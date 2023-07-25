@@ -9,6 +9,18 @@
 namespace UE::CADKernel
 {
 
+/**
+ * In some cases as a huge plan, the MaxSizeCriteria can generate a lot of triangles e.g. a 100m side plan with a MaxSizeCriteria of 3cm will need 3e3 elements by side so 2e7 triangles.
+ * This kind of case is most of the time a forgotten sketch body than a real wanted body. This mesh could make the process extremely long or simply crash all the system.
+ * The idea is to not cancel the mesh of the body in the case it will really expected but to avoid the generation of a huge mesh with unwanted hundreds of millions of triangles.
+ * So if MaxSizeCriteria will generate a huge mesh, this criteria is abandoned.
+ * The chosen limit value is 3000 elements by side
+ */
+constexpr int32 GetMaxElementCountPerSide()
+{
+	return 3000;
+}
+
 void FMinSizeCriterion::ApplyOnEdgeParameters(FTopologicalEdge& Edge, const TArray<double>& Coordinates, const TArray<FCurvePoint>& Points) const
 {
 	double NumericPrecision = Edge.GetTolerance3D();
@@ -17,12 +29,9 @@ void FMinSizeCriterion::ApplyOnEdgeParameters(FTopologicalEdge& Edge, const TArr
 		return;
 	}
 
-	ApplyOnParameters(Coordinates, Points, Edge.GetDeltaUMins(), [](double NewValue, double& AbacusValue)
+	ApplyOnParameters(Coordinates, Points, Edge.GetDeltaUMaxs(), Edge.GetDeltaUMins(), [&](double NewMaxValue, double& OutDeltaUMax, double& OutDeltaUMin)
 		{
-			if (NewValue > AbacusValue)
-			{
-				AbacusValue = NewValue;
-			}
+			UpdateWithUMinValue(NewMaxValue, OutDeltaUMax, OutDeltaUMin);
 		});
 }
 
@@ -35,55 +44,57 @@ void FMaxSizeCriterion::ApplyOnEdgeParameters(FTopologicalEdge& Edge, const TArr
 		return;
 	}
 
-	ApplyOnParameters(Coordinates, Points, Edge.GetDeltaUMaxs(), [](double NewValue, double& AbacusValue)
+	const double ElementCount = Edge.Length() / Size;
+	if (ElementCount > GetMaxElementCountPerSide())
+	{
+		return;
+	}
+
+	ApplyOnParameters(Coordinates, Points, Edge.GetDeltaUMaxs(), Edge.GetDeltaUMins(), [&](double NewMaxValue, double& OutDeltaUMax, double& OutDeltaUMin)
 		{
-			if (NewValue < AbacusValue)
-			{
-				AbacusValue = NewValue;
-			}
+			UpdateWithUMaxValue(NewMaxValue, OutDeltaUMax, OutDeltaUMin);
 		});
 }
 
-void FSizeCriterion::ApplyOnParameters(const TArray<double>& Coordinates, const TArray<FCurvePoint>& Points, TArray<double>& DeltaUArray, TFunction<void(double, double&)> Compare) const
+void FSizeCriterion::ApplyOnParameters(const TArray<double>& Coordinates, const TArray<FCurvePoint>& Points, TArray<double>& DeltaUMaxs, TArray<double>& DeltaUMins, TFunction<void(double, double&, double&)> UpdateDeltaU) const
 {
-	double DeltaUMax = Coordinates[Coordinates.Num() - 1] - Coordinates[0];
-
-	for (int32 PIndex = 1; PIndex < Coordinates.Num(); PIndex++)
+	for (int32 Index = 1; Index < Coordinates.Num(); Index++)
 	{
-		double DeltaU = Coordinates[PIndex] - Coordinates[PIndex - 1];
-		double Length = Points[2 * (PIndex - 1)].Point.Distance(Points[2 * PIndex].Point);
+		const int32 PreviousIndex = Index - 1;
+		const double DeltaCoordinate = Coordinates[Index] - Coordinates[PreviousIndex];
+		const double ChordLength = Points[2 * PreviousIndex].Point.Distance(Points[2 * Index].Point);
 
-		DeltaU = (Length > 0) ? DeltaU * Size / Length : DeltaUMax;
-		Compare(DeltaU, DeltaUArray[PIndex - 1]);
+		const double NewDeltaU = ComputeSizeCriterionValue(DeltaCoordinate, ChordLength);
+		UpdateDeltaU(NewDeltaU, DeltaUMaxs[Index - 1], DeltaUMins[Index - 1]);
 	}
 }
 
-void FMinSizeCriterion::UpdateDelta(double InDeltaU, double InUSag, double InDiagonalSag, double InVSag, double ChordLength, double DiagonalLength, double& OutSagDeltaUMax, double& OutSagDeltaUMin, FIsoCurvature& SurfaceCurvature) const
+void FMinSizeCriterion::UpdateDelta(double InDeltaCoordinate, double InUSag, double InDiagonalSag, double InVSag, double ChordLength, double DiagonalLength, double& OutSagDeltaUMax, double& OutSagDeltaUMin, FIsoCurvature& SurfaceCurvature) const
 {
 	if (ChordLength < DOUBLE_KINDA_SMALL_NUMBER)
 	{
 		return;
 	}
 
-	double DeltaU = InDeltaU * Size / ChordLength;
-	if (DeltaU > OutSagDeltaUMin)
-	{
-		OutSagDeltaUMin = DeltaU;
-	}
+	const double NewDeltaU = ComputeSizeCriterionValue(InDeltaCoordinate, ChordLength);
+	UpdateWithUMinValue(NewDeltaU, OutSagDeltaUMax, OutSagDeltaUMin);
 }
 
-void FMaxSizeCriterion::UpdateDelta(double InDeltaU, double InUSag, double InDiagonalSag, double InVSag, double ChordLength, double DiagonalLength, double& OutSagDeltaUMax, double& OutSagDeltaUMin, FIsoCurvature& SurfaceCurvature) const
+void FMaxSizeCriterion::UpdateDelta(double InDeltaCoordinate, double InUSag, double InDiagonalSag, double InVSag, double ChordLength, double DiagonalLength, double& OutSagDeltaUMax, double& OutSagDeltaUMin, FIsoCurvature& SurfaceCurvature) const
 {
 	if (ChordLength < DOUBLE_KINDA_SMALL_NUMBER)
 	{
 		return;
 	}
 
-	double DeltaU = InDeltaU * Size / ChordLength;
-	if (DeltaU < OutSagDeltaUMax)
+	const double ElementCount = ChordLength / Size;
+	if (ElementCount > GetMaxElementCountPerSide())
 	{
-		OutSagDeltaUMax = DeltaU;
+		return;
 	}
+
+	const double NewDeltaU = ComputeSizeCriterionValue(InDeltaCoordinate, ChordLength);
+	UpdateWithUMaxValue(NewDeltaU, OutSagDeltaUMax, OutSagDeltaUMin);
 }
 
 } // namespace UE::CADKernel

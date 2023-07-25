@@ -5,12 +5,11 @@ StreamingTexture.cpp: Definitions of classes used for texture.
 =============================================================================*/
 
 #include "Streaming/StreamingTexture.h"
-#include "Misc/App.h"
 #include "Streaming/StreamingManagerTexture.h"
-#include "HAL/FileManager.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
-#include "LandscapeComponent.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "StaticMeshResources.h"
 
 #if PLATFORM_DESKTOP
 ENGINE_API int32 GUseMobileLODBiasOnDesktopES31 = 1;

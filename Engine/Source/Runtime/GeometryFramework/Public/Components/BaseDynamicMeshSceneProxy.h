@@ -12,6 +12,7 @@
 #include "Rendering/ColorVertexBuffer.h"
 #include "DynamicMeshBuilder.h"
 #include "Components/BaseDynamicMeshComponent.h"
+#include "RayTracingGeometry.h"
 
 using UE::Geometry::FDynamicMesh3;
 using UE::Geometry::FDynamicMeshAttributeSet;
@@ -20,8 +21,9 @@ using UE::Geometry::FDynamicMeshNormalOverlay;
 using UE::Geometry::FDynamicMeshColorOverlay;
 using UE::Geometry::FDynamicMeshMaterialAttribute;
 
-class UMaterialInterface;
+class FDynamicPrimitiveUniformBuffer;
 class FMaterialRenderProxy;
+class UMaterialInterface;
 struct FRayTracingMaterialGatheringContext;
 
 /**

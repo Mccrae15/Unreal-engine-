@@ -3,9 +3,11 @@
 #pragma once
 
 #include "Data/PCGSurfaceData.h"
-#include "Engine/Texture2D.h"
 
 #include "PCGTextureData.generated.h"
+
+class UPCGSpatialData;
+class UTexture2D;
 
 UENUM(BlueprintType)
 enum class EPCGTextureColorChannel : uint8
@@ -30,7 +32,7 @@ class PCG_API UPCGBaseTextureData : public UPCGSurfaceData
 
 public:
 	// ~Begin UPCGData interface
-	virtual EPCGDataType GetDataType() const override { return EPCGDataType::BaseTexture | Super::GetDataType(); }
+	virtual EPCGDataType GetDataType() const override { return EPCGDataType::BaseTexture; }
 	// ~End UPCGData interface
 
 	//~Begin UPCGSpatialData interface
@@ -88,6 +90,8 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = SpatialData)
 	int32 Width = 0;
+
+	void CopyBaseTextureData(UPCGBaseTextureData* NewTextureData) const;
 };
 
 UCLASS(BlueprintType, ClassGroup=(Procedural))
@@ -97,12 +101,25 @@ class PCG_API UPCGTextureData : public UPCGBaseTextureData
 
 public:
 	// ~Begin UPCGData interface
-	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Texture | Super::GetDataType(); }
+	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Texture; }
 	// ~End UPCGData interface
 
 	UFUNCTION(BlueprintCallable, Category = Texture)
 	void Initialize(UTexture2D* InTexture, const FTransform& InTransform);
 
+	/** Returns true if the format of InTexture is compatible and can be loaded. Will load texture if not already loaded. */
+	static bool IsSupported(UTexture2D* InTexture);
+
+	//~Begin UPCGSpatialData interface
+protected:
+	virtual UPCGSpatialData* CopyInternal() const override;
+	//~End UPCGSpatialData interface
+
+public:
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = Properties)
-	TObjectPtr<UTexture2D> Texture = nullptr;
+	TWeakObjectPtr<UTexture2D> Texture = nullptr;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Engine/Texture2D.h"
+#endif

@@ -143,19 +143,35 @@ bool UNiagaraNodeWithDynamicPins::IsAddPin(const UEdGraphPin* Pin) const
 		Pin->PinType.PinSubCategory == AddPinSubCategory;
 }
 
-bool UNiagaraNodeWithDynamicPins::CanRenamePin(const UEdGraphPin* Pin) const
+bool UNiagaraNodeWithDynamicPins::IsExecPin(const UEdGraphPin* Pin) const
 {
-	return IsAddPin(Pin) == false;
+	const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
+	return Pin->PinType == Schema->TypeDefinitionToPinType(FNiagaraTypeDefinition::GetParameterMapDef()) && Pin->PinName == TEXT("");
+}
+
+bool UNiagaraNodeWithDynamicPins::CanModifyPin(const UEdGraphPin* Pin) const
+{
+	if(IsAddPin(Pin) || IsParameterMapPin(Pin))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool UNiagaraNodeWithDynamicPins::CanRenamePin(const UEdGraphPin* Pin) const
+{	
+	return CanModifyPin(Pin) && !IsExecPin(Pin) && !Pin->bOrphanedPin;
 }
 
 bool UNiagaraNodeWithDynamicPins::CanRemovePin(const UEdGraphPin* Pin) const
 {
-	return IsAddPin(Pin) == false;
+	return CanModifyPin(Pin) && !IsExecPin(Pin);
 }
 
 bool UNiagaraNodeWithDynamicPins::CanMovePin(const UEdGraphPin* Pin, int32 DirectionToMove) const
 {
-	if(IsAddPin(Pin) || IsParameterMapPin(Pin) || Pin->bOrphanedPin)
+	if(!CanModifyPin(Pin) || IsExecPin(Pin) || Pin->bOrphanedPin)
 	{
 		return false;
 	}
@@ -174,7 +190,7 @@ bool UNiagaraNodeWithDynamicPins::CanMovePin(const UEdGraphPin* Pin, int32 Direc
 	if(PinArray.IsValidIndex(Index + DirectionToMove))
 	{
 		const UEdGraphPin* PinToMoveTo = PinArray[Index + DirectionToMove];
-		if(IsAddPin(PinToMoveTo) || IsParameterMapPin(PinToMoveTo) || PinToMoveTo->bOrphanedPin)
+		if(!CanModifyPin(PinToMoveTo) || PinToMoveTo->bOrphanedPin)
 		{
 			return false;
 		}
@@ -460,7 +476,6 @@ FText UNiagaraNodeWithDynamicPins::GetPinNameText(UEdGraphPin* Pin) const
 {
 	return FText::FromName(Pin->PinName);
 }
-
 
 void UNiagaraNodeWithDynamicPins::PinNameTextCommitted(const FText& Text, ETextCommit::Type CommitType, UEdGraphPin* Pin)
 {

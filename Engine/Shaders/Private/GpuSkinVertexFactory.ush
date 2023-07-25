@@ -63,6 +63,8 @@ Buffer<float2> ClothSimulVertsPositionsNormals;
 float4x4 ClothToLocal;
 /** blend weight between simulated positions and original key-framed animation */
 float ClothBlendWeight;
+/** Scale of the owner actor */
+float3 WorldScale;
 #if GPUSKIN_APEX_CLOTH_PREVIOUS
 Buffer<float2> PreviousClothSimulVertsPositionsNormals;
 float4x4 PreviousClothToLocal;
@@ -70,7 +72,8 @@ float4x4 PreviousClothToLocal;
 #endif// #if GPUSKIN_APEX_CLOTH
 
 #if GPUSKIN_UNLIMITED_BONE_INFLUENCE
-uint InputWeightIndexSize; // bone index size: 1 - 8bit or 2 - 16bit
+// Bits 0-7 => Size of the bone weight index in bytes / bits 8-15 => Size of the bone weight weights value in bytes
+uint InputWeightIndexSize;
 Buffer<uint> InputWeightStream;
 #endif
 
@@ -451,9 +454,9 @@ float4 ClothingPosition(FClothVertex ClothVertexInfluences[NUM_INFLUENCES_PER_VE
                                          Influence.BaryCoordPos.y,
 										 1.0f - Influence.BaryCoordPos.x - Influence.BaryCoordPos.y);
 
-			float3 SimPosition = TriangleBary.x * (A + NA * Influence.BaryCoordPos.w)
-					           + TriangleBary.y * (B + NB * Influence.BaryCoordPos.w)
-					           + TriangleBary.z * (C + NC * Influence.BaryCoordPos.w);
+			float3 SimPosition = TriangleBary.x * (A + NA * Influence.BaryCoordPos.w * WorldScale.x)
+					           + TriangleBary.y * (B + NB * Influence.BaryCoordPos.w * WorldScale.y)
+					           + TriangleBary.z * (C + NC * Influence.BaryCoordPos.w * WorldScale.z);
 
 			AveragedSimulatedPosition += Weight * SimPosition;
 	    }
@@ -536,24 +539,44 @@ FBoneMatrix CalcBoneMatrix( FVertexFactoryInput Input )
 #if GPUSKIN_UNLIMITED_BONE_INFLUENCE
 	int NumBoneInfluences = Input.BlendOffsetCount & 0xff;
 	int StreamOffset = Input.BlendOffsetCount >> 8;
-	int WeightsOffset = StreamOffset + (InputWeightIndexSize * NumBoneInfluences);
+	int BoneIndexSize = InputWeightIndexSize & 0xff;
+	int BoneWeightSize = InputWeightIndexSize >> 8;
+	int WeightsOffset = StreamOffset + (BoneIndexSize * NumBoneInfluences);
 
 	FBoneMatrix BoneMatrix = FBoneMatrix(float4(0,0,0,0), float4(0,0,0,0), float4(0,0,0,0));
 	for (int InfluenceIdx = 0; InfluenceIdx < NumBoneInfluences; InfluenceIdx++)
 	{
-		int BoneIndexOffset = StreamOffset + (InputWeightIndexSize * InfluenceIdx);
+		int BoneIndexOffset = StreamOffset + (BoneIndexSize * InfluenceIdx);
+		int BoneWeightOffset = WeightsOffset + InfluenceIdx * BoneWeightSize;
 		int BoneIndex = InputWeightStream[BoneIndexOffset];
-		if (InputWeightIndexSize > 1)
+		if (BoneIndexSize > 1)
 		{
 			BoneIndex = InputWeightStream[BoneIndexOffset + 1] << 8 | BoneIndex;
 			//@todo-lh: Workaround to fix issue in SPIRVEmitter of DXC; this block must be inside the if branch
-			float BoneWeight = float(InputWeightStream[WeightsOffset + InfluenceIdx]) / 255.0f;
+			// Q: Is this workaround still necessary?
+			float BoneWeight;
+			if (BoneWeightSize > 1)
+			{
+				BoneWeight = float(InputWeightStream[BoneWeightOffset + 1] << 8 | InputWeightStream[BoneWeightOffset]) / 65535.0;
+			}
+			else
+			{
+				BoneWeight = float(InputWeightStream[BoneWeightOffset]) / 255.0f;
+			}
 			BoneMatrix += BoneWeight * GetBoneMatrix(BoneIndex);
 		}
 		else
 		{
 			//@todo-lh: Workaround to fix issue in SPIRVEmitter of DXC; this block must be inside the if branch
-			float BoneWeight = float(InputWeightStream[WeightsOffset + InfluenceIdx]) / 255.0f;
+			float BoneWeight;
+			if (BoneWeightSize > 1)
+			{
+				BoneWeight = float(InputWeightStream[BoneWeightOffset + 1] << 8 | InputWeightStream[BoneWeightOffset]) / 65535.0;
+			}
+			else
+			{
+				BoneWeight = float(InputWeightStream[BoneWeightOffset]) / 255.0f;
+			}
 			BoneMatrix += BoneWeight * GetBoneMatrix(BoneIndex);
 		}
 	}
@@ -593,24 +616,43 @@ FBoneMatrix CalcPreviousBoneMatrix( FVertexFactoryInput Input )
 #if GPUSKIN_UNLIMITED_BONE_INFLUENCE
 	int NumBoneInfluences = Input.BlendOffsetCount & 0xff;
 	int StreamOffset = Input.BlendOffsetCount >> 8;
-	int WeightsOffset = StreamOffset + (InputWeightIndexSize * NumBoneInfluences);
+	int BoneIndexSize = InputWeightIndexSize & 0xff;
+	int BoneWeightSize = InputWeightIndexSize >> 8;
+	int WeightsOffset = StreamOffset + (BoneIndexSize * NumBoneInfluences);
 
 	FBoneMatrix BoneMatrix = FBoneMatrix(float4(0,0,0,0), float4(0,0,0,0), float4(0,0,0,0));
 	for (int InfluenceIdx = 0; InfluenceIdx < NumBoneInfluences; InfluenceIdx++)
 	{
-		int BoneIndexOffset = StreamOffset + (InputWeightIndexSize * InfluenceIdx);
+		int BoneIndexOffset = StreamOffset + (BoneIndexSize * InfluenceIdx);
+		int BoneWeightOffset = WeightsOffset + InfluenceIdx * BoneWeightSize;
 		int BoneIndex = InputWeightStream[BoneIndexOffset];
-		if (InputWeightIndexSize > 1)
+		if (BoneIndexSize > 1)
 		{
 			BoneIndex = InputWeightStream[BoneIndexOffset + 1] << 8 | BoneIndex;
 			//@todo-lh: Workaround to fix issue in SPIRVEmitter of DXC; this block must be inside the if branch
-			float BoneWeight = float(InputWeightStream[WeightsOffset + InfluenceIdx]) / 255.0f;
+			float BoneWeight;
+			if (BoneWeightSize > 1)
+			{
+				BoneWeight = float(InputWeightStream[BoneWeightOffset + 1] << 8 | InputWeightStream[BoneWeightOffset]) / 65535.0;
+			}
+			else
+			{
+				BoneWeight = float(InputWeightStream[BoneWeightOffset]) / 255.0f;
+			}
 			BoneMatrix += BoneWeight * GetPreviousBoneMatrix(BoneIndex);
 		}
 		else
 		{
 			//@todo-lh: Workaround to fix issue in SPIRVEmitter of DXC; this block must be inside the if branch
-			float BoneWeight = float(InputWeightStream[WeightsOffset + InfluenceIdx]) / 255.0f;
+			float BoneWeight;
+			if (BoneWeightSize > 1)
+			{
+				BoneWeight = float(InputWeightStream[BoneWeightOffset + 1] << 8 | InputWeightStream[BoneWeightOffset]) / 65535.0;
+			}
+			else
+			{
+				BoneWeight = float(InputWeightStream[BoneWeightOffset]) / 255.0f;
+			}
 			BoneMatrix += BoneWeight * GetPreviousBoneMatrix(BoneIndex);
 		}
 	}
@@ -751,13 +793,13 @@ float3x3 SkinTangents( FVertexFactoryInput Input, FVertexFactoryIntermediates In
                     SumWeights = 1.0f;	   
 			    }
 
-			    NormalPosition += Weight * (Influence.BaryCoordNormal.x * (A + NA * Influence.BaryCoordNormal.w)
-								          + Influence.BaryCoordNormal.y * (B + NB * Influence.BaryCoordNormal.w)
-								          + Influence.BaryCoordNormal.z * (C + NC * Influence.BaryCoordNormal.w));
+			    NormalPosition += Weight * (Influence.BaryCoordNormal.x * (A + NA * Influence.BaryCoordNormal.w * WorldScale.x)
+								          + Influence.BaryCoordNormal.y * (B + NB * Influence.BaryCoordNormal.w * WorldScale.y)
+								          + Influence.BaryCoordNormal.z * (C + NC * Influence.BaryCoordNormal.w * WorldScale.z));
 
-		        TangentPosition += Weight * (Influence.BaryCoordTangent.x * (A+NA*Influence.BaryCoordTangent.w)
-								           + Influence.BaryCoordTangent.y * (B+NB*Influence.BaryCoordTangent.w)
-								           + Influence.BaryCoordTangent.z * (C + NC * Influence.BaryCoordTangent.w));
+		        TangentPosition += Weight * (Influence.BaryCoordTangent.x * (A + NA * Influence.BaryCoordTangent.w * WorldScale.x)
+								           + Influence.BaryCoordTangent.y * (B + NB * Influence.BaryCoordTangent.w * WorldScale.y)
+								           + Influence.BaryCoordTangent.z * (C + NC * Influence.BaryCoordTangent.w * WorldScale.z));
 	        }
         }
 

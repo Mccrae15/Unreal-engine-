@@ -17,6 +17,8 @@ struct FNaniteMaterialPassCommand;
 struct FLumenMeshCaptureMaterialPass;
 class  FLumenCardPassUniformParameters;
 class  FCardPageRenderData;
+class  FSceneRenderer;
+struct FCustomDepthTextures;
 
 // VertexCountPerInstance
 // InstanceCount
@@ -87,29 +89,32 @@ struct FNaniteMaterialSlot
 	};
 
 	FNaniteMaterialSlot()
-	: ShadingId(0xFFFF)
-	, RasterId(0xFFFF)
-	, SecondaryRasterId(0xFFFF)
+	: ShadingBin(0xFFFF)
+	, RasterBin(0xFFFF)
+	, SecondaryRasterBin(0xFFFF)
+	, LegacyShadingId(0xFFFF)
 	{
 	}
 
 	inline FPacked Pack() const
 	{
 		FPacked Ret;
-		Ret.Data[0] = (ShadingId << 16u | RasterId);
-		Ret.Data[1] = SecondaryRasterId == 0xFFFFu ? 0xFFFFFFFFu : SecondaryRasterId;
+		Ret.Data[0] = (ShadingBin << 16u | RasterBin);
+		Ret.Data[1] = (LegacyShadingId << 16u | SecondaryRasterBin);
 		return Ret;
 	}
 
-	uint16 ShadingId;
-	uint16 RasterId;
-	uint16 SecondaryRasterId;
+	uint16 ShadingBin;
+	uint16 RasterBin;
+	uint16 SecondaryRasterBin;
+	uint16 LegacyShadingId;
 };
 
 struct FNaniteMaterialPassCommand
 {
 	FNaniteMaterialPassCommand(const FMeshDrawCommand& InMeshDrawCommand)
 	: MeshDrawCommand(InMeshDrawCommand)
+	, MaterialId(~uint32(0))
 	, MaterialDepth(0.0f)
 	, MaterialSlot(INDEX_NONE)
 	, SortKey(MeshDrawCommand.CachedPipelineId.GetId())
@@ -122,6 +127,7 @@ struct FNaniteMaterialPassCommand
 	}
 
 	FMeshDrawCommand MeshDrawCommand;
+	uint32 MaterialId = ~uint32(0);
 	float MaterialDepth = 0.0f;
 	int32 MaterialSlot = INDEX_NONE;
 	uint64 SortKey = 0;
@@ -444,6 +450,8 @@ private:
 #endif
 };
 
+struct FNaniteShadingCommand;
+
 inline void LockIfValid(FRHICommandListBase& RHICmdList, FNaniteMaterialCommands::FUploader* Uploader)
 {
 	if (Uploader)
@@ -477,8 +485,19 @@ void EmitDepthTargets(
 	FRDGTextureRef VelocityBuffer,
 	FRDGTextureRef& OutMaterialDepth,
 	FRDGTextureRef& OutMaterialResolve,
-	bool bPrePass,
 	bool bStencilMask
+);
+
+void EmitCustomDepthStencilTargets(
+	FRDGBuilder& GraphBuilder,
+	const FScene& Scene,
+	const FViewInfo& View,
+	const FIntVector4& PageConstants,
+	FRDGBufferRef VisibleClustersSWHW,
+	FRDGBufferRef ViewsBuffer,
+	FRDGTextureRef VisBuffer64,
+	bool bWriteCustomStencil,
+	FCustomDepthTextures& CustomDepthTextures
 );
 
 void DrawBasePass(
@@ -507,6 +526,12 @@ void DrawLumenMeshCapturePass(
 	FRDGTextureRef NormalAtlasTexture,
 	FRDGTextureRef EmissiveAtlasTexture,
 	FRDGTextureRef DepthAtlasTexture
+);
+
+void BuildShadingCommands(
+	const FScene& Scene,
+	const FNaniteShadingPipelines& ShadingPipelines,
+	TArray<TPimplPtr<FNaniteShadingCommand>>& ShadingCommands
 );
 
 EGBufferLayout GetGBufferLayoutForMaterial(const FMaterial& Material);

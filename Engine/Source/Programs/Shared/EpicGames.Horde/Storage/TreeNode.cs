@@ -1,15 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Reflection;
-using System.Reflection.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Xml.Linq;
-using EpicGames.Serialization;
+using EpicGames.Core;
 
 namespace EpicGames.Horde.Storage
 {
@@ -19,121 +16,90 @@ namespace EpicGames.Horde.Storage
 	public abstract class TreeNode
 	{
 		/// <summary>
-		/// Cached incoming reference to the owner of this node.
+		/// Revision number of the node. Incremented whenever the node is modified, and used to track whether nodes are modified between 
+		/// writes starting and completing.
 		/// </summary>
-		internal TreeNodeRef? IncomingRef { get; set; }
+		public uint Revision { get; private set; }
 
 		/// <summary>
-		/// Queries if the node in its current state is read-only. Once we know that nodes are no longer going to be modified, they are favored for spilling to persistent storage.
+		/// Hash when deserialized
 		/// </summary>
-		/// <returns>True if the node is read-only.</returns>
-		public virtual bool IsReadOnly() => false;
+		public IoHash Hash { get; internal set; }
+
+		/// <summary>
+		/// Default constructor
+		/// </summary>
+		protected TreeNode()
+		{
+		}
+
+		/// <summary>
+		/// Serialization constructor. Leaves the revision number zeroed by default.
+		/// </summary>
+		/// <param name="reader"></param>
+		protected TreeNode(ITreeNodeReader reader)
+		{
+			Hash = reader.Hash;
+		}
 
 		/// <summary>
 		/// Mark this node as dirty
 		/// </summary>
-		protected void MarkAsDirty() => IncomingRef?.MarkAsDirty();
-
-		/// <summary>
-		/// Enumerates all the child references from this node
-		/// </summary>
-		/// <returns>Children of this node</returns>
-		public abstract IReadOnlyList<TreeNodeRef> GetReferences();
-
-		/// <summary>
-		/// Static instance of the serializer for a particular <see cref="TreeNode"/> type.
-		/// </summary>
-		static class SerializerInstance<T> where T : TreeNode
+		protected void MarkAsDirty()
 		{
-			static readonly TreeSerializerAttribute _attribute = typeof(T).GetCustomAttribute<TreeSerializerAttribute>()!;
-			public static TreeNodeSerializer<T> Serializer { get; } = (TreeNodeSerializer<T>)Activator.CreateInstance(_attribute.Type)!;
+			Hash = IoHash.Zero;
+			Revision++;
 		}
 
 		/// <summary>
-		/// Serialize a node to a block of memory
+		/// Serialize the contents of this node
 		/// </summary>
-		/// <returns>New data to be stored into a blob</returns>
-		public abstract Task<ITreeBlob> SerializeAsync(ITreeWriter writer, CancellationToken cancellationToken);
+		/// <returns>Data for the node</returns>
+		public abstract void Serialize(ITreeNodeWriter writer);
 
 		/// <summary>
-		/// Deserialize a node from data
+		/// Enumerate all outward references from this node
 		/// </summary>
-		/// <typeparam name="T"></typeparam>
-		/// <param name="blob">Blob to deserialize</param>
-		/// <returns></returns>
-		public static T Deserialize<T>(ITreeBlob blob) where T : TreeNode
-		{
-			return SerializerInstance<T>.Serializer.Deserialize(blob);
-		}
+		/// <returns>References to other nodes</returns>
+		public abstract IEnumerable<TreeNodeRef> EnumerateRefs();
 	}
 
 	/// <summary>
-	/// Data to be stored in a tree blob
+	/// Writer for tree nodes
 	/// </summary>
-	public struct NewTreeBlob : ITreeBlob
+	public interface ITreeNodeWriter : IMemoryWriter
 	{
 		/// <summary>
-		/// The opaque data payload
+		/// Writes a reference to another node
 		/// </summary>
-		public ReadOnlySequence<byte> Data { get; }
-
-		/// <summary>
-		/// References to other tree nodes
-		/// </summary>
-		public IReadOnlyList<ITreeBlobRef> Refs { get; }
-
-		/// <summary>
-		/// Constructor
-		/// </summary>
-		/// <param name="data">Data payload</param>
-		/// <param name="refs">References to other nodes</param>
-		public NewTreeBlob(ReadOnlyMemory<byte> data, IReadOnlyList<ITreeBlobRef> refs)
-		{
-			Data = new ReadOnlySequence<byte>(data);
-			Refs = refs;
-		}
-
-		/// <summary>
-		/// Constructor
-		/// </summary>
-		/// <param name="data">Data payload</param>
-		/// <param name="refs">References to other nodes</param>
-		public NewTreeBlob(ReadOnlySequence<byte> data, IReadOnlyList<ITreeBlobRef> refs)
-		{
-			Data = data;
-			Refs = refs;
-		}
-	}
-
-	/// <summary>
-	/// Factory class for deserializing node types
-	/// </summary>
-	/// <typeparam name="T">The type of node returned</typeparam>
-	public abstract class TreeNodeSerializer<T> where T : TreeNode
-	{
-		/// <summary>
-		/// Deserializes data from the given data
-		/// </summary>
-		/// <param name="blob">The typed blob</param>
-		/// <returns>New node parsed from the data</returns>
-		public abstract T Deserialize(ITreeBlob blob);
+		/// <param name="handle">Handle to the target node</param>
+		void WriteNodeHandle(NodeHandle handle);
 	}
 
 	/// <summary>
 	/// Attribute used to define a factory for a particular node type
 	/// </summary>
 	[AttributeUsage(AttributeTargets.Class)]
-	public sealed class TreeSerializerAttribute : Attribute
+	public sealed class TreeNodeAttribute : Attribute
 	{
 		/// <summary>
-		/// The factory type. Should be derived from <see cref="TreeNodeSerializer{T}"/>
+		/// Name of the type to store in the bundle header
 		/// </summary>
-		public Type Type { get; }
+		public string Guid { get; }
+
+		/// <summary>
+		/// Version number of the serializer
+		/// </summary>
+		public int Version { get; }
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public TreeSerializerAttribute(Type type) => Type = type;
+		public TreeNodeAttribute(string guid, int version = 1)
+		{
+			Guid = guid;
+			Version = version;
+		}
 	}
 
 	/// <summary>
@@ -142,57 +108,135 @@ namespace EpicGames.Horde.Storage
 	public static class TreeNodeExtensions
 	{
 		/// <summary>
-		/// Writes a node to storage
+		/// Read an untyped ref from the reader
 		/// </summary>
-		/// <param name="writer">Writer to output the nodes to</param>
-		/// <param name="node">Root node to serialize</param>
-		/// <param name="cancellationToken">Cancellation token for the operation</param>
-		public static async Task<ITreeBlobRef> WriteNodeAsync(this ITreeWriter writer, TreeNode node, CancellationToken cancellationToken = default)
+		/// <param name="reader">Reader to deserialize from</param>
+		/// <returns>New untyped ref</returns>
+		public static TreeNodeRef ReadRef(this ITreeNodeReader reader)
 		{
-			ITreeBlob blob = await node.SerializeAsync(writer, cancellationToken);
-			return await writer.WriteNodeAsync(blob.Data, blob.Refs, cancellationToken);
+			return new TreeNodeRef(reader);
 		}
 
 		/// <summary>
-		/// Flushes a tree to storage using the given root node
+		/// Read a strongly typed ref from the reader
 		/// </summary>
-		/// <param name="writer">Writer to output the nodes to</param>
-		/// <param name="name">Name of the ref to write</param>
-		/// <param name="node">Root node to serialize</param>
-		/// <param name="cancellationToken">Cancellation token for the operation</param>
-		public static async Task WriteRefAsync(this ITreeWriter writer, RefName name, TreeNode node, CancellationToken cancellationToken = default)
+		/// <typeparam name="T">Type of the referenced node</typeparam>
+		/// <param name="reader">Reader to deserialize from</param>
+		/// <returns>New strongly typed ref</returns>
+		public static TreeNodeRef<T> ReadRef<T>(this ITreeNodeReader reader) where T : TreeNode
 		{
-			ITreeBlobRef root = await writer.WriteNodeAsync(node, cancellationToken);
-			await writer.WriteRefAsync(name, root, cancellationToken);
+			return new TreeNodeRef<T>(reader);
 		}
 
-		/// <inheritdoc/>
-		public static async Task<T?> TryReadTreeAsync<T>(this ITreeStore store, RefName name, TimeSpan maxAge = default, CancellationToken cancellationToken = default) where T : TreeNode
+		/// <summary>
+		/// Read an optional untyped ref from the reader
+		/// </summary>
+		/// <param name="reader">Reader to deserialize from</param>
+		/// <returns>New untyped ref</returns>
+		public static TreeNodeRef? ReadOptionalRef(this ITreeNodeReader reader)
 		{
-			ITreeBlob? root = await store.TryReadTreeAsync(name, maxAge, cancellationToken);
-			if (root == null)
+			if (reader.ReadBoolean())
+			{
+				return reader.ReadRef();
+			}
+			else
 			{
 				return null;
 			}
-			return TreeNode.Deserialize<T>(root);
 		}
 
-		/// <inheritdoc/>
-		public static async Task<T> ReadTreeAsync<T>(this ITreeStore store, RefName name, TimeSpan maxAge = default, CancellationToken cancellationToken = default) where T : TreeNode
+		/// <summary>
+		/// Read an optional strongly typed ref from the reader
+		/// </summary>
+		/// <param name="reader">Reader to deserialize from</param>
+		/// <returns>New strongly typed ref</returns>
+		public static TreeNodeRef<T>? ReadOptionalRef<T>(this ITreeNodeReader reader) where T : TreeNode
 		{
-			T? result = await store.TryReadTreeAsync<T>(name, maxAge, cancellationToken);
-			if (result == null)
+			if (reader.ReadBoolean())
 			{
-				throw new RefNameNotFoundException(name);
+				return reader.ReadRef<T>();
 			}
-			return result;
+			else
+			{
+				return null;
+			}
 		}
 
-		/// <inheritdoc/>
-		public static async Task WriteTreeAsync(this ITreeStore store, RefName name, TreeNode root, CancellationToken cancellationToken = default)
+		/// <summary>
+		/// Writes a ref to storage
+		/// </summary>
+		/// <param name="writer">Writer to serialize to</param>
+		/// <param name="value">Value to write</param>
+		public static void WriteRef(this ITreeNodeWriter writer, TreeNodeRef value)
 		{
-			ITreeWriter writer = store.CreateTreeWriter(name.Text);
-			await writer.WriteRefAsync(name, root, cancellationToken);
+			value.Serialize(writer);
+		}
+
+		/// <summary>
+		/// Writes an optional ref value to storage
+		/// </summary>
+		/// <param name="writer">Writer to serialize to</param>
+		/// <param name="value">Value to write</param>
+		public static void WriteOptionalRef(this ITreeNodeWriter writer, TreeNodeRef? value)
+		{
+			if (value == null)
+			{
+				writer.WriteBoolean(false);
+			}
+			else
+			{
+				writer.WriteBoolean(true);
+				writer.WriteRef(value);
+			}
+		}
+
+		/// <summary>
+		/// Writes a node to storage
+		/// </summary>
+		/// <param name="store">Store instance to write to</param>
+		/// <param name="name">Name of the ref containing this node</param>
+		/// <param name="node">Node to be written</param>
+		/// <param name="options">Options for the node writer</param>
+		/// <param name="prefix">Prefix for uploaded blobs</param>
+		/// <param name="refOptions">Options for the ref</param>
+		/// <param name="cancellationToken">Cancellation token for the operation</param>
+		/// <returns>Location of node targetted by the ref</returns>
+		public static async Task<NodeHandle> WriteNodeAsync(this IStorageClient store, RefName name, TreeNode node, TreeOptions? options = null, Utf8String prefix = default, RefOptions? refOptions = null, CancellationToken cancellationToken = default)
+		{
+			using TreeWriter writer = new TreeWriter(store, options, prefix.IsEmpty ? name.Text : prefix);
+			return await writer.WriteAsync(name, node, refOptions, cancellationToken);
+		}
+
+		/// <summary>
+		/// Cache of constructed <see cref="BundleType"/> instances.
+		/// </summary>
+		static readonly ConcurrentDictionary<Type, BundleType> s_typeToBundleType = new ConcurrentDictionary<Type, BundleType>();
+
+		/// <summary>
+		/// Gets the bundle type object for a particular node
+		/// </summary>
+		/// <param name="node"></param>
+		/// <returns></returns>
+		public static BundleType GetBundleType(this TreeNode node) => GetBundleType(node.GetType());
+
+		/// <summary>
+		/// Gets the <see cref="BundleType"/> instance for a particular node type
+		/// </summary>
+		/// <param name="type"></param>
+		/// <returns>Bundle</returns>
+		public static BundleType GetBundleType(Type type)
+		{
+			BundleType? bundleType;
+			if (!s_typeToBundleType.TryGetValue(type, out bundleType))
+			{
+				TreeNodeAttribute? attribute = type.GetCustomAttribute<TreeNodeAttribute>();
+				if (attribute == null)
+				{
+					throw new InvalidOperationException($"Missing {nameof(TreeNodeAttribute)} from type {type.Name}");
+				}
+				bundleType = s_typeToBundleType.GetOrAdd(type, new BundleType(Guid.Parse(attribute.Guid), attribute.Version));
+			}
+			return bundleType;
 		}
 	}
 }

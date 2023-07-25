@@ -17,6 +17,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Moq;
 using Horde.Build.Logs;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace Horde.Build.Tests
 {
@@ -35,13 +36,14 @@ namespace Horde.Build.Tests
 			return Task.CompletedTask;
 		}
 
-		public Task NotifyJobCompleteAsync(IStream jobStream, IJob job, IGraph graph, LabelOutcome outcome) { throw new NotImplementedException(); }
-		public Task NotifyJobCompleteAsync(IUser user, IStream jobStream, IJob job, IGraph graph, LabelOutcome outcome) { throw new NotImplementedException(); }
-		public Task NotifyJobStepCompleteAsync(IUser user, IStream jobStream, IJob job, IJobStepBatch batch, IJobStep step, INode node, List<ILogEventData> jobStepEventData) { throw new NotImplementedException(); }
-		public Task NotifyLabelCompleteAsync(IUser user, IJob job, IStream stream, ILabel label, int labelIdx, LabelOutcome outcome, List<(string, JobStepOutcome, Uri)> stepData) { throw new NotImplementedException(); }
+		public Task NotifyJobCompleteAsync(IJob job, IGraph graph, LabelOutcome outcome) { throw new NotImplementedException(); }
+		public Task NotifyJobCompleteAsync(IUser user, IJob job, IGraph graph, LabelOutcome outcome) { throw new NotImplementedException(); }
+		public Task NotifyJobStepCompleteAsync(IUser user, IJob job, IJobStepBatch batch, IJobStep step, INode node, List<ILogEventData> jobStepEventData) { throw new NotImplementedException(); }
+		public Task NotifyLabelCompleteAsync(IUser user, IJob job, ILabel label, int labelIdx, LabelOutcome outcome, List<(string, JobStepOutcome, Uri)> stepData) { throw new NotImplementedException(); }
 		public Task NotifyIssueUpdatedAsync(IIssue issue) { throw new NotImplementedException(); }
+		public Task NotifyConfigUpdateAsync(Exception? ex) => Task.CompletedTask;
 		public Task NotifyConfigUpdateFailureAsync(string errorMessage, string fileName, int? change = null, IUser? author = null, string? description = null) { throw new NotImplementedException(); }
-		public Task NotifyDeviceServiceAsync(string message, IDevice? device = null, IDevicePool? pool = null, IStream? stream = null, IJob? job = null, IJobStep? step = null, INode? node = null, IUser? user = null) { throw new NotImplementedException(); }
+		public Task NotifyDeviceServiceAsync(string message, IDevice? device = null, IDevicePool? pool = null, StreamConfig? stream = null, IJob? job = null, IJobStep? step = null, INode? node = null, IUser? user = null) { throw new NotImplementedException(); }
 		public Task SendIssueReportAsync(IssueReportGroup report) => throw new NotImplementedException();
 	}
 
@@ -116,6 +118,38 @@ namespace Horde.Build.Tests
 			Assert.AreEqual(2, fakeSink.JobScheduledNotifications.Count);
 			Assert.AreEqual(1, fakeSink.JobScheduledCallCount);
 		}
+		
+		[TestMethod]
+		public async Task JobScheduledNotificationsAreDeduplicated()
+		{
+			FakeNotificationSink fakeSink = ServiceProvider.GetRequiredService<FakeNotificationSink>();
+			NotificationService service = (NotificationService)ServiceProvider.GetRequiredService<INotificationService>();
+			await service._ticker.StartAsync();
+			Fixture fixture = await CreateFixtureAsync();
+			IPool pool = await PoolService.CreatePoolAsync("BogusPool", properties: new Dictionary<string, string>());
+
+			service.NotifyJobScheduled(pool, false, fixture.Job1, fixture.Graph, SubResourceId.Random());
+			service.NotifyJobScheduled(pool, false, fixture.Job1, fixture.Graph, SubResourceId.Random());
+			service.NotifyJobScheduled(pool, false, fixture.Job1, fixture.Graph, SubResourceId.Random());
+			
+			// Currently no good way to wait for NotifyJobScheduled() to complete as the execution is completely async in background task (see ExecuteAsync)
+			await Task.Delay(1000);
+			await Clock.AdvanceAsync(service._notificationBatchInterval + TimeSpan.FromMinutes(5));
+			
+			// Only one job scheduled notification should have been sent, despite queuing three
+			Assert.AreEqual(1, fakeSink.JobScheduledNotifications.Count);
+			
+			// Clear the cache by compacting it 100%
+			MemoryCache cache = (MemoryCache)ServiceProvider.GetRequiredService<IMemoryCache>();
+			cache.Compact(1.0);
+			
+			// Notify of exactly the same job again
+			service.NotifyJobScheduled(pool, false, fixture.Job1, fixture.Graph, SubResourceId.Random());
+			
+			await Task.Delay(1000);
+			await Clock.AdvanceAsync(service._notificationBatchInterval + TimeSpan.FromMinutes(5));
+			Assert.AreEqual(2, fakeSink.JobScheduledNotifications.Count);
+		}
 
 		//public void NotifyLabelUpdate(IJob Job, IReadOnlyList<(LabelState, LabelOutcome)> OldLabelStates, IReadOnlyList<(LabelState, LabelOutcome)> NewLabelStates)
 		//{
@@ -159,8 +193,8 @@ namespace Horde.Build.Tests
 		//				return;
 		//			}
 
-		//			bool bFireTrigger = NewLabel.State == LabelState.Complete;
-		//			INotificationTrigger? Trigger = await GetNotificationTrigger(Job.LabelIdxToTriggerId[LabelIdx], bFireTrigger);
+		//			bool fireTrigger = NewLabel.State == LabelState.Complete;
+		//			INotificationTrigger? Trigger = await GetNotificationTrigger(Job.LabelIdxToTriggerId[LabelIdx], fireTrigger);
 		//			if (Trigger == null)
 		//			{
 		//				continue;

@@ -1,13 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Exporters/GLTFExporter.h"
-#include "Exporters/GLTFExporterUtility.h"
+#include "Engine/Engine.h"
+#include "Exporters/GLTFExporterUtilities.h"
 #include "Exporters/GLTFExporterAnalytics.h"
+#include "Misc/Paths.h"
 #include "Options/GLTFExportOptions.h"
 #include "UI/GLTFExportOptionsWindow.h"
 #include "Builders/GLTFContainerBuilder.h"
 #include "UObject/GCObjectScopeGuard.h"
 #include "AssetExportTask.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GLTFExporter)
+
 #if WITH_EDITOR
 #include "Editor.h"
 #endif
@@ -42,7 +47,7 @@ bool UGLTFExporter::ExportBinary(UObject* Object, const TCHAR* Type, FArchive& A
 	TSet<AActor*> SelectedActors;
 	if (bSelectedOnly)
 	{
-		FGLTFExporterUtility::GetSelectedActors(SelectedActors);
+		FGLTFExporterUtilities::GetSelectedActors(SelectedActors);
 	}
 
 	// TODO: add support for UAssetExportTask::IgnoreObjectList?

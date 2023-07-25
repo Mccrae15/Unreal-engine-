@@ -3,15 +3,20 @@
 #include "SpotLightGizmo.h"
 #include "Components/SpotLightComponent.h"
 #include "ContextObjectStore.h"
+#include "Engine/SpotLight.h"
 #include "ScalableConeGizmo.h"
+#include "InteractiveGizmoManager.h"
 #include "LightGizmosModule.h"
 #include "Engine/CollisionProfile.h"
-#include "Kismet/KismetMathLibrary.h"
+#include "Engine/World.h"
 #include "BaseGizmos/GizmoMath.h"
 #include "BaseGizmos/GizmoViewContext.h"
 #include "Components/SphereComponent.h"
 #include "BaseGizmos/GizmoLineHandleComponent.h"
 #include "BaseBehaviors/MouseHoverBehavior.h"
+#include "InteractiveToolManager.h"
+#include "SubTransformProxy.h"
+#include "ToolContextInterfaces.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SpotLightGizmo)
 

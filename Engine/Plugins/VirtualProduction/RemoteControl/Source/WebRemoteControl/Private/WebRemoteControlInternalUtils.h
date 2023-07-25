@@ -50,6 +50,9 @@ namespace WebRemoteControlInternalUtils
 {
 	static const TCHAR* WrappedRequestHeader = TEXT("UE-Wrapped-Request");
 	static const FString PassphraseHeader = TEXT("Passphrase");
+	static const TCHAR* OriginHeader = TEXT("Origin");
+	static const TCHAR* ForwardedIPHeader = TEXT("x-forwarded-for");
+	static const TCHAR* InvalidPassphraseError = TEXT("Given Passphrase is not correct!");
 
 	/**
 	 * Construct a default http response with CORS headers.
@@ -57,6 +60,11 @@ namespace WebRemoteControlInternalUtils
 	 * @return The constructed server response.
 	 */
 	TUniquePtr<FHttpServerResponse> CreateHttpResponse(EHttpServerResponseCodes InResponseCode = EHttpServerResponseCodes::BadRequest);
+
+	/**
+	 * Create a http response for a request denied because of an invalid passphrase.
+	 */
+	TUniquePtr<FHttpServerResponse> CreatedInvalidPassphraseResponse();
 
 	/**
 	 * Create a json structure containing an error message.
@@ -320,6 +328,13 @@ namespace WebRemoteControlInternalUtils
 	UE_NODISCARD bool ValidateContentType(const FHttpServerRequest& InRequest, FString InContentType, const FHttpResultCallback& InCompleteCallback);
 
 	/**
+	 * Check if a function call is valid since some objects//functions are disabled remotely for security reasons.
+	 * @param InRCCall The RC call to validate.
+	 * @param OutErrorText Optional error text.
+	 **/
+	UE_NODISCARD bool ValidateFunctionCall(const FRCCall& InRCCall, FString* OutErrorText);
+
+	/**
 	 * Add the desired content type to the http response headers.
 	 * @param InResponse The response to add the content type to.
 	 * @param InContentType The content type header to add.
@@ -439,4 +454,7 @@ namespace WebRemoteControlInternalUtils
 
 		return bSuccess;
 	}
+
+	/** Checking ApiKey using Md5. */
+	bool CheckPassphrase(const FString& HashedPassphrase);
 }

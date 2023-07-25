@@ -4,15 +4,25 @@
 
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h"
-#include "Engine/TextureRenderTarget2D.h"
-#include "Engine/BlueprintGeneratedClass.h"
 #include "Particles/ParticlePerfStats.h"
 #include "UObject/ObjectKey.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/WeakFieldPtr.h"
 
+#include "NiagaraComponentPoolMethodEnum.h"
+#include "NiagaraDefines.h"
+#include "NiagaraScalabilityState.h"
+#include "NiagaraTickBehaviorEnum.h"
 #include "NiagaraTypes.h"
 #include "NiagaraCore.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "NiagaraCompileHashVisitor.h"
+#include "RHIDefinitions.h"
+#endif
+
 #include "NiagaraCommon.generated.h"
 
 struct FVersionedNiagaraEmitter;
@@ -25,18 +35,17 @@ class FNiagaraSystemInstance;
 class UNiagaraParameterCollection;
 class UNiagaraParameterDefinitionsBase;
 struct FNiagaraParameterStore;
+enum class EPSCPoolMethod : uint8;
+enum ETextureRenderTargetFormat : int;
 
-//#define NIAGARA_NAN_CHECKING 1
-#define NIAGARA_NAN_CHECKING 0
+namespace ERHIFeatureLevel { enum Type : int; }
+enum EShaderPlatform : uint16;
+enum EPixelFormat : uint8;
 
 #define NIAGARA_MEMORY_TRACKING	!UE_BUILD_SHIPPING
 
 #ifndef NIAGARA_COMPUTEDEBUG_ENABLED
 	#define NIAGARA_COMPUTEDEBUG_ENABLED WITH_EDITOR
-#endif
-
-#ifndef WITH_NIAGARA_DEBUGGER
-	#define WITH_NIAGARA_DEBUGGER !UE_BUILD_SHIPPING
 #endif
 
 #define WITH_NIAGARA_GPU_PROFILER_EDITOR (WITH_EDITOR && STATS)
@@ -48,37 +57,24 @@ struct FNiagaraParameterStore;
 #define INTERPOLATED_PARAMETER_PREFIX TEXT("PREV_")
 
 /** Defines The maximum ThreadGroup size we allow in Niagara.  This is important for how memory is allocated as we always need to round this and the final instance is used to avoid overflowing the buffer. */
-constexpr uint32 NiagaraComputeMaxThreadGroupSize = 64;
+inline constexpr uint32 NiagaraComputeMaxThreadGroupSize = 64;
 
 /** The maximum number of spawn infos we can run on the GPU, modifying this will require a version update as it is used in the shader compiler  */
-constexpr uint32 NIAGARA_MAX_GPU_SPAWN_INFOS = 8;
+inline constexpr uint32 NIAGARA_MAX_GPU_SPAWN_INFOS = 8;
 
 /** TickGroup information for Niagara.  */
-constexpr ETickingGroup NiagaraFirstTickGroup = TG_PrePhysics;
-constexpr ETickingGroup NiagaraLastTickGroup = TG_LastDemotable;
-constexpr int NiagaraNumTickGroups = NiagaraLastTickGroup - NiagaraFirstTickGroup + 1;
+inline constexpr ETickingGroup NiagaraFirstTickGroup = TG_PrePhysics;
+inline constexpr ETickingGroup NiagaraLastTickGroup = TG_LastDemotable;
+inline constexpr int NiagaraNumTickGroups = NiagaraLastTickGroup - NiagaraFirstTickGroup + 1;
 
-/** Niagara ticking behaviour */
 UENUM()
-enum class ENiagaraTickBehavior : uint8
+enum class ENiagaraBaseTypes : uint8
 {
-	/** Niagara will tick after all prereqs have ticked for attachements / data interfaces, this is the safest option. */
-	UsePrereqs,
-	/** Niagara will ignore prereqs (attachments / data interface dependencies) and use the tick group set on the component. */
-	UseComponentTickGroup,
-	/** Niagara will tick in the first tick group (default is TG_PrePhysics). */
-	ForceTickFirst,
-	/** Niagara will tick in the last tick group (default is TG_LastDemotable). */
-	ForceTickLast,
-};
-
-enum ENiagaraBaseTypes
-{
-	NBT_Half,
-	NBT_Float,
-	NBT_Int32,
-	NBT_Bool,
-	NBT_Max,
+	Half,
+	Float,
+	Int32,
+	Bool,
+	Max UMETA(Hidden),
 };
 
 /** Niagara supported buffer formats on the GPU. */
@@ -348,10 +344,10 @@ struct NIAGARA_API FNiagaraFunctionSignature
 	FName Name;
 	/** Input parameters to this function. */
 	UPROPERTY()
-	TArray<FNiagaraVariable> Inputs;
+	TArray<FNiagaraVariable> Inputs; //TODO: Can these be FNiagaraVariableBase?
 	/** Input parameters of this function. */
 	UPROPERTY()
-	TArray<FNiagaraVariable> Outputs;
+	TArray<FNiagaraVariable> Outputs; //TODO: Can these be FNiagaraVariableBase?
 	/** Id of the owner is this is a member function. */
 	UPROPERTY()
 	FName OwnerName;
@@ -412,6 +408,14 @@ struct NIAGARA_API FNiagaraFunctionSignature
 	UPROPERTY()
 	int32 ContextStageIndex;
 
+	/** Number of required inputs. Can be less than the actual number of inputs when using bVariadicInput. INDEX_NONE when not using bVariadicInput, denoting that all inputs are required. */
+	UPROPERTY()
+	int16 RequiredInputs;
+
+	/** Number of required outputs. Can be less than the actual number of outputs when using bVariadicOutput. INDEX_NONE when not using bVariadicOutput, denoting that all outputs are required. */
+	UPROPERTY()
+	int16 RequiredOutputs;
+
 	/** Function specifiers verified at bind time. */
 	UPROPERTY()
 	TMap<FName, FName> FunctionSpecifiers;
@@ -442,6 +446,8 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		, bHidden(false)
 		, ModuleUsageBitmask(0)
 		, ContextStageIndex(INDEX_NONE)
+		, RequiredInputs(INDEX_NONE)
+		, RequiredOutputs(INDEX_NONE)
 	{
 	}
 
@@ -460,6 +466,8 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		, bHidden(false)
 		, ModuleUsageBitmask(0)
 		, ContextStageIndex(INDEX_NONE)
+		, RequiredInputs(INDEX_NONE)
+		, RequiredOutputs(INDEX_NONE)
 	{
 		Inputs.Reserve(InInputs.Num());
 		for (FNiagaraVariable& Var : InInputs)
@@ -502,8 +510,45 @@ struct NIAGARA_API FNiagaraFunctionSignature
 	bool EqualsIgnoringSpecifiers(const FNiagaraFunctionSignature& Other) const
 	{
 		bool bMatches = Name.ToString().Equals(Other.Name.ToString());
-		bMatches &= Inputs == Other.Inputs;
-		bMatches &= Outputs == Other.Outputs;
+		
+		//Allow divergent inputs for variadic input functions.
+		if (VariadicInput() && bMatches)
+		{
+			if (Other.Inputs.Num() >= RequiredInputs)
+			{
+				for (int32 i = 0; i < RequiredInputs; ++i)
+				{
+					bMatches &= Inputs[i] == Other.Inputs[i];
+				}
+			}
+			else
+			{
+				bMatches = false;
+			}
+		}
+		else
+		{
+			bMatches &= Inputs == Other.Inputs;
+		}
+		//Allow divergent outputs for variadic output functions.
+		if (VariadicOutput() && bMatches)
+		{
+			if (Other.Inputs.Num() >= RequiredInputs)
+			{
+				for (int32 i = 0; i < RequiredOutputs; ++i)
+				{
+					bMatches &= Outputs[i] == Other.Outputs[i];
+				}
+			}
+			else
+			{
+				bMatches = false;
+			}
+		}
+		else
+		{
+			bMatches &= Outputs == Other.Outputs;
+		}
 		bMatches &= bRequiresContext == Other.bRequiresContext;
 		bMatches &= bRequiresExecPin == Other.bRequiresExecPin;
 		bMatches &= bMemberFunction == Other.bMemberFunction;
@@ -575,6 +620,18 @@ struct NIAGARA_API FNiagaraFunctionSignature
 	}
 	
 	bool IsValid()const { return Name != NAME_None && (Inputs.Num() > 0 || Outputs.Num() > 0); }
+
+	bool VariadicInput()const { return RequiredInputs != INDEX_NONE; }
+	bool VariadicOutput()const { return RequiredOutputs != INDEX_NONE; }
+
+	int32 NumRequiredInputs()const { return RequiredInputs == INDEX_NONE ? Inputs.Num() : RequiredInputs; }
+	int32 NumOptionalInputs()const { return Inputs.Num() - NumRequiredInputs(); }
+
+	int32 NumRequiredOutputs()const { return RequiredOutputs == INDEX_NONE ? Outputs.Num() : RequiredOutputs; }
+	int32 NumOptionalOutputs()const { return Outputs.Num() - NumRequiredOutputs(); }
+
+	void GetVariadicInputs(TArray<FNiagaraVariableBase>& OutVariadicInputs, bool bStripNonExecution = true)const;
+	void GetVariadicOutputs(TArray<FNiagaraVariableBase>& OutVariadicOutputs, bool bStripNonExecution = true)const;
 };
 
 USTRUCT()
@@ -713,6 +770,12 @@ struct FVMExternalFunctionBindingInfo
 	UPROPERTY()
 	TArray<FVMFunctionSpecifier> FunctionSpecifiers;
 
+	UPROPERTY()
+	TArray<FNiagaraVariableBase> VariadicInputs;
+
+	UPROPERTY()
+	TArray<FNiagaraVariableBase> VariadicOutputs;
+
 	FORCEINLINE int32 GetNumInputs() const { return InputParamLocations.Num(); }
 	FORCEINLINE int32 GetNumOutputs() const { return NumOutputs; }
 
@@ -847,12 +910,21 @@ namespace ENiagaraScriptUsageMask
 	enum Type
 	{
 		System =
+			(1 << int32(ENiagaraScriptUsage::Module)) |
+			(1 << int32(ENiagaraScriptUsage::DynamicInput)) |
+			(1 << int32(ENiagaraScriptUsage::Function)) |
 			(1 << int32(ENiagaraScriptUsage::SystemSpawnScript)) |
 			(1 << int32(ENiagaraScriptUsage::SystemUpdateScript)),
 		Emitter =
+			(1 << int32(ENiagaraScriptUsage::Module)) |
+			(1 << int32(ENiagaraScriptUsage::DynamicInput)) |
+			(1 << int32(ENiagaraScriptUsage::Function)) |
 			(1 << int32(ENiagaraScriptUsage::EmitterSpawnScript)) |
 			(1 << int32(ENiagaraScriptUsage::EmitterUpdateScript)),
 		Particle =
+			(1 << int32(ENiagaraScriptUsage::Module)) |
+			(1 << int32(ENiagaraScriptUsage::DynamicInput)) |
+			(1 << int32(ENiagaraScriptUsage::Function)) |
 			(1 << int32(ENiagaraScriptUsage::ParticleSpawnScript)) |
 			(1 << int32(ENiagaraScriptUsage::ParticleSpawnScriptInterpolated)) |
 			(1 << int32(ENiagaraScriptUsage::ParticleUpdateScript)) |
@@ -899,16 +971,8 @@ enum class ENiagaraScriptGroup : uint8
 	Max
 };
 
-
 UENUM()
-enum class ENiagaraIterationSource : uint8
-{
-	Particles = 0,
-	DataInterface
-};
-
-UENUM()
-enum ENiagaraBindingSource 
+enum ENiagaraBindingSource : int
 {
 	ImplicitFromSource = 0,
 	ExplicitParticles,
@@ -1088,11 +1152,11 @@ struct FNiagaraMaterialAttributeBinding
 	UPROPERTY(EditAnywhere, Category = "Variable")
 	FNiagaraVariableBase NiagaraChildVariable;
 
-	void NIAGARA_API CacheValues(const UNiagaraEmitter* InEmitter); 
-	const FNiagaraVariableBase& GetParamMapBindableVariable() const;
+	NIAGARA_API void CacheValues(const UNiagaraEmitter* InEmitter);
+	NIAGARA_API const FNiagaraVariableBase& GetParamMapBindableVariable() const;
 
-	bool NIAGARA_API RenameVariableIfMatching(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
-	bool NIAGARA_API Matches(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	NIAGARA_API bool RenameVariableIfMatching(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	NIAGARA_API bool Matches(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
 };
 
 USTRUCT()
@@ -1219,14 +1283,14 @@ namespace FNiagaraUtilities
 
 	inline bool SupportsNiagaraRendering(ERHIFeatureLevel::Type FeatureLevel)
 	{
-		return FeatureLevel >= ERHIFeatureLevel::SM5 || FeatureLevel == ERHIFeatureLevel::ES3_1;
+		return true;
 	}
 
 	inline bool SupportsNiagaraRendering(EShaderPlatform ShaderPlatform)
 	{
 		// Note:
 		// IsFeatureLevelSupported does a FeatureLevel < MaxFeatureLevel(ShaderPlatform) so checking ES3.1 support will return true for SM5. I added it explicitly to be clear what we are doing.
-		return IsFeatureLevelSupported(ShaderPlatform, ERHIFeatureLevel::SM5) || IsFeatureLevelSupported(ShaderPlatform, ERHIFeatureLevel::ES3_1);
+		return true;
 	}
 
 	// When enabled log more information for the end user
@@ -1463,101 +1527,6 @@ public:
 };
 
 
-USTRUCT()
-struct FNiagaraScalabilityState
-{
-	GENERATED_BODY()
-
-	FNiagaraScalabilityState()
-		: Significance(1.0f)
-		, LastVisibleTime(0.0f)
-		, SystemDataIndex(INDEX_NONE)
-		, bCulled(0)
-		, bPreviousCulled(0)
-		, bCulledByDistance(0)
-		, bCulledByInstanceCount(0)
-		, bCulledByVisibility(0)
-		, bCulledByGlobalBudget(0)
-	{
-	}
-
-	FNiagaraScalabilityState(float InSignificance, bool InCulled, bool InPreviousCulled)
-		: Significance(InSignificance)
-		, LastVisibleTime(0.0f)
-		, SystemDataIndex(INDEX_NONE)
-		, bCulled(InCulled)
-		, bPreviousCulled(InPreviousCulled)
-		, bCulledByDistance(0)
-		, bCulledByInstanceCount(0)
-		, bCulledByVisibility(0)
-		, bCulledByGlobalBudget(0)
-	{
-	}
-
-	bool IsDirty() const { return bCulled != bPreviousCulled; }
-	void Apply() { bPreviousCulled = bCulled; }
-
-	UPROPERTY(VisibleAnywhere, Category="Scalability")
-	float Significance;
-
-	UPROPERTY(VisibleAnywhere, Category = "Scalability")
-	float LastVisibleTime;
-
-	int16 SystemDataIndex;
-
-	UPROPERTY(VisibleAnywhere, Category = "Scalability")
-	uint8 bCulled : 1;
-
-	UPROPERTY(VisibleAnywhere, Category="Scalability")
-	uint8 bPreviousCulled : 1;
-
-	UPROPERTY(VisibleAnywhere, Category="Scalability")
-	uint8 bCulledByDistance : 1;
-
-	UPROPERTY(VisibleAnywhere, Category = "Scalability")
-	uint8 bCulledByInstanceCount : 1;
-
-	UPROPERTY(VisibleAnywhere, Category = "Scalability")
-	uint8 bCulledByVisibility : 1;
-	
-	UPROPERTY(VisibleAnywhere, Category = "Scalability")
-	uint8 bCulledByGlobalBudget : 1;
-};
-
-
-UENUM()
-enum class ENCPoolMethod : uint8
-{
-	/**
-	* The component will be created fresh and not allocated from the pool.
-	*/
-	None,
-
-	/**
-	* The component is allocated from the pool and will be automatically released back to it.
-	* User need not handle this any more that other NCs but interaction with the NC after the tick it's spawned in are unsafe.
-	* This method is useful for one-shot fx that you don't need to keep a reference to and can fire and forget.
-	*/
-	AutoRelease,
-
-	/**
-	* NC is allocated from the pool but will NOT be automatically released back to it. User has ownership of the NC and must call ReleaseToPool when finished with it otherwise the NC will leak.
-	* Interaction with the NC after it has been released are unsafe.
-	* This method is useful for persistent FX that you need to modify parameters upon etc over it's lifetime.
-	*/
-	ManualRelease,
-
-	/**
-	Special entry allowing manual release NCs to be manually released but wait until completion to be returned to the pool.
-	*/
-	ManualRelease_OnComplete UMETA(Hidden),
-
-	/**
-	Special entry that marks a NC as having been returned to the pool. All NCs currently in the pool are marked this way.
-	*/
-	FreeInPool UMETA(Hidden),
-};
-
 extern NIAGARA_API ENCPoolMethod ToNiagaraPooling(EPSCPoolMethod PoolingMethod);
 extern NIAGARA_API EPSCPoolMethod ToPSCPoolMethod(ENCPoolMethod PoolingMethod);
 
@@ -1620,7 +1589,7 @@ struct NIAGARA_API FSynchronizeWithParameterDefinitionsArgs
 UENUM()
 namespace ENiagaraGpuComputeTickStage
 {
-	enum Type
+	enum Type : int
 	{
 		PreInitViews,
 		PostInitViews,

@@ -2,12 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "ContentBrowserDataSource.h"
-#include "ContentBrowserDataMenuContexts.h"
-#include "ContentBrowserClassDataPayload.h"
 #include "NativeClassHierarchy.h"
+#include "UObject/Package.h"
 #include "ContentBrowserClassDataSource.generated.h"
+
+class FContentBrowserClassFileItemDataPayload;
+class FContentBrowserClassFolderItemDataPayload;
 
 class IAssetTypeActions;
 class ICollectionManager;
@@ -77,6 +78,8 @@ public:
 	virtual bool Legacy_TryConvertAssetDataToVirtualPath(const FAssetData& InAssetData, const bool InUseFolderPaths, FName& OutPath) override;
 
 protected:
+	TSharedPtr<IAssetTypeActions> GetClassTypeActions();
+	
 	virtual void BuildRootPathVirtualTree() override;
 	bool RootClassPathPassesFilter(const FName InRootClassPath, const bool bIncludeEngineClasses, const bool bIncludePluginClasses) const;
 
@@ -108,3 +111,9 @@ private:
 
 	ICollectionManager* CollectionManager;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "ContentBrowserClassDataPayload.h"
+#include "ContentBrowserDataMenuContexts.h"
+#include "CoreMinimal.h"
+#endif

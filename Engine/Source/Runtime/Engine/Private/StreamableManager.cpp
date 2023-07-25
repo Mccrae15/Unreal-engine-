@@ -1,15 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/StreamableManager.h"
-#include "UObject/WeakObjectPtr.h"
 #include "UObject/ObjectRedirector.h"
+#include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "UObject/UObjectThreadContext.h"
 #include "HAL/IConsoleManager.h"
 #include "Tickable.h"
 #include "Serialization/LoadTimeTrace.h"
-#include "Algo/Transform.h"
-#include "atomic"
 
 DEFINE_LOG_CATEGORY_STATIC(LogStreamableManager, Log, All);
 
@@ -853,7 +851,7 @@ void FStreamableHandle::AsyncLoadCallbackWrapper(const FName& PackageName, UPack
 	// Needed so we can bind with a shared pointer for safety
 	if (OwningManager)
 	{
-		OwningManager->AsyncLoadCallback(TargetName);
+		OwningManager->AsyncLoadCallback(TargetName, Package);
 
 		if (!HasLoadCompleted())
 		{
@@ -1040,6 +1038,7 @@ struct FStreamable
 };
 
 FStreamableManager::FStreamableManager()
+	: FGCObject(EFlags::AddStableNativeReferencesOnly)
 {
 	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddRaw(this, &FStreamableManager::OnPreGarbageCollect);
 	bForceSynchronousLoads = false;
@@ -1107,22 +1106,14 @@ void FStreamableManager::OnPreGarbageCollect()
 void FStreamableManager::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	// If there are active streamable handles in the editor, this will cause the user to Force Delete, which is irritating but necessary because weak pointers cannot be used here
-	for (TStreamableMap::TConstIterator It(StreamableItems); It; ++It)
+	for (TPair<FSoftObjectPath, FStreamable*>& Pair : StreamableItems)
 	{
-		FStreamable* Existing = It.Value();
-		if (Existing->Target)
-		{
-			Collector.AddReferencedObject(Existing->Target);
-		}
+		Collector.AddStableReference(&Pair.Value->Target);
 	}
-
-	for (TStreamableRedirects::TIterator It(StreamableRedirects); It; ++It)
+	
+	for (TPair<FSoftObjectPath, FRedirectedPath>& Pair : StreamableRedirects)
 	{
-		FRedirectedPath& Existing = It.Value();
-		if (Existing.LoadedRedirector)
-		{
-			Collector.AddReferencedObject(Existing.LoadedRedirector);
-		}
+		Collector.AddStableReference(&Pair.Value.LoadedRedirector);
 	}
 }
 
@@ -1342,7 +1333,7 @@ TSharedPtr<FStreamableHandle> FStreamableManager::RequestAsyncLoad(TArray<FSoftO
 		}
 
 		// Some valid, some null
-		UE_LOG(LogStreamableManager, Warning, TEXT("RequestAsyncLoad(%s) called with both valid and null assets, null assets removed from %s!"), *DebugName, *RequestedSet);
+		UE_LOG(LogStreamableManager, Display, TEXT("RequestAsyncLoad(%s) called with both valid and null assets, null assets removed from %s!"), *DebugName, *RequestedSet);
 	}
 
 	if (TargetSet.Num() != NewRequest->RequestedAssets.Num())
@@ -1480,12 +1471,28 @@ UObject* FStreamableManager::LoadSynchronous(const FSoftObjectPath& Target, bool
 	return nullptr;
 }
 
-void FStreamableManager::FindInMemory( FSoftObjectPath& InOutTargetName, struct FStreamable* Existing )
+void FStreamableManager::FindInMemory(FSoftObjectPath& InOutTargetName, struct FStreamable* Existing, UPackage* Package)
 {
 	check(Existing);
 	check(!Existing->bAsyncLoadRequestOutstanding);
 	UE_LOG(LogStreamableManager, Verbose, TEXT("     Searching in memory for %s"), *InOutTargetName.ToString());
-	Existing->Target = StaticFindObject(UObject::StaticClass(), nullptr, *InOutTargetName.ToString());
+	Existing->Target = nullptr;
+
+	UObject* Asset = Package ? 
+		StaticFindObjectFast(UObject::StaticClass(), Package, InOutTargetName.GetAssetFName()) :
+		StaticFindObject(UObject::StaticClass(), InOutTargetName.GetAssetPath(), /*ExactClass*/false);	
+	if (Asset)
+	{
+		if (InOutTargetName.IsAsset())
+		{
+			Existing->Target = Asset;
+		}
+		else if (InOutTargetName.IsSubobject())
+		{
+			Existing->Target = StaticFindObject(UObject::StaticClass(), Asset, *InOutTargetName.GetSubPathString());
+		}
+	}
+	checkSlow(Existing->Target == StaticFindObject(UObject::StaticClass(), nullptr, *InOutTargetName.ToString()));
 
 	if (Existing->Target && Existing->Target->HasAnyInternalFlags(EInternalObjectFlags::AsyncLoading))
 	{
@@ -1507,7 +1514,7 @@ void FStreamableManager::FindInMemory( FSoftObjectPath& InOutTargetName, struct 
 	}
 }
 
-void FStreamableManager::AsyncLoadCallback(FSoftObjectPath TargetName)
+void FStreamableManager::AsyncLoadCallback(FSoftObjectPath TargetName, UPackage* Package)
 {
 	check(IsInGameThread());
 
@@ -1521,7 +1528,7 @@ void FStreamableManager::AsyncLoadCallback(FSoftObjectPath TargetName)
 			Existing->bAsyncLoadRequestOutstanding = false;
 			if (!Existing->Target)
 			{
-				FindInMemory(TargetName, Existing);
+				FindInMemory(TargetName, Existing, Package);
 			}
 
 			CheckCompletedRequests(TargetName, Existing);
@@ -1721,7 +1728,7 @@ TSharedPtr<FStreamableHandle> FStreamableManager::CreateCombinedHandle(const TCo
 	bool bFormattingFirstPass = true;
 	for (TSharedPtr<FStreamableHandle> ChildHandle : ChildHandles)
 	{
-		if (!ensure(ChildHandle.IsValid()))
+		if (!ChildHandle.IsValid())
 		{
 			if (EnumHasAllFlags(Options, EStreamableManagerCombinedHandleOptions::SkipNulls))
 			{
@@ -1729,6 +1736,7 @@ TSharedPtr<FStreamableHandle> FStreamableManager::CreateCombinedHandle(const TCo
 			}
 			else
 			{
+				ensureMsgf(ChildHandle.IsValid(), TEXT("A child handle is not valid and SkipNulls flag was not used, returning nullptr"));
 				return nullptr;
 			}
 		}

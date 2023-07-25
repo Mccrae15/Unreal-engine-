@@ -7,6 +7,7 @@
 #include "Actions/UVSeamSewAction.h"
 #include "Actions/UVToolAction.h"
 #include "AssetEditorModeManager.h"
+#include "BaseGizmos/TransformGizmoUtil.h"
 #include "ContextObjects/UVToolViewportButtonsAPI.h"
 #include "ContextObjects/UVToolAssetInputsContext.h"
 #include "ContextObjectStore.h"
@@ -47,7 +48,7 @@
 #include "UVEditorUXSettings.h"
 #include "UDIMUtilities.h"
 #include "EditorSupportDelegates.h"
-#include "Utilities/MeshUDIMClassifier.h"
+#include "Parameterization/MeshUDIMClassifier.h"
 #include "UVEditorLogging.h"
 #include "UObject/ObjectSaveContext.h"
 
@@ -382,6 +383,11 @@ void UUVEditorMode::Enter()
 	InitializeModeContexts();
 	InitializeTargets();
 
+	// By default combined transform gizmos now hide some of their elements based on what gizmo mode is chosen in
+	// the viewport. The UV editor doesn't currently have that selector, so we don't want to try to use it. If we
+	// add that selector, we'll need to remove this call.
+	GetInteractiveToolsContext()->SetForceCombinedGizmoMode(true);
+
 	BackgroundVisualization = NewObject<UUVEditorBackgroundPreview>(this);
 	BackgroundVisualization->CreateInWorld(GetWorld(), FTransform::Identity);
 
@@ -448,6 +454,13 @@ void UUVEditorMode::Enter()
 	RegisterTools();
 	RegisterActions();
 	ActivateDefaultTool();
+
+	// do any toolkit UI initialization that depends on the mode setup above
+	if (Toolkit.IsValid())
+	{
+		FUVEditorModeToolkit* UVModeToolkit = (FUVEditorModeToolkit*)Toolkit.Get();
+		UVModeToolkit->InitializeAfterModeSetup();
+	}
 
 	if (FEngineAnalytics::IsAvailable())
 	{
@@ -992,6 +1005,9 @@ void UUVEditorMode::InitializeModeContexts()
 
 	UUVEditorToolPropertiesAPI* UVEditorToolPropertiesAPI = NewObject<UUVEditorToolPropertiesAPI>();
 	AddContextObject(UVEditorToolPropertiesAPI);
+
+	// Register gizmo helper
+	UE::TransformGizmoUtil::RegisterTransformGizmoContextObject(GetInteractiveToolsContext());
 }
 
 void UUVEditorMode::InitializeTargets()
@@ -1294,7 +1310,7 @@ void UUVEditorMode::FocusLivePreviewCameraOnSelection()
 
 	for (const FUVToolSelection& Selection : CurrentSelections)
 	{
-		SelectionBoundingBox.Contain(Selection.ToBoundingBox(*Selection.Target->AppliedCanonical));
+		SelectionBoundingBox.Contain(Selection.GetConvertedSelectionForAppliedMesh().ToBoundingBox(*Selection.Target->AppliedCanonical));
 	}
 	for (const FUVToolSelection& Selection : CurrentUnsetSelections)
 	{

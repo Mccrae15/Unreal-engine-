@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
-
+#include "Engine/Level.h"
+#include "Misc/StringFormatArg.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "UObject/UnrealType.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/ErrorHandling/WorldPartitionStreamingGenerationErrorHandler.h"
 
@@ -90,5 +92,33 @@ bool UDataLayerInstanceWithAsset::Validate(IStreamingGenerationErrorHandler* Err
 	bIsValid &= Super::Validate(ErrorHandler);
 
 	return bIsValid;
+}
+
+void UDataLayerInstanceWithAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	const FName PropertyName = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UDataLayerInstanceWithAsset, DataLayerAsset))
+	{
+		GetOuterAWorldDataLayers()->ResolveActorDescContainers();
+	}
+}
+
+void UDataLayerInstanceWithAsset::PreEditUndo()
+{
+	Super::PreEditUndo();
+	CachedDataLayerAsset = DataLayerAsset;
+}
+
+void UDataLayerInstanceWithAsset::PostEditUndo()
+{
+	Super::PostEditUndo();
+	if (CachedDataLayerAsset != DataLayerAsset)
+	{
+		GetOuterAWorldDataLayers()->ResolveActorDescContainers();
+	}
+	CachedDataLayerAsset = nullptr;
 }
 #endif

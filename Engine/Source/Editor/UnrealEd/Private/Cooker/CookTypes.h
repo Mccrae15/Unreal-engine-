@@ -28,16 +28,18 @@ namespace UE::Cook { struct FCookOnTheFlyOptions; }
 namespace UE::Cook { struct FInitializeConfigSettings; }
 
 FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FBeginCookConfigSettings& Value);
-bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FBeginCookConfigSettings& Value);
+bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FBeginCookConfigSettings& OutValue);
 FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FCookByTheBookOptions& Value);
-bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FCookByTheBookOptions& Value);
+bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FCookByTheBookOptions& OutValue);
 FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FCookOnTheFlyOptions& Value);
-bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FCookOnTheFlyOptions& Value);
+bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FCookOnTheFlyOptions& OutValue);
 FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FInitializeConfigSettings& Value);
-bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FInitializeConfigSettings& Value);
+bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FInitializeConfigSettings& OutValue);
 
 #define COOK_CHECKSLOW_PACKAGEDATA 0
 #define DEBUG_COOKONTHEFLY 0
+
+LLM_DECLARE_TAG(Cooker_CachedPlatformData);
 
 /** A BaseKeyFuncs for Maps and Sets with a quicker hash function for pointers than TDefaultMapKeyFuncs */
 template<typename KeyType>
@@ -145,6 +147,7 @@ namespace UE::Cook
 		OnlyEditorOnly,
 		CookCanceled,
 		MultiprocessAssignmentError,
+		RetractedByCookDirector,
 	};
 
 	/** The type of callback for External Requests that needs to be executed within the Scheduler's lock. */
@@ -234,7 +237,7 @@ namespace UE::Cook
 	struct FCookSavePackageContext
 	{
 		FCookSavePackageContext(const ITargetPlatform* InTargetPlatform,
-			ICookedPackageWriter* InPackageWriter, FStringView InWriterDebugName);
+			ICookedPackageWriter* InPackageWriter, FStringView InWriterDebugName, FSavePackageSettings InSettings);
 		~FCookSavePackageContext();
 
 		FSavePackageContext SaveContext;
@@ -292,11 +295,15 @@ namespace UE::Cook
 		uint64 MemoryMaxUsedPhysical;
 		uint64 MemoryMinFreeVirtual;
 		uint64 MemoryMinFreePhysical;
+		FGenericPlatformMemoryStats::EMemoryPressureStatus MemoryTriggerGCAtPressureLevel;
 		int32 MinFreeUObjectIndicesBeforeGC;
 		int32 MaxNumPackagesBeforePartialGC;
+		int32 SoftGCStartNumerator;
+		int32 SoftGCDenominator;
 		TArray<FString> ConfigSettingDenyList;
 		TMap<FName, int32> MaxAsyncCacheForType; // max number of objects of a specific type which are allowed to async cache at once
 		bool bHybridIterativeDebug = false;
+		bool bUseSoftGC = false;
 
 		friend FCbWriter& ::operator<<(FCbWriter& Writer, const UE::Cook::FInitializeConfigSettings& Value);
 		friend bool ::LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FInitializeConfigSettings& Value);
@@ -337,7 +344,10 @@ namespace UE::Cook
 		bool IsRemote() const { return Id != InvalidId && Id != LocalId; }
 		uint8 GetRemoteIndex() const { check(IsRemote()); return Id - 1U; }
 		uint8 GetLocalOrRemoteIndex() const { check(IsValid()); return Id; }
+		bool operator==(const FWorkerId& Other) const { return Id == Other.Id; }
+		bool operator!=(const FWorkerId& Other) const { return Id != Other.Id; }
 		bool operator<(const FWorkerId& Other) const { return Id < Other.Id; }
+		inline friend int32 GetTypeHash(const FWorkerId& WorkerId) { return WorkerId.Id; }
 
 	private:
 		constexpr explicit FWorkerId(uint8 InId) : Id(InId) {}
@@ -353,8 +363,12 @@ namespace UE::Cook
 	bool IsCookIgnoreTimeouts();
 }
 
+bool LexTryParseString(FPlatformMemoryStats::EMemoryPressureStatus& OutValue, FStringView Text);
+FString LexToString(FPlatformMemoryStats::EMemoryPressureStatus Value);
+
 inline void RouteBeginCacheForCookedPlatformData(UObject* Obj, const ITargetPlatform* TargetPlatform)
 {
+	LLM_SCOPE_BYTAG(Cooker_CachedPlatformData);
 	UE_SCOPED_TEXT_COOKTIMER(*WriteToString<128>(GetClassTraceScope(Obj), TEXT("_BeginCacheForCookedPlatformData")));
 	UE_SCOPED_COOK_STAT(Obj->GetPackage()->GetFName(), EPackageEventStatType::BeginCacheForCookedPlatformData);
 	Obj->BeginCacheForCookedPlatformData(TargetPlatform);
@@ -362,6 +376,7 @@ inline void RouteBeginCacheForCookedPlatformData(UObject* Obj, const ITargetPlat
 
 inline bool RouteIsCachedCookedPlatformDataLoaded(UObject* Obj, const ITargetPlatform* TargetPlatform)
 {
+	LLM_SCOPE_BYTAG(Cooker_CachedPlatformData);
 	UE_SCOPED_TEXT_COOKTIMER(*WriteToString<128>(GetClassTraceScope(Obj), TEXT("_IsCachedCookedPlatformDataLoaded")));
 	UE_SCOPED_COOK_STAT(Obj->GetPackage()->GetFName(), EPackageEventStatType::IsCachedCookedPlatformDataLoaded);
 	return Obj->IsCachedCookedPlatformDataLoaded(TargetPlatform);
@@ -514,8 +529,8 @@ bool LoadFromCompactBinary(FCbFieldView Field, FBeginCookContextForWorker& Value
 void LogCookerMessage(const FString& MessageText, EMessageSeverity::Type Severity);
 LLM_DECLARE_TAG(Cooker);
 
-constexpr uint32 ExpectedMaxNumPlatforms = 32;
+inline constexpr uint32 ExpectedMaxNumPlatforms = 32;
 #define REMAPPED_PLUGINS TEXT("RemappedPlugins")
 extern float GCookProgressWarnBusyTime;
 
-constexpr float TickCookableObjectsFrameTime = .100f;
+inline constexpr float TickCookableObjectsFrameTime = .100f;

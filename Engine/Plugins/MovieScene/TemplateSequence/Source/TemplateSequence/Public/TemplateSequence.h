@@ -3,8 +3,6 @@
 #pragma once
 
 #include "MovieSceneSequence.h"
-#include "MovieScene.h"
-#include "UObject/SoftObjectPtr.h"
 #include "TemplateSequence.generated.h"
 
 class MovieSceneTrack;
@@ -67,8 +65,9 @@ public:
 	TSoftClassPtr<AActor> BoundActorClass;
 
 	UPROPERTY()
-	TSoftObjectPtr<AActor> BoundPreviewActor;
-
-	UPROPERTY()
 	TMap<FGuid, FName> BoundActorComponents;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "MovieScene.h"
+#endif

@@ -7,14 +7,20 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHIDefinitions.h"
 #include "SceneTypes.h"
+#endif
 
 #define WITH_DEBUG_VIEW_MODES !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 class UMaterialInterface;
 struct FSlowTask;
 struct FMeshMaterialShaderPermutationParameters;
+enum EShaderPlatform : uint16;
+namespace ERHIFeatureLevel { enum Type : int; }
+
+namespace EMaterialQualityLevel { enum Type : uint8; }
 
 /** 
  * Enumeration for different Quad Overdraw visualization mode.
@@ -32,7 +38,6 @@ enum EDebugViewShaderMode
 	DVSM_OutputMaterialTextureScales,  // Outputs the material texture scales.
 	DVSM_RequiredTextureResolution, // Visualize the accuracy of the streamed texture resolution.
 	DVSM_VirtualTexturePendingMips,	// Visualize the pending virtual texture mips.
-	DVSM_RayTracingDebug,			// Visualize ray tracing debug modes.
 	DVSM_LODColoration,				// Visualize primitive LOD .
 	DVSM_VisualizeGPUSkinCache,		// Visualize various properties of Skin Cache.
 	DVSM_MAX

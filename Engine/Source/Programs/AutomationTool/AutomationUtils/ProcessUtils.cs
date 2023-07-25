@@ -740,6 +740,10 @@ namespace AutomationTool
 			/// </summary>
 			NoStdOutRedirect = 1 << 3,
 			NoLoggingOfRunCommand = 1 << 4,
+
+			/// <summary>
+			/// Output of the spawned process is expected to be encoded as UTF-8.
+			/// </summary>
 			UTF8Output = 1 << 5,
 
 			/// When specified with AllowSpew, the output will be TraceEventType.Verbose instead of TraceEventType.Information
@@ -758,6 +762,17 @@ namespace AutomationTool
 			/// Not relevant when NoStdOutRedirect is set.
 			/// </summary>
 			NoStdOutCapture = 1 << 9,
+
+			/// <summary>
+			/// Output of the spawned process is expected to be encoded as UTF-16 (System.Text.UnicodeEncoding, in .NET terminology)
+			/// </summary>
+			UTF16Output = 1 << 10,
+
+			/// <summary>
+			/// If set, then use the shell to create the process, else the process will be created directly from the executable.
+			/// Will force NoStdOutRedirect since UseShellExecute is incompatible with redirection of stdout.
+			/// </summary>
+			UseShellExecute = 1 << 11,
 
 			Default = AllowSpew | AppMustExist,
 		}
@@ -837,6 +852,14 @@ namespace AutomationTool
 			// Check if the application exists, including the PATH directories.
 			if (Options.HasFlag(ERunOptions.AppMustExist) && !FileExists(Options.HasFlag(ERunOptions.NoLoggingOfRunCommand) ? true : false, App))
 			{
+				// in the case of something like "dotnet msbuild", split it up and put the msbuild on the commandline
+				// this could be generalized, but would have to account for spaces in the App part
+				if (App.StartsWith("dotnet "))
+				{
+					string[] Tokens = App.Split(" ", StringSplitOptions.RemoveEmptyEntries);
+					App = Tokens[0];
+					CommandLine = $"{Tokens[1]} {CommandLine}";
+				}
 				string ResolvedPath = WhichApp(App);
 
 				if(string.IsNullOrEmpty(ResolvedPath))
@@ -854,7 +877,8 @@ namespace AutomationTool
 				LogWithVerbosity(SpewVerbosity,"Running: " + App + " " + (String.IsNullOrEmpty(CommandLine) ? "" : CommandLine));
 			}
 
-			bool bRedirectStdOut = !Options.HasFlag(ERunOptions.NoStdOutRedirect);
+			bool bUseShellExecute = Options.HasFlag(ERunOptions.UseShellExecute);
+			bool bRedirectStdOut = !bUseShellExecute && !Options.HasFlag(ERunOptions.NoStdOutRedirect);
 			bool bAllowSpew = bRedirectStdOut && Options.HasFlag(ERunOptions.AllowSpew);
 			bool bCaptureSpew = bRedirectStdOut && !Options.HasFlag(ERunOptions.NoStdOutCapture);
 			IProcessResult Result = ProcessManager.CreateProcess(App, bAllowSpew, bCaptureSpew, Env, SpewVerbosity: SpewVerbosity, SpewFilterCallback: SpewFilterCallback, WorkingDir: WorkingDir);
@@ -870,7 +894,7 @@ namespace AutomationTool
 				// also see UE-102580
 				Proc.StartInfo.Arguments = String.IsNullOrEmpty(CommandLine) ? "" : CommandLine.Replace('\'', '\"');
 
-				Proc.StartInfo.UseShellExecute = false;
+				Proc.StartInfo.UseShellExecute = bUseShellExecute;
 				if (bRedirectStdOut)
 				{
 					Proc.StartInfo.RedirectStandardOutput = true;
@@ -883,6 +907,10 @@ namespace AutomationTool
 				if ((Options & ERunOptions.UTF8Output) == ERunOptions.UTF8Output)
 				{
 					Proc.StartInfo.StandardOutputEncoding = new System.Text.UTF8Encoding(false, false);
+				}
+				else if ((Options & ERunOptions.UTF16Output) == ERunOptions.UTF16Output)
+				{
+					Proc.StartInfo.StandardOutputEncoding = new System.Text.UnicodeEncoding(false, false, false);
 				}
 				Proc.Start();
 

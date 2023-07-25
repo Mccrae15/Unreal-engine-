@@ -5,27 +5,21 @@
 =============================================================================*/
 
 #include "Components/ReflectionCaptureComponent.h"
-#include "Serialization/MemoryWriter.h"
-#include "UObject/RenderingObjectVersion.h"
+#include "Misc/Compression.h"
+#include "UObject/Package.h"
+#include "RenderUtils.h"
 #include "UObject/ReflectionCaptureObjectVersion.h"
+#include "SceneInterface.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "Stats/StatsTrace.h"
 #include "UObject/ConstructorHelpers.h"
-#include "GameFramework/Actor.h"
-#include "RHI.h"
-#include "RenderingThread.h"
-#include "RenderResource.h"
-#include "Misc/ScopeLock.h"
 #include "Components/BillboardComponent.h"
 #include "Engine/CollisionProfile.h"
-#include "Serialization/MemoryReader.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectIterator.h"
 #include "Engine/Texture2D.h"
 #include "SceneManagement.h"
 #include "Engine/ReflectionCapture.h"
-#include "DerivedDataCacheInterface.h"
 #include "EngineModule.h"
 #include "ShaderCompiler.h"
-#include "UObject/RenderingObjectVersion.h"
 #include "Engine/SphereReflectionCapture.h"
 #include "Components/SphereReflectionCaptureComponent.h"
 #include "Components/DrawSphereComponent.h"
@@ -35,17 +29,15 @@
 #include "EngineUtils.h"
 #include "Components/PlaneReflectionCaptureComponent.h"
 #include "Components/BoxComponent.h"
-#include "Components/SkyLightComponent.h"
-#include "ProfilingDebugging/CookStats.h"
 #include "Engine/MapBuildDataRegistry.h"
-#include "ComponentRecreateRenderStateContext.h"
-#include "Engine/TextureCube.h"
 #include "Math/PackedVector.h"
+#include "GlobalRenderResources.h"
+#include "UObject/UObjectAnnotation.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ReflectionCaptureComponent)
 
 #if WITH_EDITOR
-#include "Factories/TextureFactory.h"
 #include "TextureCompiler.h"
 #endif
 
@@ -124,10 +116,30 @@ FReflectionCaptureMapBuildData* UReflectionCaptureComponent::GetMapBuildData() c
 	return NULL;
 }
 
+bool IsEncodedHDRCubemapTextureRequired(EShaderPlatform ShaderPlatform)
+{
+	const bool bEncodedHDRCubemapTextureRequired = (GIsEditor || IsMobilePlatform(ShaderPlatform))
+		// mobile forward renderer or translucensy in mobile deferred need encoded reflection texture when clustered reflections disabled
+		&& !MobileForwardEnableClusteredReflections(ShaderPlatform);
+	return bEncodedHDRCubemapTextureRequired;
+}
+
+
 void UReflectionCaptureComponent::PropagateLightingScenarioChange()
 {
-	// GetMapBuildData has changed, re-upload
-	MarkDirtyForRecaptureOrUpload();
+	const FSceneInterface* Scene = GetWorld()->Scene;
+	const EShaderPlatform  ShaderPlatform = Scene ? Scene->GetShaderPlatform() : GMaxRHIShaderPlatform;
+	const bool bEncodedDataRequired = IsEncodedHDRCubemapTextureRequired(ShaderPlatform);
+
+	if (bEncodedDataRequired && EncodedHDRCubemapTexture == nullptr)
+	{
+		ReregisterComponent();
+	}
+	else
+	{
+		// GetMapBuildData has changed, re-upload
+		MarkDirtyForRecaptureOrUpload();
+	}
 }
 
 AReflectionCapture::AReflectionCapture(const FObjectInitializer& ObjectInitializer)
@@ -736,9 +748,9 @@ void UReflectionCaptureComponent::SafeReleaseEncodedHDRCubemapTexture()
 
 void UReflectionCaptureComponent::OnRegister()
 {
-	const bool bEncodedHDRCubemapTextureRequired = (GIsEditor || GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1) 
-		// mobile forward renderer or translucensy in mobile deferred need encoded reflection texture when clustered reflections disabled
-		&& !MobileForwardEnableClusteredReflections(GMaxRHIShaderPlatform);
+	const FSceneInterface* Scene = GetWorld()->Scene;
+	const EShaderPlatform  ShaderPlatform = Scene ? Scene->GetShaderPlatform() : GMaxRHIShaderPlatform;
+	const bool bEncodedHDRCubemapTextureRequired = IsEncodedHDRCubemapTextureRequired(ShaderPlatform);
 
 	if (bEncodedHDRCubemapTextureRequired)
 	{
@@ -752,7 +764,7 @@ void UReflectionCaptureComponent::OnRegister()
 				EncodedHDRCubemapTexture = new FReflectionTextureCubeResource();
 				TArray<uint8> EncodedHDRCapturedData;
 				EPixelFormat EncodedHDRCubemapTextureFormat = PF_Unknown;
-				if (IsMobileDeferredShadingEnabled(GMaxRHIShaderPlatform))
+				if (IsMobileDeferredShadingEnabled(ShaderPlatform))
 				{
 					// make a copy, FullHDR data will still be needed later
 					EncodedHDRCapturedData = MapBuildData->FullHDRCapturedData;
@@ -1065,6 +1077,20 @@ void UReflectionCaptureComponent::UpdateReflectionCaptureContents(UWorld* WorldT
 #endif
 		)
 	{
+		// If no captures to update or load, on the condition that SendAllEndOfFrameUpdates() does not change their status, 
+		// WorldCombinedCaptures is empty and AllocateReflectionCaptures() simply returns. The logic here becomes simply calling
+		// an unnecessary SendAllEndOfFrameUpdates() and return. So we could have this early out.
+		
+		const bool bHasCapturesToUpdate = ReflectionCapturesToUpdate.Num() > 0;
+		const bool bHasCapturesToLoad = ReflectionCapturesToUpdateForLoad.Num() > 0;
+		const bool bAlwaysUpdatesCaptures = CVarReflectionCaptureUpdateEveryFrame.GetValueOnGameThread() != 0;
+		const bool bNeedsAnyUpdate = bHasCapturesToUpdate || bHasCapturesToLoad || bAlwaysUpdatesCaptures;
+		
+		if (!bNeedsAnyUpdate)
+		{
+			return;
+		}
+
 		//guarantee that all render proxies are up to date before kicking off this render
 		WorldToUpdate->SendAllEndOfFrameUpdates();
 

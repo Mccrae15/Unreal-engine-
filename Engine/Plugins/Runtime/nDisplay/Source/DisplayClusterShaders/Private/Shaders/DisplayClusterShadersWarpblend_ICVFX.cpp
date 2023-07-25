@@ -47,9 +47,17 @@ static TAutoConsoleVariable<int32> CVarIcvfxMPCDIShaderType(
 
 int32 GDisplayClusterShadersICVFXEnableLightCard = 1;
 static FAutoConsoleVariableRef CVarDisplayClusterShadersICVFXEnableLightCard(
-	TEXT("nDisplay.render.icvfx.lightcard"),
+	TEXT("nDisplay.render.icvfx.LightCard"),
 	GDisplayClusterShadersICVFXEnableLightCard,
-	TEXT("Enable ICVFX lightcards render (0 - disable).\n"),
+	TEXT("Enable ICVFX LightCards render (0 - disable).\n"),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterShadersICVFXEnableUVLightCard = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterShadersICVFXEnableUVLightCard(
+	TEXT("nDisplay.render.icvfx.UVLightCard"),
+	GDisplayClusterShadersICVFXEnableUVLightCard,
+	TEXT("Enable ICVFX UVLightCards render (0 - disable).\n"),
 	ECVF_RenderThreadSafe
 );
 
@@ -66,9 +74,11 @@ namespace IcvfxShaderPermutation
 	class FIcvfxShaderViewportInput      : SHADER_PERMUTATION_BOOL("VIEWPORT_INPUT");
 	class FIcvfxShaderViewportInputAlpha : SHADER_PERMUTATION_BOOL("VIEWPORT_INPUT_ALPHA");
 
-	class FIcvfxShaderOverlayUnder     : SHADER_PERMUTATION_BOOL("OVERLAY_UNDER");
-	class FIcvfxShaderOverlayOver      : SHADER_PERMUTATION_BOOL("OVERLAY_OVER");
-	class FIcvfxShaderOverlayAlpha     : SHADER_PERMUTATION_BOOL("OVERLAY_ALPHA");
+	class FIcvfxShaderLightCardUnder     : SHADER_PERMUTATION_BOOL("LIGHTCARD_UNDER");
+	class FIcvfxShaderLightCardOver      : SHADER_PERMUTATION_BOOL("LIGHTCARD_OVER");
+
+	class FIcvfxShaderUVLightCardUnder : SHADER_PERMUTATION_BOOL("UVLIGHTCARD_UNDER");
+	class FIcvfxShaderUVLightCardOver : SHADER_PERMUTATION_BOOL("UVLIGHTCARD_OVER");
 
 	class FIcvfxShaderInnerCamera      : SHADER_PERMUTATION_BOOL("INNER_CAMERA");
 
@@ -82,17 +92,16 @@ namespace IcvfxShaderPermutation
 
 	class FIcvfxShaderMeshWarp         : SHADER_PERMUTATION_BOOL("MESH_WARP");
 
-	class FIcvfxShaderUVLightCards : SHADER_PERMUTATION_BOOL("UV_LIGHT_CARDS");
-
 	using FCommonVSDomain = TShaderPermutationDomain<FIcvfxShaderMeshWarp>;
 
 	using FCommonPSDomain = TShaderPermutationDomain<
 		FIcvfxShaderViewportInput,
 		FIcvfxShaderViewportInputAlpha,
 
-		FIcvfxShaderOverlayUnder,
-		FIcvfxShaderOverlayOver,
-		FIcvfxShaderOverlayAlpha,
+		FIcvfxShaderLightCardUnder,
+		FIcvfxShaderLightCardOver,
+		FIcvfxShaderUVLightCardUnder,
+		FIcvfxShaderUVLightCardOver,
 
 		FIcvfxShaderInnerCamera,
 		FIcvfxShaderChromakey,
@@ -101,20 +110,11 @@ namespace IcvfxShaderPermutation
 
 		FIcvfxShaderAlphaMapBlending,
 		FIcvfxShaderBetaMapBlending,
-		FIcvfxShaderMeshWarp,
-		FIcvfxShaderUVLightCards
+		FIcvfxShaderMeshWarp
 	>;
 	
-	bool ShouldCompileCommonPSPermutation(const FGlobalShaderPermutationParameters& Parameters, const FCommonPSDomain& PermutationVector)
+	bool ShouldCompileCommonPSPermutation(const FCommonPSDomain& PermutationVector)
 	{
-		if (PermutationVector.Get<FIcvfxShaderOverlayAlpha>())
-		{
-			if (!PermutationVector.Get<FIcvfxShaderOverlayUnder>() && !PermutationVector.Get<FIcvfxShaderOverlayOver>())
-			{
-				return false;
-			}
-		}
-
 		if (!PermutationVector.Get<FIcvfxShaderMeshWarp>())
 		{
 			if (PermutationVector.Get<FIcvfxShaderChromakey>() || PermutationVector.Get<FIcvfxShaderChromakeyFrameColor>())
@@ -128,11 +128,25 @@ namespace IcvfxShaderPermutation
 			return false;
 		}
 
+		// LightCard can be only 'over' or 'under'
+		if ((PermutationVector.Get<FIcvfxShaderLightCardUnder>() || PermutationVector.Get<FIcvfxShaderUVLightCardUnder>()) && (PermutationVector.Get<FIcvfxShaderUVLightCardOver>() || PermutationVector.Get<FIcvfxShaderLightCardOver>()))
+		{
+			return false;
+		}
+
 		if (!PermutationVector.Get<FIcvfxShaderViewportInput>())
 		{
-			if (PermutationVector.Get<FIcvfxShaderOverlayUnder>() || (PermutationVector.Get<FIcvfxShaderInnerCamera>() == PermutationVector.Get<FIcvfxShaderOverlayOver>()))
+			if (PermutationVector.Get<FIcvfxShaderLightCardUnder>() || PermutationVector.Get<FIcvfxShaderUVLightCardUnder>())
 			{
 				return false;
+			}
+
+			if (PermutationVector.Get<FIcvfxShaderLightCardOver>() || PermutationVector.Get<FIcvfxShaderUVLightCardOver>())
+			{
+				if (PermutationVector.Get<FIcvfxShaderInnerCamera>())
+				{
+					return false;
+				}
 			}
 
 			if (PermutationVector.Get<FIcvfxShaderViewportInputAlpha>())
@@ -162,15 +176,19 @@ namespace IcvfxShaderPermutation
 			return false;
 		}
 
-		if (PermutationVector.Get<FIcvfxShaderUVLightCards>() && !PermutationVector.Get<FIcvfxShaderMeshWarp>())
+		// UVLightCard require UV_Chromakey (Mesh Warp)
+		if (!PermutationVector.Get<FIcvfxShaderMeshWarp>())
 		{
-			return false;
+			if (PermutationVector.Get<FIcvfxShaderUVLightCardUnder>() || PermutationVector.Get<FIcvfxShaderUVLightCardOver>())
+			{
+				return false;
+			}
 		}
 
 		return true;
 	}
 
-	bool ShouldCompileCommonVSPermutation(const FGlobalShaderPermutationParameters& Parameters, const FCommonVSDomain& PermutationVector)
+	bool ShouldCompileCommonVSPermutation(const FCommonVSDomain& PermutationVector)
 	{
 		return true;
 	}
@@ -189,23 +207,24 @@ BEGIN_SHADER_PARAMETER_STRUCT(FIcvfxPixelShaderParameters, )
 	SHADER_PARAMETER_TEXTURE(Texture2D, WarpMapTexture)
 	SHADER_PARAMETER_TEXTURE(Texture2D, AlphaMapTexture)
 	SHADER_PARAMETER_TEXTURE(Texture2D, BetaMapTexture)
-	SHADER_PARAMETER_TEXTURE(Texture2D, OverlayTexture)
-	SHADER_PARAMETER_TEXTURE(Texture2D, OverlayAlphaTexture)
 	SHADER_PARAMETER_TEXTURE(Texture2D, InnerCameraTexture)
 	SHADER_PARAMETER_TEXTURE(Texture2D, ChromakeyCameraTexture)
 	SHADER_PARAMETER_TEXTURE(Texture2D, ChromakeyMarkerTexture)
-	SHADER_PARAMETER_TEXTURE(Texture2D, UVLightCardMapTexture)
+
+	SHADER_PARAMETER_TEXTURE(Texture2D, LightCardTexture)
+	SHADER_PARAMETER_TEXTURE(Texture2D, UVLightCardTexture)
 
 	SHADER_PARAMETER_SAMPLER(SamplerState, InputSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, WarpMapSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, AlphaMapSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, BetaMapSampler)
-	SHADER_PARAMETER_SAMPLER(SamplerState, OverlaySampler)
-	SHADER_PARAMETER_SAMPLER(SamplerState, OverlayAlphaSampler)
+	
 	SHADER_PARAMETER_SAMPLER(SamplerState, InnerCameraSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ChromakeyCameraSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ChromakeyMarkerSampler)
-	SHADER_PARAMETER_SAMPLER(SamplerState, UVLightCardMapSampler)
+
+	SHADER_PARAMETER_SAMPLER(SamplerState, LightCardSampler)
+	SHADER_PARAMETER_SAMPLER(SamplerState, UVLightCardSampler)
 
 	SHADER_PARAMETER(FMatrix44f, ViewportTextureProjectionMatrix)
 	SHADER_PARAMETER(FMatrix44f, OverlayProjectionMatrix)
@@ -238,7 +257,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IcvfxShaderPermutation::ShouldCompileCommonVSPermutation(Parameters, FPermutationDomain(Parameters.PermutationId));
+		return IcvfxShaderPermutation::ShouldCompileCommonVSPermutation(FPermutationDomain(Parameters.PermutationId));
 	}
 };
 
@@ -255,7 +274,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IcvfxShaderPermutation::ShouldCompileCommonPSPermutation(Parameters, FPermutationDomain(Parameters.PermutationId));
+		return IcvfxShaderPermutation::ShouldCompileCommonPSPermutation(FPermutationDomain(Parameters.PermutationId));
 	}
 };
 
@@ -306,6 +325,28 @@ private:
 	bool bForceMultiCameraPass = false;
 	int32 CameraIndex = 0;
 
+	//LightCards
+private:
+	inline bool IsLightcardOverUsed() const
+	{
+		return ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard;
+	}
+
+	inline bool IsLightcardUnderUsed() const
+	{
+		return ICVFXParameters.IsLightcardUnderUsed() && GDisplayClusterShadersICVFXEnableLightCard;
+	}
+
+	inline bool IsUVLightcardOverUsed() const
+	{
+		return ICVFXParameters.IsUVLightcardOverUsed() && GDisplayClusterShadersICVFXEnableUVLightCard;
+	}
+
+	inline bool IsUVLightcardUnderUsed() const
+	{
+		return ICVFXParameters.IsUVLightcardUnderUsed() && GDisplayClusterShadersICVFXEnableUVLightCard;
+	}
+
 private:
 	inline bool IsMultiPassRender() const
 	{
@@ -329,7 +370,7 @@ private:
 			// 2 - second camera additive pass
 			// N - camera N
 			// N+1 - overlayOver (optional)
-			return (ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard) ? ( CameraIndex == (TotalUsedCameras + 1) ) : ( CameraIndex == TotalUsedCameras );
+			return (IsLightcardOverUsed() || IsUVLightcardOverUsed()) ? ( CameraIndex == (TotalUsedCameras + 1) ) : ( CameraIndex == TotalUsedCameras );
 		}
 
 		if (TotalUsedCameras>1)
@@ -339,28 +380,45 @@ private:
 			// 1   - camera2
 			// N-1 - camera N
 			// N   - overlayOver (optional)
-			return (ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard) ? ( CameraIndex == TotalUsedCameras ) : ( CameraIndex == (TotalUsedCameras-1) );
+			return (IsLightcardOverUsed() || IsUVLightcardOverUsed()) ? ( CameraIndex == TotalUsedCameras ) : ( CameraIndex == (TotalUsedCameras-1) );
 		}
 
 		// By default render single camera in one pass
 		return CameraIndex==0;
 	}
 
-	inline bool IsOverlayUnderUsed() const
+	inline bool IsLightCardRenderUnderInCamera() const
 	{
 		// Render OverlayUnder only on first pass
-		return IsFirstPass() && ICVFXParameters.IsLightcardUnderUsed() && GDisplayClusterShadersICVFXEnableLightCard;
+		return IsFirstPass() && IsLightcardUnderUsed();
 	}
 
-	inline bool IsOverlayOverUsed() const
+	inline bool IsLightCardRenderOverInCamera() const
 	{
 		if (IsMultiPassRender())
 		{
 			// Render OverlayOver only on last additive pass
-			return IsLastPass() && ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard;
+			return IsLastPass() && IsLightcardOverUsed();
 		}
 		
-		return ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard;
+		return IsLightcardOverUsed();
+	}
+
+	inline bool IsUVLightCardRenderUnderInCamera() const
+	{
+		// Render UVLightCard Under only on first pass
+		return IsFirstPass() && IsUVLightcardUnderUsed();
+	}
+
+	inline bool IsUVLightCardRenderOverInCamera() const
+	{
+		if (IsMultiPassRender())
+		{
+			// Render UVLightCard Over only on last additive pass
+			return IsLastPass() && IsUVLightcardOverUsed();
+		}
+
+		return IsUVLightcardOverUsed();
 	}
 
 	inline int32 GetUsedCameraIndex() const
@@ -522,27 +580,52 @@ public:
 		return false;
 	}
 
-	bool GetOverlayParameters(FIcvfxRenderPassData& RenderPassData)
+	bool GetLightCardParameters(FIcvfxRenderPassData& RenderPassData)
 	{
 		RenderPassData.PSParameters.OverlayProjectionMatrix = FMatrix44f(LocalUVMatrix);
 
-		if (IsOverlayUnderUsed() || IsOverlayOverUsed())
+		if (IsLightCardRenderUnderInCamera() || IsLightCardRenderOverInCamera())
 		{
+			RenderPassData.PSParameters.LightCardSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			RenderPassData.PSParameters.LightCardTexture = ICVFXParameters.Lightcard.Texture;
 
-				RenderPassData.PSParameters.OverlaySampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-				RenderPassData.PSParameters.OverlayTexture = ICVFXParameters.Lightcard.Texture;
-
-			if (IsOverlayUnderUsed())
+			if (IsLightCardRenderUnderInCamera())
 			{
-				RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderOverlayUnder>(true);
+				RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderLightCardUnder>(true);
 			}
-			if (IsOverlayOverUsed())
+			if (IsLightCardRenderOverInCamera())
 			{
-				RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderOverlayOver>(true);
+				RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderLightCardOver>(true);
 			}
 		}
 
 		return true;
+	}
+
+	bool GetUVLightCardParameters(FIcvfxRenderPassData& RenderPassData)
+	{
+		if (IsUVLightCardRenderUnderInCamera() || IsUVLightCardRenderOverInCamera())
+		{
+			// UVLightCard require Mesh warp (UV_Chromakey)
+			if (RenderPassData.VSPermutationVector.Get<IcvfxShaderPermutation::FIcvfxShaderMeshWarp>())
+			{
+				RenderPassData.PSParameters.UVLightCardSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+				RenderPassData.PSParameters.UVLightCardTexture = ICVFXParameters.UVLightcard.Texture;
+
+				if (IsUVLightCardRenderUnderInCamera())
+				{
+					RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderUVLightCardUnder>(true);
+				}
+				if (IsUVLightCardRenderOverInCamera())
+				{
+					RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderUVLightCardOver>(true);
+				}
+
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	bool GetCameraParameters(FIcvfxRenderPassData& RenderPassData)
@@ -639,20 +722,6 @@ public:
 		return false;
 	}
 
-	bool GetUVLightCardParameters(FIcvfxRenderPassData& RenderPassData)
-	{
-		if (ICVFXParameters.UVLightCardMap.IsValid() && GDisplayClusterShadersICVFXEnableLightCard && RenderPassData.PSPermutationVector.Get<IcvfxShaderPermutation::FIcvfxShaderMeshWarp>())
-		{
-			RenderPassData.PSParameters.UVLightCardMapSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-			RenderPassData.PSParameters.UVLightCardMapTexture = ICVFXParameters.UVLightCardMap;
-
-			RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderUVLightCards>(true);
-			return true;
-		}
-
-		return false;
-	}
-
 	void InitRenderPass(FIcvfxRenderPassData& RenderPassData)
 	{
 		// Forward input viewport
@@ -668,7 +737,9 @@ public:
 				GetWarpBlendParameters(RenderPassData);
 			}
 
-			GetOverlayParameters(RenderPassData);
+			GetLightCardParameters(RenderPassData);
+			GetUVLightCardParameters(RenderPassData);
+
 			if (GetCameraParameters(RenderPassData))
 			{
 				// Chromakey inside cam:
@@ -678,8 +749,6 @@ public:
 					GetCameraChromakeyMarkerParameters(RenderPassData);
 				}
 			}
-
-			GetUVLightCardParameters(RenderPassData);
 		}
 	}
 
@@ -789,7 +858,22 @@ public:
 		{
 			return false;
 		}
-		
+
+		// Check the permutation vectors. This should prevent a crash when no shader permutation is found.
+		if (!IcvfxShaderPermutation::ShouldCompileCommonPSPermutation(RenderPassData.PSPermutationVector))
+		{
+			UE_LOG(LogDisplayClusterShaders, Warning, TEXT("Invalid permutation vector %d for shader FIcvfxWarpPS"), RenderPassData.PSPermutationVector.ToDimensionValueId());
+
+			return false;
+		}
+
+		if (!IcvfxShaderPermutation::ShouldCompileCommonVSPermutation(RenderPassData.VSPermutationVector))
+		{
+			UE_LOG(LogDisplayClusterShaders, Warning, TEXT("Invalid permutation vector %d for shader FIcvfxWarpVS"), RenderPassData.VSPermutationVector.ToDimensionValueId());
+
+			return false;
+		}
+
 		// Get mutable shaders:
 		FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 		TShaderMapRef<FIcvfxWarpVS> VertexShader(ShaderMap, RenderPassData.VSPermutationVector);
@@ -797,16 +881,7 @@ public:
 
 		if (!VertexShader.IsValid() || !PixelShader.IsValid())
 		{
-			// Invalid permutation vector
-			if (!PixelShader.IsValid())
-			{
-				UE_LOG(LogDisplayClusterShaders, Warning, TEXT("Invalid permutation vector %d for shader FIcvfxWarpPS"), RenderPassData.PSPermutationVector.ToDimensionValueId());
-			}
-
-			if (!VertexShader.IsValid())
-			{
-				UE_LOG(LogDisplayClusterShaders, Warning, TEXT("Invalid permutation vector %d for shader FIcvfxWarpVS"), RenderPassData.VSPermutationVector.ToDimensionValueId());
-			}
+			UE_LOG(LogDisplayClusterShaders, Warning, TEXT("ICVFX shaders are not initialized properly."));
 
 			return false;
 		}
@@ -832,15 +907,16 @@ public:
 			}
 			else
 			{
+				// Extra render pass: don't change target alpha channel
 				if (RenderPassData.PSPermutationVector.Get<IcvfxShaderPermutation::FIcvfxShaderInnerCamera>())
 				{
-					// Render additive camera frame
-					GraphicsPSOInit.BlendState = TStaticBlendState <CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_InverseDestAlpha, BF_One>::GetRHI();
+					// Multicam rendering
+					GraphicsPSOInit.BlendState = TStaticBlendState <CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
 				}
 				else
 				{
-					// Render additive overlay frame
-					GraphicsPSOInit.BlendState = TStaticBlendState <CW_RGBA, BO_Add, BF_InverseSourceAlpha, BF_SourceAlpha, BO_Add, BF_InverseDestAlpha, BF_One>::GetRHI();
+					// [optional] Final render pass for LC overlays
+					GraphicsPSOInit.BlendState = TStaticBlendState <CW_RGBA, BO_Add, BF_One, BF_SourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
 				}
 			}
 
@@ -893,6 +969,11 @@ public:
 
 		case EVarIcvfxMPCDIShaderType::Disable:
 			return false;
+			break;
+
+		case EVarIcvfxMPCDIShaderType::Default:
+		default:
+			// Use default icvfx render
 			break;
 		};
 

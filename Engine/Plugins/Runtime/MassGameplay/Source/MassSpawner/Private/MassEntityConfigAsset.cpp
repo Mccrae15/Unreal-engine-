@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MassEntityConfigAsset.h"
+#include "Logging/MessageLog.h"
 #include "MassEntityTraitBase.h"
 #include "MassSpawnerTypes.h"
 #include "MassSpawnerSubsystem.h"
@@ -10,6 +11,8 @@
 #include "Engine/World.h"
 #if WITH_EDITOR
 #include "Editor.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 #endif // WITH_EDITOR
 
 #define LOCTEXT_NAMESPACE "Mass"
@@ -51,9 +54,20 @@ void UMassEntityConfigAsset::ValidateEntityConfig()
 	{
 		if (Config.ValidateEntityTemplate(*EditorWorld, *this))
 		{
+			const FText InfoText = LOCTEXT("MassEntityConfigAssetNoErrorsDetected", "There were no error detected during validation of the EntityConfigAsset");
+			
 			FMessageLog EditorInfo("LogMass");
-			EditorInfo.Info(LOCTEXT("MassEntityConfigAssetNoErrorsDetected", "There were no error detected during validation of the EntityConfigAsset"));
-			EditorInfo.Notify(LOCTEXT("MassEntityConfigAssetNoErrorsDetected", "There were no error detected during validation of the EntityConfigAsset"), EMessageSeverity::Info, true /*bForce*/);
+			EditorInfo.Info(InfoText);
+
+			FNotificationInfo Info(InfoText);
+			Info.bFireAndForget = true;
+			Info.bUseThrobber = false;
+			Info.FadeOutDuration = 0.5f;
+			Info.ExpireDuration = 5.0f;
+			if (TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(Info))
+			{
+				Notification->SetCompletionState(SNotificationItem::CS_Success);
+			}
 		}
 	}
 }
@@ -61,42 +75,40 @@ void UMassEntityConfigAsset::ValidateEntityConfig()
 
 const FMassEntityTemplate& FMassEntityConfig::GetOrCreateEntityTemplate(const UWorld& World, const UObject& ConfigOwner) const
 {
-	uint32 Hash;
 	FMassEntityTemplateID TemplateID;
 	TArray<UMassEntityTraitBase*> CombinedTraits;
-	if (const FMassEntityTemplate* ExistingTemplate = GetEntityTemplateInternal(World, ConfigOwner, Hash, TemplateID, CombinedTraits))
+	if (const FMassEntityTemplate* ExistingTemplate = GetEntityTemplateInternal(World, ConfigOwner, TemplateID, CombinedTraits))
 	{
 		return *ExistingTemplate;
 	}
 
 	UMassSpawnerSubsystem* SpawnerSystem = UWorld::GetSubsystem<UMassSpawnerSubsystem>(&World);
 	check(SpawnerSystem);
-	UMassEntityTemplateRegistry& TemplateRegistry = SpawnerSystem->GetTemplateRegistryInstance();
+	FMassEntityTemplateRegistry& TemplateRegistry = SpawnerSystem->GetMutableTemplateRegistryInstance();
 
 	// Build new template
 	// TODO: Add methods to FMassEntityTemplateBuildContext to indicate dependency vs setup.
 	// Dependency should add a fragment with default values (which later can be overridden),
 	// while setup would override values and should be run just once.
-	FMassEntityTemplate& Template = TemplateRegistry.CreateTemplate(Hash, TemplateID);
+	FMassEntityTemplate& Template = TemplateRegistry.CreateTemplate(TemplateID);
 	FMassEntityTemplateBuildContext BuildContext(Template);
 
 	BuildContext.BuildFromTraits(CombinedTraits, World);
 	Template.SetTemplateName(ConfigOwner.GetName());
 
-	if (ensureMsgf(!Template.IsEmpty(), TEXT("Need at least one fragment to create an Archetype")))
-	{
-		TemplateRegistry.InitializeEntityTemplate(Template);
-	}
+	// It is ok to have an empty template, 
+    // but be aware there will be an error if you try to create an entity with it
+    // as there will be no archetype associated with this template...
+	TemplateRegistry.InitializeEntityTemplate(Template);
 
 	return Template;
 }
 
 void FMassEntityConfig::DestroyEntityTemplate(const UWorld& World, const UObject& ConfigOwner) const
 {
-	uint32 Hash;
 	FMassEntityTemplateID TemplateID;
 	TArray<UMassEntityTraitBase*> CombinedTraits;
-	const FMassEntityTemplate* Template = GetEntityTemplateInternal(World, ConfigOwner, Hash, TemplateID, CombinedTraits);
+	const FMassEntityTemplate* Template = GetEntityTemplateInternal(World, ConfigOwner, TemplateID, CombinedTraits);
 	if (Template == nullptr)
 	{
 		return;
@@ -104,8 +116,7 @@ void FMassEntityConfig::DestroyEntityTemplate(const UWorld& World, const UObject
 
 	UMassSpawnerSubsystem* SpawnerSystem = UWorld::GetSubsystem<UMassSpawnerSubsystem>(&World);
 	check(SpawnerSystem);
-	UMassEntityTemplateRegistry& TemplateRegistry = SpawnerSystem->GetTemplateRegistryInstance();
-
+	FMassEntityTemplateRegistry& TemplateRegistry = SpawnerSystem->GetMutableTemplateRegistryInstance();
 
 	for (const UMassEntityTraitBase* Trait : CombinedTraits)
 	{
@@ -115,24 +126,23 @@ void FMassEntityConfig::DestroyEntityTemplate(const UWorld& World, const UObject
 
 	// TODO - The templates are not being torn down completely, resulting in traits that leave data in various subsystems. (Representation system)
 	
-	TemplateRegistry.DestroyTemplate(Hash, TemplateID);
+	TemplateRegistry.DestroyTemplate(TemplateID);
 }
 
 const FMassEntityTemplate& FMassEntityConfig::GetEntityTemplateChecked(const UWorld& World, const UObject& ConfigOwner) const
 {
-	uint32 Hash;
 	FMassEntityTemplateID TemplateID;
 	TArray<UMassEntityTraitBase*> CombinedTraits;
-	const FMassEntityTemplate* ExistingTemplate = GetEntityTemplateInternal(World, ConfigOwner, Hash, TemplateID, CombinedTraits);
+	const FMassEntityTemplate* ExistingTemplate = GetEntityTemplateInternal(World, ConfigOwner, TemplateID, CombinedTraits);
 	check(ExistingTemplate);
 	return *ExistingTemplate;
 }
 
-const FMassEntityTemplate* FMassEntityConfig::GetEntityTemplateInternal(const UWorld& World, const UObject& ConfigOwner, uint32& HashOut, FMassEntityTemplateID& TemplateIDOut, TArray<UMassEntityTraitBase*>& CombinedTraitsOut) const
+const FMassEntityTemplate* FMassEntityConfig::GetEntityTemplateInternal(const UWorld& World, const UObject& ConfigOwner, FMassEntityTemplateID& TemplateIDOut, TArray<UMassEntityTraitBase*>& CombinedTraitsOut) const
 {
 	UMassSpawnerSubsystem* SpawnerSystem = UWorld::GetSubsystem<UMassSpawnerSubsystem>(&World);
 	check(SpawnerSystem);
-	const UMassEntityTemplateRegistry& TemplateRegistry = SpawnerSystem->GetTemplateRegistryInstance();
+	const FMassEntityTemplateRegistry& TemplateRegistry = SpawnerSystem->GetTemplateRegistryInstance();
 
 	// Combine all the features into one array
 	// @todo this is an inefficient way assuming given template is expected to have already been created. Figure out a way to cache it.
@@ -143,8 +153,8 @@ const FMassEntityTemplate* FMassEntityConfig::GetEntityTemplateInternal(const UW
 
 	// Return existing template if found.
 	// TODO: cache the hash.
-	HashOut = UE::MassSpawner::HashTraits(CombinedTraitsOut);
-	TemplateIDOut = FMassEntityTemplateID(HashOut, EMassEntityTemplateIDType::ScriptStruct); // TODO: add proper ID type
+	const uint32 HashOut = UE::MassSpawner::HashTraits(CombinedTraitsOut);
+	TemplateIDOut = FMassEntityTemplateID(HashOut);
 	return TemplateRegistry.FindTemplateFromTemplateID(TemplateIDOut);
 }
 

@@ -2,31 +2,25 @@
 
 #include "DataValidationModule.h"
 
-#include "UObject/Object.h"
+#include "AssetRegistry/ARFilter.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/SoftObjectPath.h"
-#include "GameFramework/HUD.h"
 
+#include "Editor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ToolMenus.h"
-#include "Styling/AppStyle.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/MessageDialog.h"
 #include "DataValidationCommandlet.h"
-#include "LevelEditor.h"
-#include "Misc/FeedbackContext.h"
-#include "Misc/OutputDeviceConsole.h"
-#include "Modules/ModuleManager.h"
 
 #include "ContentBrowserMenuContexts.h"
-#include "ContentBrowserModule.h"
-#include "ContentBrowserDelegates.h"
 
-#include "WorkspaceMenuStructure.h"
-#include "WorkspaceMenuStructureModule.h"
 #include "EditorValidatorSubsystem.h"
 #include "ISettingsModule.h"
 #include "Algo/RemoveIf.h"
+#include "Misc/PackageName.h"
+#include "ToolMenu.h"
+#include "ToolMenuEntry.h"
+#include "ToolMenuSection.h"
 
 #define LOCTEXT_NAMESPACE "DataValidationModule"
 
@@ -111,7 +105,7 @@ void FDataValidationModule::RegisterMenus()
 			FSlateIcon(),
 			FToolMenuExecuteAction::CreateLambda([this](const FToolMenuContext& InContext)
 			{
-				if (UContentBrowserAssetContextMenuContext* Context = InContext.FindContext<UContentBrowserAssetContextMenuContext>())
+				if (const UContentBrowserAssetContextMenuContext* Context = InContext.FindContext<UContentBrowserAssetContextMenuContext>())
 				{
 					ValidateAssets(Context->SelectedAssets, false, EDataValidationUsecase::Manual);
 				}
@@ -125,7 +119,7 @@ void FDataValidationModule::RegisterMenus()
 			FSlateIcon(),
 			FToolMenuExecuteAction::CreateLambda([this](const FToolMenuContext& InContext)
 			{
-				if (UContentBrowserAssetContextMenuContext* Context = InContext.FindContext<UContentBrowserAssetContextMenuContext>())
+				if (const UContentBrowserAssetContextMenuContext* Context = InContext.FindContext<UContentBrowserAssetContextMenuContext>())
 				{
 					ValidateAssets(Context->SelectedAssets, true, EDataValidationUsecase::Manual);
 				}
@@ -143,7 +137,7 @@ void FDataValidationModule::RegisterMenus()
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Validate"),
 			FToolMenuExecuteAction::CreateLambda([this](const FToolMenuContext& InContext)
 			{
-				if (UContentBrowserFolderContext* Context = InContext.FindContext<UContentBrowserFolderContext>())
+				if (const UContentBrowserFolderContext* Context = InContext.FindContext<UContentBrowserFolderContext>())
 				{
 					const TArray<FString>& SelectedPaths = Context->GetSelectedPackagePaths();
 

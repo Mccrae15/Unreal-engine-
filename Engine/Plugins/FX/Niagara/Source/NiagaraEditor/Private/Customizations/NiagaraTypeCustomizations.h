@@ -15,6 +15,7 @@ class FNiagaraScriptViewModel;
 class IPropertyHandle;
 class IPropertyHandleArray;
 class UMaterialInterface;
+struct FMaterialParameterInfo;
 class UNiagaraGraph;
 class UNiagaraParameterDefinitions;
 class UNiagaraRendererProperties;
@@ -189,6 +190,8 @@ private:
 	class UNiagaraSimulationStageBase* SimulationStage = nullptr;
 	struct FNiagaraVariableAttributeBinding* TargetVariableBinding = nullptr;
 	const struct FNiagaraVariableAttributeBinding* DefaultVariableBinding = nullptr;
+	/** The emitter handle guid this binding is used in. Used to gather available parameters for the system & this emitter (not all emitters) */
+	FGuid EmitterHandleGuid;
 };
 
 class FNiagaraUserParameterBindingCustomization : public IPropertyTypeCustomization
@@ -255,13 +258,13 @@ private:
 	FText GetMaterialCurrentText() const;
 	FText GetMaterialTooltipText() const;
 	TSharedRef<SWidget> OnGetMaterialMenuContent() const;
-	TArray<FName> GetMaterialNames() const;
+	void GetMaterialParameters(TArray<TPair<FName, FString>>& OutBindingNameAndDescription) const;
 	void ChangeMaterialSource(FName InVarName);
 	void CollectAllMaterialActions(FGraphActionListBuilderBase& OutAllActions);
 	TSharedRef<SWidget> OnCreateWidgetForMaterialAction(struct FCreateWidgetForActionData* const InCreateData);
 	void OnMaterialActionSelected(const TArray< TSharedPtr<FEdGraphSchemaAction> >& SelectedActions, ESelectInfo::Type InSelectionType);
 
-	bool IsCompatibleNiagaraVariable(const struct FNiagaraVariable& InVar) const;
+	TArray<FNiagaraTypeDefinition> GetAllowedVariableTypes() const;
 	static FText MakeCurrentText(const FNiagaraVariableBase& BaseVar, const FNiagaraVariableBase& ChildVar);
 
 	TSharedPtr<IPropertyHandle> PropertyHandle;
@@ -381,14 +384,15 @@ public:
 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils) override;
 	// IPropertyTypeCustomization interface end
 
-	FText GetMaterialBindingNameText() const;
-	TSharedRef<SWidget> OnGetMaterialBindingNameMenuContent() const;
+	FText GetBindingNameText(TSharedPtr<IPropertyHandle> PropertyHandle) const;
+	static FText GetMaterialBindingTooltip(FName ParameterName, const FString& ParameterDesc);
+	TSharedRef<SWidget> OnGetMaterialBindingNameMenuContent(TSharedPtr<IPropertyHandle> PropertyHandle) const;
 
-	virtual void GetMaterialBindingNames(UMaterialInterface* Material, TArray<FName>& OutBindings) const = 0;
+	virtual bool CustomizeChildProperty(class IDetailChildrenBuilder& ChildBuilder, TSharedPtr<IPropertyHandle> PropertyHandle) { return false; }
+	virtual void GetMaterialParameterInfos(UMaterialInterface* Material, TArray<FMaterialParameterInfo>& OutMaterialParameterInfos) const = 0;
 
-private:
+protected:
 	TWeakObjectPtr<UNiagaraRendererProperties>	WeakRenderProperties;
-	TSharedPtr<IPropertyHandle>					MaterialBindingNameProperty;
 };
 
 class FNiagaraRendererMaterialScalarParameterCustomization : public FNiagaraRendererMaterialParameterCustomization
@@ -399,7 +403,7 @@ public:
 		return MakeShared<FNiagaraRendererMaterialScalarParameterCustomization>();
 	}
 
-	virtual void GetMaterialBindingNames(UMaterialInterface* Material, TArray<FName>& OutBindings) const override;
+	virtual void GetMaterialParameterInfos(UMaterialInterface* Material, TArray<FMaterialParameterInfo>& OutMaterialParameterInfos) const override;
 };
 
 class FNiagaraRendererMaterialVectorParameterCustomization : public FNiagaraRendererMaterialParameterCustomization
@@ -410,7 +414,7 @@ public:
 		return MakeShared<FNiagaraRendererMaterialVectorParameterCustomization>();
 	}
 
-	virtual void GetMaterialBindingNames(UMaterialInterface* Material, TArray<FName>& OutBindings) const override;
+	virtual void GetMaterialParameterInfos(UMaterialInterface* Material, TArray<FMaterialParameterInfo>& OutMaterialParameterInfos) const override;
 };
 
 class FNiagaraRendererMaterialTextureParameterCustomization : public FNiagaraRendererMaterialParameterCustomization
@@ -421,5 +425,36 @@ public:
 		return MakeShared<FNiagaraRendererMaterialTextureParameterCustomization>();
 	}
 
-	virtual void GetMaterialBindingNames(UMaterialInterface* Material, TArray<FName>& OutBindings) const override;
+	virtual void GetMaterialParameterInfos(UMaterialInterface* Material, TArray<FMaterialParameterInfo>& OutMaterialParameterInfos) const override;
 };
+
+class FNiagaraRendererMaterialStaticBoolParameterCustomization : public FNiagaraRendererMaterialParameterCustomization
+{
+public:
+	static TSharedRef<IPropertyTypeCustomization> MakeInstance()
+	{
+		return MakeShared<FNiagaraRendererMaterialStaticBoolParameterCustomization>();
+	}
+
+	virtual bool CustomizeChildProperty(class IDetailChildrenBuilder& ChildBuilder, TSharedPtr<IPropertyHandle> PropertyHandle) override;
+	virtual void GetMaterialParameterInfos(UMaterialInterface* Material, TArray<FMaterialParameterInfo>& OutMaterialParameterInfos) const override;
+	TSharedRef<SWidget> OnGetStaticVariablelBindingNameMenuContent(TSharedPtr<IPropertyHandle> PropertyHandle) const;
+};
+
+//** Properties customization for FNiagaraVariables. */
+class FNiagaraVariableDetailsCustomization : public IPropertyTypeCustomization
+{
+public:
+	static TSharedRef<IPropertyTypeCustomization> MakeInstance()
+	{
+		return MakeShared<FNiagaraVariableDetailsCustomization>();
+	}
+
+	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils);
+
+	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils);
+
+private:
+	TSharedRef<SWidget> GetTypeMenu(TSharedPtr<IPropertyHandle> InPropertyHandle, FNiagaraVariable* Var);
+};
+

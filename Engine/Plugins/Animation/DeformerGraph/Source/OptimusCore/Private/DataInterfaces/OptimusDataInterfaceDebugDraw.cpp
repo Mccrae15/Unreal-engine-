@@ -11,6 +11,8 @@
 #include "ShaderCore.h"
 #include "ShaderParameterMetadataBuilder.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusDataInterfaceDebugDraw)
+
 
 FString UOptimusDebugDrawDataInterface::GetDisplayName() const
 {
@@ -74,9 +76,16 @@ void UOptimusDebugDrawDataInterface::GetShaderParameters(TCHAR const* UID, FShad
 	InOutBuilder.AddNestedStruct<FDebugDrawDataInterfaceParameters>(UID);
 }
 
+TCHAR const* UOptimusDebugDrawDataInterface::TemplateFilePath = TEXT("/Plugin/Optimus/Private/DataInterfaceDebugDraw.ush");
+
+TCHAR const* UOptimusDebugDrawDataInterface::GetShaderVirtualPath() const
+{
+	return TemplateFilePath;
+}
+
 void UOptimusDebugDrawDataInterface::GetShaderHash(FString& InOutKey) const
 {
-	GetShaderFileHash(TEXT("/Plugin/Optimus/Private/DataInterfaceDebugDraw.ush"), EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
+	GetShaderFileHash(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
 }
 
 void UOptimusDebugDrawDataInterface::GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const
@@ -87,7 +96,7 @@ void UOptimusDebugDrawDataInterface::GetHLSL(FString& OutHLSL, FString const& In
 	};
 
 	FString TemplateFile;
-	LoadShaderSourceFile(TEXT("/Plugin/Optimus/Private/DataInterfaceDebugDraw.ush"), EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
+	LoadShaderSourceFile(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
 	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
 }
 
@@ -100,11 +109,6 @@ UComputeDataProvider* UOptimusDebugDrawDataInterface::CreateDataProvider(TObject
 }
 
 
-bool UOptimusDebugDrawDataProvider::IsValid() const
-{
-	return PrimitiveComponent != nullptr;
-}
-
 FComputeDataProviderRenderProxy* UOptimusDebugDrawDataProvider::GetRenderProxy()
 {
 	return new FOptimusDebugDrawDataProviderProxy(PrimitiveComponent, DebugDrawParameters);
@@ -114,8 +118,10 @@ FComputeDataProviderRenderProxy* UOptimusDebugDrawDataProvider::GetRenderProxy()
 FOptimusDebugDrawDataProviderProxy::FOptimusDebugDrawDataProviderProxy(UPrimitiveComponent* InPrimitiveComponent, FOptimusDebugDrawParameters const& InDebugDrawParameters)
 	: Setup(FIntRect(0, 0, 1920, 1080))
 {
+	Scene = InPrimitiveComponent != nullptr ? InPrimitiveComponent->GetScene() : nullptr;
+
 	// Split LocalToWorld into a pre-translation and transform for large world coordinate support.
-	FMatrix RenderMatrix = InPrimitiveComponent->GetRenderMatrix();
+	FMatrix RenderMatrix = InPrimitiveComponent != nullptr ? InPrimitiveComponent->GetRenderMatrix() : FMatrix();
 	FVector PreViewTranslation = -RenderMatrix.GetOrigin();
 	LocalToWorld = FMatrix44f(RenderMatrix.ConcatTranslation(PreViewTranslation));
 
@@ -134,6 +140,20 @@ FOptimusDebugDrawDataProviderProxy::FOptimusDebugDrawDataProviderProxy(UPrimitiv
 	}
 }
 
+bool FOptimusDebugDrawDataProviderProxy::IsValid(FValidationData const& InValidationData) const
+{
+	if (InValidationData.ParameterStructSize != sizeof(FParameters))
+	{
+		return false;
+	}
+	if (Scene == nullptr)
+	{
+		return false;
+	}
+
+	return true;
+}
+
 void FOptimusDebugDrawDataProviderProxy::AllocateResources(FRDGBuilder& GraphBuilder)
 {
 	// Allocate ShaderPrint output buffers.
@@ -149,30 +169,26 @@ void FOptimusDebugDrawDataProviderProxy::AllocateResources(FRDGBuilder& GraphBui
 	{
 		// Enqueue for display at next view render.
 		FFrozenShaderPrintData FrozenShaderPrintData = ShaderPrint::FreezeShaderPrintData(GraphBuilder, ShaderPrintData);
-		ShaderPrint::SubmitShaderPrintData(FrozenShaderPrintData);
+		ShaderPrint::SubmitShaderPrintData(FrozenShaderPrintData, Scene);
 	}
 }
 
-void FOptimusDebugDrawDataProviderProxy::GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData)
+void FOptimusDebugDrawDataProviderProxy::GatherDispatchData(FDispatchData const& InDispatchData)
 {
-	if (!ensure(InDispatchSetup.ParameterStructSizeForValidation == sizeof(FDebugDrawDataInterfaceParameters)))
+	const TStridedView<FParameters> ParameterArray = MakeStridedParameterView<FParameters>(InDispatchData);
+	for (int32 InvocationIndex = 0; InvocationIndex < ParameterArray.Num(); ++InvocationIndex)
 	{
-		return;
-	}
-
-	for (int32 InvocationIndex = 0; InvocationIndex < InDispatchSetup.NumInvocations; ++InvocationIndex)
-	{
-		FDebugDrawDataInterfaceParameters* Parameters = (FDebugDrawDataInterfaceParameters*)(InOutDispatchData.ParameterBuffer + InDispatchSetup.ParameterBufferOffset + InDispatchSetup.ParameterBufferStride * InvocationIndex);
-		Parameters->LocalToWorld = LocalToWorld;
-		Parameters->Resolution = ConfigParameters.Resolution;
-		Parameters->FontSize = ConfigParameters.FontSize;
-		Parameters->FontSpacing = ConfigParameters.FontSpacing;
-		Parameters->MaxValueCount = ConfigParameters.MaxValueCount;
-		Parameters->MaxSymbolCount = ConfigParameters.MaxSymbolCount;
-		Parameters->MaxStateCount = ConfigParameters.MaxStateCount;
-		Parameters->MaxLineCount = ConfigParameters.MaxLineCount;
-		Parameters->MaxTriangleCount = ConfigParameters.MaxTriangleCount;
-		Parameters->StateBuffer = CachedParameters.ShaderPrint_StateBuffer;
-		Parameters->RWEntryBuffer = CachedParameters.ShaderPrint_RWEntryBuffer;
+		FParameters& Parameters = ParameterArray[InvocationIndex];
+		Parameters.LocalToWorld = LocalToWorld;
+		Parameters.Resolution = ConfigParameters.Resolution;
+		Parameters.FontSize = ConfigParameters.FontSize;
+		Parameters.FontSpacing = ConfigParameters.FontSpacing;
+		Parameters.MaxValueCount = ConfigParameters.MaxValueCount;
+		Parameters.MaxSymbolCount = ConfigParameters.MaxSymbolCount;
+		Parameters.MaxStateCount = ConfigParameters.MaxStateCount;
+		Parameters.MaxLineCount = ConfigParameters.MaxLineCount;
+		Parameters.MaxTriangleCount = ConfigParameters.MaxTriangleCount;
+		Parameters.StateBuffer = CachedParameters.ShaderPrint_StateBuffer;
+		Parameters.RWEntryBuffer = CachedParameters.ShaderPrint_RWEntryBuffer;
 	}
 }

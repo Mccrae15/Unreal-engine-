@@ -7,6 +7,8 @@
 #include "ComponentAssetBroker.h"		// FComponentAssetBrokerage
 #include "TutorialMetaData.h"
 #include "IDocumentation.h"
+#include "Layout/WidgetPath.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Kismet2/ComponentEditorUtils.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -556,8 +558,8 @@ void FSubobjectRowDragDropOp::HoverTargetChanged()
 		}
 		else if (FProperty* VariableProperty = GetVariableProperty())
 		{
-			const FSlateBrush* PrimarySymbol;
-			const FSlateBrush* SecondarySymbol;
+			const FSlateBrush* PrimarySymbol = nullptr;
+			const FSlateBrush* SecondarySymbol = nullptr;
 			FSlateColor PrimaryColor;
 			FSlateColor SecondaryColor;
 			GetDefaultStatusSymbol(/*out*/ PrimarySymbol, /*out*/ PrimaryColor, /*out*/ SecondarySymbol, /*out*/ SecondaryColor);
@@ -2579,7 +2581,7 @@ void SSubobjectEditor::ClearSelection()
 	}
 }
 
-void SSubobjectEditor::RestoreSelectionState(TArray<FSubobjectEditorTreeNodePtrType>& SelectedTreeNodes)
+void SSubobjectEditor::RestoreSelectionState(TArray<FSubobjectEditorTreeNodePtrType>& SelectedTreeNodes, bool bFallBackToVariableName)
 {
 	if (SelectedTreeNodes.Num() > 0)
 	{
@@ -2596,6 +2598,14 @@ void SSubobjectEditor::RestoreSelectionState(TArray<FSubobjectEditorTreeNodePtrT
 			else
 			{
 				FSubobjectEditorTreeNodePtrType NodeToSelectPtr = FindSlateNodeForHandle(SelectedTreeNodes[i]->GetDataHandle());
+
+				// If we didn't find something for this exact handle, fall back to just search for something
+				// with the same variable name. This helps to still preserve selection across re-compiles of a class.
+				if (!NodeToSelectPtr.IsValid() && bFallBackToVariableName)
+				{
+					NodeToSelectPtr = FindSlateNodeForVariableName(SelectedTreeNodes[i]->GetVariableName());
+				}
+
 				if (NodeToSelectPtr.IsValid())
 				{
 					TreeWidget->SetItemSelection(NodeToSelectPtr, true, SelectInfo);
@@ -2980,6 +2990,29 @@ FSubobjectEditorTreeNodePtrType SSubobjectEditor::FindSlateNodeForHandle(const F
                     }
             	}
             });
+	}
+
+	return OutNodePtr;
+}
+
+FSubobjectEditorTreeNodePtrType SSubobjectEditor::FindSlateNodeForVariableName(FName InVariableName) const
+{
+	FSubobjectEditorTreeNodePtrType OutNodePtr;
+	if (RootNodes.Num() > 0)
+	{
+		TSet<FSubobjectEditorTreeNodePtrType> VisitedNodes;
+		DepthFirstTraversal(RootNodes[0], VisitedNodes,
+			[&OutNodePtr, InVariableName](
+			const FSubobjectEditorTreeNodePtrType& CurNodePtr)
+			{
+				if (CurNodePtr->GetDataHandle().IsValid())
+				{
+					if (CurNodePtr->GetDataHandle().GetSharedDataPtr()->GetVariableName() == InVariableName)
+					{
+						OutNodePtr = CurNodePtr;
+					}
+				}
+			});
 	}
 
 	return OutNodePtr;

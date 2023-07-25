@@ -17,7 +17,6 @@
 #include "Templates/Invoke.h"
 #include "Templates/UnrealTemplate.h"
 #include "Templates/UnrealTypeTraits.h"
-#include "Traits/IsVoidType.h"
 
 class FPointerTableBase;
 class FSHA1;
@@ -69,12 +68,6 @@ enum class EBitwiseOperatorFlags
 	OneFillMissingBits = 1 << 4,
 };
 ENUM_CLASS_FLAGS(EBitwiseOperatorFlags)
-
-/**
- * Serializer (predefined for no friend injection in gcc 411)
- */
-template<typename Allocator>
-FArchive& operator<<(FArchive& Ar, TBitArray<Allocator>& BitArray);
 
 /** Used to read/write a bit in the array as a bool. */
 class FBitReference
@@ -284,7 +277,7 @@ public:
 	 */
 	FORCEINLINE TBitArray(TBitArray&& Other)
 	{
-		MoveOrCopy(*this, Other);
+		this->Move(*this, Other);
 	}
 
 	/**
@@ -312,7 +305,7 @@ public:
 	{
 		if (this != &Other)
 		{
-			MoveOrCopy(*this, Other);
+			this->Move(*this, Other);
 		}
 
 		return *this;
@@ -374,10 +367,12 @@ public:
 		return false;
 	}
 
+#if !PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
 	FORCEINLINE bool operator!=(const TBitArray<Allocator>& Other) const
 	{
 		return !(*this == Other);
 	}
+#endif
 
 private:
 	FORCEINLINE uint32 GetNumWords() const
@@ -413,7 +408,7 @@ private:
 	}
 
 	template <typename BitArrayType>
-	static FORCEINLINE typename TEnableIf<TContainerTraits<BitArrayType>::MoveWillEmptyContainer>::Type MoveOrCopy(BitArrayType& ToArray, BitArrayType& FromArray)
+	static FORCEINLINE void Move(BitArrayType& ToArray, BitArrayType& FromArray)
 	{
 		ToArray.AllocatorInstance.MoveToEmpty(FromArray.AllocatorInstance);
 
@@ -423,12 +418,6 @@ private:
 		FromArray.MaxBits = 0;
 		// No need to call this.ClearPartialSlackBits, because the words we're copying or moving from satisfy the invariant
 		// No need to call FromArray.ClearPartialSlackBits because NumBits == 0 automatically satisfies the invariant
-	}
-
-	template <typename BitArrayType>
-	static FORCEINLINE typename TEnableIf<!TContainerTraits<BitArrayType>::MoveWillEmptyContainer>::Type MoveOrCopy(BitArrayType& ToArray, BitArrayType& FromArray)
-	{
-		ToArray = FromArray;
 	}
 
 	template<typename OtherAllocator>
@@ -472,29 +461,28 @@ public:
 	/**
 	 * Serializer
 	 */
-	friend FArchive& operator<<(FArchive& Ar, TBitArray& BitArray)
+	void Serialize(FArchive& Ar)
 	{
 		// serialize number of bits
-		Ar << BitArray.NumBits;
+		Ar << NumBits;
 
 		if (Ar.IsLoading())
 		{
 			// no need for slop when reading; set MaxBits to the smallest legal value that is >= NumBits
-			BitArray.MaxBits = NumBitsPerDWORD * FMath::Max(FBitSet::CalculateNumWords(BitArray.NumBits), (uint32)BitArray.AllocatorInstance.GetInitialCapacity());
+			MaxBits = NumBitsPerDWORD * FMath::Max(FBitSet::CalculateNumWords(NumBits), (uint32)AllocatorInstance.GetInitialCapacity());
 
 			// allocate room for new bits
-			BitArray.Realloc(0);
+			Realloc(0);
 		}
 
 		// serialize the data as one big chunk
-		Ar.Serialize(BitArray.GetData(), BitArray.GetNumWords() * sizeof(uint32));
+		Ar.Serialize(GetData(), GetNumWords() * sizeof(uint32));
 
 		if (Ar.IsLoading() && !Ar.IsObjectReferenceCollector() && !Ar.IsCountingMemory())
 		{
 			// Clear slack bits incase they were serialized non-null
-			BitArray.ClearPartialSlackBits();
+			ClearPartialSlackBits();
 		}
-		return Ar;
 	}
 
 	/**
@@ -1756,13 +1744,6 @@ FORCEINLINE uint32 GetTypeHash(const TBitArray<Allocator>& BitArray)
 	return Hash;
 }
 
-template<typename Allocator>
-struct TContainerTraits<TBitArray<Allocator> > : public TContainerTraitsBase<TBitArray<Allocator> >
-{
-	static_assert(TAllocatorTraits<Allocator>::SupportsMove, "TBitArray no longer supports move-unaware allocators");
-	enum { MoveWillEmptyContainer = TAllocatorTraits<Allocator>::SupportsMove };
-};
-
 
 /** An iterator which only iterates over set bits. */
 template<typename Allocator>
@@ -1797,16 +1778,18 @@ public:
 		return *this;
 	}
 
-	FORCEINLINE friend bool operator==(const TConstSetBitIterator& Lhs, const TConstSetBitIterator& Rhs) 
+	FORCEINLINE bool operator==(const TConstSetBitIterator& Rhs) const
 	{
 		// We only need to compare the bit index and the array... all the rest of the state is unobservable.
-		return Lhs.CurrentBitIndex == Rhs.CurrentBitIndex && &Lhs.Array == &Rhs.Array;
+		return CurrentBitIndex == Rhs.CurrentBitIndex && &Array == &Rhs.Array;
 	}
 
-	FORCEINLINE friend bool operator!=(const TConstSetBitIterator& Lhs, const TConstSetBitIterator& Rhs)
+#if !PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
+	FORCEINLINE bool operator!=(const TConstSetBitIterator& Rhs) const
 	{ 
-		return !(Lhs == Rhs);
+		return !(*this == Rhs);
 	}
+#endif
 
 	/** conversion to "bool" returning true if the iterator is valid. */
 	FORCEINLINE explicit operator bool() const
@@ -2018,7 +2001,7 @@ using TConstDualEitherSetBitIterator = TConstDualSetBitIterator<Allocator, Other
 template <typename Allocator, typename InDerivedType>
 class TScriptBitArray
 {
-	using DerivedType = typename TChooseClass<TIsVoidType<InDerivedType>::Value, TScriptBitArray, InDerivedType>::Result;
+	using DerivedType = typename TChooseClass<std::is_void_v<InDerivedType>, TScriptBitArray, InDerivedType>::Result;
 
 public:
 	/**
@@ -2176,3 +2159,10 @@ class FScriptBitArray : public TScriptBitArray<FDefaultBitArrayAllocator, FScrip
 public:
 	using Super::Super;
 };
+
+template<typename Allocator>
+FArchive& operator<<(FArchive& Ar, TBitArray<Allocator>& BitArray)
+{
+	BitArray.Serialize(Ar);
+	return Ar;
+}

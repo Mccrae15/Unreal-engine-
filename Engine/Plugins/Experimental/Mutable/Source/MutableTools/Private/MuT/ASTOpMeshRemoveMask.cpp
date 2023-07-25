@@ -88,7 +88,7 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-	void ASTOpMeshRemoveMask::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpMeshRemoveMask::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -221,7 +221,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	mu::Ptr<ASTOp> ASTOpMeshRemoveMask::OptimiseSink(const MODEL_OPTIMIZATION_OPTIONS&, OPTIMIZE_SINK_CONTEXT&) const
+	mu::Ptr<ASTOp> ASTOpMeshRemoveMask::OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext&) const
 	{
 		Sink_MeshRemoveMaskAST sinker;
 		mu::Ptr<ASTOp> at = sinker.Apply(this);

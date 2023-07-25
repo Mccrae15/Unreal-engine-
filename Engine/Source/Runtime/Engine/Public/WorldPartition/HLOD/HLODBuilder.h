@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Algo/Transform.h"
+#include "Templates/SubclassOf.h"
 
 #include "HLODBuilder.generated.h"
 
@@ -37,16 +38,22 @@ public:
 struct FHLODBuildContext
 {
 	/** World for which HLODs are being built */
-	UWorld*		World;
+	UWorld*	World;
+
+	/** Actors that will be represented by this HLOD */
+	TArray<AActor*> SourceActors;
 
 	/** Outer to use for generated assets */
-	UObject*	AssetsOuter;
+	UObject* AssetsOuter;
 
 	/** Base name to use for generated assets */
-	FString		AssetsBaseName;
+	FString	AssetsBaseName;
+
+	// Location of this HLOD actor in the world
+	FVector WorldPosition;
 
 	/** Minimum distance at which the HLOD is expected to be displayed */
-	double		MinVisibleDistance;
+	double MinVisibleDistance;
 };
 
 
@@ -70,17 +77,15 @@ public:
 	 * Build an HLOD representation of the input actors.
 	 * Components returned by this method needs to be properly outered & assigned to your target (HLOD) actor.
 	 */
-	TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<AActor*>& InSourceActors) const;
+	TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext) const;
+
+	UE_DEPRECATED(5.2, "Use Build() method that takes a single FHLODBuildContext parameter. SourceActors are now part of the HLOD build context object.")
+	TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<AActor*>& InSourceActors) const { return Build(InHLODBuildContext); }
 
 	/**
 	 * Return the setting subclass associated with this builder.
 	 */
 	virtual TSubclassOf<UHLODBuilderSettings> GetSettingsClass() const;
-
-	/**
-	 * Should return true if this builder needs to have it's input assets fully compiled.
-	 */
-	virtual bool RequiresCompiledAssets() const;
 
 	/**
 	 * Should return true if components generated from this builder need a warmup phase before being made visible.
@@ -101,7 +106,7 @@ public:
 	/**
 	 * Components created with this method need to be properly outered & assigned to your target actor.
 	 */
-	virtual TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<UActorComponent*>& InSourceComponents) const PURE_VIRTUAL(UHLODBuilder::CreateComponents, return {};);
+	virtual TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<UActorComponent*>& InSourceComponents) const PURE_VIRTUAL(UHLODBuilder::Build, return {};);
 
 	/**
 	 * From a set of actors, compute a unique hash from their properties that are relevant to HLOD generation.
@@ -110,6 +115,8 @@ public:
 	static uint32 ComputeHLODHash(const TArray<AActor*>& InSourceActors);
 
 protected:
+	virtual bool ShouldIgnoreBatchingPolicy() const { return false; }
+
 	static TArray<UActorComponent*> BatchInstances(const TArray<UActorComponent*>& InSubComponents);
 
 	template <typename TComponentClass>
@@ -144,7 +151,6 @@ class ENGINE_API UNullHLODBuilder : public UHLODBuilder
 	GENERATED_UCLASS_BODY()
 
 #if WITH_EDITOR
-	virtual bool RequiresCompiledAssets() const { return false; }
 	virtual bool RequiresWarmup() const { return false; }
 	virtual uint32 ComputeHLODHash(const UActorComponent* InSourceComponent) const { return 0; }
 	virtual TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<UActorComponent*>& InSourceComponents) const { return {}; }

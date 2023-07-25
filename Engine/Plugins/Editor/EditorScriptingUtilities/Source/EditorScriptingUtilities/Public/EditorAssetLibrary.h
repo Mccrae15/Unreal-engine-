@@ -3,8 +3,8 @@
 #pragma once
 
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "AssetRegistry/AssetData.h"
 
+#include "UObject/Package.h"
 #include "EditorAssetLibrary.generated.h"
 
 /**
@@ -174,7 +174,7 @@ public:
 	 * Will try to checkout the files. The Assets will be loaded before being duplicated.
 	 * @param	SourceDirectoryPath			Directory of the assets that we want to duplicate from.
 	 * @param	DestinationDirectoryPath	Directory of the duplicated asset.
-	 * @return	The duplicated object if the operation succeeds.
+	 * @return	True if the operation succeeds.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset")
 	static bool DuplicateDirectory(const FString& SourceDirectoryPath, const FString& DestinationDirectoryPath);
@@ -185,7 +185,7 @@ public:
 	 * Equivalent to a Move operation. Will try to checkout the files.
 	 * @param	SourceAsset				Asset that we want to copy from.
 	 * @param	DestinationAssetPath	Asset Path of the duplicated asset.
-	 * @return	The if the operation succeeds.
+	 * @return	True if the operation succeeds.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset")
 	static bool RenameLoadedAsset(UObject* SourceAsset, const FString& DestinationAssetPath);
@@ -383,3 +383,7 @@ public:
 	static void SyncBrowserToObjects(const TArray<FString>& AssetPaths);
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AssetRegistry/AssetData.h"
+#endif

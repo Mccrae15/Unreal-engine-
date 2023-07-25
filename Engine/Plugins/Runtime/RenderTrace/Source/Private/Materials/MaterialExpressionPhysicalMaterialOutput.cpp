@@ -2,8 +2,7 @@
 
 #include "Materials/MaterialExpressionPhysicalMaterialOutput.h"
 
-#include "Engine/Engine.h"
-#include "EngineGlobals.h"
+#include "EdGraph/EdGraphNode.h"
 #include "MaterialCompiler.h"
 #include "Materials/Material.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"

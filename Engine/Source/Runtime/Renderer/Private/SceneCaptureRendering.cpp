@@ -5,6 +5,7 @@
 =============================================================================*/
 #include "SceneCaptureRendering.h"
 #include "Containers/ArrayView.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Misc/MemStack.h"
 #include "EngineDefines.h"
 #include "RHIDefinitions.h"
@@ -40,6 +41,7 @@
 #include "SceneViewExtension.h"
 #include "GenerateMips.h"
 #include "RectLightTextureManager.h"
+#include "Materials/MaterialRenderProxy.h"
 
 #if WITH_EDITOR
 // All scene captures on the given render thread frame will be dumped
@@ -599,12 +601,6 @@ void SetupViewFamilyForSceneCapture(
 	// Initialize frame number
 	ViewFamily.FrameNumber = ViewFamily.Scene->GetFrameNumber();
 
-	// Disable Nanite in planar reflections for now because Nanite doesn't support the global clip plane
-	if (bIsPlanarReflection)
-	{
-		ViewFamily.EngineShowFlags.NaniteMeshes = 0;
-	}
-
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
 		const FSceneCaptureViewInfo& SceneCaptureViewInfo = Views[ViewIndex];
@@ -979,9 +975,8 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponent2D* CaptureCompone
 
 
 		// If capturing every frame, only render to the GPUs that are actually being used
-		// this frame. Otherwise we will get poor performance in AFR. We can only determine
-		// this by querying the viewport back buffer on the render thread, so pass that
-		// along if it exists.
+		// this frame. We can only determine this by querying the viewport back buffer on
+		// the render thread, so pass that along if it exists.
 		FRenderTarget* GameViewportRT = nullptr;
 		if (CaptureComponent->bCaptureEveryFrame)
 		{
@@ -1010,7 +1005,7 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponent2D* CaptureCompone
 			{
 				if (GameViewportRT != nullptr)
 				{
-					const FRHIGPUMask GPUMask = AFRUtils::GetGPUMaskForGroup(GameViewportRT->GetGPUMask(RHICmdList));
+					const FRHIGPUMask GPUMask = GameViewportRT->GetGPUMask(RHICmdList);
 					TextureRenderTargetResource->SetActiveGPUMask(GPUMask);
 				}
 				else

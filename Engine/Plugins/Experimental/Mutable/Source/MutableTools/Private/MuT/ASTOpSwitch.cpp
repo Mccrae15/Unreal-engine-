@@ -2,6 +2,7 @@
 
 #include "MuT/ASTOpSwitch.h"
 
+#include "MuT/ASTOpParameter.h"
 #include "Containers/Map.h"
 #include "Misc/AssertionMacros.h"
 #include "MuR/ImagePrivate.h"
@@ -140,7 +141,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	mu::Ptr<ASTOp> ASTOpSwitch::FindBranch(int32_t condition) const
+	mu::Ptr<ASTOp> ASTOpSwitch::FindBranch(int32 condition) const
 	{
 		for (const auto& c : cases)
 		{
@@ -167,7 +168,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpSwitch::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpSwitch::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -183,7 +184,7 @@ namespace mu
 			AppendCode(program.m_byteCode, DefAddress);
 			AppendCode(program.m_byteCode, (uint32_t)cases.Num());
 
-			for (const CASE& Case : cases)
+			for (const FCase& Case : cases)
 			{
 				OP::ADDRESS CaseBranchAddress = Case.branch ? Case.branch->linkedAddress : 0;
 				AppendCode(program.m_byteCode, Case.condition);
@@ -193,12 +194,12 @@ namespace mu
 	}
 
 	//-------------------------------------------------------------------------------------------------
-	FImageDesc ASTOpSwitch::GetImageDesc(bool returnBestOption, class GetImageDescContext* context)
+	FImageDesc ASTOpSwitch::GetImageDesc(bool returnBestOption, class FGetImageDescContext* context) const
 	{
 		FImageDesc res;
 
 		// Local context in case it is necessary
-		GetImageDescContext localContext;
+		FGetImageDescContext localContext;
 		if (!context)
 		{
 			context = &localContext;
@@ -287,7 +288,7 @@ namespace mu
 
 	//-------------------------------------------------------------------------------------------------
 	void ASTOpSwitch::GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY,
-		BLOCK_LAYOUT_SIZE_CACHE* cache)
+		FBlockLayoutSizeCache* cache)
 	{
 		switch (type)
 		{
@@ -401,7 +402,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	bool ASTOpSwitch::IsImagePlainConstant(vec4<float>&) const
+	bool ASTOpSwitch::IsImagePlainConstant(FVector4f&) const
 	{
 		// We could check if every option is plain and exactly the same colour, but probably it is
 		// not worth.
@@ -410,12 +411,12 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	mu::Ptr<ASTOp> ASTOpSwitch::OptimiseSemantic(const MODEL_OPTIMIZATION_OPTIONS&) const
+	mu::Ptr<ASTOp> ASTOpSwitch::OptimiseSemantic(const FModelOptimizationOptions&) const
 	{
 		// Constant condition?
 		if (variable->GetOpType() == OP_TYPE::NU_CONSTANT)
 		{
-			Ptr<ASTOp> branch = def.child();
+			Ptr<ASTOp> Branch = def.child();
 
 			auto typedCondition = dynamic_cast<const ASTOpFixed*>(variable.child().get());
 			for (int32 o = 0; o < cases.Num(); ++o)
@@ -425,55 +426,168 @@ namespace mu
 					==
 					(int)cases[o].condition)
 				{
-					branch = cases[o].branch.child();
+					Branch = cases[o].branch.child();
 					break;
 				}
 			}
 
-			return branch;
+			return Branch;
 		}
 
-		//else
-		//{
-			// If all the possible branches are the same, remove the instruction
-			// TODO: If the variables is a parameter, checking that all the possible
-			// values of this parameter are handled.
+		else if (variable->GetOpType() == OP_TYPE::NU_PARAMETER)
+		{
+			// If all the branches for the possible values are the same op remove the instruction
+			const ASTOpParameter* ParamOp = dynamic_cast<const ASTOpParameter*>(variable.child().get());
+			check(ParamOp);
+			check(!ParamOp->parameter.m_possibleValues.IsEmpty());
 
-	//            Disable this: I think it doesn't deal correctly with def. If all branches are the same but the
-	//              value is none of the options, "def" should be selected.
-	//            OP::ADDRESS switchAt = at;
-	//            bool same = true;
-	//            OP::ADDRESS value = 0;
-	//            //vector< UINT16 > options;
+			bool bFirstValue = true;
+			bool bAllSame = true;
+			Ptr<ASTOp> SameBranch = nullptr;
+			for (const FParameterDesc::INT_VALUE_DESC& Value : ParamOp->parameter.m_possibleValues)
+			{
+				// Look for the switch branch it would take
+				Ptr<ASTOp> Branch = def.child();
+				for (const FCase& Case : cases)
+				{
+					if (Case.condition == Value.m_value)
+					{
+						Branch = Case.branch.child();
+						break;
+					}
+				}
 
-	//            const auto& options = program.m_constantSwitches[program.m_code[switchAt].args.Switch.options].m_options;
-	//            for ( size_t o=0; o<options.size(); ++o )
-	//            {
-	//                if ( options[o].at )
-	//                {
-	//                    if (!value)
-	//                    {
-	//                        value = options[o].at;
-	//                    }
-	//                    else
-	//                    {
-	//                        same &= ( value == options[o].at );
-	//                    }
+				if (bFirstValue)
+				{
+					bFirstValue = false;
+					SameBranch = Branch;
+				}
+				else
+				{
+					if (SameBranch != Branch)
+					{
+						bAllSame = false;
+						SameBranch = nullptr;
+						break;
+					}
+				}
+			}
 
-	//                    //options.push_back
-	//                    //		( program.m_code[switchAt].args.Switch.conditions[o] );
-	//                }
-	//            }
+	        if (bAllSame)
+	        {
+				return SameBranch;
+	        }
+		}
 
+		// Ad-hoc logic optimization: check if all code paths leading to this operation have a switch with the same variable
+		// and the option on those switches for the path that connects to this one is always the same. In that case, we can 
+		// remove this switch and replace it by the value it has for that option. 
+		// This is something the generic logic optimizer should do whan re-enabled.
+		{
+			// List of parent operations that we have visited, and the child we have visited them from.
+			TSet<TTuple<const ASTOp*, const ASTOp*>> Visited;
+			Visited.Reserve(64);
 
-	//            if (same)
-	//            {
-	//                m_modified = true;
+			// First is parent, second is what child we are reaching the parent from. This is necessary to find out what 
+			// switch branch we reach the parent from, if it is a switch.
+			TArray< TTuple<const ASTOp*, const ASTOp*>, TInlineAllocator<16>> Pending;
+			ForEachParent([this,&Pending](ASTOp* Parent)
+				{
+					Pending.Add({ Parent,this});
+				});
 
-	//                at = value;
-	//            }
+			bool bAllPathsHaveMatchingSwitch = true;
 
-		//}
+			// Switch option value of all parent compatible switches (if any)
+			int32 MatchingSwitchOption = -1;
+
+			while (!Pending.IsEmpty() && bAllPathsHaveMatchingSwitch)
+			{
+				TTuple<const ASTOp*, const ASTOp*> ParentPair = Pending.Pop();
+				bool bAlreadyVisited = false;
+				Visited.Add(ParentPair, &bAlreadyVisited);
+
+				if (!bAlreadyVisited)
+				{
+					const ASTOp* Parent = ParentPair.Get<0>();
+					const ASTOp* ParentChild = ParentPair.Get<1>();
+
+					bool bIsMatchingSwitch = false;
+
+					// TODO: Probably it could be a any switch, it doesn't need to be of the same type.
+					if (Parent->GetOpType() == GetOpType())
+					{
+						const ASTOpSwitch* ParentSwitch = dynamic_cast<const ASTOpSwitch*>(Parent);
+						check(ParentSwitch);
+
+						// To be compatible the switch must be on the same variable
+						if (ParentSwitch->variable==variable)
+						{
+							bIsMatchingSwitch = true;
+							
+							// Find what switch option we are reaching it from
+							bool bIsSingleOption = true;
+							int OptionIndex = -1;
+							for (int32 CaseIndex = 0; CaseIndex < ParentSwitch->cases.Num(); ++CaseIndex)
+							{
+								if (ParentSwitch->cases[CaseIndex].branch.child().get() == ParentChild)
+								{
+									if (OptionIndex != -1)
+									{
+										// This means the same child is connected to more than one switch options
+										// so we cannot optimize.
+										// \TODO: We could if we track a "set of options" for all switches instead of just one.
+										bIsSingleOption = false;
+										break;
+									}
+									else
+									{
+										OptionIndex = CaseIndex;
+									}
+								}
+							}
+
+							// If we did reach it from one single option
+							if (bIsSingleOption && OptionIndex!=-1)
+							{
+								if (MatchingSwitchOption<0)
+								{
+									MatchingSwitchOption = ParentSwitch->cases[OptionIndex].condition;
+								}
+								else if (MatchingSwitchOption!= ParentSwitch->cases[OptionIndex].condition)
+								{
+									bAllPathsHaveMatchingSwitch = false;
+								}
+							}
+						}
+					}
+					
+					if (!bIsMatchingSwitch)
+					{
+						// If it has no parents, then the optimization cannot be applied
+						bool bHasParent = false;
+						Parent->ForEachParent([&bHasParent,this,&Pending,Parent](ASTOp* ParentParent)
+							{
+								Pending.Add({ ParentParent,Parent });
+								bHasParent = true;
+							});
+
+						if (!bHasParent)
+						{
+							// We reached a root without a matching switch along the path.
+							bAllPathsHaveMatchingSwitch = false;
+						}
+					}
+				}
+			}
+
+			if (bAllPathsHaveMatchingSwitch && MatchingSwitchOption>=0)
+			{
+				// We can remove this switch, all paths leading to it have the same condition for this switches variable.
+				return FindBranch(MatchingSwitchOption);
+			}
+
+		}
 
 		return nullptr;
 	}

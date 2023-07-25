@@ -1,12 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaperSpriteThumbnailRenderer.h"
-#include "Engine/EngineTypes.h"
 #include "CanvasItem.h"
-#include "Engine/Texture2D.h"
 #include "Paper2DModule.h"
 #include "CanvasTypes.h"
 #include "PaperSprite.h"
+#include "TextureResource.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PaperSpriteThumbnailRenderer)
 

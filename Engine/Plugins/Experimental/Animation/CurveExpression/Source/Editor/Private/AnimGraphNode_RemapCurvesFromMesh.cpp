@@ -2,8 +2,11 @@
 
 #include "AnimGraphNode_RemapCurvesFromMesh.h"
 
+#include "SGraphNode.h"
+
 #include "Animation/AnimAttributes.h"
 #include "Animation/AnimInstance.h"
+#include "Components/SkeletalMeshComponent.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimGraphNode_RemapCurvesFromMesh)
 
@@ -12,15 +15,37 @@
 
 bool UAnimGraphNode_RemapCurvesFromMesh::CanVerifyExpressions() const
 {
-	return GetDebuggedNode() != nullptr;
+	if (const FAnimNode_RemapCurvesFromMesh* DebuggedNode = GetDebuggedNode())
+	{
+		return DebuggedNode->CanVerifyExpressions();
+	}
+	return false;
 }
 
 
 void UAnimGraphNode_RemapCurvesFromMesh::VerifyExpressions()
 {
-	if (FAnimNode_RemapCurvesFromMesh* DebuggedNode = GetDebuggedNode())
+	if (const FAnimNode_RemapCurvesFromMesh* DebuggedNode = GetDebuggedNode())
 	{
-		DebuggedNode->VerifyExpressions();
+		TArray<FString> Results;
+		DebuggedNode->VerifyExpressions([&Results](const FString& InMessage){
+			Results.Add(InMessage);
+		});
+
+		// Don't override the current message, unless it's just an info message or 
+		if (!Results.IsEmpty() && (!bHasCompilerMessage || ErrorType > EMessageSeverity::Warning))
+		{
+			ErrorMsg = FString::Join(Results, TEXT("\n"));
+			ErrorType = EMessageSeverity::Warning;
+			bHasCompilerMessage = true;
+			
+			// This would be much nicer as a utility on UAnimGraphNode_Base
+			TSharedPtr<SGraphNode> Widget = DEPRECATED_NodeWidget.Pin();
+			if (Widget)
+			{
+				Widget->RefreshErrorInfo();
+			}
+		}
 	}
 }
 

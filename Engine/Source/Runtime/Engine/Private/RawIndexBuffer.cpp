@@ -5,8 +5,13 @@
 =============================================================================*/
 
 #include "RawIndexBuffer.h"
+
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "LocalVertexFactory.h"
 #include "Modules/ModuleManager.h"
+#include "RenderingThread.h"
+#include "RHIResourceUpdates.h"
 
 #if WITH_EDITOR
 #include "MeshUtilities.h"
@@ -323,8 +328,8 @@ FBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
 
 	if (GetNumIndices() > 0)
 	{
-		extern ENGINE_API bool DoSkeletalMeshIndexBuffersNeedSRV();
-		bool bSRV = DoSkeletalMeshIndexBuffersNeedSRV();
+		// Systems that generate data for GPUSkinPassThrough use index buffer as SRV.
+		bool bSRV = RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || FLocalVertexFactory::IsGPUSkinPassThroughSupported(GMaxRHIShaderPlatform);
 
 		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
 		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
@@ -334,17 +339,21 @@ FBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
 		const EBufferUsageFlags BufferFlags = EBufferUsageFlags::Static | (bSRV ? EBufferUsageFlags::ShaderResource : EBufferUsageFlags::None);
 
 		// Create the index buffer.
+		FBufferRHIRef Ret;
 		FRHIResourceCreateInfo CreateInfo(Is32Bit() ? TEXT("FRawStaticIndexBuffer32") : TEXT("FRawStaticIndexBuffer16"), &IndexStorage);
 		CreateInfo.bWithoutNativeResource = !SizeInBytes;
 		if (bRenderThread)
 		{
-			return RHICreateIndexBuffer(IndexStride, SizeInBytes, BufferFlags, CreateInfo);
+			Ret = RHICreateIndexBuffer(IndexStride, SizeInBytes, BufferFlags, CreateInfo);
 		}
 		else
 		{
 			FRHIAsyncCommandList CommandList;
-			return CommandList->CreateBuffer(SizeInBytes, BufferFlags | EBufferUsageFlags::IndexBuffer, IndexStride, ERHIAccess::SRVMask, CreateInfo);
+			Ret = CommandList->CreateBuffer(SizeInBytes, BufferFlags | EBufferUsageFlags::IndexBuffer, IndexStride, ERHIAccess::SRVMask, CreateInfo);
 		}
+
+		Ret->SetOwnerName(GetOwnerName());
+		return Ret;
 	}
 	return nullptr;
 }
@@ -373,6 +382,22 @@ void FRawStaticIndexBuffer::CopyRHIForStreaming(const FRawStaticIndexBuffer& Oth
 
 	// Copy resource references.
 	IndexBufferRHI = Other.IndexBufferRHI;
+}
+
+void FRawStaticIndexBuffer::InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher)
+{
+	if (IndexBufferRHI && IntermediateBuffer)
+	{
+		Batcher.QueueUpdateRequest(IndexBufferRHI, IntermediateBuffer);
+	}
+}
+
+void FRawStaticIndexBuffer::ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher)
+{
+	if (IndexBufferRHI)
+	{
+		Batcher.QueueUpdateRequest(IndexBufferRHI, nullptr);
+	}
 }
 
 void FRawStaticIndexBuffer::InitRHI()
@@ -436,6 +461,78 @@ void FRawStaticIndexBuffer::Discard()
 {
     IndexStorage.SetAllowCPUAccess(false);
     IndexStorage.Discard();
+}
+
+bool FRawStaticIndexBuffer16or32Interface::IsSRVNeeded(bool bAllowCPUAccess) const
+{
+	// Systems that generate data for GPUSkinPassThrough use index buffer as SRV.
+	bool bSRV = RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || FLocalVertexFactory::IsGPUSkinPassThroughSupported(GMaxRHIShaderPlatform);
+	// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
+	// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
+	// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.
+	bSRV |= bAllowCPUAccess;
+	return bSRV;
+}
+
+void FRawStaticIndexBuffer16or32Interface::InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, size_t IndexSize, FRHIResourceUpdateBatcher& Batcher)
+{
+	if (IndexBufferRHI && IntermediateBuffer)
+	{
+		Batcher.QueueUpdateRequest(IndexBufferRHI, IntermediateBuffer);
+		if (SRVValue)
+		{
+			Batcher.QueueUpdateRequest(SRVValue, IndexBufferRHI, IndexSize, IndexSize == 2 ? PF_R16_UINT : PF_R32_UINT);
+		}
+	}
+}
+
+void FRawStaticIndexBuffer16or32Interface::ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher)
+{
+	if (IndexBufferRHI)
+	{
+		Batcher.QueueUpdateRequest(IndexBufferRHI, nullptr);
+	}
+	if (SRVValue)
+	{
+		Batcher.QueueUpdateRequest(SRVValue, nullptr, 0, 0);
+	}
+}
+
+FBufferRHIRef FRawStaticIndexBuffer16or32Interface::CreateRHIIndexBufferInternal(
+	const TCHAR* InDebugName,
+	const FName& InOwnerName,
+	int32 IndexCount,
+	size_t IndexSize,
+	FResourceArrayInterface* ResourceArray,
+	bool bNeedSRV,
+	bool bRenderThread
+)
+{
+	// Create the index buffer.
+	FRHIResourceCreateInfo CreateInfo(InDebugName, ResourceArray);
+	EBufferUsageFlags Flags = EBufferUsageFlags::Static;
+
+	if (bNeedSRV)
+	{
+		// BUF_ShaderResource is needed for SkinCache RecomputeSkinTangents
+		Flags |= EBufferUsageFlags::ShaderResource;
+	}
+
+	FBufferRHIRef Ret;
+	const uint32 Size = IndexCount * IndexSize;
+	CreateInfo.bWithoutNativeResource = !Size;
+	if (bRenderThread)
+	{
+		Ret = RHICreateIndexBuffer(IndexSize, Size, Flags, CreateInfo);
+	}
+	else
+	{
+		FRHIAsyncCommandList CommandList;
+		Ret = CommandList->CreateBuffer(Size, Flags | EBufferUsageFlags::IndexBuffer, IndexSize, ERHIAccess::SRVMask, CreateInfo);
+	}
+
+	Ret->SetOwnerName(InOwnerName);
+	return Ret;
 }
 
 /*-----------------------------------------------------------------------------

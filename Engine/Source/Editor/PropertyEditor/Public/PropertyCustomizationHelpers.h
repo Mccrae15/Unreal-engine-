@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "AssetRegistry/AssetData.h"
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
 #include "Misc/Attribute.h"
@@ -149,6 +150,12 @@ namespace PropertyCustomizationHelpers
 	 * @param AddRowDelegate The delegate that will be called on each child property.
 	 */
 	PROPERTYEDITOR_API void MakeInstancedPropertyCustomUI(TMap<FName, IDetailGroup*>& ExistingGroup, IDetailCategoryBuilder& BaseCategory, TSharedRef<IPropertyHandle>& BaseProperty, FOnInstancedPropertyIteration AddRowDelegate);
+	
+	/**
+	 * Parse and load the given metadata string into a list of allowed classes.
+	 * The metadata string is likely from something like AllowedClasses or DisallowedClasses.
+	 */
+	PROPERTYEDITOR_API TArray<const UClass*> GetClassesFromMetadataString(const FString& MetadataString);
 }
 
 

@@ -9,8 +9,11 @@
 #include "Widgets/SWindow.h"
 #include "Framework/Application/SlateApplication.h"
 #include "EngineGlobals.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "MaterialShared.h"
 #include "RendererInterface.h"
 #include "StaticBoundShaderState.h"
+#include "SceneInterface.h"
 #include "SceneUtils.h"
 #include "RHIStaticStates.h"
 #include "UnrealEngine.h"
@@ -26,6 +29,7 @@
 #include "PipelineStateCache.h"
 #include "EngineModule.h"
 #include "Interfaces/ISlate3DRenderer.h"
+#include "SlateRHIRenderingPolicy.h"
 #include "Slate/SlateTextureAtlasInterface.h"
 #include "Types/ReflectionMetadata.h"
 #include "CommonRenderResources.h"
@@ -35,6 +39,8 @@
 #include "Rendering/RenderingCommon.h"
 #include "IHeadMountedDisplayModule.h"
 #include "HDRHelper.h"
+#include "RenderCore.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 DECLARE_CYCLE_STAT(TEXT("Slate RT: Rendering"), STAT_SlateRenderingRTTime, STATGROUP_Slate);
 
@@ -201,6 +207,7 @@ FSlateRHIRenderer::FSlateRHIRenderer(TSharedRef<FSlateFontServices> InSlateFontS
 	, EnqueuedWindowDrawBuffer(NULL)
 	, FreeBufferIndex(0)
 	, FastPathRenderingDataCleanupList(nullptr)
+	, bUpdateHDRDisplayInformation(false)
 	, CurrentSceneIndex(-1)
 	, ResourceVersion(0)
 {
@@ -213,6 +220,7 @@ FSlateRHIRenderer::FSlateRHIRenderer(TSharedRef<FSlateFontServices> InSlateFontS
 
 	bTakingAScreenShot = false;
 	OutScreenshotData = NULL;
+	OutHDRScreenshotData = NULL;
 	ScreenshotViewportInfo = nullptr;
 	bIsStandaloneStereoOnlyDevice = IHeadMountedDisplayModule::IsAvailable() && IHeadMountedDisplayModule::Get().IsStandaloneStereoOnlyDevice();
 }
@@ -496,6 +504,14 @@ void FSlateRHIRenderer::ConditionalResizeViewport(FViewportInfo* ViewInfo, uint3
 		// Reset texture streaming texture updates.
 		ResumeTextureStreamingRenderTasks();
 	}
+}
+
+void FSlateRHIRenderer::OnVirtualDesktopSizeChanged(const FDisplayMetrics& NewDisplayMetric)
+{
+	// Defer the update to as we need to call FlushRenderingCommands() before sending the event to the RHI. 
+	// FlushRenderingCommands -> FRenderCommandFence::IsFenceComplete -> CheckRenderingThreadHealth -> FPlatformApplicationMisc::PumpMessages
+	// The Display change event is not been consumed yet, and we do BroadcastDisplayMetricsChanged -> OnVirtualDesktopSizeChanged again
+	bUpdateHDRDisplayInformation = true;
 }
 
 void FSlateRHIRenderer::UpdateFullscreenState(const TSharedRef<SWindow> Window, uint32 OverrideResX, uint32 OverrideResY)
@@ -1006,7 +1022,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 
 	static uint32 LastTimestamp = FPlatformTime::Cycles();
 	{
-		const FRHIGPUMask PresentingGPUMask = FRHIGPUMask::FromIndex(RHICmdList.GetViewportNextPresentGPUIndex(ViewportInfo.ViewportRHI));
+		const FRHIGPUMask PresentingGPUMask = FRHIGPUMask::FromIndex(RHIGetViewportNextPresentGPUIndex(ViewportInfo.ViewportRHI));
 		SCOPED_GPU_MASK(RHICmdList, PresentingGPUMask);
 		SCOPED_DRAW_EVENTF(RHICmdList, SlateUI, TEXT("SlateUI Title = %s"), DrawCommandParams.WindowTitle.IsEmpty() ? TEXT("<none>") : *DrawCommandParams.WindowTitle);
 		SCOPED_GPU_STAT(RHICmdList, SlateUI);
@@ -1035,7 +1051,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 		if (CVarDrawToVRRenderTarget->GetInt() == 0 && GEngine && IsValidRef(ViewportInfo.GetRenderTargetTexture()) && GEngine->StereoRenderingDevice.IsValid())
 		{
 			const FVector2D WindowSize = WindowElementList.GetWindowSize();
-			GEngine->StereoRenderingDevice->RenderTexture_RenderThread(RHICmdList, RHICmdList.GetViewportBackBuffer(ViewportInfo.ViewportRHI), ViewportInfo.GetRenderTargetTexture(), WindowSize);
+			GEngine->StereoRenderingDevice->RenderTexture_RenderThread(RHICmdList, RHIGetViewportBackBuffer(ViewportInfo.ViewportRHI), ViewportInfo.GetRenderTargetTexture(), WindowSize);
 			bRenderedStereo = true;
 		}
 
@@ -1048,7 +1064,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 			check(IsValidRef(ViewportInfo.ViewportRHI));
 
 			FTexture2DRHIRef ViewportRT = bRenderedStereo ? nullptr : ViewportInfo.GetRenderTargetTexture();
-			FTexture2DRHIRef BackBuffer = (ViewportRT) ? ViewportRT : RHICmdList.GetViewportBackBuffer(ViewportInfo.ViewportRHI);
+			FTexture2DRHIRef BackBuffer = (ViewportRT) ? ViewportRT : RHIGetViewportBackBuffer(ViewportInfo.ViewportRHI);
 			FTexture2DRHIRef PostProcessBuffer = BackBuffer;	// If compositing UI then this will be different to the back buffer
 
 			const uint32 ViewportWidth = (ViewportRT) ? ViewportRT->GetSizeX() : ViewportInfo.Width;
@@ -1410,7 +1426,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 			if (!bRenderedStereo && GEngine && IsValidRef(ViewportInfo.GetRenderTargetTexture()) && GEngine->StereoRenderingDevice.IsValid())
 			{
 				const FVector2D WindowSize = WindowElementList.GetWindowSize();
-				GEngine->StereoRenderingDevice->RenderTexture_RenderThread(RHICmdList, RHICmdList.GetViewportBackBuffer(ViewportInfo.ViewportRHI), ViewportInfo.GetRenderTargetTexture(), WindowSize);
+				GEngine->StereoRenderingDevice->RenderTexture_RenderThread(RHICmdList, RHIGetViewportBackBuffer(ViewportInfo.ViewportRHI), ViewportInfo.GetRenderTargetTexture(), WindowSize);
 			}
 			RHICmdList.Transition(FRHITransitionInfo(BackBuffer, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
 
@@ -1428,7 +1444,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 	if (bTakingAScreenShot && ScreenshotViewportInfo != nullptr && ScreenshotViewportInfo == &ViewportInfo)
 	{
 		// take screenshot before swapbuffer
-		FTexture2DRHIRef BackBuffer = RHICmdList.GetViewportBackBuffer(ViewportInfo.ViewportRHI);
+		FTexture2DRHIRef BackBuffer = RHIGetViewportBackBuffer(ViewportInfo.ViewportRHI);
 
 		// Sanity check to make sure the user specified a valid screenshot rect.
 		FIntRect ClampedScreenshotRect;
@@ -1443,7 +1459,14 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 
 		if (!ClampedScreenshotRect.IsEmpty())
 		{
-			RHICmdList.ReadSurfaceData(BackBuffer, ClampedScreenshotRect, *OutScreenshotData, FReadSurfaceDataFlags());
+			if (OutHDRScreenshotData != nullptr)
+			{
+				RHICmdList.ReadSurfaceData(BackBuffer, ClampedScreenshotRect, *OutHDRScreenshotData, FReadSurfaceDataFlags());
+			}
+			else
+			{
+				RHICmdList.ReadSurfaceData(BackBuffer, ClampedScreenshotRect, *OutScreenshotData, FReadSurfaceDataFlags());
+			}
 		}
 		else
 		{
@@ -1451,6 +1474,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 		}
 		bTakingAScreenShot = false;
 		OutScreenshotData = nullptr;
+		OutHDRScreenshotData = nullptr;
 		ScreenshotViewportInfo = nullptr;
 	}
 
@@ -1482,24 +1506,25 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 	FThreadIdleStats& RenderThread = FThreadIdleStats::Get();
 	GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForAllOtherSleep] = RenderThread.Waits;
 	GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUPresent] += GSwapBufferTime;
-	GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForGPUPresent]++;
 
-	SET_CYCLE_COUNTER(STAT_RenderingIdleTime_RenderThreadSleepTime, GRenderThreadIdle[0]);
-	SET_CYCLE_COUNTER(STAT_RenderingIdleTime_WaitingForGPUQuery, GRenderThreadIdle[1]);
-	SET_CYCLE_COUNTER(STAT_RenderingIdleTime_WaitingForGPUPresent, GRenderThreadIdle[2]);
+	SET_CYCLE_COUNTER(STAT_RenderingIdleTime_RenderThreadSleepTime, GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForAllOtherSleep]);
+	SET_CYCLE_COUNTER(STAT_RenderingIdleTime_WaitingForGPUQuery   , GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUQuery     ]);
+	SET_CYCLE_COUNTER(STAT_RenderingIdleTime_WaitingForGPUPresent , GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUPresent   ]);
+
+	const uint32 RenderThreadNonCriticalWaits = RenderThread.Waits - RenderThread.WaitsCriticalPath;
+	const uint32 RenderThreadWaitingForGPUQuery = GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUQuery];
 
 	// Set the RenderThreadIdle CSV stats
-	CSV_CUSTOM_STAT(RenderThreadIdle, Total, FPlatformTime::ToMilliseconds(RenderThread.Waits), ECsvCustomStatOp::Set);
-	CSV_CUSTOM_STAT(RenderThreadIdle, CriticalPath, FPlatformTime::ToMilliseconds(RenderThread.WaitsCriticalPath), ECsvCustomStatOp::Set);
-	CSV_CUSTOM_STAT(RenderThreadIdle, SwapBuffer, FPlatformTime::ToMilliseconds(GSwapBufferTime), ECsvCustomStatOp::Set);
-	CSV_CUSTOM_STAT(RenderThreadIdle, NonCriticalPath, FPlatformTime::ToMilliseconds(RenderThread.Waits - RenderThread.WaitsCriticalPath), ECsvCustomStatOp::Set);
-	CSV_CUSTOM_STAT(RenderThreadIdle, GPUQuery, FPlatformTime::ToMilliseconds(GRenderThreadIdle[1]), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(RenderThreadIdle, Total          , FPlatformTime::ToMilliseconds(RenderThread.Waits            ), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(RenderThreadIdle, CriticalPath   , FPlatformTime::ToMilliseconds(RenderThread.WaitsCriticalPath), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(RenderThreadIdle, SwapBuffer     , FPlatformTime::ToMilliseconds(GSwapBufferTime               ), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(RenderThreadIdle, NonCriticalPath, FPlatformTime::ToMilliseconds(RenderThreadNonCriticalWaits  ), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(RenderThreadIdle, GPUQuery       , FPlatformTime::ToMilliseconds(RenderThreadWaitingForGPUQuery), ECsvCustomStatOp::Set);
 
 	for (int32 Index = 0; Index < ERenderThreadIdleTypes::Num; Index++)
 	{
 		RenderThreadIdle += GRenderThreadIdle[Index];
 		GRenderThreadIdle[Index] = 0;
-		GRenderThreadNumIdle[Index] = 0;
 	}
 
 	SET_CYCLE_COUNTER(STAT_RenderingIdleTime, RenderThreadIdle);
@@ -1529,10 +1554,17 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 			GWorkingRHIThreadTime += (ThisCycles - GWorkingRHIThreadStartCycles);
 			GWorkingRHIThreadStartCycles = ThisCycles;
 
-			uint32 NewVal = GWorkingRHIThreadTime - GWorkingRHIThreadStallTime;
+			FThreadIdleStats& RHIThreadStats = FThreadIdleStats::Get();
+
+			uint32 NewVal = GWorkingRHIThreadTime;
+			if (NewVal > RHIThreadStats.Waits)
+			{
+				NewVal -= RHIThreadStats.Waits;
+			}
+
 			FPlatformAtomics::AtomicStore((int32*)&GRHIThreadTime, (int32)NewVal);
 			GWorkingRHIThreadTime = 0;
-			GWorkingRHIThreadStallTime = 0;
+			RHIThreadStats.Reset();
 		});
 	}
 }
@@ -1550,6 +1582,18 @@ void FSlateRHIRenderer::PrepareToTakeScreenshot(const FIntRect& Rect, TArray<FCo
 	bTakingAScreenShot = true;
 	ScreenshotRect = Rect;
 	OutScreenshotData = OutColorData;
+	OutHDRScreenshotData = nullptr;
+	ScreenshotViewportInfo = *WindowToViewportInfo.Find(InScreenshotWindow);
+}
+
+void FSlateRHIRenderer::PrepareToTakeHDRScreenshot(const FIntRect& Rect, TArray<FLinearColor>* OutColorData, SWindow* InScreenshotWindow)
+{
+	check(OutColorData);
+
+	bTakingAScreenShot = true;
+	ScreenshotRect = Rect;
+	OutScreenshotData = nullptr;
+	OutHDRScreenshotData = OutColorData;
 	ScreenshotViewportInfo = *WindowToViewportInfo.Find(InScreenshotWindow);
 }
 
@@ -1562,6 +1606,12 @@ void FSlateRHIRenderer::DrawWindows_Private(FSlateDrawBuffer& WindowDrawBuffer)
 {
 	checkSlow(IsThreadSafeForSlateRendering());
 
+	if (bUpdateHDRDisplayInformation && IsHDRAllowed() && IsInGameThread())
+	{
+		FlushRenderingCommands();
+		RHIHandleDisplayChange();
+		bUpdateHDRDisplayInformation = false;
+	}
 
 	FSlateRHIRenderingPolicy* Policy = RenderingPolicy.Get();
 	ENQUEUE_RENDER_COMMAND(SlateBeginDrawingWindowsCommand)(
@@ -1710,6 +1760,7 @@ void FSlateRHIRenderer::DrawWindows_Private(FSlateDrawBuffer& WindowDrawBuffer)
 				for (const FRenderThreadUpdateContext& Context : Contexts)
 				{
 					Context.Renderer->DrawWindowToTarget_RenderThread(RHICmdList, Context);
+					Context.Renderer->ReleaseDrawBuffer(*Context.WindowDrawBuffer);
 				}
 			}
 		);

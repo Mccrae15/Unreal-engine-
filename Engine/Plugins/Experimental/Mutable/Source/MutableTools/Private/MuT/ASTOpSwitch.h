@@ -4,7 +4,6 @@
 
 #include "HAL/PlatformMath.h"
 #include "MuR/Image.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Operations.h"
 #include "MuR/Ptr.h"
 #include "MuT/AST.h"
@@ -12,7 +11,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+struct FProgram;
 template <class SCALAR> class vec4;
 
 
@@ -32,26 +31,26 @@ template <class SCALAR> class vec4;
 		//! Default branch in case none matches the value in the variable.
 		ASTChild def;
 
-		struct CASE
+		struct FCase
 		{
-			CASE(int32_t cond, Ptr<ASTOp> parent, Ptr<ASTOp> b)
+			FCase(int32 cond, Ptr<ASTOp> parent, Ptr<ASTOp> b)
 				: condition(cond)
 				, branch(parent.get(), b)
 			{
 			}
 
-			int32_t condition;
+			int32 condition;
 			ASTChild branch;
 
 			//!
-			bool operator==(const CASE& other) const
+			bool operator==(const FCase& other) const
 			{
 				return condition == other.condition &&
 					branch == other.branch;
 			}
 		};
 
-		TArray<CASE> cases;
+		TArray<FCase> cases;
 
 	public:
 
@@ -66,15 +65,13 @@ template <class SCALAR> class vec4;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void Assert() override;
-		void Link(PROGRAM& program, const FLinkerOptions* Options) override;
-		FImageDesc GetImageDesc(bool returnBestOption,
-			class GetImageDescContext* context) override;
-		void GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY,
-			BLOCK_LAYOUT_SIZE_CACHE* cache) override;
+		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		FImageDesc GetImageDesc(bool returnBestOption, class FGetImageDescContext* context) const  override;
+		void GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY, FBlockLayoutSizeCache* cache) override;
 		void GetLayoutBlockSize(int* pBlockX, int* pBlockY) override;
-		Ptr<ASTOp> OptimiseSemantic(const MODEL_OPTIMIZATION_OPTIONS&) const override;
+		Ptr<ASTOp> OptimiseSemantic(const FModelOptimizationOptions&) const override;
 		bool GetNonBlackRect(FImageRect& maskUsage) const override;
-		bool IsImagePlainConstant(vec4<float>& colour) const override;
+		bool IsImagePlainConstant(FVector4f& colour) const override;
 		Ptr<ImageSizeExpression> GetImageSizeExpression() const override;
 
 		// Own interface
@@ -87,7 +84,7 @@ template <class SCALAR> class vec4;
 		bool IsCompatibleWith(const ASTOpSwitch* other) const;
 
 		//!
-		Ptr<ASTOp> FindBranch(int32_t condition) const;
+		Ptr<ASTOp> FindBranch(int32 condition) const;
 
 	};
 

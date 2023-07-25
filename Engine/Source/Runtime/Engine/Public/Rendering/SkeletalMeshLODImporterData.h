@@ -14,6 +14,8 @@
 #include "Animation/MorphTarget.h"
 #include "Templates/DontCopy.h"
 
+#include "SkeletalMeshLODImporterData.generated.h"
+
 struct FMeshDescription;
 class FSkeletalMeshLODModel;
 
@@ -743,10 +745,12 @@ struct FWedgePosition
 	// Fill the data:
 	// Create the SortedPosition use to find exact match (position)
 	// Create the wedge position octree to find the closest position, we use this when there is no exact match
+	// The targetPositions is use to to max out the octree bounding box to both the source and target geometry
 	static void FillWedgePosition(
 		FWedgePosition& OutOverlappingPosition,
 		const TArray<FVector3f>& Positions,
 		const TArray<SkeletalMeshImportData::FVertex> Wedges,
+		const TArray<FVector3f>& TargetPositions,
 		float ComparisonThreshold);
 
 private:

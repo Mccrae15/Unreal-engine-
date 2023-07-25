@@ -7,7 +7,7 @@
 #include "Iris/ReplicationSystem/ReplicationSystem.h"
 #include "Iris/ReplicationSystem/ReplicationSystemInternal.h"
 #include "Iris/ReplicationSystem/NetBlob/NetBlobAssembler.h"
-#include "Iris/ReplicationSystem/NetBlob/SequentialPartialNetBlobHandler.h"
+#include "Iris/ReplicationSystem/NetBlob/PartialNetObjectAttachmentHandler.h"
 #include "Iris/Serialization/InternalNetSerializationContext.h"
 #include "Iris/Serialization/NetExportContext.h"
 #include "Iris/Serialization/NetSerializationContext.h"
@@ -106,11 +106,11 @@ public:
 		return true;
 	}
 
-	uint32 Serialize(FNetSerializationContext& Context, FNetHandle NetHandle, FReliableNetBlobQueue::ReplicationRecord& OutRecord)
+	uint32 Serialize(FNetSerializationContext& Context, FNetRefHandle RefHandle, FReliableNetBlobQueue::ReplicationRecord& OutRecord)
 	{
-		if (NetHandle.IsValid())
+		if (RefHandle.IsValid())
 		{
-			return ReliableQueue.SerializeWithObject(Context, NetHandle, OutRecord);
+			return ReliableQueue.SerializeWithObject(Context, RefHandle, OutRecord);
 		}
 		else
 		{
@@ -225,6 +225,11 @@ bool FNetObjectAttachmentSendQueue::IsAllSentAndAcked() const
 	return UnreliableQueue.IsEmpty() && (ReliableQueue == nullptr || ReliableQueue->IsAllSentAndAcked());
 }
 
+bool FNetObjectAttachmentSendQueue::IsAllReliableSentAndAcked() const
+{
+	return ReliableQueue == nullptr || ReliableQueue->IsAllSentAndAcked();
+}
+
 bool FNetObjectAttachmentSendQueue::IsSafeToDestroy() const
 {
 	return UnreliableQueue.IsEmpty() && (ReliableQueue == nullptr || ReliableQueue->IsSafeToDestroy());
@@ -246,7 +251,7 @@ void FNetObjectAttachmentSendQueue::SetUnreliableQueueCapacity(uint32 QueueCapac
 	UnreliableQueue.PopNoCheck(DropCount);
 }
 
-EAttachmentWriteStatus FNetObjectAttachmentSendQueue::Serialize(FNetSerializationContext& Context, FNetHandle NetHandle, FNetObjectAttachmentSendQueue::ReplicationRecord& OutRecord, bool& bOutHasUnsentAttachments)
+EAttachmentWriteStatus FNetObjectAttachmentSendQueue::Serialize(FNetSerializationContext& Context, FNetRefHandle RefHandle, FNetObjectAttachmentSendQueue::ReplicationRecord& OutRecord, bool& bOutHasUnsentAttachments)
 {
 	FNetBitStreamWriter& Writer = *Context.GetBitStreamWriter();
 
@@ -290,7 +295,7 @@ EAttachmentWriteStatus FNetObjectAttachmentSendQueue::Serialize(FNetSerializatio
 	if (bCanSendReliableAttachments)
 	{
 		UE_NET_TRACE_SCOPE(Reliable, Writer, Context.GetTraceCollector(), ENetTraceVerbosity::Trace);
-		SerializedReliableCount = SerializeReliable(Context, NetHandle, ReplicationRecord.ReliableRecord);
+		SerializedReliableCount = SerializeReliable(Context, RefHandle, ReplicationRecord.ReliableRecord);
 		// If we couldn't fit any reliable attachments then don't even try unreliable
 		if (SerializedReliableCount == 0)
 		{
@@ -308,7 +313,7 @@ EAttachmentWriteStatus FNetObjectAttachmentSendQueue::Serialize(FNetSerializatio
 	if (bHasUnreliableAttachments)
 	{
 		UE_NET_TRACE_SCOPE(Unreliable, Writer, Context.GetTraceCollector(), ENetTraceVerbosity::Trace);
-		SerializedUnreliableCount = SerializeUnreliable(Context, NetHandle, ReplicationRecord.UnreliableRecord);
+		SerializedUnreliableCount = SerializeUnreliable(Context, RefHandle, ReplicationRecord.UnreliableRecord);
 		if (SerializedUnreliableCount == 0)
 		{
 			// If we didn't manage to send anything then inform the caller of this via overflowing the bitstream
@@ -341,19 +346,19 @@ EAttachmentWriteStatus FNetObjectAttachmentSendQueue::Serialize(FNetSerializatio
 	return WriteStatus;
 }
 
-uint32 FNetObjectAttachmentSendQueue::SerializeReliable(FNetSerializationContext& Context, FNetHandle NetHandle, FReliableNetBlobQueue::ReplicationRecord& OutRecord)
+uint32 FNetObjectAttachmentSendQueue::SerializeReliable(FNetSerializationContext& Context, FNetRefHandle RefHandle, FReliableNetBlobQueue::ReplicationRecord& OutRecord)
 {
-	return ReliableQueue->Serialize(Context, NetHandle, OutRecord);
+	return ReliableQueue->Serialize(Context, RefHandle, OutRecord);
 }
 
-uint32 FNetObjectAttachmentSendQueue::SerializeUnreliable(FNetSerializationContext& Context, FNetHandle NetHandle, uint32& OutRecord)
+uint32 FNetObjectAttachmentSendQueue::SerializeUnreliable(FNetSerializationContext& Context, FNetRefHandle RefHandle, uint32& OutRecord)
 {
 	FNetBitStreamWriter* Writer = Context.GetBitStreamWriter();
 	const FObjectReferenceCache* ObjectReferenceCache = Context.GetInternalContext()->ObjectReferenceCache;
 
 	uint32 SerializedUnreliableCount = 0;
 	uint32 PrevHasMoreAttachmentsWritePos = 0;
-	const bool bSerializeWithObject = NetHandle.IsValid();
+	const bool bSerializeWithObject = RefHandle.IsValid();
 	for (uint32 AttachmentIt = 0, AttachmentEndIt = UnreliableQueue.Count(); AttachmentIt != AttachmentEndIt; ++AttachmentIt)
 	{
 		FNetBitStreamRollbackScope RollbackScope(*Writer);
@@ -367,7 +372,7 @@ uint32 FNetObjectAttachmentSendQueue::SerializeUnreliable(FNetSerializationConte
 		Attachment->SerializeCreationInfo(Context, Attachment->GetCreationInfo());
 		if (bSerializeWithObject)
 		{
-			Attachment->SerializeWithObject(Context, NetHandle);
+			Attachment->SerializeWithObject(Context, RefHandle);
 		}
 		else
 		{
@@ -469,7 +474,18 @@ bool FNetObjectAttachmentsWriter::IsAllSentAndAcked(ENetObjectAttachmentType Typ
 	const FNetObjectAttachmentSendQueue* Queue = GetQueue(Type, ObjectIndex);
 	if (Queue == nullptr)
 	{
-		return false;
+		return true;
+	}
+
+	return Queue->IsAllSentAndAcked();
+}
+
+bool FNetObjectAttachmentsWriter::IsAllReliableSentAndAcked(ENetObjectAttachmentType Type, uint32 ObjectIndex) const
+{
+	const FNetObjectAttachmentSendQueue* Queue = GetQueue(Type, ObjectIndex);
+	if (Queue == nullptr)
+	{
+		return true;
 	}
 
 	return Queue->IsAllSentAndAcked();
@@ -507,7 +523,7 @@ void FNetObjectAttachmentsWriter::DropUnreliableAttachments(ENetObjectAttachment
 	}
 }
 
-EAttachmentWriteStatus FNetObjectAttachmentsWriter::Serialize(FNetSerializationContext& Context, ENetObjectAttachmentType Type, uint32 ObjectIndex, const FNetHandle NetHandle,  FNetObjectAttachmentsWriter::ReplicationRecord& OutRecord, bool& bOutHasUnsentAttachments)
+EAttachmentWriteStatus FNetObjectAttachmentsWriter::Serialize(FNetSerializationContext& Context, ENetObjectAttachmentType Type, uint32 ObjectIndex, const FNetRefHandle RefHandle,  FNetObjectAttachmentsWriter::ReplicationRecord& OutRecord, bool& bOutHasUnsentAttachments)
 {
 	FNetObjectAttachmentSendQueue* Queue = GetQueue(Type, ObjectIndex);
 	// If this ensure fires we have bad logic for keeping track of whether there are attachments or not
@@ -518,7 +534,7 @@ EAttachmentWriteStatus FNetObjectAttachmentsWriter::Serialize(FNetSerializationC
 		return EAttachmentWriteStatus::NoAttachments;
 	}
 
-	return Queue->Serialize(Context, NetHandle, OutRecord, bOutHasUnsentAttachments);
+	return Queue->Serialize(Context, RefHandle, OutRecord, bOutHasUnsentAttachments);
 }
 
 void FNetObjectAttachmentsWriter::CommitReplicationRecord(ENetObjectAttachmentType Type, uint32 ObjectIndex, FNetObjectAttachmentsWriter::ReplicationRecord Record)
@@ -602,20 +618,33 @@ FNetObjectAttachmentSendQueue* FNetObjectAttachmentsWriter::GetOrCreateQueue(ENe
 class FNetObjectAttachmentReceiveQueue::FDeferredProcessingQueue
 {
 public:
+	struct FInitParams
+	{
+		const UPartialNetObjectAttachmentHandler* PartialNetObjectAttachmentHandler = nullptr;
+	};
+
+	void Init(const FInitParams& InitParams)
+	{
+		PartialNetObjectAttachmentHandler = InitParams.PartialNetObjectAttachmentHandler;
+	}
+
 	bool IsEmpty() const { return Queue.IsEmpty(); }
 	bool HasUnprocessed() const { return !Queue.IsEmpty(); }
 	bool IsSafeToDestroy() const { return Queue.IsEmpty() && !NetBlobAssembler.IsValid(); }
 
-	void Enqueue(FNetSerializationContext& Context, FNetHandle NetHandle, const TRefCountPtr<FNetBlob>& NetBlob, bool bIsPartialNetBlob)
+	void Enqueue(FNetSerializationContext& Context, FNetRefHandle RefHandle, const TRefCountPtr<FNetBlob>& NetBlob, bool bIsPartialNetBlob)
 	{
 		if (bIsPartialNetBlob)
 		{
 			if (!NetBlobAssembler.IsValid())
 			{
+				FNetBlobAssemblerInitParams InitParams;
+				InitParams.PartialNetBlobHandlerConfig = PartialNetObjectAttachmentHandler ? PartialNetObjectAttachmentHandler->GetConfig() : nullptr;
 				NetBlobAssembler = MakeUnique<FNetBlobAssembler>();
+				NetBlobAssembler->Init(InitParams);
 			}
 
-			NetBlobAssembler->AddPartialNetBlob(Context, NetHandle, reinterpret_cast<const TRefCountPtr<FPartialNetBlob>&>(NetBlob));
+			NetBlobAssembler->AddPartialNetBlob(Context, RefHandle, reinterpret_cast<const TRefCountPtr<FPartialNetBlob>&>(NetBlob));
 			if (NetBlobAssembler->IsReadyToAssemble())
 			{
 				const TRefCountPtr<FNetBlob>& AssembledBlob = NetBlobAssembler->Assemble(Context);
@@ -645,6 +674,7 @@ public:
 private:
 	TUniquePtr<FNetBlobAssembler> NetBlobAssembler;
 	TResizableCircularQueue<TRefCountPtr<FNetBlob>> Queue;
+	const UPartialNetObjectAttachmentHandler* PartialNetObjectAttachmentHandler = nullptr;
 };
 
 FNetObjectAttachmentReceiveQueue::FNetObjectAttachmentReceiveQueue()
@@ -659,6 +689,12 @@ FNetObjectAttachmentReceiveQueue::~FNetObjectAttachmentReceiveQueue()
 {
 	delete ReliableQueue;
 	delete DeferredProcessingQueue;
+}
+
+void FNetObjectAttachmentReceiveQueue::Init(const FNetObjectAttachmentReceiveQueueInitParams& InitParams)
+{
+	PartialNetObjectAttachmentHandler = InitParams.PartialNetObjectAttachmentHandler;
+	PartialNetBlobType = (InitParams.PartialNetObjectAttachmentHandler ? InitParams.PartialNetObjectAttachmentHandler->GetNetBlobType() : InvalidNetBlobType);
 }
 
 bool FNetObjectAttachmentReceiveQueue::IsSafeToDestroy() const
@@ -740,7 +776,7 @@ bool FNetObjectAttachmentReceiveQueue::IsPartialNetBlob(const TRefCountPtr<FNetB
 	return Blob.IsValid() && Blob->GetCreationInfo().Type == PartialNetBlobType;
 }
 
-void FNetObjectAttachmentReceiveQueue::Deserialize(FNetSerializationContext& Context, FNetHandle NetHandle)
+void FNetObjectAttachmentReceiveQueue::Deserialize(FNetSerializationContext& Context, FNetRefHandle RefHandle)
 {
 	FNetBitStreamReader& Reader = *Context.GetBitStreamReader();
 
@@ -757,7 +793,7 @@ void FNetObjectAttachmentReceiveQueue::Deserialize(FNetSerializationContext& Con
 	if (bHasReliableAttachments)
 	{
 		UE_NET_TRACE_SCOPE(Reliable, Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Trace);
-		DeserializeReliable(Context, NetHandle);
+		DeserializeReliable(Context, RefHandle);
 		if (Context.HasErrorOrOverflow())
 		{
 			return;
@@ -767,7 +803,7 @@ void FNetObjectAttachmentReceiveQueue::Deserialize(FNetSerializationContext& Con
 	if (bHasUnreliableAttachments)
 	{
 		UE_NET_TRACE_SCOPE(Unreliable, Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Trace);
-		DeserializeUnreliable(Context, NetHandle);
+		DeserializeUnreliable(Context, RefHandle);
 		if (Context.HasErrorOrOverflow())
 		{
 			return;
@@ -775,19 +811,22 @@ void FNetObjectAttachmentReceiveQueue::Deserialize(FNetSerializationContext& Con
 	}
 }
 
-uint32 FNetObjectAttachmentReceiveQueue::DeserializeReliable(FNetSerializationContext& Context, FNetHandle NetHandle)
+uint32 FNetObjectAttachmentReceiveQueue::DeserializeReliable(FNetSerializationContext& Context, FNetRefHandle RefHandle)
 {
 	if (ReliableQueue == nullptr)
 	{
 		ReliableQueue = new FReliableNetBlobQueue();
 		checkSlow(DeferredProcessingQueue == nullptr);
 		DeferredProcessingQueue = new FDeferredProcessingQueue();
+		FDeferredProcessingQueue::FInitParams InitParams;
+		InitParams.PartialNetObjectAttachmentHandler = PartialNetObjectAttachmentHandler;
+		DeferredProcessingQueue->Init(InitParams);
 	}
 
 	uint32 DeserializedReliableCount = 0;
-	if (NetHandle.IsValid())
+	if (RefHandle.IsValid())
 	{
-		DeserializedReliableCount = ReliableQueue->DeserializeWithObject(Context, NetHandle);
+		DeserializedReliableCount = ReliableQueue->DeserializeWithObject(Context, RefHandle);
 	}
 	else
 	{
@@ -801,7 +840,7 @@ uint32 FNetObjectAttachmentReceiveQueue::DeserializeReliable(FNetSerializationCo
 
 	while (const TRefCountPtr<FNetBlob>* Attachment = ReliableQueue->Peek())
 	{
-		DeferredProcessingQueue->Enqueue(Context, NetHandle, *Attachment, IsPartialNetBlob(*Attachment));
+		DeferredProcessingQueue->Enqueue(Context, RefHandle, *Attachment, IsPartialNetBlob(*Attachment));
 		ReliableQueue->Pop();
 
 		if (Context.HasErrorOrOverflow())
@@ -813,7 +852,7 @@ uint32 FNetObjectAttachmentReceiveQueue::DeserializeReliable(FNetSerializationCo
 	return DeserializedReliableCount;
 }
 
-uint32 FNetObjectAttachmentReceiveQueue::DeserializeUnreliable(FNetSerializationContext& Context, FNetHandle NetHandle)
+uint32 FNetObjectAttachmentReceiveQueue::DeserializeUnreliable(FNetSerializationContext& Context, FNetRefHandle RefHandle)
 {
 	INetBlobReceiver* BlobReceiver = Context.GetNetBlobReceiver();
 	checkSlow(BlobReceiver != nullptr);
@@ -821,14 +860,14 @@ uint32 FNetObjectAttachmentReceiveQueue::DeserializeUnreliable(FNetSerialization
 	FNetBitStreamReader& Reader = *Context.GetBitStreamReader();
 
 	uint32 DeserializedUnreliableCount = 0;
-	const bool bDeserializeWithObject = NetHandle.IsValid();
+	const bool bDeserializeWithObject = RefHandle.IsValid();
 	bool bHasMoreAttachments = false;
 	do
 	{
 		// If the unreliable queue overflows this could be a carefully crafted malicious packet.
 		if (UnreliableQueue.Count() == MaxUnreliableCount)
 		{
-			UE_LOG(LogIris, Error, TEXT("Unreliable queue is full for %s"), *NetHandle.ToString());
+			UE_LOG(LogIris, Error, TEXT("Unreliable queue is full for %s"), *RefHandle.ToString());
 			Context.SetError(NetError_UnreliableQueueFull);
 			break;
 		}
@@ -846,7 +885,7 @@ uint32 FNetObjectAttachmentReceiveQueue::DeserializeUnreliable(FNetSerialization
 
 		if (bDeserializeWithObject)
 		{
-			Attachment->DeserializeWithObject(Context, NetHandle);
+			Attachment->DeserializeWithObject(Context, RefHandle);
 		}
 		else
 		{
@@ -858,7 +897,7 @@ uint32 FNetObjectAttachmentReceiveQueue::DeserializeUnreliable(FNetSerialization
 		// Break if something went wrong with deserialization.
 		if (Context.HasErrorOrOverflow())
 		{
-			UE_LOG(LogIris, Error, TEXT("Failed to deserialize unreliable attachments for %s"), *NetHandle.ToString());
+			UE_LOG(LogIris, Error, TEXT("Failed to deserialize unreliable attachments for %s"), *RefHandle.ToString());
 			break;
 		}
 
@@ -870,12 +909,16 @@ uint32 FNetObjectAttachmentReceiveQueue::DeserializeUnreliable(FNetSerialization
 }
 
 FNetObjectAttachmentsReader::FNetObjectAttachmentsReader()
-: PartialNetBlobType(InvalidNetBlobType)
 {
 }
 
 FNetObjectAttachmentsReader::~FNetObjectAttachmentsReader()
 {
+}
+
+void FNetObjectAttachmentsReader::Init(const FNetObjectAttachmentsReaderInitParams& InitParams)
+{
+	PartialNetObjectAttachmentHandler = InitParams.PartialNetObjectAttachmentHandler;
 }
 
 bool FNetObjectAttachmentsReader::HasUnprocessedAttachments(ENetObjectAttachmentType Type, uint32 ObjectIndex) const
@@ -894,7 +937,7 @@ void FNetObjectAttachmentsReader::DropAllAttachments(ENetObjectAttachmentType Ty
 	ObjectToQueue.Remove(ObjectIndex);
 }
 
-void FNetObjectAttachmentsReader::Deserialize(FNetSerializationContext& Context, ENetObjectAttachmentType Type, uint32 ObjectIndex, FNetHandle NetHandle)
+void FNetObjectAttachmentsReader::Deserialize(FNetSerializationContext& Context, ENetObjectAttachmentType Type, uint32 ObjectIndex, FNetRefHandle RefHandle)
 {
 	FNetObjectAttachmentReceiveQueue* Queue = GetOrCreateQueue(Type, ObjectIndex);
 	if (!ensure(Queue != nullptr))
@@ -903,7 +946,7 @@ void FNetObjectAttachmentsReader::Deserialize(FNetSerializationContext& Context,
 		return;
 	}
 
-	Queue->Deserialize(Context, NetHandle);
+	Queue->Deserialize(Context, RefHandle);
 }
 
 FNetObjectAttachmentReceiveQueue* FNetObjectAttachmentsReader::GetQueue(ENetObjectAttachmentType Type, uint32 ObjectIndex)
@@ -930,7 +973,11 @@ FNetObjectAttachmentReceiveQueue* FNetObjectAttachmentsReader::GetOrCreateQueue(
 
 		QueuePtr = MakeUnique<FNetObjectAttachmentReceiveQueue>();
 		Queue = QueuePtr.Get();
-		Queue->SetPartialNetBlobType(PartialNetBlobType);
+		{
+			FNetObjectAttachmentReceiveQueueInitParams InitParams;
+			InitParams.PartialNetObjectAttachmentHandler = PartialNetObjectAttachmentHandler;
+			Queue->Init(InitParams);
+		}
 
 		if (Type == ENetObjectAttachmentType::OutOfBand)
 		{
@@ -953,30 +1000,14 @@ FNetObjectAttachmentReceiveQueue* FNetObjectAttachmentsReader::GetOrCreateQueue(
 		}
 
 		Queue = &ObjectToQueue.Add(ObjectIndex);
-		Queue->SetPartialNetBlobType(PartialNetBlobType);
+		{
+			FNetObjectAttachmentReceiveQueueInitParams InitParams;
+			InitParams.PartialNetObjectAttachmentHandler = PartialNetObjectAttachmentHandler;
+			Queue->Init(InitParams);
+		}
 
 		return Queue;
 	}
-
-
-	FNetObjectAttachmentReceiveQueue* Queue = ObjectToQueue.Find(ObjectIndex);
-	if (Queue != nullptr)
-	{
-		return Queue;
-	}
-
-	if (ObjectToQueue.Num() >= AttachmentReplicationCVars::MaxSimultaneousObjectsWithRPCs)
-	{
-		return nullptr;
-	}
-
-	Queue = &ObjectToQueue.Add(ObjectIndex);
-	if (ObjectIndex == 0)
-	{
-		Queue->SetUnreliableQueueCapacity(AttachmentReplicationCVars::ClientToServerUnreliableRPCQueueSize);
-	}
-
-	return Queue;
 }
 
 }

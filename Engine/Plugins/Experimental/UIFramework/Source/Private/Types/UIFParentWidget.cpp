@@ -1,9 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Types/UIFParentWidget.h"
-#include "GameFramework/PlayerController.h"
 #include "UIFWidget.h"
 #include "UIFPlayerComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UIFParentWidget)
 
 /**
  *
@@ -31,4 +32,9 @@ UUIFrameworkWidget* FUIFrameworkParentWidget::AsWidget() const
 UUIFrameworkPlayerComponent* FUIFrameworkParentWidget::AsPlayerComponent() const
 {
 	return CastChecked<UUIFrameworkPlayerComponent>(Parent);
+}
+
+bool FUIFrameworkParentWidget::operator== (const UUIFrameworkWidget* Other) const
+{
+	return Other == Parent && bIsParentAWidget;
 }

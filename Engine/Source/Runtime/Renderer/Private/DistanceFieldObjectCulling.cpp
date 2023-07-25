@@ -11,12 +11,14 @@
 #include "DistanceFieldLightingShared.h"
 #include "ScreenRendering.h"
 #include "DistanceFieldLightingPost.h"
+#include "LightRendering.h"
 #include "OneColorShader.h"
 #include "GlobalDistanceField.h"
 #include "FXSystem.h"
 #include "PostProcess/PostProcessSubsurface.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
+#include "ScenePrivate.h"
 #include "ShaderCompilerCore.h"
 
 int32 GAOScatterTileCulling = 1;

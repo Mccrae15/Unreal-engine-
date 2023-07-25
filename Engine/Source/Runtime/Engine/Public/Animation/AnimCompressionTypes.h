@@ -6,7 +6,9 @@
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
 #include "Misc/MemStack.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "BonePose.h"
+#endif
 #include "Animation/AnimTypes.h"
 #include "Animation/AnimCurveTypes.h"
 #include "Animation/AnimationAsset.h"
@@ -21,6 +23,7 @@
 #include "Serialization/MemoryWriter.h"
 
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "Animation/AnimationDecompression.h"
 
 #include "AnimCompressionTypes.generated.h"
 
@@ -28,7 +31,7 @@
  * Indicates animation data key format.
  */
 UENUM()
-enum AnimationKeyFormat
+enum AnimationKeyFormat : int
 {
 	AKF_ConstantKeyLerp,
 	AKF_VariableKeyLerp,
@@ -44,6 +47,8 @@ class UAnimCurveCompressionSettings;
 class UAnimBoneCompressionSettings;
 class UAnimBoneCompressionCodec;
 class USkeleton;
+struct FCompactPose;
+struct FBoneAnimationTrack;
 
 template<typename ArrayClass>
 struct ENGINE_API FCompressedOffsetDataBase
@@ -186,6 +191,7 @@ public:
 	}
 };
 
+#if WITH_EDITOR
 struct ENGINE_API FCompressibleAnimData
 {
 public:
@@ -218,13 +224,15 @@ public:
 
 	TArray<FFloatCurve> RawFloatCurves;
 
-	float SequenceLength;
+	double SequenceLength;
 
 	/** Number of keys within the (non-uniform) RawAnimationData tracks */
 	
-	UE_DEPRECATED(5.0, "NumberOfFrames has been replaced with NumberOfKeys")
+	UE_DEPRECATED(5.0, "NumberOfFrames has been replaced with NumberOfKeys and GetNumberOfFrames")
 	int32 NumberOfFrames;
 	int32 NumberOfKeys;
+
+	int32 GetNumberOfFrames() const { return FMath::Max(NumberOfKeys - 1, 1); }
 
 	bool bIsValidAdditive;
 
@@ -235,9 +243,15 @@ public:
 	FString FullName;
 	FName   AnimFName;
 
+	FFrameRate SampledFrameRate;
+
 	FCancelCompressionSignal IsCancelledSignal;
 
-	const ITargetPlatform* TargetPlatform;
+	bool bShouldPerformStripping = false;
+	TWeakObjectPtr<UAnimSequence> WeakSequence;
+	bool bDataFetched = false;
+
+	const ITargetPlatform* TargetPlatform = nullptr;
 
 	static int32 GetApproxRawDataArraySize(const TArray<FRawAnimSequenceTrack>& AnimData)
 	{
@@ -284,6 +298,8 @@ public:
 		return MemUsage;
 	}
 
+	void FetchData(const ITargetPlatform* InPlatform);
+	
 	void Update(struct FCompressedAnimSequence& CompressedData) const;
 
 	void AddReferencedObjects(FReferenceCollector& Collector)
@@ -297,12 +313,18 @@ public:
 		return IsCancelledSignal.IsCancelled();
 	}
 
+protected:
+	void BakeOutAdditiveIntoRawData(const FFrameRate& SampleRate, TArray<FBoneAnimationTrack>& ResampledTrackData, TArray<FFloatCurve>& FloatCurves);
+	void ResampleAnimationTrackData(const FFrameRate& SampleRate, TArray<FBoneAnimationTrack>& ResampledTrackData) const;
+
 private:
 	void WriteCompressionDataToJSON(TArrayView<FName> OriginalTrackNames, TArrayView<FRawAnimSequenceTrack> FinalRawAnimationData, TArrayView<FName> FinalTrackNames) const;
 };
 
 typedef TSharedPtr<FCompressibleAnimData, ESPMode::ThreadSafe> FCompressibleAnimPtr;
 typedef TSharedRef<FCompressibleAnimData, ESPMode::ThreadSafe> FCompressibleAnimRef;
+
+#endif // WITH_EDITOR
 
 // Wrapper Code
 template <typename T>
@@ -687,12 +709,6 @@ public:
 	}
 };
 
-template <uint32 Alignment>
-struct TAllocatorTraits<TMaybeMappedAllocator<Alignment>> : TAllocatorTraitsBase<TMaybeMappedAllocator<Alignment>>
-{
-	enum { SupportsMove = true };
-};
-
 template<typename T, uint32 Alignment>
 struct TIsContiguousContainer<TMaybeMappedArray<T, Alignment>>
 {
@@ -761,11 +777,19 @@ public:
 		return CompressedTrackToSkeletonMapTable[TrackIndex].BoneTreeIndex;
 	}
 
+	int32 GetTrackIndexFromSkeletonIndex(const int32 BoneIndex) const
+	{
+		return CompressedTrackToSkeletonMapTable.IndexOfByPredicate([BoneIndex](const FTrackToSkeletonMap& Entry) { return Entry.BoneTreeIndex == BoneIndex; });
+	}
+
 	// Return the number of bytes used
 	SIZE_T GetMemorySize() const;
 
+	void Reset();
 	void ClearCompressedBoneData();
 	void ClearCompressedCurveData();
+
+	bool IsValid(const UAnimSequence* AnimSequence) const;
 };
 
 struct FRootMotionReset
@@ -821,6 +845,7 @@ namespace UE::Anim::Compression {
 }
 #endif // WITH_EDITOR
 
+UE_DEPRECATED(5.1, "Signature of DecompressPose has been deprecated, use UE::Anim::Decompression::DecompressPose instead")
 extern void DecompressPose(FCompactPose& OutPose,
 							const FCompressedAnimSequence& CompressedData,
 							const FAnimExtractContext& ExtractionContext,
@@ -832,6 +857,7 @@ extern void DecompressPose(FCompactPose& OutPose,
 							FName SourceName,
 							const FRootMotionReset& RootMotionReset);
 
+UE_DEPRECATED(5.1, "Signature of DecompressPose has been deprecated, use UE::Anim::Decompression::DecompressPose instead")
 extern void DecompressPose(	FCompactPose& OutPose,
 							const FCompressedAnimSequence& CompressedData,
 							const FAnimExtractContext& ExtractionContext,
@@ -842,3 +868,8 @@ extern void DecompressPose(	FCompactPose& OutPose,
 							FName RetargetSource,
 							FName SourceName,
 							const FRootMotionReset& RootMotionReset);
+
+
+#if WITH_EDITOR
+extern FGuid GenerateGuidFromRawAnimData(const TArray<FRawAnimSequenceTrack>& RawAnimationData, const FRawCurveTracks& RawCurveData);
+#endif 

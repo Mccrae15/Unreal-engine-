@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
 using System;
@@ -238,7 +238,9 @@ namespace AutomationScripts
 			// implementation we will just assume that we require maximum security for this data.
 			bool bForceEncryption = !string.IsNullOrEmpty(EncryptionKeyGuid);
 			string PakName = Path.GetFileNameWithoutExtension(OutputLocation.FullName);
-			string UnrealPakResponseFileName = CombinePaths(CmdEnv.LogFolder, "PakList_" + PakName + ".txt");
+			string ResponseFilesPath = CombinePaths(CmdEnv.EngineSavedFolder, "ResponseFiles");
+			InternalUtils.SafeCreateDirectory(ResponseFilesPath);
+			string UnrealPakResponseFileName = CombinePaths(ResponseFilesPath, "PakList_" + PakName + ".txt");
 			WritePakResponseFile(UnrealPakResponseFileName, UnrealPakResponseFile, Compressed, RehydrateAssets, CryptoSettings, bForceEncryption);
 			CmdLine.AppendFormat(" -create={0}", CommandUtils.MakePathSafeToUseWithCommandLine(UnrealPakResponseFileName));
 
@@ -301,7 +303,9 @@ namespace AutomationScripts
 			// implementation we will just assume that we require maximum security for this data.
 			bool bForceEncryption = !string.IsNullOrEmpty(EncryptionKeyGuid);
 			bool RehydrateAssets = false;
-			string UnrealPakResponseFileName = CombinePaths(CmdEnv.LogFolder, "PakListIoStore_" + ContainerName + ".txt");
+			string ResponseFilesPath = CombinePaths(CmdEnv.EngineSavedFolder, "ResponseFiles");
+			InternalUtils.SafeCreateDirectory(ResponseFilesPath);
+			string UnrealPakResponseFileName = CombinePaths(ResponseFilesPath, "PakListIoStore_" + ContainerName + ".txt");
 			WritePakResponseFile(UnrealPakResponseFileName, UnrealPakResponseFile, bCompressed, RehydrateAssets, CryptoSettings, bForceEncryption);
 			CmdLine.AppendFormat(" -ResponseFile={0}", CommandUtils.MakePathSafeToUseWithCommandLine(UnrealPakResponseFileName));
 
@@ -1264,13 +1268,12 @@ namespace AutomationScripts
 						SC.StageCrashReporterFiles(StagedFileType.UFS, DirectoryReference.Combine(SC.EngineRoot, "Content", "Internationalization", InternationalizationPreset), StageFilesSearch.AllDirectories, new StagedDirectoryReference("Engine/Content/Internationalization"));
 
 						// Get the architecture in use
-						string Architecture = Params.SpecifiedArchitecture;
-						if (string.IsNullOrEmpty(Architecture))
+						UnrealArchitectures Architecture = Params.ProgramArchitecture;
+						if (Architecture == null)
 						{
-							Architecture = "";
 							if (PlatformExports.IsPlatformAvailable(CrashReportPlatform))
 							{
-								Architecture = PlatformExports.GetDefaultArchitecture(CrashReportPlatform, Params.RawProjectPath);
+								Architecture = UnrealArchitectureConfig.ForPlatform(CrashReportPlatform).ActiveArchitectures(Params.RawProjectPath, TargetName:null);
 							}
 						}
 
@@ -1518,6 +1521,13 @@ namespace AutomationScripts
 			{
 				SC.FilesToStage.NonUFSFiles[Pair.Key] = Pair.Value;
 			}
+
+			// Allow the calling scripts to make modifications to the deployment context before we finalize it
+			if (Params.FinalizeDeploymentContextCallback != null)
+			{
+				Params.FinalizeDeploymentContextCallback(Params, SC);
+			}
+
 		}
 
 		/// <summary>
@@ -2622,7 +2632,20 @@ namespace AutomationScripts
 				bCompressed_ProjectPackagingSettings = false;
 			}
 
-			if (CompressionFormats == "None" || CompressionFormats == "none")
+			bool bIsCompressionFormatNone = (CompressionFormats == "None" || CompressionFormats == "none");
+
+			if (Params.ForceCompressed)
+			{
+				Params.Compressed = true;
+				
+				// If we are forcing compression make sure we have a valid compression format
+				if (bIsCompressionFormatNone)
+				{
+					PlatformGameConfig.GetString("/Script/UnrealEd.ProjectPackagingSettings", "PackageCompressionFormat", out CompressionFormats);
+					// empty CompressionFormats string means "use default" eg. zlib;
+				}	
+			}
+			else if (bIsCompressionFormatNone)
 			{
 				// rather than pass "-compressed" + format=None through to UnrealPak/iostore
 				//	just turn off compression
@@ -3091,7 +3114,7 @@ namespace AutomationScripts
 				{
 					if (FileReference.Exists(OutputLocation) && !Params.IgnorePaksFromDifferentCookSource)
 					{
-						string UnrealPakResponseFileName = CombinePaths(CmdEnv.LogFolder, "PakList_" + OutputLocation.GetFileNameWithoutExtension() + ".txt");
+						string UnrealPakResponseFileName = CombinePaths(CmdEnv.EngineSavedFolder, "ResponseFiles", "PakList_" + OutputLocation.GetFileNameWithoutExtension() + ".txt");
 						if (File.Exists(UnrealPakResponseFileName) && FileReference.GetLastWriteTimeUtc(OutputLocation) > File.GetLastWriteTimeUtc(UnrealPakResponseFileName))
 						{
 							bCopiedExistingPak = true;
@@ -3286,10 +3309,18 @@ namespace AutomationScripts
 					}
 				}
 
-				string WriteBackMetadataToAssetRegistry;
-				if (PlatformGameConfig.GetString("/Script/UnrealEd.ProjectPackagingSettings", "WriteBackMetadataToAssetRegistry", out WriteBackMetadataToAssetRegistry))
+
+				if (Params.WriteBackMetadataToAssetRegistry.Length != 0)
 				{
-					AdditionalArgs += " -WriteBackMetadataToAssetRegistry=" + WriteBackMetadataToAssetRegistry;
+					AdditionalArgs += " -WriteBackMetadataToAssetRegistry=" + Params.WriteBackMetadataToAssetRegistry;
+				}
+				else
+				{
+					string WriteBackMetadataToAssetRegistry;
+					if (PlatformGameConfig.GetString("/Script/UnrealEd.ProjectPackagingSettings", "WriteBackMetadataToAssetRegistry", out WriteBackMetadataToAssetRegistry))
+					{
+						AdditionalArgs += " -WriteBackMetadataToAssetRegistry=" + WriteBackMetadataToAssetRegistry;
+					}
 				}
 
 
@@ -4030,6 +4061,11 @@ namespace AutomationScripts
 				return false;
 			}
 
+			if (Params.IsProgramTarget)
+			{
+				return false;
+			}
+
 			if (Params.SkipIoStore)
 			{
 				return false;
@@ -4446,25 +4482,42 @@ namespace AutomationScripts
 		//@todo move this
 		public static List<DeploymentContext> CreateDeploymentContext(ProjectParams Params, bool InDedicatedServer, bool DoCleanStage = false)
 		{
-			ParamList<string> ListToProcess = InDedicatedServer && (Params.Cook || Params.CookOnTheFly) ? Params.ServerCookedTargets : Params.ClientCookedTargets;
+			ParamList<string> ListToProcess;
+			if (Params.IsProgramTarget)
+			{
+				ListToProcess = Params.ProgramTargets;
+			}
+			else if (InDedicatedServer && (Params.Cook || Params.CookOnTheFly))
+			{
+				ListToProcess = Params.ServerCookedTargets;
+			}
+			else
+			{
+				ListToProcess = Params.ClientCookedTargets;
+			} 
 			var ConfigsToProcess = InDedicatedServer && (Params.Cook || Params.CookOnTheFly) ? Params.ServerConfigsToBuild : Params.ClientConfigsToBuild;
 
-			List<Tuple<string, UnrealTargetConfiguration>> TargetAndConfigPairs = new List<Tuple<string, UnrealTargetConfiguration>>();
+			List<Tuple<string, UnrealTargetConfiguration, UnrealArchitectures>> TargetAndConfigPairs = new();
 
 			foreach (var Target in ListToProcess)
 			{
 				// If we are staging a client and have been asked to include editor targets, we currently only want to
 				// include a single Development editor target. Ideally, we should have shipping editor configs and then
 				// just include the requested configs for all targets
-				if (Params.EditorTargets.Contains(Target) || Params.ProgramTargets.Contains(Target))
+				if (Params.HasEditorTargets && Params.EditorTargets.Contains(Target))
 				{
-					TargetAndConfigPairs.Add(new Tuple<string, UnrealTargetConfiguration>(Target, UnrealTargetConfiguration.Development));
+					TargetAndConfigPairs.Add(new Tuple<string, UnrealTargetConfiguration, UnrealArchitectures>(Target, UnrealTargetConfiguration.Development, Params.EditorArchitecture));
+				}
+				else if (Params.HasProgramTargets && Params.ProgramTargets.Contains(Target))
+				{
+					TargetAndConfigPairs.Add(new Tuple<string, UnrealTargetConfiguration, UnrealArchitectures>(Target, UnrealTargetConfiguration.Development, Params.ProgramArchitecture));
 				}
 				else
 				{
+					UnrealArchitectures Arches = InDedicatedServer ? Params.ServerArchitecture : Params.ClientArchitecture;
 					foreach (var Config in ConfigsToProcess)
 					{
-						TargetAndConfigPairs.Add(new Tuple<string, UnrealTargetConfiguration>(Target, Config));
+						TargetAndConfigPairs.Add(new Tuple<string, UnrealTargetConfiguration, UnrealArchitectures>(Target, Config, Arches));
 					}
 				}
 			}
@@ -4489,7 +4542,6 @@ namespace AutomationScripts
 				List<string> ExecutablesToStage = new List<string>();
 
 				string PlatformName = StagePlatform.ToString();
-				string StageArchitecture = !String.IsNullOrEmpty(Params.SpecifiedArchitecture) ? Params.SpecifiedArchitecture : "";
 				foreach (var TargetAndConfig in TargetAndConfigPairs)
 				{
 					string Target = TargetAndConfig.Item1;
@@ -4497,7 +4549,15 @@ namespace AutomationScripts
 					string Exe = Target;
 					if (Config != UnrealTargetConfiguration.Development)
 					{
-						Exe = Target + "-" + PlatformName + "-" + Config.ToString() + StageArchitecture;
+						Exe = Target + "-" + PlatformName + "-" + Config.ToString();
+					}
+
+					// append the architecture part if needed
+					UnrealArchitectureConfig ArchConfig = UnrealArchitectureConfig.ForPlatform(StagePlatform.Type);
+					UnrealArchitectures PlatformArches = TargetAndConfig.Item3 ?? ArchConfig.ActiveArchitectures(Params.RawProjectPath, Target);
+					if (ArchConfig.RequiresArchitectureFilenames(PlatformArches))
+					{
+						Exe += PlatformArches.ToString();
 					}
 					ExecutablesToStage.Add(Exe);
 				}
@@ -4512,6 +4572,7 @@ namespace AutomationScripts
 				{
 					string Target = TargetAndConfig.Item1;
 					UnrealTargetConfiguration Config = TargetAndConfig.Item2;
+					UnrealArchitectures Architecture = TargetAndConfig.Item3;
 					DirectoryReference ReceiptBaseDir = Params.IsCodeBasedProject ? ProjectDir : EngineDir;
 
 					Platform PlatformInstance = Platform.Platforms[StagePlatform];
@@ -4524,13 +4585,11 @@ namespace AutomationScripts
 
 					foreach (UnrealTargetPlatform ReceiptPlatform in SubPlatformsToStage)
 					{
-						string Architecture = Params.SpecifiedArchitecture;
-						if (string.IsNullOrEmpty(Architecture))
+						if (Architecture == null)
 						{
-							Architecture = "";
 							if (PlatformExports.IsPlatformAvailable(ReceiptPlatform))
 							{
-								Architecture = PlatformExports.GetDefaultArchitecture(ReceiptPlatform, Params.RawProjectPath);
+								Architecture = UnrealArchitectureConfig.ForPlatform(ReceiptPlatform).ActiveArchitectures(Params.RawProjectPath, Target);
 							}
 						}
 

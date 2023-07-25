@@ -5,17 +5,22 @@
 =============================================================================*/
 
 #include "RHI.h"
+#include "Async/ParallelFor.h"
+#include "HAL/IConsoleManager.h"
 #include "RHITransientResourceAllocator.h"
+#include "Misc/CommandLine.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Misc/MessageDialog.h"
-#include "RHIShaderFormatDefinitions.inl"
 #include "ProfilingDebugging/CsvProfiler.h"
-#include "String/Find.h"
+#include "RHIFwd.h"
 #include "String/LexFromString.h"
+#include "RHIStrings.h"
 #include "String/ParseTokens.h"
 #include "Misc/BufferedOutputDevice.h"
-#include "Misc/OutputDeviceFile.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "Serialization/MemoryImage.h"
+#include "Stats/StatsTrace.h"
+#include "RHITextureReference.h"
 
 #if RHI_ENABLE_RESOURCE_INFO
 #include "HAL/FileManager.h"
@@ -32,25 +37,6 @@ CSV_DEFINE_CATEGORY(DrawCall, false);
 #else
 CSV_DEFINE_CATEGORY(DrawCall, true);
 #endif
-
-// Define counter stats.
-DEFINE_STAT(STAT_RHIDrawPrimitiveCalls);
-DEFINE_STAT(STAT_RHITriangles);
-DEFINE_STAT(STAT_RHILines);
-
-// Define memory stats.
-DEFINE_STAT(STAT_RenderTargetMemory2D);
-DEFINE_STAT(STAT_RenderTargetMemory3D);
-DEFINE_STAT(STAT_RenderTargetMemoryCube);
-DEFINE_STAT(STAT_TextureMemory2D);
-DEFINE_STAT(STAT_TextureMemory3D);
-DEFINE_STAT(STAT_TextureMemoryCube);
-DEFINE_STAT(STAT_UniformBufferMemory);
-DEFINE_STAT(STAT_IndexBufferMemory);
-DEFINE_STAT(STAT_VertexBufferMemory);
-DEFINE_STAT(STAT_RTAccelerationStructureMemory);
-DEFINE_STAT(STAT_StructuredBufferMemory);
-DEFINE_STAT(STAT_PixelBufferMemory);
 
 IMPLEMENT_TYPE_LAYOUT(FRHIUniformBufferLayoutInitializer);
 IMPLEMENT_TYPE_LAYOUT(FRHIUniformBufferResource);
@@ -78,176 +64,8 @@ static TAutoConsoleVariable<int32> CVarGraphicsAdapter(
 	TEXT("  1: Adapter #1, ..."),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);
 
-template<typename EnumType>
-inline FString BuildEnumNameBitList(EnumType Value, const TCHAR*(*GetEnumName)(EnumType))
-{
-	if (Value == EnumType(0))
-	{
-		return GetEnumName(Value);
-	}
-
-	using T = __underlying_type(EnumType);
-	T StateValue = (T)Value;
-
-	FString Name;
-
-	int32 BitIndex = 0;
-	while (StateValue)
-	{
-		if (StateValue & 1)
-		{
-			if (Name.Len() > 0 && StateValue > 0)
-			{
-				Name += TEXT("|");
-			}
-
-			Name += GetEnumName(EnumType(T(1) << BitIndex));
-		}
-
-		BitIndex++;
-		StateValue >>= 1;
-	}
-
-	return MoveTemp(Name);
-}
-
-FString GetRHIAccessName(ERHIAccess Access)
-{
-		return BuildEnumNameBitList<ERHIAccess>(Access, [](ERHIAccess AccessBit)
-		{
-			switch (AccessBit)
-			{
-			default: checkNoEntry(); // fall through
-			case ERHIAccess::Unknown:             return TEXT("Unknown");
-			case ERHIAccess::CPURead:             return TEXT("CPURead");
-			case ERHIAccess::Present:             return TEXT("Present");
-			case ERHIAccess::IndirectArgs:        return TEXT("IndirectArgs");
-			case ERHIAccess::VertexOrIndexBuffer: return TEXT("VertexOrIndexBuffer");
-			case ERHIAccess::SRVCompute:          return TEXT("SRVCompute");
-			case ERHIAccess::SRVGraphics:         return TEXT("SRVGraphics");
-			case ERHIAccess::CopySrc:             return TEXT("CopySrc");
-			case ERHIAccess::ResolveSrc:          return TEXT("ResolveSrc");
-			case ERHIAccess::DSVRead:             return TEXT("DSVRead");
-			case ERHIAccess::UAVCompute:          return TEXT("UAVCompute");
-			case ERHIAccess::UAVGraphics:         return TEXT("UAVGraphics");
-			case ERHIAccess::RTV:                 return TEXT("RTV");
-			case ERHIAccess::CopyDest:            return TEXT("CopyDest");
-			case ERHIAccess::ResolveDst:          return TEXT("ResolveDst");
-			case ERHIAccess::DSVWrite:            return TEXT("DSVWrite");
-			case ERHIAccess::ShadingRateSource:	  return TEXT("ShadingRateSource");
-			case ERHIAccess::BVHRead:             return TEXT("BVHRead");
-			case ERHIAccess::BVHWrite:            return TEXT("BVHWrite");
-			case ERHIAccess::Discard:             return TEXT("Discard");
-			}
-		});
-}
-
-FString GetResourceTransitionFlagsName(EResourceTransitionFlags Flags)
-{
-	return BuildEnumNameBitList<EResourceTransitionFlags>(Flags, [](EResourceTransitionFlags Value)
-	{
-		switch (Value)
-		{
-		default: checkNoEntry(); // fall through
-		case EResourceTransitionFlags::None:                return TEXT("None");
-		case EResourceTransitionFlags::MaintainCompression: return TEXT("MaintainCompression");
-		case EResourceTransitionFlags::Discard:				return TEXT("Discard");
-		case EResourceTransitionFlags::Clear:				return TEXT("Clear");
-		}
-	});
-}
-
-FString GetRHIPipelineName(ERHIPipeline Pipeline)
-{
-	return BuildEnumNameBitList<ERHIPipeline>(Pipeline, [](ERHIPipeline Value)
-	{
-		if (Value == ERHIPipeline(0)) { return TEXT("None"); }
-
-		switch (Value)
-		{
-		default: checkNoEntry(); // fall through
-		case ERHIPipeline::Graphics:     return TEXT("Graphics");
-		case ERHIPipeline::AsyncCompute: return TEXT("AsyncCompute");
-		}
-	});
-}
-
-FString GetBufferUsageFlagsName(EBufferUsageFlags BufferUsage)
-{
-	return BuildEnumNameBitList<EBufferUsageFlags>(BufferUsage, [](EBufferUsageFlags BufferUsage)
-	{
-		switch (BufferUsage)
-		{
-		default: checkNoEntry(); // fall through
-		case BUF_None:					return TEXT("BUF_None");
-		case BUF_Static:				return TEXT("BUF_Static");
-		case BUF_Dynamic:				return TEXT("BUF_Dynamic");
-		case BUF_Volatile:				return TEXT("BUF_Volitile");
-		case BUF_UnorderedAccess:		return TEXT("BUF_UnorderedAccess");
-		case BUF_ByteAddressBuffer:		return TEXT("BUF_ByteAddressBuffer");
-		case BUF_SourceCopy:			return TEXT("BUF_SourceCopy");
-		case BUF_StreamOutput:			return TEXT("BUF_StreamOutput");
-		case BUF_DrawIndirect:			return TEXT("BUF_DrawIndirect");
-		case BUF_ShaderResource:		return TEXT("BUF_ShaderResource");
-		case BUF_KeepCPUAccessible:		return TEXT("BUF_KeepCPUAccessible");
-		case BUF_FastVRAM:				return TEXT("BUF_FastVRAM");
-		case BUF_Shared:				return TEXT("BUF_Shared");
-		case BUF_AccelerationStructure:	return TEXT("BUF_AccelerationStructure");
-		case BUF_RayTracingScratch:		return TEXT("BUF_RayTracingScratch");
-		case BUF_VertexBuffer:			return TEXT("BUF_VertexBuffer");
-		case BUF_IndexBuffer:			return TEXT("BUF_IndexBuffer");
-		case BUF_StructuredBuffer:		return TEXT("BUF_StructuredBuffer");
-		}
-	});
-}
-
-FString GetTextureCreateFlagsName(ETextureCreateFlags TextureCreateFlags)
-{
-	return BuildEnumNameBitList<ETextureCreateFlags>(TextureCreateFlags, [](ETextureCreateFlags TextureCreateFlags)
-	{
-		switch (TextureCreateFlags)
-		{
-		default: checkNoEntry(); // fall through
-		case TexCreate_None:							return TEXT("TexCreate_None");
-		case TexCreate_RenderTargetable:				return TEXT("TexCreate_RenderTargetable");
-		case TexCreate_ResolveTargetable:				return TEXT("TexCreate_ResolveTargetable");
-		case TexCreate_DepthStencilTargetable:			return TEXT("TexCreate_DepthStencilTargetable");
-		case TexCreate_ShaderResource:					return TEXT("TexCreate_ShaderResource");
-		case TexCreate_SRGB:							return TEXT("TexCreate_SRGB");
-		case TexCreate_CPUWritable:						return TEXT("TexCreate_CPUWritable");
-		case TexCreate_NoTiling:						return TEXT("TexCreate_NoTiling");
-		case TexCreate_VideoDecode:						return TEXT("TexCreate_VideoDecode");
-		case TexCreate_Dynamic:							return TEXT("TexCreate_Dynamic");
-		case TexCreate_InputAttachmentRead:				return TEXT("TexCreate_InputAttachmentRead");
-		case TexCreate_Foveation:						return TEXT("TexCreate_Foveation");
-		case TexCreate_3DTiling:						return TEXT("TexCreate_3DTiling");
-		case TexCreate_Memoryless:						return TEXT("TexCreate_Memoryless");
-		case TexCreate_GenerateMipCapable:				return TEXT("TexCreate_GenerateMipCapable");
-		case TexCreate_FastVRAMPartialAlloc:			return TEXT("TexCreate_FastVRAMPartialAlloc");
-		case TexCreate_DisableSRVCreation:				return TEXT("TexCreate_DisableSRVCreation");
-		case TexCreate_DisableDCC:						return TEXT("TexCreate_DisableDCC");
-		case TexCreate_UAV:								return TEXT("TexCreate_UAV");
-		case TexCreate_Presentable:						return TEXT("TexCreate_Presentable");
-		case TexCreate_CPUReadback:						return TEXT("TexCreate_CPUReadback");
-		case TexCreate_OfflineProcessed:				return TEXT("TexCreate_OfflineProcessed");
-		case TexCreate_FastVRAM:						return TEXT("TexCreate_FastVRAM");
-		case TexCreate_HideInVisualizeTexture:			return TEXT("TexCreate_HideInVisualizeTexture");
-		case TexCreate_Virtual:							return TEXT("TexCreate_Virtual");
-		case TexCreate_TargetArraySlicesIndependently:	return TEXT("TexCreate_TargetArraySlicesIndependently");
-		case TexCreate_Shared:							return TEXT("TexCreate_Shared");
-		case TexCreate_NoFastClear:						return TEXT("TexCreate_NoFastClear");
-		case TexCreate_DepthStencilResolveTarget:		return TEXT("TexCreate_DepthStencilResolveTarget");
-		case TexCreate_Streamable:						return TEXT("TexCreate_Streamable");
-		case TexCreate_NoFastClearFinalize:				return TEXT("TexCreate_NoFastClearFinalize");
-		case TexCreate_AFRManual:						return TEXT("TexCreate_AFRManual");
-		case TexCreate_ReduceMemoryWithTilingMode:		return TEXT("TexCreate_ReduceMemoryWithTilingMode");
-		case TexCreate_AtomicCompatible:				return TEXT("TexCreate_AtomicCompatible");
-		case TexCreate_External:						return TEXT("TexCreate_External");
-		}
-	});
-}
-
 #if STATS
+#include "ProfilingDebugging/CsvProfilerConfig.h"
 #include "Stats/StatsData.h"
 static void DumpRHIMemory(FOutputDevice& OutputDevice)
 {
@@ -292,13 +110,40 @@ const FClearValueBinding FClearValueBinding::Green(FLinearColor(0.0f, 1.0f, 0.0f
 // Note: this is used as the default normal for DBuffer decals.  It must decode to a value of 0 in DecodeDBufferData.
 const FClearValueBinding FClearValueBinding::DefaultNormal8Bit(FLinearColor(128.0f / 255.0f, 128.0f / 255.0f, 128.0f / 255.0f, 1.0f));
 
-std::atomic<TClosableMpscQueue<FRHIResource*>*> FRHIResource::PendingDeletes { new TClosableMpscQueue<FRHIResource*>() };
-FHazardPointerCollection FRHIResource::PendingDeletesHPC;
-FRHIResource* FRHIResource::CurrentlyDeleting = nullptr;
+#if HAS_GPU_STATS
 
-RHI_API FDrawCallCategoryName* FDrawCallCategoryName::Array[FDrawCallCategoryName::MAX_DRAWCALL_CATEGORY];
-RHI_API int32 FDrawCallCategoryName::DisplayCounts[FDrawCallCategoryName::MAX_DRAWCALL_CATEGORY][MAX_NUM_GPUS];
-RHI_API int32 FDrawCallCategoryName::NumCategory = 0;
+	FDrawCallCategoryName::FDrawCallCategoryName()
+		: Name(NAME_None)
+		, Index(-1)
+	{}
+
+	FDrawCallCategoryName::FDrawCallCategoryName(FName InName)
+		: Name(InName)
+		, Index(GetManager().NumCategory++)
+	{
+		check(Index < MAX_DRAWCALL_CATEGORY);
+		if (Index < MAX_DRAWCALL_CATEGORY)
+		{
+			GetManager().Array[Index] = this;
+		}
+	}
+
+	FDrawCallCategoryName::FManager::FManager()
+		: NumCategory(0)
+	{
+		FMemory::Memzero(Array);
+		FMemory::Memzero(DisplayCounts);
+	}
+
+	FDrawCallCategoryName::FManager& FDrawCallCategoryName::GetManager()
+	{
+		// Categories are global scope objects, so the initialization order is undefined.
+		// Lazy init the manager on first use.
+		static FManager Manager;
+		return Manager;
+	}
+
+#endif
 
 TRefCountPtr<FRHITexture> FRHITextureReference::DefaultTexture;
 
@@ -634,11 +479,33 @@ bool operator==(const FBlendStateInitializerRHI::FRenderTarget& A, const FBlendS
 	return bSame;
 }
 
+FName FRHIResource::GetOwnerName() const
+{
+#if RHI_ENABLE_RESOURCE_INFO
+	return OwnerName;
+#else
+	return NAME_None;
+#endif
+}
+
+void FRHIResource::SetOwnerName(const FName& InOwnerName)
+{
+#if RHI_ENABLE_RESOURCE_INFO
+	OwnerName = InOwnerName;
+#endif
+}
+
 #if RHI_ENABLE_RESOURCE_INFO
 
 static FCriticalSection GRHIResourceTrackingCriticalSection;
 static TSet<FRHIResource*> GRHITrackedResources;
 static bool GRHITrackingResources = false;
+
+bool FRHIResource::GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const
+{
+	OutResourceInfo = FRHIResourceInfo{};
+	return false;
+}
 
 void FRHIResource::BeginTrackingResource(FRHIResource* InResource)
 {
@@ -681,80 +548,6 @@ void FRHIResource::StopTrackingAllResources()
 	}
 	GRHITrackedResources.Empty();
 	GRHITrackingResources = false;
-}
-
-struct FRHIResourceTypeName
-{
-	ERHIResourceType Type;
-	const TCHAR* Name;
-};
-static const FRHIResourceTypeName GRHIResourceTypeNames[] =
-{
-#define RHI_RESOURCE_TYPE_DEF(Name) { RRT_##Name, TEXT(#Name) }
-
-	RHI_RESOURCE_TYPE_DEF(None),
-	RHI_RESOURCE_TYPE_DEF(SamplerState),
-	RHI_RESOURCE_TYPE_DEF(RasterizerState),
-	RHI_RESOURCE_TYPE_DEF(DepthStencilState),
-	RHI_RESOURCE_TYPE_DEF(BlendState),
-	RHI_RESOURCE_TYPE_DEF(VertexDeclaration),
-	RHI_RESOURCE_TYPE_DEF(VertexShader),
-	RHI_RESOURCE_TYPE_DEF(MeshShader),
-	RHI_RESOURCE_TYPE_DEF(AmplificationShader),
-	RHI_RESOURCE_TYPE_DEF(PixelShader),
-	RHI_RESOURCE_TYPE_DEF(GeometryShader),
-	RHI_RESOURCE_TYPE_DEF(RayTracingShader),
-	RHI_RESOURCE_TYPE_DEF(ComputeShader),
-	RHI_RESOURCE_TYPE_DEF(GraphicsPipelineState),
-	RHI_RESOURCE_TYPE_DEF(ComputePipelineState),
-	RHI_RESOURCE_TYPE_DEF(RayTracingPipelineState),
-	RHI_RESOURCE_TYPE_DEF(BoundShaderState),
-	RHI_RESOURCE_TYPE_DEF(UniformBufferLayout),
-	RHI_RESOURCE_TYPE_DEF(UniformBuffer),
-	RHI_RESOURCE_TYPE_DEF(Buffer),
-	RHI_RESOURCE_TYPE_DEF(Texture),
-	RHI_RESOURCE_TYPE_DEF(Texture2D),
-	RHI_RESOURCE_TYPE_DEF(Texture2DArray),
-	RHI_RESOURCE_TYPE_DEF(Texture3D),
-	RHI_RESOURCE_TYPE_DEF(TextureCube),
-	RHI_RESOURCE_TYPE_DEF(TextureReference),
-	RHI_RESOURCE_TYPE_DEF(TimestampCalibrationQuery),
-	RHI_RESOURCE_TYPE_DEF(GPUFence),
-	RHI_RESOURCE_TYPE_DEF(RenderQuery),
-	RHI_RESOURCE_TYPE_DEF(RenderQueryPool),
-	RHI_RESOURCE_TYPE_DEF(ComputeFence),
-	RHI_RESOURCE_TYPE_DEF(Viewport),
-	RHI_RESOURCE_TYPE_DEF(UnorderedAccessView),
-	RHI_RESOURCE_TYPE_DEF(ShaderResourceView),
-	RHI_RESOURCE_TYPE_DEF(RayTracingAccelerationStructure),
-	RHI_RESOURCE_TYPE_DEF(StagingBuffer),
-	RHI_RESOURCE_TYPE_DEF(CustomPresent),
-	RHI_RESOURCE_TYPE_DEF(ShaderLibrary),
-	RHI_RESOURCE_TYPE_DEF(PipelineBinaryLibrary),
-};
-
-static ERHIResourceType RHIResourceTypeFromString(const FString& InString)
-{
-	for (const auto& TypeName : GRHIResourceTypeNames)
-	{
-		if (InString.Equals(TypeName.Name, ESearchCase::IgnoreCase))
-		{
-			return TypeName.Type;
-		}
-	}
-	return RRT_None;
-}
-
-const TCHAR* StringFromRHIResourceType(ERHIResourceType ResourceType)
-{
-	for (const auto& TypeName : GRHIResourceTypeNames)
-	{
-		if (TypeName.Type == ResourceType)
-		{
-			return TypeName.Name;
-		}
-	}
-	return TEXT("<unknown>");
 }
 
 enum class EBooleanFilter
@@ -829,6 +622,212 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceCountsCmd
 	BufferedOutput.RedirectTo(OutputDevice);
 }));
 
+
+namespace RHIInternal
+{
+	struct FResourceEntry
+	{
+		const FRHIResource* Resource;
+		FRHIResourceInfo ResourceInfo;
+	};
+
+	struct FResourceFlags
+	{
+		bool bMarkedForDelete = false;
+		bool bTransient = false;
+		bool bStreaming = false;
+		bool bRT = false;
+		bool bDS = false;
+		bool bUAV = false;
+		bool bRTAS = false;
+		bool bHasFlags = false;
+
+		FString GetString()
+		{
+			FString FlagsString;
+			bool bHasFlag = false;
+			if (bMarkedForDelete)
+			{
+				FlagsString += "MarkedForDelete";
+				bHasFlag = true;
+			}
+			if (bTransient)
+			{
+				FlagsString += bHasFlag ? " | Transient" : "Transient";
+				bHasFlag = true;
+			}
+			if (bStreaming)
+			{
+				FlagsString += bHasFlag ? " | Streaming" : "Streaming";
+				bHasFlag = true;
+			}
+			if (bRT)
+			{
+				FlagsString += bHasFlag ? " | RT" : "RT";
+				bHasFlag = true;
+			}
+			else if (bDS)
+			{
+				FlagsString += bHasFlag ? " | DS" : "DS";
+				bHasFlag = true;
+			}
+			if (bUAV)
+			{
+				FlagsString += bHasFlag ? " | UAV" : "UAV";
+				bHasFlag = true;
+			}
+			if (bRTAS)
+			{
+				FlagsString += bHasFlag ? " | RTAS" : "RTAS";
+				bHasFlag = true;
+			}
+			return FlagsString;
+		}
+	};
+
+	void GetTrackedResourcesInternal(const FString& NameFilter, ERHIResourceType TypeFilter, EBooleanFilter TransientFilter, TArray<FResourceEntry>& OutResources, int32& OutNumberOfResourcesToShow,
+		int32& OutTotalResourcesWithInfo, int32& OutTotalTrackedResources, int64& OutTotalTrackedResourceSize, int64& OutTotalTrackedTransientResourceSize)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(RHIInternal_GetTrackedResourcesInternal);
+
+		TCHAR ResourceNameBuffer[FName::StringBufferSize];
+
+		auto ShouldIncludeResource = [&](const FRHIResource* Resource, const FRHIResourceInfo& ResourceInfo) -> bool
+		{
+			if (!NameFilter.IsEmpty())
+			{
+				if (ResourceInfo.Name.ToString(ResourceNameBuffer) == 0 || UE::String::FindFirst(ResourceNameBuffer, *NameFilter, ESearchCase::IgnoreCase) == INDEX_NONE)
+				{
+					return false;
+				}
+			}
+			if (TypeFilter != RRT_None)
+			{
+				if (TypeFilter == RRT_Texture)
+				{
+					if (ResourceInfo.Type != RRT_Texture2D &&
+						ResourceInfo.Type != RRT_Texture2DArray &&
+						ResourceInfo.Type != RRT_Texture3D &&
+						ResourceInfo.Type != RRT_TextureCube)
+					{
+						return false;
+					}
+				}
+				else if (TypeFilter != ResourceInfo.Type)
+				{
+					return false;
+				}
+			}
+			if (TransientFilter != EBooleanFilter::All)
+			{
+				const bool bAllowedFlag = TransientFilter == EBooleanFilter::Yes ? true : false;
+				if (ResourceInfo.IsTransient != bAllowedFlag)
+				{
+					return false;
+				}
+			}
+			return true;
+		};
+
+		OutResources.Reset();
+
+		{
+			FRHIResourceInfo ResourceInfo;
+			OutTotalTrackedResources = GRHITrackedResources.Num();
+
+			for (const FRHIResource* Resource : GRHITrackedResources)
+			{
+				if (Resource && Resource->GetResourceInfo(ResourceInfo))
+				{
+					ResourceInfo.bValid = Resource->IsValid();
+
+					if (ShouldIncludeResource(Resource, ResourceInfo))
+					{
+						OutResources.Emplace(FResourceEntry{ Resource, ResourceInfo });
+					}
+
+					OutTotalResourcesWithInfo++;
+					if (ResourceInfo.IsTransient)
+					{
+						OutTotalTrackedTransientResourceSize += ResourceInfo.VRamAllocation.AllocationSize;
+					}
+					else
+					{
+						OutTotalTrackedResourceSize += ResourceInfo.VRamAllocation.AllocationSize;
+					}
+				}
+			}
+		}
+
+		if (OutNumberOfResourcesToShow < 0 || OutNumberOfResourcesToShow > OutResources.Num())
+		{
+			OutNumberOfResourcesToShow = OutResources.Num();
+		}
+
+		OutResources.Sort([](const FResourceEntry& EntryA, const FResourceEntry& EntryB)
+		{
+			return EntryA.ResourceInfo.VRamAllocation.AllocationSize > EntryB.ResourceInfo.VRamAllocation.AllocationSize;
+		});
+	}
+
+	FResourceFlags GetResourceFlagsInternal(const FResourceEntry& Resource)
+	{
+		FResourceFlags Flags;
+		Flags.bMarkedForDelete = !Resource.ResourceInfo.bValid;
+		Flags.bTransient = Resource.ResourceInfo.IsTransient;
+
+		bool bIsTexture = Resource.ResourceInfo.Type == RRT_Texture ||
+			Resource.ResourceInfo.Type == RRT_Texture2D ||
+			Resource.ResourceInfo.Type == RRT_Texture2DArray ||
+			Resource.ResourceInfo.Type == RRT_Texture3D ||
+			Resource.ResourceInfo.Type == RRT_TextureCube;
+		if (bIsTexture)
+		{
+			FRHITexture* Texture = (FRHITexture*)Resource.Resource;
+			Flags.bRT = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_RenderTargetable);
+			Flags.bDS = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_DepthStencilTargetable);
+			Flags.bUAV = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_UAV);
+			Flags.bStreaming = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_Streamable);
+		}
+		else if (Resource.ResourceInfo.Type == RRT_Buffer)
+		{
+			FRHIBuffer* Buffer = (FRHIBuffer*)Resource.Resource;
+			Flags.bUAV = EnumHasAnyFlags((EBufferUsageFlags)Buffer->GetUsage(), BUF_UnorderedAccess);
+			Flags.bRTAS = EnumHasAnyFlags((EBufferUsageFlags)Buffer->GetUsage(), BUF_AccelerationStructure);
+		}
+
+		Flags.bHasFlags = Flags.bMarkedForDelete || Flags.bTransient || Flags.bStreaming || Flags.bRT || Flags.bDS || Flags.bUAV || Flags.bRTAS;
+		return Flags;
+	}
+}
+
+void RHIGetTrackedResourceStats(TArray<TSharedPtr<FRHIResourceStats>>& OutResourceStats)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(RHIGetTrackedResourceStats);
+	FScopeLock Lock(&GRHIResourceTrackingCriticalSection);
+
+	TArray<RHIInternal::FResourceEntry> Resources;
+	int32 TotalResourcesWithInfo = 0;
+	int32 TotalTrackedResources = 0;
+	int64 TotalTrackedResourceSize = 0;
+	int64 TotalTrackedTransientResourceSize = 0;
+	int32 NumberOfResourcesToShow = -1;
+
+	RHIInternal::GetTrackedResourcesInternal(TEXT(""), ERHIResourceType::RRT_None, EBooleanFilter::All, Resources, NumberOfResourcesToShow, TotalResourcesWithInfo, TotalTrackedResources, TotalTrackedResourceSize, TotalTrackedTransientResourceSize);
+
+	OutResourceStats.SetNum(Resources.Num());
+	ParallelFor(Resources.Num(), [&](int32 Index)
+	{
+		const FRHIResource* Resource = Resources[Index].Resource;
+		const FRHIResourceInfo& ResourceInfo = Resources[Index].ResourceInfo;
+		const TCHAR* ResourceType = StringFromRHIResourceType(ResourceInfo.Type);
+		const int64 SizeInBytes = ResourceInfo.VRamAllocation.AllocationSize;
+		RHIInternal::FResourceFlags Flags = GetResourceFlagsInternal(Resources[Index]);
+		OutResourceStats[Index] = MakeShared<FRHIResourceStats>(ResourceInfo.Name, Resource->GetOwnerName(), ResourceType, Flags.GetString(), SizeInBytes,
+									Flags.bMarkedForDelete, Flags.bTransient, Flags.bStreaming, Flags.bRT, Flags.bDS, Flags.bUAV, Flags.bRTAS, Flags.bHasFlags);
+	});
+}
+
 void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilter, EBooleanFilter TransientFilter, int32 NumberOfResourcesToShow, bool bUseCSVOutput, bool bSummaryOutput, bool bOutputToCSVFile, FBufferedOutputDevice& BufferedOutput)
 {	
 	FArchive* CSVFile{ nullptr };
@@ -838,108 +837,27 @@ void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilte
 		CSVFile = IFileManager::Get().CreateFileWriter(*Filename, FILEWRITE_AllowRead);
 	}
 
-	TCHAR ResourceNameBuffer[FName::StringBufferSize];
-
-	auto ShouldIncludeResource = [&](const FRHIResource* Resource, const FRHIResourceInfo& ResourceInfo) -> bool
-	{
-		if (!NameFilter.IsEmpty())
-		{
-			if (ResourceInfo.Name.ToString(ResourceNameBuffer) == 0 || UE::String::FindFirst(ResourceNameBuffer, *NameFilter, ESearchCase::IgnoreCase) == INDEX_NONE)
-			{
-				return false;
-			}
-		}
-		if (TypeFilter != RRT_None)
-		{
-			if (TypeFilter == RRT_Texture)
-			{
-				if (ResourceInfo.Type != RRT_Texture2D &&
-					ResourceInfo.Type != RRT_Texture2DArray &&
-					ResourceInfo.Type != RRT_Texture3D &&
-					ResourceInfo.Type != RRT_TextureCube)
-				{
-					return false;
-				}
-			}
-			else if (TypeFilter != ResourceInfo.Type)
-			{
-				return false;
-			}
-		}
-		if (TransientFilter != EBooleanFilter::All)
-		{
-			const bool bAllowedFlag = TransientFilter == EBooleanFilter::Yes ? true : false;
-			if (ResourceInfo.IsTransient != bAllowedFlag)
-			{
-				return false;
-			}
-		}
-		return true;
-	};
-
-	struct FLocalResourceEntry
-	{
-		const FRHIResource* Resource;
-		FRHIResourceInfo ResourceInfo;
-	};
-	TArray<FLocalResourceEntry> Resources;
-
 	FScopeLock Lock(&GRHIResourceTrackingCriticalSection);
 
+	TArray<RHIInternal::FResourceEntry> Resources;
 	int32 TotalResourcesWithInfo = 0;
 	int32 TotalTrackedResources = 0;
 	int64 TotalTrackedResourceSize = 0;
 	int64 TotalTrackedTransientResourceSize = 0;
 
-	{
-		FRHIResourceInfo ResourceInfo;
-		TotalTrackedResources = GRHITrackedResources.Num();
-
-		for (const FRHIResource* Resource : GRHITrackedResources)
-		{
-			if (Resource && Resource->GetResourceInfo(ResourceInfo))
-			{
-				ResourceInfo.bValid = Resource->IsValid();
-
-				if (ShouldIncludeResource(Resource, ResourceInfo))
-				{
-					Resources.Emplace(FLocalResourceEntry{ Resource, ResourceInfo });
-				}
-
-				TotalResourcesWithInfo++;
-				if (ResourceInfo.IsTransient)
-				{
-					TotalTrackedTransientResourceSize += ResourceInfo.VRamAllocation.AllocationSize;
-				}
-				else
-				{
-					TotalTrackedResourceSize += ResourceInfo.VRamAllocation.AllocationSize;
-				}
-			}
-		}
-	}
-
+	RHIInternal::GetTrackedResourcesInternal(NameFilter, TypeFilter, TransientFilter, Resources, NumberOfResourcesToShow, TotalResourcesWithInfo, TotalTrackedResources, TotalTrackedResourceSize, TotalTrackedTransientResourceSize);
 	const int32 NumberOfResourcesBeforeNumberFilter = Resources.Num();
-	if (NumberOfResourcesToShow < 0 || NumberOfResourcesToShow > Resources.Num())
-	{
-		NumberOfResourcesToShow = Resources.Num();
-	}
-
-	Resources.Sort([](const FLocalResourceEntry& EntryA, const FLocalResourceEntry& EntryB)
-	{
-		return EntryA.ResourceInfo.VRamAllocation.AllocationSize > EntryB.ResourceInfo.VRamAllocation.AllocationSize;
-	});
 
 	FName CategoryName(TEXT("RHIResources"));
 
 	if (bOutputToCSVFile)
 	{
-		const TCHAR* Header = TEXT("Name,Type,Size,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\"\n");
+		const TCHAR* Header = TEXT("Name,Type,Size,Resident,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\"\n");
 		CSVFile->Serialize(TCHAR_TO_ANSI(Header), FPlatformString::Strlen(Header));
 	}
 	else if (bUseCSVOutput)
 	{
-		BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name,Type,Size,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\""));
+		BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name,Type,Size,Resident,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\""));
 	}
 	else
 	{
@@ -954,6 +872,7 @@ void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilte
 		}
 	}
 
+	TCHAR ResourceNameBuffer[FName::StringBufferSize];
 	int64 TotalShownResourceSize = 0;
 
 	for (int32 Index = 0; Index < Resources.Num(); Index++)
@@ -965,106 +884,43 @@ void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilte
 			ResourceInfo.Name.ToString(ResourceNameBuffer);
 			const TCHAR* ResourceType = StringFromRHIResourceType(ResourceInfo.Type);
 			const int64 SizeInBytes = ResourceInfo.VRamAllocation.AllocationSize;
-
-			bool bMarkedForDelete = !ResourceInfo.bValid;
-			bool bTransient = ResourceInfo.IsTransient;
-			bool bStreaming = false;
-			bool bRT = false;
-			bool bDS = false;
-			bool bUAV = false;
-			bool bRTAS = false;
-
-			bool bIsTexture = ResourceInfo.Type == RRT_Texture ||
-				ResourceInfo.Type == RRT_Texture2D ||
-				ResourceInfo.Type == RRT_Texture2DArray ||
-				ResourceInfo.Type == RRT_Texture3D ||
-				ResourceInfo.Type == RRT_TextureCube;
-			if (bIsTexture)
-			{
-				FRHITexture* Texture = (FRHITexture*)Resources[Index].Resource;
-				bRT = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_RenderTargetable);
-				bDS = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_DepthStencilTargetable);
-				bUAV = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_UAV);
-				bStreaming = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_Streamable);
-			}
-			else if (ResourceInfo.Type == RRT_Buffer)
-			{
-				FRHIBuffer* Buffer = (FRHIBuffer*)Resources[Index].Resource;
-				bUAV = EnumHasAnyFlags((EBufferUsageFlags)Buffer->GetUsage(), BUF_UnorderedAccess);
-				bRTAS = EnumHasAnyFlags((EBufferUsageFlags)Buffer->GetUsage(), BUF_AccelerationStructure);
-			}
+			
+			bool bResident = ResourceInfo.bResident;
+			RHIInternal::FResourceFlags Flags = GetResourceFlagsInternal(Resources[Index]);
 
 			if (bSummaryOutput == false)
 			{
-				if (bOutputToCSVFile)
-				{					
-					const FString Row = FString::Printf(TEXT("%s,%s,%.9f,%s,%s,%s,%s,%s,%s\n"),
+				if (bOutputToCSVFile || bUseCSVOutput)
+				{		
+					const FString Row = FString::Printf(TEXT("%s,%s,%.9f,%s,%s,%s,%s,%s,%s,%s\n"),
 						ResourceNameBuffer,
 						ResourceType,
 						SizeInBytes / double(1 << 20),
-						bMarkedForDelete ? TEXT("Yes") : TEXT("No"),
-						bTransient ? TEXT("Yes") : TEXT("No"),
-						bStreaming ? TEXT("Yes") : TEXT("No"),
-						(bRT || bDS) ? TEXT("Yes") : TEXT("No"),
-						bUAV ? TEXT("Yes") : TEXT("No"),
-						bRTAS ? TEXT("Yes") : TEXT("No"));
+						bResident ? TEXT("Yes") : TEXT("No"),
+						Flags.bMarkedForDelete ? TEXT("Yes") : TEXT("No"),
+						Flags.bTransient ? TEXT("Yes") : TEXT("No"),
+						Flags.bStreaming ? TEXT("Yes") : TEXT("No"),
+						(Flags.bRT || Flags.bDS) ? TEXT("Yes") : TEXT("No"),
+						Flags.bUAV ? TEXT("Yes") : TEXT("No"),
+						Flags.bRTAS ? TEXT("Yes") : TEXT("No"));
 
-					CSVFile->Serialize(TCHAR_TO_ANSI(*Row), Row.Len());
-				}
-				else if (bUseCSVOutput)
-				{
-					BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("%s,%s,%.9f,%s,%s,%s,%s,%s,%s"),
-						ResourceNameBuffer,
-						ResourceType,
-						SizeInBytes / double(1 << 20),
-						bMarkedForDelete ? TEXT("Yes") : TEXT("No"),
-						bTransient ? TEXT("Yes") : TEXT("No"),
-						bStreaming ? TEXT("Yes") : TEXT("No"),
-						(bRT || bDS) ? TEXT("Yes") : TEXT("No"),
-						bUAV ? TEXT("Yes") : TEXT("No"),
-						bRTAS ? TEXT("Yes") : TEXT("No"));
+					if (bOutputToCSVFile)
+					{
+						CSVFile->Serialize(TCHAR_TO_ANSI(*Row), Row.Len());
+					}
+					else
+					{
+						BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("%s"), *Row);
+					}
 				}
 				else
 				{
-					FString ResoureFlags;
-					bool bHasFlag = false;
-					if (bTransient)
-					{
-						ResoureFlags += "Transient";
-						bHasFlag = true;
-					}
-					if (bStreaming)
-					{
-						ResoureFlags += bHasFlag ? "|Streaming" : "Streaming";
-						bHasFlag = true;
-					}
-					if (bRT)
-					{
-						ResoureFlags += bHasFlag ? "|RT" : "RT";
-						bHasFlag = true;
-					}
-					else if (bDS)
-					{
-						ResoureFlags += bHasFlag ? "|DS" : "DS";
-						bHasFlag = true;
-					}
-					if (bUAV)
-					{
-						ResoureFlags += bHasFlag ? "|UAV" : "UAV";
-						bHasFlag = true;
-					}
-					if (bRTAS)
-					{
-						ResoureFlags += bHasFlag ? "|RTAS" : "RTAS";
-						bHasFlag = true;
-
-					}
-
+					FString ResoureFlags = Flags.GetString();
 					BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name: %s - Type: %s - Size: %.9f MB - Flags: %s"),
 						ResourceNameBuffer,
 						ResourceType,
 						SizeInBytes / double(1 << 20),
-						bHasFlag ? *ResoureFlags : TEXT("None"));
+						ResoureFlags.IsEmpty() ? TEXT("None") : *ResoureFlags);
 				}
 			}
 
@@ -1204,49 +1060,6 @@ void RHIDumpResourceMemoryToCSV()
 
 #endif // RHI_ENABLE_RESOURCE_INFO
 
-bool FRHIResource::Bypass()
-{
-	return GRHICommandList.Bypass();
-}
-
-DECLARE_CYCLE_STAT(TEXT("Delete Resources"), STAT_DeleteResources, STATGROUP_RHICMDLIST);
-
-int32 FRHIResource::FlushPendingDeletes(FRHICommandListImmediate& RHICmdList)
-{
-	SCOPE_CYCLE_COUNTER(STAT_DeleteResources);
-
-	check(IsInRenderingThread());
-
-	TArray<FRHIResource*> DeletedResources;
-	TClosableMpscQueue<FRHIResource*>* PendingDeletesPtr = PendingDeletes.exchange(new TClosableMpscQueue<FRHIResource*>());
-	PendingDeletesPtr->Close([&DeletedResources](FRHIResource* Resource)
-	{	
-		DeletedResources.Push(Resource);
-	});
-	PendingDeletesHPC.Delete(PendingDeletesPtr);
-
-	const int32 NumDeletes = DeletedResources.Num();
-
-	RHICmdList.EnqueueLambda([DeletedResources = MoveTemp(DeletedResources)](FRHICommandListImmediate& RHICmdList) mutable
-	{
-		if (GDynamicRHI)
-		{
-			GDynamicRHI->RHIPerFrameRHIFlushComplete();
-		}
-
-		for (FRHIResource* Resource : DeletedResources)
-		{
-			if (Resource->AtomicFlags.Deleteing())
-			{
-				FRHIResource::CurrentlyDeleting = Resource;
-				delete Resource;
-			}
-		}
-	});
-
-	return NumDeletes;
-}
-
 static_assert(ERHIZBuffer::FarPlane != ERHIZBuffer::NearPlane, "Near and Far planes must be different!");
 static_assert((int32)ERHIZBuffer::NearPlane == 0 || (int32)ERHIZBuffer::NearPlane == 1, "Invalid Values for Near Plane, can only be 0 or 1!");
 static_assert((int32)ERHIZBuffer::FarPlane == 0 || (int32)ERHIZBuffer::FarPlane == 1, "Invalid Values for Far Plane, can only be 0 or 1");
@@ -1364,9 +1177,16 @@ static FAutoConsoleVariableRef CVarEnableBindlessSamplers(
 
 static ERHIBindlessConfiguration DetermineBindlessConfiguration(EShaderPlatform Platform, int32 BindlessConfigSetting)
 {
-	if (!RHISupportsBindless(Platform) || BindlessConfigSetting == 0)
+	const ERHIBindlessSupport BindlessSupport = RHIGetBindlessSupport(Platform);
+
+	if (BindlessSupport == ERHIBindlessSupport::Unsupported || BindlessConfigSetting == 0)
 	{
 		return ERHIBindlessConfiguration::Disabled;
+	}
+
+	if (BindlessSupport == ERHIBindlessSupport::RayTracingOnly)
+	{
+		return ERHIBindlessConfiguration::RayTracingShaders;
 	}
 
 	return BindlessConfigSetting == 2 ? ERHIBindlessConfiguration::RayTracingShaders : ERHIBindlessConfiguration::AllShaders;
@@ -1427,6 +1247,7 @@ bool GSupportsPixelLocalStorage = false;
 bool GSupportsTimestampRenderQueries = false;
 bool GRHISupportsGPUTimestampBubblesRemoval = false;
 bool GRHISupportsFrameCyclesBubblesRemoval = false;
+bool GRHISupportsGPUUsage = false;
 bool GHardwareHiddenSurfaceRemoval = false;
 bool GRHISupportsAsyncTextureCreation = false;
 bool GRHISupportsQuadTopology = false;
@@ -1451,6 +1272,7 @@ bool GSupportsMobileMultiView = false;
 bool GSupportsImageExternal = false;
 bool GRHISupportsDrawIndirect = true;
 bool GRHISupportsMultithreading = false;
+bool GRHISupportsAsyncGetRenderQueryResult = false;
 bool GRHISupportsUpdateFromBufferTexture = false;
 bool GSupportsWideMRT = true;
 bool GRHINeedsExtraDeletionLatency = false;
@@ -1502,13 +1324,14 @@ bool GRHISupportsRHIThread = false;
 bool GRHISupportsRHIOnTaskThread = false;
 bool GRHISupportsParallelRHIExecute = false;
 bool GSupportsParallelOcclusionQueries = false;
-bool GSupportsTransientResourceAliasing = false;
 bool GRHIRequiresRenderTargetForPixelShaderUAVs = false;
 bool GRHISupportsUAVFormatAliasing = false;
+bool GRHISupportsTextureViews = true;
 bool GRHISupportsDirectGPUMemoryLock = false;
 bool GRHISupportsMultithreadedShaderCreation = true;
 bool GRHISupportsMultithreadedResources = false;
 
+bool GRHISupportAsyncTextureStreamOut = false;
 bool GRHISupportsMSAADepthSampleAccess = false;
 
 bool GRHISupportsBackBufferWithCustomDepthStencil = true;
@@ -1531,8 +1354,6 @@ FIntPoint GRHIVariableRateShadingImageOffsetGranularity(0, 0);
 EVRSImageDataType GRHIVariableRateShadingImageDataType = VRSImage_NotSupported;
 EPixelFormat GRHIVariableRateShadingImageFormat = PF_Unknown;
 bool GRHISupportsLateVariableRateShadingUpdate = false;
-
-bool GRHISupportsDepthStencilResolve = false;
 
 EPixelFormat GRHIHDRDisplayOutputFormat = PF_FloatRGBA;
 
@@ -1566,9 +1387,8 @@ bool GRHISupportsMapWriteNoOverwrite = false;
 
 bool GRHISupportsSeparateDepthStencilCopyAccess = true;
 
+ERHIBindlessSupport GRHIBindlessSupport = ERHIBindlessSupport::Unsupported;
 bool GRHISupportsBindless = false;
-
-FVertexElementTypeSupportInfo GVertexElementTypeSupport;
 
 RHI_API int32 volatile GCurrentTextureMemorySize = 0;
 RHI_API int32 volatile GCurrentRendertargetMemorySize = 0;
@@ -1579,75 +1399,98 @@ RHI_API uint64 GDemotedLocalMemorySize = 0;
 
 RHI_API EShaderPlatform GShaderPlatformForFeatureLevel[ERHIFeatureLevel::Num] = {SP_NumPlatforms,SP_NumPlatforms,SP_NumPlatforms,SP_NumPlatforms,SP_NumPlatforms};
 
-// simple stats about draw calls. GNum is the previous frame and 
-// GCurrent is the current frame.
-// GCurrentNumDrawCallsRHIPtr points to the drawcall counter to increment
-RHI_API int32 GCurrentNumDrawCallsRHI[MAX_NUM_GPUS] = {};
-RHI_API int32 GNumDrawCallsRHI[MAX_NUM_GPUS] = {};
-thread_local FRHIDrawCallsStatPtr GCurrentNumDrawCallsRHIPtr = &GCurrentNumDrawCallsRHI;
-RHI_API int32 GCurrentNumPrimitivesDrawnRHI[MAX_NUM_GPUS] = {};
-RHI_API int32 GNumPrimitivesDrawnRHI[MAX_NUM_GPUS] = {};
-
-RHI_API uint64 GRHITransitionPrivateData_SizeInBytes = 0;
-RHI_API uint64 GRHITransitionPrivateData_AlignInBytes = 0;
-
 // By default, read only states and UAV states are allowed to participate in state merging.
 ERHIAccess GRHIMergeableAccessMask = ERHIAccess::ReadOnlyMask | ERHIAccess::UAVMask;
 
 // By default, only exclusively read only accesses are allowed.
 ERHIAccess GRHIMultiPipelineMergeableAccessMask = ERHIAccess::ReadOnlyExclusiveMask;
 
-/** Called once per frame only from within an RHI. */
-void RHIPrivateBeginFrame()
+RHI_API void FRHIDrawStats::Accumulate(FRHIDrawStats& Other)
 {
-	for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
+	for (uint32 GPUIndex = 0; GPUIndex < GNumExplicitGPUsForRendering; ++GPUIndex)
 	{
-		GNumDrawCallsRHI[GPUIndex] = GCurrentNumDrawCallsRHI[GPUIndex];
+		FPerGPUStats& LeftGPU = GetGPU(GPUIndex);
+		FPerGPUStats& RightGPU = Other.GetGPU(GPUIndex);
+
+		for (int32 CategoryIndex = 0; CategoryIndex < NumCategories; ++CategoryIndex)
+		{
+			FPerCategoryStats& LeftCategory = LeftGPU.GetCategory(CategoryIndex);
+			FPerCategoryStats& RightCategory = RightGPU.GetCategory(CategoryIndex);
+
+			LeftCategory += RightCategory;
+		}
 	}
-	
-#if CSV_PROFILER
-	// Only copy the display counters every so many frames to keep things more stable.
-	const int32 FramesUntilDisplayCopy = 30;
-	static int32 FrameCount = 0;
+}
+
+// Called from RHIBeginFrame
+void FRHICommandListImmediate::ProcessStats()
+{
+#if HAS_GPU_STATS
+	// Only copy the display counters every half second keep things more stable.
+	constexpr float TimeoutSeconds = 0.5;
+
+	static double LastTime = 0.0;
+	double CurrentTime = FPlatformTime::Seconds();
+
 	bool bCopyDisplayFrames = false;
-	++FrameCount;
-	if (FrameCount >= FramesUntilDisplayCopy)
+	if (CurrentTime - LastTime > TimeoutSeconds)
 	{
+		LastTime = CurrentTime;
 		bCopyDisplayFrames = true;
-		FrameCount = 0;
 	}
 
-	for (int32 Index=0; Index<FDrawCallCategoryName::NumCategory; ++Index)
-	{
-		FDrawCallCategoryName* CategoryName = FDrawCallCategoryName::Array[Index];
-		for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
-		{
-			if (bCopyDisplayFrames)
-			{
-				FDrawCallCategoryName::DisplayCounts[Index][GPUIndex] = CategoryName->Counters[GPUIndex];
-			}
-			GNumDrawCallsRHI[GPUIndex] += CategoryName->Counters[GPUIndex];
-		}
-		// Multi-GPU support : CSV stats do not support MGPU yet
-		FCsvProfiler::RecordCustomStat(CategoryName->Name, CSV_CATEGORY_INDEX(DrawCall), CategoryName->Counters[0], ECsvCustomStatOp::Set);
-		for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
-		{
-			CategoryName->Counters[GPUIndex] = 0;
-		}
-	}
+	FDrawCallCategoryName::FManager& Manager = FDrawCallCategoryName::GetManager();
 #endif
 
-	for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
+	// Summed stats across all GPUs
+	FRHIDrawStats::FPerCategoryStats Total = {};
+	TStaticArray<FRHIDrawStats::FPerCategoryStats, FRHIDrawStats::NumCategories> TotalPerCategory;
+	FMemory::Memzero(TotalPerCategory);
+
+	for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; ++GPUIndex)
 	{
-		GNumPrimitivesDrawnRHI[GPUIndex] = GCurrentNumPrimitivesDrawnRHI[GPUIndex];
+		FRHIDrawStats::FPerCategoryStats TotalPerGPU = {};
+
+		FRHIDrawStats::FPerGPUStats& GPUStats = FrameDrawStats.GetGPU(GPUIndex);
+
+		for (int32 CategoryIndex = 0; CategoryIndex < FRHIDrawStats::NumCategories; ++CategoryIndex)
+		{
+			FRHIDrawStats::FPerCategoryStats& Category = GPUStats.GetCategory(CategoryIndex);
+
+			TotalPerCategory[CategoryIndex] += Category;
+			TotalPerGPU                     += Category;
+			Total                           += Category;
+
+#if HAS_GPU_STATS
+			if (bCopyDisplayFrames && CategoryIndex < Manager.NumCategory)
+			{
+				Manager.DisplayCounts[CategoryIndex][GPUIndex] = Category.Draws;
+			}
+#endif // HAS_GPU_STATS
+		}
+		
+		GNumDrawCallsRHI      [GPUIndex] = TotalPerGPU.Draws;
+		GNumPrimitivesDrawnRHI[GPUIndex] = TotalPerGPU.GetTotalPrimitives();
 	}
-	// Multi-GPU support : CSV stats do not support MGPU yet
-	CSV_CUSTOM_STAT(RHI, DrawCalls, GNumDrawCallsRHI[0], ECsvCustomStatOp::Set);
-	CSV_CUSTOM_STAT(RHI, PrimitivesDrawn, GNumPrimitivesDrawnRHI[0], ECsvCustomStatOp::Set);
-	for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
+
+	// Multi-GPU support : CSV stats do not support MGPU yet. We're summing the totals across all GPUs here.
+	CSV_CUSTOM_STAT(RHI, DrawCalls      , int32(Total.Draws               ), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(RHI, PrimitivesDrawn, int32(Total.GetTotalPrimitives()), ECsvCustomStatOp::Set);
+
+#if HAS_GPU_STATS
+	SET_DWORD_STAT(STAT_RHITriangles         , Total.Triangles);
+	SET_DWORD_STAT(STAT_RHILines             , Total.Lines    );
+	SET_DWORD_STAT(STAT_RHIDrawPrimitiveCalls, Total.Draws    );
+
+	#if CSV_PROFILER
+	for (int32 CategoryIndex = 0; CategoryIndex < Manager.NumCategory; ++CategoryIndex)
 	{
-		GCurrentNumDrawCallsRHI[GPUIndex] = GCurrentNumPrimitivesDrawnRHI[GPUIndex] = 0;
+		FCsvProfiler::RecordCustomStat(Manager.Array[CategoryIndex]->Name, CSV_CATEGORY_INDEX(DrawCall), int32(TotalPerCategory[CategoryIndex].Draws), ECsvCustomStatOp::Set);
 	}
+	#endif
+#endif // HAS_GPU_STATS
+
+	FrameDrawStats.Reset();
 }
 
 /** Whether to initialize 3D textures using a bulk data (or through a mip update if false). */
@@ -1661,171 +1504,6 @@ RHI_API EShaderPlatform GMaxRHIShaderPlatform = SP_PCD3D_SM5;
 
 /** The maximum feature level supported on this machine */
 RHI_API ERHIFeatureLevel::Type GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
-
-FName FeatureLevelNames[] = 
-{
-	FName(TEXT("ES2")),
-	FName(TEXT("ES3_1")),
-	FName(TEXT("SM4_REMOVED")),
-	FName(TEXT("SM5")),
-	FName(TEXT("SM6")),
-};
-
-static_assert(UE_ARRAY_COUNT(FeatureLevelNames) == ERHIFeatureLevel::Num, "Missing entry from feature level names.");
-
-RHI_API bool GetFeatureLevelFromName(FName Name, ERHIFeatureLevel::Type& OutFeatureLevel)
-{
-	for (int32 NameIndex = 0; NameIndex < UE_ARRAY_COUNT(FeatureLevelNames); NameIndex++)
-	{
-		if (FeatureLevelNames[NameIndex] == Name)
-		{
-			OutFeatureLevel = (ERHIFeatureLevel::Type)NameIndex;
-			return true;
-		}
-	}
-
-	OutFeatureLevel = ERHIFeatureLevel::Num;
-	return false;
-}
-
-RHI_API void GetFeatureLevelName(ERHIFeatureLevel::Type InFeatureLevel, FString& OutName)
-{
-	check(InFeatureLevel < UE_ARRAY_COUNT(FeatureLevelNames));
-	if (InFeatureLevel < UE_ARRAY_COUNT(FeatureLevelNames))
-	{
-		FeatureLevelNames[(int32)InFeatureLevel].ToString(OutName);
-	}
-	else
-	{
-		OutName = TEXT("InvalidFeatureLevel");
-	}	
-}
-
-static FName InvalidFeatureLevelName(TEXT("InvalidFeatureLevel"));
-RHI_API void GetFeatureLevelName(ERHIFeatureLevel::Type InFeatureLevel, FName& OutName)
-{
-	check(InFeatureLevel < UE_ARRAY_COUNT(FeatureLevelNames));
-	if (InFeatureLevel < UE_ARRAY_COUNT(FeatureLevelNames))
-	{
-		OutName = FeatureLevelNames[(int32)InFeatureLevel];
-	}
-	else
-	{
-		
-		OutName = InvalidFeatureLevelName;
-	}
-}
-
-FName ShadingPathNames[] =
-{
-	FName(TEXT("Deferred")),
-	FName(TEXT("Forward")),
-	FName(TEXT("Mobile")),
-};
-
-static_assert(UE_ARRAY_COUNT(ShadingPathNames) == ERHIShadingPath::Num, "Missing entry from shading path names.");
-
-RHI_API bool GetShadingPathFromName(FName Name, ERHIShadingPath::Type& OutShadingPath)
-{
-	for (int32 NameIndex = 0; NameIndex < UE_ARRAY_COUNT(ShadingPathNames); NameIndex++)
-	{
-		if (ShadingPathNames[NameIndex] == Name)
-		{
-			OutShadingPath = (ERHIShadingPath::Type)NameIndex;
-			return true;
-		}
-	}
-
-	OutShadingPath = ERHIShadingPath::Num;
-	return false;
-}
-
-RHI_API void GetShadingPathName(ERHIShadingPath::Type InShadingPath, FString& OutName)
-{
-	check(InShadingPath < UE_ARRAY_COUNT(ShadingPathNames));
-	if (InShadingPath < UE_ARRAY_COUNT(ShadingPathNames))
-	{
-		ShadingPathNames[(int32)InShadingPath].ToString(OutName);
-	}
-	else
-	{
-		OutName = TEXT("InvalidShadingPath");
-	}
-}
-
-static FName InvalidShadingPathName(TEXT("InvalidShadingPath"));
-RHI_API void GetShadingPathName(ERHIShadingPath::Type InShadingPath, FName& OutName)
-{
-	check(InShadingPath < UE_ARRAY_COUNT(ShadingPathNames));
-	if (InShadingPath < UE_ARRAY_COUNT(ShadingPathNames))
-	{
-		OutName = ShadingPathNames[(int32)InShadingPath];
-	}
-	else
-	{
-
-		OutName = InvalidShadingPathName;
-	}
-}
-
-static FName NAME_PLATFORM_WINDOWS(TEXT("Windows"));
-static FName NAME_PLATFORM_ANDROID(TEXT("Android"));
-static FName NAME_PLATFORM_IOS(TEXT("IOS"));
-static FName NAME_PLATFORM_MAC(TEXT("Mac"));
-static FName NAME_PLATFORM_TVOS(TEXT("TVOS"));
-
-// @todo platplug: This is still here, only being used now by UMaterialShaderQualitySettings::GetOrCreatePlatformSettings
-// since I have moved the other uses to FindTargetPlatformWithSupport
-// But I'd like to delete it anyway!
-FName ShaderPlatformToPlatformName(EShaderPlatform Platform)
-{
-	switch (Platform)
-	{
-	case SP_PCD3D_SM6:
-	case SP_PCD3D_SM5:
-	case SP_PCD3D_ES3_1:
-	case SP_OPENGL_PCES3_1:
-	case SP_VULKAN_PCES3_1:
-	case SP_VULKAN_SM5:
-	case SP_D3D_ES3_1_HOLOLENS:
-		return NAME_PLATFORM_WINDOWS;
-	case SP_VULKAN_ES3_1_ANDROID:
-	case SP_VULKAN_SM5_ANDROID:
-	case SP_OPENGL_ES3_1_ANDROID:
-		return NAME_PLATFORM_ANDROID;
-	case SP_METAL:
-	case SP_METAL_MRT:
-		return NAME_PLATFORM_IOS;
-	case SP_METAL_SM5:
-	case SP_METAL_MACES3_1:
-	case SP_METAL_MRT_MAC:
-		return NAME_PLATFORM_MAC;
-	case SP_METAL_TVOS:
-	case SP_METAL_MRT_TVOS:
-		return NAME_PLATFORM_TVOS;
-
-
-	default:
-		if (FStaticShaderPlatformNames::IsStaticPlatform(Platform))
-		{
-			return FStaticShaderPlatformNames::Get().GetPlatformName(Platform);
-		}
-		else
-		{
-			return NAME_None;
-		}
-	}
-}
-
-FName LegacyShaderPlatformToShaderFormat(EShaderPlatform Platform)
-{
-	return  FDataDrivenShaderPlatformInfo::GetShaderFormat(Platform);
-}
-
-EShaderPlatform ShaderFormatToLegacyShaderPlatform(FName ShaderFormat)
-{
-	return ShaderFormatNameToShaderPlatform(ShaderFormat);
-}
 
 RHI_API bool IsRHIDeviceAMD()
 {
@@ -1845,36 +1523,6 @@ RHI_API bool IsRHIDeviceNVIDIA()
 	check(GRHIVendorId != 0);
 	// NVIDIA GPUs are discrete and use DedicatedVideoMemory only.
 	return GRHIVendorId == 0x10DE;
-}
-
-RHI_API const TCHAR* RHIVendorIdToString()
-{
-	return RHIVendorIdToString((EGpuVendorId)GRHIVendorId);
-}
-
-RHI_API const TCHAR* RHIVendorIdToString(EGpuVendorId VendorId)
-{
-	switch (VendorId)
-	{
-	case EGpuVendorId::Amd:			return TEXT("AMD");
-	case EGpuVendorId::ImgTec:		return TEXT("ImgTec");
-	case EGpuVendorId::Nvidia:		return TEXT("NVIDIA");
-	case EGpuVendorId::Arm:			return TEXT("ARM");
-	case EGpuVendorId::Broadcom:	return TEXT("Broadcom");
-	case EGpuVendorId::Qualcomm:	return TEXT("Qualcomm");
-	case EGpuVendorId::Apple:		return TEXT("Apple");
-	case EGpuVendorId::Intel:		return TEXT("Intel");
-	case EGpuVendorId::Vivante:		return TEXT("Vivante");
-	case EGpuVendorId::VeriSilicon:	return TEXT("VeriSilicon");
-	case EGpuVendorId::Kazan:		return TEXT("Kazan");
-	case EGpuVendorId::Codeplay:	return TEXT("Codeplay");
-	case EGpuVendorId::Mesa:		return TEXT("Mesa");
-	case EGpuVendorId::NotQueried:	return TEXT("Not Queried");
-	default:
-		break;
-	}
-
-	return TEXT("Unknown");
 }
 
 RHI_API uint32 RHIGetMetalShaderLanguageVersion(const FStaticShaderPlatform Platform)
@@ -1947,7 +1595,8 @@ bool RHIGetPreviewFeatureLevel(ERHIFeatureLevel::Type& PreviewFeatureLevelOUT)
 
 RHI_API int32 RHIGetPreferredClearUAVRectPSResourceType(const FStaticShaderPlatform Platform)
 {
-	if (IsMetalPlatform(Platform))
+	// We can't bind Nanite buffers as RWBuffer to perform a clear op.
+	if (IsMetalPlatform(Platform) && !FDataDrivenShaderPlatformInfo::GetSupportsNanite(Platform))
 	{
 		static constexpr uint32 METAL_TEXTUREBUFFER_SHADER_LANGUAGE_VERSION = 4;
 		if (METAL_TEXTUREBUFFER_SHADER_LANGUAGE_VERSION <= RHIGetMetalShaderLanguageVersion(Platform))
@@ -2002,12 +1651,6 @@ void FRHIRenderPassInfo::ConvertToRenderTargetsInfo(FRHISetRenderTargetsInfo& Ou
 	OutRTInfo.bClearDepth = (DepthLoadAction == ERenderTargetLoadAction::EClear);
 	OutRTInfo.bClearStencil = (StencilLoadAction == ERenderTargetLoadAction::EClear);
 
-	if (OutRTInfo.bHasResolveAttachments && DepthStencilRenderTarget.ResolveTarget)
-	{
-		OutRTInfo.DepthStencilResolveRenderTarget = OutRTInfo.DepthStencilRenderTarget;
-		OutRTInfo.DepthStencilResolveRenderTarget.Texture = DepthStencilRenderTarget.ResolveTarget;
-	}
-
 	OutRTInfo.ShadingRateTexture = ShadingRateTexture;
 	OutRTInfo.ShadingRateTextureCombiner = ShadingRateTextureCombiner;
 	OutRTInfo.MultiViewCount = MultiViewCount;
@@ -2030,7 +1673,7 @@ void FRHIRenderPassInfo::Validate() const
 			}
 			else
 			{
-				ensure(Entry.RenderTarget->GetNumSamples() == NumSamples);
+				ensureMsgf(Entry.RenderTarget->GetNumSamples() == NumSamples, TEXT("RenderTarget have inconsistent NumSamples: first %d, then %d"), NumSamples, Entry.RenderTarget->GetNumSamples());
 			}
 
 			ERenderTargetStoreAction Store = GetStoreAction(Entry.Action);
@@ -2103,20 +1746,6 @@ void FRHIRenderPassInfo::Validate() const
 			// 1. render pass must have depth target
 			// 2. depth target must support InputAttachement
 			ensure(EnumHasAnyFlags(DepthStencilRenderTarget.DepthStencilTarget->GetFlags(), TexCreate_InputAttachmentRead));
-		}
-
-		if (DepthStencilRenderTarget.ResolveTarget && DepthStencilRenderTarget.ResolveTarget != DepthStencilRenderTarget.DepthStencilTarget)
-		{
-			// for depth resolve
-			// 1. RHI must support depth stencil resolve
-			// 2. Must be using MSAA resolve
-			// 3. Resolve target sample count must be 1
-			// 4. Resolve target format must be the same as the MSAA target format
-			ensureMsgf(GRHISupportsDepthStencilResolve, TEXT("Attempted to resolve depth/stencil target but feature is not supported."));
-			ensureMsgf(bIsMSAAResolve, TEXT("Depth/stencil resolve target is bound but resolve was not requested."));
-			ensureMsgf(DepthStencilRenderTarget.ResolveTarget->GetNumSamples() == 1, TEXT("Depth/stencil resolve targets must have a sample count of 1."));
-			ensureMsgf(DepthStencilRenderTarget.ResolveTarget->GetFormat() == DepthStencilRenderTarget.DepthStencilTarget->GetFormat(),
-				TEXT("Depth/stencil resolve targets must have the same format as the MSAA target."));
 		}
 	}
 	else
@@ -2321,466 +1950,6 @@ FRHIPanicEvent& RHIGetPanicDelegate()
 	return RHIPanicEvent;
 }
 
-#include "Misc/DataDrivenPlatformInfoRegistry.h"
-
-FString LexToString(EShaderPlatform Platform, bool bError)
-{
-	switch (Platform)
-	{
-	case SP_PCD3D_SM6: return TEXT("PCD3D_SM6");
-	case SP_PCD3D_SM5: return TEXT("PCD3D_SM5");
-	case SP_PCD3D_ES3_1: return TEXT("PCD3D_ES3_1");
-	case SP_OPENGL_PCES3_1: return TEXT("OPENGL_PCES3_1");
-	case SP_OPENGL_ES3_1_ANDROID: return TEXT("OPENGL_ES3_1_ANDROID");
-	case SP_METAL: return TEXT("METAL");
-	case SP_METAL_MRT: return TEXT("METAL_MRT");
-	case SP_METAL_TVOS: return TEXT("METAL_TVOS");
-	case SP_METAL_MRT_TVOS: return TEXT("METAL_MRT_TVOS");
-	case SP_METAL_MRT_MAC: return TEXT("METAL_MRT_MAC");
-	case SP_METAL_SM5: return TEXT("METAL_SM5");
-	case SP_METAL_MACES3_1: return TEXT("METAL_MACES3_1");
-	case SP_VULKAN_ES3_1_ANDROID: return TEXT("VULKAN_ES3_1_ANDROID");
-	case SP_VULKAN_PCES3_1: return TEXT("VULKAN_PCES3_1");
-	case SP_VULKAN_SM5: return TEXT("VULKAN_SM5");
-	case SP_VULKAN_SM5_ANDROID: return TEXT("VULKAN_SM5_ANDROID");
-	case SP_D3D_ES3_1_HOLOLENS: return TEXT("D3D_ES3_1_HOLOLENS");
-	case SP_CUSTOM_PLATFORM_FIRST: return TEXT("SP_CUSTOM_PLATFORM_FIRST");
-	case SP_CUSTOM_PLATFORM_LAST: return TEXT("SP_CUSTOM_PLATFORM_LAST");
-
-	default:
-		if (FStaticShaderPlatformNames::IsStaticPlatform(Platform))
-		{
-			return FStaticShaderPlatformNames::Get().GetShaderPlatform(Platform).ToString();
-		}
-		else if (Platform > SP_CUSTOM_PLATFORM_FIRST && Platform < SP_CUSTOM_PLATFORM_LAST)
-		{
-			return FString::Printf(TEXT("SP_CUSTOM_PLATFORM_%d"), Platform - SP_CUSTOM_PLATFORM_FIRST);
-		}
-		else
-		{
-			checkf(!bError, TEXT("Unknown or removed EShaderPlatform %d!"), (int32)Platform);
-			return TEXT("");
-		}
-	}
-}
-
-FString LexToString(EShaderPlatform Platform)
-{
-	bool bError = true;
-	return LexToString(Platform, bError);
-}
-
-void LexFromString(EShaderPlatform& Value, const TCHAR* String)
-{
-	Value = EShaderPlatform::SP_NumPlatforms;
-
-	for (int i = 0; i < (int)EShaderPlatform::SP_NumPlatforms; ++i)
-	{
-		if (LexToString((EShaderPlatform)i, false).Equals(String, ESearchCase::IgnoreCase))
-		{
-			Value = (EShaderPlatform)i;
-			return;
-		}
-	}
-}
-
-FString LexToString(ERHIFeatureLevel::Type Level)
-{
-	switch (Level)
-	{
-		case ERHIFeatureLevel::ES2_REMOVED:
-			return TEXT("ES2_REMOVED");
-		case ERHIFeatureLevel::ES3_1:
-			return TEXT("ES3_1");
-		case ERHIFeatureLevel::SM4_REMOVED:
-			return TEXT("SM4_REMOVED");
-		case ERHIFeatureLevel::SM5:
-			return TEXT("SM5");
-		case ERHIFeatureLevel::SM6:
-			return TEXT("SM6");
-		default:
-			break;
-	}
-	return TEXT("UnknownFeatureLevel");
-}
-
-const TCHAR* LexToString(ERHIDescriptorHeapType InHeapType)
-{
-	switch (InHeapType)
-	{
-	default: checkNoEntry();                   return TEXT("UnknownDescriptorHeapType");
-	case ERHIDescriptorHeapType::Standard:     return TEXT("Standard");
-	case ERHIDescriptorHeapType::RenderTarget: return TEXT("RenderTarget");
-	case ERHIDescriptorHeapType::DepthStencil: return TEXT("DepthStencil");
-	case ERHIDescriptorHeapType::Sampler:      return TEXT("Sampler");
-	}
-}
-
-const FName LANGUAGE_D3D("D3D");
-const FName LANGUAGE_Metal("Metal");
-const FName LANGUAGE_OpenGL("OpenGL");
-const FName LANGUAGE_Vulkan("Vulkan");
-const FName LANGUAGE_Sony("Sony");
-const FName LANGUAGE_Nintendo("Nintendo");
-
-RHI_API FGenericDataDrivenShaderPlatformInfo FGenericDataDrivenShaderPlatformInfo::Infos[SP_NumPlatforms];
-
-// Gets a string from a section, or empty string if it didn't exist
-static inline FString GetSectionString(const FConfigSection& Section, FName Key)
-{
-	return Section.FindRef(Key).GetValue();
-}
-
-// Gets a bool from a section.  It returns the original value if the setting does not exist
-static inline bool GetSectionBool(const FConfigSection& Section, FName Key, bool OriginalValue)
-{
-	const FConfigValue* ConfigValue = Section.Find(Key);
-	if (ConfigValue != nullptr)
-	{
-		return FCString::ToBool(*ConfigValue->GetValue());
-	}
-	else
-	{
-		return OriginalValue;
-	}
-}
-
-// Gets an integer from a section.  It returns the original value if the setting does not exist
-static inline uint32 GetSectionUint(const FConfigSection& Section, FName Key, uint32 OriginalValue)
-{
-	const FConfigValue* ConfigValue = Section.Find(Key);
-	if (ConfigValue != nullptr)
-	{
-		return (uint32)FCString::Atoi(*ConfigValue->GetValue());
-	}
-	else
-	{
-		return OriginalValue;
-	}
-}
-
-// Gets an integer from a section.  It returns the original value if the setting does not exist
-static inline uint32 GetSectionFeatureSupport(const FConfigSection& Section, FName Key, uint32 OriginalValue)
-{
-	const FConfigValue* ConfigValue = Section.Find(Key);
-	if (ConfigValue != nullptr)
-	{
-		FString Value = ConfigValue->GetValue();
-		if (Value == TEXT("Unsupported"))
-		{
-			return uint32(ERHIFeatureSupport::Unsupported);
-		}
-		if (Value == TEXT("RuntimeDependent"))
-		{
-			return uint32(ERHIFeatureSupport::RuntimeDependent);
-		}
-		else if (Value == TEXT("RuntimeGuaranteed"))
-		{
-			return uint32(ERHIFeatureSupport::RuntimeGuaranteed);
-		}
-		else
-		{
-			checkf(false, TEXT("Unknown ERHIFeatureSupport value \"%s\" for %s"), *Value, *Key.ToString());
-		}
-	}
-
-	return OriginalValue;
-}
-
-FRHIViewableResource* GetViewableResource(const FRHITransitionInfo& Info)
-{
-	switch (Info.Type)
-	{
-	case FRHITransitionInfo::EType::Buffer:
-	case FRHITransitionInfo::EType::Texture:
-		return Info.ViewableResource;
-
-	case FRHITransitionInfo::EType::UAV:
-		return Info.UAV ? Info.UAV->GetParentResource() : nullptr;
-	}
-
-	return nullptr;
-}
-
-void FGenericDataDrivenShaderPlatformInfo::SetDefaultValues()
-{
-	MaxFeatureLevel = ERHIFeatureLevel::Num;
-	bSupportsMSAA = true;
-	bSupportsDOFHybridScattering = true;
-	bSupportsHZBOcclusion = true;
-	bSupportsWaterIndirectDraw = true;
-	bSupportsAsyncPipelineCompilation = true;
-	bSupportsManualVertexFetch = true;
-	bSupportsVolumeTextureAtomics = true;
-	PreviewShaderPlatformParent = EShaderPlatform::SP_NumPlatforms;
-}
-
-void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConfigSection& Section, FGenericDataDrivenShaderPlatformInfo& Info)
-{
-	Info.Language = *GetSectionString(Section, "Language");
-	Info.ShaderFormat = *GetSectionString(Section, "ShaderFormat");
-	checkf(!Info.ShaderFormat.IsNone(), TEXT("Missing ShaderFormat for ShaderPlatform %s  ShaderFormat %s"), *Info.Name.ToString(), *Info.ShaderFormat.ToString());
-
-	GetFeatureLevelFromName(*GetSectionString(Section, "MaxFeatureLevel"), Info.MaxFeatureLevel);
-
-	Info.ShaderPropertiesHash = 0;
-	FString ShaderPropertiesString = Info.Name.GetPlainNameString();
-
-#define ADD_TO_PROPERTIES_STRING(SettingName, SettingValue) \
-	ShaderPropertiesString += TEXT(#SettingName); \
-	ShaderPropertiesString += FString::Printf(TEXT("_%d"), SettingValue);
-
-#define GET_SECTION_BOOL_HELPER(SettingName)	\
-	Info.SettingName = GetSectionBool(Section, #SettingName, Info.SettingName);	\
-	ADD_TO_PROPERTIES_STRING(SettingName, Info.SettingName)
-
-#define GET_SECTION_INT_HELPER(SettingName)	\
-	Info.SettingName = GetSectionUint(Section, #SettingName, Info.SettingName); \
-	ADD_TO_PROPERTIES_STRING(SettingName, Info.SettingName)
-
-#define GET_SECTION_SUPPORT_HELPER(SettingName)	\
-	Info.SettingName = GetSectionFeatureSupport(Section, #SettingName, Info.SettingName); \
-	ADD_TO_PROPERTIES_STRING(SettingName, Info.SettingName)
-
-	GET_SECTION_BOOL_HELPER(bIsMobile);
-	GET_SECTION_BOOL_HELPER(bIsMetalMRT);
-	GET_SECTION_BOOL_HELPER(bIsPC);
-	GET_SECTION_BOOL_HELPER(bIsConsole);
-	GET_SECTION_BOOL_HELPER(bIsAndroidOpenGLES);
-	GET_SECTION_BOOL_HELPER(bSupportsDebugViewShaders);
-	GET_SECTION_BOOL_HELPER(bSupportsMobileMultiView);
-	GET_SECTION_BOOL_HELPER(bSupportsArrayTextureCompression);
-	GET_SECTION_BOOL_HELPER(bSupportsDistanceFields);
-	GET_SECTION_BOOL_HELPER(bSupportsDiaphragmDOF);
-	GET_SECTION_BOOL_HELPER(bSupportsRGBColorBuffer);
-	GET_SECTION_BOOL_HELPER(bSupportsCapsuleShadows);
-	GET_SECTION_BOOL_HELPER(bSupportsPercentageCloserShadows);
-	GET_SECTION_BOOL_HELPER(bSupportsVolumetricFog);
-	GET_SECTION_BOOL_HELPER(bSupportsIndexBufferUAVs);
-	GET_SECTION_BOOL_HELPER(bSupportsInstancedStereo);
-	GET_SECTION_SUPPORT_HELPER(SupportsMultiViewport);
-	GET_SECTION_BOOL_HELPER(bSupportsMSAA);
-	GET_SECTION_BOOL_HELPER(bSupports4ComponentUAVReadWrite);
-	GET_SECTION_BOOL_HELPER(bSupportsRenderTargetWriteMask);
-	GET_SECTION_BOOL_HELPER(bSupportsRayTracing);
-	GET_SECTION_BOOL_HELPER(bSupportsRayTracingShaders);
-	GET_SECTION_BOOL_HELPER(bSupportsInlineRayTracing);
-	GET_SECTION_BOOL_HELPER(bSupportsRayTracingCallableShaders);
-	GET_SECTION_BOOL_HELPER(bSupportsRayTracingProceduralPrimitive);
-	GET_SECTION_BOOL_HELPER(bSupportsRayTracingTraversalStatistics);
-	GET_SECTION_BOOL_HELPER(bSupportsRayTracingIndirectInstanceData);
-	GET_SECTION_BOOL_HELPER(bSupportsPathTracing);
-	GET_SECTION_BOOL_HELPER(bSupportsHighEndRayTracingReflections);
-	GET_SECTION_BOOL_HELPER(bSupportsByteBufferComputeShaders);
-	GET_SECTION_BOOL_HELPER(bSupportsGPUScene);
-	GET_SECTION_BOOL_HELPER(bSupportsPrimitiveShaders);
-	GET_SECTION_BOOL_HELPER(bSupportsUInt64ImageAtomics);
-	GET_SECTION_BOOL_HELPER(bRequiresVendorExtensionsForAtomics);
-	GET_SECTION_BOOL_HELPER(bSupportsNanite);
-	GET_SECTION_BOOL_HELPER(bSupportsLumenGI);
-	GET_SECTION_BOOL_HELPER(bSupportsSSDIndirect);
-	GET_SECTION_BOOL_HELPER(bSupportsTemporalHistoryUpscale);
-	GET_SECTION_BOOL_HELPER(bSupportsRTIndexFromVS);
-	GET_SECTION_BOOL_HELPER(bSupportsIntrinsicWaveOnce);
-	GET_SECTION_BOOL_HELPER(bSupportsConservativeRasterization);
-	GET_SECTION_SUPPORT_HELPER(bSupportsWaveOperations);
-	GET_SECTION_INT_HELPER(MinimumWaveSize);
-	GET_SECTION_INT_HELPER(MaximumWaveSize);
-	GET_SECTION_BOOL_HELPER(bRequiresExplicit128bitRT);
-	GET_SECTION_BOOL_HELPER(bSupportsGen5TemporalAA);
-	GET_SECTION_BOOL_HELPER(bTargetsTiledGPU);
-	GET_SECTION_BOOL_HELPER(bNeedsOfflineCompiler);
-	GET_SECTION_BOOL_HELPER(bSupportsComputeFramework);
-	GET_SECTION_BOOL_HELPER(bSupportsAnisotropicMaterials);
-	GET_SECTION_BOOL_HELPER(bSupportsDualSourceBlending);
-	GET_SECTION_BOOL_HELPER(bRequiresGeneratePrevTransformBuffer);
-	GET_SECTION_BOOL_HELPER(bRequiresRenderTargetDuringRaster);
-	GET_SECTION_BOOL_HELPER(bRequiresDisableForwardLocalLights);
-	GET_SECTION_BOOL_HELPER(bCompileSignalProcessingPipeline);
-	GET_SECTION_BOOL_HELPER(bSupportsMeshShadersTier0);
-	GET_SECTION_BOOL_HELPER(bSupportsMeshShadersTier1);
-	GET_SECTION_INT_HELPER(MaxMeshShaderThreadGroupSize);
-	GET_SECTION_BOOL_HELPER(bSupportsPerPixelDBufferMask);
-	GET_SECTION_BOOL_HELPER(bIsHlslcc);
-	GET_SECTION_BOOL_HELPER(bSupportsDxc);
-	GET_SECTION_BOOL_HELPER(bSupportsVariableRateShading);
-	GET_SECTION_BOOL_HELPER(bIsSPIRV);
-	GET_SECTION_INT_HELPER(NumberOfComputeThreads);
-
-	GET_SECTION_BOOL_HELPER(bWaterUsesSimpleForwardShading);
-	GET_SECTION_BOOL_HELPER(bSupportsHairStrandGeometry);
-	GET_SECTION_BOOL_HELPER(bSupportsDOFHybridScattering);
-	GET_SECTION_BOOL_HELPER(bNeedsExtraMobileFrames);
-	GET_SECTION_BOOL_HELPER(bSupportsHZBOcclusion);
-	GET_SECTION_BOOL_HELPER(bSupportsWaterIndirectDraw);
-	GET_SECTION_BOOL_HELPER(bSupportsAsyncPipelineCompilation);
-	GET_SECTION_BOOL_HELPER(bSupportsManualVertexFetch);
-	GET_SECTION_BOOL_HELPER(bRequiresReverseCullingOnMobile);
-	GET_SECTION_BOOL_HELPER(bOverrideFMaterial_NeedsGBufferEnabled);
-	GET_SECTION_BOOL_HELPER(bSupportsMobileDistanceField);
-	GET_SECTION_BOOL_HELPER(bSupportsFFTBloom);
-	GET_SECTION_BOOL_HELPER(bSupportsVertexShaderLayer);
-	GET_SECTION_BOOL_HELPER(bSupportsBindless);
-	GET_SECTION_BOOL_HELPER(bSupportsVolumeTextureAtomics);
-	GET_SECTION_BOOL_HELPER(bSupportsROV);
-	GET_SECTION_BOOL_HELPER(bSupportsOIT);
-	GET_SECTION_SUPPORT_HELPER(bSupportsRealTypes);
-	GET_SECTION_INT_HELPER(EnablesHLSL2021ByDefault);
-	GET_SECTION_BOOL_HELPER(bSupportsSceneDataCompressedTransforms);
-	GET_SECTION_BOOL_HELPER(bSupportsSwapchainUAVs);
-#undef GET_SECTION_BOOL_HELPER
-#undef GET_SECTION_INT_HELPER
-#undef GET_SECTION_SUPPORT_HELPER
-#undef ADD_TO_PROPERTIES_STRING
-
-	Info.ShaderPropertiesHash = GetTypeHash(ShaderPropertiesString);
-#if WITH_EDITOR
-	FTextStringHelper::ReadFromBuffer(*GetSectionString(Section, FName("FriendlyName")), Info.FriendlyName);
-#endif
-}
-
-void FGenericDataDrivenShaderPlatformInfo::Initialize()
-{
-	static bool bInitialized = false;
-	if (bInitialized)
-	{
-		return;
-	}
-
-	// look for the standard DataDriven ini files
-	int32 NumDDInfoFiles = FDataDrivenPlatformInfoRegistry::GetNumDataDrivenIniFiles();
-	int32 CustomShaderPlatform = EShaderPlatform::SP_CUSTOM_PLATFORM_FIRST;
-
-	struct PlatformInfoAndPlatformEnum
-	{
-		FGenericDataDrivenShaderPlatformInfo Info;
-		EShaderPlatform ShaderPlatform;
-	};
-
-	for (int32 Index = 0; Index < NumDDInfoFiles; Index++)
-	{
-		FConfigFile IniFile;
-		FString PlatformName;
-
-		FDataDrivenPlatformInfoRegistry::LoadDataDrivenIniFile(Index, IniFile, PlatformName);
-
-		// now walk over the file, looking for ShaderPlatformInfo sections
-		for (auto Section : IniFile)
-		{
-			if (Section.Key.StartsWith(TEXT("ShaderPlatform ")))
-			{
-				const FString& SectionName = Section.Key;
-
-				EShaderPlatform ShaderPlatform;
-				// get enum value for the string name
-				LexFromString(ShaderPlatform, *SectionName.Mid(15));
-				if (ShaderPlatform == EShaderPlatform::SP_NumPlatforms)
-				{
-#if DDPI_HAS_EXTENDED_PLATFORMINFO_DATA
-					const bool bIsEnabled = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName).bEnabledForUse;
-#else
-					const bool bIsEnabled = true;
-#endif
-					UE_CLOG(bIsEnabled, LogRHI, Warning, TEXT("Found an unknown shader platform %s in a DataDriven ini file"), *SectionName.Mid(15));
-					continue;
-				}
-				
-				// at this point, we can start pulling information out
-				Infos[ShaderPlatform].Name = *SectionName.Mid(15);
-				ParseDataDrivenShaderInfo(Section.Value, Infos[ShaderPlatform]);	
-				Infos[ShaderPlatform].bContainsValidPlatformInfo = true;
-
-#if WITH_EDITOR
-				for (const FPreviewPlatformMenuItem& Item : FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems())
-				{
-					FName PreviewPlatformName = *(Infos[ShaderPlatform].Name).ToString();
-					if (Item.ShaderPlatformToPreview == PreviewPlatformName)
-					{
-						EShaderPlatform PreviewShaderPlatform = EShaderPlatform(CustomShaderPlatform++);
-						ParseDataDrivenShaderInfo(Section.Value, Infos[PreviewShaderPlatform]);
-						if (!Item.OptionalFriendlyNameOverride.IsEmpty())
-						{
-							Infos[PreviewShaderPlatform].FriendlyName = Item.OptionalFriendlyNameOverride;
-						}
-						Infos[PreviewShaderPlatform].Name = Item.PreviewShaderPlatformName;
-						Infos[PreviewShaderPlatform].PreviewShaderPlatformParent = ShaderPlatform;
-						Infos[PreviewShaderPlatform].bIsPreviewPlatform = true;
-						Infos[PreviewShaderPlatform].bContainsValidPlatformInfo = true;
-					}
-				}
-#endif
-			}
-		}
-	}
-	bInitialized = true;
-}
-
-void FGenericDataDrivenShaderPlatformInfo::UpdatePreviewPlatforms()
-{
-	for (int i = 0; i < EShaderPlatform::SP_NumPlatforms; ++i)
-	{
-		EShaderPlatform ShaderPlatform = EShaderPlatform(i);
-		if (IsValid(ShaderPlatform))
-		{
-			ERHIFeatureLevel::Type PreviewSPMaxFeatureLevel = Infos[ShaderPlatform].MaxFeatureLevel;
-			EShaderPlatform EditorSPForPreviewMaxFeatureLevel = GShaderPlatformForFeatureLevel[PreviewSPMaxFeatureLevel];
-			if (Infos[ShaderPlatform].bIsPreviewPlatform && EditorSPForPreviewMaxFeatureLevel < EShaderPlatform::SP_NumPlatforms)
-			{
-				Infos[ShaderPlatform].ShaderFormat = Infos[EditorSPForPreviewMaxFeatureLevel].ShaderFormat;
-				Infos[ShaderPlatform].Language = Infos[EditorSPForPreviewMaxFeatureLevel].Language;
-				Infos[ShaderPlatform].bIsHlslcc = Infos[EditorSPForPreviewMaxFeatureLevel].bIsHlslcc;
-				Infos[ShaderPlatform].bSupportsDxc = Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsDxc;
-				Infos[ShaderPlatform].bSupportsGPUScene &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsGPUScene;
-				Infos[ShaderPlatform].bIsPC = true;
-				Infos[ShaderPlatform].bIsConsole = false;
-				Infos[ShaderPlatform].bSupportsSceneDataCompressedTransforms = Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsSceneDataCompressedTransforms;
-				Infos[ShaderPlatform].bSupportsNanite &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsNanite;
-				Infos[ShaderPlatform].bSupportsLumenGI &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsLumenGI;
-				Infos[ShaderPlatform].bSupportsUInt64ImageAtomics &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsUInt64ImageAtomics;
-				Infos[ShaderPlatform].bSupportsGen5TemporalAA &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsGen5TemporalAA;
-				Infos[ShaderPlatform].bSupportsMobileMultiView &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsMobileMultiView;
-				Infos[ShaderPlatform].bSupportsInstancedStereo &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsInstancedStereo;
-				Infos[ShaderPlatform].bSupportsManualVertexFetch &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsManualVertexFetch;
-				Infos[ShaderPlatform].bSupportsRenderTargetWriteMask = false;
-				Infos[ShaderPlatform].bSupportsIntrinsicWaveOnce = false;
-				Infos[ShaderPlatform].bSupportsDOFHybridScattering = false;
-				Infos[ShaderPlatform].bSupports4ComponentUAVReadWrite = false;
-				Infos[ShaderPlatform].bContainsValidPlatformInfo = true;
-			}
-		}
-	}
-}
-
-#if WITH_EDITOR
-FText FGenericDataDrivenShaderPlatformInfo::GetFriendlyName(const FStaticShaderPlatform Platform)
-{
-	if (IsRunningCommandlet() || GUsingNullRHI)
-	{
-		return FText();
-	}
-	check(IsValid(Platform));
-	return Infos[Platform].FriendlyName;
-}
-#endif
-
-const EShaderPlatform FGenericDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(const FName ShaderPlatformName)
-{
-	for (int32 i = 0; i < SP_NumPlatforms; ++i)
-	{
-		const EShaderPlatform Platform = static_cast<EShaderPlatform>(i);
-		if (!Infos[Platform].bContainsValidPlatformInfo)
-		{
-			continue;
-		}
-
-		if (Infos[Platform].Name == ShaderPlatformName)
-		{
-			return Platform;
-		}
-	}
-	return SP_NumPlatforms;
-}
-
 //
 //	MSAA sample offsets.
 //
@@ -2847,7 +2016,7 @@ void RHIInitDefaultPixelFormatCapabilities()
 			if (IsBlockCompressedFormat(PixelFormat))
 			{
 				// Block compressed formats should have limited capabilities
-				EnumAddFlags(Info.Capabilities, EPixelFormatCapabilities::AnyTexture | EPixelFormatCapabilities::TextureMipmaps | EPixelFormatCapabilities::TextureLoad | EPixelFormatCapabilities::TextureSample | EPixelFormatCapabilities::TextureGather);
+				EnumAddFlags(Info.Capabilities, EPixelFormatCapabilities::AnyTexture | EPixelFormatCapabilities::TextureMipmaps | EPixelFormatCapabilities::TextureLoad | EPixelFormatCapabilities::TextureSample | EPixelFormatCapabilities::TextureGather | EPixelFormatCapabilities::TextureFilterable);
 			}
 			else
 			{
@@ -3118,12 +2287,50 @@ void FDebugName::AppendString(FStringBuilderBase& Builder) const
 	}
 }
 
-RHI_API void RHISetCurrentNumDrawCallPtr(FRHIDrawCallsStatPtr InNumDrawCallsRHIPtr)
+namespace UE::RHI
 {
-	GCurrentNumDrawCallsRHIPtr = InNumDrawCallsRHIPtr;
-}
 
-RHI_API void RHIIncCurrentNumDrawCallPtr(uint32 GPUIndex)
-{
-	FPlatformAtomics::InterlockedIncrement(&(*GCurrentNumDrawCallsRHIPtr)[GPUIndex]);
-}
+	RHI_API void CopySharedMips(FRHICommandList& RHICmdList, FRHITexture* SrcTexture, FRHITexture* DstTexture)
+	{
+		FRHITextureDesc const& Desc = DstTexture->GetNumMips() < SrcTexture->GetNumMips()
+			? DstTexture->GetDesc()
+			: SrcTexture->GetDesc();
+
+		FRHICopyTextureInfo CopyInfo;
+		CopyInfo.Size.X         = Desc.Extent.X;
+		CopyInfo.Size.Y         = Desc.Extent.Y;
+		CopyInfo.Size.Z         = Desc.Depth;
+		CopyInfo.NumSlices      = Desc.ArraySize;
+		CopyInfo.NumMips        = Desc.NumMips;
+		CopyInfo.SourceMipIndex = SrcTexture->GetNumMips() - CopyInfo.NumMips;
+		CopyInfo.DestMipIndex   = DstTexture->GetNumMips() - CopyInfo.NumMips;
+
+		RHICmdList.CopyTexture(SrcTexture, DstTexture, CopyInfo);
+	}
+
+	RHI_API void CopySharedMips_AssumeSRVMaskState(FRHICommandList& RHICmdList, FRHITexture* SrcTexture, FRHITexture* DstTexture)
+	{
+		// Transition to copy source and dest
+		{
+			FRHITransitionInfo TransitionsBefore[] =
+			{
+				FRHITransitionInfo(SrcTexture, ERHIAccess::SRVMask, ERHIAccess::CopySrc),
+				FRHITransitionInfo(DstTexture, ERHIAccess::SRVMask, ERHIAccess::CopyDest)
+			};
+			RHICmdList.Transition(MakeArrayView(TransitionsBefore, UE_ARRAY_COUNT(TransitionsBefore)));
+		}
+
+		CopySharedMips(RHICmdList, SrcTexture, DstTexture);
+
+		// Transition to SRV
+		{
+			FRHITransitionInfo TransitionsAfter[] =
+			{
+				FRHITransitionInfo(SrcTexture, ERHIAccess::CopySrc, ERHIAccess::SRVMask),
+				FRHITransitionInfo(DstTexture, ERHIAccess::CopyDest, ERHIAccess::SRVMask)
+			};
+			RHICmdList.Transition(MakeArrayView(TransitionsAfter, UE_ARRAY_COUNT(TransitionsAfter)));
+		}
+	}
+
+} //! UE::RHI

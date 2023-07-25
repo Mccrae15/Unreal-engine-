@@ -29,6 +29,7 @@ template< typename T > class TfRefPtr;
 using UsdStageRefPtr = TfRefPtr< UsdStage >;
 PXR_NAMESPACE_CLOSE_SCOPE
 
+class UUsdAssetCache2;
 class UDirectionalLightComponent;
 class ULightComponentBase;
 class UPointLightComponent;
@@ -54,28 +55,18 @@ struct FUsdStageInfo;
  */
 namespace UsdToUnreal
 {
-	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
-	USDUTILITIES_API bool ConvertLight( const pxr::UsdLuxLightAPI& LightAPI, ULightComponentBase& LightComponentBase, double TimeCode );
-	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
-	USDUTILITIES_API bool ConvertDistantLight( const pxr::UsdLuxDistantLight& DistantLight, UDirectionalLightComponent& LightComponent, double TimeCode );
-	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
-	USDUTILITIES_API bool ConvertRectLight( const FUsdStageInfo& StageInfo, const pxr::UsdLuxRectLight& RectLight, URectLightComponent& LightComponent, double TimeCode );
-	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
-	USDUTILITIES_API bool ConvertDiskLight( const FUsdStageInfo& StageInfo, const pxr::UsdLuxDiskLight& DiskLight, URectLightComponent& LightComponent, double TimeCode );
-	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
-	USDUTILITIES_API bool ConvertSphereLight( const FUsdStageInfo& StageInfo, const pxr::UsdLuxSphereLight& SphereLight, UPointLightComponent& LightComponent, double TimeCode );
-	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
-	USDUTILITIES_API bool ConvertDomeLight( const FUsdStageInfo& StageInfo, const pxr::UsdLuxDomeLight& DomeLight, USkyLightComponent& LightComponent, UUsdAssetCache* TexturesCache, double TimeCode );
-	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
-	USDUTILITIES_API bool ConvertLuxShapingAPI( const FUsdStageInfo& StageInfo, const pxr::UsdLuxShapingAPI& ShapingAPI, USpotLightComponent& LightComponent, double TimeCode );
-
 	USDUTILITIES_API bool ConvertLight( const pxr::UsdPrim& Prim, ULightComponentBase& LightComponent, double UsdTimeCode = UsdUtils::GetDefaultTimeCode() );
 	USDUTILITIES_API bool ConvertDistantLight( const pxr::UsdPrim& Prim, UDirectionalLightComponent& LightComponent, double UsdTimeCode = UsdUtils::GetDefaultTimeCode() );
 	USDUTILITIES_API bool ConvertRectLight( const pxr::UsdPrim& Prim, URectLightComponent& LightComponent, double UsdTimeCode = UsdUtils::GetDefaultTimeCode() );
 	USDUTILITIES_API bool ConvertDiskLight( const pxr::UsdPrim& Prim, URectLightComponent& LightComponent, double UsdTimeCode = UsdUtils::GetDefaultTimeCode() );
 	USDUTILITIES_API bool ConvertSphereLight( const pxr::UsdPrim& Prim, UPointLightComponent& LightComponent, double UsdTimeCode = UsdUtils::GetDefaultTimeCode() );
-	USDUTILITIES_API bool ConvertDomeLight( const pxr::UsdPrim& Prim, USkyLightComponent& LightComponent, UUsdAssetCache* TexturesCache );
+	USDUTILITIES_API bool ConvertDomeLight( const pxr::UsdPrim& Prim, USkyLightComponent& LightComponent, UUsdAssetCache2* TexturesCache );
 	USDUTILITIES_API bool ConvertLuxShapingAPI( const pxr::UsdPrim& Prim, USpotLightComponent& LightComponent, double UsdTimeCode = UsdUtils::GetDefaultTimeCode() );
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.2, "Use the other overload that receives an UUsdAssetCache2 object instead")
+	USDUTILITIES_API bool ConvertDomeLight( const pxr::UsdPrim& Prim, USkyLightComponent& LightComponent, UUsdAssetCache* TexturesCache );
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// These are separately exposed so that they can be reused when reading data into MovieScene tracks.
 	// The other attribute conversions are mostly trivial like a single call to UsdToUnreal::ConvertDistance.

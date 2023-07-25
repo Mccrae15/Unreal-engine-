@@ -8,7 +8,6 @@
 #include "MuT/ErrorLogPrivate.h"
 
 #include "MuR/Operations.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuT/NodeObjectPrivate.h"
 
 
@@ -67,10 +66,8 @@ namespace mu
     public:
 
         //! Detailed optimization options
-        MODEL_OPTIMIZATION_OPTIONS m_optimisationOptions;
+        FModelOptimizationOptions m_optimisationOptions;
 
-        bool m_enablePartialOptimise = false;
-		bool m_enableConcurrency = false;
         bool m_ignoreStates = false;
         CompilerOptions::TextureLayoutStrategy m_textureLayoutStrategy = CompilerOptions::TextureLayoutStrategy::Pack;
 
@@ -125,7 +122,7 @@ namespace mu
     {
         OBJECT_STATE nodeState;
         Ptr<ASTOp> root;
-        PROGRAM::STATE state;
+        FProgram::FState state;
         STATE_OPTIMIZATION_OPTIONS optimisationFlags;
 
         //! List of instructions that need to be cached to efficiently update this state

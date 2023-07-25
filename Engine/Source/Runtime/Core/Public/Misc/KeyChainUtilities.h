@@ -2,6 +2,8 @@
 
 #pragma once
 
+// HEADER_UNIT_UNSUPPORTED - Includes JsonSerializer.h which is not in Core module
+
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
 #include "Misc/AES.h"
@@ -152,7 +154,7 @@ namespace KeyChainUtilities
 		FArchive* File = IFileManager::Get().CreateFileReader(*InFilename);
 		checkf(File != nullptr, TEXT("Specified crypto keys cache '%s' does not exist!"), *InFilename);
 		TSharedPtr<FJsonObject> RootObject;
-		TSharedRef<TJsonReader<char>> Reader = TJsonReaderFactory<char>::Create(File);
+		TSharedRef<TJsonReader<UTF8CHAR>> Reader = TJsonReaderFactory<UTF8CHAR>::Create(File);
 		if (FJsonSerializer::Deserialize(Reader, RootObject))
 		{
 			const TSharedPtr<FJsonObject>* EncryptionKeyObject;
@@ -219,12 +221,6 @@ namespace KeyChainUtilities
 		{
 			if (Key.Key.IsValid())
 			{
-				// Deprecated version
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				FCoreDelegates::GetRegisterEncryptionKeyDelegate().ExecuteIfBound(Key.Key, Key.Value.Key);
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-				// New version
 				FCoreDelegates::GetRegisterEncryptionKeyMulticastDelegate().Broadcast(Key.Key, Key.Value.Key);
 			}
 		}

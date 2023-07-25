@@ -397,7 +397,7 @@ private:
 	bool bRevertUnchangedFilesOnly;
 };
 
-bool FSourceControlWindows::PromptForRevert( const TArray<FString>& InPackageNames )
+bool FSourceControlWindows::PromptForRevert( const TArray<FString>& InPackageNames, bool bInReloadWorld)
 {
 	bool bReverted = false;
 
@@ -440,7 +440,7 @@ bool FSourceControlWindows::PromptForRevert( const TArray<FString>& InPackageNam
 			
 			if (FinalPackagesToRevert.Num() > 0)
 			{
-				SourceControlHelpers::RevertAndReloadPackages(FinalPackagesToRevert);
+				SourceControlHelpers::RevertAndReloadPackages(FinalPackagesToRevert, /*bRevertAll=*/false, /*bReloadWorld=*/bInReloadWorld);
 
 				bReverted = true;
 			}
@@ -448,6 +448,11 @@ bool FSourceControlWindows::PromptForRevert( const TArray<FString>& InPackageNam
 	}
 
 	return bReverted;
+}
+
+bool FSourceControlWindows::RevertAllChangesAndReloadWorld()
+{	
+	return SourceControlHelpers::RevertAllChangesAndReloadWorld();
 }
 
 #undef LOCTEXT_NAMESPACE

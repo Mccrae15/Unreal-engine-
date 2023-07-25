@@ -10,6 +10,7 @@ public class VulkanRHI : ModuleRules
 
 	public VulkanRHI(ReadOnlyTargetRules Target) : base(Target)
 	{
+		IWYUSupport = IWYUSupport.None;
 		bLegalToDistributeObjectCode = true;
 
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
@@ -64,6 +65,16 @@ public class VulkanRHI : ModuleRules
 					"Launch"
 				}
 			);
+
+			// for Swappy
+			PublicDefinitions.Add("USE_ANDROID_SWAPPY=1");
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+				"Launch",
+				"GoogleGameSDK"
+				}
+			);
 		}
 
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) || Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
@@ -71,7 +82,8 @@ public class VulkanRHI : ModuleRules
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 		}
 
-		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) || Target.Platform == UnrealTargetPlatform.Android || Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
+		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) || Target.Platform == UnrealTargetPlatform.Android
+			|| Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) || Target.Platform == UnrealTargetPlatform.Mac)
 		{
             AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");
         }
@@ -80,29 +92,6 @@ public class VulkanRHI : ModuleRules
 		{
 			PrivateDependencyModuleNames.Add("ApplicationCore");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "SDL2");
-		}
-        else if (Target.Platform == UnrealTargetPlatform.Mac)
-        {
-			string VulkanSDKPath = Environment.GetEnvironmentVariable("VULKAN_SDK");
-
-			bool bHaveVulkan = false;
-			if (!String.IsNullOrEmpty(VulkanSDKPath))
-			{
-				bHaveVulkan = true;
-				PrivateIncludePaths.Add(VulkanSDKPath + "/Include");
-			}
-
-			if (bHaveVulkan)
-			{
-				if (Target.Configuration != UnrealTargetConfiguration.Shipping)
-				{
-					PrivateIncludePathModuleNames.Add("TaskGraph");
-				}
-			}
-			else
-			{
-				PrecompileForTargets = PrecompileTargetsType.None;
-			}
 		}
 		else
 		{

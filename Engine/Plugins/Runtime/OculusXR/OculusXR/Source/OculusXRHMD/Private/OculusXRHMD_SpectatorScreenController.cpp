@@ -4,6 +4,7 @@
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 #include "OculusXRHMD.h"
+#include "TextureResource.h"
 #include "Engine/TextureRenderTarget2D.h"
 
 namespace OculusXRHMD

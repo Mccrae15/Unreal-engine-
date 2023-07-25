@@ -5,12 +5,14 @@
 #include "NiagaraSystem.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraScript.h"
+#include "NiagaraValidationRuleSet.h"
 #include "Engine/DeveloperSettings.h"
 #include "NiagaraSpawnShortcut.h"
 #include "NiagaraEditorSettings.generated.h"
 
 class UCurveFloat;
 enum class EScriptSource : uint8;
+class UClass;
 
 namespace FNiagaraEditorGuids
 {
@@ -263,6 +265,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	FSoftObjectPath RequiredSystemUpdateScript;
 
+	/** Validation rules applied to all Niagara systems. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara)
+	TArray<TSoftObjectPtr<UNiagaraValidationRuleSet>> DefaultValidationRuleSets;
+
 	/** Shortcut key bindings that if held down while doing a mouse click, will spawn the specified type of Niagara node.*/
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	TArray<FNiagaraSpawnShortcut> GraphCreationShortcuts;
@@ -378,9 +384,14 @@ public:
 	/** Returns whether or not the supplied niagara type definition can be used in the current editor context. */
 	bool IsAllowedTypeDefinition(const FNiagaraTypeDefinition& InTypeDefinition) const;
 
+	FAssetRegistryTag CreateClassUsageAssetRegistryTag(const UObject* SourceObject) const;
+
+	bool IsAllowedAssetByClassUsage(const FAssetData& InAssetData) const;
+
 private:
 	void SetupNamespaceMetadata();
 	void BuildCachedPlaybackSpeeds() const;
+	bool ShouldTrackClassUsage(const UClass* InClass) const;
 protected:
 	FOnNiagaraEditorSettingsChanged SettingsChangedDelegate;
 private:
@@ -468,6 +479,8 @@ private:
 
 	FOnIsClassAllowed OnIsClassAllowedDelegate;
 	FOnIsClassPathAllowed OnIsClassPathAllowedDelegate;
+
+	TArray<UClass*> TrackedUsageBaseClasses;
 
 public:
 	bool IsShowInstructionsCount() const;

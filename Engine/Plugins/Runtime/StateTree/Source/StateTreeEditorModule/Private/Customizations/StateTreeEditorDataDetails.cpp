@@ -1,21 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeEditorDataDetails.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Brushes/SlateRoundedBoxBrush.h"
 #include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
 #include "DetailLayoutBuilder.h"
-#include "DetailCategoryBuilder.h"
 #include "PropertyCustomizationHelpers.h"
 #include "StateTreeEditorData.h"
-#include "StateTreeViewModel.h"
-#include "StateTree.h"
-#include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "IPropertyUtilities.h"
 #include "PropertyBagDetails.h"
 #include "StateTreeEditorStyle.h"
+#include "StateTreeSchema.h"
 #include "Styling/StyleColors.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
@@ -101,7 +100,7 @@ void FStateTreeEditorDataDetails::CustomizeDetails(IDetailLayoutBuilder& DetailB
 					[
 						SNew(SBorder)
 						.Padding(FMargin(6, 1))
-						.BorderImage(new FSlateRoundedBoxBrush(FStyleColors::Hover, 6))
+						.BorderImage(new FSlateRoundedBoxBrush(FStyleColors::Hover, 6.f))
 						[
 							SNew(STextBlock)
 							.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Node.Operand")
@@ -139,7 +138,7 @@ void FStateTreeEditorDataDetails::CustomizeDetails(IDetailLayoutBuilder& DetailB
 	ParametersCategory.SetSortOrder(2);
 	{
 		// Show parameters as a category.
-		IPropertyUtilities* PropUtils = &DetailBuilder.GetPropertyUtilities().Get();
+		TSharedPtr<IPropertyUtilities> PropUtils = DetailBuilder.GetPropertyUtilities();
 		TSharedPtr<IPropertyHandle> RootParametersProperty = DetailBuilder.GetProperty(TEXT("RootParameters")); // FStateTreeStateParameters
 		check(RootParametersProperty);
 		RootParametersProperty->MarkHiddenByCustomization();
@@ -172,6 +171,12 @@ void FStateTreeEditorDataDetails::CustomizeDetails(IDetailLayoutBuilder& DetailB
 	{
 		DetailBuilder.EditCategory(EvalCategoryName).SetCategoryVisibility(false);
 	}
+
+	// Global Tasks category
+	TSharedPtr<IPropertyHandle> GlobalTasksProperty = DetailBuilder.GetProperty(TEXT("GlobalTasks"));
+	check(GlobalTasksProperty.IsValid());
+	const FName GlobalTasksCategoryName(TEXT("GlobalTasks"));
+	MakeArrayCategory(DetailBuilder, GlobalTasksCategoryName, LOCTEXT("EditorDataDetailsGlobalTasks", "Global Tasks"), /*SortOrder*/4, GlobalTasksProperty);
 
 	// Refresh the UI when the Schema changes.	
 	TSharedPtr<IPropertyHandle> SchemaProperty = DetailBuilder.GetProperty(TEXT("Schema"));

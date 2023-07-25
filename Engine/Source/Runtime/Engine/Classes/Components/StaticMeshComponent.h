@@ -11,7 +11,9 @@
 #include "Engine/TextureStreamingTypes.h"
 #include "Components/MeshComponent.h"
 #include "PackedNormal.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RawIndexBuffer.h"
+#endif
 #include "Templates/UniquePtr.h"
 #include "Runtime/Launch/Resources/Version.h"
 #include "UObject/RenderingObjectVersion.h"
@@ -31,6 +33,7 @@ struct FConvexVolume;
 struct FEngineShowFlags;
 struct FNavigableGeometryExport;
 struct FNavigationRelevantData;
+struct FStaticMeshComponentLODInfo;
 struct FStaticLightingPrimitiveInfo;
 
 /** Whether FStaticMeshSceneProxy should to store data and enable codepaths needed for debug rendering */
@@ -81,95 +84,6 @@ struct FPaintedVertex
 		return Ar;
 	}
 	
-};
-
-struct FPreCulledStaticMeshSection
-{
-	/** Range of vertices and indices used when rendering this section. */
-	uint32 FirstIndex;
-	uint32 NumTriangles;
-};
-
-USTRUCT()
-struct FStaticMeshComponentLODInfo
-{
-	GENERATED_USTRUCT_BODY()
-
-	/** Uniquely identifies this LOD's built map data. */
-	FGuid MapBuildDataId;
-
-	/** Used during deserialization to temporarily store legacy lightmap data. */
-	FMeshMapBuildData* LegacyMapBuildData;
-
-	/** 
-	 * Transient override lightmap data, used by landscape grass.
-	 * Be sure to add your component to UMapBuildDataRegistry::CleanupTransientOverrideMapBuildData() for proper cleanup
-	 * so that you don't get stale rendering resource references if the underlying MapBuildData is gone (lighting scenario changes, new static lighting build, etc.)
-	 */
-	TUniquePtr<FMeshMapBuildData> OverrideMapBuildData;
-
-	/** Vertex data cached at the time this LOD was painted, if any */
-	TArray<struct FPaintedVertex> PaintedVertices;
-
-	/** Vertex colors to use for this mesh LOD */
-	FColorVertexBuffer* OverrideVertexColors;
-
-	/** Information for each section about what range of PreCulledIndexBuffer to use.  If no preculled index data is available, PreCulledSections will be empty. */
-	TArray<FPreCulledStaticMeshSection> PreCulledSections;
-
-	FRawStaticIndexBuffer PreCulledIndexBuffer;
-
-	/** 
-	 * Owner of this FStaticMeshComponentLODInfo 
-	 * Warning, can be NULL for a component created via SpawnActor off of a blueprint default (LODData will be created without a call to SetLODDataCount).
-	 */
-	class UStaticMeshComponent* OwningComponent;
-
-	/** Default constructor */
-	FStaticMeshComponentLODInfo();
-	FStaticMeshComponentLODInfo(UStaticMeshComponent* InOwningComponent);
-	/** Destructor */
-	~FStaticMeshComponentLODInfo();
-
-	/** Delete existing resources */
-	void CleanUp();
-
-	/** 
-	 * Ensure this LODInfo has a valid MapBuildDataId GUID.
-	 * @param LodIndex Index of the LOD this LODInfo represents.
-	 * @return true if a new GUID was created, false otherwise.
-	 */
-	ENGINE_API bool CreateMapBuildDataId(int32 LodIndex);
-
-	/**
-	* Enqueues a rendering command to release the vertex colors.
-	* The game thread must block until the rendering thread has processed the command before deleting OverrideVertexColors.
-	*/
-	ENGINE_API void BeginReleaseOverrideVertexColors();
-
-	ENGINE_API void ReleaseOverrideVertexColorsAndBlock();
-
-	void ReleaseResources();
-
-	/** Methods for importing and exporting the painted vertex array to text */
-	void ExportText(FString& ValueStr);
-	void ImportText(const TCHAR** SourceText);
-
-	/** Serializer. */
-	friend FArchive& operator<<(FArchive& Ar,FStaticMeshComponentLODInfo& I);
-
-private:
-	/** Purposely hidden */
-	FStaticMeshComponentLODInfo &operator=( const FStaticMeshComponentLODInfo &rhs ) { check(0); return *this; }
-};
-
-template<>
-struct TStructOpsTypeTraits<FStaticMeshComponentLODInfo> : public TStructOpsTypeTraitsBase2<FStaticMeshComponentLODInfo>
-{
-	enum
-	{
-		WithCopy = false
-	};
 };
 
 /**
@@ -227,8 +141,13 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Rendering, meta=(editcondition = "bOverrideWireframeColor"))
 	FColor WireframeColorOverride;
 
+	/** Forces this component to use fallback mesh for rendering if Nanite is enabled on the mesh. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = Rendering)
 	uint8 bDisallowNanite : 1;
+
+	/** Forces this component to use fallback mesh for rendering if Nanite is enabled on the mesh (run-time override) */
+	UPROPERTY()
+	uint8 bForceDisableNanite : 1;
 
 	/** 
 	 * Whether to evaluate World Position Offset. 
@@ -477,6 +396,10 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Rendering|Lighting")
 	void SetReverseCulling(bool ReverseCulling);
+
+	/** Force disabling of Nanite rendering. When true, Will swap to the the fallback mesh instead. */
+	UFUNCTION(BlueprintCallable, Category="Rendering")
+	void SetForceDisableNanite(bool bInForceDisableNanite);
 
 	virtual void SetCollisionProfileName(FName InCollisionProfileName, bool bUpdateOverlaps=true) override;
 
@@ -744,10 +667,7 @@ public:
 private:
 	/** Initializes the resources used by the static mesh component. */
 	void InitResources();
-
-	/** Precache all PSOs which can be used by the static mesh component */
-	virtual void PrecachePSOs() override;
-
+		
 #if WITH_EDITOR
 	/** Update the vertex override colors */
 	void PrivateFixupOverrideColors();
@@ -760,15 +680,18 @@ private:
 #endif
 protected:
 
+	/** Collect all the PSO precache data used by the static mesh component */
+	virtual void CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams) override;
+
 	/** Whether the component type supports static lighting. */
 	virtual bool SupportsStaticLighting() const override
 	{
 		return true;
 	}
 
-	bool ShouldCreateNaniteProxy() const;	
-
 public:
+
+	bool ShouldCreateNaniteProxy() const;
 
 	void ReleaseResources();
 

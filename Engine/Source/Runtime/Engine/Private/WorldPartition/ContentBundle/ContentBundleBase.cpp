@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "WorldPartition/ContentBundle/ContentBundleBase.h"
 
-#include "WorldPartition/WorldPartition.h"
+#include "UObject/Class.h"
 #include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
 #include "WorldPartition/ContentBundle/ContentBundleClient.h"
 #include "WorldPartition/ContentBundle/ContentBundleLog.h"
 #include "WorldPartition/ContentBundle/ContentBundlePaths.h"
-#include "Engine/World.h"
+#include "WorldPartition/ContentBundle/ContentBundleStatus.h"
 
 FContentBundleBase::FContentBundleBase(TSharedPtr<FContentBundleClient>& InClient, UWorld* InWorld)
 	: Client(InClient)
@@ -22,6 +22,8 @@ FContentBundleBase::~FContentBundleBase()
 
 void FContentBundleBase::Initialize()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FContentBundleBase::Initialize);
+
 	check(GetStatus() == EContentBundleStatus::Unknown);
 
 	DoInitialize();
@@ -31,6 +33,8 @@ void FContentBundleBase::Initialize()
 
 void FContentBundleBase::Uninitialize()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FContentBundleBase::Uninitialize);
+
 	check(GetStatus() != EContentBundleStatus::Unknown);
 
 	if (GetStatus() == EContentBundleStatus::ReadyToInject || GetStatus() == EContentBundleStatus::ContentInjected)
@@ -45,6 +49,8 @@ void FContentBundleBase::Uninitialize()
 
 void FContentBundleBase::InjectContent()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FContentBundleBase::InjectContent);
+
 	check(GetStatus() == EContentBundleStatus::Registered);
 
 	DoInjectContent();
@@ -59,6 +65,8 @@ void FContentBundleBase::InjectContent()
 
 void FContentBundleBase::RemoveContent()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FContentBundleBase::RemoveContent);
+
 	check(GetStatus() == EContentBundleStatus::ReadyToInject || GetStatus() == EContentBundleStatus::ContentInjected || GetStatus() == EContentBundleStatus::FailedToInject);
 
 	if (GetStatus() == EContentBundleStatus::ContentInjected || GetStatus() == EContentBundleStatus::ReadyToInject)
@@ -86,7 +94,12 @@ const UContentBundleDescriptor* FContentBundleBase::GetDescriptor() const
 
 FString FContentBundleBase::GetExternalStreamingObjectPackageName() const
 {
-	return ContentBundlePaths::GetCookedContentBundleLevelFolder(*this) + ContentBundlePaths::GetGeneratedFolderName() + TEXT("/StreamingObject");
+	return TEXT("StreamingObject_") + GetDescriptor()->GetGuid().ToString(EGuidFormats::Base36Encoded);
+}
+
+FString FContentBundleBase::GetExternalStreamingObjectPackagePath() const
+{
+	return ContentBundlePaths::GetCookedContentBundleLevelFolder(*this) + ContentBundlePaths::GetGeneratedFolderName() + TEXT("/") + GetExternalStreamingObjectPackageName();
 }
 
 FString FContentBundleBase::GetExternalStreamingObjectName() const
@@ -104,6 +117,11 @@ const FString& FContentBundleBase::GetDisplayName() const
 	return GetDescriptor()->GetDisplayName();
 }
 
+const FColor& FContentBundleBase::GetDebugColor() const
+{
+	return GetDescriptor()->GetDebugColor();
+}
+
 void FContentBundleBase::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject(Descriptor);
@@ -113,6 +131,7 @@ void FContentBundleBase::SetStatus(EContentBundleStatus NewStatus)
 {
 	check(NewStatus != Status);
 
-	UE_LOG(LogContentBundle, Log, TEXT("[CB: %s] State changing from %s to %s"), *GetDescriptor()->GetDisplayName(), *UEnum::GetDisplayValueAsText(Status).ToString(), *UEnum::GetDisplayValueAsText(NewStatus).ToString());
+	UE_LOG(LogContentBundle, Log, TEXT("%s State changing from %s to %s"), 
+		*ContentBundle::Log::MakeDebugInfoString(*this), *UEnum::GetDisplayValueAsText(Status).ToString(), *UEnum::GetDisplayValueAsText(NewStatus).ToString());
 	Status = NewStatus;
 }

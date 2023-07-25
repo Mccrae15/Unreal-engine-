@@ -2,43 +2,19 @@
 
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceModifier.h"
 
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/Set.h"
-#include "Containers/StringConv.h"
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
-#include "HAL/PlatformCrt.h"
-#include "Internationalization/Internationalization.h"
-#include "Math/MathFwd.h"
-#include "Math/Matrix.h"
-#include "Math/Transform.h"
-#include "Math/Vector.h"
-#include "Misc/AssertionMacros.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
-#include "MuCOE/GenerateMutableSource/GenerateMutableSource.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceMesh.h"
 #include "MuCOE/GraphTraversal.h"
 #include "MuCOE/MutableUtils.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshClipDeform.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshClipMorph.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshClipWithMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeStaticMesh.h"
 #include "MuR/Mesh.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
-#include "MuT/Node.h"
 #include "MuT/NodeMeshTransform.h"
 #include "MuT/NodeModifierMeshClipDeform.h"
 #include "MuT/NodeModifierMeshClipMorphPlane.h"
-#include "MuT/NodeModifierMeshClipWithMesh.h"
-#include "Templates/Casts.h"
-#include "UObject/NameTypes.h"
-#include "UObject/ObjectPtr.h"
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
 
@@ -61,6 +37,14 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 	mu::NodeModifierPtr Result;
 
 	bool bDoNotAddToGeneratedCache = false; // TODO Remove on MTBL-829 
+
+	
+	// We don't need all the data for the modifiers meshes
+	const EMutableMeshConversionFlags ModifiersMeshFlags = 
+			EMutableMeshConversionFlags::IgnoreSkinning |
+			EMutableMeshConversionFlags::IgnorePhysics;
+
+	GenerationContext.MeshGenerationFlags.Push(ModifiersMeshFlags);
 
 	if (const UCustomizableObjectNodeMeshClipMorph* TypedNodeClip = Cast<UCustomizableObjectNodeMeshClipMorph>(Node))
 	{
@@ -132,6 +116,7 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeClipMesh->ClipMeshPin()))
 		{
 			FMutableGraphMeshGenerationData DummyMeshData;
+
 			mu::NodeMeshPtr ClipMesh = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData);
 
 			FPinDataValue* PinData = GenerationContext.PinData.Find(ConnectedPin);
@@ -153,7 +138,8 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 
 				if (!bClosed)
 				{
-					GenerationContext.Compiler->CompilerLog(LOCTEXT("Clipping mesh", "Clipping mesh not closed (i.e., it does not enclose a volume)."), MeshData.Node, EMessageSeverity::Warning);
+					FText ErrorMsg = FText::Format(LOCTEXT("Clipping mesh", "Clipping mesh [{0}] not closed (i.e., it does not enclose a volume)."), FText::FromName(MeshData.Mesh->GetFName()));
+					GenerationContext.Compiler->CompilerLog(ErrorMsg, MeshData.Node, EMessageSeverity::Warning);
 				}
 			}
 
@@ -205,12 +191,15 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 		GenerationContext.Compiler->CompilerLog(LOCTEXT("UnimplementedNode", "Node type not implemented yet."), Node);
 	}
 
+	GenerationContext.MeshGenerationFlags.Pop();
+
 	if (!bDoNotAddToGeneratedCache)
 	{
 		GenerationContext.Generated.Add(Key, FGeneratedData(Node, Result));
 	}
 	GenerationContext.GeneratedNodes.Add(Node);
 	
+
 	return Result;
 }
 

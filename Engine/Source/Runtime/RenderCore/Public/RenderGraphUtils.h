@@ -118,15 +118,6 @@ inline bool IsRegistered(FRDGBuilder& GraphBuilder, const TRefCountPtr<FRDGPoole
 	return GraphBuilder.FindExternalBuffer(Buffer) != nullptr;
 }
 
-/** Returns the pooled render target from an RDG texture if it exists, or null otherwise. */
-UE_DEPRECATED(5.0, "Accessing the underlying pooled render target has been deprecated. Use TryGetRHI() instead.")
-inline IPooledRenderTarget* TryGetPooledRenderTarget(FRDGTextureRef Texture)
-{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return Texture ? Texture->GetPooledRenderTarget() : nullptr;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
 inline FRenderTargetBindingSlots GetRenderTargetBindings(ERenderTargetLoadAction ColorLoadAction, TArrayView<FRDGTextureRef> ColorTextures)
 {
 	check(ColorTextures.Num() <= MaxSimultaneousRenderTargets);
@@ -233,8 +224,8 @@ void ClearUnusedGraphResources(
 	TPassParameterStruct* InoutParameters,
 	std::initializer_list<FRDGResourceRef> ExcludeList = {})
 {
-	static_assert(TIsSame<typename TShaderClassA::FParameters, TPassParameterStruct>::Value, "First shader FParameter type must match pass parameters.");
-	static_assert(TIsSame<typename TShaderClassB::FParameters, TPassParameterStruct>::Value, "Second shader FParameter type must match pass parameters.");
+	static_assert(std::is_same_v<typename TShaderClassA::FParameters, TPassParameterStruct>, "First shader FParameter type must match pass parameters.");
+	static_assert(std::is_same_v<typename TShaderClassB::FParameters, TPassParameterStruct>, "Second shader FParameter type must match pass parameters.");
 	const FShaderParametersMetadata* ParametersMetadata = TPassParameterStruct::FTypeInfo::GetStructMetadata();
 
 	// Verify the shader have all the parameters it needs. This is done before the
@@ -490,7 +481,7 @@ struct RENDERCORE_API FComputeShaderUtils
 
 	/** Dispatch a compute shader to render graph builder with its parameters. */
 	template<typename TShaderClass>
-	static void AddPass(
+	static FRDGPassRef AddPass(
 		FRDGBuilder& GraphBuilder,
 		FRDGEventName&& PassName,
 		ERDGPassFlags PassFlags,
@@ -506,7 +497,7 @@ struct RENDERCORE_API FComputeShaderUtils
 		ValidateGroupCount(GroupCount);
 		ClearUnusedGraphResources(ComputeShader, ParametersMetadata, Parameters);
 
-		GraphBuilder.AddPass(
+		return GraphBuilder.AddPass(
 			Forward<FRDGEventName>(PassName),
 			ParametersMetadata,
 			Parameters,
@@ -521,7 +512,7 @@ struct RENDERCORE_API FComputeShaderUtils
 	 *  This allows adding a dispatch with unknown GroupCount but the value must be ready before the pass is executed.
 	 */
 	template<typename TShaderClass>
-	static void AddPass(
+	static FRDGPassRef AddPass(
 		FRDGBuilder& GraphBuilder,
 		FRDGEventName&& PassName,
 		ERDGPassFlags PassFlags,
@@ -536,7 +527,7 @@ struct RENDERCORE_API FComputeShaderUtils
 
 		ClearUnusedGraphResources(ComputeShader, ParametersMetadata, Parameters);
 
-		GraphBuilder.AddPass(
+		return GraphBuilder.AddPass(
 			Forward<FRDGEventName>(PassName),
 			ParametersMetadata,
 			Parameters,
@@ -553,7 +544,7 @@ struct RENDERCORE_API FComputeShaderUtils
 	}
 
 	template<typename TShaderClass>
-	static void AddPass(
+	static FRDGPassRef AddPass(
 		FRDGBuilder& GraphBuilder,
 		FRDGEventName&& PassName,
 		ERDGPassFlags PassFlags,
@@ -562,11 +553,11 @@ struct RENDERCORE_API FComputeShaderUtils
 		FIntVector GroupCount)
 	{
 		const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
-		AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), PassFlags, ComputeShader, ParametersMetadata, Parameters, GroupCount);
+		return AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), PassFlags, ComputeShader, ParametersMetadata, Parameters, GroupCount);
 	}
 
 	template <typename TShaderClass>
-	static FORCEINLINE void AddPass(
+	static FORCEINLINE FRDGPassRef AddPass(
 		FRDGBuilder& GraphBuilder,
 		FRDGEventName&& PassName,
 		const TShaderRef<TShaderClass>& ComputeShader,
@@ -574,11 +565,11 @@ struct RENDERCORE_API FComputeShaderUtils
 		FIntVector GroupCount)
 	{
 		const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
-		AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, ParametersMetadata, Parameters, GroupCount);
+		return AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, ParametersMetadata, Parameters, GroupCount);
 	}
 
 	template <typename TShaderClass>
-	static FORCEINLINE void AddPass(
+	static FORCEINLINE FRDGPassRef AddPass(
 		FRDGBuilder& GraphBuilder,
 		FRDGEventName&& PassName,
 		const TShaderRef<TShaderClass>& ComputeShader,
@@ -586,12 +577,12 @@ struct RENDERCORE_API FComputeShaderUtils
 		FRDGDispatchGroupCountCallback&& GroupCountCallback)
 	{
 		const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
-		AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, ParametersMetadata, Parameters, MoveTemp(GroupCountCallback));
+		return AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, ParametersMetadata, Parameters, MoveTemp(GroupCountCallback));
 	}
 
 	/** Dispatch a compute shader to render graph builder with its parameters. */
 	template<typename TShaderClass>
-	static void AddPass(
+	static FRDGPassRef AddPass(
 		FRDGBuilder& GraphBuilder,
 		FRDGEventName&& PassName,
 		ERDGPassFlags PassFlags,
@@ -606,7 +597,7 @@ struct RENDERCORE_API FComputeShaderUtils
 		ValidateIndirectArgsBuffer(IndirectArgsBuffer, IndirectArgsOffset);
 		ClearUnusedGraphResources(ComputeShader, Parameters, { IndirectArgsBuffer });
 
-		GraphBuilder.AddPass(
+		return GraphBuilder.AddPass(
 			Forward<FRDGEventName>(PassName),
 			Parameters,
 			PassFlags,
@@ -621,7 +612,7 @@ struct RENDERCORE_API FComputeShaderUtils
 	}
 
 	template<typename TShaderClass>
-	static FORCEINLINE void AddPass(
+	static FORCEINLINE FRDGPassRef AddPass(
 		FRDGBuilder& GraphBuilder,
 		FRDGEventName&& PassName,
 		const TShaderRef<TShaderClass>& ComputeShader,
@@ -629,7 +620,7 @@ struct RENDERCORE_API FComputeShaderUtils
 		FRDGBufferRef IndirectArgsBuffer,
 		uint32 IndirectArgsOffset)
 	{
-		AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, Parameters, IndirectArgsBuffer, IndirectArgsOffset);
+		return AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, Parameters, IndirectArgsBuffer, IndirectArgsOffset);
 	}
 
 	static void ClearUAV(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGBufferUAVRef UAV, uint32 ClearValue);
@@ -644,14 +635,18 @@ struct RENDERCORE_API FComputeShaderUtils
 
 	static inline void ValidateIndirectArgsBuffer(uint32 IndirectArgsBufferSize, uint32 IndirectArgOffset)
 	{
+		constexpr uint32 IndirectArgsSize = sizeof(FRHIDispatchIndirectParametersNoPadding);
 		checkf((IndirectArgOffset % 4) == 0, TEXT("IndirectArgOffset for compute shader indirect dispatch needs to be a multiple of 4."));
 		checkf(
-			(IndirectArgOffset + sizeof(FRHIDispatchIndirectParameters)) <= IndirectArgsBufferSize,
-			TEXT("Indirect parameters buffer for compute shader indirect dispatch at byte offset %d doesn't have anought room for FRHIDispatchIndirectParameters."),
+			(IndirectArgOffset + IndirectArgsSize) <= IndirectArgsBufferSize,
+			TEXT("Indirect parameters buffer for compute shader indirect dispatch at byte offset %d doesn't have enough room for one element."),
 			IndirectArgOffset);
+#if PLATFORM_DISPATCH_INDIRECT_ARGUMENT_BOUNDARY_SIZE != 0
+			checkf(IndirectArgOffset / PLATFORM_DISPATCH_INDIRECT_ARGUMENT_BOUNDARY_SIZE == (IndirectArgOffset + IndirectArgsSize - 1) / PLATFORM_DISPATCH_INDIRECT_ARGUMENT_BOUNDARY_SIZE, TEXT("Compute indirect dispatch arguments cannot cross %d byte boundary."), PLATFORM_DISPATCH_INDIRECT_ARGUMENT_BOUNDARY_SIZE);
+#endif // #if PLATFORM_DISPATCH_INDIRECT_ARGUMENT_BOUNDARY_SIZE != 0
 	}
 
-	static inline void ValidateIndirectArgsBuffer(FRDGBufferRef IndirectArgsBuffer, uint32 IndirectArgOffset)
+	static inline void ValidateIndirectArgsBuffer(const FRDGBufferRef IndirectArgsBuffer, uint32 IndirectArgOffset)
 	{
 		checkf(EnumHasAnyFlags(IndirectArgsBuffer->Desc.Usage, EBufferUsageFlags::VertexBuffer), TEXT("The buffer %s needs to be a vertex buffer to be used as an indirect dispatch parameters"), IndirectArgsBuffer->Name);
 		checkf(EnumHasAnyFlags(IndirectArgsBuffer->Desc.Usage, EBufferUsageFlags::DrawIndirect), TEXT("The buffer %s for indirect dispatch parameters was not flagged with BUF_DrawIndirect"), IndirectArgsBuffer->Name);
@@ -838,17 +833,6 @@ RENDERCORE_API void AddEnqueueCopyPass(FRDGBuilder& GraphBuilder, FRHIGPUTexture
 /** Adds a pass to readback contents of an RDG buffer. */
 RENDERCORE_API void AddEnqueueCopyPass(FRDGBuilder& GraphBuilder, FRHIGPUBufferReadback* Readback, FRDGBufferRef SourceBuffer, uint32 NumBytes);
 
-UE_DEPRECATED(5.0, "Please use GraphBuilder.QueueBufferUpload to perform an upload.")
-inline void AddBufferUploadPass(
-	FRDGBuilder& GraphBuilder,
-	FRDGBufferRef Buffer,
-	const void* InitialData,
-	uint64 InitialDataSize,
-	ERDGInitialDataFlags InitialDataFlags = ERDGInitialDataFlags::None)
-{
-	GraphBuilder.QueueBufferUpload(Buffer, InitialData, InitialDataSize, InitialDataFlags);
-}
-
 /** Helper class to allocate data from a GraphBuilder in order to upload said data to an RDG resource.
 *   Allocating from the GraphBuilder makes it so we don't have to copy the data before deferring the upload.
 */
@@ -1026,13 +1010,6 @@ FORCEINLINE void AddPass(FRDGBuilder& GraphBuilder, FRDGEventName&& Name, Execut
 }
 
 template <typename ExecuteLambdaType>
-UE_DEPRECATED(5.0, "AddPass without an RDG_EVENT_NAME is deprecated. Use the named version instead.")
-FORCEINLINE void AddPass(FRDGBuilder& GraphBuilder, ExecuteLambdaType&& ExecuteLambda)
-{
-	AddPass(GraphBuilder, {}, MoveTemp(ExecuteLambda));
-}
-
-template <typename ExecuteLambdaType>
 FORCEINLINE void AddPassIfDebug(FRDGBuilder& GraphBuilder, FRDGEventName&& Name, ExecuteLambdaType&& ExecuteLambda)
 {
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -1040,86 +1017,11 @@ FORCEINLINE void AddPassIfDebug(FRDGBuilder& GraphBuilder, FRDGEventName&& Name,
 #endif
 }
 
-template <typename ExecuteLambdaType>
-UE_DEPRECATED(5.0, "AddPassIfDebug without an RDG_EVENT_NAME is deprecated. Use the named version instead.")
-FORCEINLINE void AddPassIfDebug(FRDGBuilder& GraphBuilder, ExecuteLambdaType&& ExecuteLambda)
-{
-	AddPassIfDebug(GraphBuilder, {}, MoveTemp(ExecuteLambda));
-}
-
-UE_DEPRECATED(5.0, "AddSetCurrentStatPass is deprecated. Use GraphBuilder.SetCommandListStat instead.")
-FORCEINLINE void AddSetCurrentStatPass(FRDGBuilder& GraphBuilder, TStatId StatId)
-{
-	GraphBuilder.SetCommandListStat(StatId);
-}
-
 FORCEINLINE void AddDispatchToRHIThreadPass(FRDGBuilder& GraphBuilder)
 {
 	AddPass(GraphBuilder, RDG_EVENT_NAME("DispatchToRHI"), [](FRHICommandListImmediate& RHICmdList)
 	{
 		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
-	});
-}
-
-UE_DEPRECATED(5.0, "AddBeginUAVOverlapPass is deprecated.")
-FORCEINLINE void AddBeginUAVOverlapPass(FRDGBuilder& GraphBuilder)
-{
-	AddPass(GraphBuilder, RDG_EVENT_NAME("BeginUAVOverlap"), [](FRHICommandList& RHICmdList)
-	{
-		RHICmdList.BeginUAVOverlap();
-	});
-}
-
-UE_DEPRECATED(5.0, "AddEndUAVOverlapPass is deprecated.")
-FORCEINLINE void AddEndUAVOverlapPass(FRDGBuilder& GraphBuilder)
-{
-	AddPass(GraphBuilder, RDG_EVENT_NAME("EndUAVOverlap"), [](FRHICommandList& RHICmdList)
-	{
-		RHICmdList.EndUAVOverlap();
-	});
-}
-
-UE_DEPRECATED(5.0, "AddBeginUAVOverlapPass is deprecated.")
-FORCEINLINE void AddBeginUAVOverlapPass(FRDGBuilder& GraphBuilder, FRHIUnorderedAccessView* UAV)
-{
-	AddPass(GraphBuilder, RDG_EVENT_NAME("BeginUAVOverlap"), [UAV](FRHICommandList& RHICmdList)
-	{
-		RHICmdList.BeginUAVOverlap(UAV);
-	});
-}
-
-UE_DEPRECATED(5.0, "AddEndUAVOverlapPass is deprecated.")
-FORCEINLINE void AddEndUAVOverlapPass(FRDGBuilder& GraphBuilder, FRHIUnorderedAccessView* UAV)
-{
-	AddPass(GraphBuilder, RDG_EVENT_NAME("EndUAVOverlap"), [UAV](FRHICommandList& RHICmdList)
-	{
-		RHICmdList.EndUAVOverlap(UAV);
-	});
-}
-
-UE_DEPRECATED(5.0, "AddBeginUAVOverlapPass is deprecated.")
-FORCEINLINE void AddBeginUAVOverlapPass(FRDGBuilder& GraphBuilder, TArrayView<FRHIUnorderedAccessView*> UAVs)
-{
-	uint32 AllocSize = UAVs.Num() * sizeof(FRHIUnorderedAccessView*);
-	FRHIUnorderedAccessView** LocalUAVs = (FRHIUnorderedAccessView**)GraphBuilder.Alloc(AllocSize, alignof(FRHIUnorderedAccessView*));
-	FMemory::Memcpy(LocalUAVs, UAVs.GetData(), AllocSize);
-	TArrayView<FRHIUnorderedAccessView*> LocalView(LocalUAVs, UAVs.Num());
-	AddPass(GraphBuilder, RDG_EVENT_NAME("BeginUAVOverlap"), [LocalView](FRHICommandList& RHICmdList)
-	{
-		RHICmdList.BeginUAVOverlap(LocalView);
-	});
-}
-
-UE_DEPRECATED(5.0, "AddEndUAVOverlapPass is deprecated.")
-FORCEINLINE void AddEndUAVOverlapPass(FRDGBuilder& GraphBuilder, TArrayView<FRHIUnorderedAccessView*> UAVs)
-{
-	uint32 AllocSize = UAVs.Num() * sizeof(FRHIUnorderedAccessView*);
-	FRHIUnorderedAccessView** LocalUAVs = (FRHIUnorderedAccessView**)GraphBuilder.Alloc(AllocSize, alignof(FRHIUnorderedAccessView*));
-	FMemory::Memcpy(LocalUAVs, UAVs.GetData(), AllocSize);
-	TArrayView<FRHIUnorderedAccessView*> LocalView(LocalUAVs, UAVs.Num());
-	AddPass(GraphBuilder, RDG_EVENT_NAME("EndUAVOverlap"), [LocalView](FRHICommandList& RHICmdList)
-	{
-		RHICmdList.EndUAVOverlap(LocalView);
 	});
 }
 
@@ -1148,7 +1050,7 @@ void AddReadbackBufferPass(FRDGBuilder& GraphBuilder, FRDGEventName&& Name, FRDG
 }
 
 /** Batches up RDG external resource access mode requests and submits them all at once to RDG. */
-class FRDGExternalAccessQueue
+class RENDERCORE_API FRDGExternalAccessQueue
 {
 public:
 	FRDGExternalAccessQueue() = default;
@@ -1191,14 +1093,7 @@ public:
 		Resources.Emplace(Resource, Access, Pipelines);
 	}
 
-	void Submit(FRDGBuilder& GraphBuilder)
-	{
-		for (FResource Resource : Resources)
-		{
-			GraphBuilder.UseExternalAccessMode(Resource.Resource, Resource.Access, Resource.Pipelines);
-		}
-		Resources.Empty();
-	}
+	void Submit(FRDGBuilder& GraphBuilder);
 
 	bool Contains(FRDGViewableResource* Resource)
 	{
@@ -1253,7 +1148,7 @@ private:
 
 		FRDGViewableResource* Resource;
 		ERHIAccess Access;
-		ERHIPipeline Pipelines;
+		ERHIPipeline Pipelines = ERHIPipeline::None;
 	};
 
 	TArray<FResource, FRDGArrayAllocator> Resources;
@@ -1389,56 +1284,6 @@ inline const TRefCountPtr<FRDGPooledBuffer>& ConvertToFinalizedExternalBuffer(
 	ERHIAccess AccessFinal)
 {
 	return ConvertToExternalAccessBuffer(GraphBuilder, Buffer, AccessFinal);
-}
-
-UE_DEPRECATED(5.0, "RegisterExternalTextureWithFallback no longer requires ERenderTargetTexture")
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-inline FRDGTextureRef RegisterExternalTextureWithFallback(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-	const TRefCountPtr<IPooledRenderTarget>& FallbackPooledTexture,
-	ERenderTargetTexture ExternalTexture,
-	ERenderTargetTexture FallbackTexture = ERenderTargetTexture::ShaderResource)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-{
-	return RegisterExternalTextureWithFallback(GraphBuilder, ExternalPooledTexture, FallbackPooledTexture);
-}
-
-UE_DEPRECATED(5.0, "TryRegisterExternalTexture no longer requires ERenderTargetTexture")
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-inline FRDGTextureRef TryRegisterExternalTexture(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-	ERenderTargetTexture RenderTargetTexture,
-	ERDGTextureFlags Flags = ERDGTextureFlags::None)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-{
-	return ExternalPooledTexture ? GraphBuilder.RegisterExternalTexture(ExternalPooledTexture, Flags) : nullptr;
-}
-
-UE_DEPRECATED(5.0, "RegisterExternalTextureMSAA with a single pooled render target is no longer supported.")
-inline FRDGTextureMSAA RegisterExternalTextureMSAA(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture)
-{
-	return FRDGTextureMSAA();
-}
-
-UE_DEPRECATED(5.0, "RegisterExternalTextureMSAA with a single pooled render target is no longer supported.")
-inline FRDGTextureMSAA TryRegisterExternalTextureMSAA(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture)
-{
-	return FRDGTextureMSAA();
-}
-
-UE_DEPRECATED(5.0, "RegisterExternalTextureMSAAWithFallback is no longer supported.")
-inline FRDGTextureMSAA RegisterExternalTextureMSAAWithFallback(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-	const TRefCountPtr<IPooledRenderTarget>& FallbackPooledTexture)
-{
-	return FRDGTextureMSAA();
 }
 
 //////////////////////////////////////////////////////////////////////////

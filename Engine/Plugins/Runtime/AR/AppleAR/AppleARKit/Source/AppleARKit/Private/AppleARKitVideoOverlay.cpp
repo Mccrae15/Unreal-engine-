@@ -5,6 +5,8 @@
 #include "AppleARKitSystem.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "MaterialDomain.h"
 #include "MaterialShaderType.h"
 #include "MaterialShader.h"
 #include "ExternalTexture.h"
@@ -14,6 +16,7 @@
 #include "MediaShaders.h"
 #include "PipelineStateCache.h"
 #include "RHIUtilities.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "RHIStaticStates.h"
 #include "EngineModule.h"
 #include "SceneUtils.h"
@@ -24,6 +27,7 @@
 #include "PostProcess/PostProcessMaterial.h"
 #include "CommonRenderResources.h"
 #include "ARUtilitiesFunctionLibrary.h"
+#include "UObject/Package.h"
 
 #if SUPPORTS_ARKIT_1_0
 	#include "IOSAppDelegate.h"

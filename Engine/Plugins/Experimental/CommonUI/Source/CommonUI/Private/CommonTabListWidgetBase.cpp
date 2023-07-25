@@ -1,16 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonTabListWidgetBase.h"
-#include "CommonUIPrivate.h"
 
-#include "Blueprint/WidgetLayoutLibrary.h"
 #include "CommonAnimatedSwitcher.h"
-#include "CommonUISubsystemBase.h"
-#include "CommonUIUtils.h"
-#include "Containers/Ticker.h"
 #include "Groups/CommonButtonGroupBase.h"
-#include "ICommonUIModule.h"
 #include "Input/CommonUIInputTypes.h"
+#include "CommonUITypes.h"
+#include "InputAction.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonTabListWidgetBase)
 
@@ -132,23 +128,26 @@ bool UCommonTabListWidgetBase::RegisterTab(FName TabNameID, TSubclassOf<UCommonB
 
 bool UCommonTabListWidgetBase::RemoveTab(FName TabNameID)
 {
-	FCommonRegisteredTabInfo* const TabInfo = RegisteredTabsByID.Find(TabNameID);
+	const FCommonRegisteredTabInfo* TabInfo = RegisteredTabsByID.Find(TabNameID);
+
 	if (!TabInfo)
 	{
 		return false;
 	}
 
-	UCommonButtonBase* const TabButton = TabInfo->TabButton;
-	if (TabButton)
+	if (TabInfo->TabIndex >= 0)
 	{
-		TabButtonGroup->RemoveWidget(TabButton);
-		TabButton->RemoveFromParent();
+		for (TPair<FName, FCommonRegisteredTabInfo>& RegisteredTabByID : RegisteredTabsByID)
+		{
+			if (RegisteredTabByID.Value.TabIndex > TabInfo->TabIndex)
+			{
+				// Decrement this tab's index as we have removed a tab before it.
+				RegisteredTabByID.Value.TabIndex--;
+			}
+		}
 	}
-	RegisteredTabsByID.Remove(TabNameID);
 
-	// Callbacks
-	HandleTabRemoval(TabNameID, TabButton);
-	OnTabButtonRemoval.Broadcast(TabNameID, TabButton);
+	RemoveTab_Internal(TabNameID, *TabInfo);
 
 	return true;
 }
@@ -157,7 +156,7 @@ void UCommonTabListWidgetBase::RemoveAllTabs()
 {
 	for (TMap<FName, FCommonRegisteredTabInfo>::TIterator Iter(RegisteredTabsByID); Iter; ++Iter)
 	{
-		RemoveTab(Iter->Key);
+		RemoveTab_Internal(Iter->Key, Iter->Value);
 	}
 }
 
@@ -193,8 +192,24 @@ void UCommonTabListWidgetBase::UpdateBindings()
 	// New input system binding flow
 	if (bIsListeningForInput)
 	{
-		NextTabActionHandle = RegisterUIActionBinding(FBindUIActionArgs(NextTabInputActionData, false, FSimpleDelegate::CreateUObject(this, &UCommonTabListWidgetBase::HandleNextTabAction)));
-		PrevTabActionHandle = RegisterUIActionBinding(FBindUIActionArgs(PreviousTabInputActionData, false, FSimpleDelegate::CreateUObject(this, &UCommonTabListWidgetBase::HandlePreviousTabAction)));
+		bool bIsEnhancedInputSupportEnabled = CommonUI::IsEnhancedInputSupportEnabled();
+		if (bIsEnhancedInputSupportEnabled && NextTabEnhancedInputAction)
+		{
+			NextTabActionHandle = RegisterUIActionBinding(FBindUIActionArgs(NextTabEnhancedInputAction, false, FSimpleDelegate::CreateUObject(this, &UCommonTabListWidgetBase::HandleNextTabAction)));
+		}
+		else
+		{
+			NextTabActionHandle = RegisterUIActionBinding(FBindUIActionArgs(NextTabInputActionData, false, FSimpleDelegate::CreateUObject(this, &UCommonTabListWidgetBase::HandleNextTabAction)));
+		}
+
+		if (bIsEnhancedInputSupportEnabled && PreviousTabEnhancedInputAction)
+		{
+			PrevTabActionHandle = RegisterUIActionBinding(FBindUIActionArgs(PreviousTabEnhancedInputAction, false, FSimpleDelegate::CreateUObject(this, &UCommonTabListWidgetBase::HandlePreviousTabAction)));
+		}
+		else
+		{
+			PrevTabActionHandle = RegisterUIActionBinding(FBindUIActionArgs(PreviousTabInputActionData, false, FSimpleDelegate::CreateUObject(this, &UCommonTabListWidgetBase::HandlePreviousTabAction)));
+		}
 	}
 	else
 	{
@@ -492,3 +507,19 @@ void UCommonTabListWidgetBase::RebuildTabList()
 	OnTabListRebuilt.Broadcast();
 }
 
+void UCommonTabListWidgetBase::RemoveTab_Internal(const FName TabNameID, const FCommonRegisteredTabInfo& TabInfo)
+{
+	UCommonButtonBase* const TabButton = TabInfo.TabButton;
+
+	if (TabButton)
+	{
+		TabButtonGroup->RemoveWidget(TabButton);
+		TabButton->RemoveFromParent();
+	}
+
+	RegisteredTabsByID.Remove(TabNameID);
+
+	// Callbacks
+	HandleTabRemoval(TabNameID, TabButton);
+	OnTabButtonRemoval.Broadcast(TabNameID, TabButton);
+}

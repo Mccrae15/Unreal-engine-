@@ -144,6 +144,7 @@ public:
 	virtual bool GetResolvedConnectString(FName SessionName, FString& ConnectInfo, FName PortType) override;
 	virtual bool GetResolvedConnectString(const FOnlineSessionSearchResult& SearchResult, FName PortType, FString& ConnectInfo) override;
 	virtual FOnlineSessionSettings* GetSessionSettings(FName SessionName) override;
+	virtual FString GetVoiceChatRoomName(int32 LocalUserNum, const FName& SessionName) override;
 	virtual bool RegisterPlayer(FName SessionName, const FUniqueNetId& PlayerId, bool bWasInvited) override;
 	virtual bool RegisterPlayers(FName SessionName, const TArray< FUniqueNetIdRef >& Players, bool bWasInvited = false) override;
 	virtual bool UnregisterPlayer(FName SessionName, const FUniqueNetId& PlayerId) override;
@@ -239,7 +240,7 @@ private:
 	EOS_NotificationId JoinLobbyAcceptedId;
 	FCallbackBase* JoinLobbyAcceptedCallback;
 
-	void OnLobbyUpdateReceived(const EOS_LobbyId& LobbyId);
+	void OnLobbyUpdateReceived(const EOS_LobbyId& LobbyId, const EOS_ProductUserId& LocalUserId);
 	void OnLobbyMemberUpdateReceived(const EOS_LobbyId& LobbyId, const EOS_ProductUserId& TargetUserId);
 	void OnMemberStatusReceived(const EOS_LobbyId& LobbyId, const EOS_ProductUserId& TargetUserId, EOS_ELobbyMemberStatus CurrentStatus);
 	void OnLobbyInviteAccepted(const char* InviteId, const EOS_ProductUserId& LocalUserId, const EOS_ProductUserId& TargetUserId);

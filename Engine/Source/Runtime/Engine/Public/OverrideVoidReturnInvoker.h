@@ -2,7 +2,10 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Not included directly
+
 #include "CoreTypes.h"
+#include <type_traits>
 
 /**
  * Wraps invocation of a function that can return a value or not. If it doesn't, the function call is wrapped into

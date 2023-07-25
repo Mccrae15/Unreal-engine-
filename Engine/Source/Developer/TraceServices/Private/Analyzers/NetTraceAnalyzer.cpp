@@ -607,7 +607,7 @@ void FNetTraceAnalyzer::HandleConnectionCreatedEvent(const FOnEventContext& Cont
 	const uint16 ConnectionId = EventData.GetValue<uint16>("ConnectionId");
 
 	TSharedRef<FNetTraceGameInstanceState> GameInstanceState = GetOrCreateActiveGameInstanceState(GameInstanceId);
-	check(!GameInstanceState->ActiveConnections.Contains(ConnectionId));
+	ensureAlwaysMsgf(!GameInstanceState->ActiveConnections.Contains(ConnectionId), TEXT("Got ConnectionCreatedEvent for already existing connection GameInstanceId: %u ConnectionId: %u"), GameInstanceId, ConnectionId);
 
 	// Add to both active connections and to persistent connections
  	FNetProfilerConnectionInternal& Connection = NetProfilerProvider.CreateConnection(GameInstanceState->GameInstanceIndex);
@@ -751,7 +751,7 @@ void FNetTraceAnalyzer::HandleConnectionClosedEvent(const FOnEventContext& Conte
 	else
 	{
 		// Incomplete trace?  Ignore?
-		check(false);
+		UE_LOG(LogNetTrace, Warning, TEXT("Connection %d is missing"), ConnectionId);
 	}
 }
 

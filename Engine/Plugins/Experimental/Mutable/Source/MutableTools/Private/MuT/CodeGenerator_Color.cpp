@@ -3,7 +3,6 @@
 #include "HAL/PlatformMath.h"
 #include "Misc/AssertionMacros.h"
 #include "MuR/Image.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/MutableMath.h"
 #include "MuR/MutableTrace.h"
 #include "MuR/Operations.h"
@@ -58,16 +57,16 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor(COLOR_GENERATION_RESULT& result, const NodeColourPtrConst& untyped)
+	void CodeGenerator::GenerateColor(FColorGenerationResult& result, const NodeColourPtrConst& untyped)
 	{
 		if (!untyped)
 		{
-			result = COLOR_GENERATION_RESULT();
+			result = FColorGenerationResult();
 			return;
 		}
 
 		// See if it was already generated
-		VISITED_MAP_KEY key = GetCurrentCacheKey(untyped);
+		FVisitedKeyMap key = GetCurrentCacheKey(untyped);
 		GeneratedColorsMap::ValueType* it = m_generatedColors.Find(key);
 		if (it)
 		{
@@ -119,7 +118,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor_Constant(COLOR_GENERATION_RESULT& result, const Ptr<const NodeColourConstant>& Typed)
+	void CodeGenerator::GenerateColor_Constant(FColorGenerationResult& result, const Ptr<const NodeColourConstant>& Typed)
 	{
 		const NodeColourConstant::Private& node = *Typed->GetPrivate();
 
@@ -128,13 +127,14 @@ namespace mu
 		op->op.args.ColourConstant.value[0] = node.m_value[0];
 		op->op.args.ColourConstant.value[1] = node.m_value[1];
 		op->op.args.ColourConstant.value[2] = node.m_value[2];
+		op->op.args.ColourConstant.value[3] = 1.0f;
 
 		result.op = op;
 	}
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor_Parameter(COLOR_GENERATION_RESULT& result, const Ptr<const NodeColourParameter>& Typed)
+	void CodeGenerator::GenerateColor_Parameter(FColorGenerationResult& result, const Ptr<const NodeColourParameter>& Typed)
 	{
 		const NodeColourParameter::Private& node = *Typed->GetPrivate();
 
@@ -144,7 +144,7 @@ namespace mu
 
 		if (it == m_nodeVariables.end())
 		{
-			PARAMETER_DESC param;
+			FParameterDesc param;
 			param.m_name = node.m_name;
 			param.m_uid = node.m_uid;
 			param.m_type = PARAMETER_TYPE::T_COLOUR;
@@ -159,7 +159,7 @@ namespace mu
 			// Generate the code for the ranges
 			for (int32 a = 0; a < node.m_ranges.Num(); ++a)
 			{
-				RANGE_GENERATION_RESULT rangeResult;
+				FRangeGenerationResult rangeResult;
 				GenerateRange(rangeResult, node.m_ranges[a]);
 				op->ranges.Emplace(op.get(), rangeResult.sizeOp, rangeResult.rangeName, rangeResult.rangeUID);
 			}
@@ -176,7 +176,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor_Switch(COLOR_GENERATION_RESULT& result, const Ptr<const NodeColourSwitch>& Typed)
+	void CodeGenerator::GenerateColor_Switch(FColorGenerationResult& result, const Ptr<const NodeColourSwitch>& Typed)
 	{
 		const NodeColourSwitch::Private& node = *Typed->GetPrivate();
 
@@ -227,7 +227,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor_Variation(COLOR_GENERATION_RESULT& result, const Ptr<const NodeColourVariation>& Typed)
+	void CodeGenerator::GenerateColor_Variation(FColorGenerationResult& result, const Ptr<const NodeColourVariation>& Typed)
 	{
 		const NodeColourVariation::Private& node = *Typed->GetPrivate();
 
@@ -294,7 +294,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor_SampleImage(COLOR_GENERATION_RESULT& result, const Ptr<const NodeColourSampleImage>& Typed)
+	void CodeGenerator::GenerateColor_SampleImage(FColorGenerationResult& result, const Ptr<const NodeColourSampleImage>& Typed)
 	{
 		const NodeColourSampleImage::Private& node = *Typed->GetPrivate();
 
@@ -366,7 +366,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor_FromScalars(COLOR_GENERATION_RESULT& result, const Ptr<const NodeColourFromScalars>& Typed)
+	void CodeGenerator::GenerateColor_FromScalars(FColorGenerationResult& result, const Ptr<const NodeColourFromScalars>& Typed)
 	{
 		const NodeColourFromScalars::Private& node = *Typed->GetPrivate();
 
@@ -426,7 +426,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor_Arithmetic(COLOR_GENERATION_RESULT& result, const Ptr<const NodeColourArithmeticOperation>& Typed)
+	void CodeGenerator::GenerateColor_Arithmetic(FColorGenerationResult& result, const Ptr<const NodeColourArithmeticOperation>& Typed)
 	{
 		const NodeColourArithmeticOperation::Private& node = *Typed->GetPrivate();
 
@@ -480,7 +480,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateColor_Table(COLOR_GENERATION_RESULT& result, const Ptr<const NodeColourTable>& Typed)
+	void CodeGenerator::GenerateColor_Table(FColorGenerationResult& result, const Ptr<const NodeColourTable>& Typed)
 	{
 		const NodeColourTable::Private& node = *Typed->GetPrivate();
 
@@ -507,7 +507,7 @@ namespace mu
 		NodeColourConstantPtr pNode = new NodeColourConstant();
 		pNode->SetValue(1, 1, 0);
 
-		COLOR_GENERATION_RESULT Result;
+		FColorGenerationResult Result;
 		GenerateColor(Result, pNode);
 
 		return Result.op;

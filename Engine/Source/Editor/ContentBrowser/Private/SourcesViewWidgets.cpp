@@ -56,8 +56,9 @@ void SAssetTreeItem::Construct( const FArguments& InArgs )
 	FolderClosedBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderClosed");
 	FolderOpenCodeBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderOpenCode");
 	FolderClosedCodeBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderClosedCode");
-	FolderDeveloperBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderDeveloper");
-	
+	FolderOpenDeveloperBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderOpenDeveloper");
+	FolderClosedDeveloperBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderClosedDeveloper");
+
 	FolderType = EFolderType::Normal;
 	if (ContentBrowserUtils::IsItemDeveloperContent(InArgs._TreeItem->GetItem()))
 	{
@@ -215,7 +216,7 @@ const FSlateBrush* SAssetTreeItem::GetFolderIcon() const
 		return ( IsItemExpanded.Get() ) ? FolderOpenCodeBrush : FolderClosedCodeBrush;
 
 	case EFolderType::Developer:
-		return FolderDeveloperBrush;
+		return (IsItemExpanded.Get()) ? FolderOpenDeveloperBrush : FolderClosedDeveloperBrush;
 
 	default:
 		return ( IsItemExpanded.Get() ) ? FolderOpenBrush : FolderClosedBrush;
@@ -240,9 +241,10 @@ FSlateColor SAssetTreeItem::GetFolderColor() const
 		}
 		else
 		{
-			if (TSharedPtr<FLinearColor> Color = ContentBrowserUtils::LoadColor(TreeItemPin->GetItem().GetInvariantPath().ToString()))
+			TOptional<FLinearColor> Color = ContentBrowserUtils::GetPathColor(TreeItemPin->GetItem().GetInvariantPath().ToString());
+			if (Color.IsSet())
 			{
-				FoundColor = *Color;
+				FoundColor = Color.GetValue();
 			}
 		}
 
@@ -495,10 +497,10 @@ FText SCollectionTreeItem::GetCollectionWarningText() const
 			return NSLOCTEXT("ContentBrowser", "CollectionStatus_IsCheckedOutByAnotherUser", "Collection is checked out by another user");
 
 		case ECollectionItemStatus::IsConflicted:
-			return NSLOCTEXT("ContentBrowser", "CollectionStatus_IsConflicted", "Collection is conflicted - please use your external source control provider to resolve this conflict");
+			return NSLOCTEXT("ContentBrowser", "CollectionStatus_IsConflicted", "Collection is conflicted - please use your external revision control provider to resolve this conflict");
 
 		case ECollectionItemStatus::IsMissingSCCProvider:
-			return NSLOCTEXT("ContentBrowser", "CollectionStatus_IsMissingSCCProvider", "Collection is missing its source control provider - please check your source control settings");
+			return NSLOCTEXT("ContentBrowser", "CollectionStatus_IsMissingSCCProvider", "Collection is missing its revision control provider - please check your revision control settings");
 
 		case ECollectionItemStatus::HasLocalChanges:
 			return NSLOCTEXT("ContentBrowser", "CollectionStatus_HasLocalChanges", "Collection has local unsaved or uncomitted changes");

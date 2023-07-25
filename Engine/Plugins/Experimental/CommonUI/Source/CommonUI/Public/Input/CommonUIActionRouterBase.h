@@ -2,15 +2,22 @@
 
 #pragma once
 
+#include "CommonInputModeTypes.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
-#include "CommonUIInputTypes.h"
-#include "CommonInputBaseTypes.h"
-#include "Misc/Passkey.h"
 #include "Containers/Ticker.h"
 
+#include "Engine/EngineBaseTypes.h"
+#include "Input/UIActionBindingHandle.h"
+#include "InputCoreTypes.h"
+#include "UObject/WeakObjectPtr.h"
 #include "CommonUIActionRouterBase.generated.h"
 
+class SWidget;
+struct FBindUIActionArgs;
+
 class AHUD;
+class FWeakWidgetPath;
+class FWidgetPath;
 class UCanvas;
 class UWidget;
 class UCommonUserWidget;
@@ -34,6 +41,7 @@ using FActivatableTreeNodeRef = TSharedRef<FActivatableTreeNode>;
 class FActivatableTreeRoot;
 using FActivatableTreeRootPtr = TSharedPtr<FActivatableTreeRoot>;
 using FActivatableTreeRootRef = TSharedRef<FActivatableTreeRoot>;
+struct FFocusEvent;
 
 enum class ERouteUIInputResult : uint8
 {
@@ -125,11 +133,15 @@ protected:
 	virtual void SetActiveRoot(FActivatableTreeRootPtr NewActiveRoot);
 	void SetForceResetActiveRoot(bool bInForceResetActiveRoot);
 
+	virtual void ApplyUIInputConfig(const FUIInputConfig& NewConfig, bool bForceRefresh);
 	void UpdateLeafNodeAndConfig(FActivatableTreeRootPtr DesiredRoot, FActivatableTreeNodePtr DesiredLeafNode);
 
 	void RefreshActionDomainLeafNodeConfig();
 
 	bool bIsActivatableTreeEnabled = true;
+
+	/** The currently applied UI input configuration */
+	TOptional<FUIInputConfig> ActiveInputConfig;
 
 	TSharedPtr<FCommonAnalogCursor> AnalogCursor;
 	FTSTicker::FDelegateHandle TickHandle;
@@ -146,8 +158,6 @@ private:
 	FActivatableTreeNodePtr FindOwningNode(const UWidget& Widget) const;
 	FActivatableTreeNodePtr FindNodeRecursive(const FActivatableTreeNodePtr& CurrentNode, const UCommonActivatableWidget& Widget) const;
 	FActivatableTreeNodePtr FindNodeRecursive(const FActivatableTreeNodePtr& CurrentNode, const TSharedPtr<SWidget>& Widget) const;
-
-	void ApplyUIInputConfig(const FUIInputConfig& NewConfig, bool bForceRefresh);
 	void SetActiveUICameraConfig(const FUICameraConfig& NewConfig);
 	
 	void HandleActivatableWidgetRebuilding(UCommonActivatableWidget& RebuildingWidget);
@@ -194,9 +204,6 @@ private:
 	// Note: Treat this as a TSharedRef - only reason it isn't is because TSharedRef doesn't play nice with forward declarations :(
 	TSharedPtr<class FPersistentActionCollection> PersistentActions;
 
-	/** The currently applied UI input configuration */
-	TOptional<FUIInputConfig> ActiveInputConfig;
-
 	bool bForceResetActiveRoot = false;
 
 	mutable FSimpleMulticastDelegate OnBoundActionsUpdatedEvent;
@@ -227,3 +234,9 @@ private:
 
 	TMap<TObjectPtr<UCommonInputActionDomain>, FActionDomainSortedRootList> ActionDomainRootNodes;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CommonInputBaseTypes.h"
+#include "CommonUIInputTypes.h"
+#include "Misc/Passkey.h"
+#endif

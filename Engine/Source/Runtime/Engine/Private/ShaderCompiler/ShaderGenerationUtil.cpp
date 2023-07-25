@@ -5,25 +5,20 @@
 =============================================================================*/
 
 #include "ShaderCompiler.h"
-#include "ShaderCore.h"
 
+#include "DataDrivenShaderPlatformInfo.h"
+#include "HAL/PlatformFile.h"
+#include "Interfaces/ITargetPlatform.h"
 #include "Misc/FileHelper.h"
-#include "Misc/CoreMisc.h"
-#include "Misc/ScopeLock.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "HAL/PlatformFileManager.h"
 #include "RenderUtils.h"
-#include "RHI.h"
 #include "SceneManagement.h"
-#include "Engine/EngineTypes.h"
 
-#include "GBufferInfo.h"
 
 #if WITH_EDITOR
-#include "Common/TargetPlatformBase.h"
 #endif
 
-#include "RHIDefinitions.h"
 
 #include "ShaderMaterial.h"
 
@@ -43,9 +38,6 @@ bool NeedsVelocityDepth(EShaderPlatform TargetPlatform)
 	return (DoesProjectSupportDistanceFields() && FDataDrivenShaderPlatformInfo::GetSupportsLumenGI(TargetPlatform))
 		|| FDataDrivenShaderPlatformInfo::GetSupportsRayTracing(TargetPlatform);
 }
-
-// Strata::IsEnabled is only accessible in the Renderer module
-bool Engine_IsStrataEnabled();
 
 #if WITH_EDITOR
 
@@ -92,7 +84,6 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderGlobalDefines& SrcDef
 	FETCH_COMPILE_BOOL(PROJECT_SUPPORT_SKY_ATMOSPHERE_AFFECTS_HEIGHFOG);
 	FETCH_COMPILE_BOOL(SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT);
 	FETCH_COMPILE_BOOL(SUPPORT_CLOUD_SHADOW_ON_SINGLE_LAYER_WATER);
-	FETCH_COMPILE_BOOL(PROJECT_MOBILE_USE_LEGACY_SHADING);
 	FETCH_COMPILE_BOOL(POST_PROCESS_ALPHA);
 	FETCH_COMPILE_BOOL(PLATFORM_SUPPORTS_RENDERTARGET_WRITE_MASK);
 	FETCH_COMPILE_BOOL(PLATFORM_SUPPORTS_PER_PIXEL_DBUFFER_MASK);
@@ -156,7 +147,7 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderMaterialPropertyDefin
 	FETCH_COMPILE_BOOL(MATERIAL_SHADINGMODEL_SINGLELAYERWATER);
 	FETCH_COMPILE_BOOL(MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT);
 
-	FETCH_COMPILE_BOOL(SINGLE_LAYER_WATER_DF_SHADOW_ENABLED);
+	FETCH_COMPILE_BOOL(SINGLE_LAYER_WATER_SEPARATED_MAIN_LIGHT);
 
 	FETCH_COMPILE_BOOL(MATERIAL_FULLY_ROUGH);
 
@@ -181,9 +172,11 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderMaterialPropertyDefin
 
 	FETCH_COMPILE_BOOL(REFRACTION_USE_INDEX_OF_REFRACTION);
 	FETCH_COMPILE_BOOL(REFRACTION_USE_PIXEL_NORMAL_OFFSET);
+	FETCH_COMPILE_BOOL(REFRACTION_USE_2D_OFFSET);
 
 	FETCH_COMPILE_BOOL(USE_DITHERED_LOD_TRANSITION_FROM_MATERIAL);
 	FETCH_COMPILE_BOOL(MATERIAL_TWOSIDED);
+	FETCH_COMPILE_BOOL(MATERIAL_ISTHINSURFACE);
 	FETCH_COMPILE_BOOL(MATERIAL_TANGENTSPACENORMAL);
 	FETCH_COMPILE_BOOL(GENERATE_SPHERICAL_PARTICLE_NORMALS);
 	FETCH_COMPILE_BOOL(MATERIAL_USE_PREINTEGRATED_GF);
@@ -266,7 +259,7 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderCompilerDefines& SrcD
 }
 
 // if we change the logic, increment this number to force a DDC key change
-static const int32 GBufferGeneratorVersion = 4;
+static const int32 GBufferGeneratorVersion = 5;
 
 static FShaderGlobalDefines FetchShaderGlobalDefines(EShaderPlatform TargetPlatform, EGBufferLayout GBufferLayout)
 {
@@ -371,11 +364,6 @@ static FShaderGlobalDefines FetchShaderGlobalDefines(EShaderPlatform TargetPlatf
 		static IConsoleVariable *CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Water.SingleLayerWater.SupportCloudShadow"));
 		const bool bSupportCloudShadowOnSingleLayerWater = CVar && CVar->GetInt() > 0;
 		Ret.SUPPORT_CLOUD_SHADOW_ON_SINGLE_LAYER_WATER = bSupportCloudShadowOnSingleLayerWater ? 1 : 0;
-	}
-
-	{
-		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.UseLegacyShadingModel"));
-		Ret.PROJECT_MOBILE_USE_LEGACY_SHADING = CVar ? (CVar->GetInt() != 0) : 0;
 	}
 
 	{
@@ -1058,8 +1046,7 @@ static FString CreateGBufferEncodeFunction(const FGBufferInfo& BufferInfo)
 						FString TargetName = FString::Printf(TEXT("MrtUint%d"), I);
 						int32 ChanBits = GetBufferNumBits(BufferInfo.Targets[I].TargetType, Chan);
 
-						// the 0.5 is to put it in the center of the int range, avoid roundoff error weirdness
-						CurrLine += FString::Printf(TEXT("(float(%s.%s) + .5f) / %u.0f"),
+						CurrLine += FString::Printf(TEXT("float(%s.%s) / %u.0f"),
 							TargetName.GetCharArray().GetData(),
 							Swizzles[Chan].GetCharArray().GetData(),
 							(1 << ChanBits) - 1);
@@ -1132,8 +1119,7 @@ static FString CreateGBufferDecodeFunctionDirect(const FGBufferInfo& BufferInfo)
 	// Default initialization in case no gbuffer data are generated when Strata is enabled to 
 	// prevent shader compiler error (division by zero, variable not-initialized) with passes 
 	// not converted to Strata and still using Gbuffer data
-	const bool bStrata = Engine_IsStrataEnabled();
-	if (bStrata)
+	if (Strata::IsStrataEnabled())
 	{
 		FullStr += TEXT("\tRet.WorldNormal = float3(0,0,1);\n");
 		FullStr += TEXT("\tRet.Depth = 0.f;\n");
@@ -1797,7 +1783,7 @@ static void DetermineUsedMaterialSlots(
 	{
 		// single layer water uses standard slots
 		SetStandardGBufferSlots(Slots, bWriteEmissive, bHasTangent, bHasVelocity, bHasStaticLighting, bIsStrataMaterial);
-		if (Mat.SINGLE_LAYER_WATER_DF_SHADOW_ENABLED)
+		if (Mat.SINGLE_LAYER_WATER_SEPARATED_MAIN_LIGHT)
 		{
 			Slots[GBS_SeparatedMainDirLight] = true;
 		}
@@ -2181,8 +2167,8 @@ FGBufferParams FShaderCompileUtilities::FetchGBufferParamsRuntime(EShaderPlatfor
 	static const auto CVarFormat = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GBufferFormat"));
 	Ret.LegacyFormatIndex = CVarFormat->GetValueOnAnyThread();
 
-	// This should match with SINGLE_LAYER_WATER_SEPARATED_DIR_LIGHT
-	Ret.bHasSingleLayerWaterSeparatedMainLight = IsWaterDistanceFieldShadowEnabled(Platform);
+	// This should match with SINGLE_LAYER_WATER_SEPARATED_MAIN_LIGHT
+	Ret.bHasSingleLayerWaterSeparatedMainLight = IsWaterDistanceFieldShadowEnabled(Platform) || IsWaterVirtualShadowMapFilteringEnabled(Platform);
 
 	return Ret;
 }

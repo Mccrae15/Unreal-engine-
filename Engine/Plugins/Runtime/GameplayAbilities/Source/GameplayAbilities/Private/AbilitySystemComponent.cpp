@@ -1014,7 +1014,7 @@ void UAbilitySystemComponent::ExecuteGameplayEffect(FGameplayEffectSpec &Spec, F
 	{
 		ABILITY_VLOG(GetOwnerActor(), Log, TEXT("Executed %s"), *Spec.Def->GetFName().ToString());
 		
-		for (FGameplayModifierInfo Modifier : Spec.Def->Modifiers)
+		for (const FGameplayModifierInfo& Modifier : Spec.Def->Modifiers)
 		{
 			float Magnitude = 0.f;
 			Modifier.ModifierMagnitude.AttemptCalculateMagnitude(Spec, Magnitude);
@@ -1758,6 +1758,18 @@ void UAbilitySystemComponent::PrintAllGameplayEffects() const
 bool UAbilitySystemComponent::IsOwnerActorAuthoritative() const
 {
 	return !bCachedIsNetSimulated;
+}
+
+bool UAbilitySystemComponent::ShouldRecordMontageReplication() const
+{
+	// Returns true IF the owner is authoritative OR the world is recording a replay.
+	if (IsOwnerActorAuthoritative())
+	{
+		return true;
+	}
+
+	const UWorld* World = GetWorld();
+	return World && World->IsRecordingReplay();
 }
 
 void UAbilitySystemComponent::OnAttributeAggregatorDirty(FAggregator* Aggregator, FGameplayAttribute Attribute, bool bFromRecursiveCall)

@@ -40,15 +40,6 @@
 #define ZERO_PRECSHADOW_MASK			(1 << 6)
 #define SKIP_VELOCITY_MASK				(1 << 7)
 
-// Hair reflectance component (R, TT, TRT, Local Scattering, Global Scattering, Multi Scattering,...)
-#define HAIR_COMPONENT_R			0x1u
-#define HAIR_COMPONENT_TT			0x2u
-#define HAIR_COMPONENT_TRT			0x4u
-#define HAIR_COMPONENT_LS			0x8u 
-#define HAIR_COMPONENT_GS			0x10u
-#define HAIR_COMPONENT_MULTISCATTER	0x20u
-#define HAIR_COMPONENT_TT_MODEL  	0x40u
-
 #define SSS_PROFILE_ID_INVALID  256
 #define SSS_PROFILE_ID_PERPIXEL 512
 
@@ -109,9 +100,14 @@ float F0ToDielectricSpecular(float F0)
 	return saturate(F0 / 0.08f);
 }
 
+float F0RGBToF0(float3 F0)
+{
+	return dot(0.3333333.xxx, F0);
+}
+
 float F0RGBToDielectricSpecular(float3 F0)
 {
-	return F0ToDielectricSpecular(max(F0.r, max(F0.g, F0.b)));
+	return F0ToDielectricSpecular(F0RGBToF0(F0));
 }
 
 half DielectricSpecularToF0(half Specular)
@@ -122,7 +118,12 @@ half DielectricSpecularToF0(half Specular)
 // [Burley, "Extending the Disney BRDF to a BSDF with Integrated Subsurface Scattering"]
 float DielectricF0ToIor(float F0)
 {
-	return 2.0f / (1.0f - sqrt(F0)) - 1.0f;
+	return 2.0f / (1.0f - sqrt(min(F0,0.99))) - 1.0f;
+}
+
+float DielectricF0RGBToIor(float3 F0)
+{
+	return DielectricF0ToIor(F0RGBToF0(F0));
 }
 
 float DielectricIorToF0(float Ior)
@@ -160,11 +161,6 @@ float3 ComputeDiffuseAlbedo(float3 BaseColor, float Metallic)
 float MakeRoughnessSafe(float Roughness, float MinRoughness=0.001f)
 {
 	return clamp(Roughness, MinRoughness, 1.0f);
-}
-
-float ComputeHazyLobeRoughness(float Roughness, float Haziness)
-{
-	return lerp(Roughness, 1.0f, Haziness);
 }
 
 float F0ToMetallic(float F0)

@@ -19,7 +19,7 @@ public class OpenVDB : ModuleRules
 
 		string DeploymentDirectory = Path.Combine(ModuleDirectory, "Deploy", "openvdb-8.1.0");
 
-		PublicIncludePaths.Add(Path.Combine(DeploymentDirectory, "include"));
+		PublicSystemIncludePaths.Add(Path.Combine(DeploymentDirectory, "include"));
 
 		PublicDefinitions.Add("OPENVDB_STATICLIB");
 		PublicDefinitions.Add("OPENVDB_OPENEXR_STATICLIB");
@@ -30,7 +30,7 @@ public class OpenVDB : ModuleRules
 			string LibDirectory = Path.Combine(
 				DeploymentDirectory,
 				"VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(),
-				Target.WindowsPlatform.GetArchitectureSubpath(),
+				Target.Architecture.WindowsName,
 				"lib");
 
 			PublicAdditionalLibraries.Add(Path.Combine(LibDirectory, "libopenvdb.lib"));
@@ -46,18 +46,10 @@ public class OpenVDB : ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			// TODO: OpenVDB requires Boost, which is not currently available
-			// for arm64, so both Boost and OpenVDB need to be built
-			// specifically for arm64 before we can support it here.
-			if (Target.Platform == UnrealTargetPlatform.LinuxArm64)
-			{
-				return;
-			}
-
 			string LibDirectory = Path.Combine(
 				DeploymentDirectory,
 				"Unix",
-				Target.Architecture,
+				Target.Architecture.LinuxName,
 				"lib");
 
 			PublicAdditionalLibraries.Add(Path.Combine(LibDirectory, "libopenvdb.a"));

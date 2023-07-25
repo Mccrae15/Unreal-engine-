@@ -7,6 +7,7 @@
 #include "MassNavigationUtils.h"
 #include "Avoidance/MassAvoidanceFragments.h"
 #include "MassCommonFragments.h"
+#include "MassExecutionContext.h"
 #include "MassSignalSubsystem.h"
 #include "ZoneGraphSubsystem.h"
 #include "ZoneGraphQuery.h"
@@ -55,9 +56,9 @@ void UMassZoneGraphLocationInitializer::ConfigureQueries()
 
 void UMassZoneGraphLocationInitializer::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this, World = EntityManager.GetWorld()](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 	{
-		const UZoneGraphSubsystem& ZoneGraphSubsystem = Context.GetSubsystemChecked<UZoneGraphSubsystem>(World);
+		const UZoneGraphSubsystem& ZoneGraphSubsystem = Context.GetSubsystemChecked<UZoneGraphSubsystem>();
 
 		const int32 NumEntities = Context.GetNumEntities();
 		const TArrayView<FMassZoneGraphLaneLocationFragment> LaneLocationList = Context.GetMutableFragmentView<FMassZoneGraphLaneLocationFragment>();
@@ -149,9 +150,9 @@ void UMassZoneGraphPathFollowProcessor::Execute(FMassEntityManager& EntityManage
 	TArray<FMassEntityHandle> EntitiesToSignalPathDone;
 	TArray<FMassEntityHandle> EntitiesToSignalLaneChanged;
 
-	EntityQuery_Conditional.ForEachEntityChunk(EntityManager, Context, [this, &EntitiesToSignalPathDone, &EntitiesToSignalLaneChanged, World = EntityManager.GetWorld()](FMassExecutionContext& Context)
+	EntityQuery_Conditional.ForEachEntityChunk(EntityManager, Context, [this, &EntitiesToSignalPathDone, &EntitiesToSignalLaneChanged](FMassExecutionContext& Context)
 	{
-		const UZoneGraphSubsystem& ZoneGraphSubsystem = Context.GetSubsystemChecked<UZoneGraphSubsystem>(World);
+		const UZoneGraphSubsystem& ZoneGraphSubsystem = Context.GetSubsystemChecked<UZoneGraphSubsystem>();
 
 		const int32 NumEntities = Context.GetNumEntities();
 		const TArrayView<FMassZoneGraphShortPathFragment> ShortPathList = Context.GetMutableFragmentView<FMassZoneGraphShortPathFragment>();
@@ -471,8 +472,8 @@ void UMassZoneGraphLaneCacheBoundaryProcessor::Execute(FMassEntityManager& Entit
 			const FMassEntityHandle Entity = Context.GetEntity(EntityIndex);
 
 			// First check if we moved enough for an update
-			const float DeltaDistSquared = FVector::DistSquared(MovementTarget.Center, LaneCacheBoundary.LastUpdatePosition);
-			const float UpdateDistanceThresholdSquared = FMath::Square(50.f);
+			const FVector::FReal DeltaDistSquared = FVector::DistSquared(MovementTarget.Center, LaneCacheBoundary.LastUpdatePosition);
+			const FVector::FReal UpdateDistanceThresholdSquared = FMath::Square(50.);
 
 #if WITH_MASSGAMEPLAY_DEBUG && 0
 			const FDebugContext ObstacleDebugContext(this, LogAvoidanceObstacles, World, Entity);

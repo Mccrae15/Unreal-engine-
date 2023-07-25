@@ -3,8 +3,10 @@
 #pragma once
 
 #include <dna/DataLayer.h>
-#include <dna/StreamReader.h>
-#include <dna/StreamWriter.h>
+#include <dna/BinaryStreamReader.h>
+#include <dna/BinaryStreamWriter.h>
+#include <dna/JSONStreamReader.h>
+#include <dna/JSONStreamWriter.h>
 #include <dna/types/Aliases.h>
 #include <dna/types/Vector3.h>
 #include <pma/MemoryResource.h>
@@ -26,9 +28,12 @@ using trio::FileStream;
 using trio::MemoryMappedFileStream;
 using trio::MemoryStream;
 using dna::DataLayer;
-using dna::StreamReader;
-using dna::StreamWriter;
+using dna::BinaryStreamReader;
+using dna::BinaryStreamWriter;
+using dna::JSONStreamReader;
+using dna::JSONStreamWriter;
 using dna::StringView;
+using dna::UnknownLayerPolicy;
 using dna::Vector3;
 
 template<typename T>

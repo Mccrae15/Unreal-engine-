@@ -5,49 +5,42 @@
 =============================================================================*/
 
 #include "Components/SkeletalMeshComponent.h"
-#include "Misc/App.h"
-#include "DrawDebugHelpers.h"
 #include "Animation/AnimStats.h"
-#include "AnimationRuntime.h"
-#include "Animation/AnimClassInterface.h"
-#include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimSingleNodeInstance.h"
 #include "Animation/AnimationSettings.h"
+#include "Animation/PoseSnapshot.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "AI/NavigationSystemHelpers.h"
-#include "PhysicsPublic.h"
+#include "Engine/SkinnedAsset.h"
 #include "PhysicsEngine/PhysicsSettings.h"
+#include "Misc/Fork.h"
 #include "Particles/ParticleSystemComponent.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimBlueprint.h"
+#include "RenderingThread.h"
 #include "SkeletalRender.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "SkinnedAssetCompiler.h"
 #include "Rendering/SkeletalMeshRenderData.h"
-#include "SkeletalDebugRendering.h"
 
 #include "Logging/MessageLog.h"
 #include "Animation/AnimNode_LinkedInputPose.h"
 
-#include "PhysXIncludes.h"
-#include "ClothingSimulationFactory.h"
+#include "ClothCollisionSource.h"
 #include "ClothingSimulationInterface.h"
 #include "ClothingSimulationInteractor.h"
 #include "Features/IModularFeatures.h"
 #include "Misc/RuntimeErrors.h"
-#include "UObject/AnimPhysObjectVersion.h"
-#include "SkeletalRenderPublic.h"
+#include "SkeletalMeshSceneProxy.h"
 #include "ContentStreaming.h"
 #include "Animation/AnimTrace.h"
 #include "Animation/BuiltInAttributeTypes.h"
-#include "HAL/LowLevelMemTracker.h"
-#include "HAL/LowLevelMemStats.h"
-#include "HAL/IConsoleManager.h"
+#include "Animation/AnimSubsystem_SharedLinkedAnimLayers.h"
+#include "UObject/Stack.h"
 #if WITH_EDITOR
-#include "Engine/PoseWatchRenderData.h"
 #include "Engine/PoseWatch.h"
 #endif
 
@@ -66,6 +59,11 @@ static TAutoConsoleVariable<float> CVarStallParallelAnimation(
 	TEXT("CriticalPathStall.ParallelAnimation"),
 	0.0f,
 	TEXT("Sleep for the given time in each parallel animation task. Time is given in ms. This is a debug option used for critical path analysis and forcing a change in the critical path."));
+
+static TAutoConsoleVariable<int32> CVarHiPriSkinnedMeshesTicks(
+	TEXT("tick.HiPriSkinnedMeshes"),
+	1,
+	TEXT("If > 0, then schedule the skinned component ticks in a tick group before other ticks."));
 
 // Deprecated. Please switch to ANIM_SKINNED_ASSET_ISPC_ENABLED_DEFAULT and "a.SkinnedAsset.ISPC", see SkinnedAsset.cpp.
 #if !defined(ANIM_SKELETAL_MESH_ISPC_ENABLED_DEFAULT)
@@ -359,10 +357,13 @@ void USkeletalMeshComponent::Serialize(FArchive& Ar)
 	}
 
 	Ar.UsingCustomVersion(FAnimPhysObjectVersion::GUID);
+
+#if WITH_EDITORONLY_DATA
 	if (Ar.IsLoading() && Ar.CustomVer(FAnimPhysObjectVersion::GUID) < FAnimPhysObjectVersion::RenameDisableAnimCurvesToAllowAnimCurveEvaluation)
 	{
 		bAllowAnimCurveEvaluation = !bDisableAnimCurves_DEPRECATED;
 	}
+#endif
 
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
@@ -377,17 +378,24 @@ void USkeletalMeshComponent::PostLoad()
 		bOverrideMinLod = true;
 	}
 
-#if WITH_EDITORONLY_DATA
+//#if WITH_EDITORONLY_DATA  // TODO: Re-add these guards once the MovieScene getters/setters are working, so that we can get rid of this redundant pointer in all cooked builds
 	// Update property alias
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	SkeletalMeshAsset = GetSkeletalMeshAsset();
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-#endif
+//#endif
 }
 
 void USkeletalMeshComponent::RegisterComponentTickFunctions(bool bRegister)
 {
 	Super::RegisterComponentTickFunctions(bRegister);
+	const bool bDoHiPri = CVarHiPriSkinnedMeshesTicks.GetValueOnGameThread() > 0;
+	if (PrimaryComponentTick.bHighPriority != bDoHiPri)
+	{
+		// Note that if animation is so long that we are blocked in EndPhysics we may want to reduce the priority. However, there is a risk that this function will not go wide early enough.
+		// This requires profiling and is very game dependent so cvar for now makes sense
+		PrimaryComponentTick.SetPriorityIncludingPrerequisites(bDoHiPri);
+	}
 
 	UpdateEndPhysicsTickRegisteredState();
 	UpdateClothTickRegisteredState();
@@ -402,6 +410,13 @@ void USkeletalMeshComponent::SetComponentTickEnabled(bool bEnabled)
 	{
 		RegisterClothTick(false);
 	}
+}
+
+void USkeletalMeshComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
+{
+	ClearAnimScriptInstance();
+
+	Super::OnComponentDestroyed(bDestroyingHierarchy);
 }
 
 void USkeletalMeshComponent::RegisterEndPhysicsTick(bool bRegister)
@@ -543,9 +558,9 @@ bool USkeletalMeshComponent::NeedToSpawnAnimScriptInstance() const
 		// Fall back to mesh skeleton (anim BP could have been a template)
 		AnimSkeleton = MeshAsset ? MeshAsset->GetSkeleton() : nullptr;
 	}
-	const bool bSkeletonCompatible = (MeshAsset && AnimSkeleton && MeshAsset->GetSkeleton()) ? MeshAsset->GetSkeleton()->IsCompatible(AnimSkeleton) : false;
+	const bool bSkeletonsExist = (MeshAsset && AnimSkeleton && MeshAsset->GetSkeleton());
 	const bool bSkelMeshCompatible = (MeshAsset && AnimSkeleton) ? AnimSkeleton->IsCompatibleMesh(MeshAsset, false) : false;
-	const bool bAnimSkelValid = !AnimClassInterface || (bSkeletonCompatible && bSkelMeshCompatible);
+	const bool bAnimSkelValid = !AnimClassInterface || (bSkeletonsExist && bSkelMeshCompatible);
 
 	if (AnimationMode == EAnimationMode::AnimationBlueprint && AnimClass && bAnimSkelValid)
 	{
@@ -570,8 +585,17 @@ bool USkeletalMeshComponent::NeedToSpawnPostPhysicsInstance(bool bForceReinit) c
 		const UClass* ClassToUse = *GetSkeletalMeshAsset()->GetPostProcessAnimBlueprint();
 		const UClass* CurrentClass = PostProcessAnimInstance ? PostProcessAnimInstance->GetClass() : nullptr;
 
+		const IAnimClassInterface* AnimClassInterface = IAnimClassInterface::GetFromClass(ClassToUse);
+		const USkeleton* AnimSkeleton = (AnimClassInterface) ? AnimClassInterface->GetTargetSkeleton() : nullptr;
+		if(AnimSkeleton == nullptr)
+		{
+			const USkeletalMesh* MeshAsset = GetSkeletalMeshAsset();
+			// Fall back to mesh skeleton (post-process anim BP could have been a template)
+			AnimSkeleton = MeshAsset ? MeshAsset->GetSkeleton() : nullptr;
+		}
+
 		// We need to have an instance, and we have the wrong class (different or null)
-		if(ClassToUse && (ClassToUse != CurrentClass || bForceReinit ) && MainInstanceClass != ClassToUse)
+		if(ClassToUse && (ClassToUse != CurrentClass || bForceReinit ) && MainInstanceClass != ClassToUse && AnimSkeleton)
 		{
 			return true;
 		}
@@ -781,11 +805,11 @@ void USkeletalMeshComponent::InitAnim(bool bForceReinit)
 
 		const bool bClearAnimInstance = AnimScriptInstance && !AnimSkeleton;
 		const bool bSkeletonMismatch = AnimSkeleton && (AnimScriptInstance->CurrentSkeleton!=GetSkeletalMeshAsset()->GetSkeleton());
-		const bool bSkeletonCompatible = AnimSkeleton && GetSkeletalMeshAsset()->GetSkeleton() && !bSkeletonMismatch && GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimSkeleton);
+		const bool bSkeletonsExist = AnimSkeleton && GetSkeletalMeshAsset()->GetSkeleton() && !bSkeletonMismatch;
 
 		LastPoseTickFrame = 0;
 
-		if (bBlueprintMismatch || bSkeletonMismatch || !bSkeletonCompatible || bClearAnimInstance)
+		if (bBlueprintMismatch || bSkeletonMismatch || !bSkeletonsExist || bClearAnimInstance)
 		{
 			ClearAnimScriptInstance();
 		}
@@ -930,7 +954,7 @@ bool USkeletalMeshComponent::InitializeAnimScriptInstance(bool bForceReinit, boo
 
 		// May need to clear out the post physics instance
 		UClass* NewMeshInstanceClass = *SkelMesh->GetPostProcessAnimBlueprint();
-		if(!NewMeshInstanceClass || NewMeshInstanceClass == *AnimClass)
+		if(!NewMeshInstanceClass || NewMeshInstanceClass == *AnimClass || (PostProcessAnimInstance && PostProcessAnimInstance->CurrentSkeleton != GetSkeletalMeshAsset()->GetSkeleton()) || !GetSkeletalMeshAsset()->GetSkeleton())
 		{
 			PostProcessAnimInstance = nullptr;
 		}
@@ -1122,14 +1146,14 @@ void USkeletalMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Prope
 
 		if ( PropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED( FSingleAnimationPlayData, AnimToPlay ))
 		{
-			// make sure the animation skeleton matches the current skeletalmesh
-			if (AnimationData.AnimToPlay && SkelMesh && SkelMesh->GetSkeleton() && SkelMesh->GetSkeleton()->IsCompatible(AnimationData.AnimToPlay->GetSkeleton()))
+			// make sure the animation skeleton is valid
+			if (AnimationData.AnimToPlay && AnimationData.AnimToPlay->GetSkeleton())
 			{
 				PlayAnimation(AnimationData.AnimToPlay, false);
 			}
 			else
 			{
-				UE_LOG(LogAnimation, Warning, TEXT("Invalid animation"));
+				UE_LOG(LogAnimation, Warning, TEXT("Invalid animation skeleton"));
 				AnimationData.AnimToPlay = nullptr;
 			}
 		}
@@ -1341,8 +1365,8 @@ bool USkeletalMeshComponent::ShouldUpdateTransform(bool bLODHasChanged) const
 		// if leader pose is ticking, follower also has to update it
 		if (LeaderPoseComponent.IsValid())
 		{
-			const USkeletalMeshComponent* Leader = CastChecked<USkeletalMeshComponent>(LeaderPoseComponent.Get());
-			if (Leader->GetUpdateAnimationInEditor())
+			const USkeletalMeshComponent* Leader = Cast<USkeletalMeshComponent>(LeaderPoseComponent.Get());
+			if (Leader && Leader->GetUpdateAnimationInEditor())
 			{
 				return true;
 			}
@@ -1500,11 +1524,6 @@ static TAutoConsoleVariable<int32> CVarAnimationDelaysEndGroup(
 	TEXT("tick.AnimationDelaysEndGroup"),
 	1,
 	TEXT("If > 0, then skeletal meshes that do not rely on physics simulation will set their animation end tick group to TG_PostPhysics."));
-static TAutoConsoleVariable<int32> CVarHiPriSkinnedMeshesTicks(
-	TEXT("tick.HiPriSkinnedMeshes"),
-	1,
-	TEXT("If > 0, then schedule the skinned component ticks in a tick group before other ticks."));
-
 
 void USkeletalMeshComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
@@ -1555,13 +1574,8 @@ void USkeletalMeshComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 	{
 		ThisTickFunction->EndTickGroup = EndTickGroup;
 
-		// Note that if animation is so long that we are blocked in EndPhysics we may want to reduce the priority. However, there is a risk that this function will not go wide early enough.
-		// This requires profiling and is very game dependent so cvar for now makes sense
-		bool bDoHiPri = CVarHiPriSkinnedMeshesTicks.GetValueOnGameThread() > 0;
-		if (ThisTickFunction->bHighPriority != bDoHiPri)
-		{
-			ThisTickFunction->SetPriorityIncludingPrerequisites(bDoHiPri);
-		}
+		const bool bDoHiPri = CVarHiPriSkinnedMeshesTicks.GetValueOnGameThread() > 0;
+		check(PrimaryComponentTick.bHighPriority == bDoHiPri)
 	}
 
 	// If we are waiting for ParallelEval to complete or if we require Physics, 
@@ -1795,9 +1809,9 @@ void USkeletalMeshComponent::ComputeRequiredBones(TArray<FBoneIndexType>& OutReq
 	// Purge invisible bones and their children
 	// this has to be done before mirror table check/physics body checks
 	// mirror table/phys body ones has to be calculated
-	if (ShouldUpdateBoneVisibility())
+	const TArray<uint8>& EditableBoneVisibilityStates = GetEditableBoneVisibilityStates();
+	if (ShouldUpdateBoneVisibility() && EditableBoneVisibilityStates.Num() > 0)
 	{
-		const TArray<uint8>& EditableBoneVisibilityStates = GetEditableBoneVisibilityStates();
 		check(EditableBoneVisibilityStates.Num() == GetNumComponentSpaceTransforms());
 		
 		if (ensureMsgf(EditableBoneVisibilityStates.Num() >= OutRequiredBones.Num(), 
@@ -2925,11 +2939,11 @@ void USkeletalMeshComponent::SetSkeletalMesh(USkeletalMesh* InSkelMesh, bool bRe
 	}
 
 	// Update property alias
-#if WITH_EDITORONLY_DATA
+//#if WITH_EDITORONLY_DATA  // TODO: Re-add these guards once the MovieScene getters/setters are working, so that we can get rid of this redundant pointer in all cooked builds
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	SkeletalMeshAsset = InSkelMesh;
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-#endif
+//#endif
 
 	// We may be doing parallel evaluation on the current anim instance
 	// Calling this here with true will block this init till that thread completes
@@ -3105,6 +3119,15 @@ UAnimInstance* USkeletalMeshComponent::GetPostProcessInstance() const
 
 void USkeletalMeshComponent::ResetLinkedAnimInstances()
 {
+	// Reset linked anim layers shared data 
+	if (AnimScriptInstance)
+	{
+		if (FAnimSubsystem_SharedLinkedAnimLayers* SharedLinkedAnimLayers = FAnimSubsystem_SharedLinkedAnimLayers::GetFromMesh(this))
+		{
+			SharedLinkedAnimLayers->Reset();
+		}
+	}
+
 	for(UAnimInstance* LinkedInstance : LinkedInstances)
 	{
 		if(LinkedInstance && LinkedInstance->bCreatedByLinkedAnimGraph)
@@ -3842,11 +3865,6 @@ void USkeletalMeshComponent::ValidateAnimation()
 				UE_LOG(LogAnimation, Warning, TEXT("Animation %s is incompatible because it has no skeleton, removing animation from actor."), *AnimationData.AnimToPlay->GetName());
 				AnimationData.AnimToPlay = nullptr;
 			}
-			else if (!AnimationData.AnimToPlay->GetSkeleton()->IsCompatible(SkelMesh->GetSkeleton()))
-			{
-				UE_LOG(LogAnimation, Warning, TEXT("Animation %s is incompatible with the skeletal mesh's skeleton, removing animation from actor."), *AnimationData.AnimToPlay->GetName());
-				AnimationData.AnimToPlay = nullptr;
-			}
 		}
 	}
 	else if (AnimationMode == EAnimationMode::AnimationBlueprint)
@@ -3854,19 +3872,9 @@ void USkeletalMeshComponent::ValidateAnimation()
 		IAnimClassInterface* AnimClassInterface = IAnimClassInterface::GetFromClass(AnimClass);
 		if (AnimClassInterface && SkelMesh)
 		{
-			if (AnimClassInterface->GetTargetSkeleton() == nullptr)
-			{
-				UE_LOG(LogAnimation, Warning, TEXT("AnimBP %s is incompatible because it has no target skeleton, removing AnimBP from actor."), *AnimClass->GetName());
-				AnimClass = nullptr;
-			}
-			else if (SkelMesh->GetSkeleton() == nullptr)
+			if (SkelMesh->GetSkeleton() == nullptr)
 			{
 				UE_LOG(LogAnimation, Warning, TEXT("AnimBP %s is incompatible because mesh %s has no skeleton, removing AnimBP from actor."), *AnimClass->GetName(), *SkelMesh->GetName());
-				AnimClass = nullptr;
-			}
-			else if (!AnimClassInterface->GetTargetSkeleton()->IsCompatible(SkelMesh->GetSkeleton()))
-			{
-				UE_LOG(LogAnimation, Warning, TEXT("AnimBP %s is incompatible with skeleton %s, removing AnimBP from actor."), *AnimClass->GetName(), *SkelMesh->GetSkeleton()->GetName());
 				AnimClass = nullptr;
 			}
 		}
@@ -4252,30 +4260,6 @@ void USkeletalMeshComponent::FinalizeBoneTransform()
 	TRACE_SKELETAL_MESH_COMPONENT(this);
 }
 
-void USkeletalMeshComponent::GetCurrentRefToLocalMatrices(TArray<FMatrix44f>& OutRefToLocals, int32 InLodIdx) const
-{
-	USkeletalMesh* SkelMesh = GetSkeletalMeshAsset();
-	if(SkelMesh)
-	{
-		FSkeletalMeshRenderData* RenderData = SkelMesh->GetResourceForRendering();
-		if (ensureMsgf(RenderData->LODRenderData.IsValidIndex(InLodIdx),
-			TEXT("GetCurrentRefToLocalMatrices (SkelMesh :%s) input LODIndex (%d) doesn't match with render data size (%d)."),
-			*SkelMesh->GetPathName(), InLodIdx, RenderData->LODRenderData.Num()))
-		{
-			UpdateRefToLocalMatrices(OutRefToLocals, this, RenderData, InLodIdx, nullptr);
-		}
-		else
-		{
-			const FReferenceSkeleton& RefSkeleton = SkelMesh->GetRefSkeleton();
-			OutRefToLocals.AddUninitialized(RefSkeleton.GetNum());
-			for (int32 Index = 0; Index < OutRefToLocals.Num(); ++Index)
-			{
-				OutRefToLocals[Index] = FMatrix44f::Identity;
-			}
-		}
-	}
-}
-
 bool USkeletalMeshComponent::ShouldUpdatePostProcessInstance() const
 {
 	return PostProcessAnimInstance && !bDisablePostProcessBlueprint;
@@ -4457,7 +4441,7 @@ void USkeletalMeshComponent::SetUpdateClothInEditor(const bool NewUpdateState)
 
 float USkeletalMeshComponent::GetTeleportRotationThreshold() const
 {
-	return TeleportDistanceThreshold;
+	return TeleportRotationThreshold;
 }
 
 void USkeletalMeshComponent::SetTeleportRotationThreshold(float Threshold)
@@ -4682,6 +4666,22 @@ TArray<FTransform> USkeletalMeshComponent::GetBoneSpaceTransforms()
 	return BoneSpaceTransforms;
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
+
+
+TArrayView<const FTransform> USkeletalMeshComponent::GetBoneSpaceTransformsView()
+{
+	// We may be doing parallel evaluation on the current anim instance
+	// Calling this here with true will block this init till that thread completes
+	// and it is safe to continue
+	const bool bBlockOnTask = true; // wait on evaluation task so it is safe to swap the buffers
+	const bool bPerformPostAnimEvaluation = true; // Do PostEvaluation so we make sure to swap the buffers back. 
+	HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return BoneSpaceTransforms;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 
 #if WITH_EDITOR
 void USkeletalMeshComponent::UpdatePoseWatches()

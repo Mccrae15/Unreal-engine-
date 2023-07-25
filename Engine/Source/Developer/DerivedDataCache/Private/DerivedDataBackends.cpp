@@ -347,7 +347,7 @@ public:
 				{
 					ParsedNode = MakeTuple(ParseS3Cache(*NodeName, *Entry), ECacheStoreFlags::Local | ECacheStoreFlags::Query | ECacheStoreFlags::StopStore);
 				}
-				else if (NodeType == TEXT("Http"))
+				else if (NodeType == TEXT("Cloud") || NodeType == TEXT("Http"))
 				{
 					ParsedNode = CreateHttpCacheStore(*NodeName, *Entry);
 				}
@@ -689,7 +689,8 @@ public:
 				FString SettingPath;
 				if(FParse::Value(*Setting, TEXT("Path="), SettingPath))
 				{
-					SettingPath = SettingPath.TrimQuotes();
+					SettingPath.TrimQuotesInline();
+					SettingPath.ReplaceEscapedCharWithCharInline();
 					if(SettingPath.Len() > 0)
 					{
 						Path = SettingPath;
@@ -735,7 +736,9 @@ public:
 				{
 					bUsingSharedDDC |= bShared;
 					DataCache = MakeTuple(InnerFileSystem, Flags);
-					UE_LOG(LogDerivedDataCache, Log, TEXT("Using %s data cache path %s: %s"), NodeName, *Path, !EnumHasAnyFlags(Flags, ECacheStoreFlags::Store) ? TEXT("ReadOnly") : TEXT("Writable"));
+					UE_LOG(LogDerivedDataCache, Log, TEXT("Using %s data cache path %s: %s"), NodeName, *Path,
+						EnumHasAnyFlags(Flags, ECacheStoreFlags::Store) ? TEXT("Writable") :
+						EnumHasAnyFlags(Flags, ECacheStoreFlags::Query) ? TEXT("ReadOnly") : TEXT("DeleteOnly"));
 					Directories.AddUnique(Path);
 				}
 				else

@@ -22,6 +22,11 @@ struct FNDIArrayImplHelper<FNiagaraID> : public FNDIArrayImplHelperBase<FNiagara
 
 	static const FNiagaraTypeDefinition GetTypeDefinition() { return FNiagaraTypeDefinition(FNiagaraID::StaticStruct()); }
 	static const FNiagaraID GetDefaultValue() { return FNiagaraID(); }
+
+	static void AppendValueToString(const FNiagaraID Value, FString& OutString)
+	{
+		OutString.Appendf(TEXT("%d, %d"), Value.Index, Value.AcquireTag);
+	}
 };
 
 UCLASS(EditInlineNew, Category = "Array", meta = (DisplayName = "NiagaraID Array", Experimental), Blueprintable, BlueprintType)
@@ -29,9 +34,10 @@ class NIAGARA_API UNiagaraDataInterfaceArrayNiagaraID : public UNiagaraDataInter
 {
 public:
 	GENERATED_BODY()
-	NDIARRAY_GENERATE_BODY(UNiagaraDataInterfaceArrayNiagaraID, FNiagaraID, IntData)
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Array")
 	TArray<FNiagaraID> IntData;
+
+	NDIARRAY_GENERATE_BODY(UNiagaraDataInterfaceArrayNiagaraID, FNiagaraID, IntData)
 };
 

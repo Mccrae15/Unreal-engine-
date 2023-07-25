@@ -14,7 +14,10 @@
  * Usage:
  * TSharedRef<SCustomDialog> HelloWorldDialog = SNew(SCustomDialog)
 		.Title(FText(LOCTEXT("HelloWorldTitleExample", "Hello, World!")))
-		.DialogContent( SNew(SImage).Image(FName(TEXT("Hello"))))
+		.Content()
+		[
+			SNew(SImage).Image(FName(TEXT("Hello"))))
+		]
 		.Buttons({
 			SCustomDialog::FButton(LOCTEXT("OK", "OK")),
 			SCustomDialog::FButton(LOCTEXT("Cancel", "Cancel"))
@@ -109,6 +112,11 @@ public:
 		/** Custom widget placed before the buttons */
 		SLATE_NAMED_SLOT(FArguments, BeforeButtons)
 
+		/** HAlign to use for Button Box slot (default: HAlign_Left) */
+		SLATE_ARGUMENT(EHorizontalAlignment, HAlignButtonBox)
+
+		/** VAlign to use for Button Box  slot (default: VAlign_Center) */
+		SLATE_ARGUMENT(EVerticalAlignment, VAlignButtonBox)
 
 		/** Padding to apply to the widget embedded in the window, i.e. to all widgets contained in the window (default: {4,4,4,4} )*/
 		SLATE_ATTRIBUTE(FMargin, RootPadding)

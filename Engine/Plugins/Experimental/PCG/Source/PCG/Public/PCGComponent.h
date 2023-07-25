@@ -2,16 +2,22 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "ComponentInstanceDataCache.h"
 #include "Components/ActorComponent.h"
+#include "PCGNode.h"
 #include "PCGSettings.h"
+#include "Utils/PCGExtraCapture.h"
 
 #include "PCGComponent.generated.h"
+
+namespace EEndPlayReason { enum Type : int; }
 
 class APCGPartitionActor;
 struct FPCGContext;
 class UPCGComponent;
 class UPCGGraph;
+class UPCGGraphInterface;
+class UPCGGraphInstance;
 class UPCGManagedResource;
 class UPCGData;
 class UPCGSubsystem;
@@ -48,26 +54,29 @@ enum class EPCGComponentDirtyFlag : uint8
 	Actor = 1 << 0,
 	Landscape = 1 << 1,
 	Input = 1 << 2,
-	Exclusions = 1 << 3,
-	Data = 1 << 4,
-	All = Actor | Landscape | Input | Exclusions | Data
+	Data = 1 << 3,
+	All = Actor | Landscape | Input | Data
 };
 ENUM_CLASS_FLAGS(EPCGComponentDirtyFlag);
 
-UCLASS(BlueprintType, ClassGroup = (Procedural), meta = (BlueprintSpawnableComponent))
+UCLASS(BlueprintType, ClassGroup = (Procedural), meta = (BlueprintSpawnableComponent, PrioritizeCategories = "PCG"))
 class PCG_API UPCGComponent : public UActorComponent
 {
+	UPCGComponent(const FObjectInitializer& InObjectInitializer);
+
 	GENERATED_BODY()
 
-	friend class UPCGSubsystem;
 	friend class UPCGManagedActors;
+	friend class UPCGSubsystem;
 
 public:
 	/** ~Begin UObject interface */
 	virtual void PostLoad() override;
+	virtual void PostInitProperties() override;
 	virtual void BeginDestroy() override;
 
 #if WITH_EDITOR
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void PostEditImport() override;
 #endif
 	/** ~End UObject interface */
@@ -91,15 +100,16 @@ public:
 	UPCGData* GetLandscapePCGData();
 	UPCGData* GetLandscapeHeightPCGData();
 	UPCGData* GetOriginalActorPCGData();
-	TArray<UPCGData*> GetPCGExclusionData();
 
 	bool CanPartition() const;
 
-	UPCGGraph* GetGraph() const { return Graph; }
-	void SetGraphLocal(UPCGGraph* InGraph);
+	UPCGGraph* GetGraph() const;
+	UPCGGraphInstance* GetGraphInstance() const { return GraphInstance; }
+
+	void SetGraphLocal(UPCGGraphInterface* InGraph);
 
 	UFUNCTION(BlueprintCallable, NetMulticast, Reliable, Category = PCG)
-	void SetGraph(UPCGGraph* InGraph);
+	void SetGraph(UPCGGraphInterface* InGraph);
 
 	/** Registers some managed resource to the current component */
 	UFUNCTION(BlueprintCallable, Category = PCG)
@@ -130,6 +140,17 @@ public:
 	UFUNCTION(BlueprintCallable, NetMulticast, Reliable, Category = PCG)
 	void Cleanup(bool bRemoveComponents, bool bSave = false);
 
+	/** Cancels in-progress generation */
+	void CancelGeneration();
+
+	/** Notify properties changed, used in runtime cases, will dirty & trigger a regeneration if needed */
+	UFUNCTION(BlueprintCallable, Category = PCG)
+	void NotifyPropertiesChangedFromBlueprint();
+
+	/** Retrieves generated data */
+	UFUNCTION(BlueprintCallable, Category = PCG)
+	const FPCGDataCollection& GetGeneratedGraphOutput() const { return GeneratedGraphOutput; }
+
 	/** Move all generated resources under a new actor, following a template (AActor if not provided), clearing all link to this PCG component. Returns the new actor.*/
 	UFUNCTION(BlueprintCallable, Category = PCG)
 	AActor* ClearPCGLink(UClass* TemplateActor = nullptr);
@@ -143,19 +164,12 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
 	int Seed = 42;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	TSet<FName> ExcludedTags;
-
-#if WITH_EDITORONLY_DATA
-	UPROPERTY()
-	TArray<FName> ExclusionTags_DEPRECATED;
-#endif
-
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Properties)
 	bool bActivated = true;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, AdvancedDisplay, Category = Properties, meta = (EditCondition = "!bIsComponentLocal"))
-	bool bIsPartitioned = true;
+	/* In World Partition map, will partition the component in a grid, according to PCGWorldActor settings, dispatching the generation to multiple local components.*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, AdvancedDisplay, Category = Properties, meta = (EditCondition = "!bIsComponentLocal", DisplayName = "Is Partitioned"))
+	bool bIsComponentPartitioned = false;
 
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = Properties, AdvancedDisplay, meta = (EditCondition = "!bIsComponentLocal", EditConditionHides))
 	EPCGComponentGenerationTrigger GenerationTrigger = EPCGComponentGenerationTrigger::GenerateOnLoad;
@@ -171,8 +185,14 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, AdvancedDisplay, Category = Properties, meta = (DisplayName = "Regenerate PCG volume in editor"))
 	bool bRegenerateInEditor = true;
 
-	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, AdvancedDisplay, Category = Properties)
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Transient, AdvancedDisplay, Category = Properties)
 	bool bDirtyGenerated = false;
+
+	// Property that will automatically be set on BP templates, to allow for "Generate on add to world" in editor.
+	// Set it as a property to automatically transfer it to its child.
+	// Don't use it directly, use ShouldGenerateBPPCGAddedToWorld, as there are other conditions checked.
+	UPROPERTY()
+	bool bForceGenerateOnBPAddedToWorld = false;
 
 	FOnPCGGraphGenerated OnPCGGraphGeneratedDelegate;
 	FOnPCGGraphCleaned OnPCGGraphCleanedDelegate;
@@ -188,9 +208,17 @@ public:
 	bool IsGenerating() const { return CurrentGenerationTask != InvalidPCGTaskId; }
 	bool IsCleaningUp() const { return CurrentCleanupTask != InvalidPCGTaskId; }
 
+	/** Returns task ids to do internal chaining */
+	FPCGTaskId GetGenerationTaskId() const { return CurrentGenerationTask; }
+
 #if WITH_EDITOR
 	void Refresh();
-	void DirtyGenerated(EPCGComponentDirtyFlag DataToDirtyFlag = EPCGComponentDirtyFlag::None);
+	void OnRefresh();
+
+	/** Dirty generated data depending on the flag. By default the call is forwarded to the local components.
+	    We don't forward if the local component has callbacks that would dirty them too.
+		For example: When a tracked actor move, we only want to dirty the impacted local components.*/
+	void DirtyGenerated(EPCGComponentDirtyFlag DataToDirtyFlag = EPCGComponentDirtyFlag::None, const bool bDispatchToLocalComponents = true);
 
 	/** Reset last generated bounds to force PCGPartitionActor creation on next refresh */
 	void ResetLastGeneratedBounds();
@@ -201,9 +229,15 @@ public:
 	void DisableInspection();
 	void StoreInspectionData(const UPCGNode* InNode, const FPCGDataCollection& InInspectionData);
 	const FPCGDataCollection* GetInspectionData(const UPCGNode* InNode) const;
+
+	/** Used by the tracking system to know if the component need to track actors. Not enabled for now, tracking is still done on the component.*/
+	bool ShouldTrackActors() const { return false; }
+
+	/** Know if we need to force a generation, in case of BP added to the world in editor */
+	bool ShouldGenerateBPPCGAddedToWorld() const;
 #endif
 
-	/** Utility function (mostly for tests) to properly set the value of bIsPartitioned.
+	/** Utility function (mostly for tests) to properly set the value of bIsComponentPartitioned.
 	*   Will do an immediate cleanup first and then register/unregister the component to the subsystem.
 	*   It's your responsibility after to regenerate the graph if you want to.
 	*/
@@ -221,10 +255,27 @@ public:
 	UPCGSubsystem* GetSubsystem() const;
 
 	FBox GetGridBounds() const;
+	FBox GetLastGeneratedBounds() const { return LastGeneratedBounds; }
+
+	/** Builds the PCG data from a given actor and its PCG component, and places it in a data collection with appropriate tags */
+	static FPCGDataCollection CreateActorPCGDataCollection(AActor* Actor, const UPCGComponent* Component, const TFunction<bool(EPCGDataType)>& InDataFilter, bool bParseActor = true);
+
+	/** Builds the canonical PCG data from a given actor and its PCG component if any. */
+	static UPCGData* CreateActorPCGData(AActor* Actor, const UPCGComponent* Component, bool bParseActor = true);
 
 protected:
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Properties)
-	TObjectPtr<UPCGGraph> Graph;
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = PCG, Instanced, meta = (NoResetToDefault))
+	TObjectPtr<UPCGGraphInstance> GraphInstance;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TObjectPtr<UPCGGraph> Graph_DEPRECATED;
+
+private:
+	// Note for upgrade: can be safely replaced by bIsComponentPartitioned. Needed a new variable to change the default value. Kept to allow proper value change, cannot be deprecated. Do not use.
+	UPROPERTY()
+	bool bIsPartitioned = true;
+#endif // WITH_EDITORONLY_DATA
 
 private:
 	UPCGData* CreatePCGData();
@@ -232,7 +283,6 @@ private:
 	UPCGData* CreateActorPCGData();
 	UPCGData* CreateActorPCGData(AActor* Actor, bool bParseActor = true);
 	UPCGData* CreateLandscapePCGData(bool bHeightOnly);
-	void UpdatePCGExclusionData();
 	bool IsLandscapeCachedDataDirty(const UPCGData* Data) const;
 
 	bool ShouldGenerate(bool bForce, EPCGComponentGenerationTrigger RequestedGenerationTrigger) const;
@@ -250,7 +300,7 @@ private:
 	void PostProcessGraph(const FBox& InNewBounds, bool bInGenerated, FPCGContext* Context);
 	void CallPostGenerateFunctions(FPCGContext* Context) const;
 	void PostCleanupGraph();
-	void OnProcessGraphAborted();
+	void OnProcessGraphAborted(bool bQuiet = false);
 	void CleanupUnusedManagedResources();
 	bool MoveResourcesToNewActor(AActor* InNewActor, bool bCreateChild);
 
@@ -258,16 +308,21 @@ private:
 	void GetManagedResources(TArray<TObjectPtr<UPCGManagedResource>>& Resources) const;
 	void SetManagedResources(const TArray<TObjectPtr<UPCGManagedResource>>& Resources);
 
-	bool GetActorsFromTags(const TSet<FName>& InTags, TSet<TWeakObjectPtr<AActor>>& OutActors, bool bCullAgainstLocalBounds);
+	bool GetActorsFromTags(const TMap<FName, bool>& InTagsAndCulling, TSet<TWeakObjectPtr<AActor>>& OutActors);
 
-	void RefreshAfterGraphChanged(UPCGGraph* InGraph, bool bIsStructural, bool bDirtyInputs);
-	void OnGraphChanged(UPCGGraph* InGraph, EPCGChangeType ChangeType);
+	void RefreshAfterGraphChanged(UPCGGraphInterface* InGraph, bool bIsStructural, bool bDirtyInputs);
+	void OnGraphChanged(UPCGGraphInterface* InGraph, EPCGChangeType ChangeType);
 
 #if WITH_EDITOR
-	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
+	// Stub for the other PreEditChange prototype to prevent compile issues from name hiding
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override { Super::PreEditChange(PropertyAboutToChange); }
+	virtual void PreEditChange(FEditPropertyChain& PropertyAboutToChange) override;
+	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PreEditUndo() override;
 	virtual void PostEditUndo() override;
+
+	bool IsChangingGraphInstanceParameterValue(FEditPropertyChain& InEditPropertyChain) const;
 
 	/** Sets up actor, tracking, landscape and graph callbacks */
 	void SetupCallbacksOnCreation();
@@ -282,10 +337,7 @@ private:
 	void OnActorDeleted(AActor* InActor);
 	void OnActorMoved(AActor* InActor);
 	void OnObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& InEvent);
-	bool ActorHasExcludedTag(AActor* InActor) const;
 	bool ActorIsTracked(AActor* InActor) const;
-
-	bool UpdateExcludedActor(AActor* InActor);
 
 	void OnActorChanged(AActor* InActor, UObject* InSourceObject, bool bActorTagChange);
 
@@ -294,13 +346,13 @@ private:
 	bool RemoveTrackedActor(AActor* InActor);
 	bool UpdateTrackedActor(AActor* InActor);
 	bool DirtyTrackedActor(AActor* InActor);
-	void DirtyCacheFromTag(const FName& InTag);
+	bool DirtyCacheFromTag(const FName& InTag, const AActor* InActor, bool bIgnoreCull = false);
 	void DirtyCacheForAllTrackedTags();
 
 	bool GraphUsesLandscapePin() const;
 #endif
 
-	FBox GetGridBounds(AActor* InActor) const;
+	FBox GetGridBounds(const AActor* InActor) const;
 
 	UPROPERTY(Transient, NonPIEDuplicateTransient)
 	TObjectPtr<UPCGData> CachedPCGData = nullptr;
@@ -317,13 +369,6 @@ private:
 	UPROPERTY(Transient, NonPIEDuplicateTransient)
 	TObjectPtr<UPCGData> CachedLandscapeHeightData = nullptr;
 
-	UPROPERTY(Transient, NonPIEDuplicateTransient)
-	TMap<TObjectPtr<AActor>, TObjectPtr<UPCGData>> CachedExclusionData;
-
-	// Cached excluded actors list is serialized because we can't get it at postload time
-	UPROPERTY()
-	TSet<TWeakObjectPtr<AActor>> CachedExcludedActors; 
-
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TSet<TSoftObjectPtr<AActor>> GeneratedActors_DEPRECATED;
@@ -337,6 +382,9 @@ private:
 
 	UPROPERTY()
 	FBox LastGeneratedBounds = FBox(EForceInit::ForceInit);
+
+	UPROPERTY()
+	FPCGDataCollection GeneratedGraphOutput;
 
 	FPCGTaskId CurrentGenerationTask = InvalidPCGTaskId;
 	FPCGTaskId CurrentCleanupTask = InvalidPCGTaskId;
@@ -353,6 +401,8 @@ private:
 	FBox LastGeneratedBoundsPriorToUndo = FBox(EForceInit::ForceInit);
 	FPCGTagToSettingsMap CachedTrackedTagsToSettings;
 
+	TMap<FName, bool> CachedTrackedTagsToCulling;
+
 	void SetupLandscapeTracking();
 	void TeardownLandscapeTracking();
 	void UpdateTrackedLandscape(bool bBoundsCheck = true);
@@ -361,7 +411,7 @@ private:
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	TArray<TWeakObjectPtr<ALandscapeProxy>> TrackedLandscapes;
+	TArray<TSoftObjectPtr<ALandscapeProxy>> TrackedLandscapes;
 #endif
 
 #if WITH_EDITORONLY_DATA
@@ -378,6 +428,16 @@ private:
 #endif
 
 	mutable FCriticalSection GeneratedResourcesLock;
+
+	// Graph instance
+private:
+	/** Will set the given graph interface into our owned graph instance. Must not be used on local components.*/
+	void SetGraphInterfaceLocal(UPCGGraphInterface* InGraphInterface);
+
+#if WITH_EDITOR
+public:
+	mutable PCGUtils::FExtraCapture ExtraCapture;
+#endif // WITH_EDITOR
 };
 
 /** Used to store generated resources data during RerunConstructionScripts */
@@ -392,10 +452,7 @@ public:
 protected:
 	virtual bool ContainsData() const override;
 	virtual void ApplyToComponent(UActorComponent* Component, const ECacheApplyPhase CacheApplyPhase) override;
-
-#if WITH_EDITOR
-	void DelayedRefresh(UPCGComponent* PCGComponent);
-#endif // WITH_EDITOR
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
 	UPROPERTY()
 	TArray<TObjectPtr<UPCGManagedResource>> GeneratedResources;
@@ -403,3 +460,7 @@ protected:
 	UPROPERTY()
 	TObjectPtr<const UPCGComponent> SourceComponent;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

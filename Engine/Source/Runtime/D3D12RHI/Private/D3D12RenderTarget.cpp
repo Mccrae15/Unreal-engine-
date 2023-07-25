@@ -161,10 +161,7 @@ void FD3D12CommandContext::ResolveTextureUsingShader(
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 
 	// Make sure the destination is not bound as a shader resource.
-	if (DestTexture)
-	{
-		ConditionalClearShaderResource(&DestTexture->ResourceLocation);
-	}
+	ClearShaderResources(DestTexture);
 
 	// Determine if the entire destination surface is being resolved to.
 	// If the entire surface is being resolved to, then it means we can clear it and signal the driver that it can discard
@@ -268,14 +265,14 @@ void FD3D12CommandContext::ResolveTextureUsingShader(
 			RHICmdList.RunOnContext([TextureIndex, SourceTexture](FD3D12CommandContext& Context)
 			{
 				// Set the source texture.
-				Context.StateCache.SetShaderResourceView<SF_Pixel>(SourceTexture->GetShaderResourceView(), TextureIndex);
+				Context.StateCache.SetShaderResourceView(SF_Pixel, SourceTexture->GetShaderResourceView(), TextureIndex);
 			});
 
 			RHICmdList.DrawPrimitive(0, 2, 1);
 		})(RHICmdList);
 	}
 
-	ConditionalClearShaderResource(&SourceTexture->ResourceLocation);
+	ClearShaderResources(SourceTexture);
 
 	// Reset saved viewport
 	{

@@ -7,7 +7,6 @@
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
 #include "EditorReimportHandler.h"
-#include "Styling/AppStyle.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
@@ -17,6 +16,7 @@
 #include "Factories/TextureFactory.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Input/Reply.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialFunction.h"
@@ -26,8 +26,10 @@
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "RenderUtils.h"
 #include "SlateOptMacros.h"
 #include "StaticParameterSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateTypes.h"
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/GCObject.h"
@@ -49,25 +51,26 @@
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionConstant4Vector.h"
+#include "Materials/MaterialExpressionConstantBiasScale.h"
 #include "Materials/MaterialExpressionLinearInterpolate.h"
-#include "Materials/MaterialExpressionPower.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionPower.h"
 #include "Materials/MaterialExpressionSpeedTree.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTwoSidedSign.h"
 #include "Materials/MaterialExpressionVertexColor.h"
-#include "Materials/MaterialExpressionConstantBiasScale.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetToolsModule.h"
+#include "ComponentReregisterContext.h"
+#include "Editor/UnrealEd/Private/GeomFitUtils.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "ObjectTools.h"
 #include "PackageTools.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetToolsModule.h"
-#include "UnrealEd/Private/GeomFitUtils.h"
 #include "SpeedTreeWind.h"
 #include "StaticMeshAttributes.h"
-#include "ComponentReregisterContext.h"
+#include "RenderMath.h"
 
 #if WITH_SPEEDTREE
 
@@ -1386,7 +1389,7 @@ UMaterialInterface* CreateSpeedTreeMaterial9(UObject* Parent, FString MaterialFu
 	// material static setup
 	FStaticParameterSet StaticParameters;
 	UnrealMaterialInstance->GetStaticParameterValues(StaticParameters);
-	for (FStaticSwitchParameter& SwitchParameter : StaticParameters.EditorOnly.StaticSwitchParameters)
+	for (FStaticSwitchParameter& SwitchParameter : StaticParameters.StaticSwitchParameters)
 	{
 		if (SwitchParameter.ParameterInfo.Name == FName(TEXT("SharedEnable")))
 		{

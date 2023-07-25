@@ -1,18 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ColorCorrectRegion.h"
+#include "ColorCorrectRegionsModule.h"
+#include "ColorCorrectRegionsSubsystem.h"
 #include "ColorCorrectWindow.h"
 #include "Components/BillboardComponent.h"
-#include "ColorCorrectRegionsSubsystem.h"
-#include "ColorCorrectRegionsModule.h"
-#include "UObject/ConstructorHelpers.h"
+#include "Components/MeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "CoreMinimal.h"
 #include "Engine/GameEngine.h"
-#include "Engine/Classes/Components/MeshComponent.h"
-#include "Materials/Material.h"
 #include "Engine/StaticMesh.h"
-#include "Components/StaticMeshComponent.h"
 #include "Engine/Texture2D.h"
+#include "Materials/Material.h"
+#include "UObject/ConstructorHelpers.h"
 
 ENUM_RANGE_BY_COUNT(EColorCorrectRegionsType, EColorCorrectRegionsType::MAX)
 
@@ -41,6 +41,11 @@ AColorCorrectRegion::AColorCorrectRegion(const FObjectInitializer& ObjectInitial
 	RootComponent = ObjectInitializer.CreateDefaultSubobject<USceneComponent>(this, TEXT("Root"));
 	RootComponent->SetMobility(EComponentMobility::Movable);
 
+	IdentityComponent = CreateDefaultSubobject<UColorCorrectionInvisibleComponent>("IdentityComponent");
+	IdentityComponent->SetupAttachment(RootComponent);
+	IdentityComponent->CastShadow = false;
+	IdentityComponent->SetHiddenInGame(false);
+
 #if WITH_METADATA
 	if (!Cast<AColorCorrectionWindow>(this))
 	{
@@ -57,7 +62,7 @@ void AColorCorrectRegion::BeginPlay()
 		ColorCorrectRegionsSubsystem = World->GetSubsystem<UColorCorrectRegionsSubsystem>();
 	}
 
-	if (ColorCorrectRegionsSubsystem)
+	if (ColorCorrectRegionsSubsystem.IsValid())
 	{
 		ColorCorrectRegionsSubsystem->OnActorSpawned(this);
 	}
@@ -65,7 +70,7 @@ void AColorCorrectRegion::BeginPlay()
 
 void AColorCorrectRegion::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (ColorCorrectRegionsSubsystem)
+	if (ColorCorrectRegionsSubsystem.IsValid())
 	{
 		ColorCorrectRegionsSubsystem->OnActorDeleted(this);
 		ColorCorrectRegionsSubsystem = nullptr;
@@ -75,7 +80,7 @@ void AColorCorrectRegion::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void AColorCorrectRegion::BeginDestroy()
 {
-	if (ColorCorrectRegionsSubsystem)
+	if (ColorCorrectRegionsSubsystem.IsValid())
 	{
 		ColorCorrectRegionsSubsystem->OnActorDeleted(this);
 		ColorCorrectRegionsSubsystem = nullptr;
@@ -104,7 +109,7 @@ void AColorCorrectRegion::TickActor(float DeltaTime, ELevelTick TickType, FActor
 		TimeWaited += DeltaTime;
 		const float WaitTimeInSecs = 1.0;
 
-		if (!ColorCorrectRegionsSubsystem)
+		if (!ColorCorrectRegionsSubsystem.IsValid())
 		{
 			if (const UWorld* World = GetWorld())
 			{
@@ -112,18 +117,13 @@ void AColorCorrectRegion::TickActor(float DeltaTime, ELevelTick TickType, FActor
 			}
 		}
 		
-		if (ColorCorrectRegionsSubsystem && TimeWaited >= WaitTimeInSecs)
+		if (ColorCorrectRegionsSubsystem.IsValid() && TimeWaited >= WaitTimeInSecs)
 		{
 			ColorCorrectRegionsSubsystem->CheckAssignedActorsValidity(this);
 			TimeWaited = 0;
 		}
 
 	}
-}
-
-void AColorCorrectRegion::Cleanup()
-{
-	ColorCorrectRegionsSubsystem = nullptr;
 }
 
 void AColorCorrectRegion::TransferState()
@@ -195,14 +195,10 @@ void AColorCorrectRegion::TransferState()
 		}
 	}
 
-	// Display Cluster uses HiddenPrimitives to hide Primitive components from view. 
 	// Store component id to be used on render thread.
-	if (const UStaticMeshComponent* FirstMeshComponent = FindComponentByClass<UStaticMeshComponent>())
+	if (!(TempCCRStateRenderThread->FirstPrimitiveId == IdentityComponent->ComponentId))
 	{
-		if (!(TempCCRStateRenderThread->FirstPrimitiveId == FirstMeshComponent->ComponentId))
-		{
-			TempCCRStateRenderThread->FirstPrimitiveId = FirstMeshComponent->ComponentId;
-		}
+		TempCCRStateRenderThread->FirstPrimitiveId = IdentityComponent->ComponentId;
 	}
 
 	{
@@ -245,7 +241,7 @@ void AColorCorrectRegion::HandleAffectedActorsPropertyChange()
 				}
 			}
 			bEventHandled = true;
-			if (ColorCorrectRegionsSubsystem)
+			if (ColorCorrectRegionsSubsystem.IsValid())
 			{
 				ColorCorrectRegionsSubsystem->AssignStencilIdsToPerActorCC(this);
 			}
@@ -256,7 +252,7 @@ void AColorCorrectRegion::HandleAffectedActorsPropertyChange()
 			|| ActorListChangeType == EPropertyChangeType::ValueSet)
 		{
 			bEventHandled = true;
-			if (ColorCorrectRegionsSubsystem)
+			if (ColorCorrectRegionsSubsystem.IsValid())
 			{
 				ColorCorrectRegionsSubsystem->ClearStencilIdsToPerActorCC(this);
 			}
@@ -314,7 +310,7 @@ void AColorCorrectRegion::PostEditChangeProperty(struct FPropertyChangedEvent& P
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
 
-	if (!ColorCorrectRegionsSubsystem)
+	if (!ColorCorrectRegionsSubsystem.IsValid())
 	{
 		if (const UWorld* World = GetWorld())
 		{
@@ -334,14 +330,14 @@ void AColorCorrectRegion::PostEditChangeProperty(struct FPropertyChangedEvent& P
 	// Therefore we need to refresh priority if PropertyChangedEvent.Property is nullptr. 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(AColorCorrectRegion, Priority) || PropertyChangedEvent.Property == nullptr)
 	{
-		if (ColorCorrectRegionsSubsystem)
+		if (ColorCorrectRegionsSubsystem.IsValid())
 		{
 			ColorCorrectRegionsSubsystem->SortRegionsByPriority();
 		}
 	}
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(AColorCorrectRegion, Type) || PropertyChangedEvent.Property == nullptr)
 	{
-		if (ColorCorrectRegionsSubsystem)
+		if (ColorCorrectRegionsSubsystem.IsValid())
 		{
 			ColorCorrectRegionsSubsystem->OnLevelsChanged();
 		}

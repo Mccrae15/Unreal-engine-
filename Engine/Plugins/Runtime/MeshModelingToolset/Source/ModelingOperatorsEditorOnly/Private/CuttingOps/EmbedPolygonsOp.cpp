@@ -180,14 +180,27 @@ void FEmbedPolygonsOp::BooleanPath(FProgressCancel* Progress)
 	Boolean.Progress = Progress;
 	Boolean.bSimplifyAlongNewEdges = true;
 	Boolean.bPutResultInInputSpace = true;
-	bool bBoolSuccess = Boolean.Compute();
+	Boolean.Compute();
+
+	// One might think that we would want to set this to the return value of Boolean.Compute() above,
+	// but that call currently returns false whenever any boundary edges are generated in a non-trim op. That type of
+	// "failure" is frequently ok for the user, for instance when cutting an open mesh, like a simple rectangle. 
+	// We should probably change FMeshBoolean to differentiate between types of errors so that we can still
+	// respond appropriately to other types of failures. For now, this is what we do here (and to some
+	// extent, in BooleanMeshesOp.cpp).
+	bOperationSucceeded = true;
 
 	if (Progress && Progress->Cancelled())
 	{
 		return;
 	}
 
-	if (Boolean.CreatedBoundaryEdges.Num() > 0 && bAttemptFixHolesOnBoolean)
+	// Deal with created boundary edges
+	if (Operation == EEmbeddedPolygonOpMethod::TrimInside || Operation == EEmbeddedPolygonOpMethod::TrimOutside)
+	{
+		EmbeddedEdges = Boolean.CreatedBoundaryEdges;
+	}
+	else if (Boolean.CreatedBoundaryEdges.Num() > 0 && bAttemptFixHolesOnBoolean)
 	{
 		FMeshBoundaryLoops OpenBoundary(Boolean.Result, false);
 		TSet<int> ConsiderEdges(Boolean.CreatedBoundaryEdges);
@@ -202,10 +215,32 @@ void FEmbedPolygonsOp::BooleanPath(FProgressCancel* Progress)
 			return;
 		}
 
+		// This hole filling code should probably be put into some common utility function since it's used in
+		// BooleanMeshesOp.h, and we do similar things (with more options) for cap filling in revolves.
+		const bool bNeedsNormalsAndUVs = Boolean.Result->HasAttributes();
+		// UV scale based on the mesh bounds, used for hole-filled regions.
+		const double MeshUVScaleFactor = (1.0 / Boolean.Result->GetBounds().MaxDim());
+
 		for (FEdgeLoop& Loop : OpenBoundary.Loops)
 		{
 			FMinimalHoleFiller Filler(Boolean.Result, Loop);
 			Filler.Fill(ResultMesh->AllocateTriangleGroup());
+
+			if (bNeedsNormalsAndUVs)
+			{
+				// Compute a best-fit plane of the boundary vertices
+				TArray<FVector3d> VertexPositions;
+				Loop.GetVertices(VertexPositions);
+
+				FVector3d PlaneOrigin, PlaneNormal;
+				PolygonTriangulation::ComputePolygonPlane<double>(VertexPositions, PlaneNormal, PlaneOrigin);
+				PlaneNormal *= -1.0;	// Previous function seems to orient the normal opposite to what's expected elsewhere
+
+				FDynamicMeshEditor Editor(ResultMesh.Get());
+				FFrame3d ProjectionFrame(PlaneOrigin, PlaneNormal);
+				Editor.SetTriangleNormals(Filler.NewTriangles);
+				Editor.SetTriangleUVsFromProjection(Filler.NewTriangles, ProjectionFrame, MeshUVScaleFactor);
+			}
 		}
 		for (int EID : Boolean.CreatedBoundaryEdges)
 		{
@@ -214,25 +249,26 @@ void FEmbedPolygonsOp::BooleanPath(FProgressCancel* Progress)
 				EdgesOnFailure.Add(EID);
 			}
 		}
-
-		bOperationSucceeded = EdgesOnFailure.Num() == 0;
 	}
 	else
 	{
 		EdgesOnFailure = Boolean.CreatedBoundaryEdges;
-		bOperationSucceeded = bBoolSuccess;
 	}
 
-	for (int EID : ResultMesh->EdgeIndicesItr())
+	// Non-mesh-boundary cut boundary edges can be detected by the group change across the cut. Not relevant to trim
+	// operations, where we get them from the created boundary edges above.
+	if (Operation == EEmbeddedPolygonOpMethod::CutThrough || Operation == EEmbeddedPolygonOpMethod::InsertPolygon)
 	{
-		FDynamicMesh3::FEdge Edge = ResultMesh->GetEdge(EID);
-		if (ResultMesh->GetTriangleGroup(Edge.Tri[0]) < MaxGroupID !=
-			ResultMesh->GetTriangleGroup(Edge.Tri[1]) < MaxGroupID)
+		for (int EID : ResultMesh->EdgeIndicesItr())
 		{
-			EmbeddedEdges.Add(EID);
+			FDynamicMesh3::FEdge Edge = ResultMesh->GetEdge(EID);
+			if (ResultMesh->GetTriangleGroup(Edge.Tri[0]) < MaxGroupID !=
+				ResultMesh->GetTriangleGroup(Edge.Tri[1]) < MaxGroupID)
+			{
+				EmbeddedEdges.Add(EID);
+			}
 		}
 	}
-
 }
 
 void FEmbedPolygonsOp::CalculateResult(FProgressCancel* Progress)

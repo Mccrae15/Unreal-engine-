@@ -18,7 +18,6 @@
 #include "Containers/UnrealString.h"
 #include "Containers/VersePathFwd.h"
 #include "CoreGlobals.h"
-#include "CoreMinimal.h"
 #include "CoreTypes.h"
 #include "Delegates/Delegate.h"
 #include "Internationalization/Text.h"
@@ -46,6 +45,7 @@
 #include "UObject/UnrealNames.h"
 
 class FArchive;
+class FCbWriter;
 class FLinkerInstancingContext;
 class FObjectPreSaveContext;
 class FOutputDevice;
@@ -927,6 +927,20 @@ COREUOBJECT_API void EndLoad(FUObjectSerializeContext* LoadContext);
  * @return The package if it exists
  */
 COREUOBJECT_API UPackage* FindPackage(UObject* InOuter, const TCHAR* PackageName);
+
+#if WITH_EDITOR
+/**
+* Sets default PackageFlags for new packages made in specified mount points during CreatePackage
+* @param InMountPointToDefaultPackageFlags A map of MountPoints to PackageFlags. Used to provide new Packages in each mount point with the associated DefaultFlags
+*/
+COREUOBJECT_API void SetMountPointDefaultPackageFlags(const TMap<FString, EPackageFlags>& InMountPointToDefaultPackageFlags);
+
+/**
+* Removes the provided list of mount points from the MountPointToDefaultPackageFlags map
+* @param InMountPoints A list of mount points that will be removed and no longer have DefaultPackageFlags associated with them
+*/
+COREUOBJECT_API void RemoveMountPointDefaultPackageFlags(const TArrayView<FString> InMountPoints);
+#endif
 
 /**
  * Find an existing package by name or create it if it doesn't exist
@@ -2084,33 +2098,24 @@ private:
 };
 
 /** Base class for reference serialization archives */
-class COREUOBJECT_API FReferenceCollectorArchive : public FArchiveUObject
+class FReferenceCollectorArchive : public FArchiveUObject
 {
 	/** Object which is performing the serialization. */
-	const UObject* SerializingObject;
+	const UObject* SerializingObject = nullptr;
 	/** Object that owns the serialized data. */
-	const UObject* SerializedDataContainer;
-	/** Pointer to serialized data (read-only). */
-	const void* SerializedDataPtr;
+	const UObject* SerializedDataContainer  = nullptr;
 	/** Stored pointer to reference collector. */
 	class FReferenceCollector& Collector;
 
 protected:
-
-	class FReferenceCollector& GetCollector()
+	FORCEINLINE class FReferenceCollector& GetCollector()
 	{
 		return Collector;
 	}
 
 public:
+	FReferenceCollectorArchive(const UObject* InSerializingObject, FReferenceCollector& InCollector);
 
-	FReferenceCollectorArchive(const UObject* InSerializingObject, FReferenceCollector& InCollector)
-		: SerializingObject(InSerializingObject)
-		, SerializedDataContainer(nullptr)
-		, SerializedDataPtr(nullptr)
-		, Collector(InCollector)
-	{
-	}
 	void SetSerializingObject(const UObject* InSerializingObject)
 	{
 		SerializingObject = InSerializingObject;
@@ -2127,14 +2132,9 @@ public:
 	{
 		return SerializedDataContainer;
 	}
-	void SetSerializedDataPtr(const void* InSerializedDataPtr)
-	{
-		SerializedDataPtr = InSerializedDataPtr;
-	}
-	const void* GetSerializedDataPtr() const
-	{
-		return SerializedDataPtr;
-	}
+
+	COREUOBJECT_API virtual FArchive& operator<<(UObject*& Object) override;
+	COREUOBJECT_API virtual FArchive& operator<<(FObjectPtr& Object) override;
 };
 
 /** Helper class for setting and resetting attributes on the FReferenceCollectorArchive */
@@ -2144,27 +2144,23 @@ class COREUOBJECT_API FVerySlowReferenceCollectorArchiveScope
 	const UObject* OldSerializingObject;
 	FProperty* OldSerializedProperty;
 	const UObject* OldSerializedDataContainer;
-	const void* OldSerializedDataPtr;
 
 public:
-	FVerySlowReferenceCollectorArchiveScope(FReferenceCollectorArchive& InArchive, const UObject* InSerializingObject, FProperty* InSerializedProperty = nullptr, const UObject* InSerializedDataContainer = nullptr, const void* InSerializedDataPtr = nullptr)
+	FVerySlowReferenceCollectorArchiveScope(FReferenceCollectorArchive& InArchive, const UObject* InSerializingObject, FProperty* InSerializedProperty = nullptr, const UObject* InSerializedDataContainer = nullptr)
 		: Archive(InArchive)
 		, OldSerializingObject(InArchive.GetSerializingObject())
 		, OldSerializedProperty(InArchive.GetSerializedProperty())
 		, OldSerializedDataContainer(InArchive.GetSerializedDataContainer())
-		, OldSerializedDataPtr(InArchive.GetSerializedDataPtr())
 	{
 		Archive.SetSerializingObject(InSerializingObject);
 		Archive.SetSerializedProperty(InSerializedProperty);
 		Archive.SetSerializedDataContainer(InSerializedDataContainer);
-		Archive.SetSerializedDataPtr(InSerializedDataPtr);
 	}
 	~FVerySlowReferenceCollectorArchiveScope()
 	{
 		Archive.SetSerializingObject(OldSerializingObject);
 		Archive.SetSerializedProperty(OldSerializedProperty);
 		Archive.SetSerializedDataContainer(OldSerializedDataContainer);
-		Archive.SetSerializedDataPtr(OldSerializedDataPtr);
 	}
 	FReferenceCollectorArchive& GetArchive()
 	{
@@ -2172,16 +2168,82 @@ public:
 	}
 };
 
-/**
- * FReferenceCollector.
- * Helper class used by the garbage collector to collect object references.
- */
+/** Used by garbage collector to collect references via virtual AddReferencedObjects calls */
 class COREUOBJECT_API FReferenceCollector
 {
 public:
+	virtual ~FReferenceCollector() {}
 
-	FReferenceCollector();
-	virtual ~FReferenceCollector();
+	/** Preferred way to add a reference that allows batching. Object must outlive GC tracing, can't be used for temporary/stack references. */
+	virtual void AddStableReference(UObject** Object);
+	
+	/** Preferred way to add a reference array that allows batching. Can't be used for temporary/stack array. */
+	virtual void AddStableReferenceArray(TArray<UObject*>* Objects);
+
+	/** Preferred way to add a reference set that allows batching. Can't be used for temporary/stack set. */
+	virtual void AddStableReferenceSet(TSet<UObject*>* Objects);
+
+	template<class UObjectType>
+	FORCEINLINE void AddStableReference(UObjectType** Object)
+	{
+		static_assert(sizeof(UObjectType) > 0, "Element must be a pointer to a fully-defined type");
+		static_assert(std::is_convertible_v<UObjectType*, const UObjectBase*>, "Element must be a pointer to a type derived from UObject");
+		AddStableReference(reinterpret_cast<UObject**>(Object));
+	}
+
+	template<class UObjectType>
+	FORCEINLINE void AddStableReferenceArray(TArray<UObjectType*>* Objects)
+	{
+		static_assert(sizeof(UObjectType) > 0, "Element must be a pointer to a fully-defined type");
+		static_assert(std::is_convertible_v<UObjectType*, const UObjectBase*>, "Element must be a pointer to a type derived from UObject");
+		AddStableReferenceArray(reinterpret_cast<TArray<UObject*>*>(Objects)); 
+	}
+
+	template<class UObjectType>
+	FORCEINLINE void AddStableReferenceSet(TSet<UObjectType*>* Objects)
+	{
+		static_assert(sizeof(UObjectType) > 0, "Element must be a pointer to a fully-defined type");
+		static_assert(std::is_convertible_v<UObjectType*, const UObjectBase*>, "Element must be a pointer to a type derived from UObject");
+		AddStableReferenceSet(reinterpret_cast<TSet<UObject*>*>(Objects)); 
+	}
+
+	template<class UObjectType>
+	FORCEINLINE void AddStableReference(TObjectPtr<UObjectType>* Object)
+	{
+		AddStableReference(reinterpret_cast<UObjectType**>(Object));
+	}
+
+	template<class UObjectType>
+	FORCEINLINE void AddStableReferenceArray(TArray<TObjectPtr<UObjectType>>* Objects)
+	{
+		AddStableReferenceArray(reinterpret_cast<TArray<UObjectType*>*>(Objects)); 
+	}
+
+	template<class UObjectType>
+	FORCEINLINE void AddStableReferenceSet(TSet<TObjectPtr<UObjectType>>* Objects)
+	{
+		AddStableReferenceSet(reinterpret_cast<TSet<UObjectType*>*>(Objects)); 
+	}
+
+	template <typename KeyType, typename ValueType, typename Allocator, typename KeyFuncs>
+	FORCEINLINE_DEBUGGABLE void AddStableReferenceMap(TMapBase<KeyType, ValueType, Allocator, KeyFuncs>& Map)
+	{
+		static constexpr bool bKeyReference =	std::is_convertible_v<KeyType, const UObjectBase*>;
+		static constexpr bool bValueReference =	std::is_convertible_v<ValueType, const UObjectBase*>;
+		static_assert(bKeyReference || bValueReference, "Key or value must be pointer to fully-defined UObject type");
+
+		for (TPair<KeyType, ValueType>& Pair : Map)
+		{
+			if constexpr (bKeyReference)
+			{
+				AddStableReference(&Pair.Key);
+			}
+			if constexpr (bValueReference)
+			{
+				AddStableReference(&Pair.Value);
+			}
+		}
+	}
 
 	/**
 	 * Adds object reference.
@@ -2304,18 +2366,6 @@ public:
 		}
 	}
 
-
-
-	/**
-	 * Adds any applicable references from a UScriptStruct. Only necessary to handle cases of an unreflected/non-UPROPERTY struct that wants to have references emitted.
-	 *
-	 * @param ScriptStruct Script struct to add referenced objects from
-	 * @param StructMemory Memory of struct instance
-	 * @param ReferencingObject Referencing object (if available).
-	 * @param ReferencingProperty Referencing property (if available).
-	 */
-	void AddReferencedObjects(const class UScriptStruct*& ScriptStruct, void* StructMemory, const UObject* ReferencingObject = nullptr, const FProperty* ReferencingProperty = nullptr);
-
 	/**
 	 * Adds object reference.
 	 *
@@ -2326,7 +2376,7 @@ public:
 	template<class UObjectType>
 	void AddReferencedObject(TObjectPtr<UObjectType>& Object, const UObject* ReferencingObject = nullptr, const FProperty* ReferencingProperty = nullptr)
 	{
-		if (IsObjectHandleResolved(Object.GetHandle()))
+		if (Object.IsResolved())
 		{
 			HandleObjectReference(*reinterpret_cast<UObject**>(&Object), ReferencingObject, ReferencingProperty);
 		}
@@ -2344,7 +2394,7 @@ public:
 	{
 		static_assert(sizeof(UObjectType) > 0, "AddReferencedObject: Element must be a pointer to a fully-defined type");
 		static_assert(TPointerIsConvertibleFromTo<UObjectType, const UObjectBase>::Value, "AddReferencedObject: Element must be a pointer to a type derived from UObject");
-		if (IsObjectHandleResolved(Object.GetHandle()))
+		if (Object.IsResolved())
 		{
 			HandleObjectReference(*reinterpret_cast<UObject**>(&Object), ReferencingObject, ReferencingProperty);
 		}
@@ -2398,7 +2448,7 @@ public:
 		static_assert(TPointerIsConvertibleFromTo<UObjectType, const UObjectBase>::Value, "AddReferencedObjects: Elements must be pointers to a type derived from UObject");
 		for (auto& Object : ObjectSet)
 		{
-			if (IsObjectHandleResolved(Object.GetHandle()))
+			if (Object.IsResolved())
 			{
 				HandleObjectReference(*reinterpret_cast<UObject**>(&Object), ReferencingObject, ReferencingProperty);
 			}
@@ -2419,7 +2469,7 @@ public:
 		static_assert(TPointerIsConvertibleFromTo<KeyType, const UObjectBase>::Value, "AddReferencedObjects: Keys must be pointers to a type derived from UObject");
 		for (auto& It : Map)
 		{
-			if (IsObjectHandleResolved(It.Key.GetHandle()))
+			if (It.Key.IsResolved())
 			{
 				HandleObjectReference(*reinterpret_cast<UObject**>(&It.Key), ReferencingObject, ReferencingProperty);
 			}
@@ -2432,7 +2482,7 @@ public:
 		static_assert(TPointerIsConvertibleFromTo<ValueType, const UObjectBase>::Value, "AddReferencedObjects: Values must be pointers to a type derived from UObject");
 		for (auto& It : Map)
 		{
-			if (IsObjectHandleResolved(It.Value.GetHandle()))
+			if (It.Value.IsResolved())
 			{
 				HandleObjectReference(*reinterpret_cast<UObject**>(&It.Value), ReferencingObject, ReferencingProperty);
 			}
@@ -2447,16 +2497,46 @@ public:
 		static_assert(TPointerIsConvertibleFromTo<ValueType, const UObjectBase>::Value, "AddReferencedObjects: Values must be pointers to a type derived from UObject");
 		for (auto& It : Map)
 		{
-			if (IsObjectHandleResolved(It.Key.GetHandle()))
+			if (It.Key.IsResolved())
 			{
 				HandleObjectReference(*reinterpret_cast<UObject**>(&It.Key), ReferencingObject, ReferencingProperty);
 			}
-			if (IsObjectHandleResolved(It.Value.GetHandle()))
+			if (It.Value.IsResolved())
 			{
 				HandleObjectReference(*reinterpret_cast<UObject**>(&It.Value), ReferencingObject, ReferencingProperty);
 			}
 		}
 	}
+
+	/**
+	 * Adds all strong property references from a UScriptStruct instance including the struct itself
+	 * 
+	 * Only necessary to handle cases of an unreflected/non-UPROPERTY struct that wants to have references emitted.
+	 *
+	 * Calls AddStructReferencedObjects() but not recursively on nested structs. 
+	 * 
+	 * This and other AddPropertyReferences functions will hopefully merge into a single function in the future.
+	 * They're kept separate initially to maintain exact semantics while replacing the much slower
+	 * SerializeBin/TPropertyValueIterator/GetVerySlowReferenceCollectorArchive paths.
+	 */
+	void AddReferencedObjects(const UScriptStruct*& ScriptStruct, void* Instance, const UObject* ReferencingObject = nullptr, const FProperty* ReferencingProperty = nullptr);
+
+	/** Adds all strong property references from a struct instance, but not the struct itself. Skips AddStructReferencedObjects. */
+	void AddPropertyReferences(const UStruct* Struct, void* Instance, const UObject* ReferencingObject = nullptr);
+	
+	/** Same as AddPropertyReferences but also calls AddStructReferencedObjects on Struct and all nested structs */
+	void AddPropertyReferencesWithStructARO(const UScriptStruct* Struct, void* Instance, const UObject* ReferencingObject = nullptr);
+
+	/** Internal use only. Same as AddPropertyReferences but skips field path and interface properties. Might get removed. */
+	void AddPropertyReferencesLimitedToObjectProperties(const UStruct* Struct, void* Instance, const UObject* ReferencingObject = nullptr);
+
+	/**
+	 * Make Add[OnlyObject]PropertyReference/AddReferencedObjects(UScriptStruct) use AddReferencedObjects(UObject*&) callbacks
+	 * with ReferencingObject and ReferencingProperty context supplied and check for null references before making a callback.
+	 * 
+	 * Return false to use context free AddStableReference callbacks without null checks that avoid sync cache misses when batch processing references.
+	 */
+	virtual bool NeedsPropertyReferencer() const { return true; }
 
 	/**
 	 * If true archetype references should not be added to this collector.
@@ -2470,6 +2550,8 @@ public:
 	 * Allows reference elimination by this collector.
 	 */
 	virtual void AllowEliminatingReferences(bool bAllow) {}
+
+
 	/**
 	 * Sets the property that is currently being serialized
 	 */
@@ -2492,9 +2574,13 @@ public:
 	 */
 	virtual bool IsProcessingNativeReferences() const { return true; }
 
+	/** Used by parallel reachability analysis to pre-collect and then exclude some initial FGCObject references */
+	virtual bool NeedsInitialReferences() const { return true; }
+
 	/**
-	* Returns the collector archive associated with this collector.
-	* NOTE THAT COLLECTING REFERENCES THROUGH SERIALIZATION IS VERY SLOW.
+	* Get archive to collect references via SerializeBin / Serialize.
+	*
+	* NOTE: Prefer using AddPropertyReferences or AddReferencedObjects(const UScriptStruct&) instead, they're much faster.
 	*/
 	FReferenceCollectorArchive& GetVerySlowReferenceCollectorArchive()
 	{
@@ -2503,19 +2589,6 @@ public:
 			CreateVerySlowReferenceCollectorArchive();
 		}
 		return *DefaultReferenceCollectorArchive;
-	}
-
-	/**
-	* INTERNAL USE ONLY: returns the persistent frame collector archive associated with this collector.
-	* NOTE THAT COLLECTING REFERENCES THROUGH SERIALIZATION IS VERY SLOW.
-	*/
-	FReferenceCollectorArchive& GetInternalPersistentFrameReferenceCollectorArchive()
-	{
-		if (!PersistentFrameReferenceCollectorArchive)
-		{
-			CreatePersistentFrameReferenceCollectorArchive();
-		}
-		return *PersistentFrameReferenceCollectorArchive;
 	}
 
 protected:
@@ -2556,16 +2629,11 @@ protected:
 	virtual void HandleObjectReferences(FObjectPtr* InObjects, const int32 ObjectNum, const UObject* InReferencingObject, const FProperty* InReferencingProperty);
 
 private:
-
-	/** Creates the roxy archive that uses serialization to add objects to this collector */
+	/** Creates the proxy archive that uses serialization to add objects to this collector */
 	void CreateVerySlowReferenceCollectorArchive();
-	/** Creates persistent frame proxy archive that uses serialization to add objects to this collector */
-	void CreatePersistentFrameReferenceCollectorArchive();
 
 	/** Default proxy archive that uses serialization to add objects to this collector */
-	FReferenceCollectorArchive* DefaultReferenceCollectorArchive;
-	/** Persistent frame proxy archive that uses serialization to add objects to this collector */
-	FReferenceCollectorArchive* PersistentFrameReferenceCollectorArchive;
+	TUniquePtr<FReferenceCollectorArchive> DefaultReferenceCollectorArchive;
 };
 
 /**
@@ -2615,8 +2683,8 @@ protected:
 
 	/** Stored reference to array of objects we add object references to. */
 	TArray<UObject*>&		ObjectArray;
-	/** List of objects that have been recursively serialized. */
-	TSet<const UObject*>	SerializedObjects;
+	/** Set that duplicates ObjectArray. Keeps ObjectArray unique and avoids duplicate recursive serializing. */
+	TSet<const UObject*>	ObjectSet;
 	/** Only objects within this outer will be considered, nullptr value indicates that outers are disregarded. */
 	UObject*		LimitOuter;
 	/** Property that is referencing the current object */
@@ -2814,6 +2882,7 @@ struct COREUOBJECT_API FCoreUObjectDelegates
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FTraceExternalRootsForReachabilityAnalysisDelegate, FGarbageCollectionTracer&, EObjectFlags, bool);
 
 	/** Called as last phase of reachability analysis. Allow external systems to add UObject roots *after* first reachability pass has been done */
+	UE_DEPRECATED(5.2, "Ability to inject extra root objects will be removed to reduce GC complexity")
 	static FTraceExternalRootsForReachabilityAnalysisDelegate TraceExternalRootsForReachabilityAnalysis;
 
 	/** Called after reachability analysis, before any purging */
@@ -2912,6 +2981,37 @@ UE_DEPRECATED(5.0, "This method is no longer in use and will be removed.")
 COREUOBJECT_API TMap<FName, FDynamicClassStaticData>& GetDynamicClassMap();
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+namespace UE
+{
+
+class FAssetLog
+{
+public:
+	inline explicit FAssetLog(const TCHAR* InPath UE_LIFETIMEBOUND) : Path(InPath) {}
+	inline explicit FAssetLog(const FPackagePath& InPath UE_LIFETIMEBOUND) : PackagePath(&InPath) {}
+	inline explicit FAssetLog(const UObject* InObject UE_LIFETIMEBOUND) : Object(InObject) {}
+
+	COREUOBJECT_API friend void SerializeForLog(FCbWriter& Writer, const FAssetLog& AssetLog);
+
+private:
+	const TCHAR* Path = nullptr;
+	const FPackagePath* PackagePath = nullptr;
+	const UObject* Object = nullptr;
+};
+
+} // UE
+
+namespace UE::Core::Private
+{
+COREUOBJECT_API void RecordAssetLog(
+	const FName& CategoryName,
+	ELogVerbosity::Type Verbosity,
+	const FAssetLog& AssetLog,
+	const FString& Message,
+	const ANSICHAR* File,
+	int32 Line);
+} // UE::Core::Private
+
 /**
  * FAssetMsg
  * This struct contains functions for asset-related messaging
@@ -2953,12 +3053,11 @@ struct FAssetMsg
 		{ \
 			UE_LOG_EXPAND_IS_FATAL(Verbosity, PREPROCESSOR_NOTHING, if (!CategoryName.IsSuppressed(ELogVerbosity::Verbosity))) \
 			{ \
-				FString FormatPath = FAssetMsg::FormatPathForAssetLog(Asset);\
-				FMsg::Logf_Internal(__FILE__, __LINE__, CategoryName.GetCategoryName(), ELogVerbosity::Verbosity, TEXT(ASSET_LOG_FORMAT_STRING_ANSI "%s"), *FormatPath, *FString::Printf(Format, ##__VA_ARGS__)); \
+				::UE::Core::Private::RecordAssetLog(CategoryName.GetCategoryName(), ELogVerbosity::Verbosity, ::UE::FAssetLog(Asset), FString::Printf(Format, ##__VA_ARGS__), __FILE__, __LINE__); \
 				UE_LOG_EXPAND_IS_FATAL(Verbosity, \
 					{ \
 						UE_DEBUG_BREAK_AND_PROMPT_FOR_REMOTE(); \
-						FDebug::AssertFailed("", __FILE__, __LINE__, TEXT("%s: %s"), *FormatPath, *FString::Printf(Format, ##__VA_ARGS__)); \
+						FDebug::AssertFailed("", __FILE__, __LINE__, TEXT("%s: %s"), *FAssetMsg::FormatPathForAssetLog(Asset), *FString::Printf(Format, ##__VA_ARGS__)); \
 						CA_ASSUME(false); \
 					}, \
 					PREPROCESSOR_NOTHING \
@@ -3041,7 +3140,7 @@ namespace UECodeGen_Private
 	ENUM_CLASS_FLAGS(EPropertyGenFlags)
 
 	// Value which masks out the type of combined EPropertyGenFlags.
-	constexpr EPropertyGenFlags PropertyTypeMask = (EPropertyGenFlags)0x3F;
+	inline constexpr EPropertyGenFlags PropertyTypeMask = (EPropertyGenFlags)0x3F;
 
 #if WITH_METADATA
 	struct FMetaDataPairParam
@@ -3554,3 +3653,7 @@ enum class EDataValidationResult : uint8
  * @return	Returns the combined data validation result
  */
 COREUOBJECT_API EDataValidationResult CombineDataValidationResults(EDataValidationResult Result1, EDataValidationResult Result2);
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

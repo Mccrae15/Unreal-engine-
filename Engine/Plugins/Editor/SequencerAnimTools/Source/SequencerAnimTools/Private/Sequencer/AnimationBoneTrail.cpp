@@ -1,18 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationBoneTrail.h"
-#include "TrailHierarchy.h"
+#include "Animation/AnimData/AnimDataModel.h"
 #include "SequencerTrailHierarchy.h"
 
-#include "Animation/AnimInstance.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "Sequencer/ControlRigLayerInstance.h"
+#include "Evaluation/MovieSceneSequenceTransform.h"
 #include "MovieSceneToolHelpers.h"
 
-#include "ISequencer.h"
-#include "MovieSceneSequence.h"
 #include "Exporters/AnimSeqExportOption.h"
 #include "Animation/AnimSequenceHelpers.h"
+#include "UObject/Package.h"
 
 namespace UE 
 {
@@ -97,7 +94,6 @@ void FAnimTrajectoryCache::GetSpaceBasedAnimationData(TArray<TArray<FTransform>>
 
 	// 2d array of animated time [boneindex][time key]
 	const int32 NumKeys = CachedAnimSequence->GetNumberOfSampledKeys();
-	float Interval = UE::SequencerAnimTools::GetIntervalPerKey(NumKeys, CachedAnimSequence->GetPlayLength());
 
 	// allocate arrays
 	for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
@@ -106,31 +102,28 @@ void FAnimTrajectoryCache::GetSpaceBasedAnimationData(TArray<TArray<FTransform>>
 	}
 
 	// If skeleton to track map isn't initialized yet, initialize it
-	if (SkelToTrackIdx.Num() == 0)
+	if (SkelToBoneName.Num() == 0)
 	{
-		SkelToTrackIdx.SetNumUninitialized(NumBones);
+		SkelToBoneName.SetNumUninitialized(NumBones);
 		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 		{
-			FName BoneName = MySkeleton->GetReferenceSkeleton().GetBoneName(BoneIndex);
-			int32 TrackIndex = CachedAnimSequence->GetDataModel()->GetBoneTrackIndexByName(BoneName);
-			SkelToTrackIdx[BoneIndex] = TrackIndex;
+			const FName SkeletonBoneName = MySkeleton->GetReferenceSkeleton().GetBoneName(BoneIndex);
+			SkelToBoneName[BoneIndex] = CachedAnimSequence->GetDataModel()->IsValidBoneTrackName(SkeletonBoneName) ? SkeletonBoneName : NAME_None;
 		}
 	}
 
 	// Set component transform for each bone
 	for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 	{
-		int32 TrackIndex = SkelToTrackIdx[BoneIndex];
-		int32 ParentBoneIndex = MySkeleton->GetReferenceSkeleton().GetParentIndex(BoneIndex);
+		const FName& BoneName = SkelToBoneName[BoneIndex];
+		const int32 ParentBoneIndex = MySkeleton->GetReferenceSkeleton().GetParentIndex(BoneIndex);
 
-		if (TrackIndex != INDEX_NONE)
+		if (BoneName != NAME_None)
 		{
 			// fill up keys - calculate PK1 * K1
 			for (int32 Key = 0; Key < NumKeys; ++Key)
 			{
-				FTransform AnimatedLocalKey;
-				UE::Anim::GetBoneTransformFromModel(CachedAnimSequence->GetDataModel(), AnimatedLocalKey, TrackIndex, Interval * Key, CachedAnimSequence->Interpolation);
-
+				const FTransform AnimatedLocalKey = CachedAnimSequence->GetDataModel()->EvaluateBoneTrackTransform(BoneName, Key, CachedAnimSequence->Interpolation);
 				if (ParentBoneIndex != INDEX_NONE)
 				{
 					OutAnimationDataInComponentSpace[BoneIndex][Key] = AnimatedLocalKey * OutAnimationDataInComponentSpace[ParentBoneIndex][Key];
@@ -144,8 +137,7 @@ void FAnimTrajectoryCache::GetSpaceBasedAnimationData(TArray<TArray<FTransform>>
 		else
 		{
 			// get local spaces from refpose and use that to fill it up
-			FTransform LocalTransform = MySkeleton->GetReferenceSkeleton().GetRefBonePose()[BoneIndex];
-
+			const FTransform LocalTransform = MySkeleton->GetReferenceSkeleton().GetRefBonePose()[BoneIndex];
 			for (int32 Key = 0; Key < NumKeys; ++Key)
 			{
 				if (ParentBoneIndex != INDEX_NONE)

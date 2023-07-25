@@ -47,11 +47,11 @@ struct FChildEntityInitializer;
 struct FComponentRegistry;
 struct FEntityAllocationIteratorProxy;
 struct FFreeEntityOperation;
-struct FMutualEntityInitializer;
 struct IComponentTypeHandler;
 struct IMovieSceneEntityMutation;
 template <typename T> struct TReadOptional;
 template <typename T> struct TWriteOptional;
+struct IMovieSceneConditionalEntityMutation;
 
 
 enum class EEntityRecursion : uint8
@@ -216,7 +216,19 @@ public:
 
 
 	/**
-	 * Compute and retrieve this entity manager's threading model
+	 * Compute and return this entity manager's threading model. Does not change the current cached threading model.
+	 */
+	EEntityThreadingModel ComputeThreadingModel() const;
+
+
+	/**
+	 * Compute and store the current threading model.
+	 */
+	void UpdateThreadingModel();
+
+
+	/**
+	 * Get this entitiy manager's current threading model based on the last time UpdateThreadingModel was called.
 	 */
 	EEntityThreadingModel GetThreadingModel() const;
 
@@ -239,12 +251,18 @@ public:
 		if (Entry.Data.Allocation != nullptr)
 		{
 			const FComponentHeader& Header = Entry.Data.Allocation->GetComponentHeaderChecked(ComponentTypeID);
-			Header.ReadWriteLock.WriteLock();
+			if (Entry.Data.Allocation->GetCurrentLockMode() != EComponentHeaderLockMode::LockFree)
+			{
+				Header.ReadWriteLock.WriteLock();
+			}
 
 			T* Component = reinterpret_cast<T*>(Header.GetValuePtr(Entry.Data.ComponentOffset));
 			*Component = Forward<ValueType>(InValue);
 
-			Header.ReadWriteLock.WriteUnlock();
+			if (Entry.Data.Allocation->GetCurrentLockMode() != EComponentHeaderLockMode::LockFree)
+			{
+				Header.ReadWriteLock.WriteUnlock();
+			}
 		}
 	}
 
@@ -324,7 +342,7 @@ public:
 	 * @param InEntity  The ID of the entity
 	 * @return The type mask for this entity, or an empty mask if it has no components
 	 */
-	FComponentMask GetEntityType(FMovieSceneEntityID InEntity) const;
+	const FComponentMask& GetEntityType(FMovieSceneEntityID InEntity) const;
 
 
 	/**
@@ -391,11 +409,6 @@ public:
 	void InitializeChildAllocation(const FComponentMask& ParentType, const FComponentMask& ChildType, const FEntityAllocation* ParentAllocation, TArrayView<const int32> ParentAllocationOffsets, const FEntityRange& InChildEntityRange);
 
 	/**
-	 * Initialize a single entity using the mutual initializers
-	 */
-	void InitializeMutualComponents(FMovieSceneEntityID EntityID);
-
-	/**
 	 * Destroy a previously registered instanced child initializer using its index
 	 */
 	void DestroyInstancedChildInitializer(int32 Index)
@@ -435,7 +448,7 @@ public:
 		}
 
 		FEntityLocation Location = EntityLocations[Entity.AsIndex()];
-		if (!Location.IsValid())
+		if (!Location.IsValid() || !EntityAllocationMasks[Location.GetAllocationIndex()].Contains(ComponentTypeID))
 		{
 			return TComponentLock<TReadOptional<T>>();
 		}
@@ -443,11 +456,15 @@ public:
 		FEntityAllocation* Allocation = EntityAllocations[Location.GetAllocationIndex()];
 		const int32 ComponentOffset = Location.GetEntryIndexWithinAllocation();
 
+		EComponentHeaderLockMode LockMode = GetThreadingModel() == EEntityThreadingModel::NoThreading
+			? EComponentHeaderLockMode::LockFree
+			: EComponentHeaderLockMode::Mutex;
+
 		for (FComponentHeader& Header : Allocation->GetComponentHeaders())
 		{
 			if (Header.ComponentType == ComponentTypeID)
 			{
-				return TComponentLock<TReadOptional<T>>(&Header, ComponentOffset);
+				return TComponentLock<TReadOptional<T>>(&Header, LockMode, ComponentOffset);
 			}
 		}
 
@@ -491,7 +508,7 @@ public:
 		}
 
 		FEntityLocation Location = EntityLocations[Entity.AsIndex()];
-		if (!Location.IsValid())
+		if (!Location.IsValid() || !EntityAllocationMasks[Location.GetAllocationIndex()].Contains(ComponentTypeID))
 		{
 			return TComponentLock<TWriteOptional<T>>();
 		}
@@ -499,11 +516,15 @@ public:
 		FEntityAllocation* Allocation = EntityAllocations[Location.GetAllocationIndex()];
 		const int32 ComponentOffset = Location.GetEntryIndexWithinAllocation();
 
+		EComponentHeaderLockMode LockMode = GetThreadingModel() == EEntityThreadingModel::NoThreading
+			? EComponentHeaderLockMode::LockFree
+			: EComponentHeaderLockMode::Mutex;
+
 		for (FComponentHeader& Header : Allocation->GetComponentHeaders())
 		{
 			if (Header.ComponentType == ComponentTypeID)
 			{
-				return TComponentLock<TWriteOptional<T>>(&Header, FEntityAllocationWriteContext(*this), ComponentOffset);
+				return TComponentLock<TWriteOptional<T>>(&Header, LockMode, FEntityAllocationWriteContext(*this), ComponentOffset);
 			}
 		}
 
@@ -563,6 +584,16 @@ public:
 	 * @return The number of entities that were mutated, or 0 if none were matched
 	 */
 	int32 MutateAll(const FEntityComponentFilter& Filter, const IMovieSceneEntityMutation& Mutation);
+
+
+	/**
+	 * Efficiently mutate all entities that match a filter. Mutations can add or remove components from batches of entity data.
+	 *
+	 * @param Filter      The filter to match entity allocations against. Only entities that match the filter will be mutated
+	 * @param Mutation    Implementation that defines how to mutate the entities that match the filter
+	 * @return The number of entities that were mutated, or 0 if none were matched
+	 */
+	int32 MutateConditional(const FEntityComponentFilter& Filter, const IMovieSceneConditionalEntityMutation& Mutation);
 
 
 	/**
@@ -751,7 +782,7 @@ public:
 
 	void CheckCanChangeStructure() const
 	{
-		checkf(IterationCount == 0, TEXT("Mutation of entities is not permissible while entities are being iterated"));
+		checkf(static_cast<uint16>(IterationCount) == 0, TEXT("Mutation of entities is not permissible while entities are being iterated"));
 		checkf(LockdownState == ELockdownState::Unlocked, TEXT("Structural changes to the entity manager are not permitted while it is locked down"));
 	}
 
@@ -786,7 +817,7 @@ public:
 	 */
 	FEntityComponentFilter& ModifyGlobalIterationFilter()
 	{
-		ensureMsgf(!IsLockedDown() && IterationCount == 0, TEXT("Manipulating the global iteration filter while locked down or iterating is not recommended"));
+		ensureMsgf(!IsLockedDown() && static_cast<uint16>(IterationCount) == 0, TEXT("Manipulating the global iteration filter while locked down or iterating is not recommended"));
 		return GlobalIterationFilter;
 	}
 
@@ -872,6 +903,7 @@ private:
 	int32 CreateEntityAllocationEntry(const FComponentMask& EntityComponentMask, uint16 InitialCapacity, uint16 MaxCapacity);
 
 	int32 GetOrCreateAllocationWithSlack(const FComponentMask& EntityComponentMask, int32* InOutDesiredSlack = nullptr);
+	int32 CreateAllocationWithSlack(const FComponentMask& EntityComponentMask, int32* InOutDesiredSlack = nullptr);
 	int32 MigrateEntity(int32 DestIndex, int32 SourceIndex, int32 SourceEntryIndexWithinAllocation);
 
 	void CopyComponents(int32 DestAllocationIndex, int32 DestEntityIndex, int32 SourceAllocationIndex, int32 SourceEntityIndex, const FComponentMask* OptionalMask = nullptr);
@@ -1006,6 +1038,7 @@ private:
 
 	ENamedThreads::Type GatherThread;
 	ENamedThreads::Type DispatchThread;
+	EEntityThreadingModel ThreadingModel;
 
 	enum class ELockdownState
 	{

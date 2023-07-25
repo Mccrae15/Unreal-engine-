@@ -2,30 +2,10 @@
 
 #include "MuCO/CustomizableObjectMipDataProvider.h"
 
-#include "Async/Fundamental/Task.h"
-#include "Containers/ArrayView.h"
-#include "Containers/IndirectArray.h"
-#include "Engine/Texture.h"
-#include "Engine/Texture2D.h"
-#include "HAL/ThreadSafeCounter.h"
-#include "HAL/UnrealMemory.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Math/UnrealMathSSE.h"
-#include "Misc/ScopeLock.h"
-#include "MuCO/CustomizableObject.h"
+#include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/CustomizableObjectSystemPrivate.h"
-#include "MuR/Instance.h"
-#include "MuR/Mesh.h"
 #include "MuR/Model.h"
-#include "MuR/MutableTrace.h"
-#include "MuR/Ptr.h"
-#include "MuR/Types.h"
-#include "Serialization/BulkData.h"
-#include "Templates/Casts.h"
-#include "Templates/Function.h"
 #include "TextureResource.h"
-#include "Trace/Detail/Channel.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CustomizableObjectMipDataProvider)
 
@@ -44,10 +24,29 @@ FMutableTextureMipDataProvider::FMutableTextureMipDataProvider(const UTexture* T
 }
 
 
+void FMutableTextureMipDataProvider::PrintWarningAndAdvanceToCleanup()
+{
+	UE_LOG(LogMutable, Warning, TEXT("Tried to update a mip from a Customizable Object being compiled, cancelling mip update."));
+	AdvanceTo(ETickState::CleanUp, ETickThread::Async);
+}
+
+
 void FMutableTextureMipDataProvider::Init(const FTextureUpdateContext& Context, const FTextureUpdateSyncOptions& SyncOptions)
 {
+#if WITH_EDITOR
+	check(Context.Texture->HasPendingInitOrStreaming());
+	check(CustomizableObjectInstance->GetCustomizableObject());
+	if (CustomizableObjectInstance->GetCustomizableObject()->IsLocked())
+	{
+		PrintWarningAndAdvanceToCleanup();
+
+		return;
+	}
+#endif
+
 	AdvanceTo(ETickState::GetMips, ETickThread::Async);
 }
+
 
 namespace impl
 {
@@ -61,15 +60,15 @@ namespace impl
 		// This runs in a worker thread.
 		check(OperationData.IsValid());
 		check(OperationData->UpdateContext->System.get());
-		check(OperationData->UpdateContext->Model.get());
+		check(OperationData->UpdateContext->Model);
 		check(OperationData->UpdateContext->Parameters.get());
 
 		mu::SystemPtr System = OperationData->UpdateContext->System;
-		mu::ModelPtr Model = OperationData->UpdateContext->Model;
+		const TSharedPtr<mu::Model,ESPMode::ThreadSafe> Model = OperationData->UpdateContext->Model;
 
 		// For now, we are forcing the recreation of mutable-side instances with every update.
-		mu::Instance::ID InstanceID = System->NewInstance(Model.get());
-		UE_LOG(LogMutable, Log, TEXT("Creating instance with id [%d] "), InstanceID)
+		mu::Instance::ID InstanceID = System->NewInstance(Model);
+		UE_LOG(LogMutable, Verbose, TEXT("Creating Mutable instance with id [%d] for a single UpdateImage"), InstanceID)
 
 		const mu::Instance* Instance = nullptr;
 
@@ -114,6 +113,7 @@ namespace impl
 		{
 			MUTABLE_CPUPROFILER_SCOPE(EndUpdate);
 			System->EndUpdate(InstanceID);
+			System->ReleaseInstance(InstanceID);
 		}
 
 		{
@@ -139,6 +139,17 @@ namespace impl
 
 int32 FMutableTextureMipDataProvider::GetMips(const FTextureUpdateContext& Context, int32 StartingMipIndex, const FTextureMipInfoArray& MipInfos, const FTextureUpdateSyncOptions& SyncOptions)
 {
+#if WITH_EDITOR
+	check(Context.Texture->HasPendingInitOrStreaming());
+	check(CustomizableObjectInstance->GetCustomizableObject());
+	if (CustomizableObjectInstance->GetCustomizableObject()->IsLocked())
+	{
+		PrintWarningAndAdvanceToCleanup();
+
+		return CurrentFirstLODIdx;
+	}
+#endif
+
 	const UTexture2D* Texture = Cast<UTexture2D>(Context.Texture);
 	check(Texture);
 	check(!Texture->NeverStream);
@@ -224,6 +235,16 @@ int32 FMutableTextureMipDataProvider::GetMips(const FTextureUpdateContext& Conte
 
 bool FMutableTextureMipDataProvider::PollMips(const FTextureUpdateSyncOptions& SyncOptions)
 {
+#if WITH_EDITOR
+	check(CustomizableObjectInstance->GetCustomizableObject());
+	if (CustomizableObjectInstance->GetCustomizableObject()->IsLocked())
+	{
+		PrintWarningAndAdvanceToCleanup();
+
+		return false;
+	}
+#endif
+
 	if (!bRequestAborted && UpdateImageMutableTaskEvent)
 	{
 		if (OperationData && OperationData->Result && OperationData->Levels.Num())

@@ -70,6 +70,9 @@
 class FPaintArgs;
 class FWidgetStyle;
 
+TAutoConsoleVariable<bool> CVarDrawCurveLines(TEXT("CurveEditor.DrawCurveLines"), true, TEXT("When true we draw curve lines, when false we do not."));
+TAutoConsoleVariable<bool> CVarDrawCurveKeys(TEXT("CurveEditor.DrawCurveKeys"), true, TEXT("When true we draw curve keys, when false we do not."));
+
 namespace CurveViewConstants
 {
 	/** The number of pixels to offset Labels from the Left/Right size. */
@@ -103,12 +106,14 @@ public:
 
 void SInteractiveCurveEditorView::Construct(const FArguments& InArgs, TWeakPtr<FCurveEditor> InCurveEditor)
 {
+
 	FixedHeight = InArgs._FixedHeight;
 	BackgroundTint = InArgs._BackgroundTint;
 	MaximumCapacity = InArgs._MaximumCapacity;
 	bAutoSize = InArgs._AutoSize;
 
 	WeakCurveEditor = InCurveEditor;
+	CachedValues.CachedTangentVisibility = InCurveEditor.Pin()->GetSettings()->GetTangentVisibility();
 
 	InCurveEditor.Pin()->OnActiveToolChangedDelegate.AddSP(this, &SInteractiveCurveEditorView::OnCurveEditorToolChanged);
 
@@ -436,6 +441,9 @@ void SInteractiveCurveEditorView::DrawCurves(TSharedRef<FCurveEditor> CurveEdito
 	const float UnHoveredCurveThickness = 2.f;
 	const bool  bAntiAliasCurves = true;
 
+	const bool bDrawLines = CVarDrawCurveLines.GetValueOnGameThread();
+	const bool bDrawKeys = CVarDrawCurveKeys.GetValueOnGameThread();
+
 	TOptional<FCurveModelID> HoveredCurve = GetHoveredCurve();
 	for (const FCurveDrawParams& Params : CachedDrawParams)
 	{
@@ -443,22 +451,26 @@ void SInteractiveCurveEditorView::DrawCurves(TSharedRef<FCurveEditor> CurveEdito
 		const float Thickness = bIsCurveHovered ? HoveredCurveThickness : UnHoveredCurveThickness;
 		const int32 CurveLayerId = bIsCurveHovered ? BaseLayerId + CurveViewConstants::ELayerOffset::Curves : BaseLayerId + CurveViewConstants::ELayerOffset::HoveredCurves;
 
-		FSlateDrawElement::MakeLines(
-			OutDrawElements,
-			CurveLayerId,
-			PaintGeometry,
-			Params.InterpolatingPoints,
-			DrawEffects,
-			Params.Color,
-			bAntiAliasCurves,
-			Thickness
-		);
+		if (bDrawLines)
+		{
 
+			FSlateDrawElement::MakeLines(
+				OutDrawElements,
+				CurveLayerId,
+				PaintGeometry,
+				Params.InterpolatingPoints,
+				DrawEffects,
+				Params.Color,
+				bAntiAliasCurves,
+				Thickness
+			);
+		}
+		
 		TArray<FVector2D> LinePoints;
 		LinePoints.SetNum(2);
 
 		// Draw tangents
-		if (Params.bKeyDrawEnabled)
+		if (bDrawKeys && Params.bKeyDrawEnabled)
 		{
 			for (int32 PointIndex = 0; PointIndex < Params.Points.Num(); PointIndex++)
 			{
@@ -492,8 +504,8 @@ void SInteractiveCurveEditorView::DrawCurves(TSharedRef<FCurveEditor> CurveEdito
 				}
 
 				FPaintGeometry PointGeometry = AllottedGeometry.ToPaintGeometry(
-					Point.ScreenPosition - (PointDrawInfo.ScreenSize * 0.5f),
-					PointDrawInfo.ScreenSize
+					PointDrawInfo.ScreenSize,
+					FSlateLayoutTransform(Point.ScreenPosition - (PointDrawInfo.ScreenSize * 0.5f))
 				);
 
 				FSlateDrawElement::MakeBox(OutDrawElements, KeyLayerId, PointGeometry, PointDrawInfo.Brush, DrawEffects, PointTint);
@@ -551,13 +563,6 @@ void SInteractiveCurveEditorView::DrawBufferedCurves(TSharedRef<FCurveEditor> Cu
 	}
 }
 
-void SInteractiveCurveEditorView::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
-{
-	// Cache our Curve Drawing Params. These are used in multiple places so we cache them once each frame.
-	CachedDrawParams.Reset();
-	GetCurveDrawParams(CachedDrawParams);
-}
-
 bool SInteractiveCurveEditorView::GetPointsWithinWidgetRange(const FSlateRect& WidgetRectangle, TArray<FCurvePointHandle>* OutPoints) const
 {
 	TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
@@ -566,8 +571,12 @@ bool SInteractiveCurveEditorView::GetPointsWithinWidgetRange(const FSlateRect& W
 		return false;
 	}
 
+	FVector2D LinePoints[2];
+	FVector Start, End, StartToEnd;
+	FBox WidgetRectangleBox(FVector(WidgetRectangle.Left, WidgetRectangle.Top, 0), FVector(WidgetRectangle.Right, WidgetRectangle.Bottom, 0));
+
 	// Iterate through all of our points and see which points the marquee overlaps. Both of these coordinate systems
-	// are in screen space pixels.
+	// are in screen space pixels.  Also check tangent lines
 	bool bFound = false;
 	for (const FCurveDrawParams& DrawParams : CachedDrawParams)
 	{
@@ -582,6 +591,21 @@ bool SInteractiveCurveEditorView::GetPointsWithinWidgetRange(const FSlateRect& W
 			{
 				OutPoints->Add(FCurvePointHandle(DrawParams.GetID(), Point.Type, Point.KeyHandle));
 				bFound = true;
+			}
+			else if (Point.LineDelta.X != 0.f || Point.LineDelta.Y != 0.f) //if tangent hit test line
+			{
+				LinePoints[0] = Point.ScreenPosition + Point.LineDelta.GetSafeNormal() * (DrawInfo.ScreenSize.X * .5f);
+				LinePoints[1] = Point.ScreenPosition + Point.LineDelta;
+
+				Start = FVector(LinePoints[0].X, LinePoints[0].Y, 0);
+				End = FVector(LinePoints[1].X, LinePoints[1].Y, 0);
+				StartToEnd = End - Start;
+
+				if (FMath::LineBoxIntersection(WidgetRectangleBox, Start, End, StartToEnd))
+				{
+					OutPoints->Add(FCurvePointHandle(DrawParams.GetID(), Point.Type, Point.KeyHandle));
+					bFound = true;
+				}
 			}
 		}
 	}

@@ -7,6 +7,7 @@
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
 #include "MaterialExpressionIO.h"
+#include "MaterialValueType.h"
 #include "Materials/MaterialExpression.h"
 #include "MaterialExpressionLandscapeLayerBlend.generated.h"
 
@@ -15,7 +16,7 @@ struct FPropertyChangedEvent;
 struct FMaterialParameterInfo;
 
 UENUM()
-enum ELandscapeLayerBlendType
+enum ELandscapeLayerBlendType : int
 {
 	LB_WeightBlend,
 	LB_AlphaBlend,

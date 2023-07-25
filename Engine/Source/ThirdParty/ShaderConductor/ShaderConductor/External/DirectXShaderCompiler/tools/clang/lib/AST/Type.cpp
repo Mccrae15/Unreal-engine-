@@ -364,6 +364,11 @@ bool Type::isStructureType() const {
     return RT->getDecl()->isStruct();
   return false;
 }
+bool Type::isEmptyStructureType() const {
+  if (const RecordType *RT = getAs<RecordType>())
+    return RT->getDecl()->isStruct() && RT->getDecl()->field_empty();
+  return false;
+}
 bool Type::isObjCBoxableRecordType() const {
   if (const RecordType *RT = getAs<RecordType>())
     return RT->getDecl()->hasAttr<ObjCBoxableAttr>();
@@ -3161,7 +3166,7 @@ public:
   friend CachedProperties merge(CachedProperties L, CachedProperties R) {
     Linkage MergedLinkage = minLinkage(L.L, R.L);
     return CachedProperties(MergedLinkage,
-                         L.hasLocalOrUnnamedType() | R.hasLocalOrUnnamedType());
+                         L.hasLocalOrUnnamedType() || R.hasLocalOrUnnamedType());
   }
 };
 }

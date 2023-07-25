@@ -5,11 +5,13 @@
 =============================================================================*/
 
 #include "SkeletalRenderStatic.h"
-#include "EngineStats.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "SceneManagement.h"
-#include "SkeletalRender.h"
+#include "RenderUtils.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "RenderingThread.h"
+
+#if RHI_RAYTRACING
+#include "Engine/SkinnedAssetCommon.h"
+#endif
 
 FSkeletalMeshObjectStatic::FSkeletalMeshObjectStatic(USkinnedMeshComponent* InMeshComponent, FSkeletalMeshRenderData* InSkelMeshRenderData, ERHIFeatureLevel::Type InFeatureLevel)
 	: FSkeletalMeshObject(InMeshComponent, InSkelMeshRenderData, InFeatureLevel)
@@ -45,7 +47,7 @@ void FSkeletalMeshObjectStatic::InitResources(USkinnedMeshComponent* InMeshCompo
 			SkelLOD.InitResources(CompLODInfo);
 
 #if RHI_RAYTRACING
-			if (IsRayTracingEnabled() && SkelLOD.SkelMeshRenderData->bSupportRayTracing)
+			if (IsRayTracingAllowed() && SkelLOD.SkelMeshRenderData->bSupportRayTracing)
 			{
 				if (SkelLOD.SkelMeshRenderData->LODRenderData[LODIndex].NumReferencingStaticSkeletalMeshObjects == 0)
 				{
@@ -134,7 +136,7 @@ void FSkeletalMeshObjectStatic::ReleaseResources()
 		if (SkelLOD.SkelMeshRenderData->LODRenderData[LODIndex].GetNumVertices() > 0)
 		{
 #if RHI_RAYTRACING
-			if (IsRayTracingEnabled())
+			if (IsRayTracingAllowed())
 			{
 				if (SkelLOD.SkelMeshRenderData->LODRenderData[LODIndex].NumReferencingStaticSkeletalMeshObjects > 0)
 				{

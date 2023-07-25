@@ -250,7 +250,7 @@ struct FPoseCurve
 struct FAnimExtractContext
 {
 	/** Position in animation to extract pose from */
-	float CurrentTime;
+	double CurrentTime;
 
 	/** Is root motion being extracted? */
 	bool bExtractRootMotion;
@@ -273,8 +273,19 @@ struct FAnimExtractContext
 	 * by several animation nodes to optimize evaluation time.
 	 */
 	TArray<bool> BonesRequired;
+	
+	UE_DEPRECATED(5.1, "FAnimExtractContext construct with float-based time value is deprecated, use other signature")
+	FAnimExtractContext(float InCurrentTime, bool InbExtractRootMotion = false, FDeltaTimeRecord InDeltaTimeRecord = {}, bool InbLooping = false)
+		: CurrentTime((double)InCurrentTime)
+		, bExtractRootMotion(InbExtractRootMotion)
+		, DeltaTimeRecord(InDeltaTimeRecord)
+		, bLooping(InbLooping)
+		, PoseCurves()
+		, BonesRequired()
+	{
+	}
 
-	FAnimExtractContext(float InCurrentTime = 0.f, bool InbExtractRootMotion = false, FDeltaTimeRecord InDeltaTimeRecord = {}, bool InbLooping = false)
+	FAnimExtractContext(double InCurrentTime = 0.0, bool InbExtractRootMotion = false, FDeltaTimeRecord InDeltaTimeRecord = {}, bool InbLooping = false)
 		: CurrentTime(InCurrentTime)
 		, bExtractRootMotion(InbExtractRootMotion)
 		, DeltaTimeRecord(InDeltaTimeRecord)
@@ -361,6 +372,7 @@ struct FAnimTickRecord
 	float RootMotionWeightModifier = 1.0f;
 
 	bool bLooping = false;
+	bool bIsEvaluator = false;
 	const UMirrorDataTable* MirrorDataTable = nullptr;
 
 	TSharedPtr<TArray<TUniquePtr<const UE::Anim::IAnimNotifyEventContextDataInterface>>> ContextData;
@@ -375,7 +387,6 @@ struct FAnimTickRecord
 			float  BlendSpacePositionX;
 			float  BlendSpacePositionY;
 			bool   bTeleportToTime;
-			bool   bIsEvaluator;
 		} BlendSpace;
 
 		struct
@@ -401,27 +412,19 @@ private:
 	void AllocateContextDataContainer();
 
 public:
-	FAnimTickRecord()
-		: SourceAsset(nullptr)
-		, TimeAccumulator(nullptr)
-		, PlayRateMultiplier(1.f)
-		, EffectiveBlendWeight(0.f)
-		, RootMotionWeightModifier(1.f)
-		, bLooping(false)
-		, DeltaTimeRecord(nullptr)
-		, MarkerTickRecord(nullptr)
-		, bCanUseMarkerSync(false)
-		, LeaderScore(0.f)
-	{
-	}
+	FAnimTickRecord() = default;
 
 	// Create a tick record for an anim sequence
+	UE_DEPRECATED(5.2, "Please use the anim sequence FAnimTickRecord constructor which adds bInIsEvaluator (defaulted to false)")
 	ENGINE_API FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping, float InPlayRate, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord);
+
+	// Create a tick record for an anim sequence
+	ENGINE_API FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping, float InPlayRate, bool bInIsEvaluator, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord);
 
 	// Create a tick record for a blendspace
 	ENGINE_API FAnimTickRecord(
 		UBlendSpace* InBlendSpace, const FVector& InBlendInput, TArray<FBlendSampleData>& InBlendSampleDataCache, FBlendFilter& InBlendFilter, bool bInLooping, 
-		float InPlayRate, bool bShouldTeleportToTime, bool bIsEvaluator, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord);
+		float InPlayRate, bool bShouldTeleportToTime, bool bInIsEvaluator, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord);
 
 	// Create a tick record for a montage
 	UE_DEPRECATED(5.0, "Please use the montage FAnimTickRecord constructor which removes InPreviousPosition and InMoveDelta")
@@ -534,7 +537,7 @@ private:
 UENUM()
 namespace EAnimGroupRole
 {
-	enum Type
+	enum Type : int
 	{
 		/** This node can be the leader, as long as it has a higher blend weight than the previous best leader. */
 		CanBeLeader,
@@ -1042,6 +1045,7 @@ public:
 	virtual float GetPlayLength() const { return 0.f; };
 
 	void SetSkeleton(USkeleton* NewSkeleton);
+	UE_DEPRECATED(5.2, "ResetSkeleton has been deprecated, use ReplaceSkeleton or SetSkeleton instead")
 	void ResetSkeleton(USkeleton* NewSkeleton);
 	virtual void PostLoad() override;
 
@@ -1087,6 +1091,8 @@ public:
 	 */
 	bool ReplaceSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces=false);
 
+	virtual void OnSetSkeleton(USkeleton* NewSkeleton) {}
+
 	// Helper function for GetAllAnimationSequencesReferred, it adds itself first and call GetAllAnimationSEquencesReferred
 	void HandleAnimReferenceCollection(TArray<UAnimationAsset*>& AnimationAssets, bool bRecursive);
 
@@ -1110,7 +1116,7 @@ public:
 	 * Parent Asset related function. Used by editor
 	 */
 	void SetParentAsset(UAnimationAsset* InParentAsset);
-	bool HasParentAsset() { return ParentAsset != nullptr;  }
+	bool HasParentAsset() const { return ParentAsset != nullptr; }
 	bool RemapAsset(UAnimationAsset* SourceAsset, UAnimationAsset* TargetAsset);
 	// we have to update whenever we have anything loaded
 	void UpdateParentAsset();
@@ -1120,7 +1126,7 @@ protected:
 
 public:
 	/** Return a list of unique marker names for blending compatibility */
-	virtual TArray<FName>* GetUniqueMarkerNames() { return NULL; }
+	virtual TArray<FName>* GetUniqueMarkerNames() { return nullptr; }
 
 	//~ Begin IInterface_AssetUserData Interface
 	virtual void AddAssetUserData(UAssetUserData* InUserData) override;
@@ -1132,6 +1138,7 @@ public:
 	//~ Begin UObject Interface.
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
 #endif // WITH_EDITOR
 

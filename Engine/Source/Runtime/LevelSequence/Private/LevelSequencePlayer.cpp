@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequencePlayer.h"
+#include "Engine/GameInstance.h"
 #include "GameFramework/Actor.h"
 #include "MovieScene.h"
 #include "Misc/CoreDelegates.h"
 #include "EngineGlobals.h"
+#include "Engine/Level.h"
 #include "Camera/PlayerCameraManager.h"
 #include "UObject/Package.h"
 #include "GameFramework/PlayerController.h"
@@ -92,6 +94,17 @@ void ULevelSequencePlayer::Initialize(ULevelSequence* InLevelSequence, ULevel* I
 
 	// Construct the path to the level asset that the streamed level relates to
 	ULevelStreaming* LevelStreaming = FLevelUtils::FindStreamingLevel(InLevel);
+	if (LevelStreaming)
+	{
+		// All ULevelStreaming objects live in the owning world but if we are streaming a World Partition persistent level it will be returned as the StreamingWorld for all it's 
+		// ULevelStreaming cells. This streaming world should be used to resolve bindings.
+		if (UWorld* StreamingWorld = LevelStreaming->GetStreamingWorld(); StreamingWorld && (StreamingWorld != World))
+		{
+			Level = StreamingWorld->PersistentLevel;
+			LevelStreaming = FLevelUtils::FindStreamingLevel(Level.Get());
+		}
+	}
+		
 	if (LevelStreaming)
 	{
 		// StreamedLevelPackage is a package name of the form /Game/Folder/MapName, not a full asset path
@@ -463,10 +476,10 @@ void ULevelSequencePlayer::TakeFrameSnapshot(FLevelSequencePlayerSnapshot& OutSn
 	// In Playback Resolution
 	const FFrameTime CurrentSequenceTime		  = ConvertFrameTime(CurrentPlayTime, PlayPosition.GetInputRate(), PlayPosition.GetOutputRate());
 
-	OutSnapshot.MasterTime = FQualifiedFrameTime(CurrentPlayTime, PlayPosition.GetInputRate());
-	OutSnapshot.MasterName = Sequence->GetName();
+	OutSnapshot.RootTime = FQualifiedFrameTime(CurrentPlayTime, PlayPosition.GetInputRate());
+	OutSnapshot.RootName = Sequence->GetName();
 
-	OutSnapshot.CurrentShotName = OutSnapshot.MasterName;
+	OutSnapshot.CurrentShotName = OutSnapshot.RootName;
 	OutSnapshot.CurrentShotLocalTime = FQualifiedFrameTime(CurrentPlayTime, PlayPosition.GetInputRate());
 	OutSnapshot.CameraComponent = CachedCameraComponent.IsValid() ? CachedCameraComponent.Get() : nullptr;
 	OutSnapshot.ShotID = MovieSceneSequenceID::Invalid;
@@ -479,7 +492,7 @@ void ULevelSequencePlayer::TakeFrameSnapshot(FLevelSequencePlayerSnapshot& OutSn
 	OutSnapshot.SourceTimecode = MovieScene->GetEarliestTimecodeSource().Timecode.ToString();
 #endif
 
-	UMovieSceneCinematicShotTrack* ShotTrack = MovieScene->FindMasterTrack<UMovieSceneCinematicShotTrack>();
+	UMovieSceneCinematicShotTrack* ShotTrack = MovieScene->FindTrack<UMovieSceneCinematicShotTrack>();
 	if (ShotTrack)
 	{
 		UMovieSceneCinematicShotSection* ActiveShot = nullptr;

@@ -4,11 +4,12 @@
 
 #include "MDLImporter.h"
 #include "MDLImporterModule.h"
-#include "MDLImporterOptions.h"
 
 #include "mdl/MaterialCollection.h"
 
 #include "Materials/MaterialInterface.h"
+#include "Misc/Paths.h"
+#include "UObject/Package.h"
 
 void FMdlMaterialImporter::AddSearchPath(const FString& SearchPath)
 {

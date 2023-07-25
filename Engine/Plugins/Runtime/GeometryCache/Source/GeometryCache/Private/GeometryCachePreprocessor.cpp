@@ -5,7 +5,6 @@
 #if WITH_EDITOR
 #include "Modules/ModuleManager.h"
 #include "MeshUtilities.h"
-#include "MeshBuild.h"
 #include "OverlappingCorners.h"
 #include "GeometryCacheTrackStreamable.h"
 
@@ -133,7 +132,7 @@ bool FOptimizeGeometryCachePreprocessor::AreIndexedVerticesEqual(int32 IndexBuff
 		// Motion vectors if we have any
 		if (BufferedFrames[Frame].MeshData.Positions.Num() == BufferedFrames[Frame].MeshData.MotionVectors.Num())
 		{
-			if (!PointsEqual((FVector)BufferedFrames[Frame].MeshData.MotionVectors[VertexIndexA], (FVector)BufferedFrames[Frame].MeshData.MotionVectors[VertexIndexB]))
+			if (!PointsEqual(BufferedFrames[Frame].MeshData.MotionVectors[VertexIndexA], BufferedFrames[Frame].MeshData.MotionVectors[VertexIndexB]))
 			{
 				return false;
 			}

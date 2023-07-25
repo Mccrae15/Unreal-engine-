@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataprepOperationsLibrary.h"
+#include "Components/StaticMeshComponent.h"
 #include "DataprepOperationsLibraryUtil.h"
 
 #include "DataprepCoreUtils.h"
@@ -8,33 +9,19 @@
 #include "DatasmithAssetUserData.h"
 #include "DatasmithAreaLightActor.h"
 
-#include "ActorEditorUtils.h"
-#include "AssetDeleteModel.h"
-#include "AssetDeleteModel.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "Camera/CameraActor.h"
-#include "Editor.h"
-#include "Engine/Light.h"
+#include "Editor/EditorEngine.h"
 #include "Engine/StaticMesh.h"
-#include "Engine/StaticMeshActor.h"
-#include "Engine/Texture.h"
-#include "Engine/World.h"
-#include "EngineUtils.h"
-#include "GameFramework/Actor.h"
-#include "IMeshBuilderModule.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Engine/Texture2D.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInstance.h"
-#include "Materials/MaterialInterface.h"
-#include "Math/Vector2D.h"
-#include "Misc/FileHelper.h"
+#include "Materials/MaterialInstance.h"
 #include "ObjectTools.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "StaticMeshAttributes.h"
+#include "StaticMeshEditorSubsystemHelpers.h"
 #include "StaticMeshOperations.h"
-#include "UObject/SoftObjectPath.h"
 #include "StaticMeshEditorSubsystem.h"
+#include "UObject/UObjectIterator.h"
 
 DEFINE_LOG_CATEGORY(LogDataprep);
 

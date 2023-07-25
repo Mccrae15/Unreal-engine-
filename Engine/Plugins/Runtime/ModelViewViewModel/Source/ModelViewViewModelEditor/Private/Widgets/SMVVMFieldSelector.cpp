@@ -2,27 +2,22 @@
 
 #include "Widgets/SMVVMFieldSelector.h"
 
-#include "Algo/Transform.h"
 #include "Bindings/MVVMBindingHelper.h"
-#include "ClassViewerModule.h"
 #include "Editor.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "Hierarchy/SReadOnlyHierarchyView.h"
-#include "Modules/ModuleManager.h"
 #include "MVVMEditorSubsystem.h"
-#include "SNegativeActionButton.h"
-#include "SPositiveActionButton.h"
 #include "SPrimaryButton.h"
-#include "SSimpleButton.h"
 #include "Styling/MVVMEditorStyle.h"
 #include "Styling/SlateIconFinder.h"
-#include "WidgetBlueprint.h"
+#include "Types/MVVMBindingMode.h"
 #include "Widgets/SMVVMFieldEntry.h"
 #include "Widgets/SMVVMSourceEntry.h"
-#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/SNullWidget.h"
+#include "Widgets/SMVVMViewModelBindingListWidget.h"
+#include "Widgets/Views/STreeView.h"
 
 #define LOCTEXT_NAMESPACE "MVVMFieldSelector"
 
@@ -88,14 +83,21 @@ void SFieldSelector::Construct(const FArguments& InArgs, const UWidgetBlueprint*
 			+ SOverlay::Slot()
 			[
 				SAssignNew(SourceEntryBox, SHorizontalBox)
-				.Visibility_Lambda([this]() { return CachedSelectedConversionFunction == nullptr && CachedSelectedField.GetFields().Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed; })
+				.Visibility_Lambda([this]() { return CachedSelectedConversionFunction == nullptr && !CachedSelectedField.IsEmpty() ? EVisibility::Visible : EVisibility::Collapsed; })
 			]
 
 			// is a conversion function set?
 			+ SOverlay::Slot()
 			[
 				SNew(SHorizontalBox)
-				.Visibility_Lambda([this]() { return CachedSelectedConversionFunction != nullptr ? EVisibility::Visible : EVisibility::Collapsed; })
+				.Visibility_Lambda([this]() 
+				{
+					return CachedSelectedConversionFunction != nullptr ? EVisibility::Visible : EVisibility::Collapsed; 
+				})
+				.ToolTipText_Lambda([this]() 
+				{
+					return CachedSelectedConversionFunction != nullptr ? CachedSelectedConversionFunction->GetToolTipText() : FText::GetEmpty();
+				})
 				+ SHorizontalBox::Slot()
 				.HAlign(HAlign_Left)
 				.VAlign(VAlign_Center)
@@ -111,7 +113,10 @@ void SFieldSelector::Construct(const FArguments& InArgs, const UWidgetBlueprint*
 				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.Text_Lambda([this]() { return CachedSelectedConversionFunction != nullptr ? CachedSelectedConversionFunction->GetDisplayNameText() : FText::GetEmpty(); })
+					.Text_Lambda([this]() 
+					{ 
+						return CachedSelectedConversionFunction != nullptr ? CachedSelectedConversionFunction->GetDisplayNameText() : FText::GetEmpty(); 
+					})
 				]
 			]
 
@@ -122,7 +127,10 @@ void SFieldSelector::Construct(const FArguments& InArgs, const UWidgetBlueprint*
 				.Padding(FMargin(8, 0, 8, 0))
 				[
 					SNew(STextBlock)
-					.Visibility_Lambda([this]() { return CachedSelectedField.IsEmpty() && CachedSelectedConversionFunction == nullptr ? EVisibility::Visible : EVisibility::Collapsed; })
+					.Visibility_Lambda([this]() 
+					{ 
+						return CachedSelectedField.IsEmpty() && CachedSelectedConversionFunction == nullptr ? EVisibility::Visible : EVisibility::Collapsed;
+					})
 					.TextStyle(FAppStyle::Get(), "HintText")
 					.Text(LOCTEXT("None", "No field selected"))
 				]
@@ -154,7 +162,8 @@ void SFieldSelector::Construct(const FArguments& InArgs, const UWidgetBlueprint*
 			[
 				SNew(SImage)
 				.Image(FAppStyle::Get().GetBrush("Icons.ChevronRight"))
-			];					
+				.Visibility_Lambda([this]() { return CachedSelectedField.HasPaths() ? EVisibility::Visible : EVisibility::Collapsed; })
+			];
 	}
 
 	SourceEntryBox->AddSlot()
@@ -198,7 +207,7 @@ bool SFieldSelector::IsSelectEnabled() const
 	if (BindingList.IsValid())
 	{
 		FMVVMBlueprintPropertyPath Path = BindingList->GetSelectedProperty();
-		if ((Path.IsFromViewModel() || Path.IsFromWidget()) && !Path.GetBasePropertyPath().IsEmpty())
+		if (Path.IsFromViewModel() || Path.IsFromWidget())
 		{
 			return true;
 		}
@@ -238,7 +247,22 @@ bool SFieldSelector::IsClearEnabled() const
 
 FReply SFieldSelector::OnClearClicked()
 {
-	SetPropertySelection(FMVVMBlueprintPropertyPath());
+	FMVVMBlueprintPropertyPath NewProperty;
+	
+	if (FixedSource.IsSet())
+	{
+		FBindingSource Source = FixedSource.GetValue();
+		if (Source.ViewModelId.IsValid())
+		{
+			NewProperty.SetViewModelId(Source.ViewModelId);
+		}
+		else 
+		{
+			NewProperty.SetWidgetName(Source.Name);
+		}
+	}
+
+	SetPropertySelection(NewProperty);
 	SetConversionFunctionSelection(nullptr);
 	return FReply::Handled();
 }

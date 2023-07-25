@@ -2,15 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
 #include "AssetRegistry/ARFilter.h"
-#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetIdentifier.h"
+#include "Containers/Array.h"
 #include "Containers/BitArray.h"
 #include "Containers/StringFwd.h"
 #include "Misc/AssetRegistryInterface.h"
 #include "Misc/Optional.h"
 #include "UObject/Interface.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AssetRegistry/AssetData.h"
+#include "CoreMinimal.h"
+#endif
 
 #include "IAssetRegistry.generated.h"
 
@@ -19,11 +23,12 @@
 #endif
 
 class FArchive;
-struct FARFilter;
-struct FARCompiledFilter;
-struct FAssetRegistrySerializationOptions;
 class FAssetRegistryState;
 class FDependsNode;
+struct FARFilter;
+struct FARCompiledFilter;
+struct FAssetData;
+struct FAssetRegistrySerializationOptions;
 struct FPackageFileSummary;
 struct FObjectExport;
 struct FObjectImport;
@@ -157,7 +162,7 @@ public:
 	/**
 	 * Gets asset data for all assets with the supplied class
 	 *
-	 * @param ClassName the class name of the assets requested
+	 * @param ClassPathName the full path of the class name of the assets requested, in a TopLevelAssetPath structure.
 	 * @param OutAssetData the list of assets in this path
 	 * @param bSearchSubClasses if true, all subclasses of the passed in class will be searched as well
 	 */
@@ -228,10 +233,7 @@ public:
 	 * @return the assets data;Will be invalid if object could not be found
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category = "AssetRegistry", DisplayName="Get Asset By Object Path")
-	virtual FAssetData K2_GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false) const
-	{
-		return GetAssetByObjectPath(ObjectPath, bIncludeOnlyOnDiskAssets);
-	}
+	ASSETREGISTRY_API virtual FAssetData K2_GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false) const;
 
 	/**
 	 * Gets the asset data for the specified object path
@@ -434,6 +436,9 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category = "AssetRegistry")
 	virtual void UseFilterToExcludeAssets(UPARAM(ref) TArray<FAssetData>& AssetDataList, const FARFilter& Filter) const = 0;
 
+	/** Trims items out of the asset data list that pass the supplied filter */
+	virtual void UseFilterToExcludeAssets(TArray<FAssetData>& AssetDataList, const FARCompiledFilter& CompiledFilter) const = 0;
+	
 	/** Tests to see whether the given asset would be included (passes) the given filter */
 	virtual bool IsAssetIncludedByFilter(const FAssetData& AssetData, const FARCompiledFilter& Filter) const = 0;
 
@@ -535,6 +540,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
 	virtual void WaitForCompletion() = 0;
 
+	/**
+	 * Empty the global gatherer's cache and disable further caching of scans from disk.
+	 * Used to save memory when cooking after the scan is complete.
+	*/
+	virtual void ClearGathererCache() = 0;
+
 	/** Wait for the scan of a specific package to be complete */
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
 	virtual void WaitForPackage(const FString& PackageName) = 0;
@@ -548,7 +559,7 @@ public:
 	virtual void ScanModifiedAssetFiles(const TArray<FString>& InFilePaths) = 0;
 
 	/** Event for when paths are added to the registry */
-	DECLARE_EVENT_OneParam( IAssetRegistry, FPathAddedEvent, const FString& /*Path*/ );
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FPathAddedEvent, const FString& /*Path*/ );
 	virtual FPathAddedEvent& OnPathAdded() = 0;
 
 	/** Event for when paths are removed from the registry */
@@ -565,7 +576,21 @@ public:
 	virtual void AssetRenamed(const UObject* RenamedAsset, const FString& OldObjectPath) = 0;
 
 	/** Informs the asset registry that an in-memory asset has been saved */
+	UE_DEPRECATED(5.2, "Use the new AssetsSaved function that takes FAssetData.")
 	virtual void AssetSaved(const UObject& SavedAsset) = 0;
+
+	/** Called during SavePackage to update the AssetRegistry's copy of the AssetDatas in the package to match the newly saved values. */
+	virtual void AssetsSaved(TArray<FAssetData>&& Assets) = 0;
+
+	/**
+	 * Called on demand from systems that need to fully update an AssetData's tags. When an Asset is loaded its tags
+	 * are updated by calling UObject::GetAssetRegistryTags, but GetAssetRegistryTagsExtended is not called, and tags
+	 * that exist in the Old AssetData but not in the results from GetAssetRegistryTags are kept because they might be
+	 * extended tags. When an asset is saved, GetAssetRegistryTagsExtended is called and all old tags are deleted in
+	 * favor of the new list. AssetFullyUpdated allows a manual trigger of the on-SavePackage behavior:
+	 * GetAssetRegistryTagsExtended is called and all old tags are deleted in favor of the new list.
+	 */
+	virtual void AssetFullyUpdateTags(UObject* Object) = 0;
 
 	/** Informs the asset registry that an in-memory package has been deleted, and all associated assets should be removed */
 	virtual void PackageDeleted (UPackage* DeletedPackage) = 0;
@@ -574,34 +599,34 @@ public:
 	virtual void AssetTagsFinalized(const UObject& FinalizedAsset) = 0;
 
 	/** Event for when assets are added to the registry */
-	DECLARE_EVENT_OneParam( IAssetRegistry, FAssetAddedEvent, const FAssetData& );
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FAssetAddedEvent, const FAssetData& );
 	virtual FAssetAddedEvent& OnAssetAdded() = 0;
 
 	/** Event for when assets are removed from the registry */
-	DECLARE_EVENT_OneParam( IAssetRegistry, FAssetRemovedEvent, const FAssetData& );
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FAssetRemovedEvent, const FAssetData& );
 	virtual FAssetRemovedEvent& OnAssetRemoved() = 0;
 
 	/** Event for when assets are renamed in the registry */
-	DECLARE_EVENT_TwoParams( IAssetRegistry, FAssetRenamedEvent, const FAssetData&, const FString& );
+	DECLARE_TS_MULTICAST_DELEGATE_TwoParams( FAssetRenamedEvent, const FAssetData&, const FString& );
 	virtual FAssetRenamedEvent& OnAssetRenamed() = 0;
 
 	/** Event for when assets are updated in the registry */
-	DECLARE_EVENT_OneParam(IAssetRegistry, FAssetUpdatedEvent, const FAssetData&);
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FAssetUpdatedEvent, const FAssetData&);
 	virtual FAssetUpdatedEvent& OnAssetUpdated() = 0;
 
 	/** Event for when assets are updated on disk and have been refreshed in the assetregistry */
 	virtual FAssetUpdatedEvent& OnAssetUpdatedOnDisk() = 0;
 
 	/** Event for when in-memory assets are created */
-	DECLARE_EVENT_OneParam( IAssetRegistry, FInMemoryAssetCreatedEvent, UObject* );
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FInMemoryAssetCreatedEvent, UObject* );
 	virtual FInMemoryAssetCreatedEvent& OnInMemoryAssetCreated() = 0;
 
 	/** Event for when assets are deleted */
-	DECLARE_EVENT_OneParam( IAssetRegistry, FInMemoryAssetDeletedEvent, UObject* );
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FInMemoryAssetDeletedEvent, UObject* );
 	virtual FInMemoryAssetDeletedEvent& OnInMemoryAssetDeleted() = 0;
 
 	/** Event for when the asset registry is done loading files */
-	DECLARE_EVENT( IAssetRegistry, FFilesLoadedEvent );
+	DECLARE_TS_MULTICAST_DELEGATE( FFilesLoadedEvent );
 	virtual FFilesLoadedEvent& OnFilesLoaded() = 0;
 
 	/** Payload data for a file progress update */
@@ -622,7 +647,7 @@ public:
 	};
 
 	/** Event to update the progress of the background file load */
-	DECLARE_EVENT_OneParam( IAssetRegistry, FFileLoadProgressUpdatedEvent, const FFileLoadProgressUpdateData& /*ProgressUpdateData*/ );
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FFileLoadProgressUpdatedEvent, const FFileLoadProgressUpdateData& /*ProgressUpdateData*/ );
 	virtual FFileLoadProgressUpdatedEvent& OnFileLoadProgressUpdated() = 0;
 
 	/** Returns true if the asset registry is currently loading files and does not yet know about all assets */
@@ -678,10 +703,8 @@ public:
 
 	struct FLoadPackageRegistryData
 	{
-		FLoadPackageRegistryData(bool bInGetDependencies = false)
-			: bGetDependencies(bInGetDependencies)
-		{
-		}
+		ASSETREGISTRY_API FLoadPackageRegistryData(bool bInGetDependencies = false);
+		ASSETREGISTRY_API ~FLoadPackageRegistryData();
 
 		TArray<FAssetData> Data;
 		TArray<FName> DataDependencies;
@@ -752,6 +775,32 @@ namespace AssetRegistry
 		InvalidTagCount = 2,
 		InvalidTag = 3,
 	};
+
+	struct ASSETREGISTRY_API FDeserializePackageData
+	{
+		int64 DependencyDataOffset = INDEX_NONE;
+		int32 ObjectCount = 0;
+
+		bool DoSerialize(FArchive& BinaryArchive, const FPackageFileSummary& PackageFileSummary, EReadPackageDataMainErrorCode& OutError);
+	};
+
+	struct ASSETREGISTRY_API FDeserializeObjectPackageData
+	{
+		FString ObjectPath;
+		FString ObjectClassName;
+		int32 TagCount = 0;
+
+		bool DoSerialize(FArchive& BinaryArchive, EReadPackageDataMainErrorCode& OutError);
+	};
+
+	struct ASSETREGISTRY_API FDeserializeTagData
+	{
+		FString Key;
+		FString Value;
+
+		bool DoSerialize(FArchive& BinaryArchive, EReadPackageDataMainErrorCode& OutError);
+	};
+
 	// Functions to read and write the data used by the AssetRegistry in each package; the format of this data is separate from the format of the data in the asset registry
 	// WritePackageData is declared in AssetRegistryInterface.h, in the CoreUObject module, because it is needed by SavePackage in CoreUObject
 	ASSETREGISTRY_API bool ReadPackageDataMain(FArchive& BinaryArchive, const FString& PackageName, const FPackageFileSummary& PackageFileSummary,
@@ -782,6 +831,11 @@ namespace AssetRegistry
 	 * A good source for PackageAssetDatas is FAssetRegistryState::GetAssetsByPackageName.
 	 */
 	ASSETREGISTRY_API const FAssetData* GetMostImportantAsset(TConstArrayView<const FAssetData*> PackageAssetDatas, bool bRequireOneTopLevelAsset);
+
+	/*
+	* Returns true if the asset registry should start searching all assets on startup
+	*/
+	ASSETREGISTRY_API bool ShouldSearchAllAssetsAtStart();
 
 	// Wildcards (*) used when looking up assets in the asset registry
 	extern ASSETREGISTRY_API const FName WildcardFName;

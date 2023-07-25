@@ -4,11 +4,6 @@
 
 #if WITH_EDITOR
 #include "Landscape.h"
-#include "LandscapeInfo.h"
-#include "LandscapeProxy.h"
-#include "LandscapeStreamingProxy.h"
-#include "WorldPartition/ActorDescContainer.h"
-#include "WorldPartition/WorldPartitionHandle.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 
@@ -46,6 +41,12 @@ void FLandscapeActorDesc::Serialize(FArchive& Ar)
 	{
 		Ar << LandscapeActorGuid;
 	}
+}
+
+FBox FLandscapeActorDesc::GetEditorBounds() const
+{
+	// We need to skip super class since we aren't using grid indices as it should be (it's in Landscape space).
+	return FWorldPartitionActorDesc::GetEditorBounds();
 }
 
 void FLandscapeActorDesc::Unload()

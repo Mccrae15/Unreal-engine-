@@ -17,8 +17,10 @@
 class IAssetTools;
 class IAssetTypeActions;
 class INiagaraEditorTypeUtilities;
+class UNiagaraDataInterface;
 class UNiagaraSettings;
 class USequencerSettings;
+class FNiagaraDataInterfaceError;
 class UNiagaraStackViewModel;
 class UNiagaraStackEntry;
 class UNiagaraStackIssue;
@@ -27,6 +29,7 @@ class FNiagaraScriptMergeManager;
 class FNiagaraCompileOptions;
 class FNiagaraCompileRequestDataBase;
 class FNiagaraCompileRequestDuplicateDataBase;
+class FNiagaraDataInterfaceFeedback;
 class UMovieSceneNiagaraParameterTrack;
 struct IConsoleCommand;
 class INiagaraEditorOnlyDataUtilities;
@@ -129,6 +132,7 @@ class FNiagaraEditorModule : public IModuleInterface,
 public:
 	DECLARE_DELEGATE_RetVal_OneParam(UMovieSceneNiagaraParameterTrack*, FOnCreateMovieSceneTrackForParameter, FNiagaraVariable);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnCheckScriptToolkitsShouldFocusGraphElement, const FNiagaraScriptIDAndGraphFocusInfo*);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnScriptApplied, UNiagaraScript*, FGuid /** VersionGuid */);
 
 public:
 	FNiagaraEditorModule();
@@ -167,8 +171,6 @@ public:
 
 	/** Gets Niagara editor type utilities for a specific type if there are any registered. */
 	TSharedPtr<INiagaraEditorTypeUtilities, ESPMode::ThreadSafe> NIAGARAEDITOR_API GetTypeUtilities(const FNiagaraTypeDefinition& Type);
-
-	static EAssetTypeCategories::Type GetAssetCategory() { return NiagaraAssetCategory; }
 
 	NIAGARAEDITOR_API void RegisterWidgetProvider(TSharedRef<INiagaraEditorWidgetProvider> InWidgetProvider);
 	NIAGARAEDITOR_API void UnregisterWidgetProvider(TSharedRef<INiagaraEditorWidgetProvider> InWidgetProvider);
@@ -245,6 +247,10 @@ public:
 
 	void PreloadSelectablePluginAssetsByClass(UClass* InClass);
 
+	void ScriptApplied(UNiagaraScript* Script, FGuid VersionGuid = FGuid()) const;
+	
+	/** Callback whenever a script is applied/updated in the editor. */
+	FOnScriptApplied& OnScriptApplied();
 private:
 	class FDeferredDestructionContainerBase
 	{
@@ -301,7 +307,6 @@ private:
 	};
 
 	void RegisterDefaultRendererFactories();
-	void RegisterAssetTypeAction(IAssetTools& AssetTools, TSharedRef<IAssetTypeActions> Action);
 	void OnNiagaraSettingsChangedEvent(const FName& PropertyName, const UNiagaraSettings* Settings);
 	void OnPreGarbageCollection();
 	void OnExecParticleInvoked(const TCHAR* InStr);
@@ -330,6 +335,9 @@ private:
 		StackIssueGenerators.Add(StructName) = Generator;
 	}
 
+	void OnAssetCreated(UObject* DeletedObject);
+	void OnAssetDeleted(UObject* DeletedObject);
+
 private:
 	TSharedPtr<FExtensibilityManager> MenuExtensibilityManager;
 	TSharedPtr<FExtensibilityManager> ToolBarExtensibilityManager;
@@ -341,7 +349,7 @@ private:
 	TMap<FNiagaraTypeDefinition, TSharedRef<INiagaraEditorTypeUtilities, ESPMode::ThreadSafe>> TypeToEditorUtilitiesMap;
 	TSharedPtr<INiagaraEditorTypeUtilities, ESPMode::ThreadSafe> EnumTypeUtilities;
 
-	static EAssetTypeCategories::Type NiagaraAssetCategory;
+	FOnScriptApplied OnScriptAppliedDelegate;
 
 	FDelegateHandle CreateEmitterTrackEditorHandle;
 	FDelegateHandle CreateSystemTrackEditorHandle;
@@ -361,7 +369,11 @@ private:
 	FDelegateHandle DeviceProfileManagerUpdatedHandle;
 
 	FDelegateHandle PreviewPlatformChangedHandle;
+	FDelegateHandle PreviewFeatureLevelChangedHandle;
 
+	FDelegateHandle OnAssetCreatedHandle;
+	FDelegateHandle OnAssetDeletedHandle;
+	
 	USequencerSettings* SequencerSettings;
 
 	TSharedPtr<INiagaraEditorWidgetProvider> WidgetProvider;

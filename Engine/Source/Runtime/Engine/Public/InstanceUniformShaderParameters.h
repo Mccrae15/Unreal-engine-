@@ -19,7 +19,7 @@
 #define INSTANCE_SCENE_DATA_FLAG_HAS_LIGHTSHADOW_UV_BIAS	0x10
 #define INSTANCE_SCENE_DATA_FLAG_HAS_HIERARCHY_OFFSET		0x20
 #define INSTANCE_SCENE_DATA_FLAG_HAS_LOCAL_BOUNDS			0x40
-#define INSTANCE_SCENE_DATA_FLAG_HAS_EDITOR_DATA			0x80
+#define INSTANCE_SCENE_DATA_FLAG_HAS_EDITOR_DATA			0x80 // Mobile allocates only 8 bits for instance flags
 #define INSTANCE_SCENE_DATA_FLAG_IS_RAYTRACING_FAR_FIELD	0x100
 
 #define INSTANCE_SCENE_DATA_FLAG_PAYLOAD_MASK ( \
@@ -36,8 +36,7 @@
 
 #define INVALID_LAST_UPDATE_FRAME 0xFFFFFFFFu
 
-// TODO: Rename to FInstanceSceneData
-struct FPrimitiveInstance
+struct FInstanceSceneData
 {
 	FRenderTransform LocalToPrimitive;
 
@@ -63,8 +62,7 @@ struct FPrimitiveInstance
 	}
 };
 
-// TODO: Rename to FInstanceDynamicData
-struct FPrimitiveInstanceDynamicData
+struct FInstanceDynamicData
 {
 	FRenderTransform PrevLocalToPrimitive;
 
@@ -95,23 +93,12 @@ struct FInstanceSceneShaderData
 private:
 	// Must match GetInstanceSceneData() in SceneData.ush
 	// Allocate the max Float4s usage when compressed transform is used.
-	// TODO: Temporary PrevVelocityHack (last float4s when compressed)
-	static constexpr uint32 CompressedTransformDataStrideInFloat4s = 5;
-	static constexpr uint32 UnCompressedTransformDataStrideInFloat4s = 7;
+	static constexpr uint32 CompressedTransformDataStrideInFloat4s = 3;
+	static constexpr uint32 UnCompressedTransformDataStrideInFloat4s = 4;
 
 public:
 
-	static uint32 GetDataStrideInFloat4s()
-	{
-		if (FDataDrivenShaderPlatformInfo::GetSupportSceneDataCompressedTransforms(GMaxRHIShaderPlatform))
-		{
-			return CompressedTransformDataStrideInFloat4s;
-		}
-		else
-		{
-			return UnCompressedTransformDataStrideInFloat4s;
-		}
-	}
+	static ENGINE_API uint32 GetDataStrideInFloat4s();
 
 	static uint32 GetEffectiveNumBytes()
 	{
@@ -141,8 +128,7 @@ public:
 		uint32 CustomDataCount,
 		float RandomID,
 		const FRenderTransform& LocalToPrimitive,
-		const FRenderTransform& PrimitiveToWorld,
-		const FRenderTransform& PrevPrimitiveToWorld // TODO: Temporary PrevVelocityHack
+		const FRenderTransform& PrimitiveToWorld
 	);
 
 	ENGINE_API void BuildInternal
@@ -153,8 +139,7 @@ public:
 		uint32 LastUpdateFrame,
 		uint32 CustomDataCount,
 		float RandomID,
-		const FRenderTransform& LocalToWorld,
-		const FRenderTransform& PrevLocalToWorld // Assumes shear has been removed already // TODO: Temporary PrevVelocityHack
+		const FRenderTransform& LocalToWorld
 	);
 
 	TStaticArray<FVector4f, UnCompressedTransformDataStrideInFloat4s> Data;

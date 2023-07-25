@@ -103,25 +103,29 @@ namespace OculusXRHMD
 		CheckInRenderThread();
 
 		const ESpectatorScreenMode MirrorWindowMode = OculusXRHMD->GetSpectatorScreenMode_RenderThread();
-		const FVector2D MirrorWindowSize = OculusXRHMD->GetFrame_RenderThread()->WindowSize;
+		const FIntPoint MirrorWindowSize = OculusXRHMD->GetFrame_RenderThread()->WindowSize;
 
 		if (FOculusXRHMDModule::GetPluginWrapper().GetInitialized())
 		{
 			// Need to destroy mirror texture?
-			if (MirrorTextureRHI.IsValid() && (MirrorWindowMode != ESpectatorScreenMode::Distorted || MirrorWindowSize != FVector2D(MirrorTextureRHI->GetSizeX(), MirrorTextureRHI->GetSizeY())))
+			if (MirrorTextureRHI.IsValid())
 			{
-				ExecuteOnRHIThread([]() {
-					FOculusXRHMDModule::GetPluginWrapper().DestroyMirrorTexture2();
-				});
+				const auto MirrorTextureSize = FIntPoint(MirrorTextureRHI->GetDesc().Extent.X, MirrorTextureRHI->GetDesc().Extent.Y);
+				if (MirrorWindowMode != ESpectatorScreenMode::Distorted || MirrorWindowSize != MirrorTextureSize)
+				{
+					ExecuteOnRHIThread([]() {
+						FOculusXRHMDModule::GetPluginWrapper().DestroyMirrorTexture2();
+					});
 
-				MirrorTextureRHI = nullptr;
+					MirrorTextureRHI = nullptr;
+				}
 			}
 
 			// Need to create mirror texture?
 			if (!MirrorTextureRHI.IsValid() && MirrorWindowMode == ESpectatorScreenMode::Distorted && MirrorWindowSize.X != 0 && MirrorWindowSize.Y != 0)
 			{
-				int Width = (int)MirrorWindowSize.X;
-				int Height = (int)MirrorWindowSize.Y;
+				const int Width = MirrorWindowSize.X;
+				const int Height = MirrorWindowSize.Y;
 				ovrpTextureHandle TextureHandle;
 
 				ExecuteOnRHIThread([&]() {

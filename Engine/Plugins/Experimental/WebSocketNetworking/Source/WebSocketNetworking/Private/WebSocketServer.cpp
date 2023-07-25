@@ -1,9 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WebSocketServer.h"
+
 #include "WebSocket.h"
 
 #if USE_LIBWEBSOCKET
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/PreWindowsApi.h"
+#include <winsock2.h>
+#include "Windows/PostWindowsApi.h"
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
 // Work around a conflict between a UI namespace defined by engine code and a typedef in OpenSSL
 #define UI UI_ST
 THIRD_PARTY_INCLUDES_START
@@ -23,7 +33,7 @@ struct PerSessionDataServer
 {
 	// Each session is actually a socket to a client
 	FWebSocket* Socket;
-	// Holds the concatenated message fragments.
+	// Holds the concatenated message fragments.er
 	TArray<uint8> FrameBuffer;
 	// The current state of the message being read.
 	EFragmentationState FragementationState = EFragmentationState::BeginFrame;
@@ -98,7 +108,7 @@ void FWebSocketServer::EnableHTTPServer(TArray<FWebSocketHttpMount> InDirectorie
 #endif
 }
 
-bool FWebSocketServer::Init(uint32 Port, FWebSocketClientConnectedCallBack CallBack)
+bool FWebSocketServer::Init(uint32 Port, FWebSocketClientConnectedCallBack CallBack, FString BindAddress)
 {
 #if USE_LIBWEBSOCKET
 #if !UE_BUILD_SHIPPING
@@ -128,14 +138,19 @@ bool FWebSocketServer::Init(uint32 Port, FWebSocketClientConnectedCallBack CallB
 	// look up libwebsockets.h for details.
 	Info.port = Port;
 	ServerPort = Port;
-	// we listen on all available interfaces.
+
 	Info.iface = NULL;
+	if (!BindAddress.IsEmpty())
+	{
+		Info.iface = StringCast<ANSICHAR>(*BindAddress).Get();
+	}
+
 	Info.protocols = &Protocols[0];
 	// no extensions
 	Info.extensions = NULL;
 	Info.gid = -1;
 	Info.uid = -1;
-	Info.options = 0;
+	Info.options = LWS_SERVER_OPTION_ALLOW_LISTEN_SHARE;
 	// tack on this object.
 	Info.user = this;
 
@@ -162,6 +177,11 @@ bool FWebSocketServer::Init(uint32 Port, FWebSocketClientConnectedCallBack CallB
 	ConnectedCallBack = CallBack;
 #endif
 	return true;
+}
+
+void FWebSocketServer::SetFilterConnectionCallback(FWebSocketFilterConnectionCallback InFilterConnectionCallback)
+{
+	FilterConnectionCallback = MoveTemp(InFilterConnectionCallback);
 }
 
 void FWebSocketServer::Tick()
@@ -214,6 +234,7 @@ static int unreal_networking_server
 	struct lws_context* Context = lws_get_context(Wsi);
 	PerSessionDataServer* BufferInfo = (PerSessionDataServer*)User;
 	FWebSocketServer* Server = (FWebSocketServer*)lws_context_user(Context);
+	bool bRejectConnection = false;
 
 	switch (Reason)
 	{
@@ -290,12 +311,59 @@ static int unreal_networking_server
 						BufferInfo->Socket->OnClose();
 					}
 				}
+				bRejectConnection = true;
 			}
 			break;
 		case LWS_CALLBACK_WSI_DESTROY:
 			break;
 		case LWS_CALLBACK_PROTOCOL_DESTROY:
+#if PLATFORM_WINDOWS
+		{
+			// There is a bug with our version of the LWS library that keeps a socket open even if we destroy the context so we have to manually shut it down.
+			lws_sockfd_type Fd = lws_get_socket_fd(Wsi);
+			if (Fd != INVALID_SOCKET)
+			{
+				closesocket(Fd);
+			}
+		}
+#endif
 			break;
+		case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION:
+			{
+				if (Server && Server->FilterConnectionCallback.IsBound())
+            	{
+					const int32 OriginHeaderLength = lws_hdr_total_length(Wsi, WSI_TOKEN_ORIGIN);
+
+					FString OriginHeader;
+
+					if (OriginHeaderLength != 0)
+					{
+						constexpr uint32 MaximumHeaderLength = 1024;
+						if (OriginHeaderLength < MaximumHeaderLength)
+						{
+							char Origin[MaximumHeaderLength + 1];
+							memset(Origin, 0, MaximumHeaderLength + 1);
+
+							lws_hdr_copy(Wsi, Origin, OriginHeaderLength + 1, WSI_TOKEN_ORIGIN);
+							OriginHeader = UTF8_TO_TCHAR(Origin);
+						}
+					}
+
+					constexpr int32 IPAddressLength = 16;
+					char IPAddress[IPAddressLength];
+					
+					lws_get_peer_simple(Wsi, IPAddress, IPAddressLength);
+
+					const FString ClientIP =UTF8_TO_TCHAR(IPAddress);
+			
+					if (Server->FilterConnectionCallback.Execute(OriginHeader, ClientIP) == EWebsocketConnectionFilterResult::ConnectionRefused)
+					{
+						bRejectConnection = true;
+					}
+				}
+
+				break;
+			}
 	}
 
 	// Check if http should be enabled or not, if so, use the in-built `lws_callback_http_dummy` which handles basic http requests
@@ -303,6 +371,7 @@ static int unreal_networking_server
 	{
 		return lws_callback_http_dummy(Wsi, Reason, User, In, Len);
 	}
-	return 0;
+
+	return bRejectConnection ? 1 : 0;
 }
 #endif

@@ -2,22 +2,24 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 
+#include "BodySetupEnums.h"
 #include "DataprepOperation.h"
 
 #include "DataprepOperationsLibrary.h"
 
-#include "EditorStaticMeshLibrary.h"
-#include "Engine/EngineTypes.h"
 #include "IDetailCustomization.h"
-#include "PropertyHandle.h"
 
+#include "StaticMeshEditorSubsystemHelpers.h"
+#include "DataprepOperations.generated.h"
+
+class IPropertyHandle;
 class SWidget;
 class UMaterialInterface;
 class UDataTable;
-
-#include "DataprepOperations.generated.h"
+namespace ESelectInfo { enum Type : int; }
+namespace ETextCommit { enum Type : int; }
+struct FPropertyChangedEvent;
 
 /** Local struct used by UDataprepSetLODsOperation to better control UX */
 USTRUCT(BlueprintType)

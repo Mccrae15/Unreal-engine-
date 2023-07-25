@@ -2,11 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "OnlineBeacon.h"
 #include "Net/Core/Connection/NetCloseResult.h"
 #include "OnlineBeaconHost.generated.h"
+
+class FUniqueNetId;
 
 class AOnlineBeaconClient;
 class AOnlineBeaconHostObject;
@@ -122,6 +122,7 @@ protected:
 	 * @param PlayerId net id of player to authenticate.
 	 * @param AuthenticationToken token to use for verification.
 	 */
+	 UE_DEPRECATED(5.2, "This version of the StartVerifyAuthentication is deprecated. Please use the new StartVerifyAuthentication method instead.")
 	virtual bool StartVerifyAuthentication(const FUniqueNetId& PlayerId, const FString& AuthenticationToken);
 
 	/**
@@ -130,7 +131,34 @@ protected:
 	 * @param PlayerId net id of player to authenticate.
 	 * @param Error result of the operation.
 	 */
+	UE_DEPRECATED(5.2, "This version of the OnAuthenticationVerificationComplete is deprecated. Please use the new OnAuthenticationVerificationComplete method instead.")
 	void OnAuthenticationVerificationComplete(const class FUniqueNetId& PlayerId, const FOnlineError& Error);
+
+	/**
+	 * Delegate executed when user authentication has completed.
+	 *
+	 * @param OnlineError the result of the operation
+	 */
+	DECLARE_DELEGATE_OneParam(FOnAuthenticationVerificationCompleteDelegate, const FOnlineError& /*OnlineError*/);
+
+	/**
+	 * Start verifying an authentication token for a connection.
+	 * OnAuthenticationVerificationComplete must be called to complete authentication verification.
+	 *
+	 * @param NetConnection network connection associated with the authentication challenge.
+	 * @param PlayerId net id of player to authenticate.
+	 * @param AuthenticationToken token to use for verification.
+	 */
+	virtual bool StartVerifyAuthentication(const FUniqueNetId& PlayerId, const FString& AuthenticationToken, const FOnAuthenticationVerificationCompleteDelegate& OnComplete);
+
+private:
+	/**
+	 * Event which must be signaled to complete an authentication verification request.
+	 *
+	 * @param NetConnection network connection associated with the authentication challenge.
+	 * @param Error result of the operation.
+	 */
+	void OnAuthenticationVerificationComplete(UNetConnection* Connection, const FOnlineError& Error);
 
 protected:
 	FString GetDebugName(UNetConnection* Connection = nullptr);
@@ -139,6 +167,15 @@ private:
 	/** Connection states used to check against misbehaving connections. */
 	struct FConnectionState
 	{
+		FConnectionState(const AOnlineBeaconHost& InBeaconHost) :
+			BeaconHost(InBeaconHost)
+		{
+		}
+
+		~FConnectionState();
+
+		const AOnlineBeaconHost& BeaconHost;
+		FTimerHandle FinishHandshakeTimerHandle;
 		bool bHasSentHello = false;
 		bool bHasSentChallenge = false;
 		bool bHasSentLogin = false;
@@ -160,6 +197,7 @@ private:
 	void OnConnectionClosed(UNetConnection* Connection);
 
 	bool HandleControlMessage(UNetConnection* Connection, uint8 MessageType, FInBunch& Bunch);
+	void FinishHandshake(UNetConnection* Connection, FString BeaconType);
 	void SendFailurePacket(UNetConnection* Connection, FNetCloseResult&& CloseReason, const FText& ErrorText);
 
 	UE_DEPRECATED(5.1, "SendFailurePacket without CloseReason is deprecated. Use the version which takes CloseReason.")
@@ -183,3 +221,7 @@ private:
 	/** Mapping of beacon types to the OnBeaconConnected delegates */
 	TMap<FString, FOnBeaconConnected> OnBeaconConnectedMapping;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/WorldPartitionPackageHelper.h"
+#include "UObject/Package.h"
 
 #if WITH_EDITOR
 
+#include "Engine/Level.h"
 #include "Engine/World.h"
 
 void FWorldPartitionPackageHelper::UnloadPackage(UPackage* InPackage)

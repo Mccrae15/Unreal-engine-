@@ -5,17 +5,16 @@
 =============================================================================*/
 
 #include "GPUSort.h"
-#include "RenderResource.h"
 #include "Math/RandomStream.h"
+#include "RHIBreadcrumbs.h"
 #include "RenderingThread.h"
-#include "UniformBuffer.h"
-#include "ShaderParameters.h"
-#include "Shader.h"
+#include "RHIContext.h"
 #include "ShaderCompilerCore.h"
-#include "SceneUtils.h"
+#include "ShaderParameterMacros.h"
 #include "ShaderParameterUtils.h"
 #include "GlobalShader.h"
 #include "PipelineStateCache.h"
+#include "ProfilingDebugging/RealtimeGPUProfiler.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGPUSort, Log, All);
 
@@ -254,10 +253,7 @@ public:
 	void SetOutput(FRHICommandList& RHICmdList, FRHIUnorderedAccessView* OutOffsetsUAV)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( OutOffsets.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutOffsets.GetBaseIndex(), OutOffsetsUAV);
-		}
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutOffsets, OutOffsetsUAV);
 	}
 
 	/**
@@ -266,10 +262,7 @@ public:
 	void UnbindBuffers(FRHICommandList& RHICmdList)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( OutOffsets.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutOffsets.GetBaseIndex(), nullptr);
-		}
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutOffsets, nullptr);
 	}
 
 private:
@@ -328,14 +321,8 @@ public:
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
 		SetUniformBufferParameter(RHICmdList, ComputeShaderRHI, GetUniformBufferParameter<FRadixSortParameters>(), RadixSortUniformBuffer );
-		if ( InKeys.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InKeys.GetBaseIndex(), InKeysSRV);
-		}
-		if ( RadixSortParameterBuffer.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, RadixSortParameterBuffer.GetBaseIndex(), RadixSortParameterBufferSRV);
-		}
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InKeys, InKeysSRV);
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, RadixSortParameterBuffer, RadixSortParameterBufferSRV);
 	}
 
 	/**
@@ -344,10 +331,7 @@ public:
 	void SetOutput(FRHICommandList& RHICmdList, FRHIUnorderedAccessView* OutOffsetsUAV)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( OutOffsets.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutOffsets.GetBaseIndex(), OutOffsetsUAV);
-		}
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutOffsets, OutOffsetsUAV);
 	}
 
 	/**
@@ -356,18 +340,9 @@ public:
 	void UnbindBuffers(FRHICommandList& RHICmdList)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( RadixSortParameterBuffer.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, RadixSortParameterBuffer.GetBaseIndex(), nullptr);
-		}
-		if ( InKeys.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InKeys.GetBaseIndex(), nullptr);
-		}
-		if ( OutOffsets.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutOffsets.GetBaseIndex(), nullptr);
-		}
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, RadixSortParameterBuffer, nullptr);
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InKeys, nullptr);
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutOffsets, nullptr);
 	}
 
 private:
@@ -418,10 +393,7 @@ public:
 	void SetParameters(FRHICommandList& RHICmdList, FRHIShaderResourceView* InOffsetsSRV)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( InOffsets.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InOffsets.GetBaseIndex(), InOffsetsSRV);
-		}
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InOffsets, InOffsetsSRV);
 	}
 
 	/**
@@ -430,10 +402,7 @@ public:
 	void SetOutput(FRHICommandList& RHICmdList, FRHIUnorderedAccessView* OutOffsetsUAV)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( OutOffsets.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutOffsets.GetBaseIndex(), OutOffsetsUAV);
-		}
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutOffsets, OutOffsetsUAV);
 	}
 
 	/**
@@ -442,14 +411,8 @@ public:
 	void UnbindBuffers(FRHICommandList& RHICmdList)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( InOffsets.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InOffsets.GetBaseIndex(), nullptr);
-		}
-		if ( OutOffsets.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutOffsets.GetBaseIndex(), nullptr);
-		}
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InOffsets, nullptr);
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutOffsets, nullptr);
 	}
 
 private:
@@ -521,22 +484,10 @@ public:
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
 		SetUniformBufferParameter(RHICmdList, ComputeShaderRHI, GetUniformBufferParameter<FRadixSortParameters>(), RadixSortUniformBuffer );
-		if ( RadixSortParameterBuffer.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, RadixSortParameterBuffer.GetBaseIndex(), RadixSortParameterBufferSRV);
-		}
-		if ( InKeys.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InKeys.GetBaseIndex(), InKeysSRV);
-		}
-		if ( InValues.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InValues.GetBaseIndex(), InValuesSRV);
-		}
-		if ( InOffsets.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InOffsets.GetBaseIndex(), InOffsetsSRV);
-		}
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, RadixSortParameterBuffer, RadixSortParameterBufferSRV);
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InKeys, InKeysSRV);
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InValues, InValuesSRV);
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InOffsets, InOffsetsSRV);
 	}
 
 	/**
@@ -545,14 +496,8 @@ public:
 	void SetOutput(FRHICommandList& RHICmdList, FRHIUnorderedAccessView* OutKeysUAV, FRHIUnorderedAccessView* OutValuesUAV)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( OutKeys.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutKeys.GetBaseIndex(), OutKeysUAV);
-		}
-		if ( OutValues.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutValues.GetBaseIndex(), OutValuesUAV);
-		}
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutKeys, OutKeysUAV);
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutValues, OutValuesUAV);
 	}
 
 	/**
@@ -561,30 +506,12 @@ public:
 	void UnbindBuffers(FRHICommandList& RHICmdList)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( RadixSortParameterBuffer.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, RadixSortParameterBuffer.GetBaseIndex(), nullptr);
-		}
-		if ( InKeys.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InKeys.GetBaseIndex(), nullptr);
-		}
-		if ( InValues.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InValues.GetBaseIndex(), nullptr);
-		}
-		if ( InOffsets.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InOffsets.GetBaseIndex(), nullptr);
-		}
-		if ( OutKeys.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutKeys.GetBaseIndex(), nullptr);
-		}
-		if ( OutValues.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutValues.GetBaseIndex(), nullptr);
-		}
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, RadixSortParameterBuffer, nullptr);
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InKeys, nullptr);
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InValues, nullptr);
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InOffsets, nullptr);
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutKeys, nullptr);
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutValues, nullptr);
 	}
 
 private:

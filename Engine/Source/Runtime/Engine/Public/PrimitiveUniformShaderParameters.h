@@ -14,7 +14,9 @@
 #include "UnifiedBuffer.h"
 #include "Containers/StaticArray.h"
 #include "NaniteDefinitions.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "UnrealEngine.h"
+#endif
 
 /** 
  * The uniform shader parameters associated with a primitive. 
@@ -32,6 +34,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FPrimitiveUniformShaderParameters,ENGINE_AP
 	SHADER_PARAMETER(FMatrix44f,	RelativeWorldToLocal)									// Rarely needed
 	SHADER_PARAMETER(FMatrix44f,	PreviousLocalToRelativeWorld)							// Used to calculate velocity
 	SHADER_PARAMETER(FMatrix44f,	PreviousRelativeWorldToLocal)							// Rarely used when calculating velocity, if material uses vertex offset along with world->local transform
+	SHADER_PARAMETER(FMatrix44f,	WorldToPreviousWorld)									// Used when calculating instance prev local->world for static instances that do not store it (calculated via doubles to resolve precision issues)
 	SHADER_PARAMETER_EX(FVector3f,	InvNonUniformScale,  EShaderPrecisionModifier::Half)	// Often needed
 	SHADER_PARAMETER(float,			ObjectBoundsX)											// Only needed for editor/development
 	SHADER_PARAMETER(FVector4f,		ObjectRelativeWorldPositionAndRadius)					// Needed by some materials
@@ -59,8 +62,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FPrimitiveUniformShaderParameters,ENGINE_AP
 	SHADER_PARAMETER(FVector2f,		InstanceDrawDistanceMinMaxSquared)
 	SHADER_PARAMETER(float,			InstanceWPODisableDistanceSquared)
 	SHADER_PARAMETER(uint32,		NaniteRayTracingDataOffset)
-	SHADER_PARAMETER(FVector3f,		Unused)
-	SHADER_PARAMETER(float,			BoundsScale)
+	SHADER_PARAMETER(float,			MaxWPODisplacement)
+	SHADER_PARAMETER(uint32,		CustomStencilValueAndMask)
 	SHADER_PARAMETER_ARRAY(FVector4f, CustomPrimitiveData, [FCustomPrimitiveData::NumCustomPrimitiveDataFloat4s]) // Custom data per primitive that can be accessed through material expression parameters and modified through UStaticMeshComponent
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
@@ -72,26 +75,31 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 #define PRIMITIVE_SCENE_DATA_FLAG_CACHE_SHADOW_AS_STATIC				0x10
 #define PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY						0x20
 #define PRIMITIVE_SCENE_DATA_FLAG_DETERMINANT_SIGN						0x40
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION			0x80
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW				0x100
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_PRIMITIVE_CUSTOM_DATA				0x200
-#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_0					0x400
-#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_1					0x800
-#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_2					0x1000
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_INSTANCE_LOCAL_BOUNDS				0x2000
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_NANITE_IMPOSTER					0x4000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_GAME						0x8000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_EDITOR						0x10000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REFLECTION_CAPTURES		0x20000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REAL_TIME_SKY_CAPTURES		0x40000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_RAY_TRACING				0x80000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_SCENE_CAPTURE_ONLY			0x100000
-#define PRIMITIVE_SCENE_DATA_FLAG_HIDDEN_IN_SCENE_CAPTURE				0x200000
-#define PRIMITIVE_SCENE_DATA_FLAG_FORCE_HIDDEN							0x400000
-#define PRIMITIVE_SCENE_DATA_FLAG_CAST_HIDDEN_SHADOW					0x800000
-#define PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET		0x1000000
-#define PRIMITIVE_SCENE_DATA_FLAG_INSTANCE_DRAW_DISTANCE_CULL			0x2000000
-#define PRIMITIVE_SCENE_DATA_FLAG_WPO_DISABLE_DISTANCE					0x4000000
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_DISTANCE_FIELD_REPRESENTATION		0x80
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION			0x100
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW				0x200
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_PRIMITIVE_CUSTOM_DATA				0x400
+#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_0					0x800
+#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_1					0x1000
+#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_2					0x2000
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_INSTANCE_LOCAL_BOUNDS				0x4000
+#define PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET		0x8000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_GAME						0x10000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_EDITOR						0x20000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REFLECTION_CAPTURES		0x40000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REAL_TIME_SKY_CAPTURES		0x80000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_RAY_TRACING				0x100000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_SCENE_CAPTURE_ONLY			0x200000
+#define PRIMITIVE_SCENE_DATA_FLAG_HIDDEN_IN_SCENE_CAPTURE				0x400000
+#define PRIMITIVE_SCENE_DATA_FLAG_FORCE_HIDDEN							0x800000 // Mobile allocates only 24 bits for primitive flags
+#define PRIMITIVE_SCENE_DATA_FLAG_CAST_HIDDEN_SHADOW					0x1000000
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_NANITE_IMPOSTER					0x2000000
+#define PRIMITIVE_SCENE_DATA_FLAG_INSTANCE_DRAW_DISTANCE_CULL			0x4000000
+#define PRIMITIVE_SCENE_DATA_FLAG_WPO_DISABLE_DISTANCE					0x8000000
+#define PRIMITIVE_SCENE_DATA_FLAG_WRITES_CUSTOM_DEPTH_STENCIL			0x10000000
+#define PRIMITIVE_SCENE_DATA_FLAG_REVERSE_CULLING						0x20000000
+#define PRIMITIVE_SCENE_DATA_FLAG_HOLDOUT								0x40000000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_LUMEN_SCENE				0x80000000
 
 struct FPrimitiveUniformShaderParametersBuilder
 {
@@ -109,6 +117,7 @@ public:
 		bVisibleInReflectionCaptures				= true;
 		bVisibleInRealTimeSkyCaptures				= true;
 		bVisibleInRayTracing						= true;
+		bVisibleInLumenScene						= true;
 
 		// Flags defaulted off
 		bReceivesDecals								= false;
@@ -116,6 +125,7 @@ public:
 		bUseVolumetricLightmap						= false;
 		bCacheShadowAsStatic						= false;
 		bOutputVelocity								= false;
+		bHasDistanceFieldRepresentation				= false;
 		bHasCapsuleRepresentation					= false;
 		bHasPreSkinnedLocalBounds					= false;
 		bHasPreviousLocalToWorld					= false;
@@ -127,8 +137,11 @@ public:
 		bHasNaniteImposter							= false;
 		bHasInstanceDrawDistanceCull				= false;
 		bHasWPODisableDistance						= false;
+		bWritesCustomDepthStencil					= false;
+		bReverseCulling								= false;
+		bHoldout                                    = false;
 
-		Parameters.BoundsScale						= 1.0f;
+		Parameters.MaxWPODisplacement					= 0.0f;
 
 		// Default colors
 		Parameters.WireframeColor					= FVector3f(1.0f, 1.0f, 1.0f);
@@ -165,6 +178,7 @@ public:
 	inline FPrimitiveUniformShaderParametersBuilder& VARIABLE_NAME(INPUT_TYPE In##VARIABLE_NAME) { b##VARIABLE_NAME = In##VARIABLE_NAME; return *this; }
 
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			ReceivesDecals);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			HasDistanceFieldRepresentation);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			HasCapsuleRepresentation);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			HasInstanceLocalBounds);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			CastContactShadow);
@@ -177,12 +191,15 @@ public:
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			EvaluateWorldPositionOffset);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInGame);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInEditor);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			ReverseCulling);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInReflectionCaptures);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInRealTimeSkyCaptures);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInRayTracing);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInLumenScene);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInSceneCaptureOnly);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			HiddenInSceneCapture);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			ForceHidden);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,         Holdout);
 
 	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			InstanceSceneDataOffset);
 	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NumInstanceSceneDataEntries);
@@ -206,9 +223,9 @@ public:
 		return *this;
 	}
 
-	inline FPrimitiveUniformShaderParametersBuilder& BoundsScale(float InBoundsScale)
+	inline FPrimitiveUniformShaderParametersBuilder& MaxWorldPositionOffsetDisplacement(float InMaxDisplacement)
 	{
-		Parameters.BoundsScale = InBoundsScale;
+		Parameters.MaxWPODisplacement = InMaxDisplacement;
 		return *this;
 	}
 
@@ -322,23 +339,31 @@ public:
 		return *this;
 	}
 
-	inline FPrimitiveUniformShaderParametersBuilder& InstanceDrawDistance(FVector2f DistanceMinMax)
+	inline FPrimitiveUniformShaderParametersBuilder& CustomDepthStencil(uint8 StencilValue, EStencilMask StencilWriteMask)
 	{
-		// Only scale the far distance by scalability parameters
-		DistanceMinMax.Y *= GetCachedScalabilityCVars().ViewDistanceScale;
-		Parameters.InstanceDrawDistanceMinMaxSquared = FMath::Square(DistanceMinMax);
-		bHasInstanceDrawDistanceCull = true;
+		// Translate the enum to a mask that can be consumed by the GPU with fewer operations
+		uint32 GPUStencilMask;
+		switch (StencilWriteMask)
+		{		
+		case SM_Default:
+			GPUStencilMask = 0u; // Use zero to mean replace
+			break;
+		case SM_255:
+			GPUStencilMask = 0xFFu;
+			break;
+		default:
+			GPUStencilMask = (1u << uint32(StencilWriteMask - SM_1)) & 0xFFu;
+			break;
+		}
+		Parameters.CustomStencilValueAndMask = (GPUStencilMask << 8u) | StencilValue;
+		bWritesCustomDepthStencil = true;
+
 		return *this;
 	}
 
-	inline FPrimitiveUniformShaderParametersBuilder& InstanceWorldPositionOffsetDisableDistance(float WPODisableDistance)
-	{
-		WPODisableDistance *= GetCachedScalabilityCVars().ViewDistanceScale;
-		bHasWPODisableDistance = true;
-		Parameters.InstanceWPODisableDistanceSquared = WPODisableDistance * WPODisableDistance;
+	ENGINE_API FPrimitiveUniformShaderParametersBuilder& InstanceDrawDistance(FVector2f DistanceMinMax);
 
-		return *this;
-	}
+	ENGINE_API FPrimitiveUniformShaderParametersBuilder& InstanceWorldPositionOffsetDisableDistance(float WPODisableDistance);
 
 	inline const FPrimitiveUniformShaderParameters& Build()
 	{
@@ -349,27 +374,30 @@ public:
 
 		{
 			// Inverse on FMatrix44f can generate NaNs if the source matrix contains large scaling, so do it in double precision.
+			// Also use double precision to calculate WorldToPreviousWorld to prevent precision issues at far distances
 			FMatrix LocalToRelativeWorld = FLargeWorldRenderScalar::MakeToRelativeWorldMatrixDouble(TilePositionOffset, AbsoluteLocalToWorld);
+			FMatrix PrevLocalToRelativeWorld = FLargeWorldRenderScalar::MakeClampedToRelativeWorldMatrixDouble(TilePositionOffset, AbsolutePreviousLocalToWorld);
+			FMatrix RelativeWorldToLocal = LocalToRelativeWorld.Inverse();
+
 			Parameters.LocalToRelativeWorld = FMatrix44f(LocalToRelativeWorld);
-			Parameters.RelativeWorldToLocal = FMatrix44f(LocalToRelativeWorld.Inverse());
+			Parameters.RelativeWorldToLocal = FMatrix44f(RelativeWorldToLocal);
+			Parameters.WorldToPreviousWorld = FMatrix44f(RelativeWorldToLocal * PrevLocalToRelativeWorld);
+
+			if (bHasPreviousLocalToWorld)
+			{
+				Parameters.PreviousLocalToRelativeWorld = FMatrix44f(PrevLocalToRelativeWorld);
+				Parameters.PreviousRelativeWorldToLocal = FMatrix44f(PrevLocalToRelativeWorld.Inverse());
+			}
+			else
+			{
+				Parameters.PreviousLocalToRelativeWorld = Parameters.LocalToRelativeWorld;
+				Parameters.PreviousRelativeWorldToLocal = Parameters.RelativeWorldToLocal;
+			}
 		}
 
 		Parameters.ActorRelativeWorldPosition = FVector3f(AbsoluteActorWorldPosition - TilePositionOffset);	//LWC_TODO: Precision loss
 		const FVector3f ObjectRelativeWorldPositionAsFloat = FVector3f(AbsoluteObjectWorldPosition - TilePositionOffset);
 		Parameters.ObjectRelativeWorldPositionAndRadius = FVector4f(ObjectRelativeWorldPositionAsFloat, ObjectRadius);
-
-		if (bHasPreviousLocalToWorld)
-		{
-			// Inverse on FMatrix44f can generate NaNs if the source matrix contains large scaling, so do it in double precision.
-			FMatrix PrevLocalToRelativeWorld = FLargeWorldRenderScalar::MakeClampedToRelativeWorldMatrixDouble(TilePositionOffset, AbsolutePreviousLocalToWorld);
-			Parameters.PreviousLocalToRelativeWorld = FMatrix44f(PrevLocalToRelativeWorld);
-			Parameters.PreviousRelativeWorldToLocal = FMatrix44f(PrevLocalToRelativeWorld.Inverse());
-		}
-		else
-		{
-			Parameters.PreviousLocalToRelativeWorld = Parameters.LocalToRelativeWorld;
-			Parameters.PreviousRelativeWorldToLocal = Parameters.RelativeWorldToLocal;
-		}
 
 		if (!bHasInstanceLocalBounds)
 		{
@@ -406,6 +434,7 @@ public:
 
 		Parameters.Flags = 0;
 		Parameters.Flags |= bReceivesDecals ? PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER : 0u;
+		Parameters.Flags |= bHasDistanceFieldRepresentation ? PRIMITIVE_SCENE_DATA_FLAG_HAS_DISTANCE_FIELD_REPRESENTATION : 0u;
 		Parameters.Flags |= bHasCapsuleRepresentation ? PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION : 0u;
 		Parameters.Flags |= bUseSingleSampleShadowFromStationaryLights ? PRIMITIVE_SCENE_DATA_FLAG_USE_SINGLE_SAMPLE_SHADOW_SL : 0u;
 		Parameters.Flags |= (bUseVolumetricLightmap && bUseSingleSampleShadowFromStationaryLights) ? PRIMITIVE_SCENE_DATA_FLAG_USE_VOLUMETRIC_LM_SHADOW_SL : 0u;
@@ -429,11 +458,15 @@ public:
 		Parameters.Flags |= bVisibleInReflectionCaptures ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REFLECTION_CAPTURES : 0u;
 		Parameters.Flags |= bVisibleInRealTimeSkyCaptures ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REAL_TIME_SKY_CAPTURES : 0u;
 		Parameters.Flags |= bVisibleInRayTracing ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_RAY_TRACING : 0u;
+		Parameters.Flags |= bVisibleInLumenScene ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_LUMEN_SCENE : 0u;
 		Parameters.Flags |= bVisibleInSceneCaptureOnly ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_SCENE_CAPTURE_ONLY : 0u;
 		Parameters.Flags |= bHiddenInSceneCapture ? PRIMITIVE_SCENE_DATA_FLAG_HIDDEN_IN_SCENE_CAPTURE : 0u;
 		Parameters.Flags |= bForceHidden ? PRIMITIVE_SCENE_DATA_FLAG_FORCE_HIDDEN : 0u;
 		Parameters.Flags |= bHasInstanceDrawDistanceCull ? PRIMITIVE_SCENE_DATA_FLAG_INSTANCE_DRAW_DISTANCE_CULL : 0u;
 		Parameters.Flags |= bHasWPODisableDistance ? PRIMITIVE_SCENE_DATA_FLAG_WPO_DISABLE_DISTANCE : 0u;
+		Parameters.Flags |= bWritesCustomDepthStencil ? PRIMITIVE_SCENE_DATA_FLAG_WRITES_CUSTOM_DEPTH_STENCIL : 0u;
+		Parameters.Flags |= bReverseCulling ? PRIMITIVE_SCENE_DATA_FLAG_REVERSE_CULLING : 0u;
+		Parameters.Flags |= bHoldout ? PRIMITIVE_SCENE_DATA_FLAG_HOLDOUT : 0u;
 		return Parameters;
 	}
 
@@ -457,6 +490,7 @@ private:
 	uint32 bCastShadow : 1;
 	uint32 bCastContactShadow : 1;
 	uint32 bCastHiddenShadow : 1;
+	uint32 bHasDistanceFieldRepresentation : 1;
 	uint32 bHasCapsuleRepresentation : 1;
 	uint32 bHasPreSkinnedLocalBounds : 1;
 	uint32 bHasInstanceLocalBounds : 1;
@@ -467,12 +501,16 @@ private:
 	uint32 bVisibleInReflectionCaptures : 1;
 	uint32 bVisibleInRealTimeSkyCaptures : 1;
 	uint32 bVisibleInRayTracing : 1;
+	uint32 bVisibleInLumenScene : 1;
 	uint32 bVisibleInSceneCaptureOnly : 1;
 	uint32 bHiddenInSceneCapture : 1;
 	uint32 bForceHidden : 1;
 	uint32 bHasNaniteImposter : 1;
 	uint32 bHasInstanceDrawDistanceCull : 1;
 	uint32 bHasWPODisableDistance : 1;
+	uint32 bWritesCustomDepthStencil : 1;
+	uint32 bReverseCulling: 1;
+	uint32 bHoldout : 1;
 };
 
 inline TUniformBufferRef<FPrimitiveUniformShaderParameters> CreatePrimitiveUniformBufferImmediate(
@@ -533,14 +571,14 @@ extern ENGINE_API TGlobalResource<FIdentityPrimitiveUniformBuffer> GIdentityPrim
 struct FPrimitiveSceneShaderData
 {
 	// Must match PRIMITIVE_SCENE_DATA_STRIDE in SceneData.ush
-	enum { DataStrideInFloat4s = 42 };
+	enum { DataStrideInFloat4s = 41 };
 
 	TStaticArray<FVector4f, DataStrideInFloat4s> Data;
 
 	FPrimitiveSceneShaderData()
 		: Data(InPlace, NoInit)
 	{
-		static_assert(FPrimitiveSceneShaderData::DataStrideInFloat4s == FScatterUploadBuffer::PrimitiveDataStrideInFloat4s,"");
+		static_assert(FPrimitiveSceneShaderData::DataStrideInFloat4s == (int)FScatterUploadBuffer::PrimitiveDataStrideInFloat4s,"");
 		Setup(GetIdentityPrimitiveParameters());
 	}
 

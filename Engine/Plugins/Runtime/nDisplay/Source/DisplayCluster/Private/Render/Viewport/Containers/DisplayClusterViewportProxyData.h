@@ -14,6 +14,7 @@ class FDisplayClusterViewport;
 class FDisplayClusterViewportProxy;
 class FDisplayClusterViewport_Context;
 class IDisplayClusterRender_MeshComponent;
+class FDisplayClusterViewport_OpenColorIO;
 
 //
 // Container for data exchange game->render threads
@@ -38,6 +39,9 @@ private:
 	FDisplayClusterViewport_RenderSettingsICVFX  RenderSettingsICVFX;
 	FDisplayClusterViewport_PostRenderSettings   PostRenderSettings;
 
+	// OpenColorIO
+	TSharedPtr<FDisplayClusterViewport_OpenColorIO, ESPMode::ThreadSafe> OpenColorIO;
+
 	// Projection policy instance that serves this viewport
 	TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> ProjectionPolicy;
 
@@ -53,6 +57,7 @@ private:
 
 #if WITH_EDITOR
 	FTextureRHIRef OutputPreviewTargetableResource;
+	TArray<TSharedPtr<FSceneViewStateReference, ESPMode::ThreadSafe>> ViewStates;
 #endif
 
 	// unique viewport resources

@@ -1,13 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
 #include "Framework/Text/ITextDecorator.h"
 
 #include "Framework/Text/RichTextMarkupProcessing.h"
-
-// Disable optimization for RickTextMarkupProcessingTest as it compiles very slowly in development builds
-PRAGMA_DISABLE_OPTIMIZATION
 
 #define LOCTEXT_NAMESPACE "Slate.RichText.MarkupProcessingTest"
 
@@ -380,5 +376,3 @@ bool FRTFProcessingTest::RunTest (const FString& Parameters)
 }
 
 #undef LOCTEXT_NAMESPACE 
-
-PRAGMA_ENABLE_OPTIMIZATION

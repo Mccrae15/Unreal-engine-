@@ -9,81 +9,62 @@
 #include "ClearReplacementShaders.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "Components/PrimitiveComponent.h"
-#include "Containers/StringConv.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "DerivedDataCache.h"
 #include "DerivedDataRequestOwner.h"
 #include "DistributedBuildControllerInterface.h"
 #include "EditorSupportDelegates.h"
 #include "Engine/RendererSettings.h"
-#include "EngineModule.h"
-#include "GBufferInfo.h"
-#include "GenericPlatform/GenericPlatformFile.h"
-#include "GlobalShader.h"
-#include "HAL/ExceptionHandling.h"
-#include "HAL/FileManager.h"
+#include "Features/IModularFeatures.h"
+#include "HAL/PlatformFile.h"
 #include "HAL/PlatformFileManager.h"
 #include "Interfaces/IShaderFormat.h"
-#include "Interfaces/IShaderFormatModule.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Internationalization/LocKeyFuncs.h"
 #include "MaterialShared.h"
 #include "Materials/Material.h"
-#include "Materials/MaterialInterface.h"
-#include "MeshMaterialShaderType.h"
-#include "Misc/CommandLine.h"
+#include "Misc/Compression.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/EngineVersion.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/FileHelper.h"
-#include "Misc/Guid.h"
-#include "Misc/LargeWorldRenderPosition.h"
 #include "Misc/MessageDialog.h"
-#include "Misc/Paths.h"
-#include "Misc/ScopeLock.h"
-#include "Misc/ScopeRWLock.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectCacheContext.h"
 #include "ProfilingDebugging/CookStats.h"
-#include "ProfilingDebugging/CountersTrace.h"
 #include "ProfilingDebugging/DiagnosticTable.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "ProfilingDebugging/StallDetector.h"
 #include "RenderUtils.h"
-#include "RendererInterface.h"
 #include "SceneInterface.h"
 #include "SceneManagement.h"
 #include "Serialization/MemoryHasher.h"
-#include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
 #include "Serialization/NameAsStringProxyArchive.h"
-#include "Shader.h"
 #include "ShaderCodeLibrary.h"
-#include "ShaderCore.h"
-#include "ShaderParameterMetadata.h"
-#include "StaticBoundShaderState.h"
+#include "ShaderPlatformCachedIniValue.h"
 #include "StaticBoundShaderState.h"
 #include "StereoRenderUtils.h"
 #include "UObject/DevObjectVersion.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
+#include "Math/UnitConversion.h"
 #include "UnrealEngine.h"
+#include "ColorSpace.h"
 
 #if WITH_EDITOR
-#include "Misc/DelayedAutoRegister.h"
-#include "Compression/OodleDataCompression.h"
 #include "UObject/ArchiveCookContext.h"
 #include "DerivedDataCache.h"
-#include "DerivedDataCacheRecord.h"
 #include "DerivedDataRequestOwner.h"
-
 #include "TextureCompiler.h"
 #include "Rendering/StaticLightingSystemInterface.h"
 #endif
+
 #if WITH_ODSC
 #include "ODSC/ODSCManager.h"
+#include "UnrealEngine.h"
 #endif
-#include "HAL/IConsoleManager.h"
 
 #define LOCTEXT_NAMESPACE "ShaderCompiler"
 
@@ -131,6 +112,12 @@ static TAutoConsoleVariable<bool> CVarJobCacheDDCPolicy(
 	TEXT("Whether to cache shaders in the job cache to your local machine or remotely to the network.\n"),
 	ECVF_ReadOnly);
 
+static TAutoConsoleVariable<bool> CVarDebugDumpWorkerInputs(
+	TEXT("r.ShaderCompiler.DebugDumpWorkerInputs"),
+	false,
+	TEXT("If true, worker input files will be saved for each individual compile job alongside other debug data (note that r.DumpShaderDebugInfo must also be enabled for this to function)"),
+	ECVF_ReadOnly);
+
 static bool IsShaderJobCacheDDCRemotePolicyEnabled()
 {
 	return CVarJobCacheDDCPolicy.GetValueOnAnyThread();
@@ -172,13 +159,12 @@ static FAutoConsoleVariableRef CVarShaderCompilerAllowDistributedCompilation(
 	ECVF_Default
 );
 
-/** Maximum number of preprocessed shaders to dump to the log on a crash. Replace with CVar if needed. */
-int32 GMaxNumDumpedShaderSources = 1;
+int32 GMaxNumDumpedShaderSources = 10;
 static FAutoConsoleVariableRef CVarShaderCompilerMaxDumpedShaderSources(
 	TEXT("r.ShaderCompiler.MaxDumpedShaderSources"),
 	GMaxNumDumpedShaderSources,
-	TEXT("Maximum number of preprocessed shader sources to dump to the log on shader compile errors. By default 1."),
-	ECVF_Default
+	TEXT("Maximum number of preprocessed shader sources to dump as a build artifact on shader compile errors. By default 10."),
+	ECVF_ReadOnly
 );
 
 int32 GSShaderCheckLevel = 1;
@@ -308,21 +294,6 @@ void DumpShaderDDCKeyToFile(const EShaderPlatform InPlatform, bool bWithEditor, 
 	DumpAr->Serialize(const_cast<TCHAR*>(*DDCKey), DDCKey.Len() * sizeof(TCHAR));
 }
 
-static void DumpShaderSourceToLog(const FString& DumpedSource)
-{
-	// Log dumped shader source line by line as message lengths in UE_LOG are limited.
-	TArray<FString> DumpedSourceLines;
-	DumpedSource.ParseIntoArrayLines(DumpedSourceLines, /*bCullEmpty:*/ false);
-
-	TGuardValue<ELogTimes::Type> DisableLogTimes(GPrintLogTimes, ELogTimes::None);
-	GLog->Serialize(TEXT("\n======================= DUMPED SHADER BEGIN =======================\n"), ELogVerbosity::Log, NAME_None);
-	for (const FString& Line : DumpedSourceLines)
-		{
-		GLog->Serialize(*Line, ELogVerbosity::Log, NAME_None);
-	}
-	GLog->Serialize(TEXT("\n======================= DUMPED SHADER END =======================\n"), ELogVerbosity::Log, NAME_None);
-}
-
 namespace ShaderCompiler
 {
 	bool IsJobCacheEnabled()
@@ -367,6 +338,15 @@ FShaderPipelineCompileJob::FShaderPipelineCompileJob(uint32 InHash, uint32 InId,
 		const FShaderCompileJobKey StageKey(ShaderType, InKey.VFType, InKey.PermutationId);
 		StageJobs.Add(new FShaderCompileJob(StageKey.MakeHash(InId), InId, InPriroity, StageKey));
 	}
+}
+
+FString FShaderCompileJobKey::ToString() const
+{
+	return FString::Printf(
+		TEXT("ShaderType:%s VertexFactoryType:%s PermutationId:%d"),
+		ShaderType ? ShaderType->GetName() : TEXT("None"),
+		VFType ? VFType->GetName() : TEXT("None"),
+		PermutationId);
 }
 
 FShaderCompileJobCollection::FShaderCompileJobCollection()
@@ -636,10 +616,10 @@ void FShaderCompileJobCollection::SubmitJobs(const TArray<FShaderCommonCompileJo
 					const bool bCheckDDC = !(Job->bIsDefaultMaterial || Job->bIsGlobalShader);
 
 					// see if we can find the job in the cache first
-					if (TArray<uint8>* ExistingOutput = CompletedJobsCache.Find(InputHash, bCheckDDC))
+					if (FSharedBuffer* ExistingOutput = CompletedJobsCache.Find(InputHash, bCheckDDC))
 					{
 						UE_LOG(LogShaderCompilers, UE_SHADERCACHE_LOG_LEVEL, TEXT("There is already a cached job with the ihash %s, processing the new one immediately."), *LexToString(InputHash));
-						FMemoryReader MemReader(*ExistingOutput);
+						FMemoryReaderView MemReader(*ExistingOutput);
 						Job->SerializeOutput(MemReader);
 
 						// finish the job instantly
@@ -688,17 +668,17 @@ void FShaderCompileJobCollection::SubmitJobs(const TArray<FShaderCommonCompileJo
 						}
 						else
 						{
-						for (FShaderCommonCompileJob::TIterator It(PendingJobs[PriorityIndex]); It; ++It)
-						{
-							FShaderCommonCompileJob& ExistingJob = *It;
-							if (ExistingJob.GetNextLink() == nullptr)
+							for (FShaderCommonCompileJob::TIterator It(PendingJobs[PriorityIndex]); It; ++It)
 							{
-								Job->LinkAfter(&ExistingJob);
+								FShaderCommonCompileJob& ExistingJob = *It;
+								if (ExistingJob.GetNextLink() == nullptr)
+								{
+									Job->LinkAfter(&ExistingJob);
 									ExistingJobs[PriorityIndex] = Job;
-								break;
+									break;
+								}
 							}
 						}
-					}
 					}
 					else
 #endif // UE_SHADERCOMPILER_FIFO_JOB_EXECUTION
@@ -772,6 +752,7 @@ void FShaderCompileJobCollection::AddToCacheAndProcessPending(FShaderCommonCompi
 	FMemoryWriter Writer(Output);
 	FinishedJob->SerializeOutput(Writer);
 
+	FSharedBuffer Buffer = MakeSharedBufferFromArray(MoveTemp(Output));
 	// TODO: reduce the scope - e.g. SerializeOutput and processing finished jobs can be moved out of it
 	FWriteScopeLock JobLocker(Lock);
 
@@ -784,7 +765,7 @@ void FShaderCompileJobCollection::AddToCacheAndProcessPending(FShaderCommonCompi
 		{
 			checkf(CurHead != FinishedJob, TEXT("Job that is being added to cache was also on a waiting list! Error in bookkeeping."));
 
-			FMemoryReader MemReader(Output);
+			FMemoryReaderView MemReader(Buffer);
 			CurHead->SerializeOutput(MemReader);
 			checkf(CurHead->bSucceeded == FinishedJob->bSucceeded, TEXT("Different success status for the job with the same ihash"));
 
@@ -808,7 +789,7 @@ void FShaderCompileJobCollection::AddToCacheAndProcessPending(FShaderCommonCompi
 	{
 		const bool bAddToDDC = !(FinishedJob->bIsDefaultMaterial || FinishedJob->bIsGlobalShader);
 		// we only cache jobs that succeded
-		CompletedJobsCache.Add(InputHash, Output, NumOutstandingJobsWithSameHash, bAddToDDC);
+		CompletedJobsCache.Add(InputHash, Buffer, NumOutstandingJobsWithSameHash, bAddToDDC);
 	}
 
 	// remove ourselves from the jobs in flight, if we were there (if this job is a cloned job it might not have been)
@@ -925,9 +906,11 @@ static constexpr int32 GSingleThreadedRunsMaxCount = (1 << 24);
 
 static void ModalErrorOrLog(const FString& Text, int64 CurrentFilePos = 0, int64 ExpectedFileSize = 0)
 {
+	static FThreadSafeBool bModalReported;
+
 	FString BadFile;
 	if (CurrentFilePos > ExpectedFileSize)
-{
+	{
 		// Corrupt file
 		BadFile = FString::Printf(TEXT("(Truncated or corrupt output file! Current file pos %lld, file size %lld)"), CurrentFilePos, ExpectedFileSize);
 	}
@@ -935,9 +918,17 @@ static void ModalErrorOrLog(const FString& Text, int64 CurrentFilePos = 0, int64
 	if (FPlatformProperties::SupportsWindowedMode())
 	{
 		UE_LOG(LogShaderCompilers, Error, TEXT("%s%s"), *Text, *BadFile);
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Text));
-		FPlatformMisc::RequestExit(false);
-		return;
+		if (!bModalReported.AtomicSet(true))
+		{
+			// Show dialog box with error message and request exit
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Text));
+			FPlatformMisc::RequestExit(false);
+		}
+		else
+		{
+			// Another thread already opened a dialog box and requests exit
+			FPlatformProcess::SleepInfinite();
+		}
 	}
 	else
 	{
@@ -1193,10 +1184,19 @@ static TAutoConsoleVariable<int32> CVarShadersRemoveDeadCode(
 	TEXT("\t1: Remove unreferenced code before compilation\n"),
 	ECVF_ReadOnly);
 
-extern bool CompileShaderPipeline(const IShaderFormat* Compiler, FName Format, FShaderPipelineCompileJob* PipelineJob, const FString& Dir);
+// note: this cvar is intended to be short-lived; when removing be sure to remove the associated code from
+// ShaderMapAppendKeyString (in Shader.cpp)
+static TAutoConsoleVariable<bool> CVarShadersUseLegacyPreprocessor(
+	TEXT("r.Shaders.UseLegacyPreprocessor"),
+	false,
+	TEXT("Executes shader preprocessing via the legacy MCPP preprocessor (instead of the new STB preprocessor).\n")
+	TEXT("\ttrue: Enabled - preprocess with MCPP\n")
+	TEXT("\tfalse: Disabled - preprocess with STB\n"),
+	ECVF_ReadOnly);
+
+extern bool CompileShaderPipeline(const TArray<const IShaderFormat*>& ShaderFormats, FName Format, FShaderPipelineCompileJob* PipelineJob, const FString& Dir);
 
 #if ENABLE_COOK_STATS
-#include "ProfilingDebugging/ScopedTimers.h"
 namespace ShaderCompilerCookStats
 {
 	static double BlockingTimeSec = 0.0;
@@ -1218,13 +1218,70 @@ namespace ShaderCompilerCookStats
 }
 #endif
 
-// Make functions so the crash reporter can disambiguate the actual error because of the different callstacks
-namespace SCWErrorCode
+static void ReissueShaderCompileJobs(const TArray<FShaderCommonCompileJob*>& SourceJobs)
 {
+	if (SourceJobs.Num())
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(ReissueShaderCompileJobs);
+
+		TArray<FShaderCommonCompileJobPtr> ReissueJobs;
+		ReissueJobs.Reserve(SourceJobs.Num());
+		const uint32 JobId = FShaderCommonCompileJob::GetNextJobId();
+		for (const FShaderCommonCompileJob* SourceJob : SourceJobs)
+		{
+			if (const FShaderCompileJob* SingleSourceJob = SourceJob->GetSingleShaderJob())
+			{
+				if (FShaderCompileJob* ReissueJob = GShaderCompilingManager->PrepareShaderCompileJob(JobId, SingleSourceJob->Key, SingleSourceJob->Priority))
+				{
+					ReissueJob->Input = SingleSourceJob->Input;
+					ReissueJobs.Add(FShaderCommonCompileJobPtr(ReissueJob));
+				}
+			}
+			else if (const FShaderPipelineCompileJob* PipelineSourceJob = SourceJob->GetShaderPipelineJob())
+			{
+				if (FShaderPipelineCompileJob* ReissueJob = GShaderCompilingManager->PreparePipelineCompileJob(JobId, PipelineSourceJob->Key, PipelineSourceJob->Priority))
+				{
+					ReissueJob->StageJobs = PipelineSourceJob->StageJobs;
+					ReissueJobs.Add(FShaderCommonCompileJobPtr(ReissueJob));
+				}
+			}
+			else
+			{
+				checkf(0, TEXT("Reissued shader compile job is neither a single nor a pipeline job"));
+			}
+		}
+
+		GShaderCompilingManager->SubmitJobs(ReissueJobs, FString(""), FString(""));
+	}
+}
+
+// Make functions so the crash reporter can disambiguate the actual error because of the different callstacks
+namespace ShaderCompileWorkerError
+{
+	static bool TryReissueShaderCompileJobs(const TArray<FShaderCommonCompileJobPtr>& SourceJobs)
+	{
+		// Reschedule all queued shader compile jobs when a worker crashed due to running out of memory.
+		TArray<FShaderCommonCompileJob*> ReissueSourceJobs;
+		ReissueSourceJobs.Reserve(SourceJobs.Num());
+		for (const FShaderCommonCompileJobPtr& Job : SourceJobs)
+		{
+			// Switch to local thread. If the worker already is a local thread, we cannot recover from this error.
+			FShaderCommonCompileJob* CurrentJob = Job.GetReference();
+			if (CurrentJob->CurrentWorker == EShaderCompilerWorkerType::LocalThread)
+			{
+				return false;
+			}
+			CurrentJob->CurrentWorker = EShaderCompilerWorkerType::LocalThread;
+			ReissueSourceJobs.Add(CurrentJob);
+		}
+		ReissueShaderCompileJobs(ReissueSourceJobs);
+		return true;
+	}
+
 	void HandleGeneralCrash(const TCHAR* ExceptionInfo, const TCHAR* Callstack)
 	{
 		GLog->Panic();
-		UE_LOG(LogShaderCompilers, Fatal, TEXT("ShaderCompileWorker crashed!\n%s\n\t%s"), ExceptionInfo, Callstack);
+		UE_LOG(LogShaderCompilers, Error, TEXT("ShaderCompileWorker crashed!\n%s\n%s"), ExceptionInfo, Callstack);
 	}
 
 	void HandleBadShaderFormatVersion(const TCHAR* Data)
@@ -1281,6 +1338,30 @@ namespace SCWErrorCode
 	{
 		ModalErrorOrLog(FString::Printf(TEXT("Crash inside the platform compiler!\n%s"), Data));
 	}
+
+	void HandleBadInputFile(const TCHAR* Data)
+	{
+		ModalErrorOrLog(FString::Printf(TEXT("ShaderCompileWorker failed with bad-input-file exception:\n%s\n"), Data));
+	}
+
+	bool HandleOutOfMemory(const TCHAR* ExceptionInfo, const TCHAR* Hostname, uint64 AvailableMemory, uint64 UsedMemory, const TArray<FShaderCommonCompileJobPtr>& QueuedJobs)
+	{
+		const FString AvailableMemoryStr = FString::Printf(TEXT("%d MB"), FUnitConversion::Convert(AvailableMemory, EUnit::Bytes, EUnit::Megabytes));
+		const FString UsedMemoryStr = FString::Printf(TEXT("%d MB"), FUnitConversion::Convert(UsedMemory, EUnit::Bytes, EUnit::Megabytes));
+		const FString ErrorReport = FString::Printf(TEXT("ShaderCompileWorker failed with out-of-memory exception on machine \"%s\"\n%s; Used physical memory %s of %s\n"), Hostname, ExceptionInfo, *UsedMemoryStr, *AvailableMemoryStr);
+
+		if (TryReissueShaderCompileJobs(QueuedJobs))
+		{
+			// We recovered from this error
+			UE_LOG(LogShaderCompilers, Warning, TEXT("%sReissue %d shader compile %s to remaining workers"), *ErrorReport, QueuedJobs.Num(), (QueuedJobs.Num() == 1 ? TEXT("job") : TEXT("jobs")));
+			return true;
+		}
+		else
+		{
+			ModalErrorOrLog(ErrorReport);
+			return false;
+		}
+	}
 }
 
 static TMap<FString, uint32> GetFormatVersionMap()
@@ -1335,8 +1416,7 @@ static void SplitJobsByType(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs
 	}
 }
 
-// Serialize Queued Job information
-bool FShaderCompileUtilities::DoWriteTasks(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& InTransferFile, IDistributedBuildController* BuildDistributionController, bool bUseRelativePaths, bool bCompressTaskFile)
+bool DoWriteTasksInner(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& InTransferFile, IDistributedBuildController* BuildDistributionController, bool bUseRelativePaths, bool bCompressTaskFile)
 {
 	int32 InputVersion = ShaderCompileWorkerInputVersion;
 	InTransferFile << InputVersion;
@@ -1508,9 +1588,6 @@ bool FShaderCompileUtilities::DoWriteTasks(const TArray<FShaderCommonCompileJobP
 		int32 NumBatches = QueuedSingleJobs.Num();
 		TransferFile << NumBatches;
 
-		FString ShaderPlatformNameString = FDataDrivenShaderPlatformInfo::GetName(GMaxRHIShaderPlatform).ToString();
-		TransferFile << ShaderPlatformNameString;
-
 		// Serialize all the batched jobs
 		for (int32 JobIndex = 0; JobIndex < QueuedSingleJobs.Num(); JobIndex++)
 		{
@@ -1573,7 +1650,68 @@ bool FShaderCompileUtilities::DoWriteTasks(const TArray<FShaderCommonCompileJobP
 	return InTransferFile.Close();
 }
 
-static void ProcessErrors(const FShaderCompileJob& CurrentJob, TArray<FString>& UniqueErrors, FString& ErrorString, int32& NumDumpedShaderSources)
+const TCHAR* DebugWorkerInputFileName = TEXT("DebugSCW.in");
+const TCHAR* DebugWorkerOutputFileName = TEXT("DebugSCW.out");
+
+FString CreateShaderCompilerWorkerDebugCommandLine(const FShaderCompileJob* Job)
+{
+	// 0 is parent PID, pass zero TTL and KeepInput to make SCW process the single job then exit without deleting the input file
+	return FString::Printf(TEXT("\"%s\" 0 \"%s\" %s %s -TimeToLive=0.0f -KeepInput"),
+		*Job->Input.DumpDebugInfoPath, // working directory for SCW
+		*Job->Input.DebugGroupName, // console window title
+		DebugWorkerInputFileName,
+		DebugWorkerOutputFileName);
+}
+
+// Serialize Queued Job information
+bool FShaderCompileUtilities::DoWriteTasks(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& InTransferFile, IDistributedBuildController* BuildDistributionController, bool bUseRelativePaths, bool bCompressTaskFile)
+{
+	if (CVarDebugDumpWorkerInputs.GetValueOnAnyThread())
+	{
+		for (const FShaderCommonCompileJobPtr& CommonJob : QueuedJobs)
+		{
+			auto WriteSingleJobFile = [](FShaderCompileJob* Job)
+			{
+				if (Job->Input.DumpDebugInfoEnabled())
+				{
+					TArray<FShaderCommonCompileJobPtr> SingleJobArray;
+					SingleJobArray.Add(Job);
+
+					FString DebugWorkerInputFilePath = Job->Input.DumpDebugInfoPath / DebugWorkerInputFileName;
+					FArchive* DebugWorkerInputFileWriter = IFileManager::Get().CreateFileWriter(*DebugWorkerInputFilePath, FILEWRITE_NoFail);
+					DoWriteTasksInner(
+						SingleJobArray, 
+						*DebugWorkerInputFileWriter, 
+						nullptr,	// Don't pass a IDistributedBuildController, this is only used for conversion to relative paths which we do not want for debug files
+						false,		// As above, use absolute paths not relative
+						true);		// Always compress the debug files; they are rather large so this saves some disk space
+					DebugWorkerInputFileWriter->Close();
+					delete DebugWorkerInputFileWriter;
+
+					FFileHelper::SaveStringToFile(
+						CreateShaderCompilerWorkerDebugCommandLine(Job), 
+						*(Job->Input.DumpDebugInfoPath / TEXT("DebugCompileArgs.txt")));
+				}
+			};
+			FShaderPipelineCompileJob* PipelineJob = CommonJob->GetShaderPipelineJob();
+			if (PipelineJob)
+			{
+				for (FShaderCompileJob* StageJob : PipelineJob->StageJobs)
+				{
+					WriteSingleJobFile(StageJob);
+				}
+			}
+			else
+			{
+				WriteSingleJobFile(CommonJob->GetSingleShaderJob());
+			}
+		}
+	}
+
+	return DoWriteTasksInner(QueuedJobs, InTransferFile, BuildDistributionController, bUseRelativePaths, bCompressTaskFile);
+}
+
+static void ProcessErrors(const FShaderCompileJob& CurrentJob, TArray<FString>& UniqueErrors, FString& ErrorString)
 {
 	bool bReportedDebugInfo = false;
 
@@ -1647,20 +1785,7 @@ static void ProcessErrors(const FShaderCompileJob& CurrentJob, TArray<FString>& 
 
 			FString UniqueErrorString = UniqueErrorPrefix + CurrentError.GetErrorStringWithLineMarker() + TEXT("\n");
 
-			if (GIsBuildMachine)
-			{
-				// Format everything on one line, and with the correct verbosity, so we can display proper errors in the failure logs.
-				UE_LOG(LogShaderCompilers, Error, TEXT("%s%s"), *UniqueErrorPrefix.Replace(TEXT("\n"), TEXT("")), *CurrentError.GetErrorStringWithLineMarker());
-
-				const FString& DumpedSource = CurrentJob.Output.OptionalPreprocessedShaderSource;
-				if (!DumpedSource.IsEmpty() && NumDumpedShaderSources < GMaxNumDumpedShaderSources)
-				{
-					// Limit number of preprocessed shaders to dump to the log as they are quite large
-					DumpShaderSourceToLog(DumpedSource);
-					++NumDumpedShaderSources;
-				}
-			}
-			else if (FPlatformMisc::IsDebuggerPresent())
+			if (FPlatformMisc::IsDebuggerPresent())
 			{
 				// Using OutputDebugString to avoid any text getting added before the filename,
 				// Which will throw off VS.NET's ability to take you directly to the file and line of the error when double clicking it in the output window.
@@ -1702,6 +1827,10 @@ static bool ReadSingleJob(FShaderCompileJob* CurrentJob, FArchive& OutputFile)
 	{
 		// Build debug info path and create the directory if it doesn't already exist
 		CurrentJob->Input.DumpDebugInfoPath = GShaderCompilingManager->CreateShaderDebugInfoPath(CurrentJob->Input);
+
+		// We failed to compile a shader, we will retry and dump the shader source. so increment the number of shader sources we've dumped so far.
+		GShaderCompilingManager->IncrementNumDumpedShaderSources();
+
 		return true;
 	}
 
@@ -1724,8 +1853,16 @@ static FString GetSingleJobCompilationDump(const FShaderCompileJob* SingleJob)
 	return String;
 }
 
+static const TCHAR* GetCompileJobSuccessText(FShaderCompileJob* SingleJob)
+{
+	if (SingleJob)
+	{
+		return SingleJob->Output.bSucceeded ? TEXT("Succeeded") : TEXT("Failed");
+	}
+	return TEXT("");
+}
 
-static void DumpCompilationJobs(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, int32 NumProcessedJobs)
+static void LogQueuedCompileJobs(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, int32 NumProcessedJobs)
 {
 	if (NumProcessedJobs == -1)
 	{
@@ -1740,7 +1877,7 @@ static void DumpCompilationJobs(const TArray<FShaderCommonCompileJobPtr>& Queued
 	{
 		if (FShaderCompileJob* SingleJob = QueuedJobs[Index]->GetSingleShaderJob())
 		{
-			UE_LOG(LogShaderCompilers, Error, TEXT("Job %d [Single] %s"), Index, *GetSingleJobCompilationDump(SingleJob));
+			UE_LOG(LogShaderCompilers, Error, TEXT("Job %d [Single] %s: %s"), Index, GetCompileJobSuccessText(SingleJob), *GetSingleJobCompilationDump(SingleJob));
 		}
 		else
 		{
@@ -1748,7 +1885,8 @@ static void DumpCompilationJobs(const TArray<FShaderCommonCompileJobPtr>& Queued
 			UE_LOG(LogShaderCompilers, Error, TEXT("Job %d: Pipeline %s "), Index, PipelineJob->Key.ShaderPipeline->GetName());
 			for (int32 JobIndex = 0; JobIndex < PipelineJob->StageJobs.Num(); ++JobIndex)
 			{
-				UE_LOG(LogShaderCompilers, Error, TEXT("PipelineJob %d %s"), JobIndex, *GetSingleJobCompilationDump(PipelineJob->StageJobs[JobIndex]->GetSingleShaderJob()));
+				FShaderCompileJob* StageJob = PipelineJob->StageJobs[JobIndex]->GetSingleShaderJob();
+				UE_LOG(LogShaderCompilers, Error, TEXT("PipelineJob %d %s: %s"), JobIndex, GetCompileJobSuccessText(StageJob), *GetSingleJobCompilationDump(StageJob));
 			}
 		}
 	}
@@ -1758,18 +1896,30 @@ static void DumpCompilationJobs(const TArray<FShaderCommonCompileJobPtr>& Queued
 }
 
 // Disable optimization for this crash handler to get full access to the entire stack frame when debugging a crash dump
-PRAGMA_DISABLE_OPTIMIZATION;
-static void HandleWorkerCrash(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& OutputFile, int32 OutputVersion, int64 FileSize, ESCWErrorCode ErrorCode, int32 NumProcessedJobs, int32 CallstackLength, int32 ExceptionInfoLength)
+UE_DISABLE_OPTIMIZATION_SHIP
+static bool HandleWorkerCrash(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& OutputFile, int32 OutputVersion, int64 FileSize, FSCWErrorCode::ECode ErrorCode, int32 NumProcessedJobs, int32 CallstackLength, int32 ExceptionInfoLength, int32 HostnameLength)
 {
 	TArray<TCHAR> Callstack;
 	Callstack.AddUninitialized(CallstackLength + 1);
 	OutputFile.Serialize(Callstack.GetData(), CallstackLength * sizeof(TCHAR));
-	Callstack[CallstackLength] = 0;
+	Callstack[CallstackLength] = TEXT('\0');
 
 	TArray<TCHAR> ExceptionInfo;
 	ExceptionInfo.AddUninitialized(ExceptionInfoLength + 1);
 	OutputFile.Serialize(ExceptionInfo.GetData(), ExceptionInfoLength * sizeof(TCHAR));
-	ExceptionInfo[ExceptionInfoLength] = 0;
+	ExceptionInfo[ExceptionInfoLength] = TEXT('\0');
+
+	TArray<TCHAR> Hostname;
+	Hostname.AddUninitialized(HostnameLength + 1);
+	OutputFile.Serialize(Hostname.GetData(), HostnameLength * sizeof(TCHAR));
+	Hostname[HostnameLength] = TEXT('\0');
+
+	// Read available and used physical memory from worker machine on OOM error
+	uint64 AvailableMemory = 0, UsedMemory = 0;
+	if (ErrorCode == FSCWErrorCode::OutOfMemory)
+	{
+		OutputFile << AvailableMemory << UsedMemory;
+	}
 
 	// Store primary job information onto stack to make it part of a crash dump
 	static const int32 MaxNumCharsForSourcePaths = 8192;
@@ -1821,53 +1971,57 @@ static void HandleWorkerCrash(const TArray<FShaderCommonCompileJobPtr>& QueuedJo
 	switch (ErrorCode)
 	{
 	default:
-	case ESCWErrorCode::GeneralCrash:
-	{
-		DumpCompilationJobs(QueuedJobs, NumProcessedJobs);
-		SCWErrorCode::HandleGeneralCrash(ExceptionInfo.GetData(), Callstack.GetData());
-	}
-	break;
-	case ESCWErrorCode::BadShaderFormatVersion:
-		SCWErrorCode::HandleBadShaderFormatVersion(ExceptionInfo.GetData());
+	case FSCWErrorCode::GeneralCrash:
+		LogQueuedCompileJobs(QueuedJobs, NumProcessedJobs);
+		ShaderCompileWorkerError::HandleGeneralCrash(ExceptionInfo.GetData(), Callstack.GetData());
 		break;
-	case ESCWErrorCode::BadInputVersion:
-		SCWErrorCode::HandleBadInputVersion(ExceptionInfo.GetData());
+	case FSCWErrorCode::BadShaderFormatVersion:
+		ShaderCompileWorkerError::HandleBadShaderFormatVersion(ExceptionInfo.GetData());
 		break;
-	case ESCWErrorCode::BadSingleJobHeader:
-		SCWErrorCode::HandleBadSingleJobHeader(ExceptionInfo.GetData());
+	case FSCWErrorCode::BadInputVersion:
+		ShaderCompileWorkerError::HandleBadInputVersion(ExceptionInfo.GetData());
 		break;
-	case ESCWErrorCode::BadPipelineJobHeader:
-		SCWErrorCode::HandleBadPipelineJobHeader(ExceptionInfo.GetData());
+	case FSCWErrorCode::BadSingleJobHeader:
+		ShaderCompileWorkerError::HandleBadSingleJobHeader(ExceptionInfo.GetData());
 		break;
-	case ESCWErrorCode::CantDeleteInputFile:
-		SCWErrorCode::HandleCantDeleteInputFile(ExceptionInfo.GetData());
+	case FSCWErrorCode::BadPipelineJobHeader:
+		ShaderCompileWorkerError::HandleBadPipelineJobHeader(ExceptionInfo.GetData());
 		break;
-	case ESCWErrorCode::CantSaveOutputFile:
-		SCWErrorCode::HandleCantSaveOutputFile(ExceptionInfo.GetData());
+	case FSCWErrorCode::CantDeleteInputFile:
+		ShaderCompileWorkerError::HandleCantDeleteInputFile(ExceptionInfo.GetData());
 		break;
-	case ESCWErrorCode::NoTargetShaderFormatsFound:
-		SCWErrorCode::HandleNoTargetShaderFormatsFound(ExceptionInfo.GetData());
+	case FSCWErrorCode::CantSaveOutputFile:
+		ShaderCompileWorkerError::HandleCantSaveOutputFile(ExceptionInfo.GetData());
 		break;
-	case ESCWErrorCode::CantCompileForSpecificFormat:
-		SCWErrorCode::HandleCantCompileForSpecificFormat(ExceptionInfo.GetData());
+	case FSCWErrorCode::NoTargetShaderFormatsFound:
+		ShaderCompileWorkerError::HandleNoTargetShaderFormatsFound(ExceptionInfo.GetData());
 		break;
-	case ESCWErrorCode::CrashInsidePlatformCompiler:
-		DumpCompilationJobs(QueuedJobs, NumProcessedJobs);
-		SCWErrorCode::HandleCrashInsidePlatformCompiler(ExceptionInfo.GetData());
+	case FSCWErrorCode::CantCompileForSpecificFormat:
+		ShaderCompileWorkerError::HandleCantCompileForSpecificFormat(ExceptionInfo.GetData());
 		break;
-	case ESCWErrorCode::Success:
+	case FSCWErrorCode::CrashInsidePlatformCompiler:
+		LogQueuedCompileJobs(QueuedJobs, NumProcessedJobs);
+		ShaderCompileWorkerError::HandleCrashInsidePlatformCompiler(ExceptionInfo.GetData());
+		break;
+	case FSCWErrorCode::BadInputFile:
+		ShaderCompileWorkerError::HandleBadInputFile(ExceptionInfo.GetData());
+		break;
+	case FSCWErrorCode::OutOfMemory:
+		return ShaderCompileWorkerError::HandleOutOfMemory(ExceptionInfo.GetData(), Hostname.GetData(), AvailableMemory, UsedMemory, QueuedJobs);
+	case FSCWErrorCode::Success:
 		// Can't get here...
-		break;
+		return true;
 	}
+	return false;
 }
-PRAGMA_ENABLE_OPTIMIZATION;
+UE_ENABLE_OPTIMIZATION_SHIP
 
 // Process results from Worker Process
 void FShaderCompileUtilities::DoReadTaskResults(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& OutputFile)
 {
 	if (OutputFile.TotalSize() == 0)
 	{
-		SCWErrorCode::HandleOutputFileEmpty(*OutputFile.GetArchiveName());
+		ShaderCompileWorkerError::HandleOutputFileEmpty(*OutputFile.GetArchiveName());
 	}
 
 	int32 OutputVersion = ShaderCompileWorkerOutputVersion;
@@ -1885,7 +2039,7 @@ void FShaderCompileUtilities::DoReadTaskResults(const TArray<FShaderCommonCompil
 	// Check for corrupted output file
 	if (FileSize > OutputFile.TotalSize())
 	{
-		SCWErrorCode::HandleOutputFileCorrupted(*OutputFile.GetArchiveName(), FileSize, OutputFile.TotalSize());
+		ShaderCompileWorkerError::HandleOutputFileCorrupted(*OutputFile.GetArchiveName(), FileSize, OutputFile.TotalSize());
 	}
 
 	int32 ErrorCode = 0;
@@ -1900,16 +2054,23 @@ void FShaderCompileUtilities::DoReadTaskResults(const TArray<FShaderCommonCompil
 	int32 ExceptionInfoLength = 0;
 	OutputFile << ExceptionInfoLength;
 
-	// Worker crashed
-	if (ESCWErrorCode(ErrorCode) != ESCWErrorCode::Success)
+	int32 HostnameLength = 0;
+	OutputFile << HostnameLength;
+
+	if (ErrorCode != FSCWErrorCode::Success)
 	{
-		HandleWorkerCrash(QueuedJobs, OutputFile, OutputVersion, FileSize, ESCWErrorCode(ErrorCode), NumProcessedJobs, CallstackLength, ExceptionInfoLength);
+		// If worker crashed in a way we were able to recover from, return and expect the compile jobs to be reissued already
+		if (HandleWorkerCrash(QueuedJobs, OutputFile, OutputVersion, FileSize, (FSCWErrorCode::ECode)ErrorCode, NumProcessedJobs, CallstackLength, ExceptionInfoLength, HostnameLength))
+		{
+			FSCWErrorCode::Reset();
+			return;
+		}
 	}
 
 	TArray<FShaderCompileJob*> QueuedSingleJobs;
 	TArray<FShaderPipelineCompileJob*> QueuedPipelineJobs;
 	SplitJobsByType(QueuedJobs, QueuedSingleJobs, QueuedPipelineJobs);
-	TArray<FShaderCompileJob*> ReissueSourceJobs;
+	TArray<FShaderCommonCompileJob*> ReissueSourceJobs;
 
 	// Read single jobs
 	{
@@ -1930,15 +2091,15 @@ void FShaderCompileUtilities::DoReadTaskResults(const TArray<FShaderCommonCompil
 		}
 		else
 		{
-		for (int32 JobIndex = 0; JobIndex < NumJobs; JobIndex++)
-		{
-			auto* CurrentJob = QueuedSingleJobs[JobIndex];
-			if (ReadSingleJob(CurrentJob, OutputFile))
+			for (int32 JobIndex = 0; JobIndex < NumJobs; JobIndex++)
 			{
-				ReissueSourceJobs.Add(CurrentJob);
+				auto* CurrentJob = QueuedSingleJobs[JobIndex];
+				if (ReadSingleJob(CurrentJob, OutputFile))
+				{
+					ReissueSourceJobs.Add(CurrentJob);
+				}
 			}
 		}
-	}
 	}
 
 	// Pipeline jobs
@@ -1960,69 +2121,52 @@ void FShaderCompileUtilities::DoReadTaskResults(const TArray<FShaderCommonCompil
 		}
 		else
 		{
-		for (int32 JobIndex = 0; JobIndex < NumJobs; JobIndex++)
-		{
-			FShaderPipelineCompileJob* CurrentJob = QueuedPipelineJobs[JobIndex];
-
-			FString PipelineName;
-			OutputFile << PipelineName;
-			if (PipelineName != CurrentJob->Key.ShaderPipeline->GetName())
+			for (int32 JobIndex = 0; JobIndex < NumJobs; JobIndex++)
 			{
-				FString Text = FString::Printf(TEXT("Worker returned Pipeline %s, expected %s!"), *PipelineName, CurrentJob->Key.ShaderPipeline->GetName());
-				ModalErrorOrLog(Text, OutputFile.Tell(), FileSize);
-			}
+				FShaderPipelineCompileJob* CurrentJob = QueuedPipelineJobs[JobIndex];
 
-			check(!CurrentJob->bFinalized);
-			CurrentJob->bFinalized = true;
-			CurrentJob->bFailedRemovingUnused = false;
+				FString PipelineName;
+				OutputFile << PipelineName;
+				if (PipelineName != CurrentJob->Key.ShaderPipeline->GetName())
+				{
+					FString Text = FString::Printf(TEXT("Worker returned Pipeline %s, expected %s!"), *PipelineName, CurrentJob->Key.ShaderPipeline->GetName());
+					ModalErrorOrLog(Text, OutputFile.Tell(), FileSize);
+				}
 
-			int32 NumStageJobs = -1;
-			OutputFile << NumStageJobs;
+				check(!CurrentJob->bFinalized);
+				CurrentJob->bFinalized = true;
+				CurrentJob->bFailedRemovingUnused = false;
 
-			if (NumStageJobs != CurrentJob->StageJobs.Num())
-			{
+				int32 NumStageJobs = -1;
+				OutputFile << NumStageJobs;
+
+				if (NumStageJobs != CurrentJob->StageJobs.Num())
+				{
 					FString Text = FString::Printf(TEXT("Worker returned %u stage pipeline jobs, %u expected"), NumStageJobs, CurrentJob->StageJobs.Num());
 					ModalErrorOrLog(Text, OutputFile.Tell(), FileSize);
 				}
 				else
 				{
-			CurrentJob->bSucceeded = true;
-			for (int32 Index = 0; Index < NumStageJobs; Index++)
-			{
-				FShaderCompileJob* SingleJob = CurrentJob->StageJobs[Index];
-				// cannot reissue a single stage of a pipeline job
-				ReadSingleJob(SingleJob, OutputFile);
+					CurrentJob->bSucceeded = true;
+					for (int32 Index = 0; Index < NumStageJobs; Index++)
+					{
+						FShaderCompileJob* SingleJob = CurrentJob->StageJobs[Index];
+						// cannot reissue a single stage of a pipeline job
+						ReadSingleJob(SingleJob, OutputFile);
 						CurrentJob->bFailedRemovingUnused = CurrentJob->bFailedRemovingUnused || SingleJob->Output.bFailedRemovingUnused;
-				CurrentJob->bSucceeded = CurrentJob->bSucceeded && SingleJob->bSucceeded;
+						CurrentJob->bSucceeded = CurrentJob->bSucceeded && SingleJob->bSucceeded;
+					}
+				}
 			}
-		}
-	}
 		}
 	}
 	
 	// Requeue any jobs we wish to run again
-	if (ReissueSourceJobs.Num())
-	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ReissueShaderJobs);
-
-		TArray<FShaderCommonCompileJobPtr> ReissueJobs;
-		ReissueJobs.Reserve(ReissueSourceJobs.Num());
-		const uint32 JobId = FShaderCommonCompileJob::GetNextJobId();
-		for (const FShaderCompileJob* ReissueSourceJob : ReissueSourceJobs)
-		{
-			FShaderCompileJob* ReissueJob = GShaderCompilingManager->PrepareShaderCompileJob(JobId, ReissueSourceJob->Key, ReissueSourceJob->Priority);
-			if (ReissueJob)
-			{
-				ReissueJob->Input = ReissueSourceJob->Input;
-				ReissueJobs.Add(FShaderCommonCompileJobPtr(ReissueJob));
-			}
-		}
-
-		GShaderCompilingManager->SubmitJobs(ReissueJobs, FString(""), FString(""));
-	}
+	ReissueShaderCompileJobs(ReissueSourceJobs);
 }
 
-static bool CheckSingleJob(const FShaderCompileJob& SingleJob, TArray<FString>& OutErrors, FString* OutDumpedSource)
+#if WITH_EDITOR
+static bool CheckSingleJob(const FShaderCompileJob& SingleJob, TArray<FString>& OutErrors)
 {
 	if (SingleJob.bSucceeded)
 	{
@@ -2063,11 +2207,6 @@ static bool CheckSingleJob(const FShaderCompileJob& SingleJob, TArray<FString>& 
 		}
 	}
 
-	if (!bSucceeded && OutDumpedSource != nullptr)
-	{
-		*OutDumpedSource = SingleJob.Output.OptionalPreprocessedShaderSource;
-	}
-
 	return bSucceeded;
 };
 
@@ -2094,6 +2233,7 @@ static void AddErrorsForFailedJob(FShaderCompileJob& CurrentJob, TArray<EShaderP
 		}
 	}
 }
+#endif // WITH_EDITOR
 
 /** Information tracked for each shader compile worker process instance. */
 struct FShaderCompileWorkerInfo
@@ -2210,7 +2350,7 @@ void FShaderCompileThreadRunnable::OnMachineResourcesChanged()
 			bWaitForWorkersToShutdown = Manager->NumShaderCompilingThreads < static_cast<uint32>(WorkerInfos.Num());
 			for (int32 Index = WorkerInfos.Num() - 1;
 				static_cast<uint32>(Index) >= Manager->NumShaderCompilingThreads; --Index)
-	{
+			{
 				WorkerInfos[Index]->bAvailable = false;
 			}
 		}
@@ -2227,7 +2367,7 @@ void FShaderCompileThreadRunnable::OnMachineResourcesChanged()
 			UE_LOG(LogShaderCompilers, Warning, TEXT("OnMachineResourcesChanged timedout waiting %.0f seconds for WorkerInfos to complete. Workers will remain allocated."),
 				(float)(CurrentTime - StartTime));
 			break;
-	}
+		}
 
 		FScopeLock WorkerScopeLock(&WorkerInfosLock);
 		for (int32 Index = WorkerInfos.Num() - 1;
@@ -2612,7 +2752,7 @@ bool FShaderCompileThreadRunnable::LaunchWorkersIfNeeded()
 					else
 					{
 						UE_LOG(LogShaderCompilers, Error, TEXT("ShaderCompileWorker terminated unexpectedly!  Falling back to directly compiling which will be very slow.  Thread %u."), WorkerIndex);
-						DumpCompilationJobs(CurrentWorkerInfo.QueuedJobs, -1);
+						LogQueuedCompileJobs(CurrentWorkerInfo.QueuedJobs, -1);
 
 						bAbandonWorkers = true;
 						break;
@@ -2771,41 +2911,14 @@ void FShaderCompileUtilities::ExecuteShaderCompileJob(FShaderCommonCompileJob& J
 
 	check(!Job.bFinalized);
 
+	FString WorkingDir = FPlatformProcess::ShaderDir();
 	static ITargetPlatformManagerModule& TPM = GetTargetPlatformManagerRef();
 	auto* SingleJob = Job.GetSingleShaderJob();
+	const TArray<const IShaderFormat*> ShaderFormats = TPM.GetShaderFormats();
 	if (SingleJob)
 	{
 		const FName Format = (SingleJob->Input.ShaderFormat != NAME_None) ? SingleJob->Input.ShaderFormat : LegacyShaderPlatformToShaderFormat(EShaderPlatform(SingleJob->Input.Target.Platform));
-		const IShaderFormat* Compiler = TPM.FindShaderFormat(Format);
-
-		if (!Compiler)
-		{
-			UE_LOG(LogShaderCompilers, Fatal, TEXT("Can't compile shaders for format %s, couldn't load compiler dll"), *Format.ToString());
-		}
-		CA_ASSUME(Compiler != nullptr);
-
-		if (IsValidRef(SingleJob->Input.SharedEnvironment))
-		{
-			// Merge the shared environment into the per-shader environment before calling into the compile function
-			// Normally this happens in the worker
-			SingleJob->Input.Environment.Merge(*SingleJob->Input.SharedEnvironment);
-		}
-
-		// Compile the shader directly through the platform dll (directly from the shader dir as the working directory)
-		Compiler->CompileShader(Format, SingleJob->Input, SingleJob->Output, FString(FPlatformProcess::ShaderDir()));
-
-		SingleJob->bSucceeded = SingleJob->Output.bSucceeded;
-
-		if (SingleJob->Output.bSucceeded)
-		{
-			// Generate a hash of the output and compress the code
-			// The shader processing this output will use the heash to search for existing FShaderResources
-			SingleJob->Output.GenerateOutputHash();
-			if (SingleJob->Input.CompressionFormat != NAME_None)
-			{
-				SingleJob->Output.CompressOutput(SingleJob->Input.CompressionFormat, SingleJob->Input.OodleCompressor, SingleJob->Input.OodleLevel);
-			}
-		}
+		CompileShader(ShaderFormats, SingleJob->Input, SingleJob->Output, WorkingDir);
 	}
 	else
 	{
@@ -2814,13 +2927,6 @@ void FShaderCompileUtilities::ExecuteShaderCompileJob(FShaderCommonCompileJob& J
 
 		EShaderPlatform Platform = (EShaderPlatform)PipelineJob->StageJobs[0]->Input.Target.Platform;
 		const FName Format = LegacyShaderPlatformToShaderFormat(Platform);
-		const IShaderFormat* Compiler = TPM.FindShaderFormat(Format);
-
-		if (!Compiler)
-		{
-			UE_LOG(LogShaderCompilers, Fatal, TEXT("Can't compile shaders for format %s, couldn't load compiler dll"), *Format.ToString());
-		}
-		CA_ASSUME(Compiler != nullptr);
 
 		// Verify same platform on all stages
 		for (int32 Index = 1; Index < PipelineJob->StageJobs.Num(); ++Index)
@@ -2836,7 +2942,7 @@ void FShaderCompileUtilities::ExecuteShaderCompileJob(FShaderCommonCompileJob& J
 			}
 		}
 
-		CompileShaderPipeline(Compiler, Format, PipelineJob, FString(FPlatformProcess::ShaderDir()));
+		CompileShaderPipeline(ShaderFormats, Format, PipelineJob, WorkingDir);
 	}
 
 	Job.bFinalized = true;
@@ -3015,11 +3121,17 @@ FShaderCompilerStats* GShaderCompilerStats = nullptr;
 void FShaderCompilerStats::WriteStats(FOutputDevice* Ar)
 {
 #if ALLOW_DEBUG_FILES
-	static TCHAR DebugText[] = TEXT("Wrote shader compile stats to file '%s'.");
+	constexpr static const TCHAR DebugText[] = TEXT("Wrote shader compile stats to file '%s'.");
 	{
 		FlushRenderingCommands();
 
-		FString FileName = FPaths::Combine(*FPaths::ProjectSavedDir(), FString::Printf(TEXT("MaterialStats/Stats-%s.csv"), *FDateTime::Now().ToString()));
+		uint32 MultiprocessId = 0;
+		FParse::Value(FCommandLine::Get(), TEXT("-MultiprocessId="), MultiprocessId);
+		FString FileName = FPaths::Combine(*FPaths::ProjectSavedDir(),
+			FString::Printf(TEXT("MaterialStats/Stats-%s%s.csv"),
+				*FDateTime::Now().ToString(),
+				(MultiprocessId == 0 ? TEXT("") : *FString::Printf(TEXT("-%d"), MultiprocessId))
+			));
 		auto DebugWriter = IFileManager::Get().CreateFileWriter(*FileName);
 		FDiagnosticTableWriterCSV StatWriter(DebugWriter);
 		const TSparseArray<ShaderCompilerStats>& PlatformStats = GetShaderCompilerStats();
@@ -3103,7 +3215,12 @@ void FShaderCompilerStats::WriteStats(FOutputDevice* Ar)
 	}
 	{
 
-		FString FileName = FString::Printf(TEXT("%s/MaterialStatsDebug/StatsDebug-%s.csv"), *FPaths::ProjectSavedDir(), *FDateTime::Now().ToString());
+		uint32 MultiprocessId = 0;
+		FParse::Value(FCommandLine::Get(), TEXT("-MultiprocessId="), MultiprocessId);
+		FString FileName = FString::Printf(TEXT("%s/MaterialStatsDebug/StatsDebug-%s%s.csv"),
+			*FPaths::ProjectSavedDir(), *FDateTime::Now().ToString(),
+			(MultiprocessId == 0 ? TEXT("") : *FString::Printf(TEXT("-%d"), MultiprocessId))
+		);
 		auto DebugWriter = IFileManager::Get().CreateFileWriter(*FileName);
 		FDiagnosticTableWriterCSV StatWriter(DebugWriter);
 		const TSparseArray<ShaderCompilerStats>& PlatformStats = GetShaderCompilerStats();
@@ -3155,16 +3272,26 @@ void FShaderCompilerStats::WriteStats(FOutputDevice* Ar)
 #endif // ALLOW_DEBUG_FILES
 }
 
+template <typename T>
+static FString FormatNumber(T Number)
+{
+	static const FNumberFormattingOptions FormattingOptions = FNumberFormattingOptions().SetUseGrouping(true);
+	return FText::AsNumber(Number, &FormattingOptions).ToString();
+}
+
 void FShaderCompilerStats::WriteStatSummary()
 {
 	const uint32 TotalCompiled = GetTotalShadersCompiled();
 	const double TotalTimeAtLeastOneJobWasInFlight = GetTimeShaderCompilationWasActive();
 
 	UE_LOG(LogShaderCompilers, Display, TEXT("=== Shader Compilation stats ==="));
-	UE_LOG(LogShaderCompilers, Display, TEXT("Shaders Compiled: %u"), TotalCompiled);
+	UE_LOG(LogShaderCompilers, Display, TEXT("Shaders Compiled: %s"), *FormatNumber(TotalCompiled));
 
 	FScopeLock Lock(&CompileStatsLock);	// make a local copy for all the stats?
-	UE_LOG(LogShaderCompilers, Display, TEXT("Jobs assigned %.0f, completed %.0f (%.2f%%)"), JobsAssigned, JobsCompleted, (JobsAssigned > 0.0) ? 100.0 * JobsCompleted / JobsAssigned : 0.0);
+	UE_LOG(LogShaderCompilers, Display, TEXT("Jobs assigned %s, completed %s (%.2f%%)"), 
+		*FormatNumber(JobsAssigned),
+		*FormatNumber(JobsCompleted),
+		(JobsAssigned > 0.0) ? 100.0 * JobsCompleted / JobsAssigned : 0.0);
 
 	if (TimesLocalWorkersWereIdle > 0.0)
 	{
@@ -3190,8 +3317,8 @@ void FShaderCompilerStats::WriteStatSummary()
 		int64 JobBatchesSeen = LocalJobBatchesSeen + DistributedJobBatchesSeen;
 		double TotalJobsReportedInJobBatches = TotalJobsReportedInLocalJobBatches + TotalJobsReportedInDistributedJobBatches;
 
-		UE_LOG(LogShaderCompilers, Display, TEXT("Jobs were issued in %lld batches (%lld local, %lld distributed), average %.2f jobs/batch (%.2f jobs/local batch. %.2f jobs/distributed batch)"),
-			JobBatchesSeen, LocalJobBatchesSeen, DistributedJobBatchesSeen,
+		UE_LOG(LogShaderCompilers, Display, TEXT("Jobs were issued in %s batches (%s local, %s distributed), average %.2f jobs/batch (%.2f jobs/local batch. %.2f jobs/distributed batch)"),
+			*FormatNumber(JobBatchesSeen), *FormatNumber(LocalJobBatchesSeen), *FormatNumber(DistributedJobBatchesSeen),
 			static_cast<double>(TotalJobsReportedInJobBatches) / static_cast<double>(JobBatchesSeen),
 			static_cast<double>(TotalJobsReportedInLocalJobBatches) / static_cast<double>(LocalJobBatchesSeen),
 			static_cast<double>(TotalJobsReportedInDistributedJobBatches) / static_cast<double>(DistributedJobBatchesSeen)
@@ -3199,13 +3326,13 @@ void FShaderCompilerStats::WriteStatSummary()
 	}
 	else if (LocalJobBatchesSeen > 0)
 	{
-		UE_LOG(LogShaderCompilers, Display, TEXT("Jobs were issued in %lld batches (only local compilation was used), average %.2f jobs/batch"), 
-			LocalJobBatchesSeen, static_cast<double>(TotalJobsReportedInLocalJobBatches) / static_cast<double>(LocalJobBatchesSeen));
+		UE_LOG(LogShaderCompilers, Display, TEXT("Jobs were issued in %s batches (only local compilation was used), average %.2f jobs/batch"), 
+			*FormatNumber(LocalJobBatchesSeen), static_cast<double>(TotalJobsReportedInLocalJobBatches) / static_cast<double>(LocalJobBatchesSeen));
 	}
 	else if (DistributedJobBatchesSeen > 0)
 	{
-		UE_LOG(LogShaderCompilers, Display, TEXT("Jobs were issued in %lld batches (only distributed compilation was used), average %.2f jobs/batch"),
-			DistributedJobBatchesSeen, static_cast<double>(TotalJobsReportedInDistributedJobBatches) / static_cast<double>(DistributedJobBatchesSeen));
+		UE_LOG(LogShaderCompilers, Display, TEXT("Jobs were issued in %s batches (only distributed compilation was used), average %.2f jobs/batch"),
+			*FormatNumber(DistributedJobBatchesSeen), static_cast<double>(TotalJobsReportedInDistributedJobBatches) / static_cast<double>(DistributedJobBatchesSeen));
 	}
 
 	if (TotalTimeAtLeastOneJobWasInFlight > 0.0)
@@ -3224,8 +3351,8 @@ void FShaderCompilerStats::WriteStatSummary()
 			TotalThreadPreprocessTimeForAllShaders += Iter.Value().TotalPreprocessTime;
 		}
 
-		UE_LOG(LogShaderCompilers, Display, TEXT("Total thread time: %.2f s"), TotalThreadTimeForAllShaders);
-		UE_LOG(LogShaderCompilers, Display, TEXT("Total thread preprocess time: %.2f s"), TotalThreadPreprocessTimeForAllShaders);
+		UE_LOG(LogShaderCompilers, Display, TEXT("Total thread time: %s s"), *FormatNumber(TotalThreadTimeForAllShaders));
+		UE_LOG(LogShaderCompilers, Display, TEXT("Total thread preprocess time: %s s"), *FormatNumber(TotalThreadPreprocessTimeForAllShaders));
 		UE_LOG(LogShaderCompilers, Display, TEXT("Percentage time preprocessing: %.2f%%"), TotalThreadTimeForAllShaders > 0.0 ? (TotalThreadPreprocessTimeForAllShaders / TotalThreadTimeForAllShaders) * 100.0 : 0.0);
 
 		if (TotalTimeAtLeastOneJobWasInFlight > 0.0)
@@ -3604,7 +3731,6 @@ FShaderCompilingManager::FShaderCompilingManager() :
 	bCompilingDuringGame(false),
 	NumExternalJobs(0),
 	NumSingleThreadedRunsBeforeRetry(GSingleThreadedRunsIdle),
-	NumDumpedShaderSources(0),
 #if PLATFORM_MAC
 	ShaderCompileWorkerName(FPaths::EngineDir() / TEXT("Binaries/Mac/ShaderCompileWorker")),
 #elif PLATFORM_LINUX
@@ -3641,6 +3767,9 @@ FShaderCompilingManager::FShaderCompilingManager() :
 	verify(GConfig->GetBool( TEXT("DevOptions.Shaders"), TEXT("bAllowCompilingThroughWorkers"), bAllowCompilingThroughWorkers, GEngineIni ));
 	verify(GConfig->GetBool( TEXT("DevOptions.Shaders"), TEXT("bAllowAsynchronousShaderCompiling"), bAllowAsynchronousShaderCompiling, GEngineIni ));
 
+	// Explicitly load ShaderPreprocessor module so it will run its initialization step
+	FModuleManager::LoadModuleChecked<IModuleInterface>(TEXT("ShaderPreprocessor"));
+	
 	// override the use of workers, can be helpful for debugging shader compiler code
 	static const IConsoleVariable* CVarAllowCompilingThroughWorkers = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.AllowCompilingThroughWorkers"), false);
 	if (!FPlatformProcess::SupportsMultithreading() || FParse::Param(FCommandLine::Get(), TEXT("noshaderworker")) || (CVarAllowCompilingThroughWorkers && CVarAllowCompilingThroughWorkers->GetInt() == 0))
@@ -3694,7 +3823,14 @@ FShaderCompilingManager::FShaderCompilingManager() :
 	FPaths::NormalizeDirectoryName(AbsoluteBaseDirectory);
 	AbsoluteShaderBaseWorkingDirectory = AbsoluteBaseDirectory + TEXT("/");
 
-	FString AbsoluteDebugInfoDirectory = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*(FPaths::ProjectSavedDir() / TEXT("ShaderDebugInfo")));
+	// Build machines should dump to the AutomationTool/Saved/Logs directory and they will upload as build artifacts via the AutomationTool.
+	FString BaseDebugInfoPath = FPaths::ProjectSavedDir();
+	if (GIsBuildMachine)
+	{
+		BaseDebugInfoPath = FPaths::Combine(*FPaths::EngineDir(), TEXT("Programs"), TEXT("AutomationTool"), TEXT("Saved"), TEXT("Logs"));
+	}
+
+	FString AbsoluteDebugInfoDirectory = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*(BaseDebugInfoPath / TEXT("ShaderDebugInfo")));
 	const FString OverrideShaderDebugDir = CVarShaderOverrideDebugDir.GetValueOnAnyThread();
 	if (!OverrideShaderDebugDir.IsEmpty())
 	{
@@ -3933,6 +4069,17 @@ void FShaderCompilingManager::ProcessAsyncTasks(bool bLimitExecutionTime)
 	ProcessAsyncResults(bLimitExecutionTime, false);
 }
 
+void FShaderCompilingManager::ProcessAsyncTasks(const AssetCompilation::FProcessAsyncTaskParams& Params)
+{
+	// Shader compilations are not required for PIE to begin.
+	if (Params.bPlayInEditorAssetsOnly)
+	{
+		return;
+	}
+
+	ProcessAsyncResults(Params.bLimitExecutionTime, false);
+}
+
 int32 FShaderCompilingManager::GetNumPendingJobs() const
 {
 	return AllJobs.GetNumPendingJobs();
@@ -3990,14 +4137,23 @@ bool FShaderCompilingManager::ShouldRecompileToDumpShaderDebugInfo(const FShader
 	if (Input.DumpDebugInfoPath.IsEmpty())
 	{
 		const EDumpShaderDebugInfo DumpShaderDebugInfo = GetDumpShaderDebugInfo();
+		const bool bErrors = !bSucceeded;
+		const bool bWarnings = Output.Errors.Num() > 0;
+
+		bool bShouldDump = true;
+		if (GIsBuildMachine)
+		{
+			// Build machines dump these as build artifacts and they should only upload so many due to size constraints.
+			bShouldDump = (NumDumpedShaderSources < GMaxNumDumpedShaderSources);
+		}
 
 		if (DumpShaderDebugInfo == EDumpShaderDebugInfo::OnError)
 		{
-			return !bSucceeded;
+			return bShouldDump && (bErrors);
 		}
 		else if (DumpShaderDebugInfo == EDumpShaderDebugInfo::OnErrorOrWarning)
 		{
-			return !bSucceeded || Output.Errors.Num() > 0;
+			return bShouldDump && (bErrors || bWarnings);
 		}
 	}
 
@@ -4147,6 +4303,13 @@ FProcHandle FShaderCompilingManager::LaunchWorker(const FString& WorkingDirector
 		}
 	}
 	WorkerParameters += FCommandLine::GetSubprocessCommandline();
+
+#if USE_SHADER_COMPILER_WORKER_TRACE
+	// When doing utrace functionality we can't run with -nothreading, since it won't create the utrace thread to send events.
+	WorkerParameters += FString(TEXT(" -trace=default "));
+#else
+	WorkerParameters += FString(TEXT(" -nothreading "));
+#endif // USE_SHADER_COMPILER_WORKER_TRACE
 
 	// Launch the worker process
 	int32 PriorityModifier = -1; // below normal
@@ -4328,7 +4491,7 @@ void FShaderCompilingManager::BlockOnShaderMapCompletion(const TArray<int32>& Sh
 		int32 NumActiveWorkers = 0;
 		do 
 		{
-			for (const auto& Thread : Threads)
+			for (const TUniquePtr<FShaderCompileThreadRunnableBase>& Thread : Threads)
 			{
 				NumActiveWorkers = Thread->CompilingLoop();
 			}
@@ -4442,7 +4605,7 @@ void FShaderCompilingManager::BlockOnAllShaderMapCompletion(TMap<int32, FShaderM
 		int32 NumActiveWorkers = 0;
 		do 
 		{
-			for (const auto& Thread : Threads)
+			for (const TUniquePtr<FShaderCompileThreadRunnableBase>& Thread : Threads)
 			{
 				NumActiveWorkers = Thread->CompilingLoop();
 			}
@@ -4521,13 +4684,16 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 
 	// Process compiled shader maps in FIFO order, in case a shader map has been enqueued multiple times,
 	// Which can happen if a material is edited while a background compile is going on
-	for (TMap<int32, FShaderMapFinalizeResults>::TIterator ProcessIt(CompiledShaderMaps); ProcessIt; ++ProcessIt)
+	for (TMap<int32, FShaderMapFinalizeResults>::TIterator ShaderMapResultIter(CompiledShaderMaps); ShaderMapResultIter; ++ShaderMapResultIter)
 	{
-		const uint32 CompilingId = ProcessIt.Key();
-		FShaderMapFinalizeResults& CompileResults = ProcessIt.Value();
+		const uint32 CompilingId = ShaderMapResultIter.Key();
+
+		FShaderMapFinalizeResults& CompileResults = ShaderMapResultIter.Value();
+		TArray<FShaderCommonCompileJobPtr>& FinishedJobs = CompileResults.FinishedJobs;
+
 		if (CompileResults.bSkipResultProcessing)
 		{
-			ProcessIt.RemoveCurrent();
+			ShaderMapResultIter.RemoveCurrent();
 			continue;
 		}
 
@@ -4538,17 +4704,15 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 			TArray<TRefCountPtr<FMaterial>>& MaterialDependencies = CompilingShaderMap->CompilingMaterialDependencies;
 
 			TArray<FString> Errors;
-			FString DumpedSource;
-			TArray<FShaderCommonCompileJobPtr>& ResultArray = CompileResults.FinishedJobs;
 
 			bool bSuccess = true;
-			for (int32 JobIndex = 0; JobIndex < ResultArray.Num(); JobIndex++)
+			for (int32 JobIndex = 0; JobIndex < FinishedJobs.Num(); JobIndex++)
 			{
-				FShaderCommonCompileJob& CurrentJob = *ResultArray[JobIndex];
+				FShaderCommonCompileJob& CurrentJob = *FinishedJobs[JobIndex];
 
 				if (FShaderCompileJob* SingleJob = CurrentJob.GetSingleShaderJob())
 				{
-					const bool bCheckSucceeded = CheckSingleJob(*SingleJob, Errors, (NumDumpedShaderSources < GMaxNumDumpedShaderSources ? &DumpedSource : nullptr));
+					const bool bCheckSucceeded = CheckSingleJob(*SingleJob, Errors);
 					bSuccess = bCheckSucceeded && bSuccess;
 				}
 				else
@@ -4556,7 +4720,7 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 					FShaderPipelineCompileJob* PipelineJob = CurrentJob.GetShaderPipelineJob();
 					for (int32 Index = 0; Index < PipelineJob->StageJobs.Num(); ++Index)
 					{
-						const bool bCheckSucceeded = CheckSingleJob(*PipelineJob->StageJobs[Index], Errors, (NumDumpedShaderSources < GMaxNumDumpedShaderSources ? &DumpedSource : nullptr));
+						const bool bCheckSucceeded = CheckSingleJob(*PipelineJob->StageJobs[Index], Errors);
 						bSuccess = PipelineJob->StageJobs[Index]->bSucceeded && bCheckSucceeded && bSuccess;
 					}
 				}
@@ -4566,17 +4730,17 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 			if (bSuccess)
 			{
 				int32 JobIndex = 0;
-				if (ResultArray.Num() > 0)
+				if (FinishedJobs.Num() > 0)
 				{
-					CompilingShaderMap->ProcessCompilationResults(ResultArray, JobIndex, TimeBudget);
+					CompilingShaderMap->ProcessCompilationResults(FinishedJobs, JobIndex, TimeBudget);
 					{
 						FScopeLock Lock(&CompileQueueSection);
 						for (int32 i = 0; i < JobIndex; ++i)
 						{
-							ReleaseJob(ResultArray[i]);
+							ReleaseJob(FinishedJobs[i]);
 						}
 					}
-					ResultArray.RemoveAt(0, JobIndex);
+					FinishedJobs.RemoveAt(0, JobIndex);
 				}
 
 				// Make a clone of the compiling shader map to use for rendering
@@ -4586,9 +4750,9 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 				TimeBudget -= (FPlatformTime::Seconds() - StartTime);
 			}
 
-			if (!bSuccess || ResultArray.Num() == 0)
+			if (!bSuccess || FinishedJobs.Num() == 0)
 			{
-				ProcessIt.RemoveCurrent();
+				ShaderMapResultIter.RemoveCurrent();
 			}
 
 #if DEBUG_INFINITESHADERCOMPILE
@@ -4634,7 +4798,7 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 							*LegacyShaderPlatformToShaderFormat(ShaderMapToUseForRendering->GetShaderPlatform()).ToString());
 						for (int32 ErrorIndex = 0; ErrorIndex < Errors.Num(); ErrorIndex++)
 						{
-							UE_LOG(LogShaders, Warning, TEXT("	%s"), *Errors[ErrorIndex]);
+							UE_LOG(LogShaders, Warning, TEXT("  %s"), *Errors[ErrorIndex]);
 						}
 					}
 				}
@@ -4646,13 +4810,6 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 
 					MaterialsToUpdate.Add(Material, nullptr);
 
-					if (!DumpedSource.IsEmpty() && NumDumpedShaderSources < GMaxNumDumpedShaderSources)
-					{
-						// Limit number of preprocessed shaders to dump to the log as they are quite large
-						DumpShaderSourceToLog(DumpedSource);
-						++NumDumpedShaderSources;
-					}
-
 					if (Material->IsDefaultMaterial())
 					{
 						FString ErrorString;
@@ -4660,7 +4817,7 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 						// Log the errors unsuppressed before the fatal error, so it's always obvious from the log what the compile error was
 						for (int32 ErrorIndex = 0; ErrorIndex < Errors.Num(); ErrorIndex++)
 						{
-							ErrorString += FString::Printf(TEXT("	%s\n"), *Errors[ErrorIndex]);
+							ErrorString += FString::Printf(TEXT("  %s\n"), *Errors[ErrorIndex]);
 						}
 
 						ErrorString += FString::Printf(TEXT("Failed to compile default material %s!"), *Material->GetBaseMaterialPathName());
@@ -4721,33 +4878,24 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 				break;
 			}
 		}
-		else if (CompilingId == GlobalShaderMapId)
-		{
-			ProcessCompiledGlobalShaders(CompileResults.FinishedJobs);
-			
-			PropagateGlobalShadersToAllPrimitives();
-
-			{
-				FScopeLock Lock(&CompileQueueSection);
-				for (auto& Job : CompileResults.FinishedJobs)
-				{
-					ReleaseJob(Job);
-				}
-			}
-			ProcessIt.RemoveCurrent();
-		}
 		else
 		{
+			if (CompilingId == GlobalShaderMapId)
+			{
+				ProcessCompiledGlobalShaders(FinishedJobs);
+				PropagateGlobalShadersToAllPrimitives();
+			}
+
 			// ShaderMap was removed from compiling list or is being used by another type of shader map which is maintaining a reference
 			// to the results, either way the job can be released
 			{
 				FScopeLock Lock(&CompileQueueSection);
-				for (auto& Job : CompileResults.FinishedJobs)
+				for (FShaderCommonCompileJobPtr& Job : FinishedJobs)
 				{
 					ReleaseJob(Job);
 				}
 			}
-			ProcessIt.RemoveCurrent();
+			ShaderMapResultIter.RemoveCurrent();
 		}
 	}
 
@@ -4796,45 +4944,21 @@ void FShaderCompilingManager::PropagateMaterialChangesToPrimitives(TMap<TRefCoun
 		return;
 	}
 
-	TRACE_CPUPROFILER_EVENT_SCOPE(FShaderCompilingManager::PropagateMaterialChangesToPrimitives);
-
 	TSet<FSceneInterface*> ScenesToUpdate;
 	FObjectCacheContextScope ObjectCacheScope;
-	TIndirectArray<FComponentRecreateRenderStateContext> ComponentContexts;
-	for (UPrimitiveComponent* PrimitiveComponent : ObjectCacheScope.GetContext().GetPrimitiveComponents())
 	{
-		if (PrimitiveComponent->IsRenderStateCreated())
+		TRACE_CPUPROFILER_EVENT_SCOPE(FShaderCompilingManager::PropagateMaterialChangesToPrimitives);
+
+		TArray<UMaterialInterface*> UpdatedMaterials;
+		for (TMap<TRefCountPtr<FMaterial>, TRefCountPtr<FMaterialShaderMap>>::TConstIterator MaterialIt(MaterialsToUpdate); MaterialIt; ++MaterialIt)
 		{
-			bool bPrimitiveIsDependentOnMaterial = false;
+			FMaterial* UpdatedMaterial = MaterialIt.Key();
+			UpdatedMaterials.Add(UpdatedMaterial->GetMaterialInterface());
+		}
 
-			// Note: relying on GetUsedMaterials to be accurate, or else we won't propagate to the right primitives and the renderer will crash later
-			// FPrimitiveSceneProxy::VerifyUsedMaterial is used to make sure that all materials used for rendering are reported in GetUsedMaterials
-			TObjectCacheIterator<UMaterialInterface> UsedMaterials = ObjectCacheScope.GetContext().GetUsedMaterials(PrimitiveComponent);
-			if (!UsedMaterials.IsEmpty())
-			{
-				for (TMap<TRefCountPtr<FMaterial>, TRefCountPtr<FMaterialShaderMap>>::TConstIterator MaterialIt(MaterialsToUpdate); MaterialIt; ++MaterialIt)
-				{
-					FMaterial* UpdatedMaterial = MaterialIt.Key();
-					UMaterialInterface* UpdatedMaterialInterface = UpdatedMaterial->GetMaterialInterface();
-
-					if (UpdatedMaterialInterface)
-					{
-						for (UMaterialInterface* TestMaterial : UsedMaterials)
-						{
-							if (TestMaterial && (TestMaterial == UpdatedMaterialInterface || TestMaterial->IsDependent(UpdatedMaterialInterface)))
-							{
-								bPrimitiveIsDependentOnMaterial = true;
-								break;
-							}
-						}
-					}
-				}
-
-				if (bPrimitiveIsDependentOnMaterial)
-				{
-					ComponentContexts.Add(new FComponentRecreateRenderStateContext(PrimitiveComponent, &ScenesToUpdate));
-				}
-			}
+		for (UPrimitiveComponent* PrimitiveComponent : ObjectCacheScope.GetContext().GetPrimitivesAffectedByMaterials(UpdatedMaterials))
+		{
+			PrimitiveComponent->MarkRenderStateDirty();
 		}
 	}
 
@@ -4844,10 +4968,6 @@ void FShaderCompilingManager::PropagateMaterialChangesToPrimitives(TMap<TRefCoun
 	// a refcount of 2, so the FMaterial destructor will trigger a check failure because the refcount doesn't reach 0. Empty this map before
 	// recreating the render state to allow resources to be deleted cleanly.
 	MaterialsToUpdate.Empty();
-
-	UpdateAllPrimitiveSceneInfosForScenes(ScenesToUpdate);
-	ComponentContexts.Empty();
-	UpdateAllPrimitiveSceneInfosForScenes(ScenesToUpdate);
 }
 
 
@@ -4895,6 +5015,7 @@ bool FShaderCompilingManager::HandlePotentialRetryOnError(TMap<int32, FShaderMap
 {
 	bool bRetryCompile = false;
 
+#if WITH_EDITORONLY_DATA
 	for (TMap<int32, FShaderMapFinalizeResults>::TIterator It(CompletedShaderMaps); It; ++It)
 	{
 		FShaderMapFinalizeResults& Results = It.Value();
@@ -4902,6 +5023,7 @@ bool FShaderCompilingManager::HandlePotentialRetryOnError(TMap<int32, FShaderMap
 		if (!Results.bAllJobsSucceeded)
 		{
 			bool bSpecialEngineMaterial = false;
+
 			const FMaterialShaderMap* ShaderMap = FMaterialShaderMap::FindCompilingShaderMap(It.Key());
 			if (ShaderMap)
 			{
@@ -4915,7 +5037,6 @@ bool FShaderCompilingManager::HandlePotentialRetryOnError(TMap<int32, FShaderMap
 				}
 			}
 
-#if WITH_EDITORONLY_DATA
 
 			if (UE_LOG_ACTIVE(LogShaders, Log) 
 				// Always log detailed errors when a special engine material or global shader fails to compile, as those will be fatal errors
@@ -4979,7 +5100,7 @@ bool FShaderCompilingManager::HandlePotentialRetryOnError(TMap<int32, FShaderMap
 						const auto* SingleJob = CurrentJob.GetSingleShaderJob();
 						if (SingleJob)
 						{
-							ProcessErrors(*SingleJob, UniqueErrors, ErrorString, NumDumpedShaderSources);
+							ProcessErrors(*SingleJob, UniqueErrors, ErrorString);
 						}
 						else
 						{
@@ -4987,7 +5108,7 @@ bool FShaderCompilingManager::HandlePotentialRetryOnError(TMap<int32, FShaderMap
 							check(PipelineJob);
 							for (auto CommonJob : PipelineJob->StageJobs)
 							{
-								ProcessErrors(*CommonJob, UniqueErrors, ErrorString, NumDumpedShaderSources);
+								ProcessErrors(*CommonJob, UniqueErrors, ErrorString);
 							}
 						}
 					}
@@ -5023,7 +5144,6 @@ bool FShaderCompilingManager::HandlePotentialRetryOnError(TMap<int32, FShaderMap
 					break;
 				}
 			}
-#endif	//WITH_EDITORONLY_DATA
 		}
 	}
 
@@ -5089,6 +5209,7 @@ bool FShaderCompilingManager::HandlePotentialRetryOnError(TMap<int32, FShaderMap
 
 		check(CompletedShaderMaps.Num() == OriginalNumShaderMaps);
 	}
+#endif	//WITH_EDITORONLY_DATA
 
 	return bRetryCompile;
 }
@@ -5256,106 +5377,98 @@ void FShaderCompilingManager::ProcessAsyncResults(bool bLimitExecutionTime, bool
 
 	COOK_STAT(FScopedDurationTimer Timer(ShaderCompilerCookStats::ProcessAsyncResultsTimeSec));
 	check(IsInGameThread());
-	if (bAllowAsynchronousShaderCompiling)
+
+	const double StartTime = FPlatformTime::Seconds();
+
+	// Some controllers need to be manually ticked if the engine loop is not initialized or blocked
+	// to do things like tick the HTTPModule.
+	// Otherwise the results from the controller will never be processed.
+	// We check for bBlockOnGlobalShaderCompletion because the BlockOnShaderMapCompletion methods already do this.
+	if (!bBlockOnGlobalShaderCompletion && BuildDistributionController)
 	{
+		BuildDistributionController->Tick(0.0f);
+	}
+
+	// Block on global shaders before checking for shader maps to finalize
+	// So if we block on global shaders for a long time, we will get a chance to finalize all the non-global shader maps completed during that time.
+	if (bBlockOnGlobalShaderCompletion)
+	{
+		TArray<int32> ShaderMapId;
+		ShaderMapId.Add(GlobalShaderMapId);
+
+		// Block until the global shader map jobs are complete
+		GShaderCompilingManager->BlockOnShaderMapCompletion(ShaderMapId, PendingFinalizeShaderMaps);
+	}
+
+	int32 NumCompilingShaderMaps = 0;
+
+	{
+		// Lock CompileQueueSection so we can access the input and output queues
+		FScopeLock Lock(&CompileQueueSection);
+
+		if (!bBlockOnGlobalShaderCompletion)
 		{
-			const double StartTime = FPlatformTime::Seconds();
+			bCompilingDuringGame = true;
+		}
 
-			// Some controllers need to be manually ticked if the engine loop is not initialized or blocked
-			// to do things like tick the HTTPModule.
-			// Otherwise the results from the controller will never be processed.
-			// We check for bBlockOnGlobalShaderCompletion because the BlockOnShaderMapCompletion methods already do this.
-			if (!bBlockOnGlobalShaderCompletion && BuildDistributionController)
+		// Get all material shader maps to finalize
+		//
+		for (TMap<int32, FPendingShaderMapCompileResultsPtr>::TIterator It(ShaderMapJobs); It; ++It)
+		{
+			FPendingShaderMapCompileResultsPtr& Results = It.Value();
+			if (Results->FinishedJobs.Num() > 0)
 			{
-				BuildDistributionController->Tick(0.0f);
-			}
-			
-			// Block on global shaders before checking for shader maps to finalize
-			// So if we block on global shaders for a long time, we will get a chance to finalize all the non-global shader maps completed during that time.
-			if (bBlockOnGlobalShaderCompletion)
-			{
-				TArray<int32> ShaderMapId;
-				ShaderMapId.Add(GlobalShaderMapId);
-
-				// Block until the global shader map jobs are complete
-				GShaderCompilingManager->BlockOnShaderMapCompletion(ShaderMapId, PendingFinalizeShaderMaps);
+				FShaderMapFinalizeResults& FinalizeResults = PendingFinalizeShaderMaps.FindOrAdd(It.Key());
+				FinalizeResults.FinishedJobs.Append(Results->FinishedJobs);
+				Results->FinishedJobs.Reset();
+				FinalizeResults.bAllJobsSucceeded = FinalizeResults.bAllJobsSucceeded && Results->bAllJobsSucceeded;
 			}
 
-			int32 NumCompilingShaderMaps = 0;
-
+			checkf(Results->FinishedJobs.Num() == 0, TEXT("Failed to remove finished jobs, %d remain"), Results->FinishedJobs.Num());
+			if (Results->NumPendingJobs.GetValue() == 0)
 			{
-				// Lock CompileQueueSection so we can access the input and output queues
-				FScopeLock Lock(&CompileQueueSection);
-
-				if (!bBlockOnGlobalShaderCompletion)
-				{
-					bCompilingDuringGame = true;
-				}
-
-				// Get all material shader maps to finalize
-				//
-				for (TMap<int32, FPendingShaderMapCompileResultsPtr>::TIterator It(ShaderMapJobs); It; ++It)
-				{
-					FPendingShaderMapCompileResultsPtr& Results = It.Value();
-					if (Results->FinishedJobs.Num() > 0)
-					{
-						FShaderMapFinalizeResults& FinalizeResults = PendingFinalizeShaderMaps.FindOrAdd(It.Key());
-						FinalizeResults.FinishedJobs.Append(Results->FinishedJobs);
-						Results->FinishedJobs.Reset();
-						FinalizeResults.bAllJobsSucceeded = FinalizeResults.bAllJobsSucceeded && Results->bAllJobsSucceeded;
-					}
-
-					checkf(Results->FinishedJobs.Num() == 0, TEXT("Failed to remove finished jobs, %d remain"), Results->FinishedJobs.Num());
-					if (Results->NumPendingJobs.GetValue() == 0)
-					{
-						It.RemoveCurrent();
-					}
-				}
-
-				NumCompilingShaderMaps = ShaderMapJobs.Num();
-			}
-
-			int32 NumPendingShaderMaps = PendingFinalizeShaderMaps.Num();
-
-			if (PendingFinalizeShaderMaps.Num() > 0)
-			{
-				bool bRetry = false;
-				do 
-				{
-					bRetry = HandlePotentialRetryOnError(PendingFinalizeShaderMaps);
-				} 
-				while (bRetry);
-
-				const float TimeBudget = bLimitExecutionTime ? ProcessGameThreadTargetTime : FLT_MAX;
-				ProcessCompiledShaderMaps(PendingFinalizeShaderMaps, TimeBudget);
-				check(bLimitExecutionTime || PendingFinalizeShaderMaps.Num() == 0);
-			}
-
-
-			if (bBlockOnGlobalShaderCompletion && !bLimitExecutionTime)
-			{
-				check(PendingFinalizeShaderMaps.Num() == 0);
-
-				if (NumPendingShaderMaps - PendingFinalizeShaderMaps.Num() > 0)
-				{
-					UE_LOG(LogShaders, Warning, TEXT("Blocking ProcessAsyncResults for %.1fs, processed %u shader maps, %u being compiled"), 
-						(float)(FPlatformTime::Seconds() - StartTime),
-						NumPendingShaderMaps - PendingFinalizeShaderMaps.Num(), 
-						NumCompilingShaderMaps);
-				}
-			}
-			else if (NumPendingShaderMaps - PendingFinalizeShaderMaps.Num() > 0)
-			{
-				UE_LOG(LogShaders, Verbose, TEXT("Completed %u async shader maps, %u more pending, %u being compiled"),
-					NumPendingShaderMaps - PendingFinalizeShaderMaps.Num(), 
-					PendingFinalizeShaderMaps.Num(),
-					NumCompilingShaderMaps);
+				It.RemoveCurrent();
 			}
 		}
+
+		NumCompilingShaderMaps = ShaderMapJobs.Num();
 	}
-	else
+
+	int32 NumPendingShaderMaps = PendingFinalizeShaderMaps.Num();
+
+	if (PendingFinalizeShaderMaps.Num() > 0)
 	{
-		check(AllJobs.GetNumPendingJobs() == 0);
+		bool bRetry = false;
+		do 
+		{
+			bRetry = HandlePotentialRetryOnError(PendingFinalizeShaderMaps);
+		} 
+		while (bRetry);
+
+		const float TimeBudget = bLimitExecutionTime ? ProcessGameThreadTargetTime : FLT_MAX;
+		ProcessCompiledShaderMaps(PendingFinalizeShaderMaps, TimeBudget);
+		check(bLimitExecutionTime || PendingFinalizeShaderMaps.Num() == 0);
+	}
+
+
+	if (bBlockOnGlobalShaderCompletion && !bLimitExecutionTime && !IsRunningCookCommandlet())
+	{
+		check(PendingFinalizeShaderMaps.Num() == 0);
+
+		if (NumPendingShaderMaps - PendingFinalizeShaderMaps.Num() > 0)
+		{
+			UE_LOG(LogShaders, Warning, TEXT("Blocking ProcessAsyncResults for %.1fs, processed %u shader maps, %u being compiled"), 
+				(float)(FPlatformTime::Seconds() - StartTime),
+				NumPendingShaderMaps - PendingFinalizeShaderMaps.Num(), 
+				NumCompilingShaderMaps);
+		}
+	}
+	else if (NumPendingShaderMaps - PendingFinalizeShaderMaps.Num() > 0)
+	{
+		UE_LOG(LogShaders, Verbose, TEXT("Completed %u async shader maps, %u more pending, %u being compiled"),
+			NumPendingShaderMaps - PendingFinalizeShaderMaps.Num(), 
+			PendingFinalizeShaderMaps.Num(),
+			NumCompilingShaderMaps);
 	}
 
 	UpdateNumRemainingAssets();
@@ -5387,6 +5500,8 @@ bool FShaderCompilingManager::IsShaderCompilerWorkerRunning(FProcHandle & Worker
 	return FPlatformProcess::IsProcRunning(WorkerHandle);
 }
 
+#if WITH_EDITOR
+
 /* Generates a uniform buffer struct member hlsl declaration using the member's metadata. */
 static void GenerateUniformBufferStructMember(FString& Result, const FShaderParametersMetadata::FMember& Member, EShaderPlatform ShaderPlatform)
 {
@@ -5405,7 +5520,7 @@ static void GenerateUniformBufferStructMember(FString& Result, const FShaderPara
 }
 
 /* Generates the instanced stereo hlsl code that's dependent on view uniform declarations. */
-ENGINE_API void GenerateInstancedStereoCode(FString& Result, EShaderPlatform ShaderPlatform)
+void GenerateInstancedStereoCode(FString& Result, EShaderPlatform ShaderPlatform)
 {
 	// Find the InstancedView uniform buffer struct
 	const FShaderParametersMetadata* View = nullptr;
@@ -5474,8 +5589,6 @@ ENGINE_API void GenerateInstancedStereoCode(FString& Result, EShaderPlatform Sha
 	Result += "}\r\n";
 
 	// GetInstancedView definition
-	// This function has the side-effect of overwriting View with InstancedView values.
-	// This way, the View buffer is no longer referenced, and does not need to be bound.
 	Result += "#if (INSTANCED_STEREO || MOBILE_MULTI_VIEW)\r\n";
 	Result += "ViewState GetInstancedView(uint ViewIndex)\r\n";
 	Result += "{\r\n";
@@ -5519,7 +5632,7 @@ ENGINE_API void GenerateInstancedStereoCode(FString& Result, EShaderPlatform Sha
 			// something unexpected, better crash now rather than generate wrong shader code and poison DDC 
 			UE_LOG(LogShaderCompilers, Fatal, TEXT("Don't know how to copy View buffers' field %s (NumElements=%d) from InstancedView field %s (NumElements=%d)"),
 				ViewMember.GetName(), ViewMember.GetNumElements(), InstancedViewMember.GetName(), InstancedViewMember.GetNumElements()
-			);
+				);
 		}
 	}
 	Result += "\tFinalizeViewState(Result);\r\n";
@@ -5580,6 +5693,13 @@ void GlobalBeginCompileShader(
 		);
 }
 
+namespace
+{
+	bool ShaderFrequencyNeedsInstancedStereoMods(const FShaderType* ShaderType)
+	{
+		return !(IsRayTracingShaderFrequency(ShaderType->GetFrequency()));
+	}
+}
 
 void GlobalBeginCompileShader(
 	const FString& DebugGroupName,
@@ -5603,9 +5723,7 @@ void GlobalBeginCompileShader(
 	EShaderPlatform ShaderPlatform = EShaderPlatform(Target.Platform);
 	const FName ShaderFormatName = LegacyShaderPlatformToShaderFormat(ShaderPlatform);
 
-#if WITH_EDITOR
 	FShaderCompileUtilities::GenerateBrdfHeaders(ShaderPlatform);
-#endif
 
 	Input.Target = Target;
 	Input.ShaderPlatformName = FDataDrivenShaderPlatformInfo::GetName(ShaderPlatform);
@@ -5791,6 +5909,8 @@ void GlobalBeginCompileShader(
 			Input.Environment.SetDefine(TEXT("USE_GLES_FBF_DEFERRED"), bGLESDeferredShading ? 1 : 0);
 			Input.Environment.SetDefine(TEXT("MOBILE_EXTENDED_GBUFFER"), MobileUsesExtenedGBuffer((EShaderPlatform)Target.Platform) ? 1 : 0);
 		}
+
+		Input.Environment.SetDefine(TEXT("USE_SCENE_DEPTH_AUX"), MobileRequiresSceneDepthAux(ShaderPlatform) ? 1 : 0);
 	}
 
 	if (ShaderPlatform == SP_VULKAN_ES3_1_ANDROID || ShaderPlatform == SP_VULKAN_SM5_ANDROID)
@@ -5804,6 +5924,7 @@ void GlobalBeginCompileShader(
 	}
 
 	// Set VR definitions
+	if (ShaderFrequencyNeedsInstancedStereoMods(ShaderType))
 	{
 		const UE::StereoRenderUtils::FStereoShaderAspects Aspects(ShaderPlatform);
 
@@ -5840,15 +5961,21 @@ void GlobalBeginCompileShader(
 			Input.Environment.SetDefine(TEXT("SUPPORT_VR_FRAME_EXTRAPOLATION"), true);
 		}
 	}
+	else
+	{
+		Input.Environment.SetDefine(TEXT("INSTANCED_STEREO"), 0);
+		Input.Environment.SetDefine(TEXT("MULTI_VIEW"), 0);
+		Input.Environment.SetDefine(TEXT("MOBILE_MULTI_VIEW"), 0);
+	}
 
-	ShaderType->AddReferencedUniformBufferIncludes(Input.Environment, Input.SourceFilePrefix, ShaderPlatform);
+	ShaderType->AddUniformBufferIncludesToEnvironment(Input.Environment, ShaderPlatform);
 
 	if (VFType)
 	{
-		VFType->AddReferencedUniformBufferIncludes(Input.Environment, Input.SourceFilePrefix, ShaderPlatform);
+		VFType->AddUniformBufferIncludesToEnvironment(Input.Environment, ShaderPlatform);
 	}
 
-	// Add generated instanced stereo code
+	// Add generated instanced stereo code (this code also generates ViewState, so needed not just for ISR)
 	{
 		// this function may be called on multiple threads, so protect the storage
 		FScopeLock GeneratedInstancedCodeLock(&GCachedGeneratedInstancedStereoCodeLock);
@@ -5897,8 +6024,8 @@ void GlobalBeginCompileShader(
 	{
 		Input.Environment.CompilerFlags.Add(CFLAG_NoFastMath);
 	}
-	
-	{
+    
+    {
         static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.FloatPrecisionMode"));
         Input.Environment.FullPrecisionInPS = CVar ? (CVar->GetInt() == EMobileFloatPrecisionMode::Full) : false;
     }
@@ -6120,13 +6247,11 @@ void GlobalBeginCompileShader(
 	{
 		// Allow GBuffer containing a velocity target to be overridden at a higher level with GBUFFER_LAYOUT
 		bool bGBufferHasVelocity = IsUsingBasePassVelocity((EShaderPlatform)Target.Platform);
-	#if WITH_EDITOR
 		if (!bGBufferHasVelocity)
 		{
 			const EGBufferLayout Layout = FShaderCompileUtilities::FetchGBufferLayout(Input.Environment);
 			bGBufferHasVelocity |= (Layout == GBL_ForceVelocity);
 		}
-	#endif
 		Input.Environment.SetDefine(TEXT("GBUFFER_HAS_VELOCITY"), bGBufferHasVelocity ? 1 : 0);
 	}
 
@@ -6146,6 +6271,11 @@ void GlobalBeginCompileShader(
 	{
 		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.AllowGlobalClipPlane"));
 		Input.Environment.SetDefine(TEXT("PROJECT_ALLOW_GLOBAL_CLIP_PLANE"), CVar ? (CVar->GetInt() != 0) : 0);
+	}
+
+	{
+		const bool bSupportsClipDistance = FDataDrivenShaderPlatformInfo::GetSupportsClipDistance((EShaderPlatform)Target.Platform);
+		Input.Environment.SetDefine(TEXT("PLATFORM_SUPPORTS_CLIP_DISTANCE"), bSupportsClipDistance ? 1u : 0u);
 	}
 
 	ITargetPlatform* TargetPlatform = GetTargetPlatformManager()->FindTargetPlatformWithSupport(TEXT("ShaderFormat"), ShaderFormatName);
@@ -6232,44 +6362,61 @@ void GlobalBeginCompileShader(
 	}
 
 	{
-		static IConsoleVariable* CVarStrata = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Strata"));
-		const bool bStrata = CVarStrata && CVarStrata->GetInt() != 0;
+		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RectLightAtlas.Translucent"));
+		const bool bSupportRectLlightOnTranslucentSurface = CVar && CVar->GetInt() > 0;
+		Input.Environment.SetDefine(TEXT("SUPPORT_RECTLIGHT_ON_FORWARD_LIT_TRANSLUCENT"), bSupportRectLlightOnTranslucentSurface ? 1 : 0);
+	}
+
+	{
+		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.TranslucentQuality"));
+		const bool bHighQualityShadow = CVar && CVar->GetInt() > 0;
+		Input.Environment.SetDefine(TEXT("SUPPORT_VSM_FOWARD_QUALITY"), bHighQualityShadow ? 1 : 0);
+	}
+
+	{
+		const bool bStrata = Strata::IsStrataEnabled();
 		Input.Environment.SetDefine(TEXT("STRATA_ENABLED"), bStrata ? 1 : 0);
 
 		// Force rough diffuse to be disable on platform which explicitly disable it from their settings
 		if (bStrata && IsConsolePlatform(Target.GetPlatform()))
 		{
-			static FShaderPlatformCachedIniValue<int32> CVarStrataRoughDiffuse(TEXT("r.Strata.RoughDiffuse"));
-			const bool bStrataRoughDiffuse = CVarStrataRoughDiffuse.Get(Target.GetPlatform()) != 0;
+			const bool bStrataRoughDiffuse = Strata::IsRoughDiffuseEnabled();
 			Input.Environment.SetDefine(TEXT("STRATA_DIFFUSE_CHAN"), bStrataRoughDiffuse ? 1 : 0);
 		}
 
 		// Force rough diffuse to be disable on platform which explicitly disable it from their settings
 		if (bStrata)
 		{
-			static FShaderPlatformCachedIniValue<int32> CVarStrataShadingQuality(TEXT("r.Strata.ShadingQuality"));
-			const uint32 StrataShadingQuality = CVarStrataShadingQuality.Get(Target.GetPlatform());
-			Input.Environment.SetDefine(TEXT("STRATA_SHADING_QUALITY"), FMath::Max(StrataShadingQuality, 1u));
+			const uint32 StrataShadingQuality = Strata::GetShadingQuality(Target.GetPlatform());
+			Input.Environment.SetDefine(TEXT("STRATA_SHADING_QUALITY"), StrataShadingQuality);
 			if (StrataShadingQuality > 1)
 			{
 				Input.Environment.SetDefine(TEXT("USE_ACHROMATIC_BXDF_ENERGY"), 1u);
 			}
 
-			static FShaderPlatformCachedIniValue<int32> CVarStrataTileCoord8Bits(TEXT("r.Strata.TileCoord8bits"));
-			const uint32 StrataTileCoord8Bits = CVarStrataTileCoord8Bits.Get(Target.GetPlatform());
-			Input.Environment.SetDefine(TEXT("USE_8BIT_TILE_COORD"), StrataTileCoord8Bits > 0 ? 1 : 0);
+			const uint32 StrataNormalQuality = Strata::GetNormalQuality();
+			Input.Environment.SetDefine(TEXT("STRATA_NORMAL_QUALITY"), StrataNormalQuality);
+
+			const uint32 StrataUintPerPixel = Strata::GetBytePerPixel(Target.GetPlatform()) / 4u;
+			Input.Environment.SetDefine(TEXT("STRATA_RT_PAYLOAD_NUM_UINTS"), StrataUintPerPixel);
+
+			const bool bTileCoord8Bits = Strata::Is8bitTileCoordEnabled();
+			Input.Environment.SetDefine(TEXT("USE_8BIT_TILE_COORD"), bTileCoord8Bits ? 1 : 0);
+
+			const bool bStrataDBufferPass = Strata::IsDBufferPassEnabled(Target.GetPlatform());
+			Input.Environment.SetDefine(TEXT("STRATA_USE_DBUFFER_PASS"), bStrataDBufferPass ? 1 : 0);
 		}
 
-		static IConsoleVariable* CVarBackCompatibility = IConsoleManager::Get().FindConsoleVariable(TEXT("r.StrataBackCompatibility"));
-		const bool bStrataBackCompatibility = CVarBackCompatibility && CVarBackCompatibility->GetInt() > 0;
+		const bool bStrataUseAccurateSRGB = bStrata && Strata::IsAccurateSRGBEnabled();
+		Input.Environment.SetDefine(TEXT("STRATA_USE_ACCURATE_SRGB"), bStrataUseAccurateSRGB ? 1 : 0);
+
+		const bool bStrataBackCompatibility = bStrata && Strata::IsBackCompatibilityEnabled();
 		Input.Environment.SetDefine(TEXT("PROJECT_STRATA_BACKCOMPATIBILITY"), bStrataBackCompatibility ? 1 : 0);
 
-		static IConsoleVariable* CVarOpaqueRoughRefrac = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Strata.OpaqueMaterialRoughRefraction"));
-		const bool bStrataOpaqueRoughRefrac = bStrata && CVarOpaqueRoughRefrac && CVarOpaqueRoughRefrac->GetInt() != 0;
+		const bool bStrataOpaqueRoughRefrac = bStrata && Strata::IsOpaqueRoughRefractionEnabled();
 		Input.Environment.SetDefine(TEXT("STRATA_OPAQUE_ROUGH_REFRACTION_ENABLED"), bStrataOpaqueRoughRefrac ? 1 : 0);
 
-		static IConsoleVariable* CVarAdvDebug = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Strata.Debug.AdvancedVisualizationShaders"));
-		const bool bStrataAdvDebug = bStrata && CVarAdvDebug && CVarAdvDebug->GetInt() != 0;
+		const bool bStrataAdvDebug = bStrata && Strata::IsAdvancedVisualizationEnabled();
 		Input.Environment.SetDefine(TEXT("STRATA_ADVANCED_DEBUG_ENABLED"), bStrataAdvDebug ? 1 : 0);
 	}
 
@@ -6295,7 +6442,7 @@ void GlobalBeginCompileShader(
 	{
 		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Material.EnergyConservation"));
 		const bool bMaterialEnergyConservation = CVar && CVar->GetInt() != 0;
-		Input.Environment.SetDefine(TEXT("MATERIAL_ENERGYCONSERVATION"), bMaterialEnergyConservation ? 1 : 0);
+		Input.Environment.SetDefine(TEXT("LEGACY_MATERIAL_ENERGYCONSERVATION"), bMaterialEnergyConservation ? 1 : 0);
 	}
 
 	{
@@ -6326,10 +6473,10 @@ void GlobalBeginCompileShader(
 	Input.Environment.SetDefine(TEXT("PLATFORM_SUPPORTS_DISTANCE_FIELDS"), DoesPlatformSupportDistanceFields(EShaderPlatform(Target.Platform)) ? 1 : 0);
 	Input.Environment.SetDefine(TEXT("PLATFORM_SUPPORTS_MESH_SHADERS_TIER0"), RHISupportsMeshShadersTier0(EShaderPlatform(Target.Platform)) ? 1 : 0);
 	Input.Environment.SetDefine(TEXT("PLATFORM_SUPPORTS_MESH_SHADERS_TIER1"), RHISupportsMeshShadersTier1(EShaderPlatform(Target.Platform)) ? 1 : 0);
-	Input.Environment.SetDefine(TEXT("PLATFORM_SUPPORTS_BINDLESS"), RHISupportsBindless(EShaderPlatform(Target.Platform)) ? 1 : 0);
 	Input.Environment.SetDefine(TEXT("PLATFORM_ALLOW_SCENE_DATA_COMPRESSED_TRANSFORMS"), FDataDrivenShaderPlatformInfo::GetSupportSceneDataCompressedTransforms(EShaderPlatform(Target.Platform)) ? 1 : 0);
 
-	if (RHISupportsBindless(EShaderPlatform(Target.Platform)))
+	bool bEnableBindlessMacro = false;
+	if (RHIGetBindlessSupport(EShaderPlatform(Target.Platform)) != ERHIBindlessSupport::Unsupported)
 	{
 		const bool bIsRaytracingShader = IsRayTracingShaderFrequency(Input.Target.GetFrequency());
 
@@ -6338,31 +6485,67 @@ void GlobalBeginCompileShader(
 
 		if (ResourcesConfig == ERHIBindlessConfiguration::AllShaders || (ResourcesConfig == ERHIBindlessConfiguration::RayTracingShaders && bIsRaytracingShader))
 		{
+			bEnableBindlessMacro = true;
 			Input.Environment.CompilerFlags.Add(CFLAG_BindlessResources);
 			Input.Environment.SetDefine(TEXT("ENABLE_BINDLESS_RESOURCES"), true);
 		}
 
 		if (SamplersConfig == ERHIBindlessConfiguration::AllShaders || (SamplersConfig == ERHIBindlessConfiguration::RayTracingShaders && bIsRaytracingShader))
 		{
+			bEnableBindlessMacro = true;
 			Input.Environment.CompilerFlags.Add(CFLAG_BindlessSamplers);
 			Input.Environment.SetDefine(TEXT("ENABLE_BINDLESS_SAMPLERS"), true);
 		}
 	}
+
+	Input.Environment.SetDefine(TEXT("PLATFORM_SUPPORTS_BINDLESS"), bEnableBindlessMacro);
 
 	if (CVarShadersRemoveDeadCode.GetValueOnAnyThread())
 	{
 		Input.Environment.CompilerFlags.Add(CFLAG_RemoveDeadCode);
 	}
 
+	if (CVarShadersUseLegacyPreprocessor.GetValueOnAnyThread())
+	{
+		Input.Environment.CompilerFlags.Add(CFLAG_UseLegacyPreprocessor);
+	}
+
 	{
 		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.VT.AnisotropicFiltering"));
 		Input.Environment.SetDefine(TEXT("VIRTUAL_TEXTURE_ANISOTROPIC_FILTERING"), CVar ? (CVar->GetInt() != 0) : 0);
+		
+		if (bIsMobilePlatform)
+		{
+			static FShaderPlatformCachedIniValue<bool> CVarVTMobileManualTrilinearFiltering(TEXT("r.VT.Mobile.ManualTrilinearFiltering"));
+			Input.Environment.SetDefine(TEXT("VIRTUAL_TEXTURE_MANUAL_TRILINEAR_FILTERING"), (CVarVTMobileManualTrilinearFiltering.Get(Target.GetPlatform()) ? 1 : 0));
+		}
 	}
 
-	if (IsMobilePlatform((EShaderPlatform)Target.Platform))
+	if (bIsMobilePlatform)
 	{
 		const bool bMobileMovableSpotlightShadowsEnabled = IsMobileMovableSpotlightShadowsEnabled(Target.GetPlatform());
 		Input.Environment.SetDefine(TEXT("PROJECT_MOBILE_ENABLE_MOVABLE_SPOTLIGHT_SHADOWS"), bMobileMovableSpotlightShadowsEnabled ? 1 : 0);
+	}
+
+	{
+		using namespace UE::Color;
+		const bool bWorkingColorSpaceIsSRGB = FColorSpace::GetWorking().IsSRGB();
+		Input.Environment.SetDefine(TEXT("WORKING_COLOR_SPACE_IS_SRGB"), bWorkingColorSpaceIsSRGB ? 1 : 0);
+		
+		// We limit matrix definition below when WORKING_COLOR_SPACE_IS_SRGB == 0.
+		if (!bWorkingColorSpaceIsSRGB)
+		{
+			TCHAR MatrixFormat[] = TEXT("float3x3(%0.10f, %0.10f, %0.10f, %0.10f, %0.10f, %0.10f, %0.10f, %0.10f, %0.10f)");
+
+			const FColorSpaceTransform FromSRGB(FColorSpace(EColorSpace::sRGB), FColorSpace::GetWorking());
+
+			Input.Environment.SetDefine(
+				TEXT("SRGB_TO_WORKING_COLOR_SPACE_MAT"),
+				FString::Printf(MatrixFormat,
+					FromSRGB.M[0][0], FromSRGB.M[1][0], FromSRGB.M[2][0],
+					FromSRGB.M[0][1], FromSRGB.M[1][1], FromSRGB.M[2][1],
+					FromSRGB.M[0][2], FromSRGB.M[1][2], FromSRGB.M[2][2]));
+		}
 	}
 
 	const double TileSize = FLargeWorldRenderScalar::GetTileSize();
@@ -6380,11 +6563,10 @@ void GlobalBeginCompileShader(
 
 	// Allow the GBuffer and other shader defines to cause dependend environment changes, but minimizing the #ifdef magic in the shaders, which
 	// is nearly impossible to debug when it goes wrong.
-#if WITH_EDITOR
 	FShaderCompileUtilities::ApplyDerivedDefines(Input.Environment, Input.SharedEnvironment, (EShaderPlatform)Target.Platform);
-#endif
 }
 
+#endif // WITH_EDITOR
 
 /** Timer class used to report information on the 'recompileshaders' console command. */
 class FRecompileShadersTimer
@@ -6570,6 +6752,7 @@ void ProcessCookOnTheFlyShaders(bool bReloadGlobalShaders, const TArray<uint8>& 
 */
 void RecompileGlobalShaders()
 {
+#if WITH_EDITOR
 	if (!FPlatformProperties::RequiresCookedData())
 	{
 		// Flush pending accesses to the existing global shaders.
@@ -6583,6 +6766,7 @@ void RecompileGlobalShaders()
 
 		GShaderCompilingManager->ProcessAsyncResults(false, true);
 	}
+#endif // WITH_EDITOR
 }
 
 void GetOutdatedShaderTypes(TArray<const FShaderType*>& OutdatedShaderTypes, TArray<const FShaderPipelineType*>& OutdatedShaderPipelineTypes, TArray<const FVertexFactoryType*>& OutdatedFactoryTypes)
@@ -6631,6 +6815,7 @@ bool RecompileShaders(const TCHAR* Cmd, FOutputDevice& Ar)
 		return true;
 	}
 
+#if WITH_EDITOR
 	FString FlagStr(FParse::Token(Cmd, 0));
 	if( FlagStr.Len() > 0 )
 	{
@@ -6654,6 +6839,8 @@ bool RecompileShaders(const TCHAR* Cmd, FOutputDevice& Ar)
 			if (OutdatedShaderPipelineTypes.Num() > 0 || OutdatedShaderTypes.Num() > 0 || OutdatedFactoryTypes.Num() > 0)
 			{
 				FRecompileShadersTimer TestTimer(TEXT("RecompileShaders Changed"));
+
+				UpdateReferencedUniformBufferNames(OutdatedShaderTypes, OutdatedFactoryTypes, OutdatedShaderPipelineTypes);
 
 				UMaterialInterface::IterateOverActiveFeatureLevels([&](ERHIFeatureLevel::Type InFeatureLevel) {
 					auto ShaderPlatform = GShaderPlatformForFeatureLevel[InFeatureLevel];
@@ -6701,7 +6888,7 @@ bool RecompileShaders(const TCHAR* Cmd, FOutputDevice& Ar)
 				if( Material && Material->GetName() == RequestedMaterialName)
 				{
 					bMaterialFound = true;
-#if WITH_EDITOR
+
 					// <Pre/Post>EditChange will force a re-creation of the resource,
 					// in turn recompiling the shader.
 					if (TargetPlatform)
@@ -6719,7 +6906,7 @@ bool RecompileShaders(const TCHAR* Cmd, FOutputDevice& Ar)
 						Material->PreEditChange(nullptr);
 						Material->PostEditChange();
 					}
-#endif // WITH_EDITOR
+
 					break;
 				}
 			}
@@ -6743,12 +6930,11 @@ bool RecompileShaders(const TCHAR* Cmd, FOutputDevice& Ar)
 				{
 					UE_LOG(LogShaderCompilers, Log, TEXT("recompiling [%s]"),*Material->GetFullName());
 					UpdateContext.AddMaterial(Material);
-#if WITH_EDITOR
+
 					// <Pre/Post>EditChange will force a re-creation of the resource,
 					// in turn recompiling the shader.
 					Material->PreEditChange(nullptr);
 					Material->PostEditChange();
-#endif // WITH_EDITOR
 				}
 			}
 		}
@@ -6760,12 +6946,11 @@ bool RecompileShaders(const TCHAR* Cmd, FOutputDevice& Ar)
 			{
 				FRecompileShadersTimer TestTimer(TEXT("RecompileShaders SingleShader"));
 				
-				TArray<const FVertexFactoryType*> FactoryTypes;
+				UpdateReferencedUniformBufferNames(ShaderTypes, {}, ShaderPipelineTypes);
 
 				UMaterialInterface::IterateOverActiveFeatureLevels([&](ERHIFeatureLevel::Type InFeatureLevel) {
 					auto ShaderPlatform = GShaderPlatformForFeatureLevel[InFeatureLevel];
 					BeginRecompileGlobalShaders(ShaderTypes, ShaderPipelineTypes, ShaderPlatform);
-					//UMaterial::UpdateMaterialShaders(ShaderTypes, ShaderPipelineTypes, FactoryTypes, ShaderPlatform);
 					FinishRecompileGlobalShaders();
 				});
 			}
@@ -6773,12 +6958,16 @@ bool RecompileShaders(const TCHAR* Cmd, FOutputDevice& Ar)
 
 		GWarn->EndSlowTask();
 
-		return 1;
+		return true;
 	}
 
 	UE_LOG(LogShaderCompilers, Warning, TEXT("Invalid parameter. Options are: \n'Changed', 'Global', 'Material [name]', 'All'."));
-	return 1;
+#endif // WITH_EDITOR
+
+	return true;
 }
+
+#if WITH_EDITOR
 
 static void PrepareGlobalShaderCompileJob(EShaderPlatform Platform,
 	EShaderPermutationFlags PermutationFlags,
@@ -6852,7 +7041,7 @@ FShader* FGlobalShaderTypeCompiler::FinishCompileShader(const FGlobalShaderType*
 		EShaderPlatform Platform = CurrentJob.Input.Target.GetPlatform();
 		FGlobalShaderMapSection* Section = GGlobalShaderMap[Platform]->FindOrAddSection(ShaderType);
 
-		Section->GetResourceCode()->AddShaderCompilerOutput(CurrentJob.Output);
+		Section->GetResourceCode()->AddShaderCompilerOutput(CurrentJob.Output, CurrentJob.Key.ToString());
 
 		if (ShaderPipelineType && !ShaderPipelineType->ShouldOptimizeUnusedOutputs(CurrentJob.Input.Target.GetPlatform()))
 		{
@@ -6897,6 +7086,9 @@ FShader* FGlobalShaderTypeCompiler::FinishCompileShader(const FGlobalShaderType*
 	return Shader;
 }
 
+#endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
 namespace ShaderCompilerUtil
 {
 	FOnGlobalShadersCompilation GOnGlobalShdersCompilationDelegate;
@@ -6906,6 +7098,7 @@ FOnGlobalShadersCompilation& GetOnGlobalShaderCompilation()
 {
 	return ShaderCompilerUtil::GOnGlobalShdersCompilationDelegate;
 }
+#endif // WITH_EDITORONLY_DATA
 
 /**
 * Makes sure all global shaders are loaded and/or compiled for the passed in platform.
@@ -6950,11 +7143,13 @@ void VerifyGlobalShaders(EShaderPlatform Platform, const ITargetPlatform* Target
 		bErrorOnMissing = true;
 	}
 
+#if WITH_EDITOR
 	// All jobs, single & pipeline
 	TArray<FShaderCommonCompileJobPtr> GlobalShaderJobs;
 
 	// Add the single jobs first
 	TMap<TShaderTypePermutation<const FShaderType>, FShaderCompileJob*> SharedShaderJobs;
+#endif // WITH_EDITOR
 
 	for (TLinkedList<FShaderType*>::TIterator ShaderTypeIt(FShaderType::GetTypeList()); ShaderTypeIt; ShaderTypeIt.Next())
 	{
@@ -6972,31 +7167,42 @@ void VerifyGlobalShaders(EShaderPlatform Platform, const ITargetPlatform* Target
 				bool bOutdated = OutdatedShaderTypes && OutdatedShaderTypes->Contains(GlobalShaderType);
 				TShaderRef<FShader> GlobalShader = GlobalShaderMap->GetShader(GlobalShaderType, PermutationId);
 				if (bOutdated || !GlobalShader.IsValid())
-			{
-				if (bErrorOnMissing)
 				{
-					UE_LOG(LogShaders, Fatal, TEXT("Missing global shader %s's permutation %i, Please make sure cooking was successful."),
-						GlobalShaderType->GetName(), PermutationId);
-				}
+					if (bErrorOnMissing)
+					{
+                        if (IsMetalPlatform(GMaxRHIShaderPlatform))
+                        {
+                            check(IsInGameThread());
+                            FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoGlobalShader_Error", "Missing shader permutation. Please make sure cooking was successful and refer to Engine log for details."));
+                        }
+                            UE_LOG(LogShaders, Fatal, TEXT("Missing global shader %s's permutation %i, Please make sure cooking was successful."),
+                                GlobalShaderType->GetName(), PermutationId);
+                    }
+					else
+					{
+#if WITH_EDITOR
+						if (OutdatedShaderTypes)
+						{
+							// Remove old shader, if it exists
+							GlobalShaderMap->RemoveShaderTypePermutaion(GlobalShaderType, PermutationId);
+						}
 
-				if (OutdatedShaderTypes)
-				{
-					// Remove old shader, if it exists
-					GlobalShaderMap->RemoveShaderTypePermutaion(GlobalShaderType, PermutationId);
+						// Compile this global shader type.
+						FGlobalShaderTypeCompiler::BeginCompileShader(GlobalShaderType, PermutationId, Platform, PermutationFlags, GlobalShaderJobs);
+						//TShaderTypePermutation<const FShaderType> ShaderTypePermutation(GlobalShaderType, PermutationId);
+						//check(!SharedShaderJobs.Find(ShaderTypePermutation));
+						//SharedShaderJobs.Add(ShaderTypePermutation, Job);
+						PermutationCountToCompile++;
+#endif // WITH_EDITOR
+					}
 				}
-
-				// Compile this global shader type.
-				FGlobalShaderTypeCompiler::BeginCompileShader(GlobalShaderType, PermutationId, Platform, PermutationFlags, GlobalShaderJobs);
-				//TShaderTypePermutation<const FShaderType> ShaderTypePermutation(GlobalShaderType, PermutationId);
-				//check(!SharedShaderJobs.Find(ShaderTypePermutation));
-				//SharedShaderJobs.Add(ShaderTypePermutation, Job);
-				PermutationCountToCompile++;
 			}
-		}
 		}
 
 		ensureMsgf(
-			PermutationCountToCompile <= 840,	// FTonemapCS has 840 possible perms (2023-04-17) // Nanite culling as of today (2022-01-11) can go up to 832 permutations
+			// BEGIN META SECTION
+			PermutationCountToCompile <= 1548,	// FTonemapCS has 1548 possible perms (2023-04-17) // Nanite culling as of today (2022-01-11) can go up to 832 permutations
+			// END META SECTION
 			TEXT("Global shader %s has %i permutations: probably more than it needs."),
 			GlobalShaderType->GetName(), PermutationCountToCompile);
 
@@ -7026,37 +7232,42 @@ void VerifyGlobalShaders(EShaderPlatform Platform, const ITargetPlatform* Target
 				{
 					UE_LOG(LogShaders, Fatal, TEXT("Missing global shader pipeline %s, Please make sure cooking was successful."), Pipeline->GetName());
 				}
-
-				if (!bEmptyMap)
-				{
-					UE_LOG(LogShaders, Log, TEXT("	%s"), Pipeline->GetName());
-				}
-
-				if (Pipeline->ShouldOptimizeUnusedOutputs(Platform))
-				{
-					// Make a pipeline job with all the stages
-					FGlobalShaderTypeCompiler::BeginCompileShaderPipeline(Platform, PermutationFlags, Pipeline, GlobalShaderJobs);
-				}
 				else
 				{
-					// If sharing shaders amongst pipelines, add this pipeline as a dependency of an existing individual job
-					for (const FShaderType* ShaderType : Pipeline->GetStages())
+#if WITH_EDITOR
+					if (!bEmptyMap)
 					{
-						TShaderTypePermutation<const FShaderType> ShaderTypePermutation(ShaderType, kUniqueShaderPermutationId);
-
-						FShaderCompileJob** Job = SharedShaderJobs.Find(ShaderTypePermutation);
-						checkf(Job, TEXT("Couldn't find existing shared job for global shader %s on pipeline %s!"), ShaderType->GetName(), Pipeline->GetName());
-						auto* SingleJob = (*Job)->GetSingleShaderJob();
-						check(SingleJob);
-						auto& SharedPipelinesInJob = SingleJob->SharingPipelines.FindOrAdd(nullptr);
-						check(!SharedPipelinesInJob.Contains(Pipeline));
-						SharedPipelinesInJob.Add(Pipeline);
+						UE_LOG(LogShaders, Log, TEXT("	%s"), Pipeline->GetName());
 					}
+
+					if (Pipeline->ShouldOptimizeUnusedOutputs(Platform))
+					{
+						// Make a pipeline job with all the stages
+						FGlobalShaderTypeCompiler::BeginCompileShaderPipeline(Platform, PermutationFlags, Pipeline, GlobalShaderJobs);
+					}
+					else
+					{
+						// If sharing shaders amongst pipelines, add this pipeline as a dependency of an existing individual job
+						for (const FShaderType* ShaderType : Pipeline->GetStages())
+						{
+							TShaderTypePermutation<const FShaderType> ShaderTypePermutation(ShaderType, kUniqueShaderPermutationId);
+
+							FShaderCompileJob** Job = SharedShaderJobs.Find(ShaderTypePermutation);
+							checkf(Job, TEXT("Couldn't find existing shared job for global shader %s on pipeline %s!"), ShaderType->GetName(), Pipeline->GetName());
+							auto* SingleJob = (*Job)->GetSingleShaderJob();
+							check(SingleJob);
+							auto& SharedPipelinesInJob = SingleJob->SharingPipelines.FindOrAdd(nullptr);
+							check(!SharedPipelinesInJob.Contains(Pipeline));
+							SharedPipelinesInJob.Add(Pipeline);
+						}
+					}
+#endif // WITH_EDITOR
 				}
 			}
 		}
 	}
 
+#if WITH_EDITOR
 	if (GlobalShaderJobs.Num() > 0)
 	{
 		GetOnGlobalShaderCompilation().Broadcast();
@@ -7080,6 +7291,7 @@ void VerifyGlobalShaders(EShaderPlatform Platform, const ITargetPlatform* Target
 			GShaderCompilingManager->FinishCompilation(TEXT("Global"), ShaderMapIds);
 		}
 	}
+#endif // WITH_EDITOR
 }
 
 void VerifyGlobalShaders(EShaderPlatform Platform, bool bLoadedFromCacheFile, const TArray<const FShaderType*>* OutdatedShaderTypes, const TArray<const FShaderPipelineType*>* OutdatedShaderPipelineTypes)
@@ -7186,7 +7398,7 @@ static UE::DerivedData::FSharedString GetGlobalShaderMapName(const FGlobalShader
 {
 	return UE::DerivedData::FSharedString(WriteToString<256>(TEXTVIEW("GlobalShaderMap ["), LegacyShaderPlatformToShaderFormat(Platform), TEXTVIEW(", "), Key, TEXTVIEW("]")));
 }
-#endif
+#endif // WITH_EDITOR
 
 /** Saves the platform's shader map to the DDC. It is assumed that the caller will check IsComplete() first before calling the function. */
 static void SaveGlobalShaderMapToDerivedDataCache(EShaderPlatform Platform)
@@ -7251,7 +7463,7 @@ FString SaveGlobalShaderFile(EShaderPlatform Platform, FString SavePath, class I
 		}
 		
 		MemoryWriter.SetCookData(CookData.GetPtrOrNull());
-#endif
+#endif // WITH_EDITOR
 
 		GlobalShaderMap->SaveToGlobalArchive(MemoryWriter);
 	}
@@ -7357,59 +7569,59 @@ static bool TryLoadCookedGlobalShaderMap(EShaderPlatform Platform, FScopedSlowTa
 {
 	SlowTask.EnterProgressFrame(50);
 
-		bool bLoadedFromCacheFile = false;
+	bool bLoadedFromCacheFile = false;
 
-			// Load from the override global shaders first, this allows us to hot reload in cooked / pak builds
-			TArray<uint8> GlobalShaderData;
-			const bool bAllowOverrideGlobalShaders = !WITH_EDITOR && !UE_BUILD_SHIPPING;
-			if (bAllowOverrideGlobalShaders)
+	// Load from the override global shaders first, this allows us to hot reload in cooked / pak builds
+	TArray<uint8> GlobalShaderData;
+	const bool bAllowOverrideGlobalShaders = !WITH_EDITOR && !UE_BUILD_SHIPPING;
+	if (bAllowOverrideGlobalShaders)
+	{
+		FString OverrideGlobalShaderCacheFilename = GetGlobalShaderCacheOverrideFilename(Platform);
+		FPaths::MakeStandardFilename(OverrideGlobalShaderCacheFilename);
+
+		bool bFileExist = IFileManager::Get().FileExists(*OverrideGlobalShaderCacheFilename);
+
+		if (!bFileExist)
+		{
+			UE_LOG(LogShaders, Display, TEXT("%s doesn't exists"), *OverrideGlobalShaderCacheFilename);
+		}
+		else
+		{
+			bLoadedFromCacheFile = FFileHelper::LoadFileToArray(GlobalShaderData, *OverrideGlobalShaderCacheFilename, FILEREAD_Silent);
+
+			if (bLoadedFromCacheFile)
 			{
-				FString OverrideGlobalShaderCacheFilename = GetGlobalShaderCacheOverrideFilename(Platform);
-				FPaths::MakeStandardFilename(OverrideGlobalShaderCacheFilename);
-
-				bool bFileExist = IFileManager::Get().FileExists(*OverrideGlobalShaderCacheFilename);
-
-				if (!bFileExist)
-				{
-					UE_LOG(LogShaders, Display, TEXT("%s doesn't exists"), *OverrideGlobalShaderCacheFilename);
-				}
-				else
-				{
-					bLoadedFromCacheFile = FFileHelper::LoadFileToArray(GlobalShaderData, *OverrideGlobalShaderCacheFilename, FILEREAD_Silent);
-
-					if (bLoadedFromCacheFile)
-					{
-						UE_LOG(LogShaders, Display, TEXT("%s has been loaded successfully"), *OverrideGlobalShaderCacheFilename);
-					}
-					else
-					{
-						UE_LOG(LogShaders, Error, TEXT("%s failed to load"), *OverrideGlobalShaderCacheFilename);
-					}
-				}
-			}
-
-			// is the data already loaded?
-			int64 PreloadedSize = 0;
-			void* PreloadedData = nullptr;
-			if (!bLoadedFromCacheFile)
-			{
-				PreloadedData = GGlobalShaderPreLoadFile.TakeOwnershipOfLoadedData(&PreloadedSize);
-			}
-
-			if (PreloadedData != nullptr)
-			{
-				FLargeMemoryReader MemoryReader((uint8*)PreloadedData, PreloadedSize, ELargeMemoryReaderFlags::TakeOwnership);
-				GGlobalShaderMap[Platform]->LoadFromGlobalArchive(MemoryReader);
-		bLoadedFromCacheFile = true;
+				UE_LOG(LogShaders, Display, TEXT("%s has been loaded successfully"), *OverrideGlobalShaderCacheFilename);
 			}
 			else
 			{
-				FString GlobalShaderCacheFilename = FPaths::GetRelativePathToRoot() / GetGlobalShaderCacheFilename(Platform);
-				FPaths::MakeStandardFilename(GlobalShaderCacheFilename);
-				if (!bLoadedFromCacheFile)
-				{
-					bLoadedFromCacheFile = FFileHelper::LoadFileToArray(GlobalShaderData, *GlobalShaderCacheFilename, FILEREAD_Silent);
-				}
+				UE_LOG(LogShaders, Error, TEXT("%s failed to load"), *OverrideGlobalShaderCacheFilename);
+			}
+		}
+	}
+
+	// is the data already loaded?
+	int64 PreloadedSize = 0;
+	void* PreloadedData = nullptr;
+	if (!bLoadedFromCacheFile)
+	{
+		PreloadedData = GGlobalShaderPreLoadFile.TakeOwnershipOfLoadedData(&PreloadedSize);
+	}
+
+	if (PreloadedData != nullptr)
+	{
+		FLargeMemoryReader MemoryReader((uint8*)PreloadedData, PreloadedSize, ELargeMemoryReaderFlags::TakeOwnership);
+		GGlobalShaderMap[Platform]->LoadFromGlobalArchive(MemoryReader);
+		bLoadedFromCacheFile = true;
+	}
+	else
+	{
+		FString GlobalShaderCacheFilename = FPaths::GetRelativePathToRoot() / GetGlobalShaderCacheFilename(Platform);
+		FPaths::MakeStandardFilename(GlobalShaderCacheFilename);
+		if (!bLoadedFromCacheFile)
+		{
+			bLoadedFromCacheFile = FFileHelper::LoadFileToArray(GlobalShaderData, *GlobalShaderCacheFilename, FILEREAD_Silent);
+		}
 
 		if (bLoadedFromCacheFile)
 		{
@@ -7423,18 +7635,20 @@ static bool TryLoadCookedGlobalShaderMap(EShaderPlatform Platform, FScopedSlowTa
 
 void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, bool bRefreshShaderMap)
 {
+	LLM_SCOPE_RENDER_RESOURCE(TEXT("GlobalShaderMap"));
+
 	// No global shaders needed on dedicated server or clients that use NullRHI. Note that cook commandlet needs to have them, even if it is not allowed to render otherwise.
 	if (FPlatformProperties::IsServerOnly() || (!IsRunningCommandlet() && !FApp::CanEverRender()))
-				{
+	{
 		if (!GGlobalShaderMap[Platform])
-					{
+		{
 			GGlobalShaderMap[Platform] = new FGlobalShaderMap(Platform);
 		}
-						return;
-					}
+		return;
+	}
 
 	if (bRefreshShaderMap || GGlobalShaderTargetPlatform[Platform] != TargetPlatform)
-					{
+	{
 		// defer the deletion the current global shader map, delete the previous one if it is still valid
 		delete GGlobalShaderMap_DeferredDeleteCopy[Platform];	// deleting null is Okay
 		GGlobalShaderMap_DeferredDeleteCopy[Platform] = GGlobalShaderMap[Platform];
@@ -7444,7 +7658,7 @@ void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* Tar
 
 		// make sure we look for updated shader source files
 		FlushShaderFileCache();
-				}
+	}
 
 	// If the global shader map hasn't been created yet, create it.
 	if (!GGlobalShaderMap[Platform])
@@ -7555,7 +7769,7 @@ void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* Tar
 						DDCMisses++;
 					}
 					++BufferIndex;
-					}
+				}
 
 				GShaderCompilerStats->AddDDCHit(DDCHits);
 				GShaderCompilerStats->AddDDCMiss(DDCMisses);
@@ -7577,7 +7791,7 @@ void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* Tar
 				FMessageDialog::Open(EAppMsgType::Ok, Message);
 				FPlatformMisc::RequestExit(false);
 				return;
-				}
+			}
 			else
 			{
 				UE_LOG(LogShaders, Fatal, TEXT("%s"), *Message.ToString());
@@ -7614,6 +7828,26 @@ void CompileGlobalShaderMap(ERHIFeatureLevel::Type InFeatureLevel, bool bRefresh
 void CompileGlobalShaderMap(bool bRefreshShaderMap)
 {
 	CompileGlobalShaderMap(GMaxRHIFeatureLevel, bRefreshShaderMap);
+}
+
+void ShutdownGlobalShaderMap()
+{
+	// handle edge case where we get a shutdown before fully initialized (the globals used below are not in a valid state)
+	if (!GIsRHIInitialized)
+	{
+		return;
+	}
+
+	// at the point this function is called (during the shutdown process) we do not expect any outstanding work that could potentially be still referencing
+	// global shaders, so we are not deferring the deletion (via GGlobalShaderMap_DeferredDeleteCopy) like we do during the shader recompilation.
+	EShaderPlatform Platform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
+	if (GGlobalShaderMap[Platform] != nullptr)
+	{
+		GGlobalShaderMap[Platform]->ReleaseAllSections();
+
+		delete GGlobalShaderMap[Platform];
+		GGlobalShaderMap[Platform] = nullptr;
+	}
 }
 
 void ReloadGlobalShaders()
@@ -7690,6 +7924,10 @@ bool RecompileChangedShadersForPlatform(const FString& PlatformName)
 	GetOutdatedShaderTypes(OutdatedShaderTypes, OutdatedShaderPipelineTypes, OutdatedFactoryTypes);
 	UE_LOG(LogShaders, Display, TEXT("We found %d out of date shader types, %d outdated pipeline types, and %d out of date VF types!"), OutdatedShaderTypes.Num(), OutdatedShaderPipelineTypes.Num(), OutdatedFactoryTypes.Num());
 
+#if WITH_EDITOR
+	UpdateReferencedUniformBufferNames(OutdatedShaderTypes, OutdatedFactoryTypes, OutdatedShaderPipelineTypes);
+#endif
+
 	for (int32 FormatIndex = 0; FormatIndex < DesiredShaderFormats.Num(); FormatIndex++)
 	{
 		// get the shader platform enum
@@ -7710,7 +7948,7 @@ bool RecompileChangedShadersForPlatform(const FString& PlatformName)
 				(*It)->ClearCachedCookedPlatformData(TargetPlatform);
 			}
 		}
-#endif
+#endif // WITH_EDITOR
 	}
 
 	if (OutdatedFactoryTypes.Num() || OutdatedShaderTypes.Num())
@@ -7900,11 +8138,6 @@ void RecompileShadersForRemote(
 
 	const uint32 StartTotalShadersCompiled = GShaderCompilerStats->GetTotalShadersCompiled();
 
-	// figure out which shaders are out of date
-	TArray<const FShaderType*> OutdatedShaderTypes;
-	TArray<const FVertexFactoryType*> OutdatedFactoryTypes;
-	TArray<const FShaderPipelineType*> OutdatedShaderPipelineTypes;
-
 	// Pick up new changes to shader files
 	FlushShaderFileCache();
 
@@ -7924,23 +8157,30 @@ void RecompileShadersForRemote(
 
 			// Only compile for the desired platform if requested
 			if (ShaderPlatform == Args.ShaderPlatform || Args.ShaderPlatform == SP_NumPlatforms)
-		{
+			{
 				if (Args.CommandType == ODSCRecompileCommand::SingleShader &&
 					Args.ShaderTypesToLoad.Len() > 0)
-		{
+				{
 					TArray<const FShaderType*> ShaderTypes = FShaderType::GetShaderTypesByFilename(*Args.ShaderTypesToLoad);
 					TArray<const FShaderPipelineType*> ShaderPipelineTypes = FShaderPipelineType::GetShaderPipelineTypesByFilename(*Args.ShaderTypesToLoad);
 
 					for (const FShaderType* ShaderType : ShaderTypes)
-			{
+					{
 						UE_LOG(LogShaders, Display, TEXT("\t%s..."), ShaderType->GetName());
-		}
+					}
+
+					UpdateReferencedUniformBufferNames(ShaderTypes, {}, ShaderPipelineTypes);
 
 					CompileGlobalShaderMapForRemote(ShaderTypes, ShaderPipelineTypes, ShaderPlatform, TargetPlatform, Args.GlobalShaderMap);
-	}
+				}
 				else if (Args.CommandType == ODSCRecompileCommand::Global ||
-					Args.CommandType == ODSCRecompileCommand::Changed)
+						 Args.CommandType == ODSCRecompileCommand::Changed)
 				{
+					// figure out which shaders are out of date
+					TArray<const FShaderType*> OutdatedShaderTypes;
+					TArray<const FVertexFactoryType*> OutdatedFactoryTypes;
+					TArray<const FShaderPipelineType*> OutdatedShaderPipelineTypes;
+
 					// Explicitly get outdated types for global shaders.
 					const FGlobalShaderMap* ShaderMap = GGlobalShaderMap[ShaderPlatform];
 					if (ShaderMap)
@@ -7949,6 +8189,8 @@ void RecompileShadersForRemote(
 					}
 
 					UE_LOG(LogShaders, Display, TEXT("\tFound %d outdated shader types."), OutdatedShaderTypes.Num() + OutdatedShaderPipelineTypes.Num());
+
+					UpdateReferencedUniformBufferNames(OutdatedShaderTypes, OutdatedFactoryTypes, OutdatedShaderPipelineTypes);
 
 					CompileGlobalShaderMapForRemote(OutdatedShaderTypes, OutdatedShaderPipelineTypes, ShaderPlatform, TargetPlatform, Args.GlobalShaderMap);
 				}
@@ -7985,10 +8227,30 @@ void RecompileShadersForRemote(
 	// Restore compilation state.
 	GShaderCompilingManager->SkipShaderCompilation(bPreviousState);
 }
+
+void ShutdownShaderCompilers(TConstArrayView<const ITargetPlatform*> TargetPlatforms)
+{
+	ITargetPlatformManagerModule& PlatformManager = GetTargetPlatformManagerRef();
+	for (const ITargetPlatform* TargetPlatform : TargetPlatforms)
+	{
+		TArray<FName> DesiredShaderFormats;
+		TargetPlatform->GetAllTargetedShaderFormats(DesiredShaderFormats);
+		for (FName FormatName : DesiredShaderFormats)
+		{
+			const IShaderFormat* ShaderFormat = PlatformManager.FindShaderFormat(FormatName);
+			if (ShaderFormat)
+			{
+				ShaderFormat->NotifyShaderCompilersShutdown(FormatName);
+			}
+		}
+	}
+}
+
 #endif // WITH_EDITOR
 
 void BeginRecompileGlobalShaders(const TArray<const FShaderType*>& OutdatedShaderTypes, const TArray<const FShaderPipelineType*>& OutdatedShaderPipelineTypes, EShaderPlatform ShaderPlatform, const ITargetPlatform* TargetPlatform)
 {
+#if WITH_EDITOR
 	if (!FPlatformProperties::RequiresCookedData())
 	{
 		// Flush pending accesses to the existing global shaders.
@@ -8004,6 +8266,7 @@ void BeginRecompileGlobalShaders(const TArray<const FShaderType*>& OutdatedShade
 			VerifyGlobalShaders(ShaderPlatform, TargetPlatform, false, &OutdatedShaderTypes, &OutdatedShaderPipelineTypes);
 		}
 	}
+#endif
 }
 
 void FinishRecompileGlobalShaders()
@@ -8011,6 +8274,8 @@ void FinishRecompileGlobalShaders()
 	// Block until global shaders have been compiled and processed
 	GShaderCompilingManager->ProcessAsyncResults(false, true);
 }
+
+#if WITH_EDITOR
 
 static inline FShader* ProcessCompiledJob(FShaderCompileJob* SingleJob, const FShaderPipelineType* Pipeline, TArray<EShaderPlatform>& ShaderPlatformsProcessed, TArray<const FShaderPipelineType*>& OutSharedPipelines)
 {
@@ -8154,6 +8419,7 @@ void SaveGlobalShadersForRemoteRecompile(FArchive& Ar, EShaderPlatform ShaderPla
 		GlobalShaderMap->SaveToGlobalArchive(Ar);
 	}
 }
+#endif // WITH_EDITOR
 
 void LoadGlobalShadersForRemoteRecompile(FArchive& Ar, EShaderPlatform ShaderPlatform)
 {
@@ -8424,7 +8690,7 @@ public:
 	int32 NumHits = 0;
 
 	/** Canned output */
-	TArray<uint8> JobOutput;
+	FSharedBuffer JobOutput;
 
 	/** Similar to FRefCountBase AddRef, but not atomic */
 	int32 AddRef()
@@ -8453,7 +8719,7 @@ public:
 
 	uint64 GetAllocatedSize() const
 	{
-		return static_cast<uint64>(JobOutput.GetAllocatedSize() + sizeof(*this));
+		return static_cast<uint64>(JobOutput.GetSize() + sizeof(*this));
 	}
 };
 
@@ -8529,16 +8795,12 @@ FShaderJobCache::FJobCachedOutput* FShaderJobCache::Find(const FJobInputHash& Ha
 				{
 					// Create a new entry to store in the FShaderJobCache
 					FStoredOutput* NewStoredOutput = new FStoredOutput();
-					NewStoredOutput->JobOutput.Reserve(Results.GetSize());
-					NewStoredOutput->JobOutput.SetNum(Results.GetSize());
+					NewStoredOutput->JobOutput = Results;
 
 					TRACE_COUNTER_ADD(Shaders_JobCacheDDCBytesReceived, Results.GetSize());
 
-					check(NewStoredOutput->JobOutput.GetAllocatedSize() == Results.GetSize());
-					FMemory::Memcpy(NewStoredOutput->JobOutput.GetData(),  Results.GetData(), Results.GetSize());
-
 					// Generate an output hash and cache the result in the FShaderJobCache
-					FJobOutputHash NewOutputHash = FBlake3::HashBuffer(NewStoredOutput->JobOutput.GetData(), NewStoredOutput->JobOutput.Num());
+					FJobOutputHash NewOutputHash = FBlake3::HashBuffer(NewStoredOutput->JobOutput.GetData(), NewStoredOutput->JobOutput.GetSize());
 
 					NewStoredOutput->AddRef();
 					Outputs.Add(NewOutputHash, NewStoredOutput);
@@ -8593,7 +8855,7 @@ void FShaderJobCache::Add(const FJobInputHash& Hash, const FJobCachedOutput& Con
 		return;
 	}
 
-	FJobOutputHash OutputHash = FBlake3::HashBuffer(Contents.GetData(), Contents.Num());
+	FJobOutputHash OutputHash = FBlake3::HashBuffer(Contents.GetData(), Contents.GetSize());
 
 	// add the record
 	const uint64 InputHashToOutputOriginalSize = InputHashToOutput.GetAllocatedSize();
@@ -8631,9 +8893,9 @@ void FShaderJobCache::Add(const FJobInputHash& Hash, const FJobCachedOutput& Con
 			Key.Hash = Hash;
 			UE::DerivedData::FCacheRecordBuilder RecordBuilder(Key);
 
-			RecordBuilder.AddValue(ShaderJobCacheId, FSharedBuffer::MakeView(MakeMemoryView(Contents)));
+			RecordBuilder.AddValue(ShaderJobCacheId, FSharedBuffer::MakeView(Contents));
 
-			TRACE_COUNTER_ADD(Shaders_JobCacheDDCBytesSent, Contents.GetAllocatedSize());
+			TRACE_COUNTER_ADD(Shaders_JobCacheDDCBytesSent, Contents.GetSize());
 
 			UE::DerivedData::FRequestOwner RequestOwner(UE::DerivedData::EPriority::Normal);
 			UE::DerivedData::FRequestBarrier RequestBarrier(RequestOwner);
@@ -8663,7 +8925,7 @@ void FShaderJobCache::Add(const FJobInputHash& Hash, const FJobCachedOutput& Con
 
 		CurrentlyAllocatedMemory += Outputs.GetAllocatedSize();
 		CurrentlyAllocatedMemory -= OutputsOriginalSize;
-					}
+	}
 
 	CurrentlyAllocatedMemory += InputHashToOutput.GetAllocatedSize();
 	CurrentlyAllocatedMemory -= InputHashToOutputOriginalSize;
@@ -8674,12 +8936,12 @@ void FShaderJobCache::RemoveByInputHash(const FJobInputHash& InputHash)
 	const FJobOutputHash* FoundOutputHash = InputHashToOutput.Find(InputHash);
 
 	if (FoundOutputHash)
-							{
+	{
 		const FJobOutputHash& OutputHash = *FoundOutputHash;
 		FStoredOutput** FoundStoredOutput = Outputs.Find(OutputHash);
 
 		if (FoundStoredOutput)
-								{
+		{
 			FStoredOutput* StoredOutput = *FoundStoredOutput;
 			checkf(StoredOutput, TEXT("Invalid entry found in FShaderJobCache Output hash table. All values are expected to be valid pointers."));
 
@@ -8687,7 +8949,7 @@ void FShaderJobCache::RemoveByInputHash(const FJobInputHash& InputHash)
 
 			// Decrement reference count and remove cached object if it's no longer referenced by any input hashes
 			if (StoredOutput->Release() == 0)
-							{
+			{
 				Outputs.Remove(OutputHash);
 				CurrentlyAllocatedMemory -= OutputSize;
 			}
@@ -8709,26 +8971,30 @@ uint64 FShaderJobCache::GetAllocatedMemory()
 void FShaderJobCache::LogStats()
 {
 	UE_LOG(LogShaderCompilers, Display, TEXT("=== FShaderJobCache stats ==="), this);
-	UE_LOG(LogShaderCompilers, Display, TEXT("Total job queries %lld, among them cache hits %lld (%.2f%%)"),
-		TotalSearchAttempts, TotalCacheHits, (TotalSearchAttempts > 0) ? 100.0 * static_cast<double>(TotalCacheHits) / static_cast<double>(TotalSearchAttempts) : 0.0);
-	UE_LOG(LogShaderCompilers, Display, TEXT("Tracking %d distinct input hashes that result in %d distinct outputs (%.2f%%)"),
-		InputHashToOutput.Num(), Outputs.Num(), (InputHashToOutput.Num() > 0) ? 100.0 * static_cast<double>(Outputs.Num()) / static_cast<double>(InputHashToOutput.Num()) : 0.0);
+	UE_LOG(LogShaderCompilers, Display, TEXT("Total job queries %s, among them cache hits %s (%.2f%%)"),
+		*FormatNumber(TotalSearchAttempts),
+		*FormatNumber(TotalCacheHits),
+		(TotalSearchAttempts > 0) ? 100.0 * static_cast<double>(TotalCacheHits) / static_cast<double>(TotalSearchAttempts) : 0.0);
 
-	uint64 MemUsed = GetAllocatedMemory();
-	double MemUsedMB = FUnitConversion::Convert(static_cast<double>(MemUsed), EUnit::Bytes, EUnit::Megabytes);
-	double MemUsedGB = FUnitConversion::Convert(static_cast<double>(MemUsed), EUnit::Bytes, EUnit::Gigabytes);
-	uint64 MemBudget = GetCurrentMemoryBudget();
+	UE_LOG(LogShaderCompilers, Display, TEXT("Tracking %s distinct input hashes that result in %s distinct outputs (%.2f%%)"),
+		*FormatNumber(InputHashToOutput.Num()), 
+		*FormatNumber(Outputs.Num()),
+		(InputHashToOutput.Num() > 0) ? 100.0 * static_cast<double>(Outputs.Num()) / static_cast<double>(InputHashToOutput.Num()) : 0.0);
+
+	static const FNumberFormattingOptions SizeFormattingOptions = FNumberFormattingOptions().SetMinimumFractionalDigits(2).SetMaximumFractionalDigits(2);
+
+	const uint64 MemUsed = GetAllocatedMemory();
+	const uint64 MemBudget = GetCurrentMemoryBudget();
 	if (MemBudget > 0)
 	{
-		double MemBudgetMB = FUnitConversion::Convert(static_cast<double>(MemBudget), EUnit::Bytes, EUnit::Megabytes);
-		double MemBudgetGB = FUnitConversion::Convert(static_cast<double>(MemBudget), EUnit::Bytes, EUnit::Gigabytes);
-
-		UE_LOG(LogShaderCompilers, Display, TEXT("RAM used: %.2f MB (%.2f GB) of %.2f MB (%.2f GB) budget. Usage: %.2f%%"), 
-			MemUsedMB, MemUsedGB, MemBudgetMB, MemBudgetGB, 100.0 * MemUsedMB / MemBudgetMB);
+		UE_LOG(LogShaderCompilers, Display, TEXT("RAM used: %s of %s budget. Usage: %.2f%%"), 
+			*FText::AsMemory(MemUsed, &SizeFormattingOptions, nullptr, EMemoryUnitStandard::IEC).ToString(),
+			*FText::AsMemory(MemBudget, &SizeFormattingOptions, nullptr, EMemoryUnitStandard::IEC).ToString(),
+			100.0 * MemUsed / MemBudget);
 	}
 	else
 	{
-		UE_LOG(LogShaderCompilers, Display, TEXT("RAM used: %.2f MB (%.2f GB), no memory limit set"), MemUsedMB, MemUsedGB);
+		UE_LOG(LogShaderCompilers, Display, TEXT("RAM used: %s, no memory limit set"), *FText::AsMemory(MemUsed, &SizeFormattingOptions, nullptr, EMemoryUnitStandard::IEC).ToString());
 	}
 }
 

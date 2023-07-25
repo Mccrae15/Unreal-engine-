@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/WorldPartitionRuntimeSpatialHashGridPreviewer.h"
-#include "WorldPartition/WorldPartitionRuntimeSpatialHash.h"
+#include "Materials/Material.h"
 #include "WorldPartition/RuntimeSpatialHash/RuntimeSpatialHashGridHelper.h"
 #include "Engine/PostProcessVolume.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -19,7 +19,10 @@ FWorldPartitionRuntimeSpatialHashGridPreviewer::FWorldPartitionRuntimeSpatialHas
 #endif
 {
 #if WITH_EDITORONLY_DATA
-	Material = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/WorldPartition/WorldPartitionSpatialHashGridPreviewMaterial"));
+	if (!IsRunningCookCommandlet())
+	{
+		Material = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/WorldPartition/WorldPartitionSpatialHashGridPreviewMaterial"));
+	}
 #endif
 }
 

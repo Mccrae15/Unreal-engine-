@@ -2,14 +2,9 @@
 
 #include "Elements/Metadata/PCGMetadataVectorOpElement.h"
 
-#include "PCGParamData.h"
-#include "Data/PCGSpatialData.h"
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataEntryKeyIterator.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataVectorOpElement)
 
 namespace PCGMetadataVectorConstants
 {
@@ -208,6 +203,31 @@ namespace PCGMetadataVectorSettings
 	};
 }
 
+void UPCGMetadataVectorSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input3AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource3.SetAttributeName(Input3AttributeName_DEPRECATED);
+		Input3AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
+}
+
 FName UPCGMetadataVectorSettings::GetInputPinLabel(uint32 Index) const
 {
 	switch (Index)
@@ -283,18 +303,18 @@ bool UPCGMetadataVectorSettings::IsSupportedInputType(uint16 TypeId, uint32 Inpu
 	}
 }
 
-FName UPCGMetadataVectorSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataVectorSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	case 2:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input3AttributeName, Params);
+		return InputSource3;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
@@ -313,7 +333,12 @@ FName UPCGMetadataVectorSettings::AdditionalTaskName() const
 #if WITH_EDITOR
 FName UPCGMetadataVectorSettings::GetDefaultNodeName() const
 {
-	return TEXT("Attribute Vector Op");
+	return TEXT("AttributeVectorOp");
+}
+
+FText UPCGMetadataVectorSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataVectorSettings", "NodeTitle", "Attribute Vector Op");
 }
 #endif // WITH_EDITOR
 

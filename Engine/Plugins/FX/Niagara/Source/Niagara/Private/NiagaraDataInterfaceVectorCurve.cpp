@@ -5,6 +5,7 @@
 #include "Curves/CurveLinearColor.h"
 #include "Curves/CurveFloat.h"
 #include "NiagaraTypes.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceVectorCurve)
 
@@ -104,8 +105,8 @@ TArray<float> UNiagaraDataInterfaceVectorCurve::BuildLUT(int32 NumEntries) const
 	OutputLUT.Reserve(NumEntries * 3);
 	for (int32 i=0; i < NumEntries; i++)
 	{
-		float X = UnnormalizeTime(i * InvEntryCountFactor);
-		FVector C(XCurve.Eval(X), YCurve.Eval(X), ZCurve.Eval(X));
+		const float X = UnnormalizeTime(i * InvEntryCountFactor);
+		const FVector3f C(XCurve.Eval(X), YCurve.Eval(X), ZCurve.Eval(X));
 		OutputLUT.Add(C.X);
 		OutputLUT.Add(C.Y);
 		OutputLUT.Add(C.Z);
@@ -148,9 +149,9 @@ bool UNiagaraDataInterfaceVectorCurve::Equals(const UNiagaraDataInterface* Other
 
 void UNiagaraDataInterfaceVectorCurve::GetCurveData(TArray<FCurveData>& OutCurveData)
 {
-	OutCurveData.Add(FCurveData(&XCurve, TEXT("X"), FLinearColor::Red));
-	OutCurveData.Add(FCurveData(&YCurve, TEXT("Y"), FLinearColor::Green));
-	OutCurveData.Add(FCurveData(&ZCurve, TEXT("Z"), FLinearColor::Blue));
+	OutCurveData.Add(FCurveData(&XCurve, TEXT("X"), FLinearColor(1.0f, 0.05f, 0.05f)));
+	OutCurveData.Add(FCurveData(&YCurve, TEXT("Y"), FLinearColor(0.05f, 1.0f, 0.05f)));
+	OutCurveData.Add(FCurveData(&ZCurve, TEXT("Z"), FLinearColor(0.1f, 0.2f, 1.0f)));
 }
 
 void UNiagaraDataInterfaceVectorCurve::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)
@@ -197,24 +198,24 @@ void UNiagaraDataInterfaceVectorCurve::GetVMExternalFunction(const FVMExternalFu
 }
 
 template<>
-FORCEINLINE_DEBUGGABLE FVector UNiagaraDataInterfaceVectorCurve::SampleCurveInternal<TIntegralConstant<bool, true>>(float X)
+FORCEINLINE_DEBUGGABLE FVector3f UNiagaraDataInterfaceVectorCurve::SampleCurveInternal<TIntegralConstant<bool, true>>(float X)
 {
-	float RemappedX = FMath::Clamp(NormalizeTime(X) * LUTNumSamplesMinusOne, 0.0f, LUTNumSamplesMinusOne);
-	float PrevEntry = FMath::TruncToFloat(RemappedX);
-	float NextEntry = PrevEntry < LUTNumSamplesMinusOne ? PrevEntry + 1.0f : PrevEntry;
-	float Interp = RemappedX - PrevEntry;
+	const float RemappedX = FMath::Clamp(NormalizeTime(X) * LUTNumSamplesMinusOne, 0.0f, LUTNumSamplesMinusOne);
+	const float PrevEntry = FMath::TruncToFloat(RemappedX);
+	const float NextEntry = PrevEntry < LUTNumSamplesMinusOne ? PrevEntry + 1.0f : PrevEntry;
+	const float Interp = RemappedX - PrevEntry;
 
-	int32 AIndex = (int32)(PrevEntry * (float)CurveLUTNumElems);
-	int32 BIndex = (int32)(NextEntry * (float)CurveLUTNumElems);
-	FVector A = FVector(ShaderLUT[AIndex], ShaderLUT[AIndex + 1], ShaderLUT[AIndex + 2]);
-	FVector B = FVector(ShaderLUT[BIndex], ShaderLUT[BIndex + 1], ShaderLUT[BIndex + 2]);
+	const int32 AIndex = (int32)(PrevEntry * (float)CurveLUTNumElems);
+	const int32 BIndex = (int32)(NextEntry * (float)CurveLUTNumElems);
+	const FVector3f A = FVector3f(ShaderLUT[AIndex], ShaderLUT[AIndex + 1], ShaderLUT[AIndex + 2]);
+	const FVector3f B = FVector3f(ShaderLUT[BIndex], ShaderLUT[BIndex + 1], ShaderLUT[BIndex + 2]);
 	return FMath::Lerp(A, B, Interp);
 }
 
 template<>
-FORCEINLINE_DEBUGGABLE FVector UNiagaraDataInterfaceVectorCurve::SampleCurveInternal<TIntegralConstant<bool, false>>(float X)
+FORCEINLINE_DEBUGGABLE FVector3f UNiagaraDataInterfaceVectorCurve::SampleCurveInternal<TIntegralConstant<bool, false>>(float X)
 {
-	return FVector(XCurve.Eval(X), YCurve.Eval(X), ZCurve.Eval(X));
+	return FVector3f(XCurve.Eval(X), YCurve.Eval(X), ZCurve.Eval(X));
 }
 
 template<typename UseLUT>
@@ -228,8 +229,8 @@ void UNiagaraDataInterfaceVectorCurve::SampleCurve(FVectorVMExternalFunctionCont
 
 	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		float X = XParam.GetAndAdvance();
-		FVector V = SampleCurveInternal<UseLUT>(X);
+		const float X = XParam.GetAndAdvance();
+		const FVector3f V = SampleCurveInternal<UseLUT>(X);
 		*OutSampleX.GetDestAndAdvance() = V.X;
 		*OutSampleY.GetDestAndAdvance() = V.Y;
 		*OutSampleZ.GetDestAndAdvance() = V.Z;

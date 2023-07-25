@@ -2,6 +2,7 @@
 
 
 #include "Graph/SControlRigGraphChangePinType.h"
+#include "Features/IModularFeatures.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Images/SImage.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
@@ -106,7 +107,18 @@ FText SControlRigChangePinType::GetBindingText(URigVMPin* ModelPin) const
 {
 	if (ModelPin)
 	{
-		return GetBindingText(ModelPin->GetTemplateArgumentType());
+		FRigVMTemplateArgumentType ArgumentType = ModelPin->GetRootPin()->GetTemplateArgumentType();
+		if(ModelPin->IsArrayElement())
+		{
+			const FRigVMRegistry& Registry = FRigVMRegistry::Get();
+			const TRigVMTypeIndex ArrayTypeIndex = Registry.GetTypeIndex(ArgumentType);
+			const TRigVMTypeIndex ElementTypeIndex = Registry.GetBaseTypeFromArrayTypeIndex(ArrayTypeIndex);
+			ArgumentType = Registry.GetType(ElementTypeIndex);
+		}
+		if(ArgumentType.IsValid())
+		{
+			return GetBindingText(ArgumentType);
+		}
 	}
 	return FText();
 }
@@ -196,11 +208,17 @@ void SControlRigChangePinType::FillPinTypeMenu(FMenuBuilder& MenuBuilder)
 	TMap<TRigVMTypeIndex, FArgumentInfo> Types;
 	for(URigVMPin* ModelPin : ModelPins)
 	{
+		const bool bIsArrayElement = ModelPin->IsArrayElement();
+		if(bIsArrayElement)
+		{
+			ModelPin = ModelPin->GetParentPin();
+		}
+
 		if(!ModelPin->IsRootPin())
 		{
 			continue;
 		}
-		
+
 		if(const URigVMTemplateNode* TemplateNode = Cast<URigVMTemplateNode>(ModelPin->GetNode()))
 		{
 			if(const FRigVMTemplate* Template = TemplateNode->GetTemplate())
@@ -251,6 +269,11 @@ void SControlRigChangePinType::FillPinTypeMenu(FMenuBuilder& MenuBuilder)
 									continue;
 								}
 							}
+						}
+
+						if(bIsArrayElement)
+						{
+							ArgumentTypeIndex = FRigVMRegistry::Get().GetBaseTypeFromArrayTypeIndex(ArgumentTypeIndex);
 						}
 						
 						const FRigVMTemplateArgumentType ArgumentType = FRigVMRegistry::Get().GetType(ArgumentTypeIndex);
@@ -405,8 +428,19 @@ void SControlRigChangePinType::HandlePinTypeChanged(FRigVMTemplateArgumentType I
 			continue;
 		}
 
-		const TRigVMTypeIndex TypeIndex = FRigVMRegistry::Get().GetTypeIndex(InType);
-		Controller->ResolveWildCardPin(ModelPin->GetPinPath(), TypeIndex, true, true);
+		TRigVMTypeIndex TypeIndex = FRigVMRegistry::Get().GetTypeIndex(InType);
+		if(ModelPin->IsArrayElement())
+		{
+			TypeIndex = FRigVMRegistry::Get().GetArrayTypeFromBaseTypeIndex(TypeIndex);
+			ModelPin = ModelPin->GetParentPin();
+		}
+
+		if(!ModelPin->IsRootPin())
+		{
+			continue;
+		}
+		
+		Controller->ResolveWildCardPin(ModelPin->GetRootPin()->GetPinPath(), TypeIndex, true, true);
 	}
 }
 

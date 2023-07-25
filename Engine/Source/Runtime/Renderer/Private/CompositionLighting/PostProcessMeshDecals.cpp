@@ -60,7 +60,7 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		DecalRendering::ModifyCompilationEnvironment(DecalRendering::ComputeDecalBlendDesc(Parameters.Platform, Parameters.MaterialParameters), EDecalRenderStage::None, OutEnvironment);
+		DecalRendering::ModifyCompilationEnvironment(Parameters.Platform, DecalRendering::ComputeDecalBlendDesc(Parameters.Platform, Parameters.MaterialParameters), EDecalRenderStage::None, OutEnvironment);
 	}
 
 	FMeshDecalsPS() = default;
@@ -85,7 +85,7 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		DecalRendering::ModifyCompilationEnvironment(DecalRendering::ComputeDecalBlendDesc(Parameters.Platform, Parameters.MaterialParameters), EDecalRenderStage::Emissive, OutEnvironment);
+		DecalRendering::ModifyCompilationEnvironment(Parameters.Platform, DecalRendering::ComputeDecalBlendDesc(Parameters.Platform, Parameters.MaterialParameters), EDecalRenderStage::Emissive, OutEnvironment);
 	}
 
 	FMeshDecalsEmissivePS() = default;
@@ -110,7 +110,7 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		DecalRendering::ModifyCompilationEnvironment(DecalRendering::ComputeDecalBlendDesc(Parameters.Platform, Parameters.MaterialParameters), EDecalRenderStage::AmbientOcclusion, OutEnvironment);
+		DecalRendering::ModifyCompilationEnvironment(Parameters.Platform, DecalRendering::ComputeDecalBlendDesc(Parameters.Platform, Parameters.MaterialParameters), EDecalRenderStage::AmbientOcclusion, OutEnvironment);
 	}
 
 	FMeshDecalsAmbientOcclusionPS() = default;
@@ -136,7 +136,7 @@ public:
 	virtual void CollectPSOInitializers(
 		const FSceneTexturesConfig& SceneTexturesConfig,
 		const FMaterial& Material,
-		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FPSOPrecacheParams& PreCacheParams, 
 		TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
@@ -325,7 +325,7 @@ bool FMeshDecalMeshProcessor::Process(
 void FMeshDecalMeshProcessor::CollectPSOInitializers(
 	const FSceneTexturesConfig& SceneTexturesConfig,
 	const FMaterial& Material,
-	const FVertexFactoryType* VertexFactoryType,
+	const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 	const FPSOPrecacheParams& PreCacheParams, 
 	TArray<FPSOPrecacheData>& PSOInitializers)
 {
@@ -370,7 +370,7 @@ void FMeshDecalMeshProcessor::CollectPSOInitializers(
 		}
 
 		FMaterialShaders Shaders;
-		if (!Material.TryGetShaders(ShaderTypes, VertexFactoryType, Shaders))
+		if (!Material.TryGetShaders(ShaderTypes, VertexFactoryData.VertexFactoryType, Shaders))
 		{
 			continue;
 		}
@@ -386,7 +386,7 @@ void FMeshDecalMeshProcessor::CollectPSOInitializers(
 		GetDeferredDecalRenderTargetsInfo(SceneTexturesConfig, ShaderPlatform, LocalRenderTargetMode, RenderTargetsInfo);
 		
 		AddGraphicsPipelineStateInitializer(
-			VertexFactoryType,
+			VertexFactoryData,
 			Material,
 			PassDrawRenderState,
 			RenderTargetsInfo,
@@ -395,6 +395,7 @@ void FMeshDecalMeshProcessor::CollectPSOInitializers(
 			MeshCullMode,
 			PT_TriangleList,
 			EMeshPassFeatures::Default,
+			true /*bRequired*/,
 			PSOInitializers);
 	}
 }

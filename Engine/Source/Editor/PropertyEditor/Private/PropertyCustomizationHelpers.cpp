@@ -437,14 +437,14 @@ namespace PropertyCustomizationHelpers
 		TArray<UFactory*> FilteredFactories;
 
 		for (UFactory* Factory : AllFactories)
-				{
-					UClass* SupportedClass = Factory->GetSupportedClass();
+		{
+			UClass* SupportedClass = Factory->GetSupportedClass();
 			auto IsChildOfLambda = [SupportedClass](const UClass* InClass) { return SupportedClass->IsChildOf(InClass); };
 
-					if (SupportedClass != nullptr 
+			if (SupportedClass != nullptr 
 				&& Classes.ContainsByPredicate(IsChildOfLambda)
 				&& !DisallowedClasses.ContainsByPredicate(IsChildOfLambda))
-					{
+			{
 				FilteredFactories.Add(Factory);
 			}
 		}
@@ -795,6 +795,58 @@ void PropertyCustomizationHelpers::MakeInstancedPropertyCustomUI(TMap<FName, IDe
 			MakeInstancedPropertyCustomUI(ExistingGroup, BaseCategory, ChildHandle, AddRowDelegate);
 		}
 	}
+}
+
+TArray<const UClass*> PropertyCustomizationHelpers::GetClassesFromMetadataString(const FString& MetadataString)
+{
+	if (MetadataString.IsEmpty())
+	{
+		return TArray<const UClass*>();
+	}
+
+	auto FindClass = [](const FString& InClassName) -> const UClass*
+	{
+		const UClass* Class = UClass::TryFindTypeSlow<const UClass>(InClassName, EFindFirstObjectOptions::EnsureIfAmbiguous);
+		if (!Class)
+		{
+			Class = LoadObject<const UClass>(nullptr, *InClassName);
+		}
+		return Class;
+	};
+		
+	TArray<FString> ClassNames;
+	MetadataString.ParseIntoArrayWS(ClassNames, TEXT(","), true);
+
+	TArray<const UClass*> Classes;
+	Classes.Reserve(ClassNames.Num());
+
+	for (const FString& ClassName : ClassNames)
+	{
+		const UClass* Class = FindClass(ClassName);
+		if (!Class)
+		{
+			continue;
+		}
+
+		// If the class is an interface, expand it to be all classes in memory that implement the class.
+		if (Class->HasAnyClassFlags(CLASS_Interface))
+		{
+			for (TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt)
+			{
+				const UClass* ClassWithInterface = (*ClassIt);
+				if (ClassWithInterface->ImplementsInterface(Class))
+				{
+					Classes.Add(ClassWithInterface);
+				}
+			}
+		}
+		else
+		{
+			Classes.Add(Class);
+		}
+	}
+
+	return Classes;
 }
 
 //////////////////////////////////////////////////////////////////////////

@@ -1,21 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenSceneLighting.h
-=============================================================================*/
-
 #pragma once
 
 #include "RHIDefinitions.h"
+#include "CommonRenderResources.h"
 #include "SceneView.h"
 #include "SceneRendering.h"
 #include "RendererPrivateUtils.h"
 #include "Lumen.h"
+#include "Lumen/LumenSceneData.h"
 #include "LumenSceneRendering.h"
 
+class FDeferredLightUniformStruct;
 class FLumenCardRenderer;
 class FLumenLight;
-class FLumenCardTracingInputs;
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenCardScatterParameters, )
 	RDG_BUFFER_ACCESS(DrawIndirectArgs, ERHIAccess::IndirectArgs)
@@ -162,27 +160,20 @@ enum class ELumenLightType
 	MAX
 };
 
-struct FLumenShadowSetup
-{
-	int32 VirtualShadowMapId;
-	const FProjectedShadowInfo* DenseShadowMap;
-};
-
-FLumenShadowSetup GetShadowForLumenDirectLighting(FVisibleLightInfo& VisibleLightInfo);
-
 void TraceLumenHardwareRayTracedDirectLightingShadows(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
 	const FViewInfo& View,
 	int32 ViewIndex,
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	FRDGBufferRef ShadowTraceIndirectArgs,
 	FRDGBufferRef ShadowTraceAllocator,
 	FRDGBufferRef ShadowTraces,
 	FRDGBufferRef LightTileAllocator,
 	FRDGBufferRef LightTiles,
 	FRDGBufferRef LumenPackedLights,
-	FRDGBufferUAVRef ShadowMaskTilesUAV);
+	FRDGBufferUAVRef ShadowMaskTilesUAV,
+	ERDGPassFlags ComputePassFlags);
 
 enum class ELumenDispatchCardTilesIndirectArgsOffset
 {
@@ -209,7 +200,7 @@ namespace Lumen
 		FScene* Scene,
 		const FViewInfo& View,
 		FRDGBuilder& GraphBuilder,
-		const FLumenCardTracingInputs& TracingInputs,
+		const FLumenSceneFrameTemporaries& FrameTemporaries,
 		const FLumenCardUpdateContext& CardUpdateContext,
 		const FLumenCardTileUpdateContext& CardTileUpdateContext,
 		ERDGPassFlags ComputePassFlags);
@@ -236,14 +227,15 @@ namespace Lumen
 	inline EPixelFormat GetNumFramesAccumulatedAtlasFormat() { return PF_R8; }
 };
 
+namespace LumenSceneLighting
+{
+	bool UseAsyncCompute(const FViewFamilyInfo& ViewFamily);
+}
+
 namespace LumenSceneDirectLighting
 {
-	float GetShadowMapSamplingBias();
-	float GetVirtualShadowMapSamplingBias();
 	float GetMeshSDFShadowRayBias();
 	float GetHeightfieldShadowRayBias();
 	float GetGlobalSDFShadowRayBias();
 	float GetHardwareRayTracingShadowRayBias();
-	bool UseVirtualShadowMaps();
-	bool AllowShadowMaps(const FEngineShowFlags& EngineShowFlags);
 }

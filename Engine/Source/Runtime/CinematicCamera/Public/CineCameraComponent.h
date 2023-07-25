@@ -76,13 +76,13 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Current Camera Settings")
 	float CurrentFocusDistance;
 
-	UPROPERTY(EditAnywhere, Category = "Current Camera Settings", meta = (InlineEditConditionToggle))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Current Camera Settings", meta = (InlineEditConditionToggle))
 	uint32 bOverride_CustomNearClippingPlane:1;
 
 	/** Set bOverride_CustomNearClippingPlane to true if you want to use a custom clipping plane instead of GNearClippingPlane. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Current Camera Settings", meta = (UIMin = "0.00001", ClampMin = "0.00001", editcondition = "bOverride_CustomNearClippingPlane"))
+	UPROPERTY(Interp, BlueprintSetter = SetCustomNearClippingPlane, EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Current Camera Settings", meta = (UIMin = "0.00001", ClampMin = "0.00001", editcondition = "bOverride_CustomNearClippingPlane"))
 	float CustomNearClippingPlane;
-
+	
 #if WITH_EDITORONLY_DATA
 	/** Read-only. Control this value with CurrentFocalLength (and filmback settings). */
 	UPROPERTY(VisibleAnywhere, Category = "Current Camera Settings")
@@ -94,6 +94,10 @@ public:
 	
 	UFUNCTION(BlueprintCallable, BlueprintSetter, Category = "Cine Camera")
 	void SetCurrentFocalLength(float InFocalLength);
+
+	/** Sets near clipping plane of the cine camera. */
+	UFUNCTION(BlueprintCallable, BlueprintSetter, Category = "Cine Camera")
+	void SetCustomNearClippingPlane(const float NewCustomNearClippingPlane);
 
 	/** Returns the horizonal FOV of the camera with current settings. */
 	UFUNCTION(BlueprintCallable, Category = "Cine Camera")

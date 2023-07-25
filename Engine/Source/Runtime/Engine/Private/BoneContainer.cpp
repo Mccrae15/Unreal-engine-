@@ -2,11 +2,12 @@
 
 #include "BoneContainer.h"
 #include "Animation/Skeleton.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/SkeletalMesh.h"
 #include "EngineLogs.h"
 #include "Animation/AnimCurveTypes.h"
-
-#include "HAL/LowLevelMemTracker.h"
+#include "Animation/SkeletonRemappingRegistry.h"
+#include "Animation/SkeletonRemapping.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BoneContainer)
 
@@ -32,10 +33,10 @@ FSkeletonRemappingCurve::FSkeletonRemappingCurve(FBlendedCurve& InCurve, FBoneCo
 	, BoneContainer(InBoneContainer)
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/BoneContainer"));
-	const FSkeletonRemapping* SkeletonRemapping = BoneContainer.GetSkeletonAsset()->GetSkeletonRemapping(SourceSkeleton);
-	if (SkeletonRemapping) // No remapping is required, just continue as we normally would.
+	const FSkeletonRemapping& SkeletonRemapping = UE::Anim::FSkeletonRemappingRegistry::Get().GetRemapping(SourceSkeleton, BoneContainer.GetSkeletonAsset());
+	if (SkeletonRemapping.IsValid()) // No remapping is required, just continue as we normally would.
 	{
-		const FCachedSkeletonCurveMapping& CurveMapping = BoneContainer.GetOrCreateCachedCurveMapping(SkeletonRemapping);
+		const FCachedSkeletonCurveMapping& CurveMapping = BoneContainer.GetOrCreateCachedCurveMapping(&SkeletonRemapping);
 		Curve.UIDToArrayIndexLUT = &CurveMapping.UIDToArrayIndices;
 		bIsRemapping = true;
 	}
@@ -115,7 +116,14 @@ void FBoneContainer::Initialize(const FCurveEvaluationOption& CurveEvalOption)
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/BoneContainer"));
 	RefSkeleton = nullptr;
-	UObject* AssetObj = Asset.Get();
+
+	UObject* AssetObj =
+#if WITH_EDITOR
+		Asset.GetEvenIfUnreachable();
+#else
+		Asset.Get();
+#endif
+	
 	USkeletalMesh* AssetSkeletalMeshObj = Cast<USkeletalMesh>(AssetObj);
 	USkeleton* AssetSkeletonObj = nullptr;
 
@@ -431,10 +439,10 @@ const FRetargetSourceCachedData& FBoneContainer::GetRetargetSourceCachedData(con
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/BoneContainer"));
 	const TArray<FTransform>& RetargetTransforms = AssetSkeleton->GetRefLocalPoses(InRetargetSourceName);
-	return GetRetargetSourceCachedData(InRetargetSourceName, RetargetTransforms);
+	return GetRetargetSourceCachedData(InRetargetSourceName, FSkeletonRemapping(), RetargetTransforms);
 }
 
-const FRetargetSourceCachedData& FBoneContainer::GetRetargetSourceCachedData(const FName& InSourceName, const TArray<FTransform>& InRetargetTransforms) const
+const FRetargetSourceCachedData& FBoneContainer::GetRetargetSourceCachedData(const FName& InSourceName, const FSkeletonRemapping& InRemapping, const TArray<FTransform>& InRetargetTransforms) const
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/BoneContainer"));
 	FRetargetSourceCachedData* RetargetSourceCachedData = RetargetSourceCachedDataLUT.Find(InSourceName);
@@ -452,44 +460,48 @@ const FRetargetSourceCachedData& FBoneContainer::GetRetargetSourceCachedData(con
 
 		for (int32 CompactBoneIndex = 0; CompactBoneIndex < CompactPoseNumBones; CompactBoneIndex++)
 		{
-			const int32& SkeletonBoneIndex = CompactPoseToSkeletonIndex[CompactBoneIndex];
+			const int32 TargetSkeletonBoneIndex = CompactPoseToSkeletonIndex[CompactBoneIndex];
+			const int32 SourceSkeletonBoneIndex = InRemapping.IsValid() ? InRemapping.GetSourceSkeletonBoneIndex(TargetSkeletonBoneIndex) : TargetSkeletonBoneIndex;
 
-			if (AssetSkeleton->GetBoneTranslationRetargetingMode(SkeletonBoneIndex) == EBoneTranslationRetargetingMode::OrientAndScale)
+			if (SourceSkeletonBoneIndex != INDEX_NONE && AssetSkeleton->GetBoneTranslationRetargetingMode(SourceSkeletonBoneIndex, bDisableRetargeting) == EBoneTranslationRetargetingMode::OrientAndScale)
 			{
-				const FVector SourceSkelTrans = AuthoredOnRefSkeleton[SkeletonBoneIndex].GetTranslation();
-				FVector TargetSkelTrans;
-				if (RefPoseOverride.IsValid())
+				if(AuthoredOnRefSkeleton.IsValidIndex(SourceSkeletonBoneIndex))
 				{
-					TargetSkelTrans = RefPoseOverride->RefBonePoses[BoneIndicesArray[CompactBoneIndex]].GetTranslation();
-				}
-				else
-				{
-					TargetSkelTrans = PlayingOnRefSkeleton[BoneIndicesArray[CompactBoneIndex]].GetTranslation();
-				}
-
-				// If translations are identical, we don't need to do any retargeting
-				if (!SourceSkelTrans.Equals(TargetSkelTrans, BONE_TRANS_RT_ORIENT_AND_SCALE_PRECISION))
-				{
-					const float SourceSkelTransLength = SourceSkelTrans.Size();
-					const float TargetSkelTransLength = TargetSkelTrans.Size();
-
-					// this only works on non zero vectors.
-					if (!FMath::IsNearlyZero(SourceSkelTransLength * TargetSkelTransLength))
+					const FVector SourceSkelTrans = AuthoredOnRefSkeleton[SourceSkeletonBoneIndex].GetTranslation();
+					FVector TargetSkelTrans;
+					if (RefPoseOverride.IsValid())
 					{
-						const FVector SourceSkelTransDir = SourceSkelTrans / SourceSkelTransLength;
-						const FVector TargetSkelTransDir = TargetSkelTrans / TargetSkelTransLength;
+						TargetSkelTrans = RefPoseOverride->RefBonePoses[BoneIndicesArray[CompactBoneIndex]].GetTranslation();
+					}
+					else
+					{
+						TargetSkelTrans = PlayingOnRefSkeleton[BoneIndicesArray[CompactBoneIndex]].GetTranslation();
+					}
 
-						const FQuat DeltaRotation = FQuat::FindBetweenNormals(SourceSkelTransDir, TargetSkelTransDir);
-						const float Scale = TargetSkelTransLength / SourceSkelTransLength;
-						const int32 OrientAndScaleIndex = RetargetSourceCachedData->OrientAndScaleData.Add(FOrientAndScaleRetargetingCachedData(DeltaRotation, Scale, SourceSkelTrans, TargetSkelTrans));
+					// If translations are identical, we don't need to do any retargeting
+					if (!SourceSkelTrans.Equals(TargetSkelTrans, BONE_TRANS_RT_ORIENT_AND_SCALE_PRECISION))
+					{
+						const float SourceSkelTransLength = SourceSkelTrans.Size();
+						const float TargetSkelTransLength = TargetSkelTrans.Size();
 
-						// initialize CompactPoseBoneIndex to OrientAndScale Index LUT on demand
-						if (RetargetSourceCachedData->CompactPoseIndexToOrientAndScaleIndex.Num() == 0)
+						// this only works on non zero vectors.
+						if (!FMath::IsNearlyZero(SourceSkelTransLength * TargetSkelTransLength))
 						{
-							RetargetSourceCachedData->CompactPoseIndexToOrientAndScaleIndex.Init(INDEX_NONE, CompactPoseNumBones);
-						}
+							const FVector SourceSkelTransDir = SourceSkelTrans / SourceSkelTransLength;
+							const FVector TargetSkelTransDir = TargetSkelTrans / TargetSkelTransLength;
 
-						RetargetSourceCachedData->CompactPoseIndexToOrientAndScaleIndex[CompactBoneIndex] = OrientAndScaleIndex;
+							const FQuat DeltaRotation = FQuat::FindBetweenNormals(SourceSkelTransDir, TargetSkelTransDir);
+							const float Scale = TargetSkelTransLength / SourceSkelTransLength;
+							const int32 OrientAndScaleIndex = RetargetSourceCachedData->OrientAndScaleData.Add(FOrientAndScaleRetargetingCachedData(DeltaRotation, Scale, SourceSkelTrans, TargetSkelTrans));
+
+							// initialize CompactPoseBoneIndex to OrientAndScale Index LUT on demand
+							if (RetargetSourceCachedData->CompactPoseIndexToOrientAndScaleIndex.Num() == 0)
+							{
+								RetargetSourceCachedData->CompactPoseIndexToOrientAndScaleIndex.Init(INDEX_NONE, CompactPoseNumBones);
+							}
+
+							RetargetSourceCachedData->CompactPoseIndexToOrientAndScaleIndex[CompactBoneIndex] = OrientAndScaleIndex;
+						}
 					}
 				}
 			}

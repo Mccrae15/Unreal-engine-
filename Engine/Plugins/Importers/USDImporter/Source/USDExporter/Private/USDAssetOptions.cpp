@@ -24,6 +24,7 @@ void UsdUtils::AddAnalyticsAttributes(
 
 	InOutAttributes.Emplace( TEXT( "BakedProperties" ), BakedPropertiesString );
 	InOutAttributes.Emplace( TEXT( "DefaultTextureSize" ), Options.DefaultTextureSize.ToString() );
+	InOutAttributes.Emplace( TEXT( "ConstantColorAsSingleValue" ), Options.bConstantColorAsSingleValue);
 }
 
 void UsdUtils::AddAnalyticsAttributes(
@@ -37,7 +38,6 @@ void UsdUtils::AddAnalyticsAttributes(
 		InOutAttributes.Emplace( TEXT( "PayloadFormat" ), Options.PayloadFormat );
 	}
 	InOutAttributes.Emplace( TEXT( "BakeMaterials" ), Options.bBakeMaterials );
-	InOutAttributes.Emplace( TEXT( "RemoveUnrealMaterials" ), Options.bRemoveUnrealMaterials );
 	if ( Options.bBakeMaterials )
 	{
 		UsdUtils::AddAnalyticsAttributes( Options.MaterialBakingOptions, InOutAttributes );
@@ -58,6 +58,11 @@ void UsdUtils::HashForMaterialExport( const FUsdMaterialBakingOptions& Options, 
 		sizeof( Options.DefaultTextureSize )
 	);
 
+	HashToUpdate.Update(
+		reinterpret_cast<const uint8*>(&Options.bConstantColorAsSingleValue),
+		sizeof(Options.bConstantColorAsSingleValue)
+	);
+
 	// If we changed where we want the textures exported we need to re-export them and update the texture paths on the
 	// material
 	HashToUpdate.UpdateWithString( *Options.TexturesDir.Path, Options.TexturesDir.Path.Len() );
@@ -75,10 +80,6 @@ void UsdUtils::HashForMeshExport( const FUsdMeshAssetOptions& Options, FSHA1& Ha
 	HashToUpdate.Update(
 		reinterpret_cast< const uint8* >( &Options.bBakeMaterials ),
 		sizeof( Options.bBakeMaterials )
-	);
-	HashToUpdate.Update(
-		reinterpret_cast< const uint8* >( &Options.bRemoveUnrealMaterials ),
-		sizeof( Options.bRemoveUnrealMaterials )
 	);
 
 	HashToUpdate.Update(

@@ -2,6 +2,7 @@
 
 #include "LandscapeEditorDetailCustomization_AlphaBrush.h"
 #include "UnrealClient.h"
+#include "ViewportClient.h"
 #include "Engine/Texture2D.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Modules/ModuleManager.h"
@@ -23,6 +24,7 @@
 #include "AssetToolsModule.h"
 #include "CanvasTypes.h"
 #include "TextureCompiler.h"
+#include "TextureResource.h"
 #include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "LandscapeEditor.Brushes.Alpha"
@@ -59,8 +61,12 @@ public:
 		TextureChannel = InArgs._TextureChannel;
 
 		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
-		TWeakPtr<IAssetTypeActions> AssetTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(Texture.Get()->GetClass());
-		FLinearColor AssetColor = AssetTypeActions.Pin()->GetTypeColor();
+		FLinearColor AssetColor(ForceInitToZero);
+		if (UTexture2D* Texture2D = Texture.Get())
+		{
+			TWeakPtr<IAssetTypeActions> AssetTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(Texture2D->GetClass());
+			AssetColor = AssetTypeActions.Pin()->GetTypeColor();
+		}
 
 		ChildSlot
 		[
@@ -155,19 +161,20 @@ void FTextureMaskThumbnailViewportClient::Draw(FViewport* Viewport, FCanvas* Can
 		return;
 	}
 
-	UTexture2D* Texture = PinnedParent->Texture.Get();
-
 	Canvas->Clear( FLinearColor::Black);
 
-	// Fully stream in the texture before drawing it.
-	FTextureCompilingManager::Get().FinishCompilation({ Texture });
-	Texture->SetForceMipLevelsToBeResident(30.0f);
-	Texture->WaitForStreaming();
+	if (UTexture2D* Texture = PinnedParent->Texture.Get())
+	{
+		// Fully stream in the texture before drawing it.
+		FTextureCompilingManager::Get().FinishCompilation({ Texture });
+		Texture->SetForceMipLevelsToBeResident(30.0f);
+		Texture->WaitForStreaming();
 
-	//Draw the selected texture, uses ColourChannelBlend mode parameter to filter colour channels and apply grayscale
-	FCanvasTileItem TileItem( FVector2D( 0.0f, 0.0f ), Texture->GetResource(), Viewport->GetSizeXY(), FLinearColor::White );
-	TileItem.BlendMode = (ESimpleElementBlendMode)(SE_BLEND_RGBA_MASK_START + (1<<PinnedParent->TextureChannel.Get()) + 16);
-	Canvas->DrawItem( TileItem );
+		//Draw the selected texture, uses ColourChannelBlend mode parameter to filter colour channels and apply grayscale
+		FCanvasTileItem TileItem( FVector2D( 0.0f, 0.0f ), Texture->GetResource(), Viewport->GetSizeXY(), FLinearColor::White );
+		TileItem.BlendMode = (ESimpleElementBlendMode)(SE_BLEND_RGBA_MASK_START + (1<<PinnedParent->TextureChannel.Get()) + 16);
+		Canvas->DrawItem( TileItem );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////

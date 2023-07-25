@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "AudioMotorSimTypes.h"
 #include "IAudioMotorSim.h"
 #include "RevLimiterMotorSimComponent.generated.h"
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnRevLimiterHit);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRevLimiterStateChanged, bool, bNewState);
 
 // Temporarily cuts throttle and reduces RPM when drifting or in the air
@@ -30,6 +30,9 @@ public:
 	float LimiterMaxRpm = 0.f;
 
 	UPROPERTY(BlueprintAssignable)
+	FOnRevLimiterHit OnRevLimiterHit;
+
+	UPROPERTY(BlueprintAssignable)
 	FOnRevLimiterStateChanged OnRevLimiterStateChanged;
 
 private:
@@ -43,3 +46,7 @@ public:
 	virtual void Update(FAudioMotorSimInputContext& Input, FAudioMotorSimRuntimeContext& RuntimeInfo) override;
 	virtual void Reset() override;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AudioMotorSimTypes.h"
+#endif

@@ -4,24 +4,25 @@
 
 #include "Chaos/Adapters/CacheAdapter.h"
 #include "Chaos/CacheCollection.h"
+#include "Chaos/CacheEvents.h"
 #include "Chaos/ChaosCache.h"
-#include "Chaos/ChaosCachingPlugin.h"
 #include "ChaosSolversModule.h"
 #include "Components/BillboardComponent.h"
+#include "GeometryCollection/GeometryCollectionComponent.h"
+#include "Engine/Texture2D.h"
 #include "PBDRigidsSolver.h"
 #include "Features/IModularFeatures.h"
 #include "Algo/Find.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CacheManagerActor)
+
 #if WITH_EDITOR
 #include "Editor.h"
-#include "Editor/EditorEngine.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Styling/CoreStyle.h"
-#include "Styling/ISlateStyle.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Kismet2/ComponentEditorUtils.h"
-#include "GeometryCollection/GeometryCollectionComponent.h"
+#else
+#include "Engine/World.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "ChaosCacheManager"
@@ -39,6 +40,11 @@ void FObservedComponent::ResetRuntimeData(const EStartMode ManagerStartMode)
 	Cache            = nullptr;
 
 	TickRecord.Reset();
+}
+
+bool FObservedComponent::IsEnabled(ECacheMode CacheMode) const
+{
+	return (CacheMode == ECacheMode::Record) || bPlaybackEnabled;
 }
 
 void FObservedComponent::PostSerialize(const FArchive& Ar)
@@ -319,7 +325,13 @@ void AChaosCacheManager::BeginEvaluate()
 
 		// Reset timers and last cache
 		Observed.ResetRuntimeData(StartMode);
-		
+
+		// we need to create the adapters regardless of it being enabled for playback and we can bail if necessary after that 
+		if (!Observed.IsEnabled(CacheMode))
+		{
+			continue;
+		}
+
 		bool                    bRequiresRecord = false;
 		FComponentCacheAdapter* CurrAdapter     = ActiveAdapters[Index];
 		check(CurrAdapter);    // should definitely have added one above
@@ -596,7 +608,7 @@ void AChaosCacheManager::OnStartFrameChanged(Chaos::FReal InTime)
 				Observed.Cache = CacheCollection->FindCache(Observed.CacheName);
 			}
 
-			if (!Observed.Cache || !Observed.BestFitAdapter || Observed.Cache->GetDuration()==0.0)
+			if (!Observed.Cache || !Observed.BestFitAdapter || Observed.Cache->GetDuration()==0.0 || !Observed.IsEnabled(CacheMode))
 			{
 				continue;
 			}
@@ -617,8 +629,8 @@ void AChaosCacheManager::OnStartFrameChanged(Chaos::FReal InTime)
 void AChaosCacheManager::TriggerComponent(UPrimitiveComponent* InComponent)
 {
 	// #BGTODO Maybe not totally thread-safe, probably safer with an atomic or condition var rather than the bTriggered flag
-	FObservedComponent* Found = Algo::FindByPredicate(ObservedComponents, [InComponent](const FObservedComponent& Test) {
-		return Test.GetComponent() == InComponent;
+	FObservedComponent* Found = Algo::FindByPredicate(ObservedComponents, [this, InComponent](const FObservedComponent& Test) {
+		return Test.GetComponent() == InComponent && Test.IsEnabled(CacheMode);
 	});
 
 	if (Found && StartMode == EStartMode::Triggered)
@@ -629,8 +641,8 @@ void AChaosCacheManager::TriggerComponent(UPrimitiveComponent* InComponent)
 
 void AChaosCacheManager::TriggerComponentByCache(FName InCacheName)
 {
-	FObservedComponent* Found = Algo::FindByPredicate(ObservedComponents, [InCacheName](const FObservedComponent& Test) {
-		return Test.CacheName == InCacheName && Test.GetComponent();
+	FObservedComponent* Found = Algo::FindByPredicate(ObservedComponents, [this, InCacheName](const FObservedComponent& Test) {
+		return Test.CacheName == InCacheName && Test.GetComponent() && Test.IsEnabled(CacheMode);
 	});
 
 	if (Found && StartMode == EStartMode::Triggered)
@@ -643,7 +655,7 @@ void AChaosCacheManager::TriggerAll()
 {
 	for(FObservedComponent& Observed : ObservedComponents)
 	{
-		if (StartMode == EStartMode::Triggered && Observed.GetComponent())
+		if (StartMode == EStartMode::Triggered && Observed.GetComponent() && Observed.IsEnabled(CacheMode))
 		{
 			Observed.bTriggered = true;
 		}
@@ -673,6 +685,14 @@ FObservedComponent& AChaosCacheManager::AddNewObservedComponent(UPrimitiveCompon
 
 	NewEntry.CacheName = MakeUniqueObjectName(CacheCollection, UChaosCache::StaticClass(), CacheName);
 
+	// make sure we keep track of the various flag that may be changed by the cahe to function
+	NewEntry.bIsSimulating = InComponent->IsSimulatingPhysics();
+	NewEntry.bHasNotifyBreaks = false;
+	if (UGeometryCollectionComponent* GeomComponent = Cast<UGeometryCollectionComponent>(InComponent))
+	{
+		NewEntry.bHasNotifyBreaks = GeomComponent->bNotifyBreaks;
+	}
+
 	return NewEntry;
 }
 
@@ -701,7 +721,7 @@ void AChaosCacheManager::TickObservedComponents(const TArray<int32>& InIndices, 
 		FObservedComponent&            Observed = ObservedComponents[Index];
 		Chaos::FComponentCacheAdapter* Adapter  = ActiveAdapters[Index];
 
-		if(!Observed.Cache)
+		if(!Observed.Cache || !Observed.IsEnabled(CacheMode))
 		{
 			// Skip if no available cache - this can happen if a component was deleted while being observed - the other components
 			// can play fine, we just omit any that we cannot find.
@@ -734,11 +754,21 @@ void AChaosCacheManager::SetObservedComponentProperties(const ECacheMode& NewCac
 		{
 			if (NewCacheMode == ECacheMode::Record)
 			{
-				PrimComp->BodyInstance.bSimulatePhysics = ObservedComponent.bIsSimulating;	
+				PrimComp->BodyInstance.bSimulatePhysics = ObservedComponent.bIsSimulating;
+				if (UGeometryCollectionComponent* GeomComponent = Cast<UGeometryCollectionComponent>(PrimComp))
+				{
+					// in record mode we need to have notify break on on the proxy 
+					GeomComponent->SetNotifyBreaks(true);
+				}
 			}
 			else
 			{
 				PrimComp->BodyInstance.bSimulatePhysics = false;
+				if (UGeometryCollectionComponent* GeomComponent = Cast<UGeometryCollectionComponent>(PrimComp))
+				{
+					// in playback modes we can restore the state of the notification 
+					GeomComponent->SetNotifyBreaks(ObservedComponent.bHasNotifyBreaks);
+				}
 			}
 		}
 	}
@@ -752,3 +782,4 @@ AChaosCachePlayer::AChaosCachePlayer(const FObjectInitializer& ObjectInitializer
 }
 
 #undef LOCTEXT_NAMESPACE
+

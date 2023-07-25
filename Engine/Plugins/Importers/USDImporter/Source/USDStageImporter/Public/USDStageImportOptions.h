@@ -67,6 +67,13 @@ public:
 	bool bImportMaterials;
 
 	/**
+	 * If this is checked, only materials actively used by the stage and import settings will be parsed.
+	 * If this is unchecked, all materials present on the stage will be parsed.
+	 */
+	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category = "DataToImport", AdvancedDisplay, meta = (EditCondition = bImportMaterials))
+	bool bImportOnlyUsedMaterials;
+
+	/**
 	 * List of paths of prims to import (e.g. ["/Root/MyBox", "/Root/OtherPrim"]).
 	 * Importing a prim will import its entire subtree.
 	 * If this list contains the root prim path the entire stage will be imported (default value).
@@ -101,6 +108,17 @@ public:
 	/** Custom StageOptions to use for the stage */
 	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "USD options", meta = ( EditCondition = bOverrideStageOptions ) )
 	FUsdStageOptions StageOptions;
+
+	/**
+	 * When true the stage will be evaluated at ImportTimeCode for the import.
+	 * When false, the stage will be evaluated at the default (non-animated) timecode
+	 */
+	UPROPERTY( BlueprintReadWrite, config, EditAnywhere, Category = "USD options" )
+	bool bImportAtSpecificTimeCode;
+
+	/** TimeCode to evaluate the stage for import, in case bImportAtSpecificTimeCode is enabled */
+	UPROPERTY( BlueprintReadWrite, config, EditAnywhere, Category = "USD options", meta = ( EditCondition = bImportAtSpecificTimeCode ) )
+	float ImportTimeCode;
 
 
 	/** Groom group interpolation settings */
@@ -144,7 +162,8 @@ public:
 	 * If false, will cause us to use HierarchicalInstancedStaticMeshComponents to replicate the instancing behavior.
 	 * Point instancers inside other point instancer prototypes are *always* collapsed into the prototype's static mesh.
 	 */
-	UPROPERTY( BlueprintReadWrite, config, EditAnywhere, Category = "Processing" )
+	UE_DEPRECATED( 5.2, "This option is now controlled via the cvar 'USD.CollapseTopLevelPointInstancers'" )
+	UPROPERTY()
 	bool bCollapseTopLevelPointInstancers;
 
 	/** When true, if a prim has a "LOD" variant set with variants named "LOD0", "LOD1", etc. where each contains a UsdGeomMesh, the importer will attempt to parse the meshes as separate LODs of a single UStaticMesh. When false, only the selected variant will be parsed as LOD0 of the UStaticMesh.  */

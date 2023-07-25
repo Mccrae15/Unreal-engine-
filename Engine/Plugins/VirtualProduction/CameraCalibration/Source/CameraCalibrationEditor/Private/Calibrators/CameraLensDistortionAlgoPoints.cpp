@@ -16,6 +16,7 @@
 #include "Models/SphericalLensModel.h"
 #include "UI/SFilterableActorPicker.h"
 #include "UI/CameraCalibrationWidgetHelpers.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Views/SListView.h"
@@ -121,6 +122,11 @@ void UCameraLensDistortionAlgoPoints::Initialize(ULensDistortionTool* InLensDist
 void UCameraLensDistortionAlgoPoints::Shutdown()
 {
 	LensDistortionTool.Reset();
+}
+
+bool UCameraLensDistortionAlgoPoints::SupportsModel(const TSubclassOf<ULensModel>& LensModel) const
+{
+	return (LensModel == USphericalLensModel::StaticClass());
 }
 
 void UCameraLensDistortionAlgoPoints::Tick(float DeltaTime)
@@ -253,7 +259,7 @@ bool UCameraLensDistortionAlgoPoints::OnViewportClicked(const FGeometry& MyGeome
 	}
 
 	// Get the mouse click 2d position
-	if (!StepsController->CalculateNormalizedMouseClickPosition(MyGeometry, MouseEvent, LastCalibratorPoint.Point2d))
+	if (!StepsController->CalculateNormalizedMouseClickPosition(MyGeometry, MouseEvent, LastCalibratorPoint.Point2d, ESimulcamViewportPortion::CameraFeed))
 	{
 		return true;
 	}
@@ -382,7 +388,7 @@ bool UCameraLensDistortionAlgoPoints::GetLensDistortion(
 		return false;
 	}
 
-	const FIntPoint ImageSize = StepsController->GetCompRenderTargetSize();
+	const FIntPoint ImageSize = StepsController->GetCompRenderResolution();
 
 	// Gather 3D points and 2D points from each group of rows
 	std::vector<std::vector<cv::Point3f>> Samples3d;

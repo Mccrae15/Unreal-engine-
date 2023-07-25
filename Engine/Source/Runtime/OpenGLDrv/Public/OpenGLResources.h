@@ -6,6 +6,8 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Not included directly
+
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/UnrealMemory.h"
@@ -355,22 +357,13 @@ typedef TOpenGLShaderProxy<FRHIComputeShader, FOpenGLComputeShader> FOpenGLCompu
 
 
 template <typename T>
-struct TIsGLProxyObject
-{
-	enum { Value = false };
-};
+constexpr bool TIsGLProxyObject_V = false;
 
 template<typename TRHIType, typename TOGLResourceType>
-struct TIsGLProxyObject<TOpenGLResourceProxy<TRHIType, TOGLResourceType>>
-{
-	enum { Value = true };
-};
+constexpr bool TIsGLProxyObject_V<TOpenGLResourceProxy<TRHIType, TOGLResourceType>> = true;
 
 template<typename TRHIType, typename TOGLResourceType>
-struct TIsGLProxyObject<TOpenGLShaderProxy<TRHIType, TOGLResourceType>>
-{
-	enum { Value = true };
-};
+constexpr bool TIsGLProxyObject_V<TOpenGLShaderProxy<TRHIType, TOGLResourceType>> = true;
 
 typedef void (*BufferBindFunction)( GLenum Type, GLuint Buffer );
 
@@ -949,9 +942,6 @@ public:
 	/** Unique ID for state shadowing purposes. */
 	uint32 UniqueID;
 
-	/** Resource table containing RHI references. */
-	TArray<TRefCountPtr<FRHIResource> > ResourceTable;
-
 	/** Emulated uniform data for ES2. */
 	FOpenGLEUniformBufferDataRef EmulatedBufferData;
 
@@ -974,6 +964,12 @@ public:
 
 	FOpenGLAssertRHIThreadFence AccessFence;
 	FOpenGLAssertRHIThreadFence CopyFence;
+
+	// Provides public non-const access to ResourceTable.
+	// @todo refactor uniform buffers to perform updates as a member function, so this isn't necessary.
+	TArray<TRefCountPtr<FRHIResource>>& GetResourceTable() { return ResourceTable; }
+
+	void SetLayoutTable(const void* Contents, EUniformBufferValidation Validation);
 };
 
 typedef TOpenGLBuffer<FOpenGLBasePixelBuffer, CachedBindPixelUnpackBuffer> FOpenGLPixelBuffer;
@@ -1144,19 +1140,22 @@ public:
 	int32 MaxTextureStageUsed();
 	bool RequiresDriverInstantiation();
 
-	FOpenGLVertexShader* GetVertexShader()
+	FOpenGLVertexShaderProxy* GetVertexShader()
 	{
 		check(IsValidRef(VertexShaderProxy));
-		return VertexShaderProxy->GetGLResourceObject();
+		return VertexShaderProxy;
 	}
 
-	FOpenGLPixelShader* GetPixelShader()
+	FOpenGLPixelShaderProxy* GetPixelShader()
 	{
 		check(IsValidRef(PixelShaderProxy));
-		return PixelShaderProxy->GetGLResourceObject();
+		return PixelShaderProxy;
 	}
 
-	FOpenGLGeometryShader* GetGeometryShader()	{ return GeometryShaderProxy ? GeometryShaderProxy->GetGLResourceObject() : nullptr;}
+	FOpenGLGeometryShaderProxy* GetGeometryShader()
+	{
+		return GeometryShaderProxy;
+	}
 
 	virtual ~FOpenGLBoundShaderState();
 };
@@ -1374,11 +1373,6 @@ public:
 	void CloneViaCopyImage(FOpenGLTexture* Src, uint32 InNumMips, int32 SrcOffset, int32 DstOffset);
 
 	/**
-	 * Clone texture from a source going via PBOs
-	 */
-	void CloneViaPBO(FOpenGLTexture* Src, uint32 InNumMips, int32 SrcOffset, int32 DstOffset);
-
-	/**
 	 * Resolved the specified face for a read Lock, for non-renderable, CPU readable surfaces this eliminates the readback inside Lock itself.
 	 */
 	void Resolve(uint32 MipIndex, uint32 ArrayIndex);
@@ -1470,12 +1464,12 @@ struct TIsGLResourceWithFence
 };
 
 template<typename T>
-static typename TEnableIf<!TIsGLResourceWithFence<T>::Value>::Type CheckRHITFence(T* Resource) {}
-
-template<typename T>
-static typename TEnableIf<TIsGLResourceWithFence<T>::Value>::Type CheckRHITFence(T* Resource)
+static void CheckRHITFence(T* Resource)
 {
-	Resource->CreationFence.WaitFenceRenderThreadOnly();
+	if constexpr (TIsGLResourceWithFence<T>::Value)
+	{
+		Resource->CreationFence.WaitFenceRenderThreadOnly();
+	}
 }
 
 /** Given a pointer to a RHI texture that was created by the OpenGL RHI, returns a pointer to the FOpenGLTexture it encapsulates. */

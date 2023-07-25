@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Internationalization/Text.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/LazySingleton.h"
 
@@ -91,7 +92,7 @@ private:
 private:
 	FCriticalSection DelgateCS;
 	FCriticalSection MessageCS;
-	FCoreDelegates::FGetOnScreenMessagesDelegate ProxyDelegate;
+	TMulticastDelegate<void(FCoreDelegates::FSeverityMessageMap&)> ProxyDelegate;
 	FDelegateHandle BaseDelegateHandle;
 	FCoreDelegates::FSeverityMessageMap Messages;
 	FCoreDelegates::FSeverityMessageMap MessagesTmp;

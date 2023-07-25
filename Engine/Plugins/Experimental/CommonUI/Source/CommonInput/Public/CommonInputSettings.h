@@ -17,6 +17,8 @@
 #include "Engine/PlatformSettings.h"
 #include "CommonInputSettings.generated.h"
 
+class UInputAction;
+
 UCLASS(config = Game, defaultconfig)
 class COMMONINPUT_API UCommonInputSettings : public UDeveloperSettings
 {
@@ -38,6 +40,9 @@ public:
 	FDataTableRowHandle GetDefaultClickAction() const;
 	FDataTableRowHandle GetDefaultBackAction() const;
 
+	UInputAction* GetEnhancedInputClickAction() const;
+	UInputAction* GetEnhancedInputBackAction() const;
+
 	bool GetEnableInputMethodThrashingProtection() const { return bEnableInputMethodThrashingProtection; }
 
 	int32 GetInputMethodThrashingLimit() const { return InputMethodThrashingLimit; }
@@ -50,7 +55,15 @@ public:
 
 	bool GetEnableDefaultInputConfig() const { return bEnableDefaultInputConfig; }
 
+	bool GetEnableEnhancedInputSupport() const { return bEnableEnhancedInputSupport; }
+
 	TObjectPtr<UCommonInputActionDomainTable> GetActionDomainTable() const { return ActionDomainTablePtr; }
+
+public:
+
+	/** Static version of enhanced input support check, exists to hide based on edit condition */
+	UFUNCTION()
+	static bool IsEnhancedInputSupportEnabled(); 
 
 private:
 	virtual void PostInitProperties() override;
@@ -86,6 +99,10 @@ private:
 	*/
 	UPROPERTY(config, EditAnywhere, Category = "Input")
 	bool bEnableDefaultInputConfig = true;
+
+	/** Controls if Enhanced Input Support plugin-wide. Requires restart due to caching. */
+	UPROPERTY(config, EditAnywhere, Category = "Input", meta = (ConfigRestartRequired = true))
+	bool bEnableEnhancedInputSupport = false;
 
 	/** Create a derived asset from UCommonInputActionDomainTable to store ordered ActionDomain data for your game */
 	UPROPERTY(config, EditAnywhere, Category = "Action Domain")

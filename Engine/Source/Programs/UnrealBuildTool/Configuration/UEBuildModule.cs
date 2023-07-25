@@ -30,6 +30,11 @@ namespace UnrealBuildTool
 		public readonly DirectoryReference IntermediateDirectory;
 
 		/// <summary>
+		/// The directory for this module's generated files that are architecture independent
+		/// </summary>
+		public readonly DirectoryReference IntermediateDirectoryNoArch;
+
+		/// <summary>
 		/// The name that uniquely identifies the module.
 		/// </summary>
 		public string Name
@@ -87,6 +92,11 @@ namespace UnrealBuildTool
 		/// Nested public include paths which used to be added automatically, but are now only added for modules with bNestedPublicIncludePaths set.
 		/// </summary>
 		public readonly HashSet<DirectoryReference> LegacyPublicIncludePaths = new HashSet<DirectoryReference>();
+
+		/// <summary>
+		/// Parent include paths which used to be added automatically, but are now only added for modules with bLegacyParentIncludePaths set.
+		/// </summary>
+		public readonly HashSet<DirectoryReference> LegacyParentIncludePaths = new HashSet<DirectoryReference>();
 
 		/// <summary>
 		/// Set of all private include paths
@@ -174,6 +184,11 @@ namespace UnrealBuildTool
 		public readonly Dictionary<string, string> AliasRestrictedFolders;
 
 		/// <summary>
+		/// Per-architecture lists of dependencies for linking to ignore (useful when building for multiple architectures, and a lib only is needed for one architecture), it's up to the Toolchain to use this
+		/// </summary>
+		public Dictionary<string, List<UnrealArch>> DependenciesToSkipPerArchitecture;
+
+		/// <summary>
 		/// The Verse source code directory associated with this module if any
 		/// </summary>
 		public virtual DirectoryReference? VerseDirectory
@@ -199,11 +214,13 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Rules">Rules for this module</param>
 		/// <param name="IntermediateDirectory">Intermediate directory for this module</param>
+		/// <param name="IntermediateDirectoryNoArch">Intermediate directory for this module for files that are architecture independent</param>
 		/// <param name="Logger">Logger for output</param>
-		public UEBuildModule(ModuleRules Rules, DirectoryReference IntermediateDirectory, ILogger Logger)
+		public UEBuildModule(ModuleRules Rules, DirectoryReference IntermediateDirectory, DirectoryReference IntermediateDirectoryNoArch, ILogger Logger)
 		{
 			this.Rules = Rules;
 			this.IntermediateDirectory = IntermediateDirectory;
+			this.IntermediateDirectoryNoArch = IntermediateDirectoryNoArch;
 
 			ModuleApiDefine = Name.ToUpperInvariant() + "_API";
 
@@ -254,7 +271,7 @@ namespace UnrealBuildTool
 					else
 					{
 						// Framework on disk
-						Framework = new UEBuildFramework(FrameworkRules.Name, null, DirectoryReference.Combine(ModuleDirectory, FrameworkRules.Path), FrameworkRules.CopyBundledAssets, FrameworkRules.bCopyFramework);
+						Framework = new UEBuildFramework(FrameworkRules.Name, DirectoryReference.Combine(ModuleDirectory, FrameworkRules.Path), FrameworkRules.CopyBundledAssets, FrameworkRules.bCopyFramework);
 					}
 					PublicAdditionalFrameworks.Add(Framework);
 				}
@@ -274,6 +291,8 @@ namespace UnrealBuildTool
 			RestrictedFoldersAllowList = new HashSet<DirectoryReference>(Rules.AllowedRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
 
 			AliasRestrictedFolders = new Dictionary<string, string>(Rules.AliasRestrictedFolders);
+
+			DependenciesToSkipPerArchitecture = Rules.DependenciesToSkipPerArchitecture;
 
 			// get the module directories from the module
 			ModuleDirectories = Rules.GetAllModuleDirectories();
@@ -550,6 +569,36 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Add definitions from source to target. This code also reformats defines to match strict rules which does not allow space before and after '='
+		/// </summary>
+		protected void AddDefinitions(List<string> Target, HashSet<string> Source)
+		{
+			StringBuilder Builder = new();
+			foreach (string Def in Source)
+			{
+				string FixedDef = Def;
+				int IndexOfAssign = Def.IndexOf("=");
+				if (IndexOfAssign != -1)
+				{
+					ReadOnlySpan<char> DefSpan = Def.AsSpan();
+					ReadOnlySpan<char> Name = DefSpan.Slice(0, IndexOfAssign);
+					ReadOnlySpan<char> NameTrim = Name.Trim();
+					ReadOnlySpan<char> Value = DefSpan.Slice(IndexOfAssign + 1);
+					ReadOnlySpan<char> ValueTrim = Value.Trim();
+					if (Name.Length != NameTrim.Length || Value.Length != ValueTrim.Length)
+					{
+						Builder.Clear();
+						Builder.Append(NameTrim);
+						Builder.Append('=');
+						Builder.Append(ValueTrim);
+						FixedDef = Builder.ToString();
+					}
+				}
+				Target.Add(FixedDef);
+			}
+		}
+
+		/// <summary>
 		/// Sets up the environment for compiling any module that includes the public interface of this module.
 		/// </summary>
 		public virtual void AddModuleToCompileEnvironment(
@@ -561,26 +610,37 @@ namespace UnrealBuildTool
 			List<string> Definitions,
 			List<UEBuildFramework> AdditionalFrameworks,
 			List<FileItem> AdditionalPrerequisites,
-			bool bLegacyPublicIncludePaths
+			bool bLegacyPublicIncludePaths,
+			bool bLegacyParentIncludePaths
 			)
 		{
-			// Add the module's parent directory to the include path, so we can root #includes from generated source files to it
-			IncludePaths.Add(ModuleDirectory.ParentDirectory!);
-
-			// Add this module's public include paths and definitions.
+			// Add this module's public include paths and definitions
 			AddIncludePaths(IncludePaths, PublicIncludePaths);
+
+			// Add the module's parent directory to the include path, so we can root #includes from generated source files to it. Not recommended (Use BuildSetting.V3 or later)
+			if (bLegacyParentIncludePaths)
+			{
+				AddIncludePaths(IncludePaths, LegacyParentIncludePaths);
+				IncludePaths.Add(ModuleDirectory.ParentDirectory!);
+			}
+
+			// Add this module's legacy public include paths. Not recommended (Use BuildSetting.V2 or later)
 			if (bLegacyPublicIncludePaths)
 			{
 				AddIncludePaths(IncludePaths, LegacyPublicIncludePaths);
 			}
-			SystemIncludePaths.UnionWith(PublicSystemIncludePaths);
-			Definitions.AddRange(PublicDefinitions);
 
 			// Add this module's internal include paths, only if the scope contains the same as the SourceModule's scope
 			if (SourceModule != null && Rules.Context.Scope.Contains(SourceModule.Rules.Context.Scope))
 			{
 				AddIncludePaths(IncludePaths, InternalIncludePaths);
 			}
+
+			// Add this module's public system include paths
+			SystemIncludePaths.UnionWith(PublicSystemIncludePaths);
+
+			// Add this module's public definitions
+			AddDefinitions(Definitions, PublicDefinitions);
 
 			// Add the import or export declaration for the module
 			if (Rules.Type == ModuleRules.ModuleType.CPlusPlus)
@@ -634,7 +694,8 @@ namespace UnrealBuildTool
 			List<string> Definitions,
 			List<UEBuildFramework> AdditionalFrameworks,
 			List<FileItem> AdditionalPrerequisites,
-			bool bWithLegacyPublicIncludePaths
+			bool bWithLegacyPublicIncludePaths,
+			bool bWithLegacyParentIncludePaths
 			)
 		{
 			if (!Rules.bTreatAsEngineModule)
@@ -653,7 +714,7 @@ namespace UnrealBuildTool
 			// Now set up the compile environment for the modules in the original order that we encountered them
 			foreach (UEBuildModule Module in ModuleToIncludePathsOnlyFlag.Keys)
 			{
-				Module.AddModuleToCompileEnvironment(this, Binary, IncludePaths, SystemIncludePaths, ModuleInterfacePaths, Definitions, AdditionalFrameworks, AdditionalPrerequisites, bWithLegacyPublicIncludePaths);
+				Module.AddModuleToCompileEnvironment(this, Binary, IncludePaths, SystemIncludePaths, ModuleInterfacePaths, Definitions, AdditionalFrameworks, AdditionalPrerequisites, bWithLegacyPublicIncludePaths, bWithLegacyParentIncludePaths);
 			}
 		}
 
@@ -764,6 +825,7 @@ namespace UnrealBuildTool
 			List<UEBuildBundleResource> AdditionalBundleResources,
 			List<string> DelayLoadDLLs,
 			List<UEBuildBinary> BinaryDependencies,
+			Dictionary<string, HashSet<UnrealArch>> DependenciesToSkip,
 			HashSet<UEBuildModule> VisitedModules,
 			DirectoryReference ExeDir
 			)
@@ -798,7 +860,7 @@ namespace UnrealBuildTool
 						if (bIsExternalModule || bIsInStaticLibrary)
 						{
 							DependencyModule.SetupPublicLinkEnvironment(SourceBinary, Libraries, SystemLibraryPaths, SystemLibraries, RuntimeLibraryPaths, Frameworks, WeakFrameworks,
-								AdditionalFrameworks, AdditionalBundleResources, DelayLoadDLLs, BinaryDependencies, VisitedModules, ExeDir);
+								AdditionalFrameworks, AdditionalBundleResources, DelayLoadDLLs, BinaryDependencies, DependenciesToSkip, VisitedModules, ExeDir);
 						}
 					}
 				}
@@ -813,6 +875,16 @@ namespace UnrealBuildTool
 				AdditionalBundleResources.AddRange(PublicAdditionalBundleResources);
 				AdditionalFrameworks.AddRange(PublicAdditionalFrameworks);
 				DelayLoadDLLs.AddRange(PublicDelayLoadDLLs);
+
+				// merge in to the outgoing dictionary
+				foreach (KeyValuePair<string, List<UnrealArch>> Pair in DependenciesToSkipPerArchitecture)
+				{
+					if (!DependenciesToSkip.ContainsKey(Pair.Key))
+					{
+						DependenciesToSkip[Pair.Key] = new HashSet<UnrealArch>();
+					}
+					DependenciesToSkip[Pair.Key] = DependenciesToSkip[Pair.Key].Union(Pair.Value).ToHashSet();
+				}
 			}
 		}
 
@@ -832,7 +904,7 @@ namespace UnrealBuildTool
 
 			// Allow the module's public dependencies to add library paths and additional libraries to the link environment.
 			SetupPublicLinkEnvironment(SourceBinary, LinkEnvironment.Libraries, LinkEnvironment.SystemLibraryPaths, LinkEnvironment.SystemLibraries, LinkEnvironment.RuntimeLibraryPaths, LinkEnvironment.Frameworks, LinkEnvironment.WeakFrameworks,
-				LinkEnvironment.AdditionalFrameworks, LinkEnvironment.AdditionalBundleResources, LinkEnvironment.DelayLoadDLLs, BinaryDependencies, VisitedModules, ExeDir);
+				LinkEnvironment.AdditionalFrameworks, LinkEnvironment.AdditionalBundleResources, LinkEnvironment.DelayLoadDLLs, BinaryDependencies, LinkEnvironment.DependenciesToSkipPerArchitecture, VisitedModules, ExeDir);
 
 			// Also allow the module's public and private dependencies to modify the link environment.
 			List<UEBuildModule> AllDependencyModules = new List<UEBuildModule>();
@@ -842,7 +914,7 @@ namespace UnrealBuildTool
 			foreach (UEBuildModule DependencyModule in AllDependencyModules)
 			{
 				DependencyModule.SetupPublicLinkEnvironment(SourceBinary, LinkEnvironment.Libraries, LinkEnvironment.SystemLibraryPaths, LinkEnvironment.SystemLibraries, LinkEnvironment.RuntimeLibraryPaths, LinkEnvironment.Frameworks, LinkEnvironment.WeakFrameworks,
-					LinkEnvironment.AdditionalFrameworks, LinkEnvironment.AdditionalBundleResources, LinkEnvironment.DelayLoadDLLs, BinaryDependencies, VisitedModules, ExeDir);
+					LinkEnvironment.AdditionalFrameworks, LinkEnvironment.AdditionalBundleResources, LinkEnvironment.DelayLoadDLLs, BinaryDependencies, LinkEnvironment.DependenciesToSkipPerArchitecture, VisitedModules, ExeDir);
 			}
 
 			// Add all the additional properties

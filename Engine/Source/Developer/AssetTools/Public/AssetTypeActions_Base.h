@@ -11,6 +11,7 @@
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
 #include "AssetToolsModule.h"
+#include "AssetTypeActivationOpenedMethod.h"
 #include "Toolkits/SimpleAssetEditor.h"
 #include "AssetRegistry/ARFilter.h"
 
@@ -33,6 +34,14 @@ public:
 	virtual void OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>() ) override
 	{
 		FSimpleAssetEditor::CreateEditor(EToolkitMode::Standalone, EditWithinLevelEditor, InObjects);
+	}
+
+	virtual void OpenAssetEditor(const TArray<UObject*>& InObjects, const EAssetTypeActivationOpenedMethod OpenedMethod, TSharedPtr<IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>()) override
+	{
+		if (OpenedMethod == EAssetTypeActivationOpenedMethod::Edit)
+		{
+			OpenAssetEditor(InObjects, EditWithinLevelEditor);
+		}
 	}
 
 	virtual bool AssetsActivatedOverride(const TArray<UObject*>& InObjects, EAssetTypeActivationMethod::Type ActivationType) override
@@ -87,8 +96,7 @@ public:
 
 	virtual void PerformAssetDiff(UObject* OldAsset, UObject* NewAsset, const struct FRevisionInfo& OldRevision, const struct FRevisionInfo& NewRevision) const override
 	{
-		check(OldAsset != nullptr);
-		check(NewAsset != nullptr);
+		check(OldAsset != nullptr || NewAsset != nullptr);
 
 		// Dump assets to temp text files
 		FString OldTextFilename = DumpAssetToTempFile(OldAsset);
@@ -152,14 +160,9 @@ public:
 		return FText::GetEmpty();
 	}
 
-	virtual void SetSupported(bool bInSupported) final
+	virtual bool SupportsOpenedMethod(const EAssetTypeActivationOpenedMethod OpenedMethod) const override
 	{
-		bIsSupported = bInSupported;
-	}
-
-	virtual bool IsSupported() const final
-	{
-		return bIsSupported;
+		return OpenedMethod == EAssetTypeActivationOpenedMethod::Edit;
 	}
 
 	virtual FName GetFilterName() const override
@@ -214,6 +217,20 @@ protected:
 
 		return TypedObjects;
 	}
+	
+	template <typename T>
+    static TArray<TSoftObjectPtr<T>> GetTypedSoftObjectPtrs(const TArray<UObject*>& InObjects)
+    {
+    	check(InObjects.Num() > 0);
+
+    	TArray<TSoftObjectPtr<T>> TypedObjects;
+    	for (auto ObjIt = InObjects.CreateConstIterator(); ObjIt; ++ObjIt)
+    	{
+    		TypedObjects.Add( CastChecked<T>(*ObjIt) );
+    	}
+
+    	return TypedObjects;
+    }
 
 	template <typename T>
 	static TArray<T*> GetTypedObjectPtrs(const TArray<UObject*>& InObjects)
@@ -228,7 +245,4 @@ protected:
 
 		return TypedObjects;
 	}
-
-private:
-	bool bIsSupported = true;
 };

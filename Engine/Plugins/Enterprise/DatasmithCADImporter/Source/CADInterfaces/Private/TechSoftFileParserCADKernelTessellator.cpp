@@ -28,8 +28,6 @@ namespace CADLibrary
 FTechSoftFileParserCADKernelTessellator::FTechSoftFileParserCADKernelTessellator(FCADFileData& InCADData, const FString& EnginePluginsPath)
 	: FTechSoftFileParser(InCADData, EnginePluginsPath)
 	, LastHostIdUsed(1 << 30)
-	, GeometricTolerance(FImportParameters::GStitchingTolerance * 10) // cm to mm
-	, ForceFactor(FImportParameters::GStitchingForceFactor)
 {
 }
 
@@ -73,6 +71,15 @@ void FTechSoftFileParserCADKernelTessellator::SewAndGenerateBodyMeshes()
 	{
 		SewAndMesh(Representations.Value);
 	}
+
+	// Delete unused ArchiveBody
+	for (FArchiveBody& ArchiveBody : SceneGraph.Bodies)
+	{
+		if (ArchiveBody.MeshActorUId == 0 && !ArchiveBody.IsDeleted())
+		{
+			ArchiveBody.Delete();
+		}
+	}
 }
 
 void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentationItem*>& Representations)
@@ -81,8 +88,7 @@ void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentat
 
 	using namespace UE::CADKernel;
 
-	const bool bTryToImproveSew = FImportParameters::bGStitchingForceSew;
-	const bool bRemoveThinSurface = FImportParameters::bGStitchingRemoveThinFaces;
+	const double GeometricTolerance = FImportParameters::GStitchingTolerance * 10; // cm to mm
 
 	FSession CADKernelSession(GeometricTolerance);
 	CADKernelSession.SetFirstNewHostId(LastHostIdUsed);
@@ -103,15 +109,17 @@ void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentat
 	}
 
 	// Sew if needed
-	FTopomaker Topomaker(CADKernelSession, GeometricTolerance, ForceFactor);
-	Topomaker.Sew(bTryToImproveSew, bRemoveThinSurface);
+	UE::CADKernel::FTopomakerOptions TopomakerOptions((UE::CADKernel::ESewOption) SewOption::GetFromImportParameters(), GeometricTolerance, FImportParameters::GStitchingForceFactor);
+
+	FTopomaker Topomaker(CADKernelSession, TopomakerOptions);
+	Topomaker.Sew();
 	Topomaker.SplitIntoConnectedShells();
 	Topomaker.OrientShells();
 
 	// The Sew + SplitIntoConnectedShells change the bodies: some are deleted some are create
 	// but at the end the count of body is always <= than the initial count
 	// We need to found the unchanged bodies to link them to their FArchiveBody
-	// The new bodies will be linked to FArchiveBody of deleted bodies but the metadata of these FArchiveBody havbe to be cleaned
+	// The new bodies will be linked to FArchiveBody of deleted bodies but the metadata of these FArchiveBody have to be cleaned
 
 	int32 BodyCount = CADKernelModel.GetBodies().Num();
 
@@ -195,15 +203,6 @@ void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentat
 			ArchiveBody.Delete();
 		}
 	}
-
-	// Delete unused ArchiveBody
-	for (FArchiveBody& ArchiveBody : SceneGraph.Bodies)
-	{
-		if (ArchiveBody.MeshActorUId == 0)
-		{
-			ArchiveBody.Delete();
-		}
-	}
 }
 
 void FTechSoftFileParserCADKernelTessellator::GenerateBodyMesh(A3DRiRepresentationItem* Representation, FArchiveBody& ArchiveBody)
@@ -211,6 +210,7 @@ void FTechSoftFileParserCADKernelTessellator::GenerateBodyMesh(A3DRiRepresentati
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTechSoftFileParserCADKernelTessellator::GenerateBodyMesh);
 	using namespace UE::CADKernel;
 
+	const double GeometricTolerance = FImportParameters::GStitchingTolerance * 10; // cm to mm
 	FSession CADKernelSession(GeometricTolerance);
 	CADKernelSession.SetFirstNewHostId(LastHostIdUsed);
 	FModel& CADKernelModel = CADKernelSession.GetModel();
@@ -226,11 +226,10 @@ void FTechSoftFileParserCADKernelTessellator::GenerateBodyMesh(A3DRiRepresentati
 
 	if (CADFileData.GetImportParameters().GetStitchingTechnique() == StitchingHeal)
 	{
-		const bool bTryToImproveSew = FImportParameters::bGStitchingForceSew;
-		const bool bRemoveThinSurface = FImportParameters::bGStitchingRemoveThinFaces;
+		UE::CADKernel::FTopomakerOptions TopomakerOptions((UE::CADKernel::ESewOption)SewOption::GetFromImportParameters(), GeometricTolerance, FImportParameters::GStitchingForceFactor);
 
-		FTopomaker Topomaker(CADKernelSession, GeometricTolerance, ForceFactor);
-		Topomaker.Sew(bTryToImproveSew, bRemoveThinSurface);
+		FTopomaker Topomaker(CADKernelSession, TopomakerOptions);
+		Topomaker.Sew();
 		Topomaker.OrientShells();
 	}
 
@@ -339,12 +338,12 @@ A3DStatus FTechSoftFileParserCADKernelTessellator::AdaptBRepModel()
 	A3DStatus Ret = TechSoftInterface::AdaptBRepInModelFile(ModelFile.Get(), *CopyAndAdaptBrepModelData, ErrorCount, &Errors);
 	if ((Ret == A3D_SUCCESS || Ret == A3D_TOOLS_CONTINUE_ON_ERROR) && ErrorCount > 0)
 	{
-		// Add warning about error during the adaptation
-		CADFileData.AddWarningMessages(FString::Printf(TEXT("File %s had %d error during BRep adaptation step."), *CADFileData.GetCADFileDescription().GetFileName(), ErrorCount));
+		// Add message about non-critical errors during the adaptation
+		CADFileData.LogMessage(FString::Printf(TEXT("File %s had %d non-critical error(s) during BRep adaptation step."), *CADFileData.GetCADFileDescription().GetFileName(), ErrorCount));
 	}
 	else if (Ret != A3D_SUCCESS)
 	{
-		CADFileData.AddWarningMessages(FString::Printf(TEXT("File %s failed during BRep adaptation step."), *CADFileData.GetCADFileDescription().GetFileName(), ErrorCount));
+		CADFileData.LogWarning(FString::Printf(TEXT("File %s failed during BRep adaptation step."), *CADFileData.GetCADFileDescription().GetFileName(), ErrorCount));
 		return A3D_ERROR;
 	}
 	return A3D_SUCCESS;

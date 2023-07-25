@@ -20,6 +20,7 @@
 #include "PropertyNode.h"
 #include "PropertyPath.h"
 #include "PropertyRowGenerator.h"
+#include "StringPrefixTree.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Views/STableRow.h"
@@ -84,6 +85,8 @@ public:
 	 * IDetailsView interface 
 	 */
 	virtual TArray< FPropertyPath > GetPropertiesInOrderDisplayed() const override;
+	virtual TArray<TPair<int32, FPropertyPath>> GetPropertyRowNumbers() const override;
+	virtual int32 CountRows() const override;
 	virtual void HighlightProperty(const FPropertyPath& Property) override;
 	virtual void ShowAllAdvancedProperties() override;
 	virtual void SetOnDisplayedPropertiesChanged(FOnDisplayedPropertiesChanged InOnDisplayedPropertiesChangedDelegate) override;
@@ -121,6 +124,8 @@ public:
 	{
 		CustomValidatePropertyNodesFunction = MoveTemp(InCustomValidatePropertyNodesFunction);
 	}
+	virtual void SetRightColumnMinWidth(float InMinWidth) override;
+	
 	/** IDetailsViewPrivate interface */
 	virtual void RerunCurrentFilter() override;
 	void SetNodeExpansionState(TSharedRef<FDetailTreeNode> InTreeNode, bool bExpand, bool bRecursive) override;
@@ -352,6 +357,9 @@ protected:
 	const FDetailsViewConfig* GetConstViewConfig() const;
 	void SaveViewConfig();
 
+	/** Clear the keyboard focus if it's inside the given widget. */
+	void ClearKeyboardFocusIfWithin(const TSharedRef<SWidget>& Widget) const;
+
 protected:
 	/** The user defined args for the details view */
 	FDetailsViewArgs DetailsViewArgs;
@@ -371,8 +379,6 @@ protected:
 	TArray< TSharedPtr<FDetailLayoutBuilderImpl> > DetailLayoutsPendingDelete;
 	/** Map of nodes that are requesting an automatic expansion/collapse due to being filtered */
 	TMap< TWeakPtr<FDetailTreeNode>, bool > FilteredNodesRequestingExpansionState;
-	/** Current set of expanded detail nodes (by path) that should be saved when the details panel closes */
-	TSet<FString> ExpandedDetailNodes;
 	/** Tree view */
 	TSharedPtr<SDetailTree> DetailTree;
 	/** Root tree nodes visible in the tree */
@@ -391,15 +397,8 @@ protected:
 	mutable FOnFinishedChangingProperties OnFinishedChangingPropertiesDelegate;
 	/** Container for passing around column size data to rows in the tree (each row has a splitter which can affect the column size)*/
 	FDetailColumnSizeData ColumnSizeData;
-	/** True if there is an active filter (text in the filter box) */
-	UE_DEPRECATED(4.26, "Use HasActiveSearch function instead.")
-	bool bHasActiveFilter;
-	/** True if this property view is currently locked (I.E The objects being observed are not changed automatically due to user selection)*/
-	bool bIsLocked;
 	/** The property node that the color picker is currently editing. */
 	TWeakPtr<FPropertyNode> ColorPropertyNode;
-	/** Whether or not this instance of the details view opened a color picker and it is not closed yet */
-	bool bHasOpenColorPicker;
 	/** Settings for this view */
 	TSharedPtr<IPropertyUtilities> PropertyUtilities;
 	/** Gets internal utilities for generating property layouts. */
@@ -425,14 +424,13 @@ protected:
 	/** Timer for that current node's widget animation duration. */
 	FTimerHandle AnimateNodeTimer;
 
-	TSet<FString> PreSearchExpandedItems;
-	TSet<FString> PreSearchExpandedCategories;
+	/** Current set of expanded detail nodes (by path) that should be saved when the details panel closes */
+	FStringPrefixTree ExpandedDetailNodes;
+	FStringPrefixTree PreSearchExpandedItems;
+	FStringPrefixTree PreSearchExpandedCategories;
 
 	/** Executed when the tree is refreshed */
 	FOnDisplayedPropertiesChanged OnDisplayedPropertiesChangedDelegate;
-
-	/** True if we want to skip generation of custom layouts for displayed object */
-	bool bDisableCustomDetailLayouts;
 
 	int32 NumVisibleTopLevelObjectNodes;
 
@@ -442,14 +440,25 @@ protected:
 
 	/** Delegate for overriding the show modified filter */
 	FSimpleDelegate CustomFilterDelegate;
+	FText CustomFilterLabel;
+
+	/** True if this property view is currently locked (I.E The objects being observed are not changed automatically due to user selection)*/
+	bool bIsLocked : 1;
+
+	/** Whether or not this instance of the details view opened a color picker and it is not closed yet */
+	bool bHasOpenColorPicker : 1;
+
+	/** True if we want to skip generation of custom layouts for displayed object */
+	bool bDisableCustomDetailLayouts : 1;
 
 	/** When overriding show modified, you can't use the filter state to determine what is overridden anymore. Use this variable instead. */
-	bool bCustomFilterActive;
+	bool bCustomFilterActive : 1;
 
 	/** Timer has already been set to be run next tick */
-	bool bPendingCleanupTimerSet;
+	bool bPendingCleanupTimerSet : 1;
 
-	FText CustomFilterLabel;
+	/** Are we currently running deferred actions? */
+	bool bRunningDeferredActions : 1;
 
 	mutable TSharedPtr<FEditConditionParser> EditConditionParser;
 	

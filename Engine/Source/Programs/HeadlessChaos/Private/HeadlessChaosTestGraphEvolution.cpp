@@ -25,7 +25,7 @@ namespace ChaosTest
 			, Constraints()
 			, TickCount(0)
 		{
-			IslandManager = &Evolution.GetConstraintGraph();
+			IslandManager = &Evolution.GetIslandManager();
 
 			// Bind the constraints to the evolution
 			Evolution.AddConstraintContainer(Constraints);
@@ -95,7 +95,7 @@ namespace ChaosTest
 		FPBDNullConstraints Constraints;
 		TArray<FPBDRigidParticleHandle*> ParticleHandles;
 		TArray<FPBDNullConstraintHandle*> ConstraintHandles;
-		FPBDIslandManager* IslandManager;
+		Private::FPBDIslandManager* IslandManager;
 
 		int32 TickCount;
 	};
@@ -903,6 +903,49 @@ namespace ChaosTest
 		EXPECT_TRUE(Test.ConstraintHandles[0]->IsSleeping());
 	}
 
+	// Test isolated kinematic particles are removed from the island manager if they have no constraints
+	GTEST_TEST(GraphEvolutionTests, TestConstraintGraph_KinematicRemoveFromGraph)
+	{
+		// Create a scene with 3 dynamic particles
+		FGraphEvolutionTest Test(3);
+
+		Test.Advance();
+
+		// Initially all particles are dynamic and should be in the graph
+		EXPECT_EQ(Test.IslandManager->NumIslands(), 3);
+		EXPECT_EQ(Test.IslandManager->GetIslandGraph()->ItemNodes.Num(), 3);
+		EXPECT_TRUE(Test.ParticleHandles[0]->IsInConstraintGraph());	// Dynamic
+		EXPECT_TRUE(Test.ParticleHandles[1]->IsInConstraintGraph());	// Dynamic
+		EXPECT_TRUE(Test.ParticleHandles[2]->IsInConstraintGraph());	// Dynamic
+		EXPECT_TRUE(Test.IslandManager->GetIslandGraph()->GraphNodes.IsValidIndex(0));
+		EXPECT_TRUE(Test.IslandManager->GetIslandGraph()->GraphNodes.IsValidIndex(1));
+		EXPECT_TRUE(Test.IslandManager->GetIslandGraph()->GraphNodes.IsValidIndex(2));
+
+		// Change a particle to kinematic. Since it has no collisions or joints it should
+		// be removed from the constraint graph at the next update.
+		Test.Evolution.SetParticleObjectState(Test.ParticleHandles[1], EObjectStateType::Kinematic);
+
+		Test.Advance();
+
+		// Should now have only 2 nodes in the graph, each in their own island
+		EXPECT_EQ(Test.IslandManager->NumIslands(), 2);
+		EXPECT_EQ(Test.IslandManager->GetIslandGraph()->ItemNodes.Num(), 2);
+
+		// Kinematic was removed from the graph, but dynamics are still there
+		EXPECT_TRUE(Test.ParticleHandles[0]->IsInConstraintGraph());	// Dynamic
+		EXPECT_FALSE(Test.ParticleHandles[1]->IsInConstraintGraph());	// Kinematic
+		EXPECT_TRUE(Test.ParticleHandles[2]->IsInConstraintGraph());	// Dynamic
+
+		Test.Advance();
+
+		// State should not have changed with a second tick
+		EXPECT_EQ(Test.IslandManager->NumIslands(), 2);
+		EXPECT_EQ(Test.IslandManager->GetIslandGraph()->ItemNodes.Num(), 2);
+		EXPECT_TRUE(Test.ParticleHandles[0]->IsInConstraintGraph());	// Dynamic
+		EXPECT_FALSE(Test.ParticleHandles[1]->IsInConstraintGraph());	// Kinematic
+		EXPECT_TRUE(Test.ParticleHandles[2]->IsInConstraintGraph());	// Dynamic
+	}
+
 	// Test the conditions for a kinematic particle waking an island
 	// If a kinematic is being animated by velocity or by setting a target
 	// position the island should wake but only if the target velocity is
@@ -1025,5 +1068,52 @@ namespace ChaosTest
 		EXPECT_EQ(Test.IslandManager->NumIslands(), 1);
 		EXPECT_FALSE(Test.IslandManager->GetIsland(0)->IsSleeping());
 
+	}
+
+	// Test the sparse array repeatable index assignment. See TSparseArray::SortFreeList()
+	GTEST_TEST(SparseArrayTests, TestSortFreeList)
+	{
+		TSparseArray<int32> Values;
+
+		// The first time we add objects, they should be in consecutive indices starting from 0
+		Values.Add(0);
+		Values.Add(1);
+		Values.Add(2);
+		EXPECT_EQ(Values[0], 0);
+		EXPECT_EQ(Values[1], 1);
+		EXPECT_EQ(Values[2], 2);
+
+		// Remove a couple items in the same order we added them
+		Values.RemoveAt(1);
+		Values.RemoveAt(2);
+
+		// Add the items again, they will end up in reverse order
+		// We don't rely on this behaviour but I'm testing here because if this changes
+		// in the future then we may be able to remove our calls to SortFreeList in the graph.
+		Values.Add(1);
+		Values.Add(2);
+		EXPECT_EQ(Values[0], 0);
+		EXPECT_EQ(Values[1], 2);	// Swapped
+		EXPECT_EQ(Values[2], 1);	// Swapped
+
+
+		// Now do the same as above on a new array, but call SortFreeList before reusing it
+		TSparseArray<int32> Values2;
+		
+		Values2.Add(0);
+		Values2.Add(1);
+		Values2.Add(2);
+		Values2.RemoveAt(1);
+		Values2.RemoveAt(2);
+
+		// Rebuild the free list
+		Values2.SortFreeList();
+
+		// We should now get the same order as the first time we added items
+		Values2.Add(1);
+		Values2.Add(2);
+		EXPECT_EQ(Values2[0], 0);
+		EXPECT_EQ(Values2[1], 1);
+		EXPECT_EQ(Values2[2], 2);
 	}
 }

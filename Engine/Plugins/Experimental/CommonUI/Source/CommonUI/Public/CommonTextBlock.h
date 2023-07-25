@@ -2,10 +2,12 @@
 
 #pragma once
 
-#include "CommonUITypes.h"
-#include "Widgets/Layout/SScrollBox.h"
 #include "Components/TextBlock.h"
+#include "Widgets/Accessibility/SlateWidgetAccessibleTypes.h"
+#include "Widgets/SCompoundWidget.h"
 #include "CommonTextBlock.generated.h"
+
+struct FTextBlockStyle;
 
 class UCommonStyleSheet;
 
@@ -174,8 +176,6 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 
-	virtual void SetText(FText InText) override;
-
 	UFUNCTION(BlueprintCallable, Category = "Common Text")
 	void SetWrapTextWidth(int32 InWrapTextAt);
 
@@ -194,6 +194,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Common Text")
 	void SetMargin(const FMargin& InMargin);
 
+	UFUNCTION(BlueprintCallable, Category = "Common Text|Mobile")
+	float GetMobileFontSizeMultiplier() const;
+	
+	/** Sets the new value and then applies the FontSizeMultiplier */
+	UFUNCTION(BlueprintCallable, Category = "Common Text|Mobile")
+	void SetMobileFontSizeMultiplier(float InMobileFontSizeMultiplier);
+
 	UFUNCTION(BlueprintCallable, Category = "Common Text|Scroll Style")
 	void ResetScrollState();
 
@@ -203,6 +210,13 @@ public:
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 	virtual void SynchronizeProperties() override;
+
+	virtual void OnTextChanged() override;
+	virtual void OnFontChanged() override;
+
+	/** Mobile font size multiplier. Activated by default on mobile. See CVar Mobile_PreviewFontSize */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = "Mobile", meta = (ClampMin = "0.01", ClampMax = "5.0"))
+	float MobileFontSizeMultiplier = 1.0f;
 	
 #if WITH_EDITOR
 	virtual void OnCreationFromPalette() override;
@@ -235,10 +249,6 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = CommonText, meta = (AllowPrivateAccess = true))
 	bool bAutoCollapseWithEmptyText = false;
 
-	/** Mobile font size multiplier. Activated by default on mobile. See CVar Mobile_PreviewFontSize */
-	UPROPERTY(EditAnywhere, Category = "Mobile", meta = (ClampMin = "0.01", ClampMax = "5.0"))
-	float MobileFontSizeMultiplier = 1.0f;
-
 #if WITH_EDITORONLY_DATA
 	/** Used to track widgets that were created before changing the default style pointer to null */
 	UPROPERTY()
@@ -253,3 +263,8 @@ private:
 
 	void ApplyFontSizeMultiplier() const;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CommonUITypes.h"
+#include "Widgets/Layout/SScrollBox.h"
+#endif

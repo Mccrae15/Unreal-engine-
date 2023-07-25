@@ -2,7 +2,9 @@
 
 #include "USDPrimConversion.h"
 
+#include "Engine/SkinnedAssetCommon.h"
 #include "UnrealUSDWrapper.h"
+#include "USDAssetImportData.h"
 #include "USDAttributeUtils.h"
 #include "USDConversionUtils.h"
 #include "USDLayerUtils.h"
@@ -428,136 +430,6 @@ bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr:
 	}
 
 	return true;
-}
-
-bool UsdToUnreal::ConvertXformable( const pxr::UsdTyped& Schema, UMovieScene3DTransformTrack& MovieSceneTrack, const FMovieSceneSequenceTransform& SequenceTransform )
-{
-	const UMovieScene* MovieScene = MovieSceneTrack.GetTypedOuter< UMovieScene >();
-
-	if ( !MovieScene )
-	{
-		return false;
-	}
-
-	FScopedUsdAllocs UsdAllocs;
-
-	pxr::UsdGeomXformable Xformable( Schema );
-
-	if ( !Xformable )
-	{
-		return false;
-	}
-
-	std::vector< double > UsdTimeSamples;
-	Xformable.GetTimeSamples( &UsdTimeSamples );
-
-	if ( UsdTimeSamples.empty() )
-	{
-		return false;
-	}
-
-	const FFrameRate Resolution = MovieScene->GetTickResolution();
-	const FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-
-	TArray< FFrameNumber > FrameNumbers;
-	FrameNumbers.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > TranslationValuesX;
-	TranslationValuesX.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > TranslationValuesY;
-	TranslationValuesY.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > TranslationValuesZ;
-	TranslationValuesZ.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > RotationValuesX;
-	RotationValuesX.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > RotationValuesY;
-	RotationValuesY.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > RotationValuesZ;
-	RotationValuesZ.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > ScaleValuesX;
-	ScaleValuesX.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > ScaleValuesY;
-	ScaleValuesY.Reserve( UsdTimeSamples.size() );
-
-	TArray< FMovieSceneDoubleValue > ScaleValuesZ;
-	ScaleValuesZ.Reserve( UsdTimeSamples.size() );
-
-	pxr::UsdStageRefPtr Stage = Schema.GetPrim().GetStage();
-	const double StageTimeCodesPerSecond = Stage->GetTimeCodesPerSecond();
-	const FFrameRate StageFrameRate( StageTimeCodesPerSecond, 1 );
-
-	const ERichCurveInterpMode InterpMode = ( Stage->GetInterpolationType() == pxr::UsdInterpolationTypeLinear ) ? ERichCurveInterpMode::RCIM_Linear : ERichCurveInterpMode::RCIM_Constant;
-
-	for ( double UsdTimeSample : UsdTimeSamples )
-	{
-		// Frame Number
-		int32 FrameNumber = FMath::FloorToInt( UsdTimeSample );
-		float SubFrameNumber = UsdTimeSample - FrameNumber;
-
-		FFrameTime FrameTime( FrameNumber, SubFrameNumber );
-
-		FFrameTime KeyFrameTime = FFrameRate::TransformTime( FrameTime, StageFrameRate, Resolution );
-		KeyFrameTime *= SequenceTransform;
-		FrameNumbers.Add( KeyFrameTime.GetFrame() );
-
-		// Frame Values
-		FTransform Transform;
-		UsdToUnreal::ConvertXformable( Stage, Xformable, Transform, UsdTimeSample );
-
-		// Location
-		TranslationValuesX.Emplace_GetRef( Transform.GetLocation().X ).InterpMode = InterpMode;
-		TranslationValuesY.Emplace_GetRef( Transform.GetLocation().Y ).InterpMode = InterpMode;
-		TranslationValuesZ.Emplace_GetRef( Transform.GetLocation().Z ).InterpMode = InterpMode;
-
-		// Rotation
-		FRotator Rotator = Transform.Rotator();
-		RotationValuesX.Emplace_GetRef( Rotator.Roll ).InterpMode = InterpMode;
-		RotationValuesY.Emplace_GetRef( Rotator.Pitch ).InterpMode = InterpMode;
-		RotationValuesZ.Emplace_GetRef( Rotator.Yaw ).InterpMode = InterpMode;
-
-		// Scale
-		ScaleValuesX.Emplace_GetRef( Transform.GetScale3D().X ).InterpMode = InterpMode;
-		ScaleValuesY.Emplace_GetRef( Transform.GetScale3D().Y ).InterpMode = InterpMode;
-		ScaleValuesZ.Emplace_GetRef( Transform.GetScale3D().Z ).InterpMode = InterpMode;
-	}
-
-	bool bSectionAdded = false;
-	UMovieScene3DTransformSection* TransformSection = Cast< UMovieScene3DTransformSection >( MovieSceneTrack.FindOrAddSection( 0, bSectionAdded ) );
-	TransformSection->EvalOptions.CompletionMode = EMovieSceneCompletionMode::KeepState;
-	TransformSection->SetRange( TRange< FFrameNumber >::All() );
-
-	TArrayView< FMovieSceneDoubleChannel* > Channels = TransformSection->GetChannelProxy().GetChannels< FMovieSceneDoubleChannel >();
-
-	check( Channels.Num() >= 9 );
-
-	// Translation
-	Channels[0]->Set( FrameNumbers, TranslationValuesX );
-	Channels[1]->Set( FrameNumbers, TranslationValuesY );
-	Channels[2]->Set( FrameNumbers, TranslationValuesZ );
-
-	// Rotation
-	Channels[3]->Set( FrameNumbers, RotationValuesX );
-	Channels[4]->Set( FrameNumbers, RotationValuesY );
-	Channels[5]->Set( FrameNumbers, RotationValuesZ );
-
-	// Scale
-	Channels[6]->Set( FrameNumbers, ScaleValuesX );
-	Channels[7]->Set( FrameNumbers, ScaleValuesY );
-	Channels[8]->Set( FrameNumbers, ScaleValuesZ );
-
-	return true;
-}
-
-bool UsdToUnreal::ConvertGeomCamera( const pxr::UsdStageRefPtr& Stage, const pxr::UsdGeomCamera& GeomCamera, UCineCameraComponent& CameraComponent, double EvalTime )
-{
-	return ConvertGeomCamera( UE::FUsdPrim{ GeomCamera.GetPrim() }, CameraComponent, EvalTime );
 }
 
 bool UsdToUnreal::ConvertGeomCamera( const UE::FUsdPrim& Prim, UCineCameraComponent& CameraComponent, double UsdTimeCode )
@@ -2126,30 +1998,48 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 
 	FScopedUsdAllocs Allocs;
 
+#if WITH_EDITOR
+	// Handle material overrides
 	if ( const UGeometryCacheComponent* GeometryCacheComponent = Cast<const UGeometryCacheComponent>( MeshComponent ) )
 	{
-		const TArray<UMaterialInterface*>& Overrides = MeshComponent->OverrideMaterials;
-		for ( int32 MatIndex = 0; MatIndex < Overrides.Num(); ++MatIndex )
+		if ( const UGeometryCache* GeometryCache = GeometryCacheComponent->GetGeometryCache() )
 		{
-			UMaterialInterface* Override = Overrides[ MatIndex ];
-			if ( !Override )
+			const TArray<UMaterialInterface*>& Overrides = MeshComponent->OverrideMaterials;
+			for ( int32 MatIndex = 0; MatIndex < Overrides.Num(); ++MatIndex )
 			{
-				continue;
+				UMaterialInterface* Override = Overrides[ MatIndex ];
+				if ( !Override )
+				{
+					continue;
+				}
+
+				UUsdMeshAssetImportData* ImportData = Cast<UUsdMeshAssetImportData>( GeometryCache->AssetImportData.Get() );
+				if ( !ImportData )
+				{
+					return false;
+				}
+
+				if ( const FUsdPrimPathList* SourcePrimPaths = ImportData->MaterialSlotToPrimPaths.Find( MatIndex ) )
+				{
+					for ( const FString& PrimPath : SourcePrimPaths->PrimPaths )
+					{
+						pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath( *PrimPath ).Get();
+						pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
+						UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
+					}
+				}
 			}
-
-			pxr::SdfPath OverridePrimPath = UsdPrim.GetPath();
-
-			pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
-			UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
 		}
 	}
 	else if ( const UStaticMeshComponent* StaticMeshComponent = Cast<const UStaticMeshComponent>( MeshComponent ) )
 	{
-#if WITH_EDITOR
 		if ( UStaticMesh* Mesh = StaticMeshComponent->GetStaticMesh() )
 		{
-			int32 NumLODs = Mesh->GetNumLODs();
-			const bool bHasLODs = NumLODs > 1;
+			UUsdMeshAssetImportData* ImportData = Cast<UUsdMeshAssetImportData>( Mesh->AssetImportData.Get() );
+			if ( !ImportData )
+			{
+				return false;
+			}
 
 			const TArray<UMaterialInterface*>& Overrides = MeshComponent->OverrideMaterials;
 			for ( int32 MatIndex = 0; MatIndex < Overrides.Num(); ++MatIndex )
@@ -2160,7 +2050,7 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 					continue;
 				}
 
-				for ( int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex )
+				for ( int32 LODIndex = 0; LODIndex < Mesh->GetNumLODs(); ++LODIndex )
 				{
 					int32 NumSections = Mesh->GetNumSections( LODIndex );
 					const bool bHasSubsets = NumSections > 1;
@@ -2173,40 +2063,19 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 							continue;
 						}
 
-						pxr::SdfPath OverridePrimPath = UsdPrim.GetPath();
-
-						// If we have only 1 LOD, the asset's DefaultPrim will be the Mesh prim directly.
-						// If we have multiple, the default prim won't have any schema, but will contain separate
-						// Mesh prims for each LOD named "LOD0", "LOD1", etc., switched via a "LOD" variant set
-						if ( bHasLODs )
+						if ( const FUsdPrimPathList* SourcePrimPaths = ImportData->MaterialSlotToPrimPaths.Find( SectionMatIndex ) )
 						{
-							OverridePrimPath = OverridePrimPath.AppendPath( UnrealToUsd::ConvertPath( *FString::Printf( TEXT( "LOD%d" ), LODIndex ) ).Get() );
-						}
-
-						// If our LOD has only one section, its material assignment will be authored directly on the Mesh prim.
-						// If it has more than one material slot, we'll author UsdGeomSubset for each LOD Section, and author the material
-						// assignment there
-						if ( bHasSubsets )
-						{
-							// Assume the UE sections are in the same order as the USD ones
-							std::vector<pxr::UsdGeomSubset> GeomSubsets = pxr::UsdShadeMaterialBindingAPI( UsdPrim ).GetMaterialBindSubsets();
-							if ( SectionIndex < GeomSubsets.size() )
+							for ( const FString& PrimPath : SourcePrimPaths->PrimPaths )
 							{
-								OverridePrimPath = OverridePrimPath.AppendChild( GeomSubsets[ SectionIndex ].GetPrim().GetName() );
-							}
-							else
-							{
-								OverridePrimPath = OverridePrimPath.AppendPath( UnrealToUsd::ConvertPath( *FString::Printf( TEXT( "Section%d" ), SectionIndex ) ).Get() );
+								pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath( *PrimPath ).Get();
+								pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
+								UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
 							}
 						}
-
-						pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
-						UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
 					}
 				}
 			}
 		}
-#endif // WITH_EDITOR
 	}
 	else if ( const USkinnedMeshComponent* SkinnedMeshComponent = Cast<const USkinnedMeshComponent>( MeshComponent ) )
 	{
@@ -2216,10 +2085,16 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 			return false;
 		}
 
-		if ( const USkinnedAsset* SkinnedAsset = SkinnedMeshComponent->GetSkinnedAsset())
+		if ( const USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>( SkinnedMeshComponent->GetSkinnedAsset() ) )
 		{
-			FSkeletalMeshRenderData* RenderData = SkinnedAsset->GetResourceForRendering();
+			FSkeletalMeshRenderData* RenderData = SkeletalMesh->GetResourceForRendering();
 			if ( !RenderData )
+			{
+				return false;
+			}
+
+			UUsdMeshAssetImportData* ImportData = Cast<UUsdMeshAssetImportData>( SkeletalMesh->GetAssetImportData() );
+			if ( !ImportData )
 			{
 				return false;
 			}
@@ -2228,21 +2103,6 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 			if ( LodRenderData.Num() == 0 )
 			{
 				return false;
-			}
-
-			int32 NumLODs = SkinnedAsset->GetLODNum();
-			const bool bHasLODs = NumLODs > 1;
-
-			FString MeshName;
-			if ( !bHasLODs )
-			{
-				for ( const pxr::UsdPrim& Child : UsdPrim.GetChildren() )
-				{
-					if ( pxr::UsdGeomMesh Mesh{ Child } )
-					{
-						MeshName = UsdToUnreal::ConvertToken( Child.GetName() );
-					}
-				}
 			}
 
 			const TArray<UMaterialInterface*>& Overrides = MeshComponent->OverrideMaterials;
@@ -2254,14 +2114,14 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 					continue;
 				}
 
-				for ( int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex )
+				for ( int32 LODIndex = 0; LODIndex < SkeletalMesh->GetLODNum(); ++LODIndex )
 				{
 					if ( !LodRenderData.IsValidIndex( LODIndex ) )
 					{
 						continue;
 					}
 
-					const FSkeletalMeshLODInfo* LODInfo = SkinnedAsset->GetLODInfo( LODIndex );
+					const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo( LODIndex );
 
 					const TArray<FSkelMeshRenderSection>& Sections = LodRenderData[ LODIndex ].RenderSections;
 					int32 NumSections = Sections.Num();
@@ -2282,44 +2142,21 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 							continue;
 						}
 
-						pxr::SdfPath OverridePrimPath = UsdPrim.GetPath();
-
-						// If we have only 1 LOD, the asset's DefaultPrim will be a SkelRoot, and the Mesh will be a subprim
-						// with the same name.If we have the default prim is also the SkelRoot, but will contain separate
-						// Mesh prims for each LOD named "LOD0", "LOD1", etc., switched via a "LOD" variant set
-						if ( bHasLODs )
+						if ( const FUsdPrimPathList* SourcePrimPaths = ImportData->MaterialSlotToPrimPaths.Find( SectionMatIndex ) )
 						{
-							OverridePrimPath = OverridePrimPath.AppendPath( UnrealToUsd::ConvertPath( *FString::Printf( TEXT( "LOD%d" ), LODIndex ) ).Get() );
-						}
-						else
-						{
-							OverridePrimPath = OverridePrimPath.AppendElementString( UnrealToUsd::ConvertString( *MeshName ).Get() );
-						}
-
-						// If our LOD has only one section, its material assignment will be authored directly on the Mesh prim.
-						// If it has more than one material slot, we'll author UsdGeomSubset for each LOD Section, and author the material
-						// assignment there
-						if ( bHasSubsets )
-						{
-							// Assume the UE sections are in the same order as the USD ones
-							std::vector<pxr::UsdGeomSubset> GeomSubsets = pxr::UsdShadeMaterialBindingAPI( UsdPrim ).GetMaterialBindSubsets();
-							if ( SectionIndex < GeomSubsets.size() )
+							for ( const FString& PrimPath : SourcePrimPaths->PrimPaths )
 							{
-								OverridePrimPath = OverridePrimPath.AppendChild( GeomSubsets[ SectionIndex ].GetPrim().GetName() );
-							}
-							else
-							{
-								OverridePrimPath = OverridePrimPath.AppendPath( UnrealToUsd::ConvertPath( *FString::Printf( TEXT( "Section%d" ), SectionIndex ) ).Get() );
+								pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath( *PrimPath ).Get();
+								pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
+								UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
 							}
 						}
-
-						pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
-						UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
 					}
 				}
 			}
 		}
 	}
+#endif // WITH_EDITOR
 
 	return true;
 }
@@ -2400,16 +2237,6 @@ bool UnrealToUsd::ConvertHierarchicalInstancedStaticMeshComponent( const UHierar
 	}
 
 	return true;
-}
-
-bool UnrealToUsd::ConvertCameraComponent( const pxr::UsdStageRefPtr& Stage, const UCineCameraComponent* CameraComponent, pxr::UsdPrim& UsdPrim, double TimeCode )
-{
-	if ( CameraComponent )
-	{
-		return ConvertCameraComponent( *CameraComponent, UE::FUsdPrim{ UsdPrim }, TimeCode );
-	}
-
-	return false;
 }
 
 bool UnrealToUsd::ConvertXformable( const FTransform& RelativeTransform, pxr::UsdPrim& UsdPrim, double TimeCode )

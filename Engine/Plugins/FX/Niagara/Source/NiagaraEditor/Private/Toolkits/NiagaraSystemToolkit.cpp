@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraSystemToolkit.h"
+#include "Engine/Texture2D.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraSystem.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraObjectSelection.h"
+#include "UObject/Linker.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
@@ -144,10 +146,8 @@ void FNiagaraSystemToolkit::InitializeWithSystem(const EToolkitMode::Type Mode, 
 
 	SystemViewModel = MakeShared<FNiagaraSystemViewModel>();
 	SystemViewModel->Initialize(*System, SystemOptions);
-	SystemGraphSelectionViewModel = MakeShared<FNiagaraSystemGraphSelectionViewModel>();
-	SystemGraphSelectionViewModel->Initialize(SystemViewModel.ToSharedRef());
-	ParameterPanelViewModel = MakeShared<FNiagaraSystemToolkitParameterPanelViewModel>(SystemViewModel, TWeakPtr<FNiagaraSystemGraphSelectionViewModel>(SystemGraphSelectionViewModel));
-	ParameterDefinitionsPanelViewModel = MakeShared<FNiagaraSystemToolkitParameterDefinitionsPanelViewModel>(SystemViewModel, SystemGraphSelectionViewModel);
+	ParameterPanelViewModel = MakeShared<FNiagaraSystemToolkitParameterPanelViewModel>(SystemViewModel);
+	ParameterDefinitionsPanelViewModel = MakeShared<FNiagaraSystemToolkitParameterDefinitionsPanelViewModel>(SystemViewModel);
 	FSystemToolkitUIContext UIContext = FSystemToolkitUIContext(
 		FSimpleDelegate::CreateSP(ParameterPanelViewModel.ToSharedRef(), &INiagaraImmutableParameterPanelViewModel::Refresh),
 		FSimpleDelegate::CreateSP(ParameterDefinitionsPanelViewModel.ToSharedRef(), &INiagaraImmutableParameterPanelViewModel::Refresh)
@@ -826,6 +826,11 @@ TSharedPtr<FNiagaraSystemViewModel> FNiagaraSystemToolkit::GetSystemViewModel()
 	return SystemViewModel;
 }
 
+TSharedPtr<FNiagaraSystemGraphSelectionViewModel> FNiagaraSystemToolkit::GetSystemGraphSelectionViewModel()
+{
+	return SystemViewModel->GetSystemGraphSelectionViewModel();
+}
+
 void FNiagaraSystemToolkit::RegisterToolbarTab(const TSharedRef<FTabManager>& InTabManager)
 {
 	FAssetEditorToolkit::RegisterTabSpawners(InTabManager);
@@ -1200,24 +1205,24 @@ void FNiagaraSystemToolkit::GetSaveableObjects(TArray<UObject*>& OutObjects) con
 
 void FNiagaraSystemToolkit::SaveAsset_Execute()
 {
+	SystemViewModel->NotifyPreSave();
 	if (SystemToolkitMode == ESystemToolkitMode::Emitter)
 	{
 		UE_LOG(LogNiagaraEditor, Log, TEXT("Saving and Compiling NiagaraEmitter %s"), *GetEditingObjects()[0]->GetName());
 		UpdateOriginalEmitter();
 	}
-	SystemViewModel->NotifyPreSave();
 	FAssetEditorToolkit::SaveAsset_Execute();
 	SystemViewModel->NotifyPostSave();
 }
 
 void FNiagaraSystemToolkit::SaveAssetAs_Execute()
 {
+	SystemViewModel->NotifyPreSave();
 	if (SystemToolkitMode == ESystemToolkitMode::Emitter)
 	{
 		UE_LOG(LogNiagaraEditor, Log, TEXT("Saving and Compiling NiagaraEmitter %s"), *GetEditingObjects()[0]->GetName());
 		UpdateOriginalEmitter();
 	}
-	SystemViewModel->NotifyPreSave();
 	FAssetEditorToolkit::SaveAssetAs_Execute();
 	SystemViewModel->NotifyPostSave();
 }

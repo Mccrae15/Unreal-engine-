@@ -409,6 +409,7 @@ void InitializeSceneTexturesConfig(FSceneTexturesConfig& Config, const FSceneVie
 	EShadingPath ShadingPath = FSceneInterface::GetShadingPath(ViewFamily.GetFeatureLevel());
 
 	bool bRequiresAlphaChannel = ShadingPath == EShadingPath::Mobile ? IsMobilePropagateAlphaEnabled(ViewFamily.GetShaderPlatform()) : false;
+	int32 NumberOfViewsWithMultiviewEnabled = 0;
 	for (int32 ViewIndex = 0; ViewIndex < ViewFamily.Views.Num(); ViewIndex++)
 	{
 		// Planar reflections and scene captures use scene color alpha to keep track of where content has been rendered, for compositing into a different scene later
@@ -416,7 +417,14 @@ void InitializeSceneTexturesConfig(FSceneTexturesConfig& Config, const FSceneVie
 		{
 			bRequiresAlphaChannel = true;
 		}
+
+		NumberOfViewsWithMultiviewEnabled += (ViewFamily.Views[ViewIndex]->bIsMobileMultiViewEnabled) ? 1 : 0;
 	}
+
+	ensureMsgf(NumberOfViewsWithMultiviewEnabled == 0 || NumberOfViewsWithMultiviewEnabled == ViewFamily.Views.Num(),
+		TEXT("Either all or no views in a view family should have multiview enabled. Mixing views with enabled and disabled is not allowed."));
+
+	const bool bAllViewsHaveMultiviewEnabled = NumberOfViewsWithMultiviewEnabled == ViewFamily.Views.Num();
 
 	const bool bNeedsStereoAlloc = ViewFamily.Views.ContainsByPredicate([](const FSceneView* View)
 		{
@@ -426,7 +434,7 @@ void InitializeSceneTexturesConfig(FSceneTexturesConfig& Config, const FSceneVie
 	FSceneTexturesConfigInitSettings SceneTexturesConfigInitSettings;
 	SceneTexturesConfigInitSettings.FeatureLevel = ViewFamily.GetFeatureLevel();
 	SceneTexturesConfigInitSettings.Extent = Extent;
-	SceneTexturesConfigInitSettings.bRequireMultiView = ViewFamily.bRequireMultiView;
+	SceneTexturesConfigInitSettings.bRequireMultiView = ViewFamily.bRequireMultiView && bAllViewsHaveMultiviewEnabled;
 	SceneTexturesConfigInitSettings.bRequiresAlphaChannel = bRequiresAlphaChannel;
 	SceneTexturesConfigInitSettings.bSupportsXRTargetManagerDepthAlloc = bNeedsStereoAlloc ? 1 : 0;
 	SceneTexturesConfigInitSettings.ExtraSceneColorCreateFlags = GFastVRamConfig.SceneColor;
@@ -467,9 +475,11 @@ void FMinimalSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FVie
 
 			if ((StereoDepthRHI = FindStereoDepthTexture(Config.bSupportsXRTargetManagerDepthAlloc, Config.Extent, Desc.NumSamples)) != nullptr)
 			{
+				ensureMsgf(Desc.ArraySize == StereoDepthRHI->GetDesc().ArraySize, TEXT("Resolve texture does not agree in dimensionality with Target (Resolve.ArraySize=%d, Target.ArraySize=%d)"),
+					Desc.ArraySize, StereoDepthRHI->GetDesc().ArraySize);
 				SceneTextures.Depth.Resolve = RegisterExternalTexture(GraphBuilder, StereoDepthRHI, TEXT("SceneDepthZ"));
 			}
-			else if (Config.bKeepDepthContent)
+			else
 			{
 				SceneTextures.Depth.Resolve = GraphBuilder.CreateTexture(Desc, TEXT("SceneDepthZ"));
 			}
@@ -482,10 +492,8 @@ void FMinimalSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FVie
 	{
 		const bool bIsMobilePlatform = Config.ShadingPath == EShadingPath::Mobile;
 		const ETextureCreateFlags sRGBFlag = (bIsMobilePlatform && IsMobileColorsRGB()) ? TexCreate_SRGB : TexCreate_None;
-
-		const bool bForceResolveFormatR8G8B8A8 = (bIsMobilePlatform && IsMobileHDR() && IsMobileTonemapSubpassEnabled());
-
 		const TCHAR* SceneColorName = TEXT("SceneColor");
+		const bool bForceResolveFormatR8G8B8A8 = (bIsMobilePlatform && IsMobileHDR() && IsMobileTonemapSubpassEnabled());
 
 		// Create the scene color.
 		// TODO: Array-size could be values > 2, on upcoming XR devices. This should be part of the config.

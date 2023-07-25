@@ -72,7 +72,7 @@ struct ENGINE_API FChaosPhysicsSettings
 UENUM()
 namespace ESettingsDOF
 {
-	enum Type
+	enum Type : int
 	{
 		/** Allows for full 3D movement and rotation. */
 		Full3D,
@@ -88,7 +88,7 @@ namespace ESettingsDOF
 UENUM()
 namespace ESettingsLockedAxis
 {
-	enum Type
+	enum Type : int
 	{
 		/** No axis is locked. */
 		None,
@@ -148,10 +148,6 @@ class ENGINE_API UPhysicsSettings : public UPhysicsSettingsCore
 	*  If true CCD will be ignored. This is an optimization when CCD is never used which removes the need for physx to check it internally. */
 	UPROPERTY(config, EditAnywhere, Category = Simulation)
 	bool bDisableCCD;
-
-	/** If set to true, the scene will use enhanced determinism at the cost of a bit more resources. See eENABLE_ENHANCED_DETERMINISM to learn about the specifics */
-	UPROPERTY(config, EditAnywhere, Category = Simulation)
-	bool bEnableEnhancedDeterminism;
 
 	/** Min Delta Time below which anim dynamics and rigidbody nodes will not simulate. */
 	UPROPERTY(config, EditAnywhere, meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"), Category = Framerate)

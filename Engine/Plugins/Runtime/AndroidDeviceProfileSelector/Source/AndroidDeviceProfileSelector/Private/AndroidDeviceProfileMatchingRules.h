@@ -2,12 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/Object.h"
 #include "AndroidDeviceProfileMatchingRules.generated.h"
 
 UENUM()
-enum ESourceType
+enum ESourceType : int
 {
 	SRC_PreviousRegexMatch,
 	SRC_GpuFamily,
@@ -28,7 +26,7 @@ enum ESourceType
 };
 
 UENUM()
-enum ECompareType
+enum ECompareType : int
 {
 	CMP_Equal,
 	CMP_Less,

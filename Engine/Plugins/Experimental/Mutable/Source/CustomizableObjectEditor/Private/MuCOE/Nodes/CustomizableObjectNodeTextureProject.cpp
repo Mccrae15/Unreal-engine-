@@ -2,16 +2,7 @@
 
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureProject.h"
 
-#include "Containers/EnumAsByte.h"
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphPin.h"
-#include "HAL/PlatformCrt.h"
-#include "Internationalization/Internationalization.h"
-#include "MuCO/CustomizableObjectCustomVersion.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
-#include "Serialization/Archive.h"
-#include "UObject/NameTypes.h"
-#include "UObject/UnrealType.h"
 
 class UCustomizableObjectNodeRemapPins;
 
@@ -86,15 +77,15 @@ void UCustomizableObjectNodeTextureProject::AllocateDefaultPins(UCustomizableObj
 	TexturePinsReferences.Reset(0);
 	OutputPinsReferences.Reset(0);
 	
-	for ( int LayerIndex = 0; LayerIndex < Textures; ++LayerIndex )
+	for ( uint32 LayerIndex = 0; LayerIndex < Textures; ++LayerIndex )
 	{
-		FString PinName = FString::Printf(TEXT("Texture %d"), LayerIndex);
+		FString PinName = FString::Printf(TEXT("Texture %u"), LayerIndex);
 		UEdGraphPin* TexturePin = CustomCreatePin(EGPD_Input, Schema->PC_Image, FName(*PinName));
 		TexturePin->bDefaultValueIsIgnored = true;
 
 		TexturePinsReferences.Add(FEdGraphPinReference(TexturePin));
 		
-		PinName = FString::Printf(TEXT("Texture %d"), LayerIndex);
+		PinName = FString::Printf(TEXT("Texture %u"), LayerIndex);
 		UEdGraphPin* OutputPin = CustomCreatePin(EGPD_Output, Schema->PC_Image, FName(*PinName));
 		OutputPin->bDefaultValueIsIgnored = true;
 

@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RemoteControlWebSocketServer.h"
+
 #include "Containers/Ticker.h"
-#include "WebRemoteControlInternalUtils.h"
 #include "IPAddress.h"
 #include "IRemoteControlModule.h"
 #include "IWebSocketNetworkingModule.h"
+#include "Misc/WildcardString.h"
 #include "RemoteControlRequest.h"
-#include "Sockets.h"
+#include "RemoteControlSettings.h"
 #include "SocketSubsystem.h"
+#include "Sockets.h"
+#include "WebRemoteControlInternalUtils.h"
 #include "WebSocketNetworkingDelegates.h"
 
 #define LOCTEXT_NAMESPACE "RCWebSocketServer"
@@ -50,10 +53,19 @@ namespace RemoteControlWebSocketServer
 			}
 			if (!Request.Passphrase.IsEmpty())
 			{
-				Message.Header.FindOrAdd(WebRemoteControlInternalUtils::PassphraseHeader) = TArray<FString>({Request.Passphrase});
+				Message.Header.FindOrAdd(WebRemoteControlInternalUtils::PassphraseHeader) = { Request.Passphrase };
+			}
+			if (!Request.ForwardedFor.IsEmpty())
+			{
+				Message.Header.FindOrAdd(WebRemoteControlInternalUtils::ForwardedIPHeader) = { Request.ForwardedFor };
 			}
 			Message.MessageName = MoveTemp(Request.MessageName);
 			ParsedMessage = MoveTemp(Message);
+		}
+
+		if (!ErrorText.IsEmpty())
+		{
+			IRemoteControlModule::BroadcastError(ErrorText);
 		}
 
 		return ParsedMessage;
@@ -107,22 +119,21 @@ void FWebsocketMessageRouter::UnbindRoute(const FString& MessageName)
 
 bool FRCWebSocketServer::Start(uint32 Port, TSharedPtr<FWebsocketMessageRouter> InRouter)
 {
-	if (!IsPortAvailable(Port))
-	{
-		return false;
-	}
-
 	FWebSocketClientConnectedCallBack CallBack;
 	CallBack.BindRaw(this, &FRCWebSocketServer::OnWebSocketClientConnected);
 
 	Server = FModuleManager::Get().LoadModuleChecked<IWebSocketNetworkingModule>(TEXT("WebSocketNetworking")).CreateServer();
 	
-	if (!Server || !Server->Init(Port, CallBack))
+	if (!Server || !Server->Init(Port, CallBack, GetDefault<URemoteControlSettings>()->RemoteControlWebsocketServerBindAddress))
 	{
 		Server.Reset();
 		return false;
 	}
 
+	FWebSocketFilterConnectionCallback FilterCallback;
+	FilterCallback.BindRaw(this, &FRCWebSocketServer::FilterConnection);
+	Server->SetFilterConnectionCallback(MoveTemp(FilterCallback));
+	
 	Router = MoveTemp(InRouter);
 	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FRCWebSocketServer::Tick));
 
@@ -203,7 +214,7 @@ void FRCWebSocketServer::OnWebSocketClientConnected(INetworkingWebSocket* Socket
 		FWebSocketConnection Connection = FWebSocketConnection{ Socket };
 			
 		FWebSocketPacketReceivedCallBack ReceiveCallBack;
-		ReceiveCallBack.BindRaw(this, &FRCWebSocketServer::ReceivedRawPacket, Connection.Id);
+		ReceiveCallBack.BindRaw(this, &FRCWebSocketServer::ReceivedRawPacket, Connection.Id, Connection.PeerAddress);
 		Socket->SetReceiveCallBack(ReceiveCallBack);
 
 		FWebSocketInfoCallBack CloseCallback;
@@ -215,7 +226,7 @@ void FRCWebSocketServer::OnWebSocketClientConnected(INetworkingWebSocket* Socket
 	}
 }
 
-void FRCWebSocketServer::ReceivedRawPacket(void* Data, int32 Size, FGuid ClientId)
+void FRCWebSocketServer::ReceivedRawPacket(void* Data, int32 Size, FGuid ClientId, TSharedPtr<FInternetAddr> PeerAddress)
 {
 	if (!Router)
 	{
@@ -230,6 +241,8 @@ void FRCWebSocketServer::ReceivedRawPacket(void* Data, int32 Size, FGuid ClientI
 	if (TOptional<FRemoteControlWebSocketMessage> Message = RemoteControlWebSocketServer::ParseWebsocketMessage(Payload))
 	{
 		Message->ClientId = ClientId;
+		Message->PeerAddress = PeerAddress;
+	
 		Router->AttemptDispatch(*Message);
 	}
 }
@@ -244,6 +257,47 @@ void FRCWebSocketServer::OnSocketClose(INetworkingWebSocket* Socket)
 	}
 }
 
+EWebsocketConnectionFilterResult FRCWebSocketServer::FilterConnection(FString OriginHeader, FString ClientIP) const
+{
+	const URemoteControlSettings* Settings = GetDefault<URemoteControlSettings>();
+	if (Settings->bRestrictServerAccess)
+	{
+		OriginHeader.RemoveSpacesInline();
+		OriginHeader.TrimStartAndEndInline();
+
+		auto SimplifyAddress = [](FString Address)
+		{
+			Address.RemoveFromStart(TEXT("https://www."));
+			Address.RemoveFromStart(TEXT("http://www."));
+			Address.RemoveFromStart(TEXT("https://"));
+			Address.RemoveFromStart(TEXT("http://"));
+			Address.RemoveFromEnd(TEXT("/"));
+			return Address;
+		};
+
+		const FString SimplifiedOrigin = SimplifyAddress(OriginHeader);
+		const FWildcardString SimplifiedAllowedOrigin = SimplifyAddress(GetDefault<URemoteControlSettings>()->AllowedOrigin);
+
+		if (!SimplifiedOrigin.IsEmpty() && GetDefault<URemoteControlSettings>()->AllowedOrigin != TEXT("*"))
+		{
+			if (!SimplifiedAllowedOrigin.IsMatch(SimplifiedOrigin))
+			{
+				return EWebsocketConnectionFilterResult::ConnectionRefused;
+			}
+
+			// Allow requests from localhost
+			if (ClientIP != TEXT("localhost") && ClientIP != TEXT("127.0.0.1"))
+			{
+				if (!Settings->IsClientAllowed(ClientIP))
+				{
+					return EWebsocketConnectionFilterResult::ConnectionRefused;
+				}
+			}
+		}
+	}
+
+	return EWebsocketConnectionFilterResult::ConnectionAccepted;
+}
 
 #undef LOCTEXT_NAMESPACE /* FRCWebSocketServer */
 

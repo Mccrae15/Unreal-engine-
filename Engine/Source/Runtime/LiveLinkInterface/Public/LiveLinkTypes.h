@@ -64,8 +64,12 @@ public:
 		Ar << InSubjectName.Name;
 		return Ar;
 	}
+	
+	friend inline uint32 GetTypeHash(const FLiveLinkSubjectName& Value)
+	{
+		return GetTypeHash(Value.Name);
+	}
 };
-template <> struct TModels<CGetTypeHashable, FLiveLinkSubjectName> { enum { Value = TModels<CGetTypeHashable, FName>::Value }; };
 
 
 // Structure that identifies an individual subject
@@ -468,7 +472,7 @@ protected:
 	{
 		static Type* Cast(const UScriptStruct* ScriptStruct, BaseType* BaseData)
 		{
-			if (TIsSame<Type, BaseType>::Value)
+			if constexpr (std::is_same_v<Type, BaseType>)
 			{
 				return StaticCast<Type*>(BaseData);
 			}
@@ -485,7 +489,7 @@ protected:
 		}
 		static const Type* ConstCast(const UScriptStruct* ScriptStruct, const BaseType* BaseData)
 		{
-			if (TIsSame<Type, BaseType>::Value)
+			if constexpr (std::is_same_v<Type, BaseType>)
 			{
 				return StaticCast<const Type*>(BaseData);
 			}
@@ -599,8 +603,8 @@ struct
 
 	FLiveLinkTimeCode& operator=(const FQualifiedFrameTime& InFrameTime)
 	{
-		const int32 NumberOfFramesInSecond = FMath::CeilToInt(InFrameTime.Rate.AsDecimal());
-		const int32 NumberOfFrames = FMath::RoundToZero(InFrameTime.Time.AsDecimal());
+		const int32 NumberOfFramesInSecond = FMath::CeilToInt32(InFrameTime.Rate.AsDecimal());
+		const int32 NumberOfFrames = (int32)(FMath::RoundToZero(InFrameTime.Time.AsDecimal()));
 
 		Seconds = (int32)FMath::RoundToZero(NumberOfFrames / (double)NumberOfFramesInSecond);
 		Frames = NumberOfFrames % NumberOfFramesInSecond;

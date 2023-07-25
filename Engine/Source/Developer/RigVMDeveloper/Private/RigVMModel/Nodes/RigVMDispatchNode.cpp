@@ -50,6 +50,24 @@ bool URigVMDispatchNode::IsDefinedAsVarying() const
 	return false;
 }
 
+const TArray<FName>& URigVMDispatchNode::GetControlFlowBlocks() const
+{
+	if (const FRigVMDispatchFactory* Factory = GetFactory())
+	{
+		return Factory->GetControlFlowBlocks(GetDispatchContext());
+	}
+	return Super::GetControlFlowBlocks();
+}
+
+const bool URigVMDispatchNode::IsControlFlowBlockSliced(const FName& InBlockName) const
+{
+	if (const FRigVMDispatchFactory* Factory = GetFactory())
+	{
+		return Factory->IsControlFlowBlockSliced(InBlockName);
+	}
+	return Super::IsControlFlowBlockSliced(InBlockName);
+}
+
 FText URigVMDispatchNode::GetToolTipTextForPin(const URigVMPin* InPin) const
 {
 	if (const FRigVMDispatchFactory* Factory = GetFactory())
@@ -76,6 +94,34 @@ FString URigVMDispatchNode::GetDeprecatedMetadata() const
 		}
 	}
 	return FString();
+}
+
+FRigVMDispatchContext URigVMDispatchNode::GetDispatchContext() const
+{
+	FRigVMDispatchContext Context;
+	Context.Instance = ConstructFactoryInstance(false, &Context.StringRepresentation);
+	Context.Subject = this;
+	return Context;
+}
+
+TSharedPtr<FStructOnScope> URigVMDispatchNode::ConstructFactoryInstance(bool bUseDefault, FString* OutFactoryDefault) const
+{
+	if (UScriptStruct* Struct = (UScriptStruct*)GetFactoryStruct())
+	{
+		TSharedPtr<FStructOnScope> StructOnScope = MakeShareable(new FStructOnScope(Struct));
+		FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
+		if (!bUseDefault)
+		{
+			const FString FactoryDefaultValue = GetFactoryDefaultValue();
+			if(OutFactoryDefault)
+			{
+				*OutFactoryDefault = FactoryDefaultValue;
+			}
+			Struct->ImportText(*FactoryDefaultValue, StructMemory, nullptr, PPF_IncludeTransient, GLog, Struct->GetName());
+		}
+		return StructOnScope;
+	}
+	return nullptr;
 }
 
 TArray<URigVMPin*> URigVMDispatchNode::GetAggregateInputs() const
@@ -174,11 +220,50 @@ void URigVMDispatchNode::InvalidateCache()
 	CachedFactory = nullptr;
 }
 
+bool URigVMDispatchNode::ShouldInputPinComputeLazily(const URigVMPin* InPin) const
+{
+	const URigVMPin* RootPin = InPin->GetRootPin();
+	check(RootPin->GetNode() == this);
+
+	if(const FRigVMDispatchFactory* Factory = GetFactory())
+	{
+		return Factory->HasArgumentMetaData(RootPin->GetFName(), FRigVMStruct::ComputeLazilyMetaName); 
+	}
+	return Super::ShouldInputPinComputeLazily(InPin);
+}
+
+FString URigVMDispatchNode::GetFactoryDefaultValue() const
+{
+	TArray<FString> PinDefaultValues;
+	for (URigVMPin* Pin : GetPins())
+	{
+		if (Pin->GetDirection() == ERigVMPinDirection::Hidden)
+		{
+			continue;
+		}
+		FString PinDefaultValue = Pin->GetDefaultValue();
+		if (Pin->IsStringType())
+		{
+			PinDefaultValue = TEXT("\"") + PinDefaultValue + TEXT("\"");
+		}
+		else if (PinDefaultValue.IsEmpty() || PinDefaultValue == TEXT("()"))
+		{
+			continue;
+		}
+		PinDefaultValues.Add(FString::Printf(TEXT("%s=%s"), *Pin->GetName(), *PinDefaultValue));
+	}
+	if (PinDefaultValues.Num() == 0)
+	{
+		return TEXT("()");
+	}
+	return FString::Printf(TEXT("(%s)"), *FString::Join(PinDefaultValues, TEXT(",")));
+}
+
 FRigVMStructUpgradeInfo URigVMDispatchNode::GetUpgradeInfo() const
 {
 	if(const FRigVMDispatchFactory* Factory = GetFactory())
 	{
-		return Factory->GetUpgradeInfo(GetFilteredTypes());
+		return Factory->GetUpgradeInfo(GetFilteredTypes(), GetDispatchContext());
 	}
 	return FRigVMStructUpgradeInfo();
 }

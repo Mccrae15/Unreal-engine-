@@ -14,6 +14,7 @@
 #include "Engine/MeshMerging.h"
 #include "Engine/StaticMesh.h"
 #include "IDetailCustomization.h"
+#include "StaticMeshResources.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "IDetailCustomNodeBuilder.h"
 
@@ -260,9 +261,11 @@ private:
 
 	// used by native tool and simplygon
 	float GetPercentTriangles() const;
+	uint32 GetMaxNumOfPercentTriangles() const;
 
 	// used by native quadric simplifier
 	float GetPercentVertices() const;
+	uint32 GetMaxNumOfPercentVertices() const;
 
 	// used by simplygon only
 	float GetMaxDeviation() const;
@@ -274,10 +277,15 @@ private:
 	// used by native tool and simplygon
 	void OnPercentTrianglesChanged(float NewValue);
 	void OnPercentTrianglesCommitted(float NewValue, ETextCommit::Type TextCommitType);
+	void OnMaxNumOfPercentTrianglesChanged(uint32 NewValue);
+	void OnMaxNumOfPercentTrianglesCommitted(uint32 NewValue, ETextCommit::Type TextCommitType);
 
 	// Used by native code only
 	void OnPercentVerticesChanged(float NewValue);
 	void OnPercentVerticesCommitted(float NewValue, ETextCommit::Type TextCommitType);
+	void OnMaxNumOfPercentVerticesChanged(uint32 NewValue);
+	void OnMaxNumOfPercentVerticesCommitted(uint32 NewValue, ETextCommit::Type TextCommitType);
+	
 
 	//used by simplygon only
 	void OnMaxDeviationChanged(float NewValue);
@@ -689,6 +697,7 @@ public:
 	void ApplyChanges();
 
 	/** Position Precision range selectable in the UI. */
+	static const int32 DisplayPositionPrecisionAuto = MIN_int32;
 	static const int32 DisplayPositionPrecisionMin = -6;
 	static const int32 DisplayPositionPrecisionMax = 13;
 
@@ -698,10 +707,23 @@ public:
 	/** Display string to show in menus. */
 	static FString PositionPrecisionValueToDisplayString(int32 Value);
 
+
+	/** Normal Precision range selectable in the UI. */
+	static const int32 DisplayNormalPrecisionAuto = -1;
+	static const int32 DisplayNormalPrecisionMin = 5;
+	static const int32 DisplayNormalPrecisionMax = 15;
+
+	static int32 NormalPrecisionIndexToValue(int32 Index);
+	static int32 NormalPrecisionValueToIndex(int32 Value);
+
+	/** Display string to show in menus. */
+	static FString NormalPrecisionValueToDisplayString(int32 Value);
+
+
 	/** Residency range selectable in the UI. */
 	static const int32 DisplayMinimumResidencyMinimalIndex = 0;
-	static const int32 DisplayMinimumResidencyExpRangeMin = 6;
-	static const int32 DisplayMinimumResidencyExpRangeMax = 16;
+	static const int32 DisplayMinimumResidencyExpRangeMin = 5;
+	static const int32 DisplayMinimumResidencyExpRangeMax = 15;
 	static const int32 DisplayMinimumResidencyFullIndex = DisplayMinimumResidencyExpRangeMax - DisplayMinimumResidencyExpRangeMin + 2;
 
 	static uint32 MinimumResidencyIndexToValue(int32 Index);
@@ -719,6 +741,7 @@ private:
 	void OnPreserveAreaChanged(ECheckBoxState NewState);
 
 	void OnPositionPrecisionChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo);
+	void OnNormalPrecisionChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo);
 	void OnResidencyChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo);
 
 	float GetKeepPercentTriangles() const;
@@ -734,6 +757,9 @@ private:
 
 	float GetFallbackRelativeError() const;
 	void OnFallbackRelativeErrorChanged(float NewValue);
+
+	int32 GetDisplacementUVChannel() const;
+	void OnDisplacementUVChannelChanged(int32 NewValue);
 
 	FString GetHiResSourceFilename() const;
 	void SetHiResSourceFilename(const FString& NewSourceFile);
@@ -753,5 +779,6 @@ private:
 	FMeshNaniteSettings NaniteSettings;
 
 	TArray<TSharedPtr<FString> > PositionPrecisionOptions;
+	TArray<TSharedPtr<FString> > NormalPrecisionOptions;
 	TArray<TSharedPtr<FString> > ResidencyOptions;
 };

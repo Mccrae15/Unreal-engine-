@@ -1,20 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-import { configure } from "mobx";
-import { isNumber } from 'util';
 import templateCache from '../backend/TemplateCache';
-import { AgentData, AgentQuery, ArtifactData, AuditLogEntry, AuditLogQuery, BatchUpdatePoolRequest, ChangeSummaryData, CreateDeviceRequest, CreateDeviceResponse, CreateExternalIssueRequest, CreateExternalIssueResponse, CreateJobRequest, CreateJobResponse, CreateNoticeRequest, CreatePoolRequest, CreateSoftwareResponse, CreateSubscriptionRequest, CreateSubscriptionResponse, DashboardPreference, EventData, FindIssueResponse, FindJobTimingsResponse, GetAgentSoftwareChannelResponse, GetArtifactZipRequest, GetDashboardConfigResponse, GetDevicePlatformResponse, GetDevicePoolResponse, GetDeviceReservationResponse, GetDeviceResponse, GetExternalIssueProjectResponse, GetExternalIssueResponse, GetGraphResponse, GetIssueStreamResponse, GetJobsTabResponse, GetJobStepRefResponse, GetJobStepTraceResponse, GetJobTimingResponse, GetLogEventResponse, GetNoticeResponse, GetNotificationResponse, GetPerforceServerStatusResponse, GetPoolResponse, GetServerInfoResponse, GetServerSettingsResponse, GetSoftwareResponse, GetSubscriptionResponse, GetUserResponse, GetUtilizationTelemetryResponse, GlobalConfig, IssueData, IssueQuery, IssueQueryV2, JobData, JobQuery, JobsTabColumnType, JobStepOutcome, JobStreamQuery, JobTimingsQuery, LeaseData, LogData, LogLineData, PoolData, ProjectData, ScheduleData, ScheduleQuery, SearchLogFileResponse, ServerUpdateResponse, SessionData, StreamData, TabType, TemplateData, TestData, UpdateAgentRequest, UpdateDeviceRequest, UpdateGlobalConfigRequest, UpdateIssueRequest, UpdateJobRequest, UpdateLeaseRequest, UpdateNoticeRequest, UpdateNotificationsRequest, UpdatePoolRequest, UpdateServerSettingsRequest, UpdateStepRequest, UpdateStepResponse, UpdateTemplateRefRequest, UpdateUserRequest, UsersQuery } from './Api';
+import { AgentData, AgentQuery, ArtifactData, AuditLogEntry, AuditLogQuery, BatchUpdatePoolRequest, ChangeSummaryData, CreateDeviceRequest, CreateDeviceResponse, CreateExternalIssueRequest, CreateExternalIssueResponse, CreateJobRequest, CreateJobResponse, CreateNoticeRequest, CreatePoolRequest, CreateSoftwareResponse, CreateSubscriptionRequest, CreateSubscriptionResponse, DashboardPreference, DevicePoolTelemetryQuery, DeviceTelemetryQuery, EventData, FindIssueResponse, FindJobTimingsResponse, GetAgentSoftwareChannelResponse, GetArtifactZipRequest, GetDashboardConfigResponse, GetDevicePlatformResponse, GetDevicePoolResponse, GetDevicePoolTelemetryResponse, GetDeviceReservationResponse, GetDeviceResponse, GetDeviceTelemetryResponse, GetExternalIssueProjectResponse, GetExternalIssueResponse, GetGraphResponse, GetIssueStreamResponse, GetJobsTabResponse, GetJobStepRefResponse, GetJobStepTraceResponse, GetJobTimingResponse, GetLogEventResponse, GetNoticeResponse, GetNotificationResponse, GetPerforceServerStatusResponse, GetPoolResponse, GetServerInfoResponse, GetServerSettingsResponse, GetSoftwareResponse, GetSubscriptionResponse, GetTestDataDetailsResponse, GetTestDataRefResponse, GetTestMetaResponse, GetTestResponse, GetTestsRequest, GetTestStreamResponse, GetUserResponse, GetUtilizationTelemetryResponse, GlobalConfig, IssueData, IssueQuery, IssueQueryV2, JobData, JobQuery, JobsTabColumnType, JobStepOutcome, JobStreamQuery, JobTimingsQuery, LeaseData, LogData, LogLineData, PoolData, ProjectData, ScheduleData, ScheduleQuery, SearchLogFileResponse, ServerUpdateResponse, SessionData, StreamData, TabType, TestData, UpdateAgentRequest, UpdateDeviceRequest, UpdateGlobalConfigRequest, UpdateIssueRequest, UpdateJobRequest, UpdateLeaseRequest, UpdateNoticeRequest, UpdateNotificationsRequest, UpdatePoolRequest, UpdateServerSettingsRequest, UpdateStepRequest, UpdateStepResponse, UpdateTemplateRefRequest, UpdateUserRequest, UsersQuery } from './Api';
 import dashboard from './Dashboard';
 import { ChallengeStatus, Fetch } from './Fetch';
 import graphCache, { GraphQuery } from './GraphCache';
 import { projectStore } from './ProjectStore';
 
-
-// configure mobx
-configure({
-    reactionRequiresObservable: true,
-    enforceActions: "observed"
-});
 
 // Update interval for relatively static global data such as projects, schedules, templates
 const updateInterval = 120 * 1000;
@@ -90,14 +82,6 @@ export class Backend {
 
         });
 
-    }
-
-    getTemplate(streamId: string, templateRefId: string): Promise<TemplateData> {
-        return new Promise<TemplateData>((resolve, reject) => {
-            this.backend.get(`/api/v1/streams/${streamId}/templates/${templateRefId}`)
-                .then(response => resolve(response.data as TemplateData))
-                .catch(reason => reject(reason));
-        });
     }
 
     updateTemplateRef(streamId: string, templateRefId: string, request: UpdateTemplateRefRequest): Promise<boolean> {
@@ -234,22 +218,6 @@ export class Backend {
                 resolve(sessions);
             }).catch(reason => { reject(reason); });
         });
-    }
-
-
-    getJobTemplate(jobId: string): Promise<TemplateData> {
-
-        return new Promise<TemplateData>((resolve, reject) => {
-
-            this.backend.get(`/api/v1/jobs/${jobId}/template`, {
-                params: {}
-            }).then((value) => {
-                resolve(value.data as TemplateData);
-            }).catch(reason => {
-                reject(reason);
-            });
-        });
-
     }
 
     retryJobStep(jobId: string, batchId: string, stepId: string): Promise<any> {
@@ -629,11 +597,11 @@ export class Backend {
 
         const params: any = {};
 
-        if (isNumber(index)) {
+        if (Number.isInteger(index)) {
             params.index = index;
         }
 
-        if (isNumber(count)) {
+        if (Number.isInteger(count)) {
             params.Count = count;
         }
 
@@ -643,24 +611,6 @@ export class Backend {
                 params: params
             }).then((value) => {
                 resolve(value.data as LogLineData);
-            }).catch(reason => {
-                reject(reason);
-            });
-        });
-
-    }
-
-    getLog(logId: string, offset?: number, count?: number): Promise<string> {
-
-        return new Promise<string>((resolve, reject) => {
-
-            this.backend.get(`/api/v1/logs/${logId}/data`, {
-                params: {
-                    offset: offset,
-                    count: count
-                }
-            }).then((value) => {
-                resolve(value.data as string);
             }).catch(reason => {
                 reject(reason);
             });
@@ -784,6 +734,10 @@ export class Backend {
         return new Promise<ScheduleData>((resolve, reject) => {
 
             this.backend.get(`/api/v1/schedules/${id}`).then((value) => {
+                const data = value.data as ScheduleData;
+                data.nextTriggerTimesUTC.forEach((d, index) => {
+                    data.nextTriggerTimesUTC[index] = new Date(d as any as string);
+                });
                 resolve(value.data as ScheduleData);
             }).catch(reason => {
                 reject(reason);
@@ -1131,6 +1085,65 @@ export class Backend {
         });
     }
 
+    getTestMetadata(automationProjects?: string[], platforms?: string[], targets?: string[], configurations?: string[]): Promise<GetTestMetaResponse[]> {
+        return new Promise<GetTestMetaResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v2/testdata/metadata`, {
+                params: { project: automationProjects, platform: platforms, target: targets, configuration: configurations }
+            }).then((value) => {
+                resolve(value.data as GetTestMetaResponse[]);
+            }).catch((reason) => {
+                reject(reason);
+            });
+        });
+    }
+
+    getTestRefs(streamIds: string[], metaIds: string[], minCreateTime?: string, maxCreateTime?: string, minChange?: number, maxChange?: number, testIds?: string[], suiteIds?: string[]): Promise<GetTestDataRefResponse[]> {
+        return new Promise<GetTestDataRefResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v2/testdata/refs`, {
+                params: { id: streamIds, mid: metaIds, tid: testIds, sid: suiteIds, minCreateTime: minCreateTime, maxCreateTime: maxCreateTime, minChange: minChange, maxChange: maxChange }
+            }).then((value) => {
+                resolve(value.data as GetTestDataRefResponse[]);
+            }).catch((reason) => {
+                reject(reason);
+            });
+        });
+    }
+
+    getTestDetails(refIds: string[]): Promise<GetTestDataDetailsResponse[]> {
+        return new Promise<GetTestDataDetailsResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v2/testdata/details`, {
+                params: { id: refIds }
+            }).then((value) => {
+                resolve(value.data as GetTestDataDetailsResponse[]);
+            }).catch((reason) => {
+                reject(reason);
+            });
+        });
+    }
+
+    getTests(testIds: string[]): Promise<GetTestResponse[]> {
+        const request: GetTestsRequest = { testIds: testIds };        
+        return new Promise<GetTestResponse[]>((resolve, reject) => {
+            this.backend.post(`/api/v2/testdata/tests`, request).then((value) => {
+                resolve(value.data as GetTestResponse[]);
+            }).catch((reason) => {
+                reject(reason);
+            });
+        });
+    }
+
+    getTestStreams(streamIds: string[]): Promise<GetTestStreamResponse[]> {
+        return new Promise<GetTestStreamResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v2/testdata/streams`, {
+                params: { id: streamIds }
+            }).then((value) => {
+                resolve(value.data as GetTestStreamResponse[]);
+            }).catch((reason) => {
+                reject(reason);
+            });
+        });
+    }
+
     getJobTestData(jobId: string, stepId?: string): Promise<TestData[]> {
         return new Promise<TestData[]>((resolve, reject) => {
             const params: any = {
@@ -1328,6 +1341,28 @@ export class Backend {
         return new Promise<GetDeviceResponse[]>((resolve, reject) => {
             this.backend.get(`/api/v2/devices`).then((value) => {
                 resolve(value.data as GetDeviceResponse[]);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    getDevicePoolTelemetry(query?: DevicePoolTelemetryQuery): Promise<GetDevicePoolTelemetryResponse[]> {
+
+        return new Promise<GetDevicePoolTelemetryResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v2/devices/pools/telemetry`, { params: query }).then((value) => {
+                resolve(value.data as GetDevicePoolTelemetryResponse[]);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    getDeviceTelemetry(query?: DeviceTelemetryQuery): Promise<GetDeviceTelemetryResponse[]> {
+
+        return new Promise<GetDeviceTelemetryResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v2/devices/telemetry`, { params: query }).then((value) => {
+                resolve(value.data as GetDeviceTelemetryResponse[]);
             }).catch(reason => {
                 reject(reason);
             });

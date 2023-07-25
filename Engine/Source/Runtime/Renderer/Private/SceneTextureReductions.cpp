@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "SceneTextureReductions.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "ScenePrivate.h"
 #include "RenderGraph.h"
 #include "PixelShaderUtils.h"
@@ -83,7 +84,7 @@ class FHZBBuildCS : public FGlobalShader
 			return false;
 		}
 
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
+		return true;
 	}
 };
 
@@ -113,8 +114,8 @@ void BuildHZB(
 	FRDGTextureRef* OutClosestHZBTexture,
 	const TCHAR* FurthestHZBName,
 	FRDGTextureRef* OutFurthestHZBTexture,
-	EPixelFormat Format
-)
+	EPixelFormat Format,
+	const FBuildHZBAsyncComputeParams* AsyncComputeParams)
 {
 	RDG_EVENT_SCOPE(GraphBuilder, "BuildHZB");
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_BuildHZB);
@@ -208,17 +209,26 @@ void BuildHZB(
 			PermutationVector.Set<FHZBBuildCS::FDimClosest>(bOutputClosest);
 			PermutationVector.Set<FHZBBuildCS::FDimVisBufferFormat>(VisBufferFormat);
 
+			const bool bAsyncCompute = AsyncComputeParams != nullptr;
+			const ERDGPassFlags PassFlags = bAsyncCompute ? ERDGPassFlags::AsyncCompute : ERDGPassFlags::Compute;
+
 			TShaderMapRef<FHZBBuildCS> ComputeShader(GetGlobalShaderMap(FeatureLevel), PermutationVector);
-			FComputeShaderUtils::AddPass(
+			FRDGPassRef ReduceHZBPass = FComputeShaderUtils::AddPass(
 				GraphBuilder,
 				RDG_EVENT_NAME("ReduceHZB(mips=[%d;%d]%s%s) %dx%d",
 					StartDestMip, EndDestMip - 1,
 					bOutputClosest ? TEXT(" Closest") : TEXT(""),
 					bOutputFurthest ? TEXT(" Furthest") : TEXT(""),
 					DstSize.X, DstSize.Y),
+				PassFlags,
 				ComputeShader,
 				PassParameters,
 				FComputeShaderUtils::GetGroupCount(DstSize, 8));
+
+			if (AsyncComputeParams && AsyncComputeParams->Prerequisite)
+			{
+				GraphBuilder.AddPassDependency(AsyncComputeParams->Prerequisite, ReduceHZBPass);
+			}
 		}
 		else
 		{
@@ -315,7 +325,8 @@ void BuildHZBFurthest(
 	EShaderPlatform ShaderPlatform,
 	const TCHAR* FurthestHZBName,
 	FRDGTextureRef* OutFurthestHZBTexture,
-	EPixelFormat Format
+	EPixelFormat Format,
+	const FBuildHZBAsyncComputeParams* AsyncComputeParams
 )
 {
 	BuildHZB(
@@ -329,5 +340,6 @@ void BuildHZBFurthest(
 		nullptr,
 		FurthestHZBName,
 		OutFurthestHZBTexture,
-		Format);
+		Format,
+		AsyncComputeParams);
 }

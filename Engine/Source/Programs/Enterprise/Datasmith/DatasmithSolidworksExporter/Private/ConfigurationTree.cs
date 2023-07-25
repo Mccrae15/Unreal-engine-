@@ -5,16 +5,17 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
+using DatasmithSolidworks.Names;
 
 namespace DatasmithSolidworks
 {
-	[ComVisible(false)]
 	public class FConfigurationTree
 	{
 		// Component state for a single configuration
 		public class FComponentConfig
 		{
-			public string ConfigName = null;
+			public readonly string ConfigName;
+			public readonly bool bIsMainActive;  // if this Configuration is the active config
 
 			public bool bVisible = true;
 			public bool bSuppressed = false;
@@ -28,6 +29,12 @@ namespace DatasmithSolidworks
 
 			public List<Body2> Bodies = null;
 
+			public FComponentConfig(string InConfigName, bool bInIsMainActive)
+			{
+				ConfigName = InConfigName;
+				bIsMainActive = bInIsMainActive;
+			}
+
 			public void CopyFrom(FComponentConfig InOther)
 			{
 				bVisible = InOther.bVisible;
@@ -37,16 +44,31 @@ namespace DatasmithSolidworks
 				RelativeTransform = InOther.RelativeTransform;
 				Bodies = InOther.Bodies;
 			}
+
 		};
 
 		// A node contains all the configuration data for a single component
 		public class FComponentTreeNode
 		{
-			public FComponentName ComponentName;
-			public int ComponentID;
+			public readonly Component2 Component;
+
+			public struct FComponentInfo
+			{
+				public FComponentName ComponentName;
+				public int ComponentId;
+				public string PartPath;
+			}
+
+			public FComponentInfo ComponentInfo = new FComponentInfo();
+
+			public int ComponentId => ComponentInfo.ComponentId;
+
+			public FComponentName ComponentName => ComponentInfo.ComponentName;
+			public FActorName ActorName => ComponentInfo.ComponentName.GetActorName();
+			public string PartPath => ComponentInfo.PartPath;
 
 			// Common configuration data
-			public FComponentConfig CommonConfig = new FComponentConfig();
+			public FComponentConfig CommonConfig = new FComponentConfig(null, true);
 
 			// Per-configuration data
 			public List<FComponentConfig> Configurations = null;
@@ -61,7 +83,25 @@ namespace DatasmithSolidworks
 
 			public List<FComponentTreeNode> Children;
 
-			public FComponentConfig AddConfiguration(string InConfigurationName, bool bIsDisplayState)
+			public IEnumerable<FComponentTreeNode> EnumChildren()
+			{
+				if (Children == null)
+				{
+					yield break;
+				}
+
+				foreach (FComponentTreeNode Child in Children)
+				{
+					yield return Child;
+				}
+			}
+
+			public FComponentTreeNode(Component2 InComponent=null)
+			{
+				Component = InComponent;
+			}
+
+			public FComponentConfig AddConfiguration(string InConfigurationName, bool bIsDisplayState, bool bIsActiveConfiguration)
 			{
 				List<FComponentConfig> TargetList = null;
 
@@ -81,8 +121,7 @@ namespace DatasmithSolidworks
 					}
 					TargetList = Configurations;
 				}
-				FComponentConfig Result = new FComponentConfig();
-				Result.ConfigName = InConfigurationName;
+				FComponentConfig Result = new FComponentConfig(InConfigurationName, bIsActiveConfiguration);
 				TargetList.Add(Result);
 
 				return Result;
@@ -117,35 +156,39 @@ namespace DatasmithSolidworks
 			}
 
 			// Add all parameters except those which could be configuration-specific
-			public void AddParametersFrom(FComponentTreeNode InInput)
+
+			public FActorName GetActorName()
 			{
-				ComponentName = InInput.ComponentName;
-				ComponentID = InInput.ComponentID;
+				return ComponentName.GetActorName();
+			}
+
+			public bool IsPartComponent()
+			{
+				return ComponentInfo.PartPath != null;
 			}
 		};
 
-		static public void Merge(FComponentTreeNode OutCombined, FComponentTreeNode InTree, string InConfigurationName)
+		static public void Merge(FComponentTreeNode OutCombined, FComponentTreeNode InTree, string InConfigurationName,
+			bool bIsActiveConfiguration)
 		{
-			if (InTree.Children == null)
+			foreach (FComponentTreeNode Child in InTree.EnumChildren())
 			{
-				return;
-			}
+				if (OutCombined.Children == null)
+				{
+					OutCombined.Children = new List<FComponentTreeNode>();
+				}
 
-			if (OutCombined.Children == null)
-			{
-				OutCombined.Children = new List<FComponentTreeNode>();
-			}
-
-			foreach (FComponentTreeNode Child in InTree.Children)
-			{
 				// Find the same node in 'combined', merge parameters
 				FComponentTreeNode CombinedChild = OutCombined.Children.FirstOrDefault(X => X.ComponentName == Child.ComponentName);
 
 				if (CombinedChild == null)
 				{
-					// The node doesn't exist yet, so add it
-					CombinedChild = new FComponentTreeNode();
-					CombinedChild.AddParametersFrom(Child);
+					// The node doesn't exist yet, so add it. copying its info from the input node
+					CombinedChild = new FComponentTreeNode(Child.Component)
+					{
+						ComponentInfo = Child.ComponentInfo
+					};
+
 					OutCombined.Children.Add(CombinedChild);
 
 					// Copy common materials, which should be "default" for the component. Do not propagate these
@@ -153,12 +196,23 @@ namespace DatasmithSolidworks
 					OutCombined.CommonConfig.Materials = Child.CommonConfig.Materials;
 				}
 
+				if (CombinedChild.PartPath == null)
+				{
+					CombinedChild.ComponentInfo.PartPath = Child.PartPath;
+				}
+				else
+				{
+					// Either child didn't have PartPath resolved - when it's document is not loaded in this configuration(suppressed) or it's not a part
+					// Same component is not expected to have different PartPath in different configurations, seems like by SW design
+					Debug.Assert(Child.PartPath == null || CombinedChild.PartPath == Child.PartPath);
+				}
+
 				// Make a NodeConfig and copy parameter values from 'tree' node
-				FComponentConfig NodeConfig = CombinedChild.AddConfiguration(InConfigurationName, false);
+				FComponentConfig NodeConfig = CombinedChild.AddConfiguration(InConfigurationName, false, bIsActiveConfiguration);
 				NodeConfig.CopyFrom(Child.CommonConfig);
 
 				// Recurse to children
-				Merge(CombinedChild, Child, InConfigurationName);
+				Merge(CombinedChild, Child, InConfigurationName, bIsActiveConfiguration);
 			}
 		}
 
@@ -175,10 +229,23 @@ namespace DatasmithSolidworks
 				bool bAllMaterialsAreSame = true;
 				for (int Idx = 1; Idx < ConfigList.Count; Idx++)
 				{
-					if (Materials != null && (!ConfigList[Idx].Materials?.EqualMaterials(Materials) ?? false))
+					FObjectMaterials OtherMaterials = ConfigList[Idx].Materials;
+					if (Materials != null && OtherMaterials != null)
 					{
-						bAllMaterialsAreSame = false;
-						break;
+						if (!OtherMaterials.EqualMaterials(Materials))
+						{
+							bAllMaterialsAreSame = false;
+							break;
+						}
+					}
+					else
+					{
+						if (Materials != OtherMaterials)
+						{
+							// One of the material sets is null(empty) but another isn't
+							bAllMaterialsAreSame = false;
+							break;
+						}
 					}
 				}
 
@@ -188,14 +255,15 @@ namespace DatasmithSolidworks
 			if (InNode.Configurations != null && InNode.Configurations.Count > 0)
 			{
 				// Check transform
-				float[] Transform = InNode.Configurations[0].RelativeTransform;
+				float[] Transform = InNode.Configurations[0].Transform;
+				float[] RelativeTransform = InNode.Configurations[0].RelativeTransform;
 				bool bAllTransformsAreSame = true;
-				if (Transform != null)
+				if (RelativeTransform != null)
 				{
 					// There could be components without a transform, so we're checking if for null
 					for (int Idx = 1; Idx < InNode.Configurations.Count; Idx++)
 					{
-						if (!InNode.Configurations[Idx].RelativeTransform.SequenceEqual(Transform))
+						if (!InNode.Configurations[Idx].RelativeTransform.SequenceEqual(RelativeTransform))
 						{
 							bAllTransformsAreSame = false;
 							break;
@@ -203,10 +271,12 @@ namespace DatasmithSolidworks
 					}
 					if (bAllTransformsAreSame)
 					{
-						InNode.CommonConfig.RelativeTransform = Transform;
+						InNode.CommonConfig.Transform = Transform;
+						InNode.CommonConfig.RelativeTransform = RelativeTransform;
 						foreach (FComponentConfig Config in InNode.Configurations)
 						{
 							Config.RelativeTransform = null;
+							Config.Transform = null;
 						}
 					}
 				}
@@ -242,7 +312,7 @@ namespace DatasmithSolidworks
 						bSuppressionSame = false;
 					}
 
-					if (!ConfigurationExporter.IsSameMesh(InNode.ComponentName, InNode.Configurations[0].ConfigName, InNode.Configurations[Idx].ConfigName))
+					if (ConfigurationExporter.DoesComponentHaveVisibleButDifferentMeshesInConfigs(InNode.ComponentName, InNode.Configurations[0].ConfigName, InNode.Configurations[Idx].ConfigName))
 					{
 						bGeometrySame = false;
 					}
@@ -255,8 +325,7 @@ namespace DatasmithSolidworks
 
 					foreach (FComponentConfig ComponentConfig in InNode.Configurations)
 					{
-						InNode.Meshes.Add(ConfigurationExporter.GetMeshActorName(InNode.ComponentName,
-							ComponentConfig.ConfigName));
+						InNode.Meshes.Add(ConfigurationExporter.GetMeshActorName(ComponentConfig.ConfigName, InNode.ComponentName));
 					}
 				}
 
@@ -297,12 +366,9 @@ namespace DatasmithSolidworks
 			}
 
 			// Recurse to children
-			if (InNode.Children != null)
+			foreach (FComponentTreeNode Child in InNode.EnumChildren())
 			{
-				foreach (FComponentTreeNode Child in InNode.Children)
-				{
-					Compress(Child, ConfigurationExporter);
-				}
+				Compress(Child, ConfigurationExporter);
 			}
 		}
 
@@ -342,19 +408,16 @@ namespace DatasmithSolidworks
 				{
 					OutData.ComponentGeometry.Add(InNode.ComponentName, new FConfigurationData.FComponentGeometryVariant
 						{
-							VisibleActor = ConfigurationExporter.GetMeshActorName(InNode.ComponentName, InConfigurationName),
+							VisibleActor = ConfigurationExporter.GetMeshActorName(InConfigurationName, InNode.ComponentName),
 							All = InNode.Meshes.ToList()
 						}
 					);
 				}
 				if (!InNode.bMaterialSame)
 				{
-					FObjectMaterials Materials = NodeConfig.Materials;
-					if (Materials == null)
-					{
-						// There's no material set for the config, use default one
-						Materials = InNode.CommonConfig.Materials;
-					}
+					// There's no material set for the config, use default one
+					// todo: handle missing materials for a config/display set by making a 'default' material
+					FObjectMaterials Materials = NodeConfig.Materials ?? InNode.CommonConfig.Materials;
 					if (Materials != null)
 					{
 						OutData.ComponentMaterials.Add(InNode.ComponentName, Materials);
@@ -363,12 +426,9 @@ namespace DatasmithSolidworks
 			}
 
 			// Recurse to children
-			if (InNode.Children != null)
+			foreach (FComponentTreeNode Child in InNode.EnumChildren())
 			{
-				foreach (FComponentTreeNode Child in InNode.Children)
-				{
-					FillConfigurationData(ConfigurationExporter, Child, InConfigurationName, OutData, bIsDisplayState);
-				}
+				FillConfigurationData(ConfigurationExporter, Child, InConfigurationName, OutData, bIsDisplayState);
 			}
 		}
 	}

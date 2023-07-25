@@ -11,36 +11,18 @@
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "CoreGlobals.h"
 #include "RayTracingGeometryManager.h"
+#include "RenderGraphResources.h"
+#include "Containers/ResourceArray.h"
+#include "RenderCore.h"
 
 /** Whether to enable mip-level fading or not: +1.0f if enabled, -1.0f if disabled. */
 float GEnableMipLevelFading = 1.0f;
-
-// The maximum number of transient vertex buffer bytes to allocate before we start panic logging who is doing the allocations
-int32 GMaxVertexBytesAllocatedPerFrame = 32 * 1024 * 1024;
-
-FAutoConsoleVariableRef CVarMaxVertexBytesAllocatedPerFrame(
-	TEXT("r.MaxVertexBytesAllocatedPerFrame"),
-	GMaxVertexBytesAllocatedPerFrame,
-	TEXT("The maximum number of transient vertex buffer bytes to allocate before we start panic logging who is doing the allocations"));
-
-int32 GGlobalBufferNumFramesUnusedThresold = 30;
-FAutoConsoleVariableRef CVarReadBufferNumFramesUnusedThresold(
-	TEXT("r.NumFramesUnusedBeforeReleasingGlobalResourceBuffers"),
-	GGlobalBufferNumFramesUnusedThresold,
-	TEXT("Number of frames after which unused global resource allocations will be discarded. Set 0 to ignore. (default=30)"));
 
 bool GFreeStructuresOnRHIBufferCreation = true;
 FAutoConsoleVariableRef CVarFreeStructuresOnRHIBufferCreation(
 	TEXT("r.FreeStructuresOnRHIBufferCreation"),
 	GFreeStructuresOnRHIBufferCreation,
 	TEXT("Toggles experimental method for freeing helper structures that own the resource arrays after submitting to RHI instead of in the callback sink."));
-
-int32 GVarDebugForceRuntimeBLAS = 0;
-FAutoConsoleVariableRef CVarDebugForceRuntimeBLAS(
-	TEXT("r.Raytracing.DebugForceRuntimeBLAS"),
-	GVarDebugForceRuntimeBLAS,
-	TEXT("Force building BLAS at runtime."),
-	ECVF_ReadOnly);
 
 /** Tracks render resources in a list. The implementation is optimized to allow fast allocation / deallocation from any thread,
  *  at the cost of period coalescing of thread-local data at a sync point each frame. Furthermore, iteration is not thread safe
@@ -314,6 +296,18 @@ void FRenderResource::UpdateRHI()
 	}
 }
 
+FRenderResource::FRenderResource()
+	: ListIndex(INDEX_NONE)
+	, FeatureLevel(ERHIFeatureLevel::Num)
+{
+}
+
+FRenderResource::FRenderResource(ERHIFeatureLevel::Type InFeatureLevel)
+	: ListIndex(INDEX_NONE)
+	, FeatureLevel(InFeatureLevel)
+{
+}
+
 FRenderResource::~FRenderResource()
 {
 	checkf(ResourceState == ERenderResourceState::Default, TEXT(" Invalid Resource State: %s"), ResourceState == ERenderResourceState::BatchReleased ? TEXT("BatchReleased") : TEXT("Deleted"));
@@ -323,6 +317,55 @@ FRenderResource::~FRenderResource()
 		// Deleting an initialized FRenderResource will result in a crash later since it is still linked
 		UE_LOG(LogRendererCore, Fatal,TEXT("A FRenderResource was deleted without being released first!"));
 	}
+}
+
+bool FRenderResource::ShouldFreeResourceObject(void* ResourceObject, FResourceArrayInterface* ResourceArray)
+{
+	return GFreeStructuresOnRHIBufferCreation && ResourceObject && (!ResourceArray || !ResourceArray->GetResourceDataSize());
+}
+
+FBufferRHIRef FRenderResource::CreateRHIBufferInternal(
+	const TCHAR* InDebugName,
+	const FName& InOwnerName,
+	uint32 ResourceCount,
+	EBufferUsageFlags InBufferUsageFlags,
+	FResourceArrayInterface* ResourceArray,
+	bool bRenderThread,
+	bool bWithoutNativeResource)
+{
+	const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
+	FRHIResourceCreateInfo CreateInfo(InDebugName, ResourceArray);
+	CreateInfo.bWithoutNativeResource = bWithoutNativeResource;
+
+	FBufferRHIRef Buffer;
+	if (bRenderThread)
+	{
+		Buffer = RHICreateVertexBuffer(SizeInBytes, InBufferUsageFlags, CreateInfo);
+	}
+	else
+	{
+		FRHIAsyncCommandList CommandList;
+		Buffer = CommandList->CreateBuffer(SizeInBytes, InBufferUsageFlags | EBufferUsageFlags::VertexBuffer, 0, ERHIAccess::SRVMask, CreateInfo);
+	}
+
+	Buffer->SetOwnerName(InOwnerName);
+	return Buffer;
+}
+
+void FRenderResource::SetOwnerName(const FName& InOwnerName)
+{
+#if RHI_ENABLE_RESOURCE_INFO
+	OwnerName = InOwnerName;
+#endif
+}
+
+FName FRenderResource::GetOwnerName() const
+{
+#if RHI_ENABLE_RESOURCE_INFO
+	return OwnerName;
+#else
+	return NAME_None;
+#endif
 }
 
 void BeginInitResource(FRenderResource* Resource)
@@ -428,6 +471,94 @@ void ReleaseResourceAndFlush(FRenderResource* Resource)
 	FlushRenderingCommands();
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTextureSamplerStateCache
+
+class FTextureSamplerStateCache : public FRenderResource
+{
+public:
+	TMap<FSamplerStateInitializerRHI, FRHISamplerState*> Samplers;
+
+	virtual void ReleaseRHI() override
+	{
+		for (auto Pair : Samplers)
+		{
+			Pair.Value->Release();
+		}
+		Samplers.Empty();
+	}
+};
+
+TGlobalResource<FTextureSamplerStateCache> GTextureSamplerStateCache;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTexture
+
+FTexture::FTexture() = default;
+FTexture::~FTexture() = default;
+
+uint32 FTexture::GetSizeX() const
+{
+	return 0;
+}
+
+uint32 FTexture::GetSizeY() const
+{
+	return 0;
+}
+
+uint32 FTexture::GetSizeZ() const
+{
+	return 0;
+}
+
+void FTexture::ReleaseRHI()
+{
+	TextureRHI.SafeRelease();
+	SamplerStateRHI.SafeRelease();
+	DeferredPassSamplerStateRHI.SafeRelease();
+}
+
+FString FTexture::GetFriendlyName() const
+{
+	return TEXT("FTexture");
+}
+
+FRHISamplerState* FTexture::GetOrCreateSamplerState(const FSamplerStateInitializerRHI& Initializer)
+{
+	// This sampler cache is supposed to be used only from RT
+	// Add a lock here if it's used from multiple threads
+	check(IsInRenderingThread());
+
+	FRHISamplerState** Found = GTextureSamplerStateCache.Samplers.Find(Initializer);
+	if (Found)
+	{
+		return *Found;
+	}
+
+	FSamplerStateRHIRef NewState = RHICreateSamplerState(Initializer);
+
+	// Add an extra reference so we don't have TRefCountPtr in the maps
+	NewState->AddRef();
+	GTextureSamplerStateCache.Samplers.Add(Initializer, NewState);
+	return NewState;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTextureWithSRV
+
+FTextureWithSRV::FTextureWithSRV() = default;
+FTextureWithSRV::~FTextureWithSRV() = default;
+
+void FTextureWithSRV::ReleaseRHI()
+{
+	ShaderResourceViewRHI.SafeRelease();
+	FTexture::ReleaseRHI();
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTextureReference
+
 FTextureReference::FTextureReference()
 	: TextureReferenceRHI(NULL)
 {
@@ -489,559 +620,63 @@ FString FTextureReference::GetFriendlyName() const
 	return TEXT("FTextureReference");
 }
 
-/** The global null color vertex buffer, which is set with a stride of 0 on meshes without a color component. */
-TGlobalResource<FNullColorVertexBuffer> GNullColorVertexBuffer;
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FVertexBuffer
 
-/** The global null vertex buffer, which is set with a stride of 0 on meshes */
-TGlobalResource<FNullVertexBuffer> GNullVertexBuffer;
+FVertexBuffer::FVertexBuffer() = default;
+FVertexBuffer::~FVertexBuffer() = default;
 
-/*------------------------------------------------------------------------------
-	FRayTracingGeometry implementation.
-------------------------------------------------------------------------------*/
-
-#if RHI_RAYTRACING
-
-void FRayTracingGeometry::CreateRayTracingGeometryFromCPUData(TResourceArray<uint8>& OfflineData)
+void FVertexBuffer::ReleaseRHI()
 {
-	check(OfflineData.Num() == 0 || Initializer.OfflineData == nullptr);
-	if (OfflineData.Num())
-	{
-		Initializer.OfflineData = &OfflineData;
-	}
-
-	if (GVarDebugForceRuntimeBLAS && Initializer.OfflineData != nullptr)
-	{
-		Initializer.OfflineData->Discard();
-		Initializer.OfflineData = nullptr;
-	}
-
-	bRequiresBuild = Initializer.OfflineData == nullptr;		
-	RayTracingGeometryRHI = RHICreateRayTracingGeometry(Initializer);
+	VertexBufferRHI.SafeRelease();
 }
 
-void FRayTracingGeometry::RequestBuildIfNeeded(ERTAccelerationStructureBuildPriority InBuildPriority)
+FString FVertexBuffer::GetFriendlyName() const
 {
-	RayTracingGeometryRHI->SetInitializer(Initializer);
-
-	if (bRequiresBuild)
-	{
-		RayTracingBuildRequestIndex = GRayTracingGeometryManager.RequestBuildAccelerationStructure(this, InBuildPriority);
-		bRequiresBuild = false;
-	}	
+	return TEXT("FVertexBuffer");
 }
 
-void FRayTracingGeometry::CreateRayTracingGeometry(ERTAccelerationStructureBuildPriority InBuildPriority)
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FVertexBufferWithSRV
+
+FVertexBufferWithSRV::FVertexBufferWithSRV() = default;
+FVertexBufferWithSRV::~FVertexBufferWithSRV() = default;
+
+void FVertexBufferWithSRV::ReleaseRHI()
 {
-	// Release previous RHI object if any
-	ReleaseRHI();
-
-	check(RawData.Num() == 0 || Initializer.OfflineData == nullptr);
-	if (RawData.Num())
-	{
-		Initializer.OfflineData = &RawData;
-	}
-
-	if (GVarDebugForceRuntimeBLAS && Initializer.OfflineData != nullptr)
-	{
-		Initializer.OfflineData->Discard();
-		Initializer.OfflineData = nullptr;
-	}
-
-	bool bAllSegmentsAreValid = Initializer.Segments.Num() > 0 || Initializer.OfflineData;
-	for (const FRayTracingGeometrySegment& Segment : Initializer.Segments)
-	{
-		if (!Segment.VertexBuffer)
-		{
-			bAllSegmentsAreValid = false;
-			break;
-		}
-	}
-
-	const bool bWithoutNativeResource = Initializer.Type == ERayTracingGeometryInitializerType::StreamingDestination;
-	if (bAllSegmentsAreValid)
-	{
-		bValid = !bWithoutNativeResource;
-		RayTracingGeometryRHI = RHICreateRayTracingGeometry(Initializer);
-		if (Initializer.OfflineData == nullptr)
-		{
-			// Request build if not skip
-			if (InBuildPriority != ERTAccelerationStructureBuildPriority::Skip)
-			{
-				RayTracingBuildRequestIndex = GRayTracingGeometryManager.RequestBuildAccelerationStructure(this, InBuildPriority);
-				bRequiresBuild = false;
-			}
-			else
-			{
-				bRequiresBuild = true;
-			}
-		}
-		else
-		{
-			bRequiresBuild = false;
-
-			// Offline data ownership is transferred to the RHI, which discards it after use.
-			// It is no longer valid to use it after this point.
-			Initializer.OfflineData = nullptr;
-		}
-	}
+	ShaderResourceViewRHI.SafeRelease();
+	UnorderedAccessViewRHI.SafeRelease();
+	FVertexBuffer::ReleaseRHI();
 }
 
-bool FRayTracingGeometry::IsValid() const
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FIndexBuffer
+
+FIndexBuffer::FIndexBuffer() = default;
+FIndexBuffer::~FIndexBuffer() = default;
+
+void FIndexBuffer::ReleaseRHI()
 {
-	return RayTracingGeometryRHI != nullptr && Initializer.TotalPrimitiveCount > 0 && bValid;
+	IndexBufferRHI.SafeRelease();
 }
 
-void FRayTracingGeometry::InitRHI()
+FString FIndexBuffer::GetFriendlyName() const
 {
-	if (!IsRayTracingEnabled())
-		return;
-
-	ERTAccelerationStructureBuildPriority BuildPriority = Initializer.Type != ERayTracingGeometryInitializerType::Rendering
-		? ERTAccelerationStructureBuildPriority::Skip
-		: ERTAccelerationStructureBuildPriority::Normal;
-	CreateRayTracingGeometry(BuildPriority);
+	return TEXT("FIndexBuffer");
 }
 
-void FRayTracingGeometry::ReleaseRHI()
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FBufferWithRDG
+
+FBufferWithRDG::FBufferWithRDG() = default;
+FBufferWithRDG::FBufferWithRDG(const FBufferWithRDG& Other) = default;
+FBufferWithRDG& FBufferWithRDG::operator=(const FBufferWithRDG& Other) = default;
+FBufferWithRDG::~FBufferWithRDG() = default;
+
+void FBufferWithRDG::ReleaseRHI()
 {
-	RemoveBuildRequest();
-	RayTracingGeometryRHI.SafeRelease();
-}
-
-void FRayTracingGeometry::RemoveBuildRequest()
-{
-	if (HasPendingBuildRequest())
-	{
-		GRayTracingGeometryManager.RemoveBuildRequest(RayTracingBuildRequestIndex);
-		RayTracingBuildRequestIndex = INDEX_NONE;
-	}
-}
-
-void FRayTracingGeometry::ReleaseResource()
-{
-	// Release any resource references held by the initializer.
-	// This includes index and vertex buffers used for building the BLAS.
-	Initializer = FRayTracingGeometryInitializer {};
-
-	FRenderResource::ReleaseResource();
-}
-
-void FRayTracingGeometry::BoostBuildPriority(float InBoostValue) const
-{
-	check(HasPendingBuildRequest());
-	GRayTracingGeometryManager.BoostPriority(RayTracingBuildRequestIndex, InBoostValue);
-}
-
-#endif // RHI_RAYTRACING
-
-/*------------------------------------------------------------------------------
-	FGlobalDynamicVertexBuffer implementation.
-------------------------------------------------------------------------------*/
-
-/**
- * An individual dynamic vertex buffer.
- */
-class FDynamicVertexBuffer : public FVertexBuffer
-{
-public:
-	/** The aligned size of all dynamic vertex buffers. */
-	enum { ALIGNMENT = (1 << 16) }; // 64KB
-	/** Pointer to the vertex buffer mapped in main memory. */
-	uint8* MappedBuffer;
-	/** Size of the vertex buffer in bytes. */
-	uint32 BufferSize;
-	/** Number of bytes currently allocated from the buffer. */
-	uint32 AllocatedByteCount;
-	/** Number of successive frames for which AllocatedByteCount == 0. Used as a metric to decide when to free the allocation. */
-	int32 NumFramesUnused = 0;
-
-	/** Default constructor. */
-	explicit FDynamicVertexBuffer(uint32 InMinBufferSize)
-		: MappedBuffer(NULL)
-		, BufferSize(FMath::Max<uint32>(Align(InMinBufferSize,ALIGNMENT),ALIGNMENT))
-		, AllocatedByteCount(0)
-	{
-	}
-
-	/**
-	 * Locks the vertex buffer so it may be written to.
-	 */
-	void Lock()
-	{
-		check(MappedBuffer == NULL);
-		check(AllocatedByteCount == 0);
-		check(IsValidRef(VertexBufferRHI));
-		MappedBuffer = (uint8*)RHILockBuffer(VertexBufferRHI, 0, BufferSize, RLM_WriteOnly);
-	}
-
-	/**
-	 * Unocks the buffer so the GPU may read from it.
-	 */
-	void Unlock()
-	{
-		check(MappedBuffer != NULL);
-		check(IsValidRef(VertexBufferRHI));
-		RHIUnlockBuffer(VertexBufferRHI);
-		MappedBuffer = NULL;
-		AllocatedByteCount = 0;
-		NumFramesUnused = 0;
-	}
-
-	// FRenderResource interface.
-	virtual void InitRHI() override
-	{
-		check(!IsValidRef(VertexBufferRHI));
-		FRHIResourceCreateInfo CreateInfo(TEXT("FDynamicVertexBuffer"));
-		VertexBufferRHI = RHICreateVertexBuffer(BufferSize, BUF_Volatile, CreateInfo);
-		MappedBuffer = NULL;
-		AllocatedByteCount = 0;
-	}
-
-	virtual void ReleaseRHI() override
-	{
-		FVertexBuffer::ReleaseRHI();
-		MappedBuffer = NULL;
-		AllocatedByteCount = 0;
-	}
-
-	virtual FString GetFriendlyName() const override
-	{
-		return TEXT("FDynamicVertexBuffer");
-	}
-};
-
-/**
- * A pool of dynamic vertex buffers.
- */
-struct FDynamicVertexBufferPool
-{
-	/** List of vertex buffers. */
-	TIndirectArray<FDynamicVertexBuffer> VertexBuffers;
-	/** The current buffer from which allocations are being made. */
-	FDynamicVertexBuffer* CurrentVertexBuffer;
-
-	/** Default constructor. */
-	FDynamicVertexBufferPool()
-		: CurrentVertexBuffer(NULL)
-	{
-	}
-
-	/** Destructor. */
-	~FDynamicVertexBufferPool()
-	{
-		int32 NumVertexBuffers = VertexBuffers.Num();
-		for (int32 BufferIndex = 0; BufferIndex < NumVertexBuffers; ++BufferIndex)
-		{
-			VertexBuffers[BufferIndex].ReleaseResource();
-		}
-	}
-};
-
-FGlobalDynamicVertexBuffer::FGlobalDynamicVertexBuffer()
-	: TotalAllocatedSinceLastCommit(0)
-{
-	Pool = new FDynamicVertexBufferPool();
-}
-
-FGlobalDynamicVertexBuffer::~FGlobalDynamicVertexBuffer()
-{
-	delete Pool;
-	Pool = NULL;
-}
-
-FGlobalDynamicVertexBuffer::FAllocation FGlobalDynamicVertexBuffer::Allocate(uint32 SizeInBytes)
-{
-	FAllocation Allocation;
-
-	TotalAllocatedSinceLastCommit += SizeInBytes;
-	if (IsRenderAlarmLoggingEnabled())
-	{
-		UE_LOG(LogRendererCore, Warning, TEXT("FGlobalDynamicVertexBuffer::Allocate(%u), will have allocated %u total this frame"), SizeInBytes, TotalAllocatedSinceLastCommit);
-	}
-
-	FDynamicVertexBuffer* VertexBuffer = Pool->CurrentVertexBuffer;
-	if (VertexBuffer == NULL || VertexBuffer->AllocatedByteCount + SizeInBytes > VertexBuffer->BufferSize)
-	{
-		// Find a buffer in the pool big enough to service the request.
-		VertexBuffer = NULL;
-		for (int32 BufferIndex = 0, NumBuffers = Pool->VertexBuffers.Num(); BufferIndex < NumBuffers; ++BufferIndex)
-		{
-			FDynamicVertexBuffer& VertexBufferToCheck = Pool->VertexBuffers[BufferIndex];
-			if (VertexBufferToCheck.AllocatedByteCount + SizeInBytes <= VertexBufferToCheck.BufferSize)
-			{
-				VertexBuffer = &VertexBufferToCheck;
-				break;
-			}
-		}
-
-		// Create a new vertex buffer if needed.
-		if (VertexBuffer == NULL)
-		{
-			VertexBuffer = new FDynamicVertexBuffer(SizeInBytes);
-			Pool->VertexBuffers.Add(VertexBuffer);
-			VertexBuffer->InitResource();
-		}
-
-		// Lock the buffer if needed.
-		if (VertexBuffer->MappedBuffer == NULL)
-		{
-			VertexBuffer->Lock();
-		}
-
-		// Remember this buffer, we'll try to allocate out of it in the future.
-		Pool->CurrentVertexBuffer = VertexBuffer;
-	}
-
-	check(VertexBuffer != NULL);
-	checkf(VertexBuffer->AllocatedByteCount + SizeInBytes <= VertexBuffer->BufferSize, TEXT("Global vertex buffer allocation failed: BufferSize=%d AllocatedByteCount=%d SizeInBytes=%d"), VertexBuffer->BufferSize, VertexBuffer->AllocatedByteCount, SizeInBytes);
-	Allocation.Buffer = VertexBuffer->MappedBuffer + VertexBuffer->AllocatedByteCount;
-	Allocation.VertexBuffer = VertexBuffer;
-	Allocation.VertexOffset = VertexBuffer->AllocatedByteCount;
-	VertexBuffer->AllocatedByteCount += SizeInBytes;
-
-	return Allocation;
-}
-
-bool FGlobalDynamicVertexBuffer::IsRenderAlarmLoggingEnabled() const
-{
-	return GMaxVertexBytesAllocatedPerFrame > 0 && TotalAllocatedSinceLastCommit >= (size_t)GMaxVertexBytesAllocatedPerFrame;
-}
-
-void FGlobalDynamicVertexBuffer::Commit()
-{
-	for (int32 BufferIndex = 0, NumBuffers = Pool->VertexBuffers.Num(); BufferIndex < NumBuffers; ++BufferIndex)
-	{
-		FDynamicVertexBuffer& VertexBuffer = Pool->VertexBuffers[BufferIndex];
-		if (VertexBuffer.MappedBuffer != NULL)
-		{
-			VertexBuffer.Unlock();
-		}
-		else if (GGlobalBufferNumFramesUnusedThresold && !VertexBuffer.AllocatedByteCount)
-		{
-			++VertexBuffer.NumFramesUnused;
-			if (VertexBuffer.NumFramesUnused >= GGlobalBufferNumFramesUnusedThresold)
-			{
-				// Remove the buffer, assumes they are unordered.
-				VertexBuffer.ReleaseResource();
-				Pool->VertexBuffers.RemoveAtSwap(BufferIndex);
-				--BufferIndex;
-				--NumBuffers;
-			}
-		}
-	}
-	Pool->CurrentVertexBuffer = NULL;
-	TotalAllocatedSinceLastCommit = 0;
-}
-
-FGlobalDynamicVertexBuffer InitViewDynamicVertexBuffer;
-FGlobalDynamicVertexBuffer InitShadowViewDynamicVertexBuffer;
-
-/*------------------------------------------------------------------------------
-	FGlobalDynamicIndexBuffer implementation.
-------------------------------------------------------------------------------*/
-
-/**
- * An individual dynamic index buffer.
- */
-class FDynamicIndexBuffer : public FIndexBuffer
-{
-public:
-	/** The aligned size of all dynamic index buffers. */
-	enum { ALIGNMENT = (1 << 16) }; // 64KB
-	/** Pointer to the index buffer mapped in main memory. */
-	uint8* MappedBuffer;
-	/** Size of the index buffer in bytes. */
-	uint32 BufferSize;
-	/** Number of bytes currently allocated from the buffer. */
-	uint32 AllocatedByteCount;
-	/** Stride of the buffer in bytes. */
-	uint32 Stride;
-	/** Number of successive frames for which AllocatedByteCount == 0. Used as a metric to decide when to free the allocation. */
-	int32 NumFramesUnused = 0;
-
-	/** Initialization constructor. */
-	explicit FDynamicIndexBuffer(uint32 InMinBufferSize, uint32 InStride)
-		: MappedBuffer(NULL)
-		, BufferSize(FMath::Max<uint32>(Align(InMinBufferSize,ALIGNMENT),ALIGNMENT))
-		, AllocatedByteCount(0)
-		, Stride(InStride)
-	{
-	}
-
-	/**
-	 * Locks the vertex buffer so it may be written to.
-	 */
-	void Lock()
-	{
-		check(MappedBuffer == NULL);
-		check(AllocatedByteCount == 0);
-		check(IsValidRef(IndexBufferRHI));
-		MappedBuffer = (uint8*)RHILockBuffer(IndexBufferRHI, 0, BufferSize, RLM_WriteOnly);
-	}
-
-	/**
-	 * Unocks the buffer so the GPU may read from it.
-	 */
-	void Unlock()
-	{
-		check(MappedBuffer != NULL);
-		check(IsValidRef(IndexBufferRHI));
-		RHIUnlockBuffer(IndexBufferRHI);
-		MappedBuffer = NULL;
-		AllocatedByteCount = 0;
-		NumFramesUnused = 0;
-	}
-
-	// FRenderResource interface.
-	virtual void InitRHI() override
-	{
-		check(!IsValidRef(IndexBufferRHI));
-		FRHIResourceCreateInfo CreateInfo(TEXT("FDynamicIndexBuffer"));
-		IndexBufferRHI = RHICreateIndexBuffer(Stride, BufferSize, BUF_Volatile, CreateInfo);
-		MappedBuffer = NULL;
-		AllocatedByteCount = 0;
-	}
-
-	virtual void ReleaseRHI() override
-	{
-		FIndexBuffer::ReleaseRHI();
-		MappedBuffer = NULL;
-		AllocatedByteCount = 0;
-	}
-
-	virtual FString GetFriendlyName() const override
-	{
-		return TEXT("FDynamicIndexBuffer");
-	}
-};
-
-/**
- * A pool of dynamic index buffers.
- */
-struct FDynamicIndexBufferPool
-{
-	/** List of index buffers. */
-	TIndirectArray<FDynamicIndexBuffer> IndexBuffers;
-	/** The current buffer from which allocations are being made. */
-	FDynamicIndexBuffer* CurrentIndexBuffer;
-	/** Stride of buffers in this pool. */
-	uint32 BufferStride;
-
-	/** Initialization constructor. */
-	explicit FDynamicIndexBufferPool(uint32 InBufferStride)
-		: CurrentIndexBuffer(NULL)
-		, BufferStride(InBufferStride)
-	{
-	}
-
-	/** Destructor. */
-	~FDynamicIndexBufferPool()
-	{
-		int32 NumIndexBuffers = IndexBuffers.Num();
-		for (int32 BufferIndex = 0; BufferIndex < NumIndexBuffers; ++BufferIndex)
-		{
-			IndexBuffers[BufferIndex].ReleaseResource();
-		}
-	}
-};
-
-FGlobalDynamicIndexBuffer::FGlobalDynamicIndexBuffer()
-{
-	Pools[0] = new FDynamicIndexBufferPool(sizeof(uint16));
-	Pools[1] = new FDynamicIndexBufferPool(sizeof(uint32));
-}
-
-FGlobalDynamicIndexBuffer::~FGlobalDynamicIndexBuffer()
-{
-	for (int32 i = 0; i < 2; ++i)
-	{
-		delete Pools[i];
-		Pools[i] = NULL;
-	}
-}
-
-FGlobalDynamicIndexBuffer::FAllocation FGlobalDynamicIndexBuffer::Allocate(uint32 NumIndices, uint32 IndexStride)
-{
-	FAllocation Allocation;
-
-	if (IndexStride != 2 && IndexStride != 4)
-	{
-		return Allocation;
-	}
-
-	FDynamicIndexBufferPool* Pool = Pools[IndexStride >> 2]; // 2 -> 0, 4 -> 1
-
-	uint32 SizeInBytes = NumIndices * IndexStride;
-	FDynamicIndexBuffer* IndexBuffer = Pool->CurrentIndexBuffer;
-	if (IndexBuffer == NULL || IndexBuffer->AllocatedByteCount + SizeInBytes > IndexBuffer->BufferSize)
-	{
-		// Find a buffer in the pool big enough to service the request.
-		IndexBuffer = NULL;
-		for (int32 BufferIndex = 0, NumBuffers = Pool->IndexBuffers.Num(); BufferIndex < NumBuffers; ++BufferIndex)
-		{
-			FDynamicIndexBuffer& IndexBufferToCheck = Pool->IndexBuffers[BufferIndex];
-			if (IndexBufferToCheck.AllocatedByteCount + SizeInBytes <= IndexBufferToCheck.BufferSize)
-			{
-				IndexBuffer = &IndexBufferToCheck;
-				break;
-			}
-		}
-
-		// Create a new index buffer if needed.
-		if (IndexBuffer == NULL)
-		{
-			IndexBuffer = new FDynamicIndexBuffer(SizeInBytes, Pool->BufferStride);
-			Pool->IndexBuffers.Add(IndexBuffer);
-			IndexBuffer->InitResource();
-		}
-
-		// Lock the buffer if needed.
-		if (IndexBuffer->MappedBuffer == NULL)
-		{
-			IndexBuffer->Lock();
-		}
-		Pool->CurrentIndexBuffer = IndexBuffer;
-	}
-
-	check(IndexBuffer != NULL);
-	checkf(IndexBuffer->AllocatedByteCount + SizeInBytes <= IndexBuffer->BufferSize, TEXT("Global index buffer allocation failed: BufferSize=%d AllocatedByteCount=%d SizeInBytes=%d"), IndexBuffer->BufferSize, IndexBuffer->AllocatedByteCount, SizeInBytes);
-
-	Allocation.Buffer = IndexBuffer->MappedBuffer + IndexBuffer->AllocatedByteCount;
-	Allocation.IndexBuffer = IndexBuffer;
-	Allocation.FirstIndex = IndexBuffer->AllocatedByteCount / IndexStride;
-	IndexBuffer->AllocatedByteCount += SizeInBytes;
-
-	return Allocation;
-}
-
-void FGlobalDynamicIndexBuffer::Commit()
-{
-	for (int32 i = 0; i < 2; ++i)
-	{
-		FDynamicIndexBufferPool* Pool = Pools[i];
-
-		for (int32 BufferIndex = 0, NumBuffers = Pool->IndexBuffers.Num(); BufferIndex < NumBuffers; ++BufferIndex)
-		{
-			FDynamicIndexBuffer& IndexBuffer = Pool->IndexBuffers[BufferIndex];
-			if (IndexBuffer.MappedBuffer != NULL)
-			{
-				IndexBuffer.Unlock();
-			}
-			else if (GGlobalBufferNumFramesUnusedThresold && !IndexBuffer.AllocatedByteCount)
-			{
-				++IndexBuffer.NumFramesUnused;
-				if (IndexBuffer.NumFramesUnused >= GGlobalBufferNumFramesUnusedThresold)
-				{
-					// Remove the buffer, assumes they are unordered.
-					IndexBuffer.ReleaseResource();
-					Pool->IndexBuffers.RemoveAtSwap(BufferIndex);
-					--BufferIndex;
-					--NumBuffers;
-				}
-			}
-		}
-		Pool->CurrentIndexBuffer = NULL;
-	}
+	Buffer = nullptr;
+	FRenderResource::ReleaseRHI();
 }
 
 /*=============================================================================
@@ -1122,64 +757,4 @@ void FMipBiasFade::SetNewMipCount( float ActualMipCount, float TargetMipCount, d
 			MipCountFadingRate = -1.0f / (GMipFadeSettings[FadeSetting].FadeOutSpeed * MipCountDelta);
 		}
 	}
-}
-
-class FTextureSamplerStateCache : public FRenderResource
-{
-public:
-	TMap<FSamplerStateInitializerRHI, FRHISamplerState*> Samplers;
-
-	virtual void ReleaseRHI() override
-	{
-		for (auto Pair : Samplers)
-		{
-			Pair.Value->Release();
-		}
-		Samplers.Empty();
-	}
-};
-
-TGlobalResource<FTextureSamplerStateCache> GTextureSamplerStateCache;
-
-FRHISamplerState* FTexture::GetOrCreateSamplerState(const FSamplerStateInitializerRHI& Initializer)
-{
-	// This sampler cache is supposed to be used only from RT
-	// Add a lock here if it's used from multiple threads
-	check(IsInRenderingThread());
-	
-	FRHISamplerState** Found = GTextureSamplerStateCache.Samplers.Find(Initializer);
-	if (Found)
-	{
-		return *Found;
-	}
-	
-	FSamplerStateRHIRef NewState = RHICreateSamplerState(Initializer);
-	
-	// Add an extra reference so we don't have TRefCountPtr in the maps
-	NewState->AddRef();
-	GTextureSamplerStateCache.Samplers.Add(Initializer, NewState);
-	return NewState;
-}
-
-bool IsRayTracingEnabled()
-{
-	checkf(GIsRHIInitialized, TEXT("IsRayTracingEnabled() may only be called once RHI is initialized."));
-
-#if DO_CHECK && WITH_EDITOR
-	{
-		// This function must not be called while cooking
-		if (IsRunningCookCommandlet())
-		{
-			return false;
-		}
-	}
-#endif // DO_CHECK && WITH_EDITOR
-
-	extern RENDERCORE_API bool GUseRayTracing;
-	return GUseRayTracing;
-}
-
-bool IsRayTracingEnabled(EShaderPlatform ShaderPlatform)
-{
-	return IsRayTracingEnabled() && RHISupportsRayTracing(ShaderPlatform);
 }

@@ -4,81 +4,58 @@
 #include "Units/RigUnitContext.h"
 #include "Features/IModularFeatures.h"
 #include "Algo/BinarySearch.h"
-
-#include "tinysplinecxx.h"
+#include "RigUnit_FitChainToCurve.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSplineUnits)
 
 FRigUnit_ControlRigSplineFromPoints_Execute()
 {
-	switch (Context.State)
-	{
-		case EControlRigState::Init:
-		case EControlRigState::Update:
-		{
-			// reset the spline
-			Spline = FControlRigSpline();
+	// reset the spline
+	Spline = FControlRigSpline();
 
-			if (Points.Num() < 4)
-			{
-				UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Cannot create a spline with less than 4 points (%d received)."), Points.Num());
-				return;
-			}
-				
-			const TArrayView<const FVector> PointsView(Points.GetData(), Points.Num());
-			Spline.SetControlPoints(PointsView, SplineMode, SamplesPerSegment, Compression, Stretch);
-			break;
-		}
-		default:
-		{
-			checkNoEntry(); // Execute is only defined for Init and Update
-			break;
-		}
+	if (Points.Num() < 4)
+	{
+		UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Cannot create a spline with less than 4 points (%d received)."), Points.Num());
+		return;
 	}
+		
+	const TArrayView<const FVector> PointsView(Points.GetData(), Points.Num());
+	Spline.SetControlPoints(PointsView, SplineMode, bClosed, SamplesPerSegment, Compression, Stretch);
 }
 
 FRigUnit_SetSplinePoints_Execute()
 {
-	if (Context.State == EControlRigState::Init)
-	{
-		return;
-	}
-	
 	if (!Spline.SplineData.IsValid())
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline."));
 		return;
 	}
 	
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}	
-#endif
-	
-	if (Points.Num() != Spline.SplineData->GetControlPoints().Num())
+
+	if (!Spline.SplineData->bClosed)
 	{
-		UE_LOG(LogControlRig, Error, TEXT("Number of input points does not match the number of point in the spline."));
-		return;
+		if (Points.Num() != Spline.SplineData->GetControlPoints().Num())
+		{
+			UE_LOG(LogControlRig, Error, TEXT("Number of input points does not match the number of point in the spline."));
+			return;
+		}
+	}
+	else if(Points.Num() != Spline.SplineData->GetControlPoints().Num() - Spline.GetDegree())
+	{
+		if (Points.Num() != Spline.SplineData->GetControlPoints().Num())
+		{
+			UE_LOG(LogControlRig, Error, TEXT("Number of input points does not match the number of point in the spline."));
+			return;
+		}
 	}
 
-	switch (Context.State)
-	{
-		case EControlRigState::Init:
-		case EControlRigState::Update:
-		{
-			const TArrayView<const FVector> PointsView(Points.GetData(), Points.Num());
-			Spline.SetControlPoints(PointsView, Spline.SplineData->SplineMode, Spline.SplineData->SamplesPerSegment, Spline.SplineData->Compression, Spline.SplineData->Stretch);
-			break;
-		}
-		default:
-		{
-			checkNoEntry(); // Execute is only defined for Init and Update
-			break;
-		}
-	}
+	const TArrayView<const FVector> PointsView(Points.GetData(), Points.Num());
+	Spline.SetControlPoints(PointsView, Spline.SplineData->SplineMode, Spline.SplineData->bClosed, Spline.SplineData->SamplesPerSegment, Spline.SplineData->Compression, Spline.SplineData->Stretch);
 }
 
 FRigUnit_PositionFromControlRigSpline_Execute()
@@ -88,28 +65,13 @@ FRigUnit_PositionFromControlRigSpline_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}
-#endif
 	
-	switch (Context.State)
-	{
-		case EControlRigState::Init:
-		case EControlRigState::Update:
-		{
-			Position = Spline.PositionAtParam(U);
-			break;
-		}
-		default:
-		{
-			checkNoEntry(); // Execute is only defined for Init and Update
-			break;
-		}
-	}
+	Position = Spline.PositionAtParam(U);
 }
 
 FRigUnit_TransformFromControlRigSpline_Execute()
@@ -119,47 +81,32 @@ FRigUnit_TransformFromControlRigSpline_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}
-#endif	
 	
-	switch (Context.State)
+	FVector UpVectorNormalized = UpVector;
+	UpVectorNormalized.Normalize();
+
+	const float ClampedU = FMath::Clamp<float>(U, 0.f, 1.f);
+	const float ClampedRoll = FMath::Clamp<float>(Roll, -180.f, 180.f);
+
+	FVector Tangent = Spline.TangentAtParam(ClampedU);
+
+	// Check if Tangent can be normalized. If not, keep the same tangent as before.
+	if (!Tangent.Normalize())
 	{
-		case EControlRigState::Init:
-		case EControlRigState::Update:
-		{
-			FVector UpVectorNormalized = UpVector;
-			UpVectorNormalized.Normalize();
-
-			const float ClampedU = FMath::Clamp<float>(U, 0.f, 1.f);
-			const float ClampedRoll = FMath::Clamp<float>(Roll, -180.f, 180.f);
-		
-			FVector Tangent = Spline.TangentAtParam(ClampedU);
-
-			// Check if Tangent can be normalized. If not, keep the same tangent as before.
-			if (!Tangent.Normalize())
-			{
-				Tangent = Transform.ToMatrixNoScale().GetUnitAxis(EAxis::X);
-			}
-			FVector Binormal = FVector::CrossProduct(Tangent, UpVectorNormalized);
-			Binormal = Binormal.RotateAngleAxis(ClampedRoll * ClampedU, Tangent);
-			
-			FMatrix RotationMatrix = FRotationMatrix::MakeFromXZ(Tangent, Binormal);
-
-			Transform.SetFromMatrix(RotationMatrix);
-			Transform.SetTranslation(Spline.PositionAtParam(U));
-			break;
-		}
-		default:
-		{
-			checkNoEntry(); // Execute is only defined for Init and Update
-			break;
-		}
+		Tangent = Transform.ToMatrixNoScale().GetUnitAxis(EAxis::X);
 	}
+	FVector Binormal = FVector::CrossProduct(Tangent, UpVectorNormalized);
+	Binormal = Binormal.RotateAngleAxis(ClampedRoll * ClampedU, Tangent);
+	
+	FMatrix RotationMatrix = FRotationMatrix::MakeFromXZ(Tangent, Binormal);
+
+	Transform.SetFromMatrix(RotationMatrix);
+	Transform.SetTranslation(Spline.PositionAtParam(U));
 }
 
 FRigUnit_TangentFromControlRigSpline_Execute()
@@ -169,51 +116,30 @@ FRigUnit_TangentFromControlRigSpline_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}
-#endif	
 	
-	switch (Context.State)
+	const float ClampedU = FMath::Clamp<float>(U, 0.f, 1.f);
+
+	FVector NewTangent = Spline.TangentAtParam(ClampedU);
+
+	// Check if Tangent can be normalized. If not, keep the same tangent as before.
+	if (!NewTangent.Normalize())
 	{
-		case EControlRigState::Init:
-		case EControlRigState::Update:
-		{
-			const float ClampedU = FMath::Clamp<float>(U, 0.f, 1.f);
-
-			FVector NewTangent = Spline.TangentAtParam(ClampedU);
-
-			// Check if Tangent can be normalized. If not, keep the same tangent as before.
-			if (!NewTangent.Normalize())
-			{
-				NewTangent = Tangent;
-			}
-			else
-			{
-				Tangent = NewTangent;
-			}
-			
-			break;
-		}
-		default:
-		{
-			checkNoEntry(); // Execute is only defined for Init and Update
-			break;
-		}
+		NewTangent = Tangent;
+	}
+	else
+	{
+		Tangent = NewTangent;
 	}
 }
 
 FRigUnit_DrawControlRigSpline_Execute()
 {
-	if (Context.State == EControlRigState::Init)
-	{
-		return;
-	}
-
-	if (Context.DrawInterface == nullptr)
+	if (ExecuteContext.GetDrawInterface() == nullptr)
 	{
 		return;
 	}
@@ -223,16 +149,14 @@ FRigUnit_DrawControlRigSpline_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}
-#endif	
 
 	int32 Count = FMath::Clamp<int32>(Detail, 4, 64);
-	FControlRigDrawInstruction Instruction(EControlRigDrawSettings::LineStrip, Color, Thickness);
+	FRigVMDrawInstruction Instruction(ERigVMDrawSettings::LineStrip, Color, Thickness);
 	Instruction.Positions.SetNumUninitialized(Count);
 
 	float T = 0;
@@ -244,7 +168,7 @@ FRigUnit_DrawControlRigSpline_Execute()
 		T += Step;
 	}
 
-	Context.DrawInterface->Instructions.Add(Instruction);
+	ExecuteContext.GetDrawInterface()->Instructions.Add(Instruction);
 }
 
 FRigUnit_GetLengthControlRigSpline_Execute()
@@ -255,35 +179,20 @@ FRigUnit_GetLengthControlRigSpline_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		Length = 0;
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}
-#endif	
 	
-	switch (Context.State)
-	{
-		case EControlRigState::Init:
-		case EControlRigState::Update:
-		{
-			Length = Spline.SplineData->AccumulatedLenth.Last();
-			break;
-		}
-		default:
-		{
-			checkNoEntry(); // Execute is only defined for Init and Update
-			break;
-		}
-	}
+	Length = Spline.SplineData->AccumulatedLenth.Last();
 }
 
 FRigUnit_FitChainToSplineCurve_Execute()
 {
 	FRigUnit_FitChainToSplineCurveItemArray::StaticExecute(
-		RigVMExecuteContext,
+		ExecuteContext,
 		Items.Keys,
 		Spline,
 		Alignment,
@@ -298,9 +207,7 @@ FRigUnit_FitChainToSplineCurve_Execute()
 		Weight,
 		bPropagateToChildren,
 		DebugSettings,
-		WorkData,
-		ExecuteContext,
-		Context);
+		WorkData);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_FitChainToSplineCurve::GetUpgradeInfo() const
@@ -340,13 +247,11 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}
-#endif	
 
 	float& ChainLength = WorkData.ChainLength;
 	TArray<FVector>& ItemPositions = WorkData.ItemPositions;
@@ -358,12 +263,6 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 	TArray<int32>& ItemRotationB = WorkData.ItemRotationB;
 	TArray<float>& ItemRotationT = WorkData.ItemRotationT;
 	TArray<FTransform>& ItemLocalTransforms = WorkData.ItemLocalTransforms;
-
-	if (Context.State == EControlRigState::Init)
-	{
-		CachedItems.Reset();
-		return;
-	}
 
 	if(CachedItems.Num() == 0 && Items.Num() > 1)
 	{
@@ -714,10 +613,10 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 		}
 	}
 
-	if (Context.DrawInterface != nullptr && DebugSettings.bEnabled)
+	if (ExecuteContext.GetDrawInterface() != nullptr && DebugSettings.bEnabled)
 	{
 		int32 Count = 64;
-		FControlRigDrawInstruction Instruction(EControlRigDrawSettings::LineStrip, DebugSettings.CurveColor, DebugSettings.Scale, DebugSettings.WorldOffset);
+		FRigVMDrawInstruction Instruction(ERigVMDrawSettings::LineStrip, DebugSettings.CurveColor, DebugSettings.Scale, DebugSettings.WorldOffset);
 		Instruction.Positions.SetNumUninitialized(Count);
 
 		float T = 0;
@@ -728,21 +627,21 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 			Instruction.Positions[Index] = Spline.PositionAtParam(T);
 			T += Step;
 		}
-		Context.DrawInterface->Instructions.Add(Instruction);
+		ExecuteContext.GetDrawInterface()->Instructions.Add(Instruction);
 
 		for (auto Point : Spline.SplineData->GetControlPoints())
 		{
-			Context.DrawInterface->DrawPoint(DebugSettings.WorldOffset, Point, DebugSettings.Scale * 6, DebugSettings.CurveColor);
+			ExecuteContext.GetDrawInterface()->DrawPoint(DebugSettings.WorldOffset, Point, DebugSettings.Scale * 6, DebugSettings.CurveColor);
 		}
 
-		Context.DrawInterface->DrawLineStrip(DebugSettings.WorldOffset, CurvePositions, DebugSettings.SegmentsColor, DebugSettings.Scale);
-		Context.DrawInterface->DrawPoints(DebugSettings.WorldOffset, CurvePositions, DebugSettings.Scale * 4.f, DebugSettings.SegmentsColor);
+		ExecuteContext.GetDrawInterface()->DrawLineStrip(DebugSettings.WorldOffset, CurvePositions, DebugSettings.SegmentsColor, DebugSettings.Scale);
+		ExecuteContext.GetDrawInterface()->DrawPoints(DebugSettings.WorldOffset, CurvePositions, DebugSettings.Scale * 4.f, DebugSettings.SegmentsColor);
 	}
 }
 
 FRigUnit_FitSplineCurveToChain_Execute()
 {
-	FRigUnit_FitSplineCurveToChainItemArray::StaticExecute(RigVMExecuteContext, Items.Keys, Spline, ExecuteContext, Context);
+	FRigUnit_FitSplineCurveToChainItemArray::StaticExecute(ExecuteContext, Items.Keys, Spline);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_FitSplineCurveToChain::GetUpgradeInfo() const
@@ -769,16 +668,9 @@ FRigUnit_FitSplineCurveToChainItemArray_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
-		return;
-	}
-#endif	
-
-	if (Context.State == EControlRigState::Init)
-	{
 		return;
 	}
 
@@ -787,6 +679,8 @@ FRigUnit_FitSplineCurveToChainItemArray_Execute()
 		UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Cannot create a spline with less than 4 points (%d received)."), Items.Num());
 		return;
 	}
+
+	const bool bClosed = Spline.SplineData->bClosed;
 
 	// 1.- Create spline from chain
 	TArray<FVector> AuxControlPoints;
@@ -798,24 +692,27 @@ FRigUnit_FitSplineCurveToChainItemArray_Execute()
 	}
     FControlRigSpline AuxSpline;
 	const TArrayView<const FVector> PointsView(AuxControlPoints.GetData(), AuxControlPoints.Num());
-	AuxSpline.SetControlPoints(PointsView, ESplineType::Hermite, Spline.SplineData->SamplesPerSegment);
+	AuxSpline.SetControlPoints(PointsView, ESplineType::Hermite, bClosed, Spline.SplineData->SamplesPerSegment);
 	
 
 	// 2.-  for each control point in the original spline
 	//			figure out its u in the original spline (preprocess)
 	//			query position at u on the new spline
-	const TArray<FVector>& ControlPoints = Spline.SplineData->GetControlPoints();
+	const TArray<FVector> ControlPoints = Spline.SplineData->GetControlPointsWithoutDuplicates();
+	const int32 NumControlPoints = ControlPoints.Num();
 	TArray<FVector> NewControlPoints;
-	NewControlPoints.SetNumUninitialized(ControlPoints.Num());
-	for (int32 i = 0; i < ControlPoints.Num(); ++i)
+	NewControlPoints.SetNumUninitialized(NumControlPoints);
+	float U = 0;
+	const float DeltaU = bClosed ? 1 / (float)(NumControlPoints) : 1 / (float)(NumControlPoints - 1);
+	for (int32 i = 0; i < NumControlPoints; ++i)
 	{
-		float U = i / (float)(ControlPoints.Num() - 1);
 		FVector NewPosition = AuxSpline.PositionAtParam(U);
 		NewControlPoints[i] = NewPosition;
+		U += DeltaU;
 	}
 
 	const TArrayView<const FVector> NewPointsView(NewControlPoints.GetData(), NewControlPoints.Num());
-	Spline.SetControlPoints(NewPointsView, Spline.SplineData->SplineMode, Spline.SplineData->SamplesPerSegment, Spline.SplineData->Compression, Spline.SplineData->Stretch);
+	Spline.SetControlPoints(NewPointsView, Spline.SplineData->SplineMode, bClosed, Spline.SplineData->SamplesPerSegment, Spline.SplineData->Compression, Spline.SplineData->Stretch);
 }
 
 FRigUnit_ClosestParameterFromControlRigSpline_Execute()
@@ -825,69 +722,53 @@ FRigUnit_ClosestParameterFromControlRigSpline_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}
-#endif	
 	
-	switch (Context.State)
+	const int32 SampleCount = Spline.SplineData->SamplesArray.Num();
+
+	auto DistanceToSegment = [&](int32 Index0, int32 Index1, float& OutParam) -> float
 	{
-		case EControlRigState::Init:
-		case EControlRigState::Update:
+		const int32 MaxIndex = Spline.SplineData->SamplesArray.Num()-1;
+		const FVector& P0 = Spline.SplineData->SamplesArray[Index0];
+		const FVector& P1 = Spline.SplineData->SamplesArray[Index1];
+
+		const FVector V = P1 - P0;
+		const FVector U = P0 - Position;
+		const float T = - U.Dot(V) / V.Dot(V);
+		if (T > 0 && T < 1)
 		{
-				const int32 SampleCount = Spline.SplineData->SamplesArray.Num();
-
-				auto DistanceToSegment = [&](int32 Index0, int32 Index1, float& OutParam) -> float
-				{
-					const int32 MaxIndex = Spline.SplineData->SamplesArray.Num()-1;
-					const FVector& P0 = Spline.SplineData->SamplesArray[Index0];
-					const FVector& P1 = Spline.SplineData->SamplesArray[Index1];
-
-					const FVector V = P1 - P0;
-					const FVector U = P0 - Position;
-					const float T = - U.Dot(V) / V.Dot(V);
-					if (T > 0 && T < 1)
-					{
-						OutParam = (1-T)*(Index0/(float)MaxIndex) + T*(Index1/(float)MaxIndex);
-						return U.Cross(V).Length() / V.Length();
-					}
-
-					const float D0 = FVector::Distance(P0, Position);
-					const float D1 = FVector::Distance(P1, Position);
-					if (D0 < D1)
-					{
-						OutParam = Index0/(float)MaxIndex;
-						return D0;
-					}
-
-					OutParam = Index1/(float)MaxIndex;
-					return D1;
-				};
-
-				float ClosestDistance = TNumericLimits<float>::Max();
-				for (int32 i=1; i<SampleCount; ++i)
-				{
-					float Param;
-					float Distance = DistanceToSegment(i-1, i, Param);
-
-					if (Distance < ClosestDistance)
-					{
-						ClosestDistance = Distance;
-						U = Param;
-					}
-				}				
-				
-			break;
+			OutParam = (1-T)*(Index0/(float)MaxIndex) + T*(Index1/(float)MaxIndex);
+			return U.Cross(V).Length() / V.Length();
 		}
-		default:
+
+		const float D0 = FVector::Distance(P0, Position);
+		const float D1 = FVector::Distance(P1, Position);
+		if (D0 < D1)
 		{
-			checkNoEntry(); // Execute is only defined for Init and Update
-			break;
+			OutParam = Index0/(float)MaxIndex;
+			return D0;
 		}
-	}
+
+		OutParam = Index1/(float)MaxIndex;
+		return D1;
+	};
+
+	float ClosestDistance = TNumericLimits<float>::Max();
+	for (int32 i=1; i<SampleCount; ++i)
+	{
+		float Param;
+		float Distance = DistanceToSegment(i-1, i, Param);
+
+		if (Distance < ClosestDistance)
+		{
+			ClosestDistance = Distance;
+			U = Param;
+		}
+	}				
 }
 
 FRigUnit_ParameterAtPercentage_Execute()
@@ -897,56 +778,40 @@ FRigUnit_ParameterAtPercentage_Execute()
 		return;
 	}
 
-#if !(USE_TINYSPLINE)
 	if (Spline.SplineData->Spline == nullptr)
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
 	}
-#endif	
 	
-	switch (Context.State)
+	const int32 SampleCount = Spline.SplineData->SamplesArray.Num();
+
+	float Length = Spline.SplineData->AccumulatedLenth.Last();
+	float ClampedPercentage = FMath::Clamp(Percentage, 0.f, 1.f);
+
+	float SearchLength = Length * ClampedPercentage;
+	int32 NextIndex = Algo::LowerBound(Spline.SplineData->AccumulatedLenth, SearchLength);
+
+	if (NextIndex >= SampleCount)
 	{
-	case EControlRigState::Init:
-	case EControlRigState::Update:
-		{
-			const int32 SampleCount = Spline.SplineData->SamplesArray.Num();
-
-			float Length = Spline.SplineData->AccumulatedLenth.Last();
-			float ClampedPercentage = FMath::Clamp(Percentage, 0.f, 1.f);
-
-			float SearchLength = Length * ClampedPercentage;
-			int32 NextIndex = Algo::LowerBound(Spline.SplineData->AccumulatedLenth, SearchLength);
-
-			if (NextIndex >= SampleCount)
-			{
-				U = 1.f;
-				return;
-			}
-
-			if (NextIndex <= 0)
-			{
-				U = 0.f;
-				return;
-			}
-
-			float UPrev = (NextIndex - 1) / (float) (SampleCount - 1);
-			float UNext = NextIndex / (float) (SampleCount - 1);
-
-			float LengthPrev = Spline.SplineData->AccumulatedLenth[NextIndex-1];
-			float LengthNext = Spline.SplineData->AccumulatedLenth[NextIndex];
-
-			float Interp = (SearchLength - LengthPrev) / (LengthNext - LengthPrev);
-			U = (1 - Interp) * UPrev + Interp * UNext;			
-				
-			break;
-		}
-	default:
-		{
-			checkNoEntry(); // Execute is only defined for Init and Update
-			break;
-		}
+		U = 1.f;
+		return;
 	}
+
+	if (NextIndex <= 0)
+	{
+		U = 0.f;
+		return;
+	}
+
+	float UPrev = (NextIndex - 1) / (float) (SampleCount - 1);
+	float UNext = NextIndex / (float) (SampleCount - 1);
+
+	float LengthPrev = Spline.SplineData->AccumulatedLenth[NextIndex-1];
+	float LengthNext = Spline.SplineData->AccumulatedLenth[NextIndex];
+
+	float Interp = (SearchLength - LengthPrev) / (LengthNext - LengthPrev);
+	U = (1 - Interp) * UPrev + Interp * UNext;			
 }
 
 

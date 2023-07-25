@@ -43,8 +43,12 @@ public:
 	virtual bool IsPIESimulating() const override { return bPIESimulating; }
 	virtual double GetRecordingDuration() const override { return RecordingDuration.Get(); }
 	virtual TSharedPtr<FDebugObjectInfo> GetSelectedComponent() const override;
+	virtual TSharedPtr<RewindDebugger::FRewindDebuggerTrack> GetSelectedTrack() const override;
 	virtual TArray<TSharedPtr<FDebugObjectInfo>>& GetDebugComponents() override;
 	
+
+	void GetTargetObjectIds(TArray<uint64>& OutActorIds) const;
+
 	TArray<TSharedPtr<RewindDebugger::FRewindDebuggerTrack>>& GetDebugTracks() { return DebugTracks; }
 
 	// create singleton instance
@@ -103,10 +107,11 @@ public:
 	
 	void ComponentDoubleClicked(TSharedPtr<RewindDebugger::FRewindDebuggerTrack> SelectedObject);
 	void ComponentSelectionChanged(TSharedPtr<RewindDebugger::FRewindDebuggerTrack> SelectedObject);
-	TSharedPtr<SWidget> BuildComponentContextMenu();
-
+	TSharedPtr<SWidget> BuildComponentContextMenu() const;
+	
 	void UpdateDetailsPanel(TSharedRef<SDockTab> DetailsTab);
-
+	static void RegisterComponentContextMenu();
+	
 	DECLARE_DELEGATE_OneParam( FOnTrackCursor, bool)
 	void OnTrackCursor(const FOnTrackCursor& TrackCursorCallback);
 
@@ -181,6 +186,7 @@ private:
 		FTransform RelativeTransform;
 	};
 
+	TArray<uint64> TargetObjectIds;
 	TMap<uint64, FMeshComponentResetData> MeshComponentsToReset;
 
 	mutable class IUnrealInsightsModule *UnrealInsightsModule;

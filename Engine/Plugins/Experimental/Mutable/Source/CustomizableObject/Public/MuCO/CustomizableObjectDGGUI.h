@@ -3,9 +3,6 @@
 #pragma once
 
 #include "Blueprint/UserWidget.h"
-#include "HAL/Platform.h"
-#include "Templates/SubclassOf.h"
-#include "UObject/UObjectGlobals.h"
 
 #include "CustomizableObjectDGGUI.generated.h"
 
@@ -28,8 +25,4 @@ public:
 
 	static void OpenDGGUI(const int32 SlotID, UCustomizableSkeletalComponent* SelectedCustomizableSkeletalComponent, const UWorld* CurrentWorld, const int32 PlayerIndex = 0);
 	static bool CloseExistingDGGUI(const UWorld* CurrentWorld);
-private:
-	void CustomizableSkeletalMeshPreUpdate(class UCustomizableSkeletalComponent* Component, class USkeletalMesh* NextMesh);
-	void CustomizableSkeletalMeshUpdated();
-	TSubclassOf<UAnimInstance> LastAnimationClass;
 };

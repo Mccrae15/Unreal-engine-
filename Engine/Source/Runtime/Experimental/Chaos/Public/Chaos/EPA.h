@@ -1,5 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
+
+// HEADER_UNIT_SKIP - Internal
+
 #include "Chaos/Simplex.h"
 #include <queue>
 #include "ChaosCheck.h"
@@ -9,7 +12,7 @@
 namespace Chaos
 {
 
-constexpr int32 ArraySizeEPA = 16;
+inline constexpr int32 ArraySizeEPA = 16;
 
 // Array type used in EPA to avoid heap allocation for small convex shapes
 // @todo(chaos): The inline size was picked to avoid allocations in box-box collision - it might need adjusting after more general purpose testing

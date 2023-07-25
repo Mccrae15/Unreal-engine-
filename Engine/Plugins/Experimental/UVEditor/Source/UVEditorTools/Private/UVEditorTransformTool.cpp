@@ -8,6 +8,7 @@
 #include "InteractiveToolManager.h"
 #include "MeshOpPreviewHelpers.h" // UMeshOpPreviewWithBackgroundCompute
 #include "Operators/UVEditorUVTransformOp.h"
+#include "SceneView.h"
 #include "ToolTargets/UVEditorToolMeshInput.h"
 #include "ContextObjects/UVToolContextObjects.h"
 #include "EngineAnalytics.h"
@@ -365,7 +366,7 @@ void UUVEditorTransformTool::DrawHUD(FCanvas* Canvas, IToolsContextRenderAPI* Re
 
 	auto ConvertUVToPixel = [RenderAPI](const FVector2D& UVIn, FVector2D& PixelOut)
 	{
-		FVector WorldPoint = FUVEditorUXSettings::UVToVertPosition(FUVEditorUXSettings::ExternalUVToInternalUV((FVector2f)UVIn));
+		FVector WorldPoint = FUVEditorUXSettings::ExternalUVToUnwrapWorldPosition((FVector2f)UVIn);
 		FVector4 TestProjectedHomogenous = RenderAPI->GetSceneView()->WorldToScreen(WorldPoint);
 		bool bValid = RenderAPI->GetSceneView()->ScreenToPixel(TestProjectedHomogenous, PixelOut);
 		return bValid;
@@ -447,7 +448,7 @@ void UUVEditorTransformTool::RecordAnalytics()
 	{
 		for (const FAnalyticsEventAttribute& Attr : Attributes)
 		{
-			UE_LOG(LogGeometry, Log, TEXT("Debug %s.TransformTool.%s = %s"), *UVEditorAnalyticsPrefix, *Attr.GetName(), *Attr.GetValue());
+			UE_LOG(LogGeometry, Log, TEXT("Debug %s.%s = %s"), *UVEditorAnalyticsEventName(TEXT("TransformTool")), *Attr.GetName(), *Attr.GetValue());
 		}
 	}
 }

@@ -55,6 +55,13 @@ void SIKRetargetAssetBrowser::Construct(
 void SIKRetargetAssetBrowser::RefreshView()
 {
 	FAssetPickerConfig AssetPickerConfig;
+	
+	// assign "referencer" asset for project filtering
+    if (EditorController.IsValid())
+    {
+    	const TObjectPtr<UObject> Referencer = EditorController.Pin()->AssetController->GetAsset();
+    	AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Referencer));
+    }
 
 	// setup filtering
 	AssetPickerConfig.Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
@@ -163,9 +170,9 @@ FReply SIKRetargetAssetBrowser::OnExportButtonClicked()
 	}
 
 	// actually run the retarget
-	FIKRetargetBatchOperation BatchOperation;
-	BatchOperation.RunRetarget(BatchContext);
-
+	const TStrongObjectPtr<UIKRetargetBatchOperation> BatchOperation(NewObject<UIKRetargetBatchOperation>());
+	BatchOperation->RunRetarget(BatchContext);
+	
 	return FReply::Handled();
 }
 
@@ -206,7 +213,7 @@ void SIKRetargetAssetBrowser::OnAssetDoubleClicked(const FAssetData& AssetData)
 	UAnimationAsset* NewAnimationAsset = Cast<UAnimationAsset>(AssetData.GetAsset());
 	if (NewAnimationAsset && EditorController.Pin().IsValid())
 	{
-		EditorController.Pin()->PlayAnimationAsset(NewAnimationAsset);
+		EditorController.Pin()->PlaybackManager->PlayAnimationAsset(NewAnimationAsset);
 	}
 }
 
@@ -232,7 +239,7 @@ bool SIKRetargetAssetBrowser::OnShouldFilterAsset(const struct FAssetData& Asset
 		return true;
 	}
 
-	return !DesiredSkeleton->IsCompatibleSkeletonByAssetData(AssetData);
+	return !DesiredSkeleton->IsCompatibleForEditor(AssetData);
 }
 
 // ------------------------------------------BEGIN  SBatchExportDialog ----------------------------

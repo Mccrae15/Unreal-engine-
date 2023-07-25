@@ -2,17 +2,21 @@
 
 #pragma once
 
-#include "SmartObjectCollection.h"
-#include "Templates/SubclassOf.h"
-#include "SmartObjectTypes.h"
+#include "SmartObjectPersistentCollection.h"
 #include "SmartObjectRuntime.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "WorldConditionContext.h"
 #include "SmartObjectSubsystem.generated.h"
 
+class UCanvas;
+class USmartObjectBehaviorDefinition;
+
 class USmartObjectComponent;
+class UWorldPartitionSmartObjectCollectionBuilder;
 struct FMassEntityManager;
 class ASmartObjectSubsystemRenderingActor;
 class FDebugRenderSceneProxy;
+class ADEPRECATED_SmartObjectCollection;
 
 #if WITH_EDITOR
 /** Called when an event related to the main collection occured. */
@@ -37,9 +41,15 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FSmartObjectRequestFilter& operator=(FSmartObjectRequestFilter&&) = default;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+	/** Pointer to the Actor requesting the Smart Object slot (Optional). */
+	UPROPERTY(Transient)
+	TObjectPtr<AActor> UserActor = nullptr;
+
+	/** Gameplay tags of the Actor or Entity requesting the Smart Object slot. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SmartObject)
 	FGameplayTagContainer UserTags;
 
+	/** Only return slots whose activity tags are matching this query. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SmartObject)
 	FGameplayTagQuery ActivityRequirements;
 
@@ -47,11 +57,18 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	UPROPERTY(meta=(DeprecatedProperty, DeprecationMessage="Use BehaviorDefinitionClasses instead"))
 	TSubclassOf<USmartObjectBehaviorDefinition> BehaviorDefinitionClass;
 
-	/** If set will filter out any SmartObject that uses different BehaviorDefinition classes. */
+	/** If set, will filter out any SmartObject that uses different BehaviorDefinition classes. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SmartObject)
 	TArray<TSubclassOf<USmartObjectBehaviorDefinition>> BehaviorDefinitionClasses;
 
+	/** Is set, will filter out any SmartObject that does not pass the predicate. */
 	TFunction<bool(FSmartObjectHandle)> Predicate;
+
+	/**
+	 * If set, will pass the context data for the selection preconditions.
+	 * Any SmartObject that has selection preconditions but does not match the schema set the in the context data will be skipped.
+	 */
+	FWorldConditionContextData ConditionContextData;
 };
 
 /**
@@ -133,9 +150,9 @@ enum class ESmartObjectCollectionRegistrationResult : uint8
  * Mode that indicates how the unregistration of the SmartObjectComponent affects its runtime instance.
  */
 UENUM()
-enum class ESmartObjectUnregistrationMode : uint8
+enum class UE_DEPRECATED(5.2, "This type is deprecated and no longer being used.") ESmartObjectUnregistrationMode : uint8
 {
-	KeepRuntimeInstanceActive,
+	KeepRuntimeInstanceActiveIfPartOfCollection,
 	DestroyRuntimeInstance
 };
 
@@ -147,11 +164,33 @@ class SMARTOBJECTSMODULE_API USmartObjectSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
 public:
+	USmartObjectSubsystem();
+
 	static USmartObjectSubsystem* GetCurrent(const UWorld* World);
 
-	ESmartObjectCollectionRegistrationResult RegisterCollection(ASmartObjectCollection& InCollection);
-	void UnregisterCollection(ASmartObjectCollection& InCollection);
-	ASmartObjectCollection* GetMainCollection() const { return MainCollection; }
+	ESmartObjectCollectionRegistrationResult RegisterCollection(ASmartObjectPersistentCollection& InCollection);
+	void UnregisterCollection(ASmartObjectPersistentCollection& InCollection);
+
+	const FSmartObjectContainer& GetSmartObjectContainer() const { return SmartObjectContainer; }
+	FSmartObjectContainer& GetMutableSmartObjectContainer() { return SmartObjectContainer; }
+
+	/**
+	 * Enables or disables the entire smart object represented by the provided handle.
+	 * Delegate 'OnEvent' is broadcasted with ESmartObjectChangeReason::OnEnabled/ESmartObjectChangeReason::OnDisabled if state changed.
+	 * @param Handle Handle to the smart object.
+	 * @param bEnabled If true enables the smart object, disables otherwise.
+	 * @return True when associated smart object is found and set (or already set) to desired state; false otherwise.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SmartObject")
+	bool SetEnabled(const FSmartObjectHandle Handle, const bool bEnabled);
+
+	/**
+	 * Enables or disables all smart objects associated to the provided actor (multiple components).
+	 * @param SmartObjectActor Smart object(s) parent actor.
+	 * @param bEnabled If true enables, disables otherwise.
+	 * @return True if all (at least one) smartobject components are found with their associated runtime and values set (or alredy set) to desired state; false otherwise.
+	 */
+	bool SetSmartObjectActorEnabled(const AActor& SmartObjectActor, bool bEnabled);
 
 	/**
 	 * Registers to the runtime simulation all SmartObject components for a given actor.
@@ -168,6 +207,13 @@ public:
 	bool UnregisterSmartObjectActor(const AActor& SmartObjectActor);
 
 	/**
+	 * Removes all data associated to SmartObject components of a given actor from the simulation.
+	 * @param SmartObjectActor Actor owning the components to delete
+	 * @return whether components are found and all successfully deleted
+	 */
+	bool RemoveSmartObjectActor(const AActor& SmartObjectActor);
+
+	/**
 	 * Registers a SmartObject components to the runtime simulation.
 	 * @param SmartObjectComponent SmartObject component to register
 	 * @return true when component is successfully registered, false otherwise
@@ -175,11 +221,25 @@ public:
 	bool RegisterSmartObject(USmartObjectComponent& SmartObjectComponent);
 	
 	/**
-	 * Unregisters a SmartObject components from the runtime simulation.
+	 * Unregisters a SmartObject component from the runtime simulation.
 	 * @param SmartObjectComponent SmartObject component to unregister
 	 * @return true when component is successfully unregistered, false otherwise
 	 */
 	bool UnregisterSmartObject(USmartObjectComponent& SmartObjectComponent);
+
+	/**
+	 * Removes a SmartObject component from the runtime simulation.
+	 * @param SmartObjectComponent SmartObject component to remove
+	 * @return whether SmartObject data has been successfully found and removed
+	 */
+	bool RemoveSmartObject(USmartObjectComponent& SmartObjectComponent);
+
+	/**
+	 * Binds a smartobject component to an existing instance in the simulation. If a given SmartObjectComponent has not 
+	 * been registered yet an ensure will trigger.
+	 * @param SmartObjectComponent The component to add to the simulation and for which a runtime instance must exist
+	*/
+	void BindComponentToSimulation(USmartObjectComponent& SmartObjectComponent);
 
 	/**
 	 * Returns the component associated to the claim handle if still
@@ -223,6 +283,13 @@ public:
 	 * @param OutSlots Available slots found that match the filter
 	 */
 	void FindSlots(const FSmartObjectHandle Handle, const FSmartObjectRequestFilter& Filter, TArray<FSmartObjectSlotHandle>& OutSlots) const;
+
+	/**
+	 * Return all slots of a given smart object.
+	 * @param Handle Handle to the smart object.
+	 * @param OutSlots All slots of the smart object
+	 */
+	void GetAllSlots(const FSmartObjectHandle Handle, TArray<FSmartObjectSlotHandle>& OutSlots) const;
 
 	/**
 	 * Claims smart object from a request result.
@@ -272,7 +339,7 @@ public:
 	 * @param SlotHandle Handle to a smart object slot.
 	 * @return True if the handle is valid and its associated slot is accessible; false otherwise.
 	 */
-	bool IsSmartObjectSlotValid(const FSmartObjectSlotHandle SlotHandle) const { return SlotHandle.IsValid() && RuntimeSlotStates.Find(SlotHandle) != nullptr; }
+	bool IsSmartObjectSlotValid(const FSmartObjectSlotHandle SlotHandle) const { return SlotHandle.IsValid() && RuntimeSlots.Find(SlotHandle) != nullptr; }
 
 	/**
 	 * Start using a claimed smart object slot.
@@ -470,6 +537,63 @@ public:
 	void RemoveTagFromInstance(const FSmartObjectHandle Handle, const FGameplayTag& Tag);
 
 	/**
+	 * Returns pointer to the smart object instance event delegate.
+	 * @param SmartObjectHandle Handle to the smart object.
+	 * @return Pointer to object's delegate, or nullptr if instance doesn't exists.
+	 */
+	FOnSmartObjectEvent* GetEventDelegate(const FSmartObjectHandle SmartObjectHandle);
+	
+	/**
+	 * Returns the list of tags associated to the smart object slot represented by the provided handle.
+	 * @param SlotHandle Handle to the smart object slot.
+	 * @return Container of tags associated to the smart object instance, or empty container if slot was not valid.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SmartObject")
+	const FGameplayTagContainer& GetSlotTags(const FSmartObjectSlotHandle SlotHandle) const;
+
+	/**
+	 * Adds a single tag to the smart object slot represented by the provided handle.
+	 * @param SlotHandle Handle to the smart object slot.
+	 * @param Tag Tag to add to the smart object slot.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SmartObject")
+	void AddTagToSlot(const FSmartObjectSlotHandle SlotHandle, const FGameplayTag& Tag);
+
+	/**
+	 * Removes a single tag from the smart object slot represented by the provided handle.
+	 * @param SlotHandle Handle to the smart object slot.
+	 * @param Tag Tag to remove from the smart object slot.
+	 * @return True if the tag was removed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SmartObject")
+	bool RemoveTagFromSlot(const FSmartObjectSlotHandle SlotHandle, const FGameplayTag& Tag);
+
+	/**
+	 * Enables or disables the smart object slot represented by the provided handle.
+	 * @param SlotHandle Handle to the smart object slot.
+	 * @param bEnabled If true enables the slot, if false, disables the slot.
+	 * @return Previous enabled state. 
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SmartObject")
+	bool SetSlotEnabled(const FSmartObjectSlotHandle SlotHandle, const bool bEnabled);
+
+	/**
+	 * Sends event to a Smart Object slot.
+	 * @param SlotHandle Handle to the smart object slot.
+	 * @param EventTag Gameplay Tag describing the event type.
+	 * @param Payload Struct payload for the event.
+	 * @return True if the event was successfully sent. 
+	 */
+	bool SendSlotEvent(const FSmartObjectSlotHandle SlotHandle, const FGameplayTag EventTag, const FConstStructView Payload = FConstStructView());
+
+	/**
+	 * Returns pointer to the smart object slot changed delegate by the provided handle.
+	 * @param SlotHandle Handle to the smart object slot.
+	 * @return Pointer to slot's delegate, or nullptr if slot does not exists.
+	 */
+	FOnSmartObjectEvent* GetSlotEventDelegate(const FSmartObjectSlotHandle SlotHandle);
+	
+	/**
 	 * Register a callback to be notified if the claimed slot is no longer available and user need to perform cleanup.
 	 * @param ClaimHandle Handle to a claimed slot returned by any of the Claim methods.
 	 * @param Callback Delegate that will be called to notify that a slot gets invalidated and can no longer be used.
@@ -487,19 +611,35 @@ public:
 	void DebugDrawCanvas(UCanvas* Canvas, APlayerController* PlayerController) const {}
 #endif
 
+#if WITH_EDITORONLY_DATA
+	/** 
+	 * Special-purpose function used to set up an instance of ASmartObjectPersistentCollection with data from a given
+	 * instance of ADEPRECATED_SmartObjectCollection 
+	 */
+	static void CreatePersistentCollectionFromDeprecatedData(UWorld& World, const ADEPRECATED_SmartObjectCollection& DeprecatedCollection);
+
+	TConstArrayView<TWeakObjectPtr<ASmartObjectPersistentCollection>> GetRegisteredCollections() const { return RegisteredCollections; }
+	TArrayView<TWeakObjectPtr<ASmartObjectPersistentCollection>> GetMutableRegisteredCollections() { return RegisteredCollections; }
+#endif // WITH_EDITORONLY_DATA
+
 #if WITH_EDITOR
 	mutable FOnMainCollectionEvent OnMainCollectionChanged;
 	mutable FOnMainCollectionEvent OnMainCollectionDirtied;
 #endif
 
 protected:
-	friend class USmartObjectComponent;
+	friend UWorldPartitionSmartObjectCollectionBuilder;
 
 	bool RegisterSmartObjectInternal(USmartObjectComponent& SmartObjectComponent);
+	bool UnregisterSmartObjectInternal(USmartObjectComponent& SmartObjectComponent, const bool bDestroyRuntimeState);
+
+	UE_DEPRECATED(5.2, "This flavor of UnregisterSmartObjectInternal is deprecated. Please use UnregisterSmartObjectInternal(USmartObjectComponent&, const bool) instead.")
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bool UnregisterSmartObjectInternal(USmartObjectComponent& SmartObjectComponent, const ESmartObjectUnregistrationMode UnregistrationMode);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	
 	/**
-	 * Callback overriden to gather loaded collections, spawn missing one and set the main collection.
+	 * Callback overridden to gather loaded collections, spawn missing one and set the main collection.
 	 * @note we use this method instead of `Initialize` or `PostInitialize` so active level is set and actors registered.
 	 */
 	virtual void OnWorldComponentsUpdated(UWorld& World) override;
@@ -512,13 +652,15 @@ protected:
 
 	// USubsystem BEGIN
 	virtual void Deinitialize() override;
+	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	// USubsystem END
 
 	/** Creates all runtime data using main collection */
 	void InitializeRuntime();
+	void InitializeRuntime(const TSharedPtr<FMassEntityManager>& InEntityManager);
 
 	/** Removes all runtime data */
-	void CleanupRuntime();
+	virtual void CleanupRuntime();
 
 	/** Returns the runtime instance associated to the provided handle */
 	FSmartObjectRuntime* GetRuntimeInstance(const FSmartObjectHandle SmartObjectHandle) { return RuntimeSmartObjects.Find(SmartObjectHandle); }
@@ -533,6 +675,24 @@ protected:
 	bool IsSlotValidVerbose(const FSmartObjectSlotHandle SlotHandle, const TCHAR* LogContext) const;
 	
 	/**
+	 * Returns pointer to the specified slot if it exists. 
+	 * Log is produced for any failing condition using provided LogContext.
+	 * @param SlotHandle Handle to a smart object slot.
+	 * @param LogContext String describing the context in which the method is called (e.g. caller function name)
+	 * @return Pointer to the slot state if the handle is valid and its associated slot is accessible; nullptr otherwise.
+	 */
+	FSmartObjectRuntimeSlot* GetMutableSlotVerbose(const FSmartObjectSlotHandle SlotHandle, const TCHAR* LogContext);
+
+	/**
+	 * Returns pointer to the specified slot if it exists. 
+	 * Log is produced for any failing condition using provided LogContext.
+	 * @param SlotHandle Handle to a smart object slot.
+	 * @param LogContext String describing the context in which the method is called (e.g. caller function name)
+	 * @return Pointer to the slot state if the handle is valid and its associated slot is accessible; nullptr otherwise.
+	 */
+	const FSmartObjectRuntimeSlot* GetSlotVerbose(const FSmartObjectSlotHandle SlotHandle, const TCHAR* LogContext) const;
+
+	/**
 	 * Returns the const runtime instance associated to the provided handle.
 	 * Method produces log messages with provided context if provided handle is not set or associated instance can't be found.
 	 */
@@ -542,11 +702,11 @@ protected:
 	 * Returns the mutable runtime instance associated to the provided handle
 	 * Method produces log messages with provided context if provided handle is not set or associated instance can't be found.
 	 */
-	FSmartObjectRuntime* GetValidatedMutableRuntime(const FSmartObjectHandle Handle, const TCHAR* Context);
+	FSmartObjectRuntime* GetValidatedMutableRuntime(const FSmartObjectHandle Handle, const TCHAR* Context) const;
 
 	void AddTagToInstance(FSmartObjectRuntime& SmartObjectRuntime, const FGameplayTag& Tag);
 	void RemoveTagFromInstance(FSmartObjectRuntime& SmartObjectRuntime, const FGameplayTag& Tag);
-	void UpdateRuntimeInstanceStatus(FSmartObjectRuntime& SmartObjectRuntime);
+	void OnSlotChanged(const FSmartObjectRuntime& SmartObjectRuntime, const FSmartObjectRuntimeSlot& Slot, const FSmartObjectSlotHandle SlotHandle, const ESmartObjectChangeReason Reason, const FGameplayTag ChangedTag = FGameplayTag()) const;
 
 	/** Goes through all defined slots of smart object represented by SmartObjectRuntime and finds the ones matching the filter. */
 	void FindSlots(const FSmartObjectRuntime& SmartObjectRuntime, const FSmartObjectRequestFilter& Filter, TArray<FSmartObjectSlotHandle>& OutResults) const;
@@ -558,31 +718,26 @@ protected:
 
 	const USmartObjectBehaviorDefinition* Use(const FSmartObjectRuntime& SmartObjectRuntime, const FSmartObjectClaimHandle& ClaimHandle, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass);
 
-	void AbortAll(FSmartObjectRuntime& SmartObjectRuntime, const ESmartObjectSlotState NewState);
+	void AbortAll(const FSmartObjectRuntime& SmartObjectRuntime);
 
-	FSmartObjectSlotClaimState* GetMutableSlotState(const FSmartObjectClaimHandle& ClaimHandle);
+	FSmartObjectRuntimeSlot* GetMutableSlot(const FSmartObjectClaimHandle& ClaimHandle);
 
 	/** Make sure that all SmartObjectCollection actors from our associated world are registered. */
 	void RegisterCollectionInstances();
 
+	void AddContainerToSimulation(const FSmartObjectContainer& InSmartObjectContainer);
+
 	/**
 	 * Registers a collection entry to the simulation and creates its associated runtime instance.
-	 * This method must be used only when the associated actor component is not available (e.g. not loaded).
 	 */
-	FSmartObjectRuntime* AddCollectionEntryToSimulation(const FSmartObjectCollectionEntry& Entry, const USmartObjectDefinition& Definition);
+	FSmartObjectRuntime* AddCollectionEntryToSimulation(const FSmartObjectCollectionEntry& Entry, const USmartObjectDefinition& Definition, USmartObjectComponent* OwnerComponent, const bool bCommitChanges = true);
 
 	/**
 	 * Registers a collection entry to the simulation and creates its associated runtime instance.
 	 * @param SmartObjectComponent The component to add to the simulation and for which a runtime entry might be created or an existing one found
 	 * @param CollectionEntry The associated collection entry that got created to add the component to the simulation.
 	 */
-	FSmartObjectRuntime* AddComponentToSimulation(USmartObjectComponent& SmartObjectComponent, const FSmartObjectCollectionEntry& CollectionEntry);
-
-	/**
-	 * Binds a smartobject component to an existing instance in the simulation.
-	 * @param SmartObjectComponent The component to add to the simulation and for which a runtime instance must exist
-	 */
-	void BindComponentToSimulation(USmartObjectComponent& SmartObjectComponent);
+	FSmartObjectRuntime* AddComponentToSimulation(USmartObjectComponent& SmartObjectComponent, const FSmartObjectCollectionEntry& CollectionEntry, const bool bCommitChanges = true);
 
 	/**
 	 * Unbinds a smartobject component from an existing instance in the simulation.
@@ -590,9 +745,48 @@ protected:
 	 */
 	void UnbindComponentFromSimulation(USmartObjectComponent& SmartObjectComponent);
 
-	void RemoveRuntimeInstanceFromSimulation(const FSmartObjectHandle Handle);
-	void RemoveCollectionEntryFromSimulation(const FSmartObjectCollectionEntry& Entry);
+	/**
+	 * Unbinds a smartobject component from the given FSmartObjectRuntime instance. Note that unlike UnbindComponentFromSimulation
+	 * this function blindly assumes that SmartObjectRuntime does indeed represent SmartObjectComponent
+	 * @param SmartObjectComponent The component to remove from the simulation
+	 * @param SmartObjectRuntime runtime data representing the component being removed
+	 */
+	void UnbindComponentFromSimulationInternal(USmartObjectComponent& SmartObjectComponent, FSmartObjectRuntime& SmartObjectRuntime);
+
+	/** @return whether the removal was successful */
+	bool RemoveRuntimeInstanceFromSimulation(const FSmartObjectHandle Handle);
+	bool RemoveCollectionEntryFromSimulation(const FSmartObjectCollectionEntry& Entry);
 	void RemoveComponentFromSimulation(USmartObjectComponent& SmartObjectComponent);
+
+	/** Destroy SmartObjectRuntime contents as Handle's representation. */
+	void DestroyRuntimeInstanceInternal(const FSmartObjectHandle Handle, FSmartObjectRuntime& SmartObjectRuntime, FMassEntityManager& EntityManagerRef);
+
+	/**
+	 * Fills the provided context data with the smartobject actor and handle associated to 'SmartObjectRuntime' and the subsystem. 
+	 * @param ConditionContextData The context data to fill
+	 * @param SmartObjectRuntime The runtime instance of the SmartObject for which the context must be filled 
+	 */
+	void SetupConditionContextCommonData(FWorldConditionContextData& ConditionContextData, const FSmartObjectRuntime& SmartObjectRuntime) const;
+
+	/**
+	 * Use the provided context data that is expected to be already filled by calling 'SetupConditionContextCommonData'
+	 * and adds the slot related part. It then evaluates all conditions associated to the specified slot.  
+	 * @param ConditionContextData The context data to fill and use for conditions evaluation
+	 * @param SlotHandle Handle to the smart object slot
+	 * @param Slot Runtime struct associated to the smart object slot
+	 * @return True if all conditions are met; false otherwise
+	 * @see SetupDefaultConditionsContext
+	 */
+	UE_NODISCARD bool EvaluateSlotConditions(FWorldConditionContextData& ConditionContextData, const FSmartObjectSlotHandle& SlotHandle, const FSmartObjectRuntimeSlot& Slot) const;\
+
+	/**
+	 * Use the provided context data that is expected to be already filled by calling 'SetupConditionContextCommonData'
+	 * and evaluates all conditions associated to the specified object.
+	 * @param ConditionContextData The context data to use for conditions evaluation
+	 * @param SmartObjectRuntime Runtime data representing the smart object for which the conditions must be evaluated
+	 * @return True if all conditions are met; false otherwise
+	 */
+	UE_NODISCARD bool EvaluateObjectConditions(const FWorldConditionContextData& ConditionContextData, const FSmartObjectRuntime& SmartObjectRuntime) const;
 
 	/**
 	 * Name of the Space partition class to use.
@@ -612,13 +806,18 @@ protected:
 	UPROPERTY()
 	TObjectPtr<ASmartObjectSubsystemRenderingActor> RenderingActor;
 
-	UPROPERTY()
-	TObjectPtr<ASmartObjectCollection> MainCollection;
+	UPROPERTY(Transient)
+	FSmartObjectContainer SmartObjectContainer;
+
+	TArray<TWeakObjectPtr<ASmartObjectPersistentCollection>> RegisteredCollections;
 
 	TSharedPtr<FMassEntityManager> EntityManager;
 
+	UPROPERTY(Transient)
 	TMap<FSmartObjectHandle, FSmartObjectRuntime> RuntimeSmartObjects;
-	TMap<FSmartObjectSlotHandle, FSmartObjectSlotClaimState> RuntimeSlotStates;
+	
+	UPROPERTY(Transient)
+	TMap<FSmartObjectSlotHandle, FSmartObjectRuntimeSlot> RuntimeSlots;
 
 	/** Keep track of Ids associated to objects entirely created at runtime (i.e. not part of the initial collection) */
 	TArray<FSmartObjectHandle> RuntimeCreatedEntries;
@@ -633,27 +832,37 @@ protected:
 
 	uint32 NextFreeUserID = 1;
 
-	/** Flag to indicate that all entries from the baked collection are registered and new registrations will be considered runtime entries (i.e. no persistence) */
-	bool bInitialCollectionAddedToSimulation = false;
+	bool bRuntimeInitialized = false;
 
 #if WITH_EDITOR
-	friend class ASmartObjectCollection;
-	void RebuildCollection(ASmartObjectCollection& InCollection);
-	void SpawnMissingCollection() const;
+	bool bAutoInitializeEditorInstances = true;
+#endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+	/** Set in OnWorldComponentsUpdated and used to control special logic required to build collections in Editor mode */
+	bool bIsPartitionedWorld = false;
+
+	friend class ASmartObjectPersistentCollection;
+
+	void PopulateCollection(ASmartObjectPersistentCollection& InCollection);
+
+	/** Iteratively adds items to registered collections. Expected to be called in World Partitined worlds. */
+	void IterativelyBuildCollections();
+
+	int32 GetRegisteredSmartObjectsCompatibleWithCollection(ASmartObjectPersistentCollection& InCollection, TArray<USmartObjectComponent*>& OutRelevantComponents) const;
 
 	/**
-	 * Compute bounds from given world and store result in provided collection
+	 * Compute bounds from the given world 
 	 * @param World World from which the bounds must be computed
-	 * @param Collection Collection that will store computed bounds
 	 */
-	void ComputeBounds(const UWorld& World, ASmartObjectCollection& Collection) const;
-#endif // WITH_EDITOR
+	FBox ComputeBounds(const UWorld& World) const;
+#endif // WITH_EDITORONLY_DATA
 
 #if WITH_SMARTOBJECT_DEBUG
 public:
 	uint32 DebugGetNumRuntimeObjects() const { return RuntimeSmartObjects.Num(); }
 	const TMap<FSmartObjectHandle, FSmartObjectRuntime>& DebugGetRuntimeObjects() const { return RuntimeSmartObjects; }
-	const TMap<FSmartObjectSlotHandle, FSmartObjectSlotClaimState>& DebugGetRuntimeSlots() const { return RuntimeSlotStates; }
+	const TMap<FSmartObjectSlotHandle, FSmartObjectRuntimeSlot>& DebugGetRuntimeSlots() const { return RuntimeSlots; }
 	uint32 DebugGetNumRegisteredComponents() const { return RegisteredSOComponents.Num(); }
 
 	/** Debugging helper to remove all registered smart objects from the simulation */
@@ -664,9 +873,6 @@ public:
 
 	/** Debugging helper to emulate the start of the simulation to create all runtime data */
 	void DebugInitializeRuntime();
-	
-	/** Debugging helper to force rebuild collection for tests scenarios when collection is built on demand */
-	void DebugRebuildCollection();
 
 	/** Debugging helper to emulate the stop of the simulation to destroy all runtime data */
 	void DebugCleanupRuntime();

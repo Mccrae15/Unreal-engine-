@@ -2,14 +2,17 @@
 
 #pragma once
 
-#include "MuCO/CustomizableObjectSystem.h"
-#include "MuCO/CustomizableObjectInstance.h"
+#include "Containers/Queue.h"
 #include "MuCO/CustomizableObject.h"
-#include "HAL/ThreadSafeBool.h"
 #include "Containers/Ticker.h"
 
+#include "MuCO/CustomizableObjectInstanceDescriptor.h"
+#include "MuR/Mesh.h"
+#include "MuR/Parameters.h"
 #include "MuR/System.h"
 #include "MuR/Image.h"
+#include "UObject/GCObject.h"
+#include "WorldCollision.h"
 
 // This define could come from MuR/System.h
 #ifdef MUTABLE_USE_NEW_TASKGRAPH
@@ -18,6 +21,9 @@
 	#include "Async/TaskGraphInterfaces.h"
 #endif
 
+class UCustomizableObjectSystem;
+namespace LowLevelTasks { enum class ETaskPriority : int8; }
+struct FTexturePlatformData;
 
 //! An operation to be performed by Mutable. This could be creating or updating an instance, releasing resources, changing an LOD, etc.
 //! Operations may be done in several tasks in several thread or across frames.
@@ -25,7 +31,7 @@ class FMutableOperation
 {
 	/** Instance parameters at the time of the operation request. */
 	mu::ParametersPtr Parameters; 
-
+	
 	bool bBuildParameterDecorations = false;
 	bool bMeshNeedsUpdate = false;
 
@@ -37,6 +43,7 @@ public:
 
 	static FMutableOperation CreateInstanceUpdate(UCustomizableObjectInstance* COInstance, bool bInNeverStream, int32 MipsToSkip);
 	static FMutableOperation CreateInstanceDiscard(UCustomizableObjectInstance* COInstance);
+	static FMutableOperation CreateInstanceIDRelease(mu::Instance::ID);
 
 
 	enum class EOperationType
@@ -45,7 +52,14 @@ public:
 		Update,
 
 		// Discard the resources of an instance.
-		Discard
+		Discard,
+
+		// Release the instance ID and all the temp data associated with it. Usually used with the LiveUpdateMode
+		IDRelease
+
+		// Attention! If any new operation type is added, make sure to review FMutableQueue::Enqueue in CustomizableObjectSystem.cpp and
+		// modify it if new operations of this type should override older ones to the same instance. The default behavior is to enqueue 
+		// the new ones so that they are executed after the old ones.
 	};
 
 	// Type of the operation
@@ -64,11 +78,17 @@ public:
 	// It is weak because we don't want to lock it in case it becomes irrelevant in the game while operations are pending and it needs to be destroyed.
 	TWeakObjectPtr<UCustomizableObjectInstance> CustomizableObjectInstance;
 
-	/** Hash of the UCustomizableObjectInstance::Descriptor (state of the instance parameters + state). */
-	uint32 InstanceDescriptorHash;
+	/** Hash of the UCustomizableObjectInstance::Descriptor at the time of the update request. */
+	FDescriptorRuntimeHash InstanceDescriptorRuntimeHash;
 
 	//! This is used to calculate stats.
 	double StartUpdateTime = 0.0;
+
+	/** Instance optimization state. */
+	int32 State;
+
+	/** Only used in the IDRelease operation type */
+	mu::Instance::ID IDToRelease;
 
 	//!
 	bool IsBuildParameterDecorations() const
@@ -105,6 +125,7 @@ struct FMutableQueueElem
 
 		MutableQueueElem.PriorityType = NewPriorityType;
 		MutableQueueElem.Priority = NewPriority;
+		check(InOperation);
 		MutableQueueElem.Operation = InOperation;
 		MutableQueueElem.bIsDiscardResources = (InOperation->Type==FMutableOperation::EOperationType::Discard);
 
@@ -246,6 +267,44 @@ struct FMutableTask
 };
 
 
+// Mutable data generated during the last update of an instance.
+struct FInstanceGeneratedData
+{
+	struct FComponent
+	{
+		uint16 ComponentId = 0;
+
+		/** True if it can be reused */
+		bool bGenerated = false;
+
+		mu::RESOURCE_ID MeshID;
+
+		/** Range in the Surfaces array */
+		uint16 FirstSurface = 0;
+		uint16 SurfaceCount = 0;
+	};
+
+	struct FLOD
+	{
+		/** Range in the Components array */
+		uint16 FirstComponent = 0;
+		uint16 ComponentCount = 0;
+	};
+
+	TArray<FLOD> LODs;
+	TArray<FComponent> Components;
+	TArray<uint32> SurfaceIds;
+
+	/** Clear data, called upon failing to generate a mesh and after recompiling the CO */
+	void Clear()
+	{
+		LODs.Empty();
+		Components.Empty();
+		SurfaceIds.Empty();
+	}
+};
+
+
 // Mutable data generated during the update steps.
 // We keep it from begin to end update, and it is used in several steps.
 // TODO: Flatten this structure into 4 arrays and use indices in fixed-size structs instead of subarrays
@@ -296,6 +355,13 @@ struct FInstanceUpdateData
 	{
 		uint16 Id = 0;
 		
+		// True if the Mesh is valid or if we're reusing a component
+		bool bGenerated = false;
+
+		// Reuse component from a previously generated SkeletalMesh
+		bool bReuseMesh = false;
+
+		mu::RESOURCE_ID MeshID;
 		mu::MeshPtrConst Mesh;
 
 		/** Range in the Surfaces array */
@@ -398,12 +464,18 @@ struct FPendingTextureCoverageQuery
 /** Runtime data used during a mutable instance update */
 struct FMutableOperationData
 {
+	bool bCanReuseGeneratedData = false;
+	FInstanceGeneratedData LastUpdateData;
+
 	FInstanceUpdateData InstanceUpdateData;
 	FParameterDecorationsUpdateData ParametersUpdateData;
 	TArray<int> RelevantParametersInProgress;
 
 	/** This option comes from the operation request */
 	bool bNeverStream = false;
+	/** When this option is enabled it will reuse the Mutable core instance and its temp data between updates.  */
+	bool bLiveUpdateMode = false;
+	bool bReuseInstanceTextures = false;
 	/** This option comes from the operation request. It is used to reduce the number of mipmaps that mutable must generate for images.  */
 	int32 MipsToSkip = 0;
 
@@ -411,6 +483,8 @@ struct FMutableOperationData
 	int32 CurrentMinLOD = 0;
 	int32 CurrentMaxLOD = 0;
 	int32 NumLODsAvailable = 0;
+
+	TArray<uint16> RequestedLODs;
 
 	TMap<FString, FTextureCoverageQueryData> TextureCoverageQueries_MutableThreadParams;
 	TMap<FString, FTextureCoverageQueryData> TextureCoverageQueries_MutableThreadResults;
@@ -475,6 +549,11 @@ public:
 	TQueue<FMutableTask> PendingTasks;
 
 	static int32 EnableMutableProgressiveMipStreaming;
+	static int32 EnableMutableLiveUpdate;
+	static int32 EnableReuseInstanceTextures;
+	static int32 EnableMutableAnimInfoDebugging;
+	static int32 EnableOnlyGenerateRequestedLODs;
+	static bool bEnableMutableReusePreviousUpdateData;
 
 	/** */
 	inline void AddGameThreadTask(const FMutableTask& Task)
@@ -678,10 +757,13 @@ public:
 
 
 	// Init the async Skeletal Mesh creation/update
-	void InitUpdateSkeletalMesh(UCustomizableObjectInstance* Public, FMutableQueueElem::EQueuePriorityType Priority);
+	void InitUpdateSkeletalMesh(UCustomizableObjectInstance& Public, FMutableQueueElem::EQueuePriorityType Priority);
 		
-	// Init an async and safe release of the UE4 and Mutable resources used by the instance without actually destroying the instance, for example if it's very far away
+	// Init an async and safe release of the UE and Mutable resources used by the instance without actually destroying the instance, for example if it's very far away
 	void InitDiscardResourcesSkeletalMesh(UCustomizableObjectInstance* InCustomizableObjectInstance);
+
+	// Init the async release of a Mutable Core Instance ID and all the temp resources associated with it
+	void InitInstanceIDRelease(mu::Instance::ID IDToRelease);
 	
 	bool IsReplaceDiscardedWithReferenceMeshEnabled() const { return bReplaceDiscardedWithReferenceMesh; }
 	void SetReplaceDiscardedWithReferenceMeshEnabled(bool bIsEnabled) { bReplaceDiscardedWithReferenceMesh = bIsEnabled; }
@@ -740,6 +822,8 @@ public:
 
 	// Check and update the streaming memory limit. Only safe from game thread and when the mutable thread is idle.
 	void UpdateStreamingLimit();
+
+	bool IsMutableAnimInfoDebuggingEnabled() const;
 
 private:
 

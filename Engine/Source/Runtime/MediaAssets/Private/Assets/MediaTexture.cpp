@@ -190,13 +190,13 @@ EMaterialValueType UMediaTexture::GetMaterialType() const
 
 float UMediaTexture::GetSurfaceWidth() const
 {
-	return Dimensions.X;
+	return (float)Dimensions.X;
 }
 
 
 float UMediaTexture::GetSurfaceHeight() const
 {
-	return Dimensions.Y;
+	return (float)Dimensions.Y;
 }
 
 
@@ -454,15 +454,39 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 	
 	// redraw texture resource on render thread
 	FMediaTextureResource* ResourceParam = (FMediaTextureResource*)GetResource();
+
+	const ERenderMode RenderModeParam = GetRenderMode();
+
 	ENQUEUE_RENDER_COMMAND(MediaTextureResourceRender)(
-		[ResourceParam, RenderParams](FRHICommandListImmediate& RHICmdList)
+		[ResourceParam, RenderParams, RenderModeParam](FRHICommandListImmediate& RHICmdList)
 		{
-			ResourceParam->Render(RenderParams);
+			check(ResourceParam);
+
+			if (RenderModeParam == ERenderMode::JustInTime)
+			{
+				// Cache the render params if this is a just in time render mode. 
+				// User must call JustInTimeRender to update the resource.
+				ResourceParam->SetJustInTimeRenderParams(RenderParams);
+			}
+			else
+			{
+				// Otherwise, render the texture right away
+				ResourceParam->ResetJustInTimeRenderParams();
+				ResourceParam->Render(RenderParams);
+			}
 		});
 
 	
 	// The texture is cleared if we have auto clear enabled, and we do not have a valid sample.
 	bIsCleared = ((AutoClear) && (bIsSampleValid == false));
+}
+
+void UMediaTexture::JustInTimeRender()
+{
+	if (FMediaTextureResource* MediaResource = static_cast<FMediaTextureResource*>(GetResource()))
+	{
+		MediaResource->JustInTimeRender();
+	}
 }
 
 void UMediaTexture::UpdateSampleInfo(const TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> & Sample)

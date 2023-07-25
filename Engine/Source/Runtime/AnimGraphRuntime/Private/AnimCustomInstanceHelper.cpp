@@ -2,6 +2,8 @@
 
 
 #include "AnimCustomInstanceHelper.h"
+#include "Animation/Skeleton.h"
+#include "Engine/SkeletalMesh.h"
 
 /////////////////////////////////////////////////////
 // FAnimCustomInstanceHelper
@@ -17,5 +19,5 @@ bool FAnimCustomInstanceHelper::ShouldCreateCustomInstancePlayer(const USkeletal
 	UAnimInstance* AnimInstance = SkeletalMeshComponent->GetAnimInstance();
 
 	return (AnimInstance == nullptr || SkeletalMeshComponent->GetAnimationMode() != EAnimationMode::AnimationBlueprint ||
-		AnimInstance->GetClass() != SkeletalMeshComponent->AnimClass || !Skeleton || !Skeleton->IsCompatible(AnimInstance->CurrentSkeleton));
+		AnimInstance->GetClass() != SkeletalMeshComponent->AnimClass || !Skeleton || !AnimInstance->CurrentSkeleton);
 }

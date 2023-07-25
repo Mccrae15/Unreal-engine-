@@ -148,23 +148,23 @@ struct AIMODULE_API FEQSDebugger
 	struct FEnvQueryInfo
 	{
 		TSharedPtr<FEnvQueryInstance> Instance;
-		float Timestamp;
+		double Timestamp;
 	};
 
 	struct FStatsInfo
 	{
 		// most expensive run
 		FEnvQueryDebugProfileData MostExpensive;
-		float MostExpensiveDuration;
+		double MostExpensiveDuration;
 
 		// average run (sum of all runs, divide by TotalAvgCount to get values)
 		FEnvQueryDebugProfileData TotalAvgData;
-		float TotalAvgDuration;
+		double TotalAvgDuration;
 		int32 TotalAvgCount;
 
 		// EQS tick load
 		TArray<uint8> TickPct;
-		float LastTickTime;
+		double LastTickTime;
 		uint64 LastTickFrame;
 		uint16 FirstTickEntry;
 		uint16 LastTickEntry;
@@ -178,7 +178,7 @@ struct AIMODULE_API FEQSDebugger
 	};
 
 	void StoreStats(const FEnvQueryInstance& QueryInstance);
-	void StoreTickTime(const FEnvQueryInstance& QueryInstance, float TickTime, float MaxTickTime);
+	void StoreTickTime(const FEnvQueryInstance& QueryInstance, double TickTime, double MaxTickTime);
 	void StoreQuery(const TSharedPtr<FEnvQueryInstance>& QueryInstance);
 	
 	static void SaveStats(const FString& FileName);
@@ -282,14 +282,14 @@ class AIMODULE_API UEnvQueryManager : public UAISubsystem, public FSelfRegisteri
 
 	static void SetAllowTimeSlicing(bool bAllowTimeSlicing);
 
-	//~ Begin FExec Interface
-	virtual bool Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar) override;
-	//~ End FExec Interface
-
 	/** Configure config variables during runtime */
 	void Configure(const FEnvQueryManagerConfig& NewConfig);
 
 protected:
+	//~ Begin FExec Interface
+	virtual bool Exec_Dev(UWorld* Inworld,const TCHAR* Cmd,FOutputDevice& Ar) override;
+	//~ End FExec Interface
+
 	friend UEnvQueryInstanceBlueprintWrapper;
 	TSharedPtr<FEnvQueryInstance> FindQueryInstance(const int32 QueryID);
 

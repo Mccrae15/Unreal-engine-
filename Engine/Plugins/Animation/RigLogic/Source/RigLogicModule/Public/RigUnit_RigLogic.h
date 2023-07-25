@@ -57,7 +57,7 @@ struct FRigUnit_RigLogic_Data
 	  * if value is valid, it is cast to appropriate uint type
 	**/
 
-	/** RL input index to ControlRig's input curve index for each LOD **/
+	/** RL input index to ControlRig's input curve index **/
 	UPROPERTY(transient)
 	TArray<int32> InputCurveIndices;
 
@@ -120,6 +120,11 @@ struct FRigUnit_RigLogic: public FRigUnitMutable
 {
 	GENERATED_BODY()
 
+	FRigUnit_RigLogic()
+		: Data()
+		, bIsInitialized(false)
+	{}
+
 public:
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Allows accessing private Data property from unit tests **/
@@ -128,7 +133,7 @@ public:
 #endif
 
 	RIGVM_METHOD()
-	void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 private:
 	static TSharedPtr<FSharedRigRuntimeContext> GetSharedRigRuntimeContext(USkeletalMesh* SkelMesh);
@@ -137,4 +142,8 @@ private:
 	// internal work data for the unit
 	UPROPERTY(transient)
 	FRigUnit_RigLogic_Data Data;
+
+	// flag to determine if the node has been initialized
+	UPROPERTY(transient)
+	bool bIsInitialized;
 };

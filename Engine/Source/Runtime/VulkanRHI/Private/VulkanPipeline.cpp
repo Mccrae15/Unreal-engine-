@@ -918,6 +918,23 @@ FArchive& operator << (FArchive& Ar, FGfxPipelineDesc::FRenderTargets::FAttachme
 	return Ar;
 }
 
+void FGfxPipelineDesc::FRenderTargets::FStencilAttachmentRef::ReadFrom(const VkAttachmentReferenceStencilLayout& InState)
+{
+	Layout = (uint64)InState.stencilLayout;
+}
+
+void FGfxPipelineDesc::FRenderTargets::FStencilAttachmentRef::WriteInto(VkAttachmentReferenceStencilLayout& Out) const
+{
+	Out.stencilLayout = (VkImageLayout)Layout;
+}
+
+FArchive& operator << (FArchive& Ar, FGfxPipelineDesc::FRenderTargets::FStencilAttachmentRef& AttachmentRef)
+{
+	// Modify VERSION if serialization changes
+	Ar << AttachmentRef.Layout;
+	return Ar;
+}
+
 void FGfxPipelineDesc::FRenderTargets::FAttachmentDesc::ReadFrom(const VkAttachmentDescription &InState)
 {
 	Format =			(uint32)InState.format;
@@ -960,6 +977,27 @@ FArchive& operator << (FArchive& Ar, FGfxPipelineDesc::FRenderTargets::FAttachme
 	return Ar;
 }
 
+void FGfxPipelineDesc::FRenderTargets::FStencilAttachmentDesc::ReadFrom(const VkAttachmentDescriptionStencilLayout& InState)
+{
+	InitialLayout = (uint64)InState.stencilInitialLayout;
+	FinalLayout = (uint64)InState.stencilFinalLayout;
+}
+
+void FGfxPipelineDesc::FRenderTargets::FStencilAttachmentDesc::WriteInto(VkAttachmentDescriptionStencilLayout& Out) const
+{
+	Out.stencilInitialLayout = (VkImageLayout)InitialLayout;
+	Out.stencilFinalLayout = (VkImageLayout)FinalLayout;
+}
+
+FArchive& operator << (FArchive& Ar, FGfxPipelineDesc::FRenderTargets::FStencilAttachmentDesc& StencilAttachmentDesc)
+{
+	// Modify VERSION if serialization changes
+	Ar << StencilAttachmentDesc.InitialLayout;
+	Ar << StencilAttachmentDesc.FinalLayout;
+
+	return Ar;
+}
+
 void FGfxPipelineDesc::FRenderTargets::ReadFrom(const FVulkanRenderTargetLayout& RTLayout)
 {
 	NumAttachments =			RTLayout.NumAttachmentDescriptions;
@@ -967,7 +1005,6 @@ void FGfxPipelineDesc::FRenderTargets::ReadFrom(const FVulkanRenderTargetLayout&
 
 	bHasDepthStencil =			RTLayout.bHasDepthStencil != 0;
 	bHasResolveAttachments =	RTLayout.bHasResolveAttachments != 0;
-	bHasDepthStencilResolve =	RTLayout.bHasDepthStencilResolve != 0;
 	bHasFragmentDensityAttachment =	RTLayout.bHasFragmentDensityAttachment != 0;
 	NumUsedClearValues =		RTLayout.NumUsedClearValues;
 
@@ -987,7 +1024,8 @@ void FGfxPipelineDesc::FRenderTargets::ReadFrom(const FVulkanRenderTargetLayout&
 	};
 	CopyAttachmentRefs(ColorAttachments, RTLayout.ColorReferences, UE_ARRAY_COUNT(RTLayout.ColorReferences));
 	CopyAttachmentRefs(ResolveAttachments, RTLayout.ResolveReferences, UE_ARRAY_COUNT(RTLayout.ResolveReferences));
-	DepthStencil.ReadFrom(RTLayout.DepthStencilReference);
+	Depth.ReadFrom(RTLayout.DepthReference);
+	Stencil.ReadFrom(RTLayout.StencilReference);
 	FragmentDensity.ReadFrom(RTLayout.FragmentDensityReference);
 
 	Descriptions.AddZeroed(UE_ARRAY_COUNT(RTLayout.Desc));
@@ -995,6 +1033,7 @@ void FGfxPipelineDesc::FRenderTargets::ReadFrom(const FVulkanRenderTargetLayout&
 	{
 		Descriptions[Index].ReadFrom(RTLayout.Desc[Index]);
 	}
+	StencilDescription.ReadFrom(RTLayout.StencilDesc);
 }
 
 void FGfxPipelineDesc::FRenderTargets::WriteInto(FVulkanRenderTargetLayout& Out) const
@@ -1004,7 +1043,6 @@ void FGfxPipelineDesc::FRenderTargets::WriteInto(FVulkanRenderTargetLayout& Out)
 
 	Out.bHasDepthStencil =			bHasDepthStencil;
 	Out.bHasResolveAttachments =	bHasResolveAttachments;
-	Out.bHasDepthStencilResolve =	bHasDepthStencilResolve;
 	Out.bHasFragmentDensityAttachment =	bHasFragmentDensityAttachment;
 	Out.NumUsedClearValues =		NumUsedClearValues;
 
@@ -1024,7 +1062,8 @@ void FGfxPipelineDesc::FRenderTargets::WriteInto(FVulkanRenderTargetLayout& Out)
 	};
 	CopyAttachmentRefs(ColorAttachments, Out.ColorReferences, UE_ARRAY_COUNT(Out.ColorReferences));
 	CopyAttachmentRefs(ResolveAttachments, Out.ResolveReferences, UE_ARRAY_COUNT(Out.ResolveReferences));
-	DepthStencil.WriteInto(Out.DepthStencilReference);
+	Depth.WriteInto(Out.DepthReference);
+	Stencil.WriteInto(Out.StencilReference);
 	FragmentDensity.WriteInto(Out.FragmentDensityReference);
 
 
@@ -1032,6 +1071,7 @@ void FGfxPipelineDesc::FRenderTargets::WriteInto(FVulkanRenderTargetLayout& Out)
 	{
 		Descriptions[Index].WriteInto(Out.Desc[Index]);
 	}
+	StencilDescription.WriteInto(Out.StencilDesc);
 }
 
 FArchive& operator << (FArchive& Ar, FGfxPipelineDesc::FRenderTargets& RTs)
@@ -1042,14 +1082,15 @@ FArchive& operator << (FArchive& Ar, FGfxPipelineDesc::FRenderTargets& RTs)
 	Ar << RTs.NumUsedClearValues;
 	Ar << RTs.ColorAttachments;
 	Ar << RTs.ResolveAttachments;
-	Ar << RTs.DepthStencil;
+	Ar << RTs.Depth;
+	Ar << RTs.Stencil;
 	Ar << RTs.FragmentDensity;
 
 	Ar << RTs.Descriptions;
+	Ar << RTs.StencilDescription;
 
 	Ar << RTs.bHasDepthStencil;
 	Ar << RTs.bHasResolveAttachments;
-	Ar << RTs.bHasDepthStencilResolve;
 	Ar << RTs.RenderPassCompatibleHash;
 	Ar << RTs.Extent3D;
 
@@ -1220,20 +1261,40 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 	PipelineInfo.pStages = ShaderStages;
 	// main_00000000_00000000
 	ANSICHAR EntryPoints[ShaderStage::NumStages][24];
+	VkPipelineShaderStageRequiredSubgroupSizeCreateInfo RequiredSubgroupSizeCreateInfo[ShaderStage::NumStages];
 	for (int32 ShaderStage = 0; ShaderStage < ShaderStage::NumStages; ++ShaderStage)
 	{
-		if (!ShaderModules[ShaderStage].IsValid())
+		if (!ShaderModules[ShaderStage].IsValid() || (Shaders[ShaderStage] == nullptr))
 		{
 			continue;
 		}
 		const ShaderStage::EStage CurrStage = (ShaderStage::EStage)ShaderStage;
 
 		ShaderStages[PipelineInfo.stageCount].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-		VkShaderStageFlagBits Stage = UEFrequencyToVKStageBit(ShaderStage::GetFrequencyForGfxStage(CurrStage));
+		const VkShaderStageFlagBits Stage = UEFrequencyToVKStageBit(ShaderStage::GetFrequencyForGfxStage(CurrStage));
 		ShaderStages[PipelineInfo.stageCount].stage = Stage;
 		ShaderStages[PipelineInfo.stageCount].module = ShaderModules[CurrStage]->GetVkShaderModule();
 		Shaders[ShaderStage]->GetEntryPoint(EntryPoints[PipelineInfo.stageCount], 24);
 		ShaderStages[PipelineInfo.stageCount].pName = EntryPoints[PipelineInfo.stageCount];
+
+		if (Device->GetOptionalExtensions().HasEXTSubgroupSizeControl)
+		{
+			const FVulkanShaderHeader& ShaderHeader = Shaders[ShaderStage]->GetCodeHeader();
+			if (ShaderHeader.WaveSize > 0)
+			{
+				// Check if supported by this stage and Check if requested size is supported
+				const VkPhysicalDeviceSubgroupSizeControlPropertiesEXT& SubgroupSizeControlProperties = Device->GetOptionalExtensionProperties().SubgroupSizeControlProperties;
+				const bool bSupportedStage = (VKHasAllFlags(SubgroupSizeControlProperties.requiredSubgroupSizeStages, Stage));
+				const bool bSupportedSize = ((ShaderHeader.WaveSize >= SubgroupSizeControlProperties.minSubgroupSize) && (ShaderHeader.WaveSize <= SubgroupSizeControlProperties.maxSubgroupSize));
+				if (bSupportedStage && bSupportedSize)
+				{
+					ZeroVulkanStruct(RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+					RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount].requiredSubgroupSize = ShaderHeader.WaveSize;
+					ShaderStages[PipelineInfo.stageCount].pNext = &RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount];
+				}
+			}
+		}
+
 		PipelineInfo.stageCount++;
 	}
 
@@ -1297,13 +1358,12 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 	PipelineInfo.pDynamicState = &DynamicState;
 
 #if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	const VkExtent2D FragmentSize = Device->GetBestMatchedShadingRateExtents(PSO->Desc.ShadingRate);
-	VkFragmentShadingRateCombinerOpKHR PipelineToPrimitiveCombinerOperation = FragmentCombinerOpMap[(uint8)PSO->Desc.Combiner];
-
 	VkPipelineFragmentShadingRateStateCreateInfoKHR PipelineFragmentShadingRate;
-
-	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled)
+	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled && PSO->Desc.ShadingRate != EVRSShadingRate::VRSSR_1x1)
 	{
+		const VkExtent2D FragmentSize = Device->GetBestMatchedFragmentSize(PSO->Desc.ShadingRate);
+		VkFragmentShadingRateCombinerOpKHR PipelineToPrimitiveCombinerOperation = FragmentCombinerOpMap[(uint8)PSO->Desc.Combiner];
+		
 		ZeroVulkanStruct(PipelineFragmentShadingRate, VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR);
 		PipelineFragmentShadingRate.fragmentSize = FragmentSize;
 		PipelineFragmentShadingRate.combinerOps[0] = PipelineToPrimitiveCombinerOperation;
@@ -1343,6 +1403,11 @@ VkResult FVulkanPipelineStateCacheManager::CreateVKPipeline(FVulkanRHIGraphicsPi
 	VkPipeline* Pipeline = &PSO->VulkanPipeline;
 
 	FPipelineCache& Cache = bIsPrecompileJob ? CurrentPrecompilingPSOCache : GlobalPSOCache;
+
+	if (Device->SupportsBindless())
+	{
+		PipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+	}
 
 	VkPipelineCache LocalPipelineCache = VK_NULL_HANDLE;
 	VkResult Result = VK_ERROR_INITIALIZATION_FAILED;
@@ -1585,39 +1650,6 @@ static inline VkPrimitiveTopology UEToVulkanTopologyType(const FVulkanDevice* In
 		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	case PT_TriangleStrip:
 		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-	case PT_1_ControlPointPatchList:
-	case PT_2_ControlPointPatchList:
-	case PT_3_ControlPointPatchList:
-	case PT_4_ControlPointPatchList:
-	case PT_5_ControlPointPatchList:
-	case PT_6_ControlPointPatchList:
-	case PT_7_ControlPointPatchList:
-	case PT_8_ControlPointPatchList:
-	case PT_9_ControlPointPatchList:
-	case PT_10_ControlPointPatchList:
-	case PT_12_ControlPointPatchList:
-	case PT_13_ControlPointPatchList:
-	case PT_14_ControlPointPatchList:
-	case PT_15_ControlPointPatchList:
-	case PT_16_ControlPointPatchList:
-	case PT_17_ControlPointPatchList:
-	case PT_18_ControlPointPatchList:
-	case PT_19_ControlPointPatchList:
-	case PT_20_ControlPointPatchList:
-	case PT_22_ControlPointPatchList:
-	case PT_23_ControlPointPatchList:
-	case PT_24_ControlPointPatchList:
-	case PT_25_ControlPointPatchList:
-	case PT_26_ControlPointPatchList:
-	case PT_27_ControlPointPatchList:
-	case PT_28_ControlPointPatchList:
-	case PT_29_ControlPointPatchList:
-	case PT_30_ControlPointPatchList:
-	case PT_31_ControlPointPatchList:
-	case PT_32_ControlPointPatchList:
-		OutControlPoints = (PrimitiveType - PT_1_ControlPointPatchList + 1);
-		checkf(false, TEXT("Missing tessellation shaders, however tried to use EPrimitiveType %d (%d control points)"), (uint32)PrimitiveType, OutControlPoints);
-		break;
 	default:
 		checkf(false, TEXT("Unsupported EPrimitiveType %d"), (uint32)PrimitiveType);
 		break;
@@ -1636,34 +1668,33 @@ void FVulkanPipelineStateCacheManager::CreateGfxEntry(const FGraphicsPipelineSta
 	FVulkanVertexInputStateInfo VertexInputState;
 	
 	{
+		const FBoundShaderStateInput& BSI = PSOInitializer.BoundShaderState;
 
-			const FBoundShaderStateInput& BSI = PSOInitializer.BoundShaderState;
+		const FVulkanShaderHeader& VSHeader = Shaders[ShaderStage::Vertex]->GetCodeHeader();
+		VertexInputState.Generate(ResourceCast(PSOInitializer.BoundShaderState.VertexDeclarationRHI), VSHeader.InOutMask);
 
-			const FVulkanShaderHeader& VSHeader = Shaders[ShaderStage::Vertex]->GetCodeHeader();
-			VertexInputState.Generate(ResourceCast(PSOInitializer.BoundShaderState.VertexDeclarationRHI), VSHeader.InOutMask);
+		FUniformBufferGatherInfo UBGatherInfo;
 
-			FUniformBufferGatherInfo UBGatherInfo;
+		DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_VERTEX_BIT, ShaderStage::Vertex, VSHeader, UBGatherInfo);
 
-			DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_VERTEX_BIT, ShaderStage::Vertex, VSHeader, UBGatherInfo);
-
-			if (Shaders[ShaderStage::Pixel])
-			{
-				const FVulkanShaderHeader& PSHeader = Shaders[ShaderStage::Pixel]->GetCodeHeader();
-				DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_FRAGMENT_BIT, ShaderStage::Pixel, PSHeader, UBGatherInfo);
-			}
+		if (Shaders[ShaderStage::Pixel])
+		{
+			const FVulkanShaderHeader& PSHeader = Shaders[ShaderStage::Pixel]->GetCodeHeader();
+			DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_FRAGMENT_BIT, ShaderStage::Pixel, PSHeader, UBGatherInfo);
+		}
 
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
-			if (Shaders[ShaderStage::Geometry])
-			{
-				const FVulkanShaderHeader& GSHeader = Shaders[ShaderStage::Geometry]->GetCodeHeader();
-				DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_GEOMETRY_BIT, ShaderStage::Geometry, GSHeader, UBGatherInfo);
-			}
+		if (Shaders[ShaderStage::Geometry])
+		{
+			const FVulkanShaderHeader& GSHeader = Shaders[ShaderStage::Geometry]->GetCodeHeader();
+			DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_GEOMETRY_BIT, ShaderStage::Geometry, GSHeader, UBGatherInfo);
+		}
 #endif
 
-			// Second pass
-			const int32 NumImmutableSamplers = PSOInitializer.ImmutableSamplerState.ImmutableSamplers.Num();
-			TArrayView<FRHISamplerState*> ImmutableSamplers(NumImmutableSamplers > 0 ? &(FRHISamplerState*&)PSOInitializer.ImmutableSamplerState.ImmutableSamplers[0] : nullptr, NumImmutableSamplers);
-			DescriptorSetLayoutInfo.FinalizeBindings<false>(*Device, UBGatherInfo, ImmutableSamplers);
+		// Second pass
+		const int32 NumImmutableSamplers = PSOInitializer.ImmutableSamplerState.ImmutableSamplers.Num();
+		TArrayView<FRHISamplerState*> ImmutableSamplers(NumImmutableSamplers > 0 ? &(FRHISamplerState*&)PSOInitializer.ImmutableSamplerState.ImmutableSamplers[0] : nullptr, NumImmutableSamplers);
+		DescriptorSetLayoutInfo.FinalizeBindings<false>(*Device, UBGatherInfo, ImmutableSamplers);
 	}
 
 	FDescriptorSetRemappingInfo& RemappingInfo = DescriptorSetLayoutInfo.RemappingInfo;
@@ -2148,6 +2179,29 @@ FVulkanComputePipeline* FVulkanPipelineStateCacheManager::CreateComputePipelineF
 	Shader->GetEntryPoint(EntryPoint, 24);
 	PipelineInfo.stage.pName = EntryPoint;
 	PipelineInfo.layout = ComputeLayout->GetPipelineLayout();
+
+	if (Device->SupportsBindless())
+	{
+		PipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+	}
+
+	VkPipelineShaderStageRequiredSubgroupSizeCreateInfo RequiredSubgroupSizeCreateInfo;
+	if ((CSHeader.WaveSize > 0) && Device->GetOptionalExtensions().HasEXTSubgroupSizeControl)
+	{
+		// Check if supported by this stage
+		const VkPhysicalDeviceSubgroupSizeControlPropertiesEXT& SubgroupSizeControlProperties = Device->GetOptionalExtensionProperties().SubgroupSizeControlProperties;
+		if (VKHasAllFlags(SubgroupSizeControlProperties.requiredSubgroupSizeStages, VK_SHADER_STAGE_COMPUTE_BIT))
+		{
+			// Check if requested size is supported
+			if ((CSHeader.WaveSize >= SubgroupSizeControlProperties.minSubgroupSize) && (CSHeader.WaveSize <= SubgroupSizeControlProperties.maxSubgroupSize))
+		{
+			ZeroVulkanStruct(RequiredSubgroupSizeCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+			RequiredSubgroupSizeCreateInfo.requiredSubgroupSize = CSHeader.WaveSize;
+			PipelineInfo.stage.pNext = &RequiredSubgroupSizeCreateInfo;
+		}
+	}
+	}
+
 	VkResult Result;
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_VulkanComputePSOCreate);
@@ -2158,7 +2212,8 @@ FVulkanComputePipeline* FVulkanPipelineStateCacheManager::CreateComputePipelineF
 	if (Result != VK_SUCCESS)
 	{
 		FString ComputeHash = Shader->GetHash().ToString();
-		UE_LOG(LogVulkanRHI, Warning, TEXT("Failed to create graphics pipeline.\nShaders in pipeline: CS: %s"), *ComputeHash);
+		UE_LOG(LogVulkanRHI, Error, TEXT("Failed to create compute pipeline.\nShaders in pipeline: CS: %s"), *ComputeHash);
+		Pipeline->SetValid(false);
 	}
 
 	Pipeline->Layout = ComputeLayout;
@@ -2179,16 +2234,23 @@ void FVulkanPipelineStateCacheManager::NotifyDeletedComputePipeline(FVulkanCompu
 }
 
 template<typename T>
-static void SerializeArray(FArchive& Ar, TArray<T>& Array)
+static bool SerializeArray(FArchive& Ar, TArray<T>& Array)
 {
 	int32 Num = Array.Num();
 	Ar << Num;
 	if (Ar.IsLoading())
 	{
-		Array.SetNum(Num);
-		for (int32 Index = 0; Index < Num; ++Index)
+		if (Num < 0)
 		{
-			Ar << Array[Index];
+			return false;
+		}
+		else
+		{
+			Array.SetNum(Num);
+			for (int32 Index = 0; Index < Num; ++Index)
+			{
+				Ar << Array[Index];
+			}
 		}
 	}
 	else
@@ -2198,6 +2260,7 @@ static void SerializeArray(FArchive& Ar, TArray<T>& Array)
 			Ar << Array[Index];
 		}
 	}
+	return true;
 }
 
 
@@ -2227,7 +2290,12 @@ bool FVulkanPipelineStateCacheManager::FVulkanLRUCacheFile::Load(FArchive& Ar)
 		return false;
 	}
 
-	SerializeArray(Ar, PipelineSizes);
+	if (!SerializeArray(Ar, PipelineSizes))
+	{
+		UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to load lru pipeline cache due to invalid archive data!"));
+		return false;
+	}
+
 	return true;
 }
 

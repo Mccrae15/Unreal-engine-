@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayCueManager.h"
+#include "Engine/Blueprint.h"
 #include "Engine/ObjectLibrary.h"
 #include "GameplayCueNotify_Actor.h"
 #include "Misc/MessageDialog.h"
@@ -23,6 +24,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Misc/CoreDelegates.h"
 #include "AbilitySystemReplicationProxyInterface.h"
+#include "UObject/LinkerLoad.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueManager)
 
@@ -1567,7 +1569,7 @@ void UGameplayCueManager::UpdatePreallocation(UWorld* World)
 		AGameplayCueNotify_Actor* PrespawnedInstance = Cast<AGameplayCueNotify_Actor>(World->SpawnActor(CDO->GetClass()));
 		if (ensureMsgf(PrespawnedInstance, TEXT("Failed to prespawn GC notify for: %s"), *GetNameSafe(CDO)))
 		{
-			ensureMsgf(IsValid(PrespawnedInstance) == false, TEXT("Newly spawned GC is PendingKILL: %s"), *GetNameSafe(CDO));
+			ensureMsgf(IsValid(PrespawnedInstance) == true, TEXT("Newly spawned GC is invalid: %s"), *GetNameSafe(CDO));
 
 			if (LogGameplayCueActorSpawning)
 			{

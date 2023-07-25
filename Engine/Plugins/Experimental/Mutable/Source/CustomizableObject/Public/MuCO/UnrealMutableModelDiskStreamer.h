@@ -2,13 +2,7 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/SparseArray.h"
-#include "HAL/Platform.h"
-#include "HAL/PlatformCrt.h"
 #include "MuCO/CustomizableObject.h"
-#include "MuR/RefCounted.h"
 #include "MuR/Serialisation.h"
 
 class FArchive;
@@ -66,9 +60,14 @@ public:
 #if WITH_EDITOR
 	/** Cancel any further streaming operations for the given object. This is necessary if the object compiled data is
 	 * going to be modified. This can only happen in the editor, when recompiling.
-	 * Any additional straming requests for this object will fail.
+	 * Any additional streaming requests for this object will fail.
 	 */
 	void CancelStreamingForObject(const UCustomizableObject* CustomizableObject);
+
+	/** Checks if there are any streaming operations for the parameter object.
+	* @return true if there are streaming operations in flight
+	*/
+	bool AreTherePendingStreamingOperationsForObject(const UCustomizableObject* CustomizableObject) const;
 #endif
 
 	/** Release all the pending resources. This disables treamings for all objects. */
@@ -99,7 +98,7 @@ protected:
 	/** Streaming data for one object. */
 	struct FObjectData
 	{
-		mu::WeakPtr<mu::Model> Model;
+		TWeakPtr<const mu::Model> Model;
 		TArray<IAsyncReadFileHandle*> ReadFileHandles;
 		TMap<OPERATION_ID, IAsyncReadRequest*> CurrentReadRequests;
 		TMap<uint64, FMutableStreamableBlock> StreamableBlocks;

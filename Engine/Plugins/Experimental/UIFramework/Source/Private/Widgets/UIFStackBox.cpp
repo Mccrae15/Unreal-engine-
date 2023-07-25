@@ -3,17 +3,16 @@
 #include "Widgets/UIFStackBox.h"
 #include "Types/UIFWidgetTree.h"
 #include "UIFLog.h"
-#include "UIFPlayerComponent.h"
+#include "UIFModule.h"
 
+#include "Components/Spacer.h"
 #include "Components/StackBox.h"
 #include "Components/StackBoxSlot.h"
 
-#include "Engine/ActorChannel.h"
-#include "Engine/Engine.h"
-#include "Engine/NetDriver.h"
-#include "GameFramework/Actor.h"
-#include "GameFramework/PlayerController.h"
 #include "Net/UnrealNetwork.h"
+#include "UObject/Package.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UIFStackBox)
 
 
 /**
@@ -42,17 +41,23 @@ bool FUIFrameworkStackBoxSlotList::NetDeltaSerialize(FNetDeltaSerializeInfo& Del
 
 void FUIFrameworkStackBoxSlotList::AddEntry(FUIFrameworkStackBoxSlot Entry)
 {
-	FUIFrameworkStackBoxSlot& NewEntry = Slots.Add_GetRef(MoveTemp(Entry));
+	int32 NewEntryIndex = Slots.Add(MoveTemp(Entry));
+	FUIFrameworkStackBoxSlot& NewEntry = Slots[NewEntryIndex];
+	NewEntry.Index = NewEntryIndex;
 	MarkItemDirty(NewEntry);
 }
 
 bool FUIFrameworkStackBoxSlotList::RemoveEntry(UUIFrameworkWidget* Widget)
 {
 	check(Widget);
-	const int32 Index = Slots.IndexOfByPredicate([Widget](const FUIFrameworkStackBoxSlot& Entry) { return Entry.AuthorityGetWidget() == Widget; });
+	int32 Index = Slots.IndexOfByPredicate([Widget](const FUIFrameworkStackBoxSlot& Entry) { return Entry.AuthorityGetWidget() == Widget; });
 	if (Index != INDEX_NONE)
 	{
 		Slots.RemoveAt(Index);
+		for (; Index < Slots.Num(); ++Index)
+		{
+			Slots[Index].Index = Index;
+		}
 		MarkArrayDirty();
 	}
 	return Index != INDEX_NONE;
@@ -96,15 +101,10 @@ void UUIFrameworkStackBox::AddWidget(FUIFrameworkStackBoxSlot InEntry)
 	{
 		FFrame::KismetExecutionMessage(TEXT("The widget is invalid. It can't be added."), ELogVerbosity::Warning, "InvalidWidgetToAdd");
 	}
-	else if (GetPlayerComponent() && GetPlayerComponent() != InEntry.AuthorityGetWidget()->GetPlayerComponent())
-	{
-		check(GetPlayerComponent()->GetOwner()->HasAuthority());
-		FFrame::KismetExecutionMessage(TEXT("The widget was created for another player. It can't be removed on this player."), ELogVerbosity::Warning, "InvalidPlayerParentOnRemovedWidget");
-	}
 	else
 	{
-		InEntry.AuthoritySetWidget(InEntry.AuthorityGetWidget()); // to make sure the id is set
-		InEntry.AuthorityGetWidget()->AuthoritySetParent(GetPlayerComponent(), FUIFrameworkParentWidget(this));
+		// Reset the widget to make sure the id is set and it may have been duplicated during the attach
+		InEntry.AuthoritySetWidget(FUIFrameworkModule::AuthorityAttachWidget(this, InEntry.AuthorityGetWidget()));
 		AddEntry(InEntry);
 	}
 }
@@ -113,20 +113,24 @@ void UUIFrameworkStackBox::RemoveWidget(UUIFrameworkWidget* Widget)
 {
 	if (Widget == nullptr)
 	{
-		FFrame::KismetExecutionMessage(TEXT("The widget is invalid. It can't be removed."), ELogVerbosity::Warning, "InvalidWidgetToRemove");
+		FFrame::KismetExecutionMessage(TEXT("The widget is invalid. Widget can't be removed."), ELogVerbosity::Warning, "InvalidWidgetToRemove");
+	}
+	else if (!Widget->AuthorityGetParent().IsParentValid())
+	{
+		FFrame::KismetExecutionMessage(TEXT("The widget parent is invalid. Widget can't be removed."), ELogVerbosity::Warning, "InvalidWidgetParentToRemoveFrom");
+	}
+	else if (!Widget->AuthorityGetParent().IsWidget())
+	{
+		FFrame::KismetExecutionMessage(TEXT("The widget parent is not a widget. Widget can't be removed."), ELogVerbosity::Warning, "NotWidgetParentToRemoveFrom");
+	}
+	else if (Widget->AuthorityGetParent().AsWidget() != this)
+	{
+		FFrame::KismetExecutionMessage(TEXT("The widget was added to another widget parent. It can't be removed on this player."), ELogVerbosity::Warning, "InvalidPlayerParentOnRemovedWidget");
 	}
 	else
 	{
-		if (GetPlayerComponent() && GetPlayerComponent() != Widget->GetPlayerComponent())
-		{
-			check(GetPlayerComponent()->GetOwner()->HasAuthority());
-			FFrame::KismetExecutionMessage(TEXT("The widget was created for another player. It can't be removed on this player."), ELogVerbosity::Warning, "InvalidPlayerParentOnRemovedWidget");
-		}
-		else
-		{
-			RemoveEntry(Widget);
-			Widget->AuthoritySetParent(GetPlayerComponent(), FUIFrameworkParentWidget());
-		}
+		FUIFrameworkModule::AuthorityDetachWidgetFromParent(Widget);
+		RemoveEntry(Widget);
 	}
 }
 
@@ -145,6 +149,7 @@ void UUIFrameworkStackBox::SetOrientation(EOrientation Value)
 			StackBox->SetOrientation(Orientation);
 		}
 		MARK_PROPERTY_DIRTY_FROM_NAME(ThisClass, Orientation, this);
+		ForceNetUpdate();
 	}
 }
 
@@ -174,22 +179,53 @@ void UUIFrameworkStackBox::LocalAddChild(FUIFrameworkWidgetId ChildId)
 	bool bIsAdded = false;
 	if (FUIFrameworkStackBoxSlot* StackBoxEntry = FindEntry(ChildId))
 	{
-		check(GetPlayerComponent());
-		if (UUIFrameworkWidget* ChildWidget = GetPlayerComponent()->GetWidgetTree().FindWidgetById(ChildId))
+		if (FUIFrameworkWidgetTree* WidgetTree = GetWidgetTree())
 		{
-			UWidget* ChildUMGWidget = ChildWidget->LocalGetUMGWidget();
-			if (ensure(ChildUMGWidget))
+			if (UUIFrameworkWidget* ChildWidget = WidgetTree->FindWidgetById(ChildId))
 			{
-				UPanelSlot* PanelSlot = CastChecked<UStackBox>(LocalGetUMGWidget())->AddChild(ChildUMGWidget);
-				checkf(PanelSlot, TEXT("StackBoxPanel should be able to receive slot"));
+				UWidget* ChildUMGWidget = ChildWidget->LocalGetUMGWidget();
+				if (ensure(ChildUMGWidget))
+				{
+					UStackBox* StackBox = CastChecked<UStackBox>(LocalGetUMGWidget());
+					UPanelSlot* PanelSlot = nullptr;
+					{
+						const int32 ChildCount = StackBox->GetChildrenCount();
+						if (StackBoxEntry->Index < ChildCount)
+						{
+							// replace the existing slot
+							StackBox->ReplaceStackBoxChildAt(StackBoxEntry->Index, ChildUMGWidget);
+							PanelSlot = StackBox->GetSlots()[StackBoxEntry->Index];
+						}
+						else if (StackBoxEntry->Index == ChildCount)
+						{
+							// add to the end
+							PanelSlot = StackBox->AddChild(ChildUMGWidget);
+						}
+						else
+						{
+							// insert until the widget count is correct
+							for (int32 Index = ChildCount; Index < StackBoxEntry->Index; ++Index)
+							{
+								StackBox->AddChild(NewObject<USpacer>(GetTransientPackage()));
+							}
+							PanelSlot = StackBox->AddChild(ChildUMGWidget);
+						}
+						checkf(PanelSlot, TEXT("StackBoxPanel should be able to receive slot"));
+					}
 
-				StackBoxEntry->LocalAquireWidget();
+					StackBoxEntry->LocalAquireWidget();
 
-				UStackBoxSlot* StackBoxSlot = CastChecked<UStackBoxSlot>(PanelSlot);
-				StackBoxSlot->SetPadding(StackBoxEntry->Padding);
-				StackBoxSlot->SetSize(StackBoxEntry->Size);
-				StackBoxSlot->SetVerticalAlignment(StackBoxEntry->VerticalAlignment);
-				StackBoxSlot->SetHorizontalAlignment(StackBoxEntry->HorizontalAlignment);
+					UStackBoxSlot* StackBoxSlot = CastChecked<UStackBoxSlot>(PanelSlot);
+					StackBoxSlot->SetPadding(StackBoxEntry->Padding);
+					StackBoxSlot->SetSize(StackBoxEntry->Size);
+					StackBoxSlot->SetVerticalAlignment(StackBoxEntry->VerticalAlignment);
+					StackBoxSlot->SetHorizontalAlignment(StackBoxEntry->HorizontalAlignment);
+				}
+			}
+			else
+			{
+				UE_LOG(LogUIFramework, Log, TEXT("The widget '%" INT64_FMT "' doesn't exist in the WidgetTree."), ChildId.GetKey());
+				Super::LocalAddChild(ChildId);
 			}
 		}
 		else

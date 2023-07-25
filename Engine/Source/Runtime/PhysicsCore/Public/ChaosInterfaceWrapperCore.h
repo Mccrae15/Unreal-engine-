@@ -4,7 +4,9 @@
 
 #include "Chaos/CollisionFilterData.h"
 #include "Chaos/Declares.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Chaos/GeometryParticles.h"
+#endif
 #include "Chaos/ParticleHandleFwd.h"
 #include "Chaos/Real.h"
 #include "ChaosSQTypes.h"
@@ -260,5 +262,3 @@ bool GetHasBlock(const FSQHitBuffer<HitType>& Callback)
 }
 
 } // namespace ChaosInterface
-
-using namespace ChaosInterface;

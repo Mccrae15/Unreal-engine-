@@ -7,6 +7,7 @@
 
 #include "MaterialOptions.h"
 #include "StaticMeshAttributes.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "StaticMeshOperations.h"
 
 #include "Misc/PackageName.h"
@@ -21,6 +22,7 @@
 
 #include "UObject/UObjectBaseUtility.h"
 #include "UObject/Package.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Modules/ModuleManager.h"
@@ -34,6 +36,7 @@
 
 #include "Editor.h"
 
+#include "Engine/SkinnedAssetCommon.h"
 #include "Engine/StaticMesh.h"
 #include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -228,7 +231,7 @@ void FMeshMergeHelpers::ExpandInstances(const UInstancedStaticMeshComponent* InI
 }
 
 
-static void RetrieveMeshInternal(const UStaticMesh* StaticMesh, const UStaticMeshComponent* StaticMeshComponent, int32 LODIndex, FMeshDescription& OutMeshDescription, bool bPropagateVertexColours)
+static void RetrieveMeshInternal(const UStaticMesh* StaticMesh, const UStaticMeshComponent* StaticMeshComponent, int32 LODIndex, FMeshDescription& OutMeshDescription, bool bPropagateVertexColours, bool bApplyComponentTransform)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FMeshMergeHelpers::RetrieveMeshInternal)
 
@@ -246,9 +249,6 @@ static void RetrieveMeshInternal(const UStaticMesh* StaticMesh, const UStaticMes
 	// If we have a component, use it to retrieve transform & vertex colors (if requested)
 	if (StaticMeshComponent)
 	{
-		// Transform mesh to world space
-		FTransform ComponentToWorldTransform = StaticMeshComponent->GetComponentTransform();
-
 		// Handle spline mesh deformation
 		const bool bIsSplineMeshComponent = StaticMeshComponent->IsA<USplineMeshComponent>();
 		if (bIsSplineMeshComponent)
@@ -264,8 +264,11 @@ static void RetrieveMeshInternal(const UStaticMesh* StaticMesh, const UStaticMes
 			FMeshMergeHelpers::PropagatePaintedColorsToMesh(StaticMeshComponent, LODIndex, OutMeshDescription);
 		}
 
-		// Transform raw mesh vertex data by the Static Mesh Component's component to world transformation	
-		FStaticMeshOperations::ApplyTransform(OutMeshDescription, ComponentToWorldTransform);
+		// If specified transform vertices from local to world space
+		if (bApplyComponentTransform)
+		{
+			FStaticMeshOperations::ApplyTransform(OutMeshDescription, StaticMeshComponent->GetComponentTransform());
+		}
 	}
 
 	FMeshBuildSettings BuildSettings;
@@ -297,14 +300,14 @@ static void RetrieveMeshInternal(const UStaticMesh* StaticMesh, const UStaticMes
 	FStaticMeshOperations::RecomputeNormalsAndTangentsIfNeeded(OutMeshDescription, ComputeNTBsOptions);
 }
 
-void FMeshMergeHelpers::RetrieveMesh(const UStaticMeshComponent* StaticMeshComponent, int32 LODIndex, FMeshDescription& OutMeshDescription, bool bPropagateVertexColours)
+void FMeshMergeHelpers::RetrieveMesh(const UStaticMeshComponent* StaticMeshComponent, int32 LODIndex, FMeshDescription& OutMeshDescription, bool bPropagateVertexColours, bool bApplyComponentTransform)
 {
-	RetrieveMeshInternal(StaticMeshComponent->GetStaticMesh(), StaticMeshComponent, LODIndex, OutMeshDescription, bPropagateVertexColours);
+	RetrieveMeshInternal(StaticMeshComponent->GetStaticMesh(), StaticMeshComponent, LODIndex, OutMeshDescription, bPropagateVertexColours, bApplyComponentTransform);
 }
 
 void FMeshMergeHelpers::RetrieveMesh(const UStaticMesh* StaticMesh, int32 LODIndex, FMeshDescription& OutMeshDescription)
 {
-	RetrieveMeshInternal(StaticMesh, nullptr, LODIndex, OutMeshDescription, /*bPropagateVertexColours*/false);
+	RetrieveMeshInternal(StaticMesh, nullptr, LODIndex, OutMeshDescription, /*bPropagateVertexColours*/false, /*bApplyComponentTransform*/false);
 }
 
 void FMeshMergeHelpers::ExportStaticMeshLOD(const FStaticMeshLODResources& StaticMeshLOD, FMeshDescription& OutMeshDescription, const TArray<FStaticMaterial>& Materials)
@@ -420,7 +423,7 @@ void FMeshMergeHelpers::ExportStaticMeshLOD(const FStaticMeshLODResources& Stati
 	}
 }
 
-void FMeshMergeHelpers::RetrieveMesh(const USkeletalMeshComponent* SkeletalMeshComponent, int32 LODIndex, FMeshDescription& OutMeshDescription, bool bPropagateVertexColours)
+void FMeshMergeHelpers::RetrieveMesh(const USkeletalMeshComponent* SkeletalMeshComponent, int32 LODIndex, FMeshDescription& OutMeshDescription, bool bPropagateVertexColours, bool bApplyComponentTransform)
 {
 	FSkeletalMeshModel* Resource = SkeletalMeshComponent->GetSkeletalMeshAsset()->GetImportedModel();
 	if (Resource->LODModels.IsValidIndex(LODIndex))
@@ -531,6 +534,12 @@ void FMeshMergeHelpers::RetrieveMesh(const USkeletalMeshComponent* SkeletalMeshC
 				//Create a polygon from this triangle
 				const FPolygonID NewPolygonID = OutMeshDescription.CreatePolygon(SectionPolygonGroupID, VertexInstanceIDs);
 			}
+		}
+
+		// If specified transform vertices from local to world space
+		if (bApplyComponentTransform)
+		{
+			FStaticMeshOperations::ApplyTransform(OutMeshDescription, SkeletalMeshComponent->GetComponentTransform());
 		}
 	}
 }
@@ -738,7 +747,7 @@ void FMeshMergeHelpers::PropagateSplineDeformationToMesh(const USplineMeshCompon
 		{
 			const FVertexInstanceID VertexInstanceID = InOutMeshDescription.GetTriangleVertexInstance(TriangleID, Corner);
 			const FVertexID VertexID = InOutMeshDescription.GetVertexInstanceVertex(VertexInstanceID);
-			const float& AxisValue = USplineMeshComponent::GetAxisValue(VertexPositions[VertexID], InSplineMeshComponent->ForwardAxis);
+			const float& AxisValue = USplineMeshComponent::GetAxisValueRef(VertexPositions[VertexID], InSplineMeshComponent->ForwardAxis);
 			FTransform SliceTransform = InSplineMeshComponent->CalcSliceTransform(AxisValue);
 			FVector TangentY = FVector::CrossProduct((FVector)VertexInstanceNormals[VertexInstanceID], (FVector)VertexInstanceTangents[VertexInstanceID]).GetSafeNormal() * VertexInstanceBinormalSigns[VertexInstanceID];
 			VertexInstanceTangents[VertexInstanceID] = (FVector3f)SliceTransform.TransformVector((FVector)VertexInstanceTangents[VertexInstanceID]);
@@ -751,7 +760,7 @@ void FMeshMergeHelpers::PropagateSplineDeformationToMesh(const USplineMeshCompon
 	// Apply spline deformation for each vertex position
 	for (const FVertexID VertexID : InOutMeshDescription.Vertices().GetElementIDs())
 	{
-		float& AxisValue = USplineMeshComponent::GetAxisValue(VertexPositions[VertexID], InSplineMeshComponent->ForwardAxis);
+		float& AxisValue = USplineMeshComponent::GetAxisValueRef(VertexPositions[VertexID], InSplineMeshComponent->ForwardAxis);
 		FTransform SliceTransform = InSplineMeshComponent->CalcSliceTransform(AxisValue);
 		AxisValue = 0.0f;
 		VertexPositions[VertexID] = (FVector3f)SliceTransform.TransformPosition((FVector)VertexPositions[VertexID]);
@@ -766,7 +775,7 @@ void FMeshMergeHelpers::PropagateSplineDeformationToPhysicsGeometry(USplineMeshC
 	{
 		for (FVector& Position : Elem.VertexData)
 		{
-			const float& AxisValue = USplineMeshComponent::GetAxisValue(Position, SplineMeshComponent->ForwardAxis);
+			const float& AxisValue = USplineMeshComponent::GetAxisValueRef(Position, SplineMeshComponent->ForwardAxis);
 			FTransform SliceTransform = SplineMeshComponent->CalcSliceTransform(AxisValue);
 			Position = SliceTransform.TransformPosition(Position * Mask);
 		}
@@ -777,13 +786,13 @@ void FMeshMergeHelpers::PropagateSplineDeformationToPhysicsGeometry(USplineMeshC
 	for (FKSphereElem& Elem : InOutPhysicsGeometry.SphereElems)
 	{
 		const FVector WorldSpaceCenter = Elem.GetTransform().TransformPosition(Elem.Center);
-		Elem.Center = SplineMeshComponent->CalcSliceTransform(USplineMeshComponent::GetAxisValue(WorldSpaceCenter, SplineMeshComponent->ForwardAxis)).TransformPosition(Elem.Center * Mask);
+		Elem.Center = SplineMeshComponent->CalcSliceTransform(USplineMeshComponent::GetAxisValueRef(WorldSpaceCenter, SplineMeshComponent->ForwardAxis)).TransformPosition(Elem.Center * Mask);
 	}
 
 	for (FKSphylElem& Elem : InOutPhysicsGeometry.SphylElems)
 	{
 		const FVector WorldSpaceCenter = Elem.GetTransform().TransformPosition(Elem.Center);
-		Elem.Center = SplineMeshComponent->CalcSliceTransform(USplineMeshComponent::GetAxisValue(WorldSpaceCenter, SplineMeshComponent->ForwardAxis)).TransformPosition(Elem.Center * Mask);
+		Elem.Center = SplineMeshComponent->CalcSliceTransform(USplineMeshComponent::GetAxisValueRef(WorldSpaceCenter, SplineMeshComponent->ForwardAxis)).TransformPosition(Elem.Center * Mask);
 	}
 }
 
@@ -832,8 +841,10 @@ void FMeshMergeHelpers::RetrieveCullingLandscapeAndVolumes(UWorld* InWorld, cons
 		// Export the landscape to raw mesh format
 		FMeshDescription* MeshDescription = new FMeshDescription();
 		FStaticMeshAttributes(*MeshDescription).Register();
-		FBoxSphereBounds LandscapeBounds = EstimatedMeshProxyBounds;
-		Landscape->ExportToRawMesh(LandscapeExportLOD, *MeshDescription, LandscapeBounds);
+		ALandscapeProxy::FRawMeshExportParams ExportParams;
+		ExportParams.ExportLOD = LandscapeExportLOD;
+		ExportParams.ExportBounds = EstimatedMeshProxyBounds;
+		Landscape->ExportToRawMesh(ExportParams, *MeshDescription);
 		if (MeshDescription->Vertices().Num())
 		{
 			OutCullingMeshes.Add(MeshDescription);
@@ -1224,7 +1235,7 @@ void FMeshMergeHelpers::FixupNonStandaloneMaterialReferences(UStaticMesh* InStat
 	for (FStaticMaterial& StaticMaterial : InStaticMesh->GetStaticMaterials())
 	{
 		TObjectPtr<UMaterialInterface>& MaterialInterface = StaticMaterial.MaterialInterface;
-		if (!MaterialInterface->HasAnyFlags(RF_Standalone) && MaterialInterface->GetPackage() != Package)
+		if (MaterialInterface && !MaterialInterface->HasAnyFlags(RF_Standalone) && MaterialInterface->GetPackage() != Package)
 		{
 			// Duplicate material and outer it to the mesh
 			MaterialInterface = DuplicateObject<UMaterialInterface>(MaterialInterface, InStaticMesh);

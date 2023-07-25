@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/PhysicsConstraintActor.h"
-#include "UObject/ConstructorHelpers.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "Engine/Texture2D.h"
+#include "UObject/ConstructorHelpers.h"
 #include "PhysicsEngine/PhysicsConstraintComponent.h"
 #include "PhysicsEngine/ConstraintUtils.h"
 

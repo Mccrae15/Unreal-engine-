@@ -299,7 +299,7 @@ public:
 	 *
 	 * @param MouseCoordinate		The new position.
 	 */
-	void SetCursorPos( const FVector2D& MouseCoordinate );
+	void SetCursorPos( const FVector2D& MouseCoordinate ) override;
 
 	/** 
 	 *	Updates the cursor user's cursor to either the platform cursor or fake cursor
@@ -381,7 +381,7 @@ public:
 	 * @param Method				An optional popup method override. If not set, the widgets in the InOwnerPath will be queried for this.
 	 * @param bIsCollapsedByParent	Is this menu collapsed when a parent menu receives focus/activation? If false, only focus/activation outside the entire stack will auto collapse it.
 	 */
-	TSharedPtr<IMenu> PushMenu(const TSharedRef<SWidget>& InParentWidget, const FWidgetPath& InOwnerPath, const TSharedRef<SWidget>& InContent, const FVector2D& SummonLocation, const FPopupTransitionEffect& TransitionEffect, const bool bFocusImmediately = true, const FVector2D& SummonLocationSize = FVector2D::ZeroVector, TOptional<EPopupMethod> Method = TOptional<EPopupMethod>(), const bool bIsCollapsedByParent = true);
+	TSharedPtr<IMenu> PushMenu(const TSharedRef<SWidget>& InParentWidget, const FWidgetPath& InOwnerPath, const TSharedRef<SWidget>& InContent, const UE::Slate::FDeprecateVector2DParameter& SummonLocation, const FPopupTransitionEffect& TransitionEffect, const bool bFocusImmediately = true, const UE::Slate::FDeprecateVector2DParameter& SummonLocationSize = FVector2f::ZeroVector, TOptional<EPopupMethod> Method = TOptional<EPopupMethod>(), const bool bIsCollapsedByParent = true);
 
 	/**
 	 * Creates a new Menu and adds it to the menu stack under the specified parent menu.
@@ -395,7 +395,7 @@ public:
 	 * @param SummonLocationSize	An optional rect which describes an area in which the menu may not appear
 	 * @param bIsCollapsedByParent	Is this menu collapsed when a parent menu receives focus/activation? If false, only focus/activation outside the entire stack will auto collapse it.
 	 */
-	TSharedPtr<IMenu> PushMenu(const TSharedPtr<IMenu>& InParentMenu, const TSharedRef<SWidget>& InContent, const FVector2D& SummonLocation, const FPopupTransitionEffect& TransitionEffect, const bool bFocusImmediately = true, const FVector2D& SummonLocationSize = FVector2D::ZeroVector, const bool bIsCollapsedByParent = true);
+	TSharedPtr<IMenu> PushMenu(const TSharedPtr<IMenu>& InParentMenu, const TSharedRef<SWidget>& InContent, const UE::Slate::FDeprecateVector2DParameter& SummonLocation, const FPopupTransitionEffect& TransitionEffect, const bool bFocusImmediately = true, const UE::Slate::FDeprecateVector2DParameter& SummonLocationSize = FVector2f::ZeroVector, const bool bIsCollapsedByParent = true);
 
 	/**
 	 * Creates a new hosted Menu and adds it to the menu stack.
@@ -833,7 +833,7 @@ public:
 	 *								If horizontal it will attempt to open below the anchor but will open above if there is no room.
 	 * @return The adjusted position
 	 */
-	virtual FVector2D CalculatePopupWindowPosition( const FSlateRect& InAnchor, const FVector2D& InSize, bool bAutoAdjustForDPIScale = true, const FVector2D& InProposedPlacement = FVector2D::ZeroVector, const EOrientation Orientation = Orient_Vertical) const;
+	virtual UE::Slate::FDeprecateVector2DResult CalculatePopupWindowPosition( const FSlateRect& InAnchor, const UE::Slate::FDeprecateVector2DParameter& InSize, bool bAutoAdjustForDPIScale = true, const UE::Slate::FDeprecateVector2DParameter& InProposedPlacement = FVector2f::ZeroVector, const EOrientation Orientation = Orient_Vertical) const;
 
 	/**
 	 * Calculates the tooltip window position.
@@ -842,7 +842,7 @@ public:
 	 * @param InSize The size of the tooltip window.
 	 * @return The suggested position.
 	 */
-	virtual FVector2D CalculateTooltipWindowPosition( const FSlateRect& InAnchorRect, const FVector2D& InSize, bool bAutoAdjustForDPIScale) const;
+	virtual UE::Slate::FDeprecateVector2DResult CalculateTooltipWindowPosition( const FSlateRect& InAnchorRect, const UE::Slate::FDeprecateVector2DParameter& InSize, bool bAutoAdjustForDPIScale) const;
 
 	/**
 	 * Is the window in the app's destroy queue? If so it will be destroyed next tick.
@@ -928,7 +928,15 @@ public:
 	 * 
 	 * @return true if taking the screenshot was successful.
 	 */
-	bool TakeScreenshot(const TSharedRef<SWidget>& Widget, TArray<FColor>&OutColorData, FIntVector& OutSize);
+	bool TakeScreenshot(const TSharedRef<SWidget>& Widget, TArray<FColor>& OutColorData, FIntVector& OutSize);
+	
+	/**
+	 * Takes a screenshot of the widget writing the results into the color buffer provided.  This is to be used with HDR buffers
+	 * the size of the resulting image is also output.
+	 *
+	 * @return true if taking the screenshot was successful.
+	 */
+	bool TakeHDRScreenshot(const TSharedRef<SWidget>& Widget, TArray<FLinearColor>& OutColorData, FIntVector& OutSize);
 
 	/**
 	 * Takes a screenshot of the widget writing the results into the color buffer provided, this version allows you to provide 
@@ -937,6 +945,14 @@ public:
 	 * @return true if taking the screenshot was successful.
 	 */
 	bool TakeScreenshot(const TSharedRef<SWidget>& Widget, const FIntRect& InnerWidgetArea, TArray<FColor>& OutColorData, FIntVector& OutSize);
+
+	/**
+	  * Takes a screenshot of the widget writing the results into the color buffer provided, this version allows you to provide
+	  * an inner area to screenshot.  Note that the format is BGRA.  The size of the resulting image is also output.
+	  *
+	  * @return true if taking the screenshot was successful.
+	*/
+	bool TakeHDRScreenshot(const TSharedRef<SWidget>& Widget, const FIntRect& InnerWidgetArea, TArray<FLinearColor>& OutColorData, FIntVector& OutSize);
 
 	/** Gets the user at the given index, null if the user does not exist. */
 	FORCEINLINE TSharedPtr<const FSlateUser> GetUser(int32 UserIndex) const
@@ -1098,7 +1114,7 @@ protected:
 	/** Engages or disengages application throttling based on user behavior */
 	void ThrottleApplicationBasedOnMouseMovement();
 
-	virtual FWidgetPath LocateWidgetInWindow(FVector2D ScreenspaceMouseCoordinate, const TSharedRef<SWindow>& Window, bool bIgnoreEnabledStatus, int32 UserIndex) const override;
+	virtual FWidgetPath LocateWidgetInWindow(UE::Slate::FDeprecateVector2DParameter ScreenspaceMouseCoordinate, const TSharedRef<SWindow>& Window, bool bIgnoreEnabledStatus, int32 UserIndex) const override;
 
 	/**
 	 * Sets up any values that need to be based on the physical dimensions of the device.  
@@ -1307,7 +1323,7 @@ public:
 	 * @param	InToolTip           Widget to display.
 	 * @param	InSpawnLocation     Screen space location to show the tool tip (window top left)
 	 */
-	void SpawnToolTip( const TSharedRef<IToolTip>& InToolTip, const FVector2D& InSpawnLocation );
+	void SpawnToolTip( const TSharedRef<IToolTip>& InToolTip, const UE::Slate::FDeprecateVector2DParameter& InSpawnLocation );
 
 	/** Closes the open tool-tip, if a tool-tip is open */
 	void CloseToolTip();
@@ -1346,8 +1362,8 @@ public:
 	float GetDragTriggerDistanceSquared() const;
 
 	/** @return true if the difference between the ScreenSpaceOrigin and the ScreenSpacePosition is larger than the trigger distance for dragging in Slate. */
-	bool HasTraveledFarEnoughToTriggerDrag(const FPointerEvent& PointerEvent, const FVector2D ScreenSpaceOrigin) const;
-	bool HasTraveledFarEnoughToTriggerDrag(const FPointerEvent& PointerEvent, const FVector2D ScreenSpaceOrigin, EOrientation Orientation) const;
+	bool HasTraveledFarEnoughToTriggerDrag(const FPointerEvent& PointerEvent, const UE::Slate::FDeprecateVector2DParameter ScreenSpaceOrigin) const;
+	bool HasTraveledFarEnoughToTriggerDrag(const FPointerEvent& PointerEvent, const UE::Slate::FDeprecateVector2DParameter ScreenSpaceOrigin, EOrientation Orientation) const;
 
 	/** Set the size of the deadzone for dragging in screen pixels */
 	void SetDragTriggerDistance( float ScreenPixels );
@@ -1426,9 +1442,9 @@ public:
 	virtual bool GetSoftwareCursorAvailable() const override { return bSoftwareCursorAvailable; }
 	virtual EVisibility GetSoftwareCursorVis() const override;
 
-	virtual FVector2D GetCursorPos() const override;
-	virtual FVector2D GetLastCursorPos() const override;
-	virtual FVector2D GetCursorSize() const override;
+	virtual UE::Slate::FDeprecateVector2DResult GetCursorPos() const override;
+	virtual UE::Slate::FDeprecateVector2DResult GetLastCursorPos() const override;
+	virtual UE::Slate::FDeprecateVector2DResult GetCursorSize() const override;
 
 	virtual TSharedPtr<SWidget> GetKeyboardFocusedWidget() const override;
 
@@ -1451,7 +1467,7 @@ public:
 	virtual bool HasFocusedDescendants( const TSharedRef<const SWidget>& Widget ) const override;
 	virtual bool HasUserFocusedDescendants(const TSharedRef< const SWidget >& Widget, int32 UserIndex) const override;
 	virtual bool IsExternalUIOpened() override;
-	virtual FWidgetPath LocateWindowUnderMouse( FVector2D ScreenspaceMouseCoordinate, const TArray<TSharedRef<SWindow>>& Windows, bool bIgnoreEnabledStatus = false, int32 UserIndex = INDEX_NONE) override;
+	virtual FWidgetPath LocateWindowUnderMouse( UE::Slate::FDeprecateVector2DParameter ScreenspaceMouseCoordinate, const TArray<TSharedRef<SWindow>>& Windows, bool bIgnoreEnabledStatus = false, int32 UserIndex = INDEX_NONE) override;
 	virtual bool IsWindowHousingInteractiveTooltip(const TSharedRef<const SWindow>& WindowToTest) const override;
 	virtual TSharedRef<SImage> MakeImage( const TAttribute<const FSlateBrush*>& Image, const TAttribute<FSlateColor>& Color, const TAttribute<EVisibility>& Visibility ) const override;
 	virtual TSharedRef<SWidget> MakeWindowTitleBar(const FWindowTitleBarArgs& InArgs, TSharedPtr<IWindowTitleBar>& OutTitleBar) const override;
@@ -1463,6 +1479,7 @@ public:
 	virtual void SetAllUserFocus(const FWidgetPath& InFocusPath, const EFocusCause InCause) override;
 	virtual void SetAllUserFocusAllowingDescendantFocus(const FWidgetPath& InFocusPath, const EFocusCause InCause) override;
 	virtual TSharedPtr<SWidget> GetUserFocusedWidget(uint32 UserIndex) const override;
+	virtual TSharedPtr<SWidget> GetCurrentDebugContextWidget() const override;
 	virtual const TArray<TSharedRef<SWindow>> GetTopLevelWindows() const override { return SlateWindows; }
 
 	DECLARE_EVENT_OneParam(FSlateApplication, FApplicationActivationStateChangedEvent, const bool /*IsActive*/)
@@ -1757,11 +1774,13 @@ private:
 	/** Weak pointers to the allocated virtual users. */
 	TArray<TWeakPtr<FSlateVirtualUserHandle>> VirtualUsers;
 
-	/**
-	  * Last widget that was set for 'all users' focus and the cause.
-	  */
+	/** Last widget that was set for 'all users' focus and the cause. */
 	TWeakPtr<SWidget> LastAllUsersFocusWidget;
 	EFocusCause LastAllUsersFocusCause;
+
+	/** The painting SWindow. */
+	TWeakPtr<SWidget> CurrentDebugContextWidget;
+	TWeakPtr<SWindow> CurrentDebuggingWindow;
 
 	/**
 	 * Application throttling

@@ -3,14 +3,18 @@
 #include "OptimusDeformerInstance.h"
 
 #include "Components/MeshComponent.h"
+#include "ComputeFramework/ComputeFramework.h"
+#include "ComputeWorkerInterface.h"
 #include "DataInterfaces/OptimusDataInterfaceGraph.h"
+#include "DataInterfaces/OptimusDataInterfaceRawBuffer.h"
 #include "OptimusComputeGraph.h"
 #include "OptimusDataTypeRegistry.h"
 #include "OptimusDeformer.h"
 #include "OptimusVariableDescription.h"
 #include "RenderGraphBuilder.h"
-#include "SkeletalRenderPublic.h"
-#include "DataInterfaces/OptimusDataInterfaceRawBuffer.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusDeformerInstance)
 
 
 /** Container for a pooled buffer. */
@@ -254,12 +258,6 @@ void UOptimusDeformerInstanceSettings::GetComponentBindings(
 	}
 }
 
-AActor* UOptimusDeformerInstanceSettings::GetActor() const
-{
-	// We should be owned by an actor at some point.
-	return GetTypedOuter<AActor>();
-}
-
 UOptimusComponentSourceBinding const* UOptimusDeformerInstanceSettings::GetComponentBindingByName(FName InBindingName) const
 {
 	if (const UOptimusDeformer* DeformerResolved = Deformer.Get())
@@ -311,12 +309,17 @@ void UOptimusDeformerInstance::SetupFromDeformer(UOptimusDeformer* InDeformer)
 	ComputeGraphExecInfos.Reset();
 	GraphsToRunOnNextTick.Reset();
 
-	for (const FOptimusComputeGraphInfo& ComputeGraphInfo : InDeformer->ComputeGraphs)
+	for (int32 GraphIndex = 0; GraphIndex < InDeformer->ComputeGraphs.Num(); ++GraphIndex)
 	{
+		FOptimusComputeGraphInfo const& ComputeGraphInfo = InDeformer->ComputeGraphs[GraphIndex];
 		FOptimusDeformerInstanceExecInfo& Info = ComputeGraphExecInfos.AddDefaulted_GetRef();
 		Info.GraphName = ComputeGraphInfo.GraphName;
 		Info.GraphType = ComputeGraphInfo.GraphType;
 		Info.ComputeGraph = ComputeGraphInfo.ComputeGraph;
+
+		// ComputeGraphs are sorted by the order we want to run them in. 
+		// Using the graph index as our sort priority prevents kernels from the different (but related) graphs running simultaineously.
+		Info.ComputeGraphInstance.SetGraphSortPriority(GraphIndex);
 
 		if (BoundComponents.Num())
 		{
@@ -336,18 +339,6 @@ void UOptimusDeformerInstance::SetupFromDeformer(UOptimusDeformer* InDeformer)
 			}
 		}
 
-		int32 LODIndex = 0;
-		if (const USkinnedMeshComponent* SkinnedMeshComponent = Cast<USkinnedMeshComponent>(MeshComponent))
-		{
-			// This guff should be a utility function on USkinnedMeshComponent. 
-			LODIndex = SkinnedMeshComponent->GetPredictedLODLevel();
-			
-			if (SkinnedMeshComponent->GetSkinnedAsset() && SkinnedMeshComponent->GetSkinnedAsset()->IsStreamable() && SkinnedMeshComponent->MeshObject)
-			{
-				LODIndex = FMath::Max<int32>(LODIndex, SkinnedMeshComponent->MeshObject->GetSkeletalMeshRenderData().PendingFirstLODIdx);
-			}
-		}
-
 		for(TObjectPtr<UComputeDataProvider> DataProvider: Info.ComputeGraphInstance.GetDataProviders())
 		{
 			// Make the persistent buffer data provider aware of the buffer pool and current LOD index.
@@ -355,6 +346,12 @@ void UOptimusDeformerInstance::SetupFromDeformer(UOptimusDeformer* InDeformer)
 			if (UOptimusPersistentBufferDataProvider* PersistentBufferProvider = Cast<UOptimusPersistentBufferDataProvider>(DataProvider))
 			{
 				PersistentBufferProvider->BufferPool = BufferPool;
+			}
+
+			// Set this instance on the graph data provider so that it can query variables.
+			if (UOptimusGraphDataProvider* GraphProvider = Cast<UOptimusGraphDataProvider>(DataProvider))
+			{
+				GraphProvider->DeformerInstance = this;
 			}
 		}
 
@@ -400,14 +397,11 @@ void UOptimusDeformerInstance::SetupFromDeformer(UOptimusDeformer* InDeformer)
 void UOptimusDeformerInstance::SetCanBeActive(bool bInCanBeActive)
 {
 	bCanBeActive = bInCanBeActive;
-
 }
 
 void UOptimusDeformerInstance::AllocateResources()
 {
-	
 }
-
 
 void UOptimusDeformerInstance::ReleaseResources()
 {
@@ -421,38 +415,57 @@ void UOptimusDeformerInstance::ReleaseResources()
 	}
 }
 
-
-bool UOptimusDeformerInstance::IsActive() const
+void UOptimusDeformerInstance::EnqueueWork(FEnqueueWorkDesc const& InDesc)
 {
-	if (!bCanBeActive)
+	// Convert execution group enum to ComputeTaskExecutionGroup name.
+	FName ExecutionGroupName;
+	switch (InDesc.ExecutionGroup)
 	{
-		return false;
+	case UMeshDeformerInstance::ExecutionGroup_Immediate:
+		ExecutionGroupName = ComputeTaskExecutionGroup::Immediate;
+		break;
+	case UMeshDeformerInstance::ExecutionGroup_Default:
+	case UMeshDeformerInstance::ExecutionGroup_EndOfFrameUodate:
+		ExecutionGroupName = ComputeTaskExecutionGroup::EndOfFrameUpdate;
+		break;
+	default:
+		ensure(0);
+		return;
 	}
-		
-	for (const FOptimusDeformerInstanceExecInfo& Info: ComputeGraphExecInfos)
-	{
-		if (!Info.ComputeGraphInstance.ValidateDataProviders(Info.ComputeGraph))
-		{
-			return false;
-		}
-	}
-	return !ComputeGraphExecInfos.IsEmpty();
-}
 
-void UOptimusDeformerInstance::EnqueueWork(FSceneInterface* InScene, EWorkLoad InWorkLoadType, FName InOwnerName)
-{
+	// Get the current queued graphs.
 	TSet<FName> GraphsToRun;
 	{
 		UE::TScopeLock<FCriticalSection> Lock(GraphsToRunOnNextTickLock);
 		Swap(GraphsToRunOnNextTick, GraphsToRun);
 	}
 	
-	for (FOptimusDeformerInstanceExecInfo& Info: ComputeGraphExecInfos)
+	// Enqueue work.
+	bool bIsWorkEnqueued = false;
+	if (bCanBeActive)
 	{
-		if (Info.GraphType == EOptimusNodeGraphType::Update || GraphsToRun.Contains(Info.GraphName))
+		for (FOptimusDeformerInstanceExecInfo& Info: ComputeGraphExecInfos)
 		{
-			Info.ComputeGraphInstance.EnqueueWork(Info.ComputeGraph, InScene, InOwnerName);
+			if (Info.GraphType == EOptimusNodeGraphType::Update || GraphsToRun.Contains(Info.GraphName))
+			{
+				bIsWorkEnqueued |= Info.ComputeGraphInstance.EnqueueWork(Info.ComputeGraph, InDesc.Scene, ExecutionGroupName, InDesc.OwnerName, InDesc.FallbackDelegate);
+			}
 		}
+	}
+
+	if (!bIsWorkEnqueued)
+	{
+		// If we failed to enqueue work then enqueue the fallback.
+		// todo: This might need enqueuing for EndOfFrame instead of immediate execution?
+		ENQUEUE_RENDER_COMMAND(ComputeFrameworkEnqueueFallback)([FallbackDelegate = InDesc.FallbackDelegate](FRHICommandListImmediate& RHICmdList)
+		{ 
+			FallbackDelegate.ExecuteIfBound();
+		});
+	}
+	else if (InDesc.ExecutionGroup == UMeshDeformerInstance::ExecutionGroup_Immediate)
+	{
+		// If we succesfully enqueued to the Immediate group then flush all work on that group now.
+		ComputeFramework::FlushWork(InDesc.Scene, ExecutionGroupName);
 	}
 }
 
@@ -514,6 +527,11 @@ bool UOptimusDeformerInstance::SetVectorVariable(FName InVariableName, const FVe
 bool UOptimusDeformerInstance::SetVector4Variable(FName InVariableName, const FVector4& InValue)
 {
 	return SetVariableValue<FVector4>(Variables, InVariableName, "FVector4", InValue);
+}
+
+bool UOptimusDeformerInstance::SetTransformVariable(FName InVariableName, const FTransform& InValue)
+{
+	return SetVariableValue<FTransform>(Variables, InVariableName, "FTransform", InValue);
 }
 
 const TArray<UOptimusVariableDescription*>& UOptimusDeformerInstance::GetVariables() const

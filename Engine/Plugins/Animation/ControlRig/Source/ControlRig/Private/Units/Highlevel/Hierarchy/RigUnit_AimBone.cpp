@@ -13,17 +13,17 @@ FRigUnit_AimBoneMath_Execute()
 
 	Result = InputTransform;
 
-	URigHierarchy* Hierarchy = Context.Hierarchy;
+	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy == nullptr)
 	{
 		return;
 	}
 
-	if (Context.State == EControlRigState::Init)
+	if (!bIsInitialized)
 	{
 		PrimaryCachedSpace.Reset();
 		SecondaryCachedSpace.Reset();
-		return;
+		bIsInitialized = true;
 	}
 
 	if ((Weight <= SMALL_NUMBER) || (Primary.Weight <= SMALL_NUMBER && Secondary.Weight <= SMALL_NUMBER))
@@ -48,17 +48,17 @@ FRigUnit_AimBoneMath_Execute()
 			}
 		}
 
-		if (Context.DrawInterface != nullptr && DebugSettings.bEnabled)
+		if (ExecuteContext.GetDrawInterface() != nullptr && DebugSettings.bEnabled)
 		{
 			const FLinearColor Color = FLinearColor(0.f, 1.f, 1.f, 1.f);
 			if (Primary.Kind == EControlRigVectorKind::Direction)
 			{
-				Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, Result.GetLocation(), Result.GetLocation() + Target * DebugSettings.Scale, Color);
+				ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, Result.GetLocation(), Result.GetLocation() + Target * DebugSettings.Scale, Color);
 			}
 			else
 			{
-				Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, Result.GetLocation(), Target, Color);
-				Context.DrawInterface->DrawBox(DebugSettings.WorldOffset, FTransform(FQuat::Identity, Target, FVector(1.f, 1.f, 1.f) * DebugSettings.Scale * 0.1f), Color);
+				ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, Result.GetLocation(), Target, Color);
+				ExecuteContext.GetDrawInterface()->DrawBox(DebugSettings.WorldOffset, FTransform(FQuat::Identity, Target, FVector(1.f, 1.f, 1.f) * DebugSettings.Scale * 0.1f), Color);
 			}
 		}
 
@@ -102,17 +102,17 @@ FRigUnit_AimBoneMath_Execute()
 			}
 		}
 
-		if (Context.DrawInterface != nullptr && DebugSettings.bEnabled)
+		if (ExecuteContext.GetDrawInterface() != nullptr && DebugSettings.bEnabled)
 		{
 			const FLinearColor Color = FLinearColor(0.f, 0.2f, 1.f, 1.f);
 			if (Secondary.Kind == EControlRigVectorKind::Direction)
 			{
-				Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, Result.GetLocation(), Result.GetLocation() + Target * DebugSettings.Scale, Color);
+				ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, Result.GetLocation(), Result.GetLocation() + Target * DebugSettings.Scale, Color);
 			}
 			else
 			{
-				Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, Result.GetLocation(), Target, Color);
-				Context.DrawInterface->DrawBox(DebugSettings.WorldOffset, FTransform(FQuat::Identity, Target, FVector(1.f, 1.f, 1.f) * DebugSettings.Scale * 0.1f), Color);
+				ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, Result.GetLocation(), Target, Color);
+				ExecuteContext.GetDrawInterface()->DrawBox(DebugSettings.WorldOffset, FTransform(FQuat::Identity, Target, FVector(1.f, 1.f, 1.f) * DebugSettings.Scale * 0.1f), Color);
 			}
 		}
 
@@ -175,7 +175,7 @@ FRigUnit_AimBone_Execute()
 	SecondaryTargetItem.Space = FRigElementKey(Secondary.Space, ERigElementType::Bone);
 
 	FRigUnit_AimItem::StaticExecute(
-		RigVMExecuteContext,
+		ExecuteContext,
 		FRigElementKey(Bone, ERigElementType::Bone),
 		PrimaryTargetItem,
 		SecondaryTargetItem,
@@ -184,8 +184,7 @@ FRigUnit_AimBone_Execute()
 		CachedBoneIndex,
 		PrimaryCachedSpace,
 		SecondaryCachedSpace,
-		ExecuteContext,
-		Context);
+		bIsInitialized);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_AimBone::GetUpgradeInfo() const
@@ -221,12 +220,12 @@ FRigUnit_AimItem_Execute()
 		return;
 	}
 
-	if (Context.State == EControlRigState::Init)
+	if (!bIsInitialized)
 	{
 		CachedItem.Reset();
 		PrimaryCachedSpace.Reset();
 		SecondaryCachedSpace.Reset();
-		return;
+		bIsInitialized = true;
 	}
 
 	if (!CachedItem.UpdateCache(Item, Hierarchy))
@@ -243,7 +242,7 @@ FRigUnit_AimItem_Execute()
 	FTransform Transform = Hierarchy->GetGlobalTransform(CachedItem);
 
 	FRigUnit_AimBoneMath::StaticExecute(
-		RigVMExecuteContext,
+		ExecuteContext,
 		Transform,
 		Primary,
 		Secondary,
@@ -252,7 +251,7 @@ FRigUnit_AimItem_Execute()
 		DebugSettings,
 		PrimaryCachedSpace,
 		SecondaryCachedSpace,
-		Context);
+		bIsInitialized);
 
 	Hierarchy->SetGlobalTransform(CachedItem, Transform);
 }
@@ -267,11 +266,12 @@ FRigUnit_AimConstraintLocalSpaceOffset_Execute()
 		return;
 	}
 	
-	if(Context.State == EControlRigState::Init)
+	if(!bIsInitialized)
 	{
 		WorldUpSpaceCache.Reset();
 		ChildCache.Reset();
 		ParentCaches.Reset();
+		bIsInitialized = true;
 	}
 	
 	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
@@ -385,7 +385,7 @@ FRigUnit_AimConstraintLocalSpaceOffset_Execute()
 				FTransform InitialAimResult = ChildInitialGlobalTransform;
 				FRigUnit_AimBone_DebugSettings DummyDebugSettings;
 				FRigUnit_AimBoneMath::StaticExecute(
-					RigVMExecuteContext,
+					ExecuteContext,
 					ChildInitialGlobalTransform, // optional
 					Primary,
 					Secondary,
@@ -394,7 +394,7 @@ FRigUnit_AimConstraintLocalSpaceOffset_Execute()
 					DummyDebugSettings,
 					PrimaryCachedSpace,
 					SecondaryCachedSpace,
-					Context);
+					bIsInitialized);
 
 				FTransform ChildParentInitialGlobalTransform = Hierarchy->GetParentTransformByIndex(ChildCache, true);
 				FQuat MixedInitialLocalRotation = ChildParentInitialGlobalTransform.GetRotation().Inverse() * InitialAimResult.GetRotation();
@@ -454,7 +454,7 @@ FRigUnit_AimConstraintLocalSpaceOffset_Execute()
 			FTransform ChildGlobalTransform = Hierarchy->GetGlobalTransform(ChildCache);
 			FTransform AimResult = ChildGlobalTransform;
 			FRigUnit_AimBoneMath::StaticExecute(
-				RigVMExecuteContext,
+				ExecuteContext,
 				ChildGlobalTransform, // optional
 				Primary,
 				Secondary,
@@ -463,7 +463,7 @@ FRigUnit_AimConstraintLocalSpaceOffset_Execute()
 				AdvancedSettings.DebugSettings,
 				PrimaryCachedSpace,
 				WorldUpSpaceCache,
-				Context);	
+				bIsInitialized);	
 
 			// handle filtering, performed in local space
 			FTransform ChildParentGlobalTransform = Hierarchy->GetParentTransformByIndex(ChildCache, false);

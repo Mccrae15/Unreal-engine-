@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "Subsystems/GameInstanceSubsystem.h"
+#include "Subsystems/EngineSubsystem.h"
 #include "Layout/Margin.h"
 #include "Widgets/Layout/Anchors.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
@@ -41,7 +41,7 @@ struct UMG_API FGameViewportWidgetSlot
  * 
  */
 UCLASS()
-class UMG_API UGameViewportSubsystem : public UGameInstanceSubsystem
+class UMG_API UGameViewportSubsystem : public UEngineSubsystem
 {
 	GENERATED_BODY()
 
@@ -51,6 +51,7 @@ public:
 	virtual void Deinitialize() override;
 	//~ End Subsystem
 
+	static UGameViewportSubsystem* Get();
 	static UGameViewportSubsystem* Get(UWorld* World);
 	
 public:
@@ -81,6 +82,14 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "User Interface")
 	void SetWidgetSlot(UWidget* Widget, FGameViewportWidgetSlot Slot);
 
+	/** */
+	DECLARE_EVENT_TwoParams(UGameViewportSubsystem, FWidgetAddedEvent, UWidget*, ULocalPlayer*);
+	FWidgetAddedEvent OnWidgetAdded;
+
+	/** */
+	DECLARE_EVENT_OneParam(UGameViewportSubsystem, FWidgetRemovedEvent, UWidget*);
+	FWidgetRemovedEvent OnWidgetRemoved;
+
 public:
 	/**
 	 * Helper function to set the position in the viewport for the Slot.
@@ -110,7 +119,9 @@ private:
 private:
 	void AddToScreen(UWidget* Widget, ULocalPlayer* Player, FGameViewportWidgetSlot& Slot);
 	void RemoveWidgetInternal(UWidget* Widget, const TWeakPtr<SConstraintCanvas>& FullScreenWidget, const TWeakObjectPtr<ULocalPlayer>& LocalPlayer);
-	void OnLevelRemovedFromWorld(ULevel* InLevel, UWorld* InWorld);
+	void HandleWorldCleanup(UWorld* InWorld, bool bSessionEnded, bool bCleanupResoures);
+	void HandleRemoveWorld(UWorld* InWorld);
+
 	FMargin GetFullScreenOffsetForWidget(UWidget* Widget) const;
 	TPair<FMargin, bool> GetOffsetAttribute(UWidget* Widget, const FGameViewportWidgetSlot& Slot) const;
 

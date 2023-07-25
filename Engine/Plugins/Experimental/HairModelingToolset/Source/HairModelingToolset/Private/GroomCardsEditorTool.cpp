@@ -2,6 +2,7 @@
 
 #include "GroomCardsEditorTool.h"
 #include "InteractiveToolManager.h"
+#include "SceneManagement.h"
 #include "ToolBuilderUtil.h"
 
 #include "BaseBehaviors/SingleClickBehavior.h"
@@ -26,9 +27,9 @@
 
 #include "GroomQueryUtil.h"
 
-#include "Engine/Classes/Engine/StaticMesh.h"
-#include "Engine/Classes/Components/StaticMeshComponent.h"
-#include "Engine/Classes/Engine/StaticMeshActor.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 
 
 #define LOCTEXT_NAMESPACE "UGroomCardsEditorTool"

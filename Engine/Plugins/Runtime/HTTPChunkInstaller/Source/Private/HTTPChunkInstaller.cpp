@@ -1,27 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HTTPChunkInstaller.h"
+#include "Async/AsyncWork.h"
 #include "HTTPChunkInstallerLog.h"
-#include "ChunkInstall.h"
-#include "Interfaces/IBuildManifest.h"
-#include "BuildPatchSettings.h"
-#include "BuildPatchServicesSingleton.h"
-#include "Templates/UniquePtr.h"
 #include "LocalTitleFile.h"
 #include "Misc/SecureHash.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
 #include "HttpModule.h"
-#include "Dom/JsonObject.h"
-#include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "HAL/ThreadSafeCounter64.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "HAL/RunnableThread.h"
 #include "Misc/CommandLine.h"
 #include "Modules/ModuleManager.h"
-#include "Stats/Stats.h"
 
 #define LOCTEXT_NAMESPACE "HTTPChunkInstaller"
 
@@ -1179,12 +1171,6 @@ bool FHTTPChunkInstall::Tick(float DeltaSeconds)
 			{
 				// No more manifests relating to the chunk ID are left to install.
 				// Inform any listeners that the install has been completed.
-				FPlatformChunkInstallCompleteMultiDelegate* FoundDelegate = DelegateMap.Find(InstallingChunkID);
-				if (FoundDelegate)
-				{
-					FoundDelegate->Broadcast(InstallingChunkID);
-				}
-
 				InstallDelegate.Broadcast(InstallingChunkID, true);
 			}
 			EndInstall();
@@ -1518,33 +1504,6 @@ bool FHTTPChunkInstall::PrioritizeChunk(uint32 ChunkID, EChunkPriority::Type Pri
 		PriorityQueue.Sort();
 	}
 	return true;
-}
-
-FDelegateHandle FHTTPChunkInstall::SetChunkInstallDelgate(uint32 ChunkID, FPlatformChunkInstallCompleteDelegate Delegate)
-{
-	FPlatformChunkInstallCompleteMultiDelegate* FoundDelegate = DelegateMap.Find(ChunkID);
-	if (FoundDelegate)
-	{
-		return FoundDelegate->Add(Delegate);
-	}
-	else
-	{
-		FPlatformChunkInstallCompleteMultiDelegate MC;
-		auto RetVal = MC.Add(Delegate);
-		DelegateMap.Add(ChunkID, MC);
-		return RetVal;
-	}
-	return FDelegateHandle();
-}
-
-void FHTTPChunkInstall::RemoveChunkInstallDelgate(uint32 ChunkID, FDelegateHandle Delegate)
-{
-	FPlatformChunkInstallCompleteMultiDelegate* FoundDelegate = DelegateMap.Find(ChunkID);
-	if (!FoundDelegate)
-	{
-		return;
-	}
-	FoundDelegate->Remove(Delegate);
 }
 
 void FHTTPChunkInstall::BeginChunkInstall(uint32 ChunkID,IBuildManifestPtr ChunkManifest, IBuildManifestPtr PrevInstallChunkManifest)

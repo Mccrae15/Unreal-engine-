@@ -312,6 +312,9 @@ class ENGINE_API UDirectionalLightComponent : public ULightComponent
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Lighting")
 	void SetAtmosphereSunLightIndex(int32 NewValue);
 
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Lighting")
+	void SetForwardShadingPriority(int32 NewValue);
+
 	//~ Begin ULightComponent Interface
 	virtual FVector4 GetLightPosition() const override;
 	virtual ELightComponentType GetLightType() const override;
@@ -341,6 +344,7 @@ class ENGINE_API UDirectionalLightComponent : public ULightComponent
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
+	virtual bool ForceActorNonSpatiallyLoaded() const override { return true; }
 #endif // WITH_EDITOR
 	virtual void Serialize(FArchive& Ar) override;
 	//~ Begin UObject Interface

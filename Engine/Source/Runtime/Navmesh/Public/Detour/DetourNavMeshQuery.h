@@ -33,7 +33,7 @@
 //@UE BEGIN
 #define WITH_FIXED_AREA_ENTERING_COST 1
 
-// LWC_TODO_AI: This should be DT_REAL_MAX but leaving as FLT_MAX until after 5.0, as UE side has not been converted to taking FReals for Costs.
+// Note poly costs are still floats in UE so we are using FLT_MAX as unwalkable still.
 #define DT_UNWALKABLE_POLY_COST FLT_MAX
 //@UE END
 
@@ -392,15 +392,16 @@ public:
 	///@{ 
 
 	/// Initializes a sliced path query.
-	///  @param[in]		startRef	The refrence id of the start polygon.
-	///  @param[in]		endRef		The reference id of the end polygon.
-	///  @param[in]		startPos	A position within the start polygon. [(x, y, z)]
-	///  @param[in]		endPos		A position within the end polygon. [(x, y, z)]
-	///  @param[in]		costLimit	Cost limit of nodes allowed to be added to the open list	//@UE
-	///  @param[in]		filter		The polygon filter to apply to the query.
+	///  @param[in]		startRef					The refrence id of the start polygon.
+	///  @param[in]		endRef						The reference id of the end polygon.
+	///  @param[in]		startPos					A position within the start polygon. [(x, y, z)]
+	///  @param[in]		endPos						A position within the end polygon. [(x, y, z)]
+	///  @param[in]		costLimit					Cost limit of nodes allowed to be added to the open list	//@UE
+	///  @param[in]		requireNavigableEndLocation	Define if the end location is required to be a valid navmesh polygon //@UE
+	///  @param[in]		filter						The polygon filter to apply to the query.
 	/// @returns The status flags for the query.
 	dtStatus initSlicedFindPath(dtPolyRef startRef, dtPolyRef endRef,
-								const dtReal* startPos, const dtReal* endPos, const dtReal costLimit, //@UE
+								const dtReal* startPos, const dtReal* endPos, const dtReal costLimit, const bool requireNavigableEndLocation, //@UE
 								const dtQueryFilter* filter);
 
 	/// Updates an in-progress sliced path query.
@@ -567,7 +568,7 @@ public:
 
 	/// [UE] Finds the wall segments that overlap the polygon shape.
 	dtStatus findWallsAroundPath(const dtPolyRef* path, const int pathCount, const dtReal* searchAreaPoly, const int searchAreaPolyCount,
-									   const float maxAreaEnterCost, const dtQueryFilter* filter,
+									   const dtReal maxAreaEnterCost, const dtQueryFilter* filter,
 									   dtPolyRef* neiRefs, int* neiCount, const int maxNei,
 									   dtReal* resultWalls, dtPolyRef* resultRefs, int* resultCount, const int maxResult) const;
 	
@@ -812,6 +813,11 @@ public:
 			&& m_linkFilter->isLinkAllowed(tile->offMeshCons[linkIdx].userId) == false);
 	}
 
+	//@UE BEGIN
+	inline void setRequireNavigableEndLocation(const bool value) { m_query.requireNavigableEndLocation = value; }
+	inline bool isRequiringNavigableEndLocation() const { return m_query.requireNavigableEndLocation; }
+	//@UE END
+
 private:
 	const dtNavMesh* m_nav;							///< Pointer to navmesh data.
 	dtQuerySpecialLinkFilter* m_linkFilter;			///< Pointer to optional special link filter
@@ -825,6 +831,7 @@ private:
 		dtReal startPos[3], endPos[3];
 		dtReal costLimit; 					//@UE ///< Cost limit of nodes allowed to be added to the open list
 		const dtQueryFilter* filter;
+		unsigned char requireNavigableEndLocation : 1;	//@UE
 	};
 	dtQueryData m_query;				///< Sliced query state.
 

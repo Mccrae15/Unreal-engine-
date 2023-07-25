@@ -8,6 +8,7 @@
 #include "MetalRHIPrivate.h"
 #include "MetalShaderTypes.h"
 #include "Shaders/MetalShaderLibrary.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 
 //------------------------------------------------------------------------------
@@ -47,6 +48,18 @@ FComputeShaderRHIRef FMetalDynamicRHI::RHICreateComputeShader(TArrayView<const u
 		return new FMetalComputeShader(Code);
 	}
 }
+
+#if METAL_RHI_RAYTRACING
+FRayTracingShaderRHIRef FMetalDynamicRHI::RHICreateRayTracingShader(TArrayView<const uint8> Code, const FSHAHash& Hash, EShaderFrequency ShaderFrequency)
+{
+	@autoreleasepool {
+	switch (ShaderFrequency)
+		{
+			default: checkNoEntry(); 				return nullptr;
+		}
+	}
+}
+#endif // METAL_RHI_RAYTRACING
 
 FRHIShaderLibraryRef FMetalDynamicRHI::RHICreateShaderLibrary(EShaderPlatform Platform, FString const& FilePath, FString const& Name)
 {
@@ -148,26 +161,6 @@ FBoundShaderStateRHIRef FMetalDynamicRHI::RHICreateBoundShaderState(
 {
 	NOT_SUPPORTED("RHICreateBoundShaderState");
 	return nullptr;
-}
-
-FVertexShaderRHIRef FMetalDynamicRHI::CreateVertexShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreateVertexShader(Code, Hash);
-}
-
-FGeometryShaderRHIRef FMetalDynamicRHI::CreateGeometryShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreateGeometryShader(Code, Hash);
-}
-
-FPixelShaderRHIRef FMetalDynamicRHI::CreatePixelShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreatePixelShader(Code, Hash);
-}
-
-FComputeShaderRHIRef FMetalDynamicRHI::CreateComputeShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreateComputeShader(Code, Hash);
 }
 
 FRHIShaderLibraryRef FMetalDynamicRHI::RHICreateShaderLibrary_RenderThread(class FRHICommandListImmediate& RHICmdList, EShaderPlatform Platform, FString FilePath, FString Name)

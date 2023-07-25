@@ -3,16 +3,17 @@
 #include "../Common.ush"
 #include "LumenMaterial.ush"
 #include "../DeferredShadingCommon.ush"
+#include "../RayTracing/RayTracingRayCone.ush"
 #include "LumenCardCommon.ush"
 #include "LumenTracingCommon.ush"
 #include "LumenRadianceCacheCommon.ush"
 #include "LumenReflectionCommon.ush"
 #include "../SceneTextureParameters.ush"
-#include "../SSRT/SSRTRayCast.ush"
 #include "../SHCommon.ush"
 #define HZB_TRACE_INCLUDE_FULL_RES_DEPTH 1
 #include "LumenScreenTracing.ush"
 #include "LumenHairTracing.ush"
+#include "LumenFog.ush"
 
 #ifndef THREADGROUP_SIZE
 #define THREADGROUP_SIZE 1
@@ -34,14 +35,6 @@ void ReflectionClearTracesCS(
 }
  
 float MaxTraceDistance;
-
-Texture2D PrevSceneColorTexture;
-Texture2D HistorySceneDepth;
-float2 PrevSceneColorBilinearUVMin;
-float2 PrevSceneColorBilinearUVMax;
-float4 PrevScreenPositionScaleBias;
-float4 PrevScreenPositionScaleBiasForDepth;
-float PrevSceneColorPreExposureCorrection;
 float4 HZBUvFactorAndInvFactor;
 float MaxHierarchicalScreenTraceIterations;
 float RelativeDepthThickness;
@@ -58,11 +51,12 @@ void ReflectionTraceScreenTexturesCS(
 	if (all(ReflectionTracingCoord.Coord < ReflectionTracingViewSize))
 	{
 		float2 ScreenUV = GetScreenUVFromReflectionTracingCoord(ReflectionTracingCoord.Coord);
-		float SceneDepth = DownsampledDepth.Load(int3(ReflectionTracingCoord.Coord, 0)).x;
+		float SceneDepth = DownsampledDepth.Load(int3(ReflectionTracingCoord.CoordFlatten, 0)).x;
 
 		if (SceneDepth > 0.0f)
 		{
-			float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, SceneDepth);
+			float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, SceneDepth);
+			float3 WorldPosition = TranslatedWorldPosition - LWCHackToFloat(PrimaryView.PreViewTranslation);
 			FRayData RayData = GetRayData(ReflectionTracingCoord.CoordFlatten);
 
 			bool bHit;
@@ -72,7 +66,7 @@ void ReflectionTraceScreenTexturesCS(
 			float HitTileZ;
 
 			TraceScreen(
-				WorldPosition + LWCHackToFloat(PrimaryView.PreViewTranslation),
+				TranslatedWorldPosition,
 				RayData.Direction,
 				RayData.TraceDistance,
 				HZBUvFactorAndInvFactor,
@@ -96,7 +90,7 @@ void ReflectionTraceScreenTexturesCS(
 				float Hair_HitTileZ;
 
 				TraceHairScreen(
-					WorldPosition + LWCHackToFloat(PrimaryView.PreViewTranslation),
+					TranslatedWorldPosition,
 					RayData.Direction,
 					RayData.TraceDistance,
 					HZBUvFactorAndInvFactor,
@@ -121,8 +115,6 @@ void ReflectionTraceScreenTexturesCS(
 			#endif
 
 			bHit = bHit && !bUncertain;
-
-			float HitDistance = min(sqrt(ComputeRayHitSqrDistance(WorldPosition + LWCHackToFloat(PrimaryView.PreViewTranslation), HitUVz)), MaxTraceDistance);
 
 			if (bHit)
 			{
@@ -166,6 +158,7 @@ void ReflectionTraceScreenTexturesCS(
 					HitHistoryScreenUV = clamp(HitHistoryScreenUV, PrevSceneColorBilinearUVMin, PrevSceneColorBilinearUVMax);
 					float3 Lighting = SampleScreenColor(PrevSceneColorTexture, GlobalPointClampedSampler, HitHistoryScreenUV).xyz * PrevSceneColorPreExposureCorrection;
 
+					float HitDistance = min(sqrt(ComputeRayHitSqrDistance(TranslatedWorldPosition, HitUVz)), MaxTraceDistance);
 					Lighting += GetSkylightLeaking(RayData.Direction, HitDistance) * View.PreExposure;
 
 					float MaxLighting = max3(Lighting.x, Lighting.y, Lighting.z);
@@ -183,6 +176,7 @@ void ReflectionTraceScreenTexturesCS(
 				}
 			}
 
+			float HitDistance = min(sqrt(ComputeRayHitSqrDistance(TranslatedWorldPosition, HitUVz)), MaxTraceDistance);
 			RWTraceHit[ReflectionTracingCoord.CoordFlatten] = EncodeRayDistance(HitDistance, bHit);
 		}
 	}
@@ -239,6 +233,9 @@ groupshared uint SharedGlobalTraceTexelStartOffset;
 #define DIM_CLIP_RAY 0
 #endif // DIM_CLIP_RAY
 
+#if COMPILER_SUPPORTS_WAVE_SIZE && WAVE_OPS
+	WAVESIZE(32)
+#endif
 [numthreads(THREADGROUP_SIZE, 1, 1)]
 void ReflectionCompactTracesCS(
 	uint GroupId : SV_GroupID,
@@ -264,7 +261,7 @@ void ReflectionCompactTracesCS(
 		if (all(ReflectionTracingCoord.Coord < ReflectionTracingViewSize))
 		{
 			float2 ScreenUV = GetScreenUVFromReflectionTracingCoord(ReflectionTracingCoord.Coord);
-			float SceneDepth = DownsampledDepth.Load(int3(ReflectionTracingCoord.Coord, 0)).x;
+			float SceneDepth = DownsampledDepth.Load(int3(ReflectionTracingCoord.CoordFlatten, 0)).x;
 
 			bool bHit;
 			float TraceHitDistance = DecodeRayDistance(TraceHit[ReflectionTracingCoord.CoordFlatten].x, bHit);
@@ -288,7 +285,7 @@ void ReflectionCompactTracesCS(
 			if (SceneDepth > 0 
 				&& !bHit
 				&& (CullByDistanceFromCamera == 0 || SceneDepth < CompactionTracingEndDistanceFromCamera)
-				&& TraceHitDistance < CompactionMaxTraceDistance)
+				&& TraceHitDistance <= CompactionMaxTraceDistance)
 			{
 #if ORDERED_COMPACTION
 				bTraceValid = true;
@@ -327,23 +324,23 @@ void ReflectionCompactTracesCS(
 
 	GroupMemoryBarrierWithGroupSync();
 
-	uint PayloadGroupOffset = SharedWaveSums[WaveIndex] + WavePrefixSum(Value);
+	uint PayloadGroupSize = SharedWaveSums[WaveIndex] + WavePrefixSum(Value) + Value;
 
 	uint WaveLaneCount = WaveGetLaneCount();
 	uint LastWaveIndex = (THREADGROUP_SIZE - 1) / WaveLaneCount;
 
 	// Last lane of last wave has the max index used by the group
 	// Allocate this group's compacted traces from the global allocator
-	if (WaveIndex == LastWaveIndex && LaneIndex == WaveLaneCount - 1)
+	if (WaveIndex == LastWaveIndex && LaneIndex == WaveLaneCount - 1 && PayloadGroupSize > 0)
 	{
-		InterlockedAdd(RWCompactedTraceTexelAllocator[0], PayloadGroupOffset + 1, SharedGlobalTraceTexelStartOffset);
+		InterlockedAdd(RWCompactedTraceTexelAllocator[0], PayloadGroupSize, SharedGlobalTraceTexelStartOffset);
 	}
 
 	GroupMemoryBarrierWithGroupSync();
 
 	if (bTraceValid)
 	{
-		RWCompactedTraceTexelData[SharedGlobalTraceTexelStartOffset + PayloadGroupOffset] = TraceTexelForThisThread;
+		RWCompactedTraceTexelData[SharedGlobalTraceTexelStartOffset + PayloadGroupSize - 1] = TraceTexelForThisThread;
 	}
 
 #else // !ORDERED_COMPACTION
@@ -370,19 +367,13 @@ RWBuffer<uint> RWReflectionCompactRayTraceDispatchIndirectArgs;
 void SetupCompactedTracesIndirectArgsCS()
 {
 	// THREADGROUP_SIZE_64
-	RWReflectionCompactTracingIndirectArgs[0 + 0] = (CompactedTraceTexelAllocator[0] + 64 - 1) / 64;
-	RWReflectionCompactTracingIndirectArgs[0 + 1] = 1;
-	RWReflectionCompactTracingIndirectArgs[0 + 2] = 1;
+	WriteDispatchIndirectArgs(RWReflectionCompactTracingIndirectArgs, 0, (CompactedTraceTexelAllocator[0] + 64 - 1) / 64, 1, 1);
 
 	// THREADGROUP_SIZE_32
-	RWReflectionCompactTracingIndirectArgs[3 + 0] = (CompactedTraceTexelAllocator[0] + 32 - 1) / 32;
-	RWReflectionCompactTracingIndirectArgs[3 + 1] = 1;
-	RWReflectionCompactTracingIndirectArgs[3 + 2] = 1;
+	WriteDispatchIndirectArgs(RWReflectionCompactTracingIndirectArgs, 1, (CompactedTraceTexelAllocator[0] + 32 - 1) / 32, 1, 1);
 
 	// Ray tracing dispatch dimensions are defined simply in terms of threads/rays, not thread groups.
-	RWReflectionCompactRayTraceDispatchIndirectArgs[0] = CompactedTraceTexelAllocator[0];
-	RWReflectionCompactRayTraceDispatchIndirectArgs[1] = 1;
-	RWReflectionCompactRayTraceDispatchIndirectArgs[2] = 1;
+	WriteDispatchIndirectArgs(RWReflectionCompactRayTraceDispatchIndirectArgs, 0, CompactedTraceTexelAllocator[0], 1, 1);
 }
 
 uint CardGridPixelSizeShift;
@@ -409,7 +400,7 @@ void TraceMeshSDFs(
 	const FReflectionTracingCoord ReflectionTracingCoord = GetReflectionTracingCoord(InReflectionTracingCoord);
 
 	float2 ScreenUV = GetScreenUVFromReflectionTracingCoord(ReflectionTracingCoord.Coord);
-	float SceneDepth = DownsampledDepth.Load(int3(ReflectionTracingCoord.Coord, 0)).x;
+	float SceneDepth = DownsampledDepth.Load(int3(ReflectionTracingCoord.CoordFlatten, 0)).x;
 
 	float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, SceneDepth);
 	float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, SceneDepth);
@@ -419,8 +410,13 @@ void TraceMeshSDFs(
 	float3 SampleTranslatedPosition = TranslatedWorldPosition + SurfaceBias * RayData.Direction;
 	float PullbackForSurfaceExpand = SurfaceBias;
 
+	FRayCone RayCone = (FRayCone)0;
+	RayCone.SpreadAngle = View.EyeToPixelSpreadAngle;
+	RayCone = PropagateRayCone(RayCone, RayData.ConeHalfAngle, SceneDepth);
+
 	FConeTraceInput TraceInput;
-	TraceInput.Setup(SamplePosition, SampleTranslatedPosition, RayData.Direction, RayData.ConeHalfAngle, 0.0f, max(TraceHitDistance - PullbackForSurfaceExpand, 0.0f), RayData.TraceDistance, 1.0f);
+	TraceInput.Setup(SamplePosition, SampleTranslatedPosition, RayData.Direction, RayCone.SpreadAngle, 0.0f, max(TraceHitDistance - PullbackForSurfaceExpand, 0.0f), RayData.TraceDistance, 1.0f);
+	TraceInput.bHiResSurface = UseHighResSurface != 0;
 	TraceInput.VoxelTraceStartDistance = MaxMeshSDFTraceDistance;
 
 	uint CardGridCellIndex = ComputeCardGridCellIndex(ReflectionTracingCoord.Coord * ReflectionDownsampleFactor, SceneDepth);
@@ -441,9 +437,31 @@ void TraceMeshSDFs(
 	// Trace against hair voxel structure, if enabled and not already done by other tracing method
 	#if USE_HAIRSTRANDS_VOXEL
 	{
-		// Use (Translated)WorldPosition instead of SamplePosition, as the bias is too strong otherwise. This is not an issue as 
-		// the voxel structure does not cause any self shadowing issue
-		TraceHairVoxels(ReflectionTracingCoord.Coord, SceneDepth, TranslatedWorldPosition, RayData.Direction, TraceHitDistance, true, TraceResult);
+		float HairTraceDistance = min(RayData.TraceDistance, TraceResult.OpaqueHitDistance);
+
+		bool bHairHit;
+		float HairTransparency;
+		float HairHitT;
+		
+		TraceHairVoxels(
+			ReflectionTracingCoord.Coord, 
+			SceneDepth, 
+			// Use (Translated)WorldPosition instead of SamplePosition, as the bias is too strong otherwise. This is not an issue as 
+			// the voxel structure does not cause any self shadowing issue
+			TranslatedWorldPosition, 
+			RayData.Direction, 
+			HairTraceDistance,
+			true, 
+			bHairHit,
+			HairTransparency,
+			HairHitT);
+
+		if (bHairHit && HairHitT < HairTraceDistance)
+		{
+			TraceResult.Lighting *= HairTransparency;
+			TraceResult.Transparency *= HairTransparency;
+			TraceResult.OpaqueHitDistance = min(HairHitT, TraceResult.OpaqueHitDistance);
+		}
 	}
 	#endif
 
@@ -454,6 +472,13 @@ void TraceMeshSDFs(
 	float DistanceFromViewpoint = length(LWCHackToFloat(PrimaryView.WorldCameraOrigin) - WorldPosition);
 	float DistanceFade = saturate(4 * DistanceFromViewpoint / CardTraceEndDistanceFromCamera - 3);
 	DistanceFade = max(DistanceFade, saturate((OpaqueHitDistance - MaxMeshSDFTraceDistance * .7f) / (MaxMeshSDFTraceDistance * .3f)));
+
+	if(SampleHeightFog > 0)
+	{
+		float CoverageForFog = saturate(1.0 - Transparency);	// LUMEN_TODO single evaluation for now even if we can hit translucent hair above.
+		float3 OriginToCollider = RayData.Direction * TraceResult.OpaqueHitDistance;
+		Lighting.rgb = GetFogOnLuminance(Lighting.rgb, CoverageForFog, OriginToCollider);
+	}
 
 	Transparency = lerp(Transparency, 1, DistanceFade);
 
@@ -511,7 +536,7 @@ void TraceVoxels(
 	const FReflectionTracingCoord ReflectionTracingCoord = GetReflectionTracingCoord(InReflectionTracingCoord);
 
 	float2 ScreenUV = GetScreenUVFromReflectionTracingCoord(ReflectionTracingCoord.Coord);
-	float SceneDepth = DownsampledDepth.Load(int3(ReflectionTracingCoord.Coord, 0)).x;
+	float SceneDepth = DownsampledDepth.Load(int3(ReflectionTracingCoord.CoordFlatten, 0)).x;
 
 	float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, SceneDepth); // LUMEN_LWC_TODO
 	float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, SceneDepth);
@@ -520,12 +545,17 @@ void TraceVoxels(
 	float3 SamplePosition = WorldPosition + SurfaceBias * RayData.Direction;
 	float3 SampleTranslatedPosition = TranslatedWorldPosition + SurfaceBias * RayData.Direction;
 
-	FConeTraceInput TraceInput;
-	TraceInput.Setup(SamplePosition, SampleTranslatedPosition, RayData.Direction, RayData.ConeHalfAngle, 0.0f, 0.0f, RayData.TraceDistance, 1.0f);
+	FRayCone RayCone = (FRayCone)0;
+	RayCone.SpreadAngle = View.EyeToPixelSpreadAngle;
+	RayCone = PropagateRayCone(RayCone, RayData.ConeHalfAngle, SceneDepth);
 
-	uint ClipmapForSurfaceExpand = ComputeGlobalDistanceFieldClipmapIndex(WorldPosition + TraceHitDistance * RayData.Direction);
+	FConeTraceInput TraceInput;
+	TraceInput.Setup(SamplePosition, SampleTranslatedPosition, RayData.Direction, RayCone.SpreadAngle, 0.0f, 0.0f, RayData.TraceDistance, 1.0f);
+	TraceInput.bHiResSurface = UseHighResSurface != 0;
+
+	uint ClipmapForSurfaceExpand = ComputeGlobalDistanceFieldClipmapIndex(TranslatedWorldPosition + TraceHitDistance * RayData.Direction);
 	// Pull back from where the previous tracing method left off so that we start outside the surface, so that the SDF expansion works properly and prevents leaking through thin objects
-	float PullbackForSurfaceExpand = GlobalVolumeCenterAndExtent[ClipmapForSurfaceExpand].w * GlobalVolumeTexelSize * 4.0f;
+	float PullbackForSurfaceExpand = GlobalVolumeTranslatedCenterAndExtent[ClipmapForSurfaceExpand].w * GlobalVolumeTexelSize * 4.0f;
 	TraceInput.VoxelTraceStartDistance = max(TraceHitDistance - PullbackForSurfaceExpand, 0.0f);
 	// Only expand the SDF surface when the ray traversal is far enough away to not self-intersect
 	TraceInput.bExpandSurfaceUsingRayTimeInsteadOfMaxDistance = false;
@@ -540,6 +570,7 @@ void TraceVoxels(
 	TraceResult.Lighting = 0;
 	TraceResult.Transparency = 1;
 	TraceResult.OpaqueHitDistance = TraceInput.MaxTraceDistance;
+	TraceResult.GeometryWorldNormal = 0.0f;
 
 	#if TRACE_GLOBAL_SDF
 	{
@@ -550,9 +581,31 @@ void TraceVoxels(
 	// Trace against hair voxel structure, if enabled and not already done by other tracing method
 	#if USE_HAIRSTRANDS_VOXEL
 	{
-		// Use (Translated)WorldPosition instead of SamplePosition, as the bias is too strong otherwise. This is not an issue as 
-		// the voxel structure does not cause any self shadowing issue
-		TraceHairVoxels(ReflectionTracingCoord.Coord, SceneDepth, TranslatedWorldPosition, RayData.Direction, RayData.TraceDistance, true, TraceResult);
+		float HairTraceDistance = min(RayData.TraceDistance, TraceResult.OpaqueHitDistance);
+
+		bool bHairHit;
+		float HairTransparency;
+		float HairHitT;
+
+		TraceHairVoxels(
+			ReflectionTracingCoord.Coord,
+			SceneDepth,
+			// Use (Translated)WorldPosition instead of SamplePosition, as the bias is too strong otherwise. This is not an issue as 
+			// the voxel structure does not cause any self shadowing issue
+			TranslatedWorldPosition,
+			RayData.Direction,
+			HairTraceDistance,
+			true,
+			bHairHit,
+			HairTransparency,
+			HairHitT);
+
+		if (bHairHit && HairHitT < HairTraceDistance)
+		{
+			TraceResult.Lighting *= HairTransparency;
+			TraceResult.Transparency *= HairTransparency;
+			TraceResult.OpaqueHitDistance = min(HairHitT, TraceResult.OpaqueHitDistance);
+		}
 	}
 	#endif
 
@@ -568,6 +621,15 @@ void TraceVoxels(
 		TraceHitDistance = GetMaxHitDistance();
 	}
 
+#if SAMPLE_SCENE_COLOR
+	if (bHit)
+	{
+		float3 HitTranslatedWorldPosition = SampleTranslatedPosition + RayData.Direction * TraceResult.OpaqueHitDistance;
+		SampleSceneColorAtHit(HitTranslatedWorldPosition, TraceResult.GeometryWorldNormal, ReflectionTracingCoord.Coord, RelativeDepthThickness, TraceResult.Lighting);
+	}
+#endif
+
+	float CoverageForFog = saturate(1.0 - TraceResult.Transparency);
 	if (!bHit)
 	{
 #if RADIANCE_CACHE
@@ -582,12 +644,20 @@ void TraceVoxels(
 		{
 			TraceHitDistance = MaxTraceDistance;
 			ApplySkylightToTraceResult(RayData.Direction, TraceResult);
+			CoverageForFog = 1.0f;
 		}
 	}
 
 	TraceResult.Lighting += GetSkylightLeaking(RayData.Direction, TraceResult.OpaqueHitDistance);
 
 	TraceResult.Lighting *= View.PreExposure;
+
+	if (SampleHeightFog > 0)
+	{
+		float3 OriginToCollider = RayData.Direction * TraceHitDistance;
+		TraceResult.Lighting.rgb = GetFogOnLuminance(TraceResult.Lighting.rgb, CoverageForFog, OriginToCollider);
+	}
+
 	float MaxLighting = max3(TraceResult.Lighting.x, TraceResult.Lighting.y, TraceResult.Lighting.z);
 
 	if (MaxLighting > MaxRayIntensity)

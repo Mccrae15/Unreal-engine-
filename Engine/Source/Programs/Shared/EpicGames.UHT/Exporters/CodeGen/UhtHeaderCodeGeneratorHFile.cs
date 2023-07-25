@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.NetworkInformation;
 using System.Text;
 using EpicGames.Core;
 using EpicGames.UHT.Types;
@@ -14,8 +15,8 @@ namespace EpicGames.UHT.Exporters.CodeGen
 	internal class UhtHeaderCodeGeneratorHFile
 		: UhtHeaderCodeGenerator
 	{
+		public static string RigVMExecuteContextParamName = "ExecuteContext";
 		public static string RigVMExecuteContextDeclaration = "FRigVMExtendedExecuteContext& RigVMExecuteContext";
-		public static string RigVMExecuteContextPublicDeclaration = "const FRigVMExecuteContext& RigVMExecuteContext";
 
 		/// <summary>
 		/// Construct an instance of this generator object
@@ -129,9 +130,13 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				{
 					builder.Append("#define ").Append(scriptStruct.SourceName).Append('_').Append(methodInfo.Name).Append("() \\\r\n");
 					builder.Append('\t').Append(methodInfo.ReturnType).Append(' ').Append(scriptStruct.SourceName).Append("::Static").Append(methodInfo.Name).Append("( \\\r\n");
-					builder.Append("\t\t").Append(RigVMExecuteContextPublicDeclaration);
+					builder.Append("\t\t");
+					if (scriptStruct.RigVMStructInfo.ExecuteContextMember == String.Empty)
+					{
+						builder.Append("const ");
+					}
+					builder.Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append("& ").Append(RigVMExecuteContextParamName);
 					builder.AppendParameterDecls(scriptStruct.RigVMStructInfo.Members, true, ", \\\r\n\t\t", true, false);
-					builder.AppendParameterDecls(methodInfo.Parameters, true, ", \\\r\n\t\t", false, false);
 					builder.Append(" \\\r\n");
 					builder.Append("\t)\r\n");
 				}
@@ -154,32 +159,32 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					// declare the static method as well as the stub method
 					if (scriptStruct.RigVMStructInfo != null)
 					{
+						string constPrefix = "";
+						if (scriptStruct.RigVMStructInfo.ExecuteContextMember == String.Empty)
+						{
+							constPrefix = "const ";
+						}
+						
 						foreach (UhtRigVMMethodInfo methodInfo in scriptStruct.RigVMStructInfo.Methods)
 						{
+							builder.Append('\t').Append(methodInfo.ReturnType).Append(' ').Append(methodInfo.Name).Append('(').Append(constPrefix).Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append("& InExecuteContext); \\\r\n");
 							builder.Append("\tstatic ").Append(methodInfo.ReturnType).Append(" Static").Append(methodInfo.Name).Append("( \\\r\n");
-							builder.Append("\t\t").Append(RigVMExecuteContextPublicDeclaration);
+							builder.Append("\t\t");
+							if (scriptStruct.RigVMStructInfo.ExecuteContextMember == String.Empty)
+							{
+								builder.Append("const ");
+							}
+							builder.Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append("& ").Append(RigVMExecuteContextParamName);
 							builder.AppendParameterDecls(scriptStruct.RigVMStructInfo.Members, true, ", \\\r\n\t\t", true, false);
-							builder.AppendParameterDecls(methodInfo.Parameters, true, ", \\\r\n\t\t", false, false);
 							builder.Append(" \\\r\n");
 							builder.Append("\t); \\\r\n");
 
 							builder.Append("\tFORCEINLINE_DEBUGGABLE static ").Append(methodInfo.ReturnType).Append(" RigVM").Append(methodInfo.Name).Append("( \\\r\n");
-							builder.Append("\t\t").Append(RigVMExecuteContextDeclaration).Append(", \\\r\n");
+							builder.Append("\t\t");
+							builder.Append(RigVMExecuteContextDeclaration).Append(", \\\r\n");
 							builder.Append("\t\tFRigVMMemoryHandleArray RigVMMemoryHandles \\\r\n");
 							builder.Append("\t) \\\r\n");
 							builder.Append("\t{ \\\r\n");
-
-							// implement inline stub method body
-							if (methodInfo.Parameters.Count > 0)
-							{
-								for (int parameterIndex = 0; parameterIndex < methodInfo.Parameters.Count; parameterIndex++)
-								{
-									UhtRigVMParameter parameter = methodInfo.Parameters[parameterIndex];
-									builder.Append("\t\t").Append(parameter.Declaration()).Append(" = *(").Append(parameter.TypeNoRef())
-										.Append("*)RigVMExecuteContext.OpaqueArguments[").Append(parameterIndex).Append("]; \\\r\n");
-								}
-								builder.Append("\t\t \\\r\n");
-							}
 
 							if (scriptStruct.RigVMStructInfo.Members.Count > 0)
 							{
@@ -194,19 +199,44 @@ namespace EpicGames.UHT.Exporters.CodeGen
 										additionalParameters = ", RigVMExecuteContext.GetSlice().GetIndex()";
 									}
 
+									string getDataMethod = "GetData";
+									if (parameter.IsLazy)
+									{
+										getDataMethod = $"GetDataLazily<{parameter.TypeOriginal(false, false)}>";
+									}
+
 									if (parameter.IsArray)
 									{
 										string extendedType = parameter.ExtendedType();
+
+										if (!parameter.IsLazy)
+										{
+											builder
+												.Append("\t\tTArray")
+												.Append(extendedType)
+												.Append("& ")
+												.Append(paramNameOriginal)
+												.Append(" = ")
+												.Append("*(TArray")
+												.Append(extendedType)
+												.Append("*)");
+										}
+										else
+										{
+											builder
+												.Append("\t\tconst ")
+												.Append(paramTypeOriginal)
+												.Append("& ")
+												.Append(paramNameOriginal)
+												.Append(" = ");
+										}
+
 										builder
-											.Append("\t\tTArray")
-											.Append(extendedType)
-											.Append("& ")
-											.Append(paramNameOriginal)
-											.Append(" = *(TArray")
-											.Append(extendedType)
-											.Append("*)RigVMMemoryHandles[")
+											.Append("RigVMMemoryHandles[")
 											.Append(operandIndex)
-											.Append("].GetData(false")
+											.Append("].")
+											.Append(getDataMethod)
+											.Append("(false")
 											.Append(additionalParameters)
 											.Append("); \\\r\n");
 										operandIndex++;
@@ -216,16 +246,32 @@ namespace EpicGames.UHT.Exporters.CodeGen
 										string variableType = parameter.TypeVariableRef(true);
 										string extractedType = parameter.TypeOriginal();
 
+										if (parameter.IsEnumAsByte)
+										{
+											extractedType = parameter.TypeOriginal(true);
+										}
+
 										builder
 											.Append("\t\t")
 											.Append(variableType)
 											.Append(' ')
 											.Append(paramNameOriginal)
-											.Append(" = *(")
-											.Append(extractedType)
-											.Append("*)RigVMMemoryHandles[")
+											.Append(" = ");
+
+										if (!parameter.IsLazy)
+										{
+											builder
+												.Append("*(")
+												.Append(extractedType)
+												.Append("*)");
+										}
+
+										builder
+											.Append("RigVMMemoryHandles[")
 											.Append(operandIndex)
-											.Append("].GetData(false")
+											.Append("].")
+											.Append(getDataMethod)
+											.Append("(false")
 											.Append(additionalParameters)
 											.Append("); \\\r\n");
 										operandIndex++;
@@ -235,9 +281,8 @@ namespace EpicGames.UHT.Exporters.CodeGen
 							}
 
 							builder.Append("\t\t").Append(methodInfo.ReturnPrefix()).Append("Static").Append(methodInfo.Name).Append("( \\\r\n");
-							builder.Append("\t\t\tRigVMExecuteContext.PublicData");
+							builder.Append("\t\t\tRigVMExecuteContext.GetPublicData<").Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append(">()");
 							builder.AppendParameterNames(scriptStruct.RigVMStructInfo.Members, true, ", \\\r\n\t\t\t", false);
-							builder.AppendParameterNames(methodInfo.Parameters, true, ", \\\r\n\t\t\t");
 							builder.Append(" \\\r\n");
 							builder.Append("\t\t); \\\r\n");
 							builder.Append("\t} \\\r\n");
@@ -293,13 +338,31 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append("enum class ").Append(enumObj.CppType);
 				if (enumObj.UnderlyingType != UhtEnumUnderlyingType.Unspecified)
 				{
-					builder.Append(" : ").Append(enumObj.UnderlyingType.ToString());
+					builder.Append(" : ").Append(enumObj.UnderlyingType.ToString().ToLower());
 				}
 				builder.Append(";\r\n");
-				
+
 				// Add TIsUEnumClass typetraits
 				builder.Append("template<> struct TIsUEnumClass<").Append(enumObj.CppType).Append("> { enum { Value = true }; };\r\n");
+			}
+			else if (enumObj.CppForm == UhtEnumCppForm.Regular && enumObj.UnderlyingType != UhtEnumUnderlyingType.Unspecified)
+			{
+				builder.Append("\r\n");
+				builder.Append("enum ").Append(enumObj.CppType);
+				builder.Append(" : ").Append(enumObj.UnderlyingType.ToString().ToLower());
+				builder.Append(";\r\n");
+			}
+			else if (enumObj.CppForm == UhtEnumCppForm.Namespaced && enumObj.UnderlyingType != UhtEnumUnderlyingType.Unspecified)
+			{
+				string[] SplitName = enumObj.CppType.Split("::");
+				builder.Append("\r\n");
+				builder.Append("namespace ").Append(SplitName[0]).Append(" { enum ").Append(SplitName[1]);
+				builder.Append(" : ").Append(enumObj.UnderlyingType.ToString().ToLower());
+				builder.Append("; }\r\n");
+			}
 
+			if (enumObj.CppForm == UhtEnumCppForm.EnumClass || enumObj.UnderlyingType != UhtEnumUnderlyingType.Unspecified)
+			{	
 				// Forward declare the StaticEnum<> specialization for enum classes
 				builder.Append("template<> ").Append(PackageApi).Append("UEnum* StaticEnum<").Append(enumObj.CppType).Append(">();\r\n");
 				builder.Append("\r\n");
@@ -312,24 +375,32 @@ namespace EpicGames.UHT.Exporters.CodeGen
 		{
 			using (UhtMacroCreator macro = new(builder, this, function, DelegateMacroSuffix))
 			{
-				int tabs = 0;
-				string strippedFunctionName = function.StrippedFunctionName;
 				string exportFunctionName = GetDelegateFunctionExportName(function);
 				string extraParameter = GetDelegateFunctionExtraParameter(function);
 
-				AppendEventParameter(builder, function, strippedFunctionName, UhtPropertyTextType.EventParameterMember, true, tabs, " \\\r\n");
-				builder.Append("static ");
-				AppendNativeFunctionHeader(builder, function, UhtPropertyTextType.EventFunctionArgOrRetVal, true, exportFunctionName, extraParameter, UhtFunctionExportFlags.Inline, " \\\r\n");
-				AppendEventFunctionPrologue(builder, function, strippedFunctionName, tabs, " \\\r\n");
-				builder
-					.Append('\t')
-					.Append(strippedFunctionName)
-					.Append('.')
-					.Append(function.FunctionFlags.HasAnyFlags(EFunctionFlags.MulticastDelegate) ? "ProcessMulticastDelegate" : "ProcessDelegate")
-					.Append("<UObject>(")
-					.Append(function.Children.Count > 0 ? "&Parms" : "NULL")
-					.Append("); \\\r\n");
-				AppendEventFunctionEpilogue(builder, function, tabs, " \\\r\n");
+				bool addAPI = true;
+
+				UhtClass? outerClass = function.Outer as UhtClass;
+				if (outerClass != null)
+				{
+					builder.Append("static ");
+					if (outerClass.ClassFlags.HasFlag(EClassFlags.RequiredAPI))
+					{
+						addAPI = false;
+					}
+				}
+
+				//if (!function.FunctionFlags.HasAnyFlags(EFunctionFlags.RequiredAPI)) // TODO: This requires too much fixup for now
+				//{
+				//	addAPI = false
+				//}
+
+				if (addAPI)
+				{
+					builder.Append(PackageApi);
+				}
+
+				AppendNativeFunctionHeader(builder, function, UhtPropertyTextType.EventFunctionArgOrRetVal, true, exportFunctionName, extraParameter, UhtFunctionExportFlags.None, "; \\\r\n");
 			}
 			return builder;
 		}
@@ -907,65 +978,6 @@ namespace EpicGames.UHT.Exporters.CodeGen
 		}
 
 		/// <summary>
-		/// Type of constructor on the class regardless of explicit or generated.
-		/// </summary>
-		enum ConstructorType
-		{
-			ObjectInitializer,
-			Default,
-			ForbiddenDefault,
-		}
-
-		/// <summary>
-		/// Return the type of constructor the class will have regardless of if one has been explicitly 
-		/// declared or will be generated.
-		/// </summary>
-		/// <param name="classObj">Class in question</param>
-		/// <returns>Constructor type</returns>
-		private static ConstructorType GetConstructorType(UhtClass classObj)
-		{
-			if (!classObj.ClassExportFlags.HasAnyFlags(UhtClassExportFlags.HasConstructor))
-			{
-
-				// Assume super class has OI constructor, this may not always be true but we should always be able to check this.
-				// In any case, it will default to old behavior before we even checked this.
-				bool superClassObjectInitializerConstructorDeclared = true;
-				UhtClass? superClass = classObj.SuperClass;
-				if (superClass != null)
-				{
-					if (!superClass.HeaderFile.IsNoExportTypes)
-					{
-						superClassObjectInitializerConstructorDeclared = GetConstructorType(superClass) == ConstructorType.ObjectInitializer;
-					}
-				}
-
-				if (superClassObjectInitializerConstructorDeclared)
-				{
-					return ConstructorType.ObjectInitializer;
-				}
-				else
-				{
-					return ConstructorType.Default;
-				}
-			}
-			else
-			{
-				if (classObj.ClassExportFlags.HasAnyFlags(UhtClassExportFlags.HasObjectInitializerConstructor))
-				{
-					return ConstructorType.ObjectInitializer;
-				}
-				else if (classObj.ClassExportFlags.HasAnyFlags(UhtClassExportFlags.HasDefaultConstructor))
-				{
-					return ConstructorType.Default;
-				}
-				else
-				{
-					return ConstructorType.ForbiddenDefault;
-				}
-			}
-		}
-
-		/// <summary>
 		/// Generates private copy-constructor declaration.
 		/// </summary>
 		/// <param name="builder">Output builder</param>
@@ -980,11 +992,11 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				switch (GetConstructorType(classObj))
 				{
 					case ConstructorType.ObjectInitializer:
-						builder.Append('\t').Append(api).Append(classObj.SourceName).Append("(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get()) : Super(ObjectInitializer) { }; \\\r\n");
+						builder.Append('\t').Append(api).Append(classObj.SourceName).Append("(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get()); \\\r\n");
 						break;
 
 					case ConstructorType.Default:
-						builder.Append('\t').Append(api).Append(classObj.SourceName).Append("() { }; \\\r\n");
+						builder.Append('\t').Append(api).Append(classObj.SourceName).Append("(); \\\r\n");
 						break;
 				}
 			}

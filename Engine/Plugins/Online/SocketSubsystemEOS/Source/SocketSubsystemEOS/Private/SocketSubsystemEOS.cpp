@@ -1,19 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SocketSubsystemEOS.h"
-#include "InternetAddrEOS.h"
 #include "SocketEOS.h"
-#include "SocketTypes.h"
-#include "Containers/Ticker.h"
-#include "Misc/ConfigCacheIni.h"
 #include "SocketSubsystemModule.h"
-#include "Modules/ModuleManager.h"
-#include "Misc/OutputDeviceRedirector.h"
 #include "OnlineSubsystemUtils.h"
+#include "EOSShared.h"
 
 #if WITH_EOS_SDK
 	#include "eos_sdk.h"
+	#include "eos_p2p.h"
+	#include "Misc/ConfigCacheIni.h"
 #endif
+
+namespace
+{
+
+	static EOS_ERelayControl LexFromString(const FString& Value)
+	{
+		if (Value == TEXT("NoRelays"))
+		{
+			return EOS_ERelayControl::EOS_RC_NoRelays;
+		}
+		if (Value == TEXT("AllowRelays"))
+		{
+			return EOS_ERelayControl::EOS_RC_AllowRelays;
+		}
+		if (Value == TEXT("ForceRelays"))
+		{
+			return EOS_ERelayControl::EOS_RC_ForceRelays;
+		}
+
+		checkNoEntry();
+		return EOS_ERelayControl::EOS_RC_AllowRelays;
+	}
+
+}
 
 TArray<FSocketSubsystemEOS*> FSocketSubsystemEOS::SocketSubsystemEOSInstances;
 TMap<UWorld*, FSocketSubsystemEOS*> FSocketSubsystemEOS::SocketSubsystemEOSPerWorldMap;
@@ -67,6 +88,25 @@ bool FSocketSubsystemEOS::Init(FString& Error)
 
 	FSocketSubsystemModule& SocketSubsystem = FModuleManager::LoadModuleChecked<FSocketSubsystemModule>("Sockets");
 	SocketSubsystem.RegisterSocketSubsystem(EOS_SOCKETSUBSYSTEM, this, false);
+
+#if WITH_EOS_SDK
+	FString RelayControlStr;
+	GConfig->GetString(TEXT("SocketSubsystemEOS"), TEXT("RelayControl"), RelayControlStr, GEngineIni);
+	if (!RelayControlStr.IsEmpty())
+	{
+		EOS_P2P_SetRelayControlOptions Options = {};
+		Options.ApiVersion = 1;
+		UE_EOS_CHECK_API_MISMATCH(EOS_P2P_SETRELAYCONTROL_API_LATEST, 1);
+
+		Options.RelayControl = LexFromString(RelayControlStr);
+
+		EOS_EResult Result = EOS_P2P_SetRelayControl(P2PHandle, &Options);
+		if (Result != EOS_EResult::EOS_Success && Result != EOS_EResult::EOS_NoChange)
+		{
+			UE_LOG(LogSocketSubsystemEOS, Warning, TEXT("[FSocketSubsystemEOS::Init] EOS_P2P_SetRelayControl failed with result [%s]"), UTF8_TO_TCHAR(EOS_EResult_ToString(Result)));
+		}
+	}
+#endif
 
 	return true;
 }

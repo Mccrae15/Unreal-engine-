@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Editor.h"
 #include "Misc/Attribute.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -22,10 +23,12 @@
 #include "SPositiveActionButton.h"
 #include "Widgets/Views/STreeView.h"
 #include "Widgets/Input/SButton.h"
+#include "SNegativeActionButton.h"
 
 #define LOCTEXT_NAMESPACE "SUndoHistoryTableRow"
 
 DECLARE_DELEGATE_OneParam(FOnGotoTransactionClicked, const FGuid&)
+DECLARE_DELEGATE_OneParam(FOnUndoBarrierButtonClicked, int32)
 
 /**
  * Implements a row widget for the undo history list.
@@ -38,9 +41,12 @@ public:
 
 	SLATE_BEGIN_ARGS(SUndoHistoryTableRow) { }
 		SLATE_ATTRIBUTE(bool, IsApplied)
+		SLATE_ATTRIBUTE(bool, IsCurrentUndoBarrier)
+		SLATE_ATTRIBUTE(bool, IsLastTransactionIndex)
 		SLATE_ARGUMENT(int32, QueueIndex)
 		SLATE_ARGUMENT(const FTransaction*, Transaction)
 		SLATE_EVENT(FOnGotoTransactionClicked, OnGotoTransactionClicked)
+		SLATE_EVENT(FOnUndoBarrierButtonClicked, OnUndoBarrierButtonClicked)
 	SLATE_END_ARGS()
 
 public:
@@ -53,8 +59,11 @@ public:
 	void Construct( const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView )
 	{
 		IsApplied = InArgs._IsApplied;
+		IsCurrentUndoBarrier = InArgs._IsCurrentUndoBarrier;
+		IsLastTransactionIndex = InArgs._IsLastTransactionIndex;
 		QueueIndex = InArgs._QueueIndex;
 		OnGotoTransactionClicked = InArgs._OnGotoTransactionClicked;
+		OnUndoBarrierButtonClicked = InArgs._OnUndoBarrierButtonClicked;
 
 		FSuperRowType::FArguments Args = FSuperRowType::FArguments()
 			.Style(&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow"));
@@ -101,6 +110,14 @@ public:
 						.ColorAndOpacity(this, &SUndoHistoryTableRow::HandleTitleTextColorAndOpacity)
 				];
 		}
+		else if (ColumnName == "UndoBarrierButton")
+		{
+			return SNew(SNegativeActionButton)
+				.ToolTipText_Lambda( [this]() { if (IsCurrentUndoBarrier.Get()) { return LOCTEXT("RemoveUndoBarrierTooltip", "Remove Undo Barrier"); } return LOCTEXT("SetUndoBarrierTooltip", "Set Undo Barrier"); })
+				.Icon(FAppStyle::GetBrush("Icons.PlusCircle"))
+				.OnClicked_Lambda([this]() { OnUndoBarrierButtonClicked.ExecuteIfBound(QueueIndex); return FReply::Handled(); })
+				.Visibility_Lambda([this]() { return (GEditor && (!GEditor->PlayWorld || GEditor->bIsSimulatingInEditor)) && this->IsHovered() && (IsCurrentUndoBarrier.Get() || IsLastTransactionIndex.Get()) ? EVisibility::Visible : EVisibility::Hidden; });
+		}
 
 		return SNullWidget::NullWidget;
 	}
@@ -124,6 +141,12 @@ private:
 	/** Holds an attribute that determines whether the transaction in this row is applied. */
 	TAttribute<bool> IsApplied;
 
+	/** Holds an attribute that determines whether the transaction in this row is the current undo barrier. */
+	TAttribute<bool> IsCurrentUndoBarrier;
+
+	/** Holds an attribute that determines whether the transaction in this row is the last active transaction. */
+	TAttribute<bool> IsLastTransactionIndex;
+
 	/** Holds the transaction's index in the transaction queue. */
 	int32 QueueIndex;
 
@@ -138,6 +161,9 @@ private:
 
 	/** Delegate called when the Goto button is clicked */
 	FOnGotoTransactionClicked OnGotoTransactionClicked;
+
+	/** Delegate called when the Barrier button is clicked */
+	FOnUndoBarrierButtonClicked OnUndoBarrierButtonClicked;
 };
 
 

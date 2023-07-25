@@ -32,15 +32,21 @@ class DYNAMICMESH_API FOffsetMeshRegion
 {
 public:
 
-
+	/**
+	 * Method used to determine the per-vertex offset direction vector
+	 */
 	enum class EVertexExtrusionVectorType
 	{
+		/** No geometric offset vector, client must define offset via custom OffsetPositionFunc */
 		Zero,
+		/** Offset vector is per-vertex normal, either provided by FDynamicMesh3 Per-Vertex Normals if defined, or computed by averaging one-ring face normals */
 		VertexNormal,
-		// Angle weighted average of the triangles in the selection that contain this vertex (unit length)
+		/** Angle weighted average of the triangles in the selection that contain this vertex(unit length) */
 		SelectionTriNormalsAngleWeightedAverage,
-		// Like SelectionTriNormalsAngleWeightedAverage, but with the vertex length adjusted to try to keep
-		// the selection triangles parallel to their original location.
+		/** 
+		 *  Like SelectionTriNormalsAngleWeightedAverage, but with the vertex length adjusted to try to keep
+		 *  the selection triangles parallel to their original location. 
+		 */
 		SelectionTriNormalsAngleWeightedAdjusted,
 	};
 
@@ -54,7 +60,7 @@ public:
 	/** The triangle region we are modifying */
 	TArray<int32> Triangles;
 
-	/** This function is called to generate the offset vertex position. */
+	/** OffsetPositionFunc function is called to generate the offset vertex position. */
 	TFunction<FVector3d(const FVector3d& Position, const FVector3d& VertexVector, int Vid)> OffsetPositionFunc = 
 		[this](const FVector3d& Position, const FVector3d& VertexVector, int Vid)
 	{
@@ -92,6 +98,72 @@ public:
 
 	/** When using SelectionTriNormalsAngleWeightedAdjusted to keep triangles parallel, clamp the offset scale to at most this factor */
 	double MaxScaleForAdjustingTriNormalsOffset = 4.0;
+
+	/** 
+	 * Number of subdivisions along the length of the "tubes" used to stitch the offset regions.
+	 * This parameter is only supported in EVersion::Version1 and later
+	 */
+	int32 NumSubdivisions = 0;
+
+	/**
+	 * If true, each extruded area gets a single new group, instead of remapping the input groups
+	 * This parameter is only supported in EVersion::Version1 and later
+	 */
+	bool bSingleGroupPerArea = true;
+
+	/**
+	 * If true, each subdivision level gets a new group
+	 * This parameter is only supported in EVersion::Version1 and later
+	 */
+	bool bGroupPerSubdivision = true;
+
+	/** 
+	 * if true, new UV island is assigned for each group in stitch region. 
+	 * This parameter is only supported in EVersion::Version1 and later
+	 * This parameter is only supported in EVersion::Version1 and later
+	 */
+	bool bUVIslandPerGroup = true;
+
+	/**
+	 * Split the extrude "tube" into separate groups based on the opening angle between quads.
+	 * This split is done relative to the above group options, so even if the tube would 
+	 * only have a single group, but the extrude area is a square, it will be split into
+	 * groups based on the corners.
+	 * This parameter is only supported in EVersion::Version1 and later
+	 */
+	double CreaseAngleThresholdDeg = 180.0;
+
+
+	/** 
+	 * Constant Material ID to set along the extrusion tubes 
+	 * This parameter is only supported in EVersion::Version1 and later
+	 */
+	int SetMaterialID = 0;
+
+	/** 
+	 * If true, Material IDs around the border of the extrude area are propagated "down" the extrusion tube 
+	 * This parameter is only supported in EVersion::Version1 and later
+	 */
+	bool bInferMaterialID = true;
+
+
+	/**
+	 * Support for different versions of the OffsetMeshRegion geometric operation.
+	 * We default to the latest version.
+	 */
+	enum class EVersion
+	{
+		// always use most recent version
+		Current = 0,
+		// initial implementation, various limitations and issues, maintained for back-compat
+		Legacy = 1,
+		// support NumSubdivisions, UVs and Normals computed by polygroup
+		Version1 = 2,
+	};
+
+	/** Version of Offset operation being used. Defaults to Current, ie most recent version */
+	EVersion UseVersion = EVersion::Current;
+	
 
 	//
 	// Outputs
@@ -174,6 +246,9 @@ public:
 protected:
 
 	virtual bool ApplyOffset(FOffsetInfo& Region);
+
+	virtual bool ApplyOffset_Legacy(FOffsetInfo& Region);
+	virtual bool ApplyOffset_Version1(FOffsetInfo& Region);
 };
 
 } // end namespace UE::Geometry

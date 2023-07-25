@@ -5,7 +5,6 @@
 #include "Containers/Array.h"
 #include "Containers/ContainersFwd.h"
 #include "Containers/Set.h"
-#include "CoreMinimal.h"
 #include "CoreTypes.h"
 #include "Misc/EnumClassFlags.h"
 #include "Modules/ModuleInterface.h"
@@ -13,11 +12,16 @@
 #include "UObject/NameTypes.h"
 #include "UObject/TopLevelAssetPath.h"
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif
+
 class FLinkerSave;
 class FStructuredArchiveRecord;
 class ITargetPlatform;
 class UObject;
 class UPackage;
+struct FAssetData;
 
 namespace EAssetRegistryDependencyType
 {
@@ -41,10 +45,10 @@ namespace EAssetRegistryDependencyType
 		// Note: Also update FAssetRegistryDependencyOptions when adding more flags
 	};
 
-	static const Type None = (Type)(0);
-	static const Type All = (Type)(Soft | Hard | SearchableName | SoftManage | HardManage);
-	static const Type Packages = (Type)(Soft | Hard);
-	static const Type Manage = (Type)(SoftManage | HardManage);
+	inline static const Type None = (Type)(0);
+	inline static const Type All = (Type)(Soft | Hard | SearchableName | SoftManage | HardManage);
+	inline static const Type Packages = (Type)(Soft | Hard);
+	inline static const Type Manage = (Type)(SoftManage | HardManage);
 }
 
 class IAssetRegistry;
@@ -190,7 +194,10 @@ namespace UE::AssetRegistry
 	};
 
 	// Functions to read and write the data used by the AssetRegistry in each package; the format of this data is separate from the format of the data in the asset registry
-	COREUOBJECT_API void WritePackageData(FStructuredArchiveRecord& ParentRecord, bool bIsCooking, const UPackage* Package, FLinkerSave* Linker, const TSet<UObject*>& ImportsUsedInGame, const TSet<FName>& SoftPackagesUsedInGame, const ITargetPlatform* TargetPlatform);
+	COREUOBJECT_API void WritePackageData(FStructuredArchiveRecord& ParentRecord, bool bIsCooking,
+		const UPackage* Package, FLinkerSave* Linker, const TSet<UObject*>& ImportsUsedInGame,
+		const TSet<FName>& SoftPackagesUsedInGame, const ITargetPlatform* TargetPlatform,
+		TArray<FAssetData>* OutAssetDatas);
 	// ReadPackageDataMain and ReadPackageDataDependencies are declared in IAssetRegistry.h, in the AssetRegistry module, because they depend upon some structures defined in the AssetRegistry module
 
 	namespace Private

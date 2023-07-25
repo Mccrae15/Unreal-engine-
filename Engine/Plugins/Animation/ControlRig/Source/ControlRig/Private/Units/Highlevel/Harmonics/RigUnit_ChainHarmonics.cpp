@@ -9,7 +9,7 @@
 FRigUnit_ChainHarmonics_Execute()
 {
 	FRigUnit_ChainHarmonicsPerItem::StaticExecute(
-		RigVMExecuteContext, 
+		ExecuteContext, 
 		FRigElementKey(ChainRoot, ERigElementType::Bone),
 		Speed,
 		Reach,
@@ -18,9 +18,7 @@ FRigUnit_ChainHarmonics_Execute()
 		Pendulum,
 		bDrawDebug,
 		DrawWorldOffset,
-		WorkData,
-		ExecuteContext, 
-		Context);
+		WorkData);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_ChainHarmonics::GetUpgradeInfo() const
@@ -59,13 +57,6 @@ FRigUnit_ChainHarmonicsPerItem_Execute()
 	TArray<FVector>& HierarchyLine = WorkData.HierarchyLine;
 	TArray<FVector>& VelocityLines = WorkData.VelocityLines;
 	
-	if (Context.State == EControlRigState::Init)
-	{
-		Time = FVector::ZeroVector;
-		Items.Reset();
-		return;
-	}
-
 	if(Items.Num() == 0)
 	{
 		if (!ChainRoot.IsValid())
@@ -190,15 +181,15 @@ FRigUnit_ChainHarmonicsPerItem_Execute()
 			FVector Velocity = Pendulum.PendulumGravity;
 			Velocity += Stiffness * Pendulum.PendulumStiffness;
 
-			if (Context.DeltaTime > 0.f)
+			if (ExecuteContext.GetDeltaTime() > 0.f)
 			{
 				PendulumVelocity[Index] = FMath::Lerp<FVector>(PendulumVelocity[Index], Velocity, FMath::Clamp<float>(Pendulum.PendulumBlend, 0.f, 0.999f));
 				PendulumVelocity[Index] = PendulumVelocity[Index] * Pendulum.PendulumDrag;
 
 				FVector PrevPosition = PendulumPosition[Index];
-				PendulumPosition[Index] = PendulumPosition[Index] + PendulumVelocity[Index] * Context.DeltaTime;
+				PendulumPosition[Index] = PendulumPosition[Index] + PendulumVelocity[Index] * ExecuteContext.GetDeltaTime();
 				PendulumPosition[Index] = GlobalTransform.GetLocation() + (PendulumPosition[Index] - GlobalTransform.GetLocation()).GetSafeNormal() * Length;
-				PendulumVelocity[Index] = (PendulumPosition[Index] - PrevPosition) / Context.DeltaTime;
+				PendulumVelocity[Index] = (PendulumPosition[Index] - PrevPosition) / ExecuteContext.GetDeltaTime();
 			}
 
 			VelocityLines[Index * 2 + 0] = PendulumPosition[Index];
@@ -222,9 +213,9 @@ FRigUnit_ChainHarmonicsPerItem_Execute()
 		ParentTransform = GlobalTransform;
 	}
 
-	Time = Time + Speed * Context.DeltaTime;
+	Time = Time + Speed * ExecuteContext.GetDeltaTime();
 
-	if (Context.DrawInterface != nullptr && bDrawDebug)
+	if (ExecuteContext.GetDrawInterface() != nullptr && bDrawDebug)
 	{
 		HierarchyLine.SetNum(Items.Num());
 		for (int32 Index = 0; Index < Items.Num(); Index++)
@@ -232,9 +223,9 @@ FRigUnit_ChainHarmonicsPerItem_Execute()
 			HierarchyLine[Index] = Hierarchy->GetGlobalTransform(Items[Index]).GetLocation();
 		}
 
-		Context.DrawInterface->DrawLineStrip(DrawWorldOffset, HierarchyLine, FLinearColor::Yellow, 0.f);
-		Context.DrawInterface->DrawLines(DrawWorldOffset, VelocityLines, FLinearColor(0.3f, 0.3f, 1.f), 0.f);
-		Context.DrawInterface->DrawPoints(DrawWorldOffset, PendulumPosition, 3.f, FLinearColor::Blue);
+		ExecuteContext.GetDrawInterface()->DrawLineStrip(DrawWorldOffset, HierarchyLine, FLinearColor::Yellow, 0.f);
+		ExecuteContext.GetDrawInterface()->DrawLines(DrawWorldOffset, VelocityLines, FLinearColor(0.3f, 0.3f, 1.f), 0.f);
+		ExecuteContext.GetDrawInterface()->DrawPoints(DrawWorldOffset, PendulumPosition, 3.f, FLinearColor::Blue);
 		return;
 	}
 

@@ -1,7 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PCGEdge.h"
-#include "PCGNode.h"
+#include "PCGPin.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGEdge)
+
+UPCGEdge::UPCGEdge(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	SetFlags(RF_Transactional);
+}
+
+void UPCGEdge::PostLoad()
+{
+	Super::PostLoad();
+	SetFlags(RF_Transactional);
+}
 
 bool UPCGEdge::IsValid() const
 {

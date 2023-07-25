@@ -3,12 +3,12 @@
 #include "LandscapePatchManager.h"
 
 #include "Modules/ModuleManager.h"
-#include "Engine/TextureRenderTarget2D.h"
+#include "Engine/Level.h"
+#include "Engine/World.h"
 #include "Landscape.h"
 #include "LandscapeDataAccess.h"
 #include "LandscapePatchComponent.h"
 #include "LandscapePatchLogging.h"
-#include "RenderGraph.h" // RDG_EVENT_NAME
 #include "LandscapeModule.h"
 #include "LandscapeEditorServices.h"
 
@@ -140,7 +140,23 @@ void ALandscapePatchManager::SetTargetLandscape(ALandscape* InTargetLandscape)
 			OwningLandscape->RemoveBrush(this);
 		}
 
-		if (InTargetLandscape && ensure(InTargetLandscape->CanHaveLayersContent()))
+		if (!InTargetLandscape)
+		{
+			if (OwningLandscape != nullptr)
+			{
+				// This can occur if the RemoveBrush call above did not do anything because the manager
+				// was removed from the landscape in some other way (probably in landscape mode panel)
+				SetOwningLandscape(nullptr);
+			}
+			return;
+		}
+
+		if (!InTargetLandscape->CanHaveLayersContent())
+		{
+			UE_LOG(LogLandscapePatch, Warning, TEXT("Landscape target for patch manager did not have edit layers enabled. Unable to attach manager."));
+			SetOwningLandscape(nullptr);
+		}
+		else
 		{
 			static const FName PatchLayerName = FName("LandscapePatches");
 

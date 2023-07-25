@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Canvas.h"
 #include "SceneManagement.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "NavigationTestingActor.h"
 #include "NavMesh/RecastNavMesh.h"
 #include "Debug/DebugDrawService.h"
@@ -67,18 +68,21 @@ void FNavTestSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>&
 
 				//@todo - the rendering thread should never read from UObjects directly!  These are race conditions, the properties should be mirrored on the proxy
 				const FVector ActorLocation = NavTestActor->GetActorLocation();
-				const FVector ProjectedLocation = NavTestActor->ProjectedLocation + (FVector)NavMeshDrawOffset;
-				const FColor ProjectedColor = NavTestActor->bProjectedLocationValid ? FColor(0, 255, 0, 120) : FColor(255, 0, 0, 120);
+				const FVector ProjectedLocation = NavTestActor->bProjectedLocationValid ? (NavTestActor->ProjectedLocation + (FVector)NavMeshDrawOffset) : (ActorLocation - FVector(0, 0, NavTestActor->QueryingExtent.Z));
+				const FColor ProjectedColor = (NavTestActor->bProjectedLocationValid ? FColor::Green : FColor::Red).WithAlpha(120);
 				const FColor ClosestWallColor = FColorList::Orange;
 				const FVector BoxExtent(20, 20, 20);
 
 				const FMaterialRenderProxy* const ColoredMeshInstance = &Collector.AllocateOneFrameResource<FColoredMaterialRenderProxy>(GEngine->DebugMeshMaterial->GetRenderProxy(), ProjectedColor);
 				//DrawBox(PDI, FTransform(ProjectedLocation).ToMatrixNoScale(),BoxExtent, ColoredMeshInstance, SDPG_World);
-				GetSphereMesh(ProjectedLocation, BoxExtent, 10, 7, ColoredMeshInstance, SDPG_World, false, ViewIndex, Collector);
+				if (NavTestActor->bProjectedLocationValid)
+				{
+					GetSphereMesh(ProjectedLocation, BoxExtent, 10, 7, ColoredMeshInstance, SDPG_World, false, ViewIndex, Collector);
+				}
 
 				//DrawWireBox(PDI, FBox(ProjectedLocation-BoxExtent, ProjectedLocation+BoxExtent), ProjectedColor, false);
 				DrawWireBox(PDI, FBox(ActorLocation - BoxExtent, ActorLocation + BoxExtent), FColor::White, false);
-				const FVector LineEnd = ProjectedLocation - (ProjectedLocation - ActorLocation).GetSafeNormal()*BoxExtent.X;
+				const FVector LineEnd = NavTestActor->bProjectedLocationValid ? ProjectedLocation - (ProjectedLocation - ActorLocation).GetSafeNormal()*BoxExtent.X : ProjectedLocation;
 				PDI->DrawLine(LineEnd, ActorLocation, ProjectedColor, SDPG_World, 2.5);
 				DrawArrowHead(PDI, LineEnd, ActorLocation, 20.f, ProjectedColor, SDPG_World, 2.5f);
 
@@ -110,7 +114,7 @@ void FNavTestSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>&
 					FDynamicMeshBuilder	MeshBuilder(View->GetFeatureLevel());
 					MeshBuilder.AddVertices(ClosedSetVerts);
 					MeshBuilder.AddTriangles(ClosedSetIndices);
-					MeshBuilder.GetMesh(FMatrix::Identity, MeshColorInstance, GetDepthPriorityGroup(View), false, false, ViewIndex, Collector);
+					MeshBuilder.GetMesh(FMatrix::Identity, MeshColorInstance, IntCastChecked<uint8>((int32)GetDepthPriorityGroup(View)), false, false, ViewIndex, Collector);
 				}
 
 				if (OpenSetIndices.Num())
@@ -119,7 +123,7 @@ void FNavTestSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>&
 					FDynamicMeshBuilder	MeshBuilder(View->GetFeatureLevel());
 					MeshBuilder.AddVertices(OpenSetVerts);
 					MeshBuilder.AddTriangles(OpenSetIndices);
-					MeshBuilder.GetMesh(FMatrix::Identity, MeshColorInstance, GetDepthPriorityGroup(View), false, false, ViewIndex, Collector);
+					MeshBuilder.GetMesh(FMatrix::Identity, MeshColorInstance, IntCastChecked<uint8>((int32)GetDepthPriorityGroup(View)), false, false, ViewIndex, Collector);
 				}
 			}
 
@@ -230,7 +234,7 @@ void FNavTestSceneProxy::GatherPathStep()
 
 			FNodeDebugData NewNodeData;
 
-			float DisplayedCost = FLT_MAX; 
+			FVector::FReal DisplayedCost = TNumericLimits<FVector::FReal>::Max();
 			switch (NavTestActor->CostDisplayMode)
 			{
 			case ENavCostDisplay::TotalCost:
@@ -303,17 +307,17 @@ FPrimitiveViewRelevance FNavTestSceneProxy::GetViewRelevance(const FSceneView* V
 
 uint32 FNavTestSceneProxy::GetAllocatedSizeInternal() const
 {
-	int32 InternalAllocSize = 0;
+	SIZE_T InternalAllocSize = 0;
 	for (TSet<FNodeDebugData>::TConstIterator It(NodeDebug); It; ++It)
 	{
 		InternalAllocSize += (*It).Desc.GetAllocatedSize();
 	}
 
-	return FDebugRenderSceneProxy::GetAllocatedSize() + PathPoints.GetAllocatedSize()
+	return IntCastChecked<uint32>(FDebugRenderSceneProxy::GetAllocatedSize() + PathPoints.GetAllocatedSize()
 		+ PathPointFlags.GetAllocatedSize()
 		+ OpenSetVerts.GetAllocatedSize() + OpenSetIndices.GetAllocatedSize()
 		+ ClosedSetVerts.GetAllocatedSize() + ClosedSetIndices.GetAllocatedSize()
-		+ NodeDebug.GetAllocatedSize() + InternalAllocSize;
+		+ NodeDebug.GetAllocatedSize() + InternalAllocSize);
 
 }
 
@@ -365,7 +369,7 @@ void FNavTestDebugDrawDelegateHelper::DrawDebugLabels(UCanvas* Canvas, APlayerCo
 
 				Canvas->SetDrawColor(MyColor);
 
-				const FVector ScreenLoc = Canvas->Project(NodeData.Position) + FVector(NavTestActor->TextCanvasOffset, 0.f);
+				const FVector3f ScreenLoc(Canvas->Project(NodeData.Position) + FVector(NavTestActor->TextCanvasOffset, 0.f));
 				Canvas->DrawText(RenderFont, NodeData.Desc, ScreenLoc.X, ScreenLoc.Y);
 			}
 		}
@@ -377,9 +381,10 @@ void FNavTestDebugDrawDelegateHelper::DrawDebugLabels(UCanvas* Canvas, APlayerCo
 		{
 			if (FNavTestSceneProxy::LocationInView(PathPoints[PointIndex], View))
 			{
-				const FVector PathPointLoc = Canvas->Project(PathPoints[PointIndex]);
+				const FVector3f PathPointLoc(Canvas->Project(PathPoints[PointIndex]));
 				const UFont* RenderFont = GEngine->GetSmallFont();
 				Canvas->DrawText(RenderFont, PathPointFlags[PointIndex], PathPointLoc.X, PathPointLoc.Y);
+
 			}
 		}
 

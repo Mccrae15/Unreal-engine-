@@ -2,10 +2,7 @@
 
 #include "InputAction.h"
 
-#include "EnhancedPlayerInput.h"
-#include "InputModifiers.h"
-#include "InputTriggers.h"
-#include "UObject/UObjectIterator.h"
+#include "PlayerMappableKeySettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InputAction)
 
@@ -106,14 +103,28 @@ void FTriggerStateTracker::SetStateForNoTriggers(ETriggerState State)
 // Record input action property changes for later processing
 
 TSet<const UInputAction*> UInputAction::ActionsWithModifiedValueTypes;
+TSet<const UInputAction*> UInputAction::ActionsWithModifiedTriggers;
 
 void UInputAction::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
+	// if our value changes were to the trigger or modifier array broadcast the change
+	if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UInputAction, Modifiers))
+	{
+		OnModifiersChanged.Broadcast();
+	}
+	if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UInputAction, Triggers))
+	{
+		OnTriggersChanged.Broadcast();
+	}
+	
 	// If our value type changes we need to inform any blueprint InputActionEx nodes that refer to this action
-	if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UInputAction, ValueType) ||
-		PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UInputAction, Triggers))
+	if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UInputAction, ValueType))
 	{
 		ActionsWithModifiedValueTypes.Add(this);
+	}
+	if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UInputAction, Triggers))
+	{
+		ActionsWithModifiedTriggers.Add(this);
 	}
 }
 
@@ -122,10 +133,15 @@ EDataValidationResult UInputAction::IsDataValid(TArray<FText>& ValidationErrors)
 	EDataValidationResult Result = CombineDataValidationResults(Super::IsDataValid(ValidationErrors), EDataValidationResult::Valid);
 
 	// Validate the triggers
+	bool bContainsComboTrigger = false;
+	bool bContainsNonComboTrigger = false;
 	for (const TObjectPtr<UInputTrigger> Trigger : Triggers)
 	{
 		if (Trigger)
 		{
+			// check if it the trigger is a combo or not
+			Trigger.IsA(UInputTriggerCombo::StaticClass()) ? bContainsComboTrigger = true : bContainsNonComboTrigger = true;
+			
 			Result = CombineDataValidationResults(Result, Trigger->IsDataValid(ValidationErrors));
 		}
 		else
@@ -133,6 +149,11 @@ EDataValidationResult UInputAction::IsDataValid(TArray<FText>& ValidationErrors)
 			Result = EDataValidationResult::Invalid;
 			ValidationErrors.Add(LOCTEXT("NullInputTrigger", "There cannot be a null Input Trigger on an Input Action!"));
 		}
+	}
+	if (bContainsComboTrigger && bContainsNonComboTrigger)
+	{
+		Result = EDataValidationResult::Invalid;
+		ValidationErrors.Add(LOCTEXT("ComboAndNonComboInputTrigger", "Combo triggers are not intended to interact with other input triggers. Consider adding the combo and other triggers later in a context or creating a seperate action for the combo."));
 	}
 	
 	// Validate the modifiers
@@ -147,6 +168,12 @@ EDataValidationResult UInputAction::IsDataValid(TArray<FText>& ValidationErrors)
 			Result = EDataValidationResult::Invalid;
 			ValidationErrors.Add(LOCTEXT("NullInputModifier", "There cannot be a null Input Modifier on an Input Action!"));
 		}		
+	}
+	
+	// Validate Settings
+	if (PlayerMappableKeySettings != nullptr)
+	{
+		Result = CombineDataValidationResults(Result, PlayerMappableKeySettings->IsDataValid(ValidationErrors));
 	}
 
 	return Result;
@@ -179,6 +206,6 @@ ETriggerEventsSupported UInputAction::GetSupportedTriggerEvents() const
 	return SupportedTriggers;
 }
 
-#endif
+#endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE

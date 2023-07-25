@@ -46,6 +46,7 @@
 #include "Misc/RedirectCollector.h"
 #include "Settings/BlueprintEditorProjectSettings.h"
 #include "AssetToolsLog.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "GameMapsSettings.h"
@@ -800,7 +801,7 @@ bool FAssetRenameManager::UpdatePackageStatus(const TArray<FAssetRenameDataWithR
 		SourceControlProvider.Login();
 		if (!SourceControlProvider.IsAvailable())
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("UnrealEd", "SourceControl_ServerUnresponsive", "Source Control is unresponsive. Please check your connection and try again."));
+			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("UnrealEd", "SourceControl_ServerUnresponsive", "Revision Control is unresponsive. Please check your connection and try again."));
 			return false;
 		}
 
@@ -1450,7 +1451,7 @@ void FAssetRenameManager::PerformAssetRename(TArray<FAssetRenameDataWithReferenc
 						if (StatePtr->IsSourceControlled())
 						{
 							bIsLocal = false;
-							ErrorMessage = LOCTEXT("ErrorCaseChangeRenameWithSourceControl", "Couldn't perform a case-only rename on a source controlled asset, as this is not supported.");
+							ErrorMessage = LOCTEXT("ErrorCaseChangeRenameWithSourceControl", "Couldn't perform a case-only rename on a revision controlled asset, as this is not supported.");
 						}
 					}
 				}

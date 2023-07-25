@@ -33,21 +33,27 @@
 	#define RDG_EVENT_NAME(Format, ...) FRDGEventName(TEXT(Format), ##__VA_ARGS__)
 	#define RDG_EVENT_SCOPE(GraphBuilder, Format, ...) FRDGEventScopeGuard PREPROCESSOR_JOIN(__RDG_ScopeRef_,__LINE__) ((GraphBuilder), RDG_EVENT_NAME(Format, ##__VA_ARGS__))
 	#define RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Condition, Format, ...) FRDGEventScopeGuard PREPROCESSOR_JOIN(__RDG_ScopeRef_,__LINE__) ((GraphBuilder), RDG_EVENT_NAME(Format, ##__VA_ARGS__), Condition)
+
+	// The 'Final' version disables any further child scopes or pass events. It is intended to group overlapping passes as events can disable overlap on certain GPUs.
+	#define RDG_EVENT_SCOPE_FINAL(GraphBuilder, Format, ...) FRDGEventScopeGuard PREPROCESSOR_JOIN(__RDG_ScopeRef_,__LINE__) ((GraphBuilder), RDG_EVENT_NAME(Format, ##__VA_ARGS__), true, ERDGEventScopeFlags::Final)
+	#define RDG_EVENT_SCOPE_FINAL_CONDITIONAL(GraphBuilder, Condition, Format, ...) FRDGEventScopeGuard PREPROCESSOR_JOIN(__RDG_ScopeRef_,__LINE__) ((GraphBuilder), RDG_EVENT_NAME(Format, ##__VA_ARGS__), Condition, ERDGEventScopeFlags::Final)
 #elif RDG_EVENTS == RDG_EVENTS_NONE
 	#define RDG_EVENT_NAME(Format, ...) FRDGEventName()
 	#define RDG_EVENT_SCOPE(GraphBuilder, Format, ...)
 	#define RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Condition, Format, ...)
+	#define RDG_EVENT_SCOPE_FINAL(GraphBuilder, Format, ...)
+	#define RDG_EVENT_SCOPE_FINAL_CONDITIONAL(GraphBuilder, Condition, Format, ...)
 #else
 	#error "RDG_EVENTS is not a valid value."
 #endif
 
 #if HAS_GPU_STATS
 	#if STATS
-		#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), GET_STATID(Stat_GPU_##StatName).GetName(), nullptr, &DrawcallCountCategory_##StatName.Counters);
-		#define RDG_GPU_STAT_SCOPE_VERBOSE(GraphBuilder, StatName, Description) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), GET_STATID(Stat_GPU_##StatName).GetName(), Description, &DrawcallCountCategory_##StatName.Counters);
+		#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), GET_STATID(Stat_GPU_##StatName).GetName(), nullptr, DrawcallCountCategory_##StatName);
+		#define RDG_GPU_STAT_SCOPE_VERBOSE(GraphBuilder, StatName, Description) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), GET_STATID(Stat_GPU_##StatName).GetName(), Description, DrawcallCountCategory_##StatName);
 	#else
-		#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), FName(), nullptr, &DrawcallCountCategory_##StatName.Counters);
-		#define RDG_GPU_STAT_SCOPE_VERBOSE(GraphBuilder, StatName, Description) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), FName(), Description, &DrawcallCountCategory_##StatName.Counters);
+		#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), FName(), nullptr, DrawcallCountCategory_##StatName);
+		#define RDG_GPU_STAT_SCOPE_VERBOSE(GraphBuilder, StatName, Description) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), FName(), Description, DrawcallCountCategory_##StatName);
 	#endif
 #else
 	#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName)
@@ -223,7 +229,7 @@ public:
 	}
 
 	template <typename... TScopeConstructArgs>
-	inline void BeginScope(TScopeConstructArgs... ScopeConstructArgs)
+	inline void BeginScope(TScopeConstructArgs&&... ScopeConstructArgs)
 	{
 		auto Scope = Allocator.AllocNoDestruct<ScopeType>(CurrentScope, Forward<TScopeConstructArgs>(ScopeConstructArgs)...);
 		Scopes.Add(Scope);
@@ -407,15 +413,23 @@ private:
 
 #if RDG_GPU_DEBUG_SCOPES
 
+enum class ERDGEventScopeFlags : uint8
+{
+	None = 0,
+	Final = 1 << 0
+};
+ENUM_CLASS_FLAGS(ERDGEventScopeFlags);
+
 class FRDGEventScope final
 {
 public:
-	FRDGEventScope(const FRDGEventScope* InParentScope, FRDGEventName&& InName, FRHIGPUMask InGPUMask)
+	FRDGEventScope(const FRDGEventScope* InParentScope, FRDGEventName&& InName, FRHIGPUMask InGPUMask, ERDGEventScopeFlags InFlags)
 		: ParentScope(InParentScope)
 		, Name(Forward<FRDGEventName&&>(InName))
 #if WITH_MGPU
 		, GPUMask(InGPUMask)
 #endif
+		, Flags(InFlags)
 	{}
 
 	/** Returns a formatted path for debugging. */
@@ -426,6 +440,7 @@ public:
 #if WITH_MGPU
 	const FRHIGPUMask GPUMask;
 #endif
+	const ERDGEventScopeFlags Flags;
 };
 
 using FRDGEventScopeOp = TRDGScopeOp<FRDGEventScope>;
@@ -480,11 +495,11 @@ public:
 		, bRDGEvents(GetEmitRDGEvents())
 	{}
 
-	inline void BeginScope(FRDGEventName&& EventName, FRHIGPUMask GPUMask)
+	inline void BeginScope(FRDGEventName&& EventName, FRHIGPUMask GPUMask, ERDGEventScopeFlags Flags)
 	{
 		if (IsEnabled())
 		{
-			ScopeStack.BeginScope(Forward<FRDGEventName&&>(EventName), GPUMask);
+			ScopeStack.BeginScope(Forward<FRDGEventName&&>(EventName), GPUMask, Flags);
 		}
 	}
 
@@ -512,7 +527,7 @@ public:
 	{
 		if (IsEnabled())
 		{
-			FRDGEventScopeOpArray Array = ScopeStack.EndCompile();
+			FRDGEventScopeOpArray Array(ScopeStack.EndCompile(), bRDGEvents);
 			if (Array.Ops.Num())
 			{
 				FRHICommandListScopedPipeline Scope(RHICmdList, Pipeline);
@@ -548,7 +563,7 @@ RENDERCORE_API FString GetRDGEventPath(const FRDGEventScope* Scope, const FRDGEv
 class RENDERCORE_API FRDGEventScopeGuard final
 {
 public:
-	FRDGEventScopeGuard(FRDGBuilder& InGraphBuilder, FRDGEventName&& ScopeName, bool bCondition = true);
+	FRDGEventScopeGuard(FRDGBuilder& InGraphBuilder, FRDGEventName&& ScopeName, bool bCondition = true, ERDGEventScopeFlags Flags = ERDGEventScopeFlags::None);
 	FRDGEventScopeGuard(const FRDGEventScopeGuard&) = delete;
 	~FRDGEventScopeGuard();
 
@@ -570,11 +585,11 @@ private:
 class FRDGGPUStatScope final
 {
 public:
-	FRDGGPUStatScope(const FRDGGPUStatScope* InParentScope, const FName& InName, const FName& InStatName, const TCHAR* InDescription, FRHIDrawCallsStatPtr InDrawCallCounter)
+	FRDGGPUStatScope(const FRDGGPUStatScope* InParentScope, const FName& InName, const FName& InStatName, const TCHAR* InDescription, FDrawCallCategoryName& InCategory)
 		: ParentScope(InParentScope)
 		, Name(InName)
 		, StatName(InStatName)
-		, DrawCallCounter(InDrawCallCounter)
+		, Category(InCategory)
 	{
 		if (InDescription)
 		{
@@ -586,7 +601,7 @@ public:
 	const FName Name;
 	const FName StatName;
 	FString Description;
-	FRHIDrawCallsStatPtr DrawCallCounter;
+	FDrawCallCategoryName& Category;
 };
 
 class FRDGGPUStatScopeOp : public TRDGScopeOp<FRDGGPUStatScope>
@@ -634,12 +649,11 @@ public:
 #endif
 	{}
 
-	inline void BeginScope(const FName& Name, const FName& StatName, const TCHAR* Description, FRHIDrawCallsStatPtr DrawCallCounter)
+	inline void BeginScope(const FName& Name, const FName& StatName, const TCHAR* Description, FDrawCallCategoryName& Category)
 	{
 		if (IsEnabled())
 		{
-			check(DrawCallCounter != nullptr);
-			ScopeStack.BeginScope(Name, StatName, Description, DrawCallCounter);
+			ScopeStack.BeginScope(Name, StatName, Description, Category);
 		}
 	}
 
@@ -696,7 +710,7 @@ private:
 class RENDERCORE_API FRDGGPUStatScopeGuard final
 {
 public:
-	FRDGGPUStatScopeGuard(FRDGBuilder& InGraphBuilder, const FName& Name, const FName& StatName, const TCHAR* Description, FRHIDrawCallsStatPtr DrawCallCounter);
+	FRDGGPUStatScopeGuard(FRDGBuilder& InGraphBuilder, const FName& Name, const FName& StatName, const TCHAR* Description, FDrawCallCategoryName& InCategory);
 	FRDGGPUStatScopeGuard(const FRDGGPUStatScopeGuard&) = delete;
 	~FRDGGPUStatScopeGuard();
 
@@ -820,11 +834,11 @@ struct RENDERCORE_API FRDGGPUScopeStacksByPipeline
 	}
 
 #if RDG_GPU_DEBUG_SCOPES
-	inline void BeginEventScope(FRDGEventName&& ScopeName, FRHIGPUMask GPUMask)
+	inline void BeginEventScope(FRDGEventName&& ScopeName, FRHIGPUMask GPUMask, ERDGEventScopeFlags Flags)
 	{
 		FRDGEventName ScopeNameCopy = ScopeName;
-		Graphics.Event.BeginScope(MoveTemp(ScopeNameCopy), GPUMask);
-		AsyncCompute.Event.BeginScope(MoveTemp(ScopeName), GPUMask);
+		Graphics.Event.BeginScope(MoveTemp(ScopeNameCopy), GPUMask, Flags);
+		AsyncCompute.Event.BeginScope(MoveTemp(ScopeName), GPUMask, Flags);
 	}
 
 	inline void EndEventScope()
@@ -833,9 +847,9 @@ struct RENDERCORE_API FRDGGPUScopeStacksByPipeline
 		AsyncCompute.Event.EndScope();
 	}
 
-	inline void BeginStatScope(const FName& Name, const FName& StatName, const TCHAR* Description, FRHIDrawCallsStatPtr DrawCallCounter)
+	inline void BeginStatScope(const FName& Name, const FName& StatName, const TCHAR* Description, FDrawCallCategoryName& Category)
 	{
-		Graphics.Stat.BeginScope(Name, StatName, Description, DrawCallCounter);
+		Graphics.Stat.BeginScope(Name, StatName, Description, Category);
 	}
 
 	inline void EndStatScope()

@@ -1175,8 +1175,6 @@ FLinearColor FControlRigGraphDetails::GetNodeColor() const
 
 void FControlRigGraphDetails::SetNodeColor(FLinearColor InColor, bool bSetupUndoRedo)
 {
-	TargetColor = InColor;
-
 	if (GraphPtr.IsValid() && ControlRigBlueprintPtr.IsValid())
 	{
 		UControlRigBlueprint* Blueprint = ControlRigBlueprintPtr.Get();
@@ -1186,7 +1184,7 @@ void FControlRigGraphDetails::SetNodeColor(FLinearColor InColor, bool bSetupUndo
 			{
 				if (URigVMController* Controller = Blueprint->GetOrCreateController(OuterNode->GetGraph()))
 				{
-					Controller->SetNodeColor(OuterNode, TargetColor, bSetupUndoRedo, bIsPickingColor, true);
+					Controller->SetNodeColor(OuterNode, InColor, bSetupUndoRedo, bIsPickingColor, true);
 				}
 			}
 		}
@@ -1209,19 +1207,12 @@ void FControlRigGraphDetails::OnNodeColorCancelled(FLinearColor OriginalColor)
 
 FReply FControlRigGraphDetails::OnNodeColorClicked()
 {
-	TargetColor = GetNodeColor();
-	TargetColors.Reset();
-	TargetColors.Add(&TargetColor);
-
-	FColorPickerArgs PickerArgs;
+	FColorPickerArgs PickerArgs = FColorPickerArgs(GetNodeColor(), FOnLinearColorValueChanged::CreateSP(this, &FControlRigGraphDetails::SetNodeColor, true));
 	PickerArgs.ParentWidget = ColorBlock;
 	PickerArgs.bUseAlpha = false;
 	PickerArgs.DisplayGamma = false;
-	PickerArgs.InitialColorOverride = TargetColor;
-	PickerArgs.LinearColorArray = &TargetColors;
 	PickerArgs.OnInteractivePickBegin = FSimpleDelegate::CreateSP(this, &FControlRigGraphDetails::OnNodeColorBegin);
 	PickerArgs.OnInteractivePickEnd = FSimpleDelegate::CreateSP(this, &FControlRigGraphDetails::OnNodeColorEnd);
-	PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateSP(this, &FControlRigGraphDetails::SetNodeColor, true);
 	PickerArgs.OnColorPickerCancelled = FOnColorPickerCancelled::CreateSP(this, &FControlRigGraphDetails::OnNodeColorCancelled);
 	OpenColorPicker(PickerArgs);
 	return FReply::Handled();
@@ -1236,10 +1227,15 @@ FText FControlRigGraphDetails::GetCurrentAccessSpecifierName() const
 		UControlRigGraph* Graph = GraphPtr.Get();
 		UControlRigBlueprint* ControlRigBlueprint = ControlRigBlueprintPtr.Get();
 
-		const FControlRigPublicFunctionData ExpectedFunctionData = Graph->GetPublicFunctionData();
-		if(ControlRigBlueprint->IsFunctionPublic(ExpectedFunctionData.Name))
+		if (URigVMGraph* RigVMGraph = Graph->GetModel())
 		{
-			return FText::FromString(*AccessSpecifierStrings[0].Get()); // public
+			if (URigVMLibraryNode* LibraryNode = RigVMGraph->GetTypedOuter<URigVMLibraryNode>())
+			{
+				if(ControlRigBlueprint->IsFunctionPublic(LibraryNode->GetFName()))
+				{
+					return FText::FromString(*AccessSpecifierStrings[0].Get()); // public
+				}
+			}
 		}
 	}
 
@@ -1252,15 +1248,20 @@ void FControlRigGraphDetails::OnAccessSpecifierSelected( TSharedPtr<FString> Spe
 	{
 		UControlRigGraph* Graph = GraphPtr.Get();
 		UControlRigBlueprint* ControlRigBlueprint = ControlRigBlueprintPtr.Get();
-		const FControlRigPublicFunctionData ExpectedFunctionData = Graph->GetPublicFunctionData();
-		
-		if(SpecifierName->Equals(TEXT("Private")))
+
+		if (URigVMGraph* RigVMGraph = Graph->GetModel())
 		{
-			ControlRigBlueprint->MarkFunctionPublic(ExpectedFunctionData.Name, false);
-		}
-		else
-		{
-			ControlRigBlueprint->MarkFunctionPublic(ExpectedFunctionData.Name, true);
+			if (URigVMLibraryNode* LibraryNode = RigVMGraph->GetTypedOuter<URigVMLibraryNode>())
+			{
+				if(SpecifierName->Equals(TEXT("Private")))
+				{
+					ControlRigBlueprint->MarkFunctionPublic(LibraryNode->GetFName(), false);
+				}
+				else
+				{
+					ControlRigBlueprint->MarkFunctionPublic(LibraryNode->GetFName(), true);
+				}
+			}
 		}
 	}
 }
@@ -1865,16 +1866,6 @@ void FControlRigGraphMathTypeDetails::CustomizeChildren(TSharedRef<IPropertyHand
 	{
 		CustomizeTransform<FEulerTransform>(InPropertyHandle, StructBuilder, StructCustomizationUtils);
 	}
-}
-
-void FControlRigGraphMathTypeDetails::AddReferencedObjects(FReferenceCollector& Collector)
-{
-	Collector.AddReferencedObjects(ObjectsBeingCustomized);
-}
-
-FString FControlRigGraphMathTypeDetails::GetReferencerName() const
-{
-	return TEXT("FControlRigGraphMathTypeDetails:") + ObjectsBeingCustomized[0]->GetPathName();
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -83,6 +83,7 @@ FMetasoundFrontendLiteral::FMetasoundFrontendLiteral(const FAudioParameter& InPa
 {
 	switch (InParameter.ParamType)
 	{
+		case EAudioParameterType::Trigger:
 		case EAudioParameterType::Boolean:
 		{
 			Set(InParameter.BoolParam);
@@ -157,7 +158,7 @@ FMetasoundFrontendLiteral::FMetasoundFrontendLiteral(const FAudioParameter& InPa
 
 		default:
 		{
-			static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 12, "Possible missing switch case coverage");
+			static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 13, "Possible missing switch case coverage");
 			checkNoEntry();
 		}
 	}
@@ -388,7 +389,7 @@ void FMetasoundFrontendLiteral::SetFromLiteral(const Metasound::FLiteral& InLite
 			// Only error if attempting to retrieve valid UObject from ProxyDataPtr
 			// as this function can safely is used to initialize from defaults (which
 			// is valid as a null proxy can safely correspond to a null UObject ptr).
-			if (InLiteral.Value.Get<Audio::IProxyDataPtr>().IsValid())
+			if (InLiteral.Value.Get<TSharedPtr<Audio::IProxyData>>().IsValid())
 			{
 				UE_LOG(LogMetaSound, Error, TEXT("Cannot set UObjectProxy from Metasound::FLiteral"));
 			}
@@ -432,7 +433,7 @@ void FMetasoundFrontendLiteral::SetFromLiteral(const Metasound::FLiteral& InLite
 			// Only error if attempting to retrieve valid UObject from ProxyDataPtr
 			// as this function can safely is used to initialize from defaults (which
 			// is valid as a null proxy can safely correspond to a null UObject ptr).
-			if (!InLiteral.Value.Get<TArray<Audio::IProxyDataPtr>>().IsEmpty())
+			if (!InLiteral.Value.Get<TArray<TSharedPtr<Audio::IProxyData>>>().IsEmpty())
 			{
 				UE_LOG(LogMetaSound, Error, TEXT("Cannot set UObjectProxy from Metasound::FLiteral"));
 			}
@@ -511,7 +512,6 @@ void FMetasoundFrontendLiteral::SetType(EMetasoundFrontendLiteralType InType)
 			Set(0.f);
 		}
 		break;
-
 	
 		case EMetasoundFrontendLiteralType::String:
 		{

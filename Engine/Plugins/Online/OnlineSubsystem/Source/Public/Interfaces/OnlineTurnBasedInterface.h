@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "OnlineTurnBasedInterface.generated.h"
 
 /** 
@@ -66,7 +64,7 @@ DECLARE_DELEGATE_TwoParams(FEndMatchSignature, FString, bool);   // bool Success
 UENUM(BlueprintType)
 namespace EMPMatchOutcome
 {
-    enum Outcome
+    enum Outcome : int
     {
         None,
         Quit,
@@ -216,3 +214,7 @@ public:
 };
 
 typedef TSharedPtr<class IOnlineTurnBased, ESPMode::ThreadSafe> IOnlineTurnBasedPtr;
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

@@ -8,6 +8,8 @@
 #include "UObject/UObjectGlobals.h"
 #include "GeometryCache.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerGeomCacheModel)
+
 #define LOCTEXT_NAMESPACE "MLDeformerGeomCacheModel"
 
 void UMLDeformerGeomCacheModel::Serialize(FArchive& Archive)
@@ -25,7 +27,11 @@ void UMLDeformerGeomCacheModel::Serialize(FArchive& Archive)
 #if WITH_EDITOR
 void UMLDeformerGeomCacheModel::UpdateNumTargetMeshVertices()
 {
-	SetNumTargetMeshVerts(UE::MLDeformer::ExtractNumImportedGeomCacheVertices(GetGeometryCache()));
+	UGeometryCache* GeomCache = GetGeometryCache();
+	if (GeomCache)
+	{
+		SetNumTargetMeshVerts(UE::MLDeformer::ExtractNumImportedGeomCacheVertices(GeomCache));
+	}
 }
 
 UMLDeformerGeomCacheVizSettings* UMLDeformerGeomCacheModel::GetGeomCacheVizSettings() const

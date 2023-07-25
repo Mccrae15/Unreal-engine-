@@ -2,15 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "AndroidFileServerBPLibrary.generated.h"
 
 UENUM()
 namespace EAFSActiveType
 {
-	enum Type
+	enum Type : int
 	{
 		None = 0 UMETA(DisplayName = "None"),
 		USBOnly = 1 UMETA(DisplayName = "USB only"),
@@ -36,3 +34,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "AndroidFileServer")
 	static TEnumAsByte<EAFSActiveType::Type> IsFileServerRunning();
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

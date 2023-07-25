@@ -91,8 +91,11 @@
 !*.config
 !*.version
 !.git*
+!.dockerignore
 !.editorconfig
 !.plist
+!.yaml
+!.yml
 
 # Projects and makefiles
 !*.cmake
@@ -108,6 +111,7 @@
 !*.xcconfig
 !*.vsprops
 !*.snippet
+!Dockerfile
 !Makefile
 !Makefile.*
 !Settings.settings
@@ -201,9 +205,7 @@
 /Engine/Binaries/DotNET/UnrealBuildTool.xml
 /Engine/Binaries/DotNET/AutomationScripts/BuildGraph.Automation.xml
 /Engine/Binaries/DotNET/AutomationScripts/Newtonsoft.Json.xml
-/Engine/Platforms/Hololens/Binaries/DotNET/AutomationTool/AutomationScripts/Platforms/HoloLens/EpicGames.UHT.xml
-/Engine/Platforms/Hololens/Binaries/DotNET/AutomationTool/AutomationScripts/Platforms/HoloLens/System.Runtime.WindowsRuntime.xml
-/Engine/Platforms/Hololens/Binaries/DotNET/AutomationTool/AutomationScripts/Platforms/HoloLens/WindowsDevicePortalWrapper.xml
+/Engine/Platforms/Hololens/Binaries/DotNET/AutomationTool/AutomationScripts/Platforms/HoloLens/*.xml
 /Engine/Source/Programs/AutomationTool/BuildGraph/BuildGraph.Automation.xml
 
 # Ignore generated files from C# tools
@@ -288,6 +290,7 @@ Engine/Plugins/Runtime/OculusXR
 
 # Ignore Samples and SamplesInternal folders, they are junctions
 Collaboration/Oculus/Samples
+
 Collaboration/Oculus/SamplesInternal
 
 # Ignore VoiceSDK Template

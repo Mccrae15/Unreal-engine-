@@ -3,20 +3,12 @@
 #include "RigVMDeveloperTypeUtils.h"
 
 #include "Internationalization/StringTableCore.h"
+#include "RigVMModel/RigVMController.h"
 #include "RigVMModel/RigVMVariableDescription.h"
 
 #if WITH_EDITOR
 
 #include "EdGraphSchema_K2.h"
-#include "Engine/Blueprint.h"
-
-FRigVMExternalVariable RigVMTypeUtils::ExternalVariableFromBPVariableDescription(
-	const FBPVariableDescription& InVariableDescription)
-{
-	const bool bIsPublic = !((InVariableDescription.PropertyFlags & CPF_DisableEditOnInstance) == CPF_DisableEditOnInstance);
-	const bool bIsReadOnly = ((InVariableDescription.PropertyFlags & CPF_BlueprintReadOnly) == CPF_BlueprintReadOnly);
-	return ExternalVariableFromPinType(InVariableDescription.VarName, InVariableDescription.VarType, bIsPublic, bIsReadOnly);
-}
 
 FRigVMExternalVariable RigVMTypeUtils::ExternalVariableFromRigVMVariableDescription(const FRigVMGraphVariableDescription& InVariableDescription)
 {	
@@ -36,6 +28,11 @@ FRigVMExternalVariable RigVMTypeUtils::ExternalVariableFromRigVMVariableDescript
 		ExternalVariable.TypeObject = InVariableDescription.CPPTypeObject;
 	}
 
+	if (UEnum* Enum = Cast<UEnum>(ExternalVariable.TypeObject))
+	{
+		ExternalVariable.TypeName = Enum->GetFName();
+	}	
+
 	ExternalVariable.bIsPublic = false;
 	ExternalVariable.bIsReadOnly = false;
 	ExternalVariable.Memory = nullptr;
@@ -43,228 +40,14 @@ FRigVMExternalVariable RigVMTypeUtils::ExternalVariableFromRigVMVariableDescript
 
 }
 
-FRigVMExternalVariable RigVMTypeUtils::ExternalVariableFromPinType(const FName& InName, const FEdGraphPinType& InPinType, bool bInPublic, bool bInReadonly)
+FEdGraphPinType RigVMTypeUtils::PinTypeFromTypeIndex(const TRigVMTypeIndex& InTypeIndex)
 {
-	FRigVMExternalVariable ExternalVariable;
-	ExternalVariable.Name = InName;
-	ExternalVariable.bIsPublic = bInPublic;
-	ExternalVariable.bIsReadOnly = bInReadonly;
-
-	if (InPinType.ContainerType == EPinContainerType::None)
+	const FRigVMTemplateArgumentType& Type = FRigVMRegistry::Get().GetType(InTypeIndex);
+	if(Type.CPPType.IsValid())
 	{
-		ExternalVariable.bIsArray = false;
+		return PinTypeFromCPPType(Type.CPPType, Type.CPPTypeObject);
 	}
-	else if (InPinType.ContainerType == EPinContainerType::Array)
-	{
-		ExternalVariable.bIsArray = true;
-	}
-	else
-	{
-		return FRigVMExternalVariable();
-	}
-
-	if (InPinType.PinCategory == UEdGraphSchema_K2::PC_Boolean)
-	{
-		ExternalVariable.TypeName = BoolTypeName;
-		ExternalVariable.Size = sizeof(bool);
-	}
-	else if (InPinType.PinCategory == UEdGraphSchema_K2::PC_Int)
-	{
-		ExternalVariable.TypeName = Int32TypeName;
-		ExternalVariable.Size = sizeof(int32);
-	}
-	else if (InPinType.PinCategory == UEdGraphSchema_K2::PC_Enum ||
-		InPinType.PinCategory == UEdGraphSchema_K2::PC_Byte)
-	{
-		if (UEnum* Enum = Cast<UEnum>(InPinType.PinSubCategoryObject))
-		{
-			ExternalVariable.TypeName = Enum->GetFName();
-			ExternalVariable.TypeObject = Enum;
-		}
-		else
-		{
-			ExternalVariable.TypeName = UInt8TypeName;
-		}
-		ExternalVariable.Size = sizeof(uint8);
-	}
-	else if (InPinType.PinCategory == UEdGraphSchema_K2::PC_Real)
-	{
-		if (InPinType.PinSubCategory == UEdGraphSchema_K2::PC_Float)
-		{
-			ExternalVariable.TypeName = FloatTypeName;
-			ExternalVariable.Size = sizeof(float);
-		}
-		else if (InPinType.PinSubCategory == UEdGraphSchema_K2::PC_Double)
-		{
-			ExternalVariable.TypeName = DoubleTypeName;
-			ExternalVariable.Size = sizeof(double);
-		}
-		else
-		{
-			checkf(false, TEXT("Unexpected subcategory for PC_Real pin type."));
-		}
-	}
-	else if (InPinType.PinCategory == UEdGraphSchema_K2::PC_Name)
-	{
-		ExternalVariable.TypeName = FNameTypeName;
-		ExternalVariable.Size = sizeof(FName);
-	}
-	else if (InPinType.PinCategory == UEdGraphSchema_K2::PC_String)
-	{
-		ExternalVariable.TypeName = FStringTypeName;
-		ExternalVariable.Size = sizeof(FString);
-	}
-	else if (InPinType.PinCategory == UEdGraphSchema_K2::PC_Struct)
-	{
-		if (UScriptStruct* Struct = Cast<UScriptStruct>(InPinType.PinSubCategoryObject))
-		{
-			ExternalVariable.TypeName = *RigVMTypeUtils::GetUniqueStructTypeName(Struct);
-			ExternalVariable.TypeObject = Struct;
-			ExternalVariable.Size = Struct->GetStructureSize();
-		}
-	}
-
-	return ExternalVariable;
-}
-
-FRigVMExternalVariable RigVMTypeUtils::ExternalVariableFromCPPTypePath(const FName& InName, const FString& InCPPTypePath, bool bInPublic, bool bInReadonly)
-{
-	FRigVMExternalVariable Variable;
-	if (InCPPTypePath.StartsWith(TEXT("TMap<")))
-	{
-		return Variable;
-	}
-	
-	Variable.Name = InName;
-	Variable.bIsPublic = bInPublic;
-	Variable.bIsReadOnly = bInReadonly;
-
-	FString CPPTypePath = InCPPTypePath;
-	Variable.bIsArray = RigVMTypeUtils::IsArrayType(CPPTypePath);
-	if (Variable.bIsArray)
-	{
-		CPPTypePath = BaseTypeFromArrayType(CPPTypePath);
-	}
-
-	if (CPPTypePath == BoolType)
-	{
-		Variable.TypeName = *CPPTypePath;
-		Variable.Size = sizeof(bool);
-	}
-	else if (CPPTypePath == FloatType)
-	{
-		Variable.TypeName = *CPPTypePath;
-		Variable.Size = sizeof(float);
-	}
-	else if (CPPTypePath == DoubleType)
-	{
-		Variable.TypeName = *CPPTypePath;
-		Variable.Size = sizeof(double);
-	}
-	else if (CPPTypePath == Int32Type)
-	{
-		Variable.TypeName = *CPPTypePath;
-		Variable.Size = sizeof(int32);
-	}
-	else if (CPPTypePath == FStringType)
-	{
-		Variable.TypeName = *CPPTypePath;
-		Variable.Size = sizeof(FString);
-	}
-	else if (CPPTypePath == FNameType)
-	{
-		Variable.TypeName = *CPPTypePath;
-		Variable.Size = sizeof(FName);
-	}
-	else if(UScriptStruct* ScriptStruct = URigVMPin::FindObjectFromCPPTypeObjectPath<UScriptStruct>(CPPTypePath))
-	{
-		Variable.TypeName = *RigVMTypeUtils::GetUniqueStructTypeName(ScriptStruct);
-		Variable.TypeObject = ScriptStruct;
-		Variable.Size = ScriptStruct->GetStructureSize();
-	}
-	else if (UEnum* Enum= URigVMPin::FindObjectFromCPPTypeObjectPath<UEnum>(CPPTypePath))
-	{
-		Variable.TypeName = *CPPTypeFromEnum(Enum);
-		Variable.TypeObject = Enum;
-		Variable.Size = Enum->GetResourceSizeBytes(EResourceSizeMode::EstimatedTotal);
-	}
-	else
-	{
-		check(false);
-	}
-
-	return Variable;
-}
-
-FRigVMExternalVariable RigVMTypeUtils::ExternalVariableFromCPPType(const FName& InName, const FString& InCPPType, UObject* InCPPTypeObject, bool bInPublic, bool bInReadonly)
-{
-	FRigVMExternalVariable Variable;
-	if (InCPPType.StartsWith(TEXT("TMap<")))
-	{
-		return Variable;
-	}
-	
-	Variable.Name = InName;
-	Variable.bIsPublic = bInPublic;
-	Variable.bIsReadOnly = bInReadonly;
-
-	FString CPPType = InCPPType;
-	Variable.bIsArray = RigVMTypeUtils::IsArrayType(CPPType);
-	if (Variable.bIsArray)
-	{
-		CPPType = BaseTypeFromArrayType(CPPType);
-	}
-
-	if (CPPType == BoolType)
-	{
-		Variable.TypeName = *CPPType;
-		Variable.Size = sizeof(bool);
-	}
-	else if (CPPType == FloatType)
-	{
-		Variable.TypeName = *CPPType;
-		Variable.Size = sizeof(float);
-	}
-	else if (CPPType == DoubleType)
-	{
-		Variable.TypeName = *CPPType;
-		Variable.Size = sizeof(double);
-	}
-	else if (CPPType == Int32Type)
-	{
-		Variable.TypeName = *CPPType;
-		Variable.Size = sizeof(int32);
-	}
-	else if (CPPType == FStringType)
-	{
-		Variable.TypeName = *CPPType;
-		Variable.Size = sizeof(FString);
-	}
-	else if (CPPType == FNameType)
-	{
-		Variable.TypeName = *CPPType;
-		Variable.Size = sizeof(FName);
-	}
-	else if(UScriptStruct* ScriptStruct = URigVMPin::FindObjectFromCPPTypeObjectPath<UScriptStruct>(CPPType))
-	{
-		Variable.TypeName = *RigVMTypeUtils::GetUniqueStructTypeName(ScriptStruct);
-		Variable.TypeObject = ScriptStruct;
-		Variable.Size = ScriptStruct->GetStructureSize();
-	}
-	else if (UEnum* Enum= URigVMPin::FindObjectFromCPPTypeObjectPath<UEnum>(CPPType))
-	{
-		Variable.TypeName = *CPPTypeFromEnum(Enum);
-		Variable.TypeObject = Enum;
-		Variable.Size = Enum->GetResourceSizeBytes(EResourceSizeMode::EstimatedTotal);
-	}
-	else
-	{
-		Variable.TypeName = *CPPType;
-		Variable.TypeObject = InCPPTypeObject;
-		Variable.Size = InCPPTypeObject->StaticClass()->GetStructureSize();
-	}
-
-	return Variable;
+	return FEdGraphPinType();
 }
 
 FEdGraphPinType RigVMTypeUtils::PinTypeFromCPPType(const FName& InCPPType, UObject* InCPPTypeObject)
@@ -724,6 +507,18 @@ bool RigVMTypeUtils::CPPTypeFromExternalVariable(const FRigVMExternalVariable& I
 	return true;
 }
 
+TRigVMTypeIndex RigVMTypeUtils::TypeIndexFromPinType(const FEdGraphPinType& InPinType)
+{
+	FString CPPType;
+	UObject* CPPTypeObject = nullptr;
+	if(CPPTypeFromPinType(InPinType, CPPType, &CPPTypeObject))
+	{
+		const FRigVMTemplateArgumentType Type(*CPPType, CPPTypeObject);
+		return FRigVMRegistry::Get().GetTypeIndex(Type);
+	}
+	return INDEX_NONE;
+}
+
 bool RigVMTypeUtils::AreCompatible(const FName& InCPPTypeA, UObject* InCPPTypeObjectA, const FName& InCPPTypeB,	UObject* InCPPTypeObjectB)
 {
 	return AreCompatible(PinTypeFromCPPType(InCPPTypeA, InCPPTypeObjectA), PinTypeFromCPPType(InCPPTypeB, InCPPTypeObjectB));
@@ -739,7 +534,7 @@ bool RigVMTypeUtils::AreCompatible(const FEdGraphPinType& InTypeA, const FEdGrap
 	FEdGraphPinType SubPinTypeA = SubPinType(InTypeA, InSegmentPathA);
 	FEdGraphPinType SubPinTypeB = SubPinType(InTypeB, InSegmentPathB);
 
-	// We allow connectiongs between floats and doubles, while EdGraphSchema_K2 does not
+	// We allow connections between floats and doubles, while EdGraphSchema_K2 does not
 	// Every other case is evaluated by UEdGraphSchema_K2::ArePinTypesCompatible
 	if (SubPinTypeA.ContainerType == SubPinTypeB.ContainerType)
 	{
@@ -749,7 +544,109 @@ bool RigVMTypeUtils::AreCompatible(const FEdGraphPinType& InTypeA, const FEdGrap
 			return true;
 		}
 	}
-	
-	return UEdGraphSchema_K2::StaticClass()->GetDefaultObject<UEdGraphSchema_K2>()->ArePinTypesCompatible(SubPinTypeA, SubPinTypeB);	
+
+	if(UEdGraphSchema_K2::StaticClass()->GetDefaultObject<UEdGraphSchema_K2>()->ArePinTypesCompatible(SubPinTypeA, SubPinTypeB))
+	{
+		return true;
+	}
+
+	// also check if there's a cast available for the type
+	const TRigVMTypeIndex TypeIndexA = TypeIndexFromPinType(SubPinTypeA);
+	const TRigVMTypeIndex TypeIndexB = TypeIndexFromPinType(SubPinTypeB);
+	const TArray<TRigVMTypeIndex>& AvailableCasts = GetAvailableCasts(TypeIndexA, true);
+	return AvailableCasts.Contains(TypeIndexB);
+ }
+
+namespace RigVMTypeUtils
+{
+	static const FName CastTemplateValueName = TEXT("Value");
+	static const FName CastTemplateResultName = TEXT("Result");
+	static const FName CastTemplateNotation = TEXT("Cast::Execute(in Value,out Result)");
 }
+
+const TArray<TRigVMTypeIndex>& RigVMTypeUtils::GetAvailableCasts(const TRigVMTypeIndex& InTypeIndex, bool bAsInput)
+{
+	static TMap<int32, TArray<TRigVMTypeIndex>> AvailableInputCastMap;
+	static TMap<int32, TArray<TRigVMTypeIndex>> AvailableOutputCastMap;
+
+	TMap<int32, TArray<TRigVMTypeIndex>>& AvailableCastMap = bAsInput ? AvailableInputCastMap : AvailableOutputCastMap;
+
+	if(const TArray<TRigVMTypeIndex>* AvailableCasts = AvailableCastMap.Find(InTypeIndex))
+	{
+		return *AvailableCasts;
+	}
+
+	// find a specific template called "Cast"
+	const FRigVMRegistry& Registry = FRigVMRegistry::Get();
+	if(const FRigVMTemplate* CastTemplate = Registry.FindTemplate(CastTemplateNotation))
+	{
+		const FRigVMTemplateArgument* ArgumentA = CastTemplate->FindArgument(bAsInput ? CastTemplateValueName : CastTemplateResultName);
+		const FRigVMTemplateArgument* ArgumentB = CastTemplate->FindArgument(bAsInput ? CastTemplateResultName : CastTemplateValueName);
+
+		if(ArgumentA && ArgumentB)
+		{
+			TArray<TRigVMTypeIndex>& AvailableCasts = AvailableCastMap.Add(InTypeIndex);
+			
+			for(int32 Index = 0; Index < ArgumentA->GetTypeIndices().Num(); Index++)
+			{
+				const TRigVMTypeIndex& TypeIndexA = ArgumentA->GetTypeIndices()[Index];
+				if(TypeIndexA == InTypeIndex)
+				{
+					AvailableCasts.Add(ArgumentB->GetTypeIndices()[Index]);
+				}
+			}
+
+			return AvailableCasts;
+		}
+	}
+
+	static const TArray<TRigVMTypeIndex> EmptyCasts;
+	return EmptyCasts;
+}
+
+bool RigVMTypeUtils::CanCastTypes(const TRigVMTypeIndex& InSourceTypeIndex, const TRigVMTypeIndex& InTargetTypeIndex)
+{
+	return GetCastForTypeIndices(InSourceTypeIndex, InTargetTypeIndex) != nullptr;
+}
+
+const FRigVMFunction* RigVMTypeUtils::GetCastForTypeIndices(const TRigVMTypeIndex& InSourceTypeIndex, const TRigVMTypeIndex& InTargetTypeIndex)
+{
+	const FRigVMRegistry& Registry = FRigVMRegistry::Get();
+	if(const FRigVMTemplate* CastTemplate = Registry.FindTemplate(CastTemplateNotation))
+	{
+		const FRigVMTemplateArgument* SourceArgument = CastTemplate->FindArgument(CastTemplateValueName);
+		const FRigVMTemplateArgument* TargetArgument = CastTemplate->FindArgument(CastTemplateResultName);
+
+		if(SourceArgument && TargetArgument)
+		{
+			for(int32 Index = 0; Index < SourceArgument->GetTypeIndices().Num(); Index++)
+			{
+				const TRigVMTypeIndex& SourceTypeIndex = SourceArgument->GetTypeIndices()[Index];
+				const TRigVMTypeIndex& TargetTypeIndex = TargetArgument->GetTypeIndices()[Index];
+				if(SourceTypeIndex == InSourceTypeIndex &&
+					TargetTypeIndex == InTargetTypeIndex)
+				{
+					return CastTemplate->GetPermutation(Index);
+				}
+			}
+		}
+	}
+	return nullptr;
+}
+
+const FName& RigVMTypeUtils::GetCastTemplateValueName()
+{
+	return CastTemplateValueName;
+}
+
+const FName& RigVMTypeUtils::GetCastTemplateResultName()
+{
+	return CastTemplateResultName;
+}
+
+const FName& RigVMTypeUtils::GetCastTemplateNotation()
+{
+	return CastTemplateNotation;
+}
+
 #endif

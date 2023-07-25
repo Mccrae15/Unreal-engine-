@@ -2,23 +2,28 @@
 
 #include "PCGModule.h"
 
+#include "PCGEngineSettings.h"
+
+#include "Modules/ModuleManager.h"
+
 #if WITH_EDITOR
 #include "Elements/PCGDifferenceElement.h"
-
+#include "ISettingsModule.h"
 #include "Tests/Determinism/PCGDeterminismNativeTests.h"
 #include "Tests/Determinism/PCGDifferenceDeterminismTest.h"
-
 #endif
 
-#include "Modules/ModuleInterface.h"
+#define LOCTEXT_NAMESPACE "FPCGModule"
 
 class FPCGModule final : public IModuleInterface
 {
 public:
 	//~ IModuleInterface implementation
-	virtual void StartupModule() override;
 
+#if WITH_EDITOR
+	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
+#endif
 
 	virtual bool SupportsDynamicReloading() override
 	{
@@ -29,30 +34,51 @@ public:
 
 private:
 #if WITH_EDITOR
+	void RegisterSettings();
+	void UnregisterSettings();
+
 	void RegisterNativeElementDeterminismTests();
 	void DeregisterNativeElementDeterminismTests();
 #endif
 };
 
+#if WITH_EDITOR
 void FPCGModule::StartupModule()
 {
-#if WITH_EDITOR
+	RegisterSettings();
+
 	PCGDeterminismTests::FNativeTestRegistry::Create();
 
 	RegisterNativeElementDeterminismTests();
-#endif
 }
 
 void FPCGModule::ShutdownModule()
 {
-#if WITH_EDITOR
+	UnregisterSettings();
+
 	DeregisterNativeElementDeterminismTests();
 
 	PCGDeterminismTests::FNativeTestRegistry::Destroy();
-#endif
 }
 
-#if WITH_EDITOR
+void FPCGModule::RegisterSettings()
+{
+	if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
+	{
+		SettingsModule->RegisterSettings("Project", "Plugins", "PCG",
+			LOCTEXT("PCGEngineSettingsName", "PCG"),
+			LOCTEXT("PCGEngineSettingsDescription", "Configure PCG."),
+			GetMutableDefault<UPCGEngineSettings>());
+	}
+}
+
+void FPCGModule::UnregisterSettings()
+{
+	if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
+	{
+		SettingsModule->UnregisterSettings("Project", "Plugins", "PCG");
+	}
+}
 
 void FPCGModule::RegisterNativeElementDeterminismTests()
 {
@@ -69,4 +95,6 @@ void FPCGModule::DeregisterNativeElementDeterminismTests()
 
 IMPLEMENT_MODULE(FPCGModule, PCG);
 
-DEFINE_LOG_CATEGORY(LogPCG);
+PCG_API DEFINE_LOG_CATEGORY(LogPCG);
+
+#undef LOCTEXT_NAMESPACE

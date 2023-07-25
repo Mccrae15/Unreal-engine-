@@ -21,12 +21,6 @@ struct FInputActionKeyMapping;
 struct FInputAxisKeyMapping;
 struct FKey;
 
-// On some platforms the XrPath type becomes ambiguous for overloading
-FORCEINLINE uint32 GetTypeHash(const TPair<XrPath, XrPath>& Pair)
-{
-	return HashCombine(GetTypeHash((uint64)Pair.Key), GetTypeHash((uint64)Pair.Value));
-}
-
 class FOpenXRInputPlugin : public IOpenXRInputPlugin
 {
 public:
@@ -36,6 +30,9 @@ public:
 		XrActionType	Type;
 		FName			Name;
 		XrAction		Handle;
+
+		// Legacy Input
+		XrTime			NextRepeatTime;
 
 		// Enhanced Input
 		TObjectPtr<const UInputAction> Object;
@@ -82,15 +79,17 @@ public:
 		XrPath			UserPath;
 		XrAction		GripAction;
 		XrAction		AimAction;
+		XrAction		PalmAction;
 		XrAction		VibrationAction;
 		int32			GripDeviceId;
 		int32			AimDeviceId;
+		int32			PalmDeviceId;
 
 		bool			bHapticActive;
 
 		FOpenXRController(XrActionSet InActionSet, XrPath InUserPath, const char* InName);
 
-		void AddActionDevices(FOpenXRHMD* HMD);
+		void AddTrackedDevices(FOpenXRHMD* HMD);
 	};
 
 	struct FInteractionProfile
@@ -159,11 +158,16 @@ public:
 
 		bool bActionsAttached;
 		bool bDirectionalBindingSupported;
+		bool bPalmPoseSupported;
 
 		/**
 		* Buffer for current delta time to get an accurate approximation of how long to play haptics for
 		*/
 		float CurrentDeltaTime = 0.0f;
+
+		/** Repeat key delays */
+		const XrTime InitialButtonRepeatDelay = 2e8;
+		const XrTime ButtonRepeatDelay = 1e8;
 
 		bool BuildActions(XrSession Session);
 		void SyncActions(XrSession Session);

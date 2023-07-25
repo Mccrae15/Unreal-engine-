@@ -7,7 +7,6 @@
  *	use in multiple files where the enum can't be mapped to a specific file.
  */
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
@@ -20,6 +19,7 @@
 #include "Engine/DamageEvents.h"
 #include "Engine/ReplicatedState.h"
 #endif
+#include "Engine/TimerHandle.h"
 #include "EngineTypes.generated.h"
 
 class AActor;
@@ -38,7 +38,7 @@ enum { NumInlinedActorComponents = 24 };
 
 /** Enum describing how to constrain perspective view port FOV */
 UENUM()
-enum EAspectRatioAxisConstraint
+enum EAspectRatioAxisConstraint : int
 {
 	AspectRatio_MaintainYFOV UMETA(DisplayName="Maintain Y-Axis FOV"),
 	AspectRatio_MaintainXFOV UMETA(DisplayName="Maintain X-Axis FOV"),
@@ -166,7 +166,7 @@ struct ENGINE_API FDetachmentTransformRules
 UENUM()
 namespace EAttachLocation
 {
-	enum Type
+	enum Type : int
 	{
 		/** Keeps current relative transform as the relative transform to the new parent. */
 		KeepRelativeOffset,
@@ -187,7 +187,7 @@ namespace EAttachLocation
  * Elements with higher priority occlude elements with lower priority, disregarding distance.
  */
 UENUM()
-enum ESceneDepthPriorityGroup
+enum ESceneDepthPriorityGroup : int
 {
 	/** World scene DPG. */
 	SDPG_World,
@@ -198,7 +198,7 @@ enum ESceneDepthPriorityGroup
 
 /** Quality of indirect lighting for Movable primitives. This has a large effect on Indirect Lighting Cache update time. */
 UENUM()
-enum EIndirectLightingCacheQuality
+enum EIndirectLightingCacheQuality : int
 {
 	/** The indirect lighting cache will be disabled for this object, so no GI from stationary lights on movable objects. */
 	ILCQ_Off,
@@ -226,7 +226,7 @@ enum class ELightmapType : uint8
 
 /** Controls how occlusion from Distance Field Ambient Occlusion is combined with Screen Space Ambient Occlusion. */
 UENUM()
-enum EOcclusionCombineMode
+enum EOcclusionCombineMode : int
 {
 	/** Take the minimum occlusion value.  This is effective for avoiding over-occlusion from multiple methods, but can result in indoors looking too flat. */
 	OCM_Minimum,
@@ -245,7 +245,7 @@ enum EOcclusionCombineMode
  * @warning Check UMaterialInstance::Serialize if changed!!
  */
 UENUM(BlueprintType)
-enum EBlendMode
+enum EBlendMode : int
 {
 	BLEND_Opaque UMETA(DisplayName="Opaque"),
 	BLEND_Masked UMETA(DisplayName="Masked"),
@@ -254,27 +254,19 @@ enum EBlendMode
 	BLEND_Modulate UMETA(DisplayName="Modulate"),
 	BLEND_AlphaComposite UMETA(DisplayName = "AlphaComposite (Premultiplied Alpha)"),
 	BLEND_AlphaHoldout UMETA(DisplayName = "AlphaHoldout"),
-	BLEND_MAX,
+	BLEND_TranslucentColoredTransmittance UMETA(DisplayName = "SUBSTRATE_ONLY - Translucent - Colored Transmittance"), /*Substrate only */
+	BLEND_MAX UMETA(Hidden),
+	// Renamed blend modes. These blend modes are remapped onto legacy ones and kept hidden for not confusing users in legacy mode, while allowing to use the new blend mode names into code.
+	BLEND_TranslucentGreyTransmittance = BLEND_Translucent UMETA(Hidden, DisplayName = "Translucent - Grey Transmittance"), /*Substrate only */
+	BLEND_ColoredTransmittanceOnly = BLEND_Modulate UMETA(Hidden, DisplayName = "Colored Transmittance Only"), /*Substrate only */
 };
 
-/**
- * The blending mode for Strata materials
- */
-UENUM(BlueprintType)
-enum EStrataBlendMode
-{
-	SBM_Opaque UMETA(DisplayName = "Opaque"),
-	SBM_Masked UMETA(DisplayName = "Masked"),
-	SBM_TranslucentGreyTransmittance UMETA(DisplayName = "Translucent - Grey Transmittance"),
-	SBM_TranslucentColoredTransmittance UMETA(DisplayName = "Translucent - Colored Transmittance"),
-	SBM_ColoredTransmittanceOnly UMETA(DisplayName = "Colored Transmittance Only"),
-	SBM_AlphaHoldout UMETA(DisplayName = "Alpha Holdout"),
-	SBM_MAX,
-};
+class FMaterial;
+class UMaterialInterface;
 
 /** The default float precision for material's pixel shaders on mobile devices*/
 UENUM()
-enum EMaterialFloatPrecisionMode
+enum EMaterialFloatPrecisionMode : int
 {
 	/** Uses project based precision mode setting */
 	MFPM_Default UMETA(DisplayName = "Default"),
@@ -289,7 +281,7 @@ enum EMaterialFloatPrecisionMode
 
 /** Controls where the sampler for different texture lookups comes from */
 UENUM()
-enum ESamplerSourceMode
+enum ESamplerSourceMode : int
 {
 	/** Get the sampler from the texture.  Every unique texture will consume a sampler slot, which are limited in number. */
 	SSM_FromTextureAsset UMETA(DisplayName="From texture asset"),
@@ -303,7 +295,7 @@ enum ESamplerSourceMode
 
 /** defines how MipValue is used */
 UENUM()
-enum ETextureMipValueMode
+enum ETextureMipValueMode : int
 {
 	/* Use hardware computed sample's mip level with automatic anisotropic filtering support. */
 	TMVM_None UMETA(DisplayName="None (use computed mip level)"),
@@ -322,7 +314,7 @@ enum ETextureMipValueMode
 
 /** Describes how to handle lighting of translucent objets */
 UENUM()
-enum ETranslucencyLightingMode
+enum ETranslucencyLightingMode : int
 {
 	/** 
 	 * Lighting will be calculated for a volume, without directionality.  Use this on particle effects like smoke and dust.
@@ -367,22 +359,35 @@ enum ETranslucencyLightingMode
 
 /** Determines how the refraction offset should be computed for the material. */
 UENUM()
-enum ERefractionMode
+enum ERefractionMode : int
 {
 	/** 
+	 * By default, when the root node refraction pin is unplugged, relies on the material IOR evaluated from F0.
 	 * Refraction is computed based on the camera vector entering a medium whose index of refraction is defined by the Refraction material input.  
 	 * The new medium's surface is defined by the material's normal.  With this mode, a flat plane seen from the side will have a constant refraction offset.
 	 * This is a physical model of refraction but causes reading outside the scene color texture so is a poor fit for large refractive surfaces like water.
 	 */
 	RM_IndexOfRefraction UMETA(DisplayName="Index Of Refraction"),
 
-	/** 
+	/**
+	 * By default, when the root node refraction pin is unplugged, no refraction will appear.
 	 * The refraction offset into Scene Color is computed based on the difference between the per-pixel normal and the per-vertex normal.  
 	 * With this mode, a material whose normal is the default (0, 0, 1) will never cause any refraction.  This mode is only valid with tangent space normals.
 	 * The refraction material input scales the offset, although a value of 1.0 maps to no refraction, and a value of 2 maps to a scale of 1.0 on the offset.
 	 * This is a non-physical model of refraction but is useful on large refractive surfaces like water, since offsets have to stay small to avoid reading outside scene color.
 	 */
-	RM_PixelNormalOffset UMETA(DisplayName="Pixel Normal Offset")
+	RM_PixelNormalOffset UMETA(DisplayName="Pixel Normal Offset"),
+
+	/**
+	 * By default, when the root node refraction pin is unplugged, no refraction will appear.
+	 * Explicit 2D screen offset. This offset is independent of screen resolution and aspect ratio. The user is in charge of any strength and fading.
+	 */
+	RM_2DOffset UMETA(DisplayName = "2D Offset"),
+
+	/**
+	 * Refraction is disabled.
+	 */
+	RM_None UMETA(DisplayName = "None"),
 };
 
 /**
@@ -391,7 +396,7 @@ enum ERefractionMode
 UENUM()
 namespace ETranslucentSortPolicy
 {
-	enum Type
+	enum Type : int
 	{
 		/** Sort based on distance from camera centerpoint to bounding sphere centerpoint. (Default, best for 3D games.) */
 		SortByDistance = 0,
@@ -408,7 +413,7 @@ namespace ETranslucentSortPolicy
 UENUM()
 namespace EDynamicGlobalIlluminationMethod
 {
-	enum Type
+	enum Type : int
 	{
 		/** No dynamic Global Illumination method will be used. Global Illumination can still be baked into lightmaps. */
 		None, 
@@ -431,7 +436,7 @@ namespace EDynamicGlobalIlluminationMethod
 UENUM()
 namespace EReflectionMethod
 {
-	enum Type
+	enum Type : int
 	{
 		/** No global reflection method will be used. Reflections can still come from Reflection Captures, Planar Reflections or a Skylight placed in the level. */
 		None, 
@@ -451,7 +456,7 @@ namespace EReflectionMethod
 UENUM()
 namespace EShadowMapMethod
 {
-	enum Type
+	enum Type : int
 	{
 		/** Render geometry into shadow depth maps for shadowing.  Requires manual setup of shadowing distances and only culls per-component, causing poor performance with high poly scenes.  Required to enable stationary baked shadows (but which is incompatible with Nanite geometry). */
 		ShadowMaps UMETA(DisplayName = "Shadow Maps"),
@@ -465,7 +470,7 @@ namespace EShadowMapMethod
 UENUM()
 namespace ECastRayTracedShadow 
 {
-	enum Type
+	enum Type : int
 	{
 		/** Ray traced shadows disabled for this light */
 		Disabled,
@@ -478,7 +483,7 @@ namespace ECastRayTracedShadow
 
 /** Specifies which component of the scene rendering should be output to the final render target. */
 UENUM()
-enum ESceneCaptureSource 
+enum ESceneCaptureSource : int
 { 
 	SCS_SceneColorHDR UMETA(DisplayName="SceneColor (HDR) in RGB, Inv Opacity in A"),
 	SCS_SceneColorHDRNoAlpha UMETA(DisplayName="SceneColor (HDR) in RGB, 0 in A"),
@@ -488,7 +493,7 @@ enum ESceneCaptureSource
 	SCS_DeviceDepth UMETA(DisplayName = "DeviceDepth in RGB"),
 	SCS_Normal UMETA(DisplayName="Normal in RGB (Deferred Renderer only)"),
 	SCS_BaseColor UMETA(DisplayName = "BaseColor in RGB (Deferred Renderer only)"),
-	SCS_FinalColorHDR UMETA(DisplayName = "Final Color (HDR) in Linear sRGB gamut"),
+	SCS_FinalColorHDR UMETA(DisplayName = "Final Color (HDR) in Linear Working Color Space"),
 	SCS_FinalToneCurveHDR UMETA(DisplayName = "Final Color (with tone curve) in Linear sRGB gamut"),
 
 	SCS_MAX
@@ -496,7 +501,7 @@ enum ESceneCaptureSource
 
 /** Specifies how scene captures are composited into render buffers */
 UENUM()
-enum ESceneCaptureCompositeMode
+enum ESceneCaptureCompositeMode : int
 { 
 	SCCM_Overwrite UMETA(DisplayName="Overwrite"),
 	SCCM_Additive UMETA(DisplayName="Additive"),
@@ -557,22 +562,22 @@ inline int32 GetFirstLightingChannelFromMask(uint8 Mask)
 UENUM()
 namespace EGBufferFormat
 {
-	enum Type
+	enum Type : int
 	{
-		/** Forces all GBuffers to 8 bits per channel. Intended as profiling for best performance. */
+		/** Forces all GBuffers to 8 bits per channel. Intended as profiling for best performance. (Substrate: Octahedral encoding as 2x11bits for simple and single materials, 2x16bits for complex materials) */
 		Force8BitsPerChannel = 0 UMETA(DisplayName = "Force 8 Bits Per Channel"),
-		/** See GBuffer allocation function for layout details. */
+		/** See GBuffer allocation function for layout details. (Substrate: Octahedral encoding as 2x11bits for simple and single material, 2x16bits for complex materials) */
 		Default = 1,
-		/** Same as Default except normals are encoded at 16 bits per channel. */
+		/** Same as Default except normals are encoded at 16 bits per channel. (Substrate: Octahedral encoding as 2x16bits for all materials.) */
 		HighPrecisionNormals = 3,
-		/** Forces all GBuffers to 16 bits per channel. Intended as profiling for best quality. */
+		/** Forces all GBuffers to 16 bits per channel. Intended as profiling for best quality. (Substrate: Octahedral encoding as 2x16bits for all materials.) */
 		Force16BitsPerChannel = 5 UMETA(DisplayName = "Force 16 Bits Per Channel"),
 	};
 }
 
 /** Controls the way that the width scale property affects animation trails. */
 UENUM()
-enum ETrailWidthMode
+enum ETrailWidthMode : int
 {
 	ETrailWidthMode_FromCentre UMETA(DisplayName = "From Centre"),
 	ETrailWidthMode_FromFirst UMETA(DisplayName = "From First Socket"),
@@ -583,7 +588,7 @@ enum ETrailWidthMode
 UENUM()
 namespace EParticleCollisionMode
 {
-	enum Type
+	enum Type : int
 	{
 		SceneDepth UMETA(DisplayName="Scene Depth"),
 		DistanceField UMETA(DisplayName="Distance Field")
@@ -595,7 +600,7 @@ namespace EParticleCollisionMode
  * @warning Check UMaterialInstance::Serialize if changed!
  */
 UENUM()
-enum EMaterialShadingModel
+enum EMaterialShadingModel : int
 {
 	MSM_Unlit					UMETA(DisplayName="Unlit"),
 	MSM_DefaultLit				UMETA(DisplayName="Default Lit"),
@@ -609,7 +614,7 @@ enum EMaterialShadingModel
 	MSM_Eye						UMETA(DisplayName="Eye"),
 	MSM_SingleLayerWater		UMETA(DisplayName="SingleLayerWater"),
 	MSM_ThinTranslucent			UMETA(DisplayName="Thin Translucent"),
-	MSM_Strata					UMETA(DisplayName="Strata", Hidden),
+	MSM_Strata					UMETA(DisplayName="Substrate", Hidden),
 	/** Number of unique shading models. */
 	MSM_NUM						UMETA(Hidden),
 	/** Shading model will be determined by the Material Expression Graph,
@@ -666,10 +671,10 @@ private:
 };
 
 /**
- * Specifies the Strata runtime shading model summarized from the material graph
+ * Specifies the Substrate runtime shading model summarized from the material graph
  */
 UENUM()
-enum EStrataShadingModel
+enum EStrataShadingModel : int
 {
 	SSM_Unlit					UMETA(DisplayName = "Unlit"),
 	SSM_DefaultLit				UMETA(DisplayName = "DefaultLit"),
@@ -681,12 +686,16 @@ enum EStrataShadingModel
 	SSM_LightFunction			UMETA(DisplayName = "LightFunction"),
 	SSM_PostProcess				UMETA(DisplayName = "PostProcess"),
 	SSM_Decal					UMETA(DisplayName = "Decal"),
+	SSM_UI						UMETA(DisplayName = "UI"),
 	/** Number of unique shading models. */
 	SSM_NUM						UMETA(Hidden),
 };
 static_assert(SSM_NUM <= 16, "Do not exceed 16 shading models without expanding FStrataMaterialShadingModelField to support uint32 instead of uint16!");
 
-/** Gather information from the Strata material graph to setup material for runtime. */
+// This used to track cyclic graph which we do not support. We only support acyclic graph and a depth of 128 is already too high for a realistic use case.
+#define STRATA_TREE_MAX_DEPTH 48
+
+/** Gather information from the Substrate material graph to setup material for runtime. */
 USTRUCT()
 struct ENGINE_API FStrataMaterialInfo
 {
@@ -722,6 +731,24 @@ public:
 	bool operator==(const FStrataMaterialInfo& Other) const { return ShadingModelField == Other.GetShadingModelField(); }
 	bool operator!=(const FStrataMaterialInfo& Other) const { return ShadingModelField != Other.GetShadingModelField(); }
 
+#if WITH_EDITOR
+	// Returns true if everything went fine (not out of Substrate tree stack)
+	bool PushStrataTreeStack()
+	{
+		bOutOfStackDepthWhenParsing = bOutOfStackDepthWhenParsing || (++ParsingStackDepth > STRATA_TREE_MAX_DEPTH);
+		return !bOutOfStackDepthWhenParsing;
+	}
+	void PopStrataTreeStack()
+	{
+		ParsingStackDepth--;
+		check(ParsingStackDepth >= 0);
+	}
+	bool GetStrataTreeOutOfStackDepthOccurred() 
+	{
+		return bOutOfStackDepthWhenParsing;
+	}
+#endif
+
 private:
 	UPROPERTY()
 	uint16 ShadingModelField = 0;
@@ -736,11 +763,17 @@ private:
 	
 	UPROPERTY()
 	TArray<TObjectPtr<USubsurfaceProfile>> SubsurfaceProfiles;
+
+#if WITH_EDITOR
+	// A simple way to detect and prevent node re-entry due to cycling graph; stop the compilation and avoid crashing.
+	bool bOutOfStackDepthWhenParsing = false;
+	int32 ParsingStackDepth = 0;
+#endif
 };
 
 /** Describes how textures are sampled for materials */
 UENUM(BlueprintType)
-enum EMaterialSamplerType
+enum EMaterialSamplerType : int
 {
 	SAMPLERTYPE_Color UMETA(DisplayName="Color"),
 	SAMPLERTYPE_Grayscale UMETA(DisplayName="Grayscale"),
@@ -771,7 +804,7 @@ inline bool IsVirtualSamplerType(EMaterialSamplerType Value)
 	return ((int32)Value >= (int32)SAMPLERTYPE_VirtualColor && (int32)Value <= (int32)SAMPLERTYPE_VirtualLinearGrayscale);
 }
 UENUM()
-enum EMaterialStencilCompare
+enum EMaterialStencilCompare : int
 {
 	MSC_Less			UMETA(DisplayName = "Less Than"),
 	MSC_LessEqual		UMETA(DisplayName = "Less Than or Equal"),
@@ -785,7 +818,7 @@ enum EMaterialStencilCompare
 };
 
 UENUM()
-enum EMaterialShadingRate
+enum EMaterialShadingRate : int
 {
 	MSR_1x1				UMETA(DisplayName = "1x1"),
 	MSR_2x1				UMETA(DisplayName = "2x1"),
@@ -800,7 +833,7 @@ enum EMaterialShadingRate
 
 /**	Lighting build quality enumeration */
 UENUM(BlueprintType)
-enum ELightingBuildQuality
+enum ELightingBuildQuality : int
 {
 	Quality_Preview		UMETA(DisplayName = "Preview"),
 	Quality_Medium		UMETA(DisplayName = "Medium"),
@@ -811,7 +844,7 @@ enum ELightingBuildQuality
 
 /** Movement modes for Characters. */
 UENUM(BlueprintType)
-enum EMovementMode
+enum EMovementMode : int
 {
 	/** None (movement is disabled). */
 	MOVE_None		UMETA(DisplayName="None"),
@@ -866,7 +899,7 @@ enum { NumExtraFilterBits = 6 };
 // Otherwise it will mess up collision profile loading
 // If you change this, please also change FCollisionResponseContainers
 //
-// If you add any more TraceQuery="1", you also should change UCollsionProfile::LoadProfileConfig
+// If you add any more TraceQuery="1", you also should change UCollisionProfile::LoadProfileConfig
 // Metadata doesn't work outside of editor, so you'll need to add manually
 
 // @NOTE : when you add more here for predefined engine channel
@@ -892,7 +925,7 @@ enum { NumExtraFilterBits = 6 };
  * Enum indicating different type of objects for rigid-body collision purposes. 
  */
 UENUM(BlueprintType)
-enum ECollisionChannel
+enum ECollisionChannel : int
 {
 
 	ECC_WorldStatic UMETA(DisplayName="WorldStatic"),
@@ -951,7 +984,7 @@ DECLARE_DELEGATE_OneParam(FOnPlasticDeformation, int32 /*ConstraintIndex*/);
  * @warning If you change this, change GetCollisionChannelFromOverlapFilter() to match 
  */
 UENUM(BlueprintType)
-enum EOverlapFilterOption
+enum EOverlapFilterOption : int
 {
 	/** Returns both overlaps with both dynamic and static components */
 	OverlapFilter_All UMETA(DisplayName="AllObjects"),
@@ -963,7 +996,7 @@ enum EOverlapFilterOption
 
 /** Specifies custom collision object types, overridable per game */
 UENUM(BlueprintType)
-enum EObjectTypeQuery
+enum EObjectTypeQuery : int
 {
 	ObjectTypeQuery1 UMETA(Hidden), 
 	ObjectTypeQuery2 UMETA(Hidden), 
@@ -1003,7 +1036,7 @@ enum EObjectTypeQuery
 
 /** Specifies custom collision trace types, overridable per game */
 UENUM(BlueprintType)
-enum ETraceTypeQuery
+enum ETraceTypeQuery : int
 {
 	TraceTypeQuery1 UMETA(Hidden), 
 	TraceTypeQuery2 UMETA(Hidden), 
@@ -1043,7 +1076,7 @@ enum ETraceTypeQuery
 
 /** Enum indicating how each type should respond */
 UENUM(BlueprintType, meta=(ScriptName="CollisionResponseType"))
-enum ECollisionResponse
+enum ECollisionResponse : int
 {
 	ECR_Ignore UMETA(DisplayName="Ignore"),
 	ECR_Overlap UMETA(DisplayName="Overlap"),
@@ -1053,7 +1086,7 @@ enum ECollisionResponse
 
 /** Interpolation method used by animation blending */
 UENUM()
-enum EFilterInterpolationType
+enum EFilterInterpolationType : int
 {
 	BSIT_Average UMETA(DisplayName = "Averaged"),
 	BSIT_Linear UMETA(DisplayName = "Linear"),
@@ -1362,7 +1395,7 @@ private:
 
 /** Enum used to indicate what type of timeline signature a function matches. */
 UENUM()
-enum ETimelineSigType
+enum ETimelineSigType : int
 {
 	ETS_EventSignature,
 	ETS_FloatSignature,
@@ -1376,7 +1409,7 @@ enum ETimelineSigType
 UENUM(BlueprintType)
 namespace ECollisionEnabled 
 { 
-	enum Type 
+	enum Type : int
 	{ 
 		/** Will not create any representation in the physics engine. Cannot be used for spatial queries (raycasts, sweeps, overlaps) or simulation (rigid body, constraints). Best performance possible (especially for moving objects) */
 		NoCollision UMETA(DisplayName="No Collision"), 
@@ -2098,7 +2131,7 @@ struct FSwarmDebugOptions
 
 /** Method for padding a light map in memory */
 UENUM()
-enum ELightMapPaddingType
+enum ELightMapPaddingType : int
 {
 	LMPT_NormalPadding,
 	LMPT_PrePadding,
@@ -2107,7 +2140,7 @@ enum ELightMapPaddingType
 
 /** Bit-field flags that affects storage (e.g. packing, streaming) and other info about a shadowmap. */
 UENUM()
-enum EShadowMapFlags
+enum EShadowMapFlags : int
 {
 	/** No flags. */
 	SMF_None			= 0,
@@ -2606,6 +2639,10 @@ struct FSkeletalMeshBuildSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = BuildSettings)
 	uint8 bUseHighPrecisionTangentBasis:1;
 
+	/** Use 16-bit precision for rendering skin weights, instead of 8-bit precision. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = BuildSettings)
+	uint8 bUseHighPrecisionSkinWeights:1;
+
 	/** If true, UVs will be stored at full floating point precision. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
 	uint8 bUseFullPrecisionUVs:1;
@@ -2630,6 +2667,16 @@ struct FSkeletalMeshBuildSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = BuildSettings)
 	float MorphThresholdPosition;
 
+	/**
+	 * The maximum number of bone influences to allow each vertex in this mesh to use.
+	 * 
+	 * If set higher than the limit determined by the project settings, it has no effect.
+	 * 
+	 * If set to 0, the value is taken from the DefaultBoneInfluenceLimit project setting.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = BuildSettings)
+	int32 BoneInfluenceLimit;
+
 	/** Default settings. */
 	FSkeletalMeshBuildSettings()
 		: bRecomputeNormals(true)
@@ -2638,12 +2685,14 @@ struct FSkeletalMeshBuildSettings
 		, bComputeWeightedNormals(false)
 		, bRemoveDegenerates(true)
 		, bUseHighPrecisionTangentBasis(false)
+		, bUseHighPrecisionSkinWeights(false)
 		, bUseFullPrecisionUVs(false)
 		, bUseBackwardsCompatibleF16TruncUVs(false)
-		, ThresholdPosition(0.00002)
-		, ThresholdTangentNormal(0.00002)
-		, ThresholdUV(0.0009765625)
+		, ThresholdPosition(0.00002f)
+		, ThresholdTangentNormal(0.00002f)
+		, ThresholdUV(0.0009765625f)
 		, MorphThresholdPosition(0.015f)
+		, BoneInfluenceLimit(0)
 	{}
 
 	/** Equality operator. */
@@ -2655,16 +2704,48 @@ struct FSkeletalMeshBuildSettings
 			&& bComputeWeightedNormals == Other.bComputeWeightedNormals
 			&& bRemoveDegenerates == Other.bRemoveDegenerates
 			&& bUseHighPrecisionTangentBasis == Other.bUseHighPrecisionTangentBasis
+			&& bUseHighPrecisionSkinWeights == Other.bUseHighPrecisionSkinWeights
 			&& bUseFullPrecisionUVs == Other.bUseFullPrecisionUVs
 			&& bUseBackwardsCompatibleF16TruncUVs == Other.bUseBackwardsCompatibleF16TruncUVs
 			&& ThresholdPosition == Other.ThresholdPosition
 			&& ThresholdTangentNormal == Other.ThresholdTangentNormal
 			&& ThresholdUV == Other.ThresholdUV
-			&& MorphThresholdPosition == Other.MorphThresholdPosition;
+			&& MorphThresholdPosition == Other.MorphThresholdPosition
+			&& BoneInfluenceLimit == Other.BoneInfluenceLimit;
 	}
 
 	/** Inequality. */
 	bool operator!=(const FSkeletalMeshBuildSettings& Other) const
+	{
+		return !(*this == Other);
+	}
+};
+
+USTRUCT(BlueprintType)
+struct FMeshDisplacementMap
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Displacement)
+	TObjectPtr<class UTexture2D> Texture = nullptr;
+
+	UPROPERTY(EditAnywhere, Category = Displacement)
+	float Magnitude = 0.0f;
+
+	UPROPERTY(EditAnywhere, Category = Displacement)
+	float Center = 0.0f;
+
+	FMeshDisplacementMap()
+	{}
+
+	bool operator==(const FMeshDisplacementMap& Other) const
+	{
+		return Texture		== Other.Texture
+			&& Magnitude	== Other.Magnitude
+			&& Center		== Other.Center;
+	}
+
+	bool operator!=(const FMeshDisplacementMap& Other) const
 	{
 		return !(*this == Other);
 	}
@@ -2676,7 +2757,7 @@ struct FSkeletalMeshBuildSettings
 USTRUCT(BlueprintType)
 struct FMeshNaniteSettings
 {
-	GENERATED_BODY()
+	GENERATED_USTRUCT_BODY()
 
 	/** If true, Nanite data will be generated. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
@@ -2688,64 +2769,66 @@ struct FMeshNaniteSettings
 
 	/** Position Precision. Step size is 2^(-PositionPrecision) cm. MIN_int32 is auto. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
-	int32 PositionPrecision;
+	int32 PositionPrecision = MIN_int32;
+
+	/** Normal Precision in bits. -1 is auto. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	int32 NormalPrecision = -1;
 
 	/** How much of the resource should always be resident (In KB). Approximate due to paging. 0: Minimum size (single page). MAX_uint32: Entire mesh.*/
 	UPROPERTY(EditAnywhere, Category = NaniteSettings)
-	uint32 TargetMinimumResidencyInKB;
+	uint32 TargetMinimumResidencyInKB = 0;
 	
 	/** Percentage of triangles to keep from source mesh. 1.0 = no reduction, 0.0 = no triangles. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
-	float KeepPercentTriangles;
+	float KeepPercentTriangles = 1.0f;
 
 	/** Reduce until at least this amount of error is reached relative to size of the mesh */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
-	float TrimRelativeError;
+	float TrimRelativeError = 0.0f;
 	
 	/** Percentage of triangles to keep from source mesh for fallback. 1.0 = no reduction, 0.0 = no triangles. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
-	float FallbackPercentTriangles;
+	float FallbackPercentTriangles = 1.0f;
 
 	/** Reduce until at least this amount of error is reached relative to size of the mesh */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
-	float FallbackRelativeError;
+	float FallbackRelativeError = 1.0f;
 
-	/** Default settings. */
+	/** UV channel used to sample displacement maps  */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	int32 DisplacementUVChannel = 0;
+
+	UPROPERTY(EditAnywhere, Category = NaniteSettings)
+	TArray<FMeshDisplacementMap> DisplacementMaps;
+
 	FMeshNaniteSettings()
 	: bEnabled(false)
 	, bPreserveArea(false)
-	, PositionPrecision(MIN_int32)
-	, TargetMinimumResidencyInKB(0)
-	, KeepPercentTriangles(1.0f)
-	, TrimRelativeError(0.0f)
-	, FallbackPercentTriangles(1.0f)
-	, FallbackRelativeError(1.0f)
-	{
-	}
-
-	FMeshNaniteSettings(const FMeshNaniteSettings& Other)
-	: bEnabled(Other.bEnabled)
-	, bPreserveArea(Other.bPreserveArea)
-	, PositionPrecision(Other.PositionPrecision)
-	, TargetMinimumResidencyInKB(Other.TargetMinimumResidencyInKB)
-	, KeepPercentTriangles(Other.KeepPercentTriangles)
-	, TrimRelativeError(Other.TrimRelativeError)
-	, FallbackPercentTriangles(Other.FallbackPercentTriangles)
-	, FallbackRelativeError(Other.FallbackRelativeError)
-	{
-	}
+	{}
 
 	/** Equality operator. */
 	bool operator==(const FMeshNaniteSettings& Other) const
 	{
+		if( DisplacementMaps.Num() != Other.DisplacementMaps.Num() )
+			return false;
+
+		for( int32 i = 0; i < DisplacementMaps.Num(); i++ )
+		{
+			if( DisplacementMaps[i] != Other.DisplacementMaps[i] )
+				return false;
+		}
+
 		return bEnabled == Other.bEnabled
 			&& bPreserveArea == Other.bPreserveArea
 			&& PositionPrecision == Other.PositionPrecision
+			&& NormalPrecision == Other.NormalPrecision
 			&& TargetMinimumResidencyInKB == Other.TargetMinimumResidencyInKB
 			&& KeepPercentTriangles == Other.KeepPercentTriangles
 			&& TrimRelativeError == Other.TrimRelativeError
 			&& FallbackPercentTriangles == Other.FallbackPercentTriangles
-			&& FallbackRelativeError == Other.FallbackRelativeError;
+			&& FallbackRelativeError == Other.FallbackRelativeError
+			&& DisplacementUVChannel == Other.DisplacementUVChannel;
 	}
 
 	/** Inequality operator. */
@@ -2757,7 +2840,7 @@ struct FMeshNaniteSettings
 
 /** The network role of an actor on a local/remote network context */
 UENUM()
-enum ENetRole
+enum ENetRole : int
 {
 	/** No role at all. */
 	ROLE_None,
@@ -2772,7 +2855,7 @@ enum ENetRole
 
 /** Describes if an actor can enter a low network bandwidth dormant mode */
 UENUM(BlueprintType)
-enum ENetDormancy
+enum ENetDormancy : int
 {
 	/** This actor can never go network dormant. */
 	DORM_Never UMETA(DisplayName = "Never"),
@@ -2792,7 +2875,7 @@ enum ENetDormancy
 UENUM()
 namespace EAutoReceiveInput
 {
-	enum Type
+	enum Type : int
 	{
 		Disabled,
 		Player0,
@@ -2839,83 +2922,6 @@ namespace EEndPlayReason
 	};
 }
 
-DECLARE_DYNAMIC_DELEGATE(FTimerDynamicDelegate);
-
-/** Unique handle that can be used to distinguish timers that have identical delegates. */
-USTRUCT(BlueprintType)
-struct FTimerHandle
-{
-	GENERATED_BODY()
-
-	friend class FTimerManager;
-	friend struct FTimerHeapOrder;
-
-	FTimerHandle()
-	: Handle(0)
-	{
-	}
-
-	/** True if this handle was ever initialized by the timer manager */
-	bool IsValid() const
-	{
-		return Handle != 0;
-	}
-
-	/** Explicitly clear handle */
-	void Invalidate()
-	{
-		Handle = 0;
-	}
-
-	bool operator==(const FTimerHandle& Other) const
-	{
-		return Handle == Other.Handle;
-	}
-
-	bool operator!=(const FTimerHandle& Other) const
-	{
-		return Handle != Other.Handle;
-	}
-
-	FString ToString() const
-	{
-		return FString::Printf(TEXT("%llu"), Handle);
-	}
-
-private:
-	static const uint32 IndexBits        = 24;
-	static const uint32 SerialNumberBits = 40;
-
-	static_assert(IndexBits + SerialNumberBits == 64, "The space for the timer index and serial number should total 64 bits");
-
-	static const int32  MaxIndex        = (int32)1 << IndexBits;
-	static const uint64 MaxSerialNumber = (uint64)1 << SerialNumberBits;
-
-	void SetIndexAndSerialNumber(int32 Index, uint64 SerialNumber)
-	{
-		check(Index >= 0 && Index < MaxIndex);
-		check(SerialNumber < MaxSerialNumber);
-		Handle = (SerialNumber << IndexBits) | (uint64)(uint32)Index;
-	}
-
-	FORCEINLINE int32 GetIndex() const
-	{
-		return (int32)(Handle & (uint64)(MaxIndex - 1));
-	}
-
-	FORCEINLINE uint64 GetSerialNumber() const
-	{
-		return Handle >> IndexBits;
-	}
-
-	UPROPERTY(Transient)
-	uint64 Handle;
-
-	friend uint32 GetTypeHash(const FTimerHandle& InHandle)
-	{
-		return GetTypeHash(InHandle.Handle);
-	}
-};
 
 /**
  * Controls behavior of WalkableSlopeOverride, determining how to affect walkability of surfaces for Characters.
@@ -2923,7 +2929,7 @@ private:
  * @see UCharacterMovementComponent::GetWalkableFloorAngle(), UCharacterMovementComponent::SetWalkableFloorAngle()
  */
 UENUM(BlueprintType)
-enum EWalkableSlopeBehavior
+enum EWalkableSlopeBehavior : int
 {
 	/** Don't affect the walkable slope. Walkable slope angle will be ignored. */
 	WalkableSlope_Default		UMETA(DisplayName="Unchanged"),
@@ -3215,7 +3221,7 @@ struct ENGINE_API FSoftComponentReference : public FBaseComponentReference
 UENUM(BlueprintType)
 namespace EPhysicalMaterialMaskColor
 {
-	enum Type
+	enum Type : int
 	{
 		Red,
 		Green,
@@ -3233,7 +3239,7 @@ namespace EPhysicalMaterialMaskColor
 UENUM(BlueprintType)
 namespace EComponentMobility
 {
-	enum Type
+	enum Type : int
 	{
 		/**
 		 * Static objects cannot be moved or changed in game.
@@ -3285,7 +3291,7 @@ public:
 UENUM()
 namespace EComponentSocketType
 {
-	enum Type
+	enum Type : int
 	{
 		/** Not a valid socket or bone name. */
 		Invalid,
@@ -3704,3 +3710,7 @@ enum class ELevelCollectionType : uint8
 
 	MAX
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

@@ -681,22 +681,11 @@ bool FNiagaraSystemSimulation::Init(UNiagaraSystem* InSystem, UWorld* InWorld, b
 
 		{
 			//SCOPE_CYCLE_COUNTER(STAT_NiagaraSystemSim_Init_ExecContexts);
-
-			if (UseLegacySystemSimulationContexts())
-			{
-				SpawnExecContext = MakeUnique<FNiagaraScriptExecutionContext>();
-				UpdateExecContext = MakeUnique<FNiagaraScriptExecutionContext>();
-				bCanExecute &= SpawnExecContext->Init(SpawnScript, ENiagaraSimTarget::CPUSim);
-				bCanExecute &= UpdateExecContext->Init(UpdateScript, ENiagaraSimTarget::CPUSim);
-			}
-			else
-			{
 				SpawnExecContext = MakeUnique<FNiagaraSystemScriptExecutionContext>(ENiagaraSystemSimulationScript::Spawn);
 				UpdateExecContext = MakeUnique<FNiagaraSystemScriptExecutionContext>(ENiagaraSystemSimulationScript::Update);
 				bCanExecute &= SpawnExecContext->Init(SpawnScript, ENiagaraSimTarget::CPUSim);
 				bCanExecute &= UpdateExecContext->Init(UpdateScript, ENiagaraSimTarget::CPUSim);
 			}
-		}
 
 		{
 			//SCOPE_CYCLE_COUNTER(STAT_NiagaraSystemSim_Init_BindParams);
@@ -741,15 +730,6 @@ bool FNiagaraSystemSimulation::Init(UNiagaraSystem* InSystem, UWorld* InWorld, b
 
 			SpawnScript->RapidIterationParameters.Bind(&SpawnExecContext->Parameters);
 			UpdateScript->RapidIterationParameters.Bind(&UpdateExecContext->Parameters);
-
-			// If this simulation is not solo than we have bind the source system parameters to the system simulation contexts so that
-			// the system and emitter scripts use the default shared data interfaces.
-			if (UseLegacySystemSimulationContexts() && !bIsSolo)
-			{
-				FNiagaraUserRedirectionParameterStore& ExposedParameters = System->GetExposedParameters();
-				ExposedParameters.Bind(&SpawnExecContext->Parameters);
-				ExposedParameters.Bind(&UpdateExecContext->Parameters);
-			}
 		}
 
 		{
@@ -809,7 +789,7 @@ UNiagaraParameterCollectionInstance* FNiagaraSystemSimulation::GetParameterColle
 
 	if (System)
 	{
-		System->GetParameterCollectionOverride(Collection);
+		Ret = System->GetParameterCollectionOverride(Collection);
 	}
 
 	//If no explicit override from the system, just get the current instance set on the world.
@@ -1139,9 +1119,25 @@ void FNiagaraSystemSimulation::Tick_GameThread(float DeltaSeconds, const FGraphE
 	{
 		float FixedDelta = System->GetFixedTickDeltaTime();
 		float Budget = FixedDelta > 0 ? FMath::Fmod(FixedDeltaTickAge, FixedDelta) + DeltaSeconds : 0;
-		int32 Ticks = FixedDelta > 0 ? FMath::Min(Budget / FixedDelta, GNiagaraSystemSimulationMaxTickSubsteps) : 0;
+		int32 Ticks = FixedDelta > 0 ? FMath::Min(FMath::FloorToInt(Budget / FixedDelta), GNiagaraSystemSimulationMaxTickSubsteps) : 0;
+
+		TickInfo.UsesFixedTick = true;
+		TickInfo.EngineTick = DeltaSeconds;
+		TickInfo.SystemTick = FixedDelta;
+		TickInfo.TickCount = Ticks;
+		TickInfo.TickNumber = -1;
+		TickInfo.TimeStepFraction = 0;
+		
 		for (int i = 0; i < Ticks; i++)
 		{
+			TickInfo.TickNumber = i;
+
+			// Fraction of the total number of ticks we are evaluating
+			// @note: I'd prefer if this were the fraction of the requested timestep, but
+			// the implementation of budget doesn't readily allow it since time fraction could be
+			// greater than 1
+			TickInfo.TimeStepFraction = 1.0f * (i + 1) / Ticks;
+
 			//Cannot do multiple tick off the game thread here without additional work. So we pass in null for the completion event which will force GT execution.
 			Tick_GameThread_Internal(FixedDelta, nullptr);
 			Budget -= FixedDelta;
@@ -1150,6 +1146,13 @@ void FNiagaraSystemSimulation::Tick_GameThread(float DeltaSeconds, const FGraphE
 	}
 	else
 	{
+		TickInfo.UsesFixedTick = false;
+		TickInfo.EngineTick = DeltaSeconds;
+		TickInfo.SystemTick = DeltaSeconds;
+		TickInfo.TickCount = 1;
+		TickInfo.TickNumber = 0;
+		TickInfo.TimeStepFraction = 1;
+
 		Tick_GameThread_Internal(DeltaSeconds, MyCompletionGraphEvent);
 	}
 }
@@ -1203,6 +1206,9 @@ void FNiagaraSystemSimulation::Tick_GameThread_Internal(float DeltaSeconds, cons
 	if (MaxDeltaTime.IsSet() && !System->HasFixedTickDelta())
 	{
 		DeltaSeconds = FMath::Clamp(DeltaSeconds, 0.0f, MaxDeltaTime.GetValue());
+
+		TickInfo.SystemTick = DeltaSeconds;
+		TickInfo.TimeStepFraction = DeltaSeconds / TickInfo.EngineTick;
 	}
 
 	UNiagaraScript* SystemSpawnScript = System->GetSystemSpawnScript();
@@ -1215,6 +1221,8 @@ void FNiagaraSystemSimulation::Tick_GameThread_Internal(float DeltaSeconds, cons
 	const bool bUpdateTickGroups = !bIsSolo;
 
 	// Update instances
+	const bool bSupportsLargeWorldCoordinates = System->SupportsLargeWorldCoordinates();
+
 	int32 SystemIndex = 0;
 	FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World);
 	check(WorldManager != nullptr);
@@ -1248,9 +1256,27 @@ void FNiagaraSystemSimulation::Tick_GameThread_Internal(float DeltaSeconds, cons
 
 		// Perform instance tick
 		Instance->Tick_GameThread(DeltaSeconds);
+
 #if NIAGARA_SYSTEMSIMULATION_DEBUGGING
 		NiagaraSystemSimulationLocal::DebugKillInstanceOnTick(Instance);
 #endif
+
+		// Has the actor position changed to the point where we need to reset the LWC tile
+		if (bSupportsLargeWorldCoordinates)
+		{
+			if ( SystemInstances.IsValidIndex(SystemIndex) && (SystemInstances[SystemIndex] == Instance) )
+			{
+				if (USceneComponent* SceneComponent = Instance->GetAttachComponent())
+				{
+					if (UFXSystemComponent::RequiresLWCTileRecache(Instance->GetLWCTile(), SceneComponent->GetComponentLocation()))
+					{
+						//-OPT: For safety we reset everything, but if everything is local space we may not need to, or we could rebase.
+						UE_LOG(LogNiagara, Warning, TEXT("NiagaraComponent(%s - %s) required LWC tile recache and was reset."), *GetFullNameSafe(SceneComponent), *GetFullNameSafe(System));
+						Instance->Reset(FNiagaraSystemInstance::EResetMode::ResetAll);
+					}
+				}
+			}
+		}
 
 		// Ticking the instance can result in it being removed, completing + reactivating or transferring
 		if (SystemInstances.IsValidIndex(SystemIndex) && (SystemInstances[SystemIndex] == Instance))
@@ -2396,53 +2422,4 @@ ENiagaraGPUTickHandlingMode FNiagaraSystemSimulation::GetGPUTickHandlingMode()co
 	}
 
 	return ENiagaraGPUTickHandlingMode::None;
-}
-
-static int32 GbNiagaraUseLegacySystemSimContexts = 0;
-static FAutoConsoleVariableRef CVarNiagaraUseLevgacySystemSimContexts(
-	TEXT("fx.Niagara.UseLegacySystemSimContexts"),
-	GbNiagaraUseLegacySystemSimContexts,
-	TEXT("If > 0, Niagara will use legacy system simulation contexts which would force the whole simulation solo if there were per instance DI calls in the system scripts. \n"),
-	FConsoleVariableDelegate::CreateStatic(&FNiagaraSystemSimulation::OnChanged_UseLegacySystemSimulationContexts),
-	ECVF_Default
-);
-
-bool FNiagaraSystemSimulation::bUseLegacyExecContexts = GbNiagaraUseLegacySystemSimContexts != 0;
-bool FNiagaraSystemSimulation::UseLegacySystemSimulationContexts()
-{
-	return bUseLegacyExecContexts;
-}
-
-void FNiagaraSystemSimulation::OnChanged_UseLegacySystemSimulationContexts(IConsoleVariable* CVar)
-{
-	bool bNewValue = GbNiagaraUseLegacySystemSimContexts != 0;
-	if( bUseLegacyExecContexts != bNewValue)
-	{
-		//To change at runtime we have to reinit all systems so they have the correct per instance DI bindings.
-		FNiagaraSystemUpdateContext UpdateContext;
-		UpdateContext.SetDestroyOnAdd(true);
-		UpdateContext.SetOnlyActive(true);
-		UpdateContext.AddAll(true);
-
-		//Just to be sure there's no lingering state, clear out the pools.
-		//TODO: Moveinto the update context itself?
-		FNiagaraWorldManager::ForAllWorldManagers(
-			[](FNiagaraWorldManager& WorldMan)
-			{
-				WorldMan.GetComponentPool()->Cleanup(nullptr);
-			}
-		);
-
-		//Reactivate any FX that were active.
-		bUseLegacyExecContexts = bNewValue;
-		UpdateContext.CommitUpdate();
-
-		//Re-prime the pools.
-		FNiagaraWorldManager::ForAllWorldManagers(
-			[](FNiagaraWorldManager& WorldMan)
-			{
-				WorldMan.PrimePoolForAllSystems();
-			}
-		);
-	}
 }

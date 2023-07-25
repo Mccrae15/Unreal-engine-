@@ -2,15 +2,17 @@
 
 
 #include "WaterBodyIslandActor.h"
-#include "Components/SplineMeshComponent.h"
-#include "Engine/StaticMesh.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "WaterSplineComponent.h"
-#include "UObject/ConstructorHelpers.h"
+#include "PropertyPairsMap.h"
 #include "WaterBodyActor.h"
+#include "WaterBodyManager.h"
 #include "WaterRuntimeSettings.h"
+#include "WaterEditorServices.h"
 #include "WaterVersion.h"
-#include "EngineUtils.h"
+#include "UObject/UObjectIterator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyIslandActor)
 
@@ -20,7 +22,6 @@
 #include "Components/BillboardComponent.h"
 #include "Modules/ModuleManager.h"
 #include "WaterIconHelper.h"
-#include "WaterSubsystem.h"
 #include "WaterModule.h"
 #include "Landscape.h"
 #endif // WITH_EDITOR
@@ -236,6 +237,7 @@ void AWaterBodyIsland::PostEditMove(bool bFinished)
 	FOnWaterBodyIslandChangedParams Params;
 	Params.PropertyChangedEvent.ChangeType = bFinished ? EPropertyChangeType::ValueSet : EPropertyChangeType::Interactive;
 	Params.bShapeOrPositionChanged = true;
+	Params.bUserTriggered = true;
 	UpdateAll(Params);
 }
 
@@ -256,6 +258,7 @@ void AWaterBodyIsland::PostEditImport()
 	FOnWaterBodyIslandChangedParams Params;
 	Params.bShapeOrPositionChanged = true;
 	Params.bWeightmapSettingsChanged = true;
+	Params.bUserTriggered = true;
 	UpdateAll(Params);
 }
 
@@ -296,6 +299,7 @@ void AWaterBodyIsland::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	FOnWaterBodyIslandChangedParams Params(PropertyChangedEvent);
+	Params.bUserTriggered = true;
 	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UWaterBodyComponent, LayerWeightmapSettings))
 	{
 		Params.bWeightmapSettingsChanged = true;
@@ -313,6 +317,7 @@ void AWaterBodyIsland::OnWaterSplineDataChanged(const FOnWaterSplineDataChangedP
 	// Transfer the FOnWaterSplineDataChangedParams parameters to FOnWaterBodyIslandChangedParams :
 	FOnWaterBodyIslandChangedParams Params(InParams.PropertyChangedEvent);
 	Params.bShapeOrPositionChanged = true;
+	Params.bUserTriggered = true;
 	OnWaterBodyIslandChanged(Params);
 }
 
@@ -323,6 +328,7 @@ void AWaterBodyIsland::OnWaterBodyIslandChanged(const FOnWaterBodyIslandChangedP
 	FWaterBrushActorChangedEventParams Params(this, InParams.PropertyChangedEvent);
 	Params.bShapeOrPositionChanged = InParams.bShapeOrPositionChanged;
 	Params.bWeightmapSettingsChanged = InParams.bWeightmapSettingsChanged;
+	Params.bUserTriggered = InParams.bUserTriggered;
 	BroadcastWaterBrushActorChangedEvent(Params);
 #endif
 }

@@ -2,17 +2,18 @@
 
 #pragma once
 
-#include "Blueprint/UserWidget.h"
-#include "Widgets/Views/STableRow.h"
-#include "Slate/SObjectTableRow.h"
-#include "Widgets/Views/STableViewBase.h"
 #include "CommonPoolableWidgetInterface.h"
+#include "Slate/SObjectWidget.h"
+
+class ITableRow;
+class STableViewBase;
 
 #define ENABLE_WIDGET_FACTORY_POOLING 1
 
-template <class WidgetType, class = typename TEnableIf<TIsDerivedFrom<WidgetType, UUserWidget>::IsDerived, WidgetType>::Type>
+template <class WidgetType>
 class TWidgetFactory : public FGCObject
 {
+	static_assert(TIsDerivedFrom<WidgetType, UUserWidget>::IsDerived, "Can only use TWidgetFactory with types deriving from UUserWidget");
 private:
 	FORCEINLINE UGameInstance* OwningObjectAsGameInstance() const { return Cast<UGameInstance>(OuterGetter()); }
 	FORCEINLINE UWorld* OwningObjectAsWorld() const { return Cast<UWorld>(OuterGetter()); }
@@ -281,3 +282,10 @@ private:
 };
 
 using FUserWidgetFactory = TWidgetFactory<UUserWidget>;
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Blueprint/UserWidget.h"
+#include "Slate/SObjectTableRow.h"
+#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
+#endif

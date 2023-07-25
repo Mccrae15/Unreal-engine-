@@ -4,39 +4,35 @@
 	ParticleSystemRender.cpp: Particle system rendering functions.
 =============================================================================*/
 
-#include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "Misc/MemStack.h"
-#include "HAL/IConsoleManager.h"
-#include "EngineDefines.h"
-#include "GameFramework/Actor.h"
-#include "RenderingThread.h"
-#include "RenderResource.h"
-#include "VertexFactory.h"
-#include "PrimitiveViewRelevance.h"
-#include "Materials/MaterialInterface.h"
+#include "ParticleEmitterInstances.h"
 #include "PrimitiveSceneProxy.h"
-#include "Engine/Engine.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "Particles/Orientation/ParticleModuleOrientationAxisLock.h"
 #include "UObject/UObjectIterator.h"
-#include "ParticleVertexFactory.h"
-#include "MeshBatch.h"
-#include "RendererInterface.h"
-#include "SceneManagement.h"
+#include "MaterialDomain.h"
 #include "MeshParticleVertexFactory.h"
-#include "ParticleHelper.h"
+#include "Particles/ParticleEmitter.h"
 #include "Particles/ParticleSystemComponent.h"
+#include "Particles/ParticleModule.h"
 #include "StaticMeshResources.h"
 #include "ParticleResources.h"
+#include "Particles/ParticlePerfStats.h"
 #include "Particles/TypeData/ParticleModuleTypeDataBeam2.h"
+#include "Particles/ParticleSpriteEmitter.h"
 #include "Particles/TypeData/ParticleModuleTypeDataMesh.h"
+#include "Particles/ParticleSystem.h"
 #include "Particles/TypeData/ParticleModuleTypeDataRibbon.h"
 #include "Particles/ParticleModuleRequired.h"
 #include "ParticleBeamTrailVertexFactory.h"
+#include "SceneInterface.h"
 #include "SceneRendering.h"
 #include "Particles/ParticleLODLevel.h"
 #include "Engine/StaticMesh.h"
+#include "Stats/StatsTrace.h"
 #include "UnrealEngine.h"
+#include "RenderCore.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 DECLARE_CYCLE_STAT(TEXT("ParticleSystemSceneProxy Create GT"), STAT_FParticleSystemSceneProxy_Create, STATGROUP_Particles);
 DECLARE_CYCLE_STAT(TEXT("ParticleSystemSceneProxy GetMeshElements RT"), STAT_FParticleSystemSceneProxy_GetMeshElements, STATGROUP_Particles);
@@ -894,7 +890,7 @@ void FDynamicSpriteEmitterData::GetDynamicMeshElementsEmitter(const FParticleSys
 					const FMaterial* Material = MaterialResource ? &MaterialResource->GetIncompleteMaterialWithFallback(FeatureLevel) : nullptr;
 
 					if (Material && 
-						(Material->GetBlendMode() == BLEND_Translucent || Material->GetBlendMode() == BLEND_AlphaComposite || Material->GetBlendMode() == BLEND_AlphaHoldout ||
+						(IsTranslucentOnlyBlendMode(*Material) || Material->GetBlendMode() == BLEND_AlphaComposite || IsAlphaHoldoutBlendMode(*Material) ||
 						((SourceData->SortMode == PSORTMODE_Age_OldestFirst) || (SourceData->SortMode == PSORTMODE_Age_NewestFirst)))
 						)
 					{
@@ -6511,17 +6507,14 @@ FParticleSystemSceneProxy::FParticleSystemSceneProxy(UParticleSystemComponent* C
 		)
 	, DynamicData(InDynamicData)
 	, LastDynamicData(NULL)
-	, DeselectedWireframeMaterialInstance(
+	, DeselectedWireframeMaterialInstance(new FColoredMaterialRenderProxy(
 		GEngine->WireframeMaterial ? GEngine->WireframeMaterial->GetRenderProxy() : NULL,
 		GetSelectionColor(FLinearColor(1.0f, 0.0f, 0.0f, 1.0f),false,false)
-		)
+		))
 	, PendingLODDistance(0.0f)
 	, VisualizeLODIndex(Component->GetCurrentLODIndex())
 	, LastFramePreRendered(-1)
 	, FirstFreeMeshBatch(0)
-#if WITH_PARTICLE_PERF_STATS
-	, PerfStatContext(Component->GetPerfStatsContext())
-#endif
 {
 	SetWireframeColor(FLinearColor(3.0f, 0.0f, 0.0f));
 	SetLevelColor(FLinearColor(1.0f, 1.0f, 0.0f));
@@ -6551,6 +6544,9 @@ FParticleSystemSceneProxy::~FParticleSystemSceneProxy()
 
 	delete DynamicData;
 	DynamicData = NULL;
+
+	delete DeselectedWireframeMaterialInstance;
+	DeselectedWireframeMaterialInstance = nullptr;
 }
 
 FMeshBatch* FParticleSystemSceneProxy::GetPooledMeshBatch()
@@ -6694,6 +6690,9 @@ void FParticleSystemSceneProxy::UpdateData(FParticleDynamicData* NewDynamicData)
 	ENQUEUE_RENDER_COMMAND(ParticleUpdateDataCommand)(
 		[Proxy, NewDynamicData](FRHICommandListImmediate& RHICmdList)
 		{
+		#if WITH_PARTICLE_PERF_STATS
+			Proxy->PerfStatContext = NewDynamicData ? NewDynamicData->PerfStatContext : FParticlePerfStatsContext();
+		#endif
 			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(ParticleUpdate);
 			SCOPE_CYCLE_COUNTER(STAT_ParticleUpdateRTTime);
 			STAT(FScopeCycleCounter Context(Proxy->GetStatId());)
@@ -6701,7 +6700,7 @@ void FParticleSystemSceneProxy::UpdateData(FParticleDynamicData* NewDynamicData)
 
 			Proxy->UpdateData_RenderThread(NewDynamicData);
 		}
-		);
+	);
 }
 
 void FParticleSystemSceneProxy::UpdateData_RenderThread(FParticleDynamicData* NewDynamicData)
@@ -6924,6 +6923,17 @@ FPrimitiveSceneProxy* UParticleSystemComponent::CreateSceneProxy()
 	//@fixme Get non-instanced path working in ES!
 	if ((IsActive() == true)/** && (EmitterInstances.Num() > 0)*/ && Template)
 	{
+		if (!bPSOPrecacheCalled)
+		{
+			PrecacheAssetPSOs(Template);
+		}
+
+		if (IsPSOPrecaching())
+		{
+			UE_LOG(LogParticles, Verbose, TEXT("Skipping CreateSceneProxy for UParticleSystemComponent %s (UParticleSystem PSOs are still compiling)"), *GetFullName());
+			return nullptr;
+		}
+
 		FInGameScopedCycleCounter InGameCycleCounter(GetWorld(), EInGamePerfTrackers::VFXSignificance, EInGamePerfTrackerThreads::GameThread, bIsManagingSignificance);
 
 		UE_LOG(LogParticles,Verbose,

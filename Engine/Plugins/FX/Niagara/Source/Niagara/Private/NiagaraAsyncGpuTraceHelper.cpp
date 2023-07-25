@@ -2,8 +2,10 @@
 
 #include "NiagaraAsyncGpuTraceHelper.h"
 
+#include "Components/PrimitiveComponent.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraStats.h"
+#include "PrimitiveSceneProxy.h"
 
 int32 GNiagaraAsyncTraceScratchBucketSize = 1024;
 static FAutoConsoleVariableRef CVarNiagaraAsyncTraceScratchBucketSize(

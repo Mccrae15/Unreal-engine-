@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelInstance/LevelInstanceLevelStreaming.h"
+#include "Engine/Engine.h"
+#include "Engine/Level.h"
+#include "Engine/LevelStreaming.h"
 #include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstancePrivate.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
@@ -8,14 +11,15 @@
 #include "Engine/World.h"
 #include "Misc/PackageName.h"
 #include "GameFramework/WorldSettings.h"
+#include "Misc/Paths.h"
 #include "ProfilingDebugging/ScopedTimers.h"
+#include "UObject/Linker.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LevelInstanceLevelStreaming)
 
 #if WITH_EDITOR
 #include "LevelInstance/LevelInstanceEditorInstanceActor.h"
-#include "Editor.h"
-#include "EditorLevelUtils.h"
 #include "LevelUtils.h"
 #include "ActorFolder.h"
 #endif
@@ -149,16 +153,6 @@ void ULevelStreamingLevelInstance::PrepareLevelInstanceLoadedActor(AActor& InAct
 	{
 		if (InActor.GetAttachParentActor() == nullptr && !InActor.IsChildActor())
 		{
-			// Detect if LevelInstance has moved since it was loaded/created and move the child actor accordingly
-			if (!LevelTransform.Equals(LevelInstanceEditorInstanceActor->GetTransform()))
-			{
-				FTransform TransformToApply = LevelTransform.Inverse() * LevelInstanceEditorInstanceActor->GetTransform();
-				FLevelUtils::FApplyLevelTransformParams TransformParams(InActor.GetLevel(), TransformToApply);
-				TransformParams.Actor = &InActor;
-				TransformParams.bDoPostEditMove = true;
-				FLevelUtils::ApplyLevelTransform(TransformParams);
-			}
-
 			InActor.AttachToActor(LevelInstanceEditorInstanceActor.Get(), FAttachmentTransformRules::KeepWorldTransform);
 		}
 	}
@@ -205,7 +199,7 @@ ULevelStreamingLevelInstance* ULevelStreamingLevelInstance::LoadInstance(ILevelI
 
 	FLoadLevelInstanceParams Params(World, LevelInstance->GetWorldAssetPackage(), LevelInstanceActor->GetActorTransform());
 	Params.OptionalLevelNameOverride = &Suffix;
-	Params.OptionalLevelStreamingClass = ULevelStreamingLevelInstance::StaticClass();
+	Params.OptionalLevelStreamingClass = LevelInstance->GetLevelStreamingClass();
 	Params.bLoadAsTempPackage = true;
 	
 	if (World->IsGameWorld())
@@ -229,7 +223,7 @@ ULevelStreamingLevelInstance* ULevelStreamingLevelInstance::LoadInstance(ILevelI
 			// It might not be the final solution to support Undo/Redo in LevelInstances but it handles most of the non-editing part
 			if (ULevel* Level = LevelStreaming->GetLoadedLevel())
 			{
-				check(LevelStreaming->GetCurrentState() == ULevelStreaming::ECurrentState::LoadedVisible);
+				check(LevelStreaming->GetLevelStreamingState() == ELevelStreamingState::LoadedVisible);
 
 				Level->OnLoadedActorAddedToLevelEvent.AddUObject(LevelStreaming, &ULevelStreamingLevelInstance::OnLoadedActorAddedToLevel);
 				Level->OnLoadedActorRemovedFromLevelEvent.AddUObject(LevelStreaming, &ULevelStreamingLevelInstance::OnLoadedActorRemovedFromLevel);

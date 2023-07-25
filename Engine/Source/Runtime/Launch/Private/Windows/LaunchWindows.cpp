@@ -36,7 +36,7 @@ extern "C" { _declspec(dllexport) uint32 AmdPowerXpressRequestHighPerformance = 
 // versions of Windows will transparently load default OS-provided D3D12 library.
 #define USE_D3D12_REDIST (PLATFORM_DESKTOP && PLATFORM_CPU_X86_FAMILY && PLATFORM_64BITS && 1)
 #if USE_D3D12_REDIST
-extern "C" { _declspec(dllexport) extern const UINT D3D12SDKVersion = 602; }
+extern "C" { _declspec(dllexport) extern const UINT D3D12SDKVersion = 608; }
 extern "C" { _declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\"; }
 #endif // USE_D3D12_REDIST
 
@@ -245,7 +245,9 @@ LAUNCH_API int32 LaunchWindowsStartup( HINSTANCE hInInstance, HINSTANCE hPrevIns
 			GIsGuarded = 0;
 		}
 #if !PLATFORM_SEH_EXCEPTIONS_DISABLED
-		__except( GEnableInnerException ? EXCEPTION_EXECUTE_HANDLER : ReportCrash( GetExceptionInformation( ) ) )
+		__except( FPlatformMisc::GetCrashHandlingType() == ECrashHandlingType::Default
+				? ( GEnableInnerException ? EXCEPTION_EXECUTE_HANDLER : ReportCrash(GetExceptionInformation()) )
+				: EXCEPTION_CONTINUE_SEARCH )	
 		{
 			// Crashed.
 			ErrorLevel = 1;

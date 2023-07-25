@@ -5,14 +5,16 @@
 =============================================================================*/
 
 #include "GameFramework/Character.h"
+#include "Animation/AnimMontage.h"
+#include "Engine/World.h"
 #include "GameFramework/DamageType.h"
 #include "GameFramework/Controller.h"
-#include "Components/SkinnedMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/ArrowComponent.h"
 #include "Engine/CollisionProfile.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Net/Core/PropertyConditions/PropertyConditions.h"
 #include "Net/UnrealNetwork.h"
 #include "DisplayDebugHelpers.h"
 #include "Engine/Canvas.h"
@@ -24,6 +26,7 @@
 DEFINE_LOG_CATEGORY_STATIC(LogCharacter, Log, All);
 
 DECLARE_CYCLE_STAT(TEXT("Char OnNetUpdateSimulatedPosition"), STAT_CharacterOnNetUpdateSimulatedPosition, STATGROUP_Character);
+
 
 FName ACharacter::MeshComponentName(TEXT("CharacterMesh0"));
 FName ACharacter::CharacterMovementComponentName(TEXT("CharMoveComp"));
@@ -691,7 +694,7 @@ namespace MovementBaseUtility
 		return false;
 	}
 
-	bool GetLocalMovementBaseLocationInWorldSpace(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& LocalLocation, FVector& OutLocationWorldSpace)
+	bool TransformLocationToWorld(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& LocalLocation, FVector& OutLocationWorldSpace)
 	{
 		FVector OutLocation;
 		FQuat OutQuat;
@@ -700,7 +703,7 @@ namespace MovementBaseUtility
 		return bResult;
 	}
 
-	bool GetLocalMovementBaseLocation(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& WorldSpaceLocation, FVector& OutLocalLocation)
+	bool TransformLocationToLocal(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& WorldSpaceLocation, FVector& OutLocalLocation)
 	{
 		FVector OutLocation;
 		FQuat OutQuat;
@@ -708,6 +711,25 @@ namespace MovementBaseUtility
 		OutLocalLocation = FTransform(OutQuat, OutLocation).InverseTransformPositionNoScale(WorldSpaceLocation);
 		return bResult;
 	}
+
+	bool TransformDirectionToWorld(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& LocalDirection, FVector& OutDirectionWorldSpace)
+	{
+		FVector IgnoredLocation;
+		FQuat OutQuat;
+		const bool bResult = GetMovementBaseTransform(MovementBase, BoneName, IgnoredLocation, OutQuat);
+		OutDirectionWorldSpace = OutQuat.RotateVector(LocalDirection);
+		return bResult;
+	}
+
+	bool TransformDirectionToLocal(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& WorldSpaceDirection, FVector& OutLocalDirection)
+	{
+		FVector IgnoredLocation;
+		FQuat OutQuat;
+		const bool bResult = GetMovementBaseTransform(MovementBase, BoneName, IgnoredLocation, OutQuat);
+		OutLocalDirection = OutQuat.UnrotateVector(WorldSpaceDirection);
+		return bResult;
+	}
+
 }
 
 
@@ -746,6 +768,11 @@ void ACharacter::SetBase( UPrimitiveComponent* NewBaseComponent, const FName InB
 		UPrimitiveComponent* OldBase = BasedMovement.MovementBase;
 		BasedMovement.MovementBase = NewBaseComponent;
 		BasedMovement.BoneName = BoneName;
+		if (bBaseChanged)
+		{
+			// Increment base ID.
+			BasedMovement.BaseID++;
+		}
 
 		if (CharacterMovement)
 		{
@@ -784,7 +811,7 @@ void ACharacter::SetBase( UPrimitiveComponent* NewBaseComponent, const FName InB
 			const ENetRole LocalRole = GetLocalRole();
 			if (LocalRole == ROLE_Authority || LocalRole == ROLE_AutonomousProxy)
 			{
-				BasedMovement.bServerHasBaseComponent = (BasedMovement.MovementBase != nullptr); // Also set on proxies for nicer debugging.
+				BasedMovement.bServerHasBaseComponent = (BasedMovement.MovementBase != nullptr); // Also set on autonomous proxies for nicer debugging.
 				UE_LOG(LogCharacter, Verbose, TEXT("Setting base on %s for '%s' to '%s'"), LocalRole == ROLE_Authority ? TEXT("Server") : TEXT("AutoProxy"), *GetName(), *GetFullNameSafe(NewBaseComponent));
 			}
 			else
@@ -1137,6 +1164,12 @@ void ACharacter::PostNetReceive()
 
 void ACharacter::OnRep_ReplicatedBasedMovement()
 {	
+	// Following the same pattern in AActor::OnRep_ReplicatedMovement() just in case...
+	if (!IsReplicatingMovement())
+	{
+		return;
+	}
+
 	if (GetLocalRole() != ROLE_SimulatedProxy)
 	{
 		return;
@@ -1221,6 +1254,12 @@ FAnimMontageInstance * ACharacter::GetRootMotionAnimMontageInstance() const
 
 void ACharacter::OnRep_RootMotion()
 {
+	// Following the same pattern in AActor::OnRep_ReplicatedMovement() just in case...
+	if (!IsReplicatingMovement())
+	{
+		return;
+	}
+
 	if (GetLocalRole() == ROLE_SimulatedProxy)
 	{
 
@@ -1453,7 +1492,7 @@ void ACharacter::PreReplication( IRepChangedPropertyTracker & ChangedPropertyTra
 {
 	Super::PreReplication( ChangedPropertyTracker );
 
-	if (CharacterMovement->CurrentRootMotion.HasActiveRootMotionSources() || IsPlayingNetworkedRootMotionMontage())
+	if (IsReplicatingMovement() && (CharacterMovement->CurrentRootMotion.HasActiveRootMotionSources() || IsPlayingNetworkedRootMotionMontage()))
 	{
 		const FAnimMontageInstance* RootMotionMontageInstance = GetRootMotionAnimMontageInstance();
 
@@ -1490,20 +1529,26 @@ void ACharacter::PreReplication( IRepChangedPropertyTracker & ChangedPropertyTra
 
 	bProxyIsJumpForceApplied = (JumpForceTimeRemaining > 0.0f);
 	ReplicatedMovementMode = CharacterMovement->PackNetworkMovementMode();	
-	ReplicatedBasedMovement = BasedMovement;
 
-	// Optimization: only update and replicate these values if they are actually going to be used.
-	if (BasedMovement.HasRelativeLocation())
+	if(IsReplicatingMovement())
 	{
-		// When velocity becomes zero, force replication so the position is updated to match the server (it may have moved due to simulation on the client).
-		ReplicatedBasedMovement.bServerHasVelocity = !CharacterMovement->Velocity.IsZero();
+		ReplicatedBasedMovement = BasedMovement;
 
-		// Make sure absolute rotations are updated in case rotation occurred after the base info was saved.
-		if (!BasedMovement.HasRelativeRotation())
+		// Optimization: only update and replicate these values if they are actually going to be used.
+		if (BasedMovement.HasRelativeLocation())
 		{
-			ReplicatedBasedMovement.Rotation = GetActorRotation();
+			// When velocity becomes zero, force replication so the position is updated to match the server (it may have moved due to simulation on the client).
+			ReplicatedBasedMovement.bServerHasVelocity = !CharacterMovement->Velocity.IsZero();
+
+			// Make sure absolute rotations are updated in case rotation occurred after the base info was saved.
+			if (!BasedMovement.HasRelativeRotation())
+			{
+				ReplicatedBasedMovement.Rotation = GetActorRotation();
+			}
 		}
 	}
+
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(ACharacter, ReplicatedBasedMovement, IsReplicatingMovement());
 
 	// Save bandwidth by not replicating this value unless it is necessary, since it changes every update.
 	if ((CharacterMovement->NetworkSmoothingMode == ENetworkSmoothingMode::Linear) || CharacterMovement->bNetworkAlwaysReplicateTransformUpdateTimestamp)

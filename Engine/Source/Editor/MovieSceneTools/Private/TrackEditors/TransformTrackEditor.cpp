@@ -24,7 +24,7 @@
 #include "Sections/TransformPropertySection.h"
 #include "SequencerUtilities.h"
 #include "MovieSceneToolHelpers.h"
-#include "Animation/AnimData/AnimDataModel.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
 
 #include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 #include "EntitySystem/Interrogation/MovieSceneInterrogatedPropertyInstantiator.h"
@@ -33,11 +33,14 @@
 
 #include "Tracks/IMovieSceneTransformOrigin.h"
 #include "IMovieScenePlaybackClient.h"
+#include "Animation/AnimData/AnimDataModel.h"
 
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "TransformConstraint.h"
-#include "MovieSceneConstraintChannelHelper.h"
+#include "TransformableHandle.h"
+#include "Constraints/MovieSceneConstraintChannelHelper.h"
+#include "Constraints/TransformConstraintChannelInterface.h"
 #include "Misc/TransactionObjectEvent.h"
 #include "Engine/Selection.h"
 
@@ -131,6 +134,7 @@ void F3DTransformTrackEditor::BuildTrackContextMenu( FMenuBuilder& MenuBuilder, 
 		UMovieSceneSequence* Sequence = InSequencer->GetFocusedMovieSceneSequence();
 
 		FAssetPickerConfig AssetPickerConfig;
+		AssetPickerConfig.bAddFilterUI = true;
 		AssetPickerConfig.SelectionMode = ESelectionMode::Single;
 		AssetPickerConfig.Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateStatic(&F3DTransformTrackEditor::ImportAnimSequenceTransforms, InSequencer, InTransformTrack);
@@ -1055,6 +1059,26 @@ void F3DTransformTrackEditor::ProcessKeyOperation(FFrameNumber InKeyTime, const 
 	Operation.IterateOperations(Iterator);
 }
 
+
+int32 GetPreviousKey(FMovieSceneDoubleChannel& Channel, FFrameNumber Time)
+{
+	TArray<FFrameNumber> KeyTimes;
+	TArray<FKeyHandle> KeyHandles;
+
+	TRange<FFrameNumber> Range;
+	Range.SetLowerBound(TRangeBound<FFrameNumber>::Open());
+	Range.SetUpperBound(TRangeBound<FFrameNumber>::Exclusive(Time));
+	Channel.GetData().GetKeys(Range, &KeyTimes, &KeyHandles);
+
+	if (KeyHandles.Num() <= 0)
+	{
+		return INDEX_NONE;
+	}
+
+	int32 Index = Channel.GetData().GetIndex(KeyHandles[KeyHandles.Num() - 1]);
+	return Index;
+}
+
 void F3DTransformTrackEditor::ProcessKeyOperation(UObject* ObjectToKey, TArrayView<const UE::Sequencer::FKeySectionOperation> SectionsToKey, ISequencer& InSequencer, FFrameNumber KeyTime)
 {
 	USceneComponent* Component = MovieSceneHelpers::SceneComponentFromRuntimeObject(ObjectToKey);
@@ -1146,7 +1170,21 @@ void F3DTransformTrackEditor::ProcessKeyOperation(UObject* ObjectToKey, TArrayVi
 					FMovieSceneDoubleChannel* Channel = static_cast<FMovieSceneDoubleChannel*>(Handle.Get());
 
 					double Value = RecomposedTransform[Handle.GetChannelIndex()];
-					AddKeyToChannel(Channel, KeyTime, Value, InSequencer.GetKeyInterpolation());
+
+					if (KeyArea->GetName() == "Rotation.X" ||
+						KeyArea->GetName() == "Rotation.Y" ||
+						KeyArea->GetName() == "Rotation.Z")
+					{
+						int32 PreviousKey = GetPreviousKey(*Channel, KeyTime);
+						if (PreviousKey != INDEX_NONE && PreviousKey < Channel->GetData().GetValues().Num())
+						{
+							double OldValue = Channel->GetData().GetValues()[PreviousKey].Value;
+							Value = UnwindChannel(OldValue, Value);
+						}
+					}
+
+					EMovieSceneKeyInterpolation Interpolation = GetInterpolationMode(Channel, KeyTime, InSequencer.GetKeyInterpolation());
+					AddKeyToChannel(Channel, KeyTime, Value, Interpolation);
 				}
 				else
 				{
@@ -1263,41 +1301,17 @@ void F3DTransformTrackEditor::ImportAnimSequenceTransforms(const FAssetData& Ass
 
 			TArray<FTempTransformKey> TempKeys;
 
-			const FBoneAnimationTrack& AnimationTrack = AnimSequence->GetDataModel()->GetBoneTrackByIndex(0);
-			const FRawAnimSequenceTrack& RawTrack = AnimationTrack.InternalTrackData;
+			TArray<FName> BoneTrackNames;
+			AnimSequence->GetDataModelInterface()->GetBoneTrackNames(BoneTrackNames);
 
-			const int32 KeyCount = FMath::Max(FMath::Max(RawTrack.PosKeys.Num(), RawTrack.RotKeys.Num()), RawTrack.ScaleKeys.Num());
-			for(int32 KeyIndex = 0; KeyIndex < KeyCount; KeyIndex++)
+			TArray<FTransform> BoneTransforms;
+			AnimSequence->GetDataModelInterface()->GetBoneTrackTransforms(BoneTrackNames[0], BoneTransforms);
+
+			for(int32 KeyIndex = 0; KeyIndex < BoneTransforms.Num(); KeyIndex++)
 			{
 				FTempTransformKey TempKey;
 				TempKey.Time = AnimSequence->GetTimeAtFrame(KeyIndex);
-
-				if(RawTrack.PosKeys.IsValidIndex(KeyIndex))
-				{
-					TempKey.Transform.SetTranslation(FVector(RawTrack.PosKeys[KeyIndex]));
-				}
-				else if(RawTrack.PosKeys.Num() > 0)
-				{
-					TempKey.Transform.SetTranslation(FVector(RawTrack.PosKeys[0]));
-				}
-				
-				if(RawTrack.RotKeys.IsValidIndex(KeyIndex))
-				{
-					TempKey.Transform.SetRotation(FQuat(RawTrack.RotKeys[KeyIndex]));
-				}
-				else if(RawTrack.RotKeys.Num() > 0)
-				{
-					TempKey.Transform.SetRotation(FQuat(RawTrack.RotKeys[0]));
-				}
-
-				if(RawTrack.ScaleKeys.IsValidIndex(KeyIndex))
-				{
-					TempKey.Transform.SetScale3D(FVector(RawTrack.ScaleKeys[KeyIndex]));
-				}
-				else if(RawTrack.ScaleKeys.Num() > 0)
-				{
-					TempKey.Transform.SetScale3D(FVector(RawTrack.ScaleKeys[0]));
-				}
+				TempKey.Transform = BoneTransforms[KeyIndex];
 
 				// apply component transform if any
 				TempKey.Transform = InvComponentTransform * TempKey.Transform;
@@ -1438,6 +1452,7 @@ void F3DTransformTrackEditor::HandleOnConstraintAdded(IMovieSceneConstrainedSect
 					}
 				});
 	}
+
 	// Store Section so we can remove these delegates
 	UMovieScene3DTransformSection* Section = Cast<UMovieScene3DTransformSection>(InSection);
 	SectionsToClear.Add(Section);
@@ -1468,6 +1483,11 @@ void F3DTransformTrackEditor::HandleOnConstraintAdded(IMovieSceneConstrainedSect
 	if (InSection)
 	{
 		HandleConstraintRemoved(InSection);
+	}
+
+	if (!UTickableTransformConstraint::GetOnConstraintChanged().IsBoundToObject(this))
+	{
+		UTickableTransformConstraint::GetOnConstraintChanged().AddRaw(this, &F3DTransformTrackEditor::HandleConstraintPropertyChanged);
 	}
 }
 
@@ -1561,9 +1581,8 @@ void F3DTransformTrackEditor::HandleConstraintRemoved(IMovieSceneConstrainedSect
 									return;
 								}
 
-								const FName ConstraintName = Constraint->GetFName();
-								const FConstraintAndActiveChannel* ConstraintChannel = InSection->GetConstraintChannel(ConstraintName);
-								if (!ConstraintChannel)
+								const FConstraintAndActiveChannel* ConstraintChannel = InSection->GetConstraintChannel(Constraint->GetFName());
+								if (!ConstraintChannel || ConstraintChannel->Constraint != Constraint)
 								{
 									return;
 								}
@@ -1578,7 +1597,7 @@ void F3DTransformTrackEditor::HandleConstraintRemoved(IMovieSceneConstrainedSect
 										Section);
 								}
 
-								InSection->RemoveConstraintChannel(ConstraintName);
+								InSection->RemoveConstraintChannel(Constraint);
 							}
 							break;
 						case EConstraintsManagerNotifyType::ManagerUpdated:
@@ -1589,6 +1608,50 @@ void F3DTransformTrackEditor::HandleConstraintRemoved(IMovieSceneConstrainedSect
 		ConstraintHandlesToClear.Add(InSection->OnConstraintRemovedHandle);
 
 	}
+}
+
+void F3DTransformTrackEditor::HandleConstraintPropertyChanged(UTickableTransformConstraint* InConstraint, const FPropertyChangedEvent& InPropertyChangedEvent) const
+{
+	if (!IsValid(InConstraint))
+	{
+		return;
+	}
+
+	// find constraint section
+	const UTransformableComponentHandle* Handle = Cast<UTransformableComponentHandle>(InConstraint->ChildTRSHandle);
+	if (!IsValid(Handle) || !Handle->IsValid())
+	{
+		return;
+	}
+
+	const FConstraintChannelInterfaceRegistry& InterfaceRegistry = FConstraintChannelInterfaceRegistry::Get();	
+	ITransformConstraintChannelInterface* Interface = InterfaceRegistry.FindConstraintChannelInterface(Handle->GetClass());
+	if (!Interface)
+	{
+		return;
+	}
+	
+	UMovieSceneSection* Section = Interface->GetHandleConstraintSection(Handle, GetSequencer());
+	IMovieSceneConstrainedSection* ConstraintSection = Cast<IMovieSceneConstrainedSection>(Section);
+	if (!ConstraintSection)
+	{
+		return;
+	}
+
+	// find corresponding channel
+	const TArray<FConstraintAndActiveChannel>& ConstraintChannels = ConstraintSection->GetConstraintsChannels();
+	const FConstraintAndActiveChannel* Channel = ConstraintChannels.FindByPredicate([InConstraint](const FConstraintAndActiveChannel& Channel)
+	{
+		return Channel.Constraint == InConstraint || Channel.ConstraintCopyToSpawn == InConstraint;
+	});
+
+	if (!Channel)
+	{
+		return;
+	}
+
+	FMovieSceneConstraintChannelHelper::HandleConstraintPropertyChanged(
+			InConstraint, Channel->ActiveChannel, InPropertyChangedEvent, GetSequencer(), Section);
 }
 
 void F3DTransformTrackEditor::ClearOutConstraintDelegates() 
@@ -1623,5 +1686,7 @@ void F3DTransformTrackEditor::ClearOutConstraintDelegates()
 		}
 	}
 	SectionsToClear.Reset();
+
+	UTickableTransformConstraint::GetOnConstraintChanged().RemoveAll(this);
 }
 #undef LOCTEXT_NAMESPACE

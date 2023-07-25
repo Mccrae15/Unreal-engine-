@@ -38,8 +38,11 @@ struct CHAOSVEHICLES_API FWheelsOutput
 		, SuspensionOffset(0.f)
 		, SpringForce(0.f)
 		, NormalizedSuspensionLength(0.f)
-		, bBlockingHit(false)
+		, DriveTorque(0.f)
+		, BrakeTorque(0.f)
+		, bABSActivated(false)
 		, ImpactPoint(FVector::ZeroVector)
+		, HitLocation(FVector::ZeroVector)
 		, PhysMaterial(nullptr)
 	{
 	}
@@ -66,8 +69,12 @@ struct CHAOSVEHICLES_API FWheelsOutput
 	float SpringForce;
 	float NormalizedSuspensionLength;
 
+	float DriveTorque;
+	float BrakeTorque;
+	bool bABSActivated;
 	bool bBlockingHit;
 	FVector ImpactPoint;
+	FVector HitLocation;
 	TWeakObjectPtr<UPhysicalMaterial> PhysMaterial;
 };
 

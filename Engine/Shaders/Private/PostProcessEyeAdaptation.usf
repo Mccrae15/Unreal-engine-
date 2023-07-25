@@ -7,20 +7,32 @@
 #include "Common.ush"
 #include "PostProcessCommon.ush"
 #include "PostProcessHistogramCommon.ush"
+#include "Strata/Strata.ush"
+#include "Strata/StrataEvaluation.ush"
 
-Texture2D EyeAdaptationTexture;
+#if COMPUTESHADER
+
+#define FrontLayerTranslucencyReflectionsStruct LumenGIVolumeStruct
+#define RadianceCacheInterpolation LumenGIVolumeStruct
+#include "Lumen/LumenTranslucencyVolumeShared.ush"
+
+#include "DeferredShadingCommon.ush"
+#include "BRDF.ush"
+#include "PositionReconstructionCommon.ush"
+#include "SHCommon.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+RWStructuredBuffer<float4> RWEyeAdaptationBuffer;
+
+#endif
+
+StructuredBuffer<float4> EyeAdaptationBuffer;
 
 Texture2D HistogramTexture;
 
 Texture2D ColorTexture;
 
 SamplerState ColorSampler;
-
-#if COMPUTESHADER
-
-RWTexture2D<float4> RWEyeAdaptationTexture;
-
-#endif
 
 uint2 Color_ViewportMin;
 uint2 Color_ViewportMax;
@@ -134,8 +146,15 @@ void EyeAdaptationCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 	OutColor.z = AverageSceneLuminance;
 	OutColor.w = MiddleGreyExposureCompensation;
 	
-	uint2 PixelPos = DispatchThreadId;
-	RWEyeAdaptationTexture[PixelPos] = OutColor;
+	RWEyeAdaptationBuffer[0] = OutColor;
+}
+
+RWTexture2D<float4> RWEyeAdaptationTexture;
+
+[numthreads(1, 1, 1)]
+void CopyEyeAdaptationToTextureCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+	RWEyeAdaptationTexture[DispatchThreadId] = EyeAdaptationBuffer[0];
 }
 #endif
 
@@ -163,17 +182,10 @@ groupshared float2 SubRectValueWeight[TGSIZE*TGSIZE];
 [numthreads(TGSIZE, TGSIZE, 1)]
 void BasicEyeAdaptationCS(uint GIndex : SV_GroupIndex, uint2 GTId : SV_GroupThreadID)
 {
-	float4 OutColor=0;
-
-#else
-
-void BasicEyeAdaptationPS(in float4 UVAndScreenPos : TEXCOORD0, out float4 OutColor : SV_Target0)
-{
-
-#endif
-
+	float4 OutColor = 0;
+	
 	// Compute scaled Log Luminance Average
-#if COMPUTESHADER
+
 	// There are TGSIZE*TGSIZE threads. Each thread will calculate the luminance for its own subregions from a TGSIZE*TGSIZE screen grid
 	const uint2 SubRectMin = uint2(
 		((Color_ViewportMax.x - Color_ViewportMin.x) * GTId.x) / TGSIZE,
@@ -215,9 +227,6 @@ void BasicEyeAdaptationPS(in float4 UVAndScreenPos : TEXCOORD0, out float4 OutCo
 	GroupMemoryBarrierWithGroupSync();
 
 	float LogLumAve = SubRectValueWeight[0].x /  SubRectValueWeight[0].y;
-#else
-	float LogLumAve = ComputeWeightedTextureAverageAlpha(ColorTexture, Color_ViewportMin, Color_ViewportMax);
-#endif
 
 	// Correct for [0,1] scaling
 	LogLumAve = (LogLumAve - EyeAdaptation_HistogramBias) / EyeAdaptation_HistogramScale;
@@ -232,7 +241,7 @@ void BasicEyeAdaptationPS(in float4 UVAndScreenPos : TEXCOORD0, out float4 OutCo
 	const float ClampedLumAve = clamp(LumAve, EyeAdaptation_MinAverageLuminance, EyeAdaptation_MaxAverageLuminance);
 	
 	// The Exposure Scale (and thus intensity) used in the previous frame
-	const float ExposureScaleOld = EyeAdaptationTexture.Load(int3(0, 0, 0)).x;
+	const float ExposureScaleOld = EyeAdaptationBuffer[0].x;
 	const float LuminanceAveOld = MiddleGreyExposureCompensation / (ExposureScaleOld != 0 ? ExposureScaleOld : 1.0f);
 
 	// Time-based expoential blend of the intensity to allow the eye adaptation to ramp up over a few frames.
@@ -255,10 +264,304 @@ void BasicEyeAdaptationPS(in float4 UVAndScreenPos : TEXCOORD0, out float4 OutCo
 	OutColor = !all(IsFinite(OutColor)) ? float4(1, 1, 1, 0) : OutColor;
 #endif
 	
-#if COMPUTESHADER
 	if(GIndex==0)
 	{
-		RWEyeAdaptationTexture[uint2(0,0)] = OutColor;
+		RWEyeAdaptationBuffer[0] = OutColor;
 	}
-#endif
 }
+
+#endif
+
+#if COMPUTESHADER
+
+RWTexture2D<float> RWIlluminanceTexture;
+SCREEN_PASS_TEXTURE_VIEWPORT(Illuminance)
+uint IllumiananceDownscaleFactor;
+
+// same weights as CalculateEyeAdaptationLuminance
+// but skip the min since we apply EyeAdaptation_IgnoreMaterialsMinBaseColorLuminance here
+float CalculateEyeAdaptationLuminanceWithoutMin(float3 Color)
+{
+	return dot(Color, float3(1.0f, 1.0f, 1.0f) / 3.0f);
+}
+
+[numthreads(8, 8, 1)]
+void SetupExposureIlluminance(uint2 ThreadId : SV_DispatchThreadID)
+{
+	const uint2 OutputTexelPos = ThreadId + Illuminance_ViewportMin;
+	const uint2 TexelPos = ThreadId * IllumiananceDownscaleFactor + View.ViewRectMinAndSize.xy;
+
+	const float3 Emissive = ColorTexture.Load(int3(TexelPos, 0)).rgb;
+
+	RWIlluminanceTexture[OutputTexelPos] = CalculateEyeAdaptationLuminanceWithoutMin(Emissive);
+}
+
+Texture3D TranslucencyLightingVolumeAmbientInner;
+Texture3D TranslucencyLightingVolumeAmbientOuter;
+Texture3D TranslucencyLightingVolumeDirectionalInner;
+Texture3D TranslucencyLightingVolumeDirectionalOuter;
+
+#define SharedAmbientInnerSampler View.SharedBilinearClampedSampler
+#define SharedAmbientOuterSampler View.SharedBilinearClampedSampler
+#define SharedDirectionalInnerSampler View.SharedBilinearClampedSampler
+#define SharedDirectionalOuterSampler View.SharedBilinearClampedSampler
+
+// TODO: Move these functions to header file shared with BasePass/Strata
+
+void ComputeVolumeUVs(float3 TranslatedWorldPosition, float3 LightingPositionOffset, out float3 InnerVolumeUVs, out float3 OuterVolumeUVs, out float FinalLerpFactor)
+{
+	// Apply a stable offset to the world position used for lighting, which breaks up artifacts from using a low res volume texture
+	InnerVolumeUVs = (TranslatedWorldPosition + LightingPositionOffset - View.TranslucencyLightingVolumeMin[0].xyz) * View.TranslucencyLightingVolumeInvSize[0].xyz;
+	OuterVolumeUVs = (TranslatedWorldPosition + LightingPositionOffset - View.TranslucencyLightingVolumeMin[1].xyz) * View.TranslucencyLightingVolumeInvSize[1].xyz;
+
+	// Controls how fast the lerp between the inner and outer cascades happens
+	// Larger values result in a shorter transition distance
+	float TransitionScale = 6;
+	// Setup a 3d lerp factor going to 0 at the edge of the inner volume
+	float3 LerpFactors = saturate((.5f - abs(InnerVolumeUVs - .5f)) * TransitionScale);
+	FinalLerpFactor = LerpFactors.x * LerpFactors.y * LerpFactors.z;
+}
+
+float4 GetAmbientLightingVectorFromTranslucentLightingVolume(float3 InnerVolumeUVs, float3 OuterVolumeUVs, float FinalLerpFactor)
+{
+	// Lookup the inner and outer cascade ambient lighting values
+	float4 InnerLighting = Texture3DSampleLevel(TranslucencyLightingVolumeAmbientInner, SharedAmbientInnerSampler, InnerVolumeUVs, 0);
+	float4 OuterLighting = Texture3DSampleLevel(TranslucencyLightingVolumeAmbientOuter, SharedAmbientOuterSampler, OuterVolumeUVs, 0);
+
+	// Lerp between cascades
+	return lerp(OuterLighting, InnerLighting, FinalLerpFactor);
+}
+
+float3 GetDirectionalLightingVectorFromTranslucentLightingVolume(float3 InnerVolumeUVs, float3 OuterVolumeUVs, float FinalLerpFactor)
+{
+	// Fetch both the ambient and directional values for both cascades
+	float3 InnerVector1 = Texture3DSampleLevel(TranslucencyLightingVolumeDirectionalInner, SharedDirectionalInnerSampler, InnerVolumeUVs, 0).rgb;
+	float3 OuterVector1 = Texture3DSampleLevel(TranslucencyLightingVolumeDirectionalOuter, SharedDirectionalOuterSampler, OuterVolumeUVs, 0).rgb;
+
+	// Lerp between cascades
+	return lerp(OuterVector1, InnerVector1, FinalLerpFactor);
+}
+
+float4 GetVolumeLightingDirectional(float4 AmbientLightingVector, float3 DirectionalLightingVector, float3 WorldNormal)
+{
+	//const float DirectionalLightingIntensity = GetMaterialTranslucencyDirectionalLightingIntensity();
+	const float DirectionalLightingIntensity = 1.0f;
+
+	AmbientLightingVector.rgb /= DirectionalLightingIntensity;
+	DirectionalLightingVector.rgb *= DirectionalLightingIntensity;
+
+	// Reconstruct the SH coefficients based on what was encoded
+	FTwoBandSHVectorRGB TranslucentLighting;
+	TranslucentLighting.R.V.x = AmbientLightingVector.r;
+	TranslucentLighting.G.V.x = AmbientLightingVector.g;
+	TranslucentLighting.B.V.x = AmbientLightingVector.b;
+	float3 NormalizedAmbientColor = AmbientLightingVector.rgb / (Luminance(AmbientLightingVector.rgb) + 0.00001f);
+
+	// Scale the monocrome directional coefficients with the normalzed ambient color as an approximation to the uncompressed values
+	TranslucentLighting.R.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.r;
+	TranslucentLighting.G.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.g;
+	TranslucentLighting.B.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.b;
+
+	// Compute diffuse lighting which takes the normal into account
+	FTwoBandSHVector DiffuseTransferSH = CalcDiffuseTransferSH(WorldNormal, 1);
+	
+	return float4(max(half3(0, 0, 0), DotSH(TranslucentLighting, DiffuseTransferSH)), AmbientLightingVector.a);
+}
+
+struct FExposureMaterial
+{
+	float3 TranslatedWorldPosition;
+	float3 WorldNormal;
+	float3 DirectionalAlbedo;
+
+	bool bIsValid;
+	bool bHasBackfaceLighting;
+	bool bHasValidDirectionalAlbedo;
+};
+
+FExposureMaterial GetExposureMaterial(uint2 InPixelPos)
+{
+	FExposureMaterial Out = (FExposureMaterial)0;
+	#if STRATA_ENABLED
+	{	
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(InPixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+		const FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+		const FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(InPixelPos, 0)));
+		const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, InPixelPos);
+
+		const float DeviceZ = ConvertFromDeviceZ(SceneDepthTexture.Load(int3(InPixelPos, 0)).r);
+		const float3 TranslatedWorldPosition = ReconstructTranslatedWorldPositionFromDeviceZ(InPixelPos, DeviceZ);
+		const float3 V = normalize(View.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
+
+		float3 DiffuseDirectionalAlbedo = 0;
+		float3 DirectionalAlbedo = 0;
+		bool bHasMaterialBackfaceDiffuse = false;
+		{
+			FStrataDeferredLighting Out = GetInitialisedStrataDeferredLighting();
+			const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, Strata.bRoughDiffuse, Strata.PeelLayersAboveDepth, Strata.bRoughnessTracking);
+			Strata_for(uint BSDFIndex = 0, BSDFIndex < StrataPixelHeader.BSDFCount, ++BSDFIndex)
+			{
+				FStrataBSDF BSDF = UnpackStrataBSDF(Strata.MaterialTextureArray, StrataAddressing, StrataPixelHeader);
+				FStrataBSDFContext StrataBSDFContext = StrataCreateBSDFContext(StrataPixelHeader, BSDF, StrataAddressing, V);
+				const float3 BSDFThroughput = LuminanceWeight(StrataBSDFContext, BSDF);
+
+				// Evaluate environment lighting
+				FStrataEnvLightResult StrataEnvLight = StrataEvaluateForEnvLight(StrataBSDFContext, true /*bEnableSpecular*/, Settings);
+
+				DiffuseDirectionalAlbedo += BSDFThroughput * StrataEnvLight.DiffuseWeight;
+				DirectionalAlbedo        += BSDFThroughput * StrataEnvLight.DiffuseWeight;
+				DirectionalAlbedo        += BSDFThroughput * StrataEnvLight.SpecularWeight;
+
+				const bool bHasBackfaceDiffuse = StrataGetBSDFType(BSDF) == STRATA_BSDF_TYPE_SLAB && BSDF_GETSSSTYPE(BSDF) != SSS_TYPE_INVALID;
+				if (bHasBackfaceDiffuse)
+				{
+					DirectionalAlbedo += BSDFThroughput * StrataEnvLight.DiffuseBackFaceWeight; // StrataEnvLight.DiffuseBackFaceWeight is already divided PI
+				}
+				if (any(StrataEnvLight.SpecularHazeWeight > 0.0f))
+				{
+					DirectionalAlbedo += BSDFThroughput * StrataEnvLight.SpecularHazeWeight;
+				}
+			}
+		}
+
+		Out.TranslatedWorldPosition = ReconstructTranslatedWorldPositionFromDeviceZ(InPixelPos, DeviceZ);
+		Out.WorldNormal = TopLayerData.WorldNormal;
+		Out.DirectionalAlbedo = DirectionalAlbedo;
+		Out.bIsValid = IsStrataMaterial(StrataPixelHeader);
+		Out.bHasBackfaceLighting = bHasMaterialBackfaceDiffuse;
+		Out.bHasValidDirectionalAlbedo = CalculateEyeAdaptationLuminanceWithoutMin(DiffuseDirectionalAlbedo) > EyeAdaptation_IgnoreMaterialsMinBaseColorLuminance;
+	}
+	#else // STRATA_ENABLED
+	{
+		const float2 GBufferUV = (InPixelPos + 0.5f) * View.BufferSizeAndInvSize.zw;
+		const FGBufferData GBufferData = GetGBufferDataFromSceneTextures(GBufferUV);
+		const float3 TranslatedWorldPosition = ReconstructTranslatedWorldPositionFromDepth(GBufferUV, GBufferData.Depth);
+
+		// Calculate approximate illuminance from SceneColor and GBufferData
+		// Illuminance ~= (SceneColorLuminance - Emissive) / (DiffuseColor + SubsurfaceColor + EnvBRDF)
+		float3 Denominator = 0.f;
+		Denominator += GBufferData.DiffuseColor;
+		if (GBufferData.ShadingModelID == SHADINGMODELID_SUBSURFACE
+			|| GBufferData.ShadingModelID == SHADINGMODELID_PREINTEGRATED_SKIN
+			|| GBufferData.ShadingModelID == SHADINGMODELID_TWOSIDED_FOLIAGE
+			|| GBufferData.ShadingModelID == SHADINGMODELID_CLOTH
+			|| GBufferData.ShadingModelID == SHADINGMODELID_EYE)
+		{
+			float3 SubsurfaceColor = ExtractSubsurfaceColor(GBufferData);
+
+			if (GBufferData.ShadingModelID == SHADINGMODELID_TWOSIDED_FOLIAGE)
+			{
+				SubsurfaceColor *= 1.0f / PI;
+			}
+
+			Denominator += SubsurfaceColor;
+		}
+
+		{
+			const float3 CameraVector = normalize(View.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
+
+			const float3 N = GBufferData.WorldNormal;
+			const float3 V = CameraVector;
+			const float3 EnvBrdf = EnvBRDF(GBufferData.SpecularColor, GBufferData.Roughness, max(0.0, dot(N, V)));
+
+			Denominator += EnvBrdf;
+		}
+
+		Out.TranslatedWorldPosition = TranslatedWorldPosition;
+		Out.WorldNormal = GBufferData.WorldNormal;
+		Out.DirectionalAlbedo = Denominator;
+		Out.bIsValid = GBufferData.ShadingModelID != SHADINGMODELID_UNLIT;
+		Out.bHasBackfaceLighting = GetShadingModelRequiresBackfaceLighting(GBufferData.ShadingModelID);
+		Out.bHasValidDirectionalAlbedo = CalculateEyeAdaptationLuminanceWithoutMin(GBufferData.DiffuseColor) > EyeAdaptation_IgnoreMaterialsMinBaseColorLuminance;
+	}
+	#endif // STRATA_ENABLED
+	return Out;
+}
+
+[numthreads(8, 8, 1)]
+void CalculateExposureIlluminance(uint2 ThreadId : SV_DispatchThreadID)
+{
+	const uint2 OutputTexelPos = ThreadId + Illuminance_ViewportMin;
+	const uint2 TexelPos = ThreadId * IllumiananceDownscaleFactor + View.ViewRectMinAndSize.xy;
+
+	const float3 SceneColor = ColorTexture.Load(int3(TexelPos, 0)).rgb * View.OneOverPreExposure;
+
+	float Luminance = CalculateEyeAdaptationLuminance(SceneColor);
+
+	const FExposureMaterial Material = GetExposureMaterial(TexelPos);
+
+	if (Material.bIsValid)
+	{
+		bool bUseTranslucencyVolume = !EyeAdaptation_IgnoreMaterialsReconstructFromSceneColor;
+
+		// when DirectionalAlbedo is black there's not enough information in SceneColor to reconstruct illuminance
+		if (!Material.bHasValidDirectionalAlbedo)
+		{
+			bUseTranslucencyVolume = true;
+		}
+
+		float Illuminance;
+
+		if (!bUseTranslucencyVolume)
+		{
+			const float DenominatorLuminance = CalculateEyeAdaptationLuminanceWithoutMin(Material.DirectionalAlbedo);
+			// Emissive is copied to IlluminanceTexture after base pass and before lighting pass
+			const float Emissive = RWIlluminanceTexture[OutputTexelPos] * View.OneOverPreExposure;
+
+			Illuminance = max(0.0f, Luminance - Emissive) / max(DenominatorLuminance, EyeAdaptation_IgnoreMaterialsMinBaseColorLuminance);
+		}
+		else
+		{
+			const float3 TranslucencyEvaluationTranslatedPosition = Material.TranslatedWorldPosition + Material.WorldNormal * EyeAdaptation_IgnoreMaterialsEvaluationPositionBias;
+
+			const float3 LightingPositionOffset = 0;
+
+			float3 InnerVolumeUVs;
+			float3 OuterVolumeUVs;
+			float FinalLerpFactor;
+			ComputeVolumeUVs(TranslucencyEvaluationTranslatedPosition, LightingPositionOffset, InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
+
+			float4 AmbientLightingVector = GetAmbientLightingVectorFromTranslucentLightingVolume(InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
+			float3 DirectionalLightingVector = GetDirectionalLightingVectorFromTranslucentLightingVolume(InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
+			
+			float3 VolumeLighting = GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, Material.WorldNormal).rgb;
+			
+			if (Material.bHasBackfaceLighting)
+			{
+				VolumeLighting += GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, -Material.WorldNormal).rgb;
+			}
+
+		#if PROJECT_SUPPORTS_LUMEN && !FORWARD_SHADING
+			if (IsLumenTranslucencyGIEnabled())
+			{
+				// Lumen Dynamic GI + shadowed Skylight
+				FLWCVector3 TranslucencyEvaluationPosition = LWCSubtract(TranslucencyEvaluationTranslatedPosition, PrimaryView.PreViewTranslation);
+
+				FTwoBandSHVectorRGB TranslucencyGISH = GetTranslucencyGIVolumeLighting(TranslucencyEvaluationPosition, PrimaryView.WorldToClip, true);
+
+				// Diffuse convolution
+				FTwoBandSHVector DiffuseTransferSH = CalcDiffuseTransferSH(Material.WorldNormal, 1);
+				VolumeLighting.rgb += max(half3(0, 0, 0), DotSH(TranslucencyGISH, DiffuseTransferSH)) / PI;
+
+				if (Material.bHasBackfaceLighting)
+				{
+					FTwoBandSHVector SubsurfaceTransferSH = CalcDiffuseTransferSH(-Material.WorldNormal, 1);
+					VolumeLighting.rgb += max(half3(0, 0, 0), DotSH(TranslucencyGISH, SubsurfaceTransferSH)) / PI;
+				}
+			}
+		#endif
+			else
+			{
+				// TODO: Use SkyLight
+			}
+
+			Illuminance = CalculateEyeAdaptationLuminance(VolumeLighting.rgb);
+		}
+
+		Luminance = Illuminance * lerp(EyeAdaptation_IgnoreMaterialsLuminanceScale, 1.0f, EyeAdaptation_IgnoreMaterialsMinBaseColorLuminance);
+	}
+	
+	RWIlluminanceTexture[OutputTexelPos] = Luminance * View.PreExposure;
+}
+
+#endif // COMPUTESHADER

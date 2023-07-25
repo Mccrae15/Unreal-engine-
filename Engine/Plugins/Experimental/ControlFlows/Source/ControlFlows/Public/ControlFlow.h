@@ -3,8 +3,8 @@
 #pragma once
 
 #include "ControlFlowNode.h"
-#include "HAL/Platform.h"
-#include "Templates/UnrealTypeTraits.h"
+
+template <typename OptionalType> struct TOptional;
 
 class UObject;
 class FControlFlowTask_Branch;
@@ -52,6 +52,7 @@ class CONTROLFLOWS_API FControlFlow : public TSharedFromThis<FControlFlow>
 {
 public:
 	FControlFlow(const FString& FlowDebugName = TEXT(""));
+	virtual ~FControlFlow() = default;
 
 public:
 	/** This needs to be called, otherwise nothing will happen!! Call after you finish adding functions to the queue. Calling with an empty queue is safe. */
@@ -140,11 +141,11 @@ private:
 
 private:
 	template<typename BindingObjectClassT, typename...ArgsT>
-	void QueueStep_Internal_DeduceBindingObject(const FString& InDebugName, typename TEnableIf<TIsDerivedFrom<BindingObjectClassT, TSharedFromThis<BindingObjectClassT>>::IsDerived, BindingObjectClassT*>::Type InBindingObject, ArgsT...Params)
+	void QueueStep_Internal_DeduceBindingObject(const FString& InDebugName, typename TEnableIf<IsDerivedFromSharedFromThis<BindingObjectClassT>(), BindingObjectClassT*>::Type InBindingObject, ArgsT...Params)
 	{
-		if (static_cast<TSharedFromThis<BindingObjectClassT>*>(InBindingObject)->DoesSharedInstanceExist())
+		if (InBindingObject->DoesSharedInstanceExist())
 		{
-			QueueStep_Internal_TSharedFromThis(InDebugName, InBindingObject->AsShared(), Params...);
+			QueueStep_Internal_TSharedFromThis(InDebugName, StaticCastSharedRef<BindingObjectClassT>(InBindingObject->AsShared()), Params...);
 		}
 	}
 
@@ -223,7 +224,7 @@ private:
 	friend class FControlFlowNode_RequiresCallback;
 	friend class FControlFlowNode_SelfCompleting;
 	friend class FControlFlowSimpleSubTask;
-	friend class FControlFlowTask_Loop;
+	friend class FControlFlowTask_LoopDeprecated;
 	friend class FControlFlowTask_BranchLegacy;
 	friend class FControlFlowTask_Branch;
 	friend class FControlFlowStatics;
@@ -239,25 +240,29 @@ public:
 	/** Adds a Loop to your flow. The flow will use FControlFlowLoopComplete - if this returns false, the flow will execute FControlTaskQueuePopulator until true is returned */
 	FControlFlowPopulator& QueueLoop(FControlFlowLoopComplete& LoopCompleteDelgate, const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
 
+	FSimpleMulticastDelegate& OnNodeComplete() const { return OnStepCompletedDelegate; }
+	FSimpleMulticastDelegate& OnComplete() const { return OnCompleteDelegate; }
+	FSimpleMulticastDelegate& OnCancel() const { return OnCancelledDelegate; }
+	FSimpleMulticastDelegate& OnExecuteWithoutAnyNodes() const { return OnExecutedWithoutAnyNodesDelegate; }	
+	
 private:
-
 	void HandleControlFlowNodeCompleted(TSharedRef<const FControlFlowNode> NodeCompleted);
 
-	void ExecuteNextNodeInQueue();
-
-	FSimpleDelegate& OnComplete() const { return OnCompleteDelegate; }
-	FSimpleDelegate& OnExecutedWithoutAnyNodes() const { return OnExecutedWithoutAnyNodesDelegate; }
-	FSimpleDelegate& OnCancelled() const { return OnCancelledDelegate; }
-
-	mutable FSimpleDelegate OnCompleteDelegate;
-	mutable FSimpleDelegate OnExecutedWithoutAnyNodesDelegate;
-	mutable FSimpleDelegate OnCancelledDelegate;
+	mutable FSimpleMulticastDelegate OnStepCompletedDelegate;
+	mutable FSimpleMulticastDelegate OnExecutedWithoutAnyNodesDelegate;
+	mutable FSimpleMulticastDelegate OnCompleteDelegate;
+	mutable FSimpleMulticastDelegate OnCancelledDelegate;
+	
+	mutable FSimpleDelegate OnCompleteDelegate_Internal;
+	mutable FSimpleDelegate OnExecutedWithoutAnyNodesDelegate_Internal;
+	mutable FSimpleDelegate OnCancelledDelegate_Internal;
 
 private:
+	void ExecuteNextNodeInQueue();
+
 	void ExecuteNode(TSharedRef<FControlFlowNode_SelfCompleting> SelfCompletingNode);
 
 private:
-
 	void HandleTaskNodeExecuted(TSharedRef<FControlFlowNode_Task> TaskNode);
 	void HandleTaskNodeCancelled(TSharedRef<FControlFlowNode_Task> TaskNode);
 

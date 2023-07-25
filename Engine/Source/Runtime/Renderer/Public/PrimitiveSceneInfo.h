@@ -8,31 +8,41 @@
 
 #include "CoreMinimal.h"
 #include "Containers/IndirectArray.h"
-#include "RenderingThread.h"
-#include "SceneTypes.h"
+#include "RenderDeferredCleanup.h"
 #include "HitProxies.h"
 #include "Math/GenericOctreePublic.h"
-#include "Engine/Scene.h"
+#include "PrimitiveComponentId.h"
+#include "PrimitiveDirtyState.h"
 #include "RendererInterface.h"
+#include "ShaderParameterMacros.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Engine/Scene.h"
+#include "RenderingThread.h"
 #include "MeshPassProcessor.h"
 #include "PrimitiveSceneProxy.h"
+#include "SceneTypes.h"
+#endif
 
+enum class ERayTracingPrimitiveFlags : uint8;
+
+class FIndirectLightingCacheUniformParameters;
+class FNaniteCommandInfo;
+class FPlanarReflectionSceneProxy;
 class FPrimitiveSceneInfo;
 class FPrimitiveSceneProxy;
+class FRayTracingGeometry;
 class FReflectionCaptureProxy;
-class FPlanarReflectionSceneProxy;
 class FScene;
 class FViewInfo;
 class UPrimitiveComponent;
-class FIndirectLightingCacheUniformParameters;
 
-template<typename ElementType,typename OctreeSemantics> class TOctree2;
-
-class FNaniteCommandInfo;
+struct FNaniteMaterialSlot;
 struct FNaniteRasterBin;
 struct FNaniteShadingBin;
-struct FNaniteMaterialSlot;
 struct FRayTracingInstance;
+
+template<typename ElementType,typename OctreeSemantics> class TOctree2;
 
 namespace Nanite
 {
@@ -256,8 +266,19 @@ ENUM_CLASS_FLAGS(EUpdateStaticMeshFlags);
  */
 struct FPersistentPrimitiveIndex
 {
-	int32 Index;
+	bool IsValid() const { return Index != INDEX_NONE; }
+	int32 Index = INDEX_NONE;
 };
+
+enum class EPrimitiveAddToSceneOps
+{
+	None = 0,
+	AddStaticMeshes = 1 << 0,
+	CacheMeshDrawCommands = 1 << 1,
+	CreateLightPrimitiveInteractions = 1 << 2,
+	All = AddStaticMeshes | CacheMeshDrawCommands | CreateLightPrimitiveInteractions
+};
+ENUM_CLASS_FLAGS(EPrimitiveAddToSceneOps);
 
 /**
  * The renderer's internal state for a single UPrimitiveComponent.  This has a one to one mapping with FPrimitiveSceneProxy, which is in the engine module.
@@ -405,6 +426,8 @@ public:
 	TArray<uint64> CachedRayTracingMeshCommandsHashPerLOD;
 	// TODO: this should be placed in FRayTracingScene and we have a pointer/handle here. It's here for now for PoC
 	FRayTracingGeometryInstance CachedRayTracingInstance;
+	bool bCachedRayTracingInstanceAnySegmentsDecal : 1;
+	bool bCachedRayTracingInstanceAllSegmentsDecal : 1;
 	TArray<FBoxSphereBounds> CachedRayTracingInstanceWorldBounds;
 	int32 SmallestRayTracingInstanceWorldBoundsIndex;
 #endif
@@ -416,7 +439,7 @@ public:
 	~FPrimitiveSceneInfo();
 
 	/** Adds the primitive to the scene. */
-	static void AddToScene(FRHICommandListImmediate& RHICmdList, FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos, bool bUpdateStaticDrawLists, bool bAddToStaticDrawLists = true, bool bAsyncCreateLPIs = false);
+	static void AddToScene(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos, EPrimitiveAddToSceneOps Ops = EPrimitiveAddToSceneOps::All);
 
 	/** Removes the primitive from the scene. */
 	void RemoveFromScene(bool bUpdateStaticDrawLists);
@@ -428,9 +451,6 @@ public:
 
 	/** return true if we need to call ConditionalUpdateStaticMeshes */
 	bool NeedsUpdateStaticMeshes();
-
-	/** Returns true it primitive contains cached Lumen Card Capture mesh draw commands. */
-	bool HasLumenCaptureMeshPass() const;
 
 	/** return true if we need to call LazyUpdateForRendering */
 	FORCEINLINE bool NeedsUniformBufferUpdate() const
@@ -445,7 +465,7 @@ public:
 	}
 
 	/** Updates the primitive's static meshes in the scene. */
-	static void UpdateStaticMeshes(FRHICommandListImmediate& RHICmdList, FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos, EUpdateStaticMeshFlags UpdateFlags, bool bReAddToDrawLists = true);
+	static void UpdateStaticMeshes(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos, EUpdateStaticMeshFlags UpdateFlags, bool bReAddToDrawLists = true);
 
 	/** Updates the primitive's uniform buffer. */
 	void UpdateUniformBuffer(FRHICommandListImmediate& RHICmdList);
@@ -466,7 +486,7 @@ public:
 	void BeginDeferredUpdateStaticMeshesWithoutVisibilityCheck();
 
 	/** Adds the primitive's static meshes to the scene. */
-	static void AddStaticMeshes(FRHICommandListImmediate& RHICmdList, FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos, bool bUpdateStaticDrawLists = true);
+	static void AddStaticMeshes(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos, bool bCacheMeshDrawCommands = true);
 
 	/** Removes the primitive's static meshes from the scene. */
 	void RemoveStaticMeshes();
@@ -485,6 +505,16 @@ public:
 
 	/** Adds a request to update GPU scene representation. */
 	RENDERER_API bool RequestGPUSceneUpdate(EPrimitiveDirtyState PrimitiveDirtyState = EPrimitiveDirtyState::ChangedAll);
+
+	/** Marks the primitive UB as needing updated and requests a GPU scene update */
+	void MarkGPUStateDirty(EPrimitiveDirtyState PrimitiveDirtyState = EPrimitiveDirtyState::ChangedAll)
+	{
+		SetNeedsUniformBufferUpdate(true);
+		RequestGPUSceneUpdate(PrimitiveDirtyState);
+	}
+
+	/** Refreshes a primitive's references to raster bins. To be called after changes that might have invalidated them. */
+	RENDERER_API void RefreshNaniteRasterBins();
 
 	/** 
 	 * Builds an array of all primitive scene info's in this primitive's attachment group. 
@@ -592,6 +622,9 @@ public:
 
 #if RHI_RAYTRACING
 	static void UpdateCachedRaytracingData(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
+
+	bool IsCachedRayTracingGeometryValid() const;
+
 	RENDERER_API FRHIRayTracingGeometry* GetStaticRayTracingGeometryInstance(int LodLevel) const;
 
 	int GetRayTracingGeometryNum() const { return RayTracingGeometries.Num(); }
@@ -599,7 +632,8 @@ public:
 
 	/** Return primitive fullname (for debugging only). */
 	FString GetFullnameForDebuggingOnly() const;
-
+	/** Return primitive Owner actor name (for debugging only). */
+	FString GetOwnerActorNameOrLabelForDebuggingOnly() const;
 	FORCEINLINE bool ShouldCacheShadowAsStatic() const
 	{
 		return bCacheShadowAsStatic;
@@ -648,6 +682,15 @@ private:
 	/** True if the primitive should be treated as static for the purpose of caching shadows */
 	bool bCacheShadowAsStatic : 1;
 
+	/** True if the Nanite raster bins were registered with custom depth enabled */
+	bool bNaniteRasterBinsRenderCustomDepth : 1;
+
+	/** True if the primitive is queued for add. */
+	bool bPendingAddToScene : 1;
+	
+	/** True if the primitive is queued to have its virtual texture flushed. */
+	bool bPendingFlushVirtualTexture : 1;
+
 	/** Index into the scene's PrimitivesNeedingLevelUpdateNotification array for this primitive scene info level. */
 	int32 LevelUpdateNotificationIndex;
 
@@ -677,7 +720,7 @@ private:
 		class FVolumetricLightmapSceneData* VolumetricLightmapSceneData);
 
 	/** Creates cached mesh draw commands for all meshes. */
-	static void CacheMeshDrawCommands(FRHICommandListImmediate& RHICmdList, FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
+	static void CacheMeshDrawCommands(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos);
 
 	/** Removes cached mesh draw commands for all meshes. */
 	void RemoveCachedMeshDrawCommands();
@@ -686,13 +729,17 @@ private:
 	FPrimitiveVirtualTextureFlags RuntimeVirtualTextureFlags;
 
 	/** Creates or add ref's cached draw commands for each unique material instance found within the scene. */
-	static void CacheNaniteDrawCommands(FRHICommandListImmediate& RHICmdList, FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
+	static void CacheNaniteDrawCommands(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
 
 	/** Removes or remove ref's cached draw commands */
 	void RemoveCachedNaniteDrawCommands();
 
 #if RHI_RAYTRACING
 	TArray<FRayTracingGeometry*> RayTracingGeometries;
+
+	// Cache pointer to FRayTracingGeometry used by cached ray tracing instance
+	// since primitives using ERayTracingPrimitiveFlags::CacheInstances don't fill the RayTracingGeometries array above
+	const FRayTracingGeometry* CachedRayTracingGeometry;
 
 	/** Creates cached ray tracing representations for all meshes. */
 	static void CacheRayTracingPrimitives(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);

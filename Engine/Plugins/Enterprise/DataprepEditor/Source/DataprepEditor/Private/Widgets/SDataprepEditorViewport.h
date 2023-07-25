@@ -2,31 +2,24 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
 #ifdef VIEWPORT_EXPERIMENTAL
 #include "ViewportExperimental.h"
 #endif
 
-#include "AdvancedPreviewScene.h"
 #include "Components/StaticMeshComponent.h"
-#include "Styling/AppStyle.h"
 #include "EditorViewportClient.h"
-#include "Layout/Visibility.h"
-#include "Math/Box.h"
 #include "SCommonEditorViewportToolbarBase.h"
 #include "SEditorViewport.h"
-#include "SlateFwd.h"
-#include "UObject/GCObject.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 
 #include "SDataprepEditorViewport.generated.h"
 
 class AActor;
+class FAdvancedPreviewScene;
 class FDataprepEditor;
 class SDataprepEditorViewport;
 class SVerticalBox;
 class STextBlock;
+class SViewportToolBar;
 class UMaterialInterface;
 class UMaterialInstanceConstant;
 class UStaticMesh;

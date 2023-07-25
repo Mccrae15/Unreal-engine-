@@ -2,6 +2,7 @@
 
 #include "Game/DisplayClusterGameManager.h"
 
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
 
@@ -196,13 +197,60 @@ ADisplayClusterRootActor* FDisplayClusterGameManager::FindRootActor(UWorld* InWo
 	const TArray<ULevelStreaming*>& StreamingLevels = InWorld->GetStreamingLevels();
 	for (const ULevelStreaming* const StreamingLevel : StreamingLevels)
 	{
-		if (StreamingLevel && StreamingLevel->GetCurrentState() == ULevelStreaming::ECurrentState::LoadedVisible)
+		if (StreamingLevel && StreamingLevel->GetLevelStreamingState() == ELevelStreamingState::LoadedVisible)
 		{
 			// Look for the actor in those sub-levels that have been loaded already
 			const TSoftObjectPtr<UWorld>& SubWorldAsset = StreamingLevel->GetWorldAsset();
 			FindRootActorsInWorld(SubWorldAsset.Get(), FoundActors);
 		}
 	}
+
+#if WITH_EDITOR
+	if (InWorld->IsPlayInEditor())
+	{
+		/** We need to fix it in the following way :
+		 * - When multiple DCRA are available in the scene, and only one has Preview Node selected, then we should see the preview
+		 * - When multiple DCRA are available in the sceneand multiple Preview Node is selected, we should write a warning in the logand print the name of the selected DCRA for the preview.
+		 */
+		TArray<ADisplayClusterRootActor*> FoundActorsForPIE;
+		for (ADisplayClusterRootActor* RootActorIt : FoundActors)
+		{
+			if (RootActorIt && !(RootActorIt->PreviewNodeId.IsEmpty() || RootActorIt->PreviewNodeId == DisplayClusterConfigurationStrings::gui::preview::PreviewNodeNone))
+			{
+				FoundActorsForPIE.Add(RootActorIt);
+			}
+		}
+
+		if (FoundActorsForPIE.IsEmpty())
+		{
+			// No DCRA for PIE preview
+			return nullptr;
+		}
+
+		ADisplayClusterRootActor* ActiveRootActor = FoundActorsForPIE[0];
+
+		if (FoundActorsForPIE.Num() > 1)
+		{
+			FString PreviewActorsNames;
+			for (ADisplayClusterRootActor* RootActorIt : FoundActorsForPIE)
+			{
+				if (PreviewActorsNames.IsEmpty())
+				{
+					PreviewActorsNames.Appendf(TEXT("%s"), *RootActorIt->GetName());
+				}
+				else
+				{
+					PreviewActorsNames.Appendf(TEXT(", %s"), *RootActorIt->GetName());
+
+				}
+			}
+
+			UE_LOG(LogDisplayClusterGame, Warning, TEXT("Multiple PIE Preview Nodes selected at DisplayClusterRootActors - %s. Active : %s"), *PreviewActorsNames , *ActiveRootActor->GetName());
+		}
+
+		return ActiveRootActor;
+	}
+#endif
 
 	// Now iterate over all DCRA instances we have found to pick the one that corresponds to the config data
 	for (ADisplayClusterRootActor* Actor : FoundActors)

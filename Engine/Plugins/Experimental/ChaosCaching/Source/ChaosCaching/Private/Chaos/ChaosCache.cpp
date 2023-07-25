@@ -1,11 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Chaos/ChaosCache.h"
-#include "Chaos/ChaosCachingPlugin.h"
-#include "Components/PrimitiveComponent.h"
-#include "UObject/UE5MainStreamObjectVersion.h"
+#include "Chaos/CacheEvents.h"
+#include "GeometryCollection/GeometryCollection.h"
+#include "GeometryCollection/TransformCollection.h"
+#include "UObject/Package.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ChaosCache)
 
 bool bChaosCacheUseInterpolation = true;
 FAutoConsoleVariableRef CVarChaosCacheUseInterpolation(

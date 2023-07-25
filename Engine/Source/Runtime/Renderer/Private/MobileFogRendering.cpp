@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "CoreMinimal.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "HAL/IConsoleManager.h"
 #include "RHI.h"
 #include "Shader.h"
@@ -13,7 +14,10 @@
 #include "SceneRendering.h"
 #include "ScenePrivate.h"
 #include "FogRendering.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
+#include "MobileBasePassRendering.h"
+#include "SkyAtmosphereRendering.h"
 
 static TAutoConsoleVariable<int32> CVarPixelFogQuality(
 	TEXT("r.Mobile.PixelFogQuality"),
@@ -96,8 +100,15 @@ class FMobileFogPS : public FGlobalShader
 		return true;
 	}
 
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("IS_MOBILE_DEPTHREAD_SUBPASS"), 1u);
+	}
+
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FViewShaderParameters, View)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FMobileBasePassUniformParameters, MobileBasePass)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

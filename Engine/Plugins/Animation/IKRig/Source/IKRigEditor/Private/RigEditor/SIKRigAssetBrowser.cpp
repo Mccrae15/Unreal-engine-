@@ -10,6 +10,7 @@
 #include "Animation/PoseAsset.h"
 #include "RigEditor/IKRigController.h"
 #include "RigEditor/IKRigEditorController.h"
+#include "Engine/SkeletalMesh.h"
 
 #define LOCTEXT_NAMESPACE "IKRigAssetBrowser"
 
@@ -35,6 +36,13 @@ void SIKRigAssetBrowser::Construct(
 void SIKRigAssetBrowser::RefreshView()
 {
 	FAssetPickerConfig AssetPickerConfig;
+
+	// assign "referencer" asset for project filtering
+	if (EditorController.IsValid())
+	{
+		const TObjectPtr<UObject> Referencer = EditorController.Pin()->AssetController->GetAsset();
+		AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Referencer));
+	}
 	
 	// setup filtering
 	AssetPickerConfig.Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
@@ -135,14 +143,21 @@ bool SIKRigAssetBrowser::OnShouldFilterAsset(const struct FAssetData& AssetData)
 		return true;
 	}
 
+	// get skeletal mesh
+	USkeletalMesh* SkeletalMesh = Controller->AssetController->GetSkeletalMesh();
+	if (!SkeletalMesh)
+	{
+		return true;
+	}
+	
 	// get skeleton
-	USkeleton* DesiredSkeleton = Controller->AssetController->GetSkeleton();;
+	USkeleton* DesiredSkeleton = SkeletalMesh->GetSkeleton();
 	if (!DesiredSkeleton)
 	{
 		return true;
 	}
 
-	return !DesiredSkeleton->IsCompatibleSkeletonByAssetData(AssetData);
+	return !DesiredSkeleton->IsCompatibleForEditor(AssetData);
 }
 
 #undef LOCTEXT_NAMESPACE

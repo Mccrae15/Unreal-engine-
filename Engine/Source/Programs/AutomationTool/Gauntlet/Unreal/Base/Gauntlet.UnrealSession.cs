@@ -13,6 +13,7 @@ using System.Drawing;
 using System.Linq;
 using System.Collections;
 using System.Diagnostics;
+using EpicGames.Core;
 
 namespace Gauntlet
 {
@@ -193,6 +194,10 @@ namespace Gauntlet
 				{
 					RequiredBuildFlags |= BuildFlags.Packaged;
 				}
+				else if (Globals.Params.ParseParam("staged") && TargetBuildSupport.CanSupportBuildType(BuildFlags.Loose))
+				{
+					RequiredBuildFlags |= BuildFlags.Loose;
+				}
 			}
 
 			InstallOnly = false;
@@ -268,7 +273,7 @@ namespace Gauntlet
 		}
 
 		/// <summary>
-		/// Helper for accessing server process. May return null if no serer is invlved
+		/// Helper for accessing server process. May return null if no server is involved
 		/// </summary>
 		public IAppInstance ServerApp
 		{
@@ -279,7 +284,7 @@ namespace Gauntlet
 		}
 
 		/// <summary>
-		/// Helper for accessing server process. May return null if no serer is invlved
+		/// Helper for accessing editor process. May return null if no editor is involved
 		/// </summary>
 		public IAppInstance EditorApp
 		{
@@ -515,7 +520,7 @@ namespace Gauntlet
 
 			if (!CheckRolesArePossible(ref ValidationIssues))
 			{
-				ValidationIssues.ForEach(S => Log.Error("{0}", S));
+				ValidationIssues.ForEach(S => Log.Error(KnownLogEvents.Gauntlet_BuildDropEvent, S));
 				throw new AutomationException("One or more issues occurred when validating build {0} against requested roles", InSource.BuildName);
 			}
 
@@ -774,7 +779,7 @@ namespace Gauntlet
 							string ErrorMessage = string.Format("Failed to install app onto device {0} for role {1}. {2}. Will retry with new device", Device, Role, Ex);
 							if (ErrorMessage.Contains("not enough space"))
 							{
-								Log.Warning(ErrorMessage);
+								Log.Error(KnownLogEvents.Gauntlet_DeviceEvent, ErrorMessage);
 								if (Device.Platform == BuildHostPlatform.Current.Platform)
 								{
 									// If on desktop platform, we are not retrying.
@@ -784,7 +789,7 @@ namespace Gauntlet
 							}
 							else
 							{
-								Log.Info(ErrorMessage);
+								Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, ErrorMessage);
 							}
 							UnrealDeviceReservation.MarkProblemDevice(Device);
 							InstallSuccess = false;
@@ -863,13 +868,13 @@ namespace Gauntlet
 						catch (DeviceException Ex)
 						{
 							// shutdown all 
-							Log.Warning("Device {0} threw an exception during launch. \nException={1}", CurrentInstall.Device, Ex.Message);
+							Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Device {Name} threw an exception during launch. \nException={Exception}", CurrentInstall.Device, Ex.Message);
 							Success = false;
 						}
 
 						if (Success == false)
 						{
-							Log.Warning("Failed to start build on {0}. Marking as problem device and retrying with new set", CurrentInstall.Device);
+							Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Failed to start build on {Name}. Marking as problem device and retrying with new set", CurrentInstall.Device);
 
 							// terminate anything that's running
 							foreach (UnrealSessionInstance.RoleInstance RunningRole in RunningRoles)

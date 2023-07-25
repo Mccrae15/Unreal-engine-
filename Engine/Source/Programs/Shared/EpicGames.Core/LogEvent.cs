@@ -32,6 +32,9 @@ namespace EpicGames.Core
 		public static readonly Utf8String Type = new Utf8String("$type");
 		public static readonly Utf8String Text = new Utf8String("$text");
 
+		public static readonly Utf8String File = new Utf8String("file"); // For source file / asset types
+		public static readonly Utf8String Identifier = new Utf8String("identifier"); // For symbols
+
 		public static readonly Utf8String Exception = new Utf8String("exception");
 		public static readonly Utf8String Trace = new Utf8String("trace");
 		public static readonly Utf8String InnerException = new Utf8String("innerException");
@@ -200,7 +203,9 @@ namespace EpicGames.Core
 		/// </summary>
 		/// <param name="reader">The Json reader</param>
 		/// <returns>New log event</returns>
+#pragma warning disable CA1045 // Do not pass types by reference
 		public static LogEvent Read(ref Utf8JsonReader reader)
+#pragma warning restore CA1045 // Do not pass types by reference
 		{
 			DateTime time = new DateTime(0);
 			LogLevel level = LogLevel.None;
@@ -221,7 +226,7 @@ namespace EpicGames.Core
 				}
 				else if (Utf8StringComparer.OrdinalIgnoreCase.Equals(propertyName, LogEventPropertyName.Level.Span))
 				{
-					level = Enum.Parse<LogLevel>(reader.GetString());
+					level = Enum.Parse<LogLevel>(reader.GetString()!);
 				}
 				else if (Utf8StringComparer.OrdinalIgnoreCase.Equals(propertyName, LogEventPropertyName.Id.Span))
 				{
@@ -237,11 +242,11 @@ namespace EpicGames.Core
 				}
 				else if (Utf8StringComparer.OrdinalIgnoreCase.Equals(propertyName, LogEventPropertyName.Message.Span))
 				{
-					message = reader.GetString();
+					message = reader.GetString()!;
 				}
 				else if (Utf8StringComparer.OrdinalIgnoreCase.Equals(propertyName, LogEventPropertyName.Format.Span))
 				{
-					format = reader.GetString();
+					format = reader.GetString()!;
 				}
 				else if (Utf8StringComparer.OrdinalIgnoreCase.Equals(propertyName, LogEventPropertyName.Properties.Span))
 				{
@@ -280,7 +285,7 @@ namespace EpicGames.Core
 				case JsonTokenType.StartObject:
 					return ReadStructuredPropertyValue(ref reader);
 				case JsonTokenType.String:
-					return reader.GetString();
+					return reader.GetString()!;
 				case JsonTokenType.Number:
 					if (reader.TryGetInt32(out int intValue))
 					{
@@ -310,11 +315,11 @@ namespace EpicGames.Core
 			{
 				if (Utf8StringComparer.OrdinalIgnoreCase.Equals(propertyName, LogEventPropertyName.Type.Span))
 				{
-					type = reader.GetString();
+					type = reader.GetString() ?? String.Empty;
 				}
 				else if (Utf8StringComparer.OrdinalIgnoreCase.Equals(propertyName, LogEventPropertyName.Text.Span))
 				{
-					text = reader.GetString();
+					text = reader.GetString() ?? String.Empty;
 				}
 				else
 				{
@@ -440,9 +445,13 @@ namespace EpicGames.Core
 		/// </summary>
 		public static LogEvent FromState<TState>(LogLevel level, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
 		{
-			if(state is LogEvent logEvent)
+			if (state is LogEvent logEvent)
 			{
 				return logEvent;
+			}
+			if (state is JsonLogEvent jsonLogEvent)
+			{
+				return Read(jsonLogEvent.Data.Span);
 			}
 
 			DateTime time = DateTime.UtcNow;
@@ -541,7 +550,7 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Multiple inner exceptions, in the case of an <see cref="AggregateException"/>
 		/// </summary>
-		public List<LogException> InnerExceptions { get; set; } = new List<LogException>();
+		public List<LogException> InnerExceptions { get; } = new List<LogException>();
 
 		/// <summary>
 		/// Constructor
@@ -574,7 +583,6 @@ namespace EpicGames.Core
 				AggregateException? aggregateException = exception as AggregateException;
 				if (aggregateException != null && aggregateException.InnerExceptions.Count > 0)
 				{
-					result.InnerExceptions = new List<LogException>();
 					for (int idx = 0; idx < 16 && idx < aggregateException.InnerExceptions.Count; idx++) // Cap number of exceptions returned to avoid huge messages
 					{
 						LogException innerException = FromException(aggregateException.InnerExceptions[idx]);
@@ -586,6 +594,54 @@ namespace EpicGames.Core
 		}
 	}
 
+	/// <summary>
+	/// Interface for a log event sink
+	/// </summary>
+	public interface ILogEventSink
+	{
+		/// <summary>
+		/// Process log event 
+		/// </summary>
+		/// <param name="logEvent">Log event</param>
+		void ProcessEvent(LogEvent logEvent);
+	}
+
+	/// <summary>
+	/// Simple filtering log event sink with a callback for convenience
+	/// </summary>
+	public class FilteringEventSink : ILogEventSink
+	{
+		/// <summary>
+		/// Log events received
+		/// </summary>
+		public IReadOnlyList<LogEvent> LogEvents => _logEvents;
+		
+		private readonly List<LogEvent> _logEvents = new List<LogEvent>();
+		private readonly int[] _includeEventIds;
+		private readonly Action<LogEvent>? _eventCallback;
+		
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="includeEventIds">Event IDs to include</param>
+		/// <param name="eventCallback">Optional callback function for each event received</param>
+		public FilteringEventSink(int[] includeEventIds, Action<LogEvent>? eventCallback = null)
+		{
+			_includeEventIds = includeEventIds;
+			_eventCallback = eventCallback;
+		}
+
+		/// <inheritdoc/>
+		public void ProcessEvent(LogEvent logEvent)
+		{
+			if (_includeEventIds.Any(x => x == logEvent.Id.Id))
+			{
+				_logEvents.Add(logEvent);
+				_eventCallback?.Invoke(logEvent);
+			}
+		}
+	}
+	
 	/// <summary>
 	/// Converter for serialization of <see cref="LogEvent"/> instances to Json streams
 	/// </summary>

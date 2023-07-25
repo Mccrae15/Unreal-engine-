@@ -2,12 +2,14 @@
 
 #include "Misc/SecureHash.h"
 
+#include "Async/AsyncWork.h"
 #include "HAL/FileManager.h"
+#include "Memory/MemoryView.h"
 #include "Misc/Paths.h"
 #include "Misc/StringBuilder.h"
 #include "Serialization/CompactBinaryWriter.h"
 
-#if defined(_M_AMD64) || defined(__x86_64__)
+#if (defined(_M_AMD64) || defined(__x86_64__)) && !defined(_M_ARM64EC)
 
 #include <immintrin.h>
 #if PLATFORM_COMPILER_CLANG
@@ -22,7 +24,7 @@
 #define UE_PLATFORM_SHA_FALLBACK 0
 #endif
 
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
 
 // on ARMv8 enable SHA instructions unconditionally only when they are enabled with compiler
 #ifdef __ARM_FEATURE_CRYPTO
@@ -598,6 +600,28 @@ FMD5Hash FMD5Hash::HashFileFromArchive( FArchive* Ar, TArray<uint8>* Buffer)
 
 	return Hash;
 }
+
+FCbWriter& FMD5Hash::WriteCompactBinary(FCbWriter& Writer) const
+{
+	// TODO: Should we write bIsValid as well?
+	Writer.AddBinary(MakeMemoryView(Bytes, GetSize()));
+	return Writer;
+}
+
+bool LoadFromCompactBinary(FCbFieldView Field, FMD5Hash& OutHash)
+{
+	FMemoryView BinaryView = Field.AsBinaryView();
+	if (BinaryView.GetSize() != OutHash.GetSize())
+	{
+		OutHash.bIsValid = false;
+		return false;
+	}
+
+	FMemory::Memcpy(OutHash.Bytes, BinaryView.GetData(), OutHash.GetSize());
+	OutHash.bIsValid = true;
+	return true;
+}
+
 
 
 /*-----------------------------------------------------------------------------
@@ -1509,3 +1533,16 @@ void appOnFailSHAVerification(const TCHAR* FailedPathname, bool bFailedDueToMiss
 #endif
 }
 
+bool FBufferReaderWithSHA::Close()
+{
+	// don't redo if we were already closed
+	if (ReaderData)
+	{
+		// kick off an SHA verification task to verify. this will handle any errors we get
+		(new FAutoDeleteAsyncTask<FAsyncSHAVerify>(ReaderData, ReaderSize, bFreeOnClose, *SourcePathname, bIsUnfoundHashAnError))->StartBackgroundTask();
+		ReaderData = NULL;
+	}
+
+	// note that we don't allow the base class CLose to happen, as the FAsyncSHAVerify will free the buffer if needed
+	return !IsError();
+}

@@ -286,7 +286,7 @@ void FLevelEditorContextMenu::RegisterActorContextMenu()
 			FSlateIcon AssetIcon = ReferencedAssets.Num() == 1 ? FSlateIconFinder::FindIconForClass(ReferencedAssets[0]->GetClass()) : FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.Default");
 
 			// Edit and Find entries (a) always appear in main menu, and (b) appear in right-click menu if referenced asset is available
-			if (LevelEditorContext->ContextType == ELevelEditorMenuContext::MainMenu || ReferencedAssets.Num() > 0 || SoftReferencedAssets.Num() > 0)
+			if (LevelEditorContext->ContextType == ELevelEditorMenuContext::MainMenu || ReferencedAssets.Num() > 0 || SoftReferencedAssets.Num() > 0 || SelectionInfo.bHaveBrowseOverride)
 			{
 				Section.AddMenuEntry(FGlobalEditorCommonCommands::Get().FindInContentBrowser);
 
@@ -1451,8 +1451,8 @@ void FLevelEditorContextMenuImpl::FillMergeActorsMenu(UToolMenu* Menu)
 
 void FLevelEditorContextMenuImpl::AddSourceControlMenu(FToolMenuSection& Section)
 {
-	Section.AddSubMenu(TEXT("SourceControlSubMenu"), LOCTEXT("SourceControlSubMenu", "Source Control"),
-					   LOCTEXT("SourceControlSubMenu_ToolTip", "Opens the Source Control sub menu"),
+	Section.AddSubMenu(TEXT("SourceControlSubMenu"), LOCTEXT("SourceControlSubMenu", "Revision Control"),
+					   LOCTEXT("SourceControlSubMenu_ToolTip", "Opens the Revision Control sub menu"),
 					   FNewToolMenuDelegate::CreateStatic(&FLevelEditorContextMenuImpl::FillSourceControlMenu),
 					   false, // default value
 					   FSlateIcon(FAppStyle::GetAppStyleSetName(), "MainFrame.ConnectToSourceControl"));
@@ -1460,7 +1460,7 @@ void FLevelEditorContextMenuImpl::AddSourceControlMenu(FToolMenuSection& Section
 
 void FLevelEditorContextMenuImpl::FillSourceControlMenu(UToolMenu* Menu)
 {
-	FToolMenuSection& Section = Menu->AddSection(TEXT("Source Control"));
+	FToolMenuSection& Section = Menu->AddSection(TEXT("Revision Control"));
 
 	Section.AddMenuEntry(FLevelEditorCommands::Get().ShowActorHistory);
 }

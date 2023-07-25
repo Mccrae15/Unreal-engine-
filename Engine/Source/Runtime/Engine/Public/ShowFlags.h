@@ -376,6 +376,8 @@ private:
 		SetVisualizeBuffer(false);
 		SetVisualizeNanite(false);
 		SetVisualizeLumen(false);
+		SetVisualizeSubstrate(false);
+		SetVisualizeGroom(false);
 		SetVisualizeVirtualShadowMap(false);
 		SetVectorFields(false);
 		SetGBufferHints(false);
@@ -387,6 +389,8 @@ private:
 		SetPhysicalMaterialMasks(false);
 		SetVisualizeMotionBlur(false);
 		SetVisualizeMotionVectors(false);
+		SetVisualizeReprojection(false);
+		SetVisualizeTemporalUpscaler(false);
 		SetEditingLevelInstance(false);
 		SetSelectionOutline(false);
 		SetDebugAI(false);
@@ -474,7 +478,7 @@ private:
 		SetVisualizePostProcessStack(false);
 		SetVirtualTexturePrimitives(false);
 		SetVisualizeVolumetricCloudConservativeDensity(false);
-		SetVisualizeStrataMaterial(false);
+		SetVisualizeVolumetricCloudEmptySpaceSkipping(false);
 		SetDrawOnlyVSMInvalidatingGeo(false);
 		SetDebugDrawDistantVirtualSMLights(false);
 
@@ -483,7 +487,7 @@ private:
 		SetLumenGlobalTraces(true);
 		SetLumenFarFieldTraces(true);
 		SetLumenSecondaryBounces(true);
-		SetLumenScreenSpaceDirectionalOcclusion(true);
+		SetLumenShortRangeAmbientOcclusion(true);
 	}
 
 

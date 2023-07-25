@@ -72,11 +72,11 @@ class ENGINE_API FAudioDeviceManagerDelegates
 {
 public:
 	// This delegate is called whenever an entirely new audio device is created.
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAudioDeviceCreated, Audio::FDeviceId /* AudioDeviceId*/);
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam(FOnAudioDeviceCreated, Audio::FDeviceId /* AudioDeviceId*/);
 	static FOnAudioDeviceCreated OnAudioDeviceCreated;
 
 	// This delegate is called whenever an audio device is destroyed.
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAudioDeviceDestroyed, Audio::FDeviceId /* AudioDeviceId*/);
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam(FOnAudioDeviceDestroyed, Audio::FDeviceId /* AudioDeviceId*/);
 	static FOnAudioDeviceDestroyed OnAudioDeviceDestroyed;
 };
 
@@ -140,6 +140,7 @@ public:
 	 * handle is invalid then a NULL device ptr will be returned.
 	 */
 	FAudioDevice* GetAudioDeviceRaw(Audio::FDeviceId InDeviceID);
+	const FAudioDevice* GetAudioDeviceRaw(Audio::FDeviceId InDeviceID) const;
 
 	/**
 	  Sets the device associated with the given world.
@@ -172,7 +173,9 @@ public:
 	/** Updates all active audio devices */
 	void UpdateActiveAudioDevices(bool bGameTicking);
 
+	/** Iterates over all managed audio devices */
 	void IterateOverAllDevices(TUniqueFunction<void(Audio::FDeviceId, FAudioDevice*)> ForEachDevice);
+	void IterateOverAllDevices(TUniqueFunction<void(Audio::FDeviceId, const FAudioDevice*)> ForEachDevice) const;
 
 	/** Tracks objects in the active audio devices. */
 	void AddReferencedObjects(FReferenceCollector& Collector);

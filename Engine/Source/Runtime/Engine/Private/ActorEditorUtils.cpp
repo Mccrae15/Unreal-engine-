@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ActorEditorUtils.h"
-#include "Components/ActorComponent.h"
-#include "GameFramework/Actor.h"
+#include "Engine/Level.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "Engine/Brush.h"
 

@@ -2,12 +2,17 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+
+/** Whether or not caching of actor/subobject names to the stack should be enabled, for async demo recording crashdumps */
+#ifndef UE_NET_REPACTOR_NAME_DEBUG
+	#define UE_NET_REPACTOR_NAME_DEBUG 0
+#endif
+
 
 /** Secondary condition to check before considering the replication of a lifetime property. */
 UENUM(BlueprintType)
-enum ELifetimeCondition
+enum ELifetimeCondition : int
 {
 	COND_None = 0							UMETA(DisplayName = "None"),							// This property has no condition, and will send anytime it changes
 	COND_InitialOnly = 1					UMETA(DisplayName = "Initial Only"),					// This property will only attempt to send on the initial bunch
@@ -47,3 +52,7 @@ enum class EChannelCloseReason : uint8
 };
 
 COREUOBJECT_API const TCHAR* LexToString(const EChannelCloseReason Value);
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

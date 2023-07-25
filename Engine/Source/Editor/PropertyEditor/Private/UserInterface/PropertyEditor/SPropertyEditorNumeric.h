@@ -21,6 +21,7 @@
 #include "PropertyHandle.h"
 #include "Presentation/PropertyEditor/PropertyEditor.h"
 #include "PropertyEditorHelpers.h"
+#include "NumericPropertyParams.h"
 #include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -257,99 +258,21 @@ public:
 		else
 		{
 			// Instance metadata overrides per-class metadata.
-			auto GetMetaDataFromKey = [PropertyHandle](const FName& Key) -> const FString&
+			const typename TNumericPropertyParams<NumericType>::FMetaDataGetter MetaDataGetter = TNumericPropertyParams<NumericType>::FMetaDataGetter::CreateLambda([&](const FName& Key)
 			{
 				const FString* InstanceValue = PropertyHandle->GetInstanceMetaData(Key);
 				return (InstanceValue != nullptr) ? *InstanceValue : PropertyHandle->GetMetaData(Key);
-			};
+			});
 
-			const FString& MetaUIMinString = GetMetaDataFromKey("UIMin");
-			const FString& MetaUIMaxString = GetMetaDataFromKey("UIMax");
-			const FString& SliderExponentString = GetMetaDataFromKey("SliderExponent");
-			const FString& LinearDeltaSensitivityString = GetMetaDataFromKey("LinearDeltaSensitivity");
-			const FString& DeltaString = GetMetaDataFromKey("Delta");
-			const FString& ClampMinString = GetMetaDataFromKey("ClampMin");
-			const FString& ClampMaxString = GetMetaDataFromKey("ClampMax");
-
-			// If no UIMin/Max was specified then use the clamp string
-			const FString& UIMinString = MetaUIMinString.Len() ? MetaUIMinString : ClampMinString;
-			const FString& UIMaxString = MetaUIMaxString.Len() ? MetaUIMaxString : ClampMaxString;
-
-			NumericType ClampMin = TNumericLimits<NumericType>::Lowest();
-			NumericType ClampMax = TNumericLimits<NumericType>::Max();
-
-			if (!ClampMinString.IsEmpty())
-			{
-				TTypeFromString<NumericType>::FromString(ClampMin, *ClampMinString);
-			}
-
-			if (!ClampMaxString.IsEmpty())
-			{
-				TTypeFromString<NumericType>::FromString(ClampMax, *ClampMaxString);
-			}
-
-			NumericType UIMin = TNumericLimits<NumericType>::Lowest();
-			NumericType UIMax = TNumericLimits<NumericType>::Max();
-			TTypeFromString<NumericType>::FromString(UIMin, *UIMinString);
-			TTypeFromString<NumericType>::FromString(UIMax, *UIMaxString);
-
-			NumericType SliderExponent = NumericType(1);
-			if (SliderExponentString.Len())
-			{
-				TTypeFromString<NumericType>::FromString(SliderExponent, *SliderExponentString);
-			}
-
-			NumericType Delta = NumericType(0);
-			if (DeltaString.Len())
-			{
-				TTypeFromString<NumericType>::FromString(Delta, *DeltaString);
-			}
-
-			int32 LinearDeltaSensitivity = 0;
-			if (LinearDeltaSensitivityString.Len())
-			{
-				TTypeFromString<int32>::FromString(LinearDeltaSensitivity, *LinearDeltaSensitivityString);
-			}
-			// LinearDeltaSensitivity only works in SSpinBox if delta is provided, so add it in if it wasn't.
-			Delta = (LinearDeltaSensitivity != 0 && Delta == NumericType(0)) ? NumericType(1) : Delta;
-
-			if (ClampMin >= ClampMax && (ClampMinString.Len() || ClampMaxString.Len()))
-			{
-				UE_LOG(LogPropertyNode, Warning, TEXT("Clamp Min (%s) >= Clamp Max (%s) for Ranged Numeric property %s"), *ClampMinString, *ClampMaxString, *Property->GetPathName());
-			}
-
-			const NumericType ActualUIMin = FMath::Max(UIMin, ClampMin);
-			const NumericType ActualUIMax = FMath::Min(UIMax, ClampMax);
-
-			TOptional<NumericType> MinValue = ClampMinString.Len() ? ClampMin : TOptional<NumericType>();
-			TOptional<NumericType> MaxValue = ClampMaxString.Len() ? ClampMax : TOptional<NumericType>();
-			TOptional<NumericType> SliderMinValue = (UIMinString.Len()) ? ActualUIMin : TOptional<NumericType>();
-			TOptional<NumericType> SliderMaxValue = (UIMaxString.Len()) ? ActualUIMax : TOptional<NumericType>();
-
-			if ((ActualUIMin >= ActualUIMax) && (SliderMinValue.IsSet() && SliderMaxValue.IsSet()))
-			{
-				UE_LOG(LogPropertyNode, Warning, TEXT("UI Min (%s) >= UI Max (%s) for Ranged Numeric property %s"), *UIMinString, *UIMaxString, *Property->GetPathName());
-			}
-
-			const FString& WheelStepString = GetMetaDataFromKey("WheelStep");
-			NumericType WheelStepValue = NumericType(0);
-
-			if (!WheelStepString.IsEmpty())
-			{
-				TTypeFromString<NumericType>::FromString(WheelStepValue, *WheelStepString);
-			}
-
-			TOptional<NumericType> WheelStep = WheelStepString.Len() ? WheelStepValue : TOptional<NumericType>();
+			TNumericPropertyParams<NumericType> NumericPropertyParams(Property, MetaDataGetter);
 
 			FObjectPropertyNode* ObjectPropertyNode = PropertyNode->FindObjectItemParent();
-			const bool bAllowSpin = (!ObjectPropertyNode || (1 == ObjectPropertyNode->GetNumObjects()))
-				&& !PropertyHandle->GetBoolMetaData("NoSpinbox");
 
 			// Set up the correct type interface if we want to display units on the property editor
 
 			// First off, check for ForceUnits= meta data. This meta tag tells us to interpret, and always display the value in these units. FUnitConversion::Settings().ShouldDisplayUnits does not apply to such properties
-			const FString& ForcedUnits = PropertyHandle->GetMetaData(TEXT("ForceUnits"));
-			auto PropertyUnits = FUnitConversion::UnitFromString(*ForcedUnits);
+			const FString& ForcedUnits = MetaDataGetter.Execute("ForceUnits");
+			TOptional<EUnit> PropertyUnits = FUnitConversion::UnitFromString(*ForcedUnits);
 			if (PropertyUnits.IsSet())
 			{
 				// Create the type interface and set up the default input units if they are compatible
@@ -368,7 +291,7 @@ public:
 					}
 					else
 					{
-						PropertyUnits = FUnitConversion::UnitFromString(*GetMetaDataFromKey("Units"));
+						PropertyUnits = FUnitConversion::UnitFromString(*MetaDataGetter.Execute("Units"));
 					}
 				}
 
@@ -379,13 +302,25 @@ public:
 
 				// Create the type interface and set up the default input units if they are compatible
 				TypeInterface = MakeShareable(new TNumericUnitTypeInterface<NumericType>(PropertyUnits.GetValue()));
-				auto Value = OnGetValue();
 
+				const FString& MaxFractionalDigitsString = MetaDataGetter.Execute("MaxFractionalDigits");
+				if (!MaxFractionalDigitsString.IsEmpty())
+				{
+					int32 MaxFractionalDigits = 0;
+					if (LexTryParseString(MaxFractionalDigits, *MaxFractionalDigitsString) && MaxFractionalDigits > 0)
+					{
+						TypeInterface->SetMaxFractionalDigits(MaxFractionalDigits);
+					}
+				}
+
+				TOptional<NumericType> Value = OnGetValue();
 				if (Value.IsSet())
 				{
 					TypeInterface->SetupFixedDisplay(Value.GetValue());
 				}
 			}
+
+			const bool bAllowSpin = (!ObjectPropertyNode || (1 == ObjectPropertyNode->GetNumObjects())) && !PropertyHandle->GetBoolMetaData("NoSpinbox");
 
 			ChildSlot
 			[
@@ -394,16 +329,16 @@ public:
 				.AllowSpin(bAllowSpin)
 				.Value(this, &SPropertyEditorNumeric<NumericType>::OnGetValue)
 				.Font(InArgs._Font)
-				.MinValue(MinValue)
-				.MaxValue(MaxValue)
-				.MinSliderValue(SliderMinValue)
-				.MaxSliderValue(SliderMaxValue)
-				.SliderExponent(SliderExponent)
-				.Delta(Delta)
+				.MinValue(NumericPropertyParams.MinValue)
+				.MaxValue(NumericPropertyParams.MaxValue)
+				.MinSliderValue(NumericPropertyParams.MinSliderValue)
+				.MaxSliderValue(NumericPropertyParams.MaxSliderValue)
+				.SliderExponent(NumericPropertyParams.SliderExponent)
+				.Delta(NumericPropertyParams.Delta)
 				// LinearDeltaSensitivity needs to be left unset if not provided, rather than being set to some default
-				.LinearDeltaSensitivity(LinearDeltaSensitivity != 0 ? LinearDeltaSensitivity : TAttribute<int32>())
+				.LinearDeltaSensitivity(NumericPropertyParams.GetLinearDeltaSensitivityAttribute())
 				.AllowWheel(bAllowSpin)
-				.WheelStep(WheelStep)
+				.WheelStep(NumericPropertyParams.WheelStep)
 				.UndeterminedString(LOCTEXT("MultipleValues", "Multiple Values"))
 				.OnValueChanged(this, &SPropertyEditorNumeric<NumericType>::OnValueChanged)
 				.OnValueCommitted(this, &SPropertyEditorNumeric<NumericType>::OnValueCommitted)
@@ -575,15 +510,21 @@ private:
 	{
 		const TSharedRef< IPropertyHandle > PropertyHandle = PropertyEditor->GetPropertyHandle();
 		NumericType OrgValue(0);
-		if (bIsUsingSlider || (PropertyHandle->GetValue(OrgValue) == FPropertyAccess::Fail || OrgValue != NewValue))
+		/* sometimes an FProperty may have been destroyed due to 2 different events invoking this handler (with the same
+		 * NewValue) and the first one nullifying the current FProperty ~ in this case it's too late to not invoke the
+		 * method, but we can not run the code instead */
+		if (PropertyHandle->GetProperty())
 		{
-			PropertyHandle->SetValue(NewValue);
-			LastSliderCommittedValue = NewValue;
-		}
+			if (bIsUsingSlider || (PropertyHandle->GetValue(OrgValue) == FPropertyAccess::Fail || OrgValue != NewValue))
+			{
+				PropertyHandle->SetValue(NewValue);
+				LastSliderCommittedValue = NewValue;
+			}
 
-		if (TypeInterface.IsValid() && !TypeInterface->FixedDisplayUnits.IsSet())
-		{
-			TypeInterface->SetupFixedDisplay(NewValue);
+			if (TypeInterface.IsValid() && !TypeInterface->FixedDisplayUnits.IsSet())
+			{
+				TypeInterface->SetupFixedDisplay(NewValue);
+			}
 		}
 	}
 

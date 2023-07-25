@@ -1,11 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/NetworkObjectList.h"
-#include "Engine/Engine.h"
-#include "Engine/Level.h"
+#include "Engine/NetConnection.h"
 #include "EngineUtils.h"
-#include "Serialization/Archive.h"
 #include "Net/NetworkGranularMemoryLogging.h"
+#include "Engine/ActorChannel.h"
+#include "UObject/Package.h"
 
 namespace UE::Net::Private
 {
@@ -15,7 +15,26 @@ namespace UE::Net::Private
 		bTrackDormantObjectsByLevel,
 		TEXT("When true, network object list will maintain a set of dormant actors per connnection per level."),
 		ECVF_Default);
+
+	static const TCHAR* LexToString(ENetSubObjectStatus SubObjectStatus)
+	{
+		switch (SubObjectStatus)
+		{
+		case ENetSubObjectStatus::Active: return TEXT("Active");
+		case ENetSubObjectStatus::TearOff: return TEXT("TearOff");
+		case ENetSubObjectStatus::Delete: return TEXT("Delete");
+		}
+		return TEXT("Missing");
+	}
 }
+
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+void FNetworkObjectList::FActorSubObjectReferences::CountBytes(FArchive& Ar) const
+{
+	ActiveSubObjectChannelReferences.CountBytes(Ar);
+	InvalidSubObjectChannelReferences.CountBytes(Ar);
+}
+#endif
 
 void FNetworkObjectList::AddInitialObjects(UWorld* const World, UNetDriver* NetDriver)
 {
@@ -395,6 +414,38 @@ void FNetworkObjectList::ClearRecentlyDormantConnection(AActor* const Actor, UNe
 	NetworkObjectInfo->RecentlyDormantConnections.Remove(Connection);
 }
 
+void FNetworkObjectList::OnActorIsTraveling(AActor* TravelingAtor)
+{
+	TSharedPtr<FNetworkObjectInfo>* NetworkObjectInfoPtr = AllNetworkObjects.Find(TravelingAtor);
+	check(NetworkObjectInfoPtr);
+
+	SeamlessTravelingObjects.Add(*NetworkObjectInfoPtr);
+}
+
+void FNetworkObjectList::OnPostSeamlessTravel()
+{
+	for (const TSharedPtr<FNetworkObjectInfo>& SeamlessTravelingActorInfo : SeamlessTravelingObjects)
+	{
+		// Make sure the actor didn't re-register itself during seamless travel
+		if (AllNetworkObjects.Find(SeamlessTravelingActorInfo->Actor) != nullptr)
+		{
+			AActor* TravelingActor = SeamlessTravelingActorInfo->Actor;
+			ensureMsgf(false, TEXT("Seamless traveling actor %s was readded to the netdriver before seamless travel was finished!"), *GetNameSafe(TravelingActor));
+			
+			// Clean our lists of this duplicate info.
+			AllNetworkObjects.Remove(TravelingActor);
+			ActiveNetworkObjects.Remove(TravelingActor);
+			ObjectsDormantOnAllConnections.Remove(TravelingActor);
+		}
+
+		// Add the saved object info back into the active list
+		AllNetworkObjects.Add(SeamlessTravelingActorInfo);
+		ActiveNetworkObjects.Add(SeamlessTravelingActorInfo);
+	}
+
+	SeamlessTravelingObjects.Empty();
+}
+
 void FNetworkObjectList::HandleConnectionAdded()
 {
 	// When a new connection is added, we must add all objects back to the active list so the new connection will process it
@@ -511,6 +562,14 @@ void FNetworkObjectList::CountBytes(FArchive& Ar) const
 			}
 		}
 	);
+
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+	GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("SubObjectChannelReferences", SubObjectChannelReferences.CountBytes(Ar));
+	for (const FActorSubObjectReferences& SubObjectRef : SubObjectChannelReferences)
+	{
+		SubObjectRef.CountBytes(Ar);
+	}
+#endif
 }
 
 void FNetworkObjectList::FlushDormantActors(UNetConnection* const Connection, const FName& PackageName)
@@ -537,3 +596,305 @@ void FNetworkObjectList::FlushDormantActors(UNetConnection* const Connection, co
 		MarkActiveInternal(ActorInfo, Connection, Connection->Driver);
 	}
 }
+
+void FNetworkObjectList::OnActorDestroyed(AActor* DestroyedActor)
+{
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+	SubObjectChannelReferences.Remove(DestroyedActor);
+#endif
+}
+
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+
+FNetworkObjectList::FActorInvalidSubObjectView FNetworkObjectList::FindActorInvalidSubObjects(AActor* OwnerActor) const
+{
+	if (const FActorSubObjectReferences* SubObjectsRefInfo = SubObjectChannelReferences.Find(OwnerActor))
+	{
+		return FActorInvalidSubObjectView(SubObjectsRefInfo->InvalidSubObjectDirtyCount, &(SubObjectsRefInfo->InvalidSubObjectChannelReferences));
+	}
+	else
+	{
+		return FActorInvalidSubObjectView(0);
+	}
+}
+
+void FNetworkObjectList::SetSubObjectForDeletion(AActor* Actor, UObject* SubObject)
+{
+	InvalidateSubObject(Actor, SubObject, ENetSubObjectStatus::Delete);
+}
+
+void FNetworkObjectList::SetSubObjectForTearOff(AActor* Actor, UObject* SubObject)
+{
+	InvalidateSubObject(Actor, SubObject, ENetSubObjectStatus::TearOff);
+}
+
+void FNetworkObjectList::InvalidateSubObject(AActor* Actor, UObject* SubObject, ENetSubObjectStatus InvalidStatus)
+{
+	ensure(InvalidStatus != ENetSubObjectStatus::Active);
+
+	if (FActorSubObjectReferences* SubObjectsRefInfo = SubObjectChannelReferences.Find(Actor))
+	{
+		const TWeakObjectPtr<UObject> SubObjectPtr = SubObject;
+		const FSetElementId FoundId = SubObjectsRefInfo->ActiveSubObjectChannelReferences.FindId(SubObjectPtr);
+
+		if (FoundId.IsValidId())
+		{
+			// Flag its new state
+			SubObjectsRefInfo->ActiveSubObjectChannelReferences[FoundId].Status = InvalidStatus;
+
+			// Move the reference to the destroyed list.
+			SubObjectsRefInfo->InvalidSubObjectChannelReferences.Emplace(MoveTemp(SubObjectsRefInfo->ActiveSubObjectChannelReferences[FoundId]));
+			SubObjectsRefInfo->ActiveSubObjectChannelReferences.Remove(FoundId);
+
+			// Increase dirty count so channels can refresh this list
+			SubObjectsRefInfo->InvalidSubObjectDirtyCount = FMath::Max(SubObjectsRefInfo->InvalidSubObjectDirtyCount + 1, 1); // Wrap around to 1 because 0 is the default actor channel value
+		}
+	}
+}
+
+void FNetworkObjectList::AddSubObjectChannelReference(AActor* OwnerActor, UObject* ReplicatedSubObject, UObject* ReferenceOwner)
+{
+	FActorSubObjectReferences* SubObjectsRefInfo = SubObjectChannelReferences.Find(OwnerActor);
+
+	if (SubObjectsRefInfo == nullptr)
+	{
+		// Create an entry for this actor
+		FSetElementId Index = SubObjectChannelReferences.Emplace(FActorSubObjectReferences(OwnerActor));
+		SubObjectsRefInfo = &(SubObjectChannelReferences[Index]);
+	}
+
+	const TWeakObjectPtr<UObject> SubObjectPtr = ReplicatedSubObject;
+
+	// Find the subobject in the active list first
+	FSubObjectChannelReference* ChannelReferences = SubObjectsRefInfo->ActiveSubObjectChannelReferences.Find(SubObjectPtr);
+
+	if (ChannelReferences == nullptr)
+	{
+		// Look if the object could be in the invalid list
+		ChannelReferences = SubObjectsRefInfo->InvalidSubObjectChannelReferences.FindByKey(SubObjectPtr);
+	}
+
+	if (ChannelReferences)
+	{
+#if DO_REPLICATED_OBJECT_CHANNELREF_CHECKS
+		ensureMsgf(!ChannelReferences->RegisteredOwners.Contains(ReferenceOwner), TEXT("SubObject %s (0x%p) owned by %s was already referenced by (0x%p) %s"), *GetNameSafe(ReplicatedSubObject), ReplicatedSubObject, *GetNameSafe(OwnerActor), ReferenceOwner, *GetNameSafe(ReferenceOwner));
+		ChannelReferences->RegisteredOwners.Add(ReferenceOwner);
+#endif
+
+		ChannelReferences->ChannelRefCount++;
+		check(ChannelReferences->ChannelRefCount < MAX_uint16);
+	}
+	else
+	{
+		bool bWasSet = false;
+		FSetElementId ElementId = SubObjectsRefInfo->ActiveSubObjectChannelReferences.Emplace(FSubObjectChannelReference(SubObjectPtr), &bWasSet);
+
+#if DO_REPLICATED_OBJECT_CHANNELREF_CHECKS
+		SubObjectsRefInfo->ActiveSubObjectChannelReferences[ElementId].RegisteredOwners.Add(ReferenceOwner);
+#endif
+	}
+}
+
+void FNetworkObjectList::RemoveMultipleSubObjectChannelReference(FObjectKey OwnerActorKey, const TArrayView<TWeakObjectPtr<UObject>>& SubObjectsToRemove, UObject* ReferenceOwner)
+{
+	FSetElementId FoundIndex = SubObjectChannelReferences.FindId(OwnerActorKey);
+	if (FoundIndex.IsValidId())
+	{
+		FActorSubObjectReferences& SubObjectsRefInfo = SubObjectChannelReferences[FoundIndex];
+
+		for (const TWeakObjectPtr<UObject>& SubObjectPtr : SubObjectsToRemove)
+		{
+			HandleRemoveAnySubObjectChannelRef(SubObjectsRefInfo, SubObjectPtr, ReferenceOwner);
+		}
+
+		if (SubObjectsRefInfo.HasNoSubObjects())
+		{
+			SubObjectChannelReferences.Remove(FoundIndex);
+		}
+	}
+}
+
+void FNetworkObjectList::RemoveMultipleInvalidSubObjectChannelReference(FObjectKey OwnerActorKey, const TArrayView<TWeakObjectPtr<UObject>>& SubObjectsToRemove, UObject* ReferenceOwner)
+{
+	FSetElementId FoundIndex = SubObjectChannelReferences.FindId(OwnerActorKey);
+	if (FoundIndex.IsValidId())
+	{
+		FActorSubObjectReferences& SubObjectsRefInfo = SubObjectChannelReferences[FoundIndex];
+	
+		for (const TWeakObjectPtr<UObject>& SubObjectPtr : SubObjectsToRemove)
+		{
+			HandleRemoveInvalidSubObjectRef(SubObjectsRefInfo, SubObjectPtr, ReferenceOwner);
+		}
+
+		if (SubObjectsRefInfo.HasNoSubObjects())
+		{
+			SubObjectChannelReferences.Remove(FoundIndex);
+		}
+	}
+}
+
+void FNetworkObjectList::RemoveMultipleActiveSubObjectChannelReference(FObjectKey OwnerActorKey, const TArrayView<TWeakObjectPtr<UObject>>& SubObjectsToRemove, UObject* ReferenceOwner)
+{
+	FSetElementId FoundIndex = SubObjectChannelReferences.FindId(OwnerActorKey);
+	if (FoundIndex.IsValidId())
+	{
+		FActorSubObjectReferences& SubObjectsRefInfo = SubObjectChannelReferences[FoundIndex];
+
+		for (const TWeakObjectPtr<UObject>& SubObjectPtr : SubObjectsToRemove)
+		{
+			bool bWasRemoved = HandleRemoveActiveSubObjectRef(SubObjectsRefInfo, SubObjectPtr, ReferenceOwner);
+
+			// If somehow the object wasn't in the active list, check if it was in the invalid list just to be sure.
+			// It's possible for an object set to be deleted to have it's uobject ptr become innacessible before we replicate it's owner.
+			// Calling this here would act as a safeguard to ensure its reference is removed even if the tear off/force delete command was never sent.
+			if (!bWasRemoved)
+			{
+				HandleRemoveInvalidSubObjectRef(SubObjectsRefInfo, SubObjectPtr, ReferenceOwner);
+			}
+		}
+
+		if (SubObjectsRefInfo.HasNoSubObjects())
+		{
+			SubObjectChannelReferences.Remove(FoundIndex);
+		}
+	}
+}
+
+void FNetworkObjectList::RemoveSubObjectChannelReference(AActor* OwnerActor, const TWeakObjectPtr<UObject>& SubObjectPtr, UObject* ReferenceOwner)
+{
+	FSetElementId FoundIndex = SubObjectChannelReferences.FindId(OwnerActor);
+	if (FoundIndex.IsValidId())
+	{
+		FActorSubObjectReferences& SubObjectsRefInfo = SubObjectChannelReferences[FoundIndex];
+		HandleRemoveAnySubObjectChannelRef(SubObjectsRefInfo, SubObjectPtr, ReferenceOwner);
+
+		if (SubObjectsRefInfo.HasNoSubObjects())
+		{
+			SubObjectChannelReferences.Remove(FoundIndex);
+		}
+	}
+}
+
+void FNetworkObjectList::HandleRemoveAnySubObjectChannelRef(FActorSubObjectReferences& SubObjectsRefInfo, const TWeakObjectPtr<UObject>& SubObjectPtr, UObject* ReferenceOwner)
+{
+	check(SubObjectPtr.IsExplicitlyNull() == false);
+
+	// Look in the active set
+	bool bWasRemoved = HandleRemoveActiveSubObjectRef(SubObjectsRefInfo, SubObjectPtr, ReferenceOwner);
+
+	// Look in the destroyed array
+	if (!bWasRemoved)
+	{
+		bWasRemoved = HandleRemoveInvalidSubObjectRef(SubObjectsRefInfo, SubObjectPtr, ReferenceOwner);
+	}
+
+#if DO_REPLICATED_OBJECT_CHANNELREF_CHECKS
+	ensureMsgf(bWasRemoved, TEXT("HandleRemoveAnySubObjectChannelRef could not find any references for %s (0x%p) owned by %s"), *GetNameSafe(SubObjectPtr.GetEvenIfUnreachable()), SubObjectPtr.GetEvenIfUnreachable(), *GetNameSafe(SubObjectsRefInfo.ActorKey.ResolveObjectPtrEvenIfUnreachable()));
+#endif
+}
+
+bool FNetworkObjectList::HandleRemoveActiveSubObjectRef(FActorSubObjectReferences& SubObjectsRefInfo, const TWeakObjectPtr<UObject>& SubObjectPtr, UObject* ReferenceOwner)
+{
+	FSetElementId FoundId = SubObjectsRefInfo.ActiveSubObjectChannelReferences.FindId(SubObjectPtr);
+	if (FoundId.IsValidId())
+	{
+		FSubObjectChannelReference& ActiveReference = SubObjectsRefInfo.ActiveSubObjectChannelReferences[FoundId];
+
+		check(ActiveReference.SubObjectPtr.HasSameIndexAndSerialNumber(SubObjectPtr));
+
+		ActiveReference.ChannelRefCount--;
+
+#if DO_REPLICATED_OBJECT_CHANNELREF_CHECKS
+		int32 Removed = ActiveReference.RegisteredOwners.RemoveSingleSwap(ReferenceOwner);
+		ensureMsgf(Removed > 0, TEXT("Removed ACTIVE ref for Subobject %s (0x%p) owned by %s but it was never referenced by the connection (0x%p) %s"), *GetNameSafe(SubObjectPtr.GetEvenIfUnreachable()), SubObjectPtr.GetEvenIfUnreachable(), *GetNameSafe(SubObjectsRefInfo.ActorKey.ResolveObjectPtrEvenIfUnreachable()), ReferenceOwner, *GetNameSafe(ReferenceOwner));
+#endif
+
+		if (ActiveReference.ChannelRefCount == 0)
+		{
+			SubObjectsRefInfo.ActiveSubObjectChannelReferences.Remove(FoundId);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+bool FNetworkObjectList::HandleRemoveInvalidSubObjectRef(FActorSubObjectReferences& SubObjectsRefInfo, const TWeakObjectPtr<UObject>& SubObjectPtr, UObject* ReferenceOwner)
+{
+	const int32 Index = SubObjectsRefInfo.InvalidSubObjectChannelReferences.IndexOfByKey(SubObjectPtr);
+	if (Index != INDEX_NONE)
+	{
+		FSubObjectChannelReference& InvalidReference = SubObjectsRefInfo.InvalidSubObjectChannelReferences[Index];
+		InvalidReference.ChannelRefCount--;
+
+#if DO_REPLICATED_OBJECT_CHANNELREF_CHECKS
+		int32 Removed = InvalidReference.RegisteredOwners.RemoveSingleSwap(ReferenceOwner);
+		ensureMsgf(Removed > 0, TEXT("Removed INVALID ref for Subobject %s (0x%p) owned by %s but it was never referenced by the connection (0x%p) %s"), *GetNameSafe(SubObjectPtr.GetEvenIfUnreachable()), SubObjectPtr.GetEvenIfUnreachable(), *GetNameSafe(SubObjectsRefInfo.ActorKey.ResolveObjectPtrEvenIfUnreachable()), ReferenceOwner, *GetNameSafe(ReferenceOwner));
+#endif
+		if (InvalidReference.ChannelRefCount == 0)
+		{
+			SubObjectsRefInfo.InvalidSubObjectChannelReferences.RemoveAtSwap(Index);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+#if DO_REPLICATED_OBJECT_CHANNELREF_CHECKS
+void FNetworkObjectList::SwapMultipleReferencesForDormancy(AActor* OwnerActor, const TArrayView<TWeakObjectPtr<UObject>>& SubObjectsToSwap, UActorChannel* PreviousChannelRefOwner, UNetConnection* NewConnectionRefOwner)
+{
+	if (FActorSubObjectReferences* SubObjectsRefInfo = SubObjectChannelReferences.Find(OwnerActor))
+	{
+		for (const TWeakObjectPtr<UObject>& SubObjectPtr : SubObjectsToSwap)
+		{
+			HandleSwapReferenceForDormancy(SubObjectsRefInfo, SubObjectPtr, PreviousChannelRefOwner, NewConnectionRefOwner);
+		}
+	}
+}
+
+void FNetworkObjectList::SwapReferenceForDormancy(AActor* OwnerActor, UObject* ReplicatedSubObject, UNetConnection* PreviousConnectionRefOwner, UActorChannel* NewChannelRefOwner)
+{
+	if (FActorSubObjectReferences* SubObjectsRefInfo = SubObjectChannelReferences.Find(OwnerActor))
+	{
+		const TWeakObjectPtr<UObject> SubObjectPtr = ReplicatedSubObject;
+		HandleSwapReferenceForDormancy(SubObjectsRefInfo, SubObjectPtr, PreviousConnectionRefOwner, NewChannelRefOwner);
+	}
+}
+
+void FNetworkObjectList::HandleSwapReferenceForDormancy(FActorSubObjectReferences* SubObjectsRefInfo, const TWeakObjectPtr<UObject>& SubObjectPtr, UObject* PreviousRefOwner, UObject* NewRefOwner)
+{
+	check(SubObjectsRefInfo);
+
+	// First check the active list
+	FSubObjectChannelReference* SubObjectChannelRef = SubObjectsRefInfo->ActiveSubObjectChannelReferences.Find(SubObjectPtr);
+
+	if (!SubObjectChannelRef)
+	{
+		// Then check the inactive list
+		SubObjectChannelRef = SubObjectsRefInfo->InvalidSubObjectChannelReferences.FindByKey(SubObjectPtr);
+	}
+
+	if (SubObjectChannelRef)
+	{
+		int32 Removed = SubObjectChannelRef->RegisteredOwners.RemoveSingleSwap(PreviousRefOwner);
+
+		ensureMsgf(Removed > 0, TEXT("SwapReferencesForDormancy could not find reference to previous reference (0x%p) %s for subobject %s (0x%p) owned by %s. Swapping to (0x%p) %s"), 
+			PreviousRefOwner, *GetNameSafe(PreviousRefOwner), *GetNameSafe(SubObjectPtr.GetEvenIfUnreachable()), SubObjectPtr.GetEvenIfUnreachable(), *GetNameSafe(SubObjectsRefInfo->ActorKey.ResolveObjectPtrEvenIfUnreachable()), NewRefOwner, *GetNameSafe(NewRefOwner));
+
+		ensureMsgf(!SubObjectChannelRef->RegisteredOwners.Contains(NewRefOwner), TEXT("SwapReferencesForDormancy found new reference (0x%p) %s was already registered to %s (0x%p) owned by %s"), 
+			NewRefOwner, *GetNameSafe(NewRefOwner), *GetNameSafe(SubObjectPtr.GetEvenIfUnreachable()), SubObjectPtr.GetEvenIfUnreachable(), *GetNameSafe(SubObjectsRefInfo->ActorKey.ResolveObjectPtrEvenIfUnreachable()));
+
+		SubObjectChannelRef->RegisteredOwners.Add(NewRefOwner);
+	}
+	else
+	{
+		ensureMsgf(false, TEXT("SwapReferencesForDormancy could not find any references to %s (0x%p) owned by %s. Swapping from (0x%p) %s to (0x%p) %s"), 
+			*GetNameSafe(SubObjectPtr.GetEvenIfUnreachable()), SubObjectPtr.GetEvenIfUnreachable(), *GetNameSafe(SubObjectsRefInfo->ActorKey.ResolveObjectPtrEvenIfUnreachable()), PreviousRefOwner, *GetNameSafe(PreviousRefOwner), NewRefOwner, *GetNameSafe(NewRefOwner));
+	}
+}
+#endif //#if DO_REPLICATED_OBJECT_CHANNELREF_CHECKS
+
+#endif //#if UE_REPLICATED_OBJECT_REFCOUNTING

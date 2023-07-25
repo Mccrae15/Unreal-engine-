@@ -2,11 +2,12 @@
 
 #pragma once 
 
-#include "CoreMinimal.h"
 #include "CollisionShape.h"
 #include "Templates/SubclassOf.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "AI/Navigation/NavLinkDefinition.h"
+#include "AI/Navigation/NavigationDataResolution.h"
+#include "AI/Navigation/NavigationTypes.h" //FNavDataPerInstanceTransformDelegate
 
 class UBrushComponent;
 class UPrimitiveComponent;
@@ -263,6 +264,7 @@ struct ENGINE_API FCompositeNavModifier : public FNavigationModifier
 		, bIsPerInstanceModifier(false)
 		, bFillCollisionUnderneathForNavmesh(false)
 		, bMaskFillCollisionUnderneathForNavmesh(false)
+		, NavMeshResolution(ENavigationDataResolution::Invalid)
 	{}
 
 	void Shrink();
@@ -306,6 +308,10 @@ struct ENGINE_API FCompositeNavModifier : public FNavigationModifier
 		bHasLowAreaModifiers |= Modifiers.HasLowAreaModifiers();
 		bFillCollisionUnderneathForNavmesh |= Modifiers.GetFillCollisionUnderneathForNavmesh();
 		bMaskFillCollisionUnderneathForNavmesh |= Modifiers.GetMaskFillCollisionUnderneathForNavmesh();
+		if (Modifiers.GetNavMeshResolution() != ENavigationDataResolution::Invalid)
+		{
+			NavMeshResolution = FMath::Max(NavMeshResolution, Modifiers.GetNavMeshResolution());	// Pick the highest resolution
+		}
 	}
 
 	void CreateAreaModifiers(const UPrimitiveComponent* PrimComp, const TSubclassOf<UNavAreaBase> AreaClass);
@@ -325,6 +331,8 @@ struct ENGINE_API FCompositeNavModifier : public FNavigationModifier
 	FORCEINLINE void SetFillCollisionUnderneathForNavmesh(bool bValue) { bFillCollisionUnderneathForNavmesh = bValue; }
 	FORCEINLINE bool GetMaskFillCollisionUnderneathForNavmesh() const { return bMaskFillCollisionUnderneathForNavmesh; }
 	FORCEINLINE void SetMaskFillCollisionUnderneathForNavmesh(bool bValue) { bMaskFillCollisionUnderneathForNavmesh = bValue; }
+	FORCEINLINE ENavigationDataResolution GetNavMeshResolution() const { return NavMeshResolution; }
+	FORCEINLINE void SetNavMeshResolution(ENavigationDataResolution Resolution) { NavMeshResolution = Resolution; }
 	FORCEINLINE void ReserveForAdditionalAreas(int32 AdditionalElementsCount) { Areas.Reserve(Areas.Num() + AdditionalElementsCount); }
 
 	void MarkPotentialLinks() { bHasPotentialLinks = true; }
@@ -357,4 +365,9 @@ private:
     uint32 bIsPerInstanceModifier : 1;
 	uint32 bFillCollisionUnderneathForNavmesh : 1;
 	uint32 bMaskFillCollisionUnderneathForNavmesh : 1;
+	ENavigationDataResolution NavMeshResolution;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

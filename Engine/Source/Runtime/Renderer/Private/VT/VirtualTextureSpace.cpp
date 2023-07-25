@@ -9,7 +9,9 @@
 #include "VisualizeTexture.h"
 #include "CommonRenderResources.h"
 #include "GlobalShader.h"
+#include "GlobalRenderResources.h"
 #include "PipelineStateCache.h"
+#include "RHIStaticStates.h"
 #include "HAL/IConsoleManager.h"
 #include "SceneUtils.h"
 
@@ -139,7 +141,7 @@ FUintPoint FVirtualTextureSpace::GetRequiredPageTableAllocationSize() const
 	// We align on some minimum size. Maybe minimum, and align sizes should be different? But OK for now.
 	const uint32 WidthAligned = Align(Width, VIRTUALTEXTURE_MIN_PAGETABLE_SIZE);
 	const uint32 HeightAligned = Align(Height, VIRTUALTEXTURE_MIN_PAGETABLE_SIZE);
-	return FUintPoint(Width, Height);
+	return FUintPoint(WidthAligned, HeightAligned);
 }
 
 uint32 FVirtualTextureSpace::GetSizeInBytes() const
@@ -191,8 +193,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) 
-			|| GetMaxSupportedFeatureLevel(Parameters.Platform) == ERHIFeatureLevel::ES3_1;
+		return true;
 	}
 
 	LAYOUT_FIELD(FShaderParameter, PageTableSize);
@@ -214,12 +215,8 @@ public:
 	
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5)
-			|| GetMaxSupportedFeatureLevel(Parameters.Platform) == ERHIFeatureLevel::ES3_1;
+		return true;
 	}
-
-	
-	
 };
 
 template<bool Use16Bits>
@@ -366,7 +363,7 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRDGBuild
 		return;
 	}
 
-	// Multi-GPU support : May be ineffecient for AFR.
+	// Multi-GPU support
 	RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
 
 	for (uint32 LayerIndex = 0u; LayerIndex < Description.NumPageTableLayers; ++LayerIndex)

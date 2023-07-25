@@ -8,6 +8,7 @@
 
 #include "CoreTypes.h"
 #include "CoreFwd.h"
+#include "Materials/MaterialRenderProxy.h"
 
 class FBatchedElements;
 class FDynamicPrimitiveResource;
@@ -199,6 +200,7 @@ inline bool MeshBatchHasPrimitives(const FMeshBatch& Mesh)
 inline int32 FViewElementPDI::DrawMesh(const FMeshBatch& Mesh)
 {
 	// Warning: can be called from Game Thread or Rendering Thread.  Be careful what you access.
+	check(DynamicPrimitiveCollector);
 
 	if (ensure(MeshBatchHasPrimitives(Mesh)))
 	{

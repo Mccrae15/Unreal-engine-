@@ -482,7 +482,7 @@ FImageComparisonResult FScreenShotManager::CompareScreenshot(const FString& InUn
 }
 
 
-FScreenshotExportResult FScreenShotManager::ExportScreenshotComparisonResult(FString ScreenshotName, FString RootExportFolder)
+FScreenshotExportResult FScreenShotManager::ExportScreenshotComparisonResult(FString ScreenshotName, FString RootExportFolder, bool bOnlyIncoming)
 {
 	FPaths::NormalizeDirectoryName(RootExportFolder);
 
@@ -501,7 +501,9 @@ FScreenshotExportResult FScreenShotManager::ExportScreenshotComparisonResult(FSt
 		return Results;
 	}
 
-	CopyDirectory(Destination, ScreenshotResultsFolder / ScreenshotName);
+	FString Pattern = bOnlyIncoming ? TEXT("Incoming.*") : TEXT("*");
+
+	CopyDirectory(Destination, ScreenshotResultsFolder / ScreenshotName, Pattern);
 
 	Results.Success = true;
 	return Results;
@@ -556,19 +558,18 @@ FString FScreenShotManager::GetDefaultExportDirectory() const
 	return FPaths::Combine(FPaths::ProjectSavedDir(),TEXT("Exported/imageCompare"));
 }
 
-void FScreenShotManager::CopyDirectory(const FString& DestDir, const FString& SrcDir)
+void FScreenShotManager::CopyDirectory(const FString& DestDir, const FString& SrcDir, const FString& Pattern)
 {
 	TArray<FString> FilesToCopy;
 
-	FString NormalizedSrc = SrcDir;
-	FPaths::NormalizeDirectoryName(NormalizedSrc);
+	FString AbsoluteSrcDir = FPaths::ConvertRelativePathToFull(SrcDir);
 
-	IFileManager::Get().FindFilesRecursive(FilesToCopy, *SrcDir, TEXT("*"), /*Files=*/true, /*Directories=*/false);
+	IFileManager::Get().FindFilesRecursive(FilesToCopy, *AbsoluteSrcDir, *Pattern, /*Files=*/true, /*Directories=*/false);
 
 	ParallelFor(FilesToCopy.Num(), [&](int32 Index)
 		{
 			const FString& SourceFilePath = FilesToCopy[Index];
-			FString DestFilePath = FPaths::Combine(DestDir, SourceFilePath.RightChop(SrcDir.Len()));
+			FString DestFilePath = FPaths::Combine(DestDir, SourceFilePath.RightChop(AbsoluteSrcDir.Len()));
 			IFileManager::Get().Copy(*DestFilePath, *SourceFilePath, true, true);
 		});
 }

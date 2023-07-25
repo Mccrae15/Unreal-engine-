@@ -16,16 +16,13 @@ namespace Dataflow
 	class DATAFLOWENGINE_API TEngineContext : public Base
 	{
 	public:
-		TEngineContext(UObject* InOwner, UDataflow* InGraph, float InTime, FString InType)
-				: Base(InTime, StaticType().Append(InType))
+		DATAFLOW_CONTEXT_INTERNAL(Base, TEngineContext);
+
+		TEngineContext(UObject* InOwner, UDataflow* InGraph, FTimestamp InTimestamp)
+				: Base(InTimestamp)
 				, Owner(InOwner)
 				, Graph(InGraph)
 		{}
-	
-		static FString StaticType()
-		{
-			return "TEngineContext";
-		}
 	
 		UObject* Owner = nullptr;
 		UDataflow* Graph = nullptr;

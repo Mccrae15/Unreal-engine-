@@ -8,12 +8,17 @@
 #include "MediaPlayer.h"
 #include "MediaSource.h"
 #include "MediaTexture.h"
+#include "TextureResource.h"
+
+#include "UObject/UObjectGlobals.h"
+#include "UObject/Package.h"
 
 
 FDisplayClusterMediaInputBase::FDisplayClusterMediaInputBase(const FString& InMediaId, const FString& InClusterNodeId, UMediaSource* InMediaSource)
 	: FDisplayClusterMediaBase(InMediaId, InClusterNodeId)
-	, MediaSource(InMediaSource)
 {
+	checkSlow(InMediaSource);
+	MediaSource = DuplicateObject(InMediaSource, GetTransientPackage());
 	checkSlow(MediaSource);
 
 	// Instantiate media player
@@ -28,6 +33,7 @@ FDisplayClusterMediaInputBase::FDisplayClusterMediaInputBase(const FString& InMe
 		if (MediaTexture)
 		{
 			MediaTexture->NewStyleOutput = true;
+			MediaTexture->SetRenderMode(UMediaTexture::ERenderMode::JustInTime);
 			MediaTexture->SetMediaPlayer(MediaPlayer);
 			MediaTexture->UpdateResource();
 		}
@@ -69,15 +75,22 @@ void FDisplayClusterMediaInputBase::Stop()
 
 void FDisplayClusterMediaInputBase::ImportMediaData(FRHICommandListImmediate& RHICmdList, const FMediaTextureInfo& TextureInfo)
 {
-	FRHITexture* const SrcTexture = MediaTexture->GetResource()->GetTextureRHI();
+	MediaTexture->JustInTimeRender();
+
+	FRHITexture* const SrcTexture = MediaTexture->GetResource() ? MediaTexture->GetResource()->GetTextureRHI() : nullptr;
 	FRHITexture* const DstTexture = TextureInfo.Texture;
 
 	if (SrcTexture && DstTexture)
 	{
 		const FIntPoint DstRegionSize = TextureInfo.Region.Size();
 
-		if (SrcTexture->GetDesc().Format == DstTexture->GetDesc().Format &&
-			SrcTexture->GetDesc().Extent == DstRegionSize)
+		const bool bSrcSrgb = EnumHasAnyFlags(SrcTexture->GetFlags(), TexCreate_SRGB);
+		const bool bDstSrgb = EnumHasAnyFlags(DstTexture->GetFlags(), TexCreate_SRGB);
+
+		if ((SrcTexture->GetDesc().Format == DstTexture->GetDesc().Format)
+			&& (SrcTexture->GetDesc().Extent == DstRegionSize)
+			&& (bSrcSrgb == bDstSrgb)
+		)
 		{
 			FRHICopyTextureInfo CopyInfo;
 

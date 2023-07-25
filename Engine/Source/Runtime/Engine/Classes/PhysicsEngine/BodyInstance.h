@@ -8,7 +8,9 @@
 #include "Engine/EngineTypes.h"
 #include "CollisionQueryParams.h"
 #include "EngineDefines.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "PhysxUserData.h"
+#endif
 #include "Physics/PhysicsInterfaceCore.h"
 #include "Physics/PhysicsInterfaceTypes.h"
 #include "PhysicsPublic.h"
@@ -24,6 +26,7 @@ struct FCollisionNotifyInfo;
 struct FCollisionShape;
 struct FConstraintInstance;
 struct FPropertyChangedEvent;
+struct FRigidBodyState;
 struct FShapeData;
 class UPrimitiveComponent;
 
@@ -34,7 +37,7 @@ ENGINE_API int32 FillInlineShapeArray_AssumesLocked(PhysicsInterfaceTypes::FInli
 UENUM(BlueprintType)
 namespace EDOFMode
 {
-	enum Type
+	enum Type : int
 	{
 		/*Inherits the degrees of freedom from the project settings.*/
 		Default,
@@ -53,7 +56,7 @@ namespace EDOFMode
 	};
 }
 
-struct FBodyInstnace;
+struct FBodyInstance;
 
 #ifndef CHAOS_DEBUG_NAME
 #define CHAOS_DEBUG_NAME 0
@@ -65,6 +68,7 @@ struct FBodyInstnace;
 struct FInitBodySpawnParams
 {
 	ENGINE_API FInitBodySpawnParams(const UPrimitiveComponent* PrimComp);
+	ENGINE_API FInitBodySpawnParams(bool bInStaticPhysics, bool bInPhysicsTypeDeterminesSimulation);
 
 	/** Whether the created physics actor will be static */
 	bool bStaticPhysics;

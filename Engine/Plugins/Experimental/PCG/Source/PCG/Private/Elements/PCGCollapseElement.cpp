@@ -2,8 +2,19 @@
 
 #include "Elements/PCGCollapseElement.h"
 
-#include "Data/PCGSpatialData.h"
 #include "Data/PCGPointData.h"
+#include "Data/PCGSpatialData.h"
+#include "PCGContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGCollapseElement)
+
+TArray<FPCGPinProperties> UPCGCollapseSettings::InputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultInputLabel, EPCGDataType::Spatial);
+
+	return PinProperties;
+}
 
 FPCGElementPtr UPCGCollapseSettings::CreateElement() const
 {

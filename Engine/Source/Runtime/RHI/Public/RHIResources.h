@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include <atomic>
-
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/UnrealMemory.h"
@@ -14,74 +12,50 @@
 #include "Math/Color.h"
 #include "Containers/StaticArray.h"
 #include "HAL/ThreadSafeCounter.h"
-#include "RHIDefinitions.h"
 #include "Templates/RefCounting.h"
 #include "PixelFormat.h"
+#include "Async/TaskGraphFwd.h"
+#include "Serialization/MemoryImage.h"
+#include "RHIFwd.h"
+#include "RHIImmutableSamplerState.h"
+#include "RHITransition.h"
+#include "MultiGPU.h"
+#include "Math/IntPoint.h"
+#include "Math/IntRect.h"
+#include "Math/IntVector.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "TextureProfiler.h"
 #include "Containers/LockFreeList.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/SecureHash.h"
 #include "Hash/CityHash.h"
 #include "Async/TaskGraphInterfaces.h"
-#include "Serialization/MemoryImage.h"
 #include "Experimental/Containers/HazardPointer.h"
 #include "Containers/ClosableMpscQueue.h"
-#include "Misc/CoreDelegates.h"
-
-// RHI_WANT_RESOURCE_INFO should be controlled by the RHI module.
-#ifndef RHI_WANT_RESOURCE_INFO
-#define RHI_WANT_RESOURCE_INFO 0
+#include "Containers/ConsumeAllMpmcQueue.h"
 #endif
 
-// RHI_FORCE_DISABLE_RESOURCE_INFO can be defined anywhere else, like in GlobalDefinitions.
-#ifndef RHI_FORCE_DISABLE_RESOURCE_INFO
-#define RHI_FORCE_DISABLE_RESOURCE_INFO 0
-#endif
+#include <atomic>
 
-#define RHI_ENABLE_RESOURCE_INFO (RHI_WANT_RESOURCE_INFO && !RHI_FORCE_DISABLE_RESOURCE_INFO)
-
+class FHazardPointerCollection;
 class FRHIComputeCommandList;
 class FRHICommandListImmediate;
+class FRHITextureReference;
 struct FClearValueBinding;
 struct FRHIResourceInfo;
 struct FGenerateMipsStruct;
 enum class EClearBinding;
 
+typedef TArray<FGraphEventRef, TInlineAllocator<4> > FGraphEventArray;
+
+
 /** The base type of RHI resources. */
-class RHI_API FRHIResource
+class FRHIResource
 {
 public:
-	UE_DEPRECATED(5.0, "FRHIResource(bool) is deprecated, please use FRHIResource(ERHIResourceType)")
-	FRHIResource(bool InbDoNotDeferDelete=false)
-		: ResourceType(RRT_None)
-		, bCommitted(true)
-#if RHI_ENABLE_RESOURCE_INFO
-		, bBeingTracked(false)
-#endif
-	{
-	}
-
-	FRHIResource(ERHIResourceType InResourceType)
-		: ResourceType(InResourceType)
-		, bCommitted(true)
-#if RHI_ENABLE_RESOURCE_INFO
-		, bBeingTracked(false)
-#endif
-	{
-#if RHI_ENABLE_RESOURCE_INFO
-		BeginTrackingResource(this);
-#endif
-	}
-
-	virtual ~FRHIResource()
-	{
-		check(IsEngineExitRequested() || CurrentlyDeleting == this);
-		check(AtomicFlags.GetNumRefs(std::memory_order_relaxed) == 0); // this should not have any outstanding refs
-		CurrentlyDeleting = nullptr;
-
-#if RHI_ENABLE_RESOURCE_INFO
-		EndTrackingResource(this);
-#endif
-	}
+	RHI_API FRHIResource(ERHIResourceType InResourceType);
+	RHI_API virtual ~FRHIResource();
 
 	FORCEINLINE_DEBUGGABLE uint32 AddRef() const
 	{
@@ -92,21 +66,7 @@ public:
 
 private:
 	// Separate function to avoid force inlining this everywhere. Helps both for code size and performance.
-	inline void Destroy() const
-	{
-		if (!AtomicFlags.MarkForDelete(std::memory_order_release))
-		{
-			while (true)
-			{
-				auto HP = MakeHazardPointer(PendingDeletes, PendingDeletesHPC);
-				TClosableMpscQueue<FRHIResource*>* PendingDeletesPtr = HP.Get();
-				if (PendingDeletesPtr->Enqueue(const_cast<FRHIResource*>(this)))
-				{
-					break;
-				}
-			}
-		}
-	}
+	RHI_API void Destroy() const;
 
 public:
 	FORCEINLINE_DEBUGGABLE uint32 Release() const
@@ -129,9 +89,9 @@ public:
 		return uint32(CurrentValue);
 	}
 
-	static int32 FlushPendingDeletes(FRHICommandListImmediate& RHICmdList);
+	RHI_API static int32 FlushPendingDeletes(FRHICommandListImmediate& RHICmdList);
 
-	static bool Bypass();
+	RHI_API static bool Bypass();
 
 	bool IsValid() const
 	{
@@ -145,16 +105,21 @@ public:
 		delete this;
 	}
 
+	void DisableLifetimeExtension()
+	{
+		ensureMsgf(IsValid(), TEXT("Resource is already marked for deletion. This call is a no-op. DisableLifetimeExtension must be called while still holding a live reference."));
+		bAllowExtendLifetime = false;
+	}
+
 	inline ERHIResourceType GetType() const { return ResourceType; }
+
+	RHI_API FName GetOwnerName() const;
+	RHI_API void SetOwnerName(const FName& InOwnerName);
 
 #if RHI_ENABLE_RESOURCE_INFO
 	// Get resource info if available.
 	// Should return true if the ResourceInfo was filled with data.
-	virtual bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const
-	{
-		OutResourceInfo = FRHIResourceInfo{};
-		return false;
-	}
+	RHI_API virtual bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const;
 
 	static void BeginTrackingResource(FRHIResource* InResource);
 	static void EndTrackingResource(FRHIResource* InResource);
@@ -233,6 +198,11 @@ private:
 			return (LocalPacked & MarkedForDeleteBit) == 0 && (LocalPacked & NumRefsMask) != 0;
 		}
 
+		bool IsMarkedForDelete(std::memory_order MemoryOrder)
+		{
+			return (Packed.load(MemoryOrder) & MarkedForDeleteBit) != 0;
+		}
+
 		int32 GetNumRefs(std::memory_order MemoryOrder)
 		{
 			return Packed.load(MemoryOrder) & NumRefsMask;
@@ -242,21 +212,203 @@ private:
 
 	const ERHIResourceType ResourceType;
 	uint8 bCommitted : 1;
+	uint8 bAllowExtendLifetime : 1;
 #if RHI_ENABLE_RESOURCE_INFO
 	uint8 bBeingTracked : 1;
+	FName OwnerName;
 #endif
 
-	static std::atomic<TClosableMpscQueue<FRHIResource*>*> PendingDeletes;
-	static FHazardPointerCollection PendingDeletesHPC;
-	static FRHIResource* CurrentlyDeleting;
+	RHI_API static FRHIResource* CurrentlyDeleting;
 
-	// Some APIs don't do internal reference counting, so we have to wait an extra couple of frames before deleting resources
-	// to ensure the GPU has completely finished with them. This avoids expensive fences, etc.
-	struct ResourcesToDelete
+	friend FRHICommandListImmediate;
+};
+
+enum class EClearBinding
+{
+	ENoneBound, //no clear color associated with this target.  Target will not do hardware clears on most platforms
+	EColorBound, //target has a clear color bound.  Clears will use the bound color, and do hardware clears.
+	EDepthStencilBound, //target has a depthstencil value bound.  Clears will use the bound values and do hardware clears.
+};
+
+struct FClearValueBinding
+{
+	struct DSVAlue
 	{
-		TArray<FRHIResource*>	Resources;
-		uint32					FrameDeleted{};
+		float Depth;
+		uint32 Stencil;
 	};
+
+	FClearValueBinding()
+		: ColorBinding(EClearBinding::EColorBound)
+	{
+		Value.Color[0] = 0.0f;
+		Value.Color[1] = 0.0f;
+		Value.Color[2] = 0.0f;
+		Value.Color[3] = 0.0f;
+	}
+
+	FClearValueBinding(EClearBinding NoBinding)
+		: ColorBinding(NoBinding)
+	{
+		check(ColorBinding == EClearBinding::ENoneBound);
+	}
+
+	explicit FClearValueBinding(const FLinearColor& InClearColor)
+		: ColorBinding(EClearBinding::EColorBound)
+	{
+		Value.Color[0] = InClearColor.R;
+		Value.Color[1] = InClearColor.G;
+		Value.Color[2] = InClearColor.B;
+		Value.Color[3] = InClearColor.A;
+	}
+
+	explicit FClearValueBinding(float DepthClearValue, uint32 StencilClearValue = 0)
+		: ColorBinding(EClearBinding::EDepthStencilBound)
+	{
+		Value.DSValue.Depth = DepthClearValue;
+		Value.DSValue.Stencil = StencilClearValue;
+	}
+
+	FLinearColor GetClearColor() const
+	{
+		ensure(ColorBinding == EClearBinding::EColorBound);
+		return FLinearColor(Value.Color[0], Value.Color[1], Value.Color[2], Value.Color[3]);
+	}
+
+	void GetDepthStencil(float& OutDepth, uint32& OutStencil) const
+	{
+		ensure(ColorBinding == EClearBinding::EDepthStencilBound);
+		OutDepth = Value.DSValue.Depth;
+		OutStencil = Value.DSValue.Stencil;
+	}
+
+	bool operator==(const FClearValueBinding& Other) const
+	{
+		if (ColorBinding == Other.ColorBinding)
+		{
+			if (ColorBinding == EClearBinding::EColorBound)
+			{
+				return
+					Value.Color[0] == Other.Value.Color[0] &&
+					Value.Color[1] == Other.Value.Color[1] &&
+					Value.Color[2] == Other.Value.Color[2] &&
+					Value.Color[3] == Other.Value.Color[3];
+
+			}
+			if (ColorBinding == EClearBinding::EDepthStencilBound)
+			{
+				return
+					Value.DSValue.Depth == Other.Value.DSValue.Depth &&
+					Value.DSValue.Stencil == Other.Value.DSValue.Stencil;
+			}
+			return true;
+		}
+		return false;
+	}
+
+	friend inline uint32 GetTypeHash(FClearValueBinding const& Binding)
+	{
+		uint32 Hash = GetTypeHash(Binding.ColorBinding);
+
+		if (Binding.ColorBinding == EClearBinding::EColorBound)
+		{
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.Color[0]));
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.Color[1]));
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.Color[2]));
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.Color[3]));
+		}
+		else if (Binding.ColorBinding == EClearBinding::EDepthStencilBound)
+		{
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.DSValue.Depth  ));
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.DSValue.Stencil));
+		}
+
+		return Hash;
+	}
+
+	EClearBinding ColorBinding;
+
+	union ClearValueType
+	{
+		float Color[4];
+		DSVAlue DSValue;
+	} Value;
+
+	// common clear values
+	static RHI_API const FClearValueBinding None;
+	static RHI_API const FClearValueBinding Black;
+	static RHI_API const FClearValueBinding BlackMaxAlpha;
+	static RHI_API const FClearValueBinding White;
+	static RHI_API const FClearValueBinding Transparent;
+	static RHI_API const FClearValueBinding DepthOne;
+	static RHI_API const FClearValueBinding DepthZero;
+	static RHI_API const FClearValueBinding DepthNear;
+	static RHI_API const FClearValueBinding DepthFar;	
+	static RHI_API const FClearValueBinding Green;
+	static RHI_API const FClearValueBinding DefaultNormal8Bit;
+};
+
+class FResourceBulkDataInterface;
+class FResourceArrayInterface;
+
+struct FRHIResourceCreateInfo
+{
+	FRHIResourceCreateInfo(const TCHAR* InDebugName)
+		: BulkData(nullptr)
+		, ResourceArray(nullptr)
+		, ClearValueBinding(FLinearColor::Transparent)
+		, GPUMask(FRHIGPUMask::All())
+		, bWithoutNativeResource(false)
+		, DebugName(InDebugName)
+		, ExtData(0)
+	{
+		check(InDebugName);
+	}
+
+	// for CreateTexture calls
+	FRHIResourceCreateInfo(const TCHAR* InDebugName, FResourceBulkDataInterface* InBulkData)
+		: FRHIResourceCreateInfo(InDebugName)
+	{
+		BulkData = InBulkData;
+	}
+
+	// for CreateBuffer calls
+	FRHIResourceCreateInfo(const TCHAR* InDebugName, FResourceArrayInterface* InResourceArray)
+		: FRHIResourceCreateInfo(InDebugName)
+	{
+		ResourceArray = InResourceArray;
+	}
+
+	FRHIResourceCreateInfo(const TCHAR* InDebugName, const FClearValueBinding& InClearValueBinding)
+		: FRHIResourceCreateInfo(InDebugName)
+	{
+		ClearValueBinding = InClearValueBinding;
+	}
+
+	FRHIResourceCreateInfo(uint32 InExtData)
+		: FRHIResourceCreateInfo(TEXT(""))
+	{
+		ExtData = InExtData;
+	}
+
+	// for CreateTexture calls
+	FResourceBulkDataInterface* BulkData;
+
+	// for CreateBuffer calls
+	FResourceArrayInterface* ResourceArray;
+
+	// for binding clear colors to render targets.
+	FClearValueBinding ClearValueBinding;
+
+	// set of GPUs on which to create the resource
+	FRHIGPUMask GPUMask;
+
+	// whether to create an RHI object with no underlying resource
+	bool bWithoutNativeResource;
+	const TCHAR* DebugName;
+
+	// optional data that would have come from an offline cooker or whatever - general purpose
+	uint32 ExtData;
 };
 
 class FExclusiveDepthStencil
@@ -573,6 +725,7 @@ static bool MatchRHIState(RHIState* LHSState, RHIState* RHSState)
 //
 
 typedef TArray<struct FVertexElement,TFixedAllocator<MaxVertexElementCount> > FVertexDeclarationElementList;
+
 class FRHIVertexDeclaration : public FRHIResource
 {
 public:
@@ -604,11 +757,33 @@ public:
 	FSHAHash GetHash() const { return Hash; }
 
 #if RHI_INCLUDE_SHADER_DEBUG_DATA
+
 	// for debugging only e.g. MaterialName:ShaderFile.usf or ShaderFile.usf/EntryFunc
-	FString ShaderName;
-	FORCEINLINE const TCHAR* GetShaderName() const { return *ShaderName; }
+	struct
+	{
+		FString ShaderName;
+		TArray<FName> UniformBufferNames;
+	} Debug;
+
+	const TCHAR* GetShaderName() const
+	{
+		return Debug.ShaderName.Len()
+			? *Debug.ShaderName
+			: TEXT("<unknown>");
+	}
+
+	FString GetUniformBufferName(uint32 Index) const
+	{
+		return Debug.UniformBufferNames.IsValidIndex(Index)
+			? Debug.UniformBufferNames[Index].ToString()
+			: TEXT("<unknown>");
+	}
+
 #else
-	FORCEINLINE const TCHAR* GetShaderName() const { return TEXT(""); }
+
+	const TCHAR* GetShaderName() const { return TEXT("<unknown>"); }
+	FString GetUniformBufferName(uint32 Index) const { return TEXT("<unknown>"); }
+
 #endif
 
 	FRHIShader() = delete;
@@ -669,6 +844,9 @@ class FRHIRayTracingShader : public FRHIShader
 {
 public:
 	explicit FRHIRayTracingShader(EShaderFrequency InFrequency) : FRHIShader(RRT_RayTracingShader, InFrequency) {}
+
+	uint32 RayTracingPayloadType = 0; // This corresponds to the ERayTracingPayloadType enum associated with the shader
+	uint32 RayTracingPayloadSize = 0; // The (maximum) size of the payload associated with this shader
 };
 
 class FRHIRayGenShader : public FRHIRayTracingShader
@@ -732,6 +910,12 @@ class FRHIComputePipelineState : public FRHIResource
 {
 public:
 	FRHIComputePipelineState() : FRHIResource(RRT_ComputePipelineState) {}
+
+	inline void SetValid(bool InIsValid) { bIsValid = InIsValid; }
+	inline bool IsValid() const { return bIsValid; }
+
+private:
+	bool bIsValid = true;
 };
 class FRHIRayTracingPipelineState : public FRHIResource
 {
@@ -760,6 +944,13 @@ struct FRHIUniformBufferResource
 
 	/** Type of the member that allow (). */
 	LAYOUT_FIELD(EUniformBufferBaseType, MemberType);
+
+	/** Compare two uniform buffer layout resources. */
+	friend inline bool operator==(const FRHIUniformBufferResource& A, const FRHIUniformBufferResource& B)
+	{
+		return A.MemberOffset == B.MemberOffset
+			&& A.MemberType == B.MemberType;
+	}
 };
 
 inline FArchive& operator<<(FArchive& Ar, FRHIUniformBufferResource& Ref)
@@ -771,14 +962,7 @@ inline FArchive& operator<<(FArchive& Ar, FRHIUniformBufferResource& Ref)
 	return Ar;
 }
 
-/** Compare two uniform buffer layout resources. */
-inline bool operator==(const FRHIUniformBufferResource& A, const FRHIUniformBufferResource& B)
-{
-	return A.MemberOffset == B.MemberOffset
-		&& A.MemberType == B.MemberType;
-}
-
-static constexpr uint16 kUniformBufferInvalidOffset = TNumericLimits<uint16>::Max();
+inline constexpr uint16 kUniformBufferInvalidOffset = TNumericLimits<uint16>::Max();
 
 /** Initializer for the layout of a uniform buffer in memory. */
 struct FRHIUniformBufferLayoutInitializer
@@ -928,16 +1112,16 @@ public:
 
 	/** Used for platforms which use emulated ub's, forces a real uniform buffer instead */
 	LAYOUT_FIELD_INITIALIZED(bool, bNoEmulatedUniformBuffer, false);
-};
 
-/** Compare two uniform buffer layout initializers. */
-inline bool operator==(const FRHIUniformBufferLayoutInitializer& A, const FRHIUniformBufferLayoutInitializer& B)
-{
-	return A.ConstantBufferSize == B.ConstantBufferSize
-		&& A.StaticSlot == B.StaticSlot
-		&& A.BindingFlags == B.BindingFlags
-		&& A.Resources == B.Resources;
-}
+	/** Compare two uniform buffer layout initializers. */
+	friend inline bool operator==(const FRHIUniformBufferLayoutInitializer& A, const FRHIUniformBufferLayoutInitializer& B)
+	{
+		return A.ConstantBufferSize == B.ConstantBufferSize
+			&& A.StaticSlot == B.StaticSlot
+			&& A.BindingFlags == B.BindingFlags
+			&& A.Resources == B.Resources;
+	}
+};
 
 /** The layout of a uniform buffer in memory. */
 struct FRHIUniformBufferLayout : public FRHIResource
@@ -1027,16 +1211,16 @@ struct FRHIUniformBufferLayout : public FRHIResource
 
 	/** Used for platforms which use emulated ub's, forces a real uniform buffer instead */
 	const bool bNoEmulatedUniformBuffer;
-};
 
-/** Compare two uniform buffer layouts. */
-inline bool operator==(const FRHIUniformBufferLayout& A, const FRHIUniformBufferLayout& B)
-{
-	return A.ConstantBufferSize == B.ConstantBufferSize
-		&& A.StaticSlot == B.StaticSlot
-		&& A.BindingFlags == B.BindingFlags
-		&& A.Resources == B.Resources;
-}
+	/** Compare two uniform buffer layouts. */
+	friend inline bool operator==(const FRHIUniformBufferLayout& A, const FRHIUniformBufferLayout& B)
+	{
+		return A.ConstantBufferSize == B.ConstantBufferSize
+			&& A.StaticSlot == B.StaticSlot
+			&& A.BindingFlags == B.BindingFlags
+			&& A.Resources == B.Resources;
+	}
+};
 
 class FRHIUniformBuffer : public FRHIResource
 #if ENABLE_RHI_VALIDATION
@@ -1085,6 +1269,11 @@ public:
 #if VALIDATE_UNIFORM_BUFFER_LIFETIME
 	mutable int32 NumMeshCommandReferencesForDebugging = 0;
 #endif
+
+	const TArray<TRefCountPtr<FRHIResource>>& GetResourceTable() const { return ResourceTable; }
+
+protected:
+	TArray<TRefCountPtr<FRHIResource>> ResourceTable;
 
 private:
 	/** Layout of the uniform buffer. */
@@ -1194,10 +1383,6 @@ private:
 	uint32 Stride{};
 	EBufferUsageFlags Usage{};
 };
-
-UE_DEPRECATED(5.0, "FRHIIndexBuffer is deprecated, please use FRHIBuffer.")      typedef class FRHIBuffer FRHIIndexBuffer;
-UE_DEPRECATED(5.0, "FRHIVertexBuffer is deprecated, please use FRHIBuffer.")     typedef class FRHIBuffer FRHIVertexBuffer;
-UE_DEPRECATED(5.0, "FRHIStructuredBuffer is deprecated, please use FRHIBuffer.") typedef class FRHIBuffer FRHIStructuredBuffer;
 
 //
 // Textures
@@ -1496,6 +1681,9 @@ struct RHI_API FRHITextureDesc
 	/** Texture format used when creating the UAV. PF_Unknown means to use the default one (same as Format). */
 	EPixelFormat UAVFormat = PF_Unknown;
 
+	/** Resource memory percentage which should be allocated onto fast VRAM (hint-only). (encoding into 8bits, 0..255 -> 0%..100%) */
+	uint8 FastVRAMPercentage = 0xFF;
+
 	/* A mask representing which GPUs to create the resource on, in a multi-GPU system. */
 	FRHIGPUMask GPUMask = FRHIGPUMask::All();
 
@@ -1670,7 +1858,8 @@ struct FRHITextureCreateDesc : public FRHITextureDesc
 	FRHITextureCreateDesc& SetDebugName(const TCHAR* InDebugName)              { DebugName = InDebugName;                  return *this; }
 	FRHITextureCreateDesc& SetGPUMask(FRHIGPUMask InGPUMask)                   { GPUMask = InGPUMask;                      return *this; }
 	FRHITextureCreateDesc& SetBulkData(FResourceBulkDataInterface* InBulkData) { BulkData = InBulkData;                    return *this; }
-	FRHITextureCreateDesc& DetermineInititialState() { if (InitialState == ERHIAccess::Unknown) InitialState = RHIGetDefaultResourceState(Flags, BulkData != nullptr); return *this; }
+	FRHITextureCreateDesc& DetermineInititialState()                           { if (InitialState == ERHIAccess::Unknown) InitialState = RHIGetDefaultResourceState(Flags, BulkData != nullptr); return *this; }
+	FRHITextureCreateDesc& SetFastVRAMPercentage(float In)                     { FastVRAMPercentage = uint8(FMath::Clamp(In, 0.f, 1.0f) * 0xFF); return *this; }
 
 	/* The RHI access state that the resource will be created in. */
 	ERHIAccess InitialState = ERHIAccess::Unknown;
@@ -1682,13 +1871,6 @@ struct FRHITextureCreateDesc : public FRHITextureDesc
 	FResourceBulkDataInterface* BulkData = nullptr;
 };
 
-class FRHITexture;
-/*UE_DEPRECATED(5.1, "FRHITexture2D is deprecated, please use FRHITexture.")      */ typedef class FRHITexture FRHITexture2D;
-/*UE_DEPRECATED(5.1, "FRHITexture2DArray is deprecated, please use FRHITexture.") */ typedef class FRHITexture FRHITexture2DArray;
-/*UE_DEPRECATED(5.1, "FRHITexture3D is deprecated, please use FRHITexture.")      */ typedef class FRHITexture FRHITexture3D;
-/*UE_DEPRECATED(5.1, "FRHITextureCube is deprecated, please use FRHITexture.")    */ typedef class FRHITexture FRHITextureCube;
-
-
 class RHI_API FRHITexture : public FRHIViewableResource
 #if ENABLE_RHI_VALIDATION
 	, public RHIValidation::FTextureResource
@@ -1696,15 +1878,7 @@ class RHI_API FRHITexture : public FRHIViewableResource
 {
 protected:
 	/** Initialization constructor. Should only be called by platform RHI implementations. */
-	FRHITexture(const FRHITextureCreateDesc& InDesc)
-		: FRHIViewableResource(RRT_Texture, InDesc.InitialState)
-#if ENABLE_RHI_VALIDATION
-		, RHIValidation::FTextureResource(InDesc)
-#endif
-		, TextureDesc(InDesc)
-	{
-		SetName(InDesc.DebugName);
-	}
+	FRHITexture(const FRHITextureCreateDesc& InDesc);
 
 public:
 	/**
@@ -1853,26 +2027,7 @@ public:
 		return LastRenderTime.GetLastRenderTime();
 	}
 
-	/** Returns the last render time container, or NULL if none were specified at creation. */
-	UE_DEPRECATED(5.0, "GetLastRenderTimeContainer is deprecated and will be removed in the future")
-	FLastRenderTimeContainer* GetLastRenderTimeContainer()
-	{
-		return nullptr;
-	}
-
-	UE_DEPRECATED(5.0, "SetDefaultLastRenderTimeContainer is deprecated and will be removed in the future")
-	FORCEINLINE_DEBUGGABLE void SetDefaultLastRenderTimeContainer()
-	{
-	}
-
-	void SetName(const FName& InName)
-	{
-		Name = InName;
-
-#if TEXTURE_PROFILER_ENABLED
-		FTextureProfiler::Get()->UpdateTextureName(this);
-#endif
-	}
+	void SetName(const FName& InName);
 
 	///
 	/// Deprecated functions
@@ -1939,90 +2094,6 @@ private:
 	FRHITextureDesc TextureDesc;
 
 	FLastRenderTimeContainer LastRenderTime;
-};
-
-class RHI_API FRHITextureReference final : public FRHITexture
-{
-public:
-	explicit FRHITextureReference()
-		: FRHITexture(RRT_TextureReference)
-	{
-		check(DefaultTexture);
-		ReferencedTexture = DefaultTexture;
-	}
-
-	UE_DEPRECATED(5.0, "The InLastRenderTime parameter will be removed in the future")
-	explicit FRHITextureReference(FLastRenderTimeContainer* InLastRenderTime)
-		: FRHITextureReference()
-	{}
-
-	virtual class FRHITextureReference* GetTextureReference() override
-	{
-		return this;
-	}
-
-	virtual void* GetNativeResource() const override 
-	{
-		check(ReferencedTexture);
-		return ReferencedTexture->GetNativeResource();
-	}
-
-	virtual void* GetNativeShaderResourceView() const override
-	{
-		check(ReferencedTexture);
-		return ReferencedTexture->GetNativeShaderResourceView();
-	}
-
-	virtual void* GetTextureBaseRHI() override 
-	{
-		check(ReferencedTexture);
-		return ReferencedTexture->GetTextureBaseRHI();
-	}
-
-	virtual void GetWriteMaskProperties(void*& OutData, uint32& OutSize) override
-	{
-		check(ReferencedTexture);
-		return ReferencedTexture->GetWriteMaskProperties(OutData, OutSize);
-	}
-
-#if ENABLE_RHI_VALIDATION
-	// Implement RHIValidation::FTextureResource::GetTrackerResource to use the tracker info
-	// for the referenced texture.
-	virtual RHIValidation::FResource* GetTrackerResource() final override
-	{
-		check(ReferencedTexture);
-		return ReferencedTexture->GetTrackerResource();
-	}
-#endif
-
-	inline FRHITexture* GetReferencedTexture() const
-	{
-		return ReferencedTexture.GetReference();
-	}
-
-	virtual const FRHITextureDesc& GetDesc() const override
-	{
-		check(ReferencedTexture);
-		return ReferencedTexture->GetDesc();
-	}
-
-private:
-	friend class FRHICommandListImmediate;
-	// Called only from FRHICommandListImmediate::UpdateTextureReference()
-	void SetReferencedTexture(FRHITexture* InTexture)
-	{
-		ReferencedTexture = InTexture
-			? InTexture
-			: DefaultTexture.GetReference();
-	}
-
-	TRefCountPtr<FRHITexture> ReferencedTexture;
-
-	// This pointer is set by the InitRHI() function on the FBlackTextureWithSRV global resource,
-	// to allow FRHITextureReference to use the global black texture when the reference is nullptr.
-	// A pointer is required since FBlackTextureWithSRV is defined in RenderCore.
-	friend class FBlackTextureWithSRV;
-	static TRefCountPtr<FRHITexture> DefaultTexture;
 };
 
 //
@@ -2292,44 +2363,6 @@ public:
 	{}
 };
 
-typedef TRefCountPtr<FRHISamplerState> FSamplerStateRHIRef;
-typedef TRefCountPtr<FRHIRasterizerState> FRasterizerStateRHIRef;
-typedef TRefCountPtr<FRHIDepthStencilState> FDepthStencilStateRHIRef;
-typedef TRefCountPtr<FRHIBlendState> FBlendStateRHIRef;
-typedef TRefCountPtr<FRHIVertexDeclaration> FVertexDeclarationRHIRef;
-typedef TRefCountPtr<FRHIVertexShader> FVertexShaderRHIRef;
-typedef TRefCountPtr<FRHIMeshShader> FMeshShaderRHIRef;
-typedef TRefCountPtr<FRHIAmplificationShader> FAmplificationShaderRHIRef;
-typedef TRefCountPtr<FRHIPixelShader> FPixelShaderRHIRef;
-typedef TRefCountPtr<FRHIGeometryShader> FGeometryShaderRHIRef;
-typedef TRefCountPtr<FRHIComputeShader> FComputeShaderRHIRef;
-typedef TRefCountPtr<FRHIRayTracingShader>          FRayTracingShaderRHIRef;
-typedef TRefCountPtr<FRHIComputeFence>	FComputeFenceRHIRef;
-typedef TRefCountPtr<FRHIBoundShaderState> FBoundShaderStateRHIRef;
-typedef TRefCountPtr<const FRHIUniformBufferLayout> FUniformBufferLayoutRHIRef;
-typedef TRefCountPtr<FRHIUniformBuffer> FUniformBufferRHIRef;
-typedef TRefCountPtr<FRHIBuffer> FBufferRHIRef;
-UE_DEPRECATED(5.0, "FIndexBufferRHIRef is deprecated, please use FBufferRHIRef.")      typedef FBufferRHIRef FIndexBufferRHIRef;
-UE_DEPRECATED(5.0, "FVertexBufferRHIRef is deprecated, please use FBufferRHIRef.")     typedef FBufferRHIRef FVertexBufferRHIRef;
-UE_DEPRECATED(5.0, "FStructuredBufferRHIRef is deprecated, please use FBufferRHIRef.") typedef FBufferRHIRef FStructuredBufferRHIRef;
-typedef TRefCountPtr<FRHITexture> FTextureRHIRef;
-/*UE_DEPRECATED(5.1, "FTexture2DRHIRef is deprecated, please use FTextureRHIRef.")      */ typedef FTextureRHIRef FTexture2DRHIRef;
-/*UE_DEPRECATED(5.1, "FTexture2DArrayRHIRef is deprecated, please use FTextureRHIRef.") */ typedef FTextureRHIRef FTexture2DArrayRHIRef;
-/*UE_DEPRECATED(5.1, "FTexture3DRHIRef is deprecated, please use FTextureRHIRef.")      */ typedef FTextureRHIRef FTexture3DRHIRef;
-/*UE_DEPRECATED(5.1, "FTextureCubeRHIRef is deprecated, please use FTextureRHIRef.")    */ typedef FTextureRHIRef FTextureCubeRHIRef;
-typedef TRefCountPtr<FRHITextureReference> FTextureReferenceRHIRef;
-typedef TRefCountPtr<FRHIRenderQuery> FRenderQueryRHIRef;
-typedef TRefCountPtr<FRHIRenderQueryPool> FRenderQueryPoolRHIRef;
-typedef TRefCountPtr<FRHITimestampCalibrationQuery> FTimestampCalibrationQueryRHIRef;
-typedef TRefCountPtr<FRHIGPUFence>	FGPUFenceRHIRef;
-typedef TRefCountPtr<FRHIViewport> FViewportRHIRef;
-typedef TRefCountPtr<FRHIUnorderedAccessView> FUnorderedAccessViewRHIRef;
-typedef TRefCountPtr<FRHIShaderResourceView> FShaderResourceViewRHIRef;
-typedef TRefCountPtr<FRHIGraphicsPipelineState> FGraphicsPipelineStateRHIRef;
-typedef TRefCountPtr<FRHIComputePipelineState> FComputePipelineStateRHIRef;
-typedef TRefCountPtr<FRHIRayTracingPipelineState> FRayTracingPipelineStateRHIRef;
-
-
 /**
  * A type used only for printing a string for debugging/profiling.
  * Adds Number as a suffix to the printed string even if the base name includes a number, so may prints a string like: Base_1_1
@@ -2515,7 +2548,10 @@ public:
 	LAYOUT_FIELD_INITIALIZED(bool, bAllowCompaction, true);
 	LAYOUT_FIELD_INITIALIZED(ERayTracingGeometryInitializerType, Type, ERayTracingGeometryInitializerType::Rendering);
 
+	// Use FDebugName for auto-generated debug names with numbered suffixes, it is a variation of FMemoryImageName with optional number postfix.
 	LAYOUT_FIELD(FDebugName, DebugName);
+	// Store the path name of the owner object for resource tracking. FMemoryImageName allows a conversion to/from FName.
+	LAYOUT_FIELD(FMemoryImageName, OwnerName);
 };
 
 enum ERayTracingSceneLifetime
@@ -2641,8 +2677,6 @@ protected:
 	ERayTracingGeometryInitializerType InitializedType = ERayTracingGeometryInitializerType::Rendering;
 };
 
-typedef TRefCountPtr<FRHIRayTracingGeometry>     FRayTracingGeometryRHIRef;
-
 /** Top level ray tracing acceleration structure (contains instances of meshes). */
 class FRHIRayTracingScene : public FRHIRayTracingAccelerationStructure
 {
@@ -2659,9 +2693,6 @@ public:
 
 	virtual uint32 GetLayerBufferOffset(uint32 LayerIndex) const = 0;
 };
-
-typedef TRefCountPtr<FRHIRayTracingScene>        FRayTracingSceneRHIRef;
-
 
 /* Generic staging buffer class used by FRHIGPUMemoryReadback
 * RHI specific staging buffers derive from this
@@ -2702,8 +2733,6 @@ public:
 	FBufferRHIRef ShadowBuffer;
 	uint32 Offset;
 };
-
-typedef TRefCountPtr<FRHIStagingBuffer>	FStagingBufferRHIRef;
 
 class FRHIRenderTargetView
 {
@@ -2881,8 +2910,6 @@ public:
 	bool bClearDepth;
 	bool bClearStencil;
 
-	FRHIDepthRenderTargetView DepthStencilResolveRenderTarget;
-
 	FRHITexture* ShadingRateTexture;
 	EVRSRateCombiner ShadingRateTextureCombiner;
 
@@ -2932,11 +2959,8 @@ public:
 		// Need a separate struct so we can memzero/remove dependencies on reference counts
 		struct FHashableStruct
 		{
-			// *2 for color and resolves
-			// depth goes in the third-to-last slot
-			// depth resolve goes in the second-to-last slot
-			// shading rate goes in the last slot
-			FRHITexture* Texture[MaxSimultaneousRenderTargets * 2 + 3];
+			// *2 for color and resolves, depth goes in the second-to-last slot, shading rate goes in the last slot
+			FRHITexture* Texture[MaxSimultaneousRenderTargets*2 + 2];
 			uint32 MipIndex[MaxSimultaneousRenderTargets];
 			uint32 ArraySliceIndex[MaxSimultaneousRenderTargets];
 			ERenderTargetLoadAction LoadAction[MaxSimultaneousRenderTargets];
@@ -2961,16 +2985,15 @@ public:
 				for (int32 Index = 0; Index < RTInfo.NumColorRenderTargets; ++Index)
 				{
 					Texture[Index] = RTInfo.ColorRenderTarget[Index].Texture;
-					Texture[MaxSimultaneousRenderTargets + Index] = RTInfo.ColorResolveRenderTarget[Index].Texture;
+					Texture[MaxSimultaneousRenderTargets+Index] = RTInfo.ColorResolveRenderTarget[Index].Texture;
 					MipIndex[Index] = RTInfo.ColorRenderTarget[Index].MipIndex;
 					ArraySliceIndex[Index] = RTInfo.ColorRenderTarget[Index].ArraySliceIndex;
 					LoadAction[Index] = RTInfo.ColorRenderTarget[Index].LoadAction;
 					StoreAction[Index] = RTInfo.ColorRenderTarget[Index].StoreAction;
 				}
 
-				Texture[MaxSimultaneousRenderTargets * 2] = RTInfo.DepthStencilRenderTarget.Texture;
-				Texture[MaxSimultaneousRenderTargets * 2 + 1] = RTInfo.DepthStencilResolveRenderTarget.Texture;
-				Texture[MaxSimultaneousRenderTargets * 2 + 2] = RTInfo.ShadingRateTexture;
+				Texture[MaxSimultaneousRenderTargets] = RTInfo.DepthStencilRenderTarget.Texture;
+				Texture[MaxSimultaneousRenderTargets + 1] = RTInfo.ShadingRateTexture;
 				DepthLoadAction = RTInfo.DepthStencilRenderTarget.DepthLoadAction;
 				DepthStoreAction = RTInfo.DepthStencilRenderTarget.DepthStoreAction;
 				StencilLoadAction = RTInfo.DepthStencilRenderTarget.StencilLoadAction;
@@ -3030,8 +3053,6 @@ public:
 	virtual void OnReleaseThreadOwnership() {}
 };
 
-
-typedef TRefCountPtr<FRHICustomPresent> FCustomPresentRHIRef;
 
 // Templates to convert an FRHI*Shader to its enum
 template<typename TRHIShader> struct TRHIShaderToEnum {};
@@ -3196,35 +3217,6 @@ private:
 #endif
 };
 
-struct FImmutableSamplerState
-{
-	using TImmutableSamplers = TStaticArray<FRHISamplerState*, MaxImmutableSamplers>;
-
-	FImmutableSamplerState()
-		: ImmutableSamplers(InPlace, nullptr)
-	{}
-
-	void Reset()
-	{
-		for (uint32 Index = 0; Index < MaxImmutableSamplers; ++Index)
-		{
-			ImmutableSamplers[Index] = nullptr;
-		}
-	}
-
-	bool operator==(const FImmutableSamplerState& rhs) const
-	{
-		return ImmutableSamplers == rhs.ImmutableSamplers;
-	}
-
-	bool operator!=(const FImmutableSamplerState& rhs) const
-	{
-		return ImmutableSamplers != rhs.ImmutableSamplers;
-	}
-
-	TImmutableSamplers ImmutableSamplers;
-};
-
 // Hints for some RHIs that support subpasses
 enum class ESubpassHint : uint8
 {
@@ -3386,7 +3378,7 @@ public:
 			bHasFragmentDensityAttachment != rhs.bHasFragmentDensityAttachment ||
 			RenderTargetsEnabled != rhs.RenderTargetsEnabled ||
 			RenderTargetFormats != rhs.RenderTargetFormats || 
-			RenderTargetFlags != rhs.RenderTargetFlags || 
+			!RelevantRenderTargetFlagsEqual(RenderTargetFlags, rhs.RenderTargetFlags) || 
 			DepthStencilTargetFormat != rhs.DepthStencilTargetFormat || 
 			DepthStencilTargetFlag != rhs.DepthStencilTargetFlag ||
 			DepthTargetLoadAction != rhs.DepthTargetLoadAction ||
@@ -3402,6 +3394,24 @@ public:
 			return false;
 		}
 
+		return true;
+	}
+
+	// We care about flags that influence RT formats (which is the only thing the underlying API cares about).
+	// In most RHIs, the format is only influenced by TexCreate_SRGB. D3D12 additionally uses TexCreate_Shared in its format selection logic.
+	static constexpr ETextureCreateFlags RelevantRenderTargetFlagMask = ETextureCreateFlags::SRGB | ETextureCreateFlags::Shared;
+
+	static bool RelevantRenderTargetFlagsEqual(const TRenderTargetFlags& A, const TRenderTargetFlags& B)
+	{
+		for (int32 Index = 0; Index < A.Num(); ++Index)
+		{
+			ETextureCreateFlags FlagsA = A[Index] & RelevantRenderTargetFlagMask;
+			ETextureCreateFlags FlagsB = B[Index] & RelevantRenderTargetFlagMask;
+			if (FlagsA != FlagsB)
+			{
+				return false;
+			}
+		}
 		return true;
 	}
 
@@ -3458,7 +3468,8 @@ public:
 	{
 		struct
 		{
-			uint16					Reserved			: 15;
+			uint16					Reserved			: 14;
+			uint16					bPSOPrecache			: 1;
 			uint16					bFromPSOFileCache	: 1;
 		};
 		uint16						Flags;
@@ -3523,6 +3534,12 @@ public:
 	// Any number of shaders for any stage may be provided when creating partial pipelines, but 
 	// at least one shader must be present in total (completely empty pipelines are not allowed).
 	bool bPartial = false;
+
+	// Hints to the RHI that this PSO is being compiled by a background task and will not be needed immediately for rendering.
+	// Speculative PSO pre-caching or non-blocking PSO creation should set this flag.
+	// This may be used by the RHI to decide if a hitch warning should be reported, change priority of any internally dispatched tasks, etc.
+	// Does not affect the creation of the PSO itself.
+	bool bBackgroundCompilation = false;
 
 	// Ray tracing pipeline may be created by deriving from the existing base.
 	// Base pipeline will be extended by adding new shaders into it, potentially saving substantial amount of CPU time.
@@ -3621,57 +3638,6 @@ protected:
 	TRefCountPtr<FRHIComputeShader> ComputeShader;
 };
 
-//
-// Shader Library
-//
-
-class FRHIShaderLibrary : public FRHIResource
-{
-public:
-	FRHIShaderLibrary(EShaderPlatform InPlatform, FString const& InName) : FRHIResource(RRT_ShaderLibrary), Platform(InPlatform), LibraryName(InName), LibraryId(GetTypeHash(InName)) {}
-	virtual ~FRHIShaderLibrary() {}
-	
-	FORCEINLINE EShaderPlatform GetPlatform(void) const { return Platform; }
-	FORCEINLINE const FString& GetName(void) const { return LibraryName; }
-	FORCEINLINE uint32 GetId(void) const { return LibraryId; }
-	
-	virtual bool IsNativeLibrary() const = 0;
-	virtual int32 GetNumShaderMaps() const = 0;
-	virtual int32 GetNumShaders() const = 0;
-	virtual int32 GetNumShadersForShaderMap(int32 ShaderMapIndex) const = 0;
-	virtual int32 GetShaderIndex(int32 ShaderMapIndex, int32 i) const = 0;
-	virtual int32 FindShaderMapIndex(const FSHAHash& Hash) = 0;
-	virtual int32 FindShaderIndex(const FSHAHash& Hash) = 0;
-	virtual bool PreloadShader(int32 ShaderIndex, FGraphEventArray& OutCompletionEvents) { return false; }
-	virtual bool PreloadShaderMap(int32 ShaderMapIndex, FGraphEventArray& OutCompletionEvents) { return false; }
-	virtual bool PreloadShaderMap(int32 ShaderMapIndex, FCoreDelegates::FAttachShaderReadRequestFunc AttachShaderReadRequestFunc) { return false; }
-	virtual void ReleasePreloadedShader(int32 ShaderIndex) {}
-
-	virtual TRefCountPtr<FRHIShader> CreateShader(int32 ShaderIndex) { return nullptr; }
-	virtual void Teardown() {};
-
-protected:
-	EShaderPlatform Platform;
-	FString LibraryName;
-	uint32 LibraryId;
-};
-
-typedef TRefCountPtr<FRHIShaderLibrary>	FRHIShaderLibraryRef;
-
-class FRHIPipelineBinaryLibrary : public FRHIResource
-{
-public:
-	FRHIPipelineBinaryLibrary(EShaderPlatform InPlatform, FString const& FilePath) : FRHIResource(RRT_PipelineBinaryLibrary), Platform(InPlatform) {}
-	virtual ~FRHIPipelineBinaryLibrary() {}
-	
-	FORCEINLINE EShaderPlatform GetPlatform(void) const { return Platform; }
-	
-protected:
-	EShaderPlatform Platform;
-};
-
-typedef TRefCountPtr<FRHIPipelineBinaryLibrary>	FRHIPipelineBinaryLibraryRef;
-
 enum class ERenderTargetActions : uint8
 {
 	LoadOpMask = 2,
@@ -3750,6 +3716,97 @@ inline ERenderTargetActions GetStencilActions(EDepthStencilTargetActions Action)
 	return (ERenderTargetActions)((uint8)Action & ((1 << (uint8)EDepthStencilTargetActions::DepthMask) - 1));
 }
 
+struct FResolveRect
+{
+	int32 X1;
+	int32 Y1;
+	int32 X2;
+	int32 Y2;
+
+	// e.g. for a a full 256 x 256 area starting at (0, 0) it would be 
+	// the values would be 0, 0, 256, 256
+	FResolveRect(int32 InX1 = -1, int32 InY1 = -1, int32 InX2 = -1, int32 InY2 = -1)
+		: X1(InX1)
+		, Y1(InY1)
+		, X2(InX2)
+		, Y2(InY2)
+	{}
+
+	FResolveRect(const FResolveRect& Other)
+		: X1(Other.X1)
+		, Y1(Other.Y1)
+		, X2(Other.X2)
+		, Y2(Other.Y2)
+	{}
+
+	explicit FResolveRect(FIntRect Other)
+		: X1(Other.Min.X)
+		, Y1(Other.Min.Y)
+		, X2(Other.Max.X)
+		, Y2(Other.Max.Y)
+	{}
+
+	bool operator==(FResolveRect Other) const
+	{
+		return X1 == Other.X1 && Y1 == Other.Y1 && X2 == Other.X2 && Y2 == Other.Y2;
+	}
+
+	bool operator!=(FResolveRect Other) const
+	{
+		return !(*this == Other);
+	}
+
+	bool IsValid() const
+	{
+		return X1 >= 0 && Y1 >= 0 && X2 - X1 > 0 && Y2 - Y1 > 0;
+	}
+};
+
+struct FResolveParams
+{
+	/** used to specify face when resolving to a cube map texture */
+	ECubeFace CubeFace;
+	/** resolve RECT bounded by [X1,Y1]..[X2,Y2]. Or -1 for fullscreen */
+	FResolveRect Rect;
+	FResolveRect DestRect;
+	/** The mip index to resolve in both source and dest. */
+	int32 MipIndex;
+	/** Array index to resolve in the source. */
+	int32 SourceArrayIndex;
+	/** Array index to resolve in the dest. */
+	int32 DestArrayIndex;
+	/** States to transition to at the end of the resolve operation. */
+	ERHIAccess SourceAccessFinal = ERHIAccess::SRVMask;
+	ERHIAccess DestAccessFinal = ERHIAccess::SRVMask;
+
+	/** constructor */
+	FResolveParams(
+		const FResolveRect& InRect = FResolveRect(),
+		ECubeFace InCubeFace = CubeFace_PosX,
+		int32 InMipIndex = 0,
+		int32 InSourceArrayIndex = 0,
+		int32 InDestArrayIndex = 0,
+		const FResolveRect& InDestRect = FResolveRect())
+		: CubeFace(InCubeFace)
+		, Rect(InRect)
+		, DestRect(InDestRect)
+		, MipIndex(InMipIndex)
+		, SourceArrayIndex(InSourceArrayIndex)
+		, DestArrayIndex(InDestArrayIndex)
+	{}
+
+	FORCEINLINE FResolveParams(const FResolveParams& Other)
+		: CubeFace(Other.CubeFace)
+		, Rect(Other.Rect)
+		, DestRect(Other.DestRect)
+		, MipIndex(Other.MipIndex)
+		, SourceArrayIndex(Other.SourceArrayIndex)
+		, DestArrayIndex(Other.DestArrayIndex)
+		, SourceAccessFinal(Other.SourceAccessFinal)
+		, DestAccessFinal(Other.DestAccessFinal)
+	{}
+};
+
 struct FRHIRenderPassInfo
 {
 	struct FColorEntry
@@ -3790,6 +3847,9 @@ struct FRHIRenderPassInfo
 
 	// Hint for some RHI's that renderpass will have specific sub-passes 
 	ESubpassHint SubpassHint = ESubpassHint::None;
+
+	// Optional Render Area extent : this renderpass will only execute on pixels within this area (scissor/viewport doesn't cover clear/loads on mobile)
+	FIntRect RenderArea = FIntRect();
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FRHIRenderPassInfo() = default;
@@ -4341,3 +4401,67 @@ private:
 	TArray<TPair<FRHIBufferUAVCreateInfo, FUnorderedAccessViewRHIRef>, TInlineAllocator<1>> UAVs;
 	TArray<TPair<FRHIBufferSRVCreateInfo, FShaderResourceViewRHIRef>, TInlineAllocator<1>> SRVs;
 };
+
+struct FRHIShaderParameter
+{
+	FRHIShaderParameter(uint16 InBufferIndex, uint16 InBaseIndex, uint16 InByteOffset, uint16 InByteSize)
+		: BufferIndex(InBufferIndex)
+		, BaseIndex(InBaseIndex)
+		, ByteOffset(InByteOffset)
+		, ByteSize(InByteSize)
+	{
+	}
+	uint16 BufferIndex;
+	uint16 BaseIndex;
+	uint16 ByteOffset;
+	uint16 ByteSize;
+};
+
+struct FRHIShaderParameterResource
+{
+	enum class EType : uint8
+	{
+		Texture,
+		ResourceView,
+		UnorderedAccessView,
+		Sampler,
+		UniformBuffer,
+	};
+
+	FRHIShaderParameterResource() = default;
+	FRHIShaderParameterResource(EType InType, FRHIResource* InResource, uint16 InIndex)
+		: Resource(InResource)
+		, Index(InIndex)
+		, Type(InType)
+	{
+	}
+	FRHIShaderParameterResource(FRHITexture* InTexture, uint16 InIndex)
+		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::Texture, InTexture, InIndex)
+	{
+	}
+	FRHIShaderParameterResource(FRHIShaderResourceView* InView, uint16 InIndex)
+		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::ResourceView, InView, InIndex)
+	{
+	}
+	FRHIShaderParameterResource(FRHIUnorderedAccessView* InUAV, uint16 InIndex)
+		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::UnorderedAccessView, InUAV, InIndex)
+	{
+	}
+	FRHIShaderParameterResource(FRHISamplerState* InSamplerState, uint16 InIndex)
+		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::Sampler, InSamplerState, InIndex)
+	{
+	}
+	FRHIShaderParameterResource(FRHIUniformBuffer* InUniformBuffer, uint16 InIndex)
+		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::UniformBuffer, InUniformBuffer, InIndex)
+	{
+	}
+
+	FRHIResource* Resource = nullptr;
+	uint16        Index = 0;
+	EType         Type = EType::Texture;
+};
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "RHIShaderLibrary.h"
+#include "RHITextureReference.h"
+#endif

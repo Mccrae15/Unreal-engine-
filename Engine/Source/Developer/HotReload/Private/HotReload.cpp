@@ -135,9 +135,6 @@ public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 
-	/** FSelfRegisteringExec implementation */
-	virtual bool Exec( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar ) override;
-
 	/** IHotReloadInterface implementation */
 	virtual void SaveConfig() override;
 	virtual bool RecompileModule(const FName InModuleName, FOutputDevice &Ar, ERecompileModuleFlags Flags) override;
@@ -155,6 +152,10 @@ public:
 	virtual FModuleCompilerFinishedEvent& OnModuleCompilerFinished() override { return ModuleCompilerFinishedEvent; }
 	virtual FString GetModuleCompileMethod(FName InModuleName) override;
 	virtual bool IsAnyGameModuleLoaded() override;
+
+protected:
+	/** FSelfRegisteringExec implementation */
+	virtual bool Exec_Dev( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar ) override;
 
 private:
 	/**
@@ -571,7 +572,7 @@ void FHotReloadModule::ShutdownModule()
 	UEHotReload_Private::DeleteFileThatIndicatesEditorRunIfNeeded();
 }
 
-bool FHotReloadModule::Exec( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar )
+bool FHotReloadModule::Exec_Dev( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
 #if !UE_BUILD_SHIPPING
 	if ( FParse::Command( &Cmd, TEXT( "Module" ) ) )
@@ -1401,6 +1402,11 @@ FString FHotReloadModule::MakeUBTArgumentsForModuleCompiling()
 		FString FullProjectPath = FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath());
 		AdditionalArguments += FString::Printf(TEXT("\"%s\" "), *FullProjectPath);
 	}
+	
+#if PLATFORM_MAC_ARM64
+	AdditionalArguments += "-architecture=arm64";
+#endif
+
 	return AdditionalArguments;
 }
 

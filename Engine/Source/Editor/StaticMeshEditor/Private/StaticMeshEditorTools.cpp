@@ -16,6 +16,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
@@ -181,6 +182,12 @@ void FStaticMeshDetails::CustomizeDetails( class IDetailLayoutBuilder& DetailBui
 void FStaticMeshDetails::OnInstancedFbxStaticMeshImportDataPropertyIteration(IDetailCategoryBuilder& BaseCategory, IDetailGroup* PropertyGroup, TSharedRef<IPropertyHandle>& Property) const
 {
 	IDetailPropertyRow* Row = nullptr;
+
+	if (Property->GetBoolMetaData(TEXT("ReimportRestrict")))
+	{
+		//Dont create a row for reimport restricted property, we do not want to show them
+		return;
+	}
 
 	if (PropertyGroup)
 	{
@@ -489,6 +496,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 {
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("RecomputeNormals", "Recompute Normals") )
+		.RowTag("RecomputeNormals")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -506,6 +514,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("RecomputeTangents", "Recompute Tangents") )
+		.RowTag("RecomputeTangents")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -522,6 +531,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("UseMikkTSpace", "Use MikkTSpace Tangent Space") )
+		.RowTag("UseMikkTSpace")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -538,6 +548,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("ComputeWeightedNormals", "Compute Weighted Normals") )
+		.RowTag("ComputeWeightedNormals")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -554,6 +565,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("RemoveDegenerates", "Remove Degenerates") )
+		.RowTag("RemoveDegenerates")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -571,6 +583,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("BuildReversedIndexBuffer", "Build Reversed Index Buffer") )
+		.RowTag("BuildReversedIndexBuffer")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -587,6 +600,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("UseHighPrecisionTangentBasis", "Use High Precision Tangent Basis"))
+		.RowTag("UseHighPrecisionTangentBasis")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -603,6 +617,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("UseFullPrecisionUVs", "Use Full Precision UVs") )
+		.RowTag("UseFullPrecisionUVs")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -619,6 +634,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 	
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("UseBackwardsCompatibleF16TruncUVs", "UE4 Compatible UVs") )
+		.RowTag("UseBackwardsCompatibleF16TruncUVs")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -635,6 +651,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("GenerateLightmapUVs", "Generate Lightmap UVs") )
+		.RowTag("GenerateLightmapUVs")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -651,6 +668,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("MinLightmapResolution", "Min Lightmap Resolution") )
+		.RowTag("MinLightmapResolution")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -670,6 +688,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("SourceLightmapIndex", "Source Lightmap Index") )
+		.RowTag("SourceLightmapIndex")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -689,6 +708,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("DestinationLightmapIndex", "Destination Lightmap Index") )
+		.RowTag("DestinationLightmapIndex")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -708,6 +728,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("BuildScale", "Build Scale"))
+		.RowTag("BuildScale")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -734,6 +755,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("DistanceFieldResolutionScale", "Distance Field Resolution Scale") )
+		.RowTag("DistanceFieldResolutionScale")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -754,6 +776,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 		
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("GenerateDistanceFieldAsIfTwoSided", "Two-Sided Distance Field Generation") )
+		.RowTag("GenerateDistanceFieldAsIfTwoSided")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -776,6 +799,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 			.OnObjectChanged(this, &FMeshBuildSettingsLayout::OnDistanceFieldReplacementMeshSelected);
 
 		ChildrenBuilder.AddCustomRow( LOCTEXT("DistanceFieldReplacementMesh", "Distance Field Replacement Mesh") )
+		.RowTag("DistanceFieldReplacementMesh")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -790,6 +814,7 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("MaxLumenMeshCards", "Max Lumen Mesh Cards"))
+		.RowTag("MaxLumenMeshCards")
 			.NameContent()
 			[
 				SNew(STextBlock)
@@ -1228,7 +1253,9 @@ bool FMeshReductionSettingsLayout::UseNativeToolLayout() const
 EVisibility FMeshReductionSettingsLayout::GetTriangleCriterionVisibility() const
 {
 	EVisibility VisibilityValue;
-	if (!bUseQuadricSimplifier || ReductionSettings.TerminationCriterion != EStaticMeshReductionTerimationCriterion::Vertices)
+	if (!bUseQuadricSimplifier
+		|| ReductionSettings.TerminationCriterion == EStaticMeshReductionTerimationCriterion::Triangles
+		|| ReductionSettings.TerminationCriterion == EStaticMeshReductionTerimationCriterion::Any)
 	{
 		VisibilityValue =  EVisibility::Visible;
 	}
@@ -1244,7 +1271,9 @@ EVisibility FMeshReductionSettingsLayout::GetTriangleCriterionVisibility() const
 EVisibility FMeshReductionSettingsLayout::GetVertexCriterionVisibility() const
 {
 	EVisibility VisibilityValue;
-	if (!bUseQuadricSimplifier || ReductionSettings.TerminationCriterion != EStaticMeshReductionTerimationCriterion::Triangles)
+	if (!bUseQuadricSimplifier
+		|| ReductionSettings.TerminationCriterion == EStaticMeshReductionTerimationCriterion::Vertices
+		|| ReductionSettings.TerminationCriterion == EStaticMeshReductionTerimationCriterion::Any)
 	{
 		VisibilityValue = EVisibility::Visible;
 	}
@@ -1303,29 +1332,75 @@ void FMeshReductionSettingsLayout::GenerateChildContent( IDetailChildrenBuilder&
 			.OnValueCommitted(this, &FMeshReductionSettingsLayout::OnPercentTrianglesCommitted)
 		]
 		.Visibility(TAttribute<EVisibility>(this, &FMeshReductionSettingsLayout::GetTriangleCriterionVisibility));
-
+		
+		if (bUseQuadricSimplifier)
+		{
+			ChildrenBuilder.AddCustomRow( LOCTEXT("MaxTrianglesPercentage_Row", "Max Number of Triangles") )
+			.RowTag("MaxPercentTriangles")
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Font( IDetailLayoutBuilder::GetDetailFont() )
+				.Text(LOCTEXT("MaxTrianglesPercentage", "Max Triangles Count"))
+				.ToolTipText(LOCTEXT("MaxTrianglesPercentage_ToolTip", "The maximum number of triangles to retain when using percentage criterion."))
+			]
+			.ValueContent()
+			[
+				SNew(SSpinBox<uint32>)
+				.Font( IDetailLayoutBuilder::GetDetailFont() )
+				.MinValue(2)
+				.MaxValue(MAX_uint32)
+				.Value(this, &FMeshReductionSettingsLayout::GetMaxNumOfPercentTriangles)
+				.OnValueChanged(this, &FMeshReductionSettingsLayout::OnMaxNumOfPercentTrianglesChanged)
+				.OnValueCommitted(this, &FMeshReductionSettingsLayout::OnMaxNumOfPercentTrianglesCommitted)
+			]
+			.Visibility(TAttribute<EVisibility>(this, &FMeshReductionSettingsLayout::GetTriangleCriterionVisibility));
+		}
 	}
 
 	if (bUseQuadricSimplifier)
 	{
+		//Percent vertices
 		ChildrenBuilder.AddCustomRow(LOCTEXT("PercentVertices", "Percent Vertices"))
 			.NameContent()
 			[
 				SNew(STextBlock)
 				.Font(IDetailLayoutBuilder::GetDetailFont())
-			.Text(LOCTEXT("PercentVertices", "Percent Vertices"))
+				.Text(LOCTEXT("PercentVertices", "Percent Vertices"))
 			]
-		.ValueContent()
+			.ValueContent()
 			[
 				SNew(SSpinBox<float>)
 				.Font(IDetailLayoutBuilder::GetDetailFont())
-			.MinValue(0.0f)
-			.MaxValue(100.0f)
-			.Value(this, &FMeshReductionSettingsLayout::GetPercentVertices)
-			.OnValueChanged(this, &FMeshReductionSettingsLayout::OnPercentVerticesChanged)
-			.OnValueCommitted(this, &FMeshReductionSettingsLayout::OnPercentVerticesCommitted)
+				.MinValue(0.0f)
+				.MaxValue(100.0f)
+				.Value(this, &FMeshReductionSettingsLayout::GetPercentVertices)
+				.OnValueChanged(this, &FMeshReductionSettingsLayout::OnPercentVerticesChanged)
+				.OnValueCommitted(this, &FMeshReductionSettingsLayout::OnPercentVerticesCommitted)
 			]
 		.Visibility(TAttribute<EVisibility>(this, &FMeshReductionSettingsLayout::GetVertexCriterionVisibility));
+
+		//Max percent absolute vertices
+		ChildrenBuilder.AddCustomRow( LOCTEXT("MaxVerticesPercentage_Row", "Max Number of Vertices") )
+			.RowTag("MaxVertices")
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Font( IDetailLayoutBuilder::GetDetailFont() )
+				.Text(LOCTEXT("MaxVerticesPercentage", "Max Vertices Count"))
+				.ToolTipText(LOCTEXT("MaxVerticesPercentage_ToolTip", "The maximum number of Vertices to retain when using percentage criterion."))
+			]
+			.ValueContent()
+			[
+				SNew(SSpinBox<uint32>)
+				.Font( IDetailLayoutBuilder::GetDetailFont() )
+				.MinValue(2)
+				.MaxValue(MAX_uint32)
+				.Value(this, &FMeshReductionSettingsLayout::GetMaxNumOfPercentVertices)
+				.OnValueChanged(this, &FMeshReductionSettingsLayout::OnMaxNumOfPercentVerticesChanged)
+				.OnValueCommitted(this, &FMeshReductionSettingsLayout::OnMaxNumOfPercentVerticesCommitted)
+			]
+			.Visibility(TAttribute<EVisibility>(this, &FMeshReductionSettingsLayout::GetVertexCriterionVisibility));
 
 	}
 
@@ -1576,9 +1651,19 @@ float FMeshReductionSettingsLayout::GetPercentTriangles() const
 	return ReductionSettings.PercentTriangles * 100.0f; // Display fraction as percentage.
 }
 
+uint32 FMeshReductionSettingsLayout::GetMaxNumOfPercentTriangles() const
+{
+	return ReductionSettings.MaxNumOfTriangles;
+}
+
 float FMeshReductionSettingsLayout::GetPercentVertices() const
 {
 	return ReductionSettings.PercentVertices * 100.0f; // Display fraction as percentage.
+}
+
+uint32 FMeshReductionSettingsLayout::GetMaxNumOfPercentVertices() const
+{
+	return ReductionSettings.MaxNumOfVerts;
 }
 
 float FMeshReductionSettingsLayout::GetMaxDeviation() const
@@ -1635,6 +1720,35 @@ void FMeshReductionSettingsLayout::OnPercentVerticesCommitted(float NewValue, ET
 		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.ReductionSettings"), TEXT("PercentVertices"), FString::Printf(TEXT("%.1f"), NewValue));
 	}
 	OnPercentVerticesChanged(NewValue);
+}
+
+void FMeshReductionSettingsLayout::OnMaxNumOfPercentTrianglesChanged(uint32 NewValue)
+{
+	ReductionSettings.MaxNumOfTriangles = NewValue;
+}
+
+void FMeshReductionSettingsLayout::OnMaxNumOfPercentTrianglesCommitted(uint32 NewValue, ETextCommit::Type TextCommitType)
+{
+	if (FEngineAnalytics::IsAvailable())
+	{
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.ReductionSettings"), TEXT("MaxNumOfTrianglesPercentage"), FString::Printf(TEXT("%d"), NewValue));
+	}
+	OnMaxNumOfPercentTrianglesChanged(NewValue);
+}
+
+
+void FMeshReductionSettingsLayout::OnMaxNumOfPercentVerticesChanged(uint32 NewValue)
+{
+	ReductionSettings.MaxNumOfVerts = NewValue;
+}
+
+void FMeshReductionSettingsLayout::OnMaxNumOfPercentVerticesCommitted(uint32 NewValue, ETextCommit::Type TextCommitType)
+{
+	if (FEngineAnalytics::IsAvailable())
+	{
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.ReductionSettings"), TEXT("MaxNumOfVertsPercentage"), FString::Printf(TEXT("%d"), NewValue));
+	}
+	OnMaxNumOfPercentVerticesChanged(NewValue);
 }
 
 void FMeshReductionSettingsLayout::OnMaxDeviationChanged(float NewValue)
@@ -5044,12 +5158,22 @@ FNaniteSettingsLayout::FNaniteSettingsLayout(FStaticMeshEditor& InStaticMeshEdit
 	check(StaticMesh);
 	NaniteSettings = StaticMesh->NaniteSettings;
 
+	// Position options
 	PositionPrecisionOptions.Add(MakeShared<FString>(LOCTEXT("PositionPrecisionAuto", "Auto").ToString()));
 	for (int32 i = DisplayPositionPrecisionMin; i <= DisplayPositionPrecisionMax; i++)
 	{
 		PositionPrecisionOptions.Add(MakeShared<FString>(PositionPrecisionValueToDisplayString(i)));
 	}
 
+	// Normal options
+	const FText NormalAutoTest = FText::Format(LOCTEXT("NormalPrecisionAuto", "Auto ({0} bits)"), 8);	//TODO: Just use Auto=8 for now
+	NormalPrecisionOptions.Add(MakeShared<FString>(NormalAutoTest.ToString()));
+	for (int32 i = DisplayNormalPrecisionMin; i <= DisplayNormalPrecisionMax; i++)
+	{
+		NormalPrecisionOptions.Add(MakeShared<FString>(NormalPrecisionValueToDisplayString(i)));
+	}
+
+	// Residency options
 	const FText ResidencyMinimalText = FText::Format(LOCTEXT("ResidencyMinimum", "Minimal ({0}KB)"), NANITE_ROOT_PAGE_GPU_SIZE >> 10);
 	ResidencyOptions.Add(MakeShared<FString>(ResidencyMinimalText.ToString()));
 	for (int32 i = DisplayMinimumResidencyExpRangeMin; i <= DisplayMinimumResidencyExpRangeMax; i++)
@@ -5180,6 +5304,27 @@ void FNaniteSettingsLayout::AddToDetailsPanel(IDetailLayoutBuilder& DetailBuilde
 			.OptionsSource(&PositionPrecisionOptions)
 			.InitiallySelectedItem(PositionPrecisionOptions[PositionPrecisionValueToIndex(NaniteSettings.PositionPrecision)])
 			.OnSelectionChanged(this, &FNaniteSettingsLayout::OnPositionPrecisionChanged)
+		];
+	}
+
+	{
+		TSharedPtr<STextComboBox> TerminationCriterionCombo;
+		NaniteSettingsCategory.AddCustomRow(LOCTEXT("NormalPrecision", "Normal Precision"))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("NormalPrecision", "Normal Precision"))
+			.ToolTipText(LOCTEXT("NormalPrecisionTooltip", "Precision of vertex normals."))
+		]
+		.ValueContent()
+		.VAlign(VAlign_Center)
+		[
+			SAssignNew(TerminationCriterionCombo, STextComboBox)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.OptionsSource(&NormalPrecisionOptions)
+			.InitiallySelectedItem(NormalPrecisionOptions[NormalPrecisionValueToIndex(NaniteSettings.NormalPrecision)])
+			.OnSelectionChanged(this, &FNaniteSettingsLayout::OnNormalPrecisionChanged)
 		];
 	}
 
@@ -5323,6 +5468,49 @@ void FNaniteSettingsLayout::AddToDetailsPanel(IDetailLayoutBuilder& DetailBuilde
 		];
 	}
 
+	{
+		NaniteSettingsCategory.AddCustomRow( LOCTEXT("DisplacementUVChannel", "Displacement UV Channel") )
+
+		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([this, NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked() && IsHiResDataEmpty(); })))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("DisplacementUVChannel", "Displacement UV Channel"))
+			.ToolTipText(LOCTEXT("DisplacementUVChannelTooltip", "UV channel to use when sampling displacement maps."))
+		]
+		.ValueContent()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SSpinBox<int32>)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.MinValue(0)
+			.MaxValue(4)
+			.Value(this, &FNaniteSettingsLayout::GetDisplacementUVChannel)
+			.OnValueChanged(this, &FNaniteSettingsLayout::OnDisplacementUVChannelChanged)
+		];
+	}
+
+	{
+		TSharedPtr<FStructOnScope> TempNaniteSettings = MakeShared<FStructOnScope>(FMeshNaniteSettings::StaticStruct());
+		FMeshNaniteSettings::StaticStruct()->CopyScriptStruct(TempNaniteSettings->GetStructMemory(), &NaniteSettings, 1);
+		IDetailPropertyRow* MapsRow = NaniteSettingsCategory.AddExternalStructureProperty(TempNaniteSettings, GET_MEMBER_NAME_CHECKED(FMeshNaniteSettings, DisplacementMaps));
+		MapsRow->GetPropertyHandle()->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda(
+			[this, TempNaniteSettings] 
+			{
+				FMeshNaniteSettings* TempSettings = (FMeshNaniteSettings*)TempNaniteSettings->GetStructMemory();
+				NaniteSettings.DisplacementMaps = TempSettings->DisplacementMaps;
+			}
+		));
+		MapsRow->GetPropertyHandle()->SetOnChildPropertyValueChanged(FSimpleDelegate::CreateLambda(
+			[this, TempNaniteSettings] 
+			{
+				FMeshNaniteSettings* TempSettings = (FMeshNaniteSettings*)TempNaniteSettings->GetStructMemory();
+				NaniteSettings.DisplacementMaps = TempSettings->DisplacementMaps;
+			}
+		));
+	}
+
 	//Nanite import button
 	{
 		NaniteSettingsCategory.AddCustomRow(LOCTEXT("NaniteHiResButtons", "Nanite Hi Res buttons"))
@@ -5441,7 +5629,7 @@ int32 FNaniteSettingsLayout::PositionPrecisionIndexToValue(int32 Index)
 
 	if (Index == 0)
 	{
-		return MIN_int32;
+		return DisplayPositionPrecisionAuto;
 	}
 	else
 	{
@@ -5453,7 +5641,7 @@ int32 FNaniteSettingsLayout::PositionPrecisionIndexToValue(int32 Index)
 
 int32 FNaniteSettingsLayout::PositionPrecisionValueToIndex(int32 Value)
 {
-	if (Value == MIN_int32)
+	if (Value == DisplayPositionPrecisionAuto)
 	{
 		return 0;
 	}
@@ -5466,7 +5654,7 @@ int32 FNaniteSettingsLayout::PositionPrecisionValueToIndex(int32 Value)
 
 FString FNaniteSettingsLayout::PositionPrecisionValueToDisplayString(int32 Value)
 {
-	check(Value != MIN_int32);
+	check(Value != DisplayPositionPrecisionAuto);
 	
 	if(Value <= 0)
 	{
@@ -5477,6 +5665,41 @@ FString FNaniteSettingsLayout::PositionPrecisionValueToDisplayString(int32 Value
 		const float fValue = static_cast<float>(FMath::Exp2((double)-Value));
 		return FString::Printf(TEXT("1/%dcm (%.3gcm)"), 1 << Value, fValue);
 	}
+}
+
+int32 FNaniteSettingsLayout::NormalPrecisionIndexToValue(int32 Index)
+{
+	check(Index >= 0);
+
+	if (Index == 0)
+	{
+		return DisplayNormalPrecisionAuto;
+	}
+	else
+	{
+		int32 Value = DisplayNormalPrecisionMin + (Index - 1);
+		Value = FMath::Min(Value, DisplayNormalPrecisionMax);
+		return Value;
+	}
+}
+
+int32 FNaniteSettingsLayout::NormalPrecisionValueToIndex(int32 Value)
+{
+	if (Value == DisplayNormalPrecisionAuto)
+	{
+		return 0;
+	}
+	else
+	{
+		Value = FMath::Clamp(Value, DisplayNormalPrecisionMin, DisplayNormalPrecisionMax);
+		return Value - DisplayNormalPrecisionMin + 1;
+	}
+}
+
+FString FNaniteSettingsLayout::NormalPrecisionValueToDisplayString(int32 Value)
+{
+	check(Value != DisplayNormalPrecisionAuto);
+	return FString::Printf(TEXT("%d bits"), Value);
 }
 
 uint32 FNaniteSettingsLayout::MinimumResidencyIndexToValue(int32 Index)
@@ -5557,6 +5780,20 @@ void FNaniteSettingsLayout::OnPositionPrecisionChanged(TSharedPtr<FString> NewVa
 	}
 }
 
+void FNaniteSettingsLayout::OnNormalPrecisionChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo)
+{
+	int32 NewValueInt = NormalPrecisionIndexToValue(NormalPrecisionOptions.Find(NewValue));
+	if (NaniteSettings.NormalPrecision != NewValueInt)
+	{
+		if (FEngineAnalytics::IsAvailable())
+		{
+			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.NaniteSettings"), TEXT("NormalPrecision"), *NewValue.Get());
+		}
+		NaniteSettings.NormalPrecision = NewValueInt;
+	}
+}
+
+
 void FNaniteSettingsLayout::OnResidencyChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo)
 {
 	int32 NewValueInt = MinimumResidencyIndexToValue(ResidencyOptions.Find(NewValue));
@@ -5630,6 +5867,16 @@ void FNaniteSettingsLayout::OnFallbackRelativeErrorChanged(float NewValue)
 	NaniteSettings.FallbackRelativeError = NewValue;
 }
 
+int32 FNaniteSettingsLayout::GetDisplacementUVChannel() const
+{
+	return NaniteSettings.DisplacementUVChannel;
+}
+
+void FNaniteSettingsLayout::OnDisplacementUVChannelChanged(int32 NewValue)
+{
+	NaniteSettings.DisplacementUVChannel = NewValue;
+}
+
 FString FNaniteSettingsLayout::GetHiResSourceFilename() const
 {
 	if (UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh())
@@ -5689,7 +5936,9 @@ FReply FNaniteSettingsLayout::OnImportHiRes()
 	{
 		StaticMesh->GetHiResSourceModel().SourceImportFilename = FString();
 		FbxMeshUtils::ImportStaticMeshHiResSourceModelDialog(StaticMesh);
-		StaticMeshEditor.RefreshTool();
+		//If we import a hires we should enable nanite
+		NaniteSettings.bEnabled = true;
+		ApplyChanges();
 	}
 	return FReply::Handled();
 }

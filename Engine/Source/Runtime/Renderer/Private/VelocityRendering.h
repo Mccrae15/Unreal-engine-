@@ -91,9 +91,9 @@ protected:
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode);
 
-	void CollectPSOInitializersInternal(
+	bool CollectPSOInitializersInternal(
 		const FSceneTexturesConfig& SceneTexturesConfig,
-		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FMaterial& RESTRICT MaterialResource,
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode,
@@ -141,7 +141,7 @@ private:
 	virtual void CollectPSOInitializers(
 		const FSceneTexturesConfig& SceneTexturesConfig,
 		const FMaterial& Material,
-		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FPSOPrecacheParams& PreCacheParams,
 		TArray<FPSOPrecacheData>& PSOInitializers) override final;
 };
@@ -184,7 +184,7 @@ private:
 	virtual void CollectPSOInitializers(
 		const FSceneTexturesConfig& SceneTexturesConfig,
 		const FMaterial& Material, 
-		const FVertexFactoryType* VertexFactoryType, 
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FPSOPrecacheParams& PreCacheParams,
 		TArray<FPSOPrecacheData>& PSOInitializers) override final;
 };

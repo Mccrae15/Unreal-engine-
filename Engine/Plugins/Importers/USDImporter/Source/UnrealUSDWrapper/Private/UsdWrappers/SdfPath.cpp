@@ -22,14 +22,24 @@ namespace UE
 			FSdfPathImpl() = default;
 
 #if USE_USD_SDK
+
+#if ENABLE_USD_DEBUG_PATH
+			FString DebugPath;
+#endif
 			explicit FSdfPathImpl( const pxr::SdfPath& InSdfPath )
 				: PxrSdfPath( InSdfPath )
 			{
+#if ENABLE_USD_DEBUG_PATH
+				DebugPath = FString(ANSI_TO_TCHAR(PxrSdfPath.Get().GetString().c_str()));
+#endif
 			}
 
 			explicit FSdfPathImpl( pxr::SdfPath&& InSdfPath )
 				: PxrSdfPath( MoveTemp( InSdfPath ) )
 			{
+#if ENABLE_USD_DEBUG_PATH
+				DebugPath = FString(ANSI_TO_TCHAR(PxrSdfPath.Get().GetString().c_str()));
+#endif
 			}
 
 			TUsdStore< pxr::SdfPath > PxrSdfPath;
@@ -300,5 +310,14 @@ namespace UE
 		}
 #endif // #if USE_USD_SDK
 		return Result;
+	}
+
+	bool FSdfPath::HasPrefix(const UE::FSdfPath& Prefix) const
+	{
+#if USE_USD_SDK
+		return Impl->PxrSdfPath.Get().HasPrefix(Prefix);
+#else
+		return false;
+#endif // #if USE_USD_SDK
 	}
 }

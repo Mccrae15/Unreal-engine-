@@ -2,26 +2,24 @@
 
 #include "K2Node_EnhancedInputAction.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "BlueprintActionDatabase.h"
 #include "BlueprintActionDatabaseRegistrar.h"
 #include "BlueprintEditorSettings.h"
 #include "BlueprintNodeSpawner.h"
-#include "EdGraphSchema_K2.h"
 #include "EdGraphSchema_K2_Actions.h"
 #include "Editor.h"
 #include "EditorCategoryUtils.h"
-#include "EnhancedInputModule.h"
-#include "Factories/Factory.h"
-#include "GameFramework/InputSettings.h"
 #include "GraphEditorSettings.h"
-#include "InputCoreTypes.h"
+#include "InputAction.h"
 #include "K2Node_AssignmentStatement.h"
 #include "K2Node_EnhancedInputActionEvent.h"
 #include "K2Node_GetInputActionValue.h"
 #include "K2Node_TemporaryVariable.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "KismetCompiler.h"
+#include "Misc/PackageName.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Modules/ModuleManager.h"
+#include "Styling/AppStyle.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(K2Node_EnhancedInputAction)
 
@@ -70,7 +68,7 @@ void UK2Node_EnhancedInputAction::AllocateDefaultPins()
 		static const UEnum* EventEnum = StaticEnum<ETriggerEvent>();
 
 		UEdGraphPin* NewPin = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, PinName);
-		NewPin->PinToolTip = EventEnum->GetToolTipTextByIndex((int32)Event).ToString();
+		NewPin->PinToolTip = EventEnum->GetToolTipTextByIndex(EventEnum->GetIndexByValue(static_cast<uint8>(Event))).ToString();
 
 		// Add a special tooltip and display name for pins that are unsupported
 		if (UE::Input::bShouldWarnOnUnsupportedInputPin && !UInputTrigger::IsSupportedTriggerEvent(SupportedTriggerEvents, Event))
@@ -420,7 +418,7 @@ void UK2Node_EnhancedInputAction::GetMenuActions(FBlueprintActionDatabaseRegistr
 		}
 
 		TArray<FAssetData> ActionAssets;
-		AssetRegistry.GetAssetsByClass(UInputAction::StaticClass()->GetClassPathName(), ActionAssets);
+		AssetRegistry.GetAssetsByClass(UInputAction::StaticClass()->GetClassPathName(), ActionAssets, true);
 		for (const FAssetData& ActionAsset : ActionAssets)
 		{
 			UBlueprintNodeSpawner* NodeSpawner = UBlueprintNodeSpawner::Create(GetClass());

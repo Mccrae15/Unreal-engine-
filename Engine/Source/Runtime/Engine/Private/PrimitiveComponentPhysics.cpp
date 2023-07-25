@@ -1,19 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "Engine/EngineTypes.h"
-#include "CollisionQueryParams.h"
-#include "Engine/World.h"
 #include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
-#include "Components/LineBatchComponent.h"
+#include "EngineLogs.h"
 #include "Logging/MessageLog.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "DrawDebugHelpers.h"
 #include "PhysicsReplication.h"
-#include "Physics/PhysicsInterfaceCore.h"
 #include "UObject/UObjectThreadContext.h"
+#include "PhysicsEngine/PhysicsObjectExternalInterface.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 
 //////////////// PRIMITIVECOMPONENT ///////////////
@@ -104,6 +100,15 @@ void UPrimitiveComponent::WarnInvalidPhysicsOperations_Internal(const FText& Act
 void UPrimitiveComponent::SetSimulatePhysics(bool bSimulate)
 {
 	BodyInstance.SetInstanceSimulatePhysics(bSimulate);
+}
+
+void UPrimitiveComponent::SetStaticWhenNotMoveable(bool bInStaticWhenNotMoveable)
+{
+	if (bStaticWhenNotMoveable != bInStaticWhenNotMoveable)
+	{
+		bStaticWhenNotMoveable = bInStaticWhenNotMoveable;
+		RecreatePhysicsState();
+	}
 }
 
 void UPrimitiveComponent::SetConstraintMode(EDOFMode::Type ConstraintMode)
@@ -328,6 +333,23 @@ void UPrimitiveComponent::WakeRigidBody(FName BoneName)
 	{
 		BI->WakeInstance();
 	}
+	else if (BoneName == NAME_None)
+	{
+		TArray<Chaos::FPhysicsObject*> PhysicsObjects = GetAllPhysicsObjects();
+		FLockedWritePhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockWrite(PhysicsObjects);
+		
+		PhysicsObjects = PhysicsObjects.FilterByPredicate(
+			[&Interface](Chaos::FPhysicsObject* Object) {
+				return !Interface->AreAllDisabled({ &Object, 1 });
+			}
+		);
+		Interface->WakeUp(PhysicsObjects);
+	}
+	else if (Chaos::FPhysicsObject* Object = GetPhysicsObjectByName(BoneName))
+	{
+		FLockedWritePhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockWrite({&Object, 1});
+		Interface->WakeUp({ &Object, 1 });
+	}
 }
 
 void UPrimitiveComponent::WakeAllRigidBodies()
@@ -500,6 +522,23 @@ void UPrimitiveComponent::PutRigidBodyToSleep(FName BoneName)
 	if(BI)
 	{
 		BI->PutInstanceToSleep();
+	}
+	else if (BoneName == NAME_None)
+	{
+		TArray<Chaos::FPhysicsObject*> PhysicsObjects = GetAllPhysicsObjects();
+		FLockedWritePhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockWrite(PhysicsObjects);
+
+		PhysicsObjects = PhysicsObjects.FilterByPredicate(
+			[&Interface](Chaos::FPhysicsObject* Object) {
+				return !Interface->AreAllDisabled({ &Object, 1 });
+			}
+		);
+		Interface->PutToSleep(PhysicsObjects);
+	}
+	else if (Chaos::FPhysicsObject* Object = GetPhysicsObjectByName(BoneName))
+	{
+		FLockedWritePhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockWrite({ &Object, 1 });
+		Interface->PutToSleep({ &Object, 1 });
 	}
 }
 
@@ -859,15 +898,38 @@ float UPrimitiveComponent::GetClosestPointOnCollision(const FVector& Point, FVec
 
 bool UPrimitiveComponent::IsSimulatingPhysics(FName BoneName) const
 {
-	FBodyInstance* BodyInst = GetBodyInstance(BoneName);
-	if(BodyInst != NULL)
+	if(FBodyInstance* BodyInst = GetBodyInstance(BoneName))
 	{
 		return BodyInst->IsInstanceSimulatingPhysics();
 	}
 	else
 	{
-		return false;
+		TArray<Chaos::FPhysicsObjectHandle> PhysicsObjects;
+		if (BoneName != NAME_None)
+		{
+			PhysicsObjects.Add(GetPhysicsObjectByName(BoneName));
+		}
+		else
+		{
+			PhysicsObjects = GetAllPhysicsObjects();
+		}
+
+		if (PhysicsObjects.IsEmpty())
+		{
+			return false;
+		}
+
+		FLockedReadPhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockRead(PhysicsObjects);
+		PhysicsObjects = PhysicsObjects.FilterByPredicate(
+			[&Interface](Chaos::FPhysicsObjectHandle Object) {
+				return !Interface->AreAllDisabled({ &Object, 1 });
+			}
+		);
+
+		return Interface->AreAllDynamic(PhysicsObjects);
 	}
+
+	return false;
 }
 
 FVector UPrimitiveComponent::GetComponentVelocity() const
@@ -1121,6 +1183,27 @@ void UPrimitiveComponent::UpdatePhysicsToRBChannels()
 	{
 		BodyInstance.UpdatePhysicsFilterData();
 	}
+}
+
+Chaos::FPhysicsObject* UPrimitiveComponent::GetPhysicsObjectById(int32 Id) const
+{
+	if (!BodyInstance.IsValidBodyInstance())
+	{
+		return nullptr;
+	}
+
+	return BodyInstance.ActorHandle->GetPhysicsObject();
+}
+
+Chaos::FPhysicsObject* UPrimitiveComponent::GetPhysicsObjectByName(const FName& Name) const
+{
+	return GetPhysicsObjectById(0);
+}
+
+TArray<Chaos::FPhysicsObject*> UPrimitiveComponent::GetAllPhysicsObjects() const
+{
+	TArray<Chaos::FPhysicsObject*> Bodies = { GetPhysicsObjectById(INDEX_NONE) };
+	return Bodies;
 }
 
 #undef LOCTEXT_NAMESPACE

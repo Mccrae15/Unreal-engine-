@@ -1040,6 +1040,8 @@ namespace EpicGames.UHT.Utils
 			StepParseHeaders();
 			StepPopulateTypeTable();
 			StepResolveInvalidCheck();
+			StepBindSuperAndBases();
+			RecursiveStructCheck();
 			StepResolveBases();
 			StepResolveProperties();
 			StepResolveFinal();
@@ -1054,6 +1056,7 @@ namespace EpicGames.UHT.Utils
 				_referenceDeleteTask.Wait();
 			}
 
+			Log.Logger.LogTrace("Step - Starting exporters.");
 			StepExport();
 		}
 
@@ -1986,33 +1989,45 @@ namespace EpicGames.UHT.Utils
 			});
 		}
 
+		private void StepBindSuperAndBases()
+		{
+			Log.Logger.LogTrace("Step - Bind super and bases");
+			StepForAllHeaders(headerFile => BindSuperAndBases(headerFile), true);
+		}
+
 		private void StepResolveBases()
 		{
-			StepForAllHeaders(headerFile => Resolve(headerFile, UhtResolvePhase.Bases));
+			Log.Logger.LogTrace("Step - Resolve bases");
+			ResolveAllHeaders(UhtResolvePhase.Bases);
 		}
 
 		private void StepResolveInvalidCheck()
 		{
-			StepForAllHeaders(headerFile => Resolve(headerFile, UhtResolvePhase.InvalidCheck));
+			Log.Logger.LogTrace("Step - Resolve invalid check");
+			ResolveAllHeaders(UhtResolvePhase.InvalidCheck);
 		}
 
 		private void StepResolveProperties()
 		{
-			StepForAllHeaders(headerFile => Resolve(headerFile, UhtResolvePhase.Properties));
+			Log.Logger.LogTrace("Step - Resolve properties");
+			ResolveAllHeaders(UhtResolvePhase.Properties);
 		}
 
 		private void StepResolveFinal()
 		{
-			StepForAllHeaders(headerFile => Resolve(headerFile, UhtResolvePhase.Final));
+			Log.Logger.LogTrace("Step - Resolve final");
+			ResolveAllHeaders(UhtResolvePhase.Final);
 		}
 
 		private void StepResolveValidate()
 		{
-			StepForAllHeaders(headerFile => UhtType.ValidateType(headerFile, UhtValidationOptions.None));
+			Log.Logger.LogTrace("Step - Resolve validate");
+			StepForAllHeaders(headerFile => UhtType.ValidateType(headerFile, UhtValidationOptions.None), true);
 		}
 
 		private void StepCollectReferences()
 		{
+			Log.Logger.LogTrace("Step - Collect references");
 			StepForAllHeaders(headerFile =>
 			{
 				foreach (UhtType child in headerFile.Children)
@@ -2023,7 +2038,12 @@ namespace EpicGames.UHT.Utils
 				{
 					headerFile.AddReferencedHeader(refHeaderFile);
 				}
-			});
+			}, true);
+		}
+
+		private void ResolveAllHeaders(UhtResolvePhase resolvePhase)
+		{
+			StepForAllHeaders(headerFile => Resolve(headerFile, resolvePhase), resolvePhase.IsMultiThreadedResolvePhase());
 		}
 
 		private void Resolve(UhtHeaderFile headerFile, UhtResolvePhase resolvePhase)
@@ -2038,16 +2058,28 @@ namespace EpicGames.UHT.Utils
 			}
 		}
 
+		private void BindSuperAndBases(UhtHeaderFile headerFile)
+		{
+			try
+			{
+				headerFile.BindSuperAndBases();
+			}
+			catch (Exception e)
+			{
+				HandleException(headerFile.MessageSource, e);
+			}
+		}
+
 		private delegate void StepDelegate(UhtHeaderFile headerFile);
 
-		private void StepForAllHeaders(StepDelegate stepDelegate)
+		private void StepForAllHeaders(StepDelegate stepDelegate, bool allowGoWide)
 		{
 			if (HasErrors)
 			{
 				return;
 			}
 
-			if (GoWide)
+			if (GoWide && allowGoWide)
 			{
 				Parallel.ForEach(_headerFiles, headerFile =>
 				{
@@ -2152,7 +2184,7 @@ namespace EpicGames.UHT.Utils
 		}
 		#endregion
 
-		#region Topological sort of the header files
+		#region Topological testing of headers and structs
 		private enum TopologicalState
 		{
 			Unmarked,
@@ -2160,7 +2192,7 @@ namespace EpicGames.UHT.Utils
 			Permanent,
 		}
 
-		private void TopologicalVisit(List<TopologicalState> states, UhtHeaderFile visit, List<UhtHeaderFile> headerStack)
+		private void TopologicalHeaderVisit(List<TopologicalState> states, UhtHeaderFile visit, List<UhtHeaderFile> headerStack)
 		{
 			headerStack.Add(visit);
 			switch (states[visit.HeaderFileTypeIndex])
@@ -2169,7 +2201,7 @@ namespace EpicGames.UHT.Utils
 					states[visit.HeaderFileTypeIndex] = TopologicalState.Temporary;
 					foreach (UhtHeaderFile referenced in visit.ReferencedHeadersNoLock)
 					{
-						TopologicalVisit(states, referenced, headerStack);
+						TopologicalHeaderVisit(states, referenced, headerStack);
 					}
 					states[visit.HeaderFileTypeIndex] = TopologicalState.Permanent;
 					_sortedHeaderFiles.Add(visit);
@@ -2222,8 +2254,87 @@ namespace EpicGames.UHT.Utils
 				{
 					if (states[headerFile.HeaderFileTypeIndex] == TopologicalState.Unmarked)
 					{
-						TopologicalVisit(states, headerFile, headerStack);
+						TopologicalHeaderVisit(states, headerFile, headerStack);
 					}
+				}
+			});
+		}
+
+		private void TopologicalStructVisitChildren(List<TopologicalState> states, UhtType visit, List<UhtStruct> structStack)
+		{
+			foreach (UhtType child in visit.Children)
+			{
+				if (child is UhtStruct childStruct)
+				{
+					TopologicalStructVisit(states, childStruct, structStack);
+				}
+			}
+		}
+
+		private void TopologicalStructVisit(List<TopologicalState> states, UhtStruct visit, List<UhtStruct> structStack)
+		{
+			structStack.Add(visit);
+			switch (states[visit.ObjectTypeIndex])
+			{
+				case TopologicalState.Unmarked:
+					states[visit.ObjectTypeIndex] = TopologicalState.Temporary;
+					if (visit.Super != null)
+					{
+						TopologicalStructVisit(states, visit.Super, structStack);
+					}
+					foreach (UhtStruct baseStruct in visit.Bases)
+					{
+						TopologicalStructVisit(states, baseStruct, structStack);
+					}
+					TopologicalStructVisitChildren(states, visit, structStack);
+					states[visit.ObjectTypeIndex] = TopologicalState.Permanent;
+					break;
+
+				case TopologicalState.Temporary:
+					{
+						int index = structStack.IndexOf(visit);
+						if (index == -1 || index == structStack.Count - 1)
+						{
+							throw new UhtIceException("Error locating struct loop");
+						}
+						index++;
+						visit.LogError("Recursive class/struct definition:");
+						UhtStruct previous = visit;
+						for (int loopIndex = index; loopIndex < structStack.Count; loopIndex++)
+						{
+							UhtStruct next = structStack[loopIndex];
+							previous.LogError($"'{previous.SourceName}' inherits '{next.SourceName}'");
+							previous = next;
+						}
+					}
+					break;
+
+				case TopologicalState.Permanent:
+					break;
+
+				default:
+					throw new UhtIceException("Unknown topological state");
+			}
+			structStack.RemoveAt(structStack.Count - 1);
+		}
+
+		private void RecursiveStructCheck()
+		{
+			Try(null, () =>
+			{
+				Log.Logger.LogTrace("Step - Check for recursive structs");
+
+				// Initialize a scratch table for topological states
+				List<TopologicalState> states = new(ObjectTypeCount);
+				for (int index = 0; index < ObjectTypeCount; ++index)
+				{
+					states.Add(TopologicalState.Unmarked);
+				}
+
+				List<UhtStruct> structStack = new(32); // arbitrary capacity
+				foreach (UhtHeaderFile headerFile in HeaderFiles)
+				{
+					TopologicalStructVisitChildren(states, headerFile, structStack);
 				}
 			});
 		}

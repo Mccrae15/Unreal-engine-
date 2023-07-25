@@ -16,6 +16,12 @@ using EpicGames.OIDC;
 
 namespace OidcToken
 {
+	public class ZenAddOidcTokenRequest
+	{
+		public string? ProviderName { get; set; }
+		public string? RefreshToken { get; set; }
+	}
+
 	public class TokenService : IHostedService
 	{
 		private readonly ILogger<TokenService> Logger;
@@ -45,6 +51,11 @@ namespace OidcToken
 				{
 					Logger.LogWarning("Was unable to allocate a token");
 					ExitCode = 10;
+				}
+				catch (HttpServerException e)
+				{
+					Logger.LogWarning("Unable to start http server:" + e.Message);
+					ExitCode = 2;
 				}
 				catch (Exception ex)
 				{
@@ -133,7 +144,8 @@ namespace OidcToken
 							client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
 							string zenUrl = $"{Settings.CurrentValue.ZenUrl}/auth/oidc/refreshtoken";
-							HttpContent content = new StringContent(JsonSerializer.Serialize<OidcTokenInfo>(tokenInfo), Encoding.UTF8, "application/json");
+							var request = new ZenAddOidcTokenRequest { ProviderName = providerName, RefreshToken = tokenInfo.RefreshToken };
+							HttpContent content = new StringContent(JsonSerializer.Serialize<ZenAddOidcTokenRequest>(request), Encoding.UTF8, "application/json");
 							HttpResponseMessage result = await client.PostAsync(zenUrl, content);
 								
 							if (result.IsSuccessStatusCode)
@@ -169,11 +181,32 @@ namespace OidcToken
 
 		private async Task OutputStatus(string service, OidcStatus status)
 		{
-			FileInfo fi = new(Settings.CurrentValue.OutFile);
-			Logger.LogInformation("Token status output to \"{OutFile}\"", fi.FullName);
+			if (Settings.CurrentValue.ResultToConsole)
+			{
+				string s = JsonSerializer.Serialize(new TokenStatusFile(service, status));
+				Console.WriteLine(s);
+			}
 
-			await using FileStream fs = fi.Open(FileMode.Create, FileAccess.Write);
-			await JsonSerializer.SerializeAsync<TokenStatusFile>(fs, new TokenStatusFile(service, status));
+			if (status == OidcStatus.NotLoggedIn)
+			{
+				Logger.LogWarning("Token for provider {ProviderName} does not exist or is old.", service);
+			}
+			else
+			{
+				// verify that the refresh token is valid and actually able to generate a access token
+				await TokenManager.GetAccessToken(service);
+				OidcStatus refreshedStatus = TokenManager.GetStatusForProvider(service);
+				Logger.LogInformation("Determined status of provider {ProviderName} was {Status}", service, refreshedStatus);
+			}
+
+			if (!string.IsNullOrEmpty(Settings.CurrentValue.OutFile))
+			{
+				FileInfo fi = new(Settings.CurrentValue.OutFile);
+				Logger.LogInformation("Token output to \"{OutFile}\"", fi.FullName);
+
+				await using FileStream fs = fi.Open(FileMode.Create, FileAccess.Write);
+				await JsonSerializer.SerializeAsync<TokenStatusFile>(fs, new TokenStatusFile(service, status));
+			}
 		}
 
 		public Task StopAsync(CancellationToken cancellationToken)

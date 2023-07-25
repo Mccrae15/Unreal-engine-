@@ -1,19 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailCustomizations/EnvTraceDataCustomization.h"
-#include "Engine/EngineTypes.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Engine/GameViewportClient.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Input/SComboButton.h"
 #include "EnvironmentQuery/EnvQueryTypes.h"
 #include "IDetailChildrenBuilder.h"
 #include "DetailWidgetRow.h"
-#include "IDetailPropertyRow.h"
 #include "DetailLayoutBuilder.h"
 
 #define LOCTEXT_NAMESPACE "EnvTraceDataCustomization"
@@ -173,14 +166,14 @@ void FEnvTraceDataCustomization::OnTraceChannelChanged()
 		ETraceTypeQuery TraceTypeValue = (ETraceTypeQuery)TraceChannelValue;
 		ECollisionChannel CollisionChannelValue = UEngineTypes::ConvertToCollisionChannel(TraceTypeValue);
 
-		uint8 SerializedChannelValue = CollisionChannelValue;
+		uint8 SerializedChannelValue = IntCastChecked<uint8>((int)CollisionChannelValue);
 		PropTraceChannelSerialized->SetValue(SerializedChannelValue);
 	}
 }
 
 void FEnvTraceDataCustomization::OnTraceModeChanged(int32 Index)
 {
-	ActiveMode = Index;
+	ActiveMode = IntCastChecked<uint8>(Index);
 	PropTraceMode->SetValue(ActiveMode);
 }
 

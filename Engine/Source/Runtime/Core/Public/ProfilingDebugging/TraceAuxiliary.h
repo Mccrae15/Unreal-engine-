@@ -33,34 +33,42 @@ public:
 		 * Write to a file. Target string is filename. Absolute or relative current working directory.
 		 * If target is null the current date and time is used.
 		 */
-		 File,
-		 /**
-		  * Don't connect, just start tracing to memory.
-		  */
-		  None,
+		File,
+		/**
+		 * Don't connect, just start tracing to memory.
+		 */
+		None,
 	};
 
 	/**
 	 * Callback type when a new connection is established.
 	 */
-	DECLARE_MULTICAST_DELEGATE(FOnConnection);
+	DECLARE_TS_MULTICAST_DELEGATE(FOnConnection);
 
 	/** Callback whenever a trace is started */
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnTraceStarted, FTraceAuxiliary::EConnectionType TraceType, const FString& TraceDestination);
+	DECLARE_TS_MULTICAST_DELEGATE_TwoParams(FOnTraceStarted, FTraceAuxiliary::EConnectionType TraceType, const FString& TraceDestination);
 
 	/** 
 	* Callback whenever a trace recording is stopped. 
 	* TraceType tells what kind of trace it is.
 	* TraceDestination will be either the the filename and path for a file trace or the network connection for a network trace
 	*/
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnTraceStopped, FTraceAuxiliary::EConnectionType TraceType, const FString& TraceDestination);
+	DECLARE_TS_MULTICAST_DELEGATE_TwoParams(FOnTraceStopped, FTraceAuxiliary::EConnectionType TraceType, const FString& TraceDestination);
 
-	struct Options
+	/**
+	* Callback whenever a trace snapshot is saved.
+	* Path is the file system path of the snapshot file.
+	*/
+	DECLARE_TS_MULTICAST_DELEGATE_TwoParams(FOnSnapshotSaved, FTraceAuxiliary::EConnectionType TraceType, const FString& TraceDestination);
+
+	struct FOptions
 	{
 		/** When set, trace will not start a worker thread, instead it is updated from end frame delegate. */
 		bool bNoWorkerThread = false;
 		/** When set, the target file will be truncated if it already exists. */
 		bool bTruncateFile = false;
+		/** When set, trace data buffered before starting tracing will not be output to the trace file */
+		bool bExcludeTail = false;
 	};
 
 	/**
@@ -73,7 +81,7 @@ public:
 	 * @param LogCategory Log channel to output messages to. Default set to 'Core'.
 	 * @return True when successfully starting the trace, false if the data connection could not be made.
 	 */
-	static bool Start(EConnectionType Type, const TCHAR* Target, const TCHAR* Channels = TEXT("default"), Options* Options = nullptr, const FLogCategoryAlias& LogCategory = LogCore);
+	static bool Start(EConnectionType Type, const TCHAR* Target, const TCHAR* Channels = TEXT("default"), FOptions* Options = nullptr, const FLogCategoryAlias& LogCategory = LogCore);
 
 	/**
 	 * Stop tracing.
@@ -96,6 +104,12 @@ public:
 	 * @param FilePath Path to the file to write the snapshot to. If it is null or empty a file path will be generated.
 	 */
 	static bool WriteSnapshot(const TCHAR* FilePath);
+	
+	/**
+	 * Write tailing memory state to a trace server.
+	 * @param FilePath Path to the file to write the snapshot to. If it is null or empty a file path will be generated.
+	 */
+	static bool SendSnapshot(const TCHAR* Host = nullptr, uint32 Port = 0);
 
 	/**
 	 * Initialize Trace systems.
@@ -144,6 +158,11 @@ public:
 	static bool	IsConnected();
 
 	/**
+	*  Returns the current connection type.
+	*/
+	static EConnectionType GetConnectionType();
+
+	/**
 	 *  Adds a comma separated list of currently active channels to the passed in StringBuilder
 	 */
 	static void	GetActiveChannelsString(FStringBuilderBase& String);
@@ -174,5 +193,11 @@ public:
 	 * The type of recording and the destination (filepath or network) is passed to the delegate.
 	 */
 	static FOnTraceStopped OnTraceStopped;
+
+	/**
+	 * Delegate that triggers when a snapshot has been saved.
+	 * The path to the snapshot file is passed to the delegate.
+	 */
+	static FOnSnapshotSaved OnSnapshotSaved;
 	
 };

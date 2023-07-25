@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Chaos/Array.h"
+#include "Chaos/Collision/PBDCollisionSolver.h"
 #include "Chaos/Evolution/IndexedConstraintContainer.h"
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/PBDSuspensionConstraintTypes.h"
@@ -13,8 +14,14 @@
 
 namespace Chaos
 {
+	class FSolverBody;
 	class FPBDSuspensionConstraints;
-	class FPBDCollisionSolver;
+
+	namespace Private
+	{
+		class FPBDCollisionSolver;
+		class FPBDCollisionSolverManifoldPoint;
+	}
 
 	class CHAOS_API FPBDSuspensionConstraintHandle final : public TIndexedContainerConstraintHandle<FPBDSuspensionConstraints>
 	{
@@ -223,7 +230,7 @@ namespace Chaos
 		//
 		virtual int32 GetNumConstraints() const override final { return NumConstraints(); }
 		virtual void ResetConstraints() override final {}
-		virtual void AddConstraintsToGraph(FPBDIslandManager& IslandManager) override final;
+		virtual void AddConstraintsToGraph(Private::FPBDIslandManager& IslandManager) override final;
 		virtual void PrepareTick() override final {}
 		virtual void UnprepareTick() override final {}
 
@@ -273,7 +280,8 @@ namespace Chaos
 		FHandles Handles;
 		FConstraintHandleAllocator HandleAllocator;
 
-		TArray<FPBDCollisionSolver*> CollisionSolvers;
+		TArray<Private::FPBDCollisionSolver> CollisionSolvers;
+		TArray<Private::FPBDCollisionSolverManifoldPoint> CollisionSolverManifoldPoints;
 		TArray<FSolverBody> StaticCollisionBodies;
 	};
 }

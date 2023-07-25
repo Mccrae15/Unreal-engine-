@@ -513,7 +513,7 @@ namespace Metasound
 				virtual UClass* GetUClassForDataType(const FName& InDataType) const override;
 
 				bool IsUObjectProxyFactory(UObject* InObject) const override;
-				Audio::IProxyDataPtr CreateProxyFromUObject(const FName& InDataType, UObject* InObject) const override;
+				TSharedPtr<Audio::IProxyData> CreateProxyFromUObject(const FName& InDataType, UObject* InObject) const override;
 
 				virtual FLiteral CreateDefaultLiteral(const FName& InDataType) const override;
 				virtual FLiteral CreateLiteralFromUObject(const FName& InDataType, UObject* InObject) const override;
@@ -521,6 +521,8 @@ namespace Metasound
 
 				virtual TOptional<FAnyDataReference> CreateDataReference(const FName& InDataType, EDataReferenceAccessType InAccessType, const FLiteral& InLiteral, const FOperatorSettings& InOperatorSettings) const override;
 				virtual TSharedPtr<IDataChannel, ESPMode::ThreadSafe> CreateDataChannel(const FName& InDataType, const FOperatorSettings& InOperatorSettings) const override;
+
+				virtual const IParameterAssignmentFunction& GetRawAssignmentFunction(const FName& InDataType) const override;
 
 				virtual bool GetFrontendInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const override;
 				virtual bool GetFrontendConstructorInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const override;
@@ -731,11 +733,11 @@ namespace Metasound
 
 						case Metasound::ELiteralType::UObjectProxy:
 						{
-							return Info.bIsProxyParsable;
+							return Info.bIsProxyParsable || Info.bIsUniquePtrProxyParsable_DEPRECATED;
 						}
 						case Metasound::ELiteralType::UObjectProxyArray:
 						{
-							return Info.bIsProxyArrayParsable;
+							return Info.bIsProxyArrayParsable || Info.bIsUniquePtrProxyArrayParsable_DEPRECATED;
 						}
 
 						case Metasound::ELiteralType::None:
@@ -812,9 +814,9 @@ namespace Metasound
 				return false;
 			}
 
-			Audio::IProxyDataPtr FDataTypeRegistry::CreateProxyFromUObject(const FName& InDataType, UObject* InObject) const
+			TSharedPtr<Audio::IProxyData> FDataTypeRegistry::CreateProxyFromUObject(const FName& InDataType, UObject* InObject) const
 			{
-				Audio::IProxyDataPtr ProxyPtr;
+				TSharedPtr<Audio::IProxyData> ProxyPtr;
 
 				if (const IDataTypeRegistryEntry* Entry = FindDataTypeEntry(InDataType))
 				{
@@ -830,13 +832,13 @@ namespace Metasound
 
 			FLiteral FDataTypeRegistry::CreateLiteralFromUObject(const FName& InDataType, UObject* InObject) const
 			{
-				Audio::IProxyDataPtr ProxyPtr = CreateProxyFromUObject(InDataType, InObject);
+				TSharedPtr<Audio::IProxyData> ProxyPtr = CreateProxyFromUObject(InDataType, InObject);
 				return Metasound::FLiteral(MoveTemp(ProxyPtr));
 			}
 
 			FLiteral FDataTypeRegistry::CreateLiteralFromUObjectArray(const FName& InDataType, const TArray<UObject*>& InObjectArray) const
 			{
-				TArray<Audio::IProxyDataPtr> ProxyArray;
+				TArray<TSharedPtr<Audio::IProxyData>> ProxyArray;
 				const IDataTypeRegistryEntry* DataTypeEntry = FindDataTypeEntry(InDataType);
 				if (!DataTypeEntry)
 				{
@@ -846,14 +848,8 @@ namespace Metasound
 
 				const FDataTypeRegistryInfo& DataTypeInfo = DataTypeEntry->GetDataTypeInfo();
 
-				const bool bIsArrayType = DataTypeInfo.bIsProxyArrayParsable;
-				if (!bIsArrayType)
-				{
-					UE_LOG(LogMetaSound, Error, TEXT("Failed to create a valid proxy from DataType '%s': Type is not 'ArrayType'."), *InDataType.ToString());
-					return Metasound::FLiteral(MoveTemp(ProxyArray));
-				}
+				const bool bIsProxyArrayParseable = DataTypeInfo.bIsProxyArrayParsable || DataTypeInfo.bIsUniquePtrProxyArrayParsable_DEPRECATED;
 
-				const bool bIsProxyArrayParseable = DataTypeInfo.bIsProxyArrayParsable;
 				if (!bIsProxyArrayParseable)
 				{
 					UE_LOG(LogMetaSound, Error, TEXT("Failed to create a valid proxy from DataType '%s': Type is not proxy parseable."), *InDataType.ToString());
@@ -870,7 +866,7 @@ namespace Metasound
 
 				for (UObject* InObject : InObjectArray)
 				{
-					Audio::IProxyDataPtr ProxyPtr = CreateProxyFromUObject(ElementDataType, InObject);
+					TSharedPtr<Audio::IProxyData> ProxyPtr = CreateProxyFromUObject(ElementDataType, InObject);
 					ProxyPtr = ElementEntry->CreateProxy(InObject);
 					if (!ProxyPtr && InObject)
 					{
@@ -899,6 +895,16 @@ namespace Metasound
 					return Entry->CreateDataChannel(InOperatorSettings);
 				}
 				return nullptr;
+			}
+
+			const IParameterAssignmentFunction& FDataTypeRegistry::GetRawAssignmentFunction(const FName& InDataType) const
+			{
+				static IParameterAssignmentFunction NoOp;
+				if (const IDataTypeRegistryEntry* Entry = FindDataTypeEntry(InDataType))
+				{
+					return Entry->GetRawAssignmentFunction();
+				}
+				return NoOp;
 			}
 
 			bool FDataTypeRegistry::GetFrontendInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const

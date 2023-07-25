@@ -2,48 +2,61 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "SlateFwd.h"
 #include "UObject/ObjectMacros.h"
 #include "Containers/SortedMap.h"
+#include "Containers/StaticArray.h"
 #include "Misc/Guid.h"
 #include "InputCoreTypes.h"
 #include "Templates/SubclassOf.h"
 #include "Engine/NetSerialization.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/EngineBaseTypes.h"
-#include "Widgets/SWidget.h"
 #include "Engine/LatentActionManager.h"
 #include "SceneTypes.h"
 #include "GameFramework/Controller.h"
 #include "UObject/TextProperty.h"
-#include "GameFramework/OnlineReplStructs.h"
 #include "GameFramework/PlayerMuteList.h"
 #include "Camera/PlayerCameraManager.h"
-#include "Components/InputComponent.h"
-#include "GameFramework/ForceFeedbackEffect.h"
+#include "GameFramework/ForceFeedbackParameters.h"
 #include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
+#include "GenericPlatform/ICursor.h"
 #include "GenericPlatform/IInputInterface.h"
-#include "GameFramework/PlayerInput.h"
 #include "Physics/AsyncPhysicsData.h"
 #include "WorldPartition/WorldPartitionStreamingSource.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Widgets/SWidget.h"
+#include "Components/InputComponent.h"
+#include "GameFramework/ForceFeedbackParameters.h"
+#include "GameFramework/OnlineReplStructs.h"
+#include "GameFramework/PlayerInput.h"
+#endif
+
 #include "PlayerController.generated.h"
 
 class ACameraActor;
 class AHUD;
 class APawn;
-class APlayerCameraManager;
 class ASpectatorPawn;
 class FDebugDisplayInfo;
+class SWidget;
 class UActorChannel;
 class UCheatManager;
 class UGameViewportClient;
+class UInputComponent;
 class ULocalMessage;
 class UNetConnection;
 class UPlayer;
+class UPlayerInput;
 class UPrimitiveComponent;
+namespace EControllerAnalogStick { enum Type : int; }
+struct FActiveForceFeedbackEffect;
 struct FActiveHapticFeedbackEffect;
 struct FCollisionQueryParams;
+struct FForceFeedbackEffectHistoryEntry;
+struct FInputKeyParams;
+struct FPlatformUserId;
 class UAsyncPhysicsInputComponent;
 
 /** Default delegate that provides an implementation for those that don't have special needs other than a toggle */
@@ -58,7 +71,7 @@ DECLARE_STATS_GROUP(TEXT("PlayerController"), STATGROUP_PlayerController, STATCA
 UENUM()
 namespace EDynamicForceFeedbackAction
 {
-	enum Type
+	enum Type : int
 	{
 		Start,
 		Update,
@@ -87,21 +100,6 @@ struct FDynamicForceFeedbackDetails
 
 	void Update(FForceFeedbackValues& Values) const;
 };
-
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-/** Used to display the force feedback history of what was played most recently. */
-struct FForceFeedbackEffectHistoryEntry
-{
-	FActiveForceFeedbackEffect LastActiveForceFeedbackEffect;
-	float TimeShown;
-
-	FForceFeedbackEffectHistoryEntry(FActiveForceFeedbackEffect LastActiveFFE, float Time)
-	{
-		LastActiveForceFeedbackEffect = LastActiveFFE;
-		TimeShown = Time;
-	}
-};
-#endif
 
 /** Abstract base class for Input Mode structures */
 struct ENGINE_API FInputModeDataBase
@@ -166,6 +164,10 @@ struct ENGINE_API FUpdateLevelStreamingLevelStatus
 	/** Whether we want to force a blocking load */
 	UPROPERTY()
 	bool bNewShouldBlockOnLoad = false;
+
+	/** Whether we want to force a blocking unload */
+	UPROPERTY()
+	bool bNewShouldBlockOnUnload = false;
 };
 
 /** Data structure used to setup an input mode that allows the UI to respond to user input, and if the UI doesn't handle it player input / player controller gets a chance. */
@@ -810,12 +812,16 @@ public:
 	virtual void GetStreamingSourceShapes(TArray<FStreamingSourceShape>& OutShapes) const;
 
 	/**
-	 * Gets the PlayerController's streaming source
-	 * @return the streaming source.
+	 * Gets the PlayerController's streaming sources
+	 * @return the streaming sources.
 	 */
-	virtual bool GetStreamingSource(FWorldPartitionStreamingSource& OutStreamingSource) const final;
+	virtual bool GetStreamingSources(TArray<FWorldPartitionStreamingSource>& OutStreamingSources) const final;
 
 protected:
+	virtual bool GetStreamingSourcesInternal(TArray<FWorldPartitionStreamingSource>& OutStreamingSources) const;
+	virtual bool GetStreamingSource(FWorldPartitionStreamingSource& OutStreamingSource) const final;
+	virtual const UObject* GetStreamingSourceOwner() const override final { return this; }
+	
 	/** Pawn has been possessed, so changing state to NAME_Playing. Start it walking and begin playing with it. */
 	virtual void BeginPlayingState();
 
@@ -832,6 +838,7 @@ public:
 
 	/** Notify player of change to level */
 	void LevelStreamingStatusChanged(class ULevelStreaming* LevelObject, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex);
+	void LevelStreamingStatusChanged(class ULevelStreaming* LevelObject, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, bool bNewShouldBlockOnUnload, int32 LODIndex);
 
 	/** Used to wait until a map change can be prepared when one was already in progress */
 	virtual void DelayedPrepareMapChange();
@@ -1405,10 +1412,10 @@ public:
 	 * @param bNewShouldBlockOnLoad - Whether we want to force a blocking load
 	 * @param LODIndex				- Current LOD index for a streaming level
 	 * @param TransactionId			- Optional parameter used when communicating LevelVisibility changes between server and client
+	 * @param bNewShouldBlockOnUnload - Optional parameter used to force a blocking unload or not
 	 */
 	UFUNCTION(Reliable, Client)
-	void ClientUpdateLevelStreamingStatus(FName PackageName, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex, FNetLevelVisibilityTransactionId TransactionId);
-	void ClientUpdateLevelStreamingStatus(FName PackageName, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex) { ClientUpdateLevelStreamingStatus(PackageName, bNewShouldBeLoaded, bNewShouldBeVisible, bNewShouldBlockOnLoad, LODIndex, FNetLevelVisibilityTransactionId()); }
+	void ClientUpdateLevelStreamingStatus(FName PackageName, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex, FNetLevelVisibilityTransactionId TransactionId = FNetLevelVisibilityTransactionId(), bool bNewShouldBlockOnUnload = false);
 
 	/**
 	 * Replicated Update streaming status.  This version allows for the streaming state of many levels to be sent in a single RPC.
@@ -2348,3 +2355,7 @@ public:
 	int32 GetLocalToServerAsyncPhysicsTickOffset() const { return LocalToServerAsyncPhysicsTickOffset; }
 	
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

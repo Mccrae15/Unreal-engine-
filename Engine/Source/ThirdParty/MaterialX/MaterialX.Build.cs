@@ -13,7 +13,7 @@ public class MaterialX : ModuleRules
 
 		string DeploymentDirectory = Path.Combine(ModuleDirectory, "Deploy", "MaterialX-1.38.5");
 
-		PublicIncludePaths.Add(Path.Combine(DeploymentDirectory, "include"));
+		PublicSystemIncludePaths.Add(Path.Combine(DeploymentDirectory, "include"));
 
 		string[] MaterialXLibraries = {
 			"MaterialXCore",
@@ -35,7 +35,7 @@ public class MaterialX : ModuleRules
 			string LibDirectory = Path.Combine(
 				DeploymentDirectory,
 				"VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(),
-				Target.WindowsPlatform.GetArchitectureSubpath(),
+				Target.Architecture.WindowsName,
 				"lib");
 
 			foreach (string MaterialXLibrary in MaterialXLibraries)
@@ -78,7 +78,7 @@ public class MaterialX : ModuleRules
 			string LibDirectory = Path.Combine(
 				DeploymentDirectory,
 				"Unix",
-				Target.Architecture,
+				Target.Architecture.LinuxName,
 				"lib");
 
 			foreach (string MaterialXLibrary in MaterialXLibraries)

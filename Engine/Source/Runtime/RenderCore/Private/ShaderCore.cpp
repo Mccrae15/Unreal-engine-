@@ -5,7 +5,9 @@
 =============================================================================*/
 
 #include "ShaderCore.h"
+#include "Algo/Find.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformStackWalk.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/PathViews.h"
@@ -17,18 +19,27 @@
 #include "Shader.h"
 #include "ShaderCompilerCore.h"
 #include "String/Find.h"
+#include "Tasks/Task.h"
 #include "VertexFactory.h"
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IShaderFormat.h"
 #include "Interfaces/IShaderFormatModule.h"
 #include "RHIShaderFormatDefinitions.inl"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Compression/OodleDataCompression.h"
+#include "Serialization/MemoryWriter.h"
 #if WITH_EDITOR
 #include "Misc/CoreMisc.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/StringBuilder.h"
+#endif
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#	include <winnt.h>
+#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
 static TAutoConsoleVariable<int32> CVarShaderDevelopmentMode(
@@ -99,11 +110,17 @@ DEFINE_STAT(STAT_Shaders_ShaderPreloadMemory);
 DEFINE_STAT(STAT_Shaders_NumShadersRegistered);
 DEFINE_STAT(STAT_Shaders_NumShadersDuplicated);
 
-/** Protects GShaderFileCache from simultaneous access by multiple threads. */
-FCriticalSection FileCacheCriticalSection;
+// Apply lock striping as we're mostly reader lock bound.
+constexpr int32 GSHADERFILECACHE_BUCKETS = 31; /* prime number for best distribution using modulo */
 
-/** The shader file cache, used to minimize shader file reads */
-TMap<FString, FString> GShaderFileCache;
+struct FShaderFileCache
+{
+	/** Protects Map from simultaneous access by multiple threads. */
+	FRWLock Lock;
+
+	/** The shader file cache, used to minimize shader file reads */
+	TMap<FString, FString> Map;
+} GShaderFileCache[GSHADERFILECACHE_BUCKETS];
 
 class FShaderHashCache
 {
@@ -166,7 +183,7 @@ public:
 		Platforms[PreviewShaderPlatform].IncludeDirectory = Platforms[ParentShaderPlatform].IncludeDirectory;
 	}
 
-	FSHAHash* FindHash(EShaderPlatform ShaderPlatform, const FString& VirtualFilePath)
+	const FSHAHash* FindHash(EShaderPlatform ShaderPlatform, const FString& VirtualFilePath) const
 	{
 		check(ShaderPlatform < UE_ARRAY_COUNT(Platforms));
 		checkf(bInitialized, TEXT("GShaderHashCache::Initialize needs to be called before GShaderHashCache::FindHash."));
@@ -182,7 +199,7 @@ public:
 		return Platforms[ShaderPlatform].ShaderHashCache.Add(VirtualFilePath, FSHAHash());
 	}
 
-	bool ShouldIgnoreInclude(const FString& VirtualFilePath, EShaderPlatform ShaderPlatform)
+	bool ShouldIgnoreInclude(const FString& VirtualFilePath, EShaderPlatform ShaderPlatform) const
 	{
 		// Ignore only platform specific files, which won't be used by the target platform.
 		if (VirtualFilePath.StartsWith(TEXT("/Engine/Private/Platform/"))
@@ -207,7 +224,7 @@ public:
 		}
 	}
 
-	const FString& GetPlatformIncludeDirectory(EShaderPlatform ShaderPlatform)
+	const FString& GetPlatformIncludeDirectory(EShaderPlatform ShaderPlatform) const
 	{
 		check(ShaderPlatform < EShaderPlatform::SP_NumPlatforms);
 		checkf(bInitialized, TEXT("GShaderHashCache::Initialize needs to be called before GShaderHashCache::GetPlatformIncludeDirectory."));
@@ -232,8 +249,39 @@ private:
 	bool bInitialized;	
 };
 
+
+static FSCWErrorCode::ECode GSCWErrorCode = FSCWErrorCode::NotSet;
+static FString GSCWErrorCodeInfo;
+
+void FSCWErrorCode::Report(ECode Code, const FStringView& Info)
+{
+	GSCWErrorCode = Code;
+	GSCWErrorCodeInfo = Info;
+}
+
+void FSCWErrorCode::Reset()
+{
+	GSCWErrorCode = FSCWErrorCode::NotSet;
+	GSCWErrorCodeInfo.Empty();
+}
+
+FSCWErrorCode::ECode FSCWErrorCode::Get()
+{
+	return GSCWErrorCode;
+}
+
+const FString& FSCWErrorCode::GetInfo()
+{
+	return GSCWErrorCodeInfo;
+}
+
+bool FSCWErrorCode::IsSet()
+{
+	return GSCWErrorCode != FSCWErrorCode::NotSet;
+}
+
 /** Protects GShaderHashCache from simultaneous modification by multiple threads. Note that it can cover more than one method of the class, e.g. a block of code doing Find() then Add() can be guarded */
-FCriticalSection GShaderHashAccessGuard;
+FRWLock GShaderHashAccessRWLock;
 
 FShaderHashCache GShaderHashCache;
 
@@ -658,6 +706,178 @@ bool CheckVirtualShaderFilePath(FStringView VirtualFilePath, TArray<FShaderCompi
 	return bSuccess;
 }
 
+const IShaderFormat* FindShaderFormat(FName Format, TArray<const IShaderFormat*> ShaderFormats)
+{
+	for (int32 Index = 0; Index < ShaderFormats.Num(); Index++)
+	{
+		TArray<FName> Formats;
+
+		ShaderFormats[Index]->GetSupportedFormats(Formats);
+
+		for (int32 FormatIndex = 0; FormatIndex < Formats.Num(); FormatIndex++)
+		{
+			if (Formats[FormatIndex] == Format)
+			{
+				return ShaderFormats[Index];
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+#if PLATFORM_WINDOWS
+static bool ExceptionCodeToString(DWORD ExceptionCode, FString& OutStr)
+{
+#define EXCEPTION_CODE_CASE_STR(CODE) case CODE: OutStr = TEXT(#CODE); return true;
+	const DWORD CPlusPlusExceptionCode = 0xE06D7363;
+	switch (ExceptionCode)
+	{
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_ACCESS_VIOLATION);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_ARRAY_BOUNDS_EXCEEDED);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_BREAKPOINT);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_DATATYPE_MISALIGNMENT);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_FLT_DENORMAL_OPERAND);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_FLT_DIVIDE_BY_ZERO);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_FLT_INEXACT_RESULT);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_FLT_INVALID_OPERATION);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_FLT_OVERFLOW);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_FLT_STACK_CHECK);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_FLT_UNDERFLOW);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_GUARD_PAGE);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_ILLEGAL_INSTRUCTION);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_IN_PAGE_ERROR);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_INT_DIVIDE_BY_ZERO);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_INT_OVERFLOW);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_INVALID_DISPOSITION);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_INVALID_HANDLE);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_NONCONTINUABLE_EXCEPTION);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_PRIV_INSTRUCTION);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_SINGLE_STEP);
+		EXCEPTION_CODE_CASE_STR(EXCEPTION_STACK_OVERFLOW);
+		EXCEPTION_CODE_CASE_STR(STATUS_UNWIND_CONSOLIDATE);
+		case CPlusPlusExceptionCode: OutStr = TEXT("CPP_EXCEPTION"); return true;
+		default: return false;
+	}
+#undef EXCEPTION_CODE_CASE_STR
+}
+
+int HandleShaderCompileException(Windows::LPEXCEPTION_POINTERS Info, FString& OutExMsg, FString& OutCallStack)
+{
+	const DWORD AssertExceptionCode = 0x00004000;
+	FString ExCodeStr;
+	if (Info->ExceptionRecord->ExceptionCode == AssertExceptionCode)
+	{
+		// In the case of an assert the assert handler populates the GErrorHist global.
+		// This contains a readable assert message followed by a callstack; so we can use that to populate
+		// our message/callstack and save some time as well as getting the properly formatted assert message.
+		FString Assert = GErrorHist;
+		const TCHAR* CallstackStart = FCString::Strfind(GErrorHist, TEXT("0x"));
+
+		OutExMsg = FString(CallstackStart - GErrorHist, GErrorHist);
+		OutCallStack = CallstackStart;
+	}
+	else
+	{
+		if (ExceptionCodeToString(Info->ExceptionRecord->ExceptionCode, ExCodeStr))
+		{
+			OutExMsg = FString::Printf(
+				TEXT("Exception: %s, address=0x%016x\n"),
+				*ExCodeStr,
+				(uint64)Info->ExceptionRecord->ExceptionAddress);
+		}
+		else
+		{
+			OutExMsg = FString::Printf(
+				TEXT("Exception code: 0x%08x, address=0x%016x\n"),
+				Info->ExceptionRecord->ExceptionCode,
+				(uint64)Info->ExceptionRecord->ExceptionAddress);
+		}
+
+		ANSICHAR CallStack[32768];
+		FMemory::Memzero(CallStack);
+		FPlatformStackWalk::StackWalkAndDump(CallStack, ARRAYSIZE(CallStack), Info->ExceptionRecord->ExceptionAddress);
+		OutCallStack = ANSI_TO_TCHAR(CallStack);
+	}
+
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
+#if PLATFORM_WINDOWS
+void CompileShaderInternal(const IShaderFormat* Compiler, const FShaderCompilerInput& Input, FShaderCompilerOutput& Output, const FString& WorkingDirectory, FString& OutExceptionMsg, FString& OutExceptionCallstack, int32* CompileCount)
+#else
+void CompileShaderInternal(const IShaderFormat* Compiler, const FShaderCompilerInput& Input, FShaderCompilerOutput& Output, const FString& WorkingDirectory, int32* CompileCount)
+#endif
+{
+#if PLATFORM_WINDOWS
+	__try
+#endif
+	{
+		double TimeStart = FPlatformTime::Seconds();
+
+		Compiler->CompileShader(Input.ShaderFormat, Input, Output, WorkingDirectory);
+		if (Output.bSucceeded)
+		{
+			Output.GenerateOutputHash();
+			if (Input.CompressionFormat != NAME_None)
+			{
+				Output.CompressOutput(Input.CompressionFormat, Input.OodleCompressor, Input.OodleLevel);
+			}
+		}
+		Output.CompileTime = FPlatformTime::Seconds() - TimeStart;
+
+		if (Compiler->UsesHLSLcc(Input))
+		{
+			Output.bUsedHLSLccCompiler = true;
+		}
+
+		if (CompileCount)
+		{
+			++(*CompileCount);
+		}
+	}
+#if PLATFORM_WINDOWS
+	__except (HandleShaderCompileException(GetExceptionInformation(), OutExceptionMsg, OutExceptionCallstack))
+	{
+		Output.bSucceeded = false;
+	}
+#endif
+}
+
+void CompileShader(const TArray<const IShaderFormat*>& ShaderFormats, FShaderCompilerInput& Input, FShaderCompilerOutput& Output, const FString& WorkingDirectory, int32* CompileCount)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(CompileShader);
+
+	const IShaderFormat* Compiler = FindShaderFormat(Input.ShaderFormat, ShaderFormats);
+	if (!Compiler)
+	{
+		UE_LOG(LogShaders, Fatal, TEXT("Can't compile shaders for format %s, couldn't load compiler dll"), *Input.ShaderFormat.ToString());
+	}
+
+	if (IsValidRef(Input.SharedEnvironment))
+	{
+		Input.Environment.Merge(*Input.SharedEnvironment);
+	}
+
+#if PLATFORM_WINDOWS
+	FString ExceptionMsg;
+	FString ExceptionCallstack;
+	CompileShaderInternal(Compiler, Input, Output, WorkingDirectory, ExceptionMsg, ExceptionCallstack, CompileCount);
+	if (!Output.bSucceeded && (!ExceptionMsg.IsEmpty() || !ExceptionCallstack.IsEmpty()))
+	{
+		FShaderCompilerError Error;
+		Error.StrippedErrorMessage = FString::Printf(
+			TEXT("Exception encountered in platform compiler: %s\nException Callstack:\n%s"), 
+			*ExceptionMsg, 
+			*ExceptionCallstack);
+		Output.Errors.Add(Error);
+	}
+#else
+	CompileShaderInternal(Compiler, Input, Output, WorkingDirectory, CompileCount);
+#endif
+}
+
 /**
 * Add a new entry to the list of shader source files
 * Only unique entries which can be loaded are added as well as their #include files
@@ -724,6 +944,7 @@ void GetAllVirtualShaderSourcePaths(TArray<FString>& OutVirtualFilePaths, EShade
 */
 void VerifyShaderSourceFiles(EShaderPlatform ShaderPlatform)
 {
+#if WITH_EDITORONLY_DATA
 	if (!FPlatformProperties::RequiresCookedData() && AllowShaderCompiling())
 	{
 		// get the list of shader files that can be used
@@ -737,6 +958,7 @@ void VerifyShaderSourceFiles(EShaderPlatform ShaderPlatform)
 			LoadShaderSourceFile(*VirtualShaderSourcePaths[ShaderFileIdx], ShaderPlatform, nullptr, nullptr);
 		}
 	}
+#endif // WITH_EDITORONLY_DATA
 }
 
 static void LogShaderSourceDirectoryMappings()
@@ -854,7 +1076,7 @@ bool ReplaceVirtualFilePathForShaderPlatform(FString& InOutVirtualFilePath, ESha
 	// as of 2021-03-01, it'd be safe to access just the include directory without the lock... but the lock (and copy) is here for the consistency's and future-proofness' sake
 	const FString PlatformIncludeDirectory( [ShaderPlatform]()
 		{
-			FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
+			FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_ReadOnly);
 			return GShaderHashCache.GetPlatformIncludeDirectory(ShaderPlatform);
 		}()
 	);
@@ -934,6 +1156,7 @@ bool ReplaceVirtualFilePathForShaderAutogen(FString& InOutVirtualFilePath, EShad
 
 bool LoadShaderSourceFile(const TCHAR* InVirtualFilePath, EShaderPlatform ShaderPlatform, FString* OutFileContents, TArray<FShaderCompilerError>* OutCompileErrors, const FName* ShaderPlatformName) // TODO: const FString&
 {
+#if WITH_EDITORONLY_DATA
 	// it's not expected that cooked platforms get here, but if they do, this is the final out
 	if (FPlatformProperties::RequiresCookedData())
 	{
@@ -943,6 +1166,7 @@ bool LoadShaderSourceFile(const TCHAR* InVirtualFilePath, EShaderPlatform Shader
 	bool bResult = false;
 
 	STAT(double ShaderFileLoadingTime = 0);
+
 	{
 		SCOPE_SECONDS_COUNTER(ShaderFileLoadingTime);
 
@@ -954,12 +1178,16 @@ bool LoadShaderSourceFile(const TCHAR* InVirtualFilePath, EShaderPlatform Shader
 		// Fixup autogen file
 		ReplaceVirtualFilePathForShaderAutogen(VirtualFilePath, ShaderPlatform, ShaderPlatformName);
 
-		// Protect GShaderFileCache from simultaneous access by multiple threads
-		FScopeLock ScopeLock(&FileCacheCriticalSection);
+		FString* CachedFile = nullptr;
 
-		FString* CachedFile = GShaderFileCache.Find(VirtualFilePath);
+		// First try a shared lock and only acquire exclusive access if element is not found in cache
+		uint32 CurrentHash = GetTypeHash(VirtualFilePath);
+		FShaderFileCache& ShaderFileCache = GShaderFileCache[CurrentHash % GSHADERFILECACHE_BUCKETS];
+		{
+			FRWScopeLock ScopeLock(ShaderFileCache.Lock, SLT_ReadOnly);
+			CachedFile = ShaderFileCache.Map.FindByHash(CurrentHash, VirtualFilePath);
+		}
 
-		//if this file has already been loaded and cached, use that
 		if (CachedFile)
 		{
 			if (OutFileContents)
@@ -968,28 +1196,49 @@ bool LoadShaderSourceFile(const TCHAR* InVirtualFilePath, EShaderPlatform Shader
 			}
 			bResult = true;
 		}
-		else
+		else 
 		{
-			FString ShaderFilePath = GetShaderSourceFilePath(VirtualFilePath, OutCompileErrors);
+			FRWScopeLock ScopeLock(ShaderFileCache.Lock, SLT_Write);
 
-			// verify SHA hash of shader files on load. missing entries trigger an error
-			FString FileContents;
-			if (!ShaderFilePath.IsEmpty() && FFileHelper::LoadFileToString(FileContents, *ShaderFilePath, FFileHelper::EHashOptions::EnableVerify|FFileHelper::EHashOptions::ErrorMissingHash) )
+			// Double-check the cache while holding exclusive lock as another thread may have added the item we're looking for
+			CachedFile = ShaderFileCache.Map.FindByHash(CurrentHash, VirtualFilePath);
+
+			// if this file has already been loaded and cached, use that
+			if (CachedFile)
 			{
-				//update the shader file cache
-				GShaderFileCache.Add(VirtualFilePath, FileContents);
-
 				if (OutFileContents)
 				{
-					*OutFileContents = MoveTemp(FileContents);
+					*OutFileContents = *CachedFile;
 				}
 				bResult = true;
 			}
+			else
+			{
+				FString ShaderFilePath = GetShaderSourceFilePath(VirtualFilePath, OutCompileErrors);
+
+				// verify SHA hash of shader files on load. missing entries trigger an error
+				FString FileContents;
+				if (!ShaderFilePath.IsEmpty() && FFileHelper::LoadFileToString(FileContents, *ShaderFilePath, FFileHelper::EHashOptions::EnableVerify|FFileHelper::EHashOptions::ErrorMissingHash) )
+				{
+					//update the shader file cache
+					ShaderFileCache.Map.AddByHash(CurrentHash, VirtualFilePath, FileContents);
+
+					if (OutFileContents)
+					{
+						*OutFileContents = FileContents;
+					}
+					bResult = true;
+				}
+			}
 		}
 	}
+
 	INC_FLOAT_STAT_BY(STAT_ShaderCompiling_LoadingShaderFiles,(float)ShaderFileLoadingTime);
 
 	return bResult;
+#else
+	return false;
+#endif // WITH_EDITORONLY_DATA
 }
 
 void LoadShaderSourceFileChecked(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString& OutFileContents, const FName* ShaderPlatformName)
@@ -1115,7 +1364,7 @@ static void InternalGetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, co
 
 					// Include only platform specific files, which will be used by the target platform.
 					{
-						FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
+						FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_ReadOnly);
 						bIgnoreInclude = bIgnoreInclude || GShaderHashCache.ShouldIgnoreInclude(ExtractedIncludeFilename, ShaderPlatform);
 					}
 
@@ -1183,13 +1432,13 @@ void HashShaderFileWithIncludes(FArchive& HashingArchive, const TCHAR* VirtualFi
 		// first, a "soft" check
 		bool bFoundInCache = false;
 		{
-			FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
-			FSHAHash* CachedHash = GShaderHashCache.FindHash(ShaderPlatform, VirtualFilePath);
+			FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_ReadOnly);
+			const FSHAHash* CachedHash = GShaderHashCache.FindHash(ShaderPlatform, VirtualFilePath);
 			// If a hash for this filename has been cached, use that
 			if (CachedHash)
 			{
 				bFoundInCache = true;
-				HashingArchive << *CachedHash;
+				HashingArchive << const_cast<FSHAHash&>(*CachedHash);
 			}
 		}
 
@@ -1261,6 +1510,12 @@ static void UpdateSingleShaderFilehash(FSHA1& InOutHashState, const TCHAR* Virtu
 	InOutHashState.UpdateWithString(*FileContents, FileContents.Len());
 }
 
+/** 
+* Prevents multiple threads from trying to redundantly call UpdateSingleShaderFilehash in GetShaderFileHash / GetShaderFilesHash.
+* Must be used in conjunction with GShaderHashAccessRWLock, which protects actual GShaderHashCache operations.
+*/
+static FCriticalSection GShaderFileHashCalculationGuard;
+
 /**
  * Calculates a Hash for the given filename and its includes if it does not already exist in the Hash cache.
  * @param Filename - shader file to Hash
@@ -1271,13 +1526,27 @@ const FSHAHash& GetShaderFileHash(const TCHAR* VirtualFilePath, EShaderPlatform 
 	// Make sure we are only accessing GShaderHashCache from one thread
 	//check(IsInGameThread() || IsAsyncLoading());
 	STAT(double HashTime = 0);
-	FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
 	{
 		SCOPE_SECONDS_COUNTER(HashTime);
 
-		FSHAHash* CachedHash = GShaderHashCache.FindHash(ShaderPlatform, VirtualFilePath);
+		{
+			FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_ReadOnly);
+			const FSHAHash* CachedHash = GShaderHashCache.FindHash(ShaderPlatform, VirtualFilePath);
+			// If a hash for this filename has been cached, use that
+			if (CachedHash)
+			{
+				return *CachedHash;
+			}
+		}
 
-		// If a hash for this filename has been cached, use that
+		// We don't want UpdateSingleShaderFilehash to be called redundantly from multiple threads,
+		// while minimiziong GShaderHashAccessRWLock exclusive lock time.
+		// We can use a dedicated critical section around the hash calculation and cache update, 
+		// while keeping the cache itself available for reading.
+		FScopeLock FileHashCalculationAccessLock(&GShaderFileHashCalculationGuard);
+
+		// Double-check the cache while holding exclusive lock as another thread may have added the item we're looking for
+		const FSHAHash* CachedHash = GShaderHashCache.FindHash(ShaderPlatform, VirtualFilePath);
 		if (CachedHash)
 		{
 			return *CachedHash;
@@ -1288,6 +1557,7 @@ const FSHAHash& GetShaderFileHash(const TCHAR* VirtualFilePath, EShaderPlatform 
 		HashState.Final();
 
 		// Update the hash cache
+		FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_Write);
 		FSHAHash& NewHash = GShaderHashCache.AddHash(ShaderPlatform, VirtualFilePath);
 		HashState.GetHash(&NewHash.Hash[0]);
 
@@ -1309,7 +1579,7 @@ const FSHAHash& GetShaderFilesHash(const TArray<FString>& VirtualFilePaths, ESha
 	// Make sure we are only accessing GShaderHashCache from one thread
 	//check(IsInGameThread() || IsAsyncLoading());
 	STAT(double HashTime = 0);
-	FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
+
 	{
 		SCOPE_SECONDS_COUNTER(HashTime);
 
@@ -1319,9 +1589,25 @@ const FSHAHash& GetShaderFilesHash(const TArray<FString>& VirtualFilePaths, ESha
 			Key += Filename;
 		}
 
-		FSHAHash* CachedHash = GShaderHashCache.FindHash(ShaderPlatform, Key);
+		{
+			FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_ReadOnly);
+			const FSHAHash* CachedHash = GShaderHashCache.FindHash(ShaderPlatform, Key);
 
-		// If a hash for this filename has been cached, use that
+			// If a hash for this filename has been cached, use that
+			if (CachedHash)
+			{
+				return *CachedHash;
+			}
+		}
+
+		// We don't want UpdateSingleShaderFilehash to be called redundantly from multiple threads,
+		// while minimiziong GShaderHashAccessRWLock exclusive lock time.
+		// We can use a dedicated critical section around the hash calculation and cache update, 
+		// while keeping the cache itself available for reading.
+		FScopeLock FileHashCalculationAccessLock(&GShaderFileHashCalculationGuard);
+
+		// Double-check the cache while holding exclusive lock as another thread may have added the item we're looking for
+		const FSHAHash* CachedHash = GShaderHashCache.FindHash(ShaderPlatform, Key);
 		if (CachedHash)
 		{
 			return *CachedHash;
@@ -1335,6 +1621,7 @@ const FSHAHash& GetShaderFilesHash(const TArray<FString>& VirtualFilePaths, ESha
 		HashState.Final();
 
 		// Update the hash cache
+		FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_Write);
 		FSHAHash& NewHash = GShaderHashCache.AddHash(ShaderPlatform, Key);
 		HashState.GetHash(&NewHash.Hash[0]);
 
@@ -1343,12 +1630,15 @@ const FSHAHash& GetShaderFilesHash(const TArray<FString>& VirtualFilePaths, ESha
 	}
 }
 
-void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables, const FName* ShaderPlatformName)
+#if WITH_EDITOR
+void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables)
 {
 	if (!FPlatformProperties::RequiresCookedData())
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(BuildShaderFileToUniformBufferMap);
+
 		TArray<FString> ShaderSourceFiles;
-		GetAllVirtualShaderSourcePaths(ShaderSourceFiles, GMaxRHIShaderPlatform, ShaderPlatformName);
+		GetAllVirtualShaderSourcePaths(ShaderSourceFiles, GMaxRHIShaderPlatform);
 
 		FScopedSlowTask SlowTask((float)ShaderSourceFiles.Num());
 
@@ -1373,53 +1663,72 @@ void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& Sha
 			SearchKeys.Add(FShaderVariable(StructIt->GetShaderVariableName()));
 		}
 
+		TArray<UE::Tasks::TTask<void>> Tasks;
+		Tasks.Reserve(ShaderSourceFiles.Num());
+
+		// Just make sure that all the TArray inside the map won't move while being used by async tasks
+		for (int32 FileIndex = 0; FileIndex < ShaderSourceFiles.Num(); FileIndex++)
+		{
+			ShaderFileToUniformBufferVariables.FindOrAdd(ShaderSourceFiles[FileIndex]);
+		}
+
 		// Find for each shader file which UBs it needs
 		for (int32 FileIndex = 0; FileIndex < ShaderSourceFiles.Num(); FileIndex++)
 		{
 			SlowTask.EnterProgressFrame(1);
 
  			FString ShaderFileContents;
-			LoadShaderSourceFileChecked(*ShaderSourceFiles[FileIndex], GMaxRHIShaderPlatform, ShaderFileContents, ShaderPlatformName);
+			LoadShaderSourceFileChecked(*ShaderSourceFiles[FileIndex], GMaxRHIShaderPlatform, ShaderFileContents);
 
-			// To allow case sensitive search which is way faster on some platforms (no need to look up locale, etc)
-			ShaderFileContents.ToUpperInline();
+			Tasks.Emplace(
+				UE::Tasks::Launch(
+					TEXT("SearchKeysInShaderContent"),
+					[&SearchKeys, &ShaderSourceFiles, FileIndex, &ShaderFileToUniformBufferVariables, ShaderFileContents = MoveTemp(ShaderFileContents)]() mutable
+					{
+						// To allow case sensitive search which is way faster on some platforms (no need to look up locale, etc)
+						ShaderFileContents.ToUpperInline();
 
-			TArray<const TCHAR*>& ReferencedUniformBuffers = ShaderFileToUniformBufferVariables.FindOrAdd(ShaderSourceFiles[FileIndex]);
+						TArray<const TCHAR*>* ReferencedUniformBuffers = ShaderFileToUniformBufferVariables.Find(ShaderSourceFiles[FileIndex]);
 
-			for (int32 SearchKeyIndex = 0; SearchKeyIndex < SearchKeys.Num(); ++SearchKeyIndex)
-			{
-				// Searching for the uniform buffer shader variable being accessed with '.'
-				if (ShaderFileContents.Contains(SearchKeys[SearchKeyIndex].SearchKey, ESearchCase::CaseSensitive)
-					|| ShaderFileContents.Contains(SearchKeys[SearchKeyIndex].SearchKeyWithSpace, ESearchCase::CaseSensitive))
-				{
-					ReferencedUniformBuffers.AddUnique(SearchKeys[SearchKeyIndex].OriginalShaderVariable);
-				}
-			}
+						for (int32 SearchKeyIndex = 0; SearchKeyIndex < SearchKeys.Num(); ++SearchKeyIndex)
+						{
+							// Searching for the uniform buffer shader variable being accessed with '.'
+							if (ShaderFileContents.Contains(SearchKeys[SearchKeyIndex].SearchKey, ESearchCase::CaseSensitive)
+								|| ShaderFileContents.Contains(SearchKeys[SearchKeyIndex].SearchKeyWithSpace, ESearchCase::CaseSensitive))
+								{
+									ReferencedUniformBuffers->AddUnique(SearchKeys[SearchKeyIndex].OriginalShaderVariable);
+							}
+						}
+					}
+				)
+			);
 		}
+		UE::Tasks::Wait(Tasks);
 	}
 }
+#endif // WITH_EDITOR
 
 void InitializeShaderHashCache()
 {
-	FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
+	FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_Write);
 	GShaderHashCache.Initialize();
 }
 
 void UpdateIncludeDirectoryForPreviewPlatform(EShaderPlatform PreviewPlatform, EShaderPlatform ActualPlatform)
 {
-	FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
+	FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_Write);
 	GShaderHashCache.UpdateIncludeDirectoryForPreviewPlatform(PreviewPlatform, ActualPlatform);
 }
 
-void CheckShaderHashCacheInclude(const FString& VirtualFilePath, EShaderPlatform ShaderPlatform)
+void CheckShaderHashCacheInclude(const FString& VirtualFilePath, EShaderPlatform ShaderPlatform, const FString& ShaderFormatName)
 {
-	FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
+	FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_ReadOnly);
 	bool bIgnoreInclude = GShaderHashCache.ShouldIgnoreInclude(VirtualFilePath, ShaderPlatform);
 
 	checkf(!bIgnoreInclude,
 		TEXT("Shader compiler is trying to include %s, which is not located in IShaderFormat::GetPlatformIncludeDirectory for %s."),
 		*VirtualFilePath,
-		*ShaderPlatformToShaderFormatName(ShaderPlatform).ToString());
+		*ShaderFormatName);
 }
 
 void InitializeShaderTypes()
@@ -1429,7 +1738,9 @@ void InitializeShaderTypes()
 	LogShaderSourceDirectoryMappings();
 
 	TMap<FString, TArray<const TCHAR*> > ShaderFileToUniformBufferVariables;
+#if WITH_EDITOR
 	BuildShaderFileToUniformBufferMap(ShaderFileToUniformBufferVariables);
+#endif // WITH_EDITOR
 
 	FShaderType::Initialize(ShaderFileToUniformBufferVariables);
 	FVertexFactoryType::Initialize(ShaderFileToUniformBufferVariables);
@@ -1455,70 +1766,130 @@ void UninitializeShaderTypes()
  * Flushes the shader file and CRC cache, and regenerates the binary shader files if necessary.
  * Allows shader source files to be re-read properly even if they've been modified since startup.
  */
-void FlushShaderFileCache(const FName* ShaderPlatformName)
+void FlushShaderFileCache()
 {
 	UE_LOG(LogShaders, Log, TEXT("FlushShaderFileCache() begin"));
 
 	{
-		FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
+		FRWScopeLock ShaderHashAccessLock(GShaderHashAccessRWLock, SLT_Write);
 		GShaderHashCache.Empty();
 	}
 	{
-		FScopeLock ScopeLock(&FileCacheCriticalSection);
-		GShaderFileCache.Empty();
-	}
-
-	if (!FPlatformProperties::RequiresCookedData())
-	{
-		LogShaderSourceDirectoryMappings();
-
-		TMap<FString, TArray<const TCHAR*> > ShaderFileToUniformBufferVariables;
-		BuildShaderFileToUniformBufferMap(ShaderFileToUniformBufferVariables, ShaderPlatformName);
-
-		for (TLinkedList<FShaderPipelineType*>::TConstIterator It(FShaderPipelineType::GetTypeList()); It; It.Next())
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(GShaderFileCache); ++Index)
 		{
-			const auto& Stages = It->GetStages();
-			for (const FShaderType* ShaderType : Stages)
-			{
-				((FShaderType*)ShaderType)->FlushShaderFileCache(ShaderFileToUniformBufferVariables);
-			}
-		}
-
-		for(TLinkedList<FShaderType*>::TIterator It(FShaderType::GetTypeList()); It; It.Next())
-		{
-			It->FlushShaderFileCache(ShaderFileToUniformBufferVariables);
-		}
-
-		for(TLinkedList<FVertexFactoryType*>::TIterator It(FVertexFactoryType::GetTypeList()); It; It.Next())
-		{
-			It->FlushShaderFileCache(ShaderFileToUniformBufferVariables);
+			FRWScopeLock ScopeLock(GShaderFileCache[Index].Lock, SLT_Write);
+			GShaderFileCache[Index].Map.Empty();
 		}
 	}
 
 	UE_LOG(LogShaders, Log, TEXT("FlushShaderFileCache() end"));
 }
 
-void GenerateReferencedUniformBuffers(
-	const TCHAR* SourceFilename, 
-	const TCHAR* ShaderTypeName, 
-	const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables,
-	TMap<const TCHAR*,FCachedUniformBufferDeclaration>& UniformBufferEntries)
+#if WITH_EDITOR
+
+void UpdateReferencedUniformBufferNames(
+	TArrayView<const FShaderType*> OutdatedShaderTypes,
+	TArrayView<const FVertexFactoryType*> OutdatedFactoryTypes,
+	TArrayView<const FShaderPipelineType*> OutdatedShaderPipelineTypes)
 {
-	TArray<FString> FilesToSearch;
-	GetShaderIncludes(SourceFilename, SourceFilename, FilesToSearch, GMaxRHIShaderPlatform);
-	FilesToSearch.Add(SourceFilename);
-
-	for (int32 FileIndex = 0; FileIndex < FilesToSearch.Num(); FileIndex++)
+	if (!FPlatformProperties::RequiresCookedData())
 	{
-		const TArray<const TCHAR*>& FoundUniformBufferVariables = ShaderFileToUniformBufferVariables.FindChecked(FilesToSearch[FileIndex]);
+		TRACE_CPUPROFILER_EVENT_SCOPE(UpdateReferencedUniformBufferNames);
 
-		for (int32 VariableIndex = 0; VariableIndex < FoundUniformBufferVariables.Num(); VariableIndex++)
+		LogShaderSourceDirectoryMappings();
+
+		TMap<FString, TArray<const TCHAR*> > ShaderFileToUniformBufferVariables;
+		BuildShaderFileToUniformBufferMap(ShaderFileToUniformBufferVariables);
+
+		for (const FShaderPipelineType* PipelineType : OutdatedShaderPipelineTypes)
 		{
-			UniformBufferEntries.Add(FoundUniformBufferVariables[VariableIndex], FCachedUniformBufferDeclaration());
+			for (const FShaderType* ShaderType : PipelineType->GetStages())
+			{
+				const_cast<FShaderType*>(ShaderType)->UpdateReferencedUniformBufferNames(ShaderFileToUniformBufferVariables);
+			}
+		}
+
+		for (const FShaderType* ShaderType : OutdatedShaderTypes)
+		{
+			const_cast<FShaderType*>(ShaderType)->UpdateReferencedUniformBufferNames(ShaderFileToUniformBufferVariables);
+		}
+
+		for (const FVertexFactoryType* VertexFactoryType : OutdatedFactoryTypes)
+		{
+			const_cast<FVertexFactoryType*>(VertexFactoryType)->UpdateReferencedUniformBufferNames(ShaderFileToUniformBufferVariables);
 		}
 	}
 }
 
+void GenerateReferencedUniformBufferNames(
+	const TCHAR* SourceFilename,
+	const TCHAR* ShaderTypeName,
+	const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables,
+	TSet<const TCHAR*>& UniformBufferNames)
+{
+	TArray<FString> FilesToSearch;
+	GetShaderIncludes(SourceFilename, SourceFilename, FilesToSearch, GMaxRHIShaderPlatform);
+	FilesToSearch.Emplace(SourceFilename);
+
+	for (const FString& FileToSearch : FilesToSearch)
+	{
+		const TArray<const TCHAR*>& FoundUniformBufferVariables = ShaderFileToUniformBufferVariables.FindChecked(FileToSearch);
+		for (const TCHAR* UniformBufferName : FoundUniformBufferVariables)
+		{
+			UniformBufferNames.Emplace(UniformBufferName);
+		}
+	}
+}
+
+namespace {
+// anonymous namespace
+
+class FFrozenMaterialLayoutHashCache
+{
+public:
+	FSHAHash Get(const FTypeLayoutDesc& TypeDesc, FPlatformTypeLayoutParameters LayoutParams)
+	{
+		{
+			FReadScopeLock ReadScope(Lock);
+
+			if (const FPlatformCache* Platform = Algo::FindBy(Platforms, LayoutParams, &FPlatformCache::Parameters))
+			{
+				if (const FSHAHash* Hash = Platform->Cache.Find(&TypeDesc))
+				{
+					return *Hash;
+				}
+			}
+		}
+
+		FSHAHash Hash = Freeze::HashLayout(TypeDesc, LayoutParams);
+
+		{
+			FWriteScopeLock WriteScope(Lock);
+
+			FPlatformCache* Platform = Algo::FindBy(Platforms, LayoutParams, &FPlatformCache::Parameters);
+			if (!Platform)
+			{
+				Platform = &Platforms.AddDefaulted_GetRef();
+				Platform->Parameters = LayoutParams;
+			}
+
+
+			Platform->Cache.FindOrAdd(&TypeDesc, Hash);
+		}
+
+		return Hash;
+	}
+
+private:
+	struct FPlatformCache
+	{
+		FPlatformTypeLayoutParameters Parameters;
+		TMap<const FTypeLayoutDesc*, FSHAHash> Cache;
+	};
+
+	FRWLock Lock;
+	TArray<FPlatformCache, TInlineAllocator<8>> Platforms;
+};
 
 /** Efficient lookup to find FShaderParametersMetadata members by name pointer */
 class FShaderParameterMemberLookup 
@@ -1575,13 +1946,20 @@ private:
 
 static FFShaderParameterPointerLookupCache GShaderParameterMemberLookupCache;
 
-void SerializeUniformBufferInfo(FShaderSaveArchive& Ar, const TSortedMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultAllocator, FUniformBufferNameSortOrder>& UniformBufferEntries)
+
+// This copy is only used internally once - it could be inlined once the public API version is removed
+void SerializeUniformBufferInfo_Internal(FShaderSaveArchive& Ar, const TArray<const TCHAR*>& UniformBufferNames)
 {
+	if (UniformBufferNames.IsEmpty())
+	{
+		return;
+	}
+
 	TSharedPtr<const FShaderParameterMemberLookup> ShaderParameterMembers = GShaderParameterMemberLookupCache.Get();
 
-	for (const TPair<const TCHAR*, FCachedUniformBufferDeclaration>& Entry : UniformBufferEntries)
+	for (const TCHAR* UniformBufferName : UniformBufferNames)
 	{
-		if (const TConstArrayView<FShaderParametersMetadata::FMember>* Members = ShaderParameterMembers->FindMembersByPointer(Entry.Key))
+		if (const TConstArrayView<FShaderParametersMetadata::FMember>* Members = ShaderParameterMembers->FindMembersByPointer(UniformBufferName))
 		{
 			// Serialize information about the struct layout so we can detect when it changes
 			int32 NumMembers = Members->Num();
@@ -1599,6 +1977,162 @@ void SerializeUniformBufferInfo(FShaderSaveArchive& Ar, const TSortedMap<const T
 		}
 	}
 }
+
+} // anonymous namespace
+
+
+FSHAHash GetShaderTypeLayoutHash(const FTypeLayoutDesc& TypeDesc, FPlatformTypeLayoutParameters LayoutParameters)
+{
+	static FFrozenMaterialLayoutHashCache GFrozenMaterialLayoutHashes;
+	return GFrozenMaterialLayoutHashes.Get(TypeDesc, LayoutParameters);
+}
+
+void AppendKeyStringShaderDependencies(
+	TConstArrayView<FShaderTypeDependency> ShaderTypeDependencies,
+	FPlatformTypeLayoutParameters LayoutParams,
+	FString& OutKeyString,
+	bool bIncludeSourceHashes)
+{
+	// Simplified interface if we only have ShaderTypeDependencies
+	AppendKeyStringShaderDependencies(
+		ShaderTypeDependencies,
+		TConstArrayView<FShaderPipelineTypeDependency>(),
+		TConstArrayView<FVertexFactoryTypeDependency>(),
+		LayoutParams,
+		OutKeyString,
+		bIncludeSourceHashes);
+}
+
+void AppendKeyStringShaderDependencies(
+	TConstArrayView<FShaderTypeDependency> ShaderTypeDependencies,
+	TConstArrayView<FShaderPipelineTypeDependency> ShaderPipelineTypeDependencies,
+	TConstArrayView<FVertexFactoryTypeDependency> VertexFactoryTypeDependencies,
+	FPlatformTypeLayoutParameters LayoutParams,
+	FString& OutKeyString,
+	bool bIncludeSourceHashes)
+{
+	TSet<const TCHAR*> ReferencedUniformBufferNames;
+
+	for (const FShaderTypeDependency& ShaderTypeDependency : ShaderTypeDependencies)
+	{
+		const FShaderType* ShaderType = FindShaderTypeByName(ShaderTypeDependency.ShaderTypeName);
+		checkf(ShaderType != nullptr, TEXT("Failed to find FShaderType for dependency %s (total in the NameToTypeMap: %d)"), ShaderTypeDependency.ShaderTypeName.GetDebugString().String.Get(), FShaderType::GetNameToTypeMap().Num());
+
+		OutKeyString.AppendChar('_');
+		OutKeyString.Append(ShaderType->GetName());
+		OutKeyString.AppendInt(ShaderTypeDependency.PermutationId);
+		OutKeyString.AppendChar('_');
+		ERayTracingPayloadType RayTracingPayloadType = ShaderType->GetRayTracingPayloadType(ShaderTypeDependency.PermutationId);
+		OutKeyString.AppendInt(static_cast<uint32>(RayTracingPayloadType));
+		OutKeyString.AppendChar('_');
+		OutKeyString.AppendInt(GetRayTracingPayloadTypeMaxSize(RayTracingPayloadType));
+
+		if (bIncludeSourceHashes)
+		{
+			// Add the type's source hash so that we can invalidate cached shaders when .usf changes are made
+			ShaderTypeDependency.SourceHash.AppendString(OutKeyString);
+		}
+
+		if (const FShaderParametersMetadata* ParameterStructMetadata = ShaderType->GetRootParametersMetadata())
+		{
+			OutKeyString.Appendf(TEXT("%08x"), ParameterStructMetadata->GetLayoutHash());
+		}
+
+		const FSHAHash LayoutHash = GetShaderTypeLayoutHash(ShaderType->GetLayout(), LayoutParams);
+		LayoutHash.AppendString(OutKeyString);
+
+		for (const TCHAR* UniformBufferName : ShaderType->GetReferencedUniformBufferNames())
+		{
+			ReferencedUniformBufferNames.Add(UniformBufferName);
+		}
+	}
+
+	// Add the inputs for any shader pipelines that are stored inline in the shader map
+	for (const FShaderPipelineTypeDependency& Dependency : ShaderPipelineTypeDependencies)
+	{
+		const FShaderPipelineType* ShaderPipelineType = FShaderPipelineType::GetShaderPipelineTypeByName(Dependency.ShaderPipelineTypeName);
+		checkf(ShaderPipelineType != nullptr, TEXT("Failed to find FShaderPipelineType for dependency %s (total in the NameToTypeMap: %d)"), Dependency.ShaderPipelineTypeName.GetDebugString().String.Get(), FShaderType::GetNameToTypeMap().Num());
+
+		OutKeyString.AppendChar('_');
+		OutKeyString.Append(ShaderPipelineType->GetName());
+
+		if (bIncludeSourceHashes)
+		{
+			Dependency.StagesSourceHash.AppendString(OutKeyString);
+		}
+
+		for (const FShaderType* ShaderType : ShaderPipelineType->GetStages())
+		{
+			if (const FShaderParametersMetadata* ParameterStructMetadata = ShaderType->GetRootParametersMetadata())
+			{
+				OutKeyString.Appendf(TEXT("%08x"), ParameterStructMetadata->GetLayoutHash());
+			}
+
+			for (const TCHAR* UniformBufferName : ShaderType->GetReferencedUniformBufferNames())
+			{
+				ReferencedUniformBufferNames.Add(UniformBufferName);
+			}
+		}
+	}
+
+	for (const FVertexFactoryTypeDependency& VFDependency : VertexFactoryTypeDependencies)
+	{
+		OutKeyString.AppendChar('_');
+
+		const FVertexFactoryType* VertexFactoryType = FVertexFactoryType::GetVFByName(VFDependency.VertexFactoryTypeName);
+
+		OutKeyString.Append(VertexFactoryType->GetName());
+
+		if (bIncludeSourceHashes)
+		{
+			VFDependency.VFSourceHash.AppendString(OutKeyString);
+		}
+
+		for (int32 Frequency = 0; Frequency < SF_NumFrequencies; Frequency++)
+		{
+			const FTypeLayoutDesc* ParameterLayout = VertexFactoryType->GetShaderParameterLayout((EShaderFrequency)Frequency);
+			if (ParameterLayout)
+			{
+				const FSHAHash LayoutHash = GetShaderTypeLayoutHash(*ParameterLayout, LayoutParams);
+				LayoutHash.AppendString(OutKeyString);
+			}
+		}
+
+		for (const TCHAR* UniformBufferName : VertexFactoryType->GetReferencedUniformBufferNames())
+		{
+			ReferencedUniformBufferNames.Add(UniformBufferName);
+		}
+	}
+
+	{
+		TArray<uint8> TempData;
+		FSerializationHistory SerializationHistory;
+		FMemoryWriter Ar(TempData, true);
+		FShaderSaveArchive SaveArchive(Ar, SerializationHistory);
+
+		TArray<const TCHAR*> SortedUniformBufferNames = ReferencedUniformBufferNames.Array();
+		Algo::Sort(SortedUniformBufferNames, FUniformBufferNameSortOrder());
+
+		// Save uniform buffer member info so we can detect when layout has changed
+		SerializeUniformBufferInfo_Internal(SaveArchive, SortedUniformBufferNames);
+
+		SerializationHistory.AppendKeyString(OutKeyString);
+	}
+}
+
+void SerializeUniformBufferInfo(FShaderSaveArchive& Ar, const TSortedMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultAllocator, FUniformBufferNameSortOrder>& UniformBufferEntries)
+{
+	TArray<const TCHAR*> UniformBufferNames;
+	for (const TPair<const TCHAR*, FCachedUniformBufferDeclaration>& Entry : UniformBufferEntries)
+	{
+		UniformBufferNames.Emplace(Entry.Key);
+	}
+	Algo::Sort(UniformBufferNames, FUniformBufferNameSortOrder());
+
+	SerializeUniformBufferInfo_Internal(Ar, UniformBufferNames);
+}
+
+#endif // WITH_EDITOR
 
 FString MakeInjectedShaderCodeBlock(const TCHAR* BlockName, const FString& CodeToInject)
 {
@@ -1852,7 +2386,6 @@ FArchive& operator<<(FArchive& Ar, FShaderCompilerInput& Input)
 		Ar << ShaderPlatformNameString;
 		Input.ShaderPlatformName = FName(*ShaderPlatformNameString);
 	}
-	Ar << Input.SourceFilePrefix;
 	Ar << Input.VirtualSourceFilePath;
 	Ar << Input.EntryPointName;
 	Ar << Input.ShaderName;

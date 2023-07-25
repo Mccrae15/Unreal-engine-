@@ -2,8 +2,11 @@
 
 #include "MLDeformerMorphModelInstance.h"
 #include "MLDeformerMorphModel.h" 
-#include "NeuralNetwork.h"
+#include "MLDeformerComponent.h" 
+#include "Components/ExternalMorphSet.h"
 #include "Components/SkeletalMeshComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerMorphModelInstance)
 
 TAtomic<int32> UMLDeformerMorphModelInstance::NextFreeMorphSetID(0);
 
@@ -13,6 +16,16 @@ void UMLDeformerMorphModelInstance::Init(USkeletalMeshComponent* SkelMeshCompone
 
 	// Generate a unique ID for our morph target set.
 	ExternalMorphSetID = NextFreeMorphSetID++;
+}
+
+bool UMLDeformerMorphModelInstance::IsValidForDataProvider() const
+{
+	return true;
+}
+
+int32 UMLDeformerMorphModelInstance::GetExternalMorphSetID() const
+{ 
+	return ExternalMorphSetID;
 }
 
 void UMLDeformerMorphModelInstance::Release()
@@ -89,82 +102,58 @@ void UMLDeformerMorphModelInstance::PostMLDeformerComponentInit()
 	}
 }
 
-FExternalMorphSetWeights* UMLDeformerMorphModelInstance::FindWeightData(int32 LOD) const
+void UMLDeformerMorphModelInstance::Tick(float DeltaTime, float ModelWeight)
 {
-	const UMLDeformerMorphModel* MorphModel = Cast<UMLDeformerMorphModel>(Model);
-	if (MorphModel == nullptr || !SkeletalMeshComponent)
+	// Detect changes in quality level.
+	const int32 CurrentQualityLevel = GetMLDeformerComponent()->GetQualityLevel();
+	if (CurrentQualityLevel != LastQualityLevel)
 	{
-		return nullptr;
+		LastQualityLevel = CurrentQualityLevel;
+		MorphLerpAlpha = 0.0f;
+
+		const int LOD = 0;	// For now we only support LOD 0, as we can't setup an ML Deformer per LOD yet.
+		FExternalMorphSetWeights* WeightData = FindWeightData(LOD);
+		if (WeightData)
+		{
+			StartMorphWeights = WeightData->Weights;
+		}
 	}
 
-	// If we haven't got an external morph set registered yet, let's just return a nullptr.
-	if (!SkeletalMeshComponent->HasExternalMorphSet(LOD, ExternalMorphSetID))
+	if (StartMorphWeights.IsEmpty())
+	{
+		const UMLDeformerMorphModel* MorphModel = Cast<UMLDeformerMorphModel>(Model);
+		StartMorphWeights.SetNumZeroed(MorphModel->GetNumMorphTargets());
+	}
+
+	Super::Tick(DeltaTime, ModelWeight);
+
+	// Update the morph lerp towards the target.
+	MorphLerpAlpha += DeltaTime * 10.0f;
+	if (MorphLerpAlpha > 1.0f)
+	{
+		MorphLerpAlpha = 1.0f;
+	}
+}
+
+FExternalMorphSetWeights* UMLDeformerMorphModelInstance::FindWeightData(int32 LOD) const
+{
+	// Check if our LOD index is valid first, as we might not have registered yet.
+	USkeletalMeshComponent* SkelMeshComponent = SkeletalMeshComponent.Get();
+	if (SkelMeshComponent == nullptr || !SkelMeshComponent->IsValidExternalMorphSetLODIndex(LOD))
 	{
 		return nullptr;
 	}
 
 	// Grab the weight data for this morph set.
 	// This could potentially fail if we are applying this deformer to the wrong skeletal mesh component.
-	return SkeletalMeshComponent->GetExternalMorphWeights(LOD).MorphSets.Find(ExternalMorphSetID);
+	return SkelMeshComponent->GetExternalMorphWeights(LOD).MorphSets.Find(ExternalMorphSetID);
 }
 
 void UMLDeformerMorphModelInstance::HandleZeroModelWeight()
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(UNeuralMorphModelInstance::HandleZeroModelWeight)
-
 	const int LOD = 0;	// For now we only support LOD 0, as we can't setup an ML Deformer per LOD yet.
 	FExternalMorphSetWeights* WeightData = FindWeightData(LOD);
 	if (WeightData)
-	{
-		WeightData->ZeroWeights();
-	}
-}
-
-// Run the neural network, which calculates its outputs, which are the weights of our morph targets.
-void UMLDeformerMorphModelInstance::Execute(float ModelWeight)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UNeuralMorphModelInstance::Execute)
-
-	// Grab the weight data for this morph set.
-	// This could potentially fail if we are applying this deformer to the wrong skeletal mesh component.
-	const int LOD = 0;	// For now we only support LOD 0, as we can't setup an ML Deformer per LOD yet.
-	FExternalMorphSetWeights* WeightData = FindWeightData(LOD);
-	if (WeightData == nullptr)
-	{
-		return;
-	}
-
-	// If our model is active, we want to run the neural network and update the morph weights
-	// with the values that the neural net calculated for us.
-	const UNeuralNetwork* NeuralNetwork = Model->GetNeuralNetwork();
-	if (NeuralNetwork)
-	{
-		// Perform the neural network inference, which updates the output tensor.
-		// This takes most CPU time inside this method.
-		UMLDeformerModelInstance::Execute(ModelWeight);
-
-		// Get the output tensor, read the values and use them as morph target weights inside the skeletal mesh component.
-		const FNeuralTensor& OutputTensor = NeuralNetwork->GetOutputTensorForContext(NeuralNetworkInferenceHandle);
-		const int32 NumNetworkWeights = OutputTensor.Num();
-		const int32 NumMorphTargets = WeightData->Weights.Num();;
-
-		// If we have the expected amount of weights.
-		// +1 because we always have an extra morph target that represents the means, with fixed weight of 1.
-		// Therefore, the neural network output tensor will contain one less float than the number of morph targets in our morph set.
-		if (NumMorphTargets == NumNetworkWeights + 1)
-		{
-			// Set the first morph target, which represents the means, to a weight of 1.0, as it always needs to be fully active.
-			WeightData->Weights[0] = 1.0f * ModelWeight;
-
-			// Update all generated morph target weights with the values calculated by our neural network.
-			for (int32 MorphIndex = 0; MorphIndex < NumNetworkWeights; ++MorphIndex)
-			{
-				const float OutputTensorValue = OutputTensor.At<float>(MorphIndex);
-				WeightData->Weights[MorphIndex + 1] = OutputTensorValue * ModelWeight;
-			}
-		}
-	}
-	else
 	{
 		WeightData->ZeroWeights();
 	}

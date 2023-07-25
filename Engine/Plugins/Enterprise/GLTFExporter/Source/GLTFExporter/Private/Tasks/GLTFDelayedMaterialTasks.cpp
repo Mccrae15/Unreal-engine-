@@ -2,10 +2,11 @@
 
 #include "Tasks/GLTFDelayedMaterialTasks.h"
 #include "Utilities/GLTFCoreUtilities.h"
-#include "Converters/GLTFNameUtility.h"
-#include "Converters/GLTFMaterialUtility.h"
+#include "Converters/GLTFNameUtilities.h"
+#include "Converters/GLTFMaterialUtilities.h"
 #include "Builders/GLTFContainerBuilder.h"
 #include "Utilities/GLTFProxyMaterialUtilities.h"
+#include "MaterialDomain.h"
 #include "Materials/GLTFProxyMaterialInfo.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialExpressionConstant.h"
@@ -59,15 +60,8 @@ void FGLTFDelayedMaterialTask::Process()
 	JsonMaterial->AlphaCutoff = Material->GetOpacityMaskClipValue();
 	JsonMaterial->DoubleSided = Material->IsTwoSided();
 
-	if (const UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(Material))
-	{
-		// TODO: remove ugly hack for dynamic instances
-		FGLTFProxyMaterialUtilities::GetOpacityMaskClipValue(MaterialInstance, JsonMaterial->AlphaCutoff);
-		FGLTFProxyMaterialUtilities::GetTwoSided(MaterialInstance, JsonMaterial->DoubleSided);
-	}
-
 	ConvertShadingModel(JsonMaterial->ShadingModel);
-	ConvertAlphaMode(JsonMaterial->AlphaMode, JsonMaterial->BlendMode);
+	ConvertAlphaMode(JsonMaterial->AlphaMode);
 
 	if (FGLTFProxyMaterialUtilities::IsProxyMaterial(BaseMaterial))
 	{
@@ -78,8 +72,8 @@ void FGLTFDelayedMaterialTask::Process()
 #if WITH_EDITOR
 	if (JsonMaterial->ShadingModel != EGLTFJsonShadingModel::None)
 	{
-		const FGLTFMaterialPropertyEx BaseColorProperty = JsonMaterial->ShadingModel == EGLTFJsonShadingModel::Unlit ? MP_EmissiveColor : MP_BaseColor;
-		const FGLTFMaterialPropertyEx OpacityProperty = JsonMaterial->AlphaMode == EGLTFJsonAlphaMode::Mask ? MP_OpacityMask : MP_Opacity;
+		const FMaterialPropertyEx BaseColorProperty = JsonMaterial->ShadingModel == EGLTFJsonShadingModel::Unlit ? MP_EmissiveColor : MP_BaseColor;
+		const FMaterialPropertyEx OpacityProperty = JsonMaterial->AlphaMode == EGLTFJsonAlphaMode::Mask ? MP_OpacityMask : MP_Opacity;
 
 		// TODO: check if a property is active before trying to get it (i.e. Material->IsPropertyActive)
 
@@ -108,21 +102,21 @@ void FGLTFDelayedMaterialTask::Process()
 
 		if (JsonMaterial->ShadingModel == EGLTFJsonShadingModel::Default || JsonMaterial->ShadingModel == EGLTFJsonShadingModel::ClearCoat)
 		{
-			const FGLTFMaterialPropertyEx MetallicProperty = MP_Metallic;
-			const FGLTFMaterialPropertyEx RoughnessProperty = MP_Roughness;
+			const FMaterialPropertyEx MetallicProperty = MP_Metallic;
+			const FMaterialPropertyEx RoughnessProperty = MP_Roughness;
 
 			if (!TryGetMetallicAndRoughness(JsonMaterial->PBRMetallicRoughness, MetallicProperty, RoughnessProperty))
 			{
 				Builder.LogWarning(FString::Printf(TEXT("Failed to export %s and %s for material %s"), *MetallicProperty.ToString(), *RoughnessProperty.ToString(), *Material->GetName()));
 			}
 
-			const FGLTFMaterialPropertyEx EmissiveProperty = MP_EmissiveColor;
+			const FMaterialPropertyEx EmissiveProperty = MP_EmissiveColor;
 			if (!TryGetEmissive(*JsonMaterial, EmissiveProperty))
 			{
 				Builder.LogWarning(FString::Printf(TEXT("Failed to export %s for material %s"), *EmissiveProperty.ToString(), *Material->GetName()));
 			}
 
-			const FGLTFMaterialPropertyEx NormalProperty = JsonMaterial->ShadingModel == EGLTFJsonShadingModel::ClearCoat ? FGLTFMaterialPropertyEx(TEXT("ClearCoatBottomNormal")) : FGLTFMaterialPropertyEx(MP_Normal);
+			const FMaterialPropertyEx NormalProperty = JsonMaterial->ShadingModel == EGLTFJsonShadingModel::ClearCoat ? FMaterialPropertyEx::ClearCoatBottomNormal : FMaterialPropertyEx(MP_Normal);
 			if (IsPropertyNonDefault(NormalProperty))
 			{
 				if (!TryGetSourceTexture(JsonMaterial->NormalTexture, NormalProperty, DefaultColorInputMasks))
@@ -134,7 +128,7 @@ void FGLTFDelayedMaterialTask::Process()
 				}
 			}
 
-			const FGLTFMaterialPropertyEx AmbientOcclusionProperty = MP_AmbientOcclusion;
+			const FMaterialPropertyEx AmbientOcclusionProperty = MP_AmbientOcclusion;
 			if (IsPropertyNonDefault(AmbientOcclusionProperty))
 			{
 				if (!TryGetSourceTexture(JsonMaterial->OcclusionTexture, AmbientOcclusionProperty, OcclusionInputMasks))
@@ -148,15 +142,15 @@ void FGLTFDelayedMaterialTask::Process()
 
 			if (JsonMaterial->ShadingModel == EGLTFJsonShadingModel::ClearCoat)
 			{
-				const FGLTFMaterialPropertyEx ClearCoatProperty = MP_CustomData0;
-				const FGLTFMaterialPropertyEx ClearCoatRoughnessProperty = MP_CustomData1;
+				const FMaterialPropertyEx ClearCoatProperty = MP_CustomData0;
+				const FMaterialPropertyEx ClearCoatRoughnessProperty = MP_CustomData1;
 
 				if (!TryGetClearCoatRoughness(JsonMaterial->ClearCoat, ClearCoatProperty, ClearCoatRoughnessProperty))
 				{
 					Builder.LogWarning(FString::Printf(TEXT("Failed to export %s and %s for material %s"), *ClearCoatProperty.ToString(), *ClearCoatRoughnessProperty.ToString(), *Material->GetName()));
 				}
 
-				const FGLTFMaterialPropertyEx ClearCoatNormalProperty = MP_Normal;
+				const FMaterialPropertyEx ClearCoatNormalProperty = MP_Normal;
 				if (IsPropertyNonDefault(ClearCoatNormalProperty))
 				{
 					if (!TryGetSourceTexture(JsonMaterial->ClearCoat.ClearCoatNormalTexture, ClearCoatNormalProperty, DefaultColorInputMasks))
@@ -232,8 +226,20 @@ void FGLTFDelayedMaterialTask::GetProxyParameters(FGLTFJsonMaterial& OutMaterial
 		GetProxyParameter(FGLTFProxyMaterialInfo::RoughnessFactor, OutMaterial.PBRMetallicRoughness.RoughnessFactor);
 		GetProxyParameter(FGLTFProxyMaterialInfo::MetallicRoughness, OutMaterial.PBRMetallicRoughness.MetallicRoughnessTexture);
 
-		GetProxyParameter(FGLTFProxyMaterialInfo::NormalScale, OutMaterial.NormalTexture.Scale);
-		GetProxyParameter(FGLTFProxyMaterialInfo::Normal, OutMaterial.NormalTexture);
+		if (HasProxyParameter(FGLTFProxyMaterialInfo::Normal.Texture))
+		{
+			if (OutMaterial.ShadingModel == EGLTFJsonShadingModel::ClearCoat && !FGLTFMaterialUtilities::IsClearCoatBottomNormalEnabled())
+			{
+				Builder.LogWarning(FString::Printf(
+					TEXT("Proxy material %s won't be exported with (bottom) normal because ClearCoatEnableSecondNormal in project rendering settings is disabled"),
+					*Material->GetName()));
+			}
+			else
+			{
+				GetProxyParameter(FGLTFProxyMaterialInfo::NormalScale, OutMaterial.NormalTexture.Scale);
+				GetProxyParameter(FGLTFProxyMaterialInfo::Normal, OutMaterial.NormalTexture);
+			}
+		}
 
 		GetProxyParameter(FGLTFProxyMaterialInfo::OcclusionStrength, OutMaterial.OcclusionTexture.Strength);
 		GetProxyParameter(FGLTFProxyMaterialInfo::Occlusion, OutMaterial.OcclusionTexture);
@@ -262,7 +268,7 @@ void FGLTFDelayedMaterialTask::GetProxyParameter(const TGLTFProxyMaterialParamet
 	FLinearColor Value;
 	if (ParameterInfo.Get(Material, Value, true))
 	{
-		OutValue = FGLTFCoreUtilities::ConvertColor3(Value, false);
+		OutValue = FGLTFCoreUtilities::ConvertColor3(Value);
 	}
 }
 
@@ -271,7 +277,7 @@ void FGLTFDelayedMaterialTask::GetProxyParameter(const TGLTFProxyMaterialParamet
 	FLinearColor Value;
 	if (ParameterInfo.Get(Material, Value, true))
 	{
-		OutValue = FGLTFCoreUtilities::ConvertColor(Value, false);
+		OutValue = FGLTFCoreUtilities::ConvertColor(Value);
 	}
 }
 
@@ -334,7 +340,7 @@ EMaterialShadingModel FGLTFDelayedMaterialTask::GetShadingModel() const
 		Builder.LogWarning(FString::Printf(
 			TEXT("No shading model defined for material %s, will export as %s"),
 			*Material->GetName(),
-			*FGLTFNameUtility::GetName(ShadingModel)));
+			*FGLTFNameUtilities::GetName(ShadingModel)));
 		return ShadingModel;
 	}
 
@@ -343,37 +349,37 @@ EMaterialShadingModel FGLTFDelayedMaterialTask::GetShadingModel() const
 #if WITH_EDITOR
 		if (!FApp::CanEverRender())
 		{
-			const EMaterialShadingModel ShadingModel = FGLTFMaterialUtility::GetRichestShadingModel(Possibilities);
+			const EMaterialShadingModel ShadingModel = FGLTFMaterialUtilities::GetRichestShadingModel(Possibilities);
 			Builder.LogWarning(FString::Printf(
 				TEXT("Can't evaluate shading model expression in material %s because renderer missing, will export as %s"),
 				*Material->GetName(),
-				*FGLTFNameUtility::GetName(ShadingModel)));
+				*FGLTFNameUtilities::GetName(ShadingModel)));
 			return ShadingModel;
 		}
 
 		if (Material->IsShadingModelFromMaterialExpression())
 		{
-			const FMaterialShadingModelField Evaluation = FGLTFMaterialUtility::EvaluateShadingModelExpression(Material);
+			const FMaterialShadingModelField Evaluation = FGLTFMaterialUtilities::EvaluateShadingModelExpression(Material);
 			const int32 EvaluationCount = Evaluation.CountShadingModels();
 
 			if (EvaluationCount == 0)
 			{
-				const EMaterialShadingModel ShadingModel = FGLTFMaterialUtility::GetRichestShadingModel(Possibilities);
+				const EMaterialShadingModel ShadingModel = FGLTFMaterialUtilities::GetRichestShadingModel(Possibilities);
 				Builder.LogWarning(FString::Printf(
 					TEXT("Evaluation of shading model expression in material %s returned none, will export as %s"),
 					*Material->GetName(),
-					*FGLTFNameUtility::GetName(ShadingModel)));
+					*FGLTFNameUtilities::GetName(ShadingModel)));
 				return ShadingModel;
 			}
 
 			if (EvaluationCount > 1)
 			{
-				const EMaterialShadingModel ShadingModel = FGLTFMaterialUtility::GetRichestShadingModel(Evaluation);
+				const EMaterialShadingModel ShadingModel = FGLTFMaterialUtilities::GetRichestShadingModel(Evaluation);
 				Builder.LogWarning(FString::Printf(
 					TEXT("Evaluation of shading model expression in material %s is inconclusive (%s), will export as %s"),
 					*Material->GetName(),
-					*FGLTFMaterialUtility::ShadingModelsToString(Evaluation),
-					*FGLTFNameUtility::GetName(ShadingModel)));
+					*FGLTFMaterialUtilities::ShadingModelsToString(Evaluation),
+					*FGLTFNameUtilities::GetName(ShadingModel)));
 				return ShadingModel;
 			}
 
@@ -382,11 +388,11 @@ EMaterialShadingModel FGLTFDelayedMaterialTask::GetShadingModel() const
 
 		// we should never end up here
 #else
-		const EMaterialShadingModel ShadingModel = FGLTFMaterialUtility::GetRichestShadingModel(Possibilities);
+		const EMaterialShadingModel ShadingModel = FGLTFMaterialUtilities::GetRichestShadingModel(Possibilities);
 		Builder.LogWarning(FString::Printf(
 			TEXT("Can't evaluate shading model expression in material %s without editor, will export as %s"),
 			*Material->GetName(),
-			*FGLTFNameUtility::GetName(ShadingModel)));
+			*FGLTFNameUtilities::GetName(ShadingModel)));
 		return ShadingModel;
 #endif
 	}
@@ -412,9 +418,9 @@ void FGLTFDelayedMaterialTask::ConvertShadingModel(EGLTFJsonShadingModel& OutSha
 
 		Builder.LogWarning(FString::Printf(
 			TEXT("Unsupported shading model (%s) in material %s, will export as %s"),
-			*FGLTFNameUtility::GetName(ShadingModel),
+			*FGLTFNameUtilities::GetName(ShadingModel),
 			*Material->GetName(),
-			*FGLTFNameUtility::GetName(MSM_DefaultLit)));
+			*FGLTFNameUtilities::GetName(MSM_DefaultLit)));
 		return;
 	}
 
@@ -424,9 +430,9 @@ void FGLTFDelayedMaterialTask::ConvertShadingModel(EGLTFJsonShadingModel& OutSha
 
 		Builder.LogWarning(FString::Printf(
 			TEXT("Shading model (%s) in material %s disabled by export options, will export as %s"),
-			*FGLTFNameUtility::GetName(ShadingModel),
+			*FGLTFNameUtilities::GetName(ShadingModel),
 			*Material->GetName(),
-			*FGLTFNameUtility::GetName(MSM_DefaultLit)));
+			*FGLTFNameUtilities::GetName(MSM_DefaultLit)));
 		return;
 	}
 
@@ -436,53 +442,33 @@ void FGLTFDelayedMaterialTask::ConvertShadingModel(EGLTFJsonShadingModel& OutSha
 
 		Builder.LogWarning(FString::Printf(
 			TEXT("Shading model (%s) in material %s disabled by export options, will export as %s"),
-			*FGLTFNameUtility::GetName(ShadingModel),
+			*FGLTFNameUtilities::GetName(ShadingModel),
 			*Material->GetName(),
-			*FGLTFNameUtility::GetName(MSM_DefaultLit)));
+			*FGLTFNameUtilities::GetName(MSM_DefaultLit)));
 	}
 }
 
-void FGLTFDelayedMaterialTask::ConvertAlphaMode(EGLTFJsonAlphaMode& OutAlphaMode, EGLTFJsonBlendMode& OutBlendMode) const
+void FGLTFDelayedMaterialTask::ConvertAlphaMode(EGLTFJsonAlphaMode& OutAlphaMode) const
 {
-	EBlendMode BlendMode = Material->GetBlendMode();
-	if (const UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(Material))
-	{
-		FGLTFProxyMaterialUtilities::GetBlendMode(MaterialInstance, BlendMode); // TODO: remove ugly hack for dynamic instances
-	}
+	const EBlendMode BlendMode = Material->GetBlendMode();
 
 	OutAlphaMode = FGLTFCoreUtilities::ConvertAlphaMode(BlendMode);
 	if (OutAlphaMode == EGLTFJsonAlphaMode::None)
 	{
 		OutAlphaMode = EGLTFJsonAlphaMode::Blend;
-		OutBlendMode = EGLTFJsonBlendMode::None;
 
 		Builder.LogWarning(FString::Printf(
 			TEXT("Unsupported blend mode (%s) in material %s, will export as %s"),
-			*FGLTFNameUtility::GetName(BlendMode),
+			*FGLTFNameUtilities::GetName(BlendMode),
 			*Material->GetName(),
-			*FGLTFNameUtility::GetName(BLEND_Translucent)));
+			*FGLTFNameUtilities::GetName(BLEND_Translucent)));
 		return;
-	}
-
-	if (OutAlphaMode == EGLTFJsonAlphaMode::Blend)
-	{
-		OutBlendMode = FGLTFCoreUtilities::ConvertBlendMode(BlendMode);
-		if (OutBlendMode != EGLTFJsonBlendMode::None && !Builder.ExportOptions->bExportExtraBlendModes)
-		{
-			OutBlendMode = EGLTFJsonBlendMode::None;
-
-			Builder.LogWarning(FString::Printf(
-				TEXT("Extra blend mode (%s) in material %s disabled by export options, will export as %s"),
-				*FGLTFNameUtility::GetName(BlendMode),
-				*Material->GetName(),
-				*FGLTFNameUtility::GetName(BLEND_Translucent)));
-		}
 	}
 }
 
 #if WITH_EDITOR
 
-bool FGLTFDelayedMaterialTask::TryGetBaseColorAndOpacity(FGLTFJsonPBRMetallicRoughness& OutPBRParams, const FGLTFMaterialPropertyEx& BaseColorProperty, const FGLTFMaterialPropertyEx& OpacityProperty)
+bool FGLTFDelayedMaterialTask::TryGetBaseColorAndOpacity(FGLTFJsonPBRMetallicRoughness& OutPBRParams, const FMaterialPropertyEx& BaseColorProperty, const FMaterialPropertyEx& OpacityProperty)
 {
 	const bool bIsBaseColorConstant = TryGetConstantColor(OutPBRParams.BaseColorFactor, BaseColorProperty);
 	const bool bIsOpacityConstant = TryGetConstantScalar(OutPBRParams.BaseColorFactor.A, OpacityProperty);
@@ -531,14 +517,8 @@ bool FGLTFDelayedMaterialTask::TryGetBaseColorAndOpacity(FGLTFJsonPBRMetallicRou
 	}
 
 	const FIntPoint TextureSize = Builder.GetBakeSizeForMaterialProperty(Material, GetPropertyGroup(BaseColorProperty));
-
 	const TextureAddress TextureAddress = Builder.GetBakeTilingForMaterialProperty(Material, GetPropertyGroup(BaseColorProperty));
-	const EGLTFJsonTextureWrap TextureWrapS = FGLTFCoreUtilities::ConvertWrap(TextureAddress);
-	const EGLTFJsonTextureWrap TextureWrapT = FGLTFCoreUtilities::ConvertWrap(TextureAddress);
-
 	const TextureFilter TextureFilter = Builder.GetBakeFilterForMaterialProperty(Material, GetPropertyGroup(BaseColorProperty));
-	const EGLTFJsonTextureFilter TextureMinFilter = FGLTFCoreUtilities::ConvertMinFilter(TextureFilter);
-	const EGLTFJsonTextureFilter TextureMagFilter = FGLTFCoreUtilities::ConvertMagFilter(TextureFilter);
 
 	const FGLTFPropertyBakeOutput BaseColorBakeOutput = BakeMaterialProperty(BaseColorProperty, BaseColorTexCoord, TextureSize, false);
 	const FGLTFPropertyBakeOutput OpacityBakeOutput = BakeMaterialProperty(OpacityProperty, OpacityTexCoord, TextureSize, false);
@@ -548,9 +528,9 @@ bool FGLTFDelayedMaterialTask::TryGetBaseColorAndOpacity(FGLTFJsonPBRMetallicRou
 	if (BaseColorBakeOutput.bIsConstant && OpacityBakeOutput.bIsConstant)
 	{
 		FLinearColor BaseColorFactor(BaseColorBakeOutput.ConstantValue * BaseColorScale);
-		BaseColorFactor.A = OpacityBakeOutput.ConstantValue.A;
+		BaseColorFactor.A = OpacityBakeOutput.ConstantValue.R;
 
-		OutPBRParams.BaseColorFactor = FGLTFCoreUtilities::ConvertColor(BaseColorFactor, Builder.ExportOptions->bStrictCompliance);
+		OutPBRParams.BaseColorFactor = FGLTFCoreUtilities::ConvertColor(BaseColorFactor);
 		return true;
 	}
 
@@ -586,26 +566,26 @@ bool FGLTFDelayedMaterialTask::TryGetBaseColorAndOpacity(FGLTFJsonPBRMetallicRou
 			return FColor(BaseColor.R, BaseColor.G, BaseColor.B, Opacity.R);
 		});
 
-	FGLTFJsonTexture* CombinedTexture = FGLTFMaterialUtility::AddTexture(
+	FGLTFJsonTexture* CombinedTexture = FGLTFMaterialUtilities::AddTexture(
 		Builder,
 		CombinedPixels,
 		TextureSize,
 		false,
 		false,
 		GetBakedTextureName(TEXT("BaseColor")),
-		TextureMinFilter,
-		TextureMagFilter,
-		TextureWrapS,
-		TextureWrapT);
+		TextureAddress,
+		TextureFilter);
 
 	OutPBRParams.BaseColorTexture.TexCoord = CombinedTexCoord;
 	OutPBRParams.BaseColorTexture.Index = CombinedTexture;
-	OutPBRParams.BaseColorFactor = FGLTFCoreUtilities::ConvertColor({ BaseColorScale, BaseColorScale, BaseColorScale }, Builder.ExportOptions->bStrictCompliance);
+
+	// TODO: add support for KHR_materials_emissive_strength
+	OutPBRParams.BaseColorFactor = FGLTFCoreUtilities::ConvertColor(FLinearColor(BaseColorScale, BaseColorScale, BaseColorScale));
 
 	return true;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetMetallicAndRoughness(FGLTFJsonPBRMetallicRoughness& OutPBRParams, const FGLTFMaterialPropertyEx& MetallicProperty, const FGLTFMaterialPropertyEx& RoughnessProperty)
+bool FGLTFDelayedMaterialTask::TryGetMetallicAndRoughness(FGLTFJsonPBRMetallicRoughness& OutPBRParams, const FMaterialPropertyEx& MetallicProperty, const FMaterialPropertyEx& RoughnessProperty)
 {
 	const bool bIsMetallicConstant = TryGetConstantScalar(OutPBRParams.MetallicFactor, MetallicProperty);
 	const bool bIsRoughnessConstant = TryGetConstantScalar(OutPBRParams.RoughnessFactor, RoughnessProperty);
@@ -656,14 +636,8 @@ bool FGLTFDelayedMaterialTask::TryGetMetallicAndRoughness(FGLTFJsonPBRMetallicRo
 
 	// TODO: add support for calculating the ideal resolution to use for baking based on connected (texture) nodes
 	const FIntPoint TextureSize = Builder.GetBakeSizeForMaterialProperty(Material, GetPropertyGroup(MetallicProperty));
-
 	const TextureAddress TextureAddress = Builder.GetBakeTilingForMaterialProperty(Material, GetPropertyGroup(MetallicProperty));
-	const EGLTFJsonTextureWrap TextureWrapS = FGLTFCoreUtilities::ConvertWrap(TextureAddress);
-	const EGLTFJsonTextureWrap TextureWrapT = FGLTFCoreUtilities::ConvertWrap(TextureAddress);
-
 	const TextureFilter TextureFilter = Builder.GetBakeFilterForMaterialProperty(Material, GetPropertyGroup(MetallicProperty));
-	const EGLTFJsonTextureFilter TextureMinFilter = FGLTFCoreUtilities::ConvertMinFilter(TextureFilter);
-	const EGLTFJsonTextureFilter TextureMagFilter = FGLTFCoreUtilities::ConvertMagFilter(TextureFilter);
 
 	FGLTFPropertyBakeOutput MetallicBakeOutput = BakeMaterialProperty(MetallicProperty, MetallicTexCoord, TextureSize, false);
 	FGLTFPropertyBakeOutput RoughnessBakeOutput = BakeMaterialProperty(RoughnessProperty, RoughnessTexCoord, TextureSize, false);
@@ -682,7 +656,7 @@ bool FGLTFDelayedMaterialTask::TryGetMetallicAndRoughness(FGLTFJsonPBRMetallicRo
 	}
 
 	int32 CombinedTexCoord;
-	
+
 	// If one is constant, it means we can use the other's texture coords
 	if (MetallicBakeOutput.bIsConstant || MetallicTexCoord == RoughnessTexCoord)
 	{
@@ -708,17 +682,15 @@ bool FGLTFDelayedMaterialTask::TryGetMetallicAndRoughness(FGLTFJsonPBRMetallicRo
 			return FColor(0, Roughness.R, Metallic.R);
 		});
 
-	FGLTFJsonTexture* CombinedTexture = FGLTFMaterialUtility::AddTexture(
+	FGLTFJsonTexture* CombinedTexture = FGLTFMaterialUtilities::AddTexture(
 		Builder,
 		CombinedPixels,
 		TextureSize,
 		true, // NOTE: we can ignore alpha in everything but TryGetBaseColorAndOpacity
 		false,
 		GetBakedTextureName(TEXT("MetallicRoughness")),
-		TextureMinFilter,
-		TextureMagFilter,
-		TextureWrapS,
-		TextureWrapT);
+		TextureAddress,
+		TextureFilter);
 
 	OutPBRParams.MetallicRoughnessTexture.TexCoord = CombinedTexCoord;
 	OutPBRParams.MetallicRoughnessTexture.Index = CombinedTexture;
@@ -726,7 +698,7 @@ bool FGLTFDelayedMaterialTask::TryGetMetallicAndRoughness(FGLTFJsonPBRMetallicRo
 	return true;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetClearCoatRoughness(FGLTFJsonClearCoatExtension& OutExtParams, const FGLTFMaterialPropertyEx& IntensityProperty, const FGLTFMaterialPropertyEx& RoughnessProperty)
+bool FGLTFDelayedMaterialTask::TryGetClearCoatRoughness(FGLTFJsonClearCoatExtension& OutExtParams, const FMaterialPropertyEx& IntensityProperty, const FMaterialPropertyEx& RoughnessProperty)
 {
 	const bool bIsIntensityConstant = TryGetConstantScalar(OutExtParams.ClearCoatFactor, IntensityProperty);
 	const bool bIsRoughnessConstant = TryGetConstantScalar(OutExtParams.ClearCoatRoughnessFactor, RoughnessProperty);
@@ -779,14 +751,8 @@ bool FGLTFDelayedMaterialTask::TryGetClearCoatRoughness(FGLTFJsonClearCoatExtens
 	}
 
 	const FIntPoint TextureSize = Builder.GetBakeSizeForMaterialProperty(Material, GetPropertyGroup(IntensityProperty));
-
 	const TextureAddress TextureAddress = Builder.GetBakeTilingForMaterialProperty(Material,GetPropertyGroup(IntensityProperty));
-	const EGLTFJsonTextureWrap TextureWrapS = FGLTFCoreUtilities::ConvertWrap(TextureAddress);
-	const EGLTFJsonTextureWrap TextureWrapT = FGLTFCoreUtilities::ConvertWrap(TextureAddress);
-
 	const TextureFilter TextureFilter = Builder.GetBakeFilterForMaterialProperty(Material, GetPropertyGroup(IntensityProperty));
-	const EGLTFJsonTextureFilter TextureMinFilter = FGLTFCoreUtilities::ConvertMinFilter(TextureFilter);
-	const EGLTFJsonTextureFilter TextureMagFilter = FGLTFCoreUtilities::ConvertMagFilter(TextureFilter);
 
 	const FGLTFPropertyBakeOutput IntensityBakeOutput = BakeMaterialProperty(IntensityProperty, IntensityTexCoord, TextureSize, false);
 	const FGLTFPropertyBakeOutput RoughnessBakeOutput = BakeMaterialProperty(RoughnessProperty, RoughnessTexCoord, TextureSize, false);
@@ -805,7 +771,7 @@ bool FGLTFDelayedMaterialTask::TryGetClearCoatRoughness(FGLTFJsonClearCoatExtens
 	}
 
 	int32 CombinedTexCoord;
-	
+
 	// If one is constant, it means we can use the other's texture coords
 	if (IntensityBakeOutput.bIsConstant || IntensityTexCoord == RoughnessTexCoord)
 	{
@@ -831,17 +797,15 @@ bool FGLTFDelayedMaterialTask::TryGetClearCoatRoughness(FGLTFJsonClearCoatExtens
 			return FColor(Intensity.R, Roughness.R, 0);
 		});
 
-	FGLTFJsonTexture* CombinedTexture = FGLTFMaterialUtility::AddTexture(
+	FGLTFJsonTexture* CombinedTexture = FGLTFMaterialUtilities::AddTexture(
 		Builder,
 		CombinedPixels,
 		TextureSize,
 		true, // NOTE: we can ignore alpha in everything but TryGetBaseColorAndOpacity
 		false,
 		GetBakedTextureName(TEXT("ClearCoatRoughness")),
-		TextureMinFilter,
-		TextureMagFilter,
-		TextureWrapS,
-		TextureWrapT);
+		TextureAddress,
+		TextureFilter);
 
 	OutExtParams.ClearCoatTexture.Index = CombinedTexture;
 	OutExtParams.ClearCoatTexture.TexCoord = CombinedTexCoord;
@@ -851,7 +815,7 @@ bool FGLTFDelayedMaterialTask::TryGetClearCoatRoughness(FGLTFJsonClearCoatExtens
 	return true;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetEmissive(FGLTFJsonMaterial& OutMaterial, const FGLTFMaterialPropertyEx& EmissiveProperty)
+bool FGLTFDelayedMaterialTask::TryGetEmissive(FGLTFJsonMaterial& OutMaterial, const FMaterialPropertyEx& EmissiveProperty)
 {
 	// TODO: right now we allow EmissiveFactor to be > 1.0 to support very bright emission, although it's not valid according to the glTF standard.
 	// We may want to change this behaviour and store factors above 1.0 using a custom extension instead.
@@ -882,7 +846,7 @@ bool FGLTFDelayedMaterialTask::TryGetEmissive(FGLTFJsonMaterial& OutMaterial, co
 	if (PropertyBakeOutput.bIsConstant)
 	{
 		const FLinearColor EmissiveColor = PropertyBakeOutput.ConstantValue;
-		OutMaterial.EmissiveFactor = FGLTFCoreUtilities::ConvertColor3(EmissiveColor * EmissiveScale, Builder.ExportOptions->bStrictCompliance);
+		OutMaterial.EmissiveFactor = FGLTFCoreUtilities::ConvertColor3(EmissiveColor * EmissiveScale);
 	}
 	else
 	{
@@ -903,19 +867,22 @@ bool FGLTFDelayedMaterialTask::TryGetEmissive(FGLTFJsonMaterial& OutMaterial, co
 	return true;
 }
 
-bool FGLTFDelayedMaterialTask::IsPropertyNonDefault(const FGLTFMaterialPropertyEx& Property) const
+bool FGLTFDelayedMaterialTask::IsPropertyNonDefault(const FMaterialPropertyEx& Property) const
 {
-	const bool bUseMaterialAttributes = Material->GetMaterial()->bUseMaterialAttributes;
-	if (bUseMaterialAttributes)
+	// Custom outputs are by definition standalone and never part of material attributes
+	if (!Property.IsCustomOutput())
 	{
-		// TODO: check if attribute property connected, i.e. Material->GetMaterial()->MaterialAttributes.IsConnected(Property)
-		return true;
+		const bool bUseMaterialAttributes = Material->GetMaterial()->bUseMaterialAttributes;
+		if (bUseMaterialAttributes)
+		{
+			// TODO: check if attribute property connected, i.e. Material->GetMaterial()->MaterialAttributes.IsConnected(Property)
+			return true;
+		}
 	}
 
-	const FExpressionInput* MaterialInput = FGLTFMaterialUtility::GetInputForProperty(Material, Property);
+	const FExpressionInput* MaterialInput = FGLTFMaterialUtilities::GetInputForProperty(Material, Property);
 	if (MaterialInput == nullptr)
 	{
-		// TODO: report error
 		return false;
 	}
 
@@ -925,34 +892,42 @@ bool FGLTFDelayedMaterialTask::IsPropertyNonDefault(const FGLTFMaterialPropertyE
 		return false;
 	}
 
+	if (Property == FMaterialPropertyEx::ClearCoatBottomNormal && !FGLTFMaterialUtilities::IsClearCoatBottomNormalEnabled())
+	{
+		Builder.LogWarning(FString::Printf(
+			TEXT("Material %s won't be exported with clear coat bottom normal because ClearCoatEnableSecondNormal in project rendering settings is disabled"),
+			*Material->GetName()));
+		return false;
+	}
+
 	return true;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetConstantColor(FGLTFJsonColor3& OutValue, const FGLTFMaterialPropertyEx& Property) const
+bool FGLTFDelayedMaterialTask::TryGetConstantColor(FGLTFJsonColor3& OutValue, const FMaterialPropertyEx& Property) const
 {
 	FLinearColor Value;
 	if (TryGetConstantColor(Value, Property))
 	{
-		OutValue = FGLTFCoreUtilities::ConvertColor3(Value, Builder.ExportOptions->bStrictCompliance);
+		OutValue = FGLTFCoreUtilities::ConvertColor3(Value);
 		return true;
 	}
 
 	return false;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetConstantColor(FGLTFJsonColor4& OutValue, const FGLTFMaterialPropertyEx& Property) const
+bool FGLTFDelayedMaterialTask::TryGetConstantColor(FGLTFJsonColor4& OutValue, const FMaterialPropertyEx& Property) const
 {
 	FLinearColor Value;
 	if (TryGetConstantColor(Value, Property))
 	{
-		OutValue = FGLTFCoreUtilities::ConvertColor(Value, Builder.ExportOptions->bStrictCompliance);
+		OutValue = FGLTFCoreUtilities::ConvertColor(Value);
 		return true;
 	}
 
 	return false;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetConstantColor(FLinearColor& OutValue, const FGLTFMaterialPropertyEx& Property) const
+bool FGLTFDelayedMaterialTask::TryGetConstantColor(FLinearColor& OutValue, const FMaterialPropertyEx& Property) const
 {
 	const bool bUseMaterialAttributes = Material->GetMaterial()->bUseMaterialAttributes;
 	if (bUseMaterialAttributes)
@@ -961,7 +936,7 @@ bool FGLTFDelayedMaterialTask::TryGetConstantColor(FLinearColor& OutValue, const
 		return false;
 	}
 
-	const FMaterialInput<FColor>* MaterialInput = FGLTFMaterialUtility::GetInputForProperty<FColor>(Material, Property);
+	const FMaterialInput<FColor>* MaterialInput = FGLTFMaterialUtilities::GetInputForProperty<FColor>(Material, Property);
 	if (MaterialInput == nullptr)
 	{
 		// TODO: report error
@@ -977,7 +952,7 @@ bool FGLTFDelayedMaterialTask::TryGetConstantColor(FLinearColor& OutValue, const
 	const UMaterialExpression* Expression = MaterialInput->Expression;
 	if (Expression == nullptr)
 	{
-		OutValue = FLinearColor(FGLTFMaterialUtility::GetPropertyDefaultValue(Property));
+		OutValue = FLinearColor(FGLTFMaterialUtilities::GetPropertyDefaultValue(Property));
 		return true;
 	}
 
@@ -995,11 +970,11 @@ bool FGLTFDelayedMaterialTask::TryGetConstantColor(FLinearColor& OutValue, const
 			}
 		}
 
-		const uint32 MaskComponentCount = FGLTFMaterialUtility::GetMaskComponentCount(*MaterialInput);
+		const uint32 MaskComponentCount = FGLTFMaterialUtilities::GetMaskComponentCount(*MaterialInput);
 
 		if (MaskComponentCount > 0)
 		{
-			const FLinearColor Mask = FGLTFMaterialUtility::GetMask(*MaterialInput);
+			const FLinearColor Mask = FGLTFMaterialUtilities::GetMask(*MaterialInput);
 
 			Value *= Mask;
 
@@ -1059,7 +1034,7 @@ bool FGLTFDelayedMaterialTask::TryGetConstantColor(FLinearColor& OutValue, const
 	return false;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetConstantScalar(float& OutValue, const FGLTFMaterialPropertyEx& Property) const
+bool FGLTFDelayedMaterialTask::TryGetConstantScalar(float& OutValue, const FMaterialPropertyEx& Property) const
 {
 	const bool bUseMaterialAttributes = Material->GetMaterial()->bUseMaterialAttributes;
 	if (bUseMaterialAttributes)
@@ -1068,7 +1043,7 @@ bool FGLTFDelayedMaterialTask::TryGetConstantScalar(float& OutValue, const FGLTF
 		return false;
 	}
 
-	const FMaterialInput<float>* MaterialInput = FGLTFMaterialUtility::GetInputForProperty<float>(Material, Property);
+	const FMaterialInput<float>* MaterialInput = FGLTFMaterialUtilities::GetInputForProperty<float>(Material, Property);
 	if (MaterialInput == nullptr)
 	{
 		// TODO: report error
@@ -1084,7 +1059,7 @@ bool FGLTFDelayedMaterialTask::TryGetConstantScalar(float& OutValue, const FGLTF
 	const UMaterialExpression* Expression = MaterialInput->Expression;
 	if (Expression == nullptr)
 	{
-		OutValue = FGLTFMaterialUtility::GetPropertyDefaultValue(Property).X;
+		OutValue = FGLTFMaterialUtilities::GetPropertyDefaultValue(Property).X;
 		return true;
 	}
 
@@ -1102,11 +1077,11 @@ bool FGLTFDelayedMaterialTask::TryGetConstantScalar(float& OutValue, const FGLTF
 			}
 		}
 
-		const uint32 MaskComponentCount = FGLTFMaterialUtility::GetMaskComponentCount(*MaterialInput);
+		const uint32 MaskComponentCount = FGLTFMaterialUtilities::GetMaskComponentCount(*MaterialInput);
 
 		if (MaskComponentCount > 0)
 		{
-			const FLinearColor Mask = FGLTFMaterialUtility::GetMask(*MaterialInput);
+			const FLinearColor Mask = FGLTFMaterialUtilities::GetMask(*MaterialInput);
 			Value *= Mask;
 		}
 
@@ -1160,7 +1135,7 @@ bool FGLTFDelayedMaterialTask::TryGetConstantScalar(float& OutValue, const FGLTF
 	return false;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetSourceTexture(FGLTFJsonTextureInfo& OutTexInfo, const FGLTFMaterialPropertyEx& Property, const TArray<FLinearColor>& AllowedMasks) const
+bool FGLTFDelayedMaterialTask::TryGetSourceTexture(FGLTFJsonTextureInfo& OutTexInfo, const FMaterialPropertyEx& Property, const TArray<FLinearColor>& AllowedMasks) const
 {
 	const UTexture2D* Texture;
 	int32 TexCoord;
@@ -1168,7 +1143,7 @@ bool FGLTFDelayedMaterialTask::TryGetSourceTexture(FGLTFJsonTextureInfo& OutTexI
 
 	if (TryGetSourceTexture(Texture, TexCoord, Transform, Property, AllowedMasks))
 	{
-		OutTexInfo.Index = Builder.AddUniqueTexture(Texture, FGLTFMaterialUtility::IsSRGB(Property));
+		OutTexInfo.Index = Builder.AddUniqueTexture(Texture, FGLTFMaterialUtilities::IsSRGB(Property));
 		OutTexInfo.TexCoord = TexCoord;
 		OutTexInfo.Transform = Transform;
 		return true;
@@ -1177,14 +1152,14 @@ bool FGLTFDelayedMaterialTask::TryGetSourceTexture(FGLTFJsonTextureInfo& OutTexI
 	return false;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetSourceTexture(const UTexture2D*& OutTexture, int32& OutTexCoord, FGLTFJsonTextureTransform& OutTransform, const FGLTFMaterialPropertyEx& Property, const TArray<FLinearColor>& AllowedMasks) const
+bool FGLTFDelayedMaterialTask::TryGetSourceTexture(const UTexture2D*& OutTexture, int32& OutTexCoord, FGLTFJsonTextureTransform& OutTransform, const FMaterialPropertyEx& Property, const TArray<FLinearColor>& AllowedMasks) const
 {
 	if (Builder.ExportOptions->TextureImageFormat == EGLTFTextureImageFormat::None)
 	{
 		return false;
 	}
 
-	const FExpressionInput* MaterialInput = FGLTFMaterialUtility::GetInputForProperty(Material, Property);
+	const FExpressionInput* MaterialInput = FGLTFMaterialUtilities::GetInputForProperty(Material, Property);
 	if (MaterialInput == nullptr)
 	{
 		// TODO: report error
@@ -1197,7 +1172,7 @@ bool FGLTFDelayedMaterialTask::TryGetSourceTexture(const UTexture2D*& OutTexture
 		return false;
 	}
 
-	const FLinearColor InputMask = FGLTFMaterialUtility::GetMask(*MaterialInput);
+	const FLinearColor InputMask = FGLTFMaterialUtilities::GetMask(*MaterialInput);
 	if (AllowedMasks.Num() > 0 && !AllowedMasks.Contains(InputMask))
 	{
 		return false;
@@ -1237,7 +1212,7 @@ bool FGLTFDelayedMaterialTask::TryGetSourceTexture(const UTexture2D*& OutTexture
 			return false;
 		}
 
-		if (!FGLTFMaterialUtility::TryGetTextureCoordinateIndex(TextureParameter, OutTexCoord, OutTransform))
+		if (!FGLTFMaterialUtilities::TryGetTextureCoordinateIndex(TextureParameter, OutTexCoord, OutTransform))
 		{
 			// TODO: report error (failed to identify texture coordinate index)
 			return false;
@@ -1278,7 +1253,7 @@ bool FGLTFDelayedMaterialTask::TryGetSourceTexture(const UTexture2D*& OutTexture
 			return false;
 		}
 
-		if (!FGLTFMaterialUtility::TryGetTextureCoordinateIndex(TextureSampler, OutTexCoord, OutTransform))
+		if (!FGLTFMaterialUtilities::TryGetTextureCoordinateIndex(TextureSampler, OutTexCoord, OutTransform))
 		{
 			// TODO: report error (failed to identify texture coordinate index)
 			return false;
@@ -1300,7 +1275,7 @@ bool FGLTFDelayedMaterialTask::TryGetSourceTexture(const UTexture2D*& OutTexture
 	return false;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo& OutTexInfo, FGLTFJsonColor3& OutConstant, const FGLTFMaterialPropertyEx& Property, const FString& PropertyName)
+bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo& OutTexInfo, FGLTFJsonColor3& OutConstant, const FMaterialPropertyEx& Property, const FString& PropertyName)
 {
 	if (Builder.ExportOptions->BakeMaterialInputs == EGLTFMaterialBakeMode::Disabled)
 	{
@@ -1315,7 +1290,7 @@ bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo&
 
 	if (PropertyBakeOutput.bIsConstant)
 	{
-		OutConstant = FGLTFCoreUtilities::ConvertColor3(PropertyBakeOutput.ConstantValue, Builder.ExportOptions->bStrictCompliance);
+		OutConstant = FGLTFCoreUtilities::ConvertColor3(PropertyBakeOutput.ConstantValue);
 		return true;
 	}
 
@@ -1334,7 +1309,7 @@ bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo&
 	return false;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo& OutTexInfo, FGLTFJsonColor4& OutConstant, const FGLTFMaterialPropertyEx& Property, const FString& PropertyName)
+bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo& OutTexInfo, FGLTFJsonColor4& OutConstant, const FMaterialPropertyEx& Property, const FString& PropertyName)
 {
 	if (Builder.ExportOptions->BakeMaterialInputs == EGLTFMaterialBakeMode::Disabled)
 	{
@@ -1349,7 +1324,7 @@ bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo&
 
 	if (PropertyBakeOutput.bIsConstant)
 	{
-		OutConstant = FGLTFCoreUtilities::ConvertColor(PropertyBakeOutput.ConstantValue, Builder.ExportOptions->bStrictCompliance);
+		OutConstant = FGLTFCoreUtilities::ConvertColor(PropertyBakeOutput.ConstantValue);
 		return true;
 	}
 
@@ -1368,7 +1343,7 @@ bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo&
 	return false;
 }
 
-inline bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo& OutTexInfo, float& OutConstant, const FGLTFMaterialPropertyEx& Property, const FString& PropertyName)
+inline bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo& OutTexInfo, float& OutConstant, const FMaterialPropertyEx& Property, const FString& PropertyName)
 {
 	if (Builder.ExportOptions->BakeMaterialInputs == EGLTFMaterialBakeMode::Disabled)
 	{
@@ -1402,7 +1377,7 @@ inline bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextu
 	return false;
 }
 
-bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo& OutTexInfo, const FGLTFMaterialPropertyEx& Property, const FString& PropertyName)
+bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo& OutTexInfo, const FMaterialPropertyEx& Property, const FString& PropertyName)
 {
 	if (Builder.ExportOptions->BakeMaterialInputs == EGLTFMaterialBakeMode::Disabled)
 	{
@@ -1426,15 +1401,15 @@ bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo&
 		return StoreBakedPropertyTexture(OutTexInfo, PropertyBakeOutput, PropertyName);
 	}
 
-	const FVector4f MaskedConstant = FVector4f(PropertyBakeOutput.ConstantValue) * FGLTFMaterialUtility::GetPropertyMask(Property);
-	if (MaskedConstant == FGLTFMaterialUtility::GetPropertyDefaultValue(Property))
+	const FVector4f MaskedConstant = FVector4f(PropertyBakeOutput.ConstantValue) * FGLTFMaterialUtilities::GetPropertyMask(Property);
+	if (MaskedConstant == FGLTFMaterialUtilities::GetPropertyDefaultValue(Property))
 	{
 		// Constant value is the same as the property's default so we can set gltf to default.
 		OutTexInfo.Index = nullptr;
 		return true;
 	}
 
-	if (FGLTFMaterialUtility::IsNormalMap(Property))
+	if (FGLTFMaterialUtilities::IsNormalMap(Property))
 	{
 		// TODO: In some cases baking normal can result in constant vector that differs slight from default (i.e 0,0,1).
 		// Yet often, when looking at such a material, it should be exactly default. Needs further investigation.
@@ -1448,34 +1423,32 @@ bool FGLTFDelayedMaterialTask::TryGetBakedMaterialProperty(FGLTFJsonTextureInfo&
 	// even though the same material when set to opaque will properly bake AmbientOcclusion to a texture.
 	// For now, create a 1x1 texture with the constant value.
 
-	FGLTFJsonTexture* Texture = FGLTFMaterialUtility::AddTexture(
+	FGLTFJsonTexture* Texture = FGLTFMaterialUtilities::AddTexture(
 		Builder,
 		PropertyBakeOutput.Pixels,
 		PropertyBakeOutput.Size,
 		true, // NOTE: we can ignore alpha in everything but TryGetBaseColorAndOpacity
 		false, // Normal and ClearCoatBottomNormal are handled above
 		GetBakedTextureName(PropertyName),
-		EGLTFJsonTextureFilter::Nearest,
-		EGLTFJsonTextureFilter::Nearest,
-		EGLTFJsonTextureWrap::ClampToEdge,
-		EGLTFJsonTextureWrap::ClampToEdge);
+		TA_Clamp,
+		TF_Nearest);
 
 	OutTexInfo.Index = Texture;
 	return true;
 }
 
-FGLTFPropertyBakeOutput FGLTFDelayedMaterialTask::BakeMaterialProperty(const FGLTFMaterialPropertyEx& Property, int32& OutTexCoord)
+FGLTFPropertyBakeOutput FGLTFDelayedMaterialTask::BakeMaterialProperty(const FMaterialPropertyEx& Property, int32& OutTexCoord)
 {
 	const FIntPoint TextureSize = Builder.GetBakeSizeForMaterialProperty(Material, GetPropertyGroup(Property));
 	return BakeMaterialProperty(Property, OutTexCoord, TextureSize, true);
 }
 
-FGLTFPropertyBakeOutput FGLTFDelayedMaterialTask::BakeMaterialProperty(const FGLTFMaterialPropertyEx& Property, int32& OutTexCoord, const FIntPoint& TextureSize, bool bFillAlpha)
+FGLTFPropertyBakeOutput FGLTFDelayedMaterialTask::BakeMaterialProperty(const FMaterialPropertyEx& Property, int32& OutTexCoord, const FIntPoint& TextureSize, bool bFillAlpha)
 {
 	if (MeshData == nullptr)
 	{
 		FGLTFIndexArray TexCoords;
-		FGLTFMaterialUtility::GetAllTextureCoordinateIndices(Material, Property, TexCoords);
+		FGLTFMaterialUtilities::GetAllTextureCoordinateIndices(Material, Property, TexCoords);
 
 		if (TexCoords.Num() > 0)
 		{
@@ -1504,7 +1477,7 @@ FGLTFPropertyBakeOutput FGLTFDelayedMaterialTask::BakeMaterialProperty(const FGL
 
 	// TODO: add support for calculating the ideal resolution to use for baking based on connected (texture) nodes
 
-	return FGLTFMaterialUtility::BakeMaterialProperty(
+	return FGLTFMaterialUtilities::BakeMaterialProperty(
 		TextureSize,
 		Property,
 		Material,
@@ -1518,30 +1491,23 @@ FGLTFPropertyBakeOutput FGLTFDelayedMaterialTask::BakeMaterialProperty(const FGL
 bool FGLTFDelayedMaterialTask::StoreBakedPropertyTexture(FGLTFJsonTextureInfo& OutTexInfo, FGLTFPropertyBakeOutput& PropertyBakeOutput, const FString& PropertyName) const
 {
 	const TextureAddress TextureAddress = Builder.GetBakeTilingForMaterialProperty(Material, GetPropertyGroup(PropertyBakeOutput.Property));
-	const EGLTFJsonTextureWrap TextureWrapS = FGLTFCoreUtilities::ConvertWrap(TextureAddress);
-	const EGLTFJsonTextureWrap TextureWrapT = FGLTFCoreUtilities::ConvertWrap(TextureAddress);
-
 	const TextureFilter TextureFilter = Builder.GetBakeFilterForMaterialProperty(Material, GetPropertyGroup(PropertyBakeOutput.Property));
-	const EGLTFJsonTextureFilter TextureMinFilter = FGLTFCoreUtilities::ConvertMinFilter(TextureFilter);
-	const EGLTFJsonTextureFilter TextureMagFilter = FGLTFCoreUtilities::ConvertMagFilter(TextureFilter);
 
-	FGLTFJsonTexture* Texture = FGLTFMaterialUtility::AddTexture(
+	FGLTFJsonTexture* Texture = FGLTFMaterialUtilities::AddTexture(
 		Builder,
 		PropertyBakeOutput.Pixels,
 		PropertyBakeOutput.Size,
 		true, // NOTE: we can ignore alpha in everything but TryGetBaseColorAndOpacity
-		FGLTFMaterialUtility::IsNormalMap(PropertyBakeOutput.Property),
+		FGLTFMaterialUtilities::IsNormalMap(PropertyBakeOutput.Property),
 		GetBakedTextureName(PropertyName),
-		TextureMinFilter,
-		TextureMagFilter,
-		TextureWrapS,
-		TextureWrapT);
+		TextureAddress,
+		TextureFilter);
 
 	OutTexInfo.Index = Texture;
 	return true;
 }
 
-EGLTFMaterialPropertyGroup FGLTFDelayedMaterialTask::GetPropertyGroup(const FGLTFMaterialPropertyEx& Property)
+EGLTFMaterialPropertyGroup FGLTFDelayedMaterialTask::GetPropertyGroup(const FMaterialPropertyEx& Property)
 {
 	switch (Property.Type)
 	{
@@ -1562,7 +1528,7 @@ EGLTFMaterialPropertyGroup FGLTFDelayedMaterialTask::GetPropertyGroup(const FGLT
 		case MP_CustomData1:
 			return EGLTFMaterialPropertyGroup::ClearCoatRoughness;
 		case MP_CustomOutput:
-			if (Property.CustomOutput == TEXT("ClearCoatBottomNormal"))
+			if (Property == FMaterialPropertyEx::ClearCoatBottomNormal)
 			{
 				return EGLTFMaterialPropertyGroup::ClearCoatBottomNormal;
 			}

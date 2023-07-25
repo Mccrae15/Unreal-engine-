@@ -2,10 +2,7 @@
 
 #include "LiveLinkPropertyTrackEditor.h"
 
-#include "Features/IModularFeatures.h"
-#include "Framework/Application/SlateApplication.h"
 #include "ISequencerSection.h"
-#include "Misc/QualifiedFrameTime.h"
 #include "MovieScene/MovieSceneLiveLinkSection.h"
 #include "Styling/SlateIconFinder.h"
 #include "LevelSequence.h"
@@ -209,12 +206,14 @@ TSharedRef<ISequencerSection> FLiveLinkPropertyTrackEditor::MakeSectionInterface
 
 bool FLiveLinkPropertyTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
-	if (InSequence && InSequence->IsTrackSupported(UMovieSceneLiveLinkTrack::StaticClass()) == ETrackSupport::NotSupported)
+	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneLiveLinkTrack::StaticClass()) : ETrackSupport::Default;
+
+	if (TrackSupported == ETrackSupport::NotSupported)
 	{
 		return false;
 	}
 
-	return InSequence && InSequence->IsA(ULevelSequence::StaticClass());
+	return (InSequence && InSequence->IsA(ULevelSequence::StaticClass())) || TrackSupported == ETrackSupport::Supported;
 }
 
 bool FLiveLinkPropertyTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Type) const
@@ -244,12 +243,12 @@ void FLiveLinkPropertyTrackEditor::HandleAddLiveLinkTrackMenuEntryExecute()
 		return;
 	}
 
-	UMovieSceneTrack* Track = FocusedMovieScene->FindMasterTrack<UMovieSceneLiveLinkTrack>();
+	UMovieSceneTrack* Track = FocusedMovieScene->FindTrack<UMovieSceneLiveLinkTrack>();
 	if (!Track)
 	{
 		const FScopedTransaction Transaction(NSLOCTEXT("Sequencer", "AddLiveLinkTrack_Transaction", "Add Live Link Track"));
 		FocusedMovieScene->Modify();
-		UMovieSceneLiveLinkTrack* NewTrack = FocusedMovieScene->AddMasterTrack<UMovieSceneLiveLinkTrack>();
+		UMovieSceneLiveLinkTrack* NewTrack = FocusedMovieScene->AddTrack<UMovieSceneLiveLinkTrack>();
 		ensure(NewTrack);
 
 		NewTrack->SetDisplayName(LOCTEXT("LiveLinkTrackName", "Live Link"));
@@ -264,7 +263,7 @@ void FLiveLinkPropertyTrackEditor::HandleAddLiveLinkTrackMenuEntryExecute()
 bool FLiveLinkPropertyTrackEditor::HandleAddLiveLinkTrackMenuEntryCanExecute() const
 {
 	UMovieScene* FocusedMovieScene = GetFocusedMovieScene();
-	return ((FocusedMovieScene != nullptr) && (FocusedMovieScene->FindMasterTrack<UMovieSceneLiveLinkTrack>() == nullptr));
+	return ((FocusedMovieScene != nullptr) && (FocusedMovieScene->FindTrack<UMovieSceneLiveLinkTrack>() == nullptr));
 }
 
 

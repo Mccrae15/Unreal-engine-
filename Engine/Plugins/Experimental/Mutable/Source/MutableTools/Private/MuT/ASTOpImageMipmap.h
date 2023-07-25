@@ -11,8 +11,7 @@
 
 namespace mu
 {
-struct PROGRAM;
-template <class SCALAR> class vec4;
+	struct FProgram;
 
 	class ASTOpImageMipmap : public ASTOp
 	{
@@ -20,14 +19,17 @@ template <class SCALAR> class vec4;
 
 		ASTChild Source;
 
-		uint8_t Levels = 0;
+		uint8 Levels = 0;
 
 		//! Number of mipmaps that can be generated for a single layout block.
-		uint8_t BlockLevels = 0;
+		uint8 BlockLevels = 0;
 
 		//! This is true if this operation is supposed to build only the tail mipmaps.
 		//! It is used during the code optimisation phase, and to validate the code.
 		bool bOnlyTail = false;
+
+		/** If this is enabled, at optimize time, the mip operation will not be split in top and bottom mip (for compose tails). */
+		bool bPreventSplitTail = false;
 
 		//! Mipmap generation settings. 
 		float SharpenFactor = 0.0f;
@@ -46,11 +48,11 @@ template <class SCALAR> class vec4;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(PROGRAM& program, const FLinkerOptions* Options) override;
-		Ptr<ASTOp> OptimiseSink(const MODEL_OPTIMIZATION_OPTIONS& options, OPTIMIZE_SINK_CONTEXT& context) const override;
-		FImageDesc GetImageDesc(bool returnBestOption, GetImageDescContext* context) override;
+		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions& options, FOptimizeSinkContext& context) const override;
+		FImageDesc GetImageDesc(bool returnBestOption, FGetImageDescContext* context) const override;
 		void GetLayoutBlockSize(int* pBlockX, int* pBlockY) override;
-		bool IsImagePlainConstant(vec4<float>& colour) const override;
+		bool IsImagePlainConstant(FVector4f& colour) const override;
 		Ptr<ImageSizeExpression> GetImageSizeExpression() const override;
 
 	};

@@ -7,10 +7,10 @@
 #include "HModel.h"
 #include "SceneView.h"
 #include "Model.h"
-#include "Components/ModelComponent.h"
 #include "Raster.h"
 #include "Engine/Polys.h"
 #include "Engine/Brush.h"
+#include "GenericPlatform/ICursor.h"
 
 IMPLEMENT_HIT_PROXY(HModel,HHitProxy);
 
@@ -143,4 +143,9 @@ void HModel::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject(Component);
 	Collector.AddReferencedObject(Model);
+}
+
+EMouseCursor::Type HModel::GetMouseCursor()
+{
+	return EMouseCursor::Crosshairs;
 }

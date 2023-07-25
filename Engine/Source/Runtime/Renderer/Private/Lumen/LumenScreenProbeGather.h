@@ -2,16 +2,20 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RendererInterface.h"
+#include "CoreTypes.h"
 #include "BlueNoise.h"
-#include "LumenRadianceCache.h"
-#include "SceneTextureParameters.h"
-#include "IndirectLightRendering.h"
-#include "ScreenSpaceRayTracing.h"
-#include "RendererPrivate.h"
-#include "ScenePrivate.h"
 #include "LumenTracingUtils.h"
+#include "ShaderParameterMacros.h"
+
+class FLumenScreenSpaceBentNormalParameters;
+class FViewInfo;
+struct FEngineShowFlags;
+
+namespace LumenRadianceCache
+{
+	class FRadianceCacheInterpolationParameters;
+	class FRadianceCacheMarkParameters;
+}
 
 extern int32 GLumenScreenProbeGatherNumMips;
 
@@ -112,7 +116,6 @@ BEGIN_SHADER_PARAMETER_STRUCT(FScreenProbeParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, RWLightSampleTraceHit)
 
 	SHADER_PARAMETER_STRUCT_INCLUDE(FScreenProbeImportanceSamplingParameters, ImportanceSampling)
-	SHADER_PARAMETER_STRUCT_INCLUDE(FOctahedralSolidAngleParameters, OctahedralSolidAngleParameters)
 	SHADER_PARAMETER_STRUCT_REF(FBlueNoise, BlueNoise)
 
 	RDG_BUFFER_ACCESS(ProbeIndirectArgs, ERHIAccess::IndirectArgs)
@@ -162,7 +165,6 @@ extern void TraceScreenProbes(
 	bool bRenderDirectLighting,
 	const FSceneTextures& SceneTextures,
 	FRDGTextureRef LightingChannelsTexture,
-	const FLumenCardTracingInputs& TracingInputs,
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	FScreenProbeParameters& ScreenProbeParameters,
 	FLumenMeshSDFGridParameters& MeshSDFGridParameters,
@@ -174,10 +176,20 @@ void RenderHardwareRayTracingScreenProbe(
 	const FSceneTextureParameters& SceneTextures,
 	FScreenProbeParameters& CommonDiffuseParameters,
 	const FViewInfo& View,
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenCardTracingParameters& TracingParameters,
 	FLumenIndirectTracingParameters& DiffuseTracingParameters,
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
-	const FCompactedTraceParameters& CompactedTraceParameters);
+	const FCompactedTraceParameters& CompactedTraceParameters,
+	ERDGPassFlags ComputePassFlags);
+
+extern void RenderHardwareRayTracingShortRangeAO(
+	FRDGBuilder& GraphBuilder,
+	const FScene* Scene,
+	const FSceneTextureParameters& SceneTextures,
+	const FScreenProbeParameters& ScreenProbeParameters,
+	const FViewInfo& View,
+	FRDGTextureRef ScreenBentNormal,
+	uint32 NumPixelRays);
 
 extern void FilterScreenProbes(
 	FRDGBuilder& GraphBuilder,
@@ -188,7 +200,7 @@ extern void FilterScreenProbes(
 	FScreenProbeGatherParameters& GatherParameters,
 	ERDGPassFlags ComputePassFlags);
 
-extern FLumenScreenSpaceBentNormalParameters ComputeScreenSpaceBentNormal(
+extern FLumenScreenSpaceBentNormalParameters ComputeScreenSpaceShortRangeAO(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
 	const FViewInfo& View,

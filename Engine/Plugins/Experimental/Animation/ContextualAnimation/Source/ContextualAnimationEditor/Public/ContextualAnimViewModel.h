@@ -2,20 +2,21 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "MovieScene.h"
 #include "UObject/GCObject.h"
-#include "MovieSceneFwd.h"
 #include "ContextualAnimTypes.h"
 #include "ContextualAnimMovieSceneSequence.h"
-#include "ISequencer.h"
 #include "EditorUndoClient.h"
+
+class ISequencer;
+enum class EMovieSceneDataChangeType;
+namespace EMovieScenePlayerStatus { enum Type : int; }
 
 class UWorld;
 class FContextualAnimPreviewScene;
 class UContextualAnimSceneAsset;
 class UContextualAnimManager;
 class UContextualAnimMovieSceneSequence;
-class UContextualAnimSceneInstance;
 class UMovieScene;
 class UMovieSceneTrack;
 class UMovieSceneSection;
@@ -64,6 +65,7 @@ public:
 	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
 
 	void Initialize(UContextualAnimSceneAsset* InSceneAsset, const TSharedRef<FContextualAnimPreviewScene>& InPreviewScene);
+	void Shutdown();
 
 	void SetDefaultMode();
 	void SetNotifiesMode(const FContextualAnimTrack& AnimTrack);
@@ -77,19 +79,24 @@ public:
 	UMovieScene* GetMovieScene() const { return MovieScene; }
 	UContextualAnimMovieSceneSequence* GetMovieSceneSequence() const { return MovieSceneSequence; }
 	UContextualAnimSceneAsset* GetSceneAsset() const { return SceneAsset; }
-	UContextualAnimSceneInstance* GetSceneInstance() const { return SceneInstance.Get(); }
-	UContextualAnimMovieSceneTrack* FindMasterTrackByRole(const FName& Role) const;
+	UContextualAnimMovieSceneTrack* FindTrackByRole(const FName& Role) const;
+	TSharedPtr<IDetailsView> GetDetailsView() { return DetailsView; }
 
 	void AddNewAnimSet(const FContextualAnimNewAnimSetParams& Params);
+	void RemoveSection(int32 SectionIdx);
+	void RemoveAnimSet(int32 SectionIdx, int32 AnimSetIdx);
 
 	void AddNewIKTarget(const UContextualAnimNewIKTargetParams& Params);
 
 	void AnimationModified(UAnimSequenceBase& Animation);
 
 	void SetActiveSection(int32 SectionIdx);
-
+	int32 GetActiveSection() const;
 	void SetActiveAnimSetForSection(int32 SectionIdx, int32 AnimSetIdx);
+	int32 GetActiveAnimSetForSection(int32 SectionIdx) const;
 
+	void StartSimulateMode();
+	void StopSimulateMode();
 	void ToggleSimulateMode();
 	bool IsSimulateModeInactive()	const { return SimulateModeState == ESimulateModeState::Inactive; }
 	bool IsSimulateModePaused()		const { return SimulateModeState == ESimulateModeState::Paused; }
@@ -119,6 +126,8 @@ public:
 	void DiscardChangeToActorTransformInScene();
 
 	float GetPlaybackTime() const;
+	
+	bool CanMakeEdits() const;
 
 private:
 
@@ -163,10 +172,6 @@ private:
 	/** Weak pointer to the PreviewScene */
 	TWeakPtr<FContextualAnimPreviewScene> PreviewScenePtr;
 
-	TObjectPtr<UContextualAnimManager> ContextualAnimManager;
-
-	TWeakObjectPtr<UContextualAnimSceneInstance> SceneInstance;
-
 	/** Copy of the bindings so we can access them even when simulation mode is not playing (and SceneInstance is not valid) */
 	FContextualAnimSceneBindings SceneBindings;
 
@@ -201,6 +206,8 @@ private:
 	/** Selected actor when the user starts modifying its transform in the scene */
 	TWeakObjectPtr<AActor> ModifyingTransformInSceneCachedActor;
 
+	TSharedPtr<IDetailsView> DetailsView;
+
 	AActor* SpawnPreviewActor(const FContextualAnimTrack& AnimTrack);
 
 	UWorld* GetWorld() const;
@@ -211,9 +218,25 @@ private:
 
 	void SequencerDataChanged(EMovieSceneDataChangeType DataChangeType);
 
+	void SequencerPlayEvent();
+
+	void SequencerStopEvent();
+
 	void OnAnimNotifyChanged(UAnimSequenceBase* Animation);
 
 	void CreateSequencer();
 
+	void CreateDetailsView();
+
+	void RefreshDetailsView();
+
 	bool WantsToModifyMeshToSceneForSelectedActor() const;
+
+private:
+	bool bInitialized = false;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "ISequencer.h"
+#endif

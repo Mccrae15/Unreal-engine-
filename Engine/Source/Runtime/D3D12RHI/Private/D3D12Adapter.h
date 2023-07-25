@@ -40,6 +40,8 @@ struct FD3D12DeviceBasicInfo
 	D3D12_RESOURCE_BINDING_TIER ResourceBindingTier;
 	D3D12_RESOURCE_HEAP_TIER    ResourceHeapTier;
 	uint32                      NumDeviceNodes;
+	bool                        bSupportsWaveOps;
+	bool                        bSupportsAtomic64;
 
 	ERHIFeatureLevel::Type      MaxRHIFeatureLevel;
 };
@@ -78,6 +80,12 @@ struct FD3D12AdapterDesc
 
 	/** Whether the GPU is integrated or discrete. */
 	bool bIsIntegrated = false;
+
+	/** Whether SM6.0 wave ops are supported */
+	bool bSupportsWaveOps = false;
+
+	/** Whether SM6.6 atomic64 wave ops are supported */
+	bool bSupportsAtomic64 = false;
 
 #if DXGI_MAX_FACTORY_INTERFACE >= 6
 	DXGI_GPU_PREFERENCE GpuPreference = DXGI_GPU_PREFERENCE_UNSPECIFIED;
@@ -179,11 +187,6 @@ public:
 	FORCEINLINE IDXGIFactory6* GetDXGIFactory6() const { return DxgiFactory6; }
 #endif
 
-#if PLATFORM_SUPPORTS_BINDLESS_RENDERING
-	FORCEINLINE bool AreBindlessResourcesAllowed() const { return bBindlessResourcesAllowed; }
-	FORCEINLINE bool AreBindlessSamplersAllowed() const { return bBindlessSamplersAllowed; }
-#endif
-
 	FORCEINLINE const bool IsDebugDevice() const { return bDebugDevice; }
 
 	FORCEINLINE const ED3D12GPUCrashDebuggingModes GetGPUCrashDebuggingModes() const { return GPUCrashDebuggingModes; }
@@ -218,29 +221,10 @@ public:
 
 	FORCEINLINE FD3D12PipelineStateCache& GetPSOCache() { return PipelineStateCache; }
 
-#if USE_STATIC_ROOT_SIGNATURE
-	FORCEINLINE const FD3D12RootSignature* GetStaticGraphicsRootSignature()
-	{
-		return &StaticGraphicsRootSignature;
-	}
-	FORCEINLINE const FD3D12RootSignature* GetStaticComputeRootSignature()
-	{
-		return &StaticComputeRootSignature;
-	}
-	FORCEINLINE const FD3D12RootSignature* GetStaticRayTracingGlobalRootSignature()
-	{
-		return &StaticRayTracingGlobalRootSignature;
-	}
-	FORCEINLINE const FD3D12RootSignature* GetStaticRayTracingLocalRootSignature()
-	{
-		return &StaticRayTracingLocalRootSignature;
-	}
-#endif // USE_STATIC_ROOT_SIGNATURE
-
-	FORCEINLINE FD3D12RootSignature* GetRootSignature(const FD3D12QuantizedBoundShaderState& QBSS) 
-	{
-		return RootSignatureManager.GetRootSignature(QBSS);
-	}
+	const FD3D12RootSignature* GetRootSignature(const FBoundShaderStateInput& BoundShaderState);
+	const FD3D12RootSignature* GetRootSignature(const class FD3D12RayTracingShader* Shader);
+	const FD3D12RootSignature* GetRootSignature(const class FD3D12ComputeShader* Shader);
+	const FD3D12RootSignature* GetGlobalRayTracingRootSignature();
 
 	FORCEINLINE FD3D12RootSignatureManager* GetRootSignatureManager()
 	{
@@ -263,6 +247,7 @@ public:
 	FORCEINLINE uint32 GetVRSTileSize() const { return VRSTileSize; }
 
 	void CreateDXGIFactory(bool bWithDebug);
+	static void CreateDXGIFactory(TRefCountPtr<IDXGIFactory2>& DxgiFactory2, bool bWithDebug, HMODULE DxgiDllHandle);
 	void InitDXGIFactoryVariants(IDXGIFactory2* InDxgiFactory2);
 	HRESULT EnumAdapters(IDXGIAdapter** TempAdapter) const;
 
@@ -389,9 +374,6 @@ public:
 
 	FD3D12TransientHeapCache& GetOrCreateTransientHeapCache();
 
-	typedef TArray<FD3D12SyncPointRef, TInlineAllocator<MAX_NUM_GPUS>> FTemporalEffect;
-	FTemporalEffect& GetTemporalEffect(const FName& EffectName);
-
 	FD3D12FastConstantAllocator& GetTransientUniformBufferAllocator();
 	void ReleaseTransientUniformBufferAllocator(FTransientUniformBufferAllocator* InAllocator);
 
@@ -432,6 +414,10 @@ public:
 	void FindReleasedAllocationData(D3D12_GPU_VIRTUAL_ADDRESS InGPUVirtualAddress, TArray<FReleasedAllocationData>& OutAllocationData);
 
 	void SetResidencyPriority(ID3D12Pageable* Pageable, D3D12_RESIDENCY_PRIORITY HeapPriority, uint32 GPUIndex);
+
+#if PLATFORM_WINDOWS
+	HMODULE GetDxgiDllHandle() const { return DxgiDllHandle; };
+#endif
 
 protected:
 
@@ -584,10 +570,6 @@ protected:
 	FCriticalSection TrackedAllocationDataCS;
 
 	FD3D12MemoryInfo MemoryInfo;
-
-#if WITH_MGPU
-	TMap<FName, FTemporalEffect> TemporalEffectMap;
-#endif
 
 	TArray<FTransientUniformBufferAllocator*> TransientUniformBufferAllocators;
 	FCriticalSection TransientUniformBufferAllocatorsCS;

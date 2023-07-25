@@ -9,7 +9,7 @@
 
 Texture2D<UlongType> VisBuffer64;
 Texture2D<float> SceneDepth;
-Texture2D<uint> MaterialResolve;
+Texture2D<uint2> MaterialResolve;
 ByteAddressBuffer MaterialSlotTable;
 ByteAddressBuffer MaterialDepthTable;
 ByteAddressBuffer MaterialEditorTable;
@@ -170,11 +170,8 @@ void ExportDebugViewPS(
 			FInstanceDynamicData InstanceDynamicData	= CalculateInstanceDynamicData(NaniteView, InstanceData);
 			FCluster Cluster							= GetCluster(VisibleCluster.PageIndex, VisibleCluster.ClusterIndex);
 
-			bool IsNanitePixel = false;
-			bool IsDecalReceiver = false;
-			uint MaterialSlot = 0;
-			UnpackMaterialResolve(MaterialResolve[PixelPos], IsNanitePixel, IsDecalReceiver, MaterialSlot);
-			const uint MaterialEditorData = GetMaterialDepthId(MaterialSlot, MaterialEditorTable);
+			FResolvedMaterial ResolvedMaterial = UnpackMaterialResolve(MaterialResolve[PixelPos]);
+			const uint MaterialEditorData = GetMaterialDepthId(ResolvedMaterial.LegacyShadingId, MaterialEditorTable);
 
 			BRANCH
 			if (DebugViewMode == DEBUG_VIEW_WIREFRAME)
@@ -186,7 +183,7 @@ void ExportDebugViewPS(
 			#if SOBEL_WIREFRAME_FILTER
 				OutColor = float4(ApplyWireframeFilter(PixelPos, DepthInt, WireColor), 1.0f);
 			#else
-				const uint3 TriIndices = ReadTriangleIndices(Cluster, TriIndex);
+				const uint3 TriIndices = DecodeTriangleIndices(Cluster, TriIndex, false);
 
 				const float3 PointLocal0 = DecodePosition(TriIndices.x, Cluster);
 				const float3 PointLocal1 = DecodePosition(TriIndices.y, Cluster);

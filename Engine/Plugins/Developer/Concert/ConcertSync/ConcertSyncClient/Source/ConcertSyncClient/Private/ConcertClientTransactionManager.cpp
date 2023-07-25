@@ -1,6 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertClientTransactionManager.h"
+#include "Algo/AnyOf.h"
+#include "Components/SceneComponent.h"
+#include "ConcertSyncSessionTypes.h"
+#include "ConcertTransactionEvents.h"
+#include "GameFramework/Actor.h"
 #include "IConcertSession.h"
 #include "ConcertSyncClientLiveSession.h"
 #include "ConcertSyncSessionDatabase.h"
@@ -8,6 +13,8 @@
 #include "ConcertSyncSettings.h"
 #include "ConcertSyncArchives.h"
 #include "ConcertSyncClientUtil.h"
+#include "IConcertSyncClient.h"
+#include "Internationalization/Internationalization.h"
 #include "Scratchpad/ConcertScratchpad.h"
 
 #include "Interfaces/ITargetPlatform.h"
@@ -18,6 +25,7 @@
 #include "Engine/Level.h"
 #include "RenderingThread.h"
 #include "Misc/ScopedSlowTask.h"
+#include "UObject/ObjectMacros.h"
 
 #if WITH_EDITOR
 	#include "Editor.h"
@@ -186,7 +194,10 @@ void FConcertClientTransactionManager::ProcessPending()
 		}
 	}
 
-	SendPendingTransactionEvents();
+	if (CanSendTransactionEvents())
+	{
+		SendPendingTransactionEvents();
+	}
 }
 
 template <typename EventType>
@@ -216,7 +227,7 @@ void FConcertClientTransactionManager::HandleTransactionRejectedEvent(const FCon
 	{
 		GEditor->bSquelchTransactionNotification = true;
 	}
-	
+
 	// if the transaction to undo is the current one, end it.
 	if (GUndo && GUndo->GetContext().TransactionId == InEvent.TransactionId)
 	{
@@ -228,7 +239,7 @@ void FConcertClientTransactionManager::HandleTransactionRejectedEvent(const FCon
 	}
 	// Otherwise undo operations until the requested transaction has been undone.
 	else
-	{		
+	{
 		int32 ReversedQueueIndex = TransBuffer->FindTransactionIndex(InEvent.TransactionId);
 		if (ReversedQueueIndex != INDEX_NONE)
 		{
@@ -264,9 +275,21 @@ void FConcertClientTransactionManager::HandleTransactionRejectedEvent(const FCon
 #endif
 }
 
+void FConcertClientTransactionManager::NotifyUserOfSendConflict(const FConcertConflictDescriptionBase& ConflictDescription)
+{
+	TransactionBridge->OnConflictResolutionForPendingSend().Broadcast(ConflictDescription);
+}
+
 bool FConcertClientTransactionManager::CanProcessTransactionEvent() const
 {
-	return TransactionBridge->CanApplyRemoteTransaction() && !LiveSession->GetSession().IsSuspended();
+	const bool bIsSuspended = LiveSession->GetSession().GetSendReceiveState() == EConcertSendReceiveState::SendOnly;
+	return TransactionBridge->CanApplyRemoteTransaction() && !bIsSuspended;
+}
+
+bool FConcertClientTransactionManager::CanSendTransactionEvents() const
+{
+	const bool bCanSend = LiveSession->GetSession().GetSendReceiveState() != EConcertSendReceiveState::ReceiveOnly;
+	return bCanSend;
 }
 
 void FConcertClientTransactionManager::ProcessTransactionEvent(const FPendingTransactionToProcessContext& InContext, const FStructOnScope& InEvent)
@@ -290,12 +313,277 @@ void FConcertClientTransactionManager::ProcessTransactionEvent(const FPendingTra
 #undef PROCESS_OBJECT_UPDATE_EVENT
 }
 
+void FConcertConflictDescriptionAggregate::AddObjectRemoved(const FConcertObjectId& ObjectIdRemoved)
+{
+	UE_LOG(LogConcert, Warning, TEXT("Object %s conflicts with in-bound transaction and has been removed}."),
+		   *ObjectIdRemoved.ObjectName.ToString());
+	ObjectsRemoved.Add(ObjectIdRemoved);
+}
+
+void FConcertConflictDescriptionAggregate::AddObjectRenamed(const FConcertObjectId& OldObjectId, const FConcertObjectId& NewObjectId)
+{
+	if (!ConcertSyncClientUtil::ObjectIdsMatch(OldObjectId, NewObjectId) &&
+		OldObjectId.ObjectName.ToString() != NewObjectId.ObjectName.ToString())
+	{
+		UE_LOG(LogConcert, Warning, TEXT("Object %s conflicts with in-bound transaction and has been renamed to %s."),
+			   *OldObjectId.ObjectName.ToString(), *NewObjectId.ObjectName.ToString());
+		ObjectsRenamed.Add({OldObjectId,NewObjectId});
+	}
+}
+
+FText FConcertConflictDescriptionAggregate::GetConflictTitle() const
+{
+	return FText::Format(
+		LOCTEXT("TransactionConflict", "Inbound transaction conflicts with transactions for pending send. Renamed {0} objects and removed {1} objects."),
+		ObjectsRenamed.Num(), ObjectsRemoved.Num());
+}
+
+FText FConcertConflictDescriptionAggregate::GetConflictDetails() const
+{
+	FTextBuilder RunningTextObject;
+	if (ObjectsRemoved.Num())
+	{
+		RunningTextObject.AppendLine(LOCTEXT("TransactionConflictRemovedObjects", "Removed Objects:"));
+		for (const FConcertObjectId& RemovedObject : ObjectsRemoved)
+		{
+			RunningTextObject.AppendLine(FText::FromString(RemovedObject.ObjectName.ToString()));
+		}
+	}
+
+	if (ObjectsRenamed.Num())
+	{
+		RunningTextObject.AppendLine(LOCTEXT("TransactionConflictRenamedObjects", "Renamed Objects:"));
+		for (const TPair<FConcertObjectId, FConcertObjectId>& Item : ObjectsRenamed)
+		{
+			RunningTextObject.AppendLineFormat(LOCTEXT("ConflictRenamedObject", "{0} -> {1}"),
+											   FText::FromString(Item.Get<0>().ObjectName.ToString()),
+											   FText::FromString(Item.Get<1>().ObjectName.ToString()));
+		}
+	}
+	return RunningTextObject.ToText();
+}
+
+namespace UE::ConcertClientTransactionManager::Private
+{
+/**
+ * Given a UObject to rename we either need to rename this object or the outer for the object. Transactions can refer to
+ * Component.Property modification. However, modifying the component does not address the actual conflicting object.
+ * Instead it is more appropriate to resolve to the parent actor and rename that actor so that it does not globally
+ * conflict anymore once the transaction has been sent to the server.
+ *
+ * @param InObject - UObject to compare.
+ */
+UObject* GetRealObjectToRename(UObject* InObject)
+{
+	auto IsAValidForRename = [](UObject* Obj)
+	{
+		return IsValid(Obj) && (Obj->IsA<AActor>() || Obj->IsA<UActorComponent>());
+	};
+	if (IsAValidForRename(InObject))
+	{
+		if (const UActorComponent* Component = Cast<UActorComponent>(InObject))
+		{
+			if (IsAValidForRename(Component->GetOwner()))
+			{
+				return Component->GetOwner();
+			}
+		}
+		return InObject;
+	}
+	return nullptr;
+}
+
+/**
+ * This structure holds the renaming as applied to an FConcertObjectId so that we can update any tables of the
+ * underlying UObject.
+ */
+struct FRenameObjectResult
+{
+	FConcertObjectId OldObjectId;
+	FConcertObjectId NewObjectId = {};
+
+	FConcertObjectId OldParentObjectId = {};
+	FConcertObjectId NewParentObjectId = {};
+};
+
+/**
+ * Apply the rename to the UObject using unique identifiers to avoid any future conflict.
+ */
+void MakeObjectUniqueToAvoidCollision(UObject* InObject)
+{
+	FString NewName = InObject->GetFName().ToString() + FGuid::NewGuid().ToString(EGuidFormats::Short);
+	InObject->Rename(*NewName, nullptr, REN_ForceNoResetLoaders | REN_NonTransactional);
+}
+
+/**
+ * Given the ObjectId to fixup apply that rename to the resolve UObject and then return the old / new FConcertObjectId
+ * so that any caller can update corresponding data.
+ */
+FRenameObjectResult RenameObjectsToAvoidCollision(const FConcertObjectId& InObjectIdToRename)
+{
+	UObject* ObjectToRename = ConcertSyncClientUtil::GetObject(InObjectIdToRename, FName(), FName(), FName(), false).Obj;
+	// The object does not exist or is marked for GC.
+	if (!IsValid(ObjectToRename))
+	{
+		return {InObjectIdToRename};
+	}
+
+	UObject* TargetObjectToRename = GetRealObjectToRename(ObjectToRename);
+	if (TargetObjectToRename)
+	{
+		FConcertObjectId TargetObjectId(TargetObjectToRename);
+		MakeObjectUniqueToAvoidCollision(TargetObjectToRename);
+		if (ObjectToRename != TargetObjectToRename)
+		{
+			return {InObjectIdToRename, FConcertObjectId(ObjectToRename),
+					TargetObjectId, FConcertObjectId(TargetObjectToRename)};
+		}
+		else
+		{
+			return {InObjectIdToRename, FConcertObjectId(ObjectToRename)};
+		}
+	}
+
+	return {};
+}
+}
+
+void FConcertClientTransactionManager::FixupObjectIdsInPendingSend(
+	const FConcertObjectId& OldObjectId, const FConcertObjectId& NewObjectId, FConcertConflictDescriptionAggregate& ConflictAggregate)
+{
+	/** If we didn't receive a valid OldObjectId then there is nothing to rename. */
+	if (!OldObjectId.IsValid())
+	{
+		return;
+	}
+
+	auto FixNames = [&OldObjectId, &NewObjectId](FPendingTransactionToSend* ToSend)
+	{
+		if (!ToSend)
+		{
+			return;
+		}
+		for (FConcertExportedObject& ExportedObject : ToSend->FinalizedData.FinalizedObjectUpdates)
+		{
+			if (ConcertSyncClientUtil::ObjectIdsMatch(ExportedObject.ObjectId,OldObjectId))
+			{
+				ExportedObject.ObjectId = NewObjectId;
+			}
+		}
+	};
+
+	TSet<FGuid>* TransactionsWithObject = NameLookupForPendingTransactionsToSend.Find(OldObjectId);
+
+	if (!TransactionsWithObject)
+	{
+		return;
+	}
+
+	/*
+	 * If the new object id is not valid then the target object is pending GC or no longer exists. So it should not
+	 * be in our tables anymore.
+	 */
+	const bool bShouldRemove = !NewObjectId.IsValid();
+	if (bShouldRemove)
+	{
+		ConflictAggregate.AddObjectRemoved(OldObjectId);
+		for (const FGuid& Guid : *TransactionsWithObject)
+		{
+			PendingTransactionsToSend.Remove(Guid);
+		}
+	}
+	else
+	{
+		ConflictAggregate.AddObjectRenamed(OldObjectId, NewObjectId);
+		for (const FGuid& Guid : *TransactionsWithObject)
+		{
+			FixNames(PendingTransactionsToSend.Find(Guid));
+		}
+	}
+
+	if (!bShouldRemove)
+	{
+		// Move the renamed FConcertObjectId to a new tracking table entry.
+		NameLookupForPendingTransactionsToSend.Add(NewObjectId, *TransactionsWithObject);
+	}
+	// Remove the old entry named entry.
+	NameLookupForPendingTransactionsToSend.Remove(OldObjectId);
+}
+
+void FConcertClientTransactionManager::CheckEventForSendConflicts(const FConcertTransactionFinalizedEvent& InEvent)
+{
+	if (CanSendTransactionEvents())
+	{
+		return;
+	}
+
+	auto IsObjectCreated = [this](const FGuid& Id)
+	{
+		if (FPendingTransactionToSend* PendingToSendPtr = PendingTransactionsToSend.Find(Id))
+		{
+			for (const FConcertExportedObject& Exported : PendingToSendPtr->FinalizedData.FinalizedObjectUpdates)
+			{
+				if (Exported.ObjectData.bAllowCreate)
+				{
+					return true;
+				}
+			}
+		}
+		return false;
+	};
+
+	FConcertConflictDescriptionAggregate ConflictAggregate;
+	auto LookupAndFix = [this, &ConflictAggregate, &IsObjectCreated](const FConcertExportedObject& ExportedObject)
+	{
+		const FConcertObjectId& ObjectId = ExportedObject.ObjectId;
+		if (TSet<FGuid>* NamedPrimary = NameLookupForPendingTransactionsToSend.Find(ObjectId))
+		{
+			// If the object is *new* during our receive only session then we need to go find every instance and
+			// redo the references.
+			if (Algo::AnyOf(*NamedPrimary, IsObjectCreated))
+			{
+				// This exported object is from a create. Therefore the conflict was from a create.
+				// fixup the conflict by renaming the object.
+				//
+				UE::ConcertClientTransactionManager::Private::FRenameObjectResult Result =
+					UE::ConcertClientTransactionManager::Private::RenameObjectsToAvoidCollision(ObjectId);
+				FixupObjectIdsInPendingSend(Result.OldParentObjectId, Result.NewParentObjectId, ConflictAggregate);
+				FixupObjectIdsInPendingSend(Result.OldObjectId, Result.NewObjectId, ConflictAggregate);
+			}
+			else
+			{
+				// Otherwise designate this change has a conflict and must be dropped from the pending list.
+				// TODO UE-170906: We can improve this by using the serialization routines to per-property diff.
+				//
+				ConflictAggregate.AddObjectRemoved(ObjectId);
+				for (const FGuid Id : *NamedPrimary)
+				{
+					PendingTransactionsToSend.Remove(Id);
+				}
+				NameLookupForPendingTransactionsToSend.Remove(ObjectId);
+			}
+		}
+	};
+	// For each exported object check for name conflicts.
+	//
+	for (const FConcertExportedObject& ExportedObject : InEvent.ExportedObjects)
+	{
+		LookupAndFix(ExportedObject);
+	}
+	if (ConflictAggregate.HasAnyResults())
+	{
+		NotifyUserOfSendConflict(ConflictAggregate);
+	}
+}
+
 void FConcertClientTransactionManager::ProcessTransactionFinalizedEvent(const FPendingTransactionToProcessContext& InContext, const FConcertTransactionFinalizedEvent& InEvent)
 {
 	const FConcertSessionVersionInfo* VersionInfo = LiveSession->GetSession().GetSessionInfo().VersionInfos.IsValidIndex(InEvent.VersionIndex) ? &LiveSession->GetSession().GetSessionInfo().VersionInfos[InEvent.VersionIndex] : nullptr;
 	FConcertLocalIdentifierTable LocalIdentifierTable(InEvent.LocalIdentifierState);
 	TransactionBridge->OnApplyTransaction().Broadcast(ETransactionNotification::Begin, /*bIsSnapshot*/ false);
+	CheckEventForSendConflicts(InEvent);
 	TransactionBridge->ApplyRemoteTransaction(InEvent, VersionInfo, InContext.PackagesToProcess, &LocalIdentifierTable, /*bIsSnapshot*/false);
+
 	TransactionBridge->OnApplyTransaction().Broadcast(ETransactionNotification::End, /*bIsSnapshot*/ false);
 }
 
@@ -307,7 +595,10 @@ void FConcertClientTransactionManager::ProcessTransactionSnapshotEvent(const FPe
 	TransactionBridge->OnApplyTransaction().Broadcast(ETransactionNotification::End, /*bIsSnapshot*/ true);
 }
 
-FConcertClientTransactionManager::FPendingTransactionToSend& FConcertClientTransactionManager::HandleLocalTransactionCommon(const FConcertClientLocalTransactionCommonData& InCommonData)
+FConcertClientTransactionManager::FPendingTransactionToSend&
+FConcertClientTransactionManager::HandleLocalTransactionCommon(
+	const FConcertClientLocalTransactionCommonData& InCommonData,
+	const TArray<FConcertExportedObject>& ObjectUpdates)
 {
 	FPendingTransactionToSend* PendingTransactionPtr = PendingTransactionsToSend.Find(InCommonData.OperationId);
 	if (PendingTransactionPtr)
@@ -315,20 +606,71 @@ FConcertClientTransactionManager::FPendingTransactionToSend& FConcertClientTrans
 		PendingTransactionPtr->CommonData = InCommonData;
 		return *PendingTransactionPtr;
 	}
+	return AddPendingToSend(InCommonData, ObjectUpdates);
+}
+
+FConcertClientTransactionManager::FPendingTransactionToSend&
+FConcertClientTransactionManager::AddPendingToSend(
+	const FConcertClientLocalTransactionCommonData& InCommonData,
+	const TArray<FConcertExportedObject>& ObjectUpdates)
+{
 	PendingTransactionsToSendOrder.Add(InCommonData.OperationId);
+	if (!CanSendTransactionEvents())
+	{
+		UObject* PrimaryObject = InCommonData.PrimaryObject.Get();
+		if (PrimaryObject)
+		{
+			FConcertObjectId Id(PrimaryObject);
+			TSet<FGuid>& NamedLookupGuids = NameLookupForPendingTransactionsToSend.FindOrAdd(Id);
+			NamedLookupGuids.Add(InCommonData.OperationId);
+		}
+		for (const FConcertExportedObject& Exported : ObjectUpdates)
+		{
+			TSet<FGuid>& NamedLookupGuids = NameLookupForPendingTransactionsToSend.FindOrAdd(Exported.ObjectId);
+			NamedLookupGuids.Add(InCommonData.OperationId);
+		}
+	}
+	else
+	{
+		NameLookupForPendingTransactionsToSend.Reset();
+	}
 	return PendingTransactionsToSend.Emplace(InCommonData.OperationId, InCommonData);
+}
+
+void FConcertClientTransactionManager::RemovePendingToSend(const FConcertClientLocalTransactionCommonData& InCommonData)
+{
+	PendingTransactionsToSend.Remove(InCommonData.OperationId);
+	if (!CanSendTransactionEvents())
+	{
+		if (UObject* PrimaryObject = InCommonData.PrimaryObject.Get())
+		{
+			FConcertObjectId Id(PrimaryObject);
+			TSet<FGuid>* NamedLookupForObjects = NameLookupForPendingTransactionsToSend.Find(Id);
+			if (NamedLookupForObjects)
+			{
+				NamedLookupForObjects->Remove(InCommonData.OperationId);
+			}
+		}
+	}
 }
 
 void FConcertClientTransactionManager::HandleLocalTransactionSnapshot(const FConcertClientLocalTransactionCommonData& InCommonData, const FConcertClientLocalTransactionSnapshotData& InSnapshotData)
 {
-	if (InCommonData.bIsExcluded)
+	if (!CanSendTransactionEvents())
 	{
-		// Note: We don't remove this from PendingTransactionsToSendOrder as we just skip transactions missing from the map (assuming they've been excluded).
-		PendingTransactionsToSend.Remove(InCommonData.OperationId);
+		// Don't handle snapshot events when sending to clients.
 		return;
 	}
 
-	FPendingTransactionToSend& PendingTransaction = HandleLocalTransactionCommon(InCommonData);
+	if (InCommonData.bIsExcluded)
+	{
+		// Note: We don't remove this from PendingTransactionsToSendOrder as we just skip transactions missing from the
+		// map (assuming they've been excluded).
+		RemovePendingToSend(InCommonData);
+		return;
+	}
+
+	FPendingTransactionToSend& PendingTransaction = HandleLocalTransactionCommon(InCommonData, InSnapshotData.SnapshotObjectUpdates);
 	if (PendingTransaction.SnapshotData.SnapshotObjectUpdates.Num() == 0)
 	{
 		PendingTransaction.SnapshotData = InSnapshotData;
@@ -378,7 +720,7 @@ void FConcertClientTransactionManager::HandleLocalTransactionFinalized(const FCo
 	if (InCommonData.bIsExcluded || InFinalizedData.FinalizedObjectUpdates.Num() == 0)
 	{
 		// Note: We don't remove this from PendingTransactionsToSendOrder as we just skip transactions missing from the map (assuming they've been excluded).
-		PendingTransactionsToSend.Remove(InCommonData.OperationId);
+		RemovePendingToSend(InCommonData);
 		return;
 	}
 
@@ -388,13 +730,14 @@ void FConcertClientTransactionManager::HandleLocalTransactionFinalized(const FCo
 		FPendingTransactionToSend* PendingTransactionPtr = PendingTransactionsToSend.Find(InCommonData.OperationId);
 		if (PendingTransactionPtr && PendingTransactionPtr->LastSnapshotTimeSeconds == 0.0)
 		{
-			// Note: We don't remove this from PendingTransactionsToSendOrder as we just skip transactions missing from the map (assuming they've been canceled).
-			PendingTransactionsToSend.Remove(InCommonData.OperationId);
+			// Note: We don't remove this from PendingTransactionsToSendOrder as we just skip transactions missing from
+			// the map (assuming they've been canceled).
+			RemovePendingToSend(InCommonData);
 			return;
 		}
 	}
 
-	FPendingTransactionToSend& PendingTransaction = HandleLocalTransactionCommon(InCommonData);
+	FPendingTransactionToSend& PendingTransaction = HandleLocalTransactionCommon(InCommonData, InFinalizedData.FinalizedObjectUpdates);
 	PendingTransaction.FinalizedData = InFinalizedData;
 	PendingTransaction.bIsFinalized = true;
 }
@@ -460,7 +803,7 @@ void FConcertClientTransactionManager::SendPendingTransactionEvents()
 				}
 				// TODO: Warn about excluded objects?
 
-				PendingTransactionsToSend.Remove(PendingTransactionPtr->CommonData.TransactionId);
+				RemovePendingToSend(PendingTransactionPtr->CommonData);
 				PendingTransactionsToSendOrderIter.RemoveCurrent();
 				continue;
 			}

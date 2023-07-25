@@ -5,6 +5,7 @@
 #include "TransformConstraint.h"
 #include "TransformableHandle.h"
 #include "ConstraintsManager.h"
+#include "TransformableRegistry.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ConstraintsScripting)
 
@@ -28,6 +29,25 @@ UTransformableComponentHandle* UConstraintsScriptingLibrary::CreateTransformable
 	return nullptr;
 }
 
+UTransformableHandle* UConstraintsScriptingLibrary::CreateTransformableHandle(UWorld* InWorld, UObject* InObject, const FName& InAttachmentName)
+{
+	UConstraintsManager* ConstraintsManager = UConstraintsManager::Get(InWorld);
+	if (!ConstraintsManager)
+	{
+		return nullptr;
+	}
+	
+	// look for customized transform handle
+	const FTransformableRegistry& Registry = FTransformableRegistry::Get();
+	if (const FTransformableRegistry::CreateHandleFuncT CreateFunction = Registry.GetCreateFunction(InObject->GetClass()))
+	{
+		return CreateFunction(ConstraintsManager, InObject, InAttachmentName);
+	}
+	
+	return nullptr;
+}
+
+
 UTickableTransformConstraint* UConstraintsScriptingLibrary::CreateFromType(
 	UWorld* InWorld,
 	const ETransformConstraintType InType)
@@ -43,9 +63,9 @@ bool UConstraintsScriptingLibrary::AddConstraint(UWorld* InWorld, UTransformable
 	return Val;
 }
 
-TArray<TWeakObjectPtr<UTickableConstraint>> UConstraintsScriptingLibrary::GetConstraintsArray(UWorld* InWorld)
+TArray<UTickableConstraint*> UConstraintsScriptingLibrary::GetConstraintsArray(UWorld* InWorld)
 {
-	TArray<TWeakObjectPtr<UTickableConstraint>> Constraints;
+	TArray<UTickableConstraint*> Constraints;
 	const FConstraintsManagerController& Controller = FConstraintsManagerController::Get(InWorld);
 	const TArray< TObjectPtr<UTickableConstraint> >& ConstraintsArray = Controller.GetConstraintsArray();
 	for (const TObjectPtr<UTickableConstraint>& Constraint : ConstraintsArray)
@@ -61,3 +81,17 @@ bool UConstraintsScriptingLibrary::RemoveConstraint(UWorld* InWorld, int32 InInd
 	return Controller.RemoveConstraint(InIndex);
 }
 
+bool UConstraintsScriptingLibrary::RemoveThisConstraint(UWorld* InWorld, UTickableConstraint* InTickableConstraint)
+{
+	const FConstraintsManagerController& Controller = FConstraintsManagerController::Get(InWorld);
+	const TArray< TObjectPtr<UTickableConstraint> >& ConstraintsArray = Controller.GetConstraintsArray();
+	for (int32 Index = 0; Index < ConstraintsArray.Num(); ++Index)
+	{
+		if (InTickableConstraint == ConstraintsArray[Index])
+		{
+			return Controller.RemoveConstraint(Index);
+
+		}
+	}
+	return false;
+}

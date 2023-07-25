@@ -2,11 +2,21 @@
 
 #include "Data/PCGPointData.h"
 
-#include "PCGHelpers.h"
+#include "Helpers/PCGHelpers.h"
 #include "Metadata/PCGMetadataAccessor.h"
+#include "Metadata/Accessors/PCGAttributeAccessorHelpers.h"
+#include "Metadata/Accessors/PCGAttributeAccessorKeys.h"
 
 #include "GameFramework/Actor.h"
-#include "Misc/ScopeLock.h"
+#include "HAL/IConsoleManager.h"
+#include "Serialization/ArchiveCrc32.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGPointData)
+
+static TAutoConsoleVariable<bool> CVarCacheFullPointDataCrc(
+	TEXT("pcg.Cache.FullPointDataCrc"),
+	true,
+	TEXT("Enable fine-grained CRC of point data for change tracking on elements that request it, rather than using data UID."));
 
 namespace PCGPointHelpers
 {
@@ -40,7 +50,7 @@ namespace PCGPointHelpers
 		return true;
 	}
 
-	float ManhattanDensity(const FPCGPoint& InPoint, const FVector& InPosition)
+	FVector::FReal ManhattanDensity(const FPCGPoint& InPoint, const FVector& InPosition)
 	{
 		FVector Ratios;
 		if (GetDistanceRatios(InPoint, InPosition, Ratios))
@@ -53,12 +63,12 @@ namespace PCGPointHelpers
 		}
 	}
 
-	float InverseEuclidianDistance(const FPCGPoint& InPoint, const FVector& InPosition)
+	FVector::FReal InverseEuclidianDistance(const FPCGPoint& InPoint, const FVector& InPosition)
 	{
 		FVector Ratios;
 		if (GetDistanceRatios(InPoint, InPosition, Ratios))
 		{
-			return 1 - Ratios.Length();
+			return 1.0 - Ratios.Length();
 		}
 		else
 		{
@@ -70,22 +80,22 @@ namespace PCGPointHelpers
 	* Note that this assumes that either data set is homogeneous in its points dimension (either 0d, 1d, 2d, 3d)
 	* Otherwise there will be some artifacts from our assumption here (namely using a 1.0 value for the additional coordinates).
 	*/
-	float ComputeOverlapRatio(const FBox& Numerator, const FBox& Denominator)
+	FVector::FReal ComputeOverlapRatio(const FBox& Numerator, const FBox& Denominator)
 	{
 		const FVector NumeratorExtent = Numerator.GetExtent();
 		const FVector DenominatorExtent = Denominator.GetExtent();
 
-		return (float)((DenominatorExtent.X > 0 ? NumeratorExtent.X / DenominatorExtent.X : 1.0) *
+		return (FVector::FReal)((DenominatorExtent.X > 0 ? NumeratorExtent.X / DenominatorExtent.X : 1.0) *
 			(DenominatorExtent.Y > 0 ? NumeratorExtent.Y / DenominatorExtent.Y : 1.0) *
 			(DenominatorExtent.Z > 0 ? NumeratorExtent.Z / DenominatorExtent.Z : 1.0));
 	}
 
-	float VolumeOverlap(const FPCGPoint& InPoint, const FBox& InBounds, const FTransform& InTransform)
+	FVector::FReal VolumeOverlap(const FPCGPoint& InPoint, const FBox& InBounds, const FTransform& InTransform)
 	{
 		// This is similar in idea to SAT considering we have two boxes - since we will test all 6 axes.
 		// However, there is some uncertainty due to rotation, and using the overlap value as-is is an overestimation, which might not be critical in this case
 		// TODO: investigate if we should do a 8-pt test instead (would be more precise, but significantly more costly).
-		const FBox PointBounds = InPoint.GetLocalBounds();
+		const FBox PointBounds = InPoint.GetLocalDensityBounds();
 		const FTransform& PointTransform = InPoint.Transform;
 
 		const FBox FirstOverlap = PointBounds.Overlap(InBounds.TransformBy(InTransform.GetRelativeTransform(PointTransform)));
@@ -100,7 +110,7 @@ namespace PCGPointHelpers
 			return 0;
 		}
 		
-		return FMath::Min(ComputeOverlapRatio(FirstOverlap, PointBounds), ComputeOverlapRatio(SecondOverlap, InBounds));
+		return FMath::Min(ComputeOverlapRatio(FirstOverlap, InBounds), ComputeOverlapRatio(SecondOverlap, InBounds));
 	}
 
 	/** Helper function for additive blending of quaternions (copied from ControlRig) */
@@ -149,7 +159,10 @@ namespace PCGPointHelpers
 
 		auto CopyPoint = [&OutPoint, &OutMetadata, &SourceMetadata](const FPCGPoint& PointToCopy)
 		{
+			PCGMetadataEntryKey OutPointEntryKey = OutPoint.MetadataEntry;
 			OutPoint = PointToCopy;
+			OutPoint.MetadataEntry = OutPointEntryKey;
+
 			if (OutMetadata)
 			{
 				OutMetadata->SetPointAttributes(PointToCopy, SourceMetadata, OutPoint);
@@ -228,6 +241,13 @@ FPCGPointRef::FPCGPointRef(const FPCGPointRef& InPointRef)
 	Bounds = InPointRef.Bounds;
 }
 
+void UPCGPointData::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(Points.GetAllocatedSize() + Octree.GetSizeBytes() + sizeof(Bounds));
+}
+
 TArray<FPCGPoint>& UPCGPointData::GetMutablePoints()
 {
 	bOctreeIsDirty = true;
@@ -243,6 +263,78 @@ const UPCGPointData::PointOctree& UPCGPointData::GetOctree() const
 	}
 
 	return Octree;
+}
+
+void UPCGPointData::AddToCrc(FArchiveCrc32& Ar, bool bFullDataCrc) const
+{
+	// The code below has non-trivial cost, and can be disabled from console.
+	if (!bFullDataCrc || !CVarCacheFullPointDataCrc.GetValueOnAnyThread())
+	{
+		// Fallback to UID
+		Super::AddToCrc(Ar, bFullDataCrc);
+		return;
+	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGPointData::AddToCrc);
+
+	uint32 UniqueTypeID = StaticClass()->GetDefaultObject()->GetUniqueID();
+	Ar << UniqueTypeID;
+
+	if (Points.Num() == 0)
+	{
+		return;
+	}
+
+	// Crc point data.
+	{
+		// Create copy so we can zero-out the metadata keys which are non-deterministic.
+		TArray<FPCGPoint> PointsCopy = Points;
+		for (FPCGPoint& Point : PointsCopy)
+		{
+			Point.MetadataEntry = 0;
+		}
+
+		Ar.Serialize(PointsCopy.GetData(), PointsCopy.Num() * PointsCopy.GetTypeSize());
+	}
+
+	// Crc metadata.
+	if (const UPCGMetadata* PCGMetadata = ConstMetadata())
+	{
+		FPCGAttributeAccessorKeysPoints AccessorKeys(Points);
+
+		TArray<FName> AttributeNames;
+		{
+			TArray<EPCGMetadataTypes> AttributeTypes;
+			PCGMetadata->GetAttributes(AttributeNames, AttributeTypes);
+		}
+
+		// Attribute names might come in different orders for e.g. if edge order changes.
+		Algo::Sort(AttributeNames, [this](const FName& A, const FName& B) { return A.LexicalLess(B); });
+
+		for (FName AttributeName : AttributeNames)
+		{
+			Ar << AttributeName;
+
+			if (const FPCGMetadataAttributeBase* Attribute = PCGMetadata->GetConstAttribute(AttributeName))
+			{
+				for (const FPCGPoint& Point : Points)
+				{
+					auto Callback = [Attribute, PCGMetadata, &Ar, &Point](auto ValueWithType)
+					{
+						using AttributeType = decltype(ValueWithType);
+
+						if (const FPCGMetadataAttribute<AttributeType>* TypedAttribute = static_cast<const FPCGMetadataAttribute<AttributeType>*>(Attribute))
+						{
+							ValueWithType = TypedAttribute->GetValueFromItemKey(Point.MetadataEntry);
+							Ar << ValueWithType;
+						}
+					};
+
+					PCGMetadataAttribute::CallbackWithRightType(Attribute->GetTypeId(), Callback);
+				}
+			}
+		}
+	}
 }
 
 FBox UPCGPointData::GetBounds() const
@@ -306,6 +398,10 @@ void UPCGPointData::InitializeFromActor(AActor* InActor)
 	const FVector& Position = Points[0].Transform.GetLocation();
 	Points[0].Seed = PCGHelpers::ComputeSeed((int)Position.X, (int)Position.Y, (int)Position.Z);
 
+	const FBox LocalBounds = PCGHelpers::GetActorLocalBounds(InActor);
+	Points[0].BoundsMin = LocalBounds.Min;
+	Points[0].BoundsMax = LocalBounds.Max;
+
 	TargetActor = InActor;
 	Metadata = NewObject<UPCGMetadata>(this);
 }
@@ -325,13 +421,23 @@ FPCGPoint UPCGPointData::GetPoint(int32 Index) const
 
 bool UPCGPointData::SamplePoint(const FTransform& InTransform, const FBox& InBounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
 {
+	// Run a projection but don't change the point transform. There is a large overlap in code/functionality so this shares one code path.
+	FPCGProjectionParams Params{};
+	Params.bProjectPositions = Params.bProjectRotations = Params.bProjectScales = Params.bProjectColors = false;
+
+	// The ProjectPoint implementation in this class returns true if the query point is overlapping the point data, which is what SamplePoint should return, so forward the return value.
+	return ProjectPoint(InTransform, InBounds, Params, OutPoint, OutMetadata);
+}
+
+bool UPCGPointData::ProjectPoint(const FTransform& InTransform, const FBox& InBounds, const FPCGProjectionParams& InParams, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
+{
 	//TRACE_CPUPROFILER_EVENT_SCOPE(UPCGPointData::SamplePoint);
 	if (bOctreeIsDirty)
 	{
 		RebuildOctree();
 	}
 
-	TArray<TPair<const FPCGPoint*, float>, TInlineAllocator<4>> Contributions;
+	TArray<TPair<const FPCGPoint*, FVector::FReal>, TInlineAllocator<4>> Contributions;
 	const bool bSampleInVolume = (InBounds.GetExtent() != FVector::ZeroVector);
 
 	if (!bSampleInVolume)
@@ -353,11 +459,11 @@ bool UPCGPointData::SamplePoint(const FTransform& InTransform, const FBox& InBou
 		});
 	}
 
-	float SumContributions = 0;
-	float MaxContribution = 0;
+	FVector::FReal SumContributions = 0;
+	FVector::FReal MaxContribution = 0;
 	const FPCGPoint* MaxContributor = nullptr;
 
-	for (const TPair<const FPCGPoint*, float>& Contribution : Contributions)
+	for (const TPair<const FPCGPoint*, FVector::FReal>& Contribution : Contributions)
 	{
 		SumContributions += Contribution.Value;
 
@@ -373,6 +479,15 @@ bool UPCGPointData::SamplePoint(const FTransform& InTransform, const FBox& InBou
 		return false;
 	}
 
+	// Rationale: 
+	// When doing volume-to-volume intersection, we want the final density to reflect the amount of overlap
+	// if any - hence the volume overlap computation before.
+	// But, considering that some points may/will overlap (incl. due to steepness), we want to make sure we do not
+	// sum up to more than the total volume. 
+	// Note that this might create some artifacts on the edges in some instances, but we will revisit this once we have a
+	// better and sufficiently efficient solution.
+	const FVector::FReal DensityNormalizationFactor = ((SumContributions > 1.0) ? (1.0 / SumContributions) : 1.0);
+
 	TArray<TPair<const FPCGPoint*, float>, TInlineAllocator<4>> ContributionsForMetadata;
 
 	// Computed weighted average of spatial properties
@@ -382,13 +497,13 @@ bool UPCGPointData::SamplePoint(const FTransform& InTransform, const FBox& InBou
 	float WeightedDensity = 0;
 	FVector WeightedBoundsMin = FVector::ZeroVector;
 	FVector WeightedBoundsMax = FVector::ZeroVector;
-	FVector WeightedColor = FVector::ZeroVector;
+	FVector4 WeightedColor = FVector4::Zero();
 	float WeightedSteepness = 0;
 
-	for (const TPair<const FPCGPoint*, float> Contribution : Contributions)
+	for (const TPair<const FPCGPoint*, FVector::FReal> Contribution : Contributions)
 	{
 		const FPCGPoint& SourcePoint = *Contribution.Key;
-		const float Weight = Contribution.Value / SumContributions;
+		const FVector::FReal Weight = Contribution.Value / SumContributions;
 
 		WeightedPosition += SourcePoint.Transform.GetLocation() * Weight;
 		WeightedQuat = PCGPointHelpers::AddQuatWithWeight(WeightedQuat, SourcePoint.Transform.GetRotation(), Weight);
@@ -400,7 +515,7 @@ bool UPCGPointData::SamplePoint(const FTransform& InTransform, const FBox& InBou
 		}
 		else
 		{
-			WeightedDensity += SourcePoint.Density * Weight * Contribution.Value;
+			WeightedDensity += SourcePoint.Density * Contribution.Value * DensityNormalizationFactor;
 		}
 
 		WeightedBoundsMin += SourcePoint.BoundsMin * Weight;
@@ -408,15 +523,38 @@ bool UPCGPointData::SamplePoint(const FTransform& InTransform, const FBox& InBou
 		WeightedColor += SourcePoint.Color * Weight;
 		WeightedSteepness += SourcePoint.Steepness * Weight;
 
-		ContributionsForMetadata.Emplace(Contribution.Key, Weight);
+		ContributionsForMetadata.Emplace(Contribution.Key, static_cast<float>(Weight));
 	}
 
-	// Finally, apply changes to point
-	WeightedQuat.Normalize();
+	// Finally, apply changes to point, based on the projection settings
+	if (InParams.bProjectPositions)
+	{
+		OutPoint.Transform.SetLocation(bSampleInVolume ? WeightedPosition : InTransform.GetLocation());
+	}
+	else
+	{
+		OutPoint.Transform.SetLocation(InTransform.GetLocation());
+	}
 
-	OutPoint.Transform.SetRotation(WeightedQuat);
-	OutPoint.Transform.SetScale3D(WeightedScale);
-	OutPoint.Transform.SetLocation(bSampleInVolume ? WeightedPosition : InTransform.GetLocation());
+	if (InParams.bProjectRotations)
+	{
+		WeightedQuat.Normalize();
+		OutPoint.Transform.SetRotation(WeightedQuat);
+	}
+	else
+	{
+		OutPoint.Transform.SetRotation(InTransform.GetRotation());
+	}
+
+	if (InParams.bProjectScales)
+	{
+		OutPoint.Transform.SetScale3D(WeightedScale);
+	}
+	else
+	{
+		OutPoint.Transform.SetScale3D(InTransform.GetScale3D());
+	}
+
 	OutPoint.Density = WeightedDensity;
 	OutPoint.BoundsMin = WeightedBoundsMin;
 	OutPoint.BoundsMax = WeightedBoundsMax;
@@ -426,6 +564,7 @@ bool UPCGPointData::SamplePoint(const FTransform& InTransform, const FBox& InBou
 	if (OutMetadata)
 	{
 		//TRACE_CPUPROFILER_EVENT_SCOPE(UPCGPointData::SamplePoint::SetupMetadata);
+		// Initialise metadata entry for this temporary point
 		UPCGMetadataAccessorHelpers::InitializeMetadataWithParent(OutPoint, OutMetadata, *MaxContributor, Metadata);
 
 		if (ContributionsForMetadata.Num() > 1)
@@ -459,4 +598,12 @@ void UPCGPointData::RebuildOctree() const
 
 	Octree = NewOctree;
 	bOctreeIsDirty = false;
+}
+
+UPCGSpatialData* UPCGPointData::CopyInternal() const
+{
+	UPCGPointData* NewPointData = NewObject<UPCGPointData>();
+	NewPointData->GetMutablePoints() = GetPoints();
+
+	return NewPointData;
 }

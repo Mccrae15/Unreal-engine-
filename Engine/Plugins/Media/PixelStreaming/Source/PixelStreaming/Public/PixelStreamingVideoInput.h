@@ -6,6 +6,7 @@
 #include "PixelCaptureCapturerMultiFormat.h"
 #include "Delegates/IDelegateInstance.h"
 #include "PixelStreamingWebRTCIncludes.h"
+#include "PixelCaptureBufferFormat.h"
 
 /**
  * The input of the Pixel Streaming system. Frames enter the system when OnFrame is called.
@@ -26,6 +27,11 @@ public:
 	 */
 	virtual void OnFrame(const IPixelCaptureInputFrame& InputFrame);
 
+	/**
+	 * A human readable identifier used when displaying what the streamer is streaming in the toolbar
+	 */
+	virtual FString ToString();
+
 	bool IsReady() const { return Ready; }
 
 	/**
@@ -34,7 +40,7 @@ public:
 	rtc::scoped_refptr<webrtc::VideoFrameBuffer> GetFrameBuffer();
 
 	/**
-	 * 
+	 *
 	 */
 	TSharedPtr<IPixelCaptureOutputFrame> RequestFormat(int32 Format, int32 LayerIndex = -1);
 
@@ -44,7 +50,7 @@ public:
 	 */
 	DECLARE_MULTICAST_DELEGATE(FOnFrameCaptured);
 	FOnFrameCaptured OnFrameCaptured;
-	
+
 private:
 	int32 LastFrameWidth = -1;
 	int32 LastFrameHeight = -1;
@@ -56,4 +62,8 @@ private:
 
 	void CreateFrameCapturer();
 	void OnCaptureComplete();
+
+	// video inputs need a unique stream id so we can properly divide hardware encoders between inputs
+	uint32 StreamId = 0;
+	static uint32 NextStreamId;
 };

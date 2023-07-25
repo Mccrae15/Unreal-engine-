@@ -10,9 +10,10 @@
 #include "VariantObjectBinding.h"
 #include "VariantSet.h"
 
-#include "CoreMinimal.h"
 #include "Engine/Texture2D.h"
 #include "GameFramework/Actor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Variant)
 
 #define LOCTEXT_NAMESPACE "Variant"
 

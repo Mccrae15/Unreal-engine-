@@ -7,7 +7,9 @@
 #include "Engine/EngineTypes.h"
 #include "EngineDefines.h"
 #include "VisualLogger/VisualLoggerTypes.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "EngineStats.h"
+#endif
 #include "Templates/IsValidVariadicFunctionArg.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/IsArrayOrRefOfTypeByPredicate.h"
@@ -486,7 +488,7 @@ public:
 	void ClearCategoryAllowList() { CategoryAllowList.Reset(); }
 
 	/** Generates and returns Id unique for given timestamp - used to connect different logs between (ex. text log with geometry shape) */
-	int32 GetUniqueId(float Timestamp);
+	int32 GetUniqueId(double Timestamp);
 
 	/** Starts visual log collecting and recording */
 	void SetIsRecording(const bool bInIsRecording);
@@ -520,7 +522,7 @@ public:
 	/** Returns  current entry for given TimeStamp or creates another one  but first it serialize previous 
 	 *	entry as completed to vislog devices. Use VisualLogger::DontCreate to get current entry without serialization
 	 *	@note this function can return null */
-	FVisualLogEntry* GetEntryToWrite(const UObject* Object, float TimeStamp, ECreateIfNeeded ShouldCreate = ECreateIfNeeded::Create);
+	FVisualLogEntry* GetEntryToWrite(const UObject* Object, double TimeStamp, ECreateIfNeeded ShouldCreate = ECreateIfNeeded::Create);
 	/** Retrieves last used entry for given UObject
 	 *	@note this function can return null */
 	FVisualLogEntry* GetLastEntryForObject(const UObject* Object);
@@ -545,10 +547,10 @@ public:
 	static bool CheckVisualLogInputInternal(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, UWorld **World, FVisualLogEntry **CurrentEntry);
 	
 	/** Returns time stamp for object */
-	float GetTimeStampForObject(const UObject* Object) const;
+	double GetTimeStampForObject(const UObject* Object) const;
 
 	/** Sets function to call to get a timestamp instead of the default implementation (i.e. world time) */
-	void SetGetTimeStampFunc(TFunction<float(const UObject*)> Function);
+	void SetGetTimeStampFunc(TFunction<double(const UObject*)> Function);
 
 	typedef TMap<FObjectKey, TArray<TWeakObjectPtr<const UObject> > > FOwnerToChildrenRedirectionMap;
 	static FOwnerToChildrenRedirectionMap& GetRedirectionMap(const UObject* InObject);
@@ -587,7 +589,7 @@ private:
 	FVisualLoggerObjectEntryMap& GetThreadCurrentEntryMap();
 
 	/** Get global entry to write where all logs are combined together, not thread safe */
-	FVisualLogEntry* GetEntryToWriteInternal(const UObject* Object, float TimeStamp, ECreateIfNeeded ShouldCreate);
+	FVisualLogEntry* GetEntryToWriteInternal(const UObject* Object, double TimeStamp, ECreateIfNeeded ShouldCreate);
 
 	/** Redirect internal implementation, not thread safe */
 	UObject* RedirectInternal(const UObject* FromObject, const UObject* ToObject);
@@ -631,7 +633,7 @@ protected:
 	// Visual Logger extensions map
 	TMap<FName, FVisualLogExtensionInterface*> AllExtensions;
 	// last generated unique id for given times tamp
-	TMap<float, int32> LastUniqueIds;
+	TMap<double, int32> LastUniqueIds;
 	// Current entry with all data
 	FVisualLoggerObjectEntryMap CurrentEntryPerObject;
 	// Threads current entry maps
@@ -665,235 +667,15 @@ protected:
 	/** Indicates there are entries in the redirection map that are invalid */
 	mutable bool bContainsInvalidRedirects : 1;
 	// start recording time
-	float StartRecordingToFileTime;
+	double StartRecordingToFileTime;
 	/** Delegate to set project specific file name for vlogs */
 	FVisualLogFilenameGetterDelegate LogFileNameGetter;
 
 	/** function to call when getting the time stamp */
-	TFunction<float(const UObject*)> GetTimeStampFunc;
+	TFunction<double(const UObject*)> GetTimeStampFunc;
 
 	// if set we are recording and collecting all vlog data
 	static int32 bIsRecording;
 };
-
-// Unfortunately needs to be a #define since it uses GET_VARARGS_RESULT which uses the va_list stuff which operates on the
-// current function, so we can't easily call a function
-#define COLLAPSED_LOGF(SerializeFunc) \
-	SCOPE_CYCLE_COUNTER(STAT_VisualLog); \
-	UWorld *World = nullptr; \
-	FVisualLogEntry *CurrentEntry = nullptr; \
-	if (CheckVisualLogInputInternal(Object, CategoryName, Verbosity, &World, &CurrentEntry) == false) \
-	{ \
-		return; \
-	} \
-	int32	BufferSize	= 1024; \
-	TCHAR*	Buffer		= nullptr; \
-	int32	Result		= -1; \
-	/* allocate some stack space to use on the first pass, which matches most strings */ \
-	TCHAR	StackBuffer[512]; \
-	TCHAR*	AllocatedBuffer = nullptr; \
-	\
-	/* first, try using the stack buffer */ \
-	Buffer = StackBuffer; \
-	GET_VARARGS_RESULT( Buffer, UE_ARRAY_COUNT(StackBuffer), UE_ARRAY_COUNT(StackBuffer) - 1, Fmt, Fmt, Result ); \
-	\
-	/* if that fails, then use heap allocation to make enough space */ \
-			while(Result == -1) \
-						{ \
-		FMemory::SystemFree(AllocatedBuffer); \
-		/* We need to use malloc here directly as GMalloc might not be safe. */ \
-		Buffer = AllocatedBuffer = (TCHAR*) FMemory::SystemMalloc( BufferSize * sizeof(TCHAR) ); \
-		GET_VARARGS_RESULT( Buffer, BufferSize, BufferSize-1, Fmt, Fmt, Result ); \
-		BufferSize *= 2; \
-						}; \
-	Buffer[Result] = 0; \
-	; \
-	\
-	SerializeFunc; \
-	FMemory::SystemFree(AllocatedBuffer);
-
-inline void FVisualLogger::CategorizedLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddText(Buffer, CategoryName, Verbosity);
-	);
-}
-inline void FVisualLogger::CategorizedLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddText(Buffer, CategoryName, Verbosity);
-	);
-}
-
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const FColor& Color, const uint16 Thickness, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Start, End, CategoryName, Verbosity, Color, Buffer, Thickness);
-	);
-}
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const FColor& Color, const uint16 Thickness, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Start, End, CategoryName, Verbosity, Color, Buffer, Thickness);
-	);
-}
-
-inline void FVisualLogger::ArrowLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName();
-	COLLAPSED_LOGF(
-		CurrentEntry->AddArrow(Start, End, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-inline void FVisualLogger::ArrowLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddArrow(Start, End, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-
-inline void FVisualLogger::CircleLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Center, const FVector& UpAxis, const float Radius, const FColor& Color, const uint16 Thickness, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName();
-	COLLAPSED_LOGF(
-		CurrentEntry->AddCircle(Center, UpAxis, Radius, CategoryName, Verbosity, Color, Buffer, Thickness);
-	);
-}
-inline void FVisualLogger::CircleLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Center, const FVector& UpAxis, const float Radius, const FColor& Color, const uint16 Thickness, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddCircle(Center, UpAxis, Radius, CategoryName, Verbosity, Color, Buffer, Thickness);
-	);
-}
-
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Location, float Radius, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Location, CategoryName, Verbosity, Color, Buffer, (uint16)Radius);
-	);
-}
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Location, float Radius, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Location, CategoryName, Verbosity, Color, Buffer, (uint16)Radius);
-	);
-}
-
-inline void FVisualLogger::GeometryBoxLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FBox& Box, const FMatrix& Matrix, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Box, Matrix, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-inline void FVisualLogger::GeometryBoxLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FBox& Box, const FMatrix& Matrix, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Box, Matrix, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Origin, const FVector& Direction, const float Length, const float Angle, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Origin, Direction, Length, Angle, Angle, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Origin, const FVector& Direction, const float Length, const float Angle, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Origin, Direction, Length, Angle, Angle, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const float Radius, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Start, End, Radius, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const float Radius, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Start, End, Radius, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Base, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Base, HalfHeight, Radius, Rotation, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Base, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Base, HalfHeight, Radius, Rotation, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-
-inline void FVisualLogger::NavAreaShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const TArray<FVector>& ConvexPoints, float MinZ, float MaxZ, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(ConvexPoints, MinZ, MaxZ, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-inline void FVisualLogger::NavAreaShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const TArray<FVector>& ConvexPoints, float MinZ, float MaxZ, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(ConvexPoints, MinZ, MaxZ, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const TArray<FVector>& Vertices, const TArray<int32>& Indices, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Vertices, Indices, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const TArray<FVector>& Vertices, const TArray<int32>& Indices, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Vertices, Indices, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-
-inline void FVisualLogger::GeometryConvexLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const TArray<FVector>& Points, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddConvexElement(Points, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-inline void FVisualLogger::GeometryConvexLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const TArray<FVector>& Points, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddConvexElement(Points, CategoryName, Verbosity, Color, Buffer);
-	);
-}
-
-inline void FVisualLogger::HistogramDataLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, FName GraphName, FName DataName, const FVector2D& Data, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	const FName CategoryName = Category.GetCategoryName(); 
-	COLLAPSED_LOGF(
-		CurrentEntry->AddHistogramData(Data, CategoryName, Verbosity, GraphName, DataName);
-	);
-}
-inline void FVisualLogger::HistogramDataLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, FName GraphName, FName DataName, const FVector2D& Data, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	COLLAPSED_LOGF(
-		CurrentEntry->AddHistogramData(Data, CategoryName, Verbosity, GraphName, DataName);
-	);
-}
-
-#undef COLLAPSED_LOGF
 
 #endif //ENABLE_VISUAL_LOG

@@ -5,14 +5,19 @@
 =============================================================================*/
 
 #include "Components/DirectionalLightComponent.h"
+#include "LightSceneProxy.h"
+#include "Math/InverseRotationMatrix.h"
 #include "UObject/ConstructorHelpers.h"
-#include "RenderingThread.h"
-#include "ConvexVolume.h"
+#include "RenderUtils.h"
 #include "SceneInterface.h"
+#include "SceneView.h"
 #include "Engine/Texture2D.h"
 #include "SceneManagement.h"
 #include "Engine/DirectionalLight.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "UObject/UnrealType.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(DirectionalLightComponent)
 
@@ -392,7 +397,7 @@ public:
 		LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
 		LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
 		LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
-
+		LightParameters.IESAtlasIndex = INDEX_NONE;
 		LightParameters.InverseExposureBlend = 0.0f;
 	}
 
@@ -1342,6 +1347,16 @@ void UDirectionalLightComponent::SetAtmosphereSunLightIndex(int32 NewValue)
 		&& AtmosphereSunLightIndex != NewValue)
 	{
 		AtmosphereSunLightIndex = FMath::Max(0, NewValue);
+		MarkRenderStateDirty();
+	}
+}
+
+void UDirectionalLightComponent::SetForwardShadingPriority(int32 NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& ForwardShadingPriority != NewValue)
+	{
+		ForwardShadingPriority = FMath::Max(0, NewValue);
 		MarkRenderStateDirty();
 	}
 }

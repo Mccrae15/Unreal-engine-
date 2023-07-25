@@ -246,11 +246,7 @@ inline FGraphicsPipelineRenderTargetsInfo ExtractRenderTargetsInfo(const FRender
 		RenderTargetsInfo.StencilTargetLoadAction = DepthStencil.GetStencilLoadAction();
 
 		RenderTargetsInfo.DepthStencilAccess = DepthStencil.GetDepthStencilAccess();
-		ERenderTargetStoreAction StoreAction = EnumHasAnyFlags(DepthTexture->Desc.Flags, TexCreate_Memoryless) ? ERenderTargetStoreAction::ENoAction : ERenderTargetStoreAction::EStore;
-		if (DepthStencil.GetResolveTexture())
-		{
-			StoreAction = ERenderTargetStoreAction::EMultisampleResolve;
-		}
+		const ERenderTargetStoreAction StoreAction = EnumHasAnyFlags(DepthTexture->Desc.Flags, TexCreate_Memoryless) ? ERenderTargetStoreAction::ENoAction : ERenderTargetStoreAction::EStore;
 		RenderTargetsInfo.DepthTargetStoreAction = RenderTargetsInfo.DepthStencilAccess.IsUsingDepth() ? StoreAction : ERenderTargetStoreAction::ENoAction;
 		RenderTargetsInfo.StencilTargetStoreAction = RenderTargetsInfo.DepthStencilAccess.IsUsingStencil() ? StoreAction : ERenderTargetStoreAction::ENoAction;
 	}

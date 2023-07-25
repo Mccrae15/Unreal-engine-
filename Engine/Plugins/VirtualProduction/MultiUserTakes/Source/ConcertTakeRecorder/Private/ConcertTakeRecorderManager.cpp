@@ -3,65 +3,41 @@
 #include "ConcertTakeRecorderManager.h"
 
 #include "Algo/Count.h"
-#include "Algo/Transform.h"
 #include "ConcertMessages.h"
 #include "ConcertSequencerMessages.h"
-#include "ConcertTransportMessages.h"
-#include "Delegates/IDelegateInstance.h"
-#include "HAL/IConsoleManager.h"
+#include "ConcertWorkspaceData.h"
+#include "Engine/Engine.h"
 #include "IConcertClientTransactionBridge.h"
-#include "Layout/Visibility.h"
-#include "Logging/LogVerbosity.h"
-#include "Misc/CoreMiscDefines.h"
-#include "Modules/ModuleManager.h"
-#include "Logging/LogMacros.h"
-
+#include "IConcertClientPackageBridge.h"
 #include "IConcertClient.h"
 #include "IConcertSyncClient.h"
-#include "IConcertSession.h"
-#include "IConcertSessionHandler.h"
 #include "IConcertSyncClientModule.h"
 #include "ConcertSyncArchives.h"
 #include "ConcertTakeRecorderStyle.h"
 
 #include "ITakeRecorderModule.h"
-#include "PropertyEditorDelegates.h"
+#include "Misc/Guid.h"
 #include "Recorder/TakeRecorder.h"
+#include "TakePreset.h"
 #include "TakeRecorderSources.h"
-#include "Styling/SlateTypes.h"
 #include "TakeRecorderSettings.h"
 #include "TakeRecorderSources.h"
-#include "TakeRecorderSource.h"
 #include "Recorder/TakeRecorderPanel.h"
 #include "Recorder/TakeRecorderBlueprintLibrary.h"
-#include "TakesCoreBlueprintLibrary.h"
 #include "TakeMetaData.h"
 #include "LevelSequence.h"
 
-#include "Templates/SharedPointer.h"
-#include "Templates/UnrealTemplate.h"
-#include "UObject/UObjectGlobals.h"
 #include "PackageTools.h"
 
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SCheckBox.h"
+#include "UObject/Package.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/SOverlay.h"
-#include "Components/SlateWrapperTypes.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
-#include "EditorFontGlyphs.h"
-#include "Styling/AppStyle.h"
 
-#include "IdentifierTable/ConcertIdentifierTable.h"
-#include "UObject/ObjectMacros.h"
 #include "Misc/MessageDialog.h"
 
-#include "ConcertTakeRecorderMessages.h"
 #include "ConcertTakeRecorderSynchronizationCustomization.h"
 #include "ConcertTakeRecorderClientSessionCustomization.h"
 
@@ -225,10 +201,14 @@ void FConcertTakeRecorderManager::RegisterExtensions()
 	{
 		if (TSharedPtr<IConcertSyncClient> ConcertSyncClient = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser")))
 		{
-			IConcertClientTransactionBridge* Bridge = ConcertSyncClient->GetTransactionBridge();
-			check(Bridge != nullptr);
+			IConcertClientTransactionBridge* TransactionBridge = ConcertSyncClient->GetTransactionBridge();
+			check(TransactionBridge != nullptr);
 
-			Bridge->RegisterTransactionFilter(TEXT("ConcertTakes"), FTransactionFilterDelegate::CreateRaw(this, &FConcertTakeRecorderManager::ShouldObjectBeTransacted));
+			TransactionBridge->RegisterTransactionFilter(TEXT("ConcertTakes"), FTransactionFilterDelegate::CreateRaw(this, &FConcertTakeRecorderManager::ShouldObjectBeTransacted));
+
+			IConcertClientPackageBridge* PackageBridge = ConcertSyncClient->GetPackageBridge();
+			check(PackageBridge);
+			PackageBridge->RegisterPackageFilter(TEXT("ConcertTakes"), FPackageFilterDelegate::CreateRaw(this, &FConcertTakeRecorderManager::ShouldPackageBeFiltered));
 		}
 
 		FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -276,10 +256,13 @@ void FConcertTakeRecorderManager::UnregisterExtensions()
 
 	if (TSharedPtr<IConcertSyncClient> ConcertSyncClient = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser")))
 	{
-		IConcertClientTransactionBridge* Bridge = ConcertSyncClient->GetTransactionBridge();
-		check(Bridge != nullptr);
+		IConcertClientTransactionBridge* TransactionBridge = ConcertSyncClient->GetTransactionBridge();
+		check(TransactionBridge != nullptr);
+		TransactionBridge->UnregisterTransactionFilter(TEXT("ConcertTakes"));
 
-		Bridge->UnregisterTransactionFilter(TEXT("ConcertTakes"));
+		IConcertClientPackageBridge* PackageBridge = ConcertSyncClient->GetPackageBridge();
+		check(PackageBridge != nullptr);
+		PackageBridge->UnregisterPackageFilter(TEXT("ConcertTakes"));
 	}
 }
 
@@ -361,6 +344,27 @@ void FConcertTakeRecorderManager::CreateExtensionWidget(TArray<TSharedRef<SWidge
 	}
 }
 
+
+void FConcertTakeRecorderManager::OnTakeRecorderStarted(UTakeRecorder* TakeRecorder)
+{
+#if WITH_EDITOR
+	if (GEngine)
+	{
+		GEngine->CancelTransaction(0);
+	}
+#endif
+}
+
+void FConcertTakeRecorderManager::OnTakeRecorderStopped(UTakeRecorder* TakeRecorder)
+{
+#if WITH_EDITOR
+	if (GEngine && GEngine->CanTransact())
+	{
+		ensureMsgf(GUndo == nullptr, TEXT("A transaction is pending but we are currently stopping a Take Recorder. Transactions during a Recorder Stop can cause asset locking between Multi-user clients."));
+	}
+#endif
+}
+
 void FConcertTakeRecorderManager::OnTakeRecorderInitialized(UTakeRecorder* TakeRecorder)
 {
 	UTakeRecorderPanel* Panel = UTakeRecorderBlueprintLibrary::GetTakeRecorderPanel();
@@ -371,6 +375,9 @@ void FConcertTakeRecorderManager::OnTakeRecorderInitialized(UTakeRecorder* TakeR
 
 	TakeRecorder->OnRecordingFinished().AddRaw(this, &FConcertTakeRecorderManager::OnRecordingFinished);
 	TakeRecorder->OnRecordingCancelled().AddRaw(this, &FConcertTakeRecorderManager::OnRecordingCancelled);
+	TakeRecorder->OnRecordingStarted().AddRaw(this, &FConcertTakeRecorderManager::OnTakeRecorderStarted);
+	TakeRecorder->OnRecordingStopped().AddRaw(this, &FConcertTakeRecorderManager::OnTakeRecorderStopped);
+
 	TakeRecorder->OnStartPlayFrameModified().AddRaw(this, &FConcertTakeRecorderManager::OnFrameAdjustment);
 
 	if (IsTakeSyncEnabled() && !bIsRecording && TakeRecorderState.LastStartedTake != TakeRecorder->GetName())
@@ -404,6 +411,7 @@ void FConcertTakeRecorderManager::OnTakeRecorderInitialized(UTakeRecorder* TakeR
 				TakeInitializedEvent.TakeName = TakeRecorder->GetName();
 				TakeInitializedEvent.TakePresetPath = TakeMetaData->GetPresetOrigin()->GetPathName();
 				TakeInitializedEvent.Settings = GetDefault<UTakeRecorderUserSettings>()->Settings;
+				TakeInitializedEvent.TakeMetaDataPath = TakeMetaData->GetPathName();
 
 				FConcertLocalIdentifierTable InLocalIdentifierTable;
 				FConcertSyncObjectWriter Writer(&InLocalIdentifierTable, TakeMetaData, TakeInitializedEvent.TakeData, true, false);
@@ -457,6 +465,8 @@ void FConcertTakeRecorderManager::OnRecordingCancelled(UTakeRecorder* TakeRecord
 
 	TakeRecorder->OnRecordingFinished().RemoveAll(this);
 	TakeRecorder->OnRecordingCancelled().RemoveAll(this);
+	TakeRecorder->OnRecordingStarted().RemoveAll(this);
+	TakeRecorder->OnRecordingFinished().RemoveAll(this);
 	TakeRecorder->OnStartPlayFrameModified().RemoveAll(this);
 	bIsRecording = false;
 }
@@ -500,7 +510,8 @@ void FConcertTakeRecorderManager::OnTakeInitializedEvent(const FConcertSessionCo
 			UTakeMetaData* TakeMetadata = NewObject<UTakeMetaData>(GetTransientPackage(), NAME_None, EObjectFlags::RF_Transient);
 
 			FConcertLocalIdentifierTable Table(InEvent.IdentifierState);
-			FConcertSyncObjectReader Reader(&Table, FConcertSyncWorldRemapper(), nullptr, TakeMetadata, InEvent.TakeData);
+			FConcertSyncWorldRemapper Remapper(InEvent.TakeMetaDataPath, TakeMetadata->GetPathName());
+			FConcertSyncObjectReader Reader(&Table, MoveTemp(Remapper), nullptr, TakeMetadata, InEvent.TakeData);
 			Reader.SerializeObject(TakeMetadata);
 
 			ULevelSequence* LevelSequence = TakePreset->GetLevelSequence();
@@ -701,7 +712,6 @@ void FConcertTakeRecorderManager::ConnectToSession(IConcertClientSession& InSess
 
 	ClientChangeDelegate = InSession.OnSessionClientChanged().AddRaw(this, &FConcertTakeRecorderManager::OnSessionClientChanged);
 
-	
 	SendInitialState(InSession);
 	UpdateSessionClientList();
 }
@@ -717,6 +727,15 @@ void FConcertTakeRecorderManager::OnSessionConnectionChanged(IConcertClientSessi
 	{
 		UE_LOG(LogConcertTakeRecorder, Display, TEXT("Multi-user Take Recorder Disconnecting from Session: %s"), *InSession.GetSessionInfo().SessionName);
 		DisconnectFromSession();
+	}
+
+	if (UTakeRecorder* ActiveTakeRecorder = UTakeRecorder::GetActiveRecorder())
+	{
+		ETakeRecorderState ActiveState = ActiveTakeRecorder->GetState();
+		if (ActiveState != ETakeRecorderState::Stopped && ActiveState != ETakeRecorderState::Cancelled)
+		{
+			ActiveTakeRecorder->Cancel();
+		}
 	}
 }
 
@@ -871,6 +890,43 @@ void FConcertTakeRecorderManager::UpdateSessionClientList()
 	RecordSettings->SaveConfig();
 }
 
+namespace UE::TakeRecorderManager::Private
+{
+	bool IsDuplicateRemoteName(const FString& LocalDisplayName)
+	{
+		UConcertSessionRecordSettings const* RecordSettings = GetDefault<UConcertSessionRecordSettings>();
+		SIZE_T Num = Algo::CountIf(
+			RecordSettings->RemoteSettings,
+			[LocalDisplayName](const FConcertClientRecordSetting&  Remote)
+			{
+				if (Remote.Settings.bRecordOnClient
+					&& Remote.Details.ClientInfo.DisplayName == LocalDisplayName)
+				{
+					return true;
+				}
+				return false;
+			});
+		return Num > 0;
+	}
+	const FString TempPostfix = TEXT("_temp");
+}
+
+
+EPackageFilterResult FConcertTakeRecorderManager::ShouldPackageBeFiltered(const FConcertPackageInfo& InPackageInfo)
+{
+	if (IsTakeSyncEnabled() && WeakSession.IsValid() && !CanRecord())
+	{
+		FTakeRecorderProjectParameters Project = GetDefault<UTakeRecorderProjectSettings>()->Settings;
+		FString FullName = InPackageInfo.PackageName.ToString();
+		if (FullName.StartsWith(Project.RootTakeSaveDir.Path) &&
+			FullName.EndsWith(UE::TakeRecorderManager::Private::TempPostfix))
+		{
+			return EPackageFilterResult::Exclude;
+		}
+	}
+	return EPackageFilterResult::UseDefault;
+}
+
 ETransactionFilterResult FConcertTakeRecorderManager::ShouldObjectBeTransacted(UObject* InObject, UPackage* InPackage)
 {
 	UConcertSessionRecordSettings const* RecordSettings = GetDefault<UConcertSessionRecordSettings>();
@@ -916,7 +972,15 @@ FTakeRecorderParameters FConcertTakeRecorderManager::SetupTakeParametersForMulti
 		if (CanRecord() && RemoteRecorders() > 0)
 		{
 			TSharedPtr<IConcertClientSession> Session = WeakSession.Pin();
-			FString Name = UPackageTools::SanitizePackageName(Session->GetLocalClientInfo().DisplayName);
+			FString LocalName = Session->GetLocalClientInfo().DisplayName;
+			if (UE::TakeRecorderManager::Private::IsDuplicateRemoteName(LocalName))
+			{
+				static FString RandomSessionId =
+					FGuid::NewGuid().ToString(EGuidFormats::Short);
+				LocalName = LocalName + "_" + RandomSessionId;
+			}
+
+			FString Name = UPackageTools::SanitizePackageName(LocalName);
 			Name.RemoveSpacesInline();
 			FTakeRecorderParameters Output = Input;
 			Output.Project.TakeSaveDir = Input.Project.TakeSaveDir + "_" + Name;
@@ -925,7 +989,7 @@ FTakeRecorderParameters FConcertTakeRecorderManager::SetupTakeParametersForMulti
 		else if (!CanRecord())
 		{
 			FTakeRecorderParameters Output = Input;
-			Output.Project.TakeSaveDir = Input.Project.TakeSaveDir + "_temp";
+			Output.Project.TakeSaveDir = Input.Project.TakeSaveDir + UE::TakeRecorderManager::Private::TempPostfix;
 			return Output;
 		}
 	}

@@ -26,10 +26,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "OculusXR|Body")
 	static bool IsBodyTrackingSupported();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Body")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
 	static bool StartBodyTracking();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Body")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
 	static bool StopBodyTracking();
 
 	UFUNCTION(BlueprintPure, Category = "OculusXR|Face")

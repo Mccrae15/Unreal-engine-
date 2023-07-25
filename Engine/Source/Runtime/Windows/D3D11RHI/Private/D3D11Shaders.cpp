@@ -8,8 +8,8 @@
 #include "Serialization/MemoryReader.h"
 #include "RHICoreShader.h"
 
-#if !PLATFORM_HOLOLENS
-#include "nvapi.h"
+#if WITH_NVAPI
+	#include "nvapi.h"
 #endif
 
 template <typename TShaderType>
@@ -26,7 +26,7 @@ static inline void ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShad
 	
 	OutShader.bShaderNeedsGlobalConstantBuffer = EnumHasAnyFlags(PackedResourceCounts->UsageFlags, EShaderResourceUsageFlags::GlobalUniformBuffer);
 #if RHI_INCLUDE_SHADER_DEBUG_DATA
-	OutShader.ShaderName = InShaderCode.FindOptionalData(FShaderCodeName::Key);
+	OutShader.Debug.ShaderName = InShaderCode.FindOptionalData(FShaderCodeName::Key);
 
 	int32 UniformBufferTableSize = 0;
 	const uint8* UniformBufferData = InShaderCode.FindOptionalDataAndSize(FShaderCodeUniformBuffers::Key, UniformBufferTableSize);
@@ -35,10 +35,10 @@ static inline void ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShad
 		FBufferReader UBReader((void*)UniformBufferData, UniformBufferTableSize, false);
 		TArray<FString> Names;
 		UBReader << Names;
-		check(OutShader.UniformBuffers.Num() == 0);
+		check(OutShader.Debug.UniformBufferNames.Num() == 0);
 		for (int32 Index = 0; Index < Names.Num(); ++Index)
 		{
-			OutShader.UniformBuffers.Add(FName(*Names[Index]));
+			OutShader.Debug.UniformBufferNames.Add(FName(*Names[Index]));
 		}
 	}
 #endif
@@ -75,12 +75,14 @@ static bool ApplyVendorExtensions(ID3D11Device* Direct3DDevice, EShaderFrequency
 				break;
 			}
 
+#if WITH_NVAPI
 			// https://developer.nvidia.com/unlocking-gpu-intrinsics-hlsl
 			if (Extension.Parameter.Type == EShaderParameterType::UAV)
 			{
 				NvAPI_D3D11_SetNvShaderExtnSlot(Direct3DDevice, Extension.Parameter.BaseIndex);
 				OutNeedsReset = true;
 			}
+#endif
 		}
 		else if (Extension.VendorId == 0x1002) // AMD
 		{
@@ -107,7 +109,7 @@ static bool ApplyVendorExtensions(ID3D11Device* Direct3DDevice, EShaderFrequency
 
 static void ResetVendorExtensions(ID3D11Device* Direct3DDevice)
 {
-#if !PLATFORM_HOLOLENS
+#if WITH_NVAPI
 	if (IsRHIDeviceNVIDIA())
 	{
 		NvAPI_D3D11_SetNvShaderExtnSlot(Direct3DDevice, ~uint32(0));
@@ -146,13 +148,6 @@ FVertexShaderRHIRef FD3D11DynamicRHI::RHICreateVertexShader(TArrayView<const uin
 	return Shader;
 }
 
-FVertexShaderRHIRef FD3D11DynamicRHI::CreateVertexShader_RenderThread(
-	class FRHICommandListImmediate& RHICmdList,
-	TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreateVertexShader(Code, Hash);
-}
-
 FGeometryShaderRHIRef FD3D11DynamicRHI::RHICreateGeometryShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 { 
 	FShaderCodeReader ShaderCode(Code);
@@ -178,13 +173,6 @@ FGeometryShaderRHIRef FD3D11DynamicRHI::RHICreateGeometryShader(TArrayView<const
 	}
 
 	return Shader;
-}
-
-FGeometryShaderRHIRef FD3D11DynamicRHI::CreateGeometryShader_RenderThread(
-	class FRHICommandListImmediate& RHICmdList,
-	TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreateGeometryShader(Code, Hash);
 }
 
 FPixelShaderRHIRef FD3D11DynamicRHI::RHICreatePixelShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
@@ -214,13 +202,6 @@ FPixelShaderRHIRef FD3D11DynamicRHI::RHICreatePixelShader(TArrayView<const uint8
 	return Shader;
 }
 
-FPixelShaderRHIRef FD3D11DynamicRHI::CreatePixelShader_RenderThread(
-	class FRHICommandListImmediate& RHICmdList,
-	TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreatePixelShader(Code, Hash);
-}
-
 FComputeShaderRHIRef FD3D11DynamicRHI::RHICreateComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 { 
 	FShaderCodeReader ShaderCode(Code);
@@ -246,13 +227,6 @@ FComputeShaderRHIRef FD3D11DynamicRHI::RHICreateComputeShader(TArrayView<const u
 	}
 
 	return Shader;
-}
-
-FComputeShaderRHIRef FD3D11DynamicRHI::CreateComputeShader_RenderThread(
-	class FRHICommandListImmediate& RHICmdList,
-	TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreateComputeShader(Code, Hash);
 }
 
 void FD3D11DynamicRHI::RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data) 

@@ -5,11 +5,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Horde.Build.Projects;
+using Horde.Build.Server;
 using Horde.Build.Streams;
 using Horde.Build.Utilities;
 using HordeCommon;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Horde.Build.Agents.Pools
 {
@@ -22,16 +25,18 @@ namespace Horde.Build.Agents.Pools
 	{
 		readonly IPoolCollection _pools;
 		readonly IStreamCollection _streams;
+		readonly IOptionsMonitor<GlobalConfig> _globalConfig;
 		readonly ILogger<PoolService> _logger;
 		readonly ITicker _ticker;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public PoolUpdateService(IPoolCollection pools, IStreamCollection streams, IClock clock, ILogger<PoolService> logger)
+		public PoolUpdateService(IPoolCollection pools, IStreamCollection streams, IClock clock, IOptionsMonitor<GlobalConfig> globalConfig, ILogger<PoolService> logger)
 		{
 			_pools = pools;
 			_streams = streams;
+			_globalConfig = globalConfig;
 			_logger = logger;
 			_ticker = clock.AddTicker($"{nameof(PoolUpdateService)}.{nameof(UpdatePoolsAsync)}", TimeSpan.FromSeconds(30.0), UpdatePoolsAsync, logger);
 		}
@@ -56,13 +61,13 @@ namespace Horde.Build.Agents.Pools
 			DateTime startTime = DateTime.UtcNow;
 
 			// Update the list
-			bool bRetryUpdate = true;
-			while (bRetryUpdate && !stoppingToken.IsCancellationRequested)
+			bool retryUpdate = true;
+			while (retryUpdate && !stoppingToken.IsCancellationRequested)
 			{
 				_logger.LogDebug("Updating pool->workspace map");
 
 				// Assume this will be the last iteration
-				bRetryUpdate = false;
+				retryUpdate = false;
 
 				// Capture the list of pools at the start of this update
 				List<IPool> currentPools = await _pools.GetAsync();
@@ -71,18 +76,20 @@ namespace Horde.Build.Agents.Pools
 				HashSet<PoolId> poolsWithAutoSdk = new HashSet<PoolId>();
 				Dictionary<PoolId, List<AgentWorkspace>> poolToAgentWorkspaces = new Dictionary<PoolId, List<AgentWorkspace>>();
 
+				// Capture the current config state
+				GlobalConfig globalConfig = _globalConfig.CurrentValue;
+
 				// Populate the workspace list from the current stream
-				List<IStream> activeStreams = await _streams.FindAllAsync();
-				foreach (IStream activeStream in activeStreams)
+				foreach (StreamConfig streamConfig in globalConfig.Streams)
 				{
-					foreach (KeyValuePair<string, AgentType> agentTypePair in activeStream.AgentTypes)
+					foreach (KeyValuePair<string, AgentConfig> agentTypePair in streamConfig.AgentTypes)
 					{
 						// Create the new agent workspace
 						(AgentWorkspace, bool)? result;
-						if (activeStream.TryGetAgentWorkspace(agentTypePair.Value, out result))
+						if (streamConfig.TryGetAgentWorkspace(agentTypePair.Value, out result))
 						{
 							(AgentWorkspace agentWorkspace, bool useAutoSdk) = result.Value;
-							AgentType agentType = agentTypePair.Value;
+							AgentConfig agentType = agentTypePair.Value;
 
 							// Find or add a list of workspaces for this pool
 							List<AgentWorkspace>? agentWorkspaces;
@@ -125,7 +132,7 @@ namespace Horde.Build.Agents.Pools
 						if (result == null)
 						{
 							_logger.LogInformation("Pool modified; will retry");
-							bRetryUpdate = true;
+							retryUpdate = true;
 						}
 					}
 				}

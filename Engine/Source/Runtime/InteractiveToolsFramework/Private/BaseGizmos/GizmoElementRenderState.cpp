@@ -3,6 +3,8 @@
 #include "BaseGizmos/GizmoElementRenderState.h"
 #include "Materials/MaterialInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GizmoElementRenderState)
+
 FLinearColor FGizmoElementColorAttribute::GetColor() const
 {
 	if (bHasValue)
@@ -99,6 +101,8 @@ void FGizmoElementMeshRenderStateAttributes::Update(FGizmoElementMeshRenderState
 	HoverMaterial.UpdateState(InChildAttributes.HoverMaterial);
 	InteractMaterial.UpdateState(InChildAttributes.InteractMaterial);
 	VertexColor.UpdateState(InChildAttributes.VertexColor);
+	HoverVertexColor.UpdateState(InChildAttributes.HoverVertexColor);
+	InteractVertexColor.UpdateState(InChildAttributes.InteractVertexColor);
 }
 
 FLinearColor FGizmoElementLineRenderStateAttributes::GetLineColor(EGizmoElementInteractionState InteractionState)

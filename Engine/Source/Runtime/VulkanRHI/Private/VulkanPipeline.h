@@ -294,9 +294,23 @@ struct FGfxPipelineDesc
 				return Attachment == In.Attachment && Layout == In.Layout;
 			}
 		};
+
+		struct FStencilAttachmentRef
+		{
+			uint64 Layout;
+
+			void ReadFrom(const VkAttachmentReferenceStencilLayout& InState);
+			void WriteInto(VkAttachmentReferenceStencilLayout& OutState) const;
+			bool operator == (const FStencilAttachmentRef& In) const
+			{
+				return Layout == In.Layout;
+			}
+		};
+
 		TArray<FAttachmentRef> ColorAttachments;
 		TArray<FAttachmentRef> ResolveAttachments;
-		FAttachmentRef DepthStencil;
+		FAttachmentRef Depth;
+		FStencilAttachmentRef Stencil;
 		FAttachmentRef FragmentDensity;
 
 		struct FAttachmentDesc
@@ -327,13 +341,29 @@ struct FGfxPipelineDesc
 			void ReadFrom(const VkAttachmentDescription &InState);
 			void WriteInto(VkAttachmentDescription& OutState) const;
 		};
+
+		struct FStencilAttachmentDesc
+		{
+			uint64 InitialLayout;
+			uint64 FinalLayout;
+
+			bool operator==(const FStencilAttachmentDesc& In) const
+			{
+				return InitialLayout == In.InitialLayout &&
+					FinalLayout == In.FinalLayout;
+			}
+
+			void ReadFrom(const VkAttachmentDescriptionStencilLayout& InState);
+			void WriteInto(VkAttachmentDescriptionStencilLayout& OutState) const;
+		};
+
 		TArray<FAttachmentDesc> Descriptions;
+		FStencilAttachmentDesc StencilDescription;
 
 		uint8 NumAttachments;
 		uint8 NumColorAttachments;
 		uint8 bHasDepthStencil;
 		uint8 bHasResolveAttachments;
-		uint8 bHasDepthStencilResolve;
 		uint8 bHasFragmentDensityAttachment;
 		uint8 NumUsedClearValues;
 		uint32 RenderPassCompatibleHash;
@@ -346,14 +376,15 @@ struct FGfxPipelineDesc
 		{
 			return ColorAttachments == In.ColorAttachments &&
 				ResolveAttachments == In.ResolveAttachments &&
-				DepthStencil == In.DepthStencil &&
+				Depth == In.Depth &&
+				Stencil == In.Stencil &&
 				FragmentDensity == In.FragmentDensity &&
 				Descriptions == In.Descriptions &&
+				StencilDescription == In.StencilDescription &&
 				NumAttachments == In.NumAttachments &&
 				NumColorAttachments == In.NumColorAttachments &&
 				bHasDepthStencil == In.bHasDepthStencil &&
 				bHasResolveAttachments == In.bHasResolveAttachments &&
-				bHasDepthStencilResolve == In.bHasDepthStencilResolve &&
 				bHasFragmentDensityAttachment == In.bHasFragmentDensityAttachment &&
 				NumUsedClearValues == In.NumUsedClearValues &&
 				RenderPassCompatibleHash == In.RenderPassCompatibleHash &&

@@ -245,6 +245,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 SWidget::~SWidget()
 {
+#if WITH_SLATE_DEBUGGING
+	UE_CLOG(Debug_DestroyedTag != 0xDC, LogSlate, Fatal, TEXT("The widget is already destroyed."));
+	Debug_DestroyedTag = 0xA3;
+#endif
+
 #if UE_WITH_SLATE_DEBUG_FIND_WIDGET_REFLECTION_METADATA
 	if (FindWidgetMetaData::FoundWidget == this)
 	{
@@ -631,11 +636,6 @@ FPopupMethodReply SWidget::OnQueryPopupMethod() const
 	return FPopupMethodReply::Unhandled();
 }
 
-TSharedPtr<struct FVirtualPointerPosition> SWidget::TranslateMouseCoordinateForCustomHitTestChild(const TSharedRef<SWidget>& ChildWidget, const FGeometry& MyGeometry, const FVector2D& ScreenSpaceMouseCoordinate, const FVector2D& LastScreenSpaceMouseCoordinate) const
-{
-	return nullptr;
-}
-
 TOptional<FVirtualPointerPosition> SWidget::TranslateMouseCoordinateForCustomHitTestChild(const SWidget& ChildWidget, const FGeometry& MyGeometry, const FVector2D ScreenSpaceMouseCoordinate, const FVector2D LastScreenSpaceMouseCoordinate) const
 {
 	return TOptional<FVirtualPointerPosition>();
@@ -708,9 +708,9 @@ void SWidget::InvalidateChildRemovedFromTree(SWidget& Child)
 	}
 }
 
-FVector2D SWidget::GetDesiredSize() const
+UE::Slate::FDeprecateVector2DResult SWidget::GetDesiredSize() const
 {
-	return FVector2D(DesiredSize.Get(FVector2f::ZeroVector));
+	return UE::Slate::FDeprecateVector2DResult(DesiredSize.Get(FVector2f::ZeroVector));
 }
 
 void SWidget::AssignParentWidget(TSharedPtr<SWidget> InParent)
@@ -795,13 +795,13 @@ void SWidget::UpdateWidgetProxy(int32 NewLayerId, FSlateCachedElementsHandle& Ca
 		if (IsVolatile() && !IsVolatileIndirectly())
 		{
 			ensureMsgf(HasAnyUpdateFlags(EWidgetUpdateFlags::NeedsVolatilePaint)
-				, TEXT("The votality of the widget '%s' changed during Paint")
+				, TEXT("The volatility of the widget '%s' changed during Paint")
 				, *FReflectionMetaData::GetWidgetPath(this));
 		}
 		else
 		{
 			ensureMsgf(!HasAnyUpdateFlags(EWidgetUpdateFlags::NeedsVolatilePaint)
-				, TEXT("The votality of the widget '%s' changed during Paint")
+				, TEXT("The volatility of the widget '%s' changed during Paint")
 				, *FReflectionMetaData::GetWidgetPath(this));
 		}
 	}
@@ -1049,11 +1049,11 @@ FGeometry SWidget::FindChildGeometry( const FGeometry& MyGeometry, TSharedRef<SW
 
 int32 SWidget::FindChildUnderMouse( const FArrangedChildren& Children, const FPointerEvent& MouseEvent )
 {
-	const FVector2D& AbsoluteCursorLocation = MouseEvent.GetScreenSpacePosition();
+	FVector2f AbsoluteCursorLocation = MouseEvent.GetScreenSpacePosition();
 	return SWidget::FindChildUnderPosition( Children, AbsoluteCursorLocation );
 }
 
-int32 SWidget::FindChildUnderPosition( const FArrangedChildren& Children, const FVector2D& ArrangedSpacePosition )
+int32 SWidget::FindChildUnderPosition( const FArrangedChildren& Children, const UE::Slate::FDeprecateVector2DParameter& ArrangedSpacePosition )
 {
 	const int32 NumChildren = Children.Num();
 	for( int32 ChildIndex=NumChildren-1; ChildIndex >= 0; --ChildIndex )
@@ -1356,8 +1356,8 @@ FSlateRect SWidget::CalculateCullingAndClippingRules(const FGeometry& AllottedGe
 			break;
 		case EWidgetClipping::OnDemand:
 			const float OverflowEpsilon = 1.0f;
-			const FVector2D& CurrentSize = GetDesiredSize();
-			const FVector2D& LocalSize = AllottedGeometry.GetLocalSize();
+			const FVector2f& CurrentSize = GetDesiredSize();
+			const FVector2f& LocalSize = AllottedGeometry.GetLocalSize();
 			bClipToBounds =
 				(CurrentSize.X - OverflowEpsilon) > LocalSize.X ||
 				(CurrentSize.Y - OverflowEpsilon) > LocalSize.Y;
@@ -1390,13 +1390,6 @@ int32 SWidget::Paint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, 
 
 	INC_DWORD_STAT(STAT_SlateNumPaintedWidgets);
 	UE_TRACE_SCOPED_SLATE_WIDGET_PAINT(this);
-
-	const SWidget* PaintParent = Args.GetPaintParent();
-	//if (GSlateEnableGlobalInvalidation)
-	//{
-	//	bInheritedVolatility = PaintParent ? (PaintParent->IsVolatileIndirectly() || PaintParent->IsVolatile()) : false;
-	//}
-
 
 	// If this widget clips to its bounds, then generate a new clipping rect representing the intersection of the bounding
 	// rectangle of the widget's geometry, and the current clipping rectangle.
@@ -1485,6 +1478,7 @@ int32 SWidget::Paint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, 
 	PersistentState.IncomingUserIndex = (int8)IncomingUserIndex;
 
 	PersistentState.IncomingFlowDirection = GSlateFlowDirection;
+	PersistentState.bIsInGameLayer = OutDrawElements.GetIsInGameLayer();
 
 	FPaintArgs UpdatedArgs = Args.WithNewParent(this);
 	UpdatedArgs.SetInheritedHittestability(bOutgoingHittestability);
@@ -1554,7 +1548,7 @@ int32 SWidget::Paint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, 
 	// Detect children that should have been painted, but were skipped during the paint process.
 	// this will result in geometry being left on screen and not cleared, because it's visible, yet wasn't painted.
 #if WITH_SLATE_DEBUGGING
-	if (GSlateIsOnFastUpdatePath && GSlateEnsureAllVisibleWidgetsPaint)
+	if (GSlateIsOnFastUpdatePath && GSlateEnsureAllVisibleWidgetsPaint && !GIntraFrameDebuggingGameThread)
 	{
 		for (TWeakPtr<const SWidget>& DebugChildThatShouldHaveBeenPaintedPtr : DebugChildWidgetsToPaint)
 		{
@@ -1577,7 +1571,7 @@ int32 SWidget::Paint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, 
 		}
 	}
 
-	if (GSlateEnsureOutgoingLayerId)
+	if (GSlateEnsureOutgoingLayerId && !GIntraFrameDebuggingGameThread)
 	{
 		for (TWeakPtr<const SWidget>& DebugChildWeakPtr : DebugChildWidgetsToPaint)
 		{
@@ -2044,7 +2038,7 @@ bool SWidget::CanChildrenBeAccessible() const
 bool SWidget::IsChildWidgetCulled(const FSlateRect& MyCullingRect, const FArrangedWidget& ArrangedChild) const
 {
 	// If we've enabled global invalidation it's safe to run the culling logic and just 'stop' drawing
-	// a widget, that widget has to be given an opportunity to paint, as wlel as all its children, the
+	// a widget, that widget has to be given an opportunity to paint, as well as all its children, the
 	// only correct way is to remove the widget from the tree, or to change the visibility of it.
 	if (GSlateIsOnFastUpdatePath)
 	{

@@ -10,9 +10,11 @@
 #include "MVVM/Extensions/IRenameableExtension.h"
 #include "MVVM/ViewModels/SequencerEditorViewModel.h"
 #include "MVVM/ViewModels/SequencerOutlinerViewModel.h"
+#include "MVVM/ViewModels/TrackRowModel.h"
 #include "Sections/MovieSceneSubSection.h"
 #include "MovieScene.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
@@ -114,12 +116,14 @@
 #include "Tracks/MovieSceneEventTrack.h"
 #include "ToolMenus.h"
 #include "MovieSceneToolHelpers.h"
+#include "Editor/UnrealEdEngine.h"
+#include "UnrealEdGlobals.h"
 
 #define LOCTEXT_NAMESPACE "Sequencer"
 
 /* SSequencer interface
  *****************************************************************************/
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 void SSequencer::Construct(const FArguments& InArgs, TSharedRef<FSequencer> InSequencer)
 {
 	using namespace UE::Sequencer;
@@ -255,6 +259,15 @@ void SSequencer::Construct(const FArguments& InArgs, TSharedRef<FSequencer> InSe
 
 	RootCustomization.AddMenuExtender = InArgs._AddMenuExtender;
 	RootCustomization.ToolbarExtender = InArgs._ToolbarExtender;
+
+	ColumnFillCoefficients[0] = 0.3f;
+	ColumnFillCoefficients[1] = 0.7f;
+
+	if (GetSequencerSettings())
+	{
+		ColumnFillCoefficients[0] = GetSequencerSettings()->GetTreeViewWidth();
+		ColumnFillCoefficients[1] = 1.f - GetSequencerSettings()->GetTreeViewWidth();
+	}
 
 	TAttribute<float> FillCoefficient_0, FillCoefficient_1;
 	{
@@ -579,6 +592,34 @@ void SSequencer::Construct(const FArguments& InArgs, TSharedRef<FSequencer> InSe
 									})
 								]
 							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							.HAlign(HAlign_Right)
+							.Padding(FMargin(CommonPadding + 2.0, 0.f, 0.f, 0.f))
+							[
+								SNew(SBorder)
+								.BorderImage(nullptr)
+								[
+									// Frame count and duration
+									SNew(STextBlock)
+									.ColorAndOpacity(FAppStyle::GetSlateColor("SelectionColor_Pressed"))
+									.Text_Lambda([this]() -> FText {
+										FFrameRate TickResolution = SequencerPtr.Pin()->GetFocusedTickResolution();
+										FFrameRate DisplayRate = SequencerPtr.Pin()->GetFocusedDisplayRate();
+
+										TOptional<TRange<FFrameNumber>> SubSequenceRange = SequencerPtr.Pin()->GetSubSequenceRange();
+
+										FFrameNumber CurrentFrame = SequencerPtr.Pin()->GetLocalTime().Time.GetFrame();
+										TRange<FFrameNumber> CurrentRange = SubSequenceRange.IsSet() ? SubSequenceRange.GetValue() : SequencerPtr.Pin()->GetPlaybackRange();
+
+										FFrameNumber FrameCount = FFrameRate::TransformTime((CurrentFrame - CurrentRange.GetLowerBoundValue() + 1).Value, TickResolution, DisplayRate).CeilToFrame();
+										FFrameNumber FrameDuration = FFrameRate::TransformTime(CurrentRange.Size<FFrameNumber>().Value, TickResolution, DisplayRate).CeilToFrame();
+
+										return FText::FromString(FString::Printf(TEXT("%d of %d"), FrameCount.Value, FrameDuration.Value));
+									})
+								]
+							]
 						]
 					]
 
@@ -813,9 +854,10 @@ void SSequencer::Construct(const FArguments& InArgs, TSharedRef<FSequencer> InSe
 				+ SOverlay::Slot()
 				[
 					// track area virtual splitter overlay
-					SNew(SSequencerSplitterOverlay)
+					SAssignNew(TreeViewSplitter, SSequencerSplitterOverlay)
 					.Style(FAppStyle::Get(), "Sequencer.AnimationOutliner.Splitter")
 					.Visibility(EVisibility::SelfHitTestInvisible)
+					.OnSplitterFinishedResizing(this, &SSequencer::OnSplitterFinishedResizing)
 
 					+ SSplitter::Slot()
 					.Value(FillCoefficient_0)
@@ -843,7 +885,7 @@ void SSequencer::Construct(const FArguments& InArgs, TSharedRef<FSequencer> InSe
 
 	ResetBreadcrumbs();
 }
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 void SSequencer::BindCommands(TSharedRef<FUICommandList> SequencerCommandBindings, TSharedRef<FUICommandList> CurveEditorSharedBindings)
 {
@@ -2413,6 +2455,7 @@ TSharedRef<SWidget> SSequencer::MakePlaybackMenu()
 		}
 
 		MenuBuilder.AddMenuEntry( FSequencerCommands::Get().ToggleAsyncEvaluation );
+		MenuBuilder.AddMenuEntry( FSequencerCommands::Get().ToggleDynamicWeighting );
 	}
 	MenuBuilder.EndSection();
 
@@ -2421,6 +2464,7 @@ TSharedRef<SWidget> SSequencer::MakePlaybackMenu()
 		if (SequencerPtr.Pin()->IsLevelEditorSequencer())
 		{
 			MenuBuilder.AddMenuEntry( FSequencerCommands::Get().ToggleEvaluateSubSequencesInIsolation );
+			MenuBuilder.AddMenuEntry( FSequencerCommands::Get().ToggleResetPlayheadWhenNavigating );
 		}
 
 		MenuBuilder.AddMenuEntry( FSequencerCommands::Get().ToggleKeepCursorInPlaybackRangeWhileScrubbing );
@@ -2821,7 +2865,9 @@ void SSequencer::UpdateLayoutTree()
 				{
 					UMovieSceneTrack* Track = TrackNode->GetTrack();
 					bool bDisableEval = NodeTree->IsNodeMute(OutlinerItem) || (bHasSoloNodes && !NodeTree->IsNodeSolo(OutlinerItem));
-					if (TrackNode->GetRowIndex() > 0)
+
+					TViewModelPtr<FTrackRowModel> TrackRowModel = OutlinerItem.ImplicitCast();
+					if (TrackRowModel)
 					{
 						if (bDisableEval != Track->IsRowEvalDisabled(TrackNode->GetRowIndex()))
 						{
@@ -2914,18 +2960,6 @@ void SSequencer::OnOutlinerSearchChanged( const FText& Filter )
 		Sequencer->GetNodeTree()->FilterNodes( FilterString );
 
 		TreeView->Refresh();
-	}
-}
-
-float SSequencer::GetColumnFillCoefficient(int32 ColumnIndex) const
-{
-	if (ColumnIndex == 0)
-	{
-		return GetSequencerSettings()->GetTreeViewWidth();
-	}
-	else
-	{
-		return 1.f - GetSequencerSettings()->GetTreeViewWidth();
 	}
 }
 
@@ -3581,9 +3615,9 @@ bool SSequencer::CanNavigateBreadcrumbs() const
 		UMovieScene* MovieScene = RootSequence ? RootSequence->GetMovieScene() : nullptr;
 		if (RootSequence)
 		{
-			for (UMovieSceneTrack* MasterTrack : MovieScene->GetMasterTracks())
+			for (UMovieSceneTrack* Track : MovieScene->GetTracks())
 			{
-				if (MasterTrack && MasterTrack->IsA<UMovieSceneSubTrack>())
+				if (Track && Track->IsA<UMovieSceneSubTrack>())
 				{
 					return true;
 				}
@@ -3626,16 +3660,20 @@ EFrameNumberDisplayFormats SSequencer::GetTimeDisplayFormat() const
 	return GetSequencerSettings()->GetTimeDisplayFormat();
 }
 
+void SSequencer::OnSplitterFinishedResizing()
+{
+	SSplitter::FSlot const& LeftSplitterSlot = TreeViewSplitter->Splitter->SlotAt(0);
+	SSplitter::FSlot const& RightSplitterSlot = TreeViewSplitter->Splitter->SlotAt(1);
+
+	OnColumnFillCoefficientChanged(LeftSplitterSlot.GetSizeValue(), 0);
+	OnColumnFillCoefficientChanged(RightSplitterSlot.GetSizeValue(), 1);
+
+	GetSequencerSettings()->SetTreeViewWidth(LeftSplitterSlot.GetSizeValue());
+}
+
 void SSequencer::OnColumnFillCoefficientChanged(float FillCoefficient, int32 ColumnIndex)
 {
-	if (ColumnIndex == 0)
-	{
-		GetSequencerSettings()->SetTreeViewWidth(FillCoefficient);
-	}
-	else
-	{
-		GetSequencerSettings()->SetTreeViewWidth(1.f - FillCoefficient);
-	}
+	ColumnFillCoefficients[ColumnIndex] = FillCoefficient;
 }
 
 void SSequencer::OnCurveEditorVisibilityChanged(bool bShouldBeVisible)

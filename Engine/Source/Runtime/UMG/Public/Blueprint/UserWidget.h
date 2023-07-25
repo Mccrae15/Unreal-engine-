@@ -24,7 +24,9 @@
 #include "EngineStats.h"
 #include "SlateGlobals.h"
 #include "Animation/WidgetAnimationEvents.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+#endif
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 	#include "Animation/WidgetAnimation.h"
@@ -39,6 +41,7 @@ class UTexture2D;
 class UUMGSequencePlayer;
 class UUMGSequenceTickManager;
 class UWidgetAnimation;
+class UWidgetBlueprintGeneratedClass;
 class UWidgetTree;
 class UNamedSlot;
 class UUserWidgetExtension;
@@ -161,6 +164,12 @@ public:
 	UPROPERTY()
 	FName Name;
 
+#if WITH_EDITORONLY_DATA
+	// GUID of the NamedSlot is used as a secondary identifier to find a binding in case the name of NamedSlot has changed.
+	UPROPERTY()
+	FGuid Guid;
+#endif
+
 	UPROPERTY(Instanced)
 	TObjectPtr<UWidget> Content;
 };
@@ -171,7 +180,7 @@ class UUMGSequencePlayer;
 UENUM(BlueprintType)
 namespace EUMGSequencePlayMode
 {
-	enum Type
+	enum Type : int
 	{
 		/** Animation plays and loops from the beginning to the end. */
 		Forward,
@@ -586,7 +595,7 @@ public:
 
 	/**
 	 * Just like OnMouseButtonDown, but tunnels instead of bubbling.
-	 * If this even is handled, OnMouseButtonDown will not be sent.
+	 * If this event is handled, OnMouseButtonDown will not be sent.
 	 * 
 	 * Use this event sparingly as preview events generally make UIs more
 	 * difficult to reason about.
@@ -885,6 +894,50 @@ protected:
 	virtual void OnAnimationFinishedPlaying(UUMGSequencePlayer& Player);
 
 public:
+	UE_DEPRECATED(5.2, "Direct access to ColorAndOpacity is deprecated. Please use the getter or setter.")
+	/** The color and opacity of this widget.  Tints all child widgets. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter = "SetColorAndOpacity", Category = "Appearance")
+	FLinearColor ColorAndOpacity;
+
+	UPROPERTY()
+	FGetLinearColor ColorAndOpacityDelegate;
+
+	UE_DEPRECATED(5.2, "Direct access to ForegroundColor is deprecated. Please use the getter or setter.")
+	/**
+	 * The foreground color of the widget, this is inherited by sub widgets.  Any color property
+	 * that is marked as inherit will use this color.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter = "SetForegroundColor", Category = "Appearance")
+	FSlateColor ForegroundColor;
+
+	UPROPERTY()
+	FGetSlateColor ForegroundColorDelegate;
+
+	/** Called when the visibility has changed */
+	UPROPERTY(BlueprintAssignable, Category = "Appearance|Event")
+	FOnVisibilityChangedEvent OnVisibilityChanged;
+	DECLARE_EVENT_OneParam(UUserWidget, FNativeOnVisibilityChangedEvent, ESlateVisibility);
+	FNativeOnVisibilityChangedEvent OnNativeVisibilityChanged;
+
+	UE_DEPRECATED(5.2, "Direct access to Padding is deprecated. Please use the getter or setter.")
+	/** The padding area around the content. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter = "SetPadding", Category = "Appearance")
+	FMargin Padding;
+
+	UE_DEPRECATED(5.2, "Direct access to Priority is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter = "GetInputActionPriority", Setter = "SetInputActionPriority", BlueprintSetter = "SetInputActionPriority", Category = "Input")
+	int32 Priority;
+
+	UE_DEPRECATED(5.2, "Direct access to bIsFocusable is deprecated. Please use the getter. Note that this property is only set at construction and is not modifiable at runtime.")
+	/** Setting this flag to true, allows this widget to accept focus when clicked, or when navigated to. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter = "IsFocusable", Setter = "SetIsFocusable", Category = "Interaction")
+	uint8 bIsFocusable : 1;
+	 
+	UE_DEPRECATED(5.2, "Direct access to bStopAction is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter = "IsInputActionBlocking", Setter = "SetInputActionBlocking", BlueprintSetter = "SetInputActionBlocking", Category = "Input")
+	uint8 bStopAction : 1;
+
+public:
 
 	/**
 	 * Sets the tint of the widget, this affects all child widgets.
@@ -895,19 +948,52 @@ public:
 	void SetColorAndOpacity(FLinearColor InColorAndOpacity);
 
 	/**
+	 * Gets the tint of the widget.
+	 */
+	const FLinearColor& GetColorAndOpacity() const;
+
+	/**
 	 * Sets the foreground color of the widget, this is inherited by sub widgets.  Any color property 
 	 * that is marked as inherit will use this color.
-	 * 
+	 *
 	 * @param InForegroundColor	The foreground color.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Appearance")
 	void SetForegroundColor(FSlateColor InForegroundColor);
 
 	/**
+	 * Gets the foreground color of the widget, this is inherited by sub widgets.  Any color property
+	 * that is marked as inherit uses this color.
+	 */
+	const FSlateColor& GetForegroundColor() const;
+
+	/**
 	 * Sets the padding for the user widget, putting a larger gap between the widget border and it's root widget.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Appearance")
 	void SetPadding(FMargin InPadding);
+
+	/**
+	 * Gets the padding for the user widget.
+	 */
+	FMargin GetPadding() const;
+
+	/**
+	 * Gets the priority of the input action.
+	 */
+	int32 GetInputActionPriority() const;
+
+	/**
+	 * Returns whether the input action is blocking.
+	 */
+	bool IsInputActionBlocking() const;
+
+	/**
+	 * Sets whether this widget to accept focus when clicked, or when navigated to.
+	 */
+	bool IsFocusable() const;
+
+	void SetIsFocusable(bool InIsFocusable);
 
 	/**
 	 * Plays an animation in this widget a specified number of times
@@ -1068,11 +1154,11 @@ public:
 	}
 
 	/** Find the first extension of the requested type. */
-	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension")
+	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension", Meta = (DeterminesOutputType = "ExtensionType"))
 	UUserWidgetExtension* GetExtension(TSubclassOf<UUserWidgetExtension> ExtensionType) const;
 
 	/** Find the extensions of the requested type. */
-	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension")
+	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension", Meta = (DeterminesOutputType = "ExtensionType"))
 	TArray<UUserWidgetExtension*> GetExtensions(TSubclassOf<UUserWidgetExtension> ExtensionType) const;
 
 	/** Add the extension of the requested type. */
@@ -1083,7 +1169,7 @@ public:
 	}
 
 	/** Add the extension of the requested type. */
-	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension")
+	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension", Meta = (DeterminesOutputType = "InExtensionType"))
 	UUserWidgetExtension* AddExtension(TSubclassOf<UUserWidgetExtension> InExtensionType);
 
 	/** Remove the extension. */
@@ -1139,6 +1225,12 @@ public:
 	virtual void OnDesignerChanged(const FDesignerChangedEventArgs& EventArgs) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
+	/** Update the binding for this namedslot if the name is not found but GUID is matched. */
+	void UpdateBindingForSlot(FName SlotName);
+
+	/** Add the GUID of each Namedslot widget to its corresponding binding, if any. */
+	void AssignGUIDToBindings();
+
 	/**
 	 * Final step of Widget Blueprint compilation. Allows widgets to perform custom validation and trigger compiler outputs as needed.
 	 * @see ValidateCompiledDefaults
@@ -1169,32 +1261,6 @@ private:
 	void ClearStoppedSequencePlayers();
 
 public:
-	/** The color and opacity of this widget.  Tints all child widgets. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Appearance")
-	FLinearColor ColorAndOpacity;
-
-	UPROPERTY()
-	FGetLinearColor ColorAndOpacityDelegate;
-
-	/**
-	 * The foreground color of the widget, this is inherited by sub widgets.  Any color property
-	 * that is marked as inherit will use this color.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Appearance")
-	FSlateColor ForegroundColor;
-
-	UPROPERTY()
-	FGetSlateColor ForegroundColorDelegate;
-
-	/** Called when the visibility has changed */
-	UPROPERTY(BlueprintAssignable, Category = "Appearance|Event")
-	FOnVisibilityChangedEvent OnVisibilityChanged;
-	DECLARE_EVENT_OneParam(UUserWidget, FNativeOnVisibilityChangedEvent, ESlateVisibility);
-	FNativeOnVisibilityChangedEvent OnNativeVisibilityChanged;
-
-	/** The padding area around the content. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Appearance")
-	FMargin Padding;
 
 	/** All the sequence players currently playing */
 	UPROPERTY(Transient)
@@ -1244,16 +1310,6 @@ public:
 	TObjectPtr<UTexture2D> PreviewBackground;
 
 #endif
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
-	int32 Priority;
-
-	/** Setting this flag to true, allows this widget to accept focus when clicked, or when navigated to. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Interaction")
-	uint8 bIsFocusable : 1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
-	uint8 bStopAction : 1;
 
 	/** If a widget has an implemented tick blueprint function */
 	UPROPERTY()

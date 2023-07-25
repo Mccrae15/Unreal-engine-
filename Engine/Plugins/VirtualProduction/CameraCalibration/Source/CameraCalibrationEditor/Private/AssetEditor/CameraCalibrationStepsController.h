@@ -7,6 +7,7 @@
 #include "Containers/Ticker.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
+#include "Input/Reply.h"
 #include "LensFile.h"
 #include "UObject/StrongObjectPtr.h"
 
@@ -31,6 +32,13 @@ enum class EOverlayPassType : uint8
 {
 	ToolOverlay = 0,
 	UserOverlay = 1
+};
+
+/** Enumeration specifying the portion of the viewport to consider when performing operations such as normalizing the mouse position or reading pixels from the media render target */
+enum class ESimulcamViewportPortion : uint8
+{
+	FullViewport = 0,
+	CameraFeed = 1
 };
 
 /**
@@ -58,8 +66,14 @@ public:
 	/** Returns the render target of the Media Plate */
 	UTextureRenderTarget2D* GetMediaPlateRenderTarget() const;
 
-	/** Returns the size of the render target used by the Comp */
-	FIntPoint GetCompRenderTargetSize() const;
+	/** Returns the output resolution of the top-level Comp */
+	FIntPoint GetCompRenderResolution() const;
+
+	/** Returns the output resolution of the CG Layer */
+	FIntPoint GetCGRenderResolution() const;
+
+	/** Returns the size of the camera feed (which may be smaller than the top-level Comp and CG Layer) */
+	FIntPoint GetCameraFeedSize() const;
 
 	/** Creates a way to read the media plate pixels for processing by any calibration step */
 	void CreateMediaPlateOutput();
@@ -116,13 +130,13 @@ public:
 	void SelectStep(const FName& Name);
 
 	/** Calculates the normalized (0~1) coordinates in the simulcam viewport of the given mouse click */
-	bool CalculateNormalizedMouseClickPosition(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, FVector2D& OutPosition) const;
+	bool CalculateNormalizedMouseClickPosition(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, FVector2D& OutPosition, ESimulcamViewportPortion ViewportPortion = ESimulcamViewportPortion::FullViewport) const;
 
 	/** Finds the world being used by the tool for finding and spawning objects */
 	UWorld* GetWorld() const;
 
 	/** Reads the pixels in the media plate */
-	bool ReadMediaPixels(TArray<FColor>& Pixels, FIntPoint& Size, ETextureRenderTargetFormat& PixelFormat, FText& OutErrorMessage) const;
+	bool ReadMediaPixels(TArray<FColor>& Pixels, FIntPoint& Size, ETextureRenderTargetFormat& PixelFormat, FText& OutErrorMessage, ESimulcamViewportPortion ViewportPortion = ESimulcamViewportPortion::FullViewport) const;
 
 	/** Returns true if the overlay transform pass is currently enabled */
 	bool IsOverlayEnabled(EOverlayPassType OverlayPass = EOverlayPassType::ToolOverlay) const;
@@ -135,6 +149,12 @@ public:
 
 	/** Redraw the overlay material used by the input overlay pass */
 	void RefreshOverlay(EOverlayPassType OverlayPass = EOverlayPassType::ToolOverlay);
+
+	/** Use the input mouse position (representing any corner of the camera feed) and the dimensions of the media source to calculate the new size of the camera feed */
+	void SetCameraFeedDimensionsFromMousePosition(FVector2D MousePosition);
+
+	/** Set the camera feed dimensions info of the LensFile being edited */
+	void SetCameraFeedDimensions(FIntPoint Dimensions, bool bMarkAsOverridden);
 
 public:
 
@@ -227,13 +247,22 @@ private:
 	/** Returns the overlay material used by the input overlay pass type */
 	UMaterialInterface* GetOverlayMaterial(EOverlayPassType OverlayPass) const;
 
+	/** Iteratively attempt to resize the camera feed until its aspect ratio matches the input camera aspect ratio */
+	void MinimizeAspectRatioError(FIntPoint& CameraFeedDimensions, float CameraAspectRatio);
+
+	/** Resizes the resolution of the top-level comp match the resolution of the media source */
+	bool UpdateCompResolution();
+
+	/** Resizes the resolution of the CG layer to match the aspect resolution of the source camera and fit within the comp */
+	void UpdateCGResolution(bool bCompResized);
+
+	/** Update the aspect ratio correction material parameters based on the ratio of the camera feed dimensions to the comp dimensions */
+	void UpdateAspectRatioCorrection();
+
 private:
 
 	/** Pointer to the camera calibration toolkit */
 	TWeakPtr<FCameraCalibrationToolkit> CameraCalibrationToolkit;
-
-	/** Size to use when creating the render targets for the comp and media output */
-	FIntPoint RenderTargetSize;
 
 	/** Array of the calibration steps that this controller is managing */
 	TArray<TStrongObjectPtr<UCameraCalibrationStep>> CalibrationSteps;
@@ -285,6 +314,9 @@ private:
 
 	/** The currently selected camera */
 	TWeakObjectPtr<ACameraActor> Camera;
+
+	/** The currently selected camera's camera component */
+	TWeakObjectPtr<UCineCameraComponent> CineCameraComponent;
 
 	/** The delegate for the core ticker callback */
 	FTSTicker::FDelegateHandle TickerHandle;

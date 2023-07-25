@@ -2,19 +2,19 @@
 
 #include "CompositingElements/PlayerViewportCompositingOutput.h"
 #include "GameFramework/PlayerController.h"
-#include "Camera/PlayerCameraManager.h"
-#include "ComposurePlayerCompositingCameraModifier.h"
 #include "Kismet/GameplayStatics.h" // for GetPlayerController()
 #include "Engine/LocalPlayer.h" // for ViewportClient
 #include "Engine/GameViewportClient.h" // for EngineShowFlags
 #include "ComposureUtils.h" // for SetEngineShowFlagsForPostprocessingOnly()
 #include "ComposureInternals.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "SceneView.h"
 #include "ComposureTonemapperPass.h" // for FComposureTonemapperUtils::ApplyTonemapperSettings()
 #include "CompositingElements/CompositingElementPassUtils.h" // for GetTargetFormatFromPixelFormat()
 #include "CompositingElements/CompositingElementTransforms.h" // for UCompositingTonemapPass
 #include "Engine/Texture2D.h"
+#include "UObject/ConstructorHelpers.h"
 
 /* FPlayerViewportOverrideStack
  *****************************************************************************/

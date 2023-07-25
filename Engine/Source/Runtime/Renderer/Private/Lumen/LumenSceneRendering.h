@@ -6,22 +6,28 @@
 
 #pragma once
 
-#include "RHIDefinitions.h"
+#include "CoreTypes.h"
+#include "MeshCardRepresentation.h"
 #include "SceneView.h"
-#include "SceneRendering.h"
-#include "ScenePrivate.h"
-#include "LumenSceneData.h"
+#include "ShaderParameterMacros.h"
 
+enum EShaderPlatform : uint16;
+
+class FDistanceFieldSceneData;
 class FLumenSceneData;
+class FLumenCard;
 class FLumenCardScene;
+class FMeshPassDrawListContext;
+class FMeshPassProcessor;
+class FNaniteCommandInfo;
+class FPrimitiveSceneProxy;
+class FScene;
+class FViewFamilyInfo;
+class FViewInfo;
 
-inline bool DoesPlatformSupportLumenGI(EShaderPlatform Platform, bool bSkipProjectCheck = false)
-{
-	extern int32 GLumenSupported;
-	return (bSkipProjectCheck || GLumenSupported)
-		&& FDataDrivenShaderPlatformInfo::GetSupportsLumenGI(Platform)
-		&& !IsForwardShadingEnabled(Platform);
-}
+struct FLumenSceneFrameTemporaries;
+
+bool DoesPlatformSupportLumenGI(EShaderPlatform Platform, bool bSkipProjectCheck = false);
 
 class FCardPageRenderData
 {
@@ -36,7 +42,7 @@ public:
 	FIntRect CardCaptureAtlasRect;
 	FIntRect SurfaceCacheAtlasRect;
 
-	FLumenCardOBB CardWorldOBB;
+	FLumenCardOBBd CardWorldOBB;
 
 	FViewMatrices ViewMatrices;
 	FMatrix ProjectionMatrixUnadjustedForRHI;
@@ -62,6 +68,7 @@ public:
 		int32 InCardIndex,
 		int32 InCardPageIndex,
 		bool bResampleLastLighting);
+	~FCardPageRenderData();
 
 	void UpdateViewMatrices(const FViewInfo& MainView);
 
@@ -84,23 +91,30 @@ FMeshPassProcessor* CreateLumenCardNaniteMeshProcessor(
 
 namespace Lumen
 {
-	inline bool HasPrimitiveNaniteMeshBatches(const FPrimitiveSceneProxy* Proxy)
-	{
-		return Proxy && Proxy->ShouldRenderInMainPass() && Proxy->AffectsDynamicIndirectLighting();
-	}
+	bool HasPrimitiveNaniteMeshBatches(const FPrimitiveSceneProxy* Proxy);
 };
 
 extern void UpdateLumenCardSceneUniformBuffer(FRDGBuilder& GraphBuilder, FScene* Scene, const FLumenSceneData& LumenSceneData, FLumenSceneFrameTemporaries& FrameTemporaries);
 extern void UpdateLumenMeshCards(FRDGBuilder& GraphBuilder, const FScene& Scene, const FDistanceFieldSceneData& DistanceFieldSceneData, FLumenSceneFrameTemporaries& FrameTemporaries, FLumenSceneData& LumenSceneData);
 
-BEGIN_SHADER_PARAMETER_STRUCT(FLumenReflectionCompositeParameters, )
-	SHADER_PARAMETER(float, MaxRoughnessToTrace)
-	SHADER_PARAMETER(float, InvRoughnessFadeLength)
-END_SHADER_PARAMETER_STRUCT()
+namespace LumenDiffuseIndirect
+{
+	bool UseAsyncCompute(const FViewFamilyInfo& ViewFamily);
+}
 
-extern FLumenReflectionCompositeParameters GetLumenReflectionCompositeParameters();
+namespace LumenReflections
+{
+	BEGIN_SHADER_PARAMETER_STRUCT(FCompositeParameters, )
+		SHADER_PARAMETER(float, MaxRoughnessToTrace)
+		SHADER_PARAMETER(float, MaxRoughnessToTraceForFoliage)
+		SHADER_PARAMETER(float, InvRoughnessFadeLength)
+	END_SHADER_PARAMETER_STRUCT()
+
+	void SetupCompositeParameters(LumenReflections::FCompositeParameters& OutParameters);
+	bool UseAsyncCompute(const FViewFamilyInfo& ViewFamily);
+}
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenScreenSpaceBentNormalParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float3>, ScreenBentNormal)
-	SHADER_PARAMETER(uint32, UseScreenBentNormal)
+	SHADER_PARAMETER(uint32, UseShortRangeAO)
 END_SHADER_PARAMETER_STRUCT()

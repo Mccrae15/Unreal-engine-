@@ -7,6 +7,8 @@
 #include "Object/TextureShareObject.h"
 #include "Object/TextureShareObjectProxy.h"
 
+class SWindow;
+
 /**
  * TextureShare API impl
  */
@@ -19,7 +21,7 @@ public:
 
 public:
 	//~ ITextureShareAPI
-	virtual TSharedPtr<ITextureShareObject, ESPMode::ThreadSafe> GetOrCreateObject(const FString& ShareName) override;
+	virtual TSharedPtr<ITextureShareObject, ESPMode::ThreadSafe> GetOrCreateObject(const FString& ShareName, const ETextureShareProcessType InProcessType = ETextureShareProcessType::Undefined) override;
 	virtual bool RemoveObject(const FString& ShareName) override;
 	virtual bool IsObjectExist(const FString& ShareName) const override;
 
@@ -38,7 +40,15 @@ public:
 	{
 		return Callbacks;
 	}
+
+	virtual void DisableWorldSubsystem(const uint8* InObject) override;
+	virtual void EnableWorldSubsystem(const uint8* InObject) override;
+	virtual bool IsWorldSubsystemEnabled() const override;
+
 	//~~ ITextureShare
+
+public:
+	
 
 private:
 	void RemoveTextureShareObjectInstances();
@@ -68,4 +78,7 @@ private:
 	mutable FCriticalSection ThreadDataCS;
 
 	FTextureShareCallbacks Callbacks;
+
+	/** Addresses of callers to DisableWorldSubsystem. */
+	TSet<const uint8*> DisableWorldSubsystemCallers;
 };

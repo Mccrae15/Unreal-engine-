@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #pragma once
+
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/UnrealMemory.h"
@@ -21,13 +22,18 @@
 #include "GenericPlatform/GenericPlatformProcess.h"
 #include "Misc/MemStack.h"
 #include "Misc/App.h"
-#include "Stats/Stats.h"
+#include "RHIStats.h"
 #include "HAL/IConsoleManager.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "RHIBreadcrumbs.h"
+#include "RHITextureReference.h"
 #include "Trace/Trace.h"
+
+#include "DynamicRHI.h"
+#include "RHITypes.h"
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(RHI_API, RHITStalls);
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(RHI_API, RHITFlushes);
@@ -91,42 +97,32 @@ namespace ERenderThreadIdleTypes
 
 /** Accumulates how many cycles the renderthread has been idle. */
 extern RHI_API uint32 GRenderThreadIdle[ERenderThreadIdleTypes::Num];
-/** Accumulates how times renderthread was idle. */
-extern RHI_API uint32 GRenderThreadNumIdle[ERenderThreadIdleTypes::Num];
 
 /** private accumulator for the RHI thread. */
 extern RHI_API uint32 GWorkingRHIThreadTime;
-extern RHI_API uint32 GWorkingRHIThreadStallTime;
 extern RHI_API uint32 GWorkingRHIThreadStartCycles;
 
 /** Helper to mark scopes as idle time on the render or RHI threads. */
 struct FRenderThreadIdleScope
 {
-	const ERenderThreadIdleTypes::Type Type;
-	const uint32 Start;
-	const bool bCondition;
+	FThreadIdleStats::FScopeIdle RHIThreadIdleScope;
 
-	FRenderThreadIdleScope(ERenderThreadIdleTypes::Type Type, bool bCondition = true)
-		: Type(Type)
-		, Start(FPlatformTime::Cycles())
-		, bCondition(bCondition)
+	const ERenderThreadIdleTypes::Type Type;
+	const bool bCondition;
+	const uint32 Start;
+
+	FRenderThreadIdleScope(ERenderThreadIdleTypes::Type Type, bool bInCondition = true)
+		: RHIThreadIdleScope(!(bInCondition && IsInRHIThread()))
+		, Type(Type)
+		, bCondition(bInCondition && IsInRenderingThread())
+		, Start(bCondition ? FPlatformTime::Cycles() : 0)
 	{}
+
 	~FRenderThreadIdleScope()
 	{
 		if (bCondition)
 		{
-			uint32 End = FPlatformTime::Cycles();
-			uint32 IdleCycles = End - Start;
-
-			if (IsInRHIThread())
-			{
-				GWorkingRHIThreadStallTime += IdleCycles;
-			}
-			else if (IsInRenderingThread())
-			{
-				GRenderThreadIdle[Type] += IdleCycles;
-				GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForAllOtherSleep]++;
-			}
+			GRenderThreadIdle[Type] += FPlatformTime::Cycles() - Start;
 		}
 	}
 };
@@ -168,6 +164,72 @@ extern RHI_API bool GEnableAsyncCompute;
 extern RHI_API TAutoConsoleVariable<int32> CVarRHICmdWidth;
 extern RHI_API TAutoConsoleVariable<int32> CVarRHICmdFlushRenderThreadTasks;
 
+
+struct FRHICopyTextureInfo
+{
+	FIntRect GetSourceRect() const
+	{
+		return FIntRect(SourcePosition.X, SourcePosition.Y, SourcePosition.X + Size.X, SourcePosition.Y + Size.Y);
+	}
+
+	FIntRect GetDestRect() const
+	{
+		return FIntRect(DestPosition.X, DestPosition.Y, DestPosition.X + Size.X, DestPosition.Y + Size.Y);
+	}
+
+	// Number of texels to copy. By default it will copy the whole resource if no size is specified.
+	FIntVector Size = FIntVector::ZeroValue;
+
+	// Position of the copy from the source texture/to destination texture
+	FIntVector SourcePosition = FIntVector::ZeroValue;
+	FIntVector DestPosition = FIntVector::ZeroValue;
+
+	uint32 SourceSliceIndex = 0;
+	uint32 DestSliceIndex = 0;
+	uint32 NumSlices = 1;
+
+	// Mips to copy and destination mips
+	uint32 SourceMipIndex = 0;
+	uint32 DestMipIndex = 0;
+	uint32 NumMips = 1;
+};
+
+struct FRHIBufferRange
+{
+	class FRHIBuffer* Buffer{ nullptr };
+	uint64 Offset{ 0 };
+	uint64 Size{ 0 };
+};
+
+/** Struct to hold common data between begin/end updatetexture3d */
+struct FUpdateTexture3DData
+{
+	FUpdateTexture3DData(FRHITexture* InTexture, uint32 InMipIndex, const struct FUpdateTextureRegion3D& InUpdateRegion, uint32 InSourceRowPitch, uint32 InSourceDepthPitch, uint8* InSourceData, uint32 InDataSizeBytes, uint32 InFrameNumber)
+		: Texture(InTexture)
+		, MipIndex(InMipIndex)
+		, UpdateRegion(InUpdateRegion)
+		, RowPitch(InSourceRowPitch)
+		, DepthPitch(InSourceDepthPitch)
+		, Data(InSourceData)
+		, DataSizeBytes(InDataSizeBytes)
+		, FrameNumber(InFrameNumber)
+	{
+	}
+
+	FRHITexture* Texture;
+	uint32 MipIndex;
+	FUpdateTextureRegion3D UpdateRegion;
+	uint32 RowPitch;
+	uint32 DepthPitch;
+	uint8* Data;
+	uint32 DataSizeBytes;
+	uint32 FrameNumber;
+	uint8 PlatformData[64];
+
+private:
+	FUpdateTexture3DData();
+};
+
 #if RHI_RAYTRACING
 struct FRayTracingShaderBindings
 {
@@ -196,24 +258,6 @@ enum class ERayTracingBindingType : uint8
 	HitGroup,
 	CallableShader,
 	MissShader,
-};
-
-// C++ counter-part of FBasicRayData declared in RayTracingCommon.ush
-struct UE_DEPRECATED(5.1, "Please use an explicit ray generation shader with a custom intersection structure instead.") FBasicRayData
-{
-	float Origin[3];
-	uint32 Mask;
-	float Direction[3];
-	float TFar;
-};
-
-// C++ counter-part of FIntersectionPayload declared in RayTracingCommon.ush
-struct UE_DEPRECATED(5.1, "Please use an explicit ray generation shader with a custom intersection structure instead.") FIntersectionPayload
-{
-	float  HitT;            // Distance from ray origin to the intersection point in the ray direction. Negative on miss.
-	uint32 PrimitiveIndex;  // Index of the primitive within the geometry inside the bottom-level acceleration structure instance. Undefined on miss.
-	uint32 InstanceIndex;   // Index of the current instance in the top-level structure. Undefined on miss.
-	float  Barycentrics[2]; // Primitive barycentric coordinates of the intersection point. Undefined on miss.
 };
 #endif // RHI_RAYTRACING
 
@@ -424,6 +468,125 @@ struct TRHILambdaCommand final : public FRHICommandBase
 
 #define RHI_COUNT_COMMANDS (DO_CHECK || STATS)
 
+class FRHICommandListScopedPipelineGuard
+{
+	FRHICommandListBase& RHICmdList;
+	bool bPipelineSet = false;
+
+public:
+	FRHICommandListScopedPipelineGuard(FRHICommandListBase& RHICmdList);
+	~FRHICommandListScopedPipelineGuard();
+};
+
+struct FRHIBatchedShaderParameters
+{
+	TArray<uint8> ParametersData;
+	TArray<FRHIShaderParameter> Parameters;
+	TArray<FRHIShaderParameterResource> ResourceParameters;
+	TArray<FRHIShaderParameterResource> BindlessParameters;
+
+	inline bool HasParameters() const
+	{
+		return (Parameters.Num() + ResourceParameters.Num() + BindlessParameters.Num()) > 0;
+	}
+
+	void Reset()
+	{
+		ParametersData.Reset();
+		Parameters.Reset();
+		ResourceParameters.Reset();
+		BindlessParameters.Reset();
+	}
+};
+
+class RHI_API FRHIParameterBatcher
+{
+protected:
+	FRHIShader* AllBatchedShaders[SF_NumStandardFrequencies]{};
+	FRHIBatchedShaderParameters AllBatchedShaderParameters[SF_NumStandardFrequencies];
+	bool bEnabled = false;
+
+	FRHIGraphicsShader* GetBatchedGraphicsShader(int32 Index) { return static_cast<FRHIGraphicsShader*>(AllBatchedShaders[Index]); }
+	FRHIComputeShader*  GetBatchedComputeShader()             { return static_cast<FRHIComputeShader*>(AllBatchedShaders[SF_Compute]);   }
+
+	FORCEINLINE_DEBUGGABLE FRHIBatchedShaderParameters& GetBatchedShaderParameters(FRHIShader* InShader)
+	{
+		checkSlow(InShader);
+		const EShaderFrequency Frequency = InShader->GetFrequency();
+		checkSlow(Frequency < SF_NumStandardFrequencies);
+		check(AllBatchedShaders[Frequency] == InShader);
+		return AllBatchedShaderParameters[Frequency];
+	}
+
+public:
+	FRHIParameterBatcher();
+	FRHIParameterBatcher(const FBoundShaderStateInput& InBoundShaderStateInput, FRHIComputeShader* InBoundComputeShaderRHI);
+	FRHIParameterBatcher(FRHIParameterBatcher&&);
+	~FRHIParameterBatcher();
+
+	FORCEINLINE bool IsEnabled() const { return bEnabled; }
+
+	void OnBoundShaderChanged(class FRHICommandList& InCommandList, const FBoundShaderStateInput& InBoundShaderStateInput);
+	void OnBoundShaderChanged(class FRHIComputeCommandList& InCommandList, FRHIComputeShader* InBoundComputeShaderRHI);
+
+	void PreDispatch(class FRHIComputeCommandList& InCommandList);
+	void PreDraw(class FRHICommandList& InCommandList);
+
+	void FlushAllParameters(class FRHIComputeCommandList& InCommandList);
+	void FlushAllParameters(class FRHICommandList& InCommandList);
+
+	void FlushPendingParameters(class FRHIComputeCommandList& InCommandList, FRHIComputeShader* InShader);
+	void FlushPendingParameters(class FRHICommandList& InCommandList, FRHIGraphicsShader* InShader);
+
+	FORCEINLINE_DEBUGGABLE void SetShaderParameter(FRHIShader* Shader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
+	{
+		FRHIBatchedShaderParameters& BatchedParameters = GetBatchedShaderParameters(Shader);
+
+		const int32 DestDataOffset = BatchedParameters.ParametersData.Num();
+		BatchedParameters.ParametersData.Append((const uint8*)NewValue, NumBytes);
+		BatchedParameters.Parameters.Emplace((uint16)BufferIndex, (uint16)BaseIndex, (uint16)DestDataOffset, (uint16)NumBytes);
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetShaderTexture(FRHIShader* Shader, uint32 TextureIndex, FRHITexture* Texture)
+	{
+		GetBatchedShaderParameters(Shader).ResourceParameters.Emplace(Texture, (uint16)TextureIndex);
+	}
+	FORCEINLINE_DEBUGGABLE void SetShaderResourceViewParameter(FRHIShader* Shader, uint32 SamplerIndex, FRHIShaderResourceView* SRV)
+	{
+		GetBatchedShaderParameters(Shader).ResourceParameters.Emplace(SRV, (uint16)SamplerIndex);
+	}
+	FORCEINLINE_DEBUGGABLE void SetShaderSampler(FRHIShader* Shader, uint32 SamplerIndex, FRHISamplerState* State)
+	{
+		GetBatchedShaderParameters(Shader).ResourceParameters.Emplace(State, (uint16)SamplerIndex);
+	}
+	FORCEINLINE_DEBUGGABLE void SetUAVParameter(FRHIShader* Shader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV)
+	{
+		GetBatchedShaderParameters(Shader).ResourceParameters.Emplace(UAV, (uint16)UAVIndex);
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetBindlessTexture(FRHIShader* Shader, uint32 Index, FRHITexture* Texture)
+	{
+		GetBatchedShaderParameters(Shader).BindlessParameters.Emplace(Texture, (uint16)Index);
+	}
+	FORCEINLINE_DEBUGGABLE void SetBindlessResourceView(FRHIShader* Shader, uint32 Index, FRHIShaderResourceView* SRV)
+	{
+		GetBatchedShaderParameters(Shader).BindlessParameters.Emplace(SRV, (uint16)Index);
+	}
+	FORCEINLINE_DEBUGGABLE void SetBindlessSampler(FRHIShader* Shader, uint32 Index, FRHISamplerState* State)
+	{
+		GetBatchedShaderParameters(Shader).BindlessParameters.Emplace(State, (uint16)Index);
+	}
+	FORCEINLINE_DEBUGGABLE void SetBindlessUAV(FRHIShader* Shader, uint32 Index, FRHIUnorderedAccessView* UAV)
+	{
+		GetBatchedShaderParameters(Shader).BindlessParameters.Emplace(UAV, (uint16)Index);
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetUAVParameter(FRHIShader* Shader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV, uint32 InitialCount)
+	{
+		checkNoEntry(); // @todo: support append/consume buffers
+	}
+};
+
 class RHI_API FRHICommandListBase : public FNoncopyable
 {
 public:
@@ -476,6 +639,13 @@ public:
 		return MemManager.Alloc(AllocSize, Alignment);
 	}
 
+	FORCEINLINE_DEBUGGABLE void* AllocCopy(const void* InSourceData, int64 AllocSize, int64 Alignment)
+	{
+		void* NewData = Alloc(AllocSize, Alignment);
+		FMemory::Memcpy(NewData, InSourceData, AllocSize);
+		return NewData;
+	}
+
 	template <typename T>
 	FORCEINLINE_DEBUGGABLE void* Alloc()
 	{
@@ -491,9 +661,13 @@ public:
 	template <typename T>
 	FORCEINLINE_DEBUGGABLE const TArrayView<T> AllocArray(const TArrayView<T> InArray)
 	{
+		if (InArray.Num() == 0)
+		{
+			return TArrayView<T>();
+		}
+
 		// @todo static_assert(TIsTrivial<T>::Value, "Only trivially constructible / copyable types can be used in RHICmdList.");
-		void* NewArray = Alloc(InArray.Num() * sizeof(T), alignof(T));
-		FMemory::Memcpy(NewArray, InArray.GetData(), InArray.Num() * sizeof(T));
+		void* NewArray = AllocCopy(InArray.GetData(), InArray.Num() * sizeof(T), alignof(T));
 		return TArrayView<T>((T*) NewArray, InArray.Num());
 	}
 
@@ -601,20 +775,27 @@ public:
 
 	void SetExecuteStat(TStatId Stat) { ExecuteStat = Stat; }
 
+#if HAS_GPU_STATS
+	void SetStatsCategory(FDrawCallCategoryName* Category);
+#endif
+
 	FGraphEventRef RHIThreadFence(bool bSetLockFence = false);
 
 	FORCEINLINE void* LockBuffer(FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
 	{
+		FRHICommandListScopedPipelineGuard ScopedPipeline(*this);
 		return GDynamicRHI->RHILockBuffer(*this, Buffer, Offset, SizeRHI, LockMode);
 	}
 
 	FORCEINLINE void UnlockBuffer(FRHIBuffer* Buffer)
 	{
+		FRHICommandListScopedPipelineGuard ScopedPipeline(*this);
 		GDynamicRHI->RHIUnlockBuffer(*this, Buffer);
 	}
 
 	FORCEINLINE FBufferRHIRef CreateBuffer(uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo)
 	{
+		FRHICommandListScopedPipelineGuard ScopedPipeline(*this);
 		FBufferRHIRef Buffer = GDynamicRHI->RHICreateBuffer(*this, Size, Usage, Stride, ResourceState, CreateInfo);
 		Buffer->SetTrackedAccess_Unsafe(ResourceState);
 		return Buffer;
@@ -622,7 +803,39 @@ public:
 
 	FORCEINLINE void UpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
 	{
+		FRHICommandListScopedPipelineGuard ScopedPipeline(*this);
 		GDynamicRHI->RHIUpdateUniformBuffer(*this, UniformBufferRHI, Contents);
+	}
+
+	FORCEINLINE void UpdateTexture2D(FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData)
+	{
+		checkf(UpdateRegion.DestX + UpdateRegion.Width <= Texture->GetSizeX(), TEXT("UpdateTexture2D out of bounds on X. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestX, UpdateRegion.Width, Texture->GetSizeX());
+		checkf(UpdateRegion.DestY + UpdateRegion.Height <= Texture->GetSizeY(), TEXT("UpdateTexture2D out of bounds on Y. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestY, UpdateRegion.Height, Texture->GetSizeY());
+		LLM_SCOPE(ELLMTag::Textures);
+
+		FRHICommandListScopedPipelineGuard ScopedPipeline(*this);
+		GDynamicRHI->RHIUpdateTexture2D(*this, Texture, MipIndex, UpdateRegion, SourcePitch, SourceData);
+	}
+
+	FORCEINLINE void UpdateFromBufferTexture2D(FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, FRHIBuffer* Buffer, uint32 BufferOffset)
+	{
+		checkf(UpdateRegion.DestX + UpdateRegion.Width <= Texture->GetSizeX(), TEXT("UpdateFromBufferTexture2D out of bounds on X. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestX, UpdateRegion.Width, Texture->GetSizeX());
+		checkf(UpdateRegion.DestY + UpdateRegion.Height <= Texture->GetSizeY(), TEXT("UpdateFromBufferTexture2D out of bounds on Y. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestY, UpdateRegion.Height, Texture->GetSizeY());
+		LLM_SCOPE(ELLMTag::Textures);
+
+		FRHICommandListScopedPipelineGuard ScopedPipeline(*this);
+		GDynamicRHI->RHIUpdateFromBufferTexture2D(*this, Texture, MipIndex, UpdateRegion, SourcePitch, Buffer, BufferOffset);
+	}
+
+	FORCEINLINE void UpdateTexture3D(FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion, uint32 SourceRowPitch, uint32 SourceDepthPitch, const uint8* SourceData)
+	{
+		checkf(UpdateRegion.DestX + UpdateRegion.Width <= Texture->GetSizeX(), TEXT("UpdateTexture3D out of bounds on X. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestX, UpdateRegion.Width, Texture->GetSizeX());
+		checkf(UpdateRegion.DestY + UpdateRegion.Height <= Texture->GetSizeY(), TEXT("UpdateTexture3D out of bounds on Y. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestY, UpdateRegion.Height, Texture->GetSizeY());
+		checkf(UpdateRegion.DestZ + UpdateRegion.Depth <= Texture->GetSizeZ(), TEXT("UpdateTexture3D out of bounds on Z. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestZ, UpdateRegion.Depth, Texture->GetSizeZ());
+		LLM_SCOPE(ELLMTag::Textures);
+
+		FRHICommandListScopedPipelineGuard ScopedPipeline(*this);
+		GDynamicRHI->RHIUpdateTexture3D(*this, Texture, MipIndex, UpdateRegion, SourceRowPitch, SourceDepthPitch, SourceData);
 	}
 
 protected:
@@ -677,11 +890,6 @@ protected:
 		PersistentState.SubpassIndex = 0;
 	}
 
-private:
-	// Replays recorded commands into the specified contexts.
-	// Used internally, do not call directly.
-	void Execute(TRHIPipelineArray<IRHIComputeContext*>& InOutPipeContexts);
-
 protected:
 	// Blocks the calling thread until the dispatch event is completed.
 	// Used internally, do not call directly.
@@ -699,6 +907,8 @@ protected:
 	// The RHI contexts available to the command list during execution.
 	// These are always set for the immediate command list, see InitializeImmediateContexts().
 	TRHIPipelineArray<IRHIComputeContext*> Contexts = {};
+
+	FRHIParameterBatcher ParameterBatcher;
 
 #if RHI_COUNT_COMMANDS
 	uint32 NumCommands = 0;
@@ -732,6 +942,7 @@ protected:
 		ESubpassHint SubpassHint = ESubpassHint::None;
 		uint8 SubpassIndex = 0;
 		uint8 MultiViewCount = 0;
+		uint8 ExtendResourceLifetimeRefCount = 0;
 		bool HasFragmentDensityAttachment = false;
 
 		bool bInsideRenderPass = false;
@@ -758,6 +969,42 @@ protected:
 		TRefCountPtr<FFenceCandidate> FenceCandidate;
 		FGraphEventArray QueuedFenceCandidateEvents;
 		TArray<TRefCountPtr<FFenceCandidate>, FConcurrentLinearArrayAllocator> QueuedFenceCandidates;
+		TArray<FRHIResource*, FConcurrentLinearArrayAllocator> ExtendedLifetimeResources;
+
+		struct FGPUStats
+		{
+#if HAS_GPU_STATS
+			FDrawCallCategoryName* CategoryTOP = nullptr;
+			FDrawCallCategoryName* CategoryBOP = nullptr;
+#endif
+
+			FRHIDrawStats* Ptr = nullptr;
+
+			void InitFrom(FGPUStats* Other)
+			{
+				if (!Other)
+					return;
+
+				Ptr = Other->Ptr;
+#if HAS_GPU_STATS
+				CategoryBOP = Other->CategoryTOP;
+#endif
+			}
+
+			void ApplyToContext(IRHIComputeContext* Context)
+			{
+				uint32 CategoryID = FRHIDrawStats::NoCategory;
+#if HAS_GPU_STATS
+				check(!CategoryBOP || CategoryBOP->ShouldCountDraws());
+				if (CategoryBOP)
+				{
+					CategoryID = CategoryBOP->Index;
+				}
+#endif
+
+				Context->StatsSetCategory(Ptr, CategoryID);
+			}
+		} Stats;
 
 		FPersistentState(FRHIGPUMask InInitialGPUMask, ERecordingThread InRecordingThread)
 			: RecordingThread(InRecordingThread)
@@ -816,6 +1063,9 @@ public:
 private:
 	FRHICommandListBase(FPersistentState&& InPersistentState);
 
+	// Replays recorded commands into the specified contexts. Used internally, do not call directly.
+	void Execute(TRHIPipelineArray<IRHIComputeContext*>& InOutPipeContexts, FPersistentState::FGPUStats* ParentStats);
+
 	friend class FRHICommandListExecutor;
 	friend class FRHICommandListIterator;
 	friend class FRHICommandListScopedFlushAndExecute;
@@ -859,12 +1109,27 @@ struct FRHICommand : public FRHICommandBase
 	virtual void StoreDebugInfo(FRHICommandListDebugContext& Context) {};
 };
 
+#define FRHICOMMAND_UNNAMED(CommandName)							\
+	struct CommandName final : public FRHICommand<CommandName, FUnnamedRhiCommand>
+
+#define FRHICOMMAND_UNNAMED_TPL(TemplateType, CommandName)			\
+	template<typename TemplateType>									\
+	struct CommandName final : public FRHICommand<CommandName<TemplateType>, FUnnamedRhiCommand>
+
 #define FRHICOMMAND_MACRO(CommandName)								\
-struct PREPROCESSOR_JOIN(CommandName##String, __LINE__)				\
-{																	\
-	static const TCHAR* TStr() { return TEXT(#CommandName); }		\
-};																	\
-struct CommandName final : public FRHICommand<CommandName, PREPROCESSOR_JOIN(CommandName##String, __LINE__)>
+	struct PREPROCESSOR_JOIN(CommandName##String, __LINE__)			\
+	{																\
+		static const TCHAR* TStr() { return TEXT(#CommandName); }	\
+	};																\
+	struct CommandName final : public FRHICommand<CommandName, PREPROCESSOR_JOIN(CommandName##String, __LINE__)>
+
+#define FRHICOMMAND_MACRO_TPL(TemplateType, CommandName)			\
+	struct PREPROCESSOR_JOIN(CommandName##String, __LINE__)			\
+	{																\
+		static const TCHAR* TStr() { return TEXT(#CommandName); }	\
+	};																\
+	template<typename TemplateType>									\
+	struct CommandName final : public FRHICommand<CommandName<TemplateType>, PREPROCESSOR_JOIN(CommandName##String, __LINE__)>
 
 FRHICOMMAND_MACRO(FRHICommandBeginUpdateMultiFrameResource)
 {
@@ -912,33 +1177,6 @@ FRHICOMMAND_MACRO(FRHICommandSetGPUMask)
 	FRHIGPUMask GPUMask;
 	FORCEINLINE_DEBUGGABLE FRHICommandSetGPUMask(FRHIGPUMask InGPUMask)
 		: GPUMask(InGPUMask)
-	{
-	}
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-FRHICOMMAND_MACRO(FRHICommandWaitForTemporalEffect)
-{
-	FName EffectName;
-	FORCEINLINE_DEBUGGABLE FRHICommandWaitForTemporalEffect(const FName& InEffectName)
-		: EffectName(InEffectName)
-	{
-	}
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-struct FRHICommandBroadcastTemporalEffectString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandBroadcastTemporalEffect"); }
-};
-template <typename TRHIResource>
-struct FRHICommandBroadcastTemporalEffect final	: public FRHICommand<FRHICommandBroadcastTemporalEffect<TRHIResource>, FRHICommandBroadcastTemporalEffectString>
-{
-	FName EffectName;
-	const TArrayView<TRHIResource*> Resources;
-	FORCEINLINE_DEBUGGABLE FRHICommandBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<TRHIResource*> InResources)
-		: EffectName(InEffectName)
-		, Resources(InResources)
 	{
 	}
 	RHI_API void Execute(FRHICommandListBase& CmdList);
@@ -993,12 +1231,32 @@ FRHICOMMAND_MACRO(FRHICommandSetStencilRef)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetShaderParameterString
+FRHICOMMAND_MACRO_TPL(TRHIShader, FRHICommandSetShaderParameters)
 {
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetShaderParameter"); }
+	TRHIShader* Shader;
+	TConstArrayView<uint8> ParametersData;
+	TConstArrayView<FRHIShaderParameter> Parameters;
+	TConstArrayView<FRHIShaderParameterResource> ResourceParameters;
+	TConstArrayView<FRHIShaderParameterResource> BindlessParameters;
+
+	FORCEINLINE_DEBUGGABLE FRHICommandSetShaderParameters(
+		TRHIShader* InShader
+		, TConstArrayView<uint8> InParametersData
+		, TConstArrayView<FRHIShaderParameter> InParameters
+		, TConstArrayView<FRHIShaderParameterResource> InResourceParameters
+		, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters
+	)
+		: Shader(InShader)
+		, ParametersData(InParametersData)
+		, Parameters(InParameters)
+		, ResourceParameters(InResourceParameters)
+		, BindlessParameters(InBindlessParameters)
+	{
+	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
-template <typename TRHIShader>
-struct FRHICommandSetShaderParameter final : public FRHICommand<FRHICommandSetShaderParameter<TRHIShader>, FRHICommandSetShaderParameterString>
+
+FRHICOMMAND_MACRO_TPL(TRHIShader, FRHICommandSetShaderParameter)
 {
 	TRHIShader* Shader;
 	const void* NewValue;
@@ -1016,16 +1274,11 @@ struct FRHICommandSetShaderParameter final : public FRHICommand<FRHICommandSetSh
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetShaderUniformBufferString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetShaderUniformBuffer"); }
-};
-template <typename TRHIShader>
-struct FRHICommandSetShaderUniformBuffer final : public FRHICommand<FRHICommandSetShaderUniformBuffer<TRHIShader>, FRHICommandSetShaderUniformBufferString>
+FRHICOMMAND_MACRO_TPL(TRHIShader, FRHICommandSetShaderUniformBuffer)
 {
 	TRHIShader* Shader;
 	uint32 BaseIndex;
-	TRefCountPtr<FRHIUniformBuffer> UniformBuffer;
+	FRHIUniformBuffer* UniformBuffer;
 	FORCEINLINE_DEBUGGABLE FRHICommandSetShaderUniformBuffer(TRHIShader* InShader, uint32 InBaseIndex, FRHIUniformBuffer* InUniformBuffer)
 		: Shader(InShader)
 		, BaseIndex(InBaseIndex)
@@ -1035,12 +1288,7 @@ struct FRHICommandSetShaderUniformBuffer final : public FRHICommand<FRHICommandS
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetShaderTextureString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetShaderTexture"); }
-};
-template <typename TRHIShader>
-struct FRHICommandSetShaderTexture final : public FRHICommand<FRHICommandSetShaderTexture<TRHIShader>, FRHICommandSetShaderTextureString >
+FRHICOMMAND_MACRO_TPL(TRHIShader, FRHICommandSetShaderTexture)
 {
 	TRHIShader* Shader;
 	uint32 TextureIndex;
@@ -1054,12 +1302,7 @@ struct FRHICommandSetShaderTexture final : public FRHICommand<FRHICommandSetShad
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetShaderResourceViewParameterString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetShaderResourceViewParameter"); }
-};
-template <typename TRHIShader>
-struct FRHICommandSetShaderResourceViewParameter final : public FRHICommand<FRHICommandSetShaderResourceViewParameter<TRHIShader>, FRHICommandSetShaderResourceViewParameterString >
+FRHICOMMAND_MACRO_TPL(TRHIShader, FRHICommandSetShaderResourceViewParameter)
 {
 	TRHIShader* Shader;
 	uint32 SamplerIndex;
@@ -1073,12 +1316,7 @@ struct FRHICommandSetShaderResourceViewParameter final : public FRHICommand<FRHI
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetUAVParameterString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetUAVParameter"); }
-};
-template <typename TRHIShader>
-struct FRHICommandSetUAVParameter final : public FRHICommand<FRHICommandSetUAVParameter<TRHIShader>, FRHICommandSetUAVParameterString >
+FRHICOMMAND_MACRO_TPL(TRHIShader, FRHICommandSetUAVParameter)
 {
 	TRHIShader* Shader;
 	uint32 UAVIndex;
@@ -1092,11 +1330,7 @@ struct FRHICommandSetUAVParameter final : public FRHICommand<FRHICommandSetUAVPa
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetUAVParameter_InitialCountString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetUAVParameter_InitialCount"); }
-};
-struct FRHICommandSetUAVParameter_InitialCount final : public FRHICommand<FRHICommandSetUAVParameter_InitialCount, FRHICommandSetUAVParameter_InitialCountString >
+FRHICOMMAND_MACRO(FRHICommandSetUAVParameter_InitialCount)
 {
 	FRHIComputeShader* Shader;
 	uint32 UAVIndex;
@@ -1112,12 +1346,7 @@ struct FRHICommandSetUAVParameter_InitialCount final : public FRHICommand<FRHICo
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetShaderSamplerString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetShaderSampler"); }
-};
-template <typename TRHIShader>
-struct FRHICommandSetShaderSampler final : public FRHICommand<FRHICommandSetShaderSampler<TRHIShader>, FRHICommandSetShaderSamplerString >
+FRHICOMMAND_MACRO_TPL(TRHIShader, FRHICommandSetShaderSampler)
 {
 	TRHIShader* Shader;
 	uint32 SamplerIndex;
@@ -1289,78 +1518,7 @@ FRHICOMMAND_MACRO(FRHICommandNextSubpass)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FLocalCmdListParallelRenderPass
-{
-	TRefCountPtr<struct FRHIParallelRenderPass> RenderPass;
-};
-
-FRHICOMMAND_MACRO(FRHICommandBeginParallelRenderPass)
-{
-	FRHIRenderPassInfo Info;
-	FLocalCmdListParallelRenderPass* LocalRenderPass;
-	const TCHAR* Name;
-
-	FRHICommandBeginParallelRenderPass(const FRHIRenderPassInfo& InInfo, FLocalCmdListParallelRenderPass* InLocalRenderPass, const TCHAR* InName)
-		: Info(InInfo)
-		, LocalRenderPass(InLocalRenderPass)
-		, Name(InName)
-	{
-	}
-
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-FRHICOMMAND_MACRO(FRHICommandEndParallelRenderPass)
-{
-	FLocalCmdListParallelRenderPass* LocalRenderPass;
-
-	FRHICommandEndParallelRenderPass(FLocalCmdListParallelRenderPass* InLocalRenderPass)
-		: LocalRenderPass(InLocalRenderPass)
-	{
-	}
-
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-struct FLocalCmdListRenderSubPass
-{
-	TRefCountPtr<struct FRHIRenderSubPass> RenderSubPass;
-};
-
-FRHICOMMAND_MACRO(FRHICommandBeginRenderSubPass)
-{
-	FLocalCmdListParallelRenderPass* LocalRenderPass;
-	FLocalCmdListRenderSubPass* LocalRenderSubPass;
-
-	FRHICommandBeginRenderSubPass(FLocalCmdListParallelRenderPass* InLocalRenderPass, FLocalCmdListRenderSubPass* InLocalRenderSubPass)
-		: LocalRenderPass(InLocalRenderPass)
-		, LocalRenderSubPass(InLocalRenderSubPass)
-	{
-	}
-
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-FRHICOMMAND_MACRO(FRHICommandEndRenderSubPass)
-{
-	FLocalCmdListParallelRenderPass* LocalRenderPass;
-	FLocalCmdListRenderSubPass* LocalRenderSubPass;
-
-	FRHICommandEndRenderSubPass(FLocalCmdListParallelRenderPass* InLocalRenderPass, FLocalCmdListRenderSubPass* InLocalRenderSubPass)
-		: LocalRenderPass(InLocalRenderPass)
-		, LocalRenderSubPass(InLocalRenderSubPass)
-	{
-	}
-
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-struct FRHICommandSetComputeShaderString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetComputeShader"); }
-};
-
-struct FRHICommandSetComputeShader final : public FRHICommand<FRHICommandSetComputeShader, FRHICommandSetComputeShaderString>
+FRHICOMMAND_MACRO(FRHICommandSetComputeShader)
 {
 	FRHIComputeShader* ComputeShader;
 	FORCEINLINE_DEBUGGABLE FRHICommandSetComputeShader(FRHIComputeShader* InComputeShader)
@@ -1370,12 +1528,7 @@ struct FRHICommandSetComputeShader final : public FRHICommand<FRHICommandSetComp
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetComputePipelineStateString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetComputePipelineState"); }
-};
-
-struct FRHICommandSetComputePipelineState final : public FRHICommand<FRHICommandSetComputePipelineState, FRHICommandSetComputePipelineStateString>
+FRHICOMMAND_MACRO(FRHICommandSetComputePipelineState)
 {
 	FComputePipelineState* ComputePipelineState;
 	FORCEINLINE_DEBUGGABLE FRHICommandSetComputePipelineState(FComputePipelineState* InComputePipelineState)
@@ -1415,12 +1568,7 @@ FRHICOMMAND_MACRO(FRHICommandSetGraphicsPipelineStateFromInitializer)
 };
 #endif
 
-struct FRHICommandDispatchComputeShaderString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandDispatchComputeShader"); }
-};
-
-struct FRHICommandDispatchComputeShader final : public FRHICommand<FRHICommandDispatchComputeShader, FRHICommandDispatchComputeShaderString>
+FRHICOMMAND_MACRO(FRHICommandDispatchComputeShader)
 {
 	uint32 ThreadGroupCountX;
 	uint32 ThreadGroupCountY;
@@ -1434,12 +1582,7 @@ struct FRHICommandDispatchComputeShader final : public FRHICommand<FRHICommandDi
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandDispatchIndirectComputeShaderString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandDispatchIndirectComputeShader"); }
-};
-
-struct FRHICommandDispatchIndirectComputeShader final : public FRHICommand<FRHICommandDispatchIndirectComputeShader, FRHICommandDispatchIndirectComputeShaderString>
+FRHICOMMAND_MACRO(FRHICommandDispatchIndirectComputeShader)
 {
 	FRHIBuffer* ArgumentBuffer;
 	uint32 ArgumentOffset;
@@ -1692,12 +1835,7 @@ FRHICOMMAND_MACRO(FRHICommandSetTrackedAccess)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetAsyncComputeBudgetString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetAsyncComputeBudget"); }
-};
-
-struct FRHICommandSetAsyncComputeBudget final : public FRHICommand<FRHICommandSetAsyncComputeBudget, FRHICommandSetAsyncComputeBudgetString>
+FRHICOMMAND_MACRO(FRHICommandSetAsyncComputeBudget)
 {
 	EAsyncComputeBudget Budget;
 
@@ -1708,12 +1846,7 @@ struct FRHICommandSetAsyncComputeBudget final : public FRHICommand<FRHICommandSe
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandCopyToStagingBufferString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandCopyToStagingBuffer"); }
-};
-
-struct FRHICommandCopyToStagingBuffer final : public FRHICommand<FRHICommandCopyToStagingBuffer, FRHICommandCopyToStagingBufferString>
+FRHICOMMAND_MACRO(FRHICommandCopyToStagingBuffer)
 {
 	FRHIBuffer* SourceBuffer;
 	FRHIStagingBuffer* DestinationStagingBuffer;
@@ -1745,107 +1878,15 @@ FRHICOMMAND_MACRO(FRHICommandWriteGPUFence)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-FRHICOMMAND_MACRO(FRHICommandClearColorTexture)
-{
-	FRHITexture* Texture;
-	FLinearColor Color;
-
-	FORCEINLINE_DEBUGGABLE FRHICommandClearColorTexture(
-		FRHITexture* InTexture,
-		const FLinearColor& InColor
-		)
-		: Texture(InTexture)
-		, Color(InColor)
-	{
-	}
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-FRHICOMMAND_MACRO(FRHICommandClearDepthStencilTexture)
-{
-	FRHITexture* Texture;
-	float Depth;
-	uint32 Stencil;
-	EClearDepthStencil ClearDepthStencil;
-
-	FORCEINLINE_DEBUGGABLE FRHICommandClearDepthStencilTexture(
-		FRHITexture* InTexture,
-		EClearDepthStencil InClearDepthStencil,
-		float InDepth,
-		uint32 InStencil
-	)
-		: Texture(InTexture)
-		, Depth(InDepth)
-		, Stencil(InStencil)
-		, ClearDepthStencil(InClearDepthStencil)
-	{
-	}
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-FRHICOMMAND_MACRO(FRHICommandClearColorTextures)
-{
-	FLinearColor ColorArray[MaxSimultaneousRenderTargets];
-	FRHITexture* Textures[MaxSimultaneousRenderTargets];
-	int32 NumClearColors;
-
-	FORCEINLINE_DEBUGGABLE FRHICommandClearColorTextures(
-		int32 InNumClearColors,
-		FRHITexture** InTextures,
-		const FLinearColor* InColorArray
-		)
-		: NumClearColors(InNumClearColors)
-	{
-		check(InNumClearColors <= MaxSimultaneousRenderTargets);
-		for (int32 Index = 0; Index < InNumClearColors; Index++)
-		{
-			ColorArray[Index] = InColorArray[Index];
-			Textures[Index] = InTextures[Index];
-		}
-	}
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
 FRHICOMMAND_MACRO(FRHICommandSetStaticUniformBuffers)
 {
 	FUniformBufferStaticBindings UniformBuffers;
 
 	FORCEINLINE_DEBUGGABLE FRHICommandSetStaticUniformBuffers(const FUniformBufferStaticBindings& InUniformBuffers)
 		: UniformBuffers(InUniformBuffers)
-	{
-		const int32 NumUniformBuffers = UniformBuffers.GetUniformBufferCount();
-		for (int32 Index = 0; Index < NumUniformBuffers; ++Index)
-		{
-			FRHIUniformBuffer* UniformBuffer = UniformBuffers.GetUniformBuffer(Index);
-			if (UniformBuffer)
-			{
-				UniformBuffer->AddRef();
-			}
-		}
-	}
-	~FRHICommandSetStaticUniformBuffers()
-	{
-		const int32 NumUniformBuffers = UniformBuffers.GetUniformBufferCount();
-		for (int32 Index = 0; Index < NumUniformBuffers; ++Index)
-		{
-			FRHIUniformBuffer* UniformBuffer = UniformBuffers.GetUniformBuffer(Index);
-			if (UniformBuffer)
-			{
-				UniformBuffer->Release();
-			}
-		}
-	}
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
+	{}
 
-struct FComputedGraphicsPipelineState
-{
-	FGraphicsPipelineStateRHIRef GraphicsPipelineState;
-	int32 UseCount;
-	FComputedGraphicsPipelineState()
-		: UseCount(0)
-	{
-	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
 struct FComputedUniformBuffer
@@ -1917,12 +1958,7 @@ FRHICOMMAND_MACRO(FRHICommandBuildLocalUniformBuffer)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandSetLocalUniformBufferString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandSetLocalUniformBuffer"); }
-};
-template <typename TRHIShader>
-struct FRHICommandSetLocalUniformBuffer final : public FRHICommand<FRHICommandSetLocalUniformBuffer<TRHIShader>, FRHICommandSetLocalUniformBufferString >
+FRHICOMMAND_MACRO_TPL(TRHIShader, FRHICommandSetLocalUniformBuffer)
 {
 	TRHIShader* Shader;
 	uint32 BaseIndex;
@@ -2047,12 +2083,7 @@ FRHICOMMAND_MACRO(FRHICommandEndDrawingViewport)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandPushEventString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandPushEventString"); }
-};
-
-struct FRHICommandPushEvent final : public FRHICommand<FRHICommandPushEvent, FRHICommandPushEventString>
+FRHICOMMAND_MACRO(FRHICommandPushEvent)
 {
 	const TCHAR *Name;
 	FColor Color;
@@ -2070,12 +2101,7 @@ struct FRHICommandPushEvent final : public FRHICommand<FRHICommandPushEvent, FRH
 	};
 };
 
-struct FRHICommandPopEventString
-{
-	static const TCHAR* TStr() { return TEXT("FRHICommandPopEvent"); }
-};
-
-struct FRHICommandPopEvent final : public FRHICommand<FRHICommandPopEvent, FRHICommandPopEventString>
+FRHICOMMAND_MACRO(FRHICommandPopEvent)
 {
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 
@@ -2120,53 +2146,6 @@ FRHICOMMAND_MACRO(FRHICommandDiscardRenderTargets)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHIShaderResourceViewUpdateInfo
-{
-	FRHIShaderResourceView* SRV;
-	FRHIBuffer* Buffer;
-	uint32 Stride;
-	uint8 Format;
-};
-
-struct FRHIBufferUpdateInfo
-{
-	FRHIBuffer* DestBuffer;
-	FRHIBuffer* SrcBuffer;
-};
-
-struct FRHIRayTracingGeometryUpdateInfo
-{
-	FRHIRayTracingGeometry* DestGeometry;
-	FRHIRayTracingGeometry* SrcGeometry;
-};
-
-struct FRHIResourceUpdateInfo
-{
-	enum EUpdateType
-	{
-		/** Take over underlying resource from an intermediate buffer */
-		UT_Buffer,
-		/** Update an SRV to view on a different buffer */
-		UT_BufferSRV,
-		/** Update an SRV to view on a different buffer with a given format */
-		UT_BufferFormatSRV,
-		/** Take over underlying resource from an intermediate geometry */
-		UT_RayTracingGeometry,
-		/** Number of update types */
-		UT_Num
-	};
-
-	EUpdateType Type;
-	union
-	{
-		FRHIBufferUpdateInfo Buffer;
-		FRHIShaderResourceViewUpdateInfo BufferSRV;
-		FRHIRayTracingGeometryUpdateInfo RayTracingGeometry;
-	};
-
-	void ReleaseRefs();
-};
-
 FRHICOMMAND_MACRO(FRHICommandUpdateRHIResources)
 {
 	FRHIResourceUpdateInfo* UpdateInfos;
@@ -2205,7 +2184,7 @@ FRHICOMMAND_MACRO(FRHICommandCopyBufferRegion)
 
 #if RHI_RAYTRACING
 
-struct FRHICommandBindAccelerationStructureMemory final : public FRHICommand<FRHICommandBindAccelerationStructureMemory>
+FRHICOMMAND_UNNAMED(FRHICommandBindAccelerationStructureMemory)
 {
 	FRHIRayTracingScene* Scene;
 	FRHIBuffer* Buffer;
@@ -2220,7 +2199,7 @@ struct FRHICommandBindAccelerationStructureMemory final : public FRHICommand<FRH
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandBuildAccelerationStructure final : public FRHICommand<FRHICommandBuildAccelerationStructure>
+FRHICOMMAND_UNNAMED(FRHICommandBuildAccelerationStructure)
 {
 	FRayTracingSceneBuildParams SceneBuildParams;
 
@@ -2242,54 +2221,14 @@ FRHICOMMAND_MACRO(FRHICommandClearRayTracingBindings)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-struct FRHICommandBuildAccelerationStructures final : public FRHICommand<FRHICommandBuildAccelerationStructures>
+FRHICOMMAND_UNNAMED(FRHICommandBuildAccelerationStructures)
 {
 	const TArrayView<const FRayTracingGeometryBuildParams> Params;
 	FRHIBufferRange ScratchBufferRange;
-	TRefCountPtr<FRHIBuffer> ScratchBuffer;
+	FRHIBuffer* ScratchBuffer;
 
 	explicit FRHICommandBuildAccelerationStructures(const TArrayView<const FRayTracingGeometryBuildParams> InParams, const FRHIBufferRange& ScratchBufferRange)
 		: Params(InParams), ScratchBufferRange(ScratchBufferRange), ScratchBuffer(ScratchBufferRange.Buffer)
-	{}
-
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-FRHICOMMAND_MACRO(FRHICommandRayTraceOcclusion)
-{
-	FRHIRayTracingScene* Scene;
-	FRHIShaderResourceView* Rays;
-	FRHIUnorderedAccessView* Output;
-	uint32 NumRays;
-
-	FRHICommandRayTraceOcclusion(FRHIRayTracingScene* InScene,
-		FRHIShaderResourceView* InRays,
-		FRHIUnorderedAccessView* InOutput,
-		uint32 InNumRays)
-		: Scene(InScene)
-		, Rays(InRays)
-		, Output(InOutput)
-		, NumRays(InNumRays)
-	{}
-
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
-FRHICOMMAND_MACRO(FRHICommandRayTraceIntersection)
-{
-	FRHIRayTracingScene* Scene;
-	FRHIShaderResourceView* Rays;
-	FRHIUnorderedAccessView* Output;
-	uint32 NumRays;
-
-	FRHICommandRayTraceIntersection(FRHIRayTracingScene* InScene,
-		FRHIShaderResourceView* InRays,
-		FRHIUnorderedAccessView* InOutput,
-		uint32 InNumRays)
-		: Scene(InScene)
-		, Rays(InRays)
-		, Output(InOutput)
-		, NumRays(InNumRays)
 	{}
 
 	RHI_API void Execute(FRHICommandListBase& CmdList);
@@ -2404,15 +2343,43 @@ FRHICOMMAND_MACRO(FRHICommandSetRayTracingBindings)
 };
 #endif // RHI_RAYTRACING
 
+template<> RHI_API void FRHICommandSetShaderParameters           <FRHIComputeShader>::Execute(FRHICommandListBase& CmdList);
 template<> RHI_API void FRHICommandSetShaderParameter            <FRHIComputeShader>::Execute(FRHICommandListBase& CmdList);
 template<> RHI_API void FRHICommandSetShaderUniformBuffer        <FRHIComputeShader>::Execute(FRHICommandListBase& CmdList);
 template<> RHI_API void FRHICommandSetShaderTexture              <FRHIComputeShader>::Execute(FRHICommandListBase& CmdList);
 template<> RHI_API void FRHICommandSetShaderResourceViewParameter<FRHIComputeShader>::Execute(FRHICommandListBase& CmdList);
 template<> RHI_API void FRHICommandSetShaderSampler              <FRHIComputeShader>::Execute(FRHICommandListBase& CmdList);
-template<> RHI_API void FRHICommandSetUAVParameter<FRHIComputeShader>::Execute(FRHICommandListBase& CmdList);
+template<> RHI_API void FRHICommandSetUAVParameter               <FRHIComputeShader>::Execute(FRHICommandListBase& CmdList);
+
+extern RHI_API FRHIComputePipelineState* ExecuteSetComputePipelineState(FComputePipelineState* ComputePipelineState);
+extern RHI_API FRHIGraphicsPipelineState* ExecuteSetGraphicsPipelineState(class FGraphicsPipelineState* GraphicsPipelineState);
+extern RHI_API FRHIRayTracingPipelineState* GetRHIRayTracingPipelineState(FRayTracingPipelineState*);
 
 class RHI_API FRHIComputeCommandList : public FRHICommandListBase
 {
+protected:
+	void OnBoundShaderChanged(FRHIComputeShader* InBoundComputeShaderRHI)
+	{
+		ParameterBatcher.OnBoundShaderChanged(*this, InBoundComputeShaderRHI);
+		PersistentState.BoundComputeShaderRHI = InBoundComputeShaderRHI;
+	}
+
+	void PreDispatch()
+	{
+		ParameterBatcher.PreDispatch(*this);
+	}
+
+	void FlushPendingComputeParameters(FRHIComputeShader* InShader)
+	{
+		ParameterBatcher.FlushPendingParameters(*this, InShader);
+	}
+
+public:
+	void FlushAllPendingComputeParameters()
+	{
+		PreDispatch();
+	}
+
 public:
 	FRHIComputeCommandList(FRHIGPUMask GPUMask = FRHIGPUMask::All(), ERecordingThread InRecordingThread = ERecordingThread::Render)
 		: FRHICommandListBase(GPUMask, InRecordingThread)
@@ -2436,12 +2403,6 @@ public:
 	}
 
 	inline FRHIComputeShader* GetBoundComputeShader() const { return PersistentState.BoundComputeShaderRHI; }
-
-	UE_DEPRECATED(5.0, "Please rename to SetStaticUniformBuffers")
-	FORCEINLINE_DEBUGGABLE void SetGlobalUniformBuffers(const FUniformBufferStaticBindings& UniformBuffers)
-	{
-		SetStaticUniformBuffers(UniformBuffers);
-	}
 
 	FORCEINLINE_DEBUGGABLE void SetStaticUniformBuffers(const FUniformBufferStaticBindings& UniformBuffers)
 	{
@@ -2486,14 +2447,6 @@ public:
 		return Result;
 	}
 
-	UE_DEPRECATED(5.0, "Use Layout pointers instead")
-	FORCEINLINE_DEBUGGABLE FLocalUniformBuffer BuildLocalUniformBuffer(const void* Contents, uint32 ContentsSize, const FRHIUniformBufferLayout& Layout)
-	{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return BuildLocalUniformBuffer(Contents, ContentsSize, &Layout);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
 	template <typename TRHIShader>
 	UE_DEPRECATED(5.1, "Local uniform buffers are now deprecated. Use RHICreateUniformBuffer instead.")
 	FORCEINLINE_DEBUGGABLE void SetLocalShaderUniformBuffer(TRHIShader* Shader, uint32 BaseIndex, const FLocalUniformBuffer& UniformBuffer)
@@ -2513,9 +2466,61 @@ public:
 		SetLocalShaderUniformBuffer(Shader.GetReference(), BaseIndex, UniformBuffer);
 	}
 
+	FORCEINLINE_DEBUGGABLE void SetShaderParameters(
+		FRHIComputeShader* InShader
+		, TConstArrayView<uint8> InParametersData
+		, TConstArrayView<FRHIShaderParameter> InParameters
+		, TConstArrayView<FRHIShaderParameterResource> InResourceParameters
+		, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters
+		, bool bSubmitBatchedParameters = true
+	)
+	{
+		ValidateBoundShader(InShader);
+
+		if (bSubmitBatchedParameters)
+		{
+			FlushPendingComputeParameters(InShader);
+		}
+
+		if (Bypass())
+		{
+			GetComputeContext().RHISetShaderParameters(InShader, InParametersData, InParameters, InResourceParameters, InBindlessParameters);
+			return;
+		}
+
+		ALLOC_COMMAND(FRHICommandSetShaderParameters<FRHIComputeShader>)(
+			InShader
+			, AllocArray(InParametersData)
+			, AllocArray(InParameters)
+			, AllocArray(InResourceParameters)
+			, AllocArray(InBindlessParameters)
+		);
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetBatchedShaderParameters(FRHIComputeShader* InShader, const FRHIBatchedShaderParameters& InBatchedParameters)
+	{
+		if (InBatchedParameters.HasParameters())
+		{
+			SetShaderParameters(
+				InShader,
+				InBatchedParameters.ParametersData,
+				InBatchedParameters.Parameters,
+				InBatchedParameters.ResourceParameters,
+				InBatchedParameters.BindlessParameters,
+				false /* bSubmitBatchedParameters */
+			);
+		}
+	}
+
 	FORCEINLINE_DEBUGGABLE void SetShaderParameter(FRHIComputeShader* Shader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
 	{
 		ValidateBoundShader(Shader);
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetShaderParameter(Shader, BufferIndex, BaseIndex, NumBytes, NewValue);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetComputeContext().RHISetShaderParameter(Shader, BufferIndex, BaseIndex, NumBytes, NewValue);
@@ -2534,6 +2539,12 @@ public:
 	FORCEINLINE_DEBUGGABLE void SetShaderTexture(FRHIComputeShader* Shader, uint32 TextureIndex, FRHITexture* Texture)
 	{
 		ValidateBoundShader(Shader);
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetShaderTexture(Shader, TextureIndex, Texture);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetComputeContext().RHISetShaderTexture(Shader, TextureIndex, Texture);
@@ -2545,6 +2556,12 @@ public:
 	FORCEINLINE_DEBUGGABLE void SetShaderResourceViewParameter(FRHIComputeShader* Shader, uint32 SamplerIndex, FRHIShaderResourceView* SRV)
 	{
 		ValidateBoundShader(Shader);
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetShaderResourceViewParameter(Shader, SamplerIndex, SRV);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetComputeContext().RHISetShaderResourceViewParameter(Shader, SamplerIndex, SRV);
@@ -2562,6 +2579,12 @@ public:
 			return;
 		}
 
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetShaderSampler(Shader, SamplerIndex, State);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetComputeContext().RHISetShaderSampler(Shader, SamplerIndex, State);
@@ -2573,6 +2596,13 @@ public:
 	FORCEINLINE_DEBUGGABLE void SetUAVParameter(FRHIComputeShader* Shader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV)
 	{
 		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetUAVParameter(Shader, UAVIndex, UAV);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetComputeContext().RHISetUAVParameter(Shader, UAVIndex, UAV);
@@ -2584,6 +2614,13 @@ public:
 	FORCEINLINE_DEBUGGABLE void SetUAVParameter(FRHIComputeShader* Shader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV, uint32 InitialCount)
 	{
 		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetUAVParameter(Shader, UAVIndex, UAV, InitialCount);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetComputeContext().RHISetUAVParameter(Shader, UAVIndex, UAV, InitialCount);
@@ -2592,10 +2629,74 @@ public:
 		ALLOC_COMMAND(FRHICommandSetUAVParameter_InitialCount)(Shader, UAVIndex, UAV, InitialCount);
 	}
 
+	FORCEINLINE_DEBUGGABLE void SetBindlessTexture(FRHIComputeShader* Shader, uint32 Index, FRHITexture* Texture)
+	{
+		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetBindlessTexture(Shader, Index, Texture);
+			return;
+		}
+
+		FRHIShaderParameterResource Resource(Texture, (uint16)Index);
+		SetShaderParameters(Shader, {}, {}, {}, MakeArrayView(&Resource, 1));
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetBindlessResourceView(FRHIComputeShader* Shader, uint32 Index, FRHIShaderResourceView* SRV)
+	{
+		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetBindlessResourceView(Shader, Index, SRV);
+			return;
+		}
+
+		FRHIShaderParameterResource Resource(SRV, (uint16)Index);
+		SetShaderParameters(Shader, {}, {}, {}, MakeArrayView(&Resource, 1));
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetBindlessSampler(FRHIComputeShader* Shader, uint32 Index, FRHISamplerState* State)
+	{
+		ValidateBoundShader(Shader);
+
+		// Immutable samplers can't be set dynamically
+		check(!State->IsImmutable());
+		if (State->IsImmutable())
+		{
+			return;
+		}
+
+		// Immutable samplers can't be set dynamically
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetBindlessSampler(Shader, Index, State);
+			return;
+		}
+
+		FRHIShaderParameterResource Resource(State, (uint16)Index);
+		SetShaderParameters(Shader, {}, {}, {}, MakeArrayView(&Resource, 1));
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetBindlessUAV(FRHIComputeShader* Shader, uint32 Index, FRHIUnorderedAccessView* UAV)
+	{
+		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetBindlessUAV(Shader, Index, UAV);
+			return;
+		}
+
+		FRHIShaderParameterResource Resource(UAV, (uint16)Index);
+		SetShaderParameters(Shader, {}, {}, {}, MakeArrayView(&Resource, 1));
+	}
+
 	UE_DEPRECATED(5.1, "ComputePipelineStates should be used instead of direct ComputeShaders. You can use SetComputePipelineState(RHICmdList, ComputeShader).")
 	FORCEINLINE_DEBUGGABLE void SetComputeShader(FRHIComputeShader* ComputeShader)
 	{
-		PersistentState.BoundComputeShaderRHI = ComputeShader;
+		OnBoundShaderChanged(ComputeShader);
 		ComputeShader->UpdateStats();
 		if (Bypass())
 		{
@@ -2609,10 +2710,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	FORCEINLINE_DEBUGGABLE void SetComputePipelineState(FComputePipelineState* ComputePipelineState, FRHIComputeShader* ComputeShader)
 	{
-		PersistentState.BoundComputeShaderRHI = ComputeShader;
+		OnBoundShaderChanged(ComputeShader);
 		if (Bypass())
 		{
-			extern RHI_API FRHIComputePipelineState* ExecuteSetComputePipelineState(FComputePipelineState* ComputePipelineState);
 			FRHIComputePipelineState* RHIComputePipelineState = ExecuteSetComputePipelineState(ComputePipelineState);
 			GetComputeContext().RHISetComputePipelineState(RHIComputePipelineState);
 			return;
@@ -2632,6 +2732,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	FORCEINLINE_DEBUGGABLE void DispatchComputeShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ)
 	{
+		PreDispatch();
 		if (Bypass())
 		{
 			GetComputeContext().RHIDispatchComputeShader(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
@@ -2642,6 +2743,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	FORCEINLINE_DEBUGGABLE void DispatchIndirectComputeShader(FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset)
 	{
+		PreDispatch();
 		if (Bypass())
 		{
 			GetComputeContext().RHIDispatchIndirectComputeShader(ArgumentBuffer, ArgumentOffset);
@@ -2652,6 +2754,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	FORCEINLINE_DEBUGGABLE void ClearUAVFloat(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const FVector4f& Values)
 	{
+		PreDispatch();
 		if (Bypass())
 		{
 			GetComputeContext().RHIClearUAVFloat(UnorderedAccessViewRHI, Values);
@@ -2662,6 +2765,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	FORCEINLINE_DEBUGGABLE void ClearUAVUint(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const FUintVector4& Values)
 	{
+		PreDispatch();
 		if (Bypass())
 		{
 			GetComputeContext().RHIClearUAVUint(UnorderedAccessViewRHI, Values);
@@ -3008,40 +3112,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 #if WITH_MGPU
-	FORCEINLINE_DEBUGGABLE void WaitForTemporalEffect(const FName& EffectName)
-	{
-		//check(IsOutsideRenderPass());
-		if (Bypass())
-		{
-			GetContext().RHIWaitForTemporalEffect(EffectName);
-			return;
-		}
-		ALLOC_COMMAND(FRHICommandWaitForTemporalEffect)(EffectName);
-	}
+	UE_DEPRECATED(5.2, "AFR support has been removed in 5.2, function is a nop and calls should be removed.")
+	FORCEINLINE void WaitForTemporalEffect(const FName& EffectName) {}
 
-	FORCEINLINE_DEBUGGABLE void BroadcastTemporalEffect(const FName& EffectName, const TArrayView<FRHITexture*> Textures)
-	{
-		//check(IsOutsideRenderPass());
-		if (Bypass())
-		{
-			GetContext().RHIBroadcastTemporalEffect(EffectName, Textures);
-			return;
-		}
+	UE_DEPRECATED(5.2, "AFR support has been removed in 5.2, function is a nop and calls should be removed.")
+	FORCEINLINE void BroadcastTemporalEffect(const FName& EffectName, const TArrayView<FRHITexture*> Textures) {}
 
-		ALLOC_COMMAND(FRHICommandBroadcastTemporalEffect<FRHITexture>)(EffectName, AllocArray(Textures));
-	}
-
-	FORCEINLINE_DEBUGGABLE void BroadcastTemporalEffect(const FName& EffectName, const TArrayView<FRHIBuffer*> Buffers)
-	{
-		//check(IsOutsideRenderPass());
-		if (Bypass())
-		{
-			GetContext().RHIBroadcastTemporalEffect(EffectName, Buffers);
-			return;
-		}
-
-		ALLOC_COMMAND(FRHICommandBroadcastTemporalEffect<FRHIBuffer>)(EffectName, AllocArray(Buffers));
-	}
+	UE_DEPRECATED(5.2, "AFR support has been removed in 5.2, function is a nop and calls should be removed.")
+	FORCEINLINE void BroadcastTemporalEffect(const FName& EffectName, const TArrayView<FRHIBuffer*> Buffers) {}
 #endif // WITH_MGPU
 
 #if RHI_RAYTRACING
@@ -3108,15 +3186,35 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 };
 
-template<> RHI_API void FRHICommandSetShaderParameter<FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
-template<> RHI_API void FRHICommandSetShaderUniformBuffer<FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
-template<> RHI_API void FRHICommandSetShaderTexture<FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
+template<> RHI_API void FRHICommandSetShaderParameters           <FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
+template<> RHI_API void FRHICommandSetShaderParameter            <FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
+template<> RHI_API void FRHICommandSetShaderUniformBuffer        <FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
+template<> RHI_API void FRHICommandSetShaderTexture              <FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
 template<> RHI_API void FRHICommandSetShaderResourceViewParameter<FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
-template<> RHI_API void FRHICommandSetShaderSampler<FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
-template<> RHI_API void FRHICommandSetUAVParameter<FRHIPixelShader>::Execute(FRHICommandListBase& CmdList);
+template<> RHI_API void FRHICommandSetShaderSampler              <FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList);
+template<> RHI_API void FRHICommandSetUAVParameter               <FRHIPixelShader   >::Execute(FRHICommandListBase& CmdList);
 
 class RHI_API FRHICommandList : public FRHIComputeCommandList
 {
+protected:
+	using FRHIComputeCommandList::OnBoundShaderChanged;
+
+	void OnBoundShaderChanged(const FBoundShaderStateInput& InBoundShaderStateInput)
+	{
+		ParameterBatcher.OnBoundShaderChanged(*this, InBoundShaderStateInput);
+		PersistentState.BoundShaderInput = InBoundShaderStateInput;
+	}
+
+	void PreDraw()
+	{
+		ParameterBatcher.PreDraw(*this);
+	}
+
+	void FlushPendingGraphicsParameters(FRHIGraphicsShader* InShader)
+	{
+		ParameterBatcher.FlushPendingParameters(*this, InShader);
+	}
+
 public:
 	FRHICommandList(FRHIGPUMask GPUMask = FRHIGPUMask::All(), ERecordingThread InRecordingThread = ERecordingThread::Render)
 		: FRHIComputeCommandList(GPUMask, InRecordingThread)
@@ -3145,49 +3243,17 @@ public:
 		}
 	}
 
-	FORCEINLINE_DEBUGGABLE void BeginUpdateMultiFrameResource(FRHITexture* Texture)
-	{
-		//check(IsOutsideRenderPass());
-		if (Bypass())
-		{
-			GetContext().RHIBeginUpdateMultiFrameResource( Texture);
-			return;
-		}
-		ALLOC_COMMAND(FRHICommandBeginUpdateMultiFrameResource)(Texture);
-	}
+	UE_DEPRECATED(5.2, "AFR support has been removed in 5.2, function is a nop and calls should be removed.")
+	FORCEINLINE void BeginUpdateMultiFrameResource(FRHITexture* Texture) {}
 
-	FORCEINLINE_DEBUGGABLE void EndUpdateMultiFrameResource(FRHITexture* Texture)
-	{
-		//check(IsOutsideRenderPass());
-		if (Bypass())
-		{
-			GetContext().RHIEndUpdateMultiFrameResource(Texture);
-			return;
-		}
-		ALLOC_COMMAND(FRHICommandEndUpdateMultiFrameResource)(Texture);
-	}
+	UE_DEPRECATED(5.2, "AFR support has been removed in 5.2, function is a nop and calls should be removed.")
+	FORCEINLINE void EndUpdateMultiFrameResource(FRHITexture* Texture) {}
 
-	FORCEINLINE_DEBUGGABLE void BeginUpdateMultiFrameResource(FRHIUnorderedAccessView* UAV)
-	{
-		//check(IsOutsideRenderPass());
-		if (Bypass())
-		{
-			GetContext().RHIBeginUpdateMultiFrameResource(UAV);
-			return;
-		}
-		ALLOC_COMMAND(FRHICommandBeginUpdateMultiFrameUAV)(UAV);
-	}
+	UE_DEPRECATED(5.2, "AFR support has been removed in 5.2, function is a nop and calls should be removed.")
+	FORCEINLINE void BeginUpdateMultiFrameResource(FRHIUnorderedAccessView* UAV) {}
 
-	FORCEINLINE_DEBUGGABLE void EndUpdateMultiFrameResource(FRHIUnorderedAccessView* UAV)
-	{
-		//check(IsOutsideRenderPass());
-		if (Bypass())
-		{
-			GetContext().RHIEndUpdateMultiFrameResource(UAV);
-			return;
-		}
-		ALLOC_COMMAND(FRHICommandEndUpdateMultiFrameUAV)(UAV);
-	}
+	UE_DEPRECATED(5.2, "AFR support has been removed in 5.2, function is a nop and calls should be removed.")
+	FORCEINLINE void EndUpdateMultiFrameResource(FRHIUnorderedAccessView* UAV) {}
 
 	using FRHIComputeCommandList::SetShaderUniformBuffer;
 
@@ -3209,12 +3275,69 @@ public:
 		SetShaderUniformBuffer(Shader.GetReference(), BaseIndex, UniformBuffer);
 	}
 
+	using FRHIComputeCommandList::SetShaderParameters;
+
+	FORCEINLINE_DEBUGGABLE void SetShaderParameters(
+		FRHIGraphicsShader* InShader
+		, TConstArrayView<uint8> InParametersData
+		, TConstArrayView<FRHIShaderParameter> InParameters
+		, TConstArrayView<FRHIShaderParameterResource> InResourceParameters
+		, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters
+		, bool bSubmitBatchedParameters = true
+	)
+	{
+		ValidateBoundShader(InShader);
+
+		if (bSubmitBatchedParameters)
+		{
+			FlushPendingGraphicsParameters(InShader);
+		}
+
+		if (Bypass())
+		{
+			GetContext().RHISetShaderParameters(InShader, InParametersData, InParameters, InResourceParameters, InBindlessParameters);
+			return;
+		}
+
+		ALLOC_COMMAND(FRHICommandSetShaderParameters<FRHIGraphicsShader>)(
+			InShader
+			, AllocArray(InParametersData)
+			, AllocArray(InParameters)
+			, AllocArray(InResourceParameters)
+			, AllocArray(InBindlessParameters)
+			);
+	}
+
+	using FRHIComputeCommandList::SetBatchedShaderParameters;
+
+	FORCEINLINE_DEBUGGABLE void SetBatchedShaderParameters(FRHIGraphicsShader* InShader, const FRHIBatchedShaderParameters& InBatchedParameters)
+	{
+		if (InBatchedParameters.HasParameters())
+		{
+			SetShaderParameters(
+				InShader,
+				InBatchedParameters.ParametersData,
+				InBatchedParameters.Parameters,
+				InBatchedParameters.ResourceParameters,
+				InBatchedParameters.BindlessParameters,
+				false /* bSubmitBatchedParameters */
+			);
+		}
+	}
+
 	using FRHIComputeCommandList::SetShaderParameter;
 
 	FORCEINLINE_DEBUGGABLE void SetShaderParameter(FRHIGraphicsShader* Shader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
 	{
 		//check(IsOutsideRenderPass());
 		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetShaderParameter(Shader, BufferIndex, BaseIndex, NumBytes, NewValue);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetContext().RHISetShaderParameter(Shader, BufferIndex, BaseIndex, NumBytes, NewValue);
@@ -3237,6 +3360,13 @@ public:
 	{
 		//check(IsOutsideRenderPass());
 		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetShaderTexture(Shader, TextureIndex, Texture);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetContext().RHISetShaderTexture(Shader, TextureIndex, Texture);
@@ -3257,6 +3387,13 @@ public:
 	{
 		//check(IsOutsideRenderPass());
 		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetShaderResourceViewParameter(Shader, SamplerIndex, SRV);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetContext().RHISetShaderResourceViewParameter(Shader, SamplerIndex, SRV);
@@ -3285,6 +3422,12 @@ public:
 			return;
 		}
 
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetShaderSampler(Shader, SamplerIndex, State);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetContext().RHISetShaderSampler(Shader, SamplerIndex, State);
@@ -3304,6 +3447,13 @@ public:
 	FORCEINLINE_DEBUGGABLE void SetUAVParameter(FRHIPixelShader* Shader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV)
 	{
 		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetUAVParameter(Shader, UAVIndex, UAV);
+			return;
+		}
+
 		if (Bypass())
 		{
 			GetContext().RHISetUAVParameter(Shader, UAVIndex, UAV);
@@ -3315,6 +3465,77 @@ public:
 	FORCEINLINE_DEBUGGABLE void SetUAVParameter(const TRefCountPtr<FRHIPixelShader>& Shader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV)
 	{
 		SetUAVParameter(Shader.GetReference(), UAVIndex, UAV);
+	}
+
+	using FRHIComputeCommandList::SetBindlessTexture;
+
+	FORCEINLINE_DEBUGGABLE void SetBindlessTexture(FRHIGraphicsShader* Shader, uint32 Index, FRHITexture* Texture)
+	{
+		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetBindlessTexture(Shader, Index, Texture);
+			return;
+		}
+
+		FRHIShaderParameterResource Resource(Texture, (uint16)Index);
+		SetShaderParameters(Shader, {}, {}, {}, MakeArrayView(&Resource, 1));
+	}
+
+	using FRHIComputeCommandList::SetBindlessResourceView;
+
+	FORCEINLINE_DEBUGGABLE void SetBindlessResourceView(FRHIGraphicsShader* Shader, uint32 Index, FRHIShaderResourceView* SRV)
+	{
+		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetBindlessResourceView(Shader, Index, SRV);
+			return;
+		}
+
+		FRHIShaderParameterResource Resource(SRV, (uint16)Index);
+		SetShaderParameters(Shader, {}, {}, {}, MakeArrayView(&Resource, 1));
+	}
+
+	using FRHIComputeCommandList::SetBindlessSampler;
+
+	FORCEINLINE_DEBUGGABLE void SetBindlessSampler(FRHIGraphicsShader* Shader, uint32 Index, FRHISamplerState* State)
+	{
+		ValidateBoundShader(Shader);
+
+		// Immutable samplers can't be set dynamically
+		check(!State->IsImmutable());
+		if (State->IsImmutable())
+		{
+			return;
+		}
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetBindlessSampler(Shader, Index, State);
+			return;
+		}
+
+		FRHIShaderParameterResource Resource(State, (uint16)Index);
+		SetShaderParameters(Shader, {}, {}, {}, MakeArrayView(&Resource, 1));
+	}
+
+	using FRHIComputeCommandList::SetBindlessUAV;
+
+	FORCEINLINE_DEBUGGABLE void SetBindlessUAV(FRHIPixelShader* Shader, uint32 Index, FRHIUnorderedAccessView* UAV)
+	{
+		ValidateBoundShader(Shader);
+
+		if (ParameterBatcher.IsEnabled())
+		{
+			ParameterBatcher.SetBindlessUAV(Shader, Index, UAV);
+			return;
+		}
+
+		FRHIShaderParameterResource Resource(UAV, (uint16)Index);
+		SetShaderParameters(Shader, {}, {}, {}, MakeArrayView(&Resource, 1));
 	}
 
 	FORCEINLINE_DEBUGGABLE void SetBlendFactor(const FLinearColor& BlendFactor = FLinearColor::White)
@@ -3331,6 +3552,7 @@ public:
 	FORCEINLINE_DEBUGGABLE void DrawPrimitive(uint32 BaseVertexIndex, uint32 NumPrimitives, uint32 NumInstances)
 	{
 		//check(IsOutsideRenderPass());
+		PreDraw();
 		if (Bypass())
 		{
 			GetContext().RHIDrawPrimitive(BaseVertexIndex, NumPrimitives, NumInstances);
@@ -3341,12 +3563,8 @@ public:
 
 	FORCEINLINE_DEBUGGABLE void DrawIndexedPrimitive(FRHIBuffer* IndexBuffer, int32 BaseVertexIndex, uint32 FirstInstance, uint32 NumVertices, uint32 StartIndex, uint32 NumPrimitives, uint32 NumInstances)
 	{
-		if (!IndexBuffer)
-		{
-			UE_LOG(LogRHI, Fatal, TEXT("Tried to call DrawIndexedPrimitive with null IndexBuffer!"));
-		}
-
 		//check(IsOutsideRenderPass());
+		PreDraw();
 		if (Bypass())
 		{
 			GetContext().RHIDrawIndexedPrimitive(IndexBuffer, BaseVertexIndex, FirstInstance, NumVertices, StartIndex, NumPrimitives, NumInstances);
@@ -3465,10 +3683,9 @@ public:
 	FORCEINLINE_DEBUGGABLE void SetGraphicsPipelineState(class FGraphicsPipelineState* GraphicsPipelineState, const FBoundShaderStateInput& ShaderInput, uint32 StencilRef, bool bApplyAdditionalState)
 	{
 		//check(IsOutsideRenderPass());
-		PersistentState.BoundShaderInput = ShaderInput;
+		OnBoundShaderChanged(ShaderInput);
 		if (Bypass())
 		{
-			extern RHI_API FRHIGraphicsPipelineState* ExecuteSetGraphicsPipelineState(class FGraphicsPipelineState* GraphicsPipelineState);
 			FRHIGraphicsPipelineState* RHIGraphicsPipelineState = ExecuteSetGraphicsPipelineState(GraphicsPipelineState);
 			GetContext().RHISetGraphicsPipelineState(RHIGraphicsPipelineState, StencilRef, bApplyAdditionalState);
 			return;
@@ -3476,17 +3693,11 @@ public:
 		ALLOC_COMMAND(FRHICommandSetGraphicsPipelineState)(GraphicsPipelineState, StencilRef, bApplyAdditionalState);
 	}
 
-	UE_DEPRECATED(5.0, "SetGraphicsPipelineState now requires a StencilRef argument")
-	FORCEINLINE_DEBUGGABLE void SetGraphicsPipelineState(class FGraphicsPipelineState* GraphicsPipelineState, const FBoundShaderStateInput& ShaderInput, bool bApplyAdditionalState)
-	{
-		SetGraphicsPipelineState(GraphicsPipelineState, ShaderInput, 0, bApplyAdditionalState);
-	}
-
 #if PLATFORM_USE_FALLBACK_PSO
 	FORCEINLINE_DEBUGGABLE void SetGraphicsPipelineState(const FGraphicsPipelineStateInitializer& PsoInit, uint32 StencilRef, bool bApplyAdditionalState)
 	{
 		//check(IsOutsideRenderPass());
-		PersistentState.BoundShaderInput = PsoInit.BoundShaderState;
+		OnBoundShaderChanged(PsoInit.BoundShaderState);
 		if (Bypass())
 		{
 			GetContext().RHISetGraphicsPipelineState(PsoInit, StencilRef, bApplyAdditionalState);
@@ -3499,6 +3710,7 @@ public:
 	FORCEINLINE_DEBUGGABLE void DrawPrimitiveIndirect(FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset)
 	{
 		//check(IsOutsideRenderPass());
+		PreDraw();
 		if (Bypass())
 		{
 			GetContext().RHIDrawPrimitiveIndirect(ArgumentBuffer, ArgumentOffset);
@@ -3510,6 +3722,7 @@ public:
 	FORCEINLINE_DEBUGGABLE void DrawIndexedIndirect(FRHIBuffer* IndexBufferRHI, FRHIBuffer* ArgumentsBufferRHI, uint32 DrawArgumentsIndex, uint32 NumInstances)
 	{
 		//check(IsOutsideRenderPass());
+		PreDraw();
 		if (Bypass())
 		{
 			GetContext().RHIDrawIndexedIndirect(IndexBufferRHI, ArgumentsBufferRHI, DrawArgumentsIndex, NumInstances);
@@ -3521,6 +3734,7 @@ public:
 	FORCEINLINE_DEBUGGABLE void DrawIndexedPrimitiveIndirect(FRHIBuffer* IndexBuffer, FRHIBuffer* ArgumentsBuffer, uint32 ArgumentOffset)
 	{
 		//check(IsOutsideRenderPass());
+		PreDraw();
 		if (Bypass())
 		{
 			GetContext().RHIDrawIndexedPrimitiveIndirect(IndexBuffer, ArgumentsBuffer, ArgumentOffset);
@@ -3531,6 +3745,7 @@ public:
 
 	FORCEINLINE_DEBUGGABLE void DispatchMeshShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ)
 	{
+		PreDraw();
 		if (Bypass())
 		{
 			GetContext().RHIDispatchMeshShader(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
@@ -3541,6 +3756,7 @@ public:
 
 	FORCEINLINE_DEBUGGABLE void DispatchIndirectMeshShader(FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset)
 	{
+		PreDraw();
 		if (Bypass())
 		{
 			GetContext().RHIDispatchIndirectMeshShader(ArgumentBuffer, ArgumentOffset);
@@ -3730,14 +3946,6 @@ public:
 		IncrementSubpass();
 	}
 
-	// These 6 are special in that they must be called on the immediate command list and they force a flush only when we are not doing RHI thread
-	void BeginScene();
-	void EndScene();
-	void BeginDrawingViewport(FRHIViewport* Viewport, FRHITexture* RenderTargetRHI);
-	void EndDrawingViewport(FRHIViewport* Viewport, bool bPresent, bool bLockToVsync);
-	void BeginFrame();
-	void EndFrame();
-
 	FORCEINLINE_DEBUGGABLE void RHIInvalidateCachedState()
 	{
 		if (Bypass())
@@ -3788,56 +3996,10 @@ public:
 		}
 	}
 
-	/**
-	 * Trace rays from an input buffer of FBasicRayData.
-	 * Binary intersection results are written to output buffer as R32_UINTs.
-	 * 0xFFFFFFFF is written if ray intersects any scene triangle, 0 otherwise.
-	 */
-	UE_DEPRECATED(5.1, "Please use an explicit ray generation shader and RayTraceDispatch() instead.")
-	FORCEINLINE_DEBUGGABLE void RayTraceOcclusion(FRHIRayTracingScene* Scene,
-		FRHIShaderResourceView* Rays,
-		FRHIUnorderedAccessView* Output,
-		uint32 NumRays)
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (Bypass())
-		{
-			GetContext().RHIRayTraceOcclusion(Scene, Rays, Output, NumRays);
-		}
-		else
-		{
-			ALLOC_COMMAND(FRHICommandRayTraceOcclusion)(Scene, Rays, Output, NumRays);
-		}
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
-	/**
-	 * Trace rays from an input buffer of FBasicRayData.
-	 * Primitive intersection results are written to output buffer as FIntersectionPayload.
-	 */
-	UE_DEPRECATED(5.1, "Please use an explicit ray generation shader and RayTraceDispatch() instead.")
-	FORCEINLINE_DEBUGGABLE void RayTraceIntersection(FRHIRayTracingScene* Scene,
-		FRHIShaderResourceView* Rays,
-		FRHIUnorderedAccessView* Output,
-		uint32 NumRays)
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (Bypass())
-		{
-			GetContext().RHIRayTraceIntersection(Scene, Rays, Output, NumRays);
-		}
-		else
-		{
-			ALLOC_COMMAND(FRHICommandRayTraceIntersection)(Scene, Rays, Output, NumRays);
-		}
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
 	FORCEINLINE_DEBUGGABLE void RayTraceDispatch(FRayTracingPipelineState* Pipeline, FRHIRayTracingShader* RayGenShader, FRHIRayTracingScene* Scene, const FRayTracingShaderBindings& GlobalResourceBindings, uint32 Width, uint32 Height)
 	{
 		if (Bypass())
 		{
-			extern RHI_API FRHIRayTracingPipelineState* GetRHIRayTracingPipelineState(FRayTracingPipelineState*);
 			GetContext().RHIRayTraceDispatch(GetRHIRayTracingPipelineState(Pipeline), RayGenShader, Scene, GlobalResourceBindings, Width, Height);
 		}
 		else
@@ -3852,10 +4014,8 @@ public:
 	 */
 	FORCEINLINE_DEBUGGABLE void RayTraceDispatchIndirect(FRayTracingPipelineState* Pipeline, FRHIRayTracingShader* RayGenShader, FRHIRayTracingScene* Scene, const FRayTracingShaderBindings& GlobalResourceBindings, FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset)
 	{
-		checkf(GRHISupportsRayTracingDispatchIndirect, TEXT("Indirect ray tracing is not supported on this machine."));
 		if (Bypass())
 		{
-			extern RHI_API FRHIRayTracingPipelineState* GetRHIRayTracingPipelineState(FRayTracingPipelineState*);
 			GetContext().RHIRayTraceDispatchIndirect(GetRHIRayTracingPipelineState(Pipeline), RayGenShader, Scene, GlobalResourceBindings, ArgumentBuffer, ArgumentOffset);
 		}
 		else
@@ -3872,7 +4032,6 @@ public:
 	{
 		if (Bypass())
 		{
-			extern RHI_API FRHIRayTracingPipelineState* GetRHIRayTracingPipelineState(FRayTracingPipelineState*);
 			GetContext().RHISetRayTracingBindings(Scene, GetRHIRayTracingPipelineState(Pipeline), NumBindings, Bindings, BindingType);
 		}
 		else
@@ -3950,7 +4109,6 @@ public:
 	{
 		if (Bypass())
 		{
-			extern RHI_API FRHIRayTracingPipelineState* GetRHIRayTracingPipelineState(FRayTracingPipelineState*);
 			GetContext().RHISetRayTracingHitGroup(Scene, InstanceIndex, SegmentIndex, ShaderSlot, GetRHIRayTracingPipelineState(Pipeline), HitGroupIndex, 
 				NumUniformBuffers, UniformBuffers,
 				LooseParameterDataSize, LooseParameterData,
@@ -3990,7 +4148,6 @@ public:
 	{
 		if (Bypass())
 		{
-			extern RHI_API FRHIRayTracingPipelineState* GetRHIRayTracingPipelineState(FRayTracingPipelineState*);
 			GetContext().RHISetRayTracingCallableShader(Scene, ShaderSlotInScene, GetRHIRayTracingPipelineState(Pipeline), ShaderIndexInPipeline, NumUniformBuffers, UniformBuffers, UserData);
 		}
 		else
@@ -4017,7 +4174,6 @@ public:
 	{
 		if (Bypass())
 		{
-			extern RHI_API FRHIRayTracingPipelineState* GetRHIRayTracingPipelineState(FRayTracingPipelineState*);
 			GetContext().RHISetRayTracingMissShader(Scene, ShaderSlotInScene, GetRHIRayTracingPipelineState(Pipeline), ShaderIndexInPipeline, NumUniformBuffers, UniformBuffers, UserData);
 		}
 		else
@@ -4071,14 +4227,18 @@ extern RHI_API ERHIAccess RHIGetDefaultResourceState(EBufferUsageFlags InUsage, 
 class RHI_API FRHICommandListImmediate : public FRHICommandList
 {
 	friend class FRHICommandListExecutor;
+	friend class FRHICommandListScopedExtendResourceLifetime;
+	friend struct FRHICommandBeginFrame;
 
 	static FGraphEventArray WaitOutstandingTasks;
 	static FGraphEventRef   RHIThreadTask;
+	static FRHIDrawStats    FrameDrawStats;
 
 	FRHICommandListImmediate()
 		: FRHICommandList(FRHIGPUMask::All(), ERecordingThread::Render)
 	{
 		PersistentState.bImmediate = true;
+		PersistentState.Stats.Ptr = &FrameDrawStats;
 	}
 
 	~FRHICommandListImmediate()
@@ -4112,7 +4272,24 @@ class RHI_API FRHICommandListImmediate : public FRHICommandList
 	//
 	void Reset();
 
+	//
+	// Called on RHIBeginFrame. Updates the draw call counters / stats.
+	//
+	void ProcessStats();
+
+	//
+	// Called when all FRHICommandListScopedExtendResourceLifetime references are released to flush any deferred deletions.
+	//
+	int32 FlushExtendedLifetimeResourceDeletes();
+
 public:
+	void BeginScene();
+	void EndScene();
+	void BeginDrawingViewport(FRHIViewport* Viewport, FRHITexture* RenderTargetRHI);
+	void EndDrawingViewport(FRHIViewport* Viewport, bool bPresent, bool bLockToVsync);
+	void BeginFrame();
+	void EndFrame();
+
 	struct FQueuedCommandList
 	{
 		// The command list to enqueue.
@@ -4184,108 +4361,108 @@ public:
 		}
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateSamplerState function.")
 	FORCEINLINE FSamplerStateRHIRef CreateSamplerState(const FSamplerStateInitializerRHI& Initializer)
 	{
-		LLM_SCOPE_BYNAME(TEXT("RHIMisc/CreateSamplerState"));
 		return RHICreateSamplerState(Initializer);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateRasterizerState function.")
 	FORCEINLINE FRasterizerStateRHIRef CreateRasterizerState(const FRasterizerStateInitializerRHI& Initializer)
 	{
-		LLM_SCOPE_BYNAME(TEXT("RHIMisc/CreateRasterizerState"));
 		return RHICreateRasterizerState(Initializer);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateDepthStencilState function.")
 	FORCEINLINE FDepthStencilStateRHIRef CreateDepthStencilState(const FDepthStencilStateInitializerRHI& Initializer)
 	{
-		LLM_SCOPE_BYNAME(TEXT("RHIMisc/CreateDepthStencilState"));
 		return RHICreateDepthStencilState(Initializer);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateBlendState function.")
 	FORCEINLINE FBlendStateRHIRef CreateBlendState(const FBlendStateInitializerRHI& Initializer)
 	{
-		LLM_SCOPE_BYNAME(TEXT("RHIMisc/CreateBlendState"));
 		return RHICreateBlendState(Initializer);
 	}
-	
+
+	UE_DEPRECATED(5.2, "Use the global scope RHICreatePixelShader function.")
 	FORCEINLINE FPixelShaderRHIRef CreatePixelShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
-		return GDynamicRHI->CreatePixelShader_RenderThread(*this, Code, Hash);
+		return RHICreatePixelShader(Code, Hash);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateVertexShader function.")
 	FORCEINLINE FVertexShaderRHIRef CreateVertexShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
-		return GDynamicRHI->CreateVertexShader_RenderThread(*this, Code, Hash);
+		return RHICreateVertexShader(Code, Hash);
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateMeshShader function.")
 	FORCEINLINE FMeshShaderRHIRef CreateMeshShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
-		return GDynamicRHI->CreateMeshShader_RenderThread(*this, Code, Hash);
+		return RHICreateMeshShader(Code, Hash);
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateAmplificationShader function.")
 	FORCEINLINE FAmplificationShaderRHIRef CreateAmplificationShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
-		return GDynamicRHI->CreateAmplificationShader_RenderThread(*this, Code, Hash);
+		return RHICreateAmplificationShader(Code, Hash);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateGeometryShader function.")
 	FORCEINLINE FGeometryShaderRHIRef CreateGeometryShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
-		return GDynamicRHI->CreateGeometryShader_RenderThread(*this, Code, Hash);
+		return RHICreateGeometryShader(Code, Hash);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateComputeShader function.")
 	FORCEINLINE FComputeShaderRHIRef CreateComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
-		return GDynamicRHI->CreateComputeShader_RenderThread(*this, Code, Hash);
+		return RHICreateComputeShader(Code, Hash);
 	}
 	
+	UE_DEPRECATED(5.2, "Compute fences are deprecated. Use RHI transitions instead.")
 	FORCEINLINE FComputeFenceRHIRef CreateComputeFence(const FName& Name)
-	{		
-		return GDynamicRHI->RHICreateComputeFence(Name);
+	{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return RHICreateComputeFence(Name);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}	
 
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateGPUFence function.")
 	FORCEINLINE FGPUFenceRHIRef CreateGPUFence(const FName& Name)
 	{
-		return GDynamicRHI->RHICreateGPUFence(Name);
+		return RHICreateGPUFence(Name);
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateStagingBuffer function.")
 	FORCEINLINE FStagingBufferRHIRef CreateStagingBuffer()
 	{
-		return GDynamicRHI->RHICreateStagingBuffer();
+		return RHICreateStagingBuffer();
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateBoundShaderState function.")
 	FORCEINLINE FBoundShaderStateRHIRef CreateBoundShaderState(FRHIVertexDeclaration* VertexDeclaration, FRHIVertexShader* VertexShader, FRHIPixelShader* PixelShader, FRHIGeometryShader* GeometryShader)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
 		return RHICreateBoundShaderState(VertexDeclaration, VertexShader, PixelShader, GeometryShader);
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateGraphicsPipelineState function.")
 	FORCEINLINE FGraphicsPipelineStateRHIRef CreateGraphicsPipelineState(const FGraphicsPipelineStateInitializer& Initializer)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
 		return RHICreateGraphicsPipelineState(Initializer);
 	}
 
-	FORCEINLINE TRefCountPtr<FRHIComputePipelineState> CreateComputePipelineState(FRHIComputeShader* ComputeShader)
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateComputePipelineState function.")
+	FORCEINLINE FComputePipelineStateRHIRef CreateComputePipelineState(FRHIComputeShader* ComputeShader)
 	{
-		LLM_SCOPE(ELLMTag::Shaders);
 		return RHICreateComputePipelineState(ComputeShader);
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateUniformBuffer function.")
 	FORCEINLINE FUniformBufferRHIRef CreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage)
 	{
 		return RHICreateUniformBuffer(Contents, Layout, Usage);
-	}
-
-	UE_DEPRECATED(5.0, "Use Layout pointers instead")
-	FORCEINLINE FUniformBufferRHIRef CreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout& Layout, EUniformBufferUsage Usage)
-	{
-		return RHICreateUniformBuffer(Contents, &Layout, Usage);
 	}
 
 	UE_DEPRECATED(5.1, "Use CreateBuffer and LockBuffer separately")
@@ -4304,18 +4481,6 @@ public:
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return CreateAndLockIndexBuffer(Stride, Size, Usage, ResourceState, CreateInfo, OutDataBuffer);
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-	
-	UE_DEPRECATED(5.0, "Buffer locks have been unified. Use LockBuffer() instead.")
-	FORCEINLINE void* LockIndexBuffer(FRHIBuffer* IndexBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
-	{
-		return GDynamicRHI->RHILockBuffer(*this, IndexBuffer, Offset, SizeRHI, LockMode);
-	}
-	
-	UE_DEPRECATED(5.0, "Buffer locks have been unified. Use UnlockBuffer() instead.")
-	FORCEINLINE void UnlockIndexBuffer(FRHIBuffer* IndexBuffer)
-	{
-		GDynamicRHI->RHIUnlockBuffer(*this, IndexBuffer);
 	}
 	
 	FORCEINLINE void* LockStagingBuffer(FRHIStagingBuffer* StagingBuffer, FRHIGPUFence* Fence, uint32 Offset, uint32 SizeRHI)
@@ -4346,41 +4511,11 @@ public:
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
-	UE_DEPRECATED(5.0, "Buffer locks have been unified. Use LockBuffer() instead.")
-	FORCEINLINE void* LockVertexBuffer(FRHIBuffer* VertexBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
-	{
-		return GDynamicRHI->RHILockBuffer(*this, VertexBuffer, Offset, SizeRHI, LockMode);
-	}
-	
-	UE_DEPRECATED(5.0, "Buffer locks have been unified. Use UnlockBuffer() instead.")
-	FORCEINLINE void UnlockVertexBuffer(FRHIBuffer* VertexBuffer)
-	{
-		GDynamicRHI->RHIUnlockBuffer(*this, VertexBuffer);
-	}
-	
 	FORCEINLINE void CopyBuffer(FRHIBuffer* SourceBuffer, FRHIBuffer* DestBuffer)
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_CopyBuffer_Flush);
 		ImmediateFlush(EImmediateFlushType::FlushRHIThread);  
 		GDynamicRHI->RHICopyBuffer(SourceBuffer, DestBuffer);
-	}
-
-	UE_DEPRECATED(5.0, "CopyVertexBuffer() has been replaced with a general CopyBuffer() function.")
-	FORCEINLINE void CopyVertexBuffer(FRHIBuffer* SourceBuffer, FRHIBuffer* DestBuffer)
-	{
-		CopyBuffer(SourceBuffer, DestBuffer);
-	}
-
-	UE_DEPRECATED(5.0, "Buffer locks have been unified. Use LockBuffer() instead.")
-	FORCEINLINE void* LockStructuredBuffer(FRHIBuffer* StructuredBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
-	{
-		return GDynamicRHI->RHILockBuffer(*this, StructuredBuffer, Offset, SizeRHI, LockMode);
-	}
-
-	UE_DEPRECATED(5.0, "Buffer locks have been unified. Use UnlockBuffer() instead.")
-	FORCEINLINE void UnlockStructuredBuffer(FRHIBuffer* StructuredBuffer)
-	{
-		GDynamicRHI->RHIUnlockBuffer(*this, StructuredBuffer);
 	}
 
 	// LockBufferMGPU / UnlockBufferMGPU may ONLY be called for buffers with the EBufferUsageFlags::MultiGPUAllocate flag set!
@@ -4475,6 +4610,7 @@ public:
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHIGetTextureMemoryStats function.")
 	FORCEINLINE void GetTextureMemoryStats(FTextureMemoryStats& OutStats)
 	{
 		RHIGetTextureMemoryStats(OutStats);
@@ -4487,29 +4623,9 @@ public:
 		return GDynamicRHI->RHIGetTextureMemoryVisualizeData(TextureData,SizeX,SizeY,Pitch,PixelSize);
 	}
 	
-	FORCEINLINE void CopySharedMips(FRHITexture* DestTexture, FRHITexture* SrcTexture)
-	{
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_CopySharedMips_Flush);
-		DestTexture->AddRef();
-		SrcTexture->AddRef();
-		EnqueueLambda([DestTexture, SrcTexture](FRHICommandList&)
-		{
-			LLM_SCOPE(ELLMTag::Textures);
-			//@todo move this function onto the IRHIComputeCommandContext
-			GDynamicRHI->RHICopySharedMips(DestTexture, SrcTexture);
-			DestTexture->Release();
-			SrcTexture->Release();
-		});
-	}
+	UE_DEPRECATED(5.2, "CopySharedMips should be replaced with UE::RHI::CopySharedMips(). ** Note ** The argument ordering of the new function has changed. The new function also does not issue RHI transitions, so the caller is responsible for ensuring src/dst textures are in CopySrc/CopyDest state.")
+	FORCEINLINE void CopySharedMips(FRHITexture* DestTexture, FRHITexture* SrcTexture);
 
-	UE_DEPRECATED(5.0, "RHIGetResourceInfo is no longer implemented in favor of FRHIResource::GetResourceInfo.")
-	FORCEINLINE void GetResourceInfo(FRHITexture* Ref, FRHIResourceInfo& OutInfo)
-	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return RHIGetResourceInfo(Ref, OutInfo);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-	
 	FORCEINLINE FShaderResourceViewRHIRef CreateShaderResourceView(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo)
 	{
 		LLM_SCOPE_BYNAME(TEXT("RHIMisc/CreateShaderResourceView"));
@@ -4551,9 +4667,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	FORCEINLINE void GenerateMips(FRHITexture* Texture)
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_GenerateMips_Flush);
-		ImmediateFlush(EImmediateFlushType::FlushRHIThread); return GDynamicRHI->RHIGenerateMips(Texture);
+		ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+		return GDynamicRHI->RHIGenerateMips(Texture);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHIComputeMemorySize function.")
 	FORCEINLINE uint32 ComputeMemorySize(FRHITexture* TextureRHI)
 	{
 		return RHIComputeMemorySize(TextureRHI);
@@ -4599,52 +4717,27 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		GDynamicRHI->UnlockTexture2DArray_RenderThread(*this, Texture, TextureIndex, MipIndex, bLockWithinMiptail);
 	}
 	
-	FORCEINLINE void UpdateTexture2D(FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData)
-	{		
-		checkf(UpdateRegion.DestX + UpdateRegion.Width <= Texture->GetSizeX(), TEXT("UpdateTexture2D out of bounds on X. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestX, UpdateRegion.Width, Texture->GetSizeX());
-		checkf(UpdateRegion.DestY + UpdateRegion.Height <= Texture->GetSizeY(), TEXT("UpdateTexture2D out of bounds on Y. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestY, UpdateRegion.Height, Texture->GetSizeY());
-		LLM_SCOPE(ELLMTag::Textures);
-		GDynamicRHI->UpdateTexture2D_RenderThread(*this, Texture, MipIndex, UpdateRegion, SourcePitch, SourceData);
-	}
-
-	FORCEINLINE void UpdateFromBufferTexture2D(FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, FRHIBuffer* Buffer, uint32 BufferOffset)
-	{
-		checkf(UpdateRegion.DestX + UpdateRegion.Width <= Texture->GetSizeX(), TEXT("UpdateFromBufferTexture2D out of bounds on X. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestX, UpdateRegion.Width, Texture->GetSizeX());
-		checkf(UpdateRegion.DestY + UpdateRegion.Height <= Texture->GetSizeY(), TEXT("UpdateFromBufferTexture2D out of bounds on Y. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestY, UpdateRegion.Height, Texture->GetSizeY());
-		LLM_SCOPE(ELLMTag::Textures);
-		GDynamicRHI->UpdateFromBufferTexture2D_RenderThread(*this, Texture, MipIndex, UpdateRegion, SourcePitch, Buffer, BufferOffset);
-	}
-
 	FORCEINLINE FUpdateTexture3DData BeginUpdateTexture3D(FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion)
 	{
 		checkf(UpdateRegion.DestX + UpdateRegion.Width <= Texture->GetSizeX(), TEXT("UpdateTexture3D out of bounds on X. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestX, UpdateRegion.Width, Texture->GetSizeX());
 		checkf(UpdateRegion.DestY + UpdateRegion.Height <= Texture->GetSizeY(), TEXT("UpdateTexture3D out of bounds on Y. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestY, UpdateRegion.Height, Texture->GetSizeY());
 		checkf(UpdateRegion.DestZ + UpdateRegion.Depth <= Texture->GetSizeZ(), TEXT("UpdateTexture3D out of bounds on Z. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestZ, UpdateRegion.Depth, Texture->GetSizeZ());
 		LLM_SCOPE(ELLMTag::Textures);
-		return GDynamicRHI->BeginUpdateTexture3D_RenderThread(*this, Texture, MipIndex, UpdateRegion);
+		return GDynamicRHI->RHIBeginUpdateTexture3D(*this, Texture, MipIndex, UpdateRegion);
 	}
 
 	FORCEINLINE void EndUpdateTexture3D(FUpdateTexture3DData& UpdateData)
-	{		
+	{
 		LLM_SCOPE(ELLMTag::Textures);
-		GDynamicRHI->EndUpdateTexture3D_RenderThread(*this, UpdateData);
+		GDynamicRHI->RHIEndUpdateTexture3D(*this, UpdateData);
 	}
 
 	FORCEINLINE void EndMultiUpdateTexture3D(TArray<FUpdateTexture3DData>& UpdateDataArray)
 	{
 		LLM_SCOPE(ELLMTag::Textures);
-		GDynamicRHI->EndMultiUpdateTexture3D_RenderThread(*this, UpdateDataArray);
+		GDynamicRHI->RHIEndMultiUpdateTexture3D(*this, UpdateDataArray);
 	}
-	
-	FORCEINLINE void UpdateTexture3D(FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion, uint32 SourceRowPitch, uint32 SourceDepthPitch, const uint8* SourceData)
-	{
-		checkf(UpdateRegion.DestX + UpdateRegion.Width <= Texture->GetSizeX(), TEXT("UpdateTexture3D out of bounds on X. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestX, UpdateRegion.Width, Texture->GetSizeX());
-		checkf(UpdateRegion.DestY + UpdateRegion.Height <= Texture->GetSizeY(), TEXT("UpdateTexture3D out of bounds on Y. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestY, UpdateRegion.Height, Texture->GetSizeY());
-		checkf(UpdateRegion.DestZ + UpdateRegion.Depth <= Texture->GetSizeZ(), TEXT("UpdateTexture3D out of bounds on Z. Texture: %s, %i, %i, %i"), *Texture->GetName().ToString(), UpdateRegion.DestZ, UpdateRegion.Depth, Texture->GetSizeZ());
-		LLM_SCOPE(ELLMTag::Textures);
-		GDynamicRHI->UpdateTexture3D_RenderThread(*this, Texture, MipIndex, UpdateRegion, SourceRowPitch, SourceDepthPitch, SourceData);
-	}
-	
+
 	FORCEINLINE void* LockTextureCubeFace(FRHITexture* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail)
 	{
 		LLM_SCOPE(ELLMTag::Textures);
@@ -4657,11 +4750,13 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		GDynamicRHI->RHIUnlockTextureCubeFace_RenderThread(*this, Texture, FaceIndex, ArrayIndex, MipIndex, bLockWithinMiptail);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHIBindDebugLabelName function.")
 	FORCEINLINE void BindDebugLabelName(FRHITexture* Texture, const TCHAR* Name)
 	{
 		RHIBindDebugLabelName(Texture, Name);
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHIBindDebugLabelName function.")
 	FORCEINLINE void BindDebugLabelName(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const TCHAR* Name)
 	{
 		RHIBindDebugLabelName(UnorderedAccessViewRHI, Name);
@@ -4721,33 +4816,25 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		GDynamicRHI->RHIRead3DSurfaceFloatData(Texture,Rect,ZMinMax,OutData,Flags);
 	}
 
-	UE_DEPRECATED(5.0, "AcquireTransientResource_RenderThread API is deprecated; use IRHITransientResourceAllocator instead.")
-	FORCEINLINE void AcquireTransientResource_RenderThread(FRHITexture* Texture) {}
-
-	UE_DEPRECATED(5.0, "DiscardTransientResource_RenderThread API is deprecated; use IRHITransientResourceAllocator instead.")
-	FORCEINLINE void DiscardTransientResource_RenderThread(FRHITexture* Texture) {}
-
-	UE_DEPRECATED(5.0, "AcquireTransientResource_RenderThread API is deprecated; use IRHITransientResourceAllocator instead.")
-	FORCEINLINE void AcquireTransientResource_RenderThread(FRHIBuffer* Buffer) {}
-
-	UE_DEPRECATED(5.0, "DiscardTransientResource_RenderThread API is deprecated; use IRHITransientResourceAllocator instead.")
-	FORCEINLINE void DiscardTransientResource_RenderThread(FRHIBuffer* Buffer) {}
-
+	UE_DEPRECATED(5.2, "Use the global scope RHIGetRenderQueryResult function.")
 	FORCEINLINE bool GetRenderQueryResult(FRHIRenderQuery* RenderQuery, uint64& OutResult, bool bWait, uint32 GPUIndex = INDEX_NONE)
 	{
 		return RHIGetRenderQueryResult(RenderQuery, OutResult, bWait, GPUIndex);
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHIGetViewportNextPresentGPUIndex function.")
 	FORCEINLINE uint32 GetViewportNextPresentGPUIndex(FRHIViewport* Viewport)
 	{
-		return GDynamicRHI->RHIGetViewportNextPresentGPUIndex(Viewport);
+		return RHIGetViewportNextPresentGPUIndex(Viewport);
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHIGetViewportBackBuffer function.")
 	FORCEINLINE FTexture2DRHIRef GetViewportBackBuffer(FRHIViewport* Viewport)
 	{
 		return RHIGetViewportBackBuffer(Viewport);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHIAdvanceFrameForGetViewportBackBuffer function.")
 	FORCEINLINE void AdvanceFrameForGetViewportBackBuffer(FRHIViewport* Viewport)
 	{
 		return RHIAdvanceFrameForGetViewportBackBuffer(Viewport);
@@ -4776,27 +4863,29 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		 
 		return GDynamicRHI->RHIFlushResources();
 	}
+
+	int32 FlushPendingDeletes();
 	
 	FORCEINLINE uint32 GetGPUFrameCycles()
 	{
 		return RHIGetGPUFrameCycles(GetGPUMask().ToIndex());
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHICreateViewport function.")
 	FORCEINLINE FViewportRHIRef CreateViewport(void* WindowHandle, uint32 SizeX, uint32 SizeY, bool bIsFullscreen, EPixelFormat PreferredPixelFormat)
 	{
-		LLM_SCOPE(ELLMTag::RenderTargets);
 		return RHICreateViewport(WindowHandle, SizeX, SizeY, bIsFullscreen, PreferredPixelFormat);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHIResizeViewport function.")
 	FORCEINLINE void ResizeViewport(FRHIViewport* Viewport, uint32 SizeX, uint32 SizeY, bool bIsFullscreen, EPixelFormat PreferredPixelFormat)
 	{
-		LLM_SCOPE(ELLMTag::RenderTargets);
 		RHIResizeViewport(Viewport, SizeX, SizeY, bIsFullscreen, PreferredPixelFormat);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHITick function.")
 	FORCEINLINE void Tick(float DeltaTime)
 	{
-		LLM_SCOPE_BYNAME(TEXT("RHIMisc/RHITick"));
 		RHITick(DeltaTime);
 	}
 	
@@ -4814,11 +4903,13 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		GDynamicRHI->RHISubmitCommandsAndFlushGPU();
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHISuspendRendering function.")
 	FORCEINLINE void SuspendRendering()
 	{
 		RHISuspendRendering();
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHIResumeRendering function.")
 	FORCEINLINE void ResumeRendering()
 	{
 		RHIResumeRendering();
@@ -4830,18 +4921,20 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		ImmediateFlush(EImmediateFlushType::FlushRHIThread); 
 		return GDynamicRHI->RHIIsRenderingSuspended();
 	}
-	
+
 	UE_DEPRECATED(5.1, "No longer used: FCompression::UncompressMemory should be used instead")
 	FORCEINLINE bool EnqueueDecompress(uint8_t* SrcBuffer, uint8_t* DestBuffer, int CompressedSize, void* ErrorCodeBuffer)
 	{
 		return false;
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHIGetAvailableResolutions function.")
 	FORCEINLINE bool GetAvailableResolutions(FScreenResolutionArray& Resolutions, bool bIgnoreRefreshRate)
 	{
 		return RHIGetAvailableResolutions(Resolutions, bIgnoreRefreshRate);
 	}
 	
+	UE_DEPRECATED(5.2, "Use the global scope RHIGetSupportedResolution function.")
 	FORCEINLINE void GetSupportedResolution(uint32& Width, uint32& Height)
 	{
 		RHIGetSupportedResolution(Width, Height);
@@ -4855,12 +4948,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	FORCEINLINE void VirtualTextureSetFirstMipVisible(FRHITexture2D* Texture, uint32 FirstMip)
 	{
 		GDynamicRHI->VirtualTextureSetFirstMipVisible_RenderThread(*this, Texture, FirstMip);
-	}
-
-	FORCEINLINE void ExecuteCommandList(FRHICommandList* CmdList)
-	{
-		FScopedRHIThreadStaller StallRHIThread(*this);
-		GDynamicRHI->RHIExecuteCommandList(CmdList);
 	}
 	
 	FORCEINLINE void* GetNativeDevice()
@@ -4908,6 +4995,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return GDynamicRHI->RHIGetNativeCommandBuffer();
 	}
 
+	UE_DEPRECATED(5.2, "Use the global scope RHIGetDefaultContext function.")
 	FORCEINLINE class IRHICommandContext* GetDefaultContext()
 	{
 		return RHIGetDefaultContext();
@@ -4966,6 +5054,27 @@ public:
 	}
 };
 
+class RHI_API FRHICommandListScopedExtendResourceLifetime
+{
+public:
+	FRHICommandListScopedExtendResourceLifetime(FRHICommandListImmediate& InRHICmdList)
+		: RHICmdList(InRHICmdList)
+	{
+		RHICmdList.PersistentState.ExtendResourceLifetimeRefCount++;
+	}
+
+	~FRHICommandListScopedExtendResourceLifetime()
+	{
+		if (--RHICmdList.PersistentState.ExtendResourceLifetimeRefCount == 0)
+		{
+			RHICmdList.FlushExtendedLifetimeResourceDeletes();
+		}
+	}
+
+private:
+	FRHICommandListImmediate& RHICmdList;
+};
+
 //
 // Helper to activate a specific RHI pipeline within a block of renderer code.
 // Allows command list recording code to switch between graphics / async compute etc.
@@ -4980,7 +5089,8 @@ public:
 	FRHICommandListScopedPipeline(FRHICommandListBase& RHICmdList, ERHIPipeline Pipeline)
 		: RHICmdList(RHICmdList)
 		, PreviousPipeline(RHICmdList.SwitchPipeline(Pipeline))
-	{}
+	{
+	}
 
 	~FRHICommandListScopedPipeline()
 	{
@@ -5051,12 +5161,6 @@ struct RHI_API FScopedUniformBufferStaticBindings
 
 #define SCOPED_UNIFORM_BUFFER_STATIC_BINDINGS(RHICmdList, UniformBuffers) FScopedUniformBufferStaticBindings PREPROCESSOR_JOIN(UniformBuffers, __LINE__){ RHICmdList, UniformBuffers }
 
-UE_DEPRECATED(5.0, "Please rename to FScopedUniformBufferStaticBindings, or use the SCOPED_UNIFORM_BUFFER_STATIC_BINDINGS instead.")
-typedef FScopedUniformBufferStaticBindings FScopedUniformBufferGlobalBindings;
-
-// UE_DEPRECATED(5.0)
-#define SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, UniformBuffers) FScopedUniformBufferGlobalBindings PREPROCESSOR_JOIN(UniformBuffers, __LINE__){ RHICmdList, UniformBuffers }
-
 // Helper to enable the use of graphics RHI command lists from within platform RHI implementations.
 // Recorded commands are dispatched when the command list is destructed. Intended for use on the stack / in a scope block.
 class RHI_API FRHICommandList_RecursiveHazardous : public FRHICommandList
@@ -5083,7 +5187,10 @@ class TRHICommandList_RecursiveHazardous : public FRHICommandList_RecursiveHazar
 		void ExecuteAndDestruct(FRHICommandListBase& CmdList, FRHICommandListDebugContext&) override final
 		{
 			// RunOnContext always requires the lowest level (platform) context, not the validation RHI context.
-			Lambda(static_cast<ContextType&>(CmdList.GetContext().GetLowestLevelContext()));
+			ContextType& Context = static_cast<ContextType&>(CmdList.GetContext().GetLowestLevelContext());
+			Context.BeginRecursiveCommand();
+
+			Lambda(Context);
 			Lambda.~LAMBDA();
 		}
 	};
@@ -5099,7 +5206,10 @@ public:
 		if (Bypass())
 		{
 			// RunOnContext always requires the lowest level (platform) context, not the validation RHI context.
-			Lambda(static_cast<ContextType&>(GetContext().GetLowestLevelContext()));
+			ContextType& Context = static_cast<ContextType&>(GetContext().GetLowestLevelContext());
+			Context.BeginRecursiveCommand();
+
+			Lambda(Context);
 		}
 		else
 		{
@@ -5134,7 +5244,10 @@ class TRHIComputeCommandList_RecursiveHazardous : public FRHIComputeCommandList_
 		void ExecuteAndDestruct(FRHICommandListBase& CmdList, FRHICommandListDebugContext&) override final
 		{
 			// RunOnContext always requires the lowest level (platform) context, not the validation RHI context.
-			Lambda(static_cast<ContextType&>(CmdList.GetComputeContext().GetLowestLevelContext()));
+			ContextType& Context = static_cast<ContextType&>(CmdList.GetComputeContext().GetLowestLevelContext());
+			Context.BeginRecursiveCommand();
+
+			Lambda(Context);
 			Lambda.~LAMBDA();
 		}
 	};
@@ -5150,7 +5263,10 @@ public:
 		if (Bypass())
 		{
 			// RunOnContext always requires the lowest level (platform) context, not the validation RHI context.
-			Lambda(static_cast<ContextType&>(GetComputeContext().GetLowestLevelContext()));
+			ContextType& Context = static_cast<ContextType&>(GetComputeContext().GetLowestLevelContext());
+			Context.BeginRecursiveCommand();
+
+			Lambda(Context);
 		}
 		else
 		{
@@ -5236,61 +5352,9 @@ public:
 
 FORCEINLINE_DEBUGGABLE FRHICommandListImmediate& FRHICommandListExecutor::GetImmediateCommandList()
 {
+	// @todo - fix remaining use of the immediate command list on other threads, then uncomment this check.
+	//check(IsInRenderingThread());
 	return GRHICommandList.CommandListImmediate;
-}
-
-FORCEINLINE FPixelShaderRHIRef RHICreatePixelShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreatePixelShader(Code, Hash);
-}
-
-FORCEINLINE FVertexShaderRHIRef RHICreateVertexShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateVertexShader(Code, Hash);
-}
-
-FORCEINLINE FMeshShaderRHIRef RHICreateMeshShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateMeshShader(Code, Hash);
-}
-
-FORCEINLINE FAmplificationShaderRHIRef RHICreateAmplificationShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateAmplificationShader(Code, Hash);
-}
-
-FORCEINLINE FGeometryShaderRHIRef RHICreateGeometryShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateGeometryShader(Code, Hash);
-}
-
-FORCEINLINE FComputeShaderRHIRef RHICreateComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateComputeShader(Code, Hash);
-}
-
-FORCEINLINE FComputeFenceRHIRef RHICreateComputeFence(const FName& Name)
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateComputeFence(Name);
-}
-
-FORCEINLINE FGPUFenceRHIRef RHICreateGPUFence(const FName& Name)
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateGPUFence(Name);
-}
-
-FORCEINLINE FStagingBufferRHIRef RHICreateStagingBuffer()
-{
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateStagingBuffer();
-}
-
-UE_DEPRECATED(5.0, "Use RHICreateBuffer() and RHILockBuffer() instead.")
-FORCEINLINE FBufferRHIRef RHICreateAndLockIndexBuffer(uint32 Stride, uint32 Size, EBufferUsageFlags InUsage, FRHIResourceCreateInfo& CreateInfo, void*& OutDataBuffer)
-{
-	check(IsInRenderingThread());
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateAndLockIndexBuffer(Stride, Size, InUsage, CreateInfo, OutDataBuffer);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FORCEINLINE FBufferRHIRef RHICreateBuffer(uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo)
@@ -5331,32 +5395,9 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
-UE_DEPRECATED(5.0, "Buffer locks have been unified. Use RHILockBuffer() instead.")
-FORCEINLINE void* RHILockIndexBuffer(FRHIBuffer* IndexBuffer, uint32 Offset, uint32 Size, EResourceLockMode LockMode)
-{
-	check(IsInRenderingThread());
-	return FRHICommandListExecutor::GetImmediateCommandList().LockBuffer(IndexBuffer, Offset, Size, LockMode);
-}
-
-UE_DEPRECATED(5.0, "Buffer locks have been unified. Use RHIUnlockBuffer() instead.")
-FORCEINLINE void RHIUnlockIndexBuffer(FRHIBuffer* IndexBuffer)
-{
-	check(IsInRenderingThread());
-	FRHICommandListExecutor::GetImmediateCommandList().UnlockBuffer(IndexBuffer);
-}
-
 FORCEINLINE void RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
 {
 	return FRHICommandListExecutor::GetImmediateCommandList().UpdateUniformBuffer(UniformBufferRHI, Contents);
-}
-
-UE_DEPRECATED(5.0, "Use RHICreateBuffer() and RHILockBuffer() instead.")
-FORCEINLINE FBufferRHIRef RHICreateAndLockVertexBuffer(uint32 Size, EBufferUsageFlags InUsage, FRHIResourceCreateInfo& CreateInfo, void*& OutDataBuffer)
-{
-	check(IsInRenderingThread());
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateAndLockVertexBuffer(Size, InUsage, CreateInfo, OutDataBuffer);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FORCEINLINE FBufferRHIRef RHICreateVertexBuffer(uint32 Size, EBufferUsageFlags Usage, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo)
@@ -5391,20 +5432,6 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
-UE_DEPRECATED(5.0, "Buffer locks have been unified. Use RHILockBuffer() instead.")
-FORCEINLINE void* RHILockVertexBuffer(FRHIBuffer* VertexBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
-{
-	check(IsInRenderingThread());
-	return FRHICommandListExecutor::GetImmediateCommandList().LockBuffer(VertexBuffer, Offset, SizeRHI, LockMode);
-}
-
-UE_DEPRECATED(5.0, "Buffer locks have been unified. Use RHIUnlockBuffer() instead.")
-FORCEINLINE void RHIUnlockVertexBuffer(FRHIBuffer* VertexBuffer)
-{
-	check(IsInRenderingThread());
-	FRHICommandListExecutor::GetImmediateCommandList().UnlockBuffer(VertexBuffer);
-}
-
 FORCEINLINE FBufferRHIRef RHICreateStructuredBuffer(uint32 Stride, uint32 Size, EBufferUsageFlags Usage, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo)
 {
 	check(IsInRenderingThread());
@@ -5417,20 +5444,6 @@ FORCEINLINE FBufferRHIRef RHICreateStructuredBuffer(uint32 Stride, uint32 Size, 
 	EBufferUsageFlags Usage = InUsage | BUF_StructuredBuffer;
 	ERHIAccess ResourceState = RHIGetDefaultResourceState(Usage, bHasInitialData);
 	return RHICreateStructuredBuffer(Stride, Size, Usage, ResourceState, CreateInfo);
-}
-
-UE_DEPRECATED(5.0, "Buffer locks have been unified. Use RHILockBuffer() instead.")
-FORCEINLINE void* RHILockStructuredBuffer(FRHIBuffer* StructuredBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
-{
-	check(IsInRenderingThread());
-	return FRHICommandListExecutor::GetImmediateCommandList().LockBuffer(StructuredBuffer, Offset, SizeRHI, LockMode);
-}
-
-UE_DEPRECATED(5.0, "Buffer locks have been unified. Use RHIUnlockBuffer() instead.")
-FORCEINLINE void RHIUnlockStructuredBuffer(FRHIBuffer* StructuredBuffer)
-{
-	check(IsInRenderingThread());
-	FRHICommandListExecutor::GetImmediateCommandList().UnlockBuffer(StructuredBuffer);
 }
 
 FORCEINLINE void* RHILockBuffer(FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
@@ -5489,12 +5502,6 @@ FORCEINLINE void RHIUpdateRHIResources(FRHIResourceUpdateInfo* UpdateInfos, int3
 FORCEINLINE FTextureReferenceRHIRef RHICreateTextureReference()
 {
 	return new FRHITextureReference();
-}
-
-UE_DEPRECATED(5.0, "The LastRenderTime parameter will be removed in the future")
-FORCEINLINE FTextureReferenceRHIRef RHICreateTextureReference(FLastRenderTimeContainer* LastRenderTime)
-{
-	return RHICreateTextureReference();
 }
 
 FORCEINLINE void RHIUpdateTextureReference(FRHITextureReference* TextureRef, FRHITexture* NewTexture)
@@ -5684,9 +5691,12 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
+UE_DEPRECATED(5.2, "RHICopySharedMips should be replaced with UE::RHI::CopySharedMips(). ** Note ** The argument ordering of the new function has changed. The new function also does not issue RHI transitions, so the caller is responsible for ensuring src/dst textures are in CopySrc/CopyDest state.")
 FORCEINLINE void RHICopySharedMips(FRHITexture* DestTexture, FRHITexture* SrcTexture)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return FRHICommandListExecutor::GetImmediateCommandList().CopySharedMips(DestTexture, SrcTexture);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FORCEINLINE FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHITexture* Texture, uint8 MipLevel)
@@ -5784,18 +5794,6 @@ FORCEINLINE void RHIUnlockTextureCubeFace(FRHITextureCube* Texture, uint32 FaceI
 	 FRHICommandListExecutor::GetImmediateCommandList().UnlockTextureCubeFace(Texture, FaceIndex, ArrayIndex, MipIndex, bLockWithinMiptail);
 }
 
-UE_DEPRECATED(5.0, "RHIAcquireTransientResource API is deprecated; use IRHITransientResourceAllocator instead.")
-FORCEINLINE void RHIAcquireTransientResource(FRHITexture*) {}
-
-UE_DEPRECATED(5.0, "RHIDiscardTransientResource API is deprecated; use IRHITransientResourceAllocator instead.")
-FORCEINLINE void RHIDiscardTransientResource(FRHITexture*) {}
-
-UE_DEPRECATED(5.0, "RHIAcquireTransientResource API is deprecated; use IRHITransientResourceAllocator instead.")
-FORCEINLINE void RHIAcquireTransientResource(FRHIBuffer*)  {}
-
-UE_DEPRECATED(5.0, "RHIDiscardTransientResource API is deprecated; use IRHITransientResourceAllocator instead.")
-FORCEINLINE void RHIDiscardTransientResource(FRHIBuffer*)  {}
-
 FORCEINLINE void RHIAcquireThreadOwnership()
 {
 	return FRHICommandListExecutor::GetImmediateCommandList().AcquireThreadOwnership();
@@ -5819,11 +5817,6 @@ FORCEINLINE void RHIVirtualTextureSetFirstMipInMemory(FRHITexture2D* Texture, ui
 FORCEINLINE void RHIVirtualTextureSetFirstMipVisible(FRHITexture2D* Texture, uint32 FirstMip)
 {
 	 FRHICommandListExecutor::GetImmediateCommandList().VirtualTextureSetFirstMipVisible(Texture, FirstMip);
-}
-
-FORCEINLINE void RHIExecuteCommandList(FRHICommandList* CmdList)
-{
-	 FRHICommandListExecutor::GetImmediateCommandList().ExecuteCommandList(CmdList);
 }
 
 FORCEINLINE void* RHIGetNativeDevice()
@@ -5876,96 +5869,25 @@ FORCEINLINE void RHIUnlockStagingBuffer(FRHIStagingBuffer* StagingBuffer)
 	 FRHICommandListExecutor::GetImmediateCommandList().UnlockStagingBuffer(StagingBuffer);
 }
 
-template <uint32 MaxNumUpdates>
-struct TRHIResourceUpdateBatcher
+namespace UE::RHI
 {
-	FRHIResourceUpdateInfo UpdateInfos[MaxNumUpdates];
-	uint32 NumBatched;
 
-	TRHIResourceUpdateBatcher()
-		: NumBatched(0)
-	{}
+	//
+	// Copies shared mip levels from one texture to another.
+	// Both textures must have full mip chains, share the same format, and have the same aspect ratio.
+	// The source texture must be in the CopySrc state, and the destination texture must be in the CopyDest state.
+	// 
+	RHI_API void CopySharedMips(FRHICommandList& RHICmdList, FRHITexture* SrcTexture, FRHITexture* DstTexture);
 
-	~TRHIResourceUpdateBatcher()
-	{
-		Flush();
-	}
+	//
+	// Same as CopySharedMips(), but assumes both source and destination textures are in the SRVMask state.
+	// Adds transitions to move the textures to/from the CopySrc/CopyDest states, restoring SRVMask when done.
+	//
+	// Provided for backwards compatibility. Caller should prefer CopySharedMips() with optimally batched transitions.
+	//
+	RHI_API void CopySharedMips_AssumeSRVMaskState(FRHICommandList& RHICmdList, FRHITexture* SrcTexture, FRHITexture* DstTexture);
 
-	void Flush()
-	{
-		if (NumBatched > 0)
-		{
-			RHIUpdateRHIResources(UpdateInfos, NumBatched, true);
-			NumBatched = 0;
-		}
-	}
-
-	void QueueUpdateRequest(FRHIBuffer* DestBuffer, FRHIBuffer* SrcBuffer)
-	{
-		FRHIResourceUpdateInfo& UpdateInfo = GetNextUpdateInfo();
-		UpdateInfo.Type = FRHIResourceUpdateInfo::UT_Buffer;
-		UpdateInfo.Buffer = { DestBuffer, SrcBuffer };
-		DestBuffer->AddRef();
-		if (SrcBuffer)
-		{
-			SrcBuffer->AddRef();
-		}
-	}
-
-	void QueueUpdateRequest(FRHIRayTracingGeometry* DestGeometry, FRHIRayTracingGeometry* SrcGeometry)
-	{
-		FRHIResourceUpdateInfo& UpdateInfo = GetNextUpdateInfo();
-		UpdateInfo.Type = FRHIResourceUpdateInfo::UT_RayTracingGeometry;
-		UpdateInfo.RayTracingGeometry = { DestGeometry, SrcGeometry };
-		DestGeometry->AddRef();
-		if (SrcGeometry)
-		{
-			SrcGeometry->AddRef();
-		}
-	}
-
-	void QueueUpdateRequest(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer, uint32 Stride, uint8 Format)
-	{
-		FRHIResourceUpdateInfo& UpdateInfo = GetNextUpdateInfo();
-		UpdateInfo.Type = FRHIResourceUpdateInfo::UT_BufferFormatSRV;
-		UpdateInfo.BufferSRV = { SRV, Buffer, Stride, Format };
-		SRV->AddRef();
-		if (Buffer)
-		{
-			Buffer->AddRef();
-		}
-	}
-
-	void QueueUpdateRequest(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer)
-	{
-		FRHIResourceUpdateInfo& UpdateInfo = GetNextUpdateInfo();
-		UpdateInfo.Type = FRHIResourceUpdateInfo::UT_BufferSRV;
-		UpdateInfo.BufferSRV = { SRV, Buffer };
-		SRV->AddRef();
-		if (Buffer)
-		{
-			Buffer->AddRef();
-		}
-	}
-
-private:
-	FRHIResourceUpdateInfo & GetNextUpdateInfo()
-	{
-		check(NumBatched <= MaxNumUpdates);
-		if (NumBatched >= MaxNumUpdates)
-		{
-			Flush();
-		}
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 6385) // Access is always in-bound due to the Flush above
-#endif
-		return UpdateInfos[NumBatched++];
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
-	}
-};
+} //! UE::RHI
 
 #undef RHICOMMAND_CALLSTACK
 

@@ -2,11 +2,14 @@
 
 #pragma once
 
+#include "Chaos/DebugDrawQueue.h"
 #include "Chaos/Deformable/ChaosDeformableSolverProxy.h"
+#include "Chaos/Deformable/ChaosDeformableCollisionsProxy.h"
 #include "Chaos/PBDSoftsEvolutionFwd.h"
 #include "CoreMinimal.h"
 
 class UDeformableSolverComponent;
+class FFleshCacheAdapter;
 
 namespace Chaos::Softs
 {
@@ -22,7 +25,15 @@ namespace Chaos::Softs
 			bool InbUseFloor = true,
 			bool InbDoSelfCollision = false,
 			bool InbUseGridBasedConstraints = false,
-			FSolverReal InGridDx = (FSolverReal)1. )
+			FSolverReal InGridDx = (FSolverReal)1. ,
+			bool InbDoQuasistatics = false,
+			FSolverReal InEMesh = (FSolverReal)100000.,
+			bool InbDoBlended = false,
+			FSolverReal InBlendedZeta = (FSolverReal).1,
+			FSolverReal InDamping = (FSolverReal)0,
+			bool InbEnableGravity = true, 
+			bool InbEnableCorotatedConstraints = true, 
+			bool InbEnablePositionTargets = true)
 			: NumSolverSubSteps(InNumSolverSubSteps)
 			, NumSolverIterations(InNumSolverIterations)
 			, FixTimeStep(InFixTimeStep)
@@ -33,6 +44,14 @@ namespace Chaos::Softs
 			, bDoSelfCollision(InbDoSelfCollision)
 			, bUseGridBasedConstraints(InbUseGridBasedConstraints)
 			, GridDx(InGridDx)
+			, bDoQuasistatics(InbDoQuasistatics)
+			, EMesh(InEMesh)
+			, bDoBlended(InbDoBlended)
+			, BlendedZeta(InBlendedZeta)
+			, Damping(InDamping)
+			, bEnableGravity(InbEnableGravity)
+			, bEnableCorotatedConstraints(InbEnableCorotatedConstraints)
+			, bEnablePositionTargets(InbEnablePositionTargets)
 		{}
 
 		FDeformableSolverProperties(const FDeformableSolverProperties& InProp)
@@ -46,6 +65,14 @@ namespace Chaos::Softs
 			, bDoSelfCollision(InProp.bDoSelfCollision)
 			, bUseGridBasedConstraints(InProp.bUseGridBasedConstraints)
 			, GridDx(InProp.GridDx)
+			, bDoQuasistatics(InProp.bDoQuasistatics)
+			, EMesh(InProp.EMesh)
+			, bDoBlended(InProp.bDoBlended)
+			, BlendedZeta(InProp.BlendedZeta)
+			, Damping(InProp.Damping)
+			, bEnableGravity(InProp.bEnableGravity)
+			, bEnableCorotatedConstraints(InProp.bEnableCorotatedConstraints)
+			, bEnablePositionTargets(InProp.bEnablePositionTargets)
 		{}
 
 		int32 NumSolverSubSteps = 5;
@@ -58,6 +85,14 @@ namespace Chaos::Softs
 		bool bDoSelfCollision = false;
 		bool bUseGridBasedConstraints = false;
 		FSolverReal GridDx = (FSolverReal)1.;
+		bool bDoQuasistatics = false;
+		FSolverReal EMesh = (FSolverReal)100000.;
+		bool bDoBlended = false;
+		FSolverReal BlendedZeta = (FSolverReal)0.;
+		FSolverReal Damping = (FSolverReal)0.;
+		bool bEnableGravity = true;
+		bool bEnableCorotatedConstraints = true;
+		bool bEnablePositionTargets = true;
 	};
 
 
@@ -82,10 +117,11 @@ namespace Chaos::Softs
 	class CHAOS_API FGameThreadAccessor
 	{
 	public:
-		friend class UDeformableSolverComponent;
-#if PLATFORM_WINDOWS
-	protected:
-#endif
+//		friend class UDeformableSolverComponent;
+//		friend class FFleshCacheAdapter;
+//#if PLATFORM_WINDOWS
+//	protected:
+//#endif
 		FGameThreadAccessor() {}
 	};
 
@@ -94,11 +130,39 @@ namespace Chaos::Softs
 	class CHAOS_API FPhysicsThreadAccessor
 	{
 	public:
-		friend class UDeformableSolverComponent;
-#if PLATFORM_WINDOWS
-	protected:
-#endif
+//		friend class UDeformableSolverComponent;
+//		friend class FFleshCacheAdapter;
+//#if PLATFORM_WINDOWS
+//	protected:
+//#endif
 		FPhysicsThreadAccessor() {}
+	};
+
+
+	struct CHAOS_API FDeformableDebugParams
+	{				
+		bool bDoDrawTetrahedralParticles = false;
+		bool bDoDrawKinematicParticles = false;
+		bool bDoDrawTransientKinematicParticles = false;
+		bool bDoDrawRigidCollisionGeometry = false;
+
+
+		bool IsDebugDrawingEnabled()
+		{ 
+#if WITH_EDITOR
+			// p.Chaos.DebugDraw.Enabled 1
+			return Chaos::FDebugDrawQueue::GetInstance().IsDebugDrawingEnabled();
+#else
+			return false;
+#endif
+		}
+	};
+
+	struct CHAOS_API FDeformableXPBDCorotatedParams
+	{
+		int32 XPBDCorotatedBatchSize = 5;
+		int32 XPBDCorotatedBatchThreshold = 5;
+
 	};
 
 

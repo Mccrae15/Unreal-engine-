@@ -2,25 +2,22 @@
 
 #include "PCGEditorGraphNodeBase.h"
 
+#include "PCGEditor.h"
 #include "PCGEditorCommands.h"
 #include "PCGEditorCommon.h"
 #include "PCGEditorGraph.h"
 #include "PCGEditorGraphSchema.h"
 #include "PCGEditorSettings.h"
 #include "PCGGraph.h"
-#include "PCGNode.h"
-#include "PCGSettings.h"
+#include "PCGPin.h"
+#include "PCGSubsystem.h"
 
-#include "EdGraph/EdGraph.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Framework/Commands/GenericCommands.h"
-#include "Misc/TransactionObjectEvent.h"
 #include "GraphEditorActions.h"
-#include "GraphEditorSettings.h"
 #include "ToolMenu.h"
 #include "ToolMenuSection.h"
+#include "Logging/TokenizedMessage.h"
+#include "Misc/TransactionObjectEvent.h"
 #include "Widgets/Colors/SColorPicker.h"
-#include "PCGEditorCommands.h"
 
 #define LOCTEXT_NAMESPACE "PCGEditorGraphNodeBase"
 
@@ -36,9 +33,9 @@ void UPCGEditorGraphNodeBase::Construct(UPCGNode* InPCGNode)
 	bCommentBubblePinned = InPCGNode->bCommentBubblePinned;
 	bCommentBubbleVisible = InPCGNode->bCommentBubbleVisible;
 
-	if (const UPCGSettings* PCGSettings = InPCGNode->DefaultSettings)
+	if (const UPCGSettingsInterface* PCGSettingsInterface = InPCGNode->GetSettingsInterface())
 	{
-		const ENodeEnabledState NewEnabledState = (PCGSettings->ExecutionMode == EPCGSettingsExecutionMode::Disabled) ? ENodeEnabledState::Disabled : ENodeEnabledState::Enabled;
+		const ENodeEnabledState NewEnabledState = !PCGSettingsInterface->bEnabled ? ENodeEnabledState::Disabled : ENodeEnabledState::Enabled;
 		SetEnabledState(NewEnabledState);
 	}
 }
@@ -79,18 +76,15 @@ void UPCGEditorGraphNodeBase::GetNodeContextMenuActions(UToolMenu* Menu, class U
 
 	{
 		FToolMenuSection& Section = Menu->AddSection("EdGraphSchemaNodeActions", LOCTEXT("NodeActionsHeader", "Node Actions"));
-		Section.AddMenuEntry(bIsInspected ? FPCGEditorCommands::Get().StopInspectNode : FPCGEditorCommands::Get().StartInspectNode);
+		Section.AddMenuEntry(FPCGEditorCommands::Get().ToggleEnabled, LOCTEXT("ToggleEnabledLabel", "Enable"));
+		Section.AddMenuEntry(FPCGEditorCommands::Get().ToggleDebug, LOCTEXT("ToggleDebugLabel", "Debug"));
+		Section.AddMenuEntry(FPCGEditorCommands::Get().DebugOnlySelected);
+		Section.AddMenuEntry(FPCGEditorCommands::Get().DisableDebugOnAllNodes);
+		Section.AddMenuEntry(FPCGEditorCommands::Get().ToggleInspect, LOCTEXT("ToggleinspectionLabel", "Inspect"));
 		Section.AddMenuEntry(FGraphEditorCommands::Get().BreakNodeLinks);
 		Section.AddMenuEntry(FPCGEditorCommands::Get().CollapseNodes);
-
-		Section.AddSubMenu("ExecutionMode", LOCTEXT("ExecutionModeHeader", "Execution Mode"), FText(), FNewToolMenuDelegate::CreateLambda([](UToolMenu* ExecutionModeMenu)
-		{
-			FToolMenuSection& SubSection = ExecutionModeMenu->AddSection("ExecutionMode");
-			SubSection.AddMenuEntry(FPCGEditorCommands::Get().ExecutionModeEnabled, LOCTEXT("ExecutionModeEnabledLabel", "Enabled"));
-			SubSection.AddMenuEntry(FPCGEditorCommands::Get().ExecutionModeDebug, LOCTEXT("ExecutionModeDebugLabel", "Debug"));
-			SubSection.AddMenuEntry(FPCGEditorCommands::Get().ExecutionModeDisabled, LOCTEXT("ExecutionModeDisabledLabel", "Disabled"));
-			SubSection.AddMenuEntry(FPCGEditorCommands::Get().ExecutionModeIsolated, LOCTEXT("ExecutionModeIsolatedLabel", "Isolated"));
-		}));
+		Section.AddMenuEntry(FPCGEditorCommands::Get().ExportNodes);
+		Section.AddMenuEntry(FPCGEditorCommands::Get().ConvertToStandaloneNodes);
 	}
 
 	{
@@ -204,9 +198,35 @@ void UPCGEditorGraphNodeBase::PostPaste()
 		PCGNode->OnNodeChangedDelegate.AddUObject(this, &UPCGEditorGraphNodeBase::OnNodeChanged);
 		PCGNode->PositionX = NodePosX;
 		PCGNode->PositionY = NodePosY;
+
+		if (const UPCGSettings* Settings = PCGNode->GetSettings())
+		{
+			if (Settings->HasDynamicPins())
+			{
+				PCGNode->UpdateAfterSettingsChangeDuringCreation();
+			}
+		}
 	}
 
 	bDisableReconstructFromNode = false;
+}
+
+void UPCGEditorGraphNodeBase::EnableDeferredReconstruct()
+{
+	ensure(DeferredReconstructCounter >= 0);
+	++DeferredReconstructCounter;
+}
+
+void UPCGEditorGraphNodeBase::DisableDeferredReconstruct()
+{
+	ensure(DeferredReconstructCounter > 0);
+	--DeferredReconstructCounter;
+
+	if (DeferredReconstructCounter == 0 && bDeferredReconstruct)
+	{
+		ReconstructNode();
+		bDeferredReconstruct = false;
+	}
 }
 
 void UPCGEditorGraphNodeBase::RebuildEdgesFromPins()
@@ -248,17 +268,64 @@ void UPCGEditorGraphNodeBase::OnNodeChanged(UPCGNode* InNode, EPCGChangeType Cha
 	{
 		if (!!(ChangeType & EPCGChangeType::Settings))
 		{
-			if (const UPCGSettings* PCGSettings = InNode->DefaultSettings)
+			if (const UPCGSettingsInterface* PCGSettingsInterface = InNode->GetSettingsInterface())
 			{
-				const ENodeEnabledState NewEnabledState = (PCGSettings->ExecutionMode == EPCGSettingsExecutionMode::Disabled) ? ENodeEnabledState::Disabled : ENodeEnabledState::Enabled;
+				const ENodeEnabledState NewEnabledState = PCGSettingsInterface->bEnabled ? ENodeEnabledState::Enabled : ENodeEnabledState::Disabled;
 				if (NewEnabledState != GetDesiredEnabledState())
 				{
 					SetEnabledState(NewEnabledState);
 				}
 			}
 		}
-		
-		ReconstructNode();
+
+		UpdateErrorsAndWarnings();
+
+		if (!!(ChangeType & (EPCGChangeType::Structural | EPCGChangeType::Node | EPCGChangeType::Edge | EPCGChangeType::Cosmetic)))
+		{
+			ReconstructNode();
+		}
+	}
+}
+
+void UPCGEditorGraphNodeBase::UpdateErrorsAndWarnings()
+{
+	bool bNodeChanged = false;
+
+	// Pull current errors/warnings state from PCG subsystem.
+	if (const UPCGSubsystem* Subsystem = UPCGSubsystem::GetActiveEditorInstance())
+	{
+		const UPCGComponent* ComponentBeingDebugged = nullptr;
+		{
+			const UPCGEditorGraph* EditorGraph = CastChecked<UPCGEditorGraph>(GetGraph());
+			const FPCGEditor* Editor = (EditorGraph && EditorGraph->GetEditor().IsValid()) ? EditorGraph->GetEditor().Pin().Get() : nullptr;
+			ComponentBeingDebugged = Editor ? Editor->GetPCGComponentBeingDebugged() : nullptr;
+		}
+
+		const bool bOldHasCompilerMessage = bHasCompilerMessage;
+		const int32 OldErrorType = ErrorType;
+		const FString OldErrorMsg = ErrorMsg;
+
+		bHasCompilerMessage = Subsystem->GetNodeVisualLogs().HasLogs(PCGNode, ComponentBeingDebugged);
+
+		if (bHasCompilerMessage)
+		{
+			const bool bHasErrors = Subsystem->GetNodeVisualLogs().HasLogs(PCGNode, ComponentBeingDebugged, ELogVerbosity::Error);
+			ErrorType = bHasErrors ? EMessageSeverity::Error : EMessageSeverity::Warning;
+
+			ErrorMsg = Subsystem->GetNodeVisualLogs().GetLogsSummaryText(PCGNode, ComponentBeingDebugged).ToString();
+		}
+		else
+		{
+			ErrorMsg.Empty();
+			ErrorType = 0;
+		}
+
+		bNodeChanged = (bHasCompilerMessage != bOldHasCompilerMessage) || (ErrorType != OldErrorType) || (ErrorMsg != OldErrorMsg);
+	}
+
+	if (bNodeChanged)
+	{
+		OnNodeChangedDelegate.ExecuteIfBound();
 	}
 }
 
@@ -267,7 +334,7 @@ void UPCGEditorGraphNodeBase::OnPickColor()
 	FColorPickerArgs PickerArgs;
 	PickerArgs.bIsModal = true;
 	PickerArgs.bUseAlpha = false;
-	PickerArgs.InitialColorOverride = GetNodeTitleColor();
+	PickerArgs.InitialColor = GetNodeTitleColor();
 	PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateUObject(this, &UPCGEditorGraphNodeBase::OnColorPicked);
 
 	OpenColorPicker(PickerArgs);
@@ -290,28 +357,51 @@ void UPCGEditorGraphNodeBase::ReconstructNode()
 		return;
 	}
 
-	// Remove all current pins
-	TArray<UEdGraphPin*> OldPins = Pins;
-
-	for (UEdGraphPin* OldPin : OldPins)
+	if (DeferredReconstructCounter > 0)
 	{
-		OldPin->BreakAllPinLinks();
-		RemovePin(OldPin);
+		bDeferredReconstruct = true;
+		return;
 	}
-	check(Pins.IsEmpty());
+	
+	Modify();
+
+	// Store copy of old pins
+	TArray<UEdGraphPin*> OldPins = MoveTemp(Pins);
+	Pins.Reset();
 
 	// Generate new pins
 	AllocateDefaultPins();
+
+	// Transfer persistent data from old to new pins
+	for (UEdGraphPin* OldPin : OldPins)
+	{
+		const FName& OldPinName = OldPin->PinName;
+		if (UEdGraphPin** NewPin = Pins.FindByPredicate([&OldPinName](UEdGraphPin* InPin) { return InPin->PinName == OldPinName; }))
+		{
+			(*NewPin)->MovePersistentDataFromOldPin(*OldPin);
+		}
+	}
+
+	// Remove old pins
+	for (UEdGraphPin* OldPin : OldPins)
+	{
+		RemovePin(OldPin);
+	}
 
 	// Generate new links
 	// TODO: we should either keep a map in the PCGEditorGraph or do this elsewhere
 	// TODO: this will not work if we have non-PCG nodes in the graph
 	if (PCGNode)
 	{
+		for (UEdGraphPin* Pin : Pins)
+		{
+			Pin->BreakAllPinLinks();
+		}
+		
 		UPCGEditorGraph* PCGEditorGraph = CastChecked<UPCGEditorGraph>(GetGraph());
 		PCGEditorGraph->CreateLinks(this, /*bCreateInbound=*/true, /*bCreateOutbound=*/true);
 	}
-	
+
 	// Notify editor
 	OnNodeChangedDelegate.ExecuteIfBound();
 }
@@ -320,11 +410,8 @@ FLinearColor UPCGEditorGraphNodeBase::GetNodeTitleColor() const
 {
 	if (PCGNode)
 	{
-		const UPCGSettings* PCGSettings = PCGNode->DefaultSettings;
-		if (PCGSettings && PCGSettings->ExecutionMode == EPCGSettingsExecutionMode::Isolated)
-		{
-			return GetDefault<UPCGEditorSettings>()->IsolatedNodeColor;
-		}
+		const UPCGSettingsInterface* PCGSettingsInterface = PCGNode->GetSettingsInterface();
+		const UPCGSettings* PCGSettings = PCGSettingsInterface ? PCGSettingsInterface->GetSettings() : nullptr;
 
 		if (PCGNode->NodeTitleColor != FLinearColor::White)
 		{
@@ -332,10 +419,10 @@ FLinearColor UPCGEditorGraphNodeBase::GetNodeTitleColor() const
 		}
 		else if (PCGSettings)
 		{
-			FLinearColor SettingsColor = PCGNode->DefaultSettings->GetNodeTitleColor();
+			FLinearColor SettingsColor = PCGNode->GetSettings()->GetNodeTitleColor();
 			if (SettingsColor == FLinearColor::White)
 			{
-				SettingsColor = GetDefault<UPCGEditorSettings>()->GetColor(PCGNode->DefaultSettings);
+				SettingsColor = GetDefault<UPCGEditorSettings>()->GetColor(PCGNode->GetSettings());
 			}
 
 			if (SettingsColor != FLinearColor::White)
@@ -352,10 +439,13 @@ FLinearColor UPCGEditorGraphNodeBase::GetNodeBodyTintColor() const
 {
 	if (PCGNode)
 	{
-		const UPCGSettings* PCGSettings = PCGNode->DefaultSettings;
-		if (PCGSettings && PCGSettings->ExecutionMode == EPCGSettingsExecutionMode::Isolated)
+		const UPCGSettingsInterface* PCGSettingsInterface = PCGNode->GetSettingsInterface();
+		if (PCGSettingsInterface)
 		{
-			return GetDefault<UPCGEditorSettings>()->IsolatedNodeColor;
+			if (PCGSettingsInterface->IsInstance())
+			{
+				return GetDefault<UPCGEditorSettings>()->InstancedNodeBodyTintColor;
+			}
 		}
 	}
 
@@ -376,9 +466,9 @@ FEdGraphPinType UPCGEditorGraphNodeBase::GetPinType(const UPCGPin* InPin)
 		return !!(PinType & AllowedType) && !(PinType & ~AllowedType);
 	};
 
-	if (CheckType(EPCGDataType::Spatial))
+	if (CheckType(EPCGDataType::Concrete))
 	{
-		EdPinType.PinCategory = FPCGEditorCommon::SpatialDataType;
+		EdPinType.PinCategory = FPCGEditorCommon::ConcreteDataType;
 
 		// Assign subcategory if we have precise information
 		if (CheckType(EPCGDataType::Point))
@@ -388,6 +478,14 @@ FEdGraphPinType UPCGEditorGraphNodeBase::GetPinType(const UPCGPin* InPin)
 		else if (CheckType(EPCGDataType::PolyLine))
 		{
 			EdPinType.PinSubCategory = FPCGEditorCommon::PolyLineDataType;
+		}
+		else if (CheckType(EPCGDataType::Landscape))
+		{
+			EdPinType.PinSubCategory = FPCGEditorCommon::LandscapeDataType;
+		}
+		else if (CheckType(EPCGDataType::Texture))
+		{
+			EdPinType.PinSubCategory = FPCGEditorCommon::TextureDataType;
 		}
 		else if (CheckType(EPCGDataType::RenderTarget))
 		{
@@ -406,6 +504,10 @@ FEdGraphPinType UPCGEditorGraphNodeBase::GetPinType(const UPCGPin* InPin)
 			EdPinType.PinSubCategory = FPCGEditorCommon::PrimitiveDataType;
 		}
 	}
+	else if (CheckType(EPCGDataType::Spatial))
+	{
+		EdPinType.PinCategory = FPCGEditorCommon::SpatialDataType;
+	}
 	else if (CheckType(EPCGDataType::Param))
 	{
 		EdPinType.PinCategory = FPCGEditorCommon::ParamDataType;
@@ -417,17 +519,20 @@ FEdGraphPinType UPCGEditorGraphNodeBase::GetPinType(const UPCGPin* InPin)
 	else if (CheckType(EPCGDataType::Other))
 	{
 		EdPinType.PinCategory = FPCGEditorCommon::OtherDataType;
-	}	
+	}
 
 	return EdPinType;
 }
 
 FText UPCGEditorGraphNodeBase::GetTooltipText() const
 {
-	return FText::Format(LOCTEXT("NodeTooltip", "{0}\n{1} - Node index {2}"),
-		GetNodeTitle(ENodeTitleType::FullTitle),
-		PCGNode ? FText::FromName(PCGNode->GetFName()) :FText(LOCTEXT("InvalidNodeName", "Unbound node")),
-		PCGNode ? FText::AsNumber(PCGNode->GetGraph()->GetNodes().IndexOfByKey(PCGNode)) : FText(LOCTEXT("InvalidNodeIndex", "Invalid index")));
+	// Either use specified tooltip for description, or fall back to node name if none given.
+	const FText Description = (PCGNode && !PCGNode->GetNodeTooltipText().IsEmpty()) ? PCGNode->GetNodeTooltipText() : GetNodeTitle(ENodeTitleType::FullTitle);
+
+	return FText::Format(LOCTEXT("NodeTooltip", "{0}\n\n{1} - Node index {2}"),
+		Description,
+		PCGNode ? FText::FromName(PCGNode->GetFName()) : LOCTEXT("InvalidNodeName", "Unbound node"),
+		PCGNode ? FText::AsNumber(PCGNode->GetGraph()->GetNodes().IndexOfByKey(PCGNode)) : LOCTEXT("InvalidNodeIndex", "Invalid index"));
 }
 
 void UPCGEditorGraphNodeBase::GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const
@@ -474,28 +579,41 @@ void UPCGEditorGraphNodeBase::GetPinHoverText(const UEdGraphPin& Pin, FString& H
 	const FText DataTypeText = PinTypeToText(Pin.PinType.PinCategory, MatchingPin);
 	const FText DataSubtypeText = PinTypeToText(Pin.PinType.PinSubCategory, MatchingPin);
 
-	if (MatchingPin != nullptr && bIsInputPin)
+	FText Description;
+	if (MatchingPin)
 	{
-		const FText AdditionalInfo = MatchingPin->Properties.bAllowMultipleConnections ? FText(LOCTEXT("SupportsMultiInput", "Supports multiple inputs")) : FText(LOCTEXT("SingleInputOnly", "Supports only one input"));
+		Description = MatchingPin->Properties.Tooltip.IsEmpty() ? FText::FromName(MatchingPin->Properties.Label) : MatchingPin->Properties.Tooltip;
+	}
 
-		HoverTextOut = FText::Format(LOCTEXT("PinHoverToolTipFull", "Type: {0}\nSubtype: {1}\nAdditional information: {2}"),
-			DataTypeText,
-			DataSubtypeText,
-			AdditionalInfo).ToString();
-	}
-	else
+	FText MultiDataSupport;
+	FText MultiConnectionSupport;	
+
+	if (MatchingPin)
 	{
-		HoverTextOut = FText::Format(LOCTEXT("PinHoverToolTipPartial", "Type: {0}\nSubtype: {1}"),
-			DataTypeText,
-			DataSubtypeText).ToString();
+		if (bIsInputPin)
+		{
+			MultiDataSupport = MatchingPin->Properties.bAllowMultipleData ? FText(LOCTEXT("InputSupportsMultiData", "Supports multiple data in input(s). ")) : FText(LOCTEXT("InputSingleDataOnly", "Supports only single data in input(s). "));
+			MultiConnectionSupport = MatchingPin->Properties.bAllowMultipleConnections ? FText(LOCTEXT("SupportsMultiInput", "Supports multiple inputs.")) : FText(LOCTEXT("SingleInputOnly", "Supports only one input."));
+		}
+		else
+		{
+			MultiDataSupport = MatchingPin->Properties.bAllowMultipleData ? FText(LOCTEXT("OutputSupportsMultiData", "Can generate multiple data.")) : FText(LOCTEXT("OutputSingleDataOnly", "Generates only single data."));
+		}
 	}
+
+	HoverTextOut = FText::Format(LOCTEXT("PinHoverToolTipFull", "{0}\n\nType: {1}\nSubtype: {2}\nAdditional information: {3}{4}"),
+		Description,
+		DataTypeText,
+		DataSubtypeText,
+		MultiDataSupport,
+		MultiConnectionSupport).ToString();
 }
 
 UObject* UPCGEditorGraphNodeBase::GetJumpTargetForDoubleClick() const
 {
 	if (PCGNode)
 	{
-		if (UPCGSettings* Settings = PCGNode->DefaultSettings)
+		if (UPCGSettings* Settings = PCGNode->GetSettings())
 		{
 			return Settings->GetJumpTargetForDoubleClick();
 		}
@@ -542,6 +660,49 @@ void UPCGEditorGraphNodeBase::UpdatePosition()
 		PCGNode->Modify();
 		PCGNode->PositionX = NodePosX;
 		PCGNode->PositionY = NodePosY;
+	}
+}
+
+bool UPCGEditorGraphNodeBase::ShouldCreatePin(const UPCGPin* InPin) const
+{
+	return true;
+}
+
+void UPCGEditorGraphNodeBase::CreatePins(const TArray<UPCGPin*>& InInputPins, const TArray<UPCGPin*>& InOutputPins)
+{
+	bool bHasAdvancedPin = false;
+
+	for (const UPCGPin* InputPin : InInputPins)
+	{
+		if (!ShouldCreatePin(InputPin))
+		{
+			continue;
+		}
+
+		UEdGraphPin* Pin = CreatePin(EEdGraphPinDirection::EGPD_Input, GetPinType(InputPin), InputPin->Properties.Label);
+		Pin->bAdvancedView = InputPin->Properties.bAdvancedPin;
+		bHasAdvancedPin |= Pin->bAdvancedView;
+	}
+
+	for (const UPCGPin* OutputPin : InOutputPins)
+	{
+		if (!ShouldCreatePin(OutputPin))
+		{
+			continue;
+		}
+
+		UEdGraphPin* Pin = CreatePin(EEdGraphPinDirection::EGPD_Output, GetPinType(OutputPin), OutputPin->Properties.Label);
+		Pin->bAdvancedView = OutputPin->Properties.bAdvancedPin;
+		bHasAdvancedPin |= Pin->bAdvancedView;
+	}
+
+	if (bHasAdvancedPin && AdvancedPinDisplay == ENodeAdvancedPins::NoPins)
+	{
+		AdvancedPinDisplay = ENodeAdvancedPins::Hidden;
+	}
+	else if (!bHasAdvancedPin)
+	{
+		AdvancedPinDisplay = ENodeAdvancedPins::NoPins;
 	}
 }
 

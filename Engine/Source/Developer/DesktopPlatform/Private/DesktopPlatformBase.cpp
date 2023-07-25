@@ -805,7 +805,7 @@ bool FDesktopPlatformBase::IsUnrealBuildToolRunning()
 	return bIsRunning;
 }
 
-bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FString& ProjectFileName, const FString& ProviderIdentifier, bool Unattended, FFeedbackContext* Warn, FString& OutToken, FDateTime& OutTokenExpiresAt)
+bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FString& ProjectFileName, const FString& ProviderIdentifier, bool bUnattended, FFeedbackContext* Warn, FString& OutToken, FDateTime& OutTokenExpiresAt, bool& bOutWasInteractiveLogin)
 {
 	FString ResultFilePath = FPaths::CreateTempFilename(*FPaths::ProjectIntermediateDir(), TEXT("oidcToken.json"));
 
@@ -822,11 +822,16 @@ bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FStr
 	FString ProcessStdout;
 	bRes = InvokeOidcTokenToolSync(LOCTEXT("GetOidcAccessToken", "Fetching OIDC Access Token..."), RootDir, UnattendedArguments, Warn, ExitCode, ProcessStdout);
 
+	bOutWasInteractiveLogin = false;
+
 	if (ExitCode == 10)
 	{
-		if (!Unattended)
+		if (!bUnattended)
 		{
 			bRes = GetOidcAccessTokenInteractive(RootDir, Arguments, Warn, ExitCode);
+
+			bOutWasInteractiveLogin = true;
+
 			if (!bRes)
 			{
 				UE_LOG(LogDesktopPlatform, Error, TEXT("Unable to allocate an access token. Interactive login failed, make sure you are assigned access and are able to login in the created browser window. Provider used: '%s'. Ran OidcToken (project file is '%s', exe path is '%s')"), *ProviderIdentifier, *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir));
@@ -863,6 +868,9 @@ bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FStr
 
 				FDateTime::ParseIso8601(*ExpiresAt, OutTokenExpiresAt);
 
+				// Remove the output file if its still around
+				IFileManager::Get().Delete(*ResultFilePath, true, false, true);
+
 				return true;
 			}
 		}
@@ -870,6 +878,8 @@ bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FStr
 
 	UE_LOG(LogDesktopPlatform, Warning, TEXT("Failed to run OidcToken (project file is '%s', exe path is '%s'). No result file found at '%s', closed with exit code: %d"), *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir), *ResultFilePath, ExitCode);
 
+	// Remove the output file if its still around
+	IFileManager::Get().Delete(*ResultFilePath, true, false, true);
 	return false;
 }
 
@@ -908,18 +918,23 @@ bool FDesktopPlatformBase::GetOidcTokenStatus(const FString& RootDir, const FStr
 			{
 				OutStatus = Status;
 
+				// Remove the output file if its still around
+				IFileManager::Get().Delete(*ResultFilePath, true, false, true);
+
 				return true;
 			}
 		}
 	}
 
+	// Remove the output file if its still around
+	IFileManager::Get().Delete(*ResultFilePath, true, false, true);
 	return false;
 }
 
 bool FDesktopPlatformBase::GetOidcAccessTokenInteractive(const FString& RootDir,  const FString& Arguments, FFeedbackContext* Warn, int32& OutReturnCode)
 {
 	FText OidcInteractivePromptTitle = NSLOCTEXT("OidcToken", "OidcToken_InteractiveLaunchPromptTitle", "Unreal Engine - Authentication Required");
-	FText OidcInteractiveLaunchPromptText = NSLOCTEXT("OidcToken", "OidcToken_InteractiveLaunch", "Your team’s preferred DDC (Distributed Data Cache) requires you to log in. Click OK to open the authentication page in your web browser.\n\nYou can cancel authentication and work with a different shared or local DDC instead. However, this may cause delays while the editor prepares the assets you need.");
+	FText OidcInteractiveLaunchPromptText = NSLOCTEXT("OidcToken", "OidcToken_InteractiveLaunch", "Your team's preferred DDC (Distributed Data Cache) requires you to log in. Click OK to open the authentication page in your web browser.\n\nYou can cancel authentication and work with a different shared or local DDC instead. However, this may cause delays while the editor prepares the assets you need.");
 	EAppReturnType::Type userAcknowledgedResult = FPlatformMisc::MessageBoxExt(EAppMsgType::OkCancel, *OidcInteractiveLaunchPromptText.ToString(), *OidcInteractivePromptTitle.ToString());
 
 	if (userAcknowledgedResult != EAppReturnType::Ok)
@@ -969,13 +984,14 @@ bool FDesktopPlatformBase::GetOidcAccessTokenInteractive(const FString& RootDir,
 			UE_LOG(LogDesktopPlatform, Display, TEXT("Waiting for OidcToken to finish login..."));
 			DurationPhase = EWaitDurationPhase::Prompt;
 		}
-		// once we have waited for 10 seconds without success we give the user a option to abort
-		else if (WaitDuration > 10.0 && DurationPhase == EWaitDurationPhase::Prompt)
+		// once we have waited for 30 seconds without success we give the user a option to abort
+		else if (WaitDuration > 30.0 && DurationPhase == EWaitDurationPhase::Prompt)
 		{
 			FText OidcLongWaitPromptTitle = NSLOCTEXT("OidcToken", "OidcToken_LongWaitPromptTitle", "Wait for user login?");
 			FText OidcLongWaitPromptText = NSLOCTEXT("OidcToken", "OidcToken_LongWaitPromptText", "Login is taking a long time, make sure you have entered your credentials in your browser window. It can be in a tab in an already existing window. Keep waiting?");
 			if (FPlatformMisc::MessageBoxExt(EAppMsgType::YesNo, *OidcLongWaitPromptText.ToString(), *OidcLongWaitPromptTitle.ToString()) == EAppReturnType::No)
 			{
+				bIsFinished = !FPlatformProcess::IsProcRunning(ProcHandle);
 				break;
 			}
 			// change phase so we do not prompt the user again
@@ -984,6 +1000,7 @@ bool FDesktopPlatformBase::GetOidcAccessTokenInteractive(const FString& RootDir,
 
 		if (WaitForOidcTokenSlowTask.ShouldCancel())
 		{
+			bIsFinished = !FPlatformProcess::IsProcRunning(ProcHandle);
 			break;
 		}
 		FPlatformProcess::Sleep(0.1f);
@@ -1062,15 +1079,17 @@ FProcHandle FDesktopPlatformBase::InvokeOidcTokenToolAsync(const FString& InArgu
 
 struct FTargetFileVisitor : IPlatformFile::FDirectoryStatVisitor
 {
+	const TSet<FString>& OriginalTargetNames;
 	TSet<FString>& RemainingTargetNames;
 	FDateTime MaxDateTime;
 	TArray<FString> SubDirectories;
 	bool bSearchSubDirectories;
 
-	FTargetFileVisitor(TSet<FString>& InRemainingTargetNames, FDateTime InMaxDateTime)
-		: RemainingTargetNames(InRemainingTargetNames)
+	FTargetFileVisitor(const TSet<FString>& InOriginalTargetNames, TSet<FString>& InRemainingTargetNames, FDateTime InMaxDateTime)
+		: OriginalTargetNames(InOriginalTargetNames)
+		, RemainingTargetNames(InRemainingTargetNames)
 		, MaxDateTime(InMaxDateTime)
-		, bSearchSubDirectories(false)
+		, bSearchSubDirectories(true)
 	{
 	}
 
@@ -1082,19 +1101,49 @@ struct FTargetFileVisitor : IPlatformFile::FDirectoryStatVisitor
 			return true;
 		}
 
-		int32 Length = FCString::Strlen(FileNameOrDirectory);
-
+		// NOTE: This code needs to behave the same as FindAllRulesSourceFiles in Rules.cs
 		static const TCHAR TargetExt[] = TEXT(".Target.cs");
 		static const int32 TargetExtLen = UE_ARRAY_COUNT(TargetExt) - 1;
+		static const TCHAR ModuleExt[] = TEXT(".Build.cs");
+		static const int32 ModuleExtLen = UE_ARRAY_COUNT(ModuleExt) - 1;
+		static const TCHAR AutomationCsprojExt[] = TEXT(".automation.csproj");
+		static const int32 AutomationCsprojExtLen = UE_ARRAY_COUNT(AutomationCsprojExt) - 1;
+		static const TCHAR UBTCsprojExt[] = TEXT(".ubtplugin.csproj");
+		static const int32 UBTCsprojExtLen = UE_ARRAY_COUNT(UBTCsprojExt) - 1;
+		static const TCHAR UBTIgnoreExt[] = TEXT(".ubtignore");
+		static const int32 UBTIgnoreExtLen = UE_ARRAY_COUNT(UBTIgnoreExt) - 1;
+
+		int32 Length = FCString::Strlen(FileNameOrDirectory);
 		if (Length > TargetExtLen && FCString::Stricmp(FileNameOrDirectory + Length - TargetExtLen, TargetExt) == 0)
 		{
 			FString TargetName = FPaths::GetCleanFilename(FString(Length - TargetExtLen, FileNameOrDirectory));
+
+			// skip target rules that are platform extension or platform group specializations
+			// Matches logic found in QueryTargetsMode.cs WriteTargetInfo
+			FString Start, End;
+			if (TargetName.Split(TEXT("_"), &Start, &End) && OriginalTargetNames.Contains(Start))
+			{
+				return true;
+			}
+
 			return (StatData.ModificationTime < MaxDateTime && RemainingTargetNames.Remove(TargetName) == 1);
 		}
-		
-		static const TCHAR ModuleExt[] = TEXT(".Build.cs");
-		static const int32 ModuleExtLen = UE_ARRAY_COUNT(ModuleExt) - 1;
-		if (Length > ModuleExtLen && FCString::Stricmp(FileNameOrDirectory + Length - ModuleExtLen, ModuleExt) == 0)
+		else if (Length > ModuleExtLen && FCString::Stricmp(FileNameOrDirectory + Length - ModuleExtLen, ModuleExt) == 0)
+		{
+			bSearchSubDirectories = false;
+			return true;
+		}
+		else if (Length > AutomationCsprojExtLen && FCString::Stricmp(FileNameOrDirectory + Length - AutomationCsprojExtLen, AutomationCsprojExt) == 0)
+		{
+			bSearchSubDirectories = false;
+			return true;
+		}
+		else if (Length > UBTCsprojExtLen && FCString::Stricmp(FileNameOrDirectory + Length - UBTCsprojExtLen, UBTCsprojExt) == 0)
+		{
+			bSearchSubDirectories = false;
+			return true;
+		}
+		else if (Length > UBTIgnoreExtLen && FCString::Stricmp(FileNameOrDirectory + Length - UBTIgnoreExtLen, UBTIgnoreExt) == 0)
 		{
 			bSearchSubDirectories = false;
 			return true;
@@ -1104,7 +1153,7 @@ struct FTargetFileVisitor : IPlatformFile::FDirectoryStatVisitor
 	}
 };
 
-bool IsTargetInfoValid(const TArray<FTargetInfo>& Targets, const FString& SourceDir, const FDateTime& LastModifiedTime)
+bool IsTargetInfoValid(const TArray<FTargetInfo>& Targets, TArray<FString>& DirectoryNames, const FDateTime& LastModifiedTime)
 {
 	if (FApp::GetEngineIsPromotedBuild())
 	{
@@ -1119,11 +1168,12 @@ bool IsTargetInfoValid(const TArray<FTargetInfo>& Targets, const FString& Source
 		RemainingTargetNames.Add(Target.Name);
 	}
 
+	TSet<FString> OriginalTargetNames = RemainingTargetNames;
+
 	// Loop through all the directories
-	TArray<FString> DirectoryNames = { SourceDir };
 	for(int Idx = 0; Idx < DirectoryNames.Num(); Idx++)
 	{
-		FTargetFileVisitor Visitor(RemainingTargetNames, LastModifiedTime);
+		FTargetFileVisitor Visitor(OriginalTargetNames, RemainingTargetNames, LastModifiedTime);
 		if(!IFileManager::Get().IterateDirectoryStat(*DirectoryNames[Idx], Visitor))
 		{
 			return false;
@@ -1173,7 +1223,8 @@ const TArray<FTargetInfo>& FDesktopPlatformBase::GetTargetsForProject(const FStr
 	{
 		// Read it in and check it's still valid
 		TArray<FTargetInfo> NewTargets;
-		if(ReadTargetInfo(InfoFileName, NewTargets) && IsTargetInfoValid(NewTargets, ProjectSourceDir, StatData.ModificationTime))
+		TArray<FString> DirectoryNames = { ProjectSourceDir, ProjectDir / TEXT("Platforms"), ProjectDir / TEXT("Restricted") };
+		if(ReadTargetInfo(InfoFileName, NewTargets) && IsTargetInfoValid(NewTargets, DirectoryNames, StatData.ModificationTime))
 		{
 			return ProjectFileToTargets.Emplace(MoveTemp(NormalizedProjectFile), MoveTemp(NewTargets));
 		}

@@ -6,12 +6,14 @@
 #include "MLDeformerVizSettings.h"
 #include "MLDeformerAsset.h"
 #include "MLDeformerComponent.h"
+#include "MLDeformerObjectVersion.h"
 #include "Engine/SkeletalMesh.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshLODModel.h"
-#include "NeuralNetwork.h"
 #include "Animation/AnimSequence.h"
 #include "UObject/UObjectGlobals.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerModel)
 
 namespace UE::MLDeformer
 {
@@ -67,7 +69,6 @@ void UMLDeformerModel::Init(UMLDeformerAsset* InDeformerAsset)
 
 void UMLDeformerModel::Serialize(FArchive& Archive)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(UMLDeformerModel::Serialize)
 	#if WITH_EDITOR
 		if (Archive.IsSaving())
 		{
@@ -80,7 +81,7 @@ void UMLDeformerModel::Serialize(FArchive& Archive)
 			InitVertexMap();
 		}
 
-		if (!Archive.IsCooking())
+		if (!Archive.IsCooking() && Archive.IsLoading())
 		{
 			// This also triggers the target mesh to be loaded, don't do that while cooking.
 			UpdateCachedNumVertices();
@@ -112,32 +113,19 @@ void UMLDeformerModel::PostLoad()
 
 	if (InputInfo)
 	{
+		// If we are dealing with an input info that doesn't have a skeletal mesh, then use the 
+		// currently set skeletal mesh. This is for backward compatibility, from before we put the skeletal mesh inside the input info.
+		if (InputInfo->GetSkeletalMesh() == nullptr)
+		{
+			InputInfo->SetSkeletalMesh(SkeletalMesh);
+		}
+
 		InputInfo->OnPostLoad();
 	}
 
-	UNeuralNetwork* Network = GetNeuralNetwork();
-	if (Network)
-	{
-		// If we run the neural network on the GPU.
-		if (IsNeuralNetworkOnGPU())
-		{
-			Network->SetDeviceType(ENeuralDeviceType::GPU, ENeuralDeviceType::CPU, ENeuralDeviceType::GPU);
-			if (Network->GetDeviceType() != ENeuralDeviceType::GPU || Network->GetOutputDeviceType() != ENeuralDeviceType::GPU || Network->GetInputDeviceType() != ENeuralDeviceType::CPU)
-			{
-				UE_LOG(LogMLDeformer, Error, TEXT("Neural net in ML Deformer '%s' cannot run on the GPU, it will not be active."), *GetDeformerAsset()->GetName());
-			}
-		}
-		else // We run our neural network on the CPU.
-		{
-			Network->SetDeviceType(ENeuralDeviceType::CPU, ENeuralDeviceType::CPU, ENeuralDeviceType::CPU);
-		}
-	}
-}
-
-void UMLDeformerModel::SetNeuralNetwork(UNeuralNetwork* InNeuralNetwork)
-{
-	NeuralNetworkModifyDelegate.Broadcast();
-	NeuralNetwork = InNeuralNetwork;
+	#if WITH_EDITOR
+		UpdateMemoryUsage();
+	#endif
 }
 
 // Used for the FBoenReference, so it knows what skeleton to pick bones from.
@@ -190,7 +178,11 @@ void UMLDeformerModel::FloatArrayToVector3Array(const TArray<float>& FloatArray,
 
 	void UMLDeformerModel::UpdateNumBaseMeshVertices()
 	{
-		NumBaseMeshVerts = UMLDeformerModel::ExtractNumImportedSkinnedVertices(GetSkeletalMesh());
+		USkeletalMesh* SkelMesh = GetSkeletalMesh();
+		if (SkelMesh)
+		{
+			NumBaseMeshVerts = UMLDeformerModel::ExtractNumImportedSkinnedVertices(SkelMesh);
+		}
 	}
 
 	void UMLDeformerModel::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -213,6 +205,46 @@ void UMLDeformerModel::FloatArrayToVector3Array(const TArray<float>& FloatArray,
 	int32 UMLDeformerModel::ExtractNumImportedSkinnedVertices(const USkeletalMesh* SkeletalMesh)
 	{
 		return SkeletalMesh ? SkeletalMesh->GetNumImportedVertices() : 0;
+	}
+
+	void UMLDeformerModel::InvalidateMemUsage()
+	{
+		bInvalidateMemUsage = true;
+	}
+
+	uint64 UMLDeformerModel::GetMemUsageInBytes(UE::MLDeformer::EMemUsageRequestFlags Flags) const
+	{
+		return (Flags == UE::MLDeformer::EMemUsageRequestFlags::Cooked) ? CookedMemUsageInBytes : MemUsageInBytes;
+	}
+
+	uint64 UMLDeformerModel::GetGPUMemUsageInBytes() const
+	{
+		return GPUMemUsageInBytes;
+	}
+
+	bool UMLDeformerModel::IsMemUsageInvalidated() const
+	{
+		return bInvalidateMemUsage;
+	}
+
+	void UMLDeformerModel::UpdateMemoryUsage()
+	{
+		bInvalidateMemUsage = false;
+		MemUsageInBytes = 0;
+		GPUMemUsageInBytes = 0;
+
+		// Get the size of the model to get an approximate size.
+		UMLDeformerModel* Model = const_cast<UMLDeformerModel*>(this);
+		MemUsageInBytes += static_cast<uint64>(Model->GetResourceSizeBytes(EResourceSizeMode::Type::EstimatedTotal));
+
+		// Init the cooked size. We can subtract bytes from this to simulate a cook.
+		CookedMemUsageInBytes = MemUsageInBytes;
+
+		// Add GPU memory.
+		if (VertexMapBuffer.VertexBufferRHI.IsValid())
+		{
+			GPUMemUsageInBytes += VertexMapBuffer.VertexBufferRHI->GetSize();
+		}
 	}
 #endif	// #if WITH_EDITOR
 

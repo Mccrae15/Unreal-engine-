@@ -6,6 +6,8 @@
 #include "GameplayTagContainer.h"
 #include "GameplayBehavior.generated.h"
 
+template <typename OptionalType> struct TOptional;
+
 
 class AActor;
 class APawn;
@@ -37,6 +39,7 @@ public:
 
 	virtual void PostInitProperties() override;
 	virtual void BeginDestroy() override;
+	virtual UWorld* GetWorld() const override;
 
 	/**
 	 * Default implementation will trigger the appropriate Blueprint event based on 

@@ -92,6 +92,25 @@ static bool ShouldSaveToPackageSidecar()
 	return ConfigSetting.bEnabled;
 }
 
+/** 
+ * Returns true if the project wants to log if an editor bulkdata is cooked or uncooked annd returns
+ * false if the project does not care. The engine ini file defaults to false 
+ */
+static bool ShouldLogCookedStatus()
+{
+	static const struct FShouldLogCookedStatus
+	{
+		bool bEnabled = false;
+
+		FShouldLogCookedStatus()
+		{
+			GConfig->GetBool(TEXT("EditorBulkData"), TEXT("LogCookedStatus"), bEnabled, GEditorIni);
+		}
+	} ConfigSetting;
+
+	return ConfigSetting.bEnabled;
+}
+
 #if UE_ENABLE_VIRTUALIZATION_TOGGLE
 bool ShouldAllowVirtualizationOptOut()
 {
@@ -224,7 +243,7 @@ FString GetDebugNameFromOwner(UObject* Owner)
  */
 bool ShouldGenerateNewIdentifier(FLinkerLoad* LinkerLoad, UObject* Owner)
 {
-	if (LinkerLoad && LinkerLoad->GetInstancingContext().ShouldRegenerateUniqueBulkDataGuids())
+	if (LinkerLoad && LinkerLoad->ShouldRegenerateGuids())
 	{
 		return true;
 	}
@@ -299,24 +318,43 @@ void UpdateArchiveData(FArchive& Ar, int64 DataPosition, DataType& Data)
 
 FArchive& operator<<(FArchive& Ar, FSharedBuffer& Buffer)
 {
+	// Note that there is a difference between a null FSharedBuffer and a zero length
+	// shared buffer and they are not interchangeable! If we have a null buffer we 
+	// write an invalid value for the buffer length so that we know to set the buffer
+	// to null when loaded and not create a valid zero length buffer instead.
+
 	if (Ar.IsLoading())
 	{
 		int64 BufferLength;
 		Ar << BufferLength;
 
-		FUniqueBuffer MutableBuffer = FUniqueBuffer::Alloc(BufferLength);
+		if (BufferLength >= 0)
+		{
+			FUniqueBuffer MutableBuffer = FUniqueBuffer::Alloc(BufferLength);
+			Ar.Serialize(MutableBuffer.GetData(), BufferLength);
 
-		Ar.Serialize(MutableBuffer.GetData(), BufferLength);
-
-		Buffer = MutableBuffer.MoveToShared();
+			Buffer = MutableBuffer.MoveToShared();
+		}
+		else
+		{
+			Buffer.Reset();
+		}
 	}
 	else if (Ar.IsSaving())
 	{
-		int64 BufferLength = (int64)Buffer.GetSize();
-		Ar << BufferLength;
+		if (!Buffer.IsNull())
+		{
+			int64 BufferLength = (int64)Buffer.GetSize();
+			Ar << BufferLength;
 
-		// Need to remove const due to FArchive API
-		Ar.Serialize(const_cast<void*>(Buffer.GetData()), BufferLength);
+			// Need to remove const due to FArchive API
+			Ar.Serialize(const_cast<void*>(Buffer.GetData()), BufferLength);
+		}
+		else
+		{
+			int64 InvalidLength = INDEX_NONE;
+			Ar << InvalidLength;
+		}
 	}
 
 	return Ar;
@@ -542,7 +580,7 @@ static FGuid CreateUniqueGuid(const FGuid& NonUniqueGuid, const UObject* Owner, 
 	else
 	{
 		UE_LOG(LogSerialization, Warning,
-			TEXT("CreateFromBulkData recieved an invalid FGuid. A temporary one will be generated until the package is next re-saved! Package: '%s'"),
+			TEXT("CreateFromBulkData received an invalid FGuid. A temporary one will be generated until the package is next re-saved! Package: '%s'"),
 			DebugName);
 		return FGuid::NewGuid();
 	}
@@ -826,11 +864,11 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 
 			if (Ar.IsSaving())
 			{
-				if (Payload.IsNull())
+				if (Payload.IsNull() && !IsDataVirtualized())
 				{
 					// We need to serialize in FSharedBuffer form, or otherwise we'd need to support
 					// multiple code paths here. Technically a bit wasteful but for general use it 
-					// shouldn't be noticable. This will make it easier to do the real perf wins
+					// shouldn't be noticeable. This will make it easier to do the real perf wins
 					// in the future.
 					Payload = GetDataInternal().Decompress();
 				}
@@ -1042,7 +1080,7 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 				
 			if (IsStoredInPackageTrailer())
 			{
-				checkf(Trailer != nullptr, TEXT("Payload was stored in a package trailer, but there no trailer loaded"));
+				checkf(Trailer != nullptr, TEXT("Payload was stored in a package trailer, but there no trailer loaded. [%s]"), *GetDebugNameFromOwner(Owner));
 				// Cache the offset from the trailer (if we move the loading of the payload to the trailer 
 				// at a later point then we can skip this)
 				OffsetInFile = Trailer->FindPayloadOffsetInFile(PayloadContentId);
@@ -1052,7 +1090,7 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 				// TODO: Consider removing in 5.2+
 				if (IsDataVirtualized() && Trailer->FindPayloadStatus(PayloadContentId) != EPayloadStatus::StoredVirtualized)
 				{
-					UE_LOG(LogSerialization, Warning, TEXT("Payload in '%s' is was saved with an invalid flag and required fixing. Please re-save the package!"), *GetDebugNameFromOwner(Owner));
+					UE_LOG(LogSerialization, Warning, TEXT("Payload was saved with an invalid flag and required fixing. Please re-save the package! [%s]"), *GetDebugNameFromOwner(Owner));
 					EnumRemoveFlags(Flags, EFlags::IsVirtualized);
 				}
 			}
@@ -1061,7 +1099,7 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 				// This check is for older virtualized formats that might be seen in older test projects.
 				// But we only care if the archive has a linker! (loading from a package)
 				// TODO: Consider removing in 5.2+
-				UE_CLOG(IsDataVirtualized() && Ar.GetLinker() != nullptr, LogSerialization, Warning, TEXT("Payload in '%s' is virtualized in an older format and should be re-saved!"), *GetDebugNameFromOwner(Owner));
+				UE_CLOG(IsDataVirtualized() && Ar.GetLinker() != nullptr, LogSerialization, Warning, TEXT("Payload is virtualized in an older format and should be re-saved! [%s]"), *GetDebugNameFromOwner(Owner));
 				if (!IsDataVirtualized() && !EnumHasAnyFlags(Flags, EFlags::IsCooked))
 				{
 					Ar << OffsetInFile;
@@ -1288,6 +1326,9 @@ FCompressedBuffer FEditorBulkData::LoadFromPackageFile() const
 	// Now we can actually serialize it
 	FCompressedBuffer PayloadFromDisk;
 	SerializeData(*BulkArchive, PayloadFromDisk, Flags);
+
+	// If PayloadId is placeholder, compute the actual now that we have the payload available to hash.
+	UpdateKeyIfNeeded(PayloadFromDisk);
 
 	return PayloadFromDisk;
 }
@@ -1528,6 +1569,20 @@ FCompressedBuffer FEditorBulkData::PullData() const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::PullData);
 
+	// Utility lambda used to generate a postfix for VA failure messages based on if the project
+	// wants to know the cooked status of the editor bulkdata.
+	auto PostFixStatus = [](EFlags InFlags)
+		{
+			if (ShouldLogCookedStatus())
+			{
+				return EnumHasAnyFlags(InFlags, EFlags::IsCooked) ? TEXT(" [Cooked]") : TEXT(" [Uncooked]");
+			}
+			else
+			{
+				return TEXT("");
+			}
+		};
+
 	UE::Virtualization::IVirtualizationSystem& System = UE::Virtualization::IVirtualizationSystem::Get();
 	if (System.IsEnabled())
 	{
@@ -1538,13 +1593,18 @@ FCompressedBuffer FEditorBulkData::PullData() const
 			PayloadSize,
 			PulledPayload.GetRawSize());
 
-		UE_CLOG(PulledPayload.IsNull(), LogSerialization, Error, TEXT("Failed to pull payload '%s'"), *LexToString(PayloadContentId));
+		UE_CLOG(PulledPayload.IsNull(), LogSerialization, Error, TEXT("Failed to pull payload '%s'%s"),
+			*LexToString(PayloadContentId),
+			PostFixStatus(Flags));
 
 		return PulledPayload;
 	}
 	else
 	{
-		UE_LOG(LogSerialization, Error, TEXT("Cannot pull payload '%s' as the virtualization system is disabled"), *LexToString(PayloadContentId));
+		UE_LOG(LogSerialization, Error, TEXT("Failed to pull payload '%s' as the virtualization system is disabled%s"),
+			*LexToString(PayloadContentId), 
+			PostFixStatus(Flags));
+
 		return FCompressedBuffer();
 	}	
 }
@@ -2082,14 +2142,39 @@ void FEditorBulkData::UpdateKeyIfNeeded()
 	{
 		checkf(IsDataVirtualized() == false, TEXT("Cannot have a virtualized payload if loaded from legacy BulkData")); // Sanity check
 
-		// Load the payload from disk (or memory) so that we can hash it
-		FSharedBuffer InPayload = GetDataInternal().Decompress();
-		PayloadContentId = HashPayload(InPayload);
+		// Call GetDataInternal to load the payload from disk; LoadFromPackageFile will call the version of
+		// UpdateKeyIfNeeded that takes the decompressed Payload parameter.
+		FSharedBuffer LocalPayload = GetDataInternal().Decompress();
+
+		if (EnumHasAnyFlags(Flags, EFlags::LegacyKeyWasGuidDerived))
+		{
+			ensureMsgf(false, TEXT("EditorBulkData logic error: LegacyKeyWasGuidDerived was not removed by GetDataInternal; this is unexpected and a minor performance problem."));
+			UpdateKeyIfNeeded(FCompressedBuffer::Compress(LocalPayload,
+				ECompressedBufferCompressor::NotSet, ECompressedBufferCompressionLevel::None));
+			check(!EnumHasAnyFlags(Flags, EFlags::LegacyKeyWasGuidDerived)); // UpdateKeyIfNeeded(FCompressedBuffer) guarantees the conversion, so a fatal assert is warranted
+		}
 
 		// Store as the in memory payload, since this method is only called during saving 
 		// we know it will get cleared anyway.
-		Payload = InPayload;
-		EnumRemoveFlags(Flags, EFlags::LegacyKeyWasGuidDerived);
+		Payload = LocalPayload;
+	}
+}
+
+void FEditorBulkData::UpdateKeyIfNeeded(FCompressedBuffer CompressedPayload) const
+{
+	if (EnumHasAnyFlags(Flags, EFlags::LegacyKeyWasGuidDerived))
+	{
+		// PayloadContentId and its associated flag are mutable for legacy BulkDatas.
+		// We do a const-cast instead of marking them mutable because they are immutable for non-legacy.
+		const_cast<FEditorBulkData&>(*this).PayloadContentId = CompressedPayload.GetRawHash();
+
+		EnumRemoveFlags(const_cast<FEditorBulkData&>(*this).Flags, EFlags::LegacyKeyWasGuidDerived);
+#if WITH_EDITOR
+		if (EnumHasAnyFlags(Flags, EFlags::HasRegistered))
+		{
+			IBulkDataRegistry::Get().UpdatePlaceholderPayloadId(*this);
+		}
+#endif
 	}
 }
 

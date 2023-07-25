@@ -154,26 +154,26 @@ class SMontageSections : public SLeafWidget
 				NameText = FText::FromName(CompositeSection.SectionName);
 			}
 
-			FVector2D TextSize = FontMeasureService->Measure(NameText, LabelFont);
-			FVector2D TextBorderSize = TextSize + (MontageSectionsConstants::TextBorderMargin * 2.0f);
+			const FVector2D TextSize = FontMeasureService->Measure(NameText, LabelFont);
+			const FVector2D TextBorderSize = TextSize + (MontageSectionsConstants::TextBorderMargin * 2.0f);
 
-			FText IconText = GetSectionIconText(SectionIndex);
-			FVector2D TextIconSize = FontMeasureService->Measure(IconText, LabelFont);
-			FVector2D TextIconBorderSize = TextIconSize + (MontageSectionsConstants::TextBorderMargin * 2.0f);
+			const FText IconText = GetSectionIconText(SectionIndex);
+			const FVector2D TextIconSize = FontMeasureService->Measure(IconText, LabelFont);
+			const FVector2D TextIconBorderSize = TextIconSize + (MontageSectionsConstants::TextBorderMargin * 2.0f);
 
-			FVector2D TotalBorderSize(TextBorderSize.X + TextIconBorderSize.X, FMath::Max(TextBorderSize.Y, TextIconBorderSize.Y));
+			const FVector2D TotalBorderSize(TextBorderSize.X + TextIconBorderSize.X, FMath::Max(TextBorderSize.Y, TextIconBorderSize.Y));
 
-			float LabelPosX = ScaleInfo.InputToLocalX(DraggedSectionIndex == SectionIndex ? DraggedSectionTime : CompositeSection.GetTime());
-			float LabelPosY = (AllottedGeometry.GetLocalSize().Y * 0.5f) - (TextBorderSize.Y * 0.5f);
-			float IconPosY = (AllottedGeometry.GetLocalSize().Y * 0.5f) - (TextIconBorderSize.Y * 0.5f);
+			const float LabelPosX = ScaleInfo.InputToLocalX(DraggedSectionIndex == SectionIndex ? DraggedSectionTime : CompositeSection.GetTime());
+			const float LabelPosY = static_cast<float>((AllottedGeometry.GetLocalSize().Y * 0.5) - (TextBorderSize.Y * 0.5));
+			const float IconPosY = static_cast<float>((AllottedGeometry.GetLocalSize().Y * 0.5) - (TextIconBorderSize.Y * 0.5));
 
-			float RightEdgeToNotify = AllottedGeometry.Size.X - (LabelPosX + TextBorderSize.X);
-			bool bDrawLabelOnLeft = RightEdgeToNotify < 0.0f;
+			const float RightEdgeToNotify = static_cast<float>(AllottedGeometry.Size.X - (LabelPosX + TextBorderSize.X));
+			const bool bDrawLabelOnLeft = RightEdgeToNotify < 0.0f;
 
 			FSlateDrawElement::MakeBox( 
 				OutDrawElements,
 				++LayerId,
-				AllottedGeometry.ToPaintGeometry(FVector2D(bDrawLabelOnLeft ? LabelPosX - TotalBorderSize.X : LabelPosX, LabelPosY), TotalBorderSize),
+				AllottedGeometry.ToPaintGeometry(TotalBorderSize, FSlateLayoutTransform(FVector2D(bDrawLabelOnLeft ? LabelPosX - TotalBorderSize.X : LabelPosX, LabelPosY))),
 				BorderBrush,
 				ESlateDrawEffect::None,
 				SelectedSectionIndex == SectionIndex ? SelectedColor : MontageColor);
@@ -181,7 +181,7 @@ class SMontageSections : public SLeafWidget
 			FSlateDrawElement::MakeText( 
 				OutDrawElements,
 				++LayerId,
-				AllottedGeometry.ToPaintGeometry(FVector2D(bDrawLabelOnLeft ? (LabelPosX - TotalBorderSize.X) + MontageSectionsConstants::TextOffset.X : LabelPosX + MontageSectionsConstants::TextOffset.X, LabelPosY + MontageSectionsConstants::TextOffset.Y), TextSize),
+				AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(FVector2D(bDrawLabelOnLeft ? (LabelPosX - TotalBorderSize.X) + MontageSectionsConstants::TextOffset.X : LabelPosX + MontageSectionsConstants::TextOffset.X, LabelPosY + MontageSectionsConstants::TextOffset.Y))),
 				NameText,
 				LabelFont,
 				ESlateDrawEffect::None,
@@ -190,7 +190,7 @@ class SMontageSections : public SLeafWidget
 			FSlateDrawElement::MakeText( 
 				OutDrawElements,
 				++LayerId,
-				AllottedGeometry.ToPaintGeometry(FVector2D(bDrawLabelOnLeft ? (LabelPosX - TotalBorderSize.X) + TextBorderSize.X + (MontageSectionsConstants::TextBorderMargin.X * 2.0f) + MontageSectionsConstants::TextOffset.X : LabelPosX + MontageSectionsConstants::TextOffset.X + (MontageSectionsConstants::TextBorderMargin.X * 2.0f) + TextBorderSize.X, IconPosY + MontageSectionsConstants::TextOffset.Y), TextIconSize),
+				AllottedGeometry.ToPaintGeometry(TextIconSize, FSlateLayoutTransform(FVector2D(bDrawLabelOnLeft ? (LabelPosX - TotalBorderSize.X) + TextBorderSize.X + (MontageSectionsConstants::TextBorderMargin.X * 2.0f) + MontageSectionsConstants::TextOffset.X : LabelPosX + MontageSectionsConstants::TextOffset.X + (MontageSectionsConstants::TextBorderMargin.X * 2.0f) + TextBorderSize.X, IconPosY + MontageSectionsConstants::TextOffset.Y))),
 				IconText,
 				IconFont,
 				ESlateDrawEffect::None,
@@ -214,23 +214,26 @@ class SMontageSections : public SLeafWidget
 		{
 			const FCompositeSection& CompositeSection = AnimMontage->CompositeSections[SectionIndex];
 
-			FText NameText = FText::FromName(CompositeSection.SectionName);
-			FVector2D TextSize = FontMeasureService->Measure(NameText, LabelFont);
-			FVector2D TextBorderSize = TextSize + (MontageSectionsConstants::TextBorderMargin * 2.0f);
+			const FText NameText = FText::FromName(CompositeSection.SectionName);
+			const FVector2D TextSize = FontMeasureService->Measure(NameText, LabelFont);
+			const FVector2D TextBorderSize = TextSize + (MontageSectionsConstants::TextBorderMargin * 2.0f);
 
-			FText IconText = GetSectionIconText(SectionIndex);
-			FVector2D TextIconSize = FontMeasureService->Measure(IconText, LabelFont);
-			FVector2D TextIconBorderSize = TextIconSize + (MontageSectionsConstants::TextBorderMargin * 2.0f);
+			const FText IconText = GetSectionIconText(SectionIndex);
+			const FVector2D TextIconSize = FontMeasureService->Measure(IconText, LabelFont);
+			const FVector2D TextIconBorderSize = TextIconSize + (MontageSectionsConstants::TextBorderMargin * 2.0f);
 
-			FVector2D TotalBorderSize(TextBorderSize.X + TextIconBorderSize.X, FMath::Max(TextBorderSize.Y, TextIconBorderSize.Y));
+			const FVector2D TotalBorderSize(TextBorderSize.X + TextIconBorderSize.X, FMath::Max(TextBorderSize.Y, TextIconBorderSize.Y));
 
-			float LabelPosX = ScaleInfo.InputToLocalX(CompositeSection.GetTime());
-			float LabelPosY = (MyGeometry.GetLocalSize().Y * 0.5f) - (TotalBorderSize.Y * 0.5f);
+			const double LabelPosX = ScaleInfo.InputToLocalX(CompositeSection.GetTime());
+			const double LabelPosY = (MyGeometry.GetLocalSize().Y * 0.5) - (TotalBorderSize.Y * 0.5);
 
-			float RightEdgeToNotify = MyGeometry.Size.X - (LabelPosX + TotalBorderSize.X);
-			bool bDrawLabelOnLeft = RightEdgeToNotify < 0.0f;
+			const double RightEdgeToNotify = MyGeometry.Size.X - (LabelPosX + TotalBorderSize.X);
+			const bool bDrawLabelOnLeft = RightEdgeToNotify < 0.0;
 
-			const FGeometry LabelGeometry = MyGeometry.MakeChild(FVector2D(bDrawLabelOnLeft ? LabelPosX - TotalBorderSize.X: LabelPosX, LabelPosY), TotalBorderSize);
+			const FGeometry LabelGeometry = MyGeometry.MakeChild(
+				TotalBorderSize,
+				FSlateLayoutTransform(FVector2D(bDrawLabelOnLeft ? LabelPosX - TotalBorderSize.X: LabelPosX, LabelPosY))
+			);
 
 			if(LabelGeometry.IsUnderLocation(MouseEvent.GetScreenSpacePosition()))
 			{
@@ -277,7 +280,7 @@ class SMontageSections : public SLeafWidget
 				FMenuBuilder MenuBuilder(true, nullptr);
 
 				FTrackScaleInfo ScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0, 0, MyGeometry.GetLocalSize());
-				SummonTrackContextMenu(MenuBuilder, ScaleInfo.LocalXToInput(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X), SelectedSectionIndex);
+				SummonTrackContextMenu(MenuBuilder, ScaleInfo.LocalXToInput(static_cast<float>(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X)), SelectedSectionIndex);
 
 				FSlateApplication::Get().PushMenu(
 					AsShared(),

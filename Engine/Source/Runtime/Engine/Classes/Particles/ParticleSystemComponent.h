@@ -42,7 +42,7 @@ struct FParticleAnimTrailEmitterInstance;
 
 /** Enum for specifying type of a name instance parameter. */
 UENUM(BlueprintType)
-enum EParticleSysParamType
+enum EParticleSysParamType : int
 {
 	PSPT_None UMETA(DisplayName="None"),
 	PSPT_Scalar UMETA(DisplayName="Scalar"),
@@ -58,7 +58,7 @@ enum EParticleSysParamType
 
 /** Particle system replay state */
 UENUM()
-enum ParticleReplayState
+enum ParticleReplayState : int
 {
 	/** Replay system is disabled.  Particles are simulated and rendered normally. */
 	PRS_Disabled UMETA(DisplayName="Disabled"),
@@ -75,7 +75,7 @@ enum ParticleReplayState
  *	Event type
  */
 UENUM()
-enum EParticleEventType
+enum EParticleEventType : int
 {
 	/** Any - allow any event */
 	EPET_Any UMETA(DisplayName="Any"),
@@ -449,6 +449,9 @@ public:
 #if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
 	mutable FParticlePerfStats* ParticlePerfStats = nullptr;
 #endif
+
+protected:
+	void PrecacheAssetPSOs(UFXSystemAsset* FXSystemAsset);
 };
 
 

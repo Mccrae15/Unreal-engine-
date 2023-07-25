@@ -4,7 +4,6 @@
 #include "ShaderPreprocessor.h"
 #include "ShaderCompilerCommon.h"
 #include "ShaderParameterParser.h"
-#include "D3D11ShaderResources.h"
 #include "D3D12RHI.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
@@ -35,6 +34,7 @@ MSVC_PRAGMA(warning(push))
 MSVC_PRAGMA(warning(disable : 4191)) // warning C4191: 'type cast': unsafe conversion from 'FARPROC' to 'DxcCreateInstanceProc'
 #include <dxc/dxcapi.h>
 #include <dxc/Support/dxcapi.use.h>
+#include <dxc/Support/ErrorCodes.h>
 #include <d3d12shader.h>
 MSVC_PRAGMA(warning(pop))
 
@@ -79,10 +79,145 @@ static uint32 GetAutoBindingSpace(const FShaderTarget& Target)
 	}
 }
 
+// DXC specific error codes cannot be translated by FPlatformMisc::GetSystemErrorMessage, so do it manually.
+// Codes defines in <DXC>/include/dxc/Support/ErrorCodes.h
+static const TCHAR* DxcErrorCodeToString(HRESULT Code)
+{
+#define SWITCHCASE_TO_STRING(VALUE) case VALUE: return TEXT(#VALUE)
+	switch (Code)
+	{
+		SWITCHCASE_TO_STRING( DXC_E_OVERLAPPING_SEMANTICS );
+		SWITCHCASE_TO_STRING( DXC_E_MULTIPLE_DEPTH_SEMANTICS );
+		SWITCHCASE_TO_STRING( DXC_E_INPUT_FILE_TOO_LARGE );
+		SWITCHCASE_TO_STRING( DXC_E_INCORRECT_DXBC );
+		SWITCHCASE_TO_STRING( DXC_E_ERROR_PARSING_DXBC_BYTECODE );
+		SWITCHCASE_TO_STRING( DXC_E_DATA_TOO_LARGE );
+		SWITCHCASE_TO_STRING( DXC_E_INCOMPATIBLE_CONVERTER_OPTIONS);
+		SWITCHCASE_TO_STRING( DXC_E_IRREDUCIBLE_CFG );
+		SWITCHCASE_TO_STRING( DXC_E_IR_VERIFICATION_FAILED );
+		SWITCHCASE_TO_STRING( DXC_E_SCOPE_NESTED_FAILED );
+		SWITCHCASE_TO_STRING( DXC_E_NOT_SUPPORTED );
+		SWITCHCASE_TO_STRING( DXC_E_STRING_ENCODING_FAILED );
+		SWITCHCASE_TO_STRING( DXC_E_CONTAINER_INVALID );
+		SWITCHCASE_TO_STRING( DXC_E_CONTAINER_MISSING_DXIL );
+		SWITCHCASE_TO_STRING( DXC_E_INCORRECT_DXIL_METADATA );
+		SWITCHCASE_TO_STRING( DXC_E_INCORRECT_DDI_SIGNATURE );
+		SWITCHCASE_TO_STRING( DXC_E_DUPLICATE_PART );
+		SWITCHCASE_TO_STRING( DXC_E_MISSING_PART );
+		SWITCHCASE_TO_STRING( DXC_E_MALFORMED_CONTAINER );
+		SWITCHCASE_TO_STRING( DXC_E_INCORRECT_ROOT_SIGNATURE );
+		SWITCHCASE_TO_STRING( DXC_E_CONTAINER_MISSING_DEBUG );
+		SWITCHCASE_TO_STRING( DXC_E_MACRO_EXPANSION_FAILURE );
+		SWITCHCASE_TO_STRING( DXC_E_OPTIMIZATION_FAILED );
+		SWITCHCASE_TO_STRING( DXC_E_GENERAL_INTERNAL_ERROR );
+		SWITCHCASE_TO_STRING( DXC_E_ABORT_COMPILATION_ERROR );
+		SWITCHCASE_TO_STRING( DXC_E_EXTENSION_ERROR );
+		SWITCHCASE_TO_STRING( DXC_E_LLVM_FATAL_ERROR );
+		SWITCHCASE_TO_STRING( DXC_E_LLVM_UNREACHABLE );
+		SWITCHCASE_TO_STRING( DXC_E_LLVM_CAST_ERROR );
+	}
+	return nullptr;
+#undef SWITCHCASE_TO_STRING
+}
+
 // Utility variable so we can place a breakpoint while debugging
 static int32 GBreakpointDXC = 0;
 
-#define VERIFYHRESULT(expr) { HRESULT HR##__LINE__ = expr; if (FAILED(HR##__LINE__)) { UE_LOG(LogD3D12ShaderCompiler, Fatal, TEXT(#expr " failed: Result=%08x"), HR##__LINE__); } }
+static void LogFailedHRESULT(const TCHAR* FailedExpressionStr, HRESULT Result)
+{
+	if (Result == E_OUTOFMEMORY)
+	{
+		const FString ErrorReport = FString::Printf(TEXT("%s failed: Result=0x%08x (E_OUTOFMEMORY)"), FailedExpressionStr, Result);
+		FSCWErrorCode::Report(FSCWErrorCode::OutOfMemory, ErrorReport);
+		UE_LOG(LogD3D12ShaderCompiler, Fatal, TEXT("%s"), *ErrorReport);
+	}
+	else if (const TCHAR* ErrorCodeStr = DxcErrorCodeToString(Result))
+	{
+		UE_LOG(LogD3D12ShaderCompiler, Fatal, TEXT("%s failed: Result=0x%08x (%s)"), FailedExpressionStr, Result, ErrorCodeStr);
+	}
+	else
+	{
+		// Turn HRESULT into human readable string for error report
+		TCHAR ResultStr[4096] = {};
+		FPlatformMisc::GetSystemErrorMessage(ResultStr, UE_ARRAY_COUNT(ResultStr), Result);
+		UE_LOG(LogD3D12ShaderCompiler, Fatal, TEXT("%s failed: Result=0x%08x (%s)"), FailedExpressionStr, Result, ResultStr);
+	}
+}
+
+#define VERIFYHRESULT(expr)									\
+	{														\
+		const HRESULT HR##__LINE__ = expr;					\
+		if (FAILED(HR##__LINE__))							\
+		{													\
+			LogFailedHRESULT(TEXT(#expr), HR##__LINE__);	\
+		}													\
+	}
+
+class FDxcMalloc final : public IMalloc
+{
+	ULONG RefCount = 1;
+
+public:
+
+	// IMalloc
+
+	void* STDCALL Alloc(SIZE_T cb) override
+	{
+		cb = FMath::Max(SIZE_T(1), cb);
+		return FMemory::Malloc(cb);
+	}
+
+	void* STDCALL Realloc(void* pv, SIZE_T cb) override
+	{
+		cb = FMath::Max(SIZE_T(1), cb);
+		return FMemory::Realloc(pv, cb);
+	}
+
+	void STDCALL Free(void* pv) override
+	{
+		return FMemory::Free(pv);
+	}
+
+	SIZE_T STDCALL GetSize(void* pv) override
+	{
+		return FMemory::GetAllocSize(pv);
+	}
+
+	int STDCALL DidAlloc(void* pv) override
+	{
+		return 1; // assume that all allocation queries coming from DXC belong to our allocator
+	}
+
+	void STDCALL HeapMinimize() override
+	{
+		// nothing
+	}
+
+	// IUnknown
+
+	ULONG STDCALL AddRef() override
+	{
+		return ++RefCount;
+	}
+
+	ULONG STDCALL Release() override
+	{
+		check(RefCount > 0);
+		return --RefCount;
+	}
+
+	HRESULT STDCALL QueryInterface(REFIID iid, void** ppvObject) override
+	{
+		checkNoEntry(); // We do not expect or support QI on DXC allocator replacement
+		return ERROR_NOINTERFACE;
+	}
+};
+
+static IMalloc* GetDxcMalloc()
+{
+	static FDxcMalloc Instance;
+	return &Instance;
+}
 
 static dxc::DxcDllSupport& GetDxcDllHelper()
 {
@@ -184,7 +319,7 @@ static HRESULT DXCCompileWrapper(
 
 	if (bExceptionError)
 	{
-		GSCWErrorCode = ESCWErrorCode::CrashInsidePlatformCompiler;
+		FSCWErrorCode::Report(FSCWErrorCode::CrashInsidePlatformCompiler);
 
 		FString ErrorMsg = TEXT("Internal error or exception inside dxcompiler.dll\n");
 		ErrorMsg += GDxcStackTrace;
@@ -234,7 +369,7 @@ static void DumpFourCCParts(dxc::DxcDllSupport& DxcDllHelper, TRefCountPtr<IDxcB
 {
 #if UE_BUILD_DEBUG && IS_PROGRAM
 	TRefCountPtr<IDxcContainerReflection> Refl;
-	VERIFYHRESULT(DxcDllHelper.CreateInstance(CLSID_DxcContainerReflection, Refl.GetInitReference()));
+	VERIFYHRESULT(DxcDllHelper.CreateInstance2(GetDxcMalloc(), CLSID_DxcContainerReflection, Refl.GetInitReference()));
 
 	VERIFYHRESULT(Refl->Load(Blob));
 
@@ -260,7 +395,7 @@ static bool RemoveContainerReflection(dxc::DxcDllSupport& DxcDllHelper, TRefCoun
 	TRefCountPtr<IDxcContainerBuilder> Builder;
 	TRefCountPtr<IDxcBlob> StrippedDxil;
 
-	VERIFYHRESULT(DxcDllHelper.CreateInstance(CLSID_DxcContainerBuilder, Builder.GetInitReference()));
+	VERIFYHRESULT(DxcDllHelper.CreateInstance2(GetDxcMalloc(), CLSID_DxcContainerBuilder, Builder.GetInitReference()));
 	VERIFYHRESULT(Builder->Load(Dxil));
 	
 	// Try and remove both the PDB & Reflection Data
@@ -286,10 +421,10 @@ static HRESULT D3DCompileToDxil(const char* SourceText, FDxcArguments& Arguments
 	dxc::DxcDllSupport& DxcDllHelper = GetDxcDllHelper();
 
 	TRefCountPtr<IDxcCompiler3> Compiler;
-	VERIFYHRESULT(DxcDllHelper.CreateInstance(CLSID_DxcCompiler, Compiler.GetInitReference()));
+	VERIFYHRESULT(DxcDllHelper.CreateInstance2(GetDxcMalloc(), CLSID_DxcCompiler, Compiler.GetInitReference()));
 
 	TRefCountPtr<IDxcLibrary> Library;
-	VERIFYHRESULT(DxcDllHelper.CreateInstance(CLSID_DxcLibrary, Library.GetInitReference()));
+	VERIFYHRESULT(DxcDllHelper.CreateInstance2(GetDxcMalloc(), CLSID_DxcLibrary, Library.GetInitReference()));
 
 	TRefCountPtr<IDxcBlobEncoding> TextBlob;
 	VERIFYHRESULT(Library->CreateBlobWithEncodingFromPinned((LPBYTE)SourceText, FCStringAnsi::Strlen(SourceText), CP_UTF8, TextBlob.GetInitReference()));
@@ -314,6 +449,8 @@ static HRESULT D3DCompileToDxil(const char* SourceText, FDxcArguments& Arguments
 		checkf(CompileResult->HasOutput(DXC_OUT_REFLECTION), TEXT("No reflection found!"));
 		VERIFYHRESULT(CompileResult->GetOutput(DXC_OUT_REFLECTION, IID_PPV_ARGS(OutReflectionBlob.GetInitReference()), ReflectionNameBlob.GetInitReference()));
 
+		const bool bHasOutputPDB = CompileResult->HasOutput(DXC_OUT_PDB);
+
 		if (Arguments.ShouldDump())
 		{
 			// Dump disassembly before we strip reflection out
@@ -325,7 +462,7 @@ static HRESULT D3DCompileToDxil(const char* SourceText, FDxcArguments& Arguments
 			FString DxilFile = Arguments.GetDumpDisassemblyFilename().LeftChop(7) + TEXT("_refl.dxil");
 			SaveDxcBlobToFile(OutDxilBlob, DxilFile);
 
-			if (CompileResult->HasOutput(DXC_OUT_PDB))
+			if (bHasOutputPDB)
 			{
 				TRefCountPtr<IDxcBlob> PdbBlob;
 				TRefCountPtr<IDxcBlobUtf16> PdbNameBlob;
@@ -340,7 +477,7 @@ static HRESULT D3DCompileToDxil(const char* SourceText, FDxcArguments& Arguments
 		}
 
 		DumpFourCCParts(DxcDllHelper, OutDxilBlob);
-		if (RemoveContainerReflection(DxcDllHelper, OutDxilBlob, !Arguments.ShouldKeepEmbeddedPDB()))
+		if (RemoveContainerReflection(DxcDllHelper, OutDxilBlob, bHasOutputPDB && !Arguments.ShouldKeepEmbeddedPDB()))
 		{
 			DumpFourCCParts(DxcDllHelper, OutDxilBlob);
 		}
@@ -465,7 +602,7 @@ static bool DXCRewriteWrapper(
 #if !PLATFORM_SEH_EXCEPTIONS_DISABLED
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
-		GSCWErrorCode = ESCWErrorCode::CrashInsidePlatformCompiler;
+		FSCWErrorCode::Report(FSCWErrorCode::CrashInsidePlatformCompiler);
 		FMemory::Memzero(OutResultDesc);
 		bOutException = true;
 		return false;
@@ -550,7 +687,9 @@ static bool RewriteUsingSC(FString& PreprocessedShaderSource, const FShaderCompi
 
 			if (bDumpDebugInfo)
 			{
-				DumpDebugUSF(Input, CStrSourceData.c_str(), 0, GRewrittenBaseFilename);
+				UE::ShaderCompilerCommon::FDebugShaderDataOptions DebugDataOptions;
+				DebugDataOptions.OverrideBaseFilename = GRewrittenBaseFilename;
+				UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShaderSource, DebugDataOptions);
 			}
 		}
 	}
@@ -565,7 +704,7 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 	const FShaderParameterParser& ShaderParameterParser,
 	FString& EntryPointName,
 	const TCHAR* ShaderProfile, ELanguage Language, bool bProcessingSecondTime,
-	TArray<FString>& FilteredErrors, FShaderCompilerOutput& Output)
+	FShaderCompilerOutput& Output)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(CompileAndProcessD3DShaderDXC);
 
@@ -609,8 +748,8 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 		bEnable16BitTypes = true;
 	}
 
-	// Write out the preprocessed file and a batch file to compile it if requested (DumpDebugInfoPath is valid)
-	bool bDumpDebugInfo = DumpDebugShaderUSF(PreprocessedShaderSource, Input);
+	UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShaderSource);
+	bool bDumpDebugInfo = Input.DumpDebugInfoEnabled(); 
 
 	FString Filename = Input.GetSourceFilename();
 
@@ -663,12 +802,6 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 	{
 		FString BatchFileContents = D3DCreateDXCCompileBatchFile(Args, Filename);
 		FFileHelper::SaveStringToFile(BatchFileContents, *(Input.DumpDebugInfoPath / TEXT("CompileDXC.bat")));
-
-		if (Input.bGenerateDirectCompileFile)
-		{
-			FFileHelper::SaveStringToFile(CreateShaderCompilerWorkerDirectCommandLine(Input), *(Input.DumpDebugInfoPath / TEXT("DirectCompile.txt")));
-			FFileHelper::SaveStringToFile(Input.DebugDescription, *(Input.DumpDebugInfoPath / TEXT("permutation_info.txt")));
-		}
 	}
 
 	TRefCountPtr<IDxcBlob> ShaderBlob;
@@ -677,6 +810,7 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 
 	const HRESULT D3DCompileToDxilResult = D3DCompileToDxil(AnsiSourceFile.Get(), Args, ShaderBlob, ReflectionBlob, DxcErrorBlob);
 
+	TArray<FString> FilteredErrors;
 	if (DxcErrorBlob && DxcErrorBlob->GetBufferSize())
 	{
 		FString ErrorString = DxcBlobEncodingToFString(DxcErrorBlob);
@@ -706,7 +840,7 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 
 		dxc::DxcDllSupport& DxcDllHelper = GetDxcDllHelper();
 		TRefCountPtr<IDxcUtils> Utils;
-		VERIFYHRESULT(DxcDllHelper.CreateInstance(CLSID_DxcUtils, Utils.GetInitReference()));
+		VERIFYHRESULT(DxcDllHelper.CreateInstance2(GetDxcMalloc(), CLSID_DxcUtils, Utils.GetInitReference()));
 		DxcBuffer ReflBuffer = { 0 };
 		ReflBuffer.Ptr = ReflectionBlob->GetBufferPointer();
 		ReflBuffer.Size = ReflectionBlob->GetBufferSize();
@@ -714,12 +848,7 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 		if (bIsRayTracingShader)
 		{
 			TRefCountPtr<ID3D12LibraryReflection> LibraryReflection;
-			const HRESULT CreateReflectionResult = Utils->CreateReflection(&ReflBuffer, IID_PPV_ARGS(LibraryReflection.GetInitReference()));
-
-			if (FAILED(CreateReflectionResult))
-			{
-				UE_LOG(LogD3D12ShaderCompiler, Fatal, TEXT("CreateReflection failed: Result=%08x"), CreateReflectionResult);
-			}
+			VERIFYHRESULT(Utils->CreateReflection(&ReflBuffer, IID_PPV_ARGS(LibraryReflection.GetInitReference())));
 
 			D3D12_LIBRARY_DESC LibraryDesc = {};
 			LibraryReflection->GetDesc(&LibraryDesc);
@@ -774,6 +903,19 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 				}
 			}
 
+			// @todo - working around DXC issue https://github.com/microsoft/DirectXShaderCompiler/issues/4715
+			if (LibraryDesc.FunctionCount > 0)
+			{
+				if (Input.Environment.CompilerFlags.Contains(CFLAG_BindlessResources))
+				{
+					ShaderRequiresFlags |= D3D_SHADER_REQUIRES_RESOURCE_DESCRIPTOR_HEAP_INDEXING;
+				}
+				if (Input.Environment.CompilerFlags.Contains(CFLAG_BindlessSamplers))
+				{
+					ShaderRequiresFlags |= D3D_SHADER_REQUIRES_SAMPLER_DESCRIPTOR_HEAP_INDEXING;
+				}
+			}
+
 			if (NumFoundEntryPoints == MangledEntryPoints.Num())
 			{
 				Output.bSucceeded = true;
@@ -820,12 +962,10 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 		}
 		else
 		{
+			Output.bSucceeded = true;
+
 			TRefCountPtr<ID3D12ShaderReflection> ShaderReflection;
-			const HRESULT CreateReflectionResult = Utils->CreateReflection(&ReflBuffer, IID_PPV_ARGS(ShaderReflection.GetInitReference()));
-			if (FAILED(CreateReflectionResult))
-			{
-				UE_LOG(LogD3D12ShaderCompiler, Fatal, TEXT("CreateReflection failed: Result=%08x"), CreateReflectionResult);
-			}
+			VERIFYHRESULT(Utils->CreateReflection(&ReflBuffer, IID_PPV_ARGS(ShaderReflection.GetInitReference())));
 
 			D3D12_SHADER_DESC ShaderDesc = {};
 			ShaderReflection->GetDesc(&ShaderDesc);
@@ -842,7 +982,6 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 					Output, UniformBufferNames, UsedUniformBufferSlots, VendorExtensions);
 
 			NumInstructions = ShaderDesc.InstructionCount;
-			Output.bSucceeded = true;
 		}
 
 		if (!ValidateResourceCounts(NumSRVs, NumSamplers, NumUAVs, NumCBs, FilteredErrors))
@@ -880,6 +1019,17 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 		// Save results if compilation and reflection succeeded
 		if (Output.bSucceeded)
 		{
+			uint32 RayTracingPayloadType = 0;
+			uint32 RayTracingPayloadSize = 0;
+			if (bIsRayTracingShader)
+			{
+				const FString* RTPayloadTypePtr = Input.Environment.GetDefinitions().Find(TEXT("RT_PAYLOAD_TYPE"));
+				const FString* RTPayloadSizePtr = Input.Environment.GetDefinitions().Find(TEXT("RT_PAYLOAD_MAX_SIZE"));
+				checkf(RTPayloadTypePtr != nullptr, TEXT("Ray tracing shaders must provide a payload type as this information is required for offline RTPSO compilation. Check that FShaderType::ModifyCompilationEnvironment correctly set this value."));
+				checkf(RTPayloadSizePtr != nullptr, TEXT("Ray tracing shaders must provide a payload size as this information is required for offline RTPSO compilation. Check that FShaderType::ModifyCompilationEnvironment correctly set this value."));
+				RayTracingPayloadType = FCString::Atoi(**RTPayloadTypePtr);
+				RayTracingPayloadSize = FCString::Atoi(**RTPayloadSizePtr);
+			}
 			auto PostSRTWriterCallback = [&](FMemoryWriter& Ar)
 			{
 				if (bIsRayTracingShader)
@@ -887,6 +1037,8 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 					Ar << RayEntryPoint;
 					Ar << RayAnyHitEntryPoint;
 					Ar << RayIntersectionEntryPoint;
+					Ar << RayTracingPayloadType;
+					Ar << RayTracingPayloadSize;
 				}
 			};
 
@@ -929,6 +1081,11 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 					EnumAddFlags(CodeFeatures.CodeFeatures, EShaderCodeFeatures::BindlessSamplers);
 				}
 
+				if ((ShaderRequiresFlags & D3D_SHADER_REQUIRES_STENCIL_REF) != 0)
+				{
+					EnumAddFlags(CodeFeatures.CodeFeatures, EShaderCodeFeatures::StencilRef);
+				}
+
 				// We only need this to appear when using a DXC shader
 				ShaderCode.AddOptionalData<FShaderCodeFeatures>(CodeFeatures);
 
@@ -966,6 +1123,9 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 
 		FilteredErrors.Add(ErrorString);
 	}
+
+	// Move intermediate filtered errors into compiler context for unification.
+	CrossCompiler::FShaderConductorContext::ConvertCompileErrors(MoveTemp(FilteredErrors), Output.Errors);
 
 	return Output.bSucceeded;
 }

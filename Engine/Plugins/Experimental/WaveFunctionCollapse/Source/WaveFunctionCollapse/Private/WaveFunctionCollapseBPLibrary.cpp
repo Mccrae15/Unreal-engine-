@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaveFunctionCollapseBPLibrary.h"
+#include "Engine/StaticMesh.h"
 #include "WaveFunctionCollapseSubsystem.h"
-#include "Math/UnrealMathUtility.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/InstancedStaticMeshComponent.h"
 
@@ -525,7 +525,7 @@ bool UWaveFunctionCollapseBPLibrary::GetPositionToOptionMapFromActor(AActor* Act
 	// Check if Model is valid
 	if (!Actor)
 	{
-		UE_LOG(LogWFC, Display, TEXT("%s is an invalid Actor"), *Actor->GetFName().ToString());
+		UE_LOG(LogWFC, Display, TEXT("GetPositionToOptionMapFromActor called with a null Actor"));
 		return false;
 	}
 

@@ -3,7 +3,10 @@
 #include "NiagaraPreviewGrid.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/Texture2D.h"
 #include "NiagaraComponent.h"
+#include "NiagaraEffectType.h"
+#include "NiagaraSystem.h"
 
 #include "Components/TextRenderComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -148,11 +151,11 @@ void ANiagaraPreviewGrid::ActivatePreviews(bool bReset)
 
 	for (int32 X = 0; X < NumX; ++X)
 	{
-		float XLocation = X / NumX - 1;
+		const float XLocation = X / float(NumX - 1);
 
 		for (int32 Y = 0; Y < NumY; ++Y)
 		{
-			float YLocation = Y / NumY - 1;
+			const float YLocation = Y / float(NumY - 1);
 
 			int32 PreviewIdx = PreviewIndex(X, Y);
 			UChildActorComponent* PreviewComp = PreviewComponents[PreviewIdx];
@@ -175,11 +178,11 @@ void ANiagaraPreviewGrid::DeactivatePreviews()
 {
 	for (int32 X = 0; X < NumX; ++X)
 	{
-		float XLocation = X / NumX - 1;
+		const float XLocation = X / float(NumX - 1);
 
 		for (int32 Y = 0; Y < NumY; ++Y)
 		{
-			float YLocation = Y / NumY - 1;
+			const float YLocation = Y / float(NumY - 1);
 
 			int32 PreviewIdx = PreviewIndex(X, Y);
 			UChildActorComponent* PreviewComp = PreviewComponents[PreviewIdx];
@@ -199,11 +202,11 @@ void ANiagaraPreviewGrid::SetPaused(bool bPaused)
 {
 	for (int32 X = 0; X < NumX; ++X)
 	{
-		float XLocation = X / NumX - 1;
+		const float XLocation = X / float(NumX - 1);
 
 		for (int32 Y = 0; Y < NumY; ++Y)
 		{
-			float YLocation = Y / NumY - 1;
+			const float YLocation = Y / float(NumY - 1);
 
 			int32 PreviewIdx = PreviewIndex(X, Y);
 			UChildActorComponent* PreviewComp = PreviewComponents[PreviewIdx];
@@ -225,11 +228,11 @@ void ANiagaraPreviewGrid::GetPreviews(TArray<UNiagaraComponent*>& OutPreviews)
 {
 	for (int32 X = 0; X < NumX; ++X)
 	{
-		float XLocation = X / NumX - 1;
+		const float XLocation = X / float(NumX - 1);
 
 		for (int32 Y = 0; Y < NumY; ++Y)
 		{
-			float YLocation = Y / NumY - 1;
+			const float YLocation = Y / float(NumY - 1);
 
 			int32 PreviewIdx = PreviewIndex(X, Y);
 			UChildActorComponent* PreviewComp = PreviewComponents[PreviewIdx];
@@ -289,7 +292,7 @@ void ANiagaraPreviewGrid::GeneratePreviews()
 		{
 			for (int32 X = 0; X < NumX; ++X)
 			{
-				float XLocation = X / NumX - 1;
+				const float XLocation = X / float(NumX - 1);
 
 				for (int32 Y = 0; Y < NumY; ++Y)
 				{
@@ -329,11 +332,11 @@ void ANiagaraPreviewGrid::TickPreviews()
 		bool bAllInactive = true;
 		for (int32 X = 0; X < NumX; ++X)
 		{
-			float XLocation = X / NumX - 1;
+			const float XLocation = X / float(NumX - 1);
 
 			for (int32 Y = 0; Y < NumY; ++Y)
 			{
-				float YLocation = Y / NumY - 1;
+				const float YLocation = Y / float(NumY - 1);
 
 				int32 PreviewIdx = PreviewIndex(X, Y);
 
@@ -390,7 +393,7 @@ void UNiagaraPreviewAxis_InterpParamInt32::ApplyToPreview_Implementation(UNiagar
 	check(PreviewComponent);
 	float Interp = Count > 1 ? (float)PreviewIndex / (Count - 1) : 1.0f;
 	int32 Val = FMath::Lerp(Min, Max, Interp);
-	PreviewComponent->SetVariableFloat(Param, Val);
+	PreviewComponent->SetVariableInt(Param, Val);
 	OutLabelText = FString::Printf(TEXT("%s = %d"), *Param.ToString(), Val);
 }
 void UNiagaraPreviewAxis_InterpParamFloat::ApplyToPreview_Implementation(UNiagaraComponent* PreviewComponent, int32 PreviewIndex, bool bIsXAxis, FString& OutLabelText)

@@ -1,12 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MassCrowdBubble.h"
+#include "MassEntityManager.h"
 #include "Net/UnrealNetwork.h"
-#include "DrawDebugHelpers.h"
-#include "MassSpawnerTypes.h"
-#include "MassEntityView.h"
-#include "MassCommonFragments.h"
-#include "MassMovementFragments.h"
+#include "MassExecutionContext.h"
 
 namespace UE::Mass::Crowd
 {

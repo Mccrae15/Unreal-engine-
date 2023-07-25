@@ -16,6 +16,9 @@
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #endif
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Abilities/GameplayAbilityRepAnimMontage.h"
+#endif
 #include "Abilities/GameplayAbilityTargetTypes.h"
 #include "GameplayAbilityTypes.generated.h"
 
@@ -41,7 +44,7 @@ namespace EGameplayAbilityInstancingPolicy
 	 *	How the ability is instanced when executed. This limits what an ability can do in its implementation. For example, a NonInstanced
 	 *	Ability cannot have state. It is probably unsafe for an InstancedPerActor ability to have latent actions, etc.
 	 */
-	enum Type
+	enum Type : int
 	{
 		// This ability is never instanced. Anything that executes the ability is operating on the CDO.
 		NonInstanced,
@@ -58,7 +61,7 @@ UENUM(BlueprintType)
 namespace EGameplayAbilityNetExecutionPolicy
 {
 	/** Where does an ability execute on the network. Does a client "ask and predict", "ask and wait", "don't ask (just do it)" */
-	enum Type
+	enum Type : int
 	{
 		// Part of this ability runs predictively on the local client if there is one
 		LocalPredicted		UMETA(DisplayName = "Local Predicted"),
@@ -78,7 +81,7 @@ UENUM(BlueprintType)
 namespace EGameplayAbilityNetSecurityPolicy
 {
 	/** What protections does this ability have? Should the client be allowed to request changes to the execution of the ability? */
-	enum Type
+	enum Type : int
 	{
 		// No security requirements. Client or server can trigger execution and termination of this ability freely.
 		ClientOrServer			UMETA(DisplayName = "Client Or Server"),
@@ -98,7 +101,7 @@ UENUM(BlueprintType)
 namespace EGameplayAbilityReplicationPolicy
 {
 	/** How an ability replicates state/events to everyone on the network */
-	enum Type
+	enum Type : int
 	{
 		// We don't replicate the instance of the ability to anyone.
 		ReplicateNo			UMETA(DisplayName = "Do Not Replicate"),
@@ -112,7 +115,7 @@ UENUM(BlueprintType)
 namespace EGameplayAbilityTriggerSource
 {
 	/**	Defines what type of trigger will activate the ability, paired to a tag */
-	enum Type
+	enum Type : int
 	{
 		// Triggered from a gameplay event, will come with payload
 		GameplayEvent,
@@ -178,9 +181,10 @@ struct GAMEPLAYABILITIES_API FGameplayAbilityActorInfo
 	/** Accessor to get the affected anim instance from the SkeletalMeshComponent */
 	UAnimInstance* GetAnimInstance() const;
 	
-	/** Returns true if this actor is locally controlled. Only true for players on the client that owns them */
+	/** Returns true if this actor is locally controlled. Only true for players on the client that owns them (differs from APawn::IsLocallyControlled which requires a Controller) */
 	bool IsLocallyControlled() const;
 
+	/** Returns true if this actor has a PlayerController that is locally controlled. */
 	bool IsLocallyControlledPlayer() const;
 
 	/** Returns true if the owning actor has net authority */
@@ -196,95 +200,6 @@ struct GAMEPLAYABILITIES_API FGameplayAbilityActorInfo
 	virtual void ClearActorInfo();
 };
 
-/** Enum used by the Ability Rep Anim Montage struct to rep the quantized position or the current section id */
-UENUM()
-enum class ERepAnimPositionMethod
-{
-	Position = 0,			// reps the position in the montage to keep the client in sync (heavier, quantized, more precise)
-	CurrentSectionId = 1,	// reps the current section id we want to play on the client (compact, less precise)
-};
-
-/** Data about montages that is replicated to simulated clients */
-USTRUCT()
-struct GAMEPLAYABILITIES_API FGameplayAbilityRepAnimMontage
-{
-	GENERATED_USTRUCT_BODY()
-
-	/** AnimMontage ref */
-	UPROPERTY()
-	TObjectPtr<UAnimMontage> AnimMontage;
-
-	/** Play Rate */
-	UPROPERTY()
-	float PlayRate;
-
-	/** Montage position */
-	UPROPERTY(NotReplicated)
-	float Position;
-
-	/** Montage current blend time */
-	UPROPERTY()
-	float BlendTime;
-
-	/** NextSectionID */
-	UPROPERTY()
-	uint8 NextSectionID;
-
-	/** ID incremented every time a montage is played, used to trigger replication when the same montage is played multiple times. This ID wraps around when it reaches its max value. */
-	UPROPERTY()
-	uint8 PlayInstanceId;
-
-	/** flag indicating we should serialize the position or the current section id */
-	UPROPERTY()
-	uint8 bRepPosition : 1;
-
-	/** Bit set when montage has been stopped. */
-	UPROPERTY()
-	uint8 IsStopped : 1;
-	
-	/** Stops montage position from replicating at all to save bandwidth */
-	UPROPERTY()
-	uint8 SkipPositionCorrection : 1;
-
-	/** Stops PlayRate from replicating to save bandwidth. PlayRate will be assumed to be 1.f. */
-	UPROPERTY()
-	uint8 bSkipPlayRate : 1;
-
-	UPROPERTY()
-	FPredictionKey PredictionKey;
-
-	/** The current section Id used by the montage. Will only be valid if bRepPosition is false */
-	UPROPERTY(NotReplicated)
-	uint8 SectionIdToPlay;
-
-	FGameplayAbilityRepAnimMontage()
-	: AnimMontage(nullptr),
-	PlayRate(0.f),
-	Position(0.f),
-	BlendTime(0.f),
-	NextSectionID(0),
-	PlayInstanceId(0),
-	bRepPosition(true),
-	IsStopped(true),
-	SkipPositionCorrection(false),
-	bSkipPlayRate(false),
-	SectionIdToPlay(0)
-	{
-	}
-
-	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
-
-	void SetRepAnimPositionMethod(ERepAnimPositionMethod InMethod);
-};
-
-template<>
-struct TStructOpsTypeTraits<FGameplayAbilityRepAnimMontage> : public TStructOpsTypeTraitsBase2<FGameplayAbilityRepAnimMontage>
-{
-	enum
-	{
-		WithNetSerializer = true,
-	};
-};
 
 
 /** Data about montages that were played locally (all montages in case of server. predictive montages in case of client). Never replicated directly. */
@@ -312,7 +227,7 @@ struct GAMEPLAYABILITIES_API FGameplayAbilityLocalAnimMontage
 
 	/** The ability, if any, that instigated this montage */
 	UPROPERTY()
-	TObjectPtr<UGameplayAbility> AnimatingAbility;
+	TWeakObjectPtr<UGameplayAbility> AnimatingAbility;
 };
 
 

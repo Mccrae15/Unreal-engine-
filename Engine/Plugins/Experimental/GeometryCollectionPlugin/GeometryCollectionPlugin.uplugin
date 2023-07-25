@@ -6,7 +6,7 @@
     "Description" : "Adds Geometry Collection Container.",
     "Category": "Geometry",
     "CreatedBy" : "Epic Games, Inc.",
-    "CreatedByURL" : "http://epicgames.com",
+    "CreatedByURL" : "https://epicgames.com",
     "DocsURL" : "",
     "MarketplaceURL" : "",
     "SupportURL" : "",
@@ -51,6 +51,14 @@
 		},
 		{
 			"Name": "PlanarCut",
+			"Enabled": true
+		},
+		{
+			"Name": "GeometryProcessing",
+			"Enabled": true
+		},
+		{
+			"Name": "Fracture",
 			"Enabled": true
 		}
 	]

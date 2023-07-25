@@ -2,37 +2,18 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/BitArray.h"
-#include "Containers/Map.h"
-#include "Containers/Set.h"
-#include "Containers/SparseArray.h"
-#include "Containers/UnrealString.h"
-#include "Delegates/Delegate.h"
-#include "HAL/Platform.h"
-#include "Input/Reply.h"
-#include "Internationalization/Text.h"
-#include "Layout/Visibility.h"
-#include "Misc/Optional.h"
-#include "MuR/Image.h"
-#include "MuR/MemoryPrivate.h"
-#include "MuR/Mesh.h"
-#include "MuR/Model.h"
 #include "MuR/ModelPrivate.h"
-#include "MuR/MutableMath.h"
-#include "MuR/Operations.h"
-#include "MuR/System.h"
-#include "Templates/SharedPointer.h"
-#include "Templates/TypeHash.h"
-#include "Types/SlateConstants.h"
-#include "Types/SlateEnums.h"
 #include "UObject/GCObject.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STreeView.h"
+
+class STableViewBase;
+namespace ESelectInfo { enum Type : int; }
+template <typename ItemType> class STreeView;
+template <typename OptionType> class SComboBox;
+
 
 class FMutableCodeTreeElement;
+class FMutableOperationElement;
 class FReferenceCollector;
 class ITableRow;
 class SBorder;
@@ -52,8 +33,8 @@ class SMutableStringViewer;
 class STextComboBox;
 class SWidget;
 namespace mu { struct Curve; }
-namespace mu { struct PROJECTOR; }
-namespace mu { struct SHAPE; }
+namespace mu { struct FProjector; }
+namespace mu { struct FShape; }
 struct FGeometry;
 
 /** This widget shows the internal Mutable Code for debugging purposes. 
@@ -72,10 +53,12 @@ public:
 		
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, const mu::ModelPtr& InMutableModel /*, const TSharedPtr<SDockTab>& ConstructUnderMajorTab*/);
+	void Construct(const FArguments& InArgs, const TSharedPtr<mu::Model, ESPMode::ThreadSafe>& InMutableModel /*, const TSharedPtr<SDockTab>& ConstructUnderMajorTab*/);
 
 	// SWidget interface
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+	FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+	FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
@@ -84,7 +67,7 @@ public:
 private:
 
 	/** The Mutable Model that we are showing. */
-	mu::ModelPtr MutableModel;
+	TSharedPtr<mu::Model, ESPMode::ThreadSafe> MutableModel;
 	
 	/** Selected model operation for preview. */
 	mu::OP::ADDRESS SelectedOperationAddress = 0;
@@ -171,6 +154,12 @@ private:
 	* Tree widget objects
 	*/
 
+	/** Map with all the generated elements of the tree. Unique and duplicated elements will be present on this list and
+	 * also the children of the unique elements.
+	 * @note The children of duplicated elements will only be present once, as children of the unique element they duplicate.
+	 * This is to avoid having identical elements on the tree (witch would cause a crash) while also being pointless due to
+	 * how we manage expansion of duplicated elements.
+	 */
 	TMap< FItemCacheKey, TSharedPtr<FMutableCodeTreeElement>> ItemCache;
 
 	/** Main tree item for each op. An op can be represented with multiple tree nodes if it is reachable from different paths. */
@@ -182,6 +171,24 @@ private:
 	/** Array with all the elements that have been manually expanded by the user */
 	TMap< mu::OP::ADDRESS, TSharedPtr<FMutableCodeTreeElement>> ExpandedElements;
 
+	/** Prepare the widget for the given model. */
+	void SetCurrentModel(const TSharedPtr<mu::Model, ESPMode::ThreadSafe>&);
+
+	/** Before any UI operation generate all the elements that may be navigable over the tree. No children of duplicated 
+	 * addresses will be generated.
+	 */
+	void GenerateAllTreeElements();
+
+	/** Support GenerateAllTreeElements by generating the elements recursively */
+	void GenerateElementRecursive( const int32& InStateIndex, mu::OP::ADDRESS InParentAddress, const mu::FProgram& InProgram);
+
+	
+	/** The addresses of the root operations. Cached when this object gets loaded on the Construct method of this slate */
+	TArray<mu::OP::ADDRESS> RootNodeAddresses;
+	
+	/** Utility method that provides you with the addresses of the root nodes of the program */
+	void CacheRootNodeAddresses();
+	
 	/** Control boolean to know if there are any highlighted elements on the tree */
 	bool bIsElementHighlighted = false;
 
@@ -189,129 +196,315 @@ private:
 	mu::OP::ADDRESS HighlightedOperation{};
 
 	/*
+	 * Operations computational cost reference collections
+	 */
+
+	/** Collection with all very expensive to run operation types */
+	const TArray<mu::OP_TYPE> VeryExpensiveOperationTypes
+	{
+		mu::OP_TYPE::ME_BINDSHAPE,
+		mu::OP_TYPE::ME_MASKCLIPMESH,
+		mu::OP_TYPE::ME_FORMAT,
+		mu::OP_TYPE::ME_DIFFERENCE,
+		mu::OP_TYPE::IM_MAKEGROWMAP,
+	};
+
+	/** Collection with all expensive to run operation types */
+	const TArray<mu::OP_TYPE> ExpensiveOperationTypes
+	{
+		mu::OP_TYPE::IM_PIXELFORMAT,
+		mu::OP_TYPE::IM_SWIZZLE,
+		mu::OP_TYPE::ME_PROJECT,
+	};
+	
+	/** Enum designed to be able to notify the row generation of the type of operation being generated */
+	enum class EOperationComputationalCost : uint8
+	{
+		Standard =			0,			// All other operation types
+		Expensive =			1,			// The ones located on ExpensiveOperationTypes
+		VeryExpensive =		2			// The ones located on VeryExpensiveOperationTypes
+	};
+
+	/** Array holding the relation between each computational cost category and the color to be used to display elements related
+	 * with it. 
+	 */
+	const TArray<FSlateColor> ColorPerComputationalCost
+	{
+		FSlateColor(FLinearColor(1,1,1,1)),		// Standard cost color
+		FSlateColor(FLinearColor(1,0.4,0.2,1)),	// Expensive cost color
+		FSlateColor(FLinearColor(1,0.1,0.1,1))		// Very Expensive cost color
+	};
+	
+	/** Provided an operation type it returns the category representing how much costs to run an operation of this type
+	 * @param OperationType The operation type you want to know the computational cost of
+	 * @return The enum value representing the computational cost of the operation type provided.
+	 */
+	EOperationComputationalCost GetOperationTypeComputationalCost(mu::OP_TYPE OperationType) const;
+	
+	
+	/*
 	 * Navigation : Operation type navigation Type selection object
 	 */
 	
 	/** Slate object that provides the user a way of selecting what kind of operation it wants to navigate.*/
-	TSharedPtr<STextComboBox> TargetedTypeSelector;
+	TSharedPtr<SComboBox<TSharedPtr<const FMutableOperationElement>>> TargetedTypeSelector;
+
+	/** Data backend for the list displayed for the navigation type selection */
+	TArray<TSharedPtr<const FMutableOperationElement>> FoundModelOperationTypeElements;
+
+	/** Navigation operation entry representing the NONE type */
+	TSharedPtr<const FMutableOperationElement> NoneOperationEntry;
+
+	/** Navigation operation entry used to be able to set the UI to show we are performing a constant resource based 
+	 * navigation
+	 */
+	TSharedPtr<const FMutableOperationElement> ConstantBasedNavigationEntry;
+	
+	/** Currently selected element on the TargetedTypeSelector slate. Actively used by the ui */
+	TSharedPtr<const FMutableOperationElement> CurrentlySelectedOperationTypeElement;
 	
 	/** Operation type we are using to search for tree nodes. Driven primarily by the UI */
 	mu::OP_TYPE OperationTypeToSearch = mu::OP_TYPE::NONE;
 
+	/** Operation types present on the currently set mutable model.
+	 * The value of the TPair represents the amount of times operations using it have been found (not duplicates) */
+	TArray< TPair< mu::OP_TYPE,uint32>> ModelOperationTypes;
+	
 	/** Array with all the names for each of the operations available on mutable. Used by the UI  */
-	TArray<TSharedPtr<FString>> OperationTypesStrings;
+	TArray<FString> ModelOperationTypeNames;
 	
 	/** Stores a list of strings based on the possible types of operations mutable define to be used by the UI */
 	void GenerateNavigationOpTypeStrings();
 
-	/** Method called when the user changes the targeted type using the UI. It is only half part of the operation since
-	 * "OnOptionTypeSelectionChangedAfterRefresh" will be the one that at the end will perform the operations over the tree.
-	 */
-	void OnOptionTypeSelectionChanged(TSharedPtr<FString, ESPMode::ThreadSafe> NesSelectedOperationString, ESelectInfo::Type SelectionType);
+	/** Generate a list of elements that will be used as backend for the navigation type selection dropdown */
+	void GenerateNavigationDropdownElements();
 	
-	/** Update the array with all the elements using the current operation. Required when changing the targeted operation type */
-	void LocateNavigationElements();
-	
-	/*
-	 * Navigation : UI callback methods
-	 */
-
-	FText OnPrintNavigableObjectAddressesCount() const;
-	
-	/** Method that tells the UI if the bottom to go to the previous element can be interacted
-	 * @return It returns true if the UI element should be interactable, false if not.
-	 */
-	bool CanInteractWithPreviousOperationButton() const;
-
-	/** Method that tells the UI if the bottom to go to the next element can be interacted
-	 * @return It returns true if the UI element should be interactable, false if not.
-	 */
-	bool CanInteractWithNextOperationButton() const;
-	
-
-	/** Callback method used to allow the user to directly set the type of operation to be scanning directly by selecting a
-	 * operation on the tree and using that operation type as the type to search for
-	 */
-	void OnSelectedOperationTypeFromTree();
-
-	/*
-	 * Navigation : control flags
-	 */
-	
-	/** Flag that tells the system the user does want to select the previous operation of the targeted type. */
-	bool bIsSearchingForPreviousElement = false;
-	
-	/** Flag that tells the system the user does want to select the next operation of the targeted type. */
-	bool bIsSearchingForNextElement = false;
-	
-	/** Flag used by the navigation system to know when it is required the full expansion of the tree.
-	 * It allows the system to safely jump from one element to another without the risk of leaving elements in the
-	 * middle without being accessed.
-	 */
-	bool bTreeWasExpanded = false;
-	
-	/** Flag set to true when the navigation system is automatically scrolling over the graph */
-	bool bIsScrolling = false;
-
-	/** Flag that tells the system when the navigation addresses have been updated and therefore action should be
-	 * taken after the tree refresh. Currently we look for the first element present on the array of addresses */
-	bool bUpdatedNavigationAddresses = false;
-	
-	/*
-	 * Navigation : OP Address based navigation
-	 */
-	
-	/** Collection of Mutable addresses. Cache used during tree navigation.
-	 * They serve as the navigation system backend and determine if an element will or not be stopped at during
-	 * the navigation process.
-	 * @note Not set as a TSet since I want to, in future revisions, be able to trust the order of the elements of the collection.
-	 */
-	TArray<mu::OP::ADDRESS> NavigationOPAddresses;
-
-	/** Provided an Operation type store as navigation addresses all operations of the targeted Op type
-	 * @note The operations found get saved on the collection  NavigationOPAddresses.
-	 * @param TargetedOperationType The type of operation we want to cache to be later able to navigate over it.
-	 */
-	void CacheAddressesOfOperationsOfType(mu::OP_TYPE TargetedOperationType);
-
-	/** Fills an array with all the addresses of operations that do have in common the same targeted operation type
-	 * @param TargetOperationType The operation type used to discriminate what operation addresses we want to retrieve.
-	 * @param InParentAddress The address of the parent object. Used to get the children and then process them too.
-	 * @param OutAddressesOfType Output with all the addresses that are of the same type as TargetOperationType.
-	 * @param  AlreadyProcessedAddresses Used during recursive calls. Cache the already processed operations to avoid
-	 * processing them more than once.
-	 */
-	void GetOperationsOfType ( const mu::OP_TYPE& TargetOperationType, const mu::OP::ADDRESS& InParentAddress, const mu::PROGRAM& InProgram,
-		TSet<mu::OP::ADDRESS>& OutAddressesOfType,
-		TSet<mu::OP::ADDRESS>& AlreadyProcessedAddresses);
-
-
-	/*
-	 * Navigation : Caching of operation types being used on the model
-	 */
-
-	/** Operation types present on the currently set mutable model. */
-	TArray<mu::OP_TYPE> ModelOperationTypes;
-
 	
 	/** Fills ModelOperationTypes with all the types present on the current model.
 	 * It also makes sure we have a NONE operation and that the operations are sorted alphabetically.
 	 * @note Method designed to be called once per model.*/
 	void CacheOperationTypesPresentOnModel();
-
 	
-	/** Method to scan over all the operations performed on the current model to produce a set of operation types present on it.
-	 * @param InParentAddress Address of the parent object. Required to be able to perform recursive calls to this method (to get the data from the children)
-	 * @param  InProgram Mutable program.
-	 * @param OutLocatedOperations Output of the method : Set with all the operation types present on the model.
-	 * @param AlreadyProcessedAddresses Addresses already processed. Used to avoid processing the same operation twice.
+	
+	/*
+	 * Navigation : UI callback methods
 	 */
-	void GetOperationTypesPresentOnModel( const mu::OP::ADDRESS& InParentAddress, const mu::PROGRAM& InProgram,
-		TSet<mu::OP_TYPE>& OutLocatedOperations,
-		TSet<mu::OP::ADDRESS>& AlreadyProcessedAddresses);
+
+	/** Generate the text to be used by the navigation operation selector */
+	FText GetCurrentNavigationOpTypeText() const;
+
+	/** Returns the color to be used by the text being currently displayed as selected on the operation selector*/
+	FSlateColor GetCurrentNavigationOpTypeColor() const;
+
+	/** Callback invoked by the ComboBox used for displaying and selecting operation types for navigation. it gets invoked
+	 * each time the slate object requires to draw a line representing one of the elements set on FoundModelOperationTypeElements
+	 */
+	TSharedRef<SWidget> OnGenerateOpNavigationDropDownWidget(TSharedPtr<const FMutableOperationElement> MutableOperationElement) const;
+
+	/** Callback invoked each time the selected operation on our navigation slate changes. It can change due to UI interaction
+	 * or also due to direct change by invoking the SetSelectedOption on the SComboBox TargetedTypeSelector
+	 */
+	void OnNavigationSelectedOperationChanged(TSharedPtr<const FMutableOperationElement, ESPMode::ThreadSafe> MutableOperationElement, ESelectInfo::Type Arg);
+
+	/** Callback used to print on screen the amount of operations found on the tree that share the same operation type that
+	 * the one currently selected on the navigation system.
+	 */
+	FText OnPrintNavigableObjectAddressesCount() const;
+	
+	/** Method that tells the UI if the bottom to go to the previous element can be interacted */
+	bool CanInteractWithPreviousOperationButton() const;
+
+	/** Method that tells the UI if the bottom to go to the next element can be interacted */
+	bool CanInteractWithNextOperationButton() const;
+	
+
+	/** Used by the UI and internally does what is necessary to get to the previous element of the targeted search type.
+	 * It is designed to work alongside GoToPreviousOperationAfterRefresh(...)
+	 * @return A reply to tell if the UI action has been handled or not.
+	 */
+	FReply OnGoToPreviousOperationButtonPressed();
+
+	/** Used by the UI and internally does what is necessary to get to the next element of the targeted search type.
+	 * It is designed to work alongside GoToNextOperationAfterRefresh(...)
+	 * @return A reply to tell if the UI action has been handled or not.
+	 */
+	FReply OnGoToNextOperationButtonPressed();
+	
+	
+	/** Callback method used to allow the user to directly set the type of operation to be scanning directly by selecting a
+	 * operation on the tree and using that operation type as the type to search for
+	 */
+	void OnSelectedOperationTypeFromTree();
+	
+	/*
+	 * Navigation : control flags
+	 */
+	
+	/** Flag monitoring if we have requested a scroll operation to reach the targeted element */
+	bool bWasScrollToTargetRequested = false;
+
+	/** Flag designed to tell the system when the expansion of unique elements have been performed as part of the navigation operation */
+	bool bWasUniqueExpansionInvokedForNavigation = false;
+	
+	/*
+	 * Navigation : Shared objects between navigation search types 
+	 */
+
+	/** Array with all the elements of the type we are looking for (shared type of constant resource). */
+	TArray<TSharedPtr<FMutableCodeTreeElement>> NavigationElements;
+	
+	/** Operation types present on the currently set mutable model. */
+	int64 NavigationIndex = -1;
+	
+	/** Sort the contents of NavigationElements to follow a sequential pattern using the indices of the elements from 0 to +n*/
+	void SortNavigationElements();
+
+	/** Focus the current NavigationElement and places it into view. It also selects it so the previewer for the
+	 * element gets invoked
+	 */
+	void FocusViewOnNavigationTarget();
+	
+	/** Wrapper struct designed to be used as cache for all elements found during the navigation system search for elements
+	 * of X Type or relation with a targeted constant resource. It is designed to be used and then destroyed once the
+	 * search operation has been completed */
+	struct FElementsSearchCache
+	{
+		/** Set of addresses that have already been searched for relevant data */
+		TSet<mu::OP::ADDRESS> ProcessedAddresses;
+
+		/** Collection of elements that have been found during the search. They may be related by OP_Type or used constant resource*/
+		TArray<TSharedPtr<FMutableCodeTreeElement>> FoundElements;
+		
+		/** Array containing all the next addresses to be processed.
+		 * The child is the address itself to be later processed
+		 * The parent is the parent address of the child.
+		 * The ChildIndexInParent is the index (or child position) o the child address on Child as part of the child set of the parent address.
+		 */
+		TArray<FItemCacheKey> BatchData;
+		
+
+		/** Generates the structures to be able to start the search of elements. It uses the root addresses as the
+		 * start of the search operation.
+		 * @param InRootNodeAddresses The addresses of the root operations of the operations tree
+		 */
+		void SetupRootBatch(const TArray<mu::OP::ADDRESS>& InRootNodeAddresses)
+		{
+			check (InRootNodeAddresses.Num());
+			// This method should only be called once when no data is present on this cache
+			check (BatchData.IsEmpty());
+			
+			BatchData.Reserve(InRootNodeAddresses.Num());
+			// The child address of each parent operation on it's parent
+			for (int32 RootIndex = 0; RootIndex < InRootNodeAddresses.Num(); RootIndex++)
+			{
+				FItemCacheKey Key;
+				{
+					Key.Child = InRootNodeAddresses[RootIndex];
+					// Store the parent of this object as 0 to have a "virtual" address witch all root addresses are
+					// children of 
+					Key.Parent = 0;
+					// And also the index of the parent on it's parent "virtual" structure
+					Key.ChildIndexInParent = RootIndex;		
+				}
+
+				// Add this new entry point for the search of addresses 
+				BatchData.Add(Key);
+			}
+		}
+		
+		/** Method to cache the provided mutable address as one of the addresses that are of the type we are looking for or maybe
+		* is related with the constant resource we are looking for operations related with.
+		* @param OpAddress The address to save as one related with a operation type or constant resource
+		* @param IndexAsChildOfInputAddress The index on BatchData that represents the parent of the provided operation address
+		* @param InItemCache Cache with all the elements of the tree. Here is where we search for the element based on
+		* the OpAddress and the parent and ChildIndexInParent provided thanks to IndexAsChildOfInputAddress
+		*/
+		void AddToFoundElements(const mu::OP::ADDRESS OpAddress,const int32 IndexAsChildOfInputAddress,
+		                        const TMap<FItemCacheKey, TSharedPtr<FMutableCodeTreeElement>>& InItemCache)
+		{
+			FItemCacheKey Key;
+			{
+				Key.Child = OpAddress;
+				// Store the parent address of this object
+				Key.Parent = BatchData[IndexAsChildOfInputAddress].Parent;
+				// And also the index of the parent on it's parent structure
+				Key.ChildIndexInParent = BatchData[IndexAsChildOfInputAddress].ChildIndexInParent;		
+			}
+			// Generate a key for this element in order to search in on the map with all the elements
+								
+			// Find that element on the tree, (check error if not found since all elements should be there)
+			const TSharedPtr<FMutableCodeTreeElement>* PtrFoundElement = InItemCache.Find(Key);
+			check(PtrFoundElement);
+			TSharedPtr<FMutableCodeTreeElement> FoundElement = *PtrFoundElement;
+			check(FoundElement != nullptr);
+			
+			// Store this element on our temp Map of elements
+			FoundElements.Add(FoundElement);
+		}
+
+		/** Caches the provided parent address to the Search payload so they can be later read and processed on another batch of the
+		 * method tasked with finding related operations to operation type or constant resource.
+		 * @param InParentAddress The parent address to search children of.
+		 * @param InProgram The mutable program that will be used to perform the children search.
+		 * @param OutFoundChildrenData Array with all the ItemCacheKeys that represent all the children found
+		 * @note It will not add the children of any provided ParentAddress for the next batch if the parent address provided
+		 * has already been processed and therefore whose children have already been searched or prepared for searching.
+		 */
+		void CacheChildrenOfAddressIfNotProcessed(mu::OP::ADDRESS InParentAddress,
+		                                          const mu::FProgram& InProgram,
+		                                          TArray<FItemCacheKey>& OutFoundChildrenData)
+		{
+			if (!ProcessedAddresses.Contains(InParentAddress))
+			{
+				// Cache to avoid processing it again later
+				ProcessedAddresses.Add(InParentAddress);
+	
+				// Generic case for unnamed children traversal.
+				uint32 ChildIndex = 0;
+				mu::ForEachReference(InProgram, InParentAddress, [this, &InParentAddress, &ChildIndex,&OutFoundChildrenData]( mu::OP::ADDRESS ChildAddress)
+				{
+					// If the parent does have a child then process it 
+					if (ChildAddress) 
+					{
+						FItemCacheKey Key;
+						{
+							Key.Child = ChildAddress;
+							Key.Parent = InParentAddress;
+							Key.ChildIndexInParent = ChildIndex;		
+						}
+
+						// Save it to the output so can later be placed onto BatchData safely 
+						OutFoundChildrenData.Add(Key);
+					}
+					ChildIndex++;
+				});
+			}
+		}
+	};
+	
+	
+	/*
+	 * Navigation : Operation type based navigation
+	 */
+	
+	/** Provided an Operation type store as navigation addresses all operations of the targeted navigation Op type
+	 * @note The operations found get saved on the collection  NavigationOPAddresses.
+	 */
+	void CacheAddressesOfOperationsOfType();
+
+	/** Fills an array with all the addresses of operations that do have in common the same targeted operation type
+	 * @param TargetOperationType The operation type used to discriminate what operation addresses we want to retrieve.
+	 * processing them more than once.
+	 * @param InSearchPayload A caching structure designed to hold the data that gets passed from one recursive call to
+	 * the other. It also stores the found elements and other data.
+	 * @param InProgram The mutable program holding the data to be searched over
+	 */
+	void GetOperationsOfType(const mu::OP_TYPE& TargetOperationType,
+	                         FElementsSearchCache& InSearchPayload,
+	                         const mu::FProgram& InProgram);
 
 	/*
-	 * Navigation : Cache operation instances based on constant resource
+	 * Navigation : Navigation based on constant resource relation with addresses
 	 */
 
 public:
@@ -329,29 +522,20 @@ public:
 	void CacheAddressesRelatedWithConstantResource(const mu::DATATYPE ConstantDataType, const int32 IndexOnConstantsArray);
 
 private:
-
-	/** The addresses of the root operations. Cached when this object gets loaded on the Construct method of this slate */
-	TArray<mu::OP::ADDRESS> RootNodeAddresses;
-	
-	/** Utility method that provides you with the addresses of the root nodes of the program */
-	void CacheRootNodeAddresses();
 	
 	/**
 	 * Provided a data type and the index of the constant object using said data type locate all operations that do
 	 * directly make use of said constant resource.
 	 * @param ConstantDataType The type of the resource we are providing an index of. 
 	 * @param IndexOnConstantsArray The index of the constant resource we want to know what operations are using it.
+	 * @param InSearchPayload Cache object that will end up containing all the elements related with the provided constant
+	 * resource
 	 * @param InProgram The mutable program containing all the operations of the graph.
-	 * @param InParentAddress The address of the root object whose child operations we are searching the provided constant on.
-	 * @param OutAddressesWithPresence An array with all the addresses to mutable operations making use of the provided constant resource.
-	 * @param AlreadyProcessedAddresses Cache with the addresses already processed. It is only intended to be used on recursive calls.
 	 */
 	void GetOperationsReferencingConstantResource(const mu::DATATYPE ConstantDataType,
 	                                              const int32 IndexOnConstantsArray,
-	                                              const mu::PROGRAM& InProgram,
-	                                              const mu::OP::ADDRESS& InParentAddress,
-	                                              TSet<mu::OP::ADDRESS>& OutAddressesWithPresence,
-	                                              TSet<mu::OP::ADDRESS>& AlreadyProcessedAddresses);
+	                                              FElementsSearchCache& InSearchPayload,
+	                                              const mu::FProgram& InProgram);
 
 	/**
 	 * Provided an operation address this method tells us if that address is making use of our constant resource or not.
@@ -367,78 +551,8 @@ private:
 	 */
 	bool IsConstantResourceUsedByOperation(const int32 IndexOnConstantsArray,
 	                                       const mu::DATATYPE ConstantDataType, const mu::OP::ADDRESS OperationAddress,
-	                                       const mu::PROGRAM& InProgram) const;
+	                                       const mu::FProgram& InProgram) const;
 	
-	
-	/*
-	 * Navigation : operation methods and variables
-	 */
-	
-	/** The element on FoundElementsOfType that we are inspecting and using as origin for our search.
-	 * @note Do not update it's value manually */
-	TSharedPtr< FMutableCodeTreeElement> CurrentNavigationElement;
-	
-	/** Array with all the elements on the tree of the same type as the one defined on "TargetedOperationType" */
-	TArray<TSharedPtr<FMutableCodeTreeElement>> NavigationFoundElements;
-	
-	/** Copy of the array FoundElementsOfType done before moving on to the next element. Required to check if the
-	 * expansion of the tree view did add or remove elements of the type we are looking for.
-	 */
-	TArray<TSharedPtr<FMutableCodeTreeElement>> NavigationPreviouslyFoundElements;
-	
-	
-	/** Amount of elements the scroll will jump up and down while searching for new elements
-	 * It is required to be able to locate elements whose rows have not been yet generated
-	 * Do not change.
-	 */
-	const int32 MinTreeScrollStep = 1;
-
-	/** Variable holding the scroll step to be used. It will vary depending on the amount of elements the tree can display
-	 * witch may change from resolution to resolution. This is then the value to be used during the automatic scrolling
-	 * operation of the tree navigation system. It will start at the min possible value and only increase when posible.
-	 */
-	int32 ComputedMaxViewScrollStep = MinTreeScrollStep;
-
-	/** Tree view manipulation method designed to set the element to be selected on the UI side of the tree. It is also
-	 *required to take note of what the current found element is to be able to navigate the tree of elements
-	 *@param NewlyFoundElement - The element we want to now be using as the NavigationFoundElement */
-	void SetCurrentNavigationElement(TSharedPtr<FMutableCodeTreeElement> NewlyFoundElement);
-
-	
-	/** Consistency focused method designed to sort the list of navigation elements based on the position of them
-	* on the tree view. It is required since new elements may be added or removed due to user activity.
-	*/
-	void SortNavigationElementsArray();
-	
-	/** Used by the UI and internally does what is necessary to get to the previous element of the targeted search type.
-	 * It is designed to work alongside GoToPreviousOperationAfterRefresh(...)
-	 * @return A reply to tell if the UI action has been handled or not.
-	 */
-	FReply OnGoToPreviousOperationButtonPressed();
-
-	/** Used by the UI and internally does what is necessary to get to the next element of the targeted search type.
-	 * It is designed to work alongside GoToNextOperationAfterRefresh(...)
-	 * @return A reply to tell if the UI action has been handled or not.
-	 */
-	FReply OnGoToNextOperationButtonPressed();
-	
-	/** Makes the currently selected operation be the previous one able to be located on the tree of operations.
-	 * @note It must only be called after the tree has been fully refreshed. If not inconsistent behaviour may arise.
-	 */
-	void GoToPreviousOperationAfterRefresh();
-	
-	/** Makes the currently selected operation of the targeted type to be the next one. Called after the tree has been
-	 * refreshed with new contents (fully refreshed).
-	 * @note It must only be called after the tree has been fully refreshed. If not inconsistent behaviour may arise.
-	 */
-	void GoToNextOperationAfterRefresh();
-
-	/** Method that compares the contents of "PreviousTargetedElementsOfType" against the ones on "CurrentTargetedElementsOfType" to
-	 *check if there is any new element found on the current elements array not found on the Previous one
-	 * @return True if there is any new element defined on the "CurrentTargetedElementsOfType" not present on "PreviousTargetedElementsOfType",
-	 * false if not.
-	 */
-	bool HaveNewElementsBeenFound() const;
 	
 	/*
 	* Main callbacks from the tree widget standard operation. 
@@ -460,6 +574,7 @@ private:
 	* @param bInExpanded - Determines if the action is of contraction (false) or expansion (true).
 	*/
 	void OnExpansionChanged(TSharedPtr<FMutableCodeTreeElement> InInfo, bool bInExpanded);
+
 
 	/** 
 	* Callback invoked each time the selected element changes used to generate the previews depending of the 
@@ -519,7 +634,7 @@ private:
 	
 	/** Grabs the selected element and expands all the elements inside the selected branch. Duplicates are ignored */
 	void TreeExpandSelected();
-
+	
 	/** 
 	* Highlights all tree elements that share the same operation as the element provided
 	* @param InTargetElement - The info object to be used as blueprint to search for similar objects and highlight them
@@ -532,6 +647,25 @@ private:
 	/** Called when any parameter value has changed, with the parameter index as argument.  */
 	void OnPreviewParameterValueChanged( int32 ParamIndex );
 
+	/*
+	* Element state recalculation 
+	*/
+	
+	/** FLag that determines if the expansion of elements should require the computation of the state of it's child elements.
+	 * Useful to avoid unnecessary calls for state resting of movable branches like the children of operations that are repeated
+	 * in the tree slate */
+	bool bShouldRecalculateStates = false;
+	
+	/** Provided an element of the tree view return all the children of it (direct and indirect). The search will stop (depth)
+	 * if a children is found to not be expanded. This way we avoid infinite searches (since we do not stop at duplicates).
+	 * @note It DOES NOT check for visibility by asking the TreeView. It only gets the elements that could be seen in theory.
+	 * @note This method will return expanded and not expanded children but only the expanded children will get it's children searched and therefore
+	 * provided by this method. In conclusion, only the elements that could be seen by the view will get provide.
+	 * @param InInfo The element whose children we want to grab. It can be expanded or not.
+	 * @param OutChildren A collection of children elements. Only the elements that could be seen in the tree view (expanded and the root element of an
+	 * unexpanded branch) wll get added to this collection.
+	 */
+	void GetVisibleChildren(TSharedPtr<FMutableCodeTreeElement> InInfo, TSet<TSharedPtr<FMutableCodeTreeElement>>& OutChildren);
 	
 
 	/*
@@ -563,9 +697,9 @@ public:
 	void PreviewMutableLayout(mu::LayoutPtrConst Layout);
 	void PreviewMutableSkeleton(mu::SkeletonPtrConst Skeleton);
 	void PreviewMutableString(const mu::string* InStringPtr);
-	void PreviewMutableProjector(const mu::PROJECTOR* Projector);
+	void PreviewMutableProjector(const mu::FProjector* Projector);
 	void PreviewMutableMatrix(const mu::mat4f* Mat);
-	void PreviewMutableShape(const mu::SHAPE* Shape);
+	void PreviewMutableShape(const mu::FShape* Shape);
 	void PreviewMutableCurve(const mu::Curve* Curve);
 	
 private:
@@ -576,69 +710,128 @@ private:
 	void PrepareProjectorViewer();
 };
 
+/** The data of a row on the operation type dropdown. */
+class FMutableOperationElement : public TSharedFromThis<FMutableOperationElement>
+{
+public:
+	FMutableOperationElement(mu::OP_TYPE InOperationType,FText OperationTypeName,uint32 OperationTypeInstanceCount,FSlateColor OperationColor)
+	{
+		OperationType = InOperationType;
+		OperationTextColor = OperationColor;
+
+		// Show the amount of instances of the operation type is found on model.
+		// @note This if block will not be triggered when working with an operation type that is not present on the model
+		// but added manually to the list of operation types (currently mu::OP_Type::None is an example of this)
+		FText OperationsCountText = FText::GetEmpty();
+		if (OperationTypeInstanceCount > 0)
+		{
+			OperationsCountText = FText::Format(INVTEXT(" - ({0})"), OperationTypeInstanceCount);
+		}
+		OperationTypeText = FText::Format(INVTEXT("{0}{1}"), OperationTypeName,OperationsCountText);
+	}
+
+public:
+	mu::OP_TYPE OperationType;
+	FText OperationTypeText;
+	FSlateColor OperationTextColor;
+
+	/** Get the type of visibility an slate representing this objects should have. */
+	EVisibility GetEntryVisibility() const
+	{
+		return OperationType == mu::OP_TYPE::NONE ? EVisibility::Collapsed : EVisibility::Visible;
+	}
+};
+
 
 
 /** An row of the code tree in the SMutableCodeViewer. */
 class FMutableCodeTreeElement : public TSharedFromThis<FMutableCodeTreeElement>
 {
 public:
-	FMutableCodeTreeElement(const mu::ModelPtr& InModel, mu::OP::ADDRESS InOperation, const FString& InCaption, const TSharedPtr<FMutableCodeTreeElement>* InDuplicatedOf = nullptr)
+	FMutableCodeTreeElement(int32 InIndexOnTree  , const int32& InMutableStateIndex ,const TSharedPtr<mu::Model, ESPMode::ThreadSafe>& InModel, mu::OP::ADDRESS InOperation, const FString& InCaption,const FSlateColor InLabelColor, const TSharedPtr<FMutableCodeTreeElement>* InDuplicatedOf = nullptr)
 	{
 		MutableModel = InModel;
 		MutableOperation = InOperation;
 		Caption = InCaption;
+		LabelColor = InLabelColor;
+		IndexOnTree = InIndexOnTree;
 		if (InDuplicatedOf)
 		{
 			DuplicatedOf = *InDuplicatedOf;
 		}
-
-		// Check what type of operation is (state constant or dynamic resource)
+		
+		// Process the data that can be extracted from the current state
+		SetElementCurrentState(InMutableStateIndex);
+	}
+	
+	void SetElementCurrentState(const int32& InStateIndex)
+	{
+		// Skip operation if state is the same
+		if (InStateIndex == CurrentMutableStateIndex)
 		{
-			// If duplicated then grab the already processed data on the original operation
-			if (InDuplicatedOf)
-			{
-				bIsDynamicResource = DuplicatedOf->bIsDynamicResource;
-				bIsStateConstant = DuplicatedOf->bIsStateConstant;
+			return;
+		}
 
-				// All required data has been processed so an early exit is required
-				return;
-			}
-			
-			// Iterate over all states and try to locate the operation
-			const mu::PROGRAM& MutableProgram = InModel->GetPrivate()->m_program;
-			for (const mu::PROGRAM::STATE& CurrentState : MutableProgram.m_states)
+		// Check for an out of bounds value
+		check(MutableModel)
+		mu::FProgram& MutableProgram = MutableModel->GetPrivate()->m_program;
+		check (InStateIndex >= 0 && InStateIndex < MutableProgram.m_states.Num());
+		
+		CurrentMutableStateIndex = InStateIndex;
+		const mu::FProgram::FState& CurrentState = MutableProgram.m_states[CurrentMutableStateIndex];
+		
+		// Check if it is a dynamic resource
+		for (auto& DynamicResource : CurrentState.m_dynamicResources)
+		{
+			// If the operation gets located then mark it as dynamic resource
+			if (DynamicResource.Key == MutableOperation)
 			{
-				// Check if it is a dynamic resource
-				for (auto& DynamicResource : CurrentState.m_dynamicResources)
-				{
-					// If the operation gets located then mark it as dynamic resource
-					if (DynamicResource.Key == MutableOperation)
-					{
-						bIsDynamicResource = true;
-						break;
-					}
-				}
-				
-				// Early exit: A dynamic resource can not be at the same time a state constant
-				if (bIsDynamicResource)
-				{
-					return;
-				}
-				
-				// Check if it is a state constant
-				bIsStateConstant = CurrentState.m_updateCache.Contains(MutableOperation);
+				bIsDynamicResource = true;
+				break;
 			}
 		}
+		// Early exit: A dynamic resource can not be at the same time a state constant
+		if (bIsDynamicResource)
+		{
+			return;
+		}
 		
+		// Check if it is a state constant
+		bIsStateConstant = CurrentState.m_updateCache.Contains(MutableOperation);
 	}
 
+	int32 GetStateIndex() const
+	{
+		return CurrentMutableStateIndex;
+	}
+	
 public:
 
 	/** */
-	mu::ModelPtr MutableModel;
-
+	TSharedPtr<mu::Model, ESPMode::ThreadSafe> MutableModel;
+	
 	/** Mutable Graph Node represented in this tree row. */
 	mu::OP::ADDRESS MutableOperation;
+
+	/** Label representing this operation. */
+	FString Caption;
+
+	/** If this tree element is a duplicated of another op, this is the op. */
+	TSharedPtr<FMutableCodeTreeElement> DuplicatedOf;
+
+	/** The color to be used by the row representing this object */
+	FSlateColor LabelColor;
+
+	/*
+	 * Navigation metadata
+	 */
+	
+	/** The current position of this element on the tree view. Used for navigation */
+	int32 IndexOnTree;
+	
+	/*
+	 * Dynamic data : Can and will change during the standard operation of the tree view object.
+	 */
 
 	/** If true means that it will not update when a runtime parameter on the state gets updated */
 	bool bIsStateConstant = false;
@@ -646,9 +839,18 @@ public:
 	/** If true then the mesh or image of this operation may change during the state update */
 	bool bIsDynamicResource = false;
 
-	/** Label representing this operation. */
-	FString Caption;
+	/** Flag that reflects the expanded state of the element in the tree view. It is used in order to know when an element
+	 * should or should not has it's set state index updated (and the data that comes with it).
+	 * @note It does not mean the element can be seen at the moment in the view, just that, in case of expansion of a parent
+	 * element then this could be part of the view (if inside view space).
+	 */
+	bool bIsExpanded = false;
 
-	/** If this tree element is a duplicated of another op, this is the op. */
-	TSharedPtr<FMutableCodeTreeElement> DuplicatedOf;
+private:
+	/** Represents as part of what state this element is currently part of. Will change for elements that are children
+	 * of duplicated elements (duplicated) since children of duplicated elements are still unique and therefore they can
+	 * be present in more than one state (but can just appear in one state at any given time)
+	 */
+	int32 CurrentMutableStateIndex = -1;	
+
 };

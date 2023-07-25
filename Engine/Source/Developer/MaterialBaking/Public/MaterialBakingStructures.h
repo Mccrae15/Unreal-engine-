@@ -3,6 +3,10 @@
 #pragma once
 
 #include "Math/IntPoint.h"
+#include "Components/MeshComponent.h"
+#include "Components/SkinnedMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "SceneTypes.h"
 #include "LightMap.h"
 #include "MaterialPropertyEx.h"
@@ -22,8 +26,17 @@ struct FMaterialData
 	/** Whether to smear borders after baking */
 	bool bPerformBorderSmear = true;
 
+	/** Whether to try to shrink the color values to a single non-magenta color value after baking */
+	bool bPerformShrinking = true;
+
 	/** Whether to transform normals from world-space to tangent-space (does nothing if material already uses tangent-space normals) */
 	bool bTangentSpaceNormal = false;
+
+	/** Blend mode to use when baking, allowing for example detection of overlapping UVs */
+	EBlendMode BlendMode = BLEND_Opaque;
+
+	/** Background color used to initially fill the output texture and used for border smear */
+	FColor BackgroundColor = FColor::Magenta;
 };
 
 /** Structure containing extended information about the material and properties which is being baked out */
@@ -38,8 +51,68 @@ struct FMaterialDataEx
 	/** Whether to smear borders after baking */
 	bool bPerformBorderSmear = true;
 
+	/** Whether to try to shrink the color values to a single non-magenta color value after baking */
+	bool bPerformShrinking = true;
+
 	/** Whether to transform normals from world-space to tangent-space (does nothing if material already uses tangent-space normals) */
 	bool bTangentSpaceNormal = false;
+
+	/** Blend mode to use when baking, allowing for example detection of overlapping UVs */
+	EBlendMode BlendMode = BLEND_Opaque;
+
+	/** Background color used to initially fill the output texture and used for border smear */
+	FColor BackgroundColor = FColor::Magenta;
+};
+
+/** Structure containing primitive information (regarding a mesh or mesh component) that is accessible through material expressions */
+struct FPrimitiveData
+{
+	FPrimitiveData(const FBoxSphereBounds& LocalBounds = FBoxSphereBounds(ForceInitToZero))
+		: LocalToWorld(FMatrix::Identity)
+		, ActorPosition(ForceInitToZero)
+		, WorldBounds(LocalBounds)
+		, LocalBounds(LocalBounds)
+		, PreSkinnedLocalBounds(LocalBounds)
+		, CustomPrimitiveData(nullptr)
+	{}
+
+	FPrimitiveData(const UStaticMesh* StaticMesh)
+		: FPrimitiveData(StaticMesh->GetBounds())
+	{}
+
+	FPrimitiveData(const USkeletalMesh* SkeletalMesh)
+		: FPrimitiveData(SkeletalMesh->GetBounds())
+	{}
+
+	FPrimitiveData(const UMeshComponent* MeshComponent)
+		: LocalToWorld(MeshComponent->GetRenderMatrix())
+		, ActorPosition(MeshComponent->GetActorPositionForRenderer())
+		, WorldBounds(MeshComponent->Bounds)
+		, LocalBounds(MeshComponent->GetLocalBounds())
+		, CustomPrimitiveData(&MeshComponent->GetCustomPrimitiveData())
+	{
+		if (const USkinnedMeshComponent* SkinnedMeshComponent = Cast<USkinnedMeshComponent>(MeshComponent))
+		{
+			SkinnedMeshComponent->GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
+		}
+		else
+		{
+			PreSkinnedLocalBounds = LocalBounds;
+		}
+	}
+
+	/** The mesh component's local-to-world transform */
+	FMatrix LocalToWorld;
+	/** The actor's location in world-space */
+	FVector ActorPosition;
+	/** The mesh component's bounds in world-space */
+	FBoxSphereBounds WorldBounds;
+	/** The mesh component's bounds in local-space */
+	FBoxSphereBounds LocalBounds;
+	/** The mesh component's pre-skinning bounds in local-space */
+	FBoxSphereBounds PreSkinnedLocalBounds;
+	/** The mesh component's custom primitive data */
+	const FCustomPrimitiveData* CustomPrimitiveData;
 };
 
 struct FMeshData
@@ -76,6 +149,9 @@ struct FMeshData
 
 	/** Pointer to the LightmapResourceCluster to be passed on the the LightCacheInterface when baking */
 	const FLightmapResourceCluster* LightmapResourceCluster = nullptr;
+
+	/** Pointer to primitive data that is accessible through material expressions, if nullptr default values are used */
+	const FPrimitiveData* PrimitiveData = nullptr;
 };
 
 /** Structure containing data being processed while baking out materials*/

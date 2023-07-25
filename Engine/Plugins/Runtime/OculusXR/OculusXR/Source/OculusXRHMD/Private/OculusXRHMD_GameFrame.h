@@ -19,7 +19,7 @@ namespace OculusXRHMD
 	public:
 		uint32 FrameNumber;			// current frame number. (StartGameFrame_GameThread)
 		float WorldToMetersScale;	// World units (UU) to Meters scale. (OnStartGameFrame)
-		FVector2D WindowSize;		// actual window size (StartGameFrame_GameThread)
+		FIntPoint WindowSize;		// actual window size (StartGameFrame_GameThread)
 		FEngineShowFlags ShowFlags; // (PreRenderViewFamily_RenderThread)
 
 		FQuat HeadOrientation;	 // (CalculateStereoViewOffset)

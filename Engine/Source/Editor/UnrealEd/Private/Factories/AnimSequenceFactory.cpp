@@ -29,7 +29,7 @@ UAnimSequenceFactory::UAnimSequenceFactory(const FObjectInitializer& ObjectIniti
 bool UAnimSequenceFactory::ConfigureProperties()
 {
 	// Null the skeleton so we can check for selection later
-	TargetSkeleton = NULL;
+	TargetSkeleton = nullptr;
 
 	// Load the content browser module to display an asset picker
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
@@ -61,7 +61,7 @@ bool UAnimSequenceFactory::ConfigureProperties()
 	GEditor->EditorAddModalWindow(PickerWindow.ToSharedRef());
 	PickerWindow.Reset();
 
-	return TargetSkeleton != NULL;
+	return TargetSkeleton != nullptr;
 }
 
 UObject* UAnimSequenceFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
@@ -72,10 +72,14 @@ UObject* UAnimSequenceFactory::FactoryCreateNew(UClass* Class, UObject* InParent
 	{
 		AnimSequence->SetSkeleton(TargetSkeleton);
 	}
+
+	AnimSequence->GetController().InitializeModel();
+	AnimSequence->GetController().SetNumberOfFrames(1);
 	if (PreviewSkeletalMesh)
 	{
 		AnimSequence->SetPreviewMesh(PreviewSkeletalMesh);
 	}
+	AnimSequence->GetController().NotifyPopulated();
 
 	return AnimSequence;
 }

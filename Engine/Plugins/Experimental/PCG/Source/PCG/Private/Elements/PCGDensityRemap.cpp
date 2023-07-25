@@ -1,11 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Elements/PCGDensityRemap.h"
-#include "PCGHelpers.h"
+
+#include "PCGContext.h"
+#include "PCGCustomVersion.h"
 #include "Data/PCGPointData.h"
+#include "Data/PCGSpatialData.h"
 #include "Helpers/PCGAsync.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "Helpers/PCGHelpers.h"
+
 #include "Math/RandomStream.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGDensityRemap)
+
+#define LOCTEXT_NAMESPACE "PCGDensityRemapElement"
 
 UPCGLinearDensityRemapSettings::UPCGLinearDensityRemapSettings()
 {
@@ -26,16 +34,12 @@ bool FPCGLinearDensityRemapElement::ExecuteInternal(FPCGContext* Context) const
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
-	UPCGParamData* Params = Context->InputData.GetParams();
 
-	// Forward any non-input data
-	Outputs.Append(Context->InputData.GetAllSettings());
+	const float SettingsRemapMin = Settings->RemapMin;
+	const float SettingsRemapMax = Settings->RemapMax;
+	const bool bMultiplyDensity = Settings->bMultiplyDensity;
 
-	const float SettingsRemapMin = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGLinearDensityRemapSettings, RemapMin), Settings->RemapMin, Params);
-	const float SettingsRemapMax = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGLinearDensityRemapSettings, RemapMax), Settings->RemapMax, Params);
-	const bool bMultiplyDensity = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGLinearDensityRemapSettings, bMultiplyDensity), Settings->bMultiplyDensity, Params);
-
-	const int Seed = PCGSettingsHelpers::ComputeSeedWithOverride(Settings, Context->SourceComponent, Params);
+	const int Seed = Context->GetSeed();
 
 	const float RemapMin = FMath::Min(SettingsRemapMin, SettingsRemapMax);
 	const float RemapMax = FMath::Max(SettingsRemapMin, SettingsRemapMax);
@@ -48,7 +52,7 @@ bool FPCGLinearDensityRemapElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!Input.Data || Cast<UPCGSpatialData>(Input.Data) == nullptr)
 		{
-			PCGE_LOG(Error, "Invalid input data");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidInputData", "Input data missing or not of type Spatial"));
 			continue;
 		}
 
@@ -56,7 +60,7 @@ bool FPCGLinearDensityRemapElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!OriginalData)
 		{
-			PCGE_LOG(Error, "Unable to get points from input");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("NoPointsInInput", "Unable to obtain points from input data"));
 			continue;
 		}
 
@@ -92,3 +96,5 @@ bool FPCGLinearDensityRemapElement::ExecuteInternal(FPCGContext* Context) const
 
 	return true;
 }
+
+#undef LOCTEXT_NAMESPACE

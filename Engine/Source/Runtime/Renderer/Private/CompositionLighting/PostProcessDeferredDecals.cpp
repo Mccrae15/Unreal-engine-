@@ -10,8 +10,11 @@
 #include "RendererUtils.h"
 #include "SceneUtils.h"
 #include "ScenePrivate.h"
+#include "SystemTextures.h"
 #include "VelocityRendering.h"
 #include "VisualizeTexture.h"
+#include "RenderCore.h"
+#include "VariableRateShadingImageManager.h"
 
 static TAutoConsoleVariable<float> CVarStencilSizeThreshold(
 	TEXT("r.Decal.StencilSizeThreshold"),
@@ -67,7 +70,7 @@ FDeferredDecalPassTextures GetDeferredDecalPassTextures(
 	auto* Parameters = GraphBuilder.AllocParameters<FDecalPassUniformParameters>();
 	const ESceneTextureSetupMode TextureReadAccess = ESceneTextureSetupMode::GBufferA | ESceneTextureSetupMode::SceneDepth | ESceneTextureSetupMode::CustomDepth;
 	SetupSceneTextureUniformParameters(GraphBuilder, &SceneTextures, View.FeatureLevel, TextureReadAccess, Parameters->SceneTextures);
-	Parameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+	Parameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(GetEyeAdaptationBuffer(GraphBuilder, View));
 	PassTextures.DecalPassUniformBuffer = GraphBuilder.CreateUniformBuffer(Parameters);
 
 	PassTextures.Depth = SceneTextures.Depth;
@@ -151,6 +154,7 @@ void GetDeferredDecalPassParameters(
 	FRDGTextureRef DepthTexture = Textures.Depth.Target;
 
 	FRenderTargetBindingSlots& RenderTargets = PassParameters.RenderTargets;
+	PassParameters.RenderTargets.ShadingRateTexture = GVRSImageManager.GetVariableRateShadingImage(GraphBuilder, View, FVariableRateShadingImageManager::EVRSPassType::Decals, nullptr);
 
 	uint32 ColorTargetIndex = 0;
 
@@ -513,7 +517,11 @@ void AddDeferredDecalPass(
 		// Sanity check - Strata only support DBuffer, SceneColor, or AO decals
 		if (Strata::IsStrataEnabled())
 		{
-			check(RenderTargetMode == EDecalRenderTargetMode::DBuffer || RenderTargetMode == EDecalRenderTargetMode::SceneColor || RenderTargetMode == EDecalRenderTargetMode::AmbientOcclusion);
+			const bool bSupported = RenderTargetMode == EDecalRenderTargetMode::DBuffer || RenderTargetMode == EDecalRenderTargetMode::SceneColor || RenderTargetMode == EDecalRenderTargetMode::AmbientOcclusion;
+			if (!bSupported)
+			{
+				return;
+			}
 		}
 
 		auto* PassParameters = GraphBuilder.AllocParameters<FDeferredDecalPassParameters>();

@@ -34,7 +34,10 @@ struct ENGINE_API FAnimCurveType
 {
 	GENERATED_USTRUCT_BODY()
 
+	UPROPERTY()
 	bool bMaterial;
+
+	UPROPERTY()
 	bool bMorphtarget;
 
 	FAnimCurveType(bool bInMorphtarget = false, bool bInMaterial = false)
@@ -270,7 +273,12 @@ public:
 	/** Returns true if FBoneContainer is Valid. Needs an Asset, a RefPoseArray, and a RequiredBonesArray. */
 	const bool IsValid() const
 	{
-		return (Asset.IsValid() && (RefSkeleton != NULL) && (BoneIndicesArray.Num() > 0));
+		return (Asset.IsValid(
+#if WITH_EDITOR
+			true, true
+#endif
+			)
+				&& (RefSkeleton != nullptr) && (BoneIndicesArray.Num() > 0));
 	}
 
 	/** Get Asset this BoneContainer was made for. Typically a SkeletalMesh, but could also be a USkeleton. */
@@ -286,9 +294,13 @@ public:
 	}
 
 	/** Get Skeleton Asset. Could either be the SkeletalMesh's Skeleton, or the Skeleton this BoneContainer was made for. Is non NULL is BoneContainer is valid. */
-	USkeleton* GetSkeletonAsset() const
+	USkeleton* GetSkeletonAsset(bool bEvenIfUnreachable = false) const
 	{
-		return AssetSkeleton.Get();
+		return
+#if WITH_EDITOR
+		bEvenIfUnreachable ? AssetSkeleton.GetEvenIfUnreachable() : 
+#endif
+		AssetSkeleton.Get();
 	}
 
 	/** Disable Retargeting for debugging. */
@@ -644,6 +656,16 @@ public:
 		return FCompactPoseBoneIndex(INDEX_NONE);
 	}
 
+	/**
+	 * Returns whether or not the skeleton index is contained in the mapping used to build this container.
+	 * Note that even if the skeleton index is valid, it might not contain a valid compact pose index if
+	 * that bone isn't used due to LOD or other reasons.
+	 */
+	bool IsSkeletonPoseIndexValid(const FSkeletonPoseBoneIndex& SkeletonIndex) const
+	{
+		return SkeletonToCompactPose.IsValidIndex(SkeletonIndex.GetInt());
+	}
+
 	FMeshPoseBoneIndex MakeMeshPoseIndex(const FCompactPoseBoneIndex& BoneIndex) const
 	{
 		return FMeshPoseBoneIndex(GetBoneIndicesArray()[BoneIndex.GetInt()]);
@@ -658,7 +680,7 @@ public:
 	void CacheRequiredAnimCurveUids(const FCurveEvaluationOption& CurveEvalOption);
 
 	const FRetargetSourceCachedData& GetRetargetSourceCachedData(const FName& InRetargetSource) const;
-	const FRetargetSourceCachedData& GetRetargetSourceCachedData(const FName& InSourceName, const TArray<FTransform>& InRetargetTransforms) const;
+	const FRetargetSourceCachedData& GetRetargetSourceCachedData(const FName& InSourceName, const FSkeletonRemapping& InRemapping, const TArray<FTransform>& InRetargetTransforms) const;
 
 #if DO_CHECK
 	/** Get the LOD that we calculated required bones when regenerated */

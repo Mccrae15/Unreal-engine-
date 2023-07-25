@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenSceneLighting.cpp
-=============================================================================*/
-
 #include "LumenSceneLighting.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
@@ -32,7 +28,7 @@ FAutoConsoleVariableRef CVarLumenSceneLightingFeedback(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-int32 GLumenDirectLightingUpdateFactor = 16;
+int32 GLumenDirectLightingUpdateFactor = 32;
 FAutoConsoleVariableRef CVarLumenSceneDirectLightingUpdateFactor(
 	TEXT("r.LumenScene.DirectLighting.UpdateFactor"),
 	GLumenDirectLightingUpdateFactor,
@@ -52,15 +48,14 @@ int32 GLumenLightingStats = 0;
 FAutoConsoleVariableRef CVarLumenSceneLightingStats(
 	TEXT("r.LumenScene.Lighting.Stats"),
 	GLumenLightingStats,
-	TEXT("GPU print out Lumen lighting update stats. Requires r.ShaderPrintEnable 1."),
+	TEXT("GPU print out Lumen lighting update stats."),
 	ECVF_RenderThreadSafe
 );
 
-int32 GLumenLightingAsyncCompute = 0;
-FAutoConsoleVariableRef CVarLumenSceneLightingAsyncCompute(
+static TAutoConsoleVariable<int32> CVarLumenSceneLightingAsyncCompute(
 	TEXT("r.LumenScene.Lighting.AsyncCompute"),
-	GLumenLightingAsyncCompute,
-	TEXT("Whether to run LumenSceneLighting on the compute pipe if possible. Only takes effect if r.LumenScene.DirectLighting.ReuseShadowMaps is disabled."),
+	1,
+	TEXT("Whether to run LumenSceneLighting on the compute pipe if possible."),
 	ECVF_RenderThreadSafe
 );
 
@@ -161,7 +156,7 @@ void Lumen::CombineLumenSceneLighting(
 	FScene* Scene,
 	const FViewInfo& View,
 	FRDGBuilder& GraphBuilder,
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	const FLumenCardUpdateContext& CardUpdateContext,
 	const FLumenCardTileUpdateContext& CardTileUpdateContext,
 	ERDGPassFlags ComputePassFlags)
@@ -172,16 +167,16 @@ void Lumen::CombineLumenSceneLighting(
 	FLumenCardCombineLightingCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenCardCombineLightingCS::FParameters>();
 	PassParameters->IndirectArgsBuffer = CardTileUpdateContext.DispatchCardTilesIndirectArgs;
 	PassParameters->View = View.ViewUniformBuffer;
-	PassParameters->LumenCardScene = TracingInputs.LumenCardSceneUniformBuffer;
+	PassParameters->LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
 	PassParameters->DiffuseColorBoost = 1.0f / FMath::Max(View.FinalPostProcessSettings.LumenDiffuseColorBoost, 1.0f);
-	PassParameters->AlbedoAtlas = TracingInputs.AlbedoAtlas;
-	PassParameters->OpacityAtlas = TracingInputs.OpacityAtlas;
-	PassParameters->EmissiveAtlas = TracingInputs.EmissiveAtlas;
-	PassParameters->DirectLightingAtlas = TracingInputs.DirectLightingAtlas;
-	PassParameters->IndirectLightingAtlas = TracingInputs.IndirectLightingAtlas;
+	PassParameters->AlbedoAtlas = FrameTemporaries.AlbedoAtlas;
+	PassParameters->OpacityAtlas = FrameTemporaries.OpacityAtlas;
+	PassParameters->EmissiveAtlas = FrameTemporaries.EmissiveAtlas;
+	PassParameters->DirectLightingAtlas = FrameTemporaries.DirectLightingAtlas;
+	PassParameters->IndirectLightingAtlas = FrameTemporaries.IndirectLightingAtlas;
 	PassParameters->BilinearClampedSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	PassParameters->CardTiles = GraphBuilder.CreateSRV(CardTileUpdateContext.CardTiles);
-	PassParameters->RWFinalLightingAtlas = GraphBuilder.CreateUAV(TracingInputs.FinalLightingAtlas);
+	PassParameters->RWFinalLightingAtlas = GraphBuilder.CreateUAV(FrameTemporaries.FinalLightingAtlas);
 	const FIntPoint IndirectLightingAtlasSize = LumenSceneData.GetRadiosityAtlasSize();
 	PassParameters->IndirectLightingAtlasHalfTexelSize = FVector2f(0.5f / IndirectLightingAtlasSize.X, 0.5f / IndirectLightingAtlasSize.Y);
 
@@ -197,16 +192,9 @@ void Lumen::CombineLumenSceneLighting(
 		(uint32)ELumenDispatchCardTilesIndirectArgsOffset::OneGroupPerCardTile);
 }
 
-ERDGPassFlags Lumen::GetLumenSceneLightingComputePassFlags(const FEngineShowFlags& EngineShadowFlags)
+bool LumenSceneLighting::UseAsyncCompute(const FViewFamilyInfo& ViewFamily)
 {
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	if (GLumenLightingAsyncCompute && LumenSceneDirectLighting::AllowShadowMaps(EngineShadowFlags))
-	{
-		GEngine->AddOnScreenDebugMessage(0xC53A67A90FB5BCA8llu, 1.f, FColor::Red,
-			TEXT("Async LumenSceneLighting enabled without disabling r.LumenScene.DirectLighting.ReuseShadowMaps. It will continue to run on the graphics pipe."));
-	}
-#endif
-	return GLumenLightingAsyncCompute && !LumenSceneDirectLighting::AllowShadowMaps(EngineShadowFlags) ? ERDGPassFlags::AsyncCompute : ERDGPassFlags::Compute;
+	return Lumen::UseAsyncCompute(ViewFamily) && CVarLumenSceneLightingAsyncCompute.GetValueOnRenderThread() != 0;
 }
 
 DECLARE_GPU_STAT(LumenSceneLighting);
@@ -236,20 +224,18 @@ void FDeferredShadingSceneRenderer::RenderLumenSceneLighting(
 		RDG_EVENT_SCOPE(GraphBuilder, "LumenSceneLighting%s", LumenCardRenderer.bPropagateGlobalLightingChange ? TEXT(" PROPAGATE GLOBAL CHANGE!") : TEXT(""));
 		RDG_GPU_STAT_SCOPE(GraphBuilder, LumenSceneLighting);
 
-		const ERDGPassFlags ComputePassFlags = Lumen::GetLumenSceneLightingComputePassFlags(ViewFamily.EngineShowFlags);
+		const ERDGPassFlags ComputePassFlags = LumenSceneLighting::UseAsyncCompute(ViewFamily) ? ERDGPassFlags::AsyncCompute : ERDGPassFlags::Compute;
 
 		LumenSceneData.IncrementSurfaceCacheUpdateFrameIndex();
-
-		FLumenCardTracingInputs TracingInputs(GraphBuilder, LumenSceneData, FrameTemporaries);
 
 		if (LumenSceneData.GetNumCardPages() > 0)
 		{
 			if (LumenSceneData.bDebugClearAllCachedState)
 			{
-				AddClearRenderTargetPass(GraphBuilder, TracingInputs.DirectLightingAtlas);
-				AddClearRenderTargetPass(GraphBuilder, TracingInputs.IndirectLightingAtlas);
-				AddClearRenderTargetPass(GraphBuilder, TracingInputs.RadiosityNumFramesAccumulatedAtlas);
-				AddClearRenderTargetPass(GraphBuilder, TracingInputs.FinalLightingAtlas);
+				AddClearRenderTargetPass(GraphBuilder, FrameTemporaries.DirectLightingAtlas);
+				AddClearRenderTargetPass(GraphBuilder, FrameTemporaries.IndirectLightingAtlas);
+				AddClearRenderTargetPass(GraphBuilder, FrameTemporaries.RadiosityNumFramesAccumulatedAtlas);
+				AddClearRenderTargetPass(GraphBuilder, FrameTemporaries.FinalLightingAtlas);
 			}
 
 			FLumenCardUpdateContext DirectLightingCardUpdateContext;
@@ -265,16 +251,15 @@ void FDeferredShadingSceneRenderer::RenderLumenSceneLighting(
 
 			RenderDirectLightingForLumenScene(
 				GraphBuilder,
-				TracingInputs,
+				FrameTemporaries,
 				DirectLightingCardUpdateContext,
 				ComputePassFlags);
 
 			RenderRadiosityForLumenScene(
 				GraphBuilder,
 				FrameTemporaries,
-				TracingInputs,
-				TracingInputs.IndirectLightingAtlas,
-				TracingInputs.RadiosityNumFramesAccumulatedAtlas,
+				FrameTemporaries.IndirectLightingAtlas,
+				FrameTemporaries.RadiosityNumFramesAccumulatedAtlas,
 				IndirectLightingCardUpdateContext,
 				ComputePassFlags);
 
@@ -722,6 +707,8 @@ void Lumen::BuildCardUpdateContext(
 
 	if (GLumenLightingStats != 0)
 	{
+		ShaderPrint::SetEnabled(true);
+
 		FLumenSceneLightingStatsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenSceneLightingStatsCS::FParameters>();
 		ShaderPrint::SetParameters(GraphBuilder, Views[0].ShaderPrintData, PassParameters->ShaderPrintUniformBuffer);
 		PassParameters->LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;

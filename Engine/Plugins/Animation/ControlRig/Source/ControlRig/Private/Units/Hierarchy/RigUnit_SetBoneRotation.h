@@ -16,7 +16,7 @@ struct CONTROLRIG_API FRigUnit_SetBoneRotation : public FRigUnitMutable
 
 		FRigUnit_SetBoneRotation()
 		: Rotation(FQuat::Identity)
-		, Space(EBoneGetterSetterMode::LocalSpace)
+		, Space(ERigVMTransformSpace::LocalSpace)
 		, Weight(1.f)
 		, bPropagateToChildren(true)
 		, CachedBone(FCachedRigElement())
@@ -24,7 +24,7 @@ struct CONTROLRIG_API FRigUnit_SetBoneRotation : public FRigUnitMutable
 
 	virtual FRigElementKey DetermineSpaceForPin(const FString& InPinPath, void* InUserContext) const override
 	{
-		if (InPinPath.StartsWith(TEXT("Rotation")) && Space == EBoneGetterSetterMode::LocalSpace)
+		if (InPinPath.StartsWith(TEXT("Rotation")) && Space == ERigVMTransformSpace::LocalSpace)
 		{
 			if (const URigHierarchy* Hierarchy = (const URigHierarchy*)InUserContext)
 			{
@@ -35,7 +35,7 @@ struct CONTROLRIG_API FRigUnit_SetBoneRotation : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Bone to set the rotation for.
@@ -54,7 +54,7 @@ struct CONTROLRIG_API FRigUnit_SetBoneRotation : public FRigUnitMutable
 	 * in local or global space.
 	 */
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	 * The weight of the change - how much the change should be applied

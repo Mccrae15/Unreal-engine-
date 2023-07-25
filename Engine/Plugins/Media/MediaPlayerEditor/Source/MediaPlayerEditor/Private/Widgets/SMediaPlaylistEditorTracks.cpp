@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SMediaPlaylistEditorTracks.h"
+#include "AssetRegistry/AssetData.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyCustomizationHelpers.h"
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
 #include "MediaPlaylist.h"
 #include "MediaSource.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Styling/AppStyle.h"

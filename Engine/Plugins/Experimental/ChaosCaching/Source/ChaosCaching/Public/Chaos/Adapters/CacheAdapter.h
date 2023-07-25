@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "Chaos/Core.h"
-#include "Chaos/ParticleHandleFwd.h"
+#include "Chaos/Declares.h"
 #include "Features/IModularFeature.h"
-#include "Templates/SubclassOf.h"
-#include "Chaos/PBDRigidsEvolutionFwd.h"
-#include "Chaos/Framework/PhysicsSolverBase.h"
+#include "Math/Transform.h"
+
+namespace Chaos { class FPhysicsSolverEvents; }
+template <class TClass> class TSubclassOf;
 
 class UClass;
 class UChaosCache;
@@ -17,11 +17,11 @@ struct FPlaybackTickRecord;
 DECLARE_LOG_CATEGORY_EXTERN(LogCacheAdapter, Log, All);
 
 struct FPendingFrameWrite;
+class AChaosCacheManager;
 
 namespace Chaos
 {
 	class FComponentCacheAdapter;
-	class AChaosCacheManager;
 	struct FAdapterUtil
 	{
 		static CHAOSCACHING_API FComponentCacheAdapter* GetBestAdapterForClass(TSubclassOf<UPrimitiveComponent> InComponentClass, bool bAllowDerived = true);
@@ -207,3 +207,9 @@ namespace Chaos
 	};
 
 }    // namespace Chaos
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Chaos/Core.h"
+#include "Chaos/Framework/PhysicsSolverBase.h"
+#include "Templates/SubclassOf.h"
+#endif

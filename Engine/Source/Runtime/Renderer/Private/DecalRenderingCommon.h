@@ -6,8 +6,10 @@
 #include "Materials/Material.h"
 #include "RenderUtils.h"
 
+class FMaterial;
 class FRHIBlendState;
 class FRHIRasterizerState;
+struct FMaterialShaderParameters;
 struct FShaderCompilerEnvironment;
 
 /** Packed decal description which contains all the information to define render passes and shader compilation setup. */
@@ -110,5 +112,5 @@ namespace DecalRendering
 	FRHIRasterizerState* GetDecalRasterizerState(EDecalRasterizerState DecalRasterizerState);
 
 	/** Modify the shader compilation environment for a given decal and stage. */
-	void ModifyCompilationEnvironment(FDecalBlendDesc DecalBlendDesc, EDecalRenderStage DecalRenderStage, FShaderCompilerEnvironment& OutEnvironment);
+	void ModifyCompilationEnvironment(EShaderPlatform Platform, FDecalBlendDesc DecalBlendDesc, EDecalRenderStage DecalRenderStage, FShaderCompilerEnvironment& OutEnvironment);
 };

@@ -33,6 +33,12 @@ struct FRayTracingLocalShaderBindings;
 enum class ERayTracingBindingType : uint8;
 enum class EAsyncComputeBudget;
 
+struct FRHIBufferRange;
+struct FRHIPerCategoryDrawStats;
+struct FRHIDrawStats;
+struct FRHICopyTextureInfo;
+
+
 #define VALIDATE_UNIFORM_BUFFER_STATIC_BINDINGS (!UE_BUILD_SHIPPING && !UE_BUILD_TEST)
 
 /** A list of static uniform buffer bindings. */
@@ -116,9 +122,6 @@ private:
 	TArray<FRHIUniformBuffer*, TInlineAllocator<InlineUniformBufferCount>> UniformBuffers;
 	int32 SlotCount = 0;
 };
-
-UE_DEPRECATED(5.0, "Please rename to FUniformBufferStaticBindings")
-typedef FUniformBufferStaticBindings FUniformBufferGlobalBindings;
 
 struct FTransferResourceFenceData
 {
@@ -230,11 +233,7 @@ public:
 	}
 
 	UE_DEPRECATED(5.1, "ComputePipelineStates should be used instead of direct ComputeShaders.")
-	virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader)
-	{
-		RHI_API void RHISetComputeShaderBackwardsCompatible(IRHIComputeContext*, FRHIComputeShader*);
-		RHISetComputeShaderBackwardsCompatible(this, ComputeShader);
-	}
+	RHI_API virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader);
 
 	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState) = 0;
 
@@ -277,7 +276,7 @@ public:
 	virtual void RHIEndUAVOverlap(TArrayView<FRHIUnorderedAccessView* const> UAVs) {}
 
 	/** Set the shader resource view of a surface.  This is used for binding TextureMS parameter types that need a multi sampled view. */
-	virtual void RHISetShaderTexture(FRHIComputeShader* PixelShader, uint32 TextureIndex, FRHITexture* NewTexture) = 0;
+	virtual void RHISetShaderTexture(FRHIComputeShader* ComputeShader, uint32 TextureIndex, FRHITexture* NewTexture) = 0;
 
 	/**
 	* Sets sampler state.
@@ -308,15 +307,14 @@ public:
 
 	virtual void RHISetShaderUniformBuffer(FRHIComputeShader* ComputeShader, uint32 BufferIndex, FRHIUniformBuffer* Buffer) = 0;
 
+	virtual void RHISetShaderParameters(FRHIComputeShader* ComputeShader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters) = 0;
+
 	virtual void RHISetShaderParameter(FRHIComputeShader* ComputeShader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue) = 0;
 
 	virtual void RHISetStaticUniformBuffers(const FUniformBufferStaticBindings& InUniformBuffers)
 	{
 		/** empty default implementation. */
 	}
-
-	UE_DEPRECATED(5.0, "Please rename to RHISetStaticUniformBuffers.")
-	virtual void RHISetGlobalUniformBuffers(const FUniformBufferStaticBindings& InUniformBuffers) {}
 
 	virtual void RHIPushEvent(const TCHAR* Name, FColor Color) = 0;
 
@@ -363,23 +361,6 @@ public:
 	{
 		return FRHIGPUMask::GPU0();
 	}
-
-#if WITH_MGPU
-	virtual void RHIWaitForTemporalEffect(const FName& InEffectName)
-	{
-		/* empty default implementation */
-	}
-
-	virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures)
-	{
-		/* empty default implementation */
-	}
-
-	virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHIBuffer*> InBuffers)
-	{
-		/* empty default implementation */
-	}
-#endif // WITH_MGPU
 
 	/**
 	 * Synchronizes the content of a resource between two GPUs using a copy operation.
@@ -456,10 +437,9 @@ public:
 #endif
 
 #if ENABLE_RHI_VALIDATION
-	virtual void SetTrackedAccess(const FRHITrackedAccessInfo& Info)
-#else
-	inline  void SetTrackedAccess(const FRHITrackedAccessInfo& Info)
+	virtual
 #endif
+	void SetTrackedAccess(const FRHITrackedAccessInfo& Info)
 	{
 		check(Info.Resource != nullptr);
 		check(Info.Access != ERHIAccess::Unknown);
@@ -474,6 +454,20 @@ public:
 
 	virtual void* RHIGetNativeCommandBuffer() { return nullptr; }
 	virtual void RHIPostExternalCommandsReset() { }
+
+protected:
+	FRHIPerCategoryDrawStats* Stats = nullptr;
+
+public:
+	RHI_API void StatsSetCategory(FRHIDrawStats* InStats, uint32 InCategoryID, uint32 InGPUIndex);
+
+#if WITH_MGPU || ENABLE_RHI_VALIDATION
+	virtual
+#endif
+	void StatsSetCategory(FRHIDrawStats* InStats, uint32 InCategoryID)
+	{
+		StatsSetCategory(InStats, InCategoryID, 0);
+	}
 };
 
 enum class EAccelerationStructureBuildMode
@@ -613,29 +607,6 @@ public:
 	// This method is queued with an RHIThread, otherwise it will flush after it is queued; without an RHI thread there is no benefit to queuing this frame advance commands
 	virtual void RHIEndScene() = 0;
 
-	/**
-	* Signals the beginning and ending of rendering to a resource to be used in the next frame on a multiGPU system
-	*/
-	virtual void RHIBeginUpdateMultiFrameResource(FRHITexture* Texture)
-	{
-		/* empty default implementation */
-	}
-
-	virtual void RHIEndUpdateMultiFrameResource(FRHITexture* Texture)
-	{
-		/* empty default implementation */
-	}
-
-	virtual void RHIBeginUpdateMultiFrameResource(FRHIUnorderedAccessView* UAV)
-	{
-		/* empty default implementation */
-	}
-
-	virtual void RHIEndUpdateMultiFrameResource(FRHIUnorderedAccessView* UAV)
-	{
-		/* empty default implementation */
-	}
-
 	virtual void RHISetStreamSource(uint32 StreamIndex, FRHIBuffer* VertexBuffer, uint32 Offset) = 0;
 
 	// @param MinX including like Win32 RECT
@@ -657,28 +628,22 @@ public:
 
 	virtual void RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, uint32 StencilRef, bool bApplyAdditionalState) = 0;
 
-	UE_DEPRECATED(5.0, "SetGraphicsPipelineState now requires a StencilRef argument")
-	void RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, bool bApplyAdditionalState)
-	{
-		RHISetGraphicsPipelineState(GraphicsState, 0, bApplyAdditionalState);
-	}
 #if PLATFORM_USE_FALLBACK_PSO
 	virtual void RHISetGraphicsPipelineState(const FGraphicsPipelineStateInitializer& PsoInit, uint32 StencilRef, bool bApplyAdditionalState) = 0;
 #endif
 
+	// Inherit the parent context's RHISet functions that take FRHIComputeShader arguments
+	// Required to avoid warning C4263 : 'function' : member function does not override any base class virtual member function
+	using IRHIComputeContext::RHISetShaderTexture;
+	using IRHIComputeContext::RHISetShaderSampler;
+	using IRHIComputeContext::RHISetUAVParameter;
+	using IRHIComputeContext::RHISetShaderResourceViewParameter;
+	using IRHIComputeContext::RHISetShaderUniformBuffer;
+	using IRHIComputeContext::RHISetShaderParameters;
+	using IRHIComputeContext::RHISetShaderParameter;
+
 	/** Set the shader resource view of a surface. */
 	virtual void RHISetShaderTexture(FRHIGraphicsShader* Shader, uint32 TextureIndex, FRHITexture* NewTexture) = 0;
-
-	/** Set the shader resource view of a surface.  This is used for binding TextureMS parameter types that need a multi sampled view. */
-	virtual void RHISetShaderTexture(FRHIComputeShader* PixelShader, uint32 TextureIndex, FRHITexture* NewTexture) = 0;
-
-	/**
-	* Sets sampler state.
-	* @param ComputeShader		The compute shader to set the sampler for.
-	* @param SamplerIndex		The index of the sampler.
-	* @param NewState			The new sampler state.
-	*/
-	virtual void RHISetShaderSampler(FRHIComputeShader* ComputeShader, uint32 SamplerIndex, FRHISamplerState* NewState) = 0;
 
 	/**
 	* Sets sampler state.
@@ -697,34 +662,13 @@ public:
 	virtual void RHISetUAVParameter(FRHIPixelShader* PixelShader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV) = 0;
 
 
-	/**
-	* Sets a compute shader UAV parameter.
-	* @param ComputeShader	The compute shader to set the UAV for.
-	* @param UAVIndex		The index of the UAVIndex.
-	* @param UAV			The new UAV.
-	*/
-	virtual void RHISetUAVParameter(FRHIComputeShader* ComputeShader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV) = 0;
-
-	/**
-	* Sets a compute shader counted UAV parameter and initial count
-	* @param ComputeShader	The compute shader to set the UAV for.
-	* @param UAVIndex		The index of the UAVIndex.
-	* @param UAV			The new UAV.
-	* @param InitialCount	The initial number of items in the UAV.
-	*/
-	virtual void RHISetUAVParameter(FRHIComputeShader* ComputeShader, uint32 UAVIndex, FRHIUnorderedAccessView* UAV, uint32 InitialCount) = 0;
-
-	virtual void RHISetShaderResourceViewParameter(FRHIComputeShader* ComputeShader, uint32 SamplerIndex, FRHIShaderResourceView* SRV) = 0;
-
 	virtual void RHISetShaderResourceViewParameter(FRHIGraphicsShader* Shader, uint32 SamplerIndex, FRHIShaderResourceView* SRV) = 0;
 
 	virtual void RHISetShaderUniformBuffer(FRHIGraphicsShader* Shader, uint32 BufferIndex, FRHIUniformBuffer* Buffer) = 0;
 
-	virtual void RHISetShaderUniformBuffer(FRHIComputeShader* ComputeShader, uint32 BufferIndex, FRHIUniformBuffer* Buffer) = 0;
+	virtual void RHISetShaderParameters(FRHIGraphicsShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters) = 0;
 
 	virtual void RHISetShaderParameter(FRHIGraphicsShader* Shader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue) = 0;
-
-	virtual void RHISetShaderParameter(FRHIComputeShader* ComputeShader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue) = 0;
 
 	virtual void RHISetStencilRef(uint32 StencilRef) {}
 
@@ -804,24 +748,6 @@ public:
 		checkNoEntry();
 	}
 
-	UE_DEPRECATED(5.1, "Please use an explicit ray generation shader and RHIRayTraceDispatch() instead.")
-	virtual void RHIRayTraceOcclusion(FRHIRayTracingScene* Scene,
-		FRHIShaderResourceView* Rays,
-		FRHIUnorderedAccessView* Output,
-		uint32 NumRays)
-	{
-		checkNoEntry();
-	}
-
-	UE_DEPRECATED(5.1, "Please use an explicit ray generation shader and RHIRayTraceDispatch() instead.")
-	virtual void RHIRayTraceIntersection(FRHIRayTracingScene* Scene,
-		FRHIShaderResourceView* Rays,
-		FRHIUnorderedAccessView* Output,
-		uint32 NumRays)
-	{
-		checkNoEntry();
-	}
-
 	virtual void RHIRayTraceDispatch(FRHIRayTracingPipelineState* RayTracingPipelineState, FRHIRayTracingShader* RayGenShader,
 		FRHIRayTracingScene* Scene,
 		const FRayTracingShaderBindings& GlobalResourceBindings,
@@ -871,8 +797,8 @@ public:
 		checkNoEntry();
 	}
 
-	protected:
-		FRHIRenderPassInfo RenderPassInfo;
+protected:
+	FRHIRenderPassInfo RenderPassInfo;
 };
 
 
@@ -925,23 +851,5 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 private:
-	void SetGraphicsPipelineStateFromInitializer(const FGraphicsPipelineStateInitializer& PsoInit, uint32 StencilRef, bool bApplyAdditionalState)
-	{
-		RHISetBoundShaderState(
-			RHICreateBoundShaderState(
-				PsoInit.BoundShaderState.VertexDeclarationRHI,
-				PsoInit.BoundShaderState.VertexShaderRHI,
-				PsoInit.BoundShaderState.PixelShaderRHI,
-				PsoInit.BoundShaderState.GetGeometryShader()
-			).GetReference()
-		);
-
-		RHISetDepthStencilState(PsoInit.DepthStencilState, StencilRef);
-		RHISetRasterizerState(PsoInit.RasterizerState);
-		RHISetBlendState(PsoInit.BlendState, FLinearColor(1.0f, 1.0f, 1.0f));
-		if (GSupportsDepthBoundsTest)
-		{
-			RHIEnableDepthBoundsTest(PsoInit.bDepthBounds);
-		}
-	}
+	RHI_API void SetGraphicsPipelineStateFromInitializer(const FGraphicsPipelineStateInitializer& PsoInit, uint32 StencilRef, bool bApplyAdditionalState);
 };

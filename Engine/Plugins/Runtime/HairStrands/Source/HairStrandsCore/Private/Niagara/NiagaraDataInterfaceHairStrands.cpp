@@ -8,6 +8,7 @@
 #include "NiagaraSimStageData.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
+#include "NiagaraSystemInstanceController.h"
 #include "NiagaraConstants.h"
 
 #include "Components/SkeletalMeshComponent.h"
@@ -303,48 +304,6 @@ void FNDIHairStrandsBuffer::InitRHI()
 		FRDGBuilder GraphBuilder(FRHICommandListExecutor::GetImmediateCommandList());
 		FHairStrandsBulkData* SourceDatas = &SourceRestResources->BulkData; // This could be released by that time depending on how the initialization order is
 		{
-			const uint32 OffsetCount = SourceDatas->GetNumCurves() + 1;
-			const uint32 OffsetBytes = sizeof(uint32)*OffsetCount;
-
-			const FHairStrandsRootIndexFormat::Type* SourceData = (const FHairStrandsRootIndexFormat::Type*)SourceDatas->CurveOffsets.Lock(LOCK_READ_ONLY);
-			
-			CurvesOffsetsBuffer.Initialize(GraphBuilder, TEXT("CurvesOffsetsBuffer"), EPixelFormat::PF_R32_UINT, sizeof(uint32), OffsetCount);
-			GraphBuilder.QueueBufferUpload(CurvesOffsetsBuffer.GetOrCreateBuffer(GraphBuilder), SourceData, OffsetBytes);
-			CurvesOffsetsBuffer.EndGraphUsage();
-
-			SourceDatas->CurveOffsets.Unlock();
-		}
-		{
-			// First retrieve the curves offsets from the bulk datas
-			TArray<FHairStrandsRootIndexFormat::Type> CurvesOffsets;
-			const uint32 InDataSize = SourceDatas->CurveOffsets.GetBulkDataSize();
-			const uint32 ElementCount = InDataSize / sizeof(FHairStrandsRootIndexFormat::BulkType);
-			CurvesOffsets.SetNum(ElementCount);
-
-			const uint8* InData = (const uint8*)SourceDatas->CurveOffsets.LockReadOnly();
-			FMemory::Memcpy(CurvesOffsets.GetData(), InData, InDataSize);
-			SourceDatas->CurveOffsets.Unlock();
-			
-			TArray<uint32> PointsCurve;
-			PointsCurve.SetNum(SourceDatas->GetNumPoints());
-
-			// Build the curve index array for each points using the curve offsets array
-			for (uint32 CurveIndex = 0; CurveIndex < SourceDatas->GetNumCurves(); ++CurveIndex)
-			{
-				for (uint32 PointIndex = CurvesOffsets[CurveIndex]; PointIndex < CurvesOffsets[CurveIndex+1]; ++PointIndex)
-				{
-					PointsCurve[PointIndex] = CurveIndex;
-				}
-			}
-			const uint32 OffsetCount = SourceDatas->GetNumPoints();
-			const uint32 OffsetBytes = sizeof(uint32)*OffsetCount;
-
-			// Copy the points buffer data to gpu for interpolation
-			PointsCurveBuffer.Initialize(GraphBuilder, TEXT("PointsCurveBuffer"), EPixelFormat::PF_R32_UINT, sizeof(uint32), OffsetCount);
-			GraphBuilder.QueueBufferUpload(PointsCurveBuffer.GetOrCreateBuffer(GraphBuilder), PointsCurve.GetData(), OffsetBytes);
-			PointsCurveBuffer.EndGraphUsage();
-		}
-		{
 			static const uint32 ZeroData[] = {
 				UINT_MAX,UINT_MAX,UINT_MAX,0,0,0,
 				UINT_MAX,UINT_MAX,UINT_MAX,0,0,0,
@@ -382,11 +341,9 @@ void FNDIHairStrandsBuffer::ReleaseRHI()
 	//delete ReadbackBuffer;
 	//ReadbackBuffer = nullptr;
 	
-	CurvesOffsetsBuffer.Release();
 	DeformedPositionBuffer.SafeRelease();
 	BoundingBoxBuffer.Release();
 	ParamsScaleBuffer.Release();
-	PointsCurveBuffer.Release();
 }
 
 //------------------------------------------------------------------------------------------------------------
@@ -944,7 +901,7 @@ static void InterpolateGroomGuides(FRDGBuilder& GraphBuilder, FNiagaraDataBuffer
 	const bool bIsRestValid = bIsHairValid && HairStrandsBuffer->SourceRestResources && HairStrandsBuffer->SourceRestResources->IsInitialized();
 	const bool bIsDeformedValid = bIsHairValid && HairStrandsBuffer->SourceDeformedResources && HairStrandsBuffer->SourceDeformedResources->IsInitialized();
 
-	if(bIsRestValid && bIsDeformedValid && bHasValidGeometry && HairStrandsBuffer->PointsCurveBuffer.IsValid() && HairStrandsBuffer->CurvesOffsetsBuffer.IsValid())
+	if(bIsRestValid && bIsDeformedValid && bHasValidGeometry)
 	{
 		bool bIsRootValid = HairStrandsBuffer->SourceDeformedRootResources && HairStrandsBuffer->SourceDeformedRootResources->IsInitialized() &&
 								HairStrandsBuffer->SourceRestRootResources && HairStrandsBuffer->SourceRestRootResources->IsInitialized() && bHasSkinningBinding;
@@ -976,8 +933,8 @@ static void InterpolateGroomGuides(FRDGBuilder& GraphBuilder, FNiagaraDataBuffer
 		PassParameters->DeformedPositionBuffer = RegisterAsUAV(GraphBuilder, HairStrandsBuffer->SourceDeformedResources->DeformedPositionBuffer[BufferIndex]);
 		PassParameters->RestPositionBuffer = RegisterAsSRV(GraphBuilder, HairStrandsBuffer->SourceRestResources->PositionBuffer);
 		
-		PassParameters->VertexToCurveIndexBuffer = HairStrandsBuffer->PointsCurveBuffer.GetOrCreateSRV(GraphBuilder);
-		PassParameters->CurvesOffsetsBuffer = HairStrandsBuffer->CurvesOffsetsBuffer.GetOrCreateSRV(GraphBuilder);
+		PassParameters->VertexToCurveIndexBuffer = RegisterAsSRV(GraphBuilder, HairStrandsBuffer->SourceRestResources->VertexToCurveBuffer);
+		PassParameters->CurvesOffsetsBuffer = RegisterAsSRV(GraphBuilder, HairStrandsBuffer->SourceRestResources->CurveBuffer);
 		if(bIsRootValid)
 		{
 			const FHairStrandsRestRootResource::FLOD* RestMeshProjection = &(HairStrandsBuffer->SourceRestRootResources->LODs[MeshLODIndex]) ;
@@ -1016,10 +973,10 @@ void UNiagaraDataInterfaceHairStrands::SimCachePostReadFrame(void* OptionalPerIn
 	{
 		FNiagaraDataSet& EmitterDatas  = EmitterInst->GetData();
 
-		const FNiagaraVariableBase NodePositionVariable(FNiagaraTypeDefinition::GetVec3Def(), FName("NodePosition"));
+		const FNiagaraVariable NodePositionVariable(FNiagaraTypeDefinition::GetVec3Def(), FName("NodePosition"));
 		const int32 NodePositionIndex = EmitterDatas.GetCompiledData().Variables.IndexOfByKey(NodePositionVariable);
 
-		const FNiagaraVariableBase RestPositionVariable(FNiagaraTypeDefinition::GetVec3Def(), FName("RestPosition"));
+		const FNiagaraVariable RestPositionVariable(FNiagaraTypeDefinition::GetVec3Def(), FName("RestPosition"));
 		const int32 RestPositionIndex = EmitterDatas.GetCompiledData().Variables.IndexOfByKey(RestPositionVariable);
 				
 		if (RestPositionIndex != INDEX_NONE && NodePositionIndex != INDEX_NONE)
@@ -1050,9 +1007,6 @@ void UNiagaraDataInterfaceHairStrands::SimCachePostReadFrame(void* OptionalPerIn
 							FRDGBuilder GraphBuilder(RHICmdList);
 							InterpolateGroomGuides(GraphBuilder, ParticlesBuffer, NodePositionComponent, RestPositionComponent, HairstrandsBuffer, StrandsSize, bHasSkinningBinding, bHasValidGeometry, WorldToLocal);
 							GraphBuilder.Execute();
-
-							HairstrandsBuffer->PointsCurveBuffer.EndGraphUsage();
-							HairstrandsBuffer->CurvesOffsetsBuffer.EndGraphUsage();
 						}
 					);
 				}
@@ -3416,7 +3370,7 @@ void UNiagaraDataInterfaceHairStrands::SetShaderParameters(const FNiagaraDataInt
 	const bool bIsRootValid = bIsHairValid && ProxyData->HairStrandsBuffer->SourceDeformedRootResources&& ProxyData->HairStrandsBuffer->SourceDeformedRootResources->IsInitialized() && bHasSkinningBinding;
 	const bool bIsRestValid = bIsHairValid && ProxyData->HairStrandsBuffer->SourceRestResources && ProxyData->HairStrandsBuffer->SourceRestResources->IsInitialized()&&
 		// TEMP: These check are only temporary for avoiding crashes while we find the bottom of the issue.
-		ProxyData->HairStrandsBuffer->CurvesOffsetsBuffer.IsValid() && ProxyData->HairStrandsBuffer->ParamsScaleBuffer.IsValid() && ProxyData->HairStrandsBuffer->BoundingBoxBuffer.IsValid();
+		ProxyData->HairStrandsBuffer->ParamsScaleBuffer.IsValid() && ProxyData->HairStrandsBuffer->BoundingBoxBuffer.IsValid();
 
 	const bool bIsGeometryValid = bIsHairValid && (!bIsHairGroupInstValid || (bIsHairGroupInstValid && (ProxyData->HairGroupInstance->GeometryType != EHairGeometryType::NoneGeometry)));
 	const bool bIsDeformedValid = bIsHairValid && ProxyData->HairStrandsBuffer->SourceDeformedResources && ProxyData->HairStrandsBuffer->SourceDeformedResources->IsInitialized();
@@ -3483,7 +3437,7 @@ void UNiagaraDataInterfaceHairStrands::SetShaderParameters(const FNiagaraDataInt
 		// Simulation setup (we update the rest configuration based on the deformed positions 
 		// if in restupdate mode or if we are resetting the sim and using RBF transfer since the rest positions are not matrching the physics asset)
 		const int32 NeedResetValue = (ProxyData->TickCount <= GHairSimulationMaxDelay) || !HairStrandsBuffer->bValidGeometryType;
-		const int32 RestUpdateValue = GHairSimulationRestUpdate || (NeedResetValue && ProxyData->bSkinningTransfer);
+		const int32 RestUpdateValue = GHairSimulationRestUpdate || (NeedResetValue && ProxyData->bSkinningTransfer) ? 1 : 0;
 		const int32 LocalSimulationValue = ProxyData->LocalSimulation;
 
 		HairStrandsBuffer->bValidGeometryType = true;
@@ -3538,7 +3492,7 @@ void UNiagaraDataInterfaceHairStrands::SetShaderParameters(const FNiagaraDataInt
 		ShaderParameters->BoundingBoxBuffer = HairStrandsBuffer->BoundingBoxBuffer.GetOrCreateUAV(GraphBuilder);
 
 		// Set Shader SRV
-		ShaderParameters->CurvesOffsetsBuffer = HairStrandsBuffer->CurvesOffsetsBuffer.GetOrCreateSRV(GraphBuilder);
+		ShaderParameters->CurvesOffsetsBuffer = RegisterAsSRV(GraphBuilder, HairStrandsBuffer->SourceRestResources->CurveBuffer);
 		ShaderParameters->ParamsScaleBuffer = HairStrandsBuffer->ParamsScaleBuffer.GetOrCreateSRV(GraphBuilder);
 		ShaderParameters->RestPositionBuffer = RegisterAsSRV(GraphBuilder,HairStrandsBuffer->SourceRestResources->PositionBuffer); //-OPT: If constant across all dispatches can create in PreStage once
 		ShaderParameters->DeformedPositionOffset = DeformedPositionOffsetSRV;
@@ -3587,7 +3541,7 @@ void UNiagaraDataInterfaceHairStrands::SetShaderParameters(const FNiagaraDataInt
 		ShaderParameters->BoundingBoxBuffer = Context.GetComputeDispatchInterface().GetEmptyBufferUAV(GraphBuilder, PF_R32_UINT);
 
 		// Set Shader SRV
-		ShaderParameters->CurvesOffsetsBuffer = Context.GetComputeDispatchInterface().GetEmptyBufferSRV(GraphBuilder, PF_R32_UINT);;
+		ShaderParameters->CurvesOffsetsBuffer = Context.GetComputeDispatchInterface().GetEmptyBufferSRV(GraphBuilder, FHairStrandsCurveFormat::Format);
 		ShaderParameters->RestPositionBuffer = Context.GetComputeDispatchInterface().GetEmptyBufferSRV(GraphBuilder, FHairStrandsPositionFormat::Format);
 		ShaderParameters->DeformedPositionOffset = Context.GetComputeDispatchInterface().GetEmptyBufferSRV(GraphBuilder, FHairStrandsPositionOffsetFormat::Format);
 		ShaderParameters->RestTrianglePositionABuffer = Context.GetComputeDispatchInterface().GetEmptyBufferSRV(GraphBuilder, FHairStrandsMeshTrianglePositionFormat::Format);
@@ -3656,9 +3610,7 @@ void FNDIHairStrandsProxy::PostSimulate(const FNDIGpuComputePostSimulateContext&
 	if (bIsHairValid && Context.IsFinalPostSimulate())
 	{
 		ProxyData->HairStrandsBuffer->BoundingBoxBuffer.EndGraphUsage();
-		ProxyData->HairStrandsBuffer->CurvesOffsetsBuffer.EndGraphUsage();
 		ProxyData->HairStrandsBuffer->ParamsScaleBuffer.EndGraphUsage();
-		ProxyData->HairStrandsBuffer->PointsCurveBuffer.EndGraphUsage();
 	}
 }
 

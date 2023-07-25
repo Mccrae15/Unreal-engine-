@@ -5,15 +5,20 @@
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "PackageSourceControlHelper.h"
 #include "SourceControlHelpers.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Commandlets/Commandlet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Misc/CommandLine.h"
 #include "UObject/MetaData.h"
 #include "UObject/SavePackage.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "ReferenceCluster.h"
 #include "ActorFolder.h"
+#include "Misc/FileHelper.h"
+#include "Settings/EditorLoadingSavingSettings.h"
+#include "AssetToolsModule.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionResaveActorsBuilder, All, All);
 
@@ -69,6 +74,11 @@ bool UWorldPartitionResaveActorsBuilder::PreRun(UWorld* World, FPackageSourceCon
 			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("SwitchActorPackagingSchemeToReduced is not compatible with ActorClassName"));
 			return false;
 		}
+		else if (!ActorClassesFromFile.IsEmpty())
+		{
+			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("SwitchActorPackagingSchemeToReduced is not compatible with ActorClassesFromFile"));
+			return false;
+		}
 		else if (!ActorTags.IsEmpty())
 		{
 			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("SwitchActorPackagingSchemeToReduced is not compatible with ActorTags"));
@@ -98,45 +108,96 @@ bool UWorldPartitionResaveActorsBuilder::PreRun(UWorld* World, FPackageSourceCon
 	return true;
 }
 
+TArray<TSubclassOf<AActor>> UWorldPartitionResaveActorsBuilder::GetActorClassesFilter()
+{
+	TArray<TSubclassOf<AActor>> ActorClasses;
+
+	auto GetActorClassFromName = [](const FString& ClassName)
+	{
+		// Look for native classes
+		UClass* ActorClass = UClass::TryFindTypeSlow<UClass>(ClassName);
+
+		if (!ActorClass)
+		{
+			// Look for a fully qualified BP class
+			ActorClass = LoadClass<AActor>(nullptr, *ClassName, nullptr, LOAD_None, nullptr);
+
+			if (!ActorClass)
+			{
+				// Look for a package BP
+				if (FPackageName::DoesPackageExist(ClassName))
+				{
+					ActorClass = LoadClass<AActor>(nullptr, *FString::Printf(TEXT("%s.%s_C"), *ClassName, *FPackageName::GetLongPackageAssetName(ClassName)), nullptr, LOAD_None, nullptr);
+				}
+			}
+		}
+
+		return ActorClass;
+	};
+
+	if (!ActorClassName.IsEmpty())
+	{
+		check(!bSwitchActorPackagingSchemeToReduced);
+
+		UClass* ActorClass = GetActorClassFromName(ActorClassName);
+		if (ActorClass)
+		{
+			ActorClasses.Add(ActorClass);
+		}
+		else
+		{
+			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to find Actor Class: %s."), *ActorClassName);
+		}
+	}
+	else if (!ActorClassesFromFile.IsEmpty())
+	{
+		TArray<FString> ClassesNames;
+
+		bool bReadFile = FFileHelper::LoadFileToStringArray(ClassesNames, *ActorClassesFromFile);
+		if (bReadFile)
+		{
+			for (const FString& ClassName : ClassesNames)
+			{
+				UClass* ActorClass = GetActorClassFromName(ClassName);
+				if (ActorClass)
+				{
+					ActorClasses.Add(ActorClass);
+				}
+				else
+				{
+					UE_LOG(LogWorldPartitionResaveActorsBuilder, Warning, TEXT("Failed to find Actor Class: %s."), *ClassName);
+				}
+			}
+
+			if (ActorClasses.IsEmpty())
+			{
+				UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to find any valid actor classes in file: %s."), *ActorClassesFromFile);
+			}			
+		}
+		else
+		{
+			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to open/process actor classes in file: %s."), *ActorClassesFromFile);
+		}
+	}
+	else 
+	{
+		// No class filtering specified... all actor classes are valid
+		ActorClasses.Add(AActor::StaticClass());
+	}
+
+	return ActorClasses;
+}
+
 bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellInfo& InCellInfo, FPackageSourceControlHelper& PackageHelper)
 {
 	UPackage* WorldPackage = World->GetPackage();
 
 	// Actor Class Filter
-	UClass* ActorClass = AActor::StaticClass();
-
-	if (!ActorClassName.IsEmpty())
+	TArray<TSubclassOf<AActor>> ActorClasses = GetActorClassesFilter();
+	if (ActorClasses.IsEmpty())
 	{
-		if (bSwitchActorPackagingSchemeToReduced)
-		{
-			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Changing the actor packaging scheme can't be executed on a subset of actors."));
-			return false;
-		}
-
-		// Look for native classes
-		ActorClass = UClass::TryFindTypeSlow<UClass>(ActorClassName);
-
-		if (!ActorClass)
-		{
-			// Look for a fully qualified BP class
-			ActorClass = LoadClass<AActor>(nullptr, *ActorClassName, nullptr, LOAD_None, nullptr);
-
-			if (!ActorClass)
-			{
-				// Look for a package BP
-				if (FPackageName::DoesPackageExist(ActorClassName))
-				{
-					ActorClass = LoadClass<AActor>(nullptr, *FString::Printf(TEXT("%s.%s_C"), *ActorClassName, *FPackageName::GetLongPackageAssetName(ActorClassName)), nullptr, LOAD_None, nullptr);
-				}
-
-				if (!ActorClass)
-				{
-					UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to find Actor Class: %s."), *ActorClassName);
-					return false;
-				}
-			}
-		}
-	}
+		return false;
+	}	
 
 	UWorldPartition* WorldPartition = World->GetWorldPartition();
 	if (!WorldPartition)
@@ -169,6 +230,9 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 	}
 
 	TArray<FString> PackagesToDelete;
+
+	TArray<FString> DirtyActorDescsOld;
+	TArray<FString> DirtyActorDescsNew;
 
 	if (bSwitchActorPackagingSchemeToReduced)
 	{
@@ -280,7 +344,7 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 
 		FWorldPartitionHelpers::FForEachActorWithLoadingParams ForEachActorWithLoadingParams;
 
-		ForEachActorWithLoadingParams.ActorClasses = { ActorClass };
+		ForEachActorWithLoadingParams.ActorClasses = ActorClasses;
 
 		ForEachActorWithLoadingParams.FilterActorDesc = [this](const FWorldPartitionActorDesc* ActorDesc) -> bool
 		{
@@ -313,14 +377,13 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 			PackagesToSave.Empty();
 		};
 
-		FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [this, &PackagesToDelete, &PackagesToSave](const FWorldPartitionActorDesc* ActorDesc)
+		FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [this, &PackagesToDelete, &PackagesToSave, &DirtyActorDescsOld, &DirtyActorDescsNew](const FWorldPartitionActorDesc* ActorDesc)
 		{
 			AActor* Actor = ActorDesc->GetActor();
 
 			if (!Actor)
 			{
 				PackagesToDelete.Add(ActorDesc->GetActorPackage().ToString());
-				return true;
 			}
 			else
 			{
@@ -338,14 +401,17 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 
 				if (bResaveDirtyActorDescsOnly)
 				{
-					if (!ActorDesc->IsResaveNeeded())
-					{
-						TUniquePtr<FWorldPartitionActorDesc> NewActorDesc = Actor->CreateActorDesc();
+					TUniquePtr<FWorldPartitionActorDesc> NewActorDesc = Actor->CreateActorDesc();
 
-						if (ActorDesc->Equals(NewActorDesc.Get()))
-						{
-							return true;
-						}
+					if (!ActorDesc->IsResaveNeeded() && ActorDesc->Equals(NewActorDesc.Get()))
+					{
+						return true;
+					}
+
+					if (bDiffDirtyActorDescs)
+					{
+						DirtyActorDescsOld.Add(ActorDesc->ToString());
+						DirtyActorDescsNew.Add(NewActorDesc->ToString());
 					}
 
 					UE_LOG(LogWorldPartitionResaveActorsBuilder, Log, TEXT("Package %s needs to be resaved."), *Package->GetName());
@@ -354,12 +420,37 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 				if (!bReportOnly)
 				{
 					PackagesToSave.Add(Package);
-					return true;
 				}
 			}
 
 			return true;
 		}, ForEachActorWithLoadingParams);
+	}
+
+	if (bDiffDirtyActorDescs)
+	{
+		auto WriteTempFile = [](const TArray<FString>& Lines, FString& TempFileName)
+		{
+			TempFileName = FPaths::CreateTempFilename(*FPaths::DiffDir(), TEXT("ActorsDescsDiff"));
+			return FFileHelper::SaveStringArrayToFile(Lines, *TempFileName);
+		};
+
+		FString TempFileOld;
+		FString TempFileNew;
+		bool OldResult = WriteTempFile(DirtyActorDescsOld, TempFileOld);
+		bool NewResult = WriteTempFile(DirtyActorDescsNew, TempFileNew);
+
+		if (OldResult && NewResult)
+		{
+			FString DiffCommand = GetDefault<UEditorLoadingSavingSettings>()->TextDiffToolPath.FilePath;
+
+			FAssetToolsModule& AssetToolsModule = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools");
+			AssetToolsModule.Get().CreateDiffProcess(DiffCommand, TempFileOld, TempFileNew);
+		}
+		else
+		{
+			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to write actors desc diff files."));
+		}
 	}
 
 	if (!bReportOnly)

@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
 using UnrealBuildTool;
 
 [SupportedPlatforms("Win64")]
@@ -19,14 +20,12 @@ public class D3D11RHI : ModuleRules
 				"RHI",
 				"RHICore",
 				"RenderCore"
-			}
-			);
+			});
 
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
-					"HeadMountedDisplay"
-			}
-			);
+				"HeadMountedDisplay"
+			});
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
 		if (bIncludeExtensions)
@@ -38,10 +37,9 @@ public class D3D11RHI : ModuleRules
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
 		}
 
-
-        if (Target.Configuration != UnrealTargetConfiguration.Shipping)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PrivateIncludePathModuleNames.AddRange(new string[] { "TaskGraph" });
+			PrivateIncludePaths.Add(Path.Combine(this.ModuleDirectory, "Private", "Windows"));
 		}
 	}
 }

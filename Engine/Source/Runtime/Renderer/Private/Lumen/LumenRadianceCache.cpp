@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenRadianceCache.cpp
-=============================================================================*/
-
 #include "LumenRadianceCache.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
@@ -12,6 +8,7 @@
 #include "ShaderParameterStruct.h"
 #include "DistanceFieldAmbientOcclusion.h"
 #include "LumenScreenProbeGather.h"
+#include "LumenSceneLighting.h"
 #include "ShaderPrintParameters.h"
 
 int32 GRadianceCacheUpdate = 1;
@@ -934,7 +931,6 @@ class FCalculateProbeIrradianceCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, RadianceProbeAtlasTexture)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, ProbeTraceData)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCacheParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(FOctahedralSolidAngleParameters, OctahedralSolidAngleParameters)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		RDG_BUFFER_ACCESS(CalculateProbeIrradianceIndirectArgs, ERHIAccess::IndirectArgs)
 	END_SHADER_PARAMETER_STRUCT()
@@ -1100,10 +1096,11 @@ public:
 
 void UpdateRadianceCaches(
 	FRDGBuilder& GraphBuilder, 
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	const TInlineArray<FUpdateInputs>& InputArray,
 	TInlineArray<FUpdateOutputs>& OutputArray,
 	const FScene* Scene,
-	const FEngineShowFlags& EngineShowFlags,
+	const FViewFamilyInfo& ViewFamily,
 	bool bPropagateGlobalLightingChange,
 	ERDGPassFlags ComputePassFlags)
 {
@@ -1271,8 +1268,7 @@ void UpdateRadianceCaches(
 				&& !bPropagateGlobalLightingChange;
 		}
 
-		const bool bLumenSceneLightingAsync = Lumen::GetLumenSceneLightingComputePassFlags(EngineShowFlags) == ERDGPassFlags::AsyncCompute;
-		TArray<FRDGTextureUAVRef, TInlineAllocator<2>> RadianceProbeIndirectionTextureSkipBarrierUAVs;
+		const bool bLumenSceneLightingAsync = LumenSceneLighting::UseAsyncCompute(ViewFamily);
 
 		// Clear each clipmap indirection entry to invalid probe index
 		for (int32 RadianceCacheIndex = 0; RadianceCacheIndex < InputArray.Num(); RadianceCacheIndex++)
@@ -1299,26 +1295,6 @@ void UpdateRadianceCaches(
 				ComputeShader,
 				PassParameters,
 				GroupSize);
-
-			RadianceProbeIndirectionTextureSkipBarrierUAVs.Add(GraphBuilder.CreateUAV(FRDGTextureUAVDesc(Outputs.RadianceCacheParameters.RadianceProbeIndirectionTexture), ERDGUnorderedAccessViewFlags::SkipBarrier));
-
-			// Workaround for a missing cross-pipe sync. RDG inserts cross-pipe syncs based on pass dependencies. If the consumer and producer passes are on different pipes,
-			// a fence will be inserted to ensure that the consumer won't start before the producer is finished. Dependency between two passes are determined based on whether
-			// any shared resource needs a transition (see FRDGBuilder::CompilePassBarriers and FRDGSubresourceState::IsMergeAllowed). The missing sync happens when we have
-			// a situation like the following. There are three passes A, B, C, and they all access a resource through UAVs. A uses a normal UAV while B and C use a SkipBarrier
-			// UAV. A and B runs on the graphics pipe while C runs async. A UAV barrier is inserted between A and B because A is not using the same SkipBarrier UAV as B does.
-			// No transition is needed between B and C because they use the same SkipBarrier UAV. No transition is inserted between A and C (even though it is required) because
-			// RDG only checks for the most recent producer which is B in this case. That is, we never check whether a sync is needed between A and C. Adding a dummy async compute
-			// pass D between A and B works around this issue because the last cross-pipe producer for D is A so a sync is inserted. There is no sync between D, B, and C because
-			// they all access the resource using the same SkipBarrier UAV.
-			if (ComputePassFlags == ERDGPassFlags::AsyncCompute && ClearPassFlags == ERDGPassFlags::Compute)
-			{
-				typedef FClearProbeIndirectionCS::FParameters FWaitPassParameters;
-				FWaitPassParameters* WaitPassParameters = GraphBuilder.AllocParameters<FWaitPassParameters>();
-				WaitPassParameters->RWRadianceProbeIndirectionTexture = RadianceProbeIndirectionTextureSkipBarrierUAVs[RadianceCacheIndex];
-
-				GraphBuilder.AddPass(RDG_EVENT_NAME("WaitForProbeIndirectionClear"), WaitPassParameters, ERDGPassFlags::AsyncCompute | ERDGPassFlags::NeverCull, [](FRHIComputeCommandList&){});
-			}
 		}
 
 		for (int32 RadianceCacheIndex = 0; RadianceCacheIndex < InputArray.Num(); RadianceCacheIndex++)
@@ -1326,7 +1302,7 @@ void UpdateRadianceCaches(
 			const FUpdateInputs& Inputs = InputArray[RadianceCacheIndex];
 			FUpdateOutputs& Outputs = OutputArray[RadianceCacheIndex];
 
-			FRDGTextureUAVRef RadianceProbeIndirectionTextureMarkUAV = RadianceProbeIndirectionTextureSkipBarrierUAVs[RadianceCacheIndex];
+			FRDGTextureUAVRef RadianceProbeIndirectionTextureMarkUAV = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(Outputs.RadianceCacheParameters.RadianceProbeIndirectionTexture), ERDGUnorderedAccessViewFlags::SkipBarrier);
 			FRadianceCacheMarkParameters RadianceCacheMarkParameters = GetMarkParameters(RadianceProbeIndirectionTextureMarkUAV, Outputs.RadianceCacheState, Inputs.RadianceCacheInputs);
 
 			// Mark indirection entries around positions that will be sampled by dependent features as used
@@ -1986,6 +1962,9 @@ void UpdateRadianceCaches(
 			const FViewInfo& View = Inputs.View;
 			const FRadianceCacheSetup& Setup = SetupOutputArray[RadianceCacheIndex];
 
+			FLumenCardTracingParameters TracingParameters;
+			GetLumenCardTracingParameters(GraphBuilder, View, *Scene->GetLumenSceneData(View), FrameTemporaries, /*bSurfaceCacheFeedback*/ false, TracingParameters);
+
 			FUpdateOutputs& Outputs = OutputArray[RadianceCacheIndex];
 			FRadianceCacheState& RadianceCacheState = Outputs.RadianceCacheState;
 			FRadianceCacheInterpolationParameters& RadianceCacheParameters = Outputs.RadianceCacheParameters;
@@ -2004,7 +1983,7 @@ void UpdateRadianceCaches(
 					Scene,
 					GetSceneTextureParameters(GraphBuilder, View),
 					View,
-					Inputs.TracingInputs,
+					TracingParameters,
 					RadianceCacheParameters,
 					Inputs.Configuration,
 					DiffuseConeHalfAngle,
@@ -2017,13 +1996,14 @@ void UpdateRadianceCaches(
 					HardwareRayTracingRayAllocatorBuffer[RadianceCacheIndex],
 					RadianceCacheHardwareRayTracingIndirectArgs[RadianceCacheIndex],
 					RadianceProbeAtlasTextureUAV,
-					DepthProbeTextureUAV
+					DepthProbeTextureUAV,
+					ComputePassFlags
 				);
 			}
 			else
 			{
 				FRadianceCacheTraceFromProbesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRadianceCacheTraceFromProbesCS::FParameters>();
-				GetLumenCardTracingParameters(GraphBuilder, View, Inputs.TracingInputs, PassParameters->TracingParameters);
+				PassParameters->TracingParameters = TracingParameters;
 				SetupLumenDiffuseTracingParametersForProbe(View, PassParameters->IndirectTracingParameters, -1.0f);
 				PassParameters->RWRadianceProbeAtlasTexture = RadianceProbeAtlasTextureUAV;
 				PassParameters->RWDepthProbeAtlasTexture = DepthProbeTextureUAV;
@@ -2108,18 +2088,12 @@ void UpdateRadianceCaches(
 
 			if (RadianceCacheInputs.CalculateIrradiance)
 			{
-				const int32 OctahedralSolidAngleTextureSize = 16;
-				FOctahedralSolidAngleParameters OctahedralSolidAngleParameters;
-				OctahedralSolidAngleParameters.OctahedralSolidAngleTextureResolutionSq = OctahedralSolidAngleTextureSize * OctahedralSolidAngleTextureSize;
-				OctahedralSolidAngleParameters.OctahedralSolidAngleTexture = InitializeOctahedralSolidAngleTexture(GraphBuilder, View.ShaderMap, OctahedralSolidAngleTextureSize, RadianceCacheState.OctahedralSolidAngleTextureRT);
-
 				{
 					FCalculateProbeIrradianceCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FCalculateProbeIrradianceCS::FParameters>();
 					PassParameters->RWFinalIrradianceAtlas = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(Setup.FinalIrradianceAtlas));
 					PassParameters->RadianceProbeAtlasTexture = RadianceProbeAtlasTexture[RadianceCacheIndex];
 					PassParameters->ProbeTraceData = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ProbeTraceData[RadianceCacheIndex], PF_A32B32G32R32F));
 					PassParameters->RadianceCacheParameters = RadianceCacheParameters;
-					PassParameters->OctahedralSolidAngleParameters = OctahedralSolidAngleParameters;
 					PassParameters->View = View.ViewUniformBuffer;
 					// GenerateProbeTraceTilesIndirectArgs is the same so we can reuse it
 					PassParameters->CalculateProbeIrradianceIndirectArgs = GenerateProbeTraceTilesIndirectArgs[RadianceCacheIndex];
@@ -2206,6 +2180,8 @@ void UpdateRadianceCaches(
 
 			if (RadianceCacheInputs.RadianceCacheStats != 0)
 			{
+				ShaderPrint::SetEnabled(true);
+
 				const int32 MaxNumProbes = RadianceCacheInputs.ProbeAtlasResolutionInProbes.X * RadianceCacheInputs.ProbeAtlasResolutionInProbes.Y;
 
 				FRadianceCacheUpdateStatsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRadianceCacheUpdateStatsCS::FParameters>();

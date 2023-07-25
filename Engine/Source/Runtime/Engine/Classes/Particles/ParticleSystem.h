@@ -8,6 +8,8 @@
 #include "UObject/Object.h"
 #include "UObject/ScriptMacros.h"
 #include "Particles/ParticlePerfStats.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "RHIDefinitions.h"
 
 #include "ParticleSystem.generated.h"
 
@@ -23,7 +25,7 @@ class UParticleEmitter;
  *	Enumeration indicating the method by which the system should be updated
  */
 UENUM()
-enum EParticleSystemUpdateMode
+enum EParticleSystemUpdateMode : int
 {
 	/** RealTime	- update via the delta time passed in				*/
 	EPSUM_RealTime UMETA(DisplayName="Real-Time"),
@@ -35,7 +37,7 @@ enum EParticleSystemUpdateMode
  *	ParticleSystemLODMethod
  */
 UENUM()
-enum ParticleSystemLODMethod
+enum ParticleSystemLODMethod : int
 {
 	// Automatically set the LOD level, checking every LODDistanceCheckTime seconds.
 	PARTICLESYSTEMLODMETHOD_Automatic UMETA(DisplayName="Automatic"),
@@ -49,7 +51,7 @@ enum ParticleSystemLODMethod
 
 /** Occlusion method enumeration */
 UENUM()
-enum EParticleSystemOcclusionBoundsMethod
+enum EParticleSystemOcclusionBoundsMethod : int
 {
 	/** Don't determine occlusion on this particle system */
 	EPSOBM_None UMETA(DisplayName="None"),
@@ -108,6 +110,8 @@ struct FNamedEmitterMaterial
 	TObjectPtr<UMaterialInterface> Material;
 };
 
+using FMaterialPSOPrecacheRequestID = uint32;
+
 UCLASS(Abstract, MinimalAPI, BlueprintType)
 class UFXSystemAsset : public UObject
 {
@@ -149,7 +153,22 @@ public:
 #endif
 #endif
 
+	const FGraphEventArray& GetPrecachePSOsEvents() const { return PrecachePSOsEvents; }
+	const TArray<FMaterialPSOPrecacheRequestID>& GetMaterialPSOPrecacheRequestIDs() const { return MaterialPSOPrecacheRequestIDs; }
 
+protected:
+	struct VFsPerMaterialData
+	{
+		UMaterialInterface* MaterialInterface = nullptr;
+		EPrimitiveType PrimitiveType = PT_TriangleList; // must match FPSOPrecacheParams::PrimitiveType default value
+		bool bDisableBackfaceCulling = false;  // must match FPSOPrecacheParams::bDisableBackfaceCulling default value
+		TArray<const class FVertexFactoryType*, TInlineAllocator<2>> VertexFactoryTypes;
+	};
+
+	ENGINE_API void LaunchPSOPrecaching(TArrayView<VFsPerMaterialData> VFsPerMaterials);
+
+	FGraphEventArray PrecachePSOsEvents;
+	TArray<FMaterialPSOPrecacheRequestID> MaterialPSOPrecacheRequestIDs;
 };
 
 /**

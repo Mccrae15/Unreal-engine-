@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Layout/Margin.h"
 #include "Framework/SlateDelegates.h"
 #include "Engine/World.h"
@@ -46,17 +45,19 @@ struct FSceneOutlinerBuiltInColumnTypes
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Label, "Item Label", "ItemLabelColumnName", "Item Label");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Gutter, "Visibility", "VisibilityColumnName", "Visibility");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(ActorInfo, "Type", "TypeColumnName", "Type");
-	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(SourceControl, "Source Control", "SourceControlColumnName", "Source Control");
-	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Mobility, "Mobility", "SceneOutlinerMobilityColumn", "Mobility");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(SourceControl, "Revision Control", "SourceControlColumnName", "Revision Control");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Mobility, "Mobility", "SceneOutlinerMobilityColumn", "Mobility"); 
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Level, "Level", "SceneOutlinerLevelColumn", "Level");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Layer, "Layer", "SceneOutlinerLayerColumn", "Layer");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(DataLayer, "Data Layer", "SceneOutlinerDataLayerColumn", "Data Layer");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(ContentBundle, "Content Bundle", "SceneOutlinerContentBundleColumn", "Content Bundle");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(SubPackage, "Sub Package", "SceneOutlinerSubPackageColumn", "Sub Package");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Pinned, "Pinned", "SceneOutlinerPinnedColumn", "Pinned");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(IDName, "ID Name", "SceneOutlinerIDNameColumn", "ID Name");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(PackageShortName, "Package Short Name", "SceneOutlinerPackageShortNameColumn", "Package Short Name");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(UncachedLights, "Uncached Lights", "SceneOutlinerUncachedLightsColumn", "# Uncached Lights");
 	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Socket, "Socket", "SceneOutlinerSocketColumn", "Socket");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Unsaved, "Unsaved", "UnsavedColumnName", "Unsaved");
 };
 
 /** Visibility enum for scene outliner columns */
@@ -72,16 +73,24 @@ enum class ESceneOutlinerColumnVisibility : uint8
 /** Column information for the scene outliner */
 struct FSceneOutlinerColumnInfo
 {
-	FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility InVisibility, int32 InPriorityIndex, const FCreateSceneOutlinerColumn& InFactory = FCreateSceneOutlinerColumn(), bool inCanBeHidden = true, TOptional<float> InFillSize = TOptional<float>()
-		, TAttribute<FText> InColumnLabel = TAttribute<FText>())
-		: Visibility(InVisibility), PriorityIndex(InPriorityIndex), bCanBeHidden(inCanBeHidden), Factory(InFactory), FillSize(InFillSize), ColumnLabel(InColumnLabel)
+	FSceneOutlinerColumnInfo(
+		ESceneOutlinerColumnVisibility InVisibility, int32 InPriorityIndex, const FCreateSceneOutlinerColumn& InFactory = FCreateSceneOutlinerColumn()
+		, bool inCanBeHidden = true, TOptional<float> InFillSize = TOptional<float>(), TAttribute<FText> InColumnLabel = TAttribute<FText>()
+		, EHeaderComboVisibility InHeaderComboVisibility = EHeaderComboVisibility::OnHover, FOnGetContent InOnGetMenuContent = FOnGetContent())
+		: Visibility(InVisibility), PriorityIndex(InPriorityIndex), bCanBeHidden(inCanBeHidden)
+		, Factory(InFactory), FillSize(InFillSize), ColumnLabel(InColumnLabel)
+		, HeaderComboVisibility(InHeaderComboVisibility), OnGetHeaderContextMenuContent(InOnGetMenuContent)
 	{
 	}
 
 	FSceneOutlinerColumnInfo() {}
 
 	FSceneOutlinerColumnInfo(const FSceneOutlinerColumnInfo& InColumnInfo)
-		: Visibility(InColumnInfo.Visibility), PriorityIndex(InColumnInfo.PriorityIndex), bCanBeHidden(InColumnInfo.bCanBeHidden), Factory(InColumnInfo.Factory), FillSize(InColumnInfo.FillSize), ColumnLabel(InColumnInfo.ColumnLabel)
+		: Visibility(InColumnInfo.Visibility), PriorityIndex(InColumnInfo.PriorityIndex)
+		, bCanBeHidden(InColumnInfo.bCanBeHidden), Factory(InColumnInfo.Factory)
+		, FillSize(InColumnInfo.FillSize), ColumnLabel(InColumnInfo.ColumnLabel)
+		, HeaderComboVisibility(InColumnInfo.HeaderComboVisibility)
+		, OnGetHeaderContextMenuContent(InColumnInfo.OnGetHeaderContextMenuContent)
 	{}
 
 	ESceneOutlinerColumnVisibility 	Visibility;
@@ -90,6 +99,10 @@ struct FSceneOutlinerColumnInfo
 	FCreateSceneOutlinerColumn	Factory;
 	TOptional< float > FillSize;
 	TAttribute<FText> ColumnLabel; // Override for the column name used instead of ID if specified (use this if you want the column name to be localizable)
+
+	/** Hides the button on each header cell which normally shows up when OnGetHeaderContextMenuContent is bound */
+	EHeaderComboVisibility HeaderComboVisibility;
+	FOnGetContent OnGetHeaderContextMenuContent;
 };
 
 /** Settings for the scene outliner which can be quieried publicly */
@@ -126,7 +139,6 @@ public:
 	void UseDefaultColumns();
 };
 
-
 /* Settings for the Filter Bar attached to the Scene Outliner. Can be specified through FSceneOutlinerInitializationOptions */
 struct FSceneOutlinerFilterBarOptions
 {
@@ -158,10 +170,17 @@ struct FSceneOutlinerFilterBarOptions
 	* of actors.
 	*/
 struct FSceneOutlinerInitializationOptions : FSharedSceneOutlinerData
-{
+{	
 	/** True if we should draw the header row above the tree view */
 	bool bShowHeaderRow : 1;
-
+	
+	/**
+	 * Can select the columns generated by right clicking on the header menu.
+	 * FColumn with ShouldGenerateWidget set can not be selected.
+	 * FColumn with MenuContent will still be displayed.
+	 */
+	bool bCanSelectGeneratedColumns : 1;
+	
 	/** Whether the Scene Outliner should expose its searchbox */
 	bool bShowSearchBox : 1;
 
@@ -187,6 +206,7 @@ public:
 	/** Constructor */
 	FSceneOutlinerInitializationOptions()
 		: bShowHeaderRow( true )
+		, bCanSelectGeneratedColumns( true )
 		, bShowSearchBox( true )
 		, bFocusSearchBoxWhenOpened( false )
 		, bShowCreateNewFolder( true )

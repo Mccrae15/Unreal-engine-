@@ -44,6 +44,7 @@
 #include "Model.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Curves/KeyHandle.h"
 #include "MaterialExpressionIO.h"
 #include "Materials/MaterialExpression.h"
@@ -272,6 +273,7 @@
 
 #include "SkinWeightsUtilities.h"
 #include "TextureImportUtils.h"
+#include "TextureReferenceResolver.h"
 #include "UDIMUtilities.h"
 #include "FileHelpers.h"
 
@@ -653,11 +655,7 @@ UObject* UMaterialParameterCollectionFactoryNew::FactoryCreateNew(UClass* Class,
 	
 	if (MaterialParameterCollection)
 	{
-		for (TObjectIterator<UWorld> It; It; ++It)
-		{
-			UWorld* CurrentWorld = *It;
-			CurrentWorld->AddParameterCollectionInstance(MaterialParameterCollection, true);
-		}
+		MaterialParameterCollection->SetupWorldParameterCollectionInstances();
 	}
 
 	return MaterialParameterCollection;
@@ -1226,89 +1224,95 @@ UObject* ULevelFactory::FactoryCreateText
 
 	// Pass 1: Sort out all the properties on the individual actors
 	bool bIsMoveToStreamingLevel =(FCString::Stricmp(Type, TEXT("move")) == 0);
-	for (auto& ActorMapElement : NewActorMap)
 	{
-		AActor* Actor = ActorMapElement.Key;
+		FScopedSlowTask SlowTask(NewActorMap.Num(), LOCTEXT("Importing Actors", "Importing Actors"));
+		SlowTask.MakeDialogDelayed(1.f);
 
-		// Import properties if the new actor is 
-		bool		bActorChanged = false;
-		FString&	PropText = ActorMapElement.Value;
-		if ( Actor->ShouldImport(&PropText, bIsMoveToStreamingLevel) )
+		for (auto& ActorMapElement : NewActorMap)
 		{
-			Actor->PreEditChange(nullptr);
-			ImportObjectProperties( (uint8*)Actor, *PropText, Actor->GetClass(), Actor, Actor, Warn, 0, INDEX_NONE, NULL, &ExistingToNewMap );
-			bActorChanged = true;
+			AActor* Actor = ActorMapElement.Key;
 
-			if (GWorld == World)
+			// Import properties if the new actor is 
+			bool		bActorChanged = false;
+			const FString&	PropText = ActorMapElement.Value;
+			if ( Actor->ShouldImport(FStringView(PropText), bIsMoveToStreamingLevel) )
 			{
-				GEditor->SelectActor( Actor, true, false, true );
-			}
-		}
-		else // This actor is new, but rejected to import its properties, so just delete...
-		{
-			Actor->Destroy();
-			continue;
-		}
+				Actor->PreEditChange(nullptr);
+				ImportObjectProperties( (uint8*)Actor, *PropText, Actor->GetClass(), Actor, Actor, Warn, 0, INDEX_NONE, NULL, &ExistingToNewMap );
+				bActorChanged = true;
 
-		// If this is a newly imported brush, validate it.  If it's a newly imported dynamic brush, rebuild it first.
-		// Previously, this just called bspValidateBrush.  However, that caused the dynamic brushes which require a valid BSP tree
-		// to be built to break after being duplicated.  Calling RebuildBrush will rebuild the BSP tree from the imported polygons.
-		ABrush* Brush = Cast<ABrush>(Actor);
-		if( bActorChanged && Brush && Brush->Brush )
-		{
-			const bool bIsStaticBrush = Brush->IsStaticBrush();
-			if( !bIsStaticBrush )
-			{
-				FBSPOps::RebuildBrush( Brush->Brush );
-			}
-
-			FBSPOps::bspValidateBrush(Brush->Brush, true, false);
-		}
-
-		// Copy brushes' model pointers over to their BrushComponent, to keep compatibility with old T3Ds.
-		if( Brush && bActorChanged )
-		{
-			if( Brush->GetBrushComponent() ) // Should always be the case, but not asserting so that old broken content won't crash.
-			{
-				Brush->GetBrushComponent()->Brush = Brush->Brush;
-
-				// We need to avoid duplicating default/ builder brushes. This is done by destroying all brushes that are CSG_Active and are not
-				// the default brush in their respective levels.
-				if( Brush->IsStaticBrush() && Brush->BrushType==Brush_Default )
+				if (GWorld == World)
 				{
-					bool bIsDefaultBrush = false;
-					
-					// Iterate over all levels and compare current actor to the level's default brush.
-					for( int32 LevelIndex=0; LevelIndex<World->GetNumLevels(); LevelIndex++ )
+					GEditor->SelectActor( Actor, true, false, true );
+				}
+			}
+			else // This actor is new, but rejected to import its properties, so just delete...
+			{
+				Actor->Destroy();
+				continue;
+			}
+
+			// If this is a newly imported brush, validate it.  If it's a newly imported dynamic brush, rebuild it first.
+			// Previously, this just called bspValidateBrush.  However, that caused the dynamic brushes which require a valid BSP tree
+			// to be built to break after being duplicated.  Calling RebuildBrush will rebuild the BSP tree from the imported polygons.
+			ABrush* Brush = Cast<ABrush>(Actor);
+			if( bActorChanged && Brush && Brush->Brush )
+			{
+				const bool bIsStaticBrush = Brush->IsStaticBrush();
+				if( !bIsStaticBrush )
+				{
+					FBSPOps::RebuildBrush( Brush->Brush );
+				}
+
+				FBSPOps::bspValidateBrush(Brush->Brush, true, false);
+			}
+
+			// Copy brushes' model pointers over to their BrushComponent, to keep compatibility with old T3Ds.
+			if( Brush && bActorChanged )
+			{
+				if( Brush->GetBrushComponent() ) // Should always be the case, but not asserting so that old broken content won't crash.
+				{
+					Brush->GetBrushComponent()->Brush = Brush->Brush;
+
+					// We need to avoid duplicating default/ builder brushes. This is done by destroying all brushes that are CSG_Active and are not
+					// the default brush in their respective levels.
+					if( Brush->IsStaticBrush() && Brush->BrushType==Brush_Default )
 					{
-						ULevel* Level = World->GetLevel(LevelIndex);
-						if(Level->GetDefaultBrush() == Brush)
+						bool bIsDefaultBrush = false;
+						
+						// Iterate over all levels and compare current actor to the level's default brush.
+						for( int32 LevelIndex=0; LevelIndex<World->GetNumLevels(); LevelIndex++ )
 						{
-							bIsDefaultBrush = true;
-							break;
+							ULevel* Level = World->GetLevel(LevelIndex);
+							if(Level->GetDefaultBrush() == Brush)
+							{
+								bIsDefaultBrush = true;
+								break;
+							}
 						}
-					}
 
-					// Destroy actor if it's a builder brush but not the default brush in any of the currently loaded levels.
-					if( !bIsDefaultBrush )
-					{
-						World->DestroyActor( Brush );
+						// Destroy actor if it's a builder brush but not the default brush in any of the currently loaded levels.
+						if( !bIsDefaultBrush )
+						{
+							World->DestroyActor( Brush );
 
-						// Since the actor has been destroyed, skip the rest of this iteration of the loop.
-						continue;
+							// Since the actor has been destroyed, skip the rest of this iteration of the loop.
+							continue;
+						}
 					}
 				}
 			}
-		}
-		
-		// If the actor was imported . . .
-		if( bActorChanged )
-		{
-			// Let the actor deal with having been imported, if desired.
-			Actor->PostEditImport();
+			
+			// If the actor was imported . . .
+			if( bActorChanged )
+			{
+				// Let the actor deal with having been imported, if desired.
+				Actor->PostEditImport();
 
-			// Notify actor its properties have changed.
-			Actor->PostEditChange();
+				// Notify actor its properties have changed.
+				Actor->PostEditChange();
+			}
+			SlowTask.EnterProgressFrame();
 		}
 	}
 
@@ -1583,7 +1587,7 @@ UObject* UPolysFactory::FactoryCreateText
 	FFeedbackContext*	Warn
 )
 {
-	FVector PointPool[4096];
+	FVector3f PointPool[4096];
 	int32 NumPoints = 0;
 
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPreImport(this, Class, InParent, Name, Type);
@@ -1657,7 +1661,7 @@ UObject* UPolysFactory::FactoryCreateText
 					if( FParse::Command(&Str,TEXT("VERTEX")) )
 					{
 						// Start of new vertex.
-						PointPool[NumPoints] = FVector::ZeroVector;
+						PointPool[NumPoints] = FVector3f::ZeroVector;
 						Started = 1;
 						IsFace  = 0;
 					}
@@ -1710,8 +1714,10 @@ UObject* UPolysFactory::FactoryCreateText
 					else if( Code>=71 && Code<=79 && (Code-71)==NewPoly.Vertices.Num() )
 					{
 						int32 iPoint = FMath::Abs(FCString::Atoi(*ExtraLine));
-						if( iPoint>0 && iPoint<=NumPoints )
-							new(NewPoly.Vertices) FVector3f(PointPool[iPoint-1]);
+						if (iPoint > 0 && iPoint <= NumPoints)
+						{
+							NewPoly.Vertices.Emplace(PointPool[iPoint - 1]);
+						}
 						else UE_LOG(LogEditorFactories, Warning, TEXT("DXF: Invalid point index %i/%i"), iPoint, NumPoints );
 					}
 				}
@@ -2227,7 +2233,7 @@ UObject* UCurveLinearColorAtlasFactory::FactoryCreateNew(UClass* Class, UObject*
 
 	UCurveLinearColorAtlas* Object = NewObject<UCurveLinearColorAtlas>(InParent, Class, Name, Flags);
 	Object->Source.Init(Width, Height, 1, 1, TSF_RGBA16F);
-	const int32 TextureDataSize = Object->Source.CalcMipSize(0);
+	const int32 TextureDataSize = IntCastChecked<int32>(Object->Source.CalcMipSize(0));
 	Object->SrcData.AddUninitialized(TextureDataSize);
 	uint32* TextureData = (uint32*)Object->Source.LockMip(0);
 	FFloat16Color InitColor(FLinearColor::White);
@@ -3208,6 +3214,7 @@ UTexture* UTextureFactory::ImportTextureUDIM(UClass* Class, UObject* InParent, F
 	const EImageImportFlags ImportFlags = EImageImportFlags::None;
 
 	bool bMismatchedFormats = false;
+	bool bMismatchedGammaSpace = false;
 
 	for (const auto& It : UDIMIndexToFile)
 	{
@@ -3229,9 +3236,17 @@ UTexture* UTextureFactory::ImportTextureUDIM(UClass* Class, UObject* InParent, F
 					TCSettings = Image.CompressionSettings;
 				}
 
-				if ( Format != Image.Format )
+				if (bSRGB != Image.SRGB)
+				{
+					bMismatchedGammaSpace = true;
+					bSRGB = false;
+					Format = TSF_RGBA32F;
+				}
+
+				if (Format != Image.Format)
 				{
 					bMismatchedFormats = true;
+					Format = FImageCoreUtils::GetCommonSourceFormat(Format, Image.Format);
 				}
 
 				const int32 UDIMIndex = It.Key;
@@ -3253,32 +3268,23 @@ UTexture* UTextureFactory::ImportTextureUDIM(UClass* Class, UObject* InParent, F
 		return nullptr;
 	}
 
-	if ( bMismatchedFormats )
+	if (bMismatchedGammaSpace || bMismatchedFormats)
 	{
-		Warn->Logf(ELogVerbosity::Warning, TEXT("Mismatched UDIM image formats, converting all to BGRA8 or RGBA16F ..."));
-		
-		if ( FTextureSource::IsHDR(Format) )
-		{
-			Format = TSF_RGBA16F;
-			bSRGB = false;
-		}
-		else
-		{
-			Format = TSF_BGRA8;
-			bSRGB = true;
-		}
+		Warn->Logf(ELogVerbosity::Warning, TEXT("Mismatched UDIM image %s, converting all to %s/%s ..."), bMismatchedGammaSpace ? TEXT("gamma spaces") : TEXT("pixel formats"),
+			ERawImageFormat::GetName(FImageCoreUtils::ConvertToRawImageFormat(Format)), bSRGB ? TEXT("sRGB") : TEXT("Linear"));
 
 		for( FImportImage & Image : SourceImages )
 		{
-			if ( Image.Format != Format )
+			if (Image.SRGB != bSRGB || Image.Format != Format)
 			{
-				ERawImageFormat::Type ImageRawFormat = FImageCoreUtils::ConvertToRawImageFormat( Image.Format );
-				FImageView SourceImage( Image.RawData.GetData(), Image.SizeX, Image.SizeY, ImageRawFormat );
-				FImage DestImage( Image.SizeX, Image.SizeY, FImageCoreUtils::ConvertToRawImageFormat(Format) );
-				FImageCore::CopyImage(SourceImage,DestImage);
+				ERawImageFormat::Type ImageRawFormat = FImageCoreUtils::ConvertToRawImageFormat(Image.Format);
+				FImageView SourceImage(Image.RawData.GetData(), Image.SizeX, Image.SizeY, 1, ImageRawFormat, Image.SRGB ? EGammaSpace::sRGB : EGammaSpace::Linear);
+				FImage DestImage(Image.SizeX, Image.SizeY, FImageCoreUtils::ConvertToRawImageFormat(Format), bSRGB ? EGammaSpace::sRGB : EGammaSpace::Linear);
+				FImageCore::CopyImage(SourceImage, DestImage);
 
 				Image.RawData = MoveTemp(DestImage.RawData);
 				Image.Format = Format;
+				Image.SRGB = bSRGB;
 			}				
 		}
 	}
@@ -3631,7 +3637,7 @@ UTexture* UTextureFactory::ImportTexture(UClass* Class, UObject* InParent, FName
 	if( FCString::Stricmp(Type, TEXT("ies")) == 0)
 	{
 		// checks for .IES extension to avoid wasting loading large assets just to reject them during header parsing
-		FIESConverter IESConverter(Buffer, Length);
+		FIESConverter IESConverter(Buffer, IntCastChecked<uint32>(Length));
 
 		if(IESConverter.IsValid())
 		{
@@ -4063,46 +4069,39 @@ UObject* UTextureFactory::FactoryCreateBinary
 	//	notice above that CompressionSettings is primed from Texture->CompressionSettings
 	//	but LODGroup is not pulled from Texture->LODGroup
 
-	// Figure out whether we're using a normal map LOD group.
-	bool bIsNormalMapLODGroup = false;
-	if( LODGroup == TEXTUREGROUP_WorldNormalMap 
-	||	LODGroup == TEXTUREGROUP_CharacterNormalMap
-	||	LODGroup == TEXTUREGROUP_VehicleNormalMap
-	||	LODGroup == TEXTUREGROUP_WeaponNormalMap )
+	// If the TextureFactory LODGroup is set to a normal map LOD group, then set CompressionSettings to Normalmap
+	bool bIsNormalMapLODGroup = ( LODGroup == TEXTUREGROUP_WorldNormalMap 
+		||	LODGroup == TEXTUREGROUP_CharacterNormalMap
+		||	LODGroup == TEXTUREGROUP_VehicleNormalMap
+		||	LODGroup == TEXTUREGROUP_WeaponNormalMap );
+
+	if ( bIsNormalMapLODGroup )
 	{
 		// Change from default to normal map.
 		if( CompressionSettings == TC_Default )
 		{
 			CompressionSettings = TC_Normalmap;
 		}
-		bIsNormalMapLODGroup = true;
+	}
+		
+	// Propagate options.
+	Texture->CompressionSettings	= CompressionSettings;
+	Texture->LODGroup				= LODGroup;
+	
+	if(!FCString::Stricmp(Type, TEXT("ies")))
+	{
+		Texture->LODGroup = TEXTUREGROUP_IESLightProfile;
 	}
 
-	// Packed normal map
-	if( Texture->IsNormalMap() )
+	// note that NormalmapIdentification has not run yet
+	//	so I think the only way you get in this branch is if bIsNormalMapLODGroup == true
+	if( Texture->IsNormalMap() ) // TC == TC_Normalmap
 	{
 		Texture->SRGB = 0;
 		if( !bIsNormalMapLODGroup )
 		{
-			LODGroup = TEXTUREGROUP_WorldNormalMap;
+			Texture->LODGroup = TEXTUREGROUP_WorldNormalMap;
 		}
-	}
-
-	if(!FCString::Stricmp(Type, TEXT("ies")))
-	{
-		LODGroup = TEXTUREGROUP_IESLightProfile;
-	}
-	
-	// Propagate options.
-	Texture->CompressionSettings	= CompressionSettings;
-	Texture->LODGroup				= LODGroup;
-
-	// Revert the LODGroup to the default if it was forcibly set by the texture being a normal map.
-	// This handles the case where multiple textures are being imported consecutively and
-	// LODGroup unexpectedly changes because some textures were normal maps and others weren't.
-	if ( LODGroup == TEXTUREGROUP_WorldNormalMap && !bIsNormalMapLODGroup )
-	{
-		LODGroup = TEXTUREGROUP_World;
 	}
 
 	Texture->CompressionNone				= NoCompression;
@@ -4256,6 +4255,11 @@ UObject* UTextureFactory::FactoryCreateBinary
 			Texture->bFlipGreenChannel = bFlipNormalMapGreenChannel;
 		}
 	}
+	
+	// Texture property setup is almost done
+	//  ApplyDefaultsForNewlyImportedTextures before ApplyAutoImportSettings so user settings can override
+	bool bIsReimport = ExistingTexture && bUsingExistingSettings;
+	UE::TextureUtilitiesCommon::ApplyDefaultsForNewlyImportedTextures(Texture,bIsReimport);
 
 	if(IsAutomatedImport())
 	{
@@ -4602,8 +4606,8 @@ bool UTextureExporterPCX::ExportBinary( UObject* Object, const TCHAR* Type, FArc
 		return false;
 	}
 
-	int32 SizeX = Texture->Source.GetSizeX();
-	int32 SizeY = Texture->Source.GetSizeY();
+	uint16 SizeX = IntCastChecked<uint16>(Texture->Source.GetSizeX());
+	uint16 SizeY = IntCastChecked<uint16>(Texture->Source.GetSizeY());
 	TArray64<uint8> RawData;
 	Texture->Source.GetMipData(RawData, 0);
 
@@ -5297,8 +5301,8 @@ bool UTextureExporterTGA::ExportBinary( UObject* Object, const TCHAR* Type, FArc
 		}
 	}
 
-	const int32 OriginalWidth = SizeX;
-	const int32 OriginalHeight = SizeY;		
+	const uint16 OriginalWidth = IntCastChecked<uint16>(SizeX);
+	const uint16 OriginalHeight = IntCastChecked<uint16>(SizeY);
 
 	FTGAFileHeader TGA;
 	FMemory::Memzero( &TGA, sizeof(TGA) );
@@ -5454,7 +5458,8 @@ UObject* UFontFileImportFactory::FactoryCreateBinary(UClass* InClass, UObject* I
 		FontFace->SourceFilename = GetCurrentFilename();
 
 		TArray<uint8> FontData;
-		FontData.Append(InBuffer, InBufferEnd - InBuffer);
+		int32 BufferSize = IntCastChecked<int32>(InBufferEnd - InBuffer);
+		FontData.Append(InBuffer, BufferSize);
 		FontFace->FontFaceData->SetData(MoveTemp(FontData));
 		FontFace->CacheSubFaces();
 	}
@@ -6308,6 +6313,9 @@ bool UReimportFbxSkeletalMeshFactory::FactoryCanImport(const FString& Filename)
 bool UReimportFbxSkeletalMeshFactory::CanReimport( UObject* Obj, TArray<FString>& OutFilenames )
 {
 	USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Obj);
+	TArray<FString> FactoryExtensions;
+	GetSupportedFileExtensions(FactoryExtensions);
+
 	if (SkeletalMesh && !SkeletalMesh->HasCustomActorReimportFactory())
 	{
 		if (UAssetImportData* AssetImportData = SkeletalMesh->GetAssetImportData())
@@ -6322,6 +6330,11 @@ bool UReimportFbxSkeletalMeshFactory::CanReimport( UObject* Obj, TArray<FString>
 				  && FPaths::GetExtension(AssetImportData->GetFirstFilename()) != TEXT("obj"))
 			{
 				//Fbx factory only support fbx and obj files
+				return false;
+			}
+			else if (!PreferredReimportPath.IsEmpty() && !FactoryExtensions.Contains(FPaths::GetExtension(PreferredReimportPath)))
+			{
+				// Unsupported extensions shouldnt be considered for reimport
 				return false;
 			}
 			AssetImportData->ExtractFilenames(OutFilenames);

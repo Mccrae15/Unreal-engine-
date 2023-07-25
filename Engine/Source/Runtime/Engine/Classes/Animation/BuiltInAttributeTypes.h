@@ -77,7 +77,7 @@ struct FIntegerAnimationAttribute
 	}
 };
 
-/** Attribute type supporting the legacy TVariant<FString> atttributes */
+/** Attribute type supporting the legacy TVariant<FString> attributes */
 USTRUCT(BlueprintType)
 struct FStringAnimationAttribute
 {
@@ -87,7 +87,7 @@ struct FStringAnimationAttribute
 	FString Value;
 };
 
-/** Attribute type supporting the legacy TVariant<FTransform> atttributes */
+/** Attribute type supporting the legacy TVariant<FTransform> attributes */
 USTRUCT(BlueprintType)
 struct FTransformAnimationAttribute
 {
@@ -375,12 +375,12 @@ namespace UE
 #if WITH_EDITOR
 		/** Helper functionality allowing the user to add an attribute with a typed value array */
 		template<typename AttributeType, typename ValueType>
-		bool AddTypedCustomAttribute(const FName& AttributeName, const FName& BoneName, UAnimSequenceBase* AnimSequenceBase, TArrayView<const float> Keys, TArrayView<const ValueType> Values)
+		bool AddTypedCustomAttribute(const FName& AttributeName, const FName& BoneName, UAnimSequenceBase* AnimSequenceBase, TArrayView<const float> Keys, TArrayView<const ValueType> Values, bool bShouldTransact = true)
 		{
 			const FAnimationAttributeIdentifier Identifier = UAnimationAttributeIdentifierExtensions::CreateAttributeIdentifier(AnimSequenceBase, AttributeName, BoneName, AttributeType::StaticStruct());
 
 			IAnimationDataController& Controller = AnimSequenceBase->GetController();
-			if (Controller.AddAttribute(Identifier))
+			if (AnimSequenceBase->GetDataModelInterface()->FindAttribute(Identifier) || Controller.AddAttribute(Identifier))
 			{
 				TArray<AttributeType> AttributeValues; 
 				Algo::Transform(Values, AttributeValues, [](const ValueType& Value)
@@ -390,7 +390,7 @@ namespace UE
 					return Attribute;
 				});
 
-				return Controller.SetTypedAttributeKeys<AttributeType>(Identifier, Keys, MakeArrayView(AttributeValues));
+				return Controller.SetTypedAttributeKeys<AttributeType>(Identifier, Keys, MakeArrayView(AttributeValues), bShouldTransact);
 			}
 
 			return false;

@@ -6,6 +6,11 @@
 #include "Engine/EngineTypes.h"
 #include "BlueprintMaterialTextureNodesBPLibrary.generated.h"
 
+class UMaterialInstanceConstant;
+class UMaterialInterface;
+class UTexture2D;
+class UTextureRenderTarget2D;
+
 /* 
 *	Function library class.
 *	Each function in it is expected to be static and represents blueprint node that can be called in any blueprint.
@@ -101,6 +106,13 @@ class BLUEPRINTMATERIALTEXTURENODES_API UBlueprintMaterialTextureNodesBPLibrary 
 	*/
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set MIC Two Sided Editor Only", Keywords = "Set MIC Two Sided", UnsafeDuringActorConstruction = "true"), Category = Rendering)
 	static bool SetMICTwoSided_EditorOnly(UMaterialInstanceConstant* Material, bool TwoSided = false);
+
+	/**
+	* Overrides the IsThinSurface setting of a Material Instance Constant
+	* Only works in the editor
+	*/
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set MIC IsThinSurface Editor Only", Keywords = "Set MIC IsThinSurface", UnsafeDuringActorConstruction = "true"), Category = Rendering)
+	static bool SetMICIsThinSurface_EditorOnly(UMaterialInstanceConstant* Material, bool bIsThinSurface = false);	
 
 	/**
 	* Overrides the Blend Mode of a Material Instance Constant

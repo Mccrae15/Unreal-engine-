@@ -1,22 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "AudioDeviceManager.h"
 
-#include "Audio.h"
 #include "Audio/AudioDebug.h"
 #include "AudioAnalytics.h"
-#include "AudioDefines.h"
-#include "AudioDevice.h"
 #include "AudioMixerDevice.h"
 #include "Engine/World.h"
-#include "Sound/AudioSettings.h"
-#include "Sound/SoundWave.h"
+#include "Features/IModularFeatures.h"
+#include "Misc/App.h"
 #include "GameFramework/GameUserSettings.h"
-#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
 #include "UObject/UObjectIterator.h"
 
-#include "AudioDecompress.h"
 #include "Sound/AudioFormatSettings.h"
 #include "ADPCMAudioInfo.h"
 #include "VorbisAudioInfo.h"
@@ -33,7 +28,6 @@
 #include "Settings/LevelEditorMiscSettings.h"
 #endif
 
-#include "IAudioLinkFactory.h"
 
 static int32 GCVarEnableAudioThreadWait = 1;
 TAutoConsoleVariable<int32> CVarEnableAudioThreadWait(
@@ -589,6 +583,10 @@ bool FAudioDeviceManager::InitializeManager()
 		AudioSettings->RegisterParameterInterfaces();
 
 		const bool bIsAudioMixerEnabled = AudioDeviceModule->IsAudioMixerModule();
+		if (bIsAudioMixerEnabled)
+		{
+			FModuleManager::Get().LoadModuleChecked(TEXT("AudioMixer"));
+		}
 		AudioSettings->SetAudioMixerEnabled(bIsAudioMixerEnabled);
 
 		// Register all formats
@@ -794,6 +792,9 @@ void FAudioDeviceManager::DecrementDevice(Audio::FDeviceId DeviceID, UWorld* InW
 			bDestroyingDevice = true;
 			FAudioDeviceManagerDelegates::OnAudioDeviceDestroyed.Broadcast(DeviceID);
 
+			// Subsystems deinitialization
+			Container.Device->Deinitialize();
+
 			// If this is the active device and being destroyed, set the main device as the active device.
 			if (DeviceID == ActiveAudioDeviceID)
 			{
@@ -871,6 +872,20 @@ FAudioDevice* FAudioDeviceManager::GetAudioDeviceRaw(Audio::FDeviceId InDeviceID
 	}
 
 	FAudioDevice* AudioDevice = Devices[InDeviceID].Device;
+	check(AudioDevice != nullptr);
+
+	return AudioDevice;
+}
+
+const FAudioDevice* FAudioDeviceManager::GetAudioDeviceRaw(Audio::FDeviceId InDeviceID) const
+{
+	FScopeLock ScopeLock(&DeviceMapCriticalSection);
+	if (!IsValidAudioDevice(InDeviceID))
+	{
+		return nullptr;
+	}
+
+	const FAudioDevice* AudioDevice = Devices[InDeviceID].Device;
 	check(AudioDevice != nullptr);
 
 	return AudioDevice;
@@ -1028,6 +1043,22 @@ void FAudioDeviceManager::IterateOverAllDevices(TUniqueFunction<void(Audio::FDev
 	}
 }
 
+void FAudioDeviceManager::IterateOverAllDevices(TUniqueFunction<void(Audio::FDeviceId, const FAudioDevice*)> ForEachDevice) const
+{
+	TArray<Audio::FDeviceId> DeviceIDs;
+	{
+		FScopeLock ScopeLock(&DeviceMapCriticalSection);
+		Devices.GetKeys(DeviceIDs);
+	}
+
+	for (const Audio::FDeviceId DeviceID : DeviceIDs)
+	{
+		if (const FAudioDevice* Device = GetAudioDeviceRaw(DeviceID))
+		{
+			ForEachDevice(DeviceID, Device);
+		}
+	}
+}
 
 void FAudioDeviceManager::AddReferencedObjects(FReferenceCollector& Collector)
 {

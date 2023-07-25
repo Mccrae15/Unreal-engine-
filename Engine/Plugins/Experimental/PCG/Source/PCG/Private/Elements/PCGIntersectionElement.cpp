@@ -1,7 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Elements/PCGIntersectionElement.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "Data/PCGSpatialData.h"
+#include "PCGContext.h"
+#include "PCGPin.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGIntersectionElement)
+
+TArray<FPCGPinProperties> UPCGIntersectionSettings::InputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultInputLabel, EPCGDataType::Spatial);
+
+	return PinProperties;
+}
+
+TArray<FPCGPinProperties> UPCGIntersectionSettings::OutputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultOutputLabel, EPCGDataType::Spatial);
+
+	return PinProperties;
+}
 
 FPCGElementPtr UPCGIntersectionSettings::CreateElement() const
 {
@@ -16,11 +36,10 @@ bool FPCGIntersectionElement::ExecuteInternal(FPCGContext* Context) const
 	check(Settings);
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
-	UPCGParamData* Params = Context->InputData.GetParams();
 
-	const EPCGIntersectionDensityFunction DensityFunction = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGIntersectionSettings, DensityFunction), Settings->DensityFunction, Params);
-#if WITH_EDITORONLY_DATA
-	const bool bKeepZeroDensityPoints = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGIntersectionSettings, bKeepZeroDensityPoints), Settings->bKeepZeroDensityPoints, Params);
+	const EPCGIntersectionDensityFunction DensityFunction = Settings->DensityFunction;
+#if WITH_EDITOR
+	const bool bKeepZeroDensityPoints = Settings->bKeepZeroDensityPoints;
 #else
 	const bool bKeepZeroDensityPoints = false;
 #endif
@@ -54,7 +73,7 @@ bool FPCGIntersectionElement::ExecuteInternal(FPCGContext* Context) const
 		IntersectionData = (IntersectionData ? IntersectionData : FirstSpatialData)->IntersectWith(SpatialData);
 		// Propagate settings
 		IntersectionData->DensityFunction = DensityFunction;
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 		IntersectionData->bKeepZeroDensityPoints = bKeepZeroDensityPoints;
 #endif
 
@@ -63,9 +82,6 @@ bool FPCGIntersectionElement::ExecuteInternal(FPCGContext* Context) const
 		IntersectionTaggedData.Data = IntersectionData;
 		IntersectionTaggedData.Tags.Append(Input.Tags);
 	}
-
-	// Pass-through settings & exclusions
-	Outputs.Append(Context->InputData.GetAllSettings());
 
 	return true;
 }

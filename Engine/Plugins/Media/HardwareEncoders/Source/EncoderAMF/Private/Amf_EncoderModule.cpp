@@ -6,9 +6,11 @@
 
 #include "Amf_Common.h"
 #include "Amf_EncoderH264.h"
+#include "Misc/App.h"
 #include "VideoEncoderFactory.h"
 
 #include "Misc/CoreDelegates.h"
+#include "RHIDefinitions.h"
 
 class FAMFEncoderModule : public IModuleInterface
 {
@@ -49,7 +51,13 @@ public:
 					IVulkanDynamicRHI::AddEnabledDeviceExtensionsAndLayers(ExtentionsToAdd, TArray<const ANSICHAR*>());
 				}
 
-				FCoreDelegates::OnPostEngineInit.AddLambda([]() {FVideoEncoderAmf_H264::Register(FVideoEncoderFactory::Get());});
+				FCoreDelegates::OnPostEngineInit.AddLambda([]()
+				{
+					if (IsRHIDeviceAMD())
+					{
+						FVideoEncoderAmf_H264::Register(FVideoEncoderFactory::Get());
+					}
+				});
 				
 				AMFStarted = true;
 			}

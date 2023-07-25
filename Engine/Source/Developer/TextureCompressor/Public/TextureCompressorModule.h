@@ -13,6 +13,7 @@ class ITextureFormat;
 class ITextureTiler;
 struct FTextureEngineParameters;
 enum EPixelFormat : uint8;
+namespace UE::TextureBuildUtilities { struct FTextureBuildMetadata; };
 
 /**
  * Compressed image data.
@@ -76,9 +77,11 @@ struct FColorAdjustmentParameters
  */
 struct FTextureBuildSettings
 {
-	/** An optional ID to change the cache key. */
-	FGuid CompressionCacheId;
-	/** Format specific config object view or null if no format specific config is applied as part of this build. */
+	/** Format specific config object view or null if no format specific config is applied as part of this build. This is only for DDC2 builds,
+	* and gets created when the build settings gets serialized for sending - it is not valid beforehand. Meaning, it should only ever be read from
+	* build workers. It is used in place of INIs or command line args to configure individual texture formats since those are not available to
+	* the texture build workers.
+	*/
 	FCbObjectView FormatConfigOverride;
 	/** Color adjustment parameters. */
 	FColorAdjustmentParameters ColorAdjustment;
@@ -88,6 +91,8 @@ struct FTextureBuildSettings
 	FVector4f AlphaCoverageThresholds;
 	/** Use newer & faster mip generation filter */
 	bool bUseNewMipFilter;
+	/** Normalize normals after mip gen, before compression */
+	bool bNormalizeNormals;
 	/** The desired amount of mip sharpening. */
 	float MipSharpening;
 	/** For angular filtered cubemaps, the mip level which contains convolution with the diffuse cosine lobe. */
@@ -112,7 +117,7 @@ struct FTextureBuildSettings
 	uint32 bLongLatSource : 1;
 	/** Whether the texture contains color data in the sRGB colorspace. */
 	uint32 bSRGB : 1;
-	/** Advanced source encoding of the image. */
+	/** Advanced source encoding of the image. UE::Color::EEncoding / ETextureSourceEncoding (same thing) */
 	uint8 SourceEncodingOverride;
 	/** Whether the texture has a defined source color space. */
 	bool bHasColorSpaceDefinition;
@@ -158,16 +163,13 @@ struct FTextureBuildSettings
 	uint8 CompositeTextureMode;	// ECompositeTextureMode, opaque to avoid dependencies on engine headers.
 	/* default 1, high values result in a stronger effect */
 	float CompositePower;
-	/** The source texture's final LOD bias (i.e. includes LODGroup based biases) */
+	/** The source texture's final LOD bias (i.e. includes LODGroup based biases). Generally this does not affect the built texture as the
+	* mips are stripped during cooking, however for tiling some platforms require knowing the actual texture size that will be created. In this
+	* case they need to know the LOD bias to compensate.
+	*/
 	uint32 LODBias;
 	/** The source texture's final LOD bias (i.e. includes LODGroup based biases). This allows cinematic mips as well. */
 	uint32 LODBiasWithCinematicMips;
-	/** The texture's top mip size without LODBias applied, should be moved into a separate struct together with bImageHasAlphaChannel */
-	mutable FIntPoint TopMipSize;
-	/** The volume texture's top mip size Z without LODBias applied */
-	mutable int32 VolumeSizeZ;
-	/** The array texture's top mip size Z without LODBias applied */
-	mutable int32 ArraySlices;
 	/** Can the texture be streamed. This is deprecated because it was used in a single place in a single 
 	*	platform for something that handled an edge case that never happened. That code is removes so this is
 	*	never touched other than saving it, and it'll be removed soon.
@@ -222,8 +224,17 @@ struct FTextureBuildSettings
 	// ETextureEncodeSpeed, either Final or Fast.
 	uint8 RepresentsEncodeSpeedNoSend;
 
+	// "TextureAddress" enum values : (TA_Wrap default)
+	uint8 TextureAddressModeX = 0;
+	uint8 TextureAddressModeY = 0;
+	uint8 TextureAddressModeZ = 0;
+
 	// If the target format is a tiled format and can leverage reusing the linear encoding, this is not nullptr.
 	const ITextureTiler* Tiler = nullptr;
+
+	// If shared linear is enabled _at all_ and this texture in involved with that _at all_ then we set
+	// this so we can segregate the derived data keys.
+	bool bAffectedBySharedLinearEncoding = false;
 
 	static constexpr uint32 MaxTextureResolutionDefault = TNumericLimits<uint32>::Max();
 
@@ -232,6 +243,7 @@ struct FTextureBuildSettings
 		: bDoScaleMipsForAlphaCoverage(false)
 		, AlphaCoverageThresholds(0, 0, 0, 0)
 		, bUseNewMipFilter(false)
+		, bNormalizeNormals(false)
 		, MipSharpening(0.0f)
 		, DiffuseConvolveMipLevel(0)
 		, SharpenMipKernelSize(2)
@@ -268,9 +280,6 @@ struct FTextureBuildSettings
 		, CompositePower(1.0f)
 		, LODBias(0)
 		, LODBiasWithCinematicMips(0)
-		, TopMipSize(0, 0)
-		, VolumeSizeZ(0)
-		, ArraySlices(0)
 		, bStreamable_Unused(false)
 		, bVirtualStreamable(false)
 		, bChromaKeyTexture(false)
@@ -313,6 +322,23 @@ struct FTextureBuildSettings
 		return GetDestGammaSpace();
 	}
 
+	// If there is a choice to be had between two formats: one with alpha and one without, this returns which
+	// one the texture expects.
+	bool GetTextureExpectsAlphaInPixelFormat(bool bInSourceMipsAlphaDetected) const
+	{
+		// note the order of operations! ( ForceNo takes precedence )
+		if (bForceNoAlphaChannel)
+		{
+			return false;
+		}
+		if (bForceAlphaChannel)
+		{
+			return true;
+		}
+		return bInSourceMipsAlphaDetected;
+	}
+
+
 	/*
 	* Convert the build settings to an actual texture description containing enough information to describe the texture
 	* to hardware APIs.
@@ -346,7 +372,7 @@ public:
 		TArray<FCompressedImage2D>& OutTextureMips,
 		uint32& OutNumMipsInTail,
 		uint32& OutExtData,
-		bool* bOutImageHasAlpha // If desired, this will report whether the mip processing determined an alpha channel is necessary in the encoded texture.		
+		UE::TextureBuildUtilities::FTextureBuildMetadata* OutMetadata
 		) = 0;
 
 	

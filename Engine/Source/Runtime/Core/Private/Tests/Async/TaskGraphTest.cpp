@@ -897,29 +897,10 @@ namespace TaskGraphTests
 
 		// named threads and local queues
 
-#if STATS
-		{	// StatsThread
-			bool bExecuted = false;
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::StatsThread)->Wait();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-			check(bExecuted);
-		}
-#endif
-
 		if (IsRHIThreadRunning())
 		{	// RHIThread
 			bool bExecuted = false;
 			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::RHIThread)->Wait();
-			check(bExecuted);
-		}
-
-		if (IsAudioThreadRunning())
-		{	// AudioThread
-			bool bExecuted = false;
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::AudioThread)->Wait();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			check(bExecuted);
 		}
 
@@ -1337,29 +1318,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return true;
 	}
 
-	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphStatsThreadRedirectionTest, "System.Core.Async.TaskGraph.StatsThreadRedirection", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
-
-	bool FTaskGraphStatsThreadRedirectionTest::RunTest(const FString& Parameters)
-	{
-		if (!FPlatformProcess::SupportsMultithreading())
-		{
-			// no StatsThread around
-			return true;
-		}
-
-#if STATS
-
-		bool bExecuted = false;
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::StatsThread)->Wait();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-		check(bExecuted);
-
-#endif
-
-		return true;
-	}
-
 	template<uint32 Num>
 	void OversubscriptionStressTest()
 	{
@@ -1434,20 +1392,29 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return true;
 	}
 
-	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphCreateCompletionHandleTest, "System.Core.Async.TaskGraph.CreateCompletionHandle", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter);
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphTaskDestructionTest, "System.Core.Async.TaskGraph.TaskDestruction", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
 
-	bool FTaskGraphCreateCompletionHandleTest::RunTest(const FString& Parameters)
+	bool FTaskGraphTaskDestructionTest::RunTest(const FString& Parameters)
 	{
-		FGraphEventRef UnblockTask = FGraphEvent::CreateGraphEvent(); // to block initially the following task
-		FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId{}, UnblockTask); // supposedly long-living task
-		FGraphEventRef CompletionHandle = Task->CreateCompletionHandle();
-		// check that the completion handle is not signalling as the task is blocked
-		FPlatformProcess::Sleep(0.1f);
-		check(!CompletionHandle->IsComplete());
-		// unblock the task
-		UnblockTask->DispatchSubsequents();
-		// wating for the completion handle instead of waiting for the task, should succeed
-		CompletionHandle->Wait();
+		struct FDestructionTest
+		{
+			explicit FDestructionTest(bool* bDestroyedIn)
+				: bDestroyed(bDestroyedIn)
+			{}
+
+			~FDestructionTest()
+			{
+				*bDestroyed = true;
+			}
+
+			bool* bDestroyed;
+		};
+
+		bool bDestroyed = false;
+
+		FFunctionGraphTask::CreateAndDispatchWhenReady([DestructionTest = FDestructionTest{ &bDestroyed }]{})->Wait();
+
+		check(bDestroyed);
 
 		return true;
 	}

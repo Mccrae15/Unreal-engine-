@@ -27,6 +27,16 @@ enum class ENiagaraGPUTickHandlingMode
 	ConcurrentBatched,/** Systems can submit their GPU ticks in batches during concurrent tick. */
 };
 
+struct FNiagaraTickInfo
+{
+	bool UsesFixedTick = false;
+	float EngineTick = 0.0;
+	float SystemTick = 0.0;
+	int32 TickCount = 0;
+	int32 TickNumber = 0;
+	float TimeStepFraction = 0.0;
+};
+
 //TODO: It would be good to have the batch size be variable per system to try to keep a good work/overhead ratio.
 //Can possibly adjust in future based on average batch execution time.
 #define NiagaraSystemTickBatchSize 4
@@ -315,11 +325,9 @@ public:
 
 	ENiagaraGPUTickHandlingMode GetGPUTickHandlingMode() const;
 
-	/** If true we use legacy simulation contexts that could not handle per instance DI calls in the system scripts and would force the whole simulation solo. */
-	static bool UseLegacySystemSimulationContexts();
-	static void OnChanged_UseLegacySystemSimulationContexts(class IConsoleVariable* CVar);
-
 	FORCEINLINE UWorld* GetWorld()const{return World;}
+
+	const FNiagaraTickInfo& GetTickInfo() { return TickInfo; }
 
 protected:
 	void DumpStalledInfo();
@@ -438,4 +446,6 @@ protected:
 	static bool bUseLegacyExecContexts;
 
 	float FixedDeltaTickAge = 0;
+
+	FNiagaraTickInfo TickInfo;
 };

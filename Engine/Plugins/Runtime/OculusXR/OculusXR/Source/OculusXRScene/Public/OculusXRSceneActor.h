@@ -136,11 +136,15 @@ private:
 	// Validates UUID
 	bool IsValidUuid(const FOculusXRUUID& Uuid);
 
+	// Helper method to spawn an actor for anchor
+	AActor* SpawnActorWithSceneComponent(const FOculusXRUInt64& Space, const FOculusXRUInt64& RoomSpaceID, const TArray<FString>& SemanticClassifications, UClass* sceneAnchorComponentInstanceClass);
+
 	// Spawns a scene anchor
 	AActor* SpawnSceneAnchor(AActor* Anchor, const FOculusXRUInt64& Space, const FOculusXRUInt64& RoomSpaceID, const FVector& BoundedPos, const FVector& BoundedSize, const TArray<FString>& SemanticClassifications, const EOculusXRSpaceComponentType AnchorComponentType);
 
 	// Components for room layout and spatial anchors functionalities
 	UOculusXRRoomLayoutManagerComponent* RoomLayoutManagerComponent = nullptr;
+
 
 	// Whether Capture Flow was already launched once
 	bool bCaptureFlowWasLaunched;

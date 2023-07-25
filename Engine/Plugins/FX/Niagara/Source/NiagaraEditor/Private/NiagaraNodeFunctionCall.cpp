@@ -101,6 +101,42 @@ void UNiagaraNodeFunctionCall::PostLoad()
 			FNiagaraStackGraphUtilities::PopulateFunctionCallNameBindings(*this);
 		}
 	}
+	else
+	{
+		//Perform some fix up due to a bug with dynamic pins and add pins.
+		//Rebuild the dynamic pins and ensure we have add pins where needed.		
+		const int32 NiagaraVer = GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
+		if (NiagaraVer < FNiagaraCustomVersion::DynamicPinNodeFixup && AllowDynamicPins())
+		{
+			bool bFoundInputAdd = false;
+			bool bFoundOutputAdd = false;
+			for (const UEdGraphPin* Pin : Pins)
+			{
+				if (IsAddPin(Pin))
+				{
+					if (Pin->Direction == EGPD_Input)
+					{
+						bFoundInputAdd = true;
+					}
+					else
+					{
+						bFoundOutputAdd = true;
+					}
+				}
+			}
+
+			if (!bFoundInputAdd)
+			{
+				CreateAddPin(EGPD_Input);
+			}
+
+			if (!bFoundOutputAdd)
+			{
+				CreateAddPin(EGPD_Output);
+			}
+		}
+	}
+
 
 	// Allow data interfaces an opportunity to intercept changes
 	if (Signature.IsValid() && Signature.bMemberFunction)
@@ -221,6 +257,34 @@ void UNiagaraNodeFunctionCall::AddOrphanedStaticSwitchPinForDataRetention(FNiaga
 	NewPin->bOrphanedPin = true;
 }
 
+void UNiagaraNodeFunctionCall::RemoveAllDynamicPins()
+{
+	FScopedTransaction RemovePinTransaction(LOCTEXT("RemoveAllDynamicPinsTransaction", "Remove all dynamic pins"));
+	if(AllowDynamicPins())
+	{
+		FPinCollectorArray PinArray;
+		GetInputPins(PinArray);
+
+		for(UEdGraphPin* Pin : PinArray)
+		{
+			if(CanModifyPin(Pin) && IsBaseSignatureOfDataInterfaceFunction(Pin) == false)
+			{
+				RemoveDynamicPin(Pin);
+			}
+		}
+
+		GetOutputPins(PinArray);
+
+		for(UEdGraphPin* Pin : PinArray)
+		{
+			if(CanModifyPin(Pin) && IsBaseSignatureOfDataInterfaceFunction(Pin) == false)
+			{
+				RemoveDynamicPin(Pin);
+			}
+		}
+	}
+}
+
 UEdGraphPin* UNiagaraNodeFunctionCall::AddStaticSwitchInputPin(FNiagaraVariable Input)
 {
 	UNiagaraGraph* Graph = GetCalledGraph();
@@ -255,6 +319,24 @@ UEdGraphPin* UNiagaraNodeFunctionCall::AddStaticSwitchInputPin(FNiagaraVariable 
 	}
 
 	return NewPin;
+}
+
+bool UNiagaraNodeFunctionCall::CanModifyPin(const UEdGraphPin* Pin) const
+{
+	if(IsAddPin(Pin))
+	{
+		return false;
+	}
+	
+	if(Signature.IsValid() && (Signature.VariadicInput() || Signature.VariadicOutput()))
+	{
+		if(IsBaseSignatureOfDataInterfaceFunction(Pin) == false)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void UNiagaraNodeFunctionCall::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
@@ -391,8 +473,22 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 
 		if (AllowDynamicPins())
 		{
-			CreateAddPin(EGPD_Input);
-			CreateAddPin(EGPD_Output);
+			if(Signature.IsValid() && (Signature.VariadicInput() || Signature.VariadicOutput()))
+			{
+				if(Signature.VariadicInput())
+				{
+					CreateAddPin(EGPD_Input);
+				}
+				if(Signature.VariadicOutput())
+				{
+					CreateAddPin(EGPD_Output);
+				}
+			}
+			else
+			{
+				CreateAddPin(EGPD_Input);
+				CreateAddPin(EGPD_Output);
+			}
 		}
 
 		// We don't reference an external function, so set an invalid id.
@@ -1013,6 +1109,7 @@ bool UNiagaraNodeFunctionCall::RefreshFromExternalChanges()
 		// TODO - Leverage code in reallocate pins to determine if any pins have changed...
 		ReallocatePins(false);
 		FNiagaraStackGraphUtilities::SynchronizeReferencingMapPinsWithFunctionCall(*this);
+		FNiagaraStackGraphUtilities::FixDynamicInputNodeOutputPinsFromExternalChanges(*this);
 		return true;
 	}
 	else
@@ -1046,6 +1143,47 @@ void UNiagaraNodeFunctionCall::UpdateCompileHashForNode(FSHA1& HashState) const
 {
 	Super::UpdateCompileHashForNode(HashState);
 	HashState.UpdateWithString(*GetFunctionName(), GetFunctionName().Len());
+}
+
+void UNiagaraNodeFunctionCall::UpdateReferencedStaticsHashForNode(FSHA1& HashState) const
+{
+
+	// Assume that we only care about static switch pins and their current values
+	FPinCollectorArray InputPins;
+	GetInputPins(InputPins);
+	for (int32 PinIndex = 0; PinIndex < InputPins.Num(); ++PinIndex)
+	{
+		if (!InputPins[PinIndex])
+		{
+			continue;
+		}
+
+		if (InputPins[PinIndex]->PersistentGuid.IsValid() && InputPins[PinIndex]->LinkedTo.Num() == 0 && InputPins[PinIndex]->bNotConnectable == true)
+		{			
+			HashState.Update((const uint8*)&InputPins[PinIndex]->PersistentGuid, sizeof(InputPins[PinIndex]->PersistentGuid));
+			HashState.UpdateWithString(*InputPins[PinIndex]->DefaultValue, InputPins[PinIndex]->DefaultValue.Len());
+		}
+	}
+
+}
+
+void UNiagaraNodeFunctionCall::GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const
+{
+	Super::GetNodeContextMenuActions(Menu, Context);
+	if ( FunctionScript != nullptr || Signature.Inputs.Num() == 0 )
+	{
+		return;
+	}
+
+	if ( Signature.Inputs[0].GetType().IsDataInterface() == false )
+	{
+		return;
+	}
+
+	if ( UClass* DIClass = Cast<UClass>(Signature.Inputs[0].GetType().GetClass()) )
+	{
+		INiagaraDataInterfaceNodeActionProvider::GetNodeContextMenuActions(DIClass, Menu, Context, Signature);
+	}
 }
 
 bool UNiagaraNodeFunctionCall::HasValidScriptAndGraph() const
@@ -1140,7 +1278,7 @@ void UNiagaraNodeFunctionCall::BuildParameterMapHistory(FNiagaraParameterMapHist
 
 		if (bHasParamMapPin && bRecursive)
 		{
-			ParamMapIdx = OutHistory.TraceParameterMapOutputPin(UNiagaraNode::TraceOutputPin(ParamMapPin->LinkedTo[0]));
+			ParamMapIdx = OutHistory.TraceParameterMapOutputPin((ParamMapPin->LinkedTo[0]));
 		}
 
 		OutHistory.EnterFunction(GetFunctionName(), FunctionScript, FunctionGraph, this);
@@ -1149,9 +1287,9 @@ void UNiagaraNodeFunctionCall::BuildParameterMapHistory(FNiagaraParameterMapHist
 			NodeIdx = OutHistory.BeginNodeVisitation(ParamMapIdx, this);
 		}
 
-		// check if we should be recursing deeper into the graph
-		const bool DoDepthTraversal = (OutHistory.MaxGraphDepthTraversal == INDEX_NONE || OutHistory.CurrentGraphDepth < OutHistory.MaxGraphDepthTraversal);
+		const bool DoDepthTraversal = OutHistory.ShouldProcessDepthTraversal(FunctionGraph);
 
+		// check if we should be recursing deeper into the graph
 		if (DoDepthTraversal)
 		{
 			++OutHistory.CurrentGraphDepth;
@@ -1256,7 +1394,7 @@ void UNiagaraNodeFunctionCall::BuildParameterMapHistory(FNiagaraParameterMapHist
 	}
 }
 
-void UNiagaraNodeFunctionCall::ChangeScriptVersion(FGuid NewScriptVersion, const FNiagaraScriptVersionUpgradeContext& UpgradeContext, bool bShowNotesInStack)
+void UNiagaraNodeFunctionCall::ChangeScriptVersion(FGuid NewScriptVersion, const FNiagaraScriptVersionUpgradeContext& UpgradeContext, bool bShowNotesInStack, bool bDeferOverridePinUpdate)
 {
 	bool bPreviousVersionValid = !InvalidScriptVersionReference.IsValid();
 	if (NewScriptVersion == SelectedScriptVersion && bPreviousVersionValid)
@@ -1286,49 +1424,62 @@ void UNiagaraNodeFunctionCall::ChangeScriptVersion(FGuid NewScriptVersion, const
 	PreviousScriptVersion = bShowNotesInStack ? SelectedScriptVersion : NewScriptVersion;
 	SelectedScriptVersion = NewScriptVersion;
 
+	if (!bDeferOverridePinUpdate)
+	{
+		UpdateOverridePins(UpgradeContext);
+	}
+
+	MarkNodeRequiresSynchronization(__FUNCTION__, true);
+}
+
+void UNiagaraNodeFunctionCall::UpdateOverridePins(const FNiagaraScriptVersionUpgradeContext& UpgradeContext)
+{
 	if (FunctionScript)
 	{
 		// Automatically remove old inputs so it does not show a bunch of warnings to the user
-		TMap<FName, FEdGraphPinType> FunctionInputNames;
+		TMap<FName, FNiagaraTypeDefinition> FunctionInputNames;
 		FPinCollectorArray OverridePins;
 		UNiagaraNodeParameterMapSet* OverrideNode = FNiagaraStackGraphUtilities::GetStackFunctionOverrideNode(*this);
 		if (OverrideNode != nullptr)
 		{
 			OverrideNode->Modify();
 			OverrideNode->GetInputPins(OverridePins);
-			
-			TArray<const UEdGraphPin*> ModuleInputPins;
-			FNiagaraStackGraphUtilities::GetStackFunctionInputPins(*this, ModuleInputPins, UpgradeContext.ConstantResolver, FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
-			for (const UEdGraphPin* InputPin : ModuleInputPins)
+
+			if (!OverridePins.IsEmpty())
 			{
-				FunctionInputNames.Add(FNiagaraParameterHandle(InputPin->PinName).GetName(), InputPin->PinType);
-			}
-		}
-		for (UEdGraphPin* OverridePin : OverridePins)
-		{
-			if (!FNiagaraStackGraphUtilities::IsOverridePinForFunction(*OverridePin, *this))
-			{
-				continue;
-			}
-			FName InputName = FNiagaraParameterHandle(OverridePin->PinName).GetName();
-			FEdGraphPinType* PinType = FunctionInputNames.Find(InputName);
-			if (PinType && *PinType != OverridePin->PinType)
-			{
-				// looks like the type of the module input changed - we'll change the override pin type as well
-				OverridePin->Modify();
-				OverridePin->PinType = *PinType;
-			}
-			else if (PinType == nullptr)
-			{
-				// the input doesn't exist any more, delete the override pin
-				TArray<TWeakObjectPtr<UNiagaraDataInterface>> RemovedDataObjects;
-				FNiagaraStackGraphUtilities::RemoveNodesForStackFunctionInputOverridePin(*OverridePin, RemovedDataObjects);
-				OverrideNode->RemovePin(OverridePin);
+				TArray<FNiagaraVariable> ModuleInputVariables;
+				FNiagaraStackGraphUtilities::GetStackFunctionInputs(*this, ModuleInputVariables, UpgradeContext.ConstantResolver, FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
+				for (const FNiagaraVariable& InputVariable : ModuleInputVariables)
+				{
+					FunctionInputNames.Add(FNiagaraParameterHandle(InputVariable.GetName()).GetName(), InputVariable.GetType());
+				}
+
+				for (UEdGraphPin* OverridePin : OverridePins)
+				{
+					if (!FNiagaraStackGraphUtilities::IsOverridePinForFunction(*OverridePin, *this))
+					{
+						continue;
+					}
+					FName InputName = FNiagaraParameterHandle(OverridePin->PinName).GetName();
+					FNiagaraTypeDefinition* InputType = FunctionInputNames.Find(InputName);
+					FNiagaraTypeDefinition OverridePinType = UEdGraphSchema_Niagara::PinTypeToTypeDefinition(OverridePin->PinType);
+					if (InputType != nullptr && *InputType != OverridePinType)
+					{
+						// looks like the type of the module input changed - we'll change the override pin type as well
+						OverridePin->Modify();
+						OverridePin->PinType = UEdGraphSchema_Niagara::TypeDefinitionToPinType(*InputType);
+					}
+					else if (InputType == nullptr)
+					{
+						// the input doesn't exist any more, delete the override pin
+						TArray<TWeakObjectPtr<UNiagaraDataInterface>> RemovedDataObjects;
+						FNiagaraStackGraphUtilities::RemoveNodesForStackFunctionInputOverridePin(*OverridePin, RemovedDataObjects);
+						OverrideNode->RemovePin(OverridePin);
+					}
+				}
 			}
 		}
 	}
-
-	MarkNodeRequiresSynchronization(__FUNCTION__, true);
 }
 
 UEdGraphPin* UNiagaraNodeFunctionCall::FindParameterMapDefaultValuePin(const FName VariableName, ENiagaraScriptUsage InParentUsage, FCompileConstantResolver ConstantResolver) const
@@ -1468,6 +1619,89 @@ void UNiagaraNodeFunctionCall::AutowireNewNode(UEdGraphPin* FromPin)
 {
 	UNiagaraNode::AutowireNewNode(FromPin);
 	ComputeNodeName();
+}
+
+void UNiagaraNodeFunctionCall::RefreshSignature()
+{
+	if (Signature.IsValid() && Signature.bMemberFunction)
+	{
+		if ((Signature.Inputs.Num() > 0) && Signature.Inputs[0].GetType().IsDataInterface())
+		{
+			UNiagaraDataInterface* CDO = CastChecked<UNiagaraDataInterface>(Signature.Inputs[0].GetType().GetClass()->GetDefaultObject());
+			TArray<FNiagaraFunctionSignature> BaseDIFuncs;
+			CDO->GetFunctions(BaseDIFuncs);
+			if (FNiagaraFunctionSignature* BaseSig = BaseDIFuncs.FindByPredicate([&](const FNiagaraFunctionSignature& CheckSig) { return Signature.Name == CheckSig.Name; }))
+			{
+				//Revert signature to base and re-add dynamic pins as new inputs and outputs.
+				Signature = *BaseSig;				
+
+				FPinCollectorArray FoundPins;
+				GetInputPins(FoundPins);
+
+				for (int32 i = 0; i < FoundPins.Num(); ++i)
+				{
+					UEdGraphPin* InputPin = FoundPins[i];
+					FNiagaraVariable InputVariable = UEdGraphSchema_Niagara::PinToNiagaraVariable(InputPin);
+
+					if(!BaseSig->Inputs.Contains(InputVariable))
+					{
+						Signature.AddInput(InputVariable, FText::FromString(InputPin->PinToolTip));
+					}
+				}
+
+				GetOutputPins(FoundPins);
+
+				for (int32 i = 0; i < FoundPins.Num(); ++i)
+				{
+					UEdGraphPin* OutputPin = FoundPins[i];
+					FNiagaraVariable InputVariable = UEdGraphSchema_Niagara::PinToNiagaraVariable(OutputPin);
+
+					if(!BaseSig->Outputs.Contains(InputVariable))
+					{
+						Signature.AddOutput(UEdGraphSchema_Niagara::PinToNiagaraVariable(OutputPin), FText::FromString(OutputPin->PinToolTip));
+					}
+				}
+
+				return;
+			}
+		}
+	}
+	Signature = FNiagaraFunctionSignature();
+}
+
+bool UNiagaraNodeFunctionCall::IsBaseSignatureOfDataInterfaceFunction(const UEdGraphPin* Pin) const
+{
+	if ((Signature.Inputs.Num() > 0) && Signature.Inputs[0].GetType().IsDataInterface())
+	{
+		UNiagaraDataInterface* CDO = CastChecked<UNiagaraDataInterface>(Signature.Inputs[0].GetType().GetClass()->GetDefaultObject());
+		TArray<FNiagaraFunctionSignature> BaseDIFuncs;
+		CDO->GetFunctions(BaseDIFuncs);
+		if (FNiagaraFunctionSignature* BaseSig = BaseDIFuncs.FindByPredicate([&](const FNiagaraFunctionSignature& CheckSig) { return Signature.Name == CheckSig.Name; }))
+		{
+			FPinCollectorArray FoundPins;
+			TArray<FNiagaraVariable> InputOrOutputVariables;
+
+			if(Pin->Direction == EGPD_Input)
+			{
+				GetInputPins(FoundPins);
+				InputOrOutputVariables = BaseSig->Inputs;
+			}
+			else
+			{
+				GetOutputPins(FoundPins);
+				InputOrOutputVariables = BaseSig->Outputs;
+			}
+			
+			FNiagaraVariable Variable = UEdGraphSchema_Niagara::PinToNiagaraVariable(Pin);
+
+			if(InputOrOutputVariables.Contains(Variable))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 void UNiagaraNodeFunctionCall::ComputeNodeName(FString SuggestedName, bool bForceSuggestion)

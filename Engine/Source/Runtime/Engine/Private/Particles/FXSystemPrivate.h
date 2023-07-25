@@ -57,21 +57,7 @@ enum EParticleCollisionShaderMode
 };
 
 /** Helper function to determine whether the given particle collision shader mode is supported on the given shader platform */
-inline bool IsParticleCollisionModeSupported(EShaderPlatform InPlatform, EParticleCollisionShaderMode InCollisionShaderMode)
-{
-	switch (InCollisionShaderMode)
-	{
-	case PCM_None:
-		return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::ES3_1);
-	case PCM_DepthBuffer:
-		return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5);
-	case PCM_DistanceField:
-		return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5);
-	}
-	check(0);
-	return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5);
-}
-
+extern bool IsParticleCollisionModeSupported(EShaderPlatform InPlatform, EParticleCollisionShaderMode InCollisionShaderMode);
 
 inline EParticleSimulatePhase::Type GetLastParticleSimulationPhase(EShaderPlatform InPlatform)
 {
@@ -283,7 +269,7 @@ public:
 	/** Get the shared SortManager, used in the rendering loop to call FGPUSortManager::OnPreRender() and FGPUSortManager::OnPostRenderOpaque() */
 	virtual FGPUSortManager* GetGPUSortManager() const override;
 
-	virtual void SetSceneTexturesUniformBuffer(FRHIUniformBuffer* InSceneTexturesUniformParams) override { SceneTexturesUniformParams = InSceneTexturesUniformParams; }
+	virtual void SetSceneTexturesUniformBuffer(const TUniformBufferRef<FSceneTextureUniformParameters>& InSceneTexturesUniformParams) override { SceneTexturesUniformParams = InSceneTexturesUniformParams; }
 
 private:
 
@@ -354,7 +340,7 @@ private:
 	void SimulateGPUParticles(
 		FRHICommandListImmediate& RHICmdList,
 		EParticleSimulatePhase::Type Phase,
-		FRHIUniformBuffer* ViewUniformBuffer,
+		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
 		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData
 		);
 
@@ -370,7 +356,7 @@ private:
 	void SimulateGPUParticles_Internal(
 		FRHICommandListImmediate& RHICmdList,
 		EParticleSimulatePhase::Type Phase,
-		FRHIUniformBuffer* ViewUniformBuffer,
+		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
 		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData,
 		FRHITexture2D* SceneDepthTexture,
 		FRHITexture2D* GBufferATexture
@@ -406,10 +392,10 @@ private:
 #endif // #if WITH_EDITOR
 
 #if WITH_MGPU
-	EParticleSimulatePhase::Type PhaseToWaitForTemporalEffect = EParticleSimulatePhase::First;
-	EParticleSimulatePhase::Type PhaseToBroadcastTemporalEffect = EParticleSimulatePhase::First;
+	EParticleSimulatePhase::Type PhaseToWaitForResourceTransfer = EParticleSimulatePhase::First;
+	EParticleSimulatePhase::Type PhaseToBroadcastResourceTransfer = EParticleSimulatePhase::First;
 #endif
 
-	FRHIUniformBuffer* SceneTexturesUniformParams = nullptr;
+	TUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformParams;
 };
 

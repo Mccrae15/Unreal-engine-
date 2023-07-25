@@ -27,16 +27,15 @@
 #include "SDetailNameArea.h"
 #include "SDetailsView.h"
 #include "PropertyEditorPermissionList.h"
-
 #include "ThumbnailRendering/ThumbnailManager.h"
 
 SDetailsViewBase::SDetailsViewBase() :
-	bHasActiveFilter(false)
+	  NumVisibleTopLevelObjectNodes(0)
 	, bIsLocked(false)
 	, bHasOpenColorPicker(false)
-	, bDisableCustomDetailLayouts( false )
-	, NumVisibleTopLevelObjectNodes(0)
+	, bDisableCustomDetailLayouts(false)
 	, bPendingCleanupTimerSet(false)
+	, bRunningDeferredActions(false)
 {
 	UDetailsConfig::Initialize();
 	UDetailsConfig::Get()->LoadEditorConfig();
@@ -71,21 +70,25 @@ TSharedRef<ITableRow> SDetailsViewBase::OnGenerateRowForDetailTree(TSharedRef<FD
 	return InTreeNode->GenerateWidgetForTableView(OwnerTable, DetailsViewArgs.bAllowFavoriteSystem);
 }
 
-void SDetailsViewBase::OnRowReleasedForDetailTree(const TSharedRef<ITableRow>& TableRow)
+void SDetailsViewBase::ClearKeyboardFocusIfWithin(const TSharedRef<SWidget>& Widget) const
 {
 	// search upwards from the current keyboard-focused widget to see if it's contained in our row
 	TSharedPtr<SWidget> CurrentWidget = FSlateApplication::Get().GetKeyboardFocusedWidget();
 	while (CurrentWidget.IsValid())
 	{
-		if (CurrentWidget == TableRow->AsWidget())
+		if (CurrentWidget == Widget)
 		{
 			// if so, clear focus so that any pending value changes are committed
 			FSlateApplication::Get().ClearKeyboardFocus();
 			return;
 		}
-
 		CurrentWidget = CurrentWidget->GetParentWidget();
 	}
+}
+
+void SDetailsViewBase::OnRowReleasedForDetailTree(const TSharedRef<ITableRow>& TableRow)
+{
+	ClearKeyboardFocusIfWithin(TableRow->AsWidget());
 }
 
 void SDetailsViewBase::SetRootExpansionStates(const bool bExpand, const bool bRecurse)
@@ -113,24 +116,38 @@ void SDetailsViewBase::SetRootExpansionStates(const bool bExpand, const bool bRe
 	}
 }
 
-void SDetailsViewBase::SetNodeExpansionState(TSharedRef<FDetailTreeNode> InTreeNode, bool bIsItemExpanded, bool bRecursive)
+void SDetailsViewBase::SetNodeExpansionState(TSharedRef<FDetailTreeNode> InTreeNode, bool bExpand, bool bRecursive)
 {
 	TArray< TSharedRef<FDetailTreeNode> > Children;
 	InTreeNode->GetChildren(Children);
 
 	if (Children.Num())
 	{
-		RequestItemExpanded(InTreeNode, bIsItemExpanded);
+		RequestItemExpanded(InTreeNode, bExpand);
 		const bool bShouldSaveState = true;
-		InTreeNode->OnItemExpansionChanged(bIsItemExpanded, bShouldSaveState);
+		InTreeNode->OnItemExpansionChanged(bExpand, bShouldSaveState);
 
 		if (bRecursive)
 		{
-			for (int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex)
-					{
-				TSharedRef<FDetailTreeNode> Child = Children[ChildIndex];
+			TArray<FString> TypesToIgnoreForRecursiveExpansion;
+			GConfig->GetArray(TEXT("DetailPropertyExpansion"), TEXT("TypesToIgnoreForRecursiveExpansion"), TypesToIgnoreForRecursiveExpansion, GEditorPerProjectIni);
 
-				SetNodeExpansionState(Child, bIsItemExpanded, bRecursive);
+			for (const TSharedRef<FDetailTreeNode>& Child : Children)
+			{
+				if (bExpand)
+				{
+					const FProperty* ChildProperty = Child->GetPropertyNode().IsValid() ? Child->GetPropertyNode()->GetProperty() : nullptr;
+					if (ChildProperty != nullptr)
+					{
+						if (TypesToIgnoreForRecursiveExpansion.Contains(ChildProperty->GetClass()->GetName()))
+						{
+							continue;
+						}
+					}
+				}
+
+
+				SetNodeExpansionState(Child, bExpand, bRecursive);
 			}
 		}
 	}
@@ -188,6 +205,58 @@ TArray< FPropertyPath > SDetailsViewBase::GetPropertiesInOrderDisplayed() const
 	TArray< FPropertyPath > Ret;
 	GetPropertiesInOrderDisplayedRecursive(RootTreeNodes, Ret);
 	return Ret;
+}
+
+static void GetPropertyRowRowNumbersRecursive(const TArray<TSharedRef<FDetailTreeNode>>& TreeNodes, int32& CurrentRowNumber, const TSharedPtr<SDetailTree>& DetailTree, TArray<TPair<int32, FPropertyPath>>& OutResults)
+{
+	for (const TSharedRef<FDetailTreeNode>& TreeNode : TreeNodes)
+	{
+		// pre-order traversal (add parents to list before their children)
+		FPropertyPath Path = TreeNode->GetPropertyPath();
+
+		if(Path.IsValid())
+		{
+			OutResults.Add(TPair<int32, FPropertyPath>(CurrentRowNumber, Path));
+		}
+		++CurrentRowNumber;
+
+		if (!TreeNode->IsLeaf() && DetailTree->IsItemExpanded(TreeNode))
+		{
+			TArray<TSharedRef<FDetailTreeNode>> Children;
+			TreeNode->GetChildren(Children);
+			GetPropertyRowRowNumbersRecursive(Children, CurrentRowNumber, DetailTree, OutResults);
+		}
+	}
+}
+
+TArray<TPair<int32, FPropertyPath>> SDetailsViewBase::GetPropertyRowNumbers() const
+{
+	TArray<TPair<int32, FPropertyPath>> Results;
+	int32 OverallIdx = 0;
+	GetPropertyRowRowNumbersRecursive(RootTreeNodes, OverallIdx, DetailTree, Results);
+	return Results;
+}
+
+static int32 CountRowsRecursive(const TArray<TSharedRef<FDetailTreeNode>>& TreeNodes, const TSharedPtr<SDetailTree>& DetailTree)
+{
+	int32 Count = 0;
+	for (const TSharedRef<FDetailTreeNode>& TreeNode : TreeNodes)
+	{
+		++Count;
+		
+		if (!TreeNode->IsLeaf() && DetailTree->IsItemExpanded(TreeNode))
+		{
+			TArray<TSharedRef<FDetailTreeNode>> Children;
+			TreeNode->GetChildren(Children);
+			Count += CountRowsRecursive(Children, DetailTree);
+		}
+	}
+	return Count;
+}
+
+int32 SDetailsViewBase::CountRows() const
+{
+	return CountRowsRecursive(RootTreeNodes, DetailTree);
 }
 
 // construct a map for fast FPropertyPath.ToString() -> FDetailTreeNode lookup
@@ -270,6 +339,11 @@ void SDetailsViewBase::SetOnDisplayedPropertiesChanged(FOnDisplayedPropertiesCha
 	OnDisplayedPropertiesChangedDelegate = InOnDisplayedPropertiesChangedDelegate;
 }
 
+void SDetailsViewBase::SetRightColumnMinWidth(float InMinWidth)
+{
+	ColumnSizeData.SetRightColumnMinWidth(InMinWidth);
+}
+
 void SDetailsViewBase::RerunCurrentFilter()
 {
 	UpdateFilteredDetails();
@@ -313,81 +387,84 @@ void SDetailsViewBase::EnqueueDeferredAction(FSimpleDelegate& DeferredAction)
 	DeferredActions.Add(DeferredAction);
 }
 
-/**
-* Creates the color picker window for this property view.
-*
-* @param Node				The slate property node to edit.
-* @param bUseAlpha			Whether or not alpha is supported
-*/
+namespace UE::PropertyEditor::Private
+{
+/** Set the color for the property node */
+void SDetailsViewBase_SetColor(FLinearColor NewColor, TWeakPtr<IPropertyHandle> WeakPropertyHandle)
+{
+	if (TSharedPtr<IPropertyHandle> PropertyHandle = WeakPropertyHandle.Pin())
+	{
+		const FProperty* NodeProperty = PropertyHandle->GetProperty();
+		check(NodeProperty);
+
+		const UScriptStruct* Struct = CastField<FStructProperty>(NodeProperty)->Struct;
+		if (Struct->GetFName() == NAME_Color)
+		{
+			const bool bSRGB = true;
+			FColor NewFColor = NewColor.ToFColor(bSRGB);
+			ensure(PropertyHandle->SetValueFromFormattedString(NewFColor.ToString(), EPropertyValueSetFlags::DefaultFlags) == FPropertyAccess::Result::Success);
+		}
+		else
+		{
+			check(Struct->GetFName() == NAME_LinearColor);
+			ensure(PropertyHandle->SetValueFromFormattedString(NewColor.ToString(), EPropertyValueSetFlags::DefaultFlags) == FPropertyAccess::Result::Success);
+		}
+	}
+}
+}//namespace
+
 void SDetailsViewBase::CreateColorPickerWindow(const TSharedRef< FPropertyEditor >& PropertyEditor, bool bUseAlpha)
 {
-	const TSharedRef< FPropertyNode > PinnedColorPropertyNode = PropertyEditor->GetPropertyNode();
-	ColorPropertyNode = PinnedColorPropertyNode;
-
-	FProperty* Property = PinnedColorPropertyNode->GetProperty();
+	const FProperty* Property = PropertyEditor->GetProperty();
 	check(Property);
 
 	FReadAddressList ReadAddresses;
-	PinnedColorPropertyNode->GetReadAddress(false, ReadAddresses, false);
+	PropertyEditor->GetPropertyNode()->GetReadAddress(false, ReadAddresses, false);
 
-	TArray<FLinearColor*> LinearColor;
-	TArray<FColor*> DWORDColor;
-	for (int32 ColorIndex = 0; ColorIndex < ReadAddresses.Num(); ++ColorIndex)
+	TOptional<FLinearColor> DefaultColor;
+	bool bClampValue = false;
+	if (ReadAddresses.Num())
 	{
-		const uint8* Addr = ReadAddresses.GetAddress(ColorIndex);
-		if (Addr)
+		for (int32 ColorIndex = 0; ColorIndex < ReadAddresses.Num(); ++ColorIndex)
 		{
-			if (CastField<FStructProperty>(Property)->Struct->GetFName() == NAME_Color)
+			const uint8* Addr = ReadAddresses.GetAddress(ColorIndex);
+			if (Addr)
 			{
-				DWORDColor.Add((FColor*)Addr);
-			}
-			else
-			{
-				check(CastField<FStructProperty>(Property)->Struct->GetFName() == NAME_LinearColor);
-				LinearColor.Add((FLinearColor*)Addr);
+				if (CastField<FStructProperty>(Property)->Struct->GetFName() == NAME_Color)
+				{
+					DefaultColor = *reinterpret_cast<const FColor*>(Addr);
+					bClampValue = true;
+				}
+				else
+				{
+					check(CastField<FStructProperty>(Property)->Struct->GetFName() == NAME_LinearColor);
+					DefaultColor = *reinterpret_cast<const FLinearColor*>(Addr);
+				}
 			}
 		}
 	}
 
-	bHasOpenColorPicker = true;
-
-	FColorPickerArgs PickerArgs;
-	PickerArgs.ParentWidget = AsShared();
-	PickerArgs.bUseAlpha = bUseAlpha;
-	PickerArgs.DisplayGamma = TAttribute<float>::Create(TAttribute<float>::FGetter::CreateUObject(GEngine, &UEngine::GetDisplayGamma));
-	PickerArgs.ColorArray = &DWORDColor;
-	PickerArgs.LinearColorArray = &LinearColor;
-	PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateSP(this, &SDetailsViewBase::SetColorPropertyFromColorPicker);
-	PickerArgs.OnColorPickerWindowClosed = FOnWindowClosed::CreateSP(this, &SDetailsViewBase::OnColorPickerWindowClosed);
-	PickerArgs.OptionalOwningDetailsView = AsShared();
-	OpenColorPicker(PickerArgs);
-}
-
-void SDetailsViewBase::SetColorPropertyFromColorPicker(FLinearColor NewColor)
-{
-	const TSharedPtr< FPropertyNode > PinnedColorPropertyNode = ColorPropertyNode.Pin();
-	if (ensure(PinnedColorPropertyNode.IsValid()))
+	if (DefaultColor.IsSet())
 	{
-		FProperty* Property = PinnedColorPropertyNode->GetProperty();
-		check(Property);
+		bHasOpenColorPicker = true;
+		ColorPropertyNode = PropertyEditor->GetPropertyNode();
 
-		FObjectPropertyNode* ObjectNode = PinnedColorPropertyNode->FindObjectItemParent();
-
-		if (ObjectNode && ObjectNode->GetNumObjects())
-		{
-			FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "SetColorProperty", "Set Color Property"));
-
-			PinnedColorPropertyNode->NotifyPreChange(Property, GetNotifyHook());
-
-			FPropertyChangedEvent ChangeEvent(Property, EPropertyChangeType::ValueSet);
-			PinnedColorPropertyNode->NotifyPostChange(ChangeEvent, GetNotifyHook());
-		}
+		TWeakPtr<IPropertyHandle> WeakPropertyHandle = PropertyEditor->GetPropertyHandle();
+		FColorPickerArgs PickerArgs = FColorPickerArgs(DefaultColor.GetValue(), FOnLinearColorValueChanged::CreateStatic(&UE::PropertyEditor::Private::SDetailsViewBase_SetColor, WeakPropertyHandle));
+		PickerArgs.ParentWidget = AsShared();
+		PickerArgs.bUseAlpha = bUseAlpha;
+		PickerArgs.bClampValue = bClampValue;
+		PickerArgs.DisplayGamma = TAttribute<float>::Create(TAttribute<float>::FGetter::CreateUObject(GEngine, &UEngine::GetDisplayGamma));
+		PickerArgs.OnColorPickerWindowClosed = FOnWindowClosed::CreateSP(this, &SDetailsViewBase::OnColorPickerWindowClosed);
+		PickerArgs.OptionalOwningDetailsView = AsShared();
+		OpenColorPicker(PickerArgs);
 	}
 }
-
 
 void SDetailsViewBase::UpdatePropertyMaps()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SDetailsView::UpdatePropertyMaps);
+
 	RootTreeNodes.Empty();
 
 	for(FDetailLayoutData& LayoutData : DetailLayouts)
@@ -490,18 +567,6 @@ void SDetailsViewBase::UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> 
 
 void SDetailsViewBase::OnColorPickerWindowClosed(const TSharedRef<SWindow>& Window)
 {
-	const TSharedPtr< FPropertyNode > PinnedColorPropertyNode = ColorPropertyNode.Pin();
-	if (ensure(PinnedColorPropertyNode.IsValid()))
-	{
-		FProperty* Property = PinnedColorPropertyNode->GetProperty();
-		if (Property && PropertyUtilities.IsValid())
-		{
-			FPropertyChangedEvent ChangeEvent(Property, EPropertyChangeType::ArrayAdd);
-			PinnedColorPropertyNode->FixPropertiesInEvent(ChangeEvent);
-			PropertyUtilities->NotifyFinishedChangingProperties(ChangeEvent);
-		}
-	}
-
 	// A color picker window is no longer open
 	bHasOpenColorPicker = false;
 	ColorPropertyNode.Reset();
@@ -608,7 +673,7 @@ void SDetailsViewBase::SaveCustomExpansionState(const FString& NodePath, bool bI
 {
 	if (bIsExpanded)
 	{
-		ExpandedDetailNodes.Add(NodePath);
+		ExpandedDetailNodes.Insert(NodePath);
 	}
 	else
 	{
@@ -818,10 +883,6 @@ void SDetailsViewBase::FilterView(const FString& InFilter)
 	ParseString.TrimStartAndEndInline();
 	ParseString.ParseIntoArray(CurrentFilterStrings, TEXT(" "), true);
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	bHasActiveFilter = CurrentFilterStrings.Num() > 0;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	
 	CurrentFilter.FilterStrings = CurrentFilterStrings;
 
 	if (!bHadActiveFilter && CurrentFilter.FilterStrings.Num() > 0)
@@ -924,6 +985,8 @@ void SDetailsViewBase::HandlePendingCleanup()
 /** Ticks the property view.  This function performs a data consistency check */
 void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SDetailsViewBase::Tick);
+
 	HandlePendingCleanup();
 
 	FDetailsViewConfig* ViewConfig = GetMutableViewConfig();
@@ -949,7 +1012,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 		}
 
 		if (bHadDeferredActions)
-		{		
+		{
 			// Any deferred actions are likely to cause the node tree to be at least partially rebuilt
 			// Save the expansion state of existing nodes so we can expand them later
 			SaveExpandedItems(RootPropertyNode.ToSharedRef());
@@ -972,6 +1035,9 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 
 	if (bHadDeferredActions)
 	{
+		bRunningDeferredActions = true;
+		ON_SCOPE_EXIT { bRunningDeferredActions = false; };
+
 		TArray<FSimpleDelegate> DeferredActionsCopy;
 		
 		do
@@ -986,7 +1052,12 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 				DeferredAction.ExecuteIfBound();
 			}
 		} while (DeferredActions.Num() > 0);
+	}
 
+	if (bHadDeferredActions)
+	{
+		// Restore expansion state after processing all deferred actions. Must be done outside of the scope where
+		// bRunningDeferredActions is true since RestoreAllExpandedItems returns immediately when it is true
 		RestoreAllExpandedItems();
 	}
 
@@ -1117,7 +1188,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 * @param InPropertyNode			The node to get expanded items from
 * @param OutExpandedItems	List of expanded items that were found
 */
-static void GetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, TSet<FString>& OutExpandedItems)
+static void GetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, FStringPrefixTree& OutExpandedItems)
 {
 	if (InPropertyNode->HasNodeFlags(EPropertyNodeFlags::Expanded))
 	{
@@ -1126,7 +1197,7 @@ static void GetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, TSet<FStr
 		Path.Empty(128);
 		InPropertyNode->GetQualifiedName(Path, bWithArrayIndex);
 
-		OutExpandedItems.Add(Path);
+		OutExpandedItems.Insert(Path);
 	}
 
 	for (int32 ChildIndex = 0; ChildIndex < InPropertyNode->GetNumChildNodes(); ++ChildIndex)
@@ -1141,7 +1212,7 @@ static void GetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, TSet<FStr
 * @param InNode			The node to set expanded items on
 * @param OutExpandedItems	List of expanded items to set
 */
-static void SetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, const TSet<FString>& InExpandedItems, bool bCollapseRest)
+static void SetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, const FStringPrefixTree& InExpandedItems, bool bCollapseRest)
 {
 	const bool bWithArrayIndex = true;
 	FString Path;
@@ -1157,21 +1228,7 @@ static void SetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, const TSe
 		InPropertyNode->SetNodeFlags(EPropertyNodeFlags::Expanded, false);
 	}
 
-	bool bAnyPrefix = false;
-	for (const FString& Item : InExpandedItems)
-	{
-		// check if this path is a prefix to some other path
-		// if it's not, we can early out and skip checking every child node, which is a win for very large child arrays
-		if (Item.Len() > Path.Len() && 
-			(Item[Path.Len()] == '[' || Item[Path.Len()] == '.') &&
-			Item.StartsWith(Path))
-		{
-			bAnyPrefix = true;
-			break;
-		}
-	}
-
-	if (bAnyPrefix)
+	if (InExpandedItems.AnyStartsWith(Path))
 	{
 		for (int32 NodeIndex = 0; NodeIndex < InPropertyNode->GetNumChildNodes(); ++NodeIndex)
 		{
@@ -1182,7 +1239,7 @@ static void SetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, const TSe
 
 void SDetailsViewBase::SavePreSearchExpandedItems()
 {
-	PreSearchExpandedItems.Reset();
+	PreSearchExpandedItems.Clear();
 
 	FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
 
@@ -1200,7 +1257,7 @@ void SDetailsViewBase::SavePreSearchExpandedItems()
 		}
 	}
 
-	PreSearchExpandedCategories.Reset();
+	PreSearchExpandedCategories.Clear();
 
 	for (const TSharedRef<FDetailTreeNode>& RootNode : RootTreeNodes)
 	{
@@ -1209,7 +1266,7 @@ void SDetailsViewBase::SavePreSearchExpandedItems()
 			FDetailCategoryImpl& Category = (FDetailCategoryImpl&) RootNode.Get();
 			if (Category.ShouldBeExpanded())
 			{
-				PreSearchExpandedCategories.Add(Category.GetCategoryPathName());
+				PreSearchExpandedCategories.Insert(Category.GetCategoryPathName());
 			}
 		}
 	}
@@ -1233,7 +1290,7 @@ void SDetailsViewBase::RestorePreSearchExpandedItems()
 		}
 	}
 
-	PreSearchExpandedItems.Reset();
+	PreSearchExpandedItems.Clear();
 
 	for (const TSharedRef<FDetailTreeNode>& RootNode : RootTreeNodes)
 	{
@@ -1246,34 +1303,33 @@ void SDetailsViewBase::RestorePreSearchExpandedItems()
 		}
 	}
 
-	PreSearchExpandedCategories.Reset();
+	PreSearchExpandedCategories.Clear();
 }
 
 void SDetailsViewBase::SaveExpandedItems(TSharedRef<FPropertyNode> StartNode)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SDetailsView::SaveExpandedItems);
+
+	if (bRunningDeferredActions)
+	{
+		// Deferred actions can manipulate the tree, eg. Add Item
+		// However, there's no reason for us to save expanded items during deferred actions, 
+		// because the expansion state was already stored at the beginning and will be restored afterwards.
+		return;
+	}
+
 	UStruct* BestBaseStruct = StartNode->FindComplexParent()->GetBaseStructure();
 
-	TSet<FString> ExpandedPropertyItemSet;
+	FStringPrefixTree ExpandedPropertyItemSet;
 	GetExpandedItems(StartNode, ExpandedPropertyItemSet);
 
-	TArray<FString> ExpandedPropertyItems = ExpandedPropertyItemSet.Array();
+	TArray<FString> ExpandedPropertyItems = ExpandedPropertyItemSet.GetAllEntries();
 
 	// Handle spaces in expanded node names by wrapping them in quotes
 	for (FString& String : ExpandedPropertyItems)
 	{
 		String.InsertAt(0, '"');
 		String.AppendChar('"');
-	}
-
-	TArray<FString> ExpandedCustomItems = ExpandedDetailNodes.Array();
-
-	// Expanded custom items may have spaces but SetSingleLineArray doesn't support spaces (treats it as another element in the array)
-	// Append a '|' after each element instead
-	FString ExpandedCustomItemsString;
-	for (const FString& DetailNode : ExpandedDetailNodes)
-	{
-		ExpandedCustomItemsString += DetailNode;
-		ExpandedCustomItemsString += TEXT(",");
 	}
 
 	//while a valid class, and we're either the same as the base class (for multiple actors being selected and base class is AActor) OR we're not down to AActor yet)
@@ -1298,22 +1354,41 @@ void SDetailsViewBase::SaveExpandedItems(TSharedRef<FPropertyNode> StartNode)
 
 	if (DetailLayouts.Num() > 0 && BestBaseStruct)
 	{
-		bool bShouldSave = !ExpandedCustomItemsString.IsEmpty();
+		TArray<FString> ExpandedCustomItems = ExpandedDetailNodes.GetAllEntries();
+
+		// Expanded custom items may have spaces but SetSingleLineArray doesn't support spaces (treats it as another element in the array)
+		// Append a ',' after each element instead
+		TStringBuilder<256> ExpandedCustomItemsBuilder;
+		ExpandedCustomItemsBuilder.Join(ExpandedCustomItems, TEXT(","));
+
+		// if there are no expanded custom items currently, save if there used to be items
+		bool bShouldSave = ExpandedCustomItemsBuilder.Len() > 0;
 		if (!bShouldSave)
 		{
 			FString DummyExpandedCustomItemsString;
 			GConfig->GetString(TEXT("DetailCustomWidgetExpansion"), *BestBaseStruct->GetName(), DummyExpandedCustomItemsString, GEditorPerProjectIni);
 			bShouldSave = !DummyExpandedCustomItemsString.IsEmpty();
 		}
+
 		if (bShouldSave)
 		{
-			GConfig->SetString(TEXT("DetailCustomWidgetExpansion"), *BestBaseStruct->GetName(), *ExpandedCustomItemsString, GEditorPerProjectIni);
+			GConfig->SetString(TEXT("DetailCustomWidgetExpansion"), *BestBaseStruct->GetName(), *ExpandedCustomItemsBuilder, GEditorPerProjectIni);
 		}
 	}
 }
 
 void SDetailsViewBase::RestoreAllExpandedItems()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SDetailsViewBase::RestoreAllExpandedItems);
+
+	if (bRunningDeferredActions)
+	{
+		// Deferred actions can manipulate the tree, eg. Add Item
+		// However, there's no reason for us to restore expanded items during deferred actions, 
+		// because the expansion state was already stored at the beginning and will be restored afterwards.
+		return;
+	}
+
 	for (TSharedPtr<FComplexPropertyNode>& RootPropertyNode : GetRootNodes())
 	{
 		check(RootPropertyNode.IsValid());
@@ -1333,6 +1408,14 @@ void SDetailsViewBase::RestoreAllExpandedItems()
 
 void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode)
 {
+	if (bRunningDeferredActions)
+	{
+		// Deferred actions can manipulate the tree, eg. Add Item
+		// However, there's no reason for us to restore expanded items during deferred actions,
+		// because the expansion state was already stored at the beginning and will be restored afterwards.
+		return;
+	}
+
 	UStruct* BestBaseStruct = StartNode->FindComplexParent()->GetBaseStructure();
 
 	//while a valid class, and we're either the same as the base class (for multiple actors being selected and base class is AActor) OR we're not down to AActor yet)
@@ -1342,9 +1425,10 @@ void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode)
 		GConfig->GetSingleLineArray(TEXT("DetailPropertyExpansion"), *Struct->GetName(), DetailPropertyExpansionStrings, GEditorPerProjectIni);
 	}
 
-	TSet<FString> ExpandedPropertyItems;
-	ExpandedPropertyItems.Append(DetailPropertyExpansionStrings);
-	SetExpandedItems(StartNode, ExpandedPropertyItems, false);
+	FStringPrefixTree PrefixTree;
+	PrefixTree.InsertAll(DetailPropertyExpansionStrings);
+
+	SetExpandedItems(StartNode, PrefixTree, false);
 
 	if (BestBaseStruct)
 	{
@@ -1354,7 +1438,7 @@ void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode)
 		TArray<FString> ExpandedCustomItemsArray;
 		ExpandedCustomItems.ParseIntoArray(ExpandedCustomItemsArray, TEXT(","), true);
 
-		ExpandedDetailNodes.Append(ExpandedCustomItemsArray);
+		ExpandedDetailNodes.InsertAll(ExpandedCustomItemsArray);
 	}
 }
 
@@ -1399,6 +1483,8 @@ void SDetailsViewBase::FilterRootNode(const TSharedPtr<FComplexPropertyNode>& Ro
 
 void SDetailsViewBase::UpdateFilteredDetails()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SDetailsViewBase::UpdateFilteredDetails);
+
 	RootTreeNodes.Reset();
 
 	FDetailNodeList InitialRootNodeList;

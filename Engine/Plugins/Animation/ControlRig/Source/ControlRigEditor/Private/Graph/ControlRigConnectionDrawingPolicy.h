@@ -12,6 +12,11 @@ public:
 	FControlRigConnectionDrawingPolicy(int32 InBackLayerID, int32 InFrontLayerID, float InZoomFactor, const FSlateRect& InClippingRect, FSlateWindowElementList& InDrawElements, UEdGraph* InGraphObj)
 		: FKismetConnectionDrawingPolicy(InBackLayerID, InFrontLayerID, InZoomFactor, InClippingRect, InDrawElements, InGraphObj)
 	{
+		CastImage = FAppStyle::GetBrush( TEXT("GraphEditor.Cast_16x") );
+		ArrowImage = nullptr;
+		ArrowRadius = CastImage->ImageSize * InZoomFactor * 0.5f;
+		MidpointImage = nullptr;
+		MidpointRadius = CastImage->ImageSize * InZoomFactor * 0.5f;
 	}
 
 	virtual void SetIncompatiblePinDrawState(const TSharedPtr<SGraphPin>& StartPin, const TSet< TSharedRef<SWidget> >& VisiblePins) override;
@@ -31,10 +36,11 @@ private:
 	// Each time a reroute node is encountered, input geometry is compared to output geometry to see if the pins on the reroute node need to be reversed
 	TMap<UControlRigGraphNode*, bool> RerouteNodeToReversedDirectionMap;
 
-	FORCEINLINE bool UseLowDetailConnections() const { return ZoomFactor <= 0.175f; /* zoom level -9 */ }
+	bool UseLowDetailConnections() const { return ZoomFactor <= 0.175f; /* zoom level -9 */ }
 
 	bool ShouldChangeTangentForReouteControlPoint(UControlRigGraphNode* Node);
 	// Average of the positions of all pins connected to InPin
 	bool GetAverageConnectedPositionForPin(UEdGraphPin* InPin, FVector2D& OutPos) const;
 
+	const FSlateBrush* CastImage;
 };

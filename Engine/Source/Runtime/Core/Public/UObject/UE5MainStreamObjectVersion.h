@@ -280,6 +280,54 @@ struct CORE_API FUE5MainStreamObjectVersion
 		// Replace FNames for class/actor paths with FSoftObjectPath
 		WorldPartitionActorDescActorAndClassPaths,
 
+		// Reintroducing AnimationDataModelInterface_BackedOut changes
+		ReintroduceAnimationDataModelInterface,
+
+		// Support 16-bit skin weights on SkeletalMesh
+		IncreasedSkinWeightPrecision,
+
+		// bIsUsedWithVolumetricCloud flag auto conversion
+		MaterialHasIsUsedWithVolumetricCloudFlag,
+
+		// bIsUsedWithVolumetricCloud flag auto conversion
+		UpdateHairDescriptionBulkData,
+
+		// Added TransformScaleMethod pin to SpawnActorFromClass node
+		SpawnActorFromClassTransformScaleMethod,
+
+		// Added support for the RigVM to run branches lazily
+		RigVMLazyEvaluation,
+
+		// Adding additional object version to defer out-of-date pose asset warning until next resaves
+		PoseAssetRawDataGUIDUpdate,
+
+		// Store function information (and compilation data) in blueprint generated class
+		RigVMSaveFunctionAccessInModel,
+
+		// Store the RigVM execute context struct the VM uses in the archive
+		RigVMSerializeExecuteContextStruct,
+
+		// Store the Visual Logger timestamp as a double
+		VisualLoggerTimeStampAsDouble,
+
+		// Add ThinSurface instance override support
+		MaterialInstanceBasePropertyOverridesThinSurface,
+
+		// Add refraction mode None, converted from legacy when the refraction pin is not plugged.
+		MaterialRefractionModeNone,
+
+		// Store serialized graph function in the function data
+		RigVMSaveSerializedGraphInGraphFunctionData,
+
+		// Animation Sequence now stores its frame-rate on a per-platform basis
+		PerPlatformAnimSequenceTargetFrameRate,
+		
+		// New default for number of attributes on 2d grids
+		NiagaraGrid2DDefaultUnnamedAttributesZero,
+
+		// RigVM generated class refactor
+		RigVMGeneratedClass,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

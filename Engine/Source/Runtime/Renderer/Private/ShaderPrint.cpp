@@ -3,6 +3,7 @@
 #include "ShaderPrint.h"
 #include "ShaderPrintParameters.h"
 
+#include "DataDrivenShaderPlatformInfo.h"
 #include "ShaderParameterStruct.h"
 #include "CommonRenderResources.h"
 #include "Containers/DynamicRHIResourceArray.h"
@@ -75,6 +76,31 @@ namespace ShaderPrint
 		TEXT("Lock the line drawing.\n"),
 		ECVF_Cheat | ECVF_RenderThreadSafe);
 
+
+	static TAutoConsoleVariable<int32> CVarDrawZoomEnable(
+		TEXT("r.ShaderPrint.Zoom"),
+		0,
+		TEXT("Enable zoom magnification around the mouse cursor.\n"),
+		ECVF_Cheat | ECVF_RenderThreadSafe);
+
+	static TAutoConsoleVariable<int32> CVarDrawZoomPixel(
+		TEXT("r.ShaderPrint.Zoom.Pixel"),
+		16,
+		TEXT("Number of pixels magnified around the mouse cursor.\n"),
+		ECVF_Cheat | ECVF_RenderThreadSafe);
+
+	static TAutoConsoleVariable<int32> CVarDrawZoomFactor(
+		TEXT("r.ShaderPrint.Zoom.Factor"),
+		8,
+		TEXT("Zoom factor for magnification around the mouse cursor.\n"),
+		ECVF_Cheat | ECVF_RenderThreadSafe);
+
+	static TAutoConsoleVariable<int32> CVarDrawZoomCorner(
+		TEXT("r.ShaderPrint.Zoom.Corner"),
+		3,
+		TEXT("Select in which corner the zoom magnifer is displayed (0:top-left, 1:top-right, 2:bottom-right, 3:bottom-left).\n"),
+		ECVF_Cheat | ECVF_RenderThreadSafe);
+
 	//////////////////////////////////////////////////////////////////////////////////////////////////
 	// Global states
 
@@ -83,8 +109,15 @@ namespace ShaderPrint
 	static uint32 GLineRequestCount = 0;
 	static uint32 GTriangleRequestCount = 0;
 	static FViewInfo* GDefaultView = nullptr;
-	static TArray<FFrozenShaderPrintData> GShaderPrintDataToRender;
-
+	
+	struct FQueuedRenderItem
+	{
+		FFrozenShaderPrintData Payload;
+		FSceneInterface const* Scene = nullptr;
+		uint32 FrameForGC = 0;
+	};
+	static TArray<FQueuedRenderItem> GQueuedRenderItems;
+	
 	//////////////////////////////////////////////////////////////////////////////////////////////////
 	// Struct & Functions
 
@@ -249,9 +282,17 @@ namespace ShaderPrint
 		GTriangleRequestCount += InCount;
 	}
 
+	void SubmitShaderPrintData(FFrozenShaderPrintData& InData, FSceneInterface const* InScene)
+	{
+		// Queue with a frame number so that we can garbage collect if no matching view ever renders.
+		GQueuedRenderItems.Add({InData, InScene, GFrameNumberRenderThread + 10});
+	}
+
 	void SubmitShaderPrintData(FFrozenShaderPrintData& InData)
 	{
-		GShaderPrintDataToRender.Add(InData);
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		SubmitShaderPrintData(InData, nullptr);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////
@@ -515,6 +556,32 @@ namespace ShaderPrint
 		SHADER_PARAMETER_STRUCT_INCLUDE(FShaderDrawDebugPS::FParameters, PS)
 	END_SHADER_PARAMETER_STRUCT()
 
+
+	// Shader to zoom the final output
+	class FShaderZoomCS : public FGlobalShader
+	{
+	public:
+		DECLARE_GLOBAL_SHADER(FShaderZoomCS);
+		SHADER_USE_PARAMETER_STRUCT(FShaderZoomCS, FGlobalShader);
+
+		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+			SHADER_PARAMETER(uint32, PixelExtent)
+			SHADER_PARAMETER(uint32, ZoomFactor)
+			SHADER_PARAMETER(uint32, Corner)
+			SHADER_PARAMETER(FIntPoint, Resolution)
+			SHADER_PARAMETER_STRUCT_REF(FShaderPrintCommonParameters, Common)
+			SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, InTexture)
+			SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutTexture)
+		END_SHADER_PARAMETER_STRUCT()
+
+		static bool ShouldCompilePermutation(FGlobalShaderPermutationParameters const& Parameters)
+		{
+			return IsSupported(Parameters.Platform);
+		}
+	};
+
+	IMPLEMENT_GLOBAL_SHADER(FShaderZoomCS, "/Engine/Private/ShaderPrintDraw.usf", "DrawZoomCS", SF_Compute);
+
 	//////////////////////////////////////////////////////////////////////////////////////////////////
 	// Setup render data
 
@@ -681,18 +748,27 @@ namespace ShaderPrint
 			return;
 		}
 
-		// Invalid to call begin twice for the same view.
-		ensure(GDefaultView != &View);
-		if (GDefaultView == nullptr)
-		{
-			GDefaultView = &View;
-		}
-
 		// Create the render data and store on the view.
 		FShaderPrintSetup ShaderPrintSetup(View);
 		View.ShaderPrintData = CreateShaderPrintData(GraphBuilder, ShaderPrintSetup, View.ViewState);
+	}
 
-		// Reset counter which is read on the next BeginView().
+	void BeginViews(FRDGBuilder& GraphBuilder, TArrayView<FViewInfo> Views)
+	{
+		ensure(GDefaultView == nullptr);
+		if (Views.Num() > 0)
+		{
+			GDefaultView = &Views[0];
+		}
+
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		{
+			FViewInfo& View = Views[ViewIndex];
+			RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
+			BeginView(GraphBuilder, View);
+		}
+
+		// Reset counters which are read on the next BeginViews().
 		GCharacterRequestCount = 0;
 		GWidgetRequestCount = 0;
 		GLineRequestCount = 0;
@@ -709,7 +785,7 @@ namespace ShaderPrint
 		// Initialize graph managed resources
 		const uint32 UintElementCount = GetCountersUintSize() + GetPackedSymbolUintSize() * GetMaxSymbolCountFromValueCount(ShaderPrintData.Setup.MaxValueCount);
 		FRDGBufferRef SymbolBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(4, UintElementCount), TEXT("ShaderPrint.SymbolBuffer"));
-		FRDGBufferRef IndirectDispatchArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc(4), TEXT("ShaderPrint.IndirectDispatchArgs"));
+		FRDGBufferRef IndirectDispatchArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("ShaderPrint.IndirectDispatchArgs"));
 		FRDGBufferRef IndirectDrawArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc(5), TEXT("ShaderPrint.IndirectDrawArgs"));
 
 		// Non graph managed resources
@@ -929,6 +1005,36 @@ namespace ShaderPrint
 			});
 	}
 
+	void InternalDrawZoom(FRDGBuilder& GraphBuilder, const FShaderPrintData& ShaderPrintData, const FScreenPassTexture& OutputTexture)
+	{
+		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+		FRDGTextureDesc Desc = OutputTexture.Texture->Desc;
+		Desc.Flags |= ETextureCreateFlags::UAV;
+		FRDGTextureRef OutZoomTexture = GraphBuilder.CreateTexture(Desc, TEXT("ShaderPrint.OutZoomTexture"));
+		AddCopyTexturePass(GraphBuilder, OutputTexture.Texture, OutZoomTexture);
+
+		TShaderMapRef<FShaderZoomCS> ComputeShader(GlobalShaderMap);
+
+		FShaderZoomCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FShaderZoomCS::FParameters>();
+		PassParameters->PixelExtent = FMath::Clamp(CVarDrawZoomPixel.GetValueOnRenderThread(), 2, 128);
+		PassParameters->ZoomFactor  = FMath::Clamp(CVarDrawZoomFactor.GetValueOnRenderThread(), 1, 10);
+		PassParameters->Resolution = OutputTexture.Texture->Desc.Extent;
+		PassParameters->Corner = FMath::Clamp(CVarDrawZoomCorner.GetValueOnRenderThread(), 0, 3);
+		PassParameters->Common = ShaderPrintData.UniformBuffer;
+		PassParameters->InTexture = OutputTexture.Texture;
+		PassParameters->OutTexture = GraphBuilder.CreateUAV(OutZoomTexture);
+
+		const uint32 SrcPixelCount = PassParameters->PixelExtent * 2 + 1;
+		const uint32 OutPixelCount = PassParameters->ZoomFactor * SrcPixelCount;
+		const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(FIntPoint(PassParameters->PixelExtent * 2 + 1), FIntPoint(8));
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("ShaderPrint::DrawZoom"),
+			ComputeShader, PassParameters, GroupCount);
+
+		AddCopyTexturePass(GraphBuilder, OutZoomTexture, OutputTexture.Texture);
+	}
+
 	void InternalDrawView(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FShaderPrintData& ShaderPrintData, const FScreenPassTexture& OutputTexture, const FScreenPassTexture& DepthTexture)
 	{
 		if (!ensure(OutputTexture.IsValid()))
@@ -968,6 +1074,13 @@ namespace ShaderPrint
 			const int32 FrameNumber = View.Family ? View.Family->FrameNumber : 0u;
 			InternalDrawView_Characters(GraphBuilder, ShaderPrintData, OutputViewRect, FrameNumber, OutputTexture);
 		}
+
+		// Zoom
+		const bool bZoom = CVarDrawZoomEnable.GetValueOnRenderThread() > 0;
+		if (bZoom)
+		{
+			InternalDrawZoom(GraphBuilder, ShaderPrintData, OutputTexture);
+		}
 	}
 
 	void DrawView(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FScreenPassTexture& OutputTexture, const FScreenPassTexture& DepthTexture)
@@ -976,17 +1089,32 @@ namespace ShaderPrint
 		InternalDrawView(GraphBuilder, View, View.ShaderPrintData, OutputTexture, DepthTexture);
 
 		// Draw any externally enqueued shader print data.
-		for (FFrozenShaderPrintData& ShaderPrintDataToRender : GShaderPrintDataToRender)
+		FSceneInterface const* Scene = View.Family != nullptr ? View.Family->Scene : nullptr;
+		for (FQueuedRenderItem& ShaderPrintDataToRender : GQueuedRenderItems)
 		{
-			FShaderPrintData ShaderPrintData = UnFreezeShaderPrintData(GraphBuilder, ShaderPrintDataToRender);
-			InternalDrawView(GraphBuilder, View, ShaderPrintData, OutputTexture, DepthTexture);
+			if (ShaderPrintDataToRender.Scene == nullptr || ShaderPrintDataToRender.Scene == Scene)
+			{
+				FShaderPrintData ShaderPrintData = UnFreezeShaderPrintData(GraphBuilder, ShaderPrintDataToRender.Payload);
+				InternalDrawView(GraphBuilder, View, ShaderPrintData, OutputTexture, DepthTexture);
+			}
 		}
 	}
 
-	void EndView(FViewInfo& View)
+	void EndViews(TArrayView<FViewInfo> Views)
 	{
-		View.ShaderPrintData = FShaderPrintData();
+		// Clear the shader print data owned by the views.
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		{
+			Views[ViewIndex].ShaderPrintData = FShaderPrintData();
+		}
+
+		// Remove all externally enqueud shader print data for the matching Scene, since we will have drawn it in the calls to DrawView().
+		if (Views.Num())
+		{
+			FSceneInterface const* Scene = Views[0].Family != nullptr ? Views[0].Family->Scene : nullptr;
+			GQueuedRenderItems.RemoveAll([Scene](FQueuedRenderItem& Data) { return Data.Scene == nullptr || Data.Scene == Scene || Data.FrameForGC < GFrameNumberRenderThread; });
+		}
+
 		GDefaultView = nullptr;
-		GShaderPrintDataToRender.Reset();
 	}
 }

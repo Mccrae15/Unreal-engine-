@@ -3,10 +3,14 @@
 
 using System;
 using System.Collections.Generic;
+using System.Configuration;
+using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -50,6 +54,11 @@ namespace UnrealBuildTool
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bSkipClangValidation")]
 		public bool bSkipClangValidation = false;
 
+		/// <summary>
+		/// Enables runtime ray tracing support.
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/MacTargetPlatform.MacTargetSettings", "bEnableRayTracing")]
+		public bool bEnableRayTracing = false;
 	}
 
 	/// <summary>
@@ -97,13 +106,162 @@ namespace UnrealBuildTool
 			get { return Inner.bSkipClangValidation; }
 		}
 
+		public bool bEnableRayTracing
+		{
+			get { return Inner.bEnableRayTracing; }
+		}
+
 #pragma warning restore CS1591
 		#endregion
 	}
 
+	class MacArchitectureConfig : UnrealArchitectureConfig
+	{
+		public MacArchitectureConfig()
+			: base(UnrealArchitectureMode.SingleTargetCompileSeparately, new[] { UnrealArch.X64, UnrealArch.Arm64 })
+		{
+		}
+
+		public override string ConvertToReadableArchitecture(UnrealArch Architecture)
+		{
+			if (Architecture == UnrealArch.X64)
+			{
+				return "Intel";
+			}
+			if (Architecture == UnrealArch.Arm64)
+			{
+				return "Apple";
+			}
+			return base.ConvertToReadableArchitecture(Architecture);
+		}
+
+		public override UnrealArchitectures ActiveArchitectures(FileReference? ProjectFile, string? TargetName)
+		{
+			return GetProjectArchitectures(ProjectFile, TargetName, false, false);
+		}
+
+		public override UnrealArchitectures DistributionArchitectures(FileReference? ProjectFile, string? TargetName)
+		{
+			return GetProjectArchitectures(ProjectFile, TargetName, false, true);
+		}
+
+		public override UnrealArchitectures ProjectSupportedArchitectures(FileReference? ProjectFile, string? TargetName = null)
+		{
+			return GetProjectArchitectures(ProjectFile, TargetName, true, false);
+		}
+
+		private UnrealArchitectures GetProjectArchitectures(FileReference? ProjectFile, string? TargetName, bool bGetAllSupported, bool bIsDistributionMode)
+		{
+			bool bIsEditor = false;
+			bool bIsBuildMachine = Environment.GetEnvironmentVariable("IsBuildMachine") == "1";
+
+			// get project ini from ProjetFile, or if null, then try to get it from the target rules
+			if (TargetName != null)
+			{
+				RulesAssembly RulesAsm;
+				if (ProjectFile == null)
+				{
+					RulesAsm = RulesCompiler.CreateEngineRulesAssembly(Unreal.IsEngineInstalled(), false, false, Log.Logger);
+				}
+				else
+				{
+					RulesAsm = RulesCompiler.CreateProjectRulesAssembly(ProjectFile, Unreal.IsEngineInstalled(), false, false, Log.Logger);
+				}
+
+				// CreateTargetRules here needs to have an UnrealArchitectures object, because otherwise with 'null', it will call
+				// back to this function to get the ActiveArchitectures! in this case the arch is unimportant
+				UnrealArchitectures DummyArchitectures = new(UnrealArch.X64);
+				TargetRules? Rules = RulesAsm.CreateTargetRules(TargetName, UnrealTargetPlatform.Mac, UnrealTargetConfiguration.Development, DummyArchitectures, ProjectFile, null, Log.Logger);
+				bIsEditor = Rules.Type == TargetType.Editor;
+
+				// the projectfile passed in may be a game's uproject file that we are compiling a program in the context of, 
+				// but we still want the settings for the program
+				if (Rules.Type == TargetType.Program)
+				{
+					ProjectFile = Rules.ProjectFile;
+				}
+			}
+
+			ConfigHierarchy EngineIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, ProjectFile?.Directory, UnrealTargetPlatform.Mac);
+
+			// get values from project ini
+			string SupportKey = bIsEditor ? "EditorTargetArchitecture" : "TargetArchitecture";
+			string DefaultKey = bIsEditor ? "EditorDefaultArchitecture" : "DefaultArchitecture";
+			string SupportedArchitecture;
+			string DefaultArchitecture;
+			bool bBuildAllSupportedOnBuildMachine;
+			EngineIni.GetString("/Script/MacTargetPlatform.MacTargetSettings", SupportKey, out SupportedArchitecture);
+			EngineIni.GetString("/Script/MacTargetPlatform.MacTargetSettings", DefaultKey, out DefaultArchitecture);
+			EngineIni.GetBool("/Script/MacTargetPlatform.MacTargetSettings", "bBuildAllSupportedOnBuildMachine", out bBuildAllSupportedOnBuildMachine);
+			SupportedArchitecture = SupportedArchitecture.ToLower();
+			DefaultArchitecture = DefaultArchitecture.ToLower();
+
+			bool bSupportsArm64 = SupportedArchitecture.Contains("universal") || SupportedArchitecture.Contains("apple");
+			bool bSupportsX86 = SupportedArchitecture.Contains("universal") || SupportedArchitecture.Contains("intel");
+
+			// make sure we found a good value
+			if (!bSupportsArm64 && !bSupportsX86)
+			{
+				throw new BuildException($"Unknown {SupportKey} value found ('{SupportedArchitecture}') in .ini");
+			}
+
+			// choose a supported architecture(s) based on desired type
+			List<UnrealArch> Architectures = new();
+
+			// return all supported if getting supported, compiling for distribution, or we want active, and "all" is selected
+			if (bGetAllSupported || bIsDistributionMode || DefaultArchitecture.Equals("all", StringComparison.InvariantCultureIgnoreCase) ||
+				(bIsBuildMachine && bBuildAllSupportedOnBuildMachine))
+			{
+				if (bSupportsArm64)
+				{
+					Architectures.Add(UnrealArch.Arm64);
+				}
+				if (bSupportsX86)
+				{
+					Architectures.Add(UnrealArch.X64);
+				}
+			}
+			else if (DefaultArchitecture.Contains("host"))
+			{
+				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && MacExports.IsRunningOnAppleArchitecture && bSupportsArm64)
+				{
+					Architectures.Add(UnrealArch.Arm64);
+				}
+				else
+				{
+					Architectures.Add(UnrealArch.X64);
+				}
+			}
+			else if (DefaultArchitecture.Contains("apple"))
+			{
+				if (!bSupportsArm64)
+				{
+					throw new BuildException($"{DefaultKey} is set to {DefaultArchitecture}, but AppleSilicon is not a supported architecture");
+				}
+				Architectures.Add(UnrealArch.Arm64);
+			}
+			else if (DefaultArchitecture.Contains("intel"))
+			{
+				if (!bSupportsX86)
+				{
+					throw new BuildException($"{DefaultKey} is set to {DefaultArchitecture}, but Intel is not a supported architecture");
+				}
+				Architectures.Add(UnrealArch.X64);
+			}
+			else
+			{
+				throw new BuildException($"Unknown {DefaultKey} value found ('{DefaultArchitecture}') in .ini");
+			}
+
+			return new UnrealArchitectures(Architectures);
+		}
+
+	}
+
 	class MacPlatform : UEBuildPlatform
 	{
-		public MacPlatform(UEBuildPlatformSDK InSDK, ILogger InLogger) : base(UnrealTargetPlatform.Mac, InSDK, InLogger)
+		public MacPlatform(UEBuildPlatformSDK InSDK, ILogger InLogger) 
+			: base(UnrealTargetPlatform.Mac, InSDK, new MacArchitectureConfig(), InLogger)
 		{
 		}
 
@@ -147,10 +305,8 @@ namespace UnrealBuildTool
 				Target.bUsePCHFiles = false;
 			}
 
-			// Mac-Arm todo - Do we need to compile in two passes so we can set this differently?
-			bool bCompilingForArm = Target.Architecture.IndexOf("arm", StringComparison.OrdinalIgnoreCase) >= 0;
-			bool bCompilingMultipleArchitectures = Target.Architecture.Contains("+");
-
+			// Mac-Arm todo - Remove this all when we feel confident no more x86-only plugins will come around
+			bool bCompilingForArm = Target.Architectures.Contains(UnrealArch.Arm64);
 			if (bCompilingForArm && Target.Name != "UnrealHeaderTool")
 			{
 				Target.DisablePlugins.AddRange(new string[]
@@ -170,6 +326,13 @@ namespace UnrealBuildTool
 				Target.GlobalDefinitions.Add("HAS_METAL=0");
 			}
 
+			// Here be dragons, use at your own risk. YMMV.
+			// Enables *extremely experimental* nanite support for M2+ devices. 
+			// Even after enabling this, spriv cross still needs to have it's own
+			// define enabled and be built separately with:
+			// (Engine/Source/ThirdParty/ShaderConductor/Build_ShaderConductor_Mac.command)
+			Target.GlobalDefinitions.Add("PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT=0");
+
 			// Force using the ANSI allocator if ASan is enabled
 			string? AddressSanitizer = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
 			if(Target.MacPlatform.bEnableAddressSanitizer || (AddressSanitizer != null && AddressSanitizer == "YES"))
@@ -186,9 +349,6 @@ namespace UnrealBuildTool
 			Target.bDeployAfterCompile = true;
 
 			Target.bCheckSystemHeadersForModification = BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac;
-
-
-			Target.bUsePCHFiles = Target.bUsePCHFiles && !bCompilingMultipleArchitectures;
 		}
 
 		static HashSet<FileReference> ValidatedLibs = new();
@@ -209,34 +369,6 @@ namespace UnrealBuildTool
 			}
 		}
 
-
-		/// <summary>
-		/// Returns true since we can do this on Mac (with some caveats, that may necessitate this being an option)
-		/// </summary>
-		/// <param name="InArchitectures">Architectures that are being built</param>
-		public override bool CanBuildArchitecturesInSinglePass(IEnumerable<string> InArchitectures)
-		{
-			return true;
-		}
-
-		/// <summary>
-		/// Allows the platform to override whether the architecture name should be appended to the name of binaries.
-		/// </summary>
-		/// <returns>True if the architecture name should be appended to the binary</returns>
-		public override bool RequiresArchitectureSuffix()
-		{
-			return false;
-		}
-
-		/// <summary>
-		/// Get the default architecture for a project. This may be overriden on the command line to UBT.
-		/// </summary>
-		/// <param name="ProjectFile">Optional project to read settings from </param>
-		public override string GetDefaultArchitecture(FileReference? ProjectFile)
-		{
-			// by default use Intel.
-			return MacExports.DefaultArchitecture;
-		}		
 
 		/// <summary>
 		/// Determines if the given name is a build product for a target.
@@ -388,6 +520,11 @@ namespace UnrealBuildTool
 		{
 			CompileEnvironment.Definitions.Add("PLATFORM_MAC=1");
 			CompileEnvironment.Definitions.Add("PLATFORM_APPLE=1");
+
+			if (Target.MacPlatform.bEnableRayTracing)
+			{
+				CompileEnvironment.Definitions.Add("RHI_RAYTRACING=1");
+			}
 
 			CompileEnvironment.Definitions.Add("WITH_TTS=0");
 			CompileEnvironment.Definitions.Add("WITH_SPEECH_RECOGNITION=0");

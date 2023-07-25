@@ -3,10 +3,9 @@
 #include "LiveLinkSourceCollection.h"
 
 #include "EngineAnalytics.h"
-#include "ILiveLinkSource.h"
-#include "LiveLinkSourceSettings.h"
-#include "LiveLinkSubjectSettings.h"
+#include "IAnalyticsProviderET.h"
 #include "LiveLinkVirtualSource.h"
+#include "UObject/Package.h"
 
 /**
  * Default VirtualSubject Source.

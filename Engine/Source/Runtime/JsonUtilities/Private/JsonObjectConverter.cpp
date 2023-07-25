@@ -2,6 +2,7 @@
 
 #include "JsonObjectConverter.h"
 #include "Internationalization/Culture.h"
+#include "Misc/PackageName.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
@@ -27,6 +28,8 @@ FString FJsonObjectConverter::StandardizeCase(const FString &StringIn)
 namespace
 {
 	const FString ObjectClassNameKey = "_ClassName";
+
+	const FName NAME_DateTime(TEXT("DateTime"));
 
 /** Convert property to JSON, assuming either the property is not an array or the value is an individual array element */
 TSharedPtr<FJsonValue> ConvertScalarFPropertyToJsonValue(FProperty* Property, const void* Value, int64 CheckFlags, int64 SkipFlags, const FJsonObjectConverter::CustomExportCallback* ExportCb, FProperty* OuterProperty)
@@ -659,7 +662,6 @@ namespace
 	}
 	else if (FStructProperty *StructProperty = CastField<FStructProperty>(Property))
 	{
-		static const FName NAME_DateTime(TEXT("DateTime"));
 		if (JsonValue->Type == EJson::Object)
 		{
 			TSharedPtr<FJsonObject> Obj = JsonValue->AsObject();
@@ -1099,4 +1101,20 @@ FFormatNamedArguments FJsonObjectConverter::ParseTextArgumentsFromJson(const TSh
 	}
 	return NamedArgs;
 }
+
+const FJsonObjectConverter::CustomExportCallback FJsonObjectConverter::ExportCallback_WriteISO8601Dates = 
+	FJsonObjectConverter::CustomExportCallback::CreateLambda(
+		[](FProperty* Prop, const void* Data) -> TSharedPtr<FJsonValue>
+		{
+			if (FStructProperty* StructProperty = CastField<FStructProperty>(Prop))
+			{
+				checkSlow(StructProperty->Struct);
+				if (StructProperty->Struct->GetFName() == NAME_DateTime)
+				{
+					return MakeShared<FJsonValueString>(static_cast<const FDateTime*>(Data)->ToIso8601());
+				}
+			}
+			return {};
+		});
+
 #undef LOCTEXT_NAMESPACE

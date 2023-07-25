@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "/Engine/Public/WaveBroadcastIntrinsics.ush"
 #include "NaniteDataDecode.ush"
 
 struct FNaniteAttributeData
@@ -29,20 +28,18 @@ struct FNaniteRawAttributeData
 	float2 TexCoords[NANITE_MAX_UVS];
 };
 
-#if COMPILER_SUPPORTS_WAVE_PERMUTE
-FNaniteRawAttributeData WaveReadLaneAtVarying(FNaniteRawAttributeData In, uint SrcIndex)
+FNaniteRawAttributeData WaveReadLaneAt(FNaniteRawAttributeData In, uint SrcIndex)
 {
 	FNaniteRawAttributeData Out;
-	Out.TangentZ = WaveReadLaneAtVarying(In.TangentZ, SrcIndex);
-	Out.Color = WaveReadLaneAtVarying(In.Color, SrcIndex);
+	Out.TangentZ = WaveReadLaneAt(In.TangentZ, SrcIndex);
+	Out.Color = WaveReadLaneAt(In.Color, SrcIndex);
 	UNROLL
 	for (uint i = 0; i < NANITE_MAX_UVS; ++i)
 	{
-		Out.TexCoords[i] = WaveReadLaneAtVarying(In.TexCoords[i], SrcIndex);
+		Out.TexCoords[i] = WaveReadLaneAt(In.TexCoords[i], SrcIndex);
 	}
 	return Out;
 }
-#endif
 
 #define SIZEOF_UV_RANGE	32
 struct FUVRange
@@ -151,9 +148,84 @@ FBarycentrics CalculateTriangleBarycentrics(float2 Subpixel, float4 PointSubpixe
 	return Result;
 }
 
+float3 ClosestPointBarycentrics( float3 p, float3 v0, float3 v1, float3 v2 )
+{
+	// Muller-Trumbore ray triangle intersect
+	float3 Edge01 = v1 - v0;
+	float3 Edge02 = v2 - v0;
+	float3 Origin0 = p - v0;
+
+	float3 TriNormal = cross( Edge02, Edge01 );
+	float3 Dirx02 = cross( TriNormal, Edge02 );
+	float InvDet = 1.0 / dot( Edge01, Dirx02 );
+ 
+	float3 UVW;
+	UVW.y = InvDet * dot( Origin0, Dirx02 );
+	UVW.z = InvDet * dot( TriNormal, cross( Origin0, Edge01 ) );
+	UVW.x = 1.0 - UVW.y - UVW.z;
+	return UVW;
+}
+
+void CalculateTriangleBarycentrics(
+	float3 PositionPixel,
+	float3 Position0,
+	float3 Position1,
+	float3 Position2,
+	float3 Normal0,
+	float3 Normal1,
+	float3 Normal2,
+	inout FBarycentrics Barycentrics )
+{
+	/*
+		Displacement mapping
+
+		PositionPixel =
+			U * ( Position0 + Normal0 * Height ) +
+			V * ( Position1 + Normal1 * Height ) +
+			W * ( Position2 + Normal2 * Height );
+
+		Solve for Height
+	*/
+
+	// 4 looks perfect but 2 seems good enough
+	uint NumIterations = 2;
+	for( uint j = 0; j < NumIterations; j++ )
+	{
+		float3 UVW = ClosestPointBarycentrics( PositionPixel, Position0, Position1, Position2 );
+		UVW = max( 0, UVW );
+		UVW /= dot( UVW, 1 );
+
+		float3 ClosestPoint;
+		ClosestPoint  = Position0 * UVW.x;
+		ClosestPoint += Position1 * UVW.y;
+		ClosestPoint += Position2 * UVW.z;
+
+		float3 ClosestNormal;
+		ClosestNormal  = Normal0 * UVW.x;
+		ClosestNormal += Normal1 * UVW.y;
+		ClosestNormal += Normal2 * UVW.z;
+
+		float Displace = dot( PositionPixel - ClosestPoint, ClosestNormal ) / dot( ClosestNormal, ClosestNormal );
+
+		Position0 += Normal0 * Displace;
+		Position1 += Normal1 * Displace;
+		Position2 += Normal2 * Displace;
+	}
+
+	Barycentrics.UVW = ClosestPointBarycentrics( PositionPixel, Position0, Position1, Position2 );
+
+	// TODO this is hacky but works well enough for now.
+	float3 dUVW_dx = ddx( Barycentrics.UVW );
+	float3 dUVW_dy = ddy( Barycentrics.UVW );
+	if( length2( dUVW_dx ) < length2( Barycentrics.UVW_dx ) )
+		Barycentrics.UVW_dx = dUVW_dx;
+	if( length2( dUVW_dy ) < length2( Barycentrics.UVW_dy ) )
+		Barycentrics.UVW_dy = dUVW_dy;
+}
+
 uint CalculateMaxAttributeBits(uint NumTexCoordInterpolators)
 {
-	return (2 * NANITE_NORMAL_QUANTIZATION_BITS + 4 * NANITE_MAX_COLOR_QUANTIZATION_BITS + NumTexCoordInterpolators * (2 * NANITE_MAX_TEXCOORD_QUANTIZATION_BITS));
+	return (2 * NANITE_MAX_NORMAL_QUANTIZATION_BITS + 4 * NANITE_MAX_COLOR_QUANTIZATION_BITS + NumTexCoordInterpolators * (2 * NANITE_MAX_TEXCOORD_QUANTIZATION_BITS));
 }
 
 void DecodeMaterialRange(uint EncodedRange, out uint TriStart, out uint TriLength, out uint MaterialIndex)
@@ -239,19 +311,21 @@ uint RemapMaterialIndexToOffset(uint InPrimitiveIndex, uint InMaterialIndex, uin
 	return RemapOffset;
 }
 
-struct FNaniteMaterialSlot {
-	uint MaterialIndex;
-	uint RasterSlot;
-	uint SecondaryRasterSlot;
+struct FNaniteMaterialSlot
+{
+	uint ShadingBin;
+	uint RasterBin;
+	uint SecondaryRasterBin;
+	uint LegacyShadingId;
 };
 
 FNaniteMaterialSlot UnpackMaterialSlot(uint2 Data)
 {
 	FNaniteMaterialSlot Output;
-	Output.MaterialIndex = Data.x >> 16u;
-	Output.RasterSlot = Data.x & 0xFFFFu;
-	Output.SecondaryRasterSlot = Data.y;
-
+	Output.ShadingBin			= Data.x >> 16u;
+	Output.RasterBin			= Data.x & 0xFFFFu;
+	Output.LegacyShadingId		= Data.y >> 16u;
+	Output.SecondaryRasterBin	= Data.y & 0xFFFFu;
 	return Output;
 }
 
@@ -268,47 +342,68 @@ FNaniteMaterialSlot LoadMaterialSlot(uint InPrimitiveIndex, uint InMaterialIndex
 	return LoadMaterialSlot(InMaterialTable, RemapOffset);
 }
 
-uint GetMaterialShadingSlotFromIndex(
+uint GetMaterialLegacyShadingIdFromIndex(
 	uint InRelativeMaterialIndex,
 	uint InPrimitiveIndex,
 	ByteAddressBuffer InMaterialSlotTable)
 {
 	FNaniteMaterialSlot MaterialSlot = LoadMaterialSlot(InPrimitiveIndex, InRelativeMaterialIndex, InMaterialSlotTable);
-	return MaterialSlot.MaterialIndex;
+	return MaterialSlot.LegacyShadingId;
 }
 
-uint GetMaterialRasterSlotFromIndex(
+uint GetMaterialShadingBinFromIndex(
 	uint InRelativeMaterialIndex,
 	uint InPrimitiveIndex,
-	uint InRegularSlotCount,
-	bool bSecondaryBin,
 	ByteAddressBuffer InMaterialSlotTable)
 {
 	FNaniteMaterialSlot MaterialSlot = LoadMaterialSlot(InPrimitiveIndex, InRelativeMaterialIndex, InMaterialSlotTable);
-	uint RasterSlot = MaterialSlot.RasterSlot;
-	if (bSecondaryBin && MaterialSlot.SecondaryRasterSlot != 0xFFFFFFFFu)
-	{
-		RasterSlot = MaterialSlot.SecondaryRasterSlot;
-	}
-	if (RasterSlot >= InRegularSlotCount)
-	{
-		RasterSlot = 0xffff - RasterSlot + InRegularSlotCount;
-	}
-
-	return RasterSlot;
+	return MaterialSlot.ShadingBin;
 }
 
-uint GetMaterialShadingSlot(
+uint GetMaterialRasterBinFromIndex(
+	uint InRelativeMaterialIndex,
+	uint InPrimitiveIndex,
+	uint InRegularRasterBinCount,
+	bool bSecondaryRasterBin,
+	ByteAddressBuffer InMaterialSlotTable)
+{
+	FNaniteMaterialSlot MaterialSlot = LoadMaterialSlot(InPrimitiveIndex, InRelativeMaterialIndex, InMaterialSlotTable);
+	uint RasterBin = MaterialSlot.RasterBin;
+	
+	if (bSecondaryRasterBin && MaterialSlot.SecondaryRasterBin != 0xFFFFu)
+	{
+		RasterBin = MaterialSlot.SecondaryRasterBin;
+	}
+
+	if (RasterBin >= InRegularRasterBinCount)
+	{
+		RasterBin = 0xFFFFu - RasterBin + InRegularRasterBinCount;
+	}
+
+	return RasterBin;
+}
+
+uint GetMaterialLegacyShadingId(
 	FCluster InCluster,
 	uint InPrimitiveIndex,
 	uint InTriIndex,
 	ByteAddressBuffer InMaterialSlotTable)
 {
 	const uint RelativeMaterialIndex = GetRelativeMaterialIndex(InCluster, InTriIndex);
-	return GetMaterialShadingSlotFromIndex(RelativeMaterialIndex, InPrimitiveIndex, InMaterialSlotTable);
+	return GetMaterialLegacyShadingIdFromIndex(RelativeMaterialIndex, InPrimitiveIndex, InMaterialSlotTable);
 }
 
-uint GetMaterialRasterSlot(
+uint GetMaterialShadingBin(
+	FCluster InCluster,
+	uint InPrimitiveIndex,
+	uint InTriIndex,
+	ByteAddressBuffer InMaterialSlotTable)
+{
+	const uint RelativeMaterialIndex = GetRelativeMaterialIndex(InCluster, InTriIndex);
+	return GetMaterialShadingBinFromIndex(RelativeMaterialIndex, InPrimitiveIndex, InMaterialSlotTable);
+}
+
+uint GetMaterialRasterBin(
 	FCluster InCluster,
 	uint InPrimitiveIndex,
 	uint InTriIndex,
@@ -317,7 +412,7 @@ uint GetMaterialRasterSlot(
 	ByteAddressBuffer InMaterialSlotTable)
 {
 	const uint RelativeMaterialIndex = GetRelativeMaterialIndex(InCluster, InTriIndex);
-	return GetMaterialRasterSlotFromIndex(RelativeMaterialIndex, InPrimitiveIndex, InRegularSlotCount, bSecondaryBin, InMaterialSlotTable);
+	return GetMaterialRasterBinFromIndex(RelativeMaterialIndex, InPrimitiveIndex, InRegularSlotCount, bSecondaryBin, InMaterialSlotTable);
 }
 
 uint GetMaterialDepthId(
@@ -430,8 +525,8 @@ void GetRawAttributeDataN(inout FNaniteRawAttributeData RawAttributeData[3],
 	for (i = 0; i < CompileTimeN; i++)
 	{
 		AttributeStream[i] = BitStreamReader_Create_Aligned(AttributeDataOffset, TriIndices[i] * Cluster.BitsPerAttribute, MaxAttributeBits);
-		const uint NormalBits = BitStreamReader_Read_RO(ClusterPageData, AttributeStream[i], 2 * NANITE_NORMAL_QUANTIZATION_BITS, 2 * NANITE_NORMAL_QUANTIZATION_BITS);
-		RawAttributeData[i].TangentZ = UnpackNormal(NormalBits, NANITE_NORMAL_QUANTIZATION_BITS);
+		const uint NormalBits = BitStreamReader_Read_RO(ClusterPageData, AttributeStream[i], 2 * Cluster.NormalPrecision, 2 * NANITE_MAX_NORMAL_QUANTIZATION_BITS);
+		RawAttributeData[i].TangentZ = UnpackNormal(NormalBits, Cluster.NormalPrecision);
 
 		const uint4 ColorDelta = BitStreamReader_Read4_RO(ClusterPageData, AttributeStream[i], NumComponentBits, NANITE_MAX_COLOR_QUANTIZATION_BITS);
 		RawAttributeData[i].Color = float4(ColorMin + ColorDelta) * (1.0f / 255.0f);
@@ -625,7 +720,7 @@ FTexCoord GetTexCoord(
 	const uint UVBitsOffset_8888 = NumUVBits_8888 * 0x01010100u;											// 8:8:8:8 (0, UV0, UV0+UV1, UV0+UV1+UV2)
 	const uint TexCoord_OffsetBits = (UVBitsOffset_8888 >> (8 * TexCoordIndex)) & 0xFFu;
 
-	const uint BitOffset = 2 * NANITE_NORMAL_QUANTIZATION_BITS + dot(NumColorComponentBits, 1u) + TexCoord_OffsetBits;
+	const uint BitOffset = 2 * Cluster.NormalPrecision + dot(NumColorComponentBits, 1u) + TexCoord_OffsetBits;
 
 	FBitStreamReaderState AttributeStream0 = BitStreamReader_Create_Aligned(AttributeDataOffset, BitOffset + TriIndices.x * Cluster.BitsPerAttribute, 2 * NANITE_MAX_TEXCOORD_QUANTIZATION_BITS);
 	FBitStreamReaderState AttributeStream1 = BitStreamReader_Create_Aligned(AttributeDataOffset, BitOffset + TriIndices.y * Cluster.BitsPerAttribute, 2 * NANITE_MAX_TEXCOORD_QUANTIZATION_BITS);

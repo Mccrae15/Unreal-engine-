@@ -1,11 +1,10 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavCorridorTestingComponent.h"
+#include "NavFilters/NavigationQueryFilter.h"
 #include "PrimitiveViewRelevance.h"
-#include "PrimitiveSceneProxy.h"
+#include "NavMesh/NavMeshPath.h"
 #include "NavigationSystem.h"
-#include "NavigationData.h"
-#include "GeomUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NavCorridorTestingComponent)
 
@@ -143,7 +142,7 @@ void UNavCorridorTestingComponent::UpdateTests()
 
 		EndTime = FPlatformTime::Seconds();
 		
-		PathfindingTimeUs = (EndTime - StartTime) * 1000000.0; // us
+		PathfindingTimeUs = FloatCastChecked<float>((EndTime - StartTime) * 1000000.0, UE::LWC::DefaultFloatPrecision); // us
 
 		StartTime = FPlatformTime::Seconds();
 
@@ -154,7 +153,7 @@ void UNavCorridorTestingComponent::UpdateTests()
 		}
 		
 		EndTime = FPlatformTime::Seconds();
-		CorridorTimeUs = (EndTime - StartTime) * 1000000.0; // us
+		CorridorTimeUs = FloatCastChecked<float>((EndTime - StartTime) * 1000000.0, UE::LWC::DefaultFloatPrecision); // us
 	}
 
 	if (bFollowPathOnGoalCorridor)

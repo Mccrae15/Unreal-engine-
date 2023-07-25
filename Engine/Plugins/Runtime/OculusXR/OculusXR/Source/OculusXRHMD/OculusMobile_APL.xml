@@ -33,6 +33,7 @@
 		<setBoolOr result="bPackageForMetaQuest" arg1="$B(bPackageForMetaQuest)" arg2="$B(bPackageForQuestPro)"/>
 
 		<!-- get supported oculus devices from OculusXRHMDRuntimeSettings -->
+		<setBoolFromPropertyContains result="bSupportMetaQuest" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="SupportedDevices" contains="Quest"/>
 		<setBoolFromPropertyContains result="bSupportMetaQuest2" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="SupportedDevices" contains="Quest2"/>
 		<setBoolFromPropertyContains result="bSupportMetaQuestPro" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="SupportedDevices" contains="QuestPro"/>
 		
@@ -235,6 +236,8 @@
 				<if condition="bSceneSupportEnabled">
 					<true>
 						<addPermission android:name="com.oculus.permission.USE_SCENE"/>
+						<addPermission android:name="com.oculus.permission.SCENE_OBJECT_TRACKING"/>
+						<addPermission android:name="com.oculus.permission.PLANE_TRACKING"/>
 					</true>
 				</if>
 			</true>
@@ -276,6 +279,11 @@
 		<loopElements tag="application">
 			<!-- Add SupportedDevices Tag -->
 			<setString result="devicesString" value=""/>
+			<if condition="bSupportMetaQuest">
+				<true>
+					<setStringAdd result="devicesString" arg1="$S(devicesString)" arg2="quest|"/>
+				</true>
+			</if>
 			<if condition="bSupportMetaQuest2">
 				<true>
 					<setStringAdd result="devicesString" arg1="$S(devicesString)" arg2="quest2|"/>

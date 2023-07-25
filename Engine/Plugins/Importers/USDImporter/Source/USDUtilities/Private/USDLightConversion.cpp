@@ -2,7 +2,7 @@
 
 #include "USDLightConversion.h"
 
-#include "USDAssetCache.h"
+#include "USDAssetCache2.h"
 #include "USDAttributeUtils.h"
 #include "USDConversionUtils.h"
 #include "USDLayerUtils.h"
@@ -24,6 +24,7 @@
 #include "Components/SpotLightComponent.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/TextureCube.h"
+#include "Misc/Paths.h"
 
 #if USE_USD_SDK
 
@@ -84,41 +85,6 @@ namespace LightConversionImpl
 		const float HalfConeAngle = FMath::Clamp( OuterConeAngle * ( float ) PI / 180.0f, ClampedInnerConeAngle + 0.001f, 89.0f * ( float ) PI / 180.0f + 0.001f );
 		return FMath::Cos( HalfConeAngle );
 	}
-}
-
-bool UsdToUnreal::ConvertLight( const pxr::UsdLuxLightAPI& LightAPI, ULightComponentBase& LightComponentBase, double TimeCode )
-{
-	return UsdToUnreal::ConvertLight( LightAPI.GetPrim(), LightComponentBase, TimeCode );
-}
-
-bool UsdToUnreal::ConvertDistantLight( const pxr::UsdLuxDistantLight& DistantLight, UDirectionalLightComponent& LightComponent, double TimeCode )
-{
-	return UsdToUnreal::ConvertDistantLight( DistantLight.GetPrim(), LightComponent, TimeCode );
-}
-
-bool UsdToUnreal::ConvertRectLight( const FUsdStageInfo& StageInfo, const pxr::UsdLuxRectLight& RectLight, URectLightComponent& LightComponent, double TimeCode )
-{
-	return UsdToUnreal::ConvertRectLight( RectLight.GetPrim(), LightComponent, TimeCode );
-}
-
-bool UsdToUnreal::ConvertDiskLight( const FUsdStageInfo& StageInfo, const pxr::UsdLuxDiskLight& DiskLight, URectLightComponent& LightComponent, double TimeCode )
-{
-	return UsdToUnreal::ConvertDiskLight( DiskLight.GetPrim(), LightComponent, TimeCode );
-}
-
-bool UsdToUnreal::ConvertSphereLight( const FUsdStageInfo& StageInfo, const pxr::UsdLuxSphereLight& SphereLight, UPointLightComponent& LightComponent, double TimeCode )
-{
-	return UsdToUnreal::ConvertSphereLight( SphereLight.GetPrim(), LightComponent, TimeCode );
-}
-
-bool UsdToUnreal::ConvertDomeLight( const FUsdStageInfo& StageInfo, const pxr::UsdLuxDomeLight& DomeLight, USkyLightComponent& LightComponent, UUsdAssetCache* TexturesCache, double TimeCode )
-{
-	return UsdToUnreal::ConvertDomeLight( DomeLight.GetPrim(), LightComponent, TexturesCache );
-}
-
-bool UsdToUnreal::ConvertLuxShapingAPI( const FUsdStageInfo& StageInfo, const pxr::UsdLuxShapingAPI& ShapingAPI, USpotLightComponent& LightComponent, double TimeCode )
-{
-	return UsdToUnreal::ConvertLuxShapingAPI( ShapingAPI.GetPrim(), LightComponent, TimeCode );
 }
 
 bool UsdToUnreal::ConvertLight( const pxr::UsdPrim& Prim, ULightComponentBase& LightComponentBase, double UsdTimeCode )
@@ -249,7 +215,7 @@ bool UsdToUnreal::ConvertSphereLight( const pxr::UsdPrim& Prim, UPointLightCompo
 	return true;
 }
 
-bool UsdToUnreal::ConvertDomeLight( const pxr::UsdPrim& Prim, USkyLightComponent& LightComponent, UUsdAssetCache* TexturesCache )
+bool UsdToUnreal::ConvertDomeLight( const pxr::UsdPrim& Prim, USkyLightComponent& LightComponent, UUsdAssetCache2* TexturesCache )
 {
 	FScopedUsdAllocs UsdAllocs;
 
@@ -325,6 +291,12 @@ bool UsdToUnreal::ConvertLuxShapingAPI( const pxr::UsdPrim& Prim, USpotLightComp
 	LightComponent.SetOuterConeAngle( OuterConeAngle );
 
 	return true;
+}
+
+bool UsdToUnreal::ConvertDomeLight(const pxr::UsdPrim& Prim, USkyLightComponent& LightComponent, UUsdAssetCache* TexturesCache)
+{
+	UUsdAssetCache2* NewCache = nullptr;
+	return UsdToUnreal::ConvertDomeLight(Prim, LightComponent, NewCache);
 }
 
 float UsdToUnreal::ConvertLightIntensityAttr( float UsdIntensity, float UsdExposure )

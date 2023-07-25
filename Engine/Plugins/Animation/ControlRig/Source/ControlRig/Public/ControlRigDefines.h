@@ -13,20 +13,6 @@
 //#define DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT() \
 //	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
-USTRUCT(BlueprintType)
-struct FControlRigExecuteContext : public FRigVMExecuteContext
-{
-	GENERATED_BODY()
-
-	FControlRigExecuteContext()
-		: FRigVMExecuteContext()
-		, Hierarchy(nullptr)
-	{
-	}
-		
-	URigHierarchy* Hierarchy;
-};
-
 UENUM()
 enum class ETransformSpaceMode : uint8
 {
@@ -47,34 +33,10 @@ enum class ETransformSpaceMode : uint8
 };
 
 UENUM()
-namespace EControlRigClampSpatialMode
-{
-	enum Type
-	{
-		Plane,
-		Cylinder,
-		Sphere
-	};
-}
-
-UENUM()
 enum class ETransformGetterType : uint8
 {
 	Initial,
 	Current,
-	Max UMETA(Hidden),
-};
-
-UENUM()
-enum class EBoneGetterSetterMode : uint8
-{
-	/** Apply in parent space */
-	LocalSpace,
-
-	/** Apply in rig space*/
-	GlobalSpace,
-
-	/** MAX - invalid */
 	Max UMETA(Hidden),
 };
 

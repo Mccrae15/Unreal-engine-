@@ -1,17 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "Modules/ModuleManager.h"
 #include "IAppleImageUtilsPlugin.h"
-#include "AppleImageUtilsTypes.h"
-#include "HAL/UnrealMemory.h"
-#include "UObject/GCObject.h"
-#include "Async/Async.h"
 #include "Engine/Texture.h"
-#include "Engine/Texture2D.h"
 
 #if SUPPORTS_IMAGE_UTILS_1_0
 	#include "Apple/ApplePlatformMisc.h"
+	#include "Async/Async.h"
+	#include "Engine/Texture2D.h"
 
 	#import <CoreImage/CIContext.h>
 

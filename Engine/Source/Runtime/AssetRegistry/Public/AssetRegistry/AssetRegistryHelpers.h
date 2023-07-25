@@ -8,19 +8,24 @@
 #include "Containers/Array.h"
 #include "Containers/Set.h"
 #include "Containers/UnrealString.h"
-#include "CoreMinimal.h"
 #include "UObject/NameTypes.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/ScriptInterface.h"
 #include "UObject/SoftObjectPath.h"
 #include "UObject/UObjectGlobals.h"
+#include "Containers/ArrayView.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif
 
 #include "AssetRegistryHelpers.generated.h"
 
 class IAssetRegistry;
 class UClass;
 struct FFrame;
+struct FAssetIdentifier;
 
 USTRUCT(BlueprintType)
 struct FTagAndValue
@@ -101,6 +106,24 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Asset Registry", meta=(ScriptMethod))
 	static void GetBlueprintAssets(const FARFilter& InFilter, TArray<FAssetData>& OutAssetData);
 
+	/**
+	 * Returns the first native class of the asset type that can be found.  Normally this is just the FAssetData::GetClass(),
+	 * however if the class is a blueprint generated class it may not be loaded.  In which case GetAncestorClassNames will
+	 * be used to find the first native super class.  This can be slow if temporary caching mode is not on.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Asset Registry", meta=(ScriptMethod))
+	static ASSETREGISTRY_API UClass* FindAssetNativeClass(const FAssetData& AssetData);
+
+	/**
+	 * Finds references of the provided asset that are of the a class contained in the InMatchClasses set.
+	 */
+	static ASSETREGISTRY_API void FindReferencersOfAssetOfClass(UObject* AssetInstance, TConstArrayView<UClass*> InMatchClasses, TArray<FAssetData>& OutAssetDatas);
+
+	/**
+	 * Finds references of the provided asset that are of the a class contained in the InMatchClasses set.
+	 */
+	static ASSETREGISTRY_API void FindReferencersOfAssetOfClass(const FAssetIdentifier& InAssetIdentifier, TConstArrayView<UClass*> InMatchClasses, TArray<FAssetData>& OutAssetDatas);
+	
 	/** Enable/disable asset registry caching mode for the duration of the scope */
 	struct ASSETREGISTRY_API FTemporaryCachingModeScope
 	{

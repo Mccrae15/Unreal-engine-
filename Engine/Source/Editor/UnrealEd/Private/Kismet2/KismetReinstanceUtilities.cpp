@@ -39,12 +39,6 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Engine/ScopedMovementUpdate.h"
 
-// Enabling this will validate cached dependent Blueprints against the full set of loaded Blueprints when updating bytecode references.
-// Note: Enabling this may potentially increase editor/Blueprint load time and/or decrease performance related to Blueprint compilation.
-#ifndef VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
-#define VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE 0
-#endif // VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
-
 DECLARE_CYCLE_STAT(TEXT("Replace Instances"), EKismetReinstancerStats_ReplaceInstancesOfClass, STATGROUP_KismetReinstancer );
 DECLARE_CYCLE_STAT(TEXT("Find Referencers"), EKismetReinstancerStats_FindReferencers, STATGROUP_KismetReinstancer );
 DECLARE_CYCLE_STAT(TEXT("Replace References"), EKismetReinstancerStats_ReplaceReferences, STATGROUP_KismetReinstancer );
@@ -62,8 +56,6 @@ static FAutoConsoleVariableRef CVarUseLegacyAnimInstanceReinstancingBehavior(
 	GUseLegacyAnimInstanceReinstancingBehavior,
 	TEXT("Use the legacy re-instancing behavior for anim instances where the instance is destroyed and re-created.")
 );
-
-extern ENGINE_API UObject* GLogReinstancerReferenceReplacementObj;
 
 struct FReplaceReferenceHelper
 {
@@ -95,24 +87,11 @@ struct FReplaceReferenceHelper
 		}
 	}
 
-	static void FindAndReplaceReferences(const TArray<UObject*>& SourceObjects, TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<UObject*, UObject*>& OldToNewInstanceMap, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap)
+	static void FindAndReplaceReferences(const TArray<UObject*>& SourceObjects, const TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<UObject*, UObject*>& OldToNewInstanceMap, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap)
 	{
 		if(SourceObjects.Num() == 0 && ObjectsToReplace.Num() == 0 )
 		{
 			return;
-		}
-
-		if (GLogReinstancerReferenceReplacementObj)
-		{
-			FString Classes;
-			for (UObject* Obj : SourceObjects)
-			{
-				Classes.Append(Obj->GetClass()->GetName() + " ");
-			}
-			UE_LOG(LogBlueprint, Warning, TEXT("%s %s Replacing References to: %s"), 
-				*(GLogReinstancerReferenceReplacementObj->GetName()), 
-				*(GLogReinstancerReferenceReplacementObj->GetClass()->GetName()), 
-				*Classes);
 		}
 
 		// Remember what values were in UActorChannel::Actor so we can restore them later (this should only affect reinstancing during PIE)
@@ -138,7 +117,7 @@ struct FReplaceReferenceHelper
 		{
 			BP_SCOPED_COMPILER_EVENT_STAT(EKismetReinstancerStats_ReplaceReferences);
 
-			FScopedSlowTask SlowTask(Targets.Num(), NSLOCTEXT("Kismet", "PerformingReplaceReferences", "Performing replace references..."));
+			FScopedSlowTask SlowTask(static_cast<float>(Targets.Num()), NSLOCTEXT("Kismet", "PerformingReplaceReferences", "Performing replace references..."));
 			SlowTask.MakeDialogDelayed(1.0f);
 
 			for (UObject* Obj : Targets)
@@ -165,6 +144,15 @@ struct FReplaceReferenceHelper
 							: FArchiveReplaceObjectAndStructPropertyRef<UObject>(InSearchObject, InReplacementMap, EArchiveReplaceObjectFlags::DelayStart), WeakReferencesMap(InWeakReferencesMap)
 						{
 							SerializeSearchObject();
+						}
+
+						ReferenceReplace(UObject* InSearchObject, const TMap<UObject*, UObject*>& InReplacementMap, const TMap<FSoftObjectPath, UObject*>& InWeakReferencesMap, EArchiveReplaceObjectFlags Flags)
+							: FArchiveReplaceObjectAndStructPropertyRef<UObject>(InSearchObject, InReplacementMap, EArchiveReplaceObjectFlags::DelayStart), WeakReferencesMap(InWeakReferencesMap)
+						{
+							if (!(Flags & EArchiveReplaceObjectFlags::DelayStart))
+							{
+								SerializeSearchObject();
+							}
 						}
 
 						FArchive& operator<<(FSoftObjectPath& Ref) override
@@ -261,21 +249,9 @@ struct FArchetypeReinstanceHelper
 	}
 };
 
-FReplaceInstancesOfClassParameters::FReplaceInstancesOfClassParameters(UClass* InOldClass, UClass* InNewClass)
-	: OldClass(InOldClass)
-	, NewClass(InNewClass)
-	, OriginalCDO(nullptr)
-	, ObjectsThatShouldUseOldStuff(nullptr)
-	, InstancesThatShouldUseOldClass(nullptr)
-	, bClassObjectReplaced(false)
-	, bPreserveRootComponent(true)
-{
-}
-
 /////////////////////////////////////////////////////////////////////////////////
 // FBlueprintCompileReinstancer
 
-TSet<TWeakObjectPtr<UBlueprint>> FBlueprintCompileReinstancer::DependentBlueprintsToRefresh = TSet<TWeakObjectPtr<UBlueprint>>();
 TSet<TWeakObjectPtr<UBlueprint>> FBlueprintCompileReinstancer::CompiledBlueprintsToSave = TSet<TWeakObjectPtr<UBlueprint>>();
 
 UClass* FBlueprintCompileReinstancer::HotReloadedOldClass = nullptr;
@@ -736,18 +712,16 @@ TSharedPtr<FReinstanceFinalizer> FBlueprintCompileReinstancer::ReinstanceInner(b
 		if (bShouldReinstance)
 		{
 			UE_LOG(LogBlueprint, Log, TEXT("BlueprintCompileReinstancer: Doing a full reinstance on class '%s'"), *GetPathNameSafe(ClassToReinstance));
-			ReplaceInstancesOfClass(DuplicatedClass, ClassToReinstance, OriginalCDO, &ObjectsThatShouldUseOldStuff, IsClassObjectReplaced(), ShouldPreserveRootComponentOfReinstancedActor());
+
+			FReplaceInstancesOfClassParameters Params;
+			Params.OriginalCDO = OriginalCDO;
+			Params.ObjectsThatShouldUseOldStuff = &ObjectsThatShouldUseOldStuff;
+			Params.bClassObjectReplaced = IsClassObjectReplaced();
+			Params.bPreserveRootComponent = ShouldPreserveRootComponentOfReinstancedActor();
+			ReplaceInstancesOfClass(DuplicatedClass, ClassToReinstance, Params);
 		}
 	}
 	return Finalizer;
-}
-
-void FBlueprintCompileReinstancer::ListDependentBlueprintsToRefresh(const TArray<UBlueprint*>& DependentBPs)
-{
-	for (UBlueprint* Element : DependentBPs)
-	{
-		DependentBlueprintsToRefresh.Add(Element);
-	}
 }
 
 void FBlueprintCompileReinstancer::EnlistDependentBlueprintToRecompile(UBlueprint* BP, bool bBytecodeOnly)
@@ -756,10 +730,6 @@ void FBlueprintCompileReinstancer::EnlistDependentBlueprintToRecompile(UBlueprin
 
 void FBlueprintCompileReinstancer::BlueprintWasRecompiled(UBlueprint* BP, bool bBytecodeOnly)
 {
-	if (IsValid(BP))
-	{
-		DependentBlueprintsToRefresh.Remove(BP);
-	}
 }
 
 extern UNREALED_API FSecondsCounterData BlueprintCompileAndLoadTimerData;
@@ -831,18 +801,6 @@ void FBlueprintCompileReinstancer::ReinstanceObjects(bool bForceAlwaysReinstance
 						}
 					}
 
-					{
-						BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_RefreshDependentBlueprintsInReinstancer);
-						for (TWeakObjectPtr<UBlueprint>& BPPtr : DependentBlueprintsToRefresh)
-						{
-							if (BPPtr.IsValid())
-							{
-								BPPtr->BroadcastChanged();
-							}
-						}
-						DependentBlueprintsToRefresh.Empty();
-					}
-
 					if (GEditor)
 					{
 						GEditor->BroadcastBlueprintCompiled();
@@ -851,7 +809,6 @@ void FBlueprintCompileReinstancer::ReinstanceObjects(bool bForceAlwaysReinstance
 				else
 				{
 					QueueToReinstance.Empty();
-					DependentBlueprintsToRefresh.Empty();
 				}
 			}
 		}
@@ -997,7 +954,9 @@ protected:
 	const TMap<FFieldVariant, FFieldVariant>& ReplacementMap;
 };
 
-void FBlueprintCompileReinstancer::UpdateBytecodeReferences()
+void FBlueprintCompileReinstancer::UpdateBytecodeReferences(
+	TSet<UBlueprint*>& OutDependentBlueprints,
+	TMap<FFieldVariant, FFieldVariant>& OutFieldMapping)
 {
 	BP_SCOPED_COMPILER_EVENT_STAT(EKismetReinstancerStats_UpdateBytecodeReferences);
 
@@ -1010,6 +969,7 @@ void FBlueprintCompileReinstancer::UpdateBytecodeReferences()
 	{
 		TMap<FFieldVariant, FFieldVariant> FieldMappings;
 		GenerateFieldMappings(FieldMappings);
+		OutFieldMapping.Append(FieldMappings);
 
 		// Note: This API returns a cached set of blueprints that's updated at compile time.
 		TArray<UBlueprint*> CachedDependentBPs;
@@ -1018,12 +978,7 @@ void FBlueprintCompileReinstancer::UpdateBytecodeReferences()
 		// Determine whether or not we will be updating references for an Animation Blueprint class.
 		const bool bIsAnimBlueprintClass = !!Cast<UAnimBlueprint>(ClassToReinstance->ClassGeneratedBy);
 
-#if VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
-		TArray<UBlueprint*> ActualDependentBPs;
-		for (TObjectIterator<UBlueprint> BpIt; BpIt; ++BpIt)
-#else
 		for (auto BpIt = CachedDependentBPs.CreateIterator(); BpIt; ++BpIt)
-#endif // VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
 		{
 			UBlueprint* DependentBP = *BpIt;
 			UClass* BPClass = DependentBP->GeneratedClass;
@@ -1048,13 +1003,11 @@ void FBlueprintCompileReinstancer::UpdateBytecodeReferences()
 				BPClass->StaticLink(true);
 			}
 
-			bool bBPWasChanged = false;
 			// For each function defined in this blueprint, run through the bytecode, and update any refs from the old properties to the new
 			for( TFieldIterator<UFunction> FuncIter(BPClass, EFieldIteratorFlags::ExcludeSuper); FuncIter; ++FuncIter )
 			{
 				UFunction* CurrentFunction = *FuncIter;
 				FArchiveReplaceFieldReferences ReplaceAr(CurrentFunction, FieldMappings);
-				bBPWasChanged |= (0 != ReplaceAr.GetCount());
 			}
 
 			// Update any refs in called functions array, as the bytecode was just similarly updated:
@@ -1075,43 +1028,25 @@ void FBlueprintCompileReinstancer::UpdateBytecodeReferences()
 				}
 			}
 
-			FArchiveReplaceFieldReferences ReplaceInBPAr(DependentBP, FieldMappings);
-			if (ReplaceInBPAr.GetCount())
-			{
-#if VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
-				ActualDependentBPs.Add(DependentBP);
-#endif // VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
-
-				bBPWasChanged = true;
-				UE_LOG(LogBlueprint, Log, TEXT("UpdateBytecodeReferences: %d references from %s was replaced in BP %s"), ReplaceInBPAr.GetCount(), *GetPathNameSafe(ClassToReinstance), *GetPathNameSafe(DependentBP));
-			}
-
-			if (bBPWasChanged && CompiledBlueprint && !CompiledBlueprint->bIsRegeneratingOnLoad)
-			{
-				DependentBlueprintsToRefresh.Add(DependentBP);
-			}
+			OutDependentBlueprints.Add(DependentBP);
 		}
+	}
+}
 
-#if VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
-		bool bHasMissingDependents = false;
-		for (UBlueprint* ChangedBP : ActualDependentBPs)
+void FBlueprintCompileReinstancer::FinishUpdateBytecodeReferences(
+	const TSet<UBlueprint*>& DependentBPs,
+	const TMap<FFieldVariant, FFieldVariant>& FieldMappings)
+{
+	for (UBlueprint* DependentBP : DependentBPs)
+	{
+		FArchiveReplaceFieldReferences ReplaceInBPAr(DependentBP, FieldMappings);
+
+		if (ReplaceInBPAr.GetCount())
 		{
-			if (!CachedDependentBPs.Contains(ChangedBP))
-			{
-				UE_LOG(LogBlueprint, Error, TEXT("While updating %s, we needed to update %s but it wasn't cached as a dependent"), *ClassToReinstance->GetName(), *ChangedBP->GetName());
-				bHasMissingDependents = true;
-			}
+			UE_LOG(LogBlueprint, Log, 
+				TEXT("UpdateBytecodeReferences: %d references were replaced in BP %s"), 
+				ReplaceInBPAr.GetCount(), *GetPathNameSafe(DependentBP));
 		}
-
-		if (bHasMissingDependents)
-		{
-			UE_LOG(LogBlueprint, Error, TEXT("Class: %s, CachedDeps: [%s], ActualDeps: [%s]"),
-				*ClassToReinstance->GetName(),
-				*FString::JoinBy(CachedDependentBPs, TEXT(","), [](UBlueprint* Blueprint) { return Blueprint->GetName(); }),
-				*FString::JoinBy(ActualDependentBPs, TEXT(","), [](UBlueprint* Blueprint) { return Blueprint->GetName(); })
-			);
-		}
-#endif // VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
 	}
 }
 
@@ -1246,7 +1181,7 @@ struct FActorReplacementHelper
 	 * Runs construction scripts on the new actor and then finishes it off by
 	 * attaching it to the same attachments that its predecessor was set with. 
 	 */
-	void Finalize(const TMap<UObject*, UObject*>& OldToNewInstanceMap, TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap);
+	void Finalize(const TMap<UObject*, UObject*>& OldToNewInstanceMap, const TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap);
 
 	/**
 	* Takes the cached child actors, as well as the old AttachParent, and sets
@@ -1255,7 +1190,7 @@ struct FActorReplacementHelper
 	*
 	* @param OldToNewInstanceMap Mapping of reinstanced objects.
 	*/
-	void ApplyAttachments(const TMap<UObject*, UObject*>& OldToNewInstanceMap, TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap);
+	void ApplyAttachments(const TMap<UObject*, UObject*>& OldToNewInstanceMap, const TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap);
 
 private:
 	/**
@@ -1276,7 +1211,7 @@ private:
 	TMap<FName, UActorComponent*> OldActorComponentNameMap;
 };
 
-void FActorReplacementHelper::Finalize(const TMap<UObject*, UObject*>& OldToNewInstanceMap, TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap)
+void FActorReplacementHelper::Finalize(const TMap<UObject*, UObject*>& OldToNewInstanceMap, const TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap)
 {
 	if (!IsValid(NewActor))
 	{
@@ -1362,7 +1297,7 @@ void FActorReplacementHelper::Finalize(const TMap<UObject*, UObject*>& OldToNewI
 	}
 }
 
-void FActorReplacementHelper::ApplyAttachments(const TMap<UObject*, UObject*>& OldToNewInstanceMap, TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap)
+void FActorReplacementHelper::ApplyAttachments(const TMap<UObject*, UObject*>& OldToNewInstanceMap, const TSet<UObject*>* ObjectsThatShouldUseOldStuff, const TArray<UObject*>& ObjectsToReplace, const TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap)
 {
 	USceneComponent* NewRootComponent = NewActor->GetRootComponent();
 	if (NewRootComponent == nullptr)
@@ -1597,28 +1532,74 @@ namespace InstancedPropertyUtils
 	};
 }
 
+// @todo_deprecated - Remove in a future release.
 void FBlueprintCompileReinstancer::ReplaceInstancesOfClass(UClass* OldClass, UClass* NewClass, UObject*	OriginalCDO, TSet<UObject*>* ObjectsThatShouldUseOldStuff, bool bClassObjectReplaced, bool bPreserveRootComponent)
 {
-	TMap<UClass*, UClass*> OldToNewClassMap;
-	OldToNewClassMap.Add(OldClass, NewClass);
-	ReplaceInstancesOfClass_Inner(OldToNewClassMap, OriginalCDO, ObjectsThatShouldUseOldStuff, bClassObjectReplaced, bPreserveRootComponent);
+	FReplaceInstancesOfClassParameters Options;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Options.OldClass = OldClass;
+	Options.NewClass = NewClass;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	Options.OriginalCDO = OriginalCDO;
+	Options.ObjectsThatShouldUseOldStuff = ObjectsThatShouldUseOldStuff;
+	Options.bClassObjectReplaced = bClassObjectReplaced;
+	Options.bPreserveRootComponent = bPreserveRootComponent;
+	ReplaceInstancesOfClass(OldClass, NewClass, Options);
 }
 
+// @todo_deprecated - Remove in a future release.
 void FBlueprintCompileReinstancer::ReplaceInstancesOfClassEx(const FReplaceInstancesOfClassParameters& Parameters )
 {
-	TMap<UClass*, UClass*> OldToNewClassMap;
-	OldToNewClassMap.Add(Parameters.OldClass, Parameters.NewClass);
-	ReplaceInstancesOfClass_Inner(OldToNewClassMap, Parameters.OriginalCDO, Parameters.ObjectsThatShouldUseOldStuff, Parameters.bClassObjectReplaced, Parameters.bPreserveRootComponent, /*bArchetypesAreUpToDate=*/false, Parameters.InstancesThatShouldUseOldClass);
+	ReplaceInstancesOfClass(
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Parameters.OldClass,
+		Parameters.NewClass,
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		Parameters
+	);
 }
 
-void FBlueprintCompileReinstancer::BatchReplaceInstancesOfClass(TMap<UClass*, UClass*>& InOldToNewClassMap, const FBatchReplaceInstancesOfClassParameters& Options )
+// @todo_deprecated - Remove in a future release.
+void FBlueprintCompileReinstancer::BatchReplaceInstancesOfClass(
+	TMap<UClass*, UClass*>& InOldToNewClassMap,
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	const FBatchReplaceInstancesOfClassParameters& BatchParams
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+)
 {
 	if (InOldToNewClassMap.Num() == 0)
 	{
 		return;
 	}
 
-	ReplaceInstancesOfClass_Inner(InOldToNewClassMap, nullptr, Options.ObjectsThatShouldUseOldStuff, false /*bClassObjectReplaced*/, true /*bPreserveRootComponent*/, Options.bArchetypesAreUpToDate, Options.InstancesThatShouldUseOldClass, Options.bReplaceReferencesToOldClasses);
+	FReplaceInstancesOfClassParameters Params;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Params.bArchetypesAreUpToDate = BatchParams.bArchetypesAreUpToDate;
+	Params.bReplaceReferencesToOldClasses = BatchParams.bReplaceReferencesToOldClasses;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	ReplaceInstancesOfClass_Inner(InOldToNewClassMap, Params);
+}
+
+void FBlueprintCompileReinstancer::ReplaceInstancesOfClass(UClass* OldClass, UClass* NewClass, const FReplaceInstancesOfClassParameters& Params)
+{
+	ensureMsgf(!Params.bClassObjectReplaced || Params.OriginalCDO != nullptr, TEXT("bClassObjectReplaced is not expected to be set without OriginalCDO"));
+
+	TMap<UClass*, UClass*> OldToNewClassMap;
+	OldToNewClassMap.Add(OldClass, NewClass);
+	ReplaceInstancesOfClass_Inner(OldToNewClassMap, Params);
+}
+
+void FBlueprintCompileReinstancer::BatchReplaceInstancesOfClass(const TMap<UClass*, UClass*>& InOldToNewClassMap, const FReplaceInstancesOfClassParameters& Params)
+{
+	if (InOldToNewClassMap.Num() == 0)
+	{
+		return;
+	}
+
+	checkf(Params.OriginalCDO == nullptr, TEXT("This path requires OriginalCDO to be NULL - use ReplaceInstancesOfClass() if you need to set it"));
+	ensureMsgf(!Params.bClassObjectReplaced, TEXT("bClassObjectReplaced is not expected to be set in this path - use ReplaceInstancesOfClass() instead"));
+
+	ReplaceInstancesOfClass_Inner(InOldToNewClassMap, Params);
 }
 
 bool FBlueprintCompileReinstancer::ReinstancerOrderingFunction(UClass* A, UClass* B)
@@ -1668,7 +1649,7 @@ void FBlueprintCompileReinstancer::GetSortedClassHierarchy(UClass* ClassToSearch
 	OutHierarchy.Sort([](UClass& A, UClass& B)->bool { return FBlueprintCompileReinstancer::ReinstancerOrderingFunction(&A, &B); });
 }
 
-void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* OwnerClass, TMap<UClass*, UClass*>& OldToNewMap)
+void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* const OwnerClass, TMap<UClass*, UClass*>& OldToNewMap)
 {
 	// Gather the whole class hierarchy up the native class so that we can correctly create the REINST class parented to native
 	TArray<UClass*> ClassHierarchy;
@@ -1687,14 +1668,15 @@ void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* OwnerClass,
 
 		GIsDuplicatingClassForReinstancing = true;
 		// Create a REINST version of the given class
-		UObject* OldCDO = OwnerClass->ClassDefaultObject;
-		const FName ReinstanceName = MakeUniqueObjectName(GetTransientPackage(), OwnerClass->GetClass(), *(FString(TEXT("REINST_")) + *OwnerClass->GetName()));
+		UObject* OldCDO = CurClass->ClassDefaultObject;
+		const FName ReinstanceName = MakeUniqueObjectName(GetTransientPackage(), CurClass->GetClass(), *(FString(TEXT("REINST_")) + *CurClass->GetName()));
 
-		checkf(IsValid(OwnerClass), TEXT("%s is invalid - will not duplicate successfully"), *(OwnerClass->GetName()));
+		checkf(IsValid(CurClass), TEXT("%s is invalid - will not duplicate successfully"), *(CurClass->GetName()));
 		UClass* ReinstClass = CastChecked<UClass>(StaticDuplicateObject(CurClass, GetTransientPackage(), ReinstanceName, ~RF_Transactional));
 		
 		ReinstClass->RemoveFromRoot();
-		OwnerClass->ClassFlags &= ~CLASS_NewerVersionExists;
+		CurClass->ClassFlags |= CLASS_NewerVersionExists;
+		CurClass->ClassFlags &= ~CLASS_NewerVersionExists;
 		GIsDuplicatingClassForReinstancing = false;
 
 		UClass** OverridenParent = OldToNewMap.Find(ReinstClass->GetSuperClass());
@@ -1712,7 +1694,7 @@ void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* OwnerClass,
 		// Actually move the old CDO reference out of the way
 		if (OldCDO)
 		{
-			OwnerClass->ClassDefaultObject = nullptr;
+			CurClass->ClassDefaultObject = nullptr;
 			OldCDO->Rename(nullptr, ReinstClass->GetOuter(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
 			ReinstClass->ClassDefaultObject = OldCDO;
 			OldCDO->SetClass(ReinstClass);
@@ -1915,8 +1897,29 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 			NewName = OldName;
 		}
 
+		UObject* DestinationOuter = OldObject->GetOuter();
+		// Check to make sure our original outer hasn't already been reinstanced:
+		if (UObject* const* ReinstancedOuter = OldToNewInstanceMap.Find(DestinationOuter))
+		{
+			// Our outer has been replaced, use the newer object:
+			DestinationOuter = *ReinstancedOuter;
+
+			// since we're changing the destination outer, make sure that there's no chance of collision with
+			// another object:
+			UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), DestinationOuter, NewName);
+			if (ExistingObject)
+			{
+				// Potential bug: if the conflict is an actor (e.g. actor template, we may need to use
+				// UObject::Rename explicitly to prevent side effects)
+				ExistingObject->Rename(
+					nullptr,
+					GetTransientPackage(),
+					REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
+			}
+		}
+
 		FMakeClassSpawnableOnScope TemporarilySpawnable(NewClass);
-		NewUObject = NewObject<UObject>(OldObject->GetOuter(), NewClass, NewName, RF_NoFlags, NewArchetype);
+		NewUObject = NewObject<UObject>(DestinationOuter, NewClass, NewName, RF_NoFlags, NewArchetype);
 	}
 
 	check(NewUObject != nullptr);
@@ -1928,6 +1931,7 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 	// Copy property values
 	Options.bNotifyObjectReplacement = true;
 	Options.bSkipCompilerGeneratedDefaults = true;
+	Options.OptionalReplacementMappings = &OldToNewInstanceMap;
 	UEditorEngine::CopyPropertiesForUnrelatedObjects(OldObject, NewUObject, Options);
 	// Generate new subobjects
 	InstancedPropertyUtils::FArchiveInsertInstancedSubObjects InstancedSubObjSpawner(NewUObject, InstancedPropertyMap);
@@ -1998,7 +2002,7 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 	}
 }
 
-static void ReplaceActorHelper(AActor* OldActor, UClass* OldClass, UObject*& NewUObject, UClass* NewClass, TMap<UObject*, UObject*>& OldToNewInstanceMap, TMap<UClass*, UClass*>& InOldToNewClassMap, TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap, TMap<UObject*, FActorAttachmentData>& ActorAttachmentData, TArray<FActorReplacementHelper>& ReplacementActors, bool bPreserveRootComponent, bool& bSelectionChanged)
+static void ReplaceActorHelper(AActor* OldActor, UClass* OldClass, UObject*& NewUObject, UClass* NewClass, TMap<UObject*, UObject*>& OldToNewInstanceMap, const TMap<UClass*, UClass*>& InOldToNewClassMap, TMap<FSoftObjectPath, UObject*>& ReinstancedObjectsWeakReferenceMap, TMap<UObject*, FActorAttachmentData>& ActorAttachmentData, TArray<FActorReplacementHelper>& ReplacementActors, bool bPreserveRootComponent, bool& bSelectionChanged)
 {
 	FVector  Location = FVector::ZeroVector;
 	FRotator Rotation = FRotator::ZeroRotator;
@@ -2027,8 +2031,10 @@ static void ReplaceActorHelper(AActor* OldActor, UClass* OldClass, UObject*& New
 
 	// Spawn the new actor instance, in the same level as the original, but deferring running the construction script until we have transferred modified properties
 	ULevel*  ActorLevel = OldActor->GetLevel();
-	UClass** MappedClass = InOldToNewClassMap.Find(OldActor->GetClass());
+	UClass* const* MappedClass = InOldToNewClassMap.Find(OldActor->GetClass());
 	UClass*  SpawnClass = MappedClass ? *MappedClass : NewClass;
+
+	const EObjectFlags FlagMask = RF_Public | RF_ArchetypeObject | RF_Transactional | RF_Transient | RF_TextExportTransient | RF_InheritableComponentTemplate | RF_Standalone;
 
 	FActorSpawnParameters SpawnInfo;
 	SpawnInfo.OverrideLevel = ActorLevel;
@@ -2038,6 +2044,7 @@ static void ReplaceActorHelper(AActor* OldActor, UClass* OldClass, UObject*& New
 	SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	SpawnInfo.bDeferConstruction = true;
 	SpawnInfo.Name = OldActor->GetFName();
+	SpawnInfo.ObjectFlags |= OldActor->GetFlags() & FlagMask;
 
 	if (!OldActor->IsListedInSceneOutliner())
 	{
@@ -2144,15 +2151,23 @@ static void ReplaceActorHelper(AActor* OldActor, UClass* OldClass, UObject*& New
 	OldToNewInstanceMap.Add(OldActor, NewActor);
 }
 
-void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, UClass*>& InOldToNewClassMap, UObject* InOriginalCDO, TSet<UObject*>* ObjectsThatShouldUseOldStuff, bool bClassObjectReplaced, bool bPreserveRootComponent, bool bArchetypesAreUpToDate, const TSet<UObject*>* InstancesThatShouldUseOldClass, bool bReplaceReferencesToOldClasses)
+void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UClass*, UClass*>& InOldToNewClassMap, const FReplaceInstancesOfClassParameters& Params)
 {
-	// If there is an original CDO, we are only reinstancing a single class
-	check((InOriginalCDO != nullptr && InOldToNewClassMap.Num() == 1) || InOriginalCDO == nullptr); // (InOldToNewClassMap.Num() > 1 && InOriginalCDO == nullptr) || (InOldToNewClassMap.Num() == 1 && InOriginalCDO != nullptr));
+	// If there is an original CDO, make sure we are only reinstancing a single class (legacy path, non-batch)
+	UObject* InOriginalCDO = Params.OriginalCDO;
+	check((InOriginalCDO != nullptr && InOldToNewClassMap.Num() == 1) || InOriginalCDO == nullptr);
 
-	if (InOldToNewClassMap.Num() == 0)
-	{
-		return;
-	}
+	// This flag only applies to the legacy (i.e. non-batch) path.
+	const bool bClassObjectReplaced = InOriginalCDO != nullptr && Params.bClassObjectReplaced;
+
+	// If we're in the legacy path, always replace references to the CDO. Otherwise, it must be enabled.
+	const bool bReplaceReferencesToOldCDOs = InOriginalCDO != nullptr || Params.bReplaceReferencesToOldCDOs;
+	
+	TSet<UObject*>* ObjectsThatShouldUseOldStuff = Params.ObjectsThatShouldUseOldStuff;
+	const TSet<UObject*>* InstancesThatShouldUseOldClass = Params.InstancesThatShouldUseOldClass;
+	const bool bPreserveRootComponent = Params.bPreserveRootComponent;
+	const bool bArchetypesAreUpToDate = Params.bArchetypesAreUpToDate;
+	const bool bReplaceReferencesToOldClasses = Params.bReplaceReferencesToOldClasses;
 
 	USelection* SelectedActors = nullptr;
 	TArray<UObject*> ObjectsReplaced;
@@ -2368,7 +2383,7 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 					if (OldActor != nullptr)
 					{
 						UObject* NewUObject = nullptr;
-						if (OldActor->GetLevel())
+						if (OldActor->GetLevel() && OldActor->GetWorld())
 						{
 							ReplaceActorHelper(OldActor, OldClass, NewUObject, NewClass, OldToNewInstanceMap, InOldToNewClassMap, ReinstancedObjectsWeakReferenceMap, ActorAttachmentData, ReplacementActors, bPreserveRootComponent, bSelectionChanged);
 						}
@@ -2411,9 +2426,8 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 	TArray<UObject*> SourceObjects;
 	OldToNewInstanceMap.GenerateKeyArray(SourceObjects);
 	
-	if (InOriginalCDO)
+	if (bReplaceReferencesToOldCDOs)
 	{
-		check(InOldToNewClassMap.Num() == 1);
 		for (TPair<UClass*, UClass*> OldToNewClass : InOldToNewClassMap)
 		{
 			UClass* OldClass = OldToNewClass.Key;

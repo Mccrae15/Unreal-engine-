@@ -2,24 +2,30 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "GameFramework/Actor.h"
+#include "Engine/BlendableInterface.h"
 #include "Engine/Scene.h"
-#include "TerrainCarvingSettings.h"
-#include "WaterBrushActorInterface.h"
 #include "WaterBodyWeightmapSettings.h"
 #include "WaterBodyHeightmapSettings.h"
 #include "WaterCurveSettings.h"
 #include "WaterSplineMetadata.h"
-#include "NavAreas/NavArea.h"
-#include "AI/Navigation/NavRelevantInterface.h"
-#include "Interfaces/Interface_PostProcessVolume.h"
-#include "WaterWaves.h"
 #include "WaterBodyTypes.h"
-#include "DynamicMeshBuilder.h"
 
+class AWaterBody;
+class UStaticMesh;
+class UWaterWavesBase;
+enum ETextureRenderTargetFormat : int;
+struct FPostProcessVolumeProperties;
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Interfaces/Interface_PostProcessVolume.h"
+#include "NavAreas/NavArea.h"
+#include "TerrainCarvingSettings.h"
+#include "WaterBrushActorInterface.h"
+#include "DynamicMeshBuilder.h"
 #if WITH_EDITOR
 #include "MeshDescription.h"
+#endif
 #endif
 
 #include "WaterBodyComponent.generated.h"
@@ -33,6 +39,8 @@ class ALandscapeProxy;
 class UMaterialInstanceDynamic;
 class FTokenizedMessage;
 namespace UE::Geometry { class FDynamicMesh3; }
+struct FDynamicMeshVertex;
+struct FMeshDescription;
 
 // ----------------------------------------------------------------------------------
 
@@ -88,16 +96,12 @@ enum class EWaterBodyStatus : uint8
 struct FWaterBodyMeshSection
 {
 public:
-	FWaterBodyMeshSection()
-		: Vertices()
-		, Indices()
-		, SectionBounds()
-	{
-	}
+	FWaterBodyMeshSection();
+	~FWaterBodyMeshSection();
 
 	bool IsValid() const { return (bool)SectionBounds.bIsValid; }
 
-	uint32 GetAllocatedSize() const { return Vertices.GetAllocatedSize() + Indices.GetAllocatedSize(); }
+	uint32 GetAllocatedSize() const;
 
 	TArray<FDynamicMeshVertex> Vertices;
 	TArray<uint32> Indices;
@@ -122,6 +126,9 @@ struct FOnWaterBodyChangedParams
 
 	/** Indicates that a property affecting the terrain weightmaps has changed */
 	bool bWeightmapSettingsChanged = false;
+
+	/** Indicates user initiated Parameter change */
+	bool bUserTriggered = false;
 };
 
 
@@ -184,8 +191,6 @@ public:
 
 	/** Returns collision half-extents */
 	virtual FVector GetCollisionExtents() const { return FVector::ZeroVector; }
-
-	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 
 	/** Sets an additional water height (For internal use. Please use AWaterBodyOcean instead.) */
 	virtual void SetHeightOffset(float InHeightOffset) { check(false); }
@@ -326,8 +331,11 @@ public:
 	virtual void OnUnregister() override;
 	virtual void PostDuplicate(bool bDuplicateForPie) override;
 
-	UFUNCTION(BlueprintCallable, Category=Water)
+	UE_DEPRECATED(5.2, "Use version which takes FOnWaterBodyChangedParams")
+	UFUNCTION(BlueprintCallable, Category=Water, meta=(Deprecated = "5.2"))
 	void OnWaterBodyChanged(bool bShapeOrPositionChanged, bool bWeightmapSettingsChanged = false);
+
+	void OnWaterBodyChanged(const FOnWaterBodyChangedParams& InParams);
 
 	/** Fills wave-related information at the given world position and for this water depth.
 	 - InPosition : water surface position at which to query the wave information
@@ -476,7 +484,6 @@ protected:
 	EWaterBodyQueryFlags CheckAndAjustQueryFlags(EWaterBodyQueryFlags InQueryFlags) const;
 	void UpdateSplineComponent();
 	void UpdateExclusionVolumes();
-	AWaterZone* FindWaterZone() const;
 	bool UpdateWaterHeight();
 	virtual void CreateOrUpdateWaterMID();
 	void CreateOrUpdateWaterLODMID();
@@ -491,7 +498,6 @@ protected:
 	void RebuildWaterBodyInfoMesh();
 	void RebuildWaterBodyLODSections();
 	void OnTessellatedWaterMeshBoundsChanged();
-	void OnWaterBodyChanged(const FOnWaterBodyChangedParams& InParams);
 
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
@@ -511,7 +517,7 @@ protected:
 	void OnWaterSplineDataChanged(const FOnWaterSplineDataChangedParams& InParams);
 	void RegisterOnUpdateWavesData(UWaterWavesBase* InWaterWaves, bool bRegister);
 	void OnWavesDataUpdated(UWaterWavesBase* InWaterWaves, EPropertyChangeType::Type InChangeType);
-	void OnWaterSplineMetadataChanged(UWaterSplineMetadata* InWaterSplineMetadata, FPropertyChangedEvent& PropertyChangedEvent);
+	void OnWaterSplineMetadataChanged(const FOnWaterSplineMetadataChangedParams& InParams);
 	void RegisterOnChangeWaterSplineData(bool bRegister);
 
 	void CreateWaterSpriteComponent();
@@ -519,6 +525,8 @@ protected:
 	virtual TSubclassOf<class UHLODBuilder> GetCustomHLODBuilderClass() const override;
 #endif // WITH_EDITOR
 
+	UE_DEPRECATED(5.2, "This function is no longer called. Instead uses UWaterSubsystem::FindWaterZone to determine the right water zone when no override is provided.")
+	AWaterZone* FindWaterZone() const { return nullptr; }
 public:
 	// INavRelevantInterface start
 	virtual void GetNavigationData(struct FNavigationRelevantData& Data) const override;
@@ -639,7 +647,7 @@ protected:
 	UPROPERTY(Transient)
 	mutable TWeakObjectPtr<ALandscapeProxy> Landscape;
 
-	UPROPERTY()
+	UPROPERTY(Category = Water, VisibleAnywhere, AdvancedDisplay)
 	TSoftObjectPtr<AWaterZone> OwningWaterZone;
 
 	UPROPERTY(Category = Water, EditAnywhere, BlueprintReadOnly, AdvancedDisplay)

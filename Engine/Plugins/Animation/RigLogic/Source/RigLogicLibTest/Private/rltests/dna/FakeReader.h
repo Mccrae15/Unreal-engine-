@@ -23,7 +23,13 @@ class FakeReader : public Reader {
     public:
         ~FakeReader();
 
-        void unload(DataLayer layer) override {
+        // HeaderReader methods
+        std::uint16_t getFileFormatGeneration() const override {
+            return static_cast<std::uint16_t>(2);
+        }
+
+        std::uint16_t getFileFormatVersion() const override {
+            return static_cast<std::uint16_t>(3);
         }
 
         // DescriptorReader methods start
@@ -83,7 +89,7 @@ class FakeReader : public Reader {
             return {};
         }
 
-        // DefinitionReader methods start
+        // DefinitionReader methods
         std::uint16_t getGUIControlCount() const override {
             return {};
         }
@@ -212,7 +218,7 @@ class FakeReader : public Reader {
             return {};
         }
 
-        // BehaviorReader methods start
+        // BehaviorReader methods
         ConstArrayView<std::uint16_t> getGUIToRawInputIndices() const override {
             return {};
         }
@@ -329,7 +335,7 @@ class FakeReader : public Reader {
             return {};
         }
 
-        // GeometryReader methods start
+        // GeometryReader methods
         std::uint32_t getVertexPositionCount(std::uint16_t meshIndex) const override {
             return {};
         }
@@ -468,6 +474,74 @@ class FakeReader : public Reader {
         ConstArrayView<std::uint32_t> getBlendShapeTargetVertexIndices(std::uint16_t meshIndex,
                                                                        std::uint16_t blendShapeTargetIndex) const override {
             return {};
+        }
+
+        // MachineLearnedBehaviorReader methods
+        std::uint16_t getMLControlCount() const override {
+            return {};
+        }
+
+        StringView getMLControlName(std::uint16_t index) const override {
+            return {};
+        }
+
+        std::uint16_t getNeuralNetworkCount() const override {
+            return {};
+        }
+
+        std::uint16_t getNeuralNetworkIndexListCount() const override {
+            return {};
+        }
+
+        ConstArrayView<std::uint16_t> getNeuralNetworkIndicesForLOD(std::uint16_t lod) const override {
+            return {};
+        }
+
+        std::uint16_t getMeshRegionCount(std::uint16_t meshIndex) const override {
+            return {};
+        }
+
+        StringView getMeshRegionName(std::uint16_t meshIndex, std::uint16_t regionIndex) const override {
+            return {};
+        }
+
+        ConstArrayView<std::uint16_t> getNeuralNetworkIndicesForMeshRegion(std::uint16_t meshIndex,
+                                                                           std::uint16_t regionIndex) const override {
+            return {};
+        }
+
+        ConstArrayView<std::uint16_t> getNeuralNetworkInputIndices(std::uint16_t neuralNetIndex) const override {
+            return {};
+        }
+
+        ConstArrayView<std::uint16_t> getNeuralNetworkOutputIndices(std::uint16_t neuralNetIndex) const override {
+            return {};
+        }
+
+        std::uint16_t getNeuralNetworkLayerCount(std::uint16_t neuralNetIndex) const override {
+            return {};
+        }
+
+        ActivationFunction getNeuralNetworkLayerActivationFunction(std::uint16_t neuralNetIndex,
+                                                                   std::uint16_t layerIndex) const override {
+            return {};
+        }
+
+        ConstArrayView<float> getNeuralNetworkLayerActivationFunctionParameters(std::uint16_t neuralNetIndex,
+                                                                                std::uint16_t layerIndex) const override {
+            return {};
+        }
+
+        ConstArrayView<float> getNeuralNetworkLayerBiases(std::uint16_t neuralNetIndex, std::uint16_t layerIndex) const override {
+            return {};
+        }
+
+        ConstArrayView<float> getNeuralNetworkLayerWeights(std::uint16_t neuralNetIndex,
+                                                           std::uint16_t layerIndex) const override {
+            return {};
+        }
+
+        void unload(DataLayer  /*unused*/) override {
         }
 
 };

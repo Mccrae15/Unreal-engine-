@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
 
 class FLevelSequenceEditorCommands
@@ -17,7 +16,7 @@ public:
 	virtual void RegisterCommands() override;
 
 	TSharedPtr<FUICommandInfo> CreateNewLevelSequenceInLevel;
-	TSharedPtr<FUICommandInfo> CreateNewMasterSequenceInLevel;
+	TSharedPtr<FUICommandInfo> CreateNewLevelSequenceWithShotsInLevel;
 	TSharedPtr<FUICommandInfo> ToggleCinematicViewportCommand;
 	
 	TSharedPtr<FUICommandInfo> SnapSectionsToTimelineUsingSourceTimecode;

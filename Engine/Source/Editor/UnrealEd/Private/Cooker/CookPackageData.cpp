@@ -50,7 +50,7 @@ static FAutoConsoleVariableRef CVarPollAsyncPeriod(
 //////////////////////////////////////////////////////////////////////////
 // FPackageData
 FPackageData::FPlatformData::FPlatformData()
-	: bRequested(false), bCookAttempted(false), bCookSucceeded(false), bExplored(false), bSaveTimedOut(false)
+	: bRequested(false), bCookAttempted(false), bCookSucceeded(false), bExplored(false), bSaveTimedOut(false), bCookable(true)
 {
 }
 
@@ -189,6 +189,31 @@ bool FPackageData::HasAllExploredPlatforms(const TArrayView<const ITargetPlatfor
 	}
 	return true;
 }
+
+bool FPackageData::CanCookForPlatforms() const
+{
+	if (PlatformDatas.Num() == 0)
+	{
+		return true;
+	}
+
+	if (AreAllRequestedPlatformsExplored())
+	{
+		for (const TPair<const ITargetPlatform*, FPlatformData>& Pair : PlatformDatas)
+		{
+			if (Pair.Value.bCookable)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+	else
+	{
+		return true;
+	}
+}
+
 
 void FPackageData::SetIsUrgent(bool Value)
 {
@@ -727,12 +752,32 @@ void FPackageData::OnEnterAssignedToWorker()
 {
 }
 
+void FPackageData::SetWorkerAssignment(FWorkerId InWorkerAssignment, ESendFlags SendFlags)
+{
+	if (WorkerAssignment.IsValid())
+	{
+		checkf(InWorkerAssignment.IsInvalid(), TEXT("Package %s is being assigned to worker %d while it is already assigned to worker %d."),
+			*GetPackageName().ToString(), WorkerAssignment.GetRemoteIndex(), WorkerAssignment.GetRemoteIndex());
+		if (EnumHasAnyFlags(SendFlags, ESendFlags::QueueRemove))
+		{
+			PackageDatas.GetCookOnTheFlyServer().NotifyRemovedFromWorker(*this);
+		}
+		WorkerAssignment = FWorkerId::Invalid();
+	}
+	else
+	{
+		if (InWorkerAssignment.IsValid())
+		{
+			checkf(GetState() == EPackageState::AssignedToWorker, TEXT("Package %s is being assigned to worker %d while in a state other than AssignedToWorker. This is invalid."),
+				*GetPackageName().ToString(), GetWorkerAssignment().GetRemoteIndex());
+		}
+		WorkerAssignment = InWorkerAssignment;
+	}
+}
+
 void FPackageData::OnExitAssignedToWorker()
 {
-	if (GetWorkerAssignment().IsValid())
-	{
-		PackageDatas.GetCookOnTheFlyServer().NotifyRemovedFromWorker(*this);
-	}
+	SetWorkerAssignment(FWorkerId::Invalid());
 }
 
 void FPackageData::OnEnterLoadPrepare()
@@ -758,7 +803,6 @@ void FPackageData::OnEnterSave()
 	check(!HasPrepareSaveFailed());
 	CheckObjectCacheEmpty();
 	CheckCookedPlatformDataEmpty();
-	check(!PackageRemoteResult);
 }
 
 void FPackageData::OnExitSave()
@@ -767,22 +811,6 @@ void FPackageData::OnExitSave()
 	ClearObjectCache();
 	SetHasPrepareSaveFailed(false);
 	SetIsPrepareSaveRequiresGC(false);
-	PackageRemoteResult.Reset();
-}
-
-FPackageRemoteResult& FPackageData::GetOrAddPackageRemoteResult()
-{
-	check(GetState() == EPackageState::Save);
-	if (!PackageRemoteResult)
-	{
-		PackageRemoteResult = MakeUnique<FPackageRemoteResult>();
-	}
-	return *PackageRemoteResult;
-}
-
-TUniquePtr<FPackageRemoteResult>& FPackageData::GetPackageRemoteResult()
-{
-	return PackageRemoteResult;
 }
 
 void FPackageData::OnEnterInProgress()
@@ -858,6 +886,13 @@ bool FPackageData::TryPreload()
 	}
 	if (FindObjectFast<UPackage>(nullptr, GetPackageName()))
 	{
+		if (AsyncRequest && !AsyncRequest->bHasFinished)
+		{
+			// In case of async loading, the object can be found while still being asynchronously serialized, we need to wait until 
+			// the callback is called and the async request is completely done.
+			return false;
+		}
+
 		// If the package has already loaded, then there is no point in further preloading
 		ClearPreload();
 		SetIsPreloadAttempted(true);
@@ -869,6 +904,24 @@ bool FPackageData::TryPreload()
 		ClearPreload();
 		SetIsPreloadAttempted(true);
 		return true;
+	}
+	if (IsAsyncLoadingMultithreaded())
+	{
+		if (!AsyncRequest.IsValid())
+		{
+			PackageDatas.GetMonitor().OnPreloadAllocatedChanged(*this, true);
+			AsyncRequest = MakeShared<FAsyncRequest>();
+			AsyncRequest->RequestID = LoadPackageAsync(
+				GetFileName().ToString(), 
+				FLoadPackageAsyncDelegate::CreateLambda(
+					[AsyncRequest = AsyncRequest](const FName&, UPackage*, EAsyncLoadingResult::Type) { AsyncRequest->bHasFinished = true; }
+				),
+				32 /* Use arbitrary higher priority for preload as we're going to need them very soon */
+			);
+		}
+
+		// always return false so we continue to check the status of the load until FindObjectFast above finds the loaded object
+		return false;
 	}
 	if (!PreloadableFile.Get())
 	{
@@ -961,6 +1014,17 @@ void FPackageData::FTrackedPreloadableFilePtr::Reset(FPackageData& Owner)
 
 void FPackageData::ClearPreload()
 {
+	if (AsyncRequest)
+	{
+		if (!AsyncRequest->bHasFinished)
+		{
+			FlushAsyncLoading(AsyncRequest->RequestID);
+			check(AsyncRequest->bHasFinished);
+		}
+		PackageDatas.GetMonitor().OnPreloadAllocatedChanged(*this, false);
+		AsyncRequest.Reset();
+	}
+
 	const TSharedPtr<FPreloadableArchive>& FilePtr = PreloadableFile.Get();
 	if (GetIsPreloaded())
 	{
@@ -987,6 +1051,7 @@ void FPackageData::ClearPreload()
 
 void FPackageData::CheckPreloadEmpty()
 {
+	check(!AsyncRequest);
 	check(!GetIsPreloadAttempted());
 	check(!PreloadableFile.Get());
 	check(!GetIsPreloaded());
@@ -1642,9 +1707,10 @@ void FGeneratorPackage::ResetSaveState(FCookGenerationInfo& Info, UPackage* Pack
 		GetCookPackageSplitterInstance()->UseInternalReferenceToAvoidGarbageCollect() &&
 		(ReleaseSaveReason == EReleaseSaveReason::Demoted || ReleaseSaveReason == EReleaseSaveReason::RecreateObjectCache))
 	{
-		UE_LOG(LogCook, Error, TEXT("CookPackageSplitter failure: We are demoting a generated package from save and removing our references that keep its objects loaded.\n")
+		UE_LOG(LogCook, Error, TEXT("CookPackageSplitter failure: We are demoting a %s package from save and removing our references that keep its objects loaded.\n")
 			TEXT("This will allow the objects to be garbage collected and cause failures in the splitter which expects them to remain loaded.\n")
 			TEXT("Package=%s, Splitter=%s, ReleaseSaveReason=%s"),
+			Info.IsGenerator() ? TEXT("generator") : TEXT("generated"),
 			Info.PackageData ? *Info.PackageData->GetPackageName().ToString() : *Info.RelativePath,
 			*GetSplitDataObjectName().ToString(), LexToString(ReleaseSaveReason));
 	}
@@ -1884,9 +1950,11 @@ FPendingCookedPlatformData::FPendingCookedPlatformData(UObject* InObject, const 
 FPendingCookedPlatformData::FPendingCookedPlatformData(FPendingCookedPlatformData&& Other)
 	: Object(Other.Object), TargetPlatform(Other.TargetPlatform), PackageData(Other.PackageData)
 	, CookOnTheFlyServer(Other.CookOnTheFlyServer), CancelManager(Other.CancelManager), ClassName(Other.ClassName)
-	, bHasReleased(Other.bHasReleased), bNeedsResourceRelease(Other.bNeedsResourceRelease)
+	, UpdatePeriodMultiplier(Other.UpdatePeriodMultiplier), bHasReleased(Other.bHasReleased)
+	, bNeedsResourceRelease(Other.bNeedsResourceRelease)
 {
 	Other.Object = nullptr;
+	Other.bHasReleased = true;
 }
 
 FPendingCookedPlatformData::~FPendingCookedPlatformData()
@@ -2129,7 +2197,7 @@ void FPackageDatas::OnAssetRegistryGenerated(IAssetRegistry& InAssetRegistry)
 
 FString FPackageDatas::GetReferencerName() const
 {
-	return TEXT("FPackageDatas");
+	return TEXT("CookOnTheFlyServer");
 }
 
 void FPackageDatas::AddReferencedObjects(FReferenceCollector& Collector)
@@ -2581,7 +2649,7 @@ void FPackageDatas::GetCookedPackagesForPlatform(const ITargetPlatform* Platform
 void FPackageDatas::Clear()
 {
 	FWriteScopeLock ExistenceWriteLock(ExistenceLock);
-	PendingCookedPlatformDatas.Empty(); // These destructors will dereference PackageDatas
+	PendingCookedPlatformDataLists.Empty(); // These destructors will dereference PackageDatas
 	RequestQueue.Empty();
 	SaveQueue.Empty();
 	PackageNameToPackageData.Empty();
@@ -2614,14 +2682,23 @@ void FPackageDatas::OnRemoveSessionPlatform(const ITargetPlatform* TargetPlatfor
 	}
 }
 
-TArray<FPendingCookedPlatformData>& FPackageDatas::GetPendingCookedPlatformDatas()
+constexpr int32 PendingPlatformDataReservationSize = 128;
+constexpr int32 PendingPlatformDataMaxUpdatePeriod = 16;
+
+void FPackageDatas::AddPendingCookedPlatformData(FPendingCookedPlatformData&& Data)
 {
-	return PendingCookedPlatformDatas;
+	if (PendingCookedPlatformDataLists.IsEmpty())
+	{
+		PendingCookedPlatformDataLists.Emplace();
+		PendingCookedPlatformDataLists.Last().Reserve(PendingPlatformDataReservationSize );
+	}
+	PendingCookedPlatformDataLists.First().Add(MoveTemp(Data));
+	++PendingCookedPlatformDataNum;
 }
 
 void FPackageDatas::PollPendingCookedPlatformDatas(bool bForce, double& LastCookableObjectTickTime)
 {
-	if (PendingCookedPlatformDatas.Num() == 0)
+	if (PendingCookedPlatformDataNum == 0)
 	{
 		return;
 	}
@@ -2630,12 +2707,29 @@ void FPackageDatas::PollPendingCookedPlatformDatas(bool bForce, double& LastCook
 	if (!bForce)
 	{
 		// ProcessAsyncResults and IsCachedCookedPlatformDataLoaded can be expensive to call
-		// Cap the frequency at which we call them.
+		// Cap the frequency at which we call them. We only update the last poll time at completion
+		// so that we don't suddenly saturate the game thread by making derived data key strings
+		// when the time to do the polls increases to GPollAsyncPeriod.
 		if (CurrentTime < LastPollAsyncTime + GPollAsyncPeriod)
 		{
 			return;
 		}
-		LastPollAsyncTime = CurrentTime;
+	}
+	LastPollAsyncTime = CurrentTime;
+
+	// PendingPlatformDataLists is a rotating list of lists of PendingPlatformDatas
+	// The first list contains all of the PendingPlatformDatas that we should poll on this tick
+	// The nth list is all of the PendingPlatformDatas that we should poll after N more ticks
+	// Each poll period we pull the front list off and all other lists move frontwards by 1.
+	// New PendingPlatformDatas are inserted into the first list, to be polled in the next poll period
+	// When a PendingPlatformData signals it is not ready after polling, we increase its poll period
+	// exponentially - we double it.
+	// A poll period of N times the default poll period means we insert it into the Nth list in
+	// PendingPlatformDataLists.
+	FPendingCookedPlatformDataContainer List = PendingCookedPlatformDataLists.PopFrontValue();
+	if (!bForce && List.IsEmpty())
+	{
+		return;
 	}
 
 	GShaderCompilingManager->ProcessAsyncResults(true /* bLimitExecutionTime */,
@@ -2648,16 +2742,49 @@ void FPackageDatas::PollPendingCookedPlatformDatas(bool bForce, double& LastCook
 		LastCookableObjectTickTime = CurrentTime;
 	}
 
-	FPendingCookedPlatformData* Datas = PendingCookedPlatformDatas.GetData();
-	for (int Index = 0; Index < PendingCookedPlatformDatas.Num();)
+	if (!bForce)
 	{
-		if (Datas[Index].PollIsComplete())
+		for (FPendingCookedPlatformData& Data : List)
 		{
-			PendingCookedPlatformDatas.RemoveAtSwap(Index, 1 /* Count */, false /* bAllowShrinking */);
+			if (Data.PollIsComplete())
+			{
+				// We are destructing all elements of List after the for loop is done; we leave
+				// the completed Data on List to be destructed.
+				--PendingCookedPlatformDataNum;
+			}
+			else
+			{
+				Data.UpdatePeriodMultiplier = FMath::Clamp(Data.UpdatePeriodMultiplier*2, 1, PendingPlatformDataMaxUpdatePeriod);
+				int32 ContainerIndex = Data.UpdatePeriodMultiplier - 1;
+				while (PendingCookedPlatformDataLists.Num() <= ContainerIndex)
+				{
+					PendingCookedPlatformDataLists.Emplace();
+					PendingCookedPlatformDataLists.Last().Reserve(PendingPlatformDataReservationSize);
+				}
+				PendingCookedPlatformDataLists[ContainerIndex].Add(MoveTemp(Data));
+			}
 		}
-		else
+	}
+	else
+	{
+		// When called with bForce, we poll all PackageDatas in all lists, and do not update
+		// any PollPeriods.
+		PendingCookedPlatformDataLists.AddFront(MoveTemp(List));
+		for (FPendingCookedPlatformDataContainer& ForceList : PendingCookedPlatformDataLists)
 		{
-			++Index;
+			for (int32 Index = 0; Index < ForceList.Num(); )
+			{
+				FPendingCookedPlatformData& Data = ForceList[Index];
+				if (Data.PollIsComplete())
+				{
+					ForceList.RemoveAtSwap(Index, 1, false /* bAllowShrinking */);
+					--PendingCookedPlatformDataNum;
+				}
+				else
+				{
+					++Index;
+				}
+			}
 		}
 	}
 }
@@ -2678,10 +2805,10 @@ void FPackageDatas::RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPla
 	{
 		PackageData->RemapTargetPlatforms(Remap);
 	}
-	for (FPendingCookedPlatformData& CookedPlatformData : PendingCookedPlatformDatas)
+	ForEachPendingCookedPlatformData([&Remap](FPendingCookedPlatformData& CookedPlatformData)
 	{
 		CookedPlatformData.RemapTargetPlatforms(Remap);
-	}
+	});
 }
 
 void FPackageDatas::DebugInstigator(FPackageData& PackageData)

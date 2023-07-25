@@ -5,9 +5,11 @@ TextureStreamingHelpers.cpp: Definitions of classes used for texture streaming.
 =============================================================================*/
 
 #include "Streaming/TextureStreamingHelpers.h"
+#include "Stats/StatsTrace.h"
 #include "UnrealEngine.h"
-#include "Engine/Texture2D.h"
+#include "Engine/Level.h"
 #include "GenericPlatform/GenericPlatformMemoryPoolStats.h"
+#include "RHI.h"
 
 /** Streaming stats */
 
@@ -70,7 +72,7 @@ TAutoConsoleVariable<float> CVarStreamingBoost(
 	TEXT("=1.0: normal\n")
 	TEXT("<1.0: decrease wanted mip levels\n")
 	TEXT(">1.0: increase wanted mip levels"),
-	ECVF_Scalability
+	ECVF_Scalability | ECVF_ExcludeFromPreview
 	);
 
 TAutoConsoleVariable<float> CVarStreamingMinBoost(
@@ -108,13 +110,13 @@ TAutoConsoleVariable<int32> CVarStreamingPoolSize(
 	TEXT("r.Streaming.PoolSize"),
 	-1,
 	TEXT("-1: Default texture pool size, otherwise the size in MB"),
-	ECVF_Scalability);
+	ECVF_Scalability | ECVF_ExcludeFromPreview);
 
 static TAutoConsoleVariable<int32> CVarStreamingPoolSizeForMeshes(
 	TEXT("r.Streaming.PoolSizeForMeshes"),
 	-1,
 	TEXT("< 0: Mesh and texture share the same pool, otherwise the size of pool dedicated to meshes."),
-	ECVF_Scalability);
+	ECVF_Scalability | ECVF_ExcludeFromPreview);
 
 TAutoConsoleVariable<int32> CVarStreamingMaxTempMemoryAllowed(
 	TEXT("r.Streaming.MaxTempMemoryAllowed"),

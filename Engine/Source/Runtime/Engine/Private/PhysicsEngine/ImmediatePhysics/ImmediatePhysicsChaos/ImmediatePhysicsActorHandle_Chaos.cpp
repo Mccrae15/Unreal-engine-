@@ -2,23 +2,17 @@
 
 #include "Physics/ImmediatePhysics/ImmediatePhysicsChaos/ImmediatePhysicsActorHandle_Chaos.h"
 
-#include "Chaos/Box.h"
-#include "Chaos/Capsule.h"
-#include "Chaos/Evolution/PBDMinEvolution.h"
-#include "Chaos/ImplicitObjectScaled.h"
+#include "BodySetupEnums.h"
 #include "Chaos/MassProperties.h"
+#include "Chaos/PBDRigidsSOAs.h"
 #include "Chaos/Particle/ParticleUtilities.h"
-#include "Chaos/ParticleHandle.h"
-#include "Chaos/PBDRigidParticles.h"
-#include "Chaos/PBDRigidsEvolutionGBF.h"
-#include "Chaos/Sphere.h"
 #include "Chaos/TriangleMeshImplicitObject.h"
-#include "Chaos/Utilities.h"
 
 #include "Physics/Experimental/ChaosInterfaceUtils.h"
 
-#include "PhysicsEngine/BodyInstance.h"
+#include "Physics/ImmediatePhysics/ImmediatePhysicsShared/ImmediatePhysicsCore.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "Physics/PhysicsInterfaceTypes.h"
 #include "PhysicsEngine/BodyUtils.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 
@@ -141,11 +135,7 @@ namespace ImmediatePhysics_Chaos
 		AddParams.Scale = Scale;
 		//AddParams.SimpleMaterial = SimpleMaterial;
 		//AddParams.ComplexMaterials = TArrayView<UPhysicalMaterial*>(ComplexMaterials);
-#if CHAOS_PARTICLE_ACTORTRANSFORM
 		AddParams.LocalTransform = FTransform::Identity;
-#else
-		AddParams.LocalTransform = FRigidTransform3(OutCoMTransform.GetRotation().Inverse() * -OutCoMTransform.GetTranslation(), OutCoMTransform.GetRotation().Inverse());
-#endif
 		AddParams.WorldTransform = BodyInstance->GetUnrealWorldTransform();
 		AddParams.Geometry = &BodySetup->AggGeom;
 		AddParams.ChaosTriMeshes = MakeArrayView(BodySetup->ChaosTriMeshes);
@@ -353,7 +343,8 @@ namespace ImmediatePhysics_Chaos
 	{
 		using namespace Chaos;
 
-		FParticleUtilitiesXR::SetActorWorldTransform(FGenericParticleHandle(ParticleHandle), WorldTM);
+		ParticleHandle->X() = WorldTM.GetTranslation();
+		ParticleHandle->R() = WorldTM.GetRotation();
 
 		auto* Dynamic = ParticleHandle->CastToRigidParticle();
 		if(Dynamic && Dynamic->ObjectState() == Chaos::EObjectStateType::Dynamic)

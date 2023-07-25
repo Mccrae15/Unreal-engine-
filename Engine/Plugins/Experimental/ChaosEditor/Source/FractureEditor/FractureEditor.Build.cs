@@ -37,12 +37,15 @@ public class FractureEditor : ModuleRules
 				"ModelingComponents",
 				"ModelingOperators",
 				"GeometryCore",
+				"DynamicMesh",
 				"MeshDescription",
 				"StaticMeshDescription",
 				"PlanarCut",
 				"Chaos",
 				"ToolWidgets",
 				"DeveloperSettings",
+				"FractureEngine",
+				"GeometryFramework"
 
 				// ... add private dependencies that you statically link with here ...	
 			}

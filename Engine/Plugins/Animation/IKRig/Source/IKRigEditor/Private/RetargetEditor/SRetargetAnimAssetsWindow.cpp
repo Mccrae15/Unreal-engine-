@@ -15,6 +15,7 @@
 #include "Misc/ScopedSlowTask.h"
 #include "RetargetEditor/IKRetargeterController.h"
 #include "Retargeter/IKRetargeter.h"
+#include "Viewports.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
@@ -575,8 +576,8 @@ bool SRetargetAnimAssetsWindow::CanApply() const
 FReply SRetargetAnimAssetsWindow::OnApply()
 {
 	CloseWindow();
-	FIKRetargetBatchOperation BatchOperation;
-	BatchOperation.RunRetarget(BatchContext);
+	const TStrongObjectPtr<UIKRetargetBatchOperation> BatchOperation(NewObject<UIKRetargetBatchOperation>());
+	BatchOperation->RunRetarget(BatchContext);
 	return FReply::Handled();
 }
 

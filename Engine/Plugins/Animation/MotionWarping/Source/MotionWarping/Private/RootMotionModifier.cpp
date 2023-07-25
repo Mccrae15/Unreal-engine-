@@ -2,14 +2,11 @@
 
 #include "RootMotionModifier.h"
 #include "GameFramework/Character.h"
-#include "GameFramework/CharacterMovementComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Animation/AnimMontage.h"
+#include "Engine/World.h"
 #include "MotionWarpingComponent.h"
 #include "DrawDebugHelpers.h"
-#include "Animation/AnimInstance.h"
-#include "AnimNotifyState_MotionWarping.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RootMotionModifier)
 

@@ -8,6 +8,10 @@
 #include "PostProcess/PostProcessEyeAdaptation.h"
 #include "ShaderCompilerCore.h"
 
+#include "SceneTextureParameters.h"
+#include "SystemTextures.h"
+#include "DataDrivenShaderPlatformInfo.h"
+
 TAutoConsoleVariable<int32> CVarUseAtomicHistogram(
 	TEXT("r.Histogram.UseAtomic"), 1,
 	TEXT("Uses atomic to speed up the generation of the histogram."),
@@ -36,15 +40,35 @@ public:
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, InputTexture)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, HistogramRWTexture)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float2>, BilateralGridRWTexture)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, DebugOutput)
 		SHADER_PARAMETER(FIntPoint, ThreadGroupCount)
 	END_SHADER_PARAMETER_STRUCT()
 
 	class FBilateralGrid : SHADER_PERMUTATION_BOOL("BILATERAL_GRID");
-	using FPermutationDomain = TShaderPermutationDomain<FBilateralGrid>;
+	using FPermutationDomain = TShaderPermutationDomain<FBilateralGrid, AutoExposurePermutation::FCommonDomain>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+		if (!IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5))
+		{
+			return false;
+		}
+
+		const FPermutationDomain PermutationVector(Parameters.PermutationId);
+		const AutoExposurePermutation::FCommonDomain& AEPermutationCommon = PermutationVector.Get<AutoExposurePermutation::FCommonDomain>();
+
+		if (!AutoExposurePermutation::ShouldCompileCommonPermutation(AEPermutationCommon))
+		{
+			return false;
+		}
+
+		if (PermutationVector.Get<FBilateralGrid>() && AEPermutationCommon != AutoExposurePermutation::FCommonDomain())
+		{
+			// bilateral grid permutation doesn't use AE permutations
+			return false;
+		}
+
+		return true;
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -97,7 +121,7 @@ public:
 		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Input)
 		SHADER_PARAMETER_SAMPLER(SamplerState, InputSampler)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, InputTexture)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 		SHADER_PARAMETER(uint32, LoopSize)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
@@ -131,18 +155,28 @@ public:
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Input)
 		SHADER_PARAMETER_STRUCT(FEyeAdaptationParameters, EyeAdaptation)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, InputTexture)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 		SHADER_PARAMETER(FIntPoint, ThreadGroupCount)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, HistogramScatter64Output)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, HistogramScatter32Output)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, DebugOutput)
+
+		SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGF)
+		SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
 	END_SHADER_PARAMETER_STRUCT()
+
+	using FPermutationDomain = TShaderPermutationDomain<AutoExposurePermutation::FCommonDomain>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+		const FPermutationDomain PermutationVector(Parameters.PermutationId);
+
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5)
+			&& AutoExposurePermutation::ShouldCompileCommonPermutation(PermutationVector.Get<AutoExposurePermutation::FCommonDomain>());
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -173,7 +207,7 @@ public:
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Input)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HistogramScatter64Texture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HistogramScatter32Texture)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, HistogramOutput)
@@ -201,10 +235,10 @@ static FRDGTextureRef AddHistogramLegacyPass(
 	const FViewInfo& View,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
 	const FScreenPassTexture& SceneColor,
-	FRDGTextureRef EyeAdaptationTexture)
+	FRDGBufferRef EyeAdaptationBuffer)
 {
 	check(SceneColor.IsValid());
-	check(EyeAdaptationTexture);
+	check(EyeAdaptationBuffer);
 
 	const FIntPoint HistogramThreadGroupCount = FHistogramCS::GetThreadGroupCount(SceneColor.ViewRect.Size(), false);
 	const uint32 HistogramThreadGroupCountTotal = HistogramThreadGroupCount.X * HistogramThreadGroupCount.Y;
@@ -235,7 +269,14 @@ static FRDGTextureRef AddHistogramLegacyPass(
 		PassParameters->ThreadGroupCount = HistogramThreadGroupCount;
 		PassParameters->EyeAdaptation = EyeAdaptationParameters;
 
+		{
+			const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(SceneColor.ViewRect.Size(), PF_R16F, FClearValueBinding::Black, TexCreate_UAV | TexCreate_ShaderResource);
+			FRDGTextureRef DebugOutputTexture = GraphBuilder.CreateTexture(Desc, TEXT("EyeAdaptation_DebugOutput"));
+			PassParameters->DebugOutput = GraphBuilder.CreateUAV(DebugOutputTexture);
+		}
+
 		FHistogramCS::FPermutationDomain PermutationVector;
+		PermutationVector.Set<AutoExposurePermutation::FCommonDomain>(AutoExposurePermutation::BuildCommonPermutationDomain());
 
 		auto ComputeShader = View.ShaderMap->GetShader<FHistogramCS>(PermutationVector);
 
@@ -269,7 +310,7 @@ static FRDGTextureRef AddHistogramLegacyPass(
 		PassParameters->InputTexture = HistogramTexture;
 		PassParameters->InputSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 		PassParameters->LoopSize = HistogramThreadGroupCountTotal;
-		PassParameters->EyeAdaptationTexture = EyeAdaptationTexture;
+		PassParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(EyeAdaptationBuffer);
 		PassParameters->RenderTargets[0] = FRenderTargetBinding(HistogramReduceTexture, ERenderTargetLoadAction::ENoAction);
 
 		TShaderMapRef<FHistogramReducePS> PixelShader(View.ShaderMap);
@@ -292,10 +333,11 @@ static FRDGTextureRef AddHistogramAtomicPass(
 	const FViewInfo& View,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
 	const FScreenPassTexture& SceneColor,
-	FRDGTextureRef EyeAdaptationTexture)
+	const FSceneTextureParameters& SceneTextures,
+	FRDGBufferRef EyeAdaptationBuffer)
 {
 	check(SceneColor.IsValid());
-	check(EyeAdaptationTexture);
+	check(EyeAdaptationBuffer);
 
 	RDG_EVENT_SCOPE(GraphBuilder, "Histogram");
 
@@ -324,20 +366,34 @@ static FRDGTextureRef AddHistogramAtomicPass(
 
 		FHistogramAtomicCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FHistogramAtomicCS::FParameters>();
 		PassParameters->View = View.ViewUniformBuffer;
+		PassParameters->SceneTextures = SceneTextures;
 		PassParameters->Input = GetScreenPassTextureViewportParameters(FScreenPassTextureViewport(SceneColor));
 		PassParameters->InputTexture = SceneColor.Texture;
-		PassParameters->EyeAdaptationTexture = EyeAdaptationTexture;
+		PassParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(EyeAdaptationBuffer);
 		PassParameters->ThreadGroupCount = FIntPoint(SceneColor.ViewRect.Size().Y, 1);
 		PassParameters->EyeAdaptation = EyeAdaptationParameters;
 		// PassParameters->HistogramScatter64Output = GraphBuilder->CreateUAV(HistogramScatter64Texture);
 		PassParameters->HistogramScatter32Output = GraphBuilder.CreateUAV(HistogramScatter32Texture);
+
+		{
+			const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(SceneColor.ViewRect.Size(), PF_R16F, FClearValueBinding::Black, TexCreate_UAV | TexCreate_ShaderResource);
+			FRDGTextureRef DebugOutputTexture = GraphBuilder.CreateTexture(Desc, TEXT("EyeAdaptation_DebugOutput"));
+			PassParameters->DebugOutput = GraphBuilder.CreateUAV(DebugOutputTexture);
+		}
+
+		PassParameters->PreIntegratedGF = GSystemTextures.PreintegratedGF->GetRHI();
+		PassParameters->PreIntegratedGFSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 		//clear the temp textures
 		uint32 ClearValues[4] = { 0, 0, 0, 0 };
 		// AddClearUAVPass(GraphBuilder, PassParameters->HistogramScatter64Output, ClearValues);
 		AddClearUAVPass(GraphBuilder, PassParameters->HistogramScatter32Output, ClearValues);
 
-		TShaderMapRef<FHistogramAtomicCS> ComputeShader(View.ShaderMap);
+		FHistogramAtomicCS::FPermutationDomain PermutationVector;
+		PermutationVector.Set<AutoExposurePermutation::FCommonDomain>(AutoExposurePermutation::BuildCommonPermutationDomain());
+
+		auto ComputeShader = View.ShaderMap->GetShader<FHistogramAtomicCS>(PermutationVector);
+
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("Histogram Atomic %dx%d (CS)", SceneColor.ViewRect.Width(), SceneColor.ViewRect.Height()),
@@ -360,7 +416,7 @@ static FRDGTextureRef AddHistogramAtomicPass(
 
 		FHistogramAtomicConvertCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FHistogramAtomicConvertCS::FParameters>();
 		PassParameters->Input = GetScreenPassTextureViewportParameters(FScreenPassTextureViewport(SceneColor));
-		PassParameters->EyeAdaptationTexture = EyeAdaptationTexture;
+		PassParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(EyeAdaptationBuffer);
 		// PassParameters->HistogramScatter64Texture = HistogramScatter64Texture;
 		PassParameters->HistogramScatter32Texture = HistogramScatter32Texture;
 		PassParameters->HistogramOutput = GraphBuilder.CreateUAV(HistogramTexture);
@@ -387,7 +443,8 @@ FRDGTextureRef AddHistogramPass(
 	const FViewInfo& View,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
 	FScreenPassTexture SceneColor,
-	FRDGTextureRef EyeAdaptationTexture)
+	const FSceneTextureParameters& SceneTextures,
+	FRDGBufferRef EyeAdaptationBuffer)
 {
 	if (CVarUseAtomicHistogram.GetValueOnRenderThread() == 1)
 	{
@@ -396,7 +453,8 @@ FRDGTextureRef AddHistogramPass(
 			View,
 			EyeAdaptationParameters,
 			SceneColor,
-			EyeAdaptationTexture);
+			SceneTextures,
+			EyeAdaptationBuffer);
 	}
 	else
 	{
@@ -405,7 +463,7 @@ FRDGTextureRef AddHistogramPass(
 			View,
 			EyeAdaptationParameters,
 			SceneColor,
-			EyeAdaptationTexture);
+			EyeAdaptationBuffer);
 	}
 }
 

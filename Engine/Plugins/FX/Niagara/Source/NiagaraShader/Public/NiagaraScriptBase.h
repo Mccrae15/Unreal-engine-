@@ -3,9 +3,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHIDefinitions.h"
+#endif
+#include "NiagaraCore.h"
 
 #include "NiagaraScriptBase.generated.h"
+
+enum EShaderPlatform : uint16;
 
 UENUM()
 enum class ENiagaraGpuDispatchType : uint8
@@ -18,6 +23,30 @@ enum class ENiagaraGpuDispatchType : uint8
 	ThreeD,
 	/* NumThreads will be determined manually. */
 	Custom			UMETA(Hidden),
+};
+
+UENUM()
+enum class ENiagaraDirectDispatchElementType : uint8
+{
+	/**
+	Number of elements is the number of threads launched in that dimension.
+	Threads that are out of bounds due to shader thread group size will be automatically clipped (i.e. code will not run).
+	For example, if GroupSize = 64,1,1 and NumElements = 32,1,1 only the first 32 threads will run the code.
+	*/
+	NumThreads,
+	/**
+	Number of elements is the number of threads launched in that dimension.
+	Threads that are out of bounds due to shader thread group size will not be clipped and your code will execute.
+	You are responsible for ensuring you do not make invalid access from these OOB threads.
+	For example, if GroupSize = 64,1,1 and NumElements = 32,1,1 you code will execute 64 times.
+	Use this path if you need to add group sync's within you graph code.
+	*/
+	NumThreadsNoClipping,
+	/**
+	Number of elements refers to the number of groups to launch.
+	For example, if you defined NumElements as 3,1,1 and GroupSize was 64,1,1 you are effectively launching 192 threads.
+	*/
+	NumGroups,
 };
 
 UENUM()
@@ -57,9 +86,17 @@ public:
 	UPROPERTY()
 	FName ElementCountZBinding;
 
-	/** The Data Interface that we iterate over for this stage. If None, then use particles.*/
+	/** The source we are iteration over. */
 	UPROPERTY()
-	FName IterationSource;
+	ENiagaraIterationSource IterationSourceType = ENiagaraIterationSource::Particles;
+
+	/** When IterationSource is ENiagaraIterationSource::DataInterface this is the data interface name. */
+	UPROPERTY()
+	FName IterationDataInterface;
+
+	/** When IterationSource is ENiagaraIterationSource::IterationDirectBinding this is the variable we are bound to. */
+	UPROPERTY()
+	FName IterationDirectBinding;
 
 	/** Controls when the simulation stage will execute. */
 	UPROPERTY()
@@ -76,9 +113,8 @@ public:
 	UPROPERTY()
 	uint32 bParticleIterationStateEnabled : 1;
 
-	/** When enabled the simulation stage uses element count provided by user to dispatch work. */
 	UPROPERTY()
-	uint32 bOverrideElementCount : 1;
+	uint32 bGpuIndirectDispatch : 1;
 
 	/** When the value is not none this is the binding used for particle state iteration stages. */
 	UPROPERTY()
@@ -99,7 +135,6 @@ public:
 	UPROPERTY()
 	TArray<FName> InputDataInterfaces;
 
-
 	/** The number of iterations for the stage. */
 	UPROPERTY()
 	int32 NumIterations = 1;
@@ -118,6 +153,9 @@ public:
 	/** Dispatch type set for this stage. */
 	UPROPERTY()
 	ENiagaraGpuDispatchType GpuDispatchType;
+
+	UPROPERTY()
+	ENiagaraDirectDispatchElementType GpuDirectDispatchElementType = ENiagaraDirectDispatchElementType::NumThreads;
 
 	/** When in custom mode this is the num threads. */
 	UPROPERTY()

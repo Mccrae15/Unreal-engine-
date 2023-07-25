@@ -221,15 +221,16 @@ FNavigationInvoker::FNavigationInvoker()
 , GenerationRadius(0)
 , RemovalRadius(0)
 {
-
+	SupportedAgents.MarkInitialized();
 }
 
-FNavigationInvoker::FNavigationInvoker(AActor& InActor, float InGenerationRadius, float InRemovalRadius)
+FNavigationInvoker::FNavigationInvoker(AActor& InActor, float InGenerationRadius, float InRemovalRadius, const FNavAgentSelector& InSupportedAgents)
 : Actor(&InActor)
 , GenerationRadius(InGenerationRadius)
 , RemovalRadius(InRemovalRadius)
+, SupportedAgents(InSupportedAgents)
 {
-
+	SupportedAgents.MarkInitialized();
 }
 
 //----------------------------------------------------------------------//
@@ -340,7 +341,8 @@ void FNavRegenTimeSliceManager::CalcAverageDeltaTime(uint64 FrameNum)
 
 void FNavRegenTimeSliceManager::CalcTimeSliceDuration(int32 NumTilesToRegen, const TArray<double>& CurrentTileRegenDurations)
 {
-	const float DeltaTimesAverage = (MovingWindowDeltaTime.GetAverage() > 0.f) ? MovingWindowDeltaTime.GetAverage() : (1.f / 30.f); //use default 33 ms
+	const float RawDeltaTimesAverage = FloatCastChecked<float>(MovingWindowDeltaTime.GetAverage(), UE::LWC::DefaultFloatPrecision);
+	const float DeltaTimesAverage = (RawDeltaTimesAverage > 0.f) ? RawDeltaTimesAverage : (1.f / 30.f); //use default 33 ms
 
 	const double TileRegenTimesAverage = (MovingWindowTileRegenTime.GetAverage() > 0.) ? MovingWindowTileRegenTime.GetAverage() : 0.0025; //use default of 2.5 milli secs to regen a full tile
 
@@ -571,7 +573,7 @@ UNavigationSystemV1::UNavigationSystemV1(const FObjectInitializer& ObjectInitial
 	CrowdManagerClass = FSoftObjectPath(TEXT("/Script/AIModule.CrowdManager"));
 
 	// active tiles
-	NextInvokersUpdateTime = 0.f;
+	NextInvokersUpdateTime = 0.;
 	ActiveTilesUpdateInterval = 1.f;
 	bGenerateNavigationOnlyAroundNavigationInvokers = false;
 	DataGatheringMode = ENavDataGatheringModeConfig::Instant;
@@ -758,7 +760,18 @@ void UNavigationSystemV1::PostInitProperties()
 void UNavigationSystemV1::ConstructNavOctree()
 {
 	DefaultOctreeController.Reset();
-	DefaultOctreeController.NavOctree = MakeShareable(new FNavigationOctree(FVector(0, 0, 0), 64000));
+
+	const FBox Bounds = GetNavigableWorldBounds();
+	if(Bounds.IsValid)
+	{
+		DefaultOctreeController.NavOctree = MakeShareable(new FNavigationOctree(Bounds.GetCenter(), 0.5*Bounds.GetSize().Length()));
+	}
+	else
+	{
+		// Fallback to previous default behavior.
+		DefaultOctreeController.NavOctree = MakeShareable(new FNavigationOctree(FVector(0, 0, 0), 64000));
+	}
+	
 	DefaultOctreeController.NavOctree->SetDataGatheringMode(DataGatheringMode);
 #if !UE_BUILD_SHIPPING	
 	DefaultOctreeController.NavOctree->SetGatheringNavModifiersTimeLimitWarning(GatheringNavModifiersWarningLimitTime);
@@ -853,27 +866,16 @@ void UNavigationSystemV1::PostEditChangeChainProperty(FPropertyChangedChainEvent
 
 void UNavigationSystemV1::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	static const FName NAME_EnableActiveTiles = GET_MEMBER_NAME_CHECKED(UNavigationSystemV1, bGenerateNavigationOnlyAroundNavigationInvokers);
+	static const FName NAME_GenerateNavigationOnlyAroundNavigationInvokers = GET_MEMBER_NAME_CHECKED(UNavigationSystemV1, bGenerateNavigationOnlyAroundNavigationInvokers);
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	if (PropertyChangedEvent.Property)
 	{
 		FName PropName = PropertyChangedEvent.Property->GetFName();
-		if (PropName == NAME_EnableActiveTiles)
+		if (PropName == NAME_GenerateNavigationOnlyAroundNavigationInvokers)
 		{
-			if (DefaultOctreeController.NavOctree.IsValid())
-			{
-				DefaultOctreeController.NavOctree->SetDataGatheringMode(DataGatheringMode);
-			}
-
-			for (auto NavData : NavDataSet)
-			{
-				if (NavData)
-				{
-					NavData->RestrictBuildingToActiveTiles(bGenerateNavigationOnlyAroundNavigationInvokers);
-				}
-			}
+			OnGenerateNavigationOnlyAroundNavigationInvokersChanged();
 		}
 		else if (PropName == GET_MEMBER_NAME_CHECKED(FNavDataConfig, AgentRadius))
 		{
@@ -1648,6 +1650,17 @@ bool UNavigationSystemV1::GetRandomPointInNavigableRadius(const FVector& Origin,
 
 ENavigationQueryResult::Type UNavigationSystemV1::GetPathCost(const FVector& PathStart, const FVector& PathEnd, float& OutPathCost, const ANavigationData* NavData, FSharedConstNavQueryFilter QueryFilter) const
 {
+	FVector::FReal PathCost = OutPathCost;
+
+	const ENavigationQueryResult::Type Result = GetPathCost(PathStart, PathEnd, PathCost, NavData, QueryFilter);
+
+	OutPathCost = UE_REAL_TO_FLOAT_CLAMPED(PathCost);
+
+	return Result;
+}
+
+ENavigationQueryResult::Type UNavigationSystemV1::GetPathCost(const FVector& PathStart, const FVector& PathEnd, FVector::FReal& OutPathCost, const ANavigationData* NavData, FSharedConstNavQueryFilter QueryFilter) const
+{
 	SCOPE_CYCLE_COUNTER(STAT_Navigation_QueriesTimeSync);
 
 	if (NavData == NULL)
@@ -1660,6 +1673,17 @@ ENavigationQueryResult::Type UNavigationSystemV1::GetPathCost(const FVector& Pat
 
 ENavigationQueryResult::Type UNavigationSystemV1::GetPathLength(const FVector& PathStart, const FVector& PathEnd, float& OutPathLength, const ANavigationData* NavData, FSharedConstNavQueryFilter QueryFilter) const
 {
+	FVector::FReal PathLength = OutPathLength;
+
+	const ENavigationQueryResult::Type Result = GetPathLength(PathStart, PathEnd, PathLength, NavData, QueryFilter);
+
+	OutPathLength = UE_REAL_TO_FLOAT_CLAMPED(PathLength);
+
+	return Result;
+}
+
+ENavigationQueryResult::Type UNavigationSystemV1::GetPathLength(const FVector& PathStart, const FVector& PathEnd, FVector::FReal& OutPathLength, const ANavigationData* NavData, FSharedConstNavQueryFilter QueryFilter) const
+{
 	SCOPE_CYCLE_COUNTER(STAT_Navigation_QueriesTimeSync);
 
 	if (NavData == NULL)
@@ -1671,6 +1695,19 @@ ENavigationQueryResult::Type UNavigationSystemV1::GetPathLength(const FVector& P
 }
 
 ENavigationQueryResult::Type UNavigationSystemV1::GetPathLengthAndCost(const FVector& PathStart, const FVector& PathEnd, float& OutPathLength, float& OutPathCost, const ANavigationData* NavData, FSharedConstNavQueryFilter QueryFilter) const
+{
+	FVector::FReal PathLength = OutPathLength;
+	FVector::FReal PathCost = OutPathCost;
+
+	const ENavigationQueryResult::Type Result = GetPathLengthAndCost(PathStart, PathEnd, PathLength, PathCost, NavData, QueryFilter);
+
+	OutPathLength = UE_REAL_TO_FLOAT_CLAMPED(PathLength);
+	OutPathCost = UE_REAL_TO_FLOAT_CLAMPED(PathCost);
+
+	return Result;
+}
+
+ENavigationQueryResult::Type UNavigationSystemV1::GetPathLengthAndCost(const FVector& PathStart, const FVector& PathEnd, FVector::FReal& OutPathLength, FVector::FReal& OutPathCost, const ANavigationData* NavData, FSharedConstNavQueryFilter QueryFilter) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_Navigation_QueriesTimeSync);
 
@@ -2177,6 +2214,12 @@ const TSet<FNavigationBounds>& UNavigationSystemV1::GetNavigationBounds() const
 
 void UNavigationSystemV1::ApplyWorldOffset(const FVector& InOffset, bool bWorldShift)
 {
+	// Move the navmesh bounds by the offset
+	for (FNavigationBounds& Bounds : RegisteredNavBounds)
+	{
+		Bounds.AreaBox = Bounds.AreaBox.ShiftBy(InOffset);
+	}
+
 	// Attempt at generation of new nav mesh after the shift
 	// dynamic navmesh, we regenerate completely
 	if (GetRuntimeGenerationType() == ERuntimeGenerationType::Dynamic)
@@ -2564,6 +2607,12 @@ void UNavigationSystemV1::UnregisterNavAreaClass(UClass* NavAreaClass)
 		// notify navigation data
 		// notify existing nav data
 		OnNavigationAreaEvent(NavAreaClass, ENavAreaEvent::Unregistered);
+
+		const UWorld* const World = GetWorld();
+		if (ensure(World))
+		{
+			UNavigationSystemBase::OnNavAreaUnregisteredDelegate().Broadcast(*World, NavAreaClass);
+		}
 	}
 }
 
@@ -2632,6 +2681,12 @@ void UNavigationSystemV1::RegisterNavAreaClass(UClass* AreaClass)
 		SwitchByAgentCDO->UpdateAgentConfig();
 	}
 #endif
+
+	const UWorld* const World = GetWorld();
+	if (ensure(World))
+	{
+		UNavigationSystemBase::OnNavAreaRegisteredDelegate().Broadcast(*World, AreaClass);
+	}
 }
 
 void UNavigationSystemV1::OnNavigationAreaEvent(UClass* AreaClass, ENavAreaEvent::Type Event)
@@ -3399,19 +3454,19 @@ void UNavigationSystemV1::PerformNavigationBoundsUpdate(const TArray<FNavigation
 		}
 	}
 
-	if (!IsNavigationBuildingLocked())
+	if (UpdatedAreas.Num())
 	{
-		if (UpdatedAreas.Num())
+		for (ANavigationData* NavData : NavDataSet)
 		{
-			for (ANavigationData* NavData : NavDataSet)
+			if (NavData)
 			{
-				if (NavData)
-				{
-					NavData->OnNavigationBoundsChanged();	
-				}
+				NavData->OnNavigationBoundsChanged();	
 			}
 		}
+	}
 
+	if (!IsNavigationBuildingLocked())
+	{
 		// Propagate to generators areas that needs to be updated
 		AddDirtyAreas(UpdatedAreas, ENavigationDirtyFlag::All | ENavigationDirtyFlag::NavigationBounds, "Navigation bounds update");
 	}
@@ -3907,7 +3962,7 @@ void UNavigationSystemV1::OnNavigationGenerationFinished(ANavigationData& NavDat
 #if WITH_EDITOR
 	if (GetWorld()->IsGameWorld() == false)
 	{
-		UE_LOG(LogNavigationDataBuild, Log, TEXT("Navigation data generation finished for %s (%s)."), *NavData.GetActorLabel(), *NavData.GetFullName());
+		UE_LOG(LogNavigationDataBuild, Verbose, TEXT("Navigation data generation finished for %s (%s)."), *NavData.GetActorLabel(), *NavData.GetFullName());
 	}
 
 	// Reset bIsBuildingOnLoad
@@ -4269,6 +4324,22 @@ bool UNavigationSystemV1::IsAllowedToRebuild() const
 	return World && (!World->IsGameWorld() || GetRuntimeGenerationType() == ERuntimeGenerationType::Dynamic);
 }
 
+void UNavigationSystemV1::OnGenerateNavigationOnlyAroundNavigationInvokersChanged()
+{
+	if (DefaultOctreeController.NavOctree.IsValid())
+	{
+		DefaultOctreeController.NavOctree->SetDataGatheringMode(DataGatheringMode);
+	}
+
+	for (auto NavData : NavDataSet)
+	{
+		if (NavData)
+		{
+			NavData->RestrictBuildingToActiveTiles(bGenerateNavigationOnlyAroundNavigationInvokers);
+		}
+	}
+}
+
 //----------------------------------------------------------------------//
 // Blueprint functions
 //----------------------------------------------------------------------//
@@ -4346,6 +4417,17 @@ bool UNavigationSystemV1::K2_GetRandomLocationInNavigableRadius(UObject* WorldCo
 
 ENavigationQueryResult::Type UNavigationSystemV1::GetPathCost(UObject* WorldContextObject, const FVector& PathStart, const FVector& PathEnd, float& OutPathCost, ANavigationData* NavData, TSubclassOf<UNavigationQueryFilter> FilterClass)
 {
+	FVector::FReal PathCost = OutPathCost;
+
+	const ENavigationQueryResult::Type Result = GetPathCost(WorldContextObject, PathStart, PathEnd, PathCost, NavData, FilterClass);
+
+	OutPathCost = UE_REAL_TO_FLOAT_CLAMPED(PathCost);
+
+	return Result;
+}
+
+ENavigationQueryResult::Type UNavigationSystemV1::GetPathCost(UObject* WorldContextObject, const FVector& PathStart, const FVector& PathEnd, double& OutPathCost, ANavigationData* NavData, TSubclassOf<UNavigationQueryFilter> FilterClass)
+{
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 	if (NavSys)
@@ -4362,8 +4444,17 @@ ENavigationQueryResult::Type UNavigationSystemV1::GetPathCost(UObject* WorldCont
 
 ENavigationQueryResult::Type UNavigationSystemV1::GetPathLength(UObject* WorldContextObject, const FVector& PathStart, const FVector& PathEnd, float& OutPathLength, ANavigationData* NavData, TSubclassOf<UNavigationQueryFilter> FilterClass)
 {
-	float PathLength = 0.f;
+	FVector::FReal PathLength = OutPathLength;
 
+	const ENavigationQueryResult::Type Result = GetPathLength(WorldContextObject, PathStart, PathEnd, PathLength, NavData, FilterClass);
+
+	OutPathLength = UE_REAL_TO_FLOAT_CLAMPED(PathLength);
+
+	return Result;
+}
+
+ENavigationQueryResult::Type UNavigationSystemV1::GetPathLength(UObject* WorldContextObject, const FVector& PathStart, const FVector& PathEnd, double& OutPathLength, ANavigationData* NavData, TSubclassOf<UNavigationQueryFilter> FilterClass)
+{
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 	if (NavSys)
@@ -4605,12 +4696,12 @@ void UNavigationSystemV1::ResetMaxSimultaneousTileGenerationJobsCount()
 // Active tiles
 //----------------------------------------------------------------------//
 
-void UNavigationSystemV1::RegisterNavigationInvoker(AActor& Invoker, float TileGenerationRadius, float TileRemovalRadius)
+void UNavigationSystemV1::RegisterNavigationInvoker(AActor& Invoker, float TileGenerationRadius, float TileRemovalRadius, const FNavAgentSelector& Agents)
 {
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(Invoker.GetWorld());
 	if (NavSys)
 	{
-		NavSys->RegisterInvoker(Invoker, TileGenerationRadius, TileRemovalRadius);
+		NavSys->RegisterInvoker(Invoker, TileGenerationRadius, TileRemovalRadius, Agents);
 	}
 }
 
@@ -4632,7 +4723,13 @@ void UNavigationSystemV1::SetGeometryGatheringMode(ENavDataGatheringModeConfig N
 	}
 }
 
+// Deprecated
 void UNavigationSystemV1::RegisterInvoker(AActor& Invoker, float TileGenerationRadius, float TileRemovalRadius)
+{
+	RegisterInvoker(Invoker, TileGenerationRadius, TileRemovalRadius, FNavAgentSelector());
+}
+
+void UNavigationSystemV1::RegisterInvoker(AActor& Invoker, float TileGenerationRadius, float TileRemovalRadius, const FNavAgentSelector& Agents)
 {
 	UE_CVLOG(bGenerateNavigationOnlyAroundNavigationInvokers == false, this, LogNavigation, Warning
 		, TEXT("Trying to register %s as enforcer, but NavigationSystem is not set up for enforcer-centric generation. See GenerateNavigationOnlyAroundNavigationInvokers in NavigationSystem's properties")
@@ -4645,6 +4742,8 @@ void UNavigationSystemV1::RegisterInvoker(AActor& Invoker, float TileGenerationR
 	Data.Actor = &Invoker;
 	Data.GenerationRadius = TileGenerationRadius;
 	Data.RemovalRadius = TileRemovalRadius;
+	Data.SupportedAgents = Agents;
+	Data.SupportedAgents.MarkInitialized();
 
 	UE_VLOG_CYLINDER(this, LogNavigation, Log, Invoker.GetActorLocation(), Invoker.GetActorLocation() + FVector(0, 0, 20), TileGenerationRadius, FColorList::LimeGreen
 		, TEXT("%s %.0f %.0f"), *Invoker.GetName(), TileGenerationRadius, TileRemovalRadius);
@@ -4660,7 +4759,7 @@ void UNavigationSystemV1::UnregisterInvoker(AActor& Invoker)
 void UNavigationSystemV1::UpdateInvokers()
 {
 	UWorld* World = GetWorld();
-	const float CurrentTime = World->GetTimeSeconds();
+	const double CurrentTime = World->GetTimeSeconds();
 	if (CurrentTime >= NextInvokersUpdateTime)
 	{
 		InvokerLocations.Reset();
@@ -4683,7 +4782,7 @@ void UNavigationSystemV1::UpdateInvokers()
 #endif //WITH_EDITOR
 					)
 				{
-					InvokerLocations.Add(FNavigationInvokerRaw(Actor->GetActorLocation(), ItemIterator->Value.GenerationRadius, ItemIterator->Value.RemovalRadius));
+					InvokerLocations.Add(FNavigationInvokerRaw(Actor->GetActorLocation(), ItemIterator->Value.GenerationRadius, ItemIterator->Value.RemovalRadius, ItemIterator->Value.SupportedAgents));
 				}
 				else
 				{
@@ -4733,7 +4832,8 @@ void UNavigationSystemV1::RegisterNavigationInvoker(AActor* Invoker, float TileG
 {
 	if (Invoker != nullptr)
 	{
-		RegisterInvoker(*Invoker, TileGenerationRadius, TileRemovalRadius);
+		// The FNavAgentSelector class is not yet exposed in BP so we use the default value to specify that we want to generate the navmesh for all agents
+		RegisterInvoker(*Invoker, TileGenerationRadius, TileRemovalRadius, FNavAgentSelector());
 	}
 }
 

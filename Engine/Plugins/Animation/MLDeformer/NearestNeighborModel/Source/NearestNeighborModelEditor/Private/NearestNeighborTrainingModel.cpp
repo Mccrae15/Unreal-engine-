@@ -33,48 +33,54 @@ const TArray<int32> UNearestNeighborTrainingModel::GetPartVertexMap(const int32 
 	return TArray<int32>((int32*)VertexMap.GetData(), VertexMap.Num());
 }
 
-void UNearestNeighborTrainingModel::SamplePart(int32 PartId, int32 Index)
+int32 UNearestNeighborTrainingModel::SamplePart(int32 PartId, int32 Index)
 {
 	FNearestNeighborGeomCacheSampler* Sampler = static_cast<FNearestNeighborGeomCacheSampler*>(EditorModel->GetSampler());
-	Sampler->SamplePart(Index, NearestNeighborModel->PartVertexMap(PartId));
+	int32 Result = Sampler->SamplePart(Index, PartId);
 	PartSampleDeltas = Sampler->GetPartVertexDeltas();
 	SampleBoneRotations = Sampler->GetBoneRotations();
+	return Result;
 }
 
-void UNearestNeighborTrainingModel::SetSamplerPartData(const int32 PartId)
+int32 UNearestNeighborTrainingModel::SetSamplerPartData(const int32 PartId)
 {
-	GetNearestNeighborEditorModel()->SetSamplerPartData(PartId);
+	return GetNearestNeighborEditorModel()->SetSamplerPartData(PartId);
 }
 
 int32 UNearestNeighborTrainingModel::GetPartNumNeighbors(const int32 PartId) const
 {
-	return NearestNeighborModel->GetNumNeighborsFromGeometryCache(PartId);
+	return FMath::Min(NearestNeighborModel->GetNumNeighborsFromAnimSequence(PartId), NearestNeighborModel->GetNumNeighborsFromGeometryCache(PartId));
 }
 
-void UNearestNeighborTrainingModel::SampleKmeansAnim(const int32 SkeletonId)
+bool UNearestNeighborTrainingModel::SampleKmeansAnim(const int32 SkeletonId)
 {
 	FNearestNeighborGeomCacheSampler* Sampler = static_cast<FNearestNeighborGeomCacheSampler*>(EditorModel->GetSampler());
-	Sampler->SampleKMeansAnim(SkeletonId);
+	return Sampler->SampleKMeansAnim(SkeletonId);
 }
 
-void UNearestNeighborTrainingModel::SampleKmeansFrame(const int32 Frame)
+bool UNearestNeighborTrainingModel::SampleKmeansFrame(const int32 Frame)
 {
 	FNearestNeighborGeomCacheSampler* Sampler = static_cast<FNearestNeighborGeomCacheSampler*>(EditorModel->GetSampler());
-	Sampler->SampleKMeansFrame(Frame);
-	SampleBoneRotations = Sampler->GetBoneRotations();
+	const bool bSampleExist = Sampler->SampleKMeansFrame(Frame);
+	if (bSampleExist)
+	{
+		SampleBoneRotations = Sampler->GetBoneRotations();
+		return true;	
+	}
+	return false;
 }
 
 
 int32 UNearestNeighborTrainingModel::GetKmeansNumAnims() const
 {
-	return NearestNeighborModel->SourceSkeletons.Num();
+	return NearestNeighborModel->SourceAnims.Num();
 }
 
 int32 UNearestNeighborTrainingModel::GetKmeansAnimNumFrames(const int32 SkeletonId) const
 {
-	if (SkeletonId < NearestNeighborModel->SourceSkeletons.Num())
+	if (SkeletonId < NearestNeighborModel->SourceAnims.Num())
 	{
-		return NearestNeighborModel->SourceSkeletons[SkeletonId]->GetDataModel()->GetNumberOfFrames();
+		return NearestNeighborModel->SourceAnims[SkeletonId]->GetDataModel()->GetNumberOfFrames();
 	}
 	return 0;
 }
@@ -84,5 +90,25 @@ int32 UNearestNeighborTrainingModel::GetKmeansNumClusters() const
 	return NearestNeighborModel->NumClusters;
 }
 
+const TArray<float> UNearestNeighborTrainingModel::GetUnskinnedVertexPositions() const
+{
+	const TArray<FVector3f>& PositionsVec = EditorModel->GetSampler()->GetUnskinnedVertexPositions();
+	TArray<float> PositionsFloat; 
+	PositionsFloat.SetNumUninitialized(PositionsVec.Num() * 3);
+	for (int32 i = 0; i < PositionsVec.Num(); i++)
+	{
+		PositionsFloat[i * 3] = PositionsVec[i].X;
+		PositionsFloat[i * 3 + 1] = PositionsVec[i].Y;
+		PositionsFloat[i * 3 + 2] = PositionsVec[i].Z;
+	}
+	return MoveTemp(PositionsFloat);
+}
+
+const TArray<int32> UNearestNeighborTrainingModel::GetMeshIndexBuffer() const
+{
+	FNearestNeighborGeomCacheSampler* Sampler = static_cast<FNearestNeighborGeomCacheSampler*>(EditorModel->GetSampler());
+	TArray<uint32> UIndexBuffer = Sampler->GetMeshIndexBuffer();
+	return TArray<int32>((int32*)UIndexBuffer.GetData(), UIndexBuffer.Num());
+}
 
 #undef LOCTEXT_NAMESPACE

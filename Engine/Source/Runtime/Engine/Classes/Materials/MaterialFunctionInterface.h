@@ -3,15 +3,24 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Materials/MaterialExpression.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Misc/Guid.h"
 #include "Templates/Casts.h"
+#include "MaterialRecursionGuard.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionFontSampleParameter.h"
 #include "Materials/MaterialExpressionParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
+#endif
 #include "StaticParameterSet.h"
+
+#if WITH_EDITOR
+#include "Materials/MaterialExpression.h"
+#endif
+
 #include "MaterialFunctionInterface.generated.h"
 
 class UMaterial;
@@ -19,6 +28,10 @@ class UMaterialFunction;
 class UTexture;
 struct FPropertyChangedEvent;
 class FMaterialHLSLGenerator;
+class FMaterialUpdateContext;
+class UMaterialInterface;
+class UMaterialExpression;
+struct FFunctionExpressionOutput;
 
 /** Usage set on a material function determines feature compatibility and validation. */
 UENUM()
@@ -37,6 +50,9 @@ class UMaterialFunctionInterfaceEditorOnlyData : public UObject
 	GENERATED_BODY()
 public:
 	
+	//~ Begin UObject Interface.
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+	//~ End UObject Interface.
 };
 
 /**
@@ -49,6 +65,8 @@ class UMaterialFunctionInterface : public UObject
 
 #if WITH_EDITORONLY_DATA
 protected:
+	friend class UMaterialFunctionInterfaceEditorOnlyData;
+
 	UPROPERTY()
 	TObjectPtr<UMaterialFunctionInterfaceEditorOnlyData> EditorOnlyData;
 
@@ -177,38 +195,6 @@ public:
 #endif // WITH_EDITOR
 
 public:
-#if WITH_EDITORONLY_DATA
-	/** Finds the names of all matching type parameters */
-	template<typename ExpressionType>
-	UE_DEPRECATED(5.0, "Use GetAllParameterInfoOfType or GetAllParametersOfType")
-	void GetAllParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const
-	{
-		if (const UMaterialFunctionInterface* ParameterFunction = GetBaseFunctionInterface())
-		{
-			const UClass* TargetClass = UMaterialExpressionMaterialFunctionCall::StaticClass();
-			for (const TObjectPtr<UMaterialExpression>& Expression : ParameterFunction->GetExpressions())
-			{
-				if (const UMaterialExpressionMaterialFunctionCall* FunctionExpression = (Expression && Expression.IsA(TargetClass)) ? (const UMaterialExpressionMaterialFunctionCall*)Expression.Get() : nullptr)
-				{
-					if (FunctionExpression->MaterialFunction)
-					{
-						PRAGMA_DISABLE_DEPRECATION_WARNINGS
-						FunctionExpression->MaterialFunction->GetAllParameterInfo<const ExpressionType>(OutParameterInfo, OutParameterIds, InBaseParameterInfo);
-						PRAGMA_ENABLE_DEPRECATION_WARNINGS
-					}
-				}
-				else if (const ExpressionType* ParameterExpression = Cast<const ExpressionType>(Expression))
-				{
-					PRAGMA_DISABLE_DEPRECATION_WARNINGS
-					ParameterExpression->GetAllParameterInfo(OutParameterInfo, OutParameterIds, InBaseParameterInfo);
-					PRAGMA_ENABLE_DEPRECATION_WARNINGS
-				}
-			}
-
-			check(OutParameterInfo.Num() == OutParameterIds.Num());
-		}
-	}
-#endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
 	/** Finds the first matching parameter by name and type */
@@ -348,6 +334,7 @@ public:
 	ENGINE_API bool OverrideNamedVectorParameter(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue);
 	ENGINE_API bool OverrideNamedTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue);
 	ENGINE_API bool OverrideNamedRuntimeVirtualTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue);
+	ENGINE_API bool OverrideNamedSparseVolumeTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class USparseVolumeTexture*& OutValue);
 	ENGINE_API bool OverrideNamedFontParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage);
 	ENGINE_API bool OverrideNamedStaticSwitchParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid);
 	ENGINE_API bool OverrideNamedStaticComponentMaskParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutR, bool& OutG, bool& OutB, bool& OutA, FGuid& OutExpressionGuid);

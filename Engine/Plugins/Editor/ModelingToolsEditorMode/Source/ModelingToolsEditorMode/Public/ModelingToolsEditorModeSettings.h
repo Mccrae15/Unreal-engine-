@@ -3,8 +3,9 @@
 #pragma once
 
 #include "Engine/DeveloperSettings.h"
-#include "Engine/EngineTypes.h"
 #include "ModelingToolsEditorModeSettings.generated.h"
+
+struct FCollectionReference;
 
 
 
@@ -134,12 +135,33 @@ public:
 	bool bAppendRandomStringToName = true;
 
 	//
+	// User Interface
+	//
+
+	/** If true, the standard UE Editor Gizmo Mode (ie selected via the Level Editor Viewport toggle) will be used to configure the Modeling Gizmo, otherwise a Combined Gizmo will always be used. It may be necessary to exit and re-enter Modeling Mode after changing this setting. */
+	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|User Interface")
+	bool bRespectLevelEditorGizmoMode = false;
+
+	//
 	// Selection
 	//
 
-	/** If true, selections will be tracked between tools, and visualized with outlines. This feature is Experimental, disabled by default. */
-	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|Selection")
+	// old preference for mesh selection system that will be disabled in 5.3
+	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|Selection", meta = (DisplayName="Enable Mesh Selection UI"))
 	bool bEnablePersistentSelections = false;
+
+	// new default-enabled preference for the mesh selection system that we will switch to in 5.3
+	/** Enable/Disable new Mesh Selection System (Experimental). */
+	//UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|Selection", meta = (DisplayName="Enable Mesh Selection UI"))
+	UPROPERTY()
+	bool bEnableMeshSelections = true;
+
+	virtual bool GetMeshSelectionsEnabled() const
+	{
+		return bEnablePersistentSelections;
+		//return bEnableMeshSelections;
+	}
+
 
 	DECLARE_MULTICAST_DELEGATE_TwoParams(UModelingToolsEditorModeSettingsModified, UObject*, FProperty*);
 	UModelingToolsEditorModeSettingsModified OnModified;
@@ -188,6 +210,18 @@ protected:
 
 	bool bRestrictiveMode = false;
 
+
+
+
+public:
+	//
+	// Settings that are currently stored during a single session but are not stored in the config file
+	// (may promote them to persistent settings in the future)
+	//
+
+	/** Toggle Absolute World Grid Position snapping */
+	UPROPERTY(Transient)
+	bool bEnableAbsoluteWorldSnapping = false;
 };
 
 
@@ -300,4 +334,35 @@ public:
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|Tool Assets")
 	TArray<FModelingModeAssetCollectionSet> BrushAlphaSets;
+
+
+
+public:
+
+	// saved-state for various mode settings that are configured via UI toggles/etc, and not exposed in settings dialog
+
+	UPROPERTY(config)
+	int32 LastMeshSelectionDragMode = 0;
+
+public:
+
+	// saved-state for various mode settings that does not persist between editor runs
+
+	UPROPERTY()
+	int32 LastMeshSelectionElementType = 0;
+
+	UPROPERTY()
+	int32 LastMeshSelectionTopologyMode = 0;
+
+	UPROPERTY()
+	bool bLastMeshSelectionVolumeToggle = false;
+
+	UPROPERTY()
+	bool bLastMeshSelectionStaticMeshToggle = false;
+
+
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Engine/EngineTypes.h"
+#endif

@@ -20,8 +20,8 @@ public:
 	void SetPayloadBitCount(uint32 BitCount) { BlobBitCount = BitCount; }
 
 private:
-	virtual void SerializeWithObject(FNetSerializationContext& Context, FNetHandle NetHandle) const override;
-	virtual void DeserializeWithObject(FNetSerializationContext& Context, FNetHandle NetHandle) override;
+	virtual void SerializeWithObject(FNetSerializationContext& Context, FNetRefHandle RefHandle) const override;
+	virtual void DeserializeWithObject(FNetSerializationContext& Context, FNetRefHandle RefHandle) override;
 
 	virtual void Serialize(FNetSerializationContext& Context) const override;
 	virtual void Deserialize(FNetSerializationContext& Context) override;
@@ -65,6 +65,15 @@ private:
 };
 
 UCLASS()
+class UMockSequentialPartialNetBlobHandlerConfig : public USequentialPartialNetBlobHandlerConfig
+{
+	GENERATED_BODY()
+
+public:
+	UMockSequentialPartialNetBlobHandlerConfig();
+};
+
+UCLASS()
 class UMockSequentialPartialNetBlobHandler final : public USequentialPartialNetBlobHandler
 {
 	GENERATED_BODY()
@@ -81,6 +90,8 @@ public:
 
 	void Init(const FSequentialPartialNetBlobHandlerInitParams& InitParams);
 
+	const USequentialPartialNetBlobHandlerConfig* GetConfig() const;
+
 	const FCallCounts& GetFunctionCallCounts() const { return CallCounts; }
 	void ResetFunctionCallCounts() { CallCounts = FCallCounts({}); }
 
@@ -91,3 +102,8 @@ private:
 	UE::Net::FNetBlobAssembler Assembler;
 	mutable FCallCounts CallCounts;
 };
+
+inline const USequentialPartialNetBlobHandlerConfig* UMockSequentialPartialNetBlobHandler::GetConfig() const
+{
+	return CastChecked<const USequentialPartialNetBlobHandlerConfig>(Super::GetConfig(), ECastCheckedType::NullAllowed);
+}

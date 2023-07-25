@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "UObject/NameTypes.h"
-#include "Math/Vector.h"
 #include "Math/Quat.h"
 
 struct FPBIKSolverSettings;
@@ -80,6 +78,7 @@ struct FRigidBody
 	FBoneSettings J;
 	FPinConstraint* Pin = nullptr;
 	FEffector* Effector = nullptr;
+	const FPBIKSolverSettings* SolverSettings;
 
 	FVector Position;
 	FQuat Rotation;
@@ -89,9 +88,9 @@ struct FRigidBody
 	TArray<FVector> ChildLocalPositions;
 
 	float InvMass = 0.f;
-	float MaxInvMass = 0.f;
-	float MinInvMass = 0.f;
 	float Mass = 0.f;
+
+	float MaxAngle = 0.0f;
 	
 private:
 
@@ -101,13 +100,17 @@ public:
 
 	FRigidBody(FBone* InBone);
 
-	void Initialize(FBone* SolverRoot);
+	void Initialize(const FBone* SolverRoot);
 
 	void UpdateFromInputs(const FPBIKSolverSettings& Settings);
+
+	void UpdateTransformAndMassFromBones();
 
 	int GetNumBonesToRoot() const;
 
 	FRigidBody* GetParentBody() const;
+
+	float GetInverseMass();
 
 	void ApplyPushToRotateBody(const FVector& Push, const FVector& Offset);
 	

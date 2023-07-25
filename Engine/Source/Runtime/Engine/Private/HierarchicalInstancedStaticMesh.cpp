@@ -4,38 +4,31 @@
 	InstancedStaticMesh.cpp: Static mesh rendering code.
 =============================================================================*/
 
-#include "CoreMinimal.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "Templates/Greater.h"
-#include "Math/RandomStream.h"
-#include "Stats/Stats.h"
-#include "HAL/IConsoleManager.h"
-#include "UObject/ObjectMacros.h"
-#include "Async/TaskGraphInterfaces.h"
+#include "EngineLogs.h"
 #include "EngineStats.h"
-#include "Async/AsyncWork.h"
-#include "PrimitiveViewRelevance.h"
-#include "ConvexVolume.h"
+#include "Engine/Level.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/MapBuildDataRegistry.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "MaterialShared.h"
+#include "PrimitiveInstanceUpdateCommand.h"
 #include "UObject/UObjectIterator.h"
-#include "MeshBatch.h"
-#include "RendererInterface.h"
-#include "Engine/StaticMesh.h"
+#include "RenderUtils.h"
 #include "UnrealEngine.h"
 #include "InstancedStaticMeshDelegates.h"
-#include "SceneManagement.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "UObject/ReleaseObjectVersion.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "Algo/AnyOf.h"
+#include "UObject/UnrealType.h"
 #if WITH_EDITOR
 #include "Rendering/StaticLightingSystemInterface.h"
 #endif
-#include "PrimitiveSceneInfo.h"
 #include "NaniteSceneProxy.h"
 #include "HierarchicalStaticMeshSceneProxy.h"
-#include "VisualLogger/VisualLogger.h"
 
 #if WITH_EDITOR
 static float GDebugBuildTreeAsyncDelayInSeconds = 0.f;
@@ -330,8 +323,7 @@ protected:
 	{
 		// build new instance buffer
 		FRandomStream RandomStream = FRandomStream(InstancingRandomSeed);
-		bool bHalfFloat = GVertexElementTypeSupport.IsSupported(VET_Half2);
-		BuiltInstanceData = MakeUnique<FStaticMeshInstanceData>(bHalfFloat);
+		BuiltInstanceData = MakeUnique<FStaticMeshInstanceData>(/*bInUseHalfFloat = */true);
 		
 		int32 NumInstances = Result->InstanceReorderTable.Num();
 		int32 NumRenderInstances = Result->SortedInstances.Num();
@@ -853,7 +845,9 @@ FHierarchicalStaticMeshSceneProxy::FHierarchicalStaticMeshSceneProxy(UHierarchic
 #endif
 {
 	SetupOcclusion(InComponent);
-	bSupportsMeshCardRepresentation = false;
+
+	// Dynamic draw path without Nanite isn't supported by Lumen
+	bVisibleInLumenScene = false;
 
 	bIsHierarchicalInstancedStaticMesh = true;
 	bIsLandscapeGrass = (ViewRelevance == EHISMViewRelevanceType::Grass);
@@ -1514,7 +1508,7 @@ void FHierarchicalStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<cons
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_HierarchicalInstancedStaticMeshSceneProxy_GetMeshElements);
 	SCOPE_CYCLE_COUNTER(STAT_HISMCGetDynamicMeshElement);
 
-	bool bMultipleSections = ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES && bDitheredLODTransitions && CVarDitheredLOD.GetValueOnRenderThread() > 0;
+	bool bMultipleSections = bDitheredLODTransitions && CVarDitheredLOD.GetValueOnRenderThread() > 0;
 	bool bSingleSections = !bMultipleSections;
 	bool bOverestimate = CVarOverestimateLOD.GetValueOnRenderThread() > 0;
 
@@ -2461,7 +2455,7 @@ int32 UHierarchicalInstancedStaticMeshComponent::AddInstance(const FTransform& I
 	int32 InstanceIndex = UInstancedStaticMeshComponent::AddInstance(InstanceTransform, bWorldSpace);
 
 	// The tree will be fully rebuilt once the static mesh compilation is finished, no need for incremental update in that case.
-	if (InstanceIndex != INDEX_NONE && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->HasValidRenderData())
+	if (InstanceIndex != INDEX_NONE && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->HasValidRenderData(false))
 	{	
 		check(InstanceIndex == InstanceReorderTable.Num());
 
@@ -2500,7 +2494,7 @@ TArray<int32> UHierarchicalInstancedStaticMeshComponent::AddInstances(const TArr
 	TArray<int32> InstanceIndices = UInstancedStaticMeshComponent::AddInstances(InstanceTransforms, true, bWorldSpace);
 
 	// The tree will be fully rebuilt once the static mesh compilation is finished, no need for incremental update in that case.
-	if (InstanceIndices.Num() > 0 && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->HasValidRenderData())
+	if (InstanceIndices.Num() > 0 && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->HasValidRenderData(false))
 	{
 		bIsOutOfDate = true;
 		bConcurrentChanges |= IsAsyncBuilding();
@@ -2686,7 +2680,7 @@ void UHierarchicalInstancedStaticMeshComponent::BuildTree()
 	}
 
 	// The tree will be fully rebuilt once the static mesh compilation is finished, no need for incremental update in that case.
-	if (PerInstanceSMData.Num() > 0 && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->HasValidRenderData())
+	if (PerInstanceSMData.Num() > 0 && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->HasValidRenderData(false))
 	{
 		// Build the tree in translated space to maintain precision.
 		TranslatedInstanceSpaceOrigin = CalcTranslatedInstanceSpaceOrigin();
@@ -2826,11 +2820,11 @@ void UHierarchicalInstancedStaticMeshComponent::ApplyEmpty()
 	SortedInstances.Empty();
 	UnbuiltInstanceBoundsList.Empty();
 	BuiltInstanceBounds.Init();
-	CacheMeshExtendedBounds = (GetStaticMesh() && (GetStaticMesh()->IsCompiling() || GetStaticMesh()->HasValidRenderData())) ? GetStaticMesh()->GetBounds() : FBoxSphereBounds(ForceInitToZero);
+	CacheMeshExtendedBounds = (GetStaticMesh() && (GetStaticMesh()->IsCompiling() || GetStaticMesh()->HasValidRenderData(false))) ? GetStaticMesh()->GetBounds() : FBoxSphereBounds(ForceInitToZero);
 	InstanceUpdateCmdBuffer.Reset();
 	if (PerInstanceRenderData.IsValid())
 	{
-		TUniquePtr<FStaticMeshInstanceData> BuiltInstanceData = MakeUnique<FStaticMeshInstanceData>(GVertexElementTypeSupport.IsSupported(VET_Half2));
+		TUniquePtr<FStaticMeshInstanceData> BuiltInstanceData = MakeUnique<FStaticMeshInstanceData>(/*bInUseHalfFloat = */true);
 		PerInstanceRenderData->UpdateFromPreallocatedData(*BuiltInstanceData);
 		PerInstanceRenderData->HitProxies.Empty();
 		MarkRenderStateDirty();
@@ -3011,7 +3005,7 @@ void UHierarchicalInstancedStaticMeshComponent::BuildTreeAsync()
 
 	// Verify that the mesh is valid before using it.
 	// The tree will be fully rebuilt once the static mesh compilation is finished, no need to do it now.
-	if (PerInstanceSMData.Num() > 0 && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->HasValidRenderData())
+	if (PerInstanceSMData.Num() > 0 && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->HasValidRenderData(false))
 	{
 		double StartTime = FPlatformTime::Seconds();
 		
@@ -3160,7 +3154,8 @@ FPrimitiveSceneProxy* UHierarchicalInstancedStaticMeshComponent::CreateSceneProx
 		// Make sure we have an actual static mesh.
 		GetStaticMesh() &&
 		!GetStaticMesh()->IsCompiling() &&
-		GetStaticMesh()->HasValidRenderData(false);
+		GetStaticMesh()->HasValidRenderData(false) &&
+		!IsPSOPrecaching();
 
 	if (bMeshIsValid)
 	{

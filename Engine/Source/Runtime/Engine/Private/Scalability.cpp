@@ -2,16 +2,33 @@
 
 #include "Scalability.h"
 #include "GenericPlatform/GenericPlatformSurvey.h"
+#include "IAnalyticsProviderET.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ConfigUtilities.h"
 #include "HAL/IConsoleManager.h"
+#include "RHIShaderPlatform.h"
 #include "SynthBenchmark.h"
 #include "EngineAnalytics.h"
-#include "AnalyticsEventAttribute.h"
-#include "Interfaces/IAnalyticsProvider.h"
 #include "Interfaces/IProjectManager.h"
 
+#if WITH_EDITOR
+#endif
+
 Scalability::FOnScalabilitySettingsChanged Scalability::OnScalabilitySettingsChanged;
+
+#if !UE_BUILD_SHIPPING
+
+static TAutoConsoleVariable<float> CVarTestCPUPerfIndexOverride(
+	TEXT("sg.Test.CPUPerfIndexOverride"), 0.0f,
+	TEXT("Custom override for the CPU perf index returned by the GPU benchmark."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarTestGPUPerfIndexOverride(
+	TEXT("sg.Test.GPUPerfIndexOverride"), 0.0f,
+	TEXT("Custom override for the GPU perf index returned by the GPU benchmark."),
+	ECVF_Default);
+
+#endif
 
 static TAutoConsoleVariable<float> CVarResolutionQuality(
 	TEXT("sg.ResolutionQuality"),
@@ -323,10 +340,13 @@ FString GetScalabilitySectionString(const TCHAR* InGroupName, int32 InQualityLev
 
 #if WITH_EDITOR
 FName PlatformScalabilityName; // The name of the current platform scalability, or NAME_None if none is active
+EShaderPlatform ScalabilityShaderPlatform;
+bool bScalabilityShaderPlatformHasBeenChanged;
 FString PlatformScalabilityIniFilename;
 TMap<IConsoleVariable*, FString> PlatformScalabilityCVarBackup;
 TSet<const IConsoleVariable*> PlatformScalabilityCVarAllowList;
 TSet<const IConsoleVariable*> PlatformScalabilityCVarDenyList;
+TMap<EShaderPlatform, Scalability::FQualityLevels> PreviewShaderPlatformToCachedQualityLevels;
 
 void UndoPlatformScalability()
 {
@@ -362,9 +382,11 @@ void ApplyScalabilityGroupFromPlatformIni(const TCHAR* InSectionName, const TCHA
 	UE::ConfigUtilities::ForEachCVarInSectionFromIni(InSectionName, InIniFilename, Func);
 }
 
-void ChangeScalabilityPreviewPlatform(FName NewPlatformScalabilityName)
+void ChangeScalabilityPreviewPlatform(FName NewPlatformScalabilityName, const EShaderPlatform& ShaderPlatform)
 {
 	PlatformScalabilityName = NewPlatformScalabilityName;
+	bScalabilityShaderPlatformHasBeenChanged = ScalabilityShaderPlatform != ShaderPlatform;
+	ScalabilityShaderPlatform = ShaderPlatform;
 }
 #endif
 
@@ -403,6 +425,20 @@ static void SetGroupQualityLevel(const TCHAR* InGroupName, int32 InQualityLevel,
 		UE::ConfigUtilities::ApplyCVarSettingsFromIni(*Section, *GScalabilityIni, ECVF_SetByScalability);
 	}
 }
+
+#if WITH_EDITOR
+void ApplyCachedQualityLevelForShaderPlatform(const EShaderPlatform& ShaderPlatform)
+{
+	if (ScalabilityShaderPlatform != EShaderPlatform::SP_NumPlatforms)
+	{
+		if (Scalability::FQualityLevels* CachedQualityLevel = PreviewShaderPlatformToCachedQualityLevels.Find(ScalabilityShaderPlatform))
+		{
+			Scalability::SetQualityLevels(*CachedQualityLevel);
+			Scalability::SaveState(GEditorSettingsIni);
+		}
+	}
+}
+#endif
 
 float GetResolutionScreenPercentage()
 {
@@ -534,6 +570,10 @@ void InitScalabilitySystem()
 	CVarFoliageQuality.AsVariable()->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&OnChangeFoliageQuality));
 	CVarShadingQuality.AsVariable()->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&OnChangeShadingQuality));
 
+#if WITH_EDITOR
+	ScalabilityShaderPlatform = GMaxRHIShaderPlatform;
+	bScalabilityShaderPlatformHasBeenChanged = false;
+#endif
 	// Set defaults
 	SetQualityLevels(FQualityLevels(), true);
 	GScalabilityBackupQualityLevels = FQualityLevels();
@@ -567,6 +607,11 @@ static float GetRenderScaleLevelFromQualityLevel(int32 InQualityLevel, EQualityL
 	return FCString::Atof(*ResolutionValueStrings[InQualityLevel]);
 }
 
+ENGINE_API float GetResolutionQualityFromGPUPerfIndex(float GPUPerfIndex)
+{
+	 return GetRenderScaleLevelFromQualityLevel(ComputeOptionFromPerfIndex(TEXT("ResolutionQuality"), 0, GPUPerfIndex));
+}
+
 FQualityLevels BenchmarkQualityLevels(uint32 WorkScale, float CPUMultiplier, float GPUMultiplier)
 {
 	ensure((CPUMultiplier > 0.0f) && (GPUMultiplier > 0.0f));
@@ -578,11 +623,22 @@ FQualityLevels BenchmarkQualityLevels(uint32 WorkScale, float CPUMultiplier, flo
 	FSynthBenchmarkResults SynthBenchmark;
 	ISynthBenchmark::Get().Run(SynthBenchmark, true, WorkScale);
 
-	const float CPUPerfIndex = SynthBenchmark.ComputeCPUPerfIndex(/*out*/ &Results.CPUBenchmarkSteps) * CPUMultiplier;
-	const float GPUPerfIndex = SynthBenchmark.ComputeGPUPerfIndex(/*out*/ &Results.GPUBenchmarkSteps) * GPUMultiplier;
+	float CPUPerfIndex = SynthBenchmark.ComputeCPUPerfIndex(/*out*/ &Results.CPUBenchmarkSteps) * CPUMultiplier;
+	float GPUPerfIndex = SynthBenchmark.ComputeGPUPerfIndex(/*out*/ &Results.GPUBenchmarkSteps) * GPUMultiplier;
+
+#if !UE_BUILD_SHIPPING
+	if (CVarTestCPUPerfIndexOverride.GetValueOnAnyThread() > 0.0f)
+	{
+		CPUPerfIndex = CVarTestCPUPerfIndexOverride.GetValueOnAnyThread();
+	}
+	if (CVarTestGPUPerfIndexOverride.GetValueOnAnyThread() > 0.0f)
+	{
+		GPUPerfIndex = CVarTestGPUPerfIndexOverride.GetValueOnAnyThread();
+	}
+#endif
 
 	// decide on the actual quality needed
-	Results.ResolutionQuality = GetRenderScaleLevelFromQualityLevel(ComputeOptionFromPerfIndex(TEXT("ResolutionQuality"), CPUPerfIndex, GPUPerfIndex));
+	Results.ResolutionQuality = GetResolutionQualityFromGPUPerfIndex(GPUPerfIndex);
 	Results.ViewDistanceQuality = ComputeOptionFromPerfIndex(TEXT("ViewDistanceQuality"), CPUPerfIndex, GPUPerfIndex);
 	Results.AntiAliasingQuality = ComputeOptionFromPerfIndex(TEXT("AntiAliasingQuality"), CPUPerfIndex, GPUPerfIndex);
 	Results.ShadowQuality = ComputeOptionFromPerfIndex(TEXT("ShadowQuality"), CPUPerfIndex, GPUPerfIndex);
@@ -752,6 +808,10 @@ void SetQualityLevels(const FQualityLevels& QualityLevels, bool bForce/* = false
 	ClampedLevels.SetFoliageQuality(QualityLevels.FoliageQuality);
 	ClampedLevels.SetShadingQuality(QualityLevels.ShadingQuality);
 
+#if WITH_EDITOR
+	bForce = bForce || bScalabilityShaderPlatformHasBeenChanged;
+#endif
+
 	if (GScalabilityUsingTemporaryQualityLevels && !bForce)
 	{
 		// When temporary scalability is active, non-temporary sets are
@@ -776,6 +836,14 @@ void SetQualityLevels(const FQualityLevels& QualityLevels, bool bForce/* = false
 
 		OnScalabilitySettingsChanged.Broadcast(ClampedLevels);
 	}
+
+#if WITH_EDITOR
+	if (ScalabilityShaderPlatform != EShaderPlatform::SP_NumPlatforms)
+	{
+		PreviewShaderPlatformToCachedQualityLevels.FindOrAdd(ScalabilityShaderPlatform) = ClampedLevels;
+	}
+	bScalabilityShaderPlatformHasBeenChanged = false;
+#endif
 }
 
 FQualityLevels GetQualityLevels()

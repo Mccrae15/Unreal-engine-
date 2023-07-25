@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "CoreTypes.h"
+
 #define VK_NO_PROTOTYPES
 #include "vulkan.h"
 
@@ -180,7 +182,6 @@
 	EnumMacro(PFN_vkCmdTraceRaysKHR, vkCmdTraceRaysKHR) \
 	EnumMacro(PFN_vkCreateRayTracingPipelinesKHR, vkCreateRayTracingPipelinesKHR) \
 	EnumMacro(PFN_vkGetRayTracingShaderGroupHandlesKHR, vkGetRayTracingShaderGroupHandlesKHR) \
-	EnumMacro(PFN_vkGetBufferDeviceAddressKHR, vkGetBufferDeviceAddressKHR) \
 	EnumMacro(PFN_vkCmdWriteAccelerationStructuresPropertiesKHR, vkCmdWriteAccelerationStructuresPropertiesKHR) \
 	EnumMacro(PFN_vkCmdCopyAccelerationStructureKHR, vkCmdCopyAccelerationStructureKHR)
 
@@ -197,13 +198,25 @@
 	EnumMacro(PFN_vkCmdNextSubpass2KHR, vkCmdNextSubpass2KHR) \
 	EnumMacro(PFN_vkCmdEndRenderPass2KHR, vkCmdEndRenderPass2KHR) \
 	EnumMacro(PFN_vkGetDeviceImageMemoryRequirementsKHR, vkGetDeviceImageMemoryRequirementsKHR) \
+	EnumMacro(PFN_vkGetDeviceBufferMemoryRequirementsKHR, vkGetDeviceBufferMemoryRequirementsKHR) \
 	EnumMacro(PFN_vkResetQueryPoolEXT, vkResetQueryPoolEXT) \
 	EnumMacro(PFN_vkCmdPipelineBarrier2KHR, vkCmdPipelineBarrier2KHR) \
 	EnumMacro(PFN_vkCmdResetEvent2KHR, vkCmdResetEvent2KHR) \
 	EnumMacro(PFN_vkCmdSetEvent2KHR, vkCmdSetEvent2KHR) \
 	EnumMacro(PFN_vkCmdWaitEvents2KHR, vkCmdWaitEvents2KHR) \
 	EnumMacro(PFN_vkQueueSubmit2KHR, vkQueueSubmit2KHR) \
-	EnumMacro(PFN_vkCreateSharedSwapchainsKHR, vkCreateSharedSwapchainsKHR)
+	EnumMacro(PFN_vkCreateSharedSwapchainsKHR, vkCreateSharedSwapchainsKHR) \
+	EnumMacro(PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT, vkGetPhysicalDeviceCalibrateableTimeDomainsEXT) \
+	EnumMacro(PFN_vkGetCalibratedTimestampsEXT, vkGetCalibratedTimestampsEXT) \
+	EnumMacro(PFN_vkBindBufferMemory2KHR, vkBindBufferMemory2KHR) \
+	EnumMacro(PFN_vkBindImageMemory2KHR, vkBindImageMemory2KHR) \
+	EnumMacro(PFN_vkGetBufferDeviceAddressKHR, vkGetBufferDeviceAddressKHR) \
+	EnumMacro(PFN_vkGetDescriptorSetLayoutSizeEXT, vkGetDescriptorSetLayoutSizeEXT) \
+	EnumMacro(PFN_vkGetDescriptorSetLayoutBindingOffsetEXT, vkGetDescriptorSetLayoutBindingOffsetEXT) \
+	EnumMacro(PFN_vkCmdBindDescriptorBuffersEXT, vkCmdBindDescriptorBuffersEXT) \
+	EnumMacro(PFN_vkCmdSetDescriptorBufferOffsetsEXT, vkCmdSetDescriptorBufferOffsetsEXT) \
+	EnumMacro(PFN_vkGetDescriptorEXT, vkGetDescriptorEXT)
+
 
 // List of all Vulkan entry points
 #define ENUM_VK_ENTRYPOINTS_ALL(EnumMacro) \

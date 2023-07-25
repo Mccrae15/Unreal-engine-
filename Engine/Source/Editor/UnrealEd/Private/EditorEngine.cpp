@@ -25,6 +25,7 @@
 #include "PhysicsEngine/BodyInstance.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "AI/NavigationSystemBase.h"
 #include "Components/LightComponent.h"
 #include "Tickable.h"
@@ -35,6 +36,7 @@
 #include "ActorFactories/ActorFactoryCylinderVolume.h"
 #include "ActorFactories/ActorFactorySphereVolume.h"
 #include "Engine/Font.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/BrushBuilder.h"
 #include "Builders/CubeBuilder.h"
 #include "Editor/EditorPerProjectUserSettings.h"
@@ -68,6 +70,7 @@
 #include "Engine/Selection.h"
 #include "Sound/SoundCue.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
 #include "Editor.h"
@@ -98,11 +101,14 @@
 #include "IMediaModule.h"
 #include "Scalability.h"
 #include "PlatformInfo.h"
+#include "Settings/LevelEditorPlaySettings.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Misc/AutomationTest.h"
 #include "ActorFolder.h"
 #include "Materials/MaterialInterface.h"
 #include "UncontrolledChangelistsModule.h"
+#include "SceneView.h"
+#include "StaticBoundShaderState.h"
 
 // needed for the RemotePropagator
 #include "AudioDevice.h"
@@ -255,6 +261,7 @@
 #include "LevelEditorDragDropHandler.h"
 #include "IProjectExternalContentInterface.h"
 #include "IDocumentation.h"
+#include "StereoRenderTargetManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditor, Log, All);
 
@@ -404,6 +411,12 @@ static void CheckForMissingAdvancedRenderingRequirements()
 		}
 	}
 #endif // PLATFORM_WINDOWS
+}
+
+
+ERHIFeatureLevel::Type FPreviewPlatformInfo::GetEffectivePreviewFeatureLevel() const
+{
+	return bPreviewFeatureLevelActive ? PreviewFeatureLevel : GMaxRHIFeatureLevel;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1156,10 +1169,12 @@ void UEditorEngine::Init(IEngineLoop* InEngineLoop)
 			TEXT("CSVtoSVG"),
 			TEXT("GeometryFramework"),
 			TEXT("VirtualizationEditor"),
-			TEXT("AnimationSettings")
+			TEXT("AnimationSettings"),
+			TEXT("GameplayDebuggerEditor"),
+			TEXT("RenderResourceViewer"),
 		};
 
-		FScopedSlowTask ModuleSlowTask(UE_ARRAY_COUNT(ModuleNames));
+		FScopedSlowTask ModuleSlowTask((float)UE_ARRAY_COUNT(ModuleNames));
 		for (const TCHAR* ModuleName : ModuleNames)
 		{
 			ModuleSlowTask.EnterProgressFrame(1);
@@ -2059,6 +2074,7 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 			if (!bAllWindowsHidden || GCurrentLevelEditingViewportClient->WantsDrawWhenAppIsHidden())
 			{
 				bool bAllowNonRealtimeViewports = true;
+				GCurrentLevelEditingViewportClient->SetIsCurrentLevelEditingFocus(true);
 				bool bWasNonRealtimeViewportDraw = UpdateSingleViewportClient(GCurrentLevelEditingViewportClient, bAllowNonRealtimeViewports, bUpdateLinkedOrthoViewports);
 				if (GCurrentLevelEditingViewportClient->IsLevelEditorClient())
 				{
@@ -2087,6 +2103,7 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 					{
 						//if we haven't drawn a non-realtime viewport OR not one of the main viewports
 						bool bAllowNonRealtimeViewports = (!bEditorFrameNonRealtimeViewportDrawn) || !(ViewportClient->IsLevelEditorClient());
+						ViewportClient->SetIsCurrentLevelEditingFocus(true);
 						bool bWasNonRealtimeViewportDrawn = UpdateSingleViewportClient(ViewportClient, bAllowNonRealtimeViewports, bUpdateLinkedOrthoViewports);
 						if (ViewportClient->IsLevelEditorClient())
 						{
@@ -2311,7 +2328,9 @@ bool UEditorEngine::UpdateSingleViewportClient(FEditorViewportClient* InViewport
 	// otherwise content for editor view can be streamed out if there are other views (ex: thumbnails)
 	if (InViewportClient->IsPerspective())
 	{
-		IStreamingManager::Get().AddViewInformation( InViewportClient->GetViewLocation(), InViewportClient->Viewport->GetSizeXY().X, InViewportClient->Viewport->GetSizeXY().X / FMath::Tan(FMath::DegreesToRadians(InViewportClient->ViewFOV * 0.5f)) );
+		float XSize = static_cast<float>(InViewportClient->Viewport->GetSizeXY().X);
+
+		IStreamingManager::Get().AddViewInformation( InViewportClient->GetViewLocation(), XSize, XSize / FMath::Tan(FMath::DegreesToRadians(InViewportClient->ViewFOV * 0.5f)) );
 	}
 	
 	// Only allow viewports to be drawn if we are not throttling for slate UI responsiveness or if the viewport client requested a redraw
@@ -4334,6 +4353,15 @@ bool UEditorEngine::CanParentActors( const AActor* ParentActor, const AActor* Ch
 		return false;
 	}
 
+	if (ChildActor->GetContentBundleGuid() != ParentActor->GetContentBundleGuid())
+	{
+		if (ReasonText)
+		{
+			*ReasonText = NSLOCTEXT("ActorAttachmentError", "WrongContentBundle_AttachmentError", "Actors need to be in the same content bundle!");
+		}
+		return false;
+	}
+
 	if(ParentRoot->IsAttachedTo( ChildRoot ))
 	{
 		if (ReasonText)
@@ -4496,6 +4524,7 @@ void UEditorEngine::CleanupPhysicsSceneThatWasInitializedForSave(UWorld* World, 
 	}
 
 	for (UPackage* ExternalPackage : World->GetPackage()->GetExternalPackages())
+
 	{
 		if (!DirtyPackages.Contains(ExternalPackage) && ExternalPackage->IsDirty())
 		{
@@ -4550,6 +4579,14 @@ FSavePackageResultStruct UEditorEngine::Save(UPackage* InOuter, UObject* InAsset
 			// Otherwise find the main asset of the package
 			Asset = InOuter->FindAssetInPackage();
 		}
+	}
+
+	// if no save package context was passed in and the default settings were modified, install a context for the save
+	TUniquePtr<FSavePackageContext> UniqueContext;
+	if (SaveArgs.SavePackageContext == nullptr && !FSavePackageSettings::GetDefaultSettings().IsDefault())
+	{
+		UniqueContext = MakeUnique<FSavePackageContext>(nullptr, nullptr, FSavePackageSettings::GetDefaultSettings());
+		SaveArgs.SavePackageContext = UniqueContext.Get();
 	}
 
 	SlowTask.EnterProgressFrame(10);
@@ -4630,13 +4667,6 @@ FSavePackageResultStruct UEditorEngine::Save(UPackage* InOuter, UObject* InAsset
 
 	SlowTask.EnterProgressFrame(10);
 
-	const bool bAutosave = (SaveArgs.SaveFlags & SAVE_FromAutosave) != 0;
-	if (!bSavingConcurrent && !IsRunningCommandlet() && !bAutosave && Asset && (World || Asset->IsA<AActor>() || Asset->IsA<UActorFolder>()))
-	{
-		// Always reset the transaction buffer on level/actor save to avoid problems with deleted actors (marked pending kill) that gets marked transient by the saving code
-		ResetTransaction( World ? NSLOCTEXT("UnrealEd", "MapSaved", "Map Saved") : Asset->IsA<AActor>() ? NSLOCTEXT("UnrealEd", "ActorSaved", "Actor Saved") : NSLOCTEXT("UnrealEd", "ActorFolderSaved", "Actor Folder Saved"));
-	}
-
 	if ( World )
 	{
 		if (OriginalOwningWorld)
@@ -4668,14 +4698,7 @@ FSavePackageResultStruct UEditorEngine::Save(UPackage* InOuter, UObject* InAsset
 	{
 		// Notify the asset registry
 		IAssetRegistry& AssetRegistry = IAssetRegistry::GetChecked();
-		ForEachObjectWithPackage(InOuter, [&AssetRegistry](UObject* Object)
-			{
-				if (Object->IsAsset() && !UE::AssetRegistry::FFiltering::ShouldSkipAsset(Object))
-				{
-					AssetRegistry.AssetSaved(*Object);
-				}
-				return true;
-			}, false /*bIncludeNestedObjects*/);
+		AssetRegistry.AssetsSaved(MoveTemp(Result.SavedAssets));
 	}
 
 	return Result;
@@ -7727,6 +7750,19 @@ void UEditorEngine::OnSceneMaterialsModified()
 {
 }
 
+void UEditorEngine::OnEffectivePreviewShaderPlatformChange()
+{
+	if (XRSystem.IsValid() && StereoRenderingDevice.IsValid())
+	{
+		IStereoRenderTargetManager* StereoRenderTargetManager = StereoRenderingDevice->GetRenderTargetManager();
+		if (StereoRenderTargetManager)
+		{
+			StereoRenderTargetManager->ReconfigureForShaderPlatform(
+				PreviewPlatform.bPreviewFeatureLevelActive ? PreviewPlatform.ShaderPlatform : CachedEditorShaderPlatform);
+		}
+	}
+}
+
 void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPlatform, bool bSaveSettings)
 {
 	// Get the requested preview platform, make sure it is valid.
@@ -7736,6 +7772,7 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 	check(NewPreviewPlatform.PreviewShaderFormatName.IsNone() || MaxFeatureLevel == NewPreviewPlatform.PreviewFeatureLevel);
 
 	const bool bChangedPreviewShaderPlatform = NewPreviewPlatform.ShaderPlatform != PreviewPlatform.ShaderPlatform;
+	const bool bChangedEffectiveShaderPlatform = bChangedPreviewShaderPlatform && (PreviewPlatform.bPreviewFeatureLevelActive || NewPreviewPlatform.bPreviewFeatureLevelActive);
 	const ERHIFeatureLevel::Type EffectiveFeatureLevel = NewPreviewPlatform.GetEffectivePreviewFeatureLevel();
 
 	if (NewPreviewPlatform.PreviewShaderFormatName != NAME_None)
@@ -7754,6 +7791,11 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 		MaterialShaderQualitySettings->SetPreviewPlatform(PreviewPlatform.PreviewShaderFormatName);
 
 		UStaticMesh::OnLodStrippingQualityLevelChanged(nullptr);
+
+		if (bChangedEffectiveShaderPlatform)
+		{
+			OnEffectivePreviewShaderPlatformChange();
+		}
 	}
 
 	constexpr bool bUpdateProgressDialog = true;
@@ -7799,20 +7841,25 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 		PreviewFeatureLevelChanged.Broadcast(EffectiveFeatureLevel);
 	}
 
-	Scalability::ChangeScalabilityPreviewPlatform(PreviewPlatform.GetEffectivePreviewPlatformName());
+	Scalability::ChangeScalabilityPreviewPlatform(PreviewPlatform.GetEffectivePreviewPlatformName(), GetActiveShaderPlatform());
 
 	UDeviceProfileManager::Get().RestorePreviewDeviceProfile();
 
 	UStaticMesh::OnLodStrippingQualityLevelChanged(nullptr);
 
-	//Override the current device profile.
-	if (PreviewPlatform.DeviceProfileName != NAME_None)
+	if (PreviewPlatform.bPreviewFeatureLevelActive)
 	{
-		if (UDeviceProfile* DP = UDeviceProfileManager::Get().FindProfile(PreviewPlatform.DeviceProfileName.ToString(), false))
+		//Override the current device profile.
+		if (PreviewPlatform.DeviceProfileName != NAME_None)
 		{
-			UDeviceProfileManager::Get().SetPreviewDeviceProfile(DP);
+			if (UDeviceProfile* DP = UDeviceProfileManager::Get().FindProfile(PreviewPlatform.DeviceProfileName.ToString(), false))
+			{
+				UDeviceProfileManager::Get().SetPreviewDeviceProfile(DP);
+			}
 		}
 	}
+
+	Scalability::ApplyCachedQualityLevelForShaderPlatform(GetActiveShaderPlatform());
 
 	PreviewPlatformChanged.Broadcast();
 
@@ -7831,7 +7878,7 @@ void UEditorEngine::ToggleFeatureLevelPreview()
 	DefaultWorldFeatureLevel = NewPreviewFeatureLevel;
 	PreviewFeatureLevelChanged.Broadcast(NewPreviewFeatureLevel);
 
-	Scalability::ChangeScalabilityPreviewPlatform(PreviewPlatform.GetEffectivePreviewPlatformName());
+	Scalability::ChangeScalabilityPreviewPlatform(PreviewPlatform.GetEffectivePreviewPlatformName(), GetActiveShaderPlatform());
 
 	if (PreviewPlatform.bPreviewFeatureLevelActive)
 	{
@@ -7859,6 +7906,8 @@ void UEditorEngine::ToggleFeatureLevelPreview()
 		UDeviceProfileManager::Get().RestorePreviewDeviceProfile();
 	}
 
+	Scalability::ApplyCachedQualityLevelForShaderPlatform(GetActiveShaderPlatform());
+	OnEffectivePreviewShaderPlatformChange();
 	PreviewPlatformChanged.Broadcast();
 
 	UStaticMesh::OnLodStrippingQualityLevelChanged(nullptr);
@@ -7876,6 +7925,17 @@ bool UEditorEngine::IsFeatureLevelPreviewEnabled() const
 bool UEditorEngine::IsFeatureLevelPreviewActive() const
 {
  	return PreviewPlatform.bPreviewFeatureLevelActive;
+}
+
+EShaderPlatform UEditorEngine::GetActiveShaderPlatform() const
+{
+	EShaderPlatform ActiveShaderPlatform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
+	if (PreviewPlatform.bPreviewFeatureLevelActive)
+	{
+		ActiveShaderPlatform = GShaderPlatformForFeatureLevel[PreviewPlatform.PreviewFeatureLevel];
+	}
+
+	return ActiveShaderPlatform;
 }
 
 ERHIFeatureLevel::Type UEditorEngine::GetActiveFeatureLevelPreviewType() const

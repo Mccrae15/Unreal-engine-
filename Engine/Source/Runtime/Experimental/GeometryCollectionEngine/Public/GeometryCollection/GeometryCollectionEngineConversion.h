@@ -1,15 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+#include "GeometryCollectionObject.h"
 #include "Engine/World.h"
 
 class UStaticMesh;
 class USkeletalMesh;
+class USkeleton;
 class USkeletalMeshComponent;
 class UGeometryCollection;
 class UMaterialInterface;
 class UGeometryCollectionComponent;
 class FGeometryCollection;
+struct FManagedArrayCollection;
 class UBodySetup;
 class FSkeletalMeshLODRenderData;
 struct FMeshDescription;
@@ -30,6 +33,15 @@ public:
 	 * @param GeometryCollection  : Collection to append the mesh into.
 	 */
 	static int32 AppendMaterials(const TArray<UMaterialInterface*>& Materials, UGeometryCollection* GeometryCollectionObject, bool bAddInteriorCopy);
+
+	/**
+	 * Appends instanced mesh indices 
+	 * @param GeometryCollectionObject geometry collection to add to 
+	 * @param FromTransformIndex transform index to start from 
+	 * @param StaticMesh  static mesh to add reference to 
+	 * @param Materials materials correcponding to the static mesh instance to get the index from 
+	 */
+	static void AppendAutoInstanceMeshIndices(UGeometryCollection* GeometryCollectionObject, int32 FromTransformIndex, const UStaticMesh* StaticMesh, const TArray<UMaterialInterface*>& Materials);
 
 	/**
 	 * Appends a MeshDescription to a GeometryCollection.
@@ -103,7 +115,15 @@ public:
 	*  @param SkeletalMeshTransform : Mesh transform.
 	*  @param GeometryCollection    : Collection to append the mesh into.
 	*/
-	static bool AppendSkeletalMesh(const USkeletalMesh* SkeletalMesh, int32 MaterialStartIndex, const FTransform& SkeletalMeshTransform, FGeometryCollection* GeometryCollection, bool bReindexMaterials = true);
+	static bool AppendSkeletalMesh(const USkeletalMesh* SkeletalMesh, int32 MaterialStartIndex, const FTransform& SkeletalMeshTransform, FManagedArrayCollection* InCollection, bool bReindexMaterials = true);
+
+	/**
+	*  Appends a skeleton mesh to a GeometryCollection.
+	*  @param USkeleton : Const mesh to read vertex/normals/index data from
+	*  @param SkeletalMeshTransform : Mesh transform.
+	*  @param GeometryCollection    : Collection to append the mesh into.
+	*/
+	static void AppendSkeleton(const USkeleton* Skeleton, const FTransform& SkeletalMeshTransform, FManagedArrayCollection* InCollection);
 
 	/**
 	*  Appends a skeletal mesh to a GeometryCollectionComponent.
@@ -147,4 +167,11 @@ public:
 	*/
 	static void AppendGeometryCollection(const UGeometryCollection* SourceGeometryCollection, const UGeometryCollectionComponent* GeometryCollectionComponent, const FTransform& GeometryCollectionTransform, UGeometryCollection* TargetGeometryCollectionObject, bool ReindexMaterials = true);
 
+	/**
+	*  Appends a GeometryCollectionSource to a GeometryCollection
+	*  @param GeometryCollectionSource : geometry collectiun source object ( from UGeometryCollection collection asset ) 
+	*  @param GeometryCollectionInOut : GeometryCollection to append to 
+	*  @param MaterialsInOut  : array of materials to append to
+	*/
+	static void AppendGeometryCollectionSource(const FGeometryCollectionSource& GeometryCollectionSource, FGeometryCollection& GeometryCollectionInOut, TArray<UMaterial*>& MaterialsInOut, bool ReindexMaterials = true);
 };

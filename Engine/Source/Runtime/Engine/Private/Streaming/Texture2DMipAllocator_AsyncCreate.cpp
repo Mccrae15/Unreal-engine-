@@ -6,7 +6,8 @@ Texture2DStreamIn_AsyncCreate.cpp: Implementation of FTextureMipAllocator using 
 
 #include "Texture2DMipAllocator_AsyncCreate.h"
 #include "RenderUtils.h"
-#include "Containers/ResourceArray.h"
+#include "Rendering/StreamableTextureResource.h"
+#include "Streaming/TextureMipAllocator.h"
 
 FTexture2DMipAllocator_AsyncCreate::FTexture2DMipAllocator_AsyncCreate(UTexture* Texture)
 	: FTextureMipAllocator(Texture, ETickState::AllocateMips, ETickThread::Async)
@@ -92,7 +93,10 @@ bool FTexture2DMipAllocator_AsyncCreate::FinalizeMips(const FTextureUpdateContex
 	else
 	{
 		// Copy the mips.
-		RHICopySharedMips(IntermediateTextureRHI, Texture2DRHI);
+		UE::RHI::CopySharedMips_AssumeSRVMaskState(
+			FRHICommandListExecutor::GetImmediateCommandList(),
+			Texture2DRHI,
+			IntermediateTextureRHI);
 		// Use the new texture resource for the texture asset, must run on the renderthread.
 		Context.Resource->FinalizeStreaming(IntermediateTextureRHI);
 		// No need for the intermediate texture anymore.

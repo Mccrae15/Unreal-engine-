@@ -97,6 +97,11 @@ struct FNiagaraComputeExecutionContext
 	void SetDebugSimName(const TCHAR*) { }
 #endif
 
+#if STATS
+	TStatId SystemStatID;
+	TStatId EmitterStatID;
+#endif
+
 //-TOOD:private:
 	void ResetInternal(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface);
 
@@ -124,7 +129,7 @@ public:
 	//TArray<uint8, TAlignedHeapAllocator<16>> ParamData_RT;		// RT side copy of the parameter data
 	FNiagaraScriptInstanceParameterStore CombinedParamStore;
 #if DO_CHECK
-	TArray< FString >  DIClassNames;
+	TArray<FName>  DIClassNames;
 #endif
 
 	TArray<FNiagaraDataInterfaceProxy*> DataInterfaceProxies;

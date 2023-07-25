@@ -6,11 +6,15 @@
 #include "Actions/OptimusNodeGraphActions.h"
 #include "Actions/OptimusResourceActions.h"
 #include "Actions/OptimusVariableActions.h"
+#include "Components/MeshComponent.h"
+#include "ComputeFramework/ComputeKernel.h"
+#include "Containers/Queue.h"
 #include "DataInterfaces/OptimusDataInterfaceGraph.h"
 #include "DataInterfaces/OptimusDataInterfaceRawBuffer.h"
 #include "IOptimusComputeKernelProvider.h"
 #include "IOptimusDataInterfaceProvider.h"
 #include "IOptimusValueProvider.h"
+#include "Misc/UObjectToken.h"
 #include "OptimusActionStack.h"
 #include "OptimusComputeGraph.h"
 #include "OptimusDataTypeRegistry.h"
@@ -24,13 +28,11 @@
 #include "OptimusNodePin.h"
 #include "OptimusObjectVersion.h"
 #include "OptimusResourceDescription.h"
+#include "OptimusSettings.h"
 #include "OptimusVariableDescription.h"
-
-#include "Components/MeshComponent.h"
-#include "ComputeFramework/ComputeKernel.h"
-#include "Containers/Queue.h"
-#include "Misc/UObjectToken.h"
 #include "RenderingThread.h"
+#include "SceneInterface.h"
+#include "ShaderCore.h"
 #include "UObject/Package.h"
 
 // FIXME: We should not be accessing nodes directly.
@@ -42,6 +44,10 @@
 #include "Nodes/OptimusNode_DataInterface.h"
 #include "Nodes/OptimusNode_GetVariable.h"
 #include "Nodes/OptimusNode_ResourceAccessorBase.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusDeformer)
+
+#include <limits>
 
 #define PRINT_COMPILED_OUTPUT 1
 
@@ -1365,6 +1371,12 @@ bool UOptimusDeformer::Compile()
 		return false;
 	}
 	
+#if WITH_EDITOR
+	// Flush the shader file cache in case we are editing engine or data interface shaders.
+	// We could make the user do this manually, but that makes iterating on data interfaces really painful.
+	FlushShaderFileCache();
+#endif
+
 	for (const FOptimusComputeGraphInfo& ComputeGraphInfo: ComputeGraphs)
 	{
 		ComputeGraphInfo.ComputeGraph->UpdateResources();
@@ -2274,6 +2286,35 @@ void UOptimusDeformer::PostRename(UObject* OldOuter, const FName OldName)
 	}
 }
 
+void UOptimusDeformer::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+	Super::GetAssetRegistryTags(OutTags);
+
+	UClass* BindingClass = nullptr;
+
+	if (Bindings != nullptr)
+	{
+		for (UOptimusComponentSourceBinding const* Binding : Bindings->Bindings)
+		{
+			if (Binding != nullptr && Binding->IsPrimaryBinding())
+			{
+				if (Binding->GetComponentSource() != nullptr)
+				{
+					BindingClass = Binding->GetComponentSource()->GetComponentClass();
+					break;
+				}
+			}
+		}
+	}
+
+	if (BindingClass != nullptr)
+	{
+		FSoftClassPath ClassPath(BindingClass);
+		OutTags.Add(FAssetRegistryTag(TEXT("PrimaryBindingClass"), *ClassPath.ToString(), FAssetRegistryTag::TT_Hidden));
+	}
+}
+
+
 #if WITH_EDITOR
 void UOptimusDeformer::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -2301,6 +2342,13 @@ UMeshDeformerInstance* UOptimusDeformer::CreateInstance(
 		return nullptr;
 	}
 
+	// Return nullptr if deformers are disabled. Clients can then fallback to some other behaviour.
+	EShaderPlatform Platform = InMeshComponent->GetScene() != nullptr ? InMeshComponent->GetScene()->GetShaderPlatform() : GMaxRHIShaderPlatform;
+	if (!Optimus::IsEnabled() || !Optimus::IsSupported(Platform))
+	{
+		return nullptr;
+	}
+
 	const FName InstanceName(GetName() + TEXT("_Instance"));
 	UOptimusDeformerInstance* Instance = NewObject<UOptimusDeformerInstance>(InMeshComponent, InstanceName);
 	Instance->SetMeshComponent(InMeshComponent);
@@ -2318,6 +2366,10 @@ UMeshDeformerInstance* UOptimusDeformer::CreateInstance(
 
 void UOptimusDeformer::SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty)
 {
+	if (bMarkAsDirty)
+	{
+		Modify();
+	}
 	Mesh = PreviewMesh;
 	
 	// FIXME: Notify upstream so the viewport can react.

@@ -3,7 +3,6 @@
 #include "MuT/ASTOpMeshRemapIndices.h"
 
 #include "HAL/PlatformMath.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/RefCounted.h"
 #include "MuR/Types.h"
@@ -74,7 +73,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpMeshRemapIndices::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpMeshRemapIndices::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)

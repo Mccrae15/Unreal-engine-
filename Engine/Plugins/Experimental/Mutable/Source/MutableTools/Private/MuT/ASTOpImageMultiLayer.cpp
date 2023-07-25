@@ -4,7 +4,6 @@
 
 #include "Containers/Map.h"
 #include "HAL/PlatformMath.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/RefCounted.h"
 #include "MuR/Types.h"
@@ -23,7 +22,6 @@ namespace mu
 		, blend(this)
 		, mask(this)
 		, range(this, nullptr, string(), string())
-		, blendType(EBlendType::BT_BLEND)
 	{
 	}
 
@@ -37,15 +35,17 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	bool ASTOpImageMultiLayer::IsEqual(const ASTOp& otherUntyped) const
+	bool ASTOpImageMultiLayer::IsEqual(const ASTOp& InOtherUntyped) const
 	{
-		if (auto other = dynamic_cast<const ASTOpImageMultiLayer*>(&otherUntyped))
+		if (const ASTOpImageMultiLayer* Other = dynamic_cast<const ASTOpImageMultiLayer*>(&InOtherUntyped))
 		{
-			return base == other->base &&
-				blend == other->blend &&
-				mask == other->mask &&
-				range == other->range &&
-				blendType == other->blendType;
+			return base == Other->base &&
+				blend == Other->blend &&
+				mask == Other->mask &&
+				range == Other->range &&
+				blendType == Other->blendType &&
+				blendTypeAlpha == Other->blendTypeAlpha &&
+				bUseMaskFromBlended == Other->bUseMaskFromBlended;
 		}
 		return false;
 	}
@@ -54,7 +54,7 @@ namespace mu
 	//-------------------------------------------------------------------------------------------------
 	uint64 ASTOpImageMultiLayer::Hash() const
 	{
-		uint64 res = std::hash<OP_TYPE>()(OP_TYPE::IM_MULTILAYER);
+		uint64 res = std::hash<OP_TYPE>()(GetOpType());
 		hash_combine(res, base.child().get());
 		hash_combine(res, blend.child().get());
 		hash_combine(res, mask.child().get());
@@ -73,6 +73,8 @@ namespace mu
 		n->range.rangeUID = range.rangeUID;
 		n->range.rangeSize = mapChild(range.rangeSize.child());
 		n->blendType = blendType;
+		n->blendTypeAlpha = blendTypeAlpha;
+		n->bUseMaskFromBlended = bUseMaskFromBlended;
 		return n;
 	}
 
@@ -88,15 +90,17 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpImageMultiLayer::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpImageMultiLayer::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
 		{
 			OP::ImageMultiLayerArgs args;
-			memset(&args, 0, sizeof(args));
+			FMemory::Memzero(&args, sizeof(args));
 
-			args.blendType = (uint16)blendType;
+			args.blendType = (uint8)blendType;
+			args.blendTypeAlpha = (uint8)blendTypeAlpha;
+			args.bUseMaskFromBlended = bUseMaskFromBlended;
 
 			if (base) args.base = base->linkedAddress;
 			if (blend) args.blended = blend->linkedAddress;
@@ -107,20 +111,20 @@ namespace mu
 			}
 
 			linkedAddress = (OP::ADDRESS)program.m_opAddress.Num();
-			program.m_opAddress.Add((uint32_t)program.m_byteCode.Num());
-			AppendCode(program.m_byteCode, OP_TYPE::IM_MULTILAYER);
+			program.m_opAddress.Add((uint32)program.m_byteCode.Num());
+			AppendCode(program.m_byteCode, GetOpType());
 			AppendCode(program.m_byteCode, args);
 		}
 	}
 
 
 	//-------------------------------------------------------------------------------------------------
-	FImageDesc ASTOpImageMultiLayer::GetImageDesc(bool returnBestOption, GetImageDescContext* context)
+	FImageDesc ASTOpImageMultiLayer::GetImageDesc(bool returnBestOption, FGetImageDescContext* context) const 
 	{
 		FImageDesc res;
 
 		// Local context in case it is necessary
-		GetImageDescContext localContext;
+		FGetImageDescContext localContext;
 		if (!context)
 		{
 			context = &localContext;

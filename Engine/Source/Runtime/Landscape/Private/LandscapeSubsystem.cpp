@@ -1,15 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeSubsystem.h"
+#include "Engine/Engine.h"
 #include "UObject/UObjectGlobals.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/World.h"
+#include "Modules/ModuleManager.h"
 #include "ContentStreaming.h"
 #include "Landscape.h"
 #include "LandscapeProxy.h"
 #include "LandscapeStreamingProxy.h"
 #include "LandscapeInfo.h"
 #include "LandscapeInfoMap.h"
+#include "LandscapeModule.h"
+#include "LandscapeRender.h"
+#include "LandscapePrivate.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "ActorPartition/ActorPartitionSubsystem.h"
@@ -20,6 +25,9 @@
 #include "Engine/Canvas.h"
 #include "EngineUtils.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Algo/Transform.h"
+#include "Algo/RemoveIf.h"
+#include "Algo/Unique.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LandscapeSubsystem)
 
@@ -38,8 +46,9 @@ DECLARE_CYCLE_STAT(TEXT("LandscapeSubsystem Tick"), STAT_LandscapeSubsystemTick,
 #define LOCTEXT_NAMESPACE "LandscapeSubsystem"
 
 ULandscapeSubsystem::ULandscapeSubsystem()
+	: bIsGrassCreationPrioritized(false)
 #if WITH_EDITOR
-	: GrassMapsBuilder(nullptr)
+	, GrassMapsBuilder(nullptr)
 	, GIBakedTextureBuilder(nullptr)
 	, PhysicalMaterialBuilder(nullptr)
 	, NotificationManager(nullptr)
@@ -95,6 +104,65 @@ TStatId ULandscapeSubsystem::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(ULandscapeSubsystem, STATGROUP_Tickables);
 }
 
+void ULandscapeSubsystem::RegenerateGrass(bool bInFlushGrass, bool bInForceSync, TOptional<TArrayView<FVector>> InOptionalCameraLocations)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(ULandscapeSubsystem::RegenerateGrass);
+
+	if (Proxies.IsEmpty())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+
+	if (bInFlushGrass)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FlushGrass);
+		for (TWeakObjectPtr<ALandscapeProxy> ProxyPtr : Proxies)
+		{
+			if (ALandscapeProxy* Proxy = ProxyPtr.Get())
+			{
+				Proxy->FlushGrassComponents(/*OnlyForComponents = */nullptr, /*bFlushGrassMaps = */false);
+			}
+		}
+	}
+
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UpdateGrass);
+
+		TArray<FVector> CameraLocations;
+		if (InOptionalCameraLocations.IsSet())
+		{
+			CameraLocations = *InOptionalCameraLocations;
+		}
+		else
+		{
+			if (GUseStreamingManagerForCameras == 0)
+			{
+				CameraLocations = World->ViewLocationsRenderedLastFrame;
+			}
+			else if (int32 Num = IStreamingManager::Get().GetNumViews())
+			{
+				CameraLocations.Reserve(Num);
+				for (int32 Index = 0; Index < Num; Index++)
+				{
+					const FStreamingViewInfo& ViewInfo = IStreamingManager::Get().GetViewInformation(Index);
+					CameraLocations.Add(ViewInfo.ViewOrigin);
+				}
+			}
+		}
+
+		// Update the grass near the specified location(s) : 
+		for (TWeakObjectPtr<ALandscapeProxy> ProxyPtr : Proxies)
+		{
+			if (ALandscapeProxy* Proxy = ProxyPtr.Get())
+			{
+				Proxy->UpdateGrass(CameraLocations, bInForceSync);
+			}
+		}
+	}
+}
+
 ETickableTickType ULandscapeSubsystem::GetTickableTickType() const
 {
 	return HasAnyFlags(RF_ClassDefaultObject) || !GetWorld() || GetWorld()->IsNetMode(NM_DedicatedServer) ? ETickableTickType::Never : ETickableTickType::Always;
@@ -116,6 +184,23 @@ void ULandscapeSubsystem::Tick(float DeltaTime)
 
 	Super::Tick(DeltaTime);
 
+#if WITH_EDITOR
+	//Check if we need to start or stop creating Collision SceneProxies
+	ILandscapeModule& LandscapeModule = FModuleManager::GetModuleChecked<ILandscapeModule>("Landscape");
+	int32 NumViewsWithShowCollision = LandscapeModule.GetLandscapeSceneViewExtension()->GetNumViewsWithShowCollision();
+	bool bNewShowCollisions = NumViewsWithShowCollision > 0;
+    bool bCollisionChanged = bNewShowCollisions != bAnyViewShowCollisions;
+    bAnyViewShowCollisions = bNewShowCollisions;
+        
+	if (bCollisionChanged)
+	{
+		for (ULandscapeHeightfieldCollisionComponent* LandscapeHeightfieldCollisionComponent : TObjectRange<ULandscapeHeightfieldCollisionComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
+		{
+			LandscapeHeightfieldCollisionComponent->MarkRenderStateDirty();
+		}
+	}
+#endif
+	
 	UWorld* World = GetWorld();
 
 	static TArray<FVector> OldCameras;
@@ -234,7 +319,7 @@ int32 ULandscapeSubsystem::GetOudatedPhysicalMaterialComponentsCount()
 	return PhysicalMaterialBuilder->GetOudatedPhysicalMaterialComponentsCount();
 }
 
-void ULandscapeSubsystem::BuildNanite()
+void ULandscapeSubsystem::BuildNanite(TArrayView<ALandscapeProxy*> InProxiesToBuild, bool bForceRebuild)
 {
 	UWorld* World = GetWorld();
 	if (!World || World->IsGameWorld())
@@ -242,22 +327,57 @@ void ULandscapeSubsystem::BuildNanite()
 		return;
 	}
 
-	if (Proxies.IsEmpty())
+	if (InProxiesToBuild.IsEmpty() && Proxies.IsEmpty())
 	{
 		return;
 	}
 
-	FScopedSlowTask SlowTask(Proxies.Num(), (LOCTEXT("Landscape_BuildNanite", "Building Nanite Landscape Meshes")));
-	SlowTask.MakeDialog();
-
-	for (TWeakObjectPtr<ALandscapeProxy> ProxyPtr : Proxies)
+	TArray<ALandscapeProxy*> FinalProxiesToBuild;
+	if (InProxiesToBuild.IsEmpty())
 	{
-		SlowTask.EnterProgressFrame(1, FText::Format(LOCTEXT("Landscape_BuildNaniteProgress", "Building Nanite Landscape Mesh {0} of {1})"), FText::AsNumber(SlowTask.CompletedWork), FText::AsNumber(SlowTask.TotalAmountOfWork)));
-		if (ALandscapeProxy* Proxy = ProxyPtr.Get())
+		Algo::Transform(Proxies, FinalProxiesToBuild, [](const TWeakObjectPtr<ALandscapeProxy>& InProxyPtr) { return InProxyPtr.Get(); });
+	}
+	else 
+	{
+		for (ALandscapeProxy* ProxyToBuild : InProxiesToBuild)
 		{
-			Proxy->UpdateNaniteRepresentation();
-			Proxy->UpdateRenderingMethod();
+			FinalProxiesToBuild.Add(ProxyToBuild);
+			// Build all streaming proxies in the case of a ALandscape :
+			if (ALandscape* Landscape = Cast<ALandscape>(ProxyToBuild))
+			{
+				ULandscapeInfo* LandscapeInfo = Landscape->GetLandscapeInfo();
+				if (LandscapeInfo != nullptr)
+				{
+					Algo::Transform(LandscapeInfo->StreamingProxies, FinalProxiesToBuild, [](const TWeakObjectPtr<ALandscapeStreamingProxy>& InStreamingProxy) { return InStreamingProxy.Get(); });
+				}
+			}
 		}
+	}
+
+	// Only keep unique copies : 
+	FinalProxiesToBuild.Sort();
+	FinalProxiesToBuild.SetNum(Algo::Unique(FinalProxiesToBuild));
+
+	// Don't keep those that are null or already up to date :
+	FinalProxiesToBuild.SetNum(Algo::RemoveIf(FinalProxiesToBuild, [bForceRebuild](ALandscapeProxy* InProxy) { return (InProxy == nullptr) || (!bForceRebuild && InProxy->IsNaniteMeshUpToDate()); }));
+
+	FScopedSlowTask SlowTask(FinalProxiesToBuild.Num(), (LOCTEXT("Landscape_BuildNanite", "Building Nanite Landscape Meshes")));
+	SlowTask.MakeDialog(/*bShowCancelButton = */true);
+
+	for (ALandscapeProxy* Proxy : FinalProxiesToBuild)
+	{
+		SlowTask.EnterProgressFrame(1, FText::Format(LOCTEXT("Landscape_BuildNaniteProgress", "Building Nanite Landscape Mesh ({0} of {1})"), FText::AsNumber(SlowTask.CompletedWork), FText::AsNumber(SlowTask.TotalAmountOfWork)));
+		if (SlowTask.ShouldCancel())
+		{
+			break;
+		}
+
+		if (bForceRebuild)
+		{
+			Proxy->InvalidateNaniteRepresentation(/*bInCheckContentId = */false);
+		}
+		Proxy->UpdateNaniteRepresentation(/*InTargetPlatform = */nullptr);
+		Proxy->UpdateRenderingMethod();
 	}
 }
 

@@ -19,8 +19,6 @@
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Containers/Ticker.h"
 #include "IO/IoDispatcherBackend.h"
-#include "Hash/Blake3.h"
-#include "IO/PackageId.h"
 
 DEFINE_LOG_CATEGORY(LogIoDispatcher);
 
@@ -338,7 +336,7 @@ public:
 		DispatcherEvent = FPlatformProcess::GetSynchEventFromPool(false);
 		BackendContext->WakeUpDispatcherThreadDelegate.BindRaw(this, &FIoDispatcherImpl::WakeUpDispatcherThread);
 		BackendContext->bIsMultiThreaded = bInIsMultithreaded;
-		FCoreDelegates::GetMemoryTrimDelegate().AddLambda([this]()
+		MemoryTrimDelegateHandle = FCoreDelegates::GetMemoryTrimDelegate().AddLambda([this]()
 		{
 			RequestAllocator->Trim();
 			BatchAllocator.Trim();
@@ -347,6 +345,14 @@ public:
 
 	~FIoDispatcherImpl()
 	{
+		for (const TSharedRef<IIoDispatcherBackend>& Backend : Backends)
+		{
+			Backend->Shutdown();
+		}
+		FCoreDelegates::GetMemoryTrimDelegate().Remove(MemoryTrimDelegateHandle);
+		BackendContext->WakeUpDispatcherThreadDelegate.Unbind();
+		// when all mounted backends have been shutdown and the delegates have been cleared,
+		// then we can go ahead and delete the resolve thread
 		delete Thread;
 		FPlatformProcess::ReturnSynchEventToPool(DispatcherEvent);
 		RequestAllocator->ReleaseRef();
@@ -625,6 +631,7 @@ private:
 				}
 				else
 				{
+					UE_CLOG(!CompletedRequestsHead->HasBuffer(), LogStreaming, Fatal, TEXT("Backend provided a completed request without an IoBuiffer. Requests that are not failed or cancelled must have an IoBuffer"));
 					FPlatformAtomics::InterlockedAdd(&TotalLoaded, CompletedRequestsHead->GetBuffer().DataSize());
 					CompleteRequest(CompletedRequestsHead, EIoErrorCode::Ok);
 				}
@@ -831,6 +838,7 @@ private:
 	using FBatchAllocator = TBlockAllocator<FIoBatchImpl, 4096>;
 
 	TSharedRef<FIoDispatcherBackendContext> BackendContext;
+	FDelegateHandle MemoryTrimDelegateHandle;
 	TArray<TSharedRef<IIoDispatcherBackend>> Backends;
 	FIoRequestAllocator* RequestAllocator = nullptr;
 	FBatchAllocator BatchAllocator;
@@ -913,8 +921,14 @@ HasScriptObjectsChunk(FIoDispatcher& Dispatcher)
 static bool
 HasUseIoStoreParam()
 {
-	static bool bForceIoStore = WITH_IOSTORE_IN_EDITOR && FParse::Param(FCommandLine::Get(), TEXT("UseIoStore"));
-	return bForceIoStore;
+#if UE_FORCE_USE_IOSTORE
+    return true;
+#elif WITH_IOSTORE_IN_EDITOR
+    static bool bForceIoStore = FParse::Param(FCommandLine::Get(), TEXT("UseIoStore"));
+    return bForceIoStore;
+#else
+    return false;
+#endif
 }
 
 bool
@@ -1076,8 +1090,7 @@ void FIoRequestImpl::CreateBuffer(uint64 Size)
 	}
 	else
 	{
-		LLM_SCOPE(InheritedLLMTag);
-		UE_MEMSCOPE(InheritedTraceTag);
+		UE::FInheritedContextScope InheritedContextScope = RestoreInheritedContext();
 		TRACE_CPUPROFILER_EVENT_SCOPE(AllocMemoryForRequest);
 		Buffer.Emplace(Size);
 	}
@@ -1219,39 +1232,4 @@ FIoRequest::Release()
 		Impl->ReleaseRef();
 		Impl = nullptr;
 	}
-}
-
-FIoChunkId CreatePackageDataChunkId(const FPackageId& PackageId)
-{
-	return CreateIoChunkId(PackageId.Value(), 0, EIoChunkType::ExportBundleData);
-}
-
-FIoChunkId CreateExternalFileChunkId(const FStringView Filename)
-{
-	check(Filename.Len() > 0);
-
-	TArray<TCHAR, TInlineAllocator<FName::StringBufferSize>> Buffer;
-	Buffer.SetNum(Filename.Len());
-
-	for (int32 Idx = 0, Len = Filename.Len(); Idx < Len; Idx++)
-	{
-		TCHAR Char = TChar<TCHAR>::ToLower(Filename[Idx]);
-		if (Char == TEXT('\\'))
-		{
-			Char = TEXT('/');
-		}
-
-		Buffer[Idx] = Char;
-	}
-
-	const FBlake3Hash Hash = FBlake3::HashBuffer(FMemoryView(Buffer.GetData(), Buffer.Num() * Buffer.GetTypeSize()));
-
-	uint8 Id[12] = {0};
-	FMemory::Memcpy(Id, Hash.GetBytes(), 11);
-	Id[11] = uint8(EIoChunkType::ExternalFile);
-
-	FIoChunkId ChunkId;
-	ChunkId.Set(Id, sizeof(Id));
-
-	return ChunkId;
 }

@@ -2,7 +2,9 @@
 
 #include "NavigationOctree.h"
 #include "AI/Navigation/NavRelevantInterface.h"
+#include "Interfaces/Interface_AsyncCompilation.h"
 #include "NavigationSystem.h"
+#include "UObject/Package.h"
 
 LLM_DEFINE_TAG(NavigationOctree);
 
@@ -10,7 +12,7 @@ LLM_DEFINE_TAG(NavigationOctree);
 //----------------------------------------------------------------------//
 // FNavigationOctree
 //----------------------------------------------------------------------//
-FNavigationOctree::FNavigationOctree(const FVector& Origin, float Radius)
+FNavigationOctree::FNavigationOctree(const FVector& Origin, FVector::FReal Radius)
 	: TOctree2<FNavigationOctreeElement, FNavigationOctreeSemantics>(Origin, Radius)
 	, DefaultGeometryGatheringMode(ENavDataGatheringMode::Instant)
 	, bGatherGeometry(false)
@@ -52,7 +54,7 @@ void FNavigationOctree::DemandLazyDataGathering(FNavigationRelevantData& Element
 	}
 
 	bool bShrink = false;
-	const int32 OrgElementMemory = ElementData.GetGeometryAllocatedSize();
+	const int32 OrgElementMemory = IntCastChecked<int32>(ElementData.GetGeometryAllocatedSize());
 
 	if (ElementData.IsPendingLazyGeometryGathering() == true && ElementData.SupportsGatheringGeometrySlices() == false)
 	{
@@ -104,7 +106,7 @@ void FNavigationOctree::DemandLazyDataGathering(FNavigationRelevantData& Element
 		ElementData.ValidateAndShrink();
 	}
 
-	const int32 ElementMemoryChange = ElementData.GetGeometryAllocatedSize() - OrgElementMemory;
+	const int32 ElementMemoryChange = IntCastChecked<int32>(ElementData.GetGeometryAllocatedSize()) - OrgElementMemory;
 	const_cast<FNavigationOctree*>(this)->NodesMemory += ElementMemoryChange;
 	INC_MEMORY_STAT_BY(STAT_Navigation_CollisionTreeMemory, ElementMemoryChange);
 }

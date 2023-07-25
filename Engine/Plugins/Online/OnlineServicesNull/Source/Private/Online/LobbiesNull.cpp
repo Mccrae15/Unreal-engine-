@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Online/LobbiesNull.h"
+#include "Online/OnlineBase.h"
 #include "Online/OnlineServicesNull.h"
 #include "Online/OnlineServicesCommonEngineUtils.h"
 #include "Online/NboSerializerNullSvc.h"
-#include "Misc/Guid.h"
 #include "SocketSubsystem.h"
 #include "UObject/CoreNet.h"
 #include "Online/LobbyRegistryNull.h"

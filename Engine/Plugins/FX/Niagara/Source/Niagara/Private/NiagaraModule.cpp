@@ -3,17 +3,20 @@
 #include "NiagaraModule.h"
 #include "Misc/LazySingleton.h"
 #include "Modules/ModuleManager.h"
+#include "NiagaraComponentSettings.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraTypes.h"
 #include "NiagaraDebugVis.h"
 #include "NiagaraEvents.h"
 #include "NiagaraSettings.h"
 #include "NiagaraDataInterfaceCurlNoise.h"
 #include "UObject/Class.h"
+#include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
 #include "NiagaraWorldManager.h"
-#include "NiagaraRenderViewDataManager.h"
 #include "VectorVM.h"
 #include "NiagaraConstants.h"
+#include "NiagaraDecalRendererProperties.h"
 #include "NiagaraLightRendererProperties.h"
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraMeshRendererProperties.h"
@@ -29,6 +32,11 @@
 #include "Particles/FXBudget.h"
 #include "Engine/StaticMesh.h"
 #include "UObject/UObjectGlobals.h"
+
+#include "DataInterface/NiagaraDataInterfaceDataChannelCommon.h"
+#include "DataInterface/NiagaraDataInterfaceDataChannelWrite.h"
+#include "DataInterface/NiagaraDataInterfaceDataChannelRead.h"
+#include "DataInterface/NiagaraDataInterfaceDataChannelSpawn.h"
 
 #if PLATFORM_WINDOWS
 #include "NiagaraOpenVDB.h"
@@ -92,6 +100,44 @@ void INiagaraModule::OnUseGlobalFXBudgetChanged(IConsoleVariable* Variable)
 	}
 }
 
+bool INiagaraModule::bDataChannelsEnabled = false;
+
+static FAutoConsoleVariableRef CVarDataChannelEnabled(
+	TEXT("fx.Niagara.DataChannels.Enabled"),
+	INiagaraModule::bDataChannelsEnabled,
+	TEXT("If true, Niagara Data Channels will be enabled. \n"),
+	FConsoleVariableDelegate::CreateStatic(&INiagaraModule::OnDataChannelsEnabledChanged),
+	ECVF_Default
+);
+
+void INiagaraModule::OnDataChannelsEnabledChanged(IConsoleVariable* Variable)
+{
+	if(DataChannelsEnabled())
+	{
+		ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable | ENiagaraTypeRegistryFlags::AllowParameter;
+		FNiagaraTypeRegistry::Register(UNiagaraDataInterfaceDataChannelWrite::StaticClass(), Flags);
+		FNiagaraTypeRegistry::Register(UNiagaraDataInterfaceDataChannelRead::StaticClass(), Flags);
+		FNiagaraTypeRegistry::Register(UNiagaraDataInterfaceDataChannelSpawn::StaticClass(), Flags);
+
+		FNiagaraWorldManager::ForAllWorldManagers(
+			[](FNiagaraWorldManager& WorldMan)
+			{
+				WorldMan.GetDataChannelManager().Init();
+			});
+	}
+// 	else TODO: for completeness we could add the ability to unregister types 
+// 	{
+// 		FNiagaraTypeRegistry::Unregister(UNiagaraDataInterfaceDataChannelWrite::StaticClass());
+// 		FNiagaraTypeRegistry::Register(UNiagaraDataInterfaceDataChannelRead::StaticClass());
+// 		FNiagaraTypeRegistry::Register(UNiagaraDataInterfaceDataChannelSpawn::StaticClass());
+// 	}
+
+	//Re-init everything for now.
+	//Can be more targeted if needed.
+	FNiagaraSystemUpdateContext Context;
+	Context.AddAll(true);
+}
+
 // these two globals are intended to help ensure that a global variable is accessible to natvis (as defined in Niagara.natvis)
 // while debugging.  GCoreTypeRegistrySingletonPtr is the pointer to the actual data stored within the TLazySingleton<FNiagaraTypeRegistry>
 // while GTypeRegistrySingletonPtr can be declared in each module to ensure that it can be accessed while debugging any Niagara
@@ -103,6 +149,7 @@ namespace NiagaraDebugVisHelper
 	const FNiagaraTypeRegistry*& GTypeRegistrySingletonPtr = GCoreTypeRegistrySingletonPtr;
 }
 
+FNiagaraVariable INiagaraModule::Engine_WorldDeltaTime;
 FNiagaraVariable INiagaraModule::Engine_DeltaTime;
 FNiagaraVariable INiagaraModule::Engine_InvDeltaTime;
 FNiagaraVariable INiagaraModule::Engine_Time;
@@ -140,6 +187,10 @@ FNiagaraVariable INiagaraModule::Engine_System_TickCount;
 FNiagaraVariable INiagaraModule::Engine_System_NumEmittersAlive;
 FNiagaraVariable INiagaraModule::Engine_System_SignificanceIndex;
 FNiagaraVariable INiagaraModule::Engine_System_RandomSeed;
+FNiagaraVariable INiagaraModule::Engine_System_CurrentTimeStep;
+FNiagaraVariable INiagaraModule::Engine_System_NumTimeSteps;
+FNiagaraVariable INiagaraModule::Engine_System_TimeStepFraction;
+
 FNiagaraVariable INiagaraModule::Engine_System_NumEmitters;
 FNiagaraVariable INiagaraModule::Engine_NumSystemInstances;
 
@@ -215,9 +266,7 @@ void INiagaraModule::StartupModule()
 #endif
 	LLM_SCOPE(ELLMTag::Niagara);
 	FNiagaraTypeDefinition::Init();
-	FNiagaraRenderViewDataManager::Init();
 
-	
 #if PLATFORM_WINDOWS
 	// Global registration of  the vdb types.
 	openvdb::initialize();
@@ -249,6 +298,7 @@ void INiagaraModule::StartupModule()
 
 	//Init commonly used FNiagaraVariables
 
+	Engine_WorldDeltaTime = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Engine.WorldDeltaTime"));
 	Engine_DeltaTime = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Engine.DeltaTime"));
 	Engine_InvDeltaTime = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Engine.InverseDeltaTime"));
 	
@@ -288,6 +338,11 @@ void INiagaraModule::StartupModule()
 	Engine_System_NumEmittersAlive = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.NumEmittersAlive"));
 	Engine_System_SignificanceIndex = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.SignificanceIndex"));
 	Engine_System_RandomSeed = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.RandomSeed"));
+
+	Engine_System_CurrentTimeStep = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.CurrentTimeStep"));
+	Engine_System_NumTimeSteps = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.NumTimeSteps"));
+	Engine_System_TimeStepFraction = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Engine.System.TimeStepFraction"));
+
 	Engine_System_NumEmitters = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.NumEmitters"));
 	Engine_NumSystemInstances = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.NumSystemInstances"));
 
@@ -357,6 +412,7 @@ void INiagaraModule::StartupModule()
 	Translator_CallID = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Translator.CallID"));
 
 	FNiagaraConstants::Init();
+	UNiagaraDecalRendererProperties::InitCDOPropertiesAfterModuleStartup();
 	UNiagaraLightRendererProperties::InitCDOPropertiesAfterModuleStartup();
 	UNiagaraSpriteRendererProperties::InitCDOPropertiesAfterModuleStartup();
 	UNiagaraRibbonRendererProperties::InitCDOPropertiesAfterModuleStartup();
@@ -412,6 +468,8 @@ void INiagaraModule::OnPostEngineInit()
 			FNiagaraPlatformSet::OnCVarUnregistered(CVar);
 		}
 	);
+
+	FNiagaraComponentSettings::OnPostEngineInit();
 }
 
 void INiagaraModule::OnPreExit()
@@ -438,7 +496,7 @@ void PollSystemCompilations()
 	for (TObjectIterator<UNiagaraSystem> SysIt; SysIt; ++SysIt)
 	{
 		UNiagaraSystem* System = *SysIt;
-		System->PollForCompilationComplete();
+		System->PollForCompilationComplete(false);
 		if (FPlatformTime::Seconds() - Start > GNiagaraMaxCompilePollTimePerFrame)
 		{
 			break;
@@ -484,8 +542,6 @@ void INiagaraModule::OnWorldBeginTearDown(UWorld* World)
 void INiagaraModule::ShutdownRenderingResources()
 {
 	FFXSystemInterface::UnregisterCustomFXSystem(FNiagaraGpuComputeDispatch::Name);
-
-	FNiagaraRenderViewDataManager::Shutdown();
 }
 
 void INiagaraModule::ShutdownModule()
@@ -503,6 +559,8 @@ void INiagaraModule::ShutdownModule()
 	ShutdownRenderingResources();
 
 	FNiagaraTypeRegistry::TearDown();
+
+	FNDIDataChannelLayoutManager::TearDown();
 
 #if WITH_EDITOR
 	FCoreUObjectDelegates::OnAssetLoaded.RemoveAll(this);
@@ -1084,7 +1142,7 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 				UScriptStruct* ScriptStruct = Cast<UScriptStruct>(Obj);
 				if (ScriptStruct != nullptr)
 				{
-					ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable;
+					ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable | ENiagaraTypeRegistryFlags::IsUserDefined;
 					if (ParamRefFound)
 					{
 						Flags |= ENiagaraTypeRegistryFlags::AllowParameter;
@@ -1131,7 +1189,7 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 				UEnum* Enum = Cast<UEnum>(Obj);
 				if (Enum != nullptr)
 				{
-					ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable | ENiagaraTypeRegistryFlags::AllowParameter;
+					ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable | ENiagaraTypeRegistryFlags::AllowParameter | ENiagaraTypeRegistryFlags::IsUserDefined;
 					
 					FNiagaraTypeDefinition Def(Enum);
 					FNiagaraTypeRegistry::Register(Def, Flags);
@@ -1320,7 +1378,7 @@ bool FNiagaraTypeDefinition::Serialize(FArchive& Ar)
 		}
 	}
 
-	if (Ar.IsLoading() || Ar.IsSaving())
+	if (Ar.IsLoading() || Ar.IsSaving() || Ar.IsModifyingWeakAndStrongReferences())
 	{
 		UScriptStruct* Struct = FNiagaraTypeDefinition::StaticStruct();
 		Struct->SerializeTaggedProperties(Ar, (uint8*)this, Struct, nullptr);
@@ -1351,20 +1409,24 @@ bool FNiagaraTypeDefinition::Serialize(FArchive& Ar)
 		}
 #endif
 
-		if (UScriptStruct* StructDef = GetScriptStruct())
+		if(!IsEnum())
 		{
-			if (Flags & TF_SerializedAsLWC)
+			if (UScriptStruct* StructDef = GetScriptStruct())
 			{
-				ClassStructOrEnum = FNiagaraTypeHelper::GetSWCStruct(StructDef);
+				if (Flags & TF_SerializedAsLWC)
+				{
+					ClassStructOrEnum = FNiagaraTypeHelper::GetSWCStruct(StructDef);
 
-				Flags &= ~TF_SerializedAsLWC;
-			}
+					Flags &= ~TF_SerializedAsLWC;
+				}
 #if WITH_EDITORONLY_DATA
-			else
-			{
-				ClassStructOrEnum = FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(static_cast<UScriptStruct*>(ClassStructOrEnum), ENiagaraStructConversion::UserFacing);
-			}
+				else if((Flags & TF_AllowLWC_DEPRECATED) == 0)
+				{	
+					// If a basic type was serialized with the LWC flag, restore the correct struct
+					ClassStructOrEnum = FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(static_cast<UScriptStruct*>(ClassStructOrEnum), ENiagaraStructConversion::UserFacing);
+				}
 #endif
+			}
 		}
 	}
 
@@ -1583,10 +1645,10 @@ const TArray<FNiagaraVariable>& FNiagaraGlobalParameters::GetVariables()
 {
 	static const FName NAME_NiagaraStructPadding0 = "Engine.PaddingInt32_0";
 	static const FName NAME_NiagaraStructPadding1 = "Engine.PaddingInt32_1";
-	static const FName NAME_NiagaraStructPadding2 = "Engine.PaddingInt32_2";
 
 	static const TArray<FNiagaraVariable> Variables =
 	{
+		SYS_PARAM_ENGINE_WORLD_DELTA_TIME,
 		SYS_PARAM_ENGINE_DELTA_TIME,
 		SYS_PARAM_ENGINE_INV_DELTA_TIME,
 		SYS_PARAM_ENGINE_TIME,
@@ -1594,7 +1656,6 @@ const TArray<FNiagaraVariable>& FNiagaraGlobalParameters::GetVariables()
 		SYS_PARAM_ENGINE_QUALITY_LEVEL,
 		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding0),
 		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding1),
-		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding2),
 	};
 
 	return Variables;
@@ -1604,6 +1665,7 @@ const TArray<FNiagaraVariable>& FNiagaraSystemParameters::GetVariables()
 {
 	static const FName NAME_NiagaraStructPadding0 = "Engine.System.PaddingInt32_0";
 	static const FName NAME_NiagaraStructPadding1 = "Engine.System.PaddingInt32_1";
+	static const FName NAME_NiagaraStructPadding2 = "Engine.System.PaddingInt32_2";
 
 	static const TArray<FNiagaraVariable> Variables =
 	{
@@ -1617,8 +1679,12 @@ const TArray<FNiagaraVariable>& FNiagaraSystemParameters::GetVariables()
 		SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS_ALIVE,
 		SYS_PARAM_ENGINE_SYSTEM_SIGNIFICANCE_INDEX,
 		SYS_PARAM_ENGINE_SYSTEM_RANDOM_SEED,
+		SYS_PARAM_ENGINE_SYSTEM_CURRENT_TIME_STEP,
+		SYS_PARAM_ENGINE_SYSTEM_NUM_TIME_STEPS,
+		SYS_PARAM_ENGINE_SYSTEM_TIME_STEP_FRACTION,			
 		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding0),
 		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding1),
+		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding2),
 	};
 
 	return Variables;

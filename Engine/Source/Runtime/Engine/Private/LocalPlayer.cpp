@@ -1,40 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/LocalPlayer.h"
+#include "Engine/ChildConnection.h"
+#include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Misc/FileHelper.h"
-#include "EngineDefines.h"
-#include "EngineGlobals.h"
-#include "Engine/Scene.h"
-#include "Camera/CameraTypes.h"
-#include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
-#include "Engine/World.h"
-#include "SceneView.h"
+#include "GameFramework/WorldSettings.h"
 #include "UObject/UObjectAnnotation.h"
 #include "Logging/LogScopedCategoryAndVerbosityOverride.h"
+#include "Math/InverseRotationMatrix.h"
 #include "UObject/UObjectIterator.h"
-#include "GameFramework/OnlineReplStructs.h"
-#include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "Engine/SkeletalMesh.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "UnrealEngine.h"
-#include "EngineUtils.h"
 
 #include "Net/OnlineEngineInterface.h"
 #include "SceneManagement.h"
-#include "Physics/PhysicsInterfaceCore.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Framework/Application/SlateApplication.h"
 
-#include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
 #include "IXRCamera.h"
+#include "SceneView.h"
 #include "SceneViewExtension.h"
 #include "Net/DataChannel.h"
 
 #include "GameDelegates.h"
+#include "UnrealClient.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LocalPlayer)
 
@@ -172,7 +168,7 @@ class AGameStateBase* FLocalPlayerContext::GetGameState() const
 	else
 	{
 		ULocalPlayer* LocalPlayerPtr = GetLocalPlayer();
-		if (UWorld* LocalPlayerWorld = LocalPlayerPtr->GetWorld())
+		if (UWorld* LocalPlayerWorld = LocalPlayerPtr ? LocalPlayerPtr->GetWorld() : nullptr)
 		{
 			GameState = LocalPlayerWorld->GetGameState();
 		}
@@ -925,7 +921,43 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 	return View;
 }
 
-bool ULocalPlayer::GetPixelBoundingBox(const FBox& ActorBox, FVector2D& OutLowerLeft, FVector2D& OutUpperRight, const FVector2D* OptionalAllotedSize)
+ULocalPlayer::FOptionalAllottedSize::FOptionalAllottedSize(std::nullptr_t Empty)
+	: Value(-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity())
+{}
+
+ULocalPlayer::FOptionalAllottedSize::FOptionalAllottedSize(const FVector2d* InVector2D)
+{
+	if (InVector2D)
+	{
+		Value.X = static_cast<float>(InVector2D->X);
+		Value.Y = static_cast<float>(InVector2D->Y);
+	}
+	else
+	{
+		Value.X = -std::numeric_limits<float>::infinity();
+		Value.Y = -std::numeric_limits<float>::infinity();
+	}
+}
+
+ULocalPlayer::FOptionalAllottedSize::FOptionalAllottedSize(const FVector2f* InVector)
+{
+	if (InVector)
+	{
+		Value = *InVector;
+	}
+	else
+	{
+		Value.X = -std::numeric_limits<float>::infinity();
+		Value.Y = -std::numeric_limits<float>::infinity();
+	}
+}
+
+ULocalPlayer::FOptionalAllottedSize::operator bool() const
+{
+	return Value.X != -std::numeric_limits<float>::infinity();
+}
+
+bool ULocalPlayer::GetPixelBoundingBox(const FBox& ActorBox, FVector2D& OutLowerLeft, FVector2D& OutUpperRight, const FVector2f* OptionalAllotedSize)
 {
 	//@TODO: CAMERA: This has issues with aspect-ratio constrained cameras
 	if ((ViewportClient != NULL) && (ViewportClient->Viewport != NULL) && (PlayerController != NULL))
@@ -945,7 +977,7 @@ bool ULocalPlayer::GetPixelBoundingBox(const FBox& ActorBox, FVector2D& OutLower
 	}
 }
 
-bool ULocalPlayer::GetPixelBoundingBox(const FSceneViewProjectionData& ProjectionData, const FBox& ActorBox, FVector2D& OutLowerLeft, FVector2D& OutUpperRight, const FVector2D* OptionalAllotedSize)
+bool ULocalPlayer::GetPixelBoundingBox(const FSceneViewProjectionData& ProjectionData, const FBox& ActorBox, FVector2D& OutLowerLeft, FVector2D& OutUpperRight, const FVector2f* OptionalAllotedSize)
 {
 	// if we passed in an optional size, use it for the viewrect
 	FIntRect ViewRect = ProjectionData.GetConstrainedViewRect();
@@ -1003,7 +1035,31 @@ bool ULocalPlayer::GetPixelBoundingBox(const FSceneViewProjectionData& Projectio
 	return SuccessCount >= 2;
 }
 
-bool ULocalPlayer::GetPixelPoint(const FVector& InPoint, FVector2D& OutPoint, const FVector2D* OptionalAllotedSize)
+bool ULocalPlayer::GetPixelBoundingBox(const FBox& ActorBox, FVector2D& OutLowerLeft, FVector2D& OutUpperRight, FOptionalAllottedSize OptionalAllotedSize)
+{
+	if (OptionalAllotedSize)
+	{
+		return GetPixelBoundingBox(ActorBox, OutLowerLeft, OutUpperRight, &OptionalAllotedSize.Value);
+	}
+	else
+	{
+		return GetPixelBoundingBox(ActorBox, OutLowerLeft, OutUpperRight);
+	}
+}
+
+bool ULocalPlayer::GetPixelBoundingBox(const FSceneViewProjectionData& ProjectionData, const FBox& ActorBox, FVector2D& OutLowerLeft, FVector2D& OutUpperRight, FOptionalAllottedSize OptionalAllotedSize)
+{
+	if (OptionalAllotedSize)
+	{
+		return GetPixelBoundingBox(ProjectionData, ActorBox, OutLowerLeft, OutUpperRight, &OptionalAllotedSize.Value);
+	}
+	else
+	{
+		return GetPixelBoundingBox(ProjectionData, ActorBox, OutLowerLeft, OutUpperRight);
+	}
+}
+
+bool ULocalPlayer::GetPixelPoint(const FVector& InPoint, FVector2D& OutPoint, const FVector2f* OptionalAllotedSize)
 {
 	//@TODO: CAMERA: This has issues with aspect-ratio constrained cameras
 	if ((ViewportClient != NULL) && (ViewportClient->Viewport != NULL) && (PlayerController != NULL))
@@ -1021,7 +1077,7 @@ bool ULocalPlayer::GetPixelPoint(const FVector& InPoint, FVector2D& OutPoint, co
 	return false;
 }
 
-bool ULocalPlayer::GetPixelPoint(const FSceneViewProjectionData& ProjectionData, const FVector& InPoint, FVector2D& OutPoint, const FVector2D* OptionalAllotedSize)
+bool ULocalPlayer::GetPixelPoint(const FSceneViewProjectionData& ProjectionData, const FVector& InPoint, FVector2D& OutPoint, const FVector2f* OptionalAllotedSize)
 {
 	bool bInFrontOfCamera = true;
 
@@ -1053,6 +1109,30 @@ bool ULocalPlayer::GetPixelPoint(const FSceneViewProjectionData& ProjectionData,
 	}
 
 	return bInFrontOfCamera;
+}
+
+bool ULocalPlayer::GetPixelPoint(const FVector& InPoint, FVector2D& OutPoint, FOptionalAllottedSize OptionalAllotedSize)
+{
+	if (OptionalAllotedSize)
+	{
+		return GetPixelPoint(InPoint, OutPoint, &OptionalAllotedSize.Value);
+	}
+	else
+	{
+		return GetPixelPoint(InPoint, OutPoint);
+	}
+}
+
+bool ULocalPlayer::GetPixelPoint(const FSceneViewProjectionData& ProjectionData, const FVector& InPoint, FVector2D& OutPoint, FOptionalAllottedSize OptionalAllotedSize)
+{
+	if (OptionalAllotedSize)
+	{
+		return GetPixelPoint(ProjectionData, InPoint, OutPoint, &OptionalAllotedSize.Value);
+	}
+	else
+	{
+		return GetPixelPoint(ProjectionData, InPoint, OutPoint);
+	}
 }
 
 bool ULocalPlayer::GetProjectionData(FViewport* Viewport, FSceneViewProjectionData& ProjectionData, int32 StereoViewIndex) const
@@ -1381,37 +1461,9 @@ bool ULocalPlayer::HandleToggleStreamingVolumesCommand( const TCHAR* Cmd, FOutpu
 	return true;
 }
 
+#if UE_ALLOW_EXEC_COMMANDS
 bool ULocalPlayer::Exec(UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 {
-#if WITH_EDITOR
-	if (GIsEditor)
-	{
-		// Override a few commands in PIE
-		if( FParse::Command(&Cmd,TEXT("DN")) )
-		{
-			return HandleDNCommand( Cmd, Ar );
-		}
-
-		if( FParse::Command(&Cmd,TEXT("Exit"))
-		||	FParse::Command(&Cmd,TEXT("Quit")))
-		{
-			return HandleExitCommand( Cmd, Ar );
-		}
-
-		if( FParse::Command(&Cmd,TEXT("FocusNextPIEWindow")))
-		{
-			GEngine->FocusNextPIEWorld(InWorld);
-			return true;
-		}
-		if( FParse::Command(&Cmd,TEXT("FocusLastPIEWindow")))
-		{
-			GEngine->FocusNextPIEWorld(InWorld, true);
-			return true;
-		}
-
-	}
-#endif // WITH_EDITOR
-
 // NOTE: all of these can probably be #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) out
 
 	if( FParse::Command(&Cmd,TEXT("LISTMOVEBODY")) )
@@ -1505,6 +1557,45 @@ bool ULocalPlayer::Exec(UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 	{
 		return false;
 	}
+}
+#endif // UE_ALLOW_EXEC_COMMANDS
+
+bool ULocalPlayer::Exec_Editor(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+#if WITH_EDITOR
+	if (GIsEditor)
+	{
+		// Override a few commands in PIE
+		if (FParse::Command(&Cmd, TEXT("DN")))
+		{
+			return HandleDNCommand(Cmd, Ar);
+		}
+
+		if( FParse::Command(&Cmd,TEXT("Exit"))
+		||	FParse::Command(&Cmd,TEXT("Quit")))
+		{
+			return HandleExitCommand( Cmd, Ar );
+		}
+
+		if (FParse::Command(&Cmd, TEXT("FocusNextPIEWindow")))
+		{
+			GEngine->FocusNextPIEWorld(InWorld);
+			return true;
+		}
+		if (FParse::Command(&Cmd, TEXT("FocusLastPIEWindow")))
+		{
+			GEngine->FocusNextPIEWorld(InWorld, true);
+			return true;
+		}
+
+		if (Super::Exec_Editor(InWorld, Cmd, Ar))
+		{
+			return true;
+		}
+	}
+#endif // WITH_EDITOR
+
+	return false;
 }
 
 void ULocalPlayer::ExecMacro( const TCHAR* Filename, FOutputDevice& Ar )

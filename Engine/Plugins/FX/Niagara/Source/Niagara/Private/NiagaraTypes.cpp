@@ -2,14 +2,17 @@
 
 #include "NiagaraTypes.h"
 
+#include "Engine/Texture2D.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraStats.h"
 #include "NiagaraEmitter.h"
 #include "Misc/StringBuilder.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraTypes)
 
+static FName NAME_NiagaraDouble(TEXT("NiagaraDouble"));
 static FName NAME_NiagaraPosition(TEXT("NiagaraPosition"));
 
 void FNiagaraVariableBase::SetNamespacedName(const FString& InNamespace, FName InVariableName)
@@ -47,7 +50,7 @@ bool FNiagaraVariableBase::ReplaceRootNamespace(const FStringView& ExpectedNames
 	{
 		FNameBuilder NewNameString;
 		NewNameString.Append(NewNamespace);
-		NewNameString.Append(NameStringView.Mid(ExpectedNamespace.Len() + 1));
+		NewNameString.Append(NameStringView.Mid(ExpectedNamespace.Len()));
 		Name = FName(FStringView(NewNameString));
 		return true;
 	}
@@ -151,106 +154,112 @@ FNiagaraStructConversionStep::FNiagaraStructConversionStep()
 {
 }
 
-FNiagaraStructConversionStep::FNiagaraStructConversionStep(int32 InSourceBytes, int32 InSourceOffset, int32 InSimulationBytes, int32 InSimulationOffset, ENiagaraStructConversionType InConversionType)
-	: SourceBytes(InSourceBytes), SourceOffset(InSourceOffset), SimulationBytes(InSimulationBytes), SimulationOffset(InSimulationOffset), ConversionType(InConversionType)
+FNiagaraStructConversionStep::FNiagaraStructConversionStep(int32 InLWCBytes, int32 InLWCOffset, int32 InSimulationBytes, int32 InSimulationOffset, ENiagaraStructConversionType InConversionType)
+	: LWCBytes(InLWCBytes), LWCOffset(InLWCOffset), SimulationBytes(InSimulationBytes), SimulationOffset(InSimulationOffset), ConversionType(InConversionType)
 {
 }
 
-void FNiagaraStructConversionStep::CopyToSim(uint8* DestinationData, const uint8* SourceData) const
+void FNiagaraStructConversionStep::CopyToSim(const uint8* LWCData, uint8* SimulationData, int32 Count, int32 LWCStride, int32 SimulationStride)const
 {
-	void* Dest = DestinationData + SimulationOffset;
-	const void* Src = SourceData + SourceOffset;
 	if (ConversionType == ENiagaraStructConversionType::DoubleToFloat)
 	{
-		checkf(SourceBytes == 8 && SimulationBytes == 4, TEXT("Wrong bytesizes for double->float conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		*static_cast<float*>(Dest) = *static_cast<const double*>(Src);
+		checkf(LWCBytes == 8 && SimulationBytes == 4, TEXT("Wrong bytesizes for double->float conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<float, double>(SimulationData, SimulationStride, SimulationOffset, LWCData, LWCStride, LWCOffset, Count);
 	}
 	else if (ConversionType == ENiagaraStructConversionType::Vector2)
 	{
-		checkf(SourceBytes == 16 && SimulationBytes == 8, TEXT("Wrong bytesizes for Vector2 d->f conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		FVector2f Vector2(*static_cast<const FVector2d*>(Src));
-		FMemory::Memcpy(Dest, &Vector2, SimulationBytes);
+		checkf(LWCBytes == 16 && SimulationBytes == 8, TEXT("Wrong bytesizes for Vector2 d->f conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<FVector2f, FVector2d>(SimulationData, SimulationStride, SimulationOffset, LWCData, LWCStride, LWCOffset, Count);
 	}
 	else if (ConversionType == ENiagaraStructConversionType::Vector3)
 	{
-		checkf(SourceBytes == 24 && SimulationBytes == 12, TEXT("Wrong bytesizes for Vector3 d->f conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		FVector3f Vector(*static_cast<const FVector3d*>(Src));
-		FMemory::Memcpy(Dest, &Vector, SimulationBytes);
+		checkf(LWCBytes == 24 && SimulationBytes == 12, TEXT("Wrong bytesizes for Vector3 d->f conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<FVector3f, FVector>(SimulationData, SimulationStride, SimulationOffset, LWCData, LWCStride, LWCOffset, Count);
 	}
 	else if (ConversionType == ENiagaraStructConversionType::Vector4)
 	{
-		checkf(SourceBytes == 32 && SimulationBytes == 16, TEXT("Wrong bytesizes for Vector4 d->f conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		FVector4f Vector4(*static_cast<const FVector4d*>(Src));
-		FMemory::Memcpy(Dest, &Vector4, SimulationBytes);
+		checkf(LWCBytes == 32 && SimulationBytes == 16, TEXT("Wrong bytesizes for Vector4 d->f conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<FVector4f, FVector4>(SimulationData, SimulationStride, SimulationOffset, LWCData, LWCStride, LWCOffset, Count);
 	}
 	else if (ConversionType == ENiagaraStructConversionType::Quat)
 	{
-		checkf(SourceBytes == 32 && SimulationBytes == 16, TEXT("Wrong bytesizes for Quat d->f conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		FQuat4d SrcQuat = *static_cast<const FQuat4d*>(Src);
-		FQuat4f TargetQuat(SrcQuat.X, SrcQuat.Y, SrcQuat.Z, SrcQuat.W);
-		FMemory::Memcpy(Dest, &TargetQuat, SimulationBytes);
+		checkf(LWCBytes == 32 && SimulationBytes == 16, TEXT("Wrong bytesizes for Quat d->f conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<FQuat4f, FQuat4d>(SimulationData, SimulationStride, SimulationOffset, LWCData, LWCStride, LWCOffset, Count);
 	}
 	else
 	{
-		checkf(SourceBytes == SimulationBytes, TEXT("SourceBytes != TargetBytes: %i != %i"), SourceBytes, SimulationBytes);
-		FMemory::Memcpy(Dest, Src, SourceBytes);
+		checkf(LWCBytes == SimulationBytes, TEXT("LWCBytes != TargetBytes: %i != %i"), LWCBytes, SimulationBytes);
+		for (int32 i = 0; i < Count; ++i)
+		{
+			uint8* Dst = (SimulationData + i * SimulationStride) + SimulationOffset;
+			const uint8* Src = (LWCData + i * LWCStride) + LWCOffset;
+			FMemory::Memcpy(Dst, Src, LWCBytes);
+		}
 	}
 }
 
-void FNiagaraStructConversionStep::CopyFromSim(uint8* DestinationData, const uint8* SourceData) const
+void FNiagaraStructConversionStep::CopyFromSim(uint8* LWCData, const uint8* SimulationData, int32 Count, int32 LWCStride, int32 SimulationStride) const
 {
-	void* Dest = DestinationData + SourceOffset;
-	const void* Src = SourceData + SimulationOffset;
 	if (ConversionType == ENiagaraStructConversionType::DoubleToFloat)
 	{
-		checkf(SourceBytes == 8 && SimulationBytes == 4, TEXT("Wrong bytesizes for float->double conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		*static_cast<double*>(Dest) = *static_cast<const float*>(Src);
+		checkf(LWCBytes == 8 && SimulationBytes == 4, TEXT("Wrong bytesizes for float->double conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<double, float>(LWCData, LWCStride, LWCOffset, SimulationData, SimulationStride, SimulationOffset, Count);
 	}
 	else if (ConversionType == ENiagaraStructConversionType::Vector2)
 	{
-		checkf(SourceBytes == 16 && SimulationBytes == 8, TEXT("Wrong bytesizes for Vector2 f->d conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		FVector2d Vector2(*static_cast<const FVector2f*>(Src));
-		FMemory::Memcpy(Dest, &Vector2, SourceBytes);
+		checkf(LWCBytes == 16 && SimulationBytes == 8, TEXT("Wrong bytesizes for Vector2 f->d conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<FVector2D, FVector2f>(LWCData, LWCStride, LWCOffset, SimulationData, SimulationStride, SimulationOffset, Count);
 	}
 	else if (ConversionType == ENiagaraStructConversionType::Vector3)
 	{
-		checkf(SourceBytes == 24 && SimulationBytes == 12, TEXT("Wrong bytesizes for Vector3 f->d conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		FVector3d Vector3(*static_cast<const FVector3f*>(Src));
-        FMemory::Memcpy(Dest, &Vector3, SourceBytes);
+		checkf(LWCBytes == 24 && SimulationBytes == 12, TEXT("Wrong bytesizes for Vector3 f->d conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<FVector, FVector3f>(LWCData, LWCStride, LWCOffset, SimulationData, SimulationStride, SimulationOffset, Count);
 	}
 	else if (ConversionType == ENiagaraStructConversionType::Vector4)
 	{
-		checkf(SourceBytes == 32 && SimulationBytes == 16, TEXT("Wrong bytesizes for Vector4 f->d conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		FVector4d Vector4(*static_cast<const FVector4f*>(Src));
-		FMemory::Memcpy(Dest, &Vector4, SourceBytes);
+		checkf(LWCBytes == 32 && SimulationBytes == 16, TEXT("Wrong bytesizes for Vector4 f->d conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<FVector4d, FVector4f>(LWCData, LWCStride, LWCOffset, SimulationData, SimulationStride, SimulationOffset, Count);
 	}
 	else if (ConversionType == ENiagaraStructConversionType::Quat)
 	{
-		checkf(SourceBytes == 32 && SimulationBytes == 16, TEXT("Wrong bytesizes for Quat f->d conversion: Source %i, Simulation %i"), SourceBytes, SimulationBytes);
-		FQuat4f SrcQuat = *static_cast<const FQuat4f*>(Src);
-		FQuat4d TargetQuat(SrcQuat.X, SrcQuat.Y, SrcQuat.Z, SrcQuat.W);
-		FMemory::Memcpy(Dest, &TargetQuat, SourceBytes);
+		checkf(LWCBytes == 32 && SimulationBytes == 16, TEXT("Wrong bytesizes for Quat f->d conversion: Source %i, Simulation %i"), LWCBytes, SimulationBytes);
+		CopyInternal<FQuat4d, FQuat4f>(LWCData, LWCStride, LWCOffset, SimulationData, SimulationStride, SimulationOffset, Count);
 	}
 	else
 	{
-		checkf(SourceBytes == SimulationBytes, TEXT("SourceBytes != TargetBytes: %i != %i"), SourceBytes, SimulationBytes);
-		FMemory::Memcpy(DestinationData, SourceData, SourceBytes);
+		checkf(LWCBytes == SimulationBytes, TEXT("LWCBytes != TargetBytes: %i != %i"), LWCBytes, SimulationBytes);
+		for (int32 i = 0; i < Count; ++i)
+		{
+			uint8* Dst = (LWCData + i * LWCStride) + LWCOffset; 
+			const uint8* Src = (SimulationData + i * SimulationStride) + SimulationOffset;
+			FMemory::Memcpy(Dst, Src, LWCBytes);
+		}
 	}
 }
 
-void FNiagaraLwcStructConverter::ConvertDataToSimulation(uint8* DestinationData, const uint8* SourceData) const
+void FNiagaraLwcStructConverter::ConvertDataToSimulation(uint8* DestinationData, const uint8* SourceData, int32 Count) const
 {
+	if (IsValid() == false || Count == 0)
+	{
+		return;
+	}
+
 	for (const FNiagaraStructConversionStep& ConversionStep : ConversionSteps)
 	{
-		ConversionStep.CopyToSim(DestinationData, SourceData);
+		ConversionStep.CopyToSim(SourceData, DestinationData, Count, LWCSize, SWCSize);
 	}
 }
 
-void FNiagaraLwcStructConverter::ConvertDataFromSimulation(uint8* DestinationData, const uint8* SourceData) const
+void FNiagaraLwcStructConverter::ConvertDataFromSimulation(uint8* DestinationData, const uint8* SourceData, int32 Count) const
 {
+	if (IsValid() == false || Count == 0)
+	{
+		return;
+	}
+
 	for (const FNiagaraStructConversionStep& ConversionStep : ConversionSteps)
 	{
-		ConversionStep.CopyFromSim(DestinationData, SourceData);
+		ConversionStep.CopyFromSim(DestinationData, SourceData, Count, LWCSize, SWCSize);
 	}
 }
 
@@ -262,6 +271,11 @@ void FNiagaraLwcStructConverter::AddConversionStep(int32 InSourceBytes, int32 In
 	check(InSimulationOffset >= 0);
 	// TODO (mg) as an optimization, if the last step was a copy step and this one is as well, they can be merged into one
 	ConversionSteps.Emplace(InSourceBytes, InSourceOffset, InSimulationBytes, InSimulationOffset, ConversionType);
+
+	// SWCSize and LWCSize are the sizes of the full structs.
+	// We're updating them with each added step, as the full struct size should be (last property offset + size).
+	SWCSize = InSimulationOffset + InSimulationBytes;
+	LWCSize = InSourceOffset + InSourceBytes;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -464,7 +478,7 @@ bool FNiagaraTypeHelper::IsLWCStructure(UStruct* InStruct)
 
 bool FNiagaraTypeHelper::IsLWCType(const FNiagaraTypeDefinition& InType)
 {
-	return InType.IsValid() && !InType.IsUObject() && IsLWCStructure(InType.GetStruct());
+	return InType.IsValid() && !InType.IsEnum() && !InType.IsUObject() && IsLWCStructure(InType.GetStruct());
 }
 
 void FNiagaraTypeHelper::TickTypeRemap()
@@ -522,32 +536,67 @@ UScriptStruct* FNiagaraTypeHelper::GetSWCStruct(UScriptStruct* LWCStruct)
 			// If this is a LWC structure we need to built a new structure now
 			if (IsLWCStructure(LWCStruct))
 			{
-				FName SWCName = FName(LWCStruct->GetName() + TEXT("_SWC"));
-
-				//check if the remap table contains a previous entry for that struct. This might happen when the lwc struct was changed at runtime.
-				// In that case we want to reuse the existing swc struct object, since it might already be referenced by compile results.
-				for (auto Iter = RemapTable.CreateIterator(); Iter; ++Iter)
+				//Return common SWC variant of common LWC Types.
+				static UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
+				static UScriptStruct* Vector2Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector2D"));
+				static UScriptStruct* Vector3Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector"));
+				static UScriptStruct* Vector4Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector4"));
+				static UScriptStruct* QuatStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Quat"));
+				if(LWCStruct == FNiagaraDouble::StaticStruct())
 				{
-					TWeakObjectPtr<UScriptStruct> ExistingStruct = Iter.Value().Struct;
-					if (ExistingStruct.IsValid() && ExistingStruct->GetFName() == SWCName)
+					SWCStruct = FNiagaraFloat::StaticStruct();
+				}
+				else if(LWCStruct == Vector2Struct) 
+				{
+					static UScriptStruct* Vector2fStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector2f"));
+					SWCStruct = Vector2fStruct;
+				}
+				else if (LWCStruct == Vector3Struct)
+				{
+					static UScriptStruct* Vector3fStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector3f"));
+					SWCStruct = Vector3fStruct;
+				}
+				else if (LWCStruct == Vector4Struct)
+				{
+					static UScriptStruct* Vector4fStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector4f"));
+					SWCStruct = Vector4fStruct;
+				}
+				else if (LWCStruct == QuatStruct)
+				{
+					static UScriptStruct* Quat4fStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Quat4f"));
+					SWCStruct = Quat4fStruct;
+				}
+				//More?
+				else
+				{
+					FName SWCName = FName(LWCStruct->GetName() + TEXT("_SWC"));
+
+					//check if the remap table contains a previous entry for that struct. This might happen when the lwc struct was changed at runtime.
+					// In that case we want to reuse the existing swc struct object, since it might already be referenced by compile results.
+					for (auto Iter = RemapTable.CreateIterator(); Iter; ++Iter)
 					{
-						SWCStruct = ExistingStruct.Get();
-						Iter.RemoveCurrent();
-						RemapTableDirty = true;
-						break;
+						TWeakObjectPtr<UScriptStruct> ExistingStruct = Iter.Value().Struct;
+						if (ExistingStruct.IsValid() && ExistingStruct->GetFName() == SWCName)
+						{
+							SWCStruct = ExistingStruct.Get();
+							Iter.RemoveCurrent();
+							RemapTableDirty = true;
+							break;
+						}
 					}
-				}
 
-				if (SWCStruct == nullptr)
-				{
-					SWCStruct = NewObject<UScriptStruct>(GetTransientPackage(), SWCName, RF_NoFlags);
-					SWCStruct->AddToRoot();
+					if (SWCStruct == nullptr)
+					{
+						SWCStruct = NewObject<UScriptStruct>(GetTransientPackage(), SWCName, RF_NoFlags);
+						SWCStruct->AddToRoot();
+					}
+					FNiagaraLwcStructConverter StructConverter = BuildSWCStructure(SWCStruct, LWCStruct);
+					FNiagaraTypeDefinition LwcTypeDefinition = FNiagaraTypeRegistry::GetTypeForStruct(LWCStruct);
+					FNiagaraTypeRegistry::RegisterStructConverter(LwcTypeDefinition, StructConverter);
+					SWCStruct->Bind();
+					SWCStruct->PrepareCppStructOps();
+					SWCStruct->StaticLink(true);
 				}
-				FNiagaraLwcStructConverter StructConverter = BuildSWCStructure(SWCStruct, LWCStruct);
-				FNiagaraTypeRegistry::RegisterStructConverter(FNiagaraTypeDefinition(LWCStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow), StructConverter);
-				SWCStruct->Bind();
-				SWCStruct->PrepareCppStructOps();
-				SWCStruct->StaticLink(true);
 			}
 			else
 			{
@@ -584,6 +633,15 @@ UScriptStruct* FNiagaraTypeHelper::GetLWCStruct(UScriptStruct* SWCStruct)
 	return nullptr;
 }
 
+FNiagaraTypeDefinition FNiagaraTypeHelper::GetSWCType(const FNiagaraTypeDefinition& InType)
+{
+	if (IsLWCType(InType))
+	{
+		return FNiagaraTypeDefinition(FindNiagaraFriendlyTopLevelStruct(CastChecked<UScriptStruct>(InType.GetStruct()), ENiagaraStructConversion::Simulation));
+	}
+	return InType;
+}
+
 UScriptStruct* FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(UScriptStruct* InStruct, ENiagaraStructConversion StructConversion)
 {
 	if (!InStruct)
@@ -592,6 +650,11 @@ UScriptStruct* FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(UScriptStru
 	}
 
 	// Note: UE core types are converted to the float variant as Niagara only works with float types.
+	if (InStruct->GetFName() == NAME_NiagaraDouble)
+	{
+		return FNiagaraTypeDefinition::GetFloatStruct();
+	}
+
 	if (InStruct->GetFName() == NAME_Vector2D || InStruct->GetFName() == NAME_Vector2d) // LWC support
 	{
 		return FNiagaraTypeDefinition::GetVec2Struct();

@@ -8,20 +8,18 @@
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/ReleaseObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
-#include "EdGraph/EdGraphPin.h"
 #include "Textures/SlateIcon.h"
-#include "EdGraph/EdGraph.h"
 #include "EngineLogs.h"
 #if WITH_EDITOR
 #include "CookerSettings.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/FeedbackContext.h"
-#include "UObject/PropertyPortFlags.h"
 #include "ScopedTransaction.h"
 #include "FindInBlueprintManager.h"
 #include "DiffResults.h"
+#else
+#include "EdGraph/EdGraphPin.h"
 #endif
-#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "EdGraph"
 
@@ -492,6 +490,16 @@ void UEdGraphNode::SnapToGrid(uint32 GridSnapSize)
 {
 	NodePosX = GridSnapSize * (NodePosX / GridSnapSize);
 	NodePosY = GridSnapSize * (NodePosY / GridSnapSize);
+}
+
+bool UEdGraphNode::ShowVisualWarning() const
+{
+	return false;
+}
+
+FText UEdGraphNode::GetVisualWarningTooltipText() const
+{
+	return FText();
 }
 
 class UEdGraph* UEdGraphNode::GetGraph() const

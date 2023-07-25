@@ -50,7 +50,9 @@ class UToolMenu;
 struct FAssetData;
 struct FGeometry;
 struct FHistoryData;
+struct FPathViewConfig;
 struct FPointerEvent;
+struct FContentBrowserInstanceConfig;
 
 typedef TTextFilter< const FString& > FolderTextFilter;
 
@@ -72,6 +74,7 @@ public:
 		, _AllowContextMenu(true)
 		, _AllowClassesFolder(false)
 		, _AllowReadOnlyFolders(true)
+		, _ShowFavorites(false)
 		, _SelectionMode( ESelectionMode::Multi )
 		{}
 
@@ -108,6 +111,9 @@ public:
 		/** If true, read only folders will be displayed */
 		SLATE_ARGUMENT( bool, AllowReadOnlyFolders )
 
+		/** If true, the favorites expander will be displayed */
+		SLATE_ARGUMENT(bool, ShowFavorites);
+
 		/** The selection mode for the tree view */
 		SLATE_ARGUMENT( ESelectionMode::Type, SelectionMode )
 
@@ -120,6 +126,9 @@ public:
 		/** The plugin filter collection */
 		SLATE_ARGUMENT( TSharedPtr<FPluginFilterCollectionType>, PluginPathFilters)
 
+		/** The instance name of the owning content browser. */
+		SLATE_ARGUMENT( FName, OwningContentBrowserName )
+
 	SLATE_END_ARGS()
 
 	/** Destructor */
@@ -127,6 +136,9 @@ public:
 
 	/** Constructs this widget with InArgs */
 	virtual void Construct( const FArguments& InArgs );
+
+	/** Selects the closest matches to the supplied paths in the tree. "/" delimited */
+	void SetSelectedPaths(const TArray<FName>& Paths);
 
 	/** Selects the closest matches to the supplied paths in the tree. "/" delimited */
 	void SetSelectedPaths(const TArray<FString>& Paths);
@@ -193,10 +205,10 @@ public:
 	void ApplyHistoryData( const FHistoryData& History );
 
 	/** Saves any settings to config that should be persistent between editor sessions */
-	virtual void SaveSettings(const FString& IniFilename, const FString& IniSection, const FString& SettingsString) const;
+	virtual void SaveSettings(const FString& IniFilename, const FString& IniSection, const FString& InstanceName) const;
 
 	/** Loads any settings to config that should be persistent between editor sessions */
-	virtual void LoadSettings(const FString& IniFilename, const FString& IniSection, const FString& SettingsString);
+	virtual void LoadSettings(const FString& IniFilename, const FString& IniSection, const FString& InstanceName);
 
 	/**
 	 * Return true if passes path block lists
@@ -291,6 +303,12 @@ protected:
 	/** Clear all root items and clear selection */
 	void ClearTreeItems();
 
+	/** Get this path view's editor config if OwningContentBrowserName is set. */
+	FPathViewConfig* GetPathViewConfig() const;
+
+	/** Get this path view's content browser instance config if OwningContentBrowserName is set. */
+	FContentBrowserInstanceConfig* GetContentBrowserConfig() const;
+
 private:
 	/** Selects the given path only if it exists. Returns true if selected. */
 	bool ExplicitlyAddPathToSelection(const FName Path);
@@ -350,6 +368,9 @@ private:
 
 	/** Update the LastExpandedPath if required */
 	void UpdateLastExpandedPathsIfDirty();
+
+	/** Create a favorites view. */
+	TSharedRef<SWidget> CreateFavoritesView();
 
 protected:
 	/** A helper class to manage PreventTreeItemChangedDelegateCount by incrementing it when constructed (on the stack) and decrementing when destroyed */
@@ -463,6 +484,12 @@ private:
 
 	/** Delegate to sort with */
 	FSortTreeItemChildrenDelegate SortOverride;
+
+	/** The favorites path view if one is set. */
+	TSharedPtr<SExpandableArea> FavoritesArea;
+
+	/** The config instance to use. */
+	FName OwningContentBrowserName;
 };
 
 
@@ -473,6 +500,9 @@ private:
 class SFavoritePathView : public SPathView
 {
 public:
+
+	virtual ~SFavoritePathView();
+
 	/** Constructs this widget with InArgs */
 	virtual void Construct(const FArguments& InArgs) override;
 
@@ -501,4 +531,5 @@ private:
 
 private:
 	TArray<FString> RemovedByFolderMove;
+	FDelegateHandle OnFavoritesChangedHandle;
 };

@@ -2,9 +2,8 @@
 
 #include "TrackEditors/CinePrestreamingTrackEditor.h"
 
-#include "CinePrestreamingData.h"
+#include "ScopedTransaction.h"
 #include "Styles/CinePrestreamingEditorStyle.h"
-#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ISequencerSection.h"
 #include "LevelSequence.h"
@@ -14,10 +13,8 @@
 #include "SequencerUtilities.h"
 #include "Styling/StyleColors.h"
 #include "Tracks/MovieSceneCinePrestreamingTrack.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Misc/Timespan.h"
 
 #define LOCTEXT_NAMESPACE "CinePrestreamingTrackEditor"
 
@@ -218,7 +215,7 @@ void FCinePrestreamingTrackEditor::HandleAddTrack()
 	const FScopedTransaction Transaction(LOCTEXT("AddDataLayerTrack_Transaction", "Add Cinematic Prestreaming Track"));
 	FocusedMovieScene->Modify();
 
-	UMovieSceneCinePrestreamingTrack* NewTrack = FocusedMovieScene->AddMasterTrack<UMovieSceneCinePrestreamingTrack>();
+	UMovieSceneCinePrestreamingTrack* NewTrack = FocusedMovieScene->AddTrack<UMovieSceneCinePrestreamingTrack>();
 	checkf(NewTrack, TEXT("Failed to create new cinematic prestreaming track."));
 
 	UMovieSceneCinePrestreamingSection* NewSection = AddNewSection(FocusedMovieScene, NewTrack);

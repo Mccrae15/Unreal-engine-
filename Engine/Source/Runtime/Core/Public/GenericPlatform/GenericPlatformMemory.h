@@ -159,7 +159,7 @@ struct CORE_API FGenericPlatformMemoryStats : public FPlatformMemoryConstants
 		Nominal, 
 		Critical, // high risk of OOM conditions
 	};
-	EMemoryPressureStatus GetMemoryPressureStatus();
+	EMemoryPressureStatus GetMemoryPressureStatus() const;
 
 	/** Default constructor, clears all variables. */
 	FGenericPlatformMemoryStats();
@@ -389,6 +389,14 @@ struct CORE_API FGenericPlatformMemory
 	 */
 	static void BinnedFreeToOS( void* Ptr, SIZE_T Size );
 	
+	/**
+	 * Performs initial setup for MiMalloc.
+	 * This is a noop on platforms that do not support MiMalloc, or when MIMALLOC_ENABLED is not defined.
+	 */
+	static void MiMallocInit()
+	{
+	}
+
 	/**
 	 *	Performs initial setup for Nano malloc.
 	 *	This is a noop on non-apple platforms

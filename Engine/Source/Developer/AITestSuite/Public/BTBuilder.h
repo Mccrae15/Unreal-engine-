@@ -17,13 +17,14 @@
 
 #include "BehaviorTree/TestBTDecorator_Blackboard.h"
 #include "BehaviorTree/TestBTDecorator_DelayedAbort.h"
+#include "BehaviorTree/TestBTDecorator_Blueprint.h"
 #include "BehaviorTree/TestBTService_Log.h"
-#include "BehaviorTree/TestBTService_StopTree.h"
+#include "BehaviorTree/TestBTService_BTStopAction.h"
 #include "BehaviorTree/TestBTTask_LatentWithFlags.h"
 #include "BehaviorTree/TestBTTask_Log.h"
 #include "BehaviorTree/TestBTTask_SetFlag.h"
 #include "BehaviorTree/TestBTTask_SetValue.h"
-#include "BehaviorTree/TestBTTask_StopTree.h"
+#include "BehaviorTree/TestBTTask_BTStopAction.h"
 #include "BehaviorTree/TestBTTask_ToggleFlag.h"
 
 struct FBTBuilder
@@ -221,12 +222,13 @@ struct FBTBuilder
 		ParentNode.Children[ChildIdx].ChildTask = TaskNode;
 	}
 
-	static void AddTaskStopTree(UBTCompositeNode& ParentNode, int32 LogIndex, EBTNodeResult::Type NodeResult, EBTTestTaskStopTree::Type StopTimming)
+	static void AddTaskBTStopAction(UBTCompositeNode& ParentNode, int32 LogIndex, EBTNodeResult::Type NodeResult, EBTTestTaskStopTiming StopTiming, EBTTestStopAction StopAction)
 	{
-		UTestBTTask_StopTree* TaskNode = NewObject<UTestBTTask_StopTree>(ParentNode.GetTreeAsset());
+		UTestBTTask_BTStopAction* TaskNode = NewObject<UTestBTTask_BTStopAction>(ParentNode.GetTreeAsset());
 		TaskNode->LogIndex = LogIndex;
 		TaskNode->LogResult = NodeResult;
-		TaskNode->StopTimming = StopTimming;
+		TaskNode->StopTiming = StopTiming;
+		TaskNode->StopAction = StopAction;
 
 		const int32 ChildIdx = ParentNode.Children.AddZeroed(1);
 		ParentNode.Children[ChildIdx].ChildTask = TaskNode;
@@ -300,6 +302,21 @@ struct FBTBuilder
 		AbortDecorator.bOnlyOnce = bAbortOnlyOnce;
 	}
 
+	static void WithDecoratorBlueprint(UBTCompositeNode& ParentNode, EBTFlowAbortMode::Type Observer, EBPConditionType BPConditionType = EBPConditionType::TrueCondition,
+		int32 LogIndexBecomeRelevant = -1, int32 LogIndexCeaseRelevant = -1, int32 LogIndexCalculate = -1, FName ObservingKeyName = NAME_None )
+	{
+		UTestBTDecorator_Blueprint& BPDecorator = WithDecorator<UTestBTDecorator_Blueprint>(ParentNode);
+		BPDecorator.LogIndexBecomeRelevant = LogIndexBecomeRelevant;
+		BPDecorator.LogIndexCeaseRelevant = LogIndexCeaseRelevant;
+		BPDecorator.LogIndexCalculate = LogIndexCalculate;
+		BPDecorator.BPConditionType = BPConditionType;
+		BPDecorator.ObservingKeyName = ObservingKeyName;
+
+		FByteProperty* ObserverProp = FindFProperty<FByteProperty>(UBTDecorator_Blackboard::StaticClass(), TEXT("FlowAbortMode"));
+		uint8* ObserverPropData = ObserverProp->ContainerPtrToValuePtr<uint8>(&BPDecorator);
+		ObserverProp->SetIntPropertyValue(ObserverPropData, (uint64)Observer);
+	}
+
 	static void WithDecoratorLoop(UBTCompositeNode& ParentNode, int32 NumLoops = 2)
 	{
 		UBTDecorator_Loop& LoopDecorator = WithDecorator<UBTDecorator_Loop>(ParentNode);
@@ -327,11 +344,12 @@ struct FBTBuilder
 		LogService.bToggleValue = bToggleValue;
 	}
 
-	static void WithServiceStopTree(UBTCompositeNode& ParentNode, int32 LogIndex, EBTTestServiceStopTree::Type StopTimming)
+	static void WithServiceBTStopAction(UBTCompositeNode& ParentNode, int32 LogIndex, EBTTestServiceStopTiming StopTiming, EBTTestStopAction StopAction)
 	{
-		UTestBTService_StopTree& Service = WithService<UTestBTService_StopTree>(ParentNode);
+		UTestBTService_BTStopAction& Service = WithService<UTestBTService_BTStopAction>(ParentNode);
 		Service.LogIndex = LogIndex;
-		Service.StopTimming = StopTimming;
+		Service.StopTiming = StopTiming;
+		Service.StopAction = StopAction;
 	}
 
 	template<class T>
@@ -358,11 +376,12 @@ struct FBTBuilder
 		LogService.bToggleValue = bToggleValue;
 	}
 
-	static void WithTaskServiceStopTree(UBTCompositeNode& ParentNode, int32 LogIndex, EBTTestServiceStopTree::Type StopTimming)
+	static void WithTaskServiceBTStopAction(UBTCompositeNode& ParentNode, int32 LogIndex, EBTTestServiceStopTiming StopTiming, EBTTestStopAction StopAction)
 	{
-		UTestBTService_StopTree& Service = WithTaskService<UTestBTService_StopTree>(ParentNode);
+		UTestBTService_BTStopAction& Service = WithTaskService<UTestBTService_BTStopAction>(ParentNode);
 		Service.LogIndex = LogIndex;
-		Service.StopTimming = StopTimming;
+		Service.StopTiming = StopTiming;
+		Service.StopAction = StopAction;
 	}
 
 };

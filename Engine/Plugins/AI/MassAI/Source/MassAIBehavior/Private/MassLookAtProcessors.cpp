@@ -4,6 +4,7 @@
 #include "MassEntityView.h"
 #include "MassAIBehaviorTypes.h"
 #include "MassCommonFragments.h"
+#include "MassExecutionContext.h"
 #include "MassLookAtFragments.h"
 #include "MassMovementFragments.h"
 #include "MassNavigationFragments.h"
@@ -39,14 +40,14 @@ namespace UE::MassBehavior
 	// Clamps direction vector to a cone specified by the cone angle along X-axis
 	FVector ClampDirectionToXAxisCone(const FVector Direction, const float ConeAngle)
 	{
-		float ConeSin = 0.0f, ConeCos = 0.0f;
+		FVector::FReal ConeSin = 0., ConeCos = 0.;
 		FMath::SinCos(&ConeSin, &ConeCos, ConeAngle);
 		
-		const float AngleCos = Direction.X; // Same as FVector::DotProduct(FVector::ForwardVector, Direction);
+		const FVector::FReal AngleCos = Direction.X; // Same as FVector::DotProduct(FVector::ForwardVector, Direction);
 		if (AngleCos < ConeCos)
 		{
-			const float DistToRimSq = FMath::Square(Direction.Y) + FMath::Square(Direction.Z);
-			const float InvDistToRim = DistToRimSq > KINDA_SMALL_NUMBER ? (1.0f / FMath::Sqrt(DistToRimSq)) : 0.0f;
+			const FVector::FReal DistToRimSq = FMath::Square(Direction.Y) + FMath::Square(Direction.Z);
+			const FVector::FReal InvDistToRim = DistToRimSq > KINDA_SMALL_NUMBER ? (1. / FMath::Sqrt(DistToRimSq)) : 0.;
 			return FVector(ConeCos, Direction.Y * InvDistToRim * ConeSin, Direction.Z * InvDistToRim * ConeSin);
 		}
 		
@@ -118,12 +119,12 @@ void UMassLookAtProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 {
 	QUICK_SCOPE_CYCLE_COUNTER(LookAtProcessor_Run);
 
-	const float CurrentTime = GetWorld()->GetTimeSeconds();
+	const double CurrentTime = GetWorld()->GetTimeSeconds();
 
-	EntityQuery_Conditional.ForEachEntityChunk(EntityManager, Context, [this, &EntityManager, CurrentTime, World = EntityManager.GetWorld()](FMassExecutionContext& Context)
+	EntityQuery_Conditional.ForEachEntityChunk(EntityManager, Context, [this, &EntityManager, CurrentTime](FMassExecutionContext& Context)
 		{
-			const UMassNavigationSubsystem& MassNavSystem = Context.GetSubsystemChecked<UMassNavigationSubsystem>(World);
-			const UZoneGraphSubsystem& ZoneGraphSubsystem = Context.GetSubsystemChecked<UZoneGraphSubsystem>(World);
+			const UMassNavigationSubsystem& MassNavSystem = Context.GetSubsystemChecked<UMassNavigationSubsystem>();
+			const UZoneGraphSubsystem& ZoneGraphSubsystem = Context.GetSubsystemChecked<UZoneGraphSubsystem>();
 
 			const int32 NumEntities = Context.GetNumEntities();
 			const TArrayView<FMassLookAtFragment> LookAtList = Context.GetMutableFragmentView<FMassLookAtFragment>();
@@ -151,7 +152,7 @@ void UMassLookAtProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 				// Update gaze target when current cycle is finished.
 				if (LookAt.RandomGazeMode != EMassLookAtGazeMode::None)
 				{
-					const float TimeSinceUpdate = CurrentTime - LookAt.GazeStartTime;
+					const double TimeSinceUpdate = CurrentTime - LookAt.GazeStartTime;
 					if (TimeSinceUpdate >= LookAt.GazeDuration)
 					{
 						FindNewGazeTarget(MassNavSystem, EntityManager, CurrentTime, TransformFragment.GetTransform(), LookAt);
@@ -197,7 +198,7 @@ void UMassLookAtProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 				// Apply gaze
 				if (LookAt.RandomGazeMode != EMassLookAtGazeMode::None)
 				{
-					const float TimeSinceUpdate = CurrentTime - LookAt.GazeStartTime;
+					const float TimeSinceUpdate = FloatCastChecked<float>(CurrentTime - LookAt.GazeStartTime, /* Precision */ 1./64.);
 					const float GazeStrength = UE::MassBehavior::GazeEnvelope(TimeSinceUpdate, LookAt.GazeDuration, LookAt.RandomGazeMode);
 
 					if (GazeStrength > KINDA_SMALL_NUMBER)
@@ -233,7 +234,7 @@ void UMassLookAtProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 		});
 }
 
-void UMassLookAtProcessor::FindNewGazeTarget(const UMassNavigationSubsystem& MassNavSystem, const FMassEntityManager& EntityManager, const float CurrentTime, const FTransform& Transform, FMassLookAtFragment& LookAt) const
+void UMassLookAtProcessor::FindNewGazeTarget(const UMassNavigationSubsystem& MassNavSystem, const FMassEntityManager& EntityManager, const double CurrentTime, const FTransform& Transform, FMassLookAtFragment& LookAt) const
 {
 	const FNavigationObstacleHashGrid2D& ObstacleGrid = MassNavSystem.GetObstacleGrid();
 	const FMassEntityHandle LastTrackedEntity = LookAt.GazeTrackedEntity;
@@ -492,7 +493,7 @@ void UMassLookAtProcessor::BuildTrajectory(const UZoneGraphSubsystem& ZoneGraphS
 			const FVector StartForward = CurrPoint.Tangent.GetVector();
 			const FVector EndPoint = NextPoint.Position;
 			const FVector EndForward = NextPoint.Tangent.GetVector();
-			const float TangentDistance = FVector::Dist(StartPoint, EndPoint) / 3.0f;
+			const FVector::FReal TangentDistance = FVector::Dist(StartPoint, EndPoint) / 3.;
 			const FVector StartControlPoint = StartPoint + StartForward * TangentDistance;
 			const FVector EndControlPoint = EndPoint - EndForward * TangentDistance;
 

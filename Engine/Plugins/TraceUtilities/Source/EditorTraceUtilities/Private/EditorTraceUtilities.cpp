@@ -2,20 +2,27 @@
 
 #include "EditorTraceUtilities.h"
 
+#include "Misc/ConfigContext.h"
 #include "ToolMenus.h"
-#include "UnrealInsightsLauncher.h"
 
 DEFINE_LOG_CATEGORY(LogTraceUtilities)
 
 #define LOCTEXT_NAMESPACE "FEditorTraceUtilitiesModule"
 
+/**
+  * This function will add the SInsightsStatusBarWidget to the Editor's status bar at the bottom ("LevelEditor.StatusBar.ToolBar").
+  */
+void RegisterInsightsStatusWidgetWithToolMenu();
+
+FString FEditorTraceUtilitiesModule::EditorTraceUtilitiesIni;
+
 void FEditorTraceUtilitiesModule::StartupModule()
 {
 	LLM_SCOPE_BYNAME(TEXT("Insights"));
-	RegisterStartupCallbackHandle = UToolMenus::RegisterStartupCallback(
-		FSimpleMulticastDelegate::FDelegate::CreateSP(
-			FUnrealInsightsLauncher::Get().ToSharedRef(),
-			&FUnrealInsightsLauncher::RegisterMenus));
+
+	RegisterInsightsStatusWidgetWithToolMenu();
+
+	FConfigContext::ReadIntoGConfig().Load(TEXT("TraceUtilities"), EditorTraceUtilitiesIni);
 }
 
 void FEditorTraceUtilitiesModule::ShutdownModule()

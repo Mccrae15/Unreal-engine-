@@ -96,6 +96,9 @@ public:
 	/** Handler for when "Delete" is selected and the delete was confirmed */
 	FReply ExecuteDeleteFolderConfirmed();
 
+	/** Get the parent widget for which this menu was summoned. */
+	TSharedPtr<SWidget> GetParentContent() const { return ParentContent.Pin(); }
+
 private:
 	/** Get tooltip for delete */
 	FText GetDeleteToolTip() const;
@@ -105,8 +108,8 @@ private:
 	/** Checks to see if any of the selected paths use custom colors */
 	bool SelectedHasCustomColors() const;
 
-	/** Callback when the color picker dialog has been closed */
-	void NewColorComplete(const TSharedRef<SWindow>& Window);
+	/** Callback when the color picker dialog changed the color. */
+	void OnLinearColorValueChanged(const FLinearColor InColor);
 
 	/** Callback when the color is picked from the set color submenu */
 	FReply OnColorClicked( const FLinearColor InColor );

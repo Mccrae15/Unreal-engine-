@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "GameFeatureAction.h"
 
 #include "GameFeatureAction_AddWPContent.generated.h"
@@ -33,8 +32,12 @@ public:
 	const UContentBundleDescriptor* GetContentBundleDescriptor() const { return ContentBundleDescriptor; }
 
 private:
-	UPROPERTY(EditAnywhere, Category = ContentBundle)
+	UPROPERTY(VisibleAnywhere, Category = ContentBundle)
 	TObjectPtr<UContentBundleDescriptor> ContentBundleDescriptor;
 
 	TSharedPtr<FContentBundleClient> ContentBundleClient;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

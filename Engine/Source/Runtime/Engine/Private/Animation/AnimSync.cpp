@@ -1,10 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimSync.h"
-#include "Animation/AnimNodeBase.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "AnimationUtils.h"
 #include "Animation/MirrorDataTable.h"
+#include "AnimationRuntime.h"
+#include "Misc/StringFormatArg.h"
+#include "Stats/StatsHierarchical.h"
 
 namespace UE { namespace Anim {
 
@@ -136,7 +139,8 @@ void FAnimSync::TickAssetPlayerInstances(FAnimInstanceProxy& InProxy, float InDe
 				// (maintains sync during inertialization or zero-length blends where the previous sync leader is no longer active)
 				const bool bGroupLeaderWasActive = (PreviousGroup && PreviousGroup->ActivePlayers.ContainsByPredicate(TickRecordMatchesGroupLeader)) ||
 					(PreviousUngroupedActivePlayers.ContainsByPredicate(TickRecordMatchesGroupLeader));
-				TickContext.SetResyncToSyncGroup(!bGroupLeaderWasActive);
+				const bool bGroupWasActive = PreviousGroup && !PreviousGroup->ActivePlayers.IsEmpty();
+				TickContext.SetResyncToSyncGroup(!bGroupLeaderWasActive && bGroupWasActive);
 
 				TickContext.MarkerTickContext.MarkersPassedThisTick.Reset();
 				TickContext.RootMotionMovementParams.Clear();

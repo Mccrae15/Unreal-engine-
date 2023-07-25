@@ -6,6 +6,9 @@
 #include "Modules/ModuleManager.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
+#include "RenderingThread.h"
+#include "RenderDeferredCleanup.h"
+#include "RHI.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Text/STextBlock.h"
@@ -147,7 +150,7 @@ public:
 			.Padding(FMargin(FixedPaddingH))
 			[
 				SNew(SBox).
-				WidthOverride(FixedWidth) 
+				WidthOverride(static_cast<float>(FixedWidth))
 				[
 					VerticalBox 
 				]
@@ -232,7 +235,7 @@ private:
 			.AutoHeight()
 			[
 				SNew(SBox)
-				.HeightOverride(SecondaryBarHeight)
+				.HeightOverride(static_cast<float>(SecondaryBarHeight))
 				[
 					SNew(SProgressBar)
 					.BorderPadding(FVector2D::ZeroVector)
@@ -393,14 +396,6 @@ FFeedbackContextEditor::FFeedbackContextEditor()
 	: HasTaskBeenCancelled(false)
 {
 	
-}
-
-void FFeedbackContextEditor::Serialize( const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category )
-{
-	if( !GLog->IsRedirectingTo( this ) )
-	{
-		GLog->Serialize( V, Verbosity, Category );
-	}
 }
 
 void FFeedbackContextEditor::StartSlowTask( const FText& Task, bool bShowCancelButton )

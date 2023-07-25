@@ -2,6 +2,7 @@
 
 #include "BlueprintDetailsCustomization.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "BlueprintEditor.h"
 #include "BlueprintEditorModule.h"
 #include "BlueprintEditorSettings.h"
@@ -26,6 +27,7 @@
 #include "EdGraphSchema_K2.h"
 #include "EdGraphSchema_K2_Actions.h"
 #include "EdMode.h"
+#include "Editor/EditorEngine.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Engine.h"
 #include "Engine/EngineBaseTypes.h"
@@ -444,7 +446,15 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 			.Font(DetailFontInfo)
 			.ToolTip(VarTypeTooltip)
 			.CustomFilters(CustomPinTypeFilters)
-		];
+		]
+		.AddCustomContextMenuAction(FUIAction(
+			FExecuteAction::CreateRaw(this, &FBlueprintVarActionDetails::OnBrowseToVarType),
+			FCanExecuteAction::CreateRaw(this, &FBlueprintVarActionDetails::CanBrowseToVarType)
+			),
+			LOCTEXT("BrowseToType", "Browse to Type"),
+			LOCTEXT("BrowseToTypeToolTip", "Browse to this variable type in the Content Browser."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.BrowseContent")
+		);
 
 	TSharedPtr<SToolTip> ToolTipTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("VarToolTipTooltip", "Extra information about this variable, shown when cursor is over it."), NULL, DocLink, TEXT("Description"));
 
@@ -2804,6 +2814,41 @@ EVisibility FBlueprintVarActionDetails::IsTooltipEditVisible() const
 	return EVisibility::Collapsed;
 }
 
+void FBlueprintVarActionDetails::OnBrowseToVarType() const
+{
+	FEdGraphPinType PinType = OnGetVarType();
+	if (const UObject* Object = PinType.PinSubCategoryObject.Get())
+	{
+		if (Object->IsAsset())
+		{
+			FAssetData AssetData(Object, false);
+			if (AssetData.IsValid())
+			{
+				TArray<FAssetData> AssetDataList = { AssetData };
+				GEditor->SyncBrowserToObjects(AssetDataList);
+			}
+		}
+	}
+}
+
+bool FBlueprintVarActionDetails::CanBrowseToVarType() const
+{
+	FEdGraphPinType PinType = OnGetVarType();
+	if (const UObject* Object = PinType.PinSubCategoryObject.Get())
+	{
+		if (Object->IsAsset())
+		{
+			FAssetData AssetData(Object, false);
+			if (AssetData.IsValid())
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 void FBlueprintVarActionDetails::OnFinishedChangingVariable(const FPropertyChangedEvent& InPropertyChangedEvent)
 {
 	if (InPropertyChangedEvent.GetNumObjectsBeingEdited() == 0)
@@ -4048,6 +4093,23 @@ void FBlueprintGraphActionDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 					SNew( SCheckBox )
 					.IsChecked( this, &FBlueprintGraphActionDetails::GetIsThreadSafeFunction )
 					.OnCheckStateChanged( this, &FBlueprintGraphActionDetails::OnIsThreadSafeFunctionModified )
+				];
+			}
+			if (IsUnsafeDuringActorConstructionVisible())
+			{
+				Category.AddCustomRow(LOCTEXT("FunctionUnsafeDuringActorConstruction_Tooltip", "Unsafe During Actor Construction"), true)
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("FunctionUnsafeDuringActorConstruction_Tooltip", "Unsafe During Actor Construction"))
+					.ToolTipText(LOCTEXT("FunctionIsUnsafeDuringActorConstruction_Tooltip", "Mark this function as unsafe during actor construction so that a warning is generated when it is called by a Constructin Script - useful when calling native functions that are also unsafe during construction"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				]
+				.ValueContent()
+				[
+					SNew(SCheckBox)
+					.IsChecked(this, &FBlueprintGraphActionDetails::GetIsUnsafeDuringActorConstruction)
+					.OnCheckStateChanged(this, &FBlueprintGraphActionDetails::OnIsUnsafeDuringActorConstructionModified)
 				];
 			}
 		}
@@ -5503,14 +5565,23 @@ FReply FBlueprintGraphActionDetails::ColorBlock_OnMouseButtonDown(const FGeometr
 	{
 		if (FKismetUserDeclaredFunctionMetadata* Metadata = GetMetadataBlock())
 		{
-			TArray<FLinearColor*> LinearColorArray;
-			LinearColorArray.Add(&(Metadata->InstanceTitleColor));
+			TWeakPtr<FBlueprintGraphActionDetails> WeakSelf = SharedThis(this);
 
 			FColorPickerArgs PickerArgs;
 			PickerArgs.bIsModal = true;
 			PickerArgs.ParentWidget = ColorBlock;
 			PickerArgs.DisplayGamma = TAttribute<float>::Create( TAttribute<float>::FGetter::CreateUObject(GEngine, &UEngine::GetDisplayGamma) );
-			PickerArgs.LinearColorArray = &LinearColorArray;
+			PickerArgs.InitialColor = Metadata->InstanceTitleColor;
+			PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateLambda([WeakSelf](FLinearColor NewValue)
+			{
+				if (TSharedPtr<FBlueprintGraphActionDetails> Self = WeakSelf.Pin())
+				{
+					if (FKismetUserDeclaredFunctionMetadata* Metadata = Self->GetMetadataBlock())
+					{
+						Metadata->InstanceTitleColor = NewValue;
+					}
+				}
+			});
 
 			OpenColorPicker(PickerArgs);
 		}
@@ -5750,6 +5821,51 @@ ECheckBoxState FBlueprintGraphActionDetails::GetIsThreadSafeFunction() const
 		return ECheckBoxState::Undetermined;
 	}
 	return EntryNode->MetaData.bThreadSafe ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+bool FBlueprintGraphActionDetails::IsUnsafeDuringActorConstructionVisible() const
+{
+	bool bSupportedType = false;
+	bool bIsEditable = false;
+
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
+	if (FunctionEntryNode)
+	{
+		bSupportedType = FunctionEntryNode->IsA<UK2Node_FunctionEntry>();
+		bIsEditable = FunctionEntryNode->IsEditable();
+	}
+
+	return bIsEditable && bSupportedType;
+}
+
+void FBlueprintGraphActionDetails::OnIsUnsafeDuringActorConstructionModified(const ECheckBoxState NewCheckedState)
+{
+	if (FunctionEntryNodePtr.IsValid())
+	{
+		const bool bIsUnsafeDuringActorConstruction = NewCheckedState == ECheckBoxState::Checked;
+		const FText TransactionType = bIsUnsafeDuringActorConstruction ? 
+			LOCTEXT("DisableIsUnsafeDuringActorConstruction", "Disable Unsafe During Actor Construction") : 
+			LOCTEXT("EnableIsUnsafeDuringActorConstruction", "Enable Unsafe During Actor Construction");
+
+		if (UK2Node_FunctionEntry* EntryPoint = Cast<UK2Node_FunctionEntry>(FunctionEntryNodePtr.Get()))
+		{
+			const FScopedTransaction Transaction(TransactionType);
+			EntryPoint->Modify();
+			EntryPoint->MetaData.bIsUnsafeDuringActorConstruction = bIsUnsafeDuringActorConstruction;
+			FBlueprintEditorUtils::MarkBlueprintAsModified(EntryPoint->GetBlueprint());
+		}
+	}
+}
+
+ECheckBoxState FBlueprintGraphActionDetails::GetIsUnsafeDuringActorConstruction() const
+{
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(FunctionEntryNode);
+	if (!EntryNode)
+	{
+		return ECheckBoxState::Undetermined;
+	}
+	return EntryNode->MetaData.bIsUnsafeDuringActorConstruction ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 FReply FBaseBlueprintGraphActionDetails::OnAddNewInputClicked()

@@ -514,6 +514,18 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 		.Padding(FMargin(5.f, 8.f, 5.f, 5.f))
 		[
 			CreateCPUThrottleWarning()
+		]
+		+SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(FMargin(5.f, 8.f, 5.f, 5.f))
+		[
+			CreateProtectedIgnoredWarning()
+		]
+		+SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(FMargin(5.f, 8.f, 5.f, 5.f))
+		[
+			CreateGetterSetterIgnoredWarning()
 		];
 
 	// Output Log Dock panel
@@ -794,14 +806,13 @@ void SRemoteControlPanel::Shutdown()
 	NoneSelectedWidget.Reset();
 }
 
-void SRemoteControlPanel::PostUndo(bool bSuccess)
+void SRemoteControlPanel::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	Refresh();
-}
-
-void SRemoteControlPanel::PostRedo(bool bSuccess)
-{
-	Refresh();
+	if (bMaterialsCompiledThisFrame)
+	{
+		TriggerMaterialCompiledRefresh();
+		bMaterialsCompiledThisFrame = false;
+	}
 }
 
 bool SRemoteControlPanel::IsExposed(const FRCExposesPropertyArgs& InPropertyArgs)
@@ -968,6 +979,15 @@ FReply SRemoteControlPanel::OnClickDisableUseLessCPU() const
 	return FReply::Handled();
 }
 
+FReply SRemoteControlPanel::OnClickIgnoreWarnings() const
+{
+	URemoteControlSettings* Settings = GetMutableDefault<URemoteControlSettings>();
+	Settings->bIgnoreWarnings = true;
+	Settings->PostEditChange();
+	Settings->SaveConfig();
+	return FReply::Handled();
+}
+
 TSharedRef<SWidget> SRemoteControlPanel::CreateCPUThrottleWarning() const
 {
 	FProperty* PerformanceThrottlingProperty = FindFieldChecked<FProperty>(UEditorPerformanceSettings::StaticClass(), GET_MEMBER_NAME_CHECKED(UEditorPerformanceSettings, bThrottleCPUWhenNotForeground));
@@ -976,14 +996,63 @@ TSharedRef<SWidget> SRemoteControlPanel::CreateCPUThrottleWarning() const
 	FText PerformanceWarningText = FText::Format(LOCTEXT("RemoteControlPerformanceWarning", "Warning: The editor setting '{PropertyName}' is currently enabled\nThis will stop editor windows from updating in realtime while the editor is not in focus"), Arguments);
 
 	return SNew(SWarningOrErrorBox)
-		.Visibility_Lambda([]() { return GetDefault<UEditorPerformanceSettings>()->bThrottleCPUWhenNotForeground ? EVisibility::Visible : EVisibility::Collapsed; })
+		.Visibility_Lambda([]() { return GetDefault<UEditorPerformanceSettings>()->bThrottleCPUWhenNotForeground && !GetDefault<URemoteControlSettings>()->bIgnoreWarnings ? EVisibility::Visible : EVisibility::Collapsed; })
 		.MessageStyle(EMessageStyle::Warning)
 		.Message(PerformanceWarningText)
 		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			[
+				SNew(SButton)
+				.OnClicked(this, &SRemoteControlPanel::OnClickDisableUseLessCPU)
+				.TextStyle(FAppStyle::Get(), "DialogButtonText")
+				.Text(LOCTEXT("RemoteControlPerformanceWarningDisable", "Disable"))
+			]
+			+ SHorizontalBox::Slot()
+			[
+				SNew(SButton)
+				.OnClicked(this, &SRemoteControlPanel::OnClickIgnoreWarnings)
+				.TextStyle(FAppStyle::Get(), "DialogButtonText")
+				.Text(LOCTEXT("RemoteControlIgnoreWarningEnable", "Ignore"))
+			]
+		];
+}
+
+TSharedRef<SWidget> SRemoteControlPanel::CreateProtectedIgnoredWarning() const
+{
+	FProperty* IgnoreProtectedCheckProperty = FindFieldChecked<FProperty>(URemoteControlSettings::StaticClass(), GET_MEMBER_NAME_CHECKED(URemoteControlSettings, bIgnoreProtectedCheck));
+	FFormatNamedArguments Arguments;
+	Arguments.Add(TEXT("PropertyName"), IgnoreProtectedCheckProperty->GetDisplayNameText());
+	FText ProtectedIgnoredWarningText = FText::Format(LOCTEXT("RemoteControlProtectedIgnoredWarning", "Warning: The editor setting '{PropertyName}' is currently enabled\nThis will let properties with the protected flag be let through for certain checks"), Arguments);
+
+	return SNew(SWarningOrErrorBox)
+		.Visibility_Lambda([](){ return GetDefault<URemoteControlSettings>()->bIgnoreProtectedCheck && !GetDefault<URemoteControlSettings>()->bIgnoreWarnings ? EVisibility::Visible : EVisibility::Collapsed; })
+		.MessageStyle(EMessageStyle::Warning)
+		.Message(ProtectedIgnoredWarningText)
+		[
 			SNew(SButton)
-			.OnClicked(this, &SRemoteControlPanel::OnClickDisableUseLessCPU)
+			.OnClicked(this, &SRemoteControlPanel::OnClickIgnoreWarnings)
 			.TextStyle(FAppStyle::Get(), "DialogButtonText")
-			.Text(LOCTEXT("RemoteControlPerformanceWarningDisable", "Disable"))
+			.Text(LOCTEXT("RemoteControlIgnoreWarningEnable", "Ignore"))
+		];
+}
+
+TSharedRef<SWidget> SRemoteControlPanel::CreateGetterSetterIgnoredWarning() const
+{
+	FProperty* IgnoreGetterSetterCheckProperty = FindFieldChecked<FProperty>(URemoteControlSettings::StaticClass(), GET_MEMBER_NAME_CHECKED(URemoteControlSettings, bIgnoreGetterSetterCheck));
+	FFormatNamedArguments Arguments;
+	Arguments.Add(TEXT("PropertyName"), IgnoreGetterSetterCheckProperty->GetDisplayNameText());
+	FText ProtectedIgnoredWarningText = FText::Format(LOCTEXT("RemoteControlGetterSetterIgnoredWarning", "Warning: The editor setting '{PropertyName}' is currently enabled\nThis will let properties which have Getter/Setter let through for certain checks"), Arguments);
+
+	return SNew(SWarningOrErrorBox)
+		.Visibility_Lambda([](){ return GetDefault<URemoteControlSettings>()->bIgnoreGetterSetterCheck && !GetDefault<URemoteControlSettings>()->bIgnoreWarnings ? EVisibility::Visible : EVisibility::Collapsed; })
+		.MessageStyle(EMessageStyle::Warning)
+		.Message(ProtectedIgnoredWarningText)
+		[
+			SNew(SButton)
+			.OnClicked(this, &SRemoteControlPanel::OnClickIgnoreWarnings)
+			.TextStyle(FAppStyle::Get(), "DialogButtonText")
+			.Text(LOCTEXT("RemoteControlIgnoreWarningEnable", "Ignore"))
 		];
 }
 
@@ -1534,9 +1603,21 @@ void SRemoteControlPanel::UnregisterPanels()
 
 void SRemoteControlPanel::Refresh()
 {
-	BlueprintPicker->Refresh();
-	ActorFunctionPicker->Refresh();
-	SubsystemFunctionPicker->Refresh();
+	TRACE_CPUPROFILER_EVENT_SCOPE(SRemoteControlPanel::Refresh);
+
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SRemoteControlPanel::RefreshBlueprintPicker);
+		BlueprintPicker->Refresh();
+	}
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SRemoteControlPanel::RefreshActorFunctionPicker);
+		ActorFunctionPicker->Refresh();
+	}
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SRemoteControlPanel::RefreshSubsystemFunctionPicker);
+		SubsystemFunctionPicker->Refresh();
+	}
+
 	EntityList->Refresh();
 }
 
@@ -1845,6 +1926,11 @@ FReply SRemoteControlPanel::OnClickSettingsButton()
 
 void SRemoteControlPanel::OnMaterialCompiled(UMaterialInterface* MaterialInterface)
 {
+	bMaterialsCompiledThisFrame = true;
+}
+
+void SRemoteControlPanel::TriggerMaterialCompiledRefresh()
+{
 	bool bTriggerRefresh = true;
 
 	// Clear the widget cache on material compiled to make sure we have valid property nodes for IPropertyRowGenerator
@@ -1861,13 +1947,13 @@ void SRemoteControlPanel::OnMaterialCompiled(UMaterialInterface* MaterialInterfa
 			if (!ChildWindows[0]->GetOnWindowClosedEvent().IsBound())
 			{
 				ChildWindows[0]->GetOnWindowClosedEvent().AddLambda([WeakThis = TWeakPtr<SRemoteControlPanel>(SharedThis(this))](const TSharedRef<SWindow>&)
-				{
-					if (TSharedPtr<SRemoteControlPanel> Panel = WeakThis.Pin())
 					{
-						Panel->WidgetRegistry->Clear();
-						Panel->Refresh();
-					}
-				});
+						if (TSharedPtr<SRemoteControlPanel> Panel = WeakThis.Pin())
+						{
+							Panel->WidgetRegistry->Clear();
+							Panel->Refresh();
+						}
+					});
 			}
 		}
 	}
@@ -1878,6 +1964,7 @@ void SRemoteControlPanel::OnMaterialCompiled(UMaterialInterface* MaterialInterfa
 		Refresh();
 	}
 }
+
 
 void SRemoteControlPanel::RegisterDefaultToolBar()
 {

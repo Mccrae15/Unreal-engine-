@@ -6,12 +6,9 @@
 
 #if WITH_EDITOR
 #include "Editor.h"
-#include "Editor/EditorEngine.h"
-#include "FileHelpers.h"
-#include "Engine/World.h"
+#include "Engine/Level.h"
 #include "Misc/ScopedSlowTask.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionEditorHash.h"
 #include "WorldPartition/WorldPartitionActorDescViewProxy.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
@@ -143,19 +140,7 @@ bool IWorldPartitionActorLoaderInterface::ILoaderAdapter::PassDataLayersFilter(c
 		}
 		else
 		{
-			uint32 NumValidLayers = 0;
-			for (const FName& DataLayerInstanceName : ActorDescProxy.GetDataLayers())
-			{
-				if (const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName))
-				{
-					if (DataLayerInstance->IsEffectiveLoadedInEditor())
-					{
-						return true;
-					}
-					NumValidLayers++;
-				}
-			}
-			return !NumValidLayers;
+			return DataLayerSubsystem->ResolveIsLoadedInEditor(ActorDescProxy.GetDataLayers());
 		}
 	}
 
@@ -285,10 +270,13 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::PostLoadedStateChanged
 		GEngine->BroadcastLevelActorListChanged();
 		GEditor->NoteSelectionChange();
 
-		GEditor->ResetTransaction(LOCTEXT("LoadingEditorActorResetTrans", "Editor Actors Loading State Changed"));
-
 		if (NumUnloads)
 		{
+			if (!GIsTransacting)
+			{
+				GEditor->ResetTransaction(LOCTEXT("UnloadingEditorActorResetTrans", "Editor Actors Unloaded"));
+			}
+
 			GEngine->ForceGarbageCollection(true);
 		}
 	}

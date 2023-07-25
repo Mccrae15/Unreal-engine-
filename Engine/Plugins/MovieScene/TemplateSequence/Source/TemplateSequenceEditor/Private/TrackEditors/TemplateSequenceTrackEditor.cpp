@@ -1,34 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/TemplateSequenceTrackEditor.h"
-#include "AssetRegistry/AssetData.h"
-#include "AssetRegistry/AssetRegistryModule.h"
 #include "Camera/CameraComponent.h"
-#include "CameraAnimationSequence.h"
-#include "CollectionManagerModule.h"
-#include "CommonMovieSceneTools.h"
+#include "Channels/MovieSceneChannelData.h"
 #include "ContentBrowserModule.h"
-#include "DragAndDrop/AssetDragDropOp.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "ICollectionManager.h"
 #include "IContentBrowserSingleton.h"
 #include "LevelSequence.h"
 #include "Misc/ConfigCacheIni.h"
-#include "MovieSceneCommonHelpers.h"
-#include "MovieSceneTimeHelpers.h"
-#include "SequencerSectionPainter.h"
+#include "Misc/PackageName.h"
 #include "SequencerUtilities.h"
+#include "MovieScenePossessable.h"
 #include "TemplateSequence.h"
+#include "MovieSceneSpawnable.h"
 #include "Tracks/MovieSceneFloatTrack.h"
+#include "ScopedTransaction.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
+#include "Sections/TemplateSequenceSection.h"
 #include "Tracks/TemplateSequenceTrack.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SBoxPanel.h"
-#include "Widgets/SCompoundWidget.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "FTemplateSequenceTrackEditor"
 
@@ -49,23 +44,28 @@ bool FTemplateSequenceTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Ty
 
 bool FTemplateSequenceTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
-	if (InSequence && InSequence->IsTrackSupported(UTemplateSequenceTrack::StaticClass()) == ETrackSupport::NotSupported)
+	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UTemplateSequenceTrack::StaticClass()) : ETrackSupport::Default;
+
+	if (TrackSupported == ETrackSupport::NotSupported)
 	{
 		return false;
 	}
 
-	return InSequence && (InSequence->IsA(ULevelSequence::StaticClass()) || InSequence->IsA(UTemplateSequence::StaticClass()));
+	return (InSequence && (InSequence->IsA(ULevelSequence::StaticClass()) || InSequence->IsA(UTemplateSequence::StaticClass()))) || TrackSupported == ETrackSupport::Supported;
 }
 
 void FTemplateSequenceTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass)
 {
-	const FText SubMenuEntryText = LOCTEXT("AddTemplateSequence", "Template Sequence");
-	const FText SubMenuEntryTooltip = LOCTEXT("AddTemplateSequenceTooltip", "Adds a track that can play a template sequence asset using the parent binding.");
-	
-	MenuBuilder.AddSubMenu(
-		SubMenuEntryText, SubMenuEntryTooltip,
-		FNewMenuDelegate::CreateRaw(this, &FTemplateSequenceTrackEditor::AddTemplateSequenceAssetSubMenu, ObjectBindings, ObjectClass)
-	);
+	if (ObjectClass->IsChildOf(AActor::StaticClass()))
+	{
+		const FText SubMenuEntryText = LOCTEXT("AddTemplateSequence", "Template Sequence");
+		const FText SubMenuEntryTooltip = LOCTEXT("AddTemplateSequenceTooltip", "Adds a track that can play a template sequence asset using the parent binding.");
+		
+		MenuBuilder.AddSubMenu(
+			SubMenuEntryText, SubMenuEntryTooltip,
+			FNewMenuDelegate::CreateRaw(this, &FTemplateSequenceTrackEditor::AddTemplateSequenceAssetSubMenu, ObjectBindings, ObjectClass)
+		);
+	}
 }
 
 TSharedPtr<SWidget> FTemplateSequenceTrackEditor::BuildOutlinerEditWidget(const FGuid& ObjectBinding, UMovieSceneTrack* Track, const FBuildEditWidgetParams& Params)
@@ -133,6 +133,7 @@ public:
 			AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateSP(TrackEditorRef, &FTemplateSequenceTrackEditor::OnTemplateSequenceAssetEnterPressed, ObjectBindings);
 			AssetPickerConfig.RefreshAssetViewDelegates.Add(&RefreshAssetViewDelegate);
 			AssetPickerConfig.bAllowNullSelection = false;
+			AssetPickerConfig.bAddFilterUI = true;
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			AssetPickerConfig.Filter.bRecursiveClasses = true;
 			AssetPickerConfig.Filter.ClassPaths.Add(UTemplateSequence::StaticClass()->GetClassPathName());

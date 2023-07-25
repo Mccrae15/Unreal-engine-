@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "USDShadeConversion.h"
+#include "TextureResource.h"
 
 #if USE_USD_SDK
 
 #include "USDAssetCache.h"
+#include "USDAssetCache2.h"
 #include "USDAssetImportData.h"
 #include "USDAttributeUtils.h"
 #include "USDConversionUtils.h"
@@ -27,9 +29,11 @@
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionConstant4Vector.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionVertexColor.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "MaterialShared.h"
 #include "Misc/FileHelper.h"
 #include "Modules/ModuleManager.h"
 #include "RenderUtils.h"
@@ -68,11 +72,6 @@ namespace UE
 	{
 		namespace Private
 		{
-			// Temporarily here as we header files can't be modified on patch versions (5.1.1)
-			const static pxr::TfToken RawColorSpaceToken = pxr::TfToken{"raw"};
-			const static pxr::TfToken SRGBColorSpaceToken = pxr::TfToken{"sRGB"};
-			const static pxr::TfToken SourceColorSpaceToken = pxr::TfToken{"sourceColorSpace"};
-
 #if WITH_EDITOR
 			using FlattenToMatEntry = TPairInitializer<const EFlattenMaterialProperties&, const EMaterialProperty&>;
 			const static TMap<EFlattenMaterialProperties, EMaterialProperty> FlattenToMaterialProperty
@@ -321,67 +320,6 @@ namespace UE
 				return NewTexture;
 			}
 
-			// Computes and returns the hash string for the texture at the given path.
-			// Handles regular texture asset paths as well as asset paths identifying textures inside Usdz archives.
-			// Returns an empty string if the texture could not be hashed.
-			FString GetTextureHash(
-				const FString& ResolvedTexturePath,
-				bool bSRGB,
-				TextureCompressionSettings CompressionSettings,
-				TextureAddress AddressX,
-				TextureAddress AddressY
-			)
-			{
-				FMD5 MD5;
-
-				// Hash the actual texture
-				FString TextureExtension;
-				if (IsInsideUsdzArchive(ResolvedTexturePath, TextureExtension))
-				{
-					uint64 BufferSize = 0;
-					TUsdStore<std::shared_ptr<const char>> Buffer = ReadTextureBufferFromUsdzArchive(ResolvedTexturePath, BufferSize);
-					const uint8* BufferStart = reinterpret_cast<const uint8*>(Buffer.Get().get());
-
-					if (BufferSize > 0 && BufferStart != nullptr)
-					{
-						MD5.Update( BufferStart, BufferSize );
-					}
-				}
-				// Copied from FMD5Hash::HashFileFromArchive as it doesn't expose its FMD5
-				else if ( TUniquePtr<FArchive> Ar{ IFileManager::Get().CreateFileReader( *ResolvedTexturePath ) } )
-				{
-					TArray<uint8> LocalScratch;
-					LocalScratch.SetNumUninitialized( 1024 * 64 );
-
-					const int64 Size = Ar->TotalSize();
-					int64 Position = 0;
-
-					// Read in BufferSize chunks
-					while ( Position < Size )
-					{
-						const auto ReadNum = FMath::Min( Size - Position, ( int64 ) LocalScratch.Num() );
-						Ar->Serialize( LocalScratch.GetData(), ReadNum );
-						MD5.Update( LocalScratch.GetData(), ReadNum );
-
-						Position += ReadNum;
-					}
-				}
-				else
-				{
-					UE_LOG( LogUsd, Warning, TEXT( "Failed to find texture at path '%s' when trying to generate a hash for it" ), *ResolvedTexturePath );
-				}
-
-				// Hash the additional data
-				MD5.Update( reinterpret_cast< uint8* >( &bSRGB ), sizeof( bool ) );
-				MD5.Update( reinterpret_cast< uint8* >( &CompressionSettings ), sizeof( CompressionSettings ) );
-				MD5.Update( reinterpret_cast< uint8* >( &AddressX ), sizeof( AddressX ) );
-				MD5.Update( reinterpret_cast< uint8* >( &AddressY ), sizeof( AddressY ) );
-
-				FMD5Hash Hash;
-				Hash.Set( MD5 );
-				return LexToString( Hash );
-			}
-
 			// Will traverse the shade material graph backwards looking for a string/token value and return it.
 			// Returns the empty string if it didn't find anything.
 			FString RecursivelySearchForStringValue( pxr::UsdShadeInput Input )
@@ -490,7 +428,7 @@ namespace UE
 			using FParameterValue = TVariant<float, FVector, FTextureParameterValue, FPrimvarReaderParameterValue, bool>;
 
 			bool GetTextureParameterValue( pxr::UsdShadeInput& ShadeInput, TextureGroup LODGroup, FParameterValue& OutValue,
-				UMaterialInterface* Material = nullptr, UUsdAssetCache* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr )
+				UMaterialInterface* Material = nullptr, UUsdAssetCache2* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr )
 			{
 				FScopedUsdAllocs UsdAllocs;
 
@@ -611,21 +549,21 @@ namespace UE
 							}
 
 							// Override the sRGB flag with whatever is specified on the texture shader, if it has anything specific.
-							if ( pxr::UsdAttribute SourceColorSpaceAttr = UsdUVTextureSource.GetInput( SourceColorSpaceToken ) )
+							if ( pxr::UsdAttribute SourceColorSpaceAttr = UsdUVTextureSource.GetInput( UnrealIdentifiers::SourceColorSpaceToken ) )
 							{
 								pxr::TfToken SourceColorSpaceValue;
 								if ( SourceColorSpaceAttr.HasAuthoredValue() && SourceColorSpaceAttr.Get( &SourceColorSpaceValue ) )
 								{
-									bSRGB = SourceColorSpaceValue == RawColorSpaceToken
+									bSRGB = SourceColorSpaceValue == UnrealIdentifiers::RawColorSpaceToken
 										? false
-										: SourceColorSpaceValue == SRGBColorSpaceToken
+										: SourceColorSpaceValue == UnrealIdentifiers::SRGBColorSpaceToken
 											? true
 											: bSRGB;
 								}
 							}
 						}
 
-						const FString TextureHash = GetTextureHash( TexturePath, bSRGB, CompressionSettings, AddressX, AddressY );
+						const FString TextureHash = UsdUtils::GetTextureHash( TexturePath, bSRGB, CompressionSettings, AddressX, AddressY );
 
 						// We only actually want to retrieve the textures if we have a cache to put them in
 						if ( TexturesCache )
@@ -735,7 +673,7 @@ namespace UE
 			}
 
 			bool GetFloatParameterValue( pxr::UsdShadeConnectableAPI& Connectable, const pxr::TfToken& InputName, float DefaultValue, FParameterValue& OutValue,
-				UMaterialInterface* Material = nullptr, UUsdAssetCache* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr)
+				UMaterialInterface* Material = nullptr, UUsdAssetCache2* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr)
 			{
 				FScopedUsdAllocs Allocs;
 
@@ -854,7 +792,7 @@ namespace UE
 			}
 
 			bool GetVec3ParameterValue( pxr::UsdShadeConnectableAPI& Connectable, const pxr::TfToken& InputName, const FLinearColor& DefaultValue, FParameterValue& OutValue,
-				bool bIsNormalMap = false, UMaterialInterface* Material = nullptr, UUsdAssetCache* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr )
+				bool bIsNormalMap = false, UMaterialInterface* Material = nullptr, UUsdAssetCache2* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr )
 			{
 				FScopedUsdAllocs Allocs;
 
@@ -924,7 +862,7 @@ namespace UE
 				return true;
 			}
 
-			bool GetBoolParameterValue( pxr::UsdShadeConnectableAPI& Connectable, const pxr::TfToken& InputName, bool DefaultValue, FParameterValue& OutValue, UMaterialInterface* Material = nullptr, UUsdAssetCache* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr)
+			bool GetBoolParameterValue( pxr::UsdShadeConnectableAPI& Connectable, const pxr::TfToken& InputName, bool DefaultValue, FParameterValue& OutValue, UMaterialInterface* Material = nullptr, UUsdAssetCache2* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr)
 			{
 				FScopedUsdAllocs Allocs;
 
@@ -1096,7 +1034,7 @@ namespace UE
 					FStaticParameterSet StaticParameters;
 					Constant->GetStaticParameterValues( StaticParameters );
 
-					for ( FStaticSwitchParameter& StaticSwitchParameter : StaticParameters.EditorOnly.StaticSwitchParameters )
+					for ( FStaticSwitchParameter& StaticSwitchParameter : StaticParameters.StaticSwitchParameters )
 					{
 						if ( StaticSwitchParameter.ParameterInfo.Name == ParameterName )
 						{
@@ -1170,7 +1108,7 @@ namespace UE
 			};
 
 			/**
-			 * Specialized version of FSetParameterValueVisitor for UE's UsdPreviewSurface base materials.
+			 * Specialized version of FSetParameterValueVisitor for UE's UsdPreviewSurface reference materials.
 			 */
 			struct FSetPreviewSurfaceParameterValueVisitor : private FSetParameterValueVisitor
 			{
@@ -1260,15 +1198,10 @@ namespace UE
 					const FString ResolvedTexturePath = UsdUtils::GetResolvedTexturePath( TextureAssetPathAttr );
 					if ( !ResolvedTexturePath.IsEmpty() )
 					{
-						EObjectFlags ObjectFlags = RF_Transactional;
+						EObjectFlags ObjectFlags = RF_Transactional | RF_Transient;
 						if ( !Outer )
 						{
 							Outer = GetTransientPackage();
-						}
-
-						if ( Outer == GetTransientPackage() )
-						{
-							ObjectFlags = ObjectFlags | RF_Transient;
 						}
 
 						FString TextureExtension;
@@ -1337,7 +1270,13 @@ namespace UE
 #if WITH_EDITOR
 			// Note that we will bake things that aren't supported on the default USD surface shader schema. These could be useful in case the user has a custom
 			// renderer though, and they can pick which properties they want anyway
-			bool BakeMaterial( const UMaterialInterface& Material, const TArray<FPropertyEntry>& InMaterialProperties, const FIntPoint& InDefaultTextureSize, FBakeOutput& OutBakedData )
+			bool BakeMaterial(
+				const UMaterialInterface& Material,
+				const TArray<FPropertyEntry>& InMaterialProperties,
+				const FIntPoint& InDefaultTextureSize,
+				FBakeOutput& OutBakedData,
+				bool bInDecayTexturesToSinglePixel
+			)
 			{
 				const bool bAllQualityLevels = true;
 				const bool bAllFeatureLevels = true;
@@ -1356,6 +1295,7 @@ namespace UE
 
 				FMaterialData MatSet;
 				MatSet.Material = const_cast<UMaterialInterface*>(&Material); // We don't modify it and neither does the material baking module, it's just a bad signature
+				MatSet.bPerformShrinking = bInDecayTexturesToSinglePixel;
 
 				for ( const FPropertyEntry& Entry : InMaterialProperties )
 				{
@@ -1386,13 +1326,13 @@ namespace UE
 						}
 						break;
 					case MP_OpacityMask:
-						if ( !Material.IsPropertyActive( MP_OpacityMask ) || Material.GetBlendMode() != BLEND_Masked )
+						if ( !Material.IsPropertyActive( MP_OpacityMask ) || !IsMaskedBlendMode(Material) )
 						{
 							continue;
 						}
 						break;
 					case MP_Opacity:
-						if ( !Material.IsPropertyActive( MP_Opacity ) || !IsTranslucentBlendMode( Material.GetBlendMode() ) )
+						if ( !Material.IsPropertyActive( MP_Opacity ) || !IsTranslucentBlendMode(Material) )
 						{
 							continue;
 						}
@@ -1706,7 +1646,7 @@ namespace UE
 					pxr::SdfValueTypeName InputType;
 					pxr::VtValue ConstantValue;
 					pxr::GfVec4f FallbackValue;
-					pxr::TfToken ColorSpaceToken = RawColorSpaceToken;
+					pxr::TfToken ColorSpaceToken = UnrealIdentifiers::RawColorSpaceToken;
 					switch ( Property )
 					{
 					case MP_BaseColor:
@@ -1724,7 +1664,7 @@ namespace UE
 							}
 						}
 						FallbackValue = pxr::GfVec4f{ 0.0, 0.0, 0.0, 1.0f };
-						ColorSpaceToken = SRGBColorSpaceToken;
+						ColorSpaceToken = UnrealIdentifiers::SRGBColorSpaceToken;
 						break;
 					case MP_Specular:
 						InputToken = UnrealIdentifiers::Specular;
@@ -1830,7 +1770,7 @@ namespace UE
 							}
 						}
 						FallbackValue = pxr::GfVec4f{ 1.0, 1.0, 1.0, 1.0f };
-						ColorSpaceToken = SRGBColorSpaceToken;
+						ColorSpaceToken = UnrealIdentifiers::SRGBColorSpaceToken;
 						break;
 					default:
 						continue;
@@ -1878,7 +1818,7 @@ namespace UE
 						pxr::UsdShadeInput TextureStInput = UsdUVTextureShader.CreateInput( UnrealIdentifiers::St, pxr::SdfValueTypeNames->Float2 );
 						TextureStInput.ConnectToSource( PrimvarReaderShader.GetOutput( UnrealIdentifiers::Result ) );
 
-						pxr::UsdShadeInput TextureColorSpaceInput = UsdUVTextureShader.CreateInput( SourceColorSpaceToken, pxr::SdfValueTypeNames->Token );
+						pxr::UsdShadeInput TextureColorSpaceInput = UsdUVTextureShader.CreateInput( UnrealIdentifiers::SourceColorSpaceToken, pxr::SdfValueTypeNames->Token );
 						TextureColorSpaceInput.Set( ColorSpaceToken );
 
 						pxr::UsdShadeInput TextureFallbackInput = UsdUVTextureShader.CreateInput( UnrealIdentifiers::Fallback, pxr::SdfValueTypeNames->Float4 );
@@ -1977,10 +1917,11 @@ namespace UsdShadeConversionImpl = UE::UsdShadeConversion::Private;
 bool UsdToUnreal::ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& Material )
 {
 	TMap<FString, int32> PrimvarToUVIndex;
-	return ConvertMaterial( UsdShadeMaterial, Material, nullptr, PrimvarToUVIndex );
+	UUsdAssetCache2* NewCache = nullptr;
+	return ConvertMaterial( UsdShadeMaterial, Material, NewCache, PrimvarToUVIndex );
 }
 
-bool UsdToUnreal::ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& Material, UUsdAssetCache* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext )
+bool UsdToUnreal::ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& Material, UUsdAssetCache2* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext )
 {
 	FScopedUsdAllocs UsdAllocs;
 
@@ -2137,10 +2078,11 @@ bool UsdToUnreal::ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial
 bool UsdToUnreal::ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterial& Material )
 {
 	TMap<FString, int32> PrimvarToUVIndex;
-	return ConvertMaterial( UsdShadeMaterial, Material, nullptr, PrimvarToUVIndex );
+	UUsdAssetCache2* NewCache = nullptr;
+	return ConvertMaterial( UsdShadeMaterial, Material, NewCache, PrimvarToUVIndex );
 }
 
-bool UsdToUnreal::ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterial& Material, UUsdAssetCache* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext )
+bool UsdToUnreal::ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterial& Material, UUsdAssetCache2* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext )
 {
 	bool bHasMaterialInfo = false;
 
@@ -2303,7 +2245,7 @@ bool UsdToUnreal::ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial
 	return bHasMaterialInfo;
 }
 
-bool UsdToUnreal::ConvertShadeInputsToParameters( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& MaterialInstance, UUsdAssetCache* TexturesCache, const TCHAR* RenderContext )
+bool UsdToUnreal::ConvertShadeInputsToParameters( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& MaterialInstance, UUsdAssetCache2* TexturesCache, const TCHAR* RenderContext )
 {
 	FScopedUsdAllocs UsdAllocs;
 
@@ -2378,8 +2320,35 @@ bool UsdToUnreal::ConvertShadeInputsToParameters( const pxr::UsdShadeMaterial& U
 	return true;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+bool UsdToUnreal::ConvertMaterial(const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& Material, UUsdAssetCache* TexturesCache, TMap<FString, int32>& PrimvarToUVIndex, const TCHAR* RenderContext)
+{
+	UUsdAssetCache2* NewCache = nullptr;
+	return UsdToUnreal::ConvertMaterial(UsdShadeMaterial, Material, NewCache, PrimvarToUVIndex, RenderContext);
+}
+
+bool UsdToUnreal::ConvertMaterial(const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterial& Material, UUsdAssetCache* TexturesCache, TMap<FString, int32>& PrimvarToUVIndex, const TCHAR* RenderContext)
+{
+	UUsdAssetCache2* NewCache = nullptr;
+	return UsdToUnreal::ConvertMaterial(UsdShadeMaterial, Material, NewCache, PrimvarToUVIndex, RenderContext);
+}
+
+bool UsdToUnreal::ConvertShadeInputsToParameters(const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& MaterialInstance, UUsdAssetCache* TexturesCache, const TCHAR* RenderContext)
+{
+	UUsdAssetCache2* NewCache = nullptr;
+	return UsdToUnreal::ConvertShadeInputsToParameters(UsdShadeMaterial, MaterialInstance, NewCache, RenderContext);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 #if WITH_EDITOR
-bool UnrealToUsd::ConvertMaterialToBakedSurface( const UMaterialInterface& InMaterial, const TArray<FPropertyEntry>& InMaterialProperties, const FIntPoint& InDefaultTextureSize, const FDirectoryPath& InTexturesDir, pxr::UsdPrim& OutUsdShadeMaterialPrim )
+bool UnrealToUsd::ConvertMaterialToBakedSurface(
+	const UMaterialInterface& InMaterial,
+	const TArray<FPropertyEntry>& InMaterialProperties,
+	const FIntPoint& InDefaultTextureSize,
+	const FDirectoryPath& InTexturesDir,
+	pxr::UsdPrim& OutUsdShadeMaterialPrim,
+	bool bInDecayTexturesToSinglePixel
+)
 {
 	pxr::UsdShadeMaterial OutUsdShadeMaterial{ OutUsdShadeMaterialPrim };
 	if ( !OutUsdShadeMaterial )
@@ -2388,7 +2357,7 @@ bool UnrealToUsd::ConvertMaterialToBakedSurface( const UMaterialInterface& InMat
 	}
 
 	FBakeOutput BakedData;
-	if ( !UsdShadeConversionImpl::BakeMaterial( InMaterial, InMaterialProperties, InDefaultTextureSize, BakedData ) )
+	if ( !UsdShadeConversionImpl::BakeMaterial( InMaterial, InMaterialProperties, InDefaultTextureSize, BakedData, bInDecayTexturesToSinglePixel ) )
 	{
 		return false;
 	}
@@ -2472,6 +2441,66 @@ FString UsdUtils::GetResolvedTexturePath( const pxr::UsdAttribute& TextureAssetP
 	}
 
 	return ResolvedTexturePath;
+}
+
+FString UsdUtils::GetTextureHash(
+	const FString& ResolvedTexturePath,
+	bool bSRGB,
+	TextureCompressionSettings CompressionSettings,
+	TextureAddress AddressX,
+	TextureAddress AddressY
+)
+{
+	using namespace UE::UsdShadeConversion::Private;
+
+	FMD5 MD5;
+
+	// Hash the actual texture
+	FString TextureExtension;
+	if (IsInsideUsdzArchive(ResolvedTexturePath, TextureExtension))
+	{
+		uint64 BufferSize = 0;
+		TUsdStore<std::shared_ptr<const char>> Buffer = ReadTextureBufferFromUsdzArchive(ResolvedTexturePath, BufferSize);
+		const uint8* BufferStart = reinterpret_cast<const uint8*>(Buffer.Get().get());
+
+		if (BufferSize > 0 && BufferStart != nullptr)
+		{
+			MD5.Update(BufferStart, BufferSize);
+		}
+	}
+	// Copied from FMD5Hash::HashFileFromArchive as it doesn't expose its FMD5
+	else if (TUniquePtr<FArchive> Ar{IFileManager::Get().CreateFileReader(*ResolvedTexturePath)})
+	{
+		TArray<uint8> LocalScratch;
+		LocalScratch.SetNumUninitialized(1024 * 64);
+
+		const int64 Size = Ar->TotalSize();
+		int64 Position = 0;
+
+		// Read in BufferSize chunks
+		while (Position < Size)
+		{
+			const auto ReadNum = FMath::Min(Size - Position, (int64)LocalScratch.Num());
+			Ar->Serialize(LocalScratch.GetData(), ReadNum);
+			MD5.Update(LocalScratch.GetData(), ReadNum);
+
+			Position += ReadNum;
+		}
+	}
+	else
+	{
+		UE_LOG(LogUsd, Warning, TEXT("Failed to find texture at path '%s' when trying to generate a hash for it"), *ResolvedTexturePath);
+	}
+
+	// Hash the additional data
+	MD5.Update(reinterpret_cast<uint8*>(&bSRGB), sizeof(bool));
+	MD5.Update(reinterpret_cast<uint8*>(&CompressionSettings), sizeof(CompressionSettings));
+	MD5.Update(reinterpret_cast<uint8*>(&AddressX), sizeof(AddressX));
+	MD5.Update(reinterpret_cast<uint8*>(&AddressY), sizeof(AddressY));
+
+	FMD5Hash Hash;
+	Hash.Set(MD5);
+	return LexToString(Hash);
 }
 
 UTexture* UsdUtils::CreateTexture( const pxr::UsdAttribute& TextureAssetPathAttr, const FString& PrimPath, TextureGroup LODGroup, UObject* Outer )

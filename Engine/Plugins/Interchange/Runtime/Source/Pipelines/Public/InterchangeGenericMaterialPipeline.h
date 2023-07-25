@@ -21,12 +21,53 @@ class UInterchangeMaterialExpressionFactoryNode;
 class UInterchangeMaterialFunctionFactoryNode;
 class UInterchangeMaterialInstanceFactoryNode;
 class UInterchangeResult;
+class UMaterialFunction;
 
 UENUM(BlueprintType)
 enum class EInterchangeMaterialImportOption : uint8
 {
 	ImportAsMaterials,
 	ImportAsMaterialInstances,
+};
+
+
+UENUM(BlueprintType)
+enum class EInterchangeMaterialXShaders : uint8
+{
+	/** Default settings for Autodesk's Standard Surface shader	*/
+	StandardSurface,
+
+	/** Standard Surface shader use for translucency	*/
+	StandardSurfaceTransmission
+};
+
+USTRUCT(BlueprintType)
+struct INTERCHANGEPIPELINES_API FMaterialXPipelineSettings
+{
+	GENERATED_BODY()
+
+public:
+	FMaterialXPipelineSettings();
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MaterialX", meta=(AllowedClasses="/Script/Engine.MaterialFunction"))
+	TMap<EInterchangeMaterialXShaders, FSoftObjectPath> SurfaceShader;
+
+	bool AreRequiredPackagesLoaded();
+
+	FString GetAssetPathString(EInterchangeMaterialXShaders ShaderType) const;
+
+private:
+
+#if WITH_EDITOR
+	friend class FInterchangeMaterialXPipelineSettingsCustomization;
+
+	static bool ShouldFilterAssets(UMaterialFunction* Asset, const TSet<FName>& Inputs, const TSet<FName>& Outputs);
+
+	static TSet<FName> StandardSurfaceInputs;
+	static TSet<FName> StandardSurfaceOutputs;
+	static TSet<FName> TransmissionSurfaceInputs;
+	static TSet<FName> TransmissionSurfaceOutputs;
+#endif // WITH_EDITOR
 };
 
 UCLASS(BlueprintType, editinlinenew)
@@ -51,13 +92,17 @@ public:
 	UPROPERTY(VisibleAnywhere, Instanced, Category = "Textures")
 	TObjectPtr<UInterchangeGenericTexturePipeline> TexturePipeline;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MaterialX", DisplayName = "Settings")
+	FMaterialXPipelineSettings MaterialXSettings;
+
 	/** BEGIN UInterchangePipelineBase overrides */
 	virtual void PreDialogCleanup(const FName PipelineStackName) override;
 	virtual bool IsSettingsAreValid(TOptional<FText>& OutInvalidReason) const override;
 	virtual void AdjustSettingsForContext(EInterchangePipelineContext ImportType, TObjectPtr<UObject> ReimportAsset) override;
 
 protected:
-	virtual void ExecutePreImportPipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas) override;
+	virtual void ExecutePipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas) override;
+	virtual void ExecutePostFactoryPipeline(const UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& NodeKey, UObject* CreatedAsset, bool bIsAReimport) override;
 	virtual void ExecutePostImportPipeline(const UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& NodeKey, UObject* CreatedAsset, bool bIsAReimport) override;
 	virtual void SetReimportSourceIndex(UClass* ReimportObjectClass, const int32 SourceFileIndex) override;
 	/** END UInterchangePipelineBase overrides */
@@ -124,6 +169,11 @@ private:
 	void HandleTextureCoordinateNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode*& TextureSampleFactoryNode);
 	void HandleLerpNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* LerpFactoryNode);
 	void HandleMaskNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* MaskFactoryNode);
+	void HandleTimeNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* TimeFactoryNode);
+	void HandleTransformPositionNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* TransformPositionFactoryNode);
+	void HandleTransformVectorNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* TransformVectorFactoryNode);
+	void HandleNoiseNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* NoiseFactoryNode);
+	void HandleVectorNoiseNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* NoiseFactoryNode);
 
 	UInterchangeMaterialExpressionFactoryNode* CreateMaterialExpressionForShaderNode(UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, const UInterchangeShaderNode* ShaderNode, const FString& ParentUid);
 	TTuple<UInterchangeMaterialExpressionFactoryNode*, FString> CreateMaterialExpressionForInput(UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, const UInterchangeShaderNode* ShaderNode, const FString& InputName, const FString& ParentUid);
@@ -173,5 +223,3 @@ private:
 
 	TArray<FMaterialExpressionCreationContext> MaterialExpressionCreationContextStack;
 };
-
-

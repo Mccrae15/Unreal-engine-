@@ -12,13 +12,17 @@
 #include "Math/Vector2D.h"
 #include "Math/Vector4.h"
 #include "Templates/SharedPointer.h"
-#if WITH_ACCESSIBILITY
-#include "GenericPlatform/Accessibility/GenericAccessibleInterfaces.h"
-#endif
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "GenericPlatform/GenericWindow.h"
 #include "GenericPlatform/GenericWindowDefinition.h"
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#if WITH_ACCESSIBILITY
+#include "GenericPlatform/Accessibility/GenericAccessibleInterfaces.h"
+#endif
+#endif
+
+class FGenericAccessibleMessageHandler;
 class FSlateApplication;
 class IAnalyticsProvider;
 class ICursor;
@@ -33,19 +37,19 @@ namespace EModifierKey
 	typedef uint8 Type;
 
 	/** No key. */
-	const Type None	= 0;
+	inline const Type None	= 0;
 
 	/** Ctrl key (Command key on Mac, Control key on Windows). */
-	const Type Control = 1 << 0;
+	inline const Type Control = 1 << 0;
 
 	/** Alt key. */
-	const Type Alt = 1 << 1;
+	inline const Type Alt = 1 << 1;
 
 	/** Shift key. */
-	const Type Shift = 1 << 2;
+	inline const Type Shift = 1 << 2;
 
 	/** Cmd key (Control key on Mac, Win key on Windows) */
-	const Type Command = 1 << 3;
+	inline const Type Command = 1 << 3;
 
 	FORCEINLINE EModifierKey::Type FromBools(const bool bControl, const bool bAlt, const bool bShift, const bool bCommand)
 	{
@@ -439,24 +443,16 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam( FOnConsoleCommandAdded, const FString& /*Command*/ );
 	typedef FOnConsoleCommandAdded::FDelegate FOnConsoleCommandListener;
 
-	GenericApplication( const TSharedPtr< ICursor >& InCursor )
-		: Cursor( InCursor )
-		, MessageHandler( MakeShareable( new FGenericApplicationMessageHandler() ) )
-#if WITH_ACCESSIBILITY
-		, AccessibleMessageHandler(MakeShareable(new FGenericAccessibleMessageHandler()))
-#endif
-	{
-
-	}
-	virtual ~GenericApplication() {}
+	APPLICATIONCORE_API GenericApplication(const TSharedPtr< ICursor >& InCursor);
+	APPLICATIONCORE_API virtual ~GenericApplication();
 
 	virtual void SetMessageHandler( const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler ) { MessageHandler = InMessageHandler; }
 
 	TSharedRef< FGenericApplicationMessageHandler > GetMessageHandler() { return MessageHandler; }
 
 #if WITH_ACCESSIBILITY
-	virtual void SetAccessibleMessageHandler(const TSharedRef<FGenericAccessibleMessageHandler>& InAccessibleMessageHandler) { AccessibleMessageHandler = InAccessibleMessageHandler; }
-	TSharedRef<FGenericAccessibleMessageHandler> GetAccessibleMessageHandler() const { return AccessibleMessageHandler; }
+	APPLICATIONCORE_API virtual void SetAccessibleMessageHandler(const TSharedRef<FGenericAccessibleMessageHandler>& InAccessibleMessageHandler);
+	APPLICATIONCORE_API TSharedRef<FGenericAccessibleMessageHandler> GetAccessibleMessageHandler() const;
 #endif
 
 	virtual void PollGameDeviceState( const float TimeDelta ) { }
@@ -568,7 +564,6 @@ protected:
 
 #if WITH_ACCESSIBILITY
 	TSharedRef<FGenericAccessibleMessageHandler> AccessibleMessageHandler;
-	
 #endif
 
 	

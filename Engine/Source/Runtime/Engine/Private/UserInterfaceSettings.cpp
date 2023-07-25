@@ -2,7 +2,6 @@
 
 #include "Engine/UserInterfaceSettings.h"
 
-#include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 
 #include "Engine/DPICustomScalingRule.h"
@@ -16,6 +15,7 @@ UUserInterfaceSettings::UUserInterfaceSettings(const FObjectInitializer& ObjectI
 	, RenderFocusRule(ERenderFocusRule::NavigationOnly)
 	, ApplicationScale(1)
 	, bLoadWidgetsOnDedicatedServer(true)
+	, bAuthorizeAutomaticWidgetVariableCreation(true)
 {
 	SectionName = TEXT("UI");
 }

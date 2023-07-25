@@ -6,6 +6,9 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "MultiUserClientStatics.generated.h"
 
+/** Delegate that is invoked when a package is saved. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPackageSavedSignature, FName, PackageName);
+
 /**
  * BP copy of FConcertSessionClientInfo
  * Holds info on a client connected through multi-user
@@ -30,6 +33,16 @@ struct FMultiUserClientInfo
 	/** Holds an array of tags that can be used for grouping and categorizing. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Client Info")
 	TArray<FName> Tags;
+};
+
+UCLASS()
+class UMultiUserClientSyncDatabase : public UObject
+{
+	GENERATED_BODY()
+public:
+
+	UPROPERTY(VisibleAnywhere, BlueprintAssignable, Category="Save Package Delegate")
+	FOnPackageSavedSignature OnPackageSaved;
 };
 
 /**
@@ -92,7 +105,7 @@ struct FMultiUserClientConfig
 	UPROPERTY(BlueprintReadWrite, Category = "Client Settings")
 	FString DefaultSessionToRestore;
 
-	UPROPERTY(BlueprintReadWrite, Category = "Source Control Settings")
+	UPROPERTY(BlueprintReadWrite, Category = "Revision Control Settings", meta = (Keywords = "Source Control"))
 	EMultiUserSourceValidationMode ValidationMode = EMultiUserSourceValidationMode::Hard;
 };
 
@@ -138,12 +151,24 @@ public:
 	static void JumpToMultiUserPresence(const FString& OtherUserName, FTransform TransformOffset);
 
 	/** Update Multi-User Workspace Modified Packages to be in sync for source control submission. */
-	UFUNCTION(BlueprintCallable, Category = "Multi-User Source Control", meta=(DevelopmentOnly, DeprecatedFunction, DeprecationMessage = "UpdateWorkspaceModifiedPackages is deprecated. Please use PersistMultiUserSessionChanges instead."))
+	UFUNCTION(BlueprintCallable, Category = "Multi-User Revision Control", meta=(DevelopmentOnly, DeprecatedFunction, DeprecationMessage = "UpdateWorkspaceModifiedPackages is deprecated. Please use PersistMultiUserSessionChanges instead.", Keywords = "Source Control"))
 	static void UpdateWorkspaceModifiedPackages();
 
 	/** Persist the session changes and prepare the files for source control submission. */
-	UFUNCTION(BlueprintCallable, Category = "Multi-User Source Control", meta=(DevelopmentOnly, DisplayName = "Persist Multi-User Session Changes"))
+	UFUNCTION(BlueprintCallable, Category = "Multi-User Revision Control", meta=(DevelopmentOnly, DisplayName = "Persist Multi-User Session Changes", Keywords = "Source Control"))
 	static void PersistMultiUserSessionChanges();
+
+	/** Persist the specified sessions changes using source control. */
+	UFUNCTION(BlueprintCallable, Category = "Multi-User Source Control", meta=(DevelopmentOnly, DsiplayName = "Persist Multi-User Sessions Changes (By Package name)"))
+	static void PersistSpecifiedPackages(const TArray<FName>& PackagesToPersist);
+
+	/** Get the list of packages that have changed since the last persist unless ignore persisted is false.  */
+	UFUNCTION(BlueprintCallable, Category = "Multi-User Source Control", meta=(DevelopmentOnly, DsiplayName = "Get List of Packages that have changed."))
+	static TArray<FName> GatherSessionChanges(bool IgnorePersisted = true);
+
+	/** Get the proxy object for the sync database. */
+	UFUNCTION(BlueprintCallable, Category = "Multi-User Source Control", meta=(DevelopmentOnly, DsiplayName = "Get Multi-user Sync Database."))
+	static UMultiUserClientSyncDatabase* GetConcertSyncDatabase();
 
 	/** Get the local ClientInfo. Works when not connected to a session. */
 	UFUNCTION(BlueprintCallable, Category = "Multi-User Client", meta=(DevelopmentOnly, DisplayName = "Get Local Multi-User Client Info"))

@@ -25,6 +25,8 @@
 #include "ImageUtils.h"
 #include "EngineUtils.h"
 #include "EngineModule.h"
+#include "RendererInterface.h"
+#include "TextureResource.h"
 
 static TAutoConsoleVariable<int32> CVarEnableVTFeedback(
 	TEXT("r.VT.UpdateFeedbackTextureEditor"),
@@ -103,6 +105,7 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	const float MipLevel = (float)TextureEditorPinned->GetMipLevel();
 	const float LayerIndex = (float)TextureEditorPinned->GetLayer();
 	const float SliceIndex = (float)TextureEditorPinned->GetSlice();
+	const bool bUsePointSampling = TextureEditorPinned->GetSampling() == ETextureEditorSampling::TextureEditorSampling_Point;
 
 	bool bIsVirtualTexture = false;
 
@@ -127,7 +130,7 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 				FaceIndex == 4 ? FMatrix44f(FVector3f::UpVector, FVector3f::ForwardVector, FVector3f::RightVector, IdentityW) :
 				FMatrix44f(FVector3f::DownVector, FVector3f::BackwardVector, FVector3f::RightVector, IdentityW);
 			const bool bShowLongLatUnwrap = TextureEditorPinned->GetCubemapViewMode() == TextureEditorCubemapViewMode_2DView && FaceIndex < 0;
-			BatchedElementParameters = new FMipLevelBatchedElementParameters(MipLevel, SliceIndex, TextureCubeArray != nullptr, ViewMatrix, bShowLongLatUnwrap, false);
+			BatchedElementParameters = new FMipLevelBatchedElementParameters(MipLevel, SliceIndex, TextureCubeArray != nullptr, ViewMatrix, bShowLongLatUnwrap, false, bUsePointSampling);
 		}
 		else if (VolumeTexture)
 		{
@@ -137,7 +140,8 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 				MipLevel, 
 				(float)TextureEditorPinned->GetVolumeOpacity(),
 				true, 
-				TextureEditorPinned->GetOrientation());
+				TextureEditorPinned->GetOrientation(),
+				bUsePointSampling);
 		}
 		else if (RTTextureVolume)
 		{
@@ -147,7 +151,8 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 				MipLevel,
 				(float)TextureEditorPinned->GetVolumeOpacity(),
 				true,
-				TextureEditorPinned->GetOrientation());
+				TextureEditorPinned->GetOrientation(),
+				bUsePointSampling);
 		}
 		else if (Texture2D)
 		{
@@ -155,26 +160,26 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 			bool bIsSingleChannel = Texture2D->CompressionSettings == TC_Grayscale || Texture2D->CompressionSettings == TC_Alpha;
 			bool bSingleVTPhysicalSpace = Texture2D->IsVirtualTexturedWithSinglePhysicalSpace();
 			bIsVirtualTexture = Texture2D->IsCurrentlyVirtualTextured();
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, bIsNormalMap, bIsSingleChannel, bSingleVTPhysicalSpace, bIsVirtualTexture, false);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, bIsNormalMap, bIsSingleChannel, bSingleVTPhysicalSpace, bIsVirtualTexture, false, bUsePointSampling);
 		}
 		else if (Texture2DArray) 
 		{
 			bool bIsNormalMap = Texture2DArray->IsNormalMap();
 			bool bIsSingleChannel = Texture2DArray->CompressionSettings == TC_Grayscale || Texture2DArray->CompressionSettings == TC_Alpha;
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, bIsNormalMap, bIsSingleChannel, false, false, true);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, bIsNormalMap, bIsSingleChannel, false, false, true, bUsePointSampling);
 		}
 		else if (TextureRT2D)
 		{
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false, bUsePointSampling);
 		}
 		else if (TextureRT2DArray)
 		{
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, true);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, true, bUsePointSampling);
 		}
 		else
 		{
 			// Default to treating any UTexture derivative as a 2D texture resource
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false, bUsePointSampling);
 		}
 	}
 
@@ -216,7 +221,8 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		// Draw a white border around the texture to show its extents
 		if (Settings.TextureBorderEnabled)
 		{
-			FCanvasBoxItem BoxItem(FVector2D(XPos, YPos), FVector2D(Width + BorderSize, Height + BorderSize));
+			FCanvasBoxItem BoxItem(FVector2D(XPos - (BorderSize - 1) * 0.5f, YPos - (BorderSize - 1) * 0.5f), FVector2D(Width + BorderSize, Height + BorderSize));
+			BoxItem.LineThickness = BorderSize;
 			BoxItem.SetColor( Settings.TextureBorderColor );
 			Canvas->DrawItem( BoxItem );
 		}

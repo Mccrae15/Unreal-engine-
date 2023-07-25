@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/ConstraintInstanceBlueprintLibrary.h"
+#include "PhysicsEngine/ConstraintInstance.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ConstraintInstanceBlueprintLibrary)
 
@@ -114,6 +115,36 @@ bool UConstraintInstanceBlueprintLibrary::GetParentDominates(FConstraintInstance
 	if (FConstraintInstance* ConstraintInstance = Accessor.Get())
 	{
 		return ConstraintInstance->IsParentDominatesEnabled();
+	}
+	return false;
+}
+
+
+void UConstraintInstanceBlueprintLibrary::SetMassConditioningEnabled(
+	FConstraintInstanceAccessor& Accessor,
+	bool bEnableMassConditioning
+)
+{
+	if (FConstraintInstance* ConstraintInstance = Accessor.Get())
+	{
+		Accessor.Modify();
+
+		if (bEnableMassConditioning)
+		{
+			ConstraintInstance->EnableMassConditioning();
+		}
+		else
+		{
+			ConstraintInstance->DisableMassConditioning();
+		}
+	}
+}
+
+bool UConstraintInstanceBlueprintLibrary::GetMassConditioningEnabled(FConstraintInstanceAccessor& Accessor)
+{
+	if (FConstraintInstance* ConstraintInstance = Accessor.Get())
+	{
+		return ConstraintInstance->IsMassConditioningEnabled();
 	}
 	return false;
 }

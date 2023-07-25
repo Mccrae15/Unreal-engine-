@@ -10,15 +10,19 @@
 #include "Templates/SubclassOf.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/NetworkDelegates.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHIDefinitions.h"
+#endif
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "GameFramework/OnlineReplStructs.h"
 #include "ReplayTypes.h"
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
 #endif 
+#endif
 
 #include "GameInstance.generated.h"
 
@@ -26,11 +30,14 @@ class AGameModeBase;
 class APlayerController;
 class FOnlineSessionSearchResult;
 class FTimerManager;
+class UGameViewportClient;
 class ULocalPlayer;
 class UOnlineSession;
+enum EPlayNetMode : int;
 struct FLatentActionManager;
 class ULevelEditorPlaySettings;
 class IAnalyticsProvider;
+namespace ERHIFeatureLevel { enum Type : int; }
 
 // 
 // 	EWelcomeScreen, 	//initial screen.  Used for platforms where we may not have a signed in user yet.
@@ -102,16 +109,7 @@ private:
 //@TODO: Some of these are really mutually exclusive and should be refactored (put into a struct to make this easier in the future)
 struct FGameInstancePIEParameters
 {
-	FGameInstancePIEParameters()
-		: bSimulateInEditor(false)
-		, bAnyBlueprintErrors(false)
-		, bStartInSpectatorMode(false)
-		, bRunAsDedicated(false)
-		, bIsPrimaryPIEClient(false)
-		, WorldFeatureLevel(ERHIFeatureLevel::Num)
-		, EditorPlaySettings(nullptr)
-		, NetMode(EPlayNetMode::PIE_Standalone)
-	{}
+	ENGINE_API FGameInstancePIEParameters();
 
 	// Are we doing SIE instead of PIE?
 	bool bSimulateInEditor;
@@ -652,6 +650,9 @@ protected:
 
 	/** Called when the game instance is started either normally or through PIE. */
 	virtual void OnStart();
+
+	/** Find a map override argument on the command-line string (the first argument without a leading '-' or -map=..., whichever comes first). */
+	static bool GetMapOverrideName(const TCHAR* CmdLine, FString& OverrideMapName);
 
 private:
 

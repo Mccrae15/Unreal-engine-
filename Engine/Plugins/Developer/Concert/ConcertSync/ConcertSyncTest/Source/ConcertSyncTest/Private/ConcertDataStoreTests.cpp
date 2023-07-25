@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertDataStoreTests.h"
-#include "CoreMinimal.h"
+#include "ConcertMessages.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
@@ -10,7 +10,6 @@
 #include "ConcertClientLocalDataStore.h"
 #include "IConcertSession.h"
 #include "Scratchpad/ConcertScratchpad.h"
-#include "Internationalization/Internationalization.h"
 
 // Defines a namespace to test FText.
 #define LOCTEXT_NAMESPACE "ConcertDataStoreTests" 
@@ -156,9 +155,17 @@ public:
 	virtual void UpdateLocalClientInfo(const FConcertClientInfoUpdate&) override     { return NotMocked<void>(); }
 	virtual void Connect() override                                                  { return NotMocked<void>(); }
 	virtual void Disconnect() override                                               { return NotMocked<void>(); }
-	virtual void Resume() override                                                   { return NotMocked<void>(); }
-	virtual void Suspend() override                                                  { return NotMocked<void>(); }
-	virtual bool IsSuspended() const override                                        { return NotMocked<bool>(false); }
+
+	virtual EConcertSendReceiveState GetSendReceiveState() const override
+	{
+		return NotMocked<EConcertSendReceiveState>(EConcertSendReceiveState::Default);
+	}
+
+	virtual void SetSendReceiveState(EConcertSendReceiveState InSendReceiveState) override
+	{
+		return NotMocked<void>();
+	}
+
 	virtual FOnConcertClientSessionTick& OnTick() override                           { return NotMocked<FOnConcertClientSessionTick&>(Tick); }
 	virtual FOnConcertClientSessionConnectionChanged& OnConnectionChanged() override { return NotMocked<FOnConcertClientSessionConnectionChanged&>(ConnectionChanged); }
 	virtual FOnConcertClientSessionClientChanged& OnSessionClientChanged() override  { return NotMocked<FOnConcertClientSessionClientChanged&>(ClientChanged); }

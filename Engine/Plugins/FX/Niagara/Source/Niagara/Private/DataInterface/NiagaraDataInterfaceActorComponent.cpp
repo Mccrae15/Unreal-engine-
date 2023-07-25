@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceActorComponent.h"
+#include "GameFramework/Pawn.h"
 #include "NiagaraTypes.h"
 #include "NiagaraCustomVersion.h"
 #include "NiagaraShaderParametersBuilder.h"
@@ -240,9 +241,8 @@ void UNiagaraDataInterfaceActorComponent::GetVMExternalFunction(const FVMExterna
 bool UNiagaraDataInterfaceActorComponent::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
-	FSHAHash Hash = GetShaderFileHash(NDIActorComponentLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5);
-	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceActorComponentTemplateHLSLSource"), Hash.ToString());
-	InVisitor->UpdateShaderParameters<FShaderParameters>();
+	bSuccess &= InVisitor->UpdateShaderFile(NDIActorComponentLocal::TemplateShaderFile);
+	bSuccess &= InVisitor->UpdateShaderParameters<FShaderParameters>();
 	return bSuccess;
 }
 
@@ -252,10 +252,7 @@ void UNiagaraDataInterfaceActorComponent::GetParameterDefinitionHLSL(const FNiag
 	{
 		{TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol},
 	};
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDIActorComponentLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, NDIActorComponentLocal::TemplateShaderFile, TemplateArgs);
 }
 
 bool UNiagaraDataInterfaceActorComponent::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)

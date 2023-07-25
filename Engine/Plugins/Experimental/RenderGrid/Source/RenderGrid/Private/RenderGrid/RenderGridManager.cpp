@@ -4,14 +4,13 @@
 #include "RenderGrid/RenderGridQueue.h"
 #include "RenderGridUtils.h"
 #include "MoviePipelineHighResSetting.h"
-#include "MoviePipelinePIEExecutor.h"
 
 
-URenderGridQueue* UE::RenderGrid::FRenderGridManager::CreateBatchRenderQueue(URenderGrid* Grid)
+URenderGridQueue* UE::RenderGrid::FRenderGridManager::CreateBatchRenderQueue(URenderGrid* Grid, const TArray<URenderGridJob*>& Jobs)
 {
 	FRenderGridQueueCreateArgs JobArgs;
-	JobArgs.RenderGrid = Grid;
-	JobArgs.RenderGridJobs.Append(Grid->GetEnabledRenderGridJobs());
+	JobArgs.RenderGrid = TStrongObjectPtr(Grid);
+	JobArgs.RenderGridJobs.Append(Jobs);
 	JobArgs.bIsBatchRender = true;
 	URenderGridQueue* NewRenderQueue = URenderGridQueue::Create(JobArgs);
 	if (!IsValid(NewRenderQueue))
@@ -26,13 +25,21 @@ URenderGridQueue* UE::RenderGrid::FRenderGridManager::RenderPreviewFrame(const F
 {
 	const FRenderGridManagerRenderPreviewFrameArgsCallback Callback = Args.Callback;
 
-	if (!IsValid(Args.RenderGridJob))
+	URenderGrid* RenderGrid = Args.RenderGrid.Get();
+	if (!IsValid(RenderGrid))
 	{
 		Callback.ExecuteIfBound(false);
 		return nullptr;
 	}
 
-	URenderGridJob* JobCopy = DuplicateObject(Args.RenderGridJob.Get(), Args.RenderGridJob->GetOuter());
+	URenderGridJob* RenderGridJob = Args.RenderGridJob.Get();
+	if (!IsValid(RenderGridJob))
+	{
+		Callback.ExecuteIfBound(false);
+		return nullptr;
+	}
+
+	URenderGridJob* JobCopy = DuplicateObject(RenderGridJob, RenderGridJob->GetOuter());
 	if (!IsValid(JobCopy))
 	{
 		Callback.ExecuteIfBound(false);
@@ -43,7 +50,7 @@ URenderGridQueue* UE::RenderGrid::FRenderGridManager::RenderPreviewFrame(const F
 
 	if (Args.Frame.IsSet())
 	{
-		constexpr int32 RenderFramesCount = 1;// can be more than 1 to prevent rendering issues, will always take the last frame that's rendered
+		constexpr int32 RenderFramesCount = 1; // can be more than 1 to prevent rendering issues, will always take the last frame that's rendered
 
 		JobCopy->SetIsUsingCustomStartFrame(true);
 		JobCopy->SetCustomStartFrame(Args.Frame.Get(0));
@@ -65,8 +72,8 @@ URenderGridQueue* UE::RenderGrid::FRenderGridManager::RenderPreviewFrame(const F
 	JobCopy->SetOutputDirectory(TmpRenderedFramesPath / (Args.Frame.IsSet() ? TEXT("PreviewFrame") : TEXT("PreviewFrames")));
 
 	FRenderGridQueueCreateArgs JobArgs;
-	JobArgs.RenderGrid = Args.RenderGrid;
-	JobArgs.RenderGridJobs.Add(JobCopy);
+	JobArgs.RenderGrid = TStrongObjectPtr(RenderGrid);
+	JobArgs.RenderGridJobs.Add(TStrongObjectPtr(JobCopy));
 	JobArgs.bHeadless = Args.bHeadless;
 	JobArgs.bForceOutputImage = true;
 	JobArgs.bForceOnlySingleOutput = true;
@@ -182,19 +189,21 @@ void UE::RenderGrid::FRenderGridManager::UpdateRenderGridJobsPropValues(URenderG
 	}
 
 	TArray<URenderGridJob*> Jobs = Grid->GetRenderGridJobs();
-	TArray<uint8> BinaryArray;
+	TArray<uint8> Bytes;
 	for (URenderGridPropRemoteControl* Field : PropsSource->GetProps()->GetAllCasted())
 	{
-		if (!Field->GetValue(BinaryArray))
+		if (!Field->GetValue(Bytes))
 		{
 			continue;
 		}
-		const TSharedPtr<FRemoteControlEntity> Entity = Field->GetRemoteControlEntity();
-		for (URenderGridJob* Job : Jobs)
+		if (const TSharedPtr<FRemoteControlEntity> Entity = Field->GetRemoteControlEntity(); Entity.IsValid())
 		{
-			if (!Job->HasRemoteControlValue(Entity))
+			for (URenderGridJob* Job : Jobs)
 			{
-				Job->SetRemoteControlValue(Entity, BinaryArray);
+				if (!Job->HasRemoteControlValueBytes(Entity))
+				{
+					Job->SetRemoteControlValueBytes(Entity, Bytes);
+				}
 			}
 		}
 	}
@@ -221,7 +230,7 @@ FRenderGridManagerPreviousPropValues UE::RenderGrid::FRenderGridManager::ApplyJo
 			}
 
 			TArray<uint8> PropData;
-			if (!Job->ConstGetRemoteControlValue(Prop->GetRemoteControlEntity(), PropData))
+			if (!Job->ConstGetRemoteControlValueBytes(Prop->GetRemoteControlEntity(), PropData))
 			{
 				continue;
 			}

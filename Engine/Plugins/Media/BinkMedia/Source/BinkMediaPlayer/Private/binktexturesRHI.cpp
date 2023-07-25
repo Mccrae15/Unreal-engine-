@@ -6,20 +6,11 @@
 #include "../../BinkMediaPlayerSDK/include/binktiny.h"
 #include "../../BinkMediaPlayerSDK/include/binktextures.h"
 
-#include "CoreMinimal.h"
-#include "UObject/ConstructorHelpers.h"
-#include "RHI.h"
-#include "Materials/MaterialInstanceDynamic.h"
-#include "Materials/MaterialInterface.h"
-#include "Materials/Material.h"
-#include "Runtime/RHI/Public/RHIStaticStates.h"
-#include "Runtime/RHI/Public/PipelineStateCache.h"
-#include "Runtime/RenderCore/Public/ShaderParameterUtils.h"
-#include "Runtime/RenderCore/Public/RenderResource.h"
-#include "Runtime/Renderer/Public/MaterialShader.h"
-#include "Runtime/RenderCore/Public/RenderGraphBuilder.h"
-#include "Runtime/RenderCore/Public/RenderGraphResources.h"
-#include "Runtime/RenderCore/Public/BinkShaders.h"
+#include "BinkShaders.h"
+#include "PipelineStateCache.h"
+#include "RHIStaticStates.h"
+#include "RenderGraphBuilder.h"
+#include "RenderingThread.h"
 
 
 extern FRHITexture2D *BinkRHIRenderTarget;
@@ -491,11 +482,11 @@ static void Draw_textures(BINKTEXTURES* ptextures, BINKSHADERS* pshaders, void* 
 				FUpdateTextureRegion2D region_YAH(0, 0, 0, 0, bb->YABufferWidth, bb->YABufferHeight);
 				FUpdateTextureRegion2D region_cRcB(0, 0, 0, 0, bb->cRcBBufferWidth, bb->cRcBBufferHeight);
 
-				GDynamicRHI->UpdateTexture2D_RenderThread(RHICmdList, textures->Ytexture[frame_num], 0, region_YAH, bp_src->YPlane.BufferPitch, (uint8*)bp_src->YPlane.Buffer);
-				GDynamicRHI->UpdateTexture2D_RenderThread(RHICmdList, textures->cRtexture[frame_num], 0, region_cRcB, bp_src->cRPlane.BufferPitch, (uint8*)bp_src->cRPlane.Buffer);
-				GDynamicRHI->UpdateTexture2D_RenderThread(RHICmdList, textures->cBtexture[frame_num], 0, region_cRcB, bp_src->cBPlane.BufferPitch, (uint8*)bp_src->cBPlane.Buffer);
-				if (hasAPlane) GDynamicRHI->UpdateTexture2D_RenderThread(RHICmdList, textures->Atexture[frame_num], 0, region_YAH, bp_src->APlane.BufferPitch, (uint8*)bp_src->APlane.Buffer);
-				if (hasHPlane) GDynamicRHI->UpdateTexture2D_RenderThread(RHICmdList, textures->Htexture[frame_num], 0, region_YAH, bp_src->HPlane.BufferPitch, (uint8*)bp_src->HPlane.Buffer);
+				GDynamicRHI->RHIUpdateTexture2D(RHICmdList, textures->Ytexture[frame_num], 0, region_YAH, bp_src->YPlane.BufferPitch, (uint8*)bp_src->YPlane.Buffer);
+				GDynamicRHI->RHIUpdateTexture2D(RHICmdList, textures->cRtexture[frame_num], 0, region_cRcB, bp_src->cRPlane.BufferPitch, (uint8*)bp_src->cRPlane.Buffer);
+				GDynamicRHI->RHIUpdateTexture2D(RHICmdList, textures->cBtexture[frame_num], 0, region_cRcB, bp_src->cBPlane.BufferPitch, (uint8*)bp_src->cBPlane.Buffer);
+				if (hasAPlane) GDynamicRHI->RHIUpdateTexture2D(RHICmdList, textures->Atexture[frame_num], 0, region_YAH, bp_src->APlane.BufferPitch, (uint8*)bp_src->APlane.Buffer);
+				if (hasHPlane) GDynamicRHI->RHIUpdateTexture2D(RHICmdList, textures->Htexture[frame_num], 0, region_YAH, bp_src->HPlane.BufferPitch, (uint8*)bp_src->HPlane.Buffer);
 			}
 
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;

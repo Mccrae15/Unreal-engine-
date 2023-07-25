@@ -30,6 +30,7 @@ float4 ShadowConvexHull[12];
 float4 ShadowBoundingSphere;
 uint NumShadowHullPlanes;
 uint bDrawNaniteMeshes;
+uint bCullHeighfieldsNotInAtlas;
 
 bool ShadowConvexHullIntersectSphere(float3 SphereOrigin, float SphereRadius)
 {
@@ -96,7 +97,7 @@ void CullObjectsForShadowCS(
 	if (ObjectIndex < GetNumSceneObjects())
 	{
 #if (DISTANCEFIELD_PRIMITIVE_TYPE == DFPT_SignedDistanceField)
-		FDFObjectBounds DFObjectBounds = LoadDFObjectBounds(ObjectIndex);
+		const FDFObjectBounds DFObjectBounds = LoadDFObjectBounds(ObjectIndex);
 		const float3 TranslatedCenter = LWCToFloat(LWCAdd(DFObjectBounds.Center, PrimaryView.PreViewTranslation));
 
 		const float3 CenterToShadowBoundingSphere = ShadowBoundingSphere.xyz - TranslatedCenter;
@@ -124,7 +125,7 @@ void CullObjectsForShadowCS(
 #else
 		FHeightfieldObjectBounds Bounds = LoadHeightfieldObjectBounds(ObjectIndex);
 		const float3 TranslatedBoxOrigin = LWCToFloat(LWCAdd(Bounds.BoxOrigin, PrimaryView.PreViewTranslation));
-		if (ShadowConvexHullIntersectBox(TranslatedBoxOrigin, Bounds.BoxExtent))
+		if ((Bounds.bInAtlas || !bCullHeighfieldsNotInAtlas) && ShadowConvexHullIntersectBox(TranslatedBoxOrigin, Bounds.BoxExtent))
 		{
 			uint DestIndex;
 			InterlockedAdd(RWObjectIndirectArguments[1], 1U, DestIndex);
@@ -552,7 +553,7 @@ void CullObjectsToTileWithGather(
 		for (uint IndexInCulledList = ThreadIndex; IndexInCulledList < NumCulledObjects; IndexInCulledList += THREADGROUP_TOTALSIZE)
 		{
 			const uint ObjectIndex = CulledObjectIndices[IndexInCulledList];
-			FDFObjectBounds Bounds = LoadDFObjectBounds(ObjectIndex);
+			const FDFObjectBounds Bounds = LoadDFObjectBounds(ObjectIndex);
 			const float3 TranslatedBoundsCenter = LWCToFloat(LWCAdd(Bounds.Center, PrimaryView.PreViewTranslation));
 
 			BRANCH

@@ -5,7 +5,6 @@
 
 #include "MuT/ErrorLog.h"
 
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/Operations.h"
 
@@ -65,7 +64,7 @@ namespace mu
 	typedef Ptr<const Model> ModelPtrConst;
 
     extern const TCHAR* GetOpName( OP_TYPE type );
-    extern FString GetOpDesc( const PROGRAM& program, OP::ADDRESS at );
+    extern FString GetOpDesc( const FProgram& program, OP::ADDRESS at );
 
 }
 

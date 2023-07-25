@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -16,59 +16,14 @@ namespace UnrealBuildTool
 	public static class MacExports
 	{
 		/// <summary>
-		/// Intel architecture string as described by clang and other tools
-		/// </summary>
-		public static string IntelArchitecture = "x86_64";
-
-		/// <summary>
-		/// Apple silicon architecture string as described by clang and other tools
-		/// </summary>
-		public static string AppleArchitecture = "arm64";
-
-		/// <summary>
 		/// Describes the architecture of the host. Note - this ignores translation.
 		/// IsRunningUnderRosetta can be used to detect that we're running under translation
 		/// </summary>
-		public static string HostArchitecture
+		public static UnrealArch HostArchitecture
 		{
 			get
 			{
-				return IsRunningOnAppleArchitecture ? AppleArchitecture : IntelArchitecture;
-			}
-		}
-
-		/// <summary>
-		/// Default to building for Intel for the time being. Targets can be allow listed below, and
-		/// projects can be set to universal to override this.
-		/// </summary>
-		public static string DefaultArchitecture
-		{
-			get
-			{
-				return IntelArchitecture;
-			}
-		}
-
-		/// <summary>
-		/// Returns the current list of default targets that are known to build for Apple Silicon. Individual projects will
-		/// use the Project setting.
-		/// </summary>
-		/// <returns></returns>
-		static public IEnumerable<string> TargetsAllowedForAppleSilicon
-		{
-			get
-			{
-				return new[] { 
-					"BenchmarkTool",
-					"BlankProgram",
-					"BuildPatchTool",
-					"ShaderCompileWorker",
-					"UnrealClient",
-					"UnrealGame", 
-					"UnrealServer",
-					"UnrealHeaderTool", 
-					"UnrealPak"
-				};
+				return IsRunningOnAppleArchitecture ? UnrealArch.Arm64 : UnrealArch.X64;
 			}
 		}
 

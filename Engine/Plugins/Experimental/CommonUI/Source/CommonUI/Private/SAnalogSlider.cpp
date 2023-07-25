@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAnalogSlider.h"
-#include "Rendering/DrawElements.h"
+#include "Input/NavigationReply.h"
 #include "Misc/App.h"
+#include "Input/Reply.h"
 
 void SAnalogSlider::Construct(const SAnalogSlider::FArguments& InDeclaration)
 {
@@ -61,6 +62,10 @@ FReply SAnalogSlider::OnAnalogValueChanged(const FGeometry& MyGeometry, const FA
 	else if (Orientation == EOrientation::Orient_Vertical && KeyPressed == EKeys::Gamepad_LeftY)
 	{
 		Reply = FReply::Handled();
+	}
+	else
+	{
+		Reply = SSlider::OnAnalogValueChanged(MyGeometry, InAnalogInputEvent);
 	}
 
 	if (bIsUsingGamepad)

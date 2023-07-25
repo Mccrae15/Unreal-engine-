@@ -38,7 +38,7 @@ public class libWebSockets : ModuleRules
 			}
 			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 			{
-				return Path.Combine(WebSocketsPackagePath, "include", "Unix", Target.Architecture);
+				return Path.Combine(WebSocketsPackagePath, "include", "Unix", Target.Architecture.LinuxName);
 			}
 			else
 			{
@@ -57,7 +57,7 @@ public class libWebSockets : ModuleRules
 			}
 			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 			{
-				return Path.Combine(WebSocketsPackagePath, "lib", "Unix", Target.Architecture, ConfigName);
+				return Path.Combine(WebSocketsPackagePath, "lib", "Unix", Target.Architecture.LinuxName, ConfigName);
 			}
 			else
 			{
@@ -77,20 +77,20 @@ public class libWebSockets : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PublicIncludePaths.Add(IncludeDirectory);
+			PublicSystemIncludePaths.Add(IncludeDirectory);
 			PublicAdditionalLibraries.Add(Path.Combine(WebSocketsPackagePath, "lib", Target.Platform.ToString(), "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), ConfigName, "websockets_static.lib"));
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Android)
 		{
-			PublicIncludePaths.Add(Path.Combine(WebSocketsPackagePath, "include", Target.Platform.ToString(), "ARM64"));
-			PublicIncludePaths.Add(Path.Combine(WebSocketsPackagePath, "include", Target.Platform.ToString(), "x64"));
-			PublicIncludePaths.Add(Path.Combine(WebSocketsPackagePath, "include", Target.Platform.ToString()));
+			PublicSystemIncludePaths.Add(Path.Combine(WebSocketsPackagePath, "include", Target.Platform.ToString(), "ARM64"));
+			PublicSystemIncludePaths.Add(Path.Combine(WebSocketsPackagePath, "include", Target.Platform.ToString(), "x64"));
+			PublicSystemIncludePaths.Add(Path.Combine(WebSocketsPackagePath, "include", Target.Platform.ToString()));
 			PublicAdditionalLibraries.Add(Path.Combine(WebSocketsPackagePath, "lib", Target.Platform.ToString(), "ARM64", ConfigName, "libwebsockets.a"));
 			PublicAdditionalLibraries.Add(Path.Combine(WebSocketsPackagePath, "lib", Target.Platform.ToString(), "x64", ConfigName, "libwebsockets.a"));
 		}
 		else
 		{
-			PublicIncludePaths.Add(IncludeDirectory);
+			PublicSystemIncludePaths.Add(IncludeDirectory);
 			PublicAdditionalLibraries.Add(Path.Combine(LibraryDirectory, DefaultLibraryName));
 		}
 

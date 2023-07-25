@@ -31,11 +31,12 @@ groupshared uint2 s_pMask[GROUP_THREAD_COUNT];
 [numthreads(HAIR_TILE_SIZE, HAIR_TILE_SIZE, 1)]
 void TileMainCS(uint2 DispatchThreadId : SV_DispatchThreadID, uint LinearIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
 {
-	const uint2 PixelCoord = DispatchThreadId;
+	const uint2 PixelCoord = DispatchThreadId + View.ViewRectMin.xy;
+	const bool bIsValid    = all(DispatchThreadId < uint2(View.ViewRectMinAndSize.zw));
 
 	bool fHair = false;
 	bool pHair = false;
-	if (all(PixelCoord < uint2(BufferResolution)))
+	if (bIsValid)
 	{
 		if (bForceOutputAllTiles)
 		{
@@ -154,22 +155,25 @@ void FillIndirectBuffers(uint TileType)
 	TileIndirectDrawBuffer[TileType * 4 + 3] = 0;  // StartInstanceLocation
 
 	// Indirect dispatch
-	TileIndirectDispatchBuffer[TileType * 3 + 0] = TileCount >= TileCountXY.x ? TileCountXY.x : TileCount;
-	TileIndirectDispatchBuffer[TileType * 3 + 1] = (TileCount + TileCountXY.x - 1) / TileCountXY.x;
-	TileIndirectDispatchBuffer[TileType * 3 + 2] = 1;
+	WriteDispatchIndirectArgs(TileIndirectDispatchBuffer, TileType,
+		TileCount >= TileCountXY.x ? TileCountXY.x : TileCount,
+		(TileCount + TileCountXY.x - 1) / TileCountXY.x,
+		1);
 
 	// Indirect dispatch with one thread
 	// At 4k, with 8x8 tiles: 4096 x 4096 / 8 x 8 = 512 x 512 tiles 
 	// With a group size of 64 (8x8), the total dispatch count should be 512 x 512 / 8 x 8 = 64 x 64 = 4096, which is below the 65k limit per dimension
-	TilePerThreadIndirectDispatchBuffer[TileType * 3 + 0] = (TileCount + TilePerThread_GroupSize - 1) / TilePerThread_GroupSize;
-	TilePerThreadIndirectDispatchBuffer[TileType * 3 + 1] = 1;
-	TilePerThreadIndirectDispatchBuffer[TileType * 3 + 2] = 1;
+	WriteDispatchIndirectArgs(TilePerThreadIndirectDispatchBuffer, TileType,
+		(TileCount + TilePerThread_GroupSize - 1) / TilePerThread_GroupSize,
+		1,
+		1);
 
 	// Indrect ray dispatch
 	// Ray tracing dispatch dimensions are defined simply in terms of threads/rays, not thread groups.
-	TileIndirectRayDispatchBuffer[TileType * 3 + 0] = TileCount * TileSize;
-	TileIndirectRayDispatchBuffer[TileType * 3 + 1] = TileSize;
-	TileIndirectRayDispatchBuffer[TileType * 3 + 2] = 1;
+	WriteDispatchIndirectArgs(TileIndirectRayDispatchBuffer, TileType,
+		TileCount * TileSize,
+		TileSize,
+		1);
 }
 
 [numthreads(HAIRTILE_COUNT, 1, 1)]
@@ -334,7 +338,7 @@ void MainVS(
 	uint2 TileVertex = TileCoord * HAIR_TILE_SIZE;
 	TileVertex.x += InVertexId == 1 || InVertexId == 2 || InVertexId == 4 ? HAIR_TILE_SIZE : 0;
 	TileVertex.y += InVertexId == 2 || InVertexId == 4 || InVertexId == 5 ? HAIR_TILE_SIZE : 0;
-	Out.UV = float2(TileVertex - ViewMin) * ViewInvSize;
+	Out.UV = float2(TileVertex) * ViewInvSize; // No need to take ViewMin into account, as the viewport rect is center on the actual view (i.e., xy:ViewMin)
 	Out.Position = float4(Out.UV * float2(2.0f, -2.0f) + float2(-1.0, 1.0f), 0.5f, 1.0f);
 }
 

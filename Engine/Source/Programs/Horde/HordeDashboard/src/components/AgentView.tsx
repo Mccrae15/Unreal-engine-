@@ -1,15 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.  
-import { Checkbox, CommandButton, ConstrainMode, ContextualMenu, DefaultButton, DetailsHeader, DetailsList, DetailsListLayoutMode, Dialog, DialogType, DirectionalHint, Dropdown, FontSizes, FontWeights, getTheme, IBasePickerProps, IColumn, Icon, IconButton, IContextualMenuItem, IContextualMenuProps, IDetailsHeaderProps, IDetailsHeaderStyles, IDetailsListProps, ITag, ITagItemStyles, ITooltipHostStyles, Link as ReactLink, mergeStyles, mergeStyleSets, PrimaryButton, ProgressIndicator, ScrollablePane, ScrollbarVisibility, SearchBox, Selection, SelectionMode, Slider, Spinner, SpinnerSize, Stack, Sticky, StickyPositionType, TagItem, Text, TextField } from '@fluentui/react';
-import { action, observable } from 'mobx';
+import { Checkbox, CommandButton, ConstrainMode, ContextualMenu, TagPicker, DefaultButton, DetailsHeader, DetailsList, DetailsListLayoutMode, Dialog, DialogType, DirectionalHint, Dropdown, FontSizes, FontWeights, getTheme, IBasePickerProps, IColumn, Icon, IconButton, IContextualMenuItem, IContextualMenuProps, IDetailsHeaderProps, IDetailsHeaderStyles, IDetailsListProps, ITag, ITagItemStyles, ITooltipHostStyles, Link as ReactLink, mergeStyles, mergeStyleSets, PrimaryButton, ProgressIndicator, ScrollablePane, ScrollbarVisibility, SearchBox, Selection, SelectionMode, Slider, Spinner, SpinnerSize, Stack, Sticky, StickyPositionType, TagItem, Text, TextField } from '@fluentui/react';
+import { action, makeObservable, observable } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import moment from 'moment-timezone';
 import React, { createRef, useEffect, useState } from 'react';
-import { Link, useHistory, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import Marquee from 'react-text-marquee';
 import backend from '../backend';
 import { agentStore } from '../backend/AgentStore';
 import { AgentData, BatchUpdatePoolRequest, GetAgentResponse, LeaseState, PoolData } from '../backend/Api';
-import { HTagPicker } from '../base/components/HordeFluentComponents/HTagPicker/HTagPicker';
 import { copyToClipboard } from '../base/utilities/clipboard';
 import { useWindowSize } from '../base/utilities/hooks';
 import { hexToRGB, hordeClasses, linearInterpolate } from '../styles/Styles';
@@ -160,6 +159,12 @@ function getAgentCapability(agent: AgentData, inProp: string) {
    return null;
 }
 
+function getAgentOs(agent: AgentData) {
+	const osDist = getAgentCapability(agent, "OSDistribution");
+	const osFamily = getAgentCapability(agent, "OSFamily");
+	return osDist ?? osFamily;
+}
+
 function getTaskTime(agent: GetAgentResponse): number {
 
    let max: moment.Duration | undefined
@@ -186,6 +191,7 @@ function getTaskTime(agent: GetAgentResponse): number {
 
 
 class LocalState {
+
    // agent update function params
    editingPools = false;  // if editing pools dialog is open
 
@@ -490,6 +496,7 @@ class LocalState {
    }
 
    constructor() {
+      makeObservable(this);
       this.columnsState = [
          {
             key: 'name',
@@ -616,6 +623,9 @@ type PoolEditorItem = {
 
 // state class for the edit pools modal
 class EditPoolsModalState {
+   constructor() {
+      makeObservable(this);
+   }
    // pool editor observables
    newIdSuffix = 0;
    @observable isOpen = false;
@@ -834,6 +844,11 @@ type AgentDataSlim = {
 
 // state class for the select pools modal
 class SelectPoolsModalState {
+
+   constructor() {
+      makeObservable(this);
+   }
+
    @observable isOpen = false;
    @observable.shallow availablePools: SelectPoolItem[] = [];
    @observable.shallow selectedPools: SelectPoolItem[] = [];
@@ -1547,7 +1562,7 @@ export const PoolSelectionModal: React.FC = observer(() => {
             }
          }}
       >
-         <HTagPicker
+         <TagPicker
             onResolveSuggestions={onResolveSuggestions}
             onEmptyResolveSuggestions={() => { return selectPoolsModalState.availablePools; }}
             onItemSelected={(selectedItem: ITag | undefined) => { return selectPoolsModalState.transitionPool(selectedItem as SelectPoolItem); }}
@@ -1585,7 +1600,7 @@ export const PoolSelectionModal: React.FC = observer(() => {
 
 export const AgentView: React.FC = observer(() => {
    const { agentId } = useParams<{ agentId: string }>();
-   const history = useHistory();
+   const navigate = useNavigate();
    const [initAgentUpdater, setInitAgentUpdater] = useState(false);
 
    // adjust automatically to viewport changes
@@ -1797,8 +1812,7 @@ export const AgentView: React.FC = observer(() => {
                }
                break;
             case 'OS':
-               const OS = getAgentCapability(agent, "OSDistribution");
-               toCheck = OS ?? "Unknown";
+               toCheck = getAgentOs(agent) ?? "Unknown";
                break;
             case 'CPU':
                const CPU = getAgentCapability(agent, "CPU");
@@ -1865,7 +1879,7 @@ export const AgentView: React.FC = observer(() => {
             }
             return (left.comment ?? "").toLocaleLowerCase().localeCompare(right.comment ?? "");
          case 'systemInfoOS':
-            return (getAgentCapability(left, "OSDistribution") ?? "Unknown").toLocaleLowerCase().localeCompare((getAgentCapability(right, "OSDistribution") ?? "Unknown"));
+            return ((getAgentOs(left) ?? "Unknown").toLocaleLowerCase().localeCompare((getAgentOs(right) ?? "Unknown")));
          case 'systemInfoCPU':
             return (getAgentCapability(left, "CPU") ?? "Unknown").toLocaleLowerCase().localeCompare((getAgentCapability(right, "CPU") ?? "Unknown"));
          case 'systemInfoRAM':
@@ -1882,7 +1896,7 @@ export const AgentView: React.FC = observer(() => {
    }
 
    function onHistoryModalDismiss() {
-      history.push('/agents');
+      navigate('/agents');
    }
 
    let agentItems = agentStore.agents.filter(filterAgents, localState.agentFilter).sort(sortAgents);
@@ -2089,23 +2103,23 @@ export const AgentView: React.FC = observer(() => {
       return <Icon iconName="FullCircle" className={className} />;
    }
 
-   function getPropFromDevice(agent: AgentData, inProp: string) {
-      const unknownElement = <Stack styles={{ root: { height: '100%' } }} horizontal horizontalAlign={"center"}><Stack.Item align={"center"}>Unknown</Stack.Item></Stack>;
-      let field = getAgentCapability(agent, inProp);
-      if (field === null)
-         return unknownElement;
+	function getPropFromDevice(agent: AgentData, propKey: string, propValue: string | null = null) {
+		const unknownElement = <Stack styles={{ root: { height: '100%' } }} horizontal horizontalAlign={"center"}><Stack.Item align={"center"}>Unknown</Stack.Item></Stack>;
+		let prop = propValue ?? getAgentCapability(agent, propKey);
+		if (prop === null)
+			return unknownElement;
 
-      if (inProp.indexOf("RAM") !== -1) {
-         field += " GB";
-      }
-      return (
-         <Stack styles={{ root: { height: '100%' } }} horizontal horizontalAlign={"center"}>
-            <Stack.Item align={"center"} className={agentStyles.ellipsesStackItem}>
-               <Text title={field} key={`sysInfo_${agent.id}_${inProp}`}>{`${field}`}</Text>
-            </Stack.Item>
-         </Stack>
-      );
-   }
+		if (propKey.indexOf("RAM") !== -1) {
+			prop += " GB";
+		}
+		return (
+			<Stack styles={{ root: { height: '100%' } }} horizontal horizontalAlign={"center"}>
+				<Stack.Item align={"center"} className={agentStyles.ellipsesStackItem}>
+					<Text title={prop} key={`sysInfo_${agent.id}_${propKey}`}>{`${prop}`}</Text>
+				</Stack.Item>
+			</Stack>
+		);
+	}
 
    // when an actual item is drawn
    function onRenderAgentListItem(agent: AgentData, index?: number, column?: IColumn) {
@@ -2117,7 +2131,7 @@ export const AgentView: React.FC = observer(() => {
                      {getAgentStatusIcon(agent)}
                   </Stack.Item>
                   <Stack.Item align={"center"}>
-                     <ReactLink styles={{ root: { paddingTop: '1px' } }} title="Lease and Session History" onClick={() => { history.push(`/agents/${agent.id}`); }}>{agent.name}</ReactLink>
+                     <ReactLink styles={{ root: { paddingTop: '1px' } }} title="Lease and Session History" onClick={() => { navigate(`/agents/${agent.id}`); }}>{agent.name}</ReactLink>
                   </Stack.Item>
                </Stack>
             );
@@ -2380,13 +2394,13 @@ export const AgentView: React.FC = observer(() => {
                </Stack.Item>
             </Stack>);
          case 'systemInfoOS':
-            return getPropFromDevice(agent, "OSDistribution");
+            return getPropFromDevice(agent, "OSDistribution", getAgentOs(agent));
          case 'systemInfoCPU':
             return getPropFromDevice(agent, "CPU");
          case 'systemInfoRAM':
             return getPropFromDevice(agent, "RAM");
          default:
-            return <span>{agent[column!.fieldName as keyof AgentData]}</span>;
+            return <span>{agent[column!.fieldName as keyof AgentData] as string}</span>;
       }
    }
 });

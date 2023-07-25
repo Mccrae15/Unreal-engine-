@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioDevice.h"
+#include "AudioBusSubsystem.h"
 #include "DSP/ConvertDeinterleave.h"
 #include "Internationalization/Text.h"
 #include "MediaPacket.h"
@@ -111,9 +112,14 @@ namespace Metasound
 					{
 						// Start the audio bus in case it's not already started
 						AudioBusChannels = AudioBusProxy->NumChannels;
-						AudioDevice->StartAudioBus(AudioBusProxy->AudioBusId, AudioBusChannels, false);
+						Audio::FAudioBusKey AudioBusKey = Audio::FAudioBusKey(AudioBusProxy->AudioBusId);
+						UAudioBusSubsystem* AudioBusSubsystem = AudioDevice->GetSubsystem<UAudioBusSubsystem>();
+						check(AudioBusSubsystem);
+						AudioBusSubsystem->StartAudioBus(AudioBusKey, AudioBusChannels, false);
 
-						AudioBusPatchOutput = AudioDevice->AddPatchForAudioBus(AudioBusProxy->AudioBusId);
+						// Create a bus patch output with enough room for the number of samples we expect and some buffering
+						int32 BlockSizeFrames = InSettings.GetNumFramesPerBlock();
+						AudioBusPatchOutput = AudioBusSubsystem->AddPatchOutputForAudioBus(AudioBusKey, BlockSizeFrames, AudioBusChannels);
 					}
 				}
 			}
@@ -184,7 +190,11 @@ namespace Metasound
 			if (bPerformPop)
 			{
 				// Pop off the interleaved data from the audio bus
-				AudioBusPatchOutput->PopAudio(InterleavedBuffer.GetData(), NumSamplesToPop, false);
+				int32 SamplesPopped = AudioBusPatchOutput->PopAudio(InterleavedBuffer.GetData(), NumSamplesToPop, false);
+				if (SamplesPopped < NumSamplesToPop)
+				{
+					UE_LOG(LogMetaSound, Warning, TEXT("Underrun detected in audio bus reader node."));
+				}
 
 				const uint32 MinChannels = FMath::Min(NumChannels, AudioBusChannels);
 				for (uint32 ChannelIndex = 0; ChannelIndex < MinChannels; ++ChannelIndex)
@@ -228,12 +238,15 @@ namespace Metasound
 	};
 
 #define REGISTER_AUDIO_BUS_READER_NODE(ChannelCount) \
-	using FTriggerSequenceNode_##ChannelCount = TAudioBusReaderNode<ChannelCount>; \
-	METASOUND_REGISTER_NODE(FTriggerSequenceNode_##ChannelCount) \
+	using FAudioBusReaderNode_##ChannelCount = TAudioBusReaderNode<ChannelCount>; \
+	METASOUND_REGISTER_NODE(FAudioBusReaderNode_##ChannelCount) \
 
 	
-	REGISTER_AUDIO_BUS_READER_NODE(1)
-	REGISTER_AUDIO_BUS_READER_NODE(2)
+	REGISTER_AUDIO_BUS_READER_NODE(1);
+	REGISTER_AUDIO_BUS_READER_NODE(2);
+	REGISTER_AUDIO_BUS_READER_NODE(4);
+	REGISTER_AUDIO_BUS_READER_NODE(6);
+	REGISTER_AUDIO_BUS_READER_NODE(8);
 }
 
 #undef LOCTEXT_NAMESPACE

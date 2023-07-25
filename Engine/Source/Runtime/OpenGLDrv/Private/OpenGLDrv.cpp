@@ -13,6 +13,7 @@
 #include "OpenGLDrvPrivate.h"
 #include "PipelineStateCache.h"
 #include "Engine/GameViewportClient.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 
 IMPLEMENT_MODULE(FOpenGLDynamicRHIModule, OpenGLDrv);
@@ -204,18 +205,14 @@ void FOpenGLGPUProfiler::BeginFrame(FOpenGLDynamicRHI* InRHI)
 	}
 	bPreviousLatchedGProfilingGPUHitches = bLatchedGProfilingGPUHitches;
 
-	// Skip timing events when using SLI, they will not be accurate anyway
-	if (GNumAlternateFrameRenderingGroups == 1)
+	if (FrameTiming.IsSupported())
 	{
-		if (FrameTiming.IsSupported())
-		{
-			FrameTiming.StartTiming();
-		}
-		if (FOpenGLDisjointTimeStampQuery::IsSupported())
-		{
-			CurrentGPUFrameQueryIndex = (CurrentGPUFrameQueryIndex + 1) % MAX_GPUFRAMEQUERIES;
-			DisjointGPUFrameTimeQuery[CurrentGPUFrameQueryIndex].StartTracking();
-		}
+		FrameTiming.StartTiming();
+	}
+	if (FOpenGLDisjointTimeStampQuery::IsSupported())
+	{
+		CurrentGPUFrameQueryIndex = (CurrentGPUFrameQueryIndex + 1) % MAX_GPUFRAMEQUERIES;
+		DisjointGPUFrameTimeQuery[CurrentGPUFrameQueryIndex].StartTracking();
 	}
 
 	if (GetEmitDrawEvents())
@@ -237,28 +234,22 @@ void FOpenGLGPUProfiler::EndFrame()
 		PopEvent();
 	}
 
-	// Skip timing events when using SLI, they will not be accurate anyway
-	if (GNumAlternateFrameRenderingGroups == 1)
+	if (FrameTiming.IsSupported())
 	{
-		if (FrameTiming.IsSupported())
-		{
-			FrameTiming.EndTiming();
-		}
-		if (FOpenGLDisjointTimeStampQuery::IsSupported())
-		{
-			DisjointGPUFrameTimeQuery[CurrentGPUFrameQueryIndex].EndTracking();
-		}
+		FrameTiming.EndTiming();
+	}
+	if (FOpenGLDisjointTimeStampQuery::IsSupported())
+	{
+		DisjointGPUFrameTimeQuery[CurrentGPUFrameQueryIndex].EndTracking();
 	}
 
-	// Skip timing events when using SLI, as they will block the GPU and we want maximum throughput
-	// Stat unit GPU time is not accurate anyway with SLI
-	if (FrameTiming.IsSupported() && GNumAlternateFrameRenderingGroups == 1)
+	if (FrameTiming.IsSupported())
 	{
 		uint64 GPUTiming = FrameTiming.GetTiming();
 		uint64 GPUFreq = FrameTiming.GetTimingFrequency();
 		GGPUFrameTime = FMath::TruncToInt( double(GPUTiming) / double(GPUFreq) / FPlatformTime::GetSecondsPerCycle() );
 	}
-	else if (FOpenGLDisjointTimeStampQuery::IsSupported() && GNumAlternateFrameRenderingGroups == 1)
+	else if (FOpenGLDisjointTimeStampQuery::IsSupported())
 	{
 		static uint32 GLastGPUFrameTime = 0;
 		uint64 GPUTiming = 0;
@@ -496,7 +487,6 @@ GLint FOpenGLBase::MaxGeometryUniformComponents = -1;
 bool  FOpenGLBase::bSupportsClipControl = false;
 bool  FOpenGLBase::bSupportsASTC = false;
 bool  FOpenGLBase::bSupportsASTCHDR = false;
-bool  FOpenGLBase::bSupportsCopyImage = false;
 bool  FOpenGLBase::bSupportsSeamlessCubemap = false;
 bool  FOpenGLBase::bSupportsVolumeTextureRendering = false;
 bool  FOpenGLBase::bSupportsTextureFilterAnisotropic = false;
@@ -544,9 +534,6 @@ void FOpenGLBase::ProcessExtensions( const FString& ExtensionsString )
 	bSupportsASTC = ExtensionsString.Contains(TEXT("GL_KHR_texture_compression_astc_ldr"));
 
 	bSupportsASTCHDR = bSupportsASTC && ExtensionsString.Contains(TEXT("GL_KHR_texture_compression_astc_hdr"));
-
-	// check for copy image support
-	bSupportsCopyImage = ExtensionsString.Contains(TEXT("GL_ARB_copy_image"));
 
 	bSupportsSeamlessCubemap = ExtensionsString.Contains(TEXT("GL_ARB_seamless_cube_map"));
 	

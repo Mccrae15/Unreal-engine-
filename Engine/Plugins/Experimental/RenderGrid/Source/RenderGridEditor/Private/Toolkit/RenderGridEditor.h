@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "IRenderGridEditor.h"
+#include "RenderGridEditor.generated.h"
 
 
 class FSpawnTabArgs;
@@ -20,6 +21,28 @@ namespace UE::RenderGrid::Private
 }
 
 
+/**
+ * The selected render grid jobs.
+ * This is placed in a separate class, so it can be an UObject, so it can be placed in the undo/redo buffer.
+ */
+UCLASS()
+class RENDERGRIDEDITOR_API URenderGridJobSelection : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	URenderGridJobSelection();
+
+	/** Sets the new job selection. Returns true if it is different from the previous selection, returns false if it was exactly the same. */
+	bool SetSelectedRenderGridJobs(const TArray<URenderGridJob*>& Jobs);
+
+public:
+	/** The GUIDs of the currently selected render grid jobs. */
+	UPROPERTY()
+	TSet<FGuid> SelectedRenderGridJobIds;
+};
+
+
 namespace UE::RenderGrid::Private
 {
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FRenderGridEditorClosed, const UE::RenderGrid::IRenderGridEditor*, URenderGridBlueprint*);
@@ -33,6 +56,11 @@ namespace UE::RenderGrid::Private
 	public:
 		/** The time it should remain in debugging mode after it has been turned off. */
 		static constexpr float TimeInSecondsToRemainDebugging = 4.0f;
+
+	protected:
+		/** The currently selected render grid jobs. It's static so multiple open render grid editors won't cause bugs with each other. */
+		static TStrongObjectPtr<URenderGridJobSelection> RenderGridJobSelection;
+
 
 	public:
 		void InitRenderGridEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, URenderGridBlueprint* InRenderGridBlueprint);
@@ -49,7 +77,8 @@ namespace UE::RenderGrid::Private
 		virtual void OnActiveTabChanged(TSharedPtr<SDockTab> PreviouslyActive, TSharedPtr<SDockTab> NewlyActivated) override;
 		virtual void SetupGraphEditorEvents(UEdGraph* InGraph, SGraphEditor::FGraphEditorEvents& InEvents) override;
 		virtual void RegisterApplicationModes(const TArray<UBlueprint*>& InBlueprints, bool bShouldOpenInDefaultsMode, bool bNewlyCreated = false) override;
-
+		virtual void PostUndo(bool bSuccessful) override;
+		virtual void PostRedo(bool bSuccessful) override;
 		virtual void Compile() override;
 		//~ End FBlueprintEditor Interface
 
@@ -59,9 +88,9 @@ namespace UE::RenderGrid::Private
 		virtual void SetIsDebugging(const bool bInIsDebugging) override;
 		virtual TSharedPtr<FRenderGridBlueprintEditorToolbar> GetRenderGridToolbarBuilder() override { return RenderGridToolbar; }
 		virtual bool IsBatchRendering() const override;
-		virtual URenderGridQueue* GetBatchRenderQueue() const override { return BatchRenderQueue; }
+		virtual URenderGridQueue* GetBatchRenderQueue() const override { return BatchRenderQueue.Get(); }
 		virtual bool IsPreviewRendering() const override;
-		virtual URenderGridQueue* GetPreviewRenderQueue() const override { return PreviewRenderQueue; }
+		virtual URenderGridQueue* GetPreviewRenderQueue() const override { return PreviewRenderQueue.Get(); }
 		virtual void SetPreviewRenderQueue(URenderGridQueue* Queue) override;
 		virtual void MarkAsModified() override;
 		virtual TArray<URenderGridJob*> GetSelectedRenderGridJobs() const override;
@@ -85,9 +114,6 @@ namespace UE::RenderGrid::Private
 
 		/** Immediately rebuilds the render grid instance that is being shown in the editor. */
 		void RefreshInstance();
-
-		/** The delegate that will fire when this editor closes. */
-		FRenderGridEditorClosed& OnRenderGridEditorClosed() { return RenderGridEditorClosedDelegate; }
 
 	private:
 		/** Called whenever the blueprint is structurally changed. */
@@ -121,7 +147,7 @@ namespace UE::RenderGrid::Private
 		void BatchRenderListAction();
 
 		/** The callback for when the batch render list action finishes. */
-		void OnBatchRenderListActionFinished(URenderGridQueue* Queue, bool bSuccess);
+		void OnBatchRenderListActionFinished();
 
 		/** Undo the last action. */
 		void UndoAction();
@@ -149,9 +175,6 @@ namespace UE::RenderGrid::Private
 		FActionMenuContent HandleCreateGraphActionMenu(UEdGraph* InGraph, const FVector2D& InNodePosition, const TArray<UEdGraphPin*>& InDraggedPins, bool bAutoExpand, SGraphEditor::FActionMenuClosed InOnMenuClosed);
 
 	private:
-		/** The delegate that will be fired when this editor closes. */
-		FRenderGridEditorClosed RenderGridEditorClosedDelegate;
-
 		/** The toolbar builder that is used to customize the toolbar of this editor. */
 		TSharedPtr<FRenderGridBlueprintEditorToolbar> RenderGridToolbar;
 
@@ -163,27 +186,30 @@ namespace UE::RenderGrid::Private
 		TSharedPtr<FExtender> ToolbarExtender;
 
 		/** The blueprint instance that's currently visible in the editor. */
-		TObjectPtr<URenderGridBlueprint> PreviewBlueprint;
+		TWeakObjectPtr<URenderGridBlueprint> PreviewBlueprintWeakPtr;
 
 		/** The current render grid instance that's visible in the editor. */
 		mutable TWeakObjectPtr<URenderGrid> RenderGridWeakPtr;
-
-		/** The IDs of the currently selected render grid jobs. */
-		TSet<FGuid> SelectedRenderGridJobIds;
 
 		/** True if it should call BatchRenderListAction() next frame. */
 		bool bRunRenderNewBatch;
 
 		/** The current batch render queue, if any. */
-		TObjectPtr<URenderGridQueue> BatchRenderQueue;
+		TStrongObjectPtr<URenderGridQueue> BatchRenderQueue;
 
 		/** The current preview render queue, if any. */
-		TObjectPtr<URenderGridQueue> PreviewRenderQueue;
+		TStrongObjectPtr<URenderGridQueue> PreviewRenderQueue;
 
 		/** The time it should still remain in debugging mode (after it has been turned off). */
 		float DebuggingTimeInSecondsRemaining;
 
 		/** True if the graph editor is currently in debugging mode. */
 		bool bIsDebugging;
+
+		/** The value of ShouldHideUI() during the last tick. */
+		bool bPreviousShouldHideUI;
+
+		/** The value of RenderGridJobSelection.Get()->SelectedRenderGridJobIds() during the last tick. */
+		TSet<FGuid> PreviousSelectedRenderGridJobIds;
 	};
 }

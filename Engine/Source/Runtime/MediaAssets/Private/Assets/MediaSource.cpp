@@ -2,10 +2,17 @@
 
 #include "MediaSource.h"
 
-#include "FileMediaSource.h"
+#include "IMediaAssetsModule.h"
 #include "MediaAssetsPrivate.h"
+#include "MediaTexture.h"
+#include "Modules/ModuleManager.h"
 #include "Misc/Paths.h"
 #include "StreamMediaSource.h"
+
+#if WITH_EDITOR
+#include "MediaSourceRendererInterface.h"
+#include "UObject/Package.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MediaSource)
 
@@ -14,6 +21,31 @@ void UMediaSource::SetCacheSettings(const FMediaSourceCacheSettings& Settings)
 	SetMediaOptionBool(TEXT("ImgMediaSmartCacheEnabled"), Settings.bOverride);
 	SetMediaOptionFloat(TEXT("ImgMediaSmartCacheTimeToLookAhead"), Settings.TimeToLookAhead);
 }
+
+#if WITH_EDITOR
+
+void UMediaSource::GenerateThumbnail()
+{
+	if (MediaSourceRenderer == nullptr)
+	{
+		IMediaAssetsModule* MediaAssetsModule = FModuleManager::LoadModulePtr<IMediaAssetsModule>("MediaAssets");
+		if (MediaAssetsModule != nullptr)
+		{
+			MediaSourceRenderer = MediaAssetsModule->CreateMediaSourceRenderer();
+		}
+	}
+
+	if (MediaSourceRenderer != nullptr)
+	{
+		IMediaSourceRendererInterface* Interface = Cast<IMediaSourceRendererInterface>(MediaSourceRenderer);
+		if (Interface != nullptr)
+		{
+			ThumbnailImage = Interface->Open(this);
+		}
+	}
+}
+
+#endif // WITH_EDITOR
 
 void UMediaSource::RegisterSpawnFromFileExtension(const FString& Extension,
 	FMediaSourceSpawnDelegate InDelegate)
@@ -55,13 +87,6 @@ UMediaSource* UMediaSource::SpawnMediaSourceForString(const FString& MediaPath, 
 		{
 			MediaSource = Delegate->Execute(MediaPath, Outer);
 		}
-		else
-		{
-			// Try a file media source.
-			TObjectPtr<UFileMediaSource> FileMediaSource = NewObject<UFileMediaSource>(Outer, NAME_None, RF_Transactional);
-			FileMediaSource->SetFilePath(MediaPath);
-			MediaSource = FileMediaSource;
-		}
 	}
 
 	// Validate the media source.
@@ -81,6 +106,15 @@ TMap<FString, FMediaSourceSpawnDelegate>& UMediaSource::GetSpawnFromFileExtensio
 {
 	static TMap<FString, FMediaSourceSpawnDelegate> Delegates;
 	return Delegates;
+}
+
+void UMediaSource::BeginDestroy()
+{
+#if WITH_EDITOR
+	MediaSourceRenderer = nullptr;
+#endif // WITH_EDITOR
+
+	Super::BeginDestroy();
 }
 
 /* IMediaOptions interface

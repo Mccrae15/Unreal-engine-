@@ -7,7 +7,7 @@
 #include "TestUtils.h"
 #include "TokenTest.h"
 
-#include "Tests/TestHarness.h"
+#include "Tests/TestHarnessAdapter.h"
 
 namespace PagedArray
 {
@@ -21,6 +21,8 @@ struct FSomeForwardDeclaredStruct;
 
 struct FDummyTestStruct
 {
+	FDummyTestStruct();
+	~FDummyTestStruct();
 	TPagedArray<FSomeForwardDeclaredStruct> Data;
 };
 

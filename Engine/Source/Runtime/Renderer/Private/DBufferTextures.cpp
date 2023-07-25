@@ -2,10 +2,12 @@
 
 #include "DBufferTextures.h"
 
+#include "DataDrivenShaderPlatformInfo.h"
 #include "RendererUtils.h"
 #include "RenderGraphUtils.h"
 #include "SceneUtils.h"
 #include "ScenePrivate.h"
+#include "SystemTextures.h"
 
 bool FDBufferTextures::IsValid() const
 {

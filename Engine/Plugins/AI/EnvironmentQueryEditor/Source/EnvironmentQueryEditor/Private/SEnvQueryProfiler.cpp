@@ -3,18 +3,13 @@
 
 #include "SEnvQueryProfiler.h"
 #include "Editor.h"
-#include "Types/SlateStructs.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SBox.h"
+#include "Modules/ModuleManager.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EnvironmentQuery/EnvQueryTest.h"
-#include "EnvironmentQuery/EnvQueryOption.h"
-#include "EnvironmentQuery/EnvQueryManager.h"
 #include "Editor/UnrealEdEngine.h"
+#include "SEnvQueryLoadGraph.h"
 #include "UnrealEdGlobals.h"
-#include "Styling/AppStyle.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "EnvironmentQuery/EnvQuery.h"
@@ -68,7 +63,7 @@ void SEnvQueryProfiler::Construct(const FArguments& InArgs)
 	VBox->AddSlot().VAlign(VAlign_Top)
 		[
 			SAssignNew(ListView, SListView< FEnvQueryProfilerStatDataPtr >)
-			.ItemHeight(24)
+			.ItemHeight(24.f)
 			.ListItemsSource(&StatData)
 			.OnGenerateRow(this, &SEnvQueryProfiler::OnGenerateRowForList)
 			.OnMouseButtonDoubleClick(this, &SEnvQueryProfiler::OnItemDoubleClicked)

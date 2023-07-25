@@ -1,15 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/ObjectLibrary.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "Modules/ModuleManager.h"
-#include "Engine/BlueprintCore.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Misc/PackageName.h"
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
 #include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/StreamableManager.h"
+#include "UObject/LinkerLoad.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ObjectLibrary)
 

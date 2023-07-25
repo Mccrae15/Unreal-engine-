@@ -226,7 +226,7 @@ float3 SpecularGGX( float Roughness, float3 SpecularColor, BxDFContext Context, 
 	float Energy = EnergyNormalization( a2, Context.VoH, AreaLight );
 	
 #if SHADING_PATH_MOBILE
-	half D = GGX_Mobile(Roughness, Context.NoH) * Energy;
+	half D = D_GGX_Mobile(Roughness, Context.NoH) * Energy;
 	return MobileSpecularGGXInner(D, SpecularColor, Roughness, Context.NoV, NoL, Context.VoH, MOBILE_HIGH_QUALITY_BRDF);
 #else
 	// Generalized microfacet specular
@@ -248,7 +248,7 @@ half3 DualSpecularGGX(half AverageRoughness, half Lobe0Roughness, half Lobe1Roug
 	float Lobe1Energy = EnergyNormalization(Lobe1Alpha2, Context.VoH, AreaLight);
 
 #if SHADING_PATH_MOBILE
-	half D = lerp(GGX_Mobile(Lobe0Roughness, Context.NoH) * Lobe0Energy, GGX_Mobile(Lobe1Roughness, Context.NoH) * Lobe1Energy, LobeMix);
+	half D = lerp(D_GGX_Mobile(Lobe0Roughness, Context.NoH) * Lobe0Energy, D_GGX_Mobile(Lobe1Roughness, Context.NoH) * Lobe1Energy, LobeMix);
 
 	return MobileSpecularGGXInner(D, SpecularColor, AverageRoughness, Context.NoV, NoL, Context.VoH, MOBILE_HIGH_QUALITY_BRDF);
 #else
@@ -405,8 +405,6 @@ FDirectLighting ClearCoatBxDF( FGBufferData GBuffer, half3 N, half3 V, half3 L, 
 {
 	const half ClearCoat			= GBuffer.CustomData.x;
 	const half ClearCoatRoughness	= max(GBuffer.CustomData.y, 0.02f);
-	const half Film = 1 * ClearCoat;
-	const half MetalSpec = 0.9;
 
 	FDirectLighting Lighting = {
 		float3(0.0, 0.0, 0.0),
@@ -469,7 +467,7 @@ FDirectLighting ClearCoatBxDF( FGBufferData GBuffer, half3 N, half3 V, half3 L, 
 		float ClearCoatEnergy = EnergyNormalization(a2, Context.VoH, AreaLight);
 		half Vis = Vis_SmithJointApprox(a2, Context.NoV, NoL);
 #if SHADING_PATH_MOBILE
-		half D = GGX_Mobile(ClearCoatRoughness, Context.NoH) * ClearCoatEnergy;
+		half D = D_GGX_Mobile(ClearCoatRoughness, Context.NoH) * ClearCoatEnergy;
 		Vis = saturate(Vis);
 #else
 		float D = D_GGX(a2, Context.NoH) * ClearCoatEnergy;
@@ -593,7 +591,7 @@ FDirectLighting ClearCoatBxDF( FGBufferData GBuffer, half3 N, half3 V, half3 L, 
 			// NoL is chosen to provide better parity with DefaultLit when ClearCoat=0
 			Vis2 = Vis_SmithJointApprox(a2, BottomContext.NoV, NoL);
 #if SHADING_PATH_MOBILE
-			D2 = GGX_Mobile(GBuffer.Roughness, BottomContext.NoH);
+			D2 = D_GGX_Mobile(GBuffer.Roughness, BottomContext.NoH);
 			Vis2 = saturate(Vis2);
 #else
 			D2 = D_GGX(a2, BottomContext.NoH);
@@ -694,7 +692,15 @@ FDirectLighting SubsurfaceProfileBxDF( FGBufferData GBuffer, half3 N, half3 V, h
 	// Needs to apply shadow at here, since the preintegrated value has already counted it, and we need to skip applying shadow outside.
 	Lighting.Diffuse = lerp(AreaLight.FalloffColor * (Falloff * NoL) * Shadow.SurfaceShadow, BurleyDiffuse.rgb, Tint) * Diffuse_Lambert(GBuffer.DiffuseColor);
 #else
-	Lighting.Diffuse  = AreaLight.FalloffColor * (Falloff * NoL) * Diffuse_Burley( GBuffer.DiffuseColor, GBuffer.Roughness, Context.NoV, NoL, Context.VoH );
+
+#if MATERIAL_ROUGHDIFFUSE
+	// Use Chan's diffuse model. It reduces flatness look and has better match, e.g., at the edge of human face skin when compared to GT.
+	const float3 DiffuseReflection = Diffuse_Chan(GBuffer.DiffuseColor, Pow4(GBuffer.Roughness), Context.NoV, NoL, Context.VoH, Context.NoH, GetAreaLightDiffuseMicroReflWeight(AreaLight));
+#else
+	const float3 DiffuseReflection = Diffuse_Burley(GBuffer.DiffuseColor, GBuffer.Roughness, Context.NoV, NoL, Context.VoH);
+#endif
+
+	Lighting.Diffuse  = AreaLight.FalloffColor * (Falloff * NoL) * DiffuseReflection;
 #endif
 
 	if (IsRectLight(AreaLight))
@@ -766,7 +772,7 @@ FDirectLighting ClothBxDF( FGBufferData GBuffer, half3 N, half3 V, half3 L, floa
 	float3 F2 = F_Schlick( FuzzColor, Context.VoH );
 	float3 Spec2 = AreaLight.FalloffColor * (Falloff * NoL) * (D2 * Vis2) * F2;
 	
-	const FBxDFEnergyTerms EnergyTerms2 = ComputeClothEnergyTerms(GBuffer.Roughness, Context.NoV, FuzzColor);
+	const FBxDFEnergyTermsA EnergyTerms2 = ComputeClothEnergyTermsA(GBuffer.Roughness, Context.NoV);
 	Spec2 *= ComputeEnergyConservation(EnergyTerms2);
 
 	FDirectLighting Lighting;
@@ -828,7 +834,7 @@ FDirectLighting TwoSidedBxDF( FGBufferData GBuffer, half3 N, half3 V, half3 L, f
 	// Scatter distribution
 	half VoL = dot(V, L);
 #if SHADING_PATH_MOBILE
-	half Scatter = GGX_Mobile(0.6, saturate(-VoL));
+	half Scatter = D_GGX_Mobile(0.6, saturate(-VoL));
 #else
 	float Scatter = D_GGX( 0.6*0.6, saturate( -VoL ) );
 #endif
@@ -891,7 +897,7 @@ FDirectLighting EyeBxDF( FGBufferData GBuffer, half3 N, half3 V, half3 L, float 
 		// Generalized microfacet specular
 		float Vis = Vis_SmithJointApprox(a2, Context.NoV, NoL);
 #if SHADING_PATH_MOBILE
-		half D = GGX_Mobile(GBuffer.Roughness, Context.NoH) * Energy;
+		half D = D_GGX_Mobile(GBuffer.Roughness, Context.NoH) * Energy;
 		Vis = saturate(Vis);
 #else
 		float D = D_GGX(a2, Context.NoH) * Energy;

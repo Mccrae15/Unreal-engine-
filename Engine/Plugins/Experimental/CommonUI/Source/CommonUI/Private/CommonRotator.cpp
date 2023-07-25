@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonRotator.h"
+#include "CommonTextBlock.h"
 #include "CommonUIPrivate.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonRotator)
@@ -11,7 +12,7 @@
 // UCommonRotator
 UCommonRotator::UCommonRotator(const FObjectInitializer& ObjectInitializer)
 {
-	bIsFocusable = true;
+	SetIsFocusable(true);
 }
 
 bool UCommonRotator::Initialize()

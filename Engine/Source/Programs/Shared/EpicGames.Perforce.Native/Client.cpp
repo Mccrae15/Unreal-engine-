@@ -32,6 +32,7 @@ struct FSettings
 	const char* ServerAndPort;
 	const char* User;
 	const char* Password;
+	const char* Host;
 	const char* Client;
 	const char* AppName;
 	const char* AppVersion;
@@ -493,16 +494,25 @@ public:
 
 		int PathLen = path.Length() + 1;
 
-		int BufferLen = PathLen + sizeof(int) + sizeof(int);
+		int BufferLen = PathLen + (sizeof(int) * 3);
 
 		char* Buffer = new char[BufferLen];
-		memcpy(Buffer, path.Text(), (size_t)PathLen);
+
+		char* BufferEnd = Buffer;
+		memcpy(BufferEnd, path.Text(), (size_t)PathLen);
+		BufferEnd += PathLen;
 
 		int TypeInt = (int)Type;
-		memcpy(Buffer + PathLen, &TypeInt, sizeof(int));
+		memcpy(BufferEnd, &TypeInt, sizeof(int));
+		BufferEnd += sizeof(int);
 
 		int ModeInt = (int)mode;
-		memcpy(Buffer + PathLen + sizeof(int), &ModeInt, sizeof(int));
+		memcpy(BufferEnd, &ModeInt, sizeof(int));
+		BufferEnd += sizeof(int);
+
+		int PermsInt = (int)perms;
+		memcpy(BufferEnd, &PermsInt, sizeof(int));
+		BufferEnd += sizeof(int);
 
 		FileId = ++NextFileId;
 		User.OutputIo(FileId, "open", Buffer, BufferLen);
@@ -525,7 +535,11 @@ public:
 
 	virtual void Close(Error* e) override
 	{
-		User.OutputIo(FileId, "close", nullptr, 0);
+		if (FileId != -1)
+		{
+			User.OutputIo(FileId, "close", nullptr, 0);
+			FileId = -1;
+		}
 	}
 
 	virtual int Stat() override
@@ -666,10 +680,20 @@ class FClient
 public:
 	ClientApi ClientApi;
 	FClientUser User;
+	char* AppVersion;
 
 	FClient(FWriteBuffer* WriteBuffer, FOnBufferReadyFn* OnBufferReady)
 		: User(WriteBuffer, OnBufferReady)
 	{
+		AppVersion = nullptr;
+	}
+
+	~FClient()
+	{
+		if (AppVersion != nullptr)
+		{
+			free(AppVersion);
+		}
 	}
 };
 
@@ -691,6 +715,10 @@ extern "C" NATIVE_API FClient* Client_Create(const FSettings* Settings, FWriteBu
 		{
 			Client->ClientApi.SetPassword(Settings->Password);
 		}
+		if (Settings->Host != nullptr)
+		{
+			Client->ClientApi.SetHost(Settings->Host);
+		}
 		if (Settings->Client != nullptr)
 		{
 			Client->ClientApi.SetClient(Settings->Client);
@@ -701,7 +729,7 @@ extern "C" NATIVE_API FClient* Client_Create(const FSettings* Settings, FWriteBu
 		}
 		if (Settings->AppVersion != nullptr)
 		{
-			Client->ClientApi.SetVersion(Settings->AppVersion);
+			Client->AppVersion = strdup(Settings->AppVersion);
 		}
 	}
 	Client->ClientApi.SetProtocol("tag", "");
@@ -717,24 +745,22 @@ extern "C" NATIVE_API FClient* Client_Create(const FSettings* Settings, FWriteBu
 	return Client;
 }
 
-extern "C" NATIVE_API void Client_Login(FClient * Client, const char* Password)
+extern "C" NATIVE_API void Client_Command(FClient* Client, const char* Func, int ArgCount, const char** Args, const char* InputData, int InputLength, const char* promptResponse, bool InterceptIo)
 {
-	Client->User.PromptResponse = Password;
-	Client->User.SetInputBuffer(nullptr, 0);
-	Client->ClientApi.SetArgv(0, nullptr);
-	Client->ClientApi.Run("login", &Client->User);
-	Client->User.Flush();
-	Client->User.PromptResponse = nullptr;
-}
+	if (Client->AppVersion != nullptr)
+	{
+		Client->ClientApi.SetVersion(Client->AppVersion);
+	}
 
-extern "C" NATIVE_API void Client_Command(FClient* Client, const char* Func, int ArgCount, const char** Args, const char* InputData, int InputLength, bool InterceptIo)
-{
 	Client->User.InterceptIo = InterceptIo;
 	Client->User.Func = Func;
 	Client->User.SetInputBuffer(InputData, InputLength);
+	Client->User.PromptResponse = promptResponse;
 	Client->ClientApi.SetArgv(ArgCount, (char* const*)Args);
 	Client->ClientApi.Run(Func, &Client->User);
 	Client->User.Flush();
+	Client->User.PromptResponse = nullptr;
+	Client->User.SetInputBuffer(nullptr, 0);
 	Client->User.Func = nullptr;
 	Client->User.InterceptIo = false;
 }

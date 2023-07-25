@@ -1,10 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/ActorPartition/PartitionActorDesc.h"
-#include "ActorPartition/PartitionActor.h"
+#include "ActorPartition/ActorPartitionSubsystem.h"
 
 #if WITH_EDITOR
-#include "Engine/Level.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 
 void FPartitionActorDesc::Init(const AActor* InActor)
@@ -52,4 +51,23 @@ bool FPartitionActorDesc::Equals(const FWorldPartitionActorDesc* Other) const
 
 	return false;
 }
+
+FBox FPartitionActorDesc::GetEditorBounds() const
+{
+	const UActorPartitionSubsystem::FCellCoord CellCoord(GridIndexX, GridIndexY, GridIndexZ, 0);
+	return UActorPartitionSubsystem::FCellCoord::GetCellBounds(CellCoord, GridSize);
+}
+
+void FPartitionActorDesc::TransferWorldData(const FWorldPartitionActorDesc* From)
+{
+	FWorldPartitionActorDesc::TransferWorldData(From);
+
+	// TransferWorldData is called for actors that are not added to the world (not registered)
+	// Transfer properties that depend on actor being added to the world (components being registered)
+	const FPartitionActorDesc* FromPartitionActorDesc = (FPartitionActorDesc*)From;
+	GridIndexX = FromPartitionActorDesc->GridIndexX;
+	GridIndexY = FromPartitionActorDesc->GridIndexY;
+	GridIndexZ = FromPartitionActorDesc->GridIndexZ;
+}
+
 #endif

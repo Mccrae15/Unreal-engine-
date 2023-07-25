@@ -635,12 +635,6 @@ FString FMapProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 
 void FMapProperty::ExportText_Internal(FString& ValueStr, const void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 {
-	if (0 != (PortFlags & PPF_ExportCpp))
-	{
-		ValueStr += TEXT("{}");
-		return;
-	}
-
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
 
@@ -1339,6 +1333,5 @@ void* FMapProperty::GetValueAddressAtIndex_Direct(const FProperty* Inner, void* 
 			Num--;
 		}
 	}
-	checkf(false, TEXT("Map element index (%d) out of range"), Index);
 	return nullptr;
 }

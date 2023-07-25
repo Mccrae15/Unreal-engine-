@@ -1,6 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
 #include "AITestsCommon.h"
 #include "StructTypeBitSet.h"
 #include "StructUtilsTestTypes.h"
@@ -8,8 +7,6 @@
 #if WITH_STRUCTUTILS_DEBUG
 
 #define LOCTEXT_NAMESPACE "StructUtilsTests"
-
-PRAGMA_DISABLE_OPTIMIZATION
 
 DECLARE_STRUCTTYPEBITSET(FTestStructBaseBitSet, FTestStructSimpleBase);
 DEFINE_TYPEBITSET(FTestStructBaseBitSet);
@@ -406,7 +403,5 @@ IMPLEMENT_AI_INSTANT_TEST(FStructUtilsTest_BitSetIndexIteratorBeginningFalse, "S
 } // namespace FStructTypeBitSetTests
 
 #undef LOCTEXT_NAMESPACE
-
-PRAGMA_ENABLE_OPTIMIZATION
 
 #endif // WITH_STRUCTUTILS_DEBUG

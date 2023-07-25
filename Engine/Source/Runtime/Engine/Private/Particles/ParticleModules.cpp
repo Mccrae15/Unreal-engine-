@@ -4,40 +4,34 @@
 	ParticleModules.cpp: Particle module implementation.
 =============================================================================*/
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "Serialization/ArchiveUObject.h"
-#include "UObject/UnrealType.h"
-#include "HAL/IConsoleManager.h"
-#include "HAL/LowLevelMemTracker.h"
+#include "Distributions/DistributionFloatParameterBase.h"
 #include "UObject/RenderingObjectVersion.h"
-#include "UObject/UObjectHash.h"
+#include "Distributions/DistributionVectorParameterBase.h"
 #include "UObject/Package.h"
-#include "Misc/App.h"
 #include "GameFramework/WorldSettings.h"
+#include "Math/InterpCurve.h"
 #include "Particles/ParticleSystem.h"
-#include "ParticleHelper.h"
-#include "Distributions.h"
 #include "Distributions/Distribution.h"
-#include "Distributions/DistributionFloat.h"
-#include "Distributions/DistributionVector.h"
+#include "MeshParticleVertexFactory.h"
 #include "Particles/ParticleModule.h"
+#include "Particles/Location/ParticleModuleLocationBase.h"
 #include "Particles/Orientation/ParticleModuleOrientationBase.h"
 #include "Particles/Orientation/ParticleModuleOrientationAxisLock.h"
 #include "ParticleEmitterInstances.h"
+#include "Particles/ParticleSpriteEmitter.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Distributions/DistributionFloatConstant.h"
 #include "Distributions/DistributionFloatUniform.h"
 #include "Distributions/DistributionVectorConstant.h"
 #include "Distributions/DistributionVectorUniform.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/Texture2D.h"
+#include "SceneInterface.h"
 #include "UnrealEngine.h"
 #include "Distributions/DistributionFloatParticleParameter.h"
 #include "Distributions/DistributionVectorParticleParameter.h"
 #include "Distributions/DistributionVectorConstantCurve.h"
 #include "Distributions/DistributionVectorUniformCurve.h"
-#include "FXSystem.h"
 #include "Particles/Acceleration/ParticleModuleAccelerationBase.h"
 #include "Particles/Acceleration/ParticleModuleAcceleration.h"
 #include "Particles/Acceleration/ParticleModuleAccelerationConstant.h"
@@ -76,7 +70,6 @@
 #include "Particles/RotationRate/ParticleModuleMeshRotationRateOverLife.h"
 #include "Particles/SubUV/ParticleModuleSubUVBase.h"
 #include "Particles/ParticleEmitter.h"
-#include "ProfilingDebugging/CookStats.h"
 #include "Particles/SubUVAnimation.h"
 #include "Particles/SubUV/ParticleModuleSubUV.h"
 #include "Particles/SubUV/ParticleModuleSubUVMovie.h"
@@ -2875,7 +2868,7 @@ void UParticleModuleAcceleration::Update(FParticleEmitterInstance* Owner, int32 
 
 uint32 UParticleModuleAcceleration::RequiredBytes(UParticleModuleTypeDataBase* TypeData)
 {
-	// FVector UsedAcceleration
+	// FVector3f UsedAcceleration
 	return sizeof(FVector3f);
 }
 

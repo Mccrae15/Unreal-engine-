@@ -5,15 +5,20 @@
 
 #pragma once 
 
+#include "Async/TaskGraphFwd.h"
 #include "CoreMinimal.h"
-#include "Async/TaskGraphInterfaces.h"
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/HitResult.h"
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Async/TaskGraphInterfaces.h"
+#endif
+
 struct FOverlapDatum;
 struct FTraceDatum;
+typedef TArray<FGraphEventRef, TInlineAllocator<4> > FGraphEventArray;
 
 /** Trace Data Structs that are used for Async Trace */
 
@@ -177,7 +182,7 @@ struct FTraceDatum : public FBaseTraceDatum
 
 	/** Set Trace Datum for each shape type **/
 	FTraceDatum(UWorld* World, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Param, const struct FCollisionResponseParams& InResponseParam, const struct FCollisionObjectQueryParams& InObjectQueryParam,
-		ECollisionChannel Channel, uint32 InUserData, EAsyncTraceType InTraceType, const FVector& InStart, const FVector& InEnd, const FQuat& InRot, FTraceDelegate* InDelegate, int32 FrameCounter)
+		ECollisionChannel Channel, uint32 InUserData, EAsyncTraceType InTraceType, const FVector& InStart, const FVector& InEnd, const FQuat& InRot, const FTraceDelegate* InDelegate, int32 FrameCounter)
 	{
 		Set(World, CollisionShape, Param, InResponseParam, InObjectQueryParam, Channel, InUserData, FrameCounter);
 		Start = InStart;
@@ -221,7 +226,7 @@ struct FOverlapDatum : FBaseTraceDatum
 
 	FOverlapDatum(UWorld * World, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Param, const struct FCollisionResponseParams &InResponseParam, const struct FCollisionObjectQueryParams& InObjectQueryParam, 
 		ECollisionChannel Channel, uint32 InUserData,
-		const FVector& InPos, const FQuat& InRot, FOverlapDelegate * InDelegate, int32 FrameCounter)
+		const FVector& InPos, const FQuat& InRot, const FOverlapDelegate* InDelegate, int32 FrameCounter)
 	{
 		Set(World, CollisionShape, Param, InResponseParam, InObjectQueryParam, Channel, InUserData, FrameCounter);
 		Pos = InPos;
@@ -289,12 +294,8 @@ struct AsyncTraceData : FNoncopyable
 	/**  Thread completion event for batch **/
 	FGraphEventArray		AsyncTraceCompletionEvent;
 
-	AsyncTraceData() 
-		: NumQueuedTraceData(0)
-		, NumQueuedOverlapData(0)
-		, bAsyncAllowed(false)
-		, bAsyncTasksCompleted(false)
-	{}
+	ENGINE_API AsyncTraceData();
+	ENGINE_API ~AsyncTraceData();
 };
 
 

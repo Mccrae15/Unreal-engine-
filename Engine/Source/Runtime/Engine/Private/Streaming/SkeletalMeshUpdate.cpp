@@ -5,15 +5,22 @@ SkeletalMeshUpdate.cpp: Helpers to stream in and out skeletal mesh LODs.
 =============================================================================*/
 
 #include "Streaming/SkeletalMeshUpdate.h"
+#include "HAL/PlatformFile.h"
 #include "RenderUtils.h"
-#include "Containers/ResourceArray.h"
 #include "ContentStreaming.h"
 #include "Streaming/TextureStreamingHelpers.h"
-#include "HAL/PlatformFileManager.h"
 #include "Serialization/MemoryReader.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "Streaming/RenderAssetUpdate.inl"
+#include "RHIResourceUpdates.h"
+
+int32 GStreamingSkeletalMeshIOPriority = (int32)AIOP_Low;
+static FAutoConsoleVariableRef CVarStreamingSkeletalMeshIOPriority(
+	TEXT("r.Streaming.SkeletalMeshIOPriority"),
+	GStreamingSkeletalMeshIOPriority,
+	TEXT("Base I/O priority for loading skeletal mesh LODs"),
+	ECVF_Default);
 
 extern int32 GStreamingMaxReferenceChecks;
 
@@ -60,7 +67,6 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_RenderThread
 	SkinWeightVertexBuffer = LODResource.SkinWeightVertexBuffer.CreateRHIBuffer_RenderThread();
 	ClothVertexBuffer = LODResource.ClothVertexBuffer.CreateRHIBuffer_RenderThread();
 	IndexBuffer = LODResource.MultiSizeIndexContainer.CreateRHIBuffer_RenderThread();
-	MorphBuffer = LODResource.MorphTargetVertexInfoBuffers.CreateMorphRHIBuffer_RenderThread();
 }
 
 void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_Async(FSkeletalMeshLODRenderData& LODResource)
@@ -74,7 +80,6 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_Async(FSkele
 	SkinWeightVertexBuffer = LODResource.SkinWeightVertexBuffer.CreateRHIBuffer_Async();
 	ClothVertexBuffer = LODResource.ClothVertexBuffer.CreateRHIBuffer_Async();
 	IndexBuffer = LODResource.MultiSizeIndexContainer.CreateRHIBuffer_Async();
-	MorphBuffer = LODResource.MorphTargetVertexInfoBuffers.CreateMorphRHIBuffer_Async();
 }
 
 void FSkeletalMeshStreamIn::FIntermediateBuffers::SafeRelease()
@@ -88,11 +93,9 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::SafeRelease()
 	ClothVertexBuffer.SafeRelease();
 	IndexBuffer.SafeRelease();
 	AltSkinWeightVertexBuffers.Empty();
-	MorphBuffer.SafeRelease();
 }
 
-template <uint32 MaxNumUpdates>
-void FSkeletalMeshStreamIn::FIntermediateBuffers::TransferBuffers(FSkeletalMeshLODRenderData& LODResource, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+void FSkeletalMeshStreamIn::FIntermediateBuffers::TransferBuffers(FSkeletalMeshLODRenderData& LODResource, FRHIResourceUpdateBatcher& Batcher)
 {
 	FStaticMeshVertexBuffers& VBs = LODResource.StaticVertexBuffers;
 	VBs.StaticMeshVertexBuffer.InitRHIForStreaming(TangentsVertexBuffer, TexCoordVertexBuffer, Batcher);
@@ -102,7 +105,6 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::TransferBuffers(FSkeletalMeshL
 	LODResource.ClothVertexBuffer.InitRHIForStreaming(ClothVertexBuffer, Batcher);
 	LODResource.MultiSizeIndexContainer.InitRHIForStreaming(IndexBuffer, Batcher);
 	LODResource.SkinWeightProfilesData.InitRHIForStreaming(AltSkinWeightVertexBuffers, Batcher);
-	LODResource.MorphTargetVertexInfoBuffers.InitRHIForStreaming(MorphBuffer, Batcher);
 	SafeRelease();
 }
 
@@ -116,8 +118,7 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CheckIsNull() const
 		&& !SkinWeightVertexBuffer.LookupVertexBufferRHI
 		&& !ClothVertexBuffer
 		&& !IndexBuffer
-		&& !AltSkinWeightVertexBuffers.Num()
-		&& !MorphBuffer);
+		&& !AltSkinWeightVertexBuffers.Num());
 }
 
 FSkeletalMeshStreamIn::FSkeletalMeshStreamIn(const USkeletalMesh* InMesh)
@@ -203,13 +204,14 @@ void FSkeletalMeshStreamIn::DoFinishUpdate(const FContext& Context)
 			{
 				FSkeletalMeshLODRenderData& LODResource = *Context.LODResourcesView[LODIndex];
 				LODResource.IncrementMemoryStats(Mesh->GetHasVertexColors());
+				LODResource.InitMorphResources();
 				IntermediateBuffersArray[LODIndex].TransferBuffers(LODResource, Batcher);
 			}
 		}
 
 #if RHI_RAYTRACING
 		// Must happen after the batched updates have been flushed
-		if (IsRayTracingEnabled())
+		if (IsRayTracingAllowed())
 		{
 			for (int32 LODIndex = PendingFirstLODIdx; LODIndex < CurrentFirstLODIdx; ++LODIndex)
 			{
@@ -361,7 +363,6 @@ void FSkeletalMeshStreamOut::ReleaseBuffers(const FContext& Context)
 			LODResource.ClothVertexBuffer.ReleaseRHIForStreaming(Batcher);
 			LODResource.MultiSizeIndexContainer.ReleaseRHIForStreaming(Batcher);
 			LODResource.SkinWeightProfilesData.ReleaseRHIForStreaming(Batcher);
-			LODResource.MorphTargetVertexInfoBuffers.ReleaseRHIForStreaming(Batcher);
 
 			if (!FPlatformProperties::HasEditorOnlyData())
 			{
@@ -369,7 +370,7 @@ void FSkeletalMeshStreamOut::ReleaseBuffers(const FContext& Context)
 			}
 
 #if RHI_RAYTRACING
-			if (IsRayTracingEnabled())
+			if (IsRayTracingAllowed())
 			{
 				if (RenderData->LODRenderData[LODIndex].bReferencedByStaticSkeletalMeshObjects_RenderThread)
 				{
@@ -445,13 +446,14 @@ void FSkeletalMeshStreamIn_IO::SetIORequest(const FContext& Context)
 		// but that won't do anything because the tick would not try to acquire the lock since it is already locked.
 		TaskSynchronization.Increment();
 
-		const EAsyncIOPriorityAndFlags Priority = bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low;
+		const EAsyncIOPriorityAndFlags Priority = (EAsyncIOPriorityAndFlags)FMath::Clamp<int32>(GStreamingSkeletalMeshIOPriority + (bHighPrioIORequest ? 1 : 0), AIOP_Low, AIOP_High);
+
 		Batch.Issue(BulkData, Priority, [this](FBulkDataRequest::EStatus Status)
 		{
 			// At this point task synchronization would hold the number of pending requests.
 			TaskSynchronization.Decrement();
 
-			if (FBulkDataRequest::EStatus::Cancelled == Status)
+			if (FBulkDataRequest::EStatus::Ok != Status)
 			{
 				// If IO requests was cancelled but the streaming request wasn't, this is an IO error.
 				if (!bIsCancelled)

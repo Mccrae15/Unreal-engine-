@@ -32,18 +32,23 @@ void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToExisting
 	const FApplySnapshotPropertiesScope NotifySnapshotListeners({ InOriginalObject, InSelectionMapForResolvingSubobjects, Selection, true });
 #if WITH_EDITOR
 	InOriginalObject->Modify();
+	InOriginalObject->PreEditChange(nullptr);
 #endif
 	
 	// 1. Serialize archetype first to handle the case were the archetype has changed properties since the snapshot was taken
 	if (ClassIndex) // Sometimes not available, e.g. for custom subobjects
 	{
 		const FSubobjectArchetypeFallbackInfo ClassFallbackInfo{ InOriginalObject->GetOuter(), InOriginalObject->GetFName(), InOriginalObject->GetFlags() };
-		SerializeSelectedClassDefaultsInto(InOriginalObject, InSharedData, *ClassIndex, Cache, ClassFallbackInfo, *Selection);
+		SerializeSelectedClassDefaultsIntoSubobject(InOriginalObject, InSharedData, *ClassIndex, Cache, ClassFallbackInfo, *Selection);
 	}
 	
 	// Step 2: Serialise  properties that were different from CDO at time of snapshotting and that are still different from CDO
 	FApplySnapshotToEditorArchive ApplySavedData(InObjectData, InSharedData, InOriginalObject, InSelectionMapForResolvingSubobjects, Selection, Cache);
 	InOriginalObject->Serialize(ApplySavedData);
+
+#if WITH_EDITOR
+	InOriginalObject->PostEditChange();
+#endif
 }
 
 void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToEditorWorldObjectRecreatedWithArchetype(

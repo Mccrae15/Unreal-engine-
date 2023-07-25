@@ -1,8 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	VirtualShadowMap.h:
-=============================================================================*/
 #include "VirtualShadowMapCacheManager.h"
 #include "VirtualShadowMapClipmap.h"
 #include "RendererModule.h"
@@ -11,11 +8,15 @@
 #include "ScenePrivate.h"
 #include "HAL/FileManager.h"
 
+#include "DataDrivenShaderPlatformInfo.h"
 #include "PrimitiveSceneInfo.h"
 #include "ShaderPrint.h"
 #include "RendererOnScreenNotification.h"
+#include "SystemTextures.h"
 
 #define VSM_LOG_STATIC_CACHING 0
+
+CSV_DECLARE_CATEGORY_EXTERN(VSM);
 
 static TAutoConsoleVariable<int32> CVarAccumulateStats(
 	TEXT("r.Shadow.Virtual.AccumulateStats"),
@@ -180,7 +181,7 @@ void FVirtualShadowMapPerLightCacheEntry::UpdateClipmap()
 	CurrentRenderedFrameNumber = -1;
 }
 
-void FVirtualShadowMapPerLightCacheEntry::UpdateLocal(const FProjectedShadowInitializer& InCacheKey, bool bIsDistantLight)
+bool FVirtualShadowMapPerLightCacheEntry::UpdateLocal(const FProjectedShadowInitializer& InCacheKey, bool bIsDistantLight, bool bAllowInvalidation)
 {
 	bPrevIsDistantLight = bCurrentIsDistantLight;
 	PrevRenderedFrameNumber = FMath::Max(PrevRenderedFrameNumber, CurrentRenderedFrameNumber);
@@ -191,7 +192,7 @@ void FVirtualShadowMapPerLightCacheEntry::UpdateLocal(const FProjectedShadowInit
 	{
 		// If it is a distant light, we want to let the time-share perform the invalidation.
 		// TODO: track invalidation state somehow for later.
-		if (!bIsDistantLight)
+		if (bAllowInvalidation)
 		{
 			PrevRenderedFrameNumber = -1;
 		}
@@ -202,6 +203,8 @@ void FVirtualShadowMapPerLightCacheEntry::UpdateLocal(const FProjectedShadowInit
 	bCurrentIsDistantLight = bIsDistantLight;
 	CurrentRenderedFrameNumber = -1;
 	CurrenScheduledFrameNumber = -1;
+
+	return PrevRenderedFrameNumber >= 0;
 }
 
 void FVirtualShadowMapPerLightCacheEntry::Invalidate()
@@ -464,61 +467,106 @@ FVirtualShadowMapArrayCacheManager::FVirtualShadowMapArrayCacheManager(FScene* I
 	// Handle message with status sent back from GPU
 	StatusFeedbackSocket = GPUMessage::RegisterHandler(TEXT("Shadow.Virtual.StatusFeedback"), [this](GPUMessage::FReader Message)
 	{
-		// Only process status messages that came from this specific cache manager
-		if (Message.MessageId == this->StatusFeedbackSocket.GetMessageId())
+		// Goes negative on underflow
+		int32 NumPagesFree = Message.Read<int32>(0);
+			
+		CSV_CUSTOM_STAT(VSM, FreePages, NumPagesFree, ECsvCustomStatOp::Set);
+
+		if (NumPagesFree < 0)
 		{
-			// Get the frame that the message was sent.
-			uint32 FrameNumber = Message.Read<uint32>(0);
-			// Goes negative on underflow
-			int32 NumPagesFree = Message.Read<int32>(0);
+			static const auto* CVarResolutionLodBiasLocalPtr = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.Shadow.Virtual.ResolutionLodBiasLocal"));
+			const float LodBiasLocal = CVarResolutionLodBiasLocalPtr->GetValueOnRenderThread();
 
-			if (NumPagesFree < 0)
-			{
-				static const auto* CVarResolutionLodBiasLocalPtr = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.Shadow.Virtual.ResolutionLodBiasLocal"));
-				const float LodBiasLocal = CVarResolutionLodBiasLocalPtr->GetValueOnRenderThread();
+			static const auto* CVarResolutionLodBiasDirectionalPtr = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.Shadow.Virtual.ResolutionLodBiasDirectional"));
+			const float LodBiasDirectional = CVarResolutionLodBiasDirectionalPtr->GetValueOnRenderThread();
 
-				static const auto* CVarResolutionLodBiasDirectionalPtr = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.Shadow.Virtual.ResolutionLodBiasDirectional"));
-				const float LodBiasDirectional = CVarResolutionLodBiasDirectionalPtr->GetValueOnRenderThread();
-
-				static const auto* CVarMaxPhysicalPagesPtr = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Shadow.Virtual.MaxPhysicalPages"));
-				const int32 MaxPhysicalPages = CVarMaxPhysicalPagesPtr->GetValueOnRenderThread();
+			static const auto* CVarMaxPhysicalPagesPtr = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Shadow.Virtual.MaxPhysicalPages"));
+			const int32 MaxPhysicalPages = CVarMaxPhysicalPagesPtr->GetValueOnRenderThread();
 
 				static const auto* CVarMaxPhysicalPagesSceneCapturePtr = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Shadow.Virtual.MaxPhysicalPagesSceneCapture"));
 				const int32 MaxPhysicalPagesSceneCapture = CVarMaxPhysicalPagesSceneCapturePtr->GetValueOnRenderThread();
 
 #if !UE_BUILD_SHIPPING
-				if (!bLoggedPageOverflow)
-				{
-					UE_LOG(LogRenderer, Warning, TEXT("Virtual Shadow Map Page Pool overflow (%d page allocations were not served), this will produce visual artifacts (missing shadow), increase the page pool limit or reduce resolution bias to avoid.\n")
-						TEXT(" See r.Shadow.Virtual.MaxPhysicalPages (%d), r.Shadow.Virtual.MaxPhysicalPagesSceneCapture (%d), r.Shadow.Virtual.ResolutionLodBiasLocal (%.2f), and r.Shadow.Virtual.ResolutionLodBiasDirectional (%.2f)"),
-						-NumPagesFree,
-						MaxPhysicalPages,
-						MaxPhysicalPagesSceneCapture,
-						LodBiasLocal,
-						LodBiasDirectional);
-					bLoggedPageOverflow = true;
-				}
-				LastOverflowFrame = Scene->GetFrameNumber();
-#endif
-			}
-#if !UE_BUILD_SHIPPING
-			else
+			if (!bLoggedPageOverflow)
 			{
-				bLoggedPageOverflow = false;
+				UE_LOG(LogRenderer, Warning, TEXT("Virtual Shadow Map Page Pool overflow (%d page allocations were not served), this will produce visual artifacts (missing shadow), increase the page pool limit or reduce resolution bias to avoid.\n")
+					TEXT(" See r.Shadow.Virtual.MaxPhysicalPages (%d), r.Shadow.Virtual.MaxPhysicalPagesSceneCapture (%d), r.Shadow.Virtual.ResolutionLodBiasLocal (%.2f), and r.Shadow.Virtual.ResolutionLodBiasDirectional (%.2f)"),
+					-NumPagesFree,
+					MaxPhysicalPages,
+					MaxPhysicalPagesSceneCapture,
+					LodBiasLocal,
+					LodBiasDirectional);
+				bLoggedPageOverflow = true;
 			}
+			LastOverflowTime = float(FGameTime::GetTimeSinceAppStart().GetRealTimeSeconds());
 #endif
 		}
+#if !UE_BUILD_SHIPPING
+		else
+		{
+			bLoggedPageOverflow = false;
+		}
+#endif
 	});
+
+#if !UE_BUILD_SHIPPING
+	// Handle message with stats sent back from GPU whenever stats are enabled
+	StatsFeedbackSocket = GPUMessage::RegisterHandler(TEXT("Shadow.Virtual.StatsFeedback"), [this](GPUMessage::FReader Message)
+	{
+		// Culling stats
+		int32 NaniteNumTris = Message.Read<int32>(0);
+		int32 NanitePostCullNodeCount = Message.Read<int32>(0);
+		int32 NonNanitePostCullInstanceCount = Message.Read<int32>(0);
+
+		CSV_CUSTOM_STAT(VSM, NaniteNumTris, NaniteNumTris, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(VSM, NanitePostCullNodeCount, NanitePostCullNodeCount, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(VSM, NonNanitePostCullInstanceCount, NonNanitePostCullInstanceCount, ECsvCustomStatOp::Set);
+
+		// Large page area items
+		LastLoggedPageOverlapAppTime.SetNumZeroed(Scene->GetMaxPersistentPrimitiveIndex());
+		float RealTimeSeconds = float(FGameTime::GetTimeSinceAppStart().GetRealTimeSeconds());
+
+		TConstArrayView<uint32> PageAreaDiags = Message.ReadCount(FVirtualShadowMapArray::MaxPageAreaDiagnosticSlots * 2);
+		for (int32 Index = 0; Index < PageAreaDiags.Num(); Index += 2)
+		{
+			uint32 Overlap = PageAreaDiags[Index];
+			uint32 PersistentPrimitiveId = PageAreaDiags[Index + 1];
+			int32 PrimtiveIndex = Scene->GetPrimitiveIndex(FPersistentPrimitiveIndex{ int32(PersistentPrimitiveId) });
+			if (Overlap > 0 && PrimtiveIndex != INDEX_NONE)
+			{
+				if (RealTimeSeconds - LastLoggedPageOverlapAppTime[PersistentPrimitiveId] > 5.0f)
+				{
+					LastLoggedPageOverlapAppTime[PersistentPrimitiveId] = RealTimeSeconds;
+					UE_LOG(LogRenderer, Warning, TEXT("Non-Nanite VSM page overlap performance Warning, %d, %s, %s"), Overlap, *Scene->Primitives[PrimtiveIndex]->GetOwnerActorNameOrLabelForDebuggingOnly(), *Scene->Primitives[PrimtiveIndex]->GetFullnameForDebuggingOnly());
+				}
+				LargePageAreaItems.Add(PersistentPrimitiveId, FLargePageAreaItem{ Overlap, RealTimeSeconds });
+			}
+		}
+	});
+#endif
 
 #if !UE_BUILD_SHIPPING
 	ScreenMessageDelegate = FRendererOnScreenNotification::Get().AddLambda([this](TMultiMap<FCoreDelegates::EOnScreenMessageSeverity, FText >& OutMessages)
 	{
+		float RealTimeSeconds = float(FGameTime::GetTimeSinceAppStart().GetRealTimeSeconds());
+
 		// Show for ~5s after last overflow
 		int32 CurrentFrameNumber = Scene->GetFrameNumber();
-		if (LastOverflowFrame >= 0 && CurrentFrameNumber - LastOverflowFrame < 30 * 5)
+		if (LastOverflowTime >= 0.0f && RealTimeSeconds - LastOverflowTime < 5.0f)
 		{
-			OutMessages.Add(FCoreDelegates::EOnScreenMessageSeverity::Warning, FText::FromString(FString::Printf(TEXT("Virtual Shadow Map Page Pool overflow detected (%d frames ago)"), CurrentFrameNumber - LastOverflowFrame)));
+			OutMessages.Add(FCoreDelegates::EOnScreenMessageSeverity::Warning, FText::FromString(FString::Printf(TEXT("Virtual Shadow Map Page Pool overflow detected (%0.0f seconds ago)"), RealTimeSeconds - LastOverflowTime)));
 		}
+
+		for (const auto& Item : LargePageAreaItems)
+		{
+			int32 PrimtiveIndex = Scene->GetPrimitiveIndex(FPersistentPrimitiveIndex{ int32(Item.Key) });
+			uint32 Overlap = Item.Value.PageArea;
+			if (PrimtiveIndex != INDEX_NONE && RealTimeSeconds - Item.Value.LastTimeSeen < 2.5f)
+			{
+				OutMessages.Add(FCoreDelegates::EOnScreenMessageSeverity::Warning, FText::FromString(FString::Printf(TEXT("Non-Nanite VSM page overlap performance Warning: Primitive '%s' overlapped %d Pages"), *Scene->Primitives[PrimtiveIndex]->GetOwnerActorNameOrLabelForDebuggingOnly(), Overlap)));
+			}
+		}
+		TrimLoggingInfo();
 	});
 #endif
 }
@@ -540,7 +588,11 @@ TRefCountPtr<IPooledRenderTarget> FVirtualShadowMapArrayCacheManager::SetPhysica
 			PF_R32_UINT,
 			FClearValueBinding::None,
 			TexCreate_None,
+		#if PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
+			TexCreate_ShaderResource | TexCreate_UAV | TexCreate_AtomicCompatible,
+		#else
 			TexCreate_ShaderResource | TexCreate_UAV,
+		#endif
 			false,
 			RequestedArraySize
 		);
@@ -697,6 +749,8 @@ void FVirtualShadowMapArrayCacheManager::ExtractFrameData(
 	const FSceneRenderer& SceneRenderer,
 	bool bEnableCaching)
 {
+	TrimLoggingInfo();
+
 	const bool bNewShadowData = VirtualShadowMapArray.IsAllocated();
 	const bool bDropAll = !bEnableCaching;
 	const bool bDropPrevBuffers = bDropAll || bNewShadowData;
@@ -1209,4 +1263,16 @@ void FVirtualShadowMapArrayCacheManager::ProcessInvalidations(
 		Instances.GetWrappedCsGroupCount()
 	);
 
+}
+// Remove old info used to track logging.
+void FVirtualShadowMapArrayCacheManager::TrimLoggingInfo()
+{
+#if !UE_BUILD_SHIPPING
+	// Remove old items
+	float RealTimeSeconds = float(FGameTime::GetTimeSinceAppStart().GetRealTimeSeconds());
+	LargePageAreaItems = LargePageAreaItems.FilterByPredicate([RealTimeSeconds](const TMap<uint32, FLargePageAreaItem>::ElementType& Element)
+	{
+		return RealTimeSeconds - Element.Value.LastTimeSeen < 5.0f;
+	});
+#endif
 }

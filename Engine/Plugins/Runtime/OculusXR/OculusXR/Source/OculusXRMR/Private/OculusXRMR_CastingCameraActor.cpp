@@ -25,6 +25,11 @@
 #include "VRNotificationsComponent.h"
 #include "RenderUtils.h"
 #include "AudioDevice.h"
+#include "Materials/Material.h"
+#include "RHIDefinitions.h"
+#if (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2) || ENGINE_MAJOR_VERSION > 5
+#include "DataDrivenShaderPlatformInfo.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "OculusXRMR_CastingCameraActor"
 

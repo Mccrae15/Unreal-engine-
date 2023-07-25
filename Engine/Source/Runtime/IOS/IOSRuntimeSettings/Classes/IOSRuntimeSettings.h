@@ -85,11 +85,6 @@ struct FIOSBuildResourceFilePath
 	 */
 	bool ExportTextItem(FString& ValueStr, FIOSBuildResourceFilePath const& DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 	{
-		if (0 != (PortFlags & EPropertyPortFlags::PPF_ExportCpp))
-		{
-			return false;
-		}
-
 		ValueStr += FilePath;
 		return true;
 	}
@@ -138,11 +133,6 @@ struct FIOSBuildResourceDirectory
 	 */
 	bool ExportTextItem(FString& ValueStr, FIOSBuildResourceDirectory const& DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 	{
-		if (0 != (PortFlags & EPropertyPortFlags::PPF_ExportCpp))
-		{
-			return false;
-		}
-
 		ValueStr += Path;
 		return true;
 	}
@@ -512,6 +502,10 @@ public:
 	/** Various overrides for how this platform should handle compression and decompression */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FPlatformRuntimeAudioCompressionOverrides CompressionOverrides;
+
+    /** Whether this app's audio can be played when using other apps or on the srpingboard */
+    UPROPERTY(config, EditAnywhere, Category = "Audio", meta = (DisplayName = "Whether audio from this plays in background (iOS and iPadOS only)"))
+    bool bSupportsBackgroundAudio;
 
 	/** This determines the max amount of memory that should be used for the cache at any given time. If set low (<= 8 MB), it lowers the size of individual chunks of audio during cook. */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides|Stream Caching", meta = (DisplayName = "Max Cache Size (KB)"))

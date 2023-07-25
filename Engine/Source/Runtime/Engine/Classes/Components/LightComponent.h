@@ -116,6 +116,14 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Light, AdvancedDisplay, meta = (DisplayName = "Contact Shadow Length In World Space Units"))
 	uint32 ContactShadowLengthInWS : 1;
 
+	/** Intensity of the shadows cast by primitives with "cast contact shadow" enabled. 0 = no shadow, 1 (default) = fully shadowed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Light, AdvancedDisplay, meta = (ClampMin = 0.0, ClampMax = 1.0, UIMin = "0.0", UIMax = "1.0"))
+	float ContactShadowCastingIntensity;
+
+	/** Intensity of the shadows cast by primitives with "cast contact shadow" disabled. 0 (default) = no shadow, 1 = fully shadowed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Light, AdvancedDisplay, meta = (ClampMin = 0.0, ClampMax = 1.0))
+	float ContactShadowNonCastingIntensity;
+
 	UPROPERTY()
 	uint32 InverseSquaredFalloff_DEPRECATED:1;
 
@@ -157,6 +165,12 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightFunction)
 	TObjectPtr<class UMaterialInterface> LightFunctionMaterial;
+
+#if WITH_EDITORONLY_DATA
+	/** When clearing the light func, e.g. because the light is made static, this field remembers the last value */
+	UPROPERTY(Transient)
+	TObjectPtr<class UMaterialInterface> StashedLightFunctionMaterial;
+#endif
 
 	/** Scales the light function projection.  X and Y scale in the directions perpendicular to the light's direction, Z scales along the light direction. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightFunction, meta=(AllowPreserveRatio = "true"))
@@ -432,6 +446,9 @@ public:
 	/** Set the MaterialInterface to use for the given element index (if valid) */
 	virtual void SetMaterial(int32 ElementIndex, UMaterialInterface* InMaterial);
 
+	/** Set the light func to null, but remember the current value so it can be restored later */
+	void ClearLightFunctionMaterial();
+
 	virtual class FLightSceneProxy* CreateSceneProxy() const
 	{
 		return NULL;
@@ -465,6 +482,9 @@ public:
 	void InitializeStaticShadowDepthMap();
 
 	FLinearColor GetColoredLightBrightness() const;
+
+	/** Get the color temperature in the working color space. */
+	FLinearColor GetColorTemperature() const;
 
 	/** 
 	 * Called when property is modified by InterpPropertyTracks

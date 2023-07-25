@@ -109,6 +109,13 @@ struct FImgMediaTileSelection
 	bool Contains(const FImgMediaTileSelection& Other) const;
 
 	/**
+	 * Combine the current selection with another (assumes they are the same size).
+	 *
+	 * @param Other Selection to include.
+	 */
+	void Include(const FImgMediaTileSelection& Other);
+
+	/**
 	 * Mark a tile as visible.
 	 *
 	 * @param TileCoordX Horizontal tile coordinate.
@@ -203,7 +210,12 @@ public:
 	 * @return Mesh component
 	 */
 	UMeshComponent* GetMeshComponent() const;
+
+	/** Get the mip level to upscale (-1 if disabled). */
+	int32 GetMipLevelToUpscale() const;
+
 protected:
+
 	/** Mesh component onto which the media is displayed. */
 	TWeakObjectPtr<class UMeshComponent> MeshComponent;
 	/** Media texture object tracker. */
@@ -273,6 +285,9 @@ public:
 	 * @return Mipmap level.
 	 */
 	TMap<int32, FImgMediaTileSelection> GetVisibleTiles();
+
+	/** Get the minimum mip level to upscale (-1 if disabled). */
+	int32 GetMinimumMipLevelToUpscale() const;
 	
 	/**
 	 * Check if any scene objects are using our img sequence.

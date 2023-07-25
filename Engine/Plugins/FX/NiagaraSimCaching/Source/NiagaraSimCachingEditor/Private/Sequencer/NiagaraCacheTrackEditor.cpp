@@ -1,18 +1,30 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sequencer/NiagaraCacheTrackEditor.h"
-#include "CommonMovieSceneTools.h"
-#include "Fonts/FontMeasure.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+
+#include "CoreMinimal.h"
+#include "AssetToolsModule.h"
 #include "LevelSequence.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSimCache.h"
-#include "Niagara/Sequencer/MovieSceneNiagaraCacheTrack.h"
-#include "Niagara/Sequencer/MovieSceneNiagaraCacheSection.h"
+#include "NiagaraSystem.h"
 #include "SequencerSectionPainter.h"
-#include "SequencerUtilities.h"
-#include "Styling/SlateIconFinder.h"
 #include "TimeToPixel.h"
+#include "CacheTrackRecorder/Public/Recorder/CacheTrackRecorder.h"
+#include "Fonts/FontMeasure.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Niagara/NiagaraSimCachingEditorStyle.h"
+#include "Niagara/Sequencer/MovieSceneNiagaraCacheSection.h"
+#include "Niagara/Sequencer/MovieSceneNiagaraCacheTrack.h"
+#include "Editor.h"
+#include "MovieScene/MovieSceneNiagaraSystemSpawnSection.h"
+#include "MovieScene/MovieSceneNiagaraSystemTrack.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Styling/SlateIconFinder.h"
+#include "UObject/Package.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
 
 namespace NiagaraCacheEditorConstants
 {
@@ -81,7 +93,7 @@ int32 FNiagaraCacheSection::OnPaintSection(FSequencerSectionPainter& Painter) co
 	const float SeqLength = Duration - TickResolution.AsSeconds(Section.Params.StartFrameOffset + Section.Params.EndFrameOffset) / AnimPlayRate;
 	const float FirstLoopSeqLength = SeqLength - TickResolution.AsSeconds(Section.Params.FirstLoopStartFrameOffset) / AnimPlayRate;
 
-	if (!FMath::IsNearlyZero(SeqLength, KINDA_SMALL_NUMBER) && SeqLength > 0)
+	if (!FMath::IsNearlyZero(SeqLength, KINDA_SMALL_NUMBER) && SeqLength > 0 && Section.Params.SectionStretchMode == ENiagaraSimCacheSectionStretchMode::Repeat)
 	{
 		float MaxOffset = Section.GetRange().Size<FFrameTime>() / TickResolution;
 		float OffsetTime = FirstLoopSeqLength;
@@ -120,6 +132,12 @@ int32 FNiagaraCacheSection::OnPaintSection(FSequencerSectionPainter& Painter) co
 			// Draw the current time next to the scrub handle
 			const float AnimTime = Section.MapTimeToAnimation(Duration, CurrentTime, TickResolution);
 			int32 FrameTime = Duration ? FMath::FloorToFloat((AnimTime / Duration) * NumFrames) + 1 : 0;
+			if (Section.Params.SectionStretchMode == ENiagaraSimCacheSectionStretchMode::TimeDilate && Duration)
+			{
+				float Frames = (Section.GetExclusiveEndFrame() - Section.GetInclusiveStartFrame()).Value;
+				float NormalizedAge = (CurrentTime.FrameNumber - Section.GetInclusiveStartFrame()).Value / Frames;
+				FrameTime = FMath::FloorToFloat(NormalizedAge * NumFrames) + 1;
+			}
 			FString FrameString =  FString::FromInt(FrameTime);
 
 			const FSlateFontInfo SmallLayoutFont = FCoreStyle::GetDefaultFontStyle("Bold", 10);
@@ -140,8 +158,8 @@ int32 FNiagaraCacheSection::OnPaintSection(FSequencerSectionPainter& Painter) co
 
 			FSlateDrawElement::MakeBox(
 				Painter.DrawElements,
-				LayerId + 5,
-				Painter.SectionGeometry.ToPaintGeometry(TextOffset - BoxPadding, TextSize + 2.0f * BoxPadding),
+				LayerId + 100,
+				Painter.SectionGeometry.ToPaintGeometry(TextSize + 2.0f * BoxPadding, FSlateLayoutTransform(TextOffset - BoxPadding)),
 				FAppStyle::GetBrush("WhiteBrush"),
 				ESlateDrawEffect::None,
 				FLinearColor::Black.CopyWithNewOpacity(0.5f)
@@ -149,8 +167,8 @@ int32 FNiagaraCacheSection::OnPaintSection(FSequencerSectionPainter& Painter) co
 
 			FSlateDrawElement::MakeText(
 				Painter.DrawElements,
-				LayerId + 6,
-				Painter.SectionGeometry.ToPaintGeometry(TextOffset, TextSize),
+				LayerId + 101,
+				Painter.SectionGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextOffset)),
 				FrameString,
 				SmallLayoutFont,
 				DrawEffects,
@@ -259,17 +277,14 @@ TSharedRef<ISequencerSection> FNiagaraCacheTrackEditor::MakeSectionInterface(UMo
 
 void FNiagaraCacheTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass)
 {
-	//TODO (mga) allow users to create cache tracks directly?
-	/*
 	if (ObjectClass->IsChildOf(UNiagaraComponent::StaticClass()) || ObjectClass->IsChildOf(AActor::StaticClass()))
 	{
 		if(ObjectBindings.Num() > 0)
 		{
-			if (UNiagaraComponent* NiagaraComponent = AcquireNiagaraComponentFromObjectGuid(ObjectBindings[0], GetSequencer()))
+			if (AcquireNiagaraComponentFromObjectGuid(ObjectBindings[0], GetSequencer()))
 			{
 				UMovieSceneTrack* Track = nullptr;
 
-				
 				MenuBuilder.AddMenuEntry(
 					NSLOCTEXT("Sequencer", "AddNiagaraCache", "Niagara Cache"),
 					NSLOCTEXT("Sequencer", "AddNiagaraCacheTooltip", "Adds a Niagara Cache track."),
@@ -281,7 +296,62 @@ void FNiagaraCacheTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBui
 				
 			}
 		}
-	}*/
+	}
+}
+
+void FNiagaraCacheTrackEditor::BuildTrackContextMenu(FMenuBuilder& MenuBuilder, UMovieSceneTrack* Track)
+{
+	MenuBuilder.BeginSection("CacheActions", LOCTEXT("CacheActions", "Cache Actions"));
+	{
+		if (UMovieSceneNiagaraCacheTrack* CacheTrack = Cast<UMovieSceneNiagaraCacheTrack>(Track))
+		{
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("CreateAssetFromThisCache", "Save Cache To Asset"),
+				LOCTEXT("CreateAssetFromThisCacheToolTip", "Create a simulation cache asset from this track's simulation data. This is especially useful if the cached data is very big or should be iterated on outside of sequencer.\nOnly enabled if there is valid cache data available and it's not already saved in an asset."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda([CacheTrack]()
+					{
+						UMovieSceneNiagaraCacheSection* CacheSection = Cast<UMovieSceneNiagaraCacheSection>(CacheTrack->GetAllSections()[0]);
+						UNiagaraSimCache* SimCacheToSave = CacheSection->Params.SimCache;
+
+						const FString PackagePath = FPackageName::GetLongPackagePath(SimCacheToSave->GetOutermost()->GetName());
+						const FName CacheName = FName(CacheTrack->GetDisplayName().ToString());
+						
+						FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+
+						// Duplicate and Save the sim cache.
+						UNiagaraSimCache* CreatedAsset = Cast<UNiagaraSimCache>(AssetToolsModule.Get().DuplicateAssetWithDialogAndTitle(CacheName.ToString(), PackagePath, SimCacheToSave, LOCTEXT("CreateCacheAssetDialogTitle", "Save Sim Cache As")));
+						if (CreatedAsset != nullptr)
+						{
+							GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(CreatedAsset);
+
+							// Replace existing cache with asset
+							FScopedTransaction ScopedTransaction(LOCTEXT("CreateAssetFromCache", "Create asset from cache"));
+							CacheSection->Modify();
+							CacheSection->Params.SimCache = CreatedAsset;
+						}
+					}),
+					FCanExecuteAction::CreateLambda(
+						[CacheTrack]()
+						{
+							TArray<UMovieSceneSection*> Sections = CacheTrack->GetAllSections();
+							if (Sections.Num() == 1)
+							{
+								if (UMovieSceneNiagaraCacheSection* CacheSection = Cast<UMovieSceneNiagaraCacheSection>(Sections[0]))
+								{
+									return CacheSection->Params.SimCache && !CacheSection->Params.SimCache->IsEmpty() && !CacheSection->Params.SimCache->IsAsset();
+								}
+							}
+							return false;
+						}
+					)
+				)
+			);
+		}
+	}
+
+	MenuBuilder.EndSection();
 }
 
 void FNiagaraCacheTrackEditor::BuildNiagaraCacheTrack(TArray<FGuid> ObjectBindings, UMovieSceneTrack* Track)
@@ -321,9 +391,15 @@ FKeyPropertyResult FNiagaraCacheTrackEditor::AddKeyInternal(FFrameNumber KeyTime
 		{
 			Track->Modify();
 
-			UMovieSceneSection* NewSection = Cast<UMovieSceneNiagaraCacheTrack>(Track)->AddNewAnimation(KeyTime, NiagaraComponent);
+			UMovieSceneNiagaraCacheTrack* CacheTrack = Cast<UMovieSceneNiagaraCacheTrack>(Track);
+			UMovieSceneSection* NewSection = CacheTrack->AddNewAnimation(KeyTime, NiagaraComponent);
 			KeyPropertyResult.bTrackModified = true;
 			KeyPropertyResult.SectionsCreated.Add(NewSection);
+
+			if (NiagaraComponent->GetAsset())
+			{
+				CacheTrack->SetDisplayName(FText::Format(LOCTEXT("NiagaraCacheTrack_Name", "{0} Sim Cache"), FText::FromName(NiagaraComponent->GetAsset()->GetFName())));
+			}
 
 			GetSequencer()->EmptySelection();
 			GetSequencer()->SelectSection(NewSection);
@@ -334,9 +410,182 @@ FKeyPropertyResult FNiagaraCacheTrackEditor::AddKeyInternal(FFrameNumber KeyTime
 	return KeyPropertyResult;
 }
 
+FReply FNiagaraCacheTrackEditor::RecordCacheTrack(IMovieSceneCachedTrack* Track)
+{
+	UCacheTrackRecorder::RecordCacheTrack(Track, GetSequencer());
+	return FReply::Handled();
+}
+
+bool FNiagaraCacheTrackEditor::IsCacheTrackOutOfDate(UMovieSceneTrack* Track)
+{
+	if (UMovieSceneNiagaraCacheTrack* NiagaraTrack = Cast<UMovieSceneNiagaraCacheTrack>(Track))
+	{
+		for (UMovieSceneSection* Section : NiagaraTrack->GetAllSections())
+		{
+			if (UMovieSceneNiagaraCacheSection* NiagaraCacheSection = Cast<UMovieSceneNiagaraCacheSection>(Section))
+			{
+				if (NiagaraCacheSection->bCacheOutOfDate)
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+bool FNiagaraCacheTrackEditor::HasConflictingLifecycleTrack(UMovieSceneTrack* CacheTrack) const
+{
+	UMovieScene* MovieScene = GetMovieSceneSequence()->GetMovieScene();
+	FFrameNumber PlaybackStartFrame = MovieScene->GetPlaybackRange().GetLowerBoundValue();
+	const TArray<FMovieSceneBinding>& SceneBindings = MovieScene->GetBindings();
+
+	for (const FMovieSceneBinding& Binding : SceneBindings)
+	{
+		TArray<UMovieSceneTrack*> ComponentTracks = Binding.GetTracks();
+		// find any life cycle tracks bound to the same component
+		if (ComponentTracks.Contains(CacheTrack))
+		{
+			for (UMovieSceneTrack* Track : ComponentTracks)
+			{
+				if (UMovieSceneNiagaraSystemTrack* SystemTrack = Cast<UMovieSceneNiagaraSystemTrack>(Track))
+				{
+					if (SystemTrack->IsEvalDisabled() == false)
+					{
+						for (UMovieSceneSection* Section : SystemTrack->GetAllSections())
+						{
+							// check if we start at the same frame as playback. If we do and don't use desired age then that's a problem, as recording a cache will reset the system multiple times at the start and invalidate the recording.
+							UMovieSceneNiagaraSystemSpawnSection* SpawnSection = Cast<UMovieSceneNiagaraSystemSpawnSection>(Section);
+							if (SpawnSection && SpawnSection->GetAgeUpdateMode() == ENiagaraAgeUpdateMode::TickDeltaTime && SpawnSection->GetInclusiveStartFrame() == PlaybackStartFrame)
+							{
+								return true;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false;
+}
+
+FText FNiagaraCacheTrackEditor::GetCacheTrackWarnings(UMovieSceneTrack* Track) const
+{
+	TArray<FText> Warnings;
+	if (HasConflictingLifecycleTrack(Track))
+	{
+		Warnings.Add(LOCTEXT("AddNiagaraCache_LifecycleTrackWarn", "The system life cycle track associated with this cache track is not set up well for cache recording.\nEither (1) set it to use desired age mode or (2) move it so it starts on a different frame than the sequence playback (e.g. one frame earlier)."));
+	}
+	if (IsCacheTrackOutOfDate(Track))
+	{
+		Warnings.Add(LOCTEXT("AddNiagaraCache_OutOfDate", "This cache track is out of date, as it's properties were changed after recording. Consider re-recording the cached data."));
+	}
+	return FText::Join(FText::FromString("\n\n"), Warnings);
+}
+
 TSharedPtr<SWidget> FNiagaraCacheTrackEditor::BuildOutlinerEditWidget(const FGuid& ObjectBinding, UMovieSceneTrack* Track, const FBuildEditWidgetParams& Params)
 {
-	return TSharedPtr<SWidget>();
+	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	FWeakObjectPtr BoundObject = SequencerPtr.IsValid() ? SequencerPtr->FindSpawnedObjectOrTemplate(ObjectBinding) : nullptr;
+	
+	return SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.Padding(2, 0, 2, 0)
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		[
+			SNew(SButton)
+			.ToolTipText(LOCTEXT("NiagaraCacheTrack_RecordCache", "Refresh the data in this cache by playing the sequence and recording the Niagara system."))
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			.ContentPadding(2)
+			.ForegroundColor(FSlateColor::UseForeground())
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+			.IsEnabled_Lambda([Track]()
+			{
+				return !Track->IsEvalDisabled();
+			})
+			.OnClicked(this, &FNiagaraCacheTrackEditor::RecordCacheTrack, Cast<IMovieSceneCachedTrack>(Track))
+			[
+				SNew(SImage)
+				.Image(FNiagaraSimCachingEditorStyle::Get().GetBrush( "Niagara.SimCaching.RecordIconSmall"))
+			]
+		]
+		+ SHorizontalBox::Slot()
+		.Padding(2, 0, 2, 0)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SImage)
+			.ToolTipText_Raw(this, &FNiagaraCacheTrackEditor::GetCacheTrackWarnings, Track)
+			.Image(FAppStyle::Get().GetBrush("Icons.WarningWithColor"))
+			.Visibility_Lambda([Track, this]()
+			{
+				if (IsCacheTrackOutOfDate(Track) || HasConflictingLifecycleTrack(Track))
+				{
+					return EVisibility::Visible;
+				}
+				return EVisibility::Collapsed;
+			})
+		]
+		+ SHorizontalBox::Slot()
+		.Padding(2, 0, 2, 0)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SImage)
+			.ToolTipText(LOCTEXT("AddNiagaraCache_InvalidCache", "The cache used by this track does not fit the Niagara component and will be ignored. Re-Record the sim cache or select a different one."))
+			.Image(FAppStyle::Get().GetBrush("Icons.ErrorWithColor"))
+			.Visibility_Lambda([Track, BoundObject]()
+			{
+				if (BoundObject.IsValid() && BoundObject.Get()->IsA(UNiagaraComponent::StaticClass()))
+				{
+					UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(BoundObject.Get());
+					if (UMovieSceneNiagaraCacheTrack* NiagaraTrack = Cast<UMovieSceneNiagaraCacheTrack>(Track))
+					{
+						for (UMovieSceneSection* Section : NiagaraTrack->GetAllSections())
+						{
+							if (UMovieSceneNiagaraCacheSection* NiagaraCacheSection = Cast<UMovieSceneNiagaraCacheSection>(Section))
+							{
+								if (NiagaraCacheSection->Params.SimCache && !NiagaraCacheSection->Params.SimCache->IsEmpty() && !NiagaraCacheSection->Params.SimCache->CanRead(NiagaraComponent->GetAsset()))
+								{
+									return EVisibility::Visible;
+								}
+							}
+						}
+					}
+				}
+				return EVisibility::Collapsed;
+			})
+		]
+		+ SHorizontalBox::Slot()
+		.Padding(2, 0, 2, 0)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SImage)
+			.ToolTipText(LOCTEXT("NiagaraCache_Active", "This track is currently providing cached data to the Niagara component, no simulation is running."))
+			.Image(FSlateIconFinder::FindIconForClass(UNiagaraSimCache::StaticClass()).GetIcon())
+			.ColorAndOpacity(FNiagaraSimCachingEditorStyle::Get().GetColor("Niagara.SimCaching.StatusIcon.Color"))
+			.Visibility_Lambda([Track, BoundObject]()
+			{
+				if (BoundObject.IsValid() && BoundObject.Get()->IsA(UNiagaraComponent::StaticClass()))
+				{
+					UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(BoundObject.Get());
+					if (UMovieSceneNiagaraCacheTrack* NiagaraTrack = Cast<UMovieSceneNiagaraCacheTrack>(Track))
+					{
+						for (UMovieSceneSection* Section : NiagaraTrack->GetAllSections())
+						{
+							if (UMovieSceneNiagaraCacheSection* NiagaraCacheSection = Cast<UMovieSceneNiagaraCacheSection>(Section))
+							{
+								if (!NiagaraTrack->IsEvalDisabled() && NiagaraCacheSection->Params.SimCache && NiagaraCacheSection->Params.SimCache->CanRead(NiagaraComponent->GetAsset()) && NiagaraComponent->GetSimCache() == NiagaraCacheSection->Params.SimCache && NiagaraComponent->IsActive())
+								{
+									return EVisibility::Visible;
+								}
+							}
+						}
+					}
+				}
+				return EVisibility::Collapsed;
+			})
+		];
 }
 
 const FSlateBrush* FNiagaraCacheTrackEditor::GetIconBrush() const

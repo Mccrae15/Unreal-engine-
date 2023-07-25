@@ -2,40 +2,15 @@
 
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceSurface.h"
 
-#include "Containers/Array.h"
-#include "Containers/EnumAsByte.h"
-#include "Containers/Map.h"
-#include "Containers/Set.h"
-#include "Containers/StringConv.h"
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphNode.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/DataTable.h"
-#include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Engine/StaticMesh.h"
-#include "Engine/Texture2D.h"
-#include "Engine/TextureDefines.h"
 #include "GPUSkinPublicDefs.h"
-#include "HAL/PlatformCrt.h"
 #include "Interfaces/ITargetPlatform.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "MaterialTypes.h"
 #include "Materials/MaterialInstance.h"
-#include "Materials/MaterialInterface.h"
-#include "Math/UnrealMathSSE.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/CString.h"
-#include "Misc/Guid.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCO/CustomizableObjectInstance.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "MuCO/MutableMeshBufferUtils.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
 #include "MuCOE/CustomizableObjectLayout.h"
-#include "MuCOE/GenerateMutableSource/GenerateMutableSource.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceColor.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceFloat.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceGroupProjector.h"
@@ -44,28 +19,17 @@
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceTable.h"
 #include "MuCOE/GraphTraversal.h"
 #include "MuCOE/MutableUtils.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeCopyMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeEditMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeExtendMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeFloatConstant.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeFloatParameter.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeMaterial.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeMaterialBase.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterialVariation.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMorphMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeRemoveMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeRemoveMeshBlocks.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
-#include "MuR/Image.h"
-#include "MuR/MeshBufferSet.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
-#include "MuT/Node.h"
-#include "MuT/NodeColour.h"
-#include "MuT/NodeImageConstant.h"
 #include "MuT/NodeImageFormat.h"
 #include "MuT/NodeImageMipmap.h"
 #include "MuT/NodeImageNormalComposite.h"
@@ -75,17 +39,8 @@
 #include "MuT/NodeMeshFragment.h"
 #include "MuT/NodePatchImage.h"
 #include "MuT/NodePatchMesh.h"
-#include "MuT/NodeSurface.h"
 #include "MuT/NodeSurfaceEdit.h"
-#include "MuT/NodeSurfaceNew.h"
 #include "MuT/NodeSurfaceVariation.h"
-#include "MuT/Table.h"
-#include "Templates/Casts.h"
-#include "Trace/Detail/Channel.h"
-#include "UObject/NameTypes.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
 
@@ -160,6 +115,8 @@ void SetSurfaceFormat( mu::FMeshBufferSet& OutVertexBufferFormat, mu::FMeshBuffe
 	{
 		++MutableBufferCount;
 	}
+
+	MutableBufferCount += MeshData.SkinWeightProfilesSemanticIndices.Num();
 
 	OutVertexBufferFormat.SetBufferCount(MutableBufferCount);
 
@@ -240,6 +197,11 @@ void SetSurfaceFormat( mu::FMeshBufferSet& OutVertexBufferFormat, mu::FMeshBuffe
 		++CurrentVertexBuffer;
 	}
 
+	for (int32 ProfileSemanticIndex : MeshData.SkinWeightProfilesSemanticIndices)
+	{
+		MutableMeshBufferUtils::SetupSkinWeightProfileBuffer(CurrentVertexBuffer, MeshData.MaxBoneIndexTypeSizeBytes, 1, MutableBonesPerVertex, ProfileSemanticIndex, OutVertexBufferFormat);
+		++CurrentVertexBuffer;
+	}
 
 	// Index buffer
 	MutableMeshBufferUtils::SetupIndexBuffer(OutIndexBufferFormat);
@@ -419,7 +381,16 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 		{
 			if (const UCustomizableObjectNodeTable* TypedNodeTable = Cast< UCustomizableObjectNodeTable >(ConnectedPin->GetOwningNode()))
 			{
-				GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), ConnectedPin, GenerationContext);
+				FString ColumnName = ConnectedPin->PinFriendlyName.ToString();
+
+				// Generating a new data table if not exists
+				mu::TablePtr Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), ConnectedPin, GenerationContext);
+				
+				// Generating a column for each modified parameter(texture, color & float) if not exists
+				if (Table && Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
+				{
+					GenerateTableColumn(TypedNodeTable, ConnectedPin, Table, ColumnName, GenerationContext.CurrentLOD, GenerationContext);
+				}
 
 				// Checking if this material has some parameters modified by the table node linked to it
 				if (GenerationContext.GeneratedParametersInTables.Contains(TypedNodeTable))
@@ -534,6 +505,18 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 						Props.AddressX = ReferenceTexture->AddressX;
 						Props.AddressY = ReferenceTexture->AddressY;
 						Props.bFlipGreenChannel = ReferenceTexture->bFlipGreenChannel;
+
+						// TODO: MTBL-1081
+						// TextureGroup::TEXTUREGROUP_UI does not support streaming. If we generate a texture that requires streaming and set this group, it will crash when initializing the resource. 
+						// If LODGroup == TEXTUREGROUP_UI, UTexture::IsPossibleToStream() will return false and UE will assume all mips are loaded, when they're not, and crash.
+						if (Props.LODGroup == TEXTUREGROUP_UI)
+						{
+							Props.LODGroup = TextureGroup::TEXTUREGROUP_Character;
+							
+							FString msg = FString::Printf(TEXT("The Reference texture [%s] is using TEXTUREGROUP_UI which does not support streaming. Please set a different TEXTURE group."),
+								*ReferenceTexture->GetName(), *ImageName);
+							GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node, EMessageSeverity::Info);
+						}
 					}
 					else if (!GroupProjectionImg.get())
 					{
@@ -672,61 +655,53 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 							if (GenerationContext.Options.bTextureCompression)
 							{
 								check(PlatformFormats[0].Num() > LayerIndex);
-								FString FormatWithoutPrefix = PlatformFormats[0][LayerIndex].ToString();
 
-								FormatWithoutPrefix.RemoveFromStart("XBOXONE_");
-								FormatWithoutPrefix.RemoveFromStart("XBOXONEGDK_");
-								FormatWithoutPrefix.RemoveFromStart("XSX_");
-								FormatWithoutPrefix.RemoveFromStart("PS4_");
-								FormatWithoutPrefix.RemoveFromStart("PS5_");
-								FormatWithoutPrefix.RemoveFromStart("SWITCH_");
-								FormatWithoutPrefix.RemoveFromStart("OODLE_");
-								FormatWithoutPrefix.RemoveFromStart("TFO_");
+								const FString PlatformFormat = PlatformFormats[0][LayerIndex].ToString();
 
-								// Special case for textures compressed with OODLE with the format "PlatformPrefix_OODLE_TextureFormat"
-								FString OodleString = TEXT("_OODLE_");
-								FString LeftSplit, RightSplit;
-								bool bSplitString = FormatWithoutPrefix.Split(OodleString, &LeftSplit, &RightSplit);
+								// Remove platform prefix
+								FString FormatWithoutPrefix = PlatformFormat;
+								PlatformFormat.Split(TEXT("_"), nullptr, &FormatWithoutPrefix, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 
-								if (bSplitString)
-								{									
-									FormatWithoutPrefix = RightSplit;
-								}
+								mu::EImageFormat mutableFormat = mu::EImageFormat::IF_NONE;
+								mu::EImageFormat mutableFormatIfAlpha = mu::EImageFormat::IF_NONE;
 
 								if (FormatWithoutPrefix == TEXT("AutoDXT"))
 								{
-									FormatImage->SetFormat(mu::EImageFormat::IF_BC1, mu::EImageFormat::IF_BC3);
+									mutableFormat = mu::EImageFormat::IF_BC1;
+									mutableFormatIfAlpha = mu::EImageFormat::IF_BC3;
 								}
-								else if ((FormatWithoutPrefix == TEXT("AutoASTC")) || (FormatWithoutPrefix == TEXT("ASTC_RGBAuto")))
+								else if (FormatWithoutPrefix == TEXT("DXT1")) mutableFormat = mu::EImageFormat::IF_BC1;
+								else if (FormatWithoutPrefix == TEXT("DXT3")) mutableFormat = mu::EImageFormat::IF_BC2;
+								else if (FormatWithoutPrefix == TEXT("DXT5")) mutableFormat = mu::EImageFormat::IF_BC3;
+								else if (FormatWithoutPrefix == TEXT("BC1")) mutableFormat = mu::EImageFormat::IF_BC1;
+								else if (FormatWithoutPrefix == TEXT("BC2")) mutableFormat = mu::EImageFormat::IF_BC2;
+								else if (FormatWithoutPrefix == TEXT("BC3")) mutableFormat = mu::EImageFormat::IF_BC3;
+								else if (FormatWithoutPrefix == TEXT("BC4")) mutableFormat = mu::EImageFormat::IF_BC4;
+								else if (FormatWithoutPrefix == TEXT("BC5")) mutableFormat = mu::EImageFormat::IF_BC5;
+								else if (FormatWithoutPrefix == TEXT("G8")) mutableFormat = mu::EImageFormat::IF_L_UBYTE;
+								else if (FormatWithoutPrefix == TEXT("BGRA8")) mutableFormat = mu::EImageFormat::IF_RGBA_UBYTE;
+								else if (PlatformFormat.Contains(TEXT("ASTC")))
 								{
-									FormatImage->SetFormat(mu::EImageFormat::IF_ASTC_4x4_RGB_LDR, mu::EImageFormat::IF_ASTC_4x4_RGBA_LDR);
-								}
-								else
-								{
-									mu::EImageFormat mutableFormat = mu::EImageFormat::IF_RGBA_UBYTE;
-
-									if (FormatWithoutPrefix == TEXT("DXT1")) mutableFormat = mu::EImageFormat::IF_BC1;
-									else if (FormatWithoutPrefix == TEXT("DXT3")) mutableFormat = mu::EImageFormat::IF_BC2;
-									else if (FormatWithoutPrefix == TEXT("DXT5")) mutableFormat = mu::EImageFormat::IF_BC3;
-									else if (FormatWithoutPrefix == TEXT("BC1")) mutableFormat = mu::EImageFormat::IF_BC1;
-									else if (FormatWithoutPrefix == TEXT("BC2")) mutableFormat = mu::EImageFormat::IF_BC2;
-									else if (FormatWithoutPrefix == TEXT("BC3")) mutableFormat = mu::EImageFormat::IF_BC3;
-									else if (FormatWithoutPrefix == TEXT("BC4")) mutableFormat = mu::EImageFormat::IF_BC4;
-									else if (FormatWithoutPrefix == TEXT("BC5")) mutableFormat = mu::EImageFormat::IF_BC5;
-									else if (FormatWithoutPrefix == TEXT("ASTC_RGB")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGB_LDR;
-									else if (FormatWithoutPrefix == TEXT("ASTC_RGBA")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGBA_LDR;
-									else if (FormatWithoutPrefix == TEXT("ASTC_NormalRG")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RG_LDR;
-									else if (FormatWithoutPrefix == TEXT("G8")) mutableFormat = mu::EImageFormat::IF_L_UBYTE;
-									else if (FormatWithoutPrefix == TEXT("BGRA8")) mutableFormat = mu::EImageFormat::IF_RGBA_UBYTE;
-									else
+									if ((FormatWithoutPrefix == TEXT("AutoASTC")) || (FormatWithoutPrefix == TEXT("RGBAuto")))
 									{
-										UE_LOG(LogMutable, Warning, TEXT("Unexpected image format [%s]."), *FormatWithoutPrefix);
+										mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGB_LDR;
+										mutableFormatIfAlpha = mu::EImageFormat::IF_ASTC_4x4_RGBA_LDR;
 									}
-
-									FormatImage->SetFormat(mutableFormat);
+									else if (FormatWithoutPrefix == TEXT("RGB")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGB_LDR;
+									else if (FormatWithoutPrefix == TEXT("RGBA")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGBA_LDR;
+									else if (FormatWithoutPrefix == TEXT("NormalRG")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RG_LDR;
 								}
-							}
 
+								if (mutableFormat == mu::EImageFormat::IF_NONE)
+								{
+									// Format not supported by Mutable, use RBGA_UBYTE as default.
+									mutableFormat = mu::EImageFormat::IF_RGBA_UBYTE;
+
+									UE_LOG(LogMutable, Warning, TEXT("Unexpected image format [%s]."), *FormatWithoutPrefix);
+								}
+
+								FormatImage->SetFormat(mutableFormat, mutableFormatIfAlpha);
+							}
 						}
 
 						ImageNode = LastImage;
@@ -752,7 +727,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 					if (bShareProjectionTexturesBetweenLODs && bIsGroupProjectorImage)
 					{
 						// Add to the GroupProjectorLODCache to potentially reuse this projection texture in higher LODs
-						ensure(LOD == 0);
+						ensure(LOD == GenerationContext.FirstLODAvailable);
 						float* AlternateProjectionResFactor = TextureNameToProjectionResFactor.Find(ImageName);
 						GenerationContext.GroupProjectorLODCache.Add(MaterialImageId,
 							FGroupProjectorImageInfo(ImageNodePtr, ImageName, ImageName, TypedNodeMat,
@@ -762,7 +737,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			}
 			else
 			{
-				ensure(LOD > 0);
+				ensure(LOD > GenerationContext.FirstLODAvailable);
 				check(ProjectorInfo->SurfNode->GetImage(ImageIndex) == ProjectorInfo->ImageNode);
 				SurfNode->SetImage(ImageIndex, ProjectorInfo->ImageNode);
 				SurfNode->SetImageName(ImageIndex, TCHAR_TO_ANSI(*ProjectorInfo->TextureName));
@@ -926,14 +901,14 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 
 						if (ProjectorInfo)
 						{
-							ensure(LOD == 0);
+							ensure(LOD == GenerationContext.FirstLODAvailable);
 							ProjectorInfo->ImageResizeNode = NodeImageResize;
 							ProjectorInfo->bIsAlternateResolutionResized = true;
 						}
 					}
 					else
 					{
-						ensure(LOD > 0);
+						ensure(LOD > GenerationContext.FirstLODAvailable);
 						check(ProjectorInfo->bIsAlternateResolutionResized);
 						SurfNode2->SetImage(ImageIndex, ProjectorInfo->ImageResizeNode);
 					}
@@ -1045,7 +1020,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 
 					if (ProjectorInfo)
 					{
-						ensure(LOD > 0);
+						ensure(LOD > GenerationContext.FirstLODAvailable);
 						check(ProjectorInfo->SurfNode->GetImage(ImageIndex) == ProjectorInfo->ImageNode);
 						ImageNode = ProjectorInfo->ImageNode;
 
@@ -1280,10 +1255,15 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 					mu::NodeImagePtr ImageNode = GenerateMutableSourceImage(ConnectedImagePin, GenerationContext, 0.f);
 					ImagePatchNode->SetImage(ImageNode);
 
-					if (const UEdGraphPin* ConnectedMaskPin = FollowInputPin(*TypedNodeEdit->GetUsedImageMaskPin(ImageId)))
+					const UEdGraphPin* ImageMaskPin = TypedNodeEdit->GetUsedImageMaskPin(ImageId);
+
+					if (ImageMaskPin)
 					{
-						mu::NodeImagePtr MaskNode = GenerateMutableSourceImage(ConnectedMaskPin, GenerationContext, 0.f);
-						ImagePatchNode->SetMask(MaskNode);
+						if (const UEdGraphPin* ConnectedMaskPin = FollowInputPin(*ImageMaskPin))
+						{
+							mu::NodeImagePtr MaskNode = GenerateMutableSourceImage(ConnectedMaskPin, GenerationContext, 0.f);
+							ImagePatchNode->SetMask(MaskNode);
+						}
 					}
 
 					// Add the block indices

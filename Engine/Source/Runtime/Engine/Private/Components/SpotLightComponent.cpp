@@ -5,11 +5,13 @@
 =============================================================================*/
 
 #include "Components/SpotLightComponent.h"
+#include "RenderUtils.h"
 #include "UObject/ConstructorHelpers.h"
-#include "Misc/LargeWorldRenderPosition.h"
 #include "Engine/Texture2D.h"
-#include "SceneManagement.h"
 #include "PointLightSceneProxy.h"
+#include "UObject/UnrealType.h"
+#include "SceneInterface.h"
+#include "SceneView.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SpotLightComponent)
 
@@ -72,8 +74,13 @@ public:
 		LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
 		LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
 		LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
-
+		LightParameters.IESAtlasIndex = INDEX_NONE;
 		LightParameters.InverseExposureBlend = InverseExposureBlend;
+
+		if (IESAtlasId != uint32(INDEX_NONE))
+		{
+			GetSceneInterface()->GetLightIESAtlasSlot(this, &LightParameters);
+		}
 	}
 
 	// FLightSceneInfo interface.

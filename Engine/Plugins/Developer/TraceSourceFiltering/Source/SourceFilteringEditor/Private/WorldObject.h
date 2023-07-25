@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "Containers/UnrealString.h"
-#include "Templates/SharedPointer.h"
+#include "Internationalization/Text.h"
 
 /** Object representing an UWorld and its filtering state */
 class FWorldObject : public TSharedFromThis<FWorldObject>

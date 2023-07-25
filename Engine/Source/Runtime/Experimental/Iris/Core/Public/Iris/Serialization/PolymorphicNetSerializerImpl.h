@@ -11,7 +11,7 @@
 #include "Iris/Serialization/NetBitStreamWriter.h"
 #include "Iris/ReplicationState/ReplicationStateDescriptor.h"
 #include "Iris/ReplicationSystem/ReplicationOperations.h"
-#include "UObject/ObjectMacros.h"
+#include "Net/Core/Trace/NetTrace.h"
 
 // NOTE: This file should not be included in a header
 
@@ -46,10 +46,21 @@ namespace UE::Net
   *
   * Helper to implement serializers that requires dynamic polymorphism.
   * It can either be used to declare a typed serializer or be used as an internal helper.
-  * 
   * ExternalSourceType is the class/struct that has the TSharedPtr<ExternalSourceItemType> data.
   * ExternalSourceItemType is the polymorphic struct type
   * GetItem is a function that will return a reference to the TSharedPtr<ExternalSourceItemType>
+  *
+  * !BIG DISCLAIMER:!
+  *
+  * This serializer was written to mimic the behavior seen in FGameplayAbilityTargetDataHandle and FGameplayEffectContextHandle 
+  * which both are written with the intent of being used for RPCs and not being used for replicated properties and uses a TSharedPointer to hold the polymorphic struct
+  *
+  * That said, IF the serializer is used for replicated properties it has very specific requirements on the implementation of the SourceType to work correctly.
+  *
+  * 1. The sourcetype MUST provide a custom assignment operator performing a deep-copy/clone
+  * 2. The sourcetype MUST define a comparison operator that compares the instance data of the stored ExternalSourceItemType
+  * 3. TStructOpsTypeTraits::WithCopy and TStructOpsTypeTraits::WithIdenticalViaEquality must be specified
+  *
   */
 template <typename ExternalSourceType, typename ExternalSourceItemType, TSharedPtr<ExternalSourceItemType>&(*GetItem)(ExternalSourceType&)>
 struct TPolymorphicStructNetSerializerImpl : protected Private::FPolymorphicStructNetSerializerInternal
@@ -67,6 +78,7 @@ struct TPolymorphicStructNetSerializerImpl : protected Private::FPolymorphicStru
 
 	typedef ExternalSourceType SourceType;
 	typedef FQuantizedData QuantizedType;
+	typedef FPolymorphicStructNetSerializerConfig ConfigType;
 
 	static void Serialize(FNetSerializationContext&, const FNetSerializeArgs&);
 	static void Deserialize(FNetSerializationContext&, const FNetDeserializeArgs&);
@@ -90,7 +102,6 @@ protected:
 
 	typedef ExternalSourceItemType SourceItemType;
 	typedef FPolymorphicNetSerializerScriptStructCache::FTypeInfo FTypeInfo;
-	typedef FPolymorphicStructNetSerializerConfig ConfigType;
 
 	struct FSourceItemTypeDeleter
 	{
@@ -121,6 +132,8 @@ private:
   *
   * Helper to implement array serializers that requires dynamic polymorphism.
   * It can either be used to declare a typed serializer or be used as an internal helper.
+  *
+  * @See: TPolymorphicStructNetSerializerImpl for requirements on external data
   */
 template <typename ExternalSourceType, typename ExternalSourceArrayItemType, TArrayView<TSharedPtr<ExternalSourceArrayItemType>>(*GetArray)(ExternalSourceType& Source), void(*SetArrayNum)(ExternalSourceType& Source, SIZE_T Num)>
 struct TPolymorphicArrayStructNetSerializerImpl : protected Private::FPolymorphicStructNetSerializerInternal
@@ -190,6 +203,8 @@ struct TPolymorphicArrayStructNetSerializerImpl : protected Private::FPolymorphi
 	}
 
 private:
+	using FItemNetSerializer = TPolymorphicStructNetSerializerImpl<ExternalSourceType, ExternalSourceArrayItemType, nullptr>;
+
 	// Allocate storage for the item array
 	static void InternalAllocateItemArray(FNetSerializationContext& Context, QuantizedType& Value, uint32 NumItems);
 
@@ -251,13 +266,85 @@ void TPolymorphicStructNetSerializerImpl<ExternalSourceType, ExternalSourceItemT
 template <typename ExternalSourceType, typename ExternalSourceItemType, TSharedPtr<ExternalSourceItemType>&(*GetItem)(ExternalSourceType&)>
 void TPolymorphicStructNetSerializerImpl<ExternalSourceType, ExternalSourceItemType, GetItem>::SerializeDelta(FNetSerializationContext& Context, const FNetSerializeDeltaArgs& Args)
 {
-	NetSerializeDeltaDefault<Serialize>(Context, Args);
+	FNetBitStreamWriter& Writer = *Context.GetBitStreamWriter();
+	const QuantizedType& Value = *reinterpret_cast<const QuantizedType*>(Args.Source);
+	const QuantizedType& PrevValue = *reinterpret_cast<const QuantizedType*>(Args.Prev);
+	const ConfigType& Config = *static_cast<const ConfigType*>(Args.NetSerializerConfig);
+
+	// If prev has the same type we can delta-compress
+	if (Writer.WriteBool(Value.TypeIndex == PrevValue.TypeIndex))
+	{
+		const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(Value.TypeIndex);
+		if (TypeInfo != nullptr)
+		{
+			UE::Net::FReplicationStateOperations::SerializeDelta(Context, static_cast<const uint8*>(Value.StructData), static_cast<const uint8*>(PrevValue.StructData), TypeInfo->Descriptor);
+		}
+	}
+	else
+	{
+		const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(Value.TypeIndex);
+		if (Writer.WriteBool(TypeInfo != nullptr))
+		{
+			CA_ASSUME(TypeInfo != nullptr);
+			Writer.WriteBits(Value.TypeIndex, FPolymorphicNetSerializerScriptStructCache::RegisteredTypeBits);
+			UE::Net::FReplicationStateOperations::Serialize(Context, static_cast<const uint8*>(Value.StructData), TypeInfo->Descriptor);
+		}
+	}
 }
 
 template <typename ExternalSourceType, typename ExternalSourceItemType, TSharedPtr<ExternalSourceItemType>&(*GetItem)(ExternalSourceType&)>
 void TPolymorphicStructNetSerializerImpl<ExternalSourceType, ExternalSourceItemType, GetItem>::DeserializeDelta(FNetSerializationContext& Context, const FNetDeserializeDeltaArgs& Args)
 {
-	NetDeserializeDeltaDefault<Deserialize>(Context, Args);
+	FNetBitStreamReader& Reader = *Context.GetBitStreamReader();
+	QuantizedType& Target = *reinterpret_cast<QuantizedType*>(Args.Target);
+	const QuantizedType& PrevValue = *reinterpret_cast<const QuantizedType*>(Args.Prev);
+	const ConfigType& Config = *static_cast<const ConfigType*>(Args.NetSerializerConfig);
+
+	InternalFreeItem(Context, Config, Target);
+
+	QuantizedType TempValue = {};
+
+	// If prev has the same type we can delta-compress
+	if (const bool bIsSameType = Reader.ReadBool())
+	{
+		const uint32 TypeIndex = PrevValue.TypeIndex;
+		if (const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(TypeIndex))
+		{
+			const FReplicationStateDescriptor* Descriptor = TypeInfo->Descriptor;
+
+			// Allocate storage and read struct data
+			TempValue.StructData = FPolymorphicStructNetSerializerInternal::Alloc(Context, Descriptor->InternalSize, Descriptor->InternalAlignment);
+			TempValue.TypeIndex = TypeIndex;
+
+			FMemory::Memzero(TempValue.StructData, Descriptor->InternalSize);
+			FReplicationStateOperations::DeserializeDelta(Context, static_cast<uint8*>(TempValue.StructData), static_cast<uint8*>(PrevValue.StructData), Descriptor);
+		}
+	}
+	else
+	{
+		if (const bool bIsValidType = Reader.ReadBool())
+		{
+			const uint32 TypeIndex = Reader.ReadBits(FPolymorphicNetSerializerScriptStructCache::RegisteredTypeBits);
+			if (const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(TypeIndex))
+			{
+				const FReplicationStateDescriptor* Descriptor = TypeInfo->Descriptor;
+
+				// Allocate storage and read struct data
+				TempValue.StructData = FPolymorphicStructNetSerializerInternal::Alloc(Context, Descriptor->InternalSize, Descriptor->InternalAlignment);
+				TempValue.TypeIndex = TypeIndex;
+
+				FMemory::Memzero(TempValue.StructData, Descriptor->InternalSize);
+				FReplicationStateOperations::Deserialize(Context, static_cast<uint8*>(TempValue.StructData), Descriptor);
+			}
+			else
+			{
+				Context.SetError(NetError_PolymorphicStructNetSerializer_InvalidStructType);
+				// Fall through to clear the target
+			}
+		}
+	}
+
+	Target = TempValue;
 }
 
 template <typename ExternalSourceType, typename ExternalSourceItemType, TSharedPtr<ExternalSourceItemType>&(*GetItem)(ExternalSourceType&)>
@@ -310,6 +397,9 @@ void TPolymorphicStructNetSerializerImpl<ExternalSourceType, ExternalSourceItemT
 	{
 		const FReplicationStateDescriptor* Descriptor = TypeInfo->Descriptor;
 		const UScriptStruct* ScriptStruct = TypeInfo->ScriptStruct;
+
+		// NOTE: We always allocate new memory in order to behave like the code we are trying to mimic expects, see GameplayEffectContextHandle
+		// this should really be a policy of this class as it is far from optimal.
 
 		// Allocate external struct, owned by external state therefore using global allocator
 		SourceItemType* NewData = static_cast<SourceItemType*>(FMemory::Malloc(ScriptStruct->GetStructureSize(), ScriptStruct->GetMinAlignment()));
@@ -469,6 +559,8 @@ void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 	Writer.WriteBits(SourceValue.NumItems, ArrayItemBits);	
 	for (uint32 It = 0, EndIt = SourceValue.NumItems; It != EndIt; ++It)
 	{
+		UE_NET_TRACE_SCOPE(Element, Writer, Context.GetTraceCollector(), ENetTraceVerbosity::VeryVerbose);
+
 		const FQuantizedItem& Item = SourceValue.Items[It];
 		const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(Item.TypeIndex);
 		if (Writer.WriteBool(TypeInfo != nullptr))
@@ -476,32 +568,6 @@ void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 			CA_ASSUME(TypeInfo != nullptr);
 			Writer.WriteBits(Item.TypeIndex, FPolymorphicNetSerializerScriptStructCache::RegisteredTypeBits);
 			FReplicationStateOperations::Serialize(Context, static_cast<const uint8*>(Item.StructData), TypeInfo->Descriptor);
-		}
-	}
-}
-
-template <typename ExternalSourceType, typename ExternalSourceArrayItemType, TArrayView<TSharedPtr<ExternalSourceArrayItemType>>(*GetArray)(ExternalSourceType& Source), void(*SetArrayNum)(ExternalSourceType& Source, SIZE_T Num)>
-void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSourceArrayItemType, GetArray, SetArrayNum>::CollectNetReferences(FNetSerializationContext& Context, const FNetCollectReferencesArgs& Args)
-{
-	const ConfigType& Config = *static_cast<const ConfigType*>(Args.NetSerializerConfig);
-	const QuantizedType& SourceValue = *reinterpret_cast<const QuantizedType*>(Args.Source);
-	FNetReferenceCollector& Collector = *reinterpret_cast<FNetReferenceCollector*>(Args.Collector);
-
-	// No references nothing to do
-	if (SourceValue.NumItems == 0U || !Config.RegisteredTypes.CanHaveNetReferences())
-	{
-		return;
-	}
-
-	for (uint32 It = 0, EndIt = SourceValue.NumItems; It != EndIt; ++It)
-	{
-		const FQuantizedItem& Item = SourceValue.Items[It];
-		const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(Item.TypeIndex);
-		const FReplicationStateDescriptor* Descriptor = TypeInfo ? TypeInfo->Descriptor : nullptr;
-
-		if (Descriptor && EnumHasAnyFlags(Descriptor->Traits, EReplicationStateTraits::HasObjectReference))
-		{			
-			FPolymorphicStructNetSerializerInternal::CollectReferences(Context, Collector, Args.ChangeMaskInfo, static_cast<const uint8*>(Item.StructData), Descriptor);
 		}
 	}
 }
@@ -522,7 +588,7 @@ void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 		return;
 	}
 
-	// Currently we always free all memory even though we in could keep it if all types are matching
+	// Currently we always free all memory even though we in theory could keep it if all types are matching
 	InternalFreeItemArray(Context, TargetValue, Config);
 
 	// Allocate space for the ItemArray
@@ -531,6 +597,8 @@ void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 	// Read polymorphic state data
 	for (uint32 It = 0, EndIt = TargetValue.NumItems; It != EndIt; ++It)
 	{
+		UE_NET_TRACE_SCOPE(Element, Reader, Context.GetTraceCollector(), ENetTraceVerbosity::VeryVerbose);
+
 		FQuantizedItem& Item = TargetValue.Items[It];
 		if (Reader.ReadBool())
 		{
@@ -559,13 +627,144 @@ void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 template <typename ExternalSourceType, typename ExternalSourceArrayItemType, TArrayView<TSharedPtr<ExternalSourceArrayItemType>>(*GetArray)(ExternalSourceType& Source), void(*SetArrayNum)(ExternalSourceType& Source, SIZE_T Num)>
 void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSourceArrayItemType, GetArray, SetArrayNum>::SerializeDelta(FNetSerializationContext& Context, const FNetSerializeDeltaArgs& Args)
 {
-	NetSerializeDeltaDefault<Serialize>(Context, Args);
+	FNetBitStreamWriter& Writer = *Context.GetBitStreamWriter();
+	const ConfigType& Config = *static_cast<const ConfigType*>(Args.NetSerializerConfig);
+	const QuantizedType& Array = *reinterpret_cast<const QuantizedType*>(Args.Source);
+	const QuantizedType& PrevArray = *reinterpret_cast<const QuantizedType*>(Args.Prev);
+
+	const uint32 NumItems = Array.NumItems;
+	const uint32 PrevNumItems = PrevArray.NumItems;
+	const bool bSameSizeArray = (NumItems == PrevNumItems);
+	Writer.WriteBits(bSameSizeArray, 1U);
+	if (!bSameSizeArray)
+	{
+		Writer.WriteBits(NumItems, ArrayItemBits);
+	}
+
+	// Use delta serialization for elements available in both the previous and current state.
+	if (PrevNumItems)
+	{
+		FNetSerializeDeltaArgs ElementArgs = Args;
+
+		for (uint32 ElementIt = 0, ElementEndIt = FPlatformMath::Min(NumItems, PrevNumItems); ElementIt != ElementEndIt; ++ElementIt)
+		{
+			UE_NET_TRACE_SCOPE(Element, Writer, Context.GetTraceCollector(), ENetTraceVerbosity::VeryVerbose);
+
+			ElementArgs.Source = NetSerializerValuePointer(&Array.Items[ElementIt]);
+			ElementArgs.Prev = NetSerializerValuePointer(&PrevArray.Items[ElementIt]);
+
+			FItemNetSerializer::SerializeDelta(Context, ElementArgs);
+		}
+	}
+
+	// Serialize additional items with standard serialization.
+	if (NumItems > PrevNumItems)
+	{
+		for (uint32 ElementIt = PrevNumItems, ElementEndIt = NumItems; ElementIt < ElementEndIt; ++ElementIt)
+		{
+			UE_NET_TRACE_SCOPE(Element, Writer, Context.GetTraceCollector(), ENetTraceVerbosity::VeryVerbose);
+			const FQuantizedItem& Item = Array.Items[ElementIt];
+			const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(Item.TypeIndex);
+			if (Writer.WriteBool(TypeInfo != nullptr))
+			{
+				CA_ASSUME(TypeInfo != nullptr);
+				Writer.WriteBits(Item.TypeIndex, FPolymorphicNetSerializerScriptStructCache::RegisteredTypeBits);
+				FReplicationStateOperations::Serialize(Context, static_cast<const uint8*>(Item.StructData), TypeInfo->Descriptor);
+			}
+		}
+	}
 }
 
 template <typename ExternalSourceType, typename ExternalSourceArrayItemType, TArrayView<TSharedPtr<ExternalSourceArrayItemType>>(*GetArray)(ExternalSourceType& Source), void(*SetArrayNum)(ExternalSourceType& Source, SIZE_T Num)>
 void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSourceArrayItemType, GetArray, SetArrayNum>::DeserializeDelta(FNetSerializationContext& Context, const FNetDeserializeDeltaArgs& Args)
 {
-	NetDeserializeDeltaDefault<Deserialize>(Context, Args);
+	FNetBitStreamReader& Reader = *Context.GetBitStreamReader();
+	const ConfigType& Config = *static_cast<const ConfigType*>(Args.NetSerializerConfig);
+	QuantizedType& Array = *reinterpret_cast<QuantizedType*>(Args.Target);
+	const QuantizedType& PrevArray = *reinterpret_cast<const QuantizedType*>(Args.Prev);
+
+	const uint32 PrevNumItems = PrevArray.NumItems;
+	const bool bSameSizeArray = !!Reader.ReadBits(1U);
+	const uint32 NumItems = (bSameSizeArray ? PrevNumItems : Reader.ReadBits(ArrayItemBits));
+
+	if (Reader.IsOverflown())
+	{
+		Context.SetError(GNetError_BitStreamOverflow);
+		return;
+	}
+
+	// Currently we always free all memory even though we in theory could keep it if all types are matching
+	InternalFreeItemArray(Context, Array, Config);
+
+	// Allocate space for the ItemArray
+	InternalAllocateItemArray(Context, Array, NumItems);
+
+	// Elements in the current array up to the previous size can use delta serialization.
+	if (PrevNumItems)
+	{
+		FNetDeserializeDeltaArgs ElementArgs = Args;
+
+		for (uint32 ElementIt = 0, ElementEndIt = FPlatformMath::Min(NumItems, PrevNumItems); ElementIt != ElementEndIt; ++ElementIt)
+		{
+			UE_NET_TRACE_SCOPE(Element, Reader, Context.GetTraceCollector(), ENetTraceVerbosity::VeryVerbose);
+
+			ElementArgs.Target = NetSerializerValuePointer(&Array.Items[ElementIt]);
+			ElementArgs.Prev = NetSerializerValuePointer(&PrevArray.Items[ElementIt]);
+
+			FItemNetSerializer::DeserializeDelta(Context, ElementArgs);
+		}
+	}
+
+	if (Context.HasError())
+	{
+		InternalFreeItemArray(Context, Array, Config);
+		return;
+	}
+
+	if (Reader.IsOverflown())
+	{
+		Context.SetError(GNetError_BitStreamOverflow);
+		InternalFreeItemArray(Context, Array, Config);
+		return;
+	}
+
+	// Deserialize additional items with standard deserialization.
+	if (NumItems > PrevNumItems)
+	{
+		for (uint32 ElementIt = PrevNumItems, ElementEndIt = NumItems; ElementIt < ElementEndIt; ++ElementIt)
+		{
+			UE_NET_TRACE_SCOPE(Element, Reader, Context.GetTraceCollector(), ENetTraceVerbosity::VeryVerbose);
+			FQuantizedItem& Item = Array.Items[ElementIt];
+			if (Reader.ReadBool())
+			{
+				const uint32 TypeIndex = Reader.ReadBits(FPolymorphicNetSerializerScriptStructCache::RegisteredTypeBits);
+				if (const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(TypeIndex))
+				{
+					const FReplicationStateDescriptor* Descriptor = TypeInfo->Descriptor;
+
+					// Allocate storage and read struct data
+					Item.StructData = FPolymorphicStructNetSerializerInternal::Alloc(Context, Descriptor->InternalSize, Descriptor->InternalAlignment);
+					Item.TypeIndex = TypeIndex;
+
+					FMemory::Memzero(Item.StructData, Descriptor->InternalSize);
+					UE::Net::FReplicationStateOperations::Deserialize(Context, static_cast<uint8*>(Item.StructData), Descriptor);
+				}
+				else
+				{
+					InternalFreeItemArray(Context, Array, Config);
+					Context.SetError(NetError_PolymorphicStructNetSerializer_InvalidStructType);
+					return;
+				}
+			}
+		}
+	}
+
+	if (Reader.IsOverflown())
+	{
+		Context.SetError(GNetError_BitStreamOverflow);
+		InternalFreeItemArray(Context, Array, Config);
+		return;
+	}
 }
 
 template <typename ExternalSourceType, typename ExternalSourceArrayItemType, TArrayView<TSharedPtr<ExternalSourceArrayItemType>>(*GetArray)(ExternalSourceType& Source), void(*SetArrayNum)(ExternalSourceType& Source, SIZE_T Num)>
@@ -575,12 +774,19 @@ void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 	QuantizedType& TargetValue = *reinterpret_cast<QuantizedType*>(Args.Target);
 	const ConfigType& Config = *static_cast<const ConfigType*>(Args.NetSerializerConfig);
 
+	// Make sure we can properly serialize the array.
+	TArrayView<const TSharedPtr<SourceArrayItemType>> ItemArray = GetArray(SourceValue);
+	const uint32 NumItems = static_cast<uint32>(ItemArray.Num());
+	if (NumItems > MaxArrayItems)
+	{
+		Context.SetError(GNetError_ArraySizeTooLarge);
+		return;
+	}
+
 	// First we need to free previously allocated data
 	InternalFreeItemArray(Context, TargetValue, Config);
 
 	// Allocate new array
-	TArrayView<const TSharedPtr<SourceArrayItemType>> ItemArray = GetArray(SourceValue);
-	const uint32 NumItems = static_cast<uint32>(ItemArray.Num());
 	InternalAllocateItemArray(Context, TargetValue, NumItems);
 
 	// Copy polymorphic struct data
@@ -633,6 +839,9 @@ void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 		{
 			const FReplicationStateDescriptor* Descriptor = TypeInfo->Descriptor;
 			const UScriptStruct* ScriptStruct = TypeInfo->ScriptStruct;
+
+			// NOTE: We always allocate new memory in order to behave like the code we are trying to mimic expects, see GameplayEffectContextHandle
+			// this should really be a policy of this class as it is far from optimal.
 
 			// Allocate external struct, owned by external state therefore using global allocator
 			SourceArrayItemType* NewData = static_cast<SourceArrayItemType*>(FMemory::Malloc(ScriptStruct->GetStructureSize(), ScriptStruct->GetMinAlignment()));
@@ -700,7 +909,6 @@ bool TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 
 	TArrayView<const TSharedPtr<SourceArrayItemType>> ItemArray = GetArray(SourceValue);
 	const uint32 NumItems = (uint32)ItemArray.Num();
-
 	if (NumItems > MaxArrayItems)
 	{
 		return false;
@@ -724,6 +932,32 @@ bool TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSource
 	}
 
 	return true;
+}
+
+template <typename ExternalSourceType, typename ExternalSourceArrayItemType, TArrayView<TSharedPtr<ExternalSourceArrayItemType>>(*GetArray)(ExternalSourceType& Source), void(*SetArrayNum)(ExternalSourceType& Source, SIZE_T Num)>
+void TPolymorphicArrayStructNetSerializerImpl<ExternalSourceType, ExternalSourceArrayItemType, GetArray, SetArrayNum>::CollectNetReferences(FNetSerializationContext& Context, const FNetCollectReferencesArgs& Args)
+{
+	const ConfigType& Config = *static_cast<const ConfigType*>(Args.NetSerializerConfig);
+	const QuantizedType& SourceValue = *reinterpret_cast<const QuantizedType*>(Args.Source);
+	FNetReferenceCollector& Collector = *reinterpret_cast<FNetReferenceCollector*>(Args.Collector);
+
+	// No references nothing to do
+	if (SourceValue.NumItems == 0U || !Config.RegisteredTypes.CanHaveNetReferences())
+	{
+		return;
+	}
+
+	for (uint32 It = 0, EndIt = SourceValue.NumItems; It != EndIt; ++It)
+	{
+		const FQuantizedItem& Item = SourceValue.Items[It];
+		const FTypeInfo* TypeInfo = Config.RegisteredTypes.GetTypeInfo(Item.TypeIndex);
+		const FReplicationStateDescriptor* Descriptor = TypeInfo ? TypeInfo->Descriptor : nullptr;
+
+		if (Descriptor && EnumHasAnyFlags(Descriptor->Traits, EReplicationStateTraits::HasObjectReference))
+		{			
+			FPolymorphicStructNetSerializerInternal::CollectReferences(Context, Collector, Args.ChangeMaskInfo, static_cast<const uint8*>(Item.StructData), Descriptor);
+		}
+	}
 }
 
 template <typename ExternalSourceType, typename ExternalSourceArrayItemType, TArrayView<TSharedPtr<ExternalSourceArrayItemType>>(*GetArray)(ExternalSourceType& Source), void(*SetArrayNum)(ExternalSourceType& Source, SIZE_T Num)>

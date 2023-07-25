@@ -2,6 +2,7 @@
 #include "InterchangeGenericMeshPipeline.h"
 
 #include "Animation/AnimSequence.h"
+#include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "InterchangeGenericAssetsPipeline.h"
@@ -103,7 +104,7 @@ void UInterchangeGenericMeshPipeline::PreDialogCleanup(const FName PipelineStack
 	PhysicsAsset = nullptr;
 }
 
-void UInterchangeGenericMeshPipeline::ExecutePreImportPipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas)
+void UInterchangeGenericMeshPipeline::ExecutePipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas)
 {
 	if (!InBaseNodeContainer)
 	{

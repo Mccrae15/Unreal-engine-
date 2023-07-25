@@ -1,28 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "UObject/CoreNet.h"
-#include "EngineGlobals.h"
-#include "Engine/EngineTypes.h"
-#include "Components/ActorComponent.h"
-#include "GameFramework/Actor.h"
-#include "Components/PrimitiveComponent.h"
-#include "GameFramework/PlayerController.h"
+#include "Engine/World.h"
+#include "GameFramework/Pawn.h"
 #include "Engine/Engine.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/ActorChannel.h"
+#include "Engine/NetDriver.h"
 #include "GameFramework/GameNetworkManager.h"
 #include "NetworkingDistanceConstants.h"
 #include "PhysicsReplication.h"
-#include "PhysicsPublic.h"
 #include "DrawDebugHelpers.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "Interfaces/Interface_ActorSubobject.h"
 #if UE_WITH_IRIS
 #include "Engine/NetConnection.h"
 #include "Iris/IrisConfig.h"
+#include "Iris/ReplicationSystem/ReplicationFragment.h"
 #include "Iris/ReplicationSystem/ReplicationFragmentUtil.h"
 #include "Iris/ReplicationSystem/ReplicationSystem.h"
 #include "Iris/ReplicationSystem/Conditionals/ReplicationCondition.h"
@@ -30,8 +25,6 @@
 #include "Net/Iris/ReplicationSystem/ActorReplicationBridge.h"
 #endif // UE_WITH_IRIS
 #include "Physics/Experimental/PhysScene_Chaos.h"
-#include "PBDRigidsSolver.h"
-#include "ChaosSolversModule.h"
 
 /*-----------------------------------------------------------------------------
 	AActor networking implementation.
@@ -627,6 +620,67 @@ void AActor::RemoveReplicatedSubObject(UObject* SubObject)
 #endif // UE_WITH_IRIS
 }
 
+
+void AActor::DestroyReplicatedSubObjectOnRemotePeers(UObject* SubObject)
+{
+	check(SubObject);
+
+	if (!HasAuthority())
+	{
+		// Only the authority can call this.
+		return;
+	}
+
+	UE_LOG(LogNetSubObject, Verbose, TEXT("%s (0x%p) requested to Delete replicated subobject on clients %s (0x%p)"), *GetName(), this, *SubObject->GetName(), SubObject);
+
+	if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(GetWorld()))
+	{
+		for (const FNamedNetDriver& Driver : Context->ActiveNetDrivers)
+		{
+			if (Driver.NetDriver)
+			{
+				Driver.NetDriver->DeleteSubObjectOnClients(this, SubObject);
+			}
+		}
+	}
+
+	if (IsUsingRegisteredSubObjectList())
+	{
+		RemoveReplicatedSubObject(SubObject);
+	}
+}
+
+
+void AActor::TearOffReplicatedSubObjectOnRemotePeers(UObject* SubObject)
+{
+	check(SubObject);
+
+	if (!HasAuthority())
+	{
+		// Only the authority can call this.
+		return;
+	}
+
+	UE_LOG(LogNetSubObject, Verbose, TEXT("%s (0x%p) requested to TearOff replicated subobject on clients %s (0x%p)"), *GetName(), this, *SubObject->GetName(), SubObject);
+
+	if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(GetWorld()))
+	{
+		for (const FNamedNetDriver& Driver : Context->ActiveNetDrivers)
+		{
+			if (Driver.NetDriver)
+			{
+				Driver.NetDriver->TearOffSubObjectOnClients(this, SubObject);
+			}
+		}
+	}
+
+	if (IsUsingRegisteredSubObjectList())
+	{
+		RemoveReplicatedSubObject(SubObject);
+	}
+
+}
+
 void AActor::AddActorComponentReplicatedSubObject(UActorComponent* OwnerComponent, UObject* SubObject, ELifetimeCondition NetCondition)
 {
 	check(IsValid(OwnerComponent));
@@ -818,7 +872,7 @@ void AActor::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext&
 
 		if (ActorComp->HasAnyFlags(RF_DefaultSubObject) || ActorComp->IsDefaultSubobject())
 		{
-			if (!ActorComp->GetIsReplicated())
+			if (!ActorComp->GetIsReplicated() || ActorComp->GetReplicationCondition() == COND_Never)
 			{
 				// Register RPC functions for not replicated default subobjects
 				ActorComp->RegisterReplicationFragments(Context, EFragmentRegistrationFlags::RegisterRPCsOnly);
@@ -829,12 +883,8 @@ void AActor::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext&
 
 void AActor::BeginReplication(const FActorBeginReplicationParams& Params)
 {
-	// If we do not have a handle we create one
-	UE::Net::FNetHandle ActorHandle = UE::Net::FReplicationSystemUtil::BeginReplication(this, Params);
-	if (ActorHandle.IsValid())
-	{
-		UpdateOwningNetConnection();
-	}
+	UE::Net::FReplicationSystemUtil::BeginReplication(this, Params);
+	UpdateOwningNetConnection();
 }
 
 void AActor::BeginReplication()
@@ -846,10 +896,7 @@ void AActor::BeginReplication()
 
 void AActor::EndReplication(EEndPlayReason::Type EndPlayReason)
 {
-	if (GetIsReplicated())
-	{
-		UE::Net::FReplicationSystemUtil::EndReplication(this, EndPlayReason);
-	}
+	UE::Net::FReplicationSystemUtil::EndReplication(this, EndPlayReason);
 }
 
 void AActor::UpdateOwningNetConnection() const
@@ -857,7 +904,8 @@ void AActor::UpdateOwningNetConnection() const
 	using namespace UE::Net;
 
 	UReplicationSystem* ReplicationSystem = FReplicationSystemUtil::GetReplicationSystem(GetNetOwner());
-	if (ReplicationSystem == nullptr)
+	UObjectReplicationBridge* ObjectReplicationBridge = (ReplicationSystem ? ReplicationSystem->GetReplicationBridgeAs<UObjectReplicationBridge>() : nullptr);
+	if (ObjectReplicationBridge == nullptr)
 	{
 		return;
 	}
@@ -881,8 +929,7 @@ void AActor::UpdateOwningNetConnection() const
 #endif
 
 		FNetHandle NetHandle = FReplicationSystemUtil::GetNetHandle(this);
-		const uint32 CurrentOwningNetConnectionId = NetHandle.IsValid() ? ReplicationSystem->GetOwningNetConnection(NetHandle) : 0U;
-		bUpdateChildren = (NewOwningNetConnectionId != CurrentOwningNetConnectionId);
+		bUpdateChildren = NetHandle.IsValid();
 	}
 
 	if (!bUpdateChildren)
@@ -905,15 +952,15 @@ void AActor::UpdateOwningNetConnection() const
 
 		if (Actor->GetIsReplicated())
 		{
-			const FNetHandle NetHandle = FReplicationSystemUtil::GetNetHandle(Actor);
-			if (NetHandle.IsValid())
+			const UE::Net::FNetRefHandle RefHandle = ObjectReplicationBridge->GetReplicatedRefHandle(Actor);
+			if (RefHandle.IsValid())
 			{
-				ReplicationSystem->SetOwningNetConnection(NetHandle, NewOwningNetConnectionId);
+				ReplicationSystem->SetOwningNetConnection(RefHandle, NewOwningNetConnectionId);
 				// Update autonomous proxy condition
 				if (Actor->GetRemoteRole() == ROLE_AutonomousProxy)
 				{
 					const bool bEnableAutonomousCondition = true;
-					ReplicationSystem->SetReplicationConditionConnectionFilter(NetHandle, EReplicationCondition::RoleAutonomous, NewOwningNetConnectionId, bEnableAutonomousCondition);
+					ReplicationSystem->SetReplicationConditionConnectionFilter(RefHandle, EReplicationCondition::RoleAutonomous, NewOwningNetConnectionId, bEnableAutonomousCondition);
 				}
 			}
 		}
@@ -929,8 +976,7 @@ void AActor::UpdateReplicatePhysicsCondition()
 	const FNetHandle NetHandle = FReplicationSystemUtil::GetNetHandle(this);
 	if (NetHandle.IsValid())
 	{
-		UReplicationSystem* ReplicationSystem = FReplicationSystemUtil::GetReplicationSystem(this);
-		ReplicationSystem->SetReplicationCondition(NetHandle, EReplicationCondition::ReplicatePhysics, GetReplicatedMovement().bRepPhysics);
+		FReplicationSystemUtil::SetReplicationCondition(NetHandle, EReplicationCondition::ReplicatePhysics, GetReplicatedMovement().bRepPhysics);
 	}
 #endif // UE_WITH_IRIS
 }

@@ -467,8 +467,7 @@ void RenderLightingCacheWithPreshadingCS(
 	}
 
 	// Build shadow ray
-	FDeferredLightData LightData = LoadLightData(LightType, VolumetricScatteringIntensity);
-
+	const FDeferredLightData LightData = InitDeferredLightFromUniforms(LightType, VolumetricScatteringIntensity);
 #if DIM_LIGHTING_CACHE_MODE == LIGHTING_CACHE_TRANSMITTANCE
 	float3 L = LightData.Direction;
 	float3 ToLight = L * GetMaxShadowTraceDistance();
@@ -493,7 +492,7 @@ void RenderLightingCacheWithPreshadingCS(
 
 #elif DIM_LIGHTING_CACHE_MODE == LIGHTING_CACHE_INSCATTERING
 	float3 Inscattering = ComputeInscattering(WorldRayOrigin, LightData, LightType, MaxStepCount, bApplyShadowTransmittance);
-	RWLightingCacheTexture[VoxelIndex] += Inscattering;
+	RWLightingCacheTexture[VoxelIndex] += Inscattering * View.PreExposure;
 #endif // DIM_LIGHTING_CACHE_MODE
 }
 
@@ -596,7 +595,7 @@ void RenderSingleScatteringWithPreshadingCS(
 			DIM_APPLY_SHADOW_TRANSMITTANCE
 		);
 
-		FDeferredLightData LightData = LoadLightData(LightType, VolumetricScatteringIntensity);
+		const FDeferredLightData LightData = InitDeferredLightFromUniforms(LightType, VolumetricScatteringIntensity);
 		uint StepCount = CalcStepCount(RayMarchingContext);
 
 		RayMarchSingleScattering(
@@ -623,7 +622,7 @@ void RenderSingleScatteringWithPreshadingCS(
 
 	// Output..
 	float3 Opacity = bApplyEmissionAndTransmittance ? 1.0 - Transmittance : 0.0;
-	RWLightingTexture[PixelCoord] += float4(Radiance, Luminance(Opacity));
+	RWLightingTexture[PixelCoord] += float4(Radiance * View.PreExposure, Luminance(Opacity));
 
 #if DIM_DEBUG
 	//if (!all(DispatchThreadId))

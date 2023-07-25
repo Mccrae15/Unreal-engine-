@@ -2,6 +2,10 @@
 
 #pragma once
 
+#include "RHIDefinitions.h"
+
+#if RHI_RAYTRACING
+
 #include "GPULightmassCommon.h"
 #include "ShaderParameterStruct.h"
 #include "GlobalShader.h"
@@ -10,8 +14,7 @@
 #include "RayTracing/RayTracingMaterialHitShaders.h"
 #include "IrradianceCaching.h"
 #include "RayTracingTypes.h"
-
-#if RHI_RAYTRACING
+#include "RayTracingPayloadType.h"
 
 BEGIN_SHADER_PARAMETER_STRUCT(FPathTracingLightGrid, RENDERER_API)
 	SHADER_PARAMETER(uint32, SceneInfiniteLightCount)
@@ -27,11 +30,7 @@ END_SHADER_PARAMETER_STRUCT()
 class FLightmapRayTracingMeshProcessor : public FRayTracingMeshProcessor
 {
 public:
-	FLightmapRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, FMeshPassProcessorRenderState InPassDrawRenderState)
-		: FRayTracingMeshProcessor(InCommandContext, nullptr, nullptr, InPassDrawRenderState, ERayTracingMeshCommandsMode::LIGHTMAP_TRACING)
-	{
-		FeatureLevel = GMaxRHIFeatureLevel;
-	}
+	FLightmapRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, FMeshPassProcessorRenderState InPassDrawRenderState);
 };
 
 class FLightmapPathTracingRGS : public FGlobalShader
@@ -68,6 +67,11 @@ class FLightmapPathTracingRGS : public FGlobalShader
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceOptimization);
 	}
 
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::PathTracingMaterial;
+	}
+
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(int, LastInvalidationFrame)
 		SHADER_PARAMETER(int, NumTotalSamples)
@@ -97,8 +101,7 @@ class FLightmapPathTracingRGS : public FGlobalShader
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FIrradianceCachingParameters, IrradianceCachingParameters)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2DArray, IESTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, IESTextureSampler)
+
 		// Subsurface data
 		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 	END_SHADER_PARAMETER_STRUCT()
@@ -127,6 +130,11 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
 		// @todo - Working around DXC compiler crash UE-165154, should be removed after DXC is updated with a fix.
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceOptimization);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::PathTracingMaterial;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -161,8 +169,6 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FIrradianceCachingParameters, IrradianceCachingParameters)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2DArray, IESTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, IESTextureSampler)
 		// Subsurface data
 		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 
@@ -185,6 +191,11 @@ class FStationaryLightShadowTracingRGS : public FGlobalShader
 		OutEnvironment.SetDefine(TEXT("GPreviewLightmapPhysicalTileSize"), GPreviewLightmapPhysicalTileSize);
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
 		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::PathTracingMaterial;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -252,6 +263,11 @@ class FStaticShadowDepthMapTracingRGS : public FGlobalShader
 	{
 		OutEnvironment.SetDefine(TEXT("GPreviewLightmapPhysicalTileSize"), GPreviewLightmapPhysicalTileSize);
 		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::PathTracingMaterial;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )

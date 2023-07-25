@@ -172,7 +172,7 @@ public:
 	* Optionally provide a custom render bridge for the OpenXR plugin.
 	* Note: this returns a pointer to a new instance allocated with "new".  Calling code is responsible for eventually deleting it.
 	*/
-	virtual class FOpenXRRenderBridge* GetCustomRenderBridge(XrInstance InInstance, XrSystemId InSystem)
+	virtual class FOpenXRRenderBridge* GetCustomRenderBridge(XrInstance InInstance)
 	{
 		return nullptr;
 	}
@@ -290,6 +290,7 @@ public:
 	/**
 	* Callback to provide extra view configurations that should be rendered in the main render pass
 	*/
+	UE_DEPRECATED(5.2, "Support for new view configurations should be added to FOpenXRHMD instead.")
 	virtual void GetViewConfigurations(XrSystemId InSystem, TArray<XrViewConfigurationView>& OutViews)
 	{
 	}
@@ -297,6 +298,7 @@ public:
 	/**
 	* Callback to provide the pose and fov of each view that was provided in GetViewConfigurations
 	*/
+	UE_DEPRECATED(5.2, "Support for new view configurations should be added to FOpenXRHMD instead.")
 	virtual void GetViewLocations(XrSession InSession, XrTime InDisplayTime, XrSpace InViewSpace, TArray<XrView>& OutViews)
 	{
 	}

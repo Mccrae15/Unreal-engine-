@@ -5,13 +5,15 @@
 #include "Components/ArrowComponent.h"
 #include "Components/BillboardComponent.h"
 #include "Engine/MapBuildDataRegistry.h"
-#include "Internationalization/Text.h"
+#include "Engine/Level.h"
+#include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "Logging/MessageLog.h"
-#include "Logging/TokenizedMessage.h"
 #include "Misc/MapErrors.h"
 #include "Misc/UObjectToken.h"
-#include "Rendering/SkyAtmosphereCommonData.h"
+#include "SceneInterface.h"
 #include "UObject/UObjectIterator.h"
+#include "SceneManagement.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Components/DirectionalLightComponent.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
@@ -53,9 +55,9 @@ USkyAtmosphereComponent::USkyAtmosphereComponent(const FObjectInitializer& Objec
 	RayleighScatteringScale = RayleightScatteringRaw.B;
 	RayleighExponentialDistribution = EarthRayleighScaleHeight;
 
-	MieScattering = FColor(FColor::White);
+	MieScattering = FColor::White;
 	MieScatteringScale = 0.003996f;
-	MieAbsorption = FColor(FColor::White);
+	MieAbsorption = FColor::White;
 	MieAbsorptionScale = 0.000444f;
 	MieAnisotropy = 0.8f;
 	MieExponentialDistribution = EarthMieScaleHeight;
@@ -304,6 +306,36 @@ void USkyAtmosphereComponent::OverrideAtmosphereLightDirection(int32 AtmosphereL
 		OverrideAtmosphericLight[AtmosphereLightIndex] = true;
 		OverrideAtmosphericLightDirection[AtmosphereLightIndex] = LightDirection;
 		MarkRenderStateDirty();
+	}
+}
+
+bool USkyAtmosphereComponent::IsAtmosphereLightDirectionOverriden(int32 AtmosphereLightIndex)
+{
+	check(AtmosphereLightIndex >= 0 && AtmosphereLightIndex < NUM_ATMOSPHERE_LIGHTS);
+	if (AtmosphereLightIndex >= 0 && AtmosphereLightIndex < NUM_ATMOSPHERE_LIGHTS)
+	{
+		return OverrideAtmosphericLight[AtmosphereLightIndex];
+	}
+	return false;
+}
+
+FVector USkyAtmosphereComponent::GetOverridenAtmosphereLightDirection(int32 AtmosphereLightIndex)
+{
+	check(AtmosphereLightIndex >= 0 && AtmosphereLightIndex < NUM_ATMOSPHERE_LIGHTS);
+	if (AtmosphereLightIndex >= 0 && AtmosphereLightIndex < NUM_ATMOSPHERE_LIGHTS)
+	{
+		return OverrideAtmosphericLightDirection[AtmosphereLightIndex];
+	}
+	return FVector::ZeroVector;
+}
+
+void USkyAtmosphereComponent::ResetAtmosphereLightDirectionOverride(int32 AtmosphereLightIndex)
+{
+	check(AtmosphereLightIndex >= 0 && AtmosphereLightIndex < NUM_ATMOSPHERE_LIGHTS);
+	if (AtmosphereLightIndex >= 0 && AtmosphereLightIndex < NUM_ATMOSPHERE_LIGHTS)
+	{
+		OverrideAtmosphericLight[AtmosphereLightIndex] = false;
+		OverrideAtmosphericLightDirection[AtmosphereLightIndex] = FVector::ZeroVector;
 	}
 }
 

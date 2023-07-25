@@ -7,6 +7,9 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json.Serialization;
 using System.Text.Json;
+using System.IO;
+using System.Threading.Tasks;
+using System.Threading;
 
 namespace EpicGames.Core
 {
@@ -101,11 +104,59 @@ namespace EpicGames.Core
 		}
 
 		/// <summary>
+		/// Creates the IoHash for a stream.
+		/// </summary>
+		/// <param name="stream">Data to compute the hash for</param>
+		/// <returns>New content hash instance containing the hash of the data</returns>
+		public static IoHash Compute(Stream stream)
+		{
+			using (Blake3.Hasher hasher = Blake3.Hasher.New())
+			{
+				Span<byte> buffer = stackalloc byte[16384];
+				int length;
+				while ((length = stream.Read(buffer)) > 0)
+				{
+					hasher.Update(buffer.Slice(0, length));
+				}
+				return FromBlake3(hasher);
+			}
+		}
+
+		/// <summary>
+		/// Creates the IoHash for a stream asynchronously. 
+		/// </summary>
+		/// <param name="stream">Data to compute the hash for</param>
+		/// <returns>New content hash instance containing the hash of the data</returns>
+		public static async Task<IoHash> ComputeAsync(Stream stream, CancellationToken cancellationToken = default)
+		{
+			using (Blake3.Hasher hasher = Blake3.Hasher.New())
+			{
+				Memory<byte> buffer = new byte[16384];
+				int length;
+				while ((length = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+				{
+					hasher.Update(buffer.Slice(0, length).Span);
+				}
+				return FromBlake3(hasher);
+			}
+		}
+
+		/// <summary>
 		/// Parses a digest from the given hex string
 		/// </summary>
 		/// <param name="text"></param>
 		/// <returns></returns>
 		public static IoHash Parse(string text)
+		{
+			return new IoHash(StringUtils.ParseHexString(text));
+		}
+
+		/// <summary>
+		/// Parses a digest from the given hex string
+		/// </summary>
+		/// <param name="text"></param>
+		/// <returns></returns>
+		public static IoHash Parse(ReadOnlySpan<char> text)
 		{
 			return new IoHash(StringUtils.ParseHexString(text));
 		}
@@ -301,13 +352,13 @@ namespace EpicGames.Core
 	sealed class IoHashTypeConverter : TypeConverter
 	{
 		/// <inheritdoc/>
-		public override bool CanConvertFrom(ITypeDescriptorContext context, Type sourceType)
+		public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType)
 		{
 			return sourceType == typeof(string);
 		}
 
 		/// <inheritdoc/>
-		public override object ConvertFrom(ITypeDescriptorContext context, CultureInfo culture, object value)
+		public override object ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value)
 		{
 			return IoHash.Parse((string)value);
 		}

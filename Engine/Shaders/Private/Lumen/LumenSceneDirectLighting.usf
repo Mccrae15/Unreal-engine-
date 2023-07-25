@@ -17,7 +17,7 @@ FDeferredLightData GetLumenDirectLightingLightData(uint LightIndex, float3 PreVi
 	FDeferredLightData Out;
 
 #if USE_LIGHT_UNIFORM_BUFFER
-	Out = LoadLightData(LIGHT_TYPE);
+	Out = InitDeferredLightFromUniforms(LIGHT_TYPE);
 #else
 	FLumenLight LumenLight = LoadLumenLight(LightIndex, PreViewTranslation);
 	Out = LumenLight.DeferredLightData;
@@ -29,13 +29,13 @@ FDeferredLightData GetLumenDirectLightingLightData(uint LightIndex, float3 PreVi
 float3 GetIrradianceForLight(
 	uint LightIndex,
 	FLumenSurfaceCacheData SurfaceCacheData,
-	float3 PreViewTranslation,
+	float3 PreViewTranslation, // LUMEN_LWC_TODO
 	float ShadowFactor)
 {
 	FDeferredLightData LightData = GetLumenDirectLightingLightData(LightIndex, PreViewTranslation);
 
 	float3 WorldNormal = SurfaceCacheData.WorldNormal;
-	float3 WorldPosition = SurfaceCacheData.WorldPosition;
+	float3 WorldPosition = SurfaceCacheData.WorldPosition; // LUMEN_LWC_TODO
 	float3 TranslatedWorldPosition = WorldPosition + PreViewTranslation;
 
 	float3 LightColor = LightData.Color;
@@ -61,7 +61,7 @@ float3 GetIrradianceForLight(
 
 			if (IsRectVisible(Rect))
 			{
-				const FRectTexture SourceTexture = InitRectTexture(LightData);
+				const FRectTexture SourceTexture = ConvertToRectTexture(LightData);
 				Context = CreateRectIntegrateContext(Roughness, WorldNormal, V, Rect, SourceTexture);
 			}
 		}

@@ -2,11 +2,9 @@
 
 
 #include "SoundscapeColor.h"
-#include "UObject/WeakObjectPtr.h"
-#include "Components/AudioComponent.h"
+#include "Engine/GameInstance.h"
 #include "AudioDevice.h"
 #include "TimerManager.h"
-#include "DrawDebugHelpers.h"
 #include "SoundscapeSubsystem.h"
 
 USoundscapeColor::USoundscapeColor()

@@ -16,6 +16,7 @@ using Horde.Build.Jobs.Graphs;
 using Horde.Build.Logs;
 using Horde.Build.Server;
 using Horde.Build.Streams;
+using Horde.Build.Telemetry;
 using Horde.Build.Users;
 using Horde.Build.Utilities;
 using HordeCommon;
@@ -24,6 +25,7 @@ using MongoDB.Bson;
 using MongoDB.Bson.IO;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Attributes;
+using MongoDB.Bson.Serialization.Options;
 using MongoDB.Driver;
 using OpenTracing;
 using OpenTracing.Util;
@@ -36,7 +38,7 @@ namespace Horde.Build.Jobs
 	using PoolId = StringId<IPool>;
 	using SessionId = ObjectId<ISession>;
 	using StreamId = StringId<IStream>;
-	using TemplateRefId = StringId<TemplateRef>;
+	using TemplateId = StringId<ITemplateRef>;
 	using UserId = ObjectId<IUser>;
 
 	/// <summary>
@@ -180,7 +182,7 @@ namespace Horde.Build.Jobs
 		class ChainedJobDocument : IChainedJob
 		{
 			public string Target { get; set; }
-			public TemplateRefId TemplateRefId { get; set; }
+			public TemplateId TemplateRefId { get; set; }
 			public JobId? JobId { get; set; }
 
 			[BsonConstructor]
@@ -189,10 +191,10 @@ namespace Horde.Build.Jobs
 				Target = String.Empty;
 			}
 
-			public ChainedJobDocument(ChainedJobTemplate trigger)
+			public ChainedJobDocument(ChainedJobTemplateConfig trigger)
 			{
 				Target = trigger.Trigger;
-				TemplateRefId = trigger.TemplateRefId;
+				TemplateRefId = trigger.TemplateId;
 			}
 		}
 
@@ -208,7 +210,7 @@ namespace Horde.Build.Jobs
 			public JobId Id { get; set; }
 
 			public StreamId StreamId { get; set; }
-			public TemplateRefId TemplateId { get; set; }
+			public TemplateId TemplateId { get; set; }
 			public ContentHash? TemplateHash { get; set; }
 			public ContentHash GraphHash { get; set; }
 
@@ -251,12 +253,19 @@ namespace Horde.Build.Jobs
 			public DateTimeOffset? CreateTime { get; set; }
 
 			[BsonIgnoreIfNull]
+			public string? Executor { get; set; }
+
+			[BsonIgnoreIfNull]
 			public DateTime? CreateTimeUtc { get; set; }
 
 			public int SchedulePriority { get; set; }
 			public List<JobStepBatchDocument> Batches { get; set; } = new List<JobStepBatchDocument>();
 			public List<Report>? Reports { get; set; }
 			public List<string> Arguments { get; set; } = new List<string>();
+
+			[BsonDictionaryOptions(DictionaryRepresentation.ArrayOfDocuments)]
+			public Dictionary<string, string> Environment { get; set; } = new Dictionary<string, string>();
+
 			public List<int> ReferencedByIssues { get; set; } = new List<int>();
 			public ObjectId? NotificationTriggerId { get; set; }
 			public bool ShowUgsBadges { get; set; }
@@ -276,8 +285,6 @@ namespace Horde.Build.Jobs
 			[BsonIgnoreIfNull]
 			public DateTime? UpdateTimeUtc { get; set; }
 
-			public Acl? Acl { get; set; }
-
 			[BsonRequired]
 			public int UpdateIndex { get; set; }
 
@@ -288,6 +295,7 @@ namespace Horde.Build.Jobs
 			IReadOnlyList<string> IJob.Arguments => Arguments;
 			IReadOnlyList<int> IJob.Issues => ReferencedByIssues;
 			IReadOnlyDictionary<int, ObjectId> IJob.LabelIdxToTriggerId => _labelNotifications.ToDictionary(x => x._labelIdx, x => x._triggerId);
+			IReadOnlyDictionary<string, string> IJob.Environment => Environment;
 			IReadOnlyList<IChainedJob> IJob.ChainedJobs => ChainedJobs;
 
 			[BsonConstructor]
@@ -297,7 +305,7 @@ namespace Horde.Build.Jobs
 				GraphHash = null!;
 			}
 
-			public JobDocument(JobId id, StreamId streamId, TemplateRefId templateId, ContentHash templateHash, ContentHash graphHash, string name, int change, int codeChange, int preflightChange, int clonedPreflightChange, string? preflightDescription, UserId? startedByUserId, Priority? priority, bool? autoSubmit, bool? updateIssues, bool? promoteIssuesByDefault, DateTime createTimeUtc, List<ChainedJobDocument> chainedJobs, bool showUgsBadges, bool showUgsAlerts, string? notificationChannel, string? notificationChannelFilter, List<string>? arguments)
+			public JobDocument(JobId id, StreamId streamId, TemplateId templateId, ContentHash templateHash, ContentHash graphHash, string name, int change, int codeChange, CreateJobOptions options, DateTime createTimeUtc)
 			{
 				Id = id;
 				StreamId = streamId;
@@ -307,36 +315,31 @@ namespace Horde.Build.Jobs
 				Name = name;
 				Change = change;
 				CodeChange = codeChange;
-				PreflightChange = preflightChange;
-				ClonedPreflightChange = clonedPreflightChange;
-				PreflightDescription = preflightDescription;
-				StartedByUserId = startedByUserId;
-				Priority = priority ?? HordeCommon.Priority.Normal;
-				AutoSubmit = autoSubmit ?? false;
-				UpdateIssues = updateIssues ?? (startedByUserId == null && preflightChange == 0);
-				PromoteIssuesByDefault = promoteIssuesByDefault ?? false;
+				PreflightChange = options.PreflightChange ?? 0;
+				ClonedPreflightChange = options.ClonedPreflightChange ?? 0;
+				PreflightDescription = options.PreflightDescription;
+				StartedByUserId = options.StartedByUserId;
+				Priority = options.Priority ?? HordeCommon.Priority.Normal;
+				AutoSubmit = options.AutoSubmit ?? false;
+				UpdateIssues = options.UpdateIssues ?? (options.StartedByUserId == null && ( options.PreflightChange == 0 || options.PreflightChange == null));
+				PromoteIssuesByDefault = options.PromoteIssuesByDefault ?? false;
+				Executor = options.Executor;
 				CreateTimeUtc = createTimeUtc;
-				ChainedJobs = chainedJobs;
-				ShowUgsBadges = showUgsBadges;
-				ShowUgsAlerts = showUgsAlerts;
-				NotificationChannel = notificationChannel;
-				NotificationChannelFilter = notificationChannelFilter;
-				Arguments = arguments ?? Arguments;
+				ChainedJobs.AddRange(options.JobTriggers.Select(x => new ChainedJobDocument(x)));
+				ShowUgsBadges = options.ShowUgsBadges;
+				ShowUgsAlerts = options.ShowUgsAlerts;
+				NotificationChannel = options.NotificationChannel;
+				NotificationChannelFilter = options.NotificationChannelFilter;
+				Arguments.AddRange(options.Arguments);
+
+				foreach (KeyValuePair<string, string> pair in options.Environment)
+				{
+					Environment[pair.Key] = pair.Value;
+				}
+
 				NextSubResourceId = SubResourceId.Random();
 				UpdateTimeUtc = createTimeUtc;
 			}
-		}
-
-		/// <summary>
-		/// Projection of a job definition to just include permissions info
-		/// </summary>
-		[SuppressMessage("Design", "CA1812: Class is never instantiated")]
-		class JobPermissions : IJobPermissions
-		{
-			public static ProjectionDefinition<JobDocument> Projection { get; } = Builders<JobDocument>.Projection.Include(x => x.Acl).Include(x => x.StreamId);
-
-			public Acl? Acl { get; set; }
-			public StreamId StreamId { get; set; }
 		}
 
 		/// <summary>
@@ -347,6 +350,8 @@ namespace Horde.Build.Jobs
 		readonly IMongoCollection<JobDocument> _jobs;
 		readonly MongoIndex<JobDocument> _createTimeIndex;
 		readonly MongoIndex<JobDocument> _updateTimeIndex;
+		readonly MongoIndex<JobDocument> _streamThenTemplateThenCreationTimeIndex;
+		readonly ITelemetrySink _telemetrySink;
 		readonly IClock _clock;
 		readonly ILogger<JobCollection> _logger;
 
@@ -355,14 +360,17 @@ namespace Horde.Build.Jobs
 		/// </summary>
 		/// <param name="mongoService">The database service singleton</param>
 		/// <param name="clock"></param>
+		/// <param name="telemetrySink">Telemetry sink for data</param>
 		/// <param name="logger">The logger instance</param>
-		public JobCollection(MongoService mongoService, IClock clock, ILogger<JobCollection> logger)
+		public JobCollection(MongoService mongoService, IClock clock, ITelemetrySink telemetrySink, ILogger<JobCollection> logger)
 		{
 			_clock = clock;
+			_telemetrySink = telemetrySink;
 			_logger = logger;
 
 			List<MongoIndex<JobDocument>> indexes = new List<MongoIndex<JobDocument>>();
 			indexes.Add(keys => keys.Ascending(x => x.StreamId));
+			indexes.Add(_streamThenTemplateThenCreationTimeIndex = MongoIndex.Create<JobDocument>(keys => keys.Ascending(x => x.StreamId).Ascending(x => x.TemplateId).Descending(x => x.CreateTimeUtc)));
 			indexes.Add(keys => keys.Ascending(x => x.Change));
 			indexes.Add(keys => keys.Ascending(x => x.PreflightChange));
 			indexes.Add(_createTimeIndex = MongoIndex.Create<JobDocument>(keys => keys.Descending(x => x.CreateTimeUtc)));
@@ -396,22 +404,33 @@ namespace Horde.Build.Jobs
 		}
 
 		/// <inheritdoc/>
-		public async Task<IJob> AddAsync(JobId jobId, StreamId streamId, TemplateRefId templateRefId, ContentHash templateHash, IGraph graph, string name, int change, int codeChange, int? preflightChange, int? clonedPreflightChange, string? preflightDescription, UserId? startedByUserId, Priority? priority, bool? autoSubmit, bool? updateIssues, bool? promoteIssuesByDefault, List<ChainedJobTemplate>? chainedJobs, bool showUgsBadges, bool showUgsAlerts, string? notificationChannel, string? notificationChannelFilter, List<string>? arguments)
+		public async Task<IJob> AddAsync(JobId jobId, StreamId streamId, TemplateId templateRefId, ContentHash templateHash, IGraph graph, string name, int change, int codeChange, CreateJobOptions options)
 		{
-			List<ChainedJobDocument> jobTriggers = new List<ChainedJobDocument>();
-			if (chainedJobs == null)
-			{
-				jobTriggers = new List<ChainedJobDocument>();
-			}
-			else
-			{
-				jobTriggers = chainedJobs.ConvertAll(x => new ChainedJobDocument(x));
-			}
-
-			JobDocument newJob = new JobDocument(jobId, streamId, templateRefId, templateHash, graph.Id, name, change, codeChange, preflightChange ?? 0, clonedPreflightChange ?? 0, preflightDescription, startedByUserId, priority, autoSubmit, updateIssues, promoteIssuesByDefault, DateTime.UtcNow, jobTriggers, showUgsBadges, showUgsAlerts, notificationChannel, notificationChannelFilter, arguments);
+			JobDocument newJob = new JobDocument(jobId, streamId, templateRefId, templateHash, graph.Id, name, change, codeChange, options, DateTime.UtcNow);
 			CreateBatches(newJob, graph, _logger);
 
 			await _jobs.InsertOneAsync(newJob);
+
+			if (_telemetrySink.Enabled)
+			{
+				_telemetrySink.SendEvent("State.Job", new
+				{
+					Id = newJob.Id,
+					StreamId = newJob.StreamId,
+					Arguments = newJob.Arguments,
+					AutoSubmit = newJob.AutoSubmit,
+					Change = newJob.Change,
+					CodeChange = newJob.CodeChange,
+					CreateTimeUtc = newJob.CreateTimeUtc,
+					GraphHash = newJob.GraphHash,
+					Name = newJob.Name,
+					PreflightChange = newJob.PreflightChange,
+					PreflightDescription = newJob.PreflightDescription,
+					Priority = newJob.Priority,
+					StartedByUserId = newJob.StartedByUserId,
+					TemplateId = newJob.TemplateId
+				});
+			}
 
 			return newJob;
 		}
@@ -441,13 +460,7 @@ namespace Horde.Build.Jobs
 		}
 
 		/// <inheritdoc/>
-		public async Task<IJobPermissions?> GetPermissionsAsync(JobId jobId)
-		{
-			return await _jobs.Find<JobDocument>(x => x.Id == jobId).Project<JobPermissions>(JobPermissions.Projection).FirstOrDefaultAsync();
-		}
-
-		/// <inheritdoc/>
-		public async Task<List<IJob>> FindAsync(JobId[]? jobIds, StreamId? streamId, string? name, TemplateRefId[]? templates, int? minChange, int? maxChange, int? preflightChange, bool? preflightOnly, UserId ? preflightStartedByUser, UserId? startedByUser, DateTimeOffset? minCreateTime, DateTimeOffset? maxCreateTime, DateTimeOffset? modifiedBefore, DateTimeOffset? modifiedAfter, int? index, int? count, bool consistentRead, string? indexHint, bool? excludeUserJobs)
+		public async Task<List<IJob>> FindAsync(JobId[]? jobIds, StreamId? streamId, string? name, TemplateId[]? templates, int? minChange, int? maxChange, int? preflightChange, bool? preflightOnly, UserId ? preflightStartedByUser, UserId? startedByUser, DateTimeOffset? minCreateTime, DateTimeOffset? maxCreateTime, DateTimeOffset? modifiedBefore, DateTimeOffset? modifiedAfter, int? index, int? count, bool consistentRead, string? indexHint, bool? excludeUserJobs)
 		{
 			FilterDefinitionBuilder<JobDocument> filterBuilder = Builders<JobDocument>.Filter;
 
@@ -538,13 +551,9 @@ namespace Horde.Build.Jobs
 		}
 
 		/// <inheritdoc/>
-		public async Task<List<IJob>> FindLatestByStreamWithTemplatesAsync(StreamId streamId, TemplateRefId[] templates, UserId? preflightStartedByUser, DateTimeOffset? maxCreateTime, DateTimeOffset? modifiedAfter, int? index, int? count, bool consistentRead)
+		public async Task<List<IJob>> FindLatestByStreamWithTemplatesAsync(StreamId streamId, TemplateId[] templates, UserId? preflightStartedByUser, DateTimeOffset? maxCreateTime, DateTimeOffset? modifiedAfter, int? index, int? count, bool consistentRead)
 		{
-			string indexHint = _createTimeIndex.Name;
-			if (modifiedAfter != null)
-			{
-				indexHint = _updateTimeIndex.Name;
-			}
+			string indexHint = _streamThenTemplateThenCreationTimeIndex.Name;
 			
 			// This find call uses an index hint. Modifying the parameter passed to FindAsync can affect execution time a lot as the query planner is forced to use the specified index.
 			// Casting to interface to benefit from default parameter values
@@ -554,14 +563,14 @@ namespace Horde.Build.Jobs
 		}
 
 		/// <inheritdoc/>
-		public async Task<IJob?> TryUpdateJobAsync(IJob inJob, IGraph graph, string? name, Priority? priority, bool? autoSubmit, int? autoSubmitChange, string? autoSubmitMessage, UserId? abortedByUserId, ObjectId? notificationTriggerId, List<Report>? reports, List<string>? arguments, KeyValuePair<int, ObjectId>? labelIdxToTriggerId, KeyValuePair<TemplateRefId, JobId>? jobTrigger)
+		public async Task<IJob?> TryUpdateJobAsync(IJob inJob, IGraph graph, string? name, Priority? priority, bool? autoSubmit, int? autoSubmitChange, string? autoSubmitMessage, UserId? abortedByUserId, ObjectId? notificationTriggerId, List<Report>? reports, List<string>? arguments, KeyValuePair<int, ObjectId>? labelIdxToTriggerId, KeyValuePair<TemplateId, JobId>? jobTrigger)
 		{
 			// Create the update 
 			UpdateDefinitionBuilder<JobDocument> updateBuilder = Builders<JobDocument>.Update;
 			List<UpdateDefinition<JobDocument>> updates = new List<UpdateDefinition<JobDocument>>();
 
 			// Flag for whether to update batches
-			bool bUpdateBatches = false;
+			bool updateBatches = false;
 
 			// Build the update list
 			JobDocument jobDocument = Clone((JobDocument)inJob);
@@ -594,7 +603,7 @@ namespace Horde.Build.Jobs
 			{
 				jobDocument.AbortedByUserId = abortedByUserId;
 				updates.Add(updateBuilder.Set(x => x.AbortedByUserId, jobDocument.AbortedByUserId));
-				bUpdateBatches = true;
+				updateBatches = true;
 			}
 			if (notificationTriggerId != null)
 			{
@@ -639,7 +648,7 @@ namespace Horde.Build.Jobs
 				{
 					if (modifiedArgument.StartsWith(IJob.TargetArgumentPrefix, StringComparison.OrdinalIgnoreCase))
 					{
-						bUpdateBatches = true;
+						updateBatches = true;
 					}
 				}
 
@@ -648,7 +657,7 @@ namespace Horde.Build.Jobs
 			}
 
 			// Update the batches
-			if (bUpdateBatches)
+			if (updateBatches)
 			{
 				UpdateBatches(jobDocument, graph, updates, _logger);
 			}
@@ -698,20 +707,15 @@ namespace Horde.Build.Jobs
 					updates.Add(updateBuilder.Set(x => x.Batches[batchIdx].FinishTime, batch.FinishTime));
 				}
 			}
-			if (newError != null)
+			if (newError != null && newError.Value != batch.Error)
 			{
 				batch.Error = newError.Value;
-				updates.Add(updateBuilder.Set(x => x.Batches[batchIdx].Error, batch.Error));
-			}
 
-			// If the batch is being marked as incomplete, see if we can reschedule any of the work
-			if (newError == JobStepBatchError.Incomplete)
-			{
-				// Get the new list of retried nodes
+				// Only allow retrying nodes that may succeed if run again
+				bool allowRetrying = !IsFatalBatchError(newError.Value);
+
+				// Update the state of the nodes
 				List<NodeRef> retriedNodes = jobDocument.RetriedNodes ?? new List<NodeRef>();
-
-				// Check if there are any steps that need to be run again
-				bool bUpdateState = false;
 				foreach (JobStepDocument step in batch.Steps)
 				{
 					if (step.State == JobStepState.Running)
@@ -720,17 +724,15 @@ namespace Horde.Build.Jobs
 						step.Outcome = JobStepOutcome.Failure;
 						step.Error = JobStepError.Incomplete;
 
-						if (CanRetryNode(jobDocument, batch.GroupIdx, step.NodeIdx))
+						if (allowRetrying && CanRetryNode(jobDocument, batch.GroupIdx, step.NodeIdx))
 						{
 							step.Retry = true;
 							retriedNodes.Add(new NodeRef(batch.GroupIdx, step.NodeIdx));
 						}
-
-						bUpdateState = true;
 					}
 					else if (step.State == JobStepState.Ready || step.State == JobStepState.Waiting)
 					{
-						if (CanRetryNode(jobDocument, batch.GroupIdx, step.NodeIdx))
+						if (allowRetrying && CanRetryNode(jobDocument, batch.GroupIdx, step.NodeIdx))
 						{
 							retriedNodes.Add(new NodeRef(batch.GroupIdx, step.NodeIdx));
 						}
@@ -738,16 +740,15 @@ namespace Horde.Build.Jobs
 						{
 							step.State = JobStepState.Skipped;
 						}
-						bUpdateState = true;
 					}
 				}
 
-				// Update the steps
-				if (bUpdateState)
-				{
-					updates.Clear();
-					UpdateBatches(jobDocument, graph, updates, _logger);
+				// Force an update of all batches in the job. This will fail or reschedule any nodes that can no longer be executed in this batch.
+				updates.Clear();
+				UpdateBatches(jobDocument, graph, updates, _logger);
 
+				if(retriedNodes.Count > 0)
+				{
 					jobDocument.RetriedNodes = retriedNodes;
 					updates.Add(updateBuilder.Set(x => x.RetriedNodes, jobDocument.RetriedNodes));
 				}
@@ -767,8 +768,8 @@ namespace Horde.Build.Jobs
 			List<UpdateDefinition<JobDocument>> updates = new List<UpdateDefinition<JobDocument>>();
 
 			// Update the appropriate batch
-			bool bRefreshBatches = false;
-			bool bRefreshDependentJobSteps = false;
+			bool refreshBatches = false;
+			bool refreshDependentJobSteps = false;
 			for (int loopBatchIdx = 0; loopBatchIdx < jobDocument.Batches.Count; loopBatchIdx++)
 			{
 				int batchIdx = loopBatchIdx; // For lambda capture
@@ -781,7 +782,6 @@ namespace Horde.Build.Jobs
 						JobStepDocument step = batch.Steps[stepIdx];
 						if (step.Id == stepId)
 						{
-
 							// Update the request abort status
 							if (newAbortRequested != null && step.AbortRequested == false)
 							{
@@ -795,7 +795,7 @@ namespace Horde.Build.Jobs
 									newOutcome = JobStepOutcome.Failure;
 								}
 
-								bRefreshDependentJobSteps = true;
+								refreshDependentJobSteps = true;
 							}
 
 							// Update the user that requested the abort
@@ -804,7 +804,7 @@ namespace Horde.Build.Jobs
 								step.AbortedByUserId = newAbortByUserId;
 								updates.Add(updateBuilder.Set(x => x.Batches[batchIdx].Steps[stepIdx].AbortedByUserId, step.AbortedByUserId));
 
-								bRefreshDependentJobSteps = true;
+								refreshDependentJobSteps = true;
 							}
 
 							// Update the state
@@ -824,7 +824,7 @@ namespace Horde.Build.Jobs
 									updates.Add(updateBuilder.Set(x => x.Batches[batchIdx].Steps[stepIdx].FinishTime, step.FinishTime));
 								}
 
-								bRefreshDependentJobSteps = true;
+								refreshDependentJobSteps = true;
 							}
 
 							// Update the job outcome
@@ -833,7 +833,7 @@ namespace Horde.Build.Jobs
 								step.Outcome = newOutcome;
 								updates.Add(updateBuilder.Set(x => x.Batches[batchIdx].Steps[stepIdx].Outcome, step.Outcome));
 
-								bRefreshDependentJobSteps = true;
+								refreshDependentJobSteps = true;
 							}
 
 							// Update the job step error
@@ -849,7 +849,7 @@ namespace Horde.Build.Jobs
 								step.LogId = newLogId.Value;
 								updates.Add(updateBuilder.Set(x => x.Batches[batchIdx].Steps[stepIdx].LogId, step.LogId));
 
-								bRefreshDependentJobSteps = true;
+								refreshDependentJobSteps = true;
 							}
 
 							// Update the notification trigger id
@@ -868,7 +868,7 @@ namespace Horde.Build.Jobs
 								step.RetriedByUserId = newRetryByUserId;
 								updates.Add(updateBuilder.Set(x => x.Batches[batchIdx].Steps[stepIdx].RetriedByUserId, step.RetriedByUserId));
 
-								bRefreshBatches = true;
+								refreshBatches = true;
 							}
 
 							// Update the priority
@@ -877,7 +877,7 @@ namespace Horde.Build.Jobs
 								step.Priority = newPriority.Value;
 								updates.Add(updateBuilder.Set(x => x.Batches[batchIdx].Steps[stepIdx].Priority, step.Priority));
 
-								bRefreshBatches = true;
+								refreshBatches = true;
 							}
 
 							// Add any new reports
@@ -892,10 +892,7 @@ namespace Horde.Build.Jobs
 							// Apply any property updates
 							if (newProperties != null)
 							{
-								if (step.Properties == null)
-								{
-									step.Properties = new Dictionary<string, string>(StringComparer.Ordinal);
-								}
+								step.Properties ??= new Dictionary<string, string>(StringComparer.Ordinal);
 
 								foreach (KeyValuePair<string, string?> pair in newProperties)
 								{
@@ -937,14 +934,14 @@ namespace Horde.Build.Jobs
 			}
 
 			// Update the batches
-			if (bRefreshBatches)
+			if (refreshBatches)
 			{
 				updates.Clear(); // UpdateBatches will update the entire batches list. We need to remove all the individual step updates to avoid an exception.
 				UpdateBatches(jobDocument, graph, updates, _logger);
 			}
 
 			// Update the state of dependent jobsteps
-			if (bRefreshDependentJobSteps)
+			if (refreshDependentJobSteps)
 			{
 				RefreshDependentJobSteps(jobDocument, graph, updates, _logger);
 				RefreshJobPriority(jobDocument, updates);
@@ -1164,7 +1161,7 @@ namespace Horde.Build.Jobs
 		/// <inheritdoc/>
 		public async Task<IJob?> TryCancelLeaseAsync(IJob job, int batchIdx)
 		{
-			_logger.LogDebug("Cancelling lease {LeaseId} for agent {AgentId}", job.Batches[batchIdx].LeaseId, job.Batches[batchIdx].AgentId);
+			_logger.LogInformation("Cancelling lease {LeaseId} for agent {AgentId}", job.Batches[batchIdx].LeaseId, job.Batches[batchIdx].AgentId);
 
 			JobDocument jobDocument = Clone((JobDocument)job);
 
@@ -1187,7 +1184,7 @@ namespace Horde.Build.Jobs
 		{
 			JobDocument jobDocument = Clone((JobDocument)job);
 			JobStepBatchDocument batch = jobDocument.Batches[batchIdx];
-			_logger.LogDebug("Failing batch {JobId}:{BatchId} with error {Error}", job.Id, batch.Id, error);
+			_logger.LogInformation("Failing batch {JobId}:{BatchId} with error {Error}", job.Id, batch.Id, error);
 
 			UpdateDefinitionBuilder<JobDocument> updateBuilder = new UpdateDefinitionBuilder<JobDocument>();
 			List<UpdateDefinition<JobDocument>> updates = new List<UpdateDefinition<JobDocument>>();
@@ -1305,6 +1302,21 @@ namespace Horde.Build.Jobs
 				batch.Steps.RemoveAll(x => x.State == JobStepState.Waiting || x.State == JobStepState.Ready);
 			}
 
+			// Mark any steps in failed batches as skipped
+			foreach (JobStepBatchDocument batch in job.Batches)
+			{
+				if (batch.State == JobStepBatchState.Complete && batch.Error != JobStepBatchError.Incomplete)
+				{
+					foreach (JobStepDocument step in batch.Steps)
+					{
+						if (step.IsPending())
+						{
+							step.State = JobStepState.Skipped;
+						}
+					}
+				}
+			}
+
 			// Remove any skipped nodes whose skipped state is no longer valid
 			HashSet<INode> failedNodes = new HashSet<INode>();
 			foreach (JobStepBatchDocument batch in job.Batches)
@@ -1316,6 +1328,10 @@ namespace Horde.Build.Jobs
 					if (step.Retry)
 					{
 						failedNodes.Remove(node);
+					}
+					else if (batch.State == JobStepBatchState.Complete && IsFatalBatchError(batch.Error))
+					{
+						failedNodes.Add(node);
 					}
 					else if (step.State == JobStepState.Skipped && (node.InputDependencies.Any(x => failedNodes.Contains(graph.GetNode(x))) || !CanRetryNode(job, batch.GroupIdx, step.NodeIdx)))
 					{
@@ -1334,7 +1350,7 @@ namespace Horde.Build.Jobs
 			}
 
 			// Remove any batches which are now empty
-			job.Batches.RemoveAll(x => x.Steps.Count == 0 && x.Error == JobStepBatchError.None);
+			job.Batches.RemoveAll(x => x.Steps.Count == 0 && x.LeaseId == null && x.Error == JobStepBatchError.None);
 
 			// Find all the targets in this job
 			HashSet<string> targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1450,7 +1466,7 @@ namespace Horde.Build.Jobs
 			JobStepBatchDocument?[] appendToBatches = new JobStepBatchDocument?[graph.Groups.Count];
 			foreach (JobStepBatchDocument batch in job.Batches)
 			{
-				if (batch.CanBeAppendedTo())
+				if (batch.CanBeAppendedTo() && batch.Steps.Count > 0)
 				{
 					INodeGroup group = graph.Groups[batch.GroupIdx];
 					INode firstNode = group.Nodes[batch.Steps[0].NodeIdx];
@@ -1559,6 +1575,14 @@ namespace Horde.Build.Jobs
 					nodeExecutionCount[node] = count + 1;
 				}
 			}
+		}
+
+		/// <summary>
+		/// Test whether the nodes in a batch can still be run
+		/// </summary>
+		static bool IsFatalBatchError(JobStepBatchError error)
+		{
+			return error != JobStepBatchError.None && error != JobStepBatchError.Incomplete;
 		}
 
 		/// <summary>

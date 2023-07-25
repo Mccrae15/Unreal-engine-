@@ -93,7 +93,7 @@ namespace Chaos
 		return INDEX_NONE;
 	}
 
-	void FCCDManager::ApplyConstraintsPhaseCCD(const FReal Dt, FCollisionConstraintAllocator *CollisionAllocator, const int32 NumDynamicParticles)
+	void FCCDManager::ApplyConstraintsPhaseCCD(const FReal Dt, Private::FCollisionConstraintAllocator *CollisionAllocator, const int32 NumDynamicParticles)
 	{
 		SweptConstraints = CollisionAllocator->GetCCDConstraints();
 		if (SweptConstraints.Num() > 0)
@@ -333,28 +333,30 @@ namespace Chaos
 		const int32 ConstraintStart = IslandConstraintStart[Island];
 		const int32 ConstraintNum = IslandConstraintNum[Island];
 		const int32 ConstraintEnd = IslandConstraintEnd[Island];
-		
+		const int32 ParticleStart = IslandParticleStart[Island];
+		const int32 ParticleNum = IslandParticleNum[Island];
+
 		if (ConstraintNum == 0)
 		{
 			return;
 		}
 
-#if CHAOS_DEBUG_DRAW
-		if (CVars::ChaosSolverDrawCCDInteractions)
+		// We assume that the particle's center of mass moved in a straight line since the previous tick.
+		// Modify X so that X-to-P is a straight line so that we can interpolate between X and P using the TOI
+		// to get the position at that time. This is required to handle objects with a CoM offset from the actor position.
+		// We will undo this manipulation at the end.
+		// NOTE: We do not modify the previous rotation R here - we just use the current rotation Q everywhere
+		// @todo(chaos): we should store the sweep positions in CCDParticle and onlymodify the original particle at the end
+		for (int32 i = ParticleStart; i < ParticleStart + ParticleNum; i++)
 		{
-			// Debugdraw the shape at the TOI=0 (black) and TOI=1 (white)
-			for (FCCDConstraint* CCDConstraint : SortedCCDConstraints)
-			{
-				DebugDraw::DrawCCDCollisionShape(FRigidTransform3::Identity, *CCDConstraint, true, FColor::Black, &CVars::ChaosSolverDebugDebugDrawSettings);
-				DebugDraw::DrawCCDCollisionShape(FRigidTransform3::Identity, *CCDConstraint, false, FColor::White, &CVars::ChaosSolverDebugDebugDrawSettings);
-			}
+			GroupedCCDParticles[i]->Particle->X() = GroupedCCDParticles[i]->Particle->P() - GroupedCCDParticles[i]->Particle->V() * Dt;
 		}
-#endif
 
 		// Sort constraints based on TOI
 		FReal IslandTOI = 0.f;
 		ResetIslandParticles(Island);
 		ResetIslandConstraints(Island);
+
 		bool bSortRequired = true;
 		int32 ConstraintIndex = ConstraintStart;
 		while (ConstraintIndex < ConstraintEnd)
@@ -407,7 +409,18 @@ namespace Chaos
 			// Debugdraw the shape at the current TOI
 			if (CVars::ChaosSolverDrawCCDInteractions)
 			{
-				DebugDraw::DrawCCDCollisionShape(FRigidTransform3::Identity, *CCDConstraint, true, FColor::Magenta, &CVars::ChaosSolverDebugDebugDrawSettings);
+				if (CCDParticle0)
+				{
+					const FRigidTransform3 SweepWorldTransform0 = FRigidTransform3(FConstGenericParticleHandle(CCDParticle0->Particle)->X(), FConstGenericParticleHandle(CCDParticle0->Particle)->Q());
+					const FRigidTransform3 ShapeWorldTransformXQ0 = CCDConstraint->SweptConstraint->GetShapeRelativeTransform0() * SweepWorldTransform0;
+					DebugDraw::DrawShape(ShapeWorldTransformXQ0, CCDConstraint->SweptConstraint->GetShape0()->GetLeafGeometry(), CCDConstraint->SweptConstraint->GetShape0(), FColor::Magenta, &CVars::ChaosSolverDebugDebugDrawSettings);
+				}
+				if (CCDParticle1)
+				{
+					const FRigidTransform3 SweepWorldTransform1 = FRigidTransform3(FConstGenericParticleHandle(CCDParticle1->Particle)->X(), FConstGenericParticleHandle(CCDParticle1->Particle)->Q());
+					const FRigidTransform3 ShapeWorldTransformXR1 = CCDConstraint->SweptConstraint->GetShapeRelativeTransform1() * SweepWorldTransform1;
+					DebugDraw::DrawShape(ShapeWorldTransformXR1, CCDConstraint->SweptConstraint->GetShape1()->GetLeafGeometry(), CCDConstraint->SweptConstraint->GetShape1(), FColor::Magenta, &CVars::ChaosSolverDebugDebugDrawSettings);
+				}
 			}
 #endif
 
@@ -471,10 +484,30 @@ namespace Chaos
 		{
 			for (FCCDConstraint* CCDConstraint : SortedCCDConstraints)
 			{
-				DebugDraw::DrawCCDCollisionShape(FRigidTransform3::Identity, *CCDConstraint, false, FColor::Green, &CVars::ChaosSolverDebugDebugDrawSettings);
+				FCCDParticle* CCDParticle0 = CCDConstraint->Particle[0];
+				FCCDParticle* CCDParticle1 = CCDConstraint->Particle[1];
+				if (CCDParticle0)
+				{
+					const FRigidTransform3 ShapeWorldTransformPQ0 = CCDConstraint->SweptConstraint->GetShapeRelativeTransform0() * FConstGenericParticleHandle(CCDParticle0->Particle)->GetTransformPQ();
+					DebugDraw::DrawShape(ShapeWorldTransformPQ0, CCDConstraint->SweptConstraint->GetShape0()->GetLeafGeometry(), CCDConstraint->SweptConstraint->GetShape0(), FColor::Green, &CVars::ChaosSolverDebugDebugDrawSettings);
+				}
+				if (CCDParticle1)
+				{
+					const FRigidTransform3 ShapeWorldTransformPQ1 = CCDConstraint->SweptConstraint->GetShapeRelativeTransform1() * FConstGenericParticleHandle(CCDParticle1->Particle)->GetTransformPQ();
+					DebugDraw::DrawShape(ShapeWorldTransformPQ1, CCDConstraint->SweptConstraint->GetShape1()->GetLeafGeometry(), CCDConstraint->SweptConstraint->GetShape1(), FColor::Green, &CVars::ChaosSolverDebugDebugDrawSettings);
+				}
 			}
 		}
 #endif
+
+		// SetX so that the implicit velocity and angular velocity will be calculated correctly in the solver step
+		// NOTE: This is not the same as its original X if we have been rewound to a TOI.
+		for (int32 i = ParticleStart; i < ParticleStart + ParticleNum; i++)
+		{
+			const FVec3 CoMPrev = GroupedCCDParticles[i]->Particle->PCom() - GroupedCCDParticles[i]->Particle->V() * Dt;
+			const FVec3 CoMOffsetPrev = GroupedCCDParticles[i]->Particle->R() * GroupedCCDParticles[i]->Particle->CenterOfMass();
+			GroupedCCDParticles[i]->Particle->X() = CoMPrev - CoMOffsetPrev;
+		}
 	}
 
 	void FCCDManager::ApplyIslandSweptConstraints(const int32 Island, const FReal Dt)
@@ -483,18 +516,6 @@ namespace Chaos
 		const int32 ConstraintNum = IslandConstraintNum[Island];
 		const int32 ConstraintEnd = IslandConstraintEnd[Island];
 		check(ConstraintNum > 0);
-
-#if CHAOS_DEBUG_DRAW
-		if (CVars::ChaosSolverDrawCCDInteractions)
-		{
-			// Debugdraw the shape at the TOI=0 (black) and TOI=1 (white)
-			for (FCCDConstraint* CCDConstraint : SortedCCDConstraints)
-			{
-				DebugDraw::DrawCCDCollisionShape(FRigidTransform3::Identity, *CCDConstraint, true, FColor::Black, &CVars::ChaosSolverDebugDebugDrawSettings);
-				DebugDraw::DrawCCDCollisionShape(FRigidTransform3::Identity, *CCDConstraint, false, FColor::White, &CVars::ChaosSolverDebugDebugDrawSettings);
-			}
-		}
-#endif
 
 		// Sort constraints based on TOI
 		std::sort(SortedCCDConstraints.GetData() + ConstraintStart, SortedCCDConstraints.GetData() + ConstraintStart + ConstraintNum, CCDConstraintSortPredicate);
@@ -538,14 +559,6 @@ namespace Chaos
 			{
 				AdvanceParticleXToTOI(CCDParticle1, IslandTOI, Dt);
 			}
-
-#if CHAOS_DEBUG_DRAW
-			// Debugdraw the shape at the current TOI
-			if (CVars::ChaosSolverDrawCCDInteractions)
-			{
-				DebugDraw::DrawCCDCollisionShape(FRigidTransform3::Identity, *CCDConstraint, true, FColor::Magenta, &CVars::ChaosSolverDebugDebugDrawSettings);
-			}
-#endif
 
 			ApplyImpulse(CCDConstraint);
 			CCDConstraint->ProcessedCount++;
@@ -660,17 +673,6 @@ namespace Chaos
 		{ 
 			CCDConstraint->SweptConstraint->SetCCDResults(CCDConstraint->NetImpulse);
 		}
-
-#if CHAOS_DEBUG_DRAW
-		// Debugdraw the shapes at the final position
-		if (CVars::ChaosSolverDrawCCDInteractions)
-		{
-			for (FCCDConstraint* CCDConstraint : SortedCCDConstraints)
-			{
-				DebugDraw::DrawCCDCollisionShape(FRigidTransform3::Identity, *CCDConstraint, false, FColor::Green, &CVars::ChaosSolverDebugDebugDrawSettings);
-			}
-		}
-#endif
 	}
 
 	bool FCCDManager::UpdateParticleSweptConstraints(FCCDParticle* CCDParticle, const FReal IslandTOI, const FReal Dt)
@@ -873,33 +875,41 @@ namespace Chaos
 		}
 	}
 
-	void FCCDManager::UpdateSweptConstraints(const FReal Dt, FCollisionConstraintAllocator *CollisionAllocator)
+	void FCCDManager::UpdateSweptConstraints(const FReal Dt, Private::FCollisionConstraintAllocator *CollisionAllocator)
 	{
-		// We need to update the world-space contact points at the final locations
-		// @todo(chaos): parallelize this code
-		// @todo(chaos): These SweptConstraints might contain non-CCD particles and those non-CCD particles might collide with other non-CCD particles, which are modeled in normal collision constraints. Those normal collision constraints might need to be updated as well.
-		for (FPBDCollisionConstraint* SweptConstraint : SweptConstraints)
+		// Buld the set of collision whose contact data will be out of date because we moved one or both of its particles. 
+		// This is all collision constraints, including non-swept ones, for any particle that was relocated by the CCD sweep 
+		// logic executed in ApplySweptConstraints (i.e., contents of CCDConstraints)
+		// @todo(chaos): we could calculate the size of the Collisions array in Init
+		// @todo(chaos): could be parallelized
+		TArray<FPBDCollisionConstraint*> Collisions;
+		for (FCCDParticle& CCDParticle : CCDParticles)
 		{
-			if (!SweptConstraint->IsEnabled())
-			{
-				continue;
-			}
+			CCDParticle.Particle->ParticleCollisions().VisitCollisions(
+				[&Collisions](FPBDCollisionConstraint& Collision)
+				{
+					// Avoid duplicates when both particles in the collision are CCD enabled by checking the particle ID
+					const FConstGenericParticleHandle P0 = FConstGenericParticleHandle(Collision.GetParticle0());
+					const FConstGenericParticleHandle P1 = FConstGenericParticleHandle(Collision.GetParticle1());
+					if (!P0->CCDEnabled() || !P1->CCDEnabled() || (P0->ParticleID() < P1->ParticleID()))
+					{
+						Collisions.Add(&Collision);
+					}
+					return ECollisionVisitorResult::Continue;
+				});
+		}
 
-			if (!SweptConstraint->GetCCDSweepEnabled())
-			{
-				continue;
-			}
+		// Update all the collisions
+		// @todo(chaos): can be parallelized
+		for (FPBDCollisionConstraint* Collision : Collisions)
+		{
+			const FConstGenericParticleHandle P0 = FConstGenericParticleHandle(Collision->GetParticle0());
+			const FConstGenericParticleHandle P1 = FConstGenericParticleHandle(Collision->GetParticle1());
 
-			const FConstGenericParticleHandle P0 = FConstGenericParticleHandle(SweptConstraint->GetParticle0());
-			const FConstGenericParticleHandle P1 = FConstGenericParticleHandle(SweptConstraint->GetParticle1());
-			SweptConstraint->ResetManifold();
-			Collisions::UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest>(*SweptConstraint, FRigidTransform3(P0->P(), P0->Q()), FRigidTransform3(P1->P(), P1->Q()), Dt);
-
-			// @todo(zhenglin): Removing constraints that has Phi larger than CullDistance could reduce the island sizes in the normal solve. But I could not get this to work...
-			// if (SweptConstraint->GetPhi() > SweptConstraint->GetCullDistance())
-			// {
-			//     CollisionAllocator->RemoveConstraintSwap(SweptConstraint);
-			// }
+			// NOTE: ResetManifold also reset friction anchors. If CCD sweep was run, static friction probably will not hold
+			// We could potentially call ResetActiveManifold here instead and then AssignSavedManifoldPoints if we want static friction
+			Collision->ResetManifold();
+			Collisions::UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest>(*Collision, P0->GetTransformPQ(), P1->GetTransformPQ(), Dt);
 		}
 	}
 

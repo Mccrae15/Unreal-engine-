@@ -123,7 +123,7 @@ void FRedirectCollector::ResolveAllSoftObjectPaths(FName FilterPackage)
 			else
 			{
 				const FString Referencer = SoftObjectPathProperty.GetPropertyName().ToString().Len() ? SoftObjectPathProperty.GetPropertyName().ToString() : TEXT("Unknown");
-				UE_LOG(LogRedirectors, Warning, TEXT("Soft Object Path '%s' was not found when resolving paths! (Referencer '%s:%s')"), *ToLoad, *ReferencerPackageName.ToString(), *Referencer);
+				UE_LOG(LogRedirectors, Display, TEXT("Soft Object Path '%s' was not found when resolving paths! (Referencer '%s:%s')"), *ToLoad, *ReferencerPackageName.ToString(), *Referencer);
 			}
 		}
 	};
@@ -296,22 +296,27 @@ FSoftObjectPath FRedirectCollector::GetAssetPathRedirection(const FSoftObjectPat
 
 	while (!CurrentPath.IsNull())
 	{
-		SeenPaths.Add(CurrentPath);
-		FSoftObjectPath NewPath = ObjectPathRedirectionMap.FindRef(CurrentPath);
-
-		if (!NewPath.IsNull())
+		if (!ensureMsgf(!SeenPaths.Contains(CurrentPath), TEXT("Found circular redirect from %s to %s! Returning None instead"), *OriginalPath.ToString(), *CurrentPath.ToString()))
 		{
-			if (!ensureMsgf(!SeenPaths.Contains(NewPath), TEXT("Found circular redirect from %s to %s! Returning None instead"), *CurrentPath.ToString(), *NewPath.ToString()))
+			UE_LOG(LogRedirectors, Error, TEXT("Logging redirection chain: "));
+			for (const FSoftObjectPath& Entry : SeenPaths)
 			{
-				return FSoftObjectPath();
+				UE_LOG(LogRedirectors, Error, TEXT(" %s"), *Entry.ToString());
 			}
+			return FSoftObjectPath();
+		}
+		SeenPaths.Add(CurrentPath);
 
-			// Continue trying to follow chain
-			CurrentPath = NewPath;
+		if (FSoftObjectPath* NewPath = ObjectPathRedirectionMap.Find(CurrentPath))
+		{
+			CurrentPath = *NewPath;
+		}
+		else if ((NewPath = ObjectPathRedirectionMap.Find(CurrentPath.GetWithoutSubPath())))
+		{
+			CurrentPath = FSoftObjectPath(NewPath->GetAssetPath(), CurrentPath.GetSubPathString());
 		}
 		else
 		{
-			// No more redirections
 			break;
 		}
 	}

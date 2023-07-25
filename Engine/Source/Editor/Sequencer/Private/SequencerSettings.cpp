@@ -38,6 +38,7 @@ USequencerSettings::USequencerSettings( const FObjectInitializer& ObjectInitiali
 	bIsolateCurveEditorToSelection = true;
 	LoopMode = ESequencerLoopMode::SLM_NoLoop;
 	bSnapKeysAndSectionsToPlayRange = false;
+	bResetPlayheadWhenNavigating = false;
 	bKeepCursorInPlayRangeWhileScrubbing = false;
 	bKeepPlayRangeInSectionBounds = true;
 	bCompileDirectorOnEvaluate = true;
@@ -64,6 +65,14 @@ USequencerSettings::USequencerSettings( const FObjectInitializer& ObjectInitiali
 	TreeViewWidth = 0.3f;
 	bShowTickLines = true;
 	bShowSequencerToolbar = true;
+
+	SectionColorTints.Add(FColor(88, 102, 142, 255)); // blue
+	SectionColorTints.Add(FColor(99, 137, 132, 255)); // blue-green
+	SectionColorTints.Add(FColor(110, 127, 92, 255)); // green
+	SectionColorTints.Add(FColor(151, 142, 102, 255)); // yellow
+	SectionColorTints.Add(FColor(147, 119, 101, 255)); // orange
+	SectionColorTints.Add(FColor(139, 95, 108, 255)); // red 
+	SectionColorTints.Add(FColor(109, 74, 121, 255)); // purple
 }
 
 void USequencerSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -453,6 +462,20 @@ void USequencerSettings::SetLoopMode(ESequencerLoopMode InLoopMode)
 	}
 }
 
+bool USequencerSettings::ShouldResetPlayheadWhenNavigating() const
+{
+	return bResetPlayheadWhenNavigating;
+}
+
+void USequencerSettings::SetResetPlayheadWhenNavigating(bool bInResetPlayheadWhenNavigating)
+{
+	if (bResetPlayheadWhenNavigating != bInResetPlayheadWhenNavigating)
+	{
+		bResetPlayheadWhenNavigating = bInResetPlayheadWhenNavigating;
+		SaveConfig();
+	}
+}
+
 bool USequencerSettings::ShouldKeepCursorInPlayRangeWhileScrubbing() const
 {
 	return bKeepCursorInPlayRangeWhileScrubbing;
@@ -765,6 +788,20 @@ void USequencerSettings::SetDisableSectionsAfterBaking(bool bInDisableSectionsAf
 	if (bDisableSectionsAfterBaking != bInDisableSectionsAfterBaking)
 	{
 		bDisableSectionsAfterBaking = bInDisableSectionsAfterBaking;
+		SaveConfig();
+	}
+}
+
+TArray<FColor> USequencerSettings::GetSectionColorTints() const
+{
+	return SectionColorTints;
+}
+
+void USequencerSettings::SetSectionColorTints(const TArray<FColor>& InSectionColorTints)
+{
+	if (SectionColorTints != InSectionColorTints)
+	{
+		SectionColorTints = InSectionColorTints;
 		SaveConfig();
 	}
 }

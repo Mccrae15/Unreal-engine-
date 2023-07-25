@@ -483,7 +483,9 @@ namespace EpicGames.UHT.Types
 							}
 						}
 
-						if (FunctionType == UhtFunctionType.Function && FunctionExportFlags.HasAnyFlags(UhtFunctionExportFlags.DeclaredConst))
+						// If the function has already been marked as blueprint pure, don't bother.  This is important to being
+						// able to detect interfaces where the value has been specified.
+						if (FunctionType == UhtFunctionType.Function && FunctionExportFlags.HasAnyFlags(UhtFunctionExportFlags.DeclaredConst) && !FunctionFlags.HasAnyFlags(EFunctionFlags.BlueprintPure))
 						{
 							// @todo: the presence of const and one or more outputs does not guarantee that there are
 							// no side effects. On GCC and clang we could use __attribure__((pure)) or __attribute__((const))
@@ -638,7 +640,8 @@ namespace EpicGames.UHT.Types
 						UhtStruct? outerSuperStruct = outerStruct.SuperStruct;
 						if (outerSuperStruct != null)
 						{
-							UhtType? overriddenFunction = outerSuperStruct.FindType(UhtFindOptions.SourceName | UhtFindOptions.Function, SourceName);
+							// We use the engine name as the find option for a caseless compare.
+							UhtType? overriddenFunction = outerSuperStruct.FindType(UhtFindOptions.EngineName | UhtFindOptions.Function, SourceName);
 							if (overriddenFunction != null)
 							{
 								// Native function overrides should be done in CPP text, not in a UFUNCTION() declaration (you can't change flags, and it'd otherwise be a burden to keep them identical)

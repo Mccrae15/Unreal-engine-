@@ -84,7 +84,7 @@ bool GSimulateSuboptimalSurfaceInNextTick = false;
 // A self registering exec helper to check for the VULKAN_* commands.
 class FVulkanCommandsHelper : public FSelfRegisteringExec
 {
-	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+	virtual bool Exec_Dev(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 	{
 		if (FParse::Command(&Cmd, TEXT("VULKAN_SIMULATE_LOST_SURFACE")))
 		{
@@ -128,11 +128,12 @@ VkResult SimulateErrors(VkResult Result)
 extern TAutoConsoleVariable<int32> GAllowPresentOnComputeQueue;
 static TSet<EPixelFormat> GPixelFormatNotSupportedWarning;
 
-FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevice, void* WindowHandle, EPixelFormat& InOutPixelFormat, uint32 Width, uint32 Height, bool bIsFullScreen,
+FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevice, void* InWindowHandle, EPixelFormat& InOutPixelFormat, uint32 Width, uint32 Height, bool bIsFullScreen,
 	uint32* InOutDesiredNumBackBuffers, TArray<VkImage>& OutImages, int8 InLockToVsync, FVulkanSwapChainRecreateInfo* RecreateInfo)
 	: SwapChain(VK_NULL_HANDLE)
 	, Device(InDevice)
 	, Surface(VK_NULL_HANDLE)
+	, WindowHandle(InWindowHandle)
 	, CurrentImageIndex(-1)
 	, SemaphoreIndex(0)
 	, NumPresentCalls(0)
@@ -530,14 +531,14 @@ FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevic
 	}
 #endif
 
-	VkResult Result = FVulkanPlatform::CreateSwapchainKHR(Device.GetInstanceHandle(), &SwapChainInfo, VULKAN_CPU_ALLOCATOR, &SwapChain);
+	VkResult Result = FVulkanPlatform::CreateSwapchainKHR(WindowHandle, Device.GetPhysicalHandle(), Device.GetInstanceHandle(), &SwapChainInfo, VULKAN_CPU_ALLOCATOR, &SwapChain);
 #if VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE
 	if (Device.GetOptionalExtensions().HasEXTFullscreenExclusive && Result == VK_ERROR_INITIALIZATION_FAILED)
 	{
 		// Unlink fullscreen
 		UE_LOG(LogVulkanRHI, Warning, TEXT("Create swapchain failed with Initialization error; removing FullScreen extension..."));
 		SwapChainInfo.pNext = FullScreenInfo.pNext;
-		Result = FVulkanPlatform::CreateSwapchainKHR(Device.GetInstanceHandle(), &SwapChainInfo, VULKAN_CPU_ALLOCATOR, &SwapChain);
+		Result = FVulkanPlatform::CreateSwapchainKHR(WindowHandle, Device.GetPhysicalHandle(), Device.GetInstanceHandle(), &SwapChainInfo, VULKAN_CPU_ALLOCATOR, &SwapChain);
 	}
 #endif
 	VERIFYVULKANRESULT_EXPANDED(Result);
@@ -671,7 +672,8 @@ int32 FVulkanSwapChain::AcquireImageIndex(VulkanRHI::FSemaphore** OutSemaphore)
 		const uint32 MaxImageIndex = ImageAcquiredSemaphore.Num() - 1;
 
 		SCOPE_CYCLE_COUNTER(STAT_VulkanAcquireBackBuffer);
-		uint32 IdleStart = FPlatformTime::Cycles();
+		FRenderThreadIdleScope IdleScope(ERenderThreadIdleTypes::WaitingForGPUPresent);
+
 		Result = VulkanRHI::vkAcquireNextImageKHR(
 			Device.GetInstanceHandle(),
 			SwapChain,
@@ -690,17 +692,6 @@ int32 FVulkanSwapChain::AcquireImageIndex(VulkanRHI::FSemaphore** OutSemaphore)
 				ImageAcquiredSemaphore[SemaphoreIndex]->GetHandle(),
 				AcquiredFence,
 				&ImageIndex);
-		}
-
-		uint32 ThisCycles = FPlatformTime::Cycles() - IdleStart;
-		if (IsInRHIThread())
-		{
-			GWorkingRHIThreadStallTime += ThisCycles;
-		}
-		else if (IsInActualRenderingThread())
-		{
-			GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUPresent] += ThisCycles;
-			GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForGPUPresent]++;
 		}
 	}
 
@@ -772,17 +763,14 @@ void FVulkanSwapChain::RenderThreadPacing()
 
 		if (SampledDeltaMS < (TargetIntervalWithEpsilonMS))
 		{
-			uint32 IdleStart = FPlatformTime::Cycles();
+			FRenderThreadIdleScope IdleScope(ERenderThreadIdleTypes::WaitingForGPUPresent);
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_StallForEmulatedSyncInterval);
+
 			FPlatformProcess::SleepNoStats((TargetIntervalWithEpsilonMS - SampledDeltaMS) * 0.001f);
 			if (GPrintVulkanVsyncDebug)
 			{
 				UE_LOG(LogVulkanRHI, Log, TEXT("CPU RT delta: %f, TargetWEps: %f, sleepTime: %f "), SampledDeltaMS, TargetIntervalWithEpsilonMS, TargetIntervalWithEpsilonMS - DeltaCPUPresentTimeMS);
 			}
-
-			uint32 ThisCycles = FPlatformTime::Cycles() - IdleStart;
-			GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUPresent] += ThisCycles;
-			GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForGPUPresent]++;
 		}
 		else
 		{
@@ -814,7 +802,7 @@ FVulkanSwapChain::EStatus FVulkanSwapChain::Present(FVulkanQueue* GfxQueue, FVul
 	Info.pSwapchains = &SwapChain;
 	Info.pImageIndices = (uint32*)&CurrentImageIndex;
 
-	bool bPlatformHandlesFramePacing = FVulkanPlatform::FramePace(Device, SwapChain, PresentID, Info);
+	bool bPlatformHandlesFramePacing = FVulkanPlatform::FramePace(Device, WindowHandle, SwapChain, PresentID, Info);
 
 	if (!bPlatformHandlesFramePacing)
 	{
@@ -830,23 +818,13 @@ FVulkanSwapChain::EStatus FVulkanSwapChain::Present(FVulkanQueue* GfxQueue, FVul
 
 			if (TimeToSleep > 0.0)
 			{
-				uint32 IdleStart = FPlatformTime::Cycles();
+				FRenderThreadIdleScope IdleScope(ERenderThreadIdleTypes::WaitingForGPUPresent);
+
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_StallForEmulatedSyncInterval);
 				FPlatformProcess::SleepNoStats(static_cast<float>(TimeToSleep));
 				if (GPrintVulkanVsyncDebug)
 				{
 					UE_LOG(LogVulkanRHI, Log, TEXT("CurrentID: %i, CPU TimeToSleep: %f, TargetWEps: %f"), PresentID, TimeToSleep * 1000.0, TargetIntervalWithEpsilon * 1000.0);
-				}
-
-				uint32 ThisCycles = FPlatformTime::Cycles() - IdleStart;
-				if (IsInRHIThread())
-				{
-					GWorkingRHIThreadStallTime += ThisCycles;
-				}
-				else if (IsInActualRenderingThread())
-				{
-					GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUPresent] += ThisCycles;
-					GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForGPUPresent]++;
 				}
 			}
 			else
@@ -863,17 +841,11 @@ FVulkanSwapChain::EStatus FVulkanSwapChain::Present(FVulkanQueue* GfxQueue, FVul
 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_VulkanQueuePresent);
-		uint32 IdleStart = FPlatformTime::Cycles();
-		VkResult PresentResult = FVulkanPlatform::Present(PresentQueue->GetHandle(), Info);
-		uint32 ThisCycles = FPlatformTime::Cycles() - IdleStart;
-		if (IsInRHIThread())
+
+		VkResult PresentResult;
 		{
-			GWorkingRHIThreadStallTime += ThisCycles;
-		}
-		else if (IsInActualRenderingThread())
-		{
-			GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUPresent] += ThisCycles;
-			GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForGPUPresent]++;
+			FRenderThreadIdleScope IdleScope(ERenderThreadIdleTypes::WaitingForGPUPresent);
+			PresentResult = FVulkanPlatform::Present(PresentQueue->GetHandle(), Info);
 		}
 
 		CurrentImageIndex = -1;

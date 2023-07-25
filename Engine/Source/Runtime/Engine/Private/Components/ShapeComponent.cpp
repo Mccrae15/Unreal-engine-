@@ -2,12 +2,14 @@
 
 
 #include "Components/ShapeComponent.h"
-#include "AI/Navigation/NavAreaBase.h"
 #include "AI/NavigationSystemBase.h"
+#include "BodySetupEnums.h"
 #include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/SphereElem.h"
 #include "PhysicsEngine/SphylElem.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "PhysicsInterfaceTypesCore.h"
+#include "Serialization/CustomVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ShapeComponent)
 
@@ -121,6 +123,14 @@ void UShapeComponent::Serialize(FArchive& Ar)
 	}
 #endif // WITH_EDITOR
 }
+
+#if WITH_EDITORONLY_DATA
+void UShapeComponent::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UBodySetup::StaticClass()));
+}
+#endif
 
 #if WITH_EDITOR
 void UShapeComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)

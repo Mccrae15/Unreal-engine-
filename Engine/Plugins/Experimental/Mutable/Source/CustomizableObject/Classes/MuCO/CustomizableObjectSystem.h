@@ -2,20 +2,7 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "Delegates/Delegate.h"
-#include "Engine/EngineTypes.h"
 #include "Engine/StreamableManager.h"
-#include "Math/IntVector.h"
-#include "Math/UnrealMathSSE.h"
-#include "PixelFormat.h"
-#include "Stats/Stats2.h"
-#include "Templates/SharedPointer.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 #include "AssetRegistry/AssetData.h"
 
 #if WITH_EDITOR
@@ -28,6 +15,7 @@ class FCustomizableObjectCompilerBase;
 class ITargetPlatform;
 class SNotificationItem;
 class UCustomizableObject;
+class UDefaultImageProvider;
 class USkeletalMesh;
 class UTexture2D;
 struct FFrame;
@@ -175,7 +163,10 @@ public:
 		Unreal,
 
 		// Data will be provided from an unreal texture, and will only be loaded when actually needed in the Mutable thread
-		Unreal_Deferred
+		Unreal_Deferred,
+
+		// Number of elements of this enum.
+		Count
 	};
 
 	// Query that Mutable will run to find out if a texture will be provided as an Unreal UTexture2D,
@@ -195,40 +186,6 @@ public:
 	// Used in the editor to show the list of available options.
 	// Only necessary if the images are required in editor previews.
 	virtual void GetTextureParameterValues(TArray<FCustomizableObjectExternalTexture>& OutValues) {};
-};
-
-
-// Example implementation of a ICustomizableSystemImageProvider that just uses a predefined array of textures.
-// It is also used by editors to set some preview images.
-UCLASS()
-class CUSTOMIZABLEOBJECT_API UCustomizableObjectImageProviderArray : public UCustomizableSystemImageProvider
-{
-public:
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, Category = Preview)
-	TArray< TObjectPtr<UTexture2D> > Textures;
-
-	// UObject interface
-#if WITH_EDITOR
-	void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-#endif
-
-	// UCustomizableSystemImageProvider interface
-	ValueType HasTextureParameterValue(int64 ID) override;
-	UTexture2D* GetTextureParameterValue(int64 ID) override;
-	void GetTextureParameterValues(TArray<FCustomizableObjectExternalTexture>& OutValues) override;
-
-	// Own interface
-	void InvalidateIds();
-
-	DECLARE_MULTICAST_DELEGATE(FOnTexturesChanged);
-	FOnTexturesChanged TexturesChangeDelegate;
-
-private:
-
-	// The preview texture values will start at this ID, to avoid clashing with other game-specific custom providers.
-	int FirstId = 100000;
 };
 
 
@@ -273,6 +230,11 @@ public:
 	// This is usually only used in the editor
 	bool LockObject(const class UCustomizableObject*);
 	void UnlockObject(const class UCustomizableObject*);
+
+	/** Checks if there are any outstading disk or mip update operations in flight for the parameter Customizable Object that may
+	* make it unsafe to compile at the moment.
+	* @return true if there are operations in flight and it's not safe to compile */
+	bool CheckIfDiskOrMipUpdateOperationsPending(const UCustomizableObject& Object) const;
 	
 	// Called whenever the Mutable Editor Settings change, copying the new value of the current needed settings to the Customizable Object System
 	void EditorSettingsChanged(const FEditorCompileSettings& InEditorSettings);
@@ -297,7 +259,7 @@ public:
 
 	bool IsProgressiveMipStreamingEnabled() const;
 
-public:
+	bool IsOnlyGenerateRequestedLODsEnabled() const;
 
 	void AddPendingReleaseSkeletalMesh( USkeletalMesh* SkeletalMesh );
 
@@ -335,21 +297,16 @@ public:
 	/** [Texture Parameters] Remove all images from the cache. */
 	void ClearImageCache();
 
+	/** Get the default image provider. Returns null if it was not already initialized. */
+	TObjectPtr<UDefaultImageProvider> GetDefaultImageProvider() const;
 
-#if WITH_EDITOR
-	/** [Texture Parameters] Get the editor-side preview external texture provider. 
-	 * \TODO: Move to the editor? 
-	 */
-	UCustomizableObjectImageProviderArray* GetEditorExternalImageProvider();
-#endif
+	/** Initialize (if was not already) and get the default image provider. */
+	UDefaultImageProvider& GetOrCreateDefaultImageProvider();
 
 private:
-
-	/** [Texture Parameters] If in editor, this will hold a reference to the image provider used to give examples of external images to preview in the customizable objects that use this functionality.
-	 * \TODO : Move to the editor ?
-	 */
+	/** Mutable default image provider. Used by the COIEditor and Instance/Descriptor APIs. */
 	UPROPERTY()
-	TObjectPtr<UCustomizableObjectImageProviderArray> PreviewExternalImageProvider = nullptr;
+	TObjectPtr<UDefaultImageProvider> DefaultImageProvider = nullptr;
 
 public:
     
@@ -367,6 +324,7 @@ public:
 
 	// Give access to the internal object data.
 	FCustomizableObjectSystemPrivate* GetPrivate() { return Private.Get(); }
+	const FCustomizableObjectSystemPrivate* GetPrivate() const { return Private.Get(); }
 
 	FStreamableManager& GetStreamableManager() { return StreamableManager; }
 
@@ -406,6 +364,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Status)
 	void SetReleaseMutableTexturesImmediately(bool bReleaseTextures);
 
+	bool IsMutableAnimInfoDebuggingEnabled() const;
+
 #if WITH_EDITOR
 	void RecompileCustomizableObjectAsync(const FAssetData& InAssetData, const UCustomizableObject* InObject);
 	
@@ -434,19 +394,12 @@ private:
 
 	// For async material loading
 	FStreamableManager StreamableManager;
-	bool bMaterialsAlreadyLoaded = false;
 
 	// Most of the work in this plugin happens here.
 	bool Tick(float DeltaTime);
 
 	// If there is an on-going operation, advance it.
 	void AdvanceCurrentOperation();
-
-	FTimerHandle TimerHandle_ApplyRandomValues;
-
-	bool ApplyRandomValuesToAllPawns = false;
-
-	bool RandomValuesCommandTimerWorking = false;
 
 	// TODO: Can we move this to the editor module?
 #if WITH_EDITOR
@@ -476,5 +429,13 @@ private:
 	TMap<FString, int64> PlatformMaxChunkSize;
 	
 #endif
+
+	// Friends
+	friend class FCustomizableObjectSystemPrivate;
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Engine/EngineTypes.h"
+#include "PixelFormat.h"
+#endif

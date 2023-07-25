@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "Materials/MaterialInstance.h"
 #include "StaticParameterSet.h"
@@ -16,18 +17,9 @@ class UMaterialFunctionInstance : public UMaterialFunctionInterface
 {
 	GENERATED_UCLASS_BODY()
 
-	void SetParent(UMaterialFunctionInterface* NewParent)
-	{
-		Parent = NewParent;
-		MaterialFunctionUsage = NewParent->GetMaterialFunctionUsage();
-		Base = GetBaseFunction();
-	}
+	ENGINE_API void SetParent(UMaterialFunctionInterface* NewParent);
 
-	virtual EMaterialFunctionUsage GetMaterialFunctionUsage() override
-	{
-		UMaterialFunctionInterface* BaseFunction = GetBaseFunction();
-		return BaseFunction ? BaseFunction->GetMaterialFunctionUsage() : EMaterialFunctionUsage::Default;
-	}
+	virtual EMaterialFunctionUsage GetMaterialFunctionUsage() override;
 
 	/** Parent function. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=MaterialFunctionInstance, AssetRegistrySearchable)
@@ -68,6 +60,10 @@ class UMaterialFunctionInstance : public UMaterialFunctionInterface
 	/** Runtime virtual texture parameters. */
 	UPROPERTY(EditAnywhere, Category = MaterialFunctionInstance)
 	TArray<struct FRuntimeVirtualTextureParameterValue> RuntimeVirtualTextureParameterValues;
+
+	/** Sparse volume texture parameters. */
+	UPROPERTY(EditAnywhere, Category = MaterialFunctionInstance)
+	TArray<struct FSparseVolumeTextureParameterValue> SparseVolumeTextureParameterValues;
 
 #if WITH_EDITOR
 	ENGINE_API void UpdateParameterSet();

@@ -13,7 +13,6 @@ namespace Chaos::Softs
 class FPBDBendingConstraintsBase
 {
 public:
-
 	FPBDBendingConstraintsBase(const FSolverParticles& InParticles,
 		int32 ParticleOffset,
 		int32 ParticleCount, 
@@ -23,12 +22,29 @@ public:
 		const FSolverVec2& InStiffness,
 		const FSolverReal InBucklingRatio,
 		const FSolverVec2& InBucklingStiffness,
-		bool bTrimKinematicConstraints = false)
+		bool bTrimKinematicConstraints = false,
+		FSolverReal MaxStiffness = FPBDStiffness::DefaultPBDMaxStiffness)
 		: Constraints(bTrimKinematicConstraints ? TrimKinematicConstraints(InConstraints, InParticles): MoveTemp(InConstraints))
 		, ConstraintSharedEdges(ExtractConstraintSharedEdges(Constraints))
-		, Stiffness(InStiffness, StiffnessMultipliers, TConstArrayView<TVec2<int32>>(ConstraintSharedEdges), ParticleOffset, ParticleCount)
-		, BucklingRatio(InBucklingRatio)
-		, BucklingStiffness(InBucklingStiffness, BucklingStiffnessMultipliers, TConstArrayView<TVec2<int32>>(ConstraintSharedEdges), ParticleOffset, ParticleCount)
+		, Stiffness(
+			InStiffness,
+			StiffnessMultipliers,
+			TConstArrayView<TVec2<int32>>(ConstraintSharedEdges),
+			ParticleOffset,
+			ParticleCount,
+			FPBDStiffness::DefaultTableSize,
+			FPBDStiffness::DefaultParameterFitBase,
+			MaxStiffness)
+		, BucklingRatio(FMath::Clamp(InBucklingRatio, (FSolverReal)0., (FSolverReal)1.))
+		, BucklingStiffness(
+			InBucklingStiffness,
+			BucklingStiffnessMultipliers,
+			TConstArrayView<TVec2<int32>>(ConstraintSharedEdges),
+			ParticleOffset,
+			ParticleCount,
+			FPBDStiffness::DefaultTableSize,
+			FPBDStiffness::DefaultParameterFitBase,
+			MaxStiffness)
 	{
 		for (const TVec4<int32>& Constraint : Constraints)
 		{
@@ -37,9 +53,10 @@ public:
 			const FSolverVec3& P3 = InParticles.X(Constraint[2]);
 			const FSolverVec3& P4 = InParticles.X(Constraint[3]);
 			RestAngles.Add(CalcAngle(P1, P2, P3, P4));
-		}	
+		}
 	}
 
+	UE_DEPRECATED(5.2, "Use one of the other constructors instead.")
 	FPBDBendingConstraintsBase(const FSolverParticles& InParticles, TArray<TVec4<int32>>&& InConstraints, const FSolverReal InStiffness = (FSolverReal)1.)
 	    : Constraints(MoveTemp(InConstraints))
 		, ConstraintSharedEdges(ExtractConstraintSharedEdges(Constraints))
@@ -62,13 +79,17 @@ public:
 	// Update stiffness values
 	void SetProperties(const FSolverVec2& InStiffness, const FSolverReal InBucklingRatio, const FSolverVec2& InBucklingStiffness)
 	{ 
-		Stiffness.SetWeightedValue(InStiffness.ClampAxes((FSolverReal)0., (FSolverReal)1.)); 
-		BucklingRatio = InBucklingRatio;
-		BucklingStiffness.SetWeightedValue(InBucklingStiffness.ClampAxes((FSolverReal)0., (FSolverReal)1.));
+		Stiffness.SetWeightedValue(InStiffness);
+		BucklingRatio = FMath::Clamp(InBucklingRatio, (FSolverReal)0., (FSolverReal)1.);
+		BucklingStiffness.SetWeightedValue(InBucklingStiffness);
 	}
 
 	// Update stiffness table, as well as the simulation stiffness exponent
-	void ApplyProperties(const FSolverReal Dt, const int32 NumIterations) { Stiffness.ApplyValues(Dt, NumIterations); BucklingStiffness.ApplyValues(Dt, NumIterations); }
+	void ApplyProperties(const FSolverReal Dt, const int32 NumIterations)
+	{
+		Stiffness.ApplyPBDValues(Dt, NumIterations);
+		BucklingStiffness.ApplyPBDValues(Dt, NumIterations);
+	}
 
 	UE_DEPRECATED(5.1, "Use SetProperties instead.")
 	void SetStiffness(FSolverReal InStiffness) { SetProperties(FSolverVec2(InStiffness), 0.f, 1.f); }

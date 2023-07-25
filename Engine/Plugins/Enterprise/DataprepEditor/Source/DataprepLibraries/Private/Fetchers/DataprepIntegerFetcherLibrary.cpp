@@ -1,13 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Fetchers/DataprepIntegerFetcherLibrary.h"
-#include "DataprepOperationsLibrary.h"
 
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
-#include "GameFramework/Actor.h"
-#include "Misc/Optional.h"
-#include "UObject/Object.h"
+#include "StaticMeshResources.h"
 
 #define LOCTEXT_NAMESPACE "DataprepIntegerFetcherLibrary"
 

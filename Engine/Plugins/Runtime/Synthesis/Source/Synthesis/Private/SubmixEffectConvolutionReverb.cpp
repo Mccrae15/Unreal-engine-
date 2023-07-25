@@ -2,9 +2,10 @@
 
 #include "SubmixEffects/SubmixEffectConvolutionReverb.h"
 
-#include "Async/Async.h"
+#include "AudioDefines.h"
+#include "DSP/AlignedBlockBuffer.h" // IWYU pragma: keep
 #include "DSP/FloatArrayMath.h"
-#include "SynthesisModule.h"
+#include "EffectConvolutionReverb.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SubmixEffectConvolutionReverb)
 

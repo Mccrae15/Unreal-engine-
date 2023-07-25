@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "MaterialTypes.h"
 #include "Materials/MaterialExpressionRuntimeVirtualTextureSample.h"
 #include "MaterialExpressionRuntimeVirtualTextureSampleParameter.generated.h"
 
@@ -31,12 +32,6 @@ class UMaterialExpressionRuntimeVirtualTextureSampleParameter : public UMaterial
 	/** If this is the named parameter from this material expression, then set its value. */
 	bool SetParameterValue(FName InParameterName, URuntimeVirtualTexture* InValue, EMaterialExpressionSetParameterValueFlags Flags = EMaterialExpressionSetParameterValueFlags::None);
 #endif
-
-	UE_DEPRECATED(5.0, "Use GetParameterValue and/or GetParameterName")
-	bool IsNamedParameter(const FHashedMaterialParameterInfo& ParameterInfo, URuntimeVirtualTexture*& OutValue) const;
-	
-	UE_DEPRECATED(5.0, "Use GetAllParameterInfoOfType or GetAllParametersOfType")
-	void GetAllParameterInfo(TArray<FMaterialParameterInfo> &OutParameterInfo, TArray<FGuid> &OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const;
 
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR

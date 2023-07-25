@@ -443,8 +443,8 @@ struct TPropertyComponentHandlerImpl<PropertyTraits, TPropertyMetaData<MetaDataT
 					FAlignedDecomposedValue& AlignedOutput = AlignedOutputs[CompositeIndex];
 					if (InitialValueComponent)
 					{
-						const StorageType& InitialValue = (*InitialValueComponent);
-						InitialValueComposite = reinterpret_cast<const double*>(reinterpret_cast<const uint8*>(&InitialValue) + Composites[CompositeIndex].CompositeOffset);
+						const StorageType* InitialValuePtr = InitialValueComponent.AsPtr();
+						InitialValueComposite = reinterpret_cast<const double*>(reinterpret_cast<const uint8*>(InitialValuePtr) + Composites[CompositeIndex].CompositeOffset);
 					}
 
 					const double NewComposite = *reinterpret_cast<const double*>(reinterpret_cast<const uint8*>(&InCurrentValue) + Composites[CompositeIndex].CompositeOffset);
@@ -503,8 +503,8 @@ struct TPropertyComponentHandlerImpl<PropertyTraits, TPropertyMetaData<MetaDataT
 				const double* InitialValueComposite = nullptr;
 				if (InitialValueComponent)
 				{
-					const StorageType& InitialValue = (*InitialValueComponent);
-					InitialValueComposite = reinterpret_cast<const double*>(reinterpret_cast<const uint8*>(&InitialValue) + Composite.CompositeOffset);
+					const StorageType* InitialValuePtr = InitialValueComponent.AsPtr();
+					InitialValueComposite = reinterpret_cast<const double*>(reinterpret_cast<const uint8*>(InitialValuePtr) + Composite.CompositeOffset);
 				}
 
 				const double RecomposedComposite = AlignedOutput.Value.Recompose(EntityID, InCurrentValue, InitialValueComposite);
@@ -559,9 +559,9 @@ struct TPropertyDefinitionBuilder
 
 		Definition->CompositeSize = 1;
 
-		static_assert(!TIsSame<typename PropertyTraits::StorageType, float>::Value, "Please use double-precision composites");
+		static_assert(!std::is_same_v<typename PropertyTraits::StorageType, float>, "Please use double-precision composites");
 
-		if (TIsSame<typename PropertyTraits::StorageType, double>::Value)
+		if constexpr (std::is_same_v<typename PropertyTraits::StorageType, double>)
 		{
 			Definition->DoubleCompositeMask = 1;
 		}
@@ -639,9 +639,9 @@ struct TCompositePropertyDefinitionBuilder
 		FPropertyCompositeDefinition NewChannel = { InComponent, static_cast<uint16>(CompositeOffset) };
 		Registry->CompositeDefinitions.Add(NewChannel);
 
-		static_assert(!TIsSame<T, float>::Value, "Please use double-precision composites");
+		static_assert(!std::is_same_v<T, float>, "Please use double-precision composites");
 
-		if (TIsSame<T, double>::Value)
+		if constexpr (std::is_same_v<T, double>)
 		{
 			Definition->DoubleCompositeMask |= 1 << Definition->CompositeSize;
 		}

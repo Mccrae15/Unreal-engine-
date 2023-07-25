@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 
 #include "PCGEdge.generated.h"
 
@@ -13,8 +12,13 @@ UCLASS(ClassGroup = (Procedural))
 class PCG_API UPCGEdge : public UObject
 {
 	GENERATED_BODY()
-
 public:
+	UPCGEdge(const FObjectInitializer& ObjectInitializer);
+
+	// ~Begin UObject interface
+	virtual void PostLoad() override;
+	// ~End UObject interface
+
 	UPROPERTY()
 	FName InboundLabel_DEPRECATED = NAME_None;
 
@@ -37,3 +41,7 @@ public:
 	UPCGPin* GetOtherPin(const UPCGPin* Pin);
 	const UPCGPin* GetOtherPin(const UPCGPin* Pin) const;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

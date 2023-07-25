@@ -5,16 +5,29 @@
 =============================================================================*/ 
 
 #include "Animation/AnimCompress.h"
+#include "Animation/AnimSequence.h"
 #include "Misc/MessageDialog.h"
-#include "Serialization/MemoryWriter.h"
-#include "Serialization/MemoryReader.h"
+#include "Animation/AnimSequenceDecompressionContext.h"
 #include "Misc/FeedbackContext.h"
-#include "AnimationCompression.h"
-#include "AnimEncoding.h"
+#include "AnimationUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimCompress)
 
 DEFINE_LOG_CATEGORY(LogAnimationCompression);
+
+#if WITH_EDITOR
+namespace UE
+{
+	namespace Anim
+	{
+		namespace Compression
+		{
+			std::atomic<bool> FAnimationCompressionMemorySummaryScope::ScopeExists = false;
+			TUniquePtr<FCompressionMemorySummary> FAnimationCompressionMemorySummaryScope::CompressionSummary = nullptr;
+		}
+	}
+}
+#endif // WITH_EDITOR
 
 UAnimCompress::UAnimCompress(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -46,10 +59,6 @@ void FCompressionMemorySummary::GatherPostCompressionStats(const FCompressedAnim
 #endif
 }
 
-void FAnimCompressContext::GatherPostCompressionStats(const FCompressedAnimSequence& CompressedData, const TArray<FBoneData>& BoneData, const FName AnimFName, double CompressionTime, bool bInPerformedCompression)
-{
-	CompressionSummary.GatherPostCompressionStats(CompressedData, BoneData, AnimFName, CompressionTime, bInPerformedCompression);
-}
 
 FCompressionMemorySummary::FCompressionMemorySummary(bool bInEnabled)
 	: bEnabled(bInEnabled)
@@ -68,7 +77,7 @@ FCompressionMemorySummary::FCompressionMemorySummary(bool bInEnabled)
 
 FCompressionMemorySummary::~FCompressionMemorySummary()
 {
-	if (bEnabled && bUsed && WorstBoneError.IsValid())
+	if (bEnabled && bUsed)
 	{
 		const int32 TotalBeforeSaving = TotalRaw - TotalBeforeCompressed;
 		const int32 TotalAfterSaving = TotalRaw - TotalAfterCompressed;
@@ -92,18 +101,24 @@ FCompressionMemorySummary::~FCompressionMemorySummary()
 		Args.Add(TEXT("TotalTimeSpentCompressingPretty"), FText::FromString(FPlatformTime::PrettyTime(TotalCompressionExecutionTime)));
 		Args.Add(TEXT("TotalTimeSpentCompressingRawSeconds"), FText::AsNumber((float)TotalCompressionExecutionTime, &Options));
 
-		const FErrorTrackerWorstBone WorstBone = WorstBoneError.GetMaxErrorItem();
-		const FErrorTrackerWorstAnimation WorstAnimation = WorstAnimationError.GetMaxErrorItem();
-
 		Args.Add(TEXT("AverageError"), FText::AsNumber(AverageError, &Options));
-
-		Args.Add(TEXT("WorstBoneError"), WorstBone.ToText());
-		Args.Add(TEXT("WorstAnimationError"), WorstAnimation.ToText());
+		if (WorstBoneError.IsValid())
+		{
+			const FErrorTrackerWorstBone WorstBone = WorstBoneError.GetMaxErrorItem();
+			const FErrorTrackerWorstAnimation WorstAnimation = WorstAnimationError.GetMaxErrorItem();
+			Args.Add(TEXT("WorstBoneError"), WorstBone.ToText());
+			Args.Add(TEXT("WorstAnimationError"), WorstAnimation.ToText());
+		}
+		else
+		{
+			Args.Add(TEXT("WorstBoneError"), FText::FromName(NAME_None));
+			Args.Add(TEXT("WorstAnimationError"), FText::FromName(NAME_None));
+		}
 
 		FText Message;
 		if (!bPerformedCompression)
 		{
-			Message = FText::Format(NSLOCTEXT("Engine", "CompressionMemorySummaryNoChange", "Compressed {NumberOfAnimations} Animation(s)\n\nRaw: {TotalRaw} - Compressed: {TotalAfterCompressed}\nSaving: {TotalAfterSaving} ({NewCompressionRatio})\n\nEnd Effector Translation Added By Compression:\n Average: {AverageError} Max:\n{WorstBoneError}\n\nMax Average Animation Error:\n{WorstAnimationError}"), Args);
+			Message = FText::Format(NSLOCTEXT("Engine", "CompressionMemorySummaryNoChange", "Fetched compressed data for {NumberOfAnimations} Animation(s)\n\nRaw: {TotalRaw} - Compressed: {TotalAfterCompressed}\nSaving: {TotalAfterSaving} ({NewCompressionRatio})\n\nEnd Effector Translation Added By Compression:\n Average: {AverageError} Max:\n{WorstBoneError}\n\nMax Average Animation Error:\n{WorstAnimationError}"), Args);
 		}
 		else
 		{
@@ -202,35 +217,13 @@ uint8 MakeBitForFlag(uint32 Item, uint32 Position)
 
 //////////////////////////////////////////////////////////////////////////////////////
 // FCompressionMemorySummary
-
-void FCompressionMemorySummary::GatherPreCompressionStats(const FString& Name, int32 RawSize, int32 PreCompressedSize, int32 ProgressNumerator, int32 ProgressDenominator)
+void FCompressionMemorySummary::GatherPreCompressionStats(int32 RawSize, int32 PreCompressedSize)
 {
-	if (bEnabled)
-	{
-		bUsed = true;
-		FFormatNamedArguments Args;
-		Args.Add(TEXT("AnimSequenceName"), FText::FromString(Name));
-		Args.Add(TEXT("ProgressNumerator"), ProgressNumerator);
-		Args.Add(TEXT("ProgressDenominator"), ProgressDenominator);
-
-		GWarn->StatusUpdate(ProgressNumerator,
-			ProgressDenominator,
-			FText::Format(NSLOCTEXT("CompressionMemorySummary", "CompressingTaskStatusMessageFormat", "Compressing {AnimSequenceName} ({ProgressNumerator}/{ProgressDenominator})"), Args));
-
-		TotalRaw += RawSize;
-		TotalBeforeCompressed += PreCompressedSize;
-		++NumberOfAnimations;
-	}
+	bUsed = true;
+	TotalRaw += RawSize;
+	TotalBeforeCompressed += PreCompressedSize;
+	++NumberOfAnimations;
 }
-
-
-//////////////////////////////////////////////////////////////////////////////////////
-
-void FAnimCompressContext::GatherPreCompressionStats(const FString& Name, int32 RawSize, int32 PreviousCompressionSize)
-{
-	CompressionSummary.GatherPreCompressionStats(Name, RawSize, PreviousCompressionSize, AnimIndex, MaxAnimations);
-}
-
 
 //////////////////////////////////////////////////////////////////////////////////////
 // UAnimCompress
@@ -323,8 +316,7 @@ void UAnimCompress::BitwiseCompressAnimationTracks(
 			UE_LOG(LogAnimationCompression, Warning, TEXT("When compressing %s: no key-reduced data"), *CompressibleAnimData.Name);
 		}
 
-		AnimData.CompressedTrackOffsets.Empty(NumTracks * 4);
-		AnimData.CompressedTrackOffsets.AddUninitialized(NumTracks * 4);
+		AnimData.CompressedTrackOffsets.SetNumUninitialized(NumTracks * 4);
 
 		// just empty it since there is chance this can be 0
 		AnimData.CompressedScaleOffsets.Empty();
@@ -335,7 +327,8 @@ void UAnimCompress::BitwiseCompressAnimationTracks(
 			AnimData.CompressedScaleOffsets.AddUninitialized(NumTracks);
 		}
 
-		AnimData.CompressedByteStream.Empty();
+		const int32 MaxSize = CompressibleAnimData.RawAnimationData.Num() * CompressibleAnimData.NumberOfKeys * sizeof(FVector3f) + sizeof(FQuat4f) + sizeof(FVector3f);
+		AnimData.CompressedByteStream.Reset(MaxSize);
 
 		for (int32 TrackIndex = 0; TrackIndex < NumTracks; ++TrackIndex)
 		{
@@ -993,12 +986,12 @@ void UAnimCompress::SeparateRawDataIntoTracks(
 {
 	const int32 NumTracks = RawAnimData.Num();
 
-	OutTranslationData.Empty( NumTracks );
-	OutRotationData.Empty( NumTracks );
-	OutScaleData.Empty( NumTracks );
-	OutTranslationData.AddZeroed( NumTracks );
-	OutRotationData.AddZeroed( NumTracks );
-	OutScaleData.AddZeroed( NumTracks );
+	OutTranslationData.Reset( NumTracks );
+	OutRotationData.Reset( NumTracks );
+	OutScaleData.Reset( NumTracks );
+	OutTranslationData.SetNumZeroed( NumTracks );
+	OutRotationData.SetNumZeroed( NumTracks );
+	OutScaleData.SetNumZeroed( NumTracks );
 
 	// only compress scale if it has valid scale keys
 	bool bCompressScaleKeys = false;
@@ -1022,65 +1015,78 @@ void UAnimCompress::SeparateRawDataIntoTracks(
 		}
 
 		// Copy over position keys.
-		for ( int32 PosIndex = 0; PosIndex < RawTrack.PosKeys.Num(); ++PosIndex )
-		{
-			TranslationTrack.PosKeys.Add( RawTrack.PosKeys[PosIndex] );
-		}
+		TranslationTrack.PosKeys = RawTrack.PosKeys;
 
 		// Copy over rotation keys.
-		for ( int32 RotIndex = 0; RotIndex < RawTrack.RotKeys.Num(); ++RotIndex )
-		{
-			RotationTrack.RotKeys.Add( RawTrack.RotKeys[RotIndex] );
-		}
+		RotationTrack.RotKeys = RawTrack.RotKeys;
 
 		// Set times for the translation track.
-		if ( TranslationTrack.PosKeys.Num() > 1 )
+		const int32 NumPosKeys = TranslationTrack.PosKeys.Num();
+		TranslationTrack.Times.SetNumUninitialized(NumPosKeys);
+		if ( NumPosKeys > 1 )
 		{
-			const float PosFrameInterval = SequenceLength / static_cast<float>(TranslationTrack.PosKeys.Num()-1);
-			for ( int32 PosIndex = 0; PosIndex < TranslationTrack.PosKeys.Num(); ++PosIndex )
+			const float PosFrameInterval = SequenceLength / static_cast<float>(NumPosKeys-1);
+			for ( int32 PosIndex = 0; PosIndex < NumPosKeys; ++PosIndex )
 			{
-				TranslationTrack.Times.Add( PosIndex * PosFrameInterval );
+				TranslationTrack.Times[PosIndex] = PosIndex * PosFrameInterval;
 			}
 		}
 		else
 		{
-			TranslationTrack.Times.Add( 0.f );
+			TranslationTrack.Times[0] = 0.f;
 		}
 
 		// Set times for the rotation track.
-		if ( RotationTrack.RotKeys.Num() > 1 )
+		const int32 NumRotKeys = RotationTrack.RotKeys.Num();
+		RotationTrack.Times.SetNumUninitialized(NumRotKeys);
+		if ( NumRotKeys > 1 )
 		{
-			const float RotFrameInterval = SequenceLength / static_cast<float>(RotationTrack.RotKeys.Num()-1);
-			for ( int32 RotIndex = 0; RotIndex < RotationTrack.RotKeys.Num(); ++RotIndex )
+			// If # of keys match between translation and rotation, re-use the timing values
+			if (NumRotKeys == NumPosKeys)
 			{
-				RotationTrack.Times.Add( RotIndex * RotFrameInterval );
+				RotationTrack.Times = TranslationTrack.Times;
 			}
+			else
+			{
+				const float RotFrameInterval = SequenceLength / static_cast<float>(NumRotKeys-1);
+				for ( int32 RotIndex = 0; RotIndex < NumRotKeys; ++RotIndex )
+				{
+					RotationTrack.Times[RotIndex] = RotIndex * RotFrameInterval;
+				}
+			}
+		
 		}
 		else
 		{
-			RotationTrack.Times.Add( 0.f );
+			RotationTrack.Times[0] = 0.f;
 		}
 
 		if (bHasScale)
 		{
 			// Copy over scalekeys.
-			for ( int32 ScaleIndex = 0; ScaleIndex < RawTrack.ScaleKeys.Num(); ++ScaleIndex )
-			{
-				ScaleTrack.ScaleKeys.Add( RawTrack.ScaleKeys[ScaleIndex] );
-			}
-					
+			ScaleTrack.ScaleKeys = RawTrack.ScaleKeys;
 			// Set times for the rotation track.
-			if ( ScaleTrack.ScaleKeys.Num() > 1 )
+			const int32 NumScaleKeys = ScaleTrack.ScaleKeys.Num();
+			ScaleTrack.Times.SetNumUninitialized(NumScaleKeys);
+			if ( NumScaleKeys > 1 )
 			{
-				const float ScaleFrameInterval = SequenceLength / static_cast<float>(ScaleTrack.ScaleKeys.Num()-1);
-				for ( int32 ScaleIndex = 0; ScaleIndex < ScaleTrack.ScaleKeys.Num(); ++ScaleIndex )
+				// If # of keys match between translation and scale, re-use the timing values
+				if (NumScaleKeys == NumPosKeys)
 				{
-					ScaleTrack.Times.Add( ScaleIndex * ScaleFrameInterval );
+					ScaleTrack.Times = TranslationTrack.Times;
+				}
+				else
+				{
+					const float ScaleFrameInterval = SequenceLength / static_cast<float>(NumScaleKeys-1);
+					for ( int32 ScaleIndex = 0; ScaleIndex < NumScaleKeys; ++ScaleIndex )
+					{
+						ScaleTrack.Times[ScaleIndex] = ScaleIndex * ScaleFrameInterval;
+					}
 				}
 			}
 			else
 			{
-				ScaleTrack.Times.Add( 0.f );
+				ScaleTrack.Times[0] = 0.f;
 			}
 		}
 

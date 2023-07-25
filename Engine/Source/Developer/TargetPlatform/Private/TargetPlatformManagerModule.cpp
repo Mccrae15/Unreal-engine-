@@ -7,6 +7,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "ShaderCompilerCore.h"
 #include "Stats/Stats.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/MonitoredProcess.h"
@@ -334,27 +335,27 @@ public:
 
 					PlatformStr.ParseIntoArray(PlatformNames, TEXT("+"), true);
 
-					// for nicer user response
-					FString AvailablePlatforms;
-
 					for (int32 Index = 0; Index < TargetPlatforms.Num(); Index++)
 					{
 						if (PlatformNames.Contains(TargetPlatforms[Index]->PlatformName()))
-						{							
-							Results.Add(TargetPlatforms[Index]);						
-						}
-
-						if(!AvailablePlatforms.IsEmpty())
 						{
-							AvailablePlatforms += TEXT(", ");
+							Results.Add(TargetPlatforms[Index]);
 						}
-						AvailablePlatforms += TargetPlatforms[Index]->PlatformName();
 					}
 
 					if (Results.Num() == 0)
 					{
 						// An invalid platform was specified...
 						// Inform the user.
+						TStringBuilder<1024> AvailablePlatforms;
+						for (int32 Index = 0; Index < TargetPlatforms.Num(); Index++)
+						{
+							if (Index > 0)
+							{
+								AvailablePlatforms << TEXT(", ");
+							}
+							AvailablePlatforms << TargetPlatforms[Index]->PlatformName();
+						}
 						bHasInitErrors = true;
 						InitErrorMessages.Appendf(TEXT("Invalid target platform specified (%s). Available = { %s } "), *PlatformStr, *AvailablePlatforms);
 						UE_LOG(LogTargetPlatformManager, Error, TEXT("Invalid target platform specified (%s). Available = { %s } "), *PlatformStr, *AvailablePlatforms);
@@ -370,8 +371,8 @@ public:
 				for (int32 Index = 0; Index < TargetPlatforms.Num(); Index++)
 				{
 					if (TargetPlatforms[Index]->IsRunningPlatform())
-					{						
-						Results.Add(TargetPlatforms[Index]);					
+					{
+						Results.Add(TargetPlatforms[Index]);
 					}
 				}
 			}
@@ -629,24 +630,7 @@ public:
 
 	virtual const IShaderFormat* FindShaderFormat(FName Name) override
 	{
-		const TArray<const IShaderFormat*>& ShaderFormats = GetShaderFormats();	
-
-		for (int32 Index = 0; Index < ShaderFormats.Num(); Index++)
-		{
-			TArray<FName> Formats;
-			
-			ShaderFormats[Index]->GetSupportedFormats(Formats);
-		
-			for (int32 FormatIndex = 0; FormatIndex < Formats.Num(); FormatIndex++)
-			{
-				if (Formats[FormatIndex] == Name)
-				{
-					return ShaderFormats[Index];
-				}
-			}
-		}
-
-		return nullptr;
+		return ::FindShaderFormat(Name, GetShaderFormats());
 	}
 
 	virtual uint32 ShaderFormatVersion(FName Name) override
@@ -766,7 +750,7 @@ protected:
 
 		// find a set of valid target platform names (the platform DataDrivenPlatformInfo.ini file was found indicates support for the platform 
 		// exists on disk, so the TP is expected to work)
-		FScopedSlowTask SlowTask(FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos().Num());
+		FScopedSlowTask SlowTask((float)FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos().Num());
 		for (auto Pair : FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
 		{
 			FName PlatformName = Pair.Key;

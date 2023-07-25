@@ -1,29 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerAnimEditPivotTool.h"
-#include "LevelEditorSequencerIntegration.h"
+#include "BaseGizmos/TransformProxy.h"
 #include "ISequencer.h"
-#include "Sequencer/SequencerTrailHierarchy.h"
-#include "Sequencer/MovieSceneTransformTrail.h"
 #include "BaseGizmos/CombinedTransformGizmo.h"
+#include "IControlRigObjectBinding.h"
 #include "InteractiveGizmoManager.h"
 #include "BaseBehaviors/SingleClickBehavior.h"
-#include "BaseBehaviors/SingleKeyCaptureBehavior.h"
-#include "BaseGizmos/TransformGizmoUtil.h"
-#include "Framework/Commands/GenericCommands.h"
+#include "Framework/Application/SlateApplication.h"
+#include "ILevelEditor.h"
 #include "LevelEditor.h"
 
 #include "InteractiveToolManager.h"
-#include "ToolBuilderUtil.h"
 // for raycast into World
-#include "CollisionQueryParams.h"
-#include "Engine/World.h"
 
-#include "SceneManagement.h"
-#include "ScopedTransaction.h"
-#include "Tools/MotionTrailOptions.h"
 #include "EditorModeManager.h"
-#include "EditorViewportClient.h"
+#include "Misc/QualifiedFrameTime.h"
 #include "Modules/ModuleManager.h"
 #include "ControlRig.h"
 #include "ControlRigSequencerEditorLibrary.h"
@@ -32,23 +24,17 @@
 #include "ILevelSequenceEditorToolkit.h"
 #include "InteractiveToolManager.h"
 #include "EdModeInteractiveToolsContext.h"
+#include "SceneView.h"
 #include "UnrealEdGlobals.h"
 #include "Editor/UnrealEdEngine.h"
-#include "Subsystems/EditorActorSubsystem.h"
-#include "LevelEditorViewport.h"
 #include "Modules/ModuleManager.h"
-#include "IAssetViewport.h"
-#include "Widgets/SWindow.h"
-#include "Widgets/Layout/SBorder.h"
+#include "Selection.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
-#include "Styling/AppStyle.h"
 #include "Viewports/InViewportUIDragOperation.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Styling/StyleColors.h"
-#include "EditorModes.h"
-#include "ControlRigObjectBinding.h"
+#include "SLevelViewport.h"
 
 #define LOCTEXT_NAMESPACE "SequencerAnimTools"
 
@@ -413,6 +399,7 @@ void USequencerPivotTool::UpdateTransformAndSelectionOnEntering()
 		}
 		SetGizmoBasedOnSelection(!bShiftPressedWhenStarted && !bCtrlPressedWhenStarted);
 	}
+	SavePivotTransforms();
 }
 
 bool USequencerPivotTool::ProcessCommandBindings(const FKey Key, const bool bRepeat) const
@@ -978,6 +965,7 @@ void USequencerPivotTool::OnClicked(const FInputDeviceRay& ClickPos)
 		{
 			GizmoTransform.SetLocation(HitLocation);
 			UpdateGizmoTransform();
+			SavePivotTransforms();
 		}
 	}
 }
@@ -1004,7 +992,6 @@ void USequencerPivotTool::OnPropertyModified(UObject* PropertySet, FProperty* Pr
 	//UpdateDistance();
 }
 
-#include "HitProxies.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SequencerAnimEditPivotTool)
 
@@ -1228,30 +1215,48 @@ FMargin USequencerPivotTool::GetPivotOverlayPadding() const
 
 void USequencerPivotTool::RemoveAndDestroyPivotOverlay()
 {
+	if (PivotWidget.IsValid() == false)
+	{
+		return;
+	}
 	if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor")))
 	{
-		TSharedPtr<IAssetViewport> ActiveLevelViewport = LevelEditorModule->GetFirstActiveViewport();
-		if (ActiveLevelViewport.IsValid())
+		if (TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule->GetFirstLevelEditor())
 		{
-			if (PivotWidget)
+			for (TSharedPtr<SLevelViewport> LevelViewport : LevelEditor->GetViewports())
 			{
-				ActiveLevelViewport->RemoveOverlayWidget(PivotWidget.ToSharedRef());
-				PivotWidget.Reset();
+				if (LevelViewport.IsValid())
+				{
+					if (PivotWidget)
+					{
+						LevelViewport->RemoveOverlayWidget(PivotWidget.ToSharedRef());
+					}
+				}
 			}
+			PivotWidget.Reset();
 		}
 	}
 }
 
 void USequencerPivotTool::TryRemovePivotOverlay()
 {
+	if (PivotWidget.IsValid() == false)
+	{
+		return;
+	}
 	if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor")))
 	{
-		TSharedPtr<IAssetViewport> ActiveLevelViewport = LevelEditorModule->GetFirstActiveViewport();
-		if (ActiveLevelViewport.IsValid())
+		if (TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule->GetFirstLevelEditor())
 		{
-			if (PivotWidget)
+			for (TSharedPtr<SLevelViewport> LevelViewport : LevelEditor->GetViewports())
 			{
-				ActiveLevelViewport->RemoveOverlayWidget(PivotWidget.ToSharedRef());
+				if (LevelViewport.IsValid())
+				{
+					if (PivotWidget)
+					{
+						LevelViewport->RemoveOverlayWidget(PivotWidget.ToSharedRef());
+					}
+				}
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 
 #include "HairCardsBuilder.h"
+#include "Engine/Texture2D.h"
 #include "HairStrandsCore.h"
 #include "HairStrandsDatas.h"
 #include "HairCardsDatas.h"
@@ -9,6 +10,7 @@
 #include "Math/Box.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
+#include "RHIStaticStates.h"
 #include "ShaderParameterStruct.h"
 #include "GlobalShader.h"
 #include "GroomAsset.h"
@@ -26,6 +28,7 @@
 #include "StaticMeshAttributes.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "StaticMeshOperations.h"
+#include "TextureResource.h"
 
 #if WITH_EDITOR
 
@@ -1338,12 +1341,14 @@ namespace HairCards
 		const uint32 OutCurveCount = FMath::Clamp(uint32(CurveCount * DecimationPercentage), 1u, CurveCount);
 
 		const uint32 BucketSize = CurveCount / OutCurveCount;
+		const bool bHasClumpID = InData.StrandsCurves.ClumpIDs.Num() > 0;
 
 		TArray<uint32> CurveIndices;
 		CurveIndices.SetNum(OutCurveCount);
 
 		uint32 OutTotalPointCount = 0;
 		FRandomStream Random;
+		Random.Initialize(0xdeedbeed);
 		for (uint32 BucketIndex = 0; BucketIndex < OutCurveCount; BucketIndex++)
 		{
 			const uint32 CurveIndex = BucketIndex * BucketSize;// +BucketSize * Random.FRand();
@@ -1367,14 +1372,16 @@ namespace HairCards
 			OutData.StrandsCurves.CurvesLength[OutCurveIndex] = InData.StrandsCurves.CurvesLength[InCurveIndex] * InData.StrandsCurves.MaxLength;
 			OutData.StrandsCurves.MaxLength = InData.StrandsCurves.MaxLength;
 			OutData.StrandsCurves.MaxRadius = InData.StrandsCurves.MaxRadius;
+			if (bHasClumpID)
+			{
+				OutData.StrandsCurves.CurvesOffset[OutCurveIndex] = InData.StrandsCurves.ClumpIDs[InCurveIndex];
+			}
 
 			for (uint32 PointIndex = 0; PointIndex < PointCount; ++PointIndex)
 			{
 				OutData.StrandsPoints.PointsPosition[PointIndex + OutPointOffset] = InData.StrandsPoints.PointsPosition[PointIndex + InPointOffset];
 				OutData.StrandsPoints.PointsCoordU[PointIndex + OutPointOffset] = InData.StrandsPoints.PointsCoordU[PointIndex + InPointOffset];
 				OutData.StrandsPoints.PointsRadius[PointIndex + OutPointOffset] = InData.StrandsPoints.PointsRadius[PointIndex + InPointOffset];
-				OutData.StrandsPoints.PointsBaseColor[PointIndex + OutPointOffset] = FLinearColor::Black;
-				OutData.StrandsPoints.PointsRoughness[PointIndex + OutPointOffset] = 0;
 			}
 			OutPointOffset += PointCount;
 		}
@@ -2832,8 +2839,6 @@ namespace HairCards
 		OutGuides.StrandsPoints.PointsPosition.Reserve(MaxGuidePoints);
 		OutGuides.StrandsPoints.PointsRadius.Reserve(MaxGuidePoints);
 		OutGuides.StrandsPoints.PointsCoordU.Reserve(MaxGuidePoints);
-		OutGuides.StrandsPoints.PointsBaseColor.Reserve(MaxGuidePoints);
-		OutGuides.StrandsPoints.PointsRoughness.Reserve(MaxGuidePoints);
 		OutGuides.StrandsCurves.SetNum(NumCards);
 		OutGuides.BoundingBox.Init();
 
@@ -3086,8 +3091,6 @@ namespace HairCards
 				OutGuides.BoundingBox += (FVector)P0;
 
 				OutGuides.StrandsPoints.PointsPosition.Add(P0);
-				OutGuides.StrandsPoints.PointsBaseColor.Add(FLinearColor(FVector3f::ZeroVector));
-				OutGuides.StrandsPoints.PointsRoughness.Add(0);
 				OutGuides.StrandsPoints.PointsCoordU.Add(FMath::Clamp(CurrentLength / TotalLength, 0.f, 1.f));
 				OutGuides.StrandsPoints.PointsRadius.Add(1);
 
@@ -4400,6 +4403,9 @@ void ImportGeometry(
 	const uint32 MeshLODIndex = 0;
 
 	// Note: if there are multiple section we only import the first one. Support for multiple section could be added later on. 
+	const FStaticMeshRenderData* MeshRenderData = StaticMesh->GetRenderData();
+	check(MeshRenderData != nullptr);
+	check(MeshRenderData->CurrentFirstLODIdx == MeshLODIndex);
 	const FStaticMeshLODResources& LODData = StaticMesh->GetLODForExport(MeshLODIndex);
 	const uint32 VertexCount = LODData.VertexBuffers.PositionVertexBuffer.GetNumVertices();
 	const uint32 IndexCount = LODData.IndexBuffer.GetNumIndices();

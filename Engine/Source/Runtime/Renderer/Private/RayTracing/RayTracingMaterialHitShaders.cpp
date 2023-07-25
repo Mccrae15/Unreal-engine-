@@ -1,10 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RayTracing/RayTracingMaterialHitShaders.h"
-#include "DeferredShadingRenderer.h"
-#include "PipelineStateCache.h"
 
 #if RHI_RAYTRACING
+
+#include "BasePassRendering.h"
+#include "DeferredShadingRenderer.h"
+#include "PipelineStateCache.h"
+#include "RenderCore.h"
+#include "ScenePrivate.h"
+
 #include "Nanite/NaniteRayTracing.h"
 
 #include "RayTracingDefinitions.h"
@@ -12,6 +17,8 @@
 #include "BuiltInRayTracingShaders.h"
 #include "RaytracingOptions.h"
 #include "RayTracingLighting.h"
+#include "RayTracingDecals.h"
+#include "PathTracing.h"
 
 int32 GEnableRayTracingMaterials = 1;
 static FAutoConsoleVariableRef CVarEnableRayTracingMaterials(
@@ -127,7 +134,7 @@ public:
 			return false;
 		}
 
-		const bool bWantAnyHitShader = (GCompileRayTracingMaterialAHS && (Parameters.MaterialParameters.bIsMasked || Parameters.MaterialParameters.BlendMode == BLEND_Translucent));
+		const bool bWantAnyHitShader = (GCompileRayTracingMaterialAHS && (Parameters.MaterialParameters.bIsMasked || IsTranslucentOnlyBlendMode(Parameters.MaterialParameters)));
 		const bool bSupportProceduralPrimitive = Parameters.VertexFactoryType->SupportsRayTracingProceduralPrimitive() && FDataDrivenShaderPlatformInfo::GetSupportsRayTracingProceduralPrimitive(Parameters.Platform);
 
 		return IsSupportedVertexFactoryType(Parameters.VertexFactoryType)
@@ -176,6 +183,11 @@ public:
 
 		return true;
 	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::RayTracingMaterial;
+	}
 };
 
 class FTrivialMaterialCHS : public FMaterialCHS
@@ -207,6 +219,11 @@ public:
 	static bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError)
 	{
 		return true;
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::RayTracingMaterial;
 	}
 };
 
@@ -291,7 +308,7 @@ static bool GetMaterialHitShader(const FMaterial& RESTRICT MaterialResource, con
 	FMaterialShaderTypes ShaderTypes;
 	const FVertexFactoryType* VFType = VertexFactory->GetType();
 	const bool bUseIntersectionShader = VFType->HasFlags(EVertexFactoryFlags::SupportsRayTracingProceduralPrimitive) && FDataDrivenShaderPlatformInfo::GetSupportsRayTracingProceduralPrimitive(GMaxRHIShaderPlatform);
-	const bool UseAnyHitShader = (MaterialResource.IsMasked() || MaterialResource.GetBlendMode() == BLEND_Translucent) && GCompileRayTracingMaterialAHS;
+	const bool UseAnyHitShader = (MaterialResource.IsMasked() || IsTranslucentOnlyBlendMode(MaterialResource)) && GCompileRayTracingMaterialAHS;
 
 	GetMaterialHitShader_AnyHit_Intersection_TextureLOD<LightMapPolicyType>(ShaderTypes, UseAnyHitShader, bUseIntersectionShader, UseTextureLod);
 
@@ -372,6 +389,21 @@ static bool GetRayTracingMeshProcessorShaders(
 	return true;
 }
 
+FRayTracingMeshProcessor::FRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, const FScene* InScene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassProcessorRenderState InPassDrawRenderState, ERayTracingMeshCommandsMode InRayTracingMeshCommandsMode)
+	:
+	CommandContext(InCommandContext),
+	Scene(InScene),
+	ViewIfDynamicMeshCommand(InViewIfDynamicMeshCommand),
+	FeatureLevel(InScene ? InScene->GetFeatureLevel() : ERHIFeatureLevel::SM5),
+	PassDrawRenderState(InPassDrawRenderState),
+	RayTracingMeshCommandsMode(InRayTracingMeshCommandsMode)
+{
+	PassDrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_Zero, BF_One>::GetRHI());
+	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
+}
+
+FRayTracingMeshProcessor::~FRayTracingMeshProcessor() = default;
+
 bool FRayTracingMeshProcessor::Process(
 	const FMeshBatch& RESTRICT MeshBatch,
 	uint64 BatchElementMask,
@@ -405,7 +437,8 @@ bool FRayTracingMeshProcessor::Process(
 		MaterialResource,
 		PassDrawRenderState,
 		RayTracingShaders,
-		ShaderElementData);
+		ShaderElementData,
+		ERayTracingViewMaskMode::RayTracing);
 
 	return true;
 }
@@ -582,10 +615,22 @@ static bool PipelineContainsHitShaders(FRayTracingPipelineState* Pipeline, const
 	return true;
 }
 
-FRHIRayTracingShader* FDeferredShadingSceneRenderer::GetRayTracingDefaultMissShader(const FViewInfo& View)
+FRHIRayTracingShader* GetRayTracingDefaultMissShader(const FGlobalShaderMap* ShaderMap)
 {
-	return View.ShaderMap->GetShader<FPackedMaterialClosestHitPayloadMS>().GetRayTracingShader();
+	return ShaderMap->GetShader<FPackedMaterialClosestHitPayloadMS>().GetRayTracingShader();
 }
+
+FRHIRayTracingShader* GetRayTracingDefaultOpaqueShader(const FGlobalShaderMap* ShaderMap)
+{
+	return ShaderMap->GetShader<FOpaqueShadowHitGroup>().GetRayTracingShader();
+}
+
+FRHIRayTracingShader* GetRayTracingDefaultHiddenShader(const FGlobalShaderMap* ShaderMap)
+{
+	return ShaderMap->GetShader<FHiddenMaterialHitGroup>().GetRayTracingShader();
+}
+
+
 
 FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMaterialPipeline(
 	FRHICommandList& RHICmdList,
@@ -597,13 +642,18 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 	SCOPE_CYCLE_COUNTER(STAT_BindRayTracingPipeline);
 
 	const bool bIsPathTracing = ViewFamily.EngineShowFlags.PathTracing;
+	const bool bSupportMeshDecals = bIsPathTracing;
+
+	ERayTracingPayloadType PayloadType = bIsPathTracing
+		? (ERayTracingPayloadType::PathTracingMaterial | ERayTracingPayloadType::Decals)
+		: ERayTracingPayloadType::RayTracingMaterial;
 
 	FRayTracingPipelineStateInitializer Initializer;
 
-	Initializer.MaxPayloadSizeInBytes = RAY_TRACING_MAX_ALLOWED_PAYLOAD_SIZE; // sizeof(FPackedMaterialClosestHitPayload)
+	Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(PayloadType);
 	Initializer.bAllowHitGroupIndexing = true;
 
-	FRHIRayTracingShader* DefaultMissShader = bIsPathTracing ? GetPathTracingDefaultMissShader(View) : GetRayTracingDefaultMissShader(View);
+	FRHIRayTracingShader* DefaultMissShader = bIsPathTracing ? GetPathTracingDefaultMissShader(View.ShaderMap) : GetRayTracingDefaultMissShader(View.ShaderMap);
 
 	TArray<FRHIRayTracingShader*> RayTracingMissShaderLibrary;
 	FShaderMapResource::GetRayTracingMissShaderLibrary(RayTracingMissShaderLibrary, DefaultMissShader);
@@ -620,20 +670,25 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 	static auto CVarEnableShadowMaterials = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RayTracing.Shadows.EnableMaterials"));
 	const bool bEnableShadowMaterials = bMaterialsCompiled && (CVarEnableShadowMaterials ? CVarEnableShadowMaterials->GetInt() != 0 : true);
 
-	// TODO: Path tracer -- will need versions of these for path tracing
-	FRHIRayTracingShader* DefaultClosestHitShader = View.ShaderMap->GetShader<FOpaqueShadowHitGroup>().GetRayTracingShader();
-	FRHIRayTracingShader* OpaqueShadowShader = View.ShaderMap->GetShader<FOpaqueShadowHitGroup>().GetRayTracingShader();
-	FRHIRayTracingShader* HiddenMaterialShader = View.ShaderMap->GetShader<FHiddenMaterialHitGroup>().GetRayTracingShader();
+	FRHIRayTracingShader* OpaqueShadowShader   = bIsPathTracing ? GetPathTracingDefaultOpaqueHitShader(View.ShaderMap) : GetRayTracingDefaultOpaqueShader(View.ShaderMap);
+	FRHIRayTracingShader* HiddenMaterialShader = bIsPathTracing ? GetPathTracingDefaultHiddenHitShader(View.ShaderMap) : GetRayTracingDefaultHiddenShader(View.ShaderMap);
+
+	FRHIRayTracingShader* OpaqueMeshDecalHitShader = GetDefaultOpaqueMeshDecalHitShader(View.ShaderMap);
+	FRHIRayTracingShader* HiddenMeshDecalHitShader = GetDefaultHiddenMeshDecalHitShader(View.ShaderMap);
 	
 	TArray<FRHIRayTracingShader*> RayTracingHitGroupLibrary;
 	if (bEnableMaterials)
 	{
-		FShaderMapResource::GetRayTracingHitGroupLibrary(RayTracingHitGroupLibrary, DefaultClosestHitShader);
+		FShaderMapResource::GetRayTracingHitGroupLibrary(RayTracingHitGroupLibrary, OpaqueShadowShader);
+
+		if (bSupportMeshDecals)
+		{
+			FShaderMapResource::GetRayTracingHitGroupLibrary(RayTracingHitGroupLibrary, OpaqueMeshDecalHitShader);
+		}
 	}
 
 	FRHIRayTracingShader* RequiredHitShaders[] =
 	{
-		DefaultClosestHitShader,
 		OpaqueShadowShader,
 		HiddenMaterialShader
 	};
@@ -645,11 +700,12 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 
 	Initializer.SetHitGroupTable(RayTracingHitGroupLibrary);
 
-	const bool bCallableShadersSupported = RHISupportsRayTracingCallableShaders(View.Family->GetShaderPlatform());
+	// For now, only path tracing uses callable shaders (for decals). This is only enabled if the current platform supports callable shaders.
+	const bool bCallableShadersRequired = bIsPathTracing && RHISupportsRayTracingCallableShaders(View.Family->GetShaderPlatform());
 	TArray<FRHIRayTracingShader*> RayTracingCallableShaderLibrary;
 	FRHIRayTracingShader* DefaultCallableShader = nullptr;
 
-	if (bCallableShadersSupported)
+	if (bCallableShadersRequired)
 	{
 		DefaultCallableShader = View.ShaderMap->GetShader<FDefaultCallableShader>().GetRayTracingShader();
 		check(DefaultCallableShader != nullptr);
@@ -677,7 +733,7 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 		&& IsCompatibleFallbackPipelineSignature(View.ViewState->LastRayTracingMaterialPipelineSignature, Initializer)
 		&& PipelineContainsHitShaders(FallbackPipelineState, RequiredHitShaders)
 		&& FindRayTracingMissShaderIndex(FallbackPipelineState, DefaultMissShader, false) != INDEX_NONE
-		&& (!bCallableShadersSupported || FindRayTracingCallableShaderIndex(FallbackPipelineState, DefaultCallableShader, false) != INDEX_NONE))
+		&& (!bCallableShadersRequired || FindRayTracingCallableShaderIndex(FallbackPipelineState, DefaultCallableShader, false) != INDEX_NONE))
 	{
 		PipelineCacheFlags |= ERayTracingPipelineCacheFlags::NonBlocking;
 	}
@@ -701,9 +757,11 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 
 	check(PipelineState);
 
-	const int32 DefaultClosestHitMaterialIndex = FindRayTracingHitGroupIndex(PipelineState, DefaultClosestHitShader, true);
 	const int32 OpaqueShadowMaterialIndex = FindRayTracingHitGroupIndex(PipelineState, OpaqueShadowShader, true);
 	const int32 HiddenMaterialIndex = FindRayTracingHitGroupIndex(PipelineState, HiddenMaterialShader, true);
+
+	const int32 OpaqueMeshDecalHitGroupIndex = bSupportMeshDecals ? FindRayTracingHitGroupIndex(PipelineState, OpaqueMeshDecalHitShader, true) : INDEX_NONE;
+	const int32 HiddenMeshDecalHitGroupIndex = bSupportMeshDecals ? FindRayTracingHitGroupIndex(PipelineState, HiddenMeshDecalHitShader, true) : INDEX_NONE;
 
 	FViewInfo& ReferenceView = Views[0];
 
@@ -728,8 +786,8 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 			View.RayTracingMaterialBindings[TaskIndex] = BindingWriter;
 
 			TaskList.Add(FFunctionGraphTask::CreateAndDispatchWhenReady(
-				[&View, PipelineState, BindingWriter, MeshCommands, NumCommands, bEnableMaterials, bEnableShadowMaterials,
-				DefaultClosestHitMaterialIndex, OpaqueShadowMaterialIndex, HiddenMaterialIndex, TaskIndex]()
+				[&View, bIsPathTracing, PipelineState, BindingWriter, MeshCommands, NumCommands, bEnableMaterials, bEnableShadowMaterials, bSupportMeshDecals,
+				OpaqueShadowMaterialIndex, HiddenMaterialIndex, OpaqueMeshDecalHitGroupIndex, HiddenMeshDecalHitGroupIndex, TaskIndex]()
 				{
 					TRACE_CPUPROFILER_EVENT_SCOPE(BindRayTracingMaterialPipelineTask);
 
@@ -738,18 +796,34 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 						const FVisibleRayTracingMeshCommand VisibleMeshCommand = MeshCommands[CommandIndex];
 						const FRayTracingMeshCommand& MeshCommand = *VisibleMeshCommand.RayTracingMeshCommand;
 
-						int32 HitGroupIndex = DefaultClosestHitMaterialIndex; // Force the same shader to be used on all geometry unless materials are enabled
+						const bool bIsMeshDecalShader = MeshCommand.MaterialShader->RayTracingPayloadType == (uint32)ERayTracingPayloadType::Decals;
 
-						if (bEnableMaterials)
+						// TODO: Following check is disabled since FRayTracingMeshProcessor non-path-tracing code paths still don't assign the appropriate shader to decal mesh commands.
+						// We could also potentially use regular materials to approximate decals in ray tracing in some situations.
+						// check(bIsMeshDecalShader == MeshCommand.bDecal);
+
+						// Force the same shader to be used on all geometry unless materials are enabled
+						int32 HitGroupIndex;
+
+						if (bIsMeshDecalShader)
+						{
+							checkf(bSupportMeshDecals && MeshCommand.bDecal, TEXT("Unexpected ray tracing mesh command using Mesh Decal payload. Fix logic adding the command or update bSupportMeshDecals as appropriate."));
+							HitGroupIndex = VisibleMeshCommand.bHidden ? HiddenMeshDecalHitGroupIndex : OpaqueMeshDecalHitGroupIndex;
+						}
+						else
+						{
+							checkf((!bIsPathTracing && MeshCommand.MaterialShader->RayTracingPayloadType == (uint32)ERayTracingPayloadType::RayTracingMaterial)
+								|| (bIsPathTracing && MeshCommand.MaterialShader->RayTracingPayloadType == (uint32)ERayTracingPayloadType::PathTracingMaterial),
+								TEXT("Incorrectly using RayTracingMaterial when path tracer is enabled or vice-versa."));
+							HitGroupIndex = VisibleMeshCommand.bHidden ? HiddenMaterialIndex : OpaqueShadowMaterialIndex;
+						}
+
+						if (bEnableMaterials && !VisibleMeshCommand.bHidden)
 						{
 							const int32 FoundIndex = FindRayTracingHitGroupIndex(PipelineState, MeshCommand.MaterialShader, false);
 							if (FoundIndex != INDEX_NONE)
 							{
 								HitGroupIndex = FoundIndex;
-							}
-							else
-							{
-								HitGroupIndex = DefaultClosestHitMaterialIndex;
 							}
 						}
 
@@ -766,8 +840,17 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 						}
 
 						// Bind shadow shader
+						if (bIsMeshDecalShader)
+						{
+							// mesh decals do not use the shadow slot, so do minimal work
+							FRayTracingLocalShaderBindings& Binding = BindingWriter->AddWithExternalParameters();
+							Binding.InstanceIndex = VisibleMeshCommand.InstanceIndex;
+							Binding.SegmentIndex = MeshCommand.GeometrySegmentIndex;
+							Binding.ShaderSlot = RAY_TRACING_SHADER_SLOT_SHADOW;
+							Binding.ShaderIndexInPipeline = OpaqueMeshDecalHitGroupIndex;
 
-						if (MeshCommand.bCastRayTracedShadows)
+						}
+						else if (MeshCommand.bCastRayTracedShadows && !VisibleMeshCommand.bHidden)
 						{
 							if (MeshCommand.bOpaque || !bEnableShadowMaterials)
 							{
@@ -806,7 +889,7 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingMateria
 		View.RayTracingMaterialBindingsTask = FFunctionGraphTask::CreateAndDispatchWhenReady([]() {}, TStatId(), &TaskList, ENamedThreads::AnyHiPriThreadHiPriTask);
 	}
 
-	if(bCallableShadersSupported)
+	if (bCallableShadersRequired)
 	{
 		const int32 DefaultCallableShaderIndex = FindRayTracingCallableShaderIndex(PipelineState, DefaultCallableShader, true);
 

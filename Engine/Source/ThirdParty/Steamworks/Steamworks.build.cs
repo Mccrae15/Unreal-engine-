@@ -54,7 +54,7 @@ public class Steamworks : ModuleRules
 		}
 		
 		// Add the SDK headers
-		PublicIncludePaths.Add(SdkBase + "/public");
+		PublicSystemIncludePaths.Add(SdkBase + "/public");
 		
 		// Path for static linking (for Windows & Linux)
 		string LibraryPath = SdkBase + "/redistributable_bin/";
@@ -87,7 +87,7 @@ public class Steamworks : ModuleRules
 				PublicDelayLoadDLLs.Add(LibraryPath);
 			}
 			
-			SteamBinariesDir += String.Format("{0}", Target.Architecture);
+			SteamBinariesDir += Target.Architecture.LinuxName;
 
 			PrivateRuntimeLibraryPaths.Add(SteamBinariesDir);
 			PublicAdditionalLibraries.Add(SteamBinariesDir + "/libsteam_api.so");

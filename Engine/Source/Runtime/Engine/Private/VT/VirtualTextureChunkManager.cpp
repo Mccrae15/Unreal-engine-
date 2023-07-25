@@ -3,14 +3,14 @@
 #include "VirtualTextureChunkManager.h"
 
 #include "RHI.h"
-#include "ScreenRendering.h"
+#include "RenderUtils.h"
 #include "UploadingVirtualTexture.h"
-#include "VirtualTextureBuiltData.h"
-#include "BlockCodingHelpers.h"
-#include "FileCache/FileCache.h"
-#include "Containers/LruCache.h"
+#include "VT/VirtualTextureBuiltData.h"
+#include "VT/VirtualTextureTranscodeCache.h"
+#include "VT/VirtualTextureUploadCache.h"
 
 #if WITH_EDITOR
+#include "RenderingThread.h"
 #include "VirtualTextureChunkDDCCache.h"
 #endif
 
@@ -43,8 +43,8 @@ void FVirtualTextureChunkStreamingManager::UpdateResourceStreaming(float DeltaTi
 #if WITH_EDITOR
 				GetVirtualTextureChunkDDCCache()->UpdateRequests();
 #endif // WITH_EDITOR
-				StreamingManager->TranscodeCache.RetireOldTasks(StreamingManager->UploadCache);
-				StreamingManager->UploadCache.UpdateFreeList();
+				StreamingManager->TranscodeCache.RetireOldTasks(RHICmdList, StreamingManager->UploadCache);
+				StreamingManager->UploadCache.UpdateFreeList(RHICmdList);
 
 				FVirtualTextureCodec::RetireOldCodecs();
 			});
@@ -61,7 +61,7 @@ void FVirtualTextureChunkStreamingManager::CancelForcedResources()
 {
 }
 
-FVTRequestPageResult FVirtualTextureChunkStreamingManager::RequestTile(FUploadingVirtualTexture* VTexture, const FVirtualTextureProducerHandle& ProducerHandle, uint8 LayerMask, uint8 vLevel, uint32 vAddress, EVTRequestPagePriority Priority)
+FVTRequestPageResult FVirtualTextureChunkStreamingManager::RequestTile(FRHICommandList& RHICmdList, FUploadingVirtualTexture* VTexture, const FVirtualTextureProducerHandle& ProducerHandle, uint8 LayerMask, uint8 vLevel, uint32 vAddress, EVTRequestPagePriority Priority)
 {
 	SCOPE_CYCLE_COUNTER(STAT_VTP_RequestTile);
 
@@ -138,11 +138,11 @@ FVTRequestPageResult FVirtualTextureChunkStreamingManager::RequestTile(FUploadin
 	TranscodeParams.LayerMask = LayerMask;
 	TranscodeParams.Codec = CodecResult.Codec;
 	TranscodeParams.Name = VTexture->GetName();
-	const FVTTranscodeTileHandle TranscodeHandle = TranscodeCache.SubmitTask(UploadCache, TranscodeKey, ProducerHandle, TranscodeParams, &GraphCompletionEvents);
+	const FVTTranscodeTileHandle TranscodeHandle = TranscodeCache.SubmitTask(RHICmdList, UploadCache, TranscodeKey, ProducerHandle, TranscodeParams, &GraphCompletionEvents);
 	return FVTRequestPageResult(EVTRequestPageStatus::Pending, TranscodeHandle.PackedData);
 }
 
-IVirtualTextureFinalizer* FVirtualTextureChunkStreamingManager::ProduceTile(FRHICommandListImmediate& RHICmdList, uint32 SkipBorderSize, uint8 NumLayers, uint8 LayerMask, uint64 RequestHandle, const FVTProduceTargetLayer* TargetLayers)
+IVirtualTextureFinalizer* FVirtualTextureChunkStreamingManager::ProduceTile(FRHICommandList& RHICmdList, uint32 SkipBorderSize, uint8 NumLayers, uint8 LayerMask, uint64 RequestHandle, const FVTProduceTargetLayer* TargetLayers)
 {
 	SCOPE_CYCLE_COUNTER(STAT_VTP_ProduceTile);
 

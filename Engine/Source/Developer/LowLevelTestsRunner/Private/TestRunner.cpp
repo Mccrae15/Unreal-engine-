@@ -6,25 +6,26 @@
 #include "HAL/PlatformOutputDevices.h"
 #include "HAL/PlatformTLS.h"
 #include "Logging/LogSuppressionInterface.h"
-#include "LowLevelTestModule.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/StringBuilder.h"
 #include "Modules/ModuleManager.h"
 #include "String/Find.h"
 #include "String/LexFromString.h"
 #include "TestCommon/CoreUtilities.h"
+#include "TestRunnerOutputDeviceError.h"
 
 #if WITH_APPLICATION_CORE
 #include "HAL/PlatformApplicationMisc.h"
 #endif
 
+#include "Misc/CoreDelegates.h"
 #include <catch2/catch_session.hpp>
+#include <catch2/internal/catch_assertion_handler.hpp>
 
 #include <iostream>
 
 namespace UE::LowLevelTests
 {
-
 static ITestRunner* GTestRunner;
 
 ITestRunner* ITestRunner::Get()
@@ -53,7 +54,7 @@ public:
 
 	void SleepOnInit() const;
 
-	void GlobalSetup() const;
+	void GlobalSetup();
 	void GlobalTeardown() const;
 	void Terminate() const;
 
@@ -64,20 +65,15 @@ public:
 	bool IsDebugMode() const final { return bDebugMode; }
 
 private:
-	static TArray<FName> GetGlobalModuleNames()
-	{
-		TArray<FName> ModuleNames;
-		FModuleManager::Get().FindModules(TEXT("*GlobalLowLevelTests"), ModuleNames);
-		return ModuleNames;
-	}
-
 	TArray<const ANSICHAR*> CatchArgs;
 	FStringBuilderBase ExtraArgs;
+	FTestRunnerOutputDeviceError ErrorOutputDevice;
 	bool bGlobalSetup = true;
 	bool bLogOutput = false;
 	bool bDebugMode = false;
 	bool bMultiThreaded = false;
 	bool bWaitForInputToTerminate = false;
+	bool bAttachToDebugger = false;
 	int32 SleepOnInitSeconds = 0;
 };
 
@@ -153,6 +149,10 @@ void FTestRunner::ParseCommandLine(TConstArrayView<const ANSICHAR*> Args)
 		{
 			bWaitForInputToTerminate = true;
 		}
+		else if (Arg == ANSITEXTVIEW("--attach-to-debugger"))
+		{
+			bAttachToDebugger = true;
+		}
 		else
 		{
 			CatchArgs.Add(Arg.GetData());
@@ -172,8 +172,18 @@ void FTestRunner::SleepOnInit() const
 	}
 }
 
-void FTestRunner::GlobalSetup() const
+void FTestRunner::GlobalSetup()
 {
+	if (bAttachToDebugger)
+	{
+		FPlatformMisc::LocalPrint(TEXT("Waiting for debugger..."));
+		while (!FPlatformMisc::IsDebuggerPresent())
+		{
+			FPlatformProcess::Sleep(0.1f);
+		}
+		UE_DEBUG_BREAK();
+	}
+
 	if (!bGlobalSetup)
 	{
 		return;
@@ -190,7 +200,19 @@ void FTestRunner::GlobalSetup() const
 	GError = FPlatformApplicationMisc::GetErrorOutputDevice();
 #else
 	GError = FPlatformOutputDevices::GetError();
+	ErrorOutputDevice.SetDeviceError(GError);
+	GError = &ErrorOutputDevice;
 #endif
+	
+	//forward unhandled `ensure` to catch to force tests to fail. test will continue to execute
+	//this does bypass the error reporting, crash reporter and etc
+	FCoreDelegates::OnHandleSystemEnsure.AddLambda([this]()
+		{
+			FString Error = GErrorHist;
+			Catch::AssertionInfo info{ "", CATCH_INTERNAL_LINEINFO, "", Catch::ResultDisposition::Normal };
+			Catch::AssertionReaction reaction;
+			Catch::getResultCapture().handleMessage(info, Catch::ResultWas::ExplicitFailure, StringCast<ANSICHAR>(*Error).Get(), reaction);
+		});
 
 	if (bLogOutput || bDebugMode)
 	{
@@ -207,12 +229,9 @@ void FTestRunner::GlobalSetup() const
 		FLogSuppressionInterface::Get().ProcessConfigAndCommandLine();
 	}
 
-	for (FName ModuleName : GetGlobalModuleNames())
+	if (FTestDelegates::GlobalSetup.Get()->IsBound())
 	{
-		if (ILowLevelTestsModule* Module = FModuleManager::LoadModulePtr<ILowLevelTestsModule>(ModuleName))
-		{
-			Module->GlobalSetup();
-		}
+		FTestDelegates::GlobalSetup.Get()->Execute();
 	}
 }
 
@@ -222,18 +241,19 @@ void FTestRunner::GlobalTeardown() const
 	{
 		return;
 	}
-
-	for (FName ModuleName : GetGlobalModuleNames())
+	
+	//only set the GError back if it was replaced
+	if (GError == &ErrorOutputDevice)
 	{
-		if (ILowLevelTestsModule* Module = FModuleManager::GetModulePtr<ILowLevelTestsModule>(ModuleName))
-		{
-			Module->GlobalTeardown();
-		}
+		GError = ErrorOutputDevice.GetDeviceError();
+	}
+
+	if (FTestDelegates::GlobalTeardown.Get()->IsBound())
+	{
+		FTestDelegates::GlobalTeardown.Get()->Execute();
 	}
 
 	CleanupPlatform();
-
-	FCommandLine::Reset();
 }
 
 void FTestRunner::Terminate() const
@@ -281,9 +301,10 @@ int RunTests(int32 ArgC, const ANSICHAR* ArgV[])
 	{
 		TestRunner.GlobalTeardown();
 		TestRunner.Terminate();
-		RequestEngineExit(TEXT("Exiting"));
 		FModuleManager::Get().UnloadModulesAtShutdown();
+		RequestEngineExit(TEXT("Exiting"));
 	};
 
-	return TestRunner.RunCatchSession();
+	int CatchReturn = TestRunner.RunCatchSession();
+	return CatchReturn;
 }

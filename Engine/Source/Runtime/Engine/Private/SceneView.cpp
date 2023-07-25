@@ -5,25 +5,17 @@
 =============================================================================*/
 
 #include "SceneView.h"
-#include "Engine/Scene.h"
-#include "Misc/CommandLine.h"
+#include "Engine/World.h"
+#include "Materials/Material.h"
+#include "Math/InverseRotationMatrix.h"
 #include "Misc/Paths.h"
-#include "EngineGlobals.h"
-#include "InstanceUniformShaderParameters.h"
-#include "PrimitiveUniformShaderParameters.h"
 #include "Engine/Engine.h"
-#include "Widgets/SWindow.h"
+#include "SceneInterface.h"
 #include "SceneManagement.h"
+#include "ShaderCore.h"
 #include "EngineModule.h"
 #include "BufferVisualizationData.h"
-#include "NaniteVisualizationData.h"
-#include "LumenVisualizationData.h"
-#include "VirtualShadowMapVisualizationData.h"
-#include "Interfaces/Interface_PostProcessVolume.h"
 #include "Engine/TextureCube.h"
-#include "StereoRendering.h"
-#include "IHeadMountedDisplay.h"
-#include "IXRTrackingSystem.h"
 #include "Engine/RendererSettings.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "HighResScreenshot.h"
@@ -31,7 +23,7 @@
 #include "RenderUtils.h"
 #include "StereoRenderUtils.h"
 #include "SceneRelativeViewMatrices.h"
-#include "NaniteDefinitions.h"
+#include "UObject/Interface.h"
 
 DEFINE_LOG_CATEGORY(LogBufferVisualization);
 DEFINE_LOG_CATEGORY(LogNaniteVisualization);
@@ -313,6 +305,14 @@ static TAutoConsoleVariable<int32> CVarAllowTranslucencyAfterDOF(
 	TEXT(" 0: off (translucency is affected by depth of field)\n")
 	TEXT(" 1: on costs GPU performance and memory but keeps translucency unaffected by Depth of Field. (default)"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarTranslucencyStandardSeparated(
+	TEXT("r.Translucency.StandardSeparated"),
+	0,
+	TEXT("Render translucent meshes in separate buffer from the scene color.\n")
+	TEXT("This prevent those meshes from self refracting and leaking scnee color behind over edges when it should be affect by colored transmittance.\n")
+	TEXT("Forced disabled when r.SeparateTranslucency is 0.\n"),
+	ECVF_RenderThreadSafe | ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarEnableTemporalUpsample(
 	TEXT("r.TemporalAA.Upsampling"),
@@ -790,9 +790,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, AntiAliasingMethod(AAM_None)
 	, PrimaryScreenPercentageMethod(EPrimaryScreenPercentageMethod::SpatialUpscale)
 	, FeatureLevel(InitOptions.ViewFamily ? InitOptions.ViewFamily->GetFeatureLevel() : GMaxRHIFeatureLevel)
-#if RHI_RAYTRACING
-	, IESLightProfileResource(nullptr)
-#endif
 {
 	check(UnscaledViewRect.Min.X >= 0);
 	check(UnscaledViewRect.Min.Y >= 0);
@@ -864,8 +861,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// Query instanced stereo and multi-view state
 	{
 		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.InstancedStereo"));
-		bIsInstancedStereoEnabled = !bUsingMobileRenderer && RHISupportsInstancedStereo(ShaderPlatform) && (CVar && CVar->GetValueOnAnyThread() != 0);
-
+		
 		static const auto MobileMultiviewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
 		const bool bHasMobileMultiviewShaders = bUsingMobileRenderer && (CVar && CVar->GetValueOnAnyThread() != 0);
 
@@ -1668,20 +1664,9 @@ void FSceneView::OverridePostProcessSettings(const FPostProcessSettings& Src, fl
 			Dest.LumenMaxTraceDistance = Src.LumenMaxTraceDistance;
 		}
 
-		if (Src.bOverride_LumenDiffuseColorBoost)
-		{
-			Dest.LumenDiffuseColorBoost = Src.LumenDiffuseColorBoost;
-		}
-
-		if (Src.bOverride_LumenSkylightLeaking)
-		{
-			Dest.LumenSkylightLeaking = Src.LumenSkylightLeaking;
-		}
-
-		if (Src.bOverride_LumenFullSkylightLeakingDistance)
-		{
-			Dest.LumenFullSkylightLeakingDistance = Src.LumenFullSkylightLeakingDistance;
-		}
+		LERP_PP(LumenDiffuseColorBoost);
+		LERP_PP(LumenSkylightLeaking);
+		LERP_PP(LumenFullSkylightLeakingDistance);
 
 		if (Src.bOverride_LumenRayLightingMode)
 		{
@@ -1748,11 +1733,6 @@ void FSceneView::OverridePostProcessSettings(const FPostProcessSettings& Src, fl
 			Dest.PathTracingFilterWidth = Src.PathTracingFilterWidth;
 		}
 
-		if (Src.bOverride_PathTracingEnableEmissive)
-		{
-			Dest.PathTracingEnableEmissive = Src.PathTracingEnableEmissive;
-		}
-
 		if (Src.bOverride_PathTracingMaxPathExposure)
 		{
 			Dest.PathTracingMaxPathExposure = Src.PathTracingMaxPathExposure;
@@ -1771,6 +1751,46 @@ void FSceneView::OverridePostProcessSettings(const FPostProcessSettings& Src, fl
 		if (Src.bOverride_PathTracingEnableDenoiser)
 		{
 			Dest.PathTracingEnableDenoiser = Src.PathTracingEnableDenoiser;
+		}
+
+		if (Src.bOverride_PathTracingIncludeEmissive)
+		{
+			Dest.PathTracingIncludeEmissive = Src.PathTracingIncludeEmissive;
+		}
+
+		if (Src.bOverride_PathTracingIncludeIndirectEmissive)
+		{
+			Dest.PathTracingIncludeIndirectEmissive = Src.PathTracingIncludeIndirectEmissive;
+		}
+
+		if (Src.bOverride_PathTracingIncludeDiffuse)
+		{
+			Dest.PathTracingIncludeDiffuse = Src.PathTracingIncludeDiffuse;
+		}
+
+		if (Src.bOverride_PathTracingIncludeIndirectDiffuse)
+		{
+			Dest.PathTracingIncludeIndirectDiffuse = Src.PathTracingIncludeIndirectDiffuse;
+		}
+
+		if (Src.bOverride_PathTracingIncludeSpecular)
+		{
+			Dest.PathTracingIncludeSpecular = Src.PathTracingIncludeSpecular;
+		}
+
+		if (Src.bOverride_PathTracingIncludeIndirectSpecular)
+		{
+			Dest.PathTracingIncludeIndirectSpecular = Src.PathTracingIncludeIndirectSpecular;
+		}
+
+		if (Src.bOverride_PathTracingIncludeVolume)
+		{
+			Dest.PathTracingIncludeVolume = Src.PathTracingIncludeVolume;
+		}
+
+		if (Src.bOverride_PathTracingIncludeIndirectVolume)
+		{
+			Dest.PathTracingIncludeIndirectVolume = Src.PathTracingIncludeIndirectVolume;
 		}
 
 		if (Src.bOverride_DepthOfFieldBladeCount)
@@ -2714,6 +2734,7 @@ void FSceneView::SetupCommonViewUniformBufferParameters(
 	ViewUniformShaderParameters.Random = FMath::Rand();
 	ViewUniformShaderParameters.FrameNumber = Family->FrameNumber;
 
+	ViewUniformShaderParameters.WorldIsPaused = Family->bWorldIsPaused;
 	ViewUniformShaderParameters.CameraCut = bCameraCut ? 1 : 0;
 
 	ViewUniformShaderParameters.MinRoughness = FMath::Clamp(CVarGlobalMinRoughnessOverride.GetValueOnRenderThread(), 0.02f, 1.0f);
@@ -2726,7 +2747,9 @@ bool FSceneView::HasValidEyeAdaptationTexture() const
 {
 	if (EyeAdaptationViewState)
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return EyeAdaptationViewState->HasValidEyeAdaptationTexture();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	return false;
 }
@@ -2742,17 +2765,18 @@ bool FSceneView::HasValidEyeAdaptationBuffer() const
 
 IPooledRenderTarget* FSceneView::GetEyeAdaptationTexture() const
 {
-	checkf(FeatureLevel > ERHIFeatureLevel::ES3_1, TEXT("SM5 and above use RenderTarget for read back"));
+	checkf(FeatureLevel > ERHIFeatureLevel::ES3_1, TEXT("EyeAdaptation Texture is only available on SM5 and above."));
 	if (EyeAdaptationViewState)
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return EyeAdaptationViewState->GetCurrentEyeAdaptationTexture();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	return nullptr;
 }
 
 FRDGPooledBuffer* FSceneView::GetEyeAdaptationBuffer() const
 {
-	checkf(FeatureLevel == ERHIFeatureLevel::ES3_1, TEXT("ES3_1 use RWBuffer for read back"));
 	if (EyeAdaptationViewState)
 	{
 		return EyeAdaptationViewState->GetCurrentEyeAdaptationBuffer();
@@ -2802,6 +2826,33 @@ TArray<const FSceneView*> FSceneView::GetSecondaryViews() const
 		Views.Add(Family->Views[ViewIndex]);
 	}
 	return Views;
+}
+
+FSceneViewFamily::ConstructionValues::ConstructionValues(
+	const FRenderTarget* InRenderTarget,
+	FSceneInterface* InScene,
+	const FEngineShowFlags& InEngineShowFlags
+	)
+:	RenderTarget(InRenderTarget)
+,	Scene(InScene)
+,	EngineShowFlags(InEngineShowFlags)
+,	ViewModeParam(-1)
+,	GammaCorrection(1.0f)
+,	bAdditionalViewFamily(false)
+,	bRealtimeUpdate(false)
+,	bDeferClear(false)
+,	bResolveScene(true)			
+,	bTimesSet(false)
+{
+	if( InScene != NULL )			
+	{
+		UWorld* World = InScene->GetWorld();
+		// Ensure the world is valid and that we are being called from a game thread (GetRealTimeSeconds requires this)
+		if( World && IsInGameThread() )
+		{	
+			SetTime(World->GetTime());
+		}
+	}
 }
 
 FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
@@ -2905,16 +2956,23 @@ FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
 
 	// Check if the translucency are allowed to be rendered after DOF, if not, translucency after DOF will be rendered in standard translucency.
 	{
-		bAllowTranslucencyAfterDOF = CVarAllowTranslucencyAfterDOF.GetValueOnAnyThread() != 0
-			&& EngineShowFlags.PostProcessing // Used for reflection captures.
-			&& !UseDebugViewPS()
-			&& EngineShowFlags.SeparateTranslucency;
+		bool SeparateTranslucencyEnabled = EngineShowFlags.PostProcessing // Used for reflection captures.
+										&& !UseDebugViewPS()
+										&& EngineShowFlags.SeparateTranslucency;
 
-		if (GetFeatureLevel() == ERHIFeatureLevel::ES3_1)
+		const bool bIsMobile = GetFeatureLevel() == ERHIFeatureLevel::ES3_1;
+		if (bIsMobile)
 		{
 			const bool bMobileMSAA = GetDefaultMSAACount(ERHIFeatureLevel::ES3_1) > 1;
-			bAllowTranslucencyAfterDOF &= (IsMobileHDR() && !bMobileMSAA); // on <= ES3_1 separate translucency requires HDR on and MSAA off
+			SeparateTranslucencyEnabled &= (IsMobileHDR() && !bMobileMSAA); // on <= ES3_1 separate translucency requires HDR on and MSAA off
 		}
+
+		bAllowTranslucencyAfterDOF = SeparateTranslucencyEnabled && CVarAllowTranslucencyAfterDOF.GetValueOnAnyThread() != 0;
+
+		// We do not allow separated translucency on mobile
+		// When MSAA sample count is >1 it works, but hair has not been properly tested so far due to other issues, so MSAA cannot use separted standard translucent for now.
+		uint32 MSAASampleCount = GetDefaultMSAACount(GetFeatureLevel());
+		bAllowStandardTranslucencySeparated = SeparateTranslucencyEnabled && MSAASampleCount == 1 && !bIsMobile && CVarTranslucencyStandardSeparated.GetValueOnAnyThread() != 0;
 	}
 }
 
@@ -3032,10 +3090,6 @@ EDebugViewShaderMode FSceneViewFamily::ChooseDebugViewShaderMode() const
 	else if (EngineShowFlags.VirtualTexturePendingMips)
 	{
 		return DVSM_VirtualTexturePendingMips;
-	}
-	else if (EngineShowFlags.RayTracingDebug)
-	{
-		return DVSM_RayTracingDebug;
 	}
 	else if (EngineShowFlags.LODColoration || EngineShowFlags.HLODColoration)
 	{

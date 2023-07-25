@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
 #include "EditorUndoClient.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/Views/ITypedTableView.h"
@@ -160,6 +159,17 @@ struct FSceneOutlinerItemSelection
 				{
 					OutArray.Add(CastedItem);
 				}
+			}
+		}
+	}
+
+	void Get(TArray<FSceneOutlinerTreeItemPtr>& OutArray) const
+	{
+		for (const TWeakPtr<ISceneOutlinerTreeItem>& Item : SelectedItems)
+		{
+			if (const auto ItemPtr = Item.Pin())
+			{
+				OutArray.Add(ItemPtr);
 			}
 		}
 	}
@@ -372,6 +382,9 @@ public:
 	/** Hook to add custom options to toolbar in a derived class */
 	virtual void CustomAddToToolbar(TSharedPtr<class SHorizontalBox> Toolbar) {}
 
+	/** Check if a filter with the given name exists and is active in the filter bar for this Outliner (if this Outliner has a filter bar). */
+	virtual bool IsFilterActive(const FString& FilterName) const override;
+
 public:
 	/** Event to react to a user double click on a item */
 	SceneOutliner::FTreeItemPtrEvent& GetDoubleClickEvent() { return OnDoubleClickOnTreeEvent; }
@@ -418,6 +431,16 @@ public:
 	virtual void UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) override;
 
 	/**
+	 * Returns true if any of the items can be pinned.
+	 */
+	virtual bool CanPinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const override;
+
+	/**
+	 * Returns true if any of the items can be unpinned.
+	 */
+	virtual bool CanUnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const override;
+
+	/**
 	 * Pin selected items
 	 */
 	virtual void PinSelectedItems() override;
@@ -426,6 +449,16 @@ public:
 	 * Unpins selected items
 	 */
 	virtual void UnpinSelectedItems() override;
+
+	/**
+	 * Returns true if any of the selected items can be pinned
+	 */
+	virtual bool CanPinSelectedItems() const override;
+
+	/**
+	 * Returns true if any of the selected items can be unpinned
+	 */
+	virtual bool CanUnpinSelectedItems() const override;
 	
 	/**
 	 * Returns the parent tree item for a given item if it exists, nullptr otherwise.
@@ -536,6 +569,7 @@ private:
 		if (bForce || bPassesFilters)
 		{
 			FSceneOutlinerTreeItemPtr Result = MakeShareable(new TreeItemType(Data));
+			Result->WeakSceneOutliner = StaticCastSharedRef<ISceneOutliner>(AsShared());
 			Result->Flags.bIsFilteredOut = !bPassesFilters;
 			Result->Flags.bInteractive = Filters->GetInteractiveState(*Result) && InteractiveFilters->GetInteractiveState(*Result);
 			return Result;
@@ -599,7 +633,7 @@ private:
 	void HandleHiddenColumnsChanged();
 
 	/** Refresh the scene outliner for when a colum was added or removed */
-	void RefreshColums();
+	void RefreshColumns();
 
 	/** Populates OutSearchStrings with the strings associated with TreeItem that should be used in searching */
 	void PopulateSearchStrings( const ISceneOutlinerTreeItem& TreeItem, OUT TArray< FString >& OutSearchStrings ) const;

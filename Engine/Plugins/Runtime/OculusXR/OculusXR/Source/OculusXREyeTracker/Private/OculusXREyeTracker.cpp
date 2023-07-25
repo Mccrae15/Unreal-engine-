@@ -188,7 +188,7 @@ public:
 	virtual bool IsEyeTrackerConnected() const override
 	{
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
-		if (FOculusXRHMDModule::Get().IsOVRPluginAvailable())
+		if (FOculusXRHMDModule::Get().IsOVRPluginAvailable() && FOculusXRHMDModule::GetPluginWrapper().IsInitialized())
 		{
 			ovrpBool isSupported = ovrpBool_False;
 			ovrpResult trackingSupportedResult = FOculusXRHMDModule::GetPluginWrapper().GetEyeTrackingSupported(&isSupported);
@@ -204,7 +204,7 @@ public:
 	virtual TSharedPtr<class IEyeTracker, ESPMode::ThreadSafe> CreateEyeTracker() override
 	{
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
-		if (FOculusXRHMDModule::Get().IsOVRPluginAvailable())
+		if (FOculusXRHMDModule::Get().IsOVRPluginAvailable() && FOculusXRHMDModule::GetPluginWrapper().IsInitialized())
 		{
 			return TSharedPtr<class IEyeTracker, ESPMode::ThreadSafe>(new OculusXRHMD::FOculusXREyeTracker);
 		}

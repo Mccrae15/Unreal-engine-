@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OIT.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "LocalVertexFactory.h"
 #include "OITParameters.h"
 #include "Shader.h"
 #include "GlobalShader.h"
+#include "PrimitiveSceneProxy.h"
 #include "ShaderParameters.h"
 #include "ShaderParameterStruct.h"
 #include "SceneTextureParameters.h"

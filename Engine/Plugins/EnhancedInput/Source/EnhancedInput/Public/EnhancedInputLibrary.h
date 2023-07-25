@@ -2,19 +2,21 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "EnhancedInputSubsystems.h"
-#include "InputActionValue.h"
-#include "InputMappingQuery.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "UObject/ObjectMacros.h"
+#include "PlayerMappableKeySlot.h"
 
 #include "EnhancedInputLibrary.generated.h"
 
+class IEnhancedInputSubsystemInterface;
+enum class EInputActionValueType : uint8;
+struct FEnhancedActionKeyMapping;
+struct FInputActionValue;
+
 class APlayerController;
-class UInputMappingContext;
-class UInputAction;
 class UEnhancedPlayerInput;
+class UInputAction;
+class UInputMappingContext;
+class UPlayerMappableKeySettings;
 
 UCLASS()
 class ENHANCEDINPUT_API UEnhancedInputLibrary : public UBlueprintFunctionLibrary
@@ -51,6 +53,24 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Input", meta = (Keywords = "construct build", NativeMakeFunc, DeprecatedFunction, DeprecatedMessage="This version of MakeInputActionValue has been deprecated, please use MakeInputActionValueOfType"))
 	static FInputActionValue MakeInputActionValue(double X, double Y, double Z, const FInputActionValue& MatchValueType);
 
+	/**
+	* Returns the Player Mappable Key Settings owned by the Action Key Mapping or by the referenced Input Action, or nothing based of the Setting Behavior.
+	*/
+	UFUNCTION(BlueprintPure, Category = "Input", meta = (ReturnDisplayName = "Player Mappable Key Settings"))
+	static UPlayerMappableKeySettings* GetPlayerMappableKeySettings(UPARAM(ref) const FEnhancedActionKeyMapping& ActionKeyMapping);
+
+	/**
+	* Returns the name of the mapping based on setting behavior used. If no name is found in the Mappable Key Settings it will return the name set in Player Mappable Options if bIsPlayerMappable is true.
+	*/
+	UFUNCTION(BlueprintPure, Category = "Input", meta = (ReturnDisplayName = "Mapping Name"))
+	static FName GetMappingName(UPARAM(ref) const FEnhancedActionKeyMapping& ActionKeyMapping);
+
+	/**
+	 * Returns true if this Action Key Mapping either holds a Player Mappable Key Settings or is set bIsPlayerMappable.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Input", meta = (ReturnDisplayName = "Is Player Mappable"))
+	static bool IsActionKeyMappingPlayerMappable(UPARAM(ref) const FEnhancedActionKeyMapping& ActionKeyMapping);
+
 	// Internal helper functionality
 
 	// GetInputActionvalue internal accessor function for actions that have been bound to from a UEnhancedInputComponent
@@ -78,4 +98,23 @@ public:
 	/** Converts a FInputActionValue to a string */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (InputActionValue)", CompactNodeTitle = "->", BlueprintAutocast), Category = "Utilities|String")
 	static FString Conv_InputActionValueToString(FInputActionValue ActionValue);
+
+	UFUNCTION(BlueprintPure, Category = "Input", meta = (ReturnDisplayName = "First Player Mappable Key Slot"))
+	static FPlayerMappableKeySlot& GetFirstPlayerMappableKeySlot() { return FPlayerMappableKeySlot::FirstKeySlot; };
+
+	UFUNCTION(BlueprintPure, Category = "Input", meta = (ReturnDisplayName = "Second Player Mappable Key Slot"))
+	static FPlayerMappableKeySlot& GetSecondPlayerMappableKeySlot() { return FPlayerMappableKeySlot::SecondKeySlot; };
+
+	UFUNCTION(BlueprintPure, Category = "Input", meta = (ReturnDisplayName = "Third Player Mappable Key Slot"))
+	static FPlayerMappableKeySlot& GetThirdPlayerMappableKeySlot() { return FPlayerMappableKeySlot::ThirdKeySlot; };
+
+	UFUNCTION(BlueprintPure, Category = "Input", meta = (ReturnDisplayName = "Fourth Player Mappable Key Slot"))
+	static FPlayerMappableKeySlot& GetFourthPlayerMappableKeySlot() { return FPlayerMappableKeySlot::FourthKeySlot; };
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "EnhancedInputSubsystems.h"
+#include "InputActionValue.h"
+#include "InputMappingQuery.h"
+#endif

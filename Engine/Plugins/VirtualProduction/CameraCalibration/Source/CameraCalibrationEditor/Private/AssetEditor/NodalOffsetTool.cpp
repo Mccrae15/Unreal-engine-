@@ -11,6 +11,8 @@
 #include "CameraCalibrationTypes.h"
 #include "DesktopPlatformModule.h"
 #include "Dom/JsonObject.h"
+#include "Engine/Engine.h"
+#include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
 #include "IDesktopPlatform.h"
 #include "ImageCenterTool.h"
@@ -22,6 +24,7 @@
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
 #include "SNodalOffsetToolPanel.h"
+#include "UObject/Package.h"
 
 #define LOCTEXT_NAMESPACE "NodalOffsetTool"
 

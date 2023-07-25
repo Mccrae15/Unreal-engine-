@@ -2,34 +2,34 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Engine/EngineTypes.h"
+#include "ISMPartition/ISMComponentDescriptor.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Templates/SubclassOf.h"
-#include "Engine/EngineTypes.h"
-#include "Engine/CollisionProfile.h"
-
-#include <type_traits>
 
 #include "PCGActorHelpers.generated.h"
 
 class AActor;
-class UInstancedStaticMeshComponent;
-class UStaticMesh;
-class UPCGComponent;
-class UMaterialInterface;
 class UActorComponent;
+class UInstancedStaticMeshComponent;
 class ULevel;
+class UMaterialInterface;
+class UPCGComponent;
+class UPCGManagedISMComponent;
+class UStaticMesh;
 class UWorld;
 
 struct FPCGISMCBuilderParameters
 {
-	UStaticMesh* Mesh = nullptr;
-	TArray<UMaterialInterface*> MaterialOverrides;
-	EComponentMobility::Type Mobility = EComponentMobility::Static;
-	FName CollisionProfile = TEXT("Default");
+	FISMComponentDescriptor Descriptor;
 	int32 NumCustomDataFloats = 0;
-	float CullStartDistance = 0;
-	float CullEndDistance = 0;
+
+	friend inline uint32 GetTypeHash(const FPCGISMCBuilderParameters& Key)
+	{
+		return HashCombine(GetTypeHash(Key.Descriptor), 1 + Key.NumCustomDataFloats);
+	}
+
+	inline bool operator==(const FPCGISMCBuilderParameters& Other) const { return Descriptor == Other.Descriptor && NumCustomDataFloats == Other.NumCustomDataFloats; }
 };
 
 UCLASS(BlueprintType)
@@ -38,7 +38,8 @@ class PCG_API UPCGActorHelpers : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
-	static UInstancedStaticMeshComponent* GetOrCreateISMC(AActor* InActor, UPCGComponent* SourceComponent, const FPCGISMCBuilderParameters& Params);
+	static UInstancedStaticMeshComponent* GetOrCreateISMC(AActor* InTargetActor, UPCGComponent* SourceComponent, uint64 SettingsUID, const FPCGISMCBuilderParameters& Params);
+	static UPCGManagedISMComponent* GetOrCreateManagedISMC(AActor* InTargetActor, UPCGComponent* SourceComponent, uint64 SettingsUID, const FPCGISMCBuilderParameters& Params);
 	static bool DeleteActors(UWorld* World, const TArray<TSoftObjectPtr<AActor>>& ActorsToDelete);
 
 	/**
@@ -105,3 +106,8 @@ public:
 	 */
 	static FIntVector GetCellCoord(FVector InPosition, int InGridSize, bool bUse2DGrid);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Engine/CollisionProfile.h"
+#endif

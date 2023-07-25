@@ -8,6 +8,7 @@
 #if RHI_RAYTRACING
 
 #include "ClearQuad.h"
+#include "FogRendering.h"
 #include "SceneRendering.h"
 #include "PostProcess/SceneRenderTargets.h"
 #include "RenderTargetPool.h"
@@ -297,7 +298,7 @@ class FRayTracingReflectionsRGS : public FGlobalShader
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FRaytracingLightDataPacked, LightDataPacked)
-		SHADER_PARAMETER_STRUCT_REF(FReflectionUniformParameters, ReflectionStruct)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FReflectionUniformParameters, ReflectionStruct)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FFogUniformParameters, FogUniformParameters)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionCaptureShaderData, ReflectionCapture)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, Forward)
@@ -333,6 +334,19 @@ class FRayTracingReflectionsRGS : public FGlobalShader
 		if (PermutationVector.Get<FDeferredMaterialMode>() == EDeferredMaterialMode::Gather)
 		{
 			OutEnvironment.SetDefine(TEXT("UE_RAY_TRACING_LIGHTWEIGHT_CLOSEST_HIT_SHADER"), 1);
+		}
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		FPermutationDomain PermutationVector(PermutationId);
+		if (PermutationVector.Get<FDeferredMaterialMode>() == EDeferredMaterialMode::Gather)
+		{
+			return ERayTracingPayloadType::Deferred;
+		}
+		else
+		{
+			return ERayTracingPayloadType::RayTracingMaterial;
 		}
 	}
 };
@@ -450,16 +464,6 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingReflections(const FViewInfo
 		{
 			FRayTracingReflectionsRGS::FPermutationDomain PermutationVector;
 			PermutationVector.Set<FRayTracingReflectionsRGS::FEnableTwoSidedGeometryForShadowDim>(EnableRayTracingShadowTwoSidedGeometry());
-			PermutationVector.Set<FRayTracingReflectionsRGS::FDeferredMaterialMode>(EDeferredMaterialMode::Gather);
-			PermutationVector.Set<FRayTracingReflectionsRGS::FHybrid>(bHybridReflections);
-			PermutationVector.Set<FRayTracingReflectionsRGS::FRayTraceSkyLightContribution>(bRayTraceSkyLightContribution);
-			auto RayGenShader = View.ShaderMap->GetShader<FRayTracingReflectionsRGS>(PermutationVector);
-			OutRayGenShaders.Add(RayGenShader.GetRayTracingShader());
-		}
-		
-		{
-			FRayTracingReflectionsRGS::FPermutationDomain PermutationVector;
-			PermutationVector.Set<FRayTracingReflectionsRGS::FEnableTwoSidedGeometryForShadowDim>(EnableRayTracingShadowTwoSidedGeometry());
 			PermutationVector.Set<FRayTracingReflectionsRGS::FDeferredMaterialMode>(EDeferredMaterialMode::Shade);
 			PermutationVector.Set<FRayTracingReflectionsRGS::FHybrid>(bHybridReflections);
 			PermutationVector.Set<FRayTracingReflectionsRGS::FRayTraceSkyLightContribution>(bRayTraceSkyLightContribution);
@@ -516,7 +520,7 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingReflectionsDeferredMaterial
 
 void FDeferredShadingSceneRenderer::PrepareSingleLayerWaterRayTracingReflections(const FViewInfo& View, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
-	if (!ShouldRenderRayTracingReflections(View))
+	if (!ShouldRenderRayTracingReflectionsWater(View))
 	{
 		return;
 	}
@@ -683,7 +687,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingReflections(
 	// Hybrid reflection path samples lit scene color texture instead of performing a ray trace.
 	CommonParameters.SceneColor = bHybridReflections ? SceneTextures.Color.Resolve : SystemTextures.Black;
 
-	CommonParameters.ReflectionStruct = CreateReflectionUniformBuffer(View, EUniformBufferUsage::UniformBuffer_SingleFrame);
+	CommonParameters.ReflectionStruct = CreateReflectionUniformBuffer(GraphBuilder, View);
 	CommonParameters.FogUniformParameters = CreateFogUniformBuffer(GraphBuilder, View);
 	CommonParameters.ColorOutput = GraphBuilder.CreateUAV(OutDenoiserInputs->Color);
 	CommonParameters.RayHitDistanceOutput = GraphBuilder.CreateUAV(OutDenoiserInputs->RayHitDistance);

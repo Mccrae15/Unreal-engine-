@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/WeakObjectPtr.h"
 #include "OptimusDiagnostic.generated.h"
 
 UENUM()
@@ -34,6 +35,9 @@ struct FOptimusCompilerDiagnostic
 
 	// Ending column (inclusive)
 	int32 ColumnEnd = INDEX_NONE;
+
+	// Absolute path to file associated with this diagnostic
+	FString AbsoluteFilePath;
 
 	// UObject associated with this diagnostic
 	TWeakObjectPtr<const UObject> Object;

@@ -148,7 +148,7 @@ class alignas(SHADER_PARAMETER_STRUCT_ALIGNMENT) FUniformBufferBinding
 public:
 	FUniformBufferBinding() = default;
 
-	FORCEINLINE const FUniformBufferRHIRef& GetUniformBuffer() const
+	FORCEINLINE FRHIUniformBuffer* GetUniformBuffer() const
 	{
 		return UniformBuffer;
 	}
@@ -170,7 +170,7 @@ public:
 
 	FORCEINLINE operator bool() const
 	{
-		return UniformBuffer.IsValid();
+		return UniformBuffer != nullptr;
 	}
 
 protected:
@@ -180,7 +180,7 @@ protected:
 	{}
 
 private:
-	FUniformBufferRHIRef UniformBuffer;
+	FRHIUniformBuffer* UniformBuffer = nullptr;
 	EUniformBufferBindingFlags BindingFlags = EUniformBufferBindingFlags::Shader;
 };
 
@@ -207,7 +207,7 @@ public:
 #endif
 	}
 
-	FORCEINLINE TUniformBufferRef<TBufferStruct> GetUniformBuffer() const
+	FORCEINLINE TUniformBufferRef<TBufferStruct> GetUniformBufferRef() const
 	{
 		return TUniformBufferRef<TBufferStruct>(FUniformBufferBinding::GetUniformBuffer());
 	}
@@ -586,22 +586,6 @@ struct FDepthStencilBinding
 		ERenderTargetLoadAction InStencilLoadAction,
 		FExclusiveDepthStencil InDepthStencilAccess)
 		: Texture(InTexture)
-		, ResolveTexture(nullptr)
-		, DepthLoadAction(InDepthLoadAction)
-		, StencilLoadAction(InStencilLoadAction)
-		, DepthStencilAccess(InDepthStencilAccess)
-	{
-		check(Validate());
-	}
-
-	FORCEINLINE FDepthStencilBinding(
-		FRDGTexture* InTexture,
-		FRDGTexture* InResolveTexture,
-		ERenderTargetLoadAction InDepthLoadAction,
-		ERenderTargetLoadAction InStencilLoadAction,
-		FExclusiveDepthStencil InDepthStencilAccess)
-		: Texture(InTexture)
-		, ResolveTexture(InResolveTexture)
 		, DepthLoadAction(InDepthLoadAction)
 		, StencilLoadAction(InStencilLoadAction)
 		, DepthStencilAccess(InDepthStencilAccess)
@@ -614,20 +598,6 @@ struct FDepthStencilBinding
 		ERenderTargetLoadAction InDepthLoadAction,
 		FExclusiveDepthStencil InDepthStencilAccess)
 		: Texture(InTexture)
-		, ResolveTexture(nullptr)
-		, DepthLoadAction(InDepthLoadAction)
-		, DepthStencilAccess(InDepthStencilAccess)
-	{
-		check(Validate());
-	}
-
-	FORCEINLINE FDepthStencilBinding(
-		FRDGTexture* InTexture,
-		FRDGTexture* InResolveTexture,
-		ERenderTargetLoadAction InDepthLoadAction,
-		FExclusiveDepthStencil InDepthStencilAccess)
-		: Texture(InTexture)
-		, ResolveTexture(InResolveTexture)
 		, DepthLoadAction(InDepthLoadAction)
 		, DepthStencilAccess(InDepthStencilAccess)
 	{
@@ -637,10 +607,6 @@ struct FDepthStencilBinding
 	FORCEINLINE FRDGTexture* GetTexture() const
 	{
 		return Texture;
-	}
-	FORCEINLINE FRDGTexture* GetResolveTexture() const
-	{
-		return ResolveTexture;
 	}
 	FORCEINLINE ERenderTargetLoadAction GetDepthLoadAction() const
 	{
@@ -660,7 +626,6 @@ struct FDepthStencilBinding
 	{
 		return
 			Texture == Other.Texture &&
-			ResolveTexture == Other.ResolveTexture &&
 			Other.DepthLoadAction != ERenderTargetLoadAction::EClear &&
 			Other.StencilLoadAction != ERenderTargetLoadAction::EClear &&
 			DepthStencilAccess == Other.DepthStencilAccess;
@@ -669,12 +634,6 @@ struct FDepthStencilBinding
 	void SetTexture(FRDGTexture* InTexture)
 	{
 		Texture = InTexture;
-		check(Validate());
-	}
-
-	void SetResolveTexture(FRDGTexture* InTexture)
-	{
-		ResolveTexture = InTexture;
 		check(Validate());
 	}
 
@@ -702,7 +661,6 @@ private:
 	 * force the user to call FDepthStencilBinding() constructors. No defaults allowed.
 	 */
 	TAlignedShaderParameterPtr<FRDGTexture*> Texture = nullptr;
-	TAlignedShaderParameterPtr<FRDGTexture*> ResolveTexture = nullptr;
 	ERenderTargetLoadAction		DepthLoadAction		= ERenderTargetLoadAction::ENoAction;
 	ERenderTargetLoadAction		StencilLoadAction	= ERenderTargetLoadAction::ENoAction;
 	FExclusiveDepthStencil		DepthStencilAccess	= FExclusiveDepthStencil::DepthNop_StencilNop;
@@ -720,6 +678,7 @@ struct alignas(SHADER_PARAMETER_STRUCT_ALIGNMENT) FRenderTargetBindingSlots
 	ESubpassHint SubpassHint = ESubpassHint::None;
 	uint8 MultiViewCount = 0;
 	FRDGTexture* ShadingRateTexture = nullptr;
+	FIntRect RenderArea = FIntRect();
 
 	/** Accessors for regular output to simplify the syntax to:
 	 *
@@ -795,7 +754,8 @@ struct alignas(SHADER_PARAMETER_STRUCT_ALIGNMENT) FRenderTargetBindingSlots
 			(NumOcclusionQueries != Other.NumOcclusionQueries && Other.NumOcclusionQueries != 0) ||
 			SubpassHint != Other.SubpassHint ||
 			MultiViewCount != Other.MultiViewCount ||
-			ShadingRateTexture != Other.ShadingRateTexture)
+			ShadingRateTexture != Other.ShadingRateTexture ||
+			RenderArea != Other.RenderArea)
 		{
 			return false;
 		}
@@ -1059,6 +1019,7 @@ struct TShaderParameterTypeInfo<FUintVector3>
 
 	using TAlignedType = TAlignedTypedef<FUintVector3, Alignment>::Type;
 	using TInstancedType = FUintVector4;
+
 	static const FShaderParametersMetadata* GetStructMetadata() { return nullptr; }
 };
 
@@ -1121,7 +1082,7 @@ struct TShaderParameterTypeInfo<FQuat4f>
 	static constexpr bool bIsStoredInConstantBuffer = true;
 
 	using TAlignedType = TAlignedTypedef<FQuat4f, Alignment>::Type;
-	using TInstancedType = FVector4;
+	using TInstancedType = FQuat4f;
 
 	static const FShaderParametersMetadata* GetStructMetadata() { return nullptr; }
 };

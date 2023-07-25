@@ -2,15 +2,16 @@
 
 #include "MassCrowdNavigationProcessor.h"
 #include "MassCommonFragments.h"
+#include "MassExecutionContext.h"
 #include "MassAIBehaviorTypes.h"
 #include "MassCrowdSubsystem.h"
 #include "MassCrowdFragments.h"
+#include "MassEntityManager.h"
 #include "MassMovementFragments.h"
 #include "MassCrowdSettings.h"
 #include "ZoneGraphAnnotationSubsystem.h"
 #include "MassZoneGraphNavigationFragments.h"
 #include "Annotations/ZoneGraphDisturbanceAnnotation.h"
-#include "VisualLogger/VisualLogger.h"
 #include "MassSimulationLOD.h"
 #include "MassSignalSubsystem.h"
 
@@ -40,9 +41,9 @@ void UMassCrowdLaneTrackingSignalProcessor::Initialize(UObject& Owner)
 
 void UMassCrowdLaneTrackingSignalProcessor::SignalEntities(FMassEntityManager& EntityManager, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals)
 {
-	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this, World = EntityManager.GetWorld()](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 	{
-		UMassCrowdSubsystem& MassCrowdSubsystem = Context.GetMutableSubsystemChecked<UMassCrowdSubsystem>(World);
+		UMassCrowdSubsystem& MassCrowdSubsystem = Context.GetMutableSubsystemChecked<UMassCrowdSubsystem>();
 		const int32 NumEntities = Context.GetNumEntities();
 		const TConstArrayView<FMassZoneGraphLaneLocationFragment> LaneLocationList = Context.GetFragmentView<FMassZoneGraphLaneLocationFragment>();
 		const TArrayView<FMassCrowdLaneTrackingFragment> LaneTrackingList = Context.GetMutableFragmentView<FMassCrowdLaneTrackingFragment>();
@@ -80,9 +81,9 @@ void UMassCrowdLaneTrackingDestructor::ConfigureQueries()
 
 void UMassCrowdLaneTrackingDestructor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this, World = EntityManager.GetWorld()](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 	{
-		UMassCrowdSubsystem& MassCrowdSubsystem = Context.GetMutableSubsystemChecked<UMassCrowdSubsystem>(World);
+		UMassCrowdSubsystem& MassCrowdSubsystem = Context.GetMutableSubsystemChecked<UMassCrowdSubsystem>();
 		const int32 NumEntities = Context.GetNumEntities();
 		const TConstArrayView<FMassCrowdLaneTrackingFragment> LaneTrackingList = Context.GetFragmentView<FMassCrowdLaneTrackingFragment>();
 
@@ -166,7 +167,7 @@ void UMassCrowdDynamicObstacleProcessor::Execute(FMassEntityManager& EntityManag
 			if (Obstacle.bIsMoving)
 			{
 				// Calculate current speed based on velocity or last known position.
-				const float CurrentSpeed = bHasVelocity ? VelocityList[EntityIndex].Value.Length() : (FVector::Dist(Position, Obstacle.LastPosition) / DeltaTime);
+				const FVector::FReal CurrentSpeed = bHasVelocity ? VelocityList[EntityIndex].Value.Length() : (FVector::Dist(Position, Obstacle.LastPosition) / DeltaTime);
 
 				// Update position while moving, the stop logic will use the last position while check if the obstacles moves again.
 				Obstacle.LastPosition = Position;

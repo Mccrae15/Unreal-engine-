@@ -38,12 +38,6 @@ class UWorld;
 /////////////////////////////////////////////////////
 // UEditorUtilityWidgetBlueprint
 
-UEditorUtilityWidgetBlueprint::UEditorUtilityWidgetBlueprint(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
-{
-
-}
-
 void UEditorUtilityWidgetBlueprint::BeginDestroy()
 {
 	// Only cleanup script if it has been registered and we're not shutdowning editor
@@ -94,13 +88,15 @@ TSharedRef<SWidget> UEditorUtilityWidgetBlueprint::CreateUtilityWidget()
 
 	UClass* BlueprintClass = GeneratedClass;
 	TSubclassOf<UEditorUtilityWidget> WidgetClass = BlueprintClass;
-	UWorld* World = GEditor->GetEditorWorldContext().World();
-	if (World)
+
+	if (CreatedUMGWidget)
 	{
-		if (CreatedUMGWidget)
-		{
-			CreatedUMGWidget->Rename(nullptr, GetTransientPackage(), REN_DoNotDirty);
-		}
+		CreatedUMGWidget->Rename(nullptr, GetTransientPackage(), REN_DoNotDirty);
+	}
+
+	CreatedUMGWidget = nullptr;
+	if (UWorld* World = GEditor->GetEditorWorldContext().World())
+	{
 		CreatedUMGWidget = CreateWidget<UEditorUtilityWidget>(World, WidgetClass);
 		if (CreatedUMGWidget)
 		{
@@ -116,7 +112,10 @@ TSharedRef<SWidget> UEditorUtilityWidgetBlueprint::CreateUtilityWidget()
 				if (Widget->IsA(UEditorUtilityWidget::StaticClass()))
 				{
 					Widget->SetFlags(RF_Transient);
-					Widget->Slot->SetFlags(RF_Transient);
+					if (UPanelSlot* Slot = Widget->Slot)
+					{
+						Slot->SetFlags(RF_Transient);
+					}
 				}
 			}
 		}
@@ -125,6 +124,7 @@ TSharedRef<SWidget> UEditorUtilityWidgetBlueprint::CreateUtilityWidget()
 	if (CreatedUMGWidget)
 	{
 		TabWidget = SNew(SVerticalBox)
+			.IsEnabled_UObject(this, &UEditorUtilityWidgetBlueprint::IsWidgetEnabled)
 			+ SVerticalBox::Slot()
 			.HAlign(HAlign_Fill)
 			[
@@ -134,13 +134,32 @@ TSharedRef<SWidget> UEditorUtilityWidgetBlueprint::CreateUtilityWidget()
 	return TabWidget;
 }
 
+bool UEditorUtilityWidgetBlueprint::IsWidgetEnabled() const
+{
+	bool bAllowPIE = bIsEnabledInPIE || (GEditor && GEditor->PlayWorld == nullptr);
+	bool bAllowDebugging = bIsEnabledInDebugging || !GIntraFrameDebuggingGameThread;
+	return bAllowPIE && bAllowDebugging;
+}
+
 void UEditorUtilityWidgetBlueprint::RegenerateCreatedTab(UBlueprint* RecompiledBlueprint)
 {
-	if (CreatedTab.IsValid())
+	if (TSharedPtr<SDockTab> CreatedTabPinned = CreatedTab.Pin())
 	{
 		TSharedRef<SWidget> TabWidget = CreateUtilityWidget();
-		CreatedTab.Pin()->SetContent(TabWidget);
+		CreatedTabPinned->SetContent(TabWidget);
 	}
+}
+
+
+FText UEditorUtilityWidgetBlueprint::GetTabDisplayName() const
+{
+	const UEditorUtilityWidget* EditorUtilityWidget = GeneratedClass->GetDefaultObject<UEditorUtilityWidget>();
+
+	if (EditorUtilityWidget && !EditorUtilityWidget->GetTabDisplayName().IsEmpty())
+	{
+		return EditorUtilityWidget->GetTabDisplayName();
+	}
+	return FText::FromString(FName::NameToDisplayString(GetName(), false));
 }
 
 void UEditorUtilityWidgetBlueprint::ChangeTabWorld(UWorld* World, EMapChangeType MapChangeType)
@@ -177,7 +196,12 @@ void UEditorUtilityWidgetBlueprint::UpdateRespawnListIfNeeded(TSharedRef<SDockTa
 			BlutilityModule->RemoveLoadedScriptUI(this);
 		}
 	}
-	CreatedUMGWidget = nullptr;
+
+	if (CreatedUMGWidget)
+	{
+		CreatedUMGWidget->Rename(nullptr, GetTransientPackage());
+		CreatedUMGWidget = nullptr;
+	}
 }
 
 void UEditorUtilityWidgetBlueprint::GetReparentingRules(TSet< const UClass* >& AllowedChildrenOfClasses, TSet< const UClass* >& DisallowedChildrenOfClasses) const

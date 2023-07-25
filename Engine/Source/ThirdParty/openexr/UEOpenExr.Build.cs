@@ -15,11 +15,11 @@ public class UEOpenExr : ModuleRules
 
 		string DeploymentDirectory = Path.Combine(ModuleDirectory, "Deploy", "openexr-3.1.5");
 
-		PublicIncludePaths.Add(Path.Combine(DeploymentDirectory, "include"));
+		PublicSystemIncludePaths.Add(Path.Combine(DeploymentDirectory, "include"));
 
 		// XXX: OpenEXR includes some of its own headers without the
 		// leading "OpenEXR/..."
-		PublicIncludePaths.Add(Path.Combine(DeploymentDirectory, "include", "OpenEXR"));
+		PublicSystemIncludePaths.Add(Path.Combine(DeploymentDirectory, "include", "OpenEXR"));
 
 		string LibPostfix = bDebug ? "_d" : "";
 
@@ -28,7 +28,7 @@ public class UEOpenExr : ModuleRules
 			string LibDirectory = Path.Combine(
 				DeploymentDirectory,
 				"VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(),
-				Target.WindowsPlatform.GetArchitectureSubpath(),
+				Target.Architecture.WindowsName,
 				"lib");
 
 			PublicAdditionalLibraries.AddRange(
@@ -63,7 +63,7 @@ public class UEOpenExr : ModuleRules
 			string LibDirectory = Path.Combine(
 				DeploymentDirectory,
 				"Unix",
-				Target.Architecture,
+				Target.Architecture.LinuxName,
 				"lib");
 
 			PublicAdditionalLibraries.AddRange(

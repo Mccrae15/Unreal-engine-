@@ -1,27 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterLandscapeBrush.h"
-#include "CoreMinimal.h"
-#include "LandscapeProxy.h"
 #include "Landscape.h"
 #include "Engine/Engine.h"
-#include "Engine/World.h"
+#include "UObject/WeakInterfacePtr.h"
 #include "WaterBodyActor.h"
 #include "WaterBodyIslandActor.h"
-#include "Algo/Transform.h"
-#include "WaterMeshComponent.h"
-#include "UObject/UObjectIterator.h"
+#include "WaterEditorServices.h"
 #include "WaterSubsystem.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "EngineUtils.h"
-#include "ProfilingDebugging/ScopedTimers.h"
-#include "Editor.h"
-#include "WaterEditorSubsystem.h"
 #include "Algo/AnyOf.h"
 #include "Misc/MapErrors.h"
 #include "Misc/UObjectToken.h"
 #include "Logging/MessageLog.h"
-#include "Logging/TokenizedMessage.h"
 #include "WaterIconHelper.h"
 #include "Components/BillboardComponent.h"
 #include "Modules/ModuleManager.h"
@@ -205,10 +197,10 @@ void AWaterLandscapeBrush::OnWaterBrushActorChanged(const IWaterBrushActorInterf
 	const UWaterEditorSettings* WaterEditorSettings = GetDefault<UWaterEditorSettings>();
 	check(WaterEditorSettings != nullptr);
 
-	bool bAllowLandscapeUpdate = (InParams.PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive) || WaterEditorSettings->GetUpdateLandscapeDuringInteractiveChanges();
+	const bool bAllowLandscapeUpdate = (InParams.PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive) || WaterEditorSettings->GetUpdateLandscapeDuringInteractiveChanges();
 	if (bForceUpdateBrush || (bAffectsLandscape && bAllowLandscapeUpdate))
 	{
-		RequestLandscapeUpdate();
+		RequestLandscapeUpdate(/* bInUserTriggered = */ InParams.bUserTriggered);
 	}
 
 	bool bAllowWaterMeshUpdate = (InParams.PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive) || WaterEditorSettings->GetUpdateWaterMeshDuringInteractiveChanges();
@@ -237,10 +229,8 @@ bool AWaterLandscapeBrush::IsActorAffectingLandscape(AActor* Actor) const
 	return ((WaterBrushActor != nullptr) && WaterBrushActor->AffectsLandscape());
 }
 
-void AWaterLandscapeBrush::PostInitProperties()
+void AWaterLandscapeBrush::RegisterDelegates()
 {
-	Super::PostInitProperties();
-
 	if (!IsTemplate())
 	{
 		OnWorldPostInitHandle = FWorldDelegates::OnPostWorldInitialization.AddLambda([this](UWorld* World, const UWorld::InitializationValues IVS)
@@ -278,10 +268,28 @@ void AWaterLandscapeBrush::PostInitProperties()
 		OnLevelActorDeletedHandle = GEngine->OnLevelActorDeleted().AddUObject(this, &AWaterLandscapeBrush::OnLevelActorRemoved);
 
 		IWaterBrushActorInterface::GetOnWaterBrushActorChangedEvent().AddUObject(this, &AWaterLandscapeBrush::OnWaterBrushActorChanged);
-
-		// If we are loading do not trigger events
-		UpdateActors(!GIsEditorLoadingPackage);
 	}
+}
+
+void AWaterLandscapeBrush::PostActorCreated()
+{
+	Super::PostActorCreated();
+
+	RegisterDelegates();
+
+	constexpr bool bInTriggerEvents = true;
+	UpdateActors(bInTriggerEvents);
+}
+
+void AWaterLandscapeBrush::PostLoad()
+{
+	Super::PostLoad();
+
+	RegisterDelegates();
+
+	// If we are loading do not trigger events
+	constexpr bool bInTriggerEvents = false;
+	UpdateActors(bInTriggerEvents);
 }
 
 void AWaterLandscapeBrush::OnLevelActorAdded(AActor* InActor)

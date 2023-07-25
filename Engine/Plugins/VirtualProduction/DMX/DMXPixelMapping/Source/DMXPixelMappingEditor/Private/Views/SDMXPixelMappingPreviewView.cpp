@@ -3,7 +3,9 @@
 #include "Views/SDMXPixelMappingPreviewView.h"
 
 #include "DMXPixelMappingEditorStyle.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Toolkits/DMXPixelMappingToolkit.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/SDMXPixelMappingPreviewViewport.h"
 #include "Widgets/SDMXPixelMappingZoomPan.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
@@ -12,7 +14,6 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
-#include "Misc/IFilter.h"
 
 
 #define LOCTEXT_NAMESPACE "SDMXPixelMappingPreviewView"
@@ -383,7 +384,7 @@ FText SDMXPixelMappingPreviewView::GetSelectedComponentNameText() const
 	UDMXPixelMappingBaseComponent* BaseComponent = SelectedComponentRef.GetComponent();
 	if (BaseComponent)
 	{
-		return FText::FromString(BaseComponent->GetName());
+		return FText::FromString(BaseComponent->GetUserFriendlyName());
 	}
 
 	return FText();

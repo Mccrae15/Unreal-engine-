@@ -2,8 +2,8 @@
 
 #include "StructUtilsEditorModule.h"
 #include "Modules/ModuleManager.h"
-#include "InstancedStructDetails.h"
 #include "PropertyBagDetails.h"
+#include "PropertyEditorModule.h"
 
 #define LOCTEXT_NAMESPACE "StructUtilsEditor"
 

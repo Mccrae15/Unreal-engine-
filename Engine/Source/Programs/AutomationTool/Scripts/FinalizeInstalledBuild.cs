@@ -35,7 +35,7 @@ namespace AutomationTool
 			// Write InstalledBuild.txt to indicate Engine is installed
 			string InstalledBuildFile = CommandUtils.CombinePaths(OutputDir, "Engine/Build/InstalledBuild.txt");
 			CommandUtils.CreateDirectory(CommandUtils.GetDirectoryName(InstalledBuildFile));
-			CommandUtils.WriteAllText(InstalledBuildFile, "");
+			CommandUtils.WriteAllText(InstalledBuildFile, Guid.NewGuid().ToString().ToUpper());
 
 			// Write InstalledBuild.txt to indicate Engine is installed
 			string Project = ParseParamValue("Project");
@@ -67,37 +67,18 @@ namespace AutomationTool
 			// Create list of platform configurations installed in a Rocket build
 			List<InstalledPlatformInfo.InstalledPlatformConfiguration> InstalledConfigs = new List<InstalledPlatformInfo.InstalledPlatformConfiguration>();
 
-			// Add the editor platform, otherwise we'll never be able to run UAT
-			string EditorArchitecture = PlatformExports.GetDefaultArchitecture(HostPlatform.Current.HostEditorPlatform, null);
-			InstalledConfigs.Add(new InstalledPlatformInfo.InstalledPlatformConfiguration(UnrealTargetConfiguration.Development, HostPlatform.Current.HostEditorPlatform, TargetRules.TargetType.Editor, EditorArchitecture, "", EProjectType.Unknown, false));
-			InstalledConfigs.Add(new InstalledPlatformInfo.InstalledPlatformConfiguration(UnrealTargetConfiguration.DebugGame, HostPlatform.Current.HostEditorPlatform, TargetRules.TargetType.Editor, EditorArchitecture, "", EProjectType.Unknown, false));
+			// Add the editor platform/architecture(s) for unspecified target, otherwise we'll never be able to run UAT
+			UnrealArchitectures EditorArchitectures = GetArchitecturesForPlatform(HostPlatform.Current.HostEditorPlatform);
+			foreach (UnrealArch EditorArchitecture in EditorArchitectures.Architectures)
+			{
+				InstalledConfigs.Add(new InstalledPlatformInfo.InstalledPlatformConfiguration(UnrealTargetConfiguration.Development, HostPlatform.Current.HostEditorPlatform, TargetRules.TargetType.Editor, EditorArchitecture, "", EProjectType.Unknown, false));
+				InstalledConfigs.Add(new InstalledPlatformInfo.InstalledPlatformConfiguration(UnrealTargetConfiguration.DebugGame, HostPlatform.Current.HostEditorPlatform, TargetRules.TargetType.Editor, EditorArchitecture, "", EProjectType.Unknown, false));
+			}
 
 			foreach (UnrealTargetPlatform CodeTargetPlatform in Platforms)
 			{
-				string Architecture = PlatformExports.GetDefaultArchitecture(CodeTargetPlatform, null);
-
-				// Try to parse additional Architectures from the command line
-				string Architectures = ParseParamValue(CodeTargetPlatform.ToString() + "Architectures");
-				string GPUArchitectures = ParseParamValue(CodeTargetPlatform.ToString() + "GPUArchitectures");
-
 				// Build a list of pre-compiled architecture combinations for this platform if any
-				List<string> AllArchNames;
-
-				if (!String.IsNullOrWhiteSpace(Architectures) && !String.IsNullOrWhiteSpace(GPUArchitectures))
-				{
-					AllArchNames = (from Arch in Architectures.Split('+')
-									from GPUArch in GPUArchitectures.Split('+')
-									select "-" + Arch + "-" + GPUArch).ToList();
-				}
-				else if (!String.IsNullOrWhiteSpace(Architectures))
-				{
-					AllArchNames = Architectures.Split('+').ToList();
-				}
-				// if there aren't any, use the default
-				else
-				{
-					AllArchNames = new List<string>() { Architecture };
-				}
+				UnrealArchitectures AllArchitectures = GetArchitecturesForPlatform(CodeTargetPlatform);
 
 				// Check whether this platform should only be used for content based projects
 				EProjectType ProjectType = ContentOnlyPlatforms.Contains(CodeTargetPlatform) ? EProjectType.Content : EProjectType.Any;
@@ -119,36 +100,28 @@ namespace AutomationTool
 						// Need to check for development receipt as we use that for the Engine code in DebugGame
 						UnrealTargetConfiguration EngineConfiguration = (CodeTargetConfiguration == UnrealTargetConfiguration.DebugGame) ? UnrealTargetConfiguration.Development : CodeTargetConfiguration;
 
-						// Android has multiple architecture flavors built without receipts, so use the default arch target instead
-						if (CodeTargetPlatform == UnrealTargetPlatform.Android)
+						// if the platform doesn't split up multi-arch into multiple targets (which equate to receipt files) then make multiple configs from one receipt
+						if (UnrealArchitectureConfig.ForPlatform(CodeTargetPlatform).Mode != UnrealArchitectureMode.OneTargetPerArchitecture)
 						{
-							FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(new DirectoryReference(OutputEnginePath), CurrentTargetName, CodeTargetPlatform, EngineConfiguration, Architecture);
+							FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(new DirectoryReference(OutputEnginePath), CurrentTargetName, CodeTargetPlatform, EngineConfiguration, AllArchitectures);
 							if (FileReference.Exists(ReceiptFileName))
 							{
 								// Strip the output folder so that this can be used on any machine
 								string RelativeReceiptFileName = ReceiptFileName.MakeRelativeTo(new DirectoryReference(OutputDir));
 
 								// Blindly append all of the architecture names
-								if (AllArchNames.Count > 0)
+								foreach (UnrealArch Arch in AllArchitectures.Architectures)
 								{
-									foreach (string Arch in AllArchNames)
-									{
-										InstalledConfigs.Add(new InstalledPlatformInfo.InstalledPlatformConfiguration(CodeTargetConfiguration, CodeTargetPlatform, CurrentTargetType, Arch, RelativeReceiptFileName, ProjectType, bCanBeDisplayed));
-									}
-								}
-								// if for some reason we didn't specify any flavors, just add the default one.
-								else
-								{
-									InstalledConfigs.Add(new InstalledPlatformInfo.InstalledPlatformConfiguration(CodeTargetConfiguration, CodeTargetPlatform, CurrentTargetType, Architecture, RelativeReceiptFileName, ProjectType, bCanBeDisplayed));
+									InstalledConfigs.Add(new InstalledPlatformInfo.InstalledPlatformConfiguration(CodeTargetConfiguration, CodeTargetPlatform, CurrentTargetType, Arch, RelativeReceiptFileName, ProjectType, bCanBeDisplayed));
 								}
 							}
 						}
-						// If we're not Android, check the existence of the target receipts for each architecture specified.
+						// otherwise, look for receipts for each specified architecture
 						else
 						{
-							foreach (string Arch in AllArchNames)
+							foreach (UnrealArch Arch in AllArchitectures.Architectures)
 							{
-								FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(new DirectoryReference(OutputEnginePath), CurrentTargetName, CodeTargetPlatform, EngineConfiguration, Arch);
+								FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(new DirectoryReference(OutputEnginePath), CurrentTargetName, CodeTargetPlatform, EngineConfiguration, AllArchitectures);
 								if (FileReference.Exists(ReceiptFileName))
 								{
 									string RelativeReceiptFileName = ReceiptFileName.MakeRelativeTo(new DirectoryReference(OutputDir));
@@ -191,6 +164,30 @@ namespace AutomationTool
 			else
 			{
 				return PlatformsString.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(x => UnrealTargetPlatform.Parse(x)).ToList();
+			}
+		}
+
+		/// <summary>
+		/// Look for a platform's architecture(s) on the commandline, and if not, then ask the platform's config for active architectures
+		/// </summary>
+		/// <param name="Platform">Platform to look for architectures</param>
+		/// <returns>One or more architectures</returns>
+		private UnrealArchitectures GetArchitecturesForPlatform(UnrealTargetPlatform Platform)
+		{
+			// Try to parse additional Architectures from the command line
+			string Architectures = ParseParamValue(Platform.ToString() + "Architectures");
+
+			// Wwas a platform specified on commandline?
+			if (!string.IsNullOrWhiteSpace(Architectures))
+			{
+				return UnrealArchitectures.FromString(Architectures, Platform);
+			}
+			// if there aren't any, use the default
+			else
+			{
+				// get the architectures for the target platform, for unspecified target
+				UnrealArchitectureConfig PlatformArchConfig = UnrealArchitectureConfig.ForPlatform(Platform);
+				return PlatformArchConfig.ActiveArchitectures(null, null);
 			}
 		}
 	}

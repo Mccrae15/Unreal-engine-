@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HTTP/HTTPManager.h"
+#include "Stats/Stats.h"
 #include "StreamReaderHLSfmp4.h"
 #include "Demuxer/ParserISO14496-12.h"
 #include "StreamAccessUnitBuffer.h"
@@ -543,6 +544,9 @@ FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult FStreamReaderHLSfmp4::F
 				HTTP->Parameters.Range.Start		= Request->InitSegmentInfo->ByteRange.GetStart();
 				HTTP->Parameters.Range.EndIncluding = Request->InitSegmentInfo->ByteRange.GetEnd();
 			}
+			// Set timeouts for init segment retrieval
+			HTTP->Parameters.ConnectTimeout = FTimeValue().SetFromMilliseconds(1000 * 4);
+			HTTP->Parameters.NoDataTimeout = FTimeValue().SetFromMilliseconds(1000 * 2);
 
 			ProgressReportCount = 0;
 			DownloadCompleteSignal.Reset();
@@ -827,6 +831,9 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 					HTTP->Parameters.Range = Request->Range;
 				}
 				HTTP->ResponseCache = PlayerSessionService->GetHTTPResponseCache();
+				// Set timeouts for media segment retrieval
+				HTTP->Parameters.ConnectTimeout = FTimeValue().SetFromMilliseconds(1000 * 4);
+				HTTP->Parameters.NoDataTimeout = FTimeValue().SetFromMilliseconds(1000 * 2);
 
 				ProgressReportCount = 0;
 				DownloadCompleteSignal.Reset();

@@ -17,7 +17,7 @@ namespace EAndroidScreenOrientation
 {
 	// IF THIS CHANGES, MAKE SURE TO UPDATE UEDeployAndroid.cs, ConvertOrientationIniValue()!
 
-	enum Type
+	enum Type : int
 	{
 		/** Portrait orientation (the display is taller than it is wide). */
 		Portrait,
@@ -51,7 +51,7 @@ namespace EAndroidDepthBufferPreference
 {
 	// IF THIS CHANGES, MAKE SURE TO UPDATE UEDeployAndroid.cs, ConvertDepthBufferIniValue()!
 
-	enum Type
+	enum Type : int
 	{
 		Default = 0 UMETA(DisplayName = "Default"),
 		Bits16 = 16 UMETA(DisplayName = "16-bit"),
@@ -64,7 +64,7 @@ namespace EAndroidDepthBufferPreference
 UENUM()
 namespace EAndroidInstallLocation
 {
-	enum Type
+	enum Type : int
 	{
 		/** Install your app only on internal device storage */
 		InternalOnly,
@@ -79,7 +79,7 @@ namespace EAndroidInstallLocation
 UENUM()
 namespace EOculusMobileDevice
 {
-	enum Type
+	enum Type : int
 	{
 		/** 0 was the deprecated OculusGo */
 
@@ -90,6 +90,43 @@ namespace EOculusMobileDevice
 
 		/** Package for Meta Quest Pro */
 		QuestPro = 3 UMETA(DisplayName = "Meta Quest Pro"),
+	};
+}
+
+/** AdMob TagForChildDirectedTreament  */
+UENUM()
+namespace ETagForChildDirectedTreatment
+{
+	enum Type : int
+	{
+		TAG_FOR_CHILD_DIRECTED_TREATMENT_UNSPECIFIED = 0,
+		TAG_FOR_CHILD_DIRECTED_TREATMENT_TRUE = 1,
+		TAG_FOR_CHILD_DIRECTED_TREATMENT_FALSE = 2,
+	};
+}
+
+/** AdMob TagForChildDirectedTreament  */
+UENUM()
+namespace ETagForUnderAgeOfConsent
+{
+	enum Type : int
+	{
+		TAG_FOR_UNDER_AGE_OF_CONSENT_UNSPECIFIED = 0,
+		TAG_FOR_UNDER_AGE_OF_CONSENT_TRUE = 1,
+		TAG_FOR_UNDER_AGE_OF_CONSENT_FALSE = 2,
+	};
+}
+
+/** AdMob MaxAdContentRating  */
+UENUM()
+namespace EMaxAdContentRating
+{
+	enum Type : int
+	{
+		MAX_AD_CONTENT_RATING_G = 0,
+		MAX_AD_CONTENT_RATING_PG = 1,
+		MAX_AD_CONTENT_RATING_T = 2,
+		MAX_AD_CONTENT_RATING_MA = 2,
 	};
 }
 
@@ -130,7 +167,7 @@ struct FGooglePlayLeaderboardMapping
 UENUM()
 namespace EAndroidAudio
 {
-	enum Type
+	enum Type : int
 	{
 		Default = 0 UMETA(DisplayName = "Default", ToolTip = "This option selects the default encoder."),
 		OGG = 1 UMETA(DisplayName = "Ogg Vorbis", ToolTip = "Selects Ogg Vorbis encoding."),
@@ -141,7 +178,7 @@ namespace EAndroidAudio
 UENUM()
 namespace EAndroidGraphicsDebugger
 {
-	enum Type
+	enum Type : int
 	{
 		None = 0 UMETA(DisplayName = "None"),
 		Mali = 1 UMETA(DisplayName = "Mali Graphics Debugger", ToolTip = "Configure for Mali Graphics Debugger."),
@@ -325,6 +362,10 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Add permissions to support Voice chat (RECORD_AUDIO)"))
 	bool bAndroidVoiceEnabled;
 
+	// Add required permission and support to allow multicast/broadcast Wi-Fi traffic through network interface
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Add support for multicast Wi-Fi traffic (CHANGE_WIFI_MULTICAST_STATE)"))
+	bool bEnableMulticastSupport;
+
 	// BEGIN META SECTION - Meta Quest Android device support
 	// Package for an Oculus Mobile device
 	UPROPERTY(meta=(DeprecatedProperty, DeprecationMessage = "Use the \"Package for Meta Quest devices\" checkbox instead"))
@@ -463,6 +504,22 @@ public:
 	// Enabling this includes the AdMob SDK and will be detected by Google Play Console on upload of APK.  Disable if you do not need ads to remove this warning.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = GooglePlayServices, meta = (DisplayName = "Include AdMob support for ads"))
 	bool bSupportAdMob;
+
+	// AdMob Application ID
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = GooglePlayServices, meta = (DisplayName = "AdMob App ID"), meta = (EditCondition = "bSupportAdMob"), meta = (ToolTip = "AdMob Application ID (see https://support.google.com/admob/answer/7356431)"))
+	FString AdMobAppID;
+
+	// Admob TagForChildDirectedTreatment (see https://developers.google.com/admob/android/targeting)
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = GooglePlayServices, meta = (DisplayName = "AdMob Tag For Child-Directed Treatment"), meta = (EditCondition = "bSupportAdMob"), meta = (ToolTip = "Admob TagForChildDirectedTreatment (see https://developers.google.com/admob/android/targeting)"))
+	TEnumAsByte<ETagForChildDirectedTreatment::Type> TagForChildDirectedTreatment;
+
+	// Admob TagForUnderAgeOfConsent (see https://developers.google.com/admob/android/targeting)
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = GooglePlayServices, meta = (DisplayName = "AdMob Tag For Under Age Of Consent"), meta = (EditCondition = "bSupportAdMob"), meta = (ToolTip = "Admob TagForUnderAgeOfConsent (see https://developers.google.com/admob/android/targeting)"))
+	TEnumAsByte<ETagForUnderAgeOfConsent::Type> TagForUnderAgeOfConsent;
+
+	// Admob MaxAdContentRating (see https://developers.google.com/admob/android/targeting)
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = GooglePlayServices, meta = (DisplayName = "AdMob Max ad content rating"), meta = (EditCondition = "bSupportAdMob"), meta = (ToolTip = "Admob MaxAdContentRating (see https://developers.google.com/admob/android/targeting)"))
+	TEnumAsByte<EMaxAdContentRating::Type> MaxAdContentRating;
 
 	// The unique identifier for the ad obtained from AdMob.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = GooglePlayServices)

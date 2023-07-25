@@ -2,23 +2,20 @@
 
 #include "LevelSequenceEditorSubsystem.h"
 
-#include "Compilation/MovieSceneCompiledDataManager.h"
-#include "ISequencer.h"
+#include "Evaluation/MovieScenePlayback.h"
 #include "ISequencerModule.h"
+#include "Framework/Commands/UICommandList.h"
 #include "LevelSequence.h"
+#include "ISceneOutliner.h"
 #include "LevelSequenceEditorCommands.h"
-#include "MovieScene.h"
-#include "MovieSceneCommonHelpers.h"
-#include "MovieSceneSection.h"
-#include "MovieSceneSequence.h"
-#include "MovieSceneTimeHelpers.h"
+#include "MovieScenePossessable.h"
 #include "SequencerSettings.h"
+#include "MovieSceneSpawnable.h"
 #include "SequencerUtilities.h"
-#include "MovieSceneBindingProxy.h"
-#include "SequenceTimeUnit.h"
 #include "Sections/MovieScene3DConstraintSection.h"
-#include "Sections/MovieScene3DTransformSection.h"
+#include "Selection.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
+#include "Toolkits/AssetEditorToolkit.h"
 #include "Tracks/MovieScene3DConstraintTrack.h"
 #include "Tracks/MovieSceneCameraShakeTrack.h"
 
@@ -26,16 +23,11 @@
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EngineUtils.h"
-#include "Engine/Selection.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "GameFramework/Actor.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "IContentBrowserSingleton.h"
-#include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
 #include "SceneOutlinerModule.h"
-#include "SceneOutlinerPublicTypes.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -1304,12 +1296,6 @@ void ULevelSequenceEditorSubsystem::RemoveInvalidBindings(const FMovieSceneBindi
 
 void ULevelSequenceEditorSubsystem::AddAssignActorMenu(FMenuBuilder& MenuBuilder)
 {
-	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().AddActorsToBinding);
-	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().ReplaceBindingWithActors);
-	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().RemoveActorsFromBinding);
-	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().RemoveAllBindings);
-	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().RemoveInvalidBindings);
-
 	TSharedPtr<ISequencer> Sequencer = GetActiveSequencer();
 	if (Sequencer == nullptr)
 	{
@@ -1322,6 +1308,12 @@ void ULevelSequenceEditorSubsystem::AddAssignActorMenu(FMenuBuilder& MenuBuilder
 	{
 		return;
 	}
+
+	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().AddActorsToBinding);
+	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().ReplaceBindingWithActors);
+	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().RemoveActorsFromBinding);
+	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().RemoveAllBindings);
+	MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().RemoveInvalidBindings);
 
 	FMovieSceneBindingProxy BindingProxy(ObjectBindings[0], Sequencer->GetFocusedMovieSceneSequence());
 

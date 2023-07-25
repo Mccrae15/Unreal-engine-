@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Units/Execution/RigUnit_BeginExecution.h"
 #include "Units/Execution/RigUnit_Hierarchy.h"
 
@@ -8,6 +9,8 @@
 #include "Components/InstancedStaticMeshComponent.h"
 #include "AnimCustomInstanceHelper.h"
 #include "ControlRigObjectBinding.h"
+#include "SceneManagement.h"
+#include "Math/ControlRigMathLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigComponent)
 
@@ -68,6 +71,8 @@ UControlRigComponent::UControlRigComponent(const FObjectInitializer& ObjectIniti
 	LazyEvaluationRotationThreshold = 0.5f;
 	LazyEvaluationScaleThreshold = 0.01f;
 	bNeedsEvaluation = true;
+
+	bNeedToInitialize = false;
 }
 
 #if WITH_EDITOR
@@ -111,14 +116,6 @@ void UControlRigComponent::Serialize(FArchive& Ar)
 	}
 }
 
-#if WITH_EDITOR
-void UControlRigComponent::InitializeComponent()
-{
-	Super::InitializeComponent();
-	Initialize();
-}
-#endif
-
 void UControlRigComponent::OnRegister()
 {
 	Super::OnRegister();
@@ -130,7 +127,19 @@ void UControlRigComponent::OnRegister()
 		gPendingSkeletalMeshes.FindOrAdd(this);
 	}
 
-	Initialize();
+	// call to Initialize() should be delayed until TickComponent
+	
+	// Initialize() here directly is not enough because
+	// in case of PIE, OnRegister() is called before BP native events like
+	// OnPreInitialize are bound, which does not happen until
+	// 1. Re-Registration ( Sequencer / Level Editor / non- PIE use cases, and there is no way to detect it here)
+	// 2. InitializeComponent() (PIE + Cooked build only, not called for editor use cases)
+
+	// so to avoid calling Initialize() in both OnRegister() and InitializeComponent()
+	// we have to delay Initialize() until TickComponent, which is called all the time
+	// in both editor + cooked.
+
+	bNeedToInitialize = true;
 
 	if (AActor* Actor = GetOwner())
 	{
@@ -179,6 +188,12 @@ void UControlRigComponent::OnUnregister()
 
 void UControlRigComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
+	if (bNeedToInitialize)
+	{
+		Initialize();
+		bNeedToInitialize = false;
+	}
+	
 	if(!bUpdateRigOnTick)
 	{
 		return;
@@ -221,11 +236,11 @@ FBoxSphereBounds UControlRigComponent::CalcBounds(const FTransform& LocalToWorld
 		// Get bounding box for the debug drawings if they are drawn 
 		if (bShowDebugDrawing)
 		{ 
-			const FControlRigDrawInterface& DrawInterface = ControlRig->GetDrawInterface();
+			const FRigVMDrawInterface& DrawInterface = ControlRig->GetDrawInterface();
 
 			for (int32 InstructionIndex = 0; InstructionIndex < DrawInterface.Num(); InstructionIndex++)
 			{
-				const FControlRigDrawInstruction& Instruction = DrawInterface[InstructionIndex];
+				const FRigVMDrawInstruction& Instruction = DrawInterface[InstructionIndex];
 
 				FTransform Transform = Instruction.Transform * GetComponentToWorld();
 				for (const FVector& Position : Instruction.Positions)
@@ -1653,7 +1668,7 @@ FName UControlRigComponent::GetComponentNameWithinActor(UActorComponent* InCompo
 	return ComponentProperty;
 }
 
-void UControlRigComponent::HandleControlRigInitializedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void UControlRigComponent::HandleControlRigInitializedEvent(URigVMHost* InControlRig, const FName& InEventName)
 {
 #if WITH_EDITOR
 	if (bUpdateInEditor)
@@ -1668,7 +1683,7 @@ void UControlRigComponent::HandleControlRigInitializedEvent(UControlRig* InContr
 	}
 }
 
-void UControlRigComponent::HandleControlRigPreConstructionEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void UControlRigComponent::HandleControlRigPreConstructionEvent(UControlRig* InControlRig, const FName& InEventName)
 {
 	TArray<USkeletalMeshComponent*> ComponentsToTick;
 
@@ -1718,7 +1733,7 @@ void UControlRigComponent::HandleControlRigPreConstructionEvent(UControlRig* InC
 	}
 }
 
-void UControlRigComponent::HandleControlRigPostConstructionEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void UControlRigComponent::HandleControlRigPostConstructionEvent(UControlRig* InControlRig, const FName& InEventName)
 {
 #if WITH_EDITOR
 	if (bUpdateInEditor)
@@ -1733,7 +1748,7 @@ void UControlRigComponent::HandleControlRigPostConstructionEvent(UControlRig* In
 	}
 }
 
-void UControlRigComponent::HandleControlRigPreForwardsSolveEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void UControlRigComponent::HandleControlRigPreForwardsSolveEvent(UControlRig* InControlRig, const FName& InEventName)
 {
 #if WITH_EDITOR
 	if (bUpdateInEditor)
@@ -1748,7 +1763,7 @@ void UControlRigComponent::HandleControlRigPreForwardsSolveEvent(UControlRig* In
 	}
 }
 
-void UControlRigComponent::HandleControlRigPostForwardsSolveEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void UControlRigComponent::HandleControlRigPostForwardsSolveEvent(UControlRig* InControlRig, const FName& InEventName)
 {
 #if WITH_EDITOR
 	if (bUpdateInEditor)
@@ -1763,7 +1778,7 @@ void UControlRigComponent::HandleControlRigPostForwardsSolveEvent(UControlRig* I
 	}
 }
 
-void UControlRigComponent::HandleControlRigExecutedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void UControlRigComponent::HandleControlRigExecutedEvent(URigVMHost* InControlRig, const FName& InEventName)
 {
 	TransferOutputs();
 }
@@ -2005,11 +2020,11 @@ void FControlRigSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 
 			if (ControlRigComponent->bShowDebugDrawing)
 			{ 
-				const FControlRigDrawInterface& DrawInterface = ControlRigComponent->ControlRig->GetDrawInterface();
+				const FRigVMDrawInterface& DrawInterface = ControlRigComponent->ControlRig->GetDrawInterface();
 
 				for (int32 InstructionIndex = 0; InstructionIndex < DrawInterface.Num(); InstructionIndex++)
 				{
-					const FControlRigDrawInstruction& Instruction = DrawInterface[InstructionIndex];
+					const FRigVMDrawInstruction& Instruction = DrawInterface[InstructionIndex];
 					if (Instruction.Positions.Num() == 0)
 					{
 						continue;
@@ -2018,7 +2033,7 @@ void FControlRigSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 					FTransform InstructionTransform = Instruction.Transform * ControlRigComponent->GetComponentToWorld();
 					switch (Instruction.PrimitiveType)
 					{
-						case EControlRigDrawSettings::Points:
+						case ERigVMDrawSettings::Points:
 						{
 							for (const FVector& Point : Instruction.Positions)
 							{
@@ -2026,7 +2041,7 @@ void FControlRigSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 							}
 							break;
 						}
-						case EControlRigDrawSettings::Lines:
+						case ERigVMDrawSettings::Lines:
 						{
 							const TArray<FVector>& Points = Instruction.Positions;
 							PDI->AddReserveLines(SDPG_Foreground, Points.Num() / 2, false, Instruction.Thickness > SMALL_NUMBER);
@@ -2036,7 +2051,7 @@ void FControlRigSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 							}
 							break;
 						}
-						case EControlRigDrawSettings::LineStrip:
+						case ERigVMDrawSettings::LineStrip:
 						{
 							const TArray<FVector>& Points = Instruction.Positions;
 							PDI->AddReserveLines(SDPG_Foreground, Points.Num() - 1, false, Instruction.Thickness > SMALL_NUMBER);

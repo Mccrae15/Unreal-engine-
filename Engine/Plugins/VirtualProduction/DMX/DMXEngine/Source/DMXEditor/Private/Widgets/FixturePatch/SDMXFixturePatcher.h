@@ -10,6 +10,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 class FDMXEditor;
+class FDMXEntityFixturePatchDragDropOperation;
 class FDMXFixturePatchNode;
 class FDMXFixturePatchSharedData;
 class FDMXTreeNodeBase;
@@ -60,12 +61,9 @@ protected:
 	/** Called when drag dropped onto a channel */
 	FReply OnDropOntoChannel(int32 UniverseID, int32 ChannelID, const FDragDropEvent& DragDropEvent);
 
-	/** Initilizes the widget for an incoming dragged patch, and the patch so it can be dragged here */
-	TSharedPtr<FDMXFixturePatchNode> GetDraggedNode(const TArray<TWeakObjectPtr<UDMXEntity>>& DraggedEntities);
+	/** Returns a map of nodes being dragged along with their absolute channel offset from the Drag Drop Event */
+	TMap<TSharedRef<FDMXFixturePatchNode>, int64> GetDraggedNodesToAbsoluteChannelOffsetMap(const FDragDropEvent& DragDropEvent) const;
 	
-	/** Creates an info widget for drag dropping */
-	TSharedRef<SWidget> CreateDragDropDecorator(TWeakObjectPtr<UDMXEntityFixturePatch> FixturePatch, int32 ChannelID) const;
-
 	//~ Begin FEditorUndoClient Interface
 	virtual void PostUndo(bool bSuccess) override;
 	virtual void PostRedo(bool bSuccess) override;
@@ -104,8 +102,14 @@ protected:
 	/** Adds a universe widget */
 	void AddUniverse(int32 UniverseID);
 
-	/** Updates the grid depending on entities and selection */
+	/** Called when the display all universe option is turned on or off */
 	void OnToggleDisplayAllUniverses(ECheckBoxState CheckboxState);
+
+	/** Sets if the DMX Monitor feature is enabled */
+	void SetDMXMonitorEnabled(bool bEnabled);
+
+	/** Called when the monitor feature is turned on or off */
+	void OnToggleDMXMonitorEnabled(ECheckBoxState CheckboxState);
 
 	/** Returns true if the patcher allows for the selection of a single universe and show only that */
 	bool IsUniverseSelectionEnabled() const;
@@ -132,14 +136,17 @@ protected:
 	FText GetTooltipText() const;
 
 protected:
-	/** Clamps the starting channel to remain within a valid channel range */
+	/** Creates a valid address given Universe, Starting Channel and Channel Span. Returns false if no valid Address can be found. */
 	int32 ClampStartingChannel(int32 StartingChannel, int32 ChannelSpan) const;
 
 	/** Returns the DMXLibrary or nullptr if not available */
 	UDMXLibrary* GetDMXLibrary() const;
 
-	/** Checkbox to determine if all check boxes shoudl be displayed */
+	/** Checkbox to determine if all patched Universes should be displayed */
 	TSharedPtr<SCheckBox> ShowAllUniversesCheckBox;
+
+	/** Checkbox to determine if the DMX Monitor functionality should be enabled */
+	TSharedPtr<SCheckBox> EnableDMXMonitorCheckBox;
 
 	/** Scrollbox containing all patch universes */
 	TSharedPtr<SScrollBox> PatchedUniverseScrollBox;

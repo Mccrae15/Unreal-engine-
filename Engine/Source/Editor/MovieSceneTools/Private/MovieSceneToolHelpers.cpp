@@ -8,6 +8,7 @@
 #include "Layout/Margin.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Text/STextBlock.h"
 #include "AssetRegistry/AssetData.h"
@@ -398,7 +399,7 @@ FString MovieSceneToolHelpers::GenerateNewShotPath(UMovieScene* SequenceMovieSce
 
 	UObject* SequenceAsset = SequenceMovieScene->GetOuter();
 	UPackage* SequencePackage = SequenceAsset->GetOutermost();
-	FString SequencePackageName = SequencePackage->GetName(); // ie. /Game/cine/max/master
+	FString SequencePackageName = SequencePackage->GetName(); // ie. /Game/cine/max/root
 	int32 LastSlashPos = SequencePackageName.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 	FString SequencePath = SequencePackageName.Left(LastSlashPos);
 
@@ -529,6 +530,41 @@ FString MovieSceneToolHelpers::GenerateNewShotName(const TArray<UMovieSceneSecti
 
 	// Default case
 	return ComposeShotName(ProjectSettings->ShotPrefix, ProjectSettings->FirstShotNumber, ProjectSettings->FirstTakeNumber, ProjectSettings->ShotNumDigits, ProjectSettings->TakeNumDigits);
+}
+
+UMovieSceneSequence* MovieSceneToolHelpers::CreateSequence(FString& NewSequenceName, FString& NewSequencePath, UMovieSceneSubSection* SectionToDuplicate)
+{
+	// Create a new level sequence asset with the appropriate name
+	IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
+
+	UObject* NewAsset = nullptr;
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* CurrentClass = *It;
+		if (CurrentClass->IsChildOf(UFactory::StaticClass()) && !(CurrentClass->HasAnyClassFlags(CLASS_Abstract)))
+		{
+			UFactory* Factory = Cast<UFactory>(CurrentClass->GetDefaultObject());
+			if (Factory->CanCreateNew() && Factory->ImportPriority >= 0 && Factory->SupportedClass == ULevelSequence::StaticClass())
+			{
+				if (SectionToDuplicate != nullptr)
+				{
+					NewAsset = AssetTools.DuplicateAssetWithDialog(NewSequenceName, NewSequencePath, SectionToDuplicate->GetSequence());
+				}
+				else
+				{
+					NewAsset = AssetTools.CreateAssetWithDialog(NewSequenceName, NewSequencePath, ULevelSequence::StaticClass(), Factory);
+				}
+				break;
+			}
+		}
+	}
+
+	if (NewAsset == nullptr)
+	{
+		return nullptr;
+	}
+
+	return Cast<UMovieSceneSequence>(NewAsset);
 }
 
 UMovieSceneSubSection* MovieSceneToolHelpers::CreateSubSequence(FString& NewSequenceName, FString& NewSequencePath, FFrameNumber NewSequenceStartTime, UMovieSceneSubTrack* SubTrack, UMovieSceneSubSection* SectionToDuplicate)
@@ -1233,7 +1269,7 @@ void MovieSceneToolHelpers::LockCameraActorToViewport(const TSharedPtr<ISequence
 void MovieSceneToolHelpers::CreateCameraCutSectionForCamera(UMovieScene* OwnerMovieScene, FGuid CameraGuid, FFrameNumber FrameNumber)
 {
 	// If there's a cinematic shot track, no need to set this camera to a shot
-	UMovieSceneTrack* CinematicShotTrack = OwnerMovieScene->FindMasterTrack(UMovieSceneCinematicShotTrack::StaticClass());
+	UMovieSceneTrack* CinematicShotTrack = OwnerMovieScene->FindTrack(UMovieSceneCinematicShotTrack::StaticClass());
 	if (CinematicShotTrack)
 	{
 		return;
@@ -3797,7 +3833,7 @@ void ExportLevelMesh(UnFbx::FFbxExporter* Exporter, ULevel* Level, IMovieScenePl
 	Exporter->ExportLevelMesh(Level, !bSelectedOnly, ActorToExport, NodeNameAdapter, bSaveAnimSeq);
 }
 
-bool MovieSceneToolHelpers::ExportFBX(UWorld* World, UMovieScene* MovieScene, IMovieScenePlayer* Player, const TArray<FGuid>& Bindings, const TArray<UMovieSceneTrack*>& MasterTracks, INodeNameAdapter& NodeNameAdapter, FMovieSceneSequenceIDRef& Template, const FString& InFBXFileName, FMovieSceneSequenceTransform& RootToLocalTransform)
+bool MovieSceneToolHelpers::ExportFBX(UWorld* World, UMovieScene* MovieScene, IMovieScenePlayer* Player, const TArray<FGuid>& Bindings, const TArray<UMovieSceneTrack*>& Tracks, INodeNameAdapter& NodeNameAdapter, FMovieSceneSequenceIDRef& Template, const FString& InFBXFileName, FMovieSceneSequenceTransform& RootToLocalTransform)
 {
 	UnFbx::FFbxExporter* Exporter = UnFbx::FFbxExporter::GetInstance();
 
@@ -3821,14 +3857,9 @@ bool MovieSceneToolHelpers::ExportFBX(UWorld* World, UMovieScene* MovieScene, IM
 
 	Exporter->ExportLevelSequence(MovieScene, Bindings, Player, NodeNameAdapter, Template, RootToLocalTransform);
 
-	//Export given master tracks
-
-	for (UMovieSceneTrack* MasterTrack : MasterTracks)
-	{
-		TArray<UMovieSceneTrack*> Tracks;
-		Tracks.Add(MasterTrack);
-		Exporter->ExportLevelSequenceTracks(MovieScene, Player, Template, nullptr, nullptr, Tracks, RootToLocalTransform);
-	}
+	//Export given tracks
+	Exporter->ExportLevelSequenceTracks(MovieScene, Player, Template, nullptr, nullptr, Tracks, RootToLocalTransform);
+	
 	// Save to disk
 	Exporter->WriteToFile(*InFBXFileName);
 
@@ -4070,6 +4101,8 @@ bool MovieSceneToolHelpers::ExportToAnimSequence(UAnimSequence* AnimSequence, UA
 		RecordingSettings.bRecordAttributeCurves = ExportOptions->bExportAttributeCurves;
 		RecordingSettings.bRecordMaterialCurves = ExportOptions->bExportMaterialCurves;
 		RecordingSettings.bRecordInWorldSpace = ExportOptions->bRecordInWorldSpace;
+		RecordingSettings.IncludeAnimationNames = ExportOptions->IncludeAnimationNames;
+		RecordingSettings.ExcludeAnimationNames = ExportOptions->ExcludeAnimationNames;
 		AnimationRecorder.Init(SkelMeshComp, AnimSequence, nullptr, RecordingSettings);	
 		});
 
@@ -4121,7 +4154,7 @@ FSpawnableRestoreState::FSpawnableRestoreState(UMovieScene* MovieScene)
 			
 			// Spawnable could be in a subscene, so temporarily override it to persist throughout
 			SpawnOwnershipMap.Add(Spawnable.GetGuid(), Spawnable.GetSpawnOwnership());
-			Spawnable.SetSpawnOwnership(ESpawnOwnership::MasterSequence);
+			Spawnable.SetSpawnOwnership(ESpawnOwnership::RootSequence);
 
 			UMovieSceneSpawnSection* SpawnSection = Cast<UMovieSceneSpawnSection>(SpawnTrack->GetAllSections()[0]);
 			SpawnSection->Modify();

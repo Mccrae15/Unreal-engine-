@@ -24,6 +24,7 @@ class FSceneViewFamily;
 class UCanvas;
 class FOpenXRRenderBridge;
 class IOpenXRInputModule;
+struct FDefaultStereoLayers_LayerRenderParams;
 
 /**
  * Simple Head Mounted Display
@@ -36,6 +37,8 @@ class FOpenXRHMD
 	, public TStereoLayerManager<FOpenXRLayer>
 	, public IOpenXRExtensionPluginDelegates
 {
+private:
+
 public:
 	class FDeviceSpace
 	{
@@ -91,6 +94,17 @@ public:
 		bool bXrFrameStateUpdated = false;
 	};
 
+	struct FEmulatedLayerState
+	{
+		// These layers are used as a target to composite all the emulated face locked layers into
+		// and be sent to the compositor with VIEW tracking space to avoid reprojection.
+		TArray<XrCompositionLayerProjectionView> CompositedProjectionLayers;
+		TArray<XrSwapchainSubImage> EmulationImages;
+		// This swapchain is where the emulated face locked layers are rendered into.
+		FXRSwapChainPtr EmulationSwapchain;
+		bool bIsFaceLockedLayerEmulationActive = false;
+	};
+
 	struct FPipelinedLayerState
 	{
 		TArray<XrCompositionLayerQuad> QuadLayers;
@@ -103,6 +117,8 @@ public:
 		FXRSwapChainPtr ColorSwapchain;
 		FXRSwapChainPtr DepthSwapchain;
 		TArray<FXRSwapChainPtr> QuadSwapchains;
+
+		FEmulatedLayerState EmulatedLayerState;
 
 		bool bBackgroundLayerVisible = true;
 		bool bSubmitBackgroundLayer = true;
@@ -218,6 +234,8 @@ public:
 
 protected:
 
+	enum ETextureCopyBlendModifier : uint8;
+
 	bool StartSession();
 	bool StopSession();
 	bool OnStereoStartup();
@@ -239,17 +257,19 @@ protected:
 	bool IsViewManagedByPlugin(int32 ViewIndex) const;
 
 	void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, FRHITexture2D* DstTexture, FIntRect DstRect, 
-								  bool bClearBlack, bool bNoAlpha, ERenderTargetActions RTAction, ERHIAccess FinalDstAccess) const;
+								  bool bClearBlack, ERenderTargetActions RTAction, ERHIAccess FinalDstAccess, ETextureCopyBlendModifier SrcTextureCopyModifier) const;
 	
-	void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, const FXRSwapChainPtr& DstSwapChain, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const;
+	void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, const FXRSwapChainPtr& DstSwapChain, FIntRect DstRect, bool bClearBlack, ETextureCopyBlendModifier SrcTextureCopyModifier) const;
 
-	void AllocateDepthTextureInternal(uint32 Index, uint32 SizeX, uint32 SizeY, uint32 NumSamples);
+	void AllocateDepthTextureInternal(uint32 SizeX, uint32 SizeY, uint32 NumSamples, uint32 ArraySize);
 
 	// Used with FCoreDelegates
 	void VRHeadsetRecenterDelegate();
 
 	void SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHICmdList);
-	void DrawEmulatedQuadLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView);
+	void DrawEmulatedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView);
+	void DrawBackgroundCompositedEmulatedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView);
+	void DrawEmulatedFaceLockedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView);
 
 	/** TStereoLayerManager<FOpenXRLayer> */
 	void UpdateLayer(FOpenXRLayer& ManagerLayer, uint32 LayerId, bool bIsValid) override;
@@ -261,7 +281,7 @@ public:
 	virtual bool HasValidTrackingPosition() override { return IsTracking(HMDDeviceId); }
 
 	/** IHeadMountedDisplay interface */
-	virtual bool IsHMDConnected() override { return true; }
+	virtual bool IsHMDConnected() override;
 	virtual bool DoesSupportPositionalTracking() const override { return true; }
 	virtual bool IsHMDEnabled() const override;
 	virtual void EnableHMD(bool allow = true) override;
@@ -315,9 +335,10 @@ public:
 	/** IStereoRenderTargetManager */
 	virtual bool ShouldUseSeparateRenderTarget() const override { return IsStereoEnabled() && RenderBridge.IsValid(); }
 	virtual void CalculateRenderTargetSize(const FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY) override;
-	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
-	virtual bool NeedReAllocateDepthTexture(const TRefCountPtr<IPooledRenderTarget>& DepthTarget) override final { return bNeedReAllocatedDepth; }
+	virtual bool AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumLayers, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<FTexture2DRHIRef>& OutTargetableTextures, TArray<FTexture2DRHIRef>& OutShaderResourceTextures, uint32 NumSamples = 1) override;
+	virtual int32 AcquireColorTexture() override final;
 	virtual bool AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override final;
+	virtual bool ReconfigureForShaderPlatform(EShaderPlatform NewShaderPlatform) override;
 	virtual EPixelFormat GetActualColorSwapchainFormat() const override { return static_cast<EPixelFormat>(LastActualColorSwapchainFormat); }
 
 	/** FXRRenderTargetManager */
@@ -338,7 +359,7 @@ private:
 
 public:
 	/** Constructor */
-	FOpenXRHMD(const FAutoRegister&, XrInstance InInstance, XrSystemId InSystem, TRefCountPtr<FOpenXRRenderBridge>& InRenderBridge, TArray<const char*> InEnabledExtensions, TArray<class IOpenXRExtensionPlugin*> InExtensionPlugins, IARSystemSupport* ARSystemSupport);
+	FOpenXRHMD(const FAutoRegister&, XrInstance InInstance, TRefCountPtr<FOpenXRRenderBridge>& InRenderBridge, TArray<const char*> InEnabledExtensions, TArray<class IOpenXRExtensionPlugin*> InExtensionPlugins, IARSystemSupport* ARSystemSupport);
 
 	void SetInputModule(IOpenXRInputModule* InInputModule)
 	{
@@ -349,7 +370,7 @@ public:
 	virtual ~FOpenXRHMD();
 
 	void OnBeginSimulation_GameThread();
-	void OnBeginRendering_RHIThread(const FPipelinedFrameState& InFrameState, FXRSwapChainPtr ColorSwapchain, FXRSwapChainPtr DepthSwapchain);
+	void OnBeginRendering_RHIThread(const FPipelinedFrameState& InFrameState, FXRSwapChainPtr ColorSwapchain, FXRSwapChainPtr DepthSwapchain, FXRSwapChainPtr EmulationSwapchain);
 	void OnFinishRendering_RHIThread();
 
 	/** @return	True if the HMD was initialized OK */
@@ -357,8 +378,8 @@ public:
 	OPENXRHMD_API bool IsRunning() const;
 	OPENXRHMD_API bool IsFocused() const;
 
-	OPENXRHMD_API int32 AddActionDevice(XrAction Action, XrPath Path);
-	OPENXRHMD_API void ResetActionDevices();
+	OPENXRHMD_API int32 AddTrackedDevice(XrAction Action, XrPath Path);
+	OPENXRHMD_API void ResetTrackedDevices();
 	OPENXRHMD_API XrPath GetTrackedDevicePath(const int32 DeviceId);
 	OPENXRHMD_API XrSpace GetTrackedDeviceSpace(const int32 DeviceId);
 
@@ -369,8 +390,17 @@ public:
 	OPENXRHMD_API XrTime GetDisplayTime() const;
 	OPENXRHMD_API XrSpace GetTrackingSpace() const;
 	OPENXRHMD_API TArray<IOpenXRExtensionPlugin*>& GetExtensionPlugins() { return ExtensionPlugins; }
+	OPENXRHMD_API void SetEnvironmentBlendMode(XrEnvironmentBlendMode NewBlendMode);
+
+	/** Returns shader platform the plugin is currently configured for, in the editor it can change due to preview platforms. */
+	EShaderPlatform GetConfiguredShaderPlatform() const { check(ConfiguredShaderPlatform != EShaderPlatform::SP_NumPlatforms); return ConfiguredShaderPlatform; }
 
 private:
+	TArray<XrEnvironmentBlendMode> RetrieveEnvironmentBlendModes() const;
+	FDefaultStereoLayers_LayerRenderParams CalculateEmulatedLayerRenderParams(const FSceneView& InView);
+	FRHIRenderPassInfo SetupEmulatedLayersRenderPass(FRHICommandListImmediate& RHICmdList, const FSceneView& InView, TArray<IStereoLayers::FLayerDesc>& Layers, FTexture2DRHIRef RenderTarget, FDefaultStereoLayers_LayerRenderParams& OutRenderParams);
+	bool IsEmulatingStereoLayers();
+
 	bool					bStereoEnabled;
 	TAtomic<bool>			bIsRunning;
 	TAtomic<bool>			bIsReady;
@@ -381,15 +411,17 @@ private:
 	bool					bDepthExtensionSupported;
 	bool					bHiddenAreaMaskSupported;
 	bool					bViewConfigurationFovSupported;
-	bool					bNeedReAllocatedDepth;
 	bool					bNeedReBuildOcclusionMesh;
 	bool					bIsMobileMultiViewEnabled;
 	bool					bSupportsHandTracking;
 	bool					bSpaceAccellerationSupported;
 	bool					bProjectionLayerAlphaEnabled;
 	bool					bIsStandaloneStereoOnlyDevice;
+	bool					bIsTrackingOnlySession;
+	bool					bIsAcquireOnAnyThreadSupported;
 	float					WorldToMetersScale = 100.0f;
 	float					RuntimePixelDensityMax = FHeadMountedDisplayBase::PixelDensityMax;
+	EShaderPlatform			ConfiguredShaderPlatform = EShaderPlatform::SP_NumPlatforms;
 
 	XrSessionState			CurrentSessionState;
 	FRWLock					SessionHandleMutex;
@@ -434,7 +466,8 @@ private:
 	FQuat					BaseOrientation;
 	FVector					BasePosition;
 
-	bool					bNativeWorldQuadLayerSupport;
-	TArray<IStereoLayers::FLayerDesc> EmulatedSceneLayers;
+	bool					bLayerSupportOpenXRCompliant;
+	TArray<IStereoLayers::FLayerDesc> BackgroundCompositedEmulatedLayers;
+	TArray<IStereoLayers::FLayerDesc> EmulatedFaceLockedLayers;
 	TArray<FOpenXRLayer>			  NativeQuadLayers;
 };

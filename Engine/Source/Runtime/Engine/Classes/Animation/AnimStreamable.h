@@ -38,6 +38,7 @@ public:
 	float StartTime;
 
 	float SequenceLength;
+	int32 NumFrames;
 
 	// Compressed Data for this chunk (if nullptr then data needs to be loaded via BulkData)
 	FCompressedAnimSequence* CompressedAnimSequence;
@@ -102,6 +103,9 @@ public:
 	/** Base pose to use when retargeting */
 	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category = Animation)
 	FName RetargetSource;
+
+	UPROPERTY()
+	FFrameRate SamplingFrameRate;
 
 #if WITH_EDITORONLY_DATA
 
@@ -234,7 +238,9 @@ public:
 
 	FString GetBaseDDCKey(uint32 NumChunks, const ITargetPlatform* TargetPlatform) const;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	void RequestCompressedDataForChunk(const FString& ChunkDDCKey, FAnimStreamableChunk& Chunk, const int32 ChunkIndex, const uint32 FrameStart, const uint32 FrameEnd, TSharedRef<FAnimCompressContext> CompressContext, const ITargetPlatform* TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
 
 	bool bUseRawDataOnly;

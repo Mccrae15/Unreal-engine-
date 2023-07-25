@@ -2,9 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 
+#include "Math/Box.h"
 #include "PCGPoint.generated.h"
+
+class IPCGAttributeAccessor;
 
 UENUM()
 enum class EPCGPointProperties : uint8
@@ -18,7 +20,8 @@ enum class EPCGPointProperties : uint8
 	Rotation,
 	Scale,
 	Transform,
-	Steepness
+	Steepness,
+	LocalCenter
 };
 
 USTRUCT(BlueprintType)
@@ -30,6 +33,7 @@ public:
 	FPCGPoint(const FTransform& InTransform, float InDensity, int32 InSeed);
 
 	FBox GetLocalBounds() const;
+	FBox GetLocalDensityBounds() const;
 	void SetLocalBounds(const FBox& InBounds);
 	FBoxSphereBounds GetDensityBounds() const;
 
@@ -65,6 +69,8 @@ public:
 		BoundsMax = Center + InExtents;
 	}
 
+	FVector GetScaledExtents() const { return GetExtents() * Transform.GetScale3D(); }
+
 	FVector GetLocalCenter() const { return (BoundsMax + BoundsMin) / 2.0; }
 	void SetLocalCenter(const FVector& InCenter)
 	{
@@ -72,4 +78,15 @@ public:
 		BoundsMin += Delta;
 		BoundsMax += Delta;
 	}
+
+	using PointCustomPropertyGetter = TFunction<bool(const FPCGPoint&, void*)>;
+	using PointCustomPropertySetter = TFunction<bool(FPCGPoint&, const void*)>;
+
+	static bool HasCustomPropertyGetterSetter(FName Name);
+	static TUniquePtr<IPCGAttributeAccessor> CreateCustomPropertyAccessor(FName Name);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Metadata/PCGMetadataAttributeTraits.h"
+#endif

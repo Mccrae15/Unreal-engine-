@@ -20,8 +20,6 @@ class FNavigationOctree;
 class UNavigationPath;
 class ANavigationData;
 
-// LWC_TODO_AI: A lot of the floats in this file should be FVector::FReal. Not until after 5.0!
-
 struct NAVIGATIONSYSTEM_API FPathFindingQueryData
 {
 	TWeakObjectPtr<const UObject> Owner;
@@ -30,7 +28,7 @@ struct NAVIGATIONSYSTEM_API FPathFindingQueryData
 	FSharedConstNavQueryFilter QueryFilter;
 
 	/** cost limit of nodes allowed to be added to the open list */
-	float CostLimit;
+	FVector::FReal CostLimit;
 	
 	/** additional flags passed to navigation data handling request */
 	int32 NavDataFlags;
@@ -38,10 +36,13 @@ struct NAVIGATIONSYSTEM_API FPathFindingQueryData
 	/** if set, allow partial paths as a result */
 	uint32 bAllowPartialPaths : 1;
 
-	FPathFindingQueryData() : StartLocation(FNavigationSystem::InvalidLocation), EndLocation(FNavigationSystem::InvalidLocation), CostLimit(FLT_MAX), NavDataFlags(0), bAllowPartialPaths(true) {}
+	/** if set, require the end location to be linked to the navigation data */
+	uint32 bRequireNavigableEndLocation : 1;
 
-	FPathFindingQueryData(const UObject* InOwner, const FVector& InStartLocation, const FVector& InEndLocation, FSharedConstNavQueryFilter InQueryFilter = nullptr, int32 InNavDataFlags = 0, bool bInAllowPartialPaths = true, const float InCostLimit = FLT_MAX) :
-		Owner(InOwner), StartLocation(InStartLocation), EndLocation(InEndLocation), QueryFilter(InQueryFilter), CostLimit(InCostLimit), NavDataFlags(InNavDataFlags), bAllowPartialPaths(bInAllowPartialPaths) {}
+	FPathFindingQueryData() : StartLocation(FNavigationSystem::InvalidLocation), EndLocation(FNavigationSystem::InvalidLocation), CostLimit(TNumericLimits<FVector::FReal>::Max()), NavDataFlags(0), bAllowPartialPaths(true), bRequireNavigableEndLocation(true) {}
+
+	FPathFindingQueryData(const UObject* InOwner, const FVector& InStartLocation, const FVector& InEndLocation, FSharedConstNavQueryFilter InQueryFilter = nullptr, int32 InNavDataFlags = 0, bool bInAllowPartialPaths = true, const  FVector::FReal InCostLimit = TNumericLimits<FVector::FReal>::Max(), const bool bInRequireNavigableEndLocation = true) :
+		Owner(InOwner), StartLocation(InStartLocation), EndLocation(InEndLocation), QueryFilter(InQueryFilter), CostLimit(InCostLimit), NavDataFlags(InNavDataFlags), bAllowPartialPaths(bInAllowPartialPaths), bRequireNavigableEndLocation(bInRequireNavigableEndLocation) {}
 };
 
 struct NAVIGATIONSYSTEM_API FPathFindingQuery : public FPathFindingQueryData
@@ -52,19 +53,20 @@ struct NAVIGATIONSYSTEM_API FPathFindingQuery : public FPathFindingQueryData
 
 	FPathFindingQuery() : FPathFindingQueryData() {}
 	FPathFindingQuery(const FPathFindingQuery& Source);
-	FPathFindingQuery(const UObject* InOwner, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter = NULL, FNavPathSharedPtr InPathInstanceToFill = NULL, const float CostLimit = FLT_MAX);
-	FPathFindingQuery(const INavAgentInterface& InNavAgent, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter = NULL, FNavPathSharedPtr InPathInstanceToFill = NULL, const float CostLimit = FLT_MAX);
+	FPathFindingQuery(const UObject* InOwner, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter = NULL, FNavPathSharedPtr InPathInstanceToFill = NULL, const FVector::FReal CostLimit = TNumericLimits<FVector::FReal>::Max(), const bool bInRequireNavigableEndLocation = true);
+	FPathFindingQuery(const INavAgentInterface& InNavAgent, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter = NULL, FNavPathSharedPtr InPathInstanceToFill = NULL, const FVector::FReal CostLimit = TNumericLimits<FVector::FReal>::Max(), const bool bInRequireNavigableEndLocation = true);
 
 	explicit FPathFindingQuery(FNavPathSharedRef PathToRecalculate, const ANavigationData* NavDataOverride = NULL);
 
 	FPathFindingQuery& SetPathInstanceToUpdate(FNavPathSharedPtr InPathInstanceToFill) { PathInstanceToFill = InPathInstanceToFill; return *this; }
-	FPathFindingQuery& SetAllowPartialPaths(bool bAllow) { bAllowPartialPaths = bAllow; return *this; }
+	FPathFindingQuery& SetAllowPartialPaths(const bool bAllow) { bAllowPartialPaths = bAllow; return *this; }
+	FPathFindingQuery& SetRequireNavigableEndLocation(const bool bRequire) { bRequireNavigableEndLocation = bRequire; return *this; }
 	FPathFindingQuery& SetNavAgentProperties(const FNavAgentProperties& InNavAgentProperties) { NavAgentProperties = InNavAgentProperties; return *this; }
 
 	/** utility function to compute a cost limit using an Euclidean heuristic, an heuristic scale and a cost limit factor
 	*	CostLimitFactor: multiplier used to compute the cost limit value from the initial heuristic
 	*	MinimumCostLimit: minimum clamping value used to prevent low cost limit for short path query */
-	float ComputeCostLimitFromHeuristic(const FVector& StartPos, const FVector& EndPos, const float HeuristicScale, const float CostLimitFactor, const float MinimumCostLimit) const;
+	static FVector::FReal ComputeCostLimitFromHeuristic(const FVector& StartPos, const FVector& EndPos, const FVector::FReal HeuristicScale, const FVector::FReal CostLimitFactor, const FVector::FReal MinimumCostLimit);
 };
 
 namespace EPathFindingMode
@@ -95,9 +97,10 @@ struct FNavigationInvokerRaw
 	FVector Location;
 	float RadiusMin;
 	float RadiusMax;
+	FNavAgentSelector SupportedAgents;
 
-	FNavigationInvokerRaw(const FVector& InLocation, float Min, float Max)
-		: Location(InLocation), RadiusMin(Min), RadiusMax(Max)
+	FNavigationInvokerRaw(const FVector& InLocation, float Min, float Max, const FNavAgentSelector& InSupportedAgents)
+		: Location(InLocation), RadiusMin(Min), RadiusMax(Max), SupportedAgents(InSupportedAgents)
 	{}
 };
 
@@ -110,9 +113,11 @@ struct FNavigationInvoker
 	/** tiles over RemovalRadius will get removed.
 	*	@Note needs to be >= GenerationRadius or will get clampped */
 	float RemovalRadius;
+	/** restrict navigation generation to specific agents */
+	FNavAgentSelector SupportedAgents;
 
 	FNavigationInvoker();
-	FNavigationInvoker(AActor& InActor, float InGenerationRadius, float InRemovalRadius);
+	FNavigationInvoker(AActor& InActor, float InGenerationRadius, float InRemovalRadius, const FNavAgentSelector& InSupportedAgents);
 };
 
 namespace NavigationHelper

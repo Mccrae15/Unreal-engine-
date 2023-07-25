@@ -2,15 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "PCGSettings.h"
-#include "InstancePackers/PCGInstancePackerBase.h"
-#include "MeshSelectors/PCGMeshSelectorBase.h"
 
 #include "Engine/CollisionProfile.h"
-#include "Templates/SubclassOf.h"
 
+#include "PCGPin.h"
 #include "PCGStaticMeshSpawner.generated.h"
+
+class UPCGInstancePackerBase;
+class UPCGMeshSelectorBase;
+class UPCGSpatialData;
+struct FPCGContext;
+struct FPCGMeshInstanceList;
+struct FPCGPackedCustomData;
 
 class UStaticMesh;
 
@@ -42,13 +46,14 @@ public:
 
 #if WITH_EDITOR
 	// ~Begin UPCGSettings interface
-	virtual FName GetDefaultNodeName() const override { return FName(TEXT("StaticMeshSpawnerNode")); }
+	virtual FName GetDefaultNodeName() const override { return FName(TEXT("StaticMeshSpawner")); }
+	virtual FText GetDefaultNodeTitle() const override { return NSLOCTEXT("PCGStaticMeshSpawnerSettings", "NodeTitle", "Static Mesh Spawner"); }
 	virtual EPCGSettingsType GetType() const override { return EPCGSettingsType::Spawner; }
 #endif
 
-	virtual TArray<FPCGPinProperties> OutputPinProperties() const override { return Super::DefaultPointOutputPinProperties(); }
-
 protected:
+	virtual TArray<FPCGPinProperties> InputPinProperties() const override { return Super::DefaultPointInputPinProperties(); }
+	virtual TArray<FPCGPinProperties> OutputPinProperties() const override { return Super::DefaultPointOutputPinProperties(); }
 	virtual FPCGElementPtr CreateElement() const override;
 	// ~End UPCGSettings interface
 
@@ -88,26 +93,9 @@ public:
 	UPROPERTY(meta=(DeprecatedProperty, DeprecationMessage="Use MeshSelectorType and MeshSelectorInstance instead."))
 	TArray<FPCGStaticMeshSpawnerEntry> Meshes_DEPRECATED;
 
-	bool bForceConnectOutput = false;
-
 protected:
 	void RefreshMeshSelector();
 	void RefreshInstancePacker();
-};
-
-USTRUCT()
-struct FPCGStaticMeshSpawnerContext : public FPCGContext
-{
-	GENERATED_BODY()
-
-	struct FPackedInstanceListData
-	{
-		const UPCGSpatialData* SpatialData;
-		TArray<FPCGMeshInstanceList> MeshInstances;
-		TArray<FPCGPackedCustomData> PackedCustomData;
-	};
-
-	TArray<FPackedInstanceListData> MeshInstancesData;
 };
 
 class FPCGStaticMeshSpawnerElement : public IPCGElement
@@ -123,3 +111,9 @@ protected:
 	void SpawnStaticMeshInstances(FPCGContext* Context, const FPCGMeshInstanceList& InstanceList, AActor* TargetActor, const FPCGPackedCustomData& PackedCustomData) const;
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "InstancePackers/PCGInstancePackerBase.h"
+#include "MeshSelectors/PCGMeshSelectorBase.h"
+#endif

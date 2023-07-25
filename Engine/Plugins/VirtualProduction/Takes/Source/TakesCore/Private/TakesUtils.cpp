@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakesUtils.h"
+#include "AssetRegistry/AssetData.h"
 #include "TakesCoreLog.h"
 
 #include "Engine/Engine.h"
@@ -10,6 +11,7 @@
 #include "Math/Range.h"
 #include "MovieSceneSection.h"
 #include "MovieSceneTimeHelpers.h"
+#include "HAL/FileManager.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
 #include "Sections/MovieSceneCameraCutSection.h"
 #include "UObject/SavePackage.h"
@@ -93,6 +95,12 @@ void SaveAsset(UObject* InObject)
 	UPackage* const Package = InObject->GetOutermost();
 	FString const PackageName = Package->GetName();
 	FString const PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+
+	if (IFileManager::Get().IsReadOnly(*PackageFileName))
+	{
+		UE_LOG(LogTakesCore, Error, TEXT("Could not save read only file: %s"), *PackageFileName);
+		return;
+	}
 
 	double StartTime = FPlatformTime::Seconds();
 

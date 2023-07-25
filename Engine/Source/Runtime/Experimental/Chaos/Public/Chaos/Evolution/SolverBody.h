@@ -14,7 +14,6 @@
 // Set to 1 to force single precision in the constraint solver, even if the default numeric type is double
 #define CHAOS_CONSTRAINTSOLVER_LOWPRECISION 1
 
-
 // Add some NaN checking when CHAOS_CONSTRAINTSOLVER_NAN_DIAGNOSTIC is defined
 #if CHAOS_CONSTRAINTSOLVER_NAN_DIAGNOSTIC
 inline void ChaosSolverCheckNaN(const Chaos::FRealSingle& V) { ensure(!FMath::IsNaN(V)); }
@@ -43,6 +42,7 @@ namespace Chaos
 	using SolverVectorRegister = VectorRegister4;
 #endif
 	using FSolverVec3 = TVec3<FSolverReal>;
+	using FSolverRotation3 = TRotation3<FSolverReal>;
 	using FSolverMatrix33 = TMatrix33<FSolverReal>;
 
 	class FSolverBody;
@@ -100,10 +100,39 @@ namespace Chaos
 	public:
 
 		/**
-		 * @brief Create an empty solver body
-		 * @note This is only used by unit tests
+		 * A factory method to create a safely initialized Solverbody. 
+		 * The defaultconstructor assumes you are going to set all properties manually.
+		 */
+		static FSolverBody MakeInitialized()
+		{
+			FSolverBody SolverBody;
+			SolverBody.State.Init();
+			return SolverBody;
+		}
+
+		/**
+		 * Create an empty solver body. All properties are uninitialized.
 		*/
-		FSolverBody();
+		static FSolverBody MakeUninitialized()
+		{
+			return FSolverBody();
+		}
+
+		/**
+		 * Create an empty solver body. All properties are uninitialized.
+		*/
+		FSolverBody() {}
+
+		/**
+		 * Reset the solver accumulators
+		 */
+		void Reset()
+		{
+			State.DP = FSolverVec3(0);
+			State.DQ = FSolverVec3(0);
+			State.CP = FSolverVec3(0);
+			State.CQ = FSolverVec3(0);
+		}
 
 		/**
 		 * @brief Calculate and set the velocity and angular velocity from the net transform delta
@@ -113,8 +142,8 @@ namespace Chaos
 			if (IsDynamic() && (Dt != FReal(0)))
 			{
 				const FSolverReal InvDt = FSolverReal(1) / FSolverReal(Dt);
-				SetV(State.V + FVec3(State.DP * InvDt));
-				SetW(State.W + FVec3(State.DQ * InvDt));
+				SetV(State.V + FVec3((State.DP - State.CP) * InvDt));
+				SetW(State.W + FVec3((State.DQ - State.CQ) * InvDt));
 			}
 		}
 
@@ -197,21 +226,21 @@ namespace Chaos
 		/**
 		 * @brief World-space center of mass velocity
 		*/
-		inline const FVec3& V() const { return State.V; }
+		inline const FSolverVec3& V() const { return State.V; }
 		inline void SetV(const FVec3& InV)
 		{ 
 			ChaosSolverCheckNaN(InV);
-			State.V = InV;
+			State.V = FSolverVec3(InV);
 		}
 
 		/**
 		 * @brief World-space center of mass angular velocity
 		*/
-		inline const FVec3& W() const { return State.W; }
+		inline const FSolverVec3& W() const { return State.W; }
 		inline void SetW(const FVec3& InW)
 		{
 			ChaosSolverCheckNaN(InW);
-			State.W = InW;
+			State.W = FSolverVec3(InW);
 		}
 
 		inline const FVec3& CoM() const { return State.CoM; }
@@ -221,14 +250,26 @@ namespace Chaos
 		inline void SetRoM(const FRotation3& InRoM) { State.RoM = InRoM; }
 
 		/**
-		 * @brief Net world-space position correction applied by the constraints
+		 * @brief Net world-space position displacement applied by the constraints
 		*/
 		inline const FSolverVec3& DP() const { return State.DP; }
 
 		/**
-		 * @brief Net world-space rotation correction applied by the constraints (axis-angle vector equivalent to angular velocity but for position)
+		 * @brief Net world-space rotation displacement applied by the constraints (axis-angle vector equivalent to angular velocity but for position)
 		*/
 		inline const FSolverVec3& DQ() const { return State.DQ; }
+
+		/**
+		 * @brief Net world-space position correction applied by the constraints
+		 * @note This only includes correction terms that do not introduce linear velocity. The full solver displacement is given by DP
+		*/
+		inline const FSolverVec3& CP() const { return State.CP; }
+
+		/**
+		 * @brief Net world-space rotation correction applied by the constraints (axis-angle vector equivalent to angular velocity but for position)
+		 * @note This only includes correction terms that do not introduce angular velocity. The full solver angular displacement is given by DQ
+		*/
+		inline const FSolverVec3& CQ() const { return State.CQ; }
 
 		/**
 		 * @brief World-space position after applying the net correction DP()
@@ -253,12 +294,14 @@ namespace Chaos
 			State.Q = CorrectedQ();
 			State.DP = FSolverVec3(0);
 			State.DQ = FSolverVec3(0);
+			State.CP = FSolverVec3(0);
+			State.CQ = FSolverVec3(0);
 		}
 
 		/**
 		 * @brief Get the world-space Actor position 
 		*/
-		inline FVec3 ActorP() const { return P() - ActorQ().RotateVector(CoM()); }
+		inline FVec3 ActorP() const { return P() - FVec3(ActorQ().RotateVector(CoM())); }
 
 		/**
 		 * @brief Get the world-space Actor rotation 
@@ -317,6 +360,28 @@ namespace Chaos
 		}
 
 		/**
+		 * @brief Apply a world-space position correction delta to the solver body center of mass
+		 * This will translate the body without introducing linear velocity
+		*/
+		inline void ApplyPositionCorrectionDelta(const FSolverVec3& CP)
+		{
+			ChaosSolverCheckNaN(CP);
+			State.CP += CP;
+			State.DP += CP;
+		}
+
+		/**
+		 * @brief Apply a world-space rotation correction delta to the solver body
+		 * This will rotate the body without introducing angular velocity
+		*/
+		inline void ApplyRotationCorrectionDelta(const FSolverVec3& CR)
+		{
+			ChaosSolverCheckNaN(CR);
+			State.CQ += CR;
+			State.DQ += CR;
+		}
+
+		/**
 		 * @brief Apply a world-space velocity delta to the solver body
 		*/
 		inline void ApplyVelocityDelta(const FSolverVec3& DV, const FSolverVec3& DW)
@@ -331,7 +396,7 @@ namespace Chaos
 		inline void ApplyLinearVelocityDelta(const FSolverVec3& DV)
 		{
 			ChaosSolverCheckNaN(DV);
-			State.V += FVec3(DV);
+			State.V += DV;
 		}
 
 		/**
@@ -364,21 +429,52 @@ namespace Chaos
 		struct FState
 		{
 			FState()
-				: InvILocal(0)
-				, InvM(0)
-				, InvI(0)
-				, DP(0)
-				, DQ(0)
-				, Level(0)
-				, X(0)
-				, R(FRotation3::Identity)
-				, P(0)
-				, Q(FRotation3::Identity)
-				, V(0)
-				, W(0)
-				, CoM(0)
-				, RoM(FRotation3::Identity)
 			{}
+
+			void Init()
+			{
+				InvI = FSolverMatrix33(0);
+				RoM = FRotation3::FromIdentity();
+				R = FRotation3::FromIdentity();
+				Q = FRotation3::FromIdentity();
+				CoM = FVec3(0);
+				X = FVec3(0);
+				P = FVec3(0);
+				InvILocal = FSolverVec3(0);
+				InvM = 0;
+				DP = FSolverVec3(0);
+				DQ = FSolverVec3(0);
+				CP = FSolverVec3(0);
+				CQ = FSolverVec3(0);
+				V = FSolverVec3(0);
+				W = FSolverVec3(0);
+				Level = 0;
+			}
+
+			// World-space inverse inertia
+			// NOTE: Matrix and Rotation are alignas(16) so beware of padding
+			// @todo(chaos): do we need this, or should we force all systems to use the FConstraintSolverBody decorator?
+			FSolverMatrix33 InvI;
+
+			// Actor-space center of mass rotation
+			FRotation3 RoM;
+
+			// World-space rotation of mass at start of sub step
+			FRotation3 R;
+
+			// Predicted world-space center of mass rotation (post-integration, pre-constraint-solve)
+			FRotation3 Q;
+
+			// Actor-space center of mass location
+			FVec3 CoM;
+
+			// World-space center of mass state at start of sub step
+			FVec3 X;
+
+			// Predicted world-space center of mass position (post-integration, pre-constraint-solve)
+			FVec3 P;
+
+
 
 			// Local-space inverse inertia (diagonal, so only 3 elements)
 			FSolverVec3 InvILocal;
@@ -386,42 +482,28 @@ namespace Chaos
 			// Inverse mass
 			FSolverReal InvM;
 
-			// World-space inverse inertia
-			// @todo(chaos): do we need this, or should we force all systems to use the FConstraintSolverBody decorator?
-			FSolverMatrix33 InvI;
-
 			// Net position delta applied by all constraints (constantly changing as we iterate over constraints)
 			FSolverVec3 DP;
 
 			// Net rotation delta applied by all constraints (constantly changing as we iterate over constraints)
 			FSolverVec3 DQ;
 
-			// Distance to a kinmatic body (through the contact graph). Used by collision shock propagation
-			int32 Level;
+			// Net position correction delta applied by all constraints (constantly changing as we iterate over constraints)
+			// Will translate the body without introducing linear velocity
+			FSolverVec3 CP;
 
-			// World-space center of mass state at start of sub step
-			FVec3 X;
-
-			// World-space rotation of mass at start of sub step
-			FRotation3 R;
-
-			// Predicted world-space center of mass position (post-integration, pre-constraint-solve)
-			FVec3 P;
-
-			// Predicted world-space center of mass rotation (post-integration, pre-constraint-solve)
-			FRotation3 Q;
+			// Net rotation correction delta applied by all constraints (constantly changing as we iterate over constraints)
+			// Will rotate the body without introducing angular velocity
+			FSolverVec3 CQ;
 
 			// World-space center of mass velocity
-			FVec3 V;
+			FSolverVec3 V;
 
 			// World-space center of mass angular velocity
-			FVec3 W;
+			FSolverVec3 W;
 
-			// Actor-space center of mass location
-			FVec3 CoM;
-
-			// Actor-space center of mass rotation
-			FRotation3 RoM;
+			// Distance to a kinematic body (through the contact graph). Used by collision shock propagation
+			int32 Level;
 		};
 
 		FState State;
@@ -452,12 +534,6 @@ namespace Chaos
 		{
 		}
 
-		FConstraintSolverBody(FSolverBody& InBody, FReal InInvMassScale)
-			: Body(&InBody)
-		{
-			SetInvMScale(InInvMassScale);
-		}
-
 		/**
 		 * @brief True if we have been set up to decorate a SolverBody
 		*/
@@ -467,6 +543,20 @@ namespace Chaos
 		 * @brief Invalidate the solver body reference
 		*/
 		inline void Reset() { Body = nullptr; }
+
+		/**
+		 * @brief Initialize all properties to safe values
+		*/
+		void Init() { State.Init(); }
+
+		/**
+		 * @brief Set the inner solver body (hold by reference)
+		 * @note Does not initialize any other properties
+		*/
+		void SetSolverBody(FSolverBody& InSolverBody)
+		{
+			Body = &InSolverBody;
+		}
 
 		/**
 		 * @brief The decorated SolverBody
@@ -527,17 +617,21 @@ namespace Chaos
 		inline const FRotation3 ActorQ() const { return Body->ActorQ(); }
 		inline const FVec3 CorrectedActorP() const { return Body->CorrectedActorP(); }
 		inline const FRotation3 CorrectedActorQ() const { return Body->CorrectedActorQ(); }
-		inline const FVec3& V() const { return Body->V(); }
-		inline const FVec3& W() const { return Body->W(); }
+		inline const FSolverVec3& V() const { return Body->V(); }
+		inline const FSolverVec3& W() const { return Body->W(); }
 		inline int32 Level() const { return Body->Level(); }
 		inline const FSolverVec3& DP() const { return Body->DP(); }
 		inline const FSolverVec3& DQ() const { return Body->DQ(); }
+		inline const FSolverVec3& CP() const { return Body->CP(); }
+		inline const FSolverVec3& CQ() const { return Body->CQ(); }
 		inline FVec3 CorrectedP() const { return Body->CorrectedP(); }
 		inline FRotation3 CorrectedQ() const { return Body->CorrectedQ(); }
 
 		inline void ApplyTransformDelta(const FSolverVec3& DP, const FSolverVec3& DR) { Body->ApplyTransformDelta(DP, DR); }
 		inline void ApplyPositionDelta(const FSolverVec3& DP) { Body->ApplyPositionDelta(DP); }
 		inline void ApplyRotationDelta(const FSolverVec3& DR) { Body->ApplyRotationDelta(DR); }
+		inline void ApplyPositionCorrectionDelta(const FSolverVec3& DP) { Body->ApplyPositionCorrectionDelta(DP); }
+		inline void ApplyRotationCorrectionDelta(const FSolverVec3& DR) { Body->ApplyRotationCorrectionDelta(DR); }
 		inline void ApplyVelocityDelta(const FSolverVec3& DV, const FSolverVec3& DW) { Body->ApplyVelocityDelta(DV, DW); }
 		inline void ApplyLinearVelocityDelta(const FSolverVec3& DV) { Body->ApplyLinearVelocityDelta(DV); }
 		inline void ApplyAngularVelocityDelta(const FSolverVec3& DW) { Body->ApplyAngularVelocityDelta(DW); }
@@ -549,10 +643,16 @@ namespace Chaos
 		struct FState
 		{
 			FState() 
-				: InvMScale(FSolverReal(1))
-				, InvIScale(FSolverReal(1))
-				, ShockPropagationScale(FSolverReal(1))
-			{}
+			{
+			}
+
+			void Init()
+			{
+				InvMScale = FSolverReal(1);
+				InvIScale = FSolverReal(1);
+				ShockPropagationScale = FSolverReal(1);
+			}
+
 			FSolverReal InvMScale;
 			FSolverReal InvIScale;
 			FSolverReal ShockPropagationScale;

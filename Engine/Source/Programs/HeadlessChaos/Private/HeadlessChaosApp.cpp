@@ -14,6 +14,7 @@
 #include "HeadlessChaosTestRaycast.h"
 #include "HeadlessChaosTestSerialization.h"
 #include "HeadlessChaosTestSpatialHashing.h"
+#include "HeadlessChaosTestTriangleMesh.h"
 #include "Modules/ModuleManager.h"
 #include "RequiredProgramMainCPPInclude.h"
 #include "Chaos/PBDRigidsEvolution.h"
@@ -72,6 +73,7 @@ DEFINE_LOG_CATEGORY(LogHeadlessChaos);
 
 TEST(ImplicitTests, Implicit) {
 	ChaosTest::ImplicitPlane();
+	ChaosTest::ImplicitTetrahedron();
 	ChaosTest::ImplicitCube();
 	ChaosTest::ImplicitSphere();
 	ChaosTest::ImplicitCylinder();
@@ -288,6 +290,11 @@ TEST(Handles, FrameworkTests)
 	ChaosTest::Handles::HandleSerializeTest();
 }
 
+TEST(TriangleMesh, TriangleMeshTests) {
+	ChaosTest::TriangleMeshProjectTest();
+	SUCCEED();
+}
+
 //TEST(Vehicle, VehicleTests) {
 //
 //	ChaosTest::SystemTemplateTest<float>();
@@ -317,8 +324,9 @@ TEST(GeometryCollection_MatricesTest,BasicGlobalMatrices) { GeometryCollectionTe
 TEST(GeometryCollection_MatricesTest,TransformMatrixElement) { GeometryCollectionTest::TransformMatrixElement(); SUCCEED(); }
 TEST(GeometryCollection_MatricesTest,ReparentingMatrices) { GeometryCollectionTest::ReparentingMatrices(); SUCCEED(); }
 
-// Creation Tests
-TEST(GeometryCollection_CreationTest,CheckIncrementMask) { GeometryCollectionTest::CheckIncrementMask(); SUCCEED(); }
+// Creation Tests CollectionCycleTest
+TEST(GeometryCollection_CreationTest, CheckClassTypes) { GeometryCollectionTest::CheckClassTypes(); SUCCEED(); }
+TEST(GeometryCollection_CreationTest, CheckIncrementMask) { GeometryCollectionTest::CheckIncrementMask(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,Creation) { GeometryCollectionTest::Creation(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,Empty) { GeometryCollectionTest::Empty(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,AppendTransformHierarchy) { GeometryCollectionTest::AppendTransformHierarchy(); SUCCEED(); }
@@ -333,6 +341,9 @@ TEST(GeometryCollection_CreationTest,ReindexMaterialsTest) { GeometryCollectionT
 TEST(GeometryCollection_CreationTest,ContiguousElementsTest) { GeometryCollectionTest::ContiguousElementsTest(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest, AttributeDependencyTest) { GeometryCollectionTest::AttributeDependencyTest(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest, IntListReindexOnDeletionTest) { GeometryCollectionTest::IntListReindexOnDeletionTest(); SUCCEED(); }
+TEST(GeometryCollection_CreationTest, AppendManagedArrayCollectionTest) { GeometryCollectionTest::AppendManagedArrayCollectionTest(); SUCCEED(); }
+TEST(GeometryCollection_CreationTest, AppendTransformCollectionTest) { GeometryCollectionTest::AppendTransformCollectionTest(); SUCCEED(); }
+TEST(GeometryCollection_CreationTest, CollectionCycleTest) { GeometryCollectionTest::CollectionCycleTest(); SUCCEED(); }
 
 
 // Proximity Tests

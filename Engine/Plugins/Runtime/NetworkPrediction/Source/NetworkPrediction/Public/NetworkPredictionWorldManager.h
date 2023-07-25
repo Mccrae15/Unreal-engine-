@@ -2,17 +2,9 @@
 
 #pragma once
 #include "Subsystems/WorldSubsystem.h"
-#include "Engine/World.h"
 
-#include "NetworkPredictionID.h"
-#include "NetworkPredictionTickState.h"
 #include "Services/NetworkPredictionServiceRegistry.h"
-#include "NetworkPredictionConfig.h"
-#include "NetworkPredictionDriver.h"
 #include "NetworkPredictionSerialization.h"
-#include "NetworkPredictionTrace.h"
-#include "NetworkPredictionSettings.h"
-#include "NetworkPredictionCues.h"
 
 #include "NetworkPredictionWorldManager.generated.h"
 
@@ -196,6 +188,8 @@ void UNetworkPredictionWorldManager::ConfigureInstance(FNetworkPredictionID ID, 
 	{
 		SetUsingPhysics();
 	}
+
+	TRemoteInputService<ModelDef>::SetMaxFaultLimit(Settings.MaximumRemoteInputFaultLimit);
 
 	ENetworkPredictionService ServiceMask = ENetworkPredictionService::None;
 	
@@ -448,6 +442,8 @@ void UNetworkPredictionWorldManager::BindServerNetRecv_Fixed(FNetworkPredictionI
 
 	const int32 ServerRecvIdx = DataStore->ServerRecv.GetIndex(ID);
 
+	TFixedTickReplicator_Server<ModelDef>::SetNumInputsPerSend(Settings.FixedTickInputSendCount);
+
 	TServerRecvData_Fixed<ModelDef>& ServerRecvData = DataStore->ServerRecv.GetByIndexChecked(ServerRecvIdx);
 	ServerRecvData.TraceID = ID.GetTraceID();
 
@@ -469,6 +465,8 @@ void UNetworkPredictionWorldManager::BindServerNetRecv_Independent(FNetworkPredi
 		return;
 
 	const int32 ServerRecvIdx = DataStore->ServerRecv_IndependentTick.GetIndex(ID);
+
+	TIndependentTickReplicator_Server<ModelDef>::SetNumInputsPerSend(Settings.IndependentTickInputSendCount);
 
 	TServerRecvData_Independent<ModelDef>& ServerRecvData = DataStore->ServerRecv_IndependentTick.GetByIndexChecked(ServerRecvIdx);
 	ServerRecvData.TraceID = ID.GetTraceID();
@@ -621,3 +619,7 @@ void UNetworkPredictionWorldManager::InitClientRecvData(FNetworkPredictionID ID,
 	ClientRecvData.FramesIdx = DataStore->Frames.GetIndexChecked(ID);
 	ClientRecvData.NetRole = NetRole;
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Engine/World.h"
+#endif

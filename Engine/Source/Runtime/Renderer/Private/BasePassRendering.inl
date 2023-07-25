@@ -8,6 +8,7 @@
 #pragma once
 
 #include "CoreFwd.h"
+#include "BasePassRendering.h"
 
 class FMeshMaterialShader;
 class FPrimitiveSceneProxy;
@@ -95,4 +96,38 @@ void TBasePassComputeShaderPolicyParamType<LightMapPolicyType>::GetShaderBinding
 		ShaderElementData.LightMapPolicyElementData,
 		this,
 		ShaderBindings);
+}
+
+template<typename LightMapPolicyType>
+void TBasePassComputeShaderPolicyParamType<LightMapPolicyType>::SetPassParameters(
+	FRHIComputeCommandList& RHICmdList,
+	FRHIComputeShader* ComputeShader,
+	const FUintVector4& ViewRect,
+	const FUintVector4& PassData,
+	FRHIUnorderedAccessView* Target0UAV,
+	FRHIUnorderedAccessView* Target1UAV,
+	FRHIUnorderedAccessView* Target2UAV,
+	FRHIUnorderedAccessView* Target3UAV,
+	FRHIUnorderedAccessView* Target4UAV,
+	FRHIUnorderedAccessView* Target5UAV,
+	FRHIUnorderedAccessView* Target6UAV,
+	FRHIUnorderedAccessView* Target7UAV
+)
+{
+	if (ComputeShader == nullptr)
+	{
+		return;
+	}
+
+	SetShaderValue(RHICmdList, ComputeShader, ViewRectParam, ViewRect);
+	SetShaderValue(RHICmdList, ComputeShader, PassDataParam, PassData);
+
+	SetUAVParameter(RHICmdList, ComputeShader, Target0, Target0UAV);
+	SetUAVParameter(RHICmdList, ComputeShader, Target1, Target1UAV);
+	SetUAVParameter(RHICmdList, ComputeShader, Target2, Target2UAV);
+	SetUAVParameter(RHICmdList, ComputeShader, Target3, Target3UAV);
+	SetUAVParameter(RHICmdList, ComputeShader, Target4, Target4UAV);
+	SetUAVParameter(RHICmdList, ComputeShader, Target5, Target5UAV);
+	SetUAVParameter(RHICmdList, ComputeShader, Target6, Target6UAV);
+	SetUAVParameter(RHICmdList, ComputeShader, Target7, Target7UAV);
 }

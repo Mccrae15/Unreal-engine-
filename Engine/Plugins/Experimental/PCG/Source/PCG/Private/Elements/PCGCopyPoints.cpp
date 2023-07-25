@@ -2,19 +2,30 @@
 
 #include "Elements/PCGCopyPoints.h"
 
-#include "PCGHelpers.h"
+#include "PCGContext.h"
 #include "Data/PCGPointData.h"
 #include "Data/PCGSpatialData.h"
 #include "Helpers/PCGAsync.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "Helpers/PCGHelpers.h"
+
+#include "Async/ParallelFor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGCopyPoints)
+
+#define LOCTEXT_NAMESPACE "PCGCopyPointsElement"
+
+#if WITH_EDITOR
+FText UPCGCopyPointsSettings::GetNodeTooltipText() const
+{
+	return LOCTEXT("NodeTooltip", "For each point pair from the source and the target, create a copy, inheriting properties & attributes depending on the node settings.");
+}
+#endif
 
 TArray<FPCGPinProperties> UPCGCopyPointsSettings::InputPinProperties() const
 {
 	TArray<FPCGPinProperties> PinProperties;
-	PinProperties.Emplace(PCGCopyPointsConstants::ParamsLabel, EPCGDataType::Param);
-	PinProperties.Emplace(PCGCopyPointsConstants::SourcePointsLabel, EPCGDataType::Spatial, /*bAllowMultipleConnections=*/false);
-	PinProperties.Emplace(PCGCopyPointsConstants::TargetPointsLabel, EPCGDataType::Spatial, /*bAllowMultipleConnections=*/false);
-
+	PinProperties.Emplace(PCGCopyPointsConstants::SourcePointsLabel, EPCGDataType::Point, /*bAllowMultipleConnections=*/false);
+	PinProperties.Emplace(PCGCopyPointsConstants::TargetPointsLabel, EPCGDataType::Point, /*bAllowMultipleConnections=*/false);
 	return PinProperties;
 }
 
@@ -30,12 +41,11 @@ bool FPCGCopyPointsElement::ExecuteInternal(FPCGContext* Context) const
 	const UPCGCopyPointsSettings* Settings = Context->GetInputSettings<UPCGCopyPointsSettings>();
 	check(Settings);
 
-	UPCGParamData* Params = Context->InputData.GetParams();
-	const EPCGCopyPointsInheritanceMode RotationInheritance = PCG_GET_OVERRIDEN_VALUE(Settings, RotationInheritance, Params);
-	const EPCGCopyPointsInheritanceMode ScaleInheritance = PCG_GET_OVERRIDEN_VALUE(Settings, ScaleInheritance, Params);
-	const EPCGCopyPointsInheritanceMode ColorInheritance = PCG_GET_OVERRIDEN_VALUE(Settings, ColorInheritance, Params);
-	const EPCGCopyPointsInheritanceMode SeedInheritance = PCG_GET_OVERRIDEN_VALUE(Settings, SeedInheritance, Params);
-	const EPCGCopyPointsMetadataInheritanceMode AttributeInheritance = PCG_GET_OVERRIDEN_VALUE(Settings, AttributeInheritance, Params);
+	const EPCGCopyPointsInheritanceMode RotationInheritance = Settings->RotationInheritance;
+	const EPCGCopyPointsInheritanceMode ScaleInheritance = Settings->ScaleInheritance;
+	const EPCGCopyPointsInheritanceMode ColorInheritance = Settings->ColorInheritance;
+	const EPCGCopyPointsInheritanceMode SeedInheritance = Settings->SeedInheritance;
+	const EPCGCopyPointsMetadataInheritanceMode AttributeInheritance = Settings->AttributeInheritance;
 
 	const TArray<FPCGTaggedData> Sources = Context->InputData.GetInputsByPin(PCGCopyPointsConstants::SourcePointsLabel);
 	const TArray<FPCGTaggedData> Targets = Context->InputData.GetInputsByPin(PCGCopyPointsConstants::TargetPointsLabel);
@@ -44,7 +54,7 @@ bool FPCGCopyPointsElement::ExecuteInternal(FPCGContext* Context) const
 
 	if (Sources.Num() != 1 || Targets.Num() != 1)
 	{
-		PCGE_LOG(Error, "Invalid number of inputs (should be exactly one source and one target)");
+		PCGE_LOG(Warning, LogOnly, FText::Format(LOCTEXT("InvalidNumberOfInputs", "Invalid number of inputs. Expected one source, got {0}; Expected one target, got {1}."), Sources.Num(), Targets.Num()));
 		return true;
 	}
 	
@@ -55,7 +65,7 @@ bool FPCGCopyPointsElement::ExecuteInternal(FPCGContext* Context) const
 
 	if (!Source.Data || !Target.Data) 
 	{
-		PCGE_LOG(Error, "Invalid input data");
+		PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidInputData", "Invalid input data"));
 		return true;
 	}
 
@@ -64,7 +74,7 @@ bool FPCGCopyPointsElement::ExecuteInternal(FPCGContext* Context) const
 
 	if (!SourceSpatialData || !TargetSpatialData)
 	{
-		PCGE_LOG(Error, "Unable to get SpatialData from input");
+		PCGE_LOG(Error, GraphAndLog, LOCTEXT("CouldNotObtainSpatialData", "Unable to get Spatial Data from input"));
 		return true;
 	}
 
@@ -73,9 +83,12 @@ bool FPCGCopyPointsElement::ExecuteInternal(FPCGContext* Context) const
 
 	if (!SourcePointData || !TargetPointData)
 	{
-		PCGE_LOG(Error, "Unable to get PointData from input");
+		PCGE_LOG(Error, GraphAndLog, LOCTEXT("CouldNotGetPointData", "Unable to get Point Data from input"));
 		return true;
 	}
+
+	const UPCGMetadata* SourcePointMetadata = SourcePointData->Metadata;
+	const UPCGMetadata* TargetPointMetadata = TargetPointData->Metadata;
 
 	const TArray<FPCGPoint>& SourcePoints = SourcePointData->GetPoints();
 	const TArray<FPCGPoint>& TargetPoints = TargetPointData->GetPoints();
@@ -85,44 +98,109 @@ bool FPCGCopyPointsElement::ExecuteInternal(FPCGContext* Context) const
 	Output.Data = OutPointData;
 
 	// RootMetadata will be parent to the ouptut metadata, while NonRootMetadata will carry attributes from the input not selected for inheritance
+	// Note that this is a preference, as we can and should pick more efficiently in the trivial cases
 	const UPCGMetadata* RootMetadata = nullptr;
 	const UPCGMetadata* NonRootMetadata = nullptr;
-	if (Settings->AttributeInheritance == EPCGCopyPointsMetadataInheritanceMode::Source)
+
+	const bool bSourceHasMetadata = (SourcePointMetadata->GetAttributeCount() > 0 && SourcePointMetadata->GetItemCountForChild() > 0);
+	const bool bTargetHasMetadata = (TargetPointMetadata->GetAttributeCount() > 0 && TargetPointMetadata->GetItemCountForChild() > 0);
+
+	bool bInheritMetadataFromSource = true;
+	bool bProcessMetadata = (bSourceHasMetadata || bTargetHasMetadata);
+
+	if (AttributeInheritance == EPCGCopyPointsMetadataInheritanceMode::SourceOnly)
 	{
+		bInheritMetadataFromSource = true;
+		bProcessMetadata = bSourceHasMetadata;
+
 		OutPointData->InitializeFromData(SourcePointData);
-		RootMetadata = SourcePointData->Metadata;
-		NonRootMetadata = TargetPointData->Metadata;
+		RootMetadata = SourcePointMetadata;
+		NonRootMetadata = nullptr;
 	}
-	else // if (Settings->AttributeInheritance == EPCGCopyPointsMetadataInheritanceMode::Target)
+	else if (AttributeInheritance == EPCGCopyPointsMetadataInheritanceMode::TargetOnly)
 	{
+		bInheritMetadataFromSource = false;
+		bProcessMetadata = bTargetHasMetadata;
+
 		OutPointData->InitializeFromData(TargetPointData);
-		RootMetadata = TargetPointData->Metadata;
-		NonRootMetadata = SourcePointData->Metadata;
+
+		RootMetadata = TargetPointMetadata;
+		NonRootMetadata = nullptr;
+	}
+	else if (AttributeInheritance == EPCGCopyPointsMetadataInheritanceMode::SourceFirst)
+	{
+		bInheritMetadataFromSource = bSourceHasMetadata || !bTargetHasMetadata;
+
+		OutPointData->InitializeFromData(SourcePointData);
+		RootMetadata = SourcePointMetadata;
+		NonRootMetadata = TargetPointMetadata;
+	}
+	else if (AttributeInheritance == EPCGCopyPointsMetadataInheritanceMode::TargetFirst)
+	{
+		bInheritMetadataFromSource = !bTargetHasMetadata;
+
+		OutPointData->InitializeFromData(TargetPointData);
+
+		RootMetadata = TargetPointMetadata;
+		NonRootMetadata = SourcePointMetadata;
+	}
+	else // None
+	{
+		OutPointData->InitializeFromData(SourcePointData, nullptr, /*bInheritMetadata=*/false, /*bInheritAttributes=*/false);
+
+		bProcessMetadata = false;
+		RootMetadata = NonRootMetadata = nullptr;
 	}
 
 	// Priorize use the target actor from the target, irrespective of the source
 	OutPointData->TargetActor = TargetPointData->TargetActor.IsValid() ? TargetPointData->TargetActor : SourcePointData->TargetActor;
 
-	check(OutPointData->Metadata && NonRootMetadata);
+	UPCGMetadata* OutMetadata = OutPointData->Metadata;
+	check(OutMetadata);
 
-	TArray<FName> AttributeNames;
-	TArray<EPCGMetadataTypes> AttributeTypes;
-	NonRootMetadata->GetAttributes(AttributeNames, AttributeTypes);
+	TArray<FPCGMetadataAttributeBase*> AttributesToSet;
+	TArray<const FPCGMetadataAttributeBase*> NonRootAttributes;
+	TArray<TTuple<int64, int64>> AllMetadataEntries;
+	TArray<TArray<TTuple<PCGMetadataEntryKey, PCGMetadataValueKey>>> AttributeValuesToSet;
 
-	TArray<FPCGMetadataAttributeBase*> NonRootAttributes;
-	for (const FName& AttributeName : AttributeNames)
+	if (bProcessMetadata)
 	{
-		if (!OutPointData->Metadata->HasAttribute(AttributeName))
+		TRACE_CPUPROFILER_EVENT_SCOPE(FPCGCopyPointsElement::Execute::SetupMetadata);
+		if (NonRootMetadata)
 		{
-			const FPCGMetadataAttributeBase* Attribute = NonRootMetadata->GetConstAttribute(AttributeName);
-			FPCGMetadataAttributeBase* NewAttribute = OutPointData->Metadata->CopyAttribute(Attribute, AttributeName, /*bKeepRoot=*/false, /*bCopyEntries=*/false, /*bCopyValues=*/true);
-			NonRootAttributes.Add(NewAttribute);
+			// Prepare the attributes from the non-root that we'll need to use to copy values over
+			TArray<FName> AttributeNames;
+			TArray<EPCGMetadataTypes> AttributeTypes;
+			NonRootMetadata->GetAttributes(AttributeNames, AttributeTypes);
+
+			for (const FName& AttributeName : AttributeNames)
+			{
+				if (!OutMetadata->HasAttribute(AttributeName))
+				{
+					const FPCGMetadataAttributeBase* Attribute = NonRootMetadata->GetConstAttribute(AttributeName);
+					if (FPCGMetadataAttributeBase* NewAttribute = OutMetadata->CopyAttribute(Attribute, AttributeName, /*bKeepRoot=*/false, /*bCopyEntries=*/false, /*bCopyValues=*/true))
+					{
+						AttributesToSet.Add(NewAttribute);
+						NonRootAttributes.Add(Attribute);
+					}
+				}
+			}
+
+			// Considering writing to the attribute value requires a lock, we'll gather the value keys to write
+			// and do it on a 1-thread-per-attribute basis at the end
+			AttributeValuesToSet.SetNum(AttributesToSet.Num());
+
+			for (TArray<TTuple<PCGMetadataEntryKey, PCGMetadataValueKey>>& AttributeValues : AttributeValuesToSet)
+			{
+				AttributeValues.SetNumUninitialized(SourcePoints.Num() * TargetPoints.Num());
+			}
 		}
+
+		// Preallocate the metadata entries array if we're going to use it
+		AllMetadataEntries.SetNumUninitialized(SourcePoints.Num() * TargetPoints.Num());
 	}
 
-	TArray<TTuple<int64, int64>> AllMetadataEntries;
-	AllMetadataEntries.SetNum(SourcePoints.Num() * TargetPoints.Num());
-
+	// Use implicit capture, since we capture a lot
 	FPCGAsync::AsyncPointProcessing(Context, SourcePoints.Num() * TargetPoints.Num(), OutPoints, [&](int32 Index, FPCGPoint& OutPoint)
 	{
 		const FPCGPoint& SourcePoint = SourcePoints[Index / TargetPoints.Num()];
@@ -174,48 +252,75 @@ bool FPCGCopyPointsElement::ExecuteInternal(FPCGContext* Context) const
 		OutPoint.Transform.SetLocation(Location);
 
 		// Set seed based on inheritance mode
-		if (ColorInheritance == EPCGCopyPointsInheritanceMode::Relative)
+		if (SeedInheritance == EPCGCopyPointsInheritanceMode::Relative)
 		{
-			const FVector& Position = OutPoint.Transform.GetLocation();
-			OutPoint.Seed = PCGHelpers::ComputeSeed((int)Position.X, (int)Position.Y, (int)Position.Z);
+			OutPoint.Seed = PCGHelpers::ComputeSeed(SourcePoint.Seed, TargetPoint.Seed);
 		}
-		else if (ColorInheritance == EPCGCopyPointsInheritanceMode::Target)
+		else if (SeedInheritance == EPCGCopyPointsInheritanceMode::Target)
 		{
 			OutPoint.Seed = TargetPoint.Seed;
 		}
 
-		const FPCGPoint* RootPoint = nullptr;
-		const FPCGPoint* NonRootPoint = nullptr;
-		if (Settings->AttributeInheritance == EPCGCopyPointsMetadataInheritanceMode::Source)
+		if (bProcessMetadata)
 		{
-			RootPoint = &SourcePoint;
-			NonRootPoint = &TargetPoint;
-		}
-		else // if (Settings->AttributeInheritance == EPCGCopyPointsMetadataInheritanceMode::Target)
-		{
-			RootPoint = &TargetPoint;
-			NonRootPoint = &SourcePoint;
-		}
+			const FPCGPoint* RootPoint = (bInheritMetadataFromSource ? &SourcePoint : &TargetPoint);
 
-		OutPoint.MetadataEntry = OutPointData->Metadata->AddEntryPlaceholder();
-		AllMetadataEntries[Index] = TTuple<int64, int64>(OutPoint.MetadataEntry, RootPoint->MetadataEntry);
+			OutPoint.MetadataEntry = OutMetadata->AddEntryPlaceholder();
+			AllMetadataEntries[Index] = TTuple<int64, int64>(OutPoint.MetadataEntry, RootPoint->MetadataEntry);
 
-		// Copy EntryToValue key mappings from NonRootAttributes
-		for (FPCGMetadataAttributeBase* NonRootAttribute : NonRootAttributes)
-		{
-			const FPCGMetadataAttributeBase* Attribute = NonRootMetadata->GetConstAttribute(NonRootAttribute->Name);
-			check(Attribute);
-			const PCGMetadataValueKey ValueKey = Attribute->GetValueKey(NonRootPoint->MetadataEntry);
-			NonRootAttribute->SetValueFromValueKey(OutPoint.MetadataEntry, ValueKey);
+			if (NonRootMetadata)
+			{
+				const FPCGPoint* NonRootPoint = (bInheritMetadataFromSource ? &TargetPoint : &SourcePoint);
+
+				// Copy EntryToValue key mappings from NonRootAttributes - no need to do it if the non-root uses the default values
+				if (NonRootPoint->MetadataEntry != PCGInvalidEntryKey)
+				{
+					for (int32 AttributeIndex = 0; AttributeIndex < NonRootAttributes.Num(); ++AttributeIndex)
+					{
+						AttributeValuesToSet[AttributeIndex][Index] = TTuple<PCGMetadataEntryKey, PCGMetadataValueKey>(OutPoint.MetadataEntry, NonRootAttributes[AttributeIndex]->GetValueKey(NonRootPoint->MetadataEntry));
+					}
+				}
+				else
+				{
+					for (int32 AttributeIndex = 0; AttributeIndex < NonRootAttributes.Num(); ++AttributeIndex)
+					{
+						AttributeValuesToSet[AttributeIndex][Index] = TTuple<PCGMetadataEntryKey, PCGMetadataValueKey>(OutPoint.MetadataEntry, PCGDefaultValueKey);
+					}
+				}
+			}
 		}
 
 		return true;
 	});
 
-	OutPointData->Metadata->AddDelayedEntries(AllMetadataEntries);
+	if (bProcessMetadata)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FPCGCopyPointsElement::Execute::SetMetadata);
+		check(AttributesToSet.Num() == AttributeValuesToSet.Num());
+		if (AttributesToSet.Num() > 0)
+		{
+			int32 AttributeOffset = 0;
+			const int32 AttributePerDispatch = FMath::Max(1, Context->AsyncState.NumAvailableTasks);
 
-	// Forward any non-input data
-	Outputs.Append(Context->InputData.GetAllSettings());
+			while (AttributeOffset < AttributesToSet.Num())
+			{
+				const int32 AttributeCountInCurrentDispatch = FMath::Min(AttributePerDispatch, AttributesToSet.Num() - AttributeOffset);
+				ParallelFor(AttributeCountInCurrentDispatch, [AttributeOffset, &AttributesToSet, &AttributeValuesToSet](int32 WorkerIndex)
+				{
+					FPCGMetadataAttributeBase* Attribute = AttributesToSet[AttributeOffset + WorkerIndex];
+					const TArray<TTuple<PCGMetadataEntryKey, PCGMetadataValueKey>>& Values = AttributeValuesToSet[AttributeOffset + WorkerIndex];
+					check(Attribute);
+					Attribute->SetValuesFromValueKeys(Values, /*bResetValueOnDefaultValueKey*/false); // no need for the reset here, our points will not have any prior value for these attributes
+				});
+
+				AttributeOffset += AttributeCountInCurrentDispatch;
+			}
+		}
+
+		OutMetadata->AddDelayedEntries(AllMetadataEntries);
+	}
 
 	return true;
 }
+
+#undef LOCTEXT_NAMESPACE

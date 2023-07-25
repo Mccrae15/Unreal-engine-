@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "CoreTypes.h"
+
 UE_DEPRECATED(5.1, "Including BulkData2.h has been deprecated. Please include BulkData.h instead.")
 inline void BulkData2CommonHeaderDeprecatedWarning()
 {

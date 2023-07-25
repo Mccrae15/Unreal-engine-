@@ -7,10 +7,14 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "TexturePaintToolset.generated.h"
 
+class FTexture;
+
 class UMeshComponent;
 class UTexture;
 class UTexture2D;
 class UTextureRenderTarget2D;
+
+struct FPaintTexture2DData;
 
 /** Batched element parameters for texture paint shaders used for paint blending and paint mask generation */
 class FMeshPaintBatchedElementParameters : public FBatchedElementParameters
@@ -70,22 +74,19 @@ public:
 	static bool GenerateSeamMask(UMeshComponent* MeshComponent, int32 UVSet, UTextureRenderTarget2D* SeamRenderTexture, UTexture2D* Texture, UTextureRenderTarget2D* RenderTargetTexture );
 
 	/** Returns the maximum bytes per pixel that are supported for source textures when painting. This limitation is set by CreateTempUncompressedTexture. */
-	static constexpr int32 GetMaxSupportedBytesPerPixelForPainting()
-	{
-		return GPixelFormats[GetTempUncompressedTexturePixelFormat()].BlockBytes;
-	}
+	static int32 GetMaxSupportedBytesPerPixelForPainting();
 
 	/** Returns the pixel format that CreateTempUncompressedTexture uses to create render target data for painting. */
-	static constexpr EPixelFormat GetTempUncompressedTexturePixelFormat()
-	{
-		return EPixelFormat::PF_B8G8R8A8;
-	}
+	static EPixelFormat GetTempUncompressedTexturePixelFormat();
 
 	/** Static: Creates a temporary texture used to transfer data to a render target in memory */
-	static UTexture2D* CreateTempUncompressedTexture(UTexture2D* SourceTexture);
+	static UTexture2D* CreateScratchUncompressedTexture(UTexture2D* SourceTexture);
 
 	/** Makes sure that the render target is ready to paint on */
-	static void SetupInitialRenderTargetData(UTexture2D* InTextureSource, UTextureRenderTarget2D* InRenderTarget);
+	static void SetupInitialRenderTargetData(FPaintTexture2DData& PaintTextureData);
+
+	/** Update the render target base on scratch texture */
+	static void UpdateRenderTargetData(FPaintTexture2DData& PaintTextureData);
 
 	/** Tries to find Materials using the given Texture and retrieve the corresponding material indices from the MEsh Compon*/
 	static void FindMaterialIndicesUsingTexture(const UTexture* Texture, const UMeshComponent* MeshComponent, TArray<int32>& OutIndices);

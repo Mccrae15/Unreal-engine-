@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "AssetRegistry/AssetData.h"
 #include "AssetManagerTypes.h"
 #include "Misc/AssetRegistryInterface.h"
 #include "StreamableManager.h"
@@ -10,6 +9,11 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
 #include "ContentEncryptionConfig.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AssetRegistry/AssetData.h"
+#endif
+
 #include "AssetManager.generated.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogAssetManager, Log, All);
@@ -383,6 +387,9 @@ public:
 
 	/** Returns list of PrimaryAssetIds that manage a package. Will optionally recurse up the management chain */
 	virtual bool GetPackageManagers(FName PackageName, bool bRecurseToParents, TSet<FPrimaryAssetId>& ManagerSet) const;
+	/** Returns PrimaryAssetIds that manage a package, with property describing the reference (direct or indirect). */
+	virtual bool GetPackageManagers(FName PackageName, bool bRecurseToParents,
+		TMap<FPrimaryAssetId, UE::AssetRegistry::EDependencyProperty>& Managers) const;
 
 
 	// GENERAL ASSET UTILITY FUNCTIONS
@@ -461,6 +468,9 @@ public:
 	/** Dumps out list of primary asset -> managed assets to log */
 	static void DumpReferencersForPackage(const TArray< FString >& PackageNames);
 
+	/** Finds all the referencers for a set of packages. Recursively will get all the referencers up to the max depth */
+	static void GetAllReferencersForPackage(TSet<FAssetData>& OutFoundAssets, const TArray<FName>& InPackageNames, int32 MaxDepth);
+
 	/** Starts initial load, gets called from InitializeObjectReferences */
 	virtual void StartInitialLoading();
 
@@ -517,6 +527,15 @@ public:
 
 	/** Returns cook rule for a package name using Management rules, games should override this to take into account their individual workflows */
 	virtual EPrimaryAssetCookRule GetPackageCookRule(FName PackageName) const;
+
+	/**
+	 * Helper function for GetPackageCookRule. Given the list of Managers that manage a package, calculate the unioned cookrule for the
+	 * package. @see FPrimaryAssetCookRuleUnion::UnionWith. If two managers are in conflict (e.g. one is CookAlways, the other is
+	 * ProductionNeverCook), the higher-priority will win. If they have the same priority, the NeverCook rule will win, and the managers
+	 * will be reported in the OutConflictIds field.
+	 */
+	EPrimaryAssetCookRule CalculateCookRuleUnion(const TMap<FPrimaryAssetId, UE::AssetRegistry::EDependencyProperty>& Managers,
+		TOptional<TPair<FPrimaryAssetId, FPrimaryAssetId>>* OutConflictIds) const;
 
 	UE_DEPRECATED(5.0, "Use version that takes ICookInfo instead")
 	virtual bool VerifyCanCookPackage(FName PackageName, bool bLogError = true) const;
@@ -775,8 +794,8 @@ protected:
 	UPROPERTY()
 	bool bOnlyCookProductionAssets;
 
-	/** Suppresses bOnlyCookProductionAssets based on the AllowsEditorObjects() property of the TargetPlatforms being cooked. */
-	bool bTargetPlatformsAllowEditorObjects;
+	/** Suppresses bOnlyCookProductionAssets based on the AllowsDevelopmentObjects() property of the TargetPlatforms being cooked. */
+	bool bTargetPlatformsAllowDevelopmentObjects;
 
 	/** >0 if we are currently in bulk scanning mode */
 	UPROPERTY()

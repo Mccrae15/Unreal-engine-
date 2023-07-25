@@ -75,6 +75,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Decal")
 	float GetFadeInDuration() const;
 
+	/** Decal size in local space (does not include the component scale), technically redundant but there for convenience */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Decal, meta=(AllowPreserveRatio = "true"))
+	FVector DecalSize;
+
+	/** Decal color, can be accessed using the material Decal Color node. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Decal)
+	FLinearColor DecalColor = FLinearColor::White;
+
 	/**
 	* Sets the decal's fade start time, duration and if the owning actor should be destroyed after the decal is fully faded out.
 	* The default value of 0 for FadeStartDelay and FadeDuration makes the decal persistent. See DecalLifetimeOpacity material 
@@ -88,19 +96,19 @@ public:
 	void SetFadeOut(float StartDelay, float Duration, bool DestroyOwnerAfterFade = true);
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Decal")
-	void SetFadeIn(float StartDelay, float Duaration);
+	void SetFadeIn(float StartDelay, float Duration);
 
 	/** Set the FadeScreenSize for this decal component */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Decal")
 	void SetFadeScreenSize(float NewFadeScreenSize);
 
-	/** Decal size in local space (does not include the component scale), technically redundant but there for convenience */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Decal, meta=(AllowPreserveRatio = "true"))
-	FVector DecalSize;
-
 	/** Sets the sort order for the decal component. Higher values draw later (on top). This will force the decal to reattach */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Decal")
 	void SetSortOrder(int32 Value);
+
+	/** Sets the decal color. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Decal")
+	void SetDecalColor(const FLinearColor& Color);
 
 	/** setting decal material on decal component. This will force the decal to reattach */
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|Decal")

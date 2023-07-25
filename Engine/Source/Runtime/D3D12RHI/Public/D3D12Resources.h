@@ -808,7 +808,7 @@ public:
 	}
 };
 
-extern void UpdateBufferStats(EBufferUsageFlags UsageFlags, int64 RequestedSize);
+extern void UpdateBufferStats(class FD3D12Buffer* Buffer, bool bAllocating);
 
 /** Uniform buffer resource class. */
 class FD3D12UniformBuffer : public FRHIUniformBuffer, public FD3D12DeviceChild, public FD3D12LinkedAdapterObject<FD3D12UniformBuffer>
@@ -820,9 +820,6 @@ public:
 
 	/** The D3D12 constant buffer resource */
 	FD3D12ResourceLocation ResourceLocation;
-
-	/** Resource table containing RHI references. */
-	TArray<TRefCountPtr<FRHIResource> > ResourceTable;
 
 	const EUniformBufferUsage UniformBufferUsage;
 
@@ -839,6 +836,10 @@ public:
 	}
 
 	virtual ~FD3D12UniformBuffer();
+
+	// Provides public non-const access to ResourceTable.
+	// @todo refactor uniform buffers to perform updates as a member function, so this isn't necessary.
+	TArray<TRefCountPtr<FRHIResource>>& GetResourceTable() { return ResourceTable; }
 };
 
 class FD3D12Buffer : public FRHIBuffer, public FD3D12BaseShaderResource, public FD3D12LinkedAdapterObject<FD3D12Buffer>
@@ -872,7 +873,11 @@ public:
 		OutResourceInfo.Name = GetName();
 		OutResourceInfo.Type = GetType();
 		OutResourceInfo.VRamAllocation.AllocationSize = ResourceLocation.GetSize();
-		OutResourceInfo.IsTransient = this->ResourceLocation.IsTransient();
+		OutResourceInfo.IsTransient = ResourceLocation.IsTransient();
+#if ENABLE_RESIDENCY_MANAGEMENT
+		OutResourceInfo.bResident = GetResource() && GetResource()->GetResidencyHandle().ResidencyStatus == D3DX12Residency::ManagedObject::RESIDENCY_STATUS::RESIDENT;
+#endif
+		
 		return true;
 	}
 #endif

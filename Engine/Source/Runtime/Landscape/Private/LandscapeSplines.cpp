@@ -36,6 +36,9 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "Engine/StaticMeshSocket.h"
 #include "EngineGlobals.h"
+#include "TextureResource.h"
+#include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
+#include "UObject/UObjectIterator.h"
 #if WITH_EDITOR
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
@@ -100,7 +103,7 @@ struct FLandscapeFixSplines
 							}
 						});
 
-						if (Pair.Value->LandscapeActor && Pair.Value->LandscapeActor->HasLayersContent())
+						if (Pair.Value->LandscapeActor.IsValid() && Pair.Value->LandscapeActor->HasLayersContent())
 						{
 							Pair.Value->LandscapeActor->RequestSplineLayerUpdate();
 						}
@@ -221,6 +224,7 @@ public:
 			{
 				const FSceneView* View = Views[ViewIndex];
 				FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
+				const uint8 DepthPriority = static_cast<uint8>(GetDepthPriorityGroup(View));
 
 				for (const FSegmentProxy& Segment : Segments)
 				{
@@ -248,19 +252,19 @@ public:
 						PDI->SetHitProxy(Segment.HitProxy);
 
 						// center line
-						PDI->DrawLine(OldPoint.Center, NewPoint.Center, SegmentColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
+						PDI->DrawLine(OldPoint.Center, NewPoint.Center, SegmentColor, DepthPriority, 0.0f, DepthBias);
 
 						// draw sides
-						PDI->DrawLine(OldPoint.Left, NewPoint.Left, SegmentColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
-						PDI->DrawLine(OldPoint.Right, NewPoint.Right, SegmentColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
+						PDI->DrawLine(OldPoint.Left, NewPoint.Left, SegmentColor, DepthPriority, 0.0f, DepthBias);
+						PDI->DrawLine(OldPoint.Right, NewPoint.Right, SegmentColor, DepthPriority, 0.0f, DepthBias);
 
 						PDI->SetHitProxy(nullptr);
 
 						// draw falloff sides
 						if (bDrawFalloff)
 						{
-							DrawDashedLine(PDI, OldPoint.FalloffLeft, NewPoint.FalloffLeft, SegmentColor, 100, GetDepthPriorityGroup(View), DepthBias);
-							DrawDashedLine(PDI, OldPoint.FalloffRight, NewPoint.FalloffRight, SegmentColor, 100, GetDepthPriorityGroup(View), DepthBias);
+							DrawDashedLine(PDI, OldPoint.FalloffLeft, NewPoint.FalloffLeft, SegmentColor, 100, DepthPriority, DepthBias);
+							DrawDashedLine(PDI, OldPoint.FalloffRight, NewPoint.FalloffRight, SegmentColor, 100, DepthPriority, DepthBias);
 						}
 
 						OldPoint = NewPoint;
@@ -274,11 +278,12 @@ public:
 					// Draw Sprite
 					if (bDrawControlPointSprite)
 					{
-						float ControlPointSpriteScale = MyLocalToWorld.GetScaleVector().X * ControlPoint.SpriteScale;
+						double ControlPointSpriteScale = MyLocalToWorld.GetScaleVector().X * ControlPoint.SpriteScale;
 						const FLinearColor ControlPointSpriteColor = ControlPoint.bSelected ? SelectedControlPointSpriteColor : FLinearColor::White;
 						PDI->SetHitProxy(ControlPoint.HitProxy);
-						float ZoomFactor = FMath::Min<float>(View->ViewMatrices.GetProjectionMatrix().M[0][0], View->ViewMatrices.GetProjectionMatrix().M[1][1]);
-						float Scale = View->WorldToScreen(ControlPointLocation).W * (4.0f / View->UnscaledViewRect.Width() / ZoomFactor);
+						const FMatrix& ProectionMatrix = View->ViewMatrices.GetProjectionMatrix();
+						const double ZoomFactor = FMath::Min<double>(ProectionMatrix.M[0][0], ProectionMatrix.M[1][1]);
+						const double Scale = View->WorldToScreen(ControlPointLocation).W * (4.0f / View->UnscaledViewRect.Width() / ZoomFactor);
 						ControlPointSpriteScale *= Scale;
 
 #if WITH_EDITORONLY_DATA
@@ -286,17 +291,17 @@ public:
 #endif
 
 						// Clamping the scale between 10 and the ControlPoint initial scale 
-						ControlPointSpriteScale = FMath::Clamp<float>(ControlPointSpriteScale, 10, ControlPoint.SpriteScale);
+						ControlPointSpriteScale = FMath::Clamp<double>(ControlPointSpriteScale, 10, ControlPoint.SpriteScale);
 						const FVector ControlPointSpriteLocation = ControlPointLocation + FVector(0, 0, ControlPointSpriteScale * 0.75f);
 						PDI->DrawSprite(
 							ControlPointSpriteLocation,
-							ControlPointSpriteScale,
-							ControlPointSpriteScale,
+							static_cast<float>(ControlPointSpriteScale),
+							static_cast<float>(ControlPointSpriteScale),
 							ControlPointSprite->GetResource(),
 							ControlPointSpriteColor,
-							GetDepthPriorityGroup(View),
-							0, ControlPointSprite->GetResource()->GetSizeX(),
-							0, ControlPointSprite->GetResource()->GetSizeY(),
+							DepthPriority,
+							0, static_cast<float>(ControlPointSprite->GetResource()->GetSizeX()),
+							0, static_cast<float>(ControlPointSprite->GetResource()->GetSizeY()),
 							SE_BLEND_Masked);
 					}
 
@@ -313,13 +318,13 @@ public:
 						NewPoint.FalloffRight = MyLocalToWorld.TransformPosition(NewPoint.FalloffRight);
 
 						// draw end for spline connection
-						PDI->DrawPoint(NewPoint.Center, ControlPointColor, 6.0f, GetDepthPriorityGroup(View));
-						PDI->DrawLine(NewPoint.Left, NewPoint.Center, ControlPointColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
-						PDI->DrawLine(NewPoint.Right, NewPoint.Center, ControlPointColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
+						PDI->DrawPoint(NewPoint.Center, ControlPointColor, 6.0f, DepthPriority);
+						PDI->DrawLine(NewPoint.Left, NewPoint.Center, ControlPointColor, DepthPriority, 0.0f, DepthBias);
+						PDI->DrawLine(NewPoint.Right, NewPoint.Center, ControlPointColor, DepthPriority, 0.0f, DepthBias);
 						if (bDrawFalloff)
 						{
-							DrawDashedLine(PDI, NewPoint.FalloffLeft, NewPoint.Left, ControlPointColor, 100, GetDepthPriorityGroup(View), DepthBias);
-							DrawDashedLine(PDI, NewPoint.FalloffRight, NewPoint.Right, ControlPointColor, 100, GetDepthPriorityGroup(View), DepthBias);
+							DrawDashedLine(PDI, NewPoint.FalloffLeft, NewPoint.Left, ControlPointColor, 100, DepthPriority, DepthBias);
+							DrawDashedLine(PDI, NewPoint.FalloffRight, NewPoint.Right, ControlPointColor, 100, DepthPriority, DepthBias);
 						}
 					}
 					else if (ControlPoint.Points.Num() >= 2)
@@ -342,27 +347,27 @@ public:
 							PDI->SetHitProxy(ControlPoint.HitProxy);
 
 							// center line
-							PDI->DrawLine(ControlPointLocation, NewPoint.Center, ControlPointColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
+							PDI->DrawLine(ControlPointLocation, NewPoint.Center, ControlPointColor, DepthPriority, 0.0f, DepthBias);
 
 							// draw sides
-							PDI->DrawLine(OldPoint.Right, NewPoint.Left, ControlPointColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
+							PDI->DrawLine(OldPoint.Right, NewPoint.Left, ControlPointColor, DepthPriority, 0.0f, DepthBias);
 
 							PDI->SetHitProxy(nullptr);
 
 							// draw falloff sides
 							if (bDrawFalloff)
 							{
-								DrawDashedLine(PDI, OldPoint.FalloffRight, NewPoint.FalloffLeft, ControlPointColor, 100, GetDepthPriorityGroup(View), DepthBias);
+								DrawDashedLine(PDI, OldPoint.FalloffRight, NewPoint.FalloffLeft, ControlPointColor, 100, DepthPriority, DepthBias);
 							}
 
 							// draw end for spline connection
-							PDI->DrawPoint(NewPoint.Center, ControlPointColor, 6.0f, GetDepthPriorityGroup(View));
-							PDI->DrawLine(NewPoint.Left, NewPoint.Center, ControlPointColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
-							PDI->DrawLine(NewPoint.Right, NewPoint.Center, ControlPointColor, GetDepthPriorityGroup(View), 0.0f, DepthBias);
+							PDI->DrawPoint(NewPoint.Center, ControlPointColor, 6.0f, DepthPriority);
+							PDI->DrawLine(NewPoint.Left, NewPoint.Center, ControlPointColor, DepthPriority, 0.0f, DepthBias);
+							PDI->DrawLine(NewPoint.Right, NewPoint.Center, ControlPointColor, DepthPriority, 0.0f, DepthBias);
 							if (bDrawFalloff)
 							{
-								DrawDashedLine(PDI, NewPoint.FalloffLeft, NewPoint.Left, ControlPointColor, 100, GetDepthPriorityGroup(View), DepthBias);
-								DrawDashedLine(PDI, NewPoint.FalloffRight, NewPoint.Right, ControlPointColor, 100, GetDepthPriorityGroup(View), DepthBias);
+								DrawDashedLine(PDI, NewPoint.FalloffLeft, NewPoint.Left, ControlPointColor, 100, DepthPriority, DepthBias);
+								DrawDashedLine(PDI, NewPoint.FalloffRight, NewPoint.Right, ControlPointColor, 100, DepthPriority, DepthBias);
 							}
 
 							//OldPoint = NewPoint;
@@ -391,7 +396,7 @@ public:
 	}
 	uint32 GetAllocatedSize() const
 	{
-		uint32 AllocatedSize = FPrimitiveSceneProxy::GetAllocatedSize() + Segments.GetAllocatedSize() + ControlPoints.GetAllocatedSize();
+		SIZE_T AllocatedSize = FPrimitiveSceneProxy::GetAllocatedSize() + Segments.GetAllocatedSize() + ControlPoints.GetAllocatedSize();
 		for (const FSegmentProxy& Segment : Segments)
 		{
 			AllocatedSize += Segment.Points.GetAllocatedSize();
@@ -400,7 +405,7 @@ public:
 		{
 			AllocatedSize += ControlPoint.Points.GetAllocatedSize();
 		}
-		return AllocatedSize;
+		return IntCastChecked<uint32>(AllocatedSize);
 	}
 };
 #endif
@@ -431,16 +436,30 @@ ULandscapeSplinesComponent::ULandscapeSplinesComponent(const FObjectInitializer&
 		struct FConstructorStatics
 		{
 			ConstructorHelpers::FObjectFinder<UTexture2D> SpriteTexture;
-			ConstructorHelpers::FObjectFinder<UStaticMesh> SplineEditorMesh;
 			FConstructorStatics()
 				: SpriteTexture(TEXT("/Engine/EditorResources/S_Terrain.S_Terrain"))
-				, SplineEditorMesh(TEXT("/Engine/EditorLandscapeResources/SplineEditorMesh"))
 			{
 			}
 		};
 		static FConstructorStatics ConstructorStatics;
 
 		ControlPointSprite = ConstructorStatics.SpriteTexture.Object;
+	}
+
+	// Another one-time initialization (non-conditional to whether we're in the editor, this time): unlike the sprite, which is purely cosmetic, SplineEditorMesh is needed 
+	//  at all times because we often check if a spline segment/control point is using the SplineEditorMesh (on PostLoad, for example) :
+	{
+		// Structure to hold one-time initialization
+		struct FConstructorStatics
+		{
+			ConstructorHelpers::FObjectFinder<UStaticMesh> SplineEditorMesh;
+			FConstructorStatics()
+				: SplineEditorMesh(TEXT("/Engine/EditorLandscapeResources/SplineEditorMesh"))
+			{
+			}
+		};
+		static FConstructorStatics ConstructorStatics;
+
 		SplineEditorMesh = ConstructorStatics.SplineEditorMesh.Object;
 	}
 #endif
@@ -976,10 +995,12 @@ void ULandscapeSplinesComponent::RequestSplineLayerUpdate()
 	}
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void ULandscapeSplinesComponent::SetDefaultEditorSplineMesh()
 {
 	SplineEditorMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EditorLandscapeResources/SplineEditorMesh"));
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void ULandscapeSplinesComponent::ShowSplineEditorMesh(bool bShow)
 {
@@ -1034,8 +1055,8 @@ ULandscapeSplinesComponent* ULandscapeSplinesComponent::GetStreamingSplinesCompo
 		OuterLandscape->GetLandscapeInfo())
 	{
 		FVector LandscapeLocalLocation = GetComponentTransform().GetRelativeTransform(OuterLandscape->LandscapeActorToWorld()).TransformPosition(LocalLocation);
-		const int32 ComponentIndexX = (LandscapeLocalLocation.X >= 0.0f) ? FMath::FloorToInt(LandscapeLocalLocation.X / OuterLandscape->ComponentSizeQuads) : FMath::CeilToInt(LandscapeLocalLocation.X / OuterLandscape->ComponentSizeQuads);
-		const int32 ComponentIndexY = (LandscapeLocalLocation.Y >= 0.0f) ? FMath::FloorToInt(LandscapeLocalLocation.Y / OuterLandscape->ComponentSizeQuads) : FMath::CeilToInt(LandscapeLocalLocation.Y / OuterLandscape->ComponentSizeQuads);
+		const int32 ComponentIndexX = (LandscapeLocalLocation.X >= 0.0f) ? FMath::FloorToInt32(LandscapeLocalLocation.X / OuterLandscape->ComponentSizeQuads) : FMath::CeilToInt32(LandscapeLocalLocation.X / OuterLandscape->ComponentSizeQuads);
+		const int32 ComponentIndexY = (LandscapeLocalLocation.Y >= 0.0f) ? FMath::FloorToInt32(LandscapeLocalLocation.Y / OuterLandscape->ComponentSizeQuads) : FMath::CeilToInt32(LandscapeLocalLocation.Y / OuterLandscape->ComponentSizeQuads);
 		ULandscapeComponent* LandscapeComponent = OuterLandscape->GetLandscapeInfo()->XYtoComponentMap.FindRef(FIntPoint(ComponentIndexX, ComponentIndexY));
 		if (LandscapeComponent)
 		{
@@ -1597,6 +1618,7 @@ void ULandscapeSplineControlPoint::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FLandscapeCustomVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID);
 
 #if WITH_EDITOR
 	if (Ar.UEVer() < VER_UE4_LANDSCAPE_SPLINE_CROSS_LEVEL_MESHES)
@@ -1668,7 +1690,9 @@ void ULandscapeSplineControlPoint::PostLoad()
 		}
 	}
 
-	if (GIsEditor && GetLinkerCustomVersion(FLandscapeCustomVersion::GUID) < FLandscapeCustomVersion::AddingBodyInstanceToSplinesElements)
+	if (GIsEditor 
+		&& ((GetLinkerCustomVersion(FLandscapeCustomVersion::GUID) < FLandscapeCustomVersion::AddingBodyInstanceToSplinesElements)
+			|| (GetLinkerCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID) < FFortniteReleaseBranchCustomObjectVersion::RemoveUselessLandscapeMeshesCookedCollisionData)))
 	{
 		auto ForeignMeshComponentsMap = GetForeignMeshComponents();
 
@@ -1684,6 +1708,12 @@ void ULandscapeSplineControlPoint::PostLoad()
 			{
 				ForeignMeshComponentsPair.Value->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 			}
+
+			// We won't ever enable collisions when using the editor mesh, ensure we don't even cook or load any collision data on this mesh  :
+			if (UBodySetup* BodySetup = ForeignMeshComponentsPair.Value->GetBodySetup())
+			{
+				BodySetup->bNeverNeedsCookedCollisionData = bUsingEditorMesh;
+			}
 		}
 
 		if (LocalMeshComponent != nullptr)
@@ -1697,6 +1727,12 @@ void ULandscapeSplineControlPoint::PostLoad()
 			else
 			{
 				LocalMeshComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+			}
+
+			// We won't ever enable collisions when using the editor mesh, ensure we don't even cook or load any collision data on this mesh  :
+			if (UBodySetup* BodySetup = LocalMeshComponent->GetBodySetup())
+			{
+				BodySetup->bNeverNeedsCookedCollisionData = bUsingEditorMesh;
 			}
 		}
 	}
@@ -1732,8 +1768,8 @@ FName ULandscapeSplineControlPoint::GetBestConnectionTo(FVector Destination) con
 			FVector SocketLocation = SocketTransform.GetTranslation();
 			FRotator SocketRotation = SocketTransform.GetRotation().Rotator();
 
-			float Score = (Destination - Location).Size() - (Destination - SocketLocation).Size(); // Score closer sockets higher
-			Score *= FMath::Abs(FVector::DotProduct((Destination - SocketLocation), SocketRotation.Vector())); // score closer rotation higher
+			const float Score = static_cast<float>((Destination - Location).Size() - (Destination - SocketLocation).Size() // Score closer sockets higher
+				* FMath::Abs(FVector::DotProduct((Destination - SocketLocation), SocketRotation.Vector()))); // score closer rotation higher
 
 			if (Score > BestScore)
 			{
@@ -2045,6 +2081,11 @@ void ULandscapeSplineControlPoint::UpdateSplinePoints(bool bUpdateCollision, boo
 			MeshComponent->SetHiddenInGame(bHiddenInGame);
 		}
 
+		if (UBodySetup* BodySetup = MeshComponent->GetBodySetup())
+		{
+			BodySetup->bNeverNeedsCookedCollisionData = bHiddenInGame;
+		}
+
 		if (MeshComponent->LDMaxDrawDistance != LDMaxDrawDistance)
 		{
 			MeshComponent->Modify();
@@ -2079,14 +2120,14 @@ void ULandscapeSplineControlPoint::UpdateSplinePoints(bool bUpdateCollision, boo
 		if (MeshComponent->VirtualTextureLodBias != VirtualTextureLodBias)
 		{
 			MeshComponent->Modify();
-			MeshComponent->VirtualTextureLodBias = VirtualTextureLodBias;
+			MeshComponent->VirtualTextureLodBias = static_cast<int8>(VirtualTextureLodBias);
 			MeshComponent->MarkRenderStateDirty();
 		}
 		
 		if (MeshComponent->VirtualTextureCullMips != VirtualTextureCullMips)
 		{
 			MeshComponent->Modify();
-			MeshComponent->VirtualTextureCullMips = VirtualTextureCullMips;
+			MeshComponent->VirtualTextureCullMips = static_cast<int8>(VirtualTextureCullMips);
 			MeshComponent->MarkRenderStateDirty();
 		}
 
@@ -2178,7 +2219,7 @@ void ULandscapeSplineControlPoint::UpdateSplinePoints(bool bUpdateCollision, boo
 			FVector StartLocation; FRotator StartRotation;
 			GetConnectionLocationAndRotation(Connection.GetNearConnection().SocketName, StartLocation, StartRotation);
 
-			const float Roll = FMath::DegreesToRadians(StartRotation.Roll);
+			const double Roll = FMath::DegreesToRadians(StartRotation.Roll);
 			const FVector Tangent = StartRotation.Vector();
 			const FVector BiNormal = FQuat(Tangent, -Roll).RotateVector((Tangent ^ FVector(0, 0, -1)).GetSafeNormal());
 			const FVector LeftPos = StartLocation - BiNormal * Width;
@@ -2204,7 +2245,7 @@ void ULandscapeSplineControlPoint::UpdateSplinePoints(bool bUpdateCollision, boo
 		FVector StartLocation; FRotator StartRotation;
 		GetConnectionLocationAndRotation(NAME_None, StartLocation, StartRotation);
 
-		const float Roll = FMath::DegreesToRadians(StartRotation.Roll);
+		const double Roll = FMath::DegreesToRadians(StartRotation.Roll);
 		const FVector Tangent = StartRotation.Vector();
 		const FVector BiNormal = FQuat(Tangent, -Roll).RotateVector((Tangent ^ FVector(0, 0, -1)).GetSafeNormal());
 		const FVector LeftPos = StartLocation - BiNormal * Width;
@@ -2416,6 +2457,7 @@ void ULandscapeSplineSegment::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FLandscapeCustomVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID);
 
 #if WITH_EDITOR
 	if (Ar.UEVer() < VER_UE4_SPLINE_MESH_ORIENTATION)
@@ -2520,7 +2562,9 @@ void ULandscapeSplineSegment::PostLoad()
 		}
 	}
 
-	if (GIsEditor && GetLinkerCustomVersion(FLandscapeCustomVersion::GUID) < FLandscapeCustomVersion::AddingBodyInstanceToSplinesElements)
+	if (GIsEditor  
+		&& ((GetLinkerCustomVersion(FLandscapeCustomVersion::GUID) < FLandscapeCustomVersion::AddingBodyInstanceToSplinesElements)
+			|| (GetLinkerCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID) < FFortniteReleaseBranchCustomObjectVersion::RemoveUselessLandscapeMeshesCookedCollisionData)))
 	{
 		ULandscapeSplinesComponent* OuterSplines = GetOuterULandscapeSplinesComponent();
 
@@ -2540,6 +2584,9 @@ void ULandscapeSplineSegment::PostLoad()
 				{
 					ForeignMeshComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 				}
+
+				// We won't ever enable collisions when using the editor mesh, ensure we don't even cook or load any collision data on this mesh  :
+				ForeignMeshComponent->SetbNeverNeedsCookedCollisionData(bUsingEditorMesh);
 			}
 		}
 
@@ -2557,6 +2604,9 @@ void ULandscapeSplineSegment::PostLoad()
 				{
 					LocalMeshComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 				}
+
+				// We won't ever enable collisions when using the editor mesh, ensure we don't even cook or load any collision data on this mesh  :
+				LocalMeshComponent->SetbNeverNeedsCookedCollisionData(bUsingEditorMesh);
 			}
 		}
 	}
@@ -2582,6 +2632,9 @@ void ULandscapeSplineSegment::UpdateMeshCollisionProfile(USplineMeshComponent* M
 
 	const FName DesiredCollisionProfileName = SplinesAlwaysUseBlockAll ? UCollisionProfile::BlockAll_ProfileName : GetCollisionProfileName();
 	const FName CollisionProfile = (bEnableCollision_DEPRECATED && !bUsingEditorMesh) ? DesiredCollisionProfileName : UCollisionProfile::NoCollision_ProfileName;
+
+	// We won't ever enable collisions when using the editor mesh, ensure we don't even cook or load any collision data on this mesh  :
+	MeshComponent->SetbNeverNeedsCookedCollisionData(bUsingEditorMesh);
 #else
 	const FName CollisionProfile = UCollisionProfile::BlockAll_ProfileName;
 #endif
@@ -2643,7 +2696,7 @@ static float ApproxLength(const FInterpCurveVector& SplineInfo, const float Star
 	for (int32 i = 1; i <= ApproxSections; i++)
 	{
 		FVector NewPos = SplineInfo.Eval(FMath::Lerp(Start, End, (float)i / (float)ApproxSections), FVector::ZeroVector);
-		SplineLength += (NewPos - OldPos).Size();
+		SplineLength += static_cast<float>((NewPos - OldPos).Size());
 		OldPos = NewPos;
 	}
 
@@ -2742,8 +2795,8 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 	Falloffs.EndLeftSideLayer = Connections[1].ControlPoint->LeftSideLayerFalloffFactor * Connections[1].ControlPoint->SideFalloff;
 	Falloffs.StartRightSideLayer = Connections[0].ControlPoint->RightSideLayerFalloffFactor * Connections[0].ControlPoint->SideFalloff;
 	Falloffs.EndRightSideLayer = Connections[1].ControlPoint->RightSideLayerFalloffFactor * Connections[1].ControlPoint->SideFalloff;
-	const float StartRollDegrees = StartRotation.Roll * (Connections[0].TangentLen > 0 ? 1 : -1);
-	const float EndRollDegrees = EndRotation.Roll * (Connections[1].TangentLen > 0 ? -1 : 1);
+	const float StartRollDegrees = static_cast<float>(StartRotation.Roll * (Connections[0].TangentLen > 0 ? 1 : -1));
+	const float EndRollDegrees = static_cast<float>(EndRotation.Roll * (Connections[1].TangentLen > 0 ? -1 : 1));
 	const float StartRoll = FMath::DegreesToRadians(StartRollDegrees);
 	const float EndRoll = FMath::DegreesToRadians(EndRollDegrees);
 	const float StartMeshOffset = Connections[0].ControlPoint->SegmentMeshOffset;
@@ -2859,10 +2912,11 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 			FVector Scale = MeshEntry->Scale;
 			if (MeshEntry->bScaleToWidth)
 			{
-				Scale *= Width / USplineMeshComponent::GetAxisValue(MeshBounds.BoxExtent, CrossAxis(MeshEntry->ForwardAxis, MeshEntry->UpAxis));
+				Scale *= Width / USplineMeshComponent::GetAxisValueRef(MeshBounds.BoxExtent, CrossAxis(MeshEntry->ForwardAxis, MeshEntry->UpAxis));
 			}
 
-			const float MeshLength = FMath::Abs(USplineMeshComponent::GetAxisValue(MeshBounds.BoxExtent, MeshEntry->ForwardAxis) * 2 * USplineMeshComponent::GetAxisValue(Scale, MeshEntry->ForwardAxis));
+			const float MeshLength = static_cast<float>(FMath::Abs(USplineMeshComponent::GetAxisValueRef(MeshBounds.BoxExtent, MeshEntry->ForwardAxis) * 2.0 *
+				USplineMeshComponent::GetAxisValueRef(Scale, MeshEntry->ForwardAxis)));
 			float MeshT = (MeshLength / SplineLength);
 
 			// Improve our approximation if we're not going off the end of the spline
@@ -2994,7 +3048,7 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 			FVector Scale = MeshEntry->Scale;
 			if (MeshEntry->bScaleToWidth)
 			{
-				Scale *= Width / USplineMeshComponent::GetAxisValue(MeshBounds.BoxExtent, SideAxis);
+				Scale *= Width / USplineMeshComponent::GetAxisValueRef(MeshBounds.BoxExtent, SideAxis);
 			}
 
 			FVector2D Offset = MeshEntry->CenterAdjust;
@@ -3002,11 +3056,11 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 			{
 				if (bDoOrientationRoll)
 				{
-					Offset.Y -= USplineMeshComponent::GetAxisValue(MeshBounds.Origin, SideAxis);
+					Offset.Y -= USplineMeshComponent::GetAxisValueRef(MeshBounds.Origin, SideAxis);
 				}
 				else
 				{
-					Offset.X -= USplineMeshComponent::GetAxisValue(MeshBounds.Origin, SideAxis);
+					Offset.X -= USplineMeshComponent::GetAxisValueRef(MeshBounds.Origin, SideAxis);
 				}
 			}
 
@@ -3044,7 +3098,7 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 			FVector ScaleEnd = MeshEntry->Scale;
 			if (MeshEntry->bScaleToWidth)
 			{
-				ScaleEnd *= WidthEnd / USplineMeshComponent::GetAxisValue(MeshBounds.BoxExtent, SideAxis);
+				ScaleEnd *= WidthEnd / USplineMeshComponent::GetAxisValueRef(MeshBounds.BoxExtent, SideAxis);
 			}
 
 			FVector2D OffsetEnd = MeshEntry->CenterAdjust;
@@ -3052,11 +3106,11 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 			{
 				if (bDoOrientationRoll)
 				{
-					OffsetEnd.Y -= USplineMeshComponent::GetAxisValue(MeshBounds.Origin, SideAxis);
+					OffsetEnd.Y -= USplineMeshComponent::GetAxisValueRef(MeshBounds.Origin, SideAxis);
 				}
 				else
 				{
-					OffsetEnd.X -= USplineMeshComponent::GetAxisValue(MeshBounds.Origin, SideAxis);
+					OffsetEnd.X -= USplineMeshComponent::GetAxisValueRef(MeshBounds.Origin, SideAxis);
 				}
 			}
 
@@ -3097,7 +3151,7 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 				MeshComponent->SplineParams.EndPos   = RelativeTransform.TransformPosition(MeshComponent->SplineParams.EndPos);
 			}
 
-			if (USplineMeshComponent::GetAxisValue(MeshEntry->Scale, MeshEntry->ForwardAxis) < 0)
+			if (USplineMeshComponent::GetAxisValueRef(MeshEntry->Scale, MeshEntry->ForwardAxis) < 0)
 			{
 				Swap(MeshComponent->SplineParams.StartPos, MeshComponent->SplineParams.EndPos);
 				Swap(MeshComponent->SplineParams.StartTangent, MeshComponent->SplineParams.EndTangent);
@@ -3128,14 +3182,14 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 			MeshComponent->TranslucencySortPriority = TranslucencySortPriority;
 
 			MeshComponent->RuntimeVirtualTextures = RuntimeVirtualTextures;
-			MeshComponent->VirtualTextureLodBias = VirtualTextureLodBias;
-			MeshComponent->VirtualTextureCullMips = VirtualTextureCullMips;
+			MeshComponent->VirtualTextureLodBias = static_cast<int8>(VirtualTextureLodBias);
+			MeshComponent->VirtualTextureCullMips = static_cast<int8>(VirtualTextureCullMips);
 			MeshComponent->VirtualTextureMainPassMaxDrawDistance = VirtualTextureMainPassMaxDrawDistance;
 			MeshComponent->VirtualTextureRenderPassType = VirtualTextureRenderPassType;
 
 			MeshComponent->SetRenderCustomDepth(bRenderCustomDepth);
 			MeshComponent->SetCustomDepthStencilWriteMask(CustomDepthStencilWriteMask);
-			MeshComponent->SetCustomDepthStencilValue(CustomDepthStencilValue);
+ 			MeshComponent->SetCustomDepthStencilValue(CustomDepthStencilValue);
 
 			MeshComponent->SetCastShadow(bCastShadow);
 			MeshComponent->InvalidateLightingCache();
@@ -3149,6 +3203,8 @@ void ULandscapeSplineSegment::UpdateSplinePoints(bool bUpdateCollision, bool bUp
 			{
 				MeshComponent->BodyInstance.SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 			}
+			// If we won't ever enable collisions, ensure we don't even cook or load any collision data on this mesh :
+			MeshComponent->SetbNeverNeedsCookedCollisionData(bUsingEditorMesh);
 
 			if (bUpdateCollision)
 			{

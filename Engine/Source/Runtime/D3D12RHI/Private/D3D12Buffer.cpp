@@ -6,6 +6,8 @@ D3D12Buffer.cpp: D3D Common code for buffers.
 
 #include "D3D12RHIPrivate.h"
 
+extern int32 GD3D12BindResourceLabels;
+
 FD3D12Buffer::~FD3D12Buffer()
 {
 	if (EnumHasAnyFlags(GetUsage(), EBufferUsageFlags::VertexBuffer) && GetParentDevice())
@@ -14,11 +16,10 @@ FD3D12Buffer::~FD3D12Buffer()
 		DefaultContext.StateCache.ClearVertexBuffer(&ResourceLocation);
 	}
 
-	int64 BufferSize = ResourceLocation.GetSize();
 	bool bTransient = ResourceLocation.IsTransient();
 	if (!bTransient)
 	{
-		UpdateBufferStats((EBufferUsageFlags)GetUsage(), -BufferSize);
+		UpdateBufferStats(this, false);
 	}
 }
 
@@ -230,15 +231,7 @@ void FD3D12Buffer::UploadResourceData(FRHICommandListBase& RHICmdList, FResource
 		}
 		else
 		{
-			// @todo d3d12 - Refactor contexts so pipe switching is not required.
-			TOptional<ERHIPipeline> PreviousPipeline;
-			if (RHICmdList.GetPipeline() == ERHIPipeline::None)
-				PreviousPipeline = RHICmdList.SwitchPipeline(ERHIPipeline::Graphics);
-
 			new (RHICmdList.AllocCommand<FD3D12RHICommandInitializeBuffer>()) FD3D12RHICommandInitializeBuffer(this, SrcResourceLoc, BufferSize, InDestinationState);
-
-			if (PreviousPipeline.IsSet())
-				RHICmdList.SwitchPipeline(PreviousPipeline.GetValue());
 		}
 	}
 
@@ -412,7 +405,7 @@ FD3D12Buffer* FD3D12Adapter::CreateRHIBuffer(
 	// Don't track transient buffer stats here
 	if (!BufferOut->ResourceLocation.IsTransient())
 	{
-		UpdateBufferStats((EBufferUsageFlags)InUsage, BufferOut->ResourceLocation.GetSize());
+		UpdateBufferStats(BufferOut, true);
 	}
 
 	return BufferOut;
@@ -469,7 +462,7 @@ void FD3D12Buffer::ReleaseUnderlyingResource()
 	bool bTransient = ResourceLocation.IsTransient();
 	if (!bTransient)
 	{
-		UpdateBufferStats((EBufferUsageFlags)GetUsage(), -BufferSize);
+		UpdateBufferStats(this, false);
 	}
 
 	check(IsHeadLink());
@@ -845,7 +838,7 @@ void FD3D12DynamicRHI::RHICopyBuffer(FRHIBuffer* SourceBufferRHI, FRHIBuffer* De
 
 void FD3D12DynamicRHI::RHIBindDebugLabelName(FRHIBuffer* BufferRHI, const TCHAR* Name)
 {
-	if (BufferRHI == nullptr)
+	if (BufferRHI == nullptr || !GD3D12BindResourceLabels)
 	{
 		return;
 	}

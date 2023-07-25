@@ -16,6 +16,7 @@
 #include "UObject/TextProperty.h"
 #include "UObject/SoftObjectPtr.h"
 #include "UObject/PropertyAccessUtil.h"
+#include "UObject/TopLevelAssetPath.h"
 #include "Engine/LatentActionManager.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Engine/CollisionProfile.h"
@@ -32,7 +33,7 @@ class UTexture2D;
 UENUM(BlueprintType)
 namespace EDrawDebugTrace
 {
-	enum Type
+	enum Type : int
 	{
 		None, 
 		ForOneFrame, 
@@ -45,7 +46,7 @@ namespace EDrawDebugTrace
 UENUM()
 namespace EMoveComponentAction
 {
-	enum Type
+	enum Type : int
 	{
 		/** Move to target over specified time. */
 		Move, 
@@ -59,7 +60,7 @@ namespace EMoveComponentAction
 UENUM()
 namespace EQuitPreference
 {
-	enum Type
+	enum Type : int
 	{
 		/** Exit the game completely. */
 		Quit,
@@ -265,7 +266,15 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Object Path", CompactNodeTitle = "->", BlueprintAutocast), Category = "Utilities")
 	static FSoftObjectPath Conv_SoftObjRefToSoftObjPath(TSoftObjectPtr<UObject> SoftObjectReference);
 
-	/** 
+	/** Builds a TopLevelAssetPath struct from single Path string or from PackageName and AssetName string. */
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe, BlueprintAutocast))
+	static FORCENOINLINE FTopLevelAssetPath MakeTopLevelAssetPath(UPARAM(DisplayName="FullPathOrPackageName") const FString& PackageName, const FString& AssetName);
+
+	/** Gets the path string out of a TopLevelAssetPath */
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (NativeBreakFunc, BlueprintThreadSafe, BlueprintAutocast))
+	static void BreakTopLevelAssetPath(const FTopLevelAssetPath& TopLevelAssetPath, FString& PathString);
+
+	/**
 	 * Builds a Soft Class Path struct from a string that contains a full /folder/packagename.class path.
 	 * For blueprint classes, this needs to point to the actual class (often with _C) and not the blueprint editor asset
 	 */
@@ -482,6 +491,15 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, Category="Development",meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext))
 	static void ExecuteConsoleCommand(const UObject* WorldContextObject, const FString& Command, class APlayerController* SpecificPlayer = NULL );
+
+	/**
+	 * Attempts to retrieve the value of the specified string console variable, if it exists.
+	 * 
+	 * @param	VariableName	Name of the console variable to find.
+	 * @return	The value if found, empty string otherwise.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Development")
+	static FString GetConsoleVariableStringValue(const FString& VariableName);
 
 	/**
 	 * Attempts to retrieve the value of the specified float console variable, if it exists.
@@ -927,40 +945,17 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", AutoCreateRefTerm = "Value"))
 	static void SetFieldPathPropertyByName(UObject* Object, FName PropertyName, const TFieldPath<FField>& Value);
 
-	DECLARE_FUNCTION(execSetCollisionProfileNameProperty)
-	{
-		P_GET_OBJECT(UObject, OwnerObject);
-		P_GET_PROPERTY(FNameProperty, StructPropertyName);
-
-		Stack.StepCompiledIn<FStructProperty>(NULL);
-		void* SrcStructAddr = Stack.MostRecentPropertyAddress;
-
-		P_FINISH;
-		P_NATIVE_BEGIN;
-		Generic_SetStructurePropertyByName(OwnerObject, StructPropertyName, SrcStructAddr);
-		P_NATIVE_END;
-	}
+	DECLARE_FUNCTION(execSetCollisionProfileNameProperty);
 
 	/** Set a custom structure property by name */
 	UFUNCTION(BlueprintCallable, CustomThunk, meta = (BlueprintInternalUseOnly = "true", CustomStructureParam = "Value", AutoCreateRefTerm = "Value"))
 	static void SetStructurePropertyByName(UObject* Object, FName PropertyName, const FGenericStruct& Value);
 
+	UE_DEPRECATED(5.2, "Function has been deprecated.")
 	static void Generic_SetStructurePropertyByName(UObject* OwnerObject, FName StructPropertyName, const void* SrcStructAddr);
 
 	/** Based on UKismetArrayLibrary::execSetArrayPropertyByName */
-	DECLARE_FUNCTION(execSetStructurePropertyByName)
-	{
-		P_GET_OBJECT(UObject, OwnerObject);
-		P_GET_PROPERTY(FNameProperty, StructPropertyName);
-
-		Stack.StepCompiledIn<FStructProperty>(NULL);
-		void* SrcStructAddr = Stack.MostRecentPropertyAddress;
-
-		P_FINISH;
-		P_NATIVE_BEGIN;
-		Generic_SetStructurePropertyByName(OwnerObject, StructPropertyName, SrcStructAddr);
-		P_NATIVE_END;
-	}
+	DECLARE_FUNCTION(execSetStructurePropertyByName);
 
 	// --- Collision functions ------------------------------
 

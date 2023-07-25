@@ -5,6 +5,9 @@
 #include "ActorMode.h"
 #include "ActorTreeItem.h"
 #include "ComponentTreeItem.h"
+#include "DataprepEditor.h"
+#include "Misc/CoreDelegates.h"
+#include "SSceneOutliner.h"
 
 namespace DataprepEditorSceneOutlinerUtils
 {

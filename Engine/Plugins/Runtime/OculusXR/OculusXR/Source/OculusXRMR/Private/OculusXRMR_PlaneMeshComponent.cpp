@@ -6,7 +6,6 @@
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
 #include "VertexFactory.h"
-#include "MaterialShared.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Materials/Material.h"
@@ -17,8 +16,10 @@
 #include "Engine/Engine.h"
 #include "MaterialShared.h"
 #include "Launch/Resources/Version.h"
-#include "SceneInterface.h"
-#include "TextureResource.h"
+#if (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2) || ENGINE_MAJOR_VERSION > 5
+#include "MaterialDomain.h"
+#include "Materials/MaterialRenderProxy.h"
+#endif
 
 /** Scene proxy */
 class FOculusXRMR_PlaneMeshSceneProxy : public FPrimitiveSceneProxy

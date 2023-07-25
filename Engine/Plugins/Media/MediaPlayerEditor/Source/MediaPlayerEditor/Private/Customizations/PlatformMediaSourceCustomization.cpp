@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/PlatformMediaSourceCustomization.h"
+#include "AssetRegistry/AssetData.h"
 #include "MediaSource.h"
 #include "PlatformMediaSource.h"
 #include "Styling/SlateColor.h"
@@ -165,12 +166,17 @@ void FPlatformMediaSourceCustomization::HandleMediaSourceEntryBoxChanged(const F
 
 	for (auto Object : OuterObjects)
 	{
-		TObjectPtr<UMediaSource>& OldMediaSource = Cast<UPlatformMediaSource>(Object)->PlatformMediaSources.FindOrAdd(PlatformName);;
-
-		if (OldMediaSource != AssetData.GetAsset())
+		UPlatformMediaSource* PlatformMediaSource = Cast<UPlatformMediaSource>(Object);
+		if (PlatformMediaSource != nullptr)
 		{
-			Object->Modify(true);
-			OldMediaSource = Cast<UMediaSource>(AssetData.GetAsset());
+			TObjectPtr<UMediaSource>& OldMediaSource = PlatformMediaSource->PlatformMediaSources.FindOrAdd(PlatformName);;
+
+			if (OldMediaSource != AssetData.GetAsset())
+			{
+				Object->Modify(true);
+				OldMediaSource = Cast<UMediaSource>(AssetData.GetAsset());
+				PlatformMediaSource->GenerateThumbnail();
+			}
 		}
 	}
 }

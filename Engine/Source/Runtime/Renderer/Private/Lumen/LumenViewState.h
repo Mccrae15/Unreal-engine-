@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include "RenderGraphResources.h"
+#include "SceneTexturesConfig.h"
+
 const static int32 NumLumenDiffuseIndirectTextures = 2;
 // Must match shader
 const static int32 MaxVoxelClipmapLevels = 8;
@@ -22,7 +25,7 @@ public:
 	int32 VoxelTracingMode;
 	int32 DirectLighting;
 
-	inline bool operator==(const FLumenGatherCvarState& Rhs)
+	inline bool operator==(const FLumenGatherCvarState& Rhs) const
 	{
 		return TraceMeshSDFs == Rhs.TraceMeshSDFs &&
 			MeshSDFTraceDistance == Rhs.MeshSDFTraceDistance &&
@@ -44,7 +47,6 @@ public:
 	TRefCountPtr<IPooledRenderTarget> FastUpdateModeHistoryRT;
 	TRefCountPtr<IPooledRenderTarget> NormalHistoryRT;
 	TRefCountPtr<IPooledRenderTarget> BSDFTileHistoryRT;
-	TRefCountPtr<IPooledRenderTarget> OctahedralSolidAngleTextureRT;
 	FIntRect ProbeHistoryViewRect;
 	FVector4f ProbeHistoryScreenPositionScaleBias;
 	TRefCountPtr<IPooledRenderTarget> HistoryScreenProbeSceneDepth;
@@ -52,6 +54,11 @@ public:
 	TRefCountPtr<IPooledRenderTarget> ProbeHistoryScreenProbeRadiance;
 	TRefCountPtr<IPooledRenderTarget> ImportanceSamplingHistoryScreenProbeRadiance;
 	FLumenGatherCvarState LumenGatherCvars;
+	FIntPoint HistorySceneTexturesExtent;
+	FIntPoint HistoryEffectiveResolution;
+	FIntPoint HistoryOverflowTileOffset;
+	FIntPoint HistoryOverflowTileCount;
+	uint32 HistoryStrataMaxBSDFCount;
 
 	FScreenProbeGatherTemporalState()
 	{
@@ -59,6 +66,11 @@ public:
 		DiffuseIndirectHistoryScreenPositionScaleBias = FVector4f(0, 0, 0, 0);
 		ProbeHistoryViewRect = FIntRect(0, 0, 0, 0);
 		ProbeHistoryScreenPositionScaleBias = FVector4f(0, 0, 0, 0);
+		HistorySceneTexturesExtent = FIntPoint(0,0);
+		HistoryEffectiveResolution = FIntPoint(0,0);
+		HistoryOverflowTileOffset = FIntPoint(0, 0);
+		HistoryOverflowTileCount = FIntPoint(0, 0);
+		HistoryStrataMaxBSDFCount = 0;
 	}
 
 	void SafeRelease()
@@ -70,7 +82,6 @@ public:
 		FastUpdateModeHistoryRT.SafeRelease();
 		NormalHistoryRT.SafeRelease();
 		BSDFTileHistoryRT.SafeRelease();
-		OctahedralSolidAngleTextureRT.SafeRelease();
 		HistoryScreenProbeSceneDepth.SafeRelease();
 		HistoryScreenProbeTranslatedWorldPosition.SafeRelease();
 		ProbeHistoryScreenProbeRadiance.SafeRelease();
@@ -105,17 +116,32 @@ public:
 class FReflectionTemporalState
 {
 public:
+	uint32 HistoryFrameIndex;
 	FIntRect HistoryViewRect;
 	FVector4f HistoryScreenPositionScaleBias;
+	FIntPoint HistorySceneTexturesExtent;
+	FIntPoint HistoryEffectiveResolution;
+	FIntPoint HistoryOverflowTileOffset;
+	FIntPoint HistoryOverflowTileCount;
+	uint32 HistoryStrataMaxBSDFCount;
+
 	TRefCountPtr<IPooledRenderTarget> SpecularIndirectHistoryRT;
 	TRefCountPtr<IPooledRenderTarget> NumFramesAccumulatedRT;
 	TRefCountPtr<IPooledRenderTarget> ResolveVarianceHistoryRT;
 	TRefCountPtr<IPooledRenderTarget> BSDFTileHistoryRT;
+	TRefCountPtr<IPooledRenderTarget> DepthHistoryRT;
+	TRefCountPtr<IPooledRenderTarget> NormalHistoryRT;
 
 	FReflectionTemporalState()
 	{
+		HistoryFrameIndex = 0;
 		HistoryViewRect = FIntRect(0, 0, 0, 0);
 		HistoryScreenPositionScaleBias = FVector4f(0, 0, 0, 0);
+		HistorySceneTexturesExtent = FIntPoint(0,0);
+		HistoryEffectiveResolution = FIntPoint(0,0);
+		HistoryOverflowTileOffset = FIntPoint(0, 0);
+		HistoryOverflowTileCount = FIntPoint(0,0);
+		HistoryStrataMaxBSDFCount = 0;
 	}
 
 	void SafeRelease()
@@ -124,6 +150,8 @@ public:
 		NumFramesAccumulatedRT.SafeRelease();
 		ResolveVarianceHistoryRT.SafeRelease();
 		BSDFTileHistoryRT.SafeRelease();
+		DepthHistoryRT.SafeRelease();
+		NormalHistoryRT.SafeRelease();
 	}
 
 #if WITH_MGPU
@@ -136,6 +164,8 @@ public:
 		TRANSFER_LUMEN_RESOURCE(NumFramesAccumulatedRT);
 		TRANSFER_LUMEN_RESOURCE(ResolveVarianceHistoryRT);
 		TRANSFER_LUMEN_RESOURCE(BSDFTileHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(DepthHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(NormalHistoryRT);
 
 		#undef TRANSFER_LUMEN_RESOURCE
 	}
@@ -194,7 +224,6 @@ public:
 	TRefCountPtr<FRDGPooledBuffer> ProbeLastUsedFrame;
 	TRefCountPtr<FRDGPooledBuffer> ProbeLastTracedFrame;
 	TRefCountPtr<FRDGPooledBuffer> ProbeWorldOffset;
-	TRefCountPtr<IPooledRenderTarget> OctahedralSolidAngleTextureRT;
 
 	void ReleaseTextures()
 	{
@@ -244,6 +273,7 @@ public:
 
 	FScreenProbeGatherTemporalState ScreenProbeGatherState;
 	FReflectionTemporalState ReflectionState;
+	FReflectionTemporalState TranslucentReflectionState;
 	TRefCountPtr<IPooledRenderTarget> DepthHistoryRT;
 
 	// Translucency
@@ -257,6 +287,7 @@ public:
 	{
 		ScreenProbeGatherState.SafeRelease();
 		ReflectionState.SafeRelease();
+		TranslucentReflectionState.SafeRelease();
 		DepthHistoryRT.SafeRelease();
 
 		TranslucencyVolume0.SafeRelease();
@@ -277,6 +308,7 @@ public:
 
 		ScreenProbeGatherState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
 		ReflectionState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
+		TranslucentReflectionState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
 		RadianceCacheState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
 		TranslucencyVolumeRadianceCacheState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
 	}
@@ -287,5 +319,5 @@ public:
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLumenCardPassUniformParameters, RENDERER_API)
 	SHADER_PARAMETER_STRUCT(FSceneTextureUniformParameters, SceneTextures)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()

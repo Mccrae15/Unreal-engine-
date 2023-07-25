@@ -410,7 +410,7 @@ ECommandResult::Type FPerforceSourceControlProvider::Execute( const FSourceContr
 		FFormatNamedArguments Arguments;
 		Arguments.Add( TEXT("OperationName"), FText::FromName(InOperation->GetName()) );
 		Arguments.Add( TEXT("ProviderName"), FText::FromName(GetName()) );
-		FText Message = FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by source control provider '{ProviderName}'"), Arguments);
+		FText Message = FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by revision control provider '{ProviderName}'"), Arguments);
 
 		FMessageLog("SourceControl").Error(Message);
 		InOperation->AddErrorMessge(Message);
@@ -486,12 +486,27 @@ bool FPerforceSourceControlProvider::UsesChangelists() const
 	return true;
 }
 
+bool FPerforceSourceControlProvider::UsesUncontrolledChangelists() const
+{
+	return true;
+}
+
 bool FPerforceSourceControlProvider::UsesCheckout() const
 {
 	return true;
 }
 
 bool FPerforceSourceControlProvider::UsesFileRevisions() const
+{
+	return true;
+}
+
+bool FPerforceSourceControlProvider::UsesSnapshots() const
+{
+	return false;
+}
+
+bool FPerforceSourceControlProvider::AllowsDiffAgainstDepot() const
 {
 	return true;
 }
@@ -689,7 +704,7 @@ bool FPerforceSourceControlProvider::TryToDownloadFileFromBackgroundThread(const
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("OperationName"), FText::FromName(InOperation->GetName()));
 		Arguments.Add(TEXT("ProviderName"), FText::FromName(GetName()));
-		FText Message = FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by source control provider '{ProviderName}'"), Arguments);
+		FText Message = FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by revision control provider '{ProviderName}'"), Arguments);
 
 		InOperation->AddErrorMessge(Message);
 

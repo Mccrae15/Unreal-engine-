@@ -5,24 +5,22 @@
 #include "CoreMinimal.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Misc/NotifyHook.h"
-#include "SPoseSearchDatabaseAssetList.h"
 
 class IDetailsView;
 class FToolBarBuilder;
-class UPoseSearchDatabaseSelectionReflection;
+class UPoseSearchDatabase;
 
 namespace UE::PoseSearch
 {
-	class SDatabasePreview;
+	class FDatabaseAssetTreeNode;
 	class FDatabasePreviewScene;
 	class FDatabaseViewModel;
+	class SDatabaseAssetTree;
+	class SDatabasePreview;
 
 	class FDatabaseEditor : public FAssetEditorToolkit, public FNotifyHook
 	{
 	public:
-
-		FDatabaseEditor();
-		virtual ~FDatabaseEditor();
 
 		void InitAssetEditor(
 			const EToolkitMode::Type Mode,
@@ -41,7 +39,9 @@ namespace UE::PoseSearch
 		UPoseSearchDatabase* GetPoseSearchDatabase();
 		FDatabaseViewModel* GetViewModel() const { return ViewModel.Get(); }
 		TSharedPtr<FDatabaseViewModel> GetViewModelSharedPtr() const { return ViewModel; }
-
+		
+		void SetSelectedAsset(int32 SourceAssetIdx);
+		
 		void BuildSearchIndex();
 
 		void PreviewBackwardEnd();
@@ -59,7 +59,8 @@ namespace UE::PoseSearch
 		TSharedRef<SDockTab> SpawnTab_PreviewSettings(const FSpawnTabArgs& Args);
 		TSharedRef<SDockTab> SpawnTab_AssetTreeView(const FSpawnTabArgs& Args);
 		TSharedRef<SDockTab> SpawnTab_SelectionDetails(const FSpawnTabArgs& Args);
-
+		TSharedRef<SDockTab> SpawnTab_StatisticsOverview(const FSpawnTabArgs& Args) const;
+		
 		void BindCommands();
 		void ExtendToolbar();
 		void FillToolbar(FToolBarBuilder& ToolbarBuilder);
@@ -69,14 +70,26 @@ namespace UE::PoseSearch
 			const TArrayView<TSharedPtr<FDatabaseAssetTreeNode>>& SelectedItems,
 			ESelectInfo::Type SelectionType);
 
+		void RefreshStatisticsWidgetInformation();
+
+		struct FSelectionWidget
+		{
+			TSharedPtr<IDetailsView> DetailView;
+			TArray<TWeakObjectPtr<UObject>> SelectedReflections;
+		};
+		FSelectionWidget& FindOrAddSelectionWidget(const UScriptStruct* ScriptStructType);
+		
 		TSharedPtr<SDatabasePreview> PreviewWidget;
 
 		TSharedPtr<SDatabaseAssetTree> AssetTreeWidget;
 
 		TSharedPtr<IDetailsView> EditingAssetWidget;
 
-		TArray<TSharedPtr<IDetailsView>> SelectionWidgets;
+		TSharedPtr<SVerticalBox> DetailsContainer;
+		TMap<const UScriptStruct*, FSelectionWidget> SelectionWidgets;
 
+		TSharedPtr<IDetailsView> StatisticsOverviewWidget;
+		
 		TSharedPtr<FDatabasePreviewScene> PreviewScene;
 
 		TSharedPtr<FDatabaseViewModel> ViewModel;

@@ -2,6 +2,7 @@
 
 #include "SourceControlHelpers.h"
 #include "Algo/Transform.h"
+#include "AssetRegistry/AssetData.h"
 #include "ISourceControlState.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -11,6 +12,7 @@
 #include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
 #include "ISourceControlLabel.h"
+#include "UObject/Linker.h"
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "Logging/MessageLog.h"
@@ -22,6 +24,8 @@
 #include "Editor.h"
 #include "PackageTools.h"
 #include "ObjectTools.h"
+#include "FileHelpers.h"
+#include "LevelEditorViewport.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "SourceControlHelpers"
@@ -55,7 +59,7 @@ ISourceControlProvider* VerifySourceControl(bool bSilent)
 
 	if (!SCModule.IsEnabled())
 	{
-		LogError(LOCTEXT("SourceControlDisabled", "Source control is not enabled."), bSilent);
+		LogError(LOCTEXT("SourceControlDisabled", "Revision control is not enabled."), bSilent);
 
 		return nullptr;
 	}
@@ -64,7 +68,7 @@ ISourceControlProvider* VerifySourceControl(bool bSilent)
 
 	if (!Provider->IsAvailable())
 	{
-		LogError(LOCTEXT("SourceControlServerUnavailable", "Source control server is currently not available."), bSilent);
+		LogError(LOCTEXT("SourceControlServerUnavailable", "Revision control server is currently not available."), bSilent);
 
 		return nullptr;
 	}
@@ -136,7 +140,7 @@ FString ConvertFileToQualifiedPath(const FString& InFile, bool bSilent, bool bAl
 					SCFile /= FString();
 				}
 				else if (AssociatedExtension)
-			{
+				{
 					// Just use the requested extension
 					SCFile += AssociatedExtension;
 				}
@@ -145,10 +149,10 @@ FString ConvertFileToQualifiedPath(const FString& InFile, bool bSilent, bool bAl
 					// The package does not exist on disk, see if we can find it in memory and predict the file extension
 					UPackage* Package = FindPackage(nullptr, *SCFile);
 					SCFile += (Package && Package->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension());
-					}
 				}
-				else
-				{
+			}
+			else
+			{
 				bPackage = false;
 			}
 		}
@@ -339,7 +343,7 @@ void LogCheckoutFailure(const FString& InFile, const FString& SCFile, FSourceCon
 	}
 	else if (!SCState->IsSourceControlled())
 	{
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("NotSourceControlled", "Could not check out the file '{InFile}' because it is not under source control ({SCFile})."), Arguments), bSilent);
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("NotSourceControlled", "Could not check out the file '{InFile}' because it is not under revision control ({SCFile})."), Arguments), bSilent);
 	}
 	else if (!SCState->IsCurrent())
 	{
@@ -353,7 +357,7 @@ void LogCheckoutFailure(const FString& InFile, const FString& SCFile, FSourceCon
 	else
 	{
 		// Improper or invalid SCC state
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine revision control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
 	}
 }
 
@@ -490,7 +494,7 @@ bool USourceControlHelpers::CheckOutOrAddFile(const FString& InFile, bool bSilen
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
 		Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine revision control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
 
 		return false;
 	}
@@ -539,7 +543,7 @@ bool USourceControlHelpers::CheckOutOrAddFile(const FString& InFile, bool bSilen
 
 	if (bAddFail)
 	{
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("AddFailed", "Failed to add file '{InFile}' to source control ({SCFile})."), Arguments), bSilent);
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("AddFailed", "Failed to add file '{InFile}' to revision control ({SCFile})."), Arguments), bSilent);
 	}
 	else if (!SCState->IsCurrent())
 	{
@@ -553,7 +557,7 @@ bool USourceControlHelpers::CheckOutOrAddFile(const FString& InFile, bool bSilen
 	else
 	{
 		// Improper or invalid SCC state
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine revision control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
 	}
 
 	return false;
@@ -663,7 +667,7 @@ bool USourceControlHelpers::MarkFileForAdd(const FString& InFile, bool bSilent)
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
 		Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine revision control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
 
 		return false;
 	}
@@ -676,7 +680,7 @@ bool USourceControlHelpers::MarkFileForAdd(const FString& InFile, bool bSilent)
 			FFormatNamedArguments Arguments;
 			Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
 			Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-			SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("MarkForAddFailed", "Failed to add file '{InFile}' to source control ({SCFile})."), Arguments), bSilent);
+			SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("MarkForAddFailed", "Failed to add file '{InFile}' to revision control ({SCFile})."), Arguments), bSilent);
 
 			return false;
 		}
@@ -742,7 +746,7 @@ bool USourceControlHelpers::MarkFileForDelete(const FString& InFile, bool bSilen
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
 		Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine revision control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
 
 		return false;
 	}
@@ -758,7 +762,7 @@ bool USourceControlHelpers::MarkFileForDelete(const FString& InFile, bool bSilen
 				FFormatNamedArguments Arguments;
 				Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
 				Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-				SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotRevert", "Could not revert source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+				SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotRevert", "Could not revert revision control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
 
 				return false;
 			}
@@ -772,7 +776,7 @@ bool USourceControlHelpers::MarkFileForDelete(const FString& InFile, bool bSilen
 				FFormatNamedArguments Arguments;
 				Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
 				Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-				SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDelete", "Could not delete file '{InFile}' from source control ({SCFile})."), Arguments), bSilent);
+				SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDelete", "Could not delete file '{InFile}' from revision control ({SCFile})."), Arguments), bSilent);
 
 				return false;
 			}
@@ -905,7 +909,7 @@ bool USourceControlHelpers::RevertFile(const FString& InFile, bool bSilent)
 }
 
 #if WITH_EDITOR
-bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString>& InFilenames, const TFunctionRef<bool(const TArray<FString>&)>& InOperation)
+bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString>& InFilenames,	const TFunctionRef<bool(const TArray<FString>&)>& InOperation, bool bReloadWorld, bool bInteractive)
 {
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 	TArray<UPackage*> LoadedPackages;
@@ -913,6 +917,16 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 	TArray<FString> PackageFilenames;
 	TArray<FString> FilteredActorPackages;
 	bool bSuccess = false;
+
+	auto DetachLinker = [](UPackage* Package)
+	{
+		if (!Package->IsFullyLoaded())
+		{
+			FlushAsyncLoading();
+			Package->FullyLoad();
+		}
+		ResetLoaders(Package);
+	};
 
 	// Normalize packagenames and filenames
 	for (const FString& Filename : InFilenames)
@@ -930,16 +944,44 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 	}
 
 	// Remove packages if they are loaded actors or world
-	PackageNames.RemoveAll([&FilteredActorPackages, &LoadedPackages](const FString& PackageName) -> bool
+	bool bWorldFound = false;
+	PackageNames.RemoveAll([&FilteredActorPackages, &LoadedPackages, bReloadWorld, &DetachLinker, &bWorldFound](const FString& PackageName) -> bool
 	{
 		UPackage* Package = FindPackage(NULL, *PackageName);
 		
 		if (Package != nullptr)
 		{
-			if (UWorld::IsWorldOrExternalActorPackage(Package))
+			if (UWorld* World = UWorld::FindWorldInPackage(Package); World)
 			{
-				FilteredActorPackages.Emplace(PackageName);
-				return true; // remove the package
+				if (!bReloadWorld)
+				{
+					FilteredActorPackages.Emplace(PackageName);
+					return true; // remove the package
+				}
+				else
+				{
+					bWorldFound = true;
+				}
+			}
+			else if (AActor* Actor = AActor::FindActorInPackage(Package))
+			{
+				if (bReloadWorld)
+				{
+					DetachLinker(Package);
+
+					if (!bWorldFound && Actor->GetWorld())
+					{
+						bWorldFound = true;
+						LoadedPackages.Add(Actor->GetWorld()->GetPackage());
+					}
+
+					return false;
+				}
+				else if (Actor->IsPackageExternal())
+				{
+					FilteredActorPackages.Emplace(PackageName);
+					return true; // remove the package
+				}				
 			}
 
 			LoadedPackages.Add(Package);
@@ -962,12 +1004,7 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 	for (UPackage* Package : LoadedPackages)
 	{
 		// Detach the linkers of any loaded packages so that SCC can overwrite the files...
-		if (!Package->IsFullyLoaded())
-		{
-			FlushAsyncLoading();
-			Package->FullyLoad();
-		}
-		ResetLoaders(Package);
+		DetachLinker(Package);
 	}
 
 	PackageFilenames = SourceControlHelpers::PackageFilenames(PackageNames);
@@ -999,13 +1036,44 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 		return false; // keep package
 	});
 
+	struct FCameraView
+	{
+		FVector Location;
+		FRotator Rotation;
+	};
+	TMap<FLevelEditorViewportClient*, FCameraView> CameraViews;
+
+	if (bReloadWorld)
+	{
+		// As we're reloading the world, we retain the camera views so they can be restored after the reload.
+		for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
+		{
+			CameraViews.Add(LevelVC, { LevelVC->GetViewLocation(), LevelVC->GetViewRotation() });
+		}
+	}
+
 	// Hot-reload the new packages...
 	FText OutReloadErrorMsg;
-	const bool bInteractive = true;
-	UPackageTools::ReloadPackages(LoadedPackages, OutReloadErrorMsg, EReloadPackagesInteractionMode::Interactive);
+	UPackageTools::ReloadPackages(LoadedPackages, OutReloadErrorMsg, bInteractive ? EReloadPackagesInteractionMode::Interactive : EReloadPackagesInteractionMode::AssumePositive);
 	if (!OutReloadErrorMsg.IsEmpty())
 	{
 		UE_LOG(LogSourceControl, Warning, TEXT("%s"), *OutReloadErrorMsg.ToString());
+	}
+
+	if (bReloadWorld)
+	{
+		// Restore the camera views after a world reload if necessary...
+		for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
+		{
+			const FCameraView& CameraView = CameraViews.FindChecked(LevelVC);
+			LevelVC->SetViewLocation(CameraView.Location);
+			if (!LevelVC->IsOrtho())
+			{
+				LevelVC->SetViewRotation(CameraView.Rotation);
+			}
+			LevelVC->Invalidate();
+			FEditorDelegates::OnEditorCameraMoved.Broadcast(CameraView.Location, CameraView.Rotation, LevelVC->ViewportType, LevelVC->ViewIndex);
+		}
 	}
 
 	// Delete and Unload assets...
@@ -1015,14 +1083,96 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 	}
 	
 	// Re-cache the SCC state...
-	SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames, EConcurrency::Asynchronous);
+	if (bReloadWorld)
+	{
+		auto UpdateCommand = ISourceControlOperation::Create<FUpdateStatus>();
+		UpdateCommand->SetCheckingAllFiles(true);
+		UpdateCommand->SetForceUpdate(true);
+		SourceControlProvider.Execute(UpdateCommand, EConcurrency::Asynchronous);
+	}
+	else
+	{
+		SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames, EConcurrency::Asynchronous);
+	}
 
 	return bSuccess;
 }
 
-bool USourceControlHelpers::RevertAndReloadPackages(const TArray<FString>& InFilenames)
+TArray<FString> USourceControlHelpers::GetSourceControlLocations(const bool bContentOnly)
 {
-	auto RevertOperation = [](const TArray<FString>& InFilenames) -> bool
+	TArray<FString> SourceControlLocations;
+
+	{
+		TArray<FString> RootPaths;
+		FPackageName::QueryRootContentPaths(RootPaths);
+		for (const FString& RootPath : RootPaths)
+		{
+			const FString RootPathOnDisk = FPackageName::LongPackageNameToFilename(RootPath);
+			SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(RootPathOnDisk));
+		}
+	}
+
+	if (!bContentOnly)
+	{
+		SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(FPaths::ProjectConfigDir()));
+		SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
+	}
+
+	return SourceControlLocations;
+}
+
+bool USourceControlHelpers::ListRevertablePackages(TArray<FString>& OutRevertablePackageNames)
+{
+	if (!ISourceControlModule::Get().IsEnabled() || !ISourceControlModule::Get().GetProvider().IsAvailable())
+	{
+		return false;
+	}
+
+	// update status for all packages
+	TArray<FString> Filenames;
+	if (ISourceControlModule::Get().UsesCustomProjectDir())
+	{
+		FString SourceControlProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
+		Filenames.Add(SourceControlProjectDir);
+	}
+	else
+	{
+		Filenames = GetSourceControlLocations();
+	}
+	
+	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+	FSourceControlOperationRef Operation = ISourceControlOperation::Create<FUpdateStatus>();
+	if (SourceControlProvider.Execute(Operation, Filenames) != ECommandResult::Succeeded)
+	{
+		return false;
+	}
+
+	// Get a list of all the revertable packages	
+	TMap<FString, FSourceControlStatePtr> PackageStates;
+	FEditorFileUtils::FindAllSubmittablePackageFiles(PackageStates, true);
+
+	for (auto& PackageState : PackageStates)
+	{
+		const FString PackageName = PackageState.Key;
+		OutRevertablePackageNames.Add(PackageName);
+	}
+
+	return true;
+}
+
+bool USourceControlHelpers::RevertAllChangesAndReloadWorld()
+{
+	TArray<FString> PackagesToReload;
+	ListRevertablePackages(PackagesToReload);
+
+	RevertAndReloadPackages(PackagesToReload, /*bRevertAll=*/true, /*bReloadWorld=*/true);
+
+	return true;
+}
+
+bool USourceControlHelpers::RevertAndReloadPackages(const TArray<FString>& InPackagesToRevert, bool bRevertAll, bool bReloadWorld)
+{
+	auto RevertOperation = [bRevertAll](const TArray<FString>& InPackagesToRevert) -> bool
 	{
 		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 
@@ -1035,10 +1185,17 @@ bool USourceControlHelpers::RevertAndReloadPackages(const TArray<FString>& InFil
 			}
 		});
 
-		return SourceControlProvider.Execute(ISourceControlOperation::Create<FRevert>(), InFilenames, EConcurrency::Synchronous, OperationCompleteCallback) == ECommandResult::Succeeded;
+		auto RevertOperation = ISourceControlOperation::Create<FRevert>();
+
+		if (bRevertAll)
+		{
+			RevertOperation->SetRevertAll(true);
+		}
+
+		return SourceControlProvider.Execute(RevertOperation, InPackagesToRevert, EConcurrency::Synchronous, OperationCompleteCallback) == ECommandResult::Succeeded;
 	};
 
-	return ApplyOperationAndReloadPackages(InFilenames, RevertOperation);
+	return ApplyOperationAndReloadPackages(InPackagesToRevert,RevertOperation, bReloadWorld);
 }
 #endif //!WITH_EDITOR
 
@@ -1288,7 +1445,7 @@ FSourceControlState USourceControlHelpers::QueryFileState(const FString& InFile,
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
 		Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine revision control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
 
 		return State;
 	}
@@ -1354,7 +1511,7 @@ void USourceControlHelpers::AsyncQueryFileState(FQueryFileStateDelegate FileStat
 				FFormatNamedArguments Arguments;
 				Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
 				Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-				SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+				SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine revision control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
 
 				FileStateCallback.ExecuteIfBound(State);
 				return;
@@ -1463,7 +1620,16 @@ FString USourceControlHelpers::PackageFilename( const UPackage* InPackage )
 	FString Filename;
 	if(InPackage != nullptr)
 	{
-		Filename = FPaths::ConvertRelativePathToFull(PackageFilename_Internal(InPackage->GetName()));
+		// Prefer using package loaded path to resolve file name as it properly resolves memory packages
+		if (!InPackage->GetLoadedPath().IsEmpty())
+		{
+			const FString PackageExtension = InPackage->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension();
+			Filename = FPaths::ConvertRelativePathToFull(FPackageName::LongPackageNameToFilename(InPackage->GetLoadedPath().GetPackageName(), PackageExtension));
+		}
+		else
+		{
+			Filename = FPaths::ConvertRelativePathToFull(PackageFilename_Internal(InPackage->GetName()));
+		}
 	}
 	return Filename;
 }

@@ -3246,13 +3246,13 @@ bool FVectorRegisterAbstractionTest::RunTest(const FString& Parameters)
 		D = FMath::Min(D1, I1);
 
 		// Test compilation mixing int32/int64 types
-		static_assert(TIsSame< decltype(FMath::Max(Big1, I1)), decltype(Big1) >::Value);
-		static_assert(TIsSame< decltype(FMath::Min(I1, Big1)), decltype(Big1) >::Value);
+		static_assert(std::is_same_v< decltype(FMath::Max(Big1, I1)), decltype(Big1) >);
+		static_assert(std::is_same_v< decltype(FMath::Min(I1, Big1)), decltype(Big1) >);
 		Big3 = FMath::Max(Big1, I1);
 		Big3 = FMath::Min(Big1, I1);
 
-		static_assert(TIsSame< decltype(FMath::Max(I1, Big2)), decltype(Big1) >::Value);
-		static_assert(TIsSame< decltype(FMath::Min(Big2, I1)), decltype(Big1) >::Value);
+		static_assert(std::is_same_v< decltype(FMath::Max(I1, Big2)), decltype(Big1) >);
+		static_assert(std::is_same_v< decltype(FMath::Min(Big2, I1)), decltype(Big1) >);
 		Big3 = FMath::Max(I1, Big2);
 		Big3 = FMath::Min(I1, Big2);
 
@@ -3291,6 +3291,45 @@ bool FVectorRegisterAbstractionTest::RunTest(const FString& Parameters)
 		// Possibly invalid, depending on the generic base FloatToIntCastChecked, since this doesn't match a specialization
 		Big1 = UE::LWC::FloatToIntCastChecked<int32>(I);
 #endif
+
+		// Test FloatToIntCastChecked() range limits
+
+		// float->int32
+		I = UE::LWC::FloatToIntCastChecked<int32>(float(TNumericLimits<int32>::Max() - 64));
+		I = UE::LWC::FloatToIntCastChecked<int32>(float(TNumericLimits<int32>::Lowest()));
+
+		// float->int64
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(float(TNumericLimits<int32>::Max()));
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(float(TNumericLimits<int32>::Lowest()));
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(float(TNumericLimits<int64>::Max() - (int64)549755813888)); // 2^63 - 1 - 2^39
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(float(TNumericLimits<int64>::Lowest()));
+		
+		// double->int32
+		I = UE::LWC::FloatToIntCastChecked<int32>(double(TNumericLimits<int32>::Max()));
+		I = UE::LWC::FloatToIntCastChecked<int32>(double(TNumericLimits<int32>::Lowest()));
+
+		// double->int64
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(double(TNumericLimits<int64>::Max() - 512));
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(double(TNumericLimits<int64>::Lowest()));
+
+#if MATHTEST_CHECK_INVALID_OVERLOAD_VARIANTS
+		// These should all assert
+		I = UE::LWC::FloatToIntCastChecked<int32>(float(TNumericLimits<int32>::Max()));
+		I = UE::LWC::FloatToIntCastChecked<int32>(TNumericLimits<float>::Max());
+		I = UE::LWC::FloatToIntCastChecked<int32>(TNumericLimits<float>::Lowest());
+
+		I = UE::LWC::FloatToIntCastChecked<int32>(TNumericLimits<double>::Max());
+		I = UE::LWC::FloatToIntCastChecked<int32>(TNumericLimits<double>::Lowest());
+
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(float(TNumericLimits<int64>::Max()));
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(TNumericLimits<float>::Max());
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(TNumericLimits<float>::Lowest());
+
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(double(TNumericLimits<int64>::Max()));
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(TNumericLimits<double>::Max());
+		Big1 = UE::LWC::FloatToIntCastChecked<int64>(TNumericLimits<double>::Lowest());
+#endif
+
 	}
 
 	// Sin, Cos, Tan tests

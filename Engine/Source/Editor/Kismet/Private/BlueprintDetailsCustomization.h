@@ -178,6 +178,9 @@ private:
 	void OnVarTypeChanged(const FEdGraphPinType& NewPinType);
 	EVisibility IsTooltipEditVisible() const;
 
+	void OnBrowseToVarType() const;
+	bool CanBrowseToVarType() const;
+
 	/**
 	 * Callback when changing a variable property
 	 *
@@ -776,6 +779,10 @@ private:
 	void OnIsThreadSafeFunctionModified(const ECheckBoxState NewCheckedState);
 	ECheckBoxState GetIsThreadSafeFunction() const;
 	
+	bool IsUnsafeDuringActorConstructionVisible() const;
+	void OnIsUnsafeDuringActorConstructionModified(const ECheckBoxState NewCheckedState);
+	ECheckBoxState GetIsUnsafeDuringActorConstruction() const;
+
 	/** Determines if the selected event is identified as editor callable */
 	ECheckBoxState GetIsEditorCallableEvent() const;
 

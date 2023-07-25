@@ -3,6 +3,7 @@
 #pragma once
 
 #include "GLTFMaterialExpressions.h"
+#include "UObject/StrongObjectPtr.h"
 
 class UMaterialExpression;
 class UMaterial;
@@ -29,6 +30,8 @@ public:
 	virtual void SetBlendMode(int InBlendMode) override;
 	virtual bool GetTwoSided() const override;
 	virtual void SetTwoSided(bool bTwoSided) override;
+	virtual bool GetIsThinSurface() const override;
+	virtual void SetIsThinSurface(bool bIsThinSurface) override;
 	virtual void SetShadingModel(GLTF::EGLTFMaterialShadingModel InShadingModel);
 	virtual void SetTranslucencyLightingMode(int InLightingMode) override;
 	virtual void Finalize() override;

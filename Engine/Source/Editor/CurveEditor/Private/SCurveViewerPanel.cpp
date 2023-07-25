@@ -38,6 +38,7 @@ void SCurveViewerPanel::Construct(const FArguments& InArgs, TSharedRef<FCurveEdi
 	CurveThickness = InArgs._CurveThickness;
 
 	InCurveEditor->SetView(SharedThis(this));
+	CachedValues.CachedTangentVisibility = InCurveEditor->GetSettings()->GetTangentVisibility();
 
 	for (const TPair<FCurveModelID, TUniquePtr<FCurveModel>>& CurvePair : InCurveEditor->GetCurves())
 	{
@@ -96,8 +97,8 @@ void SCurveViewerPanel::DrawCurves(const FGeometry& AllottedGeometry, FSlateWind
 				PointTint = HSV.HSVToLinearRGB();
 
 				FPaintGeometry PointGeometry = AllottedGeometry.ToPaintGeometry(
-					Point.ScreenPosition - (PointDrawInfo.ScreenSize * 0.5f),
-					PointDrawInfo.ScreenSize
+					PointDrawInfo.ScreenSize,
+					FSlateLayoutTransform(Point.ScreenPosition - (PointDrawInfo.ScreenSize * 0.5f))
 				);
 
 				FSlateDrawElement::MakeBox(OutDrawElements, KeyLayerId, PointGeometry, PointDrawInfo.Brush, DrawEffects, PointTint );

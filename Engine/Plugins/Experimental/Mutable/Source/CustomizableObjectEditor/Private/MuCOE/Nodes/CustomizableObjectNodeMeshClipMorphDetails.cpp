@@ -2,42 +2,16 @@
 
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshClipMorphDetails.h"
 
-#include "Containers/UnrealString.h"
-#include "Delegates/Delegate.h"
-#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
-#include "DetailWidgetRow.h"
 #include "Engine/SkeletalMesh.h"
-#include "Fonts/SlateFontInfo.h"
-#include "HAL/PlatformCrt.h"
 #include "IDetailsView.h"
-#include "Internationalization/Internationalization.h"
-#include "Layout/Margin.h"
-#include "Math/Transform.h"
-#include "Math/TransformVectorized.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
-#include "Misc/Attribute.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCOE/CustomizableObjectEditorUtilities.h"
 #include "MuCOE/CustomizableObjectGraph.h"
 #include "MuCOE/GraphTraversal.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshClipMorph.h"
 #include "PropertyCustomizationHelpers.h"
-#include "PropertyHandle.h"
-#include "ReferenceSkeleton.h"
-#include "SlotBase.h"
-#include "Styling/AppStyle.h"
-#include "Templates/Casts.h"
-#include "UObject/NameTypes.h"
-#include "UObject/WeakObjectPtr.h"
-#include "UObject/WeakObjectPtrTemplates.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/STextComboBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Text/STextBlock.h"
 
 class UCustomizableObjectNodeObject;
 
@@ -108,7 +82,7 @@ void FCustomizableObjectNodeMeshClipMorphDetails::CustomizeDetails(IDetailLayout
 		{
 			BoneComboOptions.Empty();
 				
-			for (int32 i = 0; i < SkeletalMesh->GetRefSkeleton().GetNum(); ++i)
+			for (int32 i = 0; i < SkeletalMesh->GetRefSkeleton().GetRawBoneNum(); ++i)
 			{
 				FName BoneName = SkeletalMesh->GetRefSkeleton().GetBoneName(i);
 				BoneComboOptions.Add(MakeShareable(new FString(BoneName.ToString())));
@@ -252,7 +226,7 @@ void FCustomizableObjectNodeMeshClipMorphDetails::OnBoneComboBoxSelectionChanged
 
 			//			int32 NextBone = -1;
 
-			//			for (int32 i = 0; i < SkeletalMesh->RefSkeleton.GetNum(); ++i)
+			//			for (int32 i = 0; i < SkeletalMesh->RefSkeleton.GetRawBoneNum(); ++i)
 			//			{
 			//				if (SkeletalMesh->RefSkeleton.GetParentIndex(i) == CurrentBone)
 			//				{
@@ -281,7 +255,7 @@ void FCustomizableObjectNodeMeshClipMorphDetails::OnBoneComboBoxSelectionChanged
 
 				FVector ChildLocation = FVector::ForwardVector;
 
-				for (int32 i = 0; i < SkeletalMesh->GetRefSkeleton().GetNum(); ++i)
+				for (int32 i = 0; i < SkeletalMesh->GetRefSkeleton().GetRawBoneNum(); ++i)
 				{
 					if (SkeletalMesh->GetRefSkeleton().GetParentIndex(i) == ParentIndex)
 					{

@@ -4,14 +4,19 @@
 RHIUtilities.cpp:
 =============================================================================*/
 
-#include "CoreMinimal.h"
+#include "RHIUtilities.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "HAL/PlatformStackWalk.h"
-#include "HAL/IConsoleManager.h"
+#include "Containers/ClosableMpscQueue.h"
 #include "RHI.h"
+#include "GenericPlatform/GenericPlatformFramePacer.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
-#include "Misc/ScopeLock.h"
 #include "HAL/PlatformFramePacer.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "RHIAccess.h"
+#include "RHIFwd.h"
+#include "RHIStrings.h"
 
 #define USE_FRAME_OFFSET_THREAD 1
 
@@ -657,6 +662,81 @@ RHI_API ERHIAccess RHIGetDefaultResourceState(EBufferUsageFlags InUsage, bool bI
 	return ResourceState;
 }
 
+void DecodeRenderTargetMode(ESimpleRenderTargetMode Mode, ERenderTargetLoadAction& ColorLoadAction, ERenderTargetStoreAction& ColorStoreAction, ERenderTargetLoadAction& DepthLoadAction, ERenderTargetStoreAction& DepthStoreAction, ERenderTargetLoadAction& StencilLoadAction, ERenderTargetStoreAction& StencilStoreAction, FExclusiveDepthStencil DepthStencilUsage)
+{
+	// set defaults
+	ColorStoreAction = ERenderTargetStoreAction::EStore;
+	DepthStoreAction = ERenderTargetStoreAction::EStore;
+	StencilStoreAction = ERenderTargetStoreAction::EStore;
+
+	switch (Mode)
+	{
+	case ESimpleRenderTargetMode::EExistingColorAndDepth:
+		ColorLoadAction = ERenderTargetLoadAction::ELoad;
+		DepthLoadAction = ERenderTargetLoadAction::ELoad;
+		break;
+	case ESimpleRenderTargetMode::EUninitializedColorAndDepth:
+		ColorLoadAction = ERenderTargetLoadAction::ENoAction;
+		DepthLoadAction = ERenderTargetLoadAction::ENoAction;
+		break;
+	case ESimpleRenderTargetMode::EUninitializedColorExistingDepth:
+		ColorLoadAction = ERenderTargetLoadAction::ENoAction;
+		DepthLoadAction = ERenderTargetLoadAction::ELoad;
+		break;
+	case ESimpleRenderTargetMode::EUninitializedColorClearDepth:
+		ColorLoadAction = ERenderTargetLoadAction::ENoAction;
+		DepthLoadAction = ERenderTargetLoadAction::EClear;
+		break;
+	case ESimpleRenderTargetMode::EClearColorExistingDepth:
+		ColorLoadAction = ERenderTargetLoadAction::EClear;
+		DepthLoadAction = ERenderTargetLoadAction::ELoad;
+		break;
+	case ESimpleRenderTargetMode::EClearColorAndDepth:
+		ColorLoadAction = ERenderTargetLoadAction::EClear;
+		DepthLoadAction = ERenderTargetLoadAction::EClear;
+		break;
+	case ESimpleRenderTargetMode::EExistingContents_NoDepthStore:
+		ColorLoadAction = ERenderTargetLoadAction::ELoad;
+		DepthLoadAction = ERenderTargetLoadAction::ELoad;
+		DepthStoreAction = ERenderTargetStoreAction::ENoAction;
+		break;
+	case ESimpleRenderTargetMode::EExistingColorAndClearDepth:
+		ColorLoadAction = ERenderTargetLoadAction::ELoad;
+		DepthLoadAction = ERenderTargetLoadAction::EClear;
+		break;
+	case ESimpleRenderTargetMode::EExistingColorAndDepthAndClearStencil:
+		ColorLoadAction = ERenderTargetLoadAction::ELoad;
+		DepthLoadAction = ERenderTargetLoadAction::ELoad;
+		break;
+	default:
+		UE_LOG(LogRHI, Fatal, TEXT("Using a ESimpleRenderTargetMode that wasn't decoded in DecodeRenderTargetMode [value = %d]"), (int32)Mode);
+	}
+
+	StencilLoadAction = DepthLoadAction;
+
+	if (!DepthStencilUsage.IsUsingDepth())
+	{
+		DepthLoadAction = ERenderTargetLoadAction::ENoAction;
+	}
+
+	//if we aren't writing to depth, there's no reason to store it back out again.  Should save some bandwidth on mobile platforms.
+	if (!DepthStencilUsage.IsDepthWrite())
+	{
+		DepthStoreAction = ERenderTargetStoreAction::ENoAction;
+	}
+
+	if (!DepthStencilUsage.IsUsingStencil())
+	{
+		StencilLoadAction = ERenderTargetLoadAction::ENoAction;
+	}
+
+	//if we aren't writing to stencil, there's no reason to store it back out again.  Should save some bandwidth on mobile platforms.
+	if (!DepthStencilUsage.IsStencilWrite())
+	{
+		StencilStoreAction = ERenderTargetStoreAction::ENoAction;
+	}
+}
+
 void RHICreateTargetableShaderResource(
 	const FRHITextureCreateDesc& BaseDesc,
 	ETextureCreateFlags TargetableTextureFlags,
@@ -913,4 +993,9 @@ void RHICreateTargetableShaderResource3D(
 		.SetGPUMask(CreateInfo.GPUMask);
 
 	RHICreateTargetableShaderResource(Desc, TargetableTextureFlags, bForceSeparateTargetAndShaderResource, false, OutTargetableTexture, OutShaderResourceTexture);
+}
+
+void FRHILockTracker::RaiseMismatchError()
+{
+	UE_LOG(LogRHI, Fatal, TEXT("Mismatched RHI buffer locks."));
 }

@@ -36,17 +36,6 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Gets the default architecture for a given platform
-		/// </summary>
-		/// <param name="Platform">The platform to get the default architecture for</param>
-		/// <param name="ProjectFile">Project file to read settings from</param>
-		/// <returns>The default architecture</returns>
-		public static string GetDefaultArchitecture(UnrealTargetPlatform Platform, FileReference ProjectFile)
-		{
-			return UEBuildPlatform.GetBuildPlatform(Platform).GetDefaultArchitecture(ProjectFile);
-		}
-
-		/// <summary>
 		/// Checks whether the given project has a default build configuration
 		/// </summary>
 		/// <param name="ProjectFile">The project file</param>

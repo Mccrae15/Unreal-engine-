@@ -8,7 +8,6 @@
 
 #include "VulkanResources.h"
 #include "VulkanGPUProfiler.h"
-#include "VulkanBarriers.h"
 
 class FVulkanDevice;
 class FVulkanCommandBufferManager;
@@ -55,6 +54,8 @@ public:
 	virtual void RHISetShaderUniformBuffer(FRHIComputeShader* ComputeShader, uint32 BufferIndex, FRHIUniformBuffer* Buffer) final override;
 	virtual void RHISetShaderParameter(FRHIGraphicsShader* Shader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue) final override;
 	virtual void RHISetShaderParameter(FRHIComputeShader* ComputeShader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue) final override;
+	virtual void RHISetShaderParameters(FRHIGraphicsShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters) final override;
+	virtual void RHISetShaderParameters(FRHIComputeShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters) final override;
 	virtual void RHISetStencilRef(uint32 StencilRef) final override;
 	virtual void RHIDrawPrimitive(uint32 BaseVertexIndex, uint32 NumPrimitives, uint32 NumInstances) final override;
 	virtual void RHIDrawPrimitiveIndirect(FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset) final override;
@@ -83,6 +84,7 @@ public:
 	// Render time measurement
 	virtual void RHIBeginRenderQuery(FRHIRenderQuery* RenderQuery) final override;
 	virtual void RHIEndRenderQuery(FRHIRenderQuery* RenderQuery) final override;
+	virtual void RHICalibrateTimers(FRHITimestampCalibrationQuery* CalibrationQuery) final override;
 
 	virtual void RHISubmitCommandsHint() final override;
 
@@ -104,7 +106,6 @@ public:
 	virtual void RHIBindAccelerationStructureMemory(FRHIRayTracingScene* Scene, FRHIBuffer* Buffer, uint32 BufferOffset) final override;
 	virtual void RHIBuildAccelerationStructures(const TArrayView<const FRayTracingGeometryBuildParams> Params, const FRHIBufferRange& ScratchBufferRange) final override;
 	virtual void RHIBuildAccelerationStructure(const FRayTracingSceneBuildParams& SceneBuildParams) final override;
-	virtual void RHIRayTraceOcclusion(FRHIRayTracingScene* Scene, FRHIShaderResourceView* Rays, FRHIUnorderedAccessView* Output, uint32 NumRays) final override;
 #endif
 
 	inline FVulkanCommandBufferManager* GetCommandBufferManager()
@@ -129,17 +130,26 @@ public:
 
 	inline void NotifyDeletedRenderTarget(VkImage Image)
 	{
-		LayoutManager.NotifyDeletedRenderTarget(*Device, Image);
+		if (CurrentFramebuffer && CurrentFramebuffer->ContainsRenderTarget(Image))
+		{
+			CurrentFramebuffer = nullptr;
+		}
 	}
 
 	inline void NotifyDeletedImage(VkImage Image)
 	{
-		LayoutManager.NotifyDeletedImage(Image);
+		CommandBufferManager->NotifyDeletedImage(Image);
+		Queue->NotifyDeletedImage(Image);
 	}
 
 	inline FVulkanRenderPass* GetCurrentRenderPass()
 	{
-		return LayoutManager.CurrentRenderPass;
+		return CurrentRenderPass;
+	}
+
+	inline FVulkanFramebuffer* GetCurrentFramebuffer()
+	{
+		return CurrentFramebuffer;
 	}
 
 	inline uint64 GetFrameCounter() const
@@ -172,9 +182,12 @@ public:
 		return Device;
 	}
 
-	void EndRenderQueryInternal(FVulkanCmdBuffer* CmdBuffer, FVulkanRenderQuery* Query);
+	void BeginRecursiveCommand()
+	{
+		// Nothing to do
+	}
 
-	void PrepareParallelFromBase(const FVulkanCommandListContext& BaseContext);
+	void EndRenderQueryInternal(FVulkanCmdBuffer* CmdBuffer, FVulkanRenderQuery* Query);
 
 	void ReleasePendingState();
 
@@ -198,7 +211,8 @@ protected:
 
 	FVulkanCommandBufferManager* CommandBufferManager;
 
-	static VULKANRHI_API FVulkanLayoutManager LayoutManager;
+	FVulkanRenderPass* CurrentRenderPass = nullptr;
+	FVulkanFramebuffer* CurrentFramebuffer = nullptr;
 
 	FVulkanOcclusionQueryPool* CurrentOcclusionQueryPool = nullptr;
 
@@ -218,11 +232,6 @@ public:
 	VkSurfaceTransformFlagBitsKHR GetSwapchainQCOMRenderPassTransform() const;
 	VkFormat GetSwapchainImageFormat() const;
 	FVulkanSwapChain* GetSwapChain() const;
-
-	inline FVulkanLayoutManager& GetLayoutManager()
-	{
-		return LayoutManager;
-	}
 
 	FVulkanRenderPass* PrepareRenderPassForPSOCreation(const FGraphicsPipelineStateInitializer& Initializer);
 	FVulkanRenderPass* PrepareRenderPassForPSOCreation(const FVulkanRenderTargetLayout& Initializer);

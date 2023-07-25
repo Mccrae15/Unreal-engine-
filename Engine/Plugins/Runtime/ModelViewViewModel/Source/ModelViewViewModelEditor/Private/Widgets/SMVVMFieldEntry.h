@@ -2,14 +2,13 @@
 
 #pragma once
 
-#include "Delegates/Delegate.h"
 #include "MVVMPropertyPath.h"
 #include "Styling/CoreStyle.h"
-#include "Templates/ValueOrError.h"
-#include "UObject/UnrealType.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Styling/SlateTypes.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Styling/SlateWidgetStyleAsset.h"
+
+template <typename ValueType, typename ErrorType> class TValueOrError;
 
 class SHorizontalBox;
 
@@ -29,6 +28,7 @@ public:
 	{}
 		SLATE_STYLE_ARGUMENT(FTextBlockStyle, TextStyle)
 		SLATE_ARGUMENT(FMVVMBlueprintPropertyPath, Field)
+		SLATE_ARGUMENT(bool, ShowOnlyLast)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -39,6 +39,7 @@ private:
 	const FTextBlockStyle* TextStyle = nullptr;
 	FMVVMBlueprintPropertyPath Field;
 	TSharedPtr<SHorizontalBox> FieldBox;
+	bool bShowOnlyLast = false;
 };
 
 } // namespace UE::MVVM

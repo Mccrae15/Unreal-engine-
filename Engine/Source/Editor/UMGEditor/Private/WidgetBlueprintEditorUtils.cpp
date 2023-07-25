@@ -4,6 +4,7 @@
 #include "Components/PanelSlot.h"
 #include "Components/PanelWidget.h"
 #include "Components/ContentWidget.h"
+#include "Engine/Texture2D.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "Internationalization/TextPackageNamespaceUtil.h"
@@ -23,6 +24,7 @@
 #include "Exporters/Exporter.h"
 #include "ObjectEditorUtils.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 
 #include "Animation/WidgetAnimation.h"
@@ -2026,6 +2028,24 @@ FString FWidgetBlueprintEditorUtils::FindNextValidName(UWidgetTree* WidgetTree, 
 	return Name;
 }
 
+UWidgetTree* FWidgetBlueprintEditorUtils::FindLatestWidgetTree(UWidgetBlueprint* Blueprint, UUserWidget* UserWidget)
+{
+	UWidgetTree* LatestWidgetTree = Blueprint->WidgetTree;
+
+	// If there is no RootWidget, we look for a WidgetTree in the parents classes until we find one.
+	if (LatestWidgetTree->RootWidget == nullptr)
+	{
+		UWidgetBlueprintGeneratedClass* BGClass = UserWidget->GetWidgetTreeOwningClass();
+		// If we find a class that owns the widget tree, just make sure it's not our current class, that would imply we've removed all the widgets
+		// from this current tree, and if we use this classes compiled tree it's going to be the outdated old version.
+		if (BGClass && BGClass != Blueprint->GeneratedClass)
+		{
+			LatestWidgetTree = BGClass->GetWidgetTreeArchetype();
+		}
+	}
+	return LatestWidgetTree;
+}
+
 int32 FWidgetBlueprintEditorUtils::UpdateHittestGrid(FHittestGrid& HitTestGrid, TSharedRef<SWindow> Window, float Scale, FVector2D DrawSize, float DeltaTime)
 {
 	FSlateApplication::Get().InvalidateAllWidgets(false);
@@ -2126,7 +2146,7 @@ float FWidgetBlueprintEditorUtils::GetWidgetPreviewDPIScale(UUserWidget* UserWid
 		}
 	}
 
-	return GetDefault<UUserInterfaceSettings>(UUserInterfaceSettings::StaticClass())->GetDPIScaleBasedOnSize(FIntPoint(PreviewSize.X, PreviewSize.Y));
+	return GetDefault<UUserInterfaceSettings>()->GetDPIScaleBasedOnSize(FIntPoint(PreviewSize.X, PreviewSize.Y));
 }
 
 

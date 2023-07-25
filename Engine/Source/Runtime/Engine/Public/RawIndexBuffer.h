@@ -282,24 +282,10 @@ public:
 	void CopyRHIForStreaming(const FRawStaticIndexBuffer& Other, bool InAllowCPUAccess);
 
 	/** Take over ownership of IntermediateBuffer */
-	template <uint32 MaxNumUpdates>
-	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
-	{
-		if (IndexBufferRHI && IntermediateBuffer)
-		{
-			Batcher.QueueUpdateRequest(IndexBufferRHI, IntermediateBuffer);
-		}
-	}
+	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher);
 
 	/** Release any GPU resource owned by the RHI object */
-	template <uint32 MaxNumUpdates>
-	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
-	{
-		if (IndexBufferRHI)
-		{
-			Batcher.QueueUpdateRequest(IndexBufferRHI, nullptr);
-		}
-	}
+	void ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher);
 
 	/**
 	 * Serialization.
@@ -374,6 +360,22 @@ public:
 	}
 
 protected:
+	ENGINE_API bool IsSRVNeeded(bool bAllowCPUAccess) const;
+
+	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
+	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, size_t IndexSize, FRHIResourceUpdateBatcher& Batcher);
+	void ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher);
+
+	static ENGINE_API FBufferRHIRef CreateRHIIndexBufferInternal(
+		const TCHAR* InDebugName,
+		const FName& InOwnerName,
+		int32 IndexCount,
+		size_t IndexSize,
+		FResourceArrayInterface* ResourceArray,
+		bool bNeedSRV,
+		bool bRenderThread
+	);
+
 	// guaranteed only to be valid if the vertex buffer is valid and the buffer was created with the SRV flags
 	FShaderResourceViewRHIRef SRVValue;
 };
@@ -398,11 +400,13 @@ public:
 	*/
 	virtual void InitRHI() override
 	{
+		const bool bHadIndexData = Num() > 0;
 		IndexBufferRHI = CreateRHIBuffer_RenderThread();
 
-		if (IndexBufferRHI && IsSRVNeeded() && Num())
+		if (IndexBufferRHI && IsSRVNeeded(Indices.GetAllowCPUAccess()) && bHadIndexData)
 		{
-			SRVValue = RHICreateShaderResourceView(Num() ? IndexBufferRHI : nullptr);
+			// If the index buffer is a placeholder we still need to create a FRHIShaderResourceView.
+			SRVValue = RHICreateShaderResourceView(FShaderResourceViewInitializer(IndexBufferRHI->GetSize() > 0 ? IndexBufferRHI : nullptr, sizeof(INDEX_TYPE) == 2 ? PF_R16_UINT : PF_R32_UINT));
 		}
 	}
 	
@@ -499,30 +503,14 @@ public:
 	FBufferRHIRef CreateRHIBuffer_Async() { return CreateRHIBuffer_Internal<false>(); }
 
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
-	template <uint32 MaxNumUpdates>
-	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher)
 	{
-		if (IndexBufferRHI && IntermediateBuffer)
-		{
-			Batcher.QueueUpdateRequest(IndexBufferRHI, IntermediateBuffer);
-			if (SRVValue)
-			{
-				Batcher.QueueUpdateRequest(SRVValue, IndexBufferRHI);
-			}
-		}
+		FRawStaticIndexBuffer16or32Interface::InitRHIForStreaming(IntermediateBuffer, sizeof(INDEX_TYPE), Batcher);
 	}
 
-	template <uint32 MaxNumUpdates>
-	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	void ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher)
 	{
-		if (IndexBufferRHI)
-		{
-			Batcher.QueueUpdateRequest(IndexBufferRHI, nullptr);
-		}
-		if (SRVValue)
-		{
-			Batcher.QueueUpdateRequest(SRVValue, nullptr);
-		}
+		FRawStaticIndexBuffer16or32Interface::ReleaseRHIForStreaming(Batcher);
 	}
 
 private:
@@ -530,50 +518,24 @@ private:
 
 	int32 CachedNumIndices;
 
-	bool IsSRVNeeded() const
-	{
-		extern ENGINE_API bool DoSkeletalMeshIndexBuffersNeedSRV();
-		bool bSRV = DoSkeletalMeshIndexBuffersNeedSRV();
-		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
-		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
-		// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.
-		bSRV |= Indices.GetAllowCPUAccess();
-		return bSRV;
-	}
-
 	template <bool bRenderThread>
 	FBufferRHIRef CreateRHIBuffer_Internal()
 	{
 		if (CachedNumIndices)
 		{
-			// Create the index buffer.
-			FRHIResourceCreateInfo CreateInfo(sizeof(INDEX_TYPE) == 4 ? TEXT("FRawStaticIndexBuffer32") : TEXT("FRawStaticIndexBuffer16"), &Indices);
-			EBufferUsageFlags Flags = EBufferUsageFlags::Static;
-
-			if (IsSRVNeeded())
-			{
-				// BUF_ShaderResource is needed for SkinCache RecomputeSkinTangents
-				Flags |= EBufferUsageFlags::ShaderResource;
-			}
-
 			// Need to cache number of indices from the source array *before* RHICreateIndexBuffer is called
 			// because it will empty the source array.
 			CachedNumIndices = Indices.Num();
 
-			FBufferRHIRef Ret;
-			const uint32 Size = CachedNumIndices * sizeof(INDEX_TYPE);
-			CreateInfo.bWithoutNativeResource = !Size;
-			if (bRenderThread)
-			{
-				Ret = RHICreateIndexBuffer(sizeof(INDEX_TYPE), Size, Flags, CreateInfo);
-			}
-			else
-			{
-				FRHIAsyncCommandList CommandList;
-				return CommandList->CreateBuffer(Size, Flags | EBufferUsageFlags::IndexBuffer, sizeof(INDEX_TYPE), ERHIAccess::SRVMask, CreateInfo);
-			}
-
-			return Ret;
+			return CreateRHIIndexBufferInternal(
+				sizeof(INDEX_TYPE) == 4 ? TEXT("FRawStaticIndexBuffer32") : TEXT("FRawStaticIndexBuffer16"),
+				GetOwnerName(),
+				Indices.Num(),
+				sizeof(INDEX_TYPE),
+				&Indices,
+				IsSRVNeeded(Indices.GetAllowCPUAccess()),
+				bRenderThread
+			);
 		}
 		return nullptr;
 	}

@@ -4,6 +4,7 @@
 #include "Units/Execution/RigUnit_BeginExecution.h"
 #include "Units/Execution/RigUnit_PrepareForExecution.h"
 #include "Units/Execution/RigUnit_InverseExecution.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigValidationPass)
 
@@ -123,14 +124,14 @@ void UControlRigValidator::SetControlRig(UControlRig* InControlRig)
 
 	if (UControlRig* ControlRig = WeakControlRig.Get())
 	{
-		OnControlRigInitialized(ControlRig, EControlRigState::Init, FRigUnit_BeginExecution::EventName);
+		OnControlRigInitialized(ControlRig, FRigUnit_BeginExecution::EventName);
 		ControlRig->OnInitialized_AnyThread().AddUObject(this, &UControlRigValidator::OnControlRigInitialized);
 		ControlRig->OnExecuted_AnyThread().AddUObject(this, &UControlRigValidator::OnControlRigExecuted);
 		ValidationContext.DrawInterface = &ControlRig->DrawInterface;
 	}
 }
 
-void UControlRigValidator::OnControlRigInitialized(UControlRig* Subject, EControlRigState State, const FName& EventName)
+void UControlRigValidator::OnControlRigInitialized(URigVMHost* Subject, const FName& EventName)
 {
 	if (UControlRig* ControlRig = WeakControlRig.Get())
 	{
@@ -148,7 +149,7 @@ void UControlRigValidator::OnControlRigInitialized(UControlRig* Subject, EContro
 	}
 }
 
-void UControlRigValidator::OnControlRigExecuted(UControlRig* Subject, EControlRigState State, const FName& EventName)
+void UControlRigValidator::OnControlRigExecuted(URigVMHost* Subject, const FName& EventName)
 {
 	if (UControlRig* ControlRig = WeakControlRig.Get())
 	{

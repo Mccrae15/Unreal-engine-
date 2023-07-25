@@ -3,9 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ComputeFramework/ComputeKernelCompileResult.h"
 #include "Engine/EngineTypes.h"
 #include "RenderResource.h"
 #include "RenderingThread.h"
+#include "RenderDeferredCleanup.h"
 #include "RHI.h"
 #include "SceneTypes.h"
 #include "Shader.h"
@@ -59,7 +61,9 @@ public:
 
 	~FComputeKernelShaderMapId() = default;
 
+#if WITH_EDITOR
 	void SetShaderDependencies(const TArray<FShaderType*>& InShaderTypes, EShaderPlatform InShaderPlatform);
+#endif
 
 	//void Serialize(FArchive& Ar);
 
@@ -89,8 +93,10 @@ public:
 		return !(*this == InReferenceSet);
 	}
 
+#if WITH_EDITOR
 	/** Appends string representations of this Id to a key string. */
 	void AppendKeyString(FString& OutKeyString) const;
+#endif // WITH_EDITOR
 
 	/** Returns true if the requested shader type is a dependency of this shader map Id. */
 	bool ContainsShaderType(const FShaderType* ShaderType) const;
@@ -135,15 +141,18 @@ public:
 	template<typename ShaderType> TShaderRef<ShaderType> GetShader(int32 PermutationId) const { return TShaderRef<ShaderType>(GetContent()->GetShader<ShaderType>(PermutationId), *this); }
 	TShaderRef<FShader> GetShader(FShaderType* ShaderType, int32 PermutationId) const { return TShaderRef<FShader>(GetContent()->GetShader(ShaderType, PermutationId), *this); }
 
+#if WITH_EDITOR
 	/**
 	 * Attempts to load the shader map for the given kernel from the Derived Data Cache.
 	 * If InOutShaderMap is valid, attempts to load the individual missing shaders instead.
 	 */
 	static void LoadFromDerivedDataCache(const FComputeKernelResource* InKernel, const FComputeKernelShaderMapId& InShaderMapId, EShaderPlatform InPlatform, TRefCountPtr<FComputeKernelShaderMap>& InOutShaderMap);
+#endif // WITH_EDITOR
 
 	FComputeKernelShaderMap();
 	~FComputeKernelShaderMap();
 
+#if WITH_EDITOR
 	/**
 	 * Compiles the shaders for a kernel and caches them in this shader map.
 	 * @param InKernel - The kernel to compile shaders for.
@@ -162,6 +171,7 @@ public:
 
 	/** Sorts the incoming compiled jobs into the appropriate shader maps, and finalizes this shader map so that it can be used for rendering. */
 	bool ProcessCompilationResults(const TArray<FShaderCommonCompileJobPtr>& InCompilationResults, int32& InOutResultIndex, float& InOutTimeBudget);
+#endif // WITH_EDITOR
 
 	/**
 	 * Checks whether the shader map is missing any shader types necessary for the given kernel.
@@ -170,6 +180,7 @@ public:
 	 */
 	bool IsComplete(const FComputeKernelResource* InKernel, bool bSilent);
 
+#if WITH_EDITOR
 	/** Attempts to load missing shaders from memory. */
 	void LoadMissingShadersFromMemory(const FComputeKernelResource* InKernel);
 
@@ -180,6 +191,7 @@ public:
 	 * @return True if the shader map was being compiled and we added it to the list to be applied.
 	 */
 	bool TryToAddToExistingCompilationTask(FComputeKernelResource* InKernel);
+#endif // WITH_EDITOR
 
 	/** Builds a list of the shaders in a shader map. */
 	 void GetShaderList(TMap<FShaderId, TShaderRef<FShader>>& OutShaders) const;
@@ -191,23 +203,18 @@ public:
 	void AddRef();
 	void Release();
 
-	/**
-	 * Removes all entries in the cache with exceptions based on a shader type
-	 * @param ShaderType - The shader type to flush
-	 */
-	void FlushShadersByShaderType(const FShaderType* ShaderType);
-
+#if WITH_EDITOR
 	/** Removes a kernel from ComputeKernelShaderMapsBeingCompiled. */
 	static void RemovePending(FComputeKernelResource* InKernel);
-
-	/** Finds a shader map currently being compiled that was enqueued for the given kernel. */
-	static const FComputeKernelShaderMap* GetShaderMapBeingCompiled(const FComputeKernelResource* InKernel);
+#endif
 
 	/** Serializes the shader map. */
 	bool Serialize(FArchive& Ar, bool bInlineShaderResources = true);
 
+#if WITH_EDITOR
 	/** Saves this shader map to the derived data cache. */
 	void SaveToDerivedDataCache();
+#endif
 
 	// Accessors.
 	const FComputeKernelShaderMapId& GetShaderMapId() const	{ return GetContent()->ShaderMapId; }
@@ -224,9 +231,13 @@ public:
 
 	int32 GetNumRefs() const { return NumRefs; }
 	uint32 GetCompilingId()  { return CompilingId; }
+
+#if WITH_EDITOR
 	static TMap<TRefCountPtr<FComputeKernelShaderMap>, TArray<FComputeKernelResource*> > &GetInFlightShaderMaps() { return ComputeKernelShaderMapsBeingCompiled; }
 
 	void SetCompiledSuccessfully(bool bSuccess) { bCompiledSuccessfully = bSuccess; }
+#endif // WITH_EDITOR
+
 private:
 
 	/**
@@ -242,11 +253,10 @@ private:
 	 */
 	static TArray<FComputeKernelShaderMap*> AllComputeKernelShaderMaps;
 
-	/** Next value for CompilingId. */
-	static uint32 NextCompilingId;
-
+#if WITH_EDITOR
 	/** Tracks resources and their shader maps that need to be compiled but whose compilation is being deferred. */
 	static TMap<TRefCountPtr<FComputeKernelShaderMap>, TArray<FComputeKernelResource*> > ComputeKernelShaderMapsBeingCompiled;
+#endif
 
 	/** Uniquely identifies this shader map during compilation, needed for deferred compilation where shaders from multiple shader maps are compiled together. */
 	uint32 CompilingId;
@@ -272,7 +282,9 @@ private:
 
 	uint32 bHasFrozenContent : 1;
 
+#if WITH_EDITOR
 	FShader* ProcessCompilationResultsForSingleJob(FShaderCompileJob& InSingleJob, const FSHAHash& InShaderMapHash);
+#endif
 
 	bool IsComputeKernelShaderComplete(const FComputeKernelResource* InKernel, const FComputeKernelShaderType* InShaderType, bool bSilent);
 
@@ -331,6 +343,7 @@ public:
 	 */
 	virtual void NotifyCompilationFinished(FString const& ResultMessage);
 
+#if WITH_EDITOR
 	/**
 	 * Cancels all outstanding compilation jobs
 	 */
@@ -340,6 +353,7 @@ public:
 	 * Blocks until compilation has completed. Returns immediately if a compilation is not outstanding.
 	 */
 	void FinishCompilation();
+#endif // WITH_EDITOR
 
 	/**
 	 * Checks if the compilation for this shader is finished
@@ -349,8 +363,8 @@ public:
 	bool IsCompilationFinished() const;
 
 	// Accessors.
-	const TArray<FString>& GetCompileOutputMessages() const { return CompileOutputMessages; }
-	void SetCompileOutputMessages(TArray<FString> const& InCompileOutputMessages) { CompileOutputMessages = InCompileOutputMessages; }
+	FComputeKernelCompileResults const& GetCompilationResults() const { return CompilationResults; }
+	void SetCompilationResults(FComputeKernelCompileResults const& InCompilationResults) { CompilationResults = InCompilationResults; }
 
 	ERHIFeatureLevel::Type GetFeatureLevel() const { return FeatureLevel; }
 
@@ -418,6 +432,7 @@ public:
 		FString const& InShaderHashKey,
 		FString const& InShaderSource,
 		TMap<FString, FString> const& InAdditionalSources,
+		TMap<FString, FString> const& InGeneratedSources,
 		TSharedPtr<FComputeKernelDefinitionSet>& InShaderDefinitionSet,
 		TSharedPtr<FComputeKernelPermutationVector>& InShaderPermutationVector,
 		TUniquePtr<FShaderParametersMetadataAllocations>& InShaderParameterMetadataAllocations,
@@ -425,7 +440,9 @@ public:
 		FName const& InAssetPath
 	);
 
+#if WITH_EDITOR
 	void SetupCompileEnvironment(int32 InPermutationId, FShaderCompilerEnvironment& OutShaderEnvironment) const;
+#endif // WITH_EDITOR
 
 	const FShaderParametersMetadata* GetShaderParamMetadata() const
 	{
@@ -442,14 +459,15 @@ public:
 	FOnComputeKernelCompilationComplete& OnCompilationComplete() { return OnCompilationCompleteDelegate; }
 
 protected:
-
+#if WITH_EDITOR
 	/**
 	 * Fills the passed array with IDs of shader maps unfinished compilation jobs.
 	 */
 	void GetShaderMapIDsWithUnfinishedCompilation(TArray<int32>& OutShaderMapIds);
+#endif // WITH_EDITOR
 
 private:
-	TArray<FString> CompileOutputMessages;
+	FComputeKernelCompileResults CompilationResults;
 
 	/** 
 	 * Game thread tracked shader map, which is ref counted and manages shader map lifetime. 
@@ -479,6 +497,8 @@ private:
 
 	/** Additional source code. Stored as a map from a virtual source file name to the shader source.  */
 	TMap<FString, FString> AdditionalSources;
+	/** Generated source code. Stored as a map from a virtual source file name to the shader source.  */
+	TMap<FString, FString> GeneratedSources;
 
 	/** Defines used when compiling shaders. Object can be shared across a number of shader formats during cook. */
 	TSharedPtr<FComputeKernelDefinitionSet> ShaderDefinitionSet;
@@ -515,6 +535,7 @@ private:
 
 	FOnComputeKernelCompilationComplete OnCompilationCompleteDelegate;
 
+#if WITH_EDITOR
 	/**
 	 * Compiles this kernel for InPlatform, storing the result in OutShaderMap if the compile was synchronous
 	 */
@@ -530,7 +551,7 @@ private:
 		EShaderPlatform InPlatform,
 		FShaderCompilerEnvironment& OutEnvironment
 		) const;
-
+#endif // WITH_EDITOR
 
 	FString FriendlyName;
 

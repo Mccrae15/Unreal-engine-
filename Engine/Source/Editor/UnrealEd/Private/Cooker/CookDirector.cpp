@@ -12,10 +12,12 @@
 #include "CoreGlobals.h"
 #include "LoadBalanceCookBurden.h"
 #include "HAL/PlatformMisc.h"
+#include "HAL/PlatformTime.h"
 #include "HAL/RunnableThread.h"
 #include "Math/NumericLimits.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "PackageTracker.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/CompactBinaryWriter.h"
 #include "ShaderCompiler.h"
@@ -26,40 +28,129 @@
 
 extern CORE_API int32 GNumForegroundWorkers; // TaskGraph.cpp
 
+LLM_DEFINE_TAG(Cooker_MPCook);
+
 namespace UE::Cook
 {
 
-FCookDirector::FCookDirector(UCookOnTheFlyServer& InCOTFS)
+constexpr int32 RetractionMinimumNumAssignments = 100;
+
+/** Profile data for each CookWorker that needs to be collected on the Director. */
+struct FCookWorkerProfileData
+{
+	float IdleTimeSeconds = 0.f;
+	bool bIsIdle = true;
+	void UpdateIdle(bool bInIsIdle, float DeltaTime)
+	{
+		if (bInIsIdle)
+		{
+			if (bIsIdle)
+			{
+				IdleTimeSeconds += DeltaTime;
+			}
+		}
+		bIsIdle = bInIsIdle;
+	}
+};
+
+/**
+ * A class that has an instance active while we need to handle retraction of assigned results from a CookWorker.
+ * Keeps track of the expected message coming back from the remote worker, prevents repeatedly sending messages, gives
+ * a warning if the remote worker does not respond.
+ */
+class FCookDirector::FRetractionHandler
+{
+public:
+	FRetractionHandler(FCookDirector& InDirector);
+	/** Initialize to search idle and busy workers to send a RetractionRequestMessage. */
+	void Initialize();
+	/** Initialize to handle an unexpected RetractionResultsMessage. */
+	void InitializeForResultsMessage(const FWorkerId& FromWorker);
+	void TickFromSchedulerThread(bool bAnyIdle, bool& bOutComplete);
+	/** Hook called by the director when a retraction message comes in. */
+	void HandleRetractionMessage(const FWorkerId& FromWorker, TConstArrayView<FName> Packages);
+
+private:
+	/**
+	 * Pick workers to give the retracted packages to, and assign those packages to the worker
+	 * in the local and remote state.
+	 */
+	void ReassignPackages(const FWorkerId& WorkerId, TConstArrayView<FPackageData*> Packages);
+	/** Pick workers to give the retracted packages to. */
+	TArray<FWorkerId> CalculateWorkersToSplitOver(int32 NumPackages, const FWorkerId& FromWorker,
+		TConstArrayView<TRefCountPtr<FCookWorkerServer>> LocalRemoteWorkers);
+
+	FCookDirector& Director;
+	FWorkerId ExpectedWorker;
+	TMap<FWorkerId, TArray<FName>> PackagesToRetract;
+	FWorkerId WorkerWithResults;
+	double MessageSentTimeSeconds = 0.;
+	double LastWarnTimeSeconds = 0.;
+};
+
+FCookDirector::FCookDirector(UCookOnTheFlyServer& InCOTFS, int32 CookProcessCount)
 	: RunnableShunt(*this) 
 	, COTFS(InCOTFS)
 {
+	check(CookProcessCount > 1);
 	WorkersStalledStartTimeSeconds = MAX_flt;
 	WorkersStalledWarnTimeSeconds = MAX_flt;
 	ShutdownEvent->Reset();
+	LocalWorkerProfileData = MakeUnique<FCookWorkerProfileData>();
 
-	ParseConfig();
+	bool bConfigValid;
+	ParseConfig(CookProcessCount, bConfigValid);
+	if (!bConfigValid)
+	{
+		UE_LOG(LogCook, Error, TEXT("CookDirector initialization failure: config settings are invalid for multiprocess. CookMultiprocess is disabled and the cooker is running as a single process."));
+		bMultiprocessAvailable = false;
+		return;
+	}
 	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get();
 	if (!SocketSubsystem)
 	{
-		UE_LOG(LogCook, Error, TEXT("CookDirector initialization failure: platform does not support network sockets. CookWorkers will be disabled."));
+		UE_LOG(LogCook, Error, TEXT("CookDirector initialization failure: platform does not support network sockets. CookMultiprocess is disabled and the cooker is running as a single process."));
+		bMultiprocessAvailable = false;
+		return;
 	}
-	else
-	{
-		UE_LOG(LogCook, Display, TEXT("CookMultiprocess is enabled with %d CookWorker processes."), RequestedCookWorkerCount);
-	}
+	bMultiprocessAvailable = true;
+
+	UE_LOG(LogCook, Display, TEXT("CookProcessCount=%d. CookMultiprocess is enabled with 1 CookDirector and %d %s."),
+		RequestedCookWorkerCount+1, RequestedCookWorkerCount, RequestedCookWorkerCount > 1 ? TEXT("CookWorkers") : TEXT("CookWorker"));
 
 	Register(new FLogMessagesMessageHandler());
+	Register(new IMPCollectorCbServerMessage<FRetractionResultsMessage>([this]
+	(FMPCollectorServerMessageContext& Context, bool bReadSuccessful, FRetractionResultsMessage&& Message)
+		{
+			HandleRetractionMessage(Context, bReadSuccessful, MoveTemp(Message));
+		}, TEXT("HandleRetractionMessage")));
+	Register(new IMPCollectorCbServerMessage<FHeartbeatMessage>([this]
+	(FMPCollectorServerMessageContext& Context, bool bReadSuccessful, FHeartbeatMessage&& Message)
+		{
+			HandleHeartbeatMessage(Context, bReadSuccessful, MoveTemp(Message));
+		}, TEXT("HandleHeartbeatMessage")));
+	Register(new FAssetRegistryMPCollector(COTFS));
+	Register(new FPackageWriterMPCollector(COTFS));
+
+	LastTickTimeSeconds = FPlatformTime::Seconds();
+
+	FCookStatsManager::CookStatsCallbacks.AddRaw(this, &FCookDirector::LogCookStats);
 }
 
-void FCookDirector::ParseConfig()
+bool FCookDirector::IsMultiprocessAvailable() const
 {
+	return bMultiprocessAvailable;
+}
+
+void FCookDirector::ParseConfig(int32 CookProcessCount, bool& bOutValid)
+{
+	bOutValid = true;
 	const TCHAR* CommandLine = FCommandLine::Get();
 	FString Text;
 
 	// CookWorkerCount
-	RequestedCookWorkerCount = 3;
-	GConfig->GetInt(TEXT("CookSettings"), TEXT("CookWorkerCount"), RequestedCookWorkerCount, GEditorIni);
-	FParse::Value(CommandLine, TEXT("-CookWorkerCount="), RequestedCookWorkerCount);
+	RequestedCookWorkerCount = CookProcessCount - 1;
+	check(RequestedCookWorkerCount > 0);
 
 	// CookDirectorListenPort
 	WorkerConnectPort = Sockets::COOKDIRECTOR_DEFAULT_REQUEST_CONNECTION_PORT;
@@ -96,11 +187,19 @@ void FCookDirector::ParseConfig()
 			UE_LOG(LogCook, Warning, TEXT("Invalid selection \"%s\" for -CookLoadBalance."), *Text);
 		}
 	}
+
+	int32 MultiprocessId;
+	if (FParse::Value(CommandLine, TEXT("-MultiprocessId="), MultiprocessId))
+	{
+		bOutValid = false;
+		UE_LOG(LogCook, Error, TEXT("CookMultiprocess is incompatible with -MultiprocessId on the CookDirector's commandline. The CookDirector needs to be able to specify all MultiprocessIds."));
+	}
 }
 
 FCookDirector::~FCookDirector()
 {
 	StopCommunicationThread();
+	FCookStatsManager::CookStatsCallbacks.RemoveAll(this);
 
 	TSet<FPackageData*> AbortedAssignments;
 	for (TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
@@ -110,10 +209,11 @@ FCookDirector::~FCookDirector()
 	for (FPackageData* PackageData : AbortedAssignments)
 	{
 		check(PackageData->IsInProgress()); // Packages that were assigned to workers should be in the AssignedToWorker state
-		PackageData->SetWorkerAssignment(FWorkerId::Invalid());
+		PackageData->SetWorkerAssignment(FWorkerId::Invalid(), ESendFlags::QueueNone);
 		PackageData->SendToState(UE::Cook::EPackageState::Request, ESendFlags::QueueAddAndRemove);
 	}
 	RemoteWorkers.Empty();
+	RemoteWorkerProfileDatas.Empty();
 	PendingConnections.Empty();
 	Sockets::CloseSocket(WorkerConnectSocket);
 }
@@ -149,10 +249,13 @@ uint32 FCookDirector::RunCommunicationThread()
 
 		double CurrentTime = FPlatformTime::Seconds();
 		float RemainingDuration = StartTime + TickPeriod - CurrentTime;
-		uint32 WaitTimeMilliseconds = static_cast<uint32>(RemainingDuration * .001f);
-		if (ShutdownEvent->Wait(WaitTimeMilliseconds))
+		if (RemainingDuration > .001f)
 		{
-			break;
+			uint32 WaitTimeMilliseconds = static_cast<uint32>(RemainingDuration * 1000);
+			if (ShutdownEvent->Wait(WaitTimeMilliseconds))
+			{
+				break;
+			}
 		}
 	}
 	return 0;
@@ -173,61 +276,111 @@ void FCookDirector::StartCook(const FBeginCookContext& InBeginContext)
 	BeginCookContext.Set(InBeginContext);
 }
 
-void FCookDirector::AssignRequests(TArrayView<UE::Cook::FPackageData*> Requests, TArray<FWorkerId>& OutAssignments,
+void FCookDirector::AssignRequests(TArrayView<FPackageData*> Requests, TArray<FWorkerId>& OutAssignments,
 	TMap<FPackageData*, TArray<FPackageData*>>&& RequestGraph)
 {
 	ActivateMachineResourceReduction();
 
-	TArray<TRefCountPtr<FCookWorkerServer>> SortedWorkers;
-	int32 MaxRemoteIndex = -1;
-	FScopeLock CommunicationScopeLock(&CommunicationLock);
+	TArray<FWorkerId> WorkerIds;
+	TArray<TRefCountPtr<FCookWorkerServer>> LocalRemoteWorkers;
 	{
+		FScopeLock CommunicationScopeLock(&CommunicationLock);
 		InitializeWorkers();
-
-		// Convert the Map of RemoteWorkers into an array sorted by WorkerIndex
-		SortedWorkers.Reserve(RemoteWorkers.Num());
-		for (TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
-		{
-			SortedWorkers.Add(Pair.Value);
-			MaxRemoteIndex = FMath::Max(Pair.Key, MaxRemoteIndex);
-		}
 	}
-	if (SortedWorkers.IsEmpty())
+	LocalRemoteWorkers = CopyRemoteWorkers();;
+
+	WorkerIds.Reserve(LocalRemoteWorkers.Num() + 1);
+	WorkerIds.Add(FWorkerId::Local());
+	for (const TRefCountPtr<FCookWorkerServer>& RemoteWorker : LocalRemoteWorkers)
 	{
+		WorkerIds.Add(RemoteWorker->GetWorkerId());
+	}
+
+	AssignRequests(MoveTemp(WorkerIds), LocalRemoteWorkers, Requests, OutAssignments, MoveTemp(RequestGraph));
+}
+
+void FCookDirector::AssignRequests(TArray<FWorkerId>&& InWorkers, TArray<TRefCountPtr<FCookWorkerServer>>& InRemoteWorkers,
+	TArrayView<FPackageData*> Requests, TArray<FWorkerId>& OutAssignments, TMap<FPackageData*, TArray<FPackageData*>>&& RequestGraph)
+{
+	check(InWorkers.Num() > 0);
+	if (InWorkers.Num() <= 1)
+	{
+		FWorkerId WorkerId = InWorkers[0];
 		OutAssignments.SetNum(Requests.Num());
-		for (FWorkerId& Assignment : OutAssignments)
+		TArray<UE::Cook::FPackageData*> RemovedRequests;
+		for (int32 RequestIndex = 0; RequestIndex < Requests.Num(); ++RequestIndex)
 		{
-			Assignment = FWorkerId::Local();
+			FPackageData* Request = Requests[RequestIndex];
+			FWorkerId& Assignment = OutAssignments[RequestIndex];
+			FWorkerId WorkerIdConstraint = Request->GetWorkerAssignmentConstraint();
+			if (WorkerIdConstraint.IsValid() && WorkerIdConstraint != WorkerId)
+			{
+				UE_LOG(LogCook, Error, TEXT("Package %s can only be cooked by a now-disconnected CookWorker. The package can not be cooked."),
+					*Request->GetPackageName().ToString());
+				Assignment = FWorkerId::Invalid();
+				RemovedRequests.Add(Request);
+			}
+			else
+			{
+				Assignment = WorkerId;
+			}
+		}
+		if (!WorkerId.IsLocal())
+		{
+			TRefCountPtr<FCookWorkerServer>* RemoteWorker = InRemoteWorkers.FindByPredicate(
+				[&WorkerId](const TRefCountPtr<FCookWorkerServer>& X) { return X->GetWorkerId() == WorkerId; });
+			check(RemoteWorker);
+			TArrayView<FPackageData*> RequestsToSend = Requests;
+			TArray<FPackageData*> RequestBuffer;
+			if (!RemovedRequests.IsEmpty())
+			{
+				TSet<FPackageData*> RequestSet;
+				for (FPackageData* Request : Requests)
+				{
+					RequestSet.Add(Request);
+				}
+				for (FPackageData* Remove : RemovedRequests)
+				{
+					RequestSet.Remove(Remove);
+				}
+				RequestBuffer = RequestSet.Array();
+				RequestsToSend = RequestBuffer;
+			}
+			(*RemoteWorker)->AppendAssignments(RequestsToSend, ECookDirectorThread::SchedulerThread);
 		}
 		return;
 	}
-	check(MaxRemoteIndex >= 0);
-	SortedWorkers.Sort([](const TRefCountPtr<FCookWorkerServer>& A, const TRefCountPtr<FCookWorkerServer>& B)
-		{ return A->GetWorkerId() < B->GetWorkerId(); });
+
+	InWorkers.Sort();
 
 	// Call the LoadBalancing algorithm to split the requests among the LocalWorker and RemoteWorkers
-	LoadBalance(SortedWorkers, Requests, MoveTemp(RequestGraph), OutAssignments);
+	LoadBalance(InWorkers, Requests, MoveTemp(RequestGraph), OutAssignments);
+
+	int32 MaxRemoteIndex = InWorkers.Last().IsLocal() ? -1 : InWorkers.Last().GetRemoteIndex();
 
 	// Split the output array of WorkerId assignments into a batch for each of the RemoteWorkers 
 	TArray<TArray<FPackageData*>> RemoteBatches; // Indexed by WorkerId.GetRemoteIndex()
 	TArray<bool> RemoteIndexIsValid; // Indexed by WorkerId.GetRemoteIndex()
 	RemoteBatches.SetNum(MaxRemoteIndex+1);
 	RemoteIndexIsValid.Init(false, MaxRemoteIndex+1);
-	for (FCookWorkerServer* Worker : SortedWorkers)
+	for (FWorkerId WorkerId : InWorkers)
 	{
-		RemoteIndexIsValid[Worker->GetWorkerId().GetRemoteIndex()] = true;
+		if (!WorkerId.IsLocal())
+		{
+			RemoteIndexIsValid[WorkerId.GetRemoteIndex()] = true;
+		}
 	}
 
 	for (int32 RequestIndex = 0; RequestIndex < Requests.Num(); ++RequestIndex)
 	{
-		FWorkerId WorkerId = OutAssignments[RequestIndex];
+		FWorkerId& WorkerId = OutAssignments[RequestIndex];
 		// Override the loadbalancer's assignment if the Package has a WorkerAssignmentConstraint
 		// This allows us to guarantee that generated packages will be cooked on the worker that cooked
 		// their generator package
 		FWorkerId WorkerIdConstraint = Requests[RequestIndex]->GetWorkerAssignmentConstraint();
 		if (WorkerIdConstraint.IsValid())
 		{
-			OutAssignments[RequestIndex] = WorkerIdConstraint;
+			check(InWorkers.Contains(WorkerIdConstraint));
 			WorkerId = WorkerIdConstraint;
 		}
 
@@ -237,63 +390,112 @@ void FCookDirector::AssignRequests(TArrayView<UE::Cook::FPackageData*> Requests,
 			check(RemoteIndex < RemoteBatches.Num());
 			if (!RemoteIndexIsValid[RemoteIndex])
 			{
-				UE_LOG(LogCook, Error, TEXT("Package %s can only be cooked by CookWorkerServer %d, but this worker has disconnected. The package can not be cooked."),
-					*Requests[RequestIndex]->GetPackageName().ToString(), RemoteIndex);
-				OutAssignments[RequestIndex] = FWorkerId::Invalid();
+				UE_LOG(LogCook, Error, TEXT("Package %s can only be cooked by a now-disconnected CookWorker. The package can not be cooked."),
+					*Requests[RequestIndex]->GetPackageName().ToString());
+				WorkerId = FWorkerId::Invalid();
 				continue;
 			}
 			TArray<FPackageData*>& RemoteBatch = RemoteBatches[RemoteIndex];
 			if (RemoteBatch.Num() == 0)
 			{
-				RemoteBatch.Reserve(2 * Requests.Num() / (SortedWorkers.Num() + 1));
+				RemoteBatch.Reserve(2 * Requests.Num() / (InWorkers.Num()));
 			}
 			RemoteBatch.Add(Requests[RequestIndex]);
 		}
 	}
 
-	// MPCOOKTODO: Sort each batch from leaf to root
-
 	// Assign each batch to the FCookWorkerServer in RemoteWorkers;
 	// the CookWorkerServer's tick will handle sending the message to the remote process
-	for (const TRefCountPtr<FCookWorkerServer>& RemoteWorker : SortedWorkers)
+	for (FWorkerId WorkerId : InWorkers)
 	{
-		RemoteWorker->AppendAssignments(RemoteBatches[RemoteWorker->GetWorkerId().GetRemoteIndex()], ECookDirectorThread::SchedulerThread);
+		if (!WorkerId.IsLocal())
+		{
+			TRefCountPtr<FCookWorkerServer>* RemoteWorker = InRemoteWorkers.FindByPredicate(
+				[&WorkerId](const TRefCountPtr<FCookWorkerServer>& X) { return X->GetWorkerId() == WorkerId; });
+			check(RemoteWorker);
+			(*RemoteWorker)->AppendAssignments(RemoteBatches[WorkerId.GetRemoteIndex()], ECookDirectorThread::SchedulerThread);
+		}
 	}
 
 	bIsFirstAssignment = false;
 }
 
+TArray<TRefCountPtr<FCookWorkerServer>> FCookDirector::CopyRemoteWorkers() const
+{
+	TArray<TRefCountPtr<FCookWorkerServer>> LocalRemoteWorkers;
+	FScopeLock CommunicationScopeLock(&CommunicationLock);
+	LocalRemoteWorkers.Reset(RemoteWorkers.Num());
+	for (const TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
+	{
+		LocalRemoteWorkers.Add(Pair.Value);
+	}
+	return LocalRemoteWorkers;
+}
+
 void FCookDirector::RemoveFromWorker(FPackageData& PackageData)
 {
-	TArray<FCookWorkerServer*> Workers;
+	FWorkerId WorkerId = PackageData.GetWorkerAssignment();
+	if (!WorkerId.IsRemote())
+	{
+		return;
+	}
+
+	TRefCountPtr<FCookWorkerServer> OwningWorker;
 	{
 		FScopeLock CommunicationScopeLock(&CommunicationLock);
-		for (TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
+		TRefCountPtr<FCookWorkerServer>* RemoteWorkerPtr = RemoteWorkers.Find(WorkerId.GetRemoteIndex());
+		if (!RemoteWorkerPtr)
 		{
-			Workers.Add(Pair.Value);
+			return;
 		}
+		OwningWorker = *RemoteWorkerPtr;
 	}
-	for (FCookWorkerServer* Worker : Workers)
-	{
-		Worker->AbortAssignment(PackageData, ECookDirectorThread::SchedulerThread);
-	}
+
+	OwningWorker->AbortAssignment(PackageData, ECookDirectorThread::SchedulerThread);
 }
 
 void FCookDirector::TickFromSchedulerThread()
 {
+	double CurrentTime = FPlatformTime::Seconds();
 	if (!CommunicationThread)
 	{
 		TickCommunication(ECookDirectorThread::SchedulerThread);
 	}
 
+	int32 BusiestNumAssignments = COTFS.NumMultiprocessLocalWorkerAssignments();
+	bool bLocalWorkerIdle = BusiestNumAssignments == 0;
+	float DeltaTime = static_cast<float>(CurrentTime - LastTickTimeSeconds);
+	bool bAnyIdle = bLocalWorkerIdle;
+	LastTickTimeSeconds = CurrentTime;
+	LocalWorkerProfileData->UpdateIdle(bLocalWorkerIdle, DeltaTime);
+	
+	bool bSendHeartbeat;
+	int32 LocalHeartbeatNumber;
+	TickHeartbeat(false /* bForceHeartbeat */, CurrentTime, bSendHeartbeat, LocalHeartbeatNumber);
+
 	TArray<TRefCountPtr<FCookWorkerServer>, TInlineAllocator<16>> WorkersWithMessage;
+	bool bAllWorkersConnected = false;
+	if (bWorkersInitialized)
 	{
 		FScopeLock CommunicationScopeLock(&CommunicationLock);
+		bAllWorkersConnected = true;
 		for (TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
 		{
-			if (Pair.Value->HasMessages())
+			FCookWorkerServer* RemoteWorker = Pair.Value.GetReference();
+			FCookWorkerProfileData& ProfileData = RemoteWorkerProfileDatas[RemoteWorker->GetProfileId()];
+			bAllWorkersConnected &= RemoteWorker->IsConnected();
+			int32 NumAssignments = RemoteWorker->NumAssignments();
+			BusiestNumAssignments = FMath::Max(NumAssignments, BusiestNumAssignments);
+			bool bWorkerIdle = NumAssignments == 0;
+			bAnyIdle |= bWorkerIdle;
+			ProfileData.UpdateIdle(bWorkerIdle, DeltaTime);
+			if (RemoteWorker->HasMessages())
 			{
-				WorkersWithMessage.Add(Pair.Value);
+				WorkersWithMessage.Add(RemoteWorker);
+			}
+			if (bSendHeartbeat)
+			{
+				RemoteWorker->SignalHeartbeat(ECookDirectorThread::SchedulerThread, LocalHeartbeatNumber);
 			}
 		}
 		for (TPair<FCookWorkerServer*, TRefCountPtr<FCookWorkerServer>>& Pair : ShuttingDownWorkers)
@@ -303,17 +505,88 @@ void FCookDirector::TickFromSchedulerThread()
 				WorkersWithMessage.Add(Pair.Value);
 			}
 		}
-
+		ReassignAbortedPackages(DeferredPackagesToReassign);
 	}
-	bool bIsStalled = COTFS.IsMultiprocessLocalWorkerIdle() && !COTFS.PackageDatas->GetAssignedToWorkerSet().IsEmpty();
+	if (bAllWorkersConnected && (RetractionHandler.IsValid() || bAnyIdle))
+	{
+		TickRetractionFromSchedulerThread(bAnyIdle, BusiestNumAssignments);
+	}
+
+	bool bIsStalled = bLocalWorkerIdle && !COTFS.PackageDatas->GetAssignedToWorkerSet().IsEmpty() && WorkersWithMessage.IsEmpty();
 	for (TRefCountPtr<FCookWorkerServer>& Worker : WorkersWithMessage)
 	{
 		Worker->HandleReceiveMessages(ECookDirectorThread::SchedulerThread);
-		bIsStalled = false;
 	}
 	WorkersWithMessage.Empty();
 
 	SetWorkersStalled(bIsStalled);
+	LastTickTimeSeconds = CurrentTime;
+}
+
+void FCookDirector::UpdateDisplayDiagnostics() const
+{
+	DisplayRemainingPackages();
+}
+
+void FCookDirector::DisplayRemainingPackages() const
+{
+	constexpr int32 DisplayWidth = 16;
+	UE_LOG(LogCook, Display, TEXT("\t%s: %d packages remain."), *GetDisplayName(FWorkerId::Local(), DisplayWidth),
+		COTFS.NumMultiprocessLocalWorkerAssignments());
+	FScopeLock CommunicationScopeLock(&CommunicationLock);
+	for (const TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
+	{
+		FCookWorkerServer* RemoteWorker = Pair.Value;
+		UE_LOG(LogCook, Display, TEXT("\t%s: %d packages remain."),
+			*GetDisplayName(*RemoteWorker, DisplayWidth), RemoteWorker->NumAssignments());
+	}
+}
+
+FString FCookDirector::GetDisplayName(const FWorkerId& WorkerId, int32 PreferredWidth) const
+{
+	FString Result;
+	if (WorkerId.IsLocal())
+	{
+		Result = TEXTVIEW("Local");
+	}
+	else
+	{
+		const TRefCountPtr<FCookWorkerServer>* RemoteWorker = nullptr;
+		{
+			FScopeLock CommunicationScopeLock(&CommunicationLock);
+			RemoteWorker = RemoteWorkers.Find(WorkerId.GetRemoteIndex());
+			if (!RemoteWorker)
+			{
+				for (const TPair<FCookWorkerServer*, TRefCountPtr<FCookWorkerServer>>& Pair : ShuttingDownWorkers)
+				{
+					if (Pair.Value && Pair.Value->GetWorkerId() == WorkerId)
+					{
+						RemoteWorker = &Pair.Value;
+						break;
+					}
+				}
+			}
+		}
+		if (RemoteWorker)
+		{
+			Result = FString::Printf(TEXT("%d"), (*RemoteWorker)->GetProfileId());
+		}
+		else
+		{
+			Result = FString::Printf(TEXT("Unknown (WorkerId %d)"), WorkerId.GetRemoteIndex());
+		}
+	}
+	constexpr FStringView Prefix(TEXTVIEW("CookWorker "));
+	Result = FString(Prefix) + Result.LeftPad(PreferredWidth-Prefix.Len());
+	return Result;
+}
+
+FString FCookDirector::GetDisplayName(const FCookWorkerServer& RemoteWorker, int32 PreferredWidth) const
+{
+	FString Result = FString::Printf(TEXT("%d"), RemoteWorker.GetProfileId());
+	constexpr FStringView Prefix(TEXTVIEW("CookWorker "));
+	Result = FString(Prefix) + Result.LeftPad(PreferredWidth - Prefix.Len());
+	return Result;
 }
 
 void FCookDirector::TickCommunication(ECookDirectorThread TickThread)
@@ -372,16 +645,40 @@ void FCookDirector::PumpCookComplete(bool& bCompleted)
 			for (TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
 			{
 				FCookWorkerServer& RemoteWorker = *Pair.Value;
-				// MPCOOKTODO: Messages sent from the CookWorkers about discovered packages might come in after
-				// the last message sent about completed saves. These discovered packages can cause the cook to fall
-				// back to incomplete. Don't send CookComplete messages to the CookWorkers until all CookWorkers have
-				// reported they are idle and have no further messages to send.
-				if (RemoteWorker.HasAssignments())
+				if (RemoteWorker.NumAssignments() > 0)
 				{
 					bAllIdle = false;
 					break;
 				}
 			}
+
+			if (bAllIdle && FinalIdleHeartbeatFence == -1)
+			{
+				bool bSendHeartbeat;
+				double CurrentTime = FPlatformTime::Seconds();
+				TickHeartbeat(true /* bForceHeartbeat */, CurrentTime, bSendHeartbeat, FinalIdleHeartbeatFence);
+
+				for (TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
+				{
+					FCookWorkerServer& RemoteWorker = *Pair.Value;
+					RemoteWorker.SignalHeartbeat(ECookDirectorThread::SchedulerThread, FinalIdleHeartbeatFence);
+				}
+				bAllIdle = false;
+			}
+			else
+			{
+				for (TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
+				{
+					FCookWorkerServer& RemoteWorker = *Pair.Value;
+					if (RemoteWorker.GetLastReceivedHeartbeatNumber() < FinalIdleHeartbeatFence)
+					{
+						bAllIdle = false;
+						SetWorkersStalled(true);
+						break;
+					}
+				}
+			}
+
 			if (bAllIdle)
 			{
 				for (TPair<int32, TRefCountPtr<FCookWorkerServer>>& Pair : RemoteWorkers)
@@ -459,11 +756,14 @@ void FCookDirector::ShutdownCookSession()
 	bIsFirstAssignment = true;
 	bCookCompleteSent = false;
 	bWorkersActive = false;
+	HeartbeatNumber = 0;
+	NextHeartbeatTimeSeconds = 0.;
+	FinalIdleHeartbeatFence = -1;
 }
 
 void FCookDirector::Register(IMPCollector* Collector)
 {
-	TRefCountPtr<IMPCollector>& Existing = MessageHandlers.FindOrAdd(Collector->GetMessageType());
+	TRefCountPtr<IMPCollector>& Existing = Collectors.FindOrAdd(Collector->GetMessageType());
 	if (Existing)
 	{
 		UE_LOG(LogCook, Error, TEXT("Duplicate IMPCollectors registered. Guid: %s, Existing: %s, Registering: %s. Keeping the Existing."),
@@ -476,12 +776,12 @@ void FCookDirector::Register(IMPCollector* Collector)
 void FCookDirector::Unregister(IMPCollector* Collector)
 {
 	TRefCountPtr<IMPCollector> Existing;
-	MessageHandlers.RemoveAndCopyValue(Collector->GetMessageType(), Existing);
+	Collectors.RemoveAndCopyValue(Collector->GetMessageType(), Existing);
 	if (Existing && Existing.GetReference() != Collector)
 	{
 		UE_LOG(LogCook, Error, TEXT("Duplicate IMPCollector during Unregister. Guid: %s, Existing: %s, Unregistering: %s. Ignoring the Unregister."),
 			*Collector->GetMessageType().ToString(), Existing->GetDebugName(), Collector->GetDebugName());
-		MessageHandlers.Add(Collector->GetMessageType(), MoveTemp(Existing));
+		Collectors.Add(Collector->GetMessageType(), MoveTemp(Existing));
 	}
 }
 
@@ -514,6 +814,53 @@ void FCookDirector::SetWorkersStalled(bool bInWorkersStalled)
 	}
 }
 
+void FCookDirector::TickHeartbeat(bool bForceHeartbeat, double CurrentTimeSeconds, bool& bOutSendHeartbeat,
+	int32& OutHeartbeatNumber)
+{
+	constexpr float HeartbeatPeriodSeconds = 30.f;
+
+	bOutSendHeartbeat = false;
+	OutHeartbeatNumber = HeartbeatNumber;
+	if (bForceHeartbeat)
+	{
+		bOutSendHeartbeat = true;
+	}
+	else if (NextHeartbeatTimeSeconds == 0.)
+	{
+		NextHeartbeatTimeSeconds = CurrentTimeSeconds + HeartbeatPeriodSeconds;
+	}
+	else if (CurrentTimeSeconds >= NextHeartbeatTimeSeconds)
+	{
+		bOutSendHeartbeat = true;
+	}
+
+	if (bOutSendHeartbeat)
+	{
+		checkf(HeartbeatNumber < MAX_int32, TEXT("Overflow"));
+		HeartbeatNumber++;
+		NextHeartbeatTimeSeconds = CurrentTimeSeconds + HeartbeatPeriodSeconds;
+	}
+}
+
+void FCookDirector::ResetFinalIdleHeartbeatFence()
+{
+	FinalIdleHeartbeatFence = -1;
+}
+
+void FCookDirector::HandleHeartbeatMessage(FMPCollectorServerMessageContext& Context, bool bReadSuccessful,
+	FHeartbeatMessage&& Message)
+{
+	if (!bReadSuccessful)
+	{
+		UE_LOG(LogCook, Error, TEXT("Corrupt HeartbeatMessage received from CookWorker %d. It will be ignored."),
+			Context.GetProfileId());
+		return;
+	}
+
+	Context.GetCookWorkerServer()->SetLastReceivedHeartbeatNumberInLock(Message.HeartbeatNumber);
+}
+
+
 FCookDirector::FPendingConnection::FPendingConnection(FPendingConnection&& Other)
 {
 	Swap(Socket, Other.Socket);
@@ -537,7 +884,7 @@ void FWorkerConnectMessage::Write(FCbWriter& Writer) const
 	Writer << "RemoteIndex" << RemoteIndex;
 }
 
-bool FWorkerConnectMessage::TryRead(FCbObject&& Object)
+bool FWorkerConnectMessage::TryRead(FCbObjectView Object)
 {
 	RemoteIndex = Object["RemoteIndex"].AsInt32(-1);
 	return RemoteIndex >= 0;
@@ -599,7 +946,9 @@ void FCookDirector::InitializeWorkers()
 	RemoteWorkers.Reserve(RequestedCookWorkerCount);
 	for (int32 RemoteIndex = 0; RemoteIndex < RequestedCookWorkerCount; ++RemoteIndex)
 	{
-		RemoteWorkers.Add(RemoteIndex, new FCookWorkerServer(*this, FWorkerId::FromRemoteIndex(RemoteIndex)));
+		int32 ProfileId = RemoteWorkerProfileDatas.Num();
+		RemoteWorkerProfileDatas.Emplace();
+		RemoteWorkers.Add(RemoteIndex, new FCookWorkerServer(*this, ProfileId, FWorkerId::FromRemoteIndex(RemoteIndex)));
 	}
 	bWorkersActive = true;
 
@@ -646,7 +995,9 @@ void FCookDirector::RecreateWorkers()
 		{
 			RemoteIndex = RemoteWorkers.Num();
 		}
-		RemoteWorkers.Add(RemoteIndex, new FCookWorkerServer(*this, FWorkerId::FromRemoteIndex(RemoteIndex)));
+		int32 ProfileId = RemoteWorkerProfileDatas.Num();
+		RemoteWorkerProfileDatas.Emplace();
+		RemoteWorkers.Add(RemoteIndex, new FCookWorkerServer(*this, ProfileId, FWorkerId::FromRemoteIndex(RemoteIndex)));
 		bWorkersActive = true;
 	}
 
@@ -659,26 +1010,26 @@ void FCookDirector::ActivateMachineResourceReduction()
 	}
 	bHasReducedMachineResources = true;
 
-	// Add MemoryInFree if it's not already set
-	if (COTFS.MemoryMinFreeVirtual > 0 || COTFS.MemoryMinFreePhysical > 0)
-	{
-		// When running a multiprocess cook, we remove the MemoryMaxUsed triggers and allow GCing based solely on MemoryMinFree
-		COTFS.MemoryMaxUsedVirtual = 0;
-		COTFS.MemoryMaxUsedPhysical = 0;
-	}
-	else
-	{
-		// If MemoryMinFree is not set, then keep MemoryMaxUsed but reduce it by the number of CookWorkers.
-		constexpr float FixedOverheadFraction = 0.10f;
-		float TargetRatio = (FixedOverheadFraction + (1 - FixedOverheadFraction) / RequestedCookWorkerCount);
-		COTFS.MemoryMaxUsedPhysical = TargetRatio * COTFS.MemoryMaxUsedPhysical;
-		COTFS.MemoryMaxUsedVirtual = TargetRatio * COTFS.MemoryMaxUsedVirtual;
-	}
+	// When running a multiprocess cook, we remove the Memory triggers and trigger GC based solely on PressureLevel. But keep the Soft GC settings
+	COTFS.MemoryMaxUsedPhysical = 0;
+	COTFS.MemoryMaxUsedVirtual = 0;
+	COTFS.MemoryMinFreeVirtual = 0;
+	COTFS.MemoryMinFreePhysical = 0;
+	COTFS.MemoryTriggerGCAtPressureLevel = FGenericPlatformMemoryStats::EMemoryPressureStatus::Critical;
 
-	UE_LOG(LogCook, Display, TEXT("CookMultiprocess changed CookSettings for Memory: MemoryMaxUsedVirtual %dMiB, MemoryMaxUsedPhysical %dMiB,")
-		TEXT("MemoryMinFreeVirtual % dMiB, MemoryMinFreePhysical % dMiB"),
+	UE_LOG(LogCook, Display, TEXT("CookMultiprocess changed CookSettings for Memory:")
+		TEXT("\n\tMemoryMaxUsedVirtual %dMiB")
+		TEXT("\n\tMemoryMaxUsedPhysical %dMiB")
+		TEXT("\n\tMemoryMinFreeVirtual %dMiB")
+		TEXT("\n\tMemoryMinFreePhysical %dMiB")
+		TEXT("\n\tMemoryTriggerGCAtPressureLevel %s")
+		TEXT("\n\tUseSoftGC %s%s"),
 		COTFS.MemoryMaxUsedVirtual / 1024 / 1024, COTFS.MemoryMaxUsedPhysical / 1024 / 1024,
-		COTFS.MemoryMinFreeVirtual / 1024 / 1024, COTFS.MemoryMinFreePhysical / 1024 / 1024);
+		COTFS.MemoryMinFreeVirtual / 1024 / 1024, COTFS.MemoryMinFreePhysical / 1024 / 1024,
+		*LexToString(COTFS.MemoryTriggerGCAtPressureLevel),
+		COTFS.bUseSoftGC ? TEXT("true") : TEXT("false"),
+		COTFS.bUseSoftGC ? *FString::Printf(TEXT(" (%d/%d)"), COTFS.SoftGCStartNumerator, COTFS.SoftGCDenominator) : TEXT("")
+	);
 
 	// Set CoreLimit for updating workerthreads in this process and passing to the commandline for workers
 	int32 NumProcesses = RequestedCookWorkerCount + 1;
@@ -699,9 +1050,9 @@ void FCookDirector::ActivateMachineResourceReduction()
 	GShaderCompilingManager->OnMachineResourcesChanged(CoreLimit, CoreIncludingHyperthreadsLimit);
 
 	UE_LOG(LogCook, Display, TEXT("CookMultiprocess changed number of cores from %d to %d."),
-		NumberOfCores, FPlatformMisc::NumberOfCores());
+		NumberOfCores, CoreLimit);
 	UE_LOG(LogCook, Display, TEXT("CookMultiprocess changed number of hyperthreads from %d to %d."),
-		HyperThreadCount, FPlatformMisc::NumberOfCoresIncludingHyperthreads());
+		HyperThreadCount, CoreIncludingHyperthreadsLimit);
 }
 
 void FCookDirector::TickWorkerConnects(ECookDirectorThread TickThread)
@@ -847,7 +1198,7 @@ void FCookDirector::TickWorkerShutdowns(ECookDirectorThread TickThread)
 	CompletedWorkers.Empty();
 }
 
-FString FCookDirector::GetWorkerCommandLine(FWorkerId WorkerId)
+FString FCookDirector::GetWorkerCommandLine(FWorkerId WorkerId, int32 ProfileId)
 {
 	FString CommandLine = FCommandLine::Get();
 
@@ -859,17 +1210,15 @@ FString FCookDirector::GetWorkerCommandLine(FWorkerId WorkerId)
 			if (Token.StartsWith(TEXT("-run=")) ||
 				Token == TEXT("-CookOnTheFly") ||
 				Token == TEXT("-CookWorker") ||
-				Token == TEXT("-CookMultiProcess") ||
-				Token == TEXT("-CookSingleProcess") ||
 				Token.StartsWith(TEXT("-TargetPlatform")) ||
 				Token.StartsWith(TEXT("-CookCultures")) ||
-				Token.StartsWith(TEXT("-CookDirectorCount=")) ||
 				Token.StartsWith(TEXT("-CookDirectorHost=")) ||
-				Token.StartsWith(TEXT("-CookWorkerId=")) ||
+				Token.StartsWith(TEXT("-MultiprocessId=")) ||
+				Token.StartsWith(TEXT("-CookProfileId=")) ||
 				Token.StartsWith(TEXT("-ShowCookWorker")) ||
 				Token.StartsWith(TEXT("-CoreLimit")) ||
 				Token.StartsWith(TEXT("-PhysicalCoreLimit")) ||
-				Token.StartsWith(TEXT("-CoreLimitHyperThreads"))
+				Token.StartsWith(TEXT("-CookProcessCount="))
 				)
 			{
 				return;
@@ -884,7 +1233,8 @@ FString FCookDirector::GetWorkerCommandLine(FWorkerId WorkerId)
 	Tokens.Insert(TEXT("-cookworker"), 2);
 	check(!WorkerConnectAuthority.IsEmpty()); // This should have been constructed in TryCreateWorkerConnectSocket before any CookWorkerServers could exist to call GetWorkerCommandLine
 	Tokens.Add(FString::Printf(TEXT("-CookDirectorHost=%s"), *WorkerConnectAuthority));
-	Tokens.Add(FString::Printf(TEXT("-CookWorkerId=%d"), WorkerId.GetRemoteIndex()));
+	Tokens.Add(FString::Printf(TEXT("-MultiprocessId=%d"), WorkerId.GetRemoteIndex() + 1));
+	Tokens.Add(FString::Printf(TEXT("-CookProfileId=%d"), ProfileId));
 	if (CoreLimit > 0)
 	{
 		Tokens.Add(FString::Printf(TEXT("-PhysicalCoreLimit=%d"), CoreLimit));
@@ -900,37 +1250,37 @@ bool FDirectorConnectionInfo::TryParseCommandLine()
 		UE_LOG(LogCook, Error, TEXT("CookWorker startup failed: no CookDirector specified on commandline."));
 		return false;
 	}
-	if (!FParse::Value(FCommandLine::Get(), TEXT("-CookWorkerId="), RemoteIndex))
+	uint32 MultiprocessId;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("-MultiprocessId="), MultiprocessId))
 	{
-		UE_LOG(LogCook, Error, TEXT("CookWorker startup failed: no CookWorkerId specified on commandline."));
+		UE_LOG(LogCook, Error, TEXT("CookWorker startup failed: no MultiprocessId specified on commandline."));
 		return false;
 	}
+	if (MultiprocessId < 1 || 257 <= MultiprocessId)
+	{
+		UE_LOG(LogCook, Error, TEXT("CookWorker startup failed: commandline had invalid -MultiprocessId=%d; MultiprocessId must be in the range [1, 256]."),
+			MultiprocessId);
+		return false;
+	}
+	RemoteIndex = static_cast<int32>(MultiprocessId - 1);
 	return true;
 }
 
-void FCookDirector::LoadBalance(TConstArrayView<TRefCountPtr<FCookWorkerServer>> SortedWorkers, TArrayView<FPackageData*> Requests,
+void FCookDirector::LoadBalance(TConstArrayView<FWorkerId> SortedWorkers, TArrayView<FPackageData*> Requests,
 	TMap<FPackageData*, TArray<FPackageData*>>&& RequestGraph, TArray<FWorkerId>& OutAssignments)
 {
-	TArray<FWorkerId> AllWorkers;
-	int32 NumAllWorkers = SortedWorkers.Num() + 1;
-	AllWorkers.Reserve(NumAllWorkers);
-	AllWorkers.Add(FWorkerId::Local());
-	for (FCookWorkerServer* Worker : SortedWorkers)
-	{
-		AllWorkers.Add(Worker->GetWorkerId());
-	}
 	OutAssignments.Reset(Requests.Num());
 	bool bLogResults = bIsFirstAssignment;
 
 	switch (LoadBalanceAlgorithm)
 	{
 	case ELoadBalanceAlgorithm::Striped:
-		return LoadBalanceStriped(AllWorkers, Requests, MoveTemp(RequestGraph), OutAssignments, bLogResults);
+		return LoadBalanceStriped(SortedWorkers, Requests, MoveTemp(RequestGraph), OutAssignments, bLogResults);
 	case ELoadBalanceAlgorithm::CookBurden:
-		return LoadBalanceCookBurden(AllWorkers, Requests, MoveTemp(RequestGraph), OutAssignments, bLogResults);
+		return LoadBalanceCookBurden(SortedWorkers, Requests, MoveTemp(RequestGraph), OutAssignments, bLogResults);
 	}
 	checkNoEntry();
-	return LoadBalanceCookBurden(AllWorkers, Requests, MoveTemp(RequestGraph), OutAssignments, bLogResults);
+	return LoadBalanceCookBurden(SortedWorkers, Requests, MoveTemp(RequestGraph), OutAssignments, bLogResults);
 }
 
 void FCookDirector::AbortWorker(FWorkerId WorkerId, ECookDirectorThread TickThread)
@@ -946,24 +1296,40 @@ void FCookDirector::AbortWorker(FWorkerId WorkerId, ECookDirectorThread TickThre
 			return;
 		}
 	}
-	TSet<FPackageData*> PackagesToReassign;
-	RemoteWorker->AbortAssignments(PackagesToReassign, TickThread);
+	TSet<FPackageData*> PackagesToReassignSet;
+	RemoteWorker->AbortAllAssignments(PackagesToReassignSet, TickThread);
 	if (!RemoteWorker->IsShuttingDown())
 	{
-		RemoteWorker->AbortWorker(PackagesToReassign, TickThread);
+		RemoteWorker->AbortWorker(PackagesToReassignSet, TickThread);
 	}
-	for (FPackageData* PackageData : PackagesToReassign)
+	TArray<FPackageData*> PackagesToReassign = PackagesToReassignSet.Array();
+
+	if (TickThread == ECookDirectorThread::SchedulerThread)
 	{
-		check(PackageData->IsInProgress()); // Packages that were assigned to a worker should be in the AssignedToWorker state
-		PackageData->SetWorkerAssignment(FWorkerId::Invalid());
-		PackageData->SendToState(UE::Cook::EPackageState::Request, ESendFlags::QueueAddAndRemove);
+		ReassignAbortedPackages(PackagesToReassign);
 	}
 	{
 		FScopeLock RemoteWorkersScopeLock(&CommunicationLock);
 		TRefCountPtr<FCookWorkerServer>& Existing = ShuttingDownWorkers.FindOrAdd(RemoteWorker.GetReference());
 		check(!Existing); // We should not be able to abort a worker twice because we removed it from RemoteWorkers above
 		Existing = MoveTemp(RemoteWorker);
+
+		if (TickThread != ECookDirectorThread::SchedulerThread)
+		{
+			DeferredPackagesToReassign.Append(PackagesToReassign);
+		}
 	}
+}
+
+void FCookDirector::ReassignAbortedPackages(TArray<FPackageData*>& PackagesToReassign)
+{
+	for (FPackageData* PackageData : PackagesToReassign)
+	{
+		check(PackageData->IsInProgress()); // Packages that were assigned to a worker should be in the AssignedToWorker state
+		PackageData->SetWorkerAssignment(FWorkerId::Invalid());
+		PackageData->SendToState(UE::Cook::EPackageState::Request, ESendFlags::QueueAddAndRemove);
+	}
+	PackagesToReassign.Empty();
 }
 
 void FCookDirector::ConstructReadonlyThreadVariables()
@@ -988,14 +1354,410 @@ const FInitialConfigMessage& FCookDirector::GetInitialConfigMessage()
 	return *InitialConfigMessage;
 }
 
-FCookDirector::FLaunchInfo FCookDirector::GetLaunchInfo(FWorkerId WorkerId)
+FCookDirector::FLaunchInfo FCookDirector::GetLaunchInfo(FWorkerId WorkerId, int32 ProfileId)
 {
 	FLaunchInfo Info;
 	Info.ShowWorkerOption = GetShowWorkerOption();
 	Info.CommandletExecutable = CommandletExecutablePath;
-	Info.WorkerCommandLine = GetWorkerCommandLine(WorkerId);
+	Info.WorkerCommandLine = GetWorkerCommandLine(WorkerId, ProfileId);
 	return Info;
 }
 
+void FCookDirector::LogCookStats(FCookStatsManager::AddStatFuncRef AddStat)
+{
+	auto IdleTimeToString = [](float IdleTime)
+	{
+		return FString::Printf(TEXT("%.1fs"), IdleTime);
+	};
+	TArray<FCookStatsManager::StringKeyValue> Stats;
+	Stats.Emplace(TEXT("LocalWorker IdleTime"), IdleTimeToString(LocalWorkerProfileData->IdleTimeSeconds));
+	for (int32 ProfileId = 0; ProfileId < RemoteWorkerProfileDatas.Num(); ++ProfileId)
+	{
+		FCookWorkerProfileData& ProfileData = RemoteWorkerProfileDatas[ProfileId];
+		Stats.Emplace(FString::Printf(TEXT("CookWorker %d IdleTime"), ProfileId),
+			IdleTimeToString(ProfileData.IdleTimeSeconds));
+	}
+	AddStat(TEXT("CookDirector"), Stats);
+}
+
+void FCookDirector::HandleRetractionMessage(FMPCollectorServerMessageContext& Context, bool bReadSuccessful,
+	FRetractionResultsMessage&& Message)
+{
+	if (!bReadSuccessful)
+	{
+		UE_LOG(LogCook, Error, TEXT("Corrupt RetractionResultsMessage received from CookWorker %d. It will be ignored and packages may fail to cook."),
+			Context.GetProfileId());
+		return;
+	}
+
+	if (!RetractionHandler)
+	{
+		UE_LOG(LogCook, Warning, TEXT("Retractionmessage received from CookWorker %d when we were not expecting one."), Context.GetProfileId());
+		RetractionHandler = MakeUnique<FRetractionHandler>(*this);
+		RetractionHandler->InitializeForResultsMessage(Context.GetWorkerId());
+	}
+	RetractionHandler->HandleRetractionMessage(Context.GetWorkerId(), Message.ReturnedPackages);
+}
+
+void FCookDirector::TickRetractionFromSchedulerThread(bool bAnyIdle, int32 BusiestNumAssignments)
+{
+	if (!RetractionHandler)
+	{
+		if (bAnyIdle && BusiestNumAssignments > RetractionMinimumNumAssignments)
+		{
+			RetractionHandler = MakeUnique<FRetractionHandler>(*this);
+			RetractionHandler->Initialize();
+		}
+		else
+		{
+			return;
+		}
+	}
+
+	bool bComplete;
+	RetractionHandler->TickFromSchedulerThread(bAnyIdle, bComplete);
+	if (bComplete)
+	{
+		RetractionHandler.Reset();
+	}
+}
+
+FCookDirector::FRetractionHandler::FRetractionHandler(FCookDirector& InDirector)
+	: Director(InDirector)
+{
+}
+
+void FCookDirector::FRetractionHandler::Initialize()
+{
+	FWorkerId BusiestWorker;
+	TArray<FWorkerId> IdleWorkers;
+	int32 BusiestNumAssignments = 0;
+
+	{
+		int32 NumAssignments = Director.COTFS.NumMultiprocessLocalWorkerAssignments();
+		BusiestWorker = FWorkerId::Local();
+		BusiestNumAssignments = NumAssignments;
+		if (NumAssignments == 0)
+		{
+			IdleWorkers.Add(FWorkerId::Local());
+		}
+	}
+
+	TArray<TRefCountPtr<FCookWorkerServer>> LocalRemoteWorkers = Director.CopyRemoteWorkers();
+	for (const TRefCountPtr<FCookWorkerServer>& RemoteWorker : LocalRemoteWorkers)
+	{
+		int32 NumAssignments = RemoteWorker->NumAssignments();
+		if (NumAssignments > BusiestNumAssignments)
+		{
+			BusiestWorker = RemoteWorker->GetWorkerId();
+			BusiestNumAssignments = NumAssignments;
+		}
+		if (NumAssignments == 0)
+		{
+			IdleWorkers.Add(RemoteWorker->GetWorkerId());
+		}
+	}
+	if (IdleWorkers.IsEmpty() || BusiestNumAssignments < RetractionMinimumNumAssignments)
+	{
+		// Worker loads changed after the point where we decided to initialize the RetractionHandler,
+		// and retraction is no longer needed. Early exit now and this will be deleted later in Tick.
+		return;
+	}
+
+	// Plan to divide the assignments evenly between all idle workers and the one busiest worker. This means
+	// retracting all but 1/(N+1) packages from the busiest worker.
+	int32 NumAssignmentsToRetract = (BusiestNumAssignments * IdleWorkers.Num()) / (IdleWorkers.Num() + 1);
+	TStringBuilder<256> IdleWorkerListText;
+	for (FWorkerId& WorkerId : IdleWorkers)
+	{
+		IdleWorkerListText << Director.GetDisplayName(WorkerId) << TEXT(", ");
+	}
+	IdleWorkerListText.RemoveSuffix(2);
+	UE_LOG(LogCook, Display, TEXT("Idle CookWorkers: { %s }. Retracting %d packages from %s to distribute to the idle CookWorkers."),
+		*IdleWorkerListText, NumAssignmentsToRetract, *Director.GetDisplayName(BusiestWorker));
+	Director.DisplayRemainingPackages();
+
+	if (BusiestWorker.IsLocal())
+	{
+		ExpectedWorker = FWorkerId::Local();
+		WorkerWithResults = ExpectedWorker;
+		TArray<FName> LocalPackagesToRetract;
+		Director.COTFS.GetPackagesToRetract(NumAssignmentsToRetract, LocalPackagesToRetract);
+		PackagesToRetract.FindOrAdd(ExpectedWorker).Append(MoveTemp(LocalPackagesToRetract));
+	}
+	else
+	{
+		TRefCountPtr<FCookWorkerServer>* RemoteWorker = LocalRemoteWorkers.FindByPredicate(
+			[&BusiestWorker](const TRefCountPtr<FCookWorkerServer>& X) { return X->GetWorkerId() == BusiestWorker; });
+		check(RemoteWorker);
+		FRetractionRequestMessage Message;
+		Message.RequestedCount = NumAssignmentsToRetract;
+		(*RemoteWorker)->SendMessage(Message, ECookDirectorThread::SchedulerThread);
+		ExpectedWorker = BusiestWorker;
+		MessageSentTimeSeconds = FPlatformTime::Seconds();
+		LastWarnTimeSeconds = MessageSentTimeSeconds;
+	}
+}
+
+void FCookDirector::FRetractionHandler::InitializeForResultsMessage(const FWorkerId& FromWorker)
+{
+	ExpectedWorker = FromWorker;
+}
+
+void FCookDirector::FRetractionHandler::TickFromSchedulerThread(bool bAnyIdle, bool& bOutComplete)
+{
+	if (ExpectedWorker.IsInvalid())
+	{
+		// We decided to cancel
+		checkf(PackagesToRetract.IsEmpty(), TEXT("We should not have any packages when we cancelled."));
+		bOutComplete = true;
+		return;
+	}
+	if (WorkerWithResults.IsInvalid())
+	{
+		double CurrentTime = FPlatformTime::Seconds();
+		constexpr float WarnDuration = 60.f;
+
+		if (static_cast<float>(CurrentTime - LastWarnTimeSeconds) < WarnDuration)
+		{
+			bOutComplete = false;
+			return;
+		}
+		check(ExpectedWorker.IsRemote());
+		{
+			FScopeLock CommunicationScopeLock(&Director.CommunicationLock);
+			TRefCountPtr<FCookWorkerServer>* RemoteWorkerPtr = Director.RemoteWorkers.Find(ExpectedWorker.GetRemoteIndex());
+			if (!RemoteWorkerPtr)
+			{
+				// The CookWorker aborted and we already reassigned all of its packages; stop waiting for a retraction message from it.
+				check(PackagesToRetract.IsEmpty()); // Otherwise WorkerWithResults would have been set
+				ExpectedWorker = FWorkerId::Invalid();
+				bOutComplete = true;
+				return;
+			}
+		}
+		bOutComplete = false;
+		UE_CLOG(!IsCookIgnoreTimeouts(), LogCook, Display, TEXT("%s has not responded to a RetractionRequest message for %.1f seconds. Continuing to wait..."),
+			*Director.GetDisplayName(ExpectedWorker), static_cast<float>(CurrentTime - MessageSentTimeSeconds));
+		LastWarnTimeSeconds = CurrentTime;
+		return;
+	}
+
+	// Convert names to packagedatas and collect results from all CookWorkers who sent a message.
+	TArray<FPackageData*> PackageDatasToReassign;
+	for (const TPair<FWorkerId, TArray<FName>>& Pair : PackagesToRetract)
+	{
+		TRefCountPtr<FCookWorkerServer> RemoteWorker;
+		if (Pair.Key.IsRemote())
+		{
+			FScopeLock CommunicationScopeLock(&Director.CommunicationLock);
+			TRefCountPtr<FCookWorkerServer>* FoundRemoteWorker = Director.RemoteWorkers.Find(Pair.Key.GetRemoteIndex());
+			if (FoundRemoteWorker)
+			{
+				RemoteWorker = *FoundRemoteWorker;
+			}
+		}
+		TArray<FPackageData*> WorkerPackageDatas;
+		WorkerPackageDatas.Reserve(Pair.Value.Num());
+		for (FName PackageName : Pair.Value)
+		{
+			FPackageData* PackageData = Director.COTFS.PackageDatas->FindPackageDataByPackageName(PackageName);
+			if (PackageData)
+			{
+				WorkerPackageDatas.Add(PackageData);
+			}
+		}
+		if (RemoteWorker)
+		{
+			// The worker(s) that sent the retraction message aborted all of the packages, so mark locally that they have been aborted
+			RemoteWorker->AbortAssignments(WorkerPackageDatas, ECookDirectorThread::SchedulerThread,
+				ENotifyRemote::LocalOnly);
+		}
+		PackageDatasToReassign.Append(MoveTemp(WorkerPackageDatas));
+	}
+
+	// Reassign the packages
+	ReassignPackages(WorkerWithResults, PackageDatasToReassign);
+
+	// Mark that we are no longer waiting
+	ExpectedWorker = FWorkerId::Invalid();
+	WorkerWithResults = FWorkerId::Invalid();
+	PackagesToRetract.Empty();
+	bOutComplete = true;
+}
+
+void FCookDirector::FRetractionHandler::HandleRetractionMessage(const FWorkerId& FromWorker, TConstArrayView<FName> Packages)
+{
+	UE_CLOG(WorkerWithResults.IsValid(), LogCook, Error,
+		TEXT("Unexpectedly received RetractionResults message from multiple CookWorkers. Merging the results."));
+	WorkerWithResults = FromWorker;
+	PackagesToRetract.FindOrAdd(FromWorker).Append(Packages);
+}
+
+void FCookDirector::FRetractionHandler::ReassignPackages(const FWorkerId& FromWorker, TConstArrayView<FPackageData*> Packages)
+{
+	TArray<TRefCountPtr<FCookWorkerServer>> LocalRemoteWorkers = Director.CopyRemoteWorkers();
+
+	TArray<FWorkerId> WorkersRequiredByConstraint;
+	TArray<FPackageData*> AssignmentPackages;
+	for (FPackageData* PackageData : Packages)
+	{
+		EPackageState State = PackageData->GetState();
+		if (State == EPackageState::Idle)
+		{
+			continue;
+		}
+		FWorkerId WorkerConstraint = PackageData->GetWorkerAssignmentConstraint();
+		if (WorkerConstraint.IsValid())
+		{
+			if (!WorkerConstraint.IsLocal() && !LocalRemoteWorkers.FindByPredicate(
+				[&WorkerConstraint](const TRefCountPtr<FCookWorkerServer>& X) { return X->GetWorkerId() == WorkerConstraint; }))
+			{
+				continue;
+			}
+			WorkersRequiredByConstraint.AddUnique(WorkerConstraint);
+		}
+
+		AssignmentPackages.Add(PackageData);
+		PackageData->SendToState(EPackageState::Request, ESendFlags::QueueRemove);
+	}
+	if (AssignmentPackages.IsEmpty())
+	{
+		UE_LOG(LogCook, Display, TEXT("Retraction results message received from %s; no packages were available for retraction."),
+			*Director.GetDisplayName(FromWorker));
+		Director.DisplayRemainingPackages();
+		return;
+	}
+
+	TArray<FWorkerId> WorkersToSplitOver = CalculateWorkersToSplitOver(AssignmentPackages.Num(), FromWorker, LocalRemoteWorkers);
+	if (WorkersToSplitOver.IsEmpty())
+	{
+		// Send the packages back to the Director for reassignment
+		FPackageDataSet& UnclusteredRequests = Director.COTFS.PackageDatas->GetRequestQueue().GetUnclusteredRequests();
+		for (FPackageData* PackageData : AssignmentPackages)
+		{
+			UnclusteredRequests.Add(PackageData);
+		}
+		// MPCOOKTODO: Add a method to PumpRequests long enough to assign the packages
+		UE_LOG(LogCook, Display, TEXT("%d packages retracted from %s. No workers are currently idle so the packages were assigned evenly to all CookWorkers."),
+			AssignmentPackages.Num(), *Director.GetDisplayName(FromWorker));
+		Director.DisplayRemainingPackages();
+		return;
+	}
+	for (const FWorkerId& WorkerId : WorkersRequiredByConstraint)
+	{
+		WorkersToSplitOver.AddUnique(WorkerId);
+	}
+
+	TStringBuilder<256> WorkerListText;
+	for (const FWorkerId& WorkerId : WorkersToSplitOver)
+	{
+		WorkerListText << Director.GetDisplayName(WorkerId) << TEXT(", ");
+	}
+	WorkerListText.RemoveSuffix(2);
+	UE_LOG(LogCook, Display, TEXT("%d packages retracted from %s and distributed to idle workers { %s }."),
+		AssignmentPackages.Num(), *Director.GetDisplayName(FromWorker), *WorkerListText);
+
+	TMap<FPackageData*, TArray<FPackageData*>> RequestGraph;
+	TArray<FWorkerId> Assignments;
+	Director.AssignRequests(MoveTemp(WorkersToSplitOver), LocalRemoteWorkers, AssignmentPackages, Assignments, MoveTemp(RequestGraph));
+	FRequestQueue& RequestQueue = Director.COTFS.PackageDatas->GetRequestQueue();
+	bool bAssignedToLocal = false;
+	for (int32 Index = 0; Index < AssignmentPackages.Num(); ++Index)
+	{
+		FPackageData* PackageData = AssignmentPackages[Index];
+		FWorkerId Assignment = Assignments[Index];
+		if (Assignment.IsInvalid())
+		{
+			Director.COTFS.DemoteToIdle(*PackageData, ESendFlags::QueueAdd, ESuppressCookReason::MultiprocessAssignmentError);
+		}
+		else if (Assignment.IsLocal())
+		{
+			RequestQueue.AddReadyRequest(PackageData);
+			bAssignedToLocal = true;
+		}
+		else
+		{
+			PackageData->SendToState(EPackageState::AssignedToWorker, ESendFlags::QueueAdd);
+			PackageData->SetWorkerAssignment(Assignment);
+		}
+	}
+	Director.DisplayRemainingPackages();
+	if (bAssignedToLocal)
+	{
+		// Clear the SoftGC diagnostic ExpectedNeverLoadPackages because we have new assigned packages
+		// that we didn't consider during SoftGC
+		Director.COTFS.PackageTracker->ClearExpectedNeverLoadPackages();
+	}
+}
+
+TArray<FWorkerId> FCookDirector::FRetractionHandler::CalculateWorkersToSplitOver(int32 NumPackages, const FWorkerId& FromWorker,
+	TConstArrayView<TRefCountPtr<FCookWorkerServer>> LocalRemoteWorkers)
+{
+	TArray<TPair<FWorkerId, int32>> WorkerNumPackages;
+	if (FromWorker != FWorkerId::Local())
+	{
+		WorkerNumPackages.Emplace(FWorkerId::Local(), Director.COTFS.NumMultiprocessLocalWorkerAssignments());
+	}
+	for (const TRefCountPtr<FCookWorkerServer>& RemoteWorker : LocalRemoteWorkers)
+	{
+		if (FromWorker != RemoteWorker->GetWorkerId())
+		{
+			WorkerNumPackages.Emplace(RemoteWorker->GetWorkerId(), RemoteWorker->NumAssignments());
+		}
+	}
+	if (WorkerNumPackages.Num() == 0)
+	{
+		return TArray<FWorkerId>();
+	}
+	WorkerNumPackages.Sort([](const TPair<FWorkerId, int32>& A, const TPair<FWorkerId, int32>& B) { return A.Value < B.Value; });
+
+	// Consider splitting the packages amonst the 1 lowest, 2 lowest, ... n lowest (not including the FromWorker)
+	// Pick the value to split over based on whichever split group results in the lowest post split maximum
+	// So splitting 500 over 0,1000,1000,1000 -> would give them all to the first, but splitting 500 over 0, 100, 1000, 1000 would
+	// split them amongst the first two.
+	int32 BestNumToSplitOver = 0;
+	int32 BestPostSplitValue = 0;
+	for (int32 NumToSplitOver = 1; NumToSplitOver <= WorkerNumPackages.Num(); ++NumToSplitOver)
+	{
+		int32 PostSplitValue = WorkerNumPackages[NumToSplitOver - 1].Value + NumPackages / NumToSplitOver;
+		if (BestNumToSplitOver == 0 || PostSplitValue < BestPostSplitValue)
+		{
+			BestNumToSplitOver = NumToSplitOver;
+			BestPostSplitValue = PostSplitValue;
+		}
+	}
+	check(BestNumToSplitOver > 0);
+	TArray<FWorkerId> Results;
+	Results.Reserve(BestNumToSplitOver);
+	for (const TPair<FWorkerId, int32>& Pair :
+		TArrayView<TPair<FWorkerId, int32>>(WorkerNumPackages).Left(BestNumToSplitOver))
+	{
+		Results.Add(Pair.Key);
+	}
+	return Results;
+}
+
+void FRetractionRequestMessage::Write(FCbWriter& Writer) const
+{
+	Writer << "RequestedCount" << RequestedCount;
+}
+bool FRetractionRequestMessage::TryRead(FCbObjectView Object)
+{
+	return LoadFromCompactBinary(Object["RequestedCount"], RequestedCount);
+}
+
+FGuid FRetractionRequestMessage::MessageType(TEXT("7109E168E8A8405BA65F9E1E82571D1A"));
+
+void FRetractionResultsMessage::Write(FCbWriter& Writer) const
+{
+	Writer << "ReturnedPackages" << ReturnedPackages;
+}
+bool FRetractionResultsMessage::TryRead(FCbObjectView Object)
+{
+	return LoadFromCompactBinary(Object["ReturnedPackages"], ReturnedPackages);
+}
+
+FGuid FRetractionResultsMessage::MessageType(TEXT("CBFB840A4FB94903A757C490514A4B86"));
 
 }

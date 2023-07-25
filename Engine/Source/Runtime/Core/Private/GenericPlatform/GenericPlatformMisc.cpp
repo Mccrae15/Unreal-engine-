@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GenericPlatform/GenericPlatformMisc.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/PlatformFileManager.h"
 #include "HAL/CriticalSection.h"
@@ -38,6 +39,7 @@
 #include "Misc/UProjectInfo.h"
 #include "Internationalization/Culture.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "Misc/CoreDelegates.h"
 
 #if UE_ENABLE_ICU
 	THIRD_PARTY_INCLUDES_START
@@ -443,6 +445,39 @@ FString FSHA256Signature::ToString() const
 	return LocalHashStr;
 }
 
+const TCHAR* LexToString(ENetworkConnectionStatus EnumVal)
+{
+	switch (EnumVal)
+	{
+	case ENetworkConnectionStatus::Unknown:		return TEXT("Unknown");
+	case ENetworkConnectionStatus::Disabled:	return TEXT("Disabled");
+	case ENetworkConnectionStatus::Local:		return TEXT("Local");
+	case ENetworkConnectionStatus::Connected:	return TEXT("Connected");
+	}
+
+	checkNoEntry();
+	return TEXT("Unknown");
+}
+
+ENetworkConnectionStatus FGenericPlatformMisc::GetNetworkConnectionStatus()
+{
+	return CurrentNetworkConnectionStatus;
+}
+
+void FGenericPlatformMisc::SetNetworkConnectionStatus(ENetworkConnectionStatus NewNetworkConnectionStatus)
+{
+	const ENetworkConnectionStatus OldNetworkConnectionStatus = CurrentNetworkConnectionStatus;
+
+	if (OldNetworkConnectionStatus != NewNetworkConnectionStatus)
+	{
+		CurrentNetworkConnectionStatus = NewNetworkConnectionStatus;
+
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_FGenericPlatformMisc_SetNetworkConnectionStatus);
+
+		FCoreDelegates::OnNetworkConnectionStatusChanged.Broadcast(OldNetworkConnectionStatus, NewNetworkConnectionStatus);
+	}
+}
+
 /* ENetworkConnectionType interface
  *****************************************************************************/
 
@@ -485,6 +520,8 @@ FString FSHA256Signature::ToString() const
 #endif	//#if !UE_BUILD_SHIPPING
 
 EDeviceScreenOrientation FGenericPlatformMisc::AllowedDeviceOrientation = EDeviceScreenOrientation::Unknown;
+
+ENetworkConnectionStatus FGenericPlatformMisc::CurrentNetworkConnectionStatus = ENetworkConnectionStatus::Connected;
 
 struct FGenericPlatformMisc::FStaticData
 {
@@ -695,13 +732,7 @@ void FGenericPlatformMisc::RaiseException(uint32 ExceptionCode)
 	/** This is the last place to gather memory stats before exception. */
 	FGenericCrashContext::SetMemoryStats(FPlatformMemory::GetStats());
 
-#if HACK_HEADER_GENERATOR && !PLATFORM_EXCEPTIONS_DISABLED
-	// We want Unreal Header Tool to throw an exception but in normal runtime code 
-	// we don't support exception handling
-	throw(ExceptionCode);
-#else	
 	*((uint32*)3) = ExceptionCode;
-#endif
 }
 
 template<typename CharType>
@@ -878,6 +909,16 @@ void FGenericPlatformMisc::LowLevelOutputDebugStringf(const TCHAR *Fmt, ... )
 	GROWABLE_LOGF(
 		FPlatformMisc::LowLevelOutputDebugString( Buffer );
 	);
+}
+
+bool FGenericPlatformMisc::IsLowLevelOutputDebugStringStructured()
+{
+	if (!FCommandLine::IsInitialized())
+	{
+		return false;
+	}
+	static bool bJsonDebugOutput = FParse::Param(FCommandLine::Get(), TEXT("JsonDebugOutput"));
+	return bJsonDebugOutput;
 }
 
 void FGenericPlatformMisc::SetUTF8Output()
@@ -1279,6 +1320,12 @@ const TCHAR* FGenericPlatformMisc::ProjectDir()
 		{
 			// monolithic, game-agnostic executables, the ini is in Engine/Config/Platform
 			ProjectDir = FString::Printf(TEXT("../../../Engine/Programs/%s/"), FApp::GetProjectName());
+
+			// however, if it was staged, that directory won't exist, so look in the normal staged location
+			if (!FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*ProjectDir))
+			{
+				ProjectDir = FString::Printf(TEXT("../../../%s/"), FApp::GetProjectName());
+			}
 		}
 		else
 		{

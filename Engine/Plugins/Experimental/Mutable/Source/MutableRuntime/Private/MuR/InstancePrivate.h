@@ -4,7 +4,6 @@
 
 #include "MuR/Instance.h"
 
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ImagePrivate.h"
 #include "MuR/MeshPrivate.h"
 
@@ -33,11 +32,11 @@ namespace mu
 			string m_name;
 		};
 
-		TArray<IMAGE> m_images;
+		TArray<IMAGE, TInlineAllocator<4>> m_images;
 
 		struct VECTOR
 		{
-			VECTOR( const vec4<float>& v, const char* strName )
+			VECTOR( const FVector4f& v, const char* strName )
 			{
 				m_vec = v;
 				if (strName)
@@ -46,7 +45,7 @@ namespace mu
 				}
 			}
 
-			vec4<float> m_vec;
+			FVector4f m_vec;
 			string m_name;
 		};
 
@@ -108,16 +107,16 @@ namespace mu
             RESOURCE_ID m_meshId;
 			string m_name;
 		};
-		TArray<MESH> m_meshes;
+		TArray<MESH, TInlineAllocator<2>> m_meshes;
 
 		// The order must match the meshes surfaces
-		TArray<INSTANCE_SURFACE> m_surfaces;
+		TArray<INSTANCE_SURFACE, TInlineAllocator<4>> m_surfaces;
 	};
 
 
     struct INSTANCE_LOD
     {
-		TArray<INSTANCE_COMPONENT> m_components;
+		TArray<INSTANCE_COMPONENT, TInlineAllocator<4>> m_components;
     };
 
 
@@ -129,7 +128,7 @@ namespace mu
         Instance::ID m_id;
 
 		//!
-		TArray<INSTANCE_LOD> m_lods;
+		TArray<INSTANCE_LOD,TInlineAllocator<4>> m_lods;
 
         Private()
         {
@@ -151,7 +150,7 @@ namespace mu
 		int AddSurface( int lod, int comp );
         void SetSurfaceName( int lod, int comp, int surf, const char* strName );
         int AddImage( int lod, int comp, int surf, RESOURCE_ID, const char* strName );
-        int AddVector( int lod, int comp, int surf, const vec4<float>&, const char* strName );
+        int AddVector( int lod, int comp, int surf, const FVector4f&, const char* strName );
         int AddScalar( int lod, int comp, int surf, float, const char* strName );
         int AddString( int lod, int comp, int surf, const char* strValue, const char* strName );
     };

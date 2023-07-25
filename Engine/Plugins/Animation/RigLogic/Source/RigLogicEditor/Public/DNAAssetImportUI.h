@@ -22,10 +22,10 @@ public:
 
 	/** Skeletal mesh to use for imported DNA asset. When importing DNA, leaving this as "None" will generate new skeletal mesh. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Mesh, meta = (ImportType = "DNAAsset"))
-		TObjectPtr<class USkeletalMesh> SkeletalMesh;
+	TObjectPtr<class USkeletalMesh> SkeletalMesh;
 
 	UFUNCTION(BlueprintCallable, Category = Miscellaneous)
-		void ResetToDefault();
+	void ResetToDefault();
 
 	/** UObject Interface */
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
@@ -44,11 +44,7 @@ public:
 		// DNA Asset file informations
 		// Transient value that are set everytime we show the options dialog. These are information only and should be string.
 
-	/* The DNA file version */
-	UPROPERTY(VisibleAnywhere, Transient, Category = DNAFileInformation, meta = (ImportType = "DNAAsset", DisplayName = "File Version"))
-		FString FileVersion;
-
-	/* The file creator information */
-	UPROPERTY(VisibleAnywhere, Transient, Category = DNAFileInformation, meta = (ImportType = "DNAAsset", DisplayName = "File Creator"))
-		FString FileCreator;
+	/* The DNA file name */
+	UPROPERTY(VisibleAnywhere, Transient, Category = DNAFileInformation, meta = (ImportType = "DNAAsset", DisplayName = "File Name"))
+	FString FileName;
 };

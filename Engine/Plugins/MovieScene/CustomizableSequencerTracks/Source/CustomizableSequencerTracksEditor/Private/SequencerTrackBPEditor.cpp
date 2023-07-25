@@ -1,25 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerTrackBPEditor.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "SequencerTrackBP.h"
-#include "SequencerSectionBP.h"
+#include "ISequencerSection.h"
 #include "SequencerSectionPainter.h"
+#include "Misc/PackageName.h"
 #include "SequencerUtilities.h"
 #include "CustomizableSequencerTracksStyle.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/AssetDataTagMap.h"
+#include "Modules/ModuleManager.h"
 #include "UObject/UObjectIterator.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Engine/Blueprint.h"
-#include "Styling/AppStyle.h"
-#include "EntitySystem/IMovieSceneEntityProvider.h"
-#include "Misc/PathViews.h"
 
+#include "ScopedTransaction.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "SequencerTrackBPEditor"
 
@@ -140,12 +143,12 @@ void FSequencerTrackBPEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuil
 
 	TArray<FAssetData> TrackTypes = DiscoverCustomTrackTypes();
 
-	// Prune tracks that do not support this object class, or are master tracks
+	// Prune tracks that do not support this object class, or are root tracks
 	FName TrackTypeTagName = GET_MEMBER_NAME_CHECKED(USequencerTrackBP, TrackType);
 	for (const FAssetData& Asset : TrackTypes)
 	{
 		FAssetDataTagMapSharedView::FFindTagResult TrackTypeTag = Asset.TagsAndValues.FindTag(TrackTypeTagName);
-		if (TrackTypeTag.IsSet() && TrackTypeTag.GetValue() == TEXT("MasterTrack"))
+		if (TrackTypeTag.IsSet() && TrackTypeTag.GetValue() == TEXT("RootTrack"))
 		{
 			continue;
 		}
@@ -183,13 +186,13 @@ void FSequencerTrackBPEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 
 	TArray<FAssetData> TrackTypes = DiscoverCustomTrackTypes();
 
-	// Only show tracks that can be master tracks
+	// Only show tracks that can be root tracks
 	FName TrackTypeTagName = GET_MEMBER_NAME_CHECKED(USequencerTrackBP, TrackType);
 	for (const FAssetData& Asset : TrackTypes)
 	{
 		FAssetDataTagMapSharedView::FFindTagResult TrackTypeTag = Asset.TagsAndValues.FindTag(TrackTypeTagName);
 
-		if (TrackTypeTag.IsSet() && TrackTypeTag.GetValue() == TEXT("MasterTrack"))
+		if (TrackTypeTag.IsSet() && TrackTypeTag.GetValue() == TEXT("RootTrack"))
 		{
 			UClass* ThisClass = LoadClassFromAssetData(Asset);
 			if (!ThisClass)
@@ -204,7 +207,7 @@ void FSequencerTrackBPEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 				FText(),
 				FSlateIcon(StyleSet.GetStyleSetName(), ThisClass->GetFName()),
 				FUIAction(
-					FExecuteAction::CreateSP(this, &FSequencerTrackBPEditor::AddNewMasterTrack, Asset)
+					FExecuteAction::CreateSP(this, &FSequencerTrackBPEditor::AddNewTrack, Asset)
 				)
 			);
 		}
@@ -333,7 +336,7 @@ bool FSequencerTrackBPEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Type) c
 	return Type->IsChildOf(USequencerTrackBP::StaticClass());
 }
 
-void FSequencerTrackBPEditor::AddNewMasterTrack(FAssetData AssetData)
+void FSequencerTrackBPEditor::AddNewTrack(FAssetData AssetData)
 {
 	UMovieScene* MovieScene = GetFocusedMovieScene();
 	if (MovieScene == nullptr || MovieScene->IsReadOnly())
@@ -348,11 +351,11 @@ void FSequencerTrackBPEditor::AddNewMasterTrack(FAssetData AssetData)
 		return;
 	}
 
-	const FScopedTransaction Transaction(FText::Format(LOCTEXT("AddCustomMasterTrack_Transaction", "Add Master Track {0}"), FText::FromName(ClassToAdd->GetFName())));
+	const FScopedTransaction Transaction(FText::Format(LOCTEXT("AddCustomTrack_Transaction", "Add Track {0}"), FText::FromName(ClassToAdd->GetFName())));
 
 	MovieScene->Modify();
 
-	USequencerTrackBP* CustomTrack = CastChecked<USequencerTrackBP>(MovieScene->AddMasterTrack(ClassToAdd));
+	USequencerTrackBP* CustomTrack = CastChecked<USequencerTrackBP>(MovieScene->AddTrack(ClassToAdd));
 	CreateNewSection(CustomTrack, CustomTrack->DefaultSectionType);
 
 	if (GetSequencer().IsValid())

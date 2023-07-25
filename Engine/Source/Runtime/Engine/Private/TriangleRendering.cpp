@@ -4,21 +4,15 @@
 	TriangleRendering.cpp: Simple triangle rendering implementation.
 =============================================================================*/
 
-#include "ShowFlags.h"
-#include "RHI.h"
-#include "RenderResource.h"
-#include "RenderingThread.h"
-#include "VertexFactory.h"
-#include "PackedNormal.h"
-#include "LocalVertexFactory.h"
-#include "SceneView.h"
+#include "CanvasRendererItem.h"
 #include "CanvasRender.h"
-#include "MeshBatch.h"
-#include "RendererInterface.h"
-#include "SceneUtils.h"
+#include "PrimitiveUniformShaderParameters.h"
+#include "RHIStaticStates.h"
 #include "EngineModule.h"
 #include "MeshPassProcessor.h"
 #include "RenderGraphUtils.h"
+#include "UnrealClient.h"
+#include "Materials/MaterialRenderProxy.h"
 
 DECLARE_GPU_STAT_NAMED(CanvasDrawTriangles, TEXT("CanvasDrawTriangles"));
 

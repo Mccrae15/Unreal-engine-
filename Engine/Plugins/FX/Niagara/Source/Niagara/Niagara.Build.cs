@@ -6,8 +6,10 @@ using UnrealBuildTool;
 public class Niagara : ModuleRules
 {
     public Niagara(ReadOnlyTargetRules Target) : base(Target)
-    {
-        PrivateIncludePaths.Add("../../../../Shaders/Shared");
+	{
+		NumIncludedBytesPerUnityCPPOverride = 491520; // best unity size found from using UBT ProfileUnitySizes mode
+
+		PrivateIncludePaths.Add("../../../../Shaders/Shared");
 
 		// Specific to OpenVDB support
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
@@ -60,7 +62,6 @@ public class Niagara : ModuleRules
 
         PrivateIncludePaths.AddRange(
             new string[] {
-                "Niagara/Private",
 				System.IO.Path.Combine(GetModuleDirectory("Engine"), "Private"),
 				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 			});
@@ -94,5 +95,8 @@ public class Niagara : ModuleRules
                 "VECTORVM_SUPPORTS_EXPERIMENTAL=1",
                 "VECTORVM_SUPPORTS_LEGACY=1"
             });
-    }
+
+		// TODO: Should not be including private headers in public code
+		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Private")); // For NiagaraStats.h & NiagaraGpuReadbackManager.h
+	}
 }

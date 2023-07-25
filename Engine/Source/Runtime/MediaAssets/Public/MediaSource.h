@@ -21,7 +21,9 @@
 #include "MediaSource.generated.h"
 
 class FVariant;
+class IMediaSourceRendererInterface;
 class UMediaSource;
+class UTexture;
 struct FFrame;
 
 /** Delegate for creating a media source from a string. */
@@ -89,6 +91,26 @@ public:
 	 */
 	void SetCacheSettings(const FMediaSourceCacheSettings& Settings);
 
+
+#if WITH_EDITOR
+
+	/**
+	 * Starts the process to generate a thumbnail.
+	 */
+	void GenerateThumbnail();
+
+	/**
+	 * Gets our thumbnail texture, if any.
+	 */
+	UTexture* GetThumbnail() const { return ThumbnailImage; }
+
+	/**
+	 * Sets what the thumbnail texture should be.
+	 */
+	void SetThumbnail(UTexture* InTexture) { ThumbnailImage = InTexture; }
+
+#endif // WITH_EDITOR
+
 	/**
 	 * Call this to register a callback when someone calls SpawnMediaSourceForString.
 	 * This lets you spawn a media source if the file extension matches what you want.
@@ -116,6 +138,8 @@ public:
 	static UMediaSource* SpawnMediaSourceForString(const FString& MediaPath, UObject* Outer);
 
 public:
+	//~ UObject interface
+	virtual void BeginDestroy() override;
 
 	//~ IMediaOptions interface
 
@@ -162,4 +186,16 @@ private:
 	 * Get a mapping of file extensions to spawn delegates.
 	 */
 	static TMap<FString, FMediaSourceSpawnDelegate>& GetSpawnFromFileExtensionDelegates();
+
+#if WITH_EDITORONLY_DATA
+
+	/** The thumbnail image.*/
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture> ThumbnailImage = nullptr;
+
+	/** Renders thumnbnails for us. */
+	UPROPERTY(Transient)
+	TObjectPtr<UObject> MediaSourceRenderer = nullptr;
+
+#endif
 };

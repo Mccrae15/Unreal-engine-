@@ -7,6 +7,7 @@
 #include "OculusXRHMD.h"
 #include "OculusXRPassthroughLayerShapes.h"
 #include "Curves/CurveLinearColor.h"
+#include "StaticMeshResources.h"
 
 DEFINE_LOG_CATEGORY(LogOculusPassthrough);
 
@@ -93,8 +94,8 @@ void UOculusXRPassthroughLayerComponent::TickComponent(float DeltaTime, enum ELe
 		Texture = GEngine->DefaultTexture;
 	}
 #endif
-	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	UpdatePassthroughObjects();
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 }
 
 void UOculusXRPassthroughLayerComponent::UpdatePassthroughObjects()

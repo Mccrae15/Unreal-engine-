@@ -3,11 +3,11 @@
 #include "VT/VirtualTextureScalability.h"
 
 #include "Components/RuntimeVirtualTextureComponent.h"
-#include "CoreGlobals.h"
 #include "EngineModule.h"
 #include "Engine/Texture2D.h"
-#include "HAL/IConsoleManager.h"
 #include "RendererInterface.h"
+#include "RenderingThread.h"
+#include "TextureResource.h"
 #include "UObject/UObjectIterator.h"
 #include "VT/RuntimeVirtualTexture.h"
 
@@ -141,6 +141,13 @@ namespace VirtualTextureScalability
 		TEXT("r.VT.AnisotropicFiltering"),
 		0,
 		TEXT("Is anisotropic filtering for VTs enabled?"),
+		ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
+	static TAutoConsoleVariable<int32> CVarVTMobileEnableManualTrilinearFiltering(
+		TEXT("r.VT.Mobile.ManualTrilinearFiltering"),
+		1,
+		TEXT("Whether to use a manual trilinear filtering for VTs on mobile platforms.\n")
+		TEXT("This more expensive filtering is used on mobile platforms that do not support Temporal Anti-Aliasing.\n"),
 		ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
 	static TAutoConsoleVariable<int32> CVarVTPageFreeThreshold(

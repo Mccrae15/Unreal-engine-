@@ -173,7 +173,7 @@ void FSkeletalMeshComponentDetails::UpdateAnimationCategory(IDetailLayoutBuilder
 			.VAlign(VAlign_Center)
 			.Padding(2.0f, 1.0f)
 			[
-				PropertyCustomizationHelpers::MakeBrowseButton(FSimpleDelegate::CreateSP(this, &FSkeletalMeshComponentDetails::OnBrowseToAnimBlueprint))
+				PropertyCustomizationHelpers::MakeUseSelectedButton(FSimpleDelegate::CreateSP(this, &FSkeletalMeshComponentDetails::UseSelectedAnimBlueprint))
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
@@ -181,7 +181,7 @@ void FSkeletalMeshComponentDetails::UpdateAnimationCategory(IDetailLayoutBuilder
 			.VAlign(VAlign_Center)
 			.Padding(2.0f, 1.0f)
 			[
-				PropertyCustomizationHelpers::MakeUseSelectedButton(FSimpleDelegate::CreateSP(this, &FSkeletalMeshComponentDetails::UseSelectedAnimBlueprint))
+				PropertyCustomizationHelpers::MakeBrowseButton(FSimpleDelegate::CreateSP(this, &FSkeletalMeshComponentDetails::OnBrowseToAnimBlueprint))
 			]
 		];
 
@@ -217,8 +217,9 @@ void FSkeletalMeshComponentDetails::UpdateAnimationCategory(IDetailLayoutBuilder
 
 			TAttribute<bool> AnimPickerEnabledAttr(this, &FSkeletalMeshComponentDetails::AnimPickerIsEnabled);
 
-			AnimationCategory.AddCustomRow(ChildHandle->GetPropertyDisplayName())
+			AnimationCategory.AddProperty(ChildHandle)
 				.Visibility(SingleAnimVisibility)
+				.CustomWidget()
 				.IsEnabled(AnimPickerEnabledAttr)
 				.NameContent()
 				[
@@ -258,7 +259,7 @@ EVisibility FSkeletalMeshComponentDetails::VisibilityForAnimationMode(EAnimation
 bool FSkeletalMeshComponentDetails::OnShouldFilterAnimAsset( const FAssetData& AssetData )
 {
 	// Check the compatible skeletons.
-	if (Skeleton && Skeleton->IsCompatibleSkeletonByAssetData(AssetData))
+	if (Skeleton && Skeleton->IsCompatibleForEditor(AssetData))
 	{
 		return false;
 	}
@@ -395,7 +396,7 @@ void FSkeletalMeshComponentDetails::UseSelectedAnimBlueprint()
 		{
 			if(USkeleton* AnimBlueprintSkeleton = AnimBlueprintToAssign->TargetSkeleton)
 			{
-				if (Skeleton && Skeleton->IsCompatible(AnimBlueprintSkeleton))
+				if (Skeleton && Skeleton->IsCompatibleForEditor(AnimBlueprintSkeleton))
 				{
 					OnClassPicked(AnimBlueprintToAssign->GetAnimBlueprintGeneratedClass());
 				}

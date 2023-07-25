@@ -3,45 +3,42 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
-from collections import OrderedDict
-from datetime import datetime
-from functools import wraps
-from ipaddress import IPv4Address
 import os
 import pathlib
 import re
 import socket
 import sys
 import threading
-from typing import Callable, List, Optional, Set
 import uuid
+from collections import OrderedDict
+from datetime import datetime
+from functools import wraps
+from ipaddress import IPv4Address
+from typing import Callable, Generator, List, Optional, Set
 
-from PySide2 import QtCore
-from PySide2 import QtGui
-from PySide2 import QtWidgets
-
+import switchboard.switchboard_widgets as sb_widgets
+from PySide2 import QtCore, QtGui, QtWidgets
 from switchboard import config_osc as osc
-from switchboard import message_protocol
-from switchboard import switchboard_application
+from switchboard import message_protocol, switchboard_application
+from switchboard import switchboard_dialog as sb_dialog
 from switchboard import switchboard_utils as sb_utils
-from switchboard.config import CONFIG, BoolSetting, DirectoryPathSetting, \
-    FilePathSetting, IntSetting, MultiOptionSetting, OptionSetting, StringSetting, \
-    SETTINGS, DEFAULT_MAP_TEXT, StringListSetting, migrate_comma_separated_string_to_list
-from switchboard.devices.device_base import Device, DeviceStatus, \
-    PluginHeaderWidgets
-from switchboard.devices.device_widget_base import DeviceWidget, DeviceAutoJoinMUServerUI
+from switchboard.config import (CONFIG, DEFAULT_MAP_TEXT, ENABLE_UGS_SUPPORT, SETTINGS, BoolSetting, DirectoryPathSetting,
+                                EngineSyncMethod, FilePathSetting, IntSetting, MultiOptionSetting, OptionSetting, Setting,
+                                StringListSetting, StringSetting, migrate_comma_separated_string_to_list)
+from switchboard.devices.device_base import Device, DeviceStatus, PluginHeaderWidgets
+from switchboard.devices.device_widget_base import DeviceAutoJoinMUServerUI, DeviceWidget
+from switchboard.devices.unreal.uassetparser import UassetParser
 from switchboard.listener_client import ListenerClient
 from switchboard.switchboard_logging import LOGGER
-import switchboard.switchboard_widgets as sb_widgets
-
 from switchboard.tools.insights_launcher import InsightsLauncher
 
-from .listener_watcher import ListenerWatcher
-from .redeploy_dialog import RedeployListenerDialog
-from . import version_helpers
 from ...util import p4_changelist_inspection
 from ...util.p4_changelist_inspection import P4Error
+from . import version_helpers
+from .listener_watcher import ListenerWatcher
+from .redeploy_dialog import RedeployListenerDialog
 
 
 class ProgramStartQueueItem:
@@ -268,8 +265,198 @@ class ProgramStartQueue:
     def clear_running_programs(self):
         self.running_programs.clear()
 
+class LiveLinkPresetSetting(Setting):
+    ''' Container of the LiveLink Preset setting
+    Its main widget is a combo box that makes available the list
+    of presets detected in the project and content plugins.
+
+    Its "refresh" button triggers an asset traversal to refresh
+    the options.
+    '''
+
+    def __init__(
+        self,
+        attr_name,
+        nice_name,
+        value,
+        tool_tip=None,
+        show_ui=True,
+        allow_reset=True,
+        migrate_data=None
+    ):
+        super().__init__(
+            attr_name=attr_name,
+            nice_name=nice_name,
+            value=value,
+            tool_tip=tool_tip,
+            show_ui=show_ui,
+            allow_reset=allow_reset,
+            migrate_data=migrate_data)
+
+    def _create_widgets(self, override_device_name = None):
+
+        # create combo with livelink preset options
+
+        combo = sb_widgets.SearchableComboBox(None)
+        combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        combo.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+
+        self._update_combo_items(combo, override_device_name)
+
+        combo.currentTextChanged.connect(
+            lambda: self._validate_and_commit_value(combo, override_device_name)
+        )
+
+        # create refresh button
+
+        btn_refresh = sb_widgets.ControlQPushButton()
+        btn_refresh.setIcon(QtGui.QIcon(':/icons/images/icon_refresh.png'))
+        btn_refresh.setProperty("frameless", True)
+        btn_refresh.setToolTip("Refresh list")
+        btn_refresh.setDefault(False)
+        btn_refresh.setAutoDefault(False)
+        btn_refresh.clicked.connect(
+            lambda: self._refresh_list(combo, override_device_name)
+        )
+
+        # create layout with combo and refresh button
+
+        layout = QtWidgets.QHBoxLayout()
+
+        layout.addWidget(combo)
+        layout.addWidget(btn_refresh)
+
+        # set the class' widget as the combo box itself
+        self.set_widget(widget=combo, override_device_name=override_device_name)
+
+        return layout
+
+    def _refresh_list(self, combo:QtWidgets.QComboBox, override_device_name:Optional[str] = None):
+        ''' Traveses the content to refresh the list of live link presets available '''
+
+        DeviceUnreal.analyze_project_assets()
+        self._update_combo_items(combo, override_device_name)
+
+    def _validate_and_commit_value(self, combo: QtWidgets.QComboBox, override_device_name:Optional[str] = None):
+
+        itemData = combo.currentData()
+
+        value_str = ''
+
+        if itemData:
+            value_str = itemData['gamepath'] # we use path and not name because it is unambiguous
+
+        self._on_widget_value_changed(value_str, override_device_name=override_device_name)
+
+
+    def asset_is_relevant(self, itemData) -> bool:
+        ''' Convenience function to filter the relevant assets for this setting '''
+
+        # Only return assets of the correct live link preset class
+        if itemData['classname'] not in DeviceUnreal.LIVELINKPRESET_CLASS_NAMES:
+            return False
+            
+        # Only return live link presets that have a valid gamepath. 
+        # We wouldn't be able to build the command line otherwise
+        if itemData['gamepath'] == '':
+            return False
+
+        return True
+
+    def _update_combo_items(self, combo:QtWidgets.QComboBox, override_device_name):
+        '''
+        Populate the combobox itself with known list of live link presets available.
+        Makes sure that the currently selected preset is preserved, unless it is not found,
+        in which case it defaults to no preset.
+        '''
+
+        # cache the current value of the combo box (currently selected preset for this device)
+        cur_value = self.get_value(override_device_name)
+
+        # We will re-populate the combo box from scratch
+        combo.clear()
+
+        # add the empty/none choice
+        combo.addItem('', {'name':'', 'gamepath':''})
+
+        itemDatas = DeviceUnreal.csettings['asset_itemDatas'].get_value()
+
+        # generate the combo box items
+        try:
+            for itemData in [itemData for itemData in itemDatas if self.asset_is_relevant(itemData)]:
+                name = itemData['name']
+
+                # trim the expected .uasset extension
+                ext = '.uasset'
+                if name.endswith(ext):
+                    name = name[:len(name)-len(ext)]
+
+                combo.addItem(name, itemData)
+
+        except Exception as e:
+            LOGGER.error(f'Error recalling asset itemDatas: {e}')
+
+        # set the current index to the live link preset that was already selected
+        for item_idx in range(combo.count()):
+            if cur_value == combo.itemData(item_idx)['gamepath']:
+                combo.setCurrentIndex(item_idx)
+                break
+
+    def _on_setting_changed(self, new_value: str, override_device_name: Optional[str] = None):
+
+        combo = self.get_widget(override_device_name=override_device_name)
+
+        if not combo:
+            return
+
+        try:
+            old_value = combo.currentData()['gamepath']
+        except (KeyError, TypeError):
+            old_value = ''
+
+        new_str_value = new_value
+
+        # if the value changed, find the new index in the combo box based on gamepath
+        if new_str_value != old_value:
+            for item_idx in range(combo.count()):
+                if new_str_value == combo.itemData(item_idx)['gamepath']:
+                    combo.setCurrentIndex(item_idx)
+                    break
+
+class MediaProfileSetting(LiveLinkPresetSetting):
+    ''' Container of the MediaProfile setting.
+    '''
+
+    #@override
+    def asset_is_relevant(self, itemData) -> bool:
+        # Only return assets of the correct live link preset class
+        if itemData['classname'] not in DeviceUnreal.MEDIAPROFILE_CLASS_NAMES:
+            return False
+            
+        # Only return live link presets that have a valid gamepath. 
+        # We wouldn't be able to build the command line otherwise
+        if itemData['gamepath'] == '':
+            return False
+
+        return True
+
 
 class DeviceUnreal(Device):
+
+    NDISPLAY_CLASS_NAMES =  (
+        'DisplayClusterBlueprint',
+        '/Script/DisplayCluster.DisplayClusterBlueprint',
+    )
+
+    LIVELINKPRESET_CLASS_NAMES = (
+        'LiveLinkPreset',
+        '/Script/LiveLink.LiveLinkPreset',
+    )
+
+    MEDIAPROFILE_CLASS_NAMES = (
+        'MediaProfile',
+        '/Script/MediaFrameworkUtilities.MediaProfile',
+    )
 
     csettings = {
         'buffer_size': IntSetting(
@@ -421,8 +608,56 @@ class DeviceUnreal(Device):
                 'Sets the Slate.bAllowThrottling cvar. When unchecked, the Editor viewports do not freeze/throttle \n'
                 'during certain operations. Not thottling is typically desired when using the Editor in \n'
                 'a virtual production stage.\n')
-        )
+        ),
+        'retrieve_logs': BoolSetting(
+            attr_name='retrieve_logs',
+            nice_name='Retrieve Logs',
+            value=True,
+            tool_tip=(
+                'When checked, retrieves the logs and traces after Unreal Engine terminates. \n')
+        ),
+        'livelink_preset': LiveLinkPresetSetting(
+            attr_name='livelink_preset',
+            nice_name='LiveLink Preset',
+            value='',
+            tool_tip=(
+                'Adds the selected LiveLink preset to the command line \n')
+        ),
+        'asset_itemDatas': Setting(
+            attr_name='asset_itemDatas',
+            nice_name="Asset files",
+            value=[],
+            tool_tip="Remember the last analyzed list of project and plugin assets",
+            show_ui=False,
+        ),
+        'mediaprofile': MediaProfileSetting(
+            attr_name='mediaprofile',
+            nice_name='Media Profile',
+            value='',
+            tool_tip=('Adds the selected Media Profile to the command line')
+        ),
+        'lock_gpu_clock': BoolSetting(
+            attr_name="lock_gpu_clock",
+            nice_name="Lock GPU Clock",
+            value=False,
+            tool_tip=(
+                "Hint to lock the GPU clock to its allowed maximum. Requires SwitchboardListenerHelper \n"
+                "to be running on the client machine, otherwise this option will be ignored."
+            ),
+            show_ui = True if sys.platform in ('win32','linux') else False, # Gpu Clocker is available in select platforms
+        ),
     }
+
+    if ENABLE_UGS_SUPPORT:
+        csettings['unrealgamesync_lib_dir'] = DirectoryPathSetting(
+            attr_name='unrealgamesync_lib_dir',
+            nice_name='UnrealGameSync Dll Dir',
+            value="",
+            tool_tip=(
+                "Expects an absolute path to the device directory containing the ugs.dll library file. \n"
+                "If left blank, switchboard will attempt to find UGS by searching the system PATH and default install locations. \n"
+                "On Windows, the default install location is '${LOCALAPPDATA}/UnrealGameSync/Latest/'.")
+        )
 
     unreal_started_signal = QtCore.Signal()
 
@@ -563,8 +798,8 @@ class DeviceUnreal(Device):
             self.on_setting_address_changed)
         DeviceUnreal.csettings['port'].signal_setting_changed.connect(
             self.on_setting_port_changed)
-        CONFIG.BUILD_ENGINE.signal_setting_changed.connect(
-            self.on_build_engine_changed)
+        CONFIG.ENGINE_SYNC_METHOD.signal_setting_changed.connect(
+            self.on_engine_sync_method_changed)
 
         self.auto_connect = False
 
@@ -748,7 +983,7 @@ class DeviceUnreal(Device):
         return Device.plugin_settings() + list(DeviceUnreal.csettings.values())
 
     def setting_overrides(self):
-        return super().setting_overrides() + [
+        overrides = super().setting_overrides() + [
             Device.csettings['is_recording_device'],
             DeviceUnreal.csettings['command_line_arguments'],
             DeviceUnreal.csettings['exec_cmds'],
@@ -758,10 +993,17 @@ class DeviceUnreal(Device):
             DeviceUnreal.csettings['auto_decline_package_recovery'],
             DeviceUnreal.csettings['udpmessaging_unicast_endpoint'],
             DeviceUnreal.csettings['udpmessaging_extra_static_endpoints'],
+            DeviceUnreal.csettings['livelink_preset'],
+            DeviceUnreal.csettings['mediaprofile'],
             CONFIG.ENGINE_DIR,
             CONFIG.SOURCE_CONTROL_WORKSPACE,
             CONFIG.UPROJECT_PATH,
         ]
+
+        if ENABLE_UGS_SUPPORT:
+            overrides.append(DeviceUnreal.csettings['unrealgamesync_lib_dir'])
+
+        return overrides
 
     def device_settings(self):
         return super().device_settings() + [
@@ -804,6 +1046,43 @@ class DeviceUnreal(Device):
 
         return valid
 
+    def conform_asset_gamepath(self, gamepath : str, ext : str = '.uasset') -> str:
+        ''' Conforms the given gamepath, which can include file extension, to the //Game/../MyAsset.MyAsset convention
+        e.g.
+            /Game/Folder/MyAssetName.uasset -> /Game/Folder/MyAssetName.MyAssetName
+        '''
+
+        if gamepath.endswith(ext):
+            gamepath = gamepath[:len(gamepath)-len(ext)]
+        
+        name = os.path.basename(os.path.normpath(gamepath))
+
+        return f"{gamepath}.{name}"
+
+    def exec_command_for_livelink_preset(self, livelink_preset_gamepath : str) -> str:
+        ''' Returns the exec command string to enable the given livelink preset gamepath
+        LiveLink presets can be applied as ExecCmds
+        e.g. of command:
+            "LiveLink.Preset.Apply Preset=/Game/Folder/MyLiveLinkPreset.MyLiveLinkPreset"
+        '''
+
+        if not livelink_preset_gamepath:
+            raise ValueError
+
+        return f"LiveLink.Preset.Apply Preset={self.conform_asset_gamepath(livelink_preset_gamepath)}"
+
+    def dpcvar_for_mediaprofile(self, mediaprofile_gamepath : str) -> str:
+        ''' Returns the dpcvar assignment string to enable the given mediaprofile gamepath
+        Media profiles can be applied as early cvars
+        e.g.:
+          "MediaUtils.StartupProfile=/Game/Media/MyMediaProfile.MyMediaProfile"
+        '''
+
+        if not mediaprofile_gamepath:
+            raise ValueError
+
+        return f"MediaUtils.StartupProfile={self.conform_asset_gamepath(mediaprofile_gamepath)}"
+
     @classmethod
     def plugin_header_widget_config(cls):
         """
@@ -845,14 +1124,14 @@ class DeviceUnreal(Device):
             LOGGER.info(f"Updating port for ListenerClient to {new_port}")
             self.unreal_client.port = new_port
 
-    def on_build_engine_changed(self, _, build_engine):
-        if build_engine:
+    def on_engine_sync_method_changed(self, _, engine_sync_method):
+        if engine_sync_method == EngineSyncMethod.Build_Engine.value:
             self.widget.engine_changelist_label.show()
             if not self.is_disconnected:
                 self._request_engine_changelist_number()
         else:
             self.widget.engine_changelist_label.hide()
-            self.widget.update_build_info(current_cl=self.engine_changelist, built_cl=self.built_engine_changelist)
+            self.widget.update_build_info(synched_cl=self.engine_changelist, built_cl=self.built_engine_changelist)
 
     def on_setting_exclude_from_build_changed(self, exclude_from_build):
         self.widget.update_exclude_from_build(exclude_from_build, not self.is_disconnected)
@@ -1027,6 +1306,13 @@ class DeviceUnreal(Device):
                 "There is nothing to sync!")
             return
 
+        for device in self.devices_sharing_workspace():
+            if device.status >= DeviceStatus.OPEN:
+                LOGGER.warning(f'{self.name}: Unable to sync, because another '
+                               f'device ({device.name}) using the same '
+                               'workspace is already running.')
+                return
+
         program_name = 'sync'
 
         # check if it is already on its way:
@@ -1042,7 +1328,12 @@ class DeviceUnreal(Device):
         project_path = CONFIG.UPROJECT_PATH.get_value(self.name)
         engine_dir = CONFIG.ENGINE_DIR.get_value(self.name)
         workspace = CONFIG.SOURCE_CONTROL_WORKSPACE.get_value(self.name)
-        build_engine = CONFIG.BUILD_ENGINE.get_value()
+
+        sync_method = CONFIG.ENGINE_SYNC_METHOD.get_value()
+        generate_proj_files = sync_method == EngineSyncMethod.Build_Engine.value
+        if ENABLE_UGS_SUPPORT:
+            sync_precompiled_bins = sync_method == EngineSyncMethod.Sync_PCBs.value
+            sync_using_ugs = sync_precompiled_bins or sync_method == EngineSyncMethod.Sync_From_UGS.value
 
         project_name = os.path.basename(os.path.dirname(project_path))
         LOGGER.info(
@@ -1081,8 +1372,22 @@ class DeviceUnreal(Device):
             sync_args += f' --project-cl={project_cl} --clobber-project'
             self.inflight_project_cl = project_cl
 
-        if build_engine:
+        if generate_proj_files:
             sync_args += ' --generate'
+
+        if ENABLE_UGS_SUPPORT:
+            if sync_using_ugs:
+                sync_args += ' --use-ugs'
+                if self.unrealgamesync_lib_dir_setting:
+                    sync_args += f' --ugs-lib-dir={self.unrealgamesync_lib_dir_setting}'
+        
+            if sync_precompiled_bins:
+                sync_args += ' --use-pcbs'
+            
+                # If we're syncing 'Precompiled Binaries' one of those binaries may be the SwitchboardListener executable
+                # which means (on Windows atleast) we need to move the executable to make way for the new one
+                _, msg = message_protocol.create_free_listener_bin_message()
+                self.unreal_client.send_message(msg)
 
         puuid, msg = message_protocol.create_start_process_message(
             prog_path=sync_tool,
@@ -1107,12 +1412,20 @@ class DeviceUnreal(Device):
             unreal_client=self.unreal_client,
         )
 
-        if self.status != DeviceStatus.SYNCING:
-            self.status = DeviceStatus.SYNCING
+        for device in self.devices_sharing_workspace():
+            if device.status != DeviceStatus.SYNCING:
+                device.status = DeviceStatus.SYNCING
 
     def build(self):
         if self.exclude_from_build.get_value():
             return
+
+        for device in self.devices_sharing_workspace():
+            if device.status >= DeviceStatus.OPEN:
+                LOGGER.warning(f'{self.name}: Unable to build, because '
+                               f'another device ({device.name}) using the '
+                               'same workspace is already running.')
+                return
 
         program_name = 'build_project'
 
@@ -1145,7 +1458,7 @@ class DeviceUnreal(Device):
         # TODO: Corner case if multiple local devices, and we build on a single
         # local device other than chosen. Guarantee on any local single build?
         if (self.is_designated_local_builder() and
-                CONFIG.BUILD_ENGINE.get_value()):
+                CONFIG.ENGINE_SYNC_METHOD.get_value() == EngineSyncMethod.Build_Engine.value):
             # Build multi-user server
             if CONFIG.MUSERVER_AUTO_BUILD.get_value():
                 if DeviceUnreal.mu_server.is_running():
@@ -1242,7 +1555,9 @@ class DeviceUnreal(Device):
             LOGGER.info(
                 f"{self.name}: Sending {program_name} command: "
                 f"{ubt_path} {ubt_args}")
-            self.status = DeviceStatus.BUILDING
+            
+            for device in self.devices_sharing_workspace():
+                device.status = DeviceStatus.BUILDING
 
         # Queue the build command
         self.program_start_queue.add(
@@ -1310,6 +1625,11 @@ class DeviceUnreal(Device):
     def udpmessaging_extra_static_endpoints_setting(self) -> str:
         return DeviceUnreal.csettings[
             'udpmessaging_extra_static_endpoints'].get_value(self.name)
+
+    @property
+    def unrealgamesync_lib_dir_setting(self) -> str:
+        return DeviceUnreal.csettings[
+            'unrealgamesync_lib_dir'].get_value(self.name)
 
     def generate_unreal_exe_path(self):
         return CONFIG.engine_exe_path(
@@ -1436,7 +1756,16 @@ class DeviceUnreal(Device):
                 CONFIG.INSIGHTS_TRACE_ARGS.get_value())
 
         exec_cmds = DeviceUnreal.csettings["exec_cmds"].get_value(self.name).copy()
+
+        # LiveLink preset
+        livelink_preset_gamepath = DeviceUnreal.csettings["livelink_preset"].get_value(self.name)
+        if livelink_preset_gamepath:
+            exec_cmds.append(self.exec_command_for_livelink_preset(livelink_preset_gamepath))
+
+        # Exec Commands
+
         exec_cmds = [cmd for cmd in exec_cmds if len(cmd.strip())]
+
         if len(exec_cmds):
             exec_cmds_expanded = ','.join(exec_cmds)
             command_line_args += f' -ExecCmds="{exec_cmds_expanded}"'
@@ -1474,6 +1803,11 @@ class DeviceUnreal(Device):
         # Slate.bAllowThrottling. Makes ICVFX panel and Vcam more responsive to Editor interactive changes.
         slate_allow_throttling = DeviceUnreal.csettings["slate_allow_throttling"].get_value()
         dp_cvars.append(f'Slate.bAllowThrottling={int(slate_allow_throttling)}')
+
+        # mediaprofile
+        mediaprofile_gamepath = DeviceUnreal.csettings["mediaprofile"].get_value(self.name)
+        if mediaprofile_gamepath:
+            dp_cvars.append(self.dpcvar_for_mediaprofile(mediaprofile_gamepath))
 
         # Add user set dp cvars, overriding any of the forced ones.
         user_dp_cvars = DeviceUnreal.csettings["dp_cvars"].get_value(self.name)
@@ -1556,13 +1890,17 @@ class DeviceUnreal(Device):
 
         self.last_launch_command.update_value(f'{engine_path} {args}')
 
+        lock_gpu_clock_csetting = self.__class__.csettings.get('lock_gpu_clock', None)
+        lock_gpu_clock = lock_gpu_clock_csetting.get_value() if lock_gpu_clock_csetting else False
+        
         puuid, msg = message_protocol.create_start_process_message(
             prog_path=engine_path,
             prog_args=args,
             prog_name=program_name,
             caller=self.name,
             update_clients_with_stdout=False,
-            priority_modifier=priority_modifier
+            priority_modifier=priority_modifier,
+            lock_gpu_clock=lock_gpu_clock,
         )
 
         self.program_start_queue.add(
@@ -1594,9 +1932,11 @@ class DeviceUnreal(Device):
             self.status = DeviceStatus.OPEN
             self.unreal_started_signal.emit()
         elif prog.name.startswith('build_'):
-            self.status = DeviceStatus.BUILDING
+            for device in self.devices_sharing_workspace():
+                device.status = DeviceStatus.BUILDING
         elif prog.name == 'sync':
-            self.status = DeviceStatus.SYNCING
+            for device in self.devices_sharing_workspace():
+                device.status = DeviceStatus.SYNCING
 
         self.program_start_queue.update_running_program(prog=prog)
 
@@ -1616,10 +1956,11 @@ class DeviceUnreal(Device):
             LOGGER.error(f"Could not start {program_name}: {message['error']}")
 
             if program_name == 'sync' or program_name.startswith('build_'):
-                self.status = DeviceStatus.CLOSED
-                # Force to show existing project_changelist to hide
-                # building/syncing.
-                self.project_changelist = self.project_changelist
+                for device in self.devices_sharing_workspace():
+                    device.status = DeviceStatus.CLOSED
+
+                    # This has the effect of hiding building/syncing status.
+                    device.project_changelist = device.project_changelist
             elif program_name == 'unreal':
                 self.status = DeviceStatus.CLOSED
             elif program_name == 'retrieve':
@@ -1701,9 +2042,13 @@ class DeviceUnreal(Device):
                     f'"{program_name}" is still in the list, which is unusual')
 
         if program_name == 'unreal' and not len(remaining_homonyms):
-            log_success = self.start_retrieve_log(unreal_exit_code=returncode)
-            utrace_success = self.start_retrieve_utrace(unreal_exit_code=returncode)
-            if not log_success and not utrace_success:
+            
+            if DeviceUnreal.csettings["retrieve_logs"].get_value():
+                log_success = self.start_retrieve_log(unreal_exit_code=returncode)
+                utrace_success = self.start_retrieve_utrace(unreal_exit_code=returncode)
+                if not log_success and not utrace_success:
+                    self.status = DeviceStatus.CLOSED
+            else:
                 self.status = DeviceStatus.CLOSED
 
         elif program_name == 'retrieve' and not self.transfer_in_progress:
@@ -1725,7 +2070,7 @@ class DeviceUnreal(Device):
                 self.device_qt_handler.signal_device_sync_failed.emit(self)
 
             # If you build and sync the engine, update its CL
-            if CONFIG.BUILD_ENGINE.get_value():
+            if CONFIG.ENGINE_SYNC_METHOD.get_value() == EngineSyncMethod.Build_Engine.value:
                 self.engine_changelist = (
                     self.inflight_engine_cl
                     if self.inflight_engine_cl is not None
@@ -1741,6 +2086,14 @@ class DeviceUnreal(Device):
 
             self.status = DeviceStatus.CLOSED
 
+            for other in self.devices_sharing_workspace(skip=self):
+                sync_method = CONFIG.ENGINE_SYNC_METHOD.get_value()
+                if sync_method == EngineSyncMethod.Build_Engine.value:
+                    other.engine_changelist = self.engine_changelist
+
+                other.project_changelist = self.project_changelist
+                other.status = DeviceStatus.CLOSED
+
         elif program_name.startswith('build_'):
             if returncode == 0:
                 LOGGER.info(f"{self.name}: {program_name} successful!")
@@ -1755,12 +2108,13 @@ class DeviceUnreal(Device):
                         LOGGER.error(f"{self.name}: {line}")
 
             if 'build_project' == program_name:
-                self.status = DeviceStatus.CLOSED
-                
-                self._request_project_changelist_number()
+                for device in self.devices_sharing_workspace():
+                    device.status = DeviceStatus.CLOSED
+
                 # Forces an update to the changelist field (to hide the
                 # Building state).
-                if CONFIG.BUILD_ENGINE.get_value():
+                self._request_project_changelist_number()
+                if CONFIG.ENGINE_SYNC_METHOD.get_value() == EngineSyncMethod.Build_Engine.value:
                     self._request_engine_changelist_number()
                     self._request_unreal_editor_version_file()
 
@@ -1791,14 +2145,16 @@ class DeviceUnreal(Device):
                 LOGGER.info(
                     f"{self.name}: Project {project_name} "
                     f"is on revision {current_changelist}")
-                self.project_changelist = current_changelist
+                for device in self.devices_sharing_workspace():
+                    device.project_changelist = current_changelist
             elif program_name.endswith("engine"):
                 project_name = os.path.basename(
                     os.path.dirname(CONFIG.UPROJECT_PATH.get_value(self.name)))
                 LOGGER.info(
                     f"{self.name}: Engine used for project "
                     f"{project_name} is on revision {current_changelist}")
-                self.engine_changelist = current_changelist
+                for device in self.devices_sharing_workspace():
+                    device.engine_changelist = current_changelist
 
     def on_program_killed(self, message):
         '''
@@ -1838,14 +2194,16 @@ class DeviceUnreal(Device):
             LOGGER.error(
                 f"{self.name}: Please change the roles for this device in "
                 "the settings or in the unreal project settings!")
-                
+
     def _on_receive_editor_version(self, content):
         '''
         Receives the Engine/Binaries/[platform]/UnrealEditor.version file _request_unreal_editor_version_file
         '''
         decoded_content = base64.b64decode(content).decode()
         data = json.loads(decoded_content)
-        self.built_engine_changelist = data.get("Changelist", None)
+        compatible_cl = data.get("CompatibleChangelist", None)
+        for device in self.devices_sharing_workspace():
+            device.built_engine_changelist = compatible_cl
 
     def on_file_receive_failed(self, source_path, error):
         roles = self.setting_roles.get_value()
@@ -1880,33 +2238,79 @@ class DeviceUnreal(Device):
         #
         if process['name'].startswith('build_'):
             for line in lines:
-                if '@progress' in line:
-                    stepparts = line.split("'")
+                if '@progress' not in line:
+                    continue
 
-                    if len(stepparts) < 2:
-                        break
+                stepparts = line.split("'")
 
-                    step = stepparts[-2].strip()
+                if len(stepparts) < 2:
+                    break
 
-                    percent = line.split(' ')[-1].strip()
+                step = stepparts[-2].strip()
+                percent = line.split(' ')[-1].strip()
 
-                    if '%' == percent[-1]:
-                        self.device_qt_handler.signal_device_build_update.emit(
-                            self, step, percent
-                        )
-                        
+                if percent[-1] != '%':
+                    continue
+
+                for device in self.devices_sharing_workspace():
+                    device.device_qt_handler.signal_device_build_update.emit(
+                            device, step, percent)
 
         elif process['name'] == 'sync':
             for line in lines:
-                if 'Progress:' in line:
-                    match = re.search(r'Progress: (\d{1,3}\.\d\d%)', line)
-                    if match:
-                        sync_progress = match.group(1)
-                        self.device_qt_handler.signal_device_sync_update.emit(
-                            self, sync_progress)
+                if 'Progress:' not in line:
+                    continue
+
+                match = re.search(r'Progress: (\d{1,3}\.\d\d%)', line)
+                if not match:
+                    continue
+
+                sync_progress = match.group(1)
+                for device in self.devices_sharing_workspace():
+                    device.device_qt_handler.signal_device_sync_update.emit(
+                        device, sync_progress)
 
         for line in lines:
             LOGGER.debug(f"{self.name} {process['name']}: {line}")
+
+    @classmethod
+    def devices(
+        cls, *,
+        where: Callable[[DeviceUnreal], bool] = lambda _: True,
+        only_connected: bool = True,
+        skip: Optional[DeviceUnreal] = None,
+    ) -> Generator[DeviceUnreal, None, None]:
+        for other in cls.active_unreal_devices:
+            if other == skip:
+                continue
+
+            if only_connected and other.is_disconnected:
+                continue
+
+            if where(other):
+                yield other
+
+    def devices_sharing_workspace(
+        self, *,
+        only_connected: bool = True,
+        skip: Optional[DeviceUnreal] = None,
+    ) -> Generator[DeviceUnreal, None, None]:
+        def get_ws(device):
+            return (CONFIG.SOURCE_CONTROL_WORKSPACE.get_value(
+                device.name) or '').casefold()
+
+        self_ws = get_ws(self)
+        def predicate(device: DeviceUnreal):
+            if self_ws:
+                return get_ws(device) == self_ws
+            else:
+                return device is self
+
+        return DeviceUnreal.devices(
+            where=predicate,
+            only_connected=only_connected,
+            skip=skip,
+        )
 
     def on_listener_state(self, message):
         '''
@@ -1968,7 +2372,7 @@ class DeviceUnreal(Device):
         self._request_roles_file()
         self._request_project_changelist_number()
 
-        if CONFIG.BUILD_ENGINE.get_value():
+        if CONFIG.ENGINE_SYNC_METHOD.get_value() == EngineSyncMethod.Build_Engine.value:
             self._request_engine_changelist_number()
             self._request_unreal_editor_version_file()
 
@@ -2203,6 +2607,164 @@ class DeviceUnreal(Device):
         ''' Copies the last launch command to the clipboard'''
         QtGui.QGuiApplication.clipboard().setText(
             self.last_launch_command.get_value())
+
+    @classmethod
+    def analyze_project_assets(cls):
+        ''' Traverses project and content plugins and caches a list of assets of interest. 
+        That list is currently nDisplay configs and live link presets.
+        '''
+
+        project_configs_path = os.path.normpath(
+            CONFIG.get_project_content_dir())
+
+        # search_paths stores a list of tuples of the form
+        # (unreal_plugin, directory_path). This allows us to differentiate
+        # between project assets (unreal_plugin is None in
+        # that case) and plugin assets.
+        search_paths = [(None, project_configs_path)]
+
+        for unreal_content_plugin in CONFIG.get_unreal_content_plugins():
+            search_paths.append(
+                (unreal_content_plugin,
+                 unreal_content_plugin.plugin_content_path))
+
+        asset_names = []
+        asset_paths = []
+        asset_plugins = []
+        asset_classnames = []
+
+        assets = []
+
+        for (unreal_content_plugin, configs_path) in search_paths:
+            for dirpath, _, file_names in os.walk(configs_path):
+                for file_name in file_names:
+                    if not file_name.lower().endswith(('.uasset', '.ndisplay')):
+                        continue
+
+                    if file_name not in asset_names:
+                        asset_path = os.path.join(dirpath, file_name)
+                        ext = os.path.splitext(file_name)[1]
+
+                        # Since .uasset is a generic asset container, only add
+                        # assets of the right class.
+                        if ext.lower() == '.uasset':
+                            assets.append({
+                                'name': file_name,
+                                'path': asset_path,
+                                'plugin': unreal_content_plugin,
+                            })
+                        else:
+                            asset_names.append(file_name)
+                            asset_paths.append(asset_path)
+                            asset_plugins.append(unreal_content_plugin)
+                            asset_classnames.append(DeviceUnreal.NDISPLAY_CLASS_NAMES[0]) # so that it passes the filter later on
+
+        # process the assets in a multi-threaded fashion
+
+        # show a progress bar if it is taking more a trivial amount of time
+        progressDiag = QtWidgets.QProgressDialog(
+            'Parsing assets...', 'Cancel', 0, 0, parent=None)
+
+        progressDiag.setWindowTitle('Unreal Asset Analyzer')
+        progressDiag.setModal(True)
+        progressDiag.setMinimumDuration(1000)  # time before it shows up
+        progressDiag.setRange(0, len(assets))
+        progressDiag.setCancelButton(None)
+
+        # Looks much better without the window frame.
+        progressDiag.setWindowFlag(QtCore.Qt.FramelessWindowHint)
+
+        INTERESTING_CLASS_NAMES = \
+            DeviceUnreal.NDISPLAY_CLASS_NAMES \
+            + DeviceUnreal.LIVELINKPRESET_CLASS_NAMES \
+            + DeviceUnreal.MEDIAPROFILE_CLASS_NAMES
+        
+        def validateInterestingAsset(asset):                                                                                                
+            ''' Returns the asset if it is an interesting asset '''
+
+            with open(asset['path'], 'rb') as file:
+
+                aparser = UassetParser(file, allowUnversioned=True)
+
+                for assetdata in aparser.aregdata:
+                    if assetdata.ObjectClassName in INTERESTING_CLASS_NAMES:
+                        asset['assetdata'] = assetdata
+                        return asset
+
+            raise ValueError
+
+        numThreads = 8
+        doneAssetCount = 0
+
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=numThreads) as executor:
+            futures = [
+                executor.submit(validateInterestingAsset, asset)
+                for asset in assets]
+
+            for future in concurrent.futures.as_completed(futures):
+
+                # Update progress bar.
+                doneAssetCount += 1
+                progressDiag.setValue(doneAssetCount)
+
+                # Get the future result and add to list of config names and
+                # paths.
+                try:
+                    asset = future.result()
+
+                    # first make sure they all exist
+                    name = asset['name']
+                    path = asset['path']
+                    plugin = asset['plugin']
+                    classname = asset['assetdata'].ObjectClassName
+
+                    # now append to lists
+                    asset_names.append(name)
+                    asset_paths.append(path)
+                    asset_plugins.append(plugin)
+                    asset_classnames.append(classname)
+                    
+                except Exception:
+                    pass
+
+        # close progress bar window
+        progressDiag.close()
+
+        def generate_short_unique_config_name(config_path: str, file_name: str) -> str:
+            config_path = CONFIG.shrink_path(config_path)
+            return sb_dialog.SwitchboardDialog.filter_empty_abiguated_path(config_path, file_name)
+
+        asset_names, _ = sb_dialog.SwitchboardDialog.generate_disambiguated_names(asset_paths, generate_short_unique_config_name)
+
+        # collect the found config files into the itemDatas list
+
+        itemDatas = []
+
+        for idx, asset_name in enumerate(asset_names):
+            
+            uplugin_file_path = (
+                str(asset_plugins[idx].uplugin_file_path) if asset_plugins[idx]
+                else None)
+
+            gamepath = CONFIG.resolve_content_path(
+                file_path=asset_paths[idx], 
+                unreal_content_plugin=asset_plugins[idx])
+
+            itemData = {
+                'name': asset_name,
+                'path': asset_paths[idx],
+                'uplugin_file_path': uplugin_file_path,
+                'classname': asset_classnames[idx],
+                'gamepath': gamepath,
+            }
+            itemDatas.append(itemData)
+
+        # sort by name
+        itemDatas.sort(key=lambda itemData: itemData['name'])
+
+        # update settings that should survive device removal and addition
+        DeviceUnreal.csettings['asset_itemDatas'].update_value(itemDatas)
 
 def parse_unreal_tag_file(file_content):
     tags = []
@@ -2475,7 +3037,7 @@ class DeviceWidgetUnreal(DeviceWidget):
         self.project_changelist_label.show()
 
     def update_engine_changelist(self, required_cl: str, synched_cl: str, built__cl: str):
-        if not CONFIG.BUILD_ENGINE.get_value():
+        if not CONFIG.ENGINE_SYNC_METHOD.get_value() == EngineSyncMethod.Build_Engine.value:
             return
         
         self.engine_changelist_label.setText(f'E: {synched_cl}')
@@ -2508,7 +3070,7 @@ class DeviceWidgetUnreal(DeviceWidget):
         sb_widgets.set_qt_property(self.sync_button, 'not_synched', needs_resync)
             
     def update_build_info(self, synched_cl: str, built_cl: str):
-        if built_cl is not None and synched_cl is not None and CONFIG.BUILD_ENGINE.get_value():
+        if built_cl is not None and synched_cl is not None and CONFIG.ENGINE_SYNC_METHOD.get_value() == EngineSyncMethod.Build_Engine.value:
             try:
                 earlier_cl = min(int(built_cl), int(synched_cl))
                 later_cl = max(int(built_cl), int(synched_cl))

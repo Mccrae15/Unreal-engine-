@@ -16,7 +16,7 @@ namespace UE::PixelStreaming
 
 	bool FSendSolidColorFrame::Update()
 	{
-		TSharedPtr<FPixelCaptureI420Buffer> Buffer = MakeShared<FPixelCaptureI420Buffer>(FrameConfig.Width, FrameConfig.Height);
+		TSharedPtr<FPixelCaptureBufferI420> Buffer = MakeShared<FPixelCaptureBufferI420>(FrameConfig.Width, FrameConfig.Height);
 
 		uint8_t* yData = Buffer->GetMutableDataY();
 		uint8_t* uData = Buffer->GetMutableDataU();
@@ -181,7 +181,7 @@ namespace UE::PixelStreaming
 			UE_LOG(LogPixelStreaming, Error, TEXT("Timed out waiting for streamer to connect to signalling server."));
 			return true;
 		}
-		return false;		
+		return false;
 	}
 
 	bool FWaitForPlayerConnectedOrTimeout::Update()
@@ -247,15 +247,27 @@ namespace UE::PixelStreaming
 
 	TSharedPtr<IPixelStreamingStreamer> CreateStreamer(int StreamerPort)
 	{
-		TSharedPtr<IPixelStreamingStreamer> OutStreamer = IPixelStreamingModule::Get().CreateStreamer("Mock Streamer");
+		FString StreamerName("Mock Streamer");
+		TSharedPtr<IPixelStreamingStreamer> OutStreamer = IPixelStreamingModule::Get().CreateStreamer(StreamerName);
 		OutStreamer->SetVideoInput(FPixelStreamingVideoInputBackBuffer::Create());
 		OutStreamer->SetSignallingServerURL(FString::Printf(TEXT("ws://127.0.0.1:%d"), StreamerPort));
+
+		TSharedPtr<IPixelStreamingSignallingConnection> SignallingConnection = MakeShared<FPixelStreamingSignallingConnection>(OutStreamer->GetSignallingConnectionObserver().Pin(), StreamerName);
+		SignallingConnection->SetAutoReconnect(true);
+		OutStreamer->SetSignallingConnection(SignallingConnection);
 		return OutStreamer;
 	}
 
 	TSharedPtr<FMockPlayer> CreatePlayer(FMockPlayer::EMode OfferMode)
 	{
 		TSharedPtr<FMockPlayer> OutPlayer = MakeShared<FMockPlayer>();
+
+		// We have to pass an existing shared ptr to the mockplayer or else we will end up with competing reference controllers
+		OutPlayer->SignallingServerConnection = MakeUnique<FPixelStreamingSignallingConnection>(OutPlayer, TEXT("FMockPlayer"));
+		UE::PixelStreaming::DoOnGameThreadAndWait(MAX_uint32, []() {
+			Settings::CVarPixelStreamingSuppressICECandidateErrors->Set(true, ECVF_SetByCode);
+		});
+
 		OutPlayer->SetMode(OfferMode);
 		return OutPlayer;
 	}

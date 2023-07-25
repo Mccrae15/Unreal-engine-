@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-
 #include "AudioMixer.h"
+
+#include "AudioDefines.h"
+#include "AudioMixerTrace.h"
 #include "DSP/BufferVectorOperations.h"
 #include "DSP/FloatArrayMath.h"
 #include "HAL/RunnableThread.h"
@@ -12,12 +14,20 @@
 #include "Misc/ScopeTryLock.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "ProfilingDebugging/ScopedTimers.h"
+#include "Trace/Trace.h"
+
 
 // Defines the "Audio" category in the CSV profiler.
 // This should only be defined here. Modules who wish to use this category should contain the line
 // 		CSV_DECLARE_CATEGORY_MODULE_EXTERN(AUDIOMIXERCORE_API, Audio);
 //
 CSV_DEFINE_CATEGORY_MODULE(AUDIOMIXERCORE_API, Audio, false);
+
+#if UE_AUDIO_PROFILERTRACE_ENABLED
+UE_TRACE_CHANNEL_DEFINE(AudioChannel);
+UE_TRACE_CHANNEL_DEFINE(AudioMixerChannel);
+#endif // UE_AUDIO_PROFILERTRACE_ENABLED
+
 
 // Command to enable logging to display accurate audio render times
 static int32 LogRenderTimesCVar = 0;
@@ -642,7 +652,7 @@ namespace Audio
 		check(AudioFadeEvent != nullptr);
 
 		check(!AudioRenderThread.IsValid());
-		uint64 RenderThreadAffinityCVar = SetRenderThreadAffinityCVar > 0 ? uint64(SetRenderThreadAffinityCVar) : FPlatformAffinity::GetAudioThreadMask();
+		uint64 RenderThreadAffinityCVar = SetRenderThreadAffinityCVar > 0 ? uint64(SetRenderThreadAffinityCVar) : FPlatformAffinity::GetAudioRenderThreadMask();
 		AudioRenderThread.Reset(FRunnableThread::Create(this, *FString::Printf(TEXT("AudioMixerRenderThread(%d)"), AudioMixerTaskCounter.Increment()), 0, (EThreadPriority)SetRenderThreadPriorityCVar, RenderThreadAffinityCVar));
 		check(AudioRenderThread.IsValid());
 	}
@@ -906,4 +916,38 @@ namespace Audio
 	}
 
 
+}
+
+FAudioPlatformSettings FAudioPlatformSettings::GetPlatformSettings(const TCHAR* PlatformSettingsConfigFile)
+{
+	FAudioPlatformSettings Settings;
+
+	FString TempString;
+
+	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioSampleRate"), TempString, GEngineIni))
+	{
+		Settings.SampleRate = FMath::Max(FCString::Atoi(*TempString), 8000);
+	}
+
+	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioCallbackBufferFrameSize"), TempString, GEngineIni))
+	{
+		Settings.CallbackBufferFrameSize = FMath::Max(FCString::Atoi(*TempString), 256);
+	}
+
+	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioNumBuffersToEnqueue"), TempString, GEngineIni))
+	{
+		Settings.NumBuffers = FMath::Max(FCString::Atoi(*TempString), 1);
+	}
+
+	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioMaxChannels"), TempString, GEngineIni))
+	{
+		Settings.MaxChannels = FMath::Max(FCString::Atoi(*TempString), 0);
+	}
+
+	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioNumSourceWorkers"), TempString, GEngineIni))
+	{
+		Settings.NumSourceWorkers = FMath::Max(FCString::Atoi(*TempString), 0);
+	}
+
+	return Settings;
 }

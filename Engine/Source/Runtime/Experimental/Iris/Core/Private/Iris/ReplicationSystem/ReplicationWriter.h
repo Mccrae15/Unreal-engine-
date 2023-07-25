@@ -4,23 +4,25 @@
 
 // This class will never be included from public headers
 #include "Net/Core/NetBitArray.h"
-#include "Iris/ReplicationSystem/NetHandleManager.h"
+#include "Iris/ReplicationSystem/NetRefHandleManager.h"
 #include "Iris/ReplicationSystem/ReplicationTypes.h"
 #include "Iris/ReplicationSystem/ReplicationRecord.h"
 #include "Iris/DataStream/DataStream.h"
 #include "Iris/ReplicationSystem/AttachmentReplication.h"
 #include "Iris/ReplicationSystem/NetBlob/NetBlob.h"
-#include "Iris/ReplicationSystem/NetHandle.h"
+#include "Iris/ReplicationSystem/NetRefHandle.h"
 #include "Iris/ReplicationSystem/NetExports.h"
 #include "Iris/ReplicationSystem/ObjectReferenceCache.h"
 #include "Iris/Stats/NetStats.h"
 #include "Containers/Array.h"
+#include "Misc/EnumClassFlags.h"
 
 // Forward declaration
 class UReplicationSystem;
 class UNetObjectBlobHandler;
 class UPartialNetObjectAttachmentHandler;
 class UReplicationBridge;
+
 namespace UE::Net
 {
 	class FNetBitStreamReader;
@@ -28,10 +30,11 @@ namespace UE::Net
 	class FNetObjectAttachment;
 	class FNetSerializationContext;
 	struct FReplicationProtocol;
+	
 	namespace Private
 	{
 		struct FChangeMaskCache;
-		class FNetHandleManager;
+		class FNetRefHandleManager;
 		class FReliableNetBlobQueue;
 		class FReplicationConditionals;
 		class FReplicationFiltering;
@@ -67,14 +70,11 @@ public:
 		AttachmentToObjectNotInScope,	// Special state for object index used for sending attachments to remote owned objects
 		HugeObject,						// Special state for object index used for sending parts of huge object payloads
 
-		// 
+		// Normal states
 		PendingCreate,					// Not yet created, no data in flight
 		WaitOnCreateConfirmation,		// Waiting for confirmation from remote, we can send state data, but if we do we must also include creation info until the object is Created
-		Created,						// Confirmed by remote
-		PendingFlush,					// This object should be flushed
+		Created,						// Confirmed by remote, this is the normal replicating state
 		WaitOnFlush,					// Pending flush, we are waiting for all in-flight state data to be acknowledged
-		Flushed,						// No more data in flight we can now hibernate or destroy
-		Hibernating,					// Hibernating, if an object is flushed it can be set to hibernate/be dormant
 		PendingTearOff,					// TearOff should be sent
 		SubObjectPendingDestroy,		// SubObject destroy should be sent
 		CancelPendingDestroy,			// Destroy was sent but object wants to start replicating again
@@ -89,6 +89,15 @@ public:
 	static_assert((uint8)(EReplicatedObjectState::Count) <= 32, "EReplicatedObjectState must fit in 5 bits. See FReplicationInfo::State and FReplicationRecord::FRecordInfo::ReplicatedObjectState members.");
 
 	const TCHAR* LexToString(const EReplicatedObjectState State);
+
+	enum EFlushFlags : uint32
+	{
+		FlushFlags_None				= 0U,
+		FlushFlags_FlushState		= 1U << 0U,											// Make sure that all current state data is acknowledged before we stop replicating the object
+		FlushFlags_FlushReliable	= FlushFlags_FlushState << 1U,						// Make sure that all enqueued Reliable RPCs are delivered before we stop replicating the object
+		FlushFlags_All				= FlushFlags_FlushState | FlushFlags_FlushReliable,
+		FlushFlags_Default			= FlushFlags_FlushReliable,
+	};
 
 	// Bookkeeping info required for a replicated object
 	// Keep as small as possible since there is one per replicated object per connection
@@ -114,10 +123,11 @@ public:
 				uint64 IsCreationConfirmed : 1;							// We know that this object has been created on the receiving end
 				uint64 TearOff : 1;										// This object should be torn off
 				uint64 SubObjectPendingDestroy : 1;						// This object is a subobject that should be destroyed when we replicate owner
-				uint64 IsDeltaCompressionEnabled : 1;
-				uint64 LastAckedBaselineIndex : 2;
-				uint64 PendingBaselineIndex : 2;
-				uint64 Padding : 29;
+				uint64 IsDeltaCompressionEnabled : 1;					// Set to 1 if deltacompression is enabled for this object
+				uint64 LastAckedBaselineIndex : 2;						// Last acknowledged baseline index which we can use for deltacompresion
+				uint64 PendingBaselineIndex : 2;						// Baseline index pending acknowledgment from client
+				uint64 FlushFlags : 2;									// Flags indicating what we are waiting for when flushing
+				uint64 Padding : 27;
 			};
 		};
 
@@ -141,13 +151,14 @@ public:
 	// Update new or existing/destroyed 
 	void UpdateScope(const FNetBitArrayView& ScopedObjects);
 
-	// Mark objects as tearoff and propagate dirty changemasks
-	void TearOffAndUpdateDirtyChangeMasks(const FChangeMaskCache& CachedChangeMasks) { InternalUpdateDirtyChangeMasks(CachedChangeMasks, 1U); }
+	// Force update DirtyChangeMasks and mark objects for flush and/or tearoff depending on flags
+	void ForceUpdateDirtyChangeMasks(const FChangeMaskCache& CachedChangeMasks, EFlushFlags ExtraFlushFlags, bool bMarkForTearOff) { InternalUpdateDirtyChangeMasks(CachedChangeMasks, ExtraFlushFlags, bMarkForTearOff); }
 
-	void NotifyDestroyedObjectPendingTearOff(FInternalNetHandle ObjectInternalIndex);
+	// Called if an object first being teared off and then explicitly destroyed before it has been removed from scope
+	void NotifyDestroyedObjectPendingTearOff(FInternalNetRefIndex ObjectInternalIndex);
 
 	// Propagate dirty changemasks
-	void UpdateDirtyChangeMasks(const FChangeMaskCache& CachedChangeMasks) { InternalUpdateDirtyChangeMasks(CachedChangeMasks, 0U); }
+	void UpdateDirtyChangeMasks(const FChangeMaskCache& CachedChangeMasks) { InternalUpdateDirtyChangeMasks(CachedChangeMasks, EFlushFlags::FlushFlags_None, false); }
 
 	// Returns objects that are in need of a priority update. It could be dirty, new or objects in need of resending.
 	const FNetBitArray& GetObjectsRequiringPriorityUpdate() const;
@@ -171,7 +182,7 @@ public:
 	void SetNetExports(FNetExports& InNetExports);
 
 	// Attachments
-	void QueueNetObjectAttachments(FInternalNetHandle OwnerInternalIndex, FInternalNetHandle SubObjectInternalIndex, TArrayView<const TRefCountPtr<FNetBlob>> Attachments);
+	void QueueNetObjectAttachments(FInternalNetRefIndex OwnerInternalIndex, FInternalNetRefIndex SubObjectInternalIndex, TArrayView<const TRefCountPtr<FNetBlob>> Attachments);
 
 private:
 	// Various types
@@ -182,7 +193,7 @@ private:
 	};
 
 	// Propagate dirty changemasks
-	void InternalUpdateDirtyChangeMasks(const FChangeMaskCache& CachedChangeMasks, uint32 bTearOff);
+	void InternalUpdateDirtyChangeMasks(const FChangeMaskCache& CachedChangeMasks, EFlushFlags ExtraFlushFlags, bool bTearOff);
 
 	struct FScheduleObjectInfo
 	{
@@ -196,7 +207,7 @@ private:
 		FWriteContext() : bIsValid(0) {}
 
 		// Objects we have written in this packet batch to avoid sending same object multiple times
-		FNetBitArray ObjectsWrittenThisTick;
+		FNetBitArray ObjectsWrittenThisPacket;
 		// DependentObjets that we should try to write this packet batch, aka. allow overcommit if we have pending DependentObjects when the packet is full
 		TArray<uint32, TInlineAllocator<32>> DependentObjectsPendingSend;
 		// Scheduled objects
@@ -225,7 +236,7 @@ private:
 
 	struct FBatchObjectInfo
 	{
-		FNetHandle Handle;
+		FNetRefHandle Handle;
 		uint32 InternalIndex;
 		FNetObjectAttachmentsWriter::ReplicationRecord AttachmentRecord;
 		ENetObjectAttachmentType AttachmentType;
@@ -326,6 +337,10 @@ private:
 
 private:
 
+	uint32 GetDefaultFlushFlags() const;
+	uint32 GetFlushStatus(uint32 InternalIndex, const FReplicationInfo& Info, uint32 InFlushFlags = EFlushFlags::FlushFlags_Default) const;
+	void SetPendingDestroyOrSubObjectPendingDestroyState(uint32 Index, FReplicationInfo& Info);
+
 	bool IsObjectIndexForOOBAttachment(uint32 InternalIndex) const { return InternalIndex == ObjectIndexForOOBAttachment; }
 
 	void GetInitialChangeMask(ChangeMaskStorageType* ChangeMaskStorage, const FReplicationProtocol* Protocol);
@@ -344,15 +359,18 @@ private:
 	void SetState(uint32 InternalIndex, EReplicatedObjectState NewState);
 
 	// Write index part of handle
-	void WriteNetHandleId(FNetBitStreamWriter& Writer, FNetHandle Handle);
+	void WriteNetRefHandleId(FNetBitStreamWriter& Writer, FNetRefHandle RefHandle);
 		
-	// 
+	// Create new ObjectRecord
+	// Note: be aware that it will allocate a copy of the ChangeMask that needs to be handled if the record is not Committed
 	void CreateObjectRecord(const FNetBitArrayView* ChangeMask, const FReplicationInfo& Info, const FBatchObjectInfo& ObjectInfo, FObjectRecord& OutRecord);
 	
 	// Push and link info for written object to ReplicationRecord
 	void CommitObjectRecord(uint32 InternalObjectIndex, const FObjectRecord& Record);
 
 	void CommitBatchRecord(const FBatchRecord& BatchRecord);
+
+	void ScheduleDependentObjects(uint32 Index, float ParentPriority, float* LocalPriorities, FScheduleObjectInfo* ScheduledObjectIndices, uint32& OutScheduledObjectCount);
 
 	uint32 ScheduleObjects(FScheduleObjectInfo* ScheduledObjectIndices);
 	
@@ -408,13 +426,21 @@ private:
 	// Invalidate all inflight baseline information
 	void InvalidateBaseline(uint32 InternalIndex, FReplicationInfo& Info);
 
+	// Returns true if the record chain starting from the provided RecordInfo contains any records with statedata
+	// Note: Does not check if it is part of a huge object
+	bool HasInFlightStateChanges(uint32 InternalIndex, const FReplicationInfo& Info) const;
+
+	// Returns true if object has pending state changes in flight
+	// Note: Does not check if it is part of a huge object
+	bool HasInFlightStateChanges(const FReplicationRecord::FRecordInfo* RecordInfo) const;
+
 	// Returns true object and subobjects can be created on remote
 	bool CanSendObject(uint32 InternalIndex) const;
 
 	inline bool IsInitialState(const EReplicatedObjectState State) const { return State == EReplicatedObjectState::PendingCreate || (bHighPrioCreate && State == EReplicatedObjectState::WaitOnCreateConfirmation); }
 
 	bool IsActiveHugeObject(uint32 InternalIndex) const { return HugeObjectContext.InternalIndex == InternalIndex && HugeObjectContext.SendStatus != EHugeObjectSendStatus::Idle; }
-	bool IsDestroyObjectPartOfActiveHugeObject(uint32 InternalIndex, const FReplicationInfo& Info) const;
+	bool IsObjectPartOfActiveHugeObject(uint32 InternalIndex, const FReplicationInfo& Info) const;
 
 	void ClearHugeObjectContext(FHugeObjectContext& Context) const;
 
@@ -424,7 +450,7 @@ private:
 
 	bool IsWriteObjectSuccess(EWriteObjectStatus Status) const;
 
-	void SerializeObjectStateDelta(FNetSerializationContext& Context, uint32 InternalIndex, const FReplicationInfo& Info, const FNetHandleManager::FReplicatedObjectData& ObjectData, const uint8* RESTRICT ReplicatedObjectStateBuffer, FDeltaCompressionBaseline& CurrentBaseline, uint32 CreatedBaselineIndex);
+	void SerializeObjectStateDelta(FNetSerializationContext& Context, uint32 InternalIndex, const FReplicationInfo& Info, const FNetRefHandleManager::FReplicatedObjectData& ObjectData, const uint8* RESTRICT ReplicatedObjectStateBuffer, FDeltaCompressionBaseline& CurrentBaseline, uint32 CreatedBaselineIndex);
 
 	void DiscardAllRecords();
 	void StopAllReplication();
@@ -459,7 +485,7 @@ private:
 
 	// Cached internal systems
 	FReplicationSystemInternal* ReplicationSystemInternal = nullptr;
-	FNetHandleManager* NetHandleManager = nullptr;
+	FNetRefHandleManager* NetRefHandleManager = nullptr;
 	UReplicationBridge* ReplicationBridge = nullptr;
 	FDeltaCompressionBaselineManager* BaselineManager = nullptr;
 	FObjectReferenceCache* ObjectReferenceCache = nullptr;

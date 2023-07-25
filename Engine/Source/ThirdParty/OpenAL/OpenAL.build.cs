@@ -10,15 +10,15 @@ public class OpenAL : ModuleRules
 		string version = Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) ? "1.18.1" : "1.15.1";
 
 		string OpenALPath = Target.UEThirdPartySourceDirectory + "OpenAL/" + version + "/";
-		PublicIncludePaths.Add(OpenALPath + "include");
+		PublicSystemIncludePaths.Add(OpenALPath + "include");
 
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
 			// link against runtime path since this avoids hardcoing an RPATH
-			string OpenALRuntimePath = Path.Combine(Target.UEThirdPartyBinariesDirectory , "OpenAL/Linux", Target.Architecture, "libopenal.so");
+			string OpenALRuntimePath = Path.Combine(Target.UEThirdPartyBinariesDirectory , "OpenAL/Linux", Target.Architecture.LinuxName, "libopenal.so");
 			PublicAdditionalLibraries.Add(OpenALRuntimePath);
 
-			RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/OpenAL/Linux/" + Target.Architecture + "/libopenal.so.1");
+			RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/OpenAL/Linux/" + Target.Architecture.LinuxName + "/libopenal.so.1");
 		}
 	}
 }

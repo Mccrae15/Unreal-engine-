@@ -1,28 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonRichTextBlock.h"
+#include "ICommonUIModule.h"
 #include "Widgets/Text/SRichTextBlock.h"
+#include "Rendering/SlateRenderer.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SScaleBox.h"
 
-#include "Framework/Text/SlateTextLayout.h"
-#include "Framework/Text/ITextDecorator.h"
-#include "Framework/Text/SlateWidgetRun.h"
 #include "Framework/Text/SlateTextRun.h"
 
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
 #include "Misc/DefaultValueHelper.h"
 #include "Fonts/FontMeasure.h"
-#include "Styling/SlateBrush.h"
 #include "CommonUIUtils.h"
 #include "CommonWidgetPaletteCategories.h"
 #include "CommonUIEditorSettings.h"
 #include "CommonUIRichTextData.h"
-#include "Types/ReflectionMetadata.h"
-#include "Framework/Text/IRichTextMarkupWriter.h"
 #include "Framework/Text/RichTextMarkupProcessing.h"
 #include "Framework/Application/SlateApplication.h"
 
@@ -487,14 +482,14 @@ void UCommonRichTextBlock::Serialize(FArchive& Ar)
 
 	if (Ar.IsLoading() && bDisplayAllCaps_DEPRECATED)
 	{
-		TextTransformPolicy = ETextTransformPolicy::ToUpper;
+		SetTextTransformPolicy(ETextTransformPolicy::ToUpper);
 		bDisplayAllCaps_DEPRECATED = false;
 	}
 }
 
 void UCommonRichTextBlock::SetText(const FText& InText)
 {
-	Text = InText;
+	Super::SetText(InText);
 	if (MyRichTextBlock.IsValid())
 	{
 		if (CommonUIUtils::ShouldDisplayMobileUISizes())
@@ -535,8 +530,8 @@ bool UCommonRichTextBlock::CanEditChange(const FProperty* InProperty) const
 
 	if (DefaultTextStyleOverrideClass)
 	{
-		if (PropertyName.IsEqual(GET_MEMBER_NAME_CHECKED(UCommonRichTextBlock, DefaultTextStyleOverride)) ||
-			PropertyName.IsEqual(GET_MEMBER_NAME_CHECKED(UCommonRichTextBlock, MinDesiredWidth)))
+		if (PropertyName.IsEqual(TEXT("DefaultTextStyleOverride")) ||
+			PropertyName.IsEqual(TEXT("MinDesiredWidth")))
 		{
 			return false;
 		}

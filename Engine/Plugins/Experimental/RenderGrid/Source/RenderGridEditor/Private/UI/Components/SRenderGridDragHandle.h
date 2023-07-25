@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Images/SImage.h"
@@ -53,7 +54,7 @@ public:
 	{
 		if (MouseEvent.IsMouseButtonDown(EKeys::LeftMouseButton))
 		{
-			if (TSharedPtr<FDragDropOperation> DragDropOp = CreateDragDropOperation())
+			if (const TSharedPtr<FDragDropOperation> DragDropOp = CreateDragDropOperation())
 			{
 				return FReply::Handled().BeginDragDrop(DragDropOp.ToSharedRef());
 			}

@@ -5,21 +5,19 @@
  */
 
 #include "WorldPartition/WorldPartitionLevelHelper.h"
+#include "Misc/PackageName.h"
 #include "WorldPartition/WorldPartitionPackageHelper.h"
+#include "WorldPartition/WorldPartitionRuntimeCell.h"
 
 #if WITH_EDITOR
 
-#include "FileHelpers.h"
+#include "Engine/Level.h"
+#include "Misc/Paths.h"
 #include "Model.h"
 #include "UnrealEngine.h"
-#include "UObject/UObjectHash.h"
-#include "WorldPartition/ActorDescContainer.h"
-#include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionPackageHelper.h"
-#include "AssetCompilingManager.h"
 #include "LevelUtils.h"
-#include "Templates/SharedPointer.h"
 #include "ActorFolder.h"
 
 FWorldPartitionLevelHelper& FWorldPartitionLevelHelper::Get()
@@ -109,11 +107,6 @@ UWorld::InitializationValues FWorldPartitionLevelHelper::GetWorldInitializationV
 void FWorldPartitionLevelHelper::MoveExternalActorsToLevel(const TArray<FWorldPartitionRuntimeCellObjectMapping>& InChildPackages, ULevel* InLevel, TArray<UPackage*>& OutModifiedPackages)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FWorldPartitionLevelHelper::MoveExternalActorsToLevel);
-
-	// We can't have async compilation still going on while we move actors as this is going to ResetLoaders which will move bulkdata around that
-	// might still be used by async compilation. 
-	// #TODO_DC Revisit once virtualbulkdata are enabled
-	FAssetCompilingManager::Get().FinishAllCompilation();
 
 	check(InLevel);
 	UPackage* LevelPackage = InLevel->GetPackage();
@@ -210,15 +203,15 @@ FString FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(const FAc
 	return InSubPathString;
 }
 
-FString FWorldPartitionLevelHelper::GetContainerPackage(const FActorContainerID& InContainerID, const FString& InPackageName, int32 InPIEInstanceID)
+FString FWorldPartitionLevelHelper::GetContainerPackage(const FActorContainerID& InContainerID, const FString& InPackageName, const FString& InDestLevelPackageName)
 {
-	FString ContainerPackageName = InPackageName;
-	if (InPIEInstanceID != INDEX_NONE)
+	uint64 DestLevelID = 0;
+	if (!InDestLevelPackageName.IsEmpty())
 	{
-		ContainerPackageName = UWorld::ConvertToPIEPackageName(ContainerPackageName, InPIEInstanceID);
+		DestLevelID = CityHash64((const char*)*InDestLevelPackageName, InDestLevelPackageName.Len() * sizeof(TCHAR));
 	}
 
-	return FString::Printf(TEXT("/Temp%s_%s"), *ContainerPackageName, *InContainerID.ToString());
+	return FString::Printf(TEXT("/Temp%s_%s_%016llx"), *InPackageName, *InContainerID.ToString(), DestLevelID);
 }
 
 bool FWorldPartitionLevelHelper::RemapActorPath(const FActorContainerID& InContainerID, const FString& InActorPath, FString& OutActorPath)
@@ -228,7 +221,7 @@ bool FWorldPartitionLevelHelper::RemapActorPath(const FActorContainerID& InConta
 		const FSoftObjectPath SoftObjectPath(InActorPath);
 		const FString LongPackageName = SoftObjectPath.GetLongPackageName();
 			
-		const FString ContainerPackageString = GetContainerPackage(InContainerID, LongPackageName, INDEX_NONE);	
+		const FString ContainerPackageString = GetContainerPackage(InContainerID, LongPackageName);	
 		const FString NewSubPathString = FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(InContainerID, SoftObjectPath.GetSubPathString());
 
 		FNameBuilder NewAssetPathBuilder;
@@ -272,6 +265,7 @@ ULevel* FWorldPartitionLevelHelper::CreateEmptyLevelForRuntimeCell(const UWorldP
 	// Create World & Persistent Level
 	UWorld::InitializationValues IVS = FWorldPartitionLevelHelper::GetWorldInitializationValues();
 	const FName WorldName = FName(FPackageName::ObjectPathToObjectName(InWorldAssetName));
+	check(!FindObject<UWorld>(CellPackage, *WorldName.ToString()));
 	UWorld* NewWorld = UWorld::CreateWorld(InWorld->WorldType, /*bInformEngineOfWorld*/false, WorldName, CellPackage, /*bAddToRoot*/false, InWorld->FeatureLevel, &IVS, /*bInSkipInitWorld*/true);
 	check(NewWorld);
 	NewWorld->SetFlags(RF_Public | RF_Standalone);
@@ -333,8 +327,8 @@ bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDes
 		{
 			check(!PackageObjectMapping.ContainerID.IsMainContainer());
 		
-			const int32 PIEInstanceID = InDestLevel ? InDestLevel->GetPackage()->GetPIEInstanceID() : INDEX_NONE;
-			const FName ContainerPackageInstanceName(GetContainerPackage(PackageObjectMapping.ContainerID, PackageObjectMapping.ContainerPackage.ToString(), PIEInstanceID));
+			const FString DestLevelPackageName = InDestLevel ? InDestLevel->GetPackage()->GetName() : FString();
+			const FName ContainerPackageInstanceName(GetContainerPackage(PackageObjectMapping.ContainerID, PackageObjectMapping.ContainerPackage.ToString(), DestLevelPackageName));
 
 			FLinkerInstancingContext& NewContext = LinkerInstancingContexts.Add(PackageObjectMapping.ContainerID);
 			NewContext.AddTag(ULevel::DontLoadExternalObjectsTag);

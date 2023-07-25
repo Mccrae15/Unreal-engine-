@@ -18,10 +18,10 @@ bool FHeuristicSettings::IsEnabled() const
 	return BudgetMs > 0.0f;
 }
 
-float FHeuristicSettings::GetTargetedMs() const
+float FHeuristicSettings::GetTargetedMs(float InBudgetMs) const
 {
 	check(IsEnabled());
-	return BudgetMs * (1.0f - TargetedHeadRoom);
+	return InBudgetMs * (1.0f - TargetedHeadRoom);
 }
 
 float FHeuristicSettings::EstimateCostScale(float ResolutionFraction) const
@@ -42,10 +42,8 @@ float FHeuristicSettings::EstimateCostScale(float ResolutionFraction) const
 	return Cost;
 }
 
-float FHeuristicSettings::EstimateResolutionFactor(float TimingMs) const
+float FHeuristicSettings::EstimateResolutionFactor(float TargetedMS, float TimingMs) const
 {
-	float TargetedMS = GetTargetedMs();
-
 	float S = 1.0f;
 	if (Model == EHeuristicModel::Linear)
 	{
@@ -141,6 +139,14 @@ FBudget::FBudget(const TCHAR* InName, FHeuristicSettings (*InHeuristicSettingsGe
 	{
 		UE_LOG(LogRendererCore, Warning, TEXT("Consider bumping DynamicRenderScaling::TMap::kInlineAlloactedBudgets to %d."), GRDSGlobalListLinkSize);
 	}
+#endif
+
+#if STATS
+	StatId_TargetMs			= FDynamicStats::CreateStatIdDouble<STAT_GROUP_TO_FStatGroup(STATGROUP_RenderScaling)>(FString::Printf(TEXT("%s_TargetMs"), InName));
+	StatId_MeasuredMs		= FDynamicStats::CreateStatIdDouble<STAT_GROUP_TO_FStatGroup(STATGROUP_RenderScaling)>(FString::Printf(TEXT("%s_MeasuredMs"), InName));
+	StatId_MinScaling		= FDynamicStats::CreateStatIdDouble<STAT_GROUP_TO_FStatGroup(STATGROUP_RenderScaling)>(FString::Printf(TEXT("%s_MinFraction"), InName));
+	StatId_MaxScaling		= FDynamicStats::CreateStatIdDouble<STAT_GROUP_TO_FStatGroup(STATGROUP_RenderScaling)>(FString::Printf(TEXT("%s_MaxFraction"), InName));
+	StatId_CurrentScaling	= FDynamicStats::CreateStatIdDouble<STAT_GROUP_TO_FStatGroup(STATGROUP_RenderScaling)>(FString::Printf(TEXT("%s_Fraction"), InName));
 #endif
 
 	CachedSettings = (*HeuristicSettingsGetter)();

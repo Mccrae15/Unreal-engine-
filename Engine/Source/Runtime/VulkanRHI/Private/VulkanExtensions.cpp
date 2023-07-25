@@ -51,6 +51,17 @@ TAutoConsoleVariable<int32> GVulkanAllowHostQueryResetCVar(
 	ECVF_ReadOnly
 );
 
+TAutoConsoleVariable<int32> GVulkaAllowSync2BarriersCVar(
+	TEXT("r.Vulkan.AllowSynchronization2"),
+	1,
+	TEXT("Enables the use of advanced barriers that combine the use of the VK_KHR_separate_depth_stencil_layouts \n")
+	TEXT("and VK_KHR_synchronization2 to reduce the reliance on layout tracking (except for defragging).\n")
+	TEXT("This is necessary in order to support parallel command buffer generation.\n")
+	TEXT("0: Do not enable support for sync2 barriers.\n")
+	TEXT("1: Enable sync2 barriers (default)"),
+	ECVF_ReadOnly
+);
+
 TAutoConsoleVariable<int32> GVulkanAllowFragmentShadingRateCVar(
 	TEXT("r.Vulkan.AllowFragmentShadingRate"),
 	1,
@@ -73,6 +84,13 @@ static void AddToPNext(ExistingChainType& Existing, NewStructType& Added)
 {
 	Added.pNext = (void*)Existing.pNext;
 	Existing.pNext = (void*)&Added;
+}
+
+
+struct FOptionalVulkanDeviceExtensionProperties& FVulkanDeviceExtension::GetDeviceExtensionProperties()
+{
+	const FOptionalVulkanDeviceExtensionProperties& ExtensionProperties = Device->GetOptionalExtensionProperties();
+	return const_cast<FOptionalVulkanDeviceExtensionProperties&>(ExtensionProperties);
 }
 
 
@@ -292,10 +310,9 @@ class FVulkanKHRSeparateDepthStencilLayoutsExtension : public FVulkanDeviceExten
 public:
 
 	FVulkanKHRSeparateDepthStencilLayoutsExtension(FVulkanDevice* InDevice)
-		: FVulkanDeviceExtension(InDevice, VK_KHR_SEPARATE_DEPTH_STENCIL_LAYOUTS_EXTENSION_NAME, VULKAN_SUPPORTS_SEPARATE_DEPTH_STENCIL_LAYOUTS, VK_API_VERSION_1_2)
+		: FVulkanDeviceExtension(InDevice, VK_KHR_SEPARATE_DEPTH_STENCIL_LAYOUTS_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VK_API_VERSION_1_2)
 	{
-		// Disabled but kept for reference. The barriers code doesn't currently use separate transitions for depth and stencil.
-		bEnabledInCode = false;
+		bEnabledInCode = bEnabledInCode && (GVulkaAllowSync2BarriersCVar.GetValueOnAnyThread() != 0);
 	}
 
 	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
@@ -319,6 +336,42 @@ public:
 
 private:
 	VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR SeparateDepthStencilLayoutsFeatures;
+};
+
+
+
+// ***** VK_KHR_synchronization2
+class FVulkanKHRSynchronization2 : public FVulkanDeviceExtension
+{
+public:
+
+	FVulkanKHRSynchronization2(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VK_API_VERSION_1_3)
+	{
+		bEnabledInCode = bEnabledInCode && (GVulkaAllowSync2BarriersCVar.GetValueOnAnyThread() != 0);
+	}
+
+	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
+	{
+		ZeroVulkanStruct(Synchronization2Features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES);
+		AddToPNext(PhysicalDeviceFeatures2, Synchronization2Features);
+	}
+
+	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
+	{
+		ExtensionFlags.HasKHRSynchronization2 = Synchronization2Features.synchronization2;
+	}
+
+	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
+	{
+		if (Synchronization2Features.synchronization2 == VK_TRUE)
+		{
+			AddToPNext(DeviceCreateInfo, Synchronization2Features);
+		}
+	}
+
+private:
+	VkPhysicalDeviceSynchronization2FeaturesKHR Synchronization2Features;
 };
 
 
@@ -408,12 +461,17 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasEXTDescriptorIndexing = DescriptorIndexingFeatures.runtimeDescriptorArray; // :todo-jn: add resource specific checks
+		bFullySupported = (DescriptorIndexingFeatures.runtimeDescriptorArray == VK_TRUE) &&
+			(DescriptorIndexingFeatures.descriptorBindingPartiallyBound == VK_TRUE) &&
+			(DescriptorIndexingFeatures.descriptorBindingUpdateUnusedWhilePending == VK_TRUE) &&
+			(DescriptorIndexingFeatures.descriptorBindingVariableDescriptorCount == VK_TRUE);
+
+		ExtensionFlags.HasEXTDescriptorIndexing = bFullySupported ? 1 : 0;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (DescriptorIndexingFeatures.runtimeDescriptorArray == VK_TRUE)
+		if (bFullySupported)
 		{
 			AddToPNext(DeviceCreateInfo, DescriptorIndexingFeatures);
 		}
@@ -421,6 +479,7 @@ public:
 
 private:
 	VkPhysicalDeviceDescriptorIndexingFeaturesEXT DescriptorIndexingFeatures;
+	bool bFullySupported = false;
 };
 
 
@@ -444,10 +503,10 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasKHRFragmentShadingRate = FragmentShadingRateFeatures.attachmentFragmentShadingRate;
+		ExtensionFlags.HasKHRFragmentShadingRate = 1;
 
-		GRHISupportsAttachmentVariableRateShading = FragmentShadingRateFeatures.attachmentFragmentShadingRate ? true : false;
-		GRHISupportsPipelineVariableRateShading = FragmentShadingRateFeatures.pipelineFragmentShadingRate ? true : false;
+		GRHISupportsAttachmentVariableRateShading = (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE);
+		GRHISupportsPipelineVariableRateShading = (FragmentShadingRateFeatures.pipelineFragmentShadingRate == VK_TRUE);
 
 		if (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE)
 		{
@@ -463,20 +522,23 @@ public:
 
 	virtual void PostPhysicalDeviceProperties() override final
 	{
-		GRHIVariableRateShadingImageTileMinWidth = FragmentShadingRateProperties.minFragmentShadingRateAttachmentTexelSize.width;
-		GRHIVariableRateShadingImageTileMinHeight = FragmentShadingRateProperties.minFragmentShadingRateAttachmentTexelSize.height;
-		GRHIVariableRateShadingImageTileMaxWidth = FragmentShadingRateProperties.maxFragmentShadingRateAttachmentTexelSize.width;
-		GRHIVariableRateShadingImageTileMaxHeight = FragmentShadingRateProperties.maxFragmentShadingRateAttachmentTexelSize.height;
-
-		if (FragmentShadingRateProperties.maxFragmentSize.width >= 4 && FragmentShadingRateProperties.maxFragmentSize.height >= 4)
+		if (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE)
 		{
-			// FYI FVulkanDevice::GetBestMatchedShadingRateExtents does extent filtering
-			GRHISupportsLargerVariableRateShadingSizes = GRHISupportsPipelineVariableRateShading;
+			GRHIVariableRateShadingImageTileMinWidth = FragmentShadingRateProperties.minFragmentShadingRateAttachmentTexelSize.width;
+			GRHIVariableRateShadingImageTileMinHeight = FragmentShadingRateProperties.minFragmentShadingRateAttachmentTexelSize.height;
+			GRHIVariableRateShadingImageTileMaxWidth = FragmentShadingRateProperties.maxFragmentShadingRateAttachmentTexelSize.width;
+			GRHIVariableRateShadingImageTileMaxHeight = FragmentShadingRateProperties.maxFragmentShadingRateAttachmentTexelSize.height;
+
+			if (FragmentShadingRateProperties.maxFragmentSize.width >= 4 && FragmentShadingRateProperties.maxFragmentSize.height >= 4)
+			{
+				// FYI FVulkanDevice::GetBestMatchedShadingRateExtents does extent filtering
+				GRHISupportsLargerVariableRateShadingSizes = GRHISupportsPipelineVariableRateShading;
+			}
+
+			// todo: We don't currently care much about the other properties here, but at some point in the future we probably will.
+
+			UE_LOG(LogVulkanRHI, Verbose, TEXT("Image-based Variable Rate Shading supported via KHRFragmentShadingRate extension. Selected VRS tile size %u by %u pixels per VRS image texel."), GRHIVariableRateShadingImageTileMinWidth, GRHIVariableRateShadingImageTileMinHeight);
 		}
-
-		// todo: We don't currently care much about the other properties here, but at some point in the future we probably will.
-
-		UE_LOG(LogVulkanRHI, Verbose, TEXT("Image-based Variable Rate Shading supported via KHRFragmentShadingRate extension. Selected VRS tile size %u by %u pixels per VRS image texel."), GRHIVariableRateShadingImageTileMinWidth, GRHIVariableRateShadingImageTileMinHeight);
 	}
 
 	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
@@ -487,7 +549,7 @@ public:
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE)
+		if (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE || FragmentShadingRateFeatures.pipelineFragmentShadingRate == VK_TRUE)
 		{
 			AddToPNext(DeviceCreateInfo, FragmentShadingRateFeatures);
 		}
@@ -525,7 +587,6 @@ public:
 		if (!GRHISupportsAttachmentVariableRateShading && (FragmentDensityMapFeatures.fragmentDensityMap == VK_TRUE))
 		{
 			GRHISupportsAttachmentVariableRateShading = true;
-			GRHISupportsPipelineVariableRateShading = false;
 
 			// Go with the smallest tile size for now, and also force to square, since this seems to be standard.
 			// TODO: Eventually we may want to surface the range of possible tile sizes depending on end use cases, but for now this is being used for foveated rendering and smallest tile size
@@ -539,7 +600,7 @@ public:
 			GRHIVariableRateShadingImageDataType = VRSImage_Fractional;
 			GRHIVariableRateShadingImageFormat = PF_R8G8;
 
-			// UE_LOG(LogVulkanRHI, Display, TEXT("Image-based Variable Rate Shading supported via EXTFragmentDensityMap extension. Selected VRS tile size %u by %u pixels per VRS image texel."), GRHIVariableRateShadingImageTileMinWidth, GRHIVariableRateShadingImageTileMinHeight);
+			UE_LOG(LogVulkanRHI, Display, TEXT("Image-based Variable Rate Shading supported via EXTFragmentDensityMap extension. Selected VRS tile size %u by %u pixels per VRS image texel."), GRHIVariableRateShadingImageTileMinWidth, GRHIVariableRateShadingImageTileMinHeight);
 		}
 	}
 
@@ -719,8 +780,7 @@ public:
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
 	{
 #if VULKAN_RHI_RAYTRACING
-		const FRayTracingProperties& RayTracingProperties = Device->GetRayTracingProperties();
-		VkPhysicalDeviceAccelerationStructurePropertiesKHR& AccelerationStructure = const_cast<VkPhysicalDeviceAccelerationStructurePropertiesKHR&>(RayTracingProperties.AccelerationStructure);
+		VkPhysicalDeviceAccelerationStructurePropertiesKHR& AccelerationStructure = GetDeviceExtensionProperties().AccelerationStructureProps;
 		ZeroVulkanStruct(AccelerationStructure, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR);
 		AddToPNext(PhysicalDeviceProperties2, AccelerationStructure);
 #endif
@@ -766,8 +826,7 @@ public:
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
 	{
 #if VULKAN_RHI_RAYTRACING
-		const FRayTracingProperties& RayTracingProperties = Device->GetRayTracingProperties();
-		VkPhysicalDeviceRayTracingPipelinePropertiesKHR& RayTracingPipeline = const_cast<VkPhysicalDeviceRayTracingPipelinePropertiesKHR&>(RayTracingProperties.RayTracingPipeline);
+		VkPhysicalDeviceRayTracingPipelinePropertiesKHR& RayTracingPipeline = GetDeviceExtensionProperties().RayTracingPipelineProps;
 		ZeroVulkanStruct(RayTracingPipeline, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR);
 		AddToPNext(PhysicalDeviceProperties2, RayTracingPipeline);
 #endif
@@ -962,7 +1021,6 @@ private:
 	VkPhysicalDeviceHostQueryResetFeaturesEXT HostQueryResetFeatures;
 };
 
-
 // ***** VK_EXT_subgroup_size_control
 class FVulkanEXTSubgroupSizeControlExtension : public FVulkanDeviceExtension
 {
@@ -982,12 +1040,14 @@ public:
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
  		bSupportsSubgroupSizeControl = (SubgroupSizeControlFeatures.subgroupSizeControl == VK_TRUE);
+		ExtensionFlags.HasEXTSubgroupSizeControl = bSupportsSubgroupSizeControl ? 1 : 0;
 	}
 
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
 	{
 		if (bSupportsSubgroupSizeControl)
 		{
+			VkPhysicalDeviceSubgroupSizeControlPropertiesEXT& SubgroupSizeControlProperties = GetDeviceExtensionProperties().SubgroupSizeControlProperties;
 			ZeroVulkanStruct(SubgroupSizeControlProperties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES);
 			AddToPNext(PhysicalDeviceProperties2, SubgroupSizeControlProperties);
 		}
@@ -997,34 +1057,113 @@ public:
 	{
 		if (bSupportsSubgroupSizeControl)
 		{
+			VkPhysicalDeviceSubgroupSizeControlPropertiesEXT& SubgroupSizeControlProperties = GetDeviceExtensionProperties().SubgroupSizeControlProperties;
+
 			GRHIMinimumWaveSize = SubgroupSizeControlProperties.minSubgroupSize;
 			GRHIMaximumWaveSize = SubgroupSizeControlProperties.maxSubgroupSize;
+
+			AddToPNext(DeviceCreateInfo, SubgroupSizeControlFeatures);
 		}
 	}
 
 private:
 	VkPhysicalDeviceSubgroupSizeControlFeaturesEXT SubgroupSizeControlFeatures;
-	VkPhysicalDeviceSubgroupSizeControlPropertiesEXT SubgroupSizeControlProperties;
 	bool bSupportsSubgroupSizeControl = false;
 };
 
 
-// ***** VK_KHR_depth_stencil_resolve
-class FVulkanKHRDepthStencilResolveExtension : public FVulkanDeviceExtension
+// ***** VK_EXT_calibrated_timestamps
+class FVulkanEXTCalibratedTimestampsExtension : public FVulkanDeviceExtension
 {
 public:
-
-	FVulkanKHRDepthStencilResolveExtension(FVulkanDevice* InDevice)
-		: FVulkanDeviceExtension(InDevice, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE)
+	FVulkanEXTCalibratedTimestampsExtension(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED)
 	{
 	}
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasKHRDepthStencilResolve = 1;
-		GRHISupportsDepthStencilResolve = ExtensionFlags.HasKHRDepthStencilResolve;
+		uint32 TimeDomainCount = 0;
+		VulkanRHI::vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(Device->GetPhysicalHandle(), &TimeDomainCount, nullptr);
+
+		TArray<VkTimeDomainEXT, TInlineAllocator<4>> TimeDomains;
+		TimeDomains.SetNumZeroed(TimeDomainCount);
+		VulkanRHI::vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(Device->GetPhysicalHandle(), &TimeDomainCount, &TimeDomains[0]);
+
+		for (VkTimeDomainEXT TimeDomain : TimeDomains)
+		{
+			if (TimeDomain == VK_TIME_DOMAIN_DEVICE_EXT)
+			{
+				ExtensionFlags.HasEXTCalibratedTimestamps = 1;
+				break;
+			}
+		}
 	}
 };
+
+
+// ***** VK_EXT_descriptor_buffer
+class FVulkanEXTDescriptorBuffer : public FVulkanDeviceExtension
+{
+public:
+	FVulkanEXTDescriptorBuffer(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED)
+	{
+	}
+
+	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
+	{
+		ZeroVulkanStruct(DescriptorBufferFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT);
+		AddToPNext(PhysicalDeviceFeatures2, DescriptorBufferFeatures);
+	}
+
+	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
+	{
+		// only enable descriptor buffers if we also support mutable descriptor types (value filled prior)
+		bSupportsDescriptorBuffer = (DescriptorBufferFeatures.descriptorBuffer == VK_TRUE);
+		ExtensionFlags.HasEXTDescriptorBuffer = bSupportsDescriptorBuffer ? 1 : 0;
+	}
+
+	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
+	{
+		if (bSupportsDescriptorBuffer)
+		{
+			VkPhysicalDeviceDescriptorBufferPropertiesEXT& DescriptorBufferProperties = GetDeviceExtensionProperties().DescriptorBufferProps;
+			ZeroVulkanStruct(DescriptorBufferProperties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT);
+			AddToPNext(PhysicalDeviceProperties2, DescriptorBufferProperties);
+		}
+	}
+
+	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
+	{
+		if (bSupportsDescriptorBuffer)
+		{
+			AddToPNext(DeviceCreateInfo, DescriptorBufferFeatures);
+
+			const VkPhysicalDeviceDescriptorBufferPropertiesEXT& DescriptorBufferProperties = GetDeviceExtensionProperties().DescriptorBufferProps;
+
+			UE_LOG(LogVulkanRHI, Display, TEXT("Enabling Vulkan Descriptor Buffers with: ")
+				TEXT("allowSamplerImageViewPostSubmitCreation=%u, maxDescriptorBufferBindings=%u, ")
+				TEXT("maxSamplerDescriptorBufferBindings=%u, maxResourceDescriptorBufferBindings=%u, ")
+				TEXT("samplerDescriptorBufferAddressSpaceSize=%llu, resourceDescriptorBufferAddressSpaceSize=%llu, ")
+				TEXT("maxSamplerDescriptorBufferRange=%llu, maxResourceDescriptorBufferRange=%llu, ")
+				TEXT("descriptorBufferAddressSpaceSize=%llu, descriptorBufferOffsetAlignment=%llu, ")
+				TEXT("samplerDescriptorSize=%llu"),
+				DescriptorBufferProperties.allowSamplerImageViewPostSubmitCreation, DescriptorBufferProperties.maxDescriptorBufferBindings,
+				DescriptorBufferProperties.maxSamplerDescriptorBufferBindings, DescriptorBufferProperties.maxResourceDescriptorBufferBindings,
+				DescriptorBufferProperties.samplerDescriptorBufferAddressSpaceSize, DescriptorBufferProperties.resourceDescriptorBufferAddressSpaceSize,
+				DescriptorBufferProperties.maxSamplerDescriptorBufferRange, DescriptorBufferProperties.maxResourceDescriptorBufferRange,
+				DescriptorBufferProperties.descriptorBufferAddressSpaceSize, DescriptorBufferProperties.descriptorBufferOffsetAlignment,
+				DescriptorBufferProperties.samplerDescriptorSize);
+		}
+	}
+
+private:
+	VkPhysicalDeviceDescriptorBufferFeaturesEXT DescriptorBufferFeatures;
+	bool bSupportsDescriptorBuffer = false;
+};
+
+
 
 
 template <typename ExtensionType>
@@ -1074,7 +1213,8 @@ FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensio
 	ADD_SIMPLE_EXTENSION(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,    VULKAN_RHI_RAYTRACING,                VK_API_VERSION_1_2,            DEVICE_EXT_FLAG_SETTER(HasShaderFloatControls));
 	ADD_SIMPLE_EXTENSION(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,        VULKAN_EXTENSION_ENABLED,             VK_API_VERSION_1_2,            DEVICE_EXT_FLAG_SETTER(HasKHRImageFormatList));
 	ADD_SIMPLE_EXTENSION(VK_EXT_VALIDATION_CACHE_EXTENSION_NAME,         VULKAN_SUPPORTS_VALIDATION_CACHE,     VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasEXTValidationCache));
-	ADD_SIMPLE_EXTENSION(VK_QCOM_RENDER_PASS_SHADER_RESOLVE_EXTENSION_NAME, VULKAN_SUPPORTS_QCOM_RENDERPASS_SHADER_RESOLVE,		   VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasQcomRenderPassShaderResolve));
+	ADD_SIMPLE_EXTENSION(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,            VULKAN_EXTENSION_ENABLED,             VK_API_VERSION_1_1,            nullptr);
+	ADD_SIMPLE_EXTENSION(VK_QCOM_RENDER_PASS_SHADER_RESOLVE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED,		   VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasQcomRenderPassShaderResolve));
 
 
 	// Externally activated extensions (supported by the engine, but enabled externally by plugin or other) :
@@ -1091,6 +1231,7 @@ FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensio
 	ADD_CUSTOM_EXTENSION(FVulkanEXTScalarBlockLayoutExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTShaderViewportIndexLayerExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanKHRSeparateDepthStencilLayoutsExtension);
+	ADD_CUSTOM_EXTENSION(FVulkanKHRSynchronization2);
 	ADD_CUSTOM_EXTENSION(FVulkanKHRFragmentShadingRateExtension); // must be kept BEFORE DensityMap!
 	ADD_CUSTOM_EXTENSION(FVulkanEXTFragmentDensityMapExtension);  // must be kept AFTER ShadingRate!
 	ADD_CUSTOM_EXTENSION(FVulkanEXTFragmentDensityMap2Extension);
@@ -1100,7 +1241,8 @@ FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensio
 	ADD_CUSTOM_EXTENSION(FVulkanEXTDescriptorIndexingExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTHostQueryResetExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTSubgroupSizeControlExtension);
-	ADD_CUSTOM_EXTENSION(FVulkanKHRDepthStencilResolveExtension);
+	ADD_CUSTOM_EXTENSION(FVulkanEXTCalibratedTimestampsExtension);
+	ADD_CUSTOM_EXTENSION(FVulkanEXTDescriptorBuffer);
 
 	// Needed for Raytracing
 	ADD_CUSTOM_EXTENSION(FVulkanKHRBufferDeviceAddressExtension);

@@ -101,8 +101,6 @@ namespace OculusXRInput
 		bool GetOvrpHapticsDesc(int Hand);
 
 	private:
-		void* OVRPluginHandle;
-
 		/** The recipient of motion controller input events */
 		TSharedPtr<FGenericApplicationMessageHandler> MessageHandler;
 

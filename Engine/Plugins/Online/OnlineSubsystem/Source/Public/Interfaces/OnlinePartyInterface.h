@@ -2,9 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "OnlineKeyValuePair.h"
-#include "Online/CoreOnline.h"
 #include "OnlineSubsystemTypes.h"
 #include "OnlineDelegateMacros.h"
 #include "OnlineError.h"
@@ -1741,6 +1739,15 @@ public:
 	virtual FString MakeTokenFromJoinInfo(const IOnlinePartyJoinInfo& JoinInfo) const = 0;
 
 	/**
+	 * returns the join info for current party
+	 *
+	 * @param LocalUserId       - user making the request
+	 * @param PartyId           - party to make the json from
+	 *
+ 	 */
+	virtual IOnlinePartyJoinInfoConstPtr MakeJoinInfo(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId) = 0;
+
+	/**
 	 * Creates a IOnlinePartyJoinInfo object from a command line token
 	 *
 	 * @param Token - the token string
@@ -2275,3 +2282,7 @@ ONLINESUBSYSTEM_API FString ToDebugString(const IOnlinePartyJoinInfo& JoinInfo);
 ONLINESUBSYSTEM_API FString ToDebugString(const FOnlineKeyValuePairs<FString, FVariantData>& KeyValAttrs);
 /** Dump state about the party data for debugging */
 ONLINESUBSYSTEM_API FString ToDebugString(const FOnlinePartyData& PartyData);
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

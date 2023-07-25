@@ -7,10 +7,12 @@
 
 #include "Blueprints/DisplayClusterBlueprint.h"
 #include "DisplayClusterRootActor.h"
+#include "Framework/Application/SlateApplication.h"
 #include "IDisplayClusterConfiguration.h"
 #include "DisplayClusterConfigurationTypes.h"
 
 #include "ConcertSettings.h"
+#include "ConcertClientSettings.h"
 #include "IConcertClient.h"
 #include "IConcertSyncClient.h"
 #include "IConcertSyncClientModule.h"
@@ -30,10 +32,10 @@
 #include "LevelEditor.h"
 #include "Misc/ConfigCacheIni.h"
  
-#include "ToolMenus.h"
 #include "ActorFactories/ActorFactoryBlueprint.h"
-#include "ConsoleVariablesEditorRuntime/Public/ConsoleVariablesAsset.h"
+#include "ConsoleVariablesAsset.h"
 #include "Interfaces/IPluginManager.h"
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "FDisplayClusterLaunchEditorModule"
 
@@ -470,8 +472,10 @@ void FDisplayClusterLaunchEditorModule::LaunchDisplayClusterProcess()
 	{
 		FString ConcatenatedCommandLineArguments;
 		FString ConcatenatedConsoleCommands;
-		FString ConcatenatedDPCvars;
 		FString ConcatenatedLogCommands;
+
+		TSet<FString> DPCvars;
+
 		// Fullscreen/Windowed
 		if (TObjectPtr<UDisplayClusterConfigurationClusterNode>* NodePtrPtr = ConfigDataToUse->Cluster->Nodes.Find(Node))
 		{
@@ -489,6 +493,18 @@ void FDisplayClusterLaunchEditorModule::LaunchDisplayClusterProcess()
 								NodePtr->WindowRect.X, NodePtr->WindowRect.Y,
 								NodePtr->WindowRect.W, NodePtr->WindowRect.H
 						);
+				}
+
+				// Headless
+				if (NodePtr->bRenderHeadless)
+				{
+					ConcatenatedCommandLineArguments += "-RenderOffscreen ";
+				}
+
+				// Graphics adapter
+				if (NodePtr->GraphicsAdapter >= 0)
+				{
+					DPCvars.Add(FString::Printf(TEXT("r.GraphicsAdapter=%d"), NodePtr->GraphicsAdapter));
 				}
 			}
 		}
@@ -511,7 +527,7 @@ void FDisplayClusterLaunchEditorModule::LaunchDisplayClusterProcess()
 			}
 		}
 	
-		GetProjectSettingsArguments(ProjectSettings, ConcatenatedCommandLineArguments, ConcatenatedConsoleCommands, ConcatenatedDPCvars,
+		GetProjectSettingsArguments(ProjectSettings, ConcatenatedCommandLineArguments, ConcatenatedConsoleCommands, DPCvars,
 					 ConcatenatedLogCommands);
 		
 		AddUdpMessagingArguments(ConcatenatedCommandLineArguments);
@@ -529,8 +545,7 @@ void FDisplayClusterLaunchEditorModule::LaunchDisplayClusterProcess()
 			FString::Printf(
 				TEXT("\"%s\" -game \"%s\" Log=%s %s -ExecCmds=\"%s\" -DPCVars=\"%s\" -LogCmds=\"%s\""),
 				*Project, *Map, *LogFileName, *ConcatenatedCommandLineArguments,
-				*ConcatenatedConsoleCommands, *ConcatenatedDPCvars, *ConcatenatedLogCommands
-	
+				*ConcatenatedConsoleCommands, *FString::Join(DPCvars, TEXT(",")), *ConcatenatedLogCommands
 		);
 		UE_LOG(LogDisplayClusterLaunchEditor, Log, TEXT("Full Command: %s %s"), *EditorBinary, *Params);
 		void* WritePipe = nullptr;
@@ -760,7 +775,7 @@ FText FDisplayClusterLaunchEditorModule::GetSelectedNodesListText() const
 
 void FDisplayClusterLaunchEditorModule::GetProjectSettingsArguments(
 	const UDisplayClusterLaunchEditorProjectSettings* ProjectSettings, FString& ConcatenatedCommandLineArguments,
-	FString& ConcatenatedConsoleCommands, FString& ConcatenatedDPCvars, FString& ConcatenatedLogCommands)
+	FString& ConcatenatedConsoleCommands, TSet<FString>& DPCvars, FString& ConcatenatedLogCommands)
 {
 	{
 		for (const FString& CommandLineArgument : ProjectSettings->CommandLineArguments)
@@ -801,7 +816,7 @@ void FDisplayClusterLaunchEditorModule::GetProjectSettingsArguments(
 	ConcatenatedConsoleCommands += FString::Join(CollectedCommands, TEXT(","));
 
 	// Additional Console Variables
-	ConcatenatedDPCvars += FString::Join(ProjectSettings->AdditionalConsoleVariables, TEXT(","));
+	DPCvars.Append(ProjectSettings->AdditionalConsoleVariables);
 
 	// Logging
 	{

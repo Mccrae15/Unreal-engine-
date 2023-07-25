@@ -32,6 +32,22 @@
 ///////////////////////////////////////////////////////////////////////////////////////
 // FDisplayClusterViewportManager
 ///////////////////////////////////////////////////////////////////////////////////////
+bool FDisplayClusterViewportManager::IsEditorPreviewWorld() const
+{
+	if (UWorld* CurrentWorld = GetCurrentWorld())
+	{
+		switch (CurrentWorld->WorldType)
+		{
+		case EWorldType::EditorPreview:
+			return true;
+
+		default:
+			break;
+		}
+	}
+
+	return false;
+}
 
 void FDisplayClusterViewportManager::ImplUpdatePreviewRTTResources()
 {
@@ -119,6 +135,9 @@ bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderF
 	
 	FSceneInterface* PreviewScene = CurrentWorld->Scene;
 	FEngineShowFlags EngineShowFlags = FEngineShowFlags(EShowFlagInitMode::ESFIM_Game);
+
+	// Handle special viewports game-thread logic at frame begin
+	InitializeNewFrame();
 
 	int32 ViewportIndex = 0;
 	bool bViewportsRenderPassDone = false;

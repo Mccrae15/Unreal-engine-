@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Templates/SharedPointer.h"
+#include "Delegates/Delegate.h"
 
 class IOnlineSubsystem;
 class SWidget;

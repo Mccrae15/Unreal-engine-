@@ -163,6 +163,18 @@ protected:
 	uint32 Extent;
 };
 
+// We have to manually implement this or else the default behavior will just hash FName ComparisonIndex and Number,
+// which aren't deterministic
+template<>
+inline uint32 TMeshAttributeArrayBase<FName>::GetHash(uint32 Crc) const
+{
+	for (const FName& Item : Container)
+	{
+		const FString ItemStr = Item.ToString();
+		Crc = FCrc::MemCrc32(*ItemStr, ItemStr.Len() * sizeof(TCHAR), Crc);
+	}
+	return Crc;
+}
 
 template <typename AttributeType>
 void TMeshAttributeArrayBase<AttributeType>::Insert(const int32 Index, const AttributeType& Default)
@@ -816,19 +828,19 @@ public:
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef-to-const from a regular one */
-	template <typename T = AttributeType, typename TEnableIf<TIsSame<T, const T>::Value, int>::Type = 0>
+	template <typename T = AttributeType, typename TEnableIf<std::is_same_v<T, const T>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<ElementIDType, typename TRemoveCV<T>::Type> InRef)
 		: ArrayPtr(InRef.ArrayPtr)
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef from a TMeshAttributesArray **/
-	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<!TIsSame<T, int32>::Value, int>::Type = 0>
+	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<!std::is_same_v<T, int32>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<int32, U> InRef)
 		: ArrayPtr(InRef.ArrayPtr)
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef-to-const from a TMeshAttributesArray */
-	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<TIsSame<U, const U>::Value, int>::Type = 0, typename TEnableIf<!TIsSame<T, int32>::Value, int>::Type = 0>
+	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<std::is_same_v<U, const U>, int>::Type = 0, typename TEnableIf<!std::is_same_v<T, int32>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<int32, typename TRemoveCV<U>::Type> InRef)
 		: ArrayPtr(InRef.ArrayPtr)
 	{}
@@ -1013,21 +1025,21 @@ public:
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef-to-const from a regular one */
-	template <typename T = AttributeType, typename TEnableIf<TIsSame<T, const T>::Value, int>::Type = 0>
+	template <typename T = AttributeType, typename TEnableIf<std::is_same_v<T, const T>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<ElementIDType, TArrayView<typename TRemoveCV<T>::Type>> InRef)
 		: ArrayPtr(InRef.ArrayPtr),
 		  Extent(InRef.Extent)
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef from a TMeshAttributesArray **/
-	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<!TIsSame<T, int32>::Value, int>::Type = 0>
+	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<!std::is_same_v<T, int32>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<int32, TArrayView<U>> InRef)
 		: ArrayPtr(InRef.ArrayPtr),
 		  Extent(InRef.Extent)
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef-to-const from a TMeshAttributesArray */
-	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<TIsSame<U, const U>::Value, int>::Type = 0, typename TEnableIf<!TIsSame<T, int32>::Value, int>::Type = 0>
+	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<std::is_same_v<U, const U>, int>::Type = 0, typename TEnableIf<!std::is_same_v<T, int32>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<int32, TArrayView<typename TRemoveCV<U>::Type>> InRef)
 		: ArrayPtr(InRef.ArrayPtr),
 		  Extent(InRef.Extent)
@@ -1278,19 +1290,19 @@ public:
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef-to-const from a regular one */
-	template <typename T = AttributeType, typename TEnableIf<TIsSame<T, const T>::Value, int>::Type = 0>
+	template <typename T = AttributeType, typename TEnableIf<std::is_same_v<T, const T>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<ElementIDType, TArrayAttribute<typename TRemoveCV<T>::Type>> InRef)
 		: ArrayPtr(InRef.ArrayPtr)
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef from a TMeshAttributesArray **/
-	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<!TIsSame<T, int32>::Value, int>::Type = 0>
+	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<!std::is_same_v<T, int32>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<int32, TArrayAttribute<U>> InRef)
 		: ArrayPtr(InRef.ArrayPtr)
 	{}
 
 	/** Implicitly construct a TMeshAttributesRef-to-const from a TMeshAttributesArray */
-	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<TIsSame<U, const U>::Value, int>::Type = 0, typename TEnableIf<!TIsSame<T, int32>::Value, int>::Type = 0>
+	template <typename T = ElementIDType, typename U = AttributeType, typename TEnableIf<std::is_same_v<U, const U>, int>::Type = 0, typename TEnableIf<!std::is_same_v<T, int32>, int>::Type = 0>
 	TMeshAttributesRef(TMeshAttributesRef<int32, TArrayAttribute<typename TRemoveCV<U>::Type>> InRef)
 		: ArrayPtr(InRef.ArrayPtr)
 	{}
@@ -1587,7 +1599,7 @@ public:
 	 * Obtain a reference to this with GetAttributesRef<TArrayAttribute<float>>(...)
 	 */
 	template <typename T,
-			  typename TEnableIf<TIsSame<typename TMeshAttributesRegisterType<T>::RealAttributeType, int>::Value, int>::Type = 0>
+			  typename TEnableIf<std::is_same_v<typename TMeshAttributesRegisterType<T>::RealAttributeType, int>, int>::Type = 0>
 	TMeshAttributesArray<typename TMeshAttributesRegisterType<T>::RefType> RegisterIndexAttribute(
 		const FName AttributeName,
 		const int32 NumberOfChannels = 1,

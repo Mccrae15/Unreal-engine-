@@ -12,10 +12,10 @@
 #include "InteractiveToolChange.h" //FToolCommandChange
 #include "MeshOpPreviewHelpers.h" //FDynamicMeshOpResult
 #include "Operations/GroupEdgeInserter.h"
-#include "Selection/GroupTopologySelector.h"
+#include "Selection/MeshTopologySelector.h"
 #include "SingleSelectionTool.h"
 #include "ToolDataVisualizer.h"
-
+#include "GroupTopology.h"
 #include "PolyEditInsertEdgeActivity.generated.h"
 
 PREDECLARE_USE_GEOMETRY_CLASS(FDynamicMeshChange);
@@ -42,6 +42,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = InsertEdge)
 	EGroupEdgeInsertionMode InsertionMode = EGroupEdgeInsertionMode::PlaneCut;
 
+	/** If true, edge insertions are chained together so that each end point becomes the new start point */
+	UPROPERTY(EditAnywhere, Category = InsertEdge)
+	bool bContinuousInsertion = true;
+	
 	/** How close a new loop edge needs to pass next to an existing vertex to use that vertex rather than creating a new one (used for plane cut). */
 	UPROPERTY(EditAnywhere, Category = InsertEdge, AdvancedDisplay, meta = (UIMin = "0", UIMax = "0.01", ClampMin = "0", ClampMax = "10"))
 	double VertexTolerance = 0.001;
@@ -107,7 +111,7 @@ protected:
 	bool bIsRunning = false;
 
 	FTransform TargetTransform;
-	TSharedPtr<FGroupTopologySelector, ESPMode::ThreadSafe> TopologySelector;
+	TSharedPtr<FMeshTopologySelector, ESPMode::ThreadSafe> TopologySelector;
 
 	TArray<TPair<FVector3d, FVector3d>> PreviewEdges;
 	TArray<FVector3d> PreviewPoints;
@@ -116,7 +120,7 @@ protected:
 
 	FToolDataVisualizer ExistingEdgesRenderer;
 	FToolDataVisualizer PreviewEdgeRenderer;
-	FGroupTopologySelector::FSelectionSettings TopologySelectorSettings;
+	FMeshTopologySelector::FSelectionSettings TopologySelectorSettings;
 
 
 	// Inputs from user interaction:
@@ -131,13 +135,14 @@ protected:
 	int32 CommonGroupID = FDynamicMesh3::InvalidID;
 	int32 CommonBoundaryIndex = FDynamicMesh3::InvalidID;
 
+	FRay LastEndPointWorldRay;
 
 	// State control:
 	EState ToolState = EState::GettingStart;
 
 	bool bShowingBaseMesh = false;
 	bool bLastComputeSucceeded = false;
-	TSharedPtr<FGroupTopology, ESPMode::ThreadSafe> LatestOpTopologyResult;
+	TSharedPtr<UE::Geometry::FGroupTopology, ESPMode::ThreadSafe> LatestOpTopologyResult;
 	TSharedPtr<TSet<int32>, ESPMode::ThreadSafe> LatestOpChangedTids;
 
 	int32 CurrentChangeStamp = 0;
@@ -156,7 +161,7 @@ protected:
 	void ConditionallyUpdatePreview(const FGroupEdgeInserter::FGroupEdgeSplitPoint& NewEndPoint, 
 		int32 NewEndTopologyID, bool bNewEndIsCorner, int32 NewCommonGroupID, int32 NewBoundaryIndex);
 
-	void ClearPreview(bool bClearDrawnElements = true);
+	void ClearPreview(bool bClearDrawnElements);
 
 	void GetCornerTangent(int32 CornerID, int32 GroupID, int32 BoundaryIndex, FVector3d& TangentOut);
 
@@ -186,10 +191,9 @@ public:
 	{
 		UPolyEditInsertEdgeActivity* Activity = Cast<UPolyEditInsertEdgeActivity>(Object);
 		return bHaveDoneUndo || Activity->CurrentChangeStamp != ChangeStamp
-			|| Activity->ToolState != UPolyEditInsertEdgeActivity::EState::GettingEnd;
-		// TODO: this is a bit of a hack in that we should probably have a separate stamp
-		// for expiring these instead of letting the tool state help (they expire after
-		// each new insertion unlike the other changes, which expire on tool close).
+			// We only allow undo if we're looking for the next point or waiting for completion, i.e. when
+			// we have a start point to undo.
+			|| Activity->ToolState == UPolyEditInsertEdgeActivity::EState::GettingStart;
 	}
 	virtual FString ToString() const override
 	{

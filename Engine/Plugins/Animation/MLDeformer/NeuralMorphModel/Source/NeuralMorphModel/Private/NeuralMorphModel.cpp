@@ -1,6 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NeuralMorphModel.h"
 #include "NeuralMorphModelVizSettings.h"
+#include "NeuralMorphModelInstance.h"
+#include "NeuralMorphInputInfo.h"
+#include "MLDeformerAsset.h"
+#include "MLDeformerComponent.h"
+#include "UObject/UObjectGlobals.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NeuralMorphModel)
 
 #define LOCTEXT_NAMESPACE "NeuralMorphModel"
 
@@ -28,6 +35,41 @@ UNeuralMorphModel::UNeuralMorphModel(const FObjectInitializer& ObjectInitializer
 #if WITH_EDITORONLY_DATA
 	SetVizSettings(ObjectInitializer.CreateEditorOnlyDefaultSubobject<UNeuralMorphModelVizSettings>(this, TEXT("VizSettings")));
 #endif
+}
+
+UMLDeformerModelInstance* UNeuralMorphModel::CreateModelInstance(UMLDeformerComponent* Component)
+{
+	return NewObject<UNeuralMorphModelInstance>(Component);
+}
+
+UMLDeformerInputInfo* UNeuralMorphModel::CreateInputInfo()
+{
+	return NewObject<UNeuralMorphInputInfo>(this);
+}
+
+void UNeuralMorphModel::Serialize(FArchive& Archive)
+{
+	if (Archive.IsSaving() && Archive.IsCooking())
+	{
+		if (NeuralMorphNetwork == nullptr)
+		{
+			UE_LOG(LogNeuralMorphModel, Display, TEXT("Neural Morph Model in MLD asset '%s' still needs to be trained."), *GetDeformerAsset()->GetName());
+		}
+	}
+
+	// Convert the UMLDeformerInputInfo object into a UNeuralMorphInputInfo object for backward compatiblity.
+	UMLDeformerInputInfo* CurInputInfo = GetInputInfo();
+	if (CurInputInfo)
+	{
+		if (!CurInputInfo->IsA<UNeuralMorphInputInfo>())
+		{
+			UNeuralMorphInputInfo* NeuralMorphInputInfo = Cast<UNeuralMorphInputInfo>(CreateInputInfo());
+			NeuralMorphInputInfo->CopyMembersFrom(CurInputInfo);
+			SetInputInfo(NeuralMorphInputInfo);
+		}		
+	}
+
+	Super::Serialize(Archive);
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -6,7 +6,7 @@
 #include "MacGraphicsSwitchingSettingsDetails.h"
 #include "MacGraphicsSwitchingStyle.h"
 #include "MacGraphicsSwitchingWidget.h"
-#include "Runtime/Core/Public/Features/IModularFeatures.h"
+#include "Features/IModularFeatures.h"
 #include "Runtime/SlateCore/Public/Rendering/SlateRenderer.h"
 #include "Editor/MainFrame/Public/Interfaces/IMainFrameModule.h"
 #include "ISettingsModule.h"
@@ -26,7 +26,7 @@ public:
 	virtual void ShutdownModule() override;
 	
 private:
-	void Initialize( TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow );
+	void Initialize( TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog );
 	void AddGraphicsSwitcher( FToolBarBuilder& ToolBarBuilder );
 	
 private:
@@ -56,9 +56,9 @@ void FMacGraphicsSwitchingModule::StartupModule()
 	}
 }
 
-void FMacGraphicsSwitchingModule::Initialize( TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow )
+void FMacGraphicsSwitchingModule::Initialize( TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog )
 {
-	if( !bIsNewProjectWindow )
+	if( !bIsRunningStartupDialog )
 	{
 		IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
 		MainFrameModule.OnMainFrameCreationFinished().RemoveAll(this);

@@ -4,35 +4,32 @@
 #include "PlasticSourceControlProjectSettings.h"
 #include "ISourceControlModule.h"
 #include "Styling/AppStyle.h"
+#include "RevisionControlStyle/RevisionControlStyle.h"
 
 #define LOCTEXT_NAMESPACE "PlasticSourceControl.State"
 
-namespace EWorkspaceState
-{
-const TCHAR* ToString(EWorkspaceState::Type InWorkspaceState)
+const TCHAR* FPlasticSourceControlState::ToString() const
 {
 	const TCHAR* WorkspaceStateStr = nullptr;
-	switch (InWorkspaceState)
+	switch (WorkspaceState)
 	{
-	case EWorkspaceState::Unknown: WorkspaceStateStr = TEXT("Unknown"); break;
-	case EWorkspaceState::Ignored: WorkspaceStateStr = TEXT("Ignored"); break;
-	case EWorkspaceState::Controlled: WorkspaceStateStr = TEXT("Controlled"); break;
-	case EWorkspaceState::CheckedOut: WorkspaceStateStr = TEXT("CheckedOut"); break;
-	case EWorkspaceState::Added: WorkspaceStateStr = TEXT("Added"); break;
-	case EWorkspaceState::Moved: WorkspaceStateStr = TEXT("Moved"); break;
-	case EWorkspaceState::Copied: WorkspaceStateStr = TEXT("Copied"); break;
-	case EWorkspaceState::Replaced: WorkspaceStateStr = TEXT("Replaced"); break;
-	case EWorkspaceState::Deleted: WorkspaceStateStr = TEXT("Deleted"); break;
-	case EWorkspaceState::LocallyDeleted: WorkspaceStateStr = TEXT("LocallyDeleted"); break;
-	case EWorkspaceState::Changed: WorkspaceStateStr = TEXT("Changed"); break;
-	case EWorkspaceState::Conflicted: WorkspaceStateStr = TEXT("Conflicted"); break;
-	case EWorkspaceState::LockedByOther: WorkspaceStateStr = TEXT("LockedByOther"); break;
-	case EWorkspaceState::Private: WorkspaceStateStr = TEXT("Private"); break;
-	default: WorkspaceStateStr = TEXT("???"); break;
+		case EWorkspaceState::Unknown: WorkspaceStateStr = TEXT("Unknown"); break;
+		case EWorkspaceState::Ignored: WorkspaceStateStr = TEXT("Ignored"); break;
+		case EWorkspaceState::Controlled: WorkspaceStateStr = TEXT("Controlled"); break;
+		case EWorkspaceState::CheckedOut: WorkspaceStateStr = TEXT("CheckedOut"); break;
+		case EWorkspaceState::Added: WorkspaceStateStr = TEXT("Added"); break;
+		case EWorkspaceState::Moved: WorkspaceStateStr = TEXT("Moved"); break;
+		case EWorkspaceState::Copied: WorkspaceStateStr = TEXT("Copied"); break;
+		case EWorkspaceState::Replaced: WorkspaceStateStr = TEXT("Replaced"); break;
+		case EWorkspaceState::Deleted: WorkspaceStateStr = TEXT("Deleted"); break;
+		case EWorkspaceState::LocallyDeleted: WorkspaceStateStr = TEXT("LocallyDeleted"); break;
+		case EWorkspaceState::Changed: WorkspaceStateStr = TEXT("Changed"); break;
+		case EWorkspaceState::Conflicted: WorkspaceStateStr = TEXT("Conflicted"); break;
+		case EWorkspaceState::Private: WorkspaceStateStr = TEXT("Private"); break;
+		default: WorkspaceStateStr = TEXT("???"); break;
 	}
 	return WorkspaceStateStr;
 }
-} // namespace EWorkspaceState
 
 
 int32 FPlasticSourceControlState::GetHistorySize() const
@@ -76,8 +73,22 @@ TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FPlasticSourceCont
 {
 	for (const auto& Revision : History)
 	{
-		// look for the SHA1 id of the file, not the commit id (revision)
+		// look for the changeset number, not the revision
 		if (Revision->ChangesetNumber == PendingMergeBaseChangeset)
+		{
+			return Revision;
+		}
+	}
+
+	return nullptr;
+}
+
+TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FPlasticSourceControlState::GetCurrentRevision() const
+{
+	for (const auto& Revision : History)
+	{
+		// look for the changeset number, not the revision
+		if (Revision->ChangesetNumber == LocalRevisionChangeset)
 		{
 			return Revision;
 		}
@@ -90,13 +101,17 @@ FSlateIcon FPlasticSourceControlState::GetIcon() const
 {
 	if (!IsCurrent())
 	{
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(),"Perforce.NotAtHeadRevision");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.NotAtHeadRevision");
 	}
-	else if (WorkspaceState != EWorkspaceState::CheckedOut && WorkspaceState != EWorkspaceState::LockedByOther)
+	else if (WorkspaceState != EWorkspaceState::CheckedOut && WorkspaceState != EWorkspaceState::Conflicted)
 	{
-		if (IsModifiedInOtherBranch())
+		if (IsCheckedOutOther())
 		{
-			return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.ModifiedOtherBranch");
+			return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.CheckedOutByOtherUser", NAME_None, "RevisionControl.CheckedOutByOtherUserBadge");
+		}
+		else if (IsModifiedInOtherBranch())
+		{
+			return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.ModifiedOtherBranch", NAME_None, "RevisionControl.ModifiedBadge");
 		}
 	}
 
@@ -104,24 +119,22 @@ FSlateIcon FPlasticSourceControlState::GetIcon() const
 	{
 	case EWorkspaceState::CheckedOut:
 	case EWorkspaceState::Replaced: // Merged (waiting for check-in)
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.CheckedOut");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.CheckedOut");
 	case EWorkspaceState::Changed: // Changed but unchecked-out file custom color icon
 		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.Changed"); // custom
 	case EWorkspaceState::Added:
 	case EWorkspaceState::Copied:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.OpenForAdd");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.OpenForAdd");
 	case EWorkspaceState::Moved:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.Branched");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Branched");
 	case EWorkspaceState::Deleted:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.MarkedForDelete");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.MarkedForDelete");
 	case EWorkspaceState::LocallyDeleted:
 		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.LocallyDeleted"); // custom
 	case EWorkspaceState::Conflicted:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.Conflicted"); // custom
-	case EWorkspaceState::LockedByOther:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.CheckedOutByOtherUser", NAME_None, "SourceControl.LockOverlay");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Conflicted");
 	case EWorkspaceState::Private: // Not controlled
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.NotInDepot");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.NotInDepot");
 	case EWorkspaceState::Ignored:
 		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Plastic.Ignored"); // custom
 	case EWorkspaceState::Unknown:
@@ -133,19 +146,26 @@ FSlateIcon FPlasticSourceControlState::GetIcon() const
 
 FText FPlasticSourceControlState::GetDisplayName() const
 {
+	FNumberFormattingOptions NoCommas;
+	NoCommas.UseGrouping = false;
 	if (!IsCurrent())
 	{
-		return LOCTEXT("NotCurrent", "Not current");
+		return FText::Format(LOCTEXT("NotCurrent", "Not at the head revision CS:{0} {1} (local revision is CS:{2})"),
+			FText::AsNumber(DepotRevisionChangeset), FText::FromString(HeadUserName), FText::AsNumber(LocalRevisionChangeset, &NoCommas));
 	}
-	else if (WorkspaceState != EWorkspaceState::LockedByOther)
+	else if (WorkspaceState != EWorkspaceState::CheckedOut && WorkspaceState != EWorkspaceState::Conflicted)
 	{
-		if (IsModifiedInOtherBranch())
+		if (IsCheckedOutOther())
 		{
-			FNumberFormattingOptions NoCommas;
-			NoCommas.UseGrouping = false;
-			return FText::Format(LOCTEXT("ModifiedOtherBranch", "Modified in {0} CS:{1} by {2}"), FText::FromString(HeadBranch), FText::AsNumber(HeadChangeList, &NoCommas), FText::FromString(HeadUserName));
+			return FText::Format(LOCTEXT("CheckedOutOther", "Checked out by {0} in {1}"), FText::FromString(LockedBy), FText::FromString(LockedWhere));
+		}
+		else if (IsModifiedInOtherBranch())
+		{
+			return FText::Format(LOCTEXT("ModifiedOtherBranch", "Modified in {0} as CS:{1} by {2} (local revision is CS:{3})"),
+				FText::FromString(HeadBranch), FText::AsNumber(HeadChangeList, &NoCommas), FText::FromString(HeadUserName), FText::AsNumber(LocalRevisionChangeset, &NoCommas));
 		}
 	}
+
 	switch (WorkspaceState)
 	{
 	case EWorkspaceState::Unknown:
@@ -171,9 +191,7 @@ FText FPlasticSourceControlState::GetDisplayName() const
 	case EWorkspaceState::Changed:
 		return LOCTEXT("Changed", "Changed");
 	case EWorkspaceState::Conflicted:
-		return LOCTEXT("ContentsConflict", "Conflicted");
-	case EWorkspaceState::LockedByOther:
-		return FText::Format(LOCTEXT("CheckedOutOther", "Checked out by: {0} in {1}"), FText::FromString(LockedBy), FText::FromString(LockedWhere));
+		return LOCTEXT("Conflicted", "Conflicted");
 	case EWorkspaceState::Private:
 		return LOCTEXT("NotControlled", "Not Under Source Control");
 	}
@@ -183,17 +201,23 @@ FText FPlasticSourceControlState::GetDisplayName() const
 
 FText FPlasticSourceControlState::GetDisplayTooltip() const
 {
+	FNumberFormattingOptions NoCommas;
+	NoCommas.UseGrouping = false;
 	if (!IsCurrent())
 	{
-		return FText::Format(LOCTEXT("NotCurrent_Tooltip", "Not at the head revision CS:{0} by {1}"), FText::AsNumber(DepotRevisionChangeset), FText::FromString(HeadUserName));
+		return FText::Format(LOCTEXT("NotCurrent_Tooltip", "Not at the head revision CS:{0} {1} (local revision is CS:{2})"),
+			FText::AsNumber(DepotRevisionChangeset), FText::FromString(HeadUserName), FText::AsNumber(LocalRevisionChangeset, &NoCommas));
 	}
-	else if (WorkspaceState != EWorkspaceState::LockedByOther)
+	else if (WorkspaceState != EWorkspaceState::CheckedOut && WorkspaceState != EWorkspaceState::Conflicted)
 	{
-		if (IsModifiedInOtherBranch())
+		if (IsCheckedOutOther())
 		{
-			FNumberFormattingOptions NoCommas;
-			NoCommas.UseGrouping = false;
-			return FText::Format(LOCTEXT("ModifiedOtherBranch_Tooltip", "Modified in {0} CS:{1} by {2}"), FText::FromString(HeadBranch), FText::AsNumber(HeadChangeList, &NoCommas), FText::FromString(HeadUserName));
+			return FText::Format(LOCTEXT("CheckedOutOther_Tooltip", "Checked out by {0} in {1}"), FText::FromString(LockedBy), FText::FromString(LockedWhere));
+		}
+		else if (IsModifiedInOtherBranch())
+		{
+			return FText::Format(LOCTEXT("ModifiedOtherBranch_Tooltip", "Modified in {0} as CS:{1} by {2} (local revision is CS:{3})"),
+				FText::FromString(HeadBranch), FText::AsNumber(HeadChangeList, &NoCommas), FText::FromString(HeadUserName), FText::AsNumber(LocalRevisionChangeset, &NoCommas));
 		}
 	}
 
@@ -210,7 +234,12 @@ FText FPlasticSourceControlState::GetDisplayTooltip() const
 	case EWorkspaceState::Added:
 		return LOCTEXT("Added_Tooltip", "Added");
 	case EWorkspaceState::Moved:
-		return LOCTEXT("Moved_Tooltip", "Moved or renamed");
+	{
+		FString MoveOrigin = MovedFrom;
+		FPaths::MakePathRelativeTo(MoveOrigin, *LocalFilename);
+		return FText::Format(LOCTEXT("Moved_Tooltip", "Moved from {0}"),
+			FText::FromString(FPaths::GetBaseFilename(MoveOrigin, false)));
+	}
 	case EWorkspaceState::Copied:
 		return LOCTEXT("Copied_Tooltip", "Copied");
 	case EWorkspaceState::Replaced:
@@ -222,9 +251,8 @@ FText FPlasticSourceControlState::GetDisplayTooltip() const
 	case EWorkspaceState::Changed:
 		return LOCTEXT("Modified_Tooltip", "Locally modified");
 	case EWorkspaceState::Conflicted:
-		return LOCTEXT("ContentsConflict_Tooltip", "Conflict with updates received from the repository");
-	case EWorkspaceState::LockedByOther:
-		return FText::Format(LOCTEXT("CheckedOutOther_Tooltip", "Checked out by {0} in {1}"), FText::FromString(LockedBy), FText::FromString(LockedWhere));
+		return FText::Format(LOCTEXT("Conflicted_Tooltip", "Conflict merging from source/remote CS:{0} into target/local CS:{1})"),
+			FText::AsNumber(PendingMergeSourceChangeset, &NoCommas), FText::AsNumber(LocalRevisionChangeset, &NoCommas));
 	case EWorkspaceState::Private:
 		return LOCTEXT("NotControlled_Tooltip", "Private: not under version control");
 	}
@@ -246,19 +274,19 @@ const FDateTime& FPlasticSourceControlState::GetTimeStamp() const
 	return TimeStamp;
 }
 
-// Deleted and Missing assets cannot appear in the Content Browser but does appear in Submit to Source Control Window
 bool FPlasticSourceControlState::CanCheckIn() const
 {
-	const bool bCanCheckIn =
-		  (WorkspaceState == EWorkspaceState::Added
-		|| WorkspaceState == EWorkspaceState::Deleted
-		|| WorkspaceState == EWorkspaceState::LocallyDeleted
-		|| WorkspaceState == EWorkspaceState::Changed
-		|| WorkspaceState == EWorkspaceState::Moved
-		|| WorkspaceState == EWorkspaceState::Copied
-		|| WorkspaceState == EWorkspaceState::Replaced
-		|| WorkspaceState == EWorkspaceState::CheckedOut)
-		&& !IsConflicted() && IsCurrent();
+	// Deleted assets don't appear in the Content Browser but in Submit to Source Control Window
+	const bool bCanCheckIn =  (WorkspaceState == EWorkspaceState::Added
+							|| WorkspaceState == EWorkspaceState::Deleted
+							|| WorkspaceState == EWorkspaceState::LocallyDeleted
+							|| WorkspaceState == EWorkspaceState::Changed
+							|| WorkspaceState == EWorkspaceState::Moved
+							|| WorkspaceState == EWorkspaceState::Copied
+							|| WorkspaceState == EWorkspaceState::Replaced
+							|| WorkspaceState == EWorkspaceState::CheckedOut)
+							&& !IsCheckedOutOther()	// Is not already checked-out elsewhere
+							&& IsCurrent();			// Is up to date (at the revision of the repo)
 
 	if (!IsUnknown())
 	{
@@ -278,7 +306,8 @@ bool FPlasticSourceControlState::CanCheckout() const
 	const bool bCanCheckout  =    (WorkspaceState == EWorkspaceState::Controlled	// In source control, Unmodified
 								|| WorkspaceState == EWorkspaceState::Changed		// In source control, but not checked-out
 								|| WorkspaceState == EWorkspaceState::Replaced)		// In source control, merged, waiting for checkin to conclude the merge
-								&& IsCurrent(); // Is up to date (at the revision of the repo)
+								&& !IsCheckedOutOther()	// Is not already checked-out elsewhere
+								&& IsCurrent();			// Is up to date (at the revision of the repo)
 
 	if (!IsUnknown())
 	{
@@ -318,7 +347,15 @@ bool FPlasticSourceControlState::IsCheckedOutOther(FString* Who) const
 	{
 		*Who = LockedBy;
 	}
-	const bool bIsLockedByOther = WorkspaceState == EWorkspaceState::LockedByOther;
+
+	// If the asset is Locked but not CheckedOut locally, it means it is locked somewhere else
+	const bool bIsLocked = !LockedBy.IsEmpty();
+	const bool bIsCheckedOut = WorkspaceState == EWorkspaceState::CheckedOut
+							|| WorkspaceState == EWorkspaceState::Added
+							|| WorkspaceState == EWorkspaceState::Moved
+							|| WorkspaceState == EWorkspaceState::Conflicted	// In source control, waiting for merged
+							|| WorkspaceState == EWorkspaceState::Replaced;		// In source control, merged, waiting for checkin to conclude the merge
+	const bool bIsLockedByOther = bIsLocked && !bIsCheckedOut;
 
 	if (bIsLockedByOther)
 	{
@@ -370,9 +407,10 @@ bool FPlasticSourceControlState::IsCurrent() const
 
 bool FPlasticSourceControlState::IsSourceControlled() const
 {
+	// NOTE: the Editor Collections rely on the default 'Unknown' state (until the actual file status is obtained) to be considered "in source control"
 	const bool bIsSourceControlled = WorkspaceState != EWorkspaceState::Private
-								  && WorkspaceState != EWorkspaceState::Ignored
-								  && WorkspaceState != EWorkspaceState::Unknown;
+								  && WorkspaceState != EWorkspaceState::Ignored;
+								  // WorkspaceState != EWorkspaceState::Unknown 
 
 	if (!bIsSourceControlled && !IsUnknown()) UE_LOG(LogSourceControl, Log, TEXT("%s NOT SourceControlled"), *LocalFilename);
 
@@ -435,7 +473,7 @@ bool FPlasticSourceControlState::IsModified() const
 	//
 	// Thus, before checkin UE4 Editor call RevertUnchangedFiles() in PromptForCheckin() and CheckinFiles().
 	//
-	// So here we must take care to enumerate all states that need to be commited, all other will be discarded:
+	// So here we must take care to enumerate all states that need to be committed, all other will be discarded:
 	//  - Unknown
 	//  - Controlled (Unchanged)
 	//  - Private (Not Controlled)
@@ -465,7 +503,7 @@ bool FPlasticSourceControlState::CanAdd() const
 
 bool FPlasticSourceControlState::IsConflicted() const
 {
-	if (WorkspaceState == EWorkspaceState::Conflicted) UE_LOG(LogSourceControl, Log, TEXT("%s IsConflicted"), *LocalFilename);
+	if (WorkspaceState == EWorkspaceState::Conflicted) UE_LOG(LogSourceControl, Verbose, TEXT("%s IsConflicted"), *LocalFilename);
 
 	return WorkspaceState == EWorkspaceState::Conflicted;
 }

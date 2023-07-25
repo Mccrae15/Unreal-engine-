@@ -1,28 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonButtonBase.h"
-#include "CommonUIPrivate.h"
 
-#include "CommonTextBlock.h"
 #include "CommonActionWidget.h"
 #include "CommonUISubsystemBase.h"
 #include "CommonInputSubsystem.h"
-#include "CommonUISettings.h"
 #include "CommonUIEditorSettings.h"
 #include "CommonWidgetPaletteCategories.h"
 #include "Components/ButtonSlot.h"
 #include "Blueprint/WidgetTree.h"
 #include "CommonButtonTypes.h"
-#include "Widgets/Input/SButton.h"
+#include "CommonUITypes.h"
+#include "ICommonUIModule.h"
 #include "Widgets/Layout/SBox.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "Materials/MaterialInterface.h"
 #include "Engine/UserInterfaceSettings.h"
 #include "ICommonInputModule.h"
 #include "CommonInputSettings.h"
-#include "CommonUIUtils.h"
 #include "Input/CommonUIInputTypes.h"
+#include "InputAction.h"
 #include "Sound/SoundBase.h"
 #include "Styling/UMGCoreStyle.h"
 
@@ -34,9 +31,7 @@
 
 bool UCommonButtonStyle::NeedsLoadForServer() const
 {
-	const UUserInterfaceSettings* UISettings = GetDefault<UUserInterfaceSettings>(UUserInterfaceSettings::StaticClass());
-	check(UISettings);
-	return UISettings->bLoadWidgetsOnDedicatedServer;
+	return GetDefault<UUserInterfaceSettings>()->bLoadWidgetsOnDedicatedServer;
 }
 
 void UCommonButtonStyle::GetButtonPadding(FMargin& OutButtonPadding) const
@@ -168,7 +163,7 @@ UCommonButtonInternalBase::UCommonButtonInternalBase(const FObjectInitializer& I
 	{
 		// SButton will have a transparent background and have no padding if Button Style is set to None
 		static const FButtonStyle* TransparentButtonStyle = new FButtonStyle(FUMGCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"));
-		WidgetStyle = *TransparentButtonStyle;
+		SetStyle(*TransparentButtonStyle);
 	}
 }
 
@@ -183,7 +178,7 @@ void UCommonButtonInternalBase::SetButtonEnabled(bool bInIsButtonEnabled)
 
 void UCommonButtonInternalBase::SetButtonFocusable(bool bInIsButtonFocusable)
 {
-	IsFocusable = bInIsButtonFocusable;
+	InitIsFocusable(bInIsButtonFocusable);
 	if (MyCommonButton.IsValid())
 	{
 		MyCommonButton->SetIsButtonFocusable(bInIsButtonFocusable);
@@ -247,10 +242,10 @@ TSharedRef<SWidget> UCommonButtonInternalBase::RebuildWidget()
 		.OnDoubleClicked(BIND_UOBJECT_DELEGATE(FOnClicked, SlateHandleDoubleClicked))
 		.OnPressed(BIND_UOBJECT_DELEGATE(FSimpleDelegate, SlateHandlePressedOverride))
 		.OnReleased(BIND_UOBJECT_DELEGATE(FSimpleDelegate, SlateHandleReleasedOverride))
-		.ButtonStyle(&WidgetStyle)
-		.ClickMethod(ClickMethod)
-		.TouchMethod(TouchMethod)
-		.IsFocusable(IsFocusable)
+		.ButtonStyle(&GetStyle())
+		.ClickMethod(GetClickMethod())
+		.TouchMethod(GetTouchMethod())
+		.IsFocusable(GetIsFocusable())
 		.IsButtonEnabled(bButtonEnabled)
 		.IsInteractionEnabled(bInteractionEnabled)
 		.OnReceivedFocus(BIND_UOBJECT_DELEGATE(FSimpleDelegate, SlateHandleOnReceivedFocus))
@@ -342,7 +337,7 @@ UCommonButtonBase::UCommonButtonBase(const FObjectInitializer& ObjectInitializer
 	, bButtonEnabled(true)
 	, bInteractionEnabled(true)
 {
-	bIsFocusable = true;
+	SetIsFocusable(true);
 }
 
 void UCommonButtonBase::OnWidgetRebuilt()
@@ -401,10 +396,10 @@ bool UCommonButtonBase::Initialize()
 	{
 		UCommonButtonInternalBase* RootButtonRaw = ConstructInternalButton();
 
-		RootButtonRaw->ClickMethod = ClickMethod;
-		RootButtonRaw->TouchMethod = TouchMethod;
-		RootButtonRaw->PressMethod = PressMethod;
-		RootButtonRaw->IsFocusable = bIsFocusable;
+		RootButtonRaw->SetClickMethod(ClickMethod);
+		RootButtonRaw->SetTouchMethod(TouchMethod);
+		RootButtonRaw->SetPressMethod(PressMethod);
+		RootButtonRaw->SetButtonFocusable(IsFocusable());
 		RootButtonRaw->SetButtonEnabled(bButtonEnabled);
 		RootButtonRaw->SetInteractionEnabled(bInteractionEnabled);
 		RootButton = RootButtonRaw;
@@ -499,6 +494,19 @@ void UCommonButtonBase::OnInputMethodChanged(ECommonInputType CurrentInputType)
 
 void UCommonButtonBase::BindTriggeringInputActionToClick()
 {
+	if (CommonUI::IsEnhancedInputSupportEnabled() && TriggeringEnhancedInputAction)
+	{
+		FBindUIActionArgs BindArgs(TriggeringEnhancedInputAction, false, FSimpleDelegate::CreateUObject(this, &UCommonButtonBase::HandleTriggeringActionCommited));
+		BindArgs.OnHoldActionProgressed.BindUObject(this, &UCommonButtonBase::NativeOnActionProgress);
+		BindArgs.bIsPersistent = bIsPersistentBinding;
+
+		BindArgs.InputMode = InputModeOverride;
+
+		TriggeringBindingHandle = RegisterUIActionBinding(BindArgs);
+
+		return;
+	}
+
 	if (TriggeringInputAction.IsNull() || !TriggeredInputAction.IsNull())
 	{
 		return;
@@ -506,7 +514,7 @@ void UCommonButtonBase::BindTriggeringInputActionToClick()
 
 	if (!TriggeringBindingHandle.IsValid())
 	{
-		FBindUIActionArgs BindArgs(TriggeringInputAction, false, FSimpleDelegate::CreateUObject(this, &UCommonButtonBase::HandleButtonClicked));
+		FBindUIActionArgs BindArgs(TriggeringInputAction, false, FSimpleDelegate::CreateUObject(this, &UCommonButtonBase::HandleTriggeringActionCommited));
 		BindArgs.OnHoldActionProgressed.BindUObject(this, &UCommonButtonBase::NativeOnActionProgress);
 		BindArgs.bIsPersistent = bIsPersistentBinding;
 
@@ -518,6 +526,13 @@ void UCommonButtonBase::BindTriggeringInputActionToClick()
 
 void UCommonButtonBase::UnbindTriggeringInputActionToClick()
 {
+	if (CommonUI::IsEnhancedInputSupportEnabled() && TriggeringEnhancedInputAction)
+	{
+		TriggeringBindingHandle.Unregister();
+
+		return;
+	}
+
 	if (TriggeringInputAction.IsNull() || !TriggeredInputAction.IsNull())
 	{
 		return;
@@ -530,6 +545,11 @@ void UCommonButtonBase::UnbindTriggeringInputActionToClick()
 }
 
 void UCommonButtonBase::HandleTriggeringActionCommited(bool& bPassthrough)
+{
+	HandleTriggeringActionCommited();
+}
+
+void UCommonButtonBase::HandleTriggeringActionCommited()
 {
 	// Because this path doesn't go through SButton::Press(), the sound needs to be played from here.
 	FSlateApplication::Get().PlaySound(NormalStyle.PressedSlateSound);
@@ -563,7 +583,7 @@ void UCommonButtonBase::SetIsInteractionEnabled(bool bInIsInteractionEnabled)
 
 		if (bApplyAlphaOnDisable)
 		{
-			FLinearColor ButtonColor = RootButton->ColorAndOpacity;
+			FLinearColor ButtonColor = RootButton->GetColorAndOpacity();
 			ButtonColor.A = 1.f;
 			RootButton->SetColorAndOpacity(ButtonColor);
 		}
@@ -574,7 +594,7 @@ void UCommonButtonBase::SetIsInteractionEnabled(bool bInIsInteractionEnabled)
 
 		if (bApplyAlphaOnDisable)
 		{
-			FLinearColor ButtonColor = RootButton->ColorAndOpacity;
+			FLinearColor ButtonColor = RootButton->GetColorAndOpacity();
 			ButtonColor.A = 0.5f;
 			RootButton->SetColorAndOpacity(ButtonColor);
 		}
@@ -980,6 +1000,26 @@ void UCommonButtonBase::SetTriggeringInputAction(const FDataTableRowHandle & Inp
 	}
 }
 
+void UCommonButtonBase::SetTriggeringEnhancedInputAction(UInputAction* InInputAction)
+{
+	if (CommonUI::IsEnhancedInputSupportEnabled() && TriggeringEnhancedInputAction != InInputAction)
+	{
+		UnbindTriggeringInputActionToClick();
+
+		TriggeringEnhancedInputAction = InInputAction;
+
+		if (!IsDesignTime())
+		{
+			BindTriggeringInputActionToClick();
+		}
+
+		// Update the Input action widget whenever the triggering input action changes
+		UpdateInputActionWidget();
+
+		OnTriggeringEnhancedInputActionChanged(InInputAction);
+	}
+}
+
 bool UCommonButtonBase::GetInputAction(FDataTableRowHandle &InputActionRow) const
 {
 	bool bBothActionsSet = !TriggeringInputAction.IsNull() && !TriggeredInputAction.IsNull();
@@ -1002,6 +1042,11 @@ bool UCommonButtonBase::GetInputAction(FDataTableRowHandle &InputActionRow) cons
 	}
 }
 
+UInputAction* UCommonButtonBase::GetEnhancedInputAction() const
+{
+	return TriggeringEnhancedInputAction;
+}
+
 UMaterialInstanceDynamic* UCommonButtonBase::GetSingleMaterialStyleMID() const
 {
 	return SingleMaterialStyleMID;
@@ -1016,8 +1061,15 @@ void UCommonButtonBase::UpdateInputActionWidget()
 	// Update the input action state of the input action widget contextually based on the current state of the button
 	if (GetGameInstance() && InputActionWidget)
 	{
-		// Prefer visualizing the triggering input action before all else
-		if (!TriggeringInputAction.IsNull())
+		bool bIsEnhancedInputSupportEnabled = CommonUI::IsEnhancedInputSupportEnabled();
+
+		// Prefer visualizing the triggering enhanced input action before all else
+		if (bIsEnhancedInputSupportEnabled && TriggeringEnhancedInputAction)
+		{
+			InputActionWidget->SetEnhancedInputAction(TriggeringEnhancedInputAction);
+		}
+		// Prefer visualizing the triggering input action next
+		else if (!TriggeringInputAction.IsNull())
 		{
 			InputActionWidget->SetInputAction(TriggeringInputAction);
 		}
@@ -1030,14 +1082,35 @@ void UCommonButtonBase::UpdateInputActionWidget()
 		else if (bShouldUseFallbackDefaultInputAction)
 		{
 			FDataTableRowHandle HoverStateHandle;
+			UInputAction* HoverEnhancedInputAction = nullptr;
 			if (IsHovered())
 			{
-				HoverStateHandle = ICommonInputModule::GetSettings().GetDefaultClickAction();
+				if (bIsEnhancedInputSupportEnabled)
+				{
+					HoverEnhancedInputAction = ICommonInputModule::GetSettings().GetEnhancedInputClickAction();
+				}
+				else
+				{
+					HoverStateHandle = ICommonInputModule::GetSettings().GetDefaultClickAction();
+				}
 			}
-			InputActionWidget->SetInputAction(HoverStateHandle);
+
+			if (bIsEnhancedInputSupportEnabled)
+			{
+				InputActionWidget->SetEnhancedInputAction(HoverEnhancedInputAction);
+			}
+			else
+			{
+				InputActionWidget->SetInputAction(HoverStateHandle);
+			}
 		}
 		else
 		{
+			if (bIsEnhancedInputSupportEnabled)
+			{
+				InputActionWidget->SetEnhancedInputAction(nullptr);
+			}
+
 			FDataTableRowHandle EmptyStateHandle;
 			InputActionWidget->SetInputAction(EmptyStateHandle);
 		}
@@ -1542,7 +1615,7 @@ void UCommonButtonBase::DisableButton()
 
 void UCommonButtonBase::SetIsFocusable(bool bInIsFocusable)
 {
-	bIsFocusable = bInIsFocusable;
+	UUserWidget::SetIsFocusable(bInIsFocusable);
 
 	if (RootButton.IsValid())
 	{
@@ -1552,6 +1625,6 @@ void UCommonButtonBase::SetIsFocusable(bool bInIsFocusable)
 
 bool UCommonButtonBase::GetIsFocusable() const
 {
-	return bIsFocusable;
+	return IsFocusable();
 }
 

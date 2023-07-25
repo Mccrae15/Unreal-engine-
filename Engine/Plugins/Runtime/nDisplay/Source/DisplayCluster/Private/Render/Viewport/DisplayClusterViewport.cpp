@@ -5,8 +5,11 @@
 #include "Render/Viewport/DisplayClusterViewportManager.h"
 #include "Render/Viewport/DisplayClusterViewportProxy.h"
 #include "Render/Viewport/DisplayClusterViewportManagerProxy.h"
+#include "Render/Viewport/DisplayClusterViewport_OpenColorIO.h"
+#include "Render/Viewport/DisplayClusterViewportManagerViewExtension.h"
 
 #include "Render/Viewport/Configuration/DisplayClusterViewportConfiguration.h"
+#include "Render/Viewport/LightCard/DisplayClusterViewportLightCardManager.h"
 
 #include "Render/Projection/IDisplayClusterProjectionPolicy.h"
 
@@ -18,11 +21,21 @@
 #include "Render/Viewport/Containers/DisplayClusterViewport_PostRenderSettings.h"
 
 #include "EngineUtils.h"
+#include "SceneManagement.h"
 #include "SceneView.h"
+#include "UnrealClient.h"
 
 #include "DisplayClusterSceneViewExtensions.h"
 
 #include "Misc/DisplayClusterLog.h"
+
+int32 GDisplayClusterMultiGPUEnable = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterMultiGPUEnable(
+	TEXT("DC.MultiGPU"),
+	GDisplayClusterMultiGPUEnable,
+	TEXT("Enable MultiGPU for Display Cluster rendering.  Useful to disable for debugging.  (Default = 1)"),
+	ECVF_Default
+);
 
 ///////////////////////////////////////////////////////////////////////////////////////
 //          FDisplayClusterViewport
@@ -60,7 +73,9 @@ FDisplayClusterViewport::~FDisplayClusterViewport()
 	);
 
 	ViewportProxy.Reset();
+	OpenColorIO.Reset();
 
+	// Handle projection policy EndScene event
 	HandleEndScene();
 
 	// Handle projection policy event
@@ -81,53 +96,90 @@ const FDisplayClusterRenderFrameSettings& FDisplayClusterViewport::GetRenderFram
 	return Owner.GetRenderFrameSettings();
 }
 
-const TArray<FSceneViewExtensionRef> FDisplayClusterViewport::GatherActiveExtensions(FViewport* InViewport) const
+bool FDisplayClusterViewport::IsOpenColorIOEquals(const FDisplayClusterViewport& InViewport) const
 {
-	if (InViewport)
+	bool bEnabledOCIO_1 = OpenColorIO.IsValid();
+	bool bEnabledOCIO_2 = InViewport.OpenColorIO.IsValid();
+
+	if (bEnabledOCIO_1 == bEnabledOCIO_2)
 	{
-		FDisplayClusterSceneViewExtensionContext ViewExtensionContext(InViewport, &Owner, GetId());
-		return GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
-	}
-	else
-	{
-		UWorld* CurrentWorld = Owner.GetCurrentWorld();
-		if (CurrentWorld)
+		if (!bEnabledOCIO_1)
 		{
-			FDisplayClusterSceneViewExtensionContext ViewExtensionContext(CurrentWorld->Scene, &Owner, GetId());
-			return GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
+			// Both OCIO disabled
+			return true;
+		}
+
+		if (OpenColorIO->IsConversionSettingsEqual(InViewport.OpenColorIO->GetConversionSettings()))
+		{
+			return true;
 		}
 	}
 
-	return TArray<FSceneViewExtensionRef>();
+	return false;
 }
 
-FSceneViewExtensionIsActiveFunctor FDisplayClusterViewport::GetSceneViewExtensionIsActiveFunctor() const
+const TArray<FSceneViewExtensionRef> FDisplayClusterViewport::GatherActiveExtensions(FViewport* InViewport) const
 {
-	FSceneViewExtensionIsActiveFunctor IsActiveFunction;
-	IsActiveFunction.IsActiveFunction = [this](const ISceneViewExtension* SceneViewExtension, const FSceneViewExtensionContext& Context)
+	// Use VE from engine for default render and MRQ:
+	switch (RenderSettings.CaptureMode)
 	{
-		if (Context.IsA(FDisplayClusterSceneViewExtensionContext()))
+	case EDisplayClusterViewportCaptureMode::Default:
+	case EDisplayClusterViewportCaptureMode::MoviePipeline:
+		if (InViewport)
 		{
-			const FDisplayClusterSceneViewExtensionContext& DisplayContext = static_cast<const FDisplayClusterSceneViewExtensionContext&>(Context);
-
-			// Find exist viewport by name
-			IDisplayClusterViewport* PublicViewport = DisplayContext.ViewportManager->FindViewport(DisplayContext.ViewportId);
-			if (PublicViewport)
+			FDisplayClusterSceneViewExtensionContext ViewExtensionContext(InViewport, &Owner, GetId());
+			return GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
+		}
+		else
+		{
+			UWorld* CurrentWorld = Owner.GetCurrentWorld();
+			if (CurrentWorld)
 			{
-				FDisplayClusterViewport* Viewport = static_cast<FDisplayClusterViewport*>(PublicViewport);
-
-				if (Viewport->OpenColorIODisplayExtension.IsValid() && Viewport->OpenColorIODisplayExtension.Get() == SceneViewExtension)
-				{
-					// This viewport use this OCIO extension
-					return  TOptional<bool>(true);
-				}
+				FDisplayClusterSceneViewExtensionContext ViewExtensionContext(CurrentWorld->Scene, &Owner, GetId());
+				return GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
 			}
 		}
 
-		return TOptional<bool>(false);
-	};
+		// No extension found.
+		return TArray<FSceneViewExtensionRef>();
+		
+	default:
+		break;
+	}
 
-	return IsActiveFunction;
+	// Get custom VE:
+	TArray<FSceneViewExtensionRef> OutCustomExtensions;
+
+	// Initialize custom extensions:
+	switch (RenderSettings.CaptureMode)
+	{
+	case EDisplayClusterViewportCaptureMode::Chromakey:
+	case EDisplayClusterViewportCaptureMode::Lightcard:
+	{
+		// Chromakey and LightCard use only nDisplay VE for callback purposes (preserve alpha channel, etc).
+		TSharedPtr<FDisplayClusterViewportManagerViewExtension, ESPMode::ThreadSafe> ViewportManagerViewExtension = Owner.GetViewportManagerViewExtension();
+		if (ViewportManagerViewExtension.IsValid())
+		{
+			OutCustomExtensions.Add(ViewportManagerViewExtension->AsShared());
+		}
+	}
+	break;
+
+	default:
+		break;
+	}
+
+	// Sort extensions in order of priority (copied from FSceneViewExtensions::GatherActiveExtensions)
+	struct SortPriority
+	{
+		bool operator () (const FSceneViewExtensionRef& A, const FSceneViewExtensionRef& B) const
+		{
+			return A->GetPriority() > B->GetPriority();
+		}
+	};
+	Sort(OutCustomExtensions.GetData(), OutCustomExtensions.Num(), SortPriority());
+
+	return OutCustomExtensions;
 }
 
 bool FDisplayClusterViewport::HandleStartScene()
@@ -175,14 +227,7 @@ void FDisplayClusterViewport::HandleEndScene()
 void FDisplayClusterViewport::AddReferencedObjects(FReferenceCollector& Collector)
 {
 #if WITH_EDITOR
-	for (FSceneViewStateReference& ViewState : ViewStates)
-	{
-		FSceneViewStateInterface* Ref = ViewState.GetReference();
-		if (Ref)
-		{
-			Ref->AddReferencedObjects(Collector);
-		}
-	}
+	// ViewStates released on rendering thread from viewport proxy object
 #endif
 }
 
@@ -239,12 +284,22 @@ void FDisplayClusterViewport::SetupSceneView(uint32 ContextNum, class UWorld* Wo
 		return;
 	}
 
-	// Setup MGPU features:
+	if (OpenColorIO.IsValid())
+	{
+		OpenColorIO->SetupSceneView(InOutViewFamily, InOutView);
+	}
+
 	if(Contexts[ContextNum].GPUIndex >= 0)
 	{
+		// Use custom GPUIndex for render
 		InOutView.bOverrideGPUMask = true;
-		InOutView.GPUMask = FRHIGPUMask::FromIndex(FMath::Min((uint32)Contexts[ContextNum].GPUIndex, GNumExplicitGPUsForRendering - 1));
-		InOutView.bAllowCrossGPUTransfer = (Contexts[ContextNum].bAllowGPUTransferOptimization == false);
+		InOutView.GPUMask = FRHIGPUMask::FromIndex((uint32)Contexts[ContextNum].GPUIndex);
+	}
+
+	if (Contexts[ContextNum].bOverrideCrossGPUTransfer || !RenderSettings.bEnableCrossGPUTransfer)
+	{
+		// Disable native cross-GPU transfers inside Renderer.
+		InOutView.bAllowCrossGPUTransfer = false;
 	}
 
 	// Disable raytracing for lightcard and chromakey
@@ -253,9 +308,7 @@ void FDisplayClusterViewport::SetupSceneView(uint32 ContextNum, class UWorld* Wo
 	{
 	case EDisplayClusterViewportCaptureMode::Chromakey:
 	case EDisplayClusterViewportCaptureMode::Lightcard:
-
 		InOutView.bAllowRayTracing = false;
-		
 		break;
 
 	default:
@@ -315,11 +368,11 @@ float FDisplayClusterViewport::GetClusterRenderTargetRatioMult(const FDisplayClu
 	float ClusterRenderTargetRatioMult = InFrameSettings.ClusterRenderTargetRatioMult;
 
 	// Support Outer viewport cluster rtt multiplier
-	if ((RenderSettingsICVFX.RuntimeFlags & ViewportRuntime_ICVFXTarget) != 0)
+	if (EnumHasAllFlags(RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Target))
 	{
 		ClusterRenderTargetRatioMult *= InFrameSettings.ClusterICVFXOuterViewportRenderTargetRatioMult;
 	}
-	else if ((RenderSettingsICVFX.RuntimeFlags & ViewportRuntime_ICVFXIncamera) != 0)
+	else if (EnumHasAllFlags(RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::InCamera))
 	{
 		ClusterRenderTargetRatioMult *= InFrameSettings.ClusterICVFXInnerViewportRenderTargetRatioMult;
 	}
@@ -353,12 +406,12 @@ float FDisplayClusterViewport::GetCustomBufferRatio(const FDisplayClusterRenderF
 	// Global multiplier
 	CustomBufferRatio *= InFrameSettings.ClusterBufferRatioMult;
 
-	if ((RenderSettingsICVFX.RuntimeFlags & ViewportRuntime_ICVFXTarget) != 0)
+	if (EnumHasAllFlags(RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Target))
 	{
 		// Outer viewport
 		CustomBufferRatio *= InFrameSettings.ClusterICVFXOuterViewportBufferRatioMult;
 	}
-	else if ((RenderSettingsICVFX.RuntimeFlags & ViewportRuntime_ICVFXIncamera) != 0)
+	else if (EnumHasAllFlags(RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::InCamera))
 	{
 		// Inner Frustum
 		CustomBufferRatio *= InFrameSettings.ClusterICVFXInnerFrustumBufferRatioMult;
@@ -367,18 +420,37 @@ float FDisplayClusterViewport::GetCustomBufferRatio(const FDisplayClusterRenderF
 	return CustomBufferRatio;
 }
 
+void FDisplayClusterViewport::ResetFrameContexts()
+{
+
+#if WITH_EDITOR
+	OutputPreviewTargetableResource.SafeRelease();
+#endif
+
+	// Discard resources that are not used in frame composition
+	RenderTargets.Empty();
+	OutputFrameTargetableResources.Empty();
+	AdditionalFrameTargetableResources.Empty();
+
+	// Release old contexts
+	Contexts.Empty();
+
+	// Free internal resources
+	InputShaderResources.Empty();
+	AdditionalTargetableResources.Empty();
+	MipsShaderResources.Empty();
+}
+
 bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex, const FDisplayClusterRenderFrameSettings& InFrameSettings)
 {
 	check(IsInGameThread());
 
-	uint32 FrameTargetsAmount = 2;
+	const uint32 FrameTargetsAmount = Owner.GetViewPerViewportAmount();
+
 	FIntRect     DesiredFrameTargetRect = RenderSettings.Rect;
 	{
 		switch (InFrameSettings.RenderMode)
 		{
-		case EDisplayClusterRenderFrameMode::Mono:
-			FrameTargetsAmount = 1;
-			break;
 		case EDisplayClusterRenderFrameMode::SideBySide:
 			AdjustRect(DesiredFrameTargetRect, 0.5f, 1.f);
 			break;
@@ -394,8 +466,6 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex
 			// Align each frame to zero
 			DesiredFrameTargetRect = FIntRect(FIntPoint(0, 0), DesiredFrameTargetRect.Size());
 
-			// Mono
-			FrameTargetsAmount = 1;
 			break;
 		}
 		default:
@@ -404,7 +474,7 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex
 	}
 
 	// Special case mono->stereo
-	uint32 ViewportContextAmount = RenderSettings.bForceMono ? 1 : FrameTargetsAmount;
+	const uint32 ViewportContextAmount = RenderSettings.bForceMono ? 1 : FrameTargetsAmount;
 
 #if WITH_EDITOR
 	OutputPreviewTargetableResource.SafeRelease();
@@ -519,10 +589,60 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex
 	}
 
 	bool bDisableInternalResources = false;
-	if (RenderSettings.bSkipRendering || RenderSettings.OverrideViewportId.IsEmpty() == false)
+	if (RenderSettings.bSkipRendering)
 	{
 		bDisableInternalResources = true;
 		bDisableRender = true;
+	}
+
+	if (RenderSettings.IsViewportOverrided())
+	{
+		switch (RenderSettings.ViewportOverrideMode)
+		{
+		case EDisplayClusterViewportOverrideMode::InernalRTT:
+			bDisableRender = true;
+			break;
+
+		case EDisplayClusterViewportOverrideMode::All:
+			bDisableRender = true;
+			bDisableInternalResources = true;
+			break;
+
+		default:
+			break;
+		}
+	}
+
+	// UV LightCard viewport use unique whole-cluster texture from LC manager
+	if (EnumHasAllFlags(RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::UVLightcard))
+	{
+		// Use external texture from LightCardManager instead of rendering
+		bDisableRender = true;
+
+		// Use the UVLightCard viewport only when this type of lightcards has been defined
+		bool bUseUVLightCardViewport = false;
+
+		TSharedPtr<FDisplayClusterViewportLightCardManager, ESPMode::ThreadSafe> LightCardManager = Owner.GetLightCardManager();
+		if (LightCardManager.IsValid() && LightCardManager->IsUVLightCardEnabled())
+		{
+			// Custom viewport size from LC Manager
+			ContextSize = LightCardManager->GetUVLightCardResourceSize();
+
+			// Size must be not null
+			if (ContextSize.GetMin() > 1)
+			{
+				FrameTargetRect = RenderTargetRect = FIntRect(FIntPoint(0, 0), ContextSize);
+
+				// Allow to use this viewport
+				bUseUVLightCardViewport = true;
+			}
+		}
+
+		if(!bUseUVLightCardViewport)
+		{
+			// do not use UV LightCard viewport
+			return false;
+		}
 	}
 
 	//Add new contexts
@@ -533,22 +653,23 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex
 
 		FDisplayClusterViewport_Context Context(ContextIt, StereoscopicPass, StereoViewIndex);
 
-		int32 ContextGPUIndex = (ContextIt > 0 && RenderSettings.StereoGPUIndex >= 0) ? RenderSettings.StereoGPUIndex : RenderSettings.GPUIndex;
-		Context.GPUIndex = ContextGPUIndex;
+		Context.GPUIndex = INDEX_NONE;
 
-
-		if (InFrameSettings.bIsRenderingInEditor)
+		// The nDisplay can use its own cross-GPU transfer
+		if (InFrameSettings.CrossGPUTransfer.bEnable)
 		{
-			// Disable MultiGPU feature
-			Context.GPUIndex = INDEX_NONE;
+			Context.bOverrideCrossGPUTransfer = true;
+		}
 
-			if (InFrameSettings.bAllowMultiGPURenderingInEditor)
+		const int32 MaxExplicitGPUIndex = GDisplayClusterMultiGPUEnable ? GNumExplicitGPUsForRendering - 1 : 0;
+
+		if (MaxExplicitGPUIndex > 0)
+		{
+			if (InFrameSettings.bIsRenderingInEditor)
 			{
 				// Experimental: allow mGPU for preview rendering:
-				if (GNumExplicitGPUsForRendering > 1 && bDisableRender == false)
+				if (InFrameSettings.bAllowMultiGPURenderingInEditor && !bDisableRender)
 				{
-					int32 MaxExplicitGPUIndex = GNumExplicitGPUsForRendering - 1;
-
 					int32 MinGPUIndex = FMath::Min(InFrameSettings.PreviewMinGPUIndex, MaxExplicitGPUIndex);
 					int32 MaxGPUIndex = FMath::Min(InFrameSettings.PreviewMaxGPUIndex, MaxExplicitGPUIndex);
 
@@ -559,35 +680,13 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex
 					{
 						PreviewGPUIndex = MinGPUIndex;
 					}
-
-					Context.bAllowGPUTransferOptimization = true;
-					Context.bEnabledGPUTransferLockSteps = false;
 				}
 			}
-		}
-		else
-		{
-			// Control mGPU:
-			switch (InFrameSettings.MultiGPUMode)
+			else
 			{
-			case EDisplayClusterMultiGPUMode::None:
-				Context.bAllowGPUTransferOptimization = false;
-				Context.GPUIndex = INDEX_NONE;
-				break;
-
-			case EDisplayClusterMultiGPUMode::Optimized_EnabledLockSteps:
-				Context.bAllowGPUTransferOptimization = true;
-				Context.bEnabledGPUTransferLockSteps = true;
-				break;
-
-			case EDisplayClusterMultiGPUMode::Optimized_DisabledLockSteps:
-				Context.bAllowGPUTransferOptimization = true;
-				Context.bEnabledGPUTransferLockSteps = false;
-				break;
-
-			default:
-				Context.bAllowGPUTransferOptimization = false;
-				break;
+				// Set custom GPU index for this view
+				const int32 CustomMultiGPUIndex = (ContextIt > 0 && RenderSettings.StereoGPUIndex >= 0) ? RenderSettings.StereoGPUIndex : RenderSettings.GPUIndex;
+				Context.GPUIndex = FMath::Min(CustomMultiGPUIndex, MaxExplicitGPUIndex);
 			}
 		}
 
@@ -640,4 +739,26 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex
 	}
 
 	return true;
+}
+
+// Currently, some data like EngineShowFlags and EngineGamma get updated on PostRenderViewFamily.
+// Since the viewports that have media input assigned never gets rendered in normal way, the PostRenderViewFamily
+// callback never gets called, therefore the data mentioned above never gets updated. This workaround initializes
+// those settings for all viewports. The viewports with no media input assigned will override the data
+// in PostRenderViewFamily like it was previously so nothing should be broken.
+void FDisplayClusterViewport::UpdateMediaDependencies(FViewport* InViewport)
+{
+	if (InViewport && InViewport->GetClient())
+	{
+		if (const FEngineShowFlags* const EngineShowFlags = InViewport->GetClient()->GetEngineShowFlags())
+		{
+			const float DisplayGamma = GEngine ? GEngine->DisplayGamma : 2.2f;
+
+			for (FDisplayClusterViewport_Context& Context : Contexts)
+			{
+				Context.RenderThreadData.EngineDisplayGamma = DisplayGamma;
+				Context.RenderThreadData.EngineShowFlags = *EngineShowFlags;
+			}
+		}
+	}
 }

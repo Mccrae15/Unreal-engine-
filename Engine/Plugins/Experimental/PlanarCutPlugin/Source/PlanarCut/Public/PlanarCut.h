@@ -1,15 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
-#include "CoreMinimal.h"
 
-#include "Math/Plane.h"
 
-#include "Voronoi/Voronoi.h"
 #include "GeometryCollection/GeometryCollection.h"
-#include "MeshDescription.h"
 #include "DynamicMesh/DynamicMesh3.h"
 
+class FVoronoiDiagram;
+namespace GeometryCollection::Facades { class FCollectionMeshFacade; }
+struct FMeshDescription;
+
 class FProgressCancel;
+
+// Offsets to randomize where Perlin noise is sampled for each dimension of a noise vector
+struct FNoiseOffsets
+{
+	FNoiseOffsets(FRandomStream& RandomStream) 
+		: X(RandomStream.VRand() * RandomOffsetScale), Y(RandomStream.VRand() * RandomOffsetScale), Z(RandomStream.VRand() * RandomOffsetScale)
+	{
+	}
+
+	FNoiseOffsets() {}
+
+	void SetOffsets(FRandomStream& RandomStream)
+	{
+		X = RandomStream.VRand() * RandomOffsetScale;
+		Y = RandomStream.VRand() * RandomOffsetScale;
+		Z = RandomStream.VRand() * RandomOffsetScale;
+	}
+
+	FVector X, Y, Z;
+private:
+	// Offset scale chosen to keep reasonably small offsets while still de-correlating the noise in each dimension.
+	static constexpr double RandomOffsetScale = 100.0;
+};
 
 struct PLANARCUT_API FNoiseSettings
 {
@@ -19,6 +42,28 @@ struct PLANARCUT_API FNoiseSettings
 	float PointSpacing = 1;
 	float Lacunarity = 2;
 	float Persistence = .5;
+
+	FVector NoiseVector(const FVector& Pos, const FNoiseOffsets& Offsets) const
+	{
+		FVector Base = Pos * Frequency;
+		return FVector(
+			OctaveNoise(Base + Offsets.X),
+			OctaveNoise(Base + Offsets.Y),
+			OctaveNoise(Base + Offsets.Z)
+		) * Amplitude;
+	}
+
+	float OctaveNoise(const FVector& V) const
+	{
+		float NoiseValue = 0;
+		float FreqScale = 1;
+		float AmpScale = 1;
+		for (int32 Octave = 0; Octave < Octaves; Octave++, FreqScale *= Lacunarity, AmpScale *= Persistence)
+		{
+			NoiseValue += FMath::PerlinNoise3D(V * FreqScale) * AmpScale;
+		}
+		return NoiseValue;
+	}
 };
 
 // auxiliary structure for FPlanarCells to carry material info
@@ -36,7 +81,7 @@ struct PLANARCUT_API FInternalSurfaceMaterials
 	 * @param Collection	Reference collection to use for setting UV scale
 	 * @param GeometryIdx	Reference geometry inside collection; if -1, use all geometries in collection
 	 */
-	void SetUVScaleFromCollection(const FGeometryCollectionMeshFacade& CollectionMesh, int32 GeometryIdx = -1);
+	void SetUVScaleFromCollection(const GeometryCollection::Facades::FCollectionMeshFacade& CollectionMesh, int32 GeometryIdx = -1);
 
 	
 	int32 GetDefaultMaterialIDForGeometry(const FGeometryCollection& Collection, int32 GeometryIdx = -1) const;
@@ -63,6 +108,9 @@ struct PLANARCUT_API FPlanarCells
 	TArray<FVector> PlaneBoundaryVertices;
 
 	FInternalSurfaceMaterials InternalSurfaceMaterials;
+
+	// Discards cells from the diagram, used to support visualization of a subset of cells
+	void DiscardCells(TFunctionRef<bool(int32)> KeepFunc, bool bKeepNeighbors);
 
 	/**
 	 * @return true if this is a single, unbounded cutting plane
@@ -100,7 +148,7 @@ struct PLANARCUT_API FPlanarCells
 			
 			for (int32 VIdx : Bdry)
 			{
-				float SD = P.PlaneDot(PlaneBoundaryVertices[VIdx]);
+				const double SD = P.PlaneDot(PlaneBoundaryVertices[VIdx]);
 				if (FMath::Abs(SD) > 1e-4)
 				{
 					return false; // vertices should be on plane!
@@ -110,7 +158,7 @@ struct PLANARCUT_API FPlanarCells
 			{
 				return false;
 			}
-			float AngleMeasure = (NormalDir ^ N).SizeSquared();
+			const double AngleMeasure = (NormalDir ^ N).SizeSquared();
 			if (AngleMeasure > 1e-3) // vectors aren't directionally aligned?
 			{
 				return false;
@@ -166,6 +214,31 @@ int32 PLANARCUT_API CutWithPlanarCells(
 	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
 	bool bIncludeOutsideCellInOutput = true,
 	bool bSetDefaultInternalMaterialsFromCollection = true,
+	FProgressCancel* Progress = nullptr,
+	FVector CellsOrigin = FVector::ZeroVector
+);
+
+/**
+ * Generate cutting mesh surfaces as a single mesh
+ * Useful for creating a preview of the cut surface.
+ * 
+ * @param Cells				Defines the cutting planes and division of space
+ * @param Grout				Separation to leave between cutting cells
+ * @param RandomSeed				Seed to be used for random noise displacement
+ * @param OutCuttingMeshes			Dynamic mesh representing the preview surface
+ * @param FilterCellsFunc			Filter which cells should be included in the preview
+ * @param TransformCollection		Optional transform that would be applied to the to-cut surface; if unset, defaults to Identity
+ * @param Progress						Optionally tracks progress and supports early-cancel
+ * @param CellsOrigin					Optionally provide a local origin of the cutting Cells
+ */
+void PLANARCUT_API CreateCuttingSurfacePreview(
+	const FPlanarCells& Cells,
+	const FBox& Bounds,
+	double Grout,
+	int32 RandomSeed,
+	UE::Geometry::FDynamicMesh3& OutCuttingMeshes,
+	TFunctionRef<bool(int)> FilterCellsFunc,
+	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
 	FProgressCancel* Progress = nullptr,
 	FVector CellsOrigin = FVector::ZeroVector
 );
@@ -435,3 +508,10 @@ void PLANARCUT_API ConvertToMeshDescription(
 	const TArrayView<const int32>& TransformIndices
 );
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "GeometryCollection/Facades/CollectionMeshFacade.h"
+#include "MeshDescription.h"
+#include "Voronoi/Voronoi.h"
+#endif

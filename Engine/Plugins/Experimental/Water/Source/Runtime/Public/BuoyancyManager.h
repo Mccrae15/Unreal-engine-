@@ -2,13 +2,15 @@
 
 #pragma once
 
-#include "GameFramework/Actor.h"
-#include "Chaos/SimCallbackInput.h"
+#include "BuoyancyTypes.h" // IWYU pragma: keep
 #include "Chaos/SimCallbackObject.h"
-#include "WaterBodyTypes.h"
-#include "BuoyancyTypes.h"
 #include "Chaos/GeometryParticlesfwd.h"
 #include "BuoyancyManager.generated.h"
+
+namespace EEndPlayReason { enum Type : int; }
+struct FBuoyancyComponentAsyncAux;
+struct FBuoyancyManagerAsyncInput;
+struct FBuoyancyManagerAsyncOutput;
 
 class UBuoyancyComponent;
 class AWaterBody;
@@ -72,3 +74,7 @@ private:
 	FDelegateHandle OnDestroyDelegateHandle;
 	FDelegateHandle OnPhysScenePreTickHandle;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "WaterBodyTypes.h"
+#endif

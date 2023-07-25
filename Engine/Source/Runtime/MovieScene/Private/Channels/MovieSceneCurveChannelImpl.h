@@ -13,6 +13,12 @@
 #include "MovieSceneFwd.h"
 
 
+namespace UE::MovieScene::Interpolation
+{
+	struct FCachedInterpolation;
+}
+
+
 /** Utility class for curve channels */
 template<typename ChannelType>
 struct MOVIESCENE_API TMovieSceneCurveChannelImpl
@@ -22,11 +28,29 @@ struct MOVIESCENE_API TMovieSceneCurveChannelImpl
 	/** The type of curve values (float or double) */
 	using CurveValueType = typename ChannelType::CurveValueType;
 
+	/** Structure used to store the result of UE::MovieScene::EvaluateTime for a given channel/key distribution*/
+	struct FTimeEvaluationCache
+	{
+		double InterpValue = 0.0;
+		int32 Index1 = INDEX_NONE, Index2 = INDEX_NONE;
+		int32 CachedNumFrames = INDEX_NONE;
+		FFrameTime CacheFrameTime;
+	};
 
 	/** Read-only methods */
 
 	/** Evaluate this channel with the frame resolution */
 	static bool Evaluate(const ChannelType* InChannel, FFrameTime InTime, CurveValueType& OutValue);
+
+	/**
+	 * Evaluate this channel by returning a cachable interpolation structure
+	 */
+	static UE::MovieScene::Interpolation::FCachedInterpolation GetInterpolationForTime(const ChannelType* InChannel, FFrameTime InTime);
+	static UE::MovieScene::Interpolation::FCachedInterpolation GetInterpolationForTime(const ChannelType* InChannel, FTimeEvaluationCache* InOutEvaluationCache, FFrameTime InTime);
+
+	/** Evaluate this channel at provided FrameTime, using or populating cached time to frame-number(s) calculation */
+	static bool EvaluateWithCache(const ChannelType* InChannel, FTimeEvaluationCache* InOutEvaluationCache, FFrameTime InTime, CurveValueType& OutValue);
+	
 	 /*
 	  * Populate the specified array with times and values that represent the smooth interpolation of 
 	  * the given channel across the specified range
@@ -70,12 +94,24 @@ struct MOVIESCENE_API TMovieSceneCurveChannelImpl
 	/** Add a new key to a channel at a given time */
 	static FKeyHandle AddKeyToChannel(ChannelType* InChannel, FFrameNumber InFrameNumber, float InValue, EMovieSceneKeyInterpolation Interpolation);
 
+	/** Get Tangent Value at the specified time with specified delta in seconds*/
+	static double GetTangentValue(ChannelType* InChannel, const FFrameNumber InFrameTime, const float InValue, double InDeltaTime);
+
+	/**
+	 * Get the interpolation mode to use at a specified time
+	 *
+	 * @param InChannel          The channel to find the interpolation mode
+	 * @param InTime             The time we are looking for an interpolation mode
+	 * @param DefaultInterpolationMode Current default interpolation mode, may be returned as the current mode
+	 * @return Interpolation mode to use at that frame
+	 */
+	static EMovieSceneKeyInterpolation GetInterpolationMode(ChannelType* InChannel, const FFrameNumber& InTime, EMovieSceneKeyInterpolation DefaultInterpolationMode);
+	
 	/** Dilate channel data.*/
 	static void Dilate(ChannelType* InChannel, FFrameNumber Origin, float DilationFactor);
 
 	/** Assigns a given value on a key */
 	static void AssignValue(ChannelType* InChannel, FKeyHandle InKeyHandle, typename ChannelType::CurveValueType InValue);
-
 
 	/** Serialization methods */
 
@@ -115,6 +151,15 @@ private:
 	static bool EvaluateExtrapolation(const ChannelType* InChannel, FFrameTime InTime, CurveValueType& OutValue);
 
 	/**
+	 * Evaluate this channel's extrapolation by populating a cachable structure. Assumes more than 1 key is present.
+	 *
+	 * @param InTime     The time to evaluate at
+	 * @param OutValue   A value to receive the result
+	 * @return true if the time was evaluated with extrapolation, false otherwise
+	 */
+	static bool CacheExtrapolation(const ChannelType* InChannel, FFrameTime InTime, UE::MovieScene::Interpolation::FCachedInterpolation& OutValue);
+
+	/**
 	 * Adds median points between each of the supplied points if their evaluated value is significantly different than the linear interpolation of those points
 	 *
 	 * @param TickResolution        The tick resolution with which to interpret this channel's times
@@ -123,6 +168,9 @@ private:
 	 * @param InOutPoints           An array to populate with the evaluated points
 	 */
 	static void RefineCurvePoints(const ChannelType* InChannel, FFrameRate TickResolution, double TimeThreshold, CurveValueType ValueThreshold, TArray<TTuple<double, double>>& InOutPoints);
+
+	static bool EvaluateLegacy(const ChannelType* InChannel, FTimeEvaluationCache* InOutEvaluationCache, FFrameTime InTime, CurveValueType& OutValue);
+	static bool EvaluateCached(const ChannelType* InChannel, FTimeEvaluationCache* InOutEvaluationCache, FFrameTime InTime, CurveValueType& OutValue);
 };
 
 template<typename ChannelType>
@@ -161,4 +209,5 @@ void TMovieSceneCurveChannelImpl<ChannelType>::CopyChannel(const OtherChannelTyp
 	OutDestinationChannel->bShowCurve = InSourceChannel->GetShowCurve();
 #endif
 }
+
 

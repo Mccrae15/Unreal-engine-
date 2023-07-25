@@ -1,13 +1,15 @@
 # Copyright Epic Games, Inc. All Rights Reserved.
 
+from __future__ import annotations
+
 import datetime
 import logging
 import os
 import threading
 import time
 import re
-import shutil
-from typing import List, Optional, Set, Union
+import sys
+from typing import Callable, List, Optional, Set, Union
 
 from pathlib import Path
 
@@ -21,21 +23,24 @@ from PySide2.QtWidgets import QWidgetAction, QMenu
 from switchboard import config
 from switchboard import config_osc as osc
 from switchboard import p4_utils
+from switchboard import ugs_utils
 from switchboard import recording
 from switchboard import resources  # noqa
 from switchboard import switchboard_application
 from switchboard import switchboard_utils
 from switchboard import switchboard_widgets as sb_widgets
 from switchboard.add_config_dialog import AddConfigDialog
-from switchboard.config import CONFIG, DEFAULT_MAP_TEXT, SETTINGS
+from switchboard.config import CONFIG, DEFAULT_MAP_TEXT, ENABLE_UGS_SUPPORT, SETTINGS, EngineSyncMethod
 from switchboard.device_list_widget import DeviceListWidget, DeviceWidgetHeader
-from switchboard.devices.device_base import DeviceStatus
+from switchboard.devices.device_base import Device, DeviceStatus
 from switchboard.devices.device_manager import DeviceManager
 from switchboard.settings_dialog import SettingsDialog
 from switchboard.switchboard_logging import ConsoleStream, LOGGER
 from switchboard.tools.insights_launcher import InsightsLauncher
 from switchboard.tools.listener_launcher import ListenerLauncher
+from switchboard.tools.sblhelper_launcher import SBLHelperLauncher
 from switchboard.devices.unreal.plugin_unreal import DeviceUnreal
+from switchboard.devices.unreal.redeploy_dialog import RedeployListenerDialog
 from switchboard.util import collect_logs
 
 ENGINE_PATH = "../../../../.."
@@ -153,7 +158,7 @@ class DeviceAdditionalSettingsUI(QtCore.QObject):
         self.settings_menu = QtWidgets.QMenu(parent)
         self._generate_settings_menu_items(self.settings_menu)
         self._button.setMenu(self.settings_menu)
-        self._button.setStyleSheet("QPushButton::menu-indicator{image:none;}");
+        self._button.setStyleSheet("QPushButton::menu-indicator{image:none;}")
         self._button.setDisabled(False)
 
     def make_button(self, parent):
@@ -162,31 +167,69 @@ class DeviceAdditionalSettingsUI(QtCore.QObject):
         """
         button = sb_widgets.ControlQPushButton.create(
                 icon_size=QtCore.QSize(21, 21),
-                tool_tip=f'Change device settings',
+                tool_tip='Change device settings',
                 hover_focus=False,
                 name='settings')
 
-        self.assign_button(button,parent)
+        self.assign_button(button, parent)
         return button
 
-class PeriodicRunnable(QtCore.QRunnable):
-    ''' Performs periodic tasks on the switchboard dialog. '''
 
-    def __init__(self, switchboard):
+class ProcessMonitor(QtCore.QObject):
+    ''' Offloads potentially expensive periodic checks to another thread. '''
+
+    mu_server_status_changed = QtCore.Signal(object)
+
+    class MuServerStatus:
+        def __init__(self):
+            self.pid: Optional[int] = None
+            self.endpoint: Optional[str] = None
+            self.name: Optional[str] = None
+
+        def __eq__(self, other):
+            if isinstance(other, ProcessMonitor.MuServerStatus):
+                return ((self.pid == other.pid) and
+                        (self.endpoint == other.endpoint) and
+                        (self.name == other.name))
+            else:
+                return False
+
+    def __init__(self, dialog: SwitchboardDialog):
         super().__init__()
-        self._switchboard = switchboard
+
+        self._dialog = dialog
         self._exiting = False
+        self._last_mu_status = ProcessMonitor.MuServerStatus()
+
+        self._thread = threading.Thread(target=self._run)
+        self._thread.start()
 
     def exit(self):
         self._exiting = True
+        self._thread.join()
 
-    def run(self):
+    def _run(self):
         while not self._exiting:
-            self._switchboard.update_muserver_button()
-            self._switchboard.update_locallistener_menuitem()
-            self._switchboard.update_insights_menuitem()
+            self._poll_multiuser_status()
+            self._dialog.update_locallistener_menuitem()
+            self._dialog.update_localsblhelper_menuitem()
+            self._dialog.update_insights_menuitem()
 
             time.sleep(1.0)
+
+    def _poll_multiuser_status(self):
+        new_status = ProcessMonitor.MuServerStatus()
+
+        server = switchboard_application.get_multi_user_server_instance()
+        if server.is_running():
+            new_status.pid = server._running_pid
+            new_status.endpoint = server.running_endpoint()
+            new_status.name = server.running_server_name()
+
+        if new_status != self._last_mu_status:
+            self._last_mu_status = new_status
+            self.mu_server_status_changed.emit(new_status)
+
 
 class SwitchboardDialog(QtCore.QObject):
 
@@ -257,7 +300,6 @@ class SwitchboardDialog(QtCore.QObject):
         self._multiuser_session_name = None
         self._is_recording = False
         self._description = 'description'
-        self._started_mu_server = False
 
         # Recording Manager
         self.recording_manager = recording.RecordingManager(CONFIG.SWITCHBOARD_DIR)
@@ -270,12 +312,18 @@ class SwitchboardDialog(QtCore.QObject):
         # Convenience UnrealInsights launcher
         self.init_insights_launcher()
 
-        # Convenience local Switchboard lister launcher
+        # Convenience local Switchboard Listener launcher
         self.init_listener_launcher()
+
+        # Convenience local Switchboard Listener Helper launcher
+        self.init_sblhelper_launcher()
 
         # Convenience Open Logs Folder menu item
         self.register_open_logs_menuitem()
         self.register_zip_logs_menuitem()
+
+        # Redeploy menu item
+        self.register_redeploy_menuitem()
 
         # Transport Manager
         #self.transport_queue = recording.TransportQueue(CONFIG.SWITCHBOARD_DIR)
@@ -475,59 +523,58 @@ class SwitchboardDialog(QtCore.QObject):
             SETTINGS.save()
             self.osc_server.launch(SETTINGS.ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value())
 
-    def warn_user_about_muserver(self):
-        if self.have_warned_about_muserver:
-            return
-
-        ServerInstance = switchboard_application.get_multi_user_server_instance()
-        expected_server = ServerInstance.server_name()
-        expected_endpoint = ServerInstance.endpoint_address()
-        actual_server = ServerInstance.running_server_name()
-        actual_endpoint = ServerInstance.running_endpoint()
-        LOGGER.warning(f'The running Multi-user server does not match Switchboard configuration. Expected "{expected_server}" with "{expected_endpoint}" but found "{actual_server}" with "{actual_endpoint}". Please restart the multi-user server.')
-
-        self.have_warned_about_muserver = True
-
-    def get_muserver_label(self, is_running, is_valid):
-        ServerInstance = switchboard_application.get_multi_user_server_instance()
-        if is_running and is_valid:
-            actual_server = ServerInstance.running_server_name()
-            actual_endpoint = ServerInstance.running_endpoint()
-            return f'Multi-user Server ({actual_server} {actual_endpoint})'
-        elif is_running and not is_valid:
-            return 'Multi-user Server (WARNING: RUNNING SERVER DOES NOT MATCH CONFIGURATION)'
-        else:
-            return 'Multi-user Server'
-
-    def update_muserver_button(self):
+    def _on_mu_server_status_changed(
+            self,
+            new_status: ProcessMonitor.MuServerStatus
+    ):
         '''
         Update the status of the Multi-user start/stop button to reflect the status of Multi-user server.
         '''
-        ServerInstance = switchboard_application.get_multi_user_server_instance()
+        server = switchboard_application.get_multi_user_server_instance()
+        expected_name = server.configured_server_name()
+        expected_endpoint = server.configured_endpoint()
+
+        is_running = new_status.pid is not None
+        actual_name = new_status.name
+        actual_endpoint = new_status.endpoint
+
+        is_valid = (is_running and (actual_endpoint == expected_endpoint) and
+                    (actual_name == expected_name))
+
         is_checked = self.window.muserver_start_stop_button.isChecked()
-        is_running = ServerInstance.is_running()
-        is_valid =  ServerInstance.validate_process()
-        if  (is_running or self._started_mu_server) and not is_checked:
-            self.window.muserver_start_stop_button.setChecked( True )
+        if is_running and not is_checked:
+            self.window.muserver_start_stop_button.setChecked(True)
         elif not is_running and is_checked:
-            self.window.muserver_start_stop_button.setChecked( False )
+            self.window.muserver_start_stop_button.setChecked(False)
             self.have_warned_about_muserver = False
 
-        label = self.get_muserver_label(is_running or self._started_mu_server,is_valid)
-        self.window.muserver_label.setText(label)
-        if is_running and not is_valid:
-            self.warn_user_about_muserver()
+        # Re-enable the button after a pending launch completes
+        self.window.muserver_start_stop_button.setEnabled(True)
 
-        if is_running and self._started_mu_server:
-            # Server has finished starting so reset our start flag.
-            self._started_mu_server = False
+        label = 'Multi-user Server'
+        if is_running:
+            label += f' ({new_status.name} {new_status.endpoint})'
+            if not is_valid:
+                label += ' (WARNING: RUNNING SERVER DOES NOT MATCH CONFIGURATION)'
+                if not self.have_warned_about_muserver:
+                    LOGGER.warning(
+                        'The running Multi-user server does not match '
+                        'Switchboard configuration. Expected '
+                        f'"{expected_name}" with "{expected_endpoint}" but '
+                        f'found "{actual_name}" with "{actual_endpoint}". '
+                        'Please restart the multi-user server.')
+
+                    self.have_warned_about_muserver = True
+
+        self.window.muserver_label.setText(label)
 
     def setup_periodic_tasks_thread(self):
         '''
         Sets up a thread for performing maintenance tasks
         '''
-        self._periodic_runner = PeriodicRunnable(self)
-        QtCore.QThreadPool.globalInstance().start(self._periodic_runner)
+        self._periodic_runner = ProcessMonitor(self)
+        self._periodic_runner.mu_server_status_changed.connect(
+            self._on_mu_server_status_changed)
 
     def update_locallistener_menuitem(self):
         ''' 
@@ -535,6 +582,13 @@ class SwitchboardDialog(QtCore.QObject):
         it is already running or not.
         '''
         self.locallistener_launcher_menuitem.setEnabled(not self.listener_launcher.is_running())
+
+    def update_localsblhelper_menuitem(self):
+        ''' 
+        Enables/disables the local listener helper launch menu item depending on whether 
+        it is already running or not.
+        '''
+        self.localsblhelper_launcher_menuitem.setEnabled(not self.sblhelper_launcher.is_running())
 
     def update_insights_menuitem(self):
         ''' 
@@ -550,12 +604,11 @@ class SwitchboardDialog(QtCore.QObject):
         '''
         ServerInstance = switchboard_application.get_multi_user_server_instance()
         if ServerInstance.is_running():
-            ServerInstance.terminate(bypolling=True)
-            self._started_mu_server = False
+            ServerInstance.process.kill()
         else:
-            self._started_mu_server = True
             ServerInstance.launch()
-        self.update_muserver_button()
+            # This will be re-enabled when the button transitions to stop/close
+            self.window.muserver_start_stop_button.setEnabled(False)
 
     def init_insights_launcher(self):
         ''' Initializes insights launcher '''
@@ -574,7 +627,7 @@ class SwitchboardDialog(QtCore.QObject):
         self.insights_launcher_menuitem = action
 
     def init_listener_launcher(self):
-        ''' Initializes switcboard listener launcher '''
+        ''' Initializes switchboard listener launcher '''
         self.listener_launcher = ListenerLauncher()
 
         def launch_listener():
@@ -587,6 +640,25 @@ class SwitchboardDialog(QtCore.QObject):
         action.triggered.connect(launch_listener)
 
         self.locallistener_launcher_menuitem = action
+
+    def init_sblhelper_launcher(self):
+        ''' Initializes switchboard listener helper launcher '''
+        self.sblhelper_launcher = SBLHelperLauncher()
+
+        def launch_sblhelper():
+            try:
+                self.sblhelper_launcher.launch()
+            except Exception as e:
+                LOGGER.error(e)
+
+        # Gpu Clocker is available in select platforms
+        if sys.platform in ('win32','linux'):
+            action = self.register_tools_menu_action("&Gpu Clocker")
+            action.triggered.connect(launch_sblhelper)
+        else:
+            action = QWidgetAction(None) # dummy action
+
+        self.localsblhelper_launcher_menuitem = action
 
     def register_open_logs_menuitem(self):
         ''' Registers convenience "Open Logs Folder" menu item '''
@@ -603,6 +675,15 @@ class SwitchboardDialog(QtCore.QObject):
                 collect_logs.open_logs_folder()
         action = self.register_tools_menu_action("&Zip Logs")
         action.triggered.connect(save_logs)
+
+    def register_redeploy_menuitem(self):
+        def show_redeploy_dialog():
+            dlg = RedeployListenerDialog(DeviceUnreal.active_unreal_devices,
+                                         DeviceUnreal.listener_watcher)
+            dlg.exec()
+
+        action = self.register_tools_menu_action("Listener &Redeployer")
+        action.triggered.connect(show_redeploy_dialog)
 
     def add_tools_menu(self):
         ''' Adds tools menu to menu bar and populates built-in items '''
@@ -660,7 +741,7 @@ class SwitchboardDialog(QtCore.QObject):
     def set_config_hooks(self):
         CONFIG.P4_PROJECT_PATH.signal_setting_changed.connect(lambda: self.p4_refresh_project_cl())
         CONFIG.P4_ENGINE_PATH.signal_setting_changed.connect(lambda: self.p4_refresh_engine_cl())
-        CONFIG.BUILD_ENGINE.signal_setting_changed.connect(lambda: self.p4_refresh_engine_cl())
+        CONFIG.ENGINE_SYNC_METHOD.signal_setting_changed.connect(lambda: self.p4_refresh_engine_cl())
         CONFIG.P4_ENABLED.signal_setting_changed.connect(lambda _, enabled: self.toggle_p4_controls(enabled))
         CONFIG.MAPS_PATH.signal_setting_changed.connect(lambda: self.refresh_levels())
         CONFIG.MAPS_FILTER.signal_setting_changed.connect(lambda: self.refresh_levels())
@@ -1050,28 +1131,46 @@ class SwitchboardDialog(QtCore.QObject):
     def sync_all_button_clicked(self):
         if not CONFIG.P4_ENABLED.get_value():
             return
-        device_widgets = self.device_list_widget.device_widgets()
 
-        for device_widget in device_widgets:
-            if device_widget.can_sync():
-                device_widget.sync_button_clicked()
+        self._sync_build_all(do_sync=True, do_build=False)
 
     def build_all_button_clicked(self):
-        device_widgets = self.device_list_widget.device_widgets()
-
-        for device_widget in device_widgets:
-            if device_widget.can_build():
-                device_widget.build_button_clicked()
+        self._sync_build_all(do_sync=False, do_build=True)
 
     def sync_and_build_all_button_clicked(self):
         if not CONFIG.P4_ENABLED.get_value():
             return
-        device_widgets = self.device_list_widget.device_widgets()
+        
+        self._sync_build_all(do_sync=True, do_build=True)
 
-        for device_widget in device_widgets:
-            if device_widget.can_sync() and device_widget.can_build():
-                device_widget.sync_button_clicked()
-                device_widget.build_button_clicked()
+    def _sync_build_all(self, *, do_sync: bool, do_build: bool):
+        actions_str = ' and '.join(filter(
+            None, ['sync' if do_sync else '', 'build' if do_build else '']))
+
+        workspace_to_device_map: dict[str, Device] = {}
+
+        for device in self.device_list_widget.devices():
+            can_sync = device.widget.can_sync()
+            can_build = device.widget.can_build()
+
+            if (do_sync and not can_sync) or (do_build and not can_build):
+                continue
+
+            workspace = CONFIG.SOURCE_CONTROL_WORKSPACE.get_value(
+                device.name).casefold()
+            if existing_device := workspace_to_device_map.get(workspace):
+                LOGGER.info(f'Skipping {actions_str} for {device.name} '
+                            f'because {existing_device.name} is already '
+                            'queued using the same workspace')
+                continue
+
+            workspace_to_device_map[workspace] = device
+
+            if do_sync:
+                device.widget.sync_button_clicked()
+
+            if do_build:
+                device.widget.build_button_clicked()
 
     def refresh_project_cl_button_clicked(self):
         self.p4_refresh_project_cl()
@@ -1762,9 +1861,23 @@ class SwitchboardDialog(QtCore.QObject):
     def p4_refresh_project_cl(self):
         if not CONFIG.P4_ENABLED.get_value():
             return
-        LOGGER.info("Refreshing p4 project changelists")
-        working_dir = os.path.dirname(CONFIG.UPROJECT_PATH.get_value())
-        changelists = p4_utils.p4_latest_changelist(CONFIG.P4_PROJECT_PATH.get_value(), working_dir)
+
+        sync_method = CONFIG.ENGINE_SYNC_METHOD.get_value()
+
+        changelists = None
+        # If we're syncing 'Precompiled Binaries', then that implies that we should be using UGS:
+        if ENABLE_UGS_SUPPORT:
+            if sync_method == EngineSyncMethod.Sync_PCBs.value or sync_method == EngineSyncMethod.Sync_From_UGS.value:
+                LOGGER.info("Using UnrealGameSync to refresh project changelists.")
+                changelists = ugs_utils.latest_chagelists(Path(CONFIG.UPROJECT_PATH.get_value()), client=CONFIG.SOURCE_CONTROL_WORKSPACE.get_value())
+                if not changelists:
+                    LOGGER.error("UnrealGameSync failed to get the project's latest changelists. Falling back to using p4 commands directly.")
+
+        if not changelists:
+            LOGGER.info("Refreshing p4 project changelists")
+            working_dir = os.path.dirname(CONFIG.UPROJECT_PATH.get_value())
+            changelists = p4_utils.p4_latest_changelist(CONFIG.P4_PROJECT_PATH.get_value(), working_dir)
+            
         self.window.project_cl_combo_box.clear()
 
         if changelists:
@@ -1777,7 +1890,7 @@ class SwitchboardDialog(QtCore.QObject):
             return
         self.window.engine_cl_combo_box.clear()
         # if engine is built from source, refresh the engine cl dropdown
-        if CONFIG.BUILD_ENGINE.get_value():
+        if CONFIG.ENGINE_SYNC_METHOD.get_value() == EngineSyncMethod.Build_Engine.value:
             LOGGER.info("Refreshing p4 engine changelists")
             self.window.engine_cl_label.setEnabled(True)
             self.window.engine_cl_combo_box.setEnabled(True)

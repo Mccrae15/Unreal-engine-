@@ -7,6 +7,7 @@
 #include "CoreMinimal.h"
 #include "Engine/TextureDefines.h"
 #include "Materials/MaterialInterface.h"
+#include "UObject/Package.h"
 #include "UObject/WeakObjectPtr.h"
 
 #include "UsdWrappers/SdfLayer.h"
@@ -25,14 +26,17 @@ PXR_NAMESPACE_OPEN_SCOPE
 PXR_NAMESPACE_CLOSE_SCOPE
 
 class FSHAHash;
-class UUsdAssetCache;
 class UMaterial;
 class UMaterialOptions;
 class UTexture;
+class UUsdAssetCache;
+class UUsdAssetCache2;
+enum class EFlattenMaterialProperties : uint8;
+enum EMaterialProperty : int;
+enum TextureAddress : int;
+enum TextureCompressionSettings : int;
 struct FFlattenMaterial;
 struct FPropertyEntry;
-enum class EFlattenMaterialProperties : uint8;
-enum EMaterialProperty;
 namespace UE
 {
 	class FUsdPrim;
@@ -50,9 +54,9 @@ namespace UsdToUnreal
 	 * @return Whether the conversion was successful or not.
 	 */
 	USDUTILITIES_API bool ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& Material );
-	USDUTILITIES_API bool ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& Material, UUsdAssetCache* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext = nullptr );
+	USDUTILITIES_API bool ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& Material, UUsdAssetCache2* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext = nullptr );
 	USDUTILITIES_API bool ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterial& Material );
-	USDUTILITIES_API bool ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterial& Material, UUsdAssetCache* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext = nullptr );
+	USDUTILITIES_API bool ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterial& Material, UUsdAssetCache2* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext = nullptr );
 
 	/**
 	 * Attemps to assign the values of the surface shader inputs to the MaterialInstance parameters by matching the inputs display names to the parameters names.
@@ -63,7 +67,16 @@ namespace UsdToUnreal
 	 * @return Whether the conversion was successful or not.
 	 *
 	 */
+	USDUTILITIES_API bool ConvertShadeInputsToParameters( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& MaterialInstance, UUsdAssetCache2* TexturesCache, const TCHAR* RenderContext = nullptr );
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.2, "Use the other overload that receives an UUsdAssetCache2 object instead")
+	USDUTILITIES_API bool ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& Material, UUsdAssetCache* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext = nullptr );
+	UE_DEPRECATED(5.2, "Use the other overload that receives an UUsdAssetCache2 object instead")
+	USDUTILITIES_API bool ConvertMaterial( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterial& Material, UUsdAssetCache* TexturesCache, TMap< FString, int32 >& PrimvarToUVIndex, const TCHAR* RenderContext = nullptr );
+	UE_DEPRECATED(5.2, "Use the other overload that receives an UUsdAssetCache2 object instead")
 	USDUTILITIES_API bool ConvertShadeInputsToParameters( const pxr::UsdShadeMaterial& UsdShadeMaterial, UMaterialInstance& MaterialInstance, UUsdAssetCache* TexturesCache, const TCHAR* RenderContext = nullptr );
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 #if WITH_EDITOR
@@ -76,9 +89,18 @@ namespace UnrealToUsd
 	 * @param InDefaultTextureSize - Size of the baked texture to use for any material property that does not have a custom size set
 	 * @param InTexturesDir - Directory where the baked textures will be placed
 	 * @param OutUsdShadeMaterialPrim - UsdPrim with the UsdShadeMaterial schema that will be configured to use the baked textures and constants
+	 * @param bInDecayTexturesToSinglePixel - Whether to use a single value directly on the material instead of writing out textures with that
+											  have a single uniform color value for all pixels
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertMaterialToBakedSurface( const UMaterialInterface& InMaterial, const TArray<FPropertyEntry>& InMaterialProperties, const FIntPoint& InDefaultTextureSize, const FDirectoryPath& InTexturesDir, pxr::UsdPrim& OutUsdShadeMaterialPrim );
+	USDUTILITIES_API bool ConvertMaterialToBakedSurface(
+		const UMaterialInterface& InMaterial,
+		const TArray<FPropertyEntry>& InMaterialProperties,
+		const FIntPoint& InDefaultTextureSize,
+		const FDirectoryPath& InTexturesDir,
+		pxr::UsdPrim& OutUsdShadeMaterialPrim,
+		bool bInDecayTexturesToSinglePixel = true
+	);
 
 	/**
 	 * Converts a flattened material's data into textures placed at InTexturesDir, and configures OutUsdShadeMaterial to use the baked textures.
@@ -118,6 +140,7 @@ namespace UsdUtils
 	 * @param LayerToAuthorIn - Layer to clear the opinions in, or an invalid layer (e.g. UE::FSdfLayer{}, which is the default)
 	 * @return Whether we successfully cleared the opinions or not
 	 */
+	UE_DEPRECATED( 5.2, "No longer used as UE material assignments are only visible in the 'unreal' render context anyway" )
 	USDUTILITIES_API bool RemoveUnrealSurfaceOutput( pxr::UsdPrim& MaterialPrim, const UE::FSdfLayer& LayerToAuthorIn = UE::FSdfLayer{} );
 
 	/**
@@ -137,6 +160,19 @@ namespace UsdUtils
 
 	/** Returns the resolved path from a pxr::SdfAssetPath attribute. For UDIMs path, returns the path to the 1001 tile. */
 	USDUTILITIES_API FString GetResolvedTexturePath( const pxr::UsdAttribute& TextureAssetPathAttr );
+
+	/**
+	 * Computes and returns the hash string for the texture at the given path.
+	 * Handles regular texture asset paths as well as asset paths identifying textures inside Usdz archives.
+     * Returns an empty string if the texture could not be hashed.
+	 */
+	USDUTILITIES_API FString GetTextureHash(
+		const FString& ResolvedTexturePath,
+		bool bSRGB,
+		TextureCompressionSettings CompressionSettings,
+		TextureAddress AddressX,
+		TextureAddress AddressY
+	);
 
 	/** Creates a texture from a pxr::SdfAssetPath attribute. PrimPath is optional, and should point to the source shadematerial prim path. It will be placed in its UUsdAssetImportData */
 	USDUTILITIES_API UTexture* CreateTexture( const pxr::UsdAttribute& TextureAssetPathAttr, const FString& PrimPath = FString(), TextureGroup LODGroup = TEXTUREGROUP_World, UObject* Outer = GetTransientPackage() );

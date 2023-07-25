@@ -8,7 +8,7 @@
 #pragma once
 
 // Change this to force recompilation of all strata dependent shaders (use https://www.random.org/cgi-bin/randbyte?nbytes=4&format=h)
-#define STRATA_SHADER_VERSION 0xc5265453
+#define STRATA_SHADER_VERSION 0x084bf26a2 
 
 
 
@@ -36,10 +36,10 @@
 // The default thickness of a layer is considered to be 0.01 centimeter = 0.1 millimeter
 #define STRATA_LAYER_DEFAULT_THICKNESS_CM	0.01f
 
-// The thin lighting model is used when the thickness becomes strictly lower than 0.1 millimeter
-#define STRATA_LAYER_ISTHIN_THICKNESS_THRESHOLD_CM 0.01f
+// Min Fuzz Roughness to avoid numerical issue
+#define STRATA_MIN_FUZZ_ROUGHNESS 0.02f
 
-#define STRATA_BASE_PASS_MRT_OUTPUT_COUNT	2
+#define STRATA_BASE_PASS_MRT_OUTPUT_COUNT	3
 
 #define STRATA_SSS_DATA_UINT_COUNT		2
 
@@ -49,20 +49,27 @@
 #define STRATA_OPERATOR_ADD				3
 #define STRATA_OPERATOR_BSDF			4
 #define STRATA_OPERATOR_BSDF_LEGACY		5
-#define STRATA_OPERATOR_THINFILM		6
 
 // This must map directly to EStrataTileMaterialType
 #define STRATA_TILE_TYPE_SIMPLE						0
 #define STRATA_TILE_TYPE_SINGLE						1
 #define STRATA_TILE_TYPE_COMPLEX					2
 #define STRATA_TILE_TYPE_ROUGH_REFRACT				3
-#define STRATA_TILE_TYPE_SSS_WITHOUT_ROUGH_REFRACT	4
-#define STRATA_TILE_TYPE_COUNT						5
+#define STRATA_TILE_TYPE_ROUGH_REFRACT_SSS_WITHOUT	4
+#define STRATA_TILE_TYPE_DECAL_SIMPLE				5
+#define STRATA_TILE_TYPE_DECAL_SINGLE				6
+#define STRATA_TILE_TYPE_DECAL_COMPLEX				7
+#define STRATA_TILE_TYPE_COUNT						8
 
 // sizeof(FRHIDrawIndirectParameters) = 4 uints = 16 bytes
 #define GetStrataTileTypeDrawIndirectArgOffset_Byte(x)  (x * 16)
 #define GetStrataTileTypeDrawIndirectArgOffset_DWord(x) (x * 4)
 
-// sizeof(FRHIDispatchIndirectParameters) = 3 uints = 12 bytes
-#define GetStrataTileTypeDispatchIndirectArgOffset_Byte(x)  (x * 12)
-#define GetStrataTileTypeDispatchIndirectArgOffset_DWord(x) (x * 3)
+// sizeof(FRHIDispatchIndirectParameters) can vary per-platform
+#ifdef __cplusplus
+	#define GetStrataTileTypeDispatchIndirectArgOffset_Byte(x)  (x * sizeof(FRHIDispatchIndirectParameters))
+	#define GetStrataTileTypeDispatchIndirectArgOffset_DWord(x) (x * sizeof(FRHIDispatchIndirectParameters) / sizeof(uint32))
+#else
+	#define GetStrataTileTypeDispatchIndirectArgOffset_Byte(x)  (x * DISPATCH_INDIRECT_UINT_COUNT * 4)
+	#define GetStrataTileTypeDispatchIndirectArgOffset_DWord(x) (x * DISPATCH_INDIRECT_UINT_COUNT)
+#endif

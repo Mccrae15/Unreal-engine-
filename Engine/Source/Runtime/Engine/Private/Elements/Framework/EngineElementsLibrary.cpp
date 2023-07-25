@@ -4,23 +4,17 @@
 
 #include "Elements/Framework/TypedElementRegistry.h"
 #include "Elements/Framework/TypedElementOwnerStore.h"
-#include "Elements/Framework/TypedElementUtil.h"
-#include "Elements/Interfaces/TypedElementWorldInterface.h"
 
 #include "Elements/Object/ObjectElementData.h"
-#include "UObject/Object.h"
 
 #include "Elements/Actor/ActorElementData.h"
 #include "GameFramework/Actor.h"
 
 #include "Elements/Component/ComponentElementData.h"
-#include "Components/ActorComponent.h"
 
 #include "Elements/SMInstance/SMInstanceElementData.h"
 #include "Components/InstancedStaticMeshComponent.h"
 
-#include "Containers/UnrealString.h"
-#include "UObject/Stack.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EngineElementsLibrary)
 
@@ -365,15 +359,41 @@ TTypedElementOwner<FActorElementData> UEngineElementsLibrary::CreateActorElement
 	{
 		ActorElement.GetDataChecked().Actor = const_cast<AActor*>(InActor);
 	}
+	
+	RegisterActorElement(InActor);
+
 	return ActorElement;
 }
 
 void UEngineElementsLibrary::DestroyActorElement(const AActor* InActor, TTypedElementOwner<FActorElementData>& InOutActorElement)
 {
+	UTypedElementRegistry* Registry = UTypedElementRegistry::GetInstance();
+	UnregisterActorElement(InActor);
+
 	if (InOutActorElement)
 	{
 		checkf(InOutActorElement.GetDataChecked().Actor == InActor, TEXT("Actor element was not for this actor instance! %s"), *InActor->GetPathName());
 		UTypedElementRegistry::GetInstance()->DestroyElement(InOutActorElement);
+	}
+}
+
+void UEngineElementsLibrary::RegisterActorElement(const AActor* InActor)
+{
+	UTypedElementRegistry* Registry = UTypedElementRegistry::GetInstance();
+	ITypedElementDataStorageCompatibilityInterface* Storage = Registry->GetMutableDataStorageCompatibility();
+	if (Storage)
+	{
+		Storage->AddCompatibleObject(const_cast<AActor*>(InActor));
+	}
+}
+
+void UEngineElementsLibrary::UnregisterActorElement(const AActor* InActor)
+{
+	UTypedElementRegistry* Registry = UTypedElementRegistry::GetInstance();
+	ITypedElementDataStorageCompatibilityInterface* Storage = Registry->GetMutableDataStorageCompatibility();
+	if (Storage)
+	{
+		Storage->RemoveCompatibleObject(const_cast<AActor*>(InActor));
 	}
 }
 

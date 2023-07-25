@@ -3,10 +3,7 @@
 #include "LevelInstance/LevelInstanceActor.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "LevelInstance/LevelInstanceComponent.h"
-#include "LevelInstance/LevelInstanceInterface.h"
-#include "LevelInstance/LevelInstanceEditorInstanceActor.h"
 #include "Engine/World.h"
-#include "Engine/Engine.h"
 #include "LevelInstancePrivate.h"
 #include "Net/UnrealNetwork.h"
 
@@ -14,7 +11,6 @@
 
 #if WITH_EDITOR
 #include "UObject/ObjectSaveContext.h"
-#include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/LevelInstance/LevelInstanceActorDesc.h"
 #include "LevelInstance/LevelInstanceEditorPivotActor.h"
 #endif
@@ -174,7 +170,7 @@ void ALevelInstance::PostEditUndo()
 
 void ALevelInstance::PreEditChange(FProperty* PropertyThatWillChange)
 {
-	const bool bWorldAssetChange = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(ALevelInstance, WorldAsset);
+	const bool bWorldAssetChange = PropertyThatWillChange && (PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(ALevelInstance, WorldAsset));
 	LevelInstanceActorImpl.PreEditChange(PropertyThatWillChange, bWorldAssetChange, [this](FProperty* Property) { Super::PreEditChange(Property); });
 }
 

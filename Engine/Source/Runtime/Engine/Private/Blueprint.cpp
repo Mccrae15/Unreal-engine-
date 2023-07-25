@@ -2,35 +2,25 @@
 
 #include "Engine/Blueprint.h"
 
-#include "Misc/CoreMisc.h"
-#include "Misc/ConfigCacheIni.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "UObject/BlueprintsObjectVersion.h"
+#include "EngineLogs.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/UObjectHash.h"
+#include "UObject/PrimaryAssetId.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
-#include "UObject/UnrealType.h"
-#include "Components/ActorComponent.h"
-#include "Components/SceneComponent.h"
-#include "GameFramework/Actor.h"
-#include "Misc/SecureHash.h"
-#include "Engine/BlueprintGeneratedClass.h"
-#include "EdGraph/EdGraph.h"
 #include "Components/TimelineComponent.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/TextProperty.h"
 
 #if WITH_EDITOR
 #include "BlueprintCompilationManager.h"
-#include "Settings/ProjectPackagingSettings.h"
-#include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/ComponentEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/StructureEditorUtils.h"
-#include "WatchPointViewer.h"
 #include "FindInBlueprintManager.h"
 #include "CookerSettings.h"
 #include "Editor.h"
@@ -40,10 +30,8 @@
 #include "Curves/CurveBase.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "UObject/MetaData.h"
-#include "BlueprintAssetHandler.h"
 #include "Blueprint/BlueprintExtension.h"
 #include "UObject/TextProperty.h"
-#include "Kismet2/Breakpoint.h"
 #endif
 
 #include "Engine/InheritableComponentHandler.h"
@@ -561,6 +549,16 @@ bool UBlueprint::RenameGeneratedClasses( const TCHAR* InName, UObject* NewOuter,
 bool UBlueprint::Rename( const TCHAR* InName, UObject* NewOuter, ERenameFlags Flags )
 {
 	const FName OldName = GetFName();
+	
+	TArray<UObject*> LastEditedDocumentsObjects;
+	if (!(Flags & REN_Test))
+	{
+		LastEditedDocumentsObjects.Reserve(LastEditedDocuments.Num());
+		for (const FEditedDocumentInfo& LastEditedDocument : LastEditedDocuments)
+		{
+			LastEditedDocumentsObjects.Add(LastEditedDocument.EditedObjectPath.ResolveObject());
+		}
+	}
 
 	// Move generated class/CDO to the new package, to create redirectors
 	if ( !RenameGeneratedClasses(InName, NewOuter, Flags) )
@@ -568,7 +566,22 @@ bool UBlueprint::Rename( const TCHAR* InName, UObject* NewOuter, ERenameFlags Fl
 		return false;
 	}
 
-	return Super::Rename( InName, NewOuter, Flags );
+	if (Super::Rename( InName, NewOuter, Flags ))
+	{
+		if (!(Flags & REN_Test))
+		{
+			for (int32 i=0; i<LastEditedDocuments.Num(); i++)
+			{
+				if (LastEditedDocumentsObjects[i])
+				{
+					LastEditedDocuments[i].EditedObjectPath = FSoftObjectPath(LastEditedDocumentsObjects[i]);
+				}
+			}
+		}
+		return true;
+	}
+
+	return false;
 }
 
 void UBlueprint::PostDuplicate(bool bDuplicateForPIE)
@@ -612,6 +625,14 @@ UClass* UBlueprint::RegenerateClass(UClass* ClassToRegenerate, UObject* Previous
 	UBlueprint::ForceLoadMembers(this);
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	for (auto It = Extensions.CreateIterator(); It; ++It)
+	{
+		if (!*It)
+		{
+			It.RemoveCurrent();
+		}
+	}
+	
 	for (UBlueprintExtension* Extension : Extensions)
 	{
 		ForceLoad(Extension);
@@ -1790,42 +1811,6 @@ void UBlueprint::GetAllGraphs(TArray<UEdGraph*>& Graphs) const
 }
 
 #if WITH_EDITOR
-void UBlueprint::Message_Note(const FString& MessageToLog)
-{
-	if( CurrentMessageLog )
-	{
-		CurrentMessageLog->Note(*MessageToLog);
-	}
-	else
-	{
-		UE_LOG(LogBlueprint, Log, TEXT("[%s] %s"), *GetName(), *MessageToLog);
-	}
-}
-
-void UBlueprint::Message_Warn(const FString& MessageToLog)
-{
-	if( CurrentMessageLog )
-	{
-		CurrentMessageLog->Warning(*MessageToLog);
-	}
-	else
-	{
-		UE_LOG(LogBlueprint, Warning, TEXT("[%s] %s"), *GetName(), *MessageToLog);
-	}
-}
-
-void UBlueprint::Message_Error(const FString& MessageToLog)
-{
-	if( CurrentMessageLog )
-	{
-		CurrentMessageLog->Error(*MessageToLog);
-	}
-	else
-	{
-		UE_LOG(LogBlueprint, Error, TEXT("[%s] %s"), *GetName(), *MessageToLog);
-	}
-}
-
 bool UBlueprint::ChangeOwnerOfTemplates()
 {
 	struct FUniqueNewNameHelper
@@ -2092,6 +2077,29 @@ UEdGraph* UBlueprint::GetLastEditedUberGraph() const
 
 	return nullptr;
 }
+
+#if WITH_EDITOR
+
+UClass* UBlueprint::GetBlueprintParentClassFromAssetTags(const FAssetData& BlueprintAsset)
+{
+	UClass* ParentClass = nullptr;
+	FString ParentClassName;
+	if(!BlueprintAsset.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
+	{
+		BlueprintAsset.GetTagValue(FBlueprintTags::ParentClassPath, ParentClassName);
+	}
+	
+	if(!ParentClassName.IsEmpty())
+	{
+		UObject* Outer = nullptr;
+		ResolveName(Outer, ParentClassName, false, false);
+		ParentClass = FindObject<UClass>(Outer, *ParentClassName);
+	}
+	
+	return ParentClass;
+}
+
+#endif
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 

@@ -26,6 +26,7 @@
 #include "ScopedTransaction.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Engine/SkeletalMeshSocket.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "SAnimationEditorViewport.h"
 #include "AssetViewerSettings.h"
 #include "IPersonaEditorModeManager.h"
@@ -42,6 +43,7 @@
 #include "Rendering/SkeletalMeshModel.h"
 #include "UnrealWidget.h"
 #include "Engine/PoseWatchRenderData.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 
 namespace {
 	static const float AnimationEditorViewport_RotateSpeed = 0.02f;
@@ -81,8 +83,6 @@ FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<IPersonaPrev
 	CachedDefaultCameraController = CameraController;
 
 	OnCameraControllerChanged();
-
-	InPreviewScene->RegisterOnCameraOverrideChanged(FSimpleDelegate::CreateRaw(this, &FAnimationViewportClient::OnCameraControllerChanged));
 
 	Widget->SetUsesEditorModeTools(ModeTools.Get());
 	((FAssetEditorModeManager*)ModeTools.Get())->SetPreviewScene(&InPreviewScene.Get());
@@ -145,21 +145,6 @@ FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<IPersonaPrev
 			AudioDevice->SetUseAttenuationForNonGameWorlds(ConfigOption->bUseAudioAttenuation);
 		}
 	}
-
-	InPreviewScene->RegisterOnPreviewMeshChanged(FOnPreviewMeshChanged::CreateRaw(this, &FAnimationViewportClient::HandleSkeletalMeshChanged));
-	if (InPreviewScene->GetPreviewMeshComponent())
-	{
-		HandleSkeletalMeshChanged(nullptr, InPreviewScene->GetPreviewMeshComponent()->GetSkeletalMeshAsset());
-	}
-	InPreviewScene->RegisterOnInvalidateViews(FSimpleDelegate::CreateRaw(this, &FAnimationViewportClient::HandleInvalidateViews));
-	InPreviewScene->RegisterOnFocusViews(FSimpleDelegate::CreateRaw(this, &FAnimationViewportClient::HandleFocusViews));
-	InPreviewScene->RegisterOnPreTick(FSimpleDelegate::CreateRaw(this, &FAnimationViewportClient::HandlePreviewScenePreTick));
-	InPreviewScene->RegisterOnPostTick(FSimpleDelegate::CreateRaw(this, &FAnimationViewportClient::HandlePreviewScenePostTick));
-
-	// Register delegate to update the show flags when the post processing is turned on or off
-	UAssetViewerSettings::Get()->OnAssetViewerSettingsChanged().AddRaw(this, &FAnimationViewportClient::OnAssetViewerSettingsChanged);
-	// Set correct flags according to current profile settings
-	SetAdvancedShowFlagsForScene(UAssetViewerSettings::Get()->Profiles[GetMutableDefault<UEditorPerProjectUserSettings>()->AssetViewerProfileIndex].bPostProcessingEnabled);
 }
 
 FAnimationViewportClient::~FAnimationViewportClient()
@@ -172,15 +157,15 @@ FAnimationViewportClient::~FAnimationViewportClient()
 	}
 
 	// Unregistering the callbacks is mandatory, else we get random crashes
-	if (PreviewScenePtr.IsValid())
+	if (FAnimationEditorPreviewScene* AnimationEditorPreviewScene = GetAnimPreviewScenePtr().Get())
 	{
-		PreviewScenePtr->UnregisterOnPreviewMeshChanged(this);
-		PreviewScenePtr->UnregisterOnInvalidateViews(this);
-		PreviewScenePtr->UnregisterOnCameraOverrideChanged(this);
-		PreviewScenePtr->UnregisterOnPreTick(this);
-		PreviewScenePtr->UnregisterOnPostTick(this);
+		AnimationEditorPreviewScene->UnregisterOnPreviewMeshChanged(this);
+		AnimationEditorPreviewScene->UnregisterOnInvalidateViews(this);
+		AnimationEditorPreviewScene->UnregisterOnCameraOverrideChanged(this);
+		AnimationEditorPreviewScene->UnregisterOnPreTick(this);
+		AnimationEditorPreviewScene->UnregisterOnPostTick(this);
 
-		if (UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent())
+		if (UDebugSkelMeshComponent* PreviewMeshComponent = AnimationEditorPreviewScene->GetPreviewMeshComponent())
 		{
 			if (OnPhysicsCreatedDelegateHandle.IsValid())
 			{
@@ -200,6 +185,29 @@ FAnimationViewportClient::~FAnimationViewportClient()
 	OnMeshChangedDelegateHandle.Reset();
 
 	UAssetViewerSettings::Get()->OnAssetViewerSettingsChanged().RemoveAll(this);
+}
+
+void FAnimationViewportClient::Initialize()
+{
+	if (FAnimationEditorPreviewScene* AnimationEditorPreviewScene = GetAnimPreviewScenePtr().Get())
+	{
+		AnimationEditorPreviewScene->RegisterOnCameraOverrideChanged(FSimpleDelegate::CreateSP(this, &FAnimationViewportClient::OnCameraControllerChanged));
+		AnimationEditorPreviewScene->RegisterOnPreviewMeshChanged(FOnPreviewMeshChanged::CreateSP(this, &FAnimationViewportClient::HandleSkeletalMeshChanged));
+		if (AnimationEditorPreviewScene->GetPreviewMeshComponent())
+		{
+			HandleSkeletalMeshChanged(nullptr, AnimationEditorPreviewScene->GetPreviewMeshComponent()->GetSkeletalMeshAsset());
+		}
+		AnimationEditorPreviewScene->RegisterOnInvalidateViews(FSimpleDelegate::CreateSP(this, &FAnimationViewportClient::HandleInvalidateViews));
+		AnimationEditorPreviewScene->RegisterOnFocusViews(FSimpleDelegate::CreateSP(this, &FAnimationViewportClient::HandleFocusViews));
+		AnimationEditorPreviewScene->RegisterOnPreTick(FSimpleDelegate::CreateSP(this, &FAnimationViewportClient::HandlePreviewScenePreTick));
+		AnimationEditorPreviewScene->RegisterOnPostTick(FSimpleDelegate::CreateSP(this, &FAnimationViewportClient::HandlePreviewScenePostTick));
+	}
+
+	// Register delegate to update the show flags when the post processing is turned on or off
+	UAssetViewerSettings::Get()->OnAssetViewerSettingsChanged().AddSP(this, &FAnimationViewportClient::OnAssetViewerSettingsChanged);
+	// Set correct flags according to current profile settings
+	SetAdvancedShowFlagsForScene(UAssetViewerSettings::Get()->Profiles[GetMutableDefault<UEditorPerProjectUserSettings>()->AssetViewerProfileIndex].bPostProcessingEnabled);
+
 }
 
 void FAnimationViewportClient::OnToggleAutoAlignFloor()
@@ -452,11 +460,7 @@ void FAnimationViewportClient::HandleSkeletalMeshChanged(USkeletalMesh* OldSkele
 
 	if (NewSkeletalMesh)
 	{
-		OnMeshChangedDelegateHandle = NewSkeletalMesh->GetOnMeshChanged().AddLambda([this]()
-		{
-			UpdateCameraSetup();
-			Invalidate();
-		});
+		OnMeshChangedDelegateHandle = NewSkeletalMesh->GetOnMeshChanged().AddSP(this, &FAnimationViewportClient::HandleOnMeshChanged);
 	}
 
 	if (OldSkeletalMesh != NewSkeletalMesh || NewSkeletalMesh == nullptr)
@@ -484,14 +488,7 @@ void FAnimationViewportClient::HandleSkeletalMeshChanged(USkeletalMesh* OldSkele
 		}
 		// we need to make sure we monitor any change to the PhysicsState being recreated, as this can happen from path that is external to this class
 		// (example: setting a property on a body that is type "simulated" will recreate the state from USkeletalBodySetup::PostEditChangeProperty and let the body simulating (UE-107308)
-		OnPhysicsCreatedDelegateHandle = PreviewMeshComponent->RegisterOnPhysicsCreatedDelegate(FOnSkelMeshPhysicsCreated::CreateLambda([this]()
-			{
-				UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
-				// let's make sure nothing is simulating and that all necessary state are in proper order
-				PreviewMeshComponent->SetPhysicsBlendWeight(0.f);
-				PreviewMeshComponent->SetSimulatePhysics(false);
-				DisableAllBodiesSimulatePhysics(PreviewMeshComponent);
-			}));
+		OnPhysicsCreatedDelegateHandle = PreviewMeshComponent->RegisterOnPhysicsCreatedDelegate(FOnSkelMeshPhysicsCreated::CreateSP(this, &FAnimationViewportClient::HandleOnSkelMeshPhysicsCreated));
 
 		PreviewMeshComponent->TermArticulated();
 		PreviewMeshComponent->InitArticulated(GetWorld()->GetPhysicsScene());
@@ -504,6 +501,21 @@ void FAnimationViewportClient::HandleSkeletalMeshChanged(USkeletalMesh* OldSkele
 	}
 
 	Invalidate();
+}
+
+void FAnimationViewportClient::HandleOnMeshChanged()
+{
+	UpdateCameraSetup();
+	Invalidate();
+}
+
+void FAnimationViewportClient::HandleOnSkelMeshPhysicsCreated()
+{
+	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
+	// let's make sure nothing is simulating and that all necessary state are in proper order
+	PreviewMeshComponent->SetPhysicsBlendWeight(0.f);
+	PreviewMeshComponent->SetSimulatePhysics(false);
+	DisableAllBodiesSimulatePhysics(PreviewMeshComponent);
 }
 
 void FAnimationViewportClient::Draw(const FSceneView* View, FPrimitiveDrawInterface* PDI)
@@ -622,7 +634,7 @@ void FAnimationViewportClient::DrawCanvas( FViewport& InViewport, FSceneView& Vi
 
 		if (bDrawUVs)
 		{
-			DrawUVsForMesh(Viewport, &Canvas, 1.0f, PreviewMeshComponent);
+			DrawUVsForMesh(Viewport, &Canvas, 1, PreviewMeshComponent);
 		}
 
 		// Debug draw clothing texts
@@ -656,7 +668,7 @@ void FAnimationViewportClient::DrawUVsForMesh(FViewport* InViewport, FCanvas* In
 
 	TArray<FVector2D> SelectedEdgeTexCoords; //No functionality in Persona for this (yet?)
 
-	DrawUVs(InViewport, InCanvas, InTextYPos, LODLevel, UVChannelToDraw, SelectedEdgeTexCoords, NULL, &PreviewMeshComponent->GetSkeletalMeshRenderData()->LODRenderData[LODLevel] );
+	DrawUVs(InViewport, InCanvas, InTextYPos, LODLevel, UVChannelToDraw, SelectedEdgeTexCoords, nullptr, &PreviewMeshComponent->GetSkeletalMeshRenderData()->LODRenderData[LODLevel] );
 }
 
 void FAnimationViewportClient::Tick(float DeltaSeconds) 
@@ -783,8 +795,8 @@ void FAnimationViewportClient::ShowBoneNames( FCanvas* Canvas, FSceneView* View,
 		return;
 	}
 
-	const int32 HalfX = Viewport->GetSizeXY().X/2 / GetDPIScale();
-	const int32 HalfY = Viewport->GetSizeXY().Y/2 / GetDPIScale();
+	const int32 HalfX = static_cast<int32>(Viewport->GetSizeXY().X / 2 / GetDPIScale());
+	const int32 HalfY = static_cast<int32>(Viewport->GetSizeXY().Y / 2 / GetDPIScale());
 
 	for (int32 i=0; i< LODData.RequiredBones.Num(); i++)
 	{
@@ -832,8 +844,8 @@ void FAnimationViewportClient::ShowBoneNames( FCanvas* Canvas, FSceneView* View,
 			const FPlane proj = View->Project(BonePos);
 			if (proj.W > 0.f)
 			{
-				const int32 XPos = HalfX + ( HalfX * proj.X );
-				const int32 YPos = HalfY + ( HalfY * (proj.Y * -1) );
+				const int32 XPos = static_cast<int32>(HalfX + ( HalfX * proj.X ));
+				const int32 YPos = static_cast<int32>(HalfY + ( HalfY * (proj.Y * -1) ));
 
 				const FName BoneName = ReferenceSkeleton.GetBoneName(BoneIndex);
 				const FString BoneString = FString::Printf( TEXT("%d: %s"), BoneIndex, *BoneName.ToString() );
@@ -852,8 +864,8 @@ void FAnimationViewportClient::ShowAttributeNames(FCanvas* Canvas, FSceneView* V
 		return;
 	}
 	
-	const int32 HalfX = Viewport->GetSizeXY().X / 2 / GetDPIScale();
-	const int32 HalfY = Viewport->GetSizeXY().Y / 2 / GetDPIScale();
+	const int32 HalfX = static_cast<int32>(Viewport->GetSizeXY().X / 2 / GetDPIScale());
+	const int32 HalfY = static_cast<int32>(Viewport->GetSizeXY().Y / 2 / GetDPIScale());
 
 	const UE::Anim::FMeshAttributeContainer& Attributes = MeshComponent->GetCustomAttributes();
 
@@ -876,8 +888,8 @@ void FAnimationViewportClient::ShowAttributeNames(FCanvas* Canvas, FSceneView* V
 				const FPlane proj = View->Project(AttributeTransform.GetLocation());
 				if (proj.W > 0.f)
 				{
-					const int32 XPos = HalfX + (HalfX * proj.X);
-					const int32 YPos = HalfY + (HalfY * (proj.Y * -1));
+					const int32 XPos = HalfX + static_cast<int32>(HalfX * proj.X);
+					const int32 YPos = HalfY + static_cast<int32>(HalfY * (proj.Y * -1));
 
 					FCanvasTextItem TextItem(FVector2D(XPos, YPos), FText::FromName(AttributeIdentifier.GetName()), GEngine->GetSmallFont(), FLinearColor(0.0f, 1.0f, 1.0f));
 					TextItem.EnableShadow(FLinearColor::Black);
@@ -895,7 +907,7 @@ bool FAnimationViewportClient::ShouldDisplayAdditiveScaleErrorMessage() const
 	{
 		if (AnimSequence->IsValidAdditive() && AnimSequence->RefPoseSeq)
 		{
-			FGuid AnimSeqGuid = AnimSequence->RefPoseSeq->GetRawDataGuid();
+			FGuid AnimSeqGuid = AnimSequence->RefPoseSeq->GetDataModel()->GenerateGuid();
 			if (RefPoseGuid != AnimSeqGuid)
 			{
 				RefPoseGuid = AnimSeqGuid;
@@ -1031,7 +1043,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 	{
 		if (!PreviewMeshComponent->CheckIfBoundsAreCorrrect())
 		{
-			if( PreviewMeshComponent->GetPhysicsAsset() == NULL )
+			if( PreviewMeshComponent->GetPhysicsAsset() == nullptr )
 			{
 				TextValue = ConcatenateLine(TextValue, LOCTEXT("NeedToSetupPhysicsAssetForAccurateBounds", "<AnimViewport.WarningText>You may need to setup Physics Asset to use more accurate bounds</>"));
 			}
@@ -1042,7 +1054,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 		}
 	}
 
-	if (PreviewMeshComponent != NULL && PreviewMeshComponent->MeshObject != NULL)
+	if (PreviewMeshComponent != nullptr && PreviewMeshComponent->MeshObject != nullptr)
 	{
 		if (bDisplayAllInfo)
 		{
@@ -1253,7 +1265,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 
 	if (const UPoseAsset* PoseAsset = Cast<UPoseAsset>(GetAnimPreviewScene()->GetPreviewAnimationAsset()))
 	{
-		if (PoseAsset->SourceAnimation && PoseAsset->SourceAnimation->GetRawDataGuid() != PoseAsset->SourceAnimationRawDataGUID)
+		if (PoseAsset->GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::PoseAssetRawDataGUIDUpdate && PoseAsset->SourceAnimation && PoseAsset->SourceAnimation->GetDataModel()->GenerateGuid() != PoseAsset->SourceAnimationRawDataGUID)
 		{
 			TextValue = ConcatenateLine(TextValue, LOCTEXT("PoseAssetOutOfDateWarning", "<AnimViewport.WarningText>Poses are out-of-sync with the source animation. To update them click \"Update Source\"</>"));
 		}
@@ -1786,7 +1798,7 @@ void FAnimationViewportClient::DrawMeshSubsetBones(const UDebugSkelMeshComponent
 		if (bDrawBone)
 		{
 			//add to the list
-			RequiredBones.AddUnique(BoneIndex);
+			RequiredBones.AddUnique(static_cast<FBoneIndexType>(BoneIndex));
 			WorldTransforms[BoneIndex] = MeshComponent->GetDrawTransform(BoneIndex) * MeshComponent->GetComponentTransform();
 		}
 	}
@@ -1876,14 +1888,6 @@ void FAnimationViewportClient::DrawSockets(const UDebugSkelMeshComponent* InPrev
 			{
 				SocketColor = (bUseSkeletonSocketColor) ? FLinearColor::White : FLinearColor::Red;
 			}
-
-			static const float SphereRadius = 1.0f;
-			TArray<FVector> Verts;
-
-			//Calc cone size 
-			FVector EndToStart = (Start-End);
-			float ConeLength = EndToStart.Size();
-			float Angle = FMath::RadiansToDegrees(FMath::Atan(SphereRadius / ConeLength));
 
 			//Render Sphere for bone end point and a cone between it and its parent.
 			PDI->DrawLine( Start, End, SocketColor, SDPG_Foreground );
@@ -2272,6 +2276,11 @@ EAnimationPlaybackSpeeds::Type FAnimationViewportClient::GetPlaybackSpeedMode() 
 	return AnimationPlaybackSpeedMode;
 }
 
+TSharedPtr<class FAnimationEditorPreviewScene> FAnimationViewportClient::GetAnimPreviewScenePtr() const
+{
+	return StaticCastSharedPtr<FAnimationEditorPreviewScene>(PreviewScenePtr);
+}
+
 TSharedRef<FAnimationEditorPreviewScene> FAnimationViewportClient::GetAnimPreviewScene() const
 {
 	return StaticCastSharedRef<FAnimationEditorPreviewScene>(GetPreviewScene());
@@ -2327,11 +2336,11 @@ void FAnimationViewportClient::SetupViewForRendering( FSceneViewFamily& ViewFami
 	}
 
 	// Cache screen size
-	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
-	if (PreviewMeshComponent != NULL && PreviewMeshComponent->MeshObject != NULL)
+	const UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
+	if (PreviewMeshComponent != nullptr && PreviewMeshComponent->MeshObject != nullptr)
 	{
 		const FBoxSphereBounds& SkelBounds = PreviewMeshComponent->Bounds;
-		CachedScreenSize = ComputeBoundsScreenSize(SkelBounds.Origin, SkelBounds.SphereRadius, View);
+		CachedScreenSize = ComputeBoundsScreenSize(SkelBounds.Origin, static_cast<float>(SkelBounds.SphereRadius), View);
 	}
 }
 

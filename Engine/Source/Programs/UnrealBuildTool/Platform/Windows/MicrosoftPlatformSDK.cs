@@ -69,6 +69,16 @@ namespace UnrealBuildTool
 				return true;
 			}
 
+			Result = Regex.Match(StringValue, @"^(\d+).(\d+)");
+			if (Result.Success)
+			{
+				// 8 bits for major, 8 for minor - ignore build and patch
+				OutValue |= UInt64.Parse(Result.Groups[1].Value) << 24;
+				OutValue |= UInt64.Parse(Result.Groups[2].Value) << 16;
+
+				return true;
+			}
+
 			return false;
 		}
 
@@ -473,12 +483,12 @@ namespace UnrealBuildTool
 		/// <param name="Architecture">Architecture the compiler must support</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>True if the given compiler is installed</returns>
-		public static bool HasCompiler(WindowsCompiler Compiler, WindowsArchitecture Architecture, ILogger Logger)
+		public static bool HasCompiler(WindowsCompiler Compiler, UnrealArch Architecture, ILogger Logger)
 		{
 			return FindToolChainInstallations(Compiler, Logger).Where(x => (x.Architecture == Architecture)).Count() > 0;
 		}
 
-		public static bool HasValidCompiler(WindowsCompiler Compiler, WindowsArchitecture Architecture, ILogger Logger)
+		public static bool HasValidCompiler(WindowsCompiler Compiler, UnrealArch Architecture, ILogger Logger)
 		{
 			// since this is static, we get the instance for it
 			MicrosoftPlatformSDK SDK = (MicrosoftPlatformSDK)GetSDKForPlatform("Win64")!;
@@ -496,7 +506,7 @@ namespace UnrealBuildTool
 		/// <param name="OutToolChainDir">Receives the directory containing the toolchain</param>
 		/// <param name="OutRedistDir">Receives the optional directory containing redistributable components</param>
 		/// <returns>True if the toolchain directory was found correctly</returns>
-		public static bool TryGetToolChainDir(WindowsCompiler Compiler, string? CompilerVersion, WindowsArchitecture Architecture, ILogger Logger, [NotNullWhen(true)] out VersionNumber? OutToolChainVersion, [NotNullWhen(true)] out DirectoryReference? OutToolChainDir, out DirectoryReference? OutRedistDir)
+		public static bool TryGetToolChainDir(WindowsCompiler Compiler, string? CompilerVersion, UnrealArch Architecture, ILogger Logger, [NotNullWhen(true)] out VersionNumber? OutToolChainVersion, [NotNullWhen(true)] out DirectoryReference? OutToolChainDir, out DirectoryReference? OutRedistDir)
 		{
 			// Find all the installed toolchains
 			List<ToolChainInstallation> ToolChains = FindToolChainInstallations(Compiler, Logger);
@@ -582,7 +592,7 @@ namespace UnrealBuildTool
 		/// <param name="Preference">Ordering function</param>
 		/// <param name="Architecture">Architecture that must be supported</param>
 		/// <returns></returns>
-		static ToolChainInstallation? SelectToolChain(IEnumerable<ToolChainInstallation> ToolChains, Func<IOrderedEnumerable<ToolChainInstallation>, IOrderedEnumerable<ToolChainInstallation>> Preference, WindowsArchitecture Architecture)
+		static ToolChainInstallation? SelectToolChain(IEnumerable<ToolChainInstallation> ToolChains, Func<IOrderedEnumerable<ToolChainInstallation>, IOrderedEnumerable<ToolChainInstallation>> Preference, UnrealArch Architecture)
 		{
 			ToolChainInstallation? ToolChain = Preference(ToolChains.Where(x => x.Architecture == Architecture)
 				.OrderByDescending(x => x.Error == null))
@@ -613,7 +623,7 @@ namespace UnrealBuildTool
 		/// <param name="Preference">Ordering function</param>
 		/// <param name="Architecture">Architecture that must be supported</param>
 		/// <param name="Logger">The ILogger interface to write to</param>
-		static void DumpToolChains(IEnumerable<ToolChainInstallation> ToolChains, Func<IOrderedEnumerable<ToolChainInstallation>, IOrderedEnumerable<ToolChainInstallation>> Preference, WindowsArchitecture Architecture, ILogger Logger)
+		static void DumpToolChains(IEnumerable<ToolChainInstallation> ToolChains, Func<IOrderedEnumerable<ToolChainInstallation>, IOrderedEnumerable<ToolChainInstallation>> Preference, UnrealArch Architecture, ILogger Logger)
 		{
 			var SortedToolChains = Preference(ToolChains.Where(x => x.Architecture == Architecture)
 				.OrderByDescending(x => x.Error == null))
@@ -662,12 +672,14 @@ namespace UnrealBuildTool
 						foreach (VisualStudioInstallation Installation in FindVisualStudioInstallations(WindowsCompiler.VisualStudio2019, Logger))
 						{
 							AddClangToolChain(DirectoryReference.Combine(Installation.BaseDir, "VC", "Tools", "Llvm"), ToolChains, IsAutoSdk: false, Logger);
+							AddClangToolChain(DirectoryReference.Combine(Installation.BaseDir, "VC", "Tools", "Llvm", "x64"), ToolChains, IsAutoSdk: false, Logger);
 						}
 
 						// Check for installations bundled with Visual Studio 2022
 						foreach (VisualStudioInstallation Installation in FindVisualStudioInstallations(WindowsCompiler.VisualStudio2022, Logger))
 						{
 							AddClangToolChain(DirectoryReference.Combine(Installation.BaseDir, "VC", "Tools", "Llvm"), ToolChains, IsAutoSdk: false, Logger);
+							AddClangToolChain(DirectoryReference.Combine(Installation.BaseDir, "VC", "Tools", "Llvm", "x64"), ToolChains, IsAutoSdk: false, Logger);
 						}
 
 						// Check for AutoSDK paths
@@ -816,11 +828,16 @@ namespace UnrealBuildTool
 						Logger.LogDebug("Found Visual Studio installation: {BaseDir} (Product={ProductId}, Version={Version})", BaseDir, ProductId, Version);
 					}
 
-					Installations = Installations.OrderBy(x => x.bCommunity).ThenBy(x => x.bPreview).ThenByDescending(x => x.Version).ToList();
+					Installations = Installations.OrderByDescending(x => x.Compiler)
+						.ThenBy(x => x.bCommunity)
+						.ThenBy(x => x.bPreview)
+						.ThenByDescending(x => x.Version)
+						.ToList();
 				}
 				catch (Exception Ex)
 				{
-					throw new BuildException(Ex, "Error while enumerating Visual Studio toolchains");
+					Logger.LogWarning("Unable to enumerate Visual Studio installations");
+					Logger.LogDebug(Ex.ToString());
 				}
 			}
 			CachedVisualStudioInstallations = Installations;
@@ -935,14 +952,19 @@ namespace UnrealBuildTool
 				Error = $"UnrealBuildTool has banned the MSVC {Banned} toolchains due to compiler issues. Please install a different toolchain such as {PreferredVisualCppVersions.Select(x => x.Min).Max()} by opening the generated solution and installing recommended components or from the Visual Studio installer.";
 			}
 
-			Logger.LogDebug("Found Visual Studio toolchain: {ToolChainDir} (Family={Family}, FamilyRank={FamilyRank}, Version={Version}, Is64Bit={Is64Bit}, Preview={Preview}, Architecture={Arch}, Error={Error}, Redist={RedistDir})", ToolChainDir, Family, FamilyRank, Version, Is64Bit, bPreview, WindowsArchitecture.x64.ToString(), Error != null, RedistDir);
-			ToolChains.Add(new ToolChainInstallation(Family, FamilyRank, Version, Is64Bit, bPreview, WindowsArchitecture.x64, Error, ToolChainDir, RedistDir, IsAutoSdk));
+			Logger.LogDebug("Found Visual Studio toolchain: {ToolChainDir} (Family={Family}, FamilyRank={FamilyRank}, Version={Version}, Is64Bit={Is64Bit}, Preview={Preview}, Architecture={Arch}, Error={Error}, Redist={RedistDir})", ToolChainDir, Family, FamilyRank, Version, Is64Bit, bPreview, UnrealArch.X64.ToString(), Error != null, RedistDir);
+			ToolChains.Add(new ToolChainInstallation(Family, FamilyRank, Version, Is64Bit, bPreview, UnrealArch.X64, Error, ToolChainDir, RedistDir, IsAutoSdk));
 
-			bool HasArm64 = HasArm64ToolChain(ToolChainDir);
-			if (HasArm64)
+			if (HasArm64ToolChain(ToolChainDir))
 			{
-				Logger.LogDebug("Found Visual Studio toolchain: {ToolChainDir} (Family={Family}, FamilyRank={FamilyRank}, Version={Version}, Is64Bit={Is64Bit}, Preview={Preview}, Architecture={Arch}, Error={Error}, Redist={RedistDir})", ToolChainDir, Family, FamilyRank, Version, Is64Bit, bPreview, WindowsArchitecture.ARM64.ToString(), Error != null, RedistDir);
-				ToolChains.Add(new ToolChainInstallation(Family, FamilyRank, Version, Is64Bit, bPreview, WindowsArchitecture.ARM64, Error, ToolChainDir, RedistDir, IsAutoSdk));
+				Logger.LogDebug("Found Visual Studio toolchain: {ToolChainDir} (Family={Family}, FamilyRank={FamilyRank}, Version={Version}, Is64Bit={Is64Bit}, Preview={Preview}, Architecture={Arch}, Error={Error}, Redist={RedistDir})", ToolChainDir, Family, FamilyRank, Version, Is64Bit, bPreview, UnrealArch.Arm64.ToString(), Error != null, RedistDir);
+				ToolChains.Add(new ToolChainInstallation(Family, FamilyRank, Version, Is64Bit, bPreview, UnrealArch.Arm64, Error, ToolChainDir, RedistDir, IsAutoSdk));
+				
+				if (HasArm64ECToolChain(ToolChainDir))
+				{
+					Logger.LogDebug("Found Visual Studio toolchain: {ToolChainDir} (Family={Family}, FamilyRank={FamilyRank}, Version={Version}, Is64Bit={Is64Bit}, Preview={Preview}, Architecture={Arch}, Error={Error}, Redist={RedistDir})", ToolChainDir, Family, FamilyRank, Version, Is64Bit, bPreview, UnrealArch.Arm64ec.ToString(), Error != null, RedistDir);
+					ToolChains.Add(new ToolChainInstallation(Family, FamilyRank, Version, Is64Bit, bPreview, UnrealArch.Arm64ec, Error, ToolChainDir, RedistDir, IsAutoSdk));
+				}
 			}
 		}
 
@@ -960,6 +982,7 @@ namespace UnrealBuildTool
 			{
 				FileVersionInfo VersionInfo = FileVersionInfo.GetVersionInfo(CompilerFile.FullName);
 				VersionNumber Version = new VersionNumber(VersionInfo.FileMajorPart, VersionInfo.FileMinorPart, VersionInfo.FileBuildPart);
+				VersionNumber Family = new VersionNumber(VersionInfo.FileMajorPart);
 
 				int Rank = PreferredClangVersions.TakeWhile(x => !x.Contains(Version)).Count();
 				bool Is64Bit = Is64BitExecutable(CompilerFile);
@@ -970,8 +993,8 @@ namespace UnrealBuildTool
 					Error = $"UnrealBuildTool requires at minimum the Clang {MinimumClangVersion} toolchain. Please install a later toolchain such as {PreferredClangVersions.Select(x => x.Min).Max()} from LLVM.";
 				}
 
-				Logger.LogDebug("Found Clang toolchain: {ToolChainDir} (Version={Version}, Is64Bit={Is64Bit}, Rank={Rank})", ToolChainDir, Version, Is64Bit, Rank);
-				ToolChains.Add(new ToolChainInstallation(Version, Rank, Version, Is64Bit, false, WindowsArchitecture.x64, null, ToolChainDir, null, IsAutoSdk));
+				Logger.LogDebug("Found Clang toolchain: {ToolChainDir} (Version={Version}, Is64Bit={Is64Bit}, Rank={Rank}, Error={Error})", ToolChainDir, Version, Is64Bit, Rank, Error != null);
+				ToolChains.Add(new ToolChainInstallation(Family, Rank, Version, Is64Bit, false, UnrealArch.X64, Error, ToolChainDir, null, IsAutoSdk));
 			}
 		}
 
@@ -990,6 +1013,7 @@ namespace UnrealBuildTool
 			{
 				FileVersionInfo VersionInfo = FileVersionInfo.GetVersionInfo(CompilerFile.FullName);
 				VersionNumber Version = new VersionNumber(VersionInfo.FileMajorPart, VersionInfo.FileMinorPart, VersionInfo.FileBuildPart);
+				VersionNumber Family = new VersionNumber(VersionInfo.FileMajorPart);
 
 				// The icx.exe version may be lower than the toolchain folder version, so use that instead if available
 				if (VersionNumber.TryParse(ToolChainDir.GetDirectoryName(), out VersionNumber? FolderVersion) && FolderVersion > Version)
@@ -1006,8 +1030,8 @@ namespace UnrealBuildTool
 					Error = $"UnrealBuildTool requires at minimum the Intel OneAPI {MinimumIntelOneApiVersion} toolchain. Please install a later toolchain such as {PreferredIntelOneApiVersions.Select(x => x.Min).Max()} from Intel.";
 				}
 
-				Logger.LogDebug("Found Intel OneAPI toolchain: {ToolChainDir} (Version={Version}, Is64Bit={Is64Bit}, Rank={Rank})", ToolChainDir, Version, Is64Bit, Rank);
-				ToolChains.Add(new ToolChainInstallation(Version, Rank, Version, Is64Bit, false, WindowsArchitecture.x64, Error, ToolChainDir, null, IsAutoSdk));
+				Logger.LogDebug("Found Intel OneAPI toolchain: {ToolChainDir} (Version={Version}, Is64Bit={Is64Bit}, Rank={Rank}, Error={Error})", ToolChainDir, Version, Is64Bit, Rank, Error != null);
+				ToolChains.Add(new ToolChainInstallation(Family, Rank, Version, Is64Bit, false, UnrealArch.X64, Error, ToolChainDir, null, IsAutoSdk));
 			}
 		}
 
@@ -1073,16 +1097,6 @@ namespace UnrealBuildTool
 
 
 		/// <summary>
-		/// Checks if the given directory contains a valid Clang toolchain
-		/// </summary>
-		/// <param name="ToolChainDir">Directory to check</param>
-		/// <returns>True if the given directory is valid</returns>
-		static bool IsValidToolChainDirClang(DirectoryReference ToolChainDir)
-		{
-			return FileReference.Exists(FileReference.Combine(ToolChainDir, "bin", "clang-cl.exe"));
-		}
-
-		/// <summary>
 		/// Determines if the given path is a valid Visual C++ version number
 		/// </summary>
 		/// <param name="ToolChainDir">The toolchain directory</param>
@@ -1090,15 +1104,11 @@ namespace UnrealBuildTool
 		/// <returns>True if the path is a valid version</returns>
 		static bool IsValidToolChainDirMSVC(DirectoryReference ToolChainDir, [NotNullWhen(true)] out VersionNumber? Version)
 		{
-			FileReference CompilerExe = FileReference.Combine(ToolChainDir, "bin", "Hostx86", "x64", "cl.exe");
+			FileReference CompilerExe = FileReference.Combine(ToolChainDir, "bin", "Hostx64", "x64", "cl.exe");
 			if (!FileReference.Exists(CompilerExe))
 			{
-				CompilerExe = FileReference.Combine(ToolChainDir, "bin", "Hostx64", "x64", "cl.exe");
-				if (!FileReference.Exists(CompilerExe))
-				{
-					Version = null;
-					return false;
-				}
+				Version = null;
+				return false;
 			}
 
 			FileVersionInfo VersionInfo = FileVersionInfo.GetVersionInfo(CompilerExe.FullName);
@@ -1118,17 +1128,27 @@ namespace UnrealBuildTool
 		/// <returns>True if the given directory contains a 64-bit toolchain</returns>
 		static bool Has64BitToolChain(DirectoryReference ToolChainDir)
 		{
-			return FileReference.Exists(FileReference.Combine(ToolChainDir, "bin", "amd64", "cl.exe")) || FileReference.Exists(FileReference.Combine(ToolChainDir, "bin", "Hostx64", "x64", "cl.exe"));
+			return FileReference.Exists(FileReference.Combine(ToolChainDir, "bin", "Hostx64", "x64", "cl.exe"));
 		}
 
 		/// <summary>
-		/// Checks if the given directory contains a arm64 toolchain.  Used to require arm64, which is an optional install item, when that is our target architecture.
+		/// Checks if the given directory contains an arm64 toolchain.  Used to require arm64, which is an optional install item, when that is our target architecture.
 		/// </summary>
 		/// <param name="ToolChainDir">Directory to check</param>
 		/// <returns>True if the given directory contains the arm64 toolchain</returns>
 		static bool HasArm64ToolChain(DirectoryReference ToolChainDir)
 		{
 			return FileReference.Exists(FileReference.Combine(ToolChainDir, "bin", "Hostx64", "arm64", "cl.exe"));
+		}
+
+		/// <summary>
+		/// Checks if the given directory contains a arm64ec toolchain.  Used to require arm64, which is an optional install item, when that is our target architecture.
+		/// </summary>
+		/// <param name="ToolChainDir">Directory to check</param>
+		/// <returns>True if the given directory contains the arm64ec toolchain</returns>
+		static bool HasArm64ECToolChain(DirectoryReference ToolChainDir)
+		{
+			return FileReference.Exists(FileReference.Combine(ToolChainDir, "lib", "arm64ec", "binmode.obj"));
 		}
 
 		/// <summary>
@@ -1339,7 +1359,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The architecture of this ToolChainInstallation (multiple ToolChainInstallation instances may be created, one per architecture).
 		/// </summary>
-		public WindowsArchitecture Architecture { get; }
+		public UnrealArch Architecture { get; }
 
 		/// <summary>
 		/// Reason for this toolchain not being compatible
@@ -1374,7 +1394,7 @@ namespace UnrealBuildTool
 		/// <param name="BaseDir">Base directory for the toolchain</param>
 		/// <param name="RedistDir">Optional directory for redistributable components (DLLs etc)</param>
 		/// <param name="IsAutoSdk">Whether this toolchain comes from AutoSDK</param>
-		public ToolChainInstallation(VersionNumber Family, int FamilyRank, VersionNumber Version, bool Is64Bit, bool IsPreview, WindowsArchitecture Architecture, string? Error, DirectoryReference BaseDir, DirectoryReference? RedistDir, bool IsAutoSdk)
+		public ToolChainInstallation(VersionNumber Family, int FamilyRank, VersionNumber Version, bool Is64Bit, bool IsPreview, UnrealArch Architecture, string? Error, DirectoryReference BaseDir, DirectoryReference? RedistDir, bool IsAutoSdk)
 		{
 			this.Family = Family;
 			this.FamilyRank = FamilyRank;

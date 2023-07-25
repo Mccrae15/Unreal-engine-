@@ -5,16 +5,14 @@
 =============================================================================*/
 
 #include "Engine/PendingNetGame.h"
-#include "Misc/NetworkGuid.h"
+#include "Engine/GameInstance.h"
 #include "EngineGlobals.h"
-#include "GameFramework/OnlineReplStructs.h"
 #include "Engine/Engine.h"
-#include "PacketHandlers/StatelessConnectHandlerComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/LocalPlayer.h"
-#include "Misc/NetworkVersion.h"
 #include "Net/NetworkProfiler.h"
 #include "Net/DataChannel.h"
+#include "PacketHandler.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PendingNetGame)
 
@@ -226,20 +224,10 @@ void UPendingNetGame::NotifyControlMessage(UNetConnection* Connection, uint8 Mes
 
 			if (FNetControlMessage<NMT_Upgrade>::Receive(Bunch, RemoteNetworkVersion, RemoteNetworkFeatures))
 			{
-				TStringBuilder<128> RemoteFeaturesDescription;
-				FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(RemoteNetworkFeatures, RemoteFeaturesDescription);
-
-				TStringBuilder<128> LocalFeaturesDescription;
-				FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(NetDriver->GetNetworkRuntimeFeatures(), LocalFeaturesDescription);
-
-				UE_LOG(LogNet, Error, TEXT("Server is incompatible with the local version of the game: RemoteNetworkVersion=%u, RemoteNetworkFeatures=%s vs LocalNetworkVersion=%u, LocalNetworkFeatures=%s"), 
-					RemoteNetworkVersion, RemoteFeaturesDescription.ToString(),
-					FNetworkVersion::GetLocalNetworkVersion(), LocalFeaturesDescription.ToString()
-				);
-
 				// Upgrade
 				ConnectionError = NSLOCTEXT("Engine", "ClientOutdated", "The match you are trying to join is running an incompatible version of the game.  Please try upgrading your game version.").ToString();
-				GEngine->BroadcastNetworkFailure(NULL, NetDriver, ENetworkFailure::OutdatedClient, ConnectionError);
+
+				Connection->HandleReceiveNetUpgrade(RemoteNetworkVersion, RemoteNetworkFeatures);
 			}
 
 			break;

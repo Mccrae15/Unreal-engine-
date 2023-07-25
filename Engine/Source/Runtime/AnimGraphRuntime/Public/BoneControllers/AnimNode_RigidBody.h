@@ -5,7 +5,9 @@
 #include "BoneControllers/AnimNode_SkeletalControlBase.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Physics/ImmediatePhysics/ImmediatePhysicsDeclares.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 #include "PhysicsProxy/PerSolverFieldSystem.h"
+#include "Tasks/Task.h"
 #include "AnimNode_RigidBody.generated.h"
 
 struct FBodyInstance;
@@ -99,8 +101,10 @@ struct ANIMGRAPHRUNTIME_API FSimSpaceSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta = (ClampMin = "0.0"))
 	float MaxAngularAcceleration;
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "ExternalLinearDrag is deprecated. Please use ExternalLinearDragV instead."))
 	float ExternalLinearDrag_DEPRECATED;
+#endif
 
 	// Additional linear drag applied to every body in addition to linear drag specified on them in the physics asset. 
 	// When combined with ExternalLinearVelocity, this can be used to add a temporary wind-blown effect without having to tune linear drag on 
@@ -373,8 +377,8 @@ public:
 
 private:
 
-	float WorldTimeSeconds;
-	float LastEvalTimeSeconds;
+	double WorldTimeSeconds;
+	double LastEvalTimeSeconds;
 
 	float AccumulatedDeltaTime;
 	float AnimPhysicsMinDeltaTime;
@@ -474,7 +478,7 @@ private:
 
 	FVector WorldSpaceGravity;
 
-	float TotalMass;
+	double TotalMass;
 
 	// Bounds used to gather world objects copied into the simulation
 	FSphere CachedBounds;

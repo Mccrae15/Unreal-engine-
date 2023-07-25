@@ -18,12 +18,15 @@
 #include "MuR/RefCounted.h"
 #include "MuT/ASTOpConstantResource.h"
 #include "MuT/ASTOpImageCompose.h"
+#include "MuT/ASTOpImageLayer.h"
+#include "MuT/ASTOpImageLayerColor.h"
 #include "MuT/ASTOpImageMultiLayer.h"
 #include "MuT/ASTOpInstanceAdd.h"
 #include "MuT/ASTOpMeshExtractLayoutBlocks.h"
 #include "MuT/ASTOpMeshRemoveMask.h"
 #include "MuT/ASTOpMeshDifference.h"
 #include "MuT/ASTOpMeshMorph.h"
+#include "MuT/ASTOpLayoutFromMesh.h"
 
 #include <cstdint>
 #include <memory>
@@ -36,7 +39,7 @@ namespace mu
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------
-    SubtreeSearchConstantVisitor::SubtreeSearchConstantVisitor( PROGRAM& program,
+    SubtreeSearchConstantVisitor::SubtreeSearchConstantVisitor( FProgram& program,
                                                                 OP::ADDRESS constant,
                                                                 OP_TYPE optype )
         : m_program( program ),
@@ -134,7 +137,7 @@ namespace mu
     {
     public:
 
-        GatherParametersVisitor( PROGRAM& program, OP::ADDRESS constant, OP_TYPE opType )
+        GatherParametersVisitor( FProgram& program, OP::ADDRESS constant, OP_TYPE opType )
             : m_constSearch( program, constant, opType )
         {
             MUTABLE_CPUPROFILER_SCOPE(GatherParametersVisitor);
@@ -160,7 +163,7 @@ namespace mu
         }
 
 
-        virtual bool Visit( OP::ADDRESS at, PROGRAM& program )
+        virtual bool Visit( OP::ADDRESS at, FProgram& program )
         {
             bool recurse = true;
 
@@ -379,18 +382,18 @@ namespace mu
             case OP_TYPE::IM_LAYERCOLOUR:
             {
                 recurse = false;
-				const ASTOpFixed* op = dynamic_cast<const ASTOpFixed*>(node.get());
+				const ASTOpImageLayerColor* op = dynamic_cast<const ASTOpImageLayerColor*>(node.get());
 				TArray<bool> newState;
 				newState.Init(false, size_t(EImageFormat::IF_COUNT));
-				RecurseWithState( op->children[op->op.args.ImageLayerColour.base].child(), newState );
-                RecurseWithState( op->children[op->op.args.ImageLayerColour.colour].child(), newState );
+				RecurseWithState( op->base.child(), newState );
+                RecurseWithState( op->color.child(), newState );
 
-                if ( op->children[op->op.args.ImageLayerColour.mask] )
+                if ( op->mask )
                 {
                     newState[(size_t)EImageFormat::IF_L_UBYTE] = true;
                     newState[(size_t)EImageFormat::IF_L_UBYTE_RLE] = true;
 
-                    RecurseWithState( op->children[op->op.args.ImageLayerColour.mask].child(), newState );
+                    RecurseWithState( op->mask.child(), newState );
                 }
                 break;
             }
@@ -398,18 +401,18 @@ namespace mu
             case OP_TYPE::IM_LAYER:
             {
                 recurse = false;
-				const ASTOpFixed* op = dynamic_cast<const ASTOpFixed*>(node.get());
+				const ASTOpImageLayer* op = dynamic_cast<const ASTOpImageLayer*>(node.get());
 				TArray<bool> newState;
 				newState.Init(false, size_t(EImageFormat::IF_COUNT));
-				RecurseWithState( op->children[op->op.args.ImageLayer.base].child(), newState );
-                RecurseWithState( op->children[op->op.args.ImageLayer.blended].child(), newState );
+				RecurseWithState( op->base.child(), newState );
+                RecurseWithState( op->blend.child(), newState );
 
-                if (op->children[op->op.args.ImageLayer.mask])
+                if (op->mask)
                 {
                     newState[(size_t)EImageFormat::IF_L_UBYTE] = true;
                     newState[(size_t)EImageFormat::IF_L_UBYTE_RLE] = true;
 
-                    RecurseWithState( op->children[op->op.args.ImageLayer.mask].child(), newState );
+                    RecurseWithState( op->mask.child(), newState );
                 }
                 break;
             }
@@ -625,21 +628,34 @@ namespace mu
                 break;
             }
 
-            case OP_TYPE::ME_EXTRACTFACEGROUP:
-            {
-                recurse = false;
+			case OP_TYPE::ME_EXTRACTFACEGROUP:
+			{
+				recurse = false;
 
 				const ASTOpFixed* op = dynamic_cast<const ASTOpFixed*>(node.get());
 
-                // todo: check if we really need all of them
-                uint64_t newState = currentSemantics;
-                newState |= (UINT64_C(1)<<MBS_LAYOUTBLOCK);
-                newState |= (UINT64_C(1)<<MBS_CHART);
-                newState |= (UINT64_C(1)<<MBS_VERTEXINDEX);
+				// todo: check if we really need all of them
+				uint64_t newState = currentSemantics;
+				newState |= (UINT64_C(1) << MBS_LAYOUTBLOCK);
+				newState |= (UINT64_C(1) << MBS_CHART);
+				newState |= (UINT64_C(1) << MBS_VERTEXINDEX);
 
-                RecurseWithState( op->children[op->op.args.MeshExtractFaceGroup.source].child(), newState );
-                break;
-            }
+				RecurseWithState(op->children[op->op.args.MeshExtractFaceGroup.source].child(), newState);
+				break;
+			}
+
+			case OP_TYPE::LA_FROMMESH:
+			{
+				recurse = false;
+
+				const ASTOpLayoutFromMesh* op = dynamic_cast<const ASTOpLayoutFromMesh*>(node.get());
+
+				uint64_t newState = currentSemantics;
+				newState |= (UINT64_C(1) << MBS_LAYOUTBLOCK);
+
+				RecurseWithState(op->Mesh.child(), newState);
+				break;
+			}
 
             case OP_TYPE::IN_ADDMESH:
             {
@@ -720,7 +736,7 @@ namespace mu
 
     //---------------------------------------------------------------------------------------------
     void DataOptimiseAST( int imageCompressionQuality, ASTOpList& roots,
-                          const MODEL_OPTIMIZATION_OPTIONS& options )
+                          const FModelOptimizationOptions& options )
     {
         // Images
         AccumulateImageFormatsAST accFormat;

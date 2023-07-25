@@ -8,7 +8,10 @@
 
 #pragma once
 
+#include "HAL/LowLevelMemTracker.h"
 #include "VulkanCommon.h"
+
+struct VkAllocationCallbacks;
 
 // API version we want to target.
 #ifndef UE_VK_API_VERSION
@@ -47,14 +50,6 @@
 #define VULKAN_HASH_POOLS_WITH_TYPES_USAGE_ID					1
 
 #define VULKAN_SINGLE_ALLOCATION_PER_RESOURCE					0
-
-#ifndef VULKAN_FREEPAGE_FOR_TYPE
-	#define VULKAN_FREEPAGE_FOR_TYPE							0
-#endif
-
-#ifndef VULKAN_USE_NEW_QUERIES
-	#define VULKAN_USE_NEW_QUERIES								1
-#endif
 
 #ifndef VULKAN_SHOULD_USE_LLM
 	#define VULKAN_SHOULD_USE_LLM								0
@@ -287,14 +282,6 @@
 	#endif
 #endif
 
-#ifndef VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
-	#ifdef VK_KHR_depth_stencil_resolve
-		#define VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE 1
-	#else
-		#define VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE 0
-	#endif
-#endif
-
 #ifndef VULKAN_SUPPORTS_RENDERPASS2
 	#ifdef VK_KHR_create_renderpass2
 		#define VULKAN_SUPPORTS_RENDERPASS2 1
@@ -316,14 +303,6 @@
 		#define VULKAN_SUPPORTS_ASTC_DECODE_MODE				(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)	// Requirement
 	#else
 		#define VULKAN_SUPPORTS_ASTC_DECODE_MODE				0
-	#endif
-#endif
-
-#ifndef VULKAN_SUPPORTS_SEPARATE_DEPTH_STENCIL_LAYOUTS
-	#ifdef VK_KHR_separate_depth_stencil_layouts
-		#define VULKAN_SUPPORTS_SEPARATE_DEPTH_STENCIL_LAYOUTS	1
-	#else
-		#define VULKAN_SUPPORTS_SEPARATE_DEPTH_STENCIL_LAYOUTS	0
 	#endif
 #endif
 

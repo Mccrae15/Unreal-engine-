@@ -4,24 +4,21 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ConfigContext.h"
 #include "Misc/ConfigUtilities.h"
-#include "HAL/IConsoleManager.h"
+#include "Misc/CoreDelegates.h"
 #include "Modules/ModuleManager.h"
-#include "Misc/CommandLine.h"
+#include "Misc/DelayedAutoRegister.h"
 #include "UObject/Package.h"
 #include "SceneManagement.h"
-#include "SystemSettings.h"
 #include "DeviceProfiles/DeviceProfile.h"
-#include "IDeviceProfileSelectorModule.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "UObject/UnrealType.h"
 #if WITH_EDITOR
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-#include "PlatformInfo.h"
 #include "PIEPreviewDeviceProfileSelectorModule.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
+#else
+#include "IDeviceProfileSelectorModule.h"
 #endif
-#include "ProfilingDebugging/CsvProfiler.h"
 #include "DeviceProfiles/DeviceProfileFragment.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 
@@ -172,7 +169,7 @@ TMap<FName, FString> UDeviceProfileManager::GatherDeviceProfileCVars(const FStri
 
 	EPlatformMemorySizeBucket MemBucket = FPlatformMemory::GetMemorySizeBucket();
 	// if caching (for another platfomr), then we use the DP's PreviewMemoryBucket, instead of querying for it
-	if (GatherMode == EDeviceProfileMode::DPM_CacheValues)
+	if (GatherMode == EDeviceProfileMode::DPM_CacheValues || GatherMode == EDeviceProfileMode::DPM_CacheValuesIgnoreMatchingRules )
 	{
 #if ALLOW_OTHER_PLATFORM_CONFIG
 		// caching is not done super early, so we can assume DPs have been found now
@@ -186,8 +183,10 @@ TMap<FName, FString> UDeviceProfileManager::GatherDeviceProfileCVars(const FStri
 		// use the DP's platform's configs, NOT the running platform
 		ConfigSystem = FConfigCacheIni::ForPlatform(*Profile->DeviceType);
 		MemBucket = Profile->GetPreviewMemorySizeBucket();
-
-		FragmentsSelected = FindMatchingFragments(DeviceProfileName, ConfigSystem);
+		if(GatherMode == EDeviceProfileMode::DPM_CacheValues)
+		{
+			FragmentsSelected = FindMatchingFragments(DeviceProfileName, ConfigSystem);
+		}
 #else
 		checkNoEntry();
 #endif
@@ -341,6 +340,57 @@ TMap<FName, FString> UDeviceProfileManager::GatherDeviceProfileCVars(const FStri
 	}
 
 	return DeviceProfileCVars;
+}
+
+TMap<FName, TSet<FString>> UDeviceProfileManager::GetAllReferencedDeviceProfileCVars(UDeviceProfile* DeviceProfile)
+{
+	FConfigCacheIni* ConfigSystem = GConfig;
+
+#if ALLOW_OTHER_PLATFORM_CONFIG
+	// use the DP's platform's configs, NOT the running platform
+	ConfigSystem = FConfigCacheIni::ForPlatform(*DeviceProfile->DeviceType);
+#endif
+
+	TMap<FName, FString> DeviceProfileCVars = GatherDeviceProfileCVars(DeviceProfile->GetName(), EDeviceProfileMode::DPM_CacheValuesIgnoreMatchingRules);
+
+	// gather all referenced fragments, note that this just a dumb traverse of the the matched rules so it may contain
+	// fragments that a device cannot ultimately select.
+	TArray<FString> AllReferencedMatchedFragments = FindAllReferencedFragmentsFromMatchedRules(DeviceProfile->GetName(), ConfigSystem);
+
+	TMap<FName, TSet<FString>> AllCVarsAndValues;
+
+	for (const auto& Pair : DeviceProfileCVars)
+	{
+		AllCVarsAndValues.FindOrAdd(Pair.Key).Add(Pair.Value);
+	}
+
+	for (const FString& Fragment : AllReferencedMatchedFragments)
+	{
+		TArray<FString> FragmentCVars;
+		GetFragmentCVars(Fragment, TEXT("CVars"), FragmentCVars, ConfigSystem);
+		for (const FString& FragCVar : FragmentCVars)
+		{
+			FString CVarKey, CVarValue;
+			if (FragCVar.Split(TEXT("="), &CVarKey, &CVarValue))
+			{
+				if (CVarKey.StartsWith(TEXT("sg.")))
+				{
+					TMap<FString, FString> ScalabilityCVars;
+					ExpandScalabilityCVar(ConfigSystem, CVarKey, CVarValue, ScalabilityCVars, true);
+					for (const auto& ScalabilityPair : ScalabilityCVars)
+					{
+						AllCVarsAndValues.FindOrAdd(*ScalabilityPair.Key).Add(ScalabilityPair.Value);
+					}
+				}
+				else
+				{
+					AllCVarsAndValues.FindOrAdd(FName(CVarKey)).Add(CVarValue);
+				}
+			}
+		}
+	}
+
+	return AllCVarsAndValues;
 }
 
 void UDeviceProfileManager::SetDeviceProfileCVars(const FString& DeviceProfileName)
@@ -527,6 +577,8 @@ void UDeviceProfileManager::InitializeCVarsForActiveDeviceProfile(bool bPushSett
 		ActiveProfileName = GetPlatformDeviceProfileName();
 	}
 
+	UE_LOG(LogInit, Log, TEXT("Selected Device Profile: [%s]"), *ActiveProfileName);
+
 	SetDeviceProfileCVars(ActiveProfileName);
 }
 
@@ -634,7 +686,7 @@ UDeviceProfile* UDeviceProfileManager::CreateProfile(const FString& ProfileName,
 		// @todo config: we could likely cache local ini files to speed this up,
 		// along with the ones we load in LoadConfig
 		// NOTE: This happens at runtime, so maybe only do this if !RequiresCookedData()?
-		FConfigFile* PlatformConfigFile;
+		const FConfigFile* PlatformConfigFile = nullptr;
 		FConfigFile LocalConfigFile;
 		if (FPlatformProperties::RequiresCookedData())
 		{
@@ -642,8 +694,7 @@ UDeviceProfile* UDeviceProfileManager::CreateProfile(const FString& ProfileName,
 		}
 		else
 		{
-			FConfigCacheIni::LoadLocalIniFile(LocalConfigFile, TEXT("DeviceProfiles"), true, ConfigPlatform);
-			PlatformConfigFile = &LocalConfigFile;
+			PlatformConfigFile = FConfigCacheIni::FindOrLoadPlatformConfig(LocalConfigFile, TEXT("DeviceProfiles"), ConfigPlatform);
 		}
 
 		// Build Parent objects first. Important for setup
@@ -812,13 +863,12 @@ void UDeviceProfileManager::LoadProfiles()
 			FString ConfigLoadPlatform = PlatformIndex == 0 ? FString(FPlatformProperties::IniPlatformName()) : ConfidentialPlatforms[PlatformIndex - 1].ToString();
 
 			// load the DP.ini files (from current platform and then by the extra confidential platforms)
-			FConfigFile PlatformConfigFile;
-			FConfigCacheIni::LoadLocalIniFile(PlatformConfigFile, TEXT("DeviceProfiles"), true, *ConfigLoadPlatform);
+			FConfigFile LocalPlatformConfigFile;
+			const FConfigFile* PlatformConfigFile = FConfigCacheIni::FindOrLoadPlatformConfig(LocalPlatformConfigFile, TEXT("DeviceProfiles"), *ConfigLoadPlatform);
 
 			// load all of the DeviceProfiles
 			TArray<FString> ProfileDescriptions;
-			PlatformConfigFile.GetArray(TEXT("DeviceProfiles"), TEXT("DeviceProfileNameAndTypes"), ProfileDescriptions);
-
+			PlatformConfigFile->GetArray(TEXT("DeviceProfiles"), TEXT("DeviceProfileNameAndTypes"), ProfileDescriptions);
 
 			// add them to our collection of profiles by platform
 			for (const FString& Desc : ProfileDescriptions)
@@ -1044,9 +1094,9 @@ void UDeviceProfileManager::HandleDeviceProfileOverrideChange()
 		FString PlatformName = ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName());
 		
 		TArray<FString> DeviceProfileNameAndTypes;
-		FConfigFile PlatformConfigFile;
-		FConfigCacheIni::LoadLocalIniFile(PlatformConfigFile, TEXT("DeviceProfiles"), true, *PlatformName);
-		PlatformConfigFile.GetArray(TEXT("DeviceProfiles"), TEXT("DeviceProfileNameAndTypes"), DeviceProfileNameAndTypes);
+		FConfigFile LocalConfigFile;
+		const FConfigFile* PlatformConfigFile = FConfigCacheIni::FindOrLoadPlatformConfig(LocalConfigFile, TEXT("DeviceProfiles"), *PlatformName);
+		PlatformConfigFile->GetArray(TEXT("DeviceProfiles"), TEXT("DeviceProfileNameAndTypes"), DeviceProfileNameAndTypes);
 			
 		bool bCreateIfMissing = false;
 		for (const FString& Desc: DeviceProfileNameAndTypes)

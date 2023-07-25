@@ -16,7 +16,7 @@
 #include "Preferences/MaterialStatsOptions.h"
 #include "MaterialEditorSettings.h"
 #include "ShaderCompiler.h"
-
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Modules/ModuleManager.h"
 #include "MessageLogModule.h"
 
@@ -123,12 +123,7 @@ FText FShaderPlatformSettings::GetShaderCode(const EMaterialQualityLevel::Type Q
 		if (Entry != nullptr)
 		{
 			const TShaderRef<FShader>& Shader = *Entry;
-
-			static FName NAME_NullVF(TEXT("NullVF"));
-			FVertexFactoryType* VertexFactory = Shader.GetVertexFactoryType();
-			const FName VertexFactoryName = VertexFactory ? VertexFactory->GetFName() : NAME_NullVF;
-			const FName ShaderTypeName = Shader.GetType()->GetFName();
-			const FMemoryImageString* ShaderSource = MaterialShaderMap->GetShaderSource(VertexFactoryName, ShaderTypeName);
+			const FMemoryImageString* ShaderSource = MaterialShaderMap->GetShaderSource(Shader.GetVertexFactoryType(), Shader.GetType(), ShaderId.PermutationId);
 			if (ShaderSource != nullptr)
 			{
 				PlatformData[QualityType].bUpdateShaderCode = false;
@@ -942,7 +937,7 @@ void FMaterialStats::BuildViewShaderCodeMenus()
 				const FString MaterialQualityName = FMaterialStatsUtils::MaterialQualityToString(QualityLevel);
 				const FName TabName = MakeTabName(PlatformType, PlatformID, QualityLevel);
 
-				TabManager->RegisterTabSpawner(TabName, FOnSpawnTab::CreateSP<FMaterialStats, EShaderPlatform, EMaterialQualityLevel::Type>(this, &FMaterialStats::SpawnTab_ShaderCode, PlatformID, QualityLevel))
+				TabManager->RegisterTabSpawner(TabName, FOnSpawnTab::CreateSP(this, &FMaterialStats::SpawnTab_ShaderCode, PlatformID, QualityLevel))
 					.SetGroup(ShaderPlatformMenuItem.ToSharedRef())
 					.SetDisplayName(FText::FromString(MaterialQualityName));
 

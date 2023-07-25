@@ -14,6 +14,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SVectorInputBox.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -171,9 +172,11 @@ void FBlendSampleDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBui
 
 	// Sample value
 	FBlendSampleDetails::GenerateBlendSampleWidget(
-		[&CategoryBuilder]() -> FDetailWidgetRow&
+		[&CategoryBuilder, &DetailBuilder]() -> IDetailPropertyRow&
 		{
-			return CategoryBuilder.AddCustomRow(FText::FromString(TEXT("SampleValue")));
+			TSharedPtr<IPropertyHandle> SampleProperty = DetailBuilder.GetProperty(
+				GET_MEMBER_NAME_CHECKED(FBlendSample, SampleValue), FBlendSample::StaticStruct());
+			return CategoryBuilder.AddProperty(SampleProperty);
 		}, GridWidget->OnSampleMoved, (BlendSpaceBase != nullptr) ? BlendSpaceBase : BlendSpace,
 		GridWidget->GetSelectedSampleIndex(), false);
 
@@ -183,7 +186,7 @@ void FBlendSampleDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBui
 		TSharedPtr<IPropertyHandle> AnimationProperty = DetailBuilder.GetProperty(
 			GET_MEMBER_NAME_CHECKED(FBlendSample, Animation), FBlendSample::StaticStruct());
 
-		FDetailWidgetRow& AnimationRow = CategoryBuilder.AddCustomRow(FText::FromString(TEXT("Animation")));
+		IDetailPropertyRow& AnimationRow = CategoryBuilder.AddProperty(AnimationProperty);
 		FBlendSampleDetails::GenerateAnimationWidget(AnimationRow, BlendspaceToUse, AnimationProperty);
 
 		TSharedPtr<IPropertyHandle> RateScaleProperty = DetailBuilder.GetProperty(
@@ -383,7 +386,7 @@ void FBlendSampleDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBui
 	}
 }
 
-void FBlendSampleDetails::GenerateBlendSampleWidget(TFunction<FDetailWidgetRow& (void)> InFunctor, FOnSampleMoved OnSampleMoved, const UBlendSpace* BlendSpace, const int32 SampleIndex, bool bShowLabel)
+void FBlendSampleDetails::GenerateBlendSampleWidget(TFunction<IDetailPropertyRow& (void)> InFunctor, FOnSampleMoved OnSampleMoved, const UBlendSpace* BlendSpace, const int32 SampleIndex, bool bShowLabel)
 {
 	const int32 NumParameters = BlendSpace->IsA<UBlendSpace1D>() ? 1 : 2;
 	for (int32 ParameterIndex = 0; ParameterIndex < NumParameters; ++ParameterIndex)
@@ -397,16 +400,20 @@ void FBlendSampleDetails::GenerateBlendSampleWidget(TFunction<FDetailWidgetRow& 
 			OnSampleMoved.ExecuteIfBound(SampleIndex, SampleValue, bIsInteractive);		
 		};
 		
-		FDetailWidgetRow& ParameterRow = InFunctor();
+		IDetailPropertyRow& ParameterRow = InFunctor();
 
-		ParameterRow.NameContent()
+		ParameterRow.CustomWidget()
+		.NameContent()
 		[
 			SNew(STextBlock)
 			.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
-			.Text_Lambda([BlendSpace, ParameterIndex]() { return FText::FromString(BlendSpace->GetBlendParameter(ParameterIndex).DisplayName); })
-		];
+			.Text_Lambda([BlendSpace, ParameterIndex]()
+				{ 
 
-		ParameterRow.ValueContent()
+					return FText::FromString(BlendSpace->GetBlendParameter(ParameterIndex).DisplayName);
+				})
+		]
+		.ValueContent()
 		[
 			SNew(SNumericEntryBox<float>)
 			.Font(FAppStyle::GetFontStyle("CurveEd.InfoFont"))
@@ -415,7 +422,7 @@ void FBlendSampleDetails::GenerateBlendSampleWidget(TFunction<FDetailWidgetRow& 
 			{
 				if (BlendSpace)
 				{
-					return BlendSpace->IsValidBlendSampleIndex(SampleIndex) ? BlendSpace->GetBlendSample(SampleIndex).SampleValue[ParameterIndex] : 0.0f;
+					return BlendSpace->IsValidBlendSampleIndex(SampleIndex) ? static_cast<float>(BlendSpace->GetBlendSample(SampleIndex).SampleValue[ParameterIndex]) : 0.0f;
 				}
 
 				return 0.0f;
@@ -454,16 +461,14 @@ void FBlendSampleDetails::GenerateBlendSampleWidget(TFunction<FDetailWidgetRow& 
 	}
 }
 
-void FBlendSampleDetails::GenerateAnimationWidget(FDetailWidgetRow& Row, const UBlendSpace* BlendSpace, TSharedPtr<IPropertyHandle> AnimationProperty)
+void FBlendSampleDetails::GenerateAnimationWidget(IDetailPropertyRow& PropertyRow, const UBlendSpace* BlendSpace, TSharedPtr<IPropertyHandle> AnimationProperty)
 {
-	Row.NameContent()
+	PropertyRow.CustomWidget()
+	.NameContent()
 		[
-			SNew(STextBlock)
-			.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
-			.Text(AnimationProperty->GetPropertyDisplayName())
-		];
-
-	Row.ValueContent()
+			AnimationProperty->CreatePropertyNameWidget()
+		]
+	.ValueContent()
 		.MinDesiredWidth(250.f)
 		[
 			SNew(SObjectPropertyEntryBox)
@@ -546,7 +551,7 @@ bool FBlendSampleDetails::ShouldFilterAssetStatic(const FAssetData& AssetData, c
 	if (AssetData.GetTagValue(SkeletonTagName, SkeletonName))
 	{
 		// Check whether or not the skeletons are compatible
-		if (BlendSpaceBase->GetSkeleton()->IsCompatibleSkeletonByAssetData(AssetData))
+		if (BlendSpaceBase->GetSkeleton()->IsCompatibleForEditor(AssetData))
 		{
 			// If so check if the additive animation type is compatible with the blend space
 			const FName AdditiveTypeTagName = GET_MEMBER_NAME_CHECKED(UAnimSequence, AdditiveAnimType);

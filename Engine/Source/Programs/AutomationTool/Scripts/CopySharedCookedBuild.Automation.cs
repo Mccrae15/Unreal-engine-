@@ -129,10 +129,10 @@ class CopySharedCookedBuild : BuildCommand
 				UnrealTargetPlatform CurrentPlatform = HostPlatform.Current.HostEditorPlatform;
 
 				UnrealBuild.BuildAgenda Agenda = new UnrealBuild.BuildAgenda();
-				Agenda.AddTarget("UnrealHeaderTool", CurrentPlatform, UnrealTargetConfiguration.Development);
 				Agenda.AddTarget(EditorTargetName, CurrentPlatform, UnrealTargetConfiguration.Development, ProjectFileName.EndsWith(".uproject", StringComparison.InvariantCultureIgnoreCase)? new FileReference(ProjectFileName) : null);
 				Agenda.AddTarget("ShaderCompileWorker", CurrentPlatform, UnrealTargetConfiguration.Development);
 				Agenda.AddTarget("UnrealLightmass", CurrentPlatform, UnrealTargetConfiguration.Development);
+				Agenda.AddTarget("InterchangeWorker", CurrentPlatform, UnrealTargetConfiguration.Development);
 				Agenda.AddTarget("CrashReportClient", CurrentPlatform, UnrealTargetConfiguration.Shipping);
 
 				UnrealBuild Build = new UnrealBuild(this);

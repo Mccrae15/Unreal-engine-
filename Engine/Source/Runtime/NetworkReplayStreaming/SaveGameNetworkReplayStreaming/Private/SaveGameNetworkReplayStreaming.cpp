@@ -177,7 +177,18 @@ namespace SaveGameReplay
 				}
 				else
 				{
-					OutstandingTask = MakeUnique<TAsyncTask<TResult>>(OwningStreamer, Description, InAsyncWork, InPostAsyncWork);
+					if (InAsyncWork)
+					{
+						OutstandingTask = MakeUnique<TAsyncTask<TResult>>(OwningStreamer, Description, InAsyncWork, InPostAsyncWork);
+					}
+					else
+					{
+						UE_LOG(LogSaveGameReplay, Warning, TEXT("SaveGameReplay::FAsyncTaskManager::StartTask - Async work function was invalid (NewTask = %s)"), *Description);
+
+						TResult Result;
+						Result.Result = EStreamingOperationResult::UnfinishedTask;
+						InPostAsyncWork(Result);
+					}
 				}
 			}
 		}
@@ -248,7 +259,7 @@ namespace SaveGameReplay
 		{
 			if (IsRunningDedicatedServer())
 			{
-				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper commands are client only."));
+				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper commands are client only."));
 				return;
 			}
 
@@ -259,7 +270,7 @@ namespace SaveGameReplay
 			}
 			else if (Params.Num() != 0)
 			{
-				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper commands take either a Streamer Override or no arguments."));
+				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper commands take either a Streamer Override or no arguments."));
 				return;
 			}
 
@@ -338,7 +349,7 @@ namespace SaveGameReplay
 
 			for (const FString& CurrentName : FoundFiles)
 			{
-				UE_LOG(LogSaveGameReplay, Log, TEXT("FSaveGameMoveFileHelper::SanitizeNames - Handling %s"), *CurrentName);
+				UE_LOG(LogSaveGameReplay, Log, TEXT("FSaveGameReplayMoveFileHelper::SanitizeNames - Handling %s"), *CurrentName);
 
 				FString NewName(CurrentName);
 				NewName.RemoveFromEnd(LocalFileExt);
@@ -346,7 +357,7 @@ namespace SaveGameReplay
 
 				if (!FileManager.Move(*FPaths::Combine(DemoPath, NewName), *FPaths::Combine(DemoPath, CurrentName)))
 				{
-					UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper::SanitizeNames - Failed to sanitize %s"), *CurrentName);
+					UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper::SanitizeNames - Failed to sanitize %s"), *CurrentName);
 				}
 			}
 		}
@@ -392,10 +403,10 @@ namespace SaveGameReplay
 			const uint32 Result = IFileManager::Get().Copy(*DestinationFileName, *SourceFileName);
 			if (0 != Result)
 			{
-				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper::CopyFile: Failed - from '%s' to '%s' error = %lu"), *SourceFileName, *DestinationFileName, Result);
+				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper::CopyFile: Failed - from '%s' to '%s' error = %lu"), *SourceFileName, *DestinationFileName, Result);
 			}
 
-			UE_LOG(LogSaveGameReplay, Log, TEXT("FSaveGameMoveFileHelper::CopyFile: Result = %d"), Result);
+			UE_LOG(LogSaveGameReplay, Log, TEXT("FSaveGameReplayMoveFileHelper::CopyFile - from '%s' to '%s': Result = %d"), *SourceFileName, *DestinationFileName, Result);
 		}
 
 		static void SaveFile(const TSharedPtr<FMoveContext>& Context, const FString& SaveGameName, ISaveGameSystem* SaveGameSystem)
@@ -403,7 +414,7 @@ namespace SaveGameReplay
 			TArray<uint8> SaveData;
 			if (!SaveGameSystem->LoadGame(false, *SaveGameName, Context->UserIndex, SaveData))
 			{
-				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper::SaveFile: Failed to load save game %s"), *SaveGameName)
+				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper::SaveFile: Failed to load save game %s"), *SaveGameName)
 					return;
 			}
 
@@ -415,7 +426,7 @@ namespace SaveGameReplay
 
 			if (FileAR->IsError())
 			{
-				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper::SaveFile: Failed to save game %s to %s"), *SaveGameName, *DestinationFileName);
+				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper::SaveFile: Failed to save game %s to %s"), *SaveGameName, *DestinationFileName);
 			}
 		}
 
@@ -440,22 +451,37 @@ namespace SaveGameReplay
 						}
 						else
 						{
-							UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper::OnEnumerateRecentStreamsComplete: Unable to get SaveGameSystem"));
+							UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper::OnEnumerateRecentStreamsComplete: Unable to get SaveGameSystem"));
 						}
 					}
 					else
 					{
-						//@todo: make async, but don't forget about post enumerate
-						for (const FNetworkReplayStreamInfo& StreamInfo : Result.FoundStreams)
-						{
-							CopyFile(Context, StreamInfo.Name);
-						}
+						Async(EAsyncExecution::TaskGraph,
+							[Result, Context]()
+							{
+								for (const FNetworkReplayStreamInfo& StreamInfo : Result.FoundStreams)
+								{
+									CopyFile(Context, StreamInfo.Name);
+								}
+							},
+							[Context]()
+							{
+								UE_LOG(LogSaveGameReplay, Log, TEXT("FSaveGameReplayMoveFileHelper::OnEnumerateStreamsComplete: Async copy complete."));
+
+								AsyncTask(ENamedThreads::GameThread, 
+									[Context]()
+									{
+										MoveFilesInternal_PostEnumerate(Context);
+									});
+							});
+
+						return;
 					}
 				}
 			}
 			else
 			{
-				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper::OnEnumerateRecentStreamsComplete: Enumerate failed"));
+				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper::OnEnumerateRecentStreamsComplete: Enumerate failed"));
 			}
 
 			MoveFilesInternal_PostEnumerate(Context);
@@ -465,18 +491,24 @@ namespace SaveGameReplay
 		{
 			if (Result.WasSuccessful())
 			{
-				//@todo: make async
-
-				// Currently, the LocalFileStreamer doesn't support EnumerateRecentStreams
-				// and the SaveGameStreamer will just return non-Saved replays.
-				for (const FNetworkReplayStreamInfo& StreamInfo : Result.FoundStreams)
-				{
-					CopyFile(Context, StreamInfo.Name);
-				}
+				Async(EAsyncExecution::TaskGraph, 
+					[Result, Context]()
+					{
+						// Currently, the LocalFileStreamer doesn't support EnumerateRecentStreams
+						// and the SaveGameStreamer will just return non-Saved replays.
+						for (const FNetworkReplayStreamInfo& StreamInfo : Result.FoundStreams)
+						{
+							CopyFile(Context, StreamInfo.Name);
+						}
+					},
+					[]()
+					{
+						UE_LOG(LogSaveGameReplay, Log, TEXT("FSaveGameReplayMoveFileHelper::OnEnumerateRecentStreamsComplete: Async copy complete."))
+					});
 			}
 			else
 			{
-				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper::OnEnumerateRecentStreamsComplete: Enumerate failed"))
+				UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper::OnEnumerateRecentStreamsComplete: Enumerate failed"))
 			}
 		}
 
@@ -500,7 +532,7 @@ namespace SaveGameReplay
 #if PLATFORM_MOVE_REQUIRES_LOWERCASE
 				if (ReplayFileName.Compare(ReplayFileName.ToLower(), ESearchCase::CaseSensitive) != 0)
 				{
-					UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameMoveFileHelper::MoveFilesLocalInternal - Replay file %s is not lowercase, import will fail."), *ReplayFileName);
+					UE_LOG(LogSaveGameReplay, Warning, TEXT("FSaveGameReplayMoveFileHelper::MoveFilesLocalInternal - Replay file %s is not lowercase, import will fail."), *ReplayFileName);
 				}
 #endif
 
@@ -522,11 +554,19 @@ namespace SaveGameReplay
 			MoveFiles(Streamer, GetTempDemoDirectory(), SourceDirectory, UserIndex);
 		}
 
-		//@todo: make async
 		static void MoveFilesFromTemp(const FString& DestinationDirectory, const int32 UserIndex)
 		{
 			TSharedPtr<FMoveContext> MoveContext(MakeShareable(new FMoveContext(nullptr, GetTempDemoDirectory(), DestinationDirectory, UserIndex)));
-			MoveFilesLocalInternal(MoveContext);
+
+			Async(EAsyncExecution::TaskGraph,
+				[MoveContext]()
+				{
+					MoveFilesLocalInternal(MoveContext);
+				},
+				[]()
+				{
+					UE_LOG(LogSaveGameReplay, Log, TEXT("FSaveGameReplayMoveFileHelper::MoveFilesFromTemp: Async copy complete."))
+				});
 		}
 
 	private:

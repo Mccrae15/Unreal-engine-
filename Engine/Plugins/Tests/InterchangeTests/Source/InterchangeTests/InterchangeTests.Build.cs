@@ -27,9 +27,12 @@ namespace UnrealBuildTool.Rules
 					"InterchangeCore",
 					"InterchangeDispatcher",
 					"InterchangeEngine",
+					"LevelSequence",
 					"MeshDescription",
+					"MovieScene",
 					"StaticMeshDescription",
-					"UnrealEd"
+					"UnrealEd",
+					"VariantManagerContent"
 				}
 			);
 		}

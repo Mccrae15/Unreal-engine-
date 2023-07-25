@@ -11,17 +11,14 @@
 class FVulkanDescriptorSetCache;
 class FVulkanDescriptorPool;
 class FVulkanDescriptorPoolsManager;
+class FVulkanBindlessDescriptorManager;
 class FVulkanCommandListContextImmediate;
 class FVulkanTransientHeapCache;
 class FVulkanDeviceExtension;
-#if VULKAN_USE_NEW_QUERIES
 class FVulkanOcclusionQueryPool;
-#else
-class FOLDVulkanQueryPool;
-#endif
+class FVulkanRenderPassManager;
 
 #if VULKAN_RHI_RAYTRACING
-class FVulkanBasicRaytracingPipeline;
 class FVulkanRayTracingCompactionRequestHandler;
 #endif
 
@@ -53,6 +50,8 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasRayTracingPipeline : 1;
 			uint64 HasRayQuery : 1;
 			uint64 HasDeferredHostOperations : 1;
+			uint64 HasEXTCalibratedTimestamps : 1;
+			uint64 HasEXTDescriptorBuffer : 1;
 
 			// Vendor specific
 			uint64 HasAMDBufferMarker : 1;
@@ -60,7 +59,6 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasNVDeviceDiagnosticConfig : 1;
 			uint64 HasQcomRenderPassTransform : 1;
 			uint64 HasQcomFragmentDensityMapOffset : 1;
-			uint64 HasQcomRenderPassShaderResolve : 1;
 
 			// Promoted to 1.1
 			uint64 HasKHRMaintenance1 : 1;
@@ -80,11 +78,13 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasEXTShaderViewportIndexLayer : 1;
 			uint64 HasSeparateDepthStencilLayouts : 1;
 			uint64 HasEXTHostQueryReset : 1;
-			uint64 HasKHRDepthStencilResolve : 1;
+			uint64 HasQcomRenderPassShaderResolve : 1;
 
 			// Promoted to 1.3
 			uint64 HasEXTTextureCompressionASTCHDR : 1;
 			uint64 HasKHRMaintenance4 : 1;
+			uint64 HasKHRSynchronization2 : 1;
+			uint64 HasEXTSubgroupSizeControl : 1;
 		};
 		uint64 Packed;
 	};
@@ -115,13 +115,22 @@ struct FOptionalVulkanDeviceExtensions
 #endif
 };
 
-#if VULKAN_RHI_RAYTRACING
-struct FRayTracingProperties
+// All the features and properties we need to keep around from extension initialization
+struct FOptionalVulkanDeviceExtensionProperties
 {
-	VkPhysicalDeviceAccelerationStructurePropertiesKHR AccelerationStructure;
-	VkPhysicalDeviceRayTracingPipelinePropertiesKHR RayTracingPipeline;
-};
+	FOptionalVulkanDeviceExtensionProperties()
+	{
+		FMemory::Memzero(*this);
+	}
+
+	VkPhysicalDeviceDescriptorBufferPropertiesEXT DescriptorBufferProps;
+	VkPhysicalDeviceSubgroupSizeControlPropertiesEXT SubgroupSizeControlProperties;
+
+#if VULKAN_RHI_RAYTRACING
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR AccelerationStructureProps;
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR RayTracingPipelineProps;
 #endif // VULKAN_RHI_RAYTRACING
+};
 
 namespace VulkanRHI
 {
@@ -151,6 +160,7 @@ namespace VulkanRHI
 			DeviceMemoryAllocation,
 			BufferSuballocation,
 			AccelerationStructure,
+			BindlessHandle,
 		};
 
 		template <typename T>
@@ -160,6 +170,16 @@ namespace VulkanRHI
 			EnqueueGenericResource(Type, (uint64)Handle);
 		}
 
+		inline void EnqueueBindlessHandle(FRHIDescriptorHandle DescriptorHandle)
+		{
+			if (DescriptorHandle.IsValid())
+			{
+				const uint64 Type = (uint64)DescriptorHandle.GetRawType();
+				const uint64 Index = (uint64)DescriptorHandle.GetIndex();
+				const uint64 AsUInt64 = (Type << 32) | Index;
+				EnqueueResource(EType::BindlessHandle, AsUInt64);
+			}
+		}
 
 		void EnqueueResourceAllocation(FVulkanAllocation& Allocation);
 		void EnqueueDeviceAllocation(FDeviceMemoryAllocation* DeviceMemoryAllocation);
@@ -265,9 +285,12 @@ public:
 	}
 
 #if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	VkExtent2D GetBestMatchedShadingRateExtents(EVRSShadingRate Rate) const;
+	inline VkExtent2D GetBestMatchedFragmentSize(EVRSShadingRate Rate) const
+	{
+		return FragmentSizeMap[Rate];
+	}
 #endif
-	
+
 	inline const VkPhysicalDeviceLimits& GetLimits() const
 	{
 		return GpuProps.limits;
@@ -286,12 +309,6 @@ public:
 	}
 
 #if VULKAN_RHI_RAYTRACING
-	inline const FRayTracingProperties& GetRayTracingProperties() const
-	{
-		check(OptionalDeviceExtensions.HasRaytracingExtensions() || (Device == VK_NULL_HANDLE));
-		return RayTracingProperties;
-	}
-	
 	FVulkanRayTracingCompactionRequestHandler* GetRayTracingCompactionRequestHandler() { return RayTracingCompactionRequestHandler; }
 
 	void InitializeRayTracing();
@@ -315,6 +332,8 @@ public:
 		return DeviceMemoryManager.HasUnifiedMemory();
 	}
 
+	bool SupportsBindless() const;
+
 	inline uint64 GetTimestampValidBitsMask() const
 	{
 		return TimestampValidBitsMask;
@@ -337,10 +356,7 @@ public:
 		return DefaultTexture->DefaultView;
 	}
 
-	inline const VkFormatProperties* GetFormatProperties() const
-	{
-		return FormatProperties;
-	}
+	const VkFormatProperties& GetFormatProperties(VkFormat InFormat) const;
 
 	inline VulkanRHI::FDeviceMemoryManager& GetDeviceMemoryManager()
 	{
@@ -372,6 +388,11 @@ public:
 		return FenceManager;
 	}
 
+	inline FVulkanRenderPassManager& GetRenderPassManager()
+	{
+		return *RenderPassManager;
+	}
+
 	inline FVulkanDescriptorSetCache& GetDescriptorSetCache()
 	{
 		return *DescriptorSetCache;
@@ -380,6 +401,11 @@ public:
 	inline FVulkanDescriptorPoolsManager& GetDescriptorPoolsManager()
 	{
 		return *DescriptorPoolsManager;
+	}
+
+	inline FVulkanBindlessDescriptorManager* GetBindlessDescriptorManager()
+	{
+		return BindlessDescriptorManager;
 	}
 
 	inline TMap<uint32, FSamplerStateRHIRef>& GetSamplerMap()
@@ -459,6 +485,16 @@ public:
 		return OptionalDeviceExtensions;
 	}
 
+	inline const FOptionalVulkanDeviceExtensionProperties& GetOptionalExtensionProperties() const
+	{
+		return OptionalDeviceExtensionProperties;
+	}
+
+	inline bool SupportsParallelRendering() const
+	{
+		return OptionalDeviceExtensions.HasSeparateDepthStencilLayouts && OptionalDeviceExtensions.HasKHRSynchronization2 && OptionalDeviceExtensions.HasKHRRenderPass2;
+	}
+
 #if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 	VkBuffer GetCrashMarkerBuffer() const
 	{
@@ -487,8 +523,11 @@ public:
 		bDebugMarkersFound = true;
 	}
 
+	// Performs a GPU and CPU timestamp at nearly the same time.
+	// This allows aligning GPU and CPU events on the same timeline in profile visualization.
+	FGPUTimingCalibrationTimestamp GetCalibrationTimestamp();
+
 private:
-	const VkFormatProperties& GetFormatProperties(VkFormat InFormat);
 	void MapBufferFormatSupport(FPixelFormatInfo& PixelFormatInfo, EPixelFormat UEFormat, VkFormat VulkanFormat);
 	void MapImageFormatSupport(FPixelFormatInfo& PixelFormatInfo, const TArrayView<const VkFormat>& PrioritizedFormats, EPixelFormatCapabilities RequiredCapabilities);
 	void MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping, EPixelFormatCapabilities RequiredCapabilities, int32 BlockBytes);
@@ -511,12 +550,16 @@ private:
 
 	VulkanRHI::FFenceManager FenceManager;
 
+	FVulkanRenderPassManager* RenderPassManager;
+
 	FVulkanTransientHeapCache* TransientHeapCache = nullptr;
 
 	// Active on ES3.1
 	FVulkanDescriptorSetCache* DescriptorSetCache = nullptr;
 	// Active on >= SM4
 	FVulkanDescriptorPoolsManager* DescriptorPoolsManager = nullptr;
+
+	FVulkanBindlessDescriptorManager* BindlessDescriptorManager = nullptr;
 
 	FVulkanShaderFactory ShaderFactory;
 
@@ -528,14 +571,14 @@ private:
 
 #if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 	TArray<VkPhysicalDeviceFragmentShadingRateKHR> FragmentShadingRates;
+	TStaticArray<VkExtent2D, (EVRSShadingRate::VRSSR_Last+1)> FragmentSizeMap;
 #endif
 
+	// Extension specific properties
 	VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
 	VkPhysicalDeviceSubgroupProperties GpuSubgroupProps;
 
 #if VULKAN_RHI_RAYTRACING
-	FRayTracingProperties RayTracingProperties;
-	FVulkanBasicRaytracingPipeline* BasicRayTracingPipeline = nullptr;
 	FVulkanRayTracingCompactionRequestHandler* RayTracingCompactionRequestHandler = nullptr;
 #endif // VULKAN_RHI_RAYTRACING
 
@@ -582,6 +625,7 @@ private:
 	static TArray<const ANSICHAR*> SetupDeviceLayers(VkPhysicalDevice Gpu, FVulkanDeviceExtensionArray& UEExtensions);
 
 	FOptionalVulkanDeviceExtensions	OptionalDeviceExtensions;
+	FOptionalVulkanDeviceExtensionProperties OptionalDeviceExtensionProperties;
 	TArray<const ANSICHAR*>			DeviceExtensions;
 
 	void SetupFormats();

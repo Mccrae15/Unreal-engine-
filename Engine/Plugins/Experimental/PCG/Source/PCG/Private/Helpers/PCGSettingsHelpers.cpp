@@ -3,8 +3,11 @@
 #include "Helpers/PCGSettingsHelpers.h"
 
 #include "PCGComponent.h"
-#include "PCGHelpers.h"
-#include "PCGSettings.h"
+#include "PCGEdge.h"
+#include "PCGPin.h"
+#include "Helpers/PCGHelpers.h"
+
+#include "UObject/EnumProperty.h"
 
 namespace PCGSettingsHelpers
 {
@@ -205,11 +208,211 @@ namespace PCGSettingsHelpers
 		}
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	int ComputeSeedWithOverride(const UPCGSettings* InSettings, const UPCGComponent* InComponent, UPCGParamData* InParams)
 	{
 		check(InSettings);
 
 		const int SettingsSeed = InParams ? PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGSettings, Seed), InSettings->Seed, InParams) : InSettings->Seed;
 		return InComponent ? PCGHelpers::ComputeSeed(SettingsSeed, InComponent->Seed) : SettingsSeed;
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	void DeprecationBreakOutParamsToNewPin(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins)
+	{
+		// Check basic conditions for which the code below should run.
+		if(!InOutNode || InputPins.IsEmpty() || !InputPins[0] || InputPins[0]->Properties.AllowedTypes != EPCGDataType::Any)
+		{
+			return;
+		}
+
+		// Check if the node already has a param pin, if so, nothing to do.
+		if (InOutNode->GetInputPin(PCGPinConstants::DefaultParamsLabel))
+		{
+			return;
+		}
+
+		// Also no need to add a param pin if it has no overriable params
+		if (!InOutNode->GetSettings() || InOutNode->GetSettings()->OverridableParams().IsEmpty())
+		{
+			return;
+		}
+
+		UPCGPin* InPin = InputPins[0];
+
+		// Add params pin with good defaults (UpdatePins will ensure pin details are correct later).
+		UPCGPin* NewParamsPin = NewObject<UPCGPin>(InOutNode);
+		NewParamsPin->Node = InOutNode;
+		NewParamsPin->Properties.AllowedTypes = EPCGDataType::Param;
+		NewParamsPin->Properties.Label = PCGPinConstants::DefaultParamsLabel;
+		NewParamsPin->Properties.bAllowMultipleConnections = true;
+		NewParamsPin->Properties.bAllowMultipleData = true;
+		InputPins.Add(NewParamsPin);
+
+		// Make list of param pins that In pin is currently connected to.
+		TArray<UPCGPin*> UpstreamParamPins;
+		for (const UPCGEdge* Connection : InPin->Edges)
+		{
+			if (Connection->InputPin && Connection->InputPin->Properties.AllowedTypes == EPCGDataType::Param)
+			{
+				UpstreamParamPins.Add(Connection->InputPin);
+			}
+		}
+
+		// Break all connections to param pins, and connect the first such pin to the new params pin on this node.
+		for (UPCGPin* Pin : UpstreamParamPins)
+		{
+			InPin->BreakEdgeTo(Pin);
+
+			// Params never support multiple connections as a rule (user must merge params themselves), so just connect first.
+			if (!NewParamsPin->IsConnected())
+			{
+				NewParamsPin->AddEdgeTo(Pin);
+			}
+		}
+	}
+
+	template <typename ClassType>
+	TArray<FPCGSettingsOverridableParam> GetAllOverridableParamsImpl(const ClassType* InClass, const FPCGGetAllOverridableParamsConfig& InConfig)
+	{
+		// TODO: Was not a concern until now, and we didn't have a solution, but this function
+		// only worked if we don't have names clashes in overriable parameters.
+		// The previous override solution was flattening structs, and only override use the struct member name,
+		// not prefixed by the struct name or anything else.
+		// We cannot prefix it now, because it will break existing node that were assuming the flattening.
+		// We'll keep this behavior for now, as it might be solved by passing structs instead of param data,
+		// but we'll still at least raise a warning if there is a clash.
+		TSet<FName> LabelCache;
+
+		TArray<FPCGSettingsOverridableParam> Res;
+
+		// Can't check metadata in non-editor build
+#if WITH_EDITOR
+		const bool bCheckMetadata = !InConfig.MetadataValues.IsEmpty();
+#endif // WITH_EDITOR
+
+		const bool bCheckExcludePropertyFlags = (InConfig.ExcludePropertyFlags != 0);
+		const EFieldIteratorFlags::SuperClassFlags SuperFlag = InConfig.bExcludeSuperProperties ? EFieldIteratorFlags::ExcludeSuper : EFieldIteratorFlags::IncludeSuper;
+
+		check(InClass);
+
+		for (TFieldIterator<FProperty> InputIt(InClass, SuperFlag, EFieldIteratorFlags::ExcludeDeprecated); InputIt; ++InputIt)
+		{
+			const FProperty* Property = *InputIt;
+			if (!Property)
+			{
+				continue;
+			}
+
+			bool bValid = true;
+
+#if WITH_EDITOR
+			if (bCheckMetadata)
+			{
+				bool bFoundAny = false;
+				for (const FName& Metadata : InConfig.MetadataValues)
+				{
+					if (Property->HasMetaData(Metadata))
+					{
+						bFoundAny = true;
+						break;
+					}
+				}
+
+				bValid &= bFoundAny;
+			}
+#endif // WITH_EDITOR
+
+			if (bCheckExcludePropertyFlags)
+			{
+				bValid &= !Property->HasAnyPropertyFlags(InConfig.ExcludePropertyFlags);
+			}
+
+			// Don't allow to override the seed if the settings doesn't use the seed.
+			if (!InConfig.bUseSeed)
+			{
+				bValid &= (Property->GetFName() != GET_MEMBER_NAME_CHECKED(UPCGSettings, Seed));
+			}
+
+			if (!bValid)
+			{
+				continue;
+			}
+
+			// Validate that the property can be overriden by params
+			if (PCGAttributeAccessorHelpers::IsPropertyAccessorSupported(Property))
+			{
+				FName Label = NAME_None;
+#if WITH_EDITOR
+				// GetDisplayNameText is not available in non-editor build.
+				Label = *Property->GetDisplayNameText().ToString();
+				if (LabelCache.Contains(Label))
+				{
+					UE_LOG(LogPCG, Warning, TEXT("%s property clashes with another property already found. It is a limitation at the moment and this property will be ignored."), *Label.ToString());
+					continue;
+				}
+
+				LabelCache.Add(Label);
+#endif // WITH_EDITOR
+
+				FPCGSettingsOverridableParam& Param = Res.Emplace_GetRef();
+				Param.Label = Label;
+				Param.PropertiesNames.Add(Property->GetFName());
+				Param.PropertyClass = InClass;
+			}
+			else if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+			{
+				// Reached max depth
+				if (InConfig.MaxStructDepth == 0)
+				{
+					continue;
+				}
+
+				// Use the seed, and don't check metadata.
+				FPCGGetAllOverridableParamsConfig RecurseConfig = InConfig;
+				RecurseConfig.bUseSeed = true;
+#if WITH_EDITOR
+				RecurseConfig.MetadataValues.Empty();
+#endif // WITH_EDITOR
+
+				if (RecurseConfig.MaxStructDepth > 0)
+				{
+					RecurseConfig.MaxStructDepth--;
+				}
+
+				for (const FPCGSettingsOverridableParam& ChildParam : GetAllOverridableParams(StructProperty->Struct, RecurseConfig))
+				{
+					FName Label = ChildParam.Label;
+#if WITH_EDITOR
+					// Don't check for label clash, as they would all be equal to None in non-editor build
+					if (LabelCache.Contains(Label))
+					{
+						UE_LOG(LogPCG, Warning, TEXT("%s property clashes with another property already found. It is a limitation at the moment and this property will be ignored."), *Label.ToString());
+						continue;
+					}
+
+					LabelCache.Add(Label);
+#endif // WITH_EDITOR
+
+					FPCGSettingsOverridableParam& Param = Res.Emplace_GetRef();
+					Param.Label = Label;
+					Param.PropertiesNames.Add(Property->GetFName());
+					Param.PropertiesNames.Append(ChildParam.PropertiesNames);
+					Param.PropertyClass = InClass;
+				}
+			}
+		}
+
+		return Res;
+	}
+
+	TArray<FPCGSettingsOverridableParam> GetAllOverridableParams(const UClass* InClass, const FPCGGetAllOverridableParamsConfig& InConfig)
+	{
+		return GetAllOverridableParamsImpl(InClass, InConfig);
+	}
+
+	TArray<FPCGSettingsOverridableParam> GetAllOverridableParams(const UScriptStruct* InStruct, const FPCGGetAllOverridableParamsConfig& InConfig)
+	{
+		return GetAllOverridableParamsImpl(InStruct, InConfig);
 	}
 }

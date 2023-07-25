@@ -42,25 +42,31 @@ FName UAdditiveControlRig::GetNullName(const FName& InBoneName)
 	return NAME_None;
 }
 
-bool UAdditiveControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InEventName)
+bool UAdditiveControlRig::Execute_Internal(const FName& InEventName)
 {
 	if (InEventName == FRigUnit_BeginExecution::EventName)
 	{
+		FControlRigExecuteContext ExecuteContext;
+		ExecuteContext.Hierarchy = GetHierarchy();
+		ExecuteContext.SetEventName(InEventName);
+		ExecuteContext.UnitContext = FRigUnitContext();
+
 		for (FRigUnit_AddBoneTransform& Unit : AddBoneRigUnits)
 		{
 			FName ControlName = GetControlName(Unit.Bone);
 			const int32 Index = GetHierarchy()->GetIndex(FRigElementKey(ControlName, ERigElementType::Control));
 			Unit.Transform = GetHierarchy()->GetLocalTransform(Index);
-			Unit.ExecuteContext.Hierarchy = GetHierarchy();
-			Unit.ExecuteContext.EventName = InEventName;
-			Unit.Execute(InOutContext);
+			Unit.Execute(ExecuteContext);
 		}
 	}
 	else if(InEventName == FRigUnit_PrepareForExecution::EventName)
 	{
-		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(GetObjectBinding()->GetBoundObject()))
+		if(const TSharedPtr<IControlRigObjectBinding> Binding = GetObjectBinding())
 		{
-			CreateRigElements(SkeletalMeshComponent->GetSkeletalMeshAsset());
+			if (const USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Binding->GetBoundObject()))
+			{
+				CreateRigElements(SkeletalMeshComponent->GetSkeletalMeshAsset());
+			}
 		}
 
 		// add units and initialize
@@ -90,9 +96,7 @@ void UAdditiveControlRig::Initialize(bool bInitRigUnits /*= true*/)
 		return;
 	}
 
-	Execute(EControlRigState::Init, FRigUnit_BeginExecution::EventName);
-	FRigUnitContext DefaultContext;
-	ExecuteUnits(DefaultContext, FRigUnit_PrepareForExecution::EventName);
+	Execute_Internal(FRigUnit_PrepareForExecution::EventName);
 }
 
 void UAdditiveControlRig::CreateRigElements(const FReferenceSkeleton& InReferenceSkeleton, const FSmartNameMapping* InSmartNameMapping)

@@ -6,6 +6,7 @@ GeometryCollectionActor.cpp: AGeometryCollectionActor methods.
 
 #include "GeometryCollection/GeometryCollectionActor.h"
 
+#include "Chaos/ChaosSolverActor.h"
 #include "Chaos/Utilities.h"
 #include "Chaos/Plane.h"
 #include "Chaos/Box.h"
@@ -13,10 +14,13 @@ GeometryCollectionActor.cpp: AGeometryCollectionActor methods.
 #include "Chaos/PerParticleGravity.h"
 #include "Chaos/ImplicitObject.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/World.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
 #include "GeometryCollection/GeometryCollectionUtility.h"
 #include "Math/Box.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "Physics/PhysicsInterfaceCore.h"
 #include "PhysicsSolver.h"
 #include "GeometryCollection/GeometryCollectionDebugDrawComponent.h"

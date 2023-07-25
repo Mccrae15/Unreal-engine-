@@ -8,6 +8,7 @@
 #include "Units/RigUnitContext.h"
 #include "Math/ControlRigMathLibrary.h"
 #include "UObject/AnimObjectVersion.h"
+#include "ControlRigObjectVersion.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "HAL/LowLevelMemTracker.h"
@@ -142,6 +143,7 @@ void URigHierarchy::Serialize(FArchive& Ar)
 	LLM_SCOPE_BYNAME(TEXT("Animation/ControlRig"));
 	
 	Ar.UsingCustomVersion(FAnimObjectVersion::GUID);
+	Ar.UsingCustomVersion(FControlRigObjectVersion::GUID);
 
 	if (Ar.IsSaving() || Ar.IsObjectReferenceCollector() || Ar.IsCountingMemory())
 	{
@@ -159,6 +161,8 @@ void URigHierarchy::Serialize(FArchive& Ar)
 
 void URigHierarchy::Save(FArchive& Ar)
 {
+	FScopeLock Lock(&ElementsLock);
+	
 	if(Ar.IsTransacting())
 	{
 		Ar << TransformStackIndex;
@@ -199,10 +203,15 @@ void URigHierarchy::Save(FArchive& Ar)
 		FRigBaseElement* Element = Elements[ElementIndex];
 		Element->Serialize(Ar, this, FRigBaseElement::InterElementData);
 	}
+
+	Ar << PreviousNameMap;
+	Ar << PreviousParentMap;
 }
 
 void URigHierarchy::Load(FArchive& Ar)
 {
+	FScopeLock Lock(&ElementsLock);
+	
 	TArray<FRigElementKey> SelectedKeys;
 	if(Ar.IsTransacting())
 	{
@@ -278,6 +287,17 @@ void URigHierarchy::Load(FArchive& Ar)
 		}
 	}
 
+	if (Ar.CustomVer(FControlRigObjectVersion::GUID) >= FControlRigObjectVersion::RigHierarchyStoringPreviousNames)
+	{
+		Ar << PreviousNameMap;
+		Ar << PreviousParentMap;
+	}
+	else
+	{
+		PreviousNameMap.Reset();
+		PreviousParentMap.Reset();
+	}
+
 	Notify(ERigHierarchyNotification::HierarchyReset, nullptr);
 }
 
@@ -338,6 +358,8 @@ void URigHierarchy::Reset()
 
 void URigHierarchy::ResetToDefault()
 {
+	FScopeLock Lock(&ElementsLock);
+	
 	if(DefaultHierarchyPtr.IsValid())
 	{
 		if(URigHierarchy* DefaultHierarchy = DefaultHierarchyPtr.Get())
@@ -354,6 +376,8 @@ void URigHierarchy::CopyHierarchy(URigHierarchy* InHierarchy)
 	check(InHierarchy);
 	
 	LLM_SCOPE_BYNAME(TEXT("Animation/ControlRig"));
+
+	FScopeLock Lock(&ElementsLock);
 	
 	Reset();
 
@@ -427,19 +451,6 @@ void URigHierarchy::CopyHierarchy(URigHierarchy* InHierarchy)
 	UpdateAllCachedChildren();
 	
 	EnsureCacheValidity();
-}
-
-uint32 URigHierarchy::GetNameHash() const
-{
-	uint32 Hash = GetTypeHash(GetTopologyVersion());
-
-	for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ElementIndex++)
-	{
-		const FRigBaseElement* Element = Elements[ElementIndex];
-		Hash = HashCombine(Hash, GetTypeHash(Element->GetName()));
-	}
-
-	return Hash;
 }
 
 uint32 URigHierarchy::GetTopologyHash(bool bIncludeTopologyVersion, bool bIncludeTransientControls) const
@@ -615,7 +626,7 @@ void URigHierarchy::CopyPose(URigHierarchy* InHierarchy, bool bCurrent, bool bIn
 	EnsureCacheValidity();
 }
 
-void URigHierarchy::UpdateReferences(const FRigUnitContext* InContext)
+void URigHierarchy::UpdateReferences(const FRigVMExecuteContext* InContext)
 {
 	check(InContext);
 	LLM_SCOPE_BYNAME(TEXT("Animation/ControlRig"));
@@ -627,8 +638,8 @@ void URigHierarchy::UpdateReferences(const FRigUnitContext* InContext)
 			const FTransform InitialWorldTransform = Reference->GetReferenceWorldTransform(InContext, true);
 			const FTransform CurrentWorldTransform = Reference->GetReferenceWorldTransform(InContext, false);
 
-			const FTransform InitialGlobalTransform = InitialWorldTransform.GetRelativeTransform(InContext->ToWorldSpaceTransform);
-			const FTransform CurrentGlobalTransform = CurrentWorldTransform.GetRelativeTransform(InContext->ToWorldSpaceTransform);
+			const FTransform InitialGlobalTransform = InitialWorldTransform.GetRelativeTransform(InContext->GetToWorldSpaceTransform());
+			const FTransform CurrentGlobalTransform = CurrentWorldTransform.GetRelativeTransform(InContext->GetToWorldSpaceTransform());
 
 			const FTransform InitialParentTransform = GetParentTransform(Reference, ERigTransformType::InitialGlobal); 
 			const FTransform CurrentParentTransform = GetParentTransform(Reference, ERigTransformType::CurrentGlobal);
@@ -646,7 +657,9 @@ void URigHierarchy::ResetPoseToInitial(ERigElementType InTypeFilter)
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/ControlRig"));
 	bool bPerformFiltering = InTypeFilter != ERigElementType::All;
-
+	
+	FScopeLock Lock(&ElementsLock);
+	
 	// if we are resetting the pose on some elements, we need to check if
 	// any of affected elements has any children that would not be affected
 	// by resetting the pose. if all children are affected we can use the
@@ -2297,10 +2310,9 @@ URigHierarchyController* URigHierarchy::GetController(bool bCreateIfNeeded)
 		 if(ensure(!IsGarbageCollecting()))
 		 {
 			 HierarchyController = NewObject<URigHierarchyController>(this, TEXT("HierarchyController"), RF_Transient);
-			 if(!ensure(IsInGameThread()))
-			 {
-				 HierarchyController->ClearInternalFlags(EInternalObjectFlags::Async);
-			 }
+			 // In case we create this object from async loading thread
+			 HierarchyController->ClearInternalFlags(EInternalObjectFlags::Async);
+
 			 HierarchyController->SetHierarchy(this);
 			 return HierarchyController;
 		 }
@@ -2657,7 +2669,7 @@ FTransform URigHierarchy::GetTransform(FRigTransformElement* InTransformElement,
 	if(bRecordTransformsAtRuntime && ExecuteContext)
 	{
 		ReadTransformsAtRuntime.Emplace(
-			ExecuteContext->PublicData.GetInstructionIndex(),
+			ExecuteContext->GetPublicData<>().GetInstructionIndex(),
 			ExecuteContext->GetSlice().GetIndex(),
 			InTransformElement->GetIndex(),
 			InTransformType
@@ -2777,7 +2789,7 @@ void URigHierarchy::SetTransform(FRigTransformElement* InTransformElement, const
 	if(bRecordTransformsAtRuntime && ExecuteContext)
 	{
 		WrittenTransformsAtRuntime.Emplace(
-			ExecuteContext->PublicData.GetInstructionIndex(),
+			ExecuteContext->GetPublicData<>().GetInstructionIndex(),
 			ExecuteContext->GetSlice().GetIndex(),
 			InTransformElement->GetIndex(),
 			InTransformType
@@ -2801,18 +2813,18 @@ void URigHierarchy::SetTransform(FRigTransformElement* InTransformElement, const
 
 						if(bChildFound)
 						{
-							const FRigUnitContext* UnitContext = (const FRigUnitContext*)ExecuteContext->OpaqueArguments[0];
-							if(UnitContext && UnitContext->Log)
+							const FControlRigExecuteContext& CRContext = ExecuteContext->GetPublicData<FControlRigExecuteContext>();
+							if(CRContext.GetLog())
 							{
 								static constexpr TCHAR MessageFormat[] = TEXT("Setting transform of parent (%s) after setting child (%s).\nThis may lead to unexpected results.");
 								const FString& Message = FString::Printf(
 									MessageFormat,
 									*InTransformElement->GetName().ToString(),
 									*Child->GetName().ToString());
-								UnitContext->Log->Report(
+								CRContext.GetLog()->Report(
 									EMessageSeverity::Info,
-									ExecuteContext->PublicData.GetFunctionName(),
-									ExecuteContext->PublicData.GetInstructionIndex(),
+									ExecuteContext->GetPublicData<>().GetFunctionName(),
+									ExecuteContext->GetPublicData<>().GetInstructionIndex(),
 									Message);
 							}
 						}
@@ -2949,7 +2961,7 @@ FTransform URigHierarchy::GetControlOffsetTransform(FRigControlElement* InContro
 	if(bRecordTransformsAtRuntime && ExecuteContext)
 	{
 		ReadTransformsAtRuntime.Emplace(
-			ExecuteContext->PublicData.GetInstructionIndex(),
+			ExecuteContext->GetPublicData<>().GetInstructionIndex(),
 			ExecuteContext->GetSlice().GetIndex(),
 			InControlElement->GetIndex(),
 			InTransformType
@@ -3032,7 +3044,7 @@ void URigHierarchy::SetControlOffsetTransform(FRigControlElement* InControlEleme
 	if(bRecordTransformsAtRuntime && ExecuteContext)
 	{
 		WrittenTransformsAtRuntime.Emplace(
-			ExecuteContext->PublicData.GetInstructionIndex(),
+			ExecuteContext->GetPublicData<>().GetInstructionIndex(),
 			ExecuteContext->GetSlice().GetIndex(),
 			InControlElement->GetIndex(),
 			InTransformType
@@ -3828,6 +3840,22 @@ bool URigHierarchy::IsDependentOn(FRigBaseElement* InDependent, FRigBaseElement*
 	}
 
 	return false;
+}
+
+int32 URigHierarchy::GetLocalIndex(const FRigBaseElement* InElement) const
+{
+	if(InElement == nullptr)
+	{
+		return INDEX_NONE;
+	}
+	
+	if(const FRigBaseElement* ParentElement = GetFirstParent(InElement))
+	{
+		const FRigBaseElementChildrenArray& Children = GetChildren(ParentElement);
+		return Children.Find((FRigBaseElement*)InElement);
+	}
+
+	return GetRootElements().Find((FRigBaseElement*)InElement);
 }
 
 bool URigHierarchy::IsTracingChanges() const
@@ -5231,7 +5259,7 @@ bool URigHierarchy::ShouldBeGrouped(const FRigControlElement* InControlElement) 
 	return false;
 }
 
-FTransform URigHierarchy::GetWorldTransformForReference(const FRigUnitContext* InContext, const FRigElementKey& InKey, bool bInitial)
+FTransform URigHierarchy::GetWorldTransformForReference(const FRigVMExecuteContext* InContext, const FRigElementKey& InKey, bool bInitial)
 {
 	if(const USceneComponent* OuterSceneComponent = GetTypedOuter<USceneComponent>())
 	{

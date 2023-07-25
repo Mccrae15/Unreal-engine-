@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayDebugger/GameplayDebuggerCategory_Navmesh.h"
+#include "GameFramework/Pawn.h"
 
-#if WITH_GAMEPLAY_DEBUGGER
+#if WITH_GAMEPLAY_DEBUGGER_MENU
 
 #include "NavigationSystem.h"
 #include "GameFramework/PlayerController.h"
@@ -119,8 +120,8 @@ void FGameplayDebuggerCategory_Navmesh::CollectData(APlayerController* OwnerPC, 
 		if (NavSys) 
 		{
 			DataPack.NumDirtyAreas = NavSys->GetNumDirtyAreas();
-			DataPack.NumRunningTasks = NavSys->GetNumRunningBuildTasks();
-			DataPack.NumRemainingTasks = NavSys->GetNumRemainingBuildTasks();
+			DataPack.NumRunningTasks = IntCastChecked<uint16>(NavSys->GetNumRunningBuildTasks());
+			DataPack.NumRemainingTasks = IntCastChecked<uint16>(NavSys->GetNumRemainingBuildTasks());
 			DataPack.bIsNavOctreeLocked = NavSys->IsNavigationOctreeLocked();
 			DataPack.bIsNavBuildLocked = NavSys->IsNavigationBuildingLocked();
 			DataPack.NavBuildLockStatusDesc = FString("Unknown");
@@ -329,4 +330,4 @@ FDebugRenderSceneProxy* FGameplayDebuggerCategory_Navmesh::CreateDebugSceneProxy
 	return NavMeshSceneProxy;
 }
 
-#endif // WITH_GAMEPLAY_DEBUGGER
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU

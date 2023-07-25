@@ -2,14 +2,13 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "UObject/ObjectMacros.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "MovieSceneTrack.h"
-#include "Templates/SubclassOf.h"
-#include "MovieSceneBindingProxy.h"
 
 #include "MovieSceneBindingExtensions.generated.h"
+
+class UMovieSceneTrack;
+struct FMovieSceneBindingProxy;
+template <typename T> class TSubclassOf;
 
 
 /**
@@ -70,6 +69,24 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta=(ScriptMethod))
 	static void SetName(const FMovieSceneBindingProxy& InBinding, const FString& InName);
+
+	/**
+	 * Get the sorting order for this binding
+	 *
+	 * @param InBinding        The binding to get the sorting order from
+	 * @return The sorting order of the requested binding
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod, DevelopmentOnly))
+	static int32 GetSortingOrder(const FMovieSceneBindingProxy& InBinding);
+
+	/**
+	 * Set the sorting order for this binding
+	 *
+	 * @param InBinding        The binding to get the sorting order from
+	 * @param SortingOrder The sorting order to set
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod, DevelopmentOnly))
+	static void SetSortingOrder(const FMovieSceneBindingProxy& InBinding, int32 SortingOrder);
 
 	/**
 	 * Get all the tracks stored within this binding
@@ -180,4 +197,19 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod))
 	static void MoveBindingContents(const FMovieSceneBindingProxy& SourceBindingId, const FMovieSceneBindingProxy& DestinationBindingId);
+
+	/**
+	 * Set the spawnable id that the possessable binding should possess
+	 *
+	 * @param InBinding     The binding to set
+	 * @param SpawnableBindingID The spawnable's binding id
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod))
+	static void SetSpawnableBindingID(const FMovieSceneBindingProxy& InBinding, const FMovieSceneObjectBindingID& SpawnableBindingID);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "MovieSceneBindingProxy.h"
+#include "MovieSceneTrack.h"
+#include "Templates/SubclassOf.h"
+#endif

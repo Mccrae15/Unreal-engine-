@@ -14,6 +14,8 @@ using UnrealBuildTool;
 using EpicGames.Core;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Logging;
+using Logging = Microsoft.Extensions.Logging;
 
 namespace Gauntlet
 {
@@ -204,6 +206,7 @@ namespace Gauntlet
 
 		static int SanitizationSuspendCount = 0;
 
+		static ILogger Logger = EpicGames.Core.Log.Logger;
 
 		public static void AddCallback(Action<string> CB)
 		{
@@ -264,7 +267,7 @@ namespace Gauntlet
 			{
 				if (CommandUtils.IsBuildMachine)
 				{
-					OutputMessage("<-- Suspend Log Parsing -->");
+					CommandUtils.LogInformation("<-- Suspend Log Parsing -->");
 				}
 			}
 		}
@@ -275,7 +278,7 @@ namespace Gauntlet
 			{
 				if (CommandUtils.IsBuildMachine)
 				{
-					OutputMessage("<-- Resume Log Parsing -->");
+					CommandUtils.LogInformation("<-- Resume Log Parsing -->");
 				}
 			}
 		}
@@ -312,15 +315,16 @@ namespace Gauntlet
 		}
 
 		/// <summary>
-		/// Outputs the message to the console with an optional prefix and sanitization. Sanitizing
-		/// allows errors and exceptions to be passed through to logs without triggering CIS warnings
-		/// about out log
+		/// Outputs the message to the console with an optional log level and sanitization.
+		/// Sanitizing allows errors and exceptions to be passed through to logs without triggering CIS warnings about out log
 		/// </summary>
 		/// <param name="Message"></param>
-		/// <param name="Prefix"></param>
+		/// <param name="EventId"></param>
+		/// <param name="Level"></param>
 		/// <param name="Sanitize"></param>
+		/// <param name="Args"></param>
 		/// <returns></returns>
-		static private void OutputMessage(string Message, string Prefix="", bool Sanitize=true)
+		static private void OutputMessage(string Message, Logging.EventId EventId, Logging.LogLevel Level = Logging.LogLevel.Information, bool Sanitize=true, params object[] Args)
 		{
 			// EC detects error statements in the log as a failure. Need to investigate best way of 
 			// reporting errors, but not errors we've handled from tools.
@@ -347,45 +351,58 @@ namespace Gauntlet
 				Message = "[" + ElapsedTime.ToString() + "] " + Message;
 			}
 
-			if (string.IsNullOrEmpty(Prefix) == false)
-			{
-				Message = Prefix + ": " + Message;
-			}
+			Logger.Log(Level, EventId, Message, Args);
 
-			// TODO - Remove all Gauntlet logging and switch to UBT log?
-			CommandUtils.LogInformation(Message);
-
-			try
+			if (LogFile != null || Callbacks != null)
 			{
-				if (LogFile != null)
+				try
 				{
-					LogFile.WriteLine(Message);
-				}
+					if (Args.Length > 0)
+					{
+						// Adjust Message and Arguments for string.Format
+						int Index = 0;
+						string SequenceMessage = Regex.Replace(Message, @"\{[^{}:]+(:[^{}]+)?\}", M => "{" + Index++.ToString() + M.Groups[1].Value + "}", RegexOptions.IgnoreCase);
+						if (Index > Args.Length)
+						{
+							Args = Args.Concat(Enumerable.Repeat("null", Index - Args.Length)).ToArray();
+						}
+						else if (Index < Args.Length)
+						{
+							Args = Args.Take(Index).ToArray();
+						}
+						Message = string.Format(SequenceMessage, Args);
+					}
 
-				if (Callbacks != null)
+					if (LogFile != null)
+					{
+						LogFile.WriteLine(Message);
+					}
+
+					if (Callbacks != null)
+					{
+						Callbacks.ForEach(A => A(Message));
+					}
+				}
+				catch (Exception Ex)
 				{
-					Callbacks.ForEach(A => A(Message));
+					Logger.LogWarning(KnownLogEvents.Gauntlet, "Exception logging '{Message}'. {Exception}", Message, Ex.ToString());
 				}
 			}
-			catch (Exception Ex)
-			{
-				CommandUtils.LogWarning("Exception logging '{0}'. {1}", Message, Ex.ToString());
-			}			
 		}	
 
 		static public void Verbose(string Format, params object[] Args)
 		{
 			if (IsVerbose)
 			{
-				Verbose(string.Format(Format, Args));
+				Verbose(KnownLogEvents.Gauntlet, Format, Args);
 			}
 		}
 
-		static public void Verbose(string Message)
+		static public void Verbose(Logging.EventId EventId, string Format, params object[] Args)
 		{
 			if (IsVerbose)
 			{
-				OutputMessage(Message);
+				OutputMessage(Format, EventId, Args: Args);
 			}
 		}
 
@@ -393,44 +410,44 @@ namespace Gauntlet
 		{
 			if (IsVeryVerbose)
 			{
-				VeryVerbose(string.Format(Format, Args));
+				VeryVerbose(KnownLogEvents.Gauntlet, Format, Args);
 			}
 		}
 
-		static public void VeryVerbose(string Message)
+		static public void VeryVerbose(Logging.EventId EventId, string Format, params object[] Args)
 		{
 			if (IsVeryVerbose)
 			{
-				OutputMessage(Message);
+				OutputMessage(Format, EventId, Args: Args);
 			}
 		}
 
 		static public void Info(string Format, params object[] Args)
 		{
-			Info(string.Format(Format, Args));
+			Info(KnownLogEvents.Gauntlet, Format, Args);
 		}
 
-		static public void Info(string Message)
+		static public void Info(Logging.EventId EventId, string Format, params object[] Args)
 		{
-			OutputMessage(Message);
+			OutputMessage(Format, EventId, Args: Args);
 		}
 
 		static public void Warning(string Format, params object[] Args)
 		{
-			Warning(string.Format(Format, Args));
+			Warning(KnownLogEvents.Gauntlet, Format, Args);
 		}
 
-		static public void Warning(string Message)
+		static public void Warning(Logging.EventId EventId, string Format, params object[] Args)
 		{
-			OutputMessage(Message, "Warning");
+			OutputMessage(Format, EventId, Logging.LogLevel.Warning, Args: Args);
 		}
 		static public void Error(string Format, params object[] Args)
 		{
-			Error(string.Format(Format, Args));
+			Error(KnownLogEvents.Gauntlet, Format, Args);
 		}
-		static public void Error(string Message)
-		{		
-			OutputMessage(Message, "Error", false);
+		static public void Error(Logging.EventId EventId, string Format, params object[] Args)
+		{
+			OutputMessage(Format, EventId, Logging.LogLevel.Error, false, Args);
 		}
 	}
 
@@ -519,10 +536,8 @@ namespace Gauntlet
 
 	namespace Utils
 	{
-		
 		public class TestConstructor
 		{
-
 			/// <summary>
 			/// Helper function that returns the type of an object based on namespaces and name
 			/// </summary>
@@ -542,16 +557,20 @@ namespace Gauntlet
 				}
 
 				Log.VeryVerbose("Will search {0} for test {1}", string.Join(" ", FullNames), TestName);
-				
-				// find all types from loaded assemblies that implement testnode
-					List < Type> CandidateTypes = new List<Type>();
 
-				foreach (Assembly Assembly in ScriptManager.AllScriptAssemblies) 
+				// find all types from loaded assemblies that implement testnode
+				List<Type> CandidateTypes = new List<Type>();
+				foreach (Assembly Assembly in ScriptManager.AllScriptAssemblies)
 				{
 					foreach (var Type in Assembly.GetTypes())
 					{
 						if (typeof(ITestNode).IsAssignableFrom(Type))
 						{
+							// If there is an Exact match, just take it
+							if (Type.FullName == TestName)
+							{
+								return Type;
+							}
 							CandidateTypes.Add(Type);
 						}
 					}
@@ -560,16 +579,15 @@ namespace Gauntlet
 				Log.VeryVerbose("Possible candidates for {0}: {1}", TestName, string.Join(" ", CandidateTypes));
 
 				// check our expanded names.. need to search in namespace order
+				IList<Type> MatchingTypes = new List<Type>();
 				foreach (string UserTypeName in FullNames)
 				{
 					// Even tho the user might have specified N1.Foo it still might be Other.N1.Foo so only
 					// compare based on the number of namespaces that were specified.
-
-
-					foreach (var Type in CandidateTypes)
+					foreach (Type Candidate in CandidateTypes)
 					{
 						string[] UserNameComponents = UserTypeName.Split('.');
-						string[] TypeNameComponents = Type.FullName.Split('.');
+						string[] TypeNameComponents = Candidate.FullName.Split('.');
 
 						int MissingUserComponents = TypeNameComponents.Length - UserNameComponents.Length;
 
@@ -578,18 +596,56 @@ namespace Gauntlet
 							TypeNameComponents = TypeNameComponents.Skip(MissingUserComponents).ToArray();
 						}
 
-						var Difference = TypeNameComponents.Except(UserNameComponents, StringComparer.OrdinalIgnoreCase);
+						IEnumerable<string> Difference = TypeNameComponents.Except(UserNameComponents, StringComparer.OrdinalIgnoreCase);
 
 						if (Difference.Count() == 0)
 						{
-							Log.VeryVerbose("Considering {0} as best match for {1}", Type, TestName);
-							return Type;
+							Log.VeryVerbose("Found match {0} for user type {1}", Candidate.FullName, UserTypeName);
+
+							// If we have any namespaces, add the candidate
+							if(Namespaces.Count() > 0)
+							{
+								MatchingTypes.Add(Candidate);
+							}
+
+							// No namespaces, just return the first type found
+							else
+							{
+								return Candidate;
+							}
 						}
 					}
 				}
 
+				// If user has specified at least 1 namespace, we prioritize types that include a provided namespace over types that do not.
+				// For example, in the case of the supplied parameters: TestName = BootTest, Namespaces = {"Game"}
+				// We prioritize "Game.BootTest" over "UE.BootTest".
+				// In the case of multiple name spaces, we default to the first test found within a namespace.
+				// For example, in the case of the supplied parameters: TestName = BootTest, Namespaces = {"Game", "UE"}
+				// We select "Game.BootTest" over "UE.BootTest".
+				// If you maintain many tests with the same base name, you should be as explicit as possible with Namespaces!
+				foreach(string Namespace in Namespaces)
+				{
+					foreach(Type Match in MatchingTypes)
+					{
+						// Split off the namespace
+						string TypeNamespace = Match.FullName.Replace(Match.Name, string.Empty);
 
-				throw new AutomationException("Unable to find type {0} in assemblies. Namespaces= {1}.", TestName, Namespaces);
+						// If it matches one of namespaces, return it
+						if (TypeNamespace.Contains(Namespace))
+						{
+							return Match;
+						}
+					}
+				}
+
+				// If nothing found from the prefered namespaces, then return the first item with less amount of steps.
+				if(MatchingTypes.Count() > 0)
+				{
+					return MatchingTypes.OrderBy(M => M.FullName.Split('.').Length).First();
+				}
+
+				throw new AutomationException("Unable to find type {0} in assemblies. Namespaces={1}.", TestName, string.Join(", ", Namespaces));
 			}
 
 

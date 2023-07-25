@@ -66,10 +66,10 @@ void FSourceControlWindowsModule::StartupModule()
 
 	// Register the changelist tab spawner
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(SourceControlChangelistsTabName, FOnSpawnTab::CreateRaw(this, &FSourceControlWindowsModule::CreateChangelistsTab))
-		.SetDisplayName(LOCTEXT("ChangelistsTabTitle", "View Changelists"))
-		.SetTooltipText(LOCTEXT("ChangelistsTabTooltip", "Opens a dialog displaying current changelists."))
+		.SetDisplayName(LOCTEXT("ChangelistsTabTitle", "View Changes"))
+		.SetTooltipText(LOCTEXT("ChangelistsTabTooltip", "Opens a dialog displaying current changes."))
 		.SetIcon(SourceControlIcon)
-		.SetMenuType(ETabSpawnerMenuType::Hidden);	
+		.SetMenuType(ETabSpawnerMenuType::Hidden);
 
 #if WITH_RELOAD
 	// This code attempts to relaunch the GameplayCueEditor tab when you reload this module
@@ -123,7 +123,7 @@ bool FSourceControlWindowsModule::CanShowChangelistsTab() const
 {
 	ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
 
-	return (SourceControlModule.IsEnabled() && SourceControlModule.GetProvider().IsAvailable() && SourceControlModule.GetProvider().UsesChangelists()) || FUncontrolledChangelistsModule::Get().IsEnabled();
+	return (SourceControlModule.IsEnabled() && SourceControlModule.GetProvider().IsAvailable() && SourceControlModule.GetProvider().UsesChangelists()) || (FUncontrolledChangelistsModule::Get().IsEnabled() && ISourceControlModule::Get().GetProvider().UsesUncontrolledChangelists());
 }
 
 void FSourceControlWindowsModule::SelectFiles(const TArray<FString>& Filenames)

@@ -217,14 +217,6 @@ public:
 	UPROPERTY(config, EditAnywhere, Category=Project)
 	FString BuildTarget;
 
-	/** Name of the target to use for LaunchOn (only Game/Client targets) */
-	UPROPERTY(config)
-	FString LaunchOnTarget;
-
-	/** The directory to which the packaged project will be copied. */
-	UPROPERTY(config, EditAnywhere, Category=Project)
-	FDirectoryPath StagingDirectory;
-
 	/**
 	 * If enabled, a full rebuild will be enforced each time the project is being packaged.
 	 * If disabled, only modified files will be built, which can improve iteration time.
@@ -368,16 +360,16 @@ public:
 	FString PackageCompressionMethod;
 		
 	/*
-	 * For compressors with variable levels, select the encoder effort level, which makes packages smaller but takes more time to encode.
+	 * For compressors with variable levels, select the compressor effort level, which makes packages smaller but takes more time to encode.
 	 * This does not affect decode speed.  For faster iteration, use lower effort levels (eg. 1)
 	 */
-	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay, meta = (DisplayName = "Encoder Effort Level for Debug & Development"))
+	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay, meta = (DisplayName = "Compressor Effort Level for Debug & Development"))
 	int32 PackageCompressionLevel_DebugDevelopment;
 	
-	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay, meta = (DisplayName = "Encoder Effort Level for Test & Shipping"))
+	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay, meta = (DisplayName = "Compressor Effort Level for Test & Shipping"))
 	int32 PackageCompressionLevel_TestShipping;
 	
-	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay, meta = (DisplayName = "Encoder Effort Level for Distribution"))
+	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay, meta = (DisplayName = "Compressor Effort Level for Distribution"))
 	int32 PackageCompressionLevel_Distribution;
 
 	/**
@@ -544,7 +536,7 @@ public:
 	TArray<FString> CompressedChunkWildcard;
 
 	UE_DEPRECATED(5.1, "This property is no longer supported. Use IniKeyDenylist.")
-	UPROPERTY(config, EditAnywhere, Category = Packaging)
+	UPROPERTY(config /*, EditAnywhere, Category = Packaging */, meta = (DeprecatedProperty, DeprecationMessage = "This property is no longer supported. Use IniKeyDenylist."))
 	TArray<FString> IniKeyBlacklist;
 
 	/** List of ini file keys to strip when packaging */
@@ -552,7 +544,7 @@ public:
 	TArray<FString> IniKeyDenylist;
 
 	UE_DEPRECATED(5.1, "This property is no longer supported. Use IniSectionDenylist.")
-	UPROPERTY(config, EditAnywhere, Category = Packaging)
+	UPROPERTY(config /*, EditAnywhere, Category = Packaging */, meta = (DeprecatedProperty, DeprecationMessage = "This property is no longer supported. Use IniSectionDenylist."))
 	TArray<FString> IniSectionBlacklist;
 
 	/** List of ini file sections to strip when packaging */
@@ -638,34 +630,7 @@ public:
 	UPROPERTY(config)
 	TArray<FProjectBuildSettings> EngineCustomBuilds;
 
-
-	/**
-	 * Get and set the per-platform build config and targetplatform settings for the Turnkey/Launch on menu
-	 */
-	EProjectPackagingBuildConfigurations GetBuildConfigurationForPlatform(FName PlatformName) const;
-	void SetBuildConfigurationForPlatform(FName PlatformName, EProjectPackagingBuildConfigurations Configuration);
-
-	FName GetTargetFlavorForPlatform(FName PlatformName) const;
-	void SetTargetFlavorForPlatform(FName PlatformName, FName TargetFlavorName);
-
-	FString GetBuildTargetForPlatform(FName PlatformName) const;
-	void SetBuildTargetForPlatform(FName PlatformName, FString BuildTargetName);
-
-	const FTargetInfo* GetBuildTargetInfoForPlatform(FName PlatformName, bool& bOutIsProjectTarget) const;
-
 private:
-	/** Per platform build configuration */
-	UPROPERTY(config)
-	TMap<FName, EProjectPackagingBuildConfigurations> PerPlatformBuildConfig;
-
-	/** Per platform flavor cooking target */
-	UPROPERTY(config)
-	TMap<FName, FName> PerPlatformTargetFlavorName;
-
-	/** Per platform build target */
-	UPROPERTY(config, EditAnywhere, Category=Project)
-	TMap<FName, FString> PerPlatformBuildTarget;
-
 	/** Helper array used to mirror Blueprint asset selections across edits */
 	TArray<FFilePath> CachedNativizeBlueprintAssets;
 	
@@ -699,9 +664,6 @@ public:
 
 	/** Gets the current build target, checking that it's valid, and the default build target if it is not */
 	const FTargetInfo* GetBuildTargetInfo() const;
-
-	/** Gets the current launch ojn target, checking that it's valid, and the default build target if it is not */
-	const FTargetInfo* GetLaunchOnTargetInfo() const;
 
 	/** For non-default object instances, this will LoadConfig for a specific platform,*/
 	void LoadSettingsForPlatform(FString PlatformName)

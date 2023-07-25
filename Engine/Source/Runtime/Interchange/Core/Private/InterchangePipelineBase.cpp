@@ -10,14 +10,6 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangePipelineBase)
 
-INTERCHANGECORE_API bool GInterchangeEnableCustomPipelines = false;
-
-static FAutoConsoleVariableRef CCvarInterchangeEnableCustomPipelines(
-	TEXT("Interchange.FeatureFlags.CustomPipelines"),
-	GInterchangeEnableCustomPipelines,
-	TEXT("[Experimental] Whether custom pipelines support is enabled."),
-	ECVF_Default);
-
 namespace UE
 {
 	namespace Interchange
@@ -68,6 +60,15 @@ void UInterchangePipelineBase::AdjustSettingsFromCache()
 {
 	PropertiesStates = CachePropertiesStates;
 	AdjustSettingsForContext(CachePipelineContext, CacheReimportObject.Get());
+}
+
+void UInterchangePipelineBase::TransferAdjustSettings(UInterchangePipelineBase* SourcePipeline)
+{
+	CachePipelineContext = SourcePipeline->CachePipelineContext;
+	CacheReimportObject = SourcePipeline->CacheReimportObject;
+	CachePropertiesStates = SourcePipeline->CachePropertiesStates;
+	bAllowPropertyStatesEdition = SourcePipeline->bAllowPropertyStatesEdition;
+	bIsReimportContext = SourcePipeline->bIsReimportContext;
 }
 
 const FInterchangePipelinePropertyStates* UInterchangePipelineBase::GetPropertyStates(const FName PropertyPath) const

@@ -2,22 +2,24 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Templates/SubclassOf.h"
-#include "UObject/Object.h"
 
 #include "Extensions/UserWidgetExtension.h"
-#include "FieldNotification/FieldId.h"
-#include "FieldNotification/IFieldValueChanged.h"
-#include "Types/MVVMBindingName.h"
 
 #include "MVVMView.generated.h"
 
+class INotifyFieldValueChanged;
+namespace UE::FieldNotification { struct FFieldId; }
+template <typename InterfaceType> class TScriptInterface;
+
 class UMVVMViewClass;
 struct FMVVMViewClass_CompiledBinding;
+struct FMVVMViewDelayedBinding;
 class UMVVMViewModelBase;
 class UWidget;
-
+namespace UE::MVVM
+{
+	class FDebugging;
+}
 
 /**
  * Instance UMVVMClassExtension_View for the UUserWdiget
@@ -27,17 +29,23 @@ class MODELVIEWVIEWMODEL_API UMVVMView : public UUserWidgetExtension
 {
 	GENERATED_BODY()
 
+	friend UE::MVVM::FDebugging;
+
 public:
 	void ConstructView(const UMVVMViewClass* ClassExtension);
 
 	//~ Begin UUserWidgetExtension implementation
 	virtual void Construct() override;
 	virtual void Destruct() override;
-
-// todo needed when we will support different type of update
-	//virtual bool RequiresTick() const override;
-	//virtual void Tick(const FGeometry& MyGeometry, float InDeltaTime) override;
 	//~ End UUserWidgetExtension implementation
+
+	const UMVVMViewClass* GetViewClass() const
+	{
+		return ClassExtension;
+	}
+
+	void ExecuteDelayedBinding(const FMVVMViewDelayedBinding& DelayedBinding) const;
+	void ExecuteEveryTickBindings() const;
 
 // todo a way to identify a binding from outside. maybe a unique name in the editor?
 	//UFUNCTION(BlueprintCallable, Category = "MVVM")
@@ -47,7 +55,7 @@ public:
 	//bool IsLibraryBindingEnabled(FGuid ViewModelId, FMVVMBindingName BindingName) const;
 
 	UFUNCTION(BlueprintCallable, Category = "MVVM")
-	bool SetViewModel(FName ViewModelName, UMVVMViewModelBase* ViewModel);
+	bool SetViewModel(FName ViewModelName, TScriptInterface<INotifyFieldValueChanged> ViewModel);
 
 private:
 	void HandledLibraryBindingValueChanged(UObject* InViewModel, UE::FieldNotification::FFieldId InFieldId, int32 InCompiledBindingIndex) const;
@@ -89,4 +97,15 @@ private:
 
 	/** Is the Construct method was called. */
 	bool bConstructed = false;
+
+	/** Is the Construct method was called. */
+	bool bHasEveryTickBinding = false;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "FieldNotification/FieldId.h"
+#include "FieldNotification/IFieldValueChanged.h"
+#include "Templates/SubclassOf.h"
+#include "Types/MVVMBindingName.h"
+#endif

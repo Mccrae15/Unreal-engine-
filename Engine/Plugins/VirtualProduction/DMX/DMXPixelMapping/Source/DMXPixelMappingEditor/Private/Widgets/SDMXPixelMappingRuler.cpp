@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SDMXPixelMappingRuler.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Misc/Paths.h"
-#include "Rendering/DrawElements.h"
+#include "Rendering/SlateRenderer.h"
 #include "Styling/CoreStyle.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
@@ -178,7 +176,7 @@ int32 SDMXPixelMappingRuler::DrawTicks( FSlateWindowElementList& OutDrawElements
 			FSlateDrawElement::MakeLines(
 				OutDrawElements,
 				InArgs.StartLayer,
-				InArgs.AllottedGeometry.ToPaintGeometry( Offset, TickSize ),
+				InArgs.AllottedGeometry.ToPaintGeometry( TickSize, FSlateLayoutTransform(Offset) ),
 				LinePoints,
 				InArgs.DrawEffects,
 				InArgs.TickColor,
@@ -211,7 +209,7 @@ int32 SDMXPixelMappingRuler::DrawTicks( FSlateWindowElementList& OutDrawElements
 				FSlateDrawElement::MakeText(
 					OutDrawElements,
 					InArgs.StartLayer, 
-					InArgs.AllottedGeometry.ToPaintGeometry( TextOffset, TextSize ), 
+					InArgs.AllottedGeometry.ToPaintGeometry( TextSize, FSlateLayoutTransform(TextOffset) ), 
 					FrameString, 
 					SmallLayoutFont,
 					InArgs.DrawEffects,
@@ -234,7 +232,7 @@ int32 SDMXPixelMappingRuler::DrawTicks( FSlateWindowElementList& OutDrawElements
 			FSlateDrawElement::MakeLines(
 				OutDrawElements,
 				InArgs.StartLayer,
-				InArgs.AllottedGeometry.ToPaintGeometry( Offset, TickSize ),
+				InArgs.AllottedGeometry.ToPaintGeometry( TickSize, FSlateLayoutTransform(Offset) ),
 				LinePoints,
 				InArgs.DrawEffects,
 				InArgs.TickColor,

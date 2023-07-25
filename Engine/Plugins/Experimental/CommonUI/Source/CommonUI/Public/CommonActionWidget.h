@@ -2,10 +2,15 @@
 
 #pragma once
 
-#include "CommonUITypes.h"
+#include "Components/Widget.h"
 #include "Input/UIActionBindingHandle.h"
 
+#include "Engine/DataTable.h"
 #include "CommonActionWidget.generated.h"
+
+class UCommonInputSubsystem;
+enum class ECommonInputType : uint8;
+struct FCommonInputActionDataBase;
 
 class SBox;
 class SImage;
@@ -36,6 +41,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = CommonActionWidget)
 	FText GetDisplayText() const;
+
+	UFUNCTION(BlueprintCallable, Category = CommonActionWidget)
+	void SetEnhancedInputAction(UInputAction* InInputAction);
 
 	UFUNCTION(BlueprintCallable, Category = CommonActionWidget)
 	void SetInputAction(FDataTableRowHandle InputActionRow);
@@ -87,6 +95,12 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = CommonActionWidget, meta = (RowType = "/Script/CommonUI.CommonInputActionDataBase", TitleProperty = "RowName"))
 	TArray<FDataTableRowHandle> InputActions;
 
+	/**
+	 * Input Action this common action widget is intended to represent. Optional if using EnhancedInputs
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = CommonActionWidget, meta = (EditCondition = "CommonInput.CommonInputSettings.IsEnhancedInputSupportEnabled", EditConditionHides))
+	TObjectPtr<class UInputAction> EnhancedInputAction;
+
 	//@todo DanH: Create clearer split between support for the new & legacy system in here
 	FUIActionBindingHandle DisplayedBindingHandle;
 
@@ -123,3 +137,7 @@ protected:
 
 	bool bAlwaysHideOverride = false;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CommonUITypes.h"
+#endif

@@ -57,10 +57,14 @@ FEdgeStyleParameters::FEdgeStyleParameters(
 	, ColorOffset(ColorOffset)
 	, ColorMapType(InColorMapType)
 	, ColorLutDesc(InLutDesc)
-
 {
 	bUseColorLuts = (InColorMapType == ColorMapType_ColorLut && InLutDesc.ColorLuts.Num() == 1)
 		|| (InColorMapType == ColorMapType_ColorLut_Interpolated && InLutDesc.ColorLuts.Num() == 2);
+	if ((InColorMapType == ColorMapType_ColorLut || InColorMapType == ColorMapType_ColorLut_Interpolated)
+		&& !bUseColorLuts)
+	{
+		ColorMapType = ColorMapType_None;
+	}
 	ColorMapData = GenerateColorMapData(InColorMapType, InColorMapGradient);
 };
 

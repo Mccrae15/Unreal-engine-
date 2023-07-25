@@ -13,10 +13,11 @@
 #define INTERNAL_DECORATOR_COMPUTE(Method) CmdList.GetComputeContext().Method
 #endif
 
+#include "RHIResourceUpdates.h"
+
 class FRHICommandListBase;
 class IRHIComputeContext;
 struct FComputedBSS;
-struct FComputedGraphicsPipelineState;
 struct FComputedUniformBuffer;
 struct FMemory;
 struct FRHICommandBeginDrawingViewport;
@@ -54,36 +55,10 @@ struct FRHICommandTransitionTexturesPipeline;
 struct FRHICommandTransitionTexturesDepth;
 struct FRHICommandTransitionTexturesArray;
 struct FRHICommandClearRayTracingBindings;
-struct FRHICommandRayTraceOcclusion;
-struct FRHICommandRayTraceIntersection;
 struct FRHICommandRayTraceDispatch;
 struct FRHICommandSetRayTracingBindings;
 
 template <typename TRHIShader> struct FRHICommandSetLocalUniformBuffer;
-
-void FRHICommandBeginUpdateMultiFrameResource::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(BeginUpdateMultiFrameResource);
-	INTERNAL_DECORATOR(RHIBeginUpdateMultiFrameResource)(Texture);
-}
-
-void FRHICommandEndUpdateMultiFrameResource::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(EndUpdateMultiFrameResource);
-	INTERNAL_DECORATOR(RHIEndUpdateMultiFrameResource)(Texture);
-}
-
-void FRHICommandBeginUpdateMultiFrameUAV::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(BeginUpdateMultiFrameUAV);
-	INTERNAL_DECORATOR(RHIBeginUpdateMultiFrameResource)(UAV);
-}
-
-void FRHICommandEndUpdateMultiFrameUAV::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(EndUpdateMultiFrameUAV);
-	INTERNAL_DECORATOR(RHIEndUpdateMultiFrameResource)(UAV);
-}
 
 #if WITH_MGPU
 void FRHICommandSetGPUMask::Execute(FRHICommandListBase& CmdList)
@@ -101,22 +76,6 @@ void FRHICommandSetGPUMask::Execute(FRHICommandListBase& CmdList)
 			Context->RHISetGPUMask(GPUMask);
 		}
 	}
-}
-void FRHICommandWaitForTemporalEffect::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(WaitForTemporalEffect);
-	INTERNAL_DECORATOR(RHIWaitForTemporalEffect)(EffectName);
-}
-
-template<> RHI_API void FRHICommandBroadcastTemporalEffect<FRHITexture>::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(BroadcastTemporalEffect);
-	INTERNAL_DECORATOR(RHIBroadcastTemporalEffect)(EffectName, Resources);
-}
-template<> RHI_API void FRHICommandBroadcastTemporalEffect<FRHIBuffer>::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(BroadcastTemporalEffect);
-	INTERNAL_DECORATOR(RHIBroadcastTemporalEffect)(EffectName, Resources);
 }
 
 void FRHICommandTransferResources::Execute(FRHICommandListBase& CmdList)
@@ -143,6 +102,18 @@ void FRHICommandSetStencilRef::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(SetStencilRef);
 	INTERNAL_DECORATOR(RHISetStencilRef)(StencilRef);
+}
+
+template<> RHI_API void FRHICommandSetShaderParameters<FRHIComputeShader>::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(SetShaderParameters);
+	INTERNAL_DECORATOR_COMPUTE(RHISetShaderParameters)(Shader, ParametersData, Parameters, ResourceParameters, BindlessParameters);
+}
+
+template<> RHI_API void FRHICommandSetShaderParameters<FRHIGraphicsShader>::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(SetShaderParameters);
+	INTERNAL_DECORATOR(RHISetShaderParameters)(Shader, ParametersData, Parameters, ResourceParameters, BindlessParameters);
 }
 
 template<> RHI_API void FRHICommandSetShaderParameter<FRHIComputeShader>::Execute(FRHICommandListBase& CmdList)
@@ -593,22 +564,6 @@ void FRHICommandBuildAccelerationStructures::Execute(FRHICommandListBase& CmdLis
 	INTERNAL_DECORATOR_COMPUTE(RHIBuildAccelerationStructures)(Params, ScratchBufferRange);
 }
 
-void FRHICommandRayTraceOcclusion::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(RayTraceOcclusion);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	INTERNAL_DECORATOR(RHIRayTraceOcclusion)(Scene, Rays, Output, NumRays);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-void FRHICommandRayTraceIntersection::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(RayTraceIntersection);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	INTERNAL_DECORATOR(RHIRayTraceIntersection)(Scene, Rays, Output, NumRays);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
 void FRHICommandRayTraceDispatch::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(RayTraceDispatch);
@@ -751,7 +706,7 @@ void FRHICommandEndScene::Execute(FRHICommandListBase& CmdList)
 void FRHICommandBeginFrame::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(BeginFrame);
-	RHIPrivateBeginFrame();
+	CmdList.GetAsImmediate().ProcessStats();
 	INTERNAL_DECORATOR(RHIBeginFrame)();
 }
 

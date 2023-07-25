@@ -1,23 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ContextualAnimUtilities.h"
-#include "AnimationUtils.h"
-#include "AnimationRuntime.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimationPoseData.h"
-#include "Animation/AttributesRuntime.h"
-#include "Animation/AnimTypes.h"
 #include "Animation/AnimInstance.h"
+#include "BonePose.h"
 #include "DrawDebugHelpers.h"
-#include "Engine/World.h"
-#include "ContextualAnimTypes.h"
+#include "Engine/Engine.h"
 #include "ContextualAnimSceneAsset.h"
-#include "Misc/MemStack.h"
 #include "GameFramework/Character.h"
 #include "ContextualAnimActorInterface.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "EngineUtils.h"
-#include "AnimNotifyState_IKWindow.h"
 #include "SceneManagement.h"
 #include "MotionWarpingComponent.h"
 
@@ -30,7 +23,7 @@ void UContextualAnimUtilities::ExtractLocalSpacePose(const UAnimSequenceBase* An
 	FBlendedCurve Curve;
 	Curve.InitFrom(BoneContainer);
 
-	FAnimExtractContext Context(Time, bExtractRootMotion);
+	FAnimExtractContext Context(static_cast<double>(Time), bExtractRootMotion);
 
 	UE::Anim::FStackAttributeContainer Attributes;
 	FAnimationPoseData AnimationPoseData(OutPose, Curve, Attributes);

@@ -2,22 +2,20 @@
 
 
 #include "MeshPaintInteractions.h"
-#include "InputState.h"
+#include "InteractiveTool.h"
 #include "InteractiveToolManager.h"
 #include "ToolContextInterfaces.h"
 #include "MeshPaintHelpers.h"
 #include "Components/MeshComponent.h"
 #include "IMeshPaintComponentAdapter.h"
 #include "MeshPaintAdapterFactory.h"
-#include "EngineUtils.h"
-#include "Editor.h"
 #include "Elements/Framework/TypedElementRegistry.h"
 #include "Elements/Interfaces/TypedElementObjectInterface.h"
+#include "UnrealClient.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MeshPaintInteractions)
 
 #if WITH_EDITOR
-#include "HitProxies.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "MeshSelection"

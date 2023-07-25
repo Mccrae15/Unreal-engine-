@@ -23,7 +23,7 @@
  *                         and want to have the highest settings
  */
 UENUM()
-enum TextureGroup
+enum TextureGroup : int
 {
 	TEXTUREGROUP_World UMETA(DisplayName="ini:World"),
 	TEXTUREGROUP_WorldNormalMap UMETA(DisplayName="ini:WorldNormalMap"),
@@ -93,7 +93,7 @@ enum TextureGroup
 };
 
 UENUM()
-enum TextureMipGenSettings
+enum TextureMipGenSettings : int
 {
 	/** Default for the "texture". */
 	TMGS_FromTextureGroup UMETA(DisplayName="FromTextureGroup"),
@@ -145,7 +145,7 @@ enum TextureMipGenSettings
 UENUM()
 namespace ETexturePowerOfTwoSetting
 {
-	enum Type
+	enum Type : int
 	{
 		/** Do not modify the texture dimensions. */
 		None,
@@ -218,7 +218,7 @@ enum class ETextureDownscaleOptions : uint8
 };
 
 UENUM()
-enum ETextureLossyCompressionAmount
+enum ETextureLossyCompressionAmount : int
 {
 	TLCA_Default		UMETA(DisplayName = "Default"),
 	TLCA_None			UMETA(DisplayName = "No lossy compression (Oodle RDO disabled)"),
@@ -267,7 +267,7 @@ enum class ETextureClass : uint8
 };
 
 UENUM()
-enum ECompositeTextureMode
+enum ECompositeTextureMode : int
 {
 	CTM_Disabled UMETA(DisplayName="Disabled"),
 	/** CompositingTexture needs to be a normal map with the same or larger size. */
@@ -286,7 +286,7 @@ enum ECompositeTextureMode
 };
 
 UENUM()
-enum ETextureSourceCompressionFormat
+enum ETextureSourceCompressionFormat : int
 {
 	TSCF_None	UMETA(DisplayName = "None"),
 	TSCF_PNG	UMETA(DisplayName = "PNG"),
@@ -297,7 +297,7 @@ enum ETextureSourceCompressionFormat
 
 // ETextureSourceFormat should map one-to-one to ImageCore ERawImageFormat::Type
 UENUM()
-enum ETextureSourceFormat
+enum ETextureSourceFormat : int
 {
 	TSF_Invalid,
 	TSF_G8,
@@ -326,7 +326,7 @@ enum ETextureSourceFormat
 
 // This needs to be mirrored in EditorFactories.cpp.
 UENUM()
-enum TextureCompressionSettings
+enum TextureCompressionSettings : int
 {
 	TC_Default					UMETA(DisplayName = "Default (DXT1/5, BC1/3 on DX11)"),
 	TC_Normalmap				UMETA(DisplayName = "Normalmap (DXT5, BC5 on DX11)"),
@@ -395,6 +395,18 @@ enum class ETextureColorSpace : uint8
 	TCS_MAX,
 };
 
+UENUM()
+enum TextureCookPlatformTilingSettings : uint8
+{
+	/** Get the tiling setting from the texture's group CookPlatformTilingDisabled setting. By default it's to tile during cook, unless it has been changed in the texture group */
+	TCPTS_FromTextureGroup UMETA(DisplayName = "FromTextureGroup"),
+	/** The texture will be tiled during the cook process if the platform supports it. */
+	TCPTS_Tile UMETA(DisplayName = "Tile during cook"),
+	/** The texture will not be tiled during the cook process, and will be tiled when uploaded to the GPU if the platform supports it. */
+	TCPTS_DoNotTile UMETA(DisplayName = "Do not tile during cook"),
+	TCPTS_MAX,
+};
+
 /** List of chromatic adaptation methods, matching the list in ColorManagementDefines.h. */
 UENUM()
 enum class ETextureChromaticAdaptationMethod : uint8
@@ -402,6 +414,49 @@ enum class ETextureChromaticAdaptationMethod : uint8
 	TCAM_None		= 0 UMETA(DisplayName = "None", ToolTip = "No chromatic adaptation is applied."),
 	TCAM_Bradford	= 1 UMETA(DisplayName = "Bradford", ToolTip = "Chromatic adaptation is applied using the Bradford method."),
 	TCAM_CAT02		= 2 UMETA(DisplayName = "CAT02", ToolTip = "Chromatic adaptation is applied using the CAT02 method."),
+};
+
+
+UENUM()
+enum TextureFilter : int
+{
+	TF_Nearest UMETA(DisplayName="Nearest"),
+	TF_Bilinear UMETA(DisplayName="Bi-linear"),
+	TF_Trilinear UMETA(DisplayName="Tri-linear"),
+	/** Use setting from the Texture Group. */
+	TF_Default UMETA(DisplayName="Default (from Texture Group)"),
+	TF_MAX,
+};
+
+UENUM()
+enum TextureAddress : int
+{
+	TA_Wrap UMETA(DisplayName="Wrap"),
+	TA_Clamp UMETA(DisplayName="Clamp"),
+	TA_Mirror UMETA(DisplayName="Mirror"),
+	TA_MAX,
+};
+
+UENUM()
+enum ETextureMipCount : int
+{
+	TMC_ResidentMips,
+	TMC_AllMips,
+	TMC_AllMipsBiased,
+	TMC_MAX,
+};
+
+// TextureCompressionQuality is used for ASTC
+UENUM()
+enum ETextureCompressionQuality : int
+{
+	TCQ_Default = 0		UMETA(DisplayName="Default"),
+	TCQ_Lowest = 1		UMETA(DisplayName="Lowest (ASTC 12x12)"),
+	TCQ_Low = 2			UMETA(DisplayName="Low (ASTC 10x10)"),
+	TCQ_Medium = 3		UMETA(DisplayName="Medium (ASTC 8x8)"),
+	TCQ_High= 4			UMETA(DisplayName="High (ASTC 6x6)"),
+	TCQ_Highest = 5		UMETA(DisplayName="Highest (ASTC 4x4)"),
+	TCQ_MAX,
 };
 
 

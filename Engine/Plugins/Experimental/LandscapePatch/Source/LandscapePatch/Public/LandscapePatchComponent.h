@@ -2,11 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 
 #include "Components/SceneComponent.h"
 
 #include "LandscapePatchComponent.generated.h"
+
+enum class ECacheApplyPhase;
+enum class ETeleportType : uint8;
 
 class ALandscape;
 class ALandscapePatchManager;
@@ -36,7 +38,7 @@ public:
 	virtual bool IsAffectingWeightmapLayer(const FName& InLayerName) const { return false; }
 
 	UFUNCTION(BlueprintCallable, Category = "LandscapePatch")
-	void RequestLandscapeUpdate();
+	void RequestLandscapeUpdate(bool bInUserTriggeredUpdate = false);
 
 	/**
 	 * Allows the patch to be disabled, so that it no longer affects the landscape. This can be useful
@@ -174,3 +176,7 @@ struct FLandscapePatchComponentInstanceData : public FSceneComponentInstanceData
 	bool bGaveMissingLandscapeWarning = false;
 #endif
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

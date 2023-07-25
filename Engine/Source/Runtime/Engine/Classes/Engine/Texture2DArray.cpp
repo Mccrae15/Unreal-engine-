@@ -6,11 +6,9 @@
 
 #include "Engine/Texture2DArray.h"
 
-#include "AsyncCompilationHelpers.h"
-#include "Containers/ResourceArray.h"
-#include "DeviceProfiles/DeviceProfile.h"
-#include "DeviceProfiles/DeviceProfileManager.h"
+#include "Engine/Texture2D.h"
 #include "Engine/TextureMipDataProviderFactory.h"
+#include "EngineLogs.h"
 #include "EngineUtils.h"
 #include "ImageUtils.h"
 #include "Misc/ScopedSlowTask.h"
@@ -18,10 +16,12 @@
 #include "RenderUtils.h"
 #include "Rendering/Texture2DArrayResource.h"
 #include "Streaming/Texture2DArrayStreaming.h"
+#include "Streaming/Texture2DMipDataProvider_DDC.h"
 #include "Streaming/TextureStreamIn.h"
+#include "Streaming/Texture2DMipDataProvider_IO.h"
 #include "Streaming/TextureStreamOut.h"
 #include "TextureCompiler.h"
-#include "TextureResource.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "ImageCoreUtils.h"
 
@@ -31,6 +31,11 @@
 
 // Externed global switch to control whether streaming is enabled for texture2darray. 
 bool GSupportsTexture2DArrayStreaming = true;
+static FAutoConsoleVariableRef CVarSupportsTexture2DArrayStreaming(
+	TEXT("r.SupportsTexture2DArrayStreaming"),
+	GSupportsTexture2DArrayStreaming,
+	TEXT("Enable Support of Texture2DArray Streaming\n")
+);
 
 static TAutoConsoleVariable<int32> CVarAllowTexture2DArrayAssetCreation(
 	TEXT("r.AllowTexture2DArrayCreation"),
@@ -143,23 +148,6 @@ FTexturePlatformData* UTexture2DArray::GetPlatformData()
 	const UTexture2DArray* ConstThis = this;
 	return const_cast<FTexturePlatformData*>(ConstThis->GetPlatformData());
 }
-
-#if WITH_EDITOR
-bool UTexture2DArray::GetStreamableRenderResourceState(FTexturePlatformData* InPlatformData, FStreamableRenderResourceState& OutState) const
-{
-	TGuardValue<FTexturePlatformData*> Guard(const_cast<UTexture2DArray*>(this)->PrivatePlatformData, InPlatformData);
-	if (GetPlatformData())
-	{
-		const FPixelFormatInfo& FormatInfo = GPixelFormats[GetPixelFormat()];
-		if (GetNumMips() > 0 && FormatInfo.Supported)
-		{
-			OutState = GetResourcePostInitState(GetPlatformData(), GSupportsTexture2DArrayStreaming, 0, 0, /*bSkipCanBeLoaded*/ true);
-			return true;
-		}
-	}
-	return false;
-}
-#endif
 
 FTextureResource* UTexture2DArray::CreateResource()
 {

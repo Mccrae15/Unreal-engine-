@@ -11,23 +11,27 @@ public class UIFramework : ModuleRules
 			{
 				"Core",
 				"CoreUObject",
+				"DeveloperSettings",
 				"Engine",
+				"ModelViewViewModel",
 				"SlateCore",
 				"Slate",
 				"UMG",
 			}
 		);
 
-        PublicIncludePathModuleNames.AddRange(
-            new string[] {
-            }
-        );
-		
+		PublicIncludePathModuleNames.AddRange(
+			new string[] {
+			}
+		);
+
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"NetCore",
 			}
 		);
+
+		SetupIrisSupport(Target);
 	}
 }

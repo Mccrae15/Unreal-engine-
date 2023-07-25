@@ -17,7 +17,7 @@
 
 namespace FTemplateRegistryHelpers
 {
-	uint32 CalcHash(const FInstancedStruct& StructInstance)
+	uint32 CalcHash(const FConstStructView StructInstance)
 	{
 		const UScriptStruct* Type = StructInstance.GetScriptStruct();
 		const uint8* Memory = StructInstance.GetMemory();
@@ -38,7 +38,7 @@ namespace FTemplateRegistryHelpers
 		UMassSpawnerSubsystem* SpawnerSystem = UWorld::GetSubsystem<UMassSpawnerSubsystem>(InWorld);
 		if (ensure(SpawnerSystem))
 		{
-			UMassEntityTemplateRegistry& Registry = SpawnerSystem->GetTemplateRegistryInstance();
+			FMassEntityTemplateRegistry& Registry = SpawnerSystem->GetMutableTemplateRegistryInstance();
 			Registry.DebugReset();
 		}
 	}
@@ -52,83 +52,26 @@ namespace FTemplateRegistryHelpers
 }
 
 //----------------------------------------------------------------------//
-// UMassEntityTemplateRegistry 
+// FMassEntityTemplateRegistry 
 //----------------------------------------------------------------------//
-TMap<const UScriptStruct*, UMassEntityTemplateRegistry::FStructToTemplateBuilderDelegate> UMassEntityTemplateRegistry::StructBasedBuilders;
+TMap<const UScriptStruct*, FMassEntityTemplateRegistry::FStructToTemplateBuilderDelegate> FMassEntityTemplateRegistry::StructBasedBuilders;
 
-void UMassEntityTemplateRegistry::BeginDestroy()
+FMassEntityTemplateRegistry::FMassEntityTemplateRegistry(UObject* InOwner)
+	: Owner(InOwner)
 {
-	// force release of memory owned by individual templates (especially the hosted InstancedScriptStructs).
-	TemplateIDToTemplateMap.Reset();
-
-	Super::BeginDestroy();
 }
 
-UWorld* UMassEntityTemplateRegistry::GetWorld() const 
+UWorld* FMassEntityTemplateRegistry::GetWorld() const 
 {
-	const UObject* Outer = GetOuter();
-	return Outer ? Outer->GetWorld() : nullptr;
+	return Owner.IsValid() ? Owner->GetWorld() : nullptr;
 }
 
-UMassEntityTemplateRegistry::FStructToTemplateBuilderDelegate& UMassEntityTemplateRegistry::FindOrAdd(const UScriptStruct& DataType)
+FMassEntityTemplateRegistry::FStructToTemplateBuilderDelegate& FMassEntityTemplateRegistry::FindOrAdd(const UScriptStruct& DataType)
 {
 	return StructBasedBuilders.FindOrAdd(&DataType);
 }
 
-const FMassEntityTemplate* UMassEntityTemplateRegistry::FindOrBuildStructTemplate(const FInstancedStruct& StructInstance)
-{
-	// thou shall not call this function on CDO
-	check(HasAnyFlags(RF_ClassDefaultObject) == false);
-
-	const UScriptStruct* Type = StructInstance.GetScriptStruct();
-	check(Type);
-	// 1. Check if we already have the template stored.
-	// 2. If not, 
-	//	a. build it
-	//	b. store it
-
-	const uint32 StructInstanceHash = FTemplateRegistryHelpers::CalcHash(StructInstance);
-	const uint32 HashLookup = HashCombine(GetTypeHash(Type->GetFName()), StructInstanceHash);
-
-	FMassEntityTemplateID* TemplateID = LookupTemplateIDMap.Find(HashLookup);
-
-	if (TemplateID != nullptr)
-	{
-		if (const FMassEntityTemplate* TemplateFound = TemplateIDToTemplateMap.Find(*TemplateID))
-		{
-			return TemplateFound;
-		}
-	}
-
-	// this means we don't have an entry for given struct. Let's see if we know how to make one
-	FMassEntityTemplate* NewTemplate = nullptr;
-	FStructToTemplateBuilderDelegate* Builder = StructBasedBuilders.Find(StructInstance.GetScriptStruct());
-	if (Builder)
-	{
-		if (TemplateID == nullptr)
-		{
-			// TODO consider removing the need for strings here
-			// Use the class name string for the hash here so the hash can be deterministic between client and server
-			const uint32 NameStringHash = GetTypeHash(Type->GetName());
-			const uint32 Hash = HashCombine(NameStringHash, StructInstanceHash);
-
-			TemplateID = &LookupTemplateIDMap.Add(HashLookup, FMassEntityTemplateID(Hash, EMassEntityTemplateIDType::ScriptStruct));
-		}
-
-		NewTemplate = &TemplateIDToTemplateMap.Add(*TemplateID);
-
-		check(NewTemplate);
-		NewTemplate->SetTemplateID(*TemplateID);
-
-		BuildTemplateImpl(*Builder, StructInstance, *NewTemplate);
-	}
-	UE_CVLOG_UELOG(Builder == nullptr, this, LogMassSpawner, Warning, TEXT("Attempting to build a MassAgentTemplate for struct type %s while template builder has not been registered for this type")
-		, *GetNameSafe(Type));
-
-	return NewTemplate;
-}
-
-bool UMassEntityTemplateRegistry::BuildTemplateImpl(const FStructToTemplateBuilderDelegate& Builder, const FInstancedStruct& StructInstance, FMassEntityTemplate& OutTemplate)
+bool FMassEntityTemplateRegistry::BuildTemplateImpl(const FStructToTemplateBuilderDelegate& Builder, const FConstStructView StructInstance, FMassEntityTemplate& OutTemplate)
 {
 	UWorld* World = GetWorld();
 	FMassEntityTemplateBuildContext Context(OutTemplate);
@@ -137,7 +80,7 @@ bool UMassEntityTemplateRegistry::BuildTemplateImpl(const FStructToTemplateBuild
 	{
 		InitializeEntityTemplate(OutTemplate);
 
-		UE_VLOG(this, LogMassSpawner, Log, TEXT("Created entity template for %s:\n%s"), *GetNameSafe(StructInstance.GetScriptStruct())
+		UE_VLOG(Owner.Get(), LogMassSpawner, Log, TEXT("Created entity template for %s:\n%s"), *GetNameSafe(StructInstance.GetScriptStruct())
 			, *OutTemplate.DebugGetDescription(UE::Mass::Utils::GetEntityManager(World)));
 
 		return true;
@@ -145,54 +88,47 @@ bool UMassEntityTemplateRegistry::BuildTemplateImpl(const FStructToTemplateBuild
 	return false;
 }
 
-void UMassEntityTemplateRegistry::InitializeEntityTemplate(FMassEntityTemplate& OutTemplate) const
+void FMassEntityTemplateRegistry::InitializeEntityTemplate(FMassEntityTemplate& InOutTemplate) const
 {
-	// expected to be ensured by the caller
-	check(!OutTemplate.IsEmpty());
-
 	UWorld* World = GetWorld();
 	check(World);
 	// find or create template
 	FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(*World);
 
 	// Sort anything there is to sort for later comparison purposes
-	OutTemplate.Sort();
+	InOutTemplate.Sort();
 
-	const FMassArchetypeHandle ArchetypeHandle = EntityManager.CreateArchetype(OutTemplate.GetCompositionDescriptor(), FName(OutTemplate.GetTemplateName()));
-	OutTemplate.SetArchetype(ArchetypeHandle);
+	const FMassArchetypeHandle ArchetypeHandle = EntityManager.CreateArchetype(InOutTemplate.GetCompositionDescriptor(), FName(InOutTemplate.GetTemplateName()));
+	InOutTemplate.SetArchetype(ArchetypeHandle);
 }
 
-void UMassEntityTemplateRegistry::DebugReset()
+void FMassEntityTemplateRegistry::DebugReset()
 {
 #if WITH_MASSGAMEPLAY_DEBUG
-	LookupTemplateIDMap.Reset();
 	TemplateIDToTemplateMap.Reset();
 #endif // WITH_MASSGAMEPLAY_DEBUG
 }
 
-const FMassEntityTemplate* UMassEntityTemplateRegistry::FindTemplateFromTemplateID(FMassEntityTemplateID TemplateID) const 
+const FMassEntityTemplate* FMassEntityTemplateRegistry::FindTemplateFromTemplateID(FMassEntityTemplateID TemplateID) const 
 {
 	return TemplateIDToTemplateMap.Find(TemplateID);
 }
 
-FMassEntityTemplate* UMassEntityTemplateRegistry::FindMutableTemplateFromTemplateID(FMassEntityTemplateID TemplateID) 
+FMassEntityTemplate* FMassEntityTemplateRegistry::FindMutableTemplateFromTemplateID(FMassEntityTemplateID TemplateID) 
 {
 	return TemplateIDToTemplateMap.Find(TemplateID);
 }
 
-FMassEntityTemplate& UMassEntityTemplateRegistry::CreateTemplate(const uint32 HashLookup, FMassEntityTemplateID TemplateID)
+FMassEntityTemplate& FMassEntityTemplateRegistry::CreateTemplate(FMassEntityTemplateID TemplateID)
 {
-	checkSlow(!LookupTemplateIDMap.Contains(HashLookup));
-	LookupTemplateIDMap.Add(HashLookup, TemplateID);
 	checkSlow(!TemplateIDToTemplateMap.Contains(TemplateID));
 	FMassEntityTemplate& NewTemplate = TemplateIDToTemplateMap.Add(TemplateID);
 	NewTemplate.SetTemplateID(TemplateID);
 	return NewTemplate;
 }
 
-void UMassEntityTemplateRegistry::DestroyTemplate(const uint32 HashLookup, FMassEntityTemplateID TemplateID)
+void FMassEntityTemplateRegistry::DestroyTemplate(FMassEntityTemplateID TemplateID)
 {
-	LookupTemplateIDMap.Remove(HashLookup);
 	TemplateIDToTemplateMap.Remove(TemplateID);
 }
 
@@ -240,10 +176,8 @@ bool FMassEntityTemplateBuildContext::ValidateBuildContext(const UWorld& World)
 		{
 			if (!bHeaderOutputed)
 			{
-				check(CurrentStruct);
-				check(CurrentTrait);
-				UE_LOG(LogMass, Error, TEXT("Fragment(%s) was added multiple time and can only be added by one trait. Fragment was added by:"), *CurrentStruct->GetName());
-				UE_LOG(LogMass, Error, TEXT("\t\t%s"), *CurrentTrait->GetClass()->GetName());
+				UE_LOG(LogMass, Error, TEXT("Fragment(%s) was added multiple time and can only be added by one trait. Fragment was added by:"), CurrentStruct ? *CurrentStruct->GetName() : TEXT("null"));
+				UE_LOG(LogMass, Error, TEXT("\t\t%s"), CurrentTrait ? *CurrentTrait->GetClass()->GetName() : TEXT("null"));
 				bHeaderOutputed = true;
 			}
 			UE_LOG(LogMass, Error, TEXT("\t\t%s"), *Pair.Value->GetClass()->GetName());

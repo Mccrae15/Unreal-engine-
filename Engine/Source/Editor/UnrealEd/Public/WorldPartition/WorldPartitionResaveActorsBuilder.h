@@ -21,14 +21,23 @@ public:
 	// UWorldPartitionBuilder interface end
 
 private:
+	TArray<TSubclassOf<AActor>> GetActorClassesFilter();
+
+private:
 	UPROPERTY()
 	FString ActorClassName;
+
+	UPROPERTY()
+	FString ActorClassesFromFile;
 
 	UPROPERTY()
 	bool bReportOnly;
 
 	UPROPERTY()
 	bool bResaveDirtyActorDescsOnly;
+
+	UPROPERTY()
+	bool bDiffDirtyActorDescs;
 
 	UPROPERTY()
 	bool bSwitchActorPackagingSchemeToReduced;

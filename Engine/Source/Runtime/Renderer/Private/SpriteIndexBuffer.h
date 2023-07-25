@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include "RenderResource.h"
+#include "RHI.h"
+
 template< uint32 NumSprites >
 class FSpriteIndexBuffer : public FIndexBuffer
 {

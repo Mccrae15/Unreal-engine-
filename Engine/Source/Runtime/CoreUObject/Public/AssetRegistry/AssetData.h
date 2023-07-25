@@ -4,6 +4,7 @@
 
 #include "AssetRegistry/AssetBundleData.h"
 #include "AssetRegistry/AssetDataTagMap.h"
+#include "AssetRegistry/AssetIdentifier.h"
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
 #include "Containers/ContainerAllocationPolicies.h"
@@ -14,10 +15,9 @@
 #include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
 #include "Containers/UnrealString.h"
-#include "CoreMinimal.h"
 #include "HAL/PlatformMath.h"
 #include "HAL/UnrealMemory.h"
-#include "IO/IoDispatcher.h"
+#include "IO/IoChunkId.h"
 #include "IO/IoHash.h"
 #include "Internationalization/Text.h"
 #include "Logging/LogCategory.h"
@@ -29,6 +29,7 @@
 #include "Misc/Guid.h"
 #include "Misc/Optional.h"
 #include "Misc/PackageName.h"
+#include "Misc/PackagePath.h"
 #include "Misc/SecureHash.h"
 #include "Misc/StringBuilder.h"
 #include "Serialization/Archive.h"
@@ -40,7 +41,6 @@
 #include "Trace/Detail/Channel.h"
 #include "UObject/Class.h"
 #include "UObject/LinkerInstancingContext.h"
-#include "UObject/LinkerLoad.h"
 #include "UObject/NameTypes.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
@@ -52,6 +52,10 @@
 #include "UObject/TopLevelAssetPath.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UnrealNames.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif
 
 struct FAssetBundleData;
 struct FCustomVersion;
@@ -94,6 +98,7 @@ struct COREUOBJECT_API FAssetRegistryVersion
 		ClassPaths,							// Classes are serialized as path names rather than short object names, e.g. /Script/Engine.StaticMesh
 		RemoveAssetPathFNames,				// Asset bundles are serialized as FTopLevelAssetPath instead of FSoftObjectPath, deprecated FAssetData::ObjectPath	
 		AddedHeader,						// Added header with bFilterEditorOnlyData flag 
+		AssetPackageDataHasExtension,		// Added Extension to AssetPackageData.
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
@@ -131,6 +136,16 @@ namespace UE::AssetRegistry::Private
 	/** Concatenates an existing object path with an inner object with the correct separator ('.' or ':'). Assumes the outer path already contains correct separators. */
 	COREUOBJECT_API void ConcatenateOuterPathAndObjectName(FStringBuilderBase& Builder, FName OuterPath, FName ObjectName);
 }
+
+/**
+ * Should we try and resolve the class when you call GetClass on FAssetData?  If so then it might potentially load several
+ * other assets used by the class (Example: A UBlueprintGeneratedClass, might link in multiple other assets).
+ */
+enum class EResolveClass : uint8
+{
+	No,
+	Yes,
+};
 
 /** 
  * A struct to hold important information about an assets found by the Asset Registry
@@ -424,39 +439,26 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return Object && IsRedirectorClassName(Object->GetClass()->GetClassPathName());
 	}
 
-	/** Returns the class UClass if it is loaded. */
-	UClass* GetClass() const
-	{
-		if ( !IsValid() )
-		{
-			// Dont even try to find the class if the objectpath isn't set
-			return nullptr;
-		}
-
-		UClass* FoundClass = FindObject<UClass>(AssetClassPath);
-		if (!FoundClass)
-		{
-			// Look for class redirectors
-			FString NewPath = FLinkerLoad::FindNewPathNameForClass(AssetClassPath.ToString(), false);
-			if (!NewPath.IsEmpty())
-			{
-				FoundClass = FindObject<UClass>(nullptr, *NewPath);
-			}
-		}
-		return FoundClass;
-	}
+	/**
+	 * Returns the class UClass if it is loaded.  If you choose to override ResolveClass, to EResolveClass::Yes
+	 * it will attempt to load the class if unloaded.
+	 */
+	COREUOBJECT_API UClass* GetClass(EResolveClass ResolveClass = EResolveClass::No) const;
 	
-	/** Returns whether the Asset's class is equal to or a child class of the given class. Returns false if the Asset's class can not be loaded. */
-	bool IsInstanceOf(const UClass* BaseClass) const
+	/**
+	 * Returns whether the Asset's class is equal to or a child class of the given class. Returns false if the Asset's class can not be loaded.
+	 * If you choose to override ResolveClass, to EResolveClass::Yes it will attempt to load the class if unloaded.
+	 */
+	bool IsInstanceOf(const UClass* BaseClass, EResolveClass ResolveClass = EResolveClass::No) const
 	{
-		UClass* ClassPointer = GetClass();
+		UClass* ClassPointer = GetClass(ResolveClass);
 		return ClassPointer && ClassPointer->IsChildOf(BaseClass);
 	}
 
 	template<typename BaseClass>
-	bool IsInstanceOf() const
+	bool IsInstanceOf(EResolveClass ResolveClass = EResolveClass::No) const
 	{
-		return IsInstanceOf(BaseClass::StaticClass());
+		return IsInstanceOf(BaseClass::StaticClass(), ResolveClass);
 	}
 
 	/** Append the object path to the given string builder. */
@@ -500,6 +502,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	/** 
 	 * Returns the asset UObject if it is loaded or loads the asset if it is unloaded then returns the result
 	 * 
+	 * Note this can return nullptr even if it looks like the asset exists because it doesn't handle redirects.
+	 * 
 	 * @param bLoad (optional) loads the asset if it is unloaded.
 	 * @param LoadTags (optional) allows passing specific tags to the linker when loading the asset (@see ULevel::LoadAllExternalObjectsTag for an example usage)
 	 */
@@ -541,6 +545,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** 
 	 * Returns the asset UObject if it is loaded or loads the asset if it is unloaded then returns the result 
+	 * 
+	 * Note this can return nullptr even if it looks like the asset exists because it doesn't handle redirects.
 	 * 
 	 * @param LoadTags (optional) allows passing specific tags to the linker when loading the asset (@see ULevel::LoadAllExternalObjectsTag for an example usage)
 	 */
@@ -729,14 +735,14 @@ private:
 public:
 	/** Helper function that tries to convert short class name to path name */
 	COREUOBJECT_API static FTopLevelAssetPath TryConvertShortClassNameToPathName(FName InClassName, ELogVerbosity::Type FailureMessageVerbosity = ELogVerbosity::Warning);
+
+	friend FORCEINLINE uint32 GetTypeHash(const FAssetData& AssetData)
+	{
+		return HashCombine(GetTypeHash(AssetData.PackageName), GetTypeHash(AssetData.AssetName));
+	}
 };
 
 ENUM_CLASS_FLAGS(FAssetData::ECreationFlags);
-
-FORCEINLINE uint32 GetTypeHash(const FAssetData& AssetData)
-{
-	return HashCombine(GetTypeHash(AssetData.PackageName), GetTypeHash(AssetData.AssetName));
-}
 
 
 template<>
@@ -930,11 +936,15 @@ private:
 	uint32 Flags;
 
 public:
+	EPackageExtension Extension;
+
+public:
 
 	FAssetPackageData()
 		: DiskSize(0)
 		, FileVersionLicenseeUE(-1)
 		, Flags(0)
+		, Extension(EPackageExtension::Unspecified)
 	{
 	}
 
@@ -1056,214 +1066,3 @@ struct FReferenceViewerParams
 };
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif // WITH_EDITORONLY_DATA
-
-/** A structure defining a thing that can be reference by something else in the asset registry. Represents either a package of a primary asset id */
-struct FAssetIdentifier
-{
-	/** The name of the package that is depended on, this is always set unless PrimaryAssetType is */
-	FName PackageName;
-	/** The primary asset type, if valid the ObjectName is the PrimaryAssetName */
-	FPrimaryAssetType PrimaryAssetType;
-	/** Specific object within a package. If empty, assumed to be the default asset */
-	FName ObjectName;
-	/** Name of specific value being referenced, if ObjectName specifies a type such as a UStruct */
-	FName ValueName;
-
-	/** Can be implicitly constructed from just the package name */
-	FAssetIdentifier(FName InPackageName, FName InObjectName = FName(), FName InValueName = FName())
-		: PackageName(InPackageName), PrimaryAssetType(), ObjectName(InObjectName), ValueName(InValueName)
-	{}
-
-	/** Construct from a primary asset id */
-	FAssetIdentifier(const FPrimaryAssetId& PrimaryAssetId, FName InValueName = FName())
-		: PackageName(), PrimaryAssetType(PrimaryAssetId.PrimaryAssetType), ObjectName(PrimaryAssetId.PrimaryAssetName), ValueName(InValueName)
-	{}
-
-	FAssetIdentifier(UObject* SourceObject, FName InValueName)
-	{
-		if (SourceObject)
-		{
-			UPackage* Package = SourceObject->GetOutermost();
-			PackageName = Package->GetFName();
-			ObjectName = SourceObject->GetFName();
-			ValueName = InValueName;
-		}
-	}
-
-	FAssetIdentifier() {}
-
-	/** Returns primary asset id for this identifier, if valid */
-	FPrimaryAssetId GetPrimaryAssetId() const
-	{
-		if (PrimaryAssetType.IsValid())
-		{
-			return FPrimaryAssetId(PrimaryAssetType, ObjectName);
-		}
-		return FPrimaryAssetId();
-	}
-
-	/** Returns true if this represents a package */
-	bool IsPackage() const
-	{
-		return PackageName != NAME_None && !IsObject() && !IsValue();
-	}
-
-	/** Returns true if this represents an object, true for both package objects and PrimaryAssetId objects */
-	bool IsObject() const
-	{
-		return ObjectName != NAME_None && !IsValue();
-	}
-
-	/** Returns true if this represents a specific value */
-	bool IsValue() const
-	{
-		return ValueName != NAME_None;
-	}
-
-	/** Returns true if this is a valid non-null identifier */
-	bool IsValid() const
-	{
-		return PackageName != NAME_None || GetPrimaryAssetId().IsValid();
-	}
-
-	/** Returns string version of this identifier in Package.Object::Name format */
-	FString ToString() const
-	{
-		TStringBuilder<256> Builder;
-		AppendString(Builder);
-		return FString(Builder.Len(), Builder.GetData());
-	}
-
-	/** Appends to the given builder the string version of this identifier in Package.Object::Name format */
-	void AppendString(FStringBuilderBase& Builder) const
-	{
-		if (PrimaryAssetType.IsValid())
-		{
-			GetPrimaryAssetId().AppendString(Builder);
-		}
-		else
-		{
-			PackageName.AppendString(Builder);
-			if (ObjectName != NAME_None)
-			{
-				Builder.Append(TEXT("."));
-				ObjectName.AppendString(Builder);
-			}
-		}
-		if (ValueName != NAME_None)
-		{
-			Builder.Append(TEXT("::"));
-			ValueName.AppendString(Builder);
-		}
-	}
-
-	/** Converts from Package.Object::Name format */
-	static FAssetIdentifier FromString(const FString& String)
-	{
-		// To right of :: is value
-		FString PackageString;
-		FString ObjectString;
-		FString ValueString;
-
-		// Try to split value out
-		if (!String.Split(TEXT("::"), &PackageString, &ValueString))
-		{
-			PackageString = String;
-		}
-
-		// Check if it's a valid primary asset id
-		FPrimaryAssetId PrimaryId = FPrimaryAssetId::FromString(PackageString);
-
-		if (PrimaryId.IsValid())
-		{
-			return FAssetIdentifier(PrimaryId, *ValueString);
-		}
-
-		// Try to split on first . , if it fails PackageString will stay the same
-		FString(PackageString).Split(TEXT("."), &PackageString, &ObjectString);
-
-		return FAssetIdentifier(*PackageString, *ObjectString, *ValueString);
-	}
-
-	friend inline bool operator==(const FAssetIdentifier& A, const FAssetIdentifier& B)
-	{
-		return A.PackageName == B.PackageName && A.ObjectName == B.ObjectName && A.ValueName == B.ValueName;
-	}
-
-	friend inline uint32 GetTypeHash(const FAssetIdentifier& Key)
-	{
-		uint32 Hash = 0;
-
-		// Most of the time only packagename is set
-		if (Key.ObjectName.IsNone() && Key.ValueName.IsNone())
-		{
-			return GetTypeHash(Key.PackageName);
-		}
-
-		Hash = HashCombine(Hash, GetTypeHash(Key.PackageName));
-		Hash = HashCombine(Hash, GetTypeHash(Key.PrimaryAssetType));
-		Hash = HashCombine(Hash, GetTypeHash(Key.ObjectName));
-		Hash = HashCombine(Hash, GetTypeHash(Key.ValueName));
-		return Hash;
-	}
-
-	/** Identifiers may be serialized as part of the registry cache, or in other contexts. If you make changes here you must also change FAssetRegistryVersion */
-	friend FArchive& operator<<(FArchive& Ar, FAssetIdentifier& AssetIdentifier)
-	{
-		// Serialize bitfield of which elements to serialize, in general many are empty
-		uint8 FieldBits = 0;
-
-		if (Ar.IsSaving())
-		{
-			FieldBits |= (AssetIdentifier.PackageName != NAME_None) << 0;
-			FieldBits |= (AssetIdentifier.PrimaryAssetType.IsValid()) << 1;
-			FieldBits |= (AssetIdentifier.ObjectName != NAME_None) << 2;
-			FieldBits |= (AssetIdentifier.ValueName != NAME_None) << 3;
-		}
-
-		Ar << FieldBits;
-
-		if (FieldBits & (1 << 0))
-		{
-			Ar << AssetIdentifier.PackageName;
-		}
-		if (FieldBits & (1 << 1))
-		{
-			FName TypeName = AssetIdentifier.PrimaryAssetType.GetName();
-			Ar << TypeName;
-
-			if (Ar.IsLoading())
-			{
-				AssetIdentifier.PrimaryAssetType = TypeName;
-			}
-		}
-		if (FieldBits & (1 << 2))
-		{
-			Ar << AssetIdentifier.ObjectName;
-		}
-		if (FieldBits & (1 << 3))
-		{
-			Ar << AssetIdentifier.ValueName;
-		}
-		
-		return Ar;
-	}
-
-	bool LexicalLess(const FAssetIdentifier& Other) const
-	{
-		if (PrimaryAssetType != Other.PrimaryAssetType)
-		{
-			return PrimaryAssetType.LexicalLess(Other.PrimaryAssetType);
-		}
-		if (PackageName != Other.PackageName)
-		{
-			return PackageName.LexicalLess(Other.PackageName);
-		}
-		if (ObjectName != Other.ObjectName)
-		{
-			return ObjectName.LexicalLess(Other.ObjectName);
-		}
-		return ValueName.LexicalLess(Other.ValueName);
-	}
-};
-

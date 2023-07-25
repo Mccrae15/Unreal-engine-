@@ -77,16 +77,14 @@ public:
 	/** Requests to refresh the Widget on the next tick */
 	void RequestRefresh();
 
-	/** 
-	 * Patches the node.
-	 * Patches that have bAutoAssignAddress use their auto assigned address.
-	 * Others are assigned to the specified new starting channel
-	 * Returns false if the patch cannot be patched.
-	 */
-	bool Patch(const TSharedPtr<FDMXFixturePatchNode>& Node, int32 NewStartingChannel, bool bCreateTransaction);
+	/** Sets if this universe should monitor inputs */
+	void SetMonitorInputsEnabled(bool bEnabled);
 
-	/** If set to true, shows a universe name above the patcher universe */
-	void SetShowUniverseName(bool bShow);
+	/** Finds or adds a Node to this Universe */
+	bool FindOrAdd(const TSharedPtr<FDMXFixturePatchNode>& Node);
+
+	/** Removes a Node from this Universe */
+	void Remove(const TSharedPtr<FDMXFixturePatchNode>& Node);
 
 	/** Returns wether the patch can be patched to its current channels */
 	bool CanAssignFixturePatch(TWeakObjectPtr<UDMXEntityFixturePatch> TestedPatch) const;
@@ -115,17 +113,23 @@ protected:
 	//~ End SWidget Interface
 
 private:
-	/** Removes the node. Should be called when the node is Patched in another instance */
-	void Unpatch(const TSharedPtr<FDMXFixturePatchNode>& Node);
-
 	/** Called when a Fixture Patch changed */
 	void OnFixturePatchChanged(const UDMXEntityFixturePatch* FixturePatch);
+
+	/** Called when receive DMX was enabled or disabled */
+	void OnReceiveDMXEnabledChanged(bool bNewEnabled);
 
 	/** Shows the universe directly */
 	void SetUniverseIDInternal(int32 NewUniverseID);
 
 	/** Refreshes the widget directly */
 	void RefreshInternal();
+
+	/** Updates the monitor */
+	void UpdateMonitor();
+
+	/** Resets the Monitor */
+	void ResetMonitor();
 
 	/** Creates a a new grid of channels */
 	void CreateChannelConnectors();
@@ -178,6 +182,9 @@ private:
 	/** The universe being displayed */
 	int32 UniverseID;
 
+	/** If true, monitors inputs */
+	bool bMonitorInputs = false;
+
 	/** If true the universe ID is out of controllers' ranges */
 	EDMXPatchedUniverseReachability PatchedUniverseReachability;
 	
@@ -201,6 +208,9 @@ private:
 
 	/** Delegate executed when a Drag Drop event was dropped onto a Channel */
 	FOnDropOntoChannel OnDropOntoChannel;
+
+	/** Anchor of Shift-Select while shift select is ongoing */
+	TWeakObjectPtr<UDMXEntityFixturePatch> ShiftSelectAnchorPatch;
 
 	/** The Fixture Patch Widgets that are currently being displalyed */
 	TArray<TSharedPtr<SDMXFixturePatchFragment>> FixturePatchWidgets;

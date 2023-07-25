@@ -6,6 +6,7 @@
 
 #include "Animation/EditorAnimCompositeSegment.h"
 #include "Animation/AnimComposite.h"
+#include "Animation/Skeleton.h"
 
 
 
@@ -45,7 +46,7 @@ bool UEditorAnimCompositeSegment::ApplyChangesToMontage()
 	{
 		if(Composite->AnimationTrack.AnimSegments.IsValidIndex(AnimSegmentIndex))
 		{
-			if (AnimSegment.GetAnimReference() && Composite->GetSkeleton()->IsCompatible(AnimSegment.GetAnimReference()->GetSkeleton()))
+			if (AnimSegment.GetAnimReference() && Composite->GetSkeleton()->IsCompatibleForEditor(AnimSegment.GetAnimReference()->GetSkeleton()))
 			{
 				Composite->AnimationTrack.AnimSegments[AnimSegmentIndex] = AnimSegment;
 				return true;

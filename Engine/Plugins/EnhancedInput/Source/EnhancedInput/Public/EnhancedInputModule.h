@@ -2,14 +2,21 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "EnhancedInputLibrary.h"
-#include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
+#include "Stats/Stats.h"
+
+class UEnhancedInputLibrary;
+struct FKey;
 
 class APlayerController;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogEnhancedInput, Log, All);
+
+struct ENHANCEDINPUT_API FEnhancedInputKeys
+{
+	// Combo FKey that serves as the key combo triggers are automatically mapped to - is not action bindable
+	static const FKey ComboKey;
+};
 
 /**
  * The public interface to this module
@@ -48,3 +55,8 @@ public:
 };
 
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "EnhancedInputLibrary.h"
+#endif

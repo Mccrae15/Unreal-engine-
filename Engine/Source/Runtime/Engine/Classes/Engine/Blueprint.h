@@ -11,26 +11,36 @@
 #include "Engine/EngineTypes.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Engine/BlueprintCore.h"
+#include "Blueprint/BlueprintPropertyGuidProvider.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Engine/BlueprintGeneratedClass.h"
+#endif
 #include "UObject/SoftObjectPath.h"
 #include "Blueprint/BlueprintSupport.h"
+
+#if WITH_EDITOR
+#include "EngineLogs.h"
+#include "Kismet2/CompilerResultsLog.h"
+#endif
+
 #include "Blueprint.generated.h"
 
-class FCompilerResultsLog;
 class ITargetPlatform;
 class UActorComponent;
 class UEdGraph;
 class FKismetCompilerContext;
 class UInheritableComponentHandler;
 class UBlueprintExtension;
+class UBlueprintGeneratedClass;
 class FBlueprintActionDatabaseRegistrar;
+struct FBPComponentClassOverride;
 struct FDiffResults;
 
 /**
  * Enumerates states a blueprint can be in.
  */
 UENUM()
-enum EBlueprintStatus
+enum EBlueprintStatus : int
 {
 	/** Blueprint is in an unknown state. */
 	BS_Unknown,
@@ -50,7 +60,7 @@ enum EBlueprintStatus
 
 /** Enumerates types of blueprints. */
 UENUM()
-enum EBlueprintType
+enum EBlueprintType : int
 {
 	/** Normal blueprint. */
 	BPTYPE_Normal				UMETA(DisplayName="Blueprint Class"),
@@ -462,7 +472,7 @@ class ENGINE_API UBlueprint : public UBlueprintCore, public IBlueprintPropertyGu
 	 * one such case can be created by creating a blueprint (A) based on another blueprint (B), shutting down the editor, and
 	 * deleting the parent blueprint. Exported as Alphabetical in GetAssetRegistryTags
 	 */
-	UPROPERTY()
+	UPROPERTY(meta=(NoResetToDefault))
 	TSubclassOf<UObject> ParentClass;
 
 	/** The type of this blueprint */
@@ -1140,7 +1150,7 @@ public:
 
 		return false;
 	}
-
+	
 #if WITH_EDITOR
 	static FName GetFunctionNameFromClassByGuid(const UClass* InClass, const FGuid FunctionGuid);
 	static bool GetFunctionGuidFromClassByFieldName(const UClass* InClass, const FName FunctionName, FGuid& FunctionGuid);
@@ -1153,6 +1163,10 @@ public:
 
 	/* Notify the blueprint when a graph is renamed to allow for additional fixups. */
 	virtual void NotifyGraphRenamed(class UEdGraph* Graph, FName OldName, FName NewName) { }
+#endif
+
+#if WITH_EDITOR
+	static UClass* GetBlueprintParentClassFromAssetTags(const FAssetData& BlueprintAsset);
 #endif
 
 	/** Find a function given its name and optionally an object property name within this Blueprint */
@@ -1203,21 +1217,56 @@ private:
 
 public:
 	/** If this blueprint is currently being compiled, the CurrentMessageLog will be the log currently being used to send logs to. */
-	class FCompilerResultsLog* CurrentMessageLog;
+	FCompilerResultsLog* CurrentMessageLog;
 
 	/** Message log for storing upgrade notes that were generated within the Blueprint, will be displayed to the compiler results each compiler and will remain until saving */
-	TSharedPtr<class FCompilerResultsLog> UpgradeNotesLog;
+	TSharedPtr<FCompilerResultsLog> UpgradeNotesLog;
 
 	/** Message log for storing pre-compile errors/notes/warnings that will only last until the next Blueprint compile */
-	TSharedPtr<class FCompilerResultsLog> PreCompileLog;
+	TSharedPtr<FCompilerResultsLog> PreCompileLog;
 
 	/** 
 	 * Sends a message to the CurrentMessageLog, if there is one available.  Otherwise, defaults to logging to the normal channels.
 	 * Should use this for node and blueprint actions that happen during compilation!
 	 */
-	void Message_Note(const FString& MessageToLog);
-	void Message_Warn(const FString& MessageToLog);
-	void Message_Error(const FString& MessageToLog);
+	template<typename... ArgTypes>
+	void Message_Note(const FString& MessageToLog, ArgTypes... Args)
+	{
+		if (CurrentMessageLog)
+		{
+			CurrentMessageLog->Note(*MessageToLog, Forward<ArgTypes>(Args)...);
+		}
+		else
+		{
+			UE_LOG(LogBlueprint, Log, TEXT("[%s] %s"), *GetName(), *MessageToLog);
+		}
+	}
+
+	template<typename... ArgTypes>
+	void Message_Warn(const FString& MessageToLog, ArgTypes... Args)
+	{
+		if (CurrentMessageLog)
+		{
+			CurrentMessageLog->Warning(*MessageToLog, Forward<ArgTypes>(Args)...);
+		}
+		else
+		{
+			UE_LOG(LogBlueprint, Warning, TEXT("[%s] %s"), *GetName(), *MessageToLog);
+		}
+	}
+
+	template<typename... ArgTypes>
+	void Message_Error(const FString& MessageToLog, ArgTypes... Args)
+	{
+		if (CurrentMessageLog)
+		{
+			CurrentMessageLog->Error(*MessageToLog, Forward<ArgTypes>(Args)...);
+		}
+		else
+		{
+			UE_LOG(LogBlueprint, Error, TEXT("[%s] %s"), *GetName(), *MessageToLog);
+		}
+	}
 #endif
 	
 #if WITH_EDITORONLY_DATA

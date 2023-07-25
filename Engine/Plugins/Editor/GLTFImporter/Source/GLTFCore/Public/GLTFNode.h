@@ -2,12 +2,10 @@
 
 #pragma once
 
-#include "GLTFMaterial.h"
-#include "GLTFMesh.h"
-#include "GLTFTexture.h"
 
-#include "Containers/Set.h"
-#include "CoreMinimal.h"
+#include "Math/Transform.h"
+
+namespace GLTF { struct FAccessor; }
 
 namespace GLTF
 {
@@ -39,6 +37,8 @@ namespace GLTF
 
 		int32 ParentIndex;
 		int32 RootJointIndex; //only valid if node is of Joint Type
+
+		FString UniqueId; //will be generated in FAsset::GenerateNames
 
 		FNode()
 		    : Type(EType::None)
@@ -78,6 +78,7 @@ namespace GLTF
 		float ZNear;
 		float ZFar;
 		bool  bIsPerspective;
+		FString UniqueId; //will be generated in FAsset::GenerateNames
 
 		FCamera(const FNode& Node)
 		    : Node(Node)
@@ -119,6 +120,8 @@ namespace GLTF
 		float Range;
 		FSpot Spot;
 
+		FString UniqueId; //will be generated in FAsset::GenerateNames
+
 		FLight(const FNode* Node)
 		    : Node(Node)
 		    , Color(1.f)
@@ -135,6 +138,8 @@ namespace GLTF
 		TArray<int32>    Joints;    // each is an index into FAsset::Nodes
 		int32            Skeleton;  // root node, index into FAsset::Nodes
 
+		FString          UniqueId; //will be generated in FAsset::GenerateNames
+
 		FSkinInfo(const FAccessor& InverseBindMatrices)
 		    : InverseBindMatrices(InverseBindMatrices)
 		    , Skeleton(INDEX_NONE)
@@ -143,3 +148,10 @@ namespace GLTF
 	};
 
 }  // namespace GLTF
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "GLTFMaterial.h"
+#include "GLTFMesh.h"
+#include "GLTFTexture.h"
+#endif

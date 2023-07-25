@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Guid.h"
+#include "Delegates/Delegate.h"
 
 class FVariantManager;
 class FVariantManagerDisplayNode;

@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include "Stats/Stats.h" // IWYU pragma: keep
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"
 #include "HAL/PlatformTime.h"
 #include "Logging/LogMacros.h"
@@ -15,7 +18,9 @@
 #include "Math/Vector4.h"
 #include "RHIDefinitions.h"
 #include "Stats/Stats.h"
-#include "Stats/Stats2.h"
+#include "RenderTimer.h"
+#include "HDRHelper.h"
+#endif
 
 DECLARE_LOG_CATEGORY_EXTERN(LogRendererCore, Log, All);
 
@@ -52,7 +57,10 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Decal drawing"),STAT_DecalsDrawTime,STATGROUP_Sc
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Cache Uniform Expressions"),STAT_CacheUniformExpressions,STATGROUP_SceneRendering, RENDERCORE_API);
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Lights using light shafts"), STAT_LightShaftsLights, STATGROUP_SceneRendering, RENDERCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Bind ray tracing pipeline"), STAT_BindRayTracingPipeline, STATGROUP_SceneRendering, RENDERCORE_API);
-DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Ray tracing instances"), STAT_RayTracingInstances, STATGROUP_SceneRendering, RENDERCORE_API);
+// Number of instances sent to the TLAS build command, including active and inactive (culled) instances
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Ray tracing total instances"), STAT_RayTracingTotalInstances, STATGROUP_SceneRendering, RENDERCORE_API);
+// Number of valid instances, taking into account per-instance culling / activation mask
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Ray tracing active instances"), STAT_RayTracingActiveInstances, STATGROUP_SceneRendering, RENDERCORE_API);
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("View Visibility"),STAT_ViewVisibilityTime,STATGROUP_InitViews, RENDERCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Decompress Occlusion"),STAT_DecompressPrecomputedOcclusion,STATGROUP_InitViews, RENDERCORE_API);
@@ -134,13 +142,11 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Update CPU Skin"),STAT_CPUSkinUpdateRTTime,STATG
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Update GPU Skin"),STAT_GPUSkinUpdateRTTime,STATGROUP_SceneUpdate, RENDERCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Update particles"),STAT_ParticleUpdateRTTime,STATGROUP_SceneUpdate, RENDERCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Update Influence Weights"),STAT_InfluenceWeightsUpdateRTTime,STATGROUP_SceneUpdate, RENDERCORE_API);
-DECLARE_CYCLE_STAT_EXTERN(TEXT("Flush async LPI creation"), STAT_FlushAsyncLPICreation, STATGROUP_SceneUpdate, RENDERCORE_API);
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("RemovePrimitive (GT)"),STAT_RemoveScenePrimitiveGT,STATGROUP_SceneUpdate, RENDERCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("AddPrimitive (GT)"),STAT_AddScenePrimitiveGT,STATGROUP_SceneUpdate, RENDERCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("UpdatePrimitiveTransform (GT)"),STAT_UpdatePrimitiveTransformGT,STATGROUP_SceneUpdate, RENDERCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("UpdatePrimitiveInstance (GT)"), STAT_UpdatePrimitiveInstanceGT, STATGROUP_SceneUpdate, RENDERCORE_API);
-DECLARE_CYCLE_STAT_EXTERN(TEXT("UpdateCustomPrimitiveData (GT)"),STAT_UpdateCustomPrimitiveDataGT,STATGROUP_SceneUpdate, RENDERCORE_API);
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Set Shader Maps On Material Resources (RT)"),STAT_Scene_SetShaderMapsOnMaterialResources_RT,STATGROUP_SceneUpdate, RENDERCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Update Static Draw Lists (RT)"), STAT_Scene_UpdateStaticDrawLists_RT, STATGROUP_SceneUpdate, RENDERCORE_API);
@@ -159,177 +165,9 @@ DECLARE_MEMORY_STAT_EXTERN(TEXT("Pool Size"), STAT_RenderTargetPoolSize, STATGRO
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Pool Used"), STAT_RenderTargetPoolUsed, STATGROUP_RenderTargetPool, RENDERCORE_API);
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Pool Count"), STAT_RenderTargetPoolCount, STATGROUP_RenderTargetPool, RENDERCORE_API);
 
-/**
- *	Timer helper class.
- **/
-class FTimer
-{
-public:
-	/**
-	 *	Constructor
-	 **/
-	FTimer()
-		: CurrentDeltaTime(0.0f)
-		, CurrentTime(0.0f)
-	{
-	}
-
-	/**
-	 *	Returns the current time, in seconds.
-	 *	@return Current time, in seconds
-	 */
-	float GetCurrentTime() const
-	{
-		return CurrentTime;
-	}
-
-	/**
-	 *	Returns the current delta time.
-	 *	@return Current delta time (number of seconds that passed between the last two tick)
-	 */
-	float GetCurrentDeltaTime() const
-	{
-		return CurrentDeltaTime;
-	}
-
-	/**
-	 *	Updates the timer.
-	 *	@param DeltaTime	Number of seconds that have passed since the last tick
-	 **/
-	void Tick( float DeltaTime )
-	{
-		CurrentDeltaTime = DeltaTime;
-		CurrentTime += DeltaTime;
-	}
-
-protected:
-	/** Current delta time (number of seconds that passed between the last two tick). */
-	float CurrentDeltaTime;
-	/** Current time, in seconds. */
-	float CurrentTime;
-};
-
-/** Whether to pause the global realtime clock for the rendering thread (read and write only on main thread). */
-extern RENDERCORE_API bool GPauseRenderingRealtimeClock;
-
-/** Global realtime clock for the rendering thread. */
-extern RENDERCORE_API FTimer GRenderingRealtimeClock;
-
-/**
- * Encapsulates a latency timer that measures the time from when mouse input
- * is read on the gamethread until that frame is fully displayed by the GPU.
- */
-struct FInputLatencyTimer
-{
-	/**
-	 * Constructor
-	 * @param InUpdateFrequency	How often the timer should be updated (in seconds).
-	 */
-	FInputLatencyTimer( float InUpdateFrequency )
-	{
-		bInitialized = false;
-		RenderThreadTrigger = false;
-		GameThreadTrigger = false;
-		StartTime = 0;
-		DeltaTime = 0;
-		LastCaptureTime = 0.0f;
-		UpdateFrequency = InUpdateFrequency;
-	}
-
-	/** Potentially starts the timer on the gamethread, based on the UpdateFrequency. */
-	RENDERCORE_API void GameThreadTick();
-
-	/** @return The number of seconds of input latency. */
-	inline float GetDeltaSeconds() const
-	{
-		return FPlatformTime::ToSeconds(DeltaTime);
-	}
-
-	/** Whether GInputLatencyTimer is initialized or not. */
-	bool	bInitialized;
-
-	/** Whether a measurement has been triggered on the gamethread. */
-	bool	GameThreadTrigger;
-
-	/** Whether a measurement has been triggered on the renderthread. */
-	bool	RenderThreadTrigger;
-
-	/** Start time (in FPlatformTime::Cycles). */
-	uint32	StartTime;
-
-	/** Last delta time that was measured (in FPlatformTime::Cycles). */
-	uint32	DeltaTime;
-
-	/** Last time we did a measurement (in seconds). */
-	double	LastCaptureTime;
-
-	/** How often we should do a measurement (in seconds). */
-	float	UpdateFrequency;
-};
-
-/** Global input latency timer. Defined in UnrealClient.cpp */
-extern RENDERCORE_API FInputLatencyTimer GInputLatencyTimer;
-/** How many cycles the renderthread used (excluding idle time). It's set once per frame in FViewport::Draw. */
-extern RENDERCORE_API uint32 GRenderThreadTime;
-/** How many cycles the rhithread used (excluding idle time). */
-extern RENDERCORE_API uint32 GRHIThreadTime;
-/** How many cycles the gamethread used (excluding idle time). It's set once per frame in FViewport::Draw. */
-extern RENDERCORE_API uint32 GGameThreadTime;
-/** How many cycles it took to swap buffers to present the frame. */
-extern RENDERCORE_API uint32 GSwapBufferTime;
-/** How many cycles the renderthread used, including dependent wait time. */
-extern RENDERCORE_API uint32 GRenderThreadTimeCriticalPath;
-
 // shared by renderer and engine, compiles down to a constant in final release
 RENDERCORE_API int32 GetCVarForceLOD();
 RENDERCORE_API int32 GetCVarForceLOD_AnyThread();
 
 RENDERCORE_API int32 GetCVarForceLODShadow();
 RENDERCORE_API int32 GetCVarForceLODShadow_AnyThread();
-
-RENDERCORE_API bool IsHDREnabled();
-
-RENDERCORE_API bool IsHDRAllowed();
-
-// struct containing all data the GPU needs to perform a lookup/feedback request
-struct RENDERCORE_API FVirtualTextureUniformData
-{
-	int SpaceID;
-	float PageTableSize;
-	float vPageSize;
-	float pPageBorder;
-	FVector2f pTextureSize; // The size of the cache texture
-	float MaxAnisotropic;
-	int MaxAssetLevel;
-	FVector4f Transform;
-	FVector2f vOneMinusOneOverTextureSize; // 1 - (1/TextureSize) this rather specific value is needed for clamp texturing.
-										   // We could store something more generically useful at the cost of a few shader ALU instructions?
-
-	FMatrix Pack() const
-	{
-		FMatrix Data(ForceInitToZero);
-
-		Data.M[0][0] = SpaceID;
-		Data.M[0][1] = PageTableSize;
-		Data.M[0][2] = vPageSize;
-		Data.M[0][3] = pPageBorder;
-
-		Data.M[1][0] = pTextureSize.X;
-		Data.M[1][1] = pTextureSize.Y;
-		Data.M[1][2] = FMath::Log2(MaxAnisotropic);
-		Data.M[1][3] = MaxAssetLevel;
-
-		Data.M[2][0] = Transform.X;
-		Data.M[2][1] = Transform.Y;
-		Data.M[2][2] = Transform.Z;
-		Data.M[2][3] = Transform.W;
-
-		Data.M[3][0] = vOneMinusOneOverTextureSize.X;
-		Data.M[3][1] = vOneMinusOneOverTextureSize.Y;
-
-		return Data;
-	}
-
-	static FMatrix44f Invalid;
-};
-static_assert(sizeof(FVirtualTextureUniformData) <= sizeof(FMatrix44f), "FVirtualTextureUniformData is unable to pack");

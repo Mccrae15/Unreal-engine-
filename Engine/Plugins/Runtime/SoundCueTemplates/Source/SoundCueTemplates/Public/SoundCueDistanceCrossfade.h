@@ -2,19 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "SoundCueTemplate.h"
 #include "Sound/SoundNodeDistanceCrossFade.h"
-#include "Misc/Attribute.h"
-#include "UObject/ObjectMacros.h"
 
 #if WITH_EDITOR
 #include "IDetailCustomization.h"
-#include "Layout/Visibility.h"
-#include "PropertyHandle.h"
 #endif // WITH_EDITOR
 
 #include "SoundCueDistanceCrossfade.generated.h"
+
+class FPropertyEditorModule;
 
 // ========================================================================
 // USoundCueDistanceCrossfade
@@ -70,3 +67,10 @@ public:
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailLayout) override;
 };
 #endif // WITH_EDITOR
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
+#include "PropertyHandle.h"
+#endif

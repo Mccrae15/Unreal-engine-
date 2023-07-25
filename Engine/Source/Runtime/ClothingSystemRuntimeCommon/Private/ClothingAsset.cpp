@@ -779,7 +779,11 @@ void UClothingAssetCommon::UnbindFromSkeletalMesh(
 			FSkelMeshSection& Section = LodModel.Sections[SectionIdx];
 			if(Section.HasClothingData() && Section.ClothingData.AssetGuid == AssetGuid)
 			{
-				InSkelMesh->PreEditChange(nullptr);
+				// Don't do this when in async task, this should have been done before initiating the build
+				if (IsInGameThread())
+				{
+					InSkelMesh->PreEditChange(nullptr);
+				}
 
 				// Log the LOD bias mapping data that will be removed through the call to ClearSectionClothingData
 				for (int32 LodIndex = 0; LodIndex < InMeshLodIndex; ++LodIndex)
@@ -951,6 +955,45 @@ void UClothingAssetCommon::BuildLodTransitionData()
 	}
 }
 
+void UClothingAssetCommon::PreEditUndo()
+{
+	Super::PreEditUndo();
+
+	// Stop the simulation
+	if (const USkeletalMesh* const OwnerMesh = Cast<USkeletalMesh>(GetOuter()))
+	{
+		for (TObjectIterator<USkeletalMeshComponent> It; It; ++It)
+		{
+			if (USkeletalMeshComponent* const Component = *It)
+			{
+				if (Component->GetSkeletalMeshAsset() == OwnerMesh)
+				{
+					Component->ReleaseAllClothingResources();
+				}
+			}
+		}
+	}
+}
+
+void UClothingAssetCommon::PostEditUndo()
+{
+	Super::PostEditUndo();
+
+	// Resume the simulation
+	if (const USkeletalMesh* const OwnerMesh = Cast<USkeletalMesh>(GetOuter()))
+	{
+		for (TObjectIterator<USkeletalMeshComponent> It; It; ++It)
+		{
+			if (USkeletalMeshComponent* const Component = *It)
+			{
+				if (Component->GetSkeletalMeshAsset() == OwnerMesh)
+				{
+					Component->RecreateClothingActors();
+				}
+			}
+		}
+	}
+}
 #endif // WITH_EDITOR
 
 void UClothingAssetCommon::RefreshBoneMapping(USkeletalMesh* InSkelMesh)

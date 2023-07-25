@@ -10,10 +10,12 @@
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
 #include "DetailCategoryBuilder.h"
+#include "Materials/MaterialFunction.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionComposite.h"
 #include "Materials/MaterialExpressionPinBase.h"
+#include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "MaterialLayersFunctionsCustomization.h"
 #include "PropertyEditorModule.h"
 #include "MaterialEditor/MaterialEditorPreviewParameters.h"
@@ -40,9 +42,35 @@
 #include "Engine/Texture.h"
 #include "Materials/MaterialExpressionCurveAtlasRowParameter.h"
 #include "Curves/CurveLinearColorAtlas.h"
-
+#include "RenderUtils.h"
 
 #define LOCTEXT_NAMESPACE "MaterialEditor"
+
+// Update the blend mode names based on what is supported in legacy mode or Strata mode
+UEnum* GetBlendModeEnum()
+{
+	UEnum* BlendModeEnum = StaticEnum<EBlendMode>();
+	if (Strata::IsStrataEnabled())
+	{
+		// BLEND_Translucent & BLEND_TranslucentGreyTransmittance are mapped onto the same enum index
+		BlendModeEnum->SetMetaData(TEXT("DisplayName"), TEXT("TranslucentGreyTransmittance"), BLEND_Translucent);
+
+		// BLEND_Modulate & BLEND_ColoredTransmittanceOnly are mapped onto the same enum index
+		BlendModeEnum->SetMetaData(TEXT("DisplayName"), TEXT("ColoredTransmittanceOnly"), BLEND_Modulate);
+
+		// BLEND_TranslucentColoredTransmittance is only supported in Strata mode
+		BlendModeEnum->SetMetaData(TEXT("DisplayName"), TEXT("TranslucentColoredTransmittance"), BLEND_TranslucentColoredTransmittance);
+
+		// BLEND_AlphaComposite is identical to BLEND_Translucent in Strata mode
+		BlendModeEnum->SetMetaData(TEXT("Hidden"), TEXT("True"), BLEND_AlphaComposite);
+	}
+	else
+	{
+		// BLEND_TranslucentColoredTransmittance is not supported in legacy mode
+		BlendModeEnum->SetMetaData(TEXT("Hidden"), TEXT("True"), BLEND_TranslucentColoredTransmittance);
+	}
+	return BlendModeEnum;
+}
 
 TSharedRef<IDetailCustomization> FMaterialExpressionParameterDetails::MakeInstance(FOnCollectParameterGroups InCollectGroupsDelegate)
 {
@@ -597,7 +625,15 @@ bool FMaterialExpressionCollectionParameterDetails::IsParameterNameComboEnabled(
 	if (CollectionPropertyHandle->IsValidHandle())
 	{
 		UObject* CollectionObject = nullptr;
-		verify(CollectionPropertyHandle->GetValue(CollectionObject) == FPropertyAccess::Success);
+		FPropertyAccess::Result Result = CollectionPropertyHandle->GetValue(CollectionObject);
+
+		// No name combo enabled if multiple parameter collection nodes are selected.
+		if (Result == FPropertyAccess::MultipleValues)
+		{
+			return false;
+		}
+
+		verify(Result == FPropertyAccess::Success);
 		Collection = Cast<UMaterialParameterCollection>(CollectionObject);
 	}
 
@@ -682,7 +718,15 @@ void FMaterialExpressionCollectionParameterDetails::PopulateParameters()
 	if (CollectionPropertyHandle->IsValidHandle())
 	{
 		UObject* CollectionObject = nullptr;
-		verify(CollectionPropertyHandle->GetValue(CollectionObject) == FPropertyAccess::Success);
+		FPropertyAccess::Result Result = CollectionPropertyHandle->GetValue(CollectionObject);
+
+		// Return an empty set of parameters if multiple paramter collection nodes are selected.
+		if (Result == FPropertyAccess::MultipleValues)
+		{
+			return;
+		}
+
+		verify(Result == FPropertyAccess::Success);
 		Collection = Cast<UMaterialParameterCollection>(CollectionObject);
 	}
 
@@ -782,6 +826,21 @@ void FMaterialDetailCustomization::CustomizeDetails( IDetailLayoutBuilder& Detai
 				{
 					DetailLayout.HideProperty( PropertyHandle );
 				}
+			}
+
+			if (!Strata::IsStrataEnabled())
+			{
+				if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterial, bIsThinSurface))
+				{
+					DetailLayout.HideProperty(PropertyHandle);
+				}
+			}
+
+			// Patch blend mode displayed names
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterial, BlendMode))
+			{
+				FByteProperty* BlendModeProperty = (FByteProperty*)Property;
+				BlendModeProperty->Enum = GetBlendModeEnum();
 			}
 
 			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterial, bEnableExecWire) && !CVarMaterialEnableControlFlow->GetValueOnAnyThread())

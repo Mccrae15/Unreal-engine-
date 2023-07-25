@@ -75,7 +75,7 @@ public:
 	UMovieSceneChannelOverrideContainer* GetChannel(FName ChannelName) const;
 
 	/**
-	 *
+	 * Get all channel containers of a given type.
 	 */
 	template<typename ChannelContainerType>
 	void GetChannels(TArray<ChannelContainerType*>& OutChannels) const
@@ -105,6 +105,20 @@ public:
 	* Called when overridden channels should populate evaluation field
 	*/
 	void PopulateEvaluationFieldImpl(const TRange<FFrameNumber>& EffectiveRange, const FMovieSceneEvaluationFieldEntityMetaData& InMetaData, FMovieSceneEntityComponentFieldBuilder* OutFieldBuilder, UMovieSceneSection& OwnerSection);
+
+#if WITH_EDITOR
+
+	/**
+	 * Called by the owning section after it has been created for a paste operation.
+	 */
+	void OnPostPaste();
+
+	/**
+	 * Called when an undo/redo operation has affected this override registry.
+	 */
+	virtual void PostEditUndo() override;
+
+#endif
 
 private:
 

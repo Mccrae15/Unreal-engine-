@@ -3,13 +3,17 @@
 
 #include "BinkFunctionLibrary.h"
 #include "BinkMediaPlayerPrivate.h"
-#include "Runtime/Core/Public/Misc/Paths.h"
-#include "Interfaces/IPluginManager.h"
-#include "Misc/CoreDelegates.h"
+#include "BinkMoviePlayerSettings.h"
+#include "Engine/GameViewportClient.h"
+#include "BinkMovieStreamer.h"
+#include "Misc/Paths.h"
+#include "RenderingThread.h"
+#include "HAL/PlatformFileManager.h"
+#include "UObject/UObjectIterator.h"
+#include "binkplugin_ue4.h"
+#include "egttypes.h"
 
 DEFINE_LOG_CATEGORY(LogBink);
-
-#define LOCTEXT_NAMESPACE "BinkMediaPlayerModule"
 
 TSharedPtr<FBinkMovieStreamer, ESPMode::ThreadSafe> MovieStreamer;
 
@@ -17,24 +21,22 @@ TArray< FTexture2DRHIRef > BinkActiveTextureRefs;
 
 #if BINKPLUGIN_UE4_EDITOR
 class UFactory;
-#include "ISettingsModule.h"
-#include "PropertyEditorModule.h"
-#include "PropertyCustomizationHelpers.h"
-#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
-#include "IDetailPropertyRow.h"
-#include "DesktopPlatformModule.h"
+#include "Editor.h"
 #include "EditorDirectories.h"
-#include "SourceControlHelpers.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Widgets/Input/SFilePathPicker.h"
-#include "Editor/MainFrame/Public/Interfaces/IMainFrameModule.h"
-#include "Editor/UnrealEd/Public/Editor.h"
-#include "IDetailCustomization.h"
 #include "IDetailChildrenBuilder.h"
+#include "IDetailCustomization.h"
+#include "ISettingsModule.h"
+#include "Interfaces/IMainFrameModule.h"
+#include "PropertyCustomizationHelpers.h"
+#include "SourceControlHelpers.h"
+#include "Widgets/Input/SFilePathPicker.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #include "BinkMediaPlayer.h"
+
+#define LOCTEXT_NAMESPACE "BinkMediaPlayerModule"
 
 struct FBinkMoviePlayerSettingsDetails : public IDetailCustomization {
 	static TSharedRef<IDetailCustomization> MakeInstance() { return MakeShareable(new FBinkMoviePlayerSettingsDetails); }
@@ -119,6 +121,7 @@ struct FBinkMoviePlayerSettingsDetails : public IDetailCustomization {
 unsigned bink_gpu_api;
 unsigned bink_gpu_api_hdr;
 EPixelFormat bink_force_pixel_format = PF_Unknown;
+static bool bink_initialized = false;
 
 #ifdef BINK_NDA_GPU_ALLOC
 extern void* BinkAllocGpu(UINTa Amt, U32 Align);
@@ -139,6 +142,27 @@ static void *BinkAllocCpu(UINTa Amt, U32 Align) { return FMemory::Malloc(Amt, Al
 static void BinkFreeCpu(void * ptr) { FMemory::Free(ptr); }
 #endif
 
+bool BinkInitialize() {
+	if (bink_initialized)
+	{
+		return true;
+	}
+
+	// TODO: make this an INI setting and/or configurable in Project Settings
+	//BinkPluginTurnOnGPUAssist();
+
+	static BINKPLUGININITINFO InitInfo = { 0 };
+	InitInfo.queue = 0;
+	InitInfo.physical_device = 0;
+	InitInfo.alloc = BinkAllocCpu;
+	InitInfo.free = BinkFreeCpu;
+	InitInfo.gpu_alloc = BinkAllocGpu;
+	InitInfo.gpu_free = BinkFreeGpu;
+	bink_gpu_api = BinkRHI;
+
+	bink_initialized = (bool)BinkPluginInit(0, &InitInfo, bink_gpu_api);
+	return bink_initialized;
+}
 
 FString BinkUE4CookOnTheFlyPath(FString path, const TCHAR *filename) 
 {
@@ -160,19 +184,7 @@ struct FBinkMediaPlayerModule : IModuleInterface, FTickableGameObject
 			return;
 		}
 
-		// TODO: make this an INI setting and/or configurable in Project Settings
-		//BinkPluginTurnOnGPUAssist();
-
-		static BINKPLUGININITINFO InitInfo = { 0 };
-		InitInfo.queue = 0;
-		InitInfo.physical_device = 0;
-		InitInfo.alloc = BinkAllocCpu;
-		InitInfo.free = BinkFreeCpu;
-		InitInfo.gpu_alloc = BinkAllocGpu;
-		InitInfo.gpu_free = BinkFreeGpu;
-		bink_gpu_api = BinkRHI;
-
-		bPluginInitialized = (bool)BinkPluginInit(0, &InitInfo, bink_gpu_api);
+		bPluginInitialized = BinkInitialize();
 
 		if (!bPluginInitialized)
 		{
@@ -222,7 +234,8 @@ struct FBinkMediaPlayerModule : IModuleInterface, FTickableGameObject
 	}
 
 #if BINKPLUGIN_UE4_EDITOR
-	void Initialize(TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow) {
+	void Initialize(TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog)
+	{
 		// This overrides the 
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.RegisterCustomClassLayout("MoviePlayerSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FBinkMoviePlayerSettingsDetails::MakeInstance));

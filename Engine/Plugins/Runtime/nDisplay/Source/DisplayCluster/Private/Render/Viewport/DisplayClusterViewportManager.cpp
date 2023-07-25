@@ -49,22 +49,6 @@ static FAutoConsoleVariableRef CVarDisplayClusterChromaKeyAllowNanite(
 	ECVF_RenderThreadSafe
 );
 
-int32 GDisplayClusterLightcardsAllowAA = 0;
-static FAutoConsoleVariableRef CVarDisplayClusterLightcardsAllowAA(
-	TEXT("DC.Lightcards.AllowAA"),
-	GDisplayClusterLightcardsAllowAA,
-	TEXT("0 disables AntiAliasing when rendering lightcards.Otherwise uses default showflag."),
-	ECVF_RenderThreadSafe
-);
-
-int32 GDisplayClusterChromaKeyAllowAA = 0;
-static FAutoConsoleVariableRef CVarDisplayClusterChromaKeyAllowAA(
-	TEXT("DC.ChromaKey.AllowAA"),
-	GDisplayClusterChromaKeyAllowAA,
-	TEXT("0 disables AntiAliasing when rendering custom chroma keys. Otherwise uses default showflag."),
-	ECVF_RenderThreadSafe
-);
-
 ///////////////////////////////////////////////////////////////////////////////////////
 //          FDisplayClusterViewportManager
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -90,6 +74,13 @@ FDisplayClusterViewportManager::FDisplayClusterViewportManager()
 FDisplayClusterViewportManager::~FDisplayClusterViewportManager()
 {
 	// Remove viewports
+	for (FDisplayClusterViewport* ViewportIt : Viewports)
+	{
+		if (ViewportIt)
+		{
+			delete ViewportIt;
+		}
+	}
 	Viewports.Reset();
 	ClusterNodeViewports.Reset();
 
@@ -100,6 +91,14 @@ FDisplayClusterViewportManager::~FDisplayClusterViewportManager()
 	{
 		LightCardManager->Release();
 		LightCardManager.Reset();
+	}
+
+	if (ViewportManagerViewExtension.IsValid())
+	{
+		// Force release of VE data since this TSharedPtr<> may also be held by other resources at this time.
+		// So Reset() doesn't actually release it right away in some situations.
+		ViewportManagerViewExtension->Release();
+		ViewportManagerViewExtension.Reset();
 	}
 
 	Configuration.Reset();
@@ -421,14 +420,11 @@ void FDisplayClusterViewportManager::ImplUpdateClusterNodeViewports(const EDispl
 			{
 				if (Viewport && (InClusterNodeId.IsEmpty() || Viewport->GetClusterNodeId() == InClusterNodeId))
 				{
-					bool bHasParentViewport = Viewport->RenderSettings.GetParentViewportId().IsEmpty() == false;
-					bool bHasViewportOverride = Viewport->RenderSettings.OverrideViewportId.IsEmpty() == false;
-
-					if (bHasViewportOverride)
+					if (Viewport->RenderSettings.IsViewportOverrided())
 					{
 						OverriddenViewports.Add(Viewport);
 					}
-					else if (bHasParentViewport)
+					else if (Viewport->RenderSettings.IsViewportHasParent())
 					{
 						LinkedViewports.Add(Viewport);
 					}
@@ -450,15 +446,39 @@ void FDisplayClusterViewportManager::ImplUpdateClusterNodeViewports(const EDispl
 	}
 }
 
+int32 FDisplayClusterViewportManager::GetViewPerViewportAmount() const
+{
+	switch (GetRenderFrameSettings().RenderMode)
+	{
+	case EDisplayClusterRenderFrameMode::Mono:
+	case EDisplayClusterRenderFrameMode::PreviewInScene:
+		return 1;
+		break;
+	default:
+		break;
+	}
+
+	return 2;
+}
+
+int32 FDisplayClusterViewportManager::FindFirstViewportStereoViewIndex(FDisplayClusterViewport* InViewport) const
+{
+	const int32 ViewportIndex = Viewports.Find(InViewport);
+	if (ViewportIndex != INDEX_NONE)
+	{
+		const int32 ViewPerViewportAmount = GetViewPerViewportAmount();
+		// Begin from 1, because INDEX_NONE use ViewState[0] in LocalPlayer.cpp:786
+		const int32 FirstViewportStereoViewIndex = (ViewportIndex * ViewPerViewportAmount) + 1;
+
+		return FirstViewportStereoViewIndex;
+	}
+
+	return INDEX_NONE;
+}
+
 bool FDisplayClusterViewportManager::BeginNewFrame(FViewport* InViewport, UWorld* InWorld, FDisplayClusterRenderFrame& OutRenderFrame)
 {
 	check(IsInGameThread());
-
-	if (!ViewportManagerViewExtension.IsValid())
-	{
-		// Create DC ViewExtension to handle special features
-		ViewportManagerViewExtension = FSceneViewExtensions::NewExtension<FDisplayClusterViewportManagerViewExtension>(this);
-	}
 
 	OutRenderFrame.ViewportManager = this;
 
@@ -484,30 +504,44 @@ bool FDisplayClusterViewportManager::BeginNewFrame(FViewport* InViewport, UWorld
 		}
 	}
 
+	// Create DC ViewExtension to handle special features
+	if (!ViewportManagerViewExtension.IsValid())
+	{
+		ViewportManagerViewExtension = FSceneViewExtensions::NewExtension<FDisplayClusterViewportManagerViewExtension>(this);
+	}
+
 	// Before new frame
 	if (PostProcessManager.IsValid())
 	{
 		PostProcessManager->HandleSetupNewFrame();
 	}
 
-	// generate unique stereo view index for each frame
-	// Begin from 1, because INDEX_NONE use ViewState[0] in LocalPlayer.cpp:786
-	uint32 StereoViewIndex = 1;
-
 	const FDisplayClusterRenderFrameSettings& RenderFrameSettings = GetRenderFrameSettings();
 
 	// Initialize viewports from new render settings, and create new contexts, reset prev frame resources
 	for (FDisplayClusterViewport* Viewport : ClusterNodeViewports)
 	{
-		// Save orig viewport contexts
-		TArray<FDisplayClusterViewport_Context> PrevContexts;
-		PrevContexts.Append(Viewport->GetContexts());
-		if (Viewport->UpdateFrameContexts(StereoViewIndex, RenderFrameSettings))
+		const int32 FirstViewportStereoViewIndex = FindFirstViewportStereoViewIndex(Viewport);
+		if (FirstViewportStereoViewIndex != INDEX_NONE)
 		{
-			StereoViewIndex += Viewport->Contexts.Num();
-		}
+			// Save orig viewport contexts
+			TArray<FDisplayClusterViewport_Context> PrevContexts;
+			PrevContexts.Append(Viewport->GetContexts());
+			Viewport->UpdateFrameContexts(FirstViewportStereoViewIndex, RenderFrameSettings);
 
-		HandleViewportRTTChanges(PrevContexts, Viewport->GetContexts());
+			HandleViewportRTTChanges(PrevContexts, Viewport->GetContexts());
+		}
+		else
+		{
+			// do not render this viewport
+			Viewport->ResetFrameContexts();
+		}
+	}
+
+	/* Some media dependent data can (and needs to) be initialized in advance */
+	for (FDisplayClusterViewport* const Viewport : ClusterNodeViewports)
+	{
+		Viewport->UpdateMediaDependencies(InViewport);
 	}
 
 	// Handle scene RTT resize
@@ -554,7 +588,13 @@ bool FDisplayClusterViewportManager::BeginNewFrame(FViewport* InViewport, UWorld
 
 void FDisplayClusterViewportManager::UpdateDesiredNumberOfViews(FDisplayClusterRenderFrame& InOutRenderFrame)
 {
-	InOutRenderFrame.DesiredNumberOfViews = 0;
+	// Total views ammount
+	const int32 ViewPerViewportAmount = GetViewPerViewportAmount();
+	const int32 DesiredNumberOfViews = (Viewports.Num() * ViewPerViewportAmount) + 1;
+
+	InOutRenderFrame.DesiredNumberOfViews = DesiredNumberOfViews;
+
+	// Total view on current cluster node
 	InOutRenderFrame.ViewportsAmount = 0;
 
 	for (FDisplayClusterRenderFrame::FFrameRenderTarget& RenderTargetIt : InOutRenderFrame.RenderTargets)
@@ -573,10 +613,49 @@ void FDisplayClusterViewportManager::UpdateDesiredNumberOfViews(FDisplayClusterR
 
 					// Get StereoViewIndex for this viewport
 					const int32 StereoViewIndex = ViewIt.Viewport->GetContexts()[ViewIt.ContextNum].StereoViewIndex;
-					InOutRenderFrame.DesiredNumberOfViews++;
 				}
 			}
 		}
+	}
+}
+
+void FDisplayClusterViewportManager::InitializeNewFrame()
+{
+	check(IsInGameThread());
+
+	// Before render
+	for (FDisplayClusterViewport* Viewport : ClusterNodeViewports)
+	{
+		if (Viewport)
+		{
+			// Initialize OCIO resources
+			if (Viewport->OpenColorIO.IsValid())
+			{
+				Viewport->OpenColorIO->UpdateOpenColorIORenderPassResources();
+			}
+		}
+	}
+
+	// Send render frame settings to rendering thread
+	ViewportManagerProxy->ImplUpdateRenderFrameSettings(GetRenderFrameSettings(), ViewportManagerViewExtension);
+
+	/**
+	 * [1] Send new viewport render resources to proxy:
+	 * At the moment, there are new resources in the viewport, but the math is not initialized.The math will be updated later in the game thread.
+	 * But these new resources were needed for future rendering on the render thread.
+	 * So we are sending viewports from the game stream data to the proxy.
+	 * Lastly, after the viewport math data has been updated, we need to send it again.
+	 */
+	ViewportManagerProxy->ImplUpdateViewports(ClusterNodeViewports);
+
+	// Send postprocess data to render thread
+	if (PostProcessManager.IsValid())
+	{
+		// Update postprocess data from game thread
+		PostProcessManager->Tick();
+
+		// Send updated postprocess data to rendering thread
+		PostProcessManager->FinalizeNewFrame();
 	}
 }
 
@@ -584,26 +663,24 @@ void FDisplayClusterViewportManager::FinalizeNewFrame()
 {
 	check(IsInGameThread());
 
-	// When all viewports processed, we remove all single frame custom postprocess
+	// [2] The viewport math has been updated, we need to send it to the proxy again.
+	ViewportManagerProxy->ImplUpdateViewports(ClusterNodeViewports);
+
 	for (FDisplayClusterViewport* Viewport : ClusterNodeViewports)
 	{
 		if (Viewport)
 		{
+			// When all viewports processed, we remove all single frame custom postprocess
 			Viewport->CustomPostProcessSettings.FinalizeFrame();
 
-			// update projection policy proxy data
+			// Update projection policy proxy data
 			if (Viewport->ProjectionPolicy.IsValid())
 			{
 				Viewport->ProjectionPolicy->UpdateProxyData(Viewport);
 			}
+
 		}
 	}
-
-	// Send render frame settings to rendering thread
-	ViewportManagerProxy->ImplUpdateRenderFrameSettings(GetRenderFrameSettings());
-
-	// Send updated viewports data to render thread proxy
-	ViewportManagerProxy->ImplUpdateViewports(ClusterNodeViewports);
 
 	// Finish update settings
 	for (FDisplayClusterViewport* Viewport : ClusterNodeViewports)
@@ -612,15 +689,6 @@ void FDisplayClusterViewportManager::FinalizeNewFrame()
 		{
 			Viewport->RenderSettings.FinishUpdateSettings();
 		}
-	}
-
-	if (PostProcessManager.IsValid())
-	{
-		// Update postprocess data from game thread
-		PostProcessManager->Tick();
-
-		// Send updated postprocess data to rendering thread
-		PostProcessManager->FinalizeNewFrame();
 	}
 }
 
@@ -633,16 +701,10 @@ FSceneViewFamily::ConstructionValues FDisplayClusterViewportManager::CreateViewF
 
 	bool bResolveScene = true;
 
-	// Control AA for ChromaKey and Lightcards:
+	// Control NaniteMeshes for ChromaKey and Lightcards:
 	switch (InFrameTarget.CaptureMode)
 	{
 	case EDisplayClusterViewportCaptureMode::Chromakey:
-		if (!GDisplayClusterChromaKeyAllowAA)
-		{
-			InEngineShowFlags.SetAntiAliasing(0);
-			InEngineShowFlags.SetTemporalAA(false);
-		}
-		
 		if (!GDisplayClusterChromaKeyAllowNanite)
 		{
 			InEngineShowFlags.SetNaniteMeshes(0);
@@ -650,15 +712,24 @@ FSceneViewFamily::ConstructionValues FDisplayClusterViewportManager::CreateViewF
 
 		break;
 	case EDisplayClusterViewportCaptureMode::Lightcard:
-		if (!GDisplayClusterLightcardsAllowAA)
-		{
-			InEngineShowFlags.SetAntiAliasing(0);
-			InEngineShowFlags.SetTemporalAA(false);
-		}
-
 		if (!GDisplayClusterLightcardsAllowNanite)
 		{
 			InEngineShowFlags.SetNaniteMeshes(0);
+		}
+		break;
+	default:
+		break;
+	}
+
+	const FDisplayClusterRenderFrameSettings& RenderFrameSettings = GetRenderFrameSettings();
+	switch (RenderFrameSettings.RenderMode)
+	{
+	case EDisplayClusterRenderFrameMode::PreviewInScene:
+
+		if (RenderFrameSettings.bPreviewEnablePostProcess == false)
+		{
+			// Disable postprocess for preview
+			InEngineShowFlags.PostProcessing = 0;
 		}
 		break;
 	default:
@@ -669,8 +740,33 @@ FSceneViewFamily::ConstructionValues FDisplayClusterViewportManager::CreateViewF
 	{
 	case EDisplayClusterViewportCaptureMode::Chromakey:
 	case EDisplayClusterViewportCaptureMode::Lightcard:
-		bResolveScene = false;
+		switch (GetRenderFrameSettings().AlphaChannelCaptureMode)
+		{
+			case EDisplayClusterRenderFrameAlphaChannelCaptureMode::Copy:
+				// Disable AA
+				InEngineShowFlags.SetAntiAliasing(0);
+				InEngineShowFlags.SetTemporalAA(0);
+				break;
+
+			case EDisplayClusterRenderFrameAlphaChannelCaptureMode::CopyAA:
+				// Use AA
+				InEngineShowFlags.SetAntiAliasing(1);
+				InEngineShowFlags.SetTemporalAA(0);
+				break;
+
+			case EDisplayClusterRenderFrameAlphaChannelCaptureMode::FXAA:
+				// Alpha captured without AA, own FXAA used
+				InEngineShowFlags.SetAntiAliasing(0);
+				InEngineShowFlags.SetTemporalAA(0);
+				break;
+
+			default:
+				break;
+		}
+
+		// Disable postprocess for LC\CK
 		InEngineShowFlags.SetPostProcessing(0);
+
 		InEngineShowFlags.SetAtmosphere(0);
 		InEngineShowFlags.SetFog(0);
 		InEngineShowFlags.SetVolumetricFog(0);
@@ -694,72 +790,49 @@ FSceneViewFamily::ConstructionValues FDisplayClusterViewportManager::CreateViewF
 		break;
 	}
 
+	return FSceneViewFamily::ConstructionValues(InFrameTarget.RenderTargetPtr, InScene, InEngineShowFlags)
+		.SetResolveScene(bResolveScene)
+		.SetRealtimeUpdate(true)
+		.SetGammaCorrection(1.0f)
+		.SetAdditionalViewFamily(bInAdditionalViewFamily);
+}
+
+bool FDisplayClusterViewportManager::ShouldRenderFinalColor() const
+{
+#if WITH_EDITOR
 	const FDisplayClusterRenderFrameSettings& RenderFrameSettings = GetRenderFrameSettings();
 	switch (RenderFrameSettings.RenderMode)
 	{
 	case EDisplayClusterRenderFrameMode::PreviewInScene:
+		// Disable postprocess for preview
+		return RenderFrameSettings.bPreviewEnablePostProcess;
 
-		if (RenderFrameSettings.bPreviewEnablePostProcess == false)
-		{
-			// Disable postprocess for preview
-			InEngineShowFlags.PostProcessing = 0;
-		}
-		break;
 	default:
 		break;
 	}
+#endif
 
-	return FSceneViewFamily::ConstructionValues(InFrameTarget.RenderTargetPtr, InScene, InEngineShowFlags)
-		.SetResolveScene(bResolveScene)
-		.SetRealtimeUpdate(true)
-		.SetAdditionalViewFamily(bInAdditionalViewFamily);
+	return true;
 }
 
 void FDisplayClusterViewportManager::ConfigureViewFamily(const FDisplayClusterRenderFrame::FFrameRenderTarget& InFrameTarget, const FDisplayClusterRenderFrame::FFrameViewFamily& InFrameViewFamily, FSceneViewFamilyContext& ViewFamily)
 {
-	ViewFamily.SceneCaptureCompositeMode = ESceneCaptureCompositeMode::SCCM_Overwrite;
-
 	// Note: EngineShowFlags should have already been configured in CreateViewFamilyConstructionValues.
-	switch (InFrameTarget.CaptureMode)
+	ViewFamily.SceneCaptureCompositeMode = ESceneCaptureCompositeMode::SCCM_Overwrite;
+	if (!ShouldRenderFinalColor())
 	{
-		case EDisplayClusterViewportCaptureMode::Chromakey:
-		case EDisplayClusterViewportCaptureMode::Lightcard:
-			ViewFamily.SceneCaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
-
-			//Do not use view extensions for LightCard and Chromakey.
-			ViewFamily.ViewExtensions.Empty();
-			break;
-
-		default:
-
-			// Gather Scene View Extensions
-			ViewFamily.ViewExtensions = InFrameViewFamily.ViewExtensions;
-			break;
+		ViewFamily.SceneCaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
 	}
+
+	// Gather Scene View Extensions
+	// Note: Chromakey and Light maps use their own view extensions, collected in FDisplayClusterViewport::GatherActiveExtensions().
+	ViewFamily.ViewExtensions = InFrameViewFamily.ViewExtensions;
 
 	// Scene View Extension activation with ViewportId granularity only works if you have one ViewFamily per ViewportId
 	for (FSceneViewExtensionRef& ViewExt : ViewFamily.ViewExtensions)
 	{
 		ViewExt->SetupViewFamily(ViewFamily);
 	}
-
-#if WITH_EDITOR
-	const FDisplayClusterRenderFrameSettings& RenderFrameSettings = GetRenderFrameSettings();
-	switch (RenderFrameSettings.RenderMode)
-	{
-	case EDisplayClusterRenderFrameMode::PreviewInScene:
-		if (RenderFrameSettings.bPreviewEnablePostProcess == false)
-		{
-			// Disable postprocess for preview
-			ViewFamily.SceneCaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
-			ViewFamily.SceneCaptureCompositeMode = ESceneCaptureCompositeMode::SCCM_Overwrite;
-		}
-		break;
-	default:
-		break;
-	}
-#endif
-
 }
 
 void FDisplayClusterViewportManager::RenderFrame(FViewport* InViewport)
@@ -955,11 +1028,6 @@ TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> FDisplayCluster
 	}
 
 	return nullptr;
-}
-
-TSharedPtr<IDisplayClusterViewportLightCardManager, ESPMode::ThreadSafe> FDisplayClusterViewportManager::GetLightCardManager() const
-{
-	return LightCardManager;
 }
 
 void FDisplayClusterViewportManager::MarkComponentGeometryDirty(const FName InComponentName)

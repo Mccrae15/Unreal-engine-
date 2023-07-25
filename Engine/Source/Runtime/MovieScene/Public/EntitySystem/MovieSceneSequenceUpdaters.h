@@ -87,6 +87,16 @@ public:
 
 
 	/**
+	 * Returns whether this instance can be finished immediately without any last update.
+	 *
+	 * @param Linker              The linker that owns this sequence instance
+	 * @param RootInstanceHandle  The handle to the root instance
+	 * @return                    Whether the instance can be finished immediately
+	 */
+	virtual bool CanFinishImmediately(UMovieSceneEntitySystemLinker* InLinker, FRootInstanceHandle RootInstanceHandle) const = 0;
+
+
+	/**
 	 * Called before evaluation when this updater's sequence is no longer required to be evaluated
 	 *
 	 * @param InLinker         The linker that is evaluating this sequence
@@ -116,7 +126,7 @@ public:
 	 * Override the sequence ID that should be considered the root sequence for this updater
 	 *
 	 * @param InLinker                    The linker that is owns this sequence
-	 * @param InstanceHandle              The instance handle for the master sequence
+	 * @param InstanceHandle              The instance handle for the root sequence
 	 * @param NewRootOverrideSequenceID   The new sequence ID to treat as the root
 	 */
 	virtual void OverrideRootSequence(UMovieSceneEntitySystemLinker* InLinker, FRootInstanceHandle InstanceHandle, FMovieSceneSequenceID NewRootOverrideSequenceID) = 0;

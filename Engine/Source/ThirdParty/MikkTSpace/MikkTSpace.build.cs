@@ -10,7 +10,7 @@ public class MikkTSpace : ModuleRules
 
 		string MikkTSpacePath = Target.UEThirdPartySourceDirectory + "MikkTSpace/";
 
-		PublicIncludePaths.Add(MikkTSpacePath + "inc/");
+		PublicSystemIncludePaths.Add(MikkTSpacePath + "inc/");
 
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 		{
@@ -18,7 +18,7 @@ public class MikkTSpace : ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			PublicAdditionalLibraries.Add(MikkTSpacePath + "/lib/Unix/" + Target.Architecture + "/libMikkTSpace.a");
+			PublicAdditionalLibraries.Add(MikkTSpacePath + "/lib/Unix/" + Target.Architecture.LinuxName + "/libMikkTSpace.a");
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{

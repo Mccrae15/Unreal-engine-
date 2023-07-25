@@ -119,12 +119,12 @@ FEnvQueryRequest& FEnvQueryRequest::SetDynamicParam(const FAIDynamicParam& Param
 		break;
 		case EAIParamType::Int:
 		{
-			SetIntParam(Param.ParamName, Param.Value);
+			SetIntParam(Param.ParamName, static_cast<int32>(Param.Value));
 		}
 		break;
 		case EAIParamType::Bool:
 		{
-			bool Result = Param.Value > 0;
+			bool Result = Param.Value > 0.;
 			SetBoolParam(Param.ParamName, Result);
 		}
 		break;
@@ -427,7 +427,7 @@ void UEnvQueryManager::Tick(float DeltaTime)
 	CheckQueryCount();
 #endif
 
-	float TimeLeft = MaxAllowedTestingTime;
+	double TimeLeft = MaxAllowedTestingTime;
 	int32 QueriesFinishedDuringUpdate = 0;
 
 	{
@@ -443,7 +443,7 @@ void UEnvQueryManager::Tick(float DeltaTime)
 			&& (QueriesFinishedDuringUpdate + NumRunningQueriesAbortedSinceLastUpdate < NumRunningQueries))
 		{
 			const double StepStartTime = FPlatformTime::Seconds();
-			float ResultHandlingDuration = 0.0f;
+			double ResultHandlingDuration = 0.;
 #if USE_EQS_DEBUGGER
 			bool bWorkHasBeenDone = false;
 #endif // USE_EQS_DEBUGGER
@@ -535,7 +535,7 @@ void UEnvQueryManager::Tick(float DeltaTime)
 			if (bAllowEQSTimeSlicing) // if Time slicing is enabled...
 #endif
 			{	// Don't include the querier handling as part of the total time spent by EQS for time-slicing purposes.
-				const float StepProcessingTime = ((FPlatformTime::Seconds() - StepStartTime) - ResultHandlingDuration);
+				const double StepProcessingTime = ((FPlatformTime::Seconds() - StepStartTime) - ResultHandlingDuration);
 				TimeLeft -= StepProcessingTime;
 
 #if USE_EQS_DEBUGGER
@@ -551,7 +551,7 @@ void UEnvQueryManager::Tick(float DeltaTime)
 
 	{
 		const int32 NumQueriesFinished = QueriesFinishedDuringUpdate + NumRunningQueriesAbortedSinceLastUpdate;
-		float FinishedQueriesTotalTime = 0.0;
+		double FinishedQueriesTotalTime = 0.;
 
 		if (NumQueriesFinished > 0)
 		{
@@ -598,7 +598,7 @@ void UEnvQueryManager::Tick(float DeltaTime)
 		// Reset the running queries aborted since last update counter
 		NumRunningQueriesAbortedSinceLastUpdate = 0;
 
-		const float InstanceAverageResponseTime = (NumQueriesFinished > 0) ? (1000.0f * FinishedQueriesTotalTime / NumQueriesFinished) : 0.0f;
+		const double InstanceAverageResponseTime = (NumQueriesFinished > 0) ? (1000. * FinishedQueriesTotalTime / NumQueriesFinished) : 0.;
 		SET_FLOAT_STAT(STAT_AI_EQS_AvgInstanceResponseTime, InstanceAverageResponseTime);
 	}
 }
@@ -1084,7 +1084,7 @@ void UEnvQueryManager::SetAllowTimeSlicing(bool bAllowTimeSlicing)
 #endif
 }
 
-bool UEnvQueryManager::Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar)
+bool UEnvQueryManager::Exec_Dev(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar)
 {
 #if USE_EQS_DEBUGGER
 	if (FParse::Command(&Cmd, TEXT("DumpEnvQueryStats")))
@@ -1125,7 +1125,7 @@ void FEQSDebugger::StoreStats(const FEnvQueryInstance& QueryInstance)
 	FStatsInfo& UpdateInfo = UEnvQueryManager::DebuggerStats.FindOrAdd(FName(*QueryInstance.QueryName));
 
 	const FEnvQueryDebugProfileData& QueryStats = QueryInstance.DebugData;
-	const float ExecutionTime = QueryInstance.TotalExecutionTime;
+	const double ExecutionTime = QueryInstance.TotalExecutionTime;
 	
 	if (ExecutionTime > UpdateInfo.MostExpensiveDuration)
 	{
@@ -1181,7 +1181,7 @@ void FEQSDebugger::StoreQuery(const TSharedPtr<FEnvQueryInstance>& QueryInstance
 	UpdateInfo.Timestamp = QueryInstance->World->GetTimeSeconds();
 }
 
-void FEQSDebugger::StoreTickTime(const FEnvQueryInstance& QueryInstance, float TickTime, float MaxTickTime)
+void FEQSDebugger::StoreTickTime(const FEnvQueryInstance& QueryInstance, double TickTime, double MaxTickTime)
 {
 #if USE_EQS_TICKLOADDATA
 	SCOPE_CYCLE_COUNTER(STAT_AI_EQS_Debug_StoreTickTime);
@@ -1198,7 +1198,7 @@ void FEQSDebugger::StoreTickTime(const FEnvQueryInstance& QueryInstance, float T
 	if (UpdateInfo.LastTickFrame != GFrameCounter)
 	{
 		UpdateInfo.LastTickFrame = GFrameCounter;
-		UpdateInfo.LastTickTime = 0.0f;
+		UpdateInfo.LastTickTime = 0.;
 	}
 
 	const uint16 TickIdx = GFrameCounter & (NumRecordedTicks - 1);
@@ -1206,7 +1206,7 @@ void FEQSDebugger::StoreTickTime(const FEnvQueryInstance& QueryInstance, float T
 	UpdateInfo.LastTickEntry = (TickIdx > UpdateInfo.LastTickEntry) ? TickIdx : UpdateInfo.LastTickEntry;
 
 	UpdateInfo.LastTickTime += TickTime;
-	UpdateInfo.TickPct[TickIdx] = FMath::Min(255, FMath::TruncToInt(255 * UpdateInfo.LastTickTime / MaxTickTime));
+	UpdateInfo.TickPct[TickIdx] = static_cast<uint8>(FMath::Min(255, FMath::TruncToInt(255 * UpdateInfo.LastTickTime / MaxTickTime)));
 #endif // USE_EQS_TICKLOADDATA
 }
 

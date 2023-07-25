@@ -4,6 +4,7 @@
 
 #include "SUSDLayersTreeView.h"
 #include "SUSDPrimInfo.h"
+#include "SUSDStageEditorStyle.h"
 #include "SUSDStageTreeView.h"
 #include "UnrealUSDWrapper.h"
 #include "USDClassesModule.h"
@@ -21,30 +22,44 @@
 #include "USDStageImportOptions.h"
 #include "USDStageModule.h"
 #include "USDTypesConversion.h"
-
 #include "UsdWrappers/SdfLayer.h"
+#include "UsdWrappers/UsdAttribute.h"
 #include "UsdWrappers/UsdStage.h"
+#include "Widgets/SUSDPrimPropertiesList.h"
 
 #include "ActorTreeItem.h"
 #include "Async/Async.h"
 #include "DesktopPlatformModule.h"
 #include "Dialogs/DlgPickPath.h"
+#include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Engine/Selection.h"
 #include "Engine/World.h"
 #include "EngineAnalytics.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ISceneOutliner.h"
+#include "ISceneOutlinerColumn.h"
 #include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
 #include "SceneOutlinerModule.h"
 #include "ScopedTransaction.h"
 #include "Styling/AppStyle.h"
 #include "UObject/StrongObjectPtr.h"
-#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SSplitter.h"
 
 #define LOCTEXT_NAMESPACE "SUsdStage"
+
+static bool GDiscardUndoBufferOnStageOpenClose = false;
+static FAutoConsoleVariableRef CVarDiscardUndoBufferOnStageOpenClose(
+	TEXT("USD.DiscardUndoBufferOnStageOpenClose"),
+	GDiscardUndoBufferOnStageOpenClose,
+	TEXT("Enabling this will prevent the recording of open/close stage transactions, but also discard the undo buffer after they happen. Use this when memory-constrained, as sometimes recording all created assets and actors in the undo buffer can be expensive."));
 
 #if USE_USD_SDK
 
@@ -178,16 +193,104 @@ namespace SUSDStageImpl
 			GEditor->SelectComponent( Component, bSelected, bNotifySelectionChanged );
 		}
 	}
+
+	class FStageNameOutlinerColumn : public ISceneOutlinerColumn
+	{
+	public:
+		FStageNameOutlinerColumn( ISceneOutliner& SceneOutliner )
+			: WeakSceneOutliner( StaticCastSharedRef<ISceneOutliner>( SceneOutliner.AsShared() ) )
+		{}
+
+		virtual ~FStageNameOutlinerColumn() {}
+		static FName GetID()
+		{
+			static FName ID( "Stage" );
+			return ID;
+		}
+		static FString GetStageForItem( const ISceneOutlinerTreeItem* Item )
+		{
+			if ( Item )
+			{
+				if ( const FActorTreeItem* ActorTreeItem = Item->CastTo<FActorTreeItem>() )
+				{
+					if ( const AUsdStageActor* StageActor = Cast<const AUsdStageActor>( ActorTreeItem->Actor.Get() ) )
+					{
+						if ( const UE::FUsdStage& Stage = StageActor->GetUsdStage() )
+						{
+							return Stage.GetRootLayer().GetDisplayName();
+						}
+					}
+				}
+			}
+
+			return {};
+		}
+
+		// Begin ISceneOutlinerColumn Implementation
+		virtual FName GetColumnID() override
+		{
+			return GetID();
+		}
+		virtual SHeaderRow::FColumn::FArguments ConstructHeaderRowColumn() override
+		{
+			return SHeaderRow::Column( FName( TEXT( "Stage" ) ) );
+		}
+		virtual const TSharedRef<SWidget> ConstructRowWidget(
+			FSceneOutlinerTreeItemRef TreeItem,
+			const STableRow<FSceneOutlinerTreeItemPtr>& Row
+		) override
+		{
+			return SNew( STextBlock ).Text( FText::FromString( GetStageForItem( &TreeItem.Get() ) ) );
+		}
+		virtual bool SupportsSorting() const override
+		{
+			return true;
+		}
+		virtual void SortItems( TArray<FSceneOutlinerTreeItemPtr>& OutItems, const EColumnSortMode::Type SortMode ) const
+		{
+			if ( SortMode == EColumnSortMode::Ascending )
+			{
+				OutItems.Sort(
+					[]( const FSceneOutlinerTreeItemPtr& First, const FSceneOutlinerTreeItemPtr& Second )
+					{
+						const ISceneOutlinerTreeItem* FirstPtr = First.Get();
+						const ISceneOutlinerTreeItem* SecondPtr = Second.Get();
+						return GetStageForItem( FirstPtr ) < GetStageForItem( SecondPtr );
+					}
+				);
+			}
+
+			if ( SortMode == EColumnSortMode::Descending )
+			{
+				OutItems.Sort(
+					[]( const FSceneOutlinerTreeItemPtr& First, const FSceneOutlinerTreeItemPtr& Second )
+					{
+						const ISceneOutlinerTreeItem* FirstPtr = First.Get();
+						const ISceneOutlinerTreeItem* SecondPtr = Second.Get();
+						return GetStageForItem( FirstPtr ) > GetStageForItem( SecondPtr );
+					}
+				);
+			}
+		}
+		// End ISceneOutlinerColumn Implementation
+
+	private:
+		TWeakPtr<ISceneOutliner> WeakSceneOutliner;
+	};
 }
 
 void SUsdStage::Construct( const FArguments& InArgs )
 {
-	OnActorLoadedHandle = AUsdStageActor::OnActorLoaded.AddSP( SharedThis( this ), &SUsdStage::OnStageActorLoaded );
+	const bool bFlashButton = true;
+	OnActorLoadedHandle = AUsdStageActor::OnActorLoaded.AddSP( SharedThis( this ), &SUsdStage::AttachToStageActor, bFlashButton );
 
-	OnViewportSelectionChangedHandle = USelection::SelectionChangedEvent.AddRaw( this, &SUsdStage::OnViewportSelectionChanged );
+	OnViewportSelectionChangedHandle = USelection::SelectionChangedEvent.AddSP( SharedThis(this), &SUsdStage::OnViewportSelectionChanged );
+
+	PostPIEStartedHandle = FEditorDelegates::PostPIEStarted.AddSP( SharedThis(this), &SUsdStage::OnPostPIEStarted );
+	EndPIEHandle = FEditorDelegates::EndPIE.AddSP( SharedThis(this), &SUsdStage::OnEndPIE );
 
 	IUsdStageModule& UsdStageModule = FModuleManager::Get().LoadModuleChecked< IUsdStageModule >( "UsdStage" );
-	ViewModel.UsdStageActor = UsdStageModule.FindUsdStageActor( GWorld );
+	ViewModel.UsdStageActor = UsdStageModule.FindUsdStageActor( IUsdClassesModule::GetCurrentWorld() );
 
 	bUpdatingViewportSelection = false;
 	bUpdatingPrimSelection = false;
@@ -299,6 +402,101 @@ void SUsdStage::Construct( const FArguments& InArgs )
 	{
 		Refresh();
 	}
+}
+
+AUsdStageActor* SUsdStage::GetAttachedStageActor() const
+{
+	return ViewModel.UsdStageActor.Get();
+}
+
+TArray<UE::FSdfLayer> SUsdStage::GetSelectedLayers() const
+{
+	if ( UsdLayersTreeView )
+	{
+		return UsdLayersTreeView->GetSelectedLayers();
+	}
+
+	return {};
+}
+
+void SUsdStage::SetSelectedLayers( const TArray<UE::FSdfLayer>& NewSelection ) const
+{
+	if ( UsdLayersTreeView )
+	{
+		UsdLayersTreeView->SetSelectedLayers( NewSelection );
+	}
+}
+
+TArray<UE::FUsdPrim> SUsdStage::GetSelectedPrims() const
+{
+	if ( UsdStageTreeView )
+	{
+		return UsdStageTreeView->GetSelectedPrims();
+	}
+
+	return {};
+}
+
+void SUsdStage::SetSelectedPrims( const TArray<UE::FUsdPrim>& NewSelection ) const
+{
+	if (UsdStageTreeView )
+	{
+		UsdStageTreeView->SetSelectedPrims( NewSelection );
+	}
+}
+
+TArray<FString> SUsdStage::GetSelectedPropertyNames() const
+{
+	if( UsdPrimInfoWidget && UsdPrimInfoWidget->PropertiesList )
+	{
+		return UsdPrimInfoWidget->PropertiesList->GetSelectedPropertyNames();
+	}
+
+	return {};
+}
+
+void SUsdStage::SetSelectedPropertyNames( const TArray<FString>& NewSelection )
+{
+	if ( UsdPrimInfoWidget && UsdPrimInfoWidget->PropertiesList )
+	{
+		UsdPrimInfoWidget->PropertiesList->SetSelectedPropertyNames( NewSelection );
+	}
+}
+
+void SUsdStage::AttachToStageActor( AUsdStageActor* InUsdStageActor, bool bFlashButton )
+{
+	if ( ViewModel.UsdStageActor == InUsdStageActor )
+	{
+		return;
+	}
+
+	if ( bFlashButton )
+	{
+		const float StartTimeSeconds = 0.0f;
+		const float FlashDuration = 0.5f;
+		const ECurveEaseFunction EaseFunction = ECurveEaseFunction::Linear;
+		FlashActorPickerCurve = FCurveSequence{ StartTimeSeconds, FlashDuration, EaseFunction };
+		FlashActorPickerCurve.Play( this->AsShared() );
+	}
+
+	ClearStageActorDelegates();
+	ViewModel.UsdStageActor = InUsdStageActor;
+	SetupStageActorDelegates();
+
+	if ( InUsdStageActor )
+	{
+		UE::FUsdStage UsdStage = static_cast< const AUsdStageActor* >( InUsdStageActor )->GetUsdStage();
+
+		if ( this->UsdPrimInfoWidget && InUsdStageActor )
+		{
+			// Just reset to the pseudoroot for now
+			this->UsdPrimInfoWidget->SetPrimPath( UsdStage, TEXT( "/" ) );
+		}
+	}
+
+	// Refresh here because we may be receiving an actor that has a stage already loaded,
+	// like during undo/redo
+	Refresh();
 }
 
 void SUsdStage::SetupStageActorDelegates()
@@ -471,6 +669,9 @@ void SUsdStage::ClearStageActorDelegates()
 
 SUsdStage::~SUsdStage()
 {
+	FEditorDelegates::PostPIEStarted.Remove( PostPIEStartedHandle );
+	FEditorDelegates::EndPIE.Remove( EndPIEHandle );
+
 	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove( OnStageActorPropertyChangedHandle );
 	AUsdStageActor::OnActorLoaded.Remove( OnActorLoadedHandle );
 	USelection::SelectionChangedEvent.Remove( OnViewportSelectionChangedHandle );
@@ -512,22 +713,50 @@ TSharedRef< SWidget > SUsdStage::MakeMainMenu()
 
 TSharedRef< SWidget > SUsdStage::MakeActorPickerMenu()
 {
-	return SNew( SComboButton )
-		.ComboButtonStyle( FAppStyle::Get(), "SimpleComboButton" )
-		.OnGetMenuContent( this, &SUsdStage::MakeActorPickerMenuContent )
-		.MenuPlacement( EMenuPlacement::MenuPlacement_BelowRightAnchor )
-		.ToolTipText( LOCTEXT( "ActorPicker_ToolTip", "Switch the active stage actor" ) )
-		.ButtonContent()
+	return
+		SNew(SOverlay)
+		+ SOverlay::Slot()
 		[
-			SNew( STextBlock )
-			.Text_Lambda( [this]()
-			{
-				if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+			SNew( SComboButton )
+			.ComboButtonStyle( FAppStyle::Get(), "SimpleComboButton" )
+			.OnGetMenuContent( this, &SUsdStage::MakeActorPickerMenuContent )
+			.MenuPlacement( EMenuPlacement::MenuPlacement_BelowRightAnchor )
+			.ToolTipText( LOCTEXT( "ActorPicker_ToolTip", "Switch the active stage actor" ) )
+			.ButtonContent()
+			[
+				SNew( STextBlock )
+				.Text_Lambda( [this]()
 				{
-					return FText::FromString( StageActor->GetActorLabel() );
+					if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+					{
+						return FText::FromString( StageActor->GetActorLabel() );
+					}
+
+					return FText::FromString( "None" );
+				})
+			]
+		]
+
+		// Overlay for flashing for attention
+		+ SOverlay::Slot()
+		[
+			SNew(SBorder)
+			.Visibility( EVisibility::HitTestInvisible )
+			.BorderImage( FUsdStageEditorStyle::Get()->GetBrush( "UsdStageEditor.ActorPickerFlashBrush" ) )
+			.BorderBackgroundColor_Lambda( [this]() -> FSlateColor
+			{
+				FLinearColor Color = FLinearColor::White;
+
+				if ( FlashActorPickerCurve.IsPlaying() )
+				{
+					Color.A = 0.6f * (1.0f - FlashActorPickerCurve.GetLerp());
+				}
+				else
+				{
+					Color.A = 0.0f;
 				}
 
-				return FText::FromString( "None" );
+				return FSlateColor( Color );
 			})
 		];
 }
@@ -536,12 +765,41 @@ TSharedRef< SWidget > SUsdStage::MakeActorPickerMenuContent()
 {
 	if ( !ActorPickerMenu.IsValid() )
 	{
+		const int32 NamePriority = 0;
+		const int32 StagePriority = 1;
+		const bool bCanBeHidden = true;
+		const float FillSize = 1.0f;
+
+		FSceneOutlinerColumnInfo ActorColumnInfo{ ESceneOutlinerColumnVisibility::Visible, NamePriority };
+		ActorColumnInfo.ColumnLabel = LOCTEXT( "ActorColumnText", "Actor" );
+		ActorColumnInfo.FillSize = FillSize;
+
+		FSceneOutlinerColumnInfo StageColumnInfo{
+			ESceneOutlinerColumnVisibility::Visible,
+			StagePriority,
+			FCreateSceneOutlinerColumn::CreateLambda(
+				[]( ISceneOutliner& InSceneOutliner )
+				{
+					return MakeShareable( new SUSDStageImpl::FStageNameOutlinerColumn( InSceneOutliner ) );
+				}
+			),
+			bCanBeHidden,
+			FillSize
+		};
+
 		FSceneOutlinerInitializationOptions InitOptions;
-		InitOptions.bShowHeaderRow = false;
+		InitOptions.bShowHeaderRow = true;  // The header lets us resize/hide the columns if we want
 		InitOptions.bShowSearchBox = true;
 		InitOptions.bShowCreateNewFolder = false;
 		InitOptions.bFocusSearchBoxWhenOpened = true;
-		InitOptions.ColumnMap.Add( FSceneOutlinerBuiltInColumnTypes::Label(), FSceneOutlinerColumnInfo( ESceneOutlinerColumnVisibility::Visible, 0 ) );
+		InitOptions.ColumnMap.Add(
+			FSceneOutlinerBuiltInColumnTypes::Label(),
+			ActorColumnInfo
+		);
+		InitOptions.ColumnMap.Add(
+			SUSDStageImpl::FStageNameOutlinerColumn::GetID(),
+			StageColumnInfo
+		);
 		InitOptions.Filters->AddFilterPredicate<FActorTreeItem>(
 			FActorTreeItem::FFilterPredicate::CreateLambda(
 				[]( const AActor* Actor )
@@ -559,7 +817,9 @@ TSharedRef< SWidget > SUsdStage::MakeActorPickerMenuContent()
 				{
 					if ( Actor && Actor->IsA<AUsdStageActor>() )
 					{
-						this->SetActor( Cast<AUsdStageActor>( Actor ) );
+						// Don't need to flash here as it was an intentional act to attach to a new actor
+						const bool bFlashButton = false;
+						AttachToStageActor( Cast<AUsdStageActor>( Actor ), bFlashButton );
 
 						FSlateApplication::Get().DismissAllMenus();
 					}
@@ -574,7 +834,7 @@ TSharedRef< SWidget > SUsdStage::MakeActorPickerMenuContent()
 
 		return SNew(SBox)
 			.Padding( FMargin( 1 ) )    // Add a small margin or else we'll get dark gray on dark gray which can look a bit confusing
-			.MinDesiredWidth( 400.0f )  // Force a min width or else the tree view item text will run up right to the very edge pixel of the menu
+			.MinDesiredWidth( 600.0f )  // Force a min width or else the tree view item text will run up right to the very edge pixel of the menu
 			.HAlign( HAlign_Fill )
 			[
 				ActorPickerMenu.ToSharedRef()
@@ -637,7 +897,7 @@ void SUsdStage::FillFileMenu( FMenuBuilder& MenuBuilder )
 			LOCTEXT("New_ToolTip", "Creates a new layer and opens the stage with it at its root"),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP( this, &SUsdStage::OnNew ),
+				FExecuteAction::CreateSP( this, &SUsdStage::FileNew ),
 				FCanExecuteAction()
 			),
 			NAME_None,
@@ -649,7 +909,10 @@ void SUsdStage::FillFileMenu( FMenuBuilder& MenuBuilder )
 			LOCTEXT("Open_ToolTip", "Opens a USD file"),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP( this, &SUsdStage::OnOpen ),
+				FExecuteAction::CreateLambda([this]()
+				{
+					FileOpen();
+				}),
 				FCanExecuteAction()
 			),
 			NAME_None,
@@ -661,7 +924,10 @@ void SUsdStage::FillFileMenu( FMenuBuilder& MenuBuilder )
 			LOCTEXT("Save_ToolTip", "Saves the stage"),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP( this, &SUsdStage::OnSave ),
+				FExecuteAction::CreateLambda([this]()
+				{
+					FileSave();
+				}),
 				FCanExecuteAction::CreateLambda( [this]()
 				{
 					if ( const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
@@ -694,7 +960,7 @@ void SUsdStage::FillFileMenu( FMenuBuilder& MenuBuilder )
 			LOCTEXT("Reload_ToolTip", "Reloads the stage from disk, keeping aspects of the session intact"),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP( this, &SUsdStage::OnReloadStage ),
+				FExecuteAction::CreateSP( this, &SUsdStage::FileReload ),
 				FCanExecuteAction::CreateLambda( [this]()
 				{
 					if ( const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
@@ -720,7 +986,7 @@ void SUsdStage::FillFileMenu( FMenuBuilder& MenuBuilder )
 			LOCTEXT( "ResetState_ToolTip", "Resets the session layer and other options like edit target and muted layers" ),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP( this, &SUsdStage::OnResetStage ),
+				FExecuteAction::CreateSP( this, &SUsdStage::FileReset ),
 				FCanExecuteAction::CreateLambda( [this]()
 				{
 					if ( const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
@@ -747,7 +1013,7 @@ void SUsdStage::FillFileMenu( FMenuBuilder& MenuBuilder )
 			LOCTEXT("Close_ToolTip", "Closes the opened stage"),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP( this, &SUsdStage::OnClose ),
+				FExecuteAction::CreateSP( this, &SUsdStage::FileClose ),
 				FCanExecuteAction::CreateLambda( [this]()
 				{
 					if ( const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
@@ -777,7 +1043,7 @@ void SUsdStage::FillActionsMenu( FMenuBuilder& MenuBuilder )
 			LOCTEXT("Import_ToolTip", "Imports the stage as Unreal assets"),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP( this, &SUsdStage::OnImport ),
+				FExecuteAction::CreateSP( this, &SUsdStage::ActionsImportWithDialog ),
 				FCanExecuteAction::CreateLambda( [this]()
 				{
 					if ( const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
@@ -859,12 +1125,17 @@ void SUsdStage::FillOptionsMenu(FMenuBuilder& MenuBuilder)
 
 void SUsdStage::FillExportSubMenu( FMenuBuilder& MenuBuilder )
 {
+	const FString FilePath;
+
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT( "ExportAll", "Export all layers..." ),
 		LOCTEXT( "ExportAll_ToolTip", "Exports copies of all file-based layers in the stage's layer stack to a new folder" ),
 		FSlateIcon(),
 		FUIAction(
-			FExecuteAction::CreateSP( this, &SUsdStage::OnExportAll ),
+			FExecuteAction::CreateLambda([this]()
+			{
+				FileExportAllLayers();
+			}),
 			FCanExecuteAction::CreateLambda( [this]()
 			{
 				if ( const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
@@ -887,7 +1158,10 @@ void SUsdStage::FillExportSubMenu( FMenuBuilder& MenuBuilder )
 		LOCTEXT( "ExportFlattened_ToolTip", "Flattens the current stage to a single USD layer and exports it as a new USD file" ),
 		FSlateIcon(),
 		FUIAction(
-			FExecuteAction::CreateSP( this, &SUsdStage::OnExportFlattened ),
+			FExecuteAction::CreateLambda([this]()
+			{
+				FileExportFlattenedStage();
+			}),
 			FCanExecuteAction::CreateLambda( [this]()
 			{
 				if ( const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
@@ -915,7 +1189,7 @@ void SUsdStage::FillPayloadsSubMenu(FMenuBuilder& MenuBuilder)
 		FUIAction(
 			FExecuteAction::CreateLambda([this]()
 			{
-				if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					FScopedTransaction Transaction(FText::Format(
 						LOCTEXT("SetLoadAllTransaction", "Set USD stage actor '{0}' actor to load all payloads initially"),
@@ -924,15 +1198,16 @@ void SUsdStage::FillPayloadsSubMenu(FMenuBuilder& MenuBuilder)
 
 					StageActor->Modify();
 					StageActor->InitialLoadSet = EUsdInitialLoadSet::LoadAll;
+					if ( StageActor->IsTemplate() )
+					{
+						StageActor->SaveConfig();
+					}
 				}
 			}),
-			FCanExecuteAction::CreateLambda([this]()
-			{
-				return ViewModel.UsdStageActor.Get() != nullptr;
-			}),
+			FCanExecuteAction{},
 			FIsActionChecked::CreateLambda([this]()
 			{
-				if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					return StageActor->InitialLoadSet == EUsdInitialLoadSet::LoadAll;
 				}
@@ -950,7 +1225,7 @@ void SUsdStage::FillPayloadsSubMenu(FMenuBuilder& MenuBuilder)
 		FUIAction(
 			FExecuteAction::CreateLambda([this]()
 			{
-				if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					FScopedTransaction Transaction(FText::Format(
 						LOCTEXT("SetLoadNoneTransaction", "Set USD stage actor '{0}' actor to load no payloads initially"),
@@ -959,15 +1234,16 @@ void SUsdStage::FillPayloadsSubMenu(FMenuBuilder& MenuBuilder)
 
 					StageActor->Modify();
 					StageActor->InitialLoadSet = EUsdInitialLoadSet::LoadNone;
+					if ( StageActor->IsTemplate() )
+					{
+						StageActor->SaveConfig();
+					}
 				}
 			}),
-			FCanExecuteAction::CreateLambda([this]()
-			{
-				return ViewModel.UsdStageActor.Get() != nullptr;
-			}),
+			FCanExecuteAction{},
 			FIsActionChecked::CreateLambda([this]()
 			{
-				if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					return StageActor->InitialLoadSet == EUsdInitialLoadSet::LoadNone;
 				}
@@ -990,7 +1266,7 @@ void SUsdStage::FillPurposesToLoadSubMenu(FMenuBuilder& MenuBuilder)
 			FUIAction(
 				FExecuteAction::CreateLambda([this, Purpose]()
 				{
-					if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+					if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 					{
 						FScopedTransaction Transaction(FText::Format(
 							LOCTEXT("PurposesToLoadTransaction", "Change purposes to load for USD stage actor '{0}'"),
@@ -1007,15 +1283,17 @@ void SUsdStage::FillPurposesToLoadSubMenu(FMenuBuilder& MenuBuilder)
 							FindFieldChecked< FProperty >( StageActor->GetClass(), GET_MEMBER_NAME_CHECKED( AUsdStageActor, PurposesToLoad ) )
 						);
 						StageActor->PostEditChangeProperty(PropertyChangedEvent);
+
+						if ( StageActor->IsTemplate() )
+						{
+							StageActor->SaveConfig();
+						}
 					}
 				}),
-				FCanExecuteAction::CreateLambda([this]()
-				{
-					return ViewModel.UsdStageActor.Get() != nullptr;
-				}),
+				FCanExecuteAction{},
 				FIsActionChecked::CreateLambda([this, Purpose]()
 				{
-					if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+					if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 					{
 						return EnumHasAllFlags((EUsdPurpose)StageActor->PurposesToLoad, Purpose);
 					}
@@ -1049,7 +1327,7 @@ void SUsdStage::FillRenderContextSubMenu( FMenuBuilder& MenuBuilder )
 			FUIAction(
 				FExecuteAction::CreateLambda([this, RenderContext]()
 				{
-					if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+					if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 					{
 						FScopedTransaction Transaction(FText::Format(
 							LOCTEXT("RenderContextToLoadTransaction", "Change render context to load for USD stage actor '{0}'"),
@@ -1066,15 +1344,17 @@ void SUsdStage::FillRenderContextSubMenu( FMenuBuilder& MenuBuilder )
 							FindFieldChecked< FProperty >( StageActor->GetClass(), GET_MEMBER_NAME_CHECKED( AUsdStageActor, RenderContext ) )
 						);
 						StageActor->PostEditChangeProperty(PropertyChangedEvent);
+
+						if ( StageActor->IsTemplate() )
+						{
+							StageActor->SaveConfig();
+						}
 					}
 				}),
-				FCanExecuteAction::CreateLambda([this]()
-				{
-					return ViewModel.UsdStageActor.Get() != nullptr;
-				}),
+				FCanExecuteAction{},
 				FIsActionChecked::CreateLambda([this, RenderContext]()
 				{
-					if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+					if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 					{
 						return StageActor->RenderContext == RenderContext;
 					}
@@ -1153,9 +1433,19 @@ void SUsdStage::FillMaterialPurposeSubMenu( FMenuBuilder& MenuBuilder )
 		{
 			if ( ChosenOption )
 			{
-				if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
+					FScopedTransaction Transaction(FText::Format(
+						LOCTEXT("ChangeMaterialPurpose", "Change selected material purpose for USD stage actor '{0}' to '{1}'"),
+						FText::FromString(StageActor->GetActorLabel()),
+						FText::FromString(ChosenOption.IsValid() ? *ChosenOption : TEXT(""))
+					));
+
 					StageActor->SetMaterialPurpose( **ChosenOption );
+					if ( StageActor->IsTemplate() )
+					{
+						StageActor->SaveConfig();
+					}
 				}
 			}
 		})
@@ -1163,7 +1453,7 @@ void SUsdStage::FillMaterialPurposeSubMenu( FMenuBuilder& MenuBuilder )
 			SNew( SEditableTextBox )
 			.Text_Lambda([this]() -> FText
 			{
-				if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					return FText::FromString( StageActor->MaterialPurpose == *UnrealIdentifiers::MaterialAllPurpose
 						? UnrealIdentifiers::MaterialAllPurposeText
@@ -1203,9 +1493,19 @@ void SUsdStage::FillMaterialPurposeSubMenu( FMenuBuilder& MenuBuilder )
 					}
 				}
 
-				if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
+					FScopedTransaction Transaction(FText::Format(
+						LOCTEXT("TypeMaterialPurpose", "Change selected material purpose for USD stage actor '{0}' to '{1}'"),
+						FText::FromString(StageActor->GetActorLabel()),
+						NewText
+					));
+
 					StageActor->SetMaterialPurpose( NewPurpose );
+					if ( StageActor->IsTemplate() )
+					{
+						StageActor->SaveConfig();
+					}
 				}
 			})
 		]
@@ -1229,7 +1529,7 @@ void SUsdStage::FillRootMotionSubMenu( FMenuBuilder& MenuBuilder )
 			FUIAction(
 				FExecuteAction::CreateLambda([this, HandlingStrategy]()
 				{
-					if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+					if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 					{
 						FScopedTransaction Transaction(FText::Format(
 							LOCTEXT("RootMotionHandlingTransaction", "Change root motion handling strategy for USD stage actor '{0}'"),
@@ -1241,15 +1541,16 @@ void SUsdStage::FillRootMotionSubMenu( FMenuBuilder& MenuBuilder )
 
 						StageActor->Modify();
 						StageActor->SetRootMotionHandling( HandlingStrategy );
+						if ( StageActor->IsTemplate() )
+						{
+							StageActor->SaveConfig();
+						}
 					}
 				}),
-				FCanExecuteAction::CreateLambda([this]()
-				{
-					return ViewModel.UsdStageActor.Get() != nullptr;
-				}),
+				FCanExecuteAction{},
 				FIsActionChecked::CreateLambda([this, HandlingStrategy]()
 				{
-					if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+					if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 					{
 						return StageActor->RootMotionHandling == HandlingStrategy;
 					}
@@ -1275,7 +1576,7 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 		FUIAction(
 			FExecuteAction::CreateLambda( [this]()
 			{
-				if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					FScopedTransaction Transaction( FText::Format(
 						LOCTEXT( "MergeIdenticalMaterialSlotsTransaction", "Toggle bMergeIdenticalMaterialSlots on USD stage actor '{1}'" ),
@@ -1284,52 +1585,18 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 
 					TGuardValue<bool> MaintainSelectionGuard( bUpdatingViewportSelection, true );
 					StageActor->SetMergeIdenticalMaterialSlots( !StageActor->bMergeIdenticalMaterialSlots );
+					if ( StageActor->IsTemplate() )
+					{
+						StageActor->SaveConfig();
+					}
 				}
 			}),
-			FCanExecuteAction::CreateLambda( [this]()
-			{
-				return ViewModel.UsdStageActor.Get() != nullptr;
-			}),
+			FCanExecuteAction{},
 			FIsActionChecked::CreateLambda( [this]()
 			{
-				if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					return StageActor->bMergeIdenticalMaterialSlots;
-				}
-				return false;
-			})
-		),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
-	);
-
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT( "CollapseTopLevelPointInstancers", "Collapse top-level point instancers" ),
-		LOCTEXT( "CollapseTopLevelPointInstancersToolTip", "If true, will cause us to collapse any point instancer prim into a single static mesh and static mesh component.\nIf false, will cause us to use HierarchicalInstancedStaticMeshComponents to replicate the instancing behavior.\nPoint instancers inside other point instancer prototypes are * always * collapsed into the prototype's static mesh." ),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda( [this]()
-			{
-				if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
-				{
-					FScopedTransaction Transaction( FText::Format(
-						LOCTEXT( "CollapseTopLevelPointInstancersTransaction", "Toggle bCollapseTopLevelPointInstancers on USD stage actor '{1}'" ),
-						FText::FromString( StageActor->GetActorLabel() )
-					) );
-
-					TGuardValue<bool> MaintainSelectionGuard( bUpdatingViewportSelection, true );
-					StageActor->SetCollapseTopLevelPointInstancers( !StageActor->bCollapseTopLevelPointInstancers );
-				}
-			}),
-			FCanExecuteAction::CreateLambda( [this]()
-			{
-				return ViewModel.UsdStageActor.Get() != nullptr;
-			}),
-			FIsActionChecked::CreateLambda( [this]()
-			{
-				if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
-				{
-					return StageActor->bCollapseTopLevelPointInstancers;
 				}
 				return false;
 			})
@@ -1347,7 +1614,7 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 			FUIAction(
 				FExecuteAction::CreateLambda( [this, Text, Kind]()
 				{
-					if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+					if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 					{
 						FScopedTransaction Transaction( FText::Format(
 							LOCTEXT( "ToggleCollapsingTransaction", "Toggle asset and component collapsing for kind '{0}' on USD stage actor '{1}'" ),
@@ -1365,12 +1632,16 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 
 						int32 NewKindsToCollapse = ( int32 ) ( ( EUsdDefaultKind ) StageActor->KindsToCollapse ^ Kind );
 						StageActor->SetKindsToCollapse( NewKindsToCollapse );
+						if ( StageActor->IsTemplate() )
+						{
+							StageActor->SaveConfig();
+						}
 					}
 				}),
 				CanExecuteAction,
 				FIsActionChecked::CreateLambda( [this, Kind]()
 				{
-					if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+					if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 					{
 						return EnumHasAllFlags( ( EUsdDefaultKind ) StageActor->KindsToCollapse, Kind );
 					}
@@ -1387,10 +1658,7 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 	AddKindToCollapseEntry(
 		EUsdDefaultKind::Model,
 		LOCTEXT( "ModelKind", "Model" ),
-		FCanExecuteAction::CreateLambda( [this]()
-		{
-			return ViewModel.UsdStageActor.Get() != nullptr;
-		})
+		FCanExecuteAction{}
 	);
 
 	AddKindToCollapseEntry(
@@ -1398,7 +1666,7 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 		LOCTEXT( "ModelComponent", "   Component" ),
 		FCanExecuteAction::CreateLambda( [this]()
 		{
-			if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+			if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 			{
 				// If we're collapsing all "model" kinds, the all "component"s should be collapsed anyway
 				if ( !EnumHasAnyFlags( ( EUsdDefaultKind ) StageActor->KindsToCollapse, EUsdDefaultKind::Model ) )
@@ -1416,7 +1684,7 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 		LOCTEXT( "ModelGroup", "   Group" ),
 		FCanExecuteAction::CreateLambda( [this]()
 		{
-			if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+			if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 			{
 				if ( !EnumHasAnyFlags( ( EUsdDefaultKind ) StageActor->KindsToCollapse, EUsdDefaultKind::Model ) )
 				{
@@ -1433,7 +1701,7 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 		LOCTEXT( "ModelAssembly", "      Assembly" ),
 		FCanExecuteAction::CreateLambda( [this]()
 		{
-			if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+			if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 			{
 				if ( !EnumHasAnyFlags( ( EUsdDefaultKind ) StageActor->KindsToCollapse, EUsdDefaultKind::Model ) && !EnumHasAnyFlags( ( EUsdDefaultKind ) StageActor->KindsToCollapse, EUsdDefaultKind::Group ) )
 				{
@@ -1448,10 +1716,7 @@ void SUsdStage::FillCollapsingSubMenu( FMenuBuilder& MenuBuilder )
 	AddKindToCollapseEntry(
 		EUsdDefaultKind::Subcomponent,
 		LOCTEXT( "ModelSubcomponent", "Subcomponent" ),
-		FCanExecuteAction::CreateLambda( [this]()
-		{
-			return ViewModel.UsdStageActor.Get() != nullptr;
-		})
+		FCanExecuteAction{}
 	);
 
 	MenuBuilder.EndSection();
@@ -1466,7 +1731,7 @@ void SUsdStage::FillInterpolationTypeSubMenu(FMenuBuilder& MenuBuilder)
 		FUIAction(
 			FExecuteAction::CreateLambda([this]()
 			{
-				if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					FScopedTransaction Transaction(FText::Format(
 						LOCTEXT("SetLinearInterpolationType", "Set USD stage actor '{0}' to linear interpolation"),
@@ -1477,15 +1742,17 @@ void SUsdStage::FillInterpolationTypeSubMenu(FMenuBuilder& MenuBuilder)
 					TGuardValue<bool> MaintainSelectionGuard( bUpdatingViewportSelection, true );
 
 					StageActor->SetInterpolationType( EUsdInterpolationType::Linear );
+
+					if ( StageActor->IsTemplate() )
+					{
+						StageActor->SaveConfig();
+					}
 				}
 			}),
-			FCanExecuteAction::CreateLambda([this]()
-			{
-				return ViewModel.UsdStageActor.Get() != nullptr;
-			}),
+			FCanExecuteAction{},
 			FIsActionChecked::CreateLambda([this]()
 			{
-				if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					return StageActor->InterpolationType == EUsdInterpolationType::Linear;
 				}
@@ -1503,7 +1770,7 @@ void SUsdStage::FillInterpolationTypeSubMenu(FMenuBuilder& MenuBuilder)
 		FUIAction(
 			FExecuteAction::CreateLambda([this]()
 			{
-				if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					FScopedTransaction Transaction(FText::Format(
 						LOCTEXT("SetHeldInterpolationType", "Set USD stage actor '{0}' to held interpolation"),
@@ -1514,15 +1781,17 @@ void SUsdStage::FillInterpolationTypeSubMenu(FMenuBuilder& MenuBuilder)
 					TGuardValue<bool> MaintainSelectionGuard( bUpdatingViewportSelection, true );
 
 					StageActor->SetInterpolationType( EUsdInterpolationType::Held );
+
+					if ( StageActor->IsTemplate() )
+					{
+						StageActor->SaveConfig();
+					}
 				}
 			}),
-			FCanExecuteAction::CreateLambda([this]()
-			{
-				return ViewModel.UsdStageActor.Get() != nullptr;
-			}),
+			FCanExecuteAction{},
 			FIsActionChecked::CreateLambda([this]()
 			{
-				if(AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get())
+				if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 				{
 					return StageActor->InterpolationType == EUsdInterpolationType::Held;
 				}
@@ -1567,7 +1836,7 @@ void SUsdStage::FillSelectionSubMenu( FMenuBuilder& MenuBuilder )
 					{
 						TGuardValue<bool> SelectionLoopGuard( bUpdatingViewportSelection, true );
 
-						SUSDStageImpl::SelectGeneratedComponentsAndActors( ViewModel.UsdStageActor.Get(), UsdStageTreeView->GetSelectedPrims() );
+						SUSDStageImpl::SelectGeneratedComponentsAndActors( ViewModel.UsdStageActor.Get(), UsdStageTreeView->GetSelectedPrimPaths() );
 					}
 				}
 			}),
@@ -1588,7 +1857,7 @@ void SUsdStage::FillSelectionSubMenu( FMenuBuilder& MenuBuilder )
 
 void SUsdStage::FillNaniteThresholdSubMenu( FMenuBuilder& MenuBuilder )
 {
-	if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+	if ( AUsdStageActor* StageActor = GetStageActorOrCDO() )
 	{
 		CurrentNaniteThreshold = StageActor->NaniteTriangleThreshold;
 	}
@@ -1599,32 +1868,35 @@ void SUsdStage::FillNaniteThresholdSubMenu( FMenuBuilder& MenuBuilder )
 		.Value( this, &SUsdStage::GetNaniteTriangleThresholdValue )
 		.OnValueChanged(this, &SUsdStage::OnNaniteTriangleThresholdValueChanged )
 		.SupportDynamicSliderMaxValue( true )
-		.IsEnabled_Lambda( [this]() -> bool
-		{
-			return ViewModel.UsdStageActor.Get() != nullptr;
-		})
 		.OnValueCommitted( this, &SUsdStage::OnNaniteTriangleThresholdValueCommitted );
 
 	const bool bNoIndent = true;
 	MenuBuilder.AddWidget( Slider, FText::FromString( TEXT( "Triangle threshold: " ) ), bNoIndent );
 }
 
-void SUsdStage::OnNew()
+void SUsdStage::FileNew()
 {
 	ViewModel.NewStage();
 }
 
-void SUsdStage::OnOpen()
+void SUsdStage::FileOpen( const FString& FilePath )
 {
-	TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Open );
-
-	if ( UsdFilePath )
+	FString FilePathCopy = FilePath;
+	if (FilePathCopy.IsEmpty())
 	{
-		OpenStage( *UsdFilePath.GetValue() );
+		TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Open );
+		if( !UsdFilePath.IsSet() )
+		{
+			return;
+		}
+
+		FilePathCopy = UsdFilePath.GetValue();
 	}
+
+	OpenStage(*FilePathCopy);
 }
 
-void SUsdStage::OnSave()
+void SUsdStage::FileSave( const FString& FilePath )
 {
 	const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get();
 	if ( !StageActor )
@@ -1647,16 +1919,24 @@ void SUsdStage::OnSave()
 		}
 		else
 		{
-			TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Save );
-			if ( UsdFilePath )
+			FString FilePathCopy = FilePath;
+			if (FilePathCopy.IsEmpty())
 			{
-				ViewModel.SaveStageAs( *UsdFilePath.GetValue() );
+				TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Save );
+				if( !UsdFilePath.IsSet() )
+				{
+					return;
+				}
+
+				FilePathCopy = UsdFilePath.GetValue();
 			}
+
+			ViewModel.SaveStageAs(*FilePathCopy);
 		}
 	}
 }
 
-void SUsdStage::OnExportAll()
+void SUsdStage::FileExportAllLayers( const FString& OutputDirectory )
 {
 	const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get();
 	if ( !StageActor )
@@ -1688,12 +1968,21 @@ void SUsdStage::OnExportAll()
 		? ParentWindow->GetNativeWindow()->GetOSWindowHandle()
 		: nullptr;
 
-	FString TargetFolderPath;
-	if ( !DesktopPlatform->OpenDirectoryDialog( ParentWindowHandle, LOCTEXT( "ChooseFolder", "Choose output folder" ).ToString(), TEXT( "" ), TargetFolderPath ) )
+	FString OutputDirectoryCopy = OutputDirectory;
+	if (OutputDirectoryCopy.IsEmpty())
 	{
-		return;
+		if ( !DesktopPlatform->OpenDirectoryDialog(
+			ParentWindowHandle,
+			LOCTEXT( "ChooseFolder", "Choose output folder" ).ToString(),
+			TEXT( "" ),
+			OutputDirectoryCopy
+		) )
+		{
+			return;
+		}
+
+		OutputDirectoryCopy = FPaths::ConvertRelativePathToFull(OutputDirectoryCopy);
 	}
-	TargetFolderPath = FPaths::ConvertRelativePathToFull( TargetFolderPath );
 
 	double StartTime = FPlatformTime::Cycles64();
 
@@ -1727,7 +2016,7 @@ void SUsdStage::OnExportAll()
 		FString LayerPath = Layer.GetRealPath();
 		FPaths::NormalizeFilename( LayerPath );
 
-		FString TargetPath = FPaths::Combine( TargetFolderPath, Layer.GetDisplayName() );
+		FString TargetPath = FPaths::Combine( OutputDirectory, Layer.GetDisplayName() );
 		FPaths::NormalizeFilename( TargetPath );
 
 		// Filename collision (should be rare, but possible given that we're discarding the folder structure)
@@ -1801,7 +2090,7 @@ void SUsdStage::OnExportAll()
 	}
 }
 
-void SUsdStage::OnExportFlattened()
+void SUsdStage::FileExportFlattenedStage(const FString& OutputLayer)
 {
 	const AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get();
 	if ( !StageActor )
@@ -1815,22 +2104,28 @@ void SUsdStage::OnExportFlattened()
 		return;
 	}
 
-	TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Save );
-	if ( !UsdFilePath.IsSet() )
+	FString OutputLayerCopy = OutputLayer;
+	if (OutputLayerCopy.IsEmpty())
 	{
-		return;
+		TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Save );
+		if ( !UsdFilePath.IsSet() )
+		{
+			return;
+		}
+
+		OutputLayerCopy = UsdFilePath.GetValue();
 	}
 
 	double StartTime = FPlatformTime::Cycles64();
 
-	UsdStage.Export( *( UsdFilePath.GetValue() ) );
+	UsdStage.Export(*OutputLayerCopy);
 
 	// Send analytics
 	if ( FEngineAnalytics::IsAvailable() )
 	{
 		bool bAutomated = false;
 		double ElapsedSeconds = FPlatformTime::ToSeconds64( FPlatformTime::Cycles64() - StartTime );
-		FString Extension = FPaths::GetExtension( UsdFilePath.GetValue() );
+		FString Extension = FPaths::GetExtension(OutputLayerCopy);
 		IUsdClassesModule::SendAnalytics(
 			{},
 			TEXT( "ExportStageFlattened" ),
@@ -1842,7 +2137,7 @@ void SUsdStage::OnExportFlattened()
 	}
 }
 
-void SUsdStage::OnReloadStage()
+void SUsdStage::FileReload()
 {
 	FScopedTransaction Transaction( LOCTEXT( "ReloadTransaction", "Reload USD stage" ) );
 
@@ -1857,7 +2152,7 @@ void SUsdStage::OnReloadStage()
 	}
 }
 
-void SUsdStage::OnResetStage()
+void SUsdStage::FileReset()
 {
 	ViewModel.ResetStage();
 
@@ -1870,12 +2165,25 @@ void SUsdStage::OnResetStage()
 	}
 }
 
-void SUsdStage::OnClose()
+void SUsdStage::FileClose()
 {
-	FScopedTransaction Transaction(LOCTEXT("CloseTransaction", "Close USD stage"));
+	TOptional<FScopedTransaction> Transaction;
+	if (!GDiscardUndoBufferOnStageOpenClose)
+	{
+		Transaction.Emplace(LOCTEXT("CloseTransaction", "Close USD stage"));
+	}
 
 	ViewModel.CloseStage();
 	Refresh();
+
+	if (GDiscardUndoBufferOnStageOpenClose && GEditor)
+	{
+		if (UTransactor* Transactor = GEditor->Trans)
+		{
+			const FText Reason = LOCTEXT("DiscardCloseTransactionReason", "Resetting because the cvar USD.DiscardUndoBufferOnStageOpenClose is true");
+			Transactor->Reset(Reason);
+		}
+	}
 }
 
 void SUsdStage::OnLayerIsolated( const UE::FSdfLayer& IsolatedLayer )
@@ -1888,9 +2196,22 @@ void SUsdStage::OnLayerIsolated( const UE::FSdfLayer& IsolatedLayer )
 	}
 }
 
-void SUsdStage::OnImport()
+void SUsdStage::ActionsImportWithDialog()
 {
 	ViewModel.ImportStage();
+}
+
+void SUsdStage::ActionsImport( const FString& OutputContentFolder, UUsdStageImportOptions* Options )
+{
+	ViewModel.ImportStage( *OutputContentFolder, Options );
+}
+
+void SUsdStage::ExportSelectedLayers(const FString& OutputLayerOrDirectory)
+{
+	if ( UsdLayersTreeView )
+	{
+		UsdLayersTreeView->ExportSelectedLayers(OutputLayerOrDirectory);
+	}
 }
 
 void SUsdStage::OnPrimSelectionChanged( const TArray<FString>& PrimPaths )
@@ -1936,43 +2257,33 @@ void SUsdStage::OnPrimSelectionChanged( const TArray<FString>& PrimPaths )
 
 void SUsdStage::OpenStage( const TCHAR* FilePath )
 {
-	// Create the transaction before calling UsdStageModule.GetUsdStageActor as that may create the actor, and we want
-	// the actor spawning to be part of the transaction
-	FScopedTransaction Transaction( FText::Format(
-		LOCTEXT( "OpenStageTransaction", "Open USD stage '{0}'" ),
-		FText::FromString( FilePath )
-	) );
+	TOptional<FScopedTransaction> Transaction;
+	if (!GDiscardUndoBufferOnStageOpenClose)
+	{
+		// Create the transaction before calling UsdStageModule.GetUsdStageActor as that may create the actor, and we want
+		// the actor spawning to be part of the transaction
+		Transaction.Emplace(FText::Format(
+			LOCTEXT("OpenStageTransaction", "Open USD stage '{0}'"),
+			FText::FromString(FilePath)
+		));
+	}
 
 	if ( !ViewModel.UsdStageActor.IsValid() )
 	{
 		IUsdStageModule& UsdStageModule = FModuleManager::Get().LoadModuleChecked< IUsdStageModule >( "UsdStage" );
-		SetActor( &UsdStageModule.GetUsdStageActor( GWorld ) );
+		AttachToStageActor( &UsdStageModule.GetUsdStageActor( GWorld ) );
 	}
 
 	ViewModel.OpenStage( FilePath );
-}
 
-void SUsdStage::SetActor( AUsdStageActor* InUsdStageActor )
-{
-	// Call this first so that we clear all of our delegates from the previous actor before we switch actors
-	ClearStageActorDelegates();
-
-	ViewModel.UsdStageActor = InUsdStageActor;
-
-	SetupStageActorDelegates();
-
-	if( InUsdStageActor )
+	if (GDiscardUndoBufferOnStageOpenClose && GEditor)
 	{
-		UE::FUsdStage UsdStage = static_cast< const AUsdStageActor* >( InUsdStageActor )->GetUsdStage();
-
-		if ( this->UsdPrimInfoWidget && InUsdStageActor )
+		if (UTransactor* Transactor = GEditor->Trans)
 		{
-			// Just reset to the pseudoroot for now
-			this->UsdPrimInfoWidget->SetPrimPath( UsdStage, TEXT( "/" ) );
+			const FText Reason = LOCTEXT("DiscardOpenTransactionReason", "Resetting because the cvar USD.DiscardUndoBufferOnStageOpenClose is true");
+			Transactor->Reset(Reason);
 		}
 	}
-
-	Refresh();
 }
 
 void SUsdStage::Refresh()
@@ -2000,7 +2311,7 @@ void SUsdStage::Refresh()
 
 		// Refresh will generate brand new RootItems, so let's immediately select the new item
 		// that corresponds to the prim we're supposed to be selecting
-		UsdStageTreeView->SelectPrims( { SelectedPrimPath } );
+		UsdStageTreeView->SetSelectedPrimPaths( { SelectedPrimPath } );
 
 		UsdStageTreeView->RequestTreeRefresh();
 	}
@@ -2009,22 +2320,6 @@ void SUsdStage::Refresh()
 	{
 		UsdPrimInfoWidget->SetPrimPath( GetCurrentStage(), *SelectedPrimPath );
 	}
-}
-
-void SUsdStage::OnStageActorLoaded( AUsdStageActor* InUsdStageActor )
-{
-	if ( ViewModel.UsdStageActor == InUsdStageActor )
-	{
-		return;
-	}
-
-	ClearStageActorDelegates();
-	ViewModel.UsdStageActor = InUsdStageActor;
-	SetupStageActorDelegates();
-
-	// Refresh here because we may be receiving an actor that has a stage already loaded,
-	// like during undo/redo
-	Refresh();
 }
 
 void SUsdStage::OnViewportSelectionChanged( UObject* NewSelection )
@@ -2041,19 +2336,17 @@ void SUsdStage::OnViewportSelectionChanged( UObject* NewSelection )
 		return;
 	}
 
-	AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get();
+	AUsdStageActor* AttachedStageActor = ViewModel.UsdStageActor.Get();
 	USelection* Selection = Cast<USelection>( NewSelection );
-	if ( !Selection || !StageActor )
+	if ( !Selection || !AttachedStageActor )
 	{
 		return;
 	}
 
 	TGuardValue<bool> SelectionLoopGuard( bUpdatingPrimSelection, true );
 
-	TArray<USceneComponent*> SelectedComponents;
+	TArray<USceneComponent*> AllSelectedComponents;
 	{
-		Selection->GetSelectedObjects<USceneComponent>( SelectedComponents );
-
 		TArray<AActor*> SelectedActors;
 		Selection->GetSelectedObjects<AActor>( SelectedActors );
 
@@ -2061,30 +2354,106 @@ void SUsdStage::OnViewportSelectionChanged( UObject* NewSelection )
 		{
 			if ( SelectedActor )
 			{
-				SelectedComponents.Add( SelectedActor->GetRootComponent() );
+				AllSelectedComponents.Add( SelectedActor->GetRootComponent() );
 			}
 		}
+
+		// Push the components last as we'll show info for the last selected component,
+		// and we must first select the actor before we can select its individual components
+		TArray<USceneComponent*> SelectedComponents;
+		Selection->GetSelectedObjects<USceneComponent>( SelectedComponents );
+
+		AllSelectedComponents.Append( SelectedComponents );
+	}
+	if ( AllSelectedComponents.Num() == 0 )
+	{
+		return;
+	}
+
+	// Find the exact stage actor that owns these components, if any
+	AUsdStageActor* OwnerActor = nullptr;
+	if ( AllSelectedComponents.Num() > 0 )
+	{
+		USceneComponent* AttachParent = AllSelectedComponents[ AllSelectedComponents.Num() - 1 ]->GetAttachParent();
+		while ( AttachParent )
+		{
+			USceneComponent* NewAttachParent = AttachParent->GetAttachParent();
+			if ( !NewAttachParent )
+			{
+				break;
+			}
+			AttachParent = NewAttachParent;
+		}
+
+		if ( AttachParent )
+		{
+			OwnerActor = Cast<AUsdStageActor>( AttachParent->GetOwner() );
+		}
+	}
+	if ( !OwnerActor )
+	{
+		// Selected component is not something we spawned
+		return;
 	}
 
 	TArray<FString> PrimPaths;
-	for ( USceneComponent* Component : SelectedComponents )
+	for ( USceneComponent* Component : AllSelectedComponents )
 	{
-		FString FoundPrimPath = StageActor->GetSourcePrimPath( Component );
+		FString FoundPrimPath = OwnerActor->GetSourcePrimPath( Component );
 		if ( !FoundPrimPath.IsEmpty() )
 		{
 			PrimPaths.Add( FoundPrimPath );
 		}
 	}
 
+	if ( OwnerActor && OwnerActor != AttachedStageActor )
+	{
+		AttachToStageActor( OwnerActor );
+	}
+
 	if ( PrimPaths.Num() > 0 )
 	{
-		UsdStageTreeView->SelectPrims( PrimPaths );
+		UsdStageTreeView->SetSelectedPrimPaths( PrimPaths );
 
 		if ( UsdPrimInfoWidget )
 		{
 			UsdPrimInfoWidget->SetPrimPath( GetCurrentStage(), *PrimPaths[ PrimPaths.Num() - 1 ] );
 		}
 	}
+}
+
+void SUsdStage::OnPostPIEStarted( bool bIsSimulating )
+{
+	AUsdStageActor* CurrentStageActor = ViewModel.UsdStageActor.Get();
+	if ( !CurrentStageActor )
+	{
+		return;
+	}
+
+	AUsdStageActor* PIEStageActor = Cast<AUsdStageActor>( EditorUtilities::GetSimWorldCounterpartActor( CurrentStageActor ) );
+	if ( !PIEStageActor )
+	{
+		return;
+	}
+
+	AttachToStageActor( PIEStageActor );
+}
+
+void SUsdStage::OnEndPIE( bool bIsSimulating )
+{
+	AUsdStageActor* CurrentStageActor = ViewModel.UsdStageActor.Get();
+	if ( !CurrentStageActor )
+	{
+		return;
+	}
+
+	AUsdStageActor* EditorStageActor = Cast<AUsdStageActor>( EditorUtilities::GetEditorWorldCounterpartActor( CurrentStageActor ) );
+	if ( !EditorStageActor )
+	{
+		return;
+	}
+
+	AttachToStageActor( EditorStageActor );
 }
 
 int32 SUsdStage::GetNaniteTriangleThresholdValue() const
@@ -2099,7 +2468,7 @@ void SUsdStage::OnNaniteTriangleThresholdValueChanged( int32 InValue )
 
 void SUsdStage::OnNaniteTriangleThresholdValueCommitted( int32 InValue, ETextCommit::Type InCommitType )
 {
-	AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get();
+	AUsdStageActor* StageActor = GetStageActorOrCDO();
 	if ( !StageActor )
 	{
 		return;
@@ -2115,6 +2484,11 @@ void SUsdStage::OnNaniteTriangleThresholdValueCommitted( int32 InValue, ETextCom
 
 	StageActor->SetNaniteTriangleThreshold( InValue );
 	CurrentNaniteThreshold = InValue;
+
+	if ( StageActor->IsTemplate() )
+	{
+		StageActor->SaveConfig();
+	}
 }
 
 UE::FUsdStageWeak SUsdStage::GetCurrentStage() const
@@ -2126,6 +2500,17 @@ UE::FUsdStageWeak SUsdStage::GetCurrentStage() const
 	}
 
 	return UE::FUsdStageWeak{};
+}
+
+AUsdStageActor* SUsdStage::GetStageActorOrCDO() const
+{
+	AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get();
+	if ( !StageActor )
+	{
+		StageActor = GetMutableDefault<AUsdStageActor>();
+	}
+	ensure( StageActor );
+	return StageActor;
 }
 
 #endif // #if USE_USD_SDK

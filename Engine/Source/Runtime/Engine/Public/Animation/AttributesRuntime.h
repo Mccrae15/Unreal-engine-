@@ -25,7 +25,7 @@ struct FBlendSampleData;
 struct FBoneContainer;
 
 enum class ECustomAttributeBlendType : uint8;
-enum EAdditiveAnimationType;
+enum EAdditiveAnimationType : int;
 
 struct FAnimatedBoneAttribute;
 struct FCompactPoseBoneIndex;
@@ -56,7 +56,10 @@ namespace UE
 		struct ENGINE_API Attributes
 		{
 #if WITH_EDITOR
-			static void GetAttributeValue(FStackAttributeContainer& OutAttributes, const FCompactPoseBoneIndex& PoseBoneIndex, const  FAnimatedBoneAttribute& Attribute, const FAnimExtractContext& ExtractionContext);
+			UE_DEPRECATED(5.1, "GetAttributeValue with signature using FAnimExtractContext is deprecated use other version instead")
+			static void GetAttributeValue(FStackAttributeContainer& OutAttributes, const FCompactPoseBoneIndex& PoseBoneIndex, const FAnimatedBoneAttribute& Attribute, const FAnimExtractContext& ExtractionContext);
+
+			static void GetAttributeValue(FStackAttributeContainer& OutAttributes, const FCompactPoseBoneIndex& PoseBoneIndex, const FAnimatedBoneAttribute& Attribute, double CurrentTime);
 #endif // WITH_EDITOR
 
 			/** Blend custom attribute values from N set of inputs */
@@ -96,6 +99,9 @@ namespace UE
 			static void InterpolateAttributes(FMeshAttributeContainer& FromAttributes, const FMeshAttributeContainer& ToAttributes, float Alpha);
 
 			/** Mirror (swap) attributes with the specified MirrorDataTable. Attributes are swapped using the bone mapping such that bones which are mirrored swap attributes */
+			static void MirrorAttributes(FStackAttributeContainer& Attributes, const UMirrorDataTable& MirrorDataTable, const TArray<FCompactPoseBoneIndex>& CompactPoseMirrorBones);
+
+			UE_DEPRECATED(5.2, "MirrorAttributes has been deprecated, use other signature instead")
 			static void MirrorAttributes(FStackAttributeContainer& Attributes, const UMirrorDataTable& MirrorDataTable);
 			
 			/** Helper functionality to retrieve the correct blend type (from UAnimationSettings) for the provided attribute name */

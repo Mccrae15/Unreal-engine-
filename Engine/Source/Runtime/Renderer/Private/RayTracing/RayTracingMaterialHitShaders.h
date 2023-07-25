@@ -1,33 +1,31 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-#include "MeshMaterialShader.h"
-#include "LightMapRendering.h"
-#include "ScenePrivate.h"
-#include "MeshPassProcessor.inl"
+
+#include "RHIDefinitions.h"
 
 #if RHI_RAYTRACING
 
-ENGINE_API uint8 ComputeBlendModeMask(const EBlendMode BlendMode);
+#include "DataDrivenShaderPlatformInfo.h"
+#include "LightMapRendering.h"
+#include "MaterialDomain.h"
+#include "MeshMaterialShader.h"
+#include "MeshPassProcessor.inl"
+#include "RayTracingInstanceMask.h"
+#include "RayTracingPayloadType.h"
+#include "ShaderParameterStruct.h"
+
+enum class ERayTracingMeshCommandsMode : uint8;
+
+FRHIRayTracingShader* GetRayTracingDefaultMissShader(const FGlobalShaderMap* ShaderMap);
+FRHIRayTracingShader* GetRayTracingDefaultOpaqueShader(const FGlobalShaderMap* ShaderMap);
+FRHIRayTracingShader* GetRayTracingDefaultHiddenShader(const FGlobalShaderMap* ShaderMap);
 
 class RENDERER_API FRayTracingMeshProcessor
 {
 public:
-
-	FRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, const FScene* InScene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassProcessorRenderState InPassDrawRenderState, ERayTracingMeshCommandsMode InRayTracingMeshCommandsMode)
-		:
-		CommandContext(InCommandContext),
-		Scene(InScene),
-		ViewIfDynamicMeshCommand(InViewIfDynamicMeshCommand),
-		FeatureLevel(InScene ? InScene->GetFeatureLevel() : ERHIFeatureLevel::SM5),
-		PassDrawRenderState(InPassDrawRenderState),
-		RayTracingMeshCommandsMode(InRayTracingMeshCommandsMode)
-	{
-		PassDrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_Zero, BF_One>::GetRHI());
-		PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
-	}
-
-	virtual ~FRayTracingMeshProcessor() = default;
+	FRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, const FScene* InScene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassProcessorRenderState InPassDrawRenderState, ERayTracingMeshCommandsMode InRayTracingMeshCommandsMode);
+	virtual ~FRayTracingMeshProcessor();
 
 	void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy);
 
@@ -56,7 +54,8 @@ protected:
 		const FMaterial& RESTRICT MaterialResource,
 		const FMeshPassProcessorRenderState& RESTRICT DrawRenderState,
 		PassShadersType PassShaders,
-		const ShaderElementDataType& ShaderElementData)
+		const ShaderElementDataType& ShaderElementData,
+		ERayTracingViewMaskMode MaskMode)
 	{
 		const FVertexFactory* RESTRICT VertexFactory = MeshBatch.VertexFactory;
 
@@ -64,18 +63,12 @@ protected:
 
 		FRayTracingMeshCommand SharedCommand;
 
+		SetupRayTracingMeshCommandMaskAndStatus(SharedCommand, MeshBatch, PrimitiveSceneProxy, MaterialResource, MaskMode);
+
 		if (GRHISupportsRayTracingShaders)
 		{
 			SharedCommand.SetShaders(PassShaders.GetUntypedShaders());
 		}
-
-		SharedCommand.InstanceMask = ComputeBlendModeMask(MaterialResource.GetBlendMode());
-		SharedCommand.bCastRayTracedShadows = MeshBatch.CastRayTracedShadow && MaterialResource.CastsRayTracedShadows();
-		SharedCommand.bOpaque = MaterialResource.GetBlendMode() == EBlendMode::BLEND_Opaque && !(VertexFactory->GetType()->SupportsRayTracingProceduralPrimitive() && FDataDrivenShaderPlatformInfo::GetSupportsRayTracingProceduralPrimitive(GMaxRHIShaderPlatform));
-		SharedCommand.bDecal = MaterialResource.GetMaterialDomain() == EMaterialDomain::MD_DeferredDecal;
-		SharedCommand.bIsSky = MaterialResource.IsSky();
-		SharedCommand.bTwoSided = MaterialResource.IsTwoSided();
-		SharedCommand.bIsTranslucent = MaterialResource.GetBlendMode() == EBlendMode::BLEND_Translucent;
 
 		FVertexInputStreamArray VertexStreams;
 		VertexFactory->GetStreams(ERHIFeatureLevel::SM5, EVertexInputStreamType::Default, VertexStreams);
@@ -138,6 +131,11 @@ class RENDERER_API FHiddenMaterialHitGroup : public FGlobalShader
 		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
 
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::RayTracingMaterial;
+	}
+
 	using FParameters = FEmptyShaderParameters;
 };
 
@@ -151,6 +149,11 @@ class RENDERER_API FOpaqueShadowHitGroup : public FGlobalShader
 		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
 
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::RayTracingMaterial;
+	}
+
 	using FParameters = FEmptyShaderParameters;
 };
 
@@ -162,6 +165,11 @@ class RENDERER_API FDefaultCallableShader : public FGlobalShader
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return ShouldCompileRayTracingCallableShadersForProject(Parameters.Platform);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::Decals;
 	}
 
 	using FParameters = FEmptyShaderParameters;

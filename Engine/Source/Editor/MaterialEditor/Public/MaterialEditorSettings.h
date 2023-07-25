@@ -108,7 +108,7 @@ public:
 	/**
 	Offline shader compiler to use.
 	Mali Offline Compiler: Official website address: https://developer.arm.com/products/software-development-tools/graphics-development-tools/mali-offline-compiler/downloads
-	Adreno Offline Compiler: Official website address: Not Ready. TODO: Add a website here once it is officially released.
+	Adreno Offline Compiler: Official website address: https://developer.qualcomm.com/software/adreno-gpu-sdk/tools
 	*/
 	UPROPERTY(config, EditAnywhere, Category = "Offline Shader Compilers", meta = (DisplayName = "Offline Shader Compiler"))
 	EOfflineShaderCompiler OfflineCompiler;

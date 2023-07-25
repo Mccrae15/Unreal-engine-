@@ -64,8 +64,8 @@ void FAutomationRHITest::Define()
 	{
 		It("RHI Update Texture2D", [this]()
 		{
-			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_UpdateTexture2D);
-			TestEqual("RHI Update Texture2D failed", bResult, 1);
+			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_UpdateTexture);
+			TestEqual("RHI Update Texture failed", bResult, 1);
 		});
 		
 		It("RHI Multiple Lock Texture2D", [this]()
@@ -81,6 +81,15 @@ void FAutomationRHITest::Define()
 		{
 			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_RHICopyTexture);
 			TestEqual("RHICopyTexture", bResult, 1);
+		});
+	});
+
+	Describe("Test RHI Create Buffer Parallel", [this]
+	{
+		It("RHICreateBuffer_Parallel", [this]()
+		{
+			bool bResult = RunOnRenderThreadSynchronous(FRHIBufferTests::Test_RHICreateBuffer_Parallel);
+			TestEqual("RHICreateBuffer_Parallel", bResult, 1);
 		});
 	});
 }

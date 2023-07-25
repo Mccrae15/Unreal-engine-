@@ -13,7 +13,7 @@
 #include "MoviePipeline.generated.h"
 
 // Forward Declares
-class UMoviePipelineMasterConfig;
+class UMoviePipelinePrimaryConfig;
 class ULevelSequence;
 class UMovieSceneSequencePlayer;
 class UMoviePipelineCustomTimeStep;
@@ -160,11 +160,15 @@ public:
 	FMoviePipelineWorkFinished OnMoviePipelineShotWorkFinishedDelegate;
 
 	/**
-	* Get the Master Configuration used to render this shot. This contains the global settings for the shot, as well as per-shot
+	* Get the Primary Configuration used to render this shot. This contains the global settings for the shot, as well as per-shot
 	* configurations which can contain their own settings.
 	*/
 	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
-	UMoviePipelineMasterConfig* GetPipelineMasterConfig() const;
+	UMoviePipelinePrimaryConfig* GetPipelinePrimaryConfig() const;
+	
+	UE_DEPRECATED(5.2, "GetPipelineMasterConfig is deprecated. Please use GetPipelinePrimaryConfig instead")
+	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline", meta=(DeprecatedFunction, DeprecationMessage = "Use GetPipelinePrimaryConfig"))
+	UMoviePipelinePrimaryConfig* GetPipelineMasterConfig() const { return GetPipelinePrimaryConfig(); }
 
 public:
 	ULevelSequence* GetTargetSequence() const { return TargetSequence; }
@@ -208,7 +212,7 @@ public:
 	template<typename SettingType>
 	SettingType* FindOrAddSettingForShot(const UMoviePipelineExecutorShot* InShot) const
 	{
-		return (SettingType*)UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingForShot(SettingType::StaticClass(), GetPipelineMasterConfig(), InShot);
+		return (SettingType*)UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingForShot(SettingType::StaticClass(), GetPipelinePrimaryConfig(), InShot);
 	}
 
 	template<typename SettingType>
@@ -227,7 +231,7 @@ public:
 	TArray<UMoviePipelineSetting*> FindSettingsForShot(TSubclassOf<UMoviePipelineSetting> InSetting, const UMoviePipelineExecutorShot* InShot) const;
 
 	/**
-	* Resolves the provided InFormatString by converting {format_strings} into settings provided by the master config.
+	* Resolves the provided InFormatString by converting {format_strings} into settings provided by the primary config.
 	* @param	InFormatString		A format string (in the form of "{format_key1}_{format_key2}") to resolve.
 	* @param	InFormatOverrides	A series of Key/Value pairs to override particular format keys. Useful for things that
 	*								change based on the caller such as filename extensions.
@@ -513,6 +517,7 @@ public:
 	static FString DefaultDebugWidgetAsset;
 };
 
+
 UCLASS()
 class UMoviePipelineCustomTimeStep : public UEngineCustomTimeStep
 {
@@ -528,9 +533,16 @@ public:
 
 	void SetCachedFrameTiming(const MoviePipeline::FFrameTimeStepCache& InTimeCache);
 
+	// Cache and Restore some of the World Settings settings, as rendering with MRQ in a runtime world needs to restore any changes made to World Settings.
+	void CacheWorldSettings();
+	void RestoreCachedWorldSettings();
 private:
 	/** We don't do any thinking on our own, instead we just spit out the numbers stored in our time cache. */
 	MoviePipeline::FFrameTimeStepCache TimeCache;
+
+	// Not cached in TimeCache as TimeCache is reset every frame.
+	float PrevMinUndilatedFrameTime;
+	float PrevMaxUndilatedFrameTime;
 };
 
 struct FMoviePipelineTimeController : public FMovieSceneTimeController

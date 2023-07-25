@@ -2,6 +2,7 @@
 #include "Chaos/TriangleMeshImplicitObject.h"
 #include "Chaos/Collision/ContactPoint.h"
 #include "Chaos/Collision/ContactPointsMiscShapes.h"
+#include "Chaos/Collision/TriangleOverlap.h"
 #include "Chaos/Collision/PBDCollisionConstraint.h"
 #include "Chaos/CollisionOneShotManifolds.h"
 #include "Chaos/Capsule.h"
@@ -382,42 +383,6 @@ struct FTriangleMeshOverlapVisitorNoMTD
 		Translation = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(TranslationDouble.X, TranslationDouble.Y, TranslationDouble.Z, 0.0));
 	}
 
-	// Default shape type specific culling
-	// Type specialization to follow
-	template <typename ShapeType>
-	bool ShapeTypeAdditionalCulling(const VectorRegister4Float& A, const VectorRegister4Float& B, const VectorRegister4Float& C)
-	{
-		return false;
-	}
-
-	template <>
-	bool ShapeTypeAdditionalCulling<Chaos::FCapsule>(const VectorRegister4Float& A, const VectorRegister4Float& B, const VectorRegister4Float& C)
-	{
-		const VectorRegister4Float InvRotation = VectorQuaternionInverse(Rotation);
-		const VectorRegister4Float NegTranslation = VectorNegate(Translation);
-		const VectorRegister4Float ATxSimd = VectorAdd(VectorQuaternionRotateVector(InvRotation, A), NegTranslation);
-		const VectorRegister4Float BTxSimd = VectorAdd(VectorQuaternionRotateVector(InvRotation, B), NegTranslation);
-		const VectorRegister4Float CTxSimd = VectorAdd(VectorQuaternionRotateVector(InvRotation, C), NegTranslation);
-
-		const VectorRegister4Float MinBounds = VectorMin(VectorMin(ATxSimd, BTxSimd), CTxSimd);
-		const VectorRegister4Float MaxBounds = VectorMax(VectorMax(ATxSimd, BTxSimd), CTxSimd);
-		FAABBVectorized GeometrySpaceAABB(MinBounds, MaxBounds);
-		FAABB3 GeometryAABB = QueryGeom.BoundingBox();
-		FAABBVectorized VecGeomAABB(GeometryAABB);
-
-		if (!VecGeomAABB.Intersects(GeometrySpaceAABB))
-		{
-			return true;
-		}
-		return false;
-	}
-
-	template <>
-	bool ShapeTypeAdditionalCulling<Chaos::TImplicitObjectScaled<Chaos::FCapsule, 1>>(const VectorRegister4Float& A, const VectorRegister4Float& B, const VectorRegister4Float& C)
-	{
-		return ShapeTypeAdditionalCulling<Chaos::FCapsule>(A,B,C);
-	}
-	
 	bool VisitOverlap(int32 TriIdx)
 	{
 		FVec3 A, B, C;
@@ -433,11 +398,6 @@ struct FTriangleMeshOverlapVisitorNoMTD
 		const VectorRegister4Float ASimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(A.X, A.Y, A.Z, 0.0));
 		const VectorRegister4Float BSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(B.X, B.Y, B.Z, 0.0));
 		const VectorRegister4Float CSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(C.X, C.Y, C.Z, 0.0));
-
-		if (ShapeTypeAdditionalCulling<QueryGeomType>(ASimd, BSimd, CSimd))
-		{
-			return true;
-		}
 
 		const VectorRegister4Float AB = VectorSubtract(BSimd, ASimd);
 		const VectorRegister4Float AC = VectorSubtract(CSimd, ASimd);
@@ -475,12 +435,361 @@ struct FTriangleMeshOverlapVisitorNoMTD
 	const FTriangleMeshImplicitObject* TriMesh;
 	bool bFoundIntersection;
 };
+namespace
+{
+template <typename IdxType, typename ParticlesType>
+inline void TriangleMeshTransformVertsHelperSimd(const VectorRegister4Float& TriMeshScale, int32 TriIdx, const ParticlesType& Particles,
+	const TArray<TVector<IdxType, 3>>& Elements, VectorRegister4Float& OutA, VectorRegister4Float& OutB, VectorRegister4Float& OutC)
+{
+	OutA = VectorLoadFloat3(&Particles.X(Elements[TriIdx][0]).X);
+	OutB = VectorLoadFloat3(&Particles.X(Elements[TriIdx][1]).X);
+	OutC = VectorLoadFloat3(&Particles.X(Elements[TriIdx][2]).X);
+	OutA = VectorMultiply(OutA, TriMeshScale);
+	OutB = VectorMultiply(OutB, TriMeshScale);
+	OutC = VectorMultiply(OutC, TriMeshScale);
+}
+}
+
+template <>
+struct FTriangleMeshOverlapVisitorNoMTD<FCapsule>
+{
+	FTriangleMeshOverlapVisitorNoMTD(const TRigidTransform<FReal, 3>& WorldScaleQueryTM, const FCapsule& InQueryGeom, FReal InThickness, const FVec3f& InTriMeshScale, const FTriangleMeshImplicitObject* InTriMesh)
+		: Radius(FRealSingle(InQueryGeom.GetRadius() + InThickness))
+		, TriMesh(InTriMesh)
+		, bFoundIntersection(false)
+	{
+		const FVec3f X1f = WorldScaleQueryTM.TransformPosition(InQueryGeom.GetX1());
+		const FVec3f X2f = WorldScaleQueryTM.TransformPosition(InQueryGeom.GetX2());
+		X1 = VectorLoadFloat3(&X1f.X);
+		X2 = VectorLoadFloat3(&X2f.X);
+		TriMeshScale = VectorLoadFloat3(&InTriMeshScale.X);
+	}
+
+	bool VisitOverlap(int32 TriIdx)
+	{
+		VectorRegister4Float A, B, C;
+		if (TriMesh->MElements.RequiresLargeIndices())
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetLargeIndexBuffer(), A, B, C);
+		}
+		else
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetSmallIndexBuffer(), A, B, C);
+		}
+
+		bFoundIntersection = ComputeCapsuleTriangleOverlapSimd(A, B, C, X1, X2, Radius);
+		return !bFoundIntersection;
+	}
+
+	bool VisitSweep(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+	bool VisitRaycast(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+
+	FRealSingle Radius;
+	VectorRegister4Float X1;
+	VectorRegister4Float X2;
+	VectorRegister4Float TriMeshScale;
+	const FTriangleMeshImplicitObject* TriMesh;
+	bool bFoundIntersection;
+};
+
+
+template <>
+struct FTriangleMeshOverlapVisitorNoMTD<TImplicitObjectScaled<FCapsule>>
+{
+	FTriangleMeshOverlapVisitorNoMTD(const TRigidTransform<FReal, 3>& WorldScaleQueryTM, const TImplicitObjectScaled< FCapsule >& InQueryGeom, FReal InThickness, const FVec3f& InTriMeshScale, const FTriangleMeshImplicitObject* InTriMesh)
+		: Radius(FRealSingle(InQueryGeom.GetRadius()+ InThickness))
+		, TriMesh(InTriMesh)
+		, bFoundIntersection(false)
+	{
+		const FVec3f X1f = WorldScaleQueryTM.TransformPosition(InQueryGeom.GetUnscaledObject()->GetX1() * InQueryGeom.GetScale());
+		const FVec3f X2f = WorldScaleQueryTM.TransformPosition(InQueryGeom.GetUnscaledObject()->GetX2() * InQueryGeom.GetScale());
+		X1 = VectorLoadFloat3(&X1f.X);
+		X2 = VectorLoadFloat3(&X2f.X);
+		TriMeshScale = VectorLoadFloat3(&InTriMeshScale.X);
+	}
+
+	bool VisitOverlap(int32 TriIdx)
+	{
+		VectorRegister4Float A, B, C;
+		if (TriMesh->MElements.RequiresLargeIndices())
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetLargeIndexBuffer(), A, B, C);
+		}
+		else
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetSmallIndexBuffer(), A, B, C);
+		}
+
+		bFoundIntersection = ComputeCapsuleTriangleOverlapSimd(A, B, C, X1, X2, Radius);
+		return !bFoundIntersection;
+	}
+
+	bool VisitSweep(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+	bool VisitRaycast(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+
+	FRealSingle Radius;
+	VectorRegister4Float X1;
+	VectorRegister4Float X2;
+	VectorRegister4Float TriMeshScale;
+	const FTriangleMeshImplicitObject* TriMesh;
+	bool bFoundIntersection;
+};
+
+template <>
+struct FTriangleMeshOverlapVisitorNoMTD<Chaos::FSphere>
+{
+	FTriangleMeshOverlapVisitorNoMTD(const TRigidTransform<FReal, 3>& WorldScaleQueryTM, const Chaos::FSphere& InQueryGeom, FReal InThickness, const FVec3f& InTriMeshScale, const FTriangleMeshImplicitObject* InTriMesh)
+		: Radius(FRealSingle(InQueryGeom.GetRadius() + InThickness))
+		, TriMesh(InTriMesh)
+		, bFoundIntersection(false)
+	{
+		const FVec3f Xf = WorldScaleQueryTM.TransformPosition(InQueryGeom.GetCenter());
+		X = VectorLoadFloat3(&Xf.X);
+		TriMeshScale = VectorLoadFloat3(&InTriMeshScale.X);
+	}
+
+	bool VisitOverlap(int32 TriIdx)
+	{
+		VectorRegister4Float A, B, C;
+		if (TriMesh->MElements.RequiresLargeIndices())
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetLargeIndexBuffer(), A, B, C);
+		}
+		else
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetSmallIndexBuffer(), A, B, C);
+		}
+
+		bFoundIntersection = ComputeSphereTriangleOverlapSimd(A, B, C, X, Radius);
+		return !bFoundIntersection;
+	}
+
+	bool VisitSweep(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+	bool VisitRaycast(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+
+	FRealSingle Radius;
+	VectorRegister4Float X;
+	VectorRegister4Float TriMeshScale;
+	const FTriangleMeshImplicitObject* TriMesh;
+	bool bFoundIntersection;
+};
+
+
+template <>
+struct FTriangleMeshOverlapVisitorNoMTD<TImplicitObjectScaled<Chaos::FSphere>>
+{
+	FTriangleMeshOverlapVisitorNoMTD(const TRigidTransform<FReal, 3>& WorldScaleQueryTM, const TImplicitObjectScaled< Chaos::FSphere >& InQueryGeom, FReal InThickness, const FVec3f& InTriMeshScale, const FTriangleMeshImplicitObject* InTriMesh)
+		: Radius(FRealSingle(InQueryGeom.GetRadius() + InThickness))
+		, TriMesh(InTriMesh)
+		, bFoundIntersection(false)
+	{
+		const FVec3f Xf = WorldScaleQueryTM.TransformPosition(InQueryGeom.GetUnscaledObject()->GetCenter() * InQueryGeom.GetScale());
+		X = VectorLoadFloat3(&Xf.X);
+		TriMeshScale = VectorLoadFloat3(&InTriMeshScale.X);
+	}
+
+	bool VisitOverlap(int32 TriIdx)
+	{
+		VectorRegister4Float A, B, C;
+		if (TriMesh->MElements.RequiresLargeIndices())
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetLargeIndexBuffer(), A, B, C);
+		}
+		else
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetSmallIndexBuffer(), A, B, C);
+		}
+
+		bFoundIntersection = ComputeSphereTriangleOverlapSimd(A, B, C, X, Radius);
+		return !bFoundIntersection;
+	}
+
+	bool VisitSweep(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+	bool VisitRaycast(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+
+	FRealSingle Radius;
+	VectorRegister4Float X;
+	VectorRegister4Float TriMeshScale;
+	const FTriangleMeshImplicitObject* TriMesh;
+	bool bFoundIntersection;
+};
+
+template <>
+struct FTriangleMeshOverlapVisitorNoMTD<TBox<FReal, 3>>
+{
+	FTriangleMeshOverlapVisitorNoMTD(const TRigidTransform<FReal, 3>& WorldScaleQueryTM, const TBox<FReal, 3>& InQueryGeom, FReal InThickness, const FVec3f& InTriMeshScale, const FTriangleMeshImplicitObject* InTriMesh)
+		: bIsAxisAligned(FMath::Abs(WorldScaleQueryTM.GetRotation().W) == 1.0)
+		, TriMesh(InTriMesh)
+		, bFoundIntersection(false)
+	{
+		if (bIsAxisAligned)
+		{
+			Box.AABBSimd = FAABBSimd(WorldScaleQueryTM, InQueryGeom);
+		}
+		else
+		{
+			Box.BoxSimd = FBoxSimd(WorldScaleQueryTM, InQueryGeom);
+		}
+		
+		TriMeshScale = VectorLoadFloat3(&InTriMeshScale.X);
+	}
+
+	bool VisitOverlap(int32 TriIdx)
+	{
+		VectorRegister4Float A, B, C;
+		if (TriMesh->MElements.RequiresLargeIndices())
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetLargeIndexBuffer(), A, B, C);
+		}
+		else
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetSmallIndexBuffer(), A, B, C);
+		}
+
+		if (bIsAxisAligned)
+		{
+			bFoundIntersection = Box.AABBSimd.OverlapTriangle(A, B, C);
+		}
+		else
+		{
+			bFoundIntersection = Box.BoxSimd.OverlapTriangle(A, B, C);
+		}
+		return !bFoundIntersection;
+	}
+
+	bool VisitSweep(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+	bool VisitRaycast(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+
+	const bool bIsAxisAligned;
+	struct {
+		FBoxSimd  BoxSimd;
+		FAABBSimd AABBSimd;
+	} Box;
+	VectorRegister4Float TriMeshScale;
+	const FTriangleMeshImplicitObject* TriMesh;
+	bool bFoundIntersection;
+};
+
+
+template <>
+struct FTriangleMeshOverlapVisitorNoMTD<TImplicitObjectScaled<TBox<FReal, 3>>>
+{
+	FTriangleMeshOverlapVisitorNoMTD(const TRigidTransform<FReal, 3>& WorldScaleQueryTM, const TImplicitObjectScaled< TBox<FReal, 3> >& InQueryGeom, FReal InThickness, const FVec3f& InTriMeshScale, const FTriangleMeshImplicitObject* InTriMesh)
+		: bIsAxisAligned(FMath::Abs(WorldScaleQueryTM.GetRotation().W) == 1.0)
+		, TriMesh(InTriMesh)
+		, bFoundIntersection(false)
+	{
+		if (bIsAxisAligned)
+		{
+			Box.AABBSimd = FAABBSimd(WorldScaleQueryTM, InQueryGeom);
+		}
+		else
+		{
+			Box.BoxSimd = FBoxSimd(WorldScaleQueryTM, InQueryGeom);
+		}
+
+		TriMeshScale = VectorLoadFloat3(&InTriMeshScale.X);
+	}
+
+	bool VisitOverlap(int32 TriIdx)
+	{
+		VectorRegister4Float A, B, C;
+		if (TriMesh->MElements.RequiresLargeIndices())
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetLargeIndexBuffer(), A, B, C);
+		}
+		else
+		{
+			TriangleMeshTransformVertsHelperSimd(TriMeshScale, TriIdx, TriMesh->MParticles, TriMesh->MElements.GetSmallIndexBuffer(), A, B, C);
+		}
+
+		if (bIsAxisAligned)
+		{
+			bFoundIntersection = Box.AABBSimd.OverlapTriangle(A, B, C);
+		}
+		else
+		{
+			bFoundIntersection = Box.BoxSimd.OverlapTriangle(A, B, C);
+		}
+		return !bFoundIntersection;
+	}
+
+	bool VisitSweep(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+	bool VisitRaycast(int32 Instance, FRealSingle& CurDataLength)
+	{
+		check(false);
+		return true;
+	}
+
+	const bool bIsAxisAligned;
+	struct {
+		FBoxSimd  BoxSimd;
+		FAABBSimd AABBSimd;
+	} Box;
+	VectorRegister4Float TriMeshScale;
+	const FTriangleMeshImplicitObject* TriMesh;
+	bool bFoundIntersection;
+};
 
 template <typename QueryGeomType>
 bool FTrimeshBVH::FindAllIntersectionsNoMTD(const FAABB3& Intersection, const TRigidTransform<FReal, 3>& Transform, const QueryGeomType& QueryGeom, FReal Thickness, const FVec3& TriMeshScale, const FTriangleMeshImplicitObject* TriMesh) const
 {
 	FTriangleMeshOverlapVisitorNoMTD Visitor(Transform, QueryGeom, Thickness, TriMeshScale, TriMesh);
 	Overlap(FAABBVectorized(Intersection), Visitor);
+
+	return Visitor.bFoundIntersection;
+}
+
+template <typename QueryGeomType>
+bool FTrimeshBVH::FindAllIntersectionsNoMTD(const Private::FOBBVectorized& Intersection, const TRigidTransform<FReal, 3>& Transform, const QueryGeomType& QueryGeom, FReal Thickness, const FVec3& TriMeshScale, const FTriangleMeshImplicitObject* TriMesh) const
+{
+	FTriangleMeshOverlapVisitorNoMTD Visitor(Transform, QueryGeom, Thickness, TriMeshScale, TriMesh);
+	OverlapOBB(Intersection, Visitor);
+
 	return Visitor.bFoundIntersection;
 }
 
@@ -567,6 +876,8 @@ bool FTriangleMeshImplicitObject::GJKContactPointImp(const QueryGeomType& QueryG
 	TRigidTransform<FReal, 3> WorldScaleQueryTM;
 	ScaleTransformHelper(TriMeshScale, QueryTM, WorldScaleQueryTM);
 
+	const bool bStandardWinding = ((TriMeshScale.X * TriMeshScale.Y * TriMeshScale.Z) >= FReal(0));
+
 	auto CalculateTriangleContact = [&](const FVec3& A, const FVec3& B, const FVec3& C,
 		FVec3& LocalContactLocation, FVec3& LocalContactNormal, FReal& LocalContactPhi) -> bool
 	{
@@ -580,6 +891,7 @@ bool FTriangleMeshImplicitObject::GJKContactPointImp(const QueryGeomType& QueryG
 		bool GJKValidResult = GJKPenetration<true>(TriangleConvex, WorldScaleGeom, WorldScaleQueryTM, LambdaPenetration, ClosestA, ClosestB, LambdaNormal, ClosestVertexIndexA, ClosestVertexIndexB, (FReal)0);
 		if (GJKValidResult)
 		{
+			// @todo(chaos): single-sided collision
 			LocalContactLocation = ClosestB;
 			LocalContactNormal = LambdaNormal;
 			LocalContactPhi = -LambdaPenetration;
@@ -599,6 +911,11 @@ bool FTriangleMeshImplicitObject::GJKContactPointImp(const QueryGeomType& QueryG
 		{
 			FVec3 A, B, C;
 			TriangleMeshTransformVertsHelper(TriMeshScale, TriIdx, MParticles, Elements, A, B, C);
+
+			if (!bStandardWinding)
+			{
+				Swap(B, C);
+			}
 
 			if (CalculateTriangleContact(A, B, C, LocalContactLocation, LocalContactNormal, LocalContactPhi))
 			{
@@ -736,26 +1053,24 @@ bool FTriangleMeshImplicitObject::Overlap(const FVec3& Point, const FReal Thickn
 }
 
 
-template <typename QueryGeomType>
+template <bool IsSpherical, typename QueryGeomType>
 bool FTriangleMeshImplicitObject::OverlapGeomImp(const QueryGeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD, FVec3 TriMeshScale) const
 {
-	bool bResult = false;
 
 	const QueryGeomType& WorldScaleQueryGeom = ScaleGeomIntoWorldHelper(QueryGeom, TriMeshScale);
 
-	const FVec3 InvTriMeshScale = FVec3(FReal(1) / TriMeshScale.X, FReal(1) / TriMeshScale.Y, FReal(1) / TriMeshScale.Z);
-
-	// IMPORTANT QueryTM comes with a invscaled translation so we need a version of the TM with world space translation to properly compute the bounds
-	FRigidTransform3 TriMeshToGeomNoScale{ QueryTM };
-	TriMeshToGeomNoScale.SetTranslation(TriMeshToGeomNoScale.GetTranslation() * TriMeshScale);
-	// NOTE: BVH test is done in tri-mesh local space (whereas collision detection is done in world space because you can't non-uniformly scale all shapes)
-	FAABB3 QueryBounds = WorldScaleQueryGeom.CalculateTransformedBounds(TriMeshToGeomNoScale);
-	QueryBounds.ThickenSymmetrically(FVec3(Thickness));
-	QueryBounds.ScaleWithNegative(InvTriMeshScale);
-
-
 	if (OutMTD)
 	{
+		const FVec3 InvTriMeshScale = FVec3(FReal(1) / TriMeshScale.X, FReal(1) / TriMeshScale.Y, FReal(1) / TriMeshScale.Z);
+		// IMPORTANT QueryTM comes with a invscaled translation so we need a version of the TM with world space translation to properly compute the bounds
+		FRigidTransform3 TriMeshToGeomNoScale{ QueryTM };
+		TriMeshToGeomNoScale.SetTranslation(TriMeshToGeomNoScale.GetTranslation() * TriMeshScale);
+
+		// NOTE: BVH test is done in tri-mesh local space (whereas collision detection is done in world space because you can't non-uniformly scale all shapes)
+		FAABB3 QueryBounds = WorldScaleQueryGeom.CalculateTransformedBounds(TriMeshToGeomNoScale);
+		QueryBounds.ThickenSymmetrically(FVec3(Thickness));
+		QueryBounds.ScaleWithNegative(InvTriMeshScale);
+
 		const TArray<int32> PotentialIntersections = FastBVH.FindAllIntersections(QueryBounds);
 
 		OutMTD->Normal = FVec3(0.0);
@@ -805,50 +1120,72 @@ bool FTriangleMeshImplicitObject::OverlapGeomImp(const QueryGeomType& QueryGeom,
 	}
 	else
 	{
-		TRigidTransform<FReal, 3> WorldScaleQueryTM;
-		ScaleTransformHelper(TriMeshScale, QueryTM, WorldScaleQueryTM);
-		return FastBVH.FindAllIntersectionsNoMTD(QueryBounds, WorldScaleQueryTM, WorldScaleQueryGeom, Thickness, TriMeshScale, this);
+		// Disabled optimization due to a bug UE-176682, TODO Re-enabled it 
+		// if (IsSpherical || FMath::Abs(QueryTM.GetRotation().W) > 0.9)
+		{
+			const FVec3 InvTriMeshScale = FVec3(FReal(1) / TriMeshScale.X, FReal(1) / TriMeshScale.Y, FReal(1) / TriMeshScale.Z);
+			// IMPORTANT QueryTM comes with a invscaled translation so we need a version of the TM with world space translation to properly compute the bounds
+			FRigidTransform3 TriMeshToGeomNoScale{ QueryTM };
+			TriMeshToGeomNoScale.SetTranslation(TriMeshToGeomNoScale.GetTranslation() * TriMeshScale);
+
+			// NOTE: BVH test is done in tri-mesh local space (whereas collision detection is done in world space because you can't non-uniformly scale all shapes)
+			FAABB3 QueryBounds = WorldScaleQueryGeom.CalculateTransformedBounds(TriMeshToGeomNoScale);
+			QueryBounds.ThickenSymmetrically(FVec3(Thickness));
+			QueryBounds.ScaleWithNegative(InvTriMeshScale);
+			TRigidTransform<FReal, 3> WorldScaleQueryTM;
+			ScaleTransformHelper(TriMeshScale, QueryTM, WorldScaleQueryTM);
+			return FastBVH.FindAllIntersectionsNoMTD(QueryBounds, WorldScaleQueryTM, WorldScaleQueryGeom, Thickness, TriMeshScale, this);
+		}
+		//else
+		//{
+		//	FAABB3 GeometryAABB = QueryGeom.BoundingBox();
+		//	GeometryAABB.ThickenSymmetrically(FVec3(Thickness));
+		//	Private::FOBBVectorized QueryObb(QueryTM, (GeometryAABB.Max() - GeometryAABB.Min()) * 0.5);
+		//	TRigidTransform<FReal, 3> WorldScaleQueryTM;
+		//	ScaleTransformHelper(TriMeshScale, QueryTM, WorldScaleQueryTM);
+		//	return FastBVH.FindAllIntersectionsNoMTD(QueryObb, WorldScaleQueryTM, WorldScaleQueryGeom, Thickness, TriMeshScale, this);
+		//}
 	}
 }
 
 bool FTriangleMeshImplicitObject::OverlapGeom(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD) const
 {
-	return OverlapGeomImp(QueryGeom, QueryTM, Thickness, OutMTD);
+	return OverlapGeomImp<true>(QueryGeom, QueryTM, Thickness, OutMTD);
 }
 
 bool FTriangleMeshImplicitObject::OverlapGeom(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD) const
 {
-	return OverlapGeomImp(QueryGeom, QueryTM, Thickness, OutMTD);
+	return OverlapGeomImp<false>(QueryGeom, QueryTM, Thickness, OutMTD);
 }
 
 bool FTriangleMeshImplicitObject::OverlapGeom(const FCapsule& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD) const
 {
-	return OverlapGeomImp(QueryGeom, QueryTM, Thickness, OutMTD);
+	return OverlapGeomImp<false>(QueryGeom, QueryTM, Thickness, OutMTD);
 }
 
 bool FTriangleMeshImplicitObject::OverlapGeom(const FConvex& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD) const
 {
-	return OverlapGeomImp(QueryGeom, QueryTM, Thickness, OutMTD);
+	return OverlapGeomImp<false>(QueryGeom, QueryTM, Thickness, OutMTD);
 }
 
 bool FTriangleMeshImplicitObject::OverlapGeom(const TImplicitObjectScaled<TSphere<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD, FVec3 TriMeshScale) const
 {
-	return OverlapGeomImp(QueryGeom, QueryTM, Thickness, OutMTD, TriMeshScale);
+	return OverlapGeomImp<true>(QueryGeom, QueryTM, Thickness, OutMTD, TriMeshScale);
 }
 
 bool FTriangleMeshImplicitObject::OverlapGeom(const TImplicitObjectScaled<TBox<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD, FVec3 TriMeshScale) const
 {
-	return OverlapGeomImp(QueryGeom, QueryTM, Thickness, OutMTD, TriMeshScale);
+	return OverlapGeomImp<false>(QueryGeom, QueryTM, Thickness, OutMTD, TriMeshScale);
 }
 
 bool FTriangleMeshImplicitObject::OverlapGeom(const TImplicitObjectScaled<FCapsule>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD, FVec3 TriMeshScale) const
 {
-	return OverlapGeomImp(QueryGeom, QueryTM, Thickness, OutMTD, TriMeshScale);
+	return OverlapGeomImp<false>(QueryGeom, QueryTM, Thickness, OutMTD, TriMeshScale);
 }
 
 bool FTriangleMeshImplicitObject::OverlapGeom(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD, FVec3 TriMeshScale) const
 {
-	return OverlapGeomImp(QueryGeom, QueryTM, Thickness, OutMTD, TriMeshScale);
+	return OverlapGeomImp<false>(QueryGeom, QueryTM, Thickness, OutMTD, TriMeshScale);
 }
 
 template <typename QueryGeomType, typename IdxType>
@@ -1679,7 +2016,6 @@ void FTriangleMeshImplicitObject::UpdateVertices(const TArray<FVector>& NewPosit
 			MParticles.X(InternalIdx) = Chaos::FVec3(NewPositions[i]);
 		}
 	}
-
 	RebuildFastBVH();
 }
 

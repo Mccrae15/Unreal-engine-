@@ -7,7 +7,7 @@
 #include "Chaos/Box.h"
 #include "Chaos/CollisionResolution.h"
 #include "Chaos/CollisionResolutionTypes.h"
-#include "Chaos/Collision/SolverCollisionContainer.h"
+#include "Chaos/Collision/PBDCollisionContainerSolver.h"
 #include "Chaos/Convex.h"
 #include "Chaos/Sphere.h"
 #include "Chaos/GJK.h"
@@ -85,7 +85,7 @@ namespace ChaosTest {
 		EXPECT_NEAR(BoxBounds1.Extents().Y, Size.Y, Tolerance);
 		EXPECT_NEAR(BoxBounds1.Extents().Z, Size.Z, Tolerance);
 
-		FCollisionConstraintAllocator CollisionAllocator;
+		Private::FCollisionConstraintAllocator CollisionAllocator;
 		CollisionAllocator.SetMaxContexts(1);
 
 		FPBDCollisionConstraintPtr Constraint = CollisionAllocator.GetContextAllocator(0)->CreateConstraint(
@@ -198,7 +198,7 @@ namespace ChaosTest {
 		EXPECT_NEAR(BoxBounds1.Extents().Y, Size.Y, Tolerance);
 		EXPECT_NEAR(BoxBounds1.Extents().Z, Size.Z, Tolerance);
 
-		FCollisionConstraintAllocator CollisionAllocator;
+		Private::FCollisionConstraintAllocator CollisionAllocator;
 		CollisionAllocator.SetMaxContexts(1);
 
 		FPBDCollisionConstraintPtr Constraint = CollisionAllocator.GetContextAllocator(0)->CreateConstraint(

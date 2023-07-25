@@ -10,6 +10,7 @@
 #include "Changes/MeshSelectionChange.h"
 #include "DynamicMesh/DynamicMeshOctree3.h"
 #include "Polygroups/PolygroupSet.h"
+#include "Selections/GeometrySelection.h"
 #include "MeshSelectionTool.generated.h"
 
 class UMeshStatisticsProperties;
@@ -28,6 +29,7 @@ class MESHMODELINGTOOLSEXP_API UMeshSelectionToolBuilder : public UMeshSurfacePo
 
 public:
 	virtual UMeshSurfacePointTool* CreateNewTool(const FToolBuilderState& SceneState) const override;
+	virtual void InitializeNewTool(UMeshSurfacePointTool* Tool, const FToolBuilderState& SceneState) const override;
 };
 
 
@@ -39,6 +41,7 @@ enum class EMeshSelectionToolActions
 	NoAction,
 
 	SelectAll,
+	SelectAllByMaterial,
 	ClearSelection,
 	InvertSelection,
 	GrowSelection,
@@ -99,6 +102,7 @@ public:
 		PostAction(EMeshSelectionToolActions::SelectAll);
 	}
 
+
 	/** Invert the active triangle selection */
 	UFUNCTION(CallInEditor, Category = SelectionEdits, meta = (DisplayPriority = 2))
 	void Invert()
@@ -141,11 +145,18 @@ public:
 		PostAction(EMeshSelectionToolActions::SelectLargestComponentByArea);
 	}
 
-	/** Optimize the selection border */
+	/** Optimize the selection border by removing "fin" triangles and including "ear" triangles */
 	UFUNCTION(CallInEditor, Category = SelectionEdits, meta = (DisplayPriority = 8))
 	void OptimizeBorder()
 	{
 		PostAction(EMeshSelectionToolActions::OptimizeSelection);
+	}
+
+	/** Expand the selection to include all triangles with Materials matching the Materials on the currently selected triangles */
+	UFUNCTION(CallInEditor, Category = SelectionEdits, meta = (DisplayPriority = 9))
+	void ExpandToMaterials()
+	{
+		PostAction(EMeshSelectionToolActions::SelectAllByMaterial);
 	}
 };
 
@@ -235,8 +246,11 @@ enum class EMeshSelectionToolPrimaryMode
 	/** Select all triangles in groups connected to any triangle inside the brush */
 	AllInGroup,
 
+	/** Select the connected group of triangles with same material as hit triangle */
+	ByMaterial UMETA(DisplayName = "By Material (Connected)"),
+
 	/** Select all triangles with same material as hit triangle */
-	ByMaterial,
+	ByMaterialAll UMETA(DisplayName = "By Material (All)"),
 
 	/** Select all triangles in same UV island as hit triangle */
 	ByUVIsland,
@@ -312,7 +326,8 @@ public:
 
 	virtual bool HasCancel() const override { return true; }
 	virtual bool HasAccept() const override { return true; }
-	virtual bool CanAccept() const override { return Super::CanAccept() && bHaveModifiedMesh; }
+	//virtual bool CanAccept() const override { return Super::CanAccept() && bHaveModifiedMesh; }
+	virtual bool CanAccept() const override { return Super::CanAccept(); }		// allow selection w/o modified mesh to allow for use as just a selection tool
 
 	// UBaseBrushTool overrides
 	virtual bool HitTest(const FRay& Ray, FHitResult& OutHit) override;
@@ -328,6 +343,10 @@ public:
 	virtual bool SupportsNestedCancelCommand() override;
 	virtual bool CanCurrentlyNestedCancel() override;
 	virtual bool ExecuteNestedCancelCommand() override;
+
+	// input selection support
+	virtual void SetGeometrySelection(UE::Geometry::FGeometrySelection&& SelectionIn);
+
 
 public:
 
@@ -365,6 +384,9 @@ protected:
 	virtual void OnShutdown(EToolShutdownType ShutdownType) override;
 
 protected:
+
+	UE::Geometry::FGeometrySelection InputGeometrySelection;
+
 	UPROPERTY()
 	TObjectPtr<UMeshSelectionSet> Selection;
 
@@ -427,6 +449,7 @@ protected:
 	void InvertSelection();
 	void GrowShrinkSelection(bool bGrow);
 	void ExpandToConnected();
+	void SelectAllByMaterial();
 
 	void SelectLargestComponent(bool bWeightByArea);
 	void OptimizeSelection();

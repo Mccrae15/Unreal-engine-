@@ -1,25 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/PlayerController.h"
+#include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
+#include "Materials/MaterialInterface.h"
+#include "GameFramework/CheatManagerDefines.h"
 #include "Misc/PackageName.h"
-#include "UObject/LinkerLoad.h"
-#include "EngineGlobals.h"
+#include "GameFramework/ForceFeedbackEffect.h"
 #include "TimerManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "CollisionQueryParams.h"
-#include "Engine/World.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "SceneView.h"
-#include "Components/PrimitiveComponent.h"
 #include "Camera/CameraActor.h"
 #include "UObject/Package.h"
+#include "EngineStats.h"
 #include "Engine/Canvas.h"
-#include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerStart.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/AudioComponent.h"
 #include "Components/ForceFeedbackComponent.h"
 #include "Kismet/GameplayStatics.h"
-#include "LatentActions.h"
 #include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/LocalPlayer.h"
@@ -46,7 +45,6 @@
 #include "GameFramework/TouchInterface.h"
 #include "DisplayDebugHelpers.h"
 #include "MoviePlayerProxy.h"
-#include "Engine/ActorChannel.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "GameFramework/SpectatorPawn.h"
 #include "GameFramework/HUD.h"
@@ -54,24 +52,20 @@
 #include "Widgets/Input/SVirtualJoystick.h"
 #include "GameFramework/LocalMessage.h"
 #include "GameFramework/CheatManager.h"
-#include "GameFramework/PlayerInput.h"
 #include "GameFramework/InputSettings.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameStateBase.h"
 #include "Haptics/HapticFeedbackEffect_Base.h"
 #include "Engine/ChildConnection.h"
 #include "VisualLogger/VisualLogger.h"
-#include "Logging/MessageLog.h"
 #include "Slate/SceneViewport.h"
 #include "Engine/NetworkObjectList.h"
 #include "GameFramework/GameSession.h"
 #include "GameMapsSettings.h"
 #include "Particles/EmitterCameraLensEffectBase.h"
 #include "LevelUtils.h"
-#include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "Physics/AsyncPhysicsInputComponent.h"
-#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "PBDRigidsSolver.h"
 
 #if UE_WITH_IRIS
@@ -128,6 +122,22 @@ const float RetryServerCheckSpectatorThrottleTime = 0.25f;
 // Note: This value should be sufficiently small such that it is considered to be in the past before RetryClientRestartThrottleTime and RetryServerAcknowledgeThrottleTime.
 const float ForceRetryClientRestartTime = -100.0f;
 
+//////////////////////////////////////////////////////////////////////////
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+/** Used to display the force feedback history of what was played most recently. */
+struct FForceFeedbackEffectHistoryEntry
+{
+	FActiveForceFeedbackEffect LastActiveForceFeedbackEffect;
+	float TimeShown;
+
+	FForceFeedbackEffectHistoryEntry(FActiveForceFeedbackEffect LastActiveFFE, float Time)
+	{
+		LastActiveForceFeedbackEffect = LastActiveFFE;
+		TimeShown = Time;
+	}
+};
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 // APlayerController
@@ -290,7 +300,7 @@ FName APlayerController::NetworkRemapPath(FName InPackageName, bool bReading)
 
 /// @cond DOXYGEN_WARNINGS
 
-void APlayerController::ClientUpdateLevelStreamingStatus_Implementation(FName PackageName, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex, FNetLevelVisibilityTransactionId TransactionId)
+void APlayerController::ClientUpdateLevelStreamingStatus_Implementation(FName PackageName, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex, FNetLevelVisibilityTransactionId TransactionId, bool bNewShouldBlockOnUnload)
 {
 	PackageName = NetworkRemapPath(PackageName, true);
 	
@@ -305,51 +315,38 @@ void APlayerController::ClientUpdateLevelStreamingStatus_Implementation(FName Pa
 		}
 	}
 
+	// Search for the streaming level object by name
+	ULevelStreaming* LevelStreamingObject = FLevelUtils::FindStreamingLevel(World, PackageName);
+
+	// Skip if streaming level object doesn't allow replicating the status
+	if (LevelStreamingObject && !LevelStreamingObject->CanReplicateStreamingStatus())
+	{
+		return;
+	}
+
 	// if we're about to commit a map change, we assume that the streaming update is based on the to be loaded map and so defer it until that is complete
 	if (GEngine->ShouldCommitPendingMapChange(World))
 	{
 		GEngine->AddNewPendingStreamingLevel(World, PackageName, bNewShouldBeLoaded, bNewShouldBeVisible, LODIndex);		
 	}
+	else if (LevelStreamingObject)
+	{
+		// If we're unloading any levels, we need to request a one frame delay of garbage collection to make sure it happens after the level is actually unloaded
+		if (LevelStreamingObject->ShouldBeLoaded() && !bNewShouldBeLoaded)
+		{
+			GEngine->DelayGarbageCollection();
+		}
+
+		LevelStreamingObject->SetShouldBeLoaded(bNewShouldBeLoaded);
+		LevelStreamingObject->SetShouldBeVisible(bNewShouldBeVisible);
+		LevelStreamingObject->bShouldBlockOnLoad = bNewShouldBlockOnLoad;
+		LevelStreamingObject->bShouldBlockOnUnload = bNewShouldBlockOnUnload;
+		LevelStreamingObject->SetLevelLODIndex(LODIndex);
+		LevelStreamingObject->UpdateNetVisibilityTransactionState(bNewShouldBeVisible, TransactionId);
+	}
 	else
 	{
-		// search for the level object by name
-		ULevelStreaming* LevelStreamingObject = nullptr;
-		if (World && PackageName != NAME_None)
-		{
-			for (ULevelStreaming* CurrentLevelStreamingObject : World->GetStreamingLevels())
-			{
-				if (CurrentLevelStreamingObject && CurrentLevelStreamingObject->GetWorldAssetPackageFName() == PackageName)
-				{
-					LevelStreamingObject = CurrentLevelStreamingObject;
-					if (LevelStreamingObject)
-					{
-						// If we're unloading any levels, we need to request a one frame delay of garbage collection to make sure it happens after the level is actually unloaded
-						if (LevelStreamingObject->ShouldBeLoaded() && !bNewShouldBeLoaded)
-						{
-							GEngine->DelayGarbageCollection();
-						}
-
-						LevelStreamingObject->SetShouldBeLoaded(bNewShouldBeLoaded);
-						LevelStreamingObject->SetShouldBeVisible(bNewShouldBeVisible);
-						LevelStreamingObject->bShouldBlockOnLoad = bNewShouldBlockOnLoad;
-						LevelStreamingObject->SetLevelLODIndex(LODIndex);
-						LevelStreamingObject->UpdateNetVisibilityTransactionState(bNewShouldBeVisible, TransactionId);
-					}
-					else
-					{
-						UE_LOG(LogStreaming, Log, TEXT("Unable to handle streaming object %s"),*LevelStreamingObject->GetName() );
-					}
-
-					// break out of object iterator if we found a match
-					break;
-				}
-			}
-		}
-
-		if (LevelStreamingObject == NULL)
-		{
-			UE_LOG(LogStreaming, Log, TEXT("Unable to find streaming object %s"), *PackageName.ToString() );
-		}
+		UE_LOG(LogStreaming, Log, TEXT("Unable to find streaming object %s"), *PackageName.ToString() );
 	}
 }
 
@@ -357,7 +354,7 @@ void APlayerController::ClientUpdateMultipleLevelsStreamingStatus_Implementation
 {
 	for( const FUpdateLevelStreamingLevelStatus& LevelStatus : LevelStatuses )
 	{
-		ClientUpdateLevelStreamingStatus_Implementation(LevelStatus.PackageName, LevelStatus.bNewShouldBeLoaded, LevelStatus.bNewShouldBeVisible, LevelStatus.bNewShouldBlockOnLoad, LevelStatus.LODIndex, FNetLevelVisibilityTransactionId());
+		ClientUpdateLevelStreamingStatus_Implementation(LevelStatus.PackageName, LevelStatus.bNewShouldBeLoaded, LevelStatus.bNewShouldBeVisible, LevelStatus.bNewShouldBlockOnLoad, LevelStatus.LODIndex, FNetLevelVisibilityTransactionId(), LevelStatus.bNewShouldBlockOnUnload);
 	}
 }
 
@@ -3390,7 +3387,7 @@ void APlayerController::DisplayDebug(class UCanvas* Canvas, const FDebugDisplayI
 		}
 		if (FForceFeedbackManager* FFM = FForceFeedbackManager::Get(GetWorld()))
 		{
-			FFM->DrawDebug(GetFocalLocation(), DisplayDebugManager);
+			FFM->DrawDebug(GetFocalLocation(), DisplayDebugManager, GetPlatformUserId());
 		}
 		DisplayDebugManager.DrawString(TEXT("-----------------------------------------------------"));
 #endif
@@ -3454,7 +3451,13 @@ void APlayerController::ClientForceGarbageCollection_Implementation()
 
 /// @endcond
 
-void APlayerController::LevelStreamingStatusChanged(ULevelStreaming* LevelObject, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex )
+void APlayerController::LevelStreamingStatusChanged(ULevelStreaming* LevelObject, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex)
+{ 
+	const bool bNewShouldBlockOnUnload = false;
+	LevelStreamingStatusChanged(LevelObject, bNewShouldBeLoaded, bNewShouldBeVisible, bNewShouldBlockOnLoad, bNewShouldBlockOnUnload, LODIndex);
+}
+
+void APlayerController::LevelStreamingStatusChanged(ULevelStreaming* LevelObject, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, bool bNewShouldBlockOnUnload, int32 LODIndex)
 {
 	FNetLevelVisibilityTransactionId TransactionId;
 	if (GetNetMode() == NM_Client)
@@ -3469,7 +3472,7 @@ void APlayerController::LevelStreamingStatusChanged(ULevelStreaming* LevelObject
 		TransactionId = NetConnection->UpdateLevelStreamStatusChangedTransactionId(LevelObject, PackageName, bNewShouldBeVisible);
 	}
 
-	ClientUpdateLevelStreamingStatus(NetworkRemapPath(LevelObject->GetWorldAssetPackageFName(), false), bNewShouldBeLoaded, bNewShouldBeVisible, bNewShouldBlockOnLoad, LODIndex, TransactionId);
+	ClientUpdateLevelStreamingStatus(NetworkRemapPath(LevelObject->GetWorldAssetPackageFName(), false), bNewShouldBeLoaded, bNewShouldBeVisible, bNewShouldBlockOnLoad, LODIndex, TransactionId, bNewShouldBlockOnUnload);
 }
 
 /// @cond DOXYGEN_WARNINGS
@@ -3582,6 +3585,10 @@ void APlayerController::SeamlessTravelFrom(APlayerController* OldPC)
 		OldPC->PlayerState->Destroy();
 		OldPC->PlayerState = NULL;
 	}
+
+	// Copy seamless travel state
+	SeamlessTravelCount = OldPC->SeamlessTravelCount;
+	LastCompletedSeamlessTravelCount = OldPC->LastCompletedSeamlessTravelCount;
 }
 
 void APlayerController::PostSeamlessTravel()
@@ -3634,20 +3641,32 @@ void APlayerController::GetStreamingSourceShapes(TArray<FStreamingSourceShape>& 
 
 bool APlayerController::GetStreamingSource(FWorldPartitionStreamingSource& OutStreamingSource) const
 {
+	checkNoEntry();
+	return false;
+}
+
+bool APlayerController::GetStreamingSources(TArray<FWorldPartitionStreamingSource>& OutStreamingSources) const
+{
 	const ENetMode NetMode = GetNetMode();
 	const bool bIsServer = (NetMode == NM_DedicatedServer || NetMode == NM_ListenServer);
 	if (IsStreamingSourceEnabled() && (IsLocalController() || bIsServer))
 	{
-		GetStreamingSourceLocationAndRotation(OutStreamingSource.Location, OutStreamingSource.Rotation);
-		OutStreamingSource.Name = GetFName();
-		OutStreamingSource.TargetState = StreamingSourceShouldActivate() ? EStreamingSourceTargetState::Activated : EStreamingSourceTargetState::Loaded;
-		OutStreamingSource.bBlockOnSlowLoading = StreamingSourceShouldBlockOnSlowStreaming();
-		OutStreamingSource.DebugColor = StreamingSourceDebugColor;
-		OutStreamingSource.Priority = GetStreamingSourcePriority();
-		GetStreamingSourceShapes(OutStreamingSource.Shapes);
-		return true;
+		return GetStreamingSourcesInternal(OutStreamingSources);
 	}
 	return false;
+}
+
+bool APlayerController::GetStreamingSourcesInternal(TArray<FWorldPartitionStreamingSource>& OutStreamingSources) const
+{
+	FWorldPartitionStreamingSource& StreamingSource = OutStreamingSources.AddDefaulted_GetRef();
+	GetStreamingSourceLocationAndRotation(StreamingSource.Location, StreamingSource.Rotation);
+	StreamingSource.Name = GetFName();
+	StreamingSource.TargetState = StreamingSourceShouldActivate() ? EStreamingSourceTargetState::Activated : EStreamingSourceTargetState::Loaded;
+	StreamingSource.bBlockOnSlowLoading = StreamingSourceShouldBlockOnSlowStreaming();
+	StreamingSource.DebugColor = StreamingSourceDebugColor;
+	StreamingSource.Priority = GetStreamingSourcePriority();
+	GetStreamingSourceShapes(StreamingSource.Shapes);
+	return true;
 }
 
 /// @cond DOXYGEN_WARNINGS
@@ -4000,19 +4019,19 @@ APlayerState* APlayerController::GetSplitscreenPlayerByIndex(int32 PlayerIndex) 
 					}
 					else
 					{
-						UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:%s: %s IS NOT THE PRIMARY CONNECTION AND HAS NO CHILD CONNECTIONS!"), *GetFName().ToString(), *GetStateName().ToString(), Player);
+						UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:GetSplitscreenPlayerByIndex: %s IS NOT THE PRIMARY CONNECTION AND HAS NO CHILD CONNECTIONS!"), *GetName(), *GetStateName().ToString(), *Player->GetName());
 					}
 				}
 			}
 			else
 			{
-				UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:%s: %s IS NOT A ULocalPlayer* AND NOT A RemoteConnection! (No valid UPlayer* reference)"), *GetFName().ToString(), *GetStateName().ToString(), Player);
+				UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:GetSplitscreenPlayerByIndex: %s IS NOT A ULocalPlayer* AND NOT A RemoteConnection! (No valid UPlayer* reference)"), *GetName(), *GetStateName().ToString(), *Player->GetName());
 			}
 		}
 	}
 	else
 	{
-		UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:%s: %s"), *GetFName().ToString(), *GetStateName().ToString(),  "NULL value for Player!");
+		UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:GetSplitscreenPlayerByIndex: %s"), *GetName(), *GetStateName().ToString(), TEXT("NULL value for Player!"));
 	}
 
 	return Result;
@@ -4046,12 +4065,12 @@ int32 APlayerController::GetSplitscreenPlayerCount() const
 			}
 			else
 			{
-				UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:%s NOT A ULocalPlayer* AND NOT A RemoteConnection!"), *GetFName().ToString(), *GetStateName().ToString());
+				UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:GetSplitscreenPlayerCount NOT A ULocalPlayer* AND NOT A RemoteConnection!"), *GetName(), *GetStateName().ToString());
 			}
 		}
 		else
 		{
-			UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:%s called without a valid UPlayer* value!"), *GetFName().ToString(), *GetStateName().ToString());
+			UE_LOG(LogPlayerController, Log, TEXT("(%s) APlayerController::%s:GetSplitscreenPlayerCount called without a valid UPlayer* value!"), *GetName(), *GetStateName().ToString());
 		}
 	}
 
@@ -4086,12 +4105,14 @@ void APlayerController::ClientPlayForceFeedback_Internal_Implementation( UForceF
 			{
 				if (ActiveForceFeedbackEffects[Index].Parameters.Tag == Params.Tag)
 				{
+					// Reset the device properties on an active effect before removal
+					ActiveForceFeedbackEffects[Index].ResetDeviceProperties();
 					ActiveForceFeedbackEffects.RemoveAtSwap(Index);
 				}
 			}
 		}
-
-		ActiveForceFeedbackEffects.Emplace(ForceFeedbackEffect, Params);
+		
+		ActiveForceFeedbackEffects.Emplace(ForceFeedbackEffect, Params, GetPlatformUserId());
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		ForceFeedbackEffectHistoryEntries.Emplace(ActiveForceFeedbackEffects.Last(), GetWorld()->GetTimeSeconds());
@@ -4113,6 +4134,11 @@ void APlayerController::ClientStopForceFeedback_Implementation( UForceFeedbackEf
 {
 	if (ForceFeedbackEffect == NULL && Tag == NAME_None)
 	{
+		// Reset all device properties
+		for (FActiveForceFeedbackEffect& Effect : ActiveForceFeedbackEffects)
+		{
+			Effect.ResetDeviceProperties();
+		}
 		ActiveForceFeedbackEffects.Empty();
 	}
 	else
@@ -4122,6 +4148,8 @@ void APlayerController::ClientStopForceFeedback_Implementation( UForceFeedbackEf
 			if (    (ForceFeedbackEffect == NULL || ActiveForceFeedbackEffects[Index].ForceFeedbackEffect == ForceFeedbackEffect)
 				 && (Tag == NAME_None || ActiveForceFeedbackEffects[Index].Parameters.Tag == Tag) )
 			{
+				// Reset the device properties on an active effect before removal
+				ActiveForceFeedbackEffects[Index].ResetDeviceProperties();
 				ActiveForceFeedbackEffects.RemoveAtSwap(Index);
 			}
 		}
@@ -4524,6 +4552,8 @@ void APlayerController::ProcessForceFeedbackAndHaptics(const float DeltaTime, co
 			{
 				if (!ActiveForceFeedbackEffects[Index].Update(DeltaTime, ForceFeedbackValues))
 				{
+					// Reset any device properties that may need it (i.e. trigger resistance) 
+					ActiveForceFeedbackEffects[Index].ResetDeviceProperties();
 					ActiveForceFeedbackEffects.RemoveAtSwap(Index);
 				}
 			}
@@ -4548,7 +4578,7 @@ void APlayerController::ProcessForceFeedbackAndHaptics(const float DeltaTime, co
 
 		if (FForceFeedbackManager* ForceFeedbackManager = FForceFeedbackManager::Get(World))
 		{
-			ForceFeedbackManager->Update(GetFocalLocation(), ForceFeedbackValues);
+			ForceFeedbackManager->Update(GetFocalLocation(), ForceFeedbackValues, GetPlatformUserId());
 		}
 
 		// Apply ForceFeedbackScale
@@ -5979,13 +6009,19 @@ void APlayerController::RemoveFromNetConditionGroup(FName NetGroup)
 #if UE_WITH_IRIS
 void APlayerController::BeginReplication()
 {
+	using namespace UE::Net;
+
 	// Always allow the PlayerController to be replicated as it is required for travel.
 	FActorBeginReplicationParams Params;
 	Params.bIncludeInLevelGroupFilter = false;
 	Super::BeginReplication(Params);
 
+	// Bump prio of playercontroller in order to make sure it replicates really early
+	static constexpr float PlayerControllerStaticPriority = 100.f;
+	FReplicationSystemUtil::SetStaticPriority(this, PlayerControllerStaticPriority);
+
 	// Enable groups once owner is set!!
-	UE::Net::FReplicationSystemUtil::UpdateSubObjectGroupMemberships(this);
+	FReplicationSystemUtil::UpdateSubObjectGroupMemberships(this);
 }
 #endif // UE_WITH_IRIS
 

@@ -1,17 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SoundWaveAssetActionExtenderMotoSynth.h"
+#include "Misc/PackageName.h"
 #include "ToolMenus.h"
-#include "AssetTypeActions_Base.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
+#include "Logging/MessageLog.h"
 #include "ContentBrowserMenuContexts.h"
-#include "ObjectEditorUtils.h"
-#include "Styling/AppStyle.h"
-#include "Sound/SoundWave.h"
 #include "Sound/SoundWaveProcedural.h"
 #include "MotoSynthSourceFactory.h"
 #include "MotoSynthSourceAsset.h"
+#include "ToolMenu.h"
+#include "ToolMenuSection.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -26,7 +24,7 @@ void FMotoSynthExtension::RegisterMenus()
 	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu.SoundWave");
 	FToolMenuSection& Section = Menu->FindOrAddSection("GetAssetActions");
 
-	Section.AddDynamicEntry("SoundWaveAssetConversion", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+	Section.AddDynamicEntry(NAME_None, FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
 	{
 		UContentBrowserAssetContextMenuContext* Context = InSection.FindContext<UContentBrowserAssetContextMenuContext>();
 		if (!Context || Context->SelectedAssets.IsEmpty())

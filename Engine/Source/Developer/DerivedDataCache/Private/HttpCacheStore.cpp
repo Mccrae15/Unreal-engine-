@@ -21,7 +21,6 @@
 #include "Dom/JsonObject.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/IConsoleManager.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformProcess.h"
 #include "Http/HttpClient.h"
 #include "IO/IoHash.h"
@@ -30,14 +29,17 @@
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Optional.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/ScopeRWLock.h"
 #include "Misc/StringBuilder.h"
+#include "ProfilingDebugging/CookStats.h"
 #include "ProfilingDebugging/CountersTrace.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/CompactBinaryPackage.h"
+#include "Serialization/CompactBinarySerialization.h"
 #include "Serialization/CompactBinaryValidation.h"
 #include "Serialization/CompactBinaryWriter.h"
 #include "Serialization/JsonReader.h"
@@ -62,7 +64,8 @@
 
 #define UE_HTTPDDC_GET_REQUEST_POOL_SIZE 48
 #define UE_HTTPDDC_PUT_REQUEST_POOL_SIZE 16
-#define UE_HTTPDDC_NONBLOCKING_REQUEST_POOL_SIZE 128
+#define UE_HTTPDDC_NONBLOCKING_GET_REQUEST_POOL_SIZE 128
+#define UE_HTTPDDC_NONBLOCKING_PUT_REQUEST_POOL_SIZE 24
 #define UE_HTTPDDC_MAX_FAILED_LOGIN_ATTEMPTS 16
 #define UE_HTTPDDC_MAX_ATTEMPTS 4
 
@@ -308,13 +311,16 @@ private:
 	THttpUniquePtr<IHttpConnectionPool> ConnectionPool;
 	FHttpRequestQueue GetRequestQueues[2];
 	FHttpRequestQueue PutRequestQueues[2];
-	FHttpRequestQueue NonBlockingRequestQueue;
+	FHttpRequestQueue NonBlockingGetRequestQueue;
+	FHttpRequestQueue NonBlockingPutRequestQueue;
 
 	FCriticalSection AccessCs;
 	TUniquePtr<FHttpAccessToken> Access;
 	FTSTicker::FDelegateHandle RefreshAccessTokenHandle;
 	double RefreshAccessTokenTime = 0.0;
 	uint32 FailedLoginAttempts = 0;
+	uint32 LoginAttempts = 0;
+	uint32 InteractiveLoginAttempts = 0;
 
 	bool bIsUsable = false;
 	bool bReadOnly = false;
@@ -326,8 +332,8 @@ private:
 	THttpUniquePtr<IHttpResponse> BeginIsServiceReady(IHttpClient& Client, TArray64<uint8>& Body);
 	bool EndIsServiceReady(THttpUniquePtr<IHttpResponse>& Response, TArray64<uint8>& Body);
 	bool AcquireAccessToken(IHttpClient* Client = nullptr);
-	void SetAccessToken(FStringView Token, double RefreshDelay = 0.0);
-
+	void SetAccessTokenAndUnlock(FScopeLock &Lock, FStringView Token, double RefreshDelay = 0.0);
+	
 	enum class EOperationCategory
 	{
 		Get,
@@ -336,7 +342,7 @@ private:
 
 	class FHttpOperation;
 
-	TUniquePtr<FHttpOperation> WaitForHttpOperation(EOperationCategory Category, bool bUnboundedOverflow);
+	TUniquePtr<FHttpOperation> WaitForHttpOperation(EOperationCategory Category);
 
 	struct FGetCacheRecordOnlyResponse
 	{
@@ -533,7 +539,7 @@ private:
 				{
 					StatsText << TEXTVIEW("received ") << Stats.RecvSize << TEXTVIEW(" bytes, ");
 				}
-				StatsText.Appendf(TEXT("%.3f seconds"), Stats.TotalTime);
+				StatsText.Appendf(TEXT("%.3f seconds %.3f|%.3f|%.3f|%.3f"), Stats.TotalTime, Stats.NameResolveTime, Stats.ConnectTime, Stats.TlsConnectTime, Stats.StartTransferTime);
 			}
 
 			if (bVerbose)
@@ -568,9 +574,7 @@ public:
 		: Owner(InOwner)
 		, BaseReceiver(InOperation, this)
 		, OperationComplete(MoveTemp(InOperationComplete))
-	{
-		LLM_IF_ENABLED(MemTag = FLowLevelMemTracker::Get().GetActiveTagData(ELLMTracker::Default));
-	}
+	{}
 
 private:
 	// IRequest Interface
@@ -583,7 +587,6 @@ private:
 
 	IHttpReceiver* OnCreate(IHttpResponse& LocalResponse) final
 	{
-		LLM_SCOPE(MemTag);
 		Monitor = LocalResponse.GetMonitor();
 		Owner->Begin(this);
 		return &BaseReceiver;
@@ -591,7 +594,6 @@ private:
 
 	IHttpReceiver* OnComplete(IHttpResponse& LocalResponse) final
 	{
-		LLM_SCOPE(MemTag);
 		Owner->End(this, [Self = this]
 		{
 			FHttpOperation* Operation = Self->BaseReceiver.GetOperation();
@@ -618,7 +620,6 @@ private:
 	FHttpOperationReceiver BaseReceiver;
 	TUniqueFunction<void ()> OperationComplete;
 	TRefCountPtr<IHttpResponseMonitor> Monitor;
-	LLM(const UE::LLMPrivate::FTagData* MemTag = nullptr);
 };
 
 void FHttpCacheStore::FHttpOperation::Send()
@@ -641,6 +642,16 @@ FString FHttpCacheStore::FHttpOperation::GetBodyAsString() const
 {
 	static_assert(sizeof(uint8) == sizeof(UTF8CHAR));
 	const int32 Len = IntCastChecked<int32>(ResponseBody.GetSize());
+	if (GetContentType() == EHttpMediaType::CbObject)
+	{
+		if (ValidateCompactBinary(ResponseBody, ECbValidateMode::Default) == ECbValidateError::None)
+		{
+			TUtf8StringBuilder<1024> JsonStringBuilder;
+			const FCbObject ResponseObject(ResponseBody);
+			CompactBinaryToCompactJson(ResponseObject, JsonStringBuilder);
+			return JsonStringBuilder.ToString();
+		}
+	}
 	return FString(Len, (const UTF8CHAR*)ResponseBody.GetData());
 }
 
@@ -942,7 +953,7 @@ void FHttpCacheStore::FPutPackageOp::PutRefAsync(
 		RefsUri << ANSITEXTVIEW("/finalize/") << ObjectHash;
 	}
 
-	TUniquePtr<FHttpOperation> Operation = CacheStore.WaitForHttpOperation(EOperationCategory::Put, /*bUnboundedOverflow*/ bFinalize);
+	TUniquePtr<FHttpOperation> Operation = CacheStore.WaitForHttpOperation(EOperationCategory::Put);
 	FHttpOperation& LocalOperation = *Operation;
 	LocalOperation.SetUri(RefsUri);
 	if (bFinalize)
@@ -1109,7 +1120,7 @@ void FHttpCacheStore::FPutPackageOp::OnPackagePutRefComplete(
 	FRequestBarrier Barrier(Owner);
 	for (const FCompressedBlobUpload& CompressedBlobUpload : CompressedBlobUploads)
 	{
-		TUniquePtr<FHttpOperation> Operation = CacheStore.WaitForHttpOperation(EOperationCategory::Put, /*bUnboundedOverflow*/ true);
+		TUniquePtr<FHttpOperation> Operation = CacheStore.WaitForHttpOperation(EOperationCategory::Put);
 		FHttpOperation& LocalOperation = *Operation;
 		LocalOperation.SetUri(WriteToAnsiString<256>(CacheStore.EffectiveDomain, ANSITEXTVIEW("/api/v1/compressed-blobs/"), CacheStore.Namespace, '/', CompressedBlobUpload.Hash));
 		LocalOperation.SetMethod(EHttpMethod::Put);
@@ -1206,7 +1217,7 @@ void FHttpCacheStore::FGetRecordOp::GetDataBatch(
 	for (int32 ValueIndex = 0; ValueIndex < Values.Num(); ++ValueIndex)
 	{
 		const ValueType Value = Values[ValueIndex].RemoveData();
-		TUniquePtr<FHttpOperation> Operation = CacheStore.WaitForHttpOperation(EOperationCategory::Get, /*bUnboundedOverflow*/ true);
+		TUniquePtr<FHttpOperation> Operation = CacheStore.WaitForHttpOperation(EOperationCategory::Get);
 		FHttpOperation& LocalOperation = *Operation;
 		LocalOperation.SetUri(WriteToAnsiString<256>(CacheStore.EffectiveDomain, ANSITEXTVIEW("/api/v1/compressed-blobs/"), CacheStore.Namespace, '/', Value.GetRawHash()));
 		LocalOperation.SetMethod(EHttpMethod::Get);
@@ -1401,7 +1412,7 @@ void FHttpCacheStore::FGetRecordOp::DataProbablyExistsBatch(
 		bFirstItem = false;
 	}
 
-	TUniquePtr<FHttpOperation> Operation = CacheStore.WaitForHttpOperation(EOperationCategory::Get, /*bUnboundedOverflow*/ true);
+	TUniquePtr<FHttpOperation> Operation = CacheStore.WaitForHttpOperation(EOperationCategory::Get);
 	FHttpOperation& LocalOperation = *Operation;
 	LocalOperation.SetUri(CompressedBlobsUri);
 	LocalOperation.SetMethod(EHttpMethod::Post);
@@ -1507,8 +1518,9 @@ void FHttpCacheStore::FGetRecordOp::FinishDataStep(bool bSuccess, uint64 InBytes
 
 	if (PendingOperations.fetch_sub(1, std::memory_order_acq_rel) == 1)
 	{
-		EStatus Status = EStatus::Error;
+		EStatus Status;
 		uint32 LocalSuccessfulOperations = SuccessfulOperations.load(std::memory_order_relaxed);
+		TOptional<FCacheRecord> Record;
 		if (LocalSuccessfulOperations == TotalOperations)
 		{
 			for (int32 Index = 0; Index < RequiredHeads.Num(); ++Index)
@@ -1520,9 +1532,15 @@ void FHttpCacheStore::FGetRecordOp::FinishDataStep(bool bSuccess, uint64 InBytes
 			{
 				RecordBuilder.AddValue(FValueWithId(RequiredGets[Index].GetId(), FetchedBuffers[Index]));
 			}
+			Record.Emplace(RecordBuilder.Build());
 			Status = EStatus::Ok;
 		}
-		OnComplete({Name, RecordBuilder.Build(), UserData, Status}, BytesReceived.load(std::memory_order_relaxed));
+		else
+		{
+			Record.Emplace(FCacheRecordBuilder(Key).Build());
+			Status = EStatus::Error;
+		}
+		OnComplete({Name, MoveTemp(Record.GetValue()), UserData, Status}, BytesReceived.load(std::memory_order_relaxed));
 	}
 }
 
@@ -1538,6 +1556,9 @@ FHttpCacheStore::FHttpCacheStore(const FHttpCacheStoreParams& Params)
 	, bReadOnly(Params.bReadOnly)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(HttpDDC_Construct);
+
+	// Remove any trailing / because constructing a URI will add one.
+	while (Domain.RemoveFromEnd(TEXT("/")));
 
 	EffectiveDomain.Append(Domain);
 	TAnsiStringBuilder<256> ResolvedDomain;
@@ -1583,9 +1604,13 @@ FHttpCacheStore::FHttpCacheStore(const FHttpCacheStoreParams& Params)
 		PutRequestQueues[0] = FHttpRequestQueue(*ConnectionPool, ClientParams);
 		PutRequestQueues[1] = FHttpRequestQueue(*ConnectionPool, ClientParams);
 
-		ClientParams.MaxRequests = UE_HTTPDDC_NONBLOCKING_REQUEST_POOL_SIZE * 2;
-		ClientParams.MinRequests = UE_HTTPDDC_NONBLOCKING_REQUEST_POOL_SIZE;
-		NonBlockingRequestQueue = FHttpRequestQueue(*ConnectionPool, ClientParams);
+		ClientParams.MaxRequests = UE_HTTPDDC_NONBLOCKING_GET_REQUEST_POOL_SIZE;
+		ClientParams.MinRequests = UE_HTTPDDC_NONBLOCKING_GET_REQUEST_POOL_SIZE;
+		NonBlockingGetRequestQueue = FHttpRequestQueue(*ConnectionPool, ClientParams);
+
+		ClientParams.MaxRequests = UE_HTTPDDC_NONBLOCKING_PUT_REQUEST_POOL_SIZE;
+		ClientParams.MinRequests = UE_HTTPDDC_NONBLOCKING_PUT_REQUEST_POOL_SIZE;
+		NonBlockingPutRequestQueue = FHttpRequestQueue(*ConnectionPool, ClientParams);
 
 		bIsUsable = true;
 	}
@@ -1609,10 +1634,10 @@ FHttpCacheStore::~FHttpCacheStore()
 FHttpClientParams FHttpCacheStore::GetDefaultClientParams() const
 {
 	FHttpClientParams ClientParams;
-	ClientParams.DnsCacheTimeout = 300;
-	ClientParams.ConnectTimeout = 30 * 1000;
+	ClientParams.DnsCacheTimeout = 15;
+	ClientParams.ConnectTimeout = 3 * 1000;
 	ClientParams.LowSpeedLimit = 1024;
-	ClientParams.LowSpeedTime = 30;
+	ClientParams.LowSpeedTime = 10;
 	ClientParams.TlsLevel = EHttpTlsLevel::All;
 	ClientParams.bFollowRedirects = true;
 	ClientParams.bFollow302Post = true;
@@ -1632,6 +1657,8 @@ bool FHttpCacheStore::AcquireAccessToken(IHttpClient* Client)
 		UE_LOG(LogDerivedDataCache, Log, TEXT("%s: Skipping authorization for connection to localhost."), *Domain);
 		return true;
 	}
+
+	LoginAttempts++;
 
 	// Avoid spamming this if the service is down.
 	if (FailedLoginAttempts > UE_HTTPDDC_MAX_FAILED_LOGIN_ATTEMPTS)
@@ -1655,7 +1682,7 @@ bool FHttpCacheStore::AcquireAccessToken(IHttpClient* Client)
 
 	if (!OAuthAccessToken.IsEmpty())
 	{
-		SetAccessToken(OAuthAccessToken);
+		SetAccessTokenAndUnlock(Lock, OAuthAccessToken);
 		return true;
 	}
 
@@ -1704,7 +1731,7 @@ bool FHttpCacheStore::AcquireAccessToken(IHttpClient* Client)
 				{
 					UE_LOG(LogDerivedDataCache, Display,
 						TEXT("%s: Logged in to HTTP DDC services. Expires in %.0f seconds."), *Domain, ExpiryTimeSeconds);
-					SetAccessToken(AccessTokenString, ExpiryTimeSeconds);
+					SetAccessTokenAndUnlock(Lock, AccessTokenString, ExpiryTimeSeconds);
 					return true;
 				}
 			}
@@ -1719,13 +1746,20 @@ bool FHttpCacheStore::AcquireAccessToken(IHttpClient* Client)
 	{
 		FString AccessTokenString;
 		FDateTime TokenExpiresAt;
-		if (FDesktopPlatformModule::Get()->GetOidcAccessToken(FPaths::RootDir(), FPaths::GetProjectFilePath(), OAuthProviderIdentifier, FApp::IsUnattended(), GWarn, AccessTokenString, TokenExpiresAt))
+		bool bWasInteractiveLogin;
+
+		if (FDesktopPlatformModule::Get()->GetOidcAccessToken(FPaths::RootDir(), FPaths::GetProjectFilePath(), OAuthProviderIdentifier, FApp::IsUnattended(), GWarn, AccessTokenString, TokenExpiresAt, bWasInteractiveLogin))
 		{
+			if (bWasInteractiveLogin)
+			{
+				InteractiveLoginAttempts++;
+			}
+
 			const double ExpiryTimeSeconds = (TokenExpiresAt - FDateTime::UtcNow()).GetTotalSeconds();
 			UE_LOG(LogDerivedDataCache, Display,
 				TEXT("%s: OidcToken: Logged in to HTTP DDC services. Expires at %s which is in %.0f seconds."),
 				*Domain, *TokenExpiresAt.ToString(), ExpiryTimeSeconds);
-			SetAccessToken(AccessTokenString, ExpiryTimeSeconds);
+			SetAccessTokenAndUnlock(Lock, AccessTokenString, ExpiryTimeSeconds);
 			return true;
 		}
 
@@ -1738,13 +1772,11 @@ bool FHttpCacheStore::AcquireAccessToken(IHttpClient* Client)
 	return false;
 }
 
-void FHttpCacheStore::SetAccessToken(FStringView Token, double RefreshDelay)
+void FHttpCacheStore::SetAccessTokenAndUnlock(FScopeLock& Lock, FStringView Token, double RefreshDelay)
 {
-	if (RefreshAccessTokenHandle.IsValid())
-	{
-		FTSTicker::GetCoreTicker().RemoveTicker(RefreshAccessTokenHandle);
-		RefreshAccessTokenHandle.Reset();
-	}
+	// Cache the expired refresh handle.
+	FTSTicker::FDelegateHandle ExpiredRefreshAccessTokenHandle = MoveTemp(RefreshAccessTokenHandle);
+	RefreshAccessTokenHandle.Reset();
 
 	if (!Access)
 	{
@@ -1777,9 +1809,18 @@ void FHttpCacheStore::SetAccessToken(FStringView Token, double RefreshDelay)
 
 	// Reset failed login attempts, the service is indeed alive.
 	FailedLoginAttempts = 0;
+
+	// Unlock the critical section before attempting to remove the expired refresh handle.
+	// The associated ticker delegate could already be executing, which could cause a
+	// hang in RemoveTicker when the critical section is locked.
+	Lock.Unlock();
+	if (ExpiredRefreshAccessTokenHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(MoveTemp(ExpiredRefreshAccessTokenHandle));
+	}
 }
 
-TUniquePtr<FHttpCacheStore::FHttpOperation> FHttpCacheStore::WaitForHttpOperation(EOperationCategory Category, bool bUnboundedOverflow)
+TUniquePtr<FHttpCacheStore::FHttpOperation> FHttpCacheStore::WaitForHttpOperation(EOperationCategory Category)
 {
 	if (Access && RefreshAccessTokenTime > 0.0 && RefreshAccessTokenTime < FPlatformTime::Seconds())
 	{
@@ -1791,8 +1832,14 @@ TUniquePtr<FHttpCacheStore::FHttpOperation> FHttpCacheStore::WaitForHttpOperatio
 	FHttpRequestParams Params;
 	if (FPlatformProcess::SupportsMultithreading() && bHttpEnableAsync)
 	{
-		Params.bIgnoreMaxRequests = bUnboundedOverflow;
-		Request = NonBlockingRequestQueue.CreateRequest(Params);
+		if (Category == EOperationCategory::Get)
+		{
+			Request = NonBlockingGetRequestQueue.CreateRequest(Params);
+		}
+		else
+		{
+			Request = NonBlockingPutRequestQueue.CreateRequest(Params);
+		}
 	}
 	else
 	{
@@ -1854,7 +1901,7 @@ void FHttpCacheStore::GetCacheRecordOnlyAsync(
 	TAnsiStringBuilder<64> Bucket;
 	Algo::Transform(Key.Bucket.ToString(), AppendChars(Bucket), FCharAnsi::ToLower);
 
-	TUniquePtr<FHttpOperation> Operation = WaitForHttpOperation(EOperationCategory::Get, /*bUnboundedOverflow*/ false);
+	TUniquePtr<FHttpOperation> Operation = WaitForHttpOperation(EOperationCategory::Get);
 	FHttpOperation& LocalOperation = *Operation;
 	LocalOperation.SetUri(WriteToAnsiString<256>(EffectiveDomain, ANSITEXTVIEW("/api/v1/refs/"), Namespace, '/', Bucket, '/', Key.Hash));
 	LocalOperation.SetMethod(EHttpMethod::Get);
@@ -2038,7 +2085,7 @@ void FHttpCacheStore::GetCacheValueAsync(
 	TAnsiStringBuilder<64> Bucket;
 	Algo::Transform(Key.Bucket.ToString(), AppendChars(Bucket), FCharAnsi::ToLower);
 
-	TUniquePtr<FHttpOperation> Operation = WaitForHttpOperation(EOperationCategory::Get, /*bUnboundedOverflow*/ false);
+	TUniquePtr<FHttpOperation> Operation = WaitForHttpOperation(EOperationCategory::Get);
 	FHttpOperation& LocalOperation = *Operation;
 	LocalOperation.SetUri(WriteToAnsiString<256>(EffectiveDomain, ANSITEXTVIEW("/api/v1/refs/"), Namespace, '/', Bucket, '/', Key.Hash));
 	LocalOperation.SetMethod(EHttpMethod::Get);
@@ -2173,7 +2220,7 @@ void FHttpCacheStore::RefCachedDataProbablyExistsBatchAsync(
 	RequestWriter.EndObject();
 	FCbFieldIterator RequestFields = RequestWriter.Save();
 
-	TUniquePtr<FHttpOperation> Operation = WaitForHttpOperation(EOperationCategory::Get, /*bUnboundedOverflow*/ false);
+	TUniquePtr<FHttpOperation> Operation = WaitForHttpOperation(EOperationCategory::Get);
 	FHttpOperation& LocalOperation = *Operation;
 	LocalOperation.SetUri(WriteToAnsiString<256>(EffectiveDomain, ANSITEXTVIEW("/api/v1/refs/"), Namespace));
 	LocalOperation.SetMethod(EHttpMethod::Post);
@@ -2274,6 +2321,30 @@ void FHttpCacheStore::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
 {
 	OutNode = {TEXT("Unreal Cloud DDC"), FString::Printf(TEXT("%s (%s)"), *Domain, *Namespace), /*bIsLocal*/ false};
 	OutNode.UsageStats.Add(TEXT(""), UsageStats);
+
+#if ENABLE_COOK_STATS
+	const int64 GetHits = UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+	const int64 GetMisses = UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
+	const int64 PutHits = UsageStats.PutStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+	const int64 PutMisses = UsageStats.PutStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
+	const int64 TotalGets = GetHits + GetMisses;
+	const int64 TotalPuts = PutHits + PutMisses;
+
+	const FString BaseName(TEXTVIEW("CloudDDC."));
+
+	OutNode.CustomStats = FCookStatsManager::CreateKeyValueArray(	FString(WriteToString<64>(BaseName, TEXTVIEW("Domain"))), Domain,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("EffectiveDomain"))), *EffectiveDomain,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("Namespace"))), Namespace,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("LoginAttempts"))), LoginAttempts,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("InteractiveLoginAttempts"))), InteractiveLoginAttempts,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("FailedLoginAttempts"))), FailedLoginAttempts,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("GetHits"))), GetHits,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("GetMisses"))), GetMisses,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("TotalGets"))), TotalGets,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("PutHits"))), PutHits,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("PutMisses"))), PutMisses,
+																	FString(WriteToString<64>(BaseName, TEXTVIEW("TotalPuts"))), TotalPuts);
+#endif
 }
 
 void FHttpCacheStore::Put(
@@ -2310,7 +2381,7 @@ void FHttpCacheStore::Get(
 	for (const FCacheGetRequest& Request : Requests)
 	{
 		GetCacheRecordAsync(Owner, Request.Name, Request.Key, Request.Policy, Request.UserData,
-			[COOK_STAT(Timer = UsageStats.TimePut(), ) SharedOnComplete](FCacheGetResponse&& Response, uint64 BytesReceived) mutable
+			[COOK_STAT(Timer = UsageStats.TimeGet(), ) SharedOnComplete](FCacheGetResponse&& Response, uint64 BytesReceived) mutable
 		{
 			TRACE_COUNTER_ADD(HttpDDC_BytesReceived, BytesReceived);
 			if (Response.Status == EStatus::Ok)
@@ -2758,7 +2829,7 @@ TTuple<ILegacyCacheStore*, ECacheStoreFlags> CreateHttpCacheStore(const TCHAR* N
 		UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Missing required parameter 'StructuredNamespace', falling back to '%s'"), NodeName, *Params.Namespace);
 	}
 
-	if (!Params.Host.StartsWith(TEXT("http://localhost")))
+	if (bValidParams && !Params.Host.StartsWith(TEXT("http://localhost")))
 	{
 		bool bValidOAuthAccessToken = !Params.OAuthAccessToken.IsEmpty();
 

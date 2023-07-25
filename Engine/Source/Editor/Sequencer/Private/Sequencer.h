@@ -38,6 +38,7 @@
 #include "SequencerSettings.h"
 #include "Curves/RichCurve.h"
 #include "Sections/MovieScene3DTransformSection.h"
+#include "SequencerTimeChangeUndoRedoProxy.h"
 
 class AActor;
 class ACameraActor;
@@ -599,6 +600,9 @@ public:
 	/** Will create a custom menu if FSequencerViewParams::OnBuildCustomContextMenuForGuid is specified. */
 	void BuildCustomContextMenuForGuid(FMenuBuilder& MenuBuilder, FGuid ObjectBinding);
 
+	/** Set the color tint for the requested sections */
+	void SetSectionColorTint(TArray<UMovieSceneSection*> Sections, FColor ColorTint);
+
 public:
 
 	/** Copy the selection, whether it's keys or tracks */
@@ -663,6 +667,10 @@ public:
 	//~ FGCObject Interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	virtual FString GetReferencerName() const override;
+
+private:
+	//object for undo redo support for changing time
+	FSequencerTimeChangedHandler TimeUndoRedoHandler;
 
 public:
 
@@ -910,7 +918,7 @@ protected:
 	void OnScrubPositionParentChanged(FMovieSceneSequenceID InScrubPositionParent);
 
 	/** Exports sequence to a FBX file */
-	void ExportFBXInternal(const FString& Filename, const TArray<FGuid>& Bindings, const TArray<UMovieSceneTrack*>& MasterTracks);
+	void ExportFBXInternal(const FString& Filename, const TArray<FGuid>& Bindings, const TArray<UMovieSceneTrack*>& Tracks);
 
 protected:
 
@@ -1097,14 +1105,17 @@ private:
 	/** Get actors that want to rerun construction scripts */
 	void GetConstructionScriptActors(UMovieScene*, FMovieSceneSequenceIDRef SequenceID, TSet<TWeakObjectPtr<AActor> >& BoundActors, TArray < TPair<FMovieSceneSequenceID, FGuid> >& BoundGuids);
 
-	/** Check whether we're viewing the master sequence or not */
-	bool IsViewingMasterSequence() const { return ActiveTemplateIDs.Num() == 1; }
+	/** Check whether we're viewing the root sequence or not */
+	bool IsViewingRootSequence() const { return ActiveTemplateIDs.Num() == 1; }
 
 	/** Recompile any dirty director blueprints in the sequence hierarchy */
 	void RecompileDirtyDirectors();
 
 	void ToggleAsyncEvaluation();
 	bool UsesAsyncEvaluation();
+
+	void ToggleDynamicWeighting();
+	bool UsesDynamicWeighting();
 
 	void UpdateCachedPlaybackContextAndClient();
 

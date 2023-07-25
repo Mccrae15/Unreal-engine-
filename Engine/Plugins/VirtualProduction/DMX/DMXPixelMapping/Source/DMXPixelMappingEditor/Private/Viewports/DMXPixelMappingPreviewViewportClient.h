@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UnrealClient.h"
+#include "ViewportClient.h"
 
 class SDMXPixelMappingPreviewViewport;
 class FDMXPixelMappingToolkit;

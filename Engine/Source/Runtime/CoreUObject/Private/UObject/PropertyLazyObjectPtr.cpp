@@ -117,7 +117,9 @@ UObject* FLazyObjectProperty::GetObjectPropertyValue(const void* PropertyValueAd
 
 UObject* FLazyObjectProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
 {
-	return GetWrappedObjectPropertyValue_InContainer<FLazyObjectPtr>(ContainerAddress, ArrayIndex);
+	UObject* Result = nullptr;
+	GetWrappedUObjectPtrValues_InContainer<FLazyObjectPtr>(&Result, ContainerAddress, ArrayIndex, 1);
+	return Result;
 }
 
 void FLazyObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const
@@ -136,7 +138,7 @@ void FLazyObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddr
 {
 	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
 	{
-		SetWrappedObjectPropertyValue_InContainer<FLazyObjectPtr>(ContainerAddress, Value, ArrayIndex);
+		SetWrappedUObjectPtrValues_InContainer<FLazyObjectPtr>(ContainerAddress, &Value, ArrayIndex, 1);
 	}
 	else
 	{
@@ -154,3 +156,12 @@ uint32 FLazyObjectProperty::GetValueTypeHashInternal(const void* Src) const
 	return GetTypeHash(GetPropertyValue(Src));
 }
 
+void FLazyObjectProperty::CopyCompleteValueToScriptVM_InContainer(void* OutValue, void const* InContainer) const
+{
+	GetWrappedUObjectPtrValues_InContainer<FLazyObjectPtr>((UObject**)OutValue, InContainer, 0, ArrayDim);
+}
+
+void FLazyObjectProperty::CopyCompleteValueFromScriptVM_InContainer(void* OutContainer, void const* InValue) const
+{
+	SetWrappedUObjectPtrValues_InContainer<FLazyObjectPtr>(OutContainer, (UObject**)InValue, 0, ArrayDim);
+}

@@ -160,24 +160,24 @@ public:
 	}
 
 	// The support position from the specified direction
-	FORCEINLINE FVec3 Support(const FVec3& Direction, const FReal Thickness, int32& VertexIndex) const
+	FORCEINLINE_DEBUGGABLE FVec3 Support(const FVec3& Direction, const FReal Thickness, int32& VertexIndex) const
 	{
 		return MObject->Support(Direction, Thickness, VertexIndex); 
 	}
 
 	// this shouldn't be called, but is required until we remove the explicit function implementations in CollisionResolution.cpp
-	FORCEINLINE FVec3 SupportScaled(const FVec3& Direction, const T Thickness, const FVec3& Scale, int32& VertexIndex) const
+	FORCEINLINE_DEBUGGABLE FVec3 SupportScaled(const FVec3& Direction, const T Thickness, const FVec3& Scale, int32& VertexIndex) const
 	{
 		return MObject->SupportScaled(Direction, Thickness, Scale, VertexIndex);
 	}
 
 	// The support position from the specified direction, if the shape is reduced by the margin
-	FORCEINLINE FVec3 SupportCore(const FVec3& Direction, const FReal InMargin, FReal* OutSupportDelta, int32& VertexIndex) const
+	FORCEINLINE_DEBUGGABLE FVec3 SupportCore(const FVec3& Direction, const FReal InMargin, FReal* OutSupportDelta, int32& VertexIndex) const
 	{
 		return MObject->SupportCore(Direction, InMargin, OutSupportDelta, VertexIndex);
 	}
 
-	FORCEINLINE VectorRegister4Float SupportCoreSimd(const VectorRegister4Float& Direction, const FReal InMargin) const
+	FORCEINLINE_DEBUGGABLE VectorRegister4Float SupportCoreSimd(const VectorRegister4Float& Direction, const FReal InMargin) const
 	{
 		FVec3 DirectionVec3;
 		VectorStoreFloat3(Direction, &DirectionVec3);
@@ -203,6 +203,8 @@ public:
 		return TUniquePtr<FImplicitObject>(CopyHelper(this));
 	}
 
+	virtual TUniquePtr<FImplicitObject> CopyWithScale(const FVec3& Scale) const override;
+
 	virtual FString ToString() const override
 	{
 		return FString::Printf(TEXT("Instanced %s, Margin %f"), *MObject->ToString(), GetMargin());
@@ -210,11 +212,12 @@ public:
 
 	static const TImplicitObjectInstanced<TConcrete>& AsInstancedChecked(const FImplicitObject& Obj)
 	{
-		if(TIsSame<TConcrete,FImplicitObject>::Value)
+		if constexpr (std::is_same_v<TConcrete,FImplicitObject>)
 		{
 			//can cast any instanced to ImplicitObject base
 			check(IsInstanced(Obj.GetType()));
-		} else
+		}
+		else
 		{
 			check(StaticType() == Obj.GetType());
 		}
@@ -516,7 +519,7 @@ public:
 
 	static const TImplicitObjectScaled<TConcrete>& AsScaledChecked(const FImplicitObject& Obj)
 	{
-		if (TIsSame<TConcrete, FImplicitObject>::Value)
+		if constexpr (std::is_same_v<TConcrete, FImplicitObject>)
 		{
 			//can cast any scaled to ImplicitObject base
 			check(IsScaled(Obj.GetType()));
@@ -530,7 +533,7 @@ public:
 
 	static TImplicitObjectScaled<TConcrete>& AsScaledChecked(FImplicitObject& Obj)
 	{
-		if (TIsSame<TConcrete, FImplicitObject>::Value)
+		if constexpr (std::is_same_v<TConcrete, FImplicitObject>)
 		{
 			//can cast any scaled to ImplicitObject base
 			check(IsScaled(Obj.GetType()));
@@ -544,7 +547,7 @@ public:
 
 	static const TImplicitObjectScaled<TConcrete>* AsScaled(const FImplicitObject& Obj)
 	{
-		if (TIsSame<TConcrete, FImplicitObject>::Value)
+		if constexpr (std::is_same_v<TConcrete, FImplicitObject>)
 		{
 			//can cast any scaled to ImplicitObject base
 			return IsScaled(Obj.GetType()) ? static_cast<const TImplicitObjectScaled<TConcrete>*>(&Obj) : nullptr;
@@ -557,7 +560,7 @@ public:
 
 	static TImplicitObjectScaled<TConcrete>* AsScaled(FImplicitObject& Obj)
 	{
-		if (TIsSame<TConcrete, FImplicitObject>::Value)
+		if constexpr (std::is_same_v<TConcrete, FImplicitObject>)
 		{
 			//can cast any scaled to ImplicitObject base
 			return IsScaled(Obj.GetType()) ? static_cast<TImplicitObjectScaled<TConcrete>*>(&Obj) : nullptr;
@@ -1006,6 +1009,13 @@ public:
 		return TUniquePtr<FImplicitObject>(CopyHelper(this));
 	}
 
+	virtual TUniquePtr<FImplicitObject> CopyWithScale(const FVec3& Scale) const override
+	{
+		TImplicitObjectScaled<TConcrete, bInstanced>* Obj = CopyHelper(this);
+		Obj->SetScale(Scale);
+		return TUniquePtr<FImplicitObject>(Obj);
+	}
+
 	virtual FString ToString() const override
 	{
 		return FString::Printf(TEXT("Scaled %s, Scale: [%f, %f, %f], Margin: %f"), *MObject->ToString(), MScale.X, MScale.Y, MScale.Z, GetMargin());
@@ -1072,6 +1082,11 @@ using TImplicitObjectScaledNonSerializable = TImplicitObjectScaled<TConcrete, fa
 template <typename T, int d>
 using TImplicitObjectScaledGeneric = TImplicitObjectScaled<FImplicitObject>;
 
+template<typename TConcrete>
+TUniquePtr<FImplicitObject> TImplicitObjectInstanced<TConcrete>::CopyWithScale(const FVec3& Scale) const
+{
+	return TUniquePtr<FImplicitObject>(new TImplicitObjectScaled<TConcrete, true>(MObject, Scale, 0.0));
+}
 
 /**
  * @brief Remove the Instanced or Scaled wrapper from an ImplicitObject of a known inner type and extract the instance properties

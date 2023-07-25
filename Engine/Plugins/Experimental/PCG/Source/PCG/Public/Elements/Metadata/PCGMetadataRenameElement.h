@@ -3,7 +3,6 @@
 #pragma once
 
 #include "PCGSettings.h"
-#include "PCGElement.h"
 
 #include "PCGMetadataRenameElement.generated.h"
 
@@ -15,7 +14,8 @@ class PCG_API UPCGMetadataRenameSettings : public UPCGSettings
 public:
 	//~Begin UPCGSettings interface
 #if WITH_EDITOR
-	virtual FName GetDefaultNodeName() const override { return FName(TEXT("MetadataRenameNode")); }
+	virtual FName GetDefaultNodeName() const override { return FName(TEXT("AttributeRename")); }
+	virtual FText GetDefaultNodeTitle() const override { return NSLOCTEXT("PCGMetadataRenameSettings", "NodeTitle", "Attribute Rename"); }
 	virtual EPCGSettingsType GetType() const override { return EPCGSettingsType::Metadata; }
 #endif
 
@@ -26,18 +26,15 @@ protected:
 	//~End UPCGSettings interface
 
 public:
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (PCG_Overridable))
 	FName AttributeToRename = NAME_None;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (PCG_Overridable))
 	FName NewAttributeName = NAME_None;
 };
 
 class FPCGMetadataRenameElement : public FSimplePCGElement
 {
-public:
-	virtual bool CanExecuteOnlyOnMainThread(FPCGContext* Context) const override { return true; }
-
 protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const override;
 };

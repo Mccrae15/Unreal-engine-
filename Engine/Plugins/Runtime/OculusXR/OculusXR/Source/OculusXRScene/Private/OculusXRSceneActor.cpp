@@ -36,7 +36,7 @@ AOculusXRSceneActor::AOculusXRSceneActor(const FObjectInitializer& ObjectInitial
 		TEXT("TABLE"),
 		TEXT("DOOR_FRAME"),
 		TEXT("WINDOW_FRAME"),
-		TEXT("STORAGE"),
+		TEXT("WALL_ART"),
 		TEXT("OTHER")
 	};
 
@@ -84,6 +84,7 @@ void AOculusXRSceneActor::BeginPlay()
 	rootSceneComponent->SetMobility(EComponentMobility::Static);
 	rootSceneComponent->RegisterComponent();
 	SetRootComponent(rootSceneComponent);
+
 
 	// Register delegates
 	RoomLayoutManagerComponent->OculusXRRoomLayoutSceneCaptureCompleteNative.AddUObject(this, &AOculusXRSceneActor::SceneCaptureComplete_Handler);
@@ -148,6 +149,33 @@ void AOculusXRSceneActor::LaunchCaptureFlowIfNeeded()
 #endif
 }
 
+AActor* AOculusXRSceneActor::SpawnActorWithSceneComponent(const FOculusXRUInt64& Space, const FOculusXRUInt64& RoomSpaceID, const TArray<FString>& SemanticClassifications, UClass* sceneAnchorComponentInstanceClass)
+{
+	FActorSpawnParameters actorSpawnParams;
+	actorSpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* Anchor = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, actorSpawnParams);
+
+	USceneComponent* rootComponent = NewObject<USceneComponent>(Anchor, USceneComponent::StaticClass());
+	rootComponent->SetMobility(EComponentMobility::Movable);
+	rootComponent->RegisterComponent();
+	Anchor->SetRootComponent(rootComponent);
+	rootComponent->SetWorldLocation(FVector::ZeroVector);
+
+	Anchor->AttachToActor(this, FAttachmentTransformRules::KeepRelativeTransform);
+
+	UOculusXRSceneAnchorComponent* sceneAnchorComponent = NewObject<UOculusXRSceneAnchorComponent>(Anchor, sceneAnchorComponentInstanceClass);
+	sceneAnchorComponent->RegisterComponent();
+
+	sceneAnchorComponent->SetHandle(Space);
+	sceneAnchorComponent->SemanticClassifications = SemanticClassifications;
+	sceneAnchorComponent->RoomSpaceID = RoomSpaceID;
+
+	EOculusXRAnchorResult::Type Result;
+	OculusXRAnchors::FOculusXRAnchors::SetAnchorComponentStatus(sceneAnchorComponent, EOculusXRSpaceComponentType::Locatable, true, 0.0f, FOculusXRAnchorSetComponentStatusDelegate(), Result);
+
+	return Anchor;
+}
+
 AActor* AOculusXRSceneActor::SpawnSceneAnchor(AActor* Anchor, const FOculusXRUInt64& Space, const FOculusXRUInt64& RoomSpaceID, const FVector& BoundedPos, const FVector& BoundedSize, const TArray<FString>& SemanticClassifications, const EOculusXRSpaceComponentType AnchorComponentType)
 {
 	if (Space.Value == 0)
@@ -188,27 +216,7 @@ AActor* AOculusXRSceneActor::SpawnSceneAnchor(AActor* Anchor, const FOculusXRUIn
 
 	if (!Anchor)
 	{
-		FActorSpawnParameters actorSpawnParams;
-		actorSpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-		Anchor = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, actorSpawnParams);
-
-		USceneComponent* rootComponent = NewObject<USceneComponent>(Anchor, USceneComponent::StaticClass());
-		rootComponent->SetMobility(EComponentMobility::Movable);
-		rootComponent->RegisterComponent();
-		Anchor->SetRootComponent(rootComponent);
-		rootComponent->SetWorldLocation(FVector::ZeroVector);
-
-		Anchor->AttachToActor(this, FAttachmentTransformRules::KeepRelativeTransform);
-
-		UOculusXRSceneAnchorComponent* sceneAnchorComponent = NewObject<UOculusXRSceneAnchorComponent>(Anchor, sceneAnchorComponentInstanceClass);
-		sceneAnchorComponent->RegisterComponent();
-
-		sceneAnchorComponent->SetHandle(Space);
-		sceneAnchorComponent->SemanticClassifications = SemanticClassifications;
-		sceneAnchorComponent->RoomSpaceID = RoomSpaceID;
-
-		EOculusXRAnchorResult::Type Result;
-		OculusXRAnchors::FOculusXRAnchors::SetAnchorComponentStatus(sceneAnchorComponent, EOculusXRSpaceComponentType::Locatable, true, 0.0f, FOculusXRAnchorSetComponentStatusDelegate(), Result);
+		Anchor = SpawnActorWithSceneComponent(Space, RoomSpaceID, SemanticClassifications, sceneAnchorComponentInstanceClass);
 	}
 
 	if (staticMeshObjPtrRef && staticMeshObjPtrRef->IsPending())
@@ -403,7 +411,7 @@ EOculusXRAnchorResult::Type AOculusXRSceneActor::QueryAllRooms()
 
 void AOculusXRSceneActor::RoomLayoutQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults)
 {
-	UE_LOG(LogOculusXRScene, Verbose, TEXT("RoomLayoutQueryComplete (Result = %d"), AnchorResult);
+	UE_LOG(LogOculusXRScene, Verbose, TEXT("RoomLayoutQueryComplete (Result = %d)"), AnchorResult);
 
 	for (auto& QueryElement : QueryResults)
 	{
@@ -449,6 +457,7 @@ void AOculusXRSceneActor::SceneRoomQueryComplete(EOculusXRAnchorResult::Type Anc
 
 	for (auto& AnchorQueryElement : QueryResults)
 	{
+
 		bool bIsScenePlane = false;
 		bool bIsSceneVolume = false;
 		EOculusXRAnchorResult::Type isPlaneResult = OculusXRAnchors::FOculusXRAnchorManager::GetSpaceComponentStatus(

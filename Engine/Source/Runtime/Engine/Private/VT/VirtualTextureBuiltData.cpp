@@ -4,9 +4,9 @@
 
 #include "DerivedDataCache.h"
 #include "DerivedDataRequestOwner.h"
-#include "Misc/CoreMisc.h"
-#include "Serialization/CustomVersion.h"
-#include "Serialization/MemoryWriter.h"
+#include "Engine/Texture.h"
+#include "EngineLogs.h"
+#include "Misc/Compression.h"
 
 #if WITH_EDITOR
 

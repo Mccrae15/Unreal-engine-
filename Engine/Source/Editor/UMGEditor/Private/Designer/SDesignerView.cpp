@@ -19,6 +19,8 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
 
+#include "Animation/WidgetAnimation.h"
+
 #include "Components/CanvasPanelSlot.h"
 #include "Blueprint/WidgetTree.h"
 #include "Settings/WidgetDesignerSettings.h"
@@ -215,9 +217,6 @@ UWidget* SDesignerView::GetWidgetInDesignScopeFromSlateWidget(TSharedRef<SWidget
 // SDesignerView
  
 const FString SDesignerView::ConfigSectionName = "UMGEditor.Designer";
-const uint32 SDesignerView::DefaultResolutionWidth = 1280;
-const uint32 SDesignerView::DefaultResolutionHeight = 720;
-const FString SDesignerView::DefaultAspectRatio = "16:9";
 const FString SDesignerView::DefaultPreviewOverrideName = "";
 
 void SDesignerView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetBlueprintEditor> InBlueprintEditor)
@@ -872,28 +871,38 @@ bool SDesignerView::IsRespectingLocks() const
 
 void SDesignerView::SetStartupResolution()
 {
-	// Use previously set resolution (or create new entries using default values)
-	// Width
-	if (!GConfig->GetInt(*ConfigSectionName, TEXT("PreviewWidth"), PreviewWidth, GEditorPerProjectIni))
+	// Whether the user selected a common resolution.
+	if (!GConfig->GetBool(*ConfigSectionName, TEXT("bCommonResolutionSelected"), bCommonResolutionSelected, GEditorPerProjectIni))
 	{
-		GConfig->SetInt(*ConfigSectionName, TEXT("PreviewWidth"), DefaultResolutionWidth, GEditorPerProjectIni);
-		PreviewWidth = DefaultResolutionWidth;
+		GConfig->SetBool(*ConfigSectionName, TEXT("bCommonResolutionSelected"), false, GEditorPerProjectIni);
+		bCommonResolutionSelected = false;
+	}
+	// Use user-set resolution
+	const UWidgetDesignerSettings* DesignerSettings = GetDefault<const UWidgetDesignerSettings>();
+	const FUintVector2 DefaultPreviewResolution = DesignerSettings->DefaultPreviewResolution;
+	// Width
+	if (!GConfig->GetInt(*ConfigSectionName, TEXT("PreviewWidth"), PreviewWidth, GEditorPerProjectIni) || !bCommonResolutionSelected)
+	{
+		GConfig->SetInt(*ConfigSectionName, TEXT("PreviewWidth"), DefaultPreviewResolution.X, GEditorPerProjectIni);
+		PreviewWidth = DefaultPreviewResolution.X;
 	}
 	// Initially assign WidthReadFromSettings to PreviewWidth
 	WidthReadFromSettings = PreviewWidth;
 	// Height
-	if (!GConfig->GetInt(*ConfigSectionName, TEXT("PreviewHeight"), PreviewHeight, GEditorPerProjectIni))
+	PreviewOverrideName = DefaultPreviewOverrideName;
+	if (!GConfig->GetInt(*ConfigSectionName, TEXT("PreviewHeight"), PreviewHeight, GEditorPerProjectIni) || !bCommonResolutionSelected)
 	{
-		GConfig->SetInt(*ConfigSectionName, TEXT("PreviewHeight"), DefaultResolutionHeight, GEditorPerProjectIni);
-		PreviewHeight = DefaultResolutionHeight;
+		GConfig->SetInt(*ConfigSectionName, TEXT("PreviewHeight"), DefaultPreviewResolution.Y, GEditorPerProjectIni);
+		PreviewHeight = DefaultPreviewResolution.Y;
 	}
 	// Initially assign HeightReadFromSettings to PreviewHeight
 	HeightReadFromSettings = PreviewHeight;
 	// Aspect Ratio
-	if (!GConfig->GetString(*ConfigSectionName, TEXT("PreviewAspectRatio"), PreviewAspectRatio, GEditorPerProjectIni))
+	if (!GConfig->GetString(*ConfigSectionName, TEXT("PreviewAspectRatio"), PreviewAspectRatio, GEditorPerProjectIni) || !bCommonResolutionSelected)
 	{
-		GConfig->SetString(*ConfigSectionName, TEXT("PreviewAspectRatio"), *DefaultAspectRatio, GEditorPerProjectIni);
-		PreviewAspectRatio = DefaultAspectRatio;
+		const int32 GCD = FMath::GreatestCommonDivisor(PreviewWidth, PreviewHeight);
+		PreviewAspectRatio = FString::Printf(TEXT("%d:%d"), PreviewWidth / GCD, PreviewHeight / GCD);
+		GConfig->SetString(*ConfigSectionName, TEXT("PreviewAspectRatio"), *PreviewAspectRatio, GEditorPerProjectIni);
 	}
 	// Portrait Mode
 	if (!GConfig->GetBool(*ConfigSectionName, TEXT("bIsInPortraitMode"), bPreviewIsPortrait, GEditorPerProjectIni))
@@ -1034,7 +1043,7 @@ void SDesignerView::SetPreviewAreaSize(int32 Width, int32 Height)
 
 				PreviewWidth = Width;
 				PreviewHeight = Height;
-				PreviewAspectRatio = FString::Printf(TEXT("%d:%d"), Height / GCD, Width / GCD);
+				PreviewAspectRatio = FString::Printf(TEXT("%d:%d"), Width / GCD, Height / GCD);
 
 				const bool bSaveChanges = false;
 				if (bSaveChanges)
@@ -1046,6 +1055,7 @@ void SDesignerView::SetPreviewAreaSize(int32 Width, int32 Height)
 					GConfig->SetString(*ConfigSectionName, TEXT("ProfileName"), *PreviewOverrideName, GEditorPerProjectIni);
 					GConfig->SetFloat(*ConfigSectionName, TEXT("ScaleFactor"), ScaleFactor, GEditorPerProjectIni);
 					GConfig->SetBool(*ConfigSectionName, TEXT("bCanPreviewSwapAspectRatio"), bCanPreviewSwapAspectRatio, GEditorPerProjectIni);
+					GConfig->SetBool(*ConfigSectionName, TEXT("bCommonResolutionSelected"), false, GEditorPerProjectIni);
 				}
 				break;
 			}
@@ -1794,7 +1804,7 @@ FReply SDesignerView::OnMouseMove(const FGeometry& MyGeometry, const FPointerEve
 							const FSlateRenderTransform& AbsoluteToLocalTransform = Inverse(ParentGeometry.GetAccumulatedRenderTransform());
 
 							FWidgetTransform WidgetRenderTransform = WidgetPreview->GetRenderTransform();
-							WidgetRenderTransform.Translation += AbsoluteToLocalTransform.TransformVector(MouseEvent.GetCursorDelta());
+							WidgetRenderTransform.Translation += TransformVector(AbsoluteToLocalTransform, MouseEvent.GetCursorDelta());
 
 							static const FName RenderTransformName(TEXT("RenderTransform"));
 
@@ -2151,7 +2161,7 @@ void SDesignerView::DrawSafeZone(const FOnPaintHandlerParams& PaintArgs)
 			FSlateDrawElement::MakeBox(
 				PaintArgs.OutDrawElements,
 				PaintArgs.Layer,
-				PreviewGeometry.ToPaintGeometry(FVector2D::ZeroVector, FVector2D(Width, SafeMargin.Top)),
+				PreviewGeometry.ToPaintGeometry(FVector2D(Width, SafeMargin.Top), FSlateLayoutTransform()),
 				WhiteBrush,
 				ESlateDrawEffect::None,
 				UnsafeZoneColor
@@ -2161,7 +2171,7 @@ void SDesignerView::DrawSafeZone(const FOnPaintHandlerParams& PaintArgs)
 			FSlateDrawElement::MakeBox(
 				PaintArgs.OutDrawElements,
 				PaintArgs.Layer,
-				PreviewGeometry.ToPaintGeometry(FVector2D(0.0f, Height - SafeMargin.Bottom), FVector2D(Width, SafeMargin.Bottom)),
+				PreviewGeometry.ToPaintGeometry(FVector2f(Width, SafeMargin.Bottom), FSlateLayoutTransform(FVector2f(0.0f, Height - SafeMargin.Bottom))),
 				WhiteBrush,
 				ESlateDrawEffect::None,
 				UnsafeZoneColor
@@ -2171,7 +2181,7 @@ void SDesignerView::DrawSafeZone(const FOnPaintHandlerParams& PaintArgs)
 			FSlateDrawElement::MakeBox(
 				PaintArgs.OutDrawElements,
 				PaintArgs.Layer,
-				PreviewGeometry.ToPaintGeometry(FVector2D(0.0f, SafeMargin.Top), FVector2D(SafeMargin.Left, HeightOfSides)),
+				PreviewGeometry.ToPaintGeometry(FVector2f(SafeMargin.Left, HeightOfSides), FSlateLayoutTransform(FVector2f(0.0f, SafeMargin.Top))),
 				WhiteBrush,
 				ESlateDrawEffect::None,
 				UnsafeZoneColor
@@ -2181,7 +2191,7 @@ void SDesignerView::DrawSafeZone(const FOnPaintHandlerParams& PaintArgs)
 			FSlateDrawElement::MakeBox(
 				PaintArgs.OutDrawElements,
 				PaintArgs.Layer,
-				PreviewGeometry.ToPaintGeometry(FVector2D(Width - SafeMargin.Right, SafeMargin.Top), FVector2D(SafeMargin.Right, HeightOfSides)),
+				PreviewGeometry.ToPaintGeometry(FVector2f(SafeMargin.Right, HeightOfSides), FSlateLayoutTransform(FVector2f(Width - SafeMargin.Right, SafeMargin.Top))),
 				WhiteBrush,
 				ESlateDrawEffect::None,
 				UnsafeZoneColor
@@ -2207,7 +2217,7 @@ void SDesignerView::DrawSafeZone(const FOnPaintHandlerParams& PaintArgs)
 				FSlateDrawElement::MakeBox(
 					PaintArgs.OutDrawElements,
 					PaintArgs.Layer,
-					PreviewGeometry.ToPaintGeometry(Start, Dimensions),
+					PreviewGeometry.ToPaintGeometry(Dimensions, FSlateLayoutTransform(Start)),
 					WhiteBrush,
 					ESlateDrawEffect::None,
 					UnsafeZoneColor
@@ -3029,8 +3039,8 @@ FText SDesignerView::GetCurrentDPIScaleText() const
 	Options.MaximumFractionalDigits = 2;
 	Options.MinimumFractionalDigits = 1;
 
-	const UUserInterfaceSettings* UISettings = GetDefault<UUserInterfaceSettings>(UUserInterfaceSettings::StaticClass());
-	if (UISettings && UISettings->UIScaleRule == EUIScalingRule::Custom)
+	const UUserInterfaceSettings* UISettings = GetDefault<UUserInterfaceSettings>();
+	if (UISettings->UIScaleRule == EUIScalingRule::Custom)
 	{
 		UClass* CustomScalingRuleClassInstance = UISettings->CustomScalingRuleClass.TryLoadClass<UDPICustomScalingRule>();
 
@@ -3046,8 +3056,8 @@ FText SDesignerView::GetCurrentDPIScaleText() const
 
 FSlateColor SDesignerView::GetCurrentDPIScaleColor() const
 {
-	const UUserInterfaceSettings* UISettings = GetDefault<UUserInterfaceSettings>(UUserInterfaceSettings::StaticClass());
-	if (UISettings && UISettings->UIScaleRule == EUIScalingRule::Custom)
+	const UUserInterfaceSettings* UISettings = GetDefault<UUserInterfaceSettings>();
+	if (UISettings->UIScaleRule == EUIScalingRule::Custom)
 	{
 		UClass* CustomScalingRuleClassInstance = UISettings->CustomScalingRuleClass.TryLoadClass<UDPICustomScalingRule>();
 
@@ -3121,6 +3131,15 @@ EVisibility SDesignerView::GetDesignerOutlineVisibility() const
 		return EVisibility::HitTestInvisible;
 	}
 
+	if ( Sequencer.IsValid() )
+	{
+		UWidgetAnimation* WidgetAnimation = Cast<UWidgetAnimation>(Sequencer->GetFocusedMovieSceneSequence());
+		if ( WidgetAnimation != UWidgetAnimation::GetNullAnimation() )
+		{
+			return EVisibility::HitTestInvisible;
+		}
+	}
+
 	return EVisibility::Hidden;
 }
 
@@ -3128,13 +3147,25 @@ FSlateColor SDesignerView::GetDesignerOutlineColor() const
 {
 	if ( GEditor->bIsSimulatingInEditor || GEditor->PlayWorld != nullptr )
 	{
-		return FLinearColor(0.863f, 0.407, 0.0f);
+		FLinearColor SimulatingIndicatorColor = FLinearColor(0.863f, 0.407, 0.0f);
+		return SimulatingIndicatorColor;
 	}
 
 	TSharedPtr<ISequencer> Sequencer = BlueprintEditor.Pin()->GetSequencer();
 	if ( Sequencer.IsValid() && Sequencer->GetAutoChangeMode() != EAutoChangeMode::None )
 	{
-		return FLinearColor::FromSRGBColor(FColor(251, 37, 0));
+		FLinearColor AnimRecordingIndicatorColor = FLinearColor::FromSRGBColor(FColor(251, 37, 0));
+		return AnimRecordingIndicatorColor;
+	}
+
+	if ( Sequencer.IsValid() )
+	{
+		UWidgetAnimation* WidgetAnimation = Cast<UWidgetAnimation>(Sequencer->GetFocusedMovieSceneSequence());
+		if ( WidgetAnimation != UWidgetAnimation::GetNullAnimation() )
+		{
+			FLinearColor AnimSelectedIndicatorColor = FLinearColor::FromSRGBColor(FColor(0, 67, 240));
+			return AnimSelectedIndicatorColor;
+		}
 	}
 
 	return FLinearColor::Transparent;
@@ -3146,11 +3177,22 @@ FText SDesignerView::GetDesignerOutlineText() const
 	{
 		return LOCTEXT("SIMULATING", "SIMULATING");
 	}
-	
+
 	TSharedPtr<ISequencer> Sequencer = BlueprintEditor.Pin()->GetSequencer();
 	if ( Sequencer.IsValid() && Sequencer->GetAutoChangeMode() != EAutoChangeMode::None )
 	{
 		return LOCTEXT("RECORDING", "RECORDING");
+	}
+
+	if ( Sequencer.IsValid() )
+	{
+		UWidgetAnimation* WidgetAnimation = Cast<UWidgetAnimation>(Sequencer->GetFocusedMovieSceneSequence());
+		if ( WidgetAnimation != UWidgetAnimation::GetNullAnimation() )
+		{
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("Name"), FText::FromString(WidgetAnimation->GetDisplayLabel()));
+			return FText::Format(LOCTEXT("SELECTED", "SELECTED: {Name}"), Args);
+		}
 	}
 
 	return FText::GetEmpty();
@@ -3242,7 +3284,7 @@ void SDesignerView::HandleOnCommonResolutionSelected(const FPlayScreenResolution
 	GConfig->SetString(*ConfigSectionName, TEXT("ProfileName"), *PreviewOverrideName, GEditorPerProjectIni);
 	GConfig->SetFloat(*ConfigSectionName, TEXT("ScaleFactor"), ScaleFactor, GEditorPerProjectIni);
 	GConfig->SetBool(*ConfigSectionName, TEXT("bCanPreviewSwapAspectRatio"), bCanPreviewSwapAspectRatio, GEditorPerProjectIni);
-
+	GConfig->SetBool(*ConfigSectionName, TEXT("bCommonResolutionSelected"), true, GEditorPerProjectIni);
 	if (!PreviewOverrideName.IsEmpty())
 	{
 		ULevelEditorPlaySettings* PlayInSettings = GetMutableDefault<ULevelEditorPlaySettings>();

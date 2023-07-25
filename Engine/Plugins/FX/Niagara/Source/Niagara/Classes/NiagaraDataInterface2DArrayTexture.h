@@ -55,7 +55,6 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
@@ -66,6 +65,8 @@ protected:
 
 protected:
 	static const TCHAR* TemplateShaderFilePath;
+	static const FName LoadTextureName;
+	static const FName GatherRedTextureName;
 	static const FName SampleTextureName;
 	static const FName TextureDimsName;
 };

@@ -7,11 +7,109 @@
 #include "OnlineSubsystemEOSTypes.h"
 #include "OnlineStatsEOS.h"
 #include "UserManagerEOS.h"
+#include "Misc/ConfigCacheIni.h"
 
 #if WITH_EOS_SDK
 #include "eos_achievements.h"
 
+FOnlineAchievementsEOS::FOnlineAchievementsEOS(FOnlineSubsystemEOS* InSubsystem)
+	: EOSSubsystem(InSubsystem)
+{
+	Init();
+}
+
+void FOnlineAchievementsEOS::Init()
+{
+	GConfig->GetBool(TEXT("OnlineSubsystemEOS"), TEXT("bUseUnlockAchievements"), bUseUnlockAchievements, GEngineIni);
+}
+
 void FOnlineAchievementsEOS::WriteAchievements(const FUniqueNetId& PlayerId, FOnlineAchievementsWriteRef& WriteObject, const FOnAchievementsWrittenDelegate& Delegate)
+{
+	if (bUseUnlockAchievements)
+	{
+		UnlockAchievements(PlayerId, WriteObject, Delegate);
+	}
+	else // If bUseUnlockAchievements is not set to true, we'll unlock the achievements through stat changes
+	{
+		UE_LOG_ONLINE_ACHIEVEMENTS(Warning, TEXT("Upgrade note: OSSEOS is updating its implementation of WriteAchievements to match other OSS implementations. For more information, search for bUseUnlockAchievements in the release notes."));
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		UnlockAchievementsThroughStats(PlayerId, WriteObject, Delegate);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+}
+
+typedef TEOSCallback<EOS_Achievements_OnUnlockAchievementsCompleteCallback, EOS_Achievements_OnUnlockAchievementsCompleteCallbackInfo, FOnlineAchievementsEOS> FUnlockAchievementsCallback;
+
+void FOnlineAchievementsEOS::UnlockAchievements(const FUniqueNetId& PlayerId, FOnlineAchievementsWriteRef& WriteObject, const FOnAchievementsWrittenDelegate& Delegate)
+{
+	const int32 LocalUserId = EOSSubsystem->UserManager->GetLocalUserNumFromUniqueNetId(PlayerId);
+	if (LocalUserId < 0)
+	{
+		UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("Can't unlock achievements for non-local user (%)"), *PlayerId.ToString());
+		Delegate.ExecuteIfBound(PlayerId, false);
+		return;
+	}
+
+	TArray<FName> InAchievementIds;
+	WriteObject->Properties.GenerateKeyArray(InAchievementIds);
+	TArray<FTCHARToUTF8> AchievementIdConverters; // We can't use StringCast<UTF8CHAR> because it's non-copyable, and the array will make a copy
+	AchievementIdConverters.Reserve(InAchievementIds.Num());
+	TArray<const char*> AchievementIdPtrs;
+	AchievementIdPtrs.Reserve(InAchievementIds.Num());
+	for (const FName& AchievementId : InAchievementIds)
+	{
+		const FTCHARToUTF8& Converter = AchievementIdConverters.Emplace_GetRef(*AchievementId.ToString());
+		AchievementIdPtrs.Emplace(Converter.Get());
+	}
+
+	EOS_Achievements_UnlockAchievementsOptions Options = {};
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_ACHIEVEMENTS_UNLOCKACHIEVEMENTS_API_LATEST, 1);
+	Options.UserId = EOSSubsystem->UserManager->GetLocalProductUserId(LocalUserId); // TODO: The parameter is not called LocalUserId, does that mean that this API works for non-local users?
+	Options.AchievementIds = AchievementIdPtrs.GetData();
+	Options.AchievementsCount = AchievementIdPtrs.Num();
+
+	FUnlockAchievementsCallback* CallbackObj = new FUnlockAchievementsCallback(FOnlineAchievementsEOSWeakPtr(AsShared()));
+	CallbackObj->CallbackLambda = [this, InAchievementIds, LambdaPlayerId = PlayerId.AsShared(), Delegate](const EOS_Achievements_OnUnlockAchievementsCompleteCallbackInfo* Data) mutable
+	{
+		bool bWasSuccessful = Data->ResultCode == EOS_EResult::EOS_Success;
+		if (bWasSuccessful)
+		{
+			if (const TSharedRef<TArray<FOnlineAchievement>>* Achievements = CachedAchievementsMap.Find(LambdaPlayerId))
+			{
+				UE_LOG_ONLINE_ACHIEVEMENTS(Verbose, TEXT("(%d) achievements unlocked. Caching achievements for user (%s)"), (uint32)Data->AchievementsCount, *LambdaPlayerId->ToString());
+
+				for (const FName& AchievementId : InAchievementIds)
+				{
+					for (FOnlineAchievement& Achievement : Achievements->Get())
+					{
+						if (Achievement.Id == AchievementId.ToString())
+						{
+							Achievement.Progress = 1.0f;
+							TriggerOnAchievementUnlockedDelegates(*LambdaPlayerId, AchievementId.ToString());
+							break;
+						}
+					}
+				}				
+			}
+			else
+			{
+				UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("Cached Achievements not found for local user (%s)"), *LambdaPlayerId->ToString());
+				bWasSuccessful = false;
+			}
+		}
+		else
+		{
+			UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("EOS_Achievements_UnlockAchievements failed with error code (%s)"), *LexToString(Data->ResultCode));
+		}
+
+		Delegate.ExecuteIfBound(*LambdaPlayerId, bWasSuccessful);
+	};
+
+	EOS_Achievements_UnlockAchievements(EOSSubsystem->AchievementsHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
+}
+
+void FOnlineAchievementsEOS::UnlockAchievementsThroughStats(const FUniqueNetId& PlayerId, FOnlineAchievementsWriteRef& WriteObject, const FOnAchievementsWrittenDelegate& Delegate) const
 {
 	TArray<FOnlineStatsUserUpdatedStats> StatsToWrite;
 
@@ -40,13 +138,10 @@ void FOnlineAchievementsEOS::QueryAchievements(const FUniqueNetId& PlayerId, con
 	}
 
 	EOS_Achievements_QueryPlayerAchievementsOptions Options = { };
-	Options.ApiVersion = EOS_ACHIEVEMENTS_QUERYPLAYERACHIEVEMENTS_API_LATEST;
-#if EOS_ACHIEVEMENTS_QUERYPLAYERACHIEVEMENTS_API_LATEST >= 2
+	Options.ApiVersion = 2;
+	UE_EOS_CHECK_API_MISMATCH(EOS_ACHIEVEMENTS_QUERYPLAYERACHIEVEMENTS_API_LATEST, 2);
 	Options.LocalUserId = EOSSubsystem->UserManager->GetLocalProductUserId(LocalUserId);
 	Options.TargetUserId = Options.LocalUserId;
-#else
-	Options.UserId = EOSSubsystem->UserManager->GetLocalProductUserId(LocalUserId);
-#endif
 
 	FQueryProgressCallback* CallbackObj = new FQueryProgressCallback(FOnlineAchievementsEOSWeakPtr(AsShared()));
 	CallbackObj->CallbackLambda = [this, LambdaPlayerId = PlayerId.AsShared(), OnComplete = FOnQueryAchievementsCompleteDelegate(Delegate)](const EOS_Achievements_OnQueryPlayerAchievementsCompleteCallbackInfo* Data)
@@ -61,18 +156,16 @@ void FOnlineAchievementsEOS::QueryAchievements(const FUniqueNetId& PlayerId, con
 			EOS_ProductUserId UserId = EOSSubsystem->UserManager->GetLocalProductUserId(LocalUserNum);
 
 			EOS_Achievements_GetPlayerAchievementCountOptions CountOptions = { };
-			CountOptions.ApiVersion = EOS_ACHIEVEMENTS_GETPLAYERACHIEVEMENTCOUNT_API_LATEST;
+			CountOptions.ApiVersion = 1;
+			UE_EOS_CHECK_API_MISMATCH(EOS_ACHIEVEMENTS_GETPLAYERACHIEVEMENTCOUNT_API_LATEST, 1);
 			CountOptions.UserId = UserId;
 			uint32 Count = EOS_Achievements_GetPlayerAchievementCount(EOSSubsystem->AchievementsHandle, &CountOptions);
 
 			EOS_Achievements_CopyPlayerAchievementByIndexOptions CopyOptions = { };
-			CopyOptions.ApiVersion = EOS_ACHIEVEMENTS_COPYPLAYERACHIEVEMENTBYINDEX_API_LATEST;
-#if EOS_ACHIEVEMENTS_COPYPLAYERACHIEVEMENTBYINDEX_API_LATEST >= 2
+			CopyOptions.ApiVersion = 2;
+			UE_EOS_CHECK_API_MISMATCH(EOS_ACHIEVEMENTS_COPYPLAYERACHIEVEMENTBYINDEX_API_LATEST, 2);
 			CopyOptions.LocalUserId = UserId;
 			CopyOptions.TargetUserId = UserId;
-#else
-			CopyOptions.UserId = UserId;
-#endif
 
 			for (uint32 Index = 0; Index < Count; Index++)
 			{
@@ -129,7 +222,8 @@ void FOnlineAchievementsEOS::QueryAchievementDescriptions(const FUniqueNetId& Pl
 	}
 
 	EOS_Achievements_QueryDefinitionsOptions Options = { };
-	Options.ApiVersion = EOS_ACHIEVEMENTS_QUERYDEFINITIONS_API_LATEST;
+	Options.ApiVersion = 3;
+	UE_EOS_CHECK_API_MISMATCH(EOS_ACHIEVEMENTS_QUERYDEFINITIONS_API_LATEST, 3);
 	Options.LocalUserId = EOSSubsystem->UserManager->GetLocalProductUserId(LocalUserId);
 
 	FQueryDefinitionsCallback* CallbackObj = new FQueryDefinitionsCallback(FOnlineAchievementsEOSWeakPtr(AsShared()));
@@ -139,11 +233,13 @@ void FOnlineAchievementsEOS::QueryAchievementDescriptions(const FUniqueNetId& Pl
 		if (bWasSuccessful)
 		{
 			EOS_Achievements_GetAchievementDefinitionCountOptions CountOptions = { };
-			CountOptions.ApiVersion = EOS_ACHIEVEMENTS_GETACHIEVEMENTDEFINITIONCOUNT_API_LATEST;
+			CountOptions.ApiVersion = 1;
+			UE_EOS_CHECK_API_MISMATCH(EOS_ACHIEVEMENTS_GETACHIEVEMENTDEFINITIONCOUNT_API_LATEST, 1);
 			uint32 Count = EOS_Achievements_GetAchievementDefinitionCount(EOSSubsystem->AchievementsHandle, &CountOptions);
 
 			EOS_Achievements_CopyAchievementDefinitionByIndexOptions CopyOptions = { };
-			CopyOptions.ApiVersion = EOS_ACHIEVEMENTS_COPYDEFINITIONBYINDEX_API_LATEST;
+			CopyOptions.ApiVersion = 1;
+			UE_EOS_CHECK_API_MISMATCH(EOS_ACHIEVEMENTS_COPYDEFINITIONBYINDEX_API_LATEST, 1);
 			CachedAchievementDefinitions.Empty(Count);
 			CachedAchievementDefinitionsMap.Empty();
 

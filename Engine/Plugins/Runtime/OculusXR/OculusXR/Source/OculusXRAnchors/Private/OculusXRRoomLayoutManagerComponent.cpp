@@ -94,3 +94,4 @@ bool UOculusXRRoomLayoutManagerComponent::GetRoomLayout(FOculusXRUInt64 Space, F
 
 	return bSuccess;
 }
+

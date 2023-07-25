@@ -171,6 +171,7 @@ UMetaSoundSource::UMetaSoundSource(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, FMetasoundAssetBase()
 {
+	bProcedural = true;
 	bRequiresStopFade = true;
 	NumChannels = 1;
 
@@ -406,6 +407,12 @@ void UMetaSoundSource::InitParameters(TArray<FAudioParameter>& ParametersToInit,
 
 		switch (Parameter.ParamType)
 		{
+			case EAudioParameterType::Trigger:
+			{
+				Parameter = FAudioParameter(Parameter.ParamName, EAudioParameterType::Trigger);
+			}
+			break;
+			
 			case EAudioParameterType::Boolean:
 			{
 				Parameter = FAudioParameter(Parameter.ParamName, Parameter.BoolParam);
@@ -494,7 +501,7 @@ void UMetaSoundSource::InitParameters(TArray<FAudioParameter>& ParametersToInit,
 				FDataTypeRegistryInfo DataTypeInfo;
 				if (IDataTypeRegistry::Get().GetDataTypeInfo(OutParamToInit.ObjectParam, DataTypeInfo))
 				{
-					Audio::IProxyDataPtr ProxyPtr = IDataTypeRegistry::Get().CreateProxyFromUObject(DataTypeInfo.DataTypeName, OutParamToInit.ObjectParam);
+					TSharedPtr<Audio::IProxyData> ProxyPtr = IDataTypeRegistry::Get().CreateProxyFromUObject(DataTypeInfo.DataTypeName, OutParamToInit.ObjectParam);
 					OutParamToInit.ObjectProxies.Emplace(MoveTemp(ProxyPtr));
 
 					// Null out param as it is no longer needed (nor desired to be accessed once passed to the Audio Thread)
@@ -510,7 +517,7 @@ void UMetaSoundSource::InitParameters(TArray<FAudioParameter>& ParametersToInit,
 					FDataTypeRegistryInfo DataTypeInfo;
 					if (IDataTypeRegistry::Get().GetDataTypeInfo(Object, DataTypeInfo))
 					{
-						Audio::IProxyDataPtr ProxyPtr = IDataTypeRegistry::Get().CreateProxyFromUObject(DataTypeInfo.DataTypeName, Object);
+						TSharedPtr<Audio::IProxyData> ProxyPtr = IDataTypeRegistry::Get().CreateProxyFromUObject(DataTypeInfo.DataTypeName, Object);
 						OutParamToInit.ObjectProxies.Emplace(MoveTemp(ProxyPtr));
 					}
 				}
@@ -646,7 +653,16 @@ ISoundGeneratorPtr UMetaSoundSource::CreateSoundGenerator(const FSoundGeneratorI
 		MoveTemp(InDefaultParameters)
 	};
 
-	return ISoundGeneratorPtr(new FMetasoundGenerator(MoveTemp(InitParams)));
+	TSharedPtr<FMetasoundGenerator> Generator = MakeShared<FMetasoundGenerator>(MoveTemp(InitParams));
+	TrackGenerator(InParams.InstanceID, Generator);
+
+	return ISoundGeneratorPtr(Generator);
+}
+
+void UMetaSoundSource::OnEndGenerate(ISoundGeneratorPtr Generator)
+{
+	using namespace Metasound;
+	ForgetGenerator(Generator);
 }
 
 bool UMetaSoundSource::GetAllDefaultParameters(TArray<FAudioParameter>& OutParameters) const
@@ -667,7 +683,16 @@ bool UMetaSoundSource::GetAllDefaultParameters(TArray<FAudioParameter>& OutParam
 		{
 			case EMetasoundFrontendLiteralType::Boolean:
 			{
-				Params.ParamType = EAudioParameterType::Boolean;
+				static const FName TriggerName = "Trigger";
+				if (Params.TypeName == TriggerName)
+				{
+					Params.ParamType = EAudioParameterType::Trigger;
+				}
+				else
+				{
+					Params.ParamType = EAudioParameterType::Boolean;
+				}
+					
 				ensure(Input.DefaultLiteral.TryGet(Params.BoolParam));
 			}
 			break;
@@ -779,6 +804,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 	bool bIsValid = false;
 	switch (InParameter.ParamType)
 	{
+		case EAudioParameterType::Trigger:
 		case EAudioParameterType::Boolean:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
@@ -832,7 +858,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
 			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(InParameter.ObjectParam, DataTypeInfo);
-			bIsValid &= DataTypeInfo.bIsProxyParsable;
+			bIsValid &= DataTypeInfo.bIsProxyParsable || DataTypeInfo.bIsUniquePtrProxyParsable_DEPRECATED;
 			bIsValid &= DataTypeInfo.DataTypeName == TypeName;
 		}
 		break;
@@ -846,7 +872,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 			{
 				FDataTypeRegistryInfo DataTypeInfo;
 				bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(Object, DataTypeInfo);
-				bIsValid &= DataTypeInfo.bIsProxyParsable;
+				bIsValid &= DataTypeInfo.bIsProxyParsable || DataTypeInfo.bIsUniquePtrProxyParsable_DEPRECATED;
 				bIsValid &= DataTypeInfo.DataTypeName == ElementTypeName;
 
 				if (!bIsValid)
@@ -984,5 +1010,41 @@ const TArray<Metasound::FVertexName>& UMetaSoundSource::GetOutputAudioChannelOrd
 		return Empty;
 	}
 }
+
+void UMetaSoundSource::TrackGenerator(uint64 Id, TSharedPtr<Metasound::FMetasoundGenerator> Generator)
+{
+	FScopeLock GeneratorMapLock(&GeneratorMapCriticalSection);
+	Generators.Add(Id, Generator);
+	OnGeneratorInstanceCreated.Broadcast(Id, Generator);
+}
+
+void UMetaSoundSource::ForgetGenerator(ISoundGeneratorPtr Generator)
+{
+	using namespace Metasound;
+	FMetasoundGenerator* AsMetasoundGenerator = static_cast<FMetasoundGenerator*>(Generator.Get());
+	FScopeLock GeneratorMapLock(&GeneratorMapCriticalSection);
+	for (auto It = Generators.begin(); It != Generators.end(); ++It)
+	{
+		if ((*It).Value.HasSameObject(AsMetasoundGenerator))
+		{
+			OnGeneratorInstanceDestroyed.Broadcast((*It).Key, StaticCastSharedPtr<Metasound::FMetasoundGenerator>(Generator));
+			Generators.Remove((*It).Key);
+			return;
+		}
+	}
+}
+
+TWeakPtr<Metasound::FMetasoundGenerator> UMetaSoundSource::GetGeneratorForAudioComponent(uint64 ComponentId) const
+{
+	using namespace Metasound;
+	FScopeLock GeneratorMapLock(&GeneratorMapCriticalSection);
+	const TWeakPtr<FMetasoundGenerator>* Result = Generators.Find(ComponentId);
+	if (!Result)
+	{
+		return TWeakPtr<FMetasoundGenerator>(nullptr);
+	}
+	return *Result;
+}
+
 #undef LOCTEXT_NAMESPACE // MetaSound
 

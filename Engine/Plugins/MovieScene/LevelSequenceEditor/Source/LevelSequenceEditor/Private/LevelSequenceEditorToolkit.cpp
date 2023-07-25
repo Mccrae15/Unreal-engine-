@@ -1,68 +1,47 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequenceEditorToolkit.h"
+#include "LevelSequence.h"
 #include "Misc/LevelSequencePlaybackContext.h"
 #include "Misc/LevelSequenceEditorMenuContext.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "UObject/UnrealType.h"
-#include "GameFramework/Actor.h"
-#include "EngineGlobals.h"
-#include "AssetRegistry/AssetData.h"
-#include "Components/PrimitiveComponent.h"
-#include "Editor.h"
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Channels/MovieSceneChannelProxy.h"
 #include "Containers/ArrayBuilder.h"
-#include "Modules/ModuleManager.h"
 #include "KeyParams.h"
-#include "MovieSceneSequence.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBox.h"
-#include "Engine/Selection.h"
 #include "LevelSequenceEditorModule.h"
-#include "Settings/LevelEditorPlaySettings.h"
 #include "Misc/LevelSequenceEditorSettings.h"
 #include "Misc/LevelSequenceEditorSpawnRegister.h"
 #include "Misc/LevelSequenceEditorHelpers.h"
 #include "LevelEditor.h"
 #include "LevelEditorViewport.h"
 #include "CineCameraActor.h"
-#include "Styling/SlateIconFinder.h"
 #include "KeyPropertyParams.h"
-#include "ISequencer.h"
 #include "ISequencerModule.h"
-#include "LevelSequencePlayer.h"
 #include "LevelSequenceActor.h"
 #include "Sections/MovieSceneCameraCutSection.h"
+#include "Selection.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
 #include "Sections/MovieSceneSubSection.h"
-#include "Tracks/MovieSceneSubTrack.h"
+#include "ToolMenu.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
-#include "Tracks/MovieScenePropertyTrack.h"
 #include "MovieSceneToolsProjectSettings.h"
 #include "MovieSceneToolHelpers.h"
 #include "ScopedTransaction.h"
-#include "SceneOutlinerModule.h"
-#include "SceneOutlinerPublicTypes.h"
+#include "ToolMenuEntry.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "SequencerSettings.h"
 #include "LevelEditorSequencerIntegration.h"
 #include "LevelSequenceEditorBlueprintLibrary.h"
-#include "MovieSceneCaptureDialogModule.h"
-#include "MovieScene.h"
-#include "UnrealEdMisc.h"
+#include "ToolMenuSection.h"
 #include "ToolMenus.h"
 #include "ClassViewerFilter.h"
 #include "ClassViewerModule.h"
 
 // @todo sequencer: hack: setting defaults for transform tracks
 
-#include "Sections/MovieScene3DTransformSection.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 
 // To override Sequencer editor behavior for VR Editor 
-#include "EditorWorldExtension.h"
 #include "VREditorMode.h"
 #include "VRModeSettings.h"
 
@@ -141,7 +120,7 @@ FLevelSequenceEditorToolkit::~FLevelSequenceEditorToolkit()
 	if (FModuleManager::Get().IsModuleLoaded(TEXT("LevelSequenceEditor")))
 	{
 		auto& LevelSequenceEditorModule = FModuleManager::LoadModuleChecked<ILevelSequenceEditorModule>(TEXT("LevelSequenceEditor"));
-		LevelSequenceEditorModule.OnMasterSequenceCreated().RemoveAll(this);
+		LevelSequenceEditorModule.OnLevelSequenceWithShotsCreated().RemoveAll(this);
 	}
 
 	// unregister sequencer menu extenders
@@ -244,7 +223,7 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 	LevelEditorModule.OnMapChanged().AddRaw(this, &FLevelSequenceEditorToolkit::HandleMapChanged);
 
 	ILevelSequenceEditorModule& LevelSequenceEditorModule = FModuleManager::LoadModuleChecked<ILevelSequenceEditorModule>("LevelSequenceEditor");
-	LevelSequenceEditorModule.OnMasterSequenceCreated().AddRaw(this, &FLevelSequenceEditorToolkit::HandleMasterSequenceCreated);
+	LevelSequenceEditorModule.OnLevelSequenceWithShotsCreated().AddRaw(this, &FLevelSequenceEditorToolkit::HandleLevelSequenceWithShotsCreated);
 
 	FLevelSequenceEditorToolkit::OnOpened().Broadcast(*this);
 
@@ -314,6 +293,16 @@ FText FLevelSequenceEditorToolkit::GetTabSuffix() const
 	return FText::GetEmpty();
 }
 
+void FLevelSequenceEditorToolkit::BringToolkitToFront()
+{
+	ILevelSequenceEditorToolkit::BringToolkitToFront();
+
+	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
+	LevelEditorTabManager->TryInvokeTab(LevelEditorTabIds::Sequencer);
+}
+
+
 /* FLevelSequenceEditorToolkit implementation
  *****************************************************************************/
 
@@ -364,6 +353,75 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 		return;
 	}
 
+
+	// Create a default section for a new track.
+	//
+	// @param InNewTrack the track to create a default section for
+	// @param InComponent for MovieScene3DTransformTrack, optional scene component to initialize the relative transform
+	auto CreateDefaultTrackSection = [this, &Actor](UMovieSceneTrack* InNewTrack, UObject* InComponent)
+	{
+		// Track class permissions can deny track creation. (UMovieScene::IsTrackClassAllowed)
+		if (!InNewTrack)
+		{
+			return;
+		}
+
+#if WITH_EDITORONLY_DATA
+		if (!InNewTrack->SupportsDefaultSections())
+		{
+			return;
+		}
+#endif
+
+		UMovieSceneSection* NewSection;
+		if (InNewTrack->GetAllSections().Num() > 0)
+		{
+			NewSection = InNewTrack->GetAllSections()[0];
+		}
+		else
+		{
+			NewSection = InNewTrack->CreateNewSection();
+			InNewTrack->AddSection(*NewSection);
+		}
+
+		// @todo sequencer: hack: setting defaults for transform tracks
+		if (InNewTrack->IsA(UMovieScene3DTransformTrack::StaticClass()) && Sequencer->GetAutoSetTrackDefaults())
+		{
+			auto TransformSection = Cast<UMovieScene3DTransformSection>(NewSection);
+
+			FVector Location = Actor.GetActorLocation();
+			FRotator Rotation = Actor.GetActorRotation();
+			FVector Scale = Actor.GetActorScale();
+
+			if (USceneComponent* SceneComponent = Cast<USceneComponent>(InComponent))
+			{
+				FTransform ActorRelativeTransform = SceneComponent->GetRelativeTransform();
+
+				Location = ActorRelativeTransform.GetTranslation();
+				Rotation = ActorRelativeTransform.GetRotation().Rotator();
+				Scale = ActorRelativeTransform.GetScale3D();
+			}
+
+			TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = TransformSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+			DoubleChannels[0]->SetDefault(Location.X);
+			DoubleChannels[1]->SetDefault(Location.Y);
+			DoubleChannels[2]->SetDefault(Location.Z);
+
+			DoubleChannels[3]->SetDefault(Rotation.Euler().X);
+			DoubleChannels[4]->SetDefault(Rotation.Euler().Y);
+			DoubleChannels[5]->SetDefault(Rotation.Euler().Z);
+
+			DoubleChannels[6]->SetDefault(Scale.X);
+			DoubleChannels[7]->SetDefault(Scale.Y);
+			DoubleChannels[8]->SetDefault(Scale.Z);
+		}
+
+		if (GetSequencer()->GetInfiniteKeyAreas())
+		{
+			NewSection->SetRange(TRange<FFrameNumber>::All());
+		}
+	};	
+	
 	// add default tracks
 	for (const FLevelSequenceTrackSettings& TrackSettings : GetDefault<ULevelSequenceEditorSettings>()->TrackSettings)
 	{
@@ -405,67 +463,7 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 				if (!NewTrack)
 				{
 					NewTrack = MovieScene->AddTrack(TrackClass, Binding);
-				}
-
-				if (!NewTrack)
-				{
-					continue;
-				}
-
-				bool bCreateDefaultSection = false;
-#if WITH_EDITORONLY_DATA
-				bCreateDefaultSection = NewTrack->SupportsDefaultSections();
-#endif
-
-				if (bCreateDefaultSection)
-				{
-					UMovieSceneSection* NewSection;
-					if (NewTrack->GetAllSections().Num() > 0)
-					{
-						NewSection = NewTrack->GetAllSections()[0];
-					}
-					else
-					{
-						NewSection = NewTrack->CreateNewSection();
-						NewTrack->AddSection(*NewSection);
-					}
-
-					// @todo sequencer: hack: setting defaults for transform tracks
-					if (NewTrack->IsA(UMovieScene3DTransformTrack::StaticClass()) && Sequencer->GetAutoSetTrackDefaults())
-					{
-						auto TransformSection = Cast<UMovieScene3DTransformSection>(NewSection);
-
-						FVector Location = Actor.GetActorLocation();
-						FRotator Rotation = Actor.GetActorRotation();
-						FVector Scale = Actor.GetActorScale();
-
-						if (Actor.GetRootComponent())
-						{
-							FTransform ActorRelativeTransform = Actor.GetRootComponent()->GetRelativeTransform();
-
-							Location = ActorRelativeTransform.GetTranslation();
-							Rotation = ActorRelativeTransform.GetRotation().Rotator();
-							Scale = ActorRelativeTransform.GetScale3D();
-						}
-
-						TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = TransformSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
-						DoubleChannels[0]->SetDefault(Location.X);
-						DoubleChannels[1]->SetDefault(Location.Y);
-						DoubleChannels[2]->SetDefault(Location.Z);
-
-						DoubleChannels[3]->SetDefault(Rotation.Euler().X);
-						DoubleChannels[4]->SetDefault(Rotation.Euler().Y);
-						DoubleChannels[5]->SetDefault(Rotation.Euler().Z);
-
-						DoubleChannels[6]->SetDefault(Scale.X);
-						DoubleChannels[7]->SetDefault(Scale.Y);
-						DoubleChannels[8]->SetDefault(Scale.Z);
-					}
-
-					if (GetSequencer()->GetInfiniteKeyAreas())
-					{
-						NewSection->SetRange(TRange<FFrameNumber>::All());
-					}
+					CreateDefaultTrackSection(NewTrack, Actor.GetRootComponent());
 				}
 			}
 		}
@@ -535,6 +533,7 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 			TArray<FString> PropertyNames;
 			PropertyTrackSettings.PropertyPath.ParseIntoArray(PropertyNames, TEXT("."));
 
+			bool bReplaceWithTransformTrack = false;
 			for (const FString& PropertyName : PropertyNames)
 			{
 				// skip past excluded properties
@@ -549,6 +548,14 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 				if (Property != nullptr)
 				{
 					PropertyPath->AddProperty(FPropertyInfo(Property));
+
+					// Transform tracks are a special case and must be handled separately.
+					if (PropertyOwner->IsA(USceneComponent::StaticClass()) &&
+						(PropertyName == TEXT("RelativeLocation") || PropertyName == TEXT("RelativeRotation") || PropertyName == TEXT("RelativeScale3D")))
+					{
+						bReplaceWithTransformTrack = true;
+						break;
+					}
 				}
 
 				FStructProperty* StructProperty = CastField<FStructProperty>(Property);
@@ -568,6 +575,19 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 				}
 
 				break;
+			}
+
+			if (bReplaceWithTransformTrack)
+			{
+				FGuid ComponentBinding = Sequencer->GetHandleToObject(PropertyOwner);
+				UClass* TrackClass = UMovieScene3DTransformTrack::StaticClass();
+				UMovieSceneTrack* NewTrack = MovieScene->FindTrack(TrackClass, ComponentBinding);
+				if (!NewTrack)
+				{
+					NewTrack = MovieScene->AddTrack(TrackClass, ComponentBinding);
+					CreateDefaultTrackSection(NewTrack, PropertyOwner);
+				}
+				continue;
 			}
 
 			if (!Sequencer->CanKeyProperty(FCanKeyPropertyParams(PropertyOwner->GetClass(), *PropertyPath)))
@@ -676,25 +696,25 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 	GetSequencer()->ForceEvaluate();
 	GetSequencer()->FocusSequenceInstance(*ShotSubSection);
 
-	const ULevelSequenceMasterSequenceSettings* MasterSequenceSettings = GetDefault<ULevelSequenceMasterSequenceSettings>();
+	const ULevelSequenceWithShotsSettings* LevelSequenceSettings = GetDefault<ULevelSequenceWithShotsSettings>();
 	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
 
 	// Create any subshots
-	if (MasterSequenceSettings->SubSequenceNames.Num())
+	if (LevelSequenceSettings->SubSequenceNames.Num())
 	{
-		UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(ShotSequence->GetMovieScene()->FindMasterTrack(UMovieSceneSubTrack::StaticClass()));
+		UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(ShotSequence->GetMovieScene()->FindTrack(UMovieSceneSubTrack::StaticClass()));
 		if (!SubTrack)
 		{
-			SubTrack = Cast<UMovieSceneSubTrack>(ShotSequence->GetMovieScene()->AddMasterTrack(UMovieSceneSubTrack::StaticClass()));
+			SubTrack = Cast<UMovieSceneSubTrack>(ShotSequence->GetMovieScene()->AddTrack(UMovieSceneSubTrack::StaticClass()));
 		}
 	
 		int32 RowIndex = 0;
-		for (auto SubSequenceName : MasterSequenceSettings->SubSequenceNames)
+		for (auto SubSequenceName : LevelSequenceSettings->SubSequenceNames)
 		{
 			FString SubSequenceAssetName = ShotAssetName + ProjectSettings->SubSequenceSeparator + SubSequenceName.ToString();
 
 			UMovieSceneSequence* SubSequence = nullptr;
-			if (!MasterSequenceSettings->bInstanceSubSequences || ShotTrack->GetAllSections().Num() == 1)
+			if (!LevelSequenceSettings->bInstanceSubSequences || ShotTrack->GetAllSections().Num() == 1)
 			{
 				UObject* SubSequenceAsset = LevelSequenceEditorHelpers::CreateLevelSequenceAsset(SubSequenceAssetName, ShotPackagePath);
 				SubSequence = Cast<UMovieSceneSequence>(SubSequenceAsset);
@@ -704,7 +724,7 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 				// Get the corresponding sequence from the first shot
 				UMovieSceneSubSection* FirstShotSubSection = Cast<UMovieSceneSubSection>(ShotTrack->GetAllSections()[0]);
 				UMovieSceneSequence* FirstShotSequence = FirstShotSubSection->GetSequence();
-				UMovieSceneSubTrack* FirstShotSubTrack = Cast<UMovieSceneSubTrack>(FirstShotSequence->GetMovieScene()->FindMasterTrack(UMovieSceneSubTrack::StaticClass()));
+				UMovieSceneSubTrack* FirstShotSubTrack = Cast<UMovieSceneSubTrack>(FirstShotSequence->GetMovieScene()->FindTrack(UMovieSceneSubTrack::StaticClass()));
 			
 				FString FirstShotSubSequenceAssetName = FirstShotAssetName + ProjectSettings->SubSequenceSeparator + SubSequenceName.ToString();
 
@@ -768,25 +788,25 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 	}
 }
 
-void FLevelSequenceEditorToolkit::HandleMasterSequenceCreated(UObject* MasterSequenceAsset)
+void FLevelSequenceEditorToolkit::HandleLevelSequenceWithShotsCreated(UObject* LevelSequenceWithShotsAsset)
 {
-	UMovieSceneSequence* MasterSequence = Cast<UMovieSceneSequence>(MasterSequenceAsset);
-	if (!MasterSequence)
+	UMovieSceneSequence* LevelSequenceWithShots = Cast<UMovieSceneSequence>(LevelSequenceWithShotsAsset);
+	if (!LevelSequenceWithShots)
 	{
 		return;
 	}
 
-	const FScopedTransaction Transaction( LOCTEXT( "CreateMasterSequence", "Create Master Sequence" ) );
+	const FScopedTransaction Transaction( LOCTEXT( "CreateLevelSequenceWithShots", "Create Level Sequence with Shots" ) );
 	
-	const ULevelSequenceMasterSequenceSettings* MasterSequenceSettings = GetDefault<ULevelSequenceMasterSequenceSettings>();
-	uint32 NumShots = MasterSequenceSettings->MasterSequenceNumShots;
-	ULevelSequence* AssetToDuplicate = MasterSequenceSettings->MasterSequenceLevelSequenceToDuplicate.Get();
+	const ULevelSequenceWithShotsSettings* LevelSequenceSettings = GetDefault<ULevelSequenceWithShotsSettings>();
+	uint32 NumShots = LevelSequenceSettings->NumShots;
+	ULevelSequence* AssetToDuplicate = LevelSequenceSettings->SequenceToDuplicate.Get();
 
 	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
 
-	UMovieSceneCinematicShotTrack* ShotTrack = MasterSequence->GetMovieScene()->AddMasterTrack<UMovieSceneCinematicShotTrack>();
+	UMovieSceneCinematicShotTrack* ShotTrack = LevelSequenceWithShots->GetMovieScene()->AddTrack<UMovieSceneCinematicShotTrack>();
 
-	FFrameRate TickResolution = MasterSequence->GetMovieScene()->GetTickResolution();
+	FFrameRate TickResolution = LevelSequenceWithShots->GetMovieScene()->GetTickResolution();
 
 	// Create shots with a camera cut and a camera for each
 	FFrameNumber SequenceStartTime = (ProjectSettings->DefaultStartTime * TickResolution).FloorToFrame();
@@ -799,7 +819,7 @@ void FLevelSequenceEditorToolkit::HandleMasterSequenceCreated(UObject* MasterSeq
 		ShotEndTime += ShotDuration;
 
 		FString ShotName = MovieSceneToolHelpers::GenerateNewShotName(ShotTrack->GetAllSections(), ShotStartTime);
-		FString ShotPackagePath = MovieSceneToolHelpers::GenerateNewShotPath(MasterSequence->GetMovieScene(), ShotName);
+		FString ShotPackagePath = MovieSceneToolHelpers::GenerateNewShotPath(LevelSequenceWithShots->GetMovieScene(), ShotName);
 
 		if (ShotIndex == 0)
 		{
@@ -807,24 +827,24 @@ void FLevelSequenceEditorToolkit::HandleMasterSequenceCreated(UObject* MasterSeq
 		}
 
 		AddShot(ShotTrack, ShotName, ShotPackagePath, ShotStartTime, ShotEndTime, AssetToDuplicate, FirstShotName);
-		GetSequencer()->ResetToNewRootSequence(*MasterSequence);
+		GetSequencer()->ResetToNewRootSequence(*LevelSequenceWithShots);
 
 		ShotStartTime = ShotEndTime;
 	}
 
-	MasterSequence->GetMovieScene()->SetPlaybackRange(SequenceStartTime, (ShotEndTime - SequenceStartTime).Value);
+	LevelSequenceWithShots->GetMovieScene()->SetPlaybackRange(SequenceStartTime, (ShotEndTime - SequenceStartTime).Value);
 
 #if WITH_EDITORONLY_DATA
 	const double SequenceStartSeconds = SequenceStartTime / TickResolution;
 	const double SequenceEndSeconds   = ShotEndTime / TickResolution;
 	const double OutputChange = (SequenceEndSeconds - SequenceStartSeconds) * 0.1;
 
-	FMovieSceneEditorData& EditorData = MasterSequence->GetMovieScene()->GetEditorData();
+	FMovieSceneEditorData& EditorData = LevelSequenceWithShots->GetMovieScene()->GetEditorData();
 	EditorData.ViewStart = EditorData.WorkStart = SequenceStartSeconds - OutputChange;
 	EditorData.ViewEnd   = EditorData.WorkEnd   = SequenceEndSeconds + OutputChange;
 #endif
 
-	GetSequencer()->ResetToNewRootSequence(*MasterSequence);
+	GetSequencer()->ResetToNewRootSequence(*LevelSequenceWithShots);
 
 	UActorFactory* ActorFactory = GEditor->FindActorFactoryForActorClass(ALevelSequenceActor::StaticClass());
 	if (!ensure(ActorFactory))
@@ -832,7 +852,7 @@ void FLevelSequenceEditorToolkit::HandleMasterSequenceCreated(UObject* MasterSeq
 		return;
 	}
 
-	ALevelSequenceActor* NewActor = CastChecked<ALevelSequenceActor>(GEditor->UseActorFactory(ActorFactory, FAssetData(MasterSequenceAsset), &FTransform::Identity));
+	ALevelSequenceActor* NewActor = CastChecked<ALevelSequenceActor>(GEditor->UseActorFactory(ActorFactory, FAssetData(LevelSequenceWithShotsAsset), &FTransform::Identity));
 	if (GCurrentLevelEditingViewportClient != nullptr && GCurrentLevelEditingViewportClient->IsPerspective())
 	{
 		GEditor->MoveActorInFrontOfCamera(*NewActor, GCurrentLevelEditingViewportClient->GetViewLocation(), GCurrentLevelEditingViewportClient->GetViewRotation().Vector());

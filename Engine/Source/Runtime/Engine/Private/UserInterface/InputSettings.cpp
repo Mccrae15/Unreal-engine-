@@ -5,8 +5,9 @@
 =============================================================================*/
 
 #include "GameFramework/InputSettings.h"
+#include "Engine/PlatformSettingsManager.h"
 #include "Misc/CommandLine.h"
-#include "UObject/UObjectHash.h"
+#include "UObject/UnrealType.h"
 #include "UObject/UObjectIterator.h"
 #include "HAL/PlatformApplicationMisc.h"
 
@@ -26,6 +27,7 @@ UInputSettings::UInputSettings(const FObjectInitializer& ObjectInitializer)
 	, bEnableLegacyInputScales(true)
 	, bEnableMotionControls(true)
 	, bFilterInputByPlatformUser(false)
+	, bEnableInputDeviceSubsystem(true)
 	, bShouldFlushPressedKeysOnViewportFocusLost(true)
 	, bEnableDynamicComponentInputBinding(true)
 	, DefaultViewportMouseCaptureMode(EMouseCaptureMode::CapturePermanently_IncludingInitialMouseDown)
@@ -33,6 +35,7 @@ UInputSettings::UInputSettings(const FObjectInitializer& ObjectInitializer)
 	, DefaultPlayerInputClass(UPlayerInput::StaticClass())
 	, DefaultInputComponentClass(UInputComponent::StaticClass())
 {
+	PlatformSettings.Initialize(UInputPlatformSettings::StaticClass());
 }
 
 void UInputSettings::RemoveInvalidKeys()
@@ -103,6 +106,7 @@ void UInputSettings::PostInitProperties()
 			DefaultConsoleKey = FInputKeyManager::Get().GetKeyFromCodes(VK_OEM_5, 0);
 			break;
 
+		case LANG_SLOVAK:
 		case LANG_SWEDISH:
 			DefaultConsoleKey = EKeys::Section;
 			break;
@@ -478,7 +482,7 @@ void UInputSettings::SetDefaultPlayerInputClass(TSubclassOf<UPlayerInput> NewDef
 	if(ensure(NewDefaultPlayerInputClass))
 	{
 		UInputSettings* InputSettings = Cast<UInputSettings>(UInputSettings::StaticClass()->GetDefaultObject());
-		InputSettings->DefaultPlayerInputClass = NewDefaultPlayerInputClass;	
+		InputSettings->DefaultPlayerInputClass = NewDefaultPlayerInputClass;
 	}
 }
 
@@ -487,8 +491,88 @@ void UInputSettings::SetDefaultInputComponentClass(TSubclassOf<UInputComponent> 
 	if(ensure(NewDefaultInputComponentClass))
 	{
 		UInputSettings* InputSettings = Cast<UInputSettings>(UInputSettings::StaticClass()->GetDefaultObject());
-		InputSettings->DefaultInputComponentClass = NewDefaultInputComponentClass;	
+		InputSettings->DefaultInputComponentClass = NewDefaultInputComponentClass;
 	}
 }
 
+/////////////////////////////////////////////////////////////
+// FHardwareDeviceIdentifier
 
+FHardwareDeviceIdentifier FHardwareDeviceIdentifier::Invalid = { NAME_None, NAME_None };
+FHardwareDeviceIdentifier FHardwareDeviceIdentifier::DefaultKeyboardAndMouse = { TEXT("DefaultKeyboardAndMouse"), TEXT("KBM") };
+
+// Default to the invalid hardware device identifier
+FHardwareDeviceIdentifier::FHardwareDeviceIdentifier()
+	: InputClassName(Invalid.InputClassName)
+	, HardwareDeviceIdentifier(Invalid.HardwareDeviceIdentifier)
+{
+	
+}
+
+FHardwareDeviceIdentifier::FHardwareDeviceIdentifier(const FName InClassName, const FName InHardwareDeviceIdentifier)
+	: InputClassName(InClassName)
+	, HardwareDeviceIdentifier(InHardwareDeviceIdentifier)
+{
+
+}
+
+bool FHardwareDeviceIdentifier::IsValid() const
+{
+	return InputClassName.IsValid() && HardwareDeviceIdentifier.IsValid();
+}
+
+//////////////////////////////////////////////////////////////////
+// UInputPlatformSettings
+
+UInputPlatformSettings::UInputPlatformSettings()
+	: MaxTriggerFeedbackPosition(8)
+	, MaxTriggerFeedbackStrength(8)
+	, MaxTriggerVibrationTriggerPosition(9)
+	, MaxTriggerVibrationFrequency(255)
+	, MaxTriggerVibrationAmplitude(8)
+{ }
+
+UInputPlatformSettings* UInputPlatformSettings::Get()
+{
+	return UPlatformSettingsManager::Get().GetSettingsForPlatform<UInputPlatformSettings>();
+}
+
+void UInputPlatformSettings::AddHardwareDeviceIdentifier(const FHardwareDeviceIdentifier& InHardwareDevice)
+{
+	if (ensure(InHardwareDevice.IsValid()))
+	{
+		HardwareDevices.AddUnique(InHardwareDevice);
+	}
+}
+
+const TArray<FHardwareDeviceIdentifier>& UInputPlatformSettings::GetHardwareDevices() const
+{
+	return HardwareDevices;
+}
+
+#if WITH_EDITOR
+const TArray<FName>& UInputPlatformSettings::GetAllHardwareDeviceNames()
+{
+	static TArray<FName> HardwareDevices;
+	HardwareDevices.Reset();
+
+	// Add the keyboard and mouse by default for everything
+	HardwareDevices.Add(FHardwareDeviceIdentifier::DefaultKeyboardAndMouse.HardwareDeviceIdentifier);
+
+	// Get every known platform's InputPlatformSettings and compile a list of them
+	TArray<UPlatformSettings*> AllInputSettings = UPlatformSettingsManager::Get().GetAllPlatformSettings<UInputPlatformSettings>();
+
+	for (const UPlatformSettings* Setting : AllInputSettings)
+	{
+		if (const UInputPlatformSettings* InputSetting = Cast<UInputPlatformSettings>(Setting))
+		{
+			for (const FHardwareDeviceIdentifier& Device : InputSetting->HardwareDevices)
+			{
+				HardwareDevices.AddUnique(Device.HardwareDeviceIdentifier);
+			}
+		}
+	}
+
+	return HardwareDevices;
+}
+#endif	// WITH_EDITOR

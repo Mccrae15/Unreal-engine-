@@ -2,8 +2,6 @@
 
 #include "IPAddressSteamSockets.h"
 #include "SteamSocketsPrivate.h"
-#include "SteamSocketsTypes.h"
-#include "Algo/Reverse.h"
 
 TArray<uint8> FInternetAddrSteamSockets::GetRawIp() const
 {
@@ -221,15 +219,15 @@ uint32 FInternetAddrSteamSockets::GetTypeHash() const
 		else
 		{
 			// Otherwise, hash the virtual port.
-			return ::GetTypeHash(P2PVirtualPort);
+			return GetTypeHashHelper(P2PVirtualPort);
 		}
 	}
 
 	if (GetProtocolType() == FNetworkProtocolTypes::SteamSocketsP2P)
 	{
-		return ::GetTypeHash(Addr.GetSteamID64());
+		return GetTypeHashHelper(Addr.GetSteamID64());
 	}
-	return ::GetTypeHash(ToString(true));
+	return GetTypeHashHelper(ToString(true));
 }
 
 FName FInternetAddrSteamSockets::GetProtocolType() const

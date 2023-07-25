@@ -2,9 +2,14 @@
 
 #pragma once
 
+#include "Logging/LogVerbosity.h"
 #include "Templates/SharedPointer.h"
-#include "PCGContext.h"
-#include "PCGData.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class UPCGSettingsInterface;
+struct FPCGContext;
+struct FPCGCrc;
+struct FPCGDataCollection;
 
 class IPCGElement;
 class UPCGComponent;
@@ -13,18 +18,47 @@ class UPCGNode;
 
 typedef TSharedPtr<IPCGElement, ESPMode::ThreadSafe> FPCGElementPtr;
 
-#define PCGE_LOG_C(Verbosity, CustomContext, Format, ...) \
+namespace EPCGElementLogMode
+{
+	enum Type : uint8
+	{
+		/** Output to log. */
+		LogOnly = 0,
+		/** Display errors/warnings on graph as well as writing to log. */
+		GraphAndLog,
+
+		NumLogModes,
+
+		// Used below in log macros to silence PVS by making the log mode comparison 'look' non-trivial by adding a trivial mask op (an identical
+		// mechanism as the one employed in the macro UE_ASYNC_PACKAGE_LOG in AsyncLoading2.cpp).
+		// Warning V501: There are identical sub-expressions 'EPCGElementLogMode::GraphAndLog' to the left and to the right of the '==' operator.
+		// The warning disable comment can can't be used in a macro: //-V501 
+		LogModeMask = 0xff
+	};
+};
+
+#define PCGE_LOG_BASE(Verbosity, CustomContext, Message) \
 	UE_LOG(LogPCG, \
 		Verbosity, \
-		TEXT("[%s - %s]: " Format), \
-		*((CustomContext)->GetComponentName()), \
-		*((CustomContext)->GetTaskName()), \
-		##__VA_ARGS__)
+		TEXT("[%s - %s]: %s"), \
+		(CustomContext) ? *((CustomContext)->GetComponentName()) : TEXT("UnknownComponent"), \
+		(CustomContext) ? *((CustomContext)->GetTaskName()) : TEXT("UnknownTask"), \
+		*Message.ToString())
 
 #if WITH_EDITOR
-#define PCGE_LOG(Verbosity, Format, ...) do{ if(ShouldLog()) { PCGE_LOG_C(Verbosity, Context, Format, ##__VA_ARGS__); } }while(0)
+// Output to PCG log and optionally also display warnings/errors on graph.
+#define PCGE_LOG(Verbosity, LogMode, Message) do { \
+		if (((EPCGElementLogMode::LogMode) & EPCGElementLogMode::LogModeMask) == EPCGElementLogMode::GraphAndLog && (Context)) { (Context)->LogVisual(ELogVerbosity::Verbosity, Message); } \
+		if (ShouldLog()) { PCGE_LOG_BASE(Verbosity, Context, Message); } \
+	} while (0)
+// Output to PCG log and optionally also display warnings/errors on graph. Takes context as argument.
+#define PCGE_LOG_C(Verbosity, LogMode, CustomContext, Message) do { \
+		if (((EPCGElementLogMode::LogMode) & EPCGElementLogMode::LogModeMask) == EPCGElementLogMode::GraphAndLog && (CustomContext)) { (CustomContext)->LogVisual(ELogVerbosity::Verbosity, Message); } \
+		PCGE_LOG_BASE(Verbosity, CustomContext, Message); \
+	} while (0)
 #else
-#define PCGE_LOG(Verbosity, Format, ...) PCGE_LOG_C(Verbosity, Context, Format, ##__VA_ARGS__)
+#define PCGE_LOG(Verbosity, LogMode, Message) PCGE_LOG_BASE(Verbosity, Context, Message)
+#define PCGE_LOG_C(Verbosity, LogMode, CustomContext, Message) PCGE_LOG_BASE(Verbosity, CustomContext, Message)
 #endif
 
 /**
@@ -41,8 +75,21 @@ public:
 	/** Returns true if the element, in its current phase can be executed only from the main thread */
 	virtual bool CanExecuteOnlyOnMainThread(FPCGContext* Context) const { return false; }
 
+	/** Returns true if the node can be cached - also checks for instance flags, if any. */
+	bool IsCacheableInstance(const UPCGSettingsInterface* InSettingsInterface) const;
+
 	/** Returns true if the node can be cached (e.g. does not create artifacts & does not depend on untracked data */
 	virtual bool IsCacheable(const UPCGSettings* InSettings) const { return true; }
+
+	/** Whether to do a 'deep' fine-grained CRC of the output data to pass to downstream nodes. Can be expensive so should be used sparingly. */
+	virtual bool ShouldComputeFullOutputDataCrc() const { return false; }
+
+	/**
+	 * Calculate a Crc that provides a receipt for the input data that can be paired with output data from the cache. If any dependency (setting, node input or
+	 * external data) changes then this value should change. For some elements it is inefficient or not possible to output a Crc here. These can return an invalid
+	 * Crc and the Crc can either be computed during execution, or afterwards based on output data.
+	 */
+	virtual void GetDependenciesCrc(const FPCGDataCollection& InInput, const UPCGSettings* InSettings, UPCGComponent* InComponent, FPCGCrc& OutCrc) const;
 
 	/** Public function that executes the element on the appropriately created context.
 	* The caller should call the Execute function until it returns true.
@@ -52,8 +99,6 @@ public:
 	/** Note: the following methods must be called from the main thread */
 #if WITH_EDITOR
 	void DebugDisplay(FPCGContext* Context) const;
-	const TArray<double>& GetTimers() const { return Timers; }
-	void ResetTimers();
 #endif
 
 protected:
@@ -69,7 +114,10 @@ protected:
 	/** Controls whether an element can skip its execution wholly when the input data has the cancelled tag */
 	virtual bool IsCancellable() const { return true; }
 	/** Used to specify that the element passes through the data without any manipulation - used to correct target pins, etc. */
-	virtual bool IsPassthrough() const { return false; }
+	virtual bool IsPassthrough(const UPCGSettings* InSettings) const { return false; }
+
+	/** Passes through data when the element is Disabled. Can be implemented to override what gets passed through. */
+	virtual void DisabledPassThroughData(FPCGContext* Context) const;
 
 #if WITH_EDITOR
 	virtual bool ShouldLog() const { return true; }
@@ -77,32 +125,6 @@ protected:
 
 private:
 	void CleanupAndValidateOutput(FPCGContext* Context) const;
-
-#if WITH_EDITOR
-	struct FScopedCallTimer
-	{
-		FScopedCallTimer(const IPCGElement& InOwner, FPCGContext* InContext);
-		~FScopedCallTimer();
-
-		const IPCGElement& Owner;
-		FPCGContext* Context;
-		double StartTime;
-	};
-
-	// Set mutable because we need to modify them in the execute call, which is const
-	// TODO: Should be a map with PCG Components. We need a mechanism to make sure that this map is cleaned up when component doesn't exist anymore.
-	// For now, it will track all calls to execute (excluding call where the result is already in cache).
-	mutable TArray<double> Timers;
-	mutable int CurrentTimerIndex = 0;
-	// Perhaps overkill but there is a slight chance that we need to protect the timers array. If we call reset from the UI while an element is executing,
-	// it could crash while writing to the timers array.
-	mutable FCriticalSection TimersLock;
-#else // !WITH_EDITOR
-	struct FScopedCallTimer
-	{
-		FScopedCallTimer(const IPCGElement& InOwner, FPCGContext* InContext) {}
-	};
-#endif // WITH_EDITOR
 };
 
 /**
@@ -113,3 +135,9 @@ class PCG_API FSimplePCGElement : public IPCGElement
 public:
 	virtual FPCGContext* Initialize(const FPCGDataCollection& InputData, TWeakObjectPtr<UPCGComponent> SourceComponent, const UPCGNode* Node) override;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Misc/OutputDeviceRedirector.h"
+#include "PCGContext.h"
+#include "PCGData.h"
+#endif

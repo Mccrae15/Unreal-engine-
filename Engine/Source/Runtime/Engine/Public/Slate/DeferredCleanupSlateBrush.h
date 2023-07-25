@@ -2,7 +2,10 @@
 
 #pragma once
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RenderingThread.h"
+#endif
+#include "RenderDeferredCleanup.h"
 #include "UObject/GCObject.h"
 #include "Styling/SlateBrush.h"
 
@@ -21,7 +24,7 @@ public:
 
 	static TSharedRef<FDeferredCleanupSlateBrush> CreateBrush(
 		class UObject* InResource,
-		const FVector2D& InImageSize,
+		const UE::Slate::FDeprecateVector2DParameter& InImageSize,
 		const FLinearColor& InTint = FLinearColor(1.0f, 1.0f, 1.0f, 1.0f),
 		ESlateBrushTileType::Type InTiling = ESlateBrushTileType::NoTile,
 		ESlateBrushImageType::Type InImageType = ESlateBrushImageType::FullColor,

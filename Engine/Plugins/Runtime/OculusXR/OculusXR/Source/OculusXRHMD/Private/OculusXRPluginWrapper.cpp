@@ -270,12 +270,15 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(GetSpaceBoundary2D),
 		OCULUS_BIND_ENTRY_POINT(RequestSceneCapture),
 
+	// Local Groups
+
 		// MovementSDK
-		OCULUS_BIND_ENTRY_POINT(GetBodyState),
 		OCULUS_BIND_ENTRY_POINT(GetBodyTrackingEnabled),
 		OCULUS_BIND_ENTRY_POINT(GetBodyTrackingSupported),
-		OCULUS_BIND_ENTRY_POINT(StartBodyTracking),
 		OCULUS_BIND_ENTRY_POINT(StopBodyTracking),
+		OCULUS_BIND_ENTRY_POINT(StartBodyTracking),
+		OCULUS_BIND_ENTRY_POINT(GetBodyState),
+
 		OCULUS_BIND_ENTRY_POINT(GetFaceTrackingEnabled),
 		OCULUS_BIND_ENTRY_POINT(GetFaceTrackingSupported),
 		OCULUS_BIND_ENTRY_POINT(GetFaceState),
@@ -304,6 +307,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(DestroyPassthroughColorLut),
 		OCULUS_BIND_ENTRY_POINT(UpdatePassthroughColorLut),
 		OCULUS_BIND_ENTRY_POINT(GetPassthroughCapabilities),
+		OCULUS_BIND_ENTRY_POINT(GetPassthroughPreferences),
 
 		// OVR_Plugin_MixedReality.h
 

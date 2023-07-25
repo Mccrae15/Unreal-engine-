@@ -20,6 +20,7 @@
 #include "Settings/EditorLoadingSavingSettings.h"
 #include "Settings/EditorMiscSettings.h"
 #include "Settings/LevelEditorMiscSettings.h"
+#include "Engine/GameViewportClient.h"
 #include "EngineGlobals.h"
 #include "Components/ArrowComponent.h"
 #include "Components/BillboardComponent.h"
@@ -50,13 +51,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogSettingsClasses, Log, All);
  *****************************************************************************/
 
 UContentBrowserSettings::FSettingChangedEvent UContentBrowserSettings::SettingChangedEvent;
-
-UContentBrowserSettings::UContentBrowserSettings( const FObjectInitializer& ObjectInitializer )
-	: Super(ObjectInitializer)
-	, DockCollections(true)
-{
-}
-
 
 void UContentBrowserSettings::PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent )
 {
@@ -310,6 +304,28 @@ void UEditorLoadingSavingSettings::PostInitProperties()
 		AutoReimportDirectories_DEPRECATED.Empty();
 	}
 	Super::PostInitProperties();
+}
+
+bool UEditorLoadingSavingSettings::GetAutomaticallyCheckoutOnAssetModification() const
+{
+	if (bAutomaticallyCheckoutOnAssetModificationOverride.IsSet())
+	{
+		return bAutomaticallyCheckoutOnAssetModificationOverride.GetValue();
+	}
+	else
+	{
+		return bAutomaticallyCheckoutOnAssetModification;
+	}
+}
+
+void UEditorLoadingSavingSettings::SetAutomaticallyCheckoutOnAssetModificationOverride(bool InValue)
+{
+	bAutomaticallyCheckoutOnAssetModificationOverride = InValue;
+}
+
+void UEditorLoadingSavingSettings::ResetAutomaticallyCheckoutOnAssetModificationOverride()
+{
+	bAutomaticallyCheckoutOnAssetModificationOverride.Reset();
 }
 
 FAutoReimportDirectoryConfig::FParseContext::FParseContext(bool bInEnableLogging)

@@ -10,7 +10,6 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
-using Horde.Build.Configuration;
 using Horde.Build.Issues.Handlers;
 using Horde.Build.Jobs;
 using Horde.Build.Jobs.Graphs;
@@ -23,6 +22,7 @@ using Horde.Build.Utilities;
 using HordeCommon;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
@@ -31,9 +31,8 @@ using OpenTracing.Util;
 
 namespace Horde.Build.Issues
 {
-	using LogId = ObjectId<ILogFile>;
 	using StreamId = StringId<IStream>;
-	using TemplateRefId = StringId<TemplateRef>;
+	using TemplateId = StringId<ITemplateRef>;
 	using UserId = ObjectId<IUser>;
 	using WorkflowId = StringId<WorkflowConfig>;
 
@@ -59,6 +58,9 @@ namespace Horde.Build.Issues
 
 		/// <inheritdoc/>
 		public DateTime? QuarantineTimeUtc { get; set; }
+
+		/// <inheritdoc/>
+		public IUser? ForceClosedBy { get; set; }
 
 		/// <inheritdoc/>
 		public string? ExternalIssueKey { get; }
@@ -89,13 +91,14 @@ namespace Horde.Build.Issues
 		/// <param name="nominatedBy"></param>
 		/// <param name="resolvedBy"></param>
 		/// <param name="quarantinedBy"></param>
+		/// <param name="forceClosedBy"></param>
 		/// <param name="spans">Spans for this issue</param>
 		/// <param name="steps">Steps for this issue</param>
 		/// <param name="suspects"></param>
 		/// <param name="suspectUsers"></param>
 		/// <param name="showDesktopAlerts"></param>
 		/// <param name="externalIssueKey"></param>
-		public IssueDetails(IIssue issue, IUser? owner, IUser? nominatedBy, IUser? resolvedBy, IUser? quarantinedBy, IReadOnlyList<IIssueSpan> spans, IReadOnlyList<IIssueStep> steps, IReadOnlyList<IIssueSuspect> suspects, IReadOnlyList<IUser> suspectUsers, bool showDesktopAlerts, string? externalIssueKey)
+		public IssueDetails(IIssue issue, IUser? owner, IUser? nominatedBy, IUser? resolvedBy, IUser? quarantinedBy, IUser? forceClosedBy, IReadOnlyList<IIssueSpan> spans, IReadOnlyList<IIssueStep> steps, IReadOnlyList<IIssueSuspect> suspects, IReadOnlyList<IUser> suspectUsers, bool showDesktopAlerts, string? externalIssueKey)
 		{
 			Issue = issue;
 			Owner = owner;
@@ -103,13 +106,13 @@ namespace Horde.Build.Issues
 			ResolvedBy = resolvedBy;
 			QuarantinedBy = quarantinedBy;
 			QuarantineTimeUtc = issue.QuarantineTimeUtc;
+			ForceClosedBy = forceClosedBy;
 			Spans = spans;
 			Steps = steps;
 			Suspects = suspects;
 			SuspectUsers = suspectUsers;
 			ExternalIssueKey = externalIssueKey; 
 			_showDesktopAlerts = showDesktopAlerts;
-
 
 			if (issue.OwnerId == null)
 			{
@@ -151,12 +154,11 @@ namespace Horde.Build.Issues
 		/// </summary>
 		const int MaxChanges = 250;
 
-		readonly ConfigCollection _configCollection;
 		readonly IJobStepRefCollection _jobStepRefs;
 		readonly IIssueCollection _issueCollection;
-		readonly StreamService _streams;
+		readonly ICommitService _commitService;
+		readonly IStreamCollection _streams;
 		readonly IUserCollection _userCollection;
-		readonly IPerforceService _perforce;
 		readonly ILogFileService _logFileService;
 		readonly IClock _clock;
 		readonly ITicker _ticker;
@@ -194,7 +196,7 @@ namespace Horde.Build.Issues
 		/// <summary>
 		/// Cache of templates to show desktop alerts for
 		/// </summary>
-		Dictionary<StreamId, HashSet<TemplateRefId>> _cachedDesktopAlerts = new Dictionary<StreamId, HashSet<TemplateRefId>>();
+		Dictionary<StreamId, HashSet<TemplateId>> _cachedDesktopAlerts = new Dictionary<StreamId, HashSet<TemplateId>>();
 
 		/// <summary>
 		/// Logger for tracing
@@ -206,10 +208,12 @@ namespace Horde.Build.Issues
 		/// </summary>
 		public IReadOnlyList<IIssueDetails> CachedOpenIssues => _cachedIssues;
 
+		readonly IOptionsMonitor<GlobalConfig> _globalConfig;
+
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public IssueService(ConfigCollection configCollection, IIssueCollection issueCollection, IJobStepRefCollection jobStepRefs, StreamService streams, IUserCollection userCollection, IPerforceService perforce, ILogFileService logFileService, IClock clock, ILogger<IssueService> logger)
+		public IssueService(IIssueCollection issueCollection, ICommitService commitService, IJobStepRefCollection jobStepRefs, IStreamCollection streams, IUserCollection userCollection, ILogFileService logFileService, IClock clock, IOptionsMonitor<GlobalConfig> globalConfig, ILogger<IssueService> logger)
 		{
 			Type[] issueTypes = Assembly.GetExecutingAssembly().GetTypes().Where(x => !x.IsAbstract && typeof(IIssue).IsAssignableFrom(x)).ToArray();
 			foreach (Type issueType in issueTypes)
@@ -218,15 +222,15 @@ namespace Horde.Build.Issues
 			}
 
 			// Get all the collections
-			_configCollection = configCollection;
 			_issueCollection = issueCollection;
+			_commitService = commitService;
 			_jobStepRefs = jobStepRefs;
 			_streams = streams;
 			_userCollection = userCollection;
-			_perforce = perforce;
 			_logFileService = logFileService;
 			_clock = clock;
 			_ticker = clock.AddTicker<IssueService>(TimeSpan.FromMinutes(1.0), TickAsync, logger);
+			_globalConfig = globalConfig;
 			_logger = logger;
 
 			// Create all the issue handlers
@@ -260,15 +264,16 @@ namespace Horde.Build.Issues
 		{
 			DateTime utcNow = _clock.UtcNow;
 
-			Dictionary<StreamId, HashSet<TemplateRefId>> newCachedDesktopAlerts = new Dictionary<StreamId, HashSet<TemplateRefId>>();
+			Dictionary<StreamId, HashSet<TemplateId>> newCachedDesktopAlerts = new Dictionary<StreamId, HashSet<TemplateId>>();
 
-			List<IStream> cachedStreams = await _streams.StreamCollection.FindAllAsync();
-			foreach(IStream cachedStream in cachedStreams)
+			GlobalConfig globalConfig = _globalConfig.CurrentValue;
+
+			foreach(StreamConfig streamConfig in globalConfig.Streams)
 			{
-				HashSet<TemplateRefId> templates = new HashSet<TemplateRefId>(cachedStream.Templates.Where(x => x.Value.ShowUgsAlerts).Select(x => x.Key));
+				HashSet<TemplateId> templates = new HashSet<TemplateId>(streamConfig.Templates.Where(x => x.ShowUgsAlerts).Select(x => x.Id));
 				if(templates.Count > 0)
 				{
-					newCachedDesktopAlerts[cachedStream.Id] = templates;
+					newCachedDesktopAlerts[streamConfig.Id] = templates;
 				}
 			}
 
@@ -288,14 +293,14 @@ namespace Horde.Build.Issues
 
 				if (openIssue.LastSeenAt < utcNow - TimeSpan.FromDays(7.0))
 				{
-					await _issueCollection.TryUpdateIssueAsync(openIssue, newResolvedById: IIssue.ResolvedByTimeoutId);
+					await _issueCollection.TryUpdateIssueAsync(openIssue, null, newResolvedById: IIssue.ResolvedByTimeoutId);
 					openIssues.RemoveAt(idx--);
 					continue;
 				}
 			}
 
 			// Update any issues that are listed as valid for a stream that no longer exists
-			HashSet<StreamId> validStreamIds = new HashSet<StreamId>(cachedStreams.Select(x => x.Id));
+			HashSet<StreamId> validStreamIds = new HashSet<StreamId>(globalConfig.Streams.Select(x => x.Id));
 			for (int idx = 0; idx < openIssues.Count; idx++)
 			{
 				IIssue? openIssue = openIssues[idx];
@@ -344,6 +349,7 @@ namespace Horde.Build.Issues
 			IUser? nominatedBy = issue.NominatedById.HasValue ? await _userCollection.GetCachedUserAsync(issue.NominatedById.Value) : null;
 			IUser? resolvedBy = (issue.ResolvedById.HasValue && issue.ResolvedById != IIssue.ResolvedByTimeoutId && issue.ResolvedById != IIssue.ResolvedByUnknownId)? await _userCollection.GetCachedUserAsync(issue.ResolvedById.Value) : null;
 			IUser? quarantinedBy = issue.QuarantinedByUserId.HasValue ? await _userCollection.GetCachedUserAsync(issue.QuarantinedByUserId.Value) : null;
+			IUser? forceClosedBy = issue.ForceClosedByUserId.HasValue ? await _userCollection.GetCachedUserAsync(issue.ForceClosedByUserId.Value) : null;
 
 			List<IIssueSpan> spans = await _issueCollection.FindSpansAsync(issue.Id);
 			List<IIssueStep> steps = await _issueCollection.FindStepsAsync(spans.Select(x => x.Id));
@@ -359,35 +365,37 @@ namespace Horde.Build.Issues
 				}
 			}
 
-			return new IssueDetails(issue, owner, nominatedBy, resolvedBy, quarantinedBy, spans, steps, suspects, suspectUsers, ShowDesktopAlertsForIssue(issue, spans), issue.ExternalIssueKey);
+			return new IssueDetails(issue, owner, nominatedBy, resolvedBy, quarantinedBy, forceClosedBy, spans, steps, suspects, suspectUsers, ShowDesktopAlertsForIssue(issue, spans), issue.ExternalIssueKey);
 		}
 
 		/// <inheritdoc/>
 		public bool ShowDesktopAlertsForIssue(IIssue issue, IReadOnlyList<IIssueSpan> spans)
 		{
-			bool bShowDesktopAlerts = false;
+			_ = issue;
 
-			HashSet<(StreamId, TemplateRefId)> checkedTemplates = new HashSet<(StreamId, TemplateRefId)>();
+			bool showDesktopAlerts = false;
+
+			HashSet<(StreamId, TemplateId)> checkedTemplates = new HashSet<(StreamId, TemplateId)>();
 			foreach(IIssueSpan span in spans)
 			{
 				if (span.NextSuccess == null && checkedTemplates.Add((span.StreamId, span.TemplateRefId)))
 				{
-					HashSet<TemplateRefId>? templates;
+					HashSet<TemplateId>? templates;
 					if (_cachedDesktopAlerts.TryGetValue(span.StreamId, out templates) && templates.Contains(span.TemplateRefId))
 					{
-						bShowDesktopAlerts = true;
+						showDesktopAlerts = true;
 						break;
 					}
 				}
 			}
 
-			return bShowDesktopAlerts;
+			return showDesktopAlerts;
 		}
 
 		/// <summary>
 		/// Updates the state of an issue
 		/// </summary>
-		/// <param name="id">The current issue id</param>s
+		/// <param name="id">The current issue id</param>
 		/// <param name="summary">New summary for the issue</param>
 		/// <param name="description">New description for the issue</param>
 		/// <param name="promoted">Whether the issue should be set as promoted</param>
@@ -401,8 +409,10 @@ namespace Horde.Build.Issues
 		/// <param name="removeSpanIds">Remove spans from this issue</param>
 		/// <param name="externalIssueKey">Key for external issue tracking</param>
 		/// <param name="quarantinedById">User who has quarantined the issue</param>
+		/// <param name="forceClosedById">User who has force closed the issue</param>
+		/// <param name="initiatedById">User initiating the changes, for auditing purposes</param>
 		/// <returns>True if the issue was updated</returns>
-		public async Task<bool> UpdateIssueAsync(int id, string? summary = null, string? description = null, bool? promoted = null, UserId? ownerId = null, UserId? nominatedById = null, bool? acknowledged = null, UserId? declinedById = null, int? fixChange = null, UserId? resolvedById = null, List<ObjectId>? addSpanIds = null, List<ObjectId>? removeSpanIds = null, string? externalIssueKey = null, UserId? quarantinedById = null)
+		public async Task<bool> UpdateIssueAsync(int id, string? summary = null, string? description = null, bool? promoted = null, UserId? ownerId = null, UserId? nominatedById = null, bool? acknowledged = null, UserId? declinedById = null, int? fixChange = null, UserId? resolvedById = null, List<ObjectId>? addSpanIds = null, List<ObjectId>? removeSpanIds = null, string? externalIssueKey = null, UserId? quarantinedById = null, UserId? forceClosedById = null, UserId? initiatedById = null)
 		{
 			IIssue? issue;
 			for (; ; )
@@ -413,7 +423,7 @@ namespace Horde.Build.Issues
 					return false;
 				}
 
-				issue = await _issueCollection.TryUpdateIssueAsync(issue, newUserSummary: summary, newDescription: description, newPromoted: promoted, newOwnerId: ownerId ?? resolvedById, newNominatedById: nominatedById, newDeclinedById: declinedById, newAcknowledged: acknowledged, newFixChange: fixChange, newResolvedById: resolvedById, newExcludeSpanIds: removeSpanIds, newExternalIssueKey: externalIssueKey, newQuarantinedById: quarantinedById);
+				issue = await _issueCollection.TryUpdateIssueAsync(issue, initiatedById, newUserSummary: summary, newDescription: description, newPromoted: promoted, newOwnerId: ownerId ?? resolvedById, newNominatedById: nominatedById, newDeclinedById: declinedById, newAcknowledged: acknowledged, newFixChange: fixChange, newResolvedById: resolvedById, newExcludeSpanIds: removeSpanIds, newExternalIssueKey: externalIssueKey, newQuarantinedById: quarantinedById, newForceClosedById: forceClosedById);
 				if (issue != null)
 				{
 					break;
@@ -424,6 +434,28 @@ namespace Horde.Build.Issues
 
 			List<IIssue> updateIssues = new List<IIssue>();
 			updateIssues.Add(issue);
+
+			if (forceClosedById != null)
+			{
+				List<IIssueSpan> spans = await _issueCollection.FindSpansAsync(issue.Id);
+
+				foreach (IIssueSpan span in spans)
+				{
+					if (span.NextSuccess != null)
+					{
+						continue;
+					}
+
+					IIssueStep? step = span.LastFailure ?? span.FirstFailure;
+
+					if (step == null)
+					{
+						continue;
+					}
+
+					await _issueCollection.TryUpdateSpanAsync(span, newNextSuccess: new NewIssueStepData(step.Change, step.Severity, step.JobName, step.JobId, step.BatchId, step.StepId, step.StepTime, step.LogId, step.Annotations, step.PromoteByDefault));
+				}				
+			}
 
 			if (addSpanIds != null)
 			{
@@ -478,8 +510,8 @@ namespace Horde.Build.Issues
 
 			_logger.LogInformation("Updating issues for {JobId}:{BatchId}:{StepId}", job.Id, batchId, stepId);
 
-			IStream? stream = await _streams.GetStreamAsync(job.StreamId);
-			if (stream == null)
+			StreamConfig? streamConfig;
+			if (!_globalConfig.CurrentValue.TryGetStream(job.StreamId, out streamConfig))
 			{
 				throw new Exception($"Invalid stream id '{job.StreamId}' on job '{job.Id}'");
 			}
@@ -502,7 +534,7 @@ namespace Horde.Build.Issues
 
 			// Get all the annotations for this template
 			TemplateRefConfig? templateRef;
-			if (!stream.Config.TryGetTemplate(job.TemplateId, out templateRef))
+			if (!streamConfig.TryGetTemplate(job.TemplateId, out templateRef))
 			{
 				return;
 			}
@@ -519,7 +551,7 @@ namespace Horde.Build.Issues
 			WorkflowId? workflowId = annotations.WorkflowId;
 			if (workflowId != null)
 			{
-				if (!stream.Config.TryGetWorkflow(workflowId.Value, out workflow))
+				if (!streamConfig.TryGetWorkflow(workflowId.Value, out workflow))
 				{
 					_logger.LogWarning("Unable to find workflow {WorkflowId} for {JobId}:{BatchId}:{StepId}", workflowId, job.Id, batchId, stepId);
 					return;
@@ -554,19 +586,14 @@ namespace Horde.Build.Issues
 						{
 							continue;
 						}
-						if (!await AddEventsToNewSpans(stream, job, batch, step, node, openSpans, eventGroups, annotations, job.PromoteIssuesByDefault))
+						if (!await AddEventsToNewSpans(streamConfig, job, batch, step, node, openSpans, eventGroups, annotations, job.PromoteIssuesByDefault))
 						{
 							continue;
 						}
 					}
 
-					// Only update sentinels for issues which aren't quarantined
-					List<IIssue> quarantined = await _issueCollection.FindIssuesAsync(openSpans.Select(x => x.IssueId).Distinct());
-					quarantined = quarantined.Where(x => x.QuarantinedByUserId != null).ToList();
-					List<IIssueSpan> sentinels = openSpans.Where(x => !quarantined.Any(y => x.IssueId == y.Id)).ToList();
-
 					// Try to update the sentinels for any other open steps
-					if (!await TryUpdateSentinelsAsync(sentinels, stream, job, batch, step))
+					if (!await TryUpdateSentinelsAsync(openSpans, streamConfig, job, batch, step))
 					{
 						continue;
 					}
@@ -594,7 +621,7 @@ namespace Horde.Build.Issues
 			}
 
 			// Find the log file for this step
-			ILogFile? logFile = await _logFileService.GetLogFileAsync(step.LogId.Value);
+			ILogFile? logFile = await _logFileService.GetLogFileAsync(step.LogId.Value, CancellationToken.None);
 			if (logFile == null)
 			{
 				throw new ArgumentException($"Unable to retrieve log {step.LogId}");
@@ -749,7 +776,7 @@ namespace Horde.Build.Issues
 		/// <summary>
 		/// Adds new spans for the given events
 		/// </summary>
-		/// <param name="stream">The stream containing the job</param>
+		/// <param name="streamConfig">The stream containing the job</param>
 		/// <param name="job">The job instance</param>
 		/// <param name="batch">The job batch</param>
 		/// <param name="step">The job step</param>
@@ -759,7 +786,7 @@ namespace Horde.Build.Issues
 		/// <param name="annotations"></param>
 		/// <param name="promoteByDefault"></param>
 		/// <returns>True if all events were added</returns>
-		async Task<bool> AddEventsToNewSpans(IStream stream, IJob job, IJobStepBatch batch, IJobStep step, INode node, List<IIssueSpan> openSpans, HashSet<IssueEventGroup> newEventGroups, IReadOnlyNodeAnnotations? annotations, bool promoteByDefault)
+		async Task<bool> AddEventsToNewSpans(StreamConfig streamConfig, IJob job, IJobStepBatch batch, IJobStep step, INode node, List<IIssueSpan> openSpans, HashSet<IssueEventGroup> newEventGroups, IReadOnlyNodeAnnotations? annotations, bool promoteByDefault)
 		{
 			while (newEventGroups.Count > 0)
 			{
@@ -784,16 +811,16 @@ namespace Horde.Build.Issues
 				NewIssueStepData stepData = new NewIssueStepData(job, batch, step, GetIssueSeverity(eventGroup.Events), annotations, promoteByDefault);
 
 				// Get the span data
-				NewIssueSpanData spanData = new NewIssueSpanData(stream.Id, stream.Name, job.TemplateId, node.Name, eventGroup.Fingerprint, stepData);
+				NewIssueSpanData spanData = new NewIssueSpanData(streamConfig.Id, streamConfig.Name, job.TemplateId, node.Name, eventGroup.Fingerprint, stepData);
 
-				IJobStepRef? prevJob = await _jobStepRefs.GetPrevStepForNodeAsync(job.StreamId, job.TemplateId, node.Name, job.Change);
+				IJobStepRef? prevJob = await _jobStepRefs.GetPrevStepForNodeAsync(job.StreamId, job.TemplateId, node.Name, job.Change, JobStepOutcome.Success, true);
 				if (prevJob != null)
 				{
 					spanData.LastSuccess = new NewIssueStepData(prevJob);
-					spanData.Suspects = await FindSuspectsForSpanAsync(stream, spanData.Fingerprint, spanData.LastSuccess.Change + 1, spanData.FirstFailure.Change);
+					spanData.Suspects = await FindSuspectsForSpanAsync(streamConfig, spanData.Fingerprint, spanData.LastSuccess.Change + 1, spanData.FirstFailure.Change);
 				}
 
-				IJobStepRef? nextJob = await _jobStepRefs.GetNextStepForNodeAsync(job.StreamId, job.TemplateId, node.Name, job.Change);
+				IJobStepRef? nextJob = await _jobStepRefs.GetNextStepForNodeAsync(job.StreamId, job.TemplateId, node.Name, job.Change, JobStepOutcome.Success, true);
 				if (nextJob != null)
 				{
 					spanData.NextSuccess = new NewIssueStepData(nextJob);
@@ -883,14 +910,15 @@ namespace Horde.Build.Issues
 			Dictionary<(StreamId, int), bool> fixChangeCache = new Dictionary<(StreamId, int), bool>();
 			for (; ; )
 			{
+				GlobalConfig globalConfig = _globalConfig.CurrentValue;
+
 				// Find all the spans that are attached to the issue
 				List<IIssueSpan> spans = await _issueCollection.FindSpansAsync(issue.Id);
 
 				// Remove any spans for streams that have been deleted
 				for (int idx = spans.Count - 1; idx >= 0; idx--)
 				{
-					IStream? stream = await _streams.GetStreamAsync(spans[idx].StreamId);
-					if (stream == null || stream.Deleted)
+					if (!globalConfig.TryGetStream(spans[idx].StreamId, out _))
 					{
 						spans.RemoveAt(idx);
 					}
@@ -1002,10 +1030,9 @@ namespace Horde.Build.Issues
 						{
 							newStream.ContainsFix = stream.ContainsFix;
 						}
-						if (newStream.ContainsFix == null)
-						{
-							newStream.ContainsFix = await ContainsFixChange(newStream.StreamId, issue.FixChange.Value, fixChangeCache);
-						}
+
+						newStream.ContainsFix ??= await ContainsFixChange(globalConfig, newStream.StreamId, issue.FixChange.Value, fixChangeCache);
+
 						if (spans.Any(x => x.StreamId == newStream.StreamId && x.LastFailure.Change > issue.FixChange.Value))
 						{
 							newStream.FixFailed = true;
@@ -1081,44 +1108,49 @@ namespace Horde.Build.Issues
 		/// <summary>
 		/// Figure out if a stream contains a fix changelist
 		/// </summary>
-		async ValueTask<bool> ContainsFixChange(StreamId streamId, int fixChange, Dictionary<(StreamId, int), bool> cachedContainsFixChange)
+		async ValueTask<bool> ContainsFixChange(GlobalConfig globalConfig, StreamId streamId, int fixChange, Dictionary<(StreamId, int), bool> cachedContainsFixChange)
 		{
-			bool bContainsFixChange;
-			if (!cachedContainsFixChange.TryGetValue((streamId, fixChange), out bContainsFixChange) && fixChange > 0)
+			bool containsFixChange;
+			if (!cachedContainsFixChange.TryGetValue((streamId, fixChange), out containsFixChange) && fixChange > 0)
 			{
-				IStream? stream = await _streams.GetCachedStream(streamId);
-				if (stream != null)
+				StreamConfig? streamConfig;
+				if (globalConfig.TryGetStream(streamId, out streamConfig))
 				{
 					_logger.LogInformation("Querying fix changelist {FixChange} in {StreamId}", fixChange, streamId);
-					List<ChangeSummary> changes = await _perforce.GetChangesAsync(stream.ClusterName, stream.Name, fixChange, fixChange, 1, null);
-					bContainsFixChange = changes.Count > 0;
+					ICommit? change = await _commitService.GetCollection(streamConfig).FindAsync(fixChange, fixChange, 1).FirstOrDefaultAsync();
+					containsFixChange = change != null;
 				}
-				cachedContainsFixChange[(streamId, fixChange)] = bContainsFixChange;
+				cachedContainsFixChange[(streamId, fixChange)] = containsFixChange;
 			}
-			return bContainsFixChange;
+			return containsFixChange;
 		}
 
 		/// <summary>
 		/// Find suspects that can match a given span
 		/// </summary>
-		/// <param name="stream">The stream name</param>
+		/// <param name="streamConfig">The stream name</param>
 		/// <param name="fingerprint">The fingerprint for the span</param>
 		/// <param name="minChange">Minimum changelist to consider</param>
 		/// <param name="maxChange">Maximum changelist to consider</param>
 		/// <returns>List of suspects</returns>
-		async Task<List<NewIssueSpanSuspectData>> FindSuspectsForSpanAsync(IStream stream, IIssueFingerprint fingerprint, int minChange, int maxChange)
+		async Task<List<NewIssueSpanSuspectData>> FindSuspectsForSpanAsync(StreamConfig streamConfig, IIssueFingerprint fingerprint, int minChange, int maxChange)
 		{
 			List<NewIssueSpanSuspectData> suspects = new List<NewIssueSpanSuspectData>();
 			if (TryGetHandler(fingerprint, out IssueHandler? handler))
 			{
-				_logger.LogDebug("Querying for changes in {StreamName} between {MinChange} and {MaxChange}", stream.Name, minChange, maxChange);
+				_logger.LogDebug("Querying for changes in {StreamName} between {MinChange} and {MaxChange}", streamConfig.Name, minChange, maxChange);
 
 				// Get the submitted changes before this job
-				List<ChangeDetails> changes = await PerforceServiceExtensions.GetChangeDetailsAsync(_perforce, stream.ClusterName, stream.Name, minChange, maxChange, MaxChanges, null);
+				List<ICommit> changes = await _commitService.GetCollection(streamConfig).FindAsync(minChange, maxChange, MaxChanges).ToListAsync();
 				_logger.LogDebug("Found {NumResults} changes", changes.Count);
 
 				// Get the handler to rank them
-				List<SuspectChange> suspectChanges = changes.ConvertAll(x => new SuspectChange(x));
+				List<SuspectChange> suspectChanges = new List<SuspectChange>(changes.Count);
+				foreach (ICommit commit in changes)
+				{
+					IReadOnlyList<string> files = await commit.GetFilesAsync(CancellationToken.None);
+					suspectChanges.Add(new SuspectChange(commit, files));
+				}
 				handler.RankSuspects(fingerprint, suspectChanges);
 
 				// Output the rankings
@@ -1127,20 +1159,11 @@ namespace Horde.Build.Issues
 					int maxRank = suspectChanges.Max(x => x.Rank);
 					foreach (SuspectChange suspectChange in suspectChanges)
 					{
-						_logger.LogDebug("Suspect CL: {Change}, Author: {Author}, Rank: {Rank}, MaxRank: {MaxRank}", suspectChange.Details.Number, suspectChange.Details.Author, suspectChange.Rank, maxRank);
+						_logger.LogDebug("Suspect CL: {Change}, Author: {UserId}, Rank: {Rank}, MaxRank: {MaxRank}", suspectChange.Details.Number, suspectChange.Details.AuthorId, suspectChange.Rank, maxRank);
 						if (suspectChange.Rank == maxRank)
 						{
-							IUser? owner = suspectChange.Details.Author;
-
-							string? roboOwnerName = ParseRobomergeOwner(suspectChange.Details.Description);
-							if (roboOwnerName != null)
-							{
-								owner = await _perforce.FindOrAddUserAsync(stream.ClusterName, roboOwnerName);
-							}
-
-							NewIssueSpanSuspectData suspect = new NewIssueSpanSuspectData(suspectChange.Details.Number, owner.Id);
-							suspect.OriginatingChange = ParseRobomergeSource(suspectChange.Details.Description);
-
+							NewIssueSpanSuspectData suspect = new NewIssueSpanSuspectData(suspectChange.Details.Number, suspectChange.Details.OwnerId);
+							suspect.OriginatingChange = suspectChange.Details.OriginalChange;
 							suspects.Add(suspect);
 						}
 					}
@@ -1193,12 +1216,17 @@ namespace Horde.Build.Issues
 				existingIssues = await _issueCollection.FindIssuesForChangesAsync(span.Suspects.ConvertAll(x => x.OriginatingChange ?? x.Change));
 				_logger.LogDebug("Found {NumIssues} open issues in {StreamId} from [{ChangeList}]", existingIssues.Count, span.StreamId, String.Join(", ", span.Suspects.ConvertAll(x => (x.OriginatingChange ?? x.Change).ToString())));
 			}
-
-			IIssue? issue = existingIssues.FirstOrDefault(x => x.Fingerprints.Any(y => y.IsMatch(span.Fingerprint)));
+			
+			IIssue? issue = existingIssues.FirstOrDefault(x => x.VerifiedAt == null && x.Fingerprints.Any(y => y.IsMatch(span.Fingerprint)));
 			if (issue == null)
 			{
 				string summary = GetSummary(span.Fingerprint, span.FirstFailure.Severity);
 				issue = await _issueCollection.AddIssueAsync(summary);
+				_logger.LogInformation("Created issue {IssueId}", issue.Id);
+			}
+			else
+			{
+				_logger.LogInformation("Natched to issue {IssueId}", issue.Id);
 			}
 			return issue;
 		}
@@ -1225,19 +1253,19 @@ namespace Horde.Build.Issues
 		/// Update the sentinels for the given list of issues
 		/// </summary>
 		/// <param name="spans"></param>
-		/// <param name="stream">The stream instance</param>
+		/// <param name="streamConfig">The stream instance</param>
 		/// <param name="job"></param>
 		/// <param name="batch"></param>
 		/// <param name="step"></param>
 		/// <returns></returns>
-		async Task<bool> TryUpdateSentinelsAsync(List<IIssueSpan> spans, IStream stream, IJob job, IJobStepBatch batch, IJobStep step)
+		async Task<bool> TryUpdateSentinelsAsync(List<IIssueSpan> spans, StreamConfig streamConfig, IJob job, IJobStepBatch batch, IJobStep step)
 		{
 			foreach(IIssueSpan span in spans)
 			{
 				if (job.Change < span.FirstFailure.Change && (span.LastSuccess == null || job.Change > span.LastSuccess.Change))
 				{
 					NewIssueStepData newLastSuccess = new NewIssueStepData(job.Change, IssueSeverity.Unspecified, job.Name, job.Id, batch.Id, step.Id, step.StartTimeUtc ?? default, step.LogId, null, false);
-					List<NewIssueSpanSuspectData> newSuspects = await FindSuspectsForSpanAsync(stream, span.Fingerprint, job.Change + 1, span.FirstFailure.Change);
+					List<NewIssueSpanSuspectData> newSuspects = await FindSuspectsForSpanAsync(streamConfig, span.Fingerprint, job.Change + 1, span.FirstFailure.Change);
 
 					if (await _issueCollection.TryUpdateSpanAsync(span, newLastSuccess: newLastSuccess, newSuspects: newSuspects) == null)
 					{
@@ -1248,15 +1276,33 @@ namespace Horde.Build.Issues
 					await UpdateIssueDerivedDataAsync(span.IssueId);
 				}
 				else if (job.Change > span.LastFailure.Change && (span.NextSuccess == null || job.Change < span.NextSuccess.Change))
-				{
-					NewIssueStepData newNextSucccess = new NewIssueStepData(job.Change, IssueSeverity.Unspecified, job.Name, job.Id, batch.Id, step.Id, step.StartTimeUtc ?? default, step.LogId, null, false);
-
-					if (await _issueCollection.TryUpdateSpanAsync(span, newNextSuccess: newNextSucccess) == null)
+				{					
+					IIssue? issue = await _issueCollection.GetIssueAsync(span.IssueId);
+					if (issue == null || issue.QuarantinedByUserId == null)
 					{
-						return false;
-					}
+						NewIssueStepData newNextSucccess = new NewIssueStepData(job.Change, IssueSeverity.Unspecified, job.Name, job.Id, batch.Id, step.Id, step.StartTimeUtc ?? default, step.LogId, null, false);
 
-					_logger.LogInformation("Set next success for issue {IssueId}, template {TemplateId}, node {Node} as job {JobId}, cl {Change}", span.IssueId, job.TemplateId, span.NodeName, job.Id, job.Change);
+						if (await _issueCollection.TryUpdateSpanAsync(span, newNextSuccess: newNextSucccess) == null)
+						{
+							return false;
+						}
+
+						_logger.LogInformation("Set next success for issue {IssueId}, template {TemplateId}, node {Node} as job {JobId}, cl {Change}", span.IssueId, job.TemplateId, span.NodeName, job.Id, job.Change);
+
+					}
+					else
+					{
+						// If the issue is quarantined, spans may have been updated by log events, though in the case they aren't
+						// need to add a step to the span history
+						List<IIssueStep> steps = await _issueCollection.FindStepsAsync(span.Id);
+						if (steps.FirstOrDefault(x => x.JobId == job.Id && x.StepId == step.Id) == null)
+						{
+							NewIssueStepData newStep = new NewIssueStepData(job, batch, step, IssueSeverity.Unspecified, null, false);
+							await _issueCollection.AddStepAsync(span.Id, newStep);
+							_logger.LogInformation("Adding step to quarantined issue {IssueId}, template {TemplateId}, node {Node} job {JobId} batch {BatchId} step {StepId} cl {Change}", span.IssueId, job.TemplateId, span.NodeName, job.Id, batch.Id, step.Id, job.Change);
+						}
+					}
+					
 					await UpdateIssueDerivedDataAsync(span.IssueId);
 				}
 			}

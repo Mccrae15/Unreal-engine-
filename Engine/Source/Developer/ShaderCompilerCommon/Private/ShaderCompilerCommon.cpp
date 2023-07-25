@@ -2,31 +2,34 @@
 
 #include "ShaderCompilerCommon.h"
 #include "ShaderParameterParser.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/PathViews.h"
 #include "Modules/ModuleManager.h"
 #include "HlslccDefinitions.h"
 #include "HAL/FileManager.h"
 #include "String/RemoveFrom.h"
+#include "ShaderSymbolExport.h"
+#include "ShaderMinifier.h"
 
 IMPLEMENT_MODULE(FDefaultModuleImpl, ShaderCompilerCommon);
-
 
 int16 GetNumUniformBuffersUsed(const FShaderCompilerResourceTable& InSRT)
 {
 	auto CountLambda = [&](const TArray<uint32>& In)
-	{
-		int16 LastIndex = -1;
-		for (int32 i = 0; i < In.Num(); ++i)
-		{
-			auto BufferIndex = FRHIResourceTableEntry::GetUniformBufferIndex(In[i]);
+					{
+						int16 LastIndex = -1;
+						for (int32 i = 0; i < In.Num(); ++i)
+						{
+							auto BufferIndex = FRHIResourceTableEntry::GetUniformBufferIndex(In[i]);
 			if (BufferIndex != static_cast<uint16>(FRHIResourceTableEntry::GetEndOfStreamToken()))
-			{
-				LastIndex = FMath::Max(LastIndex, (int16)BufferIndex);
-			}
-		}
+							{
+								LastIndex = FMath::Max(LastIndex, (int16)BufferIndex);
+							}
+						}
 
-		return LastIndex + 1;
-	};
+						return LastIndex + 1;
+					};
 	int16 Num = CountLambda(InSRT.SamplerMap);
 	Num = FMath::Max(Num, (int16)CountLambda(InSRT.ShaderResourceViewMap));
 	Num = FMath::Max(Num, (int16)CountLambda(InSRT.TextureMap));
@@ -92,7 +95,7 @@ bool BuildResourceTableMapping(
 	// Go through ALL the members of ALL the UB resources
 	for (auto MapIt = ResourceTableMap.CreateConstIterator(); MapIt; ++MapIt)
 	{
-		const FString& Name = MapIt->Key;
+		const FString& Name	= MapIt->Key;
 		const FResourceTableEntry& Entry = MapIt->Value;
 
 		uint16 BufferIndex, BaseIndex, Size;
@@ -256,8 +259,8 @@ const TCHAR* FindMatchingBlock(const TCHAR* OpeningCharPtr, char OpenChar, char 
 
 	return nullptr;
 }
-const TCHAR* FindMatchingClosingBrace(const TCHAR* OpeningCharPtr) { return FindMatchingBlock(OpeningCharPtr, '{', '}'); };
-const TCHAR* FindMatchingClosingParenthesis(const TCHAR* OpeningCharPtr) { return FindMatchingBlock(OpeningCharPtr, '(', ')'); };
+const TCHAR* FindMatchingClosingBrace(const TCHAR* OpeningCharPtr)			{ return FindMatchingBlock(OpeningCharPtr, '{', '}'); };
+const TCHAR* FindMatchingClosingParenthesis(const TCHAR* OpeningCharPtr)	{ return FindMatchingBlock(OpeningCharPtr, '(', ')'); };
 
 // See MSDN HLSL 'Symbol Name Restrictions' doc
 inline bool IsValidHLSLIdentifierCharacter(TCHAR Char)
@@ -290,7 +293,7 @@ void ParseHLSLTypeName(const TCHAR* SearchString, const TCHAR*& TypeNameStartPtr
 		{
 			Depth--;
 		}
-		else if (Depth == 0
+		else if (Depth == 0 
 			&& FChar::IsWhitespace(*TypeNameEndPtr)
 			// If we found a '<', we must not accept any whitespace before it
 			&& (!PotentialExtraTypeInfoPtr || *PotentialExtraTypeInfoPtr != '<' || TypeNameEndPtr > PotentialExtraTypeInfoPtr))
@@ -333,8 +336,8 @@ const TCHAR* ParseStructRecursive(
 	const TCHAR* StructStartPtr,
 	FString& UniformBufferName,
 	int32 StructDepth,
-	const FString& StructNamePrefix,
-	const FString& GlobalNamePrefix,
+	const FString& StructNamePrefix, 
+	const FString& GlobalNamePrefix, 
 	TMap<FString, TArray<FUniformBufferMemberInfo>>& UniformBufferNameToMembers)
 {
 	const TCHAR* OpeningBracePtr = FCString::Strstr(StructStartPtr, TEXT("{"));
@@ -381,7 +384,7 @@ const TCHAR* ParseStructRecursive(
 			FString MemberName;
 			const TCHAR* SymbolEndPtr = ParseHLSLSymbolName(MemberTypeEndPtr, MemberName);
 			check(MemberName.Len() > 0);
-
+			
 			MemberSearchPtr = SymbolEndPtr;
 
 			// Skip over trailing tokens '[1];'
@@ -425,7 +428,7 @@ bool MatchStructMemberName(const FString& SymbolName, const TCHAR* SearchPtr, co
 		{
 			return false;
 		}
-
+		
 		SearchPtr++;
 
 		if (i < SymbolName.Len() - 1)
@@ -452,7 +455,7 @@ bool MatchStructMemberName(const FString& SymbolName, const TCHAR* SearchPtr, co
 TCHAR* FindNextUniformBufferReference(TCHAR* SearchPtr, const TCHAR* SearchString, uint32 SearchStringLength)
 {
 	TCHAR* FoundPtr = FCString::Strstr(SearchPtr, SearchString);
-
+	
 	while (FoundPtr)
 	{
 		if (FoundPtr == nullptr)
@@ -463,11 +466,23 @@ TCHAR* FindNextUniformBufferReference(TCHAR* SearchPtr, const TCHAR* SearchStrin
 		{
 			return FoundPtr;
 		}
-
+		
 		FoundPtr = FCString::Strstr(FoundPtr + SearchStringLength, SearchString);
 	}
-
+	
 	return nullptr;
+}
+
+bool UE::ShaderCompilerCommon::ShouldUseStableConstantBuffer(const FShaderCompilerInput& Input)
+{
+	// stable constant buffer is for the FShaderParameterBindings::BindForLegacyShaderParameters() code path.
+	// Ray tracing shaders use FShaderParameterBindings::BindForRootShaderParameters instead.
+	if (Input.IsRayTracingShader())
+	{
+		return false;
+	}
+
+	return Input.RootParametersStructure != nullptr;
 }
 
 static const TCHAR* const s_AllSRVTypes[] =
@@ -511,8 +526,8 @@ static const TCHAR* const s_AllSamplerTypes[] =
 
 EShaderParameterType UE::ShaderCompilerCommon::ParseParameterType(
 	FStringView InType,
-	TArrayView<const TCHAR*> InExtraSRVTypes,
-	TArrayView<const TCHAR*> InExtraUAVTypes)
+	TArrayView<const TCHAR* const> InExtraSRVTypes,
+	TArrayView<const TCHAR* const> InExtraUAVTypes)
 {
 	TArrayView<const TCHAR* const> AllSamplerTypes(s_AllSamplerTypes);
 	TArrayView<const TCHAR* const> AllSRVTypes(s_AllSRVTypes);
@@ -526,8 +541,9 @@ EShaderParameterType UE::ShaderCompilerCommon::ParseParameterType(
 	FStringView UntemplatedType = InType;
 	if (int32 Index = InType.Find(TEXT("<")); Index != INDEX_NONE)
 	{
+		// Remove the template argument but don't forget to clean up the type name
 		const int32 NumChars = InType.Len() - Index;
-		UntemplatedType = InType.LeftChop(NumChars);
+		UntemplatedType = InType.LeftChop(NumChars).TrimEnd();
 	}
 
 	if (AllSRVTypes.Contains(UntemplatedType) || InExtraSRVTypes.Contains(UntemplatedType))
@@ -653,6 +669,56 @@ void UE::ShaderCompilerCommon::ParseRayTracingEntryPoint(const FString& Input, F
 	{
 		OutMain = Input;
 	}
+}
+
+bool UE::ShaderCompilerCommon::RemoveDeadCode(FString& InOutPreprocessedShaderSource, TConstArrayView<FStringView> RequiredSymbols, TArray<FShaderCompilerError>& OutErrors)
+{
+	UE::ShaderMinifier::EMinifyShaderFlags ExtraFlags = UE::ShaderMinifier::EMinifyShaderFlags::None;
+
+#if 0 // Extra features that may be useful during development / debugging
+	ExtraFlags |= UE::ShaderMinifier::EMinifyShaderFlags::OutputReasons // Output a comment every struct/function describing why it was included (i.e. which code block uses it)
+	           |  UE::ShaderMinifier::EMinifyShaderFlags::OutputStats;  // Output a comment detailing how many blocks of each type (functions/structs/etc.) were emitted
+#endif
+
+	UE::ShaderMinifier::FMinifiedShader Minified  = UE::ShaderMinifier::Minify(InOutPreprocessedShaderSource, RequiredSymbols,
+		  UE::ShaderMinifier::EMinifyShaderFlags::OutputCommentLines // Preserve comments that were left after preprocessing
+		| UE::ShaderMinifier::EMinifyShaderFlags::OutputLines        // Emit #line directives
+		| ExtraFlags);
+
+	if (Minified.Success())
+	{
+		Swap(InOutPreprocessedShaderSource, Minified.Code);
+		return true;
+	}
+	else
+	{
+		OutErrors.Add(TEXT("warning: Shader minification failed."));
+		return false;
+	}
+}
+
+bool UE::ShaderCompilerCommon::RemoveDeadCode(FString& InOutPreprocessedShaderSource, const FString& EntryPoint, TArray<FShaderCompilerError>& OutErrors)
+{
+	TArray<FStringView> RequiredSymbols;
+
+	FString EntryMain;
+	FString EntryAnyHit;
+	FString EntryIntersection;
+	UE::ShaderCompilerCommon::ParseRayTracingEntryPoint(EntryPoint, EntryMain, EntryAnyHit, EntryIntersection);
+
+	RequiredSymbols.Add(EntryMain);
+
+	if (!EntryAnyHit.IsEmpty())
+	{
+		RequiredSymbols.Add(EntryAnyHit);
+	}
+
+	if (!EntryIntersection.IsEmpty())
+	{
+		RequiredSymbols.Add(EntryIntersection);
+	}
+
+	return UE::ShaderCompilerCommon::RemoveDeadCode(InOutPreprocessedShaderSource, RequiredSymbols, OutErrors);
 }
 
 void HandleReflectedGlobalConstantBufferMember(
@@ -901,7 +967,7 @@ void RemoveUniformBuffersFromSource(const FShaderCompilerEnvironment& Environmen
 						check(SearchPtr[MemberNameAsStructMember.Len() + i] != 0);
 						SearchPtr[MemberNameAsStructMember.Len() + i] = ' ';
 					}
-
+							
 					break;
 				}
 			}
@@ -990,11 +1056,11 @@ void TransformStringIntoCharacterArray(FString& PreprocessedShaderSource)
 				const uint32 EntryIndex = Entries.Num();
 				uint32 ValidCharCount = 0;
 				FTextEntry& Entry = Entries.AddDefaulted_GetRef();
-				Entry.Index = EntryIndex;
-				Entry.Offset = GlobalCount;
-				Entry.SourceText = Text;
+				Entry.Index			= EntryIndex;
+				Entry.Offset		= GlobalCount;
+				Entry.SourceText	= Text;
 				ConvertTextToAsciiCharacter(Entry.SourceText, Entry.ConvertedText, Entry.EncodedText);
-				Entry.Hash = CityHash32((const char*)&Entry.SourceText.GetCharArray(), sizeof(FString::ElementType) * Entry.SourceText.Len());
+				Entry.Hash			= CityHash32((const char*)&Entry.SourceText.GetCharArray(), sizeof(FString::ElementType) * Entry.SourceText.Len());
 
 				GlobalCount += Entry.ConvertedText.Len();
 
@@ -1051,12 +1117,12 @@ void TransformStringIntoCharacterArray(FString& PreprocessedShaderSource)
 		TextChars += TEXT("uint ShaderPrintGetHash(FShaderPrintText InText)   { return TEXT_HASHES[InText.Index]; }\n");
 	}
 	else
-	{
+	{	
 		TextChars += TEXT("uint ShaderPrintGetChar(uint Index)                { return 0; }\n");
 		TextChars += TEXT("uint ShaderPrintGetOffset(FShaderPrintText InText) { return 0; }\n");
 		TextChars += TEXT("uint ShaderPrintGetHash(FShaderPrintText InText)   { return 0; }\n");
 	}
-
+	
 	// 6. Insert global struct data + print function
 	{
 		const TCHAR* InsertToken = TEXT("GENERATED_SHADER_PRINT");
@@ -1312,14 +1378,14 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 	const FOSCOptions& Options,
 	const ANSICHAR* VulkanSpirVEntryPoint)
 {
-	const auto Frequency = (EShaderFrequency)Input.Target.Frequency;
-	const FString WorkingDir(FPlatformProcess::ShaderDir());
+		const auto Frequency = (EShaderFrequency)Input.Target.Frequency;
+		const FString WorkingDir(FPlatformProcess::ShaderDir());
 
-	FString CompilerPath = Input.ExtraSettings.OfflineCompilerPath;
+		FString CompilerPath = Input.ExtraSettings.OfflineCompilerPath;
 
-	// add process and thread ids to the file name to avoid collision between workers
-	auto ProcID = FPlatformProcess::GetCurrentProcessId();
-	auto ThreadID = FPlatformTLS::GetCurrentThreadId();
+		// add process and thread ids to the file name to avoid collision between workers
+		auto ProcID = FPlatformProcess::GetCurrentProcessId();
+		auto ThreadID = FPlatformTLS::GetCurrentThreadId();
 
 	auto GetFileName = [&](FString FileType, FString Ext, int NumInst = 0)
 	{
@@ -1332,9 +1398,9 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 
 	FString ShaderSrcExt;
 	if (bVulkanSpirV)
-	{
+		{
 		ShaderSrcExt = Options.SpirVExt;
-	}
+		}
 	else
 	{
 		if (const FString* Ext = Options.FrequencyGLSLExts.Find(Frequency))
@@ -1350,7 +1416,7 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 
 	FString CompilerCommand = Options.CommonOptions;
 	if (!Options.GPUTargetOption.IsEmpty())
-	{
+		{
 		FString GPUTarget = Input.ExtraSettings.GPUTarget;
 		if (GPUTarget.IsEmpty())
 			GPUTarget = Options.DefaultGPUTarget;
@@ -1361,10 +1427,10 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 
 	CompilerCommand += Options.FrequencyOptions[Frequency];
 
-	if (bVulkanSpirV)
-	{
+		if (bVulkanSpirV)
+		{
 		CompilerCommand += FString::Printf(TEXT("%s %s"), *Options.FrequencyEntryPoints[Frequency], ANSI_TO_TCHAR(VulkanSpirVEntryPoint));
-	}
+		}
 
 	if (const FString* ExtraOption = Options.FrequencyExtraOption.Find(Frequency)) 
 	{
@@ -1373,64 +1439,67 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 
 	FArchive* Ar = IFileManager::Get().CreateFileWriter(*ShaderSourceFile, FILEWRITE_EvenIfReadOnly);
 
-	if (Ar == nullptr)
-	{
-		return;
-	}
+		if (Ar == nullptr)
+		{
+			return;
+		}
 
-	// write out the shader source to a file and use it below as input for the compiler
-	Ar->Serialize((void*)ShaderSource, SourceSize);
-	delete Ar;
+		// write out the shader source to a file and use it below as input for the compiler
+		Ar->Serialize((void*)ShaderSource, SourceSize);
+		delete Ar;
 
-	FString StdOut;
-	FString StdErr;
-	int32 ReturnCode = 0;
+		FString StdOut;
+		FString StdErr;
+		int32 ReturnCode = 0;
 
-	// Since v6.2.0, Mali compiler needs to be started in the executable folder or it won't find "external/glslangValidator" for Vulkan
-	FString CompilerWorkingDirectory = FPaths::GetPath(CompilerPath);
+		// Since v6.2.0, Mali compiler needs to be started in the executable folder or it won't find "external/glslangValidator" for Vulkan
+		FString CompilerWorkingDirectory = FPaths::GetPath(CompilerPath);
 
-	if (!CompilerWorkingDirectory.IsEmpty() && FPaths::DirectoryExists(CompilerWorkingDirectory))
-	{
-		// compiler command line contains flags and the GLSL source file name
+		if (!CompilerWorkingDirectory.IsEmpty() && FPaths::DirectoryExists(CompilerWorkingDirectory))
+		{
+			// compiler command line contains flags and the GLSL source file name
 		CompilerCommand += " " + FPaths::ConvertRelativePathToFull(ShaderSourceFile);
 
 		// Run shader compiler and wait for completion
-		FPlatformProcess::ExecProcess(*CompilerPath, *CompilerCommand, &ReturnCode, &StdOut, &StdErr, *CompilerWorkingDirectory);
-	}
-	else
-	{
-		StdErr = "Couldn't find offline compiler at " + CompilerPath;
-	}
-
-	// parse compiler's output and extract instruction count or eventual errors
-	ShaderOutput.bSucceeded = (ReturnCode >= 0);
-	if (ShaderOutput.bSucceeded)
-	{
-		// check for errors
-		if (StdErr.Len())
-		{
-			ShaderOutput.bSucceeded = false;
-
-			FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
-			NewError->StrippedErrorMessage = TEXT("[Offline Complier]\n") + StdErr;
-			ShaderOutput.ShaderStats = NewError->StrippedErrorMessage;
+			FPlatformProcess::ExecProcess(*CompilerPath, *CompilerCommand, &ReturnCode, &StdOut, &StdErr, *CompilerWorkingDirectory);
 		}
 		else
 		{
-			FString Errors = OfflineCompiler_ExtractErrors(StdOut);
-
-			if (Errors.Len())
-			{
-				FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
-				NewError->StrippedErrorMessage = TEXT("[Offline Complier]\n") + Errors;
-				ShaderOutput.ShaderStats = NewError->StrippedErrorMessage;
-				ShaderOutput.bSucceeded = false;
-			}
+		StdErr = "Couldn't find offline compiler at " + CompilerPath;
 		}
 
-		// extract instruction count
+	// parse compiler's output and extract instruction count or eventual errors
+		ShaderOutput.bSucceeded = (ReturnCode >= 0);
 		if (ShaderOutput.bSucceeded)
 		{
+			// check for errors
+			if (StdErr.Len())
+			{
+				ShaderOutput.bSucceeded = false;
+
+				FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
+			NewError->StrippedErrorMessage = TEXT("[Offline Complier]\n") + StdErr;
+			ShaderOutput.ShaderStats = NewError->StrippedErrorMessage;
+			}
+			else
+			{
+			FString Errors = OfflineCompiler_ExtractErrors(StdOut);
+
+				if (Errors.Len())
+				{
+					FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
+				NewError->StrippedErrorMessage = TEXT("[Offline Complier]\n") + Errors;
+				ShaderOutput.ShaderStats = NewError->StrippedErrorMessage;
+					ShaderOutput.bSucceeded = false;
+				}
+			}
+
+			// extract instruction count
+			if (ShaderOutput.bSucceeded)
+			{
+
+			ShaderOutput.NumInstructions = OfflineCompiler_ExtractNumberInstructions(StdOut, Options.InstructionStrings);
+
 			FString OutputStatsFile;
 			if (Input.ExtraSettings.bSaveCompilerStatsFiles)
 			{
@@ -1451,16 +1520,16 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 			}
 
 			ShaderOutput.ShaderStats = FString("\n") + OutputStatsFile + FString("\n") + StdOut;
+			}
 		}
-	}
 
-	// we're done so delete the shader file
+		// we're done so delete the shader file
 	if (Input.ExtraSettings.bSaveCompilerStatsFiles) {
 		FString DstShaderSourceFile = GetFileName(FString("-Source"), ShaderSrcExt, ShaderOutput.NumInstructions);
 		IFileManager::Get().Move(*DstShaderSourceFile, *ShaderSourceFile, true, true);
 		IFileManager::Get().Delete(*ShaderSourceFile, true, true);
 	}
-	IFileManager::Get().Delete(*ShaderSourceFile, true, true);
+		IFileManager::Get().Delete(*ShaderSourceFile, true, true);
 }
 
 void CompileShaderOffline_Mali(const FShaderCompilerInput& Input,
@@ -1578,25 +1647,23 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 
 FString GetDumpDebugUSFContents(const FShaderCompilerInput& Input, const FString& Source, uint32 HlslCCFlags)
 {
-	FString Contents = Source;
-	Contents += TEXT("\n");
-	Contents += CrossCompiler::CreateResourceTableFromEnvironment(Input.Environment);
-	Contents += TEXT("#if 0 /*DIRECT COMPILE*/\n");
-	Contents += CreateShaderCompilerWorkerDirectCommandLine(Input, HlslCCFlags);
-	Contents += TEXT("\n#endif /*DIRECT COMPILE*/\n");
-
-	return Contents;
+	UE::ShaderCompilerCommon::FDebugShaderDataOptions DebugDataOptions;
+	DebugDataOptions.HlslCCFlags = HlslCCFlags;
+	return UE::ShaderCompilerCommon::GetDebugShaderContents(Input, Source, DebugDataOptions);
 }
 
 void DumpDebugUSF(const FShaderCompilerInput& Input, const ANSICHAR* Source, uint32 HlslCCFlags, const TCHAR* OverrideBaseFilename)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FString NewSource = Source ? Source : "";
 	FString Contents = GetDumpDebugUSFContents(Input, NewSource, HlslCCFlags);
 	DumpDebugUSF(Input, NewSource, HlslCCFlags, OverrideBaseFilename);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void DumpDebugUSF(const FShaderCompilerInput& Input, const FString& Source, uint32 HlslCCFlags, const TCHAR* OverrideBaseFilename)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FString BaseSourceFilename = (OverrideBaseFilename && *OverrideBaseFilename) ? OverrideBaseFilename : *Input.GetSourceFilename();
 	FString Filename = Input.DumpDebugInfoPath / BaseSourceFilename;
 
@@ -1605,6 +1672,65 @@ void DumpDebugUSF(const FShaderCompilerInput& Input, const FString& Source, uint
 		FString Contents = GetDumpDebugUSFContents(Input, Source, HlslCCFlags);
 		FileWriter->Serialize(TCHAR_TO_ANSI(*Contents), Contents.Len());
 		FileWriter->Close();
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+namespace UE::ShaderCompilerCommon
+{
+	void DumpDebugShaderData(const FShaderCompilerInput& Input, const FString& PreprocessedSource, const FDebugShaderDataOptions& Options)
+	{
+		if (Input.DumpDebugInfoEnabled())
+		{
+			FString Prefix = (Options.FilenamePrefix && *Options.FilenamePrefix) ? Options.FilenamePrefix : FString();
+			FString BaseSourceFilename = Prefix + ((Options.OverrideBaseFilename && *Options.OverrideBaseFilename) ? Options.OverrideBaseFilename : *Input.GetSourceFilename());
+
+			FString ModifiedPreprocessedSource = GetDebugShaderContents(Input, PreprocessedSource, Options);
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			// note: DumpDebugUSF should be internalized once the deprecation window ends 
+			// (i.e. still should remain in this file but not be declared in the header)
+			// until that time we need to disable deprecation warnings here.
+			DumpDebugUSF(Input, ModifiedPreprocessedSource, Options.HlslCCFlags, *BaseSourceFilename);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+			if (Input.bGenerateDirectCompileFile && !Options.bSkipDirectCompileTxt)
+			{
+				// note: CreateShaderCompileWorkerDirectCommandLine should be internalized once the deprecation window ends
+				// (i.e. still should remain in this file but not be declared in the header)
+				// until that time we need to disable deprecation warnings here.
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				FFileHelper::SaveStringToFile(CreateShaderCompilerWorkerDirectCommandLine(Input), *(Input.DumpDebugInfoPath / FString::Printf(TEXT("%sDirectCompile.txt"), *Prefix)));
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			}
+		}
+	}
+
+	FString GetDebugShaderContents(const FShaderCompilerInput& Input, const FString& PreprocessedSource, const FDebugShaderDataOptions& Options)
+	{
+		FString Contents = Options.AppendPreSource ? Options.AppendPreSource() : FString();
+		Contents += PreprocessedSource;
+		if (Options.AppendPostSource)
+		{
+			Contents += Options.AppendPostSource();
+		}
+		Contents += TEXT("\n");
+		Contents += CrossCompiler::CreateResourceTableFromEnvironment(Input.Environment);
+		Contents += TEXT("#if 0 /*DIRECT COMPILE*/\n");
+		// note: CreateShaderCompileWorkerDirectCommandLine should be internalized once the deprecation window ends
+		// (i.e. still should remain in this file but not be declared in the header)
+		// until that time we need to disable deprecation warnings here.
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS	
+		Contents += CreateShaderCompilerWorkerDirectCommandLine(Input, Options.HlslCCFlags);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		Contents += TEXT("\n#endif /*DIRECT COMPILE*/\n");
+		if (!Input.DebugDescription.IsEmpty())
+		{
+			Contents += TEXT("//");
+			Contents += Input.DebugDescription;
+			Contents += TEXT("\n");
+		}
+
+		return Contents;
 	}
 }
 
@@ -1970,7 +2096,7 @@ namespace CrossCompiler
 				{
 					return false;
 				}
-
+				
 				if (!ParseIntegerNumber(ShaderSource, UniformBlock.Index))
 				{
 					return false;
@@ -1992,7 +2118,7 @@ namespace CrossCompiler
 				{
 					continue;
 				}
-
+			
 				//#todo-rco: Need a log here
 				//UE_LOG(ShaderCompilerCommon, Warning, TEXT("Invalid char '%c'"), *ShaderSource);
 				return false;
@@ -2005,49 +2131,49 @@ namespace CrossCompiler
 			check(0);
 			return false;
 			/*
-						ShaderSource += UniformsPrefixLen;
+			ShaderSource += UniformsPrefixLen;
 
-						while (*ShaderSource && *ShaderSource != '\n')
-						{
-							uint16 ArrayIndex = 0;
-							uint16 Offset = 0;
-							uint16 NumComponents = 0;
+			while (*ShaderSource && *ShaderSource != '\n')
+			{
+				uint16 ArrayIndex = 0;
+				uint16 Offset = 0;
+				uint16 NumComponents = 0;
 
-							FString ParameterName = ParseIdentifier(ShaderSource);
-							verify(ParameterName.Len() > 0);
-							verify(Match(ShaderSource, '('));
-							ArrayIndex = ParseNumber(ShaderSource);
-							verify(Match(ShaderSource, ':'));
-							Offset = ParseNumber(ShaderSource);
-							verify(Match(ShaderSource, ':'));
-							NumComponents = ParseNumber(ShaderSource);
-							verify(Match(ShaderSource, ')'));
+				FString ParameterName = ParseIdentifier(ShaderSource);
+				verify(ParameterName.Len() > 0);
+				verify(Match(ShaderSource, '('));
+				ArrayIndex = ParseNumber(ShaderSource);
+				verify(Match(ShaderSource, ':'));
+				Offset = ParseNumber(ShaderSource);
+				verify(Match(ShaderSource, ':'));
+				NumComponents = ParseNumber(ShaderSource);
+				verify(Match(ShaderSource, ')'));
 
-							ParameterMap.AddParameterAllocation(
-								*ParameterName,
-								ArrayIndex,
-								Offset * BytesPerComponent,
-								NumComponents * BytesPerComponent
-								);
+				ParameterMap.AddParameterAllocation(
+					*ParameterName,
+					ArrayIndex,
+					Offset * BytesPerComponent,
+					NumComponents * BytesPerComponent
+					);
 
-							if (ArrayIndex < OGL_NUM_PACKED_UNIFORM_ARRAYS)
-							{
-								PackedUniformSize[ArrayIndex] = FMath::Max<uint16>(
-									PackedUniformSize[ArrayIndex],
-									BytesPerComponent * (Offset + NumComponents)
-									);
-							}
+				if (ArrayIndex < OGL_NUM_PACKED_UNIFORM_ARRAYS)
+				{
+					PackedUniformSize[ArrayIndex] = FMath::Max<uint16>(
+						PackedUniformSize[ArrayIndex],
+						BytesPerComponent * (Offset + NumComponents)
+						);
+				}
 
-							// Skip the comma.
-							if (Match(ShaderSource, '\n'))
-							{
-								break;
-							}
+				// Skip the comma.
+				if (Match(ShaderSource, '\n'))
+				{
+					break;
+				}
 
-							verify(Match(ShaderSource, ','));
-						}
+				verify(Match(ShaderSource, ','));
+			}
 
-						Match(ShaderSource, '\n');
+			Match(ShaderSource, '\n');
 			*/
 		}
 
@@ -2132,7 +2258,7 @@ namespace CrossCompiler
 			{
 				return false;
 			}
-
+			
 			if (!ParseIntegerNumber(ShaderSource, PackedUB.Attribute.Index))
 			{
 				return false;
@@ -2166,7 +2292,7 @@ namespace CrossCompiler
 				{
 					return false;
 				}
-
+				
 				if (!Match(ShaderSource, ','))
 				{
 					return false;
@@ -2263,7 +2389,7 @@ namespace CrossCompiler
 					do
 					{
 						FString SamplerState;
-
+						
 						if (!ParseIdentifier(ShaderSource, SamplerState))
 						{
 							return false;
@@ -2483,7 +2609,7 @@ namespace CrossCompiler
 				return false;
 			}
 		}
-
+	
 		return ParseCustomHeaderEntries(ShaderSource);
 	}
 

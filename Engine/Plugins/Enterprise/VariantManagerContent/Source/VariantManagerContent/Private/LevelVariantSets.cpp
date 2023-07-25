@@ -3,17 +3,23 @@
 #include "LevelVariantSets.h"
 
 #include "Engine/BlueprintGeneratedClass.h"
-#include "Engine/World.h"
+#include "Engine/Level.h"
 #include "VariantSet.h"
 #include "Variant.h"
 #include "VariantObjectBinding.h"
 #include "LevelVariantSetsFunctionDirector.h"
 #include "Kismet/GameplayStatics.h"
 #include "LevelVariantSetsActor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LevelVariantSets)
+
 #if WITH_EDITOR
 #include "Editor.h"
 #include "GameDelegates.h"
 #include "Engine/Blueprint.h"
+#else
+#include "Engine/World.h"
+#include "UObject/Package.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "LevelVariantSets"

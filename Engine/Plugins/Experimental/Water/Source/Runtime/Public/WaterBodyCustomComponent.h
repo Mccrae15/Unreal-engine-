@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "WaterBodyComponent.h"
 #include "WaterBodyCustomComponent.generated.h"
 
@@ -36,9 +35,15 @@ protected:
 	virtual const TCHAR* GetWaterSpriteTextureName() const override;
 
 	virtual bool IsIconVisible() const override;
+
+	virtual void PostLoad() override;
 #endif // WITH_EDITOR
 
 protected:
 	UPROPERTY(NonPIEDuplicateTransient)
 	TObjectPtr<UStaticMeshComponent> MeshComp;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

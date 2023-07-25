@@ -28,6 +28,7 @@
 class FProperty;
 struct FRigVMDispatchFactory;
 struct FRigVMTemplate;
+struct FRigVMDispatchContext;
 
 typedef TMap<FName, TRigVMTypeIndex> FRigVMTemplateTypeMap;
 
@@ -68,9 +69,10 @@ struct RIGVM_API FRigVMTemplateArgumentType
 		// InCppType is unreliable because not all caller knows that
 		// we use generated unique names for user defined structs
 		// so here we override the CppType name with the actual name used in the registry
-		CPPType = *RigVMTypeUtils::PostProcessCPPType(CPPType.ToString(), CPPTypeObject);
+		const FString InCPPTypeString = CPPType.ToString();
+		CPPType = *RigVMTypeUtils::PostProcessCPPType(InCPPTypeString, CPPTypeObject);
 		
-		check(!CPPType.IsNone());
+		checkf(!CPPType.IsNone(), TEXT("FRigVMTemplateArgumentType(): Input CPPType '%s' could not be resolved."), *InCPPTypeString);
 	}
 
 	FRigVMTemplateArgumentType(UScriptStruct* InScriptStruct)
@@ -83,6 +85,11 @@ struct RIGVM_API FRigVMTemplateArgumentType
 	: CPPType(*RigVMTypeUtils::CPPTypeFromEnum(InEnum))
 	, CPPTypeObject(InEnum)
 	{
+	}
+
+	bool IsValid() const
+	{
+		return !CPPType.IsNone();
 	}
 
 	static FRigVMTemplateArgumentType Array()
@@ -100,7 +107,7 @@ struct RIGVM_API FRigVMTemplateArgumentType
 		return CPPType != InOther.CPPType;
 	}
 
-	friend FORCEINLINE uint32 GetTypeHash(const FRigVMTemplateArgumentType& InType)
+	friend uint32 GetTypeHash(const FRigVMTemplateArgumentType& InType)
 	{
 		return GetTypeHash(InType.CPPType);
 	}
@@ -249,6 +256,7 @@ protected:
 	friend struct FRigVMRegistry;
 	friend struct FRigVMStructUpgradeInfo;
 	friend struct FRigVMSetLibraryTemplateAction;
+	friend class URigVMCompiler;
 };
 
 /**
@@ -279,9 +287,6 @@ public:
 	// Returns the name of the template
 	FName GetName() const;
 
-	// returns true if this template is compatible with another one
-	bool IsCompatible(const FRigVMTemplate& InOther) const;
-
 	// returns true if this template can merge another one
 	bool Merge(const FRigVMTemplate& InOther);
 
@@ -291,14 +296,32 @@ public:
 	// returns an argument for a given index
 	const FRigVMTemplateArgument* GetArgument(int32 InIndex) const { return &Arguments[InIndex]; }
 
-		// returns an argument given a name (or nullptr)
+	// returns an argument given a name (or nullptr)
 	const FRigVMTemplateArgument* FindArgument(const FName& InArgumentName) const;
+
+	// returns the number of args of this template
+	int32 NumExecuteArguments(const FRigVMDispatchContext& InContext) const;
+
+	// returns an argument for a given index
+	const FRigVMExecuteArgument* GetExecuteArgument(int32 InIndex, const FRigVMDispatchContext& InContext) const;
+
+	// returns an argument given a name (or nullptr)
+	const FRigVMExecuteArgument* FindExecuteArgument(const FName& InArgumentName, const FRigVMDispatchContext& InContext) const;
+
+	// returns the top level execute context struct this template uses
+	const UScriptStruct* GetExecuteContextStruct() const;
+
+	// returns true if this template supports a given execute context struct
+	bool SupportsExecuteContextStruct(const UScriptStruct* InExecuteContextStruct) const;
 
 	// returns true if a given arg supports a type
 	bool ArgumentSupportsTypeIndex(const FName& InArgumentName, TRigVMTypeIndex InTypeIndex, TRigVMTypeIndex* OutTypeIndex = nullptr) const;
 
 	// returns the number of permutations supported by this template
 	int32 NumPermutations() const { return Permutations.Num(); }
+
+	// returns the first / primary permutation of the template
+	const FRigVMFunction* GetPrimaryPermutation() const;
 
 	// returns a permutation given an index
 	const FRigVMFunction* GetPermutation(int32 InIndex) const;
@@ -320,6 +343,9 @@ public:
 
 	// returns true if the template was able to resolve to at least one permutation
 	bool Resolve(FTypeMap& InOutTypes, TArray<int32> & OutPermutationIndices, bool bAllowFloatingPointCasts) const;
+
+	// returns true if the template was able to resolve to at least one permutation
+	bool ContainsPermutation(const FTypeMap& InTypes) const;
 
 	// returns true if the template can resolve an argument to a new type
 	bool ResolveArgument(const FName& InArgumentName, const TRigVMTypeIndex InTypeIndex, FTypeMap& InOutTypes) const;
@@ -378,7 +404,7 @@ public:
 	FRigVMTemplate_NewArgumentTypeDelegate& OnNewArgumentType() { return Delegates.NewArgumentTypeDelegate; }
 
 	// Returns the factory this template was created by
-	FORCEINLINE const FRigVMDispatchFactory* GetDispatchFactory() const
+	const FRigVMDispatchFactory* GetDispatchFactory() const
 	{
 		if(Delegates.GetDispatchFactoryDelegate.IsBound())
 		{
@@ -388,7 +414,7 @@ public:
 	}
 
 	// Returns true if this template is backed by a dispatch factory
-	FORCEINLINE bool UsesDispatch() const
+	bool UsesDispatch() const
 	{
 		return Delegates.RequestDispatchFunctionDelegate.IsBound() &&
 			Delegates.GetDispatchFactoryDelegate.IsBound();
@@ -404,9 +430,12 @@ private:
 
 	static FLinearColor GetColorFromMetadata(FString InMetadata);
 
+	const TArray<FRigVMExecuteArgument>& GetExecuteArguments(const FRigVMDispatchContext& InContext) const;
+
 	int32 Index;
 	FName Notation;
 	TArray<FRigVMTemplateArgument> Arguments;
+	mutable TArray<FRigVMExecuteArgument> ExecuteArguments;
 	TArray<int32> Permutations;
 
 	FRigVMTemplateDelegates Delegates;

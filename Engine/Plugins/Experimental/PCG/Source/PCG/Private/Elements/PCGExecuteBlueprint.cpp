@@ -1,14 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Elements/PCGExecuteBlueprint.h"
+#include "Engine/Blueprint.h"
+#include "Math/RandomStream.h"
 #include "PCGComponent.h"
-#include "PCGHelpers.h"
 #include "Data/PCGPointData.h"
-#include "Data/PCGSpatialData.h"
 #include "Helpers/PCGAsync.h"
+#include "Helpers/PCGHelpers.h"
 #include "Helpers/PCGSettingsHelpers.h"
 
 #include "Engine/World.h"
+#include "PCGPin.h"
+#include "UObject/Package.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGExecuteBlueprint)
+
+#define LOCTEXT_NAMESPACE "PCGBlueprintElement"
 
 #if WITH_EDITOR
 namespace PCGBlueprintHelper
@@ -39,6 +46,7 @@ void UPCGBlueprintElement::PostLoad()
 	Super::PostLoad();
 	Initialize();
 
+#if WITH_EDITOR
 	if (!InputPinLabels_DEPRECATED.IsEmpty())
 	{
 		for (const FName& Label : InputPinLabels_DEPRECATED)
@@ -58,6 +66,19 @@ void UPCGBlueprintElement::PostLoad()
 
 		OutputPinLabels_DEPRECATED.Reset();
 	}
+
+	// Go through the user-defined custom input pins and remove any Param pins labelled 'Params' or 'Param'. Such pins should not be
+	// added manually, the params pin is created dynamically from code based on presence of overrides.
+	for (int32 i = CustomInputPins.Num() - 1; i >= 0; --i)
+	{
+		FPCGPinProperties& Properties = CustomInputPins[i];
+		if (Properties.AllowedTypes == EPCGDataType::Param && (Properties.Label == FName(TEXT("Params")) || Properties.Label == FName(TEXT("Param"))))
+		{
+			// Non-swap version to preserve order
+			CustomInputPins.RemoveAt(i);
+		}
+	}
+#endif
 }
 
 void UPCGBlueprintElement::BeginDestroy()
@@ -96,6 +117,12 @@ void UPCGBlueprintElement::PostEditChangeProperty(FPropertyChangedEvent& Propert
 void UPCGBlueprintElement::OnDependencyChanged(UObject* Object, FPropertyChangedEvent& PropertyChangedEvent)
 {
 	if (PropertyChangedEvent.ChangeType == EPropertyChangeType::Interactive)
+	{
+		return;
+	}
+
+	// There are many engine notifications that aren't needed for us, esp. wrt to compilation
+	if (PropertyChangedEvent.Property == nullptr && PropertyChangedEvent.ChangeType == EPropertyChangeType::Unspecified)
 	{
 		return;
 	}
@@ -151,9 +178,23 @@ TSet<FName> UPCGBlueprintElement::OutputLabels() const
 	return Labels;
 }
 
+int UPCGBlueprintElement::GetSeed(FPCGContext& InContext) const 
+{
+	return InContext.GetSeed();
+}
+
+FRandomStream UPCGBlueprintElement::GetRandomStream(FPCGContext& InContext) const
+{
+	return FRandomStream(GetSeed(InContext));
+}
+
 UPCGBlueprintSettings::UPCGBlueprintSettings()
 {
 	bUseSeed = true;
+	
+#if WITH_EDITORONLY_DATA
+	bExposeToLibrary = HasAnyFlags(RF_ClassDefaultObject);
+#endif
 }
 
 void UPCGBlueprintSettings::SetupBlueprintEvent()
@@ -206,11 +247,13 @@ void UPCGBlueprintSettings::PostLoad()
 {
 	Super::PostLoad();
 
+#if WITH_EDITOR
 	if (BlueprintElement_DEPRECATED && !BlueprintElementType)
 	{
 		BlueprintElementType = BlueprintElement_DEPRECATED;
 		BlueprintElement_DEPRECATED = nullptr;
 	}
+#endif
 
 	SetupBlueprintEvent();
 
@@ -226,12 +269,17 @@ void UPCGBlueprintSettings::PostLoad()
 	if (BlueprintElementInstance)
 	{
 		BlueprintElementInstance->ConditionalPostLoad();
+		BlueprintElementInstance->SetFlags(RF_Transactional);
+#if WITH_EDITOR
 		BlueprintElementInstance->bCreatesArtifacts |= bCreatesArtifacts_DEPRECATED;
 		BlueprintElementInstance->bCanBeMultithreaded |= bCanBeMultithreaded_DEPRECATED;
+#endif
 	}
 
+#if WITH_EDITOR
 	bCreatesArtifacts_DEPRECATED = false;
 	bCanBeMultithreaded_DEPRECATED = false;
+#endif
 }
 
 void UPCGBlueprintSettings::BeginDestroy()
@@ -279,6 +327,9 @@ void UPCGBlueprintSettings::OnBlueprintChanged(UBlueprint* InBlueprint)
 	TeardownBlueprintElementEvent();
 	SetupBlueprintElementEvent();
 
+	// Also, reconstruct overrides
+	InitializeCachedOverridableParams(/*bReset=*/true);
+
 	OnSettingsChangedDelegate.Broadcast(this, EPCGChangeType::Settings);
 }
 
@@ -317,14 +368,17 @@ void UPCGBlueprintSettings::RefreshBlueprintElement()
 
 	if (BlueprintElementType)
 	{
-		BlueprintElementInstance = NewObject<UPCGBlueprintElement>(this, BlueprintElementType);
+		BlueprintElementInstance = NewObject<UPCGBlueprintElement>(this, BlueprintElementType, NAME_None, RF_Transactional);
 		BlueprintElementInstance->Initialize();
 		SetupBlueprintElementEvent();
 	}
 	else
 	{
 		BlueprintElementInstance = nullptr;
-	}	
+	}
+
+	// Also, reconstruct overrides
+	InitializeCachedOverridableParams(/*bReset=*/true);
 }
 
 #if WITH_EDITOR
@@ -354,17 +408,36 @@ EPCGSettingsType UPCGBlueprintSettings::GetType() const
 
 void UPCGBlueprintSettings::GetTrackedActorTags(FPCGTagToSettingsMap& OutTagToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const
 {
-#if WITH_EDITORONLY_DATA
 	for (const FName& Tag : TrackedActorTags)
 	{
-		OutTagToSettings.FindOrAdd(Tag).Add(this);
+		OutTagToSettings.FindOrAdd(Tag).Emplace({ this, bTrackActorsOnlyWithinBounds });
 	}
-#endif // WITH_EDITORONLY_DATA
 }
 
 UObject* UPCGBlueprintSettings::GetJumpTargetForDoubleClick() const
 {
-	return BlueprintElementType ? BlueprintElementType->ClassGeneratedBy : nullptr;
+	if (BlueprintElementType)
+	{
+		return BlueprintElementType->ClassGeneratedBy;
+	}
+	
+	return Super::GetJumpTargetForDoubleClick();
+}
+
+void UPCGBlueprintSettings::ApplyDeprecationBeforeUpdatePins(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins)
+{
+	Super::ApplyDeprecationBeforeUpdatePins(InOutNode, InputPins, OutputPins);
+
+	// Rename first found 'Param' or 'Params' pin to 'Overrides' which helps to ensure legacy params pins will retain incident edges.
+	for (TObjectPtr<UPCGPin>& InputPin : InputPins)
+	{
+		if (InputPin && InputPin->Properties.AllowedTypes == EPCGDataType::Param && 
+			(InputPin->Properties.Label == FName(TEXT("Params")) || InputPin->Properties.Label == FName(TEXT("Param"))))
+		{
+			InputPin->Properties.Label = PCGPinConstants::DefaultParamsLabel;
+			break;
+		}
+	}
 }
 #endif // WITH_EDITOR
 
@@ -388,18 +461,14 @@ TArray<FPCGPinProperties> UPCGBlueprintSettings::InputPinProperties() const
 {
 	TArray<FPCGPinProperties> PinProperties;
 
+	if (!BlueprintElementInstance || BlueprintElementInstance->bHasDefaultInPin)
+	{
+		PinProperties.Append(Super::InputPinProperties());
+	}
+
 	if (BlueprintElementInstance)
 	{
-		if (BlueprintElementInstance->bHasDefaultInPin)
-		{
-			PinProperties.Append(Super::InputPinProperties());
-		}
-
 		PinProperties.Append(BlueprintElementInstance->CustomInputPins);
-	}
-	else
-	{
-		PinProperties = Super::InputPinProperties();
 	}
 
 	return PinProperties;
@@ -432,14 +501,55 @@ FPCGElementPtr UPCGBlueprintSettings::CreateElement() const
 	return MakeShared<FPCGExecuteBlueprintElement>();
 }
 
+#if WITH_EDITOR
+TArray<FPCGSettingsOverridableParam> UPCGBlueprintSettings::GatherOverridableParams() const
+{
+	TArray<FPCGSettingsOverridableParam> OverridableParams = Super::GatherOverridableParams();
+
+	if (BlueprintElementInstance)
+	{
+		if (UClass* BPClass = BlueprintElementInstance->GetClass())
+		{
+			PCGSettingsHelpers::FPCGGetAllOverridableParamsConfig Config;
+			Config.bExcludeSuperProperties = true;
+			Config.ExcludePropertyFlags = CPF_DisableEditOnInstance;
+			OverridableParams.Append(PCGSettingsHelpers::GetAllOverridableParams(BPClass, Config));
+		}
+	}
+
+	return OverridableParams;
+}
+#endif // WITH_EDITOR
+
+void UPCGBlueprintSettings::FixingOverridableParamPropertyClass(FPCGSettingsOverridableParam& Param) const
+{
+	bool bFound = false;
+
+	if (BlueprintElementInstance && !Param.PropertiesNames.IsEmpty())
+	{
+		UClass* BPClass = BlueprintElementInstance->GetClass();
+		if (BPClass && BPClass->FindPropertyByName(Param.PropertiesNames[0]))
+		{
+			Param.PropertyClass = BPClass;
+			bFound = true;
+		}
+	}
+
+	if(!bFound)
+	{
+		Super::FixingOverridableParamPropertyClass(Param);
+	}
+}
+
 bool FPCGExecuteBlueprintElement::ExecuteInternal(FPCGContext* InContext) const
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FPCGExecuteBlueprintElement::Execute);
 	FPCGBlueprintExecutionContext* Context = static_cast<FPCGBlueprintExecutionContext*>(InContext);
 
 	if (Context && Context->BlueprintElementInstance)
 	{
 		UClass* BPClass = Context->BlueprintElementInstance->GetClass();
+
+		TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("FPCGExecuteBlueprintElement::Execute (%s)"), BPClass ? *BPClass->GetFName().ToString() : TEXT("")));
 
 #if WITH_EDITOR
 		/** Check if the blueprint has been successfully compiled */
@@ -447,27 +557,12 @@ bool FPCGExecuteBlueprintElement::ExecuteInternal(FPCGContext* InContext) const
 		{
 			if (Blueprint->Status == BS_Error)
 			{
-				UE_LOG(LogPCG, Error, TEXT("PCG blueprint element cannot be executed since %s is not properly compiled"), *Blueprint->GetFName().ToString());
+				PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("BPNotCompiled", "Blueprint cannot be executed since '{0}' is not properly compiled"),
+					FText::FromName(Blueprint->GetFName())));
 				return true;
 			}
 		}
 #endif
-
-		/** Apply params overrides to variables if any */
-		if (UPCGParamData* Params = Context->InputData.GetParams())
-		{
-			for (TFieldIterator<FProperty> PropertyIt(BPClass); PropertyIt; ++PropertyIt)
-			{
-				FProperty* Property = *PropertyIt;
-				if (Property->IsNative())
-				{
-					continue;
-				}
-
-				// Apply params if any
-				PCGSettingsHelpers::SetValue(Params, Context->BlueprintElementInstance, Property);
-			}
-		}
 
 		// Log info on inputs
 		for (int32 InputIndex = 0; InputIndex < Context->InputData.TaggedData.Num(); ++InputIndex)
@@ -475,12 +570,22 @@ bool FPCGExecuteBlueprintElement::ExecuteInternal(FPCGContext* InContext) const
 			const FPCGTaggedData& Input = Context->InputData.TaggedData[InputIndex];
 			if (const UPCGPointData* PointData = Cast<UPCGPointData>(Input.Data))
 			{
-				PCGE_LOG(Verbose, "Input %d has %d points", InputIndex, PointData->GetPoints().Num());
+				PCGE_LOG(Verbose, LogOnly, FText::Format(LOCTEXT("InputPointInfo", "Input {0} has {1} points"), InputIndex, PointData->GetPoints().Num()));
 			}
 		}
 
+		// Since the ExecuteWithContext method is a blueprint call, it will perform a copy of the context
+		// in a local variable. To prevent the overridden settings from being unrooted when the call finishes,
+		// we'll mark it temporarily off here. Note that for the same reason, the context is actually sliced
+		// so there should never be any members in the BP element context that are visible/accessible from blueprint
+		const bool bShouldUnrootSettingsOnDelete = Context->bShouldUnrootSettingsOnDelete;
+		Context->bShouldUnrootSettingsOnDelete = false;
+
 		/** Finally, execute the actual blueprint */
 		Context->BlueprintElementInstance->ExecuteWithContext(*Context, Context->InputData, Context->OutputData);
+
+		// Put back the proper unroot flag
+		Context->bShouldUnrootSettingsOnDelete = bShouldUnrootSettingsOnDelete;
 
 		// Log info on outputs
 		for (int32 OutputIndex = 0; OutputIndex < Context->OutputData.TaggedData.Num(); ++OutputIndex)
@@ -488,7 +593,54 @@ bool FPCGExecuteBlueprintElement::ExecuteInternal(FPCGContext* InContext) const
 			const FPCGTaggedData& Output = Context->OutputData.TaggedData[OutputIndex];
 			if (const UPCGPointData* PointData = Cast<UPCGPointData>(Output.Data))
 			{
-				PCGE_LOG(Verbose, "Output %d has %d points", OutputIndex, PointData->GetPoints().Num());
+				PCGE_LOG(Verbose, LogOnly, FText::Format(LOCTEXT("OutputPointInfo", "Output {0} has {1} points"), OutputIndex, PointData->GetPoints().Num()));
+			}
+
+			// Important implementation note:
+			// Any data that was created by the user in the blueprint will have that data parented to this blueprint element instance
+			// Which will cause issues wrt to reference leaks. We need to fix this here.
+			// Note that we will recurse up the outer tree to make sure we catch every case.
+			if (Output.Data)
+			{
+				auto ReOuterToTransientPackageIfCreatedFromThis = [Context](UObject* InObject)
+				{
+					bool bHasInstanceAsOuter = false;
+					UObject* CurrentObject = InObject;
+					while (CurrentObject && !bHasInstanceAsOuter)
+					{
+						bHasInstanceAsOuter = (CurrentObject->GetOuter() == Context->BlueprintElementInstance);
+						CurrentObject = CurrentObject->GetOuter();
+					}
+
+					if (bHasInstanceAsOuter)
+					{
+						InObject->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+					}
+				};
+
+				UObject* ThisData = const_cast<UPCGData*>(Output.Data.Get());
+				ReOuterToTransientPackageIfCreatedFromThis(ThisData);
+
+				// Similarly, if the metadata on the data inherits from a non-transient data created by this BP instance, it should be reoutered.
+				const UPCGMetadata* Metadata = nullptr;
+				if (UPCGSpatialData* SpatialData = Cast<UPCGSpatialData>(ThisData))
+				{
+					Metadata = SpatialData->Metadata;
+				}
+				else if (UPCGParamData* ParamData = Cast<UPCGParamData>(ThisData))
+				{
+					Metadata = ParamData->Metadata;
+				}
+				
+				if (Metadata)
+				{
+					while (Metadata->GetParent())
+					{
+						UObject* OuterObject = Metadata->GetParent()->GetOuter();
+						ReOuterToTransientPackageIfCreatedFromThis(OuterObject);
+						Metadata = Metadata->GetParent();
+					}
+				}
 			}
 		}
 	}
@@ -501,11 +653,11 @@ bool FPCGExecuteBlueprintElement::ExecuteInternal(FPCGContext* InContext) const
 	return true;
 }
 
-void UPCGBlueprintElement::LoopOnPoints(FPCGContext& InContext, const UPCGPointData* InData, UPCGPointData*& OutData, UPCGPointData* OptionalOutData) const
+void UPCGBlueprintElement::PointLoop(FPCGContext& InContext, const UPCGPointData* InData, UPCGPointData*& OutData, UPCGPointData* OptionalOutData) const
 {
 	if (!InData)
 	{
-		PCGE_LOG_C(Error, &InContext, "Invalid input data in LoopOnPoints");
+		PCGE_LOG_C(Error, GraphAndLog, &InContext, LOCTEXT("InvalidInputDataLoopOnPoints", "Invalid input data in LoopOnPoints"));
 		return;
 	}
 
@@ -528,11 +680,11 @@ void UPCGBlueprintElement::LoopOnPoints(FPCGContext& InContext, const UPCGPointD
 	});
 }
 
-void UPCGBlueprintElement::MultiLoopOnPoints(FPCGContext& InContext, const UPCGPointData* InData, UPCGPointData*& OutData, UPCGPointData* OptionalOutData) const
+void UPCGBlueprintElement::VariableLoop(FPCGContext& InContext, const UPCGPointData* InData, UPCGPointData*& OutData, UPCGPointData* OptionalOutData) const
 {
 	if (!InData)
 	{
-		PCGE_LOG_C(Error, &InContext, "Invalid input data in MultiLoopOnPoints");
+		PCGE_LOG_C(Error, GraphAndLog, &InContext, LOCTEXT("InvalidInputDataMultiLoopOnPoints", "Invalid input data in MultiLoopOnPoints"));
 		return;
 	}
 
@@ -551,15 +703,15 @@ void UPCGBlueprintElement::MultiLoopOnPoints(FPCGContext& InContext, const UPCGP
 
 	FPCGAsync::AsyncMultiPointProcessing(&InContext, InPoints.Num(), OutPoints, [this, &InContext, InData, OutData, &InPoints](int32 Index)
 	{
-		return MultiPointLoopBody(InContext, InData, InPoints[Index], OutData->Metadata);
+		return VariableLoopBody(InContext, InData, InPoints[Index], OutData->Metadata);
 	});
 }
 
-void UPCGBlueprintElement::LoopOnPointPairs(FPCGContext& InContext, const UPCGPointData* InA, const UPCGPointData* InB, UPCGPointData*& OutData, UPCGPointData* OptionalOutData) const
+void UPCGBlueprintElement::NestedLoop(FPCGContext& InContext, const UPCGPointData* InOuterData, const UPCGPointData* InInnerData, UPCGPointData*& OutData, UPCGPointData* OptionalOutData) const
 {
-	if (!InA || !InB)
+	if (!InOuterData || !InInnerData)
 	{
-		PCGE_LOG_C(Error, &InContext, "Invalid input data in LoopOnPointPairs");
+		PCGE_LOG_C(Error, GraphAndLog, &InContext, LOCTEXT("InvalidInputDataLoopOnPointPairs", "Invalid input data in LoopOnPointPairs"));
 		return;
 	}
 
@@ -570,25 +722,25 @@ void UPCGBlueprintElement::LoopOnPointPairs(FPCGContext& InContext, const UPCGPo
 	else
 	{
 		OutData = NewObject<UPCGPointData>();
-		OutData->InitializeFromData(InA);
-		OutData->Metadata->AddAttributes(InB->Metadata);
+		OutData->InitializeFromData(InOuterData);
+		OutData->Metadata->AddAttributes(InInnerData->Metadata);
 	}
 
-	const TArray<FPCGPoint>& InPointsA = InA->GetPoints();
-	const TArray<FPCGPoint>& InPointsB = InB->GetPoints();
+	const TArray<FPCGPoint>& InOuterPoints = InOuterData->GetPoints();
+	const TArray<FPCGPoint>& InInnerPoints = InInnerData->GetPoints();
 	TArray<FPCGPoint>& OutPoints = OutData->GetMutablePoints();
 
-	FPCGAsync::AsyncPointProcessing(&InContext, InPointsA.Num() * InPointsB.Num(), OutPoints, [this, &InContext, InA, InB, OutData, &InPointsA, &InPointsB](int32 Index, FPCGPoint& OutPoint)
+	FPCGAsync::AsyncPointProcessing(&InContext, InOuterPoints.Num() * InInnerPoints.Num(), OutPoints, [this, &InContext, InOuterData, InInnerData, OutData, &InOuterPoints, &InInnerPoints](int32 Index, FPCGPoint& OutPoint)
 	{
-		return PointPairLoopBody(InContext, InA, InB, InPointsA[Index / InPointsB.Num()], InPointsB[Index % InPointsB.Num()], OutPoint, OutData->Metadata);
+		return NestedLoopBody(InContext, InOuterData, InInnerData, InOuterPoints[Index / InInnerPoints.Num()], InInnerPoints[Index % InInnerPoints.Num()], OutPoint, OutData->Metadata);
 	});
 }
 
-void UPCGBlueprintElement::LoopNTimes(FPCGContext& InContext, int64 NumIterations, UPCGPointData*& OutData, const UPCGSpatialData* InA, const UPCGSpatialData* InB, UPCGPointData* OptionalOutData) const
+void UPCGBlueprintElement::IterationLoop(FPCGContext& InContext, int64 NumIterations, UPCGPointData*& OutData, const UPCGSpatialData* InA, const UPCGSpatialData* InB, UPCGPointData* OptionalOutData) const
 {
 	if (NumIterations < 0)
 	{
-		UE_LOG(LogPCG, Error, TEXT("Invalid number of iterations in PCG blueprint element"));
+		PCGE_LOG_C(Error, GraphAndLog, &InContext, FText::Format(LOCTEXT("InvalidIterationCount", "Invalid number of iterations ({0})"), NumIterations));
 		return;
 	}
 
@@ -678,3 +830,5 @@ bool FPCGExecuteBlueprintElement::CanExecuteOnlyOnMainThread(FPCGContext* Contex
 		return false;
 	}
 }
+
+#undef LOCTEXT_NAMESPACE

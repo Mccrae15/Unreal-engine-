@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "HAL/Platform.h"
 
 /** default beacon port, if not specified by other means */
 #define DEFAULT_BEACON_PORT 15000
@@ -110,6 +110,8 @@
 #define SETTING_CUSTOM_JOIN_INFO FName(TEXT("CUSTOMJOININFO"))
 /** What verbosity of session updates to subscribe to (value is FString, comma-separated if multiple values needed)*/
 #define SETTING_SESSION_SUBSCRIPTION_TYPES FName(TEXT("SESSIONSUBSCRIPTIONTYPE"))
+/** Whether the session should be considered as the player's activity session or otherwise (value is bool) */
+#define SETTING_ACTIVITY_SESSION FName(TEXT("ACTIVITYSESSION"))
 
 /**
  * Search settings
@@ -148,3 +150,7 @@
 /** Team a user is searching for */
 #define SEARCH_USER_ATTRIBUTE_TEAM TEXT("TEAM")
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

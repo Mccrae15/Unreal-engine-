@@ -2,6 +2,7 @@
 
 #include "InstanceCulling/InstanceCullingContext.h"
 #include "CoreMinimal.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "RHI.h"
 #include "RendererModule.h"
 #include "ShaderParameterMacros.h"
@@ -10,9 +11,11 @@
 #include "RenderGraphUtils.h"
 #include "SceneRendering.h"
 #include "ScenePrivate.h"
+#include "SystemTextures.h"
 #include "InstanceCulling/InstanceCullingManager.h"
 #include "InstanceCullingLoadBalancer.h"
 #include "InstanceCullingMergedContext.h"
+#include "RenderCore.h"
 
 static TAutoConsoleVariable<int32> CVarCullInstances(
 	TEXT("r.CullInstances"),

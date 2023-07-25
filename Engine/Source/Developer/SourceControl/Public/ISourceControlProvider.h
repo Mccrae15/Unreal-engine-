@@ -329,6 +329,11 @@ public:
 	virtual bool UsesChangelists() const = 0;
 
 	/**
+	 * Whether the provider supports uncontrolled changelists to allow work offline
+	 */
+	virtual bool UsesUncontrolledChangelists() const = 0;
+
+	/**
 	 * Whether the provider uses the checkout workflow
 	 */
 	virtual bool UsesCheckout() const = 0;
@@ -337,6 +342,16 @@ public:
 	 * Whether the provider uses individual file revisions
 	 */
 	virtual bool UsesFileRevisions() const = 0;
+
+	/**
+	 * Whether the provider uses snapshots
+	 */
+	virtual bool UsesSnapshots() const = 0;
+
+	/**
+	 * Whether the provider allow a diff between a changed file and the depot
+	 */
+	virtual bool AllowsDiffAgainstDepot() const = 0;
 
 	/**
 	 * Whether the current source control client is at the latest version 

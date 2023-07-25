@@ -2,6 +2,8 @@
 
 #include "Converters/GLTFSceneConverters.h"
 #include "Builders/GLTFContainerBuilder.h"
+#include "Engine/Level.h"
+#include "Engine/World.h"
 #include "LevelVariantSetsActor.h"
 #include "LevelVariantSets.h"
 #include "VariantSet.h"
@@ -25,7 +27,7 @@ FGLTFJsonScene* FGLTFSceneConverter::Convert(const UWorld* World)
 
 			TArray<AActor*> LevelActors(Level->Actors); // iterate using copy, in case new temporary actors are added during conversion
 
-			if (Builder.ExportOptions->VariantSetsMode != EGLTFVariantSetsMode::None)
+			if (Builder.ExportOptions->ExportMaterialVariants != EGLTFMaterialVariantMode::None)
 			{
 				for (const AActor* Actor : LevelActors)
 				{
@@ -34,27 +36,13 @@ FGLTFJsonScene* FGLTFSceneConverter::Convert(const UWorld* World)
 					{
 						const ULevelVariantSets* LevelVariantSets = const_cast<ALevelVariantSetsActor*>(LevelVariantSetsActor)->GetLevelVariantSets(true);
 
-						if (Builder.ExportOptions->VariantSetsMode == EGLTFVariantSetsMode::Epic)
+						if (LevelVariantSets != nullptr)
 						{
-							if (LevelVariantSets != nullptr)
+							for (const UVariantSet* VariantSet: LevelVariantSets->GetVariantSets())
 							{
-								FGLTFJsonEpicLevelVariantSets* JsonEpicLevelVariantSets = Builder.AddUniqueEpicLevelVariantSets(LevelVariantSets);
-								if (JsonEpicLevelVariantSets != nullptr)
+								for (const UVariant* Variant: VariantSet->GetVariants())
 								{
-									Scene->EpicLevelVariantSets.Add(JsonEpicLevelVariantSets);
-								}
-							}
-						}
-						else if (Builder.ExportOptions->VariantSetsMode == EGLTFVariantSetsMode::Khronos)
-						{
-							if (LevelVariantSets != nullptr)
-							{
-								for (const UVariantSet* VariantSet: LevelVariantSets->GetVariantSets())
-								{
-									for (const UVariant* Variant: VariantSet->GetVariants())
-									{
-										Builder.AddUniqueKhrMaterialVariant(Variant);
-									}
+									Builder.AddUniqueMaterialVariant(Variant);
 								}
 							}
 						}

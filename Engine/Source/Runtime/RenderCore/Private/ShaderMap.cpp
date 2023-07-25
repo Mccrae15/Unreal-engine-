@@ -8,7 +8,6 @@
 #include "Misc/CoreMisc.h"
 #include "Misc/StringBuilder.h"
 #include "Stats/StatsMisc.h"
-#include "Serialization/MemoryWriter.h"
 #include "VertexFactory.h"
 #include "ProfilingDebugging/DiagnosticTable.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -23,6 +22,7 @@
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "Misc/ScopeRWLock.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Interfaces/IShaderFormat.h"
@@ -170,8 +170,9 @@ bool FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 
 		// Serialize a copy of ShaderPlatform directly into the archive
 		// This will allow us to correctly deserialize the stream, even if we're not able to load the frozen content
-		TEnumAsByte<EShaderPlatform> ShaderPlatform = GetShaderPlatform();
-		Ar << ShaderPlatform;
+		const EShaderPlatform ShaderPlatform = GetShaderPlatform();
+		FName ShaderPlatformName = FDataDrivenShaderPlatformInfo::GetName(ShaderPlatform);
+		Ar << ShaderPlatformName;
 
 		if (Ar.IsCooking())
 		{
@@ -186,7 +187,7 @@ bool FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 		{
 			FSHAHash ResourceHash = Code->ResourceHash;
 			Ar << ResourceHash;
-			FShaderLibraryCooker::AddShaderCode(GetShaderPlatform(), Code, GetAssociatedAssets());
+			FShaderLibraryCooker::AddShaderCode(ShaderPlatform, Code, GetAssociatedAssets());
 		}
 		else
 #endif // WITH_EDITOR
@@ -206,8 +207,10 @@ bool FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 		bool bShareCode = false;
 		Ar << bShareCode;
 
-		TEnumAsByte<EShaderPlatform> ShaderPlatform = SP_NumPlatforms;
-		Ar << ShaderPlatform;
+		FName ShaderPlatformName;
+		Ar << ShaderPlatformName;
+		
+		const EShaderPlatform ShaderPlatform = FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(ShaderPlatformName);
 
 		if (bShareCode)
 		{
@@ -294,6 +297,20 @@ void FShaderMapBase::DestroyContent()
 static uint16 MakeShaderHash(const FHashedName& TypeName, int32 PermutationId)
 {
 	return (uint16)CityHash128to64({ TypeName.GetHash(), (uint64)PermutationId });
+}
+
+FShaderMapContent::FShaderMapContent(EShaderPlatform InPlatform)
+	: ShaderHash(128u), ShaderPlatformName(FDataDrivenShaderPlatformInfo::GetName(InPlatform))
+{}
+
+FShaderMapContent::~FShaderMapContent()
+{
+	Empty();
+}
+
+EShaderPlatform FShaderMapContent::GetShaderPlatform() const
+{
+	return FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(ShaderPlatformName);
 }
 
 FShader* FShaderMapContent::GetShader(const FHashedName& TypeName, int32 PermutationId) const
@@ -484,14 +501,15 @@ void FShaderMapContent::GetShaderList(const FShaderMapBase& InShaderMap, TMap<FH
 
 void FShaderMapContent::GetShaderPipelineList(const FShaderMapBase& InShaderMap, TArray<FShaderPipelineRef>& OutShaderPipelines, FShaderPipeline::EFilter Filter) const
 {
+	const EShaderPlatform ShaderPlatform = GetShaderPlatform();
 	for (FShaderPipeline* Pipeline : ShaderPipelines)
 	{
 		const FShaderPipelineType* PipelineType = FShaderPipelineType::GetShaderPipelineTypeByName(Pipeline->TypeName);
-		if (PipelineType->ShouldOptimizeUnusedOutputs(Platform) && Filter == FShaderPipeline::EOnlyShared)
+		if (PipelineType->ShouldOptimizeUnusedOutputs(ShaderPlatform) && Filter == FShaderPipeline::EOnlyShared)
 		{
 			continue;
 		}
-		else if (!PipelineType->ShouldOptimizeUnusedOutputs(Platform) && Filter == FShaderPipeline::EOnlyUnique)
+		else if (!PipelineType->ShouldOptimizeUnusedOutputs(ShaderPlatform) && Filter == FShaderPipeline::EOnlyUnique)
 		{
 			continue;
 		}
@@ -620,9 +638,9 @@ uint32 FShaderMapContent::GetMaxNumInstructionsForShader(const FShaderMapBase& I
 			if (PipelineShaderType &&
 				(PipelineShaderType == ShaderType))
 			{
-			MaxNumInstructions = FMath::Max(MaxNumInstructions, PipelineShader->GetNumInstructions());
+				MaxNumInstructions = FMath::Max(MaxNumInstructions, PipelineShader->GetNumInstructions());
+			}
 		}
-	}
 	}
 
 	return MaxNumInstructions;

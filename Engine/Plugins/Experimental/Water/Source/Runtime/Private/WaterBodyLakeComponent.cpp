@@ -1,23 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterBodyLakeComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "WaterModule.h"
+#include "DynamicMesh/InfoTypes.h"
 #include "WaterSplineComponent.h"
 #include "WaterSubsystem.h"
-#include "Components/SplineMeshComponent.h"
-#include "PhysicsEngine/ConvexElem.h"
 #include "Engine/StaticMesh.h"
 #include "LakeCollisionComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Polygon2.h"
 #include "ConstrainedDelaunay2.h"
 #include "Operations/InsetMeshRegion.h"
-#include "DynamicMesh/DynamicMeshChangeTracker.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyLakeComponent)
 
 #if WITH_EDITOR
-#include "WaterIconHelper.h"
 #endif
 
 // ----------------------------------------------------------------------------------
@@ -79,7 +77,7 @@ bool UWaterBodyLakeComponent::GenerateWaterBodyMesh(UE::Geometry::FDynamicMesh3&
 	Triangulation.Add(LakePoly);
 	if (!Triangulation.Triangulate())
 	{
-		UE_LOG(LogWater, Error, TEXT("Failed to triangulate Lake mesh for %s"), *GetOwner()->GetActorNameOrLabel());
+		UE_LOG(LogWater, Error, TEXT("Failed to triangulate Lake mesh for %s (%s)"), *GetOwner()->GetActorNameOrLabel(), *GetFullNameSafe(GetOwner()));
 	}
 
 	if (Triangulation.Triangles.Num() == 0)
@@ -127,10 +125,15 @@ bool UWaterBodyLakeComponent::GenerateWaterBodyMesh(UE::Geometry::FDynamicMesh3&
 
 FBoxSphereBounds UWaterBodyLakeComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
-	FBox BoxExtent = GetWaterSpline()->GetLocalBounds().GetBox();
-	BoxExtent.Max.Z += MaxWaveHeightOffset;
-	BoxExtent.Min.Z -= GetChannelDepth();
-	return FBoxSphereBounds(BoxExtent).TransformBy(LocalToWorld);
+	if (UWaterSplineComponent* WaterSpline = GetWaterSpline())
+	{
+		FBox BoxExtent = WaterSpline->GetLocalBounds().GetBox();
+		BoxExtent.Max.Z += MaxWaveHeightOffset;
+		BoxExtent.Min.Z -= GetChannelDepth();
+		return FBoxSphereBounds(BoxExtent).TransformBy(LocalToWorld);
+	}
+	
+	return FBoxSphereBounds(ForceInit);
 }
 
 void UWaterBodyLakeComponent::Reset()

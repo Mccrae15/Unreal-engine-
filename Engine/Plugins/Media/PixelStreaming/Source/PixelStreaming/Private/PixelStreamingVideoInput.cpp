@@ -3,8 +3,13 @@
 #include "PixelStreamingVideoInput.h"
 #include "Settings.h"
 #include "FrameBufferMultiFormat.h"
+#include "PixelCaptureBufferFormat.h"
+#include "PixelStreamingTrace.h"
+
+uint32 FPixelStreamingVideoInput::NextStreamId = 1;
 
 FPixelStreamingVideoInput::FPixelStreamingVideoInput()
+	: StreamId(NextStreamId++)
 {
 	CreateFrameCapturer();
 }
@@ -17,6 +22,7 @@ void FPixelStreamingVideoInput::AddOutputFormat(int32 Format)
 
 void FPixelStreamingVideoInput::OnFrame(const IPixelCaptureInputFrame& InputFrame)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL_STR("PixelStreaming Video Input Frame", PixelStreamingChannel);
 	if (LastFrameWidth != -1 && LastFrameHeight != -1)
 	{
 		if (InputFrame.GetWidth() != LastFrameWidth || InputFrame.GetHeight() != LastFrameHeight)
@@ -33,7 +39,7 @@ void FPixelStreamingVideoInput::OnFrame(const IPixelCaptureInputFrame& InputFram
 
 rtc::scoped_refptr<webrtc::VideoFrameBuffer> FPixelStreamingVideoInput::GetFrameBuffer()
 {
-	return new rtc::RefCountedObject<UE::PixelStreaming::FFrameBufferMultiFormatLayered>(FrameCapturer);
+	return new rtc::RefCountedObject<UE::PixelStreaming::FFrameBufferMultiFormatLayered>(FrameCapturer, StreamId);
 }
 
 TSharedPtr<IPixelCaptureOutputFrame> FPixelStreamingVideoInput::RequestFormat(int32 Format, int32 LayerIndex)
@@ -74,4 +80,9 @@ void FPixelStreamingVideoInput::CreateFrameCapturer()
 void FPixelStreamingVideoInput::OnCaptureComplete()
 {
 	OnFrameCaptured.Broadcast();
+}
+
+FString FPixelStreamingVideoInput::ToString()
+{
+	return TEXT("a Video Input");
 }

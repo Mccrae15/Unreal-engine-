@@ -276,14 +276,19 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetSpaceBoundary2D);
 	OCULUS_DECLARE_ENTRY_POINT(RequestSceneCapture);
 
+	// Local Groups
+
 	// MovementSDK
-	OCULUS_DECLARE_ENTRY_POINT(GetBodyState);
 	OCULUS_DECLARE_ENTRY_POINT(GetBodyTrackingEnabled);
 	OCULUS_DECLARE_ENTRY_POINT(GetBodyTrackingSupported);
-	OCULUS_DECLARE_ENTRY_POINT(StartBodyTracking);
 	OCULUS_DECLARE_ENTRY_POINT(StopBodyTracking);
+
+	OCULUS_DECLARE_ENTRY_POINT(StartBodyTracking);
+	OCULUS_DECLARE_ENTRY_POINT(GetBodyState);
+
 	OCULUS_DECLARE_ENTRY_POINT(GetFaceTrackingEnabled);
 	OCULUS_DECLARE_ENTRY_POINT(GetFaceTrackingSupported);
+
 	OCULUS_DECLARE_ENTRY_POINT(GetFaceState);
 	OCULUS_DECLARE_ENTRY_POINT(StartFaceTracking);
 	OCULUS_DECLARE_ENTRY_POINT(StopFaceTracking);
@@ -310,6 +315,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(DestroyPassthroughColorLut);
 	OCULUS_DECLARE_ENTRY_POINT(UpdatePassthroughColorLut);
 	OCULUS_DECLARE_ENTRY_POINT(GetPassthroughCapabilities);
+	OCULUS_DECLARE_ENTRY_POINT(GetPassthroughPreferences);
 
 	//OVR_Plugin_MixedReality.h
 

@@ -1,11 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-import { action, observable } from 'mobx';
+import { action, makeObservable, observable } from 'mobx';
 import { getTheme, mergeStyles, mergeStyleSets } from '@fluentui/react/lib/Styling';
 import backend from '.';
 import { getBatchInitElapsed, getNiceTime, getStepElapsed, getStepETA, getStepFinishTime, getStepTimingDelta } from '../base/utilities/timeUtils';
 import { getBatchText } from '../components/JobDetailCommon';
-import { AgentData, ArtifactData, BatchData, EventData, GetGroupResponse, GetJobStepRefResponse, GetJobTimingResponse, GetLabelResponse, GetLabelStateResponse, GetLabelTimingInfoResponse, GetTemplateResponse, GroupData, IssueData, JobData, JobState, JobStepBatchState, JobStepError, JobStepOutcome, JobStepState, LabelState, NodeData, ReportPlacement, StepData, StreamData, TestData } from './Api';
+import { AgentData, ArtifactData, BatchData, EventData, GetGroupResponse, GetJobStepRefResponse, GetJobTimingResponse, GetLabelResponse, GetLabelStateResponse, GetLabelTimingInfoResponse, GroupData, IssueData, JobData, JobState, JobStepBatchState, JobStepError, JobStepOutcome, JobStepState, LabelState, NodeData, ReportPlacement, StepData, StreamData, TestData } from './Api';
 import { projectStore } from './ProjectStore';
 import moment from 'moment';
 
@@ -25,6 +25,8 @@ const defaultUpdateMS = 5000;
 export class JobDetails {
 
     constructor(id?: string, logId?: string, stepId?: string, isLogView?: boolean) {
+
+        makeObservable(this);
 
         if (id) {
             this.set(id, logId, stepId, undefined);
@@ -561,7 +563,6 @@ export class JobDetails {
         this.issues = [];
         this.history = undefined;
         this.labels = [];
-        this.template = undefined;
         this.fatalError = undefined;
         this.state = JobStepState.Waiting;
         this.reportData = new Map<string, string>();
@@ -904,14 +905,6 @@ export class JobDetails {
                 requests.push(this.getLogEvents(logId));
             }
 
-            this.template = JobDetails.templates.get(this.jobdata!.templateHash!);
-
-            let templateIdx = -1;
-            if (!this.template && !this.isLogView) {
-                templateIdx = requests.length;
-                requests.push(backend.getJobTemplate(this.jobdata!.id));
-            }
-
             let historyIdx = -1;
             if (stepName) {
                 historyIdx = requests.length;
@@ -932,13 +925,6 @@ export class JobDetails {
 
                 if (historyIdx !== -1) {
                     this.history = values[historyIdx] as any;
-                }
-
-                if (templateIdx !== -1) {
-                    const template = values[templateIdx] as GetTemplateResponse;
-                    JobDetails.templates.set(this.jobdata!.id, template);
-                    this.template = template;
-
                 }
 
                 this.process();
@@ -1014,7 +1000,6 @@ export class JobDetails {
     history?: GetJobStepRefResponse[] = undefined;
     private timing?: GetJobTimingResponse;
     agents: Map<string, AgentData> = new Map();
-    template?: GetTemplateResponse;
 
     outcome: JobStepOutcome = JobStepOutcome.Failure;
     state: JobStepState = JobStepState.Waiting;
@@ -1041,7 +1026,6 @@ export class JobDetails {
 
     suppressIssues: boolean = false;
 
-    private static templates = new Map<string, GetTemplateResponse>();
 }
 
 

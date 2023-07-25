@@ -118,12 +118,16 @@ public:
 	FORCEINLINE static bool UseGlobalFXBudget() { return bUseGlobalFXBudget; }
 	static void OnUseGlobalFXBudgetChanged(IConsoleVariable* Variable);
 
+	FORCEINLINE static bool DataChannelsEnabled() { return bDataChannelsEnabled; }
+	static void OnDataChannelsEnabledChanged(IConsoleVariable* Variable);
+
 	FORCEINLINE static float GetGlobalSpawnCountScale() { return EngineGlobalSpawnCountScale; }
 	FORCEINLINE static float GetGlobalSystemCountScale() { return EngineGlobalSystemCountScale; }
 
 	static float EngineGlobalSpawnCountScale;
 	static float EngineGlobalSystemCountScale;
 
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_WorldDeltaTime() { return Engine_WorldDeltaTime; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_DeltaTime() { return Engine_DeltaTime; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_InvDeltaTime() { return Engine_InvDeltaTime; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Time() { return Engine_Time; }
@@ -162,6 +166,11 @@ public:
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_NumEmittersAlive() { return Engine_System_NumEmittersAlive; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_SignificanceIndex() { return Engine_System_SignificanceIndex; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_RandomSeed() { return Engine_System_RandomSeed; }
+
+	FORCEINLINE static const FNiagaraVariable& GetVar_Engine_System_CurrentTimeStep() { return Engine_System_CurrentTimeStep; }
+	FORCEINLINE static const FNiagaraVariable& GetVar_Engine_System_NumTimeSteps() { return Engine_System_NumTimeSteps; }
+	FORCEINLINE static const FNiagaraVariable& GetVar_Engine_System_TimeStepFraction() { return Engine_System_TimeStepFraction; }
+
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_NumEmitters() { return Engine_System_NumEmitters; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_NumSystemInstances() { return Engine_NumSystemInstances; }
 
@@ -244,9 +253,10 @@ public:
 	static int32 EngineEffectsQuality;
 
 	static bool bUseGlobalFXBudget;
-
+	static bool bDataChannelsEnabled;
 
 private:
+	static FNiagaraVariable Engine_WorldDeltaTime;
 	static FNiagaraVariable Engine_DeltaTime;
 	static FNiagaraVariable Engine_InvDeltaTime;
 	static FNiagaraVariable Engine_Time; 
@@ -284,6 +294,11 @@ private:
 	static FNiagaraVariable Engine_System_NumEmittersAlive;
 	static FNiagaraVariable Engine_System_SignificanceIndex;
 	static FNiagaraVariable Engine_System_RandomSeed;
+	
+	static FNiagaraVariable Engine_System_CurrentTimeStep;
+	static FNiagaraVariable Engine_System_NumTimeSteps;
+	static FNiagaraVariable Engine_System_TimeStepFraction;
+	
 	static FNiagaraVariable Engine_System_NumEmitters;
 	static FNiagaraVariable Engine_NumSystemInstances;
 

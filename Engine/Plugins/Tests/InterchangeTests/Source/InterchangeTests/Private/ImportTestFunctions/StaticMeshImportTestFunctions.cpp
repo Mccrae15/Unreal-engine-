@@ -3,10 +3,13 @@
 #include "ImportTestFunctions/StaticMeshImportTestFunctions.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshSocket.h"
-#include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMeshSourceData.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "ImportTestFunctions/ImportTestFunctionsBase.h"
 #include "StaticMeshAttributes.h"
-#include "ObjectTools.h"
+#include "InterchangeTestFunction.h"
+#include "StaticMeshResources.h"
+#include "Materials/MaterialInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StaticMeshImportTestFunctions)
 
@@ -96,7 +99,7 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckRenderVertex
 {
 	FInterchangeTestFunctionResult Result;
 
-	if (LodIndex >= Mesh->GetNumLODs())
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
 	{
 		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
 	}
@@ -140,6 +143,25 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckMaterialSlot
 	return Result;
 }
 
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckImportedMaterialSlotName(UStaticMesh* Mesh, int32 MaterialIndex, const FString& ExpectedImportedMaterialSlotName)
+{
+	FInterchangeTestFunctionResult Result;
+
+	if (!Mesh->GetStaticMaterials().IsValidIndex(MaterialIndex))
+	{
+		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't have a material at index %d, mesh material count is %d."), MaterialIndex, Mesh->GetStaticMaterials().Num()));
+	}
+	else
+	{
+		const FString ImportedMaterialSlotNameAtIndex = Mesh->GetStaticMaterials()[MaterialIndex].ImportedMaterialSlotName.ToString();
+		if (!ImportedMaterialSlotNameAtIndex.Equals(ExpectedImportedMaterialSlotName, ESearchCase::CaseSensitive))
+		{
+			Result.AddError(FString::Printf(TEXT("For material index %d, expected imported material slot name [%s], imported [%s]."), MaterialIndex, *ExpectedImportedMaterialSlotName, *ImportedMaterialSlotNameAtIndex));
+		}
+	}
+
+	return Result;
+}
 
 FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckPolygonGroupCount(UStaticMesh* Mesh, int32 LodIndex, int32 ExpectedNumberOfPolygonGroups)
 {
@@ -167,7 +189,7 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckSectionCount
 {
 	FInterchangeTestFunctionResult Result;
 
-	if (LodIndex >= Mesh->GetNumLODs())
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
 	{
 		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
 	}
@@ -184,8 +206,98 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckSectionCount
 	return Result;
 }
 
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckRenderVertexIndexNormal(UStaticMesh* Mesh, int32 LodIndex, int32 VertexIndex, const FVector4f& ExpectedVertexNormal)
+{
+	FInterchangeTestFunctionResult Result;
 
-FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckTotalTriangleCount(UStaticMesh* Mesh, int32 LodIndex, int32 ExpectedTotalNumberOfTriangles)
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
+	{
+		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
+	}
+	else if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.IsValidIndex(LodIndex))
+	{
+		const int32 NumVertices = Mesh->GetRenderData()->LODResources[LodIndex].GetNumVertices();
+		if (VertexIndex >= NumVertices)
+		{
+			Result.AddError(FString::Printf(TEXT("The imported LOD render data doesn't contain vertex index %d."), VertexIndex));
+		}
+		else
+		{
+			
+			FVector4f VertexNormal = Mesh->GetRenderData()->LODResources[LodIndex].VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexIndex);
+			if (!VertexNormal.Equals(ExpectedVertexNormal, UE_KINDA_SMALL_NUMBER))
+			{
+				Result.AddError(FString::Printf(TEXT("For LOD %d, vertex index %d, expected vertex normals %s, imported %s."), LodIndex, VertexIndex, *VertexNormal.ToString(), *ExpectedVertexNormal.ToString()));
+			}
+		}
+	}
+	else
+	{
+		Result.AddError(FString::Printf(TEXT("No valid render data For LOD %d."), LodIndex));
+	}
+
+	return Result;
+}
+
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckRenderVertexIndexColor(UStaticMesh* Mesh, int32 LodIndex, int32 VertexIndex, const FColor& ExpectedVertexColor)
+{
+	FInterchangeTestFunctionResult Result;
+
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
+	{
+		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
+	}
+	else if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.IsValidIndex(LodIndex))
+	{
+		const int32 NumVertices = Mesh->GetRenderData()->LODResources[LodIndex].VertexBuffers.ColorVertexBuffer.GetNumVertices();
+		if (VertexIndex >= NumVertices)
+		{
+			Result.AddError(FString::Printf(TEXT("The imported LOD render color buffer doesn't contain vertex index %d."), VertexIndex));
+		}
+		else
+		{
+			const FColor& ImportedVertexColor = Mesh->GetRenderData()->LODResources[LodIndex].VertexBuffers.ColorVertexBuffer.VertexColor(VertexIndex);
+			if (ImportedVertexColor != ExpectedVertexColor)
+			{
+				Result.AddError(FString::Printf(TEXT("For LOD %d, vertex index %d, expected vertex color %s, imported %s."), LodIndex, VertexIndex, *ExpectedVertexColor.ToString(), *ImportedVertexColor.ToString()));
+			}
+		}
+	}
+	else
+	{
+		Result.AddError(FString::Printf(TEXT("No valid render data For LOD %d."), LodIndex));
+	}
+
+	return Result;
+}
+
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckRenderHasVertexColors(UStaticMesh* Mesh, int32 LodIndex, bool bExpectedHasVertexColors)
+{
+	FInterchangeTestFunctionResult Result;
+
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
+	{
+		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
+	}
+	else if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.IsValidIndex(LodIndex))
+	{
+		const bool bImportedHasVertexColors = Mesh->GetRenderData()->LODResources[LodIndex].VertexBuffers.ColorVertexBuffer.GetNumVertices() != 0;
+		if (bImportedHasVertexColors != bExpectedHasVertexColors)
+		{
+			const TCHAR* ImportedDisplayValue = bImportedHasVertexColors ? TEXT("True") : TEXT("False");
+			const TCHAR* ExpectedDisplayValue = bExpectedHasVertexColors ? TEXT("True") : TEXT("False");
+			Result.AddError(FString::Printf(TEXT("For LOD %d, expected vertex colors %s, imported %s."), LodIndex, ExpectedDisplayValue, ImportedDisplayValue));
+		}
+	}
+	else
+	{
+		Result.AddError(FString::Printf(TEXT("No valid render data For LOD %d."), LodIndex));
+	}
+
+	return Result;
+}
+
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckTriangleCount(UStaticMesh* Mesh, int32 LodIndex, int32 ExpectedTotalNumberOfTriangles)
 {
 	FInterchangeTestFunctionResult Result;
 
@@ -206,8 +318,31 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckTotalTriangl
 	return Result;
 }
 
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckRenderTriangleCount(UStaticMesh* Mesh, int32 LodIndex, int32 ExpectedTotalNumberOfTriangles)
+{
+	FInterchangeTestFunctionResult Result;
 
-FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckTotalPolygonCount(UStaticMesh* Mesh, int32 LodIndex, int32 ExpectedTotalNumberOfPolygons)
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
+	{
+		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
+	}
+	else if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.IsValidIndex(LodIndex))
+	{
+		const int32 NumTriangles = Mesh->GetRenderData()->LODResources[LodIndex].GetNumTriangles();
+		if (NumTriangles != ExpectedTotalNumberOfTriangles)
+		{
+			Result.AddError(FString::Printf(TEXT("For LOD %d, expected %d triangles, imported %d."), LodIndex, ExpectedTotalNumberOfTriangles, NumTriangles));
+		}
+	}
+	else
+	{
+		Result.AddError(FString::Printf(TEXT("No valid render data For LOD %d."), LodIndex));
+	}
+
+	return Result;
+}
+
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckPolygonCount(UStaticMesh* Mesh, int32 LodIndex, int32 ExpectedTotalNumberOfPolygons)
 {
 	FInterchangeTestFunctionResult Result;
 
@@ -321,6 +456,29 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckUVChannelCou
 	return Result;
 }
 
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckRenderUVChannelCount(UStaticMesh* Mesh, int32 LodIndex, int32 ExpectedNumberOfUVChannels)
+{
+	FInterchangeTestFunctionResult Result;
+
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
+	{
+		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
+	}
+	else if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.IsValidIndex(LodIndex))
+	{
+		const int32 NumberOfUVChannels = Mesh->GetRenderData()->LODResources[LodIndex].GetNumTexCoords();
+		if (NumberOfUVChannels != ExpectedNumberOfUVChannels)
+		{
+			Result.AddError(FString::Printf(TEXT("Expected %d UV Channels, imported %d."), ExpectedNumberOfUVChannels, NumberOfUVChannels));
+		}
+	}
+	else
+	{
+		Result.AddError(FString::Printf(TEXT("No valid render data For LOD %d."), LodIndex));
+	}
+
+	return Result;
+}
 
 FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckPolygonGroupImportedMaterialSlotName(UStaticMesh* Mesh, int32 LodIndex, int32 PolygonGroupIndex, const FString& ExpectedImportedMaterialSlotName)
 {
@@ -350,11 +508,11 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckSectionMater
 {
 	FInterchangeTestFunctionResult Result;
 
-	if (LodIndex >= Mesh->GetNumLODs())
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
 	{
 		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
 	}
-	else
+	else if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.IsValidIndex(LodIndex))
 	{
 		const FStaticMeshSectionArray& Sections = Mesh->GetRenderData()->LODResources[LodIndex].Sections;
 		if (SectionIndex >= Sections.Num())
@@ -371,6 +529,10 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckSectionMater
 			}
 		}
 	}
+	else
+	{
+		Result.AddError(FString::Printf(TEXT("No valid render data For LOD %d."), LodIndex));
+	}
 
 	return Result;
 }
@@ -380,11 +542,11 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckSectionMater
 {
 	FInterchangeTestFunctionResult Result;
 
-	if (LodIndex >= Mesh->GetNumLODs())
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
 	{
 		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
 	}
-	else
+	else if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.IsValidIndex(LodIndex))
 	{
 		const FStaticMeshSectionArray& Sections = Mesh->GetRenderData()->LODResources[LodIndex].Sections;
 		if (SectionIndex >= Sections.Num())
@@ -410,10 +572,55 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckSectionMater
 			}
 		}
 	}
+	else
+	{
+		Result.AddError(FString::Printf(TEXT("No valid render data For LOD %d."), LodIndex));
+	}
 
 	return Result;
 }
 
+FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckSectionImportedMaterialSlotName(UStaticMesh* Mesh, int32 LodIndex, int32 SectionIndex, const FString& ExpectedImportedMaterialSlotName)
+{
+	FInterchangeTestFunctionResult Result;
+
+	if (LodIndex < 0 || LodIndex >= Mesh->GetNumLODs())
+	{
+		Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain LOD index %d."), LodIndex));
+	}
+	else if (Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.IsValidIndex(LodIndex))
+	{
+		const FStaticMeshSectionArray& Sections = Mesh->GetRenderData()->LODResources[LodIndex].Sections;
+		if (SectionIndex >= Sections.Num())
+		{
+			Result.AddError(FString::Printf(TEXT("The imported mesh doesn't contain section index %d."), SectionIndex));
+		}
+		else
+		{
+			int32 MaterialIndex = Sections[SectionIndex].MaterialIndex;
+
+			const TArray<FStaticMaterial>& StaticMaterials = Mesh->GetStaticMaterials();
+			if (!StaticMaterials.IsValidIndex(MaterialIndex))
+			{
+				Result.AddError(FString::Printf(TEXT("The section references a non-existent material (index %d)."), MaterialIndex));
+			}
+			else
+			{
+				FString ImportedMaterialSlotName = StaticMaterials[MaterialIndex].ImportedMaterialSlotName.ToString();
+				if (ImportedMaterialSlotName != ExpectedImportedMaterialSlotName)
+				{
+					Result.AddError(FString::Printf(TEXT("For LOD %d section %d, expected imported material slot name %s, imported %s."), LodIndex, SectionIndex, *ExpectedImportedMaterialSlotName, *ImportedMaterialSlotName));
+				}
+			}
+		}
+	}
+	else
+	{
+		Result.AddError(FString::Printf(TEXT("No valid render data For LOD %d."), LodIndex));
+	}
+
+	return Result;
+}
 
 FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckVertexIndexPosition(UStaticMesh* Mesh, int32 LodIndex, int32 VertexIndex, const FVector& ExpectedVertexPosition)
 {
@@ -435,7 +642,7 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckVertexIndexP
 		else
 		{
 			const FVector VertexPosition = FVector(Attributes.GetVertexPositions()[VertexIndex]);
-			if (!VertexPosition.Equals(ExpectedVertexPosition))
+			if (!VertexPosition.Equals(ExpectedVertexPosition, UE_DOUBLE_KINDA_SMALL_NUMBER))
 			{
 				Result.AddError(FString::Printf(TEXT("For LOD %d vertex index %d, expected position %s, imported %s."), LodIndex, VertexIndex, *ExpectedVertexPosition.ToString(), *VertexPosition.ToString()));
 			}
@@ -543,7 +750,7 @@ FInterchangeTestFunctionResult UStaticMeshImportTestFunctions::CheckSocketLocati
 	}
 
 	FVector SocketLocation = Mesh->Sockets[SocketIndex]->RelativeLocation;
-	if (SocketLocation != ExpectedSocketLocation)
+	if (SocketLocation.Equals(ExpectedSocketLocation, UE_DOUBLE_KINDA_SMALL_NUMBER))
 	{
 		Result.AddError(FString::Printf(TEXT("Expected socket location %s, imported %s"), *ExpectedSocketLocation.ToString(), *SocketLocation.ToString()));
 	}

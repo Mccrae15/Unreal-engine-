@@ -5,9 +5,7 @@
 #include "ModelingToolsActions.h"
 #include "ModelingToolsManagerActions.h"
 #include "ModelingToolsEditorModeStyle.h"
-#include "ModelingToolsEditorModeSettings.h"
 
-#include "Misc/CoreDelegates.h"
 
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
@@ -16,19 +14,15 @@
 #include "DetailsCustomizations/MeshVertexSculptToolCustomizations.h"
 #include "DetailsCustomizations/BakeMeshAttributeToolCustomizations.h"
 #include "DetailsCustomizations/BakeTransformToolCustomizations.h"
-#include "DetailsCustomizations/PolygonSelectionMechanicCustomization.h"
+#include "DetailsCustomizations/MeshTopologySelectionMechanicCustomization.h"
 
 #include "PropertySets/AxisFilterPropertyType.h"
-#include "Selection/PolygonSelectionMechanic.h"
+#include "Selection/MeshTopologySelectionMechanic.h"
 #include "MeshVertexSculptTool.h"
 #include "BakeMeshAttributeMapsTool.h"
 #include "BakeMultiMeshAttributeMapsTool.h"
 #include "BakeMeshAttributeVertexTool.h"
 #include "BakeTransformTool.h"
-#include "DynamicMeshActor.h"
-
-#include "LevelEditor.h"
-#include "Filters/CustomClassFilterData.h"
 
 
 #define LOCTEXT_NAMESPACE "FModelingToolsEditorModeModule"
@@ -100,20 +94,11 @@ void FModelingToolsEditorModeModule::OnPostEngineInit()
 	PropertyModule.RegisterCustomClassLayout("BakeMeshAttributeVertexToolProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FBakeMeshAttributeVertexToolDetails::MakeInstance));
 	ClassesToUnregisterOnShutdown.Add(UBakeMeshAttributeVertexToolProperties::StaticClass()->GetFName());
 	// PolyEd
-	PropertyModule.RegisterCustomClassLayout("PolygonSelectionMechanicProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FPolygonSelectionMechanicPropertiesDetails::MakeInstance));
-	ClassesToUnregisterOnShutdown.Add(UPolygonSelectionMechanicProperties::StaticClass()->GetFName());
+	PropertyModule.RegisterCustomClassLayout("MeshTopologySelectionMechanicProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FMeshTopologySelectionMechanicPropertiesDetails::MakeInstance));
+	ClassesToUnregisterOnShutdown.Add(UMeshTopologySelectionMechanicProperties::StaticClass()->GetFName());
 
 	PropertyModule.RegisterCustomClassLayout("BakeTransformToolProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FBakeTransformToolDetails::MakeInstance));
 	ClassesToUnregisterOnShutdown.Add(UBakeTransformToolProperties::StaticClass()->GetFName());
-
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-
-	// Register Level Editor Outliner filter
-	if(TSharedPtr<FFilterCategory> GeometryFilterCategory = LevelEditorModule.GetOutlinerFilterCategory(FLevelEditorOutlinerBuiltInCategories::Geometry()))
-	{
-		TSharedRef<FCustomClassFilterData> DynamicMeshActorClassData = MakeShared<FCustomClassFilterData>(ADynamicMeshActor::StaticClass(), GeometryFilterCategory, FLinearColor::White);
-		LevelEditorModule.AddCustomClassFilterToOutliner(DynamicMeshActorClassData);
-	}
 }
 
 #undef LOCTEXT_NAMESPACE

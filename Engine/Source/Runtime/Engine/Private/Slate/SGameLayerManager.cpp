@@ -1,18 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/SGameLayerManager.h"
-#include "Widgets/SOverlay.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
 #include "Slate/SceneViewport.h"
-#include "EngineGlobals.h"
 #include "SceneView.h"
-#include "Engine/Engine.h"
 #include "Types/NavigationMetaData.h"
 #include "Engine/GameEngine.h"
 #include "Engine/UserInterfaceSettings.h"
 #include "GeneralProjectSettings.h"
 #include "Input/HittestGrid.h"
 #include "Widgets/LayerManager/STooltipPresenter.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SDPIScaler.h"
 #include "Widgets/Layout/SPopup.h"
 #include "Widgets/Layout/SWindowTitleBarArea.h"
@@ -384,7 +384,20 @@ void SGameLayerManager::Tick(const FGeometry& AllottedGeometry, const double InC
 int32 SGameLayerManager::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
 	SCOPED_NAMED_EVENT_TEXT("Paint: Game UI", FColor::Green);
+#if WITH_EDITOR
+	if (GIntraFrameDebuggingGameThread)
+	{
+		// When BP debugging, do not paint the PIE game.
+		//It may trigger other BP code and while it's in a Debugging state the BP will not execute.
+		//It may also tick widgets that may already be ticking.
+		// ie. [A] SMyWidget::Tick() => BPEvent => BP Breakpoint => FApplication::EnterDebuggingMode() => while( SWindow::Paint() => SMyWidget::Tick() ) => End of the first [A] SMyWidget::Tick
+		return FMath::Max(GetPersistentState().OutgoingLayerId, LayerId);
+	}
+#endif
+
+	OutDrawElements.SetIsInGameLayer(true);
 	const int32 ResultLayer = SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+	OutDrawElements.SetIsInGameLayer(false);
 	return ResultLayer;
 }
 
@@ -415,14 +428,8 @@ float SGameLayerManager::GetGameViewportDPIScale() const
 		return 1;
 	}
 
-	const auto UserInterfaceSettings = GetDefault<UUserInterfaceSettings>(UUserInterfaceSettings::StaticClass());
-
-	if (UserInterfaceSettings == nullptr)
-	{
-		return 1;
-	}
-
-	FIntPoint ViewportSize = Viewport->GetSize();
+	const UUserInterfaceSettings* UserInterfaceSettings = GetDefault<UUserInterfaceSettings>();
+	const FIntPoint ViewportSize = Viewport->GetSize();
 	float GameUIScale;
 
 	if (bUseScaledDPI)

@@ -12,7 +12,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+struct FProgram;
 template <class SCALAR> class vec4;
 
 
@@ -64,13 +64,13 @@ template <class SCALAR> class vec4;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		uint64 Hash() const override;
-		void Link(PROGRAM& program, const FLinkerOptions*) override;
-		FImageDesc GetImageDesc(bool, class GetImageDescContext*) override;
+		void Link(FProgram& program, const FLinkerOptions*) override;
+		FImageDesc GetImageDesc(bool, class FGetImageDescContext*) const override;
 		void GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY,
-			BLOCK_LAYOUT_SIZE_CACHE* cache) override;
+			FBlockLayoutSizeCache* cache) override;
 		void GetLayoutBlockSize(int* pBlockX, int* pBlockY) override;
 		bool GetNonBlackRect(FImageRect& maskUsage) const override;
-		bool IsImagePlainConstant(vec4<float>& colour) const override;
+		bool IsImagePlainConstant(FVector4f& colour) const override;
 		Ptr<ImageSizeExpression> GetImageSizeExpression() const override;
 	};
 

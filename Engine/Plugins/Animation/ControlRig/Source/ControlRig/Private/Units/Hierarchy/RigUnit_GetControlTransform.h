@@ -19,7 +19,7 @@ struct CONTROLRIG_API FRigUnit_GetControlBool : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to retrieve the bool for.
@@ -52,7 +52,7 @@ struct CONTROLRIG_API FRigUnit_GetControlFloat : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to retrieve the Float for.
@@ -93,7 +93,7 @@ struct CONTROLRIG_API FRigUnit_GetControlInteger : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to retrieve the Integer for.
@@ -134,7 +134,7 @@ struct CONTROLRIG_API FRigUnit_GetControlVector2D : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to retrieve the Vector2D for.
@@ -168,7 +168,7 @@ struct CONTROLRIG_API FRigUnit_GetControlVector : public FRigUnit
 	GENERATED_BODY()
 
 	FRigUnit_GetControlVector()
-		: Space(EBoneGetterSetterMode::GlobalSpace)
+		: Space(ERigVMTransformSpace::GlobalSpace)
 		, Vector(FVector::ZeroVector)
 		, Minimum(FVector::ZeroVector)
 		, Maximum(FVector::ZeroVector)
@@ -176,7 +176,7 @@ struct CONTROLRIG_API FRigUnit_GetControlVector : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to retrieve the Vector for.
@@ -189,7 +189,7 @@ struct CONTROLRIG_API FRigUnit_GetControlVector : public FRigUnit
 	 * in local or global space.
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// The current value of the control.
 	UPROPERTY(meta=(Output))
@@ -217,7 +217,7 @@ struct CONTROLRIG_API FRigUnit_GetControlRotator : public FRigUnit
 	GENERATED_BODY()
 
 	FRigUnit_GetControlRotator()
-		: Space(EBoneGetterSetterMode::GlobalSpace)
+		: Space(ERigVMTransformSpace::GlobalSpace)
 		, Rotator(FRotator::ZeroRotator)
 		, Minimum(FRotator::ZeroRotator)
 		, Maximum(FRotator::ZeroRotator)
@@ -226,7 +226,7 @@ struct CONTROLRIG_API FRigUnit_GetControlRotator : public FRigUnit
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to retrieve the Rotator for.
@@ -239,7 +239,7 @@ struct CONTROLRIG_API FRigUnit_GetControlRotator : public FRigUnit
 	 * in local or global space.
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// The current value of the control.
 	UPROPERTY(meta=(Output))
@@ -267,7 +267,7 @@ struct CONTROLRIG_API FRigUnit_GetControlTransform : public FRigUnit
 	GENERATED_BODY()
 
 	FRigUnit_GetControlTransform()
-		: Space(EBoneGetterSetterMode::GlobalSpace)
+		: Space(ERigVMTransformSpace::GlobalSpace)
 		, Transform(FTransform::Identity)
 		, Minimum(FTransform::Identity)
 		, Maximum(FTransform::Identity)
@@ -275,7 +275,7 @@ struct CONTROLRIG_API FRigUnit_GetControlTransform : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to retrieve the transform for.
@@ -288,7 +288,7 @@ struct CONTROLRIG_API FRigUnit_GetControlTransform : public FRigUnit
 	 * in local or global space.
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// The current value of the control.
 	UPROPERTY(meta=(Output))

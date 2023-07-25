@@ -4,12 +4,17 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "NiagaraDefines.h"
+#include "NiagaraScalabilityState.h"
+#include "NiagaraTickBehaviorEnum.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "NiagaraCommon.h"
 #include "NiagaraComponentPool.h"
 #include "NiagaraSystemInstanceController.h"
+#include "PrimitiveSceneProxy.h"
+#endif
 #include "NiagaraUserRedirectionParameterStore.h"
 #include "NiagaraVariant.h"
-#include "PrimitiveSceneProxy.h"
 #include "PrimitiveViewRelevance.h"
 #include "Particles/ParticlePerfStats.h"
 #include "Particles/ParticleSystemComponent.h"
@@ -18,11 +23,18 @@
 
 class FMeshElementCollector;
 class FNiagaraRenderer;
+class UNiagaraEffectType;
 class UNiagaraSystem;
 class UNiagaraParameterCollection;
 class UNiagaraParameterCollectionInstance;
+class FNiagaraSystemRenderData;
+class FNiagaraSystemInstance;
+class FNiagaraSystemInstanceController;
 class FNiagaraSystemSimulation;
 class FNiagaraGpuComputeDispatchInterface;
+enum class ENCPoolMethod : uint8;
+using FNiagaraSystemInstanceControllerPtr = TSharedPtr<FNiagaraSystemInstanceController, ESPMode::ThreadSafe>;
+using FNiagaraSystemInstanceControllerConstPtr = TSharedPtr<const FNiagaraSystemInstanceController, ESPMode::ThreadSafe>;
 
 // Called when the particle system is done
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNiagaraSystemFinished, class UNiagaraComponent*, PSystem);
@@ -107,6 +119,18 @@ private:
 	UPROPERTY(EditAnywhere, Category = Parameters)
 	uint32 bEnableGpuComputeDebug : 1;
 
+	/** When true then this instance will override the system's warmup settings. */
+	UPROPERTY(EditAnywhere, Category = Warmup)
+	uint32 bOverrideWarmupSettings : 1;
+	
+	/** Number of ticks to process for warmup of the system. Total warmup time is WarmupTickCount * WarmupTickDelta. */
+	UPROPERTY(EditAnywhere, Category = Warmup, meta=(EditCondition="bOverrideWarmupSettings", ClampMin = "0"))
+	int32 WarmupTickCount = 0;
+
+	/** Delta time used when ticking the system in warmup mode. */
+	UPROPERTY(EditAnywhere, Category = Warmup, meta = (EditCondition="bOverrideWarmupSettings", ForceUnits=s, UIMin = "0.01", UIMax = "1"))
+	float WarmupTickDelta;
+
 	FNiagaraSystemInstanceControllerPtr SystemInstanceController;
 
 	/** Defines the mode use when updating the System age. */
@@ -182,10 +206,10 @@ public:
 	virtual void Deactivate() override;
 	virtual void DeactivateImmediate() override;
 
-	FORCEINLINE ENiagaraExecutionState GetRequestedExecutionState() const { return SystemInstanceController ? SystemInstanceController->GetRequestedExecutionState() : ENiagaraExecutionState::Complete; }
-	FORCEINLINE ENiagaraExecutionState GetExecutionState() const { return SystemInstanceController ? SystemInstanceController->GetActualExecutionState() : ENiagaraExecutionState::Complete; }
+	ENiagaraExecutionState GetRequestedExecutionState() const;
+	ENiagaraExecutionState GetExecutionState() const;
 
-	FORCEINLINE bool IsComplete() const { return SystemInstanceController ? SystemInstanceController->IsComplete() : true; }
+	bool IsComplete() const;
 
 private:
 
@@ -232,6 +256,7 @@ public:
 
 	bool InitializeSystem();
 	void DestroyInstance();
+	void DestroyInstanceNotComponent();
 
 	void OnPooledReuse(UWorld* NewWorld);
 
@@ -336,7 +361,7 @@ public:
 	void SetAutoDestroy(bool bInAutoDestroy);
 
 	UE_DEPRECATED(5.0, "This interface is no longer safe to access directly. Use the interface provided by GetSystemInstanceController instead.")
-	FNiagaraSystemInstance* GetSystemInstance() const { return SystemInstanceController ? SystemInstanceController->GetSystemInstance_Unsafe() : nullptr; }
+	FNiagaraSystemInstance* GetSystemInstance() const;
 
 	FNiagaraSystemInstanceControllerPtr GetSystemInstanceController() { return SystemInstanceController; }
 	FNiagaraSystemInstanceControllerConstPtr GetSystemInstanceController() const { return SystemInstanceController; }
@@ -394,105 +419,104 @@ public:
 	int32 GetRandomSeedOffset() const { return RandomSeedOffset; }
 
 	/** Sets a Niagara FLinearColor parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (LinearColor)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (LinearColor)", Keywords="user parameter variable color"))
 	void SetNiagaraVariableLinearColor(const FString& InVariableName, const FLinearColor& InValue);
 
 	/** Sets a Niagara FLinearColor parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (LinearColor)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (LinearColor)", Keywords="user parameter variable color"))
 	void SetVariableLinearColor(FName InVariableName, const FLinearColor& InValue);
 
-
 	/** Sets a Niagara Vector4 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Vector4)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Vector4)", Keywords="user parameter variable vector"))
 	void SetNiagaraVariableVec4(const FString& InVariableName, const FVector4& InValue);
 
 	/** Sets a Niagara Vector4 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Vector4)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Vector4)", Keywords="user parameter variable vector"))
 	void SetVariableVec4(FName InVariableName, const FVector4& InValue);
 
-	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Quaternion)"))
+	/** Sets a Niagara quaternion parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Quaternion)", Keywords="user parameter variable quaternion rotation"))
 	void SetNiagaraVariableQuat(const FString& InVariableName, const FQuat& InValue);
 
-	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Quaternion)"))
+	/** Sets a Niagara quaternion parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Quaternion)", Keywords="user parameter variable quaternion rotation"))
 	void SetVariableQuat(FName InVariableName, const FQuat& InValue);
 
-	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Matrix)"))
+	/** Sets a Niagara matrix parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Matrix)", Keywords="user parameter variable matrix"))
 	void SetNiagaraVariableMatrix(const FString& InVariableName, const FMatrix& InValue);
 
-	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Matrix)"))
+	/** Sets a Niagara matrix parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Matrix)", Keywords="user parameter variable matrix"))
 	void SetVariableMatrix(FName InVariableName, const FMatrix& InValue);
 
 	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Vector3)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Vector3)", Keywords="user parameter variable vector"))
 	void SetNiagaraVariableVec3(const FString& InVariableName, FVector InValue);
 
 	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Vector3)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Vector3)", Keywords="user parameter variable vector"))
 	void SetVariableVec3(FName InVariableName, FVector InValue);
 
 	/** Sets a Niagara Position parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Position)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Position)", Keywords="user parameter variable vector position lwc"))
 	void SetNiagaraVariablePosition(const FString& InVariableName, FVector InValue);
 
 	/** Sets a Niagara Position parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Position)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Position)", Keywords="user parameter variable vector position lwc"))
 	void SetVariablePosition(FName InVariableName, FVector InValue);
 
-	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Vector2)"))
+	/** Sets a Niagara Vector2 parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Vector2)", Keywords="user parameter variable vector"))
 	void SetNiagaraVariableVec2(const FString& InVariableName, FVector2D InValue);
 
-	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Vector2)"))
+	/** Sets a Niagara Vector2 parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Vector2)", Keywords="user parameter variable vector"))
 	void SetVariableVec2(FName InVariableName, FVector2D InValue);
 
 	/** Sets a Niagara float parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Float)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Float)", Keywords="user parameter variable float"))
 	void SetNiagaraVariableFloat(const FString& InVariableName, float InValue);
 
 	/** Sets a Niagara float parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Float)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Float)", Keywords="user parameter variable float"))
 	void SetVariableFloat(FName InVariableName, float InValue);
 
 	/** Sets a Niagara int parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Int32)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Int32)", Keywords="user parameter variable int"))
 	void SetNiagaraVariableInt(const FString& InVariableName, int32 InValue);
 
 	/** Sets a Niagara int parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Int32)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Int32)", Keywords="user parameter variable int"))
 	void SetVariableInt(FName InVariableName, int32 InValue);
 
-	/** Sets a Niagara float parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Bool)"))
+	/** Sets a Niagara bool parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Bool)", Keywords="user parameter variable bool"))
 	void SetNiagaraVariableBool(const FString& InVariableName, bool InValue);
 
-	/** Sets a Niagara float parameter by name, overriding locally if necessary.*/
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Bool)"))
+	/** Sets a Niagara bool parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Bool)", Keywords="user parameter variable bool"))
 	void SetVariableBool(FName InVariableName, bool InValue);
 
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Actor)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Actor)", Keywords="user parameter variable actor"))
 	void SetNiagaraVariableActor(const FString& InVariableName, AActor* Actor);
 
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Actor)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Actor)", Keywords="user parameter variable actor"))
 	void SetVariableActor(FName InVariableName, AActor* Actor);
 
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Object)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Object)", Keywords="user parameter variable object"))
 	void SetNiagaraVariableObject(const FString& InVariableName, UObject* Object);
 
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Object)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Object)", Keywords="user parameter variable object"))
 	void SetVariableObject(FName InVariableName, UObject* Object);
 
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Material)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Material)", Keywords="user parameter variable material"))
 	void SetVariableMaterial(FName InVariableName, UMaterialInterface* Object);
 
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Static Mesh)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Static Mesh)", Keywords="user parameter variable mesh"))
 	void SetVariableStaticMesh(FName InVariableName, UStaticMesh* InValue);
 
-	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Texture)"))
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Texture)", Keywords="user parameter variable texture"))
 	void SetVariableTexture(FName InVariableName, class UTexture* Texture);
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (TextureRenderTarget)"))
@@ -547,7 +571,7 @@ public:
 		The significant index for this component. i.e. this is the Nth most significant instance of it's system in the scene.
 		Passed to the script to allow us to scale down internally for less significant systems instances.
 	*/
-	FORCEINLINE void SetSystemSignificanceIndex(int32 InIndex) 	{ if(SystemInstanceController) SystemInstanceController->SetSystemSignificanceIndex(InIndex); }
+	void SetSystemSignificanceIndex(int32 InIndex);
 
 	//~ Begin UObject Interface.
 	virtual void Serialize(FStructuredArchive::FRecord Record) override;
@@ -599,7 +623,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Performance, meta = (Keywords = "Niagara Performance"))
 	void InitForPerformanceBaseline();
 
-	FORCEINLINE void SetLODDistance(float InLODDistance, float InMaxLODDistance);
+	void SetLODDistance(float InLODDistance, float InMaxLODDistance);
 
 #if WITH_EDITOR
 	void PostLoadNormalizeOverrideNames();
@@ -823,113 +847,8 @@ private:
 	void DestroyCullProxy();
 
 public:
-	FORCEINLINE FParticlePerfStatsContext GetPerfStatsContext(){ return FParticlePerfStatsContext(GetWorld(), Asset, this); }
+	FParticlePerfStatsContext GetPerfStatsContext();
 };
 
 FORCEINLINE bool UNiagaraComponent::GetPreviewLODDistanceEnabled()const { return bEnablePreviewLODDistance; }
 FORCEINLINE float UNiagaraComponent::GetPreviewLODDistance()const { return bEnablePreviewLODDistance ? PreviewLODDistance : 0.0f; }
-
-/**
-* Scene proxy for drawing niagara particle simulations.
-*/
-class NIAGARA_API FNiagaraSceneProxy : public FPrimitiveSceneProxy
-{
-public:
-	virtual SIZE_T GetTypeHash() const override;
-
-	FNiagaraSceneProxy(UNiagaraComponent* InComponent);
-	~FNiagaraSceneProxy();
-
-	/** Retrieves the render data for a single system */
-	FNiagaraSystemRenderData* GetSystemRenderData() { return RenderData; }
-
-	/** Called to allow renderers to free render state */
-	void DestroyRenderState_Concurrent();
-
-	/** Gets whether or not this scene proxy should be rendered. */
-	bool GetRenderingEnabled() const;
-
-	/** Sets whether or not this scene proxy should be rendered. */
-	void SetRenderingEnabled(bool bInRenderingEnabled);
-
-	FNiagaraGpuComputeDispatchInterface* GetComputeDispatchInterface() const { return ComputeDispatchInterface; }
-
-#if RHI_RAYTRACING
-	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) override;
-	virtual bool IsRayTracingRelevant() const override { return true; }
-	virtual bool HasRayTracingRepresentation() const override { return true; }
-#endif
-
-	FORCEINLINE const FMatrix& GetLocalToWorldInverse() const { return LocalToWorldInverse; }
-
-	const FVector3f& GetLWCRenderTile() const { return RenderData ? RenderData->LWCRenderTile : FVector3f::ZeroVector; }
-
-	TUniformBuffer<FPrimitiveUniformShaderParameters>* GetCustomUniformBufferResource(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
-	FRHIUniformBuffer* GetCustomUniformBuffer(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
-
-	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
-
-	/** Some proxy wide dynamic settings passed down with the emitter dynamic data. */
-	struct FDynamicData
-	{
-		bool bUseCullProxy = false;
-		float LODDistanceOverride = -1.0f;
-#if WITH_PARTICLE_PERF_STATS
-		FParticlePerfStatsContext PerfStatsContext;
-#endif
-	};
-	const FDynamicData& GetProxyDynamicData()const { return DynamicData; }
-	void SetProxyDynamicData(const FDynamicData& NewData) { DynamicData = NewData; }
-
-private:
-	void ReleaseRenderThreadResources();
-
-	void ReleaseUniformBuffers(bool bEmpty);
-
-	//~ Begin FPrimitiveSceneProxy Interface.
-	virtual void CreateRenderThreadResources() override;
-
-	//virtual void OnActorPositionChanged() override;
-	virtual void OnTransformChanged() override;
-
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
-
-
-	virtual bool CanBeOccluded() const override
-	{
-		// TODO account for MaterialRelevance.bDisableDepthTest and MaterialRelevance.bPostMotionBlurTranslucency as well
-		return !ShouldRenderCustomDepth();
-	}
-
-
-	/** Callback from the renderer to gather simple lights that this proxy wants renderered. */
-	virtual void GatherSimpleLights(const FSceneViewFamily& ViewFamily, FSimpleLightArray& OutParticleLights) const override;
-
-	virtual uint32 GetMemoryFootprint() const override;
-
-	uint32 GetAllocatedSize() const;
-
-private:
-	/** Custom Uniform Buffers, allows us to have renderer specific data packed inside such as pre-skinned bounds. */
-	mutable TMap<uint64, TUniformBuffer<FPrimitiveUniformShaderParameters>*> CustomUniformBuffers;
-
-	/** The data required to render a single instance of a NiagaraSystem */
-	FNiagaraSystemRenderData* RenderData = nullptr;
-
-	FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = nullptr;
-
-	FMatrix LocalToWorldInverse;
-
-	TStatId SystemStatID;
-
-	FDynamicData DynamicData;
-};
-
-FORCEINLINE void UNiagaraComponent::SetLODDistance(float InLODDistance, float InMaxLODDistance)
-{
-	if (!bEnablePreviewLODDistance && SystemInstanceController)
-	{
-		SystemInstanceController->SetLODDistance(InLODDistance, InMaxLODDistance, false);
-	}
-}
-

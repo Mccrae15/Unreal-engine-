@@ -43,7 +43,8 @@ struct FQueryStatsOptions :
 	FQueryStatsOptions(const uint32 InNumStatIds) :
 		EOS_Stats_QueryStatsOptions()
 	{
-		ApiVersion = EOS_STATS_QUERYSTATS_API_LATEST;
+		ApiVersion = 3;
+		UE_EOS_CHECK_API_MISMATCH(EOS_STATS_QUERYSTATS_API_LATEST, 3);
 
 		StartTime = EOS_STATS_TIME_UNDEFINED;
 		EndTime = EOS_STATS_TIME_UNDEFINED;
@@ -158,42 +159,39 @@ void FOnlineStatsEOS::QueryStats(const FUniqueNetIdRef LocalUserId, const TArray
 		Options.TargetUserId = TargetEOSUserId;
 
 		FReadStatsCallback* CallbackObj = new FReadStatsCallback(FOnlineStatsEOSWeakPtr(AsShared()));
-		CallbackObj->CallbackLambda = [this, StatsQueryContext](const EOS_Stats_OnQueryStatsCompleteCallbackInfo* Data)
+		CallbackObj->CallbackLambda = [this, StatUserId, StatsQueryContext](const EOS_Stats_OnQueryStatsCompleteCallbackInfo* Data)
 		{
 			StatsQueryContext->NumPlayerReads--;
 			bool bWasSuccessful = Data->ResultCode == EOS_EResult::EOS_Success;
 			if (bWasSuccessful)
 			{
-				FUniqueNetIdEOSPtr StatUserId = EOSSubsystem->UserManager->GetLocalUniqueNetIdEOS(Data->TargetUserId);
-				if (StatUserId.IsValid())
+				char StatNameANSI[EOS_OSS_STRING_BUFFER_LENGTH];
+				EOS_Stats_CopyStatByNameOptions Options = { };
+				Options.ApiVersion = 1;
+				UE_EOS_CHECK_API_MISMATCH(EOS_STATS_COPYSTATBYNAME_API_LATEST, 1);
+				Options.TargetUserId = Data->TargetUserId;
+				Options.Name = StatNameANSI;
+
+				TSharedPtr<FOnlineStatsUserStats> UserStats = StatsCache.Emplace(StatUserId, MakeShared<FOnlineStatsUserStats>(StatUserId));
+				// Read each stat that we were looking for so we can mark missing ones as "empty"
+				for (const FString& StatName : StatsQueryContext->StatNames)
 				{
-					char StatNameANSI[EOS_OSS_STRING_BUFFER_LENGTH];
-					EOS_Stats_CopyStatByNameOptions Options = { };
-					Options.ApiVersion = EOS_STATS_COPYSTATBYNAME_API_LATEST;
-					Options.TargetUserId = Data->TargetUserId;
-					Options.Name = StatNameANSI;
+					FCStringAnsi::Strncpy(StatNameANSI, TCHAR_TO_UTF8(*StatName.ToUpper()), EOS_OSS_STRING_BUFFER_LENGTH);
 
-					TSharedPtr<FOnlineStatsUserStats> UserStats = StatsCache.Emplace(StatUserId.ToSharedRef(), MakeShared<FOnlineStatsUserStats>(StatUserId.ToSharedRef()));
-					// Read each stat that we were looking for so we can mark missing ones as "empty"
-					for (const FString& StatName : StatsQueryContext->StatNames)
+					EOS_Stats_Stat* ReadStat = nullptr;
+					if (EOS_Stats_CopyStatByName(EOSSubsystem->StatsHandle, &Options, &ReadStat) == EOS_EResult::EOS_Success)
 					{
-						FCStringAnsi::Strncpy(StatNameANSI, TCHAR_TO_UTF8(*StatName.ToUpper()), EOS_OSS_STRING_BUFFER_LENGTH);
+						UE_LOG_ONLINE_STATS(VeryVerbose, TEXT("Found value for stat %s"), *StatName);
 
-						EOS_Stats_Stat* ReadStat = nullptr;
-						if (EOS_Stats_CopyStatByName(EOSSubsystem->StatsHandle, &Options, &ReadStat) == EOS_EResult::EOS_Success)
-						{
-							UE_LOG_ONLINE_STATS(VeryVerbose, TEXT("Found value for stat %s"), *StatName);
+						UserStats->Stats.Add(StatName, FOnlineStatValue(ReadStat->Value));
 
-							UserStats->Stats.Add(StatName, FOnlineStatValue(ReadStat->Value));
-
-							EOS_Stats_Stat_Release(ReadStat);
-						}
-						else
-						{
-							// Put an empty stat in
-							UE_LOG_ONLINE_STATS(VeryVerbose, TEXT("Value not found for stat %s, adding empty value"), *StatName);
-							UserStats->Stats.Add(StatName, FOnlineStatValue());
-						}
+						EOS_Stats_Stat_Release(ReadStat);
+					}
+					else
+					{
+						// Put an empty stat in
+						UE_LOG_ONLINE_STATS(VeryVerbose, TEXT("Value not found for stat %s, adding empty value"), *StatName);
+						UserStats->Stats.Add(StatName, FOnlineStatValue());
 					}
 				}
 			}
@@ -294,7 +292,8 @@ void FOnlineStatsEOS::WriteStats(EOS_ProductUserId LocalUserId, EOS_ProductUserI
 	for (const TPair<FString, FOnlineStatUpdate>& Stat : PlayerStats.Stats)
 	{
 		EOS_Stats_IngestData& EOSStat = EOSData[Index];
-		EOSStat.ApiVersion = EOS_STATS_INGESTDATA_API_LATEST;
+		EOSStat.ApiVersion = 1;
+		UE_EOS_CHECK_API_MISMATCH(EOS_STATS_INGESTDATA_API_LATEST, 1);
 
 		EOSStat.IngestAmount = GetVariantValue(Stat.Value.GetValue());
 		FCStringAnsi::Strncpy(EOSStatNames[Index].StatName, TCHAR_TO_UTF8(*Stat.Key.ToUpper()), EOS_OSS_STRING_BUFFER_LENGTH);
@@ -304,7 +303,8 @@ void FOnlineStatsEOS::WriteStats(EOS_ProductUserId LocalUserId, EOS_ProductUserI
 	}
 
 	EOS_Stats_IngestStatOptions Options = { };
-	Options.ApiVersion = EOS_STATS_INGESTSTAT_API_LATEST;
+	Options.ApiVersion = 3;
+	UE_EOS_CHECK_API_MISMATCH(EOS_STATS_INGESTSTAT_API_LATEST, 3);
 	Options.LocalUserId = LocalUserId;
 	Options.TargetUserId = UserId;
 	Options.Stats = EOSData.GetData();

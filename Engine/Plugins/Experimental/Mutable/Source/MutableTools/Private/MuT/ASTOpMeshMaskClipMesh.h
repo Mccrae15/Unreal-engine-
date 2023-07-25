@@ -10,7 +10,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+struct FProgram;
 
 
 	//---------------------------------------------------------------------------------------------
@@ -34,8 +34,8 @@ struct PROGRAM;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(PROGRAM& program, const FLinkerOptions* Options) override;
-		Ptr<ASTOp> OptimiseSink(const MODEL_OPTIMIZATION_OPTIONS&, OPTIMIZE_SINK_CONTEXT&) const override;
+		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext&) const override;
 
 	};
 

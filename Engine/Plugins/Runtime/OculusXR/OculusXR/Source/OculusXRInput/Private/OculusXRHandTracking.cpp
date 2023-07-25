@@ -5,6 +5,8 @@
 #include "Misc/CoreDelegates.h"
 #include "IOculusXRInputModule.h"
 
+#include "Animation/Skeleton.h"
+#include "BoneWeights.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "Rendering/SkeletalMeshRenderData.h"
@@ -12,7 +14,11 @@
 #include "Rendering/SkeletalMeshModel.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Model.h"
+#if (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2) || ENGINE_MAJOR_VERSION > 5
+#include "MaterialDomain.h"
+#endif
 
 #define OCULUS_TO_UE4_SCALE 100.0f
 
@@ -334,8 +340,8 @@ namespace OculusXRInput
 		for (uint32_t VertexIndex = 0; VertexIndex < OvrMesh->NumVertices; VertexIndex++)
 		{
 			FSoftSkinVertex SoftVertex;
-			FMemory::Memset(SoftVertex.InfluenceWeights, 0, MAX_TOTAL_INFLUENCES * sizeof(uint8));
-			FMemory::Memset(SoftVertex.InfluenceBones, 0, MAX_TOTAL_INFLUENCES * sizeof(FBoneIndexType));
+			FMemory::Memzero(SoftVertex.InfluenceWeights);
+			FMemory::Memzero(SoftVertex.InfluenceBones);
 
 			// Update vertex data
 			SoftVertex.Color = FColor::White;
@@ -356,19 +362,14 @@ namespace OculusXRInput
 			ovrpVector4f BlendWeights = OvrMesh->BlendWeights[VertexIndex];
 			ovrpVector4s BlendIndices = OvrMesh->BlendIndices[VertexIndex];
 
-			uint8 TotalWeight = 0;
-			SoftVertex.InfluenceWeights[0] = 255.f * BlendWeights.x;
+			SoftVertex.InfluenceWeights[0] = UE::AnimationCore::MaxRawBoneWeightFloat * BlendWeights.x;
 			SoftVertex.InfluenceBones[0] = BlendIndices.x;
-			TotalWeight += 255.f * BlendWeights.x;
-			SoftVertex.InfluenceWeights[1] = 255.f * BlendWeights.y;
+			SoftVertex.InfluenceWeights[1] = UE::AnimationCore::MaxRawBoneWeightFloat * BlendWeights.y;
 			SoftVertex.InfluenceBones[1] = BlendIndices.y;
-			TotalWeight += 255.f * BlendWeights.y;
-			SoftVertex.InfluenceWeights[2] = 255.f * BlendWeights.z;
+			SoftVertex.InfluenceWeights[2] = UE::AnimationCore::MaxRawBoneWeightFloat * BlendWeights.z;
 			SoftVertex.InfluenceBones[2] = BlendIndices.z;
-			TotalWeight += 255.f * BlendWeights.z;
-			SoftVertex.InfluenceWeights[3] = 255.f * BlendWeights.w;
+			SoftVertex.InfluenceWeights[3] = UE::AnimationCore::MaxRawBoneWeightFloat * BlendWeights.w;
 			SoftVertex.InfluenceBones[3] = BlendIndices.w;
-			TotalWeight += 255.f * BlendWeights.w;
 
 			MeshSection.SoftVertices.Add(SoftVertex);
 		}
@@ -429,8 +430,8 @@ namespace OculusXRInput
 		TMap<int32, TArray<int32>> OverlappingVertices;
 		for (uint32_t VertexIndex = 0; VertexIndex < OvrMesh->NumVertices; VertexIndex++)
 		{
-			FMemory::Memset(InWeights[VertexIndex].InfluenceWeights, 0, MAX_TOTAL_INFLUENCES * sizeof(uint8));
-			FMemory::Memset(InWeights[VertexIndex].InfluenceBones, 0, MAX_TOTAL_INFLUENCES * sizeof(FBoneIndexType));
+			FMemory::Memzero(InWeights[VertexIndex].InfluenceWeights);
+			FMemory::Memzero(InWeights[VertexIndex].InfluenceBones);
 			// Initialize vertex data
 			FModelVertex ModelVertex;
 
@@ -457,16 +458,16 @@ namespace OculusXRInput
 			ovrpVector4f BlendWeights = OvrMesh->BlendWeights[VertexIndex];
 			ovrpVector4s BlendIndices = OvrMesh->BlendIndices[VertexIndex];
 
-			InWeights[VertexIndex].InfluenceWeights[0] = 255.f * BlendWeights.x;
+			InWeights[VertexIndex].InfluenceWeights[0] = UE::AnimationCore::MaxRawBoneWeightFloat * BlendWeights.x;
 			InWeights[VertexIndex].InfluenceBones[0] = BlendIndices.x;
 			Vertices.Add(BlendIndices.x);
-			InWeights[VertexIndex].InfluenceWeights[1] = 255.f * BlendWeights.y;
+			InWeights[VertexIndex].InfluenceWeights[1] = UE::AnimationCore::MaxRawBoneWeightFloat * BlendWeights.y;
 			InWeights[VertexIndex].InfluenceBones[1] = BlendIndices.y;
 			Vertices.Add(BlendIndices.y);
-			InWeights[VertexIndex].InfluenceWeights[2] = 255.f * BlendWeights.z;
+			InWeights[VertexIndex].InfluenceWeights[2] = UE::AnimationCore::MaxRawBoneWeightFloat * BlendWeights.z;
 			InWeights[VertexIndex].InfluenceBones[2] = BlendIndices.z;
 			Vertices.Add(BlendIndices.z);
-			InWeights[VertexIndex].InfluenceWeights[3] = 255.f * BlendWeights.w;
+			InWeights[VertexIndex].InfluenceWeights[3] = UE::AnimationCore::MaxRawBoneWeightFloat * BlendWeights.w;
 			InWeights[VertexIndex].InfluenceBones[3] = BlendIndices.w;
 			Vertices.Add(BlendIndices.w);
 

@@ -21,11 +21,13 @@ public class ContentBrowser : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-                "AppFramework",
+			    "AssetDefinition",
+				"AppFramework",
 				"Core",
 				"CoreUObject",
 				"ApplicationCore",
                 "InputCore",
+				"EditorConfig",
 				"Engine",
 				"Slate",
 				"SlateCore",

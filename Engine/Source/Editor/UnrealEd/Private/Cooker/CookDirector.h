@@ -11,10 +11,12 @@
 #include "CookTypes.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/Event.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "HAL/Runnable.h"
 #include "Memory/SharedBuffer.h"
 #include "Misc/Guid.h"
 #include "Misc/ScopeLock.h"
+#include "ProfilingDebugging/CookStats.h"
 #include "Templates/RefCounting.h"
 #include "Templates/UniquePtr.h"
 
@@ -25,10 +27,16 @@ class FCbWriter;
 class FRunnableThread;
 class UCookOnTheFlyServer;
 namespace UE::Cook { class FCookWorkerServer; }
+namespace UE::Cook { class FMPCollectorServerMessageContext; }
 namespace UE::Cook { class IMPCollector; }
+namespace UE::Cook { struct FCookWorkerProfileData; }
+namespace UE::Cook { struct FHeartbeatMessage; }
 namespace UE::Cook { struct FInitialConfigMessage; }
 namespace UE::Cook { struct FPackageData; }
+namespace UE::Cook { struct FRetractionResultsMessage; }
 namespace UE::Cook { struct FWorkerId; }
+
+LLM_DECLARE_TAG(Cooker_MPCook);
 
 namespace UE::Cook
 {
@@ -52,21 +60,24 @@ class FCookDirector
 {
 public:
 
-	FCookDirector(UCookOnTheFlyServer& InCOTFS);
+	FCookDirector(UCookOnTheFlyServer& InCOTFS, int32 CookProcessCount);
 	~FCookDirector();
 
+	bool IsMultiprocessAvailable() const;
 	void StartCook(const FBeginCookContext& Context);
 
 	/**
 	 * Assign the given requests out to CookWorkers (or keep on local COTFS), return the list of assignments.
 	 * Input requests have been sorted by leaf to root load order.
 	 */
-	void AssignRequests(TArrayView<UE::Cook::FPackageData*> Requests, TArray<FWorkerId>& OutAssignments,
+	void AssignRequests(TArrayView<FPackageData*> Requests, TArray<FWorkerId>& OutAssignments,
 		TMap<FPackageData*, TArray<FPackageData*>>&& RequestGraph);
 	/** Notify the CookWorker that owns the cook of the package that the Director wants to take it back. */
 	void RemoveFromWorker(FPackageData& PackageData);
 	/** Periodic tick function. Sends/Receives messages to CookWorkers. */
 	void TickFromSchedulerThread();
+	/** Periodic display function, called from CookOnTheFlyServer.UpdateDisplay. */
+	void UpdateDisplayDiagnostics() const;
 	/** Called when the COTFS Server has detected all packages are complete. Tells the CookWorkers to flush messages and exit. */
 	void PumpCookComplete(bool& bOutCompleted);
 	/** Called when a session ends. The Director blocks on shutdown of all CookWorkers and returns state to before session started. */
@@ -93,7 +104,7 @@ public:
 		FString CommandletExecutable;
 		FString WorkerCommandLine;
 	};
-	FLaunchInfo GetLaunchInfo(FWorkerId WorkerId);
+	FLaunchInfo GetLaunchInfo(FWorkerId WorkerId, int32 ProfileId);
 
 	/** The message CookWorkerServer sends to the remote process once it is ready to connect. */
 	const FInitialConfigMessage& GetInitialConfigMessage();
@@ -128,10 +139,11 @@ private:
 		virtual void Stop() override;
 		FCookDirector& Director;
 	};
+	class FRetractionHandler;
 
 private:
 	/** Helper for constructor parsing. */
-	void ParseConfig();
+	void ParseConfig(int32 CookProcessCount, bool& bOutValid);
 	/** Initialization helper: create the listen socket. */
 	bool TryCreateWorkerConnectSocket();
 	/**
@@ -161,40 +173,71 @@ private:
 	/** Tick helper: tick any workers that are shutting down. */
 	void TickWorkerShutdowns(ECookDirectorThread TickThread);
 	/** Get the commandline to launch a worker process with. */
-	FString GetWorkerCommandLine(FWorkerId WorkerId);
+	FString GetWorkerCommandLine(FWorkerId WorkerId, int32 ProfileId);
 	/** Calls the configured LoadBalanceAlgorithm. Input Requests have been sorted by leaf to root load order. */
-	void LoadBalance(TConstArrayView<TRefCountPtr<FCookWorkerServer>> Workers, TArrayView<FPackageData*> Requests,
+	void LoadBalance(TConstArrayView<FWorkerId> SortedWorkers, TArrayView<FPackageData*> Requests,
 		TMap<FPackageData*, TArray<FPackageData*>>&& RequestGraph, TArray<FWorkerId>& OutAssignments);
+	/** Report whether it is time for a heartbeat message and update the timer data. */
+	void TickHeartbeat(bool bForceHeartbeat, double CurrentTimeSeconds, bool& bOutSendHeartbeat,
+		int32& OutHeartbeatNumber);
+	/** Reset the IdleHeartbeatFence when new idle-breaking data comes in. */
+	void ResetFinalIdleHeartbeatFence();
+	/** Log the occurrence of a heartbeat message from a CookWorker. */
+	void HandleHeartbeatMessage(FMPCollectorServerMessageContext& Context, bool bReadSuccessful,
+		FHeartbeatMessage&& Message);
 
 	/** Move the given worker from active workers to the list of workers shutting down. */
 	void AbortWorker(FWorkerId WorkerId, ECookDirectorThread TickThread);
+	/** Send the given packages from an aborted worker back to the CookOnTheFlyServer for reassignment. */
+	void ReassignAbortedPackages(TArray<FPackageData*>& PackagesToReassign);
+
 	/**
 	 * Periodically update whether (1) local server is done and (2) no results from cookworkers have come in.
 	 * Send warning when it goes on too long.
 	 */
 	void SetWorkersStalled(bool bInWorkersStalled);
+	/** Callback for CookStats system to log our stats. */
+	void LogCookStats(FCookStatsManager::AddStatFuncRef AddStat);
+	void TickRetractionFromSchedulerThread(bool bAnyIdle, int32 BusiestNumAssignments);
+	void HandleRetractionMessage(FMPCollectorServerMessageContext& Context, bool bReadSuccessful,
+		FRetractionResultsMessage&& Message);
+	void AssignRequests(TArray<FWorkerId>&& InWorkers, TArray<TRefCountPtr<FCookWorkerServer>>& InRemoteWorkers, 
+		TArrayView<FPackageData*> Requests, TArray<FWorkerId>& OutAssignments,
+		TMap<FPackageData*, TArray<FPackageData*>>&& RequestGraph);
+
+	TArray<TRefCountPtr<FCookWorkerServer>> CopyRemoteWorkers() const;
+	void DisplayRemainingPackages() const;
+	FString GetDisplayName(const FWorkerId& WorkerId, int32 PreferredWidth = -1) const;
+	FString GetDisplayName(const FCookWorkerServer& RemoteWorker, int32 PreferredWidth=-1) const;
 
 private:
 	// Synchronization primitives that can be used from any thread
-	FCriticalSection CommunicationLock;
+	mutable FCriticalSection CommunicationLock;
 	FEventRef ShutdownEvent {EEventMode::ManualReset};
 
 	// Data only accessible from the SchedulerThread
 	FRunnableShunt RunnableShunt;
 	FRunnableThread* CommunicationThread = nullptr;
+	TArray<FCookWorkerProfileData> RemoteWorkerProfileDatas;
 	TArray<FPendingConnection> PendingConnections;
+	TUniquePtr<FCookWorkerProfileData> LocalWorkerProfileData;
 	UCookOnTheFlyServer& COTFS;
 	double WorkersStalledStartTimeSeconds = 0.;
 	double WorkersStalledWarnTimeSeconds = 0.;
+	double LastTickTimeSeconds = 0.;
+	double NextHeartbeatTimeSeconds = 0.;
+	int32 HeartbeatNumber = 0;
+	int32 FinalIdleHeartbeatFence = -1;
 	bool bWorkersInitialized = false;
 	bool bHasReducedMachineResources = false;
 	bool bIsFirstAssignment = true;
 	bool bCookCompleteSent = false;
 	bool bWorkersStalled = false;
+	bool bMultiprocessAvailable = false;
 
 	// Data that is read-only while the CommunicationThread is active and is readable from any thread
 	FBeginCookContextForWorker BeginCookContext;
-	TMap<FGuid, TRefCountPtr<IMPCollector>> MessageHandlers;
+	TMap<FGuid, TRefCountPtr<IMPCollector>> Collectors;
 	TUniquePtr<FInitialConfigMessage> InitialConfigMessage;
 	FString WorkerConnectAuthority;
 	FString CommandletExecutablePath;
@@ -210,6 +253,8 @@ private:
 	// Data shared between SchedulerThread and CommunicationThread that can only be accessed inside CommunicationLock
 	TMap<int32, TRefCountPtr<FCookWorkerServer>> RemoteWorkers;
 	TMap<FCookWorkerServer*, TRefCountPtr<FCookWorkerServer>> ShuttingDownWorkers;
+	TArray<FPackageData*> DeferredPackagesToReassign;
+	TUniquePtr<FRetractionHandler> RetractionHandler;
 	bool bWorkersActive = false;
 
 	friend class UE::Cook::FCookWorkerServer;
@@ -229,7 +274,7 @@ struct FWorkerConnectMessage : public UE::CompactBinaryTCP::IMessage
 {
 public:
 	virtual void Write(FCbWriter& Writer) const override;
-	virtual bool TryRead(FCbObject&& Object) override;
+	virtual bool TryRead(FCbObjectView Object) override;
 	virtual FGuid GetMessageType() const override { return MessageType; }
 
 public:
@@ -237,4 +282,34 @@ public:
 	static FGuid MessageType;
 };
 
-}
+/**
+ * Message sent from CookDirector to a CookWorker to cancel some of its assigned packages and return them
+ * dispatch to idle workers.
+ */
+struct FRetractionRequestMessage : public UE::CompactBinaryTCP::IMessage
+{
+	virtual void Write(FCbWriter& Writer) const override;
+	virtual bool TryRead(FCbObjectView Object) override;
+	virtual FGuid GetMessageType() const override { return MessageType; }
+
+public:
+	int32 RequestedCount = 0;
+	static FGuid MessageType;
+};
+
+/**
+ * Message sent from CookWorker to CookDirector identifying which assigned packages it chose to satisfy a
+ * a RetractionRequest.
+ */
+struct FRetractionResultsMessage : public UE::CompactBinaryTCP::IMessage
+{
+	virtual void Write(FCbWriter& Writer) const override;
+	virtual bool TryRead(FCbObjectView Object) override;
+	virtual FGuid GetMessageType() const override { return MessageType; }
+
+public:
+	TArray<FName> ReturnedPackages;
+	static FGuid MessageType;
+};
+
+} // namespace UE::Cook

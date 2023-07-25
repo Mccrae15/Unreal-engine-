@@ -41,6 +41,8 @@ namespace UE
 namespace Math
 {
 
+struct TVectorConstInit {};
+
 /**
  * A vector in 3-D space composed of components (X, Y, Z) with floating point precision.
  */
@@ -152,6 +154,8 @@ public:
      * @param InF Value to set all components to.
      */
     explicit FORCEINLINE TVector(T InF);
+
+	FORCEINLINE constexpr TVector(T InF, TVectorConstInit);
 
     /**
      * Constructor using initial values for each component.
@@ -893,6 +897,26 @@ public:
      */
     T HeadingAngle() const;
 
+	/**
+	 * Interpolate from a vector to the direction of another vector along a spherical path.
+	 * 
+	 * @param V Vector we interpolate from
+	 * @param Direction Target direction we interpolate to
+	 * @param Alpha interpolation amount, usually between 0-1
+	 * @return Vector after interpolating between Vector and Direction along a spherical path. The magnitude will remain the length of the starting vector.
+	 */
+	static CORE_API TVector<T> SlerpVectorToDirection(TVector<T>& V, TVector<T>& Direction, T Alpha);
+
+	/**
+	 * Interpolate from normalized vector A to normalized vector B along a spherical path.
+	 *
+	 * @param NormalA Start direction of interpolation, must be normalized.
+	 * @param NormalB End target direction of interpolation, must be normalized.
+	 * @param Alpha interpolation amount, usually between 0-1
+	 * @return Normalized vector after interpolating between NormalA and NormalB along a spherical path.
+	 */
+	static CORE_API TVector<T> SlerpNormals(TVector<T>& NormalA, TVector<T>& NormalB, T Alpha);
+
     /**
      * Create an orthonormal basis from a basis with at least two orthogonal vectors.
      * It may change the directions of the X and Y axes to make the basis orthogonal,
@@ -1136,7 +1160,9 @@ public:
      */
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
 	{
-		if (Ar.EngineNetVer() >= HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
+		Ar.UsingCustomVersion(FEngineNetworkCustomVersion::Guid);
+
+		if (Ar.EngineNetVer() >= FEngineNetworkCustomVersion::SerializeDoubleVectorsAsDoubles && Ar.EngineNetVer() != FEngineNetworkCustomVersion::Ver21AndViewPitchOnly_DONOTUSE)
 		{
 			Ar << X << Y << Z;
 		}
@@ -1154,7 +1180,7 @@ public:
 	}
 
 	// Conversion from other type.
-	template<typename FArg, TEMPLATE_REQUIRES(!TIsSame<T, FArg>::Value)>
+	template<typename FArg, TEMPLATE_REQUIRES(!std::is_same_v<T, FArg>)>
 	explicit TVector(const TVector<FArg>& From) : TVector<T>((T)From.X, (T)From.Y, (T)From.Z) {}
 };
 
@@ -1368,6 +1394,12 @@ FORCEINLINE TVector<T>::TVector(T InF)
     : X(InF), Y(InF), Z(InF)
 {
     DiagnosticCheckNaN();
+}
+
+template<typename T>
+FORCEINLINE constexpr TVector<T>::TVector(T InF, TVectorConstInit)
+	: X(InF), Y(InF), Z(InF)
+{
 }
 
 template<typename T>
@@ -2657,16 +2689,28 @@ inline TVector<T> TVector2<T>::SphericalToUnitCartesian() const
 	
 namespace LWC
 {
+constexpr FVector::FReal DefaultFloatPrecision = 1./16.;
+
 // Validated narrowing cast for world positions. FVector -> FVector3f
 FORCEINLINE FVector3f NarrowWorldPositionChecked(const FVector& WorldPosition)
 {
 	FVector3f Narrowed;
-	constexpr FVector::FReal Precision = 1/16.0;
-	Narrowed.X = FloatCastChecked<float>(WorldPosition.X, Precision);
-	Narrowed.Y = FloatCastChecked<float>(WorldPosition.Y, Precision);
-	Narrowed.Z = FloatCastChecked<float>(WorldPosition.Z, Precision);
+	Narrowed.X = FloatCastChecked<float>(WorldPosition.X, DefaultFloatPrecision);
+	Narrowed.Y = FloatCastChecked<float>(WorldPosition.Y, DefaultFloatPrecision);
+	Narrowed.Z = FloatCastChecked<float>(WorldPosition.Z, DefaultFloatPrecision);
 	return Narrowed;
 }
+
+// Validated narrowing cast for world positions. FVector -> FVector3f
+FORCEINLINE FVector3f NarrowWorldPositionChecked(const FVector::FReal InX, const FVector::FReal InY, const FVector::FReal InZ)
+{
+	FVector3f Narrowed;
+	Narrowed.X = FloatCastChecked<float>(InX, DefaultFloatPrecision);
+	Narrowed.Y = FloatCastChecked<float>(InY, DefaultFloatPrecision);
+	Narrowed.Z = FloatCastChecked<float>(InZ, DefaultFloatPrecision);
+	return Narrowed;
+}
+
 } // namespace UE::LWC
 
 } // namespace UE

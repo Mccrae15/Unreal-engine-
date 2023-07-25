@@ -1,15 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelInstance/LevelInstanceActorImpl.h"
+#include "LevelInstance/LevelInstanceInterface.h"
+#include "Misc/PackageName.h"
 
 #if WITH_EDITOR
 
 #include "LevelInstance/LevelInstancePrivate.h"
 #include "LevelInstance/LevelInstanceComponent.h"
 #include "LevelInstance/LevelInstanceEditorInstanceActor.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
 #include "Logging/MessageLog.h"
-#include "Logging/TokenizedMessage.h"
 #include "Misc/MapErrors.h"
 #include "Misc/UObjectToken.h"
 

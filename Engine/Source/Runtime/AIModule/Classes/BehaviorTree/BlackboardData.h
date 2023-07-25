@@ -11,7 +11,7 @@
 
 /** blackboard entry definition */
 USTRUCT()
-struct FBlackboardEntry
+struct AIMODULE_API FBlackboardEntry
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -86,6 +86,8 @@ public:
 
 	FORCEINLINE FBlackboard::FKey GetFirstKeyID() const { return FirstKeyID; }
 
+	bool IsValidKey(FBlackboard::FKey KeyID) const { return KeyID != FBlackboard::InvalidKey && (int32)KeyID < GetNumKeys(); }
+
 	/** @return key data */
 	const FBlackboardEntry* GetKey(FBlackboard::FKey KeyID) const;
 
@@ -124,7 +126,7 @@ public:
 		}
 		else if (KeyID != FBlackboard::InvalidKey && Parent != NULL)
 		{
-			const FBlackboard::FKey KeyIndex = KeyID - FirstKeyID;
+			const FBlackboard::FKey KeyIndex = (int32)KeyID - (int32)FirstKeyID;
 			Keys.RemoveAt(KeyIndex);
 			MarkPackageDirty();
 			PropagateKeyChangesToDerivedBlackboardAssets();

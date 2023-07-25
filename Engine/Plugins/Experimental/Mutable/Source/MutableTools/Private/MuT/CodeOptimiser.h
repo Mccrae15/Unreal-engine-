@@ -8,7 +8,6 @@
 #include "MuR/CodeVisitor.h"
 #include "MuT/CompilerPrivate.h"
 #include "MuT/AST.h"
-#include "MuT/TaskManager.h"
 
 #include <memory>
 
@@ -24,7 +23,7 @@ namespace mu
         CodeOptimiser( CompilerOptionsPtr options, vector<STATE_COMPILATION_DATA>& states );
 
         //! Optimise the virtual machine code, using several transforms.
-        void OptimiseAST( TaskManager* );
+        void OptimiseAST();
 
     private:
 
@@ -39,12 +38,11 @@ namespace mu
         int m_optimizeIterationsLeft=0;
 
         //! Full optimisation pass
-        void FullOptimiseAST( ASTOpList& roots,
-                              TaskManager* pTaskManager );
+        void FullOptimiseAST( ASTOpList& roots );
 
         //! Optimise the code of a model for a specific state, generating new instructions and
         //! state information.
-        void OptimiseStatesAST( TaskManager* pTaskManager );
+        void OptimiseStatesAST();
 
     };
 
@@ -63,7 +61,7 @@ namespace mu
         {
         }
 
-        bool Apply( PROGRAM& program, OP::ADDRESS at );
+        bool Apply( FProgram& program, OP::ADDRESS at );
 
 
     private:
@@ -90,7 +88,7 @@ namespace mu
 
         IsConstantVisitor();
 
-        bool Apply( PROGRAM& program, OP::ADDRESS at );
+        bool Apply( FProgram& program, OP::ADDRESS at );
 
     private:
 
@@ -102,8 +100,7 @@ namespace mu
     //! ConstantGenerator replaces constant subtrees of operations with an equivalent single
 	//! constant value operation. 
     //---------------------------------------------------------------------------------------------
-    extern bool ConstantGeneratorAST( const CompilerOptions::Private* options, Ptr<ASTOp>& root,
-                                      TaskManager* pTaskManager );
+    extern bool ConstantGeneratorAST( const CompilerOptions::Private* options, Ptr<ASTOp>& root );
 
     //---------------------------------------------------------------------------------------------
     //! \TODO: shapes, projectors, others? but not switches (they must be unique)
@@ -122,13 +119,13 @@ namespace mu
     //! All kinds of optimisations that depend on the meaning of each operation
     //---------------------------------------------------------------------------------------------
     extern bool SemanticOptimiserAST( ASTOpList& roots,
-                                      const MODEL_OPTIMIZATION_OPTIONS& optimisationOptions );
+                                      const FModelOptimizationOptions& optimisationOptions );
 
     //---------------------------------------------------------------------------------------------
     //! Semantic operator that reorders instructions moving expensive ones down to the
     //! leaves of the expressions trying to turn them into constants.
     //---------------------------------------------------------------------------------------------
-    extern bool SinkOptimiserAST( ASTOpList& roots, const MODEL_OPTIMIZATION_OPTIONS& );
+    extern bool SinkOptimiserAST( ASTOpList& roots, const FModelOptimizationOptions& );
 
     //---------------------------------------------------------------------------------------------
     //!
@@ -245,7 +242,7 @@ namespace mu
     public:
 
         ParameterOptimiserAST( STATE_COMPILATION_DATA &s,
-                               const MODEL_OPTIMIZATION_OPTIONS& optimisationOptions );
+                               const FModelOptimizationOptions& optimisationOptions );
 
         bool Apply();
 
@@ -256,7 +253,7 @@ namespace mu
 
         bool m_modified;
 
-        MODEL_OPTIMIZATION_OPTIONS m_optimisationOptions;
+        FModelOptimizationOptions m_optimisationOptions;
 
         RuntimeParameterVisitorAST m_hasRuntimeParamVisitor;
 
@@ -272,7 +269,7 @@ namespace mu
     //---------------------------------------------------------------------------------------------
     //! Return true if two non-zero pixels of the masks overlap.
     //---------------------------------------------------------------------------------------------
-    extern bool AreMasksOverlapping( const PROGRAM& program, OP::ADDRESS a, OP::ADDRESS b );
+    extern bool AreMasksOverlapping( const FProgram& program, OP::ADDRESS a, OP::ADDRESS b );
 
 
     //---------------------------------------------------------------------------------------------

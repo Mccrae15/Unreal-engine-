@@ -2,17 +2,15 @@
 
 #include "SPCGEditorGraphDebugObjectWidget.h"
 
+#include "Framework/Views/TableViewMetadata.h"
 #include "PCGComponent.h"
 #include "PCGEditor.h"
 #include "PCGEditorGraph.h"
-#include "PCGGraph.h"
 
-#include "Editor.h"
 #include "Editor/UnrealEdEngine.h"
 #include "PropertyCustomizationHelpers.h"
 #include "UnrealEdGlobals.h"
-#include "Widgets/Input/STextComboBox.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Input/SComboBox.h"
 
 #define LOCTEXT_NAMESPACE "PCGEditorGraphDebugObjectWidget"
 
@@ -31,7 +29,7 @@ void SPCGEditorGraphDebugObjectWidget::Construct(const FArguments& InArgs, TShar
 
 	const TSharedRef<SWidget> BrowseButton = PropertyCustomizationHelpers::MakeBrowseButton(
 		FSimpleDelegate::CreateSP(this, &SPCGEditorGraphDebugObjectWidget::SelectedDebugObject_OnClicked),
-		LOCTEXT("DebugSelectActor", "Select this Actor in level"),
+		LOCTEXT("DebugSelectActor", "Select and frame the debug actor in the Level Editor."),
 		TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SPCGEditorGraphDebugObjectWidget::IsSelectDebugObjectButtonEnabled))
 	);
 	
@@ -68,7 +66,8 @@ void SPCGEditorGraphDebugObjectWidget::Construct(const FArguments& InArgs, TShar
 void SPCGEditorGraphDebugObjectWidget::OnComboBoxOpening()
 {
 	DebugObjects.Empty();
-
+	DebugObjectsComboBox->RefreshOptions();
+	
 	if (!PCGEditorPtr.IsValid())
 	{
 		return;
@@ -86,9 +85,15 @@ void SPCGEditorGraphDebugObjectWidget::OnComboBoxOpening()
 		return;
 	}
 
-	DebugObjects.Add(MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGEditorGraphDebugObjectWidget::NoObjectString));
-	DebugObjectsComboBox->SetSelectedItem(DebugObjects[0]);
+	TSharedPtr<FPCGEditorGraphDebugObjectInstance> SelectedItem = DebugObjectsComboBox->GetSelectedItem();
 
+	DebugObjects.Add(MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGEditorGraphDebugObjectWidget::NoObjectString));
+
+	if (!SelectedItem.IsValid() || SelectedItem->PCGComponent == nullptr)
+	{
+		DebugObjectsComboBox->SetSelectedItem(DebugObjects[0]);
+	}
+	
 	TArray<UObject*> PCGComponents;
 	GetObjectsOfClass(UPCGComponent::StaticClass(), PCGComponents, true);
 	for (UObject* PCGComponentObject : PCGComponents)
@@ -131,7 +136,13 @@ void SPCGEditorGraphDebugObjectWidget::OnComboBoxOpening()
 			}
 
 			const FString Label = ActorNameOrLabel + PCGEditorGraphDebugObjectWidget::SeparatorString + ComponentName;
-			DebugObjects.Add(MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGComponent, Label));
+			TSharedPtr<FPCGEditorGraphDebugObjectInstance> DebugInstance = MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGComponent, Label);
+			DebugObjects.Add(DebugInstance);
+
+			if (SelectedItem.IsValid() && SelectedItem->PCGComponent == PCGComponent)
+			{
+				DebugObjectsComboBox->SetSelectedItem(DebugInstance);
+			}
 		}
 	}
 }

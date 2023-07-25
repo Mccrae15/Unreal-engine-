@@ -44,6 +44,7 @@ public class UVEditorToolsEditorOnly : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
+				"UnrealEd",
 
 				"MeshModelingTools",
 				"MeshModelingToolsExp",
@@ -52,6 +53,7 @@ public class UVEditorToolsEditorOnly : ModuleRules
 				"ModelingComponents",
 				"ModelingOperators",
 				"ModelingOperatorsEditorOnly",
+				"MeshModelingToolsEditorOnly",
 				"UVEditorTools",
 
 				"ToolWidgets",

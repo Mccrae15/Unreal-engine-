@@ -11,6 +11,8 @@
 #include "BufferVisualizationData.h"
 #include "NaniteVisualizationData.h"
 #include "LumenVisualizationData.h"
+#include "StrataVisualizationData.h"
+#include "GroomVisualizationData.h"
 #include "VirtualShadowMapVisualizationData.h"
 #include "Bookmarks/BookmarkUI.h"
 #include "UnrealEdGlobals.h"
@@ -30,7 +32,7 @@ FLevelViewportCommands::~FLevelViewportCommands()
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** UI_COMMAND takes long for the compile to optimize */
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 void FLevelViewportCommands::RegisterCommands()
 {
 	UI_COMMAND( ToggleMaximize, "Maximize Viewport", "Toggles the Maximize state of the current viewport", EUserInterfaceActionType::ToggleButton, FInputChord() );
@@ -313,6 +315,6 @@ void FLevelViewportCommands::RegisterShowSpriteCommands()
 	}
 }
 
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 #undef LOCTEXT_NAMESPACE

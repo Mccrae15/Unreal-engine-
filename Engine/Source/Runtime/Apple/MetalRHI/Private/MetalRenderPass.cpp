@@ -13,6 +13,7 @@
 #include "MetalCommandBuffer.h"
 #include "MetalProfiler.h"
 #include "MetalFrameAllocator.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #pragma mark - Private Console Variables -
 
@@ -505,13 +506,9 @@ void FMetalRenderPass::DrawIndexedPrimitive(FMetalBuffer const& IndexBuffer, uin
 				
 				if(ClampedNumInstances < NumInstances)
 				{
-					FString ShaderName = TEXT("Unknown");
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-					ShaderName = PipelineState->PixelShader->ShaderName;
-#endif
 					// Setting NumInstances to ClampedNumInstances would fix any visual rendering bugs resulting from this bad call but these draw calls are wrong - don't hide the issue
 					UE_LOG(LogMetal, Error, TEXT("Metal DrawIndexedPrimitive requested to draw %d Instances but vertex stream only has %d instance data available. ShaderName: %s, Deficient Attribute Index: %u"), NumInstances, ClampedNumInstances,
-						   *ShaderName, VertexElem.AttributeIndex);
+						   *PipelineState->PixelShader->GetShaderName(), VertexElem.AttributeIndex);
 				}
 			}
 		}
@@ -1462,6 +1459,20 @@ void FMetalRenderPass::CommitDispatchResourceTables(void)
 		CurrentEncoder.SetShaderSideTable(mtlpp::FunctionType::Kernel, ComputeShader->SideTableBinding);
 		State.SetShaderBuffer(EMetalShaderStages::Compute, nil, nil, 0, 0, ComputeShader->SideTableBinding, mtlpp::ResourceUsage(0));
 	}
+
+#if METAL_RHI_RAYTRACING
+	// TODO: Crappy workaround for inline raytracing support.
+	if (ComputeShader->RayTracingBindings.InstanceIndexBuffer != UINT32_MAX && InstanceBufferSRV.IsValid())
+	{
+		FMetalResourceMultiBuffer* SourceBuffer = InstanceBufferSRV->GetSourceBuffer();
+		check(SourceBuffer);
+		FMetalBuffer CurBuffer = SourceBuffer->GetCurrentBufferOrNil();
+		check(CurBuffer);
+
+		CurrentEncoder.SetShaderBuffer(mtlpp::FunctionType::Kernel, CurBuffer, InstanceBufferSRV->Offset, CurBuffer.GetLength(), ComputeShader->RayTracingBindings.InstanceIndexBuffer, mtlpp::ResourceUsage::Read);
+		State.SetShaderBuffer(EMetalShaderStages::Compute, CurBuffer, nil, InstanceBufferSRV->Offset, CurBuffer.GetLength(), ComputeShader->RayTracingBindings.InstanceIndexBuffer, mtlpp::ResourceUsage::Read);
+	}
+#endif //METAL_RHI_RAYTRACING
 }
 
 void FMetalRenderPass::CommitAsyncDispatchResourceTables(void)
@@ -1476,6 +1487,20 @@ void FMetalRenderPass::CommitAsyncDispatchResourceTables(void)
 		PrologueEncoder.SetShaderSideTable(mtlpp::FunctionType::Kernel, ComputeShader->SideTableBinding);
 		State.SetShaderBuffer(EMetalShaderStages::Compute, nil, nil, 0, 0, ComputeShader->SideTableBinding, mtlpp::ResourceUsage(0));
 	}
+
+#if METAL_RHI_RAYTRACING
+	// TODO: Crappy workaround for inline raytracing support.
+	if (ComputeShader->RayTracingBindings.InstanceIndexBuffer != UINT32_MAX && InstanceBufferSRV.IsValid())
+	{
+		FMetalResourceMultiBuffer* SourceBuffer = InstanceBufferSRV->GetSourceBuffer();
+		check(SourceBuffer);
+		FMetalBuffer CurBuffer = SourceBuffer->GetCurrentBufferOrNil();
+		check(CurBuffer);
+
+		PrologueEncoder.SetShaderBuffer(mtlpp::FunctionType::Kernel, CurBuffer, InstanceBufferSRV->Offset, CurBuffer.GetLength(), ComputeShader->RayTracingBindings.InstanceIndexBuffer, mtlpp::ResourceUsage::Read);
+		State.SetShaderBuffer(EMetalShaderStages::Compute, CurBuffer, nil, InstanceBufferSRV->Offset, CurBuffer.GetLength(), ComputeShader->RayTracingBindings.InstanceIndexBuffer, mtlpp::ResourceUsage::Read);
+	}
+#endif //METAL_RHI_RAYTRACING
 }
 
 void FMetalRenderPass::PrepareToRender(uint32 PrimitiveType)
@@ -1674,8 +1699,14 @@ void FMetalRenderPass::InsertDebugDraw(FMetalCommandData& Data)
 			}
 
 		#if PLATFORM_MAC
+			// UE-182622: Apple Silicon will assert on "Memory Barrier With Resources Validation afterStages (0x2) can not contain MTLRenderStageTile or MTLRenderStageFragment on this device"
+			bool bCanUseMemoryBarrier = !GRHIAdapterName.Contains("Apple");
+			
 			id<MTLBuffer> DebugBufferPtr = State.GetDebugBuffer().GetPtr();
-			[(id<IMTLRenderCommandEncoder>)CurrentEncoder.GetRenderCommandEncoder().GetPtr() memoryBarrierWithResources:&DebugBufferPtr count:1 afterStages:MTLRenderStageFragment beforeStages:MTLRenderStageVertex];
+			if (bCanUseMemoryBarrier)
+			{
+				[(id<IMTLRenderCommandEncoder>)CurrentEncoder.GetRenderCommandEncoder().GetPtr() memoryBarrierWithResources:&DebugBufferPtr count:1 afterStages:MTLRenderStageFragment beforeStages:MTLRenderStageVertex];
+			}
 			
 			CurrentEncoder.SetShaderBytes(mtlpp::FunctionType::Vertex, (uint8 const*)&DebugInfo, sizeof(DebugInfo), 0);
 			State.SetShaderBufferDirty(EMetalShaderStages::Vertex, 0);
@@ -1685,7 +1716,10 @@ void FMetalRenderPass::InsertDebugDraw(FMetalCommandData& Data)
 
 			CurrentEncoder.GetRenderCommandEncoder().Draw(mtlpp::PrimitiveType::Point, 0, 1);
 			
-			[(id<IMTLRenderCommandEncoder>)CurrentEncoder.GetRenderCommandEncoder().GetPtr() memoryBarrierWithResources:&DebugBufferPtr count:1 afterStages:MTLRenderStageVertex beforeStages:MTLRenderStageVertex];
+			if (bCanUseMemoryBarrier)
+			{
+				[(id<IMTLRenderCommandEncoder>)CurrentEncoder.GetRenderCommandEncoder().GetPtr() memoryBarrierWithResources:&DebugBufferPtr count:1 afterStages:MTLRenderStageVertex beforeStages:MTLRenderStageVertex];
+			}
 		#else
 			CurrentEncoder.GetRenderCommandEncoder().SetTileData((uint8 const*)&DebugInfo, sizeof(DebugInfo), 0);
 			CurrentEncoder.GetRenderCommandEncoder().SetTileBuffer(State.GetDebugBuffer(), 0, 1);

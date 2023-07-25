@@ -23,7 +23,7 @@
 UENUM(BlueprintType)
 namespace EEasingFunc
 {
-	enum Type
+	enum Type : int
 	{
 		/** Simple linear interpolation. */
 		Linear,
@@ -74,7 +74,7 @@ namespace EEasingFunc
 UENUM(BlueprintType)
 namespace ELerpInterpolationMode
 {
-	enum Type
+	enum Type : int
 	{
 		/** Shortest Path or Quaternion interpolation for the rotation. */
 		QuatInterp,
@@ -91,7 +91,7 @@ namespace ELerpInterpolationMode
 UENUM(BlueprintType)
 namespace EMatrixColumns
 {
-	enum Type
+	enum Type : int
 	{
 		/** First Column. */
 		First,
@@ -201,8 +201,14 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * Get a random chance with the specified weight. Range of weight is 0.0 - 1.0 E.g.,
 	*		Weight = .6 return value = True 60% of the time
 	*/
-	UFUNCTION(BlueprintPure, Category = "Math|Random", meta=(Weight = "0.5"))
-	static bool RandomBoolWithWeightFromStream(float Weight, const FRandomStream& RandomStream);
+	UFUNCTION(BlueprintPure, Category = "Math|Random", meta=(Weight = "0.5", ScriptMethod = "RandomBoolWithWeight", ScriptMethodMutable))
+	static bool RandomBoolWithWeightFromStream(const FRandomStream& RandomStream, float Weight);
+
+	UE_DEPRECATED(5.2, "Use RandomBoolWithWeightFromStream taking the FRandomStream as the first argument.")
+	static bool RandomBoolWithWeightFromStream(float Weight, const FRandomStream& RandomStream)
+	{
+		return RandomBoolWithWeightFromStream(RandomStream, Weight);
+	}
 
 	/** Returns the logical complement of the Boolean value (NOT A) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "NOT Boolean", CompactNodeTitle = "NOT", Keywords = "! not negate"), Category="Math|Boolean")
@@ -535,7 +541,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 		*(double*)RESULT_PARAM = GenericPercent_FloatFloat(A, B);
 	}
 
-	/** Returns the fractional part of a double. */
+	/** Returns the fractional part of a float. */
 	UFUNCTION(BlueprintPure, Category="Math|Float")
 	static double Fraction(double A);
 
@@ -887,7 +893,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @param InCurrent is the current rotation value
 	 * @param InDesired is the desired rotation value
-	 * @param  is the rotation amount to apply
+	 * @param InDeltaRate is the rotation amount to apply
 	 *
 	 * @return a new rotation component value clamped in the range (-360,360)
 	 */
@@ -927,7 +933,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	// IntPoint functions
 	//
 
-	/** Convert an IntPoint to a Vector2D */
+	/** Converts an IntPoint to a Vector2D */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector2D (IntPoint)", CompactNodeTitle = "->", ScriptMethod = "Vector2D", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector2D Conv_IntPointToVector2D(FIntPoint InIntPoint);
 
@@ -1004,11 +1010,11 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Math|Vector2D", meta = (NativeBreakFunc))
 	static void BreakVector2D(FVector2D InVec, double& X, double& Y);
 
-	/** Convert a Vector2D to a Vector */
+	/** Converts a Vector2D to a Vector */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Vector2D)", CompactNodeTitle = "->", ScriptMethod = "Vector", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector Conv_Vector2DToVector(FVector2D InVector2D, float Z = 0);
 
-	/** Convert a Vector2D to an IntPoint */
+	/** Converts a Vector2D to an IntPoint */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To IntPoint (Vector2D)", CompactNodeTitle = "->", ScriptMethod = "IntPoint", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FIntPoint Conv_Vector2DToIntPoint(FVector2D InVector2D);
 
@@ -1335,11 +1341,11 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "To LinearColor (Vector)", CompactNodeTitle = "->", ScriptMethod = "LinearColor", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FLinearColor Conv_VectorToLinearColor(FVector InVec);
 
-	/** Convert a vector to a transform. Uses vector as location */
+	/** Converts a vector to a transform. Uses vector as location */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Transform (Vector)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FTransform Conv_VectorToTransform(FVector InLocation);
 	
-	/** Convert a Vector to a Vector2D using the Vector's (X, Y) coordinates */
+	/** Converts a Vector to a Vector2D using the Vector's (X, Y) coordinates */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Vector2D (Vector)", CompactNodeTitle = "->", ScriptMethod = "Vector2D", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FVector2D Conv_VectorToVector2D(FVector InVector);
 
@@ -1364,12 +1370,34 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * Similar to the FRotator version, returns a result without roll such that it preserves the up vector.
 	 *
 	 * @note If you don't care about preserving the up vector and just want the most direct rotation, you can use the faster
-	 * 'FQuat::FindBetweenVectors(FVector::ForwardVector, YourVector)' or 'FQuat::FindBetweenNormals(...)' if you know the vector is of unit length.
+	 * 'FindBetweenVectors(ForwardVector, YourVector)' or 'FindBetweenNormals(...)' if you know the vector is of unit length.
 	 *
 	 * @return Quaternion from the Vector's direction, without any roll.
 	 */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Quaternion (Vector)", ScriptMethod = "Quaternion", Keywords="rotation rotate cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FQuat Conv_VectorToQuaternion(FVector InVec);
+
+	/**
+	 * Interpolate from a vector to the direction of another vector along a spherical path.
+	 *
+	 * @param Vector Vector we interpolate from
+	 * @param Direction Target direction we interpolate to
+	 * @param Alpha interpolation amount, usually between 0-1
+	 * @return Vector after interpolating between Vector and Direction along a spherical path. The magnitude will remain the length of the starting vector.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "SlerpVectorToDirection", ScriptMethod = "SlerpVectors", Keywords = "spherical lerpvector vectorslerp interpolate"), Category = "Math|Vector")
+	static FVector Vector_SlerpVectorToDirection(FVector Vector, FVector Direction, double Alpha);
+
+	/**
+	 * Interpolate from normalized vector A to normalized vector B along a spherical path.
+	 *
+	 * @param NormalA Start direction of interpolation, must be normalized.
+	 * @param NormalB End target direction of interpolation, must be normalized.
+	 * @param Alpha interpolation amount, usually between 0-1
+	 * @return Vector after interpolating between A and B along a spherical path.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "SlerpNormals", ScriptMethod = "SlerpNormals", Keywords = "spherical lerpnormal normalslerp interpolate"), Category = "Math|Vector")
+	static FVector Vector_SlerpNormals(FVector NormalA, FVector NormalB, double Alpha);
 
 	/** Vector addition */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector + vector", CompactNodeTitle = "+", ScriptMethod = "Add", ScriptOperator = "+;+=", Keywords = "+ add plus", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Vector")
@@ -2054,7 +2082,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (NativeBreakFunc), Category = "Math|Vector4")
 	static void BreakVector4(const FVector4& InVec, double& X, double& Y, double& Z, double& W);
 
-	/** Convert a Vector4 to a Vector (dropping the W element) */
+	/** Converts a Vector4 to a Vector (dropping the W element) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Vector4)", CompactNodeTitle = "->", ScriptMethod = "Vector", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector Conv_Vector4ToVector(const FVector4& InVector4);
 
@@ -2075,7 +2103,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * Similar to the FRotator version, returns a result without roll such that it preserves the up vector.
 	 *
 	 * @note If you don't care about preserving the up vector and just want the most direct rotation, you can use the faster
-	 * 'FQuat::FindBetweenVectors(FVector::ForwardVector, YourVector)' or 'FQuat::FindBetweenNormals(...)' if you know the vector is of unit length.
+	 * 'FindBetweenVectors(ForwardVector, YourVector)' or 'FindBetweenNormals(...)' if you know the vector is of unit length.
 	 *
 	 * @return Quaternion from the Vector's direction, without any roll.
 	 */
@@ -2367,7 +2395,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "ToVector", DisplayName = "Get Rotation X Vector", Keywords="rotation rotate cast convert", BlueprintAutocast), Category="Math|Rotator")
 	static FVector Conv_RotatorToVector(FRotator InRot);
 
-	/** Convert Rotator to Transform */
+	/** Converts Rotator to Transform */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Transform (Rotator)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FTransform Conv_RotatorToTransform(const FRotator& InRotator);
 
@@ -2414,13 +2442,13 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	// Matrix functions
 	//
 
-	/** Convert a Matrix to a Transform 
+	/** Converts a Matrix to a Transform 
 	* (Assumes Matrix represents a transform) 
 	*/
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Transform (Matrix)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords = "cast convert"), Category = "Math|Conversions")
 	static FTransform Conv_MatrixToTransform(const FMatrix& InMatrix);
 
-	/** Convert a Matrix to a Rotator 
+	/** Converts a Matrix to a Rotator 
 	* (Assumes Matrix represents a transform) 
 	*/
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Rotator (Matrix)", CompactNodeTitle = "->", ScriptMethod = "Rotator", Keywords = "cast convert"), Category = "Math|Conversions")
@@ -2909,11 +2937,11 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Make from Euler (Quat)"), Category = "Math|Quat")
 	static FQuat Quat_MakeFromEuler(const FVector& Euler);
 
-	/** Convert to Rotator representation of this Quaternion. */
+	/** Converts to Rotator representation of this Quaternion. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToRotator (Quat)", CompactNodeTitle = "->", ScriptMethod = "Rotator", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FRotator Quat_Rotator(const FQuat& Q);
 
-	/** Convert to Quaternion representation of this Rotator. */
+	/** Converts to Quaternion representation of this Rotator. */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToQuaternion (Rotator)", CompactNodeTitle = "->", ScriptMethod = "Quaternion", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FQuat Conv_RotatorToQuaternion(FRotator InRot);
 
@@ -2951,6 +2979,36 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Unrotate Vector (Quat)", ScriptMethod = "UnrotateVector"), Category = "Math|Quat")
 	static FVector Quat_UnrotateVector(const FQuat& Q, const FVector& V);
 
+	/**
+	 * Spherical interpolation between Quaternions. Result is normalized.
+	 * 
+	 * @param A The starting quat we interp from
+	 * @param B The target quat we interp to
+	 * @param Alpha The interpolation amount, usually 0 to 1.
+	 * @return Quat after spherical interpolation
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Slerp (Quat)", ScriptMethod = "SlerpQuat", Keywords = "spherical interpolate"), Category = "Math|Quat")
+	static FQuat Quat_Slerp(const FQuat& A, const FQuat& B, double Alpha);
+
+	/**
+	 * Generates the 'smallest' (geodesic) rotation around a sphere between two vectors of arbitrary length.
+	 * 
+	 * @param Start Vector the rotation starts from
+	 * @param End Vector the rotation ends at
+	 * @return Quat that will rotate from Start to End
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Find Quat Between Vectors", ScriptMethod = "FindQuatBetweenVectors", Keywords = "FindQuat FindBetween"), Category = "Math|Quat")
+	static FQuat Quat_FindBetweenVectors(FVector Start, FVector End);
+
+	/**
+	 * Generates the 'smallest' (geodesic) rotation around a sphere between two normals (assumed to be unit length).
+	 * 
+	 * @param Start Normalized vector the rotation starts from
+	 * @param End Normalized vector the rotation ends at
+	 * @return Quat that will rotate from Start to End
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Find Quat Between Normals", ScriptMethod = "FindQuatBetweenNormals", Keywords = "FindQuat FindBetween"), Category = "Math|Quat")
+	static FQuat Quat_FindBetweenNormals(FVector StartNormal, FVector EndNormal);
 
 	//
 	// LinearColor constants - exposed for scripting
@@ -3035,12 +3093,12 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "SetRandomHue"), Category = "Math|Color")
 	static void LinearColor_SetRandomHue(UPARAM(ref) FLinearColor& InOutColor);
 
-	/** Convert a float into a LinearColor, where each element is a float */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To LinearColor (Float)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Converts a float into a LinearColor, where each element is a float */
+	UE_DEPRECATED(5.2, "This method has been deprecated and will be removed. Use the double version instead.")
 	static FLinearColor Conv_FloatToLinearColor(float InFloat);
 
-	/** Convert a float into a LinearColor, where each element is a double */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To LinearColor (Double)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Converts a float into a LinearColor, where each RGB element is that float */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To LinearColor (Float)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FLinearColor Conv_DoubleToLinearColor(double InDouble);
 
 	/** Make a color from individual color components (HSV space; Hue is [0..360) while Saturation and Value are 0..1) */
@@ -3071,7 +3129,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (LinearColor)", ScriptMethod = "ToRGBVector", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector Conv_LinearColorToVector(FLinearColor InLinearColor);
 
-	/** Convert from linear to 8-bit RGBE as outlined in Gregory Ward's Real Pixels article, Graphics Gems II, page 80. */
+	/** Converts from linear to 8-bit RGBE as outlined in Gregory Ward's Real Pixels article, Graphics Gems II, page 80. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To RGBE (LinearColor)", ScriptMethod = "ToRGBE", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Color")
 	static FColor LinearColor_ToRGBE(FLinearColor InLinearColor);
 
@@ -3516,19 +3574,19 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	// -- Begin K2 utilities
 
 	/** Converts a byte to a float */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Float (Byte)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UE_DEPRECATED(5.2, "This method has been deprecated and will be removed. Use the double version instead.")
 	static float Conv_ByteToFloat(uint8 InByte);
 
-	/** Converts a byte to a double */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Double (Byte)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Converts a byte to a float */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Float (Byte)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static double Conv_ByteToDouble(uint8 InByte);
 
 	/** Converts an integer to a float */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Float (Integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UE_DEPRECATED(5.2, "This method has been deprecated and will be removed. Use the double version instead.")
 	static float Conv_IntToFloat(int32 InInt);
 
-	/** Converts an integer to a double */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Double (Integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Converts an integer to a float */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Float (Integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static double Conv_IntToDouble(int32 InInt);
 
 	/** Converts an integer to a 64 bit integer */
@@ -3544,23 +3602,23 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int32 Conv_Int64ToInt(int64 InInt);
 
 	/** Converts a 64 bit floating point to a 32 bit floating point (if the float is too large, returns the low 32 bits) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Float (Double)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (BlueprintInternalUseOnly = "true", DeprecatedFunction, DeprecationMessage = "Explicit conversions between floats and doubles are not necessary. Please remove node."))
 	static float Conv_DoubleToFloat(double InDouble);
 
 	/** Converts a 32 bit floating point to a 64 bit floating point */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Double (Float)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (BlueprintInternalUseOnly = "true", DeprecatedFunction, DeprecationMessage = "Explicit conversions between floats and doubles are not necessary. Please remove node."))
 	static double Conv_FloatToDouble(float InFloat);
 
 	/** Converts a 64 bit integer to a byte (if the integer is too large, returns the low 8 bits) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Byte (Integer64)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static uint8 Conv_Int64ToByte(int64 InInt);
 
-	/** Converts a 64 bit floating point to a 64 bit integer */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Integer64 (Double)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Converts a float to a 64 bit integer */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Integer64 (Float)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static int64 Conv_DoubleToInt64(double InDouble);
 
-	/** Converts a 64 bit integer to a 64 bit floating point */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Double (Integer64)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Converts a 64 bit integer to a float */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Float (Integer64)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static double Conv_Int64ToDouble(int64 InInt);
 
 	/** Converts an integer to an IntVector*/
@@ -3580,8 +3638,12 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int32 Conv_BoolToInt(bool InBool);
 
 	/** Converts a bool to a float (0.0f or 1.0f) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Float (Boolean)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UE_DEPRECATED(5.2, "This method has been deprecated and will be removed. Use the double version instead.")
 	static float Conv_BoolToFloat(bool InBool);
+
+	/** Converts a bool to a float (0.0 or 1.0) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Float (Boolean)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static double Conv_BoolToDouble(bool InBool);
 
 	/** Converts a bool to a byte */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Byte (Boolean)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
@@ -3599,18 +3661,22 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To LinearColor (Color)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FLinearColor Conv_ColorToLinearColor(FColor InColor);
 
-	/** Convert an IntVector to a vector */
+	/** Converts an IntVector to a vector */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (IntVector)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector Conv_IntVectorToVector(const FIntVector& InIntVector);
 
-	/** Convert a float into a vector, where each element is that float */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Vector (Float)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	/** Converts a float into a vector, where each element is that float */
+	UE_DEPRECATED(5.2, "This method has been deprecated and will be removed. Use the double version instead.")
 	static FVector Conv_FloatToVector(float InFloat);
 
-	/** Convert a double into a vector, where each element is that double */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Double)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Converts a double into a vector, where each element is that float */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Float)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector Conv_DoubleToVector(double InDouble);
 
+	/** Convert a float into a vector, where each element is that float */
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Vector2D", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	static FVector2D Conv_DoubleToVector2D(double InDouble);
+	
 	//
 	// Box functions
 	//
@@ -3833,7 +3899,6 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FTransform MakeRelativeTransform(const FTransform& A, const FTransform& RelativeTo);
 
 	UE_DEPRECATED(4.22, "Use MakeRelativeTransform instead, with reversed order of arguments.")
-	UFUNCTION(BlueprintPure, meta=(Keywords="cast convert"), Category="Math|Transform")
 	static FTransform ConvertTransformToRelative(const FTransform& Transform, const FTransform& ParentTransform);
 
 	/** 
@@ -3871,7 +3936,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Math|Transform", meta = (DisplayName = "Determinant", ScriptMethod = "Determinant"))
 	static float Transform_Determinant(const FTransform& Transform);
 
-	/** Convert a Transform to a Matrix with scale */
+	/** Converts a Transform to a Matrix with scale */
 	UFUNCTION(BlueprintPure, Category="Math|Transform", meta = (DisplayName = "To Matrix (Transform)", ScriptMethod = "ToMatrix", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast))
 	static FMatrix Conv_TransformToMatrix(const FTransform& Transform);
 
@@ -3980,51 +4045,87 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** Returns a uniformly distributed random number between 0 and Max - 1 */
-	UFUNCTION(BlueprintPure, Category="Math|Random")
-	static int32 RandomIntegerFromStream(int32 Max, const FRandomStream& Stream);
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(ScriptMethod="RandomInt", ScriptMethodMutable))
+	static int32 RandomIntegerFromStream(const FRandomStream& Stream, int32 Max);
+
+	UE_DEPRECATED(5.2, "Use RandomIntegerFromStream taking the FRandomStream as the first argument.")
+	static int32 RandomIntegerFromStream(int32 Max, const FRandomStream& Stream)
+	{
+		return RandomIntegerFromStream(Stream, Max);
+	}
 
 	/** Return a random integer between Min and Max (>= Min and <= Max) */
-	UFUNCTION(BlueprintPure, Category="Math|Random")
-	static int32 RandomIntegerInRangeFromStream(int32 Min, int32 Max, const FRandomStream& Stream);
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(ScriptMethod="RandomIntInRange", ScriptMethodMutable))
+	static int32 RandomIntegerInRangeFromStream(const FRandomStream& Stream, int32 Min, int32 Max);
+
+	UE_DEPRECATED(5.2, "Use RandomIntegerInRangeFromStream taking the FRandomStream as the first argument.")
+	static int32 RandomIntegerInRangeFromStream(int32 Min, int32 Max, const FRandomStream& Stream)
+	{
+		return RandomIntegerInRangeFromStream(Stream, Min, Max);
+	}
 
 	/** Returns a random bool */
-	UFUNCTION(BlueprintPure, Category="Math|Random")
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(ScriptMethod="RandomBool", ScriptMethodMutable))
 	static bool RandomBoolFromStream(const FRandomStream& Stream);
 
 	/** Returns a random float between 0 and 1 */
-	UFUNCTION(BlueprintPure, Category="Math|Random")
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(ScriptMethod="RandomFloat", ScriptMethodMutable))
 	static float RandomFloatFromStream(const FRandomStream& Stream);
 
 	/** Generate a random number between Min and Max */
-	UFUNCTION(BlueprintPure, Category="Math|Random")
-	static float RandomFloatInRangeFromStream(float Min, float Max, const FRandomStream& Stream);
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(ScriptMethod="RandomFloatInRange", ScriptMethodMutable))
+	static float RandomFloatInRangeFromStream(const FRandomStream& Stream, float Min, float Max);
+
+	UE_DEPRECATED(5.2, "Use RandomFloatInRangeFromStream taking the FRandomStream as the first argument.")
+	static float RandomFloatInRangeFromStream(float Min, float Max, const FRandomStream& Stream)
+	{
+		return RandomFloatInRangeFromStream(Stream, Min, Max);
+	}
 
 	/** Returns a random vector with length of 1.0 */
-	UFUNCTION(BlueprintPure, Category="Math|Random")
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(ScriptMethod="RandomUnitVector", ScriptMethodMutable))
 	static FVector RandomUnitVectorFromStream(const FRandomStream& Stream);
 
 	/** Returns a random point within the specified bounding box using the first vector as an origin and the second as the half size of the AABB. */
-	UFUNCTION(BlueprintPure, Category="Math|Random")
-	static FVector RandomPointInBoundingBoxFromStream(const FVector Center, const FVector HalfSize, const FRandomStream& Stream);
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(ScriptMethod="RandomPointInBoundedBox", ScriptMethodMutable))
+	static FVector RandomPointInBoundingBoxFromStream(const FRandomStream& Stream, const FVector Center, const FVector HalfSize);
+
+	UE_DEPRECATED(5.2, "Use RandomPointInBoundingBoxFromStream taking the FRandomStream as the first argument.")
+	static FVector RandomPointInBoundingBoxFromStream(const FVector Center, const FVector HalfSize, const FRandomStream& Stream)
+	{
+		return RandomPointInBoundingBoxFromStream(Stream, Center, HalfSize);
+	}
 
 	/** Returns a random point within the specified bounding box. */
-	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(DisplayName="Random Point In Bounding Box From Stream (Box)"))
-	static FVector RandomPointInBoundingBoxFromStream_Box(const FBox Box, const FRandomStream& Stream);
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(DisplayName="Random Point In Bounding Box From Stream (Box)"), meta=(ScriptMethod="RandomPointInBox", ScriptMethodMutable))
+	static FVector RandomPointInBoundingBoxFromStream_Box(const FRandomStream& Stream, const FBox Box);
+
+	UE_DEPRECATED(5.2, "Use RandomPointInBoundingBoxFromStream_Box taking the FRandomStream as the first argument.")
+	static FVector RandomPointInBoundingBoxFromStream_Box(const FBox Box, const FRandomStream& Stream)
+	{
+		return RandomPointInBoundingBoxFromStream_Box(Stream, Box);
+	}
 
 	/** Create a random rotation */
-	UFUNCTION(BlueprintPure, Category="Math|Random")
-	static FRotator RandomRotatorFromStream(bool bRoll, const FRandomStream& Stream);
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(ScriptMethod="RandomRotator", ScriptMethodMutable))
+	static FRotator RandomRotatorFromStream(const FRandomStream& Stream, bool bRoll);
+
+	UE_DEPRECATED(5.2, "Use RandomRotatorFromStream taking the FRandomStream as the first argument.")
+	static FRotator RandomRotatorFromStream(bool bRoll, const FRandomStream& Stream)
+	{
+		return RandomRotatorFromStream(Stream, bRoll);
+	}
 
 	/** Reset a random stream */
-	UFUNCTION(BlueprintCallable, Category="Math|Random")
+	UFUNCTION(BlueprintCallable, Category="Math|Random", meta=(ScriptMethod="Reset", ScriptMethodMutable))
 	static void ResetRandomStream(const FRandomStream& Stream);
 
 	/** Create a new random seed for a random stream */
-	UFUNCTION(BlueprintCallable, Category="Math|Random")
+	UFUNCTION(BlueprintCallable, Category="Math|Random", meta=(ScriptMethod="GenerateNewSeed"))
 	static void SeedRandomStream(UPARAM(ref) FRandomStream& Stream);
 
 	/** Set the seed of a random stream to a specific number */
-	UFUNCTION(BlueprintCallable, Category="Math|Random")
+	UFUNCTION(BlueprintCallable, Category="Math|Random", meta=(ScriptMethod="SetSeed"))
 	static void SetRandomStreamSeed(UPARAM(ref) FRandomStream& Stream, int32 NewSeed);
 
 	/** 
@@ -4033,8 +4134,14 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param ConeHalfAngleInRadians	The half-angle of the cone (from ConeDir to edge), in radians.
 	 * @param Stream					The random stream from which to obtain the vector.
 	 */
-	UFUNCTION(BlueprintPure, Category="Math|Random", meta = (Keywords = "RandomVector"))
-	static FVector RandomUnitVectorInConeInRadiansFromStream(const FVector& ConeDir, float ConeHalfAngleInRadians, const FRandomStream& Stream);
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta = (Keywords = "RandomVector", ScriptMethod = "RandomUnitVectorInConeInRadians", ScriptMethodMutable))
+	static FVector RandomUnitVectorInConeInRadiansFromStream(const FRandomStream& Stream, const FVector& ConeDir, float ConeHalfAngleInRadians);
+
+	UE_DEPRECATED(5.2, "Use RandomUnitVectorInConeInRadiansFromStream taking the FRandomStream as the first argument.")
+	static FVector RandomUnitVectorInConeInRadiansFromStream(const FVector& ConeDir, float ConeHalfAngleInRadians, const FRandomStream& Stream)
+	{
+		return RandomUnitVectorInConeInRadiansFromStream(Stream, ConeDir, ConeHalfAngleInRadians);
+	}
 
 	/** 
 	 * Returns a random vector with length of 1, within the specified cone, with uniform random distribution.
@@ -4042,10 +4149,16 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param ConeHalfAngleInDegrees	The half-angle of the cone (from ConeDir to edge), in degrees.
 	 * @param Stream					The random stream from which to obtain the vector.
 	 */
-	UFUNCTION(BlueprintPure, Category="Math|Random", meta = (Keywords = "RandomVector"))
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta = (Keywords = "RandomVector", ScriptMethod = "RandomUnitVectorInConeInDegrees", ScriptMethodMutable))
+	static inline FVector RandomUnitVectorInConeInDegreesFromStream(const FRandomStream& Stream, const FVector& ConeDir, float ConeHalfAngleInDegrees)
+	{
+		return RandomUnitVectorInConeInRadiansFromStream(Stream, ConeDir, FMath::DegreesToRadians(ConeHalfAngleInDegrees));
+	}
+
+	UE_DEPRECATED(5.2, "Use RandomUnitVectorInConeInDegreesFromStream taking the FRandomStream as the first argument.")
 	static inline FVector RandomUnitVectorInConeInDegreesFromStream(const FVector& ConeDir, float ConeHalfAngleInDegrees, const FRandomStream& Stream)
 	{
-		return RandomUnitVectorInConeInRadiansFromStream(ConeDir, FMath::DegreesToRadians(ConeHalfAngleInDegrees), Stream);
+		return RandomUnitVectorInConeInDegreesFromStream(Stream, ConeDir, ConeHalfAngleInDegrees);
 	}
 
 	/**
@@ -4056,8 +4169,14 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	* @param MaxPitchInRadians	The pitch angle of the cone (from ConeDir to vertical edge), in radians.
 	* @param Stream				The random stream from which to obtain the vector.
 	*/
-	UFUNCTION(BlueprintPure, Category = "Math|Random", meta = (Keywords = "RandomVector"))
-	static FVector RandomUnitVectorInEllipticalConeInRadiansFromStream(const FVector& ConeDir, float MaxYawInRadians, float MaxPitchInRadians, const FRandomStream& Stream);
+	UFUNCTION(BlueprintPure, Category = "Math|Random", meta = (Keywords = "RandomVector", ScriptMethod = "RandomUnitVectorInEllipticalConeInRadians", ScriptMethodMutable))
+	static FVector RandomUnitVectorInEllipticalConeInRadiansFromStream(const FRandomStream& Stream, const FVector& ConeDir, float MaxYawInRadians, float MaxPitchInRadians);
+
+	UE_DEPRECATED(5.2, "Use RandomUnitVectorInEllipticalConeInRadiansFromStream taking the FRandomStream as the first argument.")
+	static FVector RandomUnitVectorInEllipticalConeInRadiansFromStream(const FVector& ConeDir, float MaxYawInRadians, float MaxPitchInRadians, const FRandomStream& Stream)
+	{
+		return RandomUnitVectorInEllipticalConeInRadiansFromStream(Stream, ConeDir, MaxYawInRadians, MaxPitchInRadians);
+	}
 
 	/**
 	* Returns a random vector with length of 1, within the specified cone, with uniform random distribution.
@@ -4067,10 +4186,16 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	* @param MaxPitchInDegrees	The pitch angle of the cone (from ConeDir to vertical edge), in degrees.
 	* @param Stream				The random stream from which to obtain the vector.
 	*/
-	UFUNCTION(BlueprintPure, Category = "Math|Random", meta = (Keywords = "RandomVector"))
+	UFUNCTION(BlueprintPure, Category = "Math|Random", meta = (Keywords = "RandomVector", ScriptMethod = "RandomUnitVectorInEllipticalConeInDegrees", ScriptMethodMutable))
+	static inline FVector RandomUnitVectorInEllipticalConeInDegreesFromStream(const FRandomStream& Stream, const FVector& ConeDir, float MaxYawInDegrees, float MaxPitchInDegrees)
+	{
+		return RandomUnitVectorInEllipticalConeInRadiansFromStream(Stream, ConeDir, FMath::DegreesToRadians(MaxYawInDegrees), FMath::DegreesToRadians(MaxPitchInDegrees));
+	}
+
+	UE_DEPRECATED(5.2, "Use RandomUnitVectorInEllipticalConeInDegreesFromStream taking the FRandomStream as the first argument.")
 	static inline FVector RandomUnitVectorInEllipticalConeInDegreesFromStream(const FVector& ConeDir, float MaxYawInDegrees, float MaxPitchInDegrees, const FRandomStream& Stream)
 	{
-		return RandomUnitVectorInEllipticalConeInRadiansFromStream(ConeDir, FMath::DegreesToRadians(MaxYawInDegrees), FMath::DegreesToRadians(MaxPitchInDegrees), Stream);
+		return RandomUnitVectorInEllipticalConeInDegreesFromStream(Stream, ConeDir, MaxYawInDegrees, MaxPitchInDegrees);
 	}
 
 	/**

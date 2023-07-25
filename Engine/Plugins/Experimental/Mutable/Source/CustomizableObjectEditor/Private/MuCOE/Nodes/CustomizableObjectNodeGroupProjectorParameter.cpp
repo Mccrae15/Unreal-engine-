@@ -2,33 +2,12 @@
 
 #include "MuCOE/Nodes/CustomizableObjectNodeGroupProjectorParameter.h"
 
-#include "Containers/Map.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/DataTable.h"
-#include "Engine/Texture2D.h"
-#include "HAL/PlatformCrt.h"
-#include "Internationalization/Internationalization.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "MuCO/CustomizableObject.h"
-#include "MuCO/CustomizableObjectCustomVersion.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
 #include "MuCOE/UnrealEditorPortabilityHelpers.h"
-#include "Serialization/Archive.h"
-#include "Trace/Detail/Channel.h"
-#include "UObject/PropertyPortFlags.h"
-#include "UObject/UnrealType.h"
 
 class UCustomizableObjectNodeRemapPins;
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
-
-
-UCustomizableObjectNodeGroupProjectorParameter::UCustomizableObjectNodeGroupProjectorParameter()
-	: Super()
-{
-
-}
 
 
 TArray<FGroupProjectorParameterImage> UCustomizableObjectNodeGroupProjectorParameter::GetOptionImagesFromTable() const
@@ -104,22 +83,6 @@ TArray<FGroupProjectorParameterImage> UCustomizableObjectNodeGroupProjectorParam
 }
 
 
-void UCustomizableObjectNodeGroupProjectorParameter::Serialize(FArchive& Ar)
-{
-	Super::Serialize(Ar);
-
-	Ar.UsingCustomVersion(FCustomizableObjectCustomVersion::GUID);
-
-	UEdGraphPin* projectorPin = ProjectorPin();
-	if (Ar.CustomVer(FCustomizableObjectCustomVersion::GUID) < FCustomizableObjectCustomVersion::GroupProjectorPinTypeAdded
-		&& projectorPin
-		&& projectorPin->PinType.PinCategory == UEdGraphSchema_CustomizableObject::PC_Projector)
-	{
-		projectorPin->PinType.PinCategory = UEdGraphSchema_CustomizableObject::PC_GroupProjector;
-	}
-}
-
-
 FText UCustomizableObjectNodeGroupProjectorParameter::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
 	return LOCTEXT("Group_Projector_Parameter", "Group Projector Parameter");
@@ -139,13 +102,39 @@ FText UCustomizableObjectNodeGroupProjectorParameter::GetTooltipText() const
 }
 
 
+void UCustomizableObjectNodeGroupProjectorParameter::BackwardsCompatibleFixup()
+{
+	Super::BackwardsCompatibleFixup();
+
+	const int32 CustomizableObjectCustomVersion = GetLinkerCustomVersion(FCustomizableObjectCustomVersion::GUID);
+	
+	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::GroupProjectorPinTypeAdded)
+	{
+		if (UEdGraphPin* Pin = ProjectorPin())
+		{
+			Pin->PinType.PinCategory = UEdGraphSchema_CustomizableObject::PC_GroupProjector;
+		}
+	}
+
+	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::GroupProjectorImagePin)
+	{
+		ReconstructNode();		
+	}
+}
+
+
 void UCustomizableObjectNodeGroupProjectorParameter::AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins)
 {
 	const UEdGraphSchema_CustomizableObject* Schema = GetDefault<UEdGraphSchema_CustomizableObject>();
 
-	FString PinName = TEXT("Value");
-	UEdGraphPin* ValuePin = CustomCreatePin(EGPD_Output, Schema->PC_GroupProjector, FName(*PinName));
-	ValuePin->bDefaultValueIsIgnored = true;
+	CustomCreatePin(EGPD_Output, Schema->PC_GroupProjector, TEXT("Value"));	
+	ImagePin = CustomCreatePin(EGPD_Input, Schema->PC_Image, TEXT("Texture"));
+}
+
+
+UEdGraphPin& UCustomizableObjectNodeGroupProjectorParameter::GetImagePin() const
+{
+	return *ImagePin.Get();
 }
 
 

@@ -3,6 +3,7 @@
 #include "Scene/WorldRenderCapture.h"
 #include "AssetUtils/Texture2DUtil.h"
 
+#include "Components/PrimitiveComponent.h"
 #include "Engine/Canvas.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Materials/Material.h"
@@ -28,10 +29,17 @@ static TAutoConsoleVariable<int32> CVarModelingWorldRenderCaptureVTWarmupFrames(
 	5,
 	TEXT("Number of frames to render before each capture in order to warmup the VT."));
 
-FRenderCaptureTypeFlags FRenderCaptureTypeFlags::All()
+FRenderCaptureTypeFlags FRenderCaptureTypeFlags::All(bool bCombinedMRS)
 {
-	// TODO Cleanup this function, its confusing due to CombinedMRS overlapping with the individual channels
-	FRenderCaptureTypeFlags Result{ true, true, true, true, true, true };
+	FRenderCaptureTypeFlags Result;
+	Result.bBaseColor = true;
+	Result.bRoughness = true;
+	Result.bMetallic = true;
+	Result.bSpecular = true;
+	Result.bEmissive = true;
+	Result.bWorldNormal = true;
+	Result.bCombinedMRS = bCombinedMRS;
+	Result.bSubsurfaceColor = true;
 	Result.bDeviceDepth = true;
 	return Result;
 }
@@ -82,6 +90,9 @@ void FRenderCaptureTypeFlags::SetEnabled(ERenderCaptureType CaptureType, bool bE
 		break;
 	case ERenderCaptureType::CombinedMRS:
 		bCombinedMRS = bEnabled;
+		break;
+	case ERenderCaptureType::SubsurfaceColor:
+		bSubsurfaceColor = bEnabled;
 		break;
 	case ERenderCaptureType::DeviceDepth:
 		bDeviceDepth = bEnabled;
@@ -183,6 +194,7 @@ void FWorldRenderCapture::SetVisibleActors(const TArray<AActor*>& Actors)
 
 	// Find all components that need to be included in rendering.
 	// This also descends into any ChildActorComponents
+	// TODO Consider using Actor->GetActorBounds() or ForEachComponent here
 	TArray<UActorComponent*> ComponentQueue;
 	for (AActor* Actor : Actors)
 	{
@@ -1030,6 +1042,12 @@ bool FWorldRenderCapture::CaptureFromPosition(
 		return bOK;
 	}
 
+	// The following handles buffer visualization materials found in /Engine/BufferVisualization/<CaptureTypeName>.
+	// Sometimes these postprocess materials change the raw GBuffer data, in particular:
+	// - The Roughness postprocess material output is:           GBufferRoughness^Gamma,   with Gamma=2.2
+	// - The SubsurfaceColor postprocess material output is:     GBufferSSColor^(1/Gamma), with Gamma=2.2
+	// Note the relationship between linear and gamma encoded values: EncodedValue = LinearValue^(1/Gamma)
+
 	// Roughness visualization is rendered with gamma correction (unclear why)
 	bool bLinear = (CaptureType != ERenderCaptureType::Roughness);
 	UTextureRenderTarget2D* RenderTargetTexture = GetRenderTexture(bLinear);
@@ -1059,10 +1077,24 @@ bool FWorldRenderCapture::CaptureFromPosition(
 	FName CaptureTypeName;
 	switch (CaptureType)
 	{
-	case ERenderCaptureType::WorldNormal:	CaptureTypeName = FName("WorldNormal");	break;
-	case ERenderCaptureType::Roughness:		CaptureTypeName = FName("Roughness");	break;
-	case ERenderCaptureType::Metallic:		CaptureTypeName = FName("Metallic");	break;
-	case ERenderCaptureType::Specular:		CaptureTypeName = FName("Specular");	break;
+	case ERenderCaptureType::WorldNormal:
+		CaptureTypeName = FName("WorldNormal");
+		break;
+	case ERenderCaptureType::Roughness:
+		CaptureTypeName = FName("Roughness");
+		break;
+	case ERenderCaptureType::Metallic:
+		CaptureTypeName = FName("Metallic");
+		break;
+	case ERenderCaptureType::Specular:
+		CaptureTypeName = FName("Specular");
+		break;
+	case ERenderCaptureType::Opacity:
+		CaptureTypeName = FName("Opacity");
+		break;
+	case ERenderCaptureType::SubsurfaceColor:
+		CaptureTypeName = FName("SubsurfaceColor");
+		break;
 	case ERenderCaptureType::BaseColor:
 	default:
 		CaptureTypeName = FName("BaseColor");

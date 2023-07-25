@@ -3,11 +3,13 @@
 #if WITH_EDITOR
 
 #include "Converters/GLTFMaterialProxyFactory.h"
-#include "Converters/GLTFMaterialUtility.h"
-#include "Converters/GLTFImageUtility.h"
+#include "Converters/GLTFMaterialUtilities.h"
+#include "Converters/GLTFImageUtilities.h"
 #include "Utilities/GLTFProxyMaterialUtilities.h"
 #include "Materials/GLTFProxyMaterialInfo.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "Misc/PackageName.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
@@ -26,7 +28,7 @@ UMaterialInterface* FGLTFMaterialProxyFactory::Create(UMaterialInterface* Origin
 		return OriginalMaterial;
 	}
 
-	if (FGLTFMaterialUtility::NeedsMeshData(OriginalMaterial))
+	if (FGLTFMaterialUtilities::NeedsMeshData(OriginalMaterial))
 	{
 		Builder.LogWarning(FString::Printf(
 			TEXT("Material %s uses mesh data but prebaking will only use a simple quad as mesh data currently"),
@@ -71,6 +73,13 @@ void FGLTFMaterialProxyFactory::SetBaseProperties(UMaterialInstanceConstant* Pro
 	{
 		ProxyMaterial->BasePropertyOverrides.bOverride_TwoSided = true;
 		ProxyMaterial->BasePropertyOverrides.TwoSided = bTwoSided;
+	}
+
+	const bool bIsThinSurface = OriginalMaterial->IsThinSurface();
+	if (bIsThinSurface != BaseMaterial->IsThinSurface())
+	{
+		ProxyMaterial->BasePropertyOverrides.bOverride_bIsThinSurface = true;
+		ProxyMaterial->BasePropertyOverrides.bIsThinSurface = bIsThinSurface;
 	}
 
 	const EBlendMode BlendMode = OriginalMaterial->GetBlendMode();
@@ -267,13 +276,13 @@ TUniquePtr<IGLTFImageConverter> FGLTFMaterialProxyFactory::CreateImageConverter(
 
 	protected:
 
-		virtual FGLTFJsonImage* Convert(TGLTFSuperfluous<FString> Name, EGLTFTextureType Type, bool bIgnoreAlpha, FIntPoint Size, TGLTFSharedArray<FColor> Pixels) override
+		virtual FGLTFJsonImage* Convert(TGLTFSuperfluous<FString> Name, bool bIgnoreAlpha, FIntPoint Size, TGLTFSharedArray<FColor> Pixels) override
 		{
-			const FString Filename = FGLTFImageUtility::GetUniqueFilename(Name, TEXT(""), UniqueFilenames);
+			const FString Filename = FGLTFImageUtilities::GetUniqueFilename(Name, TEXT(""), UniqueFilenames);
 			UniqueFilenames.Add(Filename);
 
 			FGLTFJsonImage* Image = Factory.Builder.AddImage();
-			Factory.Images.Add(Image, { Filename, Type, bIgnoreAlpha, Size, Pixels });
+			Factory.Images.Add(Image, { Filename, bIgnoreAlpha, Size, Pixels });
 			return Image;
 		}
 	};
@@ -309,7 +318,6 @@ UGLTFExportOptions* FGLTFMaterialProxyFactory::CreateExportOptions(const UGLTFPr
 	UGLTFExportOptions* ExportOptions = NewObject<UGLTFExportOptions>();
 	ExportOptions->ResetToDefault();
 	ExportOptions->bExportProxyMaterials = false;
-	ExportOptions->bExportExtraBlendModes = true;
 	ExportOptions->BakeMaterialInputs = ProxyOptions->bBakeMaterialInputs ? EGLTFMaterialBakeMode::Simple : EGLTFMaterialBakeMode::Disabled;
 	ExportOptions->DefaultMaterialBakeSize = ProxyOptions->DefaultMaterialBakeSize;
 	ExportOptions->DefaultMaterialBakeFilter = ProxyOptions->DefaultMaterialBakeFilter;

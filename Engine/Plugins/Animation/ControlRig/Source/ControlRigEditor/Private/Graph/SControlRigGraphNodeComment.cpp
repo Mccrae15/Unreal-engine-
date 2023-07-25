@@ -3,6 +3,7 @@
 #include "Graph/SControlRigGraphNodeComment.h"
 #include "EdGraphNode_Comment.h"
 #include "Engine/Engine.h"
+#include "Framework/Application/SlateApplication.h"
 #include "PropertyPathHelpers.h"
 #include "UObject/PropertyPortFlags.h"
 #include "ControlRigBlueprint.h"
@@ -156,6 +157,12 @@ void SControlRigGraphNodeComment::MoveTo(const FVector2D& NewPosition, FNodeSet&
 				TArray<UEdGraphNode*> NodesToMove = UControlRigGraphSchema::GetNodesToMoveForNode(GraphNode);
 				for(UEdGraphNode* NodeToMove : NodesToMove)
 				{
+					// If the internal node is also selected, it will also be moved, so we don't need to take care of it
+					if (NodeToMove->IsSelected())
+					{
+						continue;
+					}
+					
 					const FVector2D OldPosition = RigSchema->GetNodePositionAtStartOfInteraction(NodeToMove);
 
 					// Don't drag note content if either of the shift keys are down.

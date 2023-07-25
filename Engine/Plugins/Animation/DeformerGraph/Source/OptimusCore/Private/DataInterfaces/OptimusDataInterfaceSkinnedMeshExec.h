@@ -3,15 +3,15 @@
 #pragma once
 
 #include "OptimusComputeDataInterface.h"
-
 #include "ComputeFramework/ComputeDataProvider.h"
 
 #include "OptimusDataInterfaceSkinnedMeshExec.generated.h"
 
-class USkinnedMeshComponent;
-class FSkeletalMeshObject;
 class FRDGBuffer;
 class FRDGBufferUAV;
+class FSkeletalMeshObject;
+class FSkinedMeshExecDataInterfaceParameters;
+class USkinnedMeshComponent;
 
 UENUM()
 enum class EOptimusSkinnedMeshExecDomain : uint8
@@ -40,8 +40,10 @@ public:
 	//~ Begin UComputeDataInterface Interface
 	TCHAR const* GetClassName() const override { return TEXT("SkinnedMeshExec"); }
 	bool IsExecutionInterface() const override { return true; }
+	bool CanSupportUnifiedDispatch() const override { return true; }
 	void GetSupportedInputs(TArray<FShaderFunctionDefinition>& OutFunctions) const override;
 	void GetShaderParameters(TCHAR const* UID, FShaderParametersMetadataBuilder& InOutBuilder, FShaderParametersMetadataAllocations& InOutAllocations) const override;
+	TCHAR const* GetShaderVirtualPath() const override;
 	void GetShaderHash(FString& InOutKey) const override;
 	void GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const override;
 	UComputeDataProvider* CreateDataProvider(TObjectPtr<UObject> InBinding, uint64 InInputMask, uint64 InOutputMask) const override;
@@ -49,6 +51,9 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = Execution)
 	EOptimusSkinnedMeshExecDomain Domain = EOptimusSkinnedMeshExecDomain::Vertex;
+
+private:
+	static TCHAR const* TemplateFilePath;
 };
 
 /** Compute Framework Data Provider for executing kernels over a skinned mesh domain. */
@@ -65,7 +70,6 @@ public:
 	EOptimusSkinnedMeshExecDomain Domain = EOptimusSkinnedMeshExecDomain::Vertex;
 
 	//~ Begin UComputeDataProvider Interface
-	bool IsValid() const override;
 	FComputeDataProviderRenderProxy* GetRenderProxy() override;
 	//~ End UComputeDataProvider Interface
 };
@@ -77,10 +81,13 @@ public:
 
 	//~ Begin FComputeDataProviderRenderProxy Interface
 	int32 GetDispatchThreadCount(TArray<FIntVector>& ThreadCounts) const override;
-	void GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData) override;
+	bool IsValid(FValidationData const& InValidationData) const override;
+	void GatherDispatchData(FDispatchData const& InDispatchData) override;
 	//~ End FComputeDataProviderRenderProxy Interface
 
 private:
+	using FParameters = FSkinedMeshExecDataInterfaceParameters;
+
 	FSkeletalMeshObject* SkeletalMeshObject = nullptr;
 	EOptimusSkinnedMeshExecDomain Domain = EOptimusSkinnedMeshExecDomain::Vertex;
 };

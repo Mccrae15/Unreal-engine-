@@ -542,7 +542,7 @@ bool dtCrowd::updateAgentFilter(const int idx, const dtQueryFilter* filter)
 		const bool bMatching = filter->equals(m_filters[i]);
 		if (bMatching)
 		{
-			m_agents[idx].params.filter = i;
+			m_agents[idx].params.filter = (unsigned char)i;
 			return true;
 		}
 	}
@@ -562,7 +562,7 @@ bool dtCrowd::updateAgentFilter(const int idx, const dtQueryFilter* filter)
 		if (used[i] == 0)
 		{
 			m_filters[i].copyFrom(filter);
-			m_agents[idx].params.filter = i;
+			m_agents[idx].params.filter = (unsigned char)i;
 			return true;
 		}
 	}
@@ -854,9 +854,10 @@ void dtCrowd::updateMoveRequest(const dtReal /*dt*/)
 			// Quick seach towards the goal.
 			static const int MAX_ITER = 20;
 			m_navquery->updateLinkFilter(ag->params.linkFilter.Get());
-			// LWC_TODO_AI: This should be DT_REAL_MAX but leaving as FLT_MAX until after 5.0 as UE side has not been converted to taking FReals for Costs.
-			const dtReal costLimit = FLT_MAX; //@UE
-			m_navquery->initSlicedFindPath(path[0], ag->targetRef, ag->npos, ag->targetPos, costLimit, &m_filters[ag->params.filter]); //@UE
+
+			const dtReal costLimit = DT_REAL_MAX; //@UE
+			const bool requireNavigableEndLocation = true; //@UE
+			m_navquery->initSlicedFindPath(path[0], ag->targetRef, ag->npos, ag->targetPos, costLimit, requireNavigableEndLocation, &m_filters[ag->params.filter]); //@UE
 			m_navquery->updateSlicedFindPath(MAX_ITER, 0);
 			dtStatus status = 0;
 			if (ag->targetReplan) // && npath > 10)
@@ -922,10 +923,10 @@ void dtCrowd::updateMoveRequest(const dtReal /*dt*/)
 	for (int i = 0; i < nqueue; ++i)
 	{
 		dtCrowdAgent* ag = queue[i];
-		// LWC_TODO_AI: This should be DT_REAL_MAX but leaving as FLT_MAX until after 5.0 as UE side has not been converted to taking FReals for Costs.
-		const dtReal costLimit = FLT_MAX; //@UE
+		const dtReal costLimit = DT_REAL_MAX; //@UE
+		const bool requireNavigableEndLocation = true; //@UE
 		ag->targetPathqRef = m_pathq.request(ag->corridor.getLastPoly(), ag->targetRef,
-			ag->corridor.getTarget(), ag->targetPos, costLimit, &m_filters[ag->params.filter], ag->params.linkFilter); //@UE
+			ag->corridor.getTarget(), ag->targetPos, costLimit, requireNavigableEndLocation, &m_filters[ag->params.filter], ag->params.linkFilter); //@UE
 		if (ag->targetPathqRef != DT_PATHQ_INVALID)
 			ag->targetState = DT_CROWDAGENT_TARGET_WAITING_FOR_PATH;
 	}
@@ -1395,7 +1396,7 @@ void dtCrowd::updateStepNextMovePoint(const dtReal dt, dtCrowdAgentDebugInfo* de
 		if (overOffmeshConnection(ag, triggerRadius))
 		{
 			// Prepare to off-mesh connection.
-			const int idx = ag - m_agents;
+			const int idx = (int)(ag - m_agents);
 			dtCrowdAgentAnimation* anim = &m_agentAnims[idx];
 			m_navquery->updateLinkFilter(ag->params.linkFilter.Get());
 

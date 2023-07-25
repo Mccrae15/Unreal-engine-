@@ -70,13 +70,13 @@ public:
 	bool HasValidAsset() const;
 
 	/** register observer for blackboard key */
-	FDelegateHandle RegisterObserver(FBlackboard::FKey KeyID, UObject* NotifyOwner, FOnBlackboardChangeNotification ObserverDelegate);
+	FDelegateHandle RegisterObserver(FBlackboard::FKey KeyID, const UObject* NotifyOwner, FOnBlackboardChangeNotification ObserverDelegate);
 
 	/** unregister observer from blackboard key */
 	void UnregisterObserver(FBlackboard::FKey KeyID, FDelegateHandle ObserverHandle);
 
 	/** unregister all observers associated with given owner */
-	void UnregisterObserversFrom(UObject* NotifyOwner);
+	void UnregisterObserversFrom(const UObject* NotifyOwner);
 
 	/** pause observer change notifications, any new ones will be added to a queue */
 	void PauseObserverNotifications();
@@ -97,7 +97,7 @@ public:
 	bool InitializeBlackboard(UBlackboardData& NewAsset);
 	
 	/** @return true if component can be used with specified blackboard asset */
-	bool IsCompatibleWith(UBlackboardData* TestAsset) const;
+	virtual bool IsCompatibleWith(const UBlackboardData* TestAsset) const;
 
 	UFUNCTION(BlueprintCallable, Category="AI|Components|Blackboard")
 	UObject* GetValueAsObject(const FName& KeyName) const;
@@ -204,7 +204,7 @@ public:
 	FORCEINLINE const uint8* GetKeyRawData(FBlackboard::FKey KeyID) const { return ValueMemory.Num() && ValueOffsets.IsValidIndex(KeyID) ? (ValueMemory.GetData() + ValueOffsets[KeyID]) : NULL; }
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS // re BlackboardAsset
-	FORCEINLINE bool IsValidKey(FBlackboard::FKey KeyID) const { check(BlackboardAsset); return KeyID != FBlackboard::InvalidKey && BlackboardAsset->Keys.IsValidIndex(KeyID); }
+	FORCEINLINE bool IsValidKey(FBlackboard::FKey KeyID) const { check(BlackboardAsset); return BlackboardAsset->IsValidKey(KeyID); }
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS // re BlackboardAsset
 
 	/** compares blackboard's values under specified keys */
@@ -273,13 +273,13 @@ protected:
 	mutable int32 ObserversToRemoveCount = 0;
 
 	/** observers registered for blackboard keys */
-	mutable TMultiMap<uint8, FOnBlackboardChangeNotificationInfo> Observers;
+	mutable TMultiMap<FBlackboard::FKey, FOnBlackboardChangeNotificationInfo> Observers;
 	
 	/** observers registered from owner objects */
-	mutable TMultiMap<UObject*, FDelegateHandle> ObserverHandles;
+	mutable TMultiMap<const UObject*, FDelegateHandle> ObserverHandles;
 
 	/** queued key change notification, will be processed on ResumeUpdates call */
-	mutable TArray<uint8> QueuedUpdates;
+	mutable TArray<FBlackboard::FKey> QueuedUpdates;
 
 	/** set when observation notifies are paused and shouldn't be passed to observers */
 	uint32 bPausedNotifies : 1;
@@ -436,7 +436,7 @@ public:
 	FBBKeyCachedAccessor() : BBKey(FBlackboard::InvalidKey), CachedValue(TBlackboardKey::InvalidValue)
 	{}
 
-	FBBKeyCachedAccessor(UBlackboardComponent& BBComponent, FBlackboard::FKey InBBKey)
+	FBBKeyCachedAccessor(const UBlackboardComponent& BBComponent, FBlackboard::FKey InBBKey)
 	{
 		ensure(InBBKey != FBlackboard::InvalidKey);
 		if (ensure(BBComponent.IsKeyOfType<TBlackboardKey>(InBBKey)))

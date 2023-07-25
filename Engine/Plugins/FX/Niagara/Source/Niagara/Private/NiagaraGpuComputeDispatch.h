@@ -147,16 +147,6 @@ public:
 
 	virtual bool AddSortedGPUSimulation(FNiagaraGPUSortInfo& SortInfo) override;
 
-	const FGlobalDistanceFieldParameterData* GetGlobalDistanceFieldParameters() const;
-	const FDistanceFieldSceneData* GetMeshDistanceFieldParameters() const;
-
-	void LegacySetDataInterfaceParameters(FRHICommandList& RHICmdList, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData, const FNiagaraShaderRef& ComputeShader, const FNiagaraSimStageData& SimStageData) const;
-	void LegacyUnsetDataInterfaceParameters(FRHICommandList& RHICmdList, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData, const FNiagaraShaderRef& ComputeShader, const FNiagaraSimStageData& SimStageData) const;
-	void LegacyResetDataInterfaces(FRHICommandList& RHICmdList, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData) const;
-	void LegacyPreStageInterface(FRHICommandList& RHICmdList, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData, const FNiagaraSimStageData& SimStageData, TSet<FNiagaraDataInterfaceProxy*>& ProxiesToFinalize) const;
-	void LegacyPostStageInterface(FRHICommandList& RHICmdList, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData, const FNiagaraSimStageData& SimStageData, TSet<FNiagaraDataInterfaceProxy*>& ProxiesToFinalize) const;
-	void LegacyPostSimulateInterface(FRHICommandList& RHICmdList, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData) const;
-
 	void ResetDataInterfaces(FRDGBuilder& GraphBuilder, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData) const;
 	void SetDataInterfaceParameters(FRDGBuilder& GraphBuilder, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData, const FNiagaraShaderRef& ComputeShader, const FNiagaraSimStageData& SimStageData, const FNiagaraShaderScriptParametersMetadata& NiagaraShaderParametersMetadata, uint8* ParametersStructure) const;
 	void PreStageInterface(FRDGBuilder& GraphBuilder, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData, const FNiagaraSimStageData& SimStageData, TSet<FNiagaraDataInterfaceProxy*>& ProxiesToFinalize) const;
@@ -172,9 +162,6 @@ public:
 #if WITH_NIAGARA_GPU_PROFILER
 	virtual FNiagaraGPUProfilerInterface* GetGPUProfiler() const final { return GPUProfilerPtr.Get(); }
 #endif
-
-	/** When inside a pass returns the active scene textures for the pass, can be nullptr. */
-	class FNiagaraSceneTextureParameters* GetNiagaraSceneTextures() const { return NiagaraSceneTextures; }
 
 	/** Allows access to the current passes external access queue. */
 	FRDGExternalAccessQueue& GetCurrentPassExternalAccessQueue() const { return CurrentPassExternalAccessQueue; }
@@ -236,7 +223,6 @@ private:
 
 	uint32 FramesBeforeTickFlush = 0;
 
-	TConstArrayView<FViewInfo> CurrentPassViews;
 	mutable FRDGExternalAccessQueue CurrentPassExternalAccessQueue;
 
 	/** A buffer of list sizes used by UpdateFreeIDBuffers to allow overlapping several dispatches. */
@@ -257,8 +243,6 @@ private:
 
 	FNiagaraGpuDispatchList DispatchListPerStage[ENiagaraGpuComputeTickStage::Max];
 
-	class FNiagaraSceneTextureParameters* NiagaraSceneTextures = nullptr;
-
 	struct FDebugReadbackInfo
 	{
 		FNiagaraSystemInstanceID InstanceID;
@@ -271,14 +255,9 @@ private:
 	ENiagaraGpuComputeTickStage::Type StageToTransferGPUBuffers = ENiagaraGpuComputeTickStage::First;
 	ENiagaraGpuComputeTickStage::Type StageToWaitForGPUTransfers = ENiagaraGpuComputeTickStage::First;
 
-	bool bAFREnabled = false;
-	TArray<FRHIBuffer*> AFRBuffers;
-	TArray<FRHITexture*> AFRTextures;
-
 	bool bCrossGPUTransferEnabled = false;
 	TArray<FTransferResourceParams> CrossGPUTransferBuffers;
 
-	void AddAFRBuffer(FRHIBuffer* Buffer);
 	void AddCrossGPUTransfer(FRHICommandList& RHICmdList, FRHIBuffer* Buffer);
 
 	void CalculateCrossGPUTransferLocation();
@@ -287,9 +266,23 @@ private:
 #endif // WITH_MGPU
 
 	// Cached information to build a dummy view info if necessary
-	FIntRect CachedViewRect;
+	struct FCachedViewInitOptions
+	{
+		FGameTime	GameTime;
+		float		GammaCorrection		= 1.0f;
+		FIntRect	ViewRect			= FIntRect(0, 0, 64, 64);
+		FVector		ViewOrigin			= FVector::ZeroVector;
+		FMatrix		ViewRotationMatrix	= FMatrix::Identity;
+		FMatrix		ProjectionMatrix	= FMatrix::Identity;
+	};
+
+	FCachedViewInitOptions CachedViewInitOptions;
 
 #if WITH_EDITOR
 	bool bRaisedWarningThisFrame = false;
 #endif
+
+	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformParams = nullptr;
+	TRDGUniformBufferRef<FMobileSceneTextureUniformParameters> MobileSceneTexturesUniformParams = nullptr;
+	TRDGUniformBufferRef<FStrataPublicGlobalUniformParameters> StrataPublicGlobalUniformParams = nullptr;
 };

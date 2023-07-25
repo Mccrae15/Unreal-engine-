@@ -11,10 +11,6 @@
 #define POST_PROCESS_MATERIAL 0
 #endif
 
-#ifndef POST_PROCESS_MATERIAL_MOBILE
-#define POST_PROCESS_MATERIAL_MOBILE 0
-#endif
-
 #if (POST_PROCESS_MATERIAL == 0)
 #error POST_PROCESS_MATERIAL must be defined to non-zero in the shader compilation environment.
 #endif
@@ -63,6 +59,9 @@ SamplerState PostProcessInput_BilinearSampler;
 #define EYE_ADAPTATION_LOOSE_PARAMETERS 1
 
 #include "/Engine/Generated/Material.ush"
+
+uint ManualStencilReferenceValue;
+uint ManualStencilTestMask;
 
 struct FPostProcessMaterialVSToPS
 {
@@ -160,6 +159,28 @@ void MainVS_VideoOverlay(
 
 #elif PIXELSHADER
 
+#define STENCIL_TEST_EQUAL		0x1u
+#define STENCIL_TEST_LESS		0x2u
+#define STENCIL_TEST_GREATER	0x4u
+
+// Perform the stencil test manually by discarding test failure.
+// This is necessary when Nanite writes custom stencil and the platform cannot support writing arbitrary values directly to
+// the custom stencil buffer per-pixel
+void ManualStencilTest(uint2 PixelPos)
+{
+	const uint Stencil = CalcSceneCustomStencil(PixelPos);
+	const int Diff = ManualStencilReferenceValue - Stencil;
+	const uint Test =
+		(Stencil == ManualStencilReferenceValue	? STENCIL_TEST_EQUAL	: 0) |
+		(Stencil <  ManualStencilReferenceValue	? STENCIL_TEST_LESS		: 0) |
+		(Stencil >  ManualStencilReferenceValue	? STENCIL_TEST_GREATER	: 0);
+
+	if ((Test & ManualStencilTestMask) == 0)
+	{
+		discard;
+	}
+}
+
 void MainPS(
 	in FPostProcessMaterialVSToPS Input,
 	out float4 OutColor : SV_Target0
@@ -172,6 +193,10 @@ void MainPS(
 	// can be optimized
 	float4 SvPosition = Input.Position;
 	float2 ViewportUV = (SvPosition.xy - PostProcessOutput_ViewportMin.xy) * PostProcessOutput_ViewportSizeInverse.xy;
+
+#if MANUAL_STENCIL_TEST
+	ManualStencilTest((uint2)SvPosition.xy);
+#endif
 
 #if NUM_TEX_COORD_INTERPOLATORS
 	{
@@ -206,7 +231,8 @@ void MainPS(
 #if STRATA_ENABLED
 
 	// Unlit forces a single BSDF
-	const FStrataBSDF UnlitBSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
+	FStrataBSDF UnlitBSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
+	SanitizeStrataUnlit(UnlitBSDF);
 
 	// Grab emissive colour as output
   #if MATERIAL_OUTPUT_OPACITY_AS_ALPHA
@@ -327,7 +353,7 @@ void MainPS(
 
 	// can be optimized
 	float4 SvPosition = Input.Position;
-	float2 ViewportUV = (SvPosition - PostProcessOutput_ViewportMin) * PostProcessOutput_ViewportSizeInverse;
+	float2 ViewportUV = (SvPosition.xy - PostProcessOutput_ViewportMin.xy) * PostProcessOutput_ViewportSizeInverse.xy;
 	float2 BufferUV = ViewportUVToBufferUV(ViewportUV);
 	
 #if NUM_TEX_COORD_INTERPOLATORS
@@ -356,14 +382,37 @@ void MainPS(
 	// fill out other related material parameters
 	CalcMaterialParametersPost(Parameters, PixelMaterialInputs, SvPosition, true);
 
+#if STRATA_ENABLED
+
+	// Unlit forces a single BSDF
+	FStrataBSDF UnlitBSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
+	SanitizeStrataUnlit(UnlitBSDF);
+
+	// Grab emissive colour as output
+  #if MATERIAL_OUTPUT_OPACITY_AS_ALPHA
+  // Transmittance = 1 - opacity. See UMaterialExpressionStrataPostProcess.
+	const half UnlitBSDFTransmittance = UNLIT_TRANSMITTANCE(UnlitBSDF).x;
+	const half UnlitBSDFOpacity = 1.0f - UnlitBSDFTransmittance;
+	half Alpha = UnlitBSDFOpacity;
+  #else
+	half Alpha = 0.0f;
+  #endif
+
+	const half3 EmissiveColor = BSDF_GETEMISSIVE(UnlitBSDF);
+
+#else // STRATA_ENABLED
+
 	// Grab emissive colour as output
 	half3 EmissiveColor = GetMaterialEmissive(PixelMaterialInputs);
 	
-#if MATERIAL_OUTPUT_OPACITY_AS_ALPHA
+  #if MATERIAL_OUTPUT_OPACITY_AS_ALPHA
 	half Alpha = GetMaterialOpacity(PixelMaterialInputs);
-#else
-	half Alpha = Parameters.BackupSceneColorAlpha;
-#endif
+  #else
+	half Alpha = 0.0f;
+  #endif
+
+#endif // STRATA_ENABLED
+
 	half4 FullSceneColor = half4(EmissiveColor, Alpha);
 	   
 #if POST_PROCESS_MATERIAL_BEFORE_TONEMAP

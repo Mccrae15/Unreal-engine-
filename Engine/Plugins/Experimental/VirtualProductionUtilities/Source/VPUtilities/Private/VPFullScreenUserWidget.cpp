@@ -4,6 +4,8 @@
 
 #include "Components/PostProcessComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/UserInterfaceSettings.h"
 #include "GameFramework/WorldSettings.h"
@@ -11,6 +13,7 @@
 #include "RenderingThread.h"
 #include "RHI.h"
 #include "UObject/ConstructorHelpers.h"
+#include "UObject/Package.h"
 #include "VPUtilitiesModule.h"
 #include "HAL/PlatformApplicationMisc.h"
 
@@ -130,9 +133,10 @@ namespace
 class FVPWidgetPostProcessHitTester : public ICustomHitTestPath
 {
 public:
-	FVPWidgetPostProcessHitTester(UWorld* InWorld, TSharedPtr<SVirtualWindow> InSlateWindow)
+	FVPWidgetPostProcessHitTester(UWorld* InWorld, TSharedPtr<SVirtualWindow> InSlateWindow, TAttribute<float> GetDPIAttribute)
 		: World(InWorld)
-		, SlateWindow(InSlateWindow)
+		, VirtualSlateWindow(InSlateWindow)
+		, GetDPIAttribute(MoveTemp(GetDPIAttribute))
 		, WidgetDrawSize(FIntPoint::ZeroValue)
 		, LastLocalHitLocation(FVector2D::ZeroVector)
 	{}
@@ -141,16 +145,20 @@ public:
 	{
 		// Get the list of widget at the requested location.
 		TArray<FWidgetAndPointer> ArrangedWidgets;
-		if (TSharedPtr<SVirtualWindow> SlateWindowPin = SlateWindow.Pin())
+		if (TSharedPtr<SVirtualWindow> SlateWindowPin = VirtualSlateWindow.Pin())
 		{
-			FVector2D LocalMouseCoordinate = InGeometry.AbsoluteToLocal(DesktopSpaceCoordinate);
-			float CursorRadius = 0.f;
+			// For some reason the DPI is not applied correctly so we need to multiply the window's native DPI ourselves.
+			// This is the setting you'd find in Windows Settings > Display > Scale and layout
+			// If this bit is skipped, then hovering widgets towards the bottom right will not work
+			// if system scale is > 100% AND the viewport size is not fixed (default).
+			const float DPI = GetDPIAttribute.Get();
+			const FVector2D LocalMouseCoordinate = DPI * InGeometry.AbsoluteToLocal(DesktopSpaceCoordinate);
+			
+			constexpr float CursorRadius = 0.f;
 			ArrangedWidgets = SlateWindowPin->GetHittestGrid().GetBubblePath(LocalMouseCoordinate, CursorRadius, bIgnoreEnabledStatus);
 
-			FVirtualPointerPosition VirtualMouseCoordinate(LocalMouseCoordinate, LastLocalHitLocation);
-
+			const FVirtualPointerPosition VirtualMouseCoordinate(LocalMouseCoordinate, LastLocalHitLocation);
 			LastLocalHitLocation = LocalMouseCoordinate;
-
 			for (FWidgetAndPointer& ArrangedWidget : ArrangedWidgets)
 			{
 				ArrangedWidget.SetPointerPosition(VirtualMouseCoordinate);
@@ -163,7 +171,7 @@ public:
 	virtual void ArrangeCustomHitTestChildren(FArrangedChildren& ArrangedChildren) const override
 	{
 		// Add the displayed slate to the list of widgets.
-		if (TSharedPtr<SVirtualWindow> SlateWindowPin = SlateWindow.Pin())
+		if (TSharedPtr<SVirtualWindow> SlateWindowPin = VirtualSlateWindow.Pin())
 		{
 			FGeometry WidgetGeom;
 			ArrangedChildren.AddWidget(FArrangedWidget(SlateWindowPin.ToSharedRef(), WidgetGeom.MakeChild(WidgetDrawSize, FSlateLayoutTransform())));
@@ -182,85 +190,62 @@ public:
 
 private:
 	TWeakObjectPtr<UWorld> World;
-	TWeakPtr<SVirtualWindow> SlateWindow;
+	TWeakPtr<SVirtualWindow> VirtualSlateWindow;
+	TAttribute<float> GetDPIAttribute;
 	FIntPoint WidgetDrawSize;
 	mutable FVector2D LastLocalHitLocation;
 };
 
 /////////////////////////////////////////////////////
 // FVPFullScreenUserWidget_Viewport
-FVPFullScreenUserWidget_Viewport::FVPFullScreenUserWidget_Viewport()
-	: bAddedToGameViewport(false)
-{
-}
 
-bool FVPFullScreenUserWidget_Viewport::Display(UWorld* World, UUserWidget* Widget, float InDPIScale)
+bool FVPFullScreenUserWidget_Viewport::Display(UWorld* World, UUserWidget* Widget, TAttribute<float> InDPIScale)
 {
-	TSharedPtr<SConstraintCanvas> FullScreenWidgetPinned = FullScreenCanvasWidget.Pin();
+	const TSharedPtr<SConstraintCanvas> FullScreenWidgetPinned = FullScreenCanvasWidget.Pin();
 	if (Widget == nullptr || World == nullptr || FullScreenWidgetPinned.IsValid())
 	{
 		return false;
 	}
-
-	UGameViewportClient* ViewportClient = nullptr;
-#if WITH_EDITOR
-	TSharedPtr<SLevelViewport> ActiveLevelViewport;
-#endif
-
-	bool bResult = false;
-	if (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE)
-	{
-		ViewportClient = World->GetGameViewport();
-		bResult = ViewportClient != nullptr;
-	}
-#if WITH_EDITOR
-	else if (FModuleManager::Get().IsModuleLoaded(NAME_LevelEditorName))
-	{
-		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(NAME_LevelEditorName);
-		if (TargetViewport.IsValid())
-		{
-			ActiveLevelViewport = TargetViewport.Pin();
-		}
-		else
-		{
-			ActiveLevelViewport = LevelEditorModule.GetFirstActiveLevelViewport();
-		}
-		bResult = ActiveLevelViewport.IsValid();
-	}
-#endif
-
-	if (bResult)
-	{
-		TSharedRef<SConstraintCanvas> FullScreenCanvas = SNew(SConstraintCanvas);
-		FullScreenCanvasWidget = FullScreenCanvas;
-
-		FullScreenCanvas->AddSlot()
-			.Offset(FMargin(0, 0, 0, 0))
-			.Anchors(FAnchors(0, 0, 1, 1))
-			.Alignment(FVector2D(0, 0))
+	
+	const TSharedRef<SConstraintCanvas> FullScreenCanvas = SNew(SConstraintCanvas);
+	FullScreenCanvas->AddSlot()
+		.Offset(FMargin(0, 0, 0, 0))
+		.Anchors(FAnchors(0, 0, 1, 1))
+		.Alignment(FVector2D(0, 0))
+		[
+			SNew(SDPIScaler)
+			.DPIScale(MoveTemp(InDPIScale))
 			[
-				SNew(SDPIScaler)
-				.DPIScale(InDPIScale)
-				[
-					Widget->TakeWidget()
-				]
-			];
+				Widget->TakeWidget()
+			]
+		];
 
-		if (ViewportClient)
-		{
-			ViewportClient->AddViewportWidgetContent(FullScreenCanvas);
-		}
-#if WITH_EDITOR
-		else
-		{
-			check(ActiveLevelViewport.IsValid());
-			ActiveLevelViewport->AddOverlayWidget(FullScreenCanvas);
-			OverlayWidgetLevelViewport = ActiveLevelViewport;
-		}
-#endif
+	
+	UGameViewportClient* ViewportClient = World->GetGameViewport();
+	const bool bCanUseGameViewport = ViewportClient && World->IsGameWorld();
+	if (bCanUseGameViewport)
+	{
+		FullScreenCanvasWidget = FullScreenCanvas;
+		ViewportClient->AddViewportWidgetContent(FullScreenCanvas);
+		return true;
 	}
 
-	return bResult;
+#if WITH_EDITOR
+	const TSharedPtr<FSceneViewport> PinnedTargetViewport = EditorTargetViewport.Pin();
+	for (FLevelEditorViewportClient* Client : GEditor->GetLevelViewportClients())
+	{
+		const TSharedPtr<SLevelViewport> LevelViewport = StaticCastSharedPtr<SLevelViewport>(Client->GetEditorViewportWidget());
+		if (LevelViewport.IsValid() && LevelViewport->GetSceneViewport() == PinnedTargetViewport)
+		{
+			LevelViewport->AddOverlayWidget(FullScreenCanvas);
+			FullScreenCanvasWidget = FullScreenCanvas;
+			OverlayWidgetLevelViewport = LevelViewport;
+			return true;
+		}
+	}
+#endif
+
+	return false;
 }
 
 void FVPFullScreenUserWidget_Viewport::Hide(UWorld* World)
@@ -276,8 +261,7 @@ void FVPFullScreenUserWidget_Viewport::Hide(UWorld* World)
 		}
 
 #if WITH_EDITOR
-		TSharedPtr<SLevelViewport> OverlayWidgetLevelViewportPinned = OverlayWidgetLevelViewport.Pin();
-		if (OverlayWidgetLevelViewportPinned)
+		if (const TSharedPtr<SLevelViewport> OverlayWidgetLevelViewportPinned = OverlayWidgetLevelViewport.Pin())
 		{
 			OverlayWidgetLevelViewportPinned->RemoveOverlayWidget(FullScreenWidgetPinned.ToSharedRef());
 		}
@@ -286,11 +270,6 @@ void FVPFullScreenUserWidget_Viewport::Hide(UWorld* World)
 
 		FullScreenCanvasWidget.Reset();
 	}
-}
-
-void FVPFullScreenUserWidget_Viewport::Tick(UWorld* World, float DeltaSeconds)
-{
-
 }
 
 /////////////////////////////////////////////////////
@@ -312,17 +291,29 @@ FVPFullScreenUserWidget_PostProcess::FVPFullScreenUserWidget_PostProcess()
 	, PostProcessMaterialInstance(nullptr)
 	, WidgetRenderer(nullptr)
 	, CurrentWidgetDrawSize(FIntPoint::ZeroValue)
+{}
+
+void FVPFullScreenUserWidget_PostProcess::SetCustomPostProcessSettingsSource(TWeakObjectPtr<UObject> InCustomPostProcessSettingsSource)
 {
+	CustomPostProcessSettingsSource = InCustomPostProcessSettingsSource;
+	
+	const bool bIsRunning = PostProcessMaterialInstance != nullptr;
+	if (bIsRunning)
+	{
+		// Save us from creating another struct member: PostProcessMaterialInstance is always created with UWorld as outer.
+		UWorld* World = CastChecked<UWorld>(PostProcessMaterialInstance->GetOuter());
+		InitPostProcessComponent(World);
+	}
 }
 
-bool FVPFullScreenUserWidget_PostProcess::Display(UWorld* World, UUserWidget* Widget, bool bInRenderToTextureOnly, float InDPIScale)
+bool FVPFullScreenUserWidget_PostProcess::Display(UWorld* World, UUserWidget* Widget, bool bInRenderToTextureOnly, TAttribute<float> InDPIScale)
 {
 	bRenderToTextureOnly = bInRenderToTextureOnly;
 
-	bool bOk = CreateRenderer(World, Widget, InDPIScale);
+	bool bOk = CreateRenderer(World, Widget, MoveTemp(InDPIScale));
 	if (!bRenderToTextureOnly)
 	{
-		bOk &= CreatePostProcessComponent(World);
+		bOk &= InitPostProcessComponent(World);
 	}
 
 	return bOk;
@@ -348,100 +339,148 @@ TSharedPtr<SVirtualWindow> FVPFullScreenUserWidget_PostProcess::GetSlateWindow()
 	return SlateWindow;
 }
 
-bool FVPFullScreenUserWidget_PostProcess::CreatePostProcessComponent(UWorld* World)
+
+bool FVPFullScreenUserWidget_PostProcess::InitPostProcessComponent(UWorld* World)
 {
 	ReleasePostProcessComponent();
 	if (World && PostProcessMaterial)
 	{
-		AWorldSettings* WorldSetting = World->GetWorldSettings();
-		PostProcessComponent = NewObject<UPostProcessComponent>(WorldSetting, NAME_None, RF_Transient);
-		PostProcessComponent->bEnabled = true;
-		PostProcessComponent->bUnbound = true;
-		PostProcessComponent->RegisterComponent();
+		const bool bUseExternalPostProcess = CustomPostProcessSettingsSource.IsValid();
+		if (!bUseExternalPostProcess)
+		{
+			AWorldSettings* WorldSetting = World->GetWorldSettings();
+			PostProcessComponent = NewObject<UPostProcessComponent>(WorldSetting, NAME_None, RF_Transient);
+			PostProcessComponent->bEnabled = true;
+			PostProcessComponent->bUnbound = true;
+			PostProcessComponent->RegisterComponent();
+		}
 
-		PostProcessMaterialInstance = UMaterialInstanceDynamic::Create(PostProcessMaterial, World);
-
-		// set the parameter immediately
-		PostProcessMaterialInstance->SetTextureParameterValue(NAME_SlateUI, WidgetRenderTarget);
-		PostProcessMaterialInstance->SetVectorParameterValue(NAME_TintColorAndOpacity, PostProcessTintColorAndOpacity);
-		PostProcessMaterialInstance->SetScalarParameterValue(NAME_OpacityFromTexture, PostProcessOpacityFromTexture);
-
-		PostProcessComponent->Settings.WeightedBlendables.Array.SetNumZeroed(1);
-		PostProcessComponent->Settings.WeightedBlendables.Array[0].Weight = 1.f;
-		PostProcessComponent->Settings.WeightedBlendables.Array[0].Object = PostProcessMaterialInstance;
+		return InitPostProcessMaterial();
 	}
 
-	return PostProcessComponent && PostProcessMaterialInstance;
+	return false;
+}
+
+bool FVPFullScreenUserWidget_PostProcess::InitPostProcessMaterial()
+{
+	// Outer needs to be transient package: otherwise we cause a world memory leak using "Save Current Level As" due to reference not getting replaced correctly
+	PostProcessMaterialInstance = UMaterialInstanceDynamic::Create(PostProcessMaterial, GetTransientPackage());
+	PostProcessMaterialInstance->SetFlags(RF_Transient);
+	if (!ensure(PostProcessMaterialInstance))
+	{
+		return false;
+	}
+
+	// set the parameter immediately
+	PostProcessMaterialInstance->SetTextureParameterValue(NAME_SlateUI, WidgetRenderTarget);
+	PostProcessMaterialInstance->SetVectorParameterValue(NAME_TintColorAndOpacity, PostProcessTintColorAndOpacity);
+	PostProcessMaterialInstance->SetScalarParameterValue(NAME_OpacityFromTexture, PostProcessOpacityFromTexture);
+
+	if (FPostProcessSettings* const PostProcessSettings = GetPostProcessSettings())
+	{
+		// User added blend material should not affect the widget so insert the material at the beginning
+		const FWeightedBlendable Blendable{ 1.f, PostProcessMaterialInstance };
+			
+		// Use case: Virtual Camera specifies an external post process settings
+		// 1. Virtual Camera is activated > creates this widget
+		// 2. Save Map
+		// 3. Reload map > we'll have an empty slot in the blendables because PostProcessMaterialInstance is transient
+		const bool bReuseOldEmptySlot = PostProcessSettings->WeightedBlendables.Array.Num() > 0 && !PostProcessSettings->WeightedBlendables.Array[0].Object;
+		if (bReuseOldEmptySlot)
+		{
+			PostProcessSettings->WeightedBlendables.Array[0].Object = PostProcessMaterialInstance;
+		}
+		else
+		{
+			PostProcessSettings->WeightedBlendables.Array.Insert(Blendable, 0);
+		}
+		return true;
+	}
+
+	return false;
 }
 
 void FVPFullScreenUserWidget_PostProcess::ReleasePostProcessComponent()
 {
-	if (PostProcessComponent)
+	const bool bIsRunning = PostProcessMaterialInstance != nullptr;
+	if (!bIsRunning)
+	{
+		return;
+	}
+	
+	const bool bNeedsToResetExternalSettings = CustomPostProcessSettingsSource.IsValid();
+	if (FPostProcessSettings* Settings = GetPostProcessSettings()
+		; bNeedsToResetExternalSettings && Settings)
+	{
+		const int32 Index = Settings->WeightedBlendables.Array.IndexOfByPredicate([this](const FWeightedBlendable& Blendable){ return Blendable.Object == PostProcessMaterialInstance; });
+		if (Index != INDEX_NONE)
+		{
+			Settings->WeightedBlendables.Array.RemoveAt(Index);
+		}
+	}
+	// CustomPostProcessSettingsSource may have gone stale
+	else if (PostProcessComponent)
 	{
 		PostProcessComponent->UnregisterComponent();
 	}
+	
 	PostProcessComponent = nullptr;
 	PostProcessMaterialInstance = nullptr;
 }
 
-bool FVPFullScreenUserWidget_PostProcess::CreateRenderer(UWorld* World, UUserWidget* Widget, float InDPIScale)
+bool FVPFullScreenUserWidget_PostProcess::CreateRenderer(UWorld* World, UUserWidget* Widget, TAttribute<float> InDPIScale)
 {
 	ReleaseRenderer();
 
 	if (World && Widget)
 	{
-		const FIntPoint CalculatedWidgetSize = CalculateWidgetDrawSize(World);
-		if (IsTextureSizeValid(CalculatedWidgetSize))
+		constexpr bool bApplyGammaCorrection = true;
+		WidgetRenderer = new FWidgetRenderer(bApplyGammaCorrection);
+		WidgetRenderer->SetIsPrepassNeeded(true);
+		
+		// CalculateWidgetDrawSize may sometimes return {0,0}, e.g. right after engine startup when viewport not yet initialized.
+		// TickRenderer will call Resize automatically once CurrentWidgetDrawSize is updated to be non-zero.
+		checkf(CurrentWidgetDrawSize == FIntPoint::ZeroValue, TEXT("Expected ReleaseRenderer to reset CurrentWidgetDrawSize."));
+		SlateWindow = SNew(SVirtualWindow).Size(CurrentWidgetDrawSize);
+		SlateWindow->SetIsFocusable(bWindowFocusable);
+		SlateWindow->SetVisibility(ConvertWindowVisibilityToVisibility(WindowVisibility));
+		SlateWindow->SetContent(
+			SNew(SDPIScaler)
+			.DPIScale(InDPIScale)
+			[
+				Widget->TakeWidget()
+			]
+		);
+
+		RegisterHitTesterWithViewport(World);
+
+		if (!Widget->IsDesignTime() && World->IsGameWorld())
 		{
-			CurrentWidgetDrawSize = CalculatedWidgetSize;
-
-			const bool bApplyGammaCorrection = true;
-			WidgetRenderer = new FWidgetRenderer(bApplyGammaCorrection);
-			WidgetRenderer->SetIsPrepassNeeded(true);
-
-			SlateWindow = SNew(SVirtualWindow).Size(CurrentWidgetDrawSize);
-			SlateWindow->SetIsFocusable(bWindowFocusable);
-			SlateWindow->SetVisibility(ConvertWindowVisibilityToVisibility(WindowVisibility));
-			SlateWindow->SetContent(SNew(SDPIScaler).DPIScale(InDPIScale)
-				[
-					Widget->TakeWidget()
-				]
-			);
-
-			RegisterHitTesterWithViewport(World);
-
-			if (!Widget->IsDesignTime() && World->IsGameWorld())
+			UGameInstance* GameInstance = World->GetGameInstance();
+			UGameViewportClient* GameViewportClient = GameInstance ? GameInstance->GetGameViewportClient() : nullptr;
+			if (GameViewportClient)
 			{
-				UGameInstance* GameInstance = World->GetGameInstance();
-				UGameViewportClient* GameViewportClient = GameInstance ? GameInstance->GetGameViewportClient() : nullptr;
-				if (GameViewportClient)
-				{
-					SlateWindow->AssignParentWidget(GameViewportClient->GetGameViewportWidget());
-				}
-			}
-
-			FLinearColor ActualBackgroundColor = RenderTargetBackgroundColor;
-			switch (RenderTargetBlendMode)
-			{
-			case EWidgetBlendMode::Opaque:
-				ActualBackgroundColor.A = 1.0f;
-				break;
-			case EWidgetBlendMode::Masked:
-				ActualBackgroundColor.A = 0.0f;
-				break;
-			}
-
-			AWorldSettings* WorldSetting = World->GetWorldSettings();
-			WidgetRenderTarget = NewObject<UTextureRenderTarget2D>(WorldSetting, NAME_None, RF_Transient);
-			WidgetRenderTarget->ClearColor = ActualBackgroundColor;
-			WidgetRenderTarget->InitCustomFormat(CurrentWidgetDrawSize.X, CurrentWidgetDrawSize.Y, PF_B8G8R8A8, false);
-			WidgetRenderTarget->UpdateResourceImmediate();
-
-			if (!bRenderToTextureOnly && PostProcessMaterialInstance)
-			{
-				PostProcessMaterialInstance->SetTextureParameterValue(NAME_SlateUI, WidgetRenderTarget);
+				SlateWindow->AssignParentWidget(GameViewportClient->GetGameViewportWidget());
 			}
 		}
+
+		FLinearColor ActualBackgroundColor = RenderTargetBackgroundColor;
+		switch (RenderTargetBlendMode)
+		{
+		case EWidgetBlendMode::Opaque:
+			ActualBackgroundColor.A = 1.0f;
+			break;
+		case EWidgetBlendMode::Masked:
+			ActualBackgroundColor.A = 0.0f;
+			break;
+		}
+
+		// Skip InitCustomFormat call because CalculateWidgetDrawSize may sometimes return {0,0}, e.g. right after engine startup when viewport not yet initialized
+		// TickRenderer will call InitCustomFormat automatically once CurrentWidgetDrawSize is updated to be non-zero.
+		checkf(CurrentWidgetDrawSize == FIntPoint::ZeroValue, TEXT("Expected ReleaseRenderer to reset CurrentWidgetDrawSize."));
+		// Outer needs to be transient package: otherwise we cause a world memory leak using "Save Current Level As" due to reference not getting replaced correctly
+		WidgetRenderTarget = NewObject<UTextureRenderTarget2D>(GetTransientPackage(), NAME_None, RF_Transient);
+		WidgetRenderTarget->ClearColor = ActualBackgroundColor;
 	}
 
 	return WidgetRenderer && WidgetRenderTarget;
@@ -488,7 +527,7 @@ void FVPFullScreenUserWidget_PostProcess::TickRenderer(UWorld* World, float Delt
 			}
 		}
 
-		if (WidgetRenderer)
+		if (WidgetRenderer && CurrentWidgetDrawSize != FIntPoint::ZeroValue)
 		{
 			WidgetRenderer->DrawWindow(
 				WidgetRenderTarget,
@@ -513,9 +552,8 @@ FIntPoint FVPFullScreenUserWidget_PostProcess::CalculateWidgetDrawSize(UWorld* W
 		if (UGameViewportClient* ViewportClient = World->GetGameViewport())
 		{
 			// The viewport maybe resizing or not yet initialized.
-			//See TickRenderer(), it will be resize on the next tick to the proper size.
-			//We initialized all the rendering with an small size.
-
+			// See TickRenderer(), it will be resize on the next tick to the proper size.
+			// We initialized all the rendering with an small size.
 			const float SmallWidgetSize = 16.f;
 			FVector2D OutSize = FVector2D(SmallWidgetSize, SmallWidgetSize);
 			ViewportClient->GetViewportSize(OutSize);
@@ -525,29 +563,19 @@ FIntPoint FVPFullScreenUserWidget_PostProcess::CalculateWidgetDrawSize(UWorld* W
 			}
 			return OutSize.IntPoint();
 		}
+		
+		UE_LOG(LogVPUtilities, Warning, TEXT("CalculateWidgetDrawSize failed for game world."));
+		return FIntPoint::ZeroValue;;
 	}
+
 #if WITH_EDITOR
-	else if (FModuleManager::Get().IsModuleLoaded(NAME_LevelEditorName))
+	if (const TSharedPtr<FSceneViewport> SharedActiveViewport = EditorTargetViewport.Pin())
 	{
-		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(NAME_LevelEditorName);
-		TSharedPtr<SLevelViewport> ActiveLevelViewport;
-		if (TargetViewport.IsValid())
-		{
-			ActiveLevelViewport = TargetViewport.Pin();
-		}
-		else
-		{
-			ActiveLevelViewport = LevelEditorModule.GetFirstActiveLevelViewport();
-		}
-		if (ActiveLevelViewport.IsValid())
-		{
-			if (TSharedPtr<FSceneViewport> SharedActiveViewport = ActiveLevelViewport->GetSharedActiveViewport())
-			{
-				return SharedActiveViewport->GetSize();
-			}
-		}
+		return SharedActiveViewport->GetSize();
 	}
+	UE_LOG(LogVPUtilities, Warning, TEXT("CalculateWidgetDrawSize failed for editor world."));
 #endif
+	
 	return FIntPoint::ZeroValue;
 }
 
@@ -564,32 +592,7 @@ void FVPFullScreenUserWidget_PostProcess::RegisterHitTesterWithViewport(UWorld* 
 		FSlateApplication::Get().RegisterVirtualWindow(SlateWindow.ToSharedRef());
 	}
 
-	TSharedPtr<SViewport> EngineViewportWidget;
-	if (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE)
-	{
-		EngineViewportWidget = GEngine->GetGameViewportWidget();
-	}
-#if WITH_EDITOR
-	else if (FModuleManager::Get().IsModuleLoaded(NAME_LevelEditorName))
-	{
-		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(NAME_LevelEditorName);
-
-		TSharedPtr<SLevelViewport> ActiveLevelViewport;
-		if (TargetViewport.IsValid())
-		{
-			ActiveLevelViewport = TargetViewport.Pin();
-		}
-		else
-		{
-			ActiveLevelViewport = LevelEditorModule.GetFirstActiveLevelViewport();
-		}
-		if (ActiveLevelViewport.IsValid())
-		{
-			EngineViewportWidget = ActiveLevelViewport->GetViewportWidget().Pin();
-		}
-	}
-#endif
-
+	const TSharedPtr<SViewport> EngineViewportWidget = GetViewport(World);
 	if (EngineViewportWidget && bReceiveHardwareInput)
 	{
 		if (EngineViewportWidget->GetCustomHitTestPath())
@@ -599,7 +602,7 @@ void FVPFullScreenUserWidget_PostProcess::RegisterHitTesterWithViewport(UWorld* 
 		else
 		{
 			ViewportWidget = EngineViewportWidget;
-			CustomHitTestPath = MakeShared<FVPWidgetPostProcessHitTester>(World, SlateWindow);
+			CustomHitTestPath = MakeShared<FVPWidgetPostProcessHitTester>(World, SlateWindow, TAttribute<float>::CreateRaw(this, &FVPFullScreenUserWidget_PostProcess::GetDPIScaleForPostProcessHitTester, TWeakObjectPtr<UWorld>(World)));
 			CustomHitTestPath->SetWidgetDrawSize(CurrentWidgetDrawSize);
 			EngineViewportWidget->SetCustomHitTestPath(CustomHitTestPath);
 		}
@@ -623,6 +626,77 @@ void FVPFullScreenUserWidget_PostProcess::UnRegisterHitTesterWithViewport()
 
 	ViewportWidget.Reset();
 	CustomHitTestPath.Reset();
+}
+
+TSharedPtr<SViewport> FVPFullScreenUserWidget_PostProcess::GetViewport(UWorld* World) const
+{
+	if (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE)
+	{
+		return GEngine->GetGameViewportWidget();
+	}
+
+#if WITH_EDITOR
+	if (const TSharedPtr<FSceneViewport> TargetViewportPin = EditorTargetViewport.Pin())
+	{
+		return TargetViewportPin->GetViewportWidget().Pin();
+	}
+#endif
+	
+	return nullptr;
+}
+
+float FVPFullScreenUserWidget_PostProcess::GetDPIScaleForPostProcessHitTester(TWeakObjectPtr<UWorld> World) const
+{
+	FSceneViewport* Viewport = nullptr;
+	if (ensure(World.IsValid()) && World->IsGameWorld())
+	{
+		UGameViewportClient* ViewportClient = World->GetGameViewport();
+		Viewport = ensure(ViewportClient) ? ViewportClient->GetGameViewport() : nullptr;
+	}
+
+#if WITH_EDITOR
+	const TSharedPtr<FSceneViewport> ViewportPin = EditorTargetViewport.Pin();
+	Viewport = Viewport ? Viewport : ViewportPin.Get();
+#endif
+
+	const bool bCanScale = Viewport && !Viewport->HasFixedSize();
+	if (!bCanScale)
+	{
+		return 1.f;
+	}
+	
+	// For some reason the DPI is not applied correctly when the viewport has a fixed size and the system scale is > 100%.
+	// This is the setting you'd find in Windows Settings > Display > Scale and layout
+	// If this bit is skipped, then hovering widgets towards the bottom right will not work
+	// if system scale is > 100% AND the viewport size is not fixed (default).
+	const TSharedPtr<SWindow> ViewportWindow = Viewport->FindWindow();
+	return ViewportWindow ? ViewportWindow->GetDPIScaleFactor() : 1.f;
+}
+
+FPostProcessSettings* FVPFullScreenUserWidget_PostProcess::GetPostProcessSettings() const
+{
+	if (PostProcessComponent)
+	{
+		return &PostProcessComponent->Settings;
+	}
+
+	if (!CustomPostProcessSettingsSource.IsValid())
+	{
+		UE_LOG(LogVPUtilities, Warning, TEXT("CustomPostProcessSettingsSource has become stale"))
+		return nullptr;
+	}
+
+	// The easiest way without overcomplicating the API with an additional callback would be to look for the first struct property.
+	// We could always extend our API to accept a callback that extracts the FPostProcessSettings from the UObject instead.
+	for (TFieldIterator<FStructProperty> StructIt(CustomPostProcessSettingsSource.Get()->GetClass()); StructIt; ++StructIt)
+	{
+		if (StructIt->Struct == FPostProcessSettings::StaticStruct())
+		{
+			return StructIt->ContainerPtrToValuePtr<FPostProcessSettings>(CustomPostProcessSettingsSource.Get());
+		}
+	}
+
+	return nullptr;
 }
 
 /////////////////////////////////////////////////////
@@ -687,25 +761,52 @@ bool UVPFullScreenUserWidget::IsDisplayed() const
 bool UVPFullScreenUserWidget::Display(UWorld* InWorld)
 {
 	bDisplayRequested = true;
-
 	World = InWorld;
+
+#if WITH_EDITOR
+	if (!EditorTargetViewport.IsValid() && !World->IsGameWorld())
+	{
+		UE_LOG(LogVPUtilities, Log, TEXT("No TargetViewport set. Defaulting to FLevelEditorModule::GetFirstActiveLevelViewport."))
+		if (FModuleManager::Get().IsModuleLoaded(NAME_LevelEditorName))
+		{
+			FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(NAME_LevelEditorName);
+			const TSharedPtr<SLevelViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveLevelViewport();
+			EditorTargetViewport = ActiveLevelViewport ? ActiveLevelViewport->GetSharedActiveViewport() : nullptr;
+		}
+
+		if (!EditorTargetViewport.IsValid())
+		{
+			UE_LOG(LogVPUtilities, Error, TEXT("FLevelEditorModule::GetFirstActiveLevelViewport found no level viewport. UVPFullScreenUserWidget will not display."))
+			return false;
+		}
+	}
+	
+	// Make sure that each display type has also received the EditorTargetViewport
+	SetEditorTargetViewport(EditorTargetViewport);
+#endif
 
 	bool bWasAdded = false;
 	if (InWorld && WidgetClass && ShouldDisplay(InWorld) && CurrentDisplayType == EVPWidgetDisplayType::Inactive)
 	{
+		const bool bCreatedWidget = InitWidget();
+		if (!bCreatedWidget)
+		{
+			UE_LOG(LogVPUtilities, Error, TEXT("Failed to create subwidget for UVPFullScreenUserWidget."));
+			return false;
+		}
+		
 		CurrentDisplayType = GetDisplayType(InWorld);
-
-		InitWidget();
-
-		const float DPIScale = GetViewportDPIScale();
-
+		TAttribute<float> GetDpiScaleAttribute = TAttribute<float>::CreateLambda([WeakThis = TWeakObjectPtr<UVPFullScreenUserWidget>(this)]()
+		{
+			return WeakThis.IsValid() ? WeakThis->GetViewportDPIScale() : 1.f;
+		});
 		if (CurrentDisplayType == EVPWidgetDisplayType::Viewport)
 		{
-			bWasAdded = ViewportDisplayType.Display(InWorld, Widget, DPIScale);
+			bWasAdded = ViewportDisplayType.Display(InWorld, Widget, MoveTemp(GetDpiScaleAttribute));
 		}
 		else if ((CurrentDisplayType == EVPWidgetDisplayType::PostProcess) || (CurrentDisplayType == EVPWidgetDisplayType::Composure))
 		{
-			bWasAdded = PostProcessDisplayType.Display(InWorld, Widget, (CurrentDisplayType == EVPWidgetDisplayType::Composure), DPIScale);
+			bWasAdded = PostProcessDisplayType.Display(InWorld, Widget, (CurrentDisplayType == EVPWidgetDisplayType::Composure), MoveTemp(GetDpiScaleAttribute));
 		}
 
 		if (bWasAdded)
@@ -761,10 +862,6 @@ void UVPFullScreenUserWidget::Hide()
 	if (CurrentDisplayType != EVPWidgetDisplayType::Inactive)
 	{
 		ReleaseWidget();
-		FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
-		FWorldDelegates::OnWorldCleanup.RemoveAll(this);
-
-		VPFullScreenUserWidgetPrivate::FWorldCleanupListener::Get()->RemoveWidget(this);
 
 		if (CurrentDisplayType == EVPWidgetDisplayType::Viewport)
 		{
@@ -777,6 +874,9 @@ void UVPFullScreenUserWidget::Hide()
 		CurrentDisplayType = EVPWidgetDisplayType::Inactive;
 	}
 
+	FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
+	FWorldDelegates::OnWorldCleanup.RemoveAll(this);
+	VPFullScreenUserWidgetPrivate::FWorldCleanupListener::Get()->RemoveWidget(this);
 	World.Reset();
 }
 
@@ -789,16 +889,9 @@ void UVPFullScreenUserWidget::Tick(float DeltaSeconds)
 		{
 			Hide();
 		}
-		else
+		else if ((CurrentDisplayType == EVPWidgetDisplayType::PostProcess) || (CurrentDisplayType == EVPWidgetDisplayType::Composure))
 		{
-			if (CurrentDisplayType == EVPWidgetDisplayType::Viewport)
-			{
-				ViewportDisplayType.Tick(CurrentWorld, DeltaSeconds);
-			}
-			else if ((CurrentDisplayType == EVPWidgetDisplayType::PostProcess) || (CurrentDisplayType == EVPWidgetDisplayType::Composure))
-			{
-				PostProcessDisplayType.Tick(CurrentWorld, DeltaSeconds);
-			}
+			PostProcessDisplayType.Tick(CurrentWorld, DeltaSeconds);
 		}
 	}
 }
@@ -810,18 +903,52 @@ void UVPFullScreenUserWidget::SetDisplayTypes(EVPWidgetDisplayType InEditorDispl
 	PIEDisplayType = InPIEDisplayType;
 }
 
-void UVPFullScreenUserWidget::InitWidget()
+void UVPFullScreenUserWidget::SetOverrideWidget(UUserWidget* InWidget)
 {
-	// Don't do any work if Slate is not initialized
-	if (FSlateApplication::IsInitialized())
+	if (ensureMsgf(!IsDisplayed(), TEXT("For simplicity of API you can only override the widget before displaying.")))
 	{
-		if (WidgetClass && Widget == nullptr)
-		{
-			check(World.Get());
-			Widget = CreateWidget(World.Get(), WidgetClass);
-			Widget->SetFlags(RF_Transient);
-		}
+		Widget = InWidget;
 	}
+}
+
+void UVPFullScreenUserWidget::SetCustomPostProcessSettingsSource(TWeakObjectPtr<UObject> InCustomPostProcessSettingsSource)
+{
+	PostProcessDisplayType.SetCustomPostProcessSettingsSource(InCustomPostProcessSettingsSource);
+}
+
+#if WITH_EDITOR
+void UVPFullScreenUserWidget::SetEditorTargetViewport(TWeakPtr<FSceneViewport> InTargetViewport)
+{
+	EditorTargetViewport = InTargetViewport;
+	ViewportDisplayType.EditorTargetViewport = InTargetViewport;
+	PostProcessDisplayType.EditorTargetViewport = InTargetViewport;
+}
+
+void UVPFullScreenUserWidget::ResetEditorTargetViewport()
+{
+	EditorTargetViewport.Reset();
+	ViewportDisplayType.EditorTargetViewport.Reset();
+	PostProcessDisplayType.EditorTargetViewport.Reset();
+}
+#endif
+
+bool UVPFullScreenUserWidget::InitWidget()
+{
+	const bool bCanCreate = !Widget && WidgetClass && ensure(World.Get()) && FSlateApplication::IsInitialized();
+	if (!bCanCreate)
+	{
+		return false;
+	}
+
+	// Could fail e.g. if the class has been marked deprecated or abstract.
+	Widget = CreateWidget(World.Get(), WidgetClass);
+	UE_CLOG(!Widget, LogVPUtilities, Warning, TEXT("Failed to create widget with class %s. Review the log for more info."), *WidgetClass->GetPathName())
+	if (Widget)
+	{
+		Widget->SetFlags(RF_Transient);
+	}
+
+	return Widget != nullptr;
 }
 
 void UVPFullScreenUserWidget::ReleaseWidget()
@@ -849,40 +976,34 @@ void UVPFullScreenUserWidget::OnWorldCleanup(UWorld* InWorld, bool bSessionEnded
 
 FVector2D UVPFullScreenUserWidget::FindSceneViewportSize()
 {
-	FVector2D OutSize;
-
-	UWorld* CurrentWorld = World.Get();
-	if (CurrentWorld && (CurrentWorld->WorldType == EWorldType::Game || CurrentWorld->WorldType == EWorldType::PIE))
+	ensure(World.IsValid());
+	
+	const UWorld* CurrentWorld = World.Get();
+	const bool bIsPlayWorld = CurrentWorld && (CurrentWorld->WorldType == EWorldType::Game || CurrentWorld->WorldType == EWorldType::PIE); 
+	if (bIsPlayWorld)
 	{
 		if (UGameViewportClient* ViewportClient = World->GetGameViewport())
 		{
+			FVector2D OutSize;
 			ViewportClient->GetViewportSize(OutSize);
+			return OutSize;
 		}
 	}
+
 #if WITH_EDITOR
-	else if (FModuleManager::Get().IsModuleLoaded(NAME_LevelEditorName))
+	if (const TSharedPtr<FSceneViewport> TargetViewportPin = EditorTargetViewport.Pin())
 	{
-		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(NAME_LevelEditorName);
-		TSharedPtr<SLevelViewport> ActiveLevelViewport;
-		if (TargetViewport.IsValid())
-		{
-			ActiveLevelViewport = TargetViewport.Pin();
-		}
-		else
-		{
-			ActiveLevelViewport = LevelEditorModule.GetFirstActiveLevelViewport();
-		}
-		if (ActiveLevelViewport.IsValid())
-		{
-			if (TSharedPtr<FSceneViewport> SharedActiveViewport = ActiveLevelViewport->GetSharedActiveViewport())
-			{
-				OutSize = FVector2D(SharedActiveViewport->GetSize());
-			}
-		}
+		return TargetViewportPin->GetSize();
 	}
 #endif
 
-	return OutSize;
+	ensureMsgf(false, TEXT(
+		"FindSceneViewportSize failed. Likely Hide() was called (making World = nullptr) or EditorTargetViewport "
+		"reset externally (possibly as part of Hide()). After Hide() is called all widget code should stop calling "
+		"FindSceneViewportSize. Investigate whether something was not cleaned up correctly!"
+		)
+	);
+	return FVector2d::ZeroVector;
 }
 
 float UVPFullScreenUserWidget::GetViewportDPIScale()
@@ -899,33 +1020,14 @@ float UVPFullScreenUserWidget::GetViewportDPIScale()
 	else
 	{
 		// Otherwise when in Editor mode, the editor automatically scales to the platform size, so we only care about the UI scale
-		FIntPoint ViewportSize = FindSceneViewportSize().IntPoint();
-
-		const UUserInterfaceSettings* UserInterfaceSettings = GetDefault<UUserInterfaceSettings>(UUserInterfaceSettings::StaticClass());
-		if (UserInterfaceSettings)
-		{
-			UIScale = UserInterfaceSettings->GetDPIScaleBasedOnSize(ViewportSize);
-		}
+		const FIntPoint ViewportSize = FindSceneViewportSize().IntPoint();
+		UIScale = GetDefault<UUserInterfaceSettings>()->GetDPIScaleBasedOnSize(ViewportSize);
 	}
 
 	return UIScale;
 }
 
-
 #if WITH_EDITOR
-void UVPFullScreenUserWidget::SetAllTargetViewports(TWeakPtr<SLevelViewport> InTargetViewport)
-{
-	TargetViewport = InTargetViewport;
-	ViewportDisplayType.TargetViewport = InTargetViewport;
-	PostProcessDisplayType.TargetViewport = InTargetViewport;
-}
-
-void UVPFullScreenUserWidget::ResetAllTargetViewports()
-{
-	TargetViewport.Reset();
-	ViewportDisplayType.TargetViewport.Reset();
-	PostProcessDisplayType.TargetViewport.Reset();
-}
 
 void UVPFullScreenUserWidget::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {

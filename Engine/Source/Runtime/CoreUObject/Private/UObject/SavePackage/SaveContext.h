@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "AssetRegistry/AssetData.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/AssetRegistryInterface.h"
@@ -154,6 +155,11 @@ struct FHarvestedRealm
 	}
 
 	TSet<FTaggedExport>& GetExports()
+	{
+		return Exports;
+	}
+
+	const TSet<FTaggedExport>& GetExports() const
 	{
 		return Exports;
 	}
@@ -966,8 +972,10 @@ public:
 		}
 
 		ESavePackageResult FinalResult = IsStubRequested() ? ESavePackageResult::GenerateStub : ESavePackageResult::Success;
-		return FSavePackageResultStruct(FinalResult, TotalPackageSizeUncompressed,
+		FSavePackageResultStruct FinalResultStruct(FinalResult, TotalPackageSizeUncompressed,
 			SerializedPackageFlags, IsCompareLinker() ? MoveTemp(GetHarvestedRealm().Linker) : nullptr);
+		FinalResultStruct.SavedAssets = MoveTemp(SavedAssets);
+		return FinalResultStruct;
 	}
 
 	FObjectSaveContextData& GetObjectSaveContext()
@@ -980,9 +988,33 @@ public:
 		return PackageWriter;
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	ISavePackageValidator* GetPackageValidator() const
 	{
 		return SaveArgs.SavePackageContext ? SaveArgs.SavePackageContext->GetValidator() : nullptr;
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	bool HasExternalImportValidations() const
+	{
+		return SaveArgs.SavePackageContext ? SaveArgs.SavePackageContext->GetExternalImportValidations().Num() > 0 : false;
+	}
+
+	const TArray<TFunction<FSavePackageSettings::ExternalImportValidationFunc>> GetExternalImportValidations() const
+	{
+		check(SaveArgs.SavePackageContext);
+		return SaveArgs.SavePackageContext->GetExternalImportValidations();
+	}
+
+	bool HasExternalExportValidations() const
+	{
+		return SaveArgs.SavePackageContext ? SaveArgs.SavePackageContext->GetExternalExportValidations().Num() > 0 : false;
+	}
+
+	const TArray<TFunction<FSavePackageSettings::ExternalExportValidationFunc>> GetExternalExportValidations() const
+	{
+		check(SaveArgs.SavePackageContext);
+		return SaveArgs.SavePackageContext->GetExternalExportValidations();
 	}
 
 	const FHarvestedRealm& GetHarvestedRealm(ESaveRealm Realm = ESaveRealm::None) const
@@ -992,6 +1024,11 @@ public:
 	FHarvestedRealm& GetHarvestedRealm(ESaveRealm Realm = ESaveRealm::None)
 	{
 		return HarvestedRealms[(uint32)(Realm == ESaveRealm::None ? CurrentHarvestingRealm : Realm)];
+	}
+
+	TArray<FAssetData>& GetSavedAssets()
+	{
+		return SavedAssets;
 	}
 
 public:
@@ -1052,13 +1089,18 @@ private:
 	// The current default harvesting context being queried by the save context
 	ESaveRealm CurrentHarvestingRealm = ESaveRealm::None;
 
-	// Set of harvested content split per harvesting context
+	// List of harvested content split per harvesting context
 	TArray<FHarvestedRealm> HarvestedRealms;
 
+	// List of harvested illegal references
 	TArray<FIllegalReference> HarvestedIllegalReferences;
 
 	// Set of harvested prestream packages, should be deprecated
 	TSet<UPackage*> PrestreamPackages;
+
+	// Set of AssetDatas created for the Assets saved into the package
+	TArray<FAssetData> SavedAssets;
+
 };
 
 const TCHAR* LexToString(FSaveContext::ESaveableStatus Status);

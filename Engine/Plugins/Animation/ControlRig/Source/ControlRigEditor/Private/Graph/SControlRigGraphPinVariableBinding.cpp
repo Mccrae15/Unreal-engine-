@@ -2,6 +2,7 @@
 
 
 #include "Graph/SControlRigGraphPinVariableBinding.h"
+#include "Features/IModularFeatures.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Images/SImage.h"
@@ -10,7 +11,7 @@
 #include "EdGraphSchema_K2.h"
 #include "DetailLayoutBuilder.h"
 #include "RigVMModel/RigVMController.h"
-#include "ControlRigBlueprintGeneratedClass.h"
+#include "RigVMBlueprintGeneratedClass.h"
 #include "Graph/ControlRigGraphSchema.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 
@@ -60,7 +61,7 @@ void SControlRigVariableBinding::Construct(const FArguments& InArgs)
 
 FText SControlRigVariableBinding::GetBindingText(URigVMPin* ModelPin) const
 {
-	if (ModelPin)
+	if (ModelPin && ModelPin->GetGraph())
 	{
 		const FString VariablePath = ModelPin->GetBoundVariablePath();
 		return FText::FromString(VariablePath);
@@ -180,7 +181,7 @@ bool SControlRigVariableBinding::OnCanBindProperty(FProperty* InProperty) const
 		}
 		else if(FunctionReferenceNode && !InnerVariableName.IsNone())
 		{
-			TArray<FRigVMExternalVariable> InnerVariables = FunctionReferenceNode->GetContainedGraph()->GetExternalVariables();
+			TArray<FRigVMExternalVariable> InnerVariables = FunctionReferenceNode->GetExternalVariables(false);
 			for(const FRigVMExternalVariable& InnerVariable : InnerVariables)
 			{
 				if(InnerVariable.Name == InnerVariableName)

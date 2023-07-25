@@ -94,17 +94,38 @@ public:
 		return (TEnum)Value;
 	}
 
+	/**
+	 * Gets the integer enumeration value.
+	 *
+	 * @return The enumeration value.
+	 */
+	uint8 GetIntValue() const
+	{
+		return Value;
+	}
+
 private:
 
 	/** Holds the value as a byte. **/
 	uint8 Value;
-
-
-	FORCEINLINE friend uint32 GetTypeHash(const TEnumAsByte& Enum)
-	{
-		return GetTypeHash(Enum.Value);
-	}
 };
+
+template<class T>
+FORCEINLINE uint32 GetTypeHash(const TEnumAsByte<T>& Enum)
+{
+	return GetTypeHash((uint8)Enum.GetValue());
+}
 
 
 template<class T> struct TIsPODType<TEnumAsByte<T>> { enum { Value = true }; };
+
+template <typename T>
+struct TIsTEnumAsByte
+{
+	static constexpr bool Value = false;
+};
+
+template <typename T> struct TIsTEnumAsByte<               TEnumAsByte<T>> { static constexpr bool Value = true; };
+template <typename T> struct TIsTEnumAsByte<const          TEnumAsByte<T>> { static constexpr bool Value = true; };
+template <typename T> struct TIsTEnumAsByte<      volatile TEnumAsByte<T>> { static constexpr bool Value = true; };
+template <typename T> struct TIsTEnumAsByte<const volatile TEnumAsByte<T>> { static constexpr bool Value = true; };

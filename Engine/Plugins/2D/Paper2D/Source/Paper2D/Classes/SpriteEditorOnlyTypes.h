@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "Engine/Texture2D.h"
 #include "SpriteEditorOnlyTypes.generated.h"
 
@@ -13,7 +11,7 @@ class UMaterialInterface;
 UENUM()
 namespace ESpriteCollisionMode
 {
-	enum Type
+	enum Type : int
 	{
 		/** Should this have no collison and not participate in physics? */
 		None,
@@ -145,7 +143,7 @@ public:
 UENUM()
 namespace ESpritePolygonMode
 {
-	enum Type
+	enum Type : int
 	{
 		/** Use the bounding box of the source sprite (no optimization) */
 		SourceBoundingBox,
@@ -319,7 +317,7 @@ public:
 UENUM()
 namespace ESpritePivotMode
 {
-	enum Type
+	enum Type : int
 	{
 		Top_Left,
 		Top_Center,
@@ -333,3 +331,8 @@ namespace ESpritePivotMode
 		Custom
 	};
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "UObject/ObjectMacros.h"
+#endif

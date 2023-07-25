@@ -9,8 +9,8 @@
 #include "Engine/EngineBaseTypes.h"
 #include "UObject/ScriptMacros.h"
 #include "Input/PopupMethodReply.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SOverlay.h"
+//#include "Widgets/SWidget.h"
+//#include "Widgets/SOverlay.h"
 #include "ShowFlags.h"
 #include "Engine/ScriptViewportClient.h"
 #include "Engine/ViewportSplitScreen.h"
@@ -19,20 +19,24 @@
 #include "Engine/DebugDisplayProperty.h"
 #include "UObject/SoftObjectPath.h"
 #include "StereoRendering.h"
-#include "AudioDeviceManager.h"
+#include "AudioDeviceHandle.h"
 
 #include "GameViewportClient.generated.h"
 
 class FCanvas;
 class FSceneView;
 class FSceneViewport;
+class FViewportFrame;
 class IGameLayerManager;
+class SOverlay;
 class SViewport;
+class SWidget;
 class SWindow;
 class UCanvas;
 class UGameInstance;
 class ULocalPlayer;
 class UNetDriver;
+struct FMargin;
 
 /** Delegate for overriding the behavior when a navigation action is taken, Not to be confused with FNavigationDelegate which allows a specific widget to override behavior for itself */
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FCustomNavigationHandler, const uint32, TSharedPtr<SWidget>);
@@ -654,6 +658,12 @@ protected:
 	void SetCurrentLumenVisualizationMode(FName NewLumenVisualizationMode) { CurrentLumenVisualizationMode = NewLumenVisualizationMode; }
 	FName GetCurrentLumenVisualizationMode() const { return CurrentLumenVisualizationMode; }
 
+	void SetCurrentStrataVisualizationMode(FName NewStrataVisualizationMode) { CurrentStrataVisualizationMode = NewStrataVisualizationMode; }
+	FName GetCurrentStrataVisualizationMode() const { return CurrentStrataVisualizationMode; }
+
+	void SetCurrentGroomVisualizationMode(FName NewGroomVisualizationMode) { CurrentGroomVisualizationMode = NewGroomVisualizationMode; }
+	FName GetCurrentGroomVisualizationMode() const { return CurrentGroomVisualizationMode; }
+
 	void SetCurrentVirtualShadowMapVisualizationMode(FName NewVirtualShadowMapVisualizationMode) { CurrentVirtualShadowMapVisualizationMode = NewVirtualShadowMapVisualizationMode; }
 	FName GetCurrentVirtualShadowMapVisualizationMode() const { return CurrentVirtualShadowMapVisualizationMode; }
 
@@ -960,6 +970,12 @@ private:
 
 	/** Current Lumen visualization mode for this game viewport */
 	FName CurrentLumenVisualizationMode;
+
+	/** Current Strata visualization mode for this game viewport */
+	FName CurrentStrataVisualizationMode;
+
+	/** Current Groom visualization mode for this game viewport */
+	FName CurrentGroomVisualizationMode;
 
 	/** Current virtual shadow map visualization mode for this game viewport */
 	FName CurrentVirtualShadowMapVisualizationMode;

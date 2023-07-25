@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigUnit_PBIK.h"
+#include "RigVMCore/RigVMRegistry.h"
 #include "Units/RigUnitContext.h"
+#include "Rigs/RigHierarchy.h"
+#include "Rigs/RigHierarchyElements.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_PBIK)
 
@@ -10,20 +13,12 @@ FRigUnit_PBIK_Execute()
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	LLM_SCOPE_BYNAME(TEXT("Animation/FBIK"));
 
-	if (Context.State == EControlRigState::Init)
+	if (bNeedsInit)
 	{
 		BoneSettingToSolverBoneIndex.Reset();
 		Solver.Reset();
 		SolverBoneToElementIndex.Reset();
 		EffectorSolverIndices.Reset();
-		bNeedsInit = true;
-		return;
-	}
-
-	// only updates from here on...
-	if (Context.State != EControlRigState::Update)
-	{
-		return;
 	}
 
 	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
@@ -190,6 +185,6 @@ FRigUnit_PBIK_Execute()
 	}
 
 	// do all debug drawing
-	Debug.Draw(Context.DrawInterface, &Solver);
+	Debug.Draw(ExecuteContext.GetDrawInterface(), &Solver);
 }
 

@@ -2,13 +2,10 @@
 
 #include "CommonUIVisibilitySubsystem.h"
 
-#include "NativeGameplayTags.h"
-#include "Engine/PlatformSettings.h"
-#include "CommonInputBaseTypes.h"
+#include "CommonInputTypeEnum.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/GameInstance.h"
 #include "CommonInputSubsystem.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "ICommonUIModule.h"
 #include "CommonUISettings.h"
@@ -43,7 +40,8 @@ UCommonUIVisibilitySubsystem::UCommonUIVisibilitySubsystem()
 
 bool UCommonUIVisibilitySubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
-	if (!CastChecked<ULocalPlayer>(Outer)->GetGameInstance()->IsDedicatedServerInstance())
+	const UGameInstance* GameInstance = CastChecked<ULocalPlayer>(Outer)->GetGameInstance();
+	if (GameInstance && !GameInstance->IsDedicatedServerInstance())
 	{
 		TArray<UClass*> ChildClasses;
 		GetDerivedClasses(GetClass(), ChildClasses, false);

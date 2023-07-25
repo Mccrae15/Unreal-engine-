@@ -2,10 +2,14 @@
 
 
 #include "DebugToolExec.h"
+#include "CollisionQueryParams.h"
+#include "Engine/GameInstance.h"
+#include "GameFramework/Pawn.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SBoxPanel.h"
@@ -82,7 +86,7 @@ void FDebugToolExec::EditObject(UObject* Object, bool bShouldShowNonEditable)
  * @param Cmd	Command to parse
  * @param Ar	output device used for logging
  */
-bool FDebugToolExec::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
+bool FDebugToolExec::Exec_Editor( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
 	// these commands are only allowed in standalone games
 #if UE_BUILD_SHIPPING || UE_BUILD_TEST
@@ -246,7 +250,7 @@ bool FDebugToolExec::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar 
 				{
 					if (IsValid(*It))
 					{
-						float const Dist = (PlayerController && It->GetRootComponent()) ? FVector::Dist(It->GetActorLocation(), PlayerLocation) : 0.f;
+						const double Dist = (PlayerController && It->GetRootComponent()) ? FVector::Dist(It->GetActorLocation(), PlayerLocation) : 0.f;
 						if (Dist < MinDist)
 						{
 							MinDist = Dist;

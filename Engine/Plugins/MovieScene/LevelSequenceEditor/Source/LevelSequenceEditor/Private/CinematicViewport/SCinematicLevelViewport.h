@@ -2,14 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Types/SlateStructs.h"
-#include "Layout/Visibility.h"
-#include "Input/Reply.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 #include "LevelEditorViewport.h"
-#include "Misc/FrameRate.h"
+
+namespace ETextCommit { enum Type : int; }
+struct FOptionalSize;
 
 class FLevelSequenceEditorToolkit;
 class FAssetEditorViewportLayout;
@@ -47,14 +44,14 @@ struct FUIData
 	FText Filmback;
 	/** The text that represents the current playback time relative to the currently evaluated sequence. */
 	FText LocalPlaybackTime;
-	/** The text that represents the master start frame */
-	FText MasterStartText;
-	/** The text that represents the master end frame */
-	FText MasterEndText;
+	/** The text that represents the root start frame */
+	FText RootStartText;
+	/** The text that represents the root end frame */
+	FText RootEndText;
 
-	/** The tick resolution of the master */
+	/** The tick resolution of the root */
 	FFrameRate OuterResolution;
-	/** The play rate of the master */
+	/** The play rate of the root */
 	FFrameRate OuterPlayRate;
 };
 

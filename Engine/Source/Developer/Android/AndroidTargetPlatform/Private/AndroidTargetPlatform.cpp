@@ -32,6 +32,7 @@
 #if WITH_ENGINE
 #include "AudioCompressionSettings.h"
 #include "Sound/SoundWave.h"
+#include "TextureResource.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "FAndroidTargetPlatform"
@@ -66,6 +67,7 @@ namespace AndroidTexFormat
 	const static FName NameETC2_RGB(TEXT("ETC2_RGB"));
 	const static FName NameETC2_RGBA(TEXT("ETC2_RGBA"));
 	const static FName NameETC2_R11(TEXT("ETC2_R11"));
+	const static FName NameETC2_RG11(TEXT("ETC2_RG11"));
 	const static FName NameAutoETC2(TEXT("AutoETC2"));
 
 	const static FName NameAutoASTC(TEXT("ASTC_RGBAuto"));
@@ -75,6 +77,7 @@ namespace AndroidTexFormat
 	const static FName NameG8(TEXT("G8"));
 	const static FName NameRGBA16F(TEXT("RGBA16F"));
 	const static FName NameR16F(TEXT("R16F"));
+	const static FName NameG16(TEXT("G16"));
 
 	//A1RGB555 is mapped to RGB555A1, because OpenGL GL_RGB5_A1 only supports alpha on the lowest bit
 	const static FName NameA1RGB555(TEXT("A1RGB555"));
@@ -82,7 +85,8 @@ namespace AndroidTexFormat
 
 	const static FName GenericRemap[][2] =
 	{
-		{ NameA1RGB555,		NameRGB555A1				},
+		{ NameA1RGB555,		NameRGB555A1			},
+		{ NameG16,			NameR16F				}, // GLES does not support R16Unorm, fallback all Android to R16F
 	};
 	
 	static const FName NameASTC_RGB_HDR(TEXT("ASTC_RGB_HDR"));
@@ -106,7 +110,7 @@ namespace AndroidTexFormat
 		{ NameDXT1,			NameETC2_RGB	},
 		{ NameDXT5,			NameETC2_RGBA	},
 		{ NameDXT5n,		NameETC2_RGB	},
-		{ NameBC5,			NameETC2_RGB	},
+		{ NameBC5,			NameETC2_RG11	},
 		{ NameBC4,			NameETC2_R11	},
 		{ NameBC6H,			NameRGBA16F		},
 		{ NameBC7,			NameETC2_RGBA	},
@@ -152,7 +156,7 @@ static bool GetLicenseHash(FSHAHash& LicenseHash)
 	if (FileReader)
 	{
 		// Create buffer for file input
-		uint32 BufferSize = FileReader->TotalSize();
+		uint32 BufferSize = IntCastChecked<uint32>(FileReader->TotalSize());
 		uint8* Buffer = (uint8*)FMemory::Malloc(BufferSize);
 		FileReader->Serialize(Buffer, BufferSize);
 
@@ -190,7 +194,7 @@ static bool GetLicenseHash(FSHAHash& LicenseHash)
 
 			if (LicenseEnd < BufferEnd)
 			{
-				int32 LicenseLength = LicenseEnd - LicenseStart;
+				int32 LicenseLength = IntCastChecked<int32>(LicenseEnd - LicenseStart);
 				FSHA1::HashBuffer(LicenseStart, LicenseLength, LicenseHash.Hash);
 				bLicenseValid = true;
 			}
@@ -536,7 +540,7 @@ FName FAndroidTargetPlatform::FinalizeVirtualTextureLayerFormat(FName Format) co
 //		{ { FName(TEXT("ASTC_RGB_HDR")) },		{ NameRGBA16F } }, // ?
 		{ { FName(TEXT("ASTC_RGBAuto")) },		{ AndroidTexFormat::NameAutoETC2 } },
 		{ { FName(TEXT("ASTC_NormalAG")) },		{ AndroidTexFormat::NameETC2_RGB } },
-		{ { FName(TEXT("ASTC_NormalRG")) },		{ AndroidTexFormat::NameETC2_RGB } },
+		{ { FName(TEXT("ASTC_NormalRG")) },		{ AndroidTexFormat::NameETC2_RG11 } },
 		{ { AndroidTexFormat::NameDXT1 },		{ AndroidTexFormat::NameETC2_RGB } },
 		{ { AndroidTexFormat::NameDXT5 },		{ AndroidTexFormat::NameETC2_RGBA } },
 		{ { AndroidTexFormat::NameAutoDXT },	{ AndroidTexFormat::NameAutoETC2 } }

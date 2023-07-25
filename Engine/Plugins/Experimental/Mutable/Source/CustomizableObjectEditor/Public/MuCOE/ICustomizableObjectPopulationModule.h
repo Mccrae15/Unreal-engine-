@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
+
+class UCustomizableObject;
 
 /**
  * The public interface of the CustomizableObject module

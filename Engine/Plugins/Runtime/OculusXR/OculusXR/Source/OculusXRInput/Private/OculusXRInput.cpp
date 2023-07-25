@@ -161,8 +161,7 @@ namespace OculusXRInput
 	bool FOculusXRInput::bPulledHapticsDesc = false;
 
 	FOculusXRInput::FOculusXRInput(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler)
-		: OVRPluginHandle(nullptr)
-		, MessageHandler(InMessageHandler)
+		: MessageHandler(InMessageHandler)
 		, ControllerPairs()
 	{
 		// take care of backward compatibility of Remote with Gamepad
@@ -170,8 +169,6 @@ namespace OculusXRInput
 		{
 			Remote.MapKeysToGamepad();
 		}
-
-		OVRPluginHandle = FOculusXRHMDModule::GetOVRPluginHandle();
 
 		FOculusControllerPair& ControllerPair = *new (ControllerPairs) FOculusControllerPair();
 
@@ -188,12 +185,6 @@ namespace OculusXRInput
 	FOculusXRInput::~FOculusXRInput()
 	{
 		IModularFeatures::Get().UnregisterModularFeature(GetModularFeatureName(), this);
-
-		if (OVRPluginHandle)
-		{
-			FPlatformProcess::FreeDllHandle(OVRPluginHandle);
-			OVRPluginHandle = nullptr;
-		}
 	}
 
 	void FOculusXRInput::PreInit()
@@ -319,7 +310,6 @@ namespace OculusXRInput
 				OculusXRHMD->StartGameFrame_GameThread();
 
 				ovrpControllerState5 OvrpControllerState;
-
 				if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetControllerState5(ovrpController_Remote, &OvrpControllerState)) && (OvrpControllerState.ConnectedControllerTypes & ovrpController_Remote))
 				{
 					for (int32 ButtonIndex = 0; ButtonIndex < (int32)EOculusRemoteControllerButton::TotalButtonCount; ++ButtonIndex)
@@ -999,7 +989,6 @@ namespace OculusXRInput
 			if (IOculusXRHMDModule::IsAvailable() && FOculusXRHMDModule::GetPluginWrapper().GetInitialized() && FApp::HasVRFocus())
 			{
 				ovrpControllerState5 OvrpControllerState;
-
 				if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetControllerState5((ovrpController)(ovrpController_Active | ovrpController_LTrackedRemote | ovrpController_RTrackedRemote), &OvrpControllerState)) && (OvrpControllerState.ConnectedControllerTypes & (ovrpController_Touch | ovrpController_LTrackedRemote | ovrpController_RTrackedRemote)))
 				{
 					float FreqMin, FreqMax = 0.f;

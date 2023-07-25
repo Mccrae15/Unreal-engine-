@@ -22,12 +22,14 @@
 // Normally offsets should be within +/-TileSizeDivideBy2, but we often rebase multiple quantities off a single tile origin
 #define UE_LWC_RENDER_MAX_OFFSET (2097152.0*0.5)
 
-double FLargeWorldRenderScalar::GetTileSize()
+template<typename TScalar>
+TScalar TLargeWorldRenderScalar<TScalar>::GetTileSize()
 {
-	return UE_LWC_RENDER_TILE_SIZE;
+	return static_cast<TScalar>(UE_LWC_RENDER_TILE_SIZE);
 }
 
-FVector3f FLargeWorldRenderScalar::GetTileFor(FVector InPosition)
+template<typename TScalar>
+FVector3f TLargeWorldRenderScalar<TScalar>::GetTileFor(FVector InPosition)
 {
 	if constexpr (UE_LWC_RENDER_TILE_SIZE == 0)
 	{
@@ -58,37 +60,44 @@ FMatrix CheckMatrixInTileOffsetRange(const FMatrix& Matrix)
 	return Matrix;
 }
 
-FMatrix44f FLargeWorldRenderScalar::SafeCastMatrix(const FMatrix& Matrix)
+template<typename TScalar>
+FMatrix44f TLargeWorldRenderScalar<TScalar>::SafeCastMatrix(const FMatrix& Matrix)
 {
 	return FMatrix44f(CheckMatrixInTileOffsetRange(Matrix));
 }
 
-FMatrix44f FLargeWorldRenderScalar::MakeToRelativeWorldMatrix(const FVector Origin, const FMatrix& ToWorld)
+template<typename TScalar>
+FMatrix44f TLargeWorldRenderScalar<TScalar>::MakeToRelativeWorldMatrix(const FVector Origin, const FMatrix& ToWorld)
 {
 	return FMatrix44f(MakeToRelativeWorldMatrixDouble(Origin, ToWorld));
 }
 
-FMatrix FLargeWorldRenderScalar::MakeToRelativeWorldMatrixDouble(const FVector Origin, const FMatrix& ToWorld)
+template<typename TScalar>
+FMatrix TLargeWorldRenderScalar<TScalar>::MakeToRelativeWorldMatrixDouble(const FVector Origin, const FMatrix& ToWorld)
 {
 	return CheckMatrixInTileOffsetRange(ToWorld * FTranslationMatrix(-Origin));
 }
 
-FMatrix44f FLargeWorldRenderScalar::MakeFromRelativeWorldMatrix(const FVector Origin, const FMatrix& FromWorld)
+template<typename TScalar>
+FMatrix44f TLargeWorldRenderScalar<TScalar>::MakeFromRelativeWorldMatrix(const FVector Origin, const FMatrix& FromWorld)
 {
 	return FMatrix44f(MakeFromRelativeWorldMatrixDouble(Origin, FromWorld));
 }
 
-FMatrix FLargeWorldRenderScalar::MakeFromRelativeWorldMatrixDouble(const FVector Origin, const FMatrix& FromWorld)
+template<typename TScalar>
+FMatrix TLargeWorldRenderScalar<TScalar>::MakeFromRelativeWorldMatrixDouble(const FVector Origin, const FMatrix& FromWorld)
 {
 	return CheckMatrixInTileOffsetRange(FTranslationMatrix(Origin) * FromWorld);
 }
 
-FMatrix44f FLargeWorldRenderScalar::MakeClampedToRelativeWorldMatrix(const FVector Origin, const FMatrix& ToWorld)
+template<typename TScalar>
+FMatrix44f TLargeWorldRenderScalar<TScalar>::MakeClampedToRelativeWorldMatrix(const FVector Origin, const FMatrix& ToWorld)
 {
 	return FMatrix44f(MakeClampedToRelativeWorldMatrixDouble(Origin, ToWorld));
 }
 
-FMatrix FLargeWorldRenderScalar::MakeClampedToRelativeWorldMatrixDouble(const FVector Origin, const FMatrix& ToWorld)
+template<typename TScalar>
+FMatrix TLargeWorldRenderScalar<TScalar>::MakeClampedToRelativeWorldMatrixDouble(const FVector Origin, const FMatrix& ToWorld)
 {
 	const double OriginMax = UE_LWC_RENDER_MAX_OFFSET;
 
@@ -104,12 +113,35 @@ FMatrix FLargeWorldRenderScalar::MakeClampedToRelativeWorldMatrixDouble(const FV
 	return ClampedToRelativeWorld;
 }
 
-void FLargeWorldRenderScalar::Validate(double InAbsolute)
+// TILE_SIZE = 2097152 = (1 << 21)
+//  => Offset < (1 << 21)
+// f32 has 23+1 mantissa bits, leaving 3 bits for fractions (24 - 21)
+// f64 has 52+1 mantissa bits, leaving 32 bits for fractions (53 - 21)
+// This defines a theoretical bound on the error.
+
+template<>
+CORE_API void TLargeWorldRenderScalar<float>::Validate(double InAbsolute)
 {
-	const double Tolerance = 0.01; // TODO LWC - How precise do we need to be?
+	constexpr int FractionBitCount = 3;
+	constexpr double Tolerance = 1.0 / (1ULL << FractionBitCount);
 	const double CheckAbsolute = GetAbsolute();
 	const double Delta = FMath::Abs(CheckAbsolute - InAbsolute);
 
-	ensureMsgf(Delta < Tolerance, TEXT("Bad FLargeWorldRenderScalar (%g) vs (%g)"),
+	ensureMsgf(Delta <= Tolerance, TEXT("Bad TLargeWorldRenderScalar<float> (%.15f) vs (%.15f)"),
 		InAbsolute, CheckAbsolute);
 }
+
+template<>
+CORE_API void TLargeWorldRenderScalar<double>::Validate(double InAbsolute)
+{
+	constexpr int FractionBitCount = 32;
+	constexpr double Tolerance = 1.0 / (1ULL << FractionBitCount);
+	const double CheckAbsolute = GetAbsolute();
+	const double Delta = FMath::Abs(CheckAbsolute - InAbsolute);
+
+	ensureMsgf(Delta <= Tolerance, TEXT("Bad TLargeWorldRenderScalar<double> (%.15f) vs (%.15f)"),
+		InAbsolute, CheckAbsolute);
+}
+
+template struct TLargeWorldRenderScalar<double>;
+template struct TLargeWorldRenderScalar<float>;

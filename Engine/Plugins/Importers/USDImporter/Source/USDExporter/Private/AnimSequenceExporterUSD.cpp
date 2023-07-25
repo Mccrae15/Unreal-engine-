@@ -6,10 +6,12 @@
 #include "Engine/SkeletalMesh.h"
 #include "EngineAnalytics.h"
 #include "MaterialExporterUSD.h"
+#include "Misc/EngineVersion.h"
 #include "SkeletalMeshExporterUSDOptions.h"
 #include "UnrealUSDWrapper.h"
 #include "USDClassesModule.h"
 #include "USDErrorUtils.h"
+#include "USDExporterModule.h"
 #include "USDLayerUtils.h"
 #include "USDLog.h"
 #include "USDOptionsWindow.h"
@@ -122,6 +124,11 @@ bool UAnimSequenceExporterUSD::ExportBinary( UObject* Object, const TCHAR* Type,
 		return false;
 	}
 
+	if ( !IUsdExporterModule::CanExportToLayer( UExporter::CurrentFilename ) )
+	{
+		return false;
+	}
+
 	// See comment on the analogous line within StaticMeshExporterUSD.cpp
 	ExportTask->bPrompt = false;
 
@@ -205,7 +212,7 @@ bool UAnimSequenceExporterUSD::ExportBinary( UObject* Object, const TCHAR* Type,
 	}
 
 	FString AnimSequenceVersion;
-	if ( UAnimDataModel* DataModel = AnimSequence->GetDataModel() )
+	if ( IAnimationDataModel* DataModel = AnimSequence->GetDataModel() )
 	{
 		FSHA1 SHA1;
 

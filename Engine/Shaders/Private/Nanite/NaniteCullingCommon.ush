@@ -14,7 +14,7 @@
 #include "NaniteCulling.ush"
 
 
-void TestPrevHZB(FNaniteView NaniteView, float3 BoxBoundsCenter, float3 BoxBoundsExtent, FInstanceSceneData InstanceData, FInstanceDynamicData DynamicData, bool bNearClip, bool bViewHZB, bool bSkipBoxCullFrustum, bool bSkipBoxCullHZB, bool bTreatUnmappedAsOccluded, inout bool bVisible, inout bool bWasOccluded)
+void TestPrevHZB(FNaniteView NaniteView, float3 BoxBoundsCenter, float3 BoxBoundsExtent, FInstanceSceneData InstanceData, FInstanceDynamicData DynamicData, bool bNearClip, bool bViewHZB, bool bSkipBoxCullFrustum, bool bSkipBoxCullHZB, bool bClampToPageLevel, bool bTreatUnmappedAsOccluded, inout bool bVisible, inout bool bWasOccluded)
 {
 	BRANCH
 	if( bViewHZB && bVisible && !bSkipBoxCullHZB)
@@ -27,7 +27,7 @@ void TestPrevHZB(FNaniteView NaniteView, float3 BoxBoundsCenter, float3 BoxBound
 		if (PrevCull.bIsVisible && !PrevCull.bCrossesNearPlane)
 		{
 			FScreenRect PrevRect = GetScreenRect(NaniteView.ViewRect, PrevCull, 4);	// Assume HZBTestViewRect=ViewRect for VSM. Don't load it redundantly.
-			bWasOccluded = !IsVisibleMaskedHZB(NaniteView.TargetPrevLayerIndex, NaniteView.TargetMipLevel, PrevRect, false, bTreatUnmappedAsOccluded, 0U);
+			bWasOccluded = !IsVisibleMaskedHZB(NaniteView.TargetPrevLayerIndex, NaniteView.TargetMipLevel, PrevRect, bClampToPageLevel, bTreatUnmappedAsOccluded, 0U);
 	}
 #else
 		BRANCH
@@ -40,7 +40,7 @@ void TestPrevHZB(FNaniteView NaniteView, float3 BoxBoundsCenter, float3 BoxBound
 	}
 }
 
-void TestCurrentHZB(FFrustumCullData Cull, FScreenRect Rect, FNaniteView NaniteView, FInstanceSceneData InstanceData, FInstanceDynamicData DynamicData, bool bSkipBoxCullHZB, inout bool bVisible, inout bool bWasOccluded)
+void TestCurrentHZB(FFrustumCullData Cull, FScreenRect Rect, FNaniteView NaniteView, FInstanceSceneData InstanceData, FInstanceDynamicData DynamicData, bool bSkipBoxCullHZB, bool bClampToPageLevel, inout bool bVisible, inout bool bWasOccluded)
 {
 	BRANCH
 	if (bVisible && !bSkipBoxCullHZB)
@@ -52,7 +52,7 @@ void TestCurrentHZB(FFrustumCullData Cull, FScreenRect Rect, FNaniteView NaniteV
 			// The logic here is that if the thing has moved it should test against all hzb pages, whereas if it is static we can skip the cached ones (since we'd not render into those anyway).
 			const uint PageTestFlagMask = GetPageFlagMaskForRendering(InstanceData, NaniteView, DynamicData.bHasMoved);
 			//bWasOccluded = !IsVisibleCurrentHZB(NaniteView.TargetLayerIndex, NaniteView.TargetMipLevel, Rect, PageFlagMask);
-			bWasOccluded = !IsVisibleMaskedHZB(NaniteView.TargetLayerIndex, NaniteView.TargetMipLevel, Rect, false, true, 0U, PageTestFlagMask);
+			bWasOccluded = !IsVisibleMaskedHZB(NaniteView.TargetLayerIndex, NaniteView.TargetMipLevel, Rect, bClampToPageLevel, true, 0U, PageTestFlagMask);
 
 #else
 			bWasOccluded = !IsVisibleHZB(Rect, true);
@@ -72,14 +72,28 @@ void DrawDistanceCull(
 	inout bool bEnableWPO)
 {
 	// Ensure WPO can be disabled at the primitive level
-	bEnableWPO = bEnableWPO && (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET) != 0;
-	const bool bWPODistanceDisable = bEnableWPO && !bSkipDisableWPODistance && (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_WPO_DISABLE_DISTANCE) != 0u;
+	bEnableWPO &= (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET) != 0;
 
 	BRANCH
-	if (bVisible || bWPODistanceDisable)
+	if (bVisible)
 	{
+		// Get the instance bounds center in translated world space
 		const float3 TranslatedWorldCenter = mul(float4(InstanceData.LocalBoundsCenter, 1.0f), DynamicData.LocalToTranslatedWorld).xyz;
-		const float InstanceDistSq = dot(TranslatedWorldCenter, TranslatedWorldCenter);
+
+		// Check to cull the instances based on its distance from the view's camera (per-view setting)
+		BRANCH
+		if (bVisible && (NaniteView.Flags & NANITE_VIEW_FLAG_DISTANCE_CULL) != 0u)
+		{
+			const float InstanceViewDistSq = dot(TranslatedWorldCenter, TranslatedWorldCenter);
+			const float InstanceRadius = length(InstanceData.LocalBoundsExtent * InstanceData.NonUniformScale.xyz);
+			const float MaxDistanceSq = Square(NaniteView.RangeBasedCullingDistance + InstanceRadius);
+
+			bVisible = InstanceViewDistSq <= MaxDistanceSq;
+		}
+
+		// Determine the distance of the instance center from the DrawDistanceOrigin
+		const float3 CameraOffset = TranslatedWorldCenter - NaniteView.DrawDistanceOriginTranslatedWorld;
+		const float InstanceDrawDistSq = dot(CameraOffset, CameraOffset);
 
 		// Check to cull the instance based on its distance from the main view's location (per-primitive setting)
 		BRANCH
@@ -88,24 +102,67 @@ void DrawDistanceCull(
 			const float MinDistanceSq = PrimitiveData.InstanceDrawDistanceMinMaxSquared.x;
 			const float MaxDistanceSq = PrimitiveData.InstanceDrawDistanceMinMaxSquared.y;
 
-			// TODO: This needs to be from a different reference point for view-dependent shadows
-			bVisible = InstanceDistSq >= MinDistanceSq && InstanceDistSq <= MaxDistanceSq;
-		}
-
-		// Check to cull the instances based on its distance from the view's camera (per-view setting)
-		BRANCH
-		if (bVisible && (NaniteView.Flags & NANITE_VIEW_FLAG_DISTANCE_CULL) != 0u)
-		{
-			const float InstanceRadius = length(InstanceData.LocalBoundsExtent * InstanceData.NonUniformScale.xyz);
-			const float MaxDistanceSq = Square(NaniteView.RangeBasedCullingDistance + InstanceRadius);
-			
-			bVisible = InstanceDistSq <= MaxDistanceSq;
+			bVisible = InstanceDrawDistSq >= MinDistanceSq && InstanceDrawDistSq <= MaxDistanceSq;
 		}
 
 		// Check to disable the instance's WPO based on distance from the main view's location
-		if (bWPODistanceDisable)
+		BRANCH
+		if (bVisible && bEnableWPO && !bSkipDisableWPODistance
+			&& (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_WPO_DISABLE_DISTANCE) != 0u)
 		{
-			bEnableWPO = InstanceDistSq < PrimitiveData.InstanceWPODisableDistanceSquared;
+			bEnableWPO = InstanceDrawDistSq < PrimitiveData.InstanceWPODisableDistanceSquared;
 		}
+	}
+
+	// "Disable" WPO if the instance isn't visible
+	bEnableWPO &= bVisible;
+}
+
+float GetGlobalClipPlaneDistance(FNaniteView NaniteView, float3 TranslatedWorldPosition)
+{
+	return dot(NaniteView.TranslatedGlobalClipPlane, float4(TranslatedWorldPosition, 1.0f));
+}
+
+enum class EClipPlaneTestResult : int
+{
+	AllOut			= -1,
+	Intersecting	=  0,
+	AllIn			=  1
+};
+
+EClipPlaneTestResult GlobalClipPlaneCullBox(
+	FNaniteView NaniteView,
+	float3 LocalBoundsCenter,
+	float3 LocalBoundsExtent,
+	float4x4 LocalToTranslatedWorld,
+	float3 NonUniformScale,
+	bool bSkipGlobalClipPlaneTest)
+{
+	// Prevent the result being "intersecting" when the global plane is invalid (effectively disabled). This prevents clusters that
+	// should rasterize in SW from being sent down the HW path
+	if (bSkipGlobalClipPlaneTest || all(NaniteView.TranslatedGlobalClipPlane.xyz == (float3)0.0f))
+	{
+		return EClipPlaneTestResult::AllIn;
+	}
+
+	// Get the global clipping plane in local space (multiply by inverse transpose)
+	const float4 PlaneLocal = mul(LocalToTranslatedWorld, NaniteView.TranslatedGlobalClipPlane);
+
+	// AABB/Plane intersection test
+	const float3 ScaledExtents = LocalBoundsExtent * NonUniformScale;
+	const float ExtentAlongPlaneN = dot(abs(ScaledExtents * PlaneLocal.xyz), (float3)1.0f);
+	const float CenterDist = dot(PlaneLocal, float4(LocalBoundsCenter, 1.0f));
+
+	if (CenterDist < -ExtentAlongPlaneN)
+	{
+		return EClipPlaneTestResult::AllOut;
+	}
+	else if (CenterDist >= ExtentAlongPlaneN)
+	{
+		return EClipPlaneTestResult::AllIn;
+	}
+	else
+	{
+		return EClipPlaneTestResult::Intersecting;
 	}
 }

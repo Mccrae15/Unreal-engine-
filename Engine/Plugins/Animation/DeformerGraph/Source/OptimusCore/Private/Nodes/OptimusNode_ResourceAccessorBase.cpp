@@ -10,6 +10,8 @@
 #include "Actions/OptimusAction.h"
 #include "Actions/OptimusResourceActions.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusNode_ResourceAccessorBase)
+
 
 #define LOCTEXT_NAMESPACE "OptimusResourceAccessorBase"
 
@@ -42,6 +44,7 @@ void UOptimusNode_ResourceAccessorBase::PreDuplicateRequirementActions(
 	bool bFoundDuplicate = false;
 	do
 	{
+		bFoundDuplicate = false;
 		for (const UOptimusResourceDescription* ExistingResourceDesc: Deformer->GetResources())
 		{
 			if (ExistingResourceDesc->ResourceName == DuplicationInfo.ResourceName)
@@ -74,6 +77,7 @@ void UOptimusNode_ResourceAccessorBase::PostDuplicate(EDuplicateMode::Type Dupli
 	
 	if (ResourceDesc.IsValid())
 	{
+		// This path is taken when the entire asset is duplicated
 		const UOptimusDeformer* OldDescOwner = ResourceDesc->GetOwningDeformer();
 		
 		// No action needed if we are copying/pasting within the same deformer asset 
@@ -107,7 +111,7 @@ void UOptimusNode_ResourceAccessorBase::ExportCustomProperties(FOutputDevice& Ou
 {
 	if (const UOptimusResourceDescription* Res = ResourceDesc.Get())
 	{
-		Out.Logf(TEXT("%sCustomProperties ResourceDefinition Name=\"%s\" Type=%s DataDomain=%s\n"),
+		Out.Logf(TEXT("%sCustomProperties ResourceDefinition Name=\"%s\" Type=%s DataDomain=\"%s\"\n"),
 			FCString::Spc(Indent), *Res->ResourceName.ToString(), *Res->DataType->TypeName.ToString(),
 			*Res->DataDomain.ToString());
 	}

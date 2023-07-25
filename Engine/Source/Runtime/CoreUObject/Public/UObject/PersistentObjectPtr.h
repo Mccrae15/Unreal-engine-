@@ -6,9 +6,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/WeakObjectPtr.h"
-#include "UObject/FastReferenceCollectorOptions.h"
 
 /**
  * TPersistentObjectPtr is a template base class for FLazyObjectPtr and FSoftObjectPtr
@@ -16,10 +14,10 @@
 template<class TObjectID>
 struct TPersistentObjectPtr
 {
-public:	
+	friend struct FGCInternals;
 
-	template <typename ReferenceProcessorType, typename CollectorType, typename ArrayPoolType, EFastReferenceCollectorOptions Options>
-	friend class TFastReferenceCollector;
+public:
+	using ElementType = TObjectID;
 
 	/** Default constructor, will be null */
 	FORCEINLINE TPersistentObjectPtr()
@@ -252,3 +250,6 @@ private:
 template <class TObjectID> struct TIsPODType<TPersistentObjectPtr<TObjectID> > { enum { Value = TIsPODType<TObjectID>::Value }; };
 template <class TObjectID> struct TIsWeakPointerType<TPersistentObjectPtr<TObjectID> > { enum { Value = TIsWeakPointerType<FWeakObjectPtr>::Value }; };
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

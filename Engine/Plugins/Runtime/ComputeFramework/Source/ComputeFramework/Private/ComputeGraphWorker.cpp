@@ -2,6 +2,7 @@
 
 #include "ComputeFramework/ComputeGraphWorker.h"
 
+#include "Algo/Sort.h"
 #include "ComputeFramework/ComputeKernel.h"
 #include "ComputeFramework/ComputeKernelPermutationVector.h"
 #include "ComputeFramework/ComputeKernelShader.h"
@@ -14,116 +15,234 @@
 
 DECLARE_GPU_STAT_NAMED(ComputeFramework_ExecuteBatches, TEXT("ComputeFramework::ExecuteBatches"));
 
-void FComputeGraphTaskWorker::Enqueue(FName InOwnerName, FComputeGraphRenderProxy const* InGraphRenderProxy, TArray<FComputeDataProviderRenderProxy*> InDataProviderRenderProxies)
+static TAutoConsoleVariable<int32> CVarComputeFrameworkSortSubmit(
+	TEXT("r.ComputeFramework.SortSubmit"),
+	1,
+	TEXT("Sort submission of work to GPU for optimal scheduling."),
+	ECVF_RenderThreadSafe
+);
+
+
+void FComputeGraphTaskWorker::Enqueue(
+	FName InExecutionGroupName, 
+	FName InOwnerName, 
+	uint8 InGraphSortPriority,
+	FComputeGraphRenderProxy const* InGraphRenderProxy, 
+	TArray<FComputeDataProviderRenderProxy*> InDataProviderRenderProxies, 
+	FSimpleDelegate InFallbackDelegate)
 {
-	FGraphInvocation& GraphInvocation = GraphInvocations.AddDefaulted_GetRef();
+	FGraphInvocation& GraphInvocation = GraphInvocationsPerGroup.FindOrAdd(InExecutionGroupName).AddDefaulted_GetRef();
 	GraphInvocation.OwnerName = InOwnerName;
+	GraphInvocation.GraphSortPriority = InGraphSortPriority;
 	GraphInvocation.GraphRenderProxy = InGraphRenderProxy;
 	GraphInvocation.DataProviderRenderProxies = MoveTemp(InDataProviderRenderProxies);
+	GraphInvocation.FallbackDelegate = InFallbackDelegate;
 }
 
-void FComputeGraphTaskWorker::SubmitWork(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel)
+bool FComputeGraphTaskWorker::HasWork(FName InExecutionGroupName) const
 {
-	if (GraphInvocations.IsEmpty())
+	TArray<FGraphInvocation> const* GraphInvocations = GraphInvocationsPerGroup.Find(InExecutionGroupName);
+	return GraphInvocations != nullptr && GraphInvocations->Num();
+}
+
+void FComputeGraphTaskWorker::SubmitWork(FRDGBuilder& GraphBuilder, FName InExecutionGroupName, ERHIFeatureLevel::Type FeatureLevel)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE("ComputeFramework::ExecuteBatches");
+	RDG_EVENT_SCOPE(GraphBuilder, "ComputeFramework::ExecuteBatches");
+	RDG_GPU_STAT_SCOPE(GraphBuilder, ComputeFramework_ExecuteBatches);
+
+	// Reset our scratch memory arrays.
+	SubmitDescs.Reset();
+	Shaders.Reset();
+
+	TArray<FGraphInvocation> const& GraphInvocations = GraphInvocationsPerGroup.FindChecked(InExecutionGroupName);
+	for (int32 GraphIndex = 0; GraphIndex < GraphInvocations.Num(); ++GraphIndex)
 	{
-		return;
-	}
+		FGraphInvocation const& GraphInvocation = GraphInvocations[GraphIndex];
+		FComputeGraphRenderProxy const* GraphRenderProxy = GraphInvocation.GraphRenderProxy;
+		const int32 NumKernels = GraphRenderProxy->KernelInvocations.Num();
 
-	{
-		SCOPED_DRAW_EVENTF(RHICmdList, ComputeFramework_ExecuteBatches, TEXT("ComputeFramework::ExecuteBatches"));
-		SCOPED_GPU_STAT(RHICmdList, ComputeFramework_ExecuteBatches);
+		const int32 BaseSubmitDescIndex = SubmitDescs.Num();
+		SubmitDescs.Reserve(BaseSubmitDescIndex + NumKernels);
+		const int32 BaseShaderIndex = Shaders.Num();
 
-		FRDGBuilder GraphBuilder(RHICmdList);
-
-		for (int32 GraphIndex = 0; GraphIndex < GraphInvocations.Num(); ++GraphIndex)
+		// Gather shaders and validate the DataInterfaces.
+		// If validation fails or shaders are awaiting compilation we will not run the graph.
+		bool bIsValid = true;
+		for (int32 KernelIndex = 0; bIsValid && KernelIndex < NumKernels; ++KernelIndex)
 		{
-			FGraphInvocation const& GraphInvocation = GraphInvocations[GraphIndex];
-			FComputeGraphRenderProxy const* GraphRenderProxy = GraphInvocation.GraphRenderProxy;
+			FSubmitDescription& SubmitDesc = SubmitDescs.AddZeroed_GetRef();
+			SubmitDesc.GraphIndex = GraphIndex;
+			SubmitDesc.KernelIndex = KernelIndex;
+			SubmitDesc.GraphSortPriority = GraphInvocation.GraphSortPriority;
+			SubmitDesc.ShaderIndex = Shaders.Num();
 
-			RDG_EVENT_SCOPE(GraphBuilder, "%s:%s", *GraphInvocation.OwnerName.ToString(), *GraphRenderProxy->GraphName.ToString());
+			FComputeGraphRenderProxy::FKernelInvocation const& KernelInvocation = GraphRenderProxy->KernelInvocations[KernelIndex];
 
-			// Do resource allocation for all the data providers in the graph.
-			for (int32 DataProviderIndex = 0; DataProviderIndex < GraphInvocation.DataProviderRenderProxies.Num(); ++DataProviderIndex)
+			// Reset our scratch memory arrays.
+			PermutationIds.Reset();
+			ThreadCounts.Reset();
+
+			const int32 NumSubInvocations = GraphInvocation.DataProviderRenderProxies[KernelInvocation.ExecutionProviderIndex]->GetDispatchThreadCount(ThreadCounts);
+
+			// Iterate shader parameter members to fill the dispatch data structures.
+			// We assume that the members were filled out with a single data interface per member, and that the
+			// order is the same one defined in the KernelInvocation.BoundProviderIndices.
+			TArray<FShaderParametersMetadata::FMember> const& ParamMembers = KernelInvocation.ShaderParameterMetadata->GetMembers();
+
+			FComputeDataProviderRenderProxy::FPermutationData PermutationData{ NumSubInvocations, GraphRenderProxy->ShaderPermutationVectors[KernelIndex], MoveTemp(PermutationIds) };
+			PermutationData.PermutationIds.SetNumZeroed(NumSubInvocations);
+
+			for (int32 MemberIndex = 0; bIsValid && MemberIndex < ParamMembers.Num(); ++MemberIndex)
 			{
-				FComputeDataProviderRenderProxy* DataProvider = GraphInvocation.DataProviderRenderProxies[DataProviderIndex];
-				if (DataProvider != nullptr)
+				FShaderParametersMetadata::FMember const& Member = ParamMembers[MemberIndex];
+				if (ensure(Member.GetBaseType() == EUniformBufferBaseType::UBMT_NESTED_STRUCT))
 				{
-					DataProvider->AllocateResources(GraphBuilder);
-				}
-			}
-
-			// Iterate the graph kernels to collect shader bindings and dispatch work.
-			for (int32 KernelIndex = 0; KernelIndex < GraphRenderProxy->KernelInvocations.Num(); ++KernelIndex)
-			{
-				FComputeGraphRenderProxy::FKernelInvocation const& KernelInvocation = GraphRenderProxy->KernelInvocations[KernelIndex];
-
-				RDG_EVENT_SCOPE(GraphBuilder, "%s", *KernelInvocation.KernelName);
-
-				TArray<FIntVector> ThreadCounts;
-				const int32 NumSubInvocations = GraphInvocation.DataProviderRenderProxies[KernelInvocation.ExecutionProviderIndex]->GetDispatchThreadCount(ThreadCounts);
-
-				TStridedView<FComputeKernelShader::FParameters> ParameterArray = GraphBuilder.AllocParameters<FComputeKernelShader::FParameters>(KernelInvocation.ShaderParameterMetadata, NumSubInvocations);
-
-				// Iterate shader parameter members to fill the dispatch data structures.
-				// We assume that the members were filled out with a single data interface per member, and that the
-				// order is the same one defined in the KernelInvocation.BoundProviderIndices.
-				TArray<FShaderParametersMetadata::FMember> const& ParamMembers = KernelInvocation.ShaderParameterMetadata->GetMembers();
-
-				FComputeDataProviderRenderProxy::FCollectedDispatchData DispatchData;
-				DispatchData.ParameterBuffer = reinterpret_cast<uint8*>(&ParameterArray[0]);
-				DispatchData.PermutationId.AddZeroed(NumSubInvocations);
-
-				FComputeDataProviderRenderProxy::FDispatchSetup DispatchSetup{ NumSubInvocations, 0, ParameterArray.GetStride(), 0, GraphRenderProxy->ShaderPermutationVectors[KernelIndex]};
-
-				for (int32 MemberIndex = 0; MemberIndex < ParamMembers.Num(); ++MemberIndex)
-				{
-					FShaderParametersMetadata::FMember const& Member = ParamMembers[MemberIndex];
-					if (ensure(Member.GetBaseType() == EUniformBufferBaseType::UBMT_NESTED_STRUCT))
+					const int32 DataProviderIndex = KernelInvocation.BoundProviderIndices[MemberIndex];
+					FComputeDataProviderRenderProxy* DataProvider = GraphInvocation.DataProviderRenderProxies[DataProviderIndex];
+					if (ensure(DataProvider != nullptr))
 					{
-						const int32 DataProviderIndex = KernelInvocation.BoundProviderIndices[MemberIndex];
-						FComputeDataProviderRenderProxy* DataProvider = GraphInvocation.DataProviderRenderProxies[DataProviderIndex];
-						if (ensure(DataProvider != nullptr))
-						{
-							DispatchSetup.ParameterBufferOffset = Member.GetOffset();
-							DispatchSetup.ParameterStructSizeForValidation = Member.GetStructMetadata()->GetSize();
+						FComputeDataProviderRenderProxy::FValidationData ValidationData{ NumSubInvocations, (int32)Member.GetStructMetadata()->GetSize() };
+						bIsValid &= DataProvider->IsValid(ValidationData);
 
-							DataProvider->GatherDispatchData(DispatchSetup, DispatchData);
+						if (bIsValid)
+						{
+							DataProvider->GatherPermutations(PermutationData);
 						}
 					}
 				}
+			}
 
-				// Dispatch work to the render graph.
-				for (int32 SubInvocationIndex = 0; SubInvocationIndex < NumSubInvocations; ++SubInvocationIndex)
+			// Get shader. This can fail if compilation is pending.
+			for (int32 SubInvocationIndex = 0; bIsValid && SubInvocationIndex < NumSubInvocations; ++SubInvocationIndex)
+			{
+				TShaderRef<FComputeKernelShader> Shader = KernelInvocation.KernelResource->GetShader(PermutationData.PermutationIds[SubInvocationIndex]);
+				bIsValid &= Shader.IsValid();
+				Shaders.Add(Shader);
+			}
+
+			// Check if we can do unified dispatch and apply that if we can.
+			if (bIsValid && KernelInvocation.bSupportsUnifiedDispatch && NumSubInvocations > 1)
+			{
+				bool bSupportsUnifiedDispatch = true;
+				for (int32 SubInvocationIndex = 1; bSupportsUnifiedDispatch && SubInvocationIndex < NumSubInvocations; ++SubInvocationIndex)
 				{
-					TShaderRef<FComputeKernelShader> Shader = KernelInvocation.KernelResource->GetShader(DispatchData.PermutationId[SubInvocationIndex]);
-					const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(ThreadCounts[SubInvocationIndex], KernelInvocation.KernelGroupSize);
+					bSupportsUnifiedDispatch &= Shaders[SubmitDesc.ShaderIndex + SubInvocationIndex] == Shaders[SubmitDesc.ShaderIndex];
+				}
 
-					FComputeShaderUtils::AddPass(
-						GraphBuilder,
-						{},
-						ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
-						Shader,
-						KernelInvocation.ShaderParameterMetadata,
-						&ParameterArray[SubInvocationIndex],
-						GroupCount
-					);
+				if (bSupportsUnifiedDispatch)
+				{
+					SubmitDesc.bIsUnified = true;
+					Shaders.SetNum(SubmitDesc.ShaderIndex + 1, /*bAllowShrinking*/false);
+				}
+			}
+
+			// Move our scratch array back for subsequent reuse.
+			PermutationIds = MoveTemp(PermutationData.PermutationIds);
+		}
+
+		// If we can't run the graph for any reason, back out now and apply fallback logic.
+		if (!bIsValid)
+		{
+			SubmitDescs.SetNum(BaseSubmitDescIndex, /*bAllowShrinking*/false);
+			Shaders.SetNum(BaseShaderIndex, /*bAllowShrinking*/false);
+			GraphInvocation.FallbackDelegate.ExecuteIfBound();
+			continue;
+		}
+
+		// Allocate RDG resources for all the data providers in the graph.
+		for (int32 DataProviderIndex = 0; DataProviderIndex < GraphInvocation.DataProviderRenderProxies.Num(); ++DataProviderIndex)
+		{
+			FComputeDataProviderRenderProxy* DataProvider = GraphInvocation.DataProviderRenderProxies[DataProviderIndex];
+			if (DataProvider != nullptr)
+			{
+				DataProvider->AllocateResources(GraphBuilder);
+			}
+		}
+	}
+
+	if (CVarComputeFrameworkSortSubmit.GetValueOnRenderThread() != 0)
+	{
+		// Sort for optimal dispatch.
+		Algo::Sort(SubmitDescs, [](const FSubmitDescription& LHS, const FSubmitDescription& RHS) { return LHS.PackedSortKey < RHS.PackedSortKey; });
+	}
+
+	for (FSubmitDescription const& SubmitDesc : SubmitDescs)
+	{
+		const int32 GraphIndex = SubmitDesc.GraphIndex;
+		FGraphInvocation const& GraphInvocation = GraphInvocations[GraphIndex];
+		FComputeGraphRenderProxy const* GraphRenderProxy = GraphInvocation.GraphRenderProxy;
+
+		const int32 KernelIndex = SubmitDesc.KernelIndex;
+		FComputeGraphRenderProxy::FKernelInvocation const& KernelInvocation = GraphRenderProxy->KernelInvocations[KernelIndex];
+
+		RDG_EVENT_SCOPE(GraphBuilder, "%s:%s:%s", *GraphInvocation.OwnerName.ToString(), *GraphRenderProxy->GraphName.ToString(), *KernelInvocation.KernelName);
+
+		//todo[CF]: GetDispatchThreadCount() should take the bIsUnified flag directly.
+		ThreadCounts.Reset();
+		int32 NumSubInvocations = GraphInvocation.DataProviderRenderProxies[KernelInvocation.ExecutionProviderIndex]->GetDispatchThreadCount(ThreadCounts);
+
+		bool bIsUnifiedDispatch = SubmitDesc.bIsUnified;
+		if (bIsUnifiedDispatch)
+		{
+			for (int32 SubInvocationIndex = 1; SubInvocationIndex < NumSubInvocations; ++SubInvocationIndex)
+			{
+				ThreadCounts[0].X += ThreadCounts[SubInvocationIndex].X;
+			}
+			ThreadCounts.SetNum(1);
+			NumSubInvocations = 1;
+		}
+
+		// Allocate parameters buffer and fill from data providers.
+		TStridedView<FComputeKernelShader::FParameters> ParameterArray = GraphBuilder.AllocParameters<FComputeKernelShader::FParameters>(KernelInvocation.ShaderParameterMetadata, NumSubInvocations);
+		FComputeDataProviderRenderProxy::FDispatchData DispatchData{ NumSubInvocations, bIsUnifiedDispatch, 0, 0, ParameterArray.GetStride(), reinterpret_cast<uint8*>(&ParameterArray[0]) };
+
+		// Iterate shader parameter members to fill the dispatch data structures.
+		// We assume that the members were filled out with a single data interface per member, and that the
+		// order is the same one defined in the KernelInvocation.BoundProviderIndices.
+		TArray<FShaderParametersMetadata::FMember> const& ParamMembers = KernelInvocation.ShaderParameterMetadata->GetMembers();
+		for (int32 MemberIndex = 0; MemberIndex < ParamMembers.Num(); ++MemberIndex)
+		{
+			FShaderParametersMetadata::FMember const& Member = ParamMembers[MemberIndex];
+			if (ensure(Member.GetBaseType() == EUniformBufferBaseType::UBMT_NESTED_STRUCT))
+			{
+				const int32 DataProviderIndex = KernelInvocation.BoundProviderIndices[MemberIndex];
+				FComputeDataProviderRenderProxy* DataProvider = GraphInvocation.DataProviderRenderProxies[DataProviderIndex];
+				if (ensure(DataProvider != nullptr))
+				{
+					DispatchData.ParameterStructSize = Member.GetStructMetadata()->GetSize();
+					DispatchData.ParameterBufferOffset = Member.GetOffset();
+					DataProvider->GatherDispatchData(DispatchData);
 				}
 			}
 		}
 
-		// Release any graph resources at the end of graph execution.
-		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("Release Data Providers"), 
-			ERDGPassFlags::None, 
-			[this](FRHICommandList&) 
+		// Dispatch work to the render graph.
+		for (int32 SubInvocationIndex = 0; SubInvocationIndex < NumSubInvocations; ++SubInvocationIndex)
 		{
-			GraphInvocations.Reset(); 
-		});
+			TShaderRef<FComputeKernelShader> Shader = Shaders[SubmitDesc.ShaderIndex + SubInvocationIndex];
+			const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(ThreadCounts[SubInvocationIndex], KernelInvocation.KernelGroupSize);
 
-		// Execute graph.
-		// todo[CF]: We can pull this out into calling code so that graph can be shared with other work.
-		GraphBuilder.Execute();
+			FComputeShaderUtils::AddPass(
+				GraphBuilder,
+				{},
+				ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
+				Shader,
+				KernelInvocation.ShaderParameterMetadata,
+				&ParameterArray[SubInvocationIndex],
+				GroupCount
+			);
+		}
 	}
+
+	// Release any graph resources at the end of graph execution.
+	GraphBuilder.AddPass(
+		{},
+		ERDGPassFlags::None,
+		[this, InExecutionGroupName](FRHICommandList&)
+		{
+			GraphInvocationsPerGroup.FindChecked(InExecutionGroupName).Reset();
+		});
 }
 
 FComputeGraphTaskWorker::FGraphInvocation::~FGraphInvocation()

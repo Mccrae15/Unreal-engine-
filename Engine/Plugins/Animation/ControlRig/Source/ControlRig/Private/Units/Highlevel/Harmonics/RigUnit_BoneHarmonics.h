@@ -88,7 +88,7 @@ struct CONTROLRIG_API FRigUnit_BoneHarmonics : public FRigUnit_HighlevelBaseMuta
 		WaveFrequency = FVector(1.f, 0.6f, 0.8f);
 		WaveOffset = FVector(0.f, 1.f, 2.f);
 		WaveNoise = FVector::ZeroVector;
-		WaveEase = EControlRigAnimEasingType::Linear;
+		WaveEase = ERigVMAnimEasingType::Linear;
 		WaveMinimum = 0.5f;
 		WaveMaximum = 1.f;
 		RotationOrder = EEulerRotationOrder::YZX;
@@ -96,7 +96,7 @@ struct CONTROLRIG_API FRigUnit_BoneHarmonics : public FRigUnit_HighlevelBaseMuta
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** The bones to drive. */
 	UPROPERTY(meta = (Input, Constant))
@@ -119,7 +119,7 @@ struct CONTROLRIG_API FRigUnit_BoneHarmonics : public FRigUnit_HighlevelBaseMuta
 	FVector WaveNoise;
 
 	UPROPERTY(meta = (Input))
-	EControlRigAnimEasingType WaveEase;
+	ERigVMAnimEasingType WaveEase;
 
 	UPROPERTY(meta = (Input))
 	float WaveMinimum;
@@ -160,14 +160,14 @@ struct CONTROLRIG_API FRigUnit_ItemHarmonics : public FRigUnit_HighlevelBaseMuta
 		WaveFrequency = FVector(1.f, 0.6f, 0.8f);
 		WaveOffset = FVector(0.f, 1.f, 2.f);
 		WaveNoise = FVector::ZeroVector;
-		WaveEase = EControlRigAnimEasingType::Linear;
+		WaveEase = ERigVMAnimEasingType::Linear;
 		WaveMinimum = 0.5f;
 		WaveMaximum = 1.f;
 		RotationOrder = EEulerRotationOrder::YZX;
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** The items to drive. */
 	UPROPERTY(meta = (Input, Constant))
@@ -190,7 +190,7 @@ struct CONTROLRIG_API FRigUnit_ItemHarmonics : public FRigUnit_HighlevelBaseMuta
 	FVector WaveNoise;
 
 	UPROPERTY(meta = (Input))
-	EControlRigAnimEasingType WaveEase;
+	ERigVMAnimEasingType WaveEase;
 
 	UPROPERTY(meta = (Input))
 	float WaveMinimum;

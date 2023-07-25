@@ -5,14 +5,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/EngineTypes.h"
+#include "HAL/IConsoleManager.h"
 #include "Math/RandomStream.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Object.h"
 #include "Misc/NetworkGuid.h"
 #include "UObject/CoreNet.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "GameFramework/WorldSettings.h"
 #include "PacketHandler.h"
+#endif
 #include "Channel.h"
 #include "Net/Core/Misc/DDoSDetection.h"
 #include "IPAddress.h"
@@ -336,6 +341,9 @@ class UChannel;
 class IAnalyticsProvider;
 class FNetAnalyticsAggregator;
 class UNetDriver;
+class UActorChannel;
+class PacketHandler;
+struct FReplicatedStaticActorDestructionInfo;
 
 enum class ECreateReplicationChangelistMgrFlags;
 enum class EEngineNetworkRuntimeFeatures : uint16;
@@ -588,7 +596,7 @@ struct FActorPriority
 	int32						Priority;	// Update priority, higher = more important.
 	
 	FNetworkObjectInfo*			ActorInfo;	// Actor info.
-	class UActorChannel*		Channel;	// Actor channel.
+	UActorChannel*		        Channel;	// Actor channel.
 
 	FActorDestructionInfo *	DestructionInfo;	// Destroy an actor
 
@@ -596,7 +604,7 @@ struct FActorPriority
 		Priority(0), ActorInfo(NULL), Channel(NULL), DestructionInfo(NULL)
 	{}
 
-	FActorPriority(class UNetConnection* InConnection, class UActorChannel* InChannel, FNetworkObjectInfo* InActorInfo, const TArray<struct FNetViewer>& Viewers, bool bLowBandwidth);
+	FActorPriority(class UNetConnection* InConnection, UActorChannel* InChannel, FNetworkObjectInfo* InActorInfo, const TArray<struct FNetViewer>& Viewers, bool bLowBandwidth);
 	FActorPriority(class UNetConnection* InConnection, FActorDestructionInfo * DestructInfo, const TArray<struct FNetViewer>& Viewers );
 };
 
@@ -714,9 +722,7 @@ private:
 public:
 
 	/** Destructor */
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ENGINE_API virtual ~UNetDriver() {};
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	ENGINE_API virtual ~UNetDriver();
 
 	/** Used to specify the class to use for connections */
 	UPROPERTY(Config)
@@ -1233,6 +1239,8 @@ public:
 	// Constructors.
 	ENGINE_API UNetDriver(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
+	ENGINE_API UNetDriver(FVTableHelper& Helper);
+
 
 	//~ Begin UObject Interface.
 	ENGINE_API virtual void PostInitProperties() override;
@@ -1243,7 +1251,7 @@ public:
 	//~ End UObject Interface.
 
 	//~ Begin FExec Interface
-
+protected:
 	/**
 	 * Handle exec commands
 	 *
@@ -1253,11 +1261,12 @@ public:
 	 *
 	 * @return true if the handler consumed the input, false to continue searching handlers
 	 */
-	ENGINE_API virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar=*GLog) override;
+	ENGINE_API virtual bool Exec_Dev(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar=*GLog) override;
+//~ End FExec Interface.
+
+public:
 
 	ENGINE_API ENetMode	GetNetMode() const;
-
-	//~ End FExec Interface.
 
 	/** 
 	 * Returns true if this net driver is valid for the current configuration.
@@ -1535,9 +1544,18 @@ public:
 
 	ENGINE_API void RemoveNetworkActor(AActor* Actor);
 
+	/** Called when an authoritative actor wants to delete a replicated subobject on the clients it was already replicated to */
+	void DeleteSubObjectOnClients(AActor* Actor, UObject* SubObject);
+
+	/** Called when an authoritative actor wants to tear off a subobject on the clients it was already replicated to */
+	void TearOffSubObjectOnClients(AActor* Actor, UObject* SubObject);
+
 	ENGINE_API virtual void NotifyActorLevelUnloaded( AActor* Actor );
 
 	ENGINE_API virtual void NotifyActorTearOff(AActor* Actor);
+
+	/** Called when an actor is about to be carried during a seamless travel */
+	ENGINE_API void NotifyActorIsTraveling(AActor* TravelingActor);
 
 	/** Set whether this actor should swap roles before replicating properties. */
 	ENGINE_API void SetRoleSwapOnReplicate(AActor* Actor, bool bSwapRoles);
@@ -1739,7 +1757,7 @@ public:
 	/** Called when an actor channel is remotely opened for an actor. */
 	ENGINE_API virtual void NotifyActorChannelOpen(UActorChannel* Channel, AActor* Actor);
 	
-	/** Called when an actor channel is cleaned up foor an actor. */
+	/** Called when an actor channel is cleaned up for an actor. */
 	ENGINE_API virtual void NotifyActorChannelCleanedUp(UActorChannel* Channel, EChannelCloseReason CloseReason);
 
 	ENGINE_API virtual void NotifyActorTornOff(AActor* Actor);
@@ -1784,6 +1802,11 @@ protected:
 	/** Unregister all TickDispatch, TickFlush, PostTickFlush to tick in World */
 	ENGINE_API void UnregisterTickEvents(class UWorld* InWorld);
 
+private:
+	void InternalTickDispatch(float DeltaSeconds);
+	void InternalTickFlush(float DeltaSeconds);
+
+protected:
 	/** Subclasses may override this to customize channel creation. Called by GetOrCreateChannel if the pool is exhausted and a new channel must be allocated. */
 	ENGINE_API virtual UChannel* InternalCreateChannelByName(const FName& ChName);
 

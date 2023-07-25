@@ -1,18 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
+using System.Text.Json.Serialization;
 using EpicGames.Horde.Storage;
-using EpicGames.Horde.Storage.Bundles;
 using EpicGames.Horde.Storage.Nodes;
+using EpicGames.Perforce;
+using Horde.Build.Acls;
 using Horde.Build.Agents.Fleet;
-using Horde.Build.Storage;
+using Horde.Build.Server;
 using Horde.Build.Storage.Backends;
+using Horde.Build.Telemetry;
 using Horde.Build.Utilities;
-using TimeZoneConverter;
+using Serilog.Events;
 
 namespace Horde.Build
 {
+	using PerforceConnectionId = StringId<PerforceConnectionSettings>;
+
 	/// <summary>
 	/// Types of storage backend to use
 	/// </summary>
@@ -31,18 +38,13 @@ namespace Horde.Build
 		/// <summary>
 		/// In-memory only (for testing)
 		/// </summary>
-		Transient,
-
-		/// <summary>
-		/// Relay to another server (useful for testing against prod)
-		/// </summary>
-		Relay,
+		Memory,
 	};
 
 	/// <summary>
 	/// Common settings for different storage backends
 	/// </summary>
-	public interface IStorageBackendOptions : IFileSystemStorageOptions, IAwsStorageOptions, IRelayStorageOptions
+	public interface IStorageBackendOptions : IFileSystemStorageOptions, IAwsStorageOptions
 	{
 		/// <summary>
 		/// The type of storage backend to use
@@ -78,12 +80,6 @@ namespace Horde.Build
 
 		/// <inheritdoc/>
 		public string? AwsRegion { get; set; }
-
-		/// <inheritdoc/>
-		public string? RelayServer { get; set; }
-
-		/// <inheritdoc/>
-		public string? RelayToken { get; set; }
 	}
 
 	/// <summary>
@@ -101,7 +97,7 @@ namespace Horde.Build
 		/// <summary>
 		/// Options for creating bundles
 		/// </summary>
-		BundleOptions Bundle { get; }
+		TreeOptions Bundle { get; }
 
 		/// <summary>
 		/// Options for chunking content
@@ -115,28 +111,12 @@ namespace Horde.Build
 	public class TreeStoreOptions : BlobStoreOptions, ITreeStoreOptions
 	{
 		/// <inheritdoc/>
-		public BundleOptions Bundle { get; set; } = new BundleOptions();
+		public TreeOptions Bundle { get; set; } = new TreeOptions();
 
 		/// <inheritdoc/>
 		public ChunkingOptions Chunking { get; set; } = new ChunkingOptions();
 	}
 
-	/// <summary>
-	/// Specifies the service to use for controlling the size of the fleet
-	/// </summary>
-	public enum FleetManagerType
-	{
-		/// <summary>
-		/// Default (empty) instance
-		/// </summary>
-		None,
-
-		/// <summary>
-		/// Use AWS EC2 instances
-		/// </summary>
-		Aws,
-	}
-	
 	/// <summary>
 	/// Authentication method used for logging users in
 	/// </summary>
@@ -185,6 +165,43 @@ namespace Horde.Build
 		/// </summary>
 		Worker
 	}
+
+	/// <summary>
+	/// Type of telemetry provider to use
+	/// </summary>
+	public enum TelemetrySinkType
+	{
+		/// <summary>
+		/// No telemetry sink (default)
+		/// </summary>
+		None,
+
+		/// <summary>
+		/// Use the Epic telemetry sink
+		/// </summary>
+		Epic,
+	}
+
+	/// <summary>
+	/// Configuration for the telemetry sink
+	/// </summary>
+	public class TelemetryConfig : IEpicTelemetrySinkConfig
+	{
+		/// <summary>
+		/// Type of telemetry sink
+		/// </summary>
+		public TelemetrySinkType Type { get; set; } = TelemetrySinkType.None;
+
+		/// <summary>
+		/// Base URL for the telemetry server
+		/// </summary>
+		public Uri? Url { get; set; }
+
+		/// <summary>
+		/// Application name to send in the event messages
+		/// </summary>
+		public string AppId { get; set; } = "Horde";
+	}
 	
 	/// <summary>
 	/// Feature flags to aid rollout of new features
@@ -195,6 +212,36 @@ namespace Horde.Build
 	/// </summary>
 	public class FeatureFlagSettings
 	{
+		/// <summary>
+		/// Whether to use the new log storage backend
+		/// </summary>
+		public bool EnableNewLogger { get; set; } = false;
+	}
+
+	/// <summary>
+	/// Options for the commit service
+	/// </summary>
+	public class CommitSettings
+	{
+		/// <summary>
+		/// Whether to mirror commit metadata to the database
+		/// </summary>
+		public bool ReplicateMetadata { get; set; } = true;
+
+		/// <summary>
+		/// Whether to mirror commit metadata to the database
+		/// </summary>
+		public bool ReplicateContent { get; set; } = false;
+
+		/// <summary>
+		/// Options for how objects are packed together
+		/// </summary>
+		public TreeOptions Bundle { get; set; } = new TreeOptions();
+
+		/// <summary>
+		/// Options for how objects are sliced
+		/// </summary>
+		public ChunkingOptions Chunking { get; set; } = new ChunkingOptions();
 	}
 
 	/// <summary>
@@ -204,7 +251,17 @@ namespace Horde.Build
 	{
 		/// <inheritdoc cref="RunMode" />
 		public RunMode[]? RunModes { get; set; } = null;
-		
+
+		/// <summary>
+		/// Override the data directory used by Horde. Defaults to C:\ProgramData\HordeServer on Windows, {AppDir}/Data on other platforms.
+		/// </summary>
+		public string? DataDir { get; set; } = null;
+
+		/// <summary>
+		/// Output level for console
+		/// </summary>
+		public LogEventLevel ConsoleLogLevel { get; set; } = LogEventLevel.Debug;
+
 		/// <summary>
 		/// Main port for serving HTTP. Uses the default Kestrel port (5000) if not specified.
 		/// </summary>
@@ -265,17 +322,22 @@ namespace Horde.Build
 		/// Issuer for tokens from the auth provider
 		/// </summary>
 		public AuthMethod AuthMethod { get; set; } = AuthMethod.Anonymous;
+
+		/// <summary>
+		/// Audience for OIDC validation
+		/// </summary>
+		public string? OidcAudience { get; set; }
 		
 		/// <summary>
 		/// Issuer for tokens from the auth provider
 		/// </summary>
 		public string? OidcAuthority { get; set; }
-		
+
 		/// <summary>
 		/// Client id for the OIDC authority
 		/// </summary>
 		public string? OidcClientId { get; set; }
-		
+
 		/// <summary>
 		/// Client secret for the OIDC authority
 		/// </summary>
@@ -290,22 +352,22 @@ namespace Horde.Build
 		/// OpenID Connect scopes to request when signing in
 		/// </summary>
 		public string[] OidcRequestedScopes { get; set; } = { "profile", "email", "openid" };
-		
+
 		/// <summary>
 		/// List of fields in /userinfo endpoint to try map to the standard name claim (see System.Security.Claims.ClaimTypes.Name)
 		/// </summary>
 		public string[] OidcClaimNameMapping { get; set; } = { "preferred_username", "email" };
-		
+
 		/// <summary>
 		/// List of fields in /userinfo endpoint to try map to the standard email claim (see System.Security.Claims.ClaimTypes.Email)
 		/// </summary>
 		public string[] OidcClaimEmailMapping { get; set; } = { "email" };
-		
+
 		/// <summary>
 		/// List of fields in /userinfo endpoint to try map to the Horde user claim (see HordeClaimTypes.User)
 		/// </summary>
 		public string[] OidcClaimHordeUserMapping { get; set; } = { "preferred_username", "email" };
-		
+
 		/// <summary>
 		/// List of fields in /userinfo endpoint to try map to the Horde Perforce user claim (see HordeClaimTypes.PerforceUser)
 		/// </summary>
@@ -322,7 +384,7 @@ namespace Horde.Build
 		public string? JwtSecret { get; set; } = null!;
 
 		/// <summary>
-		/// Length of time before JWT tokens expire, in hourse
+		/// Length of time before JWT tokens expire, in hours
 		/// </summary>
 		public int JwtExpiryTimeHours { get; set; } = 4;
 
@@ -340,6 +402,11 @@ namespace Horde.Build
 		/// Whether to enable a schedule in test data (false by default for development builds)
 		/// </summary>
 		public bool EnableScheduleInTestData { get; set; }
+
+		/// <summary>
+		/// The number of months to retain test data
+		/// </summary>
+		public int TestDataRetainMonths { get; set; } = 6;
 
 		/// <summary>
 		/// Interval between rebuilding the schedule queue with a DB query.
@@ -367,7 +434,7 @@ namespace Horde.Build
 		/// See format at https://stackexchange.github.io/StackExchange.Redis/Configuration.html
 		/// </summary>
 		public string? RedisConnectionConfig { get; set; }
-		
+
 		/// <summary>
 		/// Type of write cache to use in log service
 		/// Currently Supported: "InMemory" or "Redis"
@@ -400,9 +467,14 @@ namespace Horde.Build
 		public bool LogSessionRequests { get; set; } = false;
 
 		/// <summary>
-		/// Which fleet manager service to use
+		/// Default fleet manager to use (when not specified by pool)
 		/// </summary>
-		public FleetManagerType FleetManager { get; set; } = FleetManagerType.None;
+		public FleetManagerType FleetManagerV2 { get; set; } = FleetManagerType.NoOp;
+
+		/// <summary>
+		/// Config for the fleet manager (serialized JSON)
+		/// </summary>
+		public string? FleetManagerV2Config { get; set; }
 
 		/// <summary>
 		/// Whether to run scheduled jobs.
@@ -415,14 +487,19 @@ namespace Horde.Build
 		public string? ScheduleTimeZone { get; set; }
 
 		/// <summary>
-		/// Token for interacting with Slack
+		/// Bot token for interacting with Slack (xoxb-*)
 		/// </summary>
 		public string? SlackToken { get; set; }
 
 		/// <summary>
-		/// Token for opening a socket to slack
+		/// Token for opening a socket to slack (xapp-*)
 		/// </summary>
 		public string? SlackSocketToken { get; set; }
+
+		/// <summary>
+		/// Admin user token for Slack (xoxp-*). This is only required when using the admin endpoints to invite users.
+		/// </summary>
+		public string? SlackAdminToken { get; set; }
 
 		/// <summary>
 		/// Filtered list of slack users to send notifications to. Should be Slack user ids, separated by commas.
@@ -440,34 +517,19 @@ namespace Horde.Build
 		public string SlackWarningPrefix { get; set; } = ":horde-warning: ";
 
 		/// <summary>
+		/// Channel for sending messages related to config update failures
+		/// </summary>
+		public string? ConfigNotificationChannel { get; set; }
+
+		/// <summary>
 		/// Channel to send stream notification update failures to
 		/// </summary>
 		public string? UpdateStreamsNotificationChannel { get; set; }
 
 		/// <summary>
-		/// Channel to send device notifications to
-		/// </summary>
-		public string? DeviceServiceNotificationChannel { get; set; }
-		
-		/// <summary>
-		/// Slack channel to send job related notifications to
+		/// Slack channel to send job related notifications to. Multiple channels can be specified, separated by ;
 		/// </summary>
 		public string? JobNotificationChannel { get; set; }
-
-		/// <summary>
-		/// URI to the SmtpServer to use for sending email notifications
-		/// </summary>
-		public string? SmtpServer { get; set; }
-
-		/// <summary>
-		/// The email address to send email notifications from
-		/// </summary>
-		public string? EmailSenderAddress { get; set; }
-
-		/// <summary>
-		/// The name for the sender when sending email notifications
-		/// </summary>
-		public string? EmailSenderName { get; set; }
 
 		/// <summary>
 		/// The URl to use for generating links back to the dashboard.
@@ -483,26 +545,6 @@ namespace Horde.Build
 		/// Help slack channel that users can use for issues
 		/// </summary>
 		public string? HelpSlackChannel { get; set; }
-
-		/// <summary>
-		/// The p4 bridge server
-		/// </summary>
-		public string? P4BridgeServer { get; set; }
-
-		/// <summary>
-		/// The p4 bridge service username
-		/// </summary>
-		public string? P4BridgeServiceUsername { get; set; }
-
-		/// <summary>
-		/// The p4 bridge service password
-		/// </summary>
-		public string? P4BridgeServicePassword { get; set; }
-
-		/// <summary>
-		/// Whether the p4 bridge service account can impersonate other users
-		/// </summary>
-		public bool P4BridgeCanImpersonate { get; set; } = false;
 
 		/// <summary>
 		/// Url of P4 Swarm installation
@@ -525,6 +567,11 @@ namespace Horde.Build
 		public Uri? JiraUrl { get; set; }
 
 		/// <summary>
+		/// The number of days shared device checkouts are held
+		/// </summary>
+		public int SharedDeviceCheckoutDays { get; set; } = 3;
+
+		/// <summary>
 		/// Default agent pool sizing strategy for pools that doesn't have one explicitly configured
 		/// </summary>
 		public PoolSizeStrategy DefaultAgentPoolSizeStrategy { get; set; } = PoolSizeStrategy.LeaseUtilization;
@@ -533,7 +580,7 @@ namespace Horde.Build
 		/// Scale-out cooldown for auto-scaling agent pools (in seconds). Can be overridden by per-pool settings.
 		/// </summary>
 		public int AgentPoolScaleOutCooldownSeconds { get; set; } = 60; // 1 min
-		
+
 		/// <summary>
 		/// Scale-in cooldown for auto-scaling agent pools (in seconds). Can be overridden by per-pool settings.
 		/// </summary>
@@ -553,9 +600,19 @@ namespace Horde.Build
 		public bool WithDatadog { get; set; }
 
 		/// <summary>
+		/// Whether to enable Amazon Web Services (AWS) specific features
+		/// </summary>
+		public bool WithAws { get; set; } = false;
+
+		/// <summary>
 		/// Path to the root config file
 		/// </summary>
 		public string ConfigPath { get; set; } = "Defaults/globals.json";
+
+		/// <summary>
+		/// Perforce connections for use by the Horde server (not agents)
+		/// </summary>
+		public List<PerforceConnectionSettings> Perforce { get; set; } = new List<PerforceConnectionSettings>();
 
 		/// <summary>
 		/// Settings for the storage service
@@ -563,31 +620,29 @@ namespace Horde.Build
 		public StorageOptions? Storage { get; set; }
 
 		/// <summary>
-		/// Namespace to use for storing tools
-		/// </summary>
-		public NamespaceId ToolNamespaceId { get; set; } = new NamespaceId("horde.p4");
-
-		/// <summary>
-		/// Whether to 
+		/// Whether to use the local Perforce environment
 		/// </summary>
 		public bool UseLocalPerforceEnv { get; set; }
 
 		/// <summary>
-		/// Lazily computed timezone value
+		/// Number of pooled perforce connections to keep
 		/// </summary>
-		public TimeZoneInfo TimeZoneInfo
-		{
-			get
-			{
-				if (_cachedTimeZoneInfo == null)
-				{
-					_cachedTimeZoneInfo = (ScheduleTimeZone == null) ? TimeZoneInfo.Local : TZConvert.GetTimeZoneInfo(ScheduleTimeZone);
-				}
-				return _cachedTimeZoneInfo;
-			}
-		}
+		public int PerforceConnectionPoolSize { get; set; } = 5;
 
-		private TimeZoneInfo? _cachedTimeZoneInfo;
+		/// <summary>
+		/// Whether to enable the upgrade task source.
+		/// </summary>
+		public bool EnableUpgradeTasks { get; set; } = true;
+
+		/// <summary>
+		/// Whether to enable the conform task source.
+		/// </summary>
+		public bool EnableConformTasks { get; set; } = true;
+
+		/// <summary>
+		/// Forces configuration data to be read and updated as part of appplication startup, rather than on a schedule. Useful when running locally.
+		/// </summary>
+		public bool ForceConfigUpdateOnStartup { get; set; }
 
 		/// <summary>
 		/// Whether to open a browser on startup
@@ -596,6 +651,66 @@ namespace Horde.Build
 
 		/// <inheritdoc cref="FeatureFlags" />
 		public FeatureFlagSettings FeatureFlags { get; set; } = new ();
+
+		/// <summary>
+		/// Options for the commit service
+		/// </summary>
+		public CommitSettings Commits { get; set; } = new CommitSettings();
+
+		/// <summary>
+		/// Settings for sending telemetry events
+		/// </summary>
+		public TelemetryConfig Telemetry { get; set; } = new TelemetryConfig();
+
+		/// <summary>
+		/// Default pre-baked ACL for authentication of well-known roles
+		/// </summary>
+		[JsonIgnore]
+		public AclConfig DefaultAcl
+		{
+			get
+			{
+				_defaultAcl ??= GetDefaultAcl();
+				return _defaultAcl;
+			}
+		}
+		
+		[JsonIgnore]
+		AclConfig? _defaultAcl;
+
+		/// <summary>
+		/// Authorizes a user to perform a given action
+		/// </summary>
+		/// <param name="action">The action being performed</param>
+		/// <param name="user">The principal to validate</param>
+		public bool Authorize(AclAction action, ClaimsPrincipal user)
+		{
+			return DefaultAcl.Authorize(action, user) ?? false;
+		}
+
+		/// <summary>
+		/// Create the default ACL for the server, including all predefined roles.
+		/// </summary>
+		/// <returns></returns>
+		AclConfig GetDefaultAcl()
+		{
+			AclConfig defaultAcl = new AclConfig();
+			defaultAcl.Entries.Add(new AclEntryConfig(new AclClaimConfig(ClaimTypes.Role, "internal:AgentRegistration"), new[] { AclAction.CreateAgent, AclAction.CreateSession }));
+			defaultAcl.Entries.Add(new AclEntryConfig(HordeClaims.AgentRegistrationClaim, new[] { AclAction.CreateAgent, AclAction.CreateSession, AclAction.UpdateAgent, AclAction.DownloadSoftware, AclAction.CreatePool, AclAction.UpdatePool, AclAction.ViewPool, AclAction.DeletePool, AclAction.ListPools, AclAction.ViewStream, AclAction.ViewProject, AclAction.ViewJob, AclAction.ViewCosts }));
+			defaultAcl.Entries.Add(new AclEntryConfig(HordeClaims.AgentRoleClaim, new[] { AclAction.ViewProject, AclAction.ViewStream, AclAction.CreateEvent, AclAction.DownloadSoftware }));
+			defaultAcl.Entries.Add(new AclEntryConfig(HordeClaims.DownloadSoftwareClaim, new[] { AclAction.DownloadSoftware }));
+			defaultAcl.Entries.Add(new AclEntryConfig(HordeClaims.UploadSoftwareClaim, new[] { AclAction.UploadSoftware }));
+			defaultAcl.Entries.Add(new AclEntryConfig(HordeClaims.ConfigureProjectsClaim, new[] { AclAction.CreateProject, AclAction.UpdateProject, AclAction.ViewProject, AclAction.CreateStream, AclAction.UpdateStream, AclAction.ViewStream, AclAction.ChangePermissions }));
+			defaultAcl.Entries.Add(new AclEntryConfig(HordeClaims.StartChainedJobClaim, new[] { AclAction.CreateJob, AclAction.ExecuteJob, AclAction.UpdateJob, AclAction.ViewJob, AclAction.ViewTemplate, AclAction.ViewStream }));
+
+			if (AdminClaimType != null && AdminClaimValue != null)
+			{
+				AclAction[] actions = Enum.GetValues(typeof(AclAction)).OfType<AclAction>().ToArray();
+				defaultAcl.Entries.Add(new AclEntryConfig(new AclClaimConfig(AdminClaimType, AdminClaimValue), actions));
+			}
+
+			return defaultAcl;
+		}
 
 		/// <summary>
 		/// Helper method to check if this process has activated the given mode
@@ -621,6 +736,59 @@ namespace Horde.Build
 			{
 				throw new ArgumentException($"Settings key '{nameof(RunModes)}' contains one or more invalid entries");
 			}
+		}
+	}
+
+	/// <summary>
+	/// Perforce connection information for use by the Horde server (for reading config files, etc...)
+	/// </summary>
+	public class PerforceConnectionSettings
+	{
+		/// <summary>
+		/// Identifier for the default perforce connection profile
+		/// </summary>
+		public static PerforceConnectionId Default { get; } = new PerforceConnectionId("default");
+
+		/// <summary>
+		/// Identifier for this server
+		/// </summary>
+		public PerforceConnectionId Id { get; set; } = Default;
+
+		/// <summary>
+		/// Server and port
+		/// </summary>
+		public string? ServerAndPort { get; set; }
+
+		/// <summary>
+		/// Credentials for the server
+		/// </summary>
+		public PerforceCredentials? Credentials { get; set; }
+
+		/// <summary>
+		/// Create a <see cref="PerforceSettings"/> object with these settings as overrides
+		/// </summary>
+		/// <returns>New perforce settings object</returns>
+		public PerforceSettings ToPerforceSettings()
+		{
+			PerforceSettings settings = new PerforceSettings(PerforceSettings.Default);
+			settings.PreferNativeClient = true;
+
+			if (!String.IsNullOrEmpty(ServerAndPort))
+			{
+				settings.ServerAndPort = ServerAndPort;
+			}
+			if (Credentials != null)
+			{
+				if (!String.IsNullOrEmpty(Credentials.UserName))
+				{
+					settings.UserName = Credentials.UserName;
+				}
+				if (!String.IsNullOrEmpty(Credentials.Password))
+				{
+					settings.Password = Credentials.Password;
+				}
+			}
+			return settings;
 		}
 	}
 }

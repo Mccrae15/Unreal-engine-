@@ -15,7 +15,6 @@ Field.cpp: Defines FField property system fundamentals
 #include "Misc/OutputDeviceHelper.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/OutputDeviceConsole.h"
-#include "UObject/ErrorException.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectAllocator.h"
 #include "UObject/UObjectHash.h"
@@ -761,16 +760,6 @@ FText FField::GetToolTipText(bool bShortTooltip) const
 			}
 		}
 		LocalizedToolTip = FText::FromString(NativeToolTip);
-	}
-
-	const FText DisplayName = FText::FromString(FName::NameToDisplayString(FFieldDisplayNameHelper::Get(*this), IsA<FBoolProperty>()));
-	if (LocalizedToolTip.IsEmpty())
-	{
-		LocalizedToolTip = DisplayName;
-	}
-	else
-	{
-		LocalizedToolTip = FText::Join(FText::FromString(TEXT(":" LINE_TERMINATOR_ANSI)), DisplayName, LocalizedToolTip);
 	}
 
 	return LocalizedToolTip;

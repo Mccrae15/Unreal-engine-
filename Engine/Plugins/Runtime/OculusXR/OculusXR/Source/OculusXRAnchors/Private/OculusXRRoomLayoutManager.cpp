@@ -9,7 +9,7 @@ LICENSE file in the root directory of this source tree.
 #include "OculusXRHMD.h"
 #include "OculusXRAnchorDelegates.h"
 #include "OculusXRAnchorsModule.h"
-
+#include <vector>
 namespace OculusXRAnchors
 {
 	void FOculusXRRoomLayoutManager::OnPollEvent(ovrpEventDataBuffer* EventDataBuffer, bool& EventPollResult)
@@ -56,8 +56,8 @@ namespace OculusXRAnchors
 		sceneCaptureRequest.request = nullptr;
 		sceneCaptureRequest.requestByteCount = 0;
 
-		const ovrpResult bSuccess = FOculusXRHMDModule::GetPluginWrapper().RequestSceneCapture(&sceneCaptureRequest, &OutRequestID);
-		if (bSuccess == ovrpFailure)
+		const ovrpResult Result = FOculusXRHMDModule::GetPluginWrapper().RequestSceneCapture(&sceneCaptureRequest, &OutRequestID);
+		if (!OVRP_SUCCESS(Result))
 		{
 			return false;
 		}
@@ -84,8 +84,8 @@ namespace OculusXRAnchors
 		roomLayout.wallUuidCapacityInput = MaxWallsCapacity;
 		roomLayout.wallUuids = uuids.GetData();
 
-		const ovrpResult bSuccess = FOculusXRHMDModule::GetPluginWrapper().GetSpaceRoomLayout(&Space, &roomLayout);
-		if (bSuccess == ovrpFailure)
+		const ovrpResult Result = FOculusXRHMDModule::GetPluginWrapper().GetSpaceRoomLayout(&Space, &roomLayout);
+		if (!OVRP_SUCCESS(Result))
 		{
 			return false;
 		}
@@ -103,4 +103,5 @@ namespace OculusXRAnchors
 
 		return true;
 	}
+
 } // namespace OculusXRAnchors

@@ -14,6 +14,7 @@
 #include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/Linker.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "ProfilingDebugging/ScopedTimers.h"
@@ -69,7 +70,6 @@
 #include "AutoSaveUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/NamePermissionList.h"
-#include "EngineAnalytics.h"
 #include "StudioAnalytics.h"
 #include "AnalyticsEventAttribute.h"
 #include "HierarchicalLOD.h"
@@ -100,9 +100,11 @@ TSet<FString> FEditorFileUtils::PackagesNotToPromptAnyMore;
 static TAutoConsoleVariable<int32> CVarSkipSourceControlCheckForEditablePackages(
 	TEXT("r.Editor.SkipSourceControlCheckForEditablePackages"),
 	0,
-    TEXT("Whether to skip the source control status check for editable packages, 0: Disable (Default), 1: Enable"));
+    TEXT("Whether to skip the revision control status check for editable packages, 0: Disable (Default), 1: Enable"));
 
 #define LOCTEXT_NAMESPACE "FileHelpers"
+
+FEditorFileUtils::FOnPrepareWorldsForExplicitSave FEditorFileUtils::OnPrepareWorldsForExplicitSave;
 
 /** A special output device that puts save output in the message log when flushed */
 class FSaveErrorOutputDevice : public FOutputDevice
@@ -997,7 +999,7 @@ static bool SaveWorld(UWorld* World,
 	return bSuccess;
 }
 
-FString GetAutoSaveFilename(UPackage* const Package, const FString& AutoSavePathRoot, const int32 AutoSaveIndex, const FString& PackageExt)
+FString FEditorFileUtils::GetAutoSaveFilename(UPackage* const Package, const FString& AbsoluteAutosaveDir, const int32 AutoSaveIndex, const FString& PackageExt)
 {
 	// Come up with a meaningful name for the auto-save file
 	const FString PackagePathName = Package->GetPathName();
@@ -1009,11 +1011,11 @@ FString GetAutoSaveFilename(UPackage* const Package, const FString& AutoSavePath
 	const bool bStripRootLeadingSlash = true;
 	if(FPackageName::SplitLongPackageName(PackagePathName, PackageRoot, PackagePath, PackageName, bStripRootLeadingSlash))
 	{
-		AutoSavePath = AutoSavePathRoot / PackageRoot / PackagePath;
+		AutoSavePath = AbsoluteAutosaveDir / PackageRoot / PackagePath;
 	}
 	else
 	{
-		AutoSavePath = AutoSavePathRoot;
+		AutoSavePath = AbsoluteAutosaveDir;
 		PackageName = FPaths::GetBaseFilename(PackagePathName);
 	}
 
@@ -1618,7 +1620,7 @@ bool FEditorFileUtils::AddCheckoutPackageItems(bool bCheckDirty, TArray<UPackage
 		if (SourceControlCheckPackages.Num())
 		{
 			// Update the source control status of all potentially relevant packages
-			FScopedSlowTask SlowTask(static_cast<float>(SourceControlCheckPackages.Num()), LOCTEXT("UpdatingSourceControlStatus", "Updating source control status..."));
+			FScopedSlowTask SlowTask(static_cast<float>(SourceControlCheckPackages.Num()), LOCTEXT("UpdatingSourceControlStatus", "Updating revision control status..."));
 			SlowTask.MakeDialogDelayed(0.5f);
 			SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), SourceControlCheckPackages);
 			SlowTask.EnterProgressFrame(static_cast<float>(SourceControlCheckPackages.Num()));
@@ -1748,7 +1750,7 @@ bool FEditorFileUtils::AddCheckoutPackageItems(bool bCheckDirty, TArray<UPackage
 			if (!bOtherBranchWarning)
 			{
 				CheckoutPackagesDialogModule.SetWarning(
-					NSLOCTEXT("PackagesDialogModule", "CheckoutPackagesWarnMessage", "Warning: There are modified assets which you will not be able to check out as they are locked or not at the head revision. You may lose your changes if you continue, as you will be unable to submit them to source control."));
+					NSLOCTEXT("PackagesDialogModule", "CheckoutPackagesWarnMessage", "Warning: There are modified assets which you will not be able to check out as they are locked or not at the head revision. You may lose your changes if you continue, as you will be unable to submit them to revision control."));
 			}
 			else
 			{
@@ -1854,7 +1856,7 @@ bool FEditorFileUtils::PromptToCheckoutPackagesInternal(bool bCheckDirty, const 
 		if (bAllowSkip)
 		{
 			// Skip button to skip checkout step
-			CheckoutPackagesDialogModule.AddButton(DRT_Skip, NSLOCTEXT("PackagesDialogModule", "Dlg_SkipButton", "Skip"), NSLOCTEXT("PackagesDialogModule", "Dlg_SkipTooltip", "Save all files that are writable, but don't check any files out from source control or make them writable."));
+			CheckoutPackagesDialogModule.AddButton(DRT_Skip, NSLOCTEXT("PackagesDialogModule", "Dlg_SkipButton", "Skip"), NSLOCTEXT("PackagesDialogModule", "Dlg_SkipTooltip", "Save all files that are writable, but don't check any files out from revision control or make them writable."));
 		}
 
 		// The cancel button should be different if we are prompting during a modify.
@@ -2172,10 +2174,10 @@ ECommandResult::Type FEditorFileUtils::CheckoutPackages(const TArray<UPackage*>&
 	{
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("Packages"), FText::FromString( PkgsWhichFailedCheckout ));
-		FText MessageFormat = NSLOCTEXT("FileHelper", "FailedCheckoutDlgMessageFormatting", "The following assets could not be successfully checked out from source control:{Packages}");
+		FText MessageFormat = NSLOCTEXT("FileHelper", "FailedCheckoutDlgMessageFormatting", "The following assets could not be successfully checked out from revision control:{Packages}");
 		FText Message = FText::Format( MessageFormat, Arguments );
 
-		FText Title = NSLOCTEXT("FileHelper", "FailedCheckoutDlg_Title", "Unable to Check Out From Source Control!");
+		FText Title = NSLOCTEXT("FileHelper", "FailedCheckoutDlg_Title", "Unable to Check Out From Revision Control!");
 		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
 	}
 
@@ -2353,10 +2355,10 @@ ECommandResult::Type FEditorFileUtils::CheckoutPackages(const TArray<FString>& P
 	{
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("Packages"), FText::FromString( PkgsWhichFailedCheckout ));
-		FText MessageFormat = NSLOCTEXT("FileHelper", "FailedCheckoutDlgMessageFormatting", "The following assets could not be successfully checked out from source control:{Packages}");
+		FText MessageFormat = NSLOCTEXT("FileHelper", "FailedCheckoutDlgMessageFormatting", "The following assets could not be successfully checked out from revision control:{Packages}");
 		FText Message = FText::Format( MessageFormat, Arguments );
 
-		FText Title = NSLOCTEXT("FileHelper", "FailedCheckoutDlg_Title", "Unable to Check Out From Source Control!");
+		FText Title = NSLOCTEXT("FileHelper", "FailedCheckoutDlg_Title", "Unable to Check Out From Revision Control!");
 		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
 	}
 
@@ -2979,7 +2981,7 @@ void FEditorFileUtils::ResetLevelFilenames()
 	MainFrameModule.SetLevelNameForWindowTitle(EmptyFilename);
 }
 
-bool FEditorFileUtils::AutosaveMap(const FString& AbsoluteAutosaveDir, const int32 AutosaveIndex, const bool bForceIfNotInList, const TSet< TWeakObjectPtr<UPackage> >& DirtyPackagesForAutoSave)
+bool FEditorFileUtils::AutosaveMap(const FString& AbsoluteAutosaveDir, const int32 AutosaveIndex, const bool bForceIfNotInList, const TSet< TWeakObjectPtr<UPackage>, TWeakObjectPtrSetKeyFuncs<TWeakObjectPtr<UPackage>> >& DirtyPackagesForAutoSave)
 {
 	auto Result = AutosaveMapEx(AbsoluteAutosaveDir, AutosaveIndex, bForceIfNotInList, DirtyPackagesForAutoSave);
 
@@ -2988,7 +2990,7 @@ bool FEditorFileUtils::AutosaveMap(const FString& AbsoluteAutosaveDir, const int
 	return Result == EAutosaveContentPackagesResult::Success;
 }
 
-EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveMapEx(const FString& AbsoluteAutosaveDir, const int32 AutosaveIndex, const bool bForceIfNotInList, const TSet< TWeakObjectPtr<UPackage> >& DirtyPackagesForAutoSave)
+EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveMapEx(const FString& AbsoluteAutosaveDir, const int32 AutosaveIndex, const bool bForceIfNotInList, const TSet< TWeakObjectPtr<UPackage>, TWeakObjectPtrSetKeyFuncs<TWeakObjectPtr<UPackage>> >& DirtyPackagesForAutoSave)
 {
 	const FScopedBusyCursor BusyCursor;
 	bool bResult  = false;
@@ -3008,7 +3010,7 @@ EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveMapEx(const FStri
 	if ( WorldsArray.Num() > 0 )
 	{
 		FString FinalFilename;
-		for ( int32 WorldIndex = 0 ; WorldIndex < WorldsArray.Num() && FUnrealEdMisc::Get().GetAutosaveState() != FUnrealEdMisc::EAutosaveState::Cancelled ; ++WorldIndex )
+		for ( int32 WorldIndex = 0 ; WorldIndex < WorldsArray.Num(); ++WorldIndex )
 		{
 			UWorld* World = WorldsArray[ WorldIndex ];
 			UPackage* Package = Cast<UPackage>( World->GetOuter() );
@@ -3028,7 +3030,7 @@ EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveMapEx(const FStri
 				// Remark the package as being dirty, as saving will have undiritied the package.
 				Package->MarkPackageDirty();
 
-				if( bLevelWasSaved == false && FUnrealEdMisc::Get().GetAutosaveState() != FUnrealEdMisc::EAutosaveState::Cancelled )
+				if( bLevelWasSaved == false )
 				{
 					UE_LOG(LogFileHelpers, Log, TEXT("Editor autosave (incl. sublevels) failed for file '%s' which belongs to world '%s'. Aborting autosave."), *FinalFilename, *EditorContext.World()->GetOutermost()->GetName() );
 					return EAutosaveContentPackagesResult::Failure;
@@ -3052,7 +3054,7 @@ EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveMapEx(const FStri
 							// @todo_ow: Find better way
 							if (Object->IsA<AActor>() || Object->IsA<UActorFolder>())
 							{
-								if (IsValidChecked(Object))
+								if (IsValid(Object))
 								{
 									ExternalPackagesToSave.Add(ExternalPackage);
 									return false;
@@ -3099,7 +3101,7 @@ EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveMapEx(const FStri
 	return bResult ? EAutosaveContentPackagesResult::Success : EAutosaveContentPackagesResult::NothingToDo;
 }
 
-bool FEditorFileUtils::AutosaveContentPackages(const FString& AbsoluteAutosaveDir, const int32 AutosaveIndex, const bool bForceIfNotInList, const TSet< TWeakObjectPtr<UPackage> >& DirtyPackagesForAutoSave)
+bool FEditorFileUtils::AutosaveContentPackages(const FString& AbsoluteAutosaveDir, const int32 AutosaveIndex, const bool bForceIfNotInList, const TSet< TWeakObjectPtr<UPackage>, TWeakObjectPtrSetKeyFuncs<TWeakObjectPtr<UPackage>> >& DirtyPackagesForAutoSave)
 {
 	auto Result = AutosaveContentPackagesEx(AbsoluteAutosaveDir, AutosaveIndex, bForceIfNotInList, DirtyPackagesForAutoSave);
 
@@ -3108,7 +3110,7 @@ bool FEditorFileUtils::AutosaveContentPackages(const FString& AbsoluteAutosaveDi
 	return Result == EAutosaveContentPackagesResult::Success;
 }
 
-EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveContentPackagesEx(const FString& AbsoluteAutosaveDir, const int32 AutosaveIndex, const bool bForceIfNotInList, const TSet< TWeakObjectPtr<UPackage> >& DirtyPackagesForAutoSave)
+EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveContentPackagesEx(const FString& AbsoluteAutosaveDir, const int32 AutosaveIndex, const bool bForceIfNotInList, const TSet< TWeakObjectPtr<UPackage>, TWeakObjectPtrSetKeyFuncs<TWeakObjectPtr<UPackage>> >& DirtyPackagesForAutoSave)
 {
 	const FScopedBusyCursor BusyCursor;
 	double SaveStartTime = FPlatformTime::Seconds();
@@ -3831,6 +3833,42 @@ bool FEditorFileUtils::SaveDirtyPackages(const bool bPromptUserToSave, const boo
 
 	TArray<UPackage*> PackagesToSave = InternalGetDirtyPackages(bSaveMapPackages, bSaveContentPackages, ShouldIgnorePackageFunction);
 
+	if (bPromptUserToSave)
+	{
+		// In a given set of packages it can contain at least one World Package (map) and/or at least one Actor package.
+		// If an external actor is being saved but not its world we still want to collect its owning world to pass to PrepareWorldsForExplicitSave
+		// In case there is any validation/extra steps needed for that world based on the add/edit of that Actor
+		// We use a set here to dedupe in case both the actor and its world are included in the dirty packages
+		bool bFoundActorWorld = false;
+		TSet<UWorld*> WorldsToSave;
+		for (UPackage* Package : PackagesToSave)
+		{
+			if (UWorld* WorldToSave = UWorld::FindWorldInPackage(Package))
+			{
+				WorldsToSave.Add(WorldToSave);
+			}
+			else if (!bFoundActorWorld)
+			{
+				// Currently there is only one world associated with saving actors as actors from multiple worlds can't be opened
+				// We can skip checking any further Actor packages once we grab the world off the first discovered
+				if (AActor* ActorToSave = AActor::FindActorInPackage(Package))
+				{
+					WorldsToSave.Add(ActorToSave->GetWorld());
+					bFoundActorWorld = true;
+				}
+			}
+		}
+
+		if (!WorldsToSave.IsEmpty())
+		{
+			PrepareWorldsForExplicitSave(WorldsToSave.Array());
+
+			// PrepareWorldsForExplicitSave could have dirtied further packages so refresh our list
+			// We do not go looking for further dirtied worlds however
+			PackagesToSave = InternalGetDirtyPackages(bSaveMapPackages, bSaveContentPackages, ShouldIgnorePackageFunction);
+		}
+	}
+
 	// Need to track the number of packages we're not ignoring for save.
 	int32 NumPackagesNotIgnored = 0;
 
@@ -3926,6 +3964,11 @@ bool FEditorFileUtils::SaveDirtyContentPackages(TArray<UClass*>& SaveContentClas
 	return bResult;
 }
 
+void FEditorFileUtils::PrepareWorldsForExplicitSave(TArray<UWorld*> Worlds)
+{
+	OnPrepareWorldsForExplicitSave.Broadcast(Worlds);
+}
+
 /**
  * Saves the active level, prompting the use for checkout if necessary.
  *
@@ -3945,6 +3988,14 @@ bool FEditorFileUtils::SaveCurrentLevel()
 		TArray<UPackage*> PackagesToSave;
 		
 		UPackage* LevelPackage = Level->GetPackage();
+
+		if (UWorld* World = UWorld::FindWorldInPackage(LevelPackage))
+		{
+			// Regardless of if the LevelPackage is dirty or if we are only saving external objects
+			// we still give an opportunity to validate/run extra steps on the world involved in this save before continuing
+			PrepareWorldsForExplicitSave({ World });
+		}
+
 		// Get Packages to save
 		if (!bCheckDirty || LevelPackage->IsDirty() || LevelPackage->HasAnyPackageFlags(PKG_NewlyCreated))
 		{
@@ -3998,7 +4049,7 @@ FEditorFileUtils::EPromptReturnCode InternalPromptForCheckoutAndSave(const TArra
 	PackagesToSave.Reserve(FinalSaveList.Num());
 
 	{
-		FScopedSlowTask SlowTask(static_cast<float>(FinalSaveList.Num() * 2), NSLOCTEXT("UnrealEd", "SavingPackagesE", "Saving packages..."));
+		FScopedSlowTask SlowTask(static_cast<float>(FinalSaveList.Num() * 2), NSLOCTEXT("UnrealEd", "SavingPackages", "Saving packages..."));
 		SlowTask.MakeDialog();
 
 		UWorld* ActorsWorld = nullptr;
@@ -4110,7 +4161,7 @@ FEditorFileUtils::EPromptReturnCode InternalPromptForCheckoutAndSave(const TArra
 			WritableFiles += FString::Printf(TEXT("\n%s"), *PackageIter->GetName());
 		}
 
-		const FText WritableFileWarning = FText::Format(NSLOCTEXT("UnrealEd", "Warning_WritablePackagesNotCheckedOut", "The following assets are writable on disk but not checked out from source control:{0}"),
+		const FText WritableFileWarning = FText::Format(NSLOCTEXT("UnrealEd", "Warning_WritablePackagesNotCheckedOut", "The following assets are writable on disk but not checked out from revision control:{0}"),
 			FText::FromString(WritableFiles));
 
 		UE_LOG(LogFileHelpers, Warning, TEXT("%s"), *WritableFileWarning.ToString());
@@ -4297,7 +4348,7 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 
 			if (WarningCount > 0)
 			{
-				PackagesDialogModule.SetWarning(LOCTEXT("Warning_Notification", "Warning: Assets have conflict in Source Control or cannot be written to disk"));
+				PackagesDialogModule.SetWarning(LOCTEXT("Warning_Notification", "Warning: Assets have conflict in Revision Control or cannot be written to disk"));
 			}
 
 			// If valid packages were added to the dialog, display it to the user
@@ -4619,8 +4670,8 @@ void FEditorFileUtils::FindAllSubmittableProjectFiles(TMap<FString, FSourceContr
 
 			if (SourceControlState->CanCheckIn() || (!SourceControlState->IsSourceControlled() && SourceControlState->CanAdd()))
 			{
-				FString PackageName;
-				if (!FPackageName::TryConvertFilenameToLongPackageName(Filename, PackageName))
+				FString Ext = FPaths::GetExtension(Filename);
+				if (!FPackageName::IsPackageExtension(*Ext) && !FPackageName::IsTextPackageExtension(*Ext))
 				{
 					OutProjectFiles.Add(Filename, MoveTemp(SourceControlState));
 				}
@@ -4818,18 +4869,18 @@ void FEditorFileUtils::GetDirtyWorldPackages(TArray<UPackage*>& OutDirtyPackages
 							{
 								bActorPackageNeedsToSave = false;
 								ForEachObjectWithPackage(ExternalPackage, [&bActorPackageNeedsToSave](UObject* Object)
+								{
+									// @todo_ow: Find better way
+									if (Object->IsA<AActor>() || Object->IsA<UActorFolder>())
 									{
-										// @todo_ow: Find better way
-										if (Object->IsA<AActor>() || Object->IsA<UActorFolder>())
+										if (IsValid(Object))
 										{
-											if (IsValidChecked(Object))
-											{
-												bActorPackageNeedsToSave = true;
-												return false;
-											}
+											bActorPackageNeedsToSave = true;
+											return false;
 										}
-										return true;
-									}, false);
+									}
+									return true;
+								}, false);
 							}
 
 							// Filter out Actors that might be unsaved (/Temp folder)

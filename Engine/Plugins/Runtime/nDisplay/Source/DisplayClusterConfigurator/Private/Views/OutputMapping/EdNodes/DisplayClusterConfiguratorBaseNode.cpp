@@ -2,6 +2,7 @@
 
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorBaseNode.h"
 
+#include "Views/OutputMapping/Alignment/DisplayClusterConfiguratorNodeAlignmentHelper.h"
 #include "Views/OutputMapping/IDisplayClusterConfiguratorViewOutputMapping.h"
 #include "Views/TreeViews/IDisplayClusterConfiguratorViewTree.h"
 #include "Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
@@ -30,7 +31,10 @@ void UDisplayClusterConfiguratorBaseNode::PostEditUndo()
 
 	// Make sure the undo operation isn't going to a state where this node or the object it edits isn't valid
 	// before attempting to update the object or its children
-	if (IsObjectValid())
+	//
+	// The ToolkitPtr could be invalid if the node was deleted, the BP editor was closed, then the operation undone.
+	// This node is invalid in this case and will be recreated in the new BP editor instance.
+	if (IsObjectValid() && ToolkitPtr.IsValid())
 	{
 		CleanupChildrenNodes();
 		

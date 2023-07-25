@@ -3,7 +3,7 @@
 #include "SConstraintsWidget.h"
 
 #include "ActorPickerMode.h"
-#include "ConstraintChannelHelper.h"
+#include "Constraints/MovieSceneConstraintChannelHelper.h"
 #include "ConstraintsActor.h"
 #include "ControlRigEditorStyle.h"
 #include "DetailLayoutBuilder.h"
@@ -25,6 +25,7 @@
 #include "ISequencer.h"
 #include "Tools/BakingHelper.h"
 #include "MovieSceneToolHelpers.h"
+#include "Styling/SlateIconFinder.h"
 
 #define LOCTEXT_NAMESPACE "SConstraintsWidget"
 
@@ -106,6 +107,23 @@ TArray<AActor*> GetCurrentSelection()
 	{
 		return IsValid(Actor) && Actor->IsSelected();
 	});	
+}
+
+TWeakPtr<ISequencer> GetSequencerChecked()
+{
+	const TWeakPtr<ISequencer> WeakSequencer = FBakingHelper::GetSequencer();
+	if (!WeakSequencer.IsValid() || !WeakSequencer.Pin()->GetFocusedMovieSceneSequence())
+	{
+		return nullptr;
+	}
+	
+	const UMovieScene* MovieScene = WeakSequencer.Pin()->GetFocusedMovieSceneSequence()->GetMovieScene();
+	if (!MovieScene)
+	{
+		return nullptr;
+	}
+
+	return WeakSequencer;
 }
 	
 }
@@ -293,19 +311,18 @@ void SDroppableConstraintItem::CreateConstraint(
 		return;	
 	}
 
-	// has socket?
-	USceneComponent* ComponentWithSockets = nullptr;
-	if(USceneComponent* ParentComponent = InParent->GetRootComponent())
+	// gather sub components with sockets
+	const TInlineComponentArray<USceneComponent*> Components(InParent);
+	const TArray<USceneComponent*> ComponentsWithSockets = Components.FilterByPredicate([](const USceneComponent* Component)
 	{
-		if (ParentComponent->HasAnySockets())
-		{
-			ComponentWithSockets = ParentComponent;
-		}
-	}
+		return Component->HasAnySockets();
+	});
 
+	const TWeakPtr<ISequencer> WeakSequencer = GetSequencerChecked();
+	
 	// create constraints
-	auto CreateConstraint = [InCreationDelegate, InConstraintType](
-		const TArray<AActor*>& Selection, AActor* InParent, const FName& InSocketName)
+	auto CreateConstraint = [InCreationDelegate, InConstraintType, WeakSequencer](
+		const TArray<AActor*>& Selection, UObject* InParent, const FName& InSocketName)
 	{
 		UWorld* World = GetCurrentWorld();
 		if (!IsValid(World))
@@ -320,11 +337,14 @@ void SDroppableConstraintItem::CreateConstraint(
 			{
 				FScopedTransaction Transaction(LOCTEXT("CreateConstraintKey", "Create Constraint Key"));
 				UTickableTransformConstraint* Constraint =
-					FTransformConstraintUtils::CreateAndAddFromActors(World, InParent, InSocketName, Child, InConstraintType);
+					FTransformConstraintUtils::CreateAndAddFromObjects(World, InParent, InSocketName, Child, NAME_None, InConstraintType);
 				if (Constraint)
 				{
-					FConstraintChannelHelper::SmartConstraintKey(Constraint);
 					bCreated = true;
+					if (WeakSequencer.IsValid())
+					{
+						FMovieSceneConstraintChannelHelper::SmartConstraintKey(WeakSequencer.Pin(), Constraint, TOptional<bool>(), TOptional<FFrameNumber>());
+					}
 				}
 			}
 		}
@@ -335,34 +355,69 @@ void SDroppableConstraintItem::CreateConstraint(
 			InCreationDelegate.Execute();
 		}
 	};
-	
-	// Show socket chooser if we have sockets to select
-	if (ComponentWithSockets != nullptr)
-	{		
+
+	const int32 NumComponentsWithSockets = ComponentsWithSockets.Num();
+
+	// if no component socket available then constrain the whole actor 
+	if (NumComponentsWithSockets == 0)
+	{
+		return CreateConstraint(Selection, InParent, NAME_None);
+	}
+
+	// creates a menu encapsulating InContent  
+	auto CreateMenu = [](const TSharedRef<SWidget>& InContent, const FVector2D& InLocation)
+	{
 		const FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
 		const TSharedPtr< ILevelEditor > LevelEditor = LevelEditorModule.GetFirstLevelEditor();
-
-		FVector2D SummonLocation = FSlateApplication::Get().GetCursorPos();
-		SummonLocation.Y += 4 * FSlateApplication::Get().GetCursorSize().Y;
-		
-		// Create as context menu
 		FSlateApplication::Get().PushMenu(
 			LevelEditor.ToSharedRef(),
 			FWidgetPath(),
-			SNew(SSocketChooserPopup)
-			.SceneComponent( ComponentWithSockets )
-			.OnSocketChosen_Lambda([CreateConstraint, Selection, InParent](FName InSocketName)
-			{
-				CreateConstraint(Selection, InParent, InSocketName);
-			}),
-			SummonLocation,
-			FPopupTransitionEffect( FPopupTransitionEffect::ContextMenu )
-			);
-	}
-	else
+			InContent,
+		InLocation,
+		FPopupTransitionEffect( FPopupTransitionEffect::ContextMenu ) );
+	};
+
+	// creates a new socket chooser popup widget
+	auto GetSocketChooserWidget = [CreateConstraint, Selection](USceneComponent* Component)
 	{
-		CreateConstraint(Selection, InParent, NAME_None);
+		return SNew(SSocketChooserPopup)
+		.SceneComponent( Component )
+		.OnSocketChosen_Lambda([CreateConstraint, Selection, Component](FName InSocketName)
+		{
+			CreateConstraint(Selection, Component, InSocketName);
+		});
+	};
+
+	// decal the menu 
+	FVector2D SummonLocation = FSlateApplication::Get().GetCursorPos();
+	SummonLocation.Y += 4 * FSlateApplication::Get().GetCursorSize().Y;
+	
+	// if one component with sockets then constrain the component selecting the socket
+	if (NumComponentsWithSockets == 1)
+	{
+		return CreateMenu( GetSocketChooserWidget(ComponentsWithSockets[0]), SummonLocation);
 	}
+
+	// if there are several of them, then build a component chooser first then the socket chooser
+	static constexpr bool CloseAfterSelection = true;
+	FMenuBuilder MenuBuilder(CloseAfterSelection, nullptr);
+	MenuBuilder.BeginSection("ChooseComp", LOCTEXT("ChooseComponentSection", "Choose Component"));
+	{
+		for (USceneComponent* Component: ComponentsWithSockets)
+		{
+			MenuBuilder.AddMenuEntry(FText::FromName(Component->GetFName()),
+			FText(),
+				FSlateIconFinder::FindIconForClass(Component->GetClass(), TEXT("SCS.Component")),
+				FUIAction(FExecuteAction::CreateLambda([CreateMenu, GetSocketChooserWidget, Component]()
+				{
+					CreateMenu(GetSocketChooserWidget(Component), FSlateApplication::Get().GetCursorPos());
+				})),
+				NAME_None,
+			   EUserInterfaceActionType::Button);
+		}
+	}
+	MenuBuilder.EndSection();
+	CreateMenu(MenuBuilder.MakeWidget(), SummonLocation);
 }
 
 /**
@@ -441,8 +496,11 @@ void SEditableConstraintItem::Construct(
 		const FConstraintsManagerController& Controller = FConstraintsManagerController::Get(World);
 		return Controller.GetConstraint(ConstraintItem->Name);
 	};
-	UTickableConstraint* Constraint = GetConstraint();
+	TWeakObjectPtr<UTickableConstraint> Constraint = GetConstraint();
 
+	// sequencer
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerChecked();
+	
 	// labels
 	FString ParentLabel(TEXT("undefined")), ChildLabel(TEXT("undefined"));
 	if (!InItem->Label.IsEmpty())
@@ -452,7 +510,7 @@ void SEditableConstraintItem::Construct(
 	}
 	
 	FString ParentFullLabel = ParentLabel, ChildFullLabel = ChildLabel;
-	if (IsValid(Constraint))
+	if (IsValid(Constraint.Get()))
 	{
 		Constraint->GetFullLabel().Split(TEXT("."), &ParentFullLabel, &ChildFullLabel);
 	}
@@ -474,7 +532,7 @@ void SEditableConstraintItem::Construct(
 			.BorderImage(RoundedBoxBrush)
 			.BorderBackgroundColor_Lambda([Constraint]()
 			{
-				if (!IsValid(Constraint))
+				if (!Constraint.IsValid() || !IsValid(Constraint.Get()))
 				{
 					return FStyleColors::Transparent;
 				}
@@ -510,7 +568,7 @@ void SEditableConstraintItem::Construct(
 					})
 					.Font_Lambda([Constraint]()
 					{
-						if (!IsValid(Constraint))
+						if (!Constraint.IsValid() || !IsValid(Constraint.Get()))
 						{
 							return IDetailLayoutBuilder::GetDetailFont();
 						}
@@ -518,7 +576,7 @@ void SEditableConstraintItem::Construct(
 					})
 					.ToolTipText_Lambda( [Constraint, ParentFullLabel, ChildFullLabel]()
 					{
-						if (!IsValid(Constraint))
+						if (!Constraint.IsValid() || !IsValid(Constraint.Get()))
 						{
 							return FText();
 						}
@@ -548,26 +606,32 @@ void SEditableConstraintItem::Construct(
 			SNew(SButton)
 			.ButtonStyle(FAppStyle::Get(), TEXT("SimpleButton"))
 			.ContentPadding(0)
-			.OnClicked_Lambda(	[Constraint]()
+			.OnClicked_Lambda(	[Constraint, WeakSequencer]()
 			{
-				if (!IsValid(Constraint))
+				if (!Constraint.IsValid() || !IsValid(Constraint.Get()))
 				{
 					return FReply::Handled();
 				}
+
+				if (!WeakSequencer.IsValid())
+				{
+					return FReply::Handled();
+				}
+				
 				if (UTickableTransformConstraint* TransformConstraint = Cast<UTickableTransformConstraint>(Constraint))
 				{
 					FScopedTransaction Transaction(LOCTEXT("CreateConstraintKey", "Create Constraint Key"));
-					FConstraintChannelHelper::SmartConstraintKey(TransformConstraint);
+					FMovieSceneConstraintChannelHelper::SmartConstraintKey(WeakSequencer.Pin(), TransformConstraint,TOptional<bool>(), TOptional<FFrameNumber>());
 				}
 				return FReply::Handled();
 			})
-			.IsEnabled_Lambda([]()
+			.IsEnabled_Lambda([WeakSequencer]()
 			{
-				return FConstraintChannelHelper::IsKeyframingAvailable();
+				return WeakSequencer.IsValid();
 			})
-			.Visibility_Lambda([]()
+			.Visibility_Lambda([WeakSequencer]()
 			{
-				const bool bIsKeyframingAvailable = FConstraintChannelHelper::IsKeyframingAvailable();
+				const bool bIsKeyframingAvailable = WeakSequencer.IsValid();
 				return bIsKeyframingAvailable ? EVisibility::Visible : EVisibility::Hidden;
 			})
 			.ToolTipText(LOCTEXT("KeyConstraintToolTip", "Add an active keyframe for that constraint."))
@@ -1009,14 +1073,8 @@ TSharedPtr<SWidget> SConstraintsEditionWidget::CreateContextMenu()
 				{
 					if (UTickableTransformConstraint* TransformConstraint = Cast<UTickableTransformConstraint>(Constraint))
 					{
-						const TWeakPtr<ISequencer> WeakSequencer = FBakingHelper::GetSequencer();
-						if (!WeakSequencer.IsValid() || !WeakSequencer.Pin()->GetFocusedMovieSceneSequence())
-						{
-							return;
-						}
-						const TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
-						const UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
-						if (!MovieScene)
+						const TWeakPtr<ISequencer> WeakSequencer = GetSequencerChecked();
+						if (!WeakSequencer.IsValid())
 						{
 							return;
 						}
@@ -1037,7 +1095,8 @@ TSharedPtr<SWidget> SConstraintsEditionWidget::CreateContextMenu()
 			return TransformConstraint->bDynamicOffset;
 		});
 
-		if (!bIsLookAtConstraint)
+		TWeakPtr<ISequencer> WeakSequencer = GetSequencerChecked();
+		if (!bIsLookAtConstraint && WeakSequencer.IsValid())
 		{
 			MenuBuilder.BeginSection("KeyConstraint", LOCTEXT("KeyConstraintHeader", "Keys"));
 			{
@@ -1045,9 +1104,13 @@ TSharedPtr<SWidget> SConstraintsEditionWidget::CreateContextMenu()
 				LOCTEXT("CompensateKeyLabel", "Compensate Key"),
 				FText::Format(LOCTEXT("CompensateKeyTooltip", "Compensate transform key for {0}."), ConstraintLabel),
 				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateLambda([TransformConstraint]()
+				FUIAction(FExecuteAction::CreateLambda([TransformConstraint, WeakSequencer]()
 				{
-					FConstraintChannelHelper::Compensate(TransformConstraint);
+					const TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
+					const FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
+					const FFrameTime FrameTime = Sequencer->GetLocalTime().ConvertTo(TickResolution);
+					const FFrameNumber Time = FrameTime.GetFrame();
+					FMovieSceneConstraintChannelHelper::Compensate(WeakSequencer.Pin(), TransformConstraint, TOptional<FFrameNumber>(Time));
 				}), IsCompensationEnabled),
 				NAME_None,
 				EUserInterfaceActionType::Button);
@@ -1056,9 +1119,9 @@ TSharedPtr<SWidget> SConstraintsEditionWidget::CreateContextMenu()
 				LOCTEXT("CompensateAllKeysLabel", "Compensate All Keys"),
 				FText::Format(LOCTEXT("CompensateAllKeysTooltip", "Compensate all transform keys for {0}."), ConstraintLabel),
 				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateLambda([TransformConstraint]()
+				FUIAction(FExecuteAction::CreateLambda([TransformConstraint, WeakSequencer]()
 				{
-					FConstraintChannelHelper::Compensate(TransformConstraint, true);
+					FMovieSceneConstraintChannelHelper::Compensate(WeakSequencer.Pin(), TransformConstraint, TOptional<FFrameNumber>());
 				}), IsCompensationEnabled),
 				NAME_None,
 				EUserInterfaceActionType::Button);

@@ -18,7 +18,7 @@ class SWindow;
 //////////////////////////////////////////////////////////////////////////
 // FWidgetBlueprintEditorUtils
 
-class FWidgetBlueprintEditorUtils
+class UMGEDITOR_API FWidgetBlueprintEditorUtils
 {
 
 public:
@@ -73,6 +73,8 @@ public:
 	static bool RemoveNamedSlotHostContent(UWidget* WidgetTemplate, TScriptInterface<INamedSlotInterface> NamedSlotHost);
 
 	static bool ReplaceNamedSlotHostContent(UWidget* WidgetTemplate, TScriptInterface<INamedSlotInterface> NamedSlotHost, UWidget* NewContentWidget);
+
+	static UWidgetTree* FindLatestWidgetTree(UWidgetBlueprint* Blueprint, UUserWidget* UserWidget);
 
 	static int32 UpdateHittestGrid(FHittestGrid& HitTestGrid, TSharedRef<SWindow> Window, float Scale, FVector2D DrawSize, float DeltaTime);
 

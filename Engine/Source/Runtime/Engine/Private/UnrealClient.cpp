@@ -2,37 +2,46 @@
 
 
 #include "UnrealClient.h"
+#include "BatchedElements.h"
+#include "Engine/GameViewportClient.h"
 #include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
-#include "Misc/App.h"
+#include "DummyViewport.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
+#include "Input/PopupMethodReply.h"
+#include "RenderCaptureInterface.h"
 #include "RenderingThread.h"
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
+#include "InputKeyEventArgs.h"
 #include "Misc/ConfigCacheIni.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/LocalPlayer.h"
+#include "Math/Float16Color.h"
 #include "UnrealEngine.h"
 #include "Components/PostProcessComponent.h"
 #include "HighResScreenshot.h"
-#include "GameFramework/GameUserSettings.h"
 #include "HModel.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "Misc/CoreDelegates.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Engine/PostProcessVolume.h"
-#include "RendererInterface.h"
-#include "EngineModule.h"
 #include "Performance/EnginePerformanceTargets.h"
-#include "Templates/UniquePtr.h"
 #include "Elements/Framework/TypedElementList.h"
 #include "EngineUtils.h"
+#include "RenderCounters.h"
 #include "RenderGraphUtils.h"
 #include "DynamicResolutionState.h"
+#include "Stats/StatsTrace.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogClient, Log, All);
 
 UE_IMPLEMENT_STRUCT("/Script/Engine", PostProcessSettings);
+
+static int32 GHitProxyCaptureNextUpdate = 0;
+static FAutoConsoleVariableRef CVarHitProxyCaptureEnable(
+	TEXT("r.HitProxy.CaptureNextUpdate"),
+	GHitProxyCaptureNextUpdate,
+	TEXT("Enables GPU capture of hit proxy rendering on the next update."));
 
 bool FViewport::bIsGameRenderingEnabled = true;
 int32 FViewport::PresentAndStopMovieDelay = 0;
@@ -285,13 +294,15 @@ FUnorderedAccessViewRHIRef FRenderTarget::GetRenderTargetUAV() const
 void FScreenshotRequest::RequestScreenshot(bool bInShowUI)
 {
 	// empty string means we'll later pick the name
-	RequestScreenshot(TEXT(""), bInShowUI, true);
+	RequestScreenshot(TEXT(""), bInShowUI, /*bAddUniqueSuffix*/ true, /*bHdrScreenshot*/ false);
 }
 
-void FScreenshotRequest::RequestScreenshot(const FString& InFilename, bool bInShowUI, bool bAddUniqueSuffix)
+void FScreenshotRequest::RequestScreenshot(const FString& InFilename, bool bInShowUI, bool bAddUniqueSuffix, bool bHdrScreenshot)
 {
 	FString GeneratedFilename = InFilename;
 	CreateViewportScreenShotFilename(GeneratedFilename);
+
+	const TCHAR* ScreenshotExtension = bHdrScreenshot ? TEXT("exr") : TEXT("png");
 
 	if (bAddUniqueSuffix)
 	{
@@ -299,11 +310,11 @@ void FScreenshotRequest::RequestScreenshot(const FString& InFilename, bool bInSh
 		GeneratedFilename = FPaths::GetBaseFilename(GeneratedFilename, bRemovePath);
 		if (GetHighResScreenshotConfig().bDateTimeBasedNaming)
 		{
-			FFileHelper::GenerateDateTimeBasedBitmapFilename(GeneratedFilename, TEXT("png"), Filename);
+			FFileHelper::GenerateDateTimeBasedBitmapFilename(GeneratedFilename, ScreenshotExtension, Filename);
 		}
 		else
 		{
-			FFileHelper::GenerateNextBitmapFilename(GeneratedFilename, TEXT("png"), Filename);
+			FFileHelper::GenerateNextBitmapFilename(GeneratedFilename, ScreenshotExtension, Filename);
 		}
 	}
 	else
@@ -311,7 +322,8 @@ void FScreenshotRequest::RequestScreenshot(const FString& InFilename, bool bInSh
 		Filename = GeneratedFilename;
 		if (FPaths::GetExtension(Filename).Len() == 0)
 		{
-			Filename += TEXT(".png");
+			Filename += TEXT(".");
+			Filename += ScreenshotExtension;
 		}
 	}
 
@@ -466,6 +478,20 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 		const uint32 GPUCycles = RHIGetGPUFrameCycles(GPUIndex);
 		RawGPUFrameTime[GPUIndex] = FPlatformTime::ToMilliseconds(GPUCycles);
 		GPUFrameTime[GPUIndex] = 0.9 * GPUFrameTime[GPUIndex] + 0.1 * RawGPUFrameTime[GPUIndex];
+
+		if (GRHISupportsGPUUsage)
+		{
+			FRHIGPUUsageFractions GPUUsageFractions = RHIGetGPUUsage(GPUIndex);
+
+			RawGPUClockFraction[GPUIndex] = GPUUsageFractions.ClockScaling;
+			GPUClockFraction[GPUIndex] = 0.9 * GPUClockFraction[GPUIndex] + 0.1 * RawGPUClockFraction[GPUIndex];
+
+			RawGPUUsageFraction[GPUIndex] = GPUUsageFractions.CurrentProcess;
+			GPUUsageFraction[GPUIndex] = 0.9 * GPUUsageFraction[GPUIndex] + 0.1 * RawGPUUsageFraction[GPUIndex];
+
+			RawGPUExternalUsageFraction[GPUIndex] = GPUUsageFractions.ExternalProcesses;
+			GPUExternalUsageFraction[GPUIndex] = 0.9 * GPUExternalUsageFraction[GPUIndex] + 0.1 * RawGPUExternalUsageFraction[GPUIndex];
+		}
 	}
 
 	SET_FLOAT_STAT(STAT_UnitFrame, FrameTime);
@@ -485,6 +511,7 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 	float Max_InputLatencyTime = 0.0f;
 
 	const bool bShowUnitMaxTimes = InViewport->GetClient() ? InViewport->GetClient()->IsStatEnabled(TEXT("UnitMax")) : false;
+	const bool bShowTSRStatistics = InViewport->GetClient() ? InViewport->GetClient()->IsStatEnabled(TEXT("TSR")) : false;
 #if !UE_BUILD_SHIPPING
 	const bool bShowRawUnitTimes = InViewport->GetClient() ? InViewport->GetClient()->IsStatEnabled(TEXT("Raw")) : false;
 	RenderThreadTimes[CurrentIndex] = bShowRawUnitTimes ? RawRenderThreadTime : RenderThreadTime;
@@ -565,113 +592,243 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 
 	// Draw unit.
 	{
-		int32 X3 = InX * (bStereoRendering ? 0.5f : 1.0f);
-		if (bShowUnitMaxTimes)
-		{
-			X3 -= (int32)((float)Font->GetStringSize(TEXT(" 000.00 ms ")));
-		}
+		const FColor NoUnitGraphColor(220, 220, 220);
 
-		int32 X2 = bShowUnitMaxTimes ? X3 - (int32)((float)Font->GetStringSize(TEXT(" 000.00 ms "))) : X3;
+		#define STATUNIT_FORMAT_AVGTIME TEXT("%3.2f ms")
+		#define STATUNIT_FORMAT_MAXTIME TEXT("%4.2f ms")
+		#define STATUNIT_FORMAT_PERCEMT TEXT("%3.2f %%")
+
+		const int32 AvgUnitColumnId = 0;
+		const int32 MaxUnitColumnId = 1;
+
+		const int32 ColumnWidth = Font->GetStringSize(TEXT(" 0000.00 ms "));
+		const int32 ColumnCount = bShowUnitMaxTimes ? 2 : 1;
+
+		int32 X3 = InX * (bStereoRendering ? 0.5f : 1.0f);
+		int32 X2 = X3 - ColumnWidth * (ColumnCount - 1);
+
 		const int32 RowHeight = FMath::TruncToInt(Font->GetMaxCharHeight() * 1.1f);
 
-		auto DrawTitleString = [&](const TCHAR* Title, const FColor& UnitGraphColor)
+		/* Draw a cell on raw that have custom number of columns. */
+		auto DrawCell = [&](int32 RowId, int32 ColumnId, int32 ColumnCount, const FString& CellText, const FColor& CellColor)
+		{
+			check(ColumnId < ColumnCount);
+			int32 CellCoordX = X3 - ColumnWidth * (ColumnCount - ColumnId - 1);
+			int32 CellCoordY = InY + RowId * RowHeight;
+			InCanvas->DrawShadowedString(CellCoordX, CellCoordY, *CellText, Font, CellColor);
+		};
+
+		/* Draw a row's title that have a custom number of columns. */
+		auto DrawRowTitle = [&](int32 RowId, int32 InColumnCount, const TCHAR* Title, const FColor& UnitGraphColor)
 		{
 			FString FullTitle = FString::Printf(TEXT("%s:   "), Title);
 			int32 TitleSize = Font->GetStringSize(*FullTitle);
-			InCanvas->DrawShadowedString(X2 - TitleSize, InY, *FullTitle, Font, bShowUnitTimeGraph ? UnitGraphColor : FColor::White);
+
+			int32 TitleCoordX = X3 - ColumnWidth * (InColumnCount - 1);
+			int32 TitleCoordY = InY + RowId * RowHeight;
+			InCanvas->DrawShadowedString(TitleCoordX - TitleSize, TitleCoordY, *FullTitle, Font, bShowUnitTimeGraph ? UnitGraphColor : FColor::White);
+		};
+
+		/* Push drawing of rows toward the bottom of the screen. */
+		auto PushRows = [&](int32 RowsCount)
+		{
+			InY += RowHeight * RowsCount;
+		};
+
+		/* Draw a default row's title. */
+		auto DrawTitleString = [&](const TCHAR* Title, const FColor& UnitGraphColor)
+		{
+			DrawRowTitle(/* RowId = */ 0, ColumnCount, Title, UnitGraphColor);
+		};
+
+		/* Draw a default row's avg. */
+		auto DrawDefaultAvgCell = [&](const FString& CellText, const FColor& UnitGraphColor)
+		{
+			DrawCell(/* RowId = */ 0, AvgUnitColumnId, ColumnCount, CellText, UnitGraphColor);
+		};
+		auto DrawDefaultMaxCell = [&](const FString& CellText, const FColor& UnitGraphColor)
+		{
+			check(bShowUnitMaxTimes);
+			DrawCell(/* RowId = */ 0, MaxUnitColumnId, ColumnCount, CellText, UnitGraphColor);
 		};
 
 		{
-			const FColor FrameTimeAverageColor = GEngine->GetFrameTimeDisplayColor(FrameTime);
 			DrawTitleString(TEXT("Frame"), /* UnitGraphColor = */ FColor(100, 255, 100));
-			InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.2f ms"), FrameTime), Font, FrameTimeAverageColor);
+			{
+				const FColor FrameTimeAverageColor = GEngine->GetFrameTimeDisplayColor(FrameTime);
+				DrawDefaultAvgCell(FString::Printf(STATUNIT_FORMAT_AVGTIME, FrameTime), FrameTimeAverageColor);
+			}
 			if (bShowUnitMaxTimes)
 			{
 				const FColor MaxFrameTimeColor = GEngine->GetFrameTimeDisplayColor(Max_FrameTime);
-				InCanvas->DrawShadowedString(X3, InY, *FString::Printf(TEXT("%4.2f ms"), Max_FrameTime), Font, MaxFrameTimeColor);
+				DrawDefaultMaxCell(FString::Printf(STATUNIT_FORMAT_MAXTIME, Max_FrameTime), MaxFrameTimeColor);
 			}
-			InY += RowHeight;
+			PushRows(/* RowsCount = */ 1);
 		}
 
 		{
-			const FColor GameThreadAverageColor = GEngine->GetFrameTimeDisplayColor(GameThreadTime);
 			DrawTitleString(TEXT("Game"), /* UnitGraphColor = */ FColor(255, 100, 100));
-			InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.2f ms"), GameThreadTime), Font, GameThreadAverageColor);
+			{
+				const FColor GameThreadAverageColor = GEngine->GetFrameTimeDisplayColor(GameThreadTime);
+				DrawDefaultAvgCell(FString::Printf(STATUNIT_FORMAT_AVGTIME, GameThreadTime), GameThreadAverageColor);
+			}
 			if (bShowUnitMaxTimes)
 			{
 				const FColor GameThreadMaxColor = GEngine->GetFrameTimeDisplayColor(Max_GameThreadTime);
-				InCanvas->DrawShadowedString(X3, InY, *FString::Printf(TEXT("%4.2f ms"), Max_GameThreadTime), Font, GameThreadMaxColor);
+				DrawDefaultMaxCell(FString::Printf(STATUNIT_FORMAT_MAXTIME, Max_GameThreadTime), GameThreadMaxColor);
 			}
-			InY += RowHeight;
+			PushRows(/* RowsCount = */ 1);
 		}
 
 		{
-			const FColor RenderThreadAverageColor = GEngine->GetFrameTimeDisplayColor(RenderThreadTime);
 			DrawTitleString(TEXT("Draw"), /* UnitGraphColor = */ FColor(100, 100, 255));
-			InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.2f ms"), RenderThreadTime), Font, RenderThreadAverageColor);
+			{
+				const FColor RenderThreadAverageColor = GEngine->GetFrameTimeDisplayColor(RenderThreadTime);
+				DrawDefaultAvgCell(FString::Printf(STATUNIT_FORMAT_AVGTIME, RenderThreadTime), RenderThreadAverageColor);
+			}
 			if (bShowUnitMaxTimes)
 			{
 				const FColor RenderThreadMaxColor = GEngine->GetFrameTimeDisplayColor(Max_RenderThreadTime);
-				InCanvas->DrawShadowedString(X3, InY, *FString::Printf(TEXT("%4.2f ms"), Max_RenderThreadTime), Font, RenderThreadMaxColor);
+				DrawDefaultMaxCell(FString::Printf(STATUNIT_FORMAT_MAXTIME, Max_RenderThreadTime), RenderThreadMaxColor);
 			}
-			InY += RowHeight;
+			PushRows(/* RowsCount = */ 1);
 		}
 
-		for (uint32 GPUIndex : FRHIGPUMask::All())
-		{
-			if (bHaveGPUData[GPUIndex])
-			{
-				const FColor GPUAverageColor = GEngine->GetFrameTimeDisplayColor(GPUFrameTime[GPUIndex]);
-				FString GPUString = GNumExplicitGPUsForRendering > 1 ? FString::Printf(TEXT("GPU%u"), GPUIndex) : TEXT("GPU");
-				DrawTitleString(*GPUString, /* UnitGraphColor = */ FColor(255, 255, 100));
-				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.2f ms"), GPUFrameTime[GPUIndex]), Font, GPUAverageColor);
-				if (bShowUnitMaxTimes)
-				{
-					const FColor GPUMaxColor = GEngine->GetFrameTimeDisplayColor(Max_GPUFrameTime[GPUIndex]);
-					InCanvas->DrawShadowedString(X3, InY, *FString::Printf(TEXT("%4.2f ms"), Max_GPUFrameTime[GPUIndex]), Font, GPUMaxColor);
-				}
-				InY += RowHeight;
-			}
-		}
 		if (IsRunningRHIInSeparateThread())
 		{
-			const FColor RenderThreadAverageColor = GEngine->GetFrameTimeDisplayColor(RHITTime);
 			DrawTitleString(TEXT("RHIT"), /* UnitGraphColor = */ FColor(255, 100, 255));
-			InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.2f ms"), RHITTime), Font, RenderThreadAverageColor);
+			{
+				const FColor RenderThreadAverageColor = GEngine->GetFrameTimeDisplayColor(RHITTime);
+				DrawDefaultAvgCell(FString::Printf(STATUNIT_FORMAT_AVGTIME, RHITTime), RenderThreadAverageColor);
+			}
 			if (bShowUnitMaxTimes)
 			{
 				const FColor RenderThreadMaxColor = GEngine->GetFrameTimeDisplayColor(Max_RHITTime);
-				InCanvas->DrawShadowedString(X3, InY, *FString::Printf(TEXT("%4.2f ms"), Max_RHITTime), Font, RenderThreadMaxColor);
+				DrawDefaultMaxCell(FString::Printf(STATUNIT_FORMAT_MAXTIME, Max_RHITTime), RenderThreadMaxColor);
 			}
-			InY += RowHeight;
+			PushRows(/* RowsCount = */ 1);
 		}
+
+		// Draw all GPU informations
+		{
+			const int32 ColumnPerGPU = ColumnCount;
+			const bool bDisplayGPUIndexes = GNumExplicitGPUsForRendering > 1 || GVirtualMGPU;
+			const int32 GPURowCount = 1 + (GRHISupportsGPUUsage ? 3 : 0) + (bDisplayGPUIndexes ? 1 : 0);
+			const int32 GPUColumnCount = ColumnCount * GNumExplicitGPUsForRendering;
+
+			// Draw the different timings:
+			{
+				int32 GPURowId = bDisplayGPUIndexes ? 1 : 0;
+				DrawRowTitle(GPURowId++, GPUColumnCount, TEXT("GPU Time"), /* UnitGraphColor = */ FColor(255, 255, 100));
+
+				if (GRHISupportsGPUUsage)
+				{
+					DrawRowTitle(GPURowId++, GPUColumnCount, TEXT("GPU Clock"), NoUnitGraphColor);
+					DrawRowTitle(GPURowId++, GPUColumnCount, TEXT("GPU Usage"), NoUnitGraphColor);
+					DrawRowTitle(GPURowId++, GPUColumnCount, TEXT("GPU External"), NoUnitGraphColor);
+				}
+				check(GPURowId == GPURowCount);
+			}
+
+			// Draw each GPU
+			for (uint32 GPUIndex : FRHIGPUMask::All())
+			{
+				int32 GPURowId = 0;
+				if (bDisplayGPUIndexes)
+				{
+					DrawCell(
+						GPURowId++, GPUIndex * ColumnPerGPU + AvgUnitColumnId, GPUColumnCount,
+						GVirtualMGPU ? FString::Printf(TEXT("VGPU%d"), GPUIndex) : FString::Printf(TEXT("GPU%d"), GPUIndex), NoUnitGraphColor);
+				}
+
+				if (!bHaveGPUData[GPUIndex])
+				{
+					continue;
+				}
+
+				{
+					{
+						const FColor GPUAverageColor = GEngine->GetFrameTimeDisplayColor(GPUFrameTime[GPUIndex]);
+						DrawCell(
+							GPURowId, GPUIndex * ColumnPerGPU + AvgUnitColumnId, GPUColumnCount,
+							FString::Printf(STATUNIT_FORMAT_AVGTIME, GPUFrameTime[GPUIndex]), GPUAverageColor);
+					}
+
+					if (bShowUnitMaxTimes)
+					{
+						const FColor GPUMaxColor = GEngine->GetFrameTimeDisplayColor(Max_GPUFrameTime[GPUIndex]);
+						DrawCell(
+							GPURowId, GPUIndex* ColumnPerGPU + MaxUnitColumnId, GPUColumnCount,
+							FString::Printf(STATUNIT_FORMAT_MAXTIME, Max_GPUFrameTime[GPUIndex]), GPUMaxColor);
+					}
+
+					GPURowId++;
+				}
+
+				// Only display the GPU usage of one GPU usage when using the -VMGPU 
+				if (GRHISupportsGPUUsage && GPUIndex > 0 && GVirtualMGPU)
+				{
+					GPURowId = GPURowCount;
+				}
+				else if (GRHISupportsGPUUsage)
+				{
+					{
+						const FColor Color = (GPUClockFraction[GPUIndex] < 0.5f) ? StatRed : ((GPUClockFraction[GPUIndex] < 0.75f) ? StatOrange : StatGreen);
+						DrawCell(
+							GPURowId++, GPUIndex* ColumnPerGPU + AvgUnitColumnId, GPUColumnCount,
+							FString::Printf(STATUNIT_FORMAT_PERCEMT, 100.0f * GPUClockFraction[GPUIndex]), Color);
+					}
+
+					{
+						const FColor Color = (GPUUsageFraction[GPUIndex] < 0.5f) ? StatRed : ((GPUUsageFraction[GPUIndex] < 0.75f) ? StatOrange : StatGreen);
+						DrawCell(
+							GPURowId++, GPUIndex* ColumnPerGPU + AvgUnitColumnId, GPUColumnCount,
+							FString::Printf(STATUNIT_FORMAT_PERCEMT, 100.0f * GPUUsageFraction[GPUIndex]), Color);
+					}
+
+					{
+						const FColor Color = (GPUExternalUsageFraction[GPUIndex] > 0.2f) ? StatRed : ((GPUExternalUsageFraction[GPUIndex] > 0.1f) ? StatOrange : StatGreen);
+						DrawCell(
+							GPURowId++, GPUIndex* ColumnPerGPU + AvgUnitColumnId, GPUColumnCount,
+							FString::Printf(STATUNIT_FORMAT_PERCEMT, 100.0f * GPUExternalUsageFraction[GPUIndex]), Color);
+					}
+				}
+				check(GPURowId == GPURowCount);
+			}
+
+			PushRows(/* RowsCount = */ GPURowCount);
+		}
+
 		if (bHaveInputLatencyData)
 		{
 			const float ReasonableInputLatencyFactor = 2.5f;
-			const FColor InputLatencyAverageColor = GEngine->GetFrameTimeDisplayColor(InputLatencyTime / ReasonableInputLatencyFactor);
 			DrawTitleString(TEXT("Input"), /* UnitGraphColor = */ FColor(255, 255, 100));
-			InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.2f ms"), InputLatencyTime), Font, InputLatencyAverageColor);
+			{
+				const FColor InputLatencyAverageColor = GEngine->GetFrameTimeDisplayColor(InputLatencyTime / ReasonableInputLatencyFactor);
+				DrawDefaultAvgCell(FString::Printf(STATUNIT_FORMAT_AVGTIME, InputLatencyTime), InputLatencyAverageColor);
+			}
 			if (bShowUnitMaxTimes)
 			{
 				const FColor InputLatencyMaxColor = GEngine->GetFrameTimeDisplayColor(Max_InputLatencyTime / ReasonableInputLatencyFactor);
-				InCanvas->DrawShadowedString(X3, InY, *FString::Printf(TEXT("%4.2f ms"), Max_InputLatencyTime), Font, InputLatencyMaxColor);
+				DrawDefaultMaxCell(FString::Printf(STATUNIT_FORMAT_MAXTIME, Max_InputLatencyTime), InputLatencyMaxColor);
 			}
-			InY += RowHeight;
+			PushRows(/* RowsCount = */ 1);
 		}
+
 		{
 			if (bShowUnitMaxTimes)
 			{
 				FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
 
-				DrawTitleString(TEXT("Mem"), /* UnitGraphColor = */ FColor(100, 100, 255));
-				InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(Stats.UsedPhysical), Font, StatGreen);
-				InCanvas->DrawShadowedString(X3, InY, *GetMemoryString(Stats.PeakUsedPhysical), Font, StatGreen);
-				InY += RowHeight;
+				DrawTitleString(TEXT("Mem"), NoUnitGraphColor);
+				DrawDefaultAvgCell(GetMemoryString(Stats.UsedPhysical), StatGreen);
+				DrawDefaultMaxCell(GetMemoryString(Stats.PeakUsedPhysical), StatGreen);
+				PushRows(/* RowsCount = */ 1);
 				
-				DrawTitleString(TEXT("VMem"), /* UnitGraphColor = */ FColor(100, 100, 255));
-				InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(Stats.UsedVirtual), Font, StatGreen);
-				InCanvas->DrawShadowedString(X3, InY, *GetMemoryString(Stats.PeakUsedVirtual), Font, StatGreen);
-				InY += RowHeight;
+				DrawTitleString(TEXT("VMem"), NoUnitGraphColor);
+				DrawDefaultAvgCell(GetMemoryString(Stats.UsedVirtual), StatGreen);
+				DrawDefaultMaxCell(GetMemoryString(Stats.PeakUsedVirtual), StatGreen);
+				PushRows(/* RowsCount = */ 1);
 			}
 			else
 			{
@@ -679,9 +836,9 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 				if (MemoryUsed > 0)
 				{
 					// print out currently used memory
-					DrawTitleString(TEXT("Mem"), /* UnitGraphColor = */ FColor(100, 100, 255));
-					InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(MemoryUsed), Font, StatGreen);
-					InY += RowHeight;
+					DrawTitleString(TEXT("Mem"), NoUnitGraphColor);
+					DrawDefaultAvgCell(GetMemoryString(MemoryUsed), StatGreen);
+					PushRows(/* RowsCount = */ 1);
 				}
 			}
 		}
@@ -695,29 +852,29 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 			if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Enabled)
 			{
 				FColor Color = (ResolutionFraction < AlertResolutionFraction) ? StatRed : ((ResolutionFraction < FMath::Min(ResolutionFraction * 0.97f, 1.0f)) ? StatOrange : StatGreen);
-				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), Font, Color);
+				DrawDefaultAvgCell(FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), Color);
 			}
 			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::DebugForceEnabled)
 			{
-				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), Font, StatMagenda);
+				DrawDefaultAvgCell(FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), StatMagenda);
 			}
 			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Paused)
 			{
-				InCanvas->DrawShadowedString(X2, InY, TEXT("Paused"), Font, StatMagenda);
+				DrawDefaultAvgCell(TEXT("Paused"), StatMagenda);
 			}
 			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Disabled)
 			{
-				InCanvas->DrawShadowedString(X2, InY, TEXT("OFF"), Font, FColor(160, 160, 160));
+				DrawDefaultAvgCell(TEXT("OFF"), FColor(160, 160, 160));
 			}
 			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Unsupported)
 			{
-				InCanvas->DrawShadowedString(X2, InY, TEXT("Unsupported"), Font, FColor(160, 160, 160));
+				DrawDefaultAvgCell(TEXT("Unsupported"), FColor(160, 160, 160));
 			}
 			else
 			{
 				check(0);
 			}
-			InY += RowHeight;
+			PushRows(/* RowsCount = */ 1);
 		}
 
 		// Other dynamic render scalings
@@ -744,13 +901,13 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 				DrawTitleString(*DisplayName, /* UnitGraphColor = */ FColor::White);
 				if (HeuristicSettings.Model == DynamicRenderScaling::EHeuristicModel::Quadratic)
 				{
-					InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), Font, Color);
+					DrawDefaultAvgCell(FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), Color);
 				}
 				else
 				{
-					InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.1f%%"), ScreenPercentage), Font, Color);
+					DrawDefaultAvgCell(FString::Printf(TEXT("%3.1f%%"), ScreenPercentage), Color);
 				}
-				InY += RowHeight;
+				PushRows(/* RowsCount = */ 1);
 			}
 		}
 
@@ -758,27 +915,69 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 		{
 			// Assume we don't have more than 1 GPU in mobile.
 			int32 NumDrawCalls = GNumDrawCallsRHI[0];
-			DrawTitleString(TEXT("Draws"), /* UnitGraphColor = */ FColor(100, 100, 255));
-			InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%d"), NumDrawCalls), Font, StatGreen);
-			InY += RowHeight;
+			DrawTitleString(TEXT("Draws"), NoUnitGraphColor);
+			DrawDefaultAvgCell(FString::Printf(TEXT("%d"), NumDrawCalls), StatGreen);
+			PushRows(/* RowsCount = */ 1);
 		}
 			
 		// Primitives
 		{
 			// Assume we don't have more than 1 GPU in mobile.
 			int32 NumPrimitives = GNumPrimitivesDrawnRHI[0];
-			DrawTitleString(TEXT("Prims"), /* UnitGraphColor = */ FColor(100, 100, 255));
+			DrawTitleString(TEXT("Prims"), NoUnitGraphColor);
 			if (NumPrimitives < 10000)
 			{
-				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%d"), NumPrimitives), Font, StatGreen);
+				DrawDefaultAvgCell(FString::Printf(TEXT("%d"), NumPrimitives), StatGreen);
 			}
 			else
 			{
 				float NumPrimitivesK = NumPrimitives/1000.f;
-				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%.1fK"), NumPrimitivesK), Font, StatGreen);
+				DrawDefaultAvgCell(FString::Printf(TEXT("%.1fK"), NumPrimitivesK), StatGreen);
 			}
-				
-			InY += RowHeight;
+
+			PushRows(/* RowsCount = */ 1);
+		}
+
+		if (bShowTSRStatistics && GPixelRenderCounters.GetPixelDisplayCount())
+		{
+			const uint32 PixelRenderCount = GPixelRenderCounters.GetPixelRenderCount();
+			const uint32 PixelDisplayCount = GPixelRenderCounters.GetPixelDisplayCount();
+
+			// TSR input feed in pixel/s
+			{
+				const FColor Color = (PixelRenderCount < 1280 * 720) ? StatRed : ((PixelRenderCount < 1920 * 1080) ? StatOrange : StatGreen);
+
+				float TSRFeed = PixelRenderCount * (1000.0f / FrameTime);
+
+				DrawTitleString(TEXT("TSR feed"), NoUnitGraphColor);
+				DrawDefaultAvgCell(FString::Printf(TEXT("%.2f MP/s"), float(TSRFeed) / 1000000.0f), Color);
+
+				PushRows(/* RowsCount = */ 1);
+			}
+
+			// TSR history convergence rate
+			{
+				// Target 1 sample per pixel for the convergence speed measurment.
+				const float TargetSamplePerPixel = 1.0f;
+
+				// Ideal TSR uses it to render 1080p -> 4k at 60hz.
+				const float IdealConvergenceTime = TargetSamplePerPixel * FMath::Pow(1080.0f / 2160.0f, -2.0f) * (1000.0f / 60.0f);
+
+				// Compute the resolution fraction agregate.
+				float ResolutionFraction = FMath::Sqrt(float(PixelRenderCount) / float(PixelDisplayCount));
+				float ConvergenceSpeedMultiplier = FMath::Pow(ResolutionFraction, -2.0f);
+
+				// Compute how long it takes for the history to converge to 1spp.
+				float ConvergenceFrameCount = ConvergenceSpeedMultiplier * TargetSamplePerPixel;
+				float ConvergenceTime = FMath::Max(ConvergenceFrameCount, 1.0f) * FrameTime;
+
+				const FColor Color = (ConvergenceTime <= IdealConvergenceTime) ? StatGreen : ((ConvergenceTime < 2.0f * IdealConvergenceTime) ? StatOrange : StatRed);
+
+				DrawTitleString(TEXT("TSR 1spp"), NoUnitGraphColor);
+				DrawDefaultAvgCell(FString::Printf(STATUNIT_FORMAT_AVGTIME, ConvergenceTime), Color);
+
+				PushRows(/* RowsCount = */ 1);
+			}
 		}
 	}
 
@@ -1329,6 +1528,7 @@ void FViewport::HighResScreenshot()
 	const FString CachedScreenshotName = FScreenshotRequest::GetFilename();
 
 	FDummyViewport* DummyViewport = new FDummyViewport(ViewportClient);
+	DummyViewport->SetupHDR(GetDisplayColorGamut(), GetDisplayOutputFormat(), GetSceneHDREnabled());
 
 	DummyViewport->SizeX = (GScreenshotResolutionX > 0) ? GScreenshotResolutionX : SizeX;
 	DummyViewport->SizeY = (GScreenshotResolutionY > 0) ? GScreenshotResolutionY : SizeY;
@@ -1371,12 +1571,15 @@ void FViewport::HighResScreenshot()
 	// End the frame that was started before HighResScreenshot() was called. Pass nullptr for the viewport because there's no need to
 	// call EndRenderFrame on the real viewport, as BeginRenderFrame hasn't been called yet.
 	HighResScreenshotEndFrame(nullptr);
-
+	GIsHighResScreenshot = false;
 	// Perform run-up.
 	while (FrameDelay)
 	{
 		HighResScreenshotBeginFrame(DummyViewport);
-
+		if (FrameDelay == 1)
+		{
+			GIsHighResScreenshot = true;
+		}
 		FCanvas Canvas(DummyViewport, NULL, ViewportClient->GetWorld(), ViewportClient->GetWorld()->FeatureLevel);
 		{
 			ViewportClient->Draw(DummyViewport, &Canvas);
@@ -1481,22 +1684,20 @@ void FViewport::EndRenderFrame(FRHICommandListImmediate& RHICmdList, bool bPrese
 		GEngine->SetPresentLatencyMarkerStart(CurrentFrameCounter);
 	});
 
-	uint32 StartTime = FPlatformTime::Cycles();
-	RHICmdList.EndDrawingViewport(GetViewportRHI(), bPresent, bLockToVsync);
-	uint32 EndTime = FPlatformTime::Cycles();
+	{
+		FRenderThreadIdleScope IdleScope(ERenderThreadIdleTypes::WaitingForGPUPresent);
+		RHICmdList.EndDrawingViewport(GetViewportRHI(), bPresent, bLockToVsync);
+	}
 
 	RHICmdList.EnqueueLambda([CurrentFrameCounter = GFrameCounterRenderThread](FRHICommandListImmediate& InRHICmdList)
 	{
 		GEngine->SetPresentLatencyMarkerEnd(CurrentFrameCounter);
 	});
-
-	GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUPresent] += EndTime - StartTime;
-	GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForGPUPresent]++;
 }
 
 FRHIGPUMask FViewport::GetGPUMask(FRHICommandListImmediate& RHICmdList) const
 {
-	return FRHIGPUMask::FromIndex(RHICmdList.GetViewportNextPresentGPUIndex(GetViewportRHI()));
+	return FRHIGPUMask::FromIndex(RHIGetViewportNextPresentGPUIndex(GetViewportRHI()));
 }
 
 void APostProcessVolume::PostUnregisterAllComponents()
@@ -1593,7 +1794,8 @@ void FViewport::Draw( bool bShouldPresent /*= true */)
 			{
 				const bool bShowUI = false;
 				const bool bAddFilenameSuffix = GetHighResScreenshotConfig().FilenameOverride.IsEmpty();
-				FScreenshotRequest::RequestScreenshot( FString(), bShowUI, bAddFilenameSuffix );
+				const bool bHDRScreenshot = GetSceneHDREnabled();
+				FScreenshotRequest::RequestScreenshot( FString(), bShowUI, bAddFilenameSuffix, bHDRScreenshot);
 				HighResScreenshot();
 			}
 			else if(bAnyScreenshotsRequired && bBufferVisualizationDumpingRequired)
@@ -1735,6 +1937,9 @@ const TArray<FColor>& FViewport::GetRawHitProxyData(FIntRect InRect)
 	// If the hit proxy map isn't up to date, render the viewport client's hit proxies to it.
 	else if (!bHitProxiesCached)
 	{
+		RenderCaptureInterface::FScopedCapture RenderCapture(GHitProxyCaptureNextUpdate != 0, TEXT("Update Hit Proxies"));
+		GHitProxyCaptureNextUpdate = 0;
+
 		EnqueueBeginRenderFrame(false);
 
 		FViewport* Viewport = this;
@@ -2259,6 +2464,18 @@ ENGINE_API bool GetViewportScreenShot(FViewport* Viewport, TArray<FColor>& Bitma
 	return false;
 }
 
+ENGINE_API bool GetViewportScreenShotHDR(FViewport* Viewport, TArray<FLinearColor>& Bitmap, const FIntRect& ViewRect /*= FIntRect()*/)
+{
+	// Read the contents of the viewport into an array.
+	if (Viewport->ReadLinearColorPixels(Bitmap, FReadSurfaceDataFlags(RCM_MinMax), ViewRect))
+	{
+		check(Bitmap.Num() == ViewRect.Area() || (Bitmap.Num() == Viewport->GetSizeXY().X * Viewport->GetSizeXY().Y));
+		return true;
+	}
+
+	return false;
+}
+
 extern bool ParseResolution( const TCHAR* InResolution, uint32& OutX, uint32& OutY, int32& WindowMode );
 
 ENGINE_API bool GetHighResScreenShotInput(const TCHAR* Cmd, FOutputDevice& Ar, uint32& OutXRes, uint32& OutYRes, float& OutResMult, FIntRect& OutCaptureRegion, bool& OutShouldEnableMask, bool& OutDumpBufferVisualizationTargets, bool& OutCaptureHDR, FString& OutFilenameOverride, bool& OutUseDateTimeAsFileName)
@@ -2367,6 +2584,42 @@ void FCommonViewportClient::DrawHighResScreenshotCaptureRegion(FCanvas& Canvas)
 	LineItem.Draw( &Canvas, FVector2D(Config.UnscaledCaptureRegion.Min.X, Config.UnscaledCaptureRegion.Max.Y), FVector2D(Config.UnscaledCaptureRegion.Min.X, Config.UnscaledCaptureRegion.Min.Y));
 }
 
+void FViewportClient::RedrawRequested(FViewport* Viewport)
+{
+	Viewport->Draw();
+}
+
+void FViewportClient::RequestInvalidateHitProxy(FViewport* Viewport)
+{
+	Viewport->InvalidateHitProxy();
+}
+
+bool FViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return InputKey(EventArgs.Viewport, EventArgs.ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.Key.IsGamepadKey());
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+TOptional<TSharedRef<SWidget>> FViewportClient::MapCursor(FViewport* Viewport, const FCursorReply& CursorReply)
+{
+	return TOptional<TSharedRef<SWidget>>();
+}
+
+FPopupMethodReply FViewportClient::OnQueryPopupMethod() const
+{
+	return FPopupMethodReply::Unhandled();
+}
+
+FCommonViewportClient::~FCommonViewportClient()
+{
+	//make to clean up the global "stat" client when we delete the active one.
+	if (GStatProcessingViewportClient == this)
+	{
+		GStatProcessingViewportClient = NULL;
+	}
+}
+
 void FCommonViewportClient::RequestUpdateDPIScale()
 {
 	bShouldUpdateDPIScale = true;
@@ -2421,12 +2674,28 @@ FDummyViewport::~FDummyViewport()
 
 void FDummyViewport::InitDynamicRHI()
 {
+	EPixelFormat DummyViewportFormat = bSceneHDREnabled ? GRHIHDRDisplayOutputFormat : PF_A2B10G10R10;
 	const FRHITextureCreateDesc Desc =
 		FRHITextureCreateDesc::Create2D(TEXT("FDummyViewport"))
 		.SetExtent(SizeX, SizeY)
-		.SetFormat(PF_A2B10G10R10)
+		.SetFormat(DummyViewportFormat)
 		.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
 		.SetInitialState(ERHIAccess::SRVMask);
 
 	RenderTargetTextureRHI = RHICreateTexture(Desc);
+}
+
+EDisplayColorGamut FDummyViewport::GetDisplayColorGamut() const
+{
+	return DisplayColorGamut;
+}
+
+EDisplayOutputFormat FDummyViewport::GetDisplayOutputFormat() const
+{
+	return DisplayOutputFormat;
+}
+
+bool FDummyViewport::GetSceneHDREnabled() const
+{
+	return bSceneHDREnabled;
 }

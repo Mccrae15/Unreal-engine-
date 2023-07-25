@@ -220,6 +220,39 @@ UE::Math::TRotator<T> UE::Math::TVector<T>::ToOrientationRotator() const
 	return R;
 }
 
+template<typename T>
+UE::Math::TVector<T> UE::Math::TVector<T>::SlerpVectorToDirection(UE::Math::TVector<T>& V, UE::Math::TVector<T>& Direction, T Alpha)
+{
+	using TVector = UE::Math::TVector<T>;
+	using TQuat = UE::Math::TQuat<T>;
+	
+	// Find rotation from A to B
+	const TQuat RotationQuat = TQuat::FindBetweenVectors(V, Direction);
+	const TVector Axis = RotationQuat.GetRotationAxis();
+	const T AngleRads = RotationQuat.GetAngle();
+
+	// Rotate from A toward B using portion of the angle specified by Alpha.
+	const TQuat DeltaQuat(Axis, AngleRads * Alpha);
+	TVector Result = DeltaQuat.RotateVector(V);
+	return Result;
+}
+
+template<typename T>
+UE::Math::TVector<T> UE::Math::TVector<T>::SlerpNormals(UE::Math::TVector<T>& NormalA, UE::Math::TVector<T>& NormalB, T Alpha)
+{
+	using TVector = UE::Math::TVector<T>;
+	using TQuat = UE::Math::TQuat<T>;
+
+	// Find rotation from A to B
+	const TQuat RotationQuat = TQuat::FindBetweenNormals(NormalA, NormalB);
+	const TVector Axis = RotationQuat.GetRotationAxis();
+	const T AngleRads = RotationQuat.GetAngle();
+
+	// Rotate from A toward B using portion of the angle specified by Alpha.
+	const TQuat DeltaQuat(Axis, AngleRads * Alpha);
+	TVector Result = DeltaQuat.RotateVector(NormalA);
+	return Result;
+}
 
 template<typename T>
 UE::Math::TRotator<T> UE::Math::TVector4<T>::ToOrientationRotator() const
@@ -436,6 +469,7 @@ FQuat4f FRotator3f::Quaternion() const
 	{
 		logOrEnsureNanError(TEXT("Invalid input %s to FRotator::Quaternion - generated NaN output: %s"), *ToString(), *RotationQuat.ToString());
 		RotationQuat = FQuat4f::Identity;
+		FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
 	}
 #endif
 
@@ -505,6 +539,7 @@ FQuat4d FRotator3d::Quaternion() const
 	{
 		logOrEnsureNanError(TEXT("Invalid input %s to FRotator::Quaternion - generated NaN output: %s"), *ToString(), *RotationQuat.ToString());
 		RotationQuat = FQuat4d::Identity;
+		FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
 	}
 #endif
 
@@ -1095,6 +1130,8 @@ namespace Math
 	template<typename T>
 	bool TQuat<T>::NetSerialize(FArchive& Ar, class UPackageMap*, bool& bOutSuccess)
 	{
+		Ar.UsingCustomVersion(FEngineNetworkCustomVersion::Guid);
+
 		TQuat<T> Q;
 
 		if (Ar.IsSaving())
@@ -1124,7 +1161,7 @@ namespace Math
 			}
 		}
 
-		if (Ar.EngineNetVer() >= HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
+		if (Ar.EngineNetVer() >= FEngineNetworkCustomVersion::SerializeDoubleVectorsAsDoubles && Ar.EngineNetVer() != FEngineNetworkCustomVersion::Ver21AndViewPitchOnly_DONOTUSE)
 		{
 			Ar << Q.X << Q.Y << Q.Z;
 		}
@@ -3239,16 +3276,6 @@ void FMath::ApplyScaleToFloat(float& Dst, const FVector& DeltaScale, float Magni
 	const float Multiplier = ( DeltaScale.X > 0.0f || DeltaScale.Y > 0.0f || DeltaScale.Z > 0.0f ) ? Magnitude : -Magnitude;
 	Dst += Multiplier * (float)DeltaScale.Size();
 	Dst = FMath::Max( 0.0f, Dst );
-}
-
-bool FRandomStream::ExportTextItem(FString& ValueStr, FRandomStream const& DefaultValue, class UObject* Parent, int32 PortFlags, class UObject* ExportRootScope) const
-{
-	if (0 != (PortFlags & EPropertyPortFlags::PPF_ExportCpp))
-	{
-		ValueStr += FString::Printf(TEXT("FRandomStream(%i)"), DefaultValue.GetInitialSeed());
-		return true;
-	}
-	return false;
 }
 
 // Implementation of 1D, 2D and 3D Perlin noise based on Ken Perlin's improved version https://mrl.nyu.edu/~perlin/noise/

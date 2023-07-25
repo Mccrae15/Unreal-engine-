@@ -3,6 +3,7 @@
 #include "Formats/ExrImageWrapper.h"
 #include "ImageWrapperPrivate.h"
 
+#include "ColorSpace.h"
 #include "Containers/StringConv.h"
 #include "HAL/PlatformTime.h"
 #include "Math/Float16.h"
@@ -221,48 +222,6 @@ ERawImageFormat::Type FExrImageWrapper::GetSupportedRawFormat(const ERawImageFor
 	}
 }
 
-bool FExrImageWrapper::SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth, const int32 InBytesPerRow)
-{
-	check(InRawData);
-	check(InRawSize > 0);
-	check(InWidth > 0);
-	check(InHeight > 0);
-	check(InBytesPerRow >= 0);
-
-	// FExrImageWrapper used to take RGBA 8-bit input
-	//	 and write it linearly
-	// the new image path now requires you to convert to float before coming in here
-	// so U8 will be converted to float *with* gamma correction
-
-	switch (InBitDepth)
-	{
-	case 8:
-		if (InFormat != ERGBFormat::RGBA && InFormat != ERGBFormat::BGRA && InFormat != ERGBFormat::Gray)
-		{
-			return false;
-		}
-		break;
-
-	case 16:
-	case 32:
-		if (InFormat == ERGBFormat::RGBA || InFormat == ERGBFormat::Gray)
-		{
-			// Before ERGBFormat::RGBAF and ERGBFormat::GrayF were introduced, ERGBFormat::RGBA and ERGBFormat::Gray were used to describe float pixel formats.
-			// ERGBFormat::RGBA and ERGBFormat::Gray should now only be used for integer channels.
-			// Note that EXR uint32 compression is currently not supported.
-			const TCHAR* FormatName = (InFormat == ERGBFormat::RGBA) ? TEXT("RGBA") : TEXT("Gray");
-			UE_LOG(LogImageWrapper, Warning, TEXT("Usage of 16-bit and 32-bit ERGBFormat::%s raw format for compressing EXR images is deprecated, if you are compressing float channels please specify ERGBFormat::%sF instead."), *FormatName, *FormatName);
-		}
-		if (InFormat != ERGBFormat::RGBAF && InFormat != ERGBFormat::GrayF)
-		{
-			return false;
-		}
-		break;
-	}
-
-	return FImageWrapperBase::SetRaw(InRawData, InRawSize, InWidth, InHeight, InFormat, InBitDepth, InBytesPerRow);
-}
-
 bool FExrImageWrapper::SetCompressed(const void* InCompressedData, int64 InCompressedSize)
 {
 	check(InCompressedData);
@@ -413,6 +372,16 @@ void FExrImageWrapper::Compress(int32 Quality)
 		ImfFrameBuffer.insert(ChannelNames[c], Imf::Slice(ImfPixelType, (char*)ChannelData[c].GetData(), BytesPerChannelPixel, (size_t)BytesPerChannelPixel * Width));
 	}
 
+	// Write the working color space into EXR chromaticities
+	const UE::Color::FColorSpace& WCS = UE::Color::FColorSpace::GetWorking();
+	Imf::Chromaticities Chromaticities = {
+		IMATH_NAMESPACE::V2f((float)WCS.GetRedChromaticity().X, (float)WCS.GetRedChromaticity().Y),
+		IMATH_NAMESPACE::V2f((float)WCS.GetGreenChromaticity().X, (float)WCS.GetGreenChromaticity().Y),
+		IMATH_NAMESPACE::V2f((float)WCS.GetBlueChromaticity().X, (float)WCS.GetBlueChromaticity().Y),
+		IMATH_NAMESPACE::V2f((float)WCS.GetWhiteChromaticity().X, (float)WCS.GetWhiteChromaticity().Y),
+	};
+	Imf::addChromaticities(ImfHeader, Chromaticities);
+
 	FMemFileOut MemFile("");
 	int64 MemFileLength;
 
@@ -484,17 +453,20 @@ void FExrImageWrapper::Uncompress(const ERGBFormat InFormat, const int32 InBitDe
 	try
 	{
 		Imf::FrameBuffer ImfFrameBuffer;
+		FMemFileIn MemFile(CompressedData.GetData(), CompressedData.Num());
+		Imf::InputFile ImfFile(MemFile);
+		Imf::Header ImfHeader = ImfFile.header();
+		Imath::Box2i ImfDataWindow = ImfHeader.dataWindow();
 		for (int32 c = 0; c < ChannelCount; ++c)
 		{
 			ChannelData[c].SetNumUninitialized((int64)BytesPerChannelPixel * Width * Height);
 			// Use 1.0 as a default value for the alpha channel, in case if it is not present in the EXR, use 0.0 for all other channels.
 			double DefaultValue = !strcmp(ChannelNames[c], "A") ? 1.0 : 0.0;
-			ImfFrameBuffer.insert(ChannelNames[c], Imf::Slice(ImfPixelType, (char*)ChannelData[c].GetData(), BytesPerChannelPixel, (size_t)BytesPerChannelPixel * Width, 1, 1, DefaultValue));
+			// @todo Oodle: doing a subtract on this pointer for the data window looks dangerous
+			char* ChannelBase = (char*)(ChannelData[c].GetData() -
+				(ImfDataWindow.min.x + ImfDataWindow.min.y * Width) * ((int64)BytesPerChannelPixel));
+			ImfFrameBuffer.insert(ChannelNames[c], Imf::Slice(ImfPixelType, ChannelBase, BytesPerChannelPixel, (size_t)BytesPerChannelPixel * Width, 1, 1, DefaultValue));
 		}
-		FMemFileIn MemFile(CompressedData.GetData(), CompressedData.Num());
-		Imf::InputFile ImfFile(MemFile);
-		Imf::Header ImfHeader = ImfFile.header();
-		Imath::Box2i ImfDataWindow = ImfHeader.dataWindow();
 		ImfFile.setFrameBuffer(ImfFrameBuffer);
 		ImfFile.readPixels(ImfDataWindow.min.y, ImfDataWindow.max.y);
 	}
@@ -507,14 +479,76 @@ void FExrImageWrapper::Uncompress(const ERGBFormat InFormat, const int32 InBitDe
 	}
 
 	// EXR channels are compressed non-interleaved.
-	RawData.SetNumUninitialized((int64)BytesPerChannelPixel * ChannelCount * Width * Height);
-	for (int64 OffsetNonInterleaved = 0, OffsetInterleaved = 0; OffsetInterleaved < RawData.Num(); OffsetNonInterleaved += BytesPerChannelPixel)
+	int64 BytesPerChannel = (int64)BytesPerChannelPixel * Width * Height;
+	RawData.SetNumUninitialized(BytesPerChannel * ChannelCount);
+
+	const uint8 * ChannelDataPointers[4];
+	check(ChannelCount == 1 || ChannelCount == 4);
+	for (int32 c = 0; c < ChannelCount; ++c)
 	{
-		for (int32 c = 0; c < ChannelCount; ++c)
+		ChannelDataPointers[c] = ChannelData[c].GetData();
+	}
+
+	if ( InBitDepth == 16 )
+	{
+		FFloat16 * Out = (FFloat16 *)&RawData[0];
+
+		for (int64 OffsetNonInterleaved = 0; OffsetNonInterleaved < BytesPerChannel; OffsetNonInterleaved += 2)
 		{
-			for (int32 b = 0; b < BytesPerChannelPixel; ++b, ++OffsetInterleaved)
+			for (int32 c = 0; c < ChannelCount; ++c)
 			{
-				RawData[OffsetInterleaved] = ChannelData[c][OffsetNonInterleaved + b];
+				const FFloat16 * In = (const FFloat16 *)&ChannelDataPointers[c][OffsetNonInterleaved];
+				
+				*Out = In->GetClampedFinite();
+
+				//check( ! FMath::IsNaN( Out->GetFloat() ) );
+				//check( Out->GetFloat() == In->GetFloat() || ! isfinite( In->GetFloat() ) );
+
+				Out++;
+			}
+		}
+	}
+	else
+	{
+		check( InBitDepth == 32 );
+		
+		float * Out = (float *)&RawData[0];
+		
+		for (int64 OffsetNonInterleaved = 0; OffsetNonInterleaved < BytesPerChannel; OffsetNonInterleaved += 4)
+		{
+			for (int32 c = 0; c < ChannelCount; ++c)
+			{
+				const float * In = (const float *)&ChannelDataPointers[c][OffsetNonInterleaved];
+				
+				float f = *In;
+
+				// sanitize inf and nan :
+				if ( f >= -FLT_MAX && f <= FLT_MAX )
+				{
+					// finite, leave it
+					// nans will fail all compares so not go in here
+				}
+				else if ( f > FLT_MAX )
+				{
+					// +inf
+					f = FLT_MAX;
+				}
+				else if ( f < -FLT_MAX )
+				{
+					// -inf
+					f = -FLT_MAX;
+				}
+				else
+				{
+					// nan
+					f = 0.f;
+				}
+
+				*Out = f;
+				
+				//check( ! FMath::IsNaN( *Out ) );
+
+				Out++;
 			}
 		}
 	}
@@ -523,7 +557,172 @@ void FExrImageWrapper::Uncompress(const ERGBFormat InFormat, const int32 InBitDe
 	BitDepth = InBitDepth;
 }
 
+#elif WITH_UNREALEXR_MINIMAL
 
+FExrImageWrapper::FExrImageWrapper()
+	: FImageWrapperBase()
+{
+}
 
+bool FExrImageWrapper::SetCompressed(const void* InCompressedData, int64 InCompressedSize)
+{
+	return false;
+}
+
+void FExrImageWrapper::Compress(int32 Quality)
+{
+	check(RawData.Num());
+
+	// Ensure we haven't already compressed the file.
+	if (CompressedData.Num())
+	{
+		return;
+	}
+
+	const double StartTime = FPlatformTime::Seconds();
+
+	// conditions enforced by CanSetRawFormat :
+	check(BitDepth == 32);
+	check(Format == ERGBFormat::RGBAF);
+
+	constexpr uint32 EXRHeaderSize = 313;
+
+	// Indicates the offset, from the start of the file, to get access to the 'full data' of the row
+	const uint32 LineOffsetTableSize = 8 * Height; 
+	const uint64 TotalHeaderSize = EXRHeaderSize + LineOffsetTableSize;
+
+	// We force use half float as output
+	const uint32 PerChannelStride = Width * sizeof(FFloat16);
+
+	// We store RGB, not A
+	const uint32 PixelDataRowSize = PerChannelStride * 3; 
+
+	// Full Row is Row Y coordinate + size of pixel data + pixel data
+	const uint32 FullDataRowSize = 2 * sizeof(uint32) + PixelDataRowSize; 
+
+	// Final data allocation
+	uint32 CompressedDataReservedSize = TotalHeaderSize + Height * FullDataRowSize;
+	CompressedData.Reserve(CompressedDataReservedSize);
+
+	auto AddDataU32 = [&](uint32 Value) { CompressedData.Append((uint8*)&Value, sizeof(uint32)); };
+	// Based on example header at https://www.openexr.com/documentation/openexrfilelayout.pdf
+	{
+		auto AddHeaderString = [&](const char* Value) { int32 Len = FCStringAnsi::Strlen(Value); CompressedData.Append((uint8*)Value, Len + 1); };
+
+		// magic number,			  version, flags
+		AddDataU32(0x01312f76);	AddDataU32(0x00000002);
+
+		// Attribute name / type / size: 18 bytes per channel + 1 terminating byte
+		AddHeaderString("channels"); AddHeaderString("chlist"); AddDataU32(55);
+		//name                type (u8,f16,f32)		pLinear/reserved        xSampling          ySampling
+		AddHeaderString("B");  AddDataU32(1);     AddDataU32(0);       AddDataU32(1);  AddDataU32(1);
+		AddHeaderString("G");  AddDataU32(1);     AddDataU32(0);       AddDataU32(1);  AddDataU32(1);
+		AddHeaderString("R");  AddDataU32(1);     AddDataU32(0);       AddDataU32(1);  AddDataU32(1);
+		// Separator
+		CompressedData.Add(0);
+
+		// Attribute name / type / size: compression expects a single byte
+		AddHeaderString("compression"); AddHeaderString("compression"); AddDataU32(1);
+		// NO_COMPRESSION = 0, RLE = 1, ZIPS = 2, ZIP = 3, PIZ = 4, PXR24= 5, B44= 6, B44A= 7,
+		CompressedData.Add(0);
+
+		// Attribute name / type / size
+		AddHeaderString("dataWindow"); AddHeaderString("box2i"); AddDataU32(16);
+		// Top Left / Bottom Right
+		AddDataU32(0); AddDataU32(0); AddDataU32(Width - 1); AddDataU32(Height - 1);
+
+		// Attribute name / type / size
+		AddHeaderString("displayWindow"); AddHeaderString("box2i"); AddDataU32(16);
+		AddDataU32(0); AddDataU32(0); AddDataU32(Width - 1); AddDataU32(Height - 1);
+
+		// Attribute name / type / size
+		AddHeaderString("lineOrder"); AddHeaderString("lineOrder"); AddDataU32(1);
+		// INCREASING_Y = 0, DECREASING_Y = 1, RANDOM_Y = 2
+		CompressedData.Add(0);
+
+		// Attribute name / type / size
+		AddHeaderString("pixelAspectRatio"); AddHeaderString("float"); AddDataU32(4);
+		// 1.0f
+		AddDataU32(0x3f800000);
+
+		// Attribute name / type / size
+		AddHeaderString("screenWindowCenter"); AddHeaderString("v2f"); AddDataU32(8);
+		// 0.0f / 0.0f
+		AddDataU32(0); AddDataU32(0);
+
+		// Attribute name / type / size
+		AddHeaderString("screenWindowWidth"); AddHeaderString("float"); AddDataU32(4);
+		// 1.0f
+		AddDataU32(0x3f800000);
+
+		// end of header
+		CompressedData.Add(0);
+
+		// Sanity check to make sure header size pre-allocation is still up-to-date
+		check(CompressedData.Num() == EXRHeaderSize);
+	}
+
+	uint64 LineOffset = TotalHeaderSize;
+	// Line Offset table
+	for (int32 RowIndex = 0; RowIndex < Height; ++RowIndex)
+	{
+		CompressedData.Append((uint8*)&LineOffset, sizeof(uint64));
+		LineOffset += FullDataRowSize;
+	}
+	check(CompressedData.Num() == TotalHeaderSize);
+
+	// Raw Data output
+	const FLinearColor* SrcPixelData = (FLinearColor*)RawData.GetData();
+	for (int32 RowIndex = 0; RowIndex < Height; ++RowIndex, SrcPixelData += Width)
+	{
+		uint32 OutEXRFileDataRowBeginSize = CompressedData.Num();
+
+		AddDataU32(RowIndex);
+		AddDataU32(PixelDataRowSize);
+
+		// Layout is BBBB..BBGGGG..GGRRRR..RR
+		for (int32 ColIndex = 0; ColIndex < Width; ++ColIndex)
+		{
+			FFloat16 B16(SrcPixelData[ColIndex].B);
+			CompressedData.Append((uint8*)&B16.Encoded, sizeof(B16.Encoded));
+		}
+
+		for (int32 ColIndex = 0; ColIndex < Width; ++ColIndex)
+		{
+			FFloat16 G16(SrcPixelData[ColIndex].G);
+			CompressedData.Append((uint8*)&G16.Encoded, sizeof(G16.Encoded));
+		}
+
+		for (int32 ColIndex = 0; ColIndex < Width; ++ColIndex)
+		{
+			FFloat16 R16(SrcPixelData[ColIndex].R);
+			CompressedData.Append((uint8*)&R16.Encoded, sizeof(R16.Encoded));
+		}
+
+		check(CompressedData.Num() == OutEXRFileDataRowBeginSize + FullDataRowSize);
+	}
+
+	// make sure we have written all the data we reserved in the first place
+	check(CompressedData.Num() == CompressedDataReservedSize);
+
+	const double DeltaTime = FPlatformTime::Seconds() - StartTime;
+	UE_LOG(LogImageWrapper, Verbose, TEXT("written image in %.3f seconds"), DeltaTime);
+}
+
+void FExrImageWrapper::Uncompress(const ERGBFormat InFormat, const int32 InBitDepth)
+{
+	ensure(false);
+	UE_LOG(LogImageWrapper, Error, TEXT("FExrImageWrapper::Uncompress is not supported"));
+}
+
+bool FExrImageWrapper::CanSetRawFormat(const ERGBFormat InFormat, const int32 InBitDepth) const
+{
+	return (InFormat == ERGBFormat::RGBAF) && (InBitDepth == 32);
+}
+
+ERawImageFormat::Type FExrImageWrapper::GetSupportedRawFormat(const ERawImageFormat::Type InFormat) const
+{
+	return ERawImageFormat::RGBA32F;
+}
 
 #endif // WITH_UNREALEXR

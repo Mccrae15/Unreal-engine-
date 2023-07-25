@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ZenServerInterface.h"
 #include "DerivedDataLegacyCacheStore.h"
+#include "Experimental/ZenServerInterface.h"
 
 #if UE_WITH_ZEN
 
@@ -13,6 +13,8 @@
 #include "DerivedDataChunk.h"
 #include "DerivedDataRequest.h"
 #include "DerivedDataRequestOwner.h"
+#include "Experimental/ZenStatistics.h"
+#include "HAL/FileManager.h"
 #include "Http/HttpClient.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/App.h"
@@ -28,7 +30,6 @@
 #include "Templates/Function.h"
 #include "ZenBackendUtils.h"
 #include "ZenSerialization.h"
-#include "ZenStatistics.h"
 
 TRACE_DECLARE_INT_COUNTER(ZenDDC_Get,			TEXT("ZenDDC Get"));
 TRACE_DECLARE_INT_COUNTER(ZenDDC_GetHit,		TEXT("ZenDDC Get Hit"));
@@ -77,6 +78,9 @@ public:
 	 */
 	FZenCacheStore(const TCHAR* ServiceUrl, const TCHAR* Namespace);
 
+
+	FZenCacheStore(UE::Zen::FServiceSettings&& InSettings, const TCHAR* Namespace);
+
 	inline FString GetName() const { return ZenService.GetInstance().GetURL(); }
 
 	/**
@@ -118,12 +122,12 @@ public:
 	bool LegacyDebugOptions(FBackendDebugOptions& Options) final;
 
 private:
+	void Initialize(const TCHAR* Namespace);
+
 	bool IsServiceReady();
 
 	static FCompositeBuffer SaveRpcPackage(const FCbPackage& Package);
 	THttpUniquePtr<IHttpRequest> CreateRpcRequest();
-	THttpUniquePtr<IHttpResponse> PerformBlockingRpc(FCbObject RequestObject, FCbPackage& OutResponse);
-	THttpUniquePtr<IHttpResponse> PerformBlockingRpc(const FCbPackage& RequestPackage, FCbPackage& OutResponse);
 	using FOnRpcComplete = TUniqueFunction<void(THttpUniquePtr<IHttpResponse>& HttpResponse, FCbPackage& Response)>;
 	void EnqueueAsyncRpc(IRequestOwner& Owner, FCbObject RequestObject, FOnRpcComplete&& OnComplete);
 	void EnqueueAsyncRpc(IRequestOwner& Owner, const FCbPackage& RequestPackage, FOnRpcComplete&& OnComplete);
@@ -151,6 +155,7 @@ private:
 	THttpUniquePtr<IHttpConnectionPool> ConnectionPool;
 	FHttpRequestQueue RequestQueue;
 	bool bIsUsable = false;
+	bool bIsLocalConnection = false;
 	int32 BatchPutMaxBytes = 1024*1024;
 	int32 CacheRecordBatchSize = 8;
 	int32 CacheChunksBatchSize = 8;
@@ -334,6 +339,10 @@ public:
 				{
 					BatchRequest << ANSITEXTVIEW("Method") << ANSITEXTVIEW("GetCacheRecords");
 					BatchRequest.AddInteger(ANSITEXTVIEW("Accept"), Zen::Http::kCbPkgMagic);
+					if (CacheStore.bIsLocalConnection)
+					{
+						BatchRequest.AddInteger(ANSITEXTVIEW("AcceptFlags"), static_cast<uint32_t>(Zen::Http::RpcAcceptOptions::kAllowLocalReferences));
+					}
 
 					BatchRequest.BeginObject(ANSITEXTVIEW("Params"));
 					{
@@ -608,6 +617,10 @@ public:
 			{
 				BatchRequest << ANSITEXTVIEW("Method") << ANSITEXTVIEW("GetCacheValues");
 				BatchRequest.AddInteger(ANSITEXTVIEW("Accept"), Zen::Http::kCbPkgMagic);
+				if (CacheStore.bIsLocalConnection)
+				{
+					BatchRequest.AddInteger(ANSITEXTVIEW("AcceptFlags"), static_cast<uint32_t>(Zen::Http::RpcAcceptOptions::kAllowLocalReferences));
+				}
 
 				BatchRequest.BeginObject(ANSITEXTVIEW("Params"));
 				{
@@ -757,6 +770,10 @@ public:
 			{
 				BatchRequest << ANSITEXTVIEW("Method") << "GetCacheChunks";
 				BatchRequest.AddInteger(ANSITEXTVIEW("Accept"), Zen::Http::kCbPkgMagic);
+				if (CacheStore.bIsLocalConnection)
+				{
+					BatchRequest.AddInteger(ANSITEXTVIEW("AcceptFlags"), static_cast<uint32_t>(Zen::Http::RpcAcceptOptions::kAllowLocalReferences));
+				}
 
 				BatchRequest.BeginObject(ANSITEXTVIEW("Params"));
 				{
@@ -941,9 +958,11 @@ public:
 	FAsyncCbPackageReceiver(
 		THttpUniquePtr<IHttpRequest>&& InRequest,
 		IRequestOwner* InOwner,
+		Zen::FZenServiceInstance& InZenServiceInstance,
 		FOnRpcComplete&& InOnRpcComplete)
 		: Request(MoveTemp(InRequest))
 		, Owner(InOwner)
+		, ZenServiceInstance(InZenServiceInstance)
 		, BaseReceiver(Package, this)
 		, OnRpcComplete(MoveTemp(InOnRpcComplete))
 	{
@@ -966,11 +985,34 @@ private:
 		return &BaseReceiver;
 	}
 
+	bool ShouldRecoverAndRetry(IHttpResponse& LocalResponse)
+	{
+		if (!ZenServiceInstance.IsServiceRunningLocally())
+		{
+			return false;
+		}
+
+		if ((LocalResponse.GetErrorCode() == EHttpErrorCode::Connect) ||
+			(LocalResponse.GetErrorCode() == EHttpErrorCode::TlsConnect) ||
+			(LocalResponse.GetErrorCode() == EHttpErrorCode::TimedOut))
+		{
+			return true;
+		}
+
+		return false;
+	}
+
 	IHttpReceiver* OnComplete(IHttpResponse& LocalResponse) final
 	{
-		Request.Reset();
-		Owner->End(this, [Self = this]
+		Owner->End(this, [Self = this, &LocalResponse]
 		{
+			if (Self->ShouldRecoverAndRetry(LocalResponse) && Self->ZenServiceInstance.TryRecovery())
+			{
+				new FAsyncCbPackageReceiver(MoveTemp(Self->Request), Self->Owner, Self->ZenServiceInstance, MoveTemp(Self->OnRpcComplete));
+				return;
+			}
+
+			Self->Request.Reset();
 			if (Self->OnRpcComplete)
 			{
 				// Launch a task for the completion function since it can execute arbitrary code.
@@ -988,6 +1030,7 @@ private:
 	THttpUniquePtr<IHttpResponse> Response;
 	TRefCountPtr<IHttpResponseMonitor> Monitor;
 	IRequestOwner* Owner;
+	Zen::FZenServiceInstance& ZenServiceInstance;
 	FCbPackage Package;
 	FCbPackageReceiver BaseReceiver;
 	FOnRpcComplete OnRpcComplete;
@@ -996,9 +1039,23 @@ private:
 FZenCacheStore::FZenCacheStore(
 	const TCHAR* InServiceUrl,
 	const TCHAR* InNamespace)
-	: Namespace(InNamespace)
-	, ZenService(InServiceUrl)
+	: ZenService(InServiceUrl)
 {
+	Initialize(InNamespace);
+}
+
+FZenCacheStore::FZenCacheStore(
+	UE::Zen::FServiceSettings&& InSettings,
+	const TCHAR* InNamespace)
+	: ZenService(MoveTemp(InSettings))
+{
+	Initialize(InNamespace);
+}
+
+void FZenCacheStore::Initialize(
+	const TCHAR* InNamespace)
+{
+	Namespace = InNamespace;
 	if (IsServiceReady())
 	{
 		RpcUri << ZenService.GetInstance().GetURL() << ANSITEXTVIEW("/z$/$rpc");
@@ -1018,6 +1075,7 @@ FZenCacheStore::FZenCacheStore(
 		RequestQueue = FHttpRequestQueue(*ConnectionPool, ClientParams);
 
 		bIsUsable = true;
+		bIsLocalConnection = ZenService.GetInstance().IsServiceRunningLocally();
 
 		// Issue a request for stats as it will be fetched asynchronously and issuing now makes them available sooner for future callers.
 		Zen::FZenStats ZenStats;
@@ -1051,36 +1109,12 @@ THttpUniquePtr<IHttpRequest> FZenCacheStore::CreateRpcRequest()
 	return Request;
 }
 
-THttpUniquePtr<IHttpResponse> FZenCacheStore::PerformBlockingRpc(FCbObject RequestObject, FCbPackage& OutResponse)
-{
-	THttpUniquePtr<IHttpRequest> Request = CreateRpcRequest();
-	Request->SetContentType(EHttpMediaType::CbObject);
-	Request->SetBody(RequestObject.GetBuffer().MakeOwned());
-
-	FCbPackageReceiver Receiver(OutResponse);
-	THttpUniquePtr<IHttpResponse> Response;
-	Request->Send(&Receiver, Response);
-	return Response;
-}
-
-THttpUniquePtr<IHttpResponse> FZenCacheStore::PerformBlockingRpc(const FCbPackage& RequestPackage, FCbPackage& OutResponse)
-{
-	THttpUniquePtr<IHttpRequest> Request = CreateRpcRequest();
-	Request->SetContentType(EHttpMediaType::CbPackage);
-	Request->SetBody(SaveRpcPackage(RequestPackage));
-
-	FCbPackageReceiver Receiver(OutResponse);
-	THttpUniquePtr<IHttpResponse> Response;
-	Request->Send(&Receiver, Response);
-	return Response;
-}
-
 void FZenCacheStore::EnqueueAsyncRpc(IRequestOwner& Owner, FCbObject RequestObject, FOnRpcComplete&& OnComplete)
 {
 	THttpUniquePtr<IHttpRequest> Request = CreateRpcRequest();
 	Request->SetContentType(EHttpMediaType::CbObject);
 	Request->SetBody(RequestObject.GetBuffer().MakeOwned());
-	new FAsyncCbPackageReceiver(MoveTemp(Request), &Owner, MoveTemp(OnComplete));
+	new FAsyncCbPackageReceiver(MoveTemp(Request), &Owner, ZenService.GetInstance(), MoveTemp(OnComplete));
 }
 
 void FZenCacheStore::EnqueueAsyncRpc(IRequestOwner& Owner, const FCbPackage& RequestPackage, FOnRpcComplete&& OnComplete)
@@ -1088,7 +1122,7 @@ void FZenCacheStore::EnqueueAsyncRpc(IRequestOwner& Owner, const FCbPackage& Req
 	THttpUniquePtr<IHttpRequest> Request = CreateRpcRequest();
 	Request->SetContentType(EHttpMediaType::CbPackage);
 	Request->SetBody(SaveRpcPackage(RequestPackage));
-	new FAsyncCbPackageReceiver(MoveTemp(Request), &Owner, MoveTemp(OnComplete));
+	new FAsyncCbPackageReceiver(MoveTemp(Request), &Owner, ZenService.GetInstance(), MoveTemp(OnComplete));
 }
 
 void FZenCacheStore::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
@@ -1102,7 +1136,7 @@ void FZenCacheStore::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
 	using EHitOrMiss = FCookStats::CallStats::EHitOrMiss;
 	using ECacheStatType = FCookStats::CallStats::EStatType;
 
-	Zen::GetDefaultServiceInstance().GetStats(ZenStats);
+	ZenService.GetInstance().GetStats(ZenStats);
 
 	const int64 RemotePutSize = int64(ZenStats.UpstreamStats.TotalUploadedMB * 1024 * 1024);
 	const int64 RemoteGetSize = int64(ZenStats.UpstreamStats.TotalDownloadedMB * 1024 * 1024);
@@ -1203,20 +1237,112 @@ TTuple<ILegacyCacheStore*, ECacheStoreFlags> CreateZenCacheStore(const TCHAR* No
 	FString ServiceUrl;
 	FParse::Value(Config, TEXT("Host="), ServiceUrl);
 
+	FString OverrideName;
+	if (FParse::Value(Config, TEXT("EnvHostOverride="), OverrideName))
+	{
+		FString ServiceUrlEnv = FPlatformMisc::GetEnvironmentVariable(*OverrideName);
+		if (!ServiceUrlEnv.IsEmpty())
+		{
+			ServiceUrl = ServiceUrlEnv;
+			UE_LOG(LogDerivedDataCache, Log, TEXT("%s: Found environment override for Host %s=%s"), NodeName, *OverrideName, *ServiceUrl);
+		}
+	}
+
+	if (FParse::Value(Config, TEXT("CommandLineHostOverride="), OverrideName))
+	{
+		if (FParse::Value(FCommandLine::Get(), *(OverrideName + TEXT("=")), ServiceUrl))
+		{
+			UE_LOG(LogDerivedDataCache, Log, TEXT("%s: Found command line override for Host %s=%s"), NodeName, *OverrideName, *ServiceUrl);
+		}
+	}
+
+	if (ServiceUrl == TEXT("None"))
+	{
+		UE_LOG(LogDerivedDataCache, Log, TEXT("Disabling %s data cache - host set to 'None'."), NodeName);
+		return MakeTuple<ILegacyCacheStore*, ECacheStoreFlags>(nullptr, ECacheStoreFlags::None);
+	}
+
 	FString Namespace;
-	if (!FParse::Value(Config, TEXT("Namespace="), Namespace))
+	if (!FParse::Value(Config, TEXT("StructuredNamespace="), Namespace) && !FParse::Value(Config, TEXT("Namespace="), Namespace))
 	{
 		Namespace = FApp::GetProjectName();
+		UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Missing required parameter 'Namespace', falling back to '%s'"), NodeName, *Namespace);
 	}
 
-	FString StructuredNamespace;
-	if (!FParse::Value(Config, TEXT("StructuredNamespace="), StructuredNamespace))
+	FString Sandbox;
+	FParse::Value(Config, TEXT("Sandbox="), Sandbox);
+	bool bHasSandbox = !Sandbox.IsEmpty();
+	bool bUseLocalDataCachePathOverrides = !bHasSandbox;
+
+	FString CachePathOverride;
+	if (bUseLocalDataCachePathOverrides && UE::Zen::Private::IsLocalAutoLaunched(ServiceUrl) && UE::Zen::Private::GetLocalDataCachePathOverride(CachePathOverride))
 	{
-		StructuredNamespace = Namespace;
-		UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Missing required parameter 'StructuredNamespace', falling back '%s'"), NodeName, *StructuredNamespace);
+		if (CachePathOverride == TEXT("None"))
+		{
+			UE_LOG(LogDerivedDataCache, Log, TEXT("Disabling %s data cache - path set to 'None'."), NodeName);
+			return MakeTuple<ILegacyCacheStore*, ECacheStoreFlags>(nullptr, ECacheStoreFlags::None);
+		}
 	}
 
-	TUniquePtr<FZenCacheStore> Backend = MakeUnique<FZenCacheStore>(*ServiceUrl, *StructuredNamespace);
+	TUniquePtr<FZenCacheStore> Backend;
+
+	bool bFlush = false;
+	FParse::Bool(Config, TEXT("Flush="), bFlush);
+
+	if (bHasSandbox)
+	{
+		Zen::FServiceSettings DefaultServiceSettings;
+		DefaultServiceSettings.ReadFromConfig();
+
+		if (!DefaultServiceSettings.IsAutoLaunch())
+		{
+			UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Attempting to use a sandbox when there is no default autolaunch configured to interhit settings from.  Cache will be disabled."), NodeName);
+			return MakeTuple<ILegacyCacheStore*, ECacheStoreFlags>(nullptr, ECacheStoreFlags::None);
+		}
+
+		// Make a unique local instance (not the default local instance) of ZenServer
+		Zen::FServiceSettings ServiceSettings;
+		ServiceSettings.SettingsVariant.Emplace<Zen::FServiceAutoLaunchSettings>();
+		Zen::FServiceAutoLaunchSettings& AutoLaunchSettings = ServiceSettings.SettingsVariant.Get<Zen::FServiceAutoLaunchSettings>();
+
+		const Zen::FServiceAutoLaunchSettings& DefaultAutoLaunchSettings = DefaultServiceSettings.SettingsVariant.Get<Zen::FServiceAutoLaunchSettings>();
+		AutoLaunchSettings = DefaultAutoLaunchSettings;
+		// Default as one more than the default port to not collide.  Multiple sandboxes will share a desired port, but will get differing effective ports.
+		AutoLaunchSettings.DesiredPort++;
+
+		FPaths::NormalizeDirectoryName(AutoLaunchSettings.DataPath);
+		AutoLaunchSettings.DataPath += TEXT("_");
+		AutoLaunchSettings.DataPath += Sandbox;
+
+		// The unique local instances will always limit process lifetime for now to avoid accumulating many of them
+		AutoLaunchSettings.bLimitProcessLifetime = true;
+
+		// Flush the cache if requested.
+		if (bFlush)
+		{
+			bool bStopped = true;
+			if (UE::Zen::IsLocalServiceRunning(*AutoLaunchSettings.DataPath))
+			{
+				bStopped = UE::Zen::StopLocalService(*AutoLaunchSettings.DataPath);
+			}
+
+			if (bStopped)
+			{
+				IFileManager::Get().DeleteDirectory(*(AutoLaunchSettings.DataPath / TEXT("")), /*bRequireExists*/ false, /*bTree*/ true);
+			}
+			else
+			{
+				UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Zen DDC could not be flushed due to an existing instance not shutting down when requested."), NodeName);
+			}
+		}
+
+		Backend = MakeUnique<FZenCacheStore>(MoveTemp(ServiceSettings), *Namespace);
+	}
+	else
+	{
+		Backend = MakeUnique<FZenCacheStore>(*ServiceUrl, *Namespace);
+	}
+
 	if (!Backend->IsUsable())
 	{
 		UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Failed to contact the service (%s), will not use it."), NodeName, *Backend->GetName());

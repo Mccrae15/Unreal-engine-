@@ -7,7 +7,7 @@
 #include "MoviePipelineBurnInWidget.h"
 #include "MoviePipelineOutputSetting.h"
 #include "MoviePipelineCameraSetting.h"
-#include "MoviePipelineMasterConfig.h"
+#include "MoviePipelinePrimaryConfig.h"
 #include "MoviePipelineBlueprintLibrary.h"
 #include "MoviePipeline.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -15,6 +15,8 @@
 #include "ImagePixelData.h"
 #include "MovieRenderPipelineCoreModule.h"
 #include "MoviePipelineQueue.h"
+#include "TextureResource.h"
+#include "RenderingThread.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineBurnInSetting)
 
@@ -114,7 +116,7 @@ void UMoviePipelineBurnInSetting::SetupImpl(const MoviePipeline::FMoviePipelineR
 		return;
 	}
 
-	OutputResolution = UMoviePipelineBlueprintLibrary::GetEffectiveOutputResolution(GetPipeline()->GetPipelineMasterConfig(), GetPipeline()->GetActiveShotList()[GetPipeline()->GetCurrentShotIndex()]);
+	OutputResolution = UMoviePipelineBlueprintLibrary::GetEffectiveOutputResolution(GetPipeline()->GetPipelinePrimaryConfig(), GetPipeline()->GetActiveShotList()[GetPipeline()->GetCurrentShotIndex()]);
 	int32 MaxResolution = GetMax2DTextureDimension();
 	if (OutputResolution.X > MaxResolution || OutputResolution.Y > MaxResolution)
 	{

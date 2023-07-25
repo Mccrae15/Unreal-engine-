@@ -6,10 +6,11 @@
 #include "MassEntitySettings.h"
 #include "MassExecutor.h"
 #include "MassEntityView.h"
+#include "MassExecutionContext.h"
 
 #define LOCTEXT_NAMESPACE "MassTest"
 
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 
 //----------------------------------------------------------------------//
 // tests 
@@ -28,7 +29,7 @@ struct FMTTestBase : FEntityTestBase
 	using Super = FExecutionTestBase;
 	UMassCompositeProcessor* CompositeProcessor = nullptr;
 	TArray<UMassTestProcessorBase*> Processors;
-	TArray<FProcessorDependencySolver::FOrderInfo> Result;
+	TArray<FMassProcessorOrderInfo> Result;
 	FGraphEventRef FinishEvent;
 	TArray<FMassEntityHandle> Entities;
 
@@ -47,14 +48,11 @@ struct FMTTestBase : FEntityTestBase
 
 		if (FinishEvent->IsComplete())
 		{
-			VerifyResults();
 			// signal that we're done with this test
 			return true;
 		}
 		return false;
 	}
-
-	virtual void VerifyResults() = 0;
 };
 
 struct FMTTrivial : FMTTestBase
@@ -76,20 +74,17 @@ struct FMTTrivial : FMTTestBase
 		{
 			UMassTestProcessorBase* Proc = Processors.Add_GetRef(NewObject<UMassTestProcessor_A>());
 
-			Proc->TestGetQuery().AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadOnly);
-			Proc->ExecutionFunction = [this, Proc](FMassEntityManager& InEntitySubsystem, FMassExecutionContext& Context)
+			Proc->EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadOnly);
+			Proc->ForEachEntityChunkExecutionFunction = [this](FMassExecutionContext& Context)
 			{
-				Proc->TestGetQuery().ForEachEntityChunk(InEntitySubsystem, Context, [this](FMassExecutionContext& Context)
-					{
-						NumProcessed += Context.GetNumEntities();
-					});
+				NumProcessed += Context.GetNumEntities();
 			};
 		}
 
 		return true;
 	}
 	
-	virtual void VerifyResults()
+	virtual void VerifyLatentResults() override
 	{
 		AITEST_EQUAL_LATENT("Expected to process all the created entities.", NumToCreate, NumProcessed);
 	}
@@ -116,60 +111,51 @@ struct FMTBasic : FMTTestBase
 		{
 			UMassTestProcessorBase* Proc = Processors.Add_GetRef(NewObject<UMassTestProcessor_C>());
 			Proc->GetMutableExecutionOrder().ExecuteAfter.Add(GetProcessorName<UMassTestProcessor_B>());
-			Proc->TestGetQuery().AddRequirement<FTestFragment_Float>(EMassFragmentAccess::ReadOnly);
-			Proc->TestGetQuery().AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadWrite);
-			Proc->ExecutionFunction = [this, Proc](FMassEntityManager& InEntitySubsystem, FMassExecutionContext& Context)
+			Proc->EntityQuery.AddRequirement<FTestFragment_Float>(EMassFragmentAccess::ReadOnly);
+			Proc->EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadWrite);
+			Proc->ForEachEntityChunkExecutionFunction = [this](FMassExecutionContext& Context)
 			{
-				Proc->TestGetQuery().ForEachEntityChunk(InEntitySubsystem, Context, [this](FMassExecutionContext& Context)
-					{
-						const TArrayView<FTestFragment_Int> IntsList = Context.GetMutableFragmentView<FTestFragment_Int>();
-						const TConstArrayView<FTestFragment_Float> FloatsList = Context.GetFragmentView<FTestFragment_Float>();
-						for (int32 i = 0; i < Context.GetNumEntities(); ++i)
-						{
-							IntsList[i].Value = int(FloatsList[i].Value) + IntsList[i].Value;
-						}
-					});
+				const TArrayView<FTestFragment_Int> IntsList = Context.GetMutableFragmentView<FTestFragment_Int>();
+				const TConstArrayView<FTestFragment_Float> FloatsList = Context.GetFragmentView<FTestFragment_Float>();
+				for (int32 i = 0; i < Context.GetNumEntities(); ++i)
+				{
+					IntsList[i].Value = int(FloatsList[i].Value) + IntsList[i].Value;
+				}
 			};
 		} 
 		{
 			UMassTestProcessorBase* Proc = Processors.Add_GetRef(NewObject<UMassTestProcessor_B>());
 			Proc->GetMutableExecutionOrder().ExecuteAfter.Add(GetProcessorName<UMassTestProcessor_A>());
-			Proc->TestGetQuery().AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadOnly);
-			Proc->TestGetQuery().AddRequirement<FTestFragment_Float>(EMassFragmentAccess::ReadWrite);
-			Proc->ExecutionFunction = [this, Proc](FMassEntityManager& InEntitySubsystem, FMassExecutionContext& Context)
+			Proc->EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadOnly);
+			Proc->EntityQuery.AddRequirement<FTestFragment_Float>(EMassFragmentAccess::ReadWrite);
+			Proc->ForEachEntityChunkExecutionFunction = [this](FMassExecutionContext& Context)
 			{
-				Proc->TestGetQuery().ForEachEntityChunk(InEntitySubsystem, Context, [this](FMassExecutionContext& Context)
-					{
-						const TConstArrayView<FTestFragment_Int> IntsList = Context.GetFragmentView<FTestFragment_Int>();
-						const TArrayView<FTestFragment_Float> FloatsList = Context.GetMutableFragmentView<FTestFragment_Float>();
-						for (int32 i = 0; i < Context.GetNumEntities(); ++i)
-						{
-							FloatsList[i].Value = float(IntsList[i].Value * IntsList[i].Value);
-						}
-					});
+				const TConstArrayView<FTestFragment_Int> IntsList = Context.GetFragmentView<FTestFragment_Int>();
+				const TArrayView<FTestFragment_Float> FloatsList = Context.GetMutableFragmentView<FTestFragment_Float>();
+				for (int32 i = 0; i < Context.GetNumEntities(); ++i)
+				{
+					FloatsList[i].Value = float(IntsList[i].Value * IntsList[i].Value);
+				}
 			};
 		} 
 		{
 			UMassTestProcessorBase* Proc = Processors.Add_GetRef(NewObject<UMassTestProcessor_A>());
-			Proc->TestGetQuery().AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadWrite);
-			Proc->ExecutionFunction = [this, Proc](FMassEntityManager& InEntitySubsystem, FMassExecutionContext& Context)
+			Proc->EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadWrite);
+			Proc->ForEachEntityChunkExecutionFunction = [this](FMassExecutionContext& Context)
 			{
 				int Index = 0;
-				Proc->TestGetQuery().ForEachEntityChunk(InEntitySubsystem, Context, [this, &Index](FMassExecutionContext& Context)
-					{
-						const TArrayView<FTestFragment_Int> IntsList = Context.GetMutableFragmentView<FTestFragment_Int>();
-						for (int32 i = 0; i < Context.GetNumEntities(); ++i)
-						{
-							IntsList[i].Value = Index++;
-						}
-					});
+				const TArrayView<FTestFragment_Int> IntsList = Context.GetMutableFragmentView<FTestFragment_Int>();
+				for (int32 i = 0; i < Context.GetNumEntities(); ++i)
+				{
+					IntsList[i].Value = Index++;
+				}
 			};
 		}
 
 		return true;
 	}
 
-	virtual void VerifyResults()
+	virtual void VerifyLatentResults() override
 	{
 		for (int i = 0; i < Entities.Num(); ++i)
 		{
@@ -182,6 +168,6 @@ IMPLEMENT_AI_LATENT_TEST(FMTBasic, "System.Mass.Multithreading.Basic");
 
 } // FMassMultiThreadingTest
 
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 #undef LOCTEXT_NAMESPACE

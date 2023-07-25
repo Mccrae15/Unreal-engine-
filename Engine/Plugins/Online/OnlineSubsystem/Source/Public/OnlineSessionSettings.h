@@ -2,14 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Online/CoreOnline.h"
 #include "OnlineSubsystemTypes.h"
 #include "OnlineKeyValuePair.h"
-#include "OnlineSubsystemPackage.h"
 
 // NOTE:  Session setting names have been moved to OnlineBase in OnlineSessionNames.h
-#include "Online/OnlineSessionNames.h"
 
 #define INVALID_SESSION_SETTING_ID -1
 
@@ -526,6 +522,9 @@ public:
 	}
 };
 
+using FNamedOnlineSessionPtr = TSharedPtr<FNamedOnlineSession, ESPMode::ThreadSafe>;
+using FNamedOnlineSessionRef = TSharedRef<FNamedOnlineSession, ESPMode::ThreadSafe>;
+
 /** Value returned on unreachable or otherwise bad search results */
 #define MAX_QUERY_PING 9999
 
@@ -659,3 +658,9 @@ void ONLINESUBSYSTEM_API DumpSession(const FOnlineSession* Session);
  */
 void ONLINESUBSYSTEM_API DumpSessionSettings(const FOnlineSessionSettings* SessionSettings);
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Online/OnlineSessionNames.h"
+#include "OnlineSubsystemPackage.h"
+#endif

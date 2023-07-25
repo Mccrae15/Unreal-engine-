@@ -1,16 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeStateDetails.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
 #include "DetailLayoutBuilder.h"
-#include "DetailCategoryBuilder.h"
 #include "PropertyCustomizationHelpers.h"
 #include "IPropertyUtilities.h"
 #include "StateTreeEditorData.h"
-#include "StateTreeViewModel.h"
-#include "StateTree.h"
+#include "StateTreeSchema.h"
 
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
@@ -45,7 +41,7 @@ void FStateTreeStateDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilde
 	TSharedPtr<IPropertyHandle> EnterConditionsProperty = DetailBuilder.GetProperty(TEXT("EnterConditions"));
 	TSharedPtr<IPropertyHandle> TransitionsProperty = DetailBuilder.GetProperty(TEXT("Transitions"));
 	TSharedPtr<IPropertyHandle> TypeProperty = DetailBuilder.GetProperty(TEXT("Type"));
-	TSharedPtr<IPropertyHandle> LinkedStateProperty = DetailBuilder.GetProperty(TEXT("LinkedState"));
+	TSharedPtr<IPropertyHandle> LinkedSubtreeProperty = DetailBuilder.GetProperty(TEXT("LinkedSubtree"));
 	TSharedPtr<IPropertyHandle> ParametersProperty = DetailBuilder.GetProperty(TEXT("Parameters"));
 
 	uint8 StateTypeValue = 0;
@@ -57,7 +53,7 @@ void FStateTreeStateDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilde
 
 	if (StateType != EStateTreeStateType::Linked)
 	{
-		LinkedStateProperty->MarkHiddenByCustomization();
+		LinkedSubtreeProperty->MarkHiddenByCustomization();
 	}
 	
 	if (!(StateType == EStateTreeStateType::Subtree || StateType == EStateTreeStateType::Linked))

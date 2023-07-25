@@ -3,52 +3,47 @@
 #include "GameFramework/Actor.h"
 
 #include "ActorTransactionAnnotation.h"
-#include "EngineDefines.h"
+#include "Engine/LevelStreaming.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
 #include "Elements/Framework/EngineElementsLibrary.h"
+#include "Engine/NetConnection.h"
 #include "GameFramework/DamageType.h"
+#include "GameFramework/WorldSettings.h"
+#include "Net/Core/PropertyConditions/PropertyConditions.h"
 #include "TimerManager.h"
 #include "GameFramework/Pawn.h"
-#include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
-#include "Components/InputComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Net/Core/PropertyConditions/RepChangedPropertyTracker.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/PropertyPortFlags.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
-#include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "UObject/Package.h"
 #include "UObject/UE5PrivateFrostyStreamObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/Level.h"
 #include "Engine/LocalPlayer.h"
-#include "ContentStreaming.h"
-#include "DrawDebugHelpers.h"
 #include "Engine/InputDelegateBinding.h"
 #include "Engine/LevelStreamingPersistent.h"
-#include "PhysicsPublic.h"
 #include "Logging/MessageLog.h"
 #include "Net/UnrealNetwork.h"
-#include "Net/RepLayout.h"
 #include "Engine/Canvas.h"
 #include "DisplayDebugHelpers.h"
-#include "Animation/AnimInstance.h"
 #include "Engine/DemoNetDriver.h"
 #include "Components/PawnNoiseEmitterComponent.h"
-#include "Components/ChildActorComponent.h"
 #include "Camera/CameraComponent.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
-#include "Engine/NetworkObjectList.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "ObjectTrace.h"
-#include "Net/Core/PushModel/PushModel.h"
 #include "Engine/AutoDestroySubsystem.h"
+#include "WorldPartition/WorldPartitionRuntimeCellInterface.h"
 #if UE_WITH_IRIS
+#include "Iris/ReplicationSystem/ObjectReplicationBridge.h"
 #include "Iris/ReplicationSystem/ReplicationSystem.h"
 #include "Iris/ReplicationSystem/Conditionals/ReplicationCondition.h"
 #include "Net/Iris/ReplicationSystem/ReplicationSystemUtil.h"
@@ -60,20 +55,15 @@
 #include "PrimitiveSceneProxy.h"
 #include "UObject/MetaData.h"
 #include "Engine/DamageEvents.h"
-#include "Engine/OverlapInfo.h"
 
 #if WITH_EDITOR
 #include "FoliageHelper.h"
-#include "AssetRegistry/AssetRegistryModule.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "LevelInstance/LevelInstanceInterface.h"
 #endif
 
-#include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/WorldPartitionActorDescUtils.h"
-#include "WorldPartition/WorldPartitionRuntimeCell.h"
-#include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "WorldPartition/DataLayer/DataLayerAsset.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/ContentBundle/ContentBundlePaths.h"
@@ -391,7 +381,7 @@ bool AActor::CanBeInCluster() const
 void AActor::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
 {
 	AActor* This = CastChecked<AActor>(InThis);
-	Collector.AddReferencedObjects(This->OwnedComponents);
+	Collector.AddStableReferenceSet(&This->OwnedComponents);
 #if WITH_EDITOR
 	if (This->CurrentTransactionAnnotation.IsValid())
 	{
@@ -879,6 +869,16 @@ void AActor::Serialize(FArchive& Ar)
 		{
 			ContentBundleGuid = ContentBundlePaths::GetContentBundleGuidFromExternalActorPackagePath(GetPackage()->GetFName().ToString());
 		}
+		else // @todo_ow: remove once we find why some actors end up with invalid ContentBundleGuids
+		{
+			FGuid FixupContentBundleGuid = ContentBundlePaths::GetContentBundleGuidFromExternalActorPackagePath(GetPackage()->GetFName().ToString());
+			if (ContentBundleGuid != FixupContentBundleGuid)
+			{
+				UE_LOG(LogActor, Log, TEXT("Actor ContentBundleGuid was fixed up: %s"), *GetName());
+				ContentBundleGuid = FixupContentBundleGuid;
+			}
+		}
+
 	}
 #endif
 }
@@ -1061,52 +1061,89 @@ void AActor::ProcessEvent(UFunction* Function, void* Parameters)
 }
 
 #if WITH_EDITOR
-FBox AActor::GetStreamingBounds() const
+static bool IsComponentStreamingRelevant(const AActor* InActor, const UActorComponent* InComponent, FBox& OutStreamingBounds)
 {
-	FBox StreamingBounds(ForceInit);
+	check(InActor);
+	check(InComponent);
 
-	auto HandleComponent = [this, &StreamingBounds](const UActorComponent* Component)
+	if (!InComponent->IsRegistered())
 	{
-		check(Component);
+		return false;
+	}
 
-		if (!Component->IsRegistered())
+	if (InComponent->HasAnyFlags(RF_Transient))
+	{
+		return false;
+	}
+
+	if (!InActor->IsEditorOnly() && InComponent->IsEditorOnly())
+	{
+		return false;
+	}
+
+	OutStreamingBounds = InComponent->GetStreamingBounds();
+	return !!OutStreamingBounds.IsValid;
+}
+
+template <class F>
+static bool ForEachStreamingRelevantComponent(const AActor* InActor, F Func)
+{
+	bool bHasStreamingRelevantComponents = false;
+
+	auto HandleComponent = [InActor, &bHasStreamingRelevantComponents, &Func](const UActorComponent* Component)
+	{
+		FBox ComponentStreamingBound;
+		if (IsComponentStreamingRelevant(InActor, Component, ComponentStreamingBound))
 		{
-			return;
+			Func(Component, ComponentStreamingBound);
+			bHasStreamingRelevantComponents = true;
 		}
-
-		if (Component->HasAnyFlags(RF_Transient))
-		{
-			return;
-		}
-
-		if (!IsEditorOnly() && Component->IsEditorOnly())
-		{
-			return;
-		}
-
-		const FBox ComponentStreamingBound = Component->GetStreamingBounds();
-		if (!ComponentStreamingBound.IsValid)
-		{
-			return;
-		}
-
-		StreamingBounds += ComponentStreamingBound;
 	};
 
-	ForEachComponent<UPrimitiveComponent>(true, [this, &HandleComponent](UActorComponent* Component)
+	InActor->ForEachComponent<UPrimitiveComponent>(true, [&HandleComponent](UActorComponent* Component)
 	{
 		HandleComponent(Component);
 	});
 
-	if (!StreamingBounds.IsValid)
+	if (!bHasStreamingRelevantComponents)
 	{
-		ForEachComponent<UActorComponent>(false, [this, &HandleComponent](UActorComponent* Component)
+		InActor->ForEachComponent<UActorComponent>(false, [&HandleComponent](UActorComponent* Component)
 		{
 			HandleComponent(Component);
 		});
 	}
 
+	return bHasStreamingRelevantComponents;
+}
+
+static bool HasComponentForceActorNonSpatiallyLoaded(const AActor* InActor)
+{
+	bool bHasComponentForceActorNonSpatiallyLoaded = false;
+	ForEachStreamingRelevantComponent(InActor, [&bHasComponentForceActorNonSpatiallyLoaded](const UActorComponent* Component, const FBox& StreamingBound)
+	{
+		bHasComponentForceActorNonSpatiallyLoaded |= Component->ForceActorNonSpatiallyLoaded();
+	});
+	return bHasComponentForceActorNonSpatiallyLoaded;
+}
+
+FBox AActor::GetStreamingBounds() const
+{
+	FBox StreamingBounds(ForceInit);
+	ForEachStreamingRelevantComponent(this, [&StreamingBounds](const UActorComponent* Component, const FBox& StreamingBound)
+	{
+		StreamingBounds += StreamingBound;
+	});
 	return StreamingBounds;
+}
+
+bool AActor::GetIsSpatiallyLoaded() const
+{
+	return bIsSpatiallyLoaded && !HasComponentForceActorNonSpatiallyLoaded(this);
+}
+	
+bool AActor::CanChangeIsSpatiallyLoadedFlag() const
+{
+	return !HasComponentForceActorNonSpatiallyLoaded(this);
 }
 #endif
 
@@ -2112,17 +2149,19 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
-void AActor::K2_AttachToComponent(USceneComponent* Parent, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies)
+bool AActor::K2_AttachToComponent(USceneComponent* Parent, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies)
 {
-	AttachToComponent(Parent, FAttachmentTransformRules(LocationRule, RotationRule, ScaleRule, bWeldSimulatedBodies), SocketName);
+	return AttachToComponent(Parent, FAttachmentTransformRules(LocationRule, RotationRule, ScaleRule, bWeldSimulatedBodies), SocketName);
 }
 
-void AActor::AttachToComponent(USceneComponent* Parent, const FAttachmentTransformRules& AttachmentRules, FName SocketName)
+bool AActor::AttachToComponent(USceneComponent* Parent, const FAttachmentTransformRules& AttachmentRules, FName SocketName)
 {
 	if (RootComponent && Parent)
 	{
-		RootComponent->AttachToComponent(Parent, AttachmentRules, SocketName);
+		return RootComponent->AttachToComponent(Parent, AttachmentRules, SocketName);
 	}
+
+	return false;
 }
 
 void AActor::OnRep_AttachmentReplication()
@@ -2184,21 +2223,23 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
 
-void AActor::K2_AttachToActor(AActor* ParentActor, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies)
+bool AActor::K2_AttachToActor(AActor* ParentActor, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies)
 {
-	AttachToActor(ParentActor, FAttachmentTransformRules(LocationRule, RotationRule, ScaleRule, bWeldSimulatedBodies), SocketName);
+	return AttachToActor(ParentActor, FAttachmentTransformRules(LocationRule, RotationRule, ScaleRule, bWeldSimulatedBodies), SocketName);
 }
 
-void AActor::AttachToActor(AActor* ParentActor, const FAttachmentTransformRules& AttachmentRules, FName SocketName)
+bool AActor::AttachToActor(AActor* ParentActor, const FAttachmentTransformRules& AttachmentRules, FName SocketName)
 {
 	if (RootComponent && ParentActor)
 	{
 		USceneComponent* ParentDefaultAttachComponent = ParentActor->GetDefaultAttachComponent();
 		if (ParentDefaultAttachComponent)
 		{
-			RootComponent->AttachToComponent(ParentDefaultAttachComponent, AttachmentRules, SocketName);
+			return RootComponent->AttachToComponent(ParentDefaultAttachComponent, AttachmentRules, SocketName);
 		}
 	}
+
+	return false;
 }
 
 void AActor::DetachRootComponentFromParent(bool bMaintainWorldPosition)
@@ -3609,7 +3650,7 @@ static void ValidateDeferredTransformCache()
 	}
 }
 
-void AActor::PostSpawnInitialize(FTransform const& UserSpawnTransform, AActor* InOwner, APawn* InInstigator, bool bRemoteOwned, bool bNoFail, bool bDeferConstruction)
+void AActor::PostSpawnInitialize(FTransform const& UserSpawnTransform, AActor* InOwner, APawn* InInstigator, bool bRemoteOwned, bool bNoFail, bool bDeferConstruction, ESpawnActorScaleMethod TransformScaleMethod)
 {
 	// General flow here is like so
 	// - Actor sets up the basics.
@@ -3646,7 +3687,17 @@ void AActor::PostSpawnInitialize(FTransform const& UserSpawnTransform, AActor* I
 		// Respect any non-default transform value that the root component may have received from the archetype that's owned
 		// by the native CDO, so the final transform might not always necessarily equate to the passed-in UserSpawnTransform.
 		const FTransform RootTransform(SceneRootComponent->GetRelativeRotation(), SceneRootComponent->GetRelativeLocation(), SceneRootComponent->GetRelativeScale3D());
-		const FTransform FinalRootComponentTransform = RootTransform * UserSpawnTransform;
+		FTransform FinalRootComponentTransform = RootTransform;
+		switch(TransformScaleMethod)
+		{
+		case ESpawnActorScaleMethod::OverrideRootScale:
+			FinalRootComponentTransform = UserSpawnTransform;
+			break;
+		case ESpawnActorScaleMethod::MultiplyWithRoot:
+		case ESpawnActorScaleMethod::SelectDefaultAtRuntime:
+			FinalRootComponentTransform = RootTransform * UserSpawnTransform;
+			break;
+		}
 		SceneRootComponent->SetWorldTransform(FinalRootComponentTransform, false, nullptr, ETeleportType::ResetPhysics);
 	}
 
@@ -3697,7 +3748,7 @@ void AActor::PostSpawnInitialize(FTransform const& UserSpawnTransform, AActor* I
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(Actor)
 
-void AActor::FinishSpawning(const FTransform& UserTransform, bool bIsDefaultTransform, const FComponentInstanceDataCache* InstanceDataCache)
+void AActor::FinishSpawning(const FTransform& UserTransform, bool bIsDefaultTransform, const FComponentInstanceDataCache* InstanceDataCache, ESpawnActorScaleMethod TransformScaleMethod)
 {
 #if ENABLE_SPAWNACTORTIMER
 	FScopedSpawnActorTimer SpawnTimer(GetClass()->GetFName(), ESpawnActorTimingType::FinishSpawning);
@@ -3741,7 +3792,7 @@ void AActor::FinishSpawning(const FTransform& UserTransform, bool bIsDefaultTran
 
 		{
 			FEditorScriptExecutionGuard ScriptGuard;
-			ExecuteConstruction(FinalRootComponentTransform, nullptr, InstanceDataCache, bIsDefaultTransform);
+			ExecuteConstruction(FinalRootComponentTransform, nullptr, InstanceDataCache, bIsDefaultTransform, TransformScaleMethod);
 		}
 
 		{
@@ -3911,6 +3962,12 @@ void AActor::SetReplicates(bool bInReplicates)
 					ForcePropertyCompare();
 				}
 			}
+#if UE_WITH_IRIS
+			else if (HasActorBegunPlay())
+			{
+				EndReplication(EEndPlayReason::RemovedFromWorld);
+			}
+#endif
 
 			MARK_PROPERTY_DIRTY_FROM_NAME(AActor, RemoteRole, this);
 		}
@@ -3951,12 +4008,15 @@ void AActor::SetAutonomousProxy(const bool bInAutonomousProxy, const bool bAllow
 			// Update autonomous role condition
 			if (UReplicationSystem* ReplicationSystem = UE::Net::FReplicationSystemUtil::GetReplicationSystem(GetNetOwner()))
 			{
-				const UE::Net::FNetHandle NetHandle = UE::Net::FReplicationSystemUtil::GetNetHandle(this);
-				if (NetHandle.IsValid())
+				if (UObjectReplicationBridge* Bridge = ReplicationSystem->GetReplicationBridgeAs<UObjectReplicationBridge>())
 				{
-					const uint32 OwningNetConnectionId = ReplicationSystem->GetOwningNetConnection(NetHandle);
-					const bool bEnableAutonomousCondition = RemoteRole == ROLE_AutonomousProxy;
-					ReplicationSystem->SetReplicationConditionConnectionFilter(NetHandle, UE::Net::EReplicationCondition::RoleAutonomous, OwningNetConnectionId, bEnableAutonomousCondition);
+					const UE::Net::FNetRefHandle RefHandle = Bridge->GetReplicatedRefHandle(this);
+					if (RefHandle.IsValid())
+					{
+						const uint32 OwningNetConnectionId = ReplicationSystem->GetOwningNetConnection(RefHandle);
+						const bool bEnableAutonomousCondition = RemoteRole == ROLE_AutonomousProxy;
+						ReplicationSystem->SetReplicationConditionConnectionFilter(RefHandle, UE::Net::EReplicationCondition::RoleAutonomous, OwningNetConnectionId, bEnableAutonomousCondition);
+					}
 				}
 			}
 #endif // UE_WITH_IRIS
@@ -4178,6 +4238,19 @@ void AActor::EnableInput(APlayerController* PlayerController)
 		}
 
 		PlayerController->PushInputComponent(InputComponent);
+	}
+}
+
+void AActor::CreateInputComponent(TSubclassOf<UInputComponent> InputComponentToCreate)
+{
+	if (InputComponentToCreate && !InputComponent)
+	{
+		InputComponent = NewObject<UInputComponent>(this, InputComponentToCreate);
+		InputComponent->RegisterComponent();
+		InputComponent->bBlockInput = bBlockInput;
+		InputComponent->Priority = InputPriority;
+
+		UInputDelegateBinding::BindInputDelegatesWithSubojects(this, InputComponent);
 	}
 }
 
@@ -4671,9 +4744,10 @@ ENetMode AActor::InternalGetNetMode() const
 		return NetDriver->GetNetMode();
 	}
 
-	if (UDemoNetDriver* DemoNetDriver = World ? World->GetDemoNetDriver() : nullptr)
+	if (World)
 	{
-		return DemoNetDriver->GetNetMode();
+		// World handles the demo net mode and has some special case checks for PIE
+		return World->GetNetMode();
 	}
 
 	return NM_Standalone;
@@ -5160,6 +5234,16 @@ void AActor::GetAllChildActors(TArray<AActor*>& ChildActors, bool bIncludeDescen
 
 void AActor::UnregisterAllComponents(const bool bForReregister)
 {
+	// This function may be called multiple times for each actor at different states of destruction:
+	// Use the cached all components registration flag to ensure the world is only notified once.
+	if (bHasRegisteredAllComponents)
+	{
+		if (UWorld* OwningWorld = GetWorld())
+		{
+			OwningWorld->NotifyPreUnregisterAllActorComponents(this);
+		}
+	}
+
 	TInlineComponentArray<UActorComponent*> Components;
 	GetComponents(Components);
 
@@ -5307,6 +5391,9 @@ bool AActor::IncrementalRegisterComponents(int32 NumComponentsToRegister, FRegis
 		bHasRegisteredAllComponents = true;
 		// Finally, call PostRegisterAllComponents
 		PostRegisterAllComponents();
+
+		// After all components have been registered the actor is considered fully added: notify the owning world.
+		World->NotifyPostRegisterAllActorComponents(this);
 		return true;
 	}
 	

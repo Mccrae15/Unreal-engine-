@@ -4,9 +4,10 @@
 #include "AudioDecompress.h"
 #include "AudioDevice.h"
 #include "Interfaces/IAudioFormat.h"
-#include "ContentStreaming.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "ADPCMAudioInfo.h"
+#include "Misc/CoreStats.h"
+#include "Misc/ScopeRWLock.h"
+#include "Stats/StatsTrace.h"
 
 IStreamedCompressedInfo::IStreamedCompressedInfo()
 	: bIsStreaming(false)
@@ -701,15 +702,9 @@ FAsyncAudioDecompressWorker::FAsyncAudioDecompressWorker(USoundWave* InWave, int
 	, NumPrecacheFrames(InPrecacheBufferNumFrames)
 {
 	check(NumPrecacheFrames > 0);
-	if (InAudioDevice)
-	{
-		AudioInfo = InAudioDevice->CreateCompressedAudioInfo(Wave);
-	}
-	else if (GEngine && GEngine->GetMainAudioDevice())
-	{
-		// alternatively, we could expose InWave::InternalProxy via public getter to avoid the proxy creation
-		AudioInfo = GEngine->GetMainAudioDevice()->CreateCompressedAudioInfo(InWave->CreateSoundWaveProxy());
-	}
+
+
+	AudioInfo = IAudioInfoFactoryRegistry::Get().Create(InWave->GetRuntimeFormat());
 }
 
 void FAsyncAudioDecompressWorker::DoWork()

@@ -118,6 +118,19 @@ namespace UnrealBuildTool
 		public List<FileItem> CompiledModuleInterfaces = new List<FileItem>();
 		public List<FileItem> GeneratedHeaderFiles = new List<FileItem>();
 		public FileItem? PrecompiledHeaderFile = null;
+		public Dictionary<UnrealArch, FileItem> PerArchPrecompiledHeaderFiles = new();
+
+		public void Merge(CPPOutput Other, UnrealArch Architecture)
+		{
+			ObjectFiles.AddRange(Other.ObjectFiles);
+			CompiledModuleInterfaces.AddRange(Other.CompiledModuleInterfaces);
+			GeneratedHeaderFiles.AddRange(Other.GeneratedHeaderFiles);
+			ObjectFiles.AddRange(Other.ObjectFiles);
+			if (Other.PrecompiledHeaderFile != null)
+			{
+				PerArchPrecompiledHeaderFiles[Architecture] = Other.PrecompiledHeaderFile;
+			}
+		}
 	}
 
 	/// <summary>
@@ -138,7 +151,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The architecture that is being compiled/linked (empty string by default)
 		/// </summary>
-		public readonly string Architecture;
+		public UnrealArchitectures Architectures;
+
+		/// <summary>
+		/// Gets the Architecture in the normal case where there is a single Architecture in Architectures
+		/// </summary>
+		public UnrealArch Architecture => Architectures.SingleArchitecture;
 
 		/// <summary>
 		/// Cache of source file metadata
@@ -169,6 +187,16 @@ namespace UnrealBuildTool
 		/// Use run time type information
 		/// </summary>
 		public bool bUseRTTI = false;
+
+		/// <summary>
+		/// Use Position Independent Executable (PIE). Has an overhead cost
+		/// </summary>
+		public bool bUsePIE = false;
+
+		/// <summary>
+		/// Use Stack Protection. Has an overhead cost
+		/// </summary>
+		public bool bUseStackProtection = false;
 
 		/// <summary>
 		/// Enable inlining.
@@ -229,6 +257,13 @@ namespace UnrealBuildTool
 		public bool bEnableObjCExceptions = false;
 
 		/// <summary>
+		/// Enable objective C automatic reference counting (ARC)
+		/// If you set this to true you should not use shared PCHs for this module. The engine won't be extensively using ARC in the short term  
+		/// Not doing this will result in a compile errors because shared PCHs were compiled with different flags than consumer
+		/// </summary>
+		public bool bEnableObjCAutomaticReferenceCounting = false;
+
+		/// <summary>
 		/// How to treat any warnings in the code
 		/// </summary>
 		public WarningLevel DefaultWarningLevel = WarningLevel.Warning;
@@ -267,6 +302,19 @@ namespace UnrealBuildTool
 		/// Whether to disable all static analysis - Clang, MSVC, PVS-Studio.
 		/// </summary>
 		public bool bDisableStaticAnalysis = false;
+
+		/// <summary>
+		/// Enable additional analyzer extension warnings using the EspXEngine plugin. This is only supported for MSVC.
+		/// See https://learn.microsoft.com/en-us/cpp/code-quality/using-the-cpp-core-guidelines-checkers
+		/// This will add a large number of warnings by default. It's recommended to use StaticAnalyzerRulesets if this is enabled.
+		/// </summary>
+		public bool bStaticAnalyzerExtensions = false;
+
+		/// <summary>
+		/// The static analyzer rulesets that should be used to filter warnings. This is only supported for MSVC.
+		/// See https://learn.microsoft.com/en-us/cpp/code-quality/using-rule-sets-to-specify-the-cpp-rules-to-run
+		/// </summary>
+		public HashSet<FileReference> StaticAnalyzerRulesets = new HashSet<FileReference>();
 
 		/// <summary>
 		/// The static analyzer checkers that should be enabled rather than the defaults. This is only supported for Clang.
@@ -353,35 +401,30 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bAllowLTCG;
 
-        /// <summary>
-        /// Whether to enable Profile Guided Optimization (PGO) instrumentation in this build.
-        /// </summary>
-        public bool bPGOProfile;
-        
-        /// <summary>
-        /// Whether to optimize this build with Profile Guided Optimization (PGO).
-        /// </summary>
-        public bool bPGOOptimize;
+		/// <summary>
+		/// Whether to enable Profile Guided Optimization (PGO) instrumentation in this build.
+		/// </summary>
+		public bool bPGOProfile;
 
-        /// <summary>
-        /// Platform specific directory where PGO profiling data is stored.
-        /// </summary>
-        public string? PGODirectory;
+		/// <summary>
+		/// Whether to optimize this build with Profile Guided Optimization (PGO).
+		/// </summary>
+		public bool bPGOOptimize;
 
-        /// <summary>
-        /// Platform specific filename where PGO profiling data is saved.
-        /// </summary>
-        public string? PGOFilenamePrefix;
+		/// <summary>
+		/// Platform specific directory where PGO profiling data is stored.
+		/// </summary>
+		public string? PGODirectory;
+
+		/// <summary>
+		/// Platform specific filename where PGO profiling data is saved.
+		/// </summary>
+		public string? PGOFilenamePrefix;
 
 		/// <summary>
 		/// Whether to log detailed timing info from the compiler
 		/// </summary>
 		public bool bPrintTimingInfo;
-
-		/// <summary>
-		/// Whether to output a dependencies file along with the output build products
-		/// </summary>
-		public bool bGenerateDependenciesFile = true;
 
 		/// <summary>
 		/// When enabled, allows XGE to compile pre-compiled header files on remote machines.  Otherwise, PCHs are always generated locally.
@@ -445,6 +488,16 @@ namespace UnrealBuildTool
 		public FileItem? PrecompiledHeaderFile = null;
 
 		/// <summary>
+		/// A dictionary of PCH files for multiple architectures
+		/// </summary>
+		public Dictionary<UnrealArch, FileItem>? PerArchPrecompiledHeaderFiles = null;
+
+		/// <summary>
+		/// True if a single PRecompiledHeader exists, or at least one PerArchPrecompiledHeaderFile exists
+		/// </summary>
+		public bool bHasPrecompiledHeader => PrecompiledHeaderAction == PrecompiledHeaderAction.Include;
+
+		/// <summary>
 		/// Whether or not UHT is being built
 		/// </summary>
 		public bool bHackHeaderGenerator;
@@ -494,11 +547,11 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Default constructor.
 		/// </summary>
-        public CppCompileEnvironment(UnrealTargetPlatform Platform, CppConfiguration Configuration, string Architecture, SourceFileMetadataCache MetadataCache)
+		public CppCompileEnvironment(UnrealTargetPlatform Platform, CppConfiguration Configuration, UnrealArchitectures Architectures, SourceFileMetadataCache MetadataCache)
 		{
 			this.Platform = Platform;
 			this.Configuration = Configuration;
-			this.Architecture = Architecture;
+			this.Architectures = Architectures;
 			this.MetadataCache = MetadataCache;
 			this.SharedPCHs = new List<PrecompiledHeaderTemplate>();
 			this.UserIncludePaths = new HashSet<DirectoryReference>();
@@ -514,13 +567,19 @@ namespace UnrealBuildTool
 		{
 			Platform = Other.Platform;
 			Configuration = Other.Configuration;
-			Architecture = Other.Architecture;
+			Architectures = new(Other.Architectures);
 			MetadataCache = Other.MetadataCache;
 			SharedPCHs = Other.SharedPCHs;
 			PrecompiledHeaderIncludeFilename = Other.PrecompiledHeaderIncludeFilename;
+			if (Other.PerArchPrecompiledHeaderFiles != null)
+			{
+				PerArchPrecompiledHeaderFiles = new(Other.PerArchPrecompiledHeaderFiles);
+			}
 			PrecompiledHeaderAction = Other.PrecompiledHeaderAction;
 			bUseSharedBuildEnvironment = Other.bUseSharedBuildEnvironment;
 			bUseRTTI = Other.bUseRTTI;
+			bUsePIE = Other.bUsePIE;
+			bUseStackProtection = Other.bUseStackProtection;
 			bUseInlining = Other.bUseInlining;
 			bCompileISPC = Other.bCompileISPC;
 			bUseAVX = Other.bUseAVX;
@@ -531,6 +590,7 @@ namespace UnrealBuildTool
 			bRetainFramePointers = Other.bRetainFramePointers;
 			bEnableExceptions = Other.bEnableExceptions;
 			bEnableObjCExceptions = Other.bEnableObjCExceptions;
+			bEnableObjCAutomaticReferenceCounting = Other.bEnableObjCAutomaticReferenceCounting;
 			DefaultWarningLevel = Other.DefaultWarningLevel;
 			DeprecationWarningLevel = Other.DeprecationWarningLevel;
 			ShadowVariableWarningLevel = Other.ShadowVariableWarningLevel;
@@ -561,7 +621,6 @@ namespace UnrealBuildTool
 			PGOFilenamePrefix = Other.PGOFilenamePrefix;
 			PGODirectory = Other.PGODirectory;
 			bPrintTimingInfo = Other.bPrintTimingInfo;
-			bGenerateDependenciesFile = Other.bGenerateDependenciesFile;
 			bAllowRemotelyCompiledPCHs = Other.bAllowRemotelyCompiledPCHs;
 			UserIncludePaths = new HashSet<DirectoryReference>(Other.UserIncludePaths);
 			SystemIncludePaths = new HashSet<DirectoryReference>(Other.SystemIncludePaths);
@@ -569,6 +628,7 @@ namespace UnrealBuildTool
 			bCheckSystemHeadersForModification = Other.bCheckSystemHeadersForModification;
 			ForceIncludeFiles.AddRange(Other.ForceIncludeFiles);
 			AdditionalPrerequisites.AddRange(Other.AdditionalPrerequisites);
+			FileInlineGenCPPMap = new Dictionary<FileItem, List<FileItem>>(Other.FileInlineGenCPPMap);
 			Definitions.AddRange(Other.Definitions);
 			AdditionalArguments = Other.AdditionalArguments;
 			AdditionalFrameworks.AddRange(Other.AdditionalFrameworks);
@@ -581,6 +641,24 @@ namespace UnrealBuildTool
 			IncludeOrderVersion = Other.IncludeOrderVersion;
 			bDeterministic = Other.bDeterministic;
 			CrashDiagnosticDirectory = Other.CrashDiagnosticDirectory;
+		}
+
+		public CppCompileEnvironment(CppCompileEnvironment Other, UnrealArch OverrideArchitecture)
+			: this(Other)
+		{
+			Architectures = new UnrealArchitectures(OverrideArchitecture);
+			if (Other.PerArchPrecompiledHeaderFiles != null)
+			{
+				Other.PerArchPrecompiledHeaderFiles.TryGetValue(OverrideArchitecture, out PrecompiledHeaderFile);
+			}
+			else
+			{
+				PrecompiledHeaderFile = null;
+			}
+			if (PrecompiledHeaderFile == null && PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
+			{
+				Console.WriteLine("badness");
+			}
 		}
 	}
 }

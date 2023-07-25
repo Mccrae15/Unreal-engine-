@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DTLSCertStore.h"
+#include "DTLSCertificate.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "HAL/IConsoleManager.h"
+
+#if WITH_SSL
 
 #if !UE_BUILD_SHIPPING
 static TAutoConsoleVariable<int32> CVarDTLSDebugFingerprints(TEXT("DTLS.DebugFingerprints"), 0, TEXT(""));
@@ -59,7 +62,35 @@ TSharedPtr<FDTLSCertificate> FDTLSCertStore::GetCert(const FString& Identifier) 
 	return CertMap.FindRef(Identifier);
 }
 
+TSharedPtr<FDTLSCertificate> FDTLSCertStore::ImportCert(const FString& CertPath) const
+{
+	TSharedRef<FDTLSCertificate> Cert = MakeShared<FDTLSCertificate>();
+	if (Cert->ImportCertificate(CertPath))
+	{
+		return Cert;
+	}
+
+	UE_LOG(LogDTLSHandler, Error, TEXT("ImportCert: Failed to import certificate"));
+	return nullptr;
+}
+
+TSharedPtr<FDTLSCertificate> FDTLSCertStore::ImportCert(const FString& CertPath, const FString& Identifier)
+{
+	TSharedRef<FDTLSCertificate> Cert = MakeShared<FDTLSCertificate>();
+	if (Cert->ImportCertificate(CertPath) && !Identifier.IsEmpty())
+	{
+		CertMap.Emplace(Identifier, Cert);
+
+		return Cert;
+	}
+
+	UE_LOG(LogDTLSHandler, Error, TEXT("ImportCert: Failed to import certificate"));
+	return nullptr;
+}
+
 bool FDTLSCertStore::RemoveCert(const FString& Identifier)
 {
 	return (CertMap.Remove(Identifier) != 0);
 }
+
+#endif // WITH_SSL

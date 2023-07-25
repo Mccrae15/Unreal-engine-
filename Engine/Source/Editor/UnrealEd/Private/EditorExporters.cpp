@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "CoreMinimal.h"
+#include "Animation/Skeleton.h"
+#include "Audio.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -12,6 +14,7 @@
 #include "Misc/OutputDeviceFile.h"
 #include "UObject/Object.h"
 #include "UObject/UObjectIterator.h"
+#include "Misc/ScopedSlowTask.h"
 #include "Misc/TextBuffer.h"
 #include "UObject/Package.h"
 #include "Engine/EngineTypes.h"
@@ -62,6 +65,7 @@
 #include "StaticMeshAttributes.h"
 #include "StaticMeshOperations.h"
 #include "MaterialUtilities.h"
+#include "MaterialShared.h"
 #include "InstancedFoliageActor.h"
 #include "LandscapeProxy.h"
 #include "Landscape.h"
@@ -519,9 +523,18 @@ bool ULevelExporterT3D::ExportText( const FExportObjectInnerContext* Context, UO
 
 	TextIndent += 3;
 
+	const int32 ActorNumberToCopy = bAllActors ? Level->Actors.Num() : Context->GetObjectNumber();
+	FScopedSlowTask SlowTask(ActorNumberToCopy, NSLOCTEXT("UnrealEd", "ExportingActors", "Exporting Actors"));
+	const bool bShowCancelButton = true;
+	SlowTask.MakeDialogDelayed(1.f, bShowCancelButton);
+
 	// loop through all of the actors just in this level
 	for (AActor* Actor : Level->Actors)
 	{
+		if (SlowTask.ShouldCancel())
+		{
+			break;
+		}
 		// Don't export the default physics volume, as it doesn't have a UModel associated with it
 		// and thus will not import properly.
 		if ( Actor == DefaultPhysicsVolume )
@@ -539,7 +552,9 @@ bool ULevelExporterT3D::ExportText( const FExportObjectInnerContext* Context, UO
 
 				AActor* ParentActor = Actor->GetAttachParentActor();
 				FName SocketName = Actor->GetAttachParentSocketName();
-				Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+				FDetachmentTransformRules DetachmentTransformRules = FDetachmentTransformRules::KeepWorldTransform;
+				DetachmentTransformRules.bCallModify = false;
+				Actor->DetachFromActor(DetachmentTransformRules);
 
 				FString ParentActorString = ( ParentActor ? FString::Printf(TEXT(" ParentActor=%s"), *ParentActor->GetName() ) : TEXT(""));
 				FString SocketNameString = ( (ParentActor && SocketName != NAME_None) ? FString::Printf(TEXT(" SocketName=%s"), *SocketName.ToString() ) : TEXT(""));
@@ -565,6 +580,8 @@ bool ULevelExporterT3D::ExportText( const FExportObjectInnerContext* Context, UO
 			{
 				GEditor->GetSelectedActors()->Deselect(Actor);
 			}
+
+			SlowTask.EnterProgressFrame();
 		}
 	}
 
@@ -602,7 +619,7 @@ bool ULevelExporterT3D::ExportText( const FExportObjectInnerContext* Context, UO
 	Ar.Logf( TEXT("%sEnd Map\r\n"), FCString::Spc(TextIndent) );
 
 
-	return 1;
+	return !SlowTask.ShouldCancel();
 }
 
 void ULevelExporterT3D::ExportComponentExtra(const FExportObjectInnerContext* Context, const TArray<UActorComponent*>& Components, FOutputDevice& Ar, uint32 PortFlags)
@@ -1062,9 +1079,7 @@ static void ExportMaterialPropertyTexture(const FString& BMPFilename, UMaterialI
 	TArray<FColor> OutputBMP;
 	FIntPoint OutSize{};
 
-	const TEnumAsByte<EBlendMode> BlendMode = Material->GetBlendMode();
-
-	bool bIsValidProperty = FMaterialUtilities::SupportsExport(BlendMode, MatProp);
+	bool bIsValidProperty = FMaterialUtilities::SupportsExport(IsOpaqueBlendMode(*Material), MatProp);
 	if (bIsValidProperty)
 	{
 		FMeshData MeshSettings;
@@ -1418,8 +1433,8 @@ static void ExportPolys( UPolys* Polys, int32 &PolyNum, int32 TotalPolys, FFeedb
 					const FVert& Vert = Model->Verts[TriVertIndices[TriVertexIndex]];
 					const FVector& Vertex = (FVector)Model->Points[Vert.pVertex];
 
-					float U = ((Vertex - TextureBase) | TextureX) / UModel::GetGlobalBSPTexelScale();
-					float V = ((Vertex - TextureBase) | TextureY) / UModel::GetGlobalBSPTexelScale();
+					double U = ((Vertex - TextureBase) | TextureX) / UModel::GetGlobalBSPTexelScale();
+					double V = ((Vertex - TextureBase) | TextureY) / UModel::GetGlobalBSPTexelScale();
 
 					Vertices[TriVertexIndex].Vert = Vertex;
 					Vertices[TriVertexIndex].UV = FVector2D( U, V );

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "CoreTypes.h"
+#include "Misc/Build.h"
 #include <type_traits>
 
 // Formatters

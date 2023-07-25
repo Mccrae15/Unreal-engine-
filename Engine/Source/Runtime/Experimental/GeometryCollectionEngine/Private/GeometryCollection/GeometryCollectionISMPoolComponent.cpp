@@ -8,6 +8,8 @@
 
 #include "GeometryCollection/GeometryCollectionComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCollectionISMPoolComponent)
+
 FGeometryCollectionMeshGroup::FMeshId FGeometryCollectionMeshGroup::AddMesh(const FGeometryCollectionStaticMeshInstance& MeshInstance, int32 InstanceCount, const FGeometryCollectionMeshInfo& ISMInstanceInfo)
 {
 	FMeshId* MeshIndex = Meshes.Find(MeshInstance);
@@ -73,9 +75,11 @@ int32 FGeometryCollectionISM::AddInstanceGroup(int32 InstanceCount)
 	const FInstanceGroups::FInstanceGroupRange& NewInstanceGroup = InstanceGroups.GetGroup(InstanceGroupIndex);
 	const int32 TotalInstanceCount = NewInstanceGroup.Start + NewInstanceGroup.Count;
 	ISMComponent->PreAllocateInstancesMemory(TotalInstanceCount);
+	FTransform ZeroScaleTransform;
+	ZeroScaleTransform.SetIdentityZeroScale();
 	for (int32 InstanceIndex = NewInstanceGroup.Start; InstanceIndex < TotalInstanceCount; InstanceIndex++)
 	{
-		ISMComponent->AddInstance(FTransform::Identity, true);
+		ISMComponent->AddInstance(ZeroScaleTransform, true);
 	}
 	return InstanceGroupIndex;
 }

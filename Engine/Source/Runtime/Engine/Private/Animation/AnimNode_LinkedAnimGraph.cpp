@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimNode_LinkedAnimGraph.h"
-#include "Animation/AnimClassInterface.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimNode_LinkedInputPose.h"
 #include "Animation/AnimNode_Root.h"
-#include "Animation/AnimTrace.h"
+#include "Animation/BlendProfile.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Animation/ExposedValueHandler.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_LinkedAnimGraph)
 
@@ -230,12 +231,15 @@ void FAnimNode_LinkedAnimGraph::TeardownInstance(const UAnimInstance* InOwningAn
 		// Never delete the owning animation instance
 		if (InstanceToRun != InOwningAnimInstance)
 		{
-			USkeletalMeshComponent* MeshComp = InOwningAnimInstance->GetSkelMeshComponent();
-			check(MeshComp);
-			MeshComp->GetLinkedAnimInstances().Remove(InstanceToRun);
-			// Only call UninitializeAnimation if we are not the owning anim instance
-			InstanceToRun->UninitializeAnimation();
-			InstanceToRun->MarkAsGarbage();
+			if (CanTeardownLinkedInstance(InstanceToRun))
+			{
+				USkeletalMeshComponent* MeshComp = InOwningAnimInstance->GetSkelMeshComponent();
+				check(MeshComp);
+				MeshComp->GetLinkedAnimInstances().Remove(InstanceToRun);
+				// Only call UninitializeAnimation if we are not the owning anim instance
+				InstanceToRun->UninitializeAnimation();
+				InstanceToRun->MarkAsGarbage();
+			}
 		}
 
 		InstanceToRun = nullptr;
@@ -298,19 +302,6 @@ void FAnimNode_LinkedAnimGraph::ReinitializeLinkedAnimInstance(const UAnimInstan
 void FAnimNode_LinkedAnimGraph::SetAnimClass(TSubclassOf<UAnimInstance> InClass, const UAnimInstance* InOwningAnimInstance)
 {
 	UClass* NewClass = InClass.Get();
-	if(NewClass)
-	{
-		// Verify target skeleton match at runtime
-		IAnimClassInterface* LinkedAnimBlueprintClass = IAnimClassInterface::GetFromClass(NewClass);
-		IAnimClassInterface* OuterAnimBlueprintClass = IAnimClassInterface::GetFromClass(InOwningAnimInstance->GetClass());
-		USkeleton* LinkedSkeleton = LinkedAnimBlueprintClass->GetTargetSkeleton();
-		USkeleton* OuterSkeleton = OuterAnimBlueprintClass->GetTargetSkeleton();
-		if(!LinkedSkeleton->IsCompatible(OuterSkeleton))
-		{
-			UE_LOG(LogAnimation, Warning, TEXT("Setting linked anim instance class: Class has a mismatched target skeleton. Expected %s, found %s."), OuterSkeleton ? *OuterSkeleton->GetName() : TEXT("null"), LinkedSkeleton ? *LinkedSkeleton->GetName() : TEXT("null"));
-			return;
-		}
-	}
 
 	// Verified OK, so set it now
 	TSubclassOf<UAnimInstance> OldClass = InstanceClass;
@@ -484,10 +475,26 @@ void FAnimNode_LinkedAnimGraph::HandleObjectsReinstanced_Impl(UObject* InSourceO
 	if(UseLegacyAnimInstanceReinstancingBehavior == nullptr || !UseLegacyAnimInstanceReinstancingBehavior->GetBool())
 	{
 		UAnimInstance* SourceAnimInstance = CastChecked<UAnimInstance>(InSourceObject);
-	
+		FAnimInstanceProxy& SourceProxy = SourceAnimInstance->GetProxyOnAnyThread<FAnimInstanceProxy>();
+
+		// Call Initialize here to ensure any custom proxies are initialized (as they may have been re-created during
+		// re-instancing, and they dont call the constructor that takes a UAnimInstance*)
+		SourceProxy.Initialize(SourceAnimInstance);
+
 		InitializeProperties(SourceAnimInstance, GetTargetClass());
 		DynamicUnlink(SourceAnimInstance);
 		DynamicLink(SourceAnimInstance);
+
+		SourceProxy.InitializeCachedClassData();
+
+		// Ensure we have a valid mesh at this point, as calling into the graph without one can result in crashes
+		// as we assume a valid bone container/reference skeleton is present
+		USkeletalMeshComponent* MeshComponent = SourceAnimInstance->GetSkelMeshComponent();
+		if(MeshComponent && MeshComponent->GetSkeletalMeshAsset())
+		{
+			FAnimationInitializeContext Context(&SourceProxy);
+			InitializeSubGraph_AnyThread(Context);
+		}
 	}
 }
 #endif

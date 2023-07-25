@@ -6,11 +6,41 @@
 #include "PhysicsControlComponentHelpers.h"
 #include "PhysicsControlComponentImpl.h"
 
+#include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/ConstraintInstance.h"
 #include "PhysicsEngine/BodyInstance.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "Physics/PhysicsInterfaceCore.h"
+
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/BillboardComponent.h"
+
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "Engine/Texture2D.h"
+
+#include "SceneManagement.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PhysicsControlComponent)
+
+//======================================================================================================================
+// This is used, rather than UEnum::GetValueAsString, so that we have more control over the string returned, which 
+// gets used as a prefix for the automatically named sets etc
+static FName GetControlTypeName(EPhysicsControlType ControlType)
+{
+	switch (ControlType)
+	{
+	case EPhysicsControlType::ParentSpace:
+		return "ParentSpace";
+	case EPhysicsControlType::WorldSpace:
+		return "WorldSpace";
+	default:
+		return "None";
+	}
+}
 
 //======================================================================================================================
 UPhysicsControlComponent::UPhysicsControlComponent(const FObjectInitializer& ObjectInitializer)
@@ -18,19 +48,15 @@ UPhysicsControlComponent::UPhysicsControlComponent(const FObjectInitializer& Obj
 {
 	Implementation = MakePimpl<FPhysicsControlComponentImpl>(this);
 
-	TeleportDistanceThreshold = 300.0f;
-	TeleportRotationThreshold = 0.0f;
-
-	bShowDebugVisualization = true;
-	VisualizationSizeScale = 5.0f;
-	VelocityPredictionTime = 0.2f;
-	MaxNumControlsOrModifiersPerName = 256;
-
 	// ActorComponent setup
 	bWantsInitializeComponent = true;
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bTickEvenWhenPaused = true;
 	PrimaryComponentTick.TickGroup = TG_PrePhysics;
+
+#if WITH_EDITORONLY_DATA
+	bVisualizeComponent = true;
+#endif
 }
 
 //======================================================================================================================
@@ -47,15 +73,15 @@ void UPhysicsControlComponent::BeginDestroy()
 	{
 		for (TPair<FName, FPhysicsControlRecord>& PhysicsControlRecordPair : Implementation->PhysicsControlRecords)
 		{
-			DestroyControl(PhysicsControlRecordPair.Key);
-			FPhysicsControlRecord& Record = PhysicsControlRecordPair.Value;
-			Record.PhysicsControlState.Reset();
+			Implementation->DestroyControl(
+				PhysicsControlRecordPair.Key, FPhysicsControlComponentImpl::EDestroyBehavior::KeepRecord);
 		}
 		Implementation->PhysicsControlRecords.Empty();
 
 		for (TPair<FName, FPhysicsBodyModifier>& PhysicsBodyModifierPair : Implementation->PhysicsBodyModifiers)
 		{
-			DestroyBodyModifier(PhysicsBodyModifierPair.Key);
+			Implementation->DestroyBodyModifier(
+				PhysicsBodyModifierPair.Key, FPhysicsControlComponentImpl::EDestroyBehavior::KeepRecord);
 		}
 		Implementation->PhysicsBodyModifiers.Empty();
 	}
@@ -64,35 +90,11 @@ void UPhysicsControlComponent::BeginDestroy()
 
 //======================================================================================================================
 void UPhysicsControlComponent::TickComponent(
-	float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+	float                        DeltaTime, 
+	enum ELevelTick              TickType, 
+	FActorComponentTickFunction* ThisTickFunction)
 {
-	// Handle control removal
-	bool bRemovedOneControl = false;
-	for (auto It = Implementation->PhysicsControlRecords.CreateIterator(); It; ++It)
-	{
-		FPhysicsControlRecord& Record = It.Value();
-
-		if (Record.PhysicsControlState.bPendingDestroy)
-		{
-			Record.PhysicsControlState.Reset();
-			It.RemoveCurrent();
-			bRemovedOneControl = true;
-		}
-	}
-	Implementation->PhysicsControlRecords.Compact();
-
-	// Handle body modifier removal
-	bool bRemovedOneBodyModifier = false;
-	for (auto It = Implementation->PhysicsBodyModifiers.CreateIterator(); It; ++It)
-	{
-		FPhysicsBodyModifier& BodyModifier = It.Value();
-		if (BodyModifier.bPendingDestroy)
-		{
-			It.RemoveCurrent();
-			bRemovedOneBodyModifier = true;
-		}
-	}
-	Implementation->PhysicsBodyModifiers.Compact();
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	// We only want to continue the update if this is a "real" tick that corresponds to updating the
 	// world. We certainly don't want to tick during a pause, because part of the processing involves 
@@ -101,6 +103,10 @@ void UPhysicsControlComponent::TickComponent(
 	{
 		return;
 	}
+
+	// Tidy up
+	Implementation->PhysicsControlRecords.Compact();
+	Implementation->PhysicsBodyModifiers.Compact();
 
 	// Update the skeletal mesh caches
 	Implementation->UpdateCachedSkeletalBoneData(DeltaTime);
@@ -117,12 +123,15 @@ void UPhysicsControlComponent::TickComponent(
 
 		if (ConstraintInstance)
 		{
+			// Always control collision, because otherwise maintaining it is very difficult, since
+			// constraint-controlled collision doesn't interact nicely when there are multiple constraints.
+			ConstraintInstance->SetDisableCollision(Record.PhysicsControl.ControlSettings.bDisableCollision);
+
 			// Constraint is not enabled
 			if (!Record.PhysicsControlState.bEnabled)
 			{
 				ConstraintInstance->SetAngularDriveParams(0.0f, 0.0f, 0.0f);
 				ConstraintInstance->SetLinearDriveParams(0.0f, 0.0f, 0.0f);
-				ConstraintInstance->SetDisableCollision(false);
 			}
 			else
 			{
@@ -212,8 +221,7 @@ TMap<FName, FPhysicsControlLimbBones> UPhysicsControlComponent::GetLimbBonesFrom
 		if (LimbSetupData.bIncludeParentBone)
 		{
 			LimbBones.bFirstBoneIsAdditional = true;
-			FName ParentBoneName;
-			ParentBoneName = UE::PhysicsControlComponent::GetPhysicalParentBone(
+			const FName ParentBoneName = UE::PhysicsControlComponent::GetPhysicalParentBone(
 				SkeletalMeshComponent, LimbSetupData.StartBone);
 			if (!ParentBoneName.IsNone())
 			{
@@ -246,20 +254,21 @@ TMap<FName, FPhysicsControlLimbBones> UPhysicsControlComponent::GetLimbBonesFrom
 
 //======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
-FName UPhysicsControlComponent::MakeControl(
-	UMeshComponent*         ParentMeshComponent,
-	const FName             ParentBoneName,
-	UMeshComponent*         ChildMeshComponent,
-	const FName             ChildBoneName,
-	FPhysicsControlData     ControlData, 
-	FPhysicsControlTarget   ControlTarget, 
-	FPhysicsControlSettings ControlSettings,
-	bool                    bEnabled)
+FName UPhysicsControlComponent::CreateControl(
+	UMeshComponent*               ParentMeshComponent,
+	const FName                   ParentBoneName,
+	UMeshComponent*               ChildMeshComponent,
+	const FName                   ChildBoneName,
+	const FPhysicsControlData     ControlData, 
+	const FPhysicsControlTarget   ControlTarget, 
+	const FPhysicsControlSettings ControlSettings,
+	const FName                   Set,
+	const bool                    bEnabled)
 {
-	FName Name = Implementation->GetUniqueControlName(ParentBoneName, ChildBoneName);
-	if (MakeNamedControl(
+	const FName Name = Implementation->GetUniqueControlName(ParentBoneName, ChildBoneName);
+	if (CreateNamedControl(
 		Name, ParentMeshComponent, ParentBoneName, ChildMeshComponent, ChildBoneName, 
-		ControlData, ControlTarget, ControlSettings, bEnabled))
+		ControlData, ControlTarget, ControlSettings, Set, bEnabled))
 	{
 		return Name;
 	}
@@ -268,19 +277,19 @@ FName UPhysicsControlComponent::MakeControl(
 
 //======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
-bool UPhysicsControlComponent::MakeNamedControl(
-	const FName             Name, 
-	UMeshComponent*         ParentMeshComponent,
-	const FName             ParentBoneName,
-	UMeshComponent*         ChildMeshComponent,
-	const FName             ChildBoneName,
-	FPhysicsControlData     ControlData, 
-	FPhysicsControlTarget   ControlTarget, 
-	FPhysicsControlSettings ControlSettings,
-	bool                    bEnabled)
+bool UPhysicsControlComponent::CreateNamedControl(
+	const FName                   Name, 
+	UMeshComponent*               ParentMeshComponent,
+	const FName                   ParentBoneName,
+	UMeshComponent*               ChildMeshComponent,
+	const FName                   ChildBoneName,
+	const FPhysicsControlData     ControlData, 
+	const FPhysicsControlTarget   ControlTarget, 
+	const FPhysicsControlSettings ControlSettings,
+	const FName                   Set,
+	const bool                    bEnabled)
 {
-	FPhysicsControlRecord* PhysicsControlRecord = Implementation->FindControlRecord(Name);
-	if (PhysicsControlRecord)
+	if (Implementation->FindControlRecord(Name))
 	{
 		return false;
 	}
@@ -308,19 +317,22 @@ bool UPhysicsControlComponent::MakeNamedControl(
 	NewRecord.PhysicsControlState.bEnabled = bEnabled;
 	NewRecord.ResetControlPoint();
 
+	Implementation->NameRecords.AddControl(Name, Set);
+
 	return true;
 }
 
 //======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
-TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshBelow(
+TArray<FName> UPhysicsControlComponent::CreateControlsFromSkeletalMeshBelow(
 	USkeletalMeshComponent* SkeletalMeshComponent,
-	FName                   BoneName,
-	bool                    bIncludeSelf,
-	EPhysicsControlType     ControlType,
-	FPhysicsControlData     ControlData,
-	FPhysicsControlSettings ControlSettings,
-	bool                    bEnabled)
+	const FName                   BoneName,
+	const bool                    bIncludeSelf,
+	const EPhysicsControlType     ControlType,
+	const FPhysicsControlData     ControlData,
+	const FPhysicsControlSettings ControlSettings,
+	const FName                   Set,
+	const bool                    bEnabled)
 {
 	TArray<FName> Result;
 	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent ? SkeletalMeshComponent->GetPhysicsAsset() : nullptr;
@@ -338,7 +350,7 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshBelow(
 		BoneName, bIncludeSelf, /*bSkipCustomType=*/false, 
 		[
 			this, PhysicsAsset, ParentMeshComponent, SkeletalMeshComponent, 
-			&ControlData, &ControlSettings, &Result, bEnabled
+			ControlType, &ControlData, &ControlSettings, Set, &Result, bEnabled
 		](const FBodyInstance* BI)
 		{
 			if (USkeletalBodySetup* BodySetup = Cast<USkeletalBodySetup>(BI->BodySetup.Get()))
@@ -355,12 +367,15 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshBelow(
 						return;
 					}
 				}
-				FName ControlName = MakeControl(
+				const FName ControlName = CreateControl(
 					ParentMeshComponent, ParentBoneName, SkeletalMeshComponent, ChildBoneName,
-					ControlData, FPhysicsControlTarget(), ControlSettings, bEnabled);
+					ControlData, FPhysicsControlTarget(), ControlSettings, 
+					FName(GetControlTypeName(ControlType).ToString().Append("_").Append(Set.ToString())), 
+					bEnabled);
 				if (!ControlName.IsNone())
 				{
 					Result.Add(ControlName);
+					Implementation->NameRecords.AddControl(ControlName, GetControlTypeName(ControlType));
 				}
 				else
 				{
@@ -375,12 +390,13 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshBelow(
 
 //======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
-TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshAndConstraintProfileBelow(
+TArray<FName> UPhysicsControlComponent::CreateControlsFromSkeletalMeshAndConstraintProfileBelow(
 	USkeletalMeshComponent* SkeletalMeshComponent,
-	FName                   BoneName,
-	bool                    bIncludeSelf,
-	FName                   ConstraintProfile,
-	bool                    bEnabled)
+	const FName             BoneName,
+	const bool              bIncludeSelf,
+	const FName             ConstraintProfile,
+	const FName             Set,
+	const bool              bEnabled)
 {
 	TArray<FName> Result;
 	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent ? SkeletalMeshComponent->GetPhysicsAsset() : nullptr;
@@ -399,7 +415,7 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshAndConstrain
 		BoneName, bIncludeSelf, /*bSkipCustomType=*/false,
 		[
 			this, PhysicsAsset, SkeletalMeshComponent,
-			ConstraintProfile, &ControlSettings, &Result, bEnabled
+			ConstraintProfile, Set, &ControlSettings, &Result, bEnabled
 		](const FBodyInstance* BI)
 		{
 			if (USkeletalBodySetup* BodySetup = Cast<USkeletalBodySetup>(BI->BodySetup.Get()))
@@ -419,18 +435,23 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshAndConstrain
 				if (!SkeletalMeshComponent->GetConstraintProfilePropertiesOrDefault(
 					ProfileProperties, ChildBoneName, ConstraintProfile))
 				{
-					UE_LOG(LogPhysicsControlComponent, Warning, TEXT("Failed get constraint profile for %s"), *ChildBoneName.ToString());
+					UE_LOG(LogPhysicsControlComponent, Warning, 
+						TEXT("Failed get constraint profile for %s"), *ChildBoneName.ToString());
 					return;
 				}
 
 				UE::PhysicsControlComponent::ConvertConstraintProfileToControlData(ControlData, ProfileProperties);
 
-				FName ControlName = MakeControl(
+				const FName ControlName = CreateControl(
 					SkeletalMeshComponent, ParentBoneName, SkeletalMeshComponent, ChildBoneName,
-					ControlData, FPhysicsControlTarget(), ControlSettings, bEnabled);
+					ControlData, FPhysicsControlTarget(), ControlSettings, 
+					FName(GetControlTypeName(EPhysicsControlType::ParentSpace).ToString().Append("_").Append(Set.ToString())),
+					bEnabled);
 				if (!ControlName.IsNone())
 				{
 					Result.Add(ControlName);
+					Implementation->NameRecords.AddControl(
+						ControlName, GetControlTypeName(EPhysicsControlType::ParentSpace));
 				}
 				else
 				{
@@ -445,13 +466,14 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshAndConstrain
 
 //======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
-TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMesh(
-	USkeletalMeshComponent* SkeletalMeshComponent,
-	const TArray<FName>&    BoneNames,
-	EPhysicsControlType     ControlType,
-	FPhysicsControlData     ControlData,
-	FPhysicsControlSettings ControlSettings,
-	bool                    bEnabled)
+TArray<FName> UPhysicsControlComponent::CreateControlsFromSkeletalMesh(
+	USkeletalMeshComponent*       SkeletalMeshComponent,
+	const TArray<FName>&          BoneNames,
+	const EPhysicsControlType     ControlType,
+	const FPhysicsControlData     ControlData,
+	const FPhysicsControlSettings ControlSettings,
+	const FName                   Set,
+	const bool                    bEnabled)
 {
 	TArray<FName> Result;
 	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent ? SkeletalMeshComponent->GetPhysicsAsset() : nullptr;
@@ -478,12 +500,15 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMesh(
 				continue;
 			}
 		}
-		FName ControlName = MakeControl(
+		const FName ControlName = CreateControl(
 			ParentMeshComponent, ParentBoneName, SkeletalMeshComponent, ChildBoneName,
-			ControlData, FPhysicsControlTarget(), ControlSettings, bEnabled);
+			ControlData, FPhysicsControlTarget(), ControlSettings, 
+			FName(GetControlTypeName(ControlType).ToString().Append("_").Append(Set.ToString())),
+			bEnabled);
 		if (!ControlName.IsNone())
 		{
 			Result.Add(ControlName);
+			Implementation->NameRecords.AddControl(ControlName, GetControlTypeName(ControlType));
 		}
 		else
 		{
@@ -496,11 +521,12 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMesh(
 
 //======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
-TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshAndConstraintProfile(
+TArray<FName> UPhysicsControlComponent::CreateControlsFromSkeletalMeshAndConstraintProfile(
 	USkeletalMeshComponent* SkeletalMeshComponent,
 	const TArray<FName>&    BoneNames,
-	FName                   ConstraintProfile,
-	bool                    bEnabled)
+	const FName             ConstraintProfile,
+	const FName             Set,
+	const bool              bEnabled)
 {
 	TArray<FName> Result;
 	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent ? SkeletalMeshComponent->GetPhysicsAsset() : nullptr;
@@ -519,8 +545,8 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshAndConstrain
 	{
 		FBodyInstance* ChildBone = SkeletalMeshComponent->GetBodyInstance(ChildBoneName);
 
-		FName ParentBoneName;
-		ParentBoneName = UE::PhysicsControlComponent::GetPhysicalParentBone(SkeletalMeshComponent, ChildBoneName);
+		const FName ParentBoneName = 
+			UE::PhysicsControlComponent::GetPhysicalParentBone(SkeletalMeshComponent, ChildBoneName);
 		if (ParentBoneName.IsNone())
 		{
 			continue;
@@ -531,18 +557,22 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshAndConstrain
 		if (!SkeletalMeshComponent->GetConstraintProfilePropertiesOrDefault(
 			ProfileProperties, ChildBoneName, ConstraintProfile))
 		{
-			UE_LOG(LogPhysicsControlComponent, Warning, TEXT("Failed get constraint profile for %s"), *ChildBoneName.ToString());
+			UE_LOG(LogPhysicsControlComponent, Warning, 
+				TEXT("Failed get constraint profile for %s"), *ChildBoneName.ToString());
 			continue;
 		}
 
 		UE::PhysicsControlComponent::ConvertConstraintProfileToControlData(ControlData, ProfileProperties);
 
-		FName ControlName = MakeControl(
+		const FName ControlName = CreateControl(
 			SkeletalMeshComponent, ParentBoneName, SkeletalMeshComponent, ChildBoneName,
-			ControlData, FPhysicsControlTarget(), ControlSettings, bEnabled);
+			ControlData, FPhysicsControlTarget(), ControlSettings, 
+			FName(GetControlTypeName(EPhysicsControlType::ParentSpace).ToString().Append("_").Append(Set.ToString())),
+			bEnabled);
 		if (!ControlName.IsNone())
 		{
 			Result.Add(ControlName);
+			Implementation->NameRecords.AddControl(ControlName, GetControlTypeName(EPhysicsControlType::ParentSpace));
 		}
 		else
 		{
@@ -555,20 +585,20 @@ TArray<FName> UPhysicsControlComponent::MakeControlsFromSkeletalMeshAndConstrain
 
 //======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
-TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFromLimbBones(
-	FPhysicsControlNameArray&                    AllControls,
+TMap<FName, FPhysicsControlNames> UPhysicsControlComponent::CreateControlsFromLimbBones(
+	FPhysicsControlNames&                        AllControls,
 	const TMap<FName, FPhysicsControlLimbBones>& LimbBones,
-	EPhysicsControlType                          ControlType,
-	FPhysicsControlData                          ControlData,
-	FPhysicsControlSettings                      ControlSettings,
-	bool                                         bEnabled)
+	const EPhysicsControlType                    ControlType,
+	const FPhysicsControlData                    ControlData,
+	const FPhysicsControlSettings                ControlSettings,
+	const bool                                   bEnabled)
 {
-	TMap<FName, FPhysicsControlNameArray> Result;
+	TMap<FName, FPhysicsControlNames> Result;
 	Result.Reserve(LimbBones.Num());
 
-	for (const TPair< FName, FPhysicsControlLimbBones>& LimbBoneEntry : LimbBones)
+	for (const TPair<FName, FPhysicsControlLimbBones>& LimbBoneEntry : LimbBones)
 	{
-		FName LimbName = LimbBoneEntry.Key;
+		const FName LimbName = LimbBoneEntry.Key;
 		const FPhysicsControlLimbBones& BonesInLimb = LimbBoneEntry.Value;
 
 		if (!BonesInLimb.SkeletalMeshComponent)
@@ -582,7 +612,7 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFrom
 
 		const int32 NumBonesInLimb = BonesInLimb.BoneNames.Num();
 
-		FPhysicsControlNameArray& LimbResult = Result.Add(LimbName);
+		FPhysicsControlNames& LimbResult = Result.Add(LimbName);
 		LimbResult.Names.Reserve(NumBonesInLimb);
 		AllControls.Names.Reserve(AllControls.Names.Num() + NumBonesInLimb);
 
@@ -607,17 +637,21 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFrom
 					continue;
 				}
 			}
-			FName ControlName = MakeControl(
+			const FName ControlName = CreateControl(
 				ParentMeshComponent, ParentBoneName, BonesInLimb.SkeletalMeshComponent, ChildBoneName,
-				ControlData, FPhysicsControlTarget(), ControlSettings, bEnabled);
+				ControlData, FPhysicsControlTarget(), ControlSettings, 
+				FName(GetControlTypeName(ControlType).ToString().Append("_").Append(LimbName.ToString())),
+				bEnabled);
 			if (!ControlName.IsNone())
 			{
 				LimbResult.Names.Add(ControlName);
 				AllControls.Names.Add(ControlName);
+				Implementation->NameRecords.AddControl(ControlName, GetControlTypeName(ControlType));
 			}
 			else
 			{
-				UE_LOG(LogPhysicsControlComponent, Warning, TEXT("Failed to make control for %s"), *ChildBoneName.ToString());
+				UE_LOG(LogPhysicsControlComponent, Warning, 
+					TEXT("Failed to make control for %s"), *ChildBoneName.ToString());
 			}
 		}
 	}
@@ -625,17 +659,17 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFrom
 }
 
 //======================================================================================================================
-TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFromLimbBonesAndConstraintProfile(
-	FPhysicsControlNameArray&                    AllControls,
+TMap<FName, FPhysicsControlNames> UPhysicsControlComponent::CreateControlsFromLimbBonesAndConstraintProfile(
+	FPhysicsControlNames&                        AllControls,
 	const TMap<FName, FPhysicsControlLimbBones>& LimbBones,
-	FName                                        ConstraintProfile,
-	bool                                         bEnabled)
+	const FName                                  ConstraintProfile,
+	const bool                                   bEnabled)
 {
-	TMap<FName, FPhysicsControlNameArray> Result;
+	TMap<FName, FPhysicsControlNames> Result;
 	Result.Reserve(LimbBones.Num());
 	for (const TPair< FName, FPhysicsControlLimbBones>& LimbBoneEntry : LimbBones)
 	{
-		FName LimbName = LimbBoneEntry.Key;
+		const FName LimbName = LimbBoneEntry.Key;
 		const FPhysicsControlLimbBones& BonesInLimb = LimbBoneEntry.Value;
 
 		USkeletalMeshComponent* SkeletalMeshComponent = BonesInLimb.SkeletalMeshComponent;
@@ -653,7 +687,7 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFrom
 
 		const int32 NumBonesInLimb = BonesInLimb.BoneNames.Num();
 
-		FPhysicsControlNameArray& LimbResult = Result.Add(LimbName);
+		FPhysicsControlNames& LimbResult = Result.Add(LimbName);
 		LimbResult.Names.Reserve(NumBonesInLimb);
 		AllControls.Names.Reserve(AllControls.Names.Num() + NumBonesInLimb);
 
@@ -667,13 +701,13 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFrom
 			// Don't create the parent space control if it's the first bone in a limb that had bIncludeParentBone
 			if (BoneIndex == 0 && BonesInLimb.bFirstBoneIsAdditional)
 			{
-				continue;
+				continue; 
 			}
 
-			FName ChildBoneName = BonesInLimb.BoneNames[BoneIndex];
+			const FName ChildBoneName = BonesInLimb.BoneNames[BoneIndex];
 			FBodyInstance* ChildBone = SkeletalMeshComponent->GetBodyInstance(ChildBoneName);
-			FName ParentBoneName;
-			ParentBoneName = UE::PhysicsControlComponent::GetPhysicalParentBone(SkeletalMeshComponent, ChildBoneName);
+			const FName ParentBoneName = 
+				UE::PhysicsControlComponent::GetPhysicalParentBone(SkeletalMeshComponent, ChildBoneName);
 			if (ParentBoneName.IsNone())
 			{
 				continue;
@@ -683,24 +717,30 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFrom
 			FConstraintProfileProperties ProfileProperties;
 			if (!SkeletalMeshComponent->GetConstraintProfilePropertiesOrDefault(
 				ProfileProperties, ChildBoneName, ConstraintProfile))
+			
 			{
-				UE_LOG(LogPhysicsControlComponent, Warning, TEXT("Failed get constraint profile for %s"), *ChildBoneName.ToString());
+				UE_LOG(LogPhysicsControlComponent, Warning, 
+					TEXT("Failed get constraint profile for %s"), *ChildBoneName.ToString());
 				continue;
 			}
 
 			UE::PhysicsControlComponent::ConvertConstraintProfileToControlData(ControlData, ProfileProperties);
 
-			FName ControlName = MakeControl(
+			const FName ControlName = CreateControl(
 				SkeletalMeshComponent, ParentBoneName, SkeletalMeshComponent, ChildBoneName,
-				ControlData, FPhysicsControlTarget(), ControlSettings, bEnabled);
+				ControlData, FPhysicsControlTarget(), ControlSettings, 
+				FName(GetControlTypeName(EPhysicsControlType::ParentSpace).ToString().Append("_").Append(LimbName.ToString())),
+				bEnabled);
 			if (!ControlName.IsNone())
 			{
 				LimbResult.Names.Add(ControlName);
 				AllControls.Names.Add(ControlName);
+				Implementation->NameRecords.AddControl(ControlName, GetControlTypeName(EPhysicsControlType::ParentSpace));
 			}
 			else
 			{
-				UE_LOG(LogPhysicsControlComponent, Warning, TEXT("Failed to make control for %s"), *ChildBoneName.ToString());
+				UE_LOG(LogPhysicsControlComponent, Warning, 
+					TEXT("Failed to make control for %s"), *ChildBoneName.ToString());
 			}
 		}
 	}
@@ -710,38 +750,28 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeControlsFrom
 //======================================================================================================================
 bool UPhysicsControlComponent::DestroyControl(const FName Name)
 {
-	FPhysicsControlRecord* PhysicsControlRecord = Implementation->FindControlRecord(Name);
-	if (PhysicsControlRecord)
-	{
-		if (USkeletalMeshComponent* SkeletalMeshComponent = 
-			Cast<USkeletalMeshComponent>(PhysicsControlRecord->PhysicsControl.ParentMeshComponent))
-		{
-			Implementation->RemoveSkeletalMeshReferenceForCaching(SkeletalMeshComponent);
-		}
-		if (USkeletalMeshComponent* SkeletalMeshComponent =
-			Cast<USkeletalMeshComponent>(PhysicsControlRecord->PhysicsControl.ChildMeshComponent))
-		{
-			Implementation->RemoveSkeletalMeshReferenceForCaching(SkeletalMeshComponent);
-		}
-
-		PhysicsControlRecord->PhysicsControlState.bPendingDestroy = true;
-		PhysicsControlRecord->PhysicsControlState.bEnabled = false;
-		return true;
-	}
-	return false;
+	return Implementation->DestroyControl(Name);
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::DestroyAllControls(const TArray<FName>& Names)
+void UPhysicsControlComponent::DestroyControls(const TArray<FName>& Names)
 {
 	for (FName Name : Names)
 	{
-		DestroyControl(Name);
+		Implementation->DestroyControl(Name);
 	}
 }
 
 //======================================================================================================================
-bool UPhysicsControlComponent::SetControlEnabled(const FName Name, bool bEnable)
+void UPhysicsControlComponent::DestroyControlsInSet(const FName SetName)
+{
+	// Make a copy as the set will be being modified during 
+	TArray<FName> Names = GetControlNamesInSet(SetName);
+	DestroyControls(Names);
+}
+
+//======================================================================================================================
+bool UPhysicsControlComponent::SetControlEnabled(const FName Name, const bool bEnable)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
@@ -753,7 +783,7 @@ bool UPhysicsControlComponent::SetControlEnabled(const FName Name, bool bEnable)
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllControlsEnabled(const TArray<FName>& Names, bool bEnable)
+void UPhysicsControlComponent::SetControlsEnabled(const TArray<FName>& Names, const bool bEnable)
 {
 	for (FName Name : Names)
 	{
@@ -762,11 +792,17 @@ void UPhysicsControlComponent::SetAllControlsEnabled(const TArray<FName>& Names,
 }
 
 //======================================================================================================================
+void UPhysicsControlComponent::SetControlsInSetEnabled(FName SetName, bool bEnable)
+{
+	SetControlsEnabled(GetControlNamesInSet(SetName), bEnable);
+}
+
+//======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
 bool UPhysicsControlComponent::SetControlData(
-	const FName         Name, 
-	FPhysicsControlData ControlData, 
-	bool                bEnableControl)
+	const FName               Name, 
+	const FPhysicsControlData ControlData, 
+	const bool                bEnableControl)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
@@ -782,10 +818,10 @@ bool UPhysicsControlComponent::SetControlData(
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllControlDatas(
-	const TArray<FName>& Names, 
-	FPhysicsControlData  ControlData, 
-	bool                 bEnableControl)
+void UPhysicsControlComponent::SetControlDatas(
+	const TArray<FName>&       Names, 
+	const FPhysicsControlData  ControlData, 
+	const bool                 bEnableControl)
 {
 	for (FName Name : Names)
 	{
@@ -793,18 +829,26 @@ void UPhysicsControlComponent::SetAllControlDatas(
 	}
 }
 
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlDatasInSet(
+	const FName                SetName,
+	const FPhysicsControlData  ControlData,
+	const bool                 bEnableControl)
+{
+	SetControlDatas(GetControlNamesInSet(SetName), ControlData, bEnableControl);
+}
 
 //======================================================================================================================
 // Note - some params passed by value to allow them to be unconnected and enable inline BP editing
-bool UPhysicsControlComponent::SetControlMultipliers(
-	const FName                Name, 
-	FPhysicsControlMultipliers ControlMultipliers, 
-	bool                       bEnableControl)
+bool UPhysicsControlComponent::SetControlMultiplier(
+	const FName                      Name, 
+	const FPhysicsControlMultiplier  ControlMultiplier, 
+	const bool                       bEnableControl)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
 	{
-		Record->PhysicsControl.ControlMultipliers = ControlMultipliers;
+		Record->PhysicsControl.ControlMultiplier = ControlMultiplier;
 		if (bEnableControl)
 		{
 			Record->PhysicsControlState.bEnabled = true;
@@ -815,21 +859,34 @@ bool UPhysicsControlComponent::SetControlMultipliers(
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllControlMultipliers(
-	const TArray<FName>&       Names,
-	FPhysicsControlMultipliers ControlMultipliers, 
-	bool                       bEnableControl)
+void UPhysicsControlComponent::SetControlMultipliers(
+	const TArray<FName>&             Names,
+	const FPhysicsControlMultiplier  ControlMultiplier, 
+	const bool                       bEnableControl)
 {
 	for (FName Name : Names)
 	{
-		SetControlMultipliers(Name, ControlMultipliers, bEnableControl);
+		SetControlMultiplier(Name, ControlMultiplier, bEnableControl);
 	}
 }
 
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlMultipliersInSet(
+	const FName                      SetName,
+	const FPhysicsControlMultiplier  ControlMultiplier, 
+	const bool                       bEnableControl)
+{
+	SetControlMultipliers(GetControlNamesInSet(SetName), ControlMultiplier, bEnableControl);
+}
 
 //======================================================================================================================
 bool UPhysicsControlComponent::SetControlLinearData(
-	const FName Name, float Strength, float DampingRatio, float ExtraDamping, float MaxForce, bool bEnableControl)
+	const FName Name, 
+	const float Strength, 
+	const float DampingRatio, 
+	const float ExtraDamping, 
+	const float MaxForce, 
+	const bool  bEnableControl)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
@@ -849,7 +906,12 @@ bool UPhysicsControlComponent::SetControlLinearData(
 
 //======================================================================================================================
 bool UPhysicsControlComponent::SetControlAngularData(
-	const FName Name, float Strength, float DampingRatio, float ExtraDamping, float MaxTorque, bool bEnableControl)
+	const FName Name, 
+	const float Strength, 
+	const float DampingRatio, 
+	const float ExtraDamping, 
+	const float MaxTorque, 
+	const bool  bEnableControl)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
@@ -895,8 +957,8 @@ bool UPhysicsControlComponent::ResetControlPoint(const FName Name)
 //======================================================================================================================
 bool UPhysicsControlComponent::SetControlTarget(
 	const FName           Name, 
-	FPhysicsControlTarget ControlTarget, 
-	bool                  bEnableControl)
+	const FPhysicsControlTarget ControlTarget, 
+	const bool                  bEnableControl)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
@@ -912,10 +974,10 @@ bool UPhysicsControlComponent::SetControlTarget(
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllControlTargets(
-	const TArray<FName>&  Names, 
-	FPhysicsControlTarget ControlTarget, 
-	bool                  bEnableControl)
+void UPhysicsControlComponent::SetControlTargets(
+	const TArray<FName>&        Names, 
+	const FPhysicsControlTarget ControlTarget, 
+	const bool                  bEnableControl)
 {
 	for (FName Name : Names)
 	{
@@ -924,9 +986,22 @@ void UPhysicsControlComponent::SetAllControlTargets(
 }
 
 //======================================================================================================================
+void UPhysicsControlComponent::SetControlTargetsInSet(
+	const FName                 SetName, 
+	const FPhysicsControlTarget ControlTarget, 
+	const bool                  bEnableControl)
+{
+	SetControlTargets(GetControlNamesInSet(SetName), ControlTarget, bEnableControl);
+}
+
+//======================================================================================================================
 bool UPhysicsControlComponent::SetControlTargetPositionAndOrientation(
-	const FName Name, const FVector Position, const FRotator Orientation, float VelocityDeltaTime, 
-	bool bEnableControl, bool bApplyControlPointToTarget)
+	const FName    Name, 
+	const FVector  Position, 
+	const FRotator Orientation, 
+	const float    VelocityDeltaTime, 
+	const bool     bEnableControl, 
+	const bool     bApplyControlPointToTarget)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
@@ -942,13 +1017,16 @@ bool UPhysicsControlComponent::SetControlTargetPositionAndOrientation(
 
 //======================================================================================================================
 bool UPhysicsControlComponent::SetControlTargetPosition(
-	const FName Name, const FVector Position, float VelocityDeltaTime, 
-	bool bEnableControl, bool bApplyControlPointToTarget)
+	const FName   Name, 
+	const FVector Position, 
+	const float   VelocityDeltaTime, 
+	const bool    bEnableControl, 
+	const bool    bApplyControlPointToTarget)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
 	{
-		if (VelocityDeltaTime)
+		if (VelocityDeltaTime != 0)
 		{
 			Record->PhysicsControl.ControlTarget.TargetVelocity =
 				(Position - Record->PhysicsControl.ControlTarget.TargetPosition) / VelocityDeltaTime;
@@ -970,13 +1048,16 @@ bool UPhysicsControlComponent::SetControlTargetPosition(
 
 //======================================================================================================================
 bool UPhysicsControlComponent::SetControlTargetOrientation(
-	const FName Name, const FRotator Orientation, float AngularVelocityDeltaTime, 
-	bool bEnableControl, bool bApplyControlPointToTarget)
+	const FName    Name, 
+	const FRotator Orientation, 
+	const float    AngularVelocityDeltaTime, 
+	const bool     bEnableControl, 
+	const bool     bApplyControlPointToTarget)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
 	{
-		if (AngularVelocityDeltaTime)
+		if (AngularVelocityDeltaTime != 0)
 		{
 			FQuat OldQ = Record->PhysicsControl.ControlTarget.TargetOrientation.Quaternion();
 			FQuat OrientationQ = Orientation.Quaternion();
@@ -1003,10 +1084,13 @@ bool UPhysicsControlComponent::SetControlTargetOrientation(
 
 //======================================================================================================================
 bool UPhysicsControlComponent::SetControlTargetPoses(
-	const FName Name,
-	const FVector ParentPosition, const FRotator ParentOrientation,
-	const FVector ChildPosition, const FRotator ChildOrientation,
-	float VelocityDeltaTime, bool bEnableControl)
+	const FName    Name,
+	const FVector  ParentPosition, 
+	const FRotator ParentOrientation,
+	const FVector  ChildPosition, 
+	const FRotator ChildOrientation,
+	const float    VelocityDeltaTime, 
+	const bool     bEnableControl)
 {
 	FPhysicsControlRecord* Record = Implementation->FindControlRecord(Name);
 	if (Record)
@@ -1018,7 +1102,7 @@ bool UPhysicsControlComponent::SetControlTargetPoses(
 		FVector Position = OffsetTM.GetTranslation();
 		FQuat OrientationQ = OffsetTM.GetRotation();
 
-		if (VelocityDeltaTime)
+		if (VelocityDeltaTime != 0)
 		{
 			FQuat OldQ = Record->PhysicsControl.ControlTarget.TargetOrientation.Quaternion();
 			OldQ.EnforceShortestArcWith(OrientationQ);
@@ -1050,8 +1134,8 @@ bool UPhysicsControlComponent::SetControlTargetPoses(
 //======================================================================================================================
 bool UPhysicsControlComponent::SetControlUseSkeletalAnimation(
 	const FName Name,
-	bool        bUseSkeletalAnimation,
-	float       SkeletalAnimationVelocityMultiplier)
+	const bool  bUseSkeletalAnimation,
+	const float SkeletalAnimationVelocityMultiplier)
 {
 	FPhysicsControl* PhysicsControl = Implementation->FindControl(Name);
 	if (PhysicsControl)
@@ -1064,10 +1148,10 @@ bool UPhysicsControlComponent::SetControlUseSkeletalAnimation(
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllControlsUseSkeletalAnimation(
+void UPhysicsControlComponent::SetControlsUseSkeletalAnimation(
 	const TArray<FName>& Names,
-	bool                 bUseSkeletalAnimation,
-	float                SkeletalAnimationVelocityMultiplier)
+	const bool           bUseSkeletalAnimation,
+	const float          SkeletalAnimationVelocityMultiplier)
 {
 	for (FName Name : Names)
 	{
@@ -1076,7 +1160,17 @@ void UPhysicsControlComponent::SetAllControlsUseSkeletalAnimation(
 }
 
 //======================================================================================================================
-bool UPhysicsControlComponent::SetControlAutoDisable(const FName Name, bool bAutoDisable)
+void UPhysicsControlComponent::SetControlsInSetUseSkeletalAnimation(
+	const FName SetName,
+	const bool  bUseSkeletalAnimation,
+	const float SkeletalAnimationVelocityMultiplier)
+{
+	SetControlsUseSkeletalAnimation(
+		GetControlNamesInSet(SetName), bUseSkeletalAnimation, SkeletalAnimationVelocityMultiplier);
+}
+
+//======================================================================================================================
+bool UPhysicsControlComponent::SetControlAutoDisable(const FName Name, const bool bAutoDisable)
 {
 	FPhysicsControl* PhysicsControl = Implementation->FindControl(Name);
 	if (PhysicsControl)
@@ -1088,15 +1182,45 @@ bool UPhysicsControlComponent::SetControlAutoDisable(const FName Name, bool bAut
 }
 
 //======================================================================================================================
-bool UPhysicsControlComponent::GetControl(const FName Name, FPhysicsControl& Control) const
+void UPhysicsControlComponent::SetControlsAutoDisable(const TArray<FName>& Names, const bool bAutoDisable)
+{
+	for (FName Name : Names)
+	{
+		SetControlAutoDisable(Name, bAutoDisable);
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlsInSetAutoDisable(const FName SetName, const bool bAutoDisable)
+{
+	SetControlsAutoDisable(GetControlNamesInSet(SetName), bAutoDisable);
+}
+
+//======================================================================================================================
+bool UPhysicsControlComponent::SetControlDisableCollision(const FName Name, const bool bDisableCollision)
 {
 	FPhysicsControl* PhysicsControl = Implementation->FindControl(Name);
 	if (PhysicsControl)
 	{
-		Control = *PhysicsControl;
+		PhysicsControl->ControlSettings.bDisableCollision = bDisableCollision;
 		return true;
 	}
 	return false;
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlsDisableCollision(const TArray<FName>& Names, const bool bDisableCollision)
+{
+	for (FName Name : Names)
+	{
+		SetControlDisableCollision(Name, bDisableCollision);
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlsInSetDisableCollision(const FName SetName, const bool bDisableCollision)
+{
+	SetControlsDisableCollision(GetControlNamesInSet(SetName), bDisableCollision);
 }
 
 //======================================================================================================================
@@ -1112,12 +1236,12 @@ bool UPhysicsControlComponent::GetControlData(const FName Name, FPhysicsControlD
 }
 
 //======================================================================================================================
-bool UPhysicsControlComponent::GetControlMultipliers(const FName Name, FPhysicsControlMultipliers& ControlMultipliers) const
+bool UPhysicsControlComponent::GetControlMultiplier(const FName Name, FPhysicsControlMultiplier& ControlMultiplier) const
 {
 	FPhysicsControl* PhysicsControl = Implementation->FindControl(Name);
 	if (PhysicsControl)
 	{
-		ControlMultipliers = PhysicsControl->ControlMultipliers;
+		ControlMultiplier = PhysicsControl->ControlMultiplier;
 		return true;
 	}
 	return false;
@@ -1158,17 +1282,18 @@ bool UPhysicsControlComponent::GetControlEnabled(const FName Name) const
 }
 
 //======================================================================================================================
-FName UPhysicsControlComponent::MakeBodyModifier(
-	UMeshComponent*         MeshComponent,
-	const FName             BoneName,
-	EPhysicsMovementType    MovementType, 
-	ECollisionEnabled::Type CollisionType,
-	float                   GravityMultiplier,
-	bool                    bUseSkeletalAnimation)
+FName UPhysicsControlComponent::CreateBodyModifier(
+	UMeshComponent*               MeshComponent,
+	const FName                   BoneName,
+	const FName                   Set,
+	const EPhysicsMovementType    MovementType,
+	const ECollisionEnabled::Type CollisionType,
+	const float                   GravityMultiplier,
+	const bool                    bUseSkeletalAnimation)
 {
-	FName Name = Implementation->GetUniqueBodyModifierName(BoneName);
-	if (MakeNamedBodyModifier(
-		Name, MeshComponent, BoneName, MovementType, CollisionType, GravityMultiplier, bUseSkeletalAnimation))
+	const FName Name = Implementation->GetUniqueBodyModifierName(BoneName);
+	if (CreateNamedBodyModifier(
+		Name, MeshComponent, BoneName, Set, MovementType, CollisionType, GravityMultiplier, bUseSkeletalAnimation))
 	{
 		return Name;
 	}
@@ -1176,17 +1301,17 @@ FName UPhysicsControlComponent::MakeBodyModifier(
 }
 
 //======================================================================================================================
-bool UPhysicsControlComponent::MakeNamedBodyModifier(
-	const FName             Name,
-	UMeshComponent*         MeshComponent,
-	const FName             BoneName,
-	EPhysicsMovementType    MovementType,
-	ECollisionEnabled::Type CollisionType,
-	float                   GravityMultiplier,
-	bool                    bUseSkeletalAnimation)
+bool UPhysicsControlComponent::CreateNamedBodyModifier(
+	const FName                   Name,
+	UMeshComponent*               MeshComponent,
+	const FName                   BoneName,
+	const FName                   Set,
+	const EPhysicsMovementType    MovementType,
+	const ECollisionEnabled::Type CollisionType,
+	const float                   GravityMultiplier,
+	const bool                    bUseSkeletalAnimation)
 {
-	FPhysicsBodyModifier* BodyModifier = Implementation->FindBodyModifier(Name);
-	if (BodyModifier)
+	if (Implementation->FindBodyModifier(Name))
 	{
 		return false;
 	}
@@ -1209,18 +1334,21 @@ bool UPhysicsControlComponent::MakeNamedBodyModifier(
 		Implementation->AddSkeletalMeshReferenceForModifier(SkeletalMeshComponent);
 	}
 
+	Implementation->NameRecords.AddBodyModifier(Name, Set);
+
 	return true;
 }
 
 //======================================================================================================================
-TArray<FName> UPhysicsControlComponent::MakeBodyModifiersFromSkeletalMeshBelow(
-	USkeletalMeshComponent* SkeletalMeshComponent,
-	FName                   BoneName,
-	bool                    bIncludeSelf,
-	EPhysicsMovementType    MovementType,
-	ECollisionEnabled::Type CollisionType,
-	float                   GravityMultiplier,
-	bool                    bUseSkeletalAnimation)
+TArray<FName> UPhysicsControlComponent::CreateBodyModifiersFromSkeletalMeshBelow(
+	USkeletalMeshComponent*       SkeletalMeshComponent,
+	const FName                   BoneName,
+	const bool                    bIncludeSelf,
+	const FName                   Set,
+	const EPhysicsMovementType    MovementType,
+	const ECollisionEnabled::Type CollisionType,
+	const float                   GravityMultiplier,
+	const bool                    bUseSkeletalAnimation)
 {
 	TArray<FName> Result;
 	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent ? SkeletalMeshComponent->GetPhysicsAsset() : nullptr;
@@ -1232,15 +1360,16 @@ TArray<FName> UPhysicsControlComponent::MakeBodyModifiersFromSkeletalMeshBelow(
 	SkeletalMeshComponent->ForEachBodyBelow(
 		BoneName, bIncludeSelf, /*bSkipCustomType=*/false,
 		[
-			this, PhysicsAsset, SkeletalMeshComponent, MovementType, CollisionType,
+			this, PhysicsAsset, SkeletalMeshComponent, Set, MovementType, CollisionType,
 			GravityMultiplier, bUseSkeletalAnimation, &Result
 		](const FBodyInstance* BI)
 		{
 			if (USkeletalBodySetup* BodySetup = Cast<USkeletalBodySetup>(BI->BodySetup.Get()))
 			{
 				const FName BoneName = PhysicsAsset->SkeletalBodySetups[BI->InstanceBodyIndex]->BoneName;
-				FName BodyModifierName = MakeBodyModifier(
-					SkeletalMeshComponent, BoneName, MovementType, CollisionType, GravityMultiplier, bUseSkeletalAnimation);
+				const FName BodyModifierName = CreateBodyModifier(
+					SkeletalMeshComponent, BoneName, Set, MovementType, 
+					CollisionType, GravityMultiplier, bUseSkeletalAnimation);
 				Result.Add(BodyModifierName);
 			}
 		});
@@ -1249,20 +1378,20 @@ TArray<FName> UPhysicsControlComponent::MakeBodyModifiersFromSkeletalMeshBelow(
 }
 
 //======================================================================================================================
-TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeBodyModifiersFromLimbBones(
-	FPhysicsControlNameArray&                    AllBodyModifiers,
+TMap<FName, FPhysicsControlNames> UPhysicsControlComponent::CreateBodyModifiersFromLimbBones(
+	FPhysicsControlNames&                        AllBodyModifiers,
 	const TMap<FName, FPhysicsControlLimbBones>& LimbBones,
-	EPhysicsMovementType                         MovementType,
-	ECollisionEnabled::Type                      CollisionType,
-	float                                        GravityMultiplier,
-	bool                                         bUseSkeletalAnimation)
+	const EPhysicsMovementType                   MovementType,
+	const ECollisionEnabled::Type                CollisionType,
+	const float                                  GravityMultiplier,
+	const bool                                   bUseSkeletalAnimation)
 {
-	TMap<FName, FPhysicsControlNameArray> Result;
+	TMap<FName, FPhysicsControlNames> Result;
 	Result.Reserve(LimbBones.Num());
 
 	for (const TPair<FName, FPhysicsControlLimbBones>& LimbBoneEntry : LimbBones)
 	{
-		FName LimbName = LimbBoneEntry.Key;
+		const FName LimbName = LimbBoneEntry.Key;
 		const FPhysicsControlLimbBones& BonesInLimb = LimbBoneEntry.Value;
 
 		if (!BonesInLimb.SkeletalMeshComponent)
@@ -1273,14 +1402,15 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeBodyModifier
 
 		const int32 NumBonesInLimb = BonesInLimb.BoneNames.Num();
 
-		FPhysicsControlNameArray& LimbResult = Result.Add(LimbName);
+		FPhysicsControlNames& LimbResult = Result.Add(LimbName);
 		LimbResult.Names.Reserve(NumBonesInLimb);
 		AllBodyModifiers.Names.Reserve(AllBodyModifiers.Names.Num() + NumBonesInLimb);
 
-		for (FName BoneName : BonesInLimb.BoneNames)
+		for (const FName BoneName : BonesInLimb.BoneNames)
 		{
-			FName BodyModifierName = MakeBodyModifier(
-				BonesInLimb.SkeletalMeshComponent, BoneName, MovementType, CollisionType, GravityMultiplier, bUseSkeletalAnimation);
+			const FName BodyModifierName = CreateBodyModifier(
+				BonesInLimb.SkeletalMeshComponent, BoneName, LimbName, MovementType, 
+				CollisionType, GravityMultiplier, bUseSkeletalAnimation);
 			if (!BodyModifierName.IsNone())
 			{
 				LimbResult.Names.Add(BodyModifierName);
@@ -1288,7 +1418,8 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeBodyModifier
 			}
 			else
 			{
-				UE_LOG(LogPhysicsControlComponent, Warning, TEXT("Failed to make body modifier for %s"), *BoneName.ToString());
+				UE_LOG(LogPhysicsControlComponent, Warning, 
+					TEXT("Failed to make body modifier for %s"), *BoneName.ToString());
 			}
 		}
 	}
@@ -1298,37 +1429,31 @@ TMap<FName, FPhysicsControlNameArray> UPhysicsControlComponent::MakeBodyModifier
 //======================================================================================================================
 bool UPhysicsControlComponent::DestroyBodyModifier(const FName Name)
 {
-	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
-	if (PhysicsBodyModifier)
-	{
-		if (USkeletalMeshComponent* SkeletalMeshComponent = 
-			Cast<USkeletalMeshComponent>(PhysicsBodyModifier->MeshComponent))
-		{
-			Implementation->RemoveSkeletalMeshReferenceForCaching(SkeletalMeshComponent);
-			Implementation->RemoveSkeletalMeshReferenceForModifier(SkeletalMeshComponent);
-		}
-
-		PhysicsBodyModifier->bPendingDestroy = true;
-		return true;
-	}
-	return false;
+	return Implementation->DestroyBodyModifier(Name);
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::DestroyAllBodyModifiers(const TArray<FName>& Names)
+void UPhysicsControlComponent::DestroyBodyModifiers(const TArray<FName>& Names)
 {
 	for (FName Name : Names)
 	{
-		DestroyBodyModifier(Name);
+		Implementation->DestroyBodyModifier(Name);
 	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::DestroyBodyModifiersInSet(const FName SetName)
+{
+	TArray<FName> Names = GetBodyModifierNamesInSet(SetName);
+	DestroyBodyModifiers(Names);
 }
 
 //======================================================================================================================
 bool UPhysicsControlComponent::SetBodyModifierKinematicTarget(
-	const FName Name,
-	FVector     KinematicTargetPosition,
-	FRotator    KinematicTargetOrienation,
-	bool        bMakeKinematic)
+	const FName    Name,
+	const FVector  KinematicTargetPosition,
+	const FRotator KinematicTargetOrienation,
+	const bool     bMakeKinematic)
 {
 	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
 	if (PhysicsBodyModifier)
@@ -1346,8 +1471,8 @@ bool UPhysicsControlComponent::SetBodyModifierKinematicTarget(
 
 //======================================================================================================================
 bool UPhysicsControlComponent::SetBodyModifierMovementType(
-		FName                Name,
-		EPhysicsMovementType MovementType)
+	const FName                Name,
+	const EPhysicsMovementType MovementType)
 {
 	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
 	if (PhysicsBodyModifier)
@@ -1359,9 +1484,9 @@ bool UPhysicsControlComponent::SetBodyModifierMovementType(
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllBodyModifierMovementType(
-	const TArray<FName>& Names,
-	EPhysicsMovementType MovementType)
+void UPhysicsControlComponent::SetBodyModifiersMovementType(
+	const TArray<FName>&       Names,
+	const EPhysicsMovementType MovementType)
 {
 	for (FName Name : Names)
 	{
@@ -1370,9 +1495,17 @@ void UPhysicsControlComponent::SetAllBodyModifierMovementType(
 }
 
 //======================================================================================================================
+void UPhysicsControlComponent::SetBodyModifiersInSetMovementType(
+	const FName                SetName,
+	const EPhysicsMovementType MovementType)
+{
+	SetBodyModifiersMovementType(GetBodyModifierNamesInSet(SetName), MovementType);
+}
+
+//======================================================================================================================
 bool UPhysicsControlComponent::SetBodyModifierCollisionType(
-	FName                   Name,
-	ECollisionEnabled::Type CollisionType)
+	const FName                   Name,
+	const ECollisionEnabled::Type CollisionType)
 {
 	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
 	if (PhysicsBodyModifier)
@@ -1384,9 +1517,9 @@ bool UPhysicsControlComponent::SetBodyModifierCollisionType(
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllBodyModifierCollisionType(
-	const TArray<FName>&    Names,
-	ECollisionEnabled::Type CollisionType)
+void UPhysicsControlComponent::SetBodyModifiersCollisionType(
+	const TArray<FName>&          Names,
+	const ECollisionEnabled::Type CollisionType)
 {
 	for (FName Name : Names)
 	{
@@ -1395,9 +1528,17 @@ void UPhysicsControlComponent::SetAllBodyModifierCollisionType(
 }
 
 //======================================================================================================================
+void UPhysicsControlComponent::SetBodyModifiersInSetCollisionType(
+	const FName                   SetName,
+	const ECollisionEnabled::Type CollisionType)
+{
+	SetBodyModifiersCollisionType(GetBodyModifierNamesInSet(SetName), CollisionType);
+}
+
+//======================================================================================================================
 bool UPhysicsControlComponent::SetBodyModifierGravityMultiplier(
 	const FName Name,
-	float       GravityMultiplier)
+	const float GravityMultiplier)
 {
 	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
 	if (PhysicsBodyModifier)
@@ -1409,9 +1550,9 @@ bool UPhysicsControlComponent::SetBodyModifierGravityMultiplier(
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllBodyModifierGravityMultipliers(
+void UPhysicsControlComponent::SetBodyModifiersGravityMultiplier(
 	const TArray<FName>& Names,
-	float                GravityMultiplier)
+	const float          GravityMultiplier)
 {
 	for (FName Name : Names)
 	{
@@ -1420,9 +1561,17 @@ void UPhysicsControlComponent::SetAllBodyModifierGravityMultipliers(
 }
 
 //======================================================================================================================
+void UPhysicsControlComponent::SetBodyModifiersInSetGravityMultiplier(
+	const FName SetName,
+	const float GravityMultiplier)
+{
+	SetBodyModifiersGravityMultiplier(GetBodyModifierNamesInSet(SetName), GravityMultiplier);
+}
+
+//======================================================================================================================
 bool UPhysicsControlComponent::SetBodyModifierUseSkeletalAnimation(
 	const FName Name,
-	bool        bUseSkeletalAnimation)
+	const bool  bUseSkeletalAnimation)
 {
 	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
 	if (PhysicsBodyModifier)
@@ -1434,9 +1583,9 @@ bool UPhysicsControlComponent::SetBodyModifierUseSkeletalAnimation(
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::SetAllBodyModifiersUseSkeletalAnimation(
+void UPhysicsControlComponent::SetBodyModifiersUseSkeletalAnimation(
 	const TArray<FName>& Names,
-	bool                 bUseSkeletalAnimation)
+	const bool           bUseSkeletalAnimation)
 {
 	for (FName Name : Names)
 	{
@@ -1444,19 +1593,295 @@ void UPhysicsControlComponent::SetAllBodyModifiersUseSkeletalAnimation(
 	}
 }
 
+//======================================================================================================================
+void UPhysicsControlComponent::SetBodyModifiersInSetUseSkeletalAnimation(
+	const FName SetName,
+	const bool  bUseSkeletalAnimation)
+{
+	SetBodyModifiersUseSkeletalAnimation(GetBodyModifierNamesInSet(SetName), bUseSkeletalAnimation);
+}
+
+//======================================================================================================================
+const TArray<FName>& UPhysicsControlComponent::GetAllControlNames() const
+{
+	return GetControlNamesInSet("All");
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::CreateControlsAndBodyModifiersFromLimbBones(
+	FPhysicsControlNames&                       AllWorldSpaceControls,
+	TMap<FName, FPhysicsControlNames>&          LimbWorldSpaceControls,
+	FPhysicsControlNames&                       AllParentSpaceControls,
+	TMap<FName, FPhysicsControlNames>&          LimbParentSpaceControls,
+	FPhysicsControlNames&                       AllBodyModifiers,
+	TMap<FName, FPhysicsControlNames>&          LimbBodyModifiers,
+	USkeletalMeshComponent*                     SkeletalMeshComponent,
+	const TArray<FPhysicsControlLimbSetupData>& LimbSetupData,
+	const FPhysicsControlData                   WorldSpaceControlData,
+	const FPhysicsControlSettings               WorldSpaceControlSettings,
+	const bool                                  bEnableWorldSpaceControls,
+	const FPhysicsControlData                   ParentSpaceControlData,
+	const FPhysicsControlSettings               ParentSpaceControlSettings,
+	const bool                                  bEnableParentSpaceControls,
+	const EPhysicsMovementType                  PhysicsMovementType,
+	const float                                 GravityMultiplier)
+{
+	TMap<FName, FPhysicsControlLimbBones> LimbBones = 
+		GetLimbBonesFromSkeletalMesh(SkeletalMeshComponent, LimbSetupData);
+
+	LimbWorldSpaceControls = CreateControlsFromLimbBones(
+		AllWorldSpaceControls, LimbBones, EPhysicsControlType::WorldSpace, 
+		WorldSpaceControlData, WorldSpaceControlSettings, bEnableWorldSpaceControls);
+
+	LimbParentSpaceControls = CreateControlsFromLimbBones(
+		AllParentSpaceControls, LimbBones, EPhysicsControlType::ParentSpace,
+		ParentSpaceControlData, ParentSpaceControlSettings, bEnableParentSpaceControls);
+
+	LimbBodyModifiers = CreateBodyModifiersFromLimbBones(
+		AllBodyModifiers, LimbBones, PhysicsMovementType, ECollisionEnabled::QueryAndPhysics, GravityMultiplier, true);
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::AddControlToSet(
+	FPhysicsControlNames& NewSet, 
+	const FName           Control, 
+	const FName           SetName)
+{
+	Implementation->NameRecords.AddControl(Control, SetName);
+	NewSet.Names = GetControlNamesInSet(SetName);
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::AddControlsToSet(
+	FPhysicsControlNames& NewSet, 
+	const TArray<FName>&  Controls, 
+	const FName           SetName)
+{
+	for (FName Control : Controls)
+	{
+		Implementation->NameRecords.AddControl(Control, SetName);
+	}
+	NewSet.Names = GetControlNamesInSet(SetName);
+}
+
+//======================================================================================================================
+const TArray<FName>& UPhysicsControlComponent::GetControlNamesInSet(const FName SetName) const
+{
+	return Implementation->NameRecords.GetControlNamesInSet(SetName);
+}
+
+//======================================================================================================================
+const TArray<FName>& UPhysicsControlComponent::GetAllBodyModifierNames() const
+{
+	return GetBodyModifierNamesInSet("All");
+}
+
+//======================================================================================================================
+const TArray<FName>& UPhysicsControlComponent::GetBodyModifierNamesInSet(const FName SetName) const
+{
+	return Implementation->NameRecords.GetBodyModifierNamesInSet(SetName);
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::AddBodyModifierToSet(
+	FPhysicsControlNames& NewSet, 
+	const FName           BodyModifier, 
+	const FName           SetName)
+{
+	Implementation->NameRecords.AddBodyModifier(BodyModifier, SetName);
+	NewSet.Names = GetBodyModifierNamesInSet(SetName);
+}
+
+
+//======================================================================================================================
+void UPhysicsControlComponent::AddBodyModifiersToSet(
+	FPhysicsControlNames& NewSet, 
+	const TArray<FName>&  BodyModifiers, 
+	const FName           SetName)
+{
+	for (FName BodyModifier : BodyModifiers)
+	{
+		Implementation->NameRecords.AddBodyModifier(BodyModifier, SetName);
+	}
+	NewSet.Names = GetBodyModifierNamesInSet(SetName);
+}
+
+//======================================================================================================================
+TArray<FName> UPhysicsControlComponent::GetSetsContainingControl(const FName Control) const
+{
+	TArray<FName> Result;
+	for (const TPair<FName, TArray<FName>>& ControlSetPair : Implementation->NameRecords.ControlSets)
+	{
+		for (const FName& ControlName : ControlSetPair.Value)
+		{
+			if (ControlName == Control)
+			{
+				Result.Add(ControlSetPair.Key);
+			}
+		}
+	}
+	return Result;
+}
+
+//======================================================================================================================
+TArray<FName> UPhysicsControlComponent::GetSetsContainingBodyModifier(const FName BodyModifier) const
+{
+	TArray<FName> Result;
+	for (const TPair<FName, TArray<FName>>& BodyModifierSetPair : Implementation->NameRecords.BodyModifierSets)
+	{
+		for (const FName& BodyModifierName : BodyModifierSetPair.Value)
+		{
+			if (BodyModifierName == BodyModifier)
+			{
+				Result.Add(BodyModifierSetPair.Key);
+			}
+		}
+	}
+	return Result;
+}
+
 #if WITH_EDITOR
+
+//======================================================================================================================
+void UPhysicsControlComponent::OnRegister()
+{
+	Super::OnRegister();
+
+	if (SpriteComponent)
+	{
+		UpdateSpriteTexture();
+		SpriteComponent->SpriteInfo.Category = TEXT("Physics");
+		SpriteComponent->SpriteInfo.DisplayName = NSLOCTEXT("SpriteCategory", "Physics", "Physics");
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::UpdateSpriteTexture()
+{
+	if (SpriteComponent)
+	{
+		SpriteComponent->SetSprite(LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorResources/S_KBSJoint.S_KBSJoint")));
+	}
+}
+
 //======================================================================================================================
 void UPhysicsControlComponent::DebugDraw(FPrimitiveDrawInterface* PDI) const
 {
+	// Draw gizmos
 	if (bShowDebugVisualization && VisualizationSizeScale > 0)
 	{
 		for (const TPair<FName, FPhysicsControlRecord>& PhysicsControlRecordPair : 
 			Implementation->PhysicsControlRecords)
 		{
-			const FName& Name = PhysicsControlRecordPair.Key;
+			const FName Name = PhysicsControlRecordPair.Key;
 			const FPhysicsControlRecord& Record = PhysicsControlRecordPair.Value;
 			DebugDrawControl(PDI, Record, Name);
 		} 
+	}
+
+	// Detailed controls - if there's a filter
+	if (!DebugControlDetailFilter.IsEmpty())
+	{
+		for (const TPair<FName, FPhysicsControlRecord>& PhysicsControlRecordPair :
+			Implementation->PhysicsControlRecords)
+		{
+			const FName Name = PhysicsControlRecordPair.Key;
+
+			if (Name.ToString().Contains(DebugControlDetailFilter))
+			{
+				const FPhysicsControlRecord& Record = PhysicsControlRecordPair.Value;
+
+				FString ParentComponentName = Record.PhysicsControl.ParentMeshComponent ?
+					Record.PhysicsControl.ParentMeshComponent->GetName() : TEXT("NoParent");
+				FString ChildComponentName = Record.PhysicsControl.ChildMeshComponent ?
+					Record.PhysicsControl.ChildMeshComponent->GetName() : TEXT("NoChild");
+
+				FString Text = FString::Printf(
+					TEXT("%s: Parent %s (%s) Child %s (%s): Linear strength %f Angular strength %f"),
+					*Name.ToString(),
+					*ParentComponentName,
+					*Record.PhysicsControl.ParentBoneName.ToString(),
+					*ChildComponentName,
+					*Record.PhysicsControl.ChildBoneName.ToString(),
+					Record.PhysicsControl.ControlData.LinearStrength,
+					Record.PhysicsControl.ControlData.AngularStrength);
+
+				GEngine->AddOnScreenDebugMessage(
+					-1, 0.0f,
+					Record.PhysicsControlState.bEnabled ? FColor::Green : FColor::Red, Text);
+			}
+		}
+	}
+
+	// Summary of control list
+	if (bShowDebugControlList)
+	{
+		FString AllNames;
+
+		for (const TPair<FName, FPhysicsControlRecord>& PhysicsControlRecordPair :
+			Implementation->PhysicsControlRecords)
+		{
+			const FName Name = PhysicsControlRecordPair.Key;
+			AllNames += Name.ToString() + TEXT(" ");
+			if (AllNames.Len() > 256)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::White, *AllNames);
+				AllNames.Reset();
+			}
+		}
+		GEngine->AddOnScreenDebugMessage(
+			-1, 0.0f, FColor::White,
+			FString::Printf(TEXT("%d Controls: %s"), Implementation->PhysicsControlRecords.Num(), *AllNames));
+
+	}
+
+	// Detailed body modifiers - if there's a filter
+	if (!DebugBodyModifierDetailFilter.IsEmpty())
+	{
+		for (const TPair<FName, FPhysicsBodyModifier>& PhysicsBodyModifierPair :
+			Implementation->PhysicsBodyModifiers)
+		{
+			const FName Name = PhysicsBodyModifierPair.Key;
+
+			if (Name.ToString().Contains(DebugBodyModifierDetailFilter))
+			{
+				const FPhysicsBodyModifier& Record = PhysicsBodyModifierPair.Value;
+
+				FString ComponentName = Record.MeshComponent ? Record.MeshComponent->GetName() : TEXT("None");
+
+				FString Text = FString::Printf(
+					TEXT("%s: %s: %s %s GravityMultiplier %f"),
+					*Name.ToString(),
+					*ComponentName,
+					*UEnum::GetValueAsString(Record.MovementType),
+					*UEnum::GetValueAsString(Record.CollisionType),
+					Record.GravityMultiplier);
+
+				GEngine->AddOnScreenDebugMessage(-1, 0.0f, 
+					Record.MovementType == EPhysicsMovementType::Simulated ? FColor::Green : FColor::Red, Text);
+			}
+		}
+	}
+
+	// Summary of control list
+	if (bShowDebugBodyModifierList)
+	{
+		FString AllNames;
+
+		for (const TPair<FName, FPhysicsBodyModifier>& PhysicsBodyModifierPair : Implementation->PhysicsBodyModifiers)
+		{
+			const FName Name = PhysicsBodyModifierPair.Key;
+			AllNames += Name.ToString() + TEXT(" ");
+			if (AllNames.Len() > 256)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::White, *AllNames);
+				AllNames.Reset();
+			}
+		}
+		GEngine->AddOnScreenDebugMessage(
+			-1, 0.0f, FColor::White,
+			FString::Printf(TEXT("%d Body modifiers: %s"), Implementation->PhysicsBodyModifiers.Num(), *AllNames));
+
 	}
 }
 
@@ -1471,8 +1896,8 @@ void UPhysicsControlComponent::DebugDrawControl(
 
 	const FConstraintInstance* ConstraintInstance = Record.PhysicsControlState.ConstraintInstance.Get();
 
-	bool bHaveLinear = Record.PhysicsControl.ControlData.LinearStrength > 0;
-	bool bHaveAngular = Record.PhysicsControl.ControlData.AngularStrength > 0;
+	const bool bHaveLinear = Record.PhysicsControl.ControlData.LinearStrength > 0;
+	const bool bHaveAngular = Record.PhysicsControl.ControlData.AngularStrength > 0;
 
 	if (Record.PhysicsControlState.bEnabled && ConstraintInstance)
 	{
@@ -1486,7 +1911,7 @@ void UPhysicsControlComponent::DebugDrawControl(
 
 		FBodyInstance* ParentBodyInstance = UE::PhysicsControlComponent::GetBodyInstance(
 			Record.PhysicsControl.ParentMeshComponent, Record.PhysicsControl.ParentBoneName);
-		FTransform ParentBodyTM = ParentBodyInstance ? ParentBodyInstance->GetUnrealWorldTransform() : FTransform();
+		const FTransform ParentBodyTM = ParentBodyInstance ? ParentBodyInstance->GetUnrealWorldTransform() : FTransform();
 
 		FTransform TargetTM;
 		FVector TargetVelocity;
@@ -1494,14 +1919,14 @@ void UPhysicsControlComponent::DebugDrawControl(
 		Implementation->CalculateControlTargetData(TargetTM, TargetVelocity, TargetAngularVelocity, Record, true);
 
 		// WorldChildFrameTM is the world-space transform of the child (driven) constraint frame
-		FTransform WorldChildFrameTM = ConstraintInstance->GetRefFrame(EConstraintFrame::Frame1) * ChildBodyTM;
+		const FTransform WorldChildFrameTM = ConstraintInstance->GetRefFrame(EConstraintFrame::Frame1) * ChildBodyTM;
 
 		// WorldParentFrameTM is the world-space transform of the parent constraint frame
-		FTransform WorldParentFrameTM = ConstraintInstance->GetRefFrame(EConstraintFrame::Frame2) * ParentBodyTM;
+		const FTransform WorldParentFrameTM = ConstraintInstance->GetRefFrame(EConstraintFrame::Frame2) * ParentBodyTM;
+
+		const FTransform WorldCurrentTM = WorldChildFrameTM;
 
 		FTransform WorldTargetTM = TargetTM * WorldParentFrameTM;
-		FTransform WorldCurrentTM = WorldChildFrameTM;
-
 		if (!bHaveLinear)
 		{
 			WorldTargetTM.SetTranslation(WorldCurrentTM.GetTranslation());
@@ -1530,11 +1955,11 @@ void UPhysicsControlComponent::DebugDrawControl(
 			DrawCoordinateSystem(
 				PDI, WorldTargetTM.GetTranslation(), WorldTargetTM.Rotator(),
 				VisualizationSizeScale, SDPG_Foreground, 4.0f * GizmoWidthScale);
-			if (VelocityPredictionTime)
+			if (VelocityPredictionTime != 0)
 			{
 				DrawCoordinateSystem(
 					PDI, PredictedTargetTM.GetTranslation(), PredictedTargetTM.Rotator(),
-					VisualizationSizeScale * 0.5, SDPG_Foreground, 4.0f * GizmoWidthScale);
+					VisualizationSizeScale * 0.5f, SDPG_Foreground, 4.0f * GizmoWidthScale);
 			}
 		}
 		else
@@ -1545,16 +1970,16 @@ void UPhysicsControlComponent::DebugDrawControl(
 			DrawWireSphere(
 				PDI, WorldTargetTM, TargetColor, 
 				VisualizationSizeScale, 8, SDPG_Foreground, 3.0f * GizmoWidthScale);
-			if (VelocityPredictionTime)
+			if (VelocityPredictionTime != 0)
 			{
 				DrawWireSphere(
 					PDI, PredictedTargetTM, TargetColor, 
-					VisualizationSizeScale * 0.5, 8, SDPG_Foreground, 3.0f * GizmoWidthScale);
+					VisualizationSizeScale * 0.5f, 8, SDPG_Foreground, 3.0f * GizmoWidthScale);
 			}
 		}
 
 
-		if (VelocityPredictionTime)
+		if (VelocityPredictionTime != 0)
 		{
 			PDI->DrawLine(
 				WorldTargetTM.GetTranslation(), 

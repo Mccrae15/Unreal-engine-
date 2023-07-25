@@ -73,7 +73,6 @@ namespace UE::Interchange::Private
 	{
 		if (Texture)
 		{
-			Texture->PreEditChange(nullptr);
 			if (UE::NormalMapIdentification::HandleAssetPostImport(Texture))
 			{
 				UE_LOG(LogInterchangePipeline, Display, TEXT("Auto-detected normal map"));
@@ -83,7 +82,7 @@ namespace UE::Interchange::Private
 					Texture->bFlipGreenChannel = true;
 				}
 			}
-			Texture->PostEditChange();
+			// this will rebuild the texture if it changed to normal map
 		}
 	}
 #endif
@@ -130,7 +129,7 @@ void UInterchangeGenericTexturePipeline::AdjustSettingsForContext(EInterchangePi
 	}
 }
 
-void UInterchangeGenericTexturePipeline::ExecutePreImportPipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas)
+void UInterchangeGenericTexturePipeline::ExecutePipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas)
 {
 	if (!InBaseNodeContainer)
 	{
@@ -170,7 +169,7 @@ void UInterchangeGenericTexturePipeline::ExecutePreImportPipeline(UInterchangeBa
 	}
 }
 
-void UInterchangeGenericTexturePipeline::ExecutePostImportPipeline(const UInterchangeBaseNodeContainer* InBaseNodeContainer, const FString& NodeKey, UObject* CreatedAsset, bool bIsAReimport)
+void UInterchangeGenericTexturePipeline::ExecutePostFactoryPipeline(const UInterchangeBaseNodeContainer* InBaseNodeContainer, const FString& NodeKey, UObject* CreatedAsset, bool bIsAReimport)
 {
 	//We do not use the provided base container since ExecutePreImportPipeline cache it
 	//We just make sure the same one is pass in parameter
@@ -332,37 +331,21 @@ UInterchangeTextureFactoryNode* UInterchangeGenericTexturePipeline::CreateTextur
 void UInterchangeGenericTexturePipeline::PostImportTextureAssetImport(UObject* CreatedAsset, bool bIsAReimport)
 {
 #if WITH_EDITOR
+
+	// this is run on main thread
+	check(IsInGameThread());
+	//	after texture may have started compiling
+
 	if (!bIsAReimport && bDetectNormalMapTexture)
 	{
-		// Verify if the texture is a normal map
 		if (UTexture* Texture = Cast<UTexture>(CreatedAsset))
 		{
+			// if it's already a normal map, no need to run NormalMapIdentification
 			if (!Texture->IsNormalMap())
 			{
-				// This can create 2 build of the texture (we should revisit this at some point)
-				if (FTextureCompilingManager::Get().IsCompilingTexture(Texture))
-				{
-					TWeakObjectPtr<UTexture> WeakTexturePtr = Texture;
-					TSharedRef<FDelegateHandle> HandlePtr = MakeShared<FDelegateHandle>();
-					HandlePtr.Get() = FTextureCompilingManager::Get().OnTexturePostCompileEvent().AddLambda([this, WeakTexturePtr, HandlePtr](const TArrayView<UTexture* const>&)
-						{
-							if (UTexture* TextureToTest = WeakTexturePtr.Get())
-							{
-								if (FTextureCompilingManager::Get().IsCompilingTexture(TextureToTest))
-								{
-									return;
-								}
-
-								UE::Interchange::Private::AdjustTextureForNormalMap(TextureToTest, bFlipNormalMapGreenChannel);
-							}
-
-							FTextureCompilingManager::Get().OnTexturePostCompileEvent().Remove(HandlePtr.Get());
-						});
-				}
-				else
-				{
-					UE::Interchange::Private::AdjustTextureForNormalMap(Texture, bFlipNormalMapGreenChannel);
-				}
+ 				check(!FTextureCompilingManager::Get().IsCompilingTexture(Texture));
+				// AdjustTextureForNormalMap does a PostEditChange which triggers a rebuild
+				UE::Interchange::Private::AdjustTextureForNormalMap(Texture, bFlipNormalMapGreenChannel);
 			}
 		}
 	}

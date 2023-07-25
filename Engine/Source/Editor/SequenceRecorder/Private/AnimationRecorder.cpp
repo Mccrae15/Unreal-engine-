@@ -3,6 +3,8 @@
 #include "AnimationRecorder.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Animation/AnimSequence.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Misc/MessageDialog.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
@@ -248,14 +250,16 @@ void FAnimationRecorder::StartRecord(USkeletalMeshComponent* Component, UAnimSeq
 	LastFrame = 0;
 
 	IAnimationDataController& Controller = AnimationObject->GetController();
-	Controller.SetModel(AnimationObject->GetDataModel());
+	Controller.SetModel(AnimationObject->GetDataModelInterface());
 
-	Controller.OpenBracket(LOCTEXT("StartRecord_Bracket", "Starting Animation Recording"));
+	Controller.OpenBracket(LOCTEXT("StartRecord_Bracket", "Starting Animation Recording"), bTransactRecording);
+
+	Controller.InitializeModel();
 
 	const bool bKeepNotifiesAndCurves = CVarKeepNotifyAndCurvesOnAnimationRecord->GetInt() == 0 ? false : true;
 	if (bKeepNotifiesAndCurves)
 	{
-		Controller.RemoveAllBoneTracks();
+		Controller.RemoveAllBoneTracks(bTransactRecording);
 	}
 	else
 	{
@@ -279,7 +283,7 @@ void FAnimationRecorder::StartRecord(USkeletalMeshComponent* Component, UAnimSeq
 		{
 			// add tracks for the bone existing
 			const FName BoneTreeName = AnimSkeleton->GetReferenceSkeleton().GetBoneName(BoneTreeIndex);
-			Controller.AddBoneTrack(BoneTreeName);			
+			Controller.AddBoneCurve(BoneTreeName, bTransactRecording);			
 			RawTracks.AddDefaulted();
 		}
 	}
@@ -375,8 +379,8 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 		AnimationObject->Interpolation = Interpolation;
 
 		// can't use TimePassed. That is just total time that has been passed, not necessarily match with frame count
-		Controller.SetPlayLength( (NumKeys>1) ? RecordingRate.AsSeconds(LastFrame): RecordingRate.AsSeconds(1) );
-		Controller.SetFrameRate(RecordingRate);
+		Controller.SetFrameRate(RecordingRate, bTransactRecording);
+		Controller.SetNumberOfFrames( FMath::Max(LastFrame.Value,1), bTransactRecording);
 
 		ProcessNotifies();
 
@@ -447,7 +451,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 								{
 									// give default curve flag for recording 
 									const FAnimationCurveIdentifier CurveId(CurveName, ERawCurveTrackTypes::RCT_Float);
-									Controller.AddCurve(CurveId, AACF_DefaultCurve);
+									Controller.AddCurve(CurveId, AACF_DefaultCurve, bTransactRecording);
 									FloatCurveData = AnimationObject->GetDataModel()->FindFloatCurve(CurveId);
 								}
 							}
@@ -475,7 +479,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 						}
 
 						const FAnimationCurveIdentifier CurveId(FloatCurveData->Name, ERawCurveTrackTypes::RCT_Float);
-						Controller.SetCurveKeys(CurveId, Keys);
+						Controller.SetCurveKeys(CurveId, Keys, bTransactRecording);
 					}
 				}
 			}	
@@ -485,19 +489,18 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 		}
 
 		// Populate bone tracks
-		const TArray<FBoneAnimationTrack>& BoneAnimationTracks = AnimationObject->GetDataModel()->GetBoneAnimationTracks();
-		for (int32 TrackIndex = 0; TrackIndex < BoneAnimationTracks.Num(); ++TrackIndex)
+		TArray<FName> TrackNames;
+		AnimationObject->GetDataModel()->GetBoneTrackNames(TrackNames);
+		for (int32 TrackIndex = 0; TrackIndex < TrackNames.Num(); ++TrackIndex)
 		{
-			const FBoneAnimationTrack& AnimationTrack = BoneAnimationTracks[TrackIndex];
 			const FRawAnimSequenceTrack& RawTrack = RawTracks[TrackIndex];
+			FName BoneName = TrackNames[TrackIndex];
 
-			FName BoneName = AnimationTrack.Name;
-
-			bool bShouldSkipName = ShouldSkipName(AnimationTrack.Name);
+			bool bShouldSkipName = ShouldSkipName(BoneName);
 
 			if (!bShouldSkipName)
 			{
-				Controller.SetBoneTrackKeys(BoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
+				Controller.SetBoneTrackKeys(BoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys, bTransactRecording);
 			}
 			else
 			{
@@ -508,7 +511,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 				TArray<FVector3f> SingleScaleKey;
 				SingleScaleKey.Add(RawTrack.ScaleKeys[0]);
 
-				Controller.SetBoneTrackKeys(BoneName, SinglePosKey, SingleRotKey, SingleScaleKey);
+				Controller.SetBoneTrackKeys(BoneName, SinglePosKey, SingleRotKey, SingleScaleKey, bTransactRecording);
 
 				UE_LOG(LogAnimation, Log, TEXT("Animation Recorder skipping bone: %s"), *BoneName.ToString());
 			}
@@ -516,11 +519,11 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 
 		if (bRecordTransforms == false)
 		{
-			Controller.RemoveAllBoneTracks();
+			Controller.RemoveAllBoneTracks(bTransactRecording);
 		}
 
 		Controller.NotifyPopulated();
-		Controller.CloseBracket();
+		Controller.CloseBracket(bTransactRecording);
 
 
 		AnimationObject->MarkPackageDirty();
@@ -537,7 +540,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 			FSavePackageArgs SaveArgs;
 			SaveArgs.TopLevelFlags = RF_Standalone;
 			SaveArgs.SaveFlags = SAVE_NoError;
-			UPackage::SavePackage(Package, NULL, *PackageFileName, SaveArgs);
+			UPackage::SavePackage(Package, nullptr, *PackageFileName, SaveArgs);
 
 			ElapsedTime = FPlatformTime::Seconds() - StartTime;
 			UE_LOG(LogAnimation, Log, TEXT("Animation Recorder saved %s in %0.2f seconds"), *PackageName, ElapsedTime);
@@ -577,7 +580,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 			FAssetRegistryModule::AssetCreated(AnimationObject);
 		}
 
-		AnimationObject = NULL;
+		AnimationObject = nullptr;
 		PreviousSpacesBases.Empty();
 		PreviousAnimCurves.Empty();
 
@@ -850,7 +853,9 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 			Component->LeaderPoseComponent->GetSkinnedAsset() :
 			Component->GetSkinnedAsset();
 
-		const TArray<FBoneAnimationTrack>& BoneAnimationTracks = AnimationObject->GetDataModel()->GetBoneAnimationTracks();
+		TArray<FName> TrackNames;
+		const IAnimationDataModel* DataModel = AnimationObject->GetDataModel();
+		DataModel->GetBoneTrackNames(TrackNames);
 
 		if (FrameToAdd == 0)
 		{
@@ -858,10 +863,10 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 			SkeletonRootIndex = INDEX_NONE;
 			USkeleton* AnimSkeleton = AnimationObject->GetSkeleton();
 
-			for (const FBoneAnimationTrack& AnimationTrack : BoneAnimationTracks)
+			for (const FName& TrackName : TrackNames)
 			{
 				// verify if this bone exists in skeleton
-				const int32 BoneTreeIndex = AnimationTrack.BoneTreeIndex;
+				const int32 BoneTreeIndex = AnimSkeleton->GetReferenceSkeleton().FindBoneIndex(TrackName);
 				if (BoneTreeIndex != INDEX_NONE)
 				{
 					const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkinnedAsset, BoneTreeIndex);
@@ -869,7 +874,7 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 					const FTransform LocalTransform = SpacesBases[BoneIndex];
 					if (ParentIndex == INDEX_NONE)
 					{
-						if (bRemoveRootTransform && BoneAnimationTracks.Num() > 1)
+						if (bRemoveRootTransform && TrackNames.Num() > 1)
 						{
 							// Store initial root transform.
 							// We remove the initial transform of the root bone and transform root's children
@@ -896,13 +901,13 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 		FSerializedAnimation  SerializedAnimation;
 		USkeleton* AnimSkeleton = AnimationObject->GetSkeleton();
 
-		for (int32 TrackIndex = 0; TrackIndex < BoneAnimationTracks.Num(); ++TrackIndex)
+		for (int32 TrackIndex = 0; TrackIndex < TrackNames.Num(); ++TrackIndex)
 		{
-			const FBoneAnimationTrack& AnimationTrack = BoneAnimationTracks[TrackIndex];
+			const FName& TrackName = TrackNames[TrackIndex];
 			FRawAnimSequenceTrack& RawTrack = RawTracks[TrackIndex];
 
 			// verify if this bone exists in skeleton
-			const int32 BoneTreeIndex = AnimationTrack.BoneTreeIndex;
+			const int32 BoneTreeIndex = AnimSkeleton->GetReferenceSkeleton().FindBoneIndex(TrackName);
 			if (BoneTreeIndex != INDEX_NONE)
 			{
 				const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkinnedAsset, BoneTreeIndex);
@@ -943,9 +948,9 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 					if (FrameToAdd == 0)
 					{
 						const FTransform RefPose = Component->GetSkeletalMeshAsset()->GetRefSkeleton().GetRefBonePose()[BoneIndex];
-						RawTrack.PosKeys.Add((FVector3f)RefPose.GetTranslation());
+						RawTrack.PosKeys.Add(FVector3f(RefPose.GetTranslation()));
 						RawTrack.RotKeys.Add(FQuat4f(RefPose.GetRotation()));
-						RawTrack.ScaleKeys.Add((FVector3f)RefPose.GetScale3D());
+						RawTrack.ScaleKeys.Add(FVector3f(RefPose.GetScale3D()));
 					}
 				}
 			}
@@ -1148,6 +1153,7 @@ void FAnimRecorderInstance::InitInternal(USkeletalMeshComponent* InComponent, co
 	Recorder->bRecordMorphTargets = Settings.bRecordMorphTargets;
 	Recorder->bRecordAttributeCurves = Settings.bRecordAttributeCurves;
 	Recorder->bRecordMaterialCurves = Settings.bRecordMaterialCurves;
+	Recorder->bTransactRecording = Settings.bTransactRecording;
 	Recorder->IncludeAnimationNames = Settings.IncludeAnimationNames;
 	Recorder->ExcludeAnimationNames = Settings.ExcludeAnimationNames;
 

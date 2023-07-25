@@ -27,6 +27,8 @@ public:
 	virtual TCHAR const* GetClassName() const PURE_VIRTUAL(UComputeDataInterface::GetClassName, return nullptr;)
 	/** Does the associated UComputeDataProvider provide invocations and thread counts. One and only one data interface per kernel should return true. */
 	virtual bool IsExecutionInterface() const { return false; }
+	/** Return true if the associated UComputeDataProvider holds data that can be combined into a single dispatch invocation. */
+	virtual bool CanSupportUnifiedDispatch() const { return false; }
 	/** Gather compile definitions from the data interface. Any connected kernel will compile with these. */
 	virtual void GetDefines(FComputeKernelDefinitionSet& OutDefinitionSet) const {}
 	/** Gather permutations from the data interface. Any connected kernel will include these in its total compiled permutations. */
@@ -37,6 +39,8 @@ public:
 	virtual void GetSupportedOutputs(TArray<FShaderFunctionDefinition>& OutFunctions) const {}
 	/** Gather the shader metadata exposed by the data provider payload. */
 	virtual void GetShaderParameters(TCHAR const* UID, FShaderParametersMetadataBuilder& InOutBuilder, FShaderParametersMetadataAllocations& InOutAllocations) const {}
+	/** If the data interface HLSL comes from a file this should fill the virtual file path. This is used to resolve shader compilation errors. */
+	virtual TCHAR const* GetShaderVirtualPath() const { return nullptr; }
 	/** Get a hash that changes on any data interface changes that affect kernel compilation. */
 	virtual void GetShaderHash(FString& InOutKey) const {}
 	/** Gather any extra struct types that this data provider relies on. */

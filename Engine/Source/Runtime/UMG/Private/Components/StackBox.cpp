@@ -75,6 +75,18 @@ UStackBoxSlot* UStackBox::AddChildToStackBox(UWidget* Content)
 	return Cast<UStackBoxSlot>(Super::AddChild(Content));
 }
 
+bool UStackBox::ReplaceStackBoxChildAt(int32 Index, UWidget* Content)
+{
+	if (!Slots.IsValidIndex(Index) || Content == nullptr)
+	{
+		return false;
+	}
+
+	UStackBoxSlot* StackBoxSlot = CastChecked<UStackBoxSlot>(Slots[Index]);
+	StackBoxSlot->ReplaceContent(Content);
+	return true;
+}
+
 TSharedRef<SWidget> UStackBox::RebuildWidget()
 {
 	MyBox = SNew(SStackBox)
@@ -95,6 +107,12 @@ TSharedRef<SWidget> UStackBox::RebuildWidget()
 void UStackBox::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
+
+	if (!MyBox.IsValid())
+	{
+		return;
+	}
+
 	MyBox->SetOrientation(Orientation);
 }
 

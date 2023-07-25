@@ -1,20 +1,56 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ColorSpace.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Math/VectorRegister.h"
 
 namespace UE { namespace Color {
 
+static bool bIsWorkingColorSpaceReadyForUse = false;
 static FColorSpace WorkingColorSpace = FColorSpace(EColorSpace::sRGB);
+
+void PreloadWorkingColorSpace()
+{
+	if (bIsWorkingColorSpaceReadyForUse)
+	{
+		return;
+	}
+
+	check(GConfig != nullptr && GConfig->IsReadyForUse());
+
+	bool bIsWorkingColorSpaceInConfig = true;
+	TStaticArray<FVector2d, 4> Chromaticities;
+	bIsWorkingColorSpaceInConfig &= GConfig->GetVector2D(TEXT("/Script/Engine.RendererSettings"), TEXT("RedChromaticityCoordinate"),   Chromaticities[0], GEngineIni);
+	bIsWorkingColorSpaceInConfig &= GConfig->GetVector2D(TEXT("/Script/Engine.RendererSettings"), TEXT("GreenChromaticityCoordinate"), Chromaticities[1], GEngineIni);
+	bIsWorkingColorSpaceInConfig &= GConfig->GetVector2D(TEXT("/Script/Engine.RendererSettings"), TEXT("BlueChromaticityCoordinate"),  Chromaticities[2], GEngineIni);
+	bIsWorkingColorSpaceInConfig &= GConfig->GetVector2D(TEXT("/Script/Engine.RendererSettings"), TEXT("WhiteChromaticityCoordinate"), Chromaticities[3], GEngineIni);
+
+	if (bIsWorkingColorSpaceInConfig)
+	{
+		FColorSpace::SetWorking(FColorSpace(Chromaticities[0], Chromaticities[1], Chromaticities[2], Chromaticities[3]));
+	}
+	else
+	{
+		// The working color space wasn't modified/serialized to the config so we keep the implicit sRGB default.
+		bIsWorkingColorSpaceReadyForUse = true;
+	}
+};
 
 const FColorSpace& FColorSpace::GetWorking()
 {
+	/**
+	 * NOTE: Addresses issue where shader compilation can request the working color space before it has been loaded by renderer settings.
+	 * We optionally early-load the settings here and leave existing singleton interface as is.
+	 */
+	UE_CALL_ONCE(PreloadWorkingColorSpace);
+
 	return WorkingColorSpace;
 }
 
 void FColorSpace::SetWorking(FColorSpace ColorSpace)
 {
 	WorkingColorSpace = MoveTemp(ColorSpace);
+	bIsWorkingColorSpaceReadyForUse = true;
 }
 
 static bool IsSRGBChromaticities(const TStaticArray<FVector2d, 4>& Chromaticities, double Tolerance = 1.e-7)
@@ -125,6 +161,12 @@ FColorSpace::FColorSpace(EColorSpace ColorSpaceType)
 		Chromaticities[2] = FVector2d(0.100, -0.030);
 		Chromaticities[3] = GetWhitePoint(EWhitePoint::CIE1931_D65);
 		break;
+	case EColorSpace::PLASA_E1_54:
+		Chromaticities[0] = FVector2d(0.7347, 0.2653);
+		Chromaticities[1] = FVector2d(0.1596, 0.8404);
+		Chromaticities[2] = FVector2d(0.0366, 0.0001);
+		Chromaticities[3] = FVector2d(0.4254, 0.4044);
+		break;
 	default:
 		checkNoEntry();
 		break;
@@ -157,18 +199,43 @@ FMatrix44d FColorSpace::CalcRgbToXYZ() const
 	return Mat;
 }
 
-bool FColorSpace::Equals(const FColorSpace& CS, double Tolerance) const
+bool FColorSpace::Equals(const FColorSpace& ColorSpace, double Tolerance) const
 {
-	return	Chromaticities[0].Equals(CS.Chromaticities[0], Tolerance) &&
-		Chromaticities[1].Equals(CS.Chromaticities[1], Tolerance) &&
-		Chromaticities[2].Equals(CS.Chromaticities[2], Tolerance) &&
-		Chromaticities[3].Equals(CS.Chromaticities[3], Tolerance);
+	return	Chromaticities[0].Equals(ColorSpace.Chromaticities[0], Tolerance) &&
+		Chromaticities[1].Equals(ColorSpace.Chromaticities[1], Tolerance) &&
+		Chromaticities[2].Equals(ColorSpace.Chromaticities[2], Tolerance) &&
+		Chromaticities[3].Equals(ColorSpace.Chromaticities[3], Tolerance);
 }
 
 bool FColorSpace::IsSRGB() const
 {
 	return bIsSRGB;
 }
+
+FLinearColor FColorSpace::MakeFromColorTemperature(float Temp) const
+{
+	Temp = FMath::Clamp(Temp, 1000.0f, 15000.0f);
+
+	// Approximate Planckian locus in CIE 1960 UCS
+	float u = (0.860117757f + 1.54118254e-4f * Temp + 1.28641212e-7f * Temp * Temp) / (1.0f + 8.42420235e-4f * Temp + 7.08145163e-7f * Temp * Temp);
+	float v = (0.317398726f + 4.22806245e-5f * Temp + 4.20481691e-8f * Temp * Temp) / (1.0f - 2.89741816e-5f * Temp + 1.61456053e-7f * Temp * Temp);
+
+	float x = 3.0f * u / (2.0f * u - 8.0f * v + 4.0f);
+	float y = 2.0f * v / (2.0f * u - 8.0f * v + 4.0f);
+	float z = 1.0f - x - y;
+
+	FVector3d XYZ = FVector3d(1.0 / y * x, 1.0, 1.0 / y * z);
+	FVector4d RGB = XYZToRgb.TransformVector(XYZ);
+
+	return FLinearColor((float)RGB.X, (float)RGB.Y, (float)RGB.Z);
+}
+
+float FColorSpace::GetLuminance(const FLinearColor& Color) const
+{
+	//Note: Equivalent to the dot product of Color and RgbToXYZ.GetColumn(1).
+	return Color.R * RgbToXYZ.M[0][1] + Color.G * RgbToXYZ.M[1][1] + Color.B * RgbToXYZ.M[2][1];
+}
+
 
 FMatrix44d FColorSpaceTransform::CalcChromaticAdaptionMatrix(FVector3d SourceXYZ, FVector3d TargetXYZ, EChromaticAdaptationMethod Method)
 {

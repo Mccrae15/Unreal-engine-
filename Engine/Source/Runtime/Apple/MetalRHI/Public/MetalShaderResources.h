@@ -99,40 +99,11 @@ enum class EMetalBufferFormat : uint8
 	Max						=54
 };
 
-struct FMetalShaderResourceTable : public FBaseShaderResourceTable
-{
-	/** Mapping of bound Textures to their location in resource tables. */
-	TArray<uint32> TextureMap;
-	friend bool operator==(const FMetalShaderResourceTable &A, const FMetalShaderResourceTable& B)
-	{
-		if (!(((FBaseShaderResourceTable&)A) == ((FBaseShaderResourceTable&)B)))
-		{
-			return false;
-		}
-		if (A.TextureMap.Num() != B.TextureMap.Num())
-		{
-			return false;
-		}
-		if (FMemory::Memcmp(A.TextureMap.GetData(), B.TextureMap.GetData(), A.TextureMap.GetTypeSize()*A.TextureMap.Num()) != 0)
-		{
-			return false;
-		}
-		return true;
-	}
-};
-
-inline FArchive& operator<<(FArchive& Ar, FMetalShaderResourceTable& SRT)
-{
-	Ar << ((FBaseShaderResourceTable&)SRT);
-	Ar << SRT.TextureMap;
-	return Ar;
-}
-
 struct FMetalShaderBindings
 {
 	TArray<TArray<CrossCompiler::FPackedArrayInfo>>	PackedUniformBuffers;
 	TArray<CrossCompiler::FPackedArrayInfo>			PackedGlobalArrays;
-	FMetalShaderResourceTable						ShaderResourceTable;
+	FShaderResourceTable							ShaderResourceTable;
 	TMap<uint8, TArray<uint8>>						ArgumentBufferMasks;
 	CrossCompiler::FShaderBindingInOutMask			InOutMask;
 
@@ -200,6 +171,28 @@ enum class EMetalComponentType : uint8
 	Max
 };
 
+struct FMetalRayTracingHeader
+{
+	uint32 InstanceIndexBuffer;
+
+	bool IsValid() const
+	{
+		return InstanceIndexBuffer != UINT32_MAX;
+	}
+
+	FMetalRayTracingHeader()
+		: InstanceIndexBuffer(UINT32_MAX)
+	{
+
+	}
+
+	friend FArchive& operator<<(FArchive& Ar, FMetalRayTracingHeader& Header)
+	{
+		Ar << Header.InstanceIndexBuffer;
+		return Ar;
+	}
+};
+
 struct FMetalAttribute
 {
 	uint32 Index;
@@ -246,7 +239,8 @@ struct FMetalCodeHeader
 	uint32 Version;
 	int8 SideTable;
 	bool bDeviceFunctionConstants;
-	
+	FMetalRayTracingHeader RayTracing;
+
 	FMetalCodeHeader()
 	: CompilerBuild(0)
 	, CompilerVersion(0)
@@ -300,7 +294,7 @@ inline FArchive& operator<<(FArchive& Ar, FMetalCodeHeader& Header)
 	Ar << Header.Version;
 	Ar << Header.SideTable;
 	Ar << Header.bDeviceFunctionConstants;
-
+	Ar << Header.RayTracing;
     return Ar;
 }
 

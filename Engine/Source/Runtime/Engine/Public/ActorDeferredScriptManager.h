@@ -26,13 +26,15 @@ public:
 	/**
 	 * empty implementation since deferred actor scripts are not actually async
 	 */
-	ENGINE_API void FinishAllCompilation() override {}
-
+	ENGINE_API void FinishAllCompilation() override
+	{
+		ProcessAsyncTasks(false);
+	}
 
 	/** 
 	 * Add an actor for the manager to run the construction of once dependent asset compilation are done (i.e Static Mesh)
 	 */
-	void AddActor(AActor* InActor);
+	ENGINE_API void AddActor(AActor* InActor);
 
 private:
 	friend class FAssetCompilingManager;
@@ -47,11 +49,28 @@ private:
 
 	void UpdateCompilationNotification();
 
+	void OnAssetPostCompile(const TArray<FAssetCompileData>& CompiledAssets);
+	void OnWorldCleanup(class UWorld* InWorld, bool bInSessionEnded, bool bInCleanupResources);
+
+	void EnsureEventRegistered();
+
 	/** Actors awaiting outstanding asset compilation prior to running their non trivial construction scripts after loading this level. */
-	TDeque<TWeakObjectPtr<AActor>> PendingConstructionScriptActors;
+	TArray<TWeakObjectPtr<AActor>> PendingConstructionScriptActors;
 
 	/** Notification for the amount of pending construction scripts to run */
 	FAsyncCompilationNotification Notification;
+
+	/** We need to monitor when static meshes have finished compiling to only work when necessary */
+	FDelegateHandle OnAssetChangeDelegateHandle;
+
+	/** We need to monitor when worlds are cleaned up to avoid triggering any construction script past this point */
+	FDelegateHandle OnWorldCleanupDelegateHandle;
+
+	/** Where to start on the next ProcessAsyncTasks iteration. */
+	int32 NextIndexToProcess = 0;
+	
+	/** What's left to process if we were aborted because of execution time limit. */
+	int32 NumLeftToProcess = 0;
 };
 
 #endif

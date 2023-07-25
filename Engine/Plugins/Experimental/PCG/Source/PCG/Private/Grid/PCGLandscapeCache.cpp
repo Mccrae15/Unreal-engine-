@@ -2,26 +2,20 @@
 
 #include "Grid/PCGLandscapeCache.h"
 
-#include "PCGSubsystem.h"
-#include "Data/PCGPointData.h"
+#include "PCGPoint.h"
 #include "Helpers/PCGBlueprintHelpers.h"
 #include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataAttributeTraits.h"
 
-#include "UObject/WeakObjectPtr.h"
-
-#include "LandscapeHeightfieldCollisionComponent.h"
 #include "LandscapeComponent.h"
-#include "LandscapeInfo.h"
+#include "LandscapeDataAccess.h"
 #include "LandscapeInfoMap.h"
 #include "LandscapeProxy.h"
-#include "LandscapeDataAccess.h"
-#include "Landscape.h"
+#include "Async/ParallelFor.h"
+#include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
-#include "Serialization/BufferReader.h"
 #include "Serialization/BufferWriter.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGLandscapeCache)
 
 static TAutoConsoleVariable<float> CVarLandscapeCacheGCFrequency(
 	TEXT("pcg.LandscapeCacheGCFrequency"),
@@ -33,65 +27,102 @@ static TAutoConsoleVariable<int32> CVarLandscapeCacheSizeThreshold(
 	64,
 	TEXT("Memory Threhold at which we start cleaning up the landscape cache"));
 
-#if WITH_EDITOR
-void FPCGLandscapeCacheEntry::BuildCacheData(ULandscapeInfo* LandscapeInfo, ULandscapeComponent* InComponent)
+namespace PCGLandscapeCache
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FPCGLandscapeCacheEntry::BuildCacheData);
-	check(!Component.Get() && InComponent && PositionsAndNormals.Num() == 0 && !bDataLoaded);
-	Component = InComponent;
-
-	ALandscape* Landscape = Component->GetLandscapeActor();
-	if (!Landscape)
+	FSafeIndices CalcSafeIndices(FVector2D LocalPoint, int32 Stride)
 	{
-		return;
+		check(Stride != 0);
+
+		const FVector2D ClampedLocalPoint = LocalPoint.ClampAxes(0.0, FVector2D::FReal(Stride-1));
+
+		FSafeIndices Result;
+		const int32 CellX0 = FMath::FloorToInt(ClampedLocalPoint.X);
+		const int32 CellY0 = FMath::FloorToInt(ClampedLocalPoint.Y);
+		const int32 CellX1 = FMath::Min(CellX0+1, Stride-1);
+		const int32 CellY1 = FMath::Min(CellY0+1, Stride-1);
+
+		Result.X0Y0 = CellX0 + CellY0 * Stride;
+		Result.X1Y0 = CellX1 + CellY0 * Stride;
+		Result.X0Y1 = CellX0 + CellY1 * Stride;
+		Result.X1Y1 = CellX1 + CellY1 * Stride;
+
+		Result.XFraction = FMath::Fractional(ClampedLocalPoint.X);
+		Result.YFraction = FMath::Fractional(ClampedLocalPoint.Y);
+
+		return Result;
 	}
+}
+
+#if WITH_EDITOR
+FPCGLandscapeCacheEntry* FPCGLandscapeCacheEntry::CreateCacheEntry(ULandscapeInfo* LandscapeInfo, ULandscapeComponent* InComponent)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FPCGLandscapeCacheEntry::CreateCacheEntry);
+
+	FLandscapeComponentDataInterface CDI(InComponent, 0, /*bWorkInEditingLayer=*/false);
+
+	// CDI.GetRawHeightData() may be nullptr if InComponent has no texture data.
+	if (CDI.GetRawHeightData() == nullptr)
+	{
+		return nullptr;
+	}
+
+	// The component has an extra vertex on the edge, for interpolation purposes
+	const int32 Stride = InComponent->ComponentSizeQuads + 1;
+
+	if (Stride <= 0)
+	{
+		return nullptr;
+	}
+
+	FPCGLandscapeCacheEntry *Result = new FPCGLandscapeCacheEntry();
+
+ 	Result->Component = InComponent;
+	Result->PointHalfSize = InComponent->GetComponentTransform().GetScale3D() * 0.5;
+	Result->Stride = Stride;
 
 	// Get landscape default layer (heightmap/tangents/normal)
 	{
-		FLandscapeComponentDataInterface CDI(InComponent, 0, /*bWorkInEditingLayer=*/false);
 		FVector WorldPos;
 		FVector WorldTangentX;
 		FVector WorldTangentY;
 		FVector WorldTangentZ;
 
-		PointHalfSize = InComponent->GetComponentTransform().GetScale3D() * 0.5;
+		const int32 NumVertices = FMath::Square(Stride);
 
-		// The component has an extra vertex on the edge, for interpolation purposes
-		const int32 ComponentSizeQuads = InComponent->ComponentSizeQuads + 1;
-		const int32 NumVertices = FMath::Square(ComponentSizeQuads);
+		Result->PositionsAndNormals.Reserve(2 * NumVertices);
 
-		Stride = ComponentSizeQuads;
-
-		PositionsAndNormals.Reserve(2 * NumVertices);
 		for (int32 Index = 0; Index < NumVertices; ++Index)
 		{
 			CDI.GetWorldPositionTangents(Index, WorldPos, WorldTangentX, WorldTangentY, WorldTangentZ);
-			PositionsAndNormals.Add(WorldPos);
-			PositionsAndNormals.Add(WorldTangentZ);
+			Result->PositionsAndNormals.Add(WorldPos);
+			Result->PositionsAndNormals.Add(WorldTangentZ);
 		}
 	}
-	
+
 	// Get other layers, push data into metadata attributes
-	TArray<uint8> LayerCache;
-	for (const FLandscapeInfoLayerSettings& Layer : LandscapeInfo->Layers)
 	{
-		ULandscapeLayerInfoObject* LayerInfo = Layer.LayerInfoObj;
-		if (!LayerInfo)
+		TArray<uint8> LayerCache;
+		for (const FLandscapeInfoLayerSettings& Layer : LandscapeInfo->Layers)
 		{
-			continue;
-		}
+			ULandscapeLayerInfoObject* LayerInfo = Layer.LayerInfoObj;
+			if (!LayerInfo)
+			{
+				continue;
+			}
 
-		FLandscapeComponentDataInterface CDI(InComponent, 0, /*bWorkInEditingLayer=*/false);
-		if (CDI.GetWeightmapTextureData(LayerInfo, LayerCache, /*bUseEditingLayer=*/false))
-		{
-			LayerDataNames.Add(Layer.LayerName);
-			LayerData.Add(LayerCache);
-		}
+			if (CDI.GetWeightmapTextureData(LayerInfo, LayerCache, /*bUseEditingLayer=*/false))
+			{
+				Result->LayerDataNames.Add(Layer.LayerName);
+				Result->LayerData.Emplace(std::move(LayerCache));
+			}
 
-		LayerCache.Reset();
+			LayerCache.Reset();
+		}
 	}
 	
-	bDataLoaded = true;
+	Result->bDataLoaded = true;
+
+	return Result;
 }
 #endif // WITH_EDITOR
 
@@ -108,10 +139,12 @@ void FPCGLandscapeCacheEntry::GetPoint(int32 PointIndex, FPCGPoint& OutPoint, UP
 	TangentX = FVector(Normal.Z, 0.f, -Normal.X);
 	TangentY = Normal ^ TangentX;
 
-	OutPoint.Transform = FTransform(TangentX.GetSafeNormal(), TangentY.GetSafeNormal(), Normal.GetSafeNormal(), Position);
+	const float Density = 1;
+	const int32 Seed = 1 + PointIndex;
+
+	new(&OutPoint) FPCGPoint(FTransform(TangentX.GetSafeNormal(), TangentY.GetSafeNormal(), Normal.GetSafeNormal(), Position), Density, Seed);
 	OutPoint.BoundsMin = -PointHalfSize;
 	OutPoint.BoundsMax = PointHalfSize;
-	OutPoint.Seed = 1 + PointIndex;
 	
 	if (OutMetadata && !LayerData.IsEmpty())
 	{
@@ -139,52 +172,92 @@ void FPCGLandscapeCacheEntry::GetPointHeightOnly(int32 PointIndex, FPCGPoint& Ou
 
 	const FVector& Position = PositionsAndNormals[2 * PointIndex];
 	
-	OutPoint.Transform = FTransform(Position);
+	const float Density = 1;
+	const int32 Seed = 1 + PointIndex;
+
+	new(&OutPoint) FPCGPoint(FTransform(Position), Density, Seed);
 	OutPoint.BoundsMin = -PointHalfSize;
 	OutPoint.BoundsMax = PointHalfSize;
-	OutPoint.Seed = 1 + PointIndex;
 }
 
-void FPCGLandscapeCacheEntry::GetInterpolatedPoint(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
+void FPCGLandscapeCacheEntry::GetInterpolatedLayerWeights(const FVector2D& LocalPoint, TArray<FPCGLandscapeLayerWeight>& OutLayerWeights) const
+{
+	OutLayerWeights.SetNum(LayerData.Num());
+	
+	if (!bDataLoaded)
+	{
+		return;
+	}
+
+	const PCGLandscapeCache::FSafeIndices Indices = PCGLandscapeCache::CalcSafeIndices(LocalPoint, Stride);
+
+	if (!LayerData.IsEmpty())
+	{
+		check(LayerData.Num() == LayerDataNames.Num());
+
+		for(int32 LayerIndex = 0; LayerIndex < LayerData.Num(); ++LayerIndex)
+		{
+			FPCGLandscapeLayerWeight& OutLayer = OutLayerWeights[LayerIndex];
+			OutLayer.Name = LayerDataNames[LayerIndex];
+
+			const TArray<uint8>& CurrentLayerData = LayerData[LayerIndex];
+
+			const float Y0Data = FMath::Lerp((float)CurrentLayerData[Indices.X0Y0] / 255.0f, (float)CurrentLayerData[Indices.X1Y0] / 255.0f, Indices.XFraction);
+			const float Y1Data = FMath::Lerp((float)CurrentLayerData[Indices.X0Y1] / 255.0f, (float)CurrentLayerData[Indices.X1Y1] / 255.0f, Indices.XFraction);
+
+			OutLayer.Weight = FMath::Lerp(Y0Data, Y1Data, Indices.YFraction);
+		}
+	}
+}
+
+void FPCGLandscapeCacheEntry::GetInterpolatedPointInternal(const PCGLandscapeCache::FSafeIndices& Indices, FPCGPoint& OutPoint, bool bHeightOnly) const
 {
 	check(bDataLoaded);
+	check(2 * Indices.X1Y1 < PositionsAndNormals.Num());
 
-	const int32 X0Y0 = FMath::FloorToInt(LocalPoint.X) + FMath::FloorToInt(LocalPoint.Y) * Stride;
-	const int32 X1Y0 = X0Y0 + 1;
-	const int32 X0Y1 = X0Y0 + Stride;
-	const int32 X1Y1 = X0Y1 + 1;
+	const FVector& PositionX0Y0 = PositionsAndNormals[2 * Indices.X0Y0];
+	const FVector& PositionX1Y0 = PositionsAndNormals[2 * Indices.X1Y0];
+	const FVector& PositionX0Y1 = PositionsAndNormals[2 * Indices.X0Y1];
+	const FVector& PositionX1Y1 = PositionsAndNormals[2 * Indices.X1Y1];
 
-	const float XFactor = FMath::Fractional(LocalPoint.X);
-	const float YFactor = FMath::Fractional(LocalPoint.Y);
+	const FVector LerpPositionY0 = FMath::Lerp(PositionX0Y0, PositionX1Y0, Indices.XFraction);
+	const FVector LerpPositionY1 = FMath::Lerp(PositionX0Y1, PositionX1Y1, Indices.XFraction);
+	const FVector Position = FMath::Lerp(LerpPositionY0, LerpPositionY1, Indices.YFraction);
 
-	check(X0Y0 >= 0 && 2 * X1Y1 < PositionsAndNormals.Num());
+	const int32 Seed = UPCGBlueprintHelpers::ComputeSeedFromPosition(Position);
+	const float Density = 1;
 
-	const FVector& PositionX0Y0 = PositionsAndNormals[2 * X0Y0];
-	const FVector& NormalX0Y0 = PositionsAndNormals[2 * X0Y0 + 1];
-	const FVector& PositionX1Y0 = PositionsAndNormals[2 * X1Y0];
-	const FVector& NormalX1Y0 = PositionsAndNormals[2 * X1Y0 + 1];
-	const FVector& PositionX0Y1 = PositionsAndNormals[2 * X0Y1];
-	const FVector& NormalX0Y1 = PositionsAndNormals[2 * X0Y1 + 1];
-	const FVector& PositionX1Y1 = PositionsAndNormals[2 * X1Y1];
-	const FVector& NormalX1Y1 = PositionsAndNormals[2 * X1Y1 + 1];
+	if (bHeightOnly)
+	{
+		new(&OutPoint) FPCGPoint(FTransform(Position), Density, Seed);
+	}
+	else
+	{
+		const FVector& NormalX0Y0 = PositionsAndNormals[2 * Indices.X0Y0 + 1];
+		const FVector& NormalX1Y0 = PositionsAndNormals[2 * Indices.X1Y0 + 1];
+		const FVector& NormalX0Y1 = PositionsAndNormals[2 * Indices.X0Y1 + 1];
+		const FVector& NormalX1Y1 = PositionsAndNormals[2 * Indices.X1Y1 + 1];
 
-	const FVector LerpPositionY0 = FMath::Lerp(PositionX0Y0, PositionX1Y0, XFactor);
-	const FVector LerpPositionY1 = FMath::Lerp(PositionX0Y1, PositionX1Y1, XFactor);
-	const FVector Position = FMath::Lerp(LerpPositionY0, LerpPositionY1, YFactor);
+		const FVector LerpNormalY0 = FMath::Lerp(NormalX0Y0.GetSafeNormal(), NormalX1Y0.GetSafeNormal(), Indices.XFraction).GetSafeNormal();
+		const FVector LerpNormalY1 = FMath::Lerp(NormalX0Y1.GetSafeNormal(), NormalX1Y1.GetSafeNormal(), Indices.XFraction).GetSafeNormal();
+		const FVector Normal = FMath::Lerp(LerpNormalY0, LerpNormalY1, Indices.YFraction);
 
-	const FVector LerpNormalY0 = FMath::Lerp(NormalX0Y0.GetSafeNormal(), NormalX1Y0.GetSafeNormal(), XFactor).GetSafeNormal();
-	const FVector LerpNormalY1 = FMath::Lerp(NormalX0Y1.GetSafeNormal(), NormalX1Y1.GetSafeNormal(), XFactor).GetSafeNormal();
-	const FVector Normal = FMath::Lerp(LerpNormalY0, LerpNormalY1, YFactor);
+		FVector TangentX;
+		FVector TangentY;
+		TangentX = FVector(Normal.Z, 0.f, -Normal.X);
+		TangentY = Normal ^ TangentX;
 
-	FVector TangentX;
-	FVector TangentY;
-	TangentX = FVector(Normal.Z, 0.f, -Normal.X);
-	TangentY = Normal ^ TangentX;
+		new(&OutPoint) FPCGPoint(FTransform(TangentX.GetSafeNormal(), TangentY.GetSafeNormal(), Normal.GetSafeNormal(), Position), Density, Seed);
+	}
 
-	OutPoint.Transform = FTransform(TangentX.GetSafeNormal(), TangentY.GetSafeNormal(), Normal.GetSafeNormal(), Position);
 	OutPoint.BoundsMin = -PointHalfSize;
 	OutPoint.BoundsMax = PointHalfSize;
-	OutPoint.Seed = UPCGBlueprintHelpers::ComputeSeedFromPosition(Position);
+}
+
+void FPCGLandscapeCacheEntry::GetInterpolatedPointMetadataInternal(const PCGLandscapeCache::FSafeIndices& Indices, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
+{
+	check(bDataLoaded);
+	check(2 * Indices.X1Y1 < PositionsAndNormals.Num());
 
 	if (OutMetadata && !LayerData.IsEmpty())
 	{
@@ -192,7 +265,7 @@ void FPCGLandscapeCacheEntry::GetInterpolatedPoint(const FVector2D& LocalPoint, 
 
 		check(LayerData.Num() == LayerDataNames.Num());
 
-		for(int32 LayerIndex = 0; LayerIndex < LayerData.Num(); ++LayerIndex)
+		for (int32 LayerIndex = 0; LayerIndex < LayerData.Num(); ++LayerIndex)
 		{
 			const FName& CurrentLayerName = LayerDataNames[LayerIndex];
 			const TArray<uint8>& CurrentLayerData = LayerData[LayerIndex];
@@ -200,9 +273,9 @@ void FPCGLandscapeCacheEntry::GetInterpolatedPoint(const FVector2D& LocalPoint, 
 			if (FPCGMetadataAttributeBase* Attribute = OutMetadata->GetMutableAttribute(CurrentLayerName))
 			{
 				check(Attribute->GetTypeId() == PCG::Private::MetadataTypes<float>::Id);
-				float Y0Data = FMath::Lerp((float)CurrentLayerData[X0Y0] / 255.0f, (float)CurrentLayerData[X1Y0] / 255.0f, XFactor);
-				float Y1Data = FMath::Lerp((float)CurrentLayerData[X0Y1] / 255.0f, (float)CurrentLayerData[X1Y1] / 255.0f, XFactor);
-				float Data = FMath::Lerp(Y0Data, Y1Data, YFactor);
+				const float Y0Data = FMath::Lerp((float)CurrentLayerData[Indices.X0Y0] / 255.0f, (float)CurrentLayerData[Indices.X1Y0] / 255.0f, Indices.XFraction);
+				const float Y1Data = FMath::Lerp((float)CurrentLayerData[Indices.X0Y1] / 255.0f, (float)CurrentLayerData[Indices.X1Y1] / 255.0f, Indices.XFraction);
+				const float Data = FMath::Lerp(Y0Data, Y1Data, Indices.YFraction);
 
 				static_cast<FPCGMetadataAttribute<float>*>(Attribute)->SetValue(OutPoint.MetadataEntry, Data);
 			}
@@ -210,33 +283,26 @@ void FPCGLandscapeCacheEntry::GetInterpolatedPoint(const FVector2D& LocalPoint, 
 	}
 }
 
+void FPCGLandscapeCacheEntry::GetInterpolatedPoint(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
+{
+	check (bDataLoaded);
+	const PCGLandscapeCache::FSafeIndices Indices = PCGLandscapeCache::CalcSafeIndices(LocalPoint, Stride);
+	GetInterpolatedPointInternal(Indices, OutPoint);
+	GetInterpolatedPointMetadataInternal(Indices, OutPoint, OutMetadata);
+}
+
+void FPCGLandscapeCacheEntry::GetInterpolatedPointMetadataOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
+{
+	check(bDataLoaded);
+	const PCGLandscapeCache::FSafeIndices Indices = PCGLandscapeCache::CalcSafeIndices(LocalPoint, Stride);
+	GetInterpolatedPointMetadataInternal(Indices, OutPoint, OutMetadata);
+}
+
 void FPCGLandscapeCacheEntry::GetInterpolatedPointHeightOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint) const
 {
 	check(bDataLoaded);
-
-	const int32 X0Y0 = FMath::FloorToInt(LocalPoint.X) + FMath::FloorToInt(LocalPoint.Y) * Stride;
-	const int32 X1Y0 = X0Y0 + 1;
-	const int32 X0Y1 = X0Y0 + Stride;
-	const int32 X1Y1 = X0Y1 + 1;
-
-	const float XFactor = FMath::Fractional(LocalPoint.X);
-	const float YFactor = FMath::Fractional(LocalPoint.Y);
-
-	check(X0Y0 >= 0 && 2 * X1Y1 < PositionsAndNormals.Num());
-
-	const FVector& PositionX0Y0 = PositionsAndNormals[2 * X0Y0];
-	const FVector& PositionX1Y0 = PositionsAndNormals[2 * X1Y0];
-	const FVector& PositionX0Y1 = PositionsAndNormals[2 * X0Y1];
-	const FVector& PositionX1Y1 = PositionsAndNormals[2 * X1Y1];
-
-	const FVector LerpPositionY0 = FMath::Lerp(PositionX0Y0, PositionX1Y0, XFactor);
-	const FVector LerpPositionY1 = FMath::Lerp(PositionX0Y1, PositionX1Y1, XFactor);
-	const FVector Position = FMath::Lerp(LerpPositionY0, LerpPositionY1, YFactor);
-
-	OutPoint.Transform = FTransform(Position);
-	OutPoint.BoundsMin = -PointHalfSize;
-	OutPoint.BoundsMax = PointHalfSize;
-	OutPoint.Seed = UPCGBlueprintHelpers::ComputeSeedFromPosition(Position);
+	const PCGLandscapeCache::FSafeIndices Indices = PCGLandscapeCache::CalcSafeIndices(LocalPoint, Stride);
+	GetInterpolatedPointInternal(Indices, OutPoint, /*bHeightOnly=*/true);
 }
 
 bool FPCGLandscapeCacheEntry::TouchAndLoad(int32 InTouch) const
@@ -345,8 +411,6 @@ void FPCGLandscapeCacheEntry::SerializeFromBulkData() const
 
 void FPCGLandscapeCacheEntry::Serialize(FArchive& Archive, UObject* Owner, int32 Index)
 {
-	check(bDataLoaded || Archive.IsLoading());
-
 	if (bDataLoaded && Archive.IsSaving() && Archive.IsCooking())
 	{
 		SerializeToBulkData();
@@ -486,13 +550,16 @@ void UPCGLandscapeCache::PrimeCache()
 		return;
 	}
 
+	// First, gather all potential cached data to create, emplace a nullptr at these locations
+	TArray<TTuple<ULandscapeInfo*, ULandscapeComponent*, TPair<FGuid, FIntPoint>>> CacheEntriesToBuild;
+
 	for (auto It = ULandscapeInfoMap::GetLandscapeInfoMap(World).Map.CreateIterator(); It; ++It)
 	{
 		ULandscapeInfo* LandscapeInfo = It.Value();
 		if (IsValid(LandscapeInfo))
 		{
 			// Build per-component information
-			LandscapeInfo->ForAllLandscapeProxies([this, LandscapeInfo](const ALandscapeProxy* LandscapeProxy)
+			LandscapeInfo->ForAllLandscapeProxies([this, LandscapeInfo, &CacheEntriesToBuild](const ALandscapeProxy* LandscapeProxy)
 			{
 				check(LandscapeProxy);
 				const FGuid LandscapeGuid = LandscapeProxy->GetLandscapeGuid();
@@ -509,12 +576,29 @@ void UPCGLandscapeCache::PrimeCache()
 
 					if (!CachedData.Contains(ComponentKey))
 					{
-						FPCGLandscapeCacheEntry* NewEntry = new FPCGLandscapeCacheEntry();
-						NewEntry->BuildCacheData(LandscapeInfo, LandscapeComponent);
-						CachedData.Add(ComponentKey, NewEntry);
+						CacheEntriesToBuild.Emplace(LandscapeInfo, LandscapeComponent, ComponentKey);
 					}
 				}
 			});
+		}
+	}
+
+	// Then create the landscape cache entries
+	TArray<FPCGLandscapeCacheEntry*> NewEntries;
+	NewEntries.SetNum(CacheEntriesToBuild.Num());
+
+	ParallelFor(CacheEntriesToBuild.Num(), [&CacheEntriesToBuild, &NewEntries](int32 EntryIndex)
+	{
+		const TTuple<ULandscapeInfo*, ULandscapeComponent*, TPair<FGuid, FIntPoint>>& CacheEntryInfo = CacheEntriesToBuild[EntryIndex];
+		NewEntries[EntryIndex] = FPCGLandscapeCacheEntry::CreateCacheEntry(CacheEntryInfo.Get<0>(), CacheEntryInfo.Get<1>());
+	});
+
+	// Finally, write them back to the cache
+	for (int32 EntryIndex = 0; EntryIndex < CacheEntriesToBuild.Num(); ++EntryIndex)
+	{
+		if (NewEntries[EntryIndex])
+		{
+			CachedData.Add(CacheEntriesToBuild[EntryIndex].Get<2>(), NewEntries[EntryIndex]);
 		}
 	}
 
@@ -533,10 +617,47 @@ void UPCGLandscapeCache::ClearCache()
 	CachedData.Reset();
 }
 
+#if WITH_EDITOR
 const FPCGLandscapeCacheEntry* UPCGLandscapeCache::GetCacheEntry(ULandscapeComponent* LandscapeComponent, const FIntPoint& ComponentCoordinate)
 {
+	const FGuid LandscapeGuid = (LandscapeComponent && LandscapeComponent->GetLandscapeProxy() ? LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid() : FGuid());
+	const FPCGLandscapeCacheEntry* CacheEntry = GetCacheEntry(LandscapeGuid, ComponentCoordinate);
+
+	if (!CacheEntry && LandscapeComponent && LandscapeComponent->GetLandscapeInfo())
+	{
+		FWriteScopeLock ScopeLock(CacheLock);
+		TPair<FGuid, FIntPoint> ComponentKey(LandscapeGuid, ComponentCoordinate);
+		if (FPCGLandscapeCacheEntry** FoundEntry = CachedData.Find(ComponentKey))
+		{
+			CacheEntry = *FoundEntry;
+		}
+		else
+		{
+			check(LandscapeComponent->SectionBaseX / LandscapeComponent->ComponentSizeQuads == ComponentKey.Value.X && LandscapeComponent->SectionBaseY / LandscapeComponent->ComponentSizeQuads == ComponentKey.Value.Y);
+			if (FPCGLandscapeCacheEntry* NewEntry = FPCGLandscapeCacheEntry::CreateCacheEntry(LandscapeComponent->GetLandscapeInfo(), LandscapeComponent))
+			{
+				CacheEntry = NewEntry;
+				CachedData.Add(ComponentKey, NewEntry);
+			}
+		}
+
+		if (CacheEntry)
+		{
+			if (CacheEntry->TouchAndLoad(CacheTouch++))
+			{
+				CacheMemorySize += CacheEntry->GetMemorySize();
+			}
+		}
+	}
+
+	return CacheEntry;
+}
+#endif
+
+const FPCGLandscapeCacheEntry* UPCGLandscapeCache::GetCacheEntry(const FGuid& LandscapeGuid, const FIntPoint& ComponentCoordinate)
+{
 	const FPCGLandscapeCacheEntry* CacheEntry = nullptr;
-	TPair<FGuid, FIntPoint> ComponentKey(LandscapeComponent && LandscapeComponent->GetLandscapeProxy() ? LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid() : FGuid(), ComponentCoordinate);
+	TPair<FGuid, FIntPoint> ComponentKey(LandscapeGuid, ComponentCoordinate);
 
 	{
 #if WITH_EDITOR
@@ -547,26 +668,6 @@ const FPCGLandscapeCacheEntry* UPCGLandscapeCache::GetCacheEntry(ULandscapeCompo
 			CacheEntry = *FoundEntry;
 		}
 	}
-
-#if WITH_EDITOR
-	if (!CacheEntry && LandscapeComponent && LandscapeComponent->GetLandscapeInfo())
-	{
-		FWriteScopeLock ScopeLock(CacheLock);
-		if (FPCGLandscapeCacheEntry** FoundEntry = CachedData.Find(ComponentKey))
-		{
-			CacheEntry = *FoundEntry;
-		}
-		else
-		{
-			check(LandscapeComponent->SectionBaseX / LandscapeComponent->ComponentSizeQuads == ComponentKey.Value.X && LandscapeComponent->SectionBaseY / LandscapeComponent->ComponentSizeQuads == ComponentKey.Value.Y);
-			FPCGLandscapeCacheEntry* NewEntry = new FPCGLandscapeCacheEntry();
-			NewEntry->BuildCacheData(LandscapeComponent->GetLandscapeInfo(), LandscapeComponent);
-
-			CacheEntry = NewEntry;
-			CachedData.Add(ComponentKey, NewEntry);
-		}
-	}
-#endif
 
 	if (CacheEntry)
 	{
@@ -585,6 +686,39 @@ TArray<FName> UPCGLandscapeCache::GetLayerNames(ALandscapeProxy* Landscape)
 	FReadScopeLock ScopeLock(CacheLock);
 #endif
 	return CachedLayerNames.Array();
+}
+
+void UPCGLandscapeCache::SampleMetadataOnPoint(ALandscapeProxy* Landscape, FPCGPoint& InOutPoint, UPCGMetadata* OutMetadata)
+{
+	if (!Landscape || !Landscape->GetWorld() || !OutMetadata || CachedLayerNames.IsEmpty())
+	{
+		return;
+	}
+
+	ULandscapeInfo* LandscapeInfo = Landscape->GetLandscapeInfo();
+	if (!LandscapeInfo)
+	{
+		UE_LOG(LogPCG, Warning, TEXT("Unable to get landscape layer weights because the landscape info is not available (landscape not registered yet?"));
+		return;
+	}
+
+	const FVector LocalPoint = Landscape->GetTransform().InverseTransformPosition(InOutPoint.Transform.GetLocation());
+	const FIntPoint ComponentMapKey(FMath::FloorToInt(LocalPoint.X / LandscapeInfo->ComponentSizeQuads), FMath::FloorToInt(LocalPoint.Y / LandscapeInfo->ComponentSizeQuads));
+
+#if WITH_EDITOR
+	ULandscapeComponent* LandscapeComponent = LandscapeInfo->XYtoComponentMap.FindRef(ComponentMapKey);
+	const FPCGLandscapeCacheEntry* CacheEntry = GetCacheEntry(LandscapeComponent, ComponentMapKey);
+#else
+	const FPCGLandscapeCacheEntry* CacheEntry = GetCacheEntry(Landscape->GetLandscapeGuid(), ComponentMapKey);
+#endif
+
+	if (!CacheEntry || CacheEntry->LayerData.IsEmpty())
+	{
+		return;
+	}
+
+	const FVector2D ComponentLocalPoint(LocalPoint.X - ComponentMapKey.X * LandscapeInfo->ComponentSizeQuads, LocalPoint.Y - ComponentMapKey.Y * LandscapeInfo->ComponentSizeQuads);	
+	CacheEntry->GetInterpolatedPointMetadataOnly(ComponentLocalPoint, InOutPoint, OutMetadata);
 }
 
 #if WITH_EDITOR

@@ -27,6 +27,7 @@ protected:
 		TSharedPtr<FUICommandInfo> MoveCameraHere;
 		TSharedPtr<FUICommandInfo> PlayFromHere;
 		TSharedPtr<FUICommandInfo> LoadFromHere;
+		TSharedPtr<FUICommandInfo> BugItHere;
 
 		/**
 		 * Initialize commands
@@ -45,14 +46,16 @@ protected:
 	void LoadSelectedRegions();
 	void UnloadSelectedRegions();
 	void ConvertSelectedRegionsToActors();
+	
 	void MoveCameraHere();
 	void PlayFromHere();
 	void LoadFromHere();
+	void BugItHere();
 
 	bool IsFollowPlayerInPIE() const;
 	bool IsInteractive() const;
 
-	virtual int32 GetSelectionSnap() const;
+	virtual int64 GetSelectionSnap() const;
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
@@ -95,7 +98,7 @@ protected:
 		ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(ChildSlot.GetWidget(), FVector2D::ZeroVector, AllottedGeometry.GetLocalSize()));
 	}
 
-	void FocusBox(const FBox& Box) const;
+	virtual void FocusBox(const FBox& Box) const override;
 
 	mutable float Scale;
 	mutable FVector2D Trans;
@@ -108,6 +111,7 @@ protected:
 	bool bIsPanning;
 	bool bIsMeasuring;
 	bool bShowActors;
+	bool bShowGrid;
 	bool bFollowPlayerInPIE;
 	FVector2D MouseCursorPos;
 	FVector2D MouseCursorPosWorld;

@@ -3,9 +3,11 @@
 #include "GroomComponent.h"
 #include "GeometryCacheComponent.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "MaterialShared.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/Engine.h"
+#include "NiagaraSystem.h"
 #include "PrimitiveSceneProxy.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "HairStrandsRendering.h"
@@ -21,6 +23,8 @@
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Engine/RendererSettings.h"
 #include "Animation/AnimationSettings.h"
+#include "Animation/MeshDeformerInstance.h"
+#include "Animation/MeshDeformer.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Misc/MapErrors.h"
@@ -37,6 +41,7 @@
 #include "Async/ParallelFor.h"
 #include "PrimitiveSceneInfo.h"
 #include "PSOPrecache.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GroomComponent)
 LLM_DECLARE_TAG(Groom);
@@ -68,8 +73,6 @@ static FAutoConsoleVariableRef CVarHairStrands_UseAttachedSimulationComponents(T
 #define USE_HAIR_TRIANGLE_STRIP 0
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-EHairStrandsDebugMode GetHairStrandsGeometryDebugMode(const FHairGroupInstance* Instance);
 
 const FLinearColor GetHairGroupDebugColor(int32 GroupIt)
 {
@@ -255,7 +258,7 @@ static EHairMaterialCompatibility IsHairMaterialCompatible(UMaterialInterface* M
 		{
 			return EHairMaterialCompatibility::Invalid_ShadingModel;
 		}
-		if (MaterialInterface->GetBlendMode() != BLEND_Opaque && MaterialInterface->GetBlendMode() != BLEND_Masked && GeometryType == EHairGeometryType::Strands)
+		if (!IsOpaqueOrMaskedBlendMode(*MaterialInterface) && GeometryType == EHairGeometryType::Strands)
 		{
 			return EHairMaterialCompatibility::Invalid_BlendMode;
 		}
@@ -545,7 +548,7 @@ public:
 			const uint32 LODIndex = Instance->HairGroupPublicData->GetIntLODIndex();
 
 			FHairStrandsRaytracingResource* RTGeometry = nullptr;
-			uint8 RayTracingMask = RAY_TRACING_MASK_OPAQUE;
+			bool bIsHairStrands = false;
 			uint32 InstanceViewRayTracingMask = EHairViewRayTracingMask::PathTracing | EHairViewRayTracingMask::RayTracing;
 			switch (GeometryType)
 			{
@@ -553,7 +556,7 @@ public:
 				{
 					RTGeometry = Instance->Strands.RenRaytracingResource;
 					InstanceViewRayTracingMask = Instance->Strands.ViewRayTracingMask;
-					RayTracingMask = RAY_TRACING_MASK_THIN_SHADOW;
+					bIsHairStrands = true;
 					break;
 				}
 				case EHairGeometryType::Cards:
@@ -587,28 +590,7 @@ public:
 					RayTracingInstance.Geometry = &RTGeometry->RayTracingGeometry;
 					RayTracingInstance.Materials.Add(*MeshBatch);
 					RayTracingInstance.InstanceTransforms.Add(OverrideLocalToWorld);
-					RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel(), ERayTracingInstanceLayer::NearField, RayTracingMask);
-
-					// If thin shadow is requested, we ensure that regular shadow mask is not added.
-					// TODO: can this logic live in BuildInstanceMaskAndFlags instead?
-					if (RayTracingMask == RAY_TRACING_MASK_THIN_SHADOW)
-					{
-						if (RayTracingInstance.Mask & RAY_TRACING_MASK_SHADOW)
-						{
-							// geometry casts shadows, make sure it is in only one of the shadow casting groups, so it can be treated seperately if desired
-							RayTracingInstance.Mask &= ~RAY_TRACING_MASK_SHADOW;
-							RayTracingInstance.Mask |= RAY_TRACING_MASK_THIN_SHADOW;
-						}
-						else
-						{
-							// if the geometry does not cast shadows, remove this flag
-							RayTracingInstance.Mask &= ~RAY_TRACING_MASK_THIN_SHADOW;
-						}
-						// make sure geometry is only in the hair group
-						RayTracingInstance.Mask &= ~RAY_TRACING_MASK_OPAQUE;
-						RayTracingInstance.Mask &= ~RAY_TRACING_MASK_TRANSLUCENT;
-						RayTracingInstance.Mask |= RAY_TRACING_MASK_HAIR_STRANDS;
-					}
+					RayTracingInstance.bThinGeometry = bIsHairStrands;
 
 					OutRayTracingInstances.Add(RayTracingInstance);
 				}
@@ -653,36 +635,52 @@ public:
 					check(Instances[GroupIt]->GetRefCount() > 0);
 
 					FMaterialRenderProxy* Debug_MaterialProxy = nullptr;
-					EHairStrandsDebugMode DebugMode = GetHairStrandsGeometryDebugMode(Instances[GroupIt]);
-					if (AllowDebugViewmodes() && View->Family->EngineShowFlags.LODColoration)
+					const EGroomViewMode ViewMode = AllowDebugViewmodes() ? GetGroomViewMode(*View) : EGroomViewMode::None;
+					bool bNeedDebugMaterial = false;
+					switch(ViewMode)
 					{
-						DebugMode = EHairStrandsDebugMode::RenderLODColoration;
-					}
-					
-					const bool bNeedDebugMaterial = 
-						DebugMode != EHairStrandsDebugMode::NoneDebug &&
-						DebugMode != EHairStrandsDebugMode::RenderHairControlPoints &&
-						DebugMode != EHairStrandsDebugMode::RenderHairTangent;
+					case EGroomViewMode::SimHairStrands	:
+					case EGroomViewMode::Cluster		:
+					case EGroomViewMode::ClusterAABB	:
+					case EGroomViewMode::RenderHairStrands:
+						bNeedDebugMaterial = Instances[GroupIt]->GeometryType == EHairGeometryType::Strands; break;
+					case EGroomViewMode::RootUV			:
+					case EGroomViewMode::UV				:
+					case EGroomViewMode::Seed			:
+					case EGroomViewMode::ClumpID		:
+					case EGroomViewMode::Dimension		:
+					case EGroomViewMode::RadiusVariation:
+					case EGroomViewMode::RootUDIM		:
+					case EGroomViewMode::Color			:
+					case EGroomViewMode::Roughness		:
+					case EGroomViewMode::AO				:
+					case EGroomViewMode::Group			:
+					case EGroomViewMode::LODColoration	:
+						bNeedDebugMaterial = true; break;
+					};
 
 					if (bNeedDebugMaterial)
 					{
 						float DebugModeScalar = 0;
-						switch(DebugMode)
+						switch(ViewMode)
 						{
-						case EHairStrandsDebugMode::NoneDebug					: DebugModeScalar =99.f; break;
-						case EHairStrandsDebugMode::SimHairStrands				: DebugModeScalar = 0.f; break;
-						case EHairStrandsDebugMode::RenderHairStrands			: DebugModeScalar = 0.f; break;
-						case EHairStrandsDebugMode::RenderHairRootUV			: DebugModeScalar = 1.f; break;
-						case EHairStrandsDebugMode::RenderHairUV				: DebugModeScalar = 2.f; break;
-						case EHairStrandsDebugMode::RenderHairSeed				: DebugModeScalar = 3.f; break;
-						case EHairStrandsDebugMode::RenderHairDimension			: DebugModeScalar = 4.f; break;
-						case EHairStrandsDebugMode::RenderHairRadiusVariation	: DebugModeScalar = 5.f; break;
-						case EHairStrandsDebugMode::RenderHairRootUDIM			: DebugModeScalar = 6.f; break;
-						case EHairStrandsDebugMode::RenderHairBaseColor			: DebugModeScalar = 7.f; break;
-						case EHairStrandsDebugMode::RenderHairRoughness			: DebugModeScalar = 8.f; break;
-						case EHairStrandsDebugMode::RenderVisCluster			: DebugModeScalar = 0.f; break;
-						case EHairStrandsDebugMode::RenderHairGroup				: DebugModeScalar = 9.f; break;
-						case EHairStrandsDebugMode::RenderLODColoration			: DebugModeScalar = 10.f; break;
+						case EGroomViewMode::None				: DebugModeScalar =99.f; break;
+						case EGroomViewMode::SimHairStrands		: DebugModeScalar = 0.f; break;
+						case EGroomViewMode::RenderHairStrands	: DebugModeScalar = 0.f; break;
+						case EGroomViewMode::RootUV				: DebugModeScalar = 1.f; break;
+						case EGroomViewMode::UV					: DebugModeScalar = 2.f; break;
+						case EGroomViewMode::Seed				: DebugModeScalar = 3.f; break;
+						case EGroomViewMode::Dimension			: DebugModeScalar = 4.f; break;
+						case EGroomViewMode::RadiusVariation	: DebugModeScalar = 5.f; break;
+						case EGroomViewMode::RootUDIM			: DebugModeScalar = 6.f; break;
+						case EGroomViewMode::Color				: DebugModeScalar = 7.f; break;
+						case EGroomViewMode::Roughness			: DebugModeScalar = 8.f; break;
+						case EGroomViewMode::Cluster			: DebugModeScalar = 0.f; break;
+						case EGroomViewMode::ClusterAABB		: DebugModeScalar = 0.f; break;
+						case EGroomViewMode::Group				: DebugModeScalar = 9.f; break;
+						case EGroomViewMode::LODColoration		: DebugModeScalar = 10.f; break;
+						case EGroomViewMode::ClumpID			: DebugModeScalar = 11.f; break;
+						case EGroomViewMode::AO					: DebugModeScalar = 12.f; break;
 						};
 
 						// TODO: fix this as the radius is incorrect. This code run before the interpolation code, which is where HairRadius is updated.
@@ -693,17 +691,17 @@ public:
 						}
 						
 						// Reuse the HairMaxRadius field to send the LOD index instead of adding yet another variable
-						if (DebugMode == EHairStrandsDebugMode::RenderLODColoration)
+						if (ViewMode == EGroomViewMode::LODColoration)
 						{
 							HairMaxRadius = Instances[GroupIt]->HairGroupPublicData ? Instances[GroupIt]->HairGroupPublicData->LODIndex : 0;
 						}
 
 						FVector HairColor = FVector::ZeroVector;
-						if (DebugMode == EHairStrandsDebugMode::RenderHairGroup)
+						if (ViewMode == EGroomViewMode::Group)
 						{
 							HairColor = FVector(GetHairGroupDebugColor(GroupIt));
 						}
-						else if (DebugMode == EHairStrandsDebugMode::RenderLODColoration)
+						else if (ViewMode == EGroomViewMode::LODColoration)
 						{
 							int32 LODIndex = Instances[GroupIt]->HairGroupPublicData ? Instances[GroupIt]->HairGroupPublicData->LODIndex : 0;
 							LODIndex = FMath::Clamp(LODIndex, 0, GEngine->LODColorationColors.Num() - 1);
@@ -1628,14 +1626,6 @@ void UGroomComponent::SetHairLengthScaleEnable(bool bEnable)
 	InitResources();
 }
 
-#if WITH_EDITOR
-void UGroomComponent::SetDebugMode(EHairStrandsDebugMode InMode)
-{ 
-	DebugMode = InMode; 
-	UpdateHairGroupsDescAndInvalidateRenderState(true);
-}
-#endif
-
 bool UGroomComponent::GetIsHairLengthScaleEnabled()
 {
 	bool IsEnabled = true;
@@ -1833,11 +1823,7 @@ void UGroomComponent::UpdateHairGroupsDescAndInvalidateRenderState(bool bInvalid
 	uint32 GroupIndex = 0;
 	for (FHairGroupInstance* Instance : HairGroupInstances)
 	{
-		Instance->Strands.Modifier  = GetGroomGroupsDesc(GroomAsset, this, GroupIndex);
-#if WITH_EDITORONLY_DATA
-		Instance->Debug.DebugMode = DebugMode;
-		Instance->HairGroupPublicData->DebugMode = DebugMode; // Replicated value for accessing it from the engine side. Refactor this.
-#endif// #if WITH_EDITORONLY_DATA
+		Instance->Strands.Modifier = GetGroomGroupsDesc(GroomAsset, this, GroupIndex);
 		++GroupIndex;
 	}
 	if (bInvalid)
@@ -2495,13 +2481,21 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 		{
 			if (BindingAsset)
 			{
-				const uint32 SkelLODCount = ParentSkelMeshComponent->GetNumLODs();
+				// Extract if skin cache or mesh. deformer is enabled on at least on LOD.
+				// Since there is 1:1 mapping between groom LOD and mesh LOD, only use this has a hint.
+				bool bSupportSkinCache = ParentSkelMeshComponent->HasMeshDeformer();
+				if (!bSupportSkinCache)
+				{
+					for (uint32 SkelLODIt = 0, SkelLODCount = ParentSkelMeshComponent->GetNumLODs(); SkelLODIt < SkelLODCount; ++SkelLODIt)
+					{
+						bSupportSkinCache = bSupportSkinCache || ParentSkelMeshComponent->IsSkinCacheAllowed(SkelLODIt);
+					}
+				}
+
 				for (int32 GroupIt = 0, GroupCount = GroomAsset->HairGroupsData.Num(); GroupIt < GroupCount; ++GroupIt)
 				{
 					for (uint32 LODIt = 0, LODCount = GroomAsset->GetLODCount(); LODIt < LODCount; ++LODIt)
 					{
-						const uint32 EffectiveLODIt = FMath::Clamp<uint32>(LODIt, 0, SkelLODCount - 1);
-						const bool bSupportSkinCache = ParentSkelMeshComponent->IsSkinCacheAllowed(EffectiveLODIt);
 						const EGroomBindingType BindingType = GroomAsset->GetBindingType(GroupIt, LODIt);
 						const bool bIsVisible = GroomAsset->IsVisible(GroupIt, LODIt);
 
@@ -2535,6 +2529,13 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 			{
 				LocalBindingAsset = nullptr;
 			}
+		}
+
+		// When a groom is attached to a skinned mesh, skin dynamic data needs to be update immediately and not deferred 
+		// until drawing. This ensures that skin data are ready/available for simulation.
+		if (USkinnedMeshComponent* SkinnedMesh = Cast<USkinnedMeshComponent>(RegisteredMeshComponent))
+		{
+			SkinnedMesh->SetForceUpdateDynamicDataImmediately(true);
 		}
 	}
 
@@ -2575,6 +2576,8 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 		HairGroupInstance->Debug.LODSelectionTypeForDebug = LODSelectionType;
 		HairGroupInstance->DeformedComponent = DeformedMeshComponent;
 		HairGroupInstance->DeformedSection = GroomAsset->DeformedGroupSections.IsValidIndex(GroupIt) ? GroomAsset->DeformedGroupSections[GroupIt] : INDEX_NONE; 
+		HairGroupInstance->Debug.MeshComponentId = ValidatedMeshComponent ? ValidatedMeshComponent->ComponentId : FPrimitiveComponentId();
+		HairGroupInstance->Debug.CachedMeshPersistentPrimitiveIndex = FPersistentPrimitiveIndex();
 
 		if (RegisteredMeshComponent)
 		{
@@ -2593,10 +2596,12 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 
 		const EHairInterpolationType HairInterpolationType = ToHairInterpolationType(GroomAsset->HairInterpolationType);
 
+		const FName OwnerName = GroomAsset->GetAssetPathName();
+
 		// Initialize LOD screen size & visibility
 		bool bNeedStrandsData = false;
 		{
-			HairGroupInstance->HairGroupPublicData = new FHairGroupPublicData(GroupIt);
+			HairGroupInstance->HairGroupPublicData = new FHairGroupPublicData(GroupIt, OwnerName);
 			HairGroupInstance->HairGroupPublicData->Instance = HairGroupInstance;
 			HairGroupInstance->HairGroupPublicData->bDebugDrawLODInfo = bPreviewMode;
 			HairGroupInstance->HairGroupPublicData->DebugScreenSize = 0.f;
@@ -2664,7 +2669,7 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 				}
 
 				HairGroupInstance->Guides.RestRootResource = LocalBindingAsset->HairGroupResources[GroupIt].SimRootResources;
-				HairGroupInstance->Guides.DeformedRootResource = new FHairStrandsDeformedRootResource(HairGroupInstance->Guides.RestRootResource, EHairStrandsResourcesType::Guides, ResourceName);
+				HairGroupInstance->Guides.DeformedRootResource = new FHairStrandsDeformedRootResource(HairGroupInstance->Guides.RestRootResource, EHairStrandsResourcesType::Guides, ResourceName, OwnerName);
 			}
 
 			// Lazy allocation of the guide resources
@@ -2672,7 +2677,7 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 			check(GroupData.Guides.RestResource);
 
 			// If guides are allocated, deformed resources are always needs since they are either used with simulation, or RBF deformation. Both are dynamics, and require deformed positions
-			HairGroupInstance->Guides.DeformedResource = new FHairStrandsDeformedResource(GroupData.Guides.BulkData, EHairStrandsResourcesType::Guides, ResourceName);
+			HairGroupInstance->Guides.DeformedResource = new FHairStrandsDeformedResource(GroupData.Guides.BulkData, EHairStrandsResourcesType::Guides, ResourceName, OwnerName);
 
 			// Initialize the simulation and the global deformation to its default behavior by setting it with LODIndex = -1
 			const int32 LODIndex = -1;
@@ -2683,9 +2688,6 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 
 		// LODBias is in the Modifier which is needed for LOD selection regardless if the strands are there or not
 		HairGroupInstance->Strands.Modifier = GetGroomGroupsDesc(GroomAsset, this, GroupIt);
-		#if WITH_EDITORONLY_DATA
-		HairGroupInstance->Debug.DebugMode = DebugMode;
-		#endif// #if WITH_EDITORONLY_DATA
 
 		// Strands data/resources
 		if (bNeedStrandsData && GroupData.Strands.IsValid())
@@ -2743,6 +2745,11 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 				{
 					bNeedDynamicResources = true;
 				}
+				// Mesh deformer requires to dynamic resources
+				if (MeshDeformer)
+				{
+					bNeedDynamicResources = true;
+				}
 			}
 
 			#if RHI_RAYTRACING
@@ -2752,7 +2759,7 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 				if (bNeedDynamicResources)
 				{
 					// Allocate dynamic raytracing resources (owned by the groom component/instance)
-					HairGroupInstance->Strands.RenRaytracingResource = new FHairStrandsRaytracingResource(GroupData.Strands.BulkData, ResourceName);
+					HairGroupInstance->Strands.RenRaytracingResource = new FHairStrandsRaytracingResource(GroupData.Strands.BulkData, ResourceName, OwnerName);
 					HairGroupInstance->Strands.RenRaytracingResourceOwned = true;
 				}
 				else
@@ -2776,13 +2783,13 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 				}
 
 				HairGroupInstance->Strands.RestRootResource = LocalBindingAsset->HairGroupResources[GroupIt].RenRootResources;
-				HairGroupInstance->Strands.DeformedRootResource = new FHairStrandsDeformedRootResource(HairGroupInstance->Strands.RestRootResource, EHairStrandsResourcesType::Strands, ResourceName);
+				HairGroupInstance->Strands.DeformedRootResource = new FHairStrandsDeformedRootResource(HairGroupInstance->Strands.RestRootResource, EHairStrandsResourcesType::Strands, ResourceName, OwnerName);
 			}
 
 			HairGroupInstance->Strands.RestResource = GroupData.Strands.RestResource;
 			if (bNeedDynamicResources)
 			{
-				HairGroupInstance->Strands.DeformedResource = new FHairStrandsDeformedResource(GroupData.Strands.BulkData, EHairStrandsResourcesType::Strands, ResourceName);
+				HairGroupInstance->Strands.DeformedResource = new FHairStrandsDeformedResource(GroupData.Strands.BulkData, EHairStrandsResourcesType::Strands, ResourceName, OwnerName);
 			} 
 
 			// An empty groom doesn't have a ClusterCullingResource
@@ -2822,6 +2829,7 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 			if (LOD.IsValid())
 			{
 				FHairResourceName LODResourceName(GetFName(), GroupIt, CardsLODIndex);
+				const FName LODOwnerName = GroomAsset->GetAssetPathName(CardsLODIndex);
 
 				const EHairBindingType BindingType	= HairGroupInstance->HairGroupPublicData->GetBindingType(CardsLODIndex);
 				const bool bHasSimulation			= HairGroupInstance->HairGroupPublicData->IsSimulationEnable(CardsLODIndex);
@@ -2842,16 +2850,16 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 
 				if (bNeedDeformedPositions)
 				{
-					InstanceLOD.DeformedResource = new FHairCardsDeformedResource(LOD.BulkData, false, LODResourceName);
+					InstanceLOD.DeformedResource = new FHairCardsDeformedResource(LOD.BulkData, false, LODResourceName, LODOwnerName);
 				}
 
 				#if RHI_RAYTRACING
-				if (IsRayTracingEnabled() && bVisibleInRayTracing)
+				if (IsRayTracingAllowed() && bVisibleInRayTracing)
 				{
 					if (bNeedDeformedPositions)
 					{
 						// Allocate dynamic raytracing resources (owned by the groom component/instance)
-						InstanceLOD.RaytracingResource = new FHairStrandsRaytracingResource(*InstanceLOD.Data, LODResourceName);
+						InstanceLOD.RaytracingResource = new FHairStrandsRaytracingResource(*InstanceLOD.Data, LODResourceName, LODOwnerName);
 						InstanceLOD.RaytracingResourceOwned = true;
 					}
 					else
@@ -2880,12 +2888,12 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 						}
 
 						InstanceLOD.Guides.RestRootResource = LocalBindingAsset->HairGroupResources[GroupIt].CardsRootResources[CardsLODIndex];
-						InstanceLOD.Guides.DeformedRootResource = new FHairStrandsDeformedRootResource(InstanceLOD.Guides.RestRootResource, EHairStrandsResourcesType::Cards, LODResourceName);
+						InstanceLOD.Guides.DeformedRootResource = new FHairStrandsDeformedRootResource(InstanceLOD.Guides.RestRootResource, EHairStrandsResourcesType::Cards, LODResourceName, LODOwnerName);
 					}
 
 					InstanceLOD.Guides.RestResource = LOD.Guides.RestResource;
 					{
-						InstanceLOD.Guides.DeformedResource = new FHairStrandsDeformedResource(LOD.Guides.BulkData, EHairStrandsResourcesType::Cards, LODResourceName);
+						InstanceLOD.Guides.DeformedResource = new FHairStrandsDeformedResource(LOD.Guides.BulkData, EHairStrandsResourcesType::Cards, LODResourceName, LODOwnerName);
 					}
 
 					InstanceLOD.Guides.HairInterpolationType = HairInterpolationType;
@@ -2901,6 +2909,7 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 			if (LOD.IsValid())
 			{
 				FHairResourceName LODResourceName(GetFName(), GroupIt, MeshLODIndex);
+				const FName LODOwnerName = GroomAsset->GetAssetPathName(MeshLODIndex);
 
 				const EHairBindingType BindingType = HairGroupInstance->HairGroupPublicData->GetBindingType(MeshLODIndex);
 				const bool bHasGlobalDeformation   = HairGroupInstance->HairGroupPublicData->IsGlobalInterpolationEnable(MeshLODIndex);
@@ -2910,16 +2919,16 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 				InstanceLOD.RestResource = LOD.RestResource;
 				if (bNeedDeformedPositions)
 				{
-					InstanceLOD.DeformedResource = new FHairMeshesDeformedResource(LOD.BulkData, true, LODResourceName);
+					InstanceLOD.DeformedResource = new FHairMeshesDeformedResource(LOD.BulkData, true, LODResourceName, LODOwnerName);
 				}
 
 				#if RHI_RAYTRACING
-				if (IsRayTracingEnabled() && bVisibleInRayTracing)
+				if (IsRayTracingAllowed() && bVisibleInRayTracing)
 				{
 					if (bNeedDeformedPositions)
 					{
 						// Allocate dynamic raytracing resources (owned by the groom component/instance)
-						InstanceLOD.RaytracingResource = new FHairStrandsRaytracingResource(*InstanceLOD.Data, LODResourceName);
+						InstanceLOD.RaytracingResource = new FHairStrandsRaytracingResource(*InstanceLOD.Data, LODResourceName, LODOwnerName);
 						InstanceLOD.RaytracingResourceOwned = true;
 					}
 					else
@@ -2927,7 +2936,6 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 						// (Lazy) Allocate static raytracing resources (owned by the grooom asset)
 						InstanceLOD.RaytracingResourceOwned = false;
 						InstanceLOD.RaytracingResource = GroomAsset->AllocateMeshesRaytracingResources(GroupIt, MeshLODIndex);
-						check(InstanceLOD.RaytracingResource);
 					}
 				}
 				#endif
@@ -3111,24 +3119,26 @@ void UGroomComponent::PostLoad()
 #endif
 }
 
-void UGroomComponent::PrecachePSOs()
+void UGroomComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams) 
 {
-	if (!IsComponentPSOPrecachingEnabled() || GroomAsset == nullptr)
+	if (GroomAsset == nullptr)
 	{
 		return;
 	}
 
 	TArray<FHairVertexFactoryTypesPerMaterialData> VFsPerMaterials = GroomAsset->CollectVertexFactoryTypesPerMaterialData(GMaxRHIShaderPlatform);
 
-	FPSOPrecacheParams PrecachePSOParams;
-	SetupPrecachePSOParams(PrecachePSOParams);
+	FPSOPrecacheParams PrecachePSOParams = BasePrecachePSOParams;
 
 	for (FHairVertexFactoryTypesPerMaterialData& VFsPerMaterial : VFsPerMaterials)
 	{
 		UMaterialInterface* MaterialInterface = GetMaterial(GetMaterialIndexWithFallback(VFsPerMaterial.MaterialIndex), VFsPerMaterial.HairGeometryType, true);
 		if (MaterialInterface)
 		{
-			MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryTypes, PrecachePSOParams);
+			FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+			ComponentParams.MaterialInterface = MaterialInterface;
+			ComponentParams.VertexFactoryDataList = VFsPerMaterial.VertexFactoryDataList;
+			ComponentParams.PSOPrecacheParams = PrecachePSOParams;
 		}
 	}
 
@@ -3175,6 +3185,8 @@ void UGroomComponent::OnRegister()
 		UpdateGroomCache(ElapsedTime);
 	}
 	UpdateHairSimulation();
+
+	MeshDeformerInstance = (MeshDeformer != nullptr) ? MeshDeformer->CreateInstance(this, MeshDeformerInstanceSettings) : nullptr;
 }
 
 void UGroomComponent::OnUnregister()
@@ -3192,6 +3204,8 @@ void UGroomComponent::OnUnregister()
 		}
 		IGroomCacheStreamingManager::Get().UnregisterComponent(this);
 	}
+
+	MeshDeformerInstance = nullptr;
 }
 
 void UGroomComponent::BeginDestroy()
@@ -3579,6 +3593,48 @@ void UGroomComponent::SendRenderDynamicData_Concurrent()
 			}
 		});
 	}
+
+	if (MeshDeformerInstance != nullptr && GroomAsset != nullptr)
+	{
+		UMeshDeformerInstance::FEnqueueWorkDesc Desc;
+		Desc.Scene = GetScene();
+		Desc.OwnerName = GroomAsset->GetFName();
+		// TODO: Provide a FEnqueueWorkDesc::FallbackDelegate so that groom appears rest pose if the Enqueue fails.
+		MeshDeformerInstance->EnqueueWork(Desc);
+	}
+}
+
+void UGroomComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
+{
+	if (MeshDeformerInstance)
+	{
+		MeshDeformerInstance->AllocateResources();
+	}
+
+	Super::CreateRenderState_Concurrent(Context);
+}
+
+void UGroomComponent::DestroyRenderState_Concurrent()
+{
+	Super::DestroyRenderState_Concurrent();
+
+	if (MeshDeformerInstance)
+	{
+		MeshDeformerInstance->ReleaseResources();
+	}
+}
+
+bool UGroomComponent::RequiresGameThreadEndOfFrameRecreate() const
+{
+	return Super::RequiresGameThreadEndOfFrameRecreate();
+}
+
+void UGroomComponent::SetMeshDeformer(UMeshDeformer* InMeshDeformer)
+{
+	MeshDeformer = InMeshDeformer;
+	MeshDeformerInstanceSettings = MeshDeformer->CreateSettingsInstance(this);
+	MeshDeformerInstance = (MeshDeformer != nullptr) ? MeshDeformer->CreateInstance(this, MeshDeformerInstanceSettings) : nullptr;
+	MarkRenderDynamicDataDirty();
 }
 
 void UGroomComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const
@@ -3647,6 +3703,7 @@ void UGroomComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	const bool bIsBindingCompatible = UGroomBindingAsset::IsCompatible(GroomAsset, BindingAsset, bValidationEnable);
 	const bool bEnableSolverChanged = PropertyName == GET_MEMBER_NAME_CHECKED(FHairSimulationSolver, bEnableSimulation);
 	const bool bGroomCacheChanged = PropertyName == GET_MEMBER_NAME_CHECKED(UGroomComponent, GroomCache);
+	const bool bMeshDeformerChanged = PropertyName == GET_MEMBER_NAME_CHECKED(UGroomComponent, MeshDeformer);
 	const bool bEnableLengthScaleChanged = PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairLengthScale);
 	if (!bIsBindingCompatible || !UGroomBindingAsset::IsBindingAssetValid(BindingAsset, false, bValidationEnable))
 	{
@@ -3703,7 +3760,7 @@ void UGroomComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	// If material is assigned to the groom from the viewport (i.e., drag&drop a material from the content brown onto the groom geometry, it results into a unknown property). There is other case 
 	const bool bIsUnknown = PropertyThatChanged == nullptr;
 
-	const bool bRecreateResources = bAssetChanged || bBindingAssetChanged || bGroomCacheChanged || bEnableLengthScaleOverrideChanged || bIsUnknown || bSourceSkeletalMeshChanged || bRayTracingGeometryChanged || bEnableSolverChanged;
+	const bool bRecreateResources = bAssetChanged || bBindingAssetChanged || bGroomCacheChanged || bEnableLengthScaleOverrideChanged || bIsUnknown || bSourceSkeletalMeshChanged || bRayTracingGeometryChanged || bEnableSolverChanged|| bMeshDeformerChanged;
 	if (bRecreateResources)
 	{
 		// Release the resources before Super::PostEditChangeProperty so that they get
@@ -4152,8 +4209,11 @@ FGroomComponentRecreateRenderStateContext::FGroomComponentRecreateRenderStateCon
 		}
 	}
 
-	// Flush the rendering commands generated by the detachments.
-	FlushRenderingCommands();
+	if (GroomComponents.Num())
+	{
+		// Flush the rendering commands generated by the detachments.
+		FlushRenderingCommands();
+	}
 }
 
 FGroomComponentRecreateRenderStateContext::~FGroomComponentRecreateRenderStateContext()

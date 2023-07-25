@@ -12,17 +12,26 @@ using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
-	/** Architecture as stored in the ini. */
-	enum LinuxArchitecture
+	partial struct UnrealArch
 	{
-		/** x86_64, most commonly used architecture.*/
-		X86_64UnknownLinuxGnu,
+		private static Dictionary<UnrealArch, string> LinuxToolchainArchitectures = new()
+		{
+			{ UnrealArch.Arm64,         "aarch64-unknown-linux-gnueabi" },
+			{ UnrealArch.X64,           "x86_64-unknown-linux-gnu" },
+		};
 
-		/** A.k.a. AArch32, ARM 32-bit with hardware floats */
-		ArmUnknownLinuxGnueabihf,
+		/// <summary>
+		/// Returns the low-architecture specific string for the generic architectures
+		/// </summary>
+		public string LinuxName
+		{
+			get
+			{
+				if (AppleToolchainArchitectures.ContainsKey(this)) return LinuxToolchainArchitectures[this];
 
-		/** Arm64, ARM 64-bit */
-		AArch64UnknownLinuxGnueabi,
+				throw new BuildException($"Unknown architecture {ToString()} passed to UnrealArch.LinuxName");
+			}
+		}
 	}
 
 	/// <summary>
@@ -147,12 +156,22 @@ namespace UnrealBuildTool
 		#endregion
 	}
 
+	// Usable by both Linux and LinuxArm64 (platform passed to constructor)
+	class LinuxArchitectureConfig : UnrealArchitectureConfig
+	{
+		public LinuxArchitectureConfig(UnrealTargetPlatform Platform)
+			:  base(Platform == UnrealTargetPlatform.Linux ? UnrealArch.X64 : UnrealArch.Arm64)
+		{
+		}
+	}
+
 	class LinuxPlatform : UEBuildPlatform
 	{
 		/// <summary>
 		/// Linux host architecture (compiler target triplet)
+		/// @todo Remove this and get the actual Host architecture?
 		/// </summary>
-		public const string DefaultHostArchitecture = "x86_64-unknown-linux-gnu";
+		public static readonly UnrealArch DefaultHostArchitecture = UnrealArch.X64;
 
 		/// <summary>
 		/// SDK in use by the platform
@@ -169,40 +188,9 @@ namespace UnrealBuildTool
 		}
 
 		public LinuxPlatform(UnrealTargetPlatform UnrealTarget, LinuxPlatformSDK InSDK, ILogger Logger)
-			: base(UnrealTarget, InSDK, Logger)
+			: base(UnrealTarget, InSDK, new LinuxArchitectureConfig(UnrealTarget), Logger)
 		{
 			SDK = InSDK;
-		}
-
-		/// <summary>
-		/// Find the default architecture for the given project
-		/// </summary>
-		public override string GetDefaultArchitecture(FileReference? ProjectFile)
-		{
-			if (Platform == UnrealTargetPlatform.LinuxArm64)
-			{
-				return "aarch64-unknown-linux-gnueabi";
-			}
-			else
-			{
-				return "x86_64-unknown-linux-gnu";
-			}
-		}
-
-		/// <summary>
-		/// Get name for architecture-specific directories (can be shorter than architecture name itself)
-		/// </summary>
-		public override string GetFolderNameForArchitecture(string Architecture)
-		{
-			// shorten the string (heuristically)
-			uint Sum = 0;
-			int Len = Architecture.Length;
-			for (int Index = 0; Index < Len; ++Index)
-			{
-				Sum += (uint)(Architecture[Index]);
-				Sum <<= 1;	// allowed to overflow
-			}
-			return Sum.ToString("X");
 		}
 
 		public override void ResetTarget(TargetRules Target)
@@ -276,16 +264,11 @@ namespace UnrealBuildTool
 			Target.bCheckSystemHeadersForModification = (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Linux);
 
 			Target.bCompileISPC = true;
-		}
 
-		/// <summary>
-		/// Allows the platform to override whether the architecture name should be appended to the name of binaries.
-		/// </summary>
-		/// <returns>True if the architecture name should be appended to the binary</returns>
-		public override bool RequiresArchitectureSuffix()
-		{
-			// Linux ignores architecture-specific names, although it might be worth it to prepend architecture
-			return false;
+			if (Target.bIWYU)
+			{
+				IWYUToolChain.ValidateTarget(Target);
+			}
 		}
 
 		public override bool CanUseXGE()
@@ -561,6 +544,11 @@ namespace UnrealBuildTool
 		/// <returns>New toolchain instance.</returns>
 		public override UEToolChain CreateToolChain(ReadOnlyTargetRules Target)
 		{
+			if (Target.bIWYU)
+			{
+				return new IWYUToolChain(Target, Logger);
+			}
+
 			ClangToolChainOptions Options = ClangToolChainOptions.None;
 
 			if (Target.LinuxPlatform.bEnableAddressSanitizer)

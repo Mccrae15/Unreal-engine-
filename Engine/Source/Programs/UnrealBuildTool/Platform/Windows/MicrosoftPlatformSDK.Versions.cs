@@ -21,7 +21,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		static readonly VersionNumberRange[] PreferredClangVersions =
 		{
-			VersionNumberRange.Parse("13.0.0", "13.999"),
+			VersionNumberRange.Parse("14.0.0", "14.999"), // VS2022 17.4.x runtime requires Clang 14
+			VersionNumberRange.Parse("13.0.0", "13.999"), // VS2019 16.11 runtime requires Clang 13
 		};
 
 		static readonly VersionNumber MinimumClangVersion = new VersionNumber(13, 0, 0);
@@ -32,8 +33,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		static readonly VersionNumberRange[] PreferredVisualCppVersions = new VersionNumberRange[]
 		{
+			VersionNumberRange.Parse("14.34.31933", "14.34.99999"), // VS2022 17.4.x
 			VersionNumberRange.Parse("14.29.30133", "14.29.99999"), // VS2019 16.11.x
-			VersionNumberRange.Parse("14.33.31629", "14.33.99999"), // VS2022 17.3.x
 		};
 
 		/// <summary>
@@ -47,13 +48,14 @@ namespace UnrealBuildTool
 
 		/// <summary>
 		/// The default compiler version to be used, if installed. 
+		/// https://www.intel.com/content/www/us/en/developer/articles/tool/oneapi-standalone-components.html#dpcpp-cpp
 		/// </summary>
 		static readonly VersionNumberRange[] PreferredIntelOneApiVersions =
 		{
-			VersionNumberRange.Parse("2022.0.0", "2022.9999"),
+			VersionNumberRange.Parse("2022.2.0", "2022.9999"),
 		};
 
-		static readonly VersionNumber MinimumIntelOneApiVersion = new VersionNumber(2021, 0, 0);
+		static readonly VersionNumber MinimumIntelOneApiVersion = new VersionNumber(2022, 2, 0);
 
 		/// <summary>
 		/// The default set of components that should be suggested to be installed for Visual Studio 2019 or 2022.
@@ -62,12 +64,29 @@ namespace UnrealBuildTool
 		static readonly string[] VisualStudioSuggestedComponents = new string[]
 		{
 			"Microsoft.VisualStudio.Workload.CoreEditor",
-			"Microsoft.VisualStudio.Workload.Universal",
 			"Microsoft.VisualStudio.Workload.NativeDesktop",
 			"Microsoft.VisualStudio.Workload.NativeGame",
 			"Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-			"Microsoft.VisualStudio.Component.VC.Tools.ARM64",
 			"Microsoft.VisualStudio.Component.Windows10SDK",
+		};
+
+		/// <summary>
+		/// Additional set of components that should be suggested to be installed for Visual Studio 2019 or 2022
+		/// to support the HoloLens platform.
+		/// </summary>
+		static readonly string[] VisualStudioSuggestedHololensComponents = new string[]
+		{
+			"Microsoft.VisualStudio.Workload.Universal",
+			"Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+		};
+
+		/// <summary>
+		/// Additional set of components that should be suggested to be installed for Visual Studio 2019 or 2022
+		/// to support the Linux platform.
+		/// </summary>
+		static readonly string[] VisualStudioSuggestedLinuxComponents = new string[]
+		{
+			"Microsoft.VisualStudio.Workload.NativeCrossPlat",
 		};
 
 		/// <summary>
@@ -83,10 +102,17 @@ namespace UnrealBuildTool
 		static readonly string[] VisualStudio2022SuggestedComponents = new string[]
 		{
 			"Microsoft.VisualStudio.Workload.ManagedDesktop",
-			"Microsoft.VisualStudio.Workload.NativeCrossPlat",
-			"Microsoft.VisualStudio.Component.VC.14.33.17.3.ARM64",
-			"Microsoft.VisualStudio.Component.VC.14.33.17.3.x86.x64",
+			"Microsoft.VisualStudio.Component.VC.14.34.17.4.x86.x64",
 			"Microsoft.Net.Component.4.6.2.TargetingPack",
+		};
+
+		/// <summary>
+		/// Additional set of components that should be suggested to be installed for Visual Studio 2022
+		/// to support the HoloLens platform.
+		/// </summary>
+		static readonly string[] VisualStudio2022SuggestedHololensComponents = new string[]
+		{
+			"Microsoft.VisualStudio.Component.VC.14.34.17.4.ARM64",
 		};
 
 		/// <summary>
@@ -95,6 +121,9 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static IEnumerable<string> GetVisualStudioSuggestedComponents(VCProjectFileFormat Format)
 		{
+			bool LinuxValid = InstalledPlatformInfo.IsValidPlatform(UnrealTargetPlatform.Linux) && UEBuildPlatform.IsPlatformAvailable(UnrealTargetPlatform.Linux);
+			bool HololensValid = InstalledPlatformInfo.IsValidPlatform(UnrealTargetPlatform.HoloLens) && UEBuildPlatform.IsPlatformAvailable(UnrealTargetPlatform.HoloLens);
+
 			SortedSet<string> Components = new SortedSet<string>();
 			Components.UnionWith(VisualStudioSuggestedComponents);
 
@@ -105,9 +134,23 @@ namespace UnrealBuildTool
 					break;
 				case VCProjectFileFormat.VisualStudio2022:
 					Components.UnionWith(VisualStudio2022SuggestedComponents);
+					if (HololensValid)
+					{
+						Components.UnionWith(VisualStudio2022SuggestedHololensComponents);
+					}
 					break;
 				default:
 					throw new BuildException("Unsupported Visual Studio version");
+			}
+
+			if (LinuxValid)
+			{
+				Components.UnionWith(VisualStudioSuggestedLinuxComponents);
+			}
+
+			if (HololensValid)
+			{
+				Components.UnionWith(VisualStudioSuggestedHololensComponents);
 			}
 
 			return Components;

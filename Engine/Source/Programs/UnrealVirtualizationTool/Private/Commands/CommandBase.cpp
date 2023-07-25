@@ -2,8 +2,10 @@
 
 #include "CommandBase.h"
 
+#include "HAL/FileManager.h"
 #include "ISourceControlModule.h"
 #include "ISourceControlProvider.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
 #include "SourceControlInitSettings.h"
@@ -21,6 +23,89 @@ bool IsPackageFile(const FString FilePath)
 
 	// Currently we don't virtualize text based assets so no call to FPackageName::IsTextPackageExtension
 	return FPackageName::IsPackageExtension(*Extension);
+}
+
+FCommand::FCommand(FStringView InCommandName)
+	: CommandName(InCommandName)
+{
+
+}
+
+FCommand::~FCommand()
+{
+
+}
+
+void FCommand::ParseCommandLine(const TCHAR* CmdLine, TArray<FString>& Tokens, TArray<FString>& Switches)
+{
+	// TODO: Taken from UCommandlet, maybe consider moving this code to a general purpose utility. We 
+	// could also make a version that returns TArray<FStringView>
+
+	FString NextToken;
+	while (FParse::Token(CmdLine, NextToken, false))
+	{
+		if (**NextToken == TCHAR('-'))
+		{
+			new(Switches) FString(NextToken.Mid(1));
+		}
+		else
+		{
+			new(Tokens) FString(NextToken);
+		}
+	}
+}
+
+FCommand::EPathResult FCommand::ParseSwitchForPaths(const FString& Switch, TArray<FString>& OutPackages)
+{
+	FString Path;
+	if (FParse::Value(*Switch, TEXT("Package="), Path))
+	{
+		FPaths::NormalizeFilename(Path);
+
+		if (!FPackageName::IsPackageFilename(Path))
+		{
+			UE_LOG(LogVirtualizationTool, Error, TEXT("Requested package file '%s' is not a valid package filename"), *Path);
+			return EPathResult::Error;
+		}
+
+		if (!IFileManager::Get().FileExists(*Path))
+		{
+			UE_LOG(LogVirtualizationTool, Error, TEXT("Could not find the requested package file '%s'"), *Path);
+			return EPathResult::Error;
+		}
+
+		OutPackages.Add(Path);
+		return EPathResult::Success;
+	}
+	else if (FParse::Value(*Switch, TEXT("PackageDir="), Path) || FParse::Value(*Switch, TEXT("PackageFolder="), Path))
+	{
+		// Note that 'PackageFolder' is the switch used by the resave commandlet, so allowing it here for compatibility purposes
+		FPaths::NormalizeFilename(Path);
+		if (IFileManager::Get().DirectoryExists(*Path))
+		{
+			IFileManager::Get().IterateDirectoryRecursively(*Path, [&OutPackages](const TCHAR* Path, bool bIsDirectory)
+				{
+					if (!bIsDirectory && FPackageName::IsPackageFilename(Path))
+					{
+						FString FilePath(Path);
+						FPaths::NormalizeFilename(FilePath);
+
+						OutPackages.Add(MoveTemp(FilePath));
+					}
+
+					return true; // Continue
+				});
+
+			return EPathResult::Success;
+		}
+		else
+		{
+			UE_LOG(LogVirtualizationTool, Error, TEXT("Could not find the requested directory '%s'"), *Path);
+			return EPathResult::Error;
+		}
+	}
+
+	return EPathResult::NotFound;
 }
 
 bool FCommand::TryConnectToSourceControl(FStringView ClientSpecName)
@@ -103,7 +188,7 @@ bool FCommand::TryCheckOutFilesForProject(FStringView ClientSpecName, FStringVie
 	return true;
 }
 
-bool FCommand::TryParseChangelist(FStringView ClientSpecName, FStringView ChangelistNumber, TArray<FString>& OutPackages)
+bool FCommand::TryParseChangelist(FStringView ClientSpecName, FStringView ChangelistNumber, TArray<FString>& OutPackages, FSourceControlChangelistPtr* OutChangelist)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(TryParseChangelist);
 
@@ -135,6 +220,10 @@ bool FCommand::TryParseChangelist(FStringView ClientSpecName, FStringView Change
 		return false;
 	}
 
+	// TODO: At the moment we have to poll for all changelists under the current workspace and then iterate over
+	// them to find the one we want.
+	// We need to add better support in the API to go from a changelist number to a FSourceControlChangelistRef
+	// directly.
 	TArray<FSourceControlChangelistStateRef> ChangelistsStates;
 	if (SCCProvider->GetState(Changelists, ChangelistsStates, EStateCacheUsage::Use) != ECommandResult::Succeeded)
 	{
@@ -149,12 +238,6 @@ bool FCommand::TryParseChangelist(FStringView ClientSpecName, FStringView Change
 		if (ChangelistNumber == DisplayText.ToString())
 		{
 			TSharedRef<FUpdatePendingChangelistsStatus, ESPMode::ThreadSafe> Operation = ISourceControlOperation::Create<FUpdatePendingChangelistsStatus>();
-
-			// TODO: Updating only the CL we want does not currently work and even if it did we still end up with a pointless
-			// p4 changes command before updating the files. Given we know the changelist number via FSourceControlChangelistRef
-			// we should be able to just request the file states be updated.
-			// This is also a lot of code to write for a simple "give me all files in a changelist" operation, if we don't add
-			// support directly in the API we should move this to a utility namespace in the source control module.
 
 			FSourceControlChangelistRef Changelist = ChangelistState->GetChangelist();
 			Operation->SetChangelistsToUpdate(MakeArrayView(&Changelist, 1));
@@ -179,6 +262,11 @@ bool FCommand::TryParseChangelist(FStringView ClientSpecName, FStringView Change
 				}
 			}
 
+			if (OutChangelist != nullptr)
+			{
+				*OutChangelist = Changelist;
+			}
+
 			return true;
 		}
 	}
@@ -188,6 +276,50 @@ bool FCommand::TryParseChangelist(FStringView ClientSpecName, FStringView Change
 	return false;
 }
 
+FString FCommand::FindClientSpecForChangelist(FStringView ChangelistNumber)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FindClientSpecForChangelist);
 
+	UE_LOG(LogVirtualizationTool, Display, TEXT("\tAttempting to find the workspace for '%.*s'"),
+		ChangelistNumber.Len(), ChangelistNumber.GetData());
+
+	if (!TryConnectToSourceControl(FStringView()))
+	{
+		return FString();
+	}
+
+	if (!SCCProvider.IsValid())
+	{
+		UE_LOG(LogVirtualizationTool, Error, TEXT("No valid source control connection found!"));
+		return FString();
+	}
+
+	if (!SCCProvider->UsesChangelists())
+	{
+		UE_LOG(LogVirtualizationTool, Error, TEXT("The source control provider does not support the use of changelists"));
+		return FString();
+	}
+
+	TSharedRef<FGetChangelistDetails> Operation = ISourceControlOperation::Create<FGetChangelistDetails>(ChangelistNumber);
+
+	if (SCCProvider->Execute(Operation, EConcurrency::Synchronous) == ECommandResult::Succeeded && !Operation->GetChangelistDetails().IsEmpty())
+	{
+		const FString* ClientSpec = Operation->GetChangelistDetails()[0].Find(TEXT("Client"));
+		if (ClientSpec != nullptr)
+		{
+			return *ClientSpec;
+		}
+		else
+		{ 
+			UE_LOG(LogVirtualizationTool, Error, TEXT("Unable to find the 'client' field for the changelist '%.*s'"), ChangelistNumber.Len(), ChangelistNumber.GetData());
+			return FString();
+		}
+	}
+	else
+	{
+		UE_LOG(LogVirtualizationTool, Error, TEXT("Failed to find details for the changelist '%.*s'"), ChangelistNumber.Len(), ChangelistNumber.GetData());
+		return FString();
+	}
+}
 
 } //namespace UE::Virtualization 

@@ -10,6 +10,8 @@
 #include "CADKernel/Geo/Sampler/SamplerOnChord.h"
 #include "CADKernel/Geo/Sampling/Polyline.h"
 #include "CADKernel/Geo/Surfaces/Surface.h"
+#include "CADKernel/Mesh/Criteria/CriteriaGrid.h"
+#include "CADKernel/Mesh/Criteria/Criterion.h"
 #include "CADKernel/Mesh/Structure/FaceMesh.h"
 #include "CADKernel/Mesh/Structure/Grid.h"
 #include "CADKernel/Topo/Shell.h"
@@ -41,12 +43,6 @@ void FTopologicalFace::ComputeBoundary() const
 
 	Boundary->WidenIfDegenerated();
 	Boundary.SetReady();
-}
-
-void FTopologicalFace::Presample()
-{
-	const FSurfacicBoundary& FaceBoundaries = GetBoundary();
-	CarrierSurface->Presample(FaceBoundaries, CrossingCoordinates);
 }
 
 #ifdef DEBUG_GET_BBOX
@@ -264,91 +260,142 @@ void FTopologicalFace::RemoveLoop(const TSharedPtr<FTopologicalLoop>& Loop)
 
 	if (Loops.Num() == 0)
 	{
-		SetDeleted();
+		Delete();
 	}
 }
 
-void FTopologicalFace::Disjoin(TArray<FTopologicalEdge*>& NewBorderEdges)
+void FTopologicalFace::Disjoin(TArray<FTopologicalEdge*>* NewBorderEdges)
 {
-	NewBorderEdges.Reserve(NewBorderEdges.Num() + EdgeCount());
+	if(NewBorderEdges)
+	{
+		NewBorderEdges->Reserve(NewBorderEdges->Num() + EdgeCount());
+	}
+
 	for (const TSharedPtr<FTopologicalLoop>& Loop : GetLoops())
 	{
-		for (const FOrientedEdge& Edge : Loop->GetEdges())
+		for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
 		{
-			const TArray<FTopologicalEdge*> Twins = Edge.Entity->GetTwinEntities();
+			FTopologicalEdge* Edge = OrientedEdge.Entity.Get();
+			const TArray<FTopologicalEdge*> Twins = Edge->GetTwinEntities();
 			for (FTopologicalEdge* TwinEdge : Twins)
 			{
-				if (TwinEdge != Edge.Entity.Get())
+				if (NewBorderEdges && TwinEdge != Edge)
 				{
-					NewBorderEdges.Add(TwinEdge);
+					NewBorderEdges->Add(TwinEdge);
 				}
 			}
-			Edge.Entity->RemoveFromLink();
-			Edge.Entity->SetMarker1();
-			Edge.Entity->GetStartVertex()->RemoveFromLink();
-			Edge.Entity->GetEndVertex()->RemoveFromLink();
+			Edge->RemoveFromLink();
+			Edge->SetMarker1();
+			Edge->GetStartVertex()->RemoveFromLink();
+			Edge->GetEndVertex()->RemoveFromLink();
 		}
 	}
 }
 
-bool FTopologicalFace::HasSameBoundariesAs(const TSharedPtr<FTopologicalFace>& OtherFace) const
+bool FTopologicalFace::HasSameBoundariesAs(const FTopologicalFace* OtherFace) const
 {
-	int32 EdgeCount = 0;
+	for (const TSharedPtr<FTopologicalLoop>& Loop : GetLoops())
+	{
+		for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
+		{
+			const FTopologicalEdge& Edge = *OrientedEdge.Entity;
+			if (!Edge.IsDegenerated() && !Edge.IsBorder() && !Edge.IsConnectedTo(OtherFace))
+			{
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool FTopologicalFace::IsADuplicatedFace() const
+{
+	if (!GetLoops().Num())
+	{
+		return false;
+	}
+
+	// Find in the adjacent faces of the first (surface or non manifold) edge, a face with the same loops
+	
+	TArray<FTopologicalFace*> AdjacentFaces;
+	const TSharedPtr<FTopologicalLoop>& Loop = GetLoops()[0];
+	for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
+	{
+		const FTopologicalEdge& Edge = *OrientedEdge.Entity;
+		if (!Edge.IsDegenerated() && !Edge.IsBorder())
+		{
+			AdjacentFaces = Edge.GetLinkedFaces();
+			break;
+		}
+	}
+
+	for (FTopologicalFace* AdjacentFace : AdjacentFaces)
+	{
+		if (AdjacentFace == this)
+		{
+			continue;
+		}
+
+		if (HasSameBoundariesAs(AdjacentFace))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+bool FTopologicalFace::IsANonManifoldFace() const
+{
 	for (const TSharedPtr<FTopologicalLoop>& Loop : GetLoops())
 	{
 		for (const FOrientedEdge& Edge : Loop->GetEdges())
 		{
-			if (Edge.Entity->IsDegenerated())
+			if (Edge.Entity->GetTwinEntityCount() > 2)
 			{
-				continue;
+				return true;
 			}
-			Edge.Entity->GetLinkActiveEntity()->SetMarker1();
-			++EdgeCount;
 		}
 	}
+	return false;
+}
 
-	bool bSameBoundary = true;
-	int32 OtherFaceEdgeCount = 0;
-	for (const TSharedPtr<FTopologicalLoop>& Loop : OtherFace->GetLoops())
-	{
-		OtherFaceEdgeCount += Loop->EdgeCount();
-		for (const FOrientedEdge& Edge : Loop->GetEdges())
-		{
-			if (Edge.Entity->IsDegenerated())
-			{
-				continue;
-			}
-			if (!Edge.Entity->GetLinkActiveEntity()->HasMarker1())
-			{
-				bSameBoundary = false;
-				break;
-			}
-			++OtherFaceEdgeCount;
-		}
-	}
-
+bool FTopologicalFace::IsABorderFace() const
+{
 	for (const TSharedPtr<FTopologicalLoop>& Loop : GetLoops())
 	{
-		EdgeCount += Loop->EdgeCount();
 		for (const FOrientedEdge& Edge : Loop->GetEdges())
 		{
-			Edge.Entity->GetLinkActiveEntity()->ResetMarkers();
+			if (Edge.Entity->GetTwinEntityCount() == 1)
+			{
+				return true;
+			}
 		}
 	}
+	return false;
+}
 
-	if (EdgeCount != OtherFaceEdgeCount)
+bool FTopologicalFace::IsAFullyNonManifoldFace() const
+{
+	for (const TSharedPtr<FTopologicalLoop>& Loop : GetLoops())
 	{
-		bSameBoundary = false;
+		for (const FOrientedEdge& Edge : Loop->GetEdges())
+		{
+			if (!Edge.Entity->IsDegenerated() && Edge.Entity->GetTwinEntityCount() < 3)
+			{
+				return false;
+			}
+		}
 	}
-
-	return bSameBoundary;
+	return true;
 }
 
 const FTopologicalEdge* FTopologicalFace::GetLinkedEdge(const FTopologicalEdge& LinkedEdge) const
 {
 	for (FTopologicalEdge* TwinEdge : LinkedEdge.GetTwinEntities())
 	{
-		if (&*TwinEdge->GetLoop()->GetFace() == this)
+		if (&*TwinEdge->GetFace() == this)
 		{
 			return TwinEdge;
 		}
@@ -438,6 +485,8 @@ TSharedRef<FFaceMesh> FTopologicalFace::GetOrCreateMesh(FModelMesh& MeshModel)
 	return Mesh.ToSharedRef();
 }
 
+// Meshing parameters ==============================================================================================================================================================================================================================
+
 void FTopologicalFace::InitDeltaUs()
 {
 	CrossingPointDeltaMins[EIso::IsoU].Init(DOUBLE_SMALL_NUMBER, CrossingCoordinates[EIso::IsoU].Num() - 1);
@@ -447,35 +496,103 @@ void FTopologicalFace::InitDeltaUs()
 	CrossingPointDeltaMaxs[EIso::IsoV].Init(HUGE_VALUE, CrossingCoordinates[EIso::IsoV].Num() - 1);
 }
 
-void FTopologicalFace::ChooseFinalDeltaUs()
+bool FTopologicalFace::ComputeCriteriaGridSampling()
 {
-	TFunction<void(const TArray<double>&, TArray<double>&)> ChooseFinalDeltas = [](const TArray<double>& DeltaUMins, TArray<double>& DeltaUMaxs)
+	const FSurfacicBoundary& FaceBoundaries = GetBoundary();
+	CarrierSurface->Presample(FaceBoundaries, CrossingCoordinates);
+
+	constexpr int32 MaxGrid = 1000000;
+	if (CrossingCoordinates[EIso::IsoU].Num() * CrossingCoordinates[EIso::IsoV].Num() > MaxGrid)
 	{
-		int32 Index = 0;
-		for (; Index < DeltaUMins.Num(); ++Index)
+		// The sampling of the surface is huge. This is probably due to a degenerated carrier surface
+		// The face is removed
+		Remove();
+		return false;
+	}
+
+	return true;
+}
+
+void FTopologicalFace::ApplyCriteria(const TArray<TSharedPtr<FCriterion>>& Criteria, const FCriteriaGrid& Grid)
+{
+	TArray<double>& DeltaUMaxArray = CrossingPointDeltaMaxs[EIso::IsoU];
+	TArray<double>& DeltaUMinArray = CrossingPointDeltaMins[EIso::IsoU];
+	TArray<double>& DeltaVMaxArray = CrossingPointDeltaMaxs[EIso::IsoV];
+	TArray<double>& DeltaVMinArray = CrossingPointDeltaMins[EIso::IsoV];
+	FSurfaceCurvature& SurfaceCurvature = GetCurvatures();
+
+	double ElementLengthMin = DOUBLE_BIG_NUMBER;
+
+	TFunction<void(const double, const double, const double)> ElementLength = [&](const double CoordNextMinusCoord, const double Length, const double DeltaMax)
+	{
+		if (CoordNextMinusCoord < DOUBLE_SMALL_NUMBER)
 		{
-			if (DeltaUMins[Index] > DeltaUMaxs[Index])
+			return Length;
+		}
+		const double ElemLength = Length * DeltaMax / CoordNextMinusCoord;
+		if (ElementLengthMin > ElemLength)
+		{
+			ElementLengthMin = ElemLength;
+		}
+		return ElemLength;
+	};
+
+	for (int32 IndexV = 0; IndexV < CrossingCoordinates[EIso::IsoV].Num() - 1; ++IndexV)
+	{
+		for (int32 IndexU = 0; IndexU < CrossingCoordinates[EIso::IsoU].Num() - 1; ++IndexU)
+		{
+			const FPoint& Point_U0_V0 = Grid.GetPoint(IndexU, IndexV);
+			const FPoint& Point_U1_V1 = Grid.GetPoint(IndexU + 1, IndexV + 1);
+			const FPoint& Point_Um_V0 = Grid.GetIntermediateU(IndexU, IndexV);
+			const FPoint& Point_Um_V1 = Grid.GetIntermediateU(IndexU, IndexV + 1);
+			const FPoint& Point_U0_Vm = Grid.GetIntermediateV(IndexU, IndexV);
+			const FPoint& Point_U1_Vm = Grid.GetIntermediateV(IndexU + 1, IndexV);
+			const FPoint& Point_Um_Vm = Grid.GetIntermediateUV(IndexU, IndexV);
+
+			// Evaluate Sag
+			double LengthU;
+			const double SagU = FCriterion::EvaluateSag(Point_U0_Vm, Point_U1_Vm, Point_Um_Vm, LengthU);
+			double LengthV;
+			const double SagV = FCriterion::EvaluateSag(Point_Um_V0, Point_Um_V1, Point_Um_Vm, LengthV);
+			double LengthUV;
+			const double SagUV = FCriterion::EvaluateSag(Point_U0_V0, Point_U1_V1, Point_Um_Vm, LengthUV);
+
+			double& DeltaUMin = DeltaUMinArray[IndexU];
+			double& DeltaUMax = DeltaUMaxArray[IndexU];
+			double& DeltaVMin = DeltaVMinArray[IndexV];
+			double& DeltaVMax = DeltaVMaxArray[IndexV];
+
+			const double UNextMinusU = CrossingCoordinates[EIso::IsoU][IndexU + 1] - CrossingCoordinates[EIso::IsoU][IndexU];
+			const double VNextMinusV = CrossingCoordinates[EIso::IsoV][IndexV + 1] - CrossingCoordinates[EIso::IsoV][IndexV];
+
+			for (const TSharedPtr<FCriterion>& Criterion : Criteria)
 			{
-				DeltaUMaxs[Index] = DeltaUMins[Index];
+				Criterion->UpdateDelta(UNextMinusU, SagU, SagUV, SagV, LengthU, LengthUV, DeltaUMax, DeltaUMin, SurfaceCurvature[EIso::IsoU]);
+				Criterion->UpdateDelta(VNextMinusV, SagV, SagUV, SagU, LengthV, LengthUV, DeltaVMax, DeltaVMin, SurfaceCurvature[EIso::IsoV]);
 			}
+
+			ElementLength(UNextMinusU, LengthU, DeltaUMax);
+			ElementLength(VNextMinusV, LengthV, DeltaVMax);
+		}
+	}
+
+	// Delta of the extremities are smooth to avoid big disparity 
+	TFunction<void(TArray<double>&)> SmoothExtremities = [](TArray<double>& DeltaMaxArray)
+	{
+		if (DeltaMaxArray.Num() > 2)
+		{
+			DeltaMaxArray[0] = (DeltaMaxArray[0] + DeltaMaxArray[1] * 2) * AThird;
+			DeltaMaxArray.Last() = (DeltaMaxArray.Last() + DeltaMaxArray[DeltaMaxArray.Num() - 2] * 2) * AThird;
 		}
 	};
 
-	ChooseFinalDeltas(CrossingPointDeltaMins[EIso::IsoU], CrossingPointDeltaMaxs[EIso::IsoU]);
-	ChooseFinalDeltas(CrossingPointDeltaMins[EIso::IsoV], CrossingPointDeltaMaxs[EIso::IsoV]);
+	SmoothExtremities(DeltaUMaxArray);
+	SmoothExtremities(DeltaVMaxArray);
+
+	SetEstimatedMinimalElementLength(ElementLengthMin);
+	SetApplyCriteriaMarker();
 }
 
-// =========================================================================================================================================================================================================
-// =========================================================================================================================================================================================================
-// =========================================================================================================================================================================================================
-//
-//
-//                                                                            NOT YET REVIEWED
-//
-//
-// =========================================================================================================================================================================================================
-// =========================================================================================================================================================================================================
-// =========================================================================================================================================================================================================
 
 // Quad ==============================================================================================================================================================================================================================
 
@@ -583,7 +700,7 @@ void FTopologicalFace::DefineSurfaceType()
 						{
 							continue;
 						}
-						Neighbor = Edge->GetLoop()->GetFace();
+						Neighbor = Edge->GetFace();
 					}
 				}
 
@@ -660,8 +777,6 @@ const TSharedPtr<FTopologicalLoop> FTopologicalFace::GetExternalLoop() const
 	}
 	return TSharedPtr<FTopologicalLoop>();
 }
-
-
 
 void FFaceSubset::SetMainShell(TMap<FTopologicalShapeEntity*, int32>& ShellToFaceCount)
 {

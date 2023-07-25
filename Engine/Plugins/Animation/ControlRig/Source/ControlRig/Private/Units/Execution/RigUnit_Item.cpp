@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigUnit_Item.h"
-#include "Units/Core/RigUnit_Name.h"
+#include "RigVMFunctions/RigVMFunction_Name.h"
 #include "Units/RigUnitContext.h"
-#include "Units/Core/RigUnit_CoreDispatch.h"
+#include "RigVMFunctions/RigVMDispatch_Core.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_Item)
 
@@ -11,25 +11,7 @@ FRigUnit_ItemExists_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 
-	Exists = false;
-
-	switch (Context.State)
-	{
-		case EControlRigState::Init:
-		{
-			CachedIndex.Reset();
-			// fall through to update
-		}
-		case EControlRigState::Update:
-		{
-			Exists = CachedIndex.UpdateCache(Item, Context.Hierarchy);
-	    	break;
-	    }
-	    default:
-	    {
-	    	break;
-	    }
-	}
+	Exists = CachedIndex.UpdateCache(Item, ExecuteContext.Hierarchy);
 }
 
 FRigUnit_ItemReplace_Execute()
@@ -37,7 +19,7 @@ FRigUnit_ItemReplace_Execute()
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 
 	Result = Item;
-	FRigUnit_NameReplace::StaticExecute(RigVMExecuteContext, Item.Name, Old, New, Result.Name, Context);
+	FRigVMFunction_NameReplace::StaticExecute(ExecuteContext, Item.Name, Old, New, Result.Name);
 }
 
 FRigUnit_ItemEquals_Execute()
@@ -47,7 +29,7 @@ FRigUnit_ItemEquals_Execute()
 
 FRigVMStructUpgradeInfo FRigUnit_ItemEquals::GetUpgradeInfo() const
 {
-	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreEquals::StaticStruct());
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigVMDispatch_CoreEquals::StaticStruct());
 }
 
 FRigUnit_ItemNotEquals_Execute()
@@ -57,7 +39,7 @@ FRigUnit_ItemNotEquals_Execute()
 
 FRigVMStructUpgradeInfo FRigUnit_ItemNotEquals::GetUpgradeInfo() const
 {
-	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreNotEquals::StaticStruct());
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigVMDispatch_CoreNotEquals::StaticStruct());
 }
 
 FRigUnit_ItemTypeEquals_Execute()
@@ -104,3 +86,8 @@ IMPLEMENT_RIGUNIT_AUTOMATION_TEST(FRigUnit_ItemReplace)
 	return true;
 }
 #endif
+
+FRigUnit_ItemToName_Execute()
+{
+	Result = Value.Name;
+}

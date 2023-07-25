@@ -47,6 +47,7 @@
 #include "Math/RandomStream.h"
 #include "Math/RangeBound.h"
 #include "Math/Interval.h"
+#include "Math/Sphere.h"
 
 #include "Internationalization/PolyglotTextData.h"
 
@@ -55,6 +56,7 @@
 #include "AssetRegistry/AssetData.h"
 
 #include "../../../ApplicationCore/Public/GenericPlatform/ICursor.h"
+#include "../../../ApplicationCore/Public/GenericPlatform/IInputInterface.h"
 
 #endif
 
@@ -69,7 +71,7 @@
 UENUM()
 namespace ESearchCase
 {
-	enum Type
+	enum Type : int
 	{
 		CaseSensitive,
 		IgnoreCase,
@@ -83,7 +85,7 @@ namespace ESearchCase
 UENUM()
 namespace ESearchDir
 {
-	enum Type
+	enum Type : int
 	{
 		FromStart,
 		FromEnd,
@@ -97,7 +99,7 @@ namespace ESearchDir
 UENUM()
 namespace ELogTimes
 {
-	enum Type
+	enum Type : int
 	{
 		/** Do not display log timestamps. */
 		None UMETA(DisplayName = "None"),
@@ -117,7 +119,7 @@ namespace ELogTimes
 UENUM(meta=(ScriptName="AxisType"))
 namespace EAxis
 {
-	enum Type
+	enum Type : int
 	{
 		None,
 		X,
@@ -130,7 +132,7 @@ namespace EAxis
 UENUM()
 namespace EAxisList
 {
-	enum Type
+	enum Type : int
 	{
 		None = 0,
 		X = 1,
@@ -154,7 +156,7 @@ namespace EAxisList
 
 /** Describes shape of an interpolation curve (mirrored from InterpCurvePoint.h). */
 UENUM()
-enum EInterpCurveMode
+enum EInterpCurveMode : int
 {
 	/** A straight line between two keypoint values. */
 	CIM_Linear UMETA(DisplayName="Linear"),
@@ -184,7 +186,7 @@ enum EInterpCurveMode
  * @warning: The *Tools DLLs will also need to be recompiled if the ordering is changed, but should not need code changes.
  */
 UENUM()
-enum EPixelFormat
+enum EPixelFormat : int
 {
 	PF_Unknown,
 	PF_A32B32G32R32F,
@@ -280,6 +282,11 @@ enum EPixelFormat
 	PF_ETC2_RG11_EAC,
 	PF_R8,
 	PF_B5G5R5A1_UNORM,
+	PF_ASTC_4x4_HDR,	
+	PF_ASTC_6x6_HDR,	
+	PF_ASTC_8x8_HDR,	
+	PF_ASTC_10x10_HDR,	
+	PF_ASTC_12x12_HDR,
 	PF_G16R16_SNORM,
 	PF_R8G8_UINT,
 	PF_R32G32B32_UINT,
@@ -288,6 +295,7 @@ enum EPixelFormat
 	PF_R8_SINT,
 	PF_R64_UINT,
 	PF_R9G9B9EXP5,
+	PF_P010,
 	PF_MAX,
 };
 
@@ -295,7 +303,7 @@ enum EPixelFormat
 UENUM()
 namespace EMouseCursor
 {
-	enum Type
+	enum Type : int
 	{
 		/** Causes no mouse cursor to be visible. */
 		None,
@@ -408,7 +416,7 @@ enum class EPropertyAccessChangeNotifyMode : uint8
 UENUM(BlueprintType)
 namespace EAppReturnType
 {
-	enum Type
+	enum Type : int
 	{
 		No,
 		Yes,
@@ -431,7 +439,7 @@ namespace EAppMsgType
 	/**
 	 * Enumerates supported message dialog button types.
 	 */
-	enum Type
+	enum Type : int
 	{
 		Ok,
 		YesNo,
@@ -590,10 +598,10 @@ struct FVector4
 USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FVector2f
 {
-	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector2D, SaveGame)
 	float X;
 
-	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector2D, SaveGame)
 	float Y;
 };
 
@@ -671,6 +679,52 @@ struct FPlane : public FVector
 };
 
 
+
+/**
+ * 3D Ray represented by Origin and (normalized) Direction.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Ray.h
+ * @note FRay3f is not currently exposed as a Blueprint type
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FRay3f
+{
+	UPROPERTY(EditAnywhere, Category = Ray, SaveGame)
+	FVector3f Origin;
+
+	UPROPERTY(EditAnywhere, Category = Ray, SaveGame)
+	FVector3f Direction;
+};
+
+/**
+ * 3D Ray represented by Origin and (normalized) Direction.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Ray.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FRay3d
+{
+	UPROPERTY(EditAnywhere, Category = Ray, SaveGame)
+	FVector3d Origin;
+
+	UPROPERTY(EditAnywhere, Category = Ray, SaveGame)
+	FVector3d Direction;
+};
+
+/**
+ * 3D Ray represented by Origin and (normalized) Direction.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Ray.h
+ */
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FRay
+{
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Ray, SaveGame)
+	FVector Origin;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Ray, SaveGame)
+	FVector Direction;
+};
+
+
+
 /**
  * An orthogonal rotation in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Rotator.h
@@ -730,6 +784,52 @@ struct FRotator
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Rotator, SaveGame, meta=(DisplayName="X"))
 	FLargeWorldCoordinatesReal Roll;
 };
+
+
+
+/**
+ * 3D Sphere represented by Center and Radius.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Sphere.h
+ * @note FSphere3f is not currently exposed as a Blueprint type
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FSphere3f
+{
+	UPROPERTY(EditAnywhere, Category = Sphere, SaveGame)
+	FVector3f Center;
+
+	UPROPERTY(EditAnywhere, Category = Sphere, SaveGame, meta = (DisplayName = "Radius"))
+	float W;
+};
+/**
+ * 3D Sphere represented by Center and Radius.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Sphere.h
+ * @note FSphere3d is not currently exposed as a Blueprint type
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FSphere3d
+{
+	UPROPERTY(EditAnywhere, Category = Sphere, SaveGame)
+	FVector3d Center;
+
+	UPROPERTY(EditAnywhere, Category = Sphere, SaveGame, meta = (DisplayName = "Radius"))
+	double W;
+};
+/**
+ * 3D Sphere represented by Center and Radius.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Sphere.h
+ */
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FSphere
+{
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Sphere, SaveGame)
+	FVector Center;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Sphere, SaveGame, meta = (DisplayName = "Radius"))
+	FLargeWorldCoordinatesReal W;
+};
+
+
 
 /**
  * Quaternion.
@@ -1269,14 +1369,14 @@ struct FLinearColor
 USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FBox3f
 {
-	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame, meta=(EditCondition="IsValid"))
 	FVector3f Min;
 
-	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame, meta=(EditCondition="IsValid"))
 	FVector3f Max;
 
-	UPROPERTY()
-	uint8 IsValid;
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame, meta=(ScriptName="IsValid"))
+	bool IsValid;
 };
 
 
@@ -1287,14 +1387,14 @@ struct FBox3f
 USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FBox3d
 {
-	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame, meta=(EditCondition="IsValid"))
 	FVector3d Min;
 
-	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame, meta=(EditCondition="IsValid"))
 	FVector3d Max;
 
-	UPROPERTY()
-	uint8 IsValid;
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame, meta=(ScriptName="IsValid"))
+	bool IsValid;
 };
 
 /**
@@ -1304,14 +1404,14 @@ struct FBox3d
 USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeBox"))
 struct FBox
 {
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box, SaveGame, meta=(EditCondition="IsValid"))
 	FVector Min;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box, SaveGame, meta=(EditCondition="IsValid"))
 	FVector Max;
 
-	UPROPERTY()
-	uint8 IsValid;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box, SaveGame, meta=(ScriptName="IsValid"))
+	bool IsValid;
 };
 
 /**
@@ -1321,14 +1421,14 @@ struct FBox
 USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FBox2f
 {
-	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame, meta=(EditCondition="bIsValid"))
 	FVector2f Min;
 
-	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame, meta=(EditCondition="bIsValid"))
 	FVector2f Max;
 
-	UPROPERTY()
-	uint8 bIsValid;
+	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame, meta=(ScriptName="bIsValid"))
+	bool bIsValid;
 };
 
 /**
@@ -1339,14 +1439,14 @@ struct FBox2f
 // USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 // struct FBox2d
 // {
-// 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
+// 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame, meta=(EditCondition="bIsValid"))
 // 	FVector2d Min;
 //
-// 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
+// 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame, meta=(EditCondition="bIsValid"))
 // 	FVector2d Max;
 //
-// 	UPROPERTY()
-// 	uint8 bIsValid;
+// 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame, meta=(ScriptName="bIsValid"))
+// 	bool bIsValid;
 // };
 
 /**
@@ -1356,14 +1456,14 @@ struct FBox2f
 USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeBox2D"))
 struct FBox2D
 {
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box2D, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box2D, SaveGame, meta=(EditCondition="bIsValid"))
 	FVector2D Min;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box2D, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box2D, SaveGame, meta=(EditCondition="bIsValid"))
 	FVector2D Max;
 
-	UPROPERTY()
-	uint8 bIsValid;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box2D, SaveGame, meta=(ScriptName="bIsValid"))
+	bool bIsValid;
 };
 
 /**
@@ -2000,7 +2100,7 @@ struct FTimespan
  * A struct that can reference a top level asset such as '/Path/To/Package.AssetName'
  * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\TopLevelAssetPath.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, meta = (HasNativeMake = "/Script/Engine.KismetSystemLibrary.MakeTopLevelAssetPath", HasNativeBreak = "/Script/Engine.KismetSystemLibrary.BreakTopLevelAssetPath"))
 struct FTopLevelAssetPath
 {
 private:
@@ -2069,7 +2169,7 @@ struct FPrimaryAssetId
 UENUM(BlueprintType)
 namespace ERangeBoundTypes
 {
-	enum Type
+	enum Type : int
 	{
 		/**
 		* The range excludes the bound.
@@ -2428,6 +2528,20 @@ enum class EInputDeviceConnectionState : uint8
 
 	/** Definitely connected and powered on */
 	Connected
+};
+
+/**
+ * Represents input device triggers that are available
+ *
+ * NOTE: Make sure to keep this type in sync with the reflected version in IInputInterface.h!
+ */
+UENUM(BlueprintType)
+enum class EInputDeviceTriggerMask : uint8
+{
+	None		= 0x00,
+	Left		= 0x01,
+	Right		= 0x02,
+	All			= Left | Right
 };
 
 /**

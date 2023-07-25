@@ -2,12 +2,9 @@
 
 #include "Elements/Metadata/PCGMetadataRotatorOpElement.h"
 
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataEntryKeyIterator.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataRotatorOpElement)
 
 // Taken from Kismet Math library
 FRotator PCGMetadataRotatorHelpers::RLerp(const FRotator& A, const FRotator& B, double Alpha, bool bShortestPath)
@@ -94,6 +91,31 @@ namespace PCGMetadataRotatorSettings
 	}
 }
 
+void UPCGMetadataRotatorSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input3AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource3.SetAttributeName(Input3AttributeName_DEPRECATED);
+		Input3AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
+}
+
 FName UPCGMetadataRotatorSettings::GetInputPinLabel(uint32 Index) const
 {
 	switch (Index)
@@ -151,18 +173,18 @@ bool UPCGMetadataRotatorSettings::IsSupportedInputType(uint16 TypeId, uint32 Inp
 	}
 }
 
-FName UPCGMetadataRotatorSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataRotatorSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	case 2:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input3AttributeName, Params);
+		return InputSource3;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
@@ -181,7 +203,12 @@ FName UPCGMetadataRotatorSettings::AdditionalTaskName() const
 #if WITH_EDITOR
 FName UPCGMetadataRotatorSettings::GetDefaultNodeName() const
 {
-	return TEXT("Attribute Rotator Op");
+	return TEXT("AttributeRotatorOp");
+}
+
+FText UPCGMetadataRotatorSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataRotatorSettings", "NodeTitle", "Attribute Rotator Op");
 }
 #endif // WITH_EDITOR
 

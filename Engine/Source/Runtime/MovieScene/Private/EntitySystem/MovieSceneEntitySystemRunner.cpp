@@ -4,7 +4,12 @@
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneEntityMutations.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
+#include "EntitySystem/MovieSceneEntitySystemTypes.h"
 #include "Evaluation/PreAnimatedState/MovieScenePreAnimatedCaptureSource.h"
+#include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
+#include "IMovieScenePlayer.h"
+#include "MovieSceneSequence.h"
+#include "Algo/Reverse.h"
 #include "ProfilingDebugging/CountersTrace.h"
 
 DECLARE_CYCLE_STAT(TEXT("Runner Flush"), 				MovieSceneEval_RunnerFlush, 				STATGROUP_MovieSceneEval);
@@ -205,33 +210,6 @@ bool FMovieSceneEntitySystemRunner::QueueFinalUpdateAndDestroy(FInstanceHandle I
 	return QueueFinalUpdateImpl(InInstanceHandle, FSimpleDelegate(), true);
 }
 
-bool CanFinishImmediately(UMovieSceneEntitySystemLinker* Linker, UE::MovieScene::FInstanceHandle InstanceHandle)
-{
-	using namespace UE::MovieScene;
-
-	const UE::MovieScene::FInstanceRegistry* Registry = Linker->GetInstanceRegistry();
-	const FSequenceInstance& Instance = Registry->GetInstance(InstanceHandle);
-
-	ensure(Instance.IsRootSequence());
-
-	if (!Registry->GetInstance(InstanceHandle).Ledger.IsEmpty())
-	{
-		return false;
-	}
-
-	for (const FSequenceInstance& OtherInstance : Registry->GetSparseInstances())
-	{
-		if (OtherInstance.GetRootInstanceHandle() == Instance.GetRootInstanceHandle())
-		{
-			if (!OtherInstance.Ledger.IsEmpty())
-			{
-				return false;
-			}
-		}
-	}
-
-	return true;
-}
 
 bool FMovieSceneEntitySystemRunner::QueueFinalUpdateImpl(FInstanceHandle InInstanceHandle, FSimpleDelegate&& InOnLastFlushDelegate, bool bDestroyInstance)
 {
@@ -257,8 +235,7 @@ bool FMovieSceneEntitySystemRunner::QueueFinalUpdateImpl(FInstanceHandle InInsta
 	// 2. we're not in the middle of an update loop 
 	// 3. the instance has no current updates
 	//
-	const bool bCanFinishImmediately = CanFinishImmediately(Linker, InInstanceHandle);
-	
+	const bool bCanFinishImmediately = Instance.CanFinishImmediately(Linker);
 	const ERunnerFlushState UnsafeDestroyMask = ERunnerFlushState::Everything & ~(ERunnerFlushState::PostEvaluation | ERunnerFlushState::End);
 	const bool bSafeToDestroyNow = !EnumHasAnyFlags(FlushState, UnsafeDestroyMask);
 	if (bCanFinishImmediately && bSafeToDestroyNow && !HasQueuedUpdates(InInstanceHandle))
@@ -623,10 +600,28 @@ bool FMovieSceneEntitySystemRunner::GameThread_UpdateSequenceInstances(UMovieSce
 
 			// Give the instance an opportunity to dissect the range into distinct evaluations
 			FSequenceInstance& Instance = InstanceRegistry->MutateInstance(Request.Params.InstanceHandle);
+			if (!Instance.IsRootSequence())
+			{
+				FMovieSceneRootEvaluationTemplateInstance& Template = Instance.GetPlayer()->GetEvaluationTemplate();
+				UMovieSceneSequence* RootSequence = Template.GetRootSequence();
+				UMovieSceneSequence* SubSequence  = Template.GetSequence(Instance.GetSequenceID());
+
+				ensureMsgf(Instance.IsRootSequence(), TEXT("Update request received for a non-root sequence ID 0x%08X (%s) in root-sequence %s. This is not supported."),
+					Instance.GetSequenceID().GetInternalValue(),
+					SubSequence  ? *SubSequence->GetName()  : TEXT("<nullptr>"),
+					RootSequence ? *RootSequence->GetName() : TEXT("<nullptr>")
+				);
+				continue;
+			}
 			Instance.DissectContext(Linker, Request.Context, Dissections);
 
 			if (Dissections.Num() != 0)
 			{
+				if (Request.Context.GetDirection() == EPlayDirection::Backwards)
+				{
+					Algo::Reverse(Dissections);
+				}
+
 				for (int32 Index = 0; Index < Dissections.Num() - 1; ++Index)
 				{
 					// Never finish or destroy sequence instances until the _last_ dissected update
@@ -1085,5 +1080,39 @@ FMovieSceneEntitySystemEventTriggers& FMovieSceneEntitySystemRunner::GetQueuedEv
 {
 	checkf(bCanQueueEventTriggers, TEXT("Can't queue event triggers at this point in the update loop."));
 	return EventTriggers;
+}
+
+bool FMovieSceneEntitySystemRunner::FlushSingleEvaluationPhase()
+{
+	using namespace UE::MovieScene;
+
+	if (!ensureMsgf(
+			!IsCurrentlyEvaluating() && CurrentPhase == ESystemPhase::None,
+			TEXT("Can't run nested flush phase while the runner is evaluating and no re-entrancy window is open")))
+	{
+		return false;
+	}
+
+	UMovieSceneEntitySystemLinker* Linker = GetLinker();
+	if (!ensureMsgf(Linker, TEXT("Runner isn't attached to a valid linker")))
+	{
+		return false;
+	}
+
+	TGuardValue<ESystemPhase> PhaseGuard(CurrentPhase, ESystemPhase::Evaluation);
+
+	Linker->EntityManager.LockDown();
+
+	FGraphEventArray AllTasks;
+	Linker->SystemGraph.ExecutePhase(ESystemPhase::Evaluation, Linker, AllTasks);
+
+	if (AllTasks.Num() != 0)
+	{
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(AllTasks, ENamedThreads::GameThread_Local);
+	}
+
+	Linker->EntityManager.ReleaseLockDown();
+
+	return true;
 }
 

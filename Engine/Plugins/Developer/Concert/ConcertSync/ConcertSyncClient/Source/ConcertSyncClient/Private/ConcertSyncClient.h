@@ -36,11 +36,13 @@ public:
 	virtual FOnConcertClientSyncSessionStartupOrShutdown& OnSyncSessionStartup() override;
 	virtual FOnConcertClientSyncSessionStartupOrShutdown& OnSyncSessionShutdown() override;
 
+	virtual void PersistSpecificChanges(TArrayView<const FName> InPackages) override;
 	virtual void PersistAllSessionChanges() override;
 	virtual void GetSessionClientActions(const FConcertSessionClientInfo& InClientInfo, TArray<FConcertActionDefinition>& OutActions) const override;
 
 	virtual void SetFileSharingService(TSharedPtr<IConcertFileSharingService> InFileSharingService) override;
 	virtual IConcertClientTransactionBridge* GetTransactionBridge() const override;
+	virtual IConcertClientPackageBridge* GetPackageBridge() const override;
 
 private:
 	void CreateWorkspace(const TSharedRef<FConcertSyncClientLiveSession>& InLiveSession);

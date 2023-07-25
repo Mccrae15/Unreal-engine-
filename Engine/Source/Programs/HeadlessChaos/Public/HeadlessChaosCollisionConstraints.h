@@ -41,11 +41,11 @@ public:
 		, CollisionConstraints(EmptyParticles, EmptyCollided, EmptyPhysicsMaterials, EmptyUniquePhysicsMaterials, nullptr)
 		, BroadPhase(EmptyParticles)
 		, CollisionDetector(BroadPhase, CollisionConstraints)
-		, ConstraintSolver()
+		, ConstraintSolver(Iterations)
 	{
 		CollisionConstraints.SetContainerId(0);
 
-		CollisionDetector.SetBoundsExpansion(FReal(1));
+		CollisionConstraints.SetCullDistance(FReal(1));
 
 		ConstraintSolver.SetConstraintSolver(CollisionConstraints.GetContainerId(), CollisionConstraints.CreateSceneSolver(0));
 	}
@@ -57,11 +57,11 @@ public:
 		, CollisionConstraints(InParticles, Collided, PerParticleMaterials, PerParticleUniqueMaterials, nullptr)
 		, BroadPhase(InParticles)
 		, CollisionDetector(BroadPhase, CollisionConstraints)
-		, ConstraintSolver()
+		, ConstraintSolver(Iterations)
 	{
 		CollisionConstraints.SetContainerId(0);
 
-		CollisionDetector.SetBoundsExpansion(FReal(1));
+		CollisionConstraints.SetCullDistance(FReal(1));
 
 		ConstraintSolver.SetConstraintSolver(CollisionConstraints.GetContainerId(), CollisionConstraints.CreateSceneSolver(0));
 	}
@@ -72,11 +72,11 @@ public:
 	{
 		CollisionDetector.GetBroadPhase().SetSpatialAcceleration(&SpatialAcceleration);
 
-		FCollisionDetectorSettings DetectorSettings = CollisionDetector.GetSettings();
+		FCollisionDetectorSettings DetectorSettings = CollisionConstraints.GetDetectorSettings();
 		DetectorSettings.bFilteringEnabled = true;
 		DetectorSettings.bDeferNarrowPhase = false;
 		DetectorSettings.bAllowManifolds = true;
-		CollisionDetector.SetSettings(DetectorSettings);
+		CollisionConstraints.SetDetectorSettings(DetectorSettings);
 		
 		CollisionDetector.DetectCollisions(Dt, nullptr);
 		
@@ -138,12 +138,16 @@ public:
 
 	void Apply(const FReal Dt, const int32 NumIts)
 	{
-		ConstraintSolver.ApplyPositionConstraints(Dt, NumIts);
+		Iterations.SetNumPositionIterations(NumIts);
+		ConstraintSolver.SetIterationSettings(Iterations);
+		ConstraintSolver.ApplyPositionConstraints(Dt);
 	}
 
 	void ApplyPushOut(const FReal Dt, int32 NumIts)
 	{
-		ConstraintSolver.ApplyVelocityConstraints(Dt, NumIts);
+		Iterations.SetNumVelocityIterations(NumIts);
+		ConstraintSolver.SetIterationSettings(Iterations);
+		ConstraintSolver.ApplyVelocityConstraints(Dt);
 	}
 
 	void GatherInput(FReal Dt)
@@ -171,6 +175,7 @@ public:
 	FCollisionConstraints CollisionConstraints;
 	FSpatialAccelerationBroadPhase BroadPhase;
 	FCollisionDetector CollisionDetector;
-	FPBDSceneConstraintGroupSolver ConstraintSolver;
+	Private::FPBDSceneConstraintGroupSolver ConstraintSolver;
+	Private::FIterationSettings Iterations;
 };
 }

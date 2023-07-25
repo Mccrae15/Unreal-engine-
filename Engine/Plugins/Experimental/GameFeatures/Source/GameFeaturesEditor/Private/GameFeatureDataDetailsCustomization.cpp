@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFeatureDataDetailsCustomization.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "GameFeaturePluginOperationResult.h"
+#include "UObject/Package.h"
+#include "GameFeaturesSubsystem.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
@@ -9,7 +11,6 @@
 #include "Widgets/Notifications/SErrorText.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "DetailCategoryBuilder.h"
 
 #include "Interfaces/IPluginManager.h"
 #include "Features/IPluginsEditorFeature.h"
@@ -20,6 +21,7 @@
 
 #include "GameFeatureData.h"
 #include "GameFeatureTypes.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "GameFeatures"
 
@@ -43,7 +45,7 @@ void FGameFeatureDataDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder
 	ObjectsBeingCustomized.Empty();
 	DetailBuilder.GetObjectsBeingCustomized(/*out*/ ObjectsBeingCustomized);
 
-	if (ObjectsBeingCustomized.Num() == 1)
+	if (ObjectsBeingCustomized.Num() == 1 && !ObjectsBeingCustomized[0]->GetPackage()->HasAnyPackageFlags(PKG_ForDiffing))
 	{
 		const UGameFeatureData* GameFeature = CastChecked<const UGameFeatureData>(ObjectsBeingCustomized[0]);
 

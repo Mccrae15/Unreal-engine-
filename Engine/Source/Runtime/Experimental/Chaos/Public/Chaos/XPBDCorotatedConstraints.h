@@ -6,6 +6,7 @@
 #include "Chaos/ImplicitQRSVD.h"
 #include "Chaos/GraphColoring.h"
 #include "Chaos/Framework/Parallel.h"
+#include "Chaos/Deformable/ChaosDeformableSolverTypes.h"
 
 DECLARE_CYCLE_STAT(TEXT("Chaos XPBD Corotated Constraint"), STAT_ChaosXPBDCorotated, STATGROUP_Chaos);
 DECLARE_CYCLE_STAT(TEXT("Chaos XPBD Corotated Constraint Polar Compute"), STAT_ChaosXPBDCorotatedPolar, STATGROUP_Chaos);
@@ -13,12 +14,10 @@ DECLARE_CYCLE_STAT(TEXT("Chaos XPBD Corotated Constraint Det Compute"), STAT_Cha
 
 namespace Chaos::Softs
 {
+
 	template <typename T, typename ParticleType>
 	class FXPBDCorotatedConstraints 
 	{
-
-		//TODO(Yizhou Chen): COuld be optimized . The SVD is using Chaos::Softs::Tdouble so float -> double -> float all the time
-		//should change data type in accordance 
 
 	public:
 		//this one only accepts tetmesh input and mesh
@@ -57,6 +56,111 @@ namespace Chaos::Softs
 					Measure[e] = -Measure[e];
 				}
 
+			}
+
+			InitColor(InParticles);
+		}
+
+		FXPBDCorotatedConstraints(
+			const ParticleType& InParticles,
+			const TArray<TVector<int32, 4>>& InMesh,
+			const TArray<T>& EMeshArray,
+			const T& NuMesh = (T).3,
+			const bool bRecordMetricIn = false
+		)
+			: bRecordMetric(bRecordMetricIn), MeshConstraints(InMesh)
+		{
+			ensureMsgf(EMeshArray.Num() == InMesh.Num(), TEXT("Input Young Modulus Array Size is wrong"));
+			LambdaArray.Init((T)0., 2 * MeshConstraints.Num());
+			DmInverse.Init((T)0., 9 * MeshConstraints.Num());
+			Measure.Init((T)0., MeshConstraints.Num());
+			LambdaElementArray.Init((T)0., MeshConstraints.Num());
+			MuElementArray.Init((T)0., MeshConstraints.Num());
+
+			for (int e = 0; e < InMesh.Num(); e++)
+			{
+				for (int32 j = 0; j < 4; j++)
+				{
+					ensure(MeshConstraints[e][j] > -1 && MeshConstraints[e][j] < int32(InParticles.Size()));
+				}
+			}
+			
+			for (int e = 0; e < InMesh.Num(); e++)
+			{
+				LambdaElementArray[e] = EMeshArray[e] * NuMesh / (((T)1. + NuMesh) * ((T)1. - (T)2. * NuMesh));
+				MuElementArray[e] = EMeshArray[e] / ((T)2. * ((T)1. + NuMesh));
+
+				PMatrix<T, 3, 3> Dm = DsInit(e, InParticles);
+				PMatrix<T, 3, 3> DmInv = Dm.Inverse();
+				for (int r = 0; r < 3; r++) {
+					for (int c = 0; c < 3; c++) {
+						DmInverse[(3 * 3) * e + 3 * r + c] = DmInv.GetAt(r, c);
+					}
+				}
+
+				Measure[e] = Dm.Determinant() / (T)6.;
+
+				if (Measure[e] < (T)0.)
+				{
+					Measure[e] = -Measure[e];
+				}
+			}
+
+			InitColor(InParticles);
+		}
+
+		FXPBDCorotatedConstraints(
+			const ParticleType& InParticles,
+			const TArray<TVector<int32, 4>>& InMesh,
+			const TArray<T>& EMeshArray,
+			const TArray<T>& NuMeshArray,
+			TArray<T>&& AlphaJMeshArray,
+			const FDeformableXPBDCorotatedParams& InParams,
+			const T& NuMesh = (T).3,
+			const bool bRecordMetricIn = false
+		)
+			: CorotatedParams(InParams), AlphaJArray(MoveTemp(AlphaJMeshArray)), bRecordMetric(bRecordMetricIn), MeshConstraints(InMesh)
+		{
+			ensureMsgf(EMeshArray.Num() == InMesh.Num(), TEXT("Input Young Modulus Array Size is wrong"));
+			LambdaArray.Init((T)0., 2 * MeshConstraints.Num());
+			DmInverse.Init((T)0., 9 * MeshConstraints.Num());
+			Measure.Init((T)0., MeshConstraints.Num());
+			LambdaElementArray.Init((T)0., MeshConstraints.Num());
+			MuElementArray.Init((T)0., MeshConstraints.Num());
+
+			for (int e = 0; e < InMesh.Num(); e++)
+			{
+				for (int32 j = 0; j < 4; j++)
+				{
+					ensure(MeshConstraints[e][j] > -1 && MeshConstraints[e][j] < int32(InParticles.Size()));
+					
+					if (InParticles.InvM(MeshConstraints[e][j]) == (T)0.)
+					{
+						AlphaJArray[e] = (T)1.;
+					}
+				}
+				
+			}
+
+			for (int e = 0; e < InMesh.Num(); e++)
+			{
+				LambdaElementArray[e] = EMeshArray[e] * NuMeshArray[e] / (((T)1. + NuMeshArray[e]) * ((T)1. - (T)2. * NuMeshArray[e]));
+				MuElementArray[e] = EMeshArray[e] / ((T)2. * ((T)1. + NuMeshArray[e]));
+
+				PMatrix<T, 3, 3> Dm = DsInit(e, InParticles);
+				PMatrix<T, 3, 3> DmInv = Dm.Inverse();
+				for (int r = 0; r < 3; r++) {
+					for (int c = 0; c < 3; c++) {
+						DmInverse[(3 * 3) * e + 3 * r + c] = DmInv.GetAt(r, c);
+					}
+				}
+
+				Measure[e] = Dm.Determinant() / (T)6.;
+
+				if (Measure[e] < (T)0.)
+				{
+					Measure[e] = -Measure[e];
+				}
 			}
 
 			InitColor(InParticles);
@@ -133,7 +237,7 @@ namespace Chaos::Softs
 			return DmInv;
 		}
 		
-		void Init() const 
+		virtual void Init() const 
 		{
 			for (T& Lambdas : LambdaArray) { Lambdas = (T)0.; }
 		}
@@ -141,13 +245,14 @@ namespace Chaos::Softs
 		virtual void ApplyInSerial(ParticleType& Particles, const T Dt, const int32 ElementIndex) const
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("STAT_ChaosXPBDCorotatedApplySingle"));
+
 			TVec4<TVector<T, 3>> PolarDelta = GetPolarDelta(Particles, Dt, ElementIndex);
 
-			for (int i = 0; i < 4; i++) 
+			for (int i = 0; i < 4; i++)
 			{
 				Particles.P(MeshConstraints[ElementIndex][i]) += PolarDelta[i];
 			}
-			
+
 			TVec4<TVector<T, 3>> DetDelta = GetDeterminantDelta(Particles, Dt, ElementIndex);
 
 			for (int i = 0; i < 4; i++)
@@ -155,16 +260,22 @@ namespace Chaos::Softs
 				Particles.P(MeshConstraints[ElementIndex][i]) += DetDelta[i];
 			}
 
-
 		}
 
 		void ApplyInSerial(ParticleType& Particles, const T Dt) const
 		{
 			SCOPE_CYCLE_COUNTER(STAT_ChaosXPBDCorotated);
 			TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("STAT_ChaosXPBDCorotatedApplySerial"));
-			for (int32 ElementIndex = 0; ElementIndex < MeshConstraints.Num(); ++ElementIndex)
+			const int32 ConstraintColorNum = ConstraintsPerColorStartIndex.Num() - 1;
+			for (int32 ConstraintColorIndex = 0; ConstraintColorIndex < ConstraintColorNum; ++ConstraintColorIndex)
 			{
-				ApplyInSerial(Particles, Dt, ElementIndex);
+				const int32 ColorStart = ConstraintsPerColorStartIndex[ConstraintColorIndex];
+				const int32 ColorSize = ConstraintsPerColorStartIndex[ConstraintColorIndex + 1] - ColorStart;
+				for (int32 Index = 0; Index < ColorSize; Index++)
+				{
+					const int32 ConstraintIndex = ColorStart + Index;
+					ApplyInSerial(Particles, Dt, ConstraintIndex);
+				}
 			}
 
 
@@ -190,16 +301,27 @@ namespace Chaos::Softs
 					{
 						const int32 ColorStart = ConstraintsPerColorStartIndex[ConstraintColorIndex];
 						const int32 ColorSize = ConstraintsPerColorStartIndex[ConstraintColorIndex + 1] - ColorStart;
-						PhysicsParallelFor(ColorSize, [&](const int32 Index)
+
+						int32 NumBatch = ColorSize / CorotatedParams.XPBDCorotatedBatchSize;
+						if (ColorSize % CorotatedParams.XPBDCorotatedBatchSize != 0)
+						{
+							NumBatch += 1;
+						}
+
+						PhysicsParallelFor(NumBatch, [&](const int32 BatchIndex)
 							{
-								const int32 ConstraintIndex = ColorStart + Index;
-								ApplyInSerial(Particles, Dt, ConstraintIndex);
-							});
+								for (int32 BatchSubIndex = 0; BatchSubIndex < CorotatedParams.XPBDCorotatedBatchSize; BatchSubIndex++) {
+									int32 TaskIndex = CorotatedParams.XPBDCorotatedBatchSize * BatchIndex + BatchSubIndex;
+									const int32 ConstraintIndex = ColorStart + TaskIndex;
+									if (ConstraintIndex < ColorStart + ColorSize)
+									{
+										ApplyInSerial(Particles, Dt, ConstraintIndex);
+									}
+								}
+							}, NumBatch < CorotatedParams.XPBDCorotatedBatchThreshold);
 					}
 				}
 			}
-
-
 		}
 
 		TVec4<TVector<T, 3>> GetPolarGradient(const PMatrix<T, 3, 3>& Fe, const PMatrix<T, 3, 3>& Re, const PMatrix<T, 3, 3>& DmInvT, const T C1) const
@@ -321,7 +443,7 @@ namespace Chaos::Softs
 		
 
 
-		TVec4<TVector<T, 3>> GetDeterminantDelta(const ParticleType& Particles, const T Dt, const int32 ElementIndex, const T Tol = (T)1e-3) const
+		virtual TVec4<TVector<T, 3>> GetDeterminantDelta(const ParticleType& Particles, const T Dt, const int32 ElementIndex, const T Tol = (T)1e-3) const
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("STAT_ChaosXPBDCorotatedApplyDet"));
 			//SCOPE_CYCLE_COUNTER(STAT_ChaosXPBDCorotatedDet);
@@ -331,14 +453,20 @@ namespace Chaos::Softs
 			PMatrix<T, 3, 3> DmInvT = ElementDmInv(ElementIndex).GetTransposed();
 			
 			T J = Fe.Determinant();
-			if (J - 1 < Tol)
+			if (J - AlphaJArray[ElementIndex] < Tol)
 			{
 				return TVec4<TVector<T, 3>>(TVector<T, 3>((T)0.));
 			}
 
 			TVec4<TVector<T, 3>> dC2 = GetDeterminantGradient(Fe, DmInvT);
 
-			T AlphaTilde = (T)2. / (Dt * Dt * Lambda * Measure[ElementIndex]);
+			//T AlphaTilde = (T)2. / (Dt * Dt * Lambda * Measure[ElementIndex]);
+			T AlphaTilde = (T)2. / (Dt * Dt * LambdaElementArray[ElementIndex] * Measure[ElementIndex]);
+
+			if (LambdaElementArray[ElementIndex] > (T)1. / (T)UE_SMALL_NUMBER)
+			{
+				AlphaTilde = (T)0.;
+			}
 
 			if (bRecordMetric)
 			{
@@ -354,7 +482,7 @@ namespace Chaos::Softs
 			}
 			
 
-			T DLambda = (1 - J) - AlphaTilde * LambdaArray[2 * ElementIndex + 1];
+			T DLambda = (AlphaJArray[ElementIndex] - J) - AlphaTilde * LambdaArray[2 * ElementIndex + 1];
 
 			T Denom = AlphaTilde;
 			for (int i = 0; i < 4; i++)
@@ -379,7 +507,7 @@ namespace Chaos::Softs
 
 
 
-		TVec4<TVector<T, 3>> GetPolarDelta(const ParticleType& Particles, const T Dt, const int32 ElementIndex, const T Tol = (T)1e-3) const
+		virtual TVec4<TVector<T, 3>> GetPolarDelta(const ParticleType& Particles, const T Dt, const int32 ElementIndex, const T Tol = (T)1e-3) const
 		{	
 			TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("STAT_ChaosXPBDCorotatedApplyPolar"));
 			SCOPE_CYCLE_COUNTER(STAT_ChaosXPBDCorotatedPolar);
@@ -388,6 +516,8 @@ namespace Chaos::Softs
 			PMatrix<T, 3, 3> Re((T)0.), Se((T)0.);
 
 			Chaos::PolarDecomposition(Fe, Re, Se);
+
+			Re *= FGenericPlatformMath::Pow(AlphaJArray[ElementIndex], (T)1. / (T)3.);
 
 			T C1 = (T)0.;
 			for (int i = 0; i < 3; i++)
@@ -399,19 +529,23 @@ namespace Chaos::Softs
 			}
 			C1 = FMath::Sqrt(C1);
 
-			if (C1 < Tol)
+			if (C1 < Tol )
 			{
 				return TVec4<TVector<T, 3>>(TVector<T, 3>((T)0.));
 			}
 
-			//TVector<T, 81> dRdF((T)0.);
-			//Chaos::dRdFCorotated(Fe, dRdF);
 
 			PMatrix<T, 3, 3> DmInvT = ElementDmInv(ElementIndex).GetTransposed();
 
 			TVec4<TVector<T, 3>> dC1 = GetPolarGradient(Fe, Re, DmInvT, C1);
 
-			T AlphaTilde = (T)1. / (Dt * Dt * Mu * Measure[ElementIndex]);
+			//T AlphaTilde = (T)1. / (Dt * Dt * Mu * Measure[ElementIndex]);
+			T AlphaTilde = (T)1. / (Dt * Dt * MuElementArray[ElementIndex] * Measure[ElementIndex]);
+
+			if (MuElementArray[ElementIndex] > (T)1./ (T)UE_SMALL_NUMBER) 
+			{
+				AlphaTilde = (T)0.;
+			}
 
 			if (bRecordMetric)
 			{
@@ -455,12 +589,19 @@ namespace Chaos::Softs
 		mutable TArray<T> LambdaArray;
 		mutable TArray<T> DmInverse;
 
+		//parallel data:
+		FDeformableXPBDCorotatedParams CorotatedParams;
+
 		//material constants calculated from E:
 		T Mu;
 		T Lambda;
+		TArray<T> MuElementArray;
+		TArray<T> LambdaElementArray;
+		TArray<T> AlphaJArray;
 		mutable T HError;
 		mutable TArray<T> HErrorArray;
 		bool bRecordMetric;
+		bool VariableStiffness = false;
 
 		TArray<TVector<int32, 4>> MeshConstraints;
 		mutable TArray<T> Measure;

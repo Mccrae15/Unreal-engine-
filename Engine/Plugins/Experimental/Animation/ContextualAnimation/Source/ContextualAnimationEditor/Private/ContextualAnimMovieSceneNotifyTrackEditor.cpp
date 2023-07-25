@@ -5,26 +5,25 @@
 #include "ContextualAnimMovieSceneNotifySection.h"
 #include "ContextualAnimSceneAsset.h"
 #include "ContextualAnimViewModel.h"
-#include "ContextualAnimMovieSceneSequence.h"
+#include "DetailsViewArgs.h"
 #include "SequencerUtilities.h"
+#include "Framework/Commands/UICommandList.h"
 #include "SequencerSectionPainter.h"
-#include "ClassViewerModule.h"
-#include "ClassViewerFilter.h"
-#include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
-#include "Animation/AnimMontage.h"
 #include "AnimNotifyState_IKWindow.h"
-#include "IStructureDetailsView.h"
+#include "IDetailsView.h"
 #include "PropertyEditorModule.h"
-#include "PropertyCustomizationHelpers.h"
 #include "PersonaUtils.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Modules/ModuleManager.h"
+#include "Rendering/SlateRenderer.h"
 #include "Widgets/Input/SButton.h"
 #include "ContextualAnimEditorTypes.h"
 #include "ISequencerModule.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Fonts/FontMeasure.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "FContextualAnimMovieSceneNotifyTrackEditor"
 
@@ -352,7 +351,7 @@ void FContextualAnimMovieSceneNotifyTrackEditor::AddNewNotifyTrack()
 	GetMovieSceneSequence().GetViewModel().AnimationModified(*Animation);
 
 	// Create and Initialize MovieSceneTrack
-	UContextualAnimMovieSceneNotifyTrack* MovieSceneTrack = GetMovieSceneSequence().GetMovieScene()->AddMasterTrack<UContextualAnimMovieSceneNotifyTrack>();
+	UContextualAnimMovieSceneNotifyTrack* MovieSceneTrack = GetMovieSceneSequence().GetMovieScene()->AddTrack<UContextualAnimMovieSceneNotifyTrack>();
 	check(MovieSceneTrack);
 
 	MovieSceneTrack->Initialize(*Animation, NewNotifyTrack);
@@ -490,7 +489,7 @@ void FContextualAnimNotifySection::PaintNotifyName(FSequencerSectionPainter& Pai
 	FSlateDrawElement::MakeBox(
 		Painter.DrawElements,
 		LayerId + 1,
-		Painter.SectionGeometry.ToPaintGeometry(BoxOffset, BoxSize),
+		Painter.SectionGeometry.ToPaintGeometry(BoxSize, FSlateLayoutTransform(BoxOffset)),
 		FAppStyle::GetBrush("WhiteBrush"),
 		ESlateDrawEffect::None,
 		FLinearColor::Black.CopyWithNewOpacity(0.5f)
@@ -502,7 +501,7 @@ void FContextualAnimNotifySection::PaintNotifyName(FSequencerSectionPainter& Pai
 		FSlateDrawElement::MakeText(
 			Painter.DrawElements,
 			LayerId + 2,
-			Painter.SectionGeometry.ToPaintGeometry(BoxOffset + IconOffset, IconSize),
+			Painter.SectionGeometry.ToPaintGeometry(IconSize, FSlateLayoutTransform(BoxOffset + IconOffset)),
 			WarningString,
 			FontAwesomeFont,
 			Painter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect,
@@ -513,7 +512,7 @@ void FContextualAnimNotifySection::PaintNotifyName(FSequencerSectionPainter& Pai
 	FSlateDrawElement::MakeText(
 		Painter.DrawElements,
 		LayerId + 2,
-		Painter.SectionGeometry.ToPaintGeometry(BoxOffset + TextOffset, TextSize),
+		Painter.SectionGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(BoxOffset + TextOffset)),
 		InEventString,
 		SmallLayoutFont,
 		Painter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect,

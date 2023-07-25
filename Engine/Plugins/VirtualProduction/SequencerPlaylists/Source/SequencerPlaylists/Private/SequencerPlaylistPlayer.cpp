@@ -2,10 +2,7 @@
 
 #include "SequencerPlaylistPlayer.h"
 #include "ISequencer.h"
-#include "Misc/QualifiedFrameTime.h"
-#include "MovieSceneFwd.h"
 #include "SequencerPlaylist.h"
-#include "SequencerPlaylistItem.h"
 #include "SequencerPlaylistsLog.h"
 #include "SequencerPlaylistsModule.h"
 
@@ -61,20 +58,48 @@ void USequencerPlaylistPlayer::SetPlaylist(USequencerPlaylist* InPlaylist)
 }
 
 
-bool USequencerPlaylistPlayer::PlayItem(USequencerPlaylistItem* Item)
+bool USequencerPlaylistPlayer::PlayItem(
+	USequencerPlaylistItem* Item,
+	ESequencerPlaylistPlaybackDirection Direction // = ESequencerPlaylistPlaybackDirection::Forward
+)
 {
 	if (!Item)
 	{
 		return false;
 	}
 
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
+
 	FScopedTransaction Transaction(FText::Format(LOCTEXT("PlayItemTransaction", "Begin playback of {0}"), Item->GetDisplayName()));
 
 	EnterUnboundedPlayIfNotRecording();
 
-	if (GetCheckedItemPlayer(Item)->Play(Item))
+	if (GetCheckedItemPlayer(Item)->Play(Item, Direction))
 	{
-		GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+
+bool USequencerPlaylistPlayer::PauseItem(USequencerPlaylistItem* Item)
+{
+	if (!Item)
+	{
+		return false;
+	}
+
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
+
+	FScopedTransaction Transaction(FText::Format(LOCTEXT("PauseItemTransaction", "Toggle pause of {0}"), Item->GetDisplayName()));
+
+	if (GetCheckedItemPlayer(Item)->TogglePause(Item))
+	{
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
 		return true;
 	}
 	else
@@ -91,11 +116,13 @@ bool USequencerPlaylistPlayer::StopItem(USequencerPlaylistItem* Item)
 		return false;
 	}
 
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
+
 	FScopedTransaction Transaction(FText::Format(LOCTEXT("StopItemTransaction", "Stop playback of {0}"), Item->GetDisplayName()));
 
 	if (GetCheckedItemPlayer(Item)->Stop(Item))
 	{
-		GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
 		return true;
 	}
 	else
@@ -112,11 +139,13 @@ bool USequencerPlaylistPlayer::ResetItem(USequencerPlaylistItem* Item)
 		return false;
 	}
 
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
+
 	FScopedTransaction Transaction(FText::Format(LOCTEXT("ResetItemTransaction", "Reset playback of {0}"), Item->GetDisplayName()));
 
 	if (GetCheckedItemPlayer(Item)->Reset(Item))
 	{
-		GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
 		return true;
 	}
 	else
@@ -128,17 +157,30 @@ bool USequencerPlaylistPlayer::ResetItem(USequencerPlaylistItem* Item)
 
 bool USequencerPlaylistPlayer::IsPlaying(USequencerPlaylistItem* Item)
 {
+	return GetPlaybackState(Item).bIsPlaying;
+}
+
+
+FSequencerPlaylistPlaybackState USequencerPlaylistPlayer::GetPlaybackState(USequencerPlaylistItem* Item)
+{
+	FSequencerPlaylistPlaybackState Result;
+
 	if (!Item)
 	{
-		return false;
+		return Result;
 	}
 
-	if (!WeakSequencer.IsValid())
+	// If Sequencer isn't already open, don't open it
+	if (WeakSequencer.IsValid())
 	{
-		return false;
+		Result = GetCheckedItemPlayer(Item)->GetPlaybackState(Item);
+	}
+	else
+	{
+		Result.bIsPaused = Item->bHoldAtFirstFrame;
 	}
 
-	return GetCheckedItemPlayer(Item)->IsPlaying(Item);
+	return Result;
 }
 
 
@@ -241,7 +283,7 @@ void USequencerPlaylistPlayer::Tick(float DeltaTime)
 
 void USequencerPlaylistPlayer::EnterUnboundedPlayIfNotRecording()
 {
-	TSharedPtr<ISequencer> Sequencer = GetSequencer();
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
 	UTakeRecorder* Recorder = UTakeRecorder::GetActiveRecorder();
 
 	const bool bInRecorder = Recorder && Recorder->GetState() != ETakeRecorderState::Stopped;
@@ -260,12 +302,16 @@ void USequencerPlaylistPlayer::EnterUnboundedPlayIfNotRecording()
 	}
 }
 
-bool USequencerPlaylistPlayer::PlayAll()
+bool USequencerPlaylistPlayer::PlayAll(
+	ESequencerPlaylistPlaybackDirection Direction // = ESequencerPlaylistPlaybackDirection::Forward
+)
 {
 	if (!ensure(Playlist) || !Playlist->Items.Num())
 	{
 		return false;
 	}
+
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
 
 	FScopedTransaction Transaction(LOCTEXT("PlayAllTransaction", "Begin playback of all Playlist items"));
 
@@ -280,12 +326,67 @@ bool USequencerPlaylistPlayer::PlayAll()
 			continue;
 		}
 
-		bAnyChange |= GetCheckedItemPlayer(Item)->Play(Item);
+		TSharedPtr<ISequencerPlaylistItemPlayer> Player = GetCheckedItemPlayer(Item);
+		const FSequencerPlaylistPlaybackState ItemState = Player->GetPlaybackState(Item);
+
+		if (ItemState.bIsPaused)
+		{
+			bAnyChange |= Player->TogglePause(Item);
+		}
+		else
+		{
+			bAnyChange |= Player->Play(Item, Direction);
+		}
 	}
 
 	if (bAnyChange)
 	{
-		GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
+	}
+
+	return bAnyChange;
+}
+
+
+bool USequencerPlaylistPlayer::PauseAll()
+{
+	if (!ensure(Playlist) || !Playlist->Items.Num())
+	{
+		return false;
+	}
+
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
+	UTakeRecorder* Recorder = UTakeRecorder::GetActiveRecorder();
+
+	const bool bPlaying = Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Playing;
+	const bool bRecording = Recorder && Recorder->GetState() != ETakeRecorderState::Stopped;
+
+	bool bAnyChange = false;
+
+	FScopedTransaction Transaction(LOCTEXT("PauseAllTransaction", "Pause playback of all Playlist items"));
+
+	// If we are playing or recording, pause any playing items.
+	// If we are not playing or recording, add holds for any items without holds.
+	for (USequencerPlaylistItem* Item : Playlist->Items)
+	{
+		TSharedPtr<ISequencerPlaylistItemPlayer> Player = GetCheckedItemPlayer(Item);
+		const FSequencerPlaylistPlaybackState ItemState = Player->GetPlaybackState(Item);
+		if (bPlaying || bRecording)
+		{
+			if (ItemState.bIsPlaying && !ItemState.bIsPaused)
+			{
+				bAnyChange |= Player->TogglePause(Item);
+			}
+		}
+		else if (!ItemState.bIsPaused)
+		{
+			bAnyChange |= Player->AddHold(Item);
+		}
+	}
+
+	if (bAnyChange)
+	{
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
 	}
 
 	return bAnyChange;
@@ -307,7 +408,7 @@ bool USequencerPlaylistPlayer::StopAll()
 		bAnyChange |= GetCheckedItemPlayer(Item)->Stop(Item);
 	}
 
-	TSharedPtr<ISequencer> Sequencer = GetSequencer();
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
 
 	UTakeRecorder* Recorder = UTakeRecorder::GetActiveRecorder();
 	const bool bInRecorder = Recorder && Recorder->GetState() != ETakeRecorderState::Stopped;
@@ -334,6 +435,8 @@ bool USequencerPlaylistPlayer::ResetAll()
 		return false;
 	}
 
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
+
 	bool bAnyChange = false;
 
 	FScopedTransaction Transaction(LOCTEXT("ResetAllTransaction", "Reset playback of all Playlist items"));
@@ -352,14 +455,14 @@ bool USequencerPlaylistPlayer::ResetAll()
 
 	if (bAnyChange)
 	{
-		GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::RefreshAllImmediately);
 	}
 
 	return bAnyChange;
 }
 
 
-TSharedPtr<ISequencer> USequencerPlaylistPlayer::GetSequencer()
+TSharedPtr<ISequencer> USequencerPlaylistPlayer::GetOrCreateSequencer()
 {
 	if (TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin())
 	{
@@ -371,10 +474,13 @@ TSharedPtr<ISequencer> USequencerPlaylistPlayer::GetSequencer()
 	{
 		UTakePreset* Preset = UTakePreset::AllocateTransientPreset(GetDefault<UTakeRecorderUserSettings>()->LastOpenedPreset.Get());
 
-		FScopedTransaction Transaction(LOCTEXT("CreateEmptyTake", "Create Empty Playlist Sequence"));
+		if (!Preset->GetLevelSequence())
+		{
+			FScopedTransaction Transaction(LOCTEXT("CreateEmptyTake", "Create Empty Playlist Sequence"));
 
-		Preset->Modify();
-		Preset->CreateLevelSequence();
+			Preset->Modify();
+			Preset->CreateLevelSequence();
+		}
 
 		RootSequence = Preset->GetLevelSequence();
 	}
@@ -396,33 +502,6 @@ TSharedPtr<ISequencer> USequencerPlaylistPlayer::GetSequencer()
 		});
 	}
 	WeakSequencer = Sequencer;
-	return Sequencer;
-}
-
-
-TSharedPtr<ISequencer> USequencerPlaylistPlayer::GetValidatedSequencer()
-{
-	TSharedPtr<ISequencer> Sequencer = GetSequencer();
-	if (!Sequencer)
-	{
-		return nullptr;
-	}
-
-	ULevelSequence* RootSequence = Cast<ULevelSequence>(Sequencer->GetRootMovieSceneSequence());
-	if (!RootSequence)
-	{
-		UE_LOG(LogSequencerPlaylists, Error, TEXT("USequencerPlaylistPlayer::GetValidatedSequencer: Unable to get root sequence"));
-		return nullptr;
-	}
-
-	UMovieScene* RootScene = RootSequence->GetMovieScene();
-	if (!RootScene)
-	{
-		// TODO: Seems like this may not be possible?
-		UE_LOG(LogSequencerPlaylists, Error, TEXT("USequencerPlaylistPlayer::GetValidatedSequencer: Unable to get root scene"));
-		return nullptr;
-	}
-
 	return Sequencer;
 }
 
@@ -451,7 +530,7 @@ void USequencerPlaylistPlayer::OnTakeRecorderStarted(UTakeRecorder* InRecorder)
 		return;
 	}
 
-	if (TSharedPtr<ISequencer> Sequencer = GetValidatedSequencer())
+	if (TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer())
 	{
 		FScopedTransaction Transaction(LOCTEXT("TakeRecorderStartedTransaction", "Playlist - Take Recorder started"));
 
@@ -474,7 +553,7 @@ void USequencerPlaylistPlayer::OnTakeRecorderStopped(UTakeRecorder* InRecorder)
 	}
 
 	// FIXME: Any sequences not already stopped end up a few frames too long; pass in explicit end frame?
-	if (TSharedPtr<ISequencer> Sequencer = GetValidatedSequencer())
+	if (TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer())
 	{
 		FScopedTransaction Transaction(LOCTEXT("TakeRecorderStoppedTransaction", "Playlist - Take Recorder stopped"));
 		bool bAnySequencesModified = false;
@@ -504,7 +583,7 @@ TSharedPtr<ISequencerPlaylistItemPlayer> USequencerPlaylistPlayer::GetCheckedIte
 		return *ExistingPlayer;
 	}
 
-	TSharedPtr<ISequencer> Sequencer = GetValidatedSequencer();
+	TSharedPtr<ISequencer> Sequencer = GetOrCreateSequencer();
 	check(Sequencer.IsValid());
 
 	TSharedPtr<ISequencerPlaylistItemPlayer> NewPlayer =

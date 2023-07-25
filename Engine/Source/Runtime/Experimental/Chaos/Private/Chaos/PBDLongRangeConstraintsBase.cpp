@@ -32,50 +32,25 @@ FPBDLongRangeConstraintsBase::FPBDLongRangeConstraintsBase(
 	const TConstArrayView<FRealSingle>& StiffnessMultipliers,
 	const TConstArrayView<FRealSingle>& ScaleMultipliers,
 	const FSolverVec2& InStiffness,
-	const FSolverVec2& InScale)
+	const FSolverVec2& InScale,
+	FSolverReal MaxStiffness,
+	FSolverReal MeshScale)
 	: Tethers(InTethers)
-	, Stiffness(InStiffness, StiffnessMultipliers, InParticleCount)
-	, Scale(InScale)
+	, Stiffness(
+		InStiffness,
+		StiffnessMultipliers,
+		InParticleCount,
+		FPBDStiffness::DefaultTableSize,
+		FPBDStiffness::DefaultParameterFitBase,
+		MaxStiffness)
+	, TetherScale(
+		InScale.ClampAxes(MinTetherScale, MaxTetherScale) * MeshScale,
+		ScaleMultipliers,
+		InParticleCount)
 	, ParticleOffset(InParticleOffset)
-	, ParticleCount(InParticleCount)
 {
-	if (ScaleMultipliers.Num() == ParticleCount && ParticleCount > 0)
-	{
-		// Convert the weight maps into an array of lookup indices to the scale table
-		ScaleIndices.AddUninitialized(ParticleCount);
-
-		const FRealSingle TableScale = (FRealSingle)(TableSize - 1);
-
-		for (int32 Index = 0; Index < ParticleCount; ++Index)
-		{
-			ScaleIndices[Index] = (uint8)(FMath::Clamp(ScaleMultipliers[Index], (FRealSingle)0., (FRealSingle)1.) * TableScale);
-		}
-
-		// Initialize empty table until ApplyValues is called
-		ScaleTable.AddZeroed(TableSize);
-	}
-	else
-	{
-		// Initialize with a one element table until ApplyValues is called
-		ScaleIndices.AddZeroed(1);
-		ScaleTable.AddZeroed(1);
-	}
-
 	// Apply default properties
 	ApplyProperties((FSolverReal)(1. / FPBDStiffness::ParameterFrequency), 1);
-}
-
-void FPBDLongRangeConstraintsBase::ApplyScale()
-{
-	const FSolverReal Offset = Scale[0];
-	const FSolverReal Range = Scale[1] - Scale[0];
-	const int32 ScaleTableSize = ScaleTable.Num();
-	const FSolverReal WeightIncrement = (ScaleTableSize > 1) ? (FSolverReal)1. / (FSolverReal)(ScaleTableSize - 1) : (FSolverReal)1.; // Must allow full range from 0 to 1 included
-	for (int32 Index = 0; Index < ScaleTableSize; ++Index)
-	{
-		const FSolverReal Weight = (FSolverReal)Index * WeightIncrement;
-		ScaleTable[Index] = Offset + Weight * Range;
-	}
 }
 
 }  // End namespace Chaos::Softs

@@ -3,40 +3,24 @@
 #include "Converters/GLTFSamplerConverters.h"
 #include "Builders/GLTFContainerBuilder.h"
 #include "Utilities/GLTFCoreUtilities.h"
-#include "Converters/GLTFTextureUtility.h"
+#include "Converters/GLTFTextureUtilities.h"
 
-FGLTFJsonSampler* FGLTFSamplerConverter::Convert(const UTexture* Texture)
+void FGLTFSamplerConverter::Sanitize(TextureAddress& AddressX, TextureAddress& AddressY, TextureFilter& Filter, TextureGroup& LODGroup)
 {
-	// TODO: reuse existing samplers, don't create a unique sampler per texture
+	if (Filter == TF_Default)
+	{
+		Filter = FGLTFTextureUtilities::GetDefaultFilter(LODGroup);
+	}
 
+	LODGroup = TEXTUREGROUP_MAX; // Ignore it, since Filter should cover any missing information
+}
+
+FGLTFJsonSampler* FGLTFSamplerConverter::Convert(TextureAddress AddressX, TextureAddress AddressY, TextureFilter Filter, TextureGroup LODGroup)
+{
 	FGLTFJsonSampler* JsonSampler = Builder.AddSampler();
-	Texture->GetName(JsonSampler->Name);
-
-	if (Texture->IsA<ULightMapTexture2D>())
-	{
-		// Override default filter settings for LightMap textures (which otherwise is "nearest")
-		JsonSampler->MinFilter = EGLTFJsonTextureFilter::LinearMipmapLinear;
-		JsonSampler->MagFilter = EGLTFJsonTextureFilter::Linear;
-	}
-	else
-	{
-		JsonSampler->MinFilter = FGLTFCoreUtilities::ConvertMinFilter(Texture->Filter, Texture->LODGroup);
-		JsonSampler->MagFilter = FGLTFCoreUtilities::ConvertMagFilter(Texture->Filter, Texture->LODGroup);
-	}
-
-	if (FGLTFTextureUtility::IsCubemap(Texture))
-	{
-		JsonSampler->WrapS = EGLTFJsonTextureWrap::ClampToEdge;
-		JsonSampler->WrapT = EGLTFJsonTextureWrap::ClampToEdge;
-	}
-	else
-	{
-		const TTuple<TextureAddress, TextureAddress> AddressXY = FGLTFTextureUtility::GetAddressXY(Texture);
-		// TODO: report error if AddressX == TA_MAX or AddressY == TA_MAX
-
-		JsonSampler->WrapS = FGLTFCoreUtilities::ConvertWrap(AddressXY.Get<0>());
-		JsonSampler->WrapT = FGLTFCoreUtilities::ConvertWrap(AddressXY.Get<1>());
-	}
-
+	JsonSampler->MinFilter = FGLTFCoreUtilities::ConvertMinFilter(Filter);
+	JsonSampler->MagFilter = FGLTFCoreUtilities::ConvertMagFilter(Filter);
+	JsonSampler->WrapS = FGLTFCoreUtilities::ConvertWrap(AddressX);
+	JsonSampler->WrapT = FGLTFCoreUtilities::ConvertWrap(AddressY);
 	return JsonSampler;
 }

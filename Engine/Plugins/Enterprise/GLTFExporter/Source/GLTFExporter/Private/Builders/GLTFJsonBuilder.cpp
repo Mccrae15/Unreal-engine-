@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Builders/GLTFJsonBuilder.h"
-#include "GLTFExporterModule.h"
 #include "Interfaces/IPluginManager.h"
 #include "Runtime/Launch/Resources/Version.h"
 
@@ -15,21 +14,6 @@ FGLTFJsonBuilder::FGLTFJsonBuilder(const FString& FileName, const UGLTFExportOpt
 void FGLTFJsonBuilder::WriteJsonArchive(FArchive& Archive)
 {
 	JsonRoot.WriteJson(Archive, !bIsGLB, ExportOptions->bSkipNearDefaultValues ? KINDA_SMALL_NUMBER : 0);
-}
-
-TSet<EGLTFJsonExtension> FGLTFJsonBuilder::GetCustomExtensionsUsed() const
-{
-	TSet<EGLTFJsonExtension> CustomExtensions;
-
-	for (EGLTFJsonExtension Extension : JsonRoot.Extensions.Used)
-	{
-		if (IsCustomExtension(Extension))
-		{
-			CustomExtensions.Add(Extension);
-		}
-	}
-
-	return CustomExtensions;
 }
 
 void FGLTFJsonBuilder::AddExtension(EGLTFJsonExtension Extension, bool bIsRequired)
@@ -106,34 +90,14 @@ FGLTFJsonTexture* FGLTFJsonBuilder::AddTexture()
 	return JsonRoot.Textures.Add();
 }
 
-FGLTFJsonBackdrop* FGLTFJsonBuilder::AddBackdrop()
-{
-	return JsonRoot.Backdrops.Add();
-}
-
 FGLTFJsonLight* FGLTFJsonBuilder::AddLight()
 {
 	return JsonRoot.Lights.Add();
 }
 
-FGLTFJsonLightMap* FGLTFJsonBuilder::AddLightMap()
+FGLTFJsonMaterialVariant* FGLTFJsonBuilder::AddMaterialVariant()
 {
-	return JsonRoot.LightMaps.Add();
-}
-
-FGLTFJsonSkySphere* FGLTFJsonBuilder::AddSkySphere()
-{
-	return JsonRoot.SkySpheres.Add();
-}
-
-FGLTFJsonEpicLevelVariantSets* FGLTFJsonBuilder::AddEpicLevelVariantSets()
-{
-	return JsonRoot.EpicLevelVariantSets.Add();
-}
-
-FGLTFJsonKhrMaterialVariant* FGLTFJsonBuilder::AddKhrMaterialVariant()
-{
-	return JsonRoot.KhrMaterialVariants.Add();
+	return JsonRoot.MaterialVariants.Add();
 }
 
 const FGLTFJsonRoot& FGLTFJsonBuilder::GetRoot() const
@@ -141,20 +105,7 @@ const FGLTFJsonRoot& FGLTFJsonBuilder::GetRoot() const
 	return JsonRoot;
 }
 
-FString FGLTFJsonBuilder::GetGeneratorString() const
+const TCHAR* FGLTFJsonBuilder::GetGeneratorString()
 {
-	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(GLTFEXPORTER_MODULE_NAME);
-	const FPluginDescriptor& PluginDescriptor = Plugin->GetDescriptor();
-
-	return ExportOptions->bIncludeGeneratorVersion
-		? TEXT(EPIC_PRODUCT_NAME) TEXT(" ") ENGINE_VERSION_STRING TEXT(" ") + PluginDescriptor.FriendlyName + TEXT(" ") + PluginDescriptor.VersionName
-		: TEXT(EPIC_PRODUCT_NAME) TEXT(" ") + PluginDescriptor.FriendlyName;
-}
-
-bool FGLTFJsonBuilder::IsCustomExtension(EGLTFJsonExtension Extension)
-{
-	const TCHAR CustomPrefix[] = TEXT("EPIC_");
-
-	const TCHAR* ExtensionString = FGLTFJsonUtilities::GetValue(Extension);
-	return FCString::Strncmp(ExtensionString, CustomPrefix, GetNum(CustomPrefix) - 1) == 0;
+	return TEXT(EPIC_PRODUCT_NAME) TEXT(" ") ENGINE_VERSION_STRING;
 }

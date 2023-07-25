@@ -66,7 +66,7 @@ ALandscapeProxy* FLandscapeConfigHelper::FindOrAddLandscapeStreamingProxy(UActor
 
 	auto LandscapeProxyCreated = [InCellCoord, Landscape](APartitionActor* PartitionActor)
 	{
-		const FIntPoint CellLocation(InCellCoord.X * Landscape->GridSize, InCellCoord.Y * Landscape->GridSize);
+		const FIntPoint CellLocation(static_cast<int32>(InCellCoord.X) * Landscape->GridSize, static_cast<int32>(InCellCoord.Y) * Landscape->GridSize);
 
 		ALandscapeProxy* LandscapeProxy = CastChecked<ALandscapeProxy>(PartitionActor);
 		// copy shared properties to this new proxy
@@ -83,7 +83,7 @@ ALandscapeProxy* FLandscapeConfigHelper::FindOrAddLandscapeStreamingProxy(UActor
 	const bool bBoundsSearch = false;
 
 	ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(InActorPartitionSubsystem->GetActor(ALandscapeStreamingProxy::StaticClass(), InCellCoord, bCreate, InLandscapeInfo->LandscapeGuid, Landscape->GridSize, bBoundsSearch, LandscapeProxyCreated));
-	check(LandscapeProxy->GridSize == Landscape->GridSize);
+	check(!LandscapeProxy || LandscapeProxy->GridSize == Landscape->GridSize);
 	return LandscapeProxy;
 }
 
@@ -138,7 +138,7 @@ bool FLandscapeConfigHelper::ChangeGridSize(ULandscapeInfo* InLandscapeInfo, uin
 				TMap<int32, UMaterialInterface*>& LODMaterials = ComponentLODMaterials.FindOrAdd(LandscapeComponent);
 				for (int32 LODIndex = 0; LODIndex <= 8; ++LODIndex)
 				{
-					LODMaterials.Add(LODIndex, LandscapeComponent->GetLandscapeMaterial(LODIndex));
+					LODMaterials.Add(LODIndex, LandscapeComponent->GetLandscapeMaterial(static_cast<int8>(LODIndex)));
 				}
 
 				ComponentsToMove.Add(LandscapeComponent);
@@ -195,7 +195,7 @@ bool FLandscapeConfigHelper::ChangeGridSize(ULandscapeInfo* InLandscapeInfo, uin
 
 				TArray<FLandscapePerLODMaterialOverride> PerLODOverrideMaterialsForComponent;
 				TArray<FLandscapePerLODMaterialOverride> PerLODOverrideMaterialsForProxy = LandscapeProxy->GetPerLODOverrideMaterials();
-				for (int32 LODIndex = 0; LODIndex <= 8; ++LODIndex)
+				for (int8 LODIndex = 0; LODIndex <= 8; ++LODIndex)
 				{
 					UMaterialInterface* PreviousLODMaterial = PreviousLandscapeLODMaterials.FindChecked(LODIndex);
 					// If Proxy doesn't differ from Landscape override material there first
@@ -370,7 +370,7 @@ void FLandscapeConfigHelper::MoveFoliageToLandscape(ULandscapeInfo* InLandscapeI
 	// Move instances
 	for (const TPair<FIntPoint, ULandscapeComponent*>& OldEntry : InLandscapeInfo->XYtoComponentMap)
 	{
-		ULandscapeHeightfieldCollisionComponent* OldCollisionComponent = OldEntry.Value->CollisionComponent.Get();
+		ULandscapeHeightfieldCollisionComponent* OldCollisionComponent = OldEntry.Value->GetCollisionComponent();
 
 		if (OldCollisionComponent)
 		{
@@ -378,7 +378,7 @@ void FLandscapeConfigHelper::MoveFoliageToLandscape(ULandscapeInfo* InLandscapeI
 
 			for (const TPair<FIntPoint, ULandscapeComponent*>& NewEntry : InNewLandscapeInfo->XYtoComponentMap)
 			{
-				ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewEntry.Value->CollisionComponent.Get();
+				ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewEntry.Value->GetCollisionComponent();
 
 				if (NewCollisionComponent && FBoxSphereBounds::BoxesIntersect(NewCollisionComponent->Bounds, OldCollisionComponent->Bounds))
 				{
@@ -395,7 +395,7 @@ void FLandscapeConfigHelper::MoveFoliageToLandscape(ULandscapeInfo* InLandscapeI
 	// Snap them to the bounds
 	for (const TPair<FIntPoint, ULandscapeComponent*>& NewEntry : InNewLandscapeInfo->XYtoComponentMap)
 	{
-		ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewEntry.Value->CollisionComponent.Get();
+		ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewEntry.Value->GetCollisionComponent();
 
 		if (NewCollisionComponent)
 		{

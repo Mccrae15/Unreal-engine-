@@ -2,7 +2,8 @@
 
 #include "HttpClient.h"
 
-#include "Containers/DepletableMpscQueue.h"
+#include "Async/InheritedContext.h"
+#include "Containers/ConsumeAllMpmcQueue.h"
 #include "Containers/LockFreeList.h"
 #include "Containers/StringView.h"
 #include "HAL/Event.h"
@@ -167,7 +168,7 @@ private:
 	void Destroy() final { delete this; }
 
 	void ThreadLoop();
-	void CompleteRequest(CURL* Curl);
+	void CompleteRequest(CURL* Curl, CURLcode* OptionalReturnCode);
 
 	static void CurlLock(CURL* Curl, curl_lock_data Data, curl_lock_access Access, void* Param);
 	static void CurlUnlock(CURL* Curl, curl_lock_data Data, void* Param);
@@ -196,7 +197,7 @@ private:
 		EThreadCommandType Type;
 	};
 
-	TDepletableMpscQueue<FThreadCommand> ThreadCommands;
+	TConsumeAllMpmcQueue<FThreadCommand> ThreadCommands;
 	FThread Thread;
 	std::atomic<bool> bThreadStarting;
 	std::atomic<bool> bThreadStopping;
@@ -279,7 +280,7 @@ enum class ECurlHttpResponseState : uint8
 
 ENUM_CLASS_FLAGS(ECurlHttpResponseState);
 
-class FCurlHttpResponse final : public IHttpResponse, public IHttpResponseMonitor
+class FCurlHttpResponse final : public IHttpResponse, public IHttpResponseMonitor, private FInheritedContextBase
 {
 public:
 	FCurlHttpResponse(CURL* Curl, EHttpMethod Method, FAnsiStringView Uri, IHttpReceiver* Receiver);
@@ -455,7 +456,7 @@ bool FCurlHttpConnectionPool::BeginAsyncRequest(FCurlHttpResponse* Response)
 	{
 		return false;
 	}
-	if (ThreadCommands.EnqueueAndReturnWasEmpty(FThreadCommand{Response, EThreadCommandType::Begin}))
+	if (ThreadCommands.ProduceItem(FThreadCommand{Response, EThreadCommandType::Begin}) == EConsumeAllMpmcQueueResult::WasEmpty)
 	{
 		AssertMultiCodeOk(curl_multi_wakeup(CurlMulti));
 	}
@@ -468,7 +469,7 @@ bool FCurlHttpConnectionPool::BeginAsyncRequest(FCurlHttpResponse* Response)
 
 void FCurlHttpConnectionPool::CancelAsyncRequest(FCurlHttpResponse* Response)
 {
-	if (ThreadCommands.EnqueueAndReturnWasEmpty(FThreadCommand{Response, EThreadCommandType::Cancel}))
+	if (ThreadCommands.ProduceItem(FThreadCommand{Response, EThreadCommandType::Cancel}) == EConsumeAllMpmcQueueResult::WasEmpty)
 	{
 		AssertMultiCodeOk(curl_multi_wakeup(CurlMulti));
 	}
@@ -478,7 +479,7 @@ void FCurlHttpConnectionPool::ThreadLoop()
 {
 	while (!ThreadCommands.IsEmpty() || !bThreadStopping.load(std::memory_order_relaxed))
 	{
-		ThreadCommands.Deplete([this](FThreadCommand Command)
+		ThreadCommands.ConsumeAllFifo([this](FThreadCommand Command)
 		{
 			if (CURL* Curl = Command.Response->GetCurl())
 			{
@@ -488,7 +489,7 @@ void FCurlHttpConnectionPool::ThreadLoop()
 					AssertMultiCodeOk(curl_multi_add_handle(CurlMulti, Curl));
 					break;
 				case EThreadCommandType::Cancel:
-					CompleteRequest(Curl);
+					CompleteRequest(Curl, nullptr);
 					break;
 				}
 			}
@@ -501,7 +502,7 @@ void FCurlHttpConnectionPool::ThreadLoop()
 		{
 			if (Message->msg == CURLMSG_DONE)
 			{
-				CompleteRequest(Message->easy_handle);
+				CompleteRequest(Message->easy_handle, &Message->data.result);
 			}
 		}
 
@@ -510,12 +511,12 @@ void FCurlHttpConnectionPool::ThreadLoop()
 	}
 }
 
-void FCurlHttpConnectionPool::CompleteRequest(CURL* Curl)
+void FCurlHttpConnectionPool::CompleteRequest(CURL* Curl, CURLcode* OptionalReturnCode)
 {
 	AssertMultiCodeOk(curl_multi_remove_handle(CurlMulti, Curl));
 	void* Request = nullptr;
 	curl_easy_getinfo(Curl, CURLINFO_PRIVATE, &Request);
-	((FCurlHttpRequest*)Request)->OnComplete(CURLE_OK);
+	((FCurlHttpRequest*)Request)->OnComplete(OptionalReturnCode ? *OptionalReturnCode : CURLE_OK);
 }
 
 void FCurlHttpConnectionPool::CurlLock(CURL* Curl, curl_lock_data Data, curl_lock_access Access, void* Param)
@@ -933,6 +934,8 @@ FCurlHttpResponse::FCurlHttpResponse(CURL* InCurl, EHttpMethod InMethod, FAnsiSt
 	, Curl(InCurl)
 	, Receiver(InReceiver)
 {
+	CaptureInheritedContext();
+
 	// Release() is called by Destroy().
 	AddRef();
 
@@ -999,6 +1002,8 @@ bool FCurlHttpResponse::WriteHeader(FAnsiStringView Header)
 		return !EnumHasAnyFlags(State.load(std::memory_order_relaxed), ECurlHttpResponseState::Canceled);
 	}
 
+	FInheritedContextScope InheritedContextScope = RestoreInheritedContext();
+
 	// Reset headers between responses and keep only the last.
 	if (!HeaderViews.IsEmpty())
 	{
@@ -1040,6 +1045,8 @@ bool FCurlHttpResponse::WriteHeader(FAnsiStringView Header)
 
 bool FCurlHttpResponse::WriteBody(FMemoryView Body)
 {
+	FInheritedContextScope InheritedContextScope = RestoreInheritedContext();
+
 	ConditionallySetResponseStatus();
 
 	bHasBody = true;
@@ -1116,8 +1123,9 @@ void FCurlHttpResponse::SetComplete(CURLcode Code)
 	Curl = nullptr;
 	Client = nullptr;
 
-	// Hold a reference to safely access Receiver, State, and CompleteEvent.
+	// Hold a reference to safely access Receiver, State, CompleteEvent, and FInheritedContextBase.
 	TRefCountPtr<FCurlHttpResponse> Self(this);
+	FInheritedContextScope InheritedContextScope = RestoreInheritedContext();
 
 	for (TGuardValue GuardReceiverFunction(ReceiverFunction, EHttpReceiverFunction::OnComplete);;)
 	{

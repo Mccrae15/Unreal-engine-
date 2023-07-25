@@ -5,7 +5,7 @@
 #include "Units/RigUnit.h"
 #include "ControlRig.h"
 #include "ControlRigSplineTypes.h"
-#include "ControlRig/Private/Units/Highlevel/Hierarchy/RigUnit_FitChainToCurve.h"
+#include "RigUnit_FitChainToCurve.h"
 #include "ControlRigSplineUnits.generated.h"
 
 USTRUCT(meta = (Abstract, NodeColor = "0.3 0.1 0.1"))
@@ -25,6 +25,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_ControlRigSplineFromPoints : public FRigUni
 	FRigUnit_ControlRigSplineFromPoints()
 	{
 		SplineMode = ESplineType::Hermite;
+		bClosed = false;
 		SamplesPerSegment = 16;
 		Compression = 0.f;
 		Stretch = 0.f;
@@ -32,13 +33,16 @@ struct CONTROLRIGSPLINE_API FRigUnit_ControlRigSplineFromPoints : public FRigUni
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	TArray<FVector> Points;
 
 	UPROPERTY(meta = (Input))
 	ESplineType SplineMode;
+
+	UPROPERTY(meta = (Input))
+	bool bClosed;
 
 	UPROPERTY(meta = (Input))
 	int32 SamplesPerSegment;
@@ -68,7 +72,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_SetSplinePoints : public FRigUnitMutable
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	TArray<FVector> Points;
@@ -93,7 +97,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_PositionFromControlRigSpline : public FRigU
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FControlRigSpline Spline;
@@ -123,7 +127,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_TransformFromControlRigSpline : public FRig
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FControlRigSpline Spline;
@@ -157,7 +161,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_TangentFromControlRigSpline : public FRigUn
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FControlRigSpline Spline;
@@ -186,7 +190,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_DrawControlRigSpline : public FRigUnitMutab
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FControlRigSpline Spline;
@@ -216,7 +220,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_GetLengthControlRigSpline : public FRigUnit
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FControlRigSpline Spline;
@@ -243,14 +247,14 @@ struct CONTROLRIGSPLINE_API FRigUnit_FitChainToSplineCurve : public FRigUnit_Hig
 		PrimaryAxis = FVector(1.f, 0.f, 0.f);
 		SecondaryAxis = FVector(0.f, 0.f, 0.f);
 		PoleVectorPosition = FVector::ZeroVector;
-		RotationEaseType = EControlRigAnimEasingType::Linear;
+		RotationEaseType = ERigVMAnimEasingType::Linear;
 		Weight = 1.f;
 		bPropagateToChildren = true;
 		DebugSettings = FRigUnit_FitChainToCurve_DebugSettings();
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The items to align
@@ -318,7 +322,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_FitChainToSplineCurve : public FRigUnit_Hig
 	 * The easing to use between to rotations.
 	 */
 	UPROPERTY(meta = (Input, Constant))
-	EControlRigAnimEasingType RotationEaseType;
+	ERigVMAnimEasingType RotationEaseType;
 
 	/**
 	 * The weight of the solver - how much the rotation should be applied
@@ -362,14 +366,14 @@ struct CONTROLRIGSPLINE_API FRigUnit_FitChainToSplineCurveItemArray : public FRi
 		PrimaryAxis = FVector(1.f, 0.f, 0.f);
 		SecondaryAxis = FVector(0.f, 0.f, 0.f);
 		PoleVectorPosition = FVector::ZeroVector;
-		RotationEaseType = EControlRigAnimEasingType::Linear;
+		RotationEaseType = ERigVMAnimEasingType::Linear;
 		Weight = 1.f;
 		bPropagateToChildren = true;
 		DebugSettings = FRigUnit_FitChainToCurve_DebugSettings();
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The items to align
@@ -437,7 +441,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_FitChainToSplineCurveItemArray : public FRi
 	 * The easing to use between to rotations.
 	 */
 	UPROPERTY(meta = (Input, Constant))
-	EControlRigAnimEasingType RotationEaseType;
+	ERigVMAnimEasingType RotationEaseType;
 
 	/**
 	 * The weight of the solver - how much the rotation should be applied
@@ -474,7 +478,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_FitSplineCurveToChain : public FRigUnit_Hig
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The items to align to
@@ -506,7 +510,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_FitSplineCurveToChainItemArray : public FRi
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The items to align to
@@ -537,7 +541,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_ClosestParameterFromControlRigSpline : publ
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FControlRigSpline Spline;
@@ -566,7 +570,7 @@ struct CONTROLRIGSPLINE_API FRigUnit_ParameterAtPercentage : public FRigUnit_Con
 
 	/** Execute logic for this rig unit */
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FControlRigSpline Spline;

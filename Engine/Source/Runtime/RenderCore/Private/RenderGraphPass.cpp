@@ -73,28 +73,12 @@ FRHIRenderPassInfo FRDGParameterStruct::GetRenderPassInfo() const
 	if (FRDGTextureRef Texture = DepthStencil.GetTexture())
 	{
 		const FExclusiveDepthStencil ExclusiveDepthStencil = DepthStencil.GetDepthStencilAccess();
-		ERenderTargetStoreAction StoreAction = EnumHasAnyFlags(Texture->Desc.Flags, TexCreate_Memoryless) ? ERenderTargetStoreAction::ENoAction : ERenderTargetStoreAction::EStore;
-		FRDGTextureRef ResolveTexture = DepthStencil.GetResolveTexture();
-
-		if (ResolveTexture)
-		{
-			// Silently skip the resolve if the resolve texture is the same as the render target texture.
-			if (ResolveTexture != Texture)
-			{
-				StoreAction = ERenderTargetStoreAction::EMultisampleResolve;
-			}
-			else
-			{
-				ResolveTexture = nullptr;
-			}
-		}
-
+		const ERenderTargetStoreAction StoreAction = EnumHasAnyFlags(Texture->Desc.Flags, TexCreate_Memoryless) ? ERenderTargetStoreAction::ENoAction : ERenderTargetStoreAction::EStore;
 		const ERenderTargetStoreAction DepthStoreAction = ExclusiveDepthStencil.IsUsingDepth() ? StoreAction : ERenderTargetStoreAction::ENoAction;
 		const ERenderTargetStoreAction StencilStoreAction = ExclusiveDepthStencil.IsUsingStencil() ? StoreAction : ERenderTargetStoreAction::ENoAction;
 
 		auto& DepthStencilTarget = RenderPassInfo.DepthStencilRenderTarget;
 		DepthStencilTarget.DepthStencilTarget = Texture->GetRHI();
-		DepthStencilTarget.ResolveTarget = ResolveTexture ? ResolveTexture->GetRHI() : nullptr;
 		DepthStencilTarget.Action = MakeDepthStencilTargetActions(
 			MakeRenderTargetActions(DepthStencil.GetDepthLoadAction(), DepthStoreAction),
 			MakeRenderTargetActions(DepthStencil.GetStencilLoadAction(), StencilStoreAction));
@@ -110,6 +94,7 @@ FRHIRenderPassInfo FRDGParameterStruct::GetRenderPassInfo() const
 	RenderPassInfo.ShadingRateTexture = RenderTargets.ShadingRateTexture ? RenderTargets.ShadingRateTexture->GetRHI() : nullptr;
 	// @todo: should define this as a state that gets passed through? Max seems appropriate for now.
 	RenderPassInfo.ShadingRateTextureCombiner = RenderPassInfo.ShadingRateTexture.IsValid() ? VRSRB_Max : VRSRB_Passthrough;
+	RenderPassInfo.RenderArea = RenderTargets.RenderArea;
 
 	return RenderPassInfo;
 }
@@ -145,7 +130,7 @@ void FRDGBarrierBatchBegin::AddTransition(FRDGViewableResource* Resource, const 
 	Transitions.Add(Info);
 	bTransitionNeeded = true;
 
-#if STATS
+#if RDG_STATS
 	GRDGStatTransitionCount++;
 #endif
 
@@ -159,7 +144,7 @@ void FRDGBarrierBatchBegin::AddAlias(FRDGViewableResource* Resource, const FRHIT
 	Aliases.Add(Info);
 	bTransitionNeeded = true;
 
-#if STATS
+#if RDG_STATS
 	GRDGStatAliasingCount++;
 #endif
 
@@ -181,7 +166,7 @@ void FRDGBarrierBatchBegin::Submit(FRHIComputeCommandList& RHICmdList, ERHIPipel
 		TransitionsToBegin.Emplace(Transition);
 	}
 
-#if STATS
+#if RDG_STATS
 	GRDGStatTransitionBatchCount++;
 #endif
 }

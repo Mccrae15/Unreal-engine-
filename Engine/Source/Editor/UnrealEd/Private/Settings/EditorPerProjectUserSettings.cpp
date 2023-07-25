@@ -3,6 +3,7 @@
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Misc/Paths.h"
 #include "HAL/IConsoleManager.h"
+#include "RHI.h"
 #include "UnrealEdMisc.h"
 #include "BlueprintPaletteFavorites.h"
 
@@ -33,6 +34,7 @@ UEditorPerProjectUserSettings::UEditorPerProjectUserSettings(const FObjectInitia
 	bPreviewFeatureLevelActive = false;
 	bPreviewFeatureLevelWasDefault = true;
 	PreviewDeviceProfileName = NAME_None;
+	bShowSelectionSubcomponents = true;
 }
 
 void UEditorPerProjectUserSettings::PostInitProperties()
@@ -44,7 +46,9 @@ void UEditorPerProjectUserSettings::PostInitProperties()
 	if (bPreviewFeatureLevelWasDefault || PreviewFeatureLevel > GMaxRHIFeatureLevel)
 	{
 		PreviewFeatureLevel = GMaxRHIFeatureLevel;
+		PreviewShaderPlatformName = NAME_None;
 		PreviewShaderFormatName = NAME_None;
+        PreviewPlatformName = NAME_None;
 		bPreviewFeatureLevelActive = false;
 		bPreviewFeatureLevelWasDefault = true;
 		PreviewDeviceProfileName = NAME_None;

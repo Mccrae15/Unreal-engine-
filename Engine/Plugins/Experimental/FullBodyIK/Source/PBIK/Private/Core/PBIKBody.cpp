@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Core/PBIKBody.h"
+#include "Core/PBIKConstraint.h"
 #include "Core/PBIKSolver.h"
 
 namespace PBIK
@@ -51,30 +52,17 @@ FRigidBody::FRigidBody(FBone* InBone)
 	J = FBoneSettings();
 }
 
-void FRigidBody::Initialize(FBone* SolverRoot)
+void FRigidBody::Initialize(const FBone* SolverRoot)
 {
-	FVector Centroid = Bone->Position;
-	Mass = 0.0f;
-	for(const FBone* Child : Bone->Children)
-	{
-		Centroid += Child->Position;
-		Mass += (Bone->Position - Child->Position).Size();
-	}
-	Centroid = Centroid * (1.0f / (Bone->Children.Num() + 1.0f));
+	// calculate transform and mass of body based on the skeleton
+	UpdateTransformAndMassFromBones();
 
-	Position = Centroid;
-	Rotation = InitialRotation = Bone->Rotation;
-	BoneLocalPosition = Rotation.Inverse() * (Bone->Position - Centroid);
-
-	for (FBone* Child : Bone->Children)
-	{
-		FVector ChildLocalPos = Rotation.Inverse() * (Child->Position - Centroid);
-		ChildLocalPositions.Add(ChildLocalPos);
-	}
-
+	// store initial rotation from ref pose
+	InitialRotation = Rotation;
+	
 	// calculate num bones distance to root
 	NumBonesToRoot = 0;
-	FBone* Parent = Bone;
+	const FBone* Parent = Bone;
 	while (Parent && Parent != SolverRoot)
 	{
 		NumBonesToRoot += 1;
@@ -86,16 +74,37 @@ void FRigidBody::UpdateFromInputs(const FPBIKSolverSettings& Settings)
 {
 	if (Settings.bStartSolveFromInputPose)
 	{
-		// set to input pose
-		Position = Bone->Position - Bone->Rotation * BoneLocalPosition;
-		Rotation = Bone->Rotation;
-		InputPosition = Position;
+		UpdateTransformAndMassFromBones();
 	}
 
-	// for fork joints (multiple solved children) we sum lengths to all children (see Initialize)
-	const float MinMass = 0.5f; // prevent mass ever hitting zero
-	MaxInvMass = 1.0f / (Mass * ((Settings.MassMultiplier * GLOBAL_UNITS) + MinMass));
-	MinInvMass = 1.0f / (Mass * ((Settings.MinMassMultiplier * GLOBAL_UNITS) + MinMass));
+	// update InvMass based on global mass multiplier
+	constexpr float MinMass = 0.5f; // prevent mass ever hitting zero
+	InvMass = 1.0f / FMath::Max(MinMass,(Mass * Settings.MassMultiplier * GLOBAL_UNITS));
+
+	SolverSettings = &Settings;
+}
+
+void FRigidBody::UpdateTransformAndMassFromBones()
+{
+	FVector Centroid = Bone->Position;
+	Mass = 0.0f;
+	for(const FBone* Child : Bone->Children)
+	{
+		Centroid += Child->Position;
+		Mass += (Bone->Position - Child->Position).Size();
+	}
+	Centroid = Centroid * (1.0f / (Bone->Children.Num() + 1.0f));
+
+	Position = InputPosition = Centroid;
+	Rotation = InitialRotation = Bone->Rotation;
+	BoneLocalPosition = Bone->Rotation.Inverse() * (Bone->Position - Centroid);
+
+	ChildLocalPositions.Reserve(Bone->Children.Num());
+	for (const FBone* Child : Bone->Children)
+	{
+		FVector ChildLocalPos = Rotation.Inverse() * (Child->Position - Centroid);
+		ChildLocalPositions.Add(ChildLocalPos);
+	}
 }
 
 int FRigidBody::GetNumBonesToRoot() const
@@ -113,6 +122,16 @@ FRigidBody* FRigidBody::GetParentBody() const
 	return nullptr;
 }
 
+float FRigidBody::GetInverseMass()
+{
+	if (Pin && Pin->bEnabled)
+	{
+		return 1.0f - Pin->Alpha;
+	}
+
+	return InvMass;
+}
+
 void FRigidBody::ApplyPushToRotateBody(const FVector& Push, const FVector& Offset)
 {
 	if (Pin && Pin->bEnabled && Pin->bPinRotation)
@@ -128,7 +147,7 @@ void FRigidBody::ApplyPushToRotateBody(const FVector& Push, const FVector& Offse
 
 void FRigidBody::ApplyPushToPosition(const FVector& Push)
 {
-	Position += Push * (1.0f - J.PositionStiffness);
+	Position += Push * (1.0f - J.PositionStiffness) * SolverSettings->OverRelaxation;
 }
 
 void FRigidBody::ApplyRotationDelta(const FQuat& DeltaQ)
@@ -138,8 +157,17 @@ void FRigidBody::ApplyRotationDelta(const FQuat& DeltaQ)
 		return; // rotation of this body is pinned
 	}
 
+	// limit rotation each iteration
+	FQuat ClampedDQ = DeltaQ;
+	const float MaxPhi = FMath::DegreesToRadians(SolverSettings->MaxAngle);
+	const float Phi = DeltaQ.Size();
+	if (Phi > MaxPhi)
+	{
+		ClampedDQ *= MaxPhi / Phi;
+	}
+
 	/** DeltaQ is assumed to be a "pure" quaternion representing an infintesimal rotation */
-	FQuat Delta = DeltaQ * Rotation;
+	FQuat Delta = ClampedDQ * Rotation;
 	Delta.X *= 0.5f;
 	Delta.Y *= 0.5f;
 	Delta.Z *= 0.5f;

@@ -56,6 +56,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|Room Layout Manager")
 	bool GetRoomLayout(FOculusXRUInt64 Space, UPARAM(ref) FOculusXRRoomLayout& RoomLayoutOut, int32 MaxWallsCapacity = 64);
 
+
 protected:
 	UPROPERTY(Transient)
 	TSet<uint64> EntityRequestList;

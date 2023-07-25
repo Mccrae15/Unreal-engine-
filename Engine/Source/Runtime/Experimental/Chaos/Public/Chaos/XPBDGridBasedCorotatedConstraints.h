@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+// HEADER_UNIT_SKIP - Not included directly
+
 #include "Chaos/PBDSpringConstraintsBase.h"
 #include "ChaosStats.h"
 #include "Chaos/ImplicitQRSVD.h"
@@ -25,6 +27,7 @@ namespace Chaos::Softs
 		using Base::Measure;
 		using Base::DmInverse;
 		using Base::Mu;
+		using Base::Init;
 		using Base::Lambda;
 
 	public:

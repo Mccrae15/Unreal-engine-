@@ -2,7 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/UnrealString.h"
+
+struct FScriptContainerElement;
 
 namespace GLTF
 {
@@ -23,6 +25,8 @@ namespace GLTF
 		// Image data is kept encoded in Format, to be decoded when needed by Unreal.
 		uint32       DataByteLength;
 		const uint8* Data;
+
+		FString      UniqueId; //will be generated in FAsset::GenerateNames
 
 		FImage()
 		    : DataByteLength(0)
@@ -76,6 +80,8 @@ namespace GLTF
 		const FSampler& Sampler;
 		FString         Name;
 
+		FString			UniqueId; //will be generated in FAsset::GenerateNames
+
 		FTexture(const FString& InName, const FImage& InSource, const FSampler& InSampler)
 		    : Source(InSource)
 		    , Sampler(InSampler)
@@ -85,3 +91,7 @@ namespace GLTF
 	};
 
 }  // namespace GLTF
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

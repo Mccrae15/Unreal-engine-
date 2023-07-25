@@ -4,7 +4,6 @@
 
 #include "HAL/UnrealMemory.h"
 #include "Misc/AssertionMacros.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Mesh.h"
 #include "MuR/MeshBufferSet.h"
 #include "MuR/ModelPrivate.h"
@@ -79,7 +78,7 @@ void ASTOpMeshFormat::ForEachChild(const TFunctionRef<void(ASTChild&)> f )
 }
 
 
-void ASTOpMeshFormat::Link( PROGRAM& program, const FLinkerOptions* )
+void ASTOpMeshFormat::Link( FProgram& program, const FLinkerOptions* )
 {
     // Already linked?
     if (!linkedAddress)
@@ -101,7 +100,7 @@ void ASTOpMeshFormat::Link( PROGRAM& program, const FLinkerOptions* )
 }
 
 
-mu::Ptr<ASTOp> ASTOpMeshFormat::OptimiseSink(const MODEL_OPTIMIZATION_OPTIONS& options, OPTIMIZE_SINK_CONTEXT& context) const
+mu::Ptr<ASTOp> ASTOpMeshFormat::OptimiseSink(const FModelOptimizationOptions& options, FOptimizeSinkContext& context) const
 {
 	mu::Ptr<ASTOp> at = context.MeshFormatSinker.Apply(this);
 	return at;
@@ -116,7 +115,7 @@ mu::Ptr<ASTOp> Sink_MeshFormatAST::Apply(const ASTOp* root)
 	m_root = dynamic_cast<const ASTOpMeshFormat*>(root);
 	check(m_root);
 
-	m_oldToNew.Empty();
+	OldToNew.Empty();
 
 	m_initialSource = m_root->Source.child();
 	mu::Ptr<ASTOp> newSource = Visit(m_initialSource, m_root);
@@ -230,17 +229,11 @@ mu::Ptr<ASTOp> Sink_MeshFormatAST::Visit(const mu::Ptr<ASTOp>& at, const ASTOpMe
 {
 	if (!at) return nullptr;
 
-	// Newly created?
-	if (m_newOps.Find(at) != INDEX_NONE)
-	{
-		return at;
-	}
-
 	// Already visited?
-	auto cacheIt = m_oldToNew.Find(at);
-	if (cacheIt)
+	const Ptr<ASTOp>* Cached = OldToNew.Find({ at,currentFormatOp });
+	if (Cached)
 	{
-		return *cacheIt;
+		return *Cached;
 	}
 
 	mu::Ptr<ASTOp> newAt = at;
@@ -407,7 +400,7 @@ mu::Ptr<ASTOp> Sink_MeshFormatAST::Visit(const mu::Ptr<ASTOp>& at, const ASTOpMe
 
 	}
 
-	m_oldToNew.Add(at, newAt);
+	OldToNew.Add({ at,currentFormatOp }, newAt);
 
 	return newAt;
 }

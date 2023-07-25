@@ -356,6 +356,7 @@ FString FOculusXRHMDModule::GetDeviceSystemName()
 #ifdef WITH_OCULUS_BRANCH
 			case ovrpSystemHeadset_Meta_Quest_Pro:
 				return FString("Meta Quest Pro");
+
 #endif // WITH_OCULUS_BRANCH
 		}
 	}

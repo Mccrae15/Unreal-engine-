@@ -22,17 +22,20 @@
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraNodeInput.h"
 #include "NiagaraNodeOutput.h"
+#include "NiagaraNodeParameterMapGet.h"
 #include "NiagaraNodeParameterMapSet.h"
 #include "NiagaraNodeStaticSwitch.h"
 #include "NiagaraOverviewNode.h"
 #include "NiagaraParameterMapHistory.h"
 #include "NiagaraParameterDefinitions.h"
 #include "NiagaraScript.h"
+#include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraScriptMergeManager.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraSettings.h"
 #include "NiagaraSimulationStageBase.h"
 #include "NiagaraStackEditorData.h"
+#include "UObject/UObjectIterator.h"
 #include "ViewModels/NiagaraOverviewGraphViewModel.h"
 #include "ViewModels/NiagaraSystemSelectionViewModel.h"
 #include "ViewModels/NiagaraParameterDefinitionsSubscriberViewModel.h"
@@ -59,6 +62,7 @@
 #include "Misc/ScopeExit.h"
 #include "Styling/CoreStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "UObject/PropertyIterator.h"
 #include "UObject/StructOnScope.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -481,7 +485,7 @@ bool FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(const void* Cont
 			Property->GetFName().AppendString(PropertyName);
 		}
 
-		if (PODPropertyAppendCompileHash(Container, Property, PropertyName, InVisitor))
+		if (PODPropertyAppendCompileHash(Container, Property, *PropertyName, InVisitor))
 		{
 			continue;
 		}
@@ -489,14 +493,14 @@ bool FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(const void* Cont
 		{
 			FStructProperty* StructProp = CastFieldChecked<FStructProperty>(Property);
 			const void* StructContainer = Property->ContainerPtrToValuePtr<uint8>(Container);
-			NestedPropertiesAppendCompileHash(StructContainer, StructProp->Struct, EFieldIteratorFlags::IncludeSuper, PropertyName, InVisitor);
+			NestedPropertiesAppendCompileHash(StructContainer, StructProp->Struct, EFieldIteratorFlags::IncludeSuper, *PropertyName, InVisitor);
 			continue;
 		}
 		else if (Property->IsA(FEnumProperty::StaticClass()))
 		{
 			FEnumProperty* CastProp = CastFieldChecked<FEnumProperty>(Property);
 			const void* EnumContainer = Property->ContainerPtrToValuePtr<uint8>(Container);
-			if (PODPropertyAppendCompileHash(EnumContainer, CastProp->GetUnderlyingProperty(), PropertyName, InVisitor))
+			if (PODPropertyAppendCompileHash(EnumContainer, CastProp->GetUnderlyingProperty(), *PropertyName, InVisitor))
 			{
 				continue;
 			}
@@ -512,11 +516,11 @@ bool FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(const void* Cont
 				// We just do name here as sometimes things will be in a transient package or something tricky.
 				// Because we do nested id's for each called graph, it should work out in the end to have a different
 				// value in the compile array if the scripts are the same name but different locations.
-				InVisitor->UpdateString(PropertyName.GetData(), Obj->GetName());
+				InVisitor->UpdateString(*PropertyName, Obj->GetName());
 			}
 			else
 			{
-				InVisitor->UpdateString(PropertyName.GetData(), TEXT("nullptr"));
+				InVisitor->UpdateString(*PropertyName, TEXT("nullptr"));
 			}
 			continue;
 		}
@@ -524,7 +528,7 @@ bool FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(const void* Cont
 		{
 			FMapProperty* CastProp = CastFieldChecked<FMapProperty>(Property);
 			FScriptMapHelper MapHelper(CastProp, CastProp->ContainerPtrToValuePtr<void>(Container));
-			InVisitor->UpdatePOD(PropertyName.GetData(), MapHelper.Num());
+			InVisitor->UpdatePOD(*PropertyName, MapHelper.Num());
 			if (MapHelper.GetKeyProperty())
 			{
 				PathName.Reset();
@@ -609,7 +613,7 @@ bool FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(const void* Cont
 			FArrayProperty* CastProp = CastFieldChecked<FArrayProperty>(Property);
 
 			FScriptArrayHelper ArrayHelper(CastProp, CastProp->ContainerPtrToValuePtr<void>(Container));
-			InVisitor->UpdatePOD(PropertyName.GetData(), ArrayHelper.Num());
+			InVisitor->UpdatePOD(*PropertyName, ArrayHelper.Num());
 			PathName.Reset();
 			CastProp->Inner->GetPathName(nullptr, PathName);
 			InVisitor->UpdateString(TEXT("InnerPathname"), PathName);
@@ -622,7 +626,7 @@ bool FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(const void* Cont
 
 				for (int32 ArrayIdx = 0; ArrayIdx < ArrayHelper.Num(); ArrayIdx++)
 				{
-					if (!NestedPropertiesAppendCompileHash(ArrayHelper.GetRawPtr(ArrayIdx), StructProp->Struct, EFieldIteratorFlags::IncludeSuper, PropertyName, InVisitor))
+					if (!NestedPropertiesAppendCompileHash(ArrayHelper.GetRawPtr(ArrayIdx), StructProp->Struct, EFieldIteratorFlags::IncludeSuper, *PropertyName, InVisitor))
 					{
 						UE_LOG(LogNiagaraEditor, Warning, TEXT("Skipping %s because it is an array property of unsupported underlying type, please add \"meta = (SkipForCompileHash=\"true\")\" to avoid this warning in the future or handle it yourself in NestedPropertiesAppendCompileHash!"), *Property->GetName());
 						bPassed = false;
@@ -639,7 +643,7 @@ bool FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(const void* Cont
 				bool bPassed = true;
 				for (int32 ArrayIdx = 0; ArrayIdx < ArrayHelper.Num(); ArrayIdx++)
 				{
-					if (!PODPropertyAppendCompileHash(ArrayHelper.GetRawPtr(ArrayIdx), CastProp->Inner, PropertyName, InVisitor))
+					if (!PODPropertyAppendCompileHash(ArrayHelper.GetRawPtr(ArrayIdx), CastProp->Inner, *PropertyName, InVisitor))
 					{
 						if (bPassed)
 						{
@@ -944,11 +948,6 @@ void FNiagaraEditorUtilities::CompileExistingEmitters(const TArray<FVersionedNia
 			}
 		}
 	}
-
-	for (TSharedPtr<FNiagaraSystemViewModel> SystemViewModel : ExistingSystemViewModels)
-	{
-		SystemViewModel->RefreshAll();
-	}
 }
 
 bool FNiagaraEditorUtilities::TryGetEventDisplayName(UNiagaraEmitter* Emitter, FGuid EventUsageId, FText& OutEventDisplayName)
@@ -1013,6 +1012,16 @@ bool FNiagaraEditorUtilities::AreTypesAssignable(const FNiagaraTypeDefinition& T
 
 void FNiagaraEditorUtilities::MarkDependentCompilableAssetsDirty(TArray<UObject*> InObjects)
 {
+	TArray<FAssetData> AssetsToCheck;
+	for (UObject* InObject : InObjects)
+	{	
+		AssetsToCheck.Add(FAssetData(InObject));
+	}
+	MarkDependentCompilableAssetsDirty(AssetsToCheck);
+}
+
+void FNiagaraEditorUtilities::MarkDependentCompilableAssetsDirty(const TArray<FAssetData>& InAssetsToCheck)
+{
 	const FText LoadAndMarkDirtyDisplayName = NSLOCTEXT("NiagaraEditor", "MarkDependentAssetsDirtySlowTask", "Loading and marking dependent assets dirty.");
 	GWarn->BeginSlowTask(LoadAndMarkDirtyDisplayName, true, true);
 
@@ -1020,12 +1029,7 @@ void FNiagaraEditorUtilities::MarkDependentCompilableAssetsDirty(TArray<UObject*
 	TArray<FAssetIdentifier> ReferenceNames;
 
 	TArray<FAssetData> AssetsToLoadAndMarkDirty;
-	TArray<FAssetData> AssetsToCheck;
-
-	for (UObject* InObject : InObjects)
-	{	
-		AssetsToCheck.Add(FAssetData(InObject));
-	}
+	TArray<FAssetData> AssetsToCheck = InAssetsToCheck;
 
 	while (AssetsToCheck.Num() > 0)
 	{
@@ -1397,6 +1401,7 @@ void FNiagaraEditorUtilities::GetFilteredScriptAssets(FGetFilteredScriptAssetsOp
 	TArray<FAssetData> FilteredScriptAssets;
 	AssetRegistryModule.Get().GetAssets(ScriptFilter, FilteredScriptAssets);
 
+	const UNiagaraEditorSettings* NiagaraEditorSettings = GetDefault<UNiagaraEditorSettings>();
 	for (int i = 0; i < FilteredScriptAssets.Num(); ++i)
 	{
 		// Get the custom version the asset was saved with so it can be used below.
@@ -1474,6 +1479,12 @@ void FNiagaraEditorUtilities::GetFilteredScriptAssets(FGetFilteredScriptAssetsOp
 			{
 				continue;
 			}
+		}
+
+		// Filter by allowed class usage.
+		if (NiagaraEditorSettings->IsAllowedAssetByClassUsage(FilteredScriptAssets[i]) == false)
+		{
+			continue;
 		}
 		
 		OutFilteredScriptAssets.Add(FilteredScriptAssets[i]);
@@ -2198,6 +2209,179 @@ bool FNiagaraEditorUtilities::AddParameter(FNiagaraVariable& NewParameterVariabl
 	return bSuccess;
 }
 
+TArray<FNiagaraVariable> FNiagaraEditorUtilities::GetReferencedUserParametersFromEmitter(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel)
+{
+	TArray<FNiagaraVariable> UserParameters;
+	
+	TSharedRef<FNiagaraScriptGraphViewModel> GraphViewModel = EmitterViewModel->GetSharedScriptViewModel()->GetGraphViewModel();
+
+	TArray<UNiagaraNodeParameterMapGet*> MapGetNodes;
+	GraphViewModel->GetGraph()->GetNodesOfClass<UNiagaraNodeParameterMapGet>(MapGetNodes);
+
+	// first we check for direct references on parameter map get nodes
+	for(UNiagaraNodeParameterMapGet* MapGetNode : MapGetNodes)
+	{
+		TArray<UEdGraphPin*> OutputPins;
+		MapGetNode->GetOutputPins(OutputPins);
+
+		for(UEdGraphPin* Pin : OutputPins)
+		{
+			if(!Pin->bOrphanedPin && Pin->PinType.PinSubCategory == UNiagaraNodeParameterMapBase::ParameterPinSubCategory)
+			{
+				FNiagaraVariable Variable = UEdGraphSchema_Niagara::PinToNiagaraVariable(Pin);
+				FNiagaraParameterHandle Handle(Variable.GetName());
+				if(Handle.IsUserHandle())
+				{
+					UserParameters.AddUnique(Variable);
+				}
+			}			
+		}
+	}
+
+	TArray<UNiagaraNodeInput*> InputNodes;
+	GraphViewModel->GetGraph()->GetNodesOfClass<UNiagaraNodeInput>(InputNodes);
+
+	// then we check for DI user parameter binding properties
+	for(UNiagaraNodeInput* Input : InputNodes)
+	{
+		if(Input->GetDataInterface() != nullptr)
+		{
+			for(TFieldIterator<FStructProperty> It(Input->GetDataInterface()->GetClass()); It; ++It)
+			{
+				if((*It)->Struct == StaticStruct<FNiagaraUserParameterBinding>())
+				{
+					FNiagaraUserParameterBinding ParameterBinding;
+					(*It)->GetValue_InContainer(Input->GetDataInterface(), &ParameterBinding);
+
+					if(ParameterBinding.Parameter.IsValid())
+					{
+						FNiagaraParameterHandle ReferencedParameter(ParameterBinding.Parameter.GetName());
+						if(ReferencedParameter.IsUserHandle())
+						{
+							UserParameters.AddUnique(ParameterBinding.Parameter);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// then we check for user parameter bindings on renderers
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterViewModel->GetEmitter().GetEmitterData()->GetRenderers();
+	for(UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		for(TFieldIterator<FStructProperty> It(Renderer->GetClass()); It; ++It)
+		{
+			if((*It)->Struct == StaticStruct<FNiagaraUserParameterBinding>())
+			{
+				FNiagaraUserParameterBinding ParameterBinding;
+				(*It)->GetValue_InContainer(Renderer, &ParameterBinding);
+
+				if(ParameterBinding.Parameter.IsValid())
+				{
+					FNiagaraParameterHandle ReferencedParameter(ParameterBinding.Parameter.GetName());
+					if(ReferencedParameter.IsUserHandle())
+					{
+						UserParameters.AddUnique(ParameterBinding.Parameter);
+					}
+				}
+			}
+		}
+	}
+	
+	return UserParameters;
+}
+
+TArray<UNiagaraNodeParameterMapGet*> FNiagaraEditorUtilities::GetParameterMapGetNodesWithUserParameter(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel, FNiagaraVariable UserParameter)
+{
+	TArray<UNiagaraNodeParameterMapGet*> Result;
+
+	TSharedRef<FNiagaraScriptGraphViewModel> GraphViewModel = EmitterViewModel->GetSharedScriptViewModel()->GetGraphViewModel();
+
+	TArray<UNiagaraNodeParameterMapGet*> MapGetNodes;
+	GraphViewModel->GetGraph()->GetNodesOfClass<UNiagaraNodeParameterMapGet>(MapGetNodes);
+
+	for(UNiagaraNodeParameterMapGet* MapGetNode : MapGetNodes)
+	{
+		TArray<UEdGraphPin*> OutputPins;
+		MapGetNode->GetOutputPins(OutputPins);
+
+		for(UEdGraphPin* Pin : OutputPins)
+		{
+			if(!Pin->bOrphanedPin && Pin->PinType.PinSubCategory == UNiagaraNodeParameterMapBase::ParameterPinSubCategory)
+			{
+				FNiagaraVariable Variable = UEdGraphSchema_Niagara::PinToNiagaraVariable(Pin);
+				FNiagaraParameterHandle Handle(Variable.GetName());
+				if(Handle.IsUserHandle() && Variable == UserParameter)
+				{
+					Result.AddUnique(MapGetNode);
+					break;
+				}
+			}			
+		}
+	}
+
+	return Result;
+}
+
+TArray<FNiagaraUserParameterBinding*> FNiagaraEditorUtilities::GetUserParameterBindingsForUserParameter(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel, FNiagaraVariable UserParameter)
+{
+	TArray<FNiagaraUserParameterBinding*> Bindings;
+
+	// First we gather the bindings on renderers of an emitter
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterViewModel->GetEmitter().GetEmitterData()->GetRenderers();
+	for(UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		for(TFieldIterator<FStructProperty> It(Renderer->GetClass()); It; ++It)
+		{
+			if((*It)->Struct == StaticStruct<FNiagaraUserParameterBinding>())
+			{				
+				FNiagaraUserParameterBinding* ParameterBinding = (FNiagaraUserParameterBinding*) (*It)->ContainerPtrToValuePtr<void>(Renderer, 0);
+				
+				if(ParameterBinding->Parameter.IsValid())
+				{
+					FNiagaraParameterHandle ReferencedParameter(ParameterBinding->Parameter.GetName());
+					if(ReferencedParameter.IsUserHandle() && ParameterBinding->Parameter == UserParameter)
+					{
+						Bindings.Add(ParameterBinding);
+					}
+				}
+			}
+		}
+	}
+
+	// then we get the bindings on DIs which live on input nodes in the emitter graph
+	TSharedRef<FNiagaraScriptGraphViewModel> GraphViewModel = EmitterViewModel->GetSharedScriptViewModel()->GetGraphViewModel();
+
+	TArray<UNiagaraNodeInput*> InputNodes;
+	GraphViewModel->GetGraph()->GetNodesOfClass<UNiagaraNodeInput>(InputNodes);
+
+	for(UNiagaraNodeInput* Input : InputNodes)
+	{
+		if(Input->GetDataInterface() != nullptr)
+		{
+			for(TFieldIterator<FStructProperty> It(Input->GetDataInterface()->GetClass()); It; ++It)
+			{
+				if((*It)->Struct == StaticStruct<FNiagaraUserParameterBinding>())
+				{					
+					FNiagaraUserParameterBinding* ParameterBinding = (FNiagaraUserParameterBinding*) (*It)->ContainerPtrToValuePtr<void>(Input->GetDataInterface(), 0);
+
+					if(ParameterBinding->Parameter.IsValid())
+					{
+						FNiagaraParameterHandle ReferencedParameter(ParameterBinding->Parameter.GetName());
+						if(ReferencedParameter.IsUserHandle() && ParameterBinding->Parameter == UserParameter)
+						{
+							Bindings.Add(ParameterBinding);
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	return Bindings;
+}
+
 TObjectPtr<UNiagaraScriptVariable> FNiagaraEditorUtilities::GetScriptVariableForUserParameter(const FNiagaraVariable& UserParameter, TSharedPtr<FNiagaraSystemViewModel> SystemViewModel)
 {
 	return Cast<UNiagaraSystemEditorData>(SystemViewModel->GetSystem().GetEditorData())->FindOrAddUserScriptVariable(UserParameter, SystemViewModel->GetSystem());
@@ -2211,6 +2395,37 @@ TObjectPtr<UNiagaraScriptVariable> FNiagaraEditorUtilities::GetScriptVariableFor
 TObjectPtr<UNiagaraScriptVariable> FNiagaraEditorUtilities::FindScriptVariableForUserParameter(const FGuid& UserParameterGuid, UNiagaraSystem& System)
 {
 	return Cast<UNiagaraSystemEditorData>(System.GetEditorData())->FindUserScriptVariable(UserParameterGuid);
+}
+
+void FNiagaraEditorUtilities::ReplaceUserParameterReferences(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel,	FNiagaraVariable OldUserParameter, FNiagaraVariable NewUserParameter)
+{
+	TArray<FNiagaraUserParameterBinding*> ReferencingBindings = FNiagaraEditorUtilities::GetUserParameterBindingsForUserParameter(EmitterViewModel, OldUserParameter);
+
+	for(FNiagaraUserParameterBinding* ReferencingBinding : ReferencingBindings)
+	{
+		ReferencingBinding->Parameter = NewUserParameter;
+	}
+
+	TArray<UNiagaraNodeParameterMapGet*> ReferencingMapGetNodes = FNiagaraEditorUtilities::GetParameterMapGetNodesWithUserParameter(EmitterViewModel, OldUserParameter);
+
+	for(UNiagaraNodeParameterMapGet* MapGet : ReferencingMapGetNodes)
+	{
+		TArray<UEdGraphPin*> OutputPins;
+		MapGet->GetOutputPins(OutputPins);
+
+		for(UEdGraphPin* GraphPin : OutputPins)
+		{
+			if(GraphPin->PinType.PinSubCategory == UNiagaraNodeParameterMapBase::ParameterPinSubCategory && GraphPin->bOrphanedPin == false)
+			{
+				FNiagaraVariable RepresentingVariable = UEdGraphSchema_Niagara::PinToNiagaraVariable(GraphPin);
+
+				if(RepresentingVariable == OldUserParameter)
+				{
+					GraphPin->PinName = NewUserParameter.GetName();
+				}
+			}
+		}
+	}
 }
 
 void FNiagaraEditorUtilities::ShowParentEmitterInContentBrowser(TSharedRef<FNiagaraEmitterViewModel> Emitter)
@@ -3929,18 +4144,6 @@ int FNiagaraEditorUtilities::GetReferencedAssetCount(const FAssetData& SourceAss
 		}
 	}
 	return FMath::Max(Count, 0);
-}
-
-void FNiagaraEditorUtilities::GetAllowedTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes)
-{
-	const UNiagaraEditorSettings* NiagaraEditorSettings = GetDefault<UNiagaraEditorSettings>();
-	for (const FNiagaraTypeDefinition& RegisteredType : FNiagaraTypeRegistry::GetRegisteredTypes())
-	{
-		if (NiagaraEditorSettings->IsAllowedTypeDefinition(RegisteredType))
-		{
-			OutAllowedTypes.Add(RegisteredType);
-		}
-	}
 }
 
 void FNiagaraEditorUtilities::GetAllowedUserVariableTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes)

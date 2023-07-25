@@ -260,7 +260,7 @@ FRDGPassRef FRDGBuilder::AddPassInternal(
 		MoveTemp(Name),
 		ParametersMetadata,
 		ParameterStruct,
-		OverridePassFlags(Name.GetTCHAR(), Flags, LambdaPassType::kSupportsAsyncCompute),
+		OverridePassFlags(Name.GetTCHAR(), Flags),
 		MoveTemp(ExecuteLambda));
 
 	IF_RDG_ENABLE_DEBUG(ClobberPassOutputs(Pass));
@@ -288,6 +288,11 @@ FRDGPassRef FRDGBuilder::AddPass(
 	ExecuteLambdaType&& ExecuteLambda)
 {
 	return AddPassInternal(Forward<FRDGEventName>(Name), ParameterStructType::FTypeInfo::GetStructMetadata(), ParameterStruct, Flags, Forward<ExecuteLambdaType>(ExecuteLambda));
+}
+
+inline void FRDGBuilder::SetPassWorkload(FRDGPass* Pass, uint32 Workload)
+{
+	Pass->Workload = Workload;
 }
 
 inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, const void* InitialData, uint64 InitialDataSize, ERDGInitialDataFlags InitialDataFlags)
@@ -400,45 +405,55 @@ inline void FRDGBuilder::AddDispatchHint()
 	}
 }
 
-template <typename TaskLambda>
-void FRDGBuilder::AddSetupTask(TaskLambda&& Task)
+template <typename TaskLambdaType>
+UE::Tasks::FTask FRDGBuilder::AddSetupTask(TaskLambdaType&& TaskLambda, bool bCondition)
 {
-	if (bParallelExecuteEnabled)
+	UE::Tasks::FTask Task;
+
+	if (bParallelExecuteEnabled && bCondition)
 	{
-		ParallelSetupEvents.Emplace(UE::Tasks::Launch(TEXT("FRDGBuilder::AddSetupTask"), [Task = MoveTemp(Task)]
+		Task = UE::Tasks::Launch(TEXT("FRDGBuilder::AddSetupTask"), [TaskLambda = MoveTemp(TaskLambda)] () mutable
 		{
-			FTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
-			Task();
-		}));
+			FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+			TaskLambda();
+		});
+
+		ParallelSetupEvents.Emplace(Task);
 	}
 	else
 	{
-		Task();
+		TaskLambda();
 	}
+
+	return Task;
 }
 
-template <typename TaskLambda>
-void FRDGBuilder::AddCommandListSetupTask(TaskLambda&& Task)
+template <typename TaskLambdaType>
+UE::Tasks::FTask FRDGBuilder::AddCommandListSetupTask(TaskLambdaType&& TaskLambda, bool bCondition)
 {
-	if (bParallelExecuteEnabled)
+	UE::Tasks::FTask Task;
+
+	if (bParallelExecuteEnabled && bCondition)
 	{
-		FRHICommandList* RHICmdListTask = new FRHICommandList(FRHIGPUMask::All());
+		FRHICommandList* RHICmdListTask = new FRHICommandList(RHICmdList.GetGPUMask());
 
-		ParallelSetupEvents.Emplace(UE::Tasks::Launch(TEXT("FRDGBuilder::AddCommandListSetupTask"), [Task = MoveTemp(Task), RHICmdListTask]
+		Task = UE::Tasks::Launch(TEXT("FRDGBuilder::AddCommandListSetupTask"), [TaskLambda = MoveTemp(TaskLambda), RHICmdListTask] () mutable
 		{
-			FTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
-			Task(*RHICmdListTask);
-
+			FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+			RHICmdListTask->SwitchPipeline(ERHIPipeline::Graphics);
+			TaskLambda(*RHICmdListTask);
 			RHICmdListTask->FinishRecording();
+		});
 
-		}));
-
+		ParallelSetupEvents.Emplace(Task);
 		RHICmdList.QueueAsyncCommandListSubmit(RHICmdListTask);
 	}
 	else
 	{
-		Task(RHICmdList);
+		TaskLambda(RHICmdList);
 	}
+
+	return Task;
 }
 
 inline const TRefCountPtr<IPooledRenderTarget>& FRDGBuilder::GetPooledTexture(FRDGTextureRef Texture) const
@@ -478,13 +493,19 @@ inline void FRDGBuilder::RemoveUnusedBufferWarning(FRDGBufferRef Buffer)
 inline void FRDGBuilder::BeginEventScope(FRDGEventName&& ScopeName)
 {
 #if RDG_GPU_DEBUG_SCOPES
-	GPUScopeStacks.BeginEventScope(MoveTemp(ScopeName), RHICmdList.GetGPUMask());
+	if (!bFinalEventScopeActive)
+	{
+		GPUScopeStacks.BeginEventScope(MoveTemp(ScopeName), RHICmdList.GetGPUMask(), ERDGEventScopeFlags::None);
+	}
 #endif
 }
 
 inline void FRDGBuilder::EndEventScope()
 {
 #if RDG_GPU_DEBUG_SCOPES
-	GPUScopeStacks.EndEventScope();
+	if (!bFinalEventScopeActive)
+	{
+		GPUScopeStacks.EndEventScope();
+	}
 #endif
 }

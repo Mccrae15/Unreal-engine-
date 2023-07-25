@@ -3,6 +3,7 @@
 #include "MaterialList.h"
 #include "DetailLayoutBuilder.h"
 #include "Editor.h"
+#include "Engine/Texture2D.h"
 #include "IDetailChildrenBuilder.h"
 #include "PropertyCustomizationHelpers.h"
 #include "PropertyEditorModule.h"
@@ -203,6 +204,14 @@ TSharedRef<SWidget> FMaterialItemView::CreateValueContent(IDetailLayoutBuilder& 
 					.VAlign(VAlign_Center)
 					[
 						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.Padding(0.0f, 0.0f, 3.0f, 0.0f)
+						.AutoWidth()
+						[
+							// Add a button to browse to any nanite override material
+							MakeBrowseNaniteOverrideMaterialButton()
+						]
 						+SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
 						.Padding(0.0f, 0.0f, 3.0f, 0.0f)
@@ -215,6 +224,7 @@ TSharedRef<SWidget> FMaterialItemView::CreateValueContent(IDetailLayoutBuilder& 
 							.VAlign(VAlign_Center)
 							.IsEnabled( this, &FMaterialItemView::IsTexturesMenuEnabled )
 							.Visibility(bShowUsedTextures ? EVisibility::Visible : EVisibility::Hidden)
+							.ToolTipText(this, &FMaterialItemView::GetTexturesMenuToolTipText)
 							.ButtonContent()
 							[
 								SNew(SImage)
@@ -304,9 +314,82 @@ void FMaterialItemView::OnSetObject( const FAssetData& AssetData )
 	ReplaceMaterial( NewMaterial, bReplaceAll );
 }
 
+TSharedRef<SWidget> FMaterialItemView::MakeBrowseNaniteOverrideMaterialButton() const
+{
+	TSharedRef<SWidget> Widget =
+		SNew(SBox)
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.WidthOverride(22)
+		.HeightOverride(22)
+		.ToolTipText(LOCTEXT("BrowseToNaniteOverride_Tip", "Browse to the Nanite Override Material in Content Browser"))
+		[
+			SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(0)
+			.IsFocusable(false)
+			.OnClicked(FOnClicked::CreateLambda([WeakMaterial = MaterialItem.Material]()
+				{
+					UMaterialInterface* Material = WeakMaterial.Get();
+					UMaterialInterface* NaniteOverrideMaterial = Material != nullptr ? Material->GetNaniteOverride() : nullptr;
+					if (GEditor && NaniteOverrideMaterial != nullptr)
+					{
+						TArray<UObject*> Objects;
+						Objects.Add(NaniteOverrideMaterial);
+						GEditor->SyncBrowserToObjects(Objects);
+					}
+					return FReply::Handled();
+				}))
+			[ 
+				SNew(SImage)
+				.Image(FAppStyle::Get().GetBrush("Icons.BrowseContent")) //todo: UE-168435 Get custom icon for this.
+				.ColorAndOpacity(FSlateColor::UseForeground())
+			]
+		];
+
+	Widget->SetVisibility(TAttribute<EVisibility>::CreateLambda([WeakMaterial = MaterialItem.Material]()
+		{
+			UMaterialInterface* Material = WeakMaterial.Get();
+			return Material != nullptr && Material->GetNaniteOverride() != nullptr ? EVisibility::Visible : EVisibility::Collapsed;
+		}));
+
+	return Widget;
+}
+
+
 bool FMaterialItemView::IsTexturesMenuEnabled() const
 {
-	return MaterialItem.Material.Get() != NULL;
+	if (UMaterialInterface* Material = MaterialItem.Material.Get())
+	{
+		// Don't enable the menu unless there are textures, otherwise, the user might want to think the button is broken while really, it just has nothing to display
+		TArray<UTexture*> Textures;
+		Material->GetUsedTextures(Textures, EMaterialQualityLevel::Num, false, ERHIFeatureLevel::Num, true);
+		return !Textures.IsEmpty();
+	}
+	return false;
+}
+
+FText FMaterialItemView::GetTexturesMenuToolTipText() const
+{
+	if (UMaterialInterface* Material = MaterialItem.Material.Get())
+	{
+		// Don't enable the menu unless there are textures, otherwise, the user might want to think the button is broken while really, it just has nothing to display
+		TArray<UTexture*> Textures;
+		Material->GetUsedTextures(Textures, EMaterialQualityLevel::Num, false, ERHIFeatureLevel::Num, true);
+
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("MaterialName"), FText::AsCultureInvariant(Material->GetName()));
+		if (Textures.IsEmpty())
+		{
+			return LOCTEXT("GetTexturesMenuToolTipText_NoTexture", "Find the material's textures in the content browser (no texture)");
+		}
+		else
+		{
+			return FText::Format(LOCTEXT("GetTexturesMenuToolTipText_MaterialName", "Find {MaterialName}'s textures in the content browser"), Arguments);
+		}
+	}
+
+	return LOCTEXT("GetTexturesMenuToolTipText_Default", "Find the material's textures in the content browser");
 }
 
 TSharedRef<SWidget> FMaterialItemView::OnGetTexturesMenuForMaterial()

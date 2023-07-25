@@ -3,19 +3,10 @@
 #include "AudioEditorModule.h"
 
 #include "AssetToolsModule.h"
-#include "AssetTypeActions/AssetTypeActions_AudioBus.h"
-#include "AssetTypeActions/AssetTypeActions_DialogueVoice.h"
 #include "AssetTypeActions/AssetTypeActions_DialogueWave.h"
-#include "AssetTypeActions/AssetTypeActions_ReverbEffect.h"
-#include "AssetTypeActions/AssetTypeActions_SoundAttenuation.h"
-#include "AssetTypeActions/AssetTypeActions_SoundBase.h"
 #include "AssetTypeActions/AssetTypeActions_SoundClass.h"
-#include "AssetTypeActions/AssetTypeActions_SoundConcurrency.h"
-#include "AssetTypeActions/AssetTypeActions_SoundCue.h"
 #include "AssetTypeActions/AssetTypeActions_SoundEffectPreset.h"
-#include "AssetTypeActions/AssetTypeActions_SoundMix.h"
 #include "AssetTypeActions/AssetTypeActions_SoundWave.h"
-#include "AssetTypeActions/AssetTypeActions_SoundSourceBus.h"
 #include "AssetTypeActions/AssetTypeActions_SoundSubmix.h"
 #include "ClassTemplateEditorSubsystem.h"
 #include "Components/SynthComponent.h"
@@ -26,6 +17,7 @@
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
 #include "Sound/AudioSettings.h"
+#include "Sound/SoundClass.h"
 #include "Sound/SoundCue.h"
 #include "Sound/SoundEffectPreset.h"
 #include "Sound/SoundNodeDialoguePlayer.h"
@@ -185,16 +177,9 @@ public:
 		// Register the audio editor asset type actions
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
-		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_DialogueVoice>());
 		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_DialogueWave>());
-		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundAttenuation>());
-		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundConcurrency>());
-		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundBase>());
 		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundClass>());
-		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundCue>());
-		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundMix>());
 		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundWave>());
-		AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_ReverbEffect>());
 	}
 
 	virtual void RegisterAudioMixerAssetActions() override
@@ -215,8 +200,6 @@ public:
 			AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundEffectSubmixPreset>());
 			AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundEffectSourcePreset>());
 			AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundEffectSourcePresetChain>());
-			AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_SoundSourceBus>());
-			AssetTools.RegisterAssetTypeActions(MakeShared<FAssetTypeActions_AudioBus>());
 		}
 	}
 

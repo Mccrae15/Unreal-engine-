@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/HitResult.h"
 #include "UObject/ObjectMacros.h"
 #include "Engine/EngineTypes.h"
 #include "FinalPostProcessSettings.h"
@@ -61,7 +62,7 @@ class ENGINE_API ADebugCameraController
 	UPROPERTY()
 	TObjectPtr<class UDrawFrustumComponent> DrawFrustum;
 	
-	/** Sets whether to show information about the selected actor on the debug camera HUD.t */
+	/** Sets whether to show information about the selected actor on the debug camera HUD. */
 	UFUNCTION(exec)
 	virtual void ShowDebugSelectedInfo();
 

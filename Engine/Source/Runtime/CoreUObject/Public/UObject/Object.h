@@ -6,7 +6,6 @@
 	Object.h: Direct base class for all UE objects
 =============================================================================*/
 
-#include "CoreMinimal.h"
 #include "UObject/Script.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectBaseUtility.h"
@@ -313,7 +312,7 @@ public:
 #endif
 
 	/**
-	 * Called to defer loading a subobject to its top-level container object. Usefull with the package override
+	 * Called to defer loading a subobject to its top-level container object. Useful with the package override
 	 * feature, where an object might not be saved in the same package as its outer, especially if the the top-level
 	 * object does lazy loading of these objects.
 	 * 
@@ -1806,4 +1805,8 @@ const T* GetValid(const T* Test)
 #if WITH_EDITOR
 /** Callback for editor object selection. This must be in core instead of editor for UObject::IsSelectedInEditor to work */
 extern COREUOBJECT_API TFunction<bool(const UObject*)> GIsObjectSelectedInEditor;
+#endif
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
 #endif

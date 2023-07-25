@@ -2,9 +2,9 @@
 
 #pragma once
 
-#include "RigUnit_SimBase.h"
+#include "RigVMFunctions/Simulation/RigVMFunction_SimBase.h"
 #include "Math/ControlRigMathLibrary.h"
-#include "Math/Simulation/CRSimPoint.h"
+#include "RigVMFunctions/Math/RigVMMathLibrary.h"
 #include "Math/Simulation/CRSimLinearSpring.h"
 #include "Math/Simulation/CRSimPointForce.h"
 #include "Math/Simulation/CRSimSoftCollision.h"
@@ -118,29 +118,29 @@ struct CONTROLRIG_API FRigUnit_PointSimulation_WorkData
  * Note: Disabled for now.
  */
 USTRUCT(meta=(DisplayName="Point Simulation", Keywords="Simulate,Verlet,Springs", Deprecated="4.25"))
-struct CONTROLRIG_API FRigUnit_PointSimulation : public FRigUnit_SimBaseMutable
+struct CONTROLRIG_API FRigUnit_PointSimulation : public FRigVMFunction_SimBaseMutable
 {
 	GENERATED_BODY()
 	
 	FRigUnit_PointSimulation()
 	{
 		SimulatedStepsPerSecond = 60.f;
-		IntegratorType = ECRSimPointIntegrateType::Verlet;
+		IntegratorType = ERigVMSimPointIntegrateType::Verlet;
 		VerletBlend = 4.f;
 		bLimitLocalPosition = true;
 		bPropagateToChildren = true;
 		PrimaryAimAxis = FVector(1.f, 0.f, 0.f);
 		SecondaryAimAxis = FVector(0.f, 1.f, 0.f);
 		DebugSettings = FRigUnit_PointSimulation_DebugSettings();
-		Bezier = FCRFourPointBezier();
+		Bezier = FRigVMFourPointBezier();
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** The points to simulate */
 	UPROPERTY(meta = (Input))
-	TArray<FCRSimPoint> Points;
+	TArray<FRigVMSimPoint> Points;
 
 	/** The links to connect the points with */
 	UPROPERTY(meta = (Input))
@@ -160,7 +160,7 @@ struct CONTROLRIG_API FRigUnit_PointSimulation : public FRigUnit_SimBaseMutable
 
 	/** The type of integrator to use */
 	UPROPERTY(meta = (Input, Constant))
-	ECRSimPointIntegrateType IntegratorType;
+	ERigVMSimPointIntegrateType IntegratorType;
 
 	/** The amount of blending to apply per second ( only for verlet integrations )*/
 	UPROPERTY(meta = (Input))
@@ -199,7 +199,7 @@ struct CONTROLRIG_API FRigUnit_PointSimulation : public FRigUnit_SimBaseMutable
 
 	/** If the simulation has at least four points they will be stored in here. */
 	UPROPERTY(meta = (Output))
-	FCRFourPointBezier Bezier;
+	FRigVMFourPointBezier Bezier;
 
 	UPROPERTY(transient)
 	FRigUnit_PointSimulation_WorkData WorkData;

@@ -3,33 +3,22 @@
 
 #include "Engine/Level.h"
 #include "Engine/World.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
 #include "WorldPartition/ContentBundle/ContentBundleBase.h"
 #include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
 #include "Misc/Paths.h"
 
 #if WITH_EDITOR
-#include "String/Find.h"
+#include "PackageTools.h"
 #endif
-
-namespace ContentBundlePaths
-{
-	// ContentBundleCookedFolder is reduce to avoid reaching MAX_PATH
-	constexpr FStringView ContentBundleCookedFolder = TEXTVIEW("/CB/");
-}
 
 FString ContentBundlePaths::GetCookedContentBundleLevelFolder(const FContentBundleBase& ContentBundle)
 {
 	TStringBuilderWithBuffer<TCHAR, NAME_SIZE> GeneratedContentBundleLevelFolder;
 	GeneratedContentBundleLevelFolder += TEXT("/");
 	GeneratedContentBundleLevelFolder += ContentBundle.GetDescriptor()->GetPackageRoot();
-	GeneratedContentBundleLevelFolder += TEXT("/");
-	GeneratedContentBundleLevelFolder += ContentBundlePaths::ContentBundleCookedFolder;
-	GeneratedContentBundleLevelFolder += TEXT("/");
-	
-	// ContentBundleGuid is reduced to avoid reaching MAX_PATH
-	ContentBundle.GetDescriptor()->GetGuid().AppendString(GeneratedContentBundleLevelFolder, EGuidFormats::Short); 
-
-	GeneratedContentBundleLevelFolder += TEXT("/");
+	GeneratedContentBundleLevelFolder += TEXT("/CB/");
 	GeneratedContentBundleLevelFolder += GetRelativeLevelFolder(ContentBundle);
 	GeneratedContentBundleLevelFolder += TEXT("/");
 
@@ -37,7 +26,6 @@ FString ContentBundlePaths::GetCookedContentBundleLevelFolder(const FContentBund
 	FPaths::RemoveDuplicateSlashes(Result);
 	return Result;
 }
-
 
 FString ContentBundlePaths::GetRelativeLevelFolder(const FContentBundleBase& ContentBundle)
 {
@@ -116,6 +104,48 @@ FStringView ContentBundlePaths::GetActorPathRelativeToExternalActors(FStringView
 		}
 	}
 	return FStringView();
+}
+
+bool ContentBundlePaths::BuildContentBundleRootPath(const FString& InContenBundleMountPoint, const FGuid& InContentBundleGuid, FString& OutContentBundleRootPath)
+{
+	if (InContenBundleMountPoint.IsEmpty() || !InContentBundleGuid.IsValid())
+	{
+		return false;
+	}
+
+	TStringBuilderWithBuffer<TCHAR, NAME_SIZE> ContentBundleRootPathBuilder;
+	ContentBundleRootPathBuilder += TEXT("/");
+	ContentBundleRootPathBuilder += InContenBundleMountPoint;
+	ContentBundleRootPathBuilder += GetContentBundleFolder();
+	ContentBundleRootPathBuilder += InContentBundleGuid.ToString();
+	ContentBundleRootPathBuilder += TEXT("/");
+	
+	OutContentBundleRootPath = *ContentBundleRootPathBuilder;
+
+	return true;
+}
+
+bool ContentBundlePaths::BuildActorDescContainerPackgePath(const FString& InContenBundleMountPoint, const FGuid& InContentBundleGuid, const FString& InLevelPackagePath, FString& OutContainerPackagePath)
+{
+	FString ContentBundleRootPath;
+	if (!BuildContentBundleRootPath(InContenBundleMountPoint, InContentBundleGuid, ContentBundleRootPath))
+	{
+		return false;
+	}
+
+	FString LevelRoot, LevelPackagePath, LevelName;
+	if (FPackageName::SplitLongPackageName(InLevelPackagePath, LevelRoot, LevelPackagePath, LevelName))
+	{
+		TStringBuilderWithBuffer<TCHAR, NAME_SIZE> ContentBundleActorDescContainerPackage;
+		ContentBundleActorDescContainerPackage += ContentBundleRootPath;
+		ContentBundleActorDescContainerPackage += LevelPackagePath;
+		ContentBundleActorDescContainerPackage += LevelName;
+
+		OutContainerPackagePath = UPackageTools::SanitizePackageName(*ContentBundleActorDescContainerPackage);
+		return true;
+	}
+
+	return false;
 }
 
 #endif

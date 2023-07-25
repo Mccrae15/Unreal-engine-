@@ -12,6 +12,7 @@
 #include "UObject/MetaData.h"
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
+#include "MaterialDomain.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/Material.h"
 #include "Factories/Factory.h"
@@ -21,6 +22,7 @@
 #include "Engine/Polys.h"
 #include "Engine/StaticMeshSocket.h"
 #include "Editor.h"
+#include "MeshBudgetProjectSettings.h"
 #include "Modules/ModuleManager.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
@@ -1710,6 +1712,10 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 
 		// Free any RHI resources for existing mesh before we re-create in place.
 		ExistingMesh->PreEditChange(NULL);
+
+		//When we do a reimport the nanite static mesh import setting should not affect the asset since its a "reimportrestrict" option
+		//In that case we override the import setting
+		ImportOptions->bBuildNanite = ExistingMesh->NaniteSettings.bEnabled;
 	}
 	else if (ExistingObject)
 	{
@@ -1772,9 +1778,7 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 		//Make sure an imported mesh do not get reduce if there was no mesh data before reimport.
 		//In this case we have a generated LOD convert to a custom LOD
 		FStaticMeshSourceModel& SrcModel = StaticMesh->GetSourceModel(LODIndex);
-		SrcModel.ReductionSettings.MaxDeviation = 0.0f;
-		SrcModel.ReductionSettings.PercentTriangles = 1.0f;
-		SrcModel.ReductionSettings.PercentVertices = 1.0f;
+		SrcModel.ResetReductionSetting();
 	}
 	else if (InStaticMesh != NULL && LODIndex > 0)
 	{
@@ -2379,6 +2383,10 @@ void UnFbx::FFbxImporter::PostImportStaticMesh(UStaticMesh* StaticMesh, TArray<F
 	{
 		ReorderMaterialAfterImport(StaticMesh, MeshNodeArray, ImportOptions->bReorderMaterialToFbxOrder);
 	}
+
+#if WITH_EDITOR
+	FMeshBudgetProjectSettingsUtils::SetLodGroupForStaticMesh(StaticMesh);
+#endif
 }
 
 void UnFbx::FFbxImporter::UpdateStaticMeshImportData(UStaticMesh *StaticMesh, UFbxStaticMeshImportData* StaticMeshImportData)

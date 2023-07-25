@@ -9,6 +9,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -140,6 +141,8 @@ void FAssetTypeActions_ForceFeedbackEffect::PlayEffect(UForceFeedbackEffect* Eff
 	{
 		PreviewForceFeedbackEffect.ForceFeedbackEffect = Effect;
 		PreviewForceFeedbackEffect.PlayTime = 0.f;
+		PreviewForceFeedbackEffect.PlatformUser = IPlatformInputDeviceMapper::Get().GetPrimaryPlatformUser();
+		PreviewForceFeedbackEffect.ActivateDeviceProperties();
 	}
 	else
 	{
@@ -149,6 +152,7 @@ void FAssetTypeActions_ForceFeedbackEffect::PlayEffect(UForceFeedbackEffect* Eff
 
 void FAssetTypeActions_ForceFeedbackEffect::StopEffect() 
 {
+	PreviewForceFeedbackEffect.ResetDeviceProperties();
 	PreviewForceFeedbackEffect.ForceFeedbackEffect = nullptr;
 
 	IInputInterface* InputInterface = FSlateApplication::Get().GetInputInterface();
@@ -245,6 +249,7 @@ void FPreviewForceFeedbackEffect::Tick( float DeltaTime )
 
 	if (!Update(DeltaTime, ForceFeedbackValues))
 	{
+		ResetDeviceProperties();
 		ForceFeedbackEffect = nullptr;
 	}
 

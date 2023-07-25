@@ -2,10 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Styling/SlateColor.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+
 //#include "DisplayNodes/SVariantManagerEditableLabel.h"
+struct FTableRowStyle;
+
+#include "VariantManagerDisplayNode.generated.h"
 
 enum class EItemDropZone;
 class FMenuBuilder;

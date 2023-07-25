@@ -1338,11 +1338,6 @@ class FThreadStats : FNoncopyable
 	/** Tracks current stack depth for cycle counters. **/
 	bool bSawExplicitFlush;
 
-#if !UE_STATS_THREAD_AS_PIPE
-	/** True if this is the stats thread, which needs special handling. **/
-	bool bIsStatsThread;
-#endif
-
 	/** Gathers information about the current thread and sets up the TLS value. **/
 	CORE_API FThreadStats();
 
@@ -1780,7 +1775,7 @@ class FStartupMessages
 {
 	friend class FStatsThread;
 
-	TArray<FStatMessage> DelayedMessages;
+	TArray64<FStatMessage> DelayedMessages;
 	FCriticalSection CriticalSection;
 
 public:
@@ -2404,6 +2399,7 @@ DECLARE_STATS_GROUP(TEXT("RHI"), STATGROUP_RHI, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("RDG"), STATGROUP_RDG, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Render Thread"),STATGROUP_RenderThreadProcessing, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Render Target Pool"), STATGROUP_RenderTargetPool, STATCAT_Advanced);
+DECLARE_STATS_GROUP(TEXT("Render Scaling"), STATGROUP_RenderScaling, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Scene Memory"),STATGROUP_SceneMemory, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Scene Rendering"),STATGROUP_SceneRendering, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Scene Update"),STATGROUP_SceneUpdate, STATCAT_Advanced);

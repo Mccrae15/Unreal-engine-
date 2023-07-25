@@ -23,7 +23,9 @@
 #include "RawIndexBuffer.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/ShapeComponent.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Engine/StaticMesh.h"
+#include "EditorDirectories.h"
 #include "Materials/Material.h"
 #include "RawMesh.h"
 #include "StaticMeshResources.h"
@@ -41,6 +43,7 @@
 #include "PhysicsEngine/AggregateGeom.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "MaterialUtilities.h"
+#include "MaterialShared.h"
 #include "IHierarchicalLODUtilities.h"
 #include "HierarchicalLODUtilitiesModule.h"
 #include "MeshBoneReduction.h"
@@ -57,6 +60,7 @@
 #include "Algo/Transform.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "Math/Bounds.h"
 
 #include "LandscapeProxy.h"
 #include "Landscape.h"
@@ -109,6 +113,7 @@
 #include "UnrealEdMisc.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #endif
+#include "BoneWeights.h"
 #include "MaterialBakingStructures.h"
 #include "IMaterialBakingModule.h"
 #include "MaterialOptions.h"
@@ -497,7 +502,16 @@ UStaticMesh* FMeshUtilities::ConvertMeshesToStaticMesh(const TArray<UMeshCompone
 	if (InPackageName.IsEmpty())
 	{
 		FString NewNameSuggestion = FString(TEXT("StaticMesh"));
-		FString PackageNameSuggestion = FString(TEXT("/Game/Meshes/")) + NewNameSuggestion;
+		FString DefaultPath;
+		const FString DefaultDirectory = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::NEW_ASSET);
+		FPackageName::TryConvertFilenameToLongPackageName(DefaultDirectory, DefaultPath);
+
+		if (DefaultPath.IsEmpty())
+		{
+			DefaultPath = TEXT("/Game/Meshes");
+		}
+
+		FString PackageNameSuggestion = DefaultPath / NewNameSuggestion;
 		FString Name;
 		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 		AssetToolsModule.Get().CreateUniqueAssetName(PackageNameSuggestion, TEXT(""), PackageNameSuggestion, Name);
@@ -2127,7 +2141,7 @@ static void BuildDepthOnlyIndexBuffer(
 	VertIndexAndZ.Empty(NumVertices);
 	for (int32 VertIndex = 0; VertIndex < NumVertices; VertIndex++)
 	{
-		new(VertIndexAndZ)FIndexAndZ(VertIndex, (FVector)InVertices[VertIndex].Position);
+		new(VertIndexAndZ)FIndexAndZ(VertIndex, InVertices[VertIndex].Position);
 	}
 	VertIndexAndZ.Sort(FCompareIndexAndZ());
 
@@ -2221,9 +2235,9 @@ static bool AreVerticesEqual(
 	)
 {
 	if (!PointsEqual(A.Position, B.Position, ComparisonThreshold)
-		|| !NormalsEqual((FVector)A.TangentX, (FVector)B.TangentX)
-		|| !NormalsEqual((FVector)A.TangentY, (FVector)B.TangentY)
-		|| !NormalsEqual((FVector)A.TangentZ, (FVector)B.TangentZ)
+		|| !NormalsEqual(A.TangentX, B.TangentX)
+		|| !NormalsEqual(A.TangentY, B.TangentY)
+		|| !NormalsEqual(A.TangentZ, B.TangentZ)
 		|| A.Color != B.Color)
 	{
 		return false;
@@ -2904,23 +2918,25 @@ public:
 		}
 
 		// Calculate the bounding box.
-		FBox BoundingBox(ForceInit);
+		FBounds3f Bounds;
 		FPositionVertexBuffer& BasePositionVertexBuffer = OutRenderData.LODResources[0].VertexBuffers.PositionVertexBuffer;
 		for (uint32 VertexIndex = 0; VertexIndex < BasePositionVertexBuffer.GetNumVertices(); VertexIndex++)
 		{
-			BoundingBox += (FVector)BasePositionVertexBuffer.VertexPosition(VertexIndex);
+			Bounds += BasePositionVertexBuffer.VertexPosition(VertexIndex);
 		}
-		BoundingBox.GetCenterAndExtents(OutRenderData.Bounds.Origin, OutRenderData.Bounds.BoxExtent);
+		OutRenderData.Bounds.Origin = (FVector)Bounds.GetCenter();
+		OutRenderData.Bounds.BoxExtent = (FVector)Bounds.GetExtent();
 
 		// Calculate the bounding sphere, using the center of the bounding box as the origin.
 		OutRenderData.Bounds.SphereRadius = 0.0f;
 		for (uint32 VertexIndex = 0; VertexIndex < BasePositionVertexBuffer.GetNumVertices(); VertexIndex++)
 		{
 			OutRenderData.Bounds.SphereRadius = FMath::Max(
-				(BasePositionVertexBuffer.VertexPosition(VertexIndex) - (FVector3f)OutRenderData.Bounds.Origin).Size(),
+				(BasePositionVertexBuffer.VertexPosition(VertexIndex) - (FVector3f)OutRenderData.Bounds.Origin).SizeSquared(),
 				OutRenderData.Bounds.SphereRadius
 				);
 		}
+		OutRenderData.Bounds.SphereRadius = FMath::Sqrt( OutRenderData.Bounds.SphereRadius );
 
 		Stage = EStage::GenerateRendering;
 		return true;
@@ -3078,7 +3094,7 @@ public:
 	virtual uint32 GetVertexIndex(uint32 FaceIndex, uint32 TriIndex) = 0;
 	virtual FVector3f GetVertexPosition(uint32 WedgeIndex) = 0;
 	virtual FVector3f GetVertexPosition(uint32 FaceIndex, uint32 TriIndex) = 0;
-	virtual FVector2D GetVertexUV(uint32 FaceIndex, uint32 TriIndex, uint32 UVIndex) = 0;
+	virtual FVector2f GetVertexUV(uint32 FaceIndex, uint32 TriIndex, uint32 UVIndex) = 0;
 	virtual uint32 GetFaceSmoothingGroups(uint32 FaceIndex) = 0;
 
 	virtual uint32 GetNumFaces() = 0;
@@ -3198,9 +3214,9 @@ public:
 		return Points[Wedges[Faces[FaceIndex].iWedge[TriIndex]].iVertex];
 	}
 
-	virtual FVector2D GetVertexUV(uint32 FaceIndex, uint32 TriIndex, uint32 UVIndex) override
+	virtual FVector2f GetVertexUV(uint32 FaceIndex, uint32 TriIndex, uint32 UVIndex) override
 	{
-		return FVector2D(Wedges[Faces[FaceIndex].iWedge[TriIndex]].UVs[UVIndex]);
+		return Wedges[Faces[FaceIndex].iWedge[TriIndex]].UVs[UVIndex];
 	}
 
 	virtual uint32 GetFaceSmoothingGroups(uint32 FaceIndex)
@@ -3293,7 +3309,7 @@ public:
 			for (int32 TriIndex = 0; TriIndex < 3; ++TriIndex)
 			{
 				uint32 Index = BuildData->GetWedgeIndex(FaceIndex, TriIndex);
-				new(VertIndexAndZ)FIndexAndZ(Index, (FVector)BuildData->GetVertexPosition(Index));
+				new(VertIndexAndZ)FIndexAndZ(Index, BuildData->GetVertexPosition(Index));
 			}
 		}
 
@@ -3459,7 +3475,7 @@ public:
 			for (int32 CornerB = 0; CornerB < 3; ++CornerB)
 			{
 				const FVector3f& CornerBPosition = BuildData->GetVertexPosition((FaceIdxB * 3) + CornerB);
-				if (PointsEqual((FVector)CornerAPosition, (FVector)CornerBPosition, BuildData->BuildOptions.OverlappingThresholds))
+				if (PointsEqual(CornerAPosition, CornerBPosition, BuildData->BuildOptions.OverlappingThresholds))
 				{
 					bFoundMatch = true;
 					break;
@@ -3559,9 +3575,9 @@ public:
 			}
 
 			// Don't process degenerate triangles.
-			if (PointsEqual((FVector)CornerPositions[0], (FVector)CornerPositions[1], BuildData->BuildOptions.OverlappingThresholds)
-				|| PointsEqual((FVector)CornerPositions[0], (FVector)CornerPositions[2], BuildData->BuildOptions.OverlappingThresholds)
-				|| PointsEqual((FVector)CornerPositions[1], (FVector)CornerPositions[2], BuildData->BuildOptions.OverlappingThresholds))
+			if (PointsEqual(CornerPositions[0], CornerPositions[1], BuildData->BuildOptions.OverlappingThresholds) ||
+				PointsEqual(CornerPositions[0], CornerPositions[2], BuildData->BuildOptions.OverlappingThresholds) ||
+				PointsEqual(CornerPositions[1], CornerPositions[2], BuildData->BuildOptions.OverlappingThresholds))
 			{
 				continue;
 			}
@@ -3647,8 +3663,8 @@ public:
 						for (int32 OtherCornerIndex = 0; OtherCornerIndex < 3; OtherCornerIndex++)
 						{
 							if (PointsEqual(
-								(FVector)CornerPositions[OurCornerIndex],
-								(FVector)BuildData->GetVertexPosition(OtherFaceIndex, OtherCornerIndex),
+								CornerPositions[OurCornerIndex],
+								BuildData->GetVertexPosition(OtherFaceIndex, OtherCornerIndex),
 								BuildData->BuildOptions.OverlappingThresholds
 								))
 							{
@@ -3705,8 +3721,8 @@ public:
 												int32 NextVertexIndex = BuildData->GetVertexIndex(NextFace.FaceIndex, NextCornerIndex);
 												int32 OtherVertexIndex = BuildData->GetVertexIndex(OtherFace.FaceIndex, OtherCornerIndex);
 												if (PointsEqual(
-													(FVector)BuildData->GetVertexPosition(NextFace.FaceIndex, NextCornerIndex),
-													(FVector)BuildData->GetVertexPosition(OtherFace.FaceIndex, OtherCornerIndex),
+													BuildData->GetVertexPosition(NextFace.FaceIndex, NextCornerIndex),
+													BuildData->GetVertexPosition(OtherFace.FaceIndex, OtherCornerIndex),
 													BuildData->BuildOptions.OverlappingThresholds))
 												{
 													CommonVertices++;
@@ -3781,9 +3797,9 @@ public:
 							if (bComputeWeightedNormals)
 							{
 								FVector3f OtherFacePoint[3] = { BuildData->GetVertexPosition(OtherFaceIndex, 0), BuildData->GetVertexPosition(OtherFaceIndex, 1), BuildData->GetVertexPosition(OtherFaceIndex, 2) };
-								float OtherFaceArea = TriangleUtilities::ComputeTriangleArea((FVector)OtherFacePoint[0], (FVector)OtherFacePoint[1], (FVector)OtherFacePoint[2]);
+								float OtherFaceArea = TriangleUtilities::ComputeTriangleArea(OtherFacePoint[0], OtherFacePoint[1], OtherFacePoint[2]);
 								int32 OtherFaceCornerIndex = RelevantFace.LinkedVertexIndex;
-								float OtherFaceAngle = TriangleUtilities::ComputeTriangleCornerAngle((FVector)OtherFacePoint[OtherFaceCornerIndex], (FVector)OtherFacePoint[(OtherFaceCornerIndex + 1) % 3], (FVector)OtherFacePoint[(OtherFaceCornerIndex + 2) % 3]);
+								float OtherFaceAngle = TriangleUtilities::ComputeTriangleCornerAngle(OtherFacePoint[OtherFaceCornerIndex], OtherFacePoint[(OtherFaceCornerIndex + 1) % 3], OtherFacePoint[(OtherFaceCornerIndex + 2) % 3]);
 								//Get the CornerWeight
 								CornerWeight = OtherFaceArea * OtherFaceAngle;
 							}
@@ -4050,7 +4066,16 @@ public:
 					}
 
 					InfluenceCount = FMath::Min<uint32>(InfluenceCount, MAX_TOTAL_INFLUENCES);
-					if (InfluenceCount > EXTRA_BONE_INFLUENCES && !FGPUBaseSkinVertexFactory::UseUnlimitedBoneInfluences(InfluenceCount))
+
+					// Apply bone influence limit from asset
+					{
+						const int32 InfluenceLimit = FGPUBaseSkinVertexFactory::GetBoneInfluenceLimitForAsset(
+							BuildData.BuildOptions.BoneInfluenceLimit, BuildData.BuildOptions.TargetPlatform);
+
+						InfluenceCount = FMath::Min<uint32>(InfluenceCount, InfluenceLimit);
+					}
+
+					if (InfluenceCount > EXTRA_BONE_INFLUENCES && !FGPUBaseSkinVertexFactory::UseUnlimitedBoneInfluences(InfluenceCount, BuildData.BuildOptions.TargetPlatform))
 					{
 						// Add a single warning message, there could be too many
 						if (bIsFirstBoneInfluenceTruncation)
@@ -4070,27 +4095,43 @@ public:
 						InfluenceCount = EXTRA_BONE_INFLUENCES;
 					}
 
-					// Setup the vertex influences.
-					Vertex.InfluenceBones[0] = 0;
-					Vertex.InfluenceWeights[0] = 255;
-					for (uint32 i = 1; i < MAX_TOTAL_INFLUENCES; i++)
-					{
-						Vertex.InfluenceBones[i] = 0;
-						Vertex.InfluenceWeights[i] = 0;
-					}
+					using namespace UE::AnimationCore;
 
-					uint32	TotalInfluenceWeight = 0;
-					for (uint32 i = 0; i < InfluenceCount; i++)
+					// Setup the vertex influences.
+					FBoneIndexType InfluenceBones[MAX_TOTAL_INFLUENCES];
+					float InfluenceWeights[MAX_TOTAL_INFLUENCES];
+
+					int32 ActualInfluenceCount = 0; 
+					for (uint32 Index = 0; Index < InfluenceCount; Index++)
 					{
-						FBoneIndexType BoneIndex = (FBoneIndexType)BuildData.Influences[InfIdx + i].BoneIndex;
+						const FBoneIndexType BoneIndex = BuildData.Influences[InfIdx + Index].BoneIndex;
 						if (BoneIndex >= BuildData.RefSkeleton.GetRawBoneNum())
 							continue;
-
-						Vertex.InfluenceBones[i] = BoneIndex;
-						Vertex.InfluenceWeights[i] = (uint8)(BuildData.Influences[InfIdx + i].Weight * 255.0f);
-						TotalInfluenceWeight += Vertex.InfluenceWeights[i];
+					
+						InfluenceBones[ActualInfluenceCount] = BoneIndex;
+						InfluenceWeights[ActualInfluenceCount] = (BuildData.Influences[InfIdx + Index].Weight);
+						ActualInfluenceCount++;
 					}
-					Vertex.InfluenceWeights[0] += 255 - TotalInfluenceWeight;
+
+					const FBoneWeights BoneWeights = FBoneWeights::Create(InfluenceBones, InfluenceWeights, ActualInfluenceCount);
+				
+					FMemory::Memzero(Vertex.InfluenceBones);
+					FMemory::Memzero(Vertex.InfluenceWeights);
+				
+					if (BoneWeights.Num() == 0)
+					{
+						Vertex.InfluenceWeights[0] = std::numeric_limits<uint16>::max();
+					}
+					else
+					{
+						int32 Index = 0;
+						for (FBoneWeight BoneWeight: BoneWeights)
+						{
+							Vertex.InfluenceBones[Index] = BoneWeight.GetBoneIndex();
+							Vertex.InfluenceWeights[Index] = BoneWeight.GetRawWeight();
+							Index++;
+						}
+					}
 				}
 
 				// Add the vertex as well as its original index in the points array
@@ -4201,7 +4242,7 @@ bool FMeshUtilities::BuildSkeletalMesh(FSkeletalMeshLODModel& LODModel,	const FS
 			for (int32 VertIndex = 0; VertIndex < NumSoftVertices; ++VertIndex)
 			{
 				FSoftSkinVertex& SrcVert = CurSection.SoftVertices[VertIndex];
-				new(VertIndexAndZ)FIndexAndZ(VertIndex, (FVector)SrcVert.Position);
+				new(VertIndexAndZ)FIndexAndZ(VertIndex, SrcVert.Position);
 			}
 			VertIndexAndZ.Sort(FCompareIndexAndZ());
 
@@ -4220,7 +4261,7 @@ bool FMeshUtilities::BuildSkeletalMesh(FSkeletalMeshLODModel& LODModel,	const FS
 
 					const uint32 IterVertIndex = VertIndexAndZ[j].Index;
 					FSoftSkinVertex& IterVert = CurSection.SoftVertices[IterVertIndex];
-					if (PointsEqual((FVector)SrcVert.Position, (FVector)IterVert.Position))
+					if (PointsEqual(SrcVert.Position, IterVert.Position))
 					{
 						// if so, we add to overlapping vert
 						TArray<int32>& SrcValueArray = CurSection.OverlappingVertices.FindOrAdd(SrcVertIndex);
@@ -4605,8 +4646,8 @@ bool FMeshUtilities::BuildSkeletalMesh_Legacy(FSkeletalMeshLODModel& LODModel
 
 				// check to see if the points are really overlapping
 				if (PointsEqual(
-					(FVector)Points[VertIndexAndZ[i].Index],
-					(FVector)Points[VertIndexAndZ[j].Index], OverlappingThresholds))
+					Points[VertIndexAndZ[i].Index],
+					Points[VertIndexAndZ[j].Index], OverlappingThresholds))
 				{
 					Vert2Duplicates.Add(VertIndexAndZ[i].Index, VertIndexAndZ[j].Index);
 					Vert2Duplicates.Add(VertIndexAndZ[j].Index, VertIndexAndZ[i].Index);
@@ -4699,7 +4740,7 @@ bool FMeshUtilities::BuildSkeletalMesh_Legacy(FSkeletalMeshLODModel& LODModel
 				const SkeletalMeshImportData::FMeshFace&	OtherFace = Faces[OtherFaceIndex];
 
 				FVector3f OtherFacePoint[3] = { Points[Wedges[OtherFace.iWedge[0]].iVertex], Points[Wedges[OtherFace.iWedge[1]].iVertex], Points[Wedges[OtherFace.iWedge[2]].iVertex] };
-				float OtherFaceArea = !bComputeWeightedNormals ? 1.0f : TriangleUtilities::ComputeTriangleArea((FVector)OtherFacePoint[0], (FVector)OtherFacePoint[1], (FVector)OtherFacePoint[2]);
+				float OtherFaceArea = !bComputeWeightedNormals ? 1.0f : TriangleUtilities::ComputeTriangleArea(OtherFacePoint[0], OtherFacePoint[1], OtherFacePoint[2]);
 				FVector3f		OtherTriangleNormal = (FVector3f)FPlane(
 					(FVector)OtherFacePoint[2],
 					(FVector)OtherFacePoint[1],
@@ -4712,13 +4753,13 @@ bool FMeshUtilities::BuildSkeletalMesh_Legacy(FSkeletalMeshLODModel& LODModel
 					for (int32 OtherVertexIndex = 0; OtherVertexIndex < 3; OtherVertexIndex++)
 					{
 						if (PointsEqual(
-							(FVector)OtherFacePoint[OtherVertexIndex],
-							(FVector)FacePoint[VertexIndex],
+							OtherFacePoint[OtherVertexIndex],
+							FacePoint[VertexIndex],
 							OverlappingThresholds
 							))
 						{
 							//Compute the angle
-							float OtherFaceAngle = !bComputeWeightedNormals ? 1.0f : TriangleUtilities::ComputeTriangleCornerAngle((FVector)OtherFacePoint[OtherVertexIndex], (FVector)OtherFacePoint[(OtherVertexIndex + 1) % 3], (FVector)OtherFacePoint[(OtherVertexIndex + 2) % 3]);
+							float OtherFaceAngle = !bComputeWeightedNormals ? 1.0f : TriangleUtilities::ComputeTriangleCornerAngle(OtherFacePoint[OtherVertexIndex], OtherFacePoint[(OtherVertexIndex + 1) % 3], OtherFacePoint[(OtherVertexIndex + 2) % 3]);
 							
 							float CornerWeight = (OtherFaceArea * OtherFaceAngle);
 
@@ -4809,6 +4850,7 @@ bool FMeshUtilities::BuildSkeletalMesh_Legacy(FSkeletalMeshLODModel& LODModel
 
 			{
 				// Count the influences.
+				using namespace UE::AnimationCore;
 
 				int32 InfIdx = WedgeInfluenceIndices[Face.iWedge[VertexIndex]];
 				int32 LookIdx = InfIdx;
@@ -4822,27 +4864,40 @@ bool FMeshUtilities::BuildSkeletalMesh_Legacy(FSkeletalMeshLODModel& LODModel
 				InfluenceCount = FMath::Min<uint32>(InfluenceCount, MAX_TOTAL_INFLUENCES);
 
 				// Setup the vertex influences.
+				FBoneIndexType InfluenceBones[MAX_TOTAL_INFLUENCES];
+				float InfluenceWeights[MAX_TOTAL_INFLUENCES];
 
-				Vertex.InfluenceBones[0] = 0;
-				Vertex.InfluenceWeights[0] = 255;
-				for (uint32 i = 1; i < MAX_TOTAL_INFLUENCES; i++)
+				int32 ActualInfluenceCount = 0; 
+				for (uint32 Index = 0; Index < InfluenceCount; Index++)
 				{
-					Vertex.InfluenceBones[i] = 0;
-					Vertex.InfluenceWeights[i] = 0;
-				}
-
-				uint32	TotalInfluenceWeight = 0;
-				for (uint32 i = 0; i < InfluenceCount; i++)
-				{
-					FBoneIndexType BoneIndex = (FBoneIndexType)Influences[InfIdx + i].BoneIndex;
+					const FBoneIndexType BoneIndex = Influences[InfIdx + Index].BoneIndex;
 					if (BoneIndex >= RefSkeleton.GetRawBoneNum())
 						continue;
-
-					Vertex.InfluenceBones[i] = BoneIndex;
-					Vertex.InfluenceWeights[i] = (uint8)(Influences[InfIdx + i].Weight * 255.0f);
-					TotalInfluenceWeight += Vertex.InfluenceWeights[i];
+					
+					InfluenceBones[ActualInfluenceCount] = BoneIndex;
+					InfluenceWeights[ActualInfluenceCount] = (Influences[InfIdx + Index].Weight);
+					ActualInfluenceCount++;
 				}
-				Vertex.InfluenceWeights[0] += 255 - TotalInfluenceWeight;
+
+				const FBoneWeights BoneWeights = FBoneWeights::Create(InfluenceBones, InfluenceWeights, ActualInfluenceCount);
+				
+				FMemory::Memzero(Vertex.InfluenceBones);
+				FMemory::Memzero(Vertex.InfluenceWeights);
+				
+				if (BoneWeights.Num() == 0)
+				{
+					Vertex.InfluenceWeights[0] = std::numeric_limits<uint16>::max();
+				}
+				else
+				{
+					int32 Index = 0;
+					for (FBoneWeight BoneWeight: BoneWeights)
+					{
+						Vertex.InfluenceBones[Index] = BoneWeight.GetBoneIndex();
+						Vertex.InfluenceWeights[Index] = BoneWeight.GetRawWeight();
+						Index++;
+					}
+				}
 			}
 
 			// Add the vertex as well as its original index in the points array
@@ -4966,7 +5021,7 @@ static bool NonOpaqueMaterialPredicate(UStaticMeshComponent* InMesh)
 	InMesh->GetUsedMaterials(OutMaterials);
 	for (auto Material : OutMaterials)
 	{
-		if (Material == nullptr || Material->GetBlendMode() != BLEND_Opaque)
+		if (Material == nullptr || !IsOpaqueBlendMode(*Material))
 		{
 			return true;
 		}
@@ -5699,7 +5754,11 @@ void FMeshUtilities::CalculateOverlappingCorners(const TArray<FVector3f>& InVert
 }
 
 
-void FMeshUtilities::GenerateRuntimeSkinWeightData(const FSkeletalMeshLODModel* ImportedModel, const TArray<FRawSkinWeight>& InRawSkinWeights, FRuntimeSkinWeightProfileData& InOutSkinWeightOverrideData) const
+void FMeshUtilities::GenerateRuntimeSkinWeightData(
+	const FSkeletalMeshLODModel* ImportedModel,
+	const TArray<FRawSkinWeight>& InRawSkinWeights,
+	bool bInUseHighPrecisionWeights,
+	FRuntimeSkinWeightProfileData& InOutSkinWeightOverrideData) const
 {
 	const FSkeletalMeshLODModel& TargetLODModel = *ImportedModel;
 
@@ -5738,13 +5797,13 @@ void FMeshUtilities::GenerateRuntimeSkinWeightData(const FSkeletalMeshLODModel* 
 			if (bIsDifferent)
 			{
 				// Check whether or not there is already an override store which matches the new skin weight data
-				int32 OverrideIndex = UniqueWeights.IndexOfByPredicate([SourceSkinWeight, NumInfluences](const FRawSkinWeight Override)
+				int32 OverrideIndex = UniqueWeights.IndexOfByPredicate([SourceSkinWeight, NumInfluences](const FRawSkinWeight& InOverride)
 				{
 					bool bSame = true;
 					for (int32 InfluenceIndex = 0; InfluenceIndex < NumInfluences; ++InfluenceIndex)
 					{
-						bSame &= (Override.InfluenceBones[InfluenceIndex] == SourceSkinWeight.InfluenceBones[InfluenceIndex]);
-						bSame &= (Override.InfluenceWeights[InfluenceIndex] == SourceSkinWeight.InfluenceWeights[InfluenceIndex]);
+						bSame &= (InOverride.InfluenceBones[InfluenceIndex] == SourceSkinWeight.InfluenceBones[InfluenceIndex]);
+						bSame &= (InOverride.InfluenceWeights[InfluenceIndex] == SourceSkinWeight.InfluenceWeights[InfluenceIndex]);
 					}
 
 					return bSame;
@@ -5759,20 +5818,29 @@ void FMeshUtilities::GenerateRuntimeSkinWeightData(const FSkeletalMeshLODModel* 
 					for (int32 InfluenceIndex = 0; InfluenceIndex < NumInfluences; ++InfluenceIndex)
 					{
 						const FBoneIndexType Index = SourceSkinWeight.InfluenceBones[InfluenceIndex];
-						const uint8 Weight = SourceSkinWeight.InfluenceWeights[InfluenceIndex];
+						const uint16 Weight = SourceSkinWeight.InfluenceWeights[InfluenceIndex];
+						TArray<uint8> &BoneIDs = InOutSkinWeightOverrideData.BoneIDs;
+						TArray<uint8> &BoneWeights = InOutSkinWeightOverrideData.BoneWeights;
 
 						if (b16BitBoneIndices)
 						{
-							InOutSkinWeightOverrideData.BoneIDs.AddZeroed(2);
-							FBoneIndexType* BoneIndex = (FBoneIndexType*)&InOutSkinWeightOverrideData.BoneIDs[InOutSkinWeightOverrideData.BoneIDs.Num() - 2];
-							*BoneIndex = Index;
+							BoneIDs.AddZeroed(2);
+							*reinterpret_cast<FBoneIndexType*>(&BoneIDs[BoneIDs.Num() - 2]) = Index;
 						}
 						else
 						{
-							InOutSkinWeightOverrideData.BoneIDs.Add((uint8)Index);
+							InOutSkinWeightOverrideData.BoneIDs.Add(static_cast<uint8>(Index));
 						}
 
-						InOutSkinWeightOverrideData.BoneWeights.Add(Weight);
+						if (bInUseHighPrecisionWeights)
+						{
+							BoneWeights.AddZeroed(2);
+							*reinterpret_cast<uint16*>(&BoneWeights[BoneWeights.Num() - 2]) = Weight;
+						}
+						else
+						{
+							BoneWeights.Add(static_cast<uint8>(Weight >> 8));
+						}
 					}
 
 					UniqueWeights.Add(SourceSkinWeight);
@@ -5957,15 +6025,15 @@ void FMeshUtilities::CreateImportDataFromLODModel(USkeletalMesh* SkeletalMesh) c
 
 				for (int32 InfluenceIndex = 0; InfluenceIndex < MAX_TOTAL_INFLUENCES; ++InfluenceIndex)
 				{
-					float Weight = static_cast<float>(Vertex.InfluenceWeights[InfluenceIndex]) / 255.0f;
-					if (FMath::IsNearlyZero(Weight))
+					// Have we reached the end of valid weights?
+					if (Vertex.InfluenceWeights[InfluenceIndex] == 0)
 					{
 						break;
 					}
 					SkeletalMeshImportData::FRawBoneInfluence& Influence = ImportData.Influences.AddZeroed_GetRef();
 					Influence.VertexIndex = PointIndex;
 					Influence.BoneIndex = Section.BoneMap[Vertex.InfluenceBones[InfluenceIndex]];
-					Influence.Weight = static_cast<float>(Vertex.InfluenceWeights[InfluenceIndex]) / 255.0f;
+					Influence.Weight = static_cast<float>(Vertex.InfluenceWeights[InfluenceIndex]) / 65535.0f;
 				}
 			}
 		}
@@ -6057,11 +6125,12 @@ void FMeshUtilities::CreateImportDataFromLODModel(USkeletalMesh* SkeletalMesh) c
 					const FRawSkinWeight& SkinWeight = ImportedSkinWeightProfileData.SkinWeights[VerticeIndex];
 					for (int32 InfluenceIndex = 0; InfluenceIndex < MAX_TOTAL_INFLUENCES; ++InfluenceIndex)
 					{
-						float Weight = static_cast<float>(SkinWeight.InfluenceWeights[InfluenceIndex]) / 255.0f;
-						if (FMath::IsNearlyZero(Weight))
+						const uint16 RawWeight = SkinWeight.InfluenceWeights[InfluenceIndex]; 
+						if (RawWeight == 0)
 						{
 							break;
 						}
+						const float Weight = static_cast<float>(RawWeight) / 65535.0f;
 						SkeletalMeshImportData::FRawBoneInfluence& Influence = AlternateInfluence.Influences.AddZeroed_GetRef();
 						Influence.VertexIndex = VerticeIndex;
 						Influence.BoneIndex = Section.BoneMap[SkinWeight.InfluenceBones[InfluenceIndex]];

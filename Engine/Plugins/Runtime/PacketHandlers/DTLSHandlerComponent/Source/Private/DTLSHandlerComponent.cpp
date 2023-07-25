@@ -1,27 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DTLSHandlerComponent.h"
-#include "Engine/NetConnection.h"
-#include "Ssl.h"
+#include "Modules/ModuleManager.h"
+
+#if WITH_SSL
 
 #define UI UI_ST
 THIRD_PARTY_INCLUDES_START
+#include "DTLSCertificate.h"
 #include <openssl/ssl.h>
+#include "DTLSContext.h"
 #include <openssl/dtls1.h>
+#include "Interfaces/ISslManager.h"
 #include <openssl/err.h>
+#include "SslModule.h"
+#include "Stats/Stats.h"
+#include <openssl/bio.h>
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/ossl_typ.h>
 THIRD_PARTY_INCLUDES_END
 #undef UI
+
+TAutoConsoleVariable<int32> CVarPreSharedKeys(TEXT("DTLS.PreSharedKeys"), 1, TEXT("If non-zero, use pre-shared keys, otherwise self-signed certificates will be generated."));
+
+#endif // WITH_SSL
 
 DEFINE_LOG_CATEGORY(LogDTLSHandler);
 
 IMPLEMENT_MODULE(FDTLSHandlerComponentModule, DTLSHandlerComponent)
 
-TAutoConsoleVariable<int32> CVarPreSharedKeys(TEXT("DTLS.PreSharedKeys"), 1, TEXT("If non-zero, use pre-shared keys, otherwise self-signed certificates will be generated."));
-
 void FDTLSHandlerComponentModule::StartupModule()
 {
 	FPacketHandlerComponentModuleInterface::StartupModule();
 
+#if WITH_SSL
 	FSslModule& SslModule = FModuleManager::LoadModuleChecked<FSslModule>("SSL");
 	if (!SslModule.GetSslManager().InitializeSsl())
 	{
@@ -29,23 +42,31 @@ void FDTLSHandlerComponentModule::StartupModule()
 		SSL_load_error_strings();        
 		OpenSSL_add_all_algorithms();
 	}
+#endif // WITH_SSL
 }
 
 void FDTLSHandlerComponentModule::ShutdownModule()
 {
+#if WITH_SSL
 	FSslModule& SslModule = FModuleManager::LoadModuleChecked<FSslModule>("SSL");
 	SslModule.GetSslManager().ShutdownSsl();
+#endif // WITH_SSL
 
 	FPacketHandlerComponentModuleInterface::ShutdownModule();
 }
 
 TSharedPtr<HandlerComponent> FDTLSHandlerComponentModule::CreateComponentInstance(FString& Options)
 {
+#if WITH_SSL
 	TSharedRef<HandlerComponent> ReturnVal = MakeShared<FDTLSHandlerComponent>();
 
 	return ReturnVal;
+#else
+	return nullptr;
+#endif // WITH_SSL
 }
 
+#if WITH_SSL
 FDTLSHandlerComponent::FDTLSHandlerComponent()
 	: FEncryptionComponent(FName(TEXT("DTLSHandlerComponent")))
 	, InternalState(EDTLSHandlerState::Unencrypted)
@@ -319,28 +340,41 @@ void FDTLSHandlerComponent::DoHandshake()
 	int32 Pending = BIO_ctrl_pending(DTLSContext->GetFilterBIO());
 	while (Pending > 0)
 	{
-		check(Pending <= sizeof(TempBuffer));
-
-		const int32 BytesRead = BIO_read(DTLSContext->GetOutBIO(), TempBuffer, Pending);
-		if (BytesRead > 0)
+		if (Pending <= sizeof(TempBuffer))
 		{
-			check(BytesRead == Pending);
-			check(BytesRead <= MAX_PACKET_SIZE);
+			const int32 BytesRead = BIO_read(DTLSContext->GetOutBIO(), TempBuffer, Pending);
+			if (BytesRead > 0)
+			{
+				if (BytesRead == Pending)
+				{
+					FBitWriter OutPacket(0, true);
+					OutPacket.WriteBit(1);	// encryption enabled
+					OutPacket.WriteBit(1);	// handshake packet
+					OutPacket.SerializeBits(TempBuffer, BytesRead * 8);
 
-			FBitWriter OutPacket(0, true);
-			OutPacket.WriteBit(1);	// encryption enabled
-			OutPacket.WriteBit(1);	// handshake packet
-			OutPacket.SerializeBits(TempBuffer, BytesRead * 8);
+					UE_LOG(LogDTLSHandler, Verbose, TEXT("DoHandshake:  Sending handshake packet: %d bytes"), BytesRead);
 
-			UE_LOG(LogDTLSHandler, Verbose, TEXT("DoHandshake:  Sending handshake packet: %d bytes"), BytesRead);
-
-			// SendHandlerPacket is a low level send and is not reliable
-			FOutPacketTraits Traits;
-			Handler->SendHandlerPacket(this, OutPacket, Traits);
+					// SendHandlerPacket is a low level send and is not reliable
+					FOutPacketTraits Traits;
+					Handler->SendHandlerPacket(this, OutPacket, Traits);
+				}
+				else
+				{
+					DTLSContext.Reset();
+					UE_LOG(LogDTLSHandler, Error, TEXT("Unexpected value from BIO_read: Read: %d Pending: %d"), BytesRead, Pending);
+					return;
+				}
+			}
+			else
+			{
+				UE_LOG(LogDTLSHandler, Error, TEXT("BIO_read error: %d"), BytesRead);
+				return;
+			}
 		}
 		else
 		{
-			UE_LOG(LogDTLSHandler, Error, TEXT("BIO_read error: %d"), BytesRead);
+			DTLSContext.Reset();
+			UE_LOG(LogDTLSHandler, Error, TEXT("BIO_ctrl_pending returned value out of range: %d"), Pending);
 			return;
 		}
 
@@ -408,16 +442,22 @@ void FDTLSHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits& Trait
 				int32 Pending = BIO_ctrl_pending(DTLSContext->GetFilterBIO());
 				if (Pending > 0)
 				{
-					check(Pending <= sizeof(TempBuffer));
-
-					const int32 BytesRead = BIO_read(DTLSContext->GetOutBIO(), TempBuffer, Pending);
-					if (ensure(BytesRead == Pending))
+					if (Pending <= sizeof(TempBuffer))
 					{
-						NewPacket.SerializeBits(TempBuffer, BytesRead * 8);
+						const int32 BytesRead = BIO_read(DTLSContext->GetOutBIO(), TempBuffer, Pending);
+						if (ensure(BytesRead == Pending))
+						{
+							NewPacket.SerializeBits(TempBuffer, BytesRead * 8);
+						}
+						else
+						{
+							UE_LOG(LogDTLSHandler, Error, TEXT("BIO_read error: %d"), BytesRead);
+							Packet.SetError();
+						}
 					}
 					else
 					{
-						UE_LOG(LogDTLSHandler, Error, TEXT("BIO_read error: %d"), BytesRead);
+						UE_LOG(LogDTLSHandler, Error, TEXT("BIO_ctrl_pending returned value out of range: %d"), Pending);
 						Packet.SetError();
 					}
 				}
@@ -498,3 +538,5 @@ void FDTLSHandlerComponent::LogError(const TCHAR* Context, int32 Result)
 		UE_LOG(LogDTLSHandler, Error, TEXT("%s: ERR_print_errors: %s"), Context, *ErrorString);
 	}
 }
+
+#endif // WITH_SSL

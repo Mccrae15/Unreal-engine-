@@ -2,9 +2,12 @@
 
 #pragma once
 
+#include "HAL/Platform.h"
+
 #if WITH_TENCENTSDK
 #if WITH_TENCENT_RAIL_SDK
 
+#include "Delegates/IDelegateInstance.h"
 #include "PlayTimeLimitUser.h"
 
 class ONLINESUBSYSTEMTENCENT_API FOnlinePlayTimeLimitUserTencentRail

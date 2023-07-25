@@ -8,8 +8,8 @@
 #include "ContextualAnimViewportClient.h"
 #include "ContextualAnimAssetEditorToolkit.h"
 #include "ContextualAnimViewModel.h"
-#include "Animation/AnimMontage.h"
 #include "AnimNotifyState_IKWindow.h"
+#include "SceneView.h"
 #include "SkeletalDebugRendering.h"
 #include "CanvasTypes.h"
 #include "CanvasItem.h"
@@ -327,15 +327,6 @@ bool FContextualAnimEdMode::InputDelta(FEditorViewportClient* InViewportClient, 
 
 bool FContextualAnimEdMode::InputKey(FEditorViewportClient* ViewportClient, FViewport* Viewport, FKey Key, EInputEvent Event)
 {
-	if (ViewModel && ViewModel->IsSimulateModePaused())
-	{
-		if (Key == EKeys::Enter && Event == IE_Released)
-		{
-			ViewModel->StartSimulation();
-			return true;
-		}
-	}
-
 	return FEdMode::InputKey(ViewportClient, Viewport, Key, Event);
 }
 

@@ -2,7 +2,11 @@
 
 #pragma once
 
+
+template <typename FuncType> class TFunctionRef;
+
 struct FAssetData;
+struct FARFilter;
 class UObject;
 class FString;
 
@@ -17,4 +21,13 @@ namespace PCGEditorUtils
 	*/
 	void GetParentPackagePathAndUniqueName(const UObject* OriginalObject, const FString& NewAssetTentativeName, FString& OutPackagePath, FString& OutUniqueName);
 
+	/** Methods related to visiting asset data. Ends early if InFunc returns false */
+	void ForEachAssetData(const FARFilter& Filter, TFunctionRef<bool(const FAssetData&)> InFunc);
+
+	void ForEachPCGBlueprintAssetData(TFunctionRef<bool(const FAssetData&)> InFunc);
+	void ForEachPCGSettingsAssetData(TFunctionRef<bool(const FAssetData&)> InFunc);
+	void ForEachPCGGraphAssetData(TFunctionRef<bool(const FAssetData&)> InFunc);
+
+	/** Asset deprecation methods */
+	void ForcePCGBlueprintVariableVisibility();
 }

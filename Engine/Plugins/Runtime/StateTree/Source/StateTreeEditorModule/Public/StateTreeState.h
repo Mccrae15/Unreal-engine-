@@ -2,41 +2,10 @@
 
 #pragma once
 
-#include "StateTreeTypes.h"
-#include "StateTreeNodeBase.h"
-#include "Misc/Guid.h"
-#include "InstancedStruct.h"
-#include "PropertyBag.h"
 #include "StateTreeEditorNode.h"
 #include "StateTreeState.generated.h"
 
 class UStateTreeState;
-
-/**
- * Editor representation of a link to another state in StateTree
- */
-USTRUCT()
-struct STATETREEEDITORMODULE_API FStateTreeStateLink
-{
-	GENERATED_BODY()
-
-	FStateTreeStateLink() = default;
-	FStateTreeStateLink(const EStateTreeTransitionType InType) : Type(InType) {}
-
-	void Set(const EStateTreeTransitionType InType, const UStateTreeState* InState = nullptr);
-	void Set(const UStateTreeState* InState) { Set(EStateTreeTransitionType::GotoState, InState); }
-	
-	bool IsValid() const { return ID.IsValid(); }
-
-	UPROPERTY(EditDefaultsOnly, Category = Link)
-	FName Name;
-	
-	UPROPERTY(EditDefaultsOnly, Category = Link)
-	FGuid ID;
-
-	UPROPERTY(EditDefaultsOnly, Category = Link)
-	EStateTreeTransitionType Type = EStateTreeTransitionType::GotoState;
-};
 
 /**
  * Editor representation of a transition in StateTree
@@ -49,7 +18,7 @@ struct STATETREEEDITORMODULE_API FStateTreeTransition
 	FStateTreeTransition() = default;
 	FStateTreeTransition(const EStateTreeTransitionTrigger InTrigger, const EStateTreeTransitionType InType, const UStateTreeState* InState = nullptr);
 	FStateTreeTransition(const EStateTreeTransitionTrigger InTrigger, const FGameplayTag InEventTag, const EStateTreeTransitionType InType, const UStateTreeState* InState = nullptr);
-
+	
 	template<typename T, typename... TArgs>
 	TStateTreeEditorNode<T>& AddCondition(TArgs&&... InArgs)
 	{
@@ -64,20 +33,40 @@ struct STATETREEEDITORMODULE_API FStateTreeTransition
 		return static_cast<TStateTreeEditorNode<T>&>(CondNode);
 	}
 
-	UPROPERTY(EditDefaultsOnly, Category = Transition)
+	/** When to try trigger the transition. */
+	UPROPERTY(EditDefaultsOnly, Category = "Transition")
 	EStateTreeTransitionTrigger Trigger = EStateTreeTransitionTrigger::OnStateCompleted;
 
-	UPROPERTY(EditDefaultsOnly, Category = Transition)
+	/** Tag of the State Tree event that triggers the transition. */
+	UPROPERTY(EditDefaultsOnly, Category = "Transition")
 	FGameplayTag EventTag;
 
-	UPROPERTY(EditDefaultsOnly, Category = Transition, meta=(DisplayName="Transition To"))
+	/** Transition target state. */
+	UPROPERTY(EditDefaultsOnly, Category = "Transition", meta=(DisplayName="Transition To"))
 	FStateTreeStateLink State;
 
-	// Gate delay in seconds.
-	UPROPERTY(EditDefaultsOnly, Category = Transition, meta = (UIMin = "0", ClampMin = "0", UIMax = "25", ClampMax = "25"))
-	float GateDelay = 0.0f;
-	
-	UPROPERTY(EditDefaultsOnly, Category = Transition, meta = (BaseStruct = "/Script/StateTreeModule.StateTreeConditionBase", BaseClass = "/Script/StateTreeModule.StateTreeConditionBlueprintBase"))
+	/**
+	 * Transition priority when multiple transitions happen at the same time.
+	 * During transition handling, the transitions are visited from leaf to root.
+	 * The first visited transition, of highest priority, that leads to a state selection, will be activated.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Transition")
+	EStateTreeTransitionPriority Priority = EStateTreeTransitionPriority::Normal;
+
+	/** Delay the triggering of the transition. */
+	UPROPERTY(EditDefaultsOnly, Category = "Transition")
+	bool bDelayTransition = false;
+
+	/** Transition delay duration in seconds. */
+	UPROPERTY(EditDefaultsOnly, Category = "Transition", meta = (EditCondition = "bDelayTransition", UIMin = "0", ClampMin = "0", UIMax = "25", ClampMax = "25", ForceUnits="s"))
+	float DelayDuration = 0.0f;
+
+	/** Transition delay random variance in seconds. */
+	UPROPERTY(EditDefaultsOnly, Category = "Transition", meta = (EditCondition = "bDelayTransition", UIMin = "0", ClampMin = "0", UIMax = "25", ClampMax = "25", ForceUnits="s"))
+	float DelayRandomVariance = 0.0f;
+
+	/** Conditions that must pass so that the transition can be triggered. */
+	UPROPERTY(EditDefaultsOnly, Category = "Transition", meta = (BaseStruct = "/Script/StateTreeModule.StateTreeConditionBase", BaseClass = "/Script/StateTreeModule.StateTreeConditionBlueprintBase"))
 	TArray<FStateTreeEditorNode> Conditions;
 };
 
@@ -91,14 +80,14 @@ struct STATETREEEDITORMODULE_API FStateTreeStateParameters
 		Parameters.Reset();
 		bFixedLayout = false;
 	}
-	
+
 	UPROPERTY(EditDefaultsOnly, Category = Parameters)
 	FInstancedPropertyBag Parameters;
 
 	UPROPERTY(EditDefaultsOnly, Category = Parameters)
 	bool bFixedLayout = false;
 
-	UPROPERTY(EditDefaultsOnly, Category = Parameters)
+	UPROPERTY(EditDefaultsOnly, Category = Parameters, meta = (IgnoreForMemberInitializationTest))
 	FGuid ID;
 };
 
@@ -119,9 +108,12 @@ public:
 	void UpdateParametersFromLinkedSubtree();
 #endif
 
-	UStateTreeState* GetNextSiblingState() const;
-	
+	const UStateTreeState* GetRootState() const;
+	const UStateTreeState* GetNextSiblingState() const;
+
 	// StateTree Builder API
+	/** @return state link to this state. */
+	FStateTreeStateLink GetLinkToState() const;
 	
 	/** Adds child state with specified name. */
 	UStateTreeState& AddChildState(const FName ChildName, const EStateTreeStateType StateType = EStateTreeStateType::State)
@@ -137,7 +129,7 @@ public:
 
 	/**
 	 * Adds enter condition of specified type.
-	 * @return reference to the new condition. 
+	 * @return reference to the new condition.
 	 */
 	template<typename T, typename... TArgs>
 	TStateTreeEditorNode<T>& AddEnterCondition(TArgs&&... InArgs)
@@ -155,7 +147,7 @@ public:
 
 	/**
 	 * Adds Task of specified type.
-	 * @return reference to the new Task. 
+	 * @return reference to the new Task.
 	 */
 	template<typename T, typename... TArgs>
 	TStateTreeEditorNode<T>& AddTask(TArgs&&... InArgs)
@@ -173,7 +165,7 @@ public:
 
 	/**
 	 * Adds Transition.
-	 * @return reference to the new Transition. 
+	 * @return reference to the new Transition.
 	 */
 	FStateTreeTransition& AddTransition(const EStateTreeTransitionTrigger InTrigger, const EStateTreeTransitionType InType, const UStateTreeState* InState = nullptr)
 	{
@@ -185,7 +177,7 @@ public:
 		return Transitions.Emplace_GetRef(InTrigger, InEventTag, InType, InState);
 	}
 
- 
+
 	// ~StateTree Builder API
 
 	UPROPERTY(EditDefaultsOnly, Category = "State")
@@ -200,7 +192,7 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "State")
 	FStateTreeStateParameters Parameters;
 
-	UPROPERTY()
+	UPROPERTY(meta = (IgnoreForMemberInitializationTest))
 	FGuid ID;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Enter Conditions", meta = (BaseStruct = "/Script/StateTreeModule.StateTreeConditionBase", BaseClass = "/Script/StateTreeModule.StateTreeConditionBlueprintBase"))

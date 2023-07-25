@@ -3,8 +3,9 @@
 import { DefaultButton, IContextualMenuProps, mergeStyleSets, Pivot, PivotItem, PrimaryButton, Stack, Text, TextField } from '@fluentui/react';
 import { observer } from 'mobx-react-lite';
 import React, { useEffect, useState } from 'react';
-import { useHistory, useLocation, useParams } from 'react-router-dom';
+import { Navigate, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useBackend } from '../backend';
+import dashboard from '../backend/Dashboard';
 import { JobFilterSimple } from '../base/utilities/filter';
 import { useWindowSize } from '../base/utilities/hooks';
 import { modeColors, hordeClasses } from '../styles/Styles';
@@ -58,11 +59,11 @@ const StreamViewInner: React.FC = observer(() => {
    const windowSize = useWindowSize();
 
    const { streamId } = useParams<{ streamId: string }>();
-   const history = useHistory();
+   const navigate = useNavigate();
    const location = useLocation();
    const query = useQuery();
 
-   const [filter, setFilter] = useState<JobFilterSimple>({ showOthersPreflights: false });
+   const [filter, setFilter] = useState<JobFilterSimple>({ showOthersPreflights: dashboard.showPreflights });
 
    const [shown, setShown] = useState(query.get("newbuild") ? true : false);
    const [findJobsShown, setFindJobsShown] = useState(false);
@@ -84,8 +85,7 @@ const StreamViewInner: React.FC = observer(() => {
 
    if (!stream || !project) {
       console.error("Bad stream or project id in StreamView");
-      history.replace("/");
-      return null;
+      return <Navigate to="/" replace={true} />
    }
 
    let queryTab = query.get("tab") ?? undefined;
@@ -93,14 +93,12 @@ const StreamViewInner: React.FC = observer(() => {
    if (!queryTab || (queryTab.toLowerCase() !== "summary" && queryTab.toLowerCase() !== "all" && !stream.tabs.find(t => t.title === queryTab))) {
 
       if (!!stream.tabs.find(t => t.title.toLowerCase() === "incremental")) {
-         history.replace(`/stream/${streamId}?tab=Incremental`);
+         return <Navigate to={`/stream/${streamId}?tab=Incremental`} replace={true} />
       } else if (stream.tabs.length) {
-         history.replace(`/stream/${streamId}?tab=${stream.tabs[0].title}`);
+         return <Navigate to={`/stream/${streamId}?tab=${stream.tabs[0].title}`} replace={true} />
       } else {
-         history.replace(`/stream/${streamId}?tab=all`);
+         return <Navigate to={`/stream/${streamId}?tab=all`} replace={true} />
       }
-
-      return null;
    }
 
    const isSummary = queryTab === 'summary';
@@ -221,10 +219,10 @@ const StreamViewInner: React.FC = observer(() => {
          <NewBuild streamId={streamId!} jobKey={newBuildTab!} show={shown} onClose={(newJobId) => {
             setShown(false);
             if (newJobId) {
-               history.push(`/job/${newJobId}`);
+               navigate(`/job/${newJobId}`);
             } else {
                if (query.get("newbuild")) {
-                  history.replace(`/stream/${streamId}?tab=${queryTab}`);
+                  navigate(`/stream/${streamId}?tab=${queryTab}`, { replace: true });
                }
             }
          }} />
@@ -242,7 +240,7 @@ const StreamViewInner: React.FC = observer(() => {
                            onLinkClick={(item) => {
                               if (item!.props.itemKey !== queryTab) {
                                  // this still needs to be here, even though specific button href in item
-                                 history.push(`/stream/${streamId}?tab=${encodeURIComponent(item!.props.itemKey!)}`);
+                                 navigate(`/stream/${streamId}?tab=${encodeURIComponent(item!.props.itemKey!)}`);
                               }
                            }}>
                            {pivotItems}

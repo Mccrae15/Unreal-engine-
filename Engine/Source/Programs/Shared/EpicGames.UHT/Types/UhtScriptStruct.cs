@@ -50,11 +50,21 @@ namespace EpicGames.UHT.Types
 		/// Set if the property is an enum
 		/// </summary>
 		IsEnum = 0x00010000,
-
+		
 		/// <summary>
 		/// Set if the property is an array
 		/// </summary>
 		IsArray = 0x00020000,
+
+		/// <summary>
+		/// Set if the property is an enum as byte
+		/// </summary>
+		IsEnumAsByte = 0x00040000,
+
+		/// <summary>
+		/// Computes the value lazily
+		/// </summary>
+		IsLazy = 0x00080000,
 	}
 
 	/// <summary>
@@ -176,6 +186,18 @@ namespace EpicGames.UHT.Types
 		/// </summary>
 		[JsonIgnore]
 		public bool IsEnum => ParameterFlags.HasAnyFlags(UhtRigVMParameterFlags.IsEnum);
+		
+		/// <summary>
+		/// True if the parameter is an enum as byte
+		/// </summary>
+		[JsonIgnore]
+		public bool IsEnumAsByte => ParameterFlags.HasAnyFlags(UhtRigVMParameterFlags.IsEnumAsByte);
+
+		/// <summary>
+		/// True if the parameter should be computed lazily
+		/// </summary>
+		[JsonIgnore]
+		public bool IsLazy => ParameterFlags.HasAnyFlags(UhtRigVMParameterFlags.IsLazy);
 
 		/// <summary>
 		/// True if the parameter is an array
@@ -198,6 +220,7 @@ namespace EpicGames.UHT.Types
 			ParameterFlags |= property.MetaData.ContainsKey("Output") ? UhtRigVMParameterFlags.Output : UhtRigVMParameterFlags.None;
 			ParameterFlags |= property.IsEditorOnlyProperty ? UhtRigVMParameterFlags.EditorOnly : UhtRigVMParameterFlags.None;
 			ParameterFlags |= property.MetaData.ContainsKey("Singleton") ? UhtRigVMParameterFlags.Singleton : UhtRigVMParameterFlags.None;
+			ParameterFlags |= property.MetaData.ContainsKey("Lazy") ? UhtRigVMParameterFlags.IsLazy : UhtRigVMParameterFlags.None;
 
 			if (property.MetaData.ContainsKey("Visible"))
 			{
@@ -217,10 +240,15 @@ namespace EpicGames.UHT.Types
 				{
 					ParameterFlags |= UhtRigVMParameterFlags.IsEnum;
 				}
+				if (property.PropertyCaps.HasAnyFlags(UhtPropertyCaps.IsRigVMEnumAsByte))
+				{
+					ParameterFlags |= UhtRigVMParameterFlags.IsEnumAsByte;
+					CastType = $"TEnumAsByte<{Type}>";
+				}
 				if (property.PropertyCaps.HasAnyFlags(UhtPropertyCaps.IsRigVMArray))
 				{
 					ParameterFlags |= UhtRigVMParameterFlags.IsArray;
-					if (IsConst())
+					if (IsConst() && !IsLazy)
 					{
 						string extendedType = ExtendedType(false);
 						CastName = $"{Name}_{index}_Array";
@@ -259,10 +287,11 @@ namespace EpicGames.UHT.Types
 		/// Get the type of the parameter
 		/// </summary>
 		/// <param name="castType">If true, return the cast type</param>
+		/// <param name="wrapLazyType">If true, return the wrapped lazy type as needed</param>
 		/// <returns>Parameter type</returns>
-		public string TypeOriginal(bool castType = false)
+		public string TypeOriginal(bool castType = false, bool wrapLazyType = true)
 		{
-			return castType && CastType != null ? CastType : Type;
+			return GetLazyType(castType && CastType != null ? CastType : Type, wrapLazyType);
 		}
 
 		/// <summary>
@@ -283,7 +312,7 @@ namespace EpicGames.UHT.Types
 		/// <returns>Base parameter type</returns>
 		public string BaseType(bool castType = false)
 		{
-			string typeOriginal = TypeOriginal(castType);
+			string typeOriginal = TypeOriginal(castType, false);
 
 			int lesserPos = typeOriginal.IndexOf('<', StringComparison.Ordinal);
 			if (lesserPos >= 0)
@@ -303,7 +332,7 @@ namespace EpicGames.UHT.Types
 		/// <returns>Template arguments of the type</returns>
 		public string ExtendedType(bool castType = false)
 		{
-			string typeOriginal = TypeOriginal(castType);
+			string typeOriginal = TypeOriginal(castType, false);
 
 			int lesserPos = typeOriginal.IndexOf('<', StringComparison.Ordinal);
 			if (lesserPos >= 0)
@@ -374,6 +403,21 @@ namespace EpicGames.UHT.Types
 		}
 
 		/// <summary>
+		/// Return the type wrapped with a lazy struct as needed
+		/// </summary>
+		/// <param name="typeToWrap">The type to wrap with a lazy struct</param>
+		/// <param name="wrapLazyType">If true the type will be wrapped as needed</param>
+		/// <returns>Type wrapped as needed</returns>
+		public string GetLazyType(string typeToWrap, bool wrapLazyType)
+		{
+			if (IsLazy && wrapLazyType)
+			{
+				return $"TRigVMLazyValue<{typeToWrap}>";
+			}
+			return typeToWrap;
+		}
+
+		/// <summary>
 		/// Return a variable declaration for the parameter
 		/// </summary>
 		/// <param name="castType">If true, return the cast type</param>
@@ -400,6 +444,27 @@ namespace EpicGames.UHT.Types
 		public bool RequiresCast()
 		{
 			return CastType != null && CastName != null;
+		}
+
+		/// <summary>
+		/// Return true if the parameter is an execute context
+		/// </summary>
+		/// <returns>True if the parameter is an execute context</returns>
+		public bool IsExecuteContext()
+		{
+			if (Property is UhtStructProperty structProperty)
+			{
+				UhtScriptStruct? scriptStruct = structProperty.ScriptStruct;
+				while (scriptStruct != null)
+				{
+					if (scriptStruct.SourceName == "FRigVMExecuteContext")
+					{
+						return true;
+					}
+					scriptStruct = scriptStruct.SuperScriptStruct;
+				}
+			}
+			return false;
 		}
 	}
 
@@ -458,6 +523,16 @@ namespace EpicGames.UHT.Types
 		/// Engine name of the owning script struct
 		/// </summary>
 		public string Name { get; set; } = String.Empty;
+
+		/// <summary>
+		/// The name of the execute context to use for this struct's RigVM methods
+		/// </summary>
+		public string ExecuteContextType { get; set; } = "FRigVMExecuteContext";
+
+		/// <summary>
+		/// The name of a member on the struct providing an execute context
+		/// </summary>
+		public string ExecuteContextMember { get; set; } = String.Empty;
 
 		/// <summary>
 		/// List of the members
@@ -628,6 +703,14 @@ namespace EpicGames.UHT.Types
 		}
 
 		#region Resolution support
+
+		/// <inheritdoc/>
+		public override void BindSuperAndBases()
+		{
+			BindSuper(SuperIdentifier, UhtFindOptions.ScriptStruct);
+			base.BindSuperAndBases();
+		}
+
 		/// <inheritdoc/>
 		protected override void ResolveSuper(UhtResolvePhase resolvePhase)
 		{
@@ -636,7 +719,6 @@ namespace EpicGames.UHT.Types
 			switch (resolvePhase)
 			{
 				case UhtResolvePhase.Bases:
-					BindAndResolveSuper(SuperIdentifier, UhtFindOptions.ScriptStruct);
 
 					// if we have a base struct, propagate inherited struct flags now
 					UhtScriptStruct? superScriptStruct = SuperScriptStruct;
@@ -777,7 +859,7 @@ namespace EpicGames.UHT.Types
 
 			ValidateProperties();
 
-			return options |= UhtValidationOptions.Shadowing;
+			return options |= UhtValidationOptions.Shadowing | UhtValidationOptions.Deprecated;
 		}
 
 		void ValidateProperties()
@@ -841,19 +923,43 @@ namespace EpicGames.UHT.Types
 		{
 			if (RigVMStructInfo != null)
 			{
+				if (this.MetaData.TryGetValueHierarchical("ExecuteContext", out string? ExecuteContextMetadata))
+				{
+					RigVMStructInfo.ExecuteContextType = ExecuteContextMetadata;
+				}
+
 				for (UhtStruct? current = this; current != null; current = current.SuperStruct)
 				{
 					foreach (UhtProperty property in current.Properties)
 					{
-						RigVMStructInfo.Members.Add(new UhtRigVMParameter(property, RigVMStructInfo.Members.Count));
+						UhtRigVMParameter parameter = new UhtRigVMParameter(property, RigVMStructInfo.Members.Count);
+						if (parameter.IsExecuteContext())
+						{
+							if (RigVMStructInfo.ExecuteContextMember == String.Empty)
+							{
+								RigVMStructInfo.ExecuteContextMember = parameter.Name;
+							}
+							if (RigVMStructInfo.ExecuteContextType == "FRigVMExecuteContext")
+							{
+								RigVMStructInfo.ExecuteContextType = parameter.Type;
+							}
+							else if (RigVMStructInfo.ExecuteContextType != parameter.Type)
+							{
+								this.LogError($"RigVM Struct {this.SourceName} contains properties of varying execute context type {RigVMStructInfo.ExecuteContextType} vs {parameter.Type}.");
+							}
+						}
+						else
+						{
+							if (parameter.IsLazy && parameter.Output)
+							{
+								this.LogError($"RigVM Struct {this.SourceName} - Member {parameter.Name} is both an output and a lazy input.");
+							}
+							RigVMStructInfo.Members.Add(parameter);
+						}
 					}
 				}
 
-				if (RigVMStructInfo.Members.Count == 0)
-				{
-					this.LogError($"RigVM Struct '{SourceName}' - has zero members - invalid RIGVM_METHOD.");
-				}
-				else if (RigVMStructInfo.Members.Count > 64)
+				if (RigVMStructInfo.Members.Count > 64)
 				{
 					this.LogError($"RigVM Struct '{SourceName}' - has {RigVMStructInfo.Members.Count} members (64 is the limit).");
 				}

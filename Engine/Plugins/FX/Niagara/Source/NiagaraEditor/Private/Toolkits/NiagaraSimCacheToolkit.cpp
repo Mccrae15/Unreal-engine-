@@ -4,16 +4,21 @@
 #include "NiagaraEditorModule.h"
 
 // Widgets & ViewModels
+#include "AdvancedPreviewSceneModule.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "NiagaraSimCacheViewModel.h"
+#include "SNiagaraSimCacheTreeView.h"
+#include "SNiagaraSimCacheOverview.h"
+#include "SNiagaraSimCacheViewport.h"
 #include "SNiagaraSimCacheViewTimeline.h"
 #include "SNiagaraSimCacheViewTransportControls.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraSimCacheToolkit"
 
 const FName FNiagaraSimCacheToolkit::NiagaraSimCacheSpreadsheetTabId(TEXT("NiagaraSimCacheEditor_Spreadsheet"));
-
-//TODO Preview
+const FName FNiagaraSimCacheToolkit::NiagaraSimCacheViewportTabId(TEXT("NiagaraSimCacheEditor_Viewport"));
+const FName FNiagaraSimCacheToolkit::NiagaraSimCachePreviewSettingsTabId(TEXT("NiagaraSimCacheEditor_PreviewSettings"));
+const FName FNiagaraSimCacheToolkit::NiagaraSimCacheOverviewTabId(TEXT("NiagaraSimCacheEditor_Overview"));
 
 FNiagaraSimCacheToolkit::FNiagaraSimCacheToolkit()
 {
@@ -33,6 +38,18 @@ void FNiagaraSimCacheToolkit::RegisterTabSpawners(const TSharedRef<class FTabMan
 
 	InTabManager->RegisterTabSpawner(NiagaraSimCacheSpreadsheetTabId, FOnSpawnTab::CreateSP(this, &FNiagaraSimCacheToolkit::SpawnTab_SimCacheSpreadsheet))
 		.SetDisplayName(LOCTEXT("SpreadsheetTab", "Cache Spreadsheet"))
+		.SetGroup(WorkspaceMenuCategory.ToSharedRef());
+
+	InTabManager->RegisterTabSpawner(NiagaraSimCacheViewportTabId, FOnSpawnTab::CreateSP(this, &FNiagaraSimCacheToolkit::SpawnTab_SimCacheViewport))
+		.SetDisplayName(LOCTEXT("ViewpoirtTab", "Cache Viewport"))
+		.SetGroup(WorkspaceMenuCategory.ToSharedRef());
+
+	InTabManager->RegisterTabSpawner(NiagaraSimCachePreviewSettingsTabId, FOnSpawnTab::CreateSP(this, &FNiagaraSimCacheToolkit::SpawnTab_PreviewSettings))
+		.SetDisplayName(LOCTEXT("PreviewSceneSettingsTab","Preview Scene Settings"))
+		.SetGroup(WorkspaceMenuCategory.ToSharedRef());
+
+	InTabManager->RegisterTabSpawner(NiagaraSimCacheOverviewTabId, FOnSpawnTab::CreateSP(this, &FNiagaraSimCacheToolkit::SpawnTab_Overview))
+		.SetDisplayName(LOCTEXT("OverviewTab", "Overview"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef());
 }
 
@@ -56,11 +73,26 @@ void FNiagaraSimCacheToolkit::Initialize(const EToolkitMode::Type Mode, const TS
 		const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_SimCache_Layout_V1")
 			->AddArea
 			(
-				FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
+				FTabManager::NewPrimaryArea()->SetOrientation(Orient_Horizontal)
+				->Split(
+					FTabManager::NewSplitter()->SetOrientation(Orient_Vertical)
+					->SetSizeCoefficient(0.2f)
+					->Split
+					(
+						FTabManager::NewStack()
+						->SetSizeCoefficient(0.3f)
+						->AddTab(NiagaraSimCacheViewportTabId, ETabState::OpenedTab)
+					)
+					->Split(
+						FTabManager::NewStack()
+						->SetSizeCoefficient(0.7f)
+						->AddTab(NiagaraSimCacheOverviewTabId, ETabState::OpenedTab)
+					)
+				)
 				->Split
 				(
 					FTabManager::NewStack()
-					->SetSizeCoefficient(0.1f)
+					->SetSizeCoefficient(0.8f)
 					->AddTab(NiagaraSimCacheSpreadsheetTabId, ETabState::OpenedTab)
 				)
 			);
@@ -139,6 +171,59 @@ TSharedRef<SDockTab> FNiagaraSimCacheToolkit::SpawnTab_SimCacheSpreadsheet(const
 			Contents
 		];
 	
+	return SpawnedTab;
+}
+
+TSharedRef<SDockTab>  FNiagaraSimCacheToolkit::SpawnTab_SimCacheViewport(const FSpawnTabArgs& Args)
+{
+	check(Args.GetTabId().TabType == NiagaraSimCacheViewportTabId);
+
+	if (!Viewport.IsValid())
+	{
+		Viewport = SNew(SNiagaraSimCacheViewport);
+	}
+	
+
+	TSharedRef<SDockTab> SpawnedTab =
+		SNew(SDockTab)
+		[
+			Viewport.ToSharedRef()
+		];
+
+	Viewport->SetPreviewComponent(SimCacheViewModel->GetPreviewComponent());
+	
+	return SpawnedTab;
+}
+
+TSharedRef<SDockTab> FNiagaraSimCacheToolkit::SpawnTab_PreviewSettings(const FSpawnTabArgs& Args)
+{
+	check(Args.GetTabId() == NiagaraSimCachePreviewSettingsTabId);
+
+	TSharedRef<SWidget> InWidget = SNullWidget::NullWidget;
+	if (Viewport.IsValid())
+	{
+		FAdvancedPreviewSceneModule& AdvancedPreviewSceneModule = FModuleManager::LoadModuleChecked<FAdvancedPreviewSceneModule>("AdvancedPreviewScene");
+		InWidget = AdvancedPreviewSceneModule.CreateAdvancedPreviewSceneSettingsWidget(Viewport->GetPreviewScene());
+	}
+
+	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
+		.Label(LOCTEXT("PreviewSceneSettingsTab", "Preview Scene Settings"))
+		[
+			InWidget
+		];
+
+	return SpawnedTab;
+}
+
+TSharedRef<SDockTab> FNiagaraSimCacheToolkit::SpawnTab_Overview(const FSpawnTabArgs& Args)
+{
+	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
+		.Label(LOCTEXT("OverviewTab", "Overview"))
+		[
+			SNew(SNiagaraSimCacheOverview)
+			.SimCacheViewModel(SimCacheViewModel)
+		];
+
 	return SpawnedTab;
 }
 

@@ -8,11 +8,12 @@
 #include "NiagaraScript.h"
 #include "NiagaraGraph.generated.h"
 
+class UNiagaraNodeStaticSwitch;
 class UNiagaraParameterDefinitions;
 class UNiagaraScriptVariable;
 struct FSynchronizeWithParameterDefinitionsArgs;
 struct FNiagaraScriptVariableData;
-
+struct FNiagaraStaticVariableSearchContext;
 
 /** This is the type of action that occurred on a given Niagara graph. Note that this should follow from EEdGraphActionType, leaving some slop for growth. */
 enum ENiagaraGraphActionType
@@ -59,14 +60,12 @@ struct FNiagaraGraphParameterReferenceCollection
 
 	GENERATED_USTRUCT_BODY()
 public:
-	FNiagaraGraphParameterReferenceCollection(const bool bInCreated = false);
+	FNiagaraGraphParameterReferenceCollection() = default;
+	FNiagaraGraphParameterReferenceCollection(bool bInCreated);
 
 	/** All the references in the graph. */
 	UPROPERTY()
 	TArray<FNiagaraGraphParameterReference> ParameterReferences;
-
-	UPROPERTY()
-	TObjectPtr<const UNiagaraGraph> Graph;
 
 	/** Returns true if this parameter was initially created by the user. */
 	bool WasCreatedByUser() const;
@@ -74,7 +73,7 @@ public:
 private:
 	/** Whether this parameter was initially created by the user. */
 	UPROPERTY()
-	bool bCreatedByUser;
+	bool bCreatedByUser = false;
 };
 
 
@@ -106,6 +105,10 @@ public:
 	/** The hash that we calculated last traversal. */
 	UPROPERTY()
 	FNiagaraCompileHash CompileHashFromGraph;
+
+	/** The hash of values that could feed into downstream scripts.*/
+	UPROPERTY()
+	FNiagaraCompileHash ReferenceHashFromGraph;
 
 	UPROPERTY(Transient)
 	TArray<FNiagaraCompileHashVisitorDebugInfo> CompileLastObjects;
@@ -262,6 +265,9 @@ class UNiagaraGraph : public UEdGraph
 	/** Gets the current compile data hash associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid hash is returned.*/
 	FNiagaraCompileHash GetCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const;
 
+	/** Gets the current reference data hash associated with the output node traversal specified by InUsage and InUsageId (Static variables & switches). If the usage is not found, an invalid hash is returned.*/
+	FNiagaraCompileHash GetCompileReferencedDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const;
+
 	/** Gets the current base id associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid guid is returned. */
 	FGuid GetBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const;
 
@@ -272,8 +278,14 @@ class UNiagaraGraph : public UEdGraph
 	UEdGraphPin* FindParameterMapDefaultValuePin(const FName VariableName, ENiagaraScriptUsage InUsage, ENiagaraScriptUsage InParentUsage) const;
 	void MultiFindParameterMapDefaultValuePins(TConstArrayView<FName> VariableNames, ENiagaraScriptUsage InUsage, ENiagaraScriptUsage InParentUsage, TArrayView<UEdGraphPin*> DefaultPins) const;
 
-	/** Walk through the graph for an ParameterMapGet nodes and find all matching default pins for VariableName, irrespective of usage. */
+	/** Find all matching default pins for VariableName, irrespective of usage. */
 	TArray<UEdGraphPin*> FindParameterMapDefaultValuePins(const FName VariableName) const;
+
+	/** Rebuilds the internally stored ParameterRefrenceMap if it has been marked dirty.  Used to explicitly trigger the rebuild rather than
+	impliticly rebuilding it through a call to GetParameterReferenceMap(). */
+	NIAGARAEDITOR_API void ConditionalRefreshParameterReferences();
+
+	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& GetParameterReferenceMap() const; // NOTE: The const is a lie! (This indirectly calls RefreshParameterReferences, which can recreate the entire map)
 
 	/** Gets the meta-data associated with this variable, if it exists.*/
 	TOptional<FNiagaraVariableMetaData> GetMetaData(const FNiagaraVariable& InVar) const;
@@ -281,14 +293,11 @@ class UNiagaraGraph : public UEdGraph
 	/** Sets the meta-data associated with this variable. Creates a new UNiagaraScriptVariable if the target variable cannot be found. Illegal to call on FNiagaraVariables that are Niagara Constants. */
 	void SetMetaData(const FNiagaraVariable& InVar, const FNiagaraVariableMetaData& MetaData);
 
-	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& GetParameterReferenceMap() const; // NOTE: The const is a lie! (This indirectly calls RefreshParameterReferences, which can recreate the entire map)
-
 	// These functions are not supported for compilation copies
-	NIAGARAEDITOR_API const TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>>& GetAllMetaData() const;
-	NIAGARAEDITOR_API TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>>& GetAllMetaData();
+	using FScriptVariableMap = TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>>;
 
-	UNiagaraScriptVariable* GetScriptVariable(FNiagaraVariable Parameter, bool bUpdateIfPending = false);
-	NIAGARAEDITOR_API UNiagaraScriptVariable* GetScriptVariable(FName ParameterName, bool bUpdateIfPending = false);
+	NIAGARAEDITOR_API const FScriptVariableMap& GetAllMetaData() const;
+	NIAGARAEDITOR_API FScriptVariableMap& GetAllMetaData();
 
 	UNiagaraScriptVariable* GetScriptVariable(FNiagaraVariable Parameter) const;
 	NIAGARAEDITOR_API UNiagaraScriptVariable* GetScriptVariable(FName ParameterName) const;
@@ -318,6 +327,8 @@ class UNiagaraGraph : public UEdGraph
 
 	/** Rename a pin inline in a graph. If this is the only instance used in the graph, then rename them all, otherwise make a duplicate. */
 	bool RenameParameterFromPin(const FNiagaraVariable& Parameter, FName NewName, UEdGraphPin* InPin);
+
+	bool RenameStaticSwitch(UNiagaraNodeStaticSwitch* SwitchNode, FName NewName);
 
 	/** Changes the type of existing graph parameters.
 	 *  Optionally creates orphaned pins for any connection that won't be kept, but tries to keep connections as long as types are matching.
@@ -354,7 +365,12 @@ class UNiagaraGraph : public UEdGraph
 	  */
 	FString GetFunctionAliasByContext(const FNiagaraGraphFunctionAliasContext& FunctionAliasContext);
 
-	void RebuildCachedCompileIds(bool bForce = false);
+	/** In order to support reducing the number of times we need to fully generate the CompileId this function is introduced
+	  * to work with LastBuiltScriptVersionId & bHasValidLastBuiltScriptVersionId.
+	  */
+	void ConditionalRebuildCompileIdCache();
+
+	void RebuildCachedCompileIds();
 
 	void CopyCachedReferencesMap(UNiagaraGraph* TargetGraph);
 
@@ -415,12 +431,15 @@ class UNiagaraGraph : public UEdGraph
 
 	void SetIsStaticSwitch(const FNiagaraVariable& Variable, bool InValue);
 
+	bool ReferencesStaticVariable(FNiagaraStaticVariableSearchContext& SearchContext) const;
+
 protected:
 	void RebuildNumericCache();
 	bool bNeedNumericCacheRebuilt;
 	TMap<TPair<FGuid, UEdGraphNode*>, FNiagaraTypeDefinition> CachedNumericConversions;
 	void ResolveNumerics(TMap<UNiagaraNode*, bool>& VisitedNodes, UEdGraphNode* Node);
 	bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor, const TArray<UNiagaraNode*>& InTraversal) const;
+	UNiagaraScriptVariable* CreateScriptVariableInternal(const FNiagaraVariable& Parameter, const FNiagaraVariableMetaData& ParameterMetaData, bool bIsStaticSwitch);
 
 private:
 	virtual void NotifyGraphChanged(const FEdGraphEditAction& InAction) override;
@@ -445,6 +464,11 @@ private:
 	static bool VariableLess(const FNiagaraVariable& Lhs, const FNiagaraVariable& Rhs);
 	TOptional<FNiagaraScriptVariableData> GetScriptVariableData(const FNiagaraVariable& Variable) const;
 
+	void FixupReferenceCollectionsPostRename(const FNiagaraVariable& OrigVariable, const FNiagaraVariable& DestVariable, bool bParameterMerged, bool bSuppressEvents);
+
+	void PostLoad_LWCFixup(int32 NiagaraVersion);
+	void PostLoad_ManageScriptVariables(int32 NiagaraVersion);
+
 private:
 	/** The current change identifier for this graph overall. Used to sync status with UNiagaraScripts.*/
 	UPROPERTY()
@@ -457,6 +481,13 @@ private:
 	UPROPERTY()
 	FGuid LastBuiltTraversalDataChangeId;
 
+	/** The script version that was used when the cached CompileId was generated, a change
+	 *	in script version will invalidate the cached CompileId and a new one will be generated.
+	 *	Will be initialized to an invalid guid but it won't be used until a valid script has been
+	 *	assigned (as dictated by bHasValidLastBuiltScriptVersionId) */
+	UPROPERTY()
+	FGuid LastBuiltScriptVersionId;
+
 	UPROPERTY()
 	TArray<FNiagaraGraphScriptUsageInfo> CachedUsageInfo;
 
@@ -466,7 +497,7 @@ private:
 
 	/** Storage of variables defined for use with this graph.*/
 	UPROPERTY()
-	mutable TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>> VariableToScriptVariable;
+	TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>> VariableToScriptVariable;
 
 	/** A map of parameters in the graph to their referencers. */
 	UPROPERTY(Transient)
@@ -474,6 +505,11 @@ private:
 
 	UPROPERTY(Transient)
 	mutable TArray<FNiagaraScriptVariableData> CompilationScriptVariables;
+
+	/** Used in conjunction with LastBuiltScriptVersionId to note that we've got a valid script Id stored.
+	 *	Works around things without having to add a custom version. */
+	UPROPERTY()
+	bool bHasValidLastBuiltScriptVersionId = false;
 
 	FOnDataInterfaceChanged OnDataInterfaceChangedDelegate;
 	FOnSubObjectSelectionChanged OnSelectedSubObjectChanged;

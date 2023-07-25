@@ -5,6 +5,8 @@
 #include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
 #include "WorldPartition/ContentBundle/ContentBundleLog.h"
 #include "Engine/Engine.h"
+#include "WorldPartition/ContentBundle/ContentBundleStatus.h"
+#include "WorldPartition/ContentBundle/ContentBundleWorldSubsystem.h"
 
 TSharedPtr<FContentBundleClient> FContentBundleClient::CreateClient(const UContentBundleDescriptor* InContentBundleDescriptor, FString const& InDisplayName)
 {
@@ -37,7 +39,7 @@ void FContentBundleClient::RequestRemoveContent()
 {
 	if (State == EContentBundleClientState::ContentInjectionRequested)
 	{
-		if (HasInjectedAnyContent())
+		if (HasContentToRemove())
 		{
 			SetState(EContentBundleClientState::ContentRemovalRequested);
 			GEngine->GetEngineSubsystem<UContentBundleEngineSubsystem>()->RequestContentRemoval(*this);
@@ -68,10 +70,99 @@ void FContentBundleClient::RequestUnregister()
 	}
 }
 
-bool FContentBundleClient::HasInjectedAnyContent() const
+bool FContentBundleClient::ShouldInjectContent(UWorld* World) const
+{
+	bool bIsClientInjecting = GetState() == EContentBundleClientState::ContentInjectionRequested;
+
+#if WITH_EDITOR
+	bool bIsClientForceInjectingWorld = GetState() != EContentBundleClientState::Unregistered && ForceInjectedWorlds.Contains(World);
+#else
+	bool bIsClientForceInjectingWorld = false;
+#endif
+	
+	return (bIsClientInjecting || bIsClientForceInjectingWorld) && GetWorldContentState(World) == EWorldContentState::NoContent;
+}
+
+bool FContentBundleClient::ShouldRemoveContent(UWorld* World) const
+{
+	bool bIsClientInjecting = GetState() == EContentBundleClientState::ContentInjectionRequested;
+
+#if WITH_EDITOR
+	bool bIsClientForceInjectingWorld = GetState() != EContentBundleClientState::Unregistered && ForceInjectedWorlds.Contains(World);
+#else
+	bool bIsClientForceInjectingWorld = false;
+#endif
+
+	return !bIsClientInjecting && !bIsClientForceInjectingWorld && GetWorldContentState(World) != EWorldContentState::NoContent;
+}
+
+void FContentBundleClient::OnContentInjectedInWorld(EContentBundleStatus InjectionStatus, UWorld* InjectedWorld)
+{
+	check(ShouldInjectContent(InjectedWorld));
+	check(InjectionStatus == EContentBundleStatus::ContentInjected
+		|| InjectionStatus == EContentBundleStatus::ReadyToInject
+		|| InjectionStatus == EContentBundleStatus::FailedToInject);
+
+	SetWorldContentState(InjectedWorld, EWorldContentState::ContentBundleInjected);
+}
+
+void FContentBundleClient::OnContentRemovedFromWorld(EContentBundleStatus RemovalStatus, UWorld* InjectedWorld)
+{
+	// Removal of content bundle can come from the client or WorldUnload
+	check(ShouldRemoveContent(InjectedWorld) || !InjectedWorld->ContentBundleManager->CanInject());
+	check(RemovalStatus == EContentBundleStatus::Registered);
+
+	WorldContentStates.Remove(InjectedWorld);
+
+#if WITH_EDITOR
+	ForceInjectedWorlds.Remove(InjectedWorld);
+#endif
+
+	// If the client request content removal and removed everything set the client state as registered.
+	// If the client did not request content removal but removed everything keep the client state. We just changed levels. The next level will have its content bundle injected.
+	bool bHasProcessAllRemoveRequest = !HasContentToRemove() && GetState() == EContentBundleClientState::ContentRemovalRequested;
+	if (bHasProcessAllRemoveRequest)
+	{
+		SetState(EContentBundleClientState::Registered);
+	}
+
+}
+
+void FContentBundleClient::SetWorldContentState(UWorld* World, EWorldContentState NewState)
+{
+	if (EWorldContentState* OldState = WorldContentStates.Find(World))
+	{
+		UE_LOG(LogContentBundle, Log, TEXT("%s Client WorldState changing from %s to %s"), *ContentBundle::Log::MakeDebugInfoString(*this, World), *UEnum::GetDisplayValueAsText(*OldState).ToString(), *UEnum::GetDisplayValueAsText(NewState).ToString());
+		*OldState = NewState;
+		return;
+	}
+	
+	UE_LOG(LogContentBundle, Log, TEXT("%s Client WorldState changing to %s"), *ContentBundle::Log::MakeDebugInfoString(*this, World), *UEnum::GetDisplayValueAsText(NewState).ToString());
+	WorldContentStates.Add(World, NewState);
+}
+
+EWorldContentState FContentBundleClient::GetWorldContentState(UWorld* World) const
+{
+	const EWorldContentState* WorldState = WorldContentStates.Find(World);
+	if (WorldState != nullptr)
+	{
+		return *WorldState;
+	}
+
+	return EWorldContentState::NoContent;
+}
+
+bool FContentBundleClient::HasContentToRemove() const
 {
 	for (auto& WorldState : WorldContentStates)
 	{
+#if WITH_EDITOR
+		if (ForceInjectedWorlds.Contains(WorldState.Key))
+		{
+			continue;
+		}
+#endif
+
 		if (WorldState.Value != EWorldContentState::NoContent)
 		{
 			return true;
@@ -81,68 +172,52 @@ bool FContentBundleClient::HasInjectedAnyContent() const
 	return false;
 }
 
-void FContentBundleClient::OnContentInjectedInWorld(EContentBundleStatus InjectionStatus, UWorld* InjectedWorld)
-{
-	check(State == EContentBundleClientState::ContentInjectionRequested);
-
-	if (InjectionStatus == EContentBundleStatus::ContentInjected || InjectionStatus == EContentBundleStatus::ReadyToInject)
-	{
-		SetWorldContentState(InjectedWorld, EWorldContentState::ContentBundleInjected);
-	}
-	else if (InjectionStatus == EContentBundleStatus::FailedToInject)
-	{
-		SetWorldContentState(InjectedWorld, EWorldContentState::ContentBundleInjected);
-	}
-	else
-	{
-		// Injection status unhandled
-		check(0);
-	}
-}
-
-void FContentBundleClient::OnContentRemovedFromWorld(EContentBundleStatus RemovalStatus, UWorld* InjectedWorld)
-{
-	if (RemovalStatus == EContentBundleStatus::Registered)
-	{
-		SetWorldContentState(InjectedWorld, EWorldContentState::NoContent);
-
-		if (!HasInjectedAnyContent())
-		{
-			WorldContentStates.Empty();
-
-			// If the client did not request content removal but removed everything keep the client state. We just changed levels. The next level will have its content bundle injected.
-			// If the client request content removal and removed everything set the client state as registered.
-			if (GetState() == EContentBundleClientState::ContentRemovalRequested)
-			{
-				SetState(EContentBundleClientState::Registered);
-			}
-		}
-	}
-	else
-	{
-		// Removal status unhandled
-		check(0);
-	}
-
-}
-
-void FContentBundleClient::SetWorldContentState(UWorld* World, EWorldContentState NewState)
-{
-	if (EWorldContentState* OldState = WorldContentStates.Find(World))
-	{
-		UE_LOG(LogContentBundle, Log, TEXT("[CB: %s] Client WorldState for world %s changing from %s to %s"), *GetDescriptor()->GetDisplayName(), *World->GetName(), *UEnum::GetDisplayValueAsText(*OldState).ToString(), *UEnum::GetDisplayValueAsText(NewState).ToString());
-		*OldState = NewState;
-		return;
-	}
-	
-	UE_LOG(LogContentBundle, Log, TEXT("[CB: %s] Client WorldState for world %s changing to %s"), *GetDescriptor()->GetDisplayName(), *World->GetName(), *UEnum::GetDisplayValueAsText(NewState).ToString());
-	WorldContentStates.Add(World, NewState);
-}
-
 void FContentBundleClient::SetState(EContentBundleClientState NewState)
 {
 	check(NewState != State);
 
-	UE_LOG(LogContentBundle, Log, TEXT("[CB: %s] Client State changing from %s to %s"), *GetDescriptor()->GetDisplayName(), *UEnum::GetDisplayValueAsText(State).ToString(), *UEnum::GetDisplayValueAsText(NewState).ToString());
+	UE_LOG(LogContentBundle, Log, TEXT("%s Client State changing from %s to %s"), *ContentBundle::Log::MakeDebugInfoString(*this), *UEnum::GetDisplayValueAsText(State).ToString(), *UEnum::GetDisplayValueAsText(NewState).ToString());
 	State = NewState;
 }
+
+#if WITH_EDITOR
+
+void FContentBundleClient::RequestForceInject(UWorld* WorldToInject)
+{
+	if (UContentBundleManager* ContentBundleManager = WorldToInject->ContentBundleManager)
+	{
+		UE_LOG(LogContentBundle, Log, TEXT("%s Client requested a forced injection in world."), *ContentBundle::Log::MakeDebugInfoString(*this, WorldToInject));
+
+		ForceInjectedWorlds.Add(WorldToInject);
+	
+		if (ShouldInjectContent(WorldToInject))
+		{
+			ContentBundleManager->TryInject(*this);
+		}
+	}
+	else
+	{
+		UE_LOG(LogContentBundle, Log, TEXT("%s Client cannot force inject in World. It does not support content bundles."), *ContentBundle::Log::MakeDebugInfoString(*this, WorldToInject));
+	}
+}
+
+void FContentBundleClient::RequestRemoveForceInjectedContent(UWorld* WorldToInject)
+{
+	if (UContentBundleManager* ContentBundleManager = WorldToInject->ContentBundleManager)
+	{
+		UE_LOG(LogContentBundle, Log, TEXT("%s Client requested removal of force injected content in world."), *ContentBundle::Log::MakeDebugInfoString(*this, WorldToInject));
+
+		ForceInjectedWorlds.Remove(WorldToInject);
+
+		if (ShouldRemoveContent(WorldToInject))
+		{
+			ContentBundleManager->Remove(*this);
+		}
+	}
+	else
+	{
+		UE_LOG(LogContentBundle, Log, TEXT("%s Client cannot remove force injected content from world. It does not support content bundles."), *ContentBundle::Log::MakeDebugInfoString(*this, WorldToInject));
+	}
+}
+
+#endif

@@ -2,8 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Async/TaskGraphInterfaces.h"
+#include "Async/TaskGraphFwd.h"
+#include "Templates/RefCounting.h"
+
+namespace ENamedThreads { enum Type : int32; }
 
 ////////////////////////////////////
 // Render fences
@@ -33,9 +35,17 @@ public:
 	// return true if the fence is complete
 	bool IsFenceComplete() const;
 
+	// Ctor/dtor
+	FRenderCommandFence();
+	~FRenderCommandFence();
+
 private:
 	/** Graph event that represents completion of this fence **/
 	mutable FGraphEventRef CompletionEvent;
 	/** Thread that will trigger the CompletionEvent **/
 	ENamedThreads::Type TriggerThreadIndex;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

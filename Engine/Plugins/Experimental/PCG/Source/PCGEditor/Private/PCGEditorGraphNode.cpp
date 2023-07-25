@@ -2,16 +2,34 @@
 
 #include "PCGEditorGraphNode.h"
 
-#include "PCGEditorGraphSchema.h"
 #include "PCGEditorModule.h"
 #include "PCGNode.h"
+#include "PCGSettings.h"
+#include "PCGSubsystem.h"
 
 #include "Framework/Commands/GenericCommands.h"
-#include "GraphEditorActions.h"
+#include "PCGPin.h"
 #include "ToolMenu.h"
 #include "ToolMenuSection.h"
 
 #define LOCTEXT_NAMESPACE "PCGEditorGraphNode"
+
+namespace UPCGEditorGraphNodeHelpers
+{
+	// Info to aid element cache analysis / debugging
+	void GetGraphCacheDebugInfo(const UPCGNode* InNode, bool& bOutDebuggingEnabled, uint32& OutNumCacheEntries)
+	{
+		UWorld* World = GEditor ? (GEditor->PlayWorld ? GEditor->PlayWorld.Get() : GEditor->GetEditorWorldContext().World()) : nullptr;
+		UPCGSubsystem* Subsystem = UPCGSubsystem::GetInstance(World);
+		bOutDebuggingEnabled = Subsystem && Subsystem->IsGraphCacheDebuggingEnabled();
+
+		if (bOutDebuggingEnabled)
+		{
+			IPCGElement* Element = (InNode && InNode->GetSettings()) ? InNode->GetSettings()->GetElement().Get() : nullptr;
+			OutNumCacheEntries = Element ? Subsystem->GetGraphCacheEntryCount(Element) : 0;
+		}
+	}
+}
 
 UPCGEditorGraphNode::UPCGEditorGraphNode(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -21,14 +39,29 @@ UPCGEditorGraphNode::UPCGEditorGraphNode(const FObjectInitializer& ObjectInitial
 
 FText UPCGEditorGraphNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
+	constexpr int32 NodeTitleMaxSize = 70;
+
+	FString Result;
 	if (PCGNode)
 	{
-		return FText::FromName(PCGNode->GetNodeTitle());
+		Result = PCGNode->GetNodeTitle().ToString();
+		Result = (Result.Len() > NodeTitleMaxSize) ? Result.Left(NodeTitleMaxSize) : Result;
 	}
 	else
 	{
-		return FText::FromName(TEXT("Unnamed node"));
+		Result = FString(TEXT("Unnamed node"));
 	}
+
+	// Debug info - append how many copies of this element are currently in the cache to the node title
+	bool bDebuggingEnabled;
+	uint32 NumCacheEntries;
+	UPCGEditorGraphNodeHelpers::GetGraphCacheDebugInfo(PCGNode.Get(), bDebuggingEnabled, NumCacheEntries);
+	if (bDebuggingEnabled)
+	{
+		Result = FString::Format(TEXT("{0} [{1}]"), { Result, NumCacheEntries });
+	}
+
+	return FText::FromString(Result);
 }
 
 void UPCGEditorGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const
@@ -51,15 +84,7 @@ void UPCGEditorGraphNode::AllocateDefaultPins()
 {
 	if (PCGNode)
 	{
-		for (const UPCGPin* InputPin : PCGNode->GetInputPins())
-		{
-			CreatePin(EEdGraphPinDirection::EGPD_Input, GetPinType(InputPin), InputPin->Properties.Label);
-		}
-
-		for (const UPCGPin* OutputPin : PCGNode->GetOutputPins())
-		{
-			CreatePin(EEdGraphPinDirection::EGPD_Output, GetPinType(OutputPin), OutputPin->Properties.Label);
-		}
+		CreatePins(PCGNode->GetInputPins(), PCGNode->GetOutputPins());
 	}
 }
 
@@ -81,12 +106,10 @@ void UPCGEditorGraphNode::OnRenameNode(const FString& NewName)
 		return;
 	}
 
-	const FName TentativeName(*NewName);
-
-	if (PCGNode->GetNodeTitle() != TentativeName)
+	if(PCGNode->GetNodeTitle().ToString() != NewName)
 	{
 		PCGNode->Modify();
-		PCGNode->NodeTitle = TentativeName;
+		PCGNode->NodeTitle = FName(*NewName);
 	}
 }
 

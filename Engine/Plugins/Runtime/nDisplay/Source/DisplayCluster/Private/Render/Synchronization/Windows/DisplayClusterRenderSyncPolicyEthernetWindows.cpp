@@ -10,12 +10,14 @@
 
 #include "Math/UnrealMathUtility.h"
 
+#include "UnrealClient.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <windows.h>
-#include "DirectX/Include/DXGI.h"
+#include "DXGI.h"
 #include "dwmapi.h"
 #include "Windows/HideWindowsPlatformTypes.h"
 
+#include "RHI.h"
 #include "RHIResources.h"
 
 
@@ -70,7 +72,7 @@ bool FDisplayClusterRenderSyncPolicyEthernet::SynchronizeClusterRendering(int32&
 			// Wait unless the frame is rendered
 			WaitForFrameCompletion();
 			// Barrier sync only
-			SyncBarrierRenderThread();
+			SyncOnBarrier();
 			// Let the engine present this frame
 			bNeedEnginePresent = true;
 		}
@@ -232,7 +234,7 @@ void FDisplayClusterRenderSyncPolicyEthernet::Step_WaitForEthernetBarrierSignal_
 {
 	// Align render threads with a barrier
 	B1B = FPlatformTime::Seconds();
-	SyncBarrierRenderThread();
+	SyncOnBarrier();
 	B1A = FPlatformTime::Seconds();
 }
 
@@ -261,7 +263,7 @@ void FDisplayClusterRenderSyncPolicyEthernet::Step_SkipPresentationOnClosestVBla
 void FDisplayClusterRenderSyncPolicyEthernet::Step_WaitForEthernetBarrierSignal_2()
 {
 	B2B = FPlatformTime::Seconds();
-	SyncBarrierRenderThread();
+	SyncOnBarrier();
 	B2A = FPlatformTime::Seconds();
 }
 

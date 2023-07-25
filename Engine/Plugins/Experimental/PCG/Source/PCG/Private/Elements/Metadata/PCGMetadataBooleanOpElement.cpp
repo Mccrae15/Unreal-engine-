@@ -2,14 +2,8 @@
 
 #include "Elements/Metadata/PCGMetadataBooleanOpElement.h"
 
-#include "PCGParamData.h"
-#include "Data/PCGSpatialData.h"
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataEntryKeyIterator.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataBooleanOpElement)
 
 namespace PCGMetadataBooleanSettings
 {
@@ -33,6 +27,25 @@ namespace PCGMetadataBooleanSettings
 			return false;
 		}
 	}
+}
+
+void UPCGMetadataBooleanSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
 }
 
 FName UPCGMetadataBooleanSettings::GetInputPinLabel(uint32 Index) const
@@ -59,16 +72,16 @@ bool UPCGMetadataBooleanSettings::IsSupportedInputType(uint16 TypeId, uint32 Inp
 	return PCG::Private::IsOfTypes<bool>(TypeId);
 }
 
-FName UPCGMetadataBooleanSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataBooleanSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
@@ -92,7 +105,12 @@ FName UPCGMetadataBooleanSettings::AdditionalTaskName() const
 #if WITH_EDITOR
 FName UPCGMetadataBooleanSettings::GetDefaultNodeName() const
 {
-	return TEXT("Attribute Boolean Op");
+	return TEXT("AttributeBooleanOp");
+}
+
+FText UPCGMetadataBooleanSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataBooleanSettings", "NodeTitle", "Attribute Boolean Op");
 }
 #endif // WITH_EDITOR
 

@@ -2,17 +2,14 @@
 
 #include "DisplayNodes/VariantManagerColorPropertyNode.h"
 
+#include "Engine/Engine.h"
 #include "PropertyValue.h"
-#include "SVariantManager.h"
 #include "VariantManagerLog.h"
-#include "VariantObjectBinding.h"
 
-#include "CoreMinimal.h"
-#include "Editor.h"
-#include "Styling/AppStyle.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Colors/SColorPicker.h"
+#include "Widgets/Layout/SBox.h"
 
 #define LOCTEXT_NAMESPACE "FVariantManagerColorPropertyNode"
 
@@ -110,7 +107,7 @@ FReply FVariantManagerColorPropertyNode::OnClickColorBlock(const FGeometry& MyGe
 		PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateSP(this, &FVariantManagerColorPropertyNode::OnSetColorFromColorPicker);
 	}
 
-	FVariantColorNodeImpl::GetCommonColorFromPropertyValues(PickerArgs.InitialColorOverride, PropertyValues);
+	FVariantColorNodeImpl::GetCommonColorFromPropertyValues(PickerArgs.InitialColor, PropertyValues);
 
 	OpenColorPicker(PickerArgs);
 

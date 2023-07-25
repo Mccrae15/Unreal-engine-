@@ -2,6 +2,7 @@
 
 #include "AssetSelection.h"
 #include "Engine/Level.h"
+#include "Model.h"
 #include "UObject/UnrealType.h"
 #include "GameFramework/Actor.h"
 #include "ActorFactories/ActorFactory.h"
@@ -310,6 +311,11 @@ namespace AssetSelectionUtils
 						// Just count the total number of actors with counterparts
 						++ActorInfo.NumSimulationChanges;
 					}
+
+					if (!CurrentActor->GetBrowseToAssetOverride().IsEmpty())
+					{
+						ActorInfo.bHaveBrowseOverride = true;
+					}
 				}
 
 				if( ActorInfo.SelectionClass != NULL )
@@ -455,7 +461,7 @@ namespace ActorPlacementUtils
 			if (!(SCState->IsCheckedOut() || SCState->IsAdded() || SCState->CanAdd() || SCState->IsUnknown()))
 			{
 				FText Title = NSLOCTEXT("UnrealEd", "LevelCheckout_Title", "Level Checkout Warning");
-				if (EAppReturnType::Ok != FMessageDialog::Open(EAppMsgType::OkCancel, NSLOCTEXT("UnrealEd","LevelNotCheckedOutMsg", "This actor will be placed in a level that is in source control but not currently checked out. Continue?"), &Title))
+				if (EAppReturnType::Ok != FMessageDialog::Open(EAppMsgType::OkCancel, NSLOCTEXT("UnrealEd","LevelNotCheckedOutMsg", "This actor will be placed in a level that is in revision control but not currently checked out. Continue?"), &Title))
 				{
 					return false;
 				}

@@ -5,13 +5,13 @@
 =============================================================================*/
 
 #include "SkeletalMeshMerge.h"
-#include "GPUSkinPublicDefs.h"
-#include "RawIndexBuffer.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SkeletalMeshSocket.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "EngineLogs.h"
 #include "Rendering/SkeletalMeshRenderData.h"
-#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Materials/MaterialInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SkeletalMeshMerge)
 
@@ -232,7 +232,7 @@ bool FSkeletalMeshMerge::FinalizeMesh()
 		for (int32 LODIdx = 0; LODIdx < MaxNumLODs; LODIdx++)
 		{
 			const FSkeletalMeshLODInfo* LODInfoPtr = MergeMesh->GetLODInfo(LODIdx);
-			bool bUseFullPrecisionUVs = LODInfoPtr ? LODInfoPtr->BuildSettings.bUseFullPrecisionUVs : GVertexElementTypeSupport.IsSupported(VET_Half2) ? false : true;
+			bool bUseFullPrecisionUVs = LODInfoPtr ? LODInfoPtr->BuildSettings.bUseFullPrecisionUVs : false;
 			if (!bUseFullPrecisionUVs)
 			{
 				GENERATE_LOD_MODEL(TGPUSkinVertexFloat16Uvs, PerLODNumUVSets[LODIdx]);
@@ -671,7 +671,7 @@ void FSkeletalMeshMerge::GenerateLODModel( int32 LODIdx )
 					if (DestWeight.InfluenceWeights[Idx] > 0)
 					{
 						checkSlow(MergeSectionInfo.BoneMapToMergedBoneMap.IsValidIndex(DestWeight.InfluenceBones[Idx]));
-						DestWeight.InfluenceBones[Idx] = (uint8)MergeSectionInfo.BoneMapToMergedBoneMap[DestWeight.InfluenceBones[Idx]];
+						DestWeight.InfluenceBones[Idx] = (FBoneIndexType)MergeSectionInfo.BoneMapToMergedBoneMap[DestWeight.InfluenceBones[Idx]];
 					}
 				}
 			}

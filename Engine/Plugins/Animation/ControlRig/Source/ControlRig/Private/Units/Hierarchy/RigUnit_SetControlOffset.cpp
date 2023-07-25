@@ -16,37 +16,22 @@ FRigUnit_SetControlOffset_Execute()
 	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy)
 	{
-		switch (Context.State)
+		if (!CachedControlIndex.UpdateCache(FRigElementKey(Control, ERigElementType::Control), Hierarchy))
 		{
-			case EControlRigState::Init:
-			{
-				CachedControlIndex.Reset();
-				break;
-			}
-			case EControlRigState::Update:
-			{
-				if (!CachedControlIndex.UpdateCache(FRigElementKey(Control, ERigElementType::Control), Hierarchy))
-				{
-					UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Control '%s' is not valid."), *Control.ToString());
-					return;
-				}
+			UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Control '%s' is not valid."), *Control.ToString());
+			return;
+		}
 
-				FRigControlElement* ControlElement = Hierarchy->Get<FRigControlElement>(CachedControlIndex);
-				if (Space == EBoneGetterSetterMode::GlobalSpace)
-				{
-					Hierarchy->SetControlOffsetTransform(ControlElement, Offset, ERigTransformType::CurrentGlobal, true, false);
-					Hierarchy->SetControlOffsetTransform(ControlElement, Offset, ERigTransformType::InitialGlobal, true, false);
-				}
-				else
-				{
-					Hierarchy->SetControlOffsetTransform(ControlElement, Offset, ERigTransformType::CurrentLocal, true, false);
-					Hierarchy->SetControlOffsetTransform(ControlElement, Offset, ERigTransformType::InitialLocal, true, false);
-				}
-			}
-			default:
-			{
-				break;
-			}
+		FRigControlElement* ControlElement = Hierarchy->Get<FRigControlElement>(CachedControlIndex);
+		if (Space == ERigVMTransformSpace::GlobalSpace)
+		{
+			Hierarchy->SetControlOffsetTransform(ControlElement, Offset, ERigTransformType::CurrentGlobal, true, false);
+			Hierarchy->SetControlOffsetTransform(ControlElement, Offset, ERigTransformType::InitialGlobal, true, false);
+		}
+		else
+		{
+			Hierarchy->SetControlOffsetTransform(ControlElement, Offset, ERigTransformType::CurrentLocal, true, false);
+			Hierarchy->SetControlOffsetTransform(ControlElement, Offset, ERigTransformType::InitialLocal, true, false);
 		}
 	}
 }
@@ -55,33 +40,17 @@ FRigUnit_GetShapeTransform_Execute()
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 
-	const URigHierarchy* Hierarchy = Context.Hierarchy;
+	const URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy)
 	{
-		switch (Context.State)
+		if (!CachedControlIndex.UpdateCache(FRigElementKey(Control, ERigElementType::Control), Hierarchy))
 		{
-			case EControlRigState::Init:
-			{
-				CachedControlIndex.Reset();
-				break;
-			}
-			case EControlRigState::Update:
-			{
-				if (!CachedControlIndex.UpdateCache(FRigElementKey(Control, ERigElementType::Control), Hierarchy))
-				{
-					UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Control '%s' is not valid."), *Control.ToString());
-					return;
-				}
-
-				const FRigControlElement* ControlElement = Hierarchy->Get<FRigControlElement>(CachedControlIndex);
-				Transform = Hierarchy->GetControlShapeTransform((FRigControlElement*)ControlElement, ERigTransformType::CurrentLocal);
-				break;
-			}
-			default:
-			{
-				break;
-			}
+			UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Control '%s' is not valid."), *Control.ToString());
+			return;
 		}
+
+		const FRigControlElement* ControlElement = Hierarchy->Get<FRigControlElement>(CachedControlIndex);
+		Transform = Hierarchy->GetControlShapeTransform((FRigControlElement*)ControlElement, ERigTransformType::CurrentLocal);
 	}
 }
 
@@ -92,29 +61,13 @@ FRigUnit_SetShapeTransform_Execute()
 	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy)
 	{
-		switch (Context.State)
+		if (!CachedControlIndex.UpdateCache(FRigElementKey(Control, ERigElementType::Control), Hierarchy))
 		{
-			case EControlRigState::Init:
-			{
-				CachedControlIndex.Reset();
-			break;
-			}
-			case EControlRigState::Update:
-			{
-				if (!CachedControlIndex.UpdateCache(FRigElementKey(Control, ERigElementType::Control), Hierarchy))
-				{
-					UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Control '%s' is not valid."), *Control.ToString());
-					return;
-				}
-
-				FRigControlElement* ControlElement = Hierarchy->Get<FRigControlElement>(CachedControlIndex);
-				Hierarchy->SetControlShapeTransform(ControlElement, Transform, ERigTransformType::InitialLocal);
-				break;
-			}
-			default:
-			{
-				break;
-			}
+			UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Control '%s' is not valid."), *Control.ToString());
+			return;
 		}
+
+		FRigControlElement* ControlElement = Hierarchy->Get<FRigControlElement>(CachedControlIndex);
+		Hierarchy->SetControlShapeTransform(ControlElement, Transform, ERigTransformType::InitialLocal);
 	}
 }

@@ -7,6 +7,7 @@
 #include "Controllers/LiveLinkTransformController.h"
 #include "Engine/Engine.h"
 #include "ILiveLinkComponentModule.h"
+#include "Modules/ModuleManager.h"
 #include "Roles/LiveLinkCameraTypes.h"
 #include "Roles/LiveLinkCameraRole.h"
 #include "Roles/LiveLinkTransformRole.h"
@@ -141,6 +142,7 @@ void ULensComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 			case EDistortionSource::Manual:
 			{
 				LensDistortionHandler->SetDistortionState(DistortionState);
+				LensDistortionHandler->SetCameraFilmback(CineCameraComponent->Filmback);
 
 				//Recompute overscan factor for the distortion state
 				float OverscanFactor = LensDistortionHandler->ComputeOverscanFactor();
@@ -254,6 +256,17 @@ void ULensComponent::PostLoad()
 			CleanupDistortion(CineCameraComponent);
 		}
 		bIsDistortionSetup = false;
+	}
+
+	// Cache the currently set LensFile and register for new LensFile events
+	WeakCachedLensFile = LensFilePicker.GetLensFile();
+
+	if (ULensFile* const LensFile = WeakCachedLensFile.Get())
+	{
+		if (!LensFile->OnLensFileModelChanged().IsBoundToObject(this))
+		{
+			LensFile->OnLensFileModelChanged().AddUObject(this, &ULensComponent::OnLensFileModelChanged);
+		}
 	}
 
 #if WITH_EDITOR
@@ -472,6 +485,20 @@ void ULensComponent::SetLensFilePicker(FLensFilePicker LensFile)
 {
 	LensFilePicker = LensFile;
 
+	if (ULensFile* const CachedLensFile = WeakCachedLensFile.Get())
+	{
+		CachedLensFile->OnLensFileModelChanged().RemoveAll(this);
+	}
+
+	WeakCachedLensFile = LensFilePicker.GetLensFile();
+	if (ULensFile* const NewLensFile = WeakCachedLensFile.Get())
+	{
+		if (!NewLensFile->OnLensFileModelChanged().IsBoundToObject(this))
+		{
+			NewLensFile->OnLensFileModelChanged().AddUObject(this, &ULensComponent::OnLensFileModelChanged);
+		}
+	}
+
 	if (DistortionStateSource == EDistortionSource::LensFile)
 	{
 		if (ULensFile* const NewLensFile = LensFilePicker.GetLensFile())
@@ -488,20 +515,11 @@ void ULensComponent::SetLensFilePicker(FLensFilePicker LensFile)
 void ULensComponent::SetLensFile(ULensFile* Lens)
 {
 	// Automatically sets this to false so the component can use the newly set LensFile directly
-	LensFilePicker.bUseDefaultLensFile = false;
-	LensFilePicker.LensFile = Lens;
+	FLensFilePicker NewLensFilePicker;
+	NewLensFilePicker.bUseDefaultLensFile = false;
+	NewLensFilePicker.LensFile = Lens;
 
-	if (DistortionStateSource == EDistortionSource::LensFile)
-	{
-		if (Lens)
-		{
-			SetLensModel(Lens->LensInfo.LensModel);
-		}
-		else
-		{
-			ClearDistortionState();
-		}
-	}
+	SetLensFilePicker(NewLensFilePicker);
 }
 
 EFIZEvaluationMode ULensComponent::GetFIZEvaluationMode() const
@@ -590,10 +608,23 @@ void ULensComponent::SetLensModel(TSubclassOf<ULensModel> Model)
 
 	if (LensModel)
 	{
-		const uint32 NumDistortionParameters = LensModel->GetDefaultObject<ULensModel>()->GetNumParameters();
-		DistortionState.DistortionInfo.Parameters.Init(0.0f, NumDistortionParameters);
+		LensModel->GetDefaultObject<ULensModel>()->GetDefaultParameterArray(DistortionState.DistortionInfo.Parameters);
 
 		CreateDistortionHandler();
+	}
+	else
+	{
+		DistortionState.DistortionInfo.Parameters.Empty();
+	}
+
+	OnLensComponentModelChangedDelegate.Broadcast(LensModel);
+}
+
+void ULensComponent::OnLensFileModelChanged(const TSubclassOf<ULensModel>& Model)
+{
+	if (DistortionStateSource == EDistortionSource::LensFile)
+	{
+		SetLensModel(Model);
 	}
 }
 
@@ -616,16 +647,16 @@ void ULensComponent::SetDistortionSource(EDistortionSource Source)
 {
 	DistortionStateSource = Source;
 
-	ClearDistortionState();
-
 	// If the new source is a LensFile, update the lens model to match
 	if (DistortionStateSource == EDistortionSource::LensFile)
 	{
 		if (ULensFile* LensFile = LensFilePicker.GetLensFile())
 		{
-			LensModel = LensFile->LensInfo.LensModel;
+			SetLensModel(LensFile->LensInfo.LensModel);
 		}
 	}
+
+	ClearDistortionState();
 }
 
 bool ULensComponent::ShouldApplyDistortion() const
@@ -698,8 +729,7 @@ void ULensComponent::ClearDistortionState()
 	FLensDistortionState ZeroDistortionState;
 	if (LensModel)
 	{
-		const uint32 NumDistortionParameters = LensModel->GetDefaultObject<ULensModel>()->GetNumParameters();
-		ZeroDistortionState.DistortionInfo.Parameters.SetNumZeroed(NumDistortionParameters);
+		LensModel->GetDefaultObject<ULensModel>()->GetDefaultParameterArray(ZeroDistortionState.DistortionInfo.Parameters);
 	}
 	DistortionState = ZeroDistortionState;
 }

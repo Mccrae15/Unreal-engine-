@@ -15,7 +15,7 @@
 struct FParticleEmitterInstance;
 
 UENUM()
-enum CylinderHeightAxis
+enum CylinderHeightAxis : int
 {
 	PMLPC_HEIGHTAXIS_X UMETA(DisplayName="X"),
 	PMLPC_HEIGHTAXIS_Y UMETA(DisplayName="Y"),
@@ -41,7 +41,7 @@ class ENGINE_API UParticleModuleLocationPrimitiveCylinder : public UParticleModu
 	struct FRawDistributionFloat StartHeight;
 
 	/**
-	 * Determine particle particle system axis that should represent the height of the cylinder.
+	 * Determine the particle system axis that should represent the height of the cylinder.
 	 * Can be one of the following:
 	 *   PMLPC_HEIGHTAXIS_X - Orient the height along the particle system X-axis.
 	 *   PMLPC_HEIGHTAXIS_Y - Orient the height along the particle system Y-axis.

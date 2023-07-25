@@ -4,7 +4,8 @@
 
 #include "HAL/LowLevelMemTracker.h"
 #include "PoseSearchTraceProvider.h"
-#include "Runtime/Private/Trace/PoseSearchTraceLogger.h"
+#include "Serialization/MemoryReader.h"
+#include "Trace/PoseSearchTraceLogger.h"
 #include "TraceServices/Model/AnalysisSession.h"
 
 namespace UE::PoseSearch

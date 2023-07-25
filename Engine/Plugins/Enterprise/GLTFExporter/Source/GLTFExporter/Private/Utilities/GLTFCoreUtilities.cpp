@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Utilities/GLTFCoreUtilities.h"
-#include "Converters/GLTFTextureUtility.h"
+#include "Converters/GLTFTextureUtilities.h"
 
 float FGLTFCoreUtilities::ConvertLength(const float Length, const float ConversionScale)
 {
@@ -27,33 +27,40 @@ FGLTFVector3 FGLTFCoreUtilities::ConvertScale(const FVector3f& Scale)
 
 FGLTFVector3 FGLTFCoreUtilities::ConvertNormal(const FVector3f& Normal)
 {
-	return ConvertVector(Normal);
-}
-
-FGLTFInt16Vector4 FGLTFCoreUtilities::ConvertNormal(const FPackedRGBA16N& Normal)
-{
-	return { Normal.X, Normal.Z, Normal.Y, 0 };
+	const FVector3f SafeNormal = Normal.GetSafeNormal();
+	return ConvertVector(SafeNormal);
 }
 
 FGLTFInt8Vector4 FGLTFCoreUtilities::ConvertNormal(const FPackedNormal& Normal)
 {
-	return { Normal.Vector.X, Normal.Vector.Z, Normal.Vector.Y, 0 };
+	const FPackedNormal SafeNormal = Normal.ToFVector3f().GetSafeNormal();
+	return { SafeNormal.Vector.X, SafeNormal.Vector.Z, SafeNormal.Vector.Y, 0 };
 }
 
-FGLTFVector4 FGLTFCoreUtilities::ConvertTangent(const FVector3f& Tangent)
+FGLTFInt16Vector4 FGLTFCoreUtilities::ConvertNormal(const FPackedRGBA16N& Normal)
 {
-	// glTF stores tangent as Vec4, with W component indicating handedness of tangent basis.
-	return { Tangent.X, Tangent.Z, Tangent.Y, 1.0f };
+	const FPackedRGBA16N SafeNormal = Normal.ToFVector3f().GetSafeNormal();
+	return { SafeNormal.X, SafeNormal.Z, SafeNormal.Y, 0 };
 }
 
-FGLTFInt16Vector4 FGLTFCoreUtilities::ConvertTangent(const FPackedRGBA16N& Tangent)
+FGLTFVector4 FGLTFCoreUtilities::ConvertTangent(const FVector3f& Tangent, const FVector4f& Normal)
 {
-	return { Tangent.X, Tangent.Z, Tangent.Y, MAX_int16 /* = 1.0 */ };
+	// Unreal keeps the binormal sign in the normal's w-component.
+	// glTF keeps the binormal sign in the tangent's w-component.
+	const FVector3f SafeTangent = Tangent.GetSafeNormal();
+	return { SafeTangent.X, SafeTangent.Z, SafeTangent.Y, Normal.W >= 0 ? 1.0f : -1.0f };
 }
 
-FGLTFInt8Vector4 FGLTFCoreUtilities::ConvertTangent(const FPackedNormal& Tangent)
+FGLTFInt8Vector4 FGLTFCoreUtilities::ConvertTangent(const FPackedNormal& Tangent, const FPackedNormal& Normal)
 {
-	return { Tangent.Vector.X, Tangent.Vector.Z, Tangent.Vector.Y, MAX_int8 /* = 1.0 */ };
+	const FPackedNormal SafeTangent = Tangent.ToFVector3f().GetSafeNormal();
+	return { SafeTangent.Vector.X, SafeTangent.Vector.Z, SafeTangent.Vector.Y, Normal.Vector.W >= 0 ? MAX_int8 : MIN_int8 };
+}
+
+FGLTFInt16Vector4 FGLTFCoreUtilities::ConvertTangent(const FPackedRGBA16N& Tangent, const FPackedRGBA16N& Normal)
+{
+	const FPackedRGBA16N SafeTangent = Tangent.ToFVector3f().GetSafeNormal();
+	return { SafeTangent.X, SafeTangent.Z, SafeTangent.Y, Normal.W >= 0 ? MAX_int16 : MIN_int16 };
 }
 
 FGLTFVector2 FGLTFCoreUtilities::ConvertUV(const FVector2f& UV)
@@ -67,43 +74,24 @@ FGLTFVector2 FGLTFCoreUtilities::ConvertUV(const FVector2DHalf& UV)
 	return ConvertUV(FVector2f(UV));
 }
 
-FGLTFColor4 FGLTFCoreUtilities::ConvertColor(const FLinearColor& Color, bool bForceLDR)
+FGLTFColor4 FGLTFCoreUtilities::ConvertColor(const FLinearColor& Color)
 {
-	if (bForceLDR)
-	{
-		return {
-			FMath::Clamp(Color.R, 0.0f, 1.0f),
-			FMath::Clamp(Color.G, 0.0f, 1.0f),
-			FMath::Clamp(Color.B, 0.0f, 1.0f),
-			FMath::Clamp(Color.A, 0.0f, 1.0f)
-		};
-	}
-
-	// Just make sure its non-negative (which can happen when using MakeFromColorTemperature).
+	// glTF requires that color components are in the range 0.0 - 1.0
 	return {
-		FMath::Max(Color.R, 0.0f),
-		FMath::Max(Color.G, 0.0f),
-		FMath::Max(Color.B, 0.0f),
-		FMath::Max(Color.A, 0.0f)
+		FMath::Clamp(Color.R, 0.0f, 1.0f),
+		FMath::Clamp(Color.G, 0.0f, 1.0f),
+		FMath::Clamp(Color.B, 0.0f, 1.0f),
+		FMath::Clamp(Color.A, 0.0f, 1.0f)
 	};
 }
 
-FGLTFColor3 FGLTFCoreUtilities::ConvertColor3(const FLinearColor& Color, bool bForceLDR)
+FGLTFColor3 FGLTFCoreUtilities::ConvertColor3(const FLinearColor& Color)
 {
-	if (bForceLDR)
-	{
-		return {
-			FMath::Clamp(Color.R, 0.0f, 1.0f),
-			FMath::Clamp(Color.G, 0.0f, 1.0f),
-			FMath::Clamp(Color.B, 0.0f, 1.0f)
-		};
-	}
-
-	// Just make sure its non-negative (which can happen when using MakeFromColorTemperature).
+	// glTF requires that color components are in the range 0.0 - 1.0
 	return {
-		FMath::Max(Color.R, 0.0f),
-		FMath::Max(Color.G, 0.0f),
-		FMath::Max(Color.B, 0.0f)
+		FMath::Clamp(Color.R, 0.0f, 1.0f),
+		FMath::Clamp(Color.G, 0.0f, 1.0f),
+		FMath::Clamp(Color.B, 0.0f, 1.0f)
 	};
 }
 
@@ -245,21 +233,7 @@ EGLTFJsonAlphaMode FGLTFCoreUtilities::ConvertAlphaMode(EBlendMode Mode)
 		case BLEND_Opaque:         return EGLTFJsonAlphaMode::Opaque;
 		case BLEND_Masked:         return EGLTFJsonAlphaMode::Mask;
 		case BLEND_Translucent:    return EGLTFJsonAlphaMode::Blend;
-		case BLEND_Additive:       return EGLTFJsonAlphaMode::Blend;
-		case BLEND_Modulate:       return EGLTFJsonAlphaMode::Blend;
-		case BLEND_AlphaComposite: return EGLTFJsonAlphaMode::Blend;
 		default:                   return EGLTFJsonAlphaMode::None;
-	}
-}
-
-EGLTFJsonBlendMode FGLTFCoreUtilities::ConvertBlendMode(EBlendMode Mode)
-{
-	switch (Mode)
-	{
-		case BLEND_Additive:       return EGLTFJsonBlendMode::Additive;
-		case BLEND_Modulate:       return EGLTFJsonBlendMode::Modulate;
-		case BLEND_AlphaComposite: return EGLTFJsonBlendMode::AlphaComposite;
-		default:                   return EGLTFJsonBlendMode::None;
 	}
 }
 
@@ -270,7 +244,7 @@ EGLTFJsonTextureWrap FGLTFCoreUtilities::ConvertWrap(TextureAddress Address)
 		case TA_Wrap:   return EGLTFJsonTextureWrap::Repeat;
 		case TA_Mirror: return EGLTFJsonTextureWrap::MirroredRepeat;
 		case TA_Clamp:  return EGLTFJsonTextureWrap::ClampToEdge;
-		default:        return EGLTFJsonTextureWrap::None; // TODO: add error handling in callers
+		default:        return EGLTFJsonTextureWrap::None;
 	}
 }
 
@@ -293,29 +267,5 @@ EGLTFJsonTextureFilter FGLTFCoreUtilities::ConvertMagFilter(TextureFilter Filter
 		case TF_Bilinear:  return EGLTFJsonTextureFilter::Linear;
 		case TF_Trilinear: return EGLTFJsonTextureFilter::Linear;
 		default:           return EGLTFJsonTextureFilter::None;
-	}
-}
-
-EGLTFJsonTextureFilter FGLTFCoreUtilities::ConvertMinFilter(TextureFilter Filter, TextureGroup LODGroup)
-{
-	return ConvertMinFilter(Filter == TF_Default ? FGLTFTextureUtility::GetDefaultFilter(LODGroup) : Filter);
-}
-
-EGLTFJsonTextureFilter FGLTFCoreUtilities::ConvertMagFilter(TextureFilter Filter, TextureGroup LODGroup)
-{
-	return ConvertMagFilter(Filter == TF_Default ? FGLTFTextureUtility::GetDefaultFilter(LODGroup) : Filter);
-}
-
-EGLTFJsonCubeFace FGLTFCoreUtilities::ConvertCubeFace(ECubeFace CubeFace)
-{
-	switch (CubeFace)
-	{
-		case CubeFace_PosX:	return EGLTFJsonCubeFace::NegX;
-		case CubeFace_NegX:	return EGLTFJsonCubeFace::PosX;
-		case CubeFace_PosY:	return EGLTFJsonCubeFace::PosZ;
-		case CubeFace_NegY:	return EGLTFJsonCubeFace::NegZ;
-		case CubeFace_PosZ:	return EGLTFJsonCubeFace::PosY;
-		case CubeFace_NegZ:	return EGLTFJsonCubeFace::NegY;
-		default:            return EGLTFJsonCubeFace::None; // TODO: add error handling in callers
 	}
 }

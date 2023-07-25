@@ -1,29 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Windows/WindowsPlatformMemory.h"
-#include "Misc/AssertionMacros.h"
-#include "Logging/LogMacros.h"
-#include "Misc/OutputDevice.h"
-#include "Math/NumericLimits.h"
+
 #include "Containers/UnrealString.h"
 #include "CoreGlobals.h"
-#include "Misc/OutputDeviceRedirector.h"
-#include "Misc/Guid.h"
-#include "Stats/Stats.h"
 #include "GenericPlatform/GenericPlatformMemoryPoolStats.h"
-
-#include "HAL/MallocTBB.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "HAL/MallocAnsi.h"
-#include "HAL/MallocMimalloc.h"
-#include "HAL/MallocStomp.h"
-#include "HAL/MemoryMisc.h"
 #include "HAL/MallocBinned.h"
 #include "HAL/MallocBinned2.h"
 #include "HAL/MallocBinned3.h"
-#include "HAL/MallocStomp2.h"
 #include "HAL/MallocDoubleFreeFinder.h"
-#include "HAL/IConsoleManager.h"
+#include "HAL/MallocMimalloc.h"
+#include "HAL/MallocStomp.h"
+#include "HAL/MallocStomp2.h"
+#include "HAL/MallocTBB.h"
+#include "HAL/MemoryMisc.h"
+#include "Logging/LogMacros.h"
+#include "Math/NumericLimits.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
+#include "Misc/OutputDevice.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "Stats/Stats.h"
 #include "Windows/WindowsHWrapper.h"
+
+#include <MemoryApi.h> // Include after WindowsHWrapper.h
+
+#if ENABLE_LOW_LEVEL_MEM_TRACKER && MIMALLOC_ENABLED
+#include "ThirdParty/IncludeMimAlloc.h"
+#include "VirtualAllocPageStatus.h"
+#include <winternl.h>
+#endif
 
 #pragma warning(disable:6250)
 
@@ -120,12 +129,12 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	// Mimalloc is now the default allocator for editor and programs because it has shown
 	// both great performance and as much as half the memory usage of TBB after
 	// heavy editor workloads. See CL 15887498 description for benchmarks.
-	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && MIMALLOC_ALLOCATOR_ALLOWED) //-V517
+	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && MIMALLOC_ENABLED) //-V517
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
 	}
 #endif
-	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && TBB_ALLOCATOR_ALLOWED) //-V517
+	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && TBBMALLOC_ENABLED) //-V517
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::TBB;
 	}
@@ -153,13 +162,13 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 		// see FPlatformMisc::GetProcessDiagnostics()
 		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
 	}
-#if TBB_ALLOCATOR_ALLOWED
+#if TBBMALLOC_ENABLED
 	else if (FCString::Stristr(CommandLine, TEXT("-tbbmalloc")))
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::TBB;
 	}
 #endif
-#if MIMALLOC_ALLOCATOR_ALLOWED
+#if MIMALLOC_ENABLED
 	else if (FCString::Stristr(CommandLine, TEXT("-mimalloc")))
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
@@ -208,11 +217,11 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	case EMemoryAllocatorToUse::Stomp:
 		return new FMallocStomp();
 #endif
-#if TBB_ALLOCATOR_ALLOWED
+#if TBBMALLOC_ENABLED
 	case EMemoryAllocatorToUse::TBB:
 		return new FMallocTBB();
 #endif
-#if MIMALLOC_ALLOCATOR_ALLOWED && PLATFORM_SUPPORTS_MIMALLOC && PLATFORM_BUILDS_MIMALLOC
+#if MIMALLOC_ENABLED
 	case EMemoryAllocatorToUse::Mimalloc:
 		return new FMallocMimalloc();
 #endif
@@ -258,6 +267,8 @@ FPlatformMemoryStats FWindowsPlatformMemory::GetStats()
 
 	FPlatformMemoryStats MemoryStats;
 
+	static HANDLE MemoryResourceNotificationHandle = CreateMemoryResourceNotification(LowMemoryResourceNotification);
+
 	// Gather platform memory stats.
 	MEMORYSTATUSEX MemoryStatusEx;
 	FPlatformMemory::Memzero( &MemoryStatusEx, sizeof( MemoryStatusEx ) );
@@ -285,6 +296,17 @@ FPlatformMemoryStats FWindowsPlatformMemory::GetStats()
 	// PagefileUsage = commit charge
 	MemoryStats.UsedVirtual = ProcessMemoryCounters.PagefileUsage;
 	MemoryStats.PeakUsedVirtual = ProcessMemoryCounters.PeakPagefileUsage;
+
+	BOOL bIsInLowMemoryState;
+	if (MemoryResourceNotificationHandle && QueryMemoryResourceNotification(MemoryResourceNotificationHandle, &bIsInLowMemoryState))
+	{
+		MemoryStats.MemoryPressureStatus = bIsInLowMemoryState ? FPlatformMemoryStats::EMemoryPressureStatus::Critical :
+			FPlatformMemoryStats::EMemoryPressureStatus::Nominal;
+	}
+	else
+	{
+		MemoryStats.MemoryPressureStatus = MemoryStats.FGenericPlatformMemoryStats::GetMemoryPressureStatus();
+	}
 
 	if ( GWindowsPlatformMemoryGetStatsLimitTotalGB > 0 )
 	{
@@ -673,6 +695,149 @@ bool FWindowsPlatformMemory::GetLLMAllocFunctions(void*(*&OutAllocFunction)(size
 	return true;
 }
 
+#if MIMALLOC_ENABLED
+
+FVirtualAllocPageStatus& GetVirtualAllocPageStatus()
+{
+	static FVirtualAllocPageStatus PageBits;
+	return PageBits;
+}
+
+LPVOID __stdcall MiMallocVirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect)
+{
+	LPVOID Result = VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect);
+	if (Result && FLowLevelMemTracker::IsEnabled())
+	{
+		if (flAllocationType & MEM_RESERVE)
+		{
+			SIZE_T dwOldSize;
+			GetVirtualAllocPageStatus().AddReservationSize(Result, dwSize, dwOldSize);
+			LLMCheck(dwOldSize == 0 || dwSize == dwOldSize);
+		}
+		if (flAllocationType & MEM_COMMIT)
+		{
+			int64 DeltaSize = GetVirtualAllocPageStatus().MarkChangedAndReturnDeltaSize(Result, dwSize, true /* bCommitted */);
+			LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
+			FLowLevelMemTracker::Get().OnLowLevelChangeInMemoryUse(ELLMTracker::Platform, DeltaSize);
+		}
+	}
+	return Result;
+}
+
+BOOL __stdcall MiMallocVirtualFree(LPVOID lpAddress, SIZE_T dwSize, DWORD dwFreeType)
+{
+	if (dwFreeType & (MEM_DECOMMIT | MEM_RELEASE) && FLowLevelMemTracker::IsEnabled())
+	{
+		SIZE_T AllocationSize = dwSize;
+		if (dwFreeType & MEM_RELEASE)
+		{
+			LLMCheck(AllocationSize == 0);
+			AllocationSize = GetVirtualAllocPageStatus().GetAndRemoveReservationSize(lpAddress);
+			LLMCheck(AllocationSize > 0);
+		}
+		int64 DeltaSize = GetVirtualAllocPageStatus().MarkChangedAndReturnDeltaSize(lpAddress, AllocationSize, false /* bCommitted */);
+		LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
+		FLowLevelMemTracker::Get().OnLowLevelChangeInMemoryUse(ELLMTracker::Platform, DeltaSize);
+	}
+	return VirtualFree(lpAddress, dwSize, dwFreeType);
+}
+
+typedef PVOID(__stdcall* VirtualAlloc2Func)(HANDLE Process, PVOID BaseAddress, SIZE_T Size, ULONG AllocationType, ULONG PageProtection,
+	void* ExtendedParameters, ULONG ParameterCount);
+VirtualAlloc2Func GOSVirtualAlloc2 = nullptr;
+PVOID __stdcall MiMallocVirtualAlloc2(HANDLE Process, PVOID BaseAddress, SIZE_T Size, ULONG AllocationType, ULONG PageProtection,
+	void* ExtendedParameters, ULONG ParameterCount)
+{
+	PVOID Result = GOSVirtualAlloc2(Process, BaseAddress, Size, AllocationType, PageProtection, ExtendedParameters, ParameterCount);
+	if (Result && FLowLevelMemTracker::IsEnabled())
+	{
+		if (AllocationType & MEM_RESERVE)
+		{
+			SIZE_T OldSize;
+			GetVirtualAllocPageStatus().AddReservationSize(Result, Size, OldSize);
+			LLMCheck(OldSize == 0 || OldSize == Size);
+		}
+		if (AllocationType & MEM_COMMIT)
+		{
+			int64 DeltaSize = GetVirtualAllocPageStatus().MarkChangedAndReturnDeltaSize(Result, Size, true /* bCommitted */);
+			LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
+			FLowLevelMemTracker::Get().OnLowLevelChangeInMemoryUse(ELLMTracker::Platform, DeltaSize);
+		}
+	}
+	return Result;
+}
+
+VirtualAlloc2Func GetMiMallocVirtualAlloc2()
+{
+	GOSVirtualAlloc2 = nullptr;
+	HINSTANCE hDll;
+	hDll = LoadLibrary(TEXT("kernelbase.dll"));
+	if (hDll != NULL)
+	{
+		// warning C4191: unsafe conversion from 'FARPROC' to void (__cdecl *)(void)
+		// We avoid this warning by casting the FARPROC to void* before casting it to our desired function prototype
+
+		// use VirtualAlloc2FromApp if possible as it is available to Windows store apps
+		GOSVirtualAlloc2 = (VirtualAlloc2Func)(void *)GetProcAddress(hDll, "VirtualAlloc2FromApp");
+		if (GOSVirtualAlloc2 == nullptr) GOSVirtualAlloc2 = (VirtualAlloc2Func)(void *)GetProcAddress(hDll, "VirtualAlloc2");
+		FreeLibrary(hDll);
+	}
+	return GOSVirtualAlloc2 ? MiMallocVirtualAlloc2 : nullptr;
+}
+
+typedef NTSTATUS(__stdcall* NtAllocateVirtualMemoryExFunc)(HANDLE Process, PVOID* BaseAddress, SIZE_T* Size, ULONG AllocationType,
+	ULONG PageProtection, PVOID ExtendedParameters, ULONG ParameterCount);
+NtAllocateVirtualMemoryExFunc GOSNtAllocateVirtualMemoryEx = nullptr;
+NTSTATUS __stdcall MiMallocNtAllocateVirtualMemoryEx(HANDLE Process, PVOID* BaseAddress, SIZE_T* Size, ULONG AllocationType,
+	ULONG PageProtection, PVOID ExtendedParameters, ULONG ParameterCount)
+{
+	NTSTATUS Result = GOSNtAllocateVirtualMemoryEx(Process, BaseAddress, Size, AllocationType, PageProtection, ExtendedParameters, ParameterCount);
+	if (*BaseAddress && FLowLevelMemTracker::IsEnabled())
+	{
+		if (AllocationType & MEM_RESERVE)
+		{
+			SIZE_T OldSize;
+			GetVirtualAllocPageStatus().AddReservationSize(*BaseAddress, *Size, OldSize);
+			LLMCheck(OldSize == 0 || OldSize == *Size);
+		}
+		if (AllocationType & MEM_COMMIT)
+		{
+			int64 DeltaSize = GetVirtualAllocPageStatus().MarkChangedAndReturnDeltaSize(*BaseAddress, *Size, true /* bCommitted */);
+			LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
+			FLowLevelMemTracker::Get().OnLowLevelChangeInMemoryUse(ELLMTracker::Platform, DeltaSize);
+		}
+	}
+	return Result;
+}
+
+NtAllocateVirtualMemoryExFunc GetMiMallocNtAllocateVirtualMemoryEx()
+{
+	GOSNtAllocateVirtualMemoryEx = nullptr;
+	HINSTANCE hDll = LoadLibrary(TEXT("ntdll.dll"));
+	if (hDll != NULL) {
+		// warning C4191: unsafe conversion from 'FARPROC' to void (__cdecl *)(void)
+		// We avoid this warning by casting the FARPROC to void* before casting it to our desired function prototype
+		GOSNtAllocateVirtualMemoryEx = (NtAllocateVirtualMemoryExFunc)(void *)GetProcAddress(hDll, "NtAllocateVirtualMemoryEx");
+		FreeLibrary(hDll);
+	}
+	return GOSNtAllocateVirtualMemoryEx ? MiMallocNtAllocateVirtualMemoryEx : nullptr;
+}
+
+#endif // MIMALLOC_ENABLED
+
 #endif // ENABLE_LOW_LEVEL_MEM_TRACKER
+
+void FWindowsPlatformMemory::MiMallocInit()
+{
+#if ENABLE_LOW_LEVEL_MEM_TRACKER && MIMALLOC_ENABLED
+	mi_ext_win32_allocators_t allocators;
+	allocators.VirtualAlloc = MiMallocVirtualAlloc;
+	allocators.VirtualFree = MiMallocVirtualFree;
+	allocators.VirtualAlloc2 = GetMiMallocVirtualAlloc2();
+	allocators.NtAllocateVirtualMemoryEx = GetMiMallocNtAllocateVirtualMemoryEx();
+
+	mi_ext_set_win32_allocators(&allocators);
+#endif
+}
 
 #include "Windows/HideWindowsPlatformTypes.h"

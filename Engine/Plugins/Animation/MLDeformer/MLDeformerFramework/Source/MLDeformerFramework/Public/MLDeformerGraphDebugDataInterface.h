@@ -4,7 +4,6 @@
 
 #include "CoreMinimal.h"
 #include "MLDeformerModel.h"
-#include "MLDeformerGraphDataInterface.h"
 #include "OptimusComputeDataInterface.h"
 #include "ComputeFramework/ComputeDataProvider.h"
 #include "MLDeformerGraphDebugDataInterface.generated.h"
@@ -15,26 +14,6 @@ class FRHIShaderResourceView;
 class FSkeletalMeshObject;
 class UMLDeformerAsset;
 class USkeletalMeshComponent;
-
-#define MLDEFORMER_DEBUG_SHADER_PARAMETERS() \
-	SHADER_PARAMETER(uint32, NumVertices) \
-	SHADER_PARAMETER(uint32, InputStreamStart) \
-	SHADER_PARAMETER(int32, HeatMapMode) \
-	SHADER_PARAMETER(float, HeatMapMax) \
-	SHADER_PARAMETER(float, GroundTruthLerp) \
-	SHADER_PARAMETER(uint32, GroundTruthBufferSize) \
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float>, PositionGroundTruthBuffer) \
-	SHADER_PARAMETER_SRV(Buffer<uint>, VertexMapBuffer)
-
-#define MLDEFORMER_GRAPH_DISPATCH_DEFAULT_DEBUG_PARAMETERS() \
-	Parameters->NumVertices = 0; \
-	Parameters->InputStreamStart = RenderSection.BaseVertexIndex; \
-	Parameters->HeatMapMode = HeatMapMode; \
-	Parameters->HeatMapMax = HeatMapMax; \
-	Parameters->GroundTruthLerp = GroundTruthLerp; \
-	Parameters->GroundTruthBufferSize = GroundTruthPositions.Num(); \
-	Parameters->PositionGroundTruthBuffer = GroundTruthBufferSRV; \
-	Parameters->VertexMapBuffer = VertexMapBufferSRV;
 
 /** 
  * Compute Framework Data Interface for MLDeformer debugging data. 
@@ -54,12 +33,18 @@ public:
 	// ~END UOptimusComputeDataInterface overrides.
 
 	// UComputeDataInterface overrides.
-	TCHAR const* GetClassName() const override { return TEXT("MLDeformerDebug"); }
+	TCHAR const* GetClassName() const override { return TEXT("MLDeformerGraphDebugData"); }
+	virtual bool CanSupportUnifiedDispatch() const override { return true; }
 	virtual void GetSupportedInputs(TArray<FShaderFunctionDefinition>& OutFunctions) const override;
 	virtual void GetShaderParameters(TCHAR const* UID, FShaderParametersMetadataBuilder& OutBuilder, FShaderParametersMetadataAllocations& InOutAllocations) const override;
+	virtual TCHAR const* GetShaderVirtualPath() const override;
+	virtual void GetShaderHash(FString& InOutKey) const override;
 	virtual void GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const override;
 	virtual UComputeDataProvider* CreateDataProvider(TObjectPtr<UObject> InBinding, uint64 InInputMask, uint64 InOutputMask) const override;
 	// ~END UComputeDataInterface overrides.
+
+private:
+	static TCHAR const* TemplateFilePath;
 };
 
 /** Compute Framework Data Provider for MLDeformer debugging data. */
@@ -73,7 +58,6 @@ public:
 	virtual void Init() {};
 
 	// UComputeDataProvider overrides.
-	virtual bool IsValid() const override;
 	virtual FComputeDataProviderRenderProxy* GetRenderProxy() override;
 	// ~END UComputeDataProvider overrides.
 
@@ -98,15 +82,16 @@ namespace UE::MLDeformer
 		virtual void HandleZeroGroundTruthPositions();
 
 		// FComputeDataProviderRenderProxy overrides.
-		virtual void AllocateResources(FRDGBuilder& GraphBuilder) override;
-		virtual void GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData) override;
+		bool IsValid(FValidationData const& InValidationData) const override;
+		void AllocateResources(FRDGBuilder& GraphBuilder) override;
+		void GatherDispatchData(FDispatchData const& InDispatchData) override;
 		// ~END FComputeDataProviderRenderProxy overrides.
 
 		TArray<FVector3f>& GetGroundTruthPositions() { return GroundTruthPositions; }
 
 	protected:
 		TObjectPtr<UMLDeformerGraphDebugDataProvider> Provider = nullptr;
-		FSkeletalMeshObject* SkeletalMeshObject;
+		FSkeletalMeshObject* SkeletalMeshObject = nullptr;
 		TArray<FVector3f> GroundTruthPositions;
 		FRHIShaderResourceView* VertexMapBufferSRV = nullptr;
 		FRDGBuffer* GroundTruthBuffer = nullptr;

@@ -3,9 +3,10 @@
 #include "ExtensionLibraries/MovieSceneBindingExtensions.h"
 #include "ExtensionLibraries/MovieSceneSequenceExtensions.h"
 #include "MovieSceneBindingProxy.h"
+#include "MovieScenePossessable.h"
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
-#include "Algo/Find.h"
+#include "MovieSceneSpawnable.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneBindingExtensions)
 
@@ -88,6 +89,41 @@ void UMovieSceneBindingExtensions::SetName(const FMovieSceneBindingProxy& InBind
 			Possessable->SetName(InName);
 		}
 	}
+}
+
+int32 UMovieSceneBindingExtensions::GetSortingOrder(const FMovieSceneBindingProxy& InBinding)
+{
+#if WITH_EDITORONLY_DATA
+	UMovieScene* MovieScene = InBinding.GetMovieScene();
+	if (MovieScene)
+	{
+		const FMovieSceneBinding* Binding = Algo::FindBy(MovieScene->GetBindings(), InBinding.BindingID, &FMovieSceneBinding::GetObjectGuid);
+		if (Binding)
+		{
+			return Binding->GetSortingOrder();
+		}
+	}
+#endif
+
+	FFrame::KismetExecutionMessage(TEXT("Cannot find requested binding"), ELogVerbosity::Error);
+	return 0;
+}
+
+void UMovieSceneBindingExtensions::SetSortingOrder(const FMovieSceneBindingProxy& InBinding, int32 SortingOrder)
+{
+#if WITH_EDITORONLY_DATA
+	UMovieScene* MovieScene = InBinding.GetMovieScene();
+	if (MovieScene)
+	{
+		FMovieSceneBinding* Binding = MovieScene->FindBinding(InBinding.BindingID);
+		if (Binding)
+		{
+			Binding->SetSortingOrder(SortingOrder);
+			return;
+		}
+	}
+#endif
+	FFrame::KismetExecutionMessage(TEXT("Cannot find requested binding"), ELogVerbosity::Error);
 }
 
 TArray<UMovieSceneTrack*> UMovieSceneBindingExtensions::GetTracks(const FMovieSceneBindingProxy& InBinding)
@@ -307,3 +343,20 @@ void UMovieSceneBindingExtensions::MoveBindingContents(const FMovieSceneBindingP
 	}
 }
 
+void UMovieSceneBindingExtensions::SetSpawnableBindingID(const FMovieSceneBindingProxy& InBinding, const FMovieSceneObjectBindingID& SpawnableBindingID)
+{
+	if (!InBinding.Sequence)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call SetSpawnableBindingID with a binding with a null sequence"), ELogVerbosity::Error);
+		return;
+	}
+
+	FMovieScenePossessable* Possessable = InBinding.Sequence->GetMovieScene()->FindPossessable(InBinding.BindingID);
+	if (!Possessable)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call SetSpawnableBindingID with a null possessable"), ELogVerbosity::Error);
+		return;
+	}
+	
+	Possessable->SetSpawnableObjectBindingID(SpawnableBindingID);
+}

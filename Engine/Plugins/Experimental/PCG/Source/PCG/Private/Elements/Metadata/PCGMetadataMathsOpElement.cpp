@@ -2,16 +2,11 @@
 
 #include "Elements/Metadata/PCGMetadataMathsOpElement.h"
 
-#include "PCGParamData.h"
-#include "Data/PCGSpatialData.h"
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataEntryKeyIterator.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
 
 #include "Elements/Metadata/PCGMetadataMaths.inl"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataMathsOpElement)
 
 namespace PCGMetadataMathsSettings
 {
@@ -101,6 +96,10 @@ namespace PCGMetadataMathsSettings
 			return PCGMetadataMaths::Sqrt(Value);
 		case EPCGMedadataMathsOperation::Abs:
 			return PCGMetadataMaths::Abs(Value);
+		case EPCGMedadataMathsOperation::Floor:
+			return PCGMetadataMaths::Floor(Value);
+		case EPCGMedadataMathsOperation::Ceil:
+			return PCGMetadataMaths::Ceil(Value);
 		default:
 			return T{};
 		}
@@ -129,6 +128,8 @@ namespace PCGMetadataMathsSettings
 			return PCGMetadataMaths::Clamp(Value1, Value1, Value2);
 		case EPCGMedadataMathsOperation::Pow:
 			return PCGMetadataMaths::Pow(Value1, Value2);
+		case EPCGMedadataMathsOperation::Modulo:
+			return PCGMetadataMaths::Modulo(Value1, Value2);
 		default:
 			return T{};
 		}
@@ -147,6 +148,31 @@ namespace PCGMetadataMathsSettings
 			return T{};
 		}
 	}
+}
+
+void UPCGMetadataMathsSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input3AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource3.SetAttributeName(Input3AttributeName_DEPRECATED);
+		Input3AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
 }
 
 FName UPCGMetadataMathsSettings::GetInputPinLabel(uint32 Index) const
@@ -191,24 +217,24 @@ bool UPCGMetadataMathsSettings::IsSupportedInputType(uint16 TypeId, uint32 Input
 	return PCG::Private::IsOfTypes<float, double, int32, int64, FVector2D, FVector, FVector4>(TypeId);
 }
 
-FName UPCGMetadataMathsSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataMathsSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	case 2:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input3AttributeName, Params);
+		return InputSource3;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
 FName UPCGMetadataMathsSettings::AdditionalTaskName() const
 {
-	if (const UEnum* EnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/PCG.EPCGMedadataMathsOperation"), true))
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataMathsOperation>())
 	{
 		return FName(FString("Maths: ") + EnumPtr->GetNameStringByValue(static_cast<int>(Operation)));
 	}
@@ -221,7 +247,12 @@ FName UPCGMetadataMathsSettings::AdditionalTaskName() const
 #if WITH_EDITOR
 FName UPCGMetadataMathsSettings::GetDefaultNodeName() const
 {
-	return TEXT("Attribute Maths Op");
+	return TEXT("AttributeMathsOp");
+}
+
+FText UPCGMetadataMathsSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataMathsSettings", "NodeTitle", "Attribute Maths Op");
 }
 #endif // WITH_EDITOR
 

@@ -21,10 +21,13 @@ namespace UnrealBuildTool.Rules
             PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
+					"ComputeFramework",
 					"Core",
 					"CoreUObject",
 					"DeveloperSettings",
 					"Engine",
+					"RenderCore",
+					"RHI",
 				}
 			);
         }

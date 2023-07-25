@@ -6,6 +6,7 @@
 #include "ComputeFramework/ComputeDataProvider.h"
 #include "OptimusDataInterfaceScene.generated.h"
 
+class FSceneDataInterfaceParameters;
 class USceneComponent;
 
 /** Compute Framework Data Interface for reading general scene data. */
@@ -23,12 +24,17 @@ public:
 
 	//~ Begin UComputeDataInterface Interface
 	TCHAR const* GetClassName() const override { return TEXT("Scene"); }
+	bool CanSupportUnifiedDispatch() const override { return true; }
 	void GetSupportedInputs(TArray<FShaderFunctionDefinition>& OutFunctions) const override;
 	void GetShaderParameters(TCHAR const* UID, FShaderParametersMetadataBuilder& InOutBuilder, FShaderParametersMetadataAllocations& InOutAllocations) const override;
+	TCHAR const* GetShaderVirtualPath() const override;
 	void GetShaderHash(FString& InOutKey) const override;
 	void GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const override;
 	UComputeDataProvider* CreateDataProvider(TObjectPtr<UObject> InBinding, uint64 InInputMask, uint64 InOutputMask) const override;
 	//~ End UComputeDataInterface Interface
+
+private:
+	static TCHAR const* TemplateFilePath;
 };
 
 /** Compute Framework Data Provider for reading general scene data. */
@@ -52,10 +58,14 @@ public:
 	FOptimusSceneDataProviderProxy(USceneComponent* SceneComponent);
 
 	//~ Begin FComputeDataProviderRenderProxy Interface
-	void GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData) override;
+	bool IsValid(FValidationData const& InValidationData) const override;
+	void GatherDispatchData(FDispatchData const& InDispatchData) override;
 	//~ End FComputeDataProviderRenderProxy Interface
 
 private:
+	using FParameters = FSceneDataInterfaceParameters;
+
+	bool bIsValid;
 	float GameTime;
 	float GameTimeDelta;
 	uint32 FrameNumber;

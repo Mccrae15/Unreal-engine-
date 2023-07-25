@@ -153,6 +153,7 @@ import android.text.TextUtils;
 import android.media.AudioManager;
 
 import android.net.ConnectivityManager;
+import android.net.wifi.WifiManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
 
@@ -529,6 +530,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	public static final int ANDROID_BUILD_VERSION = android.os.Build.VERSION.SDK_INT;
 	
 	private StoreHelper IapStoreHelper;
+
+	/** App wide Multicast lock used to allow broadcast/multicast communication */
+	private WifiManager.MulticastLock MultiCastLock = null;
 
 //$${gameActivityClassAdditions}$$
 
@@ -2334,6 +2338,13 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
 		gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
 
+
+		if (PermissionHelper.checkPermission("android.permission.CHANGE_WIFI_MULTICAST_STATE"))
+		{
+			WifiManager wifiManager = (WifiManager)getSystemService(Context.WIFI_SERVICE);
+			MultiCastLock = wifiManager.createMulticastLock("UE");
+			MultiCastLock.setReferenceCounted(true);
+		}
 
 		// disable autofill to avoid possible Android 10 crash (android.view.autofill.AutofillManager.ensureServiceClientAddedIfNeededLocked() SyncResultReceiver$TimeoutException)
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
@@ -5209,14 +5220,19 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		new DeviceInfoData(0x0738, 0x5266, "Mad Catz C.T.R.L.R"),
 		new DeviceInfoData(0x045e, 0x028e, "Xbox Wired Controller"),
 		new DeviceInfoData(0x045e, 0x02e0, "Xbox Wireless Controller"),
+		new DeviceInfoData(0x045e, 0x02fd, "Xbox Wireless Controller"),
 		new DeviceInfoData(0x045e, 0x0b05, "Xbox Elite Wireless Controller"),
+		new DeviceInfoData(0x045e, 0x0b12, "Generic X-Box pad"),
+		new DeviceInfoData(0x045e, 0x0b13, "Xbox Wireless Controller"),
 		new DeviceInfoData(0x0111, 0x1419, "SteelSeries Stratus XL"), 
 		new DeviceInfoData(0x054c, 0x05c4, "PS4 Wireless Controller"),
 		new DeviceInfoData(0x054c, 0x09cc, "PS4 Wireless Controller (v2)"),
 		new DeviceInfoData(0x054c, 0x0ce6, "PS5 Wireless Controller"),
 		new DeviceInfoData(0x05ac, 0x056a, "glap QXPGP001"),
 		new DeviceInfoData(0x0483, 0x5750, "STMicroelectronics Lenovo GamePad"),
-		new DeviceInfoData(0x1532, 0x0705, "Razer Razer Claire T1 Wired")
+		new DeviceInfoData(0x1532, 0x0705, "Razer Razer Claire T1 Wired"),
+		new DeviceInfoData(0x1532, 0x0712, "Razer Kishi V2"),
+		new DeviceInfoData(0x1532, 0x0718, "Razer Kishi V2 Pro XBox360")
 	};
 
 	public class InputDeviceInfo {
@@ -6533,6 +6549,24 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			return true;
 		}
 		return false;
+	}
+
+	public boolean AndroidThunkJava_AcquireWifiManagerMulticastLock()
+	{
+		if (MultiCastLock != null)
+		{		
+			MultiCastLock.acquire();
+			return true;
+		}
+		return false;
+	}
+
+	public void AndroidThunkJava_ReleaseWifiManagerMulticastLock()
+	{
+		if (MultiCastLock != null)
+		{		
+			MultiCastLock.release();
+		}
 	}
 
 	public void SetCrashContextData(String Key, String Value)

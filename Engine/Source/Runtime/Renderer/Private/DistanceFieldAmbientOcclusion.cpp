@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "DistanceFieldAmbientOcclusion.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "DeferredShadingRenderer.h"
 #include "PostProcess/PostProcessing.h"
 #include "PostProcess/SceneFilterRendering.h"
@@ -19,7 +20,10 @@
 #include "VisualizeTexture.h"
 #include "RayTracing/RaytracingOptions.h"
 #include "Lumen/Lumen.h"
+#include "ScenePrivate.h"
 #include "Strata/Strata.h"
+
+DEFINE_LOG_CATEGORY(LogDistanceField);
 
 int32 GDistanceFieldAO = 1;
 FAutoConsoleVariableRef CVarDistanceFieldAO(
@@ -126,8 +130,6 @@ bool UseAOObjectDistanceField()
 int32 GDistanceFieldAOTileSizeX = 16;
 int32 GDistanceFieldAOTileSizeY = 16;
 
-DEFINE_LOG_CATEGORY(LogDistanceField);
-
 FDistanceFieldAOParameters::FDistanceFieldAOParameters(float InOcclusionMaxDistance, float InContrast)
 {
 	Contrast = FMath::Clamp(InContrast, .01f, 2.0f);
@@ -144,6 +146,15 @@ FDistanceFieldAOParameters::FDistanceFieldAOParameters(float InOcclusionMaxDista
 		ObjectMaxOcclusionDistance = InOcclusionMaxDistance;
 		GlobalMaxOcclusionDistance = 0;
 	}
+}
+
+void TileIntersectionModifyCompilationEnvironment(EShaderPlatform Platform, FShaderCompilerEnvironment& OutEnvironment)
+{
+	OutEnvironment.SetDefine(TEXT("CULLED_TILE_DATA_STRIDE"), CulledTileDataStride);
+	OutEnvironment.SetDefine(TEXT("CULLED_TILE_SIZEX"), GDistanceFieldAOTileSizeX);
+	extern int32 GConeTraceDownsampleFactor;
+	OutEnvironment.SetDefine(TEXT("TRACE_DOWNSAMPLE_FACTOR"), GConeTraceDownsampleFactor);
+	OutEnvironment.SetDefine(TEXT("CONE_TRACE_OBJECTS_THREADGROUP_SIZE"), ConeTraceObjectsThreadGroupSize);
 }
 
 FIntPoint GetBufferSizeForAO(const FViewInfo& View)

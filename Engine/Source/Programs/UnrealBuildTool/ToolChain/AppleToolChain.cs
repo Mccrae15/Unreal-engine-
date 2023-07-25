@@ -10,6 +10,7 @@ using EpicGames.Core;
 using System.Text.RegularExpressions;
 using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 
 namespace UnrealBuildTool
 {
@@ -33,13 +34,27 @@ namespace UnrealBuildTool
 			{
 				Reason = "xcode-select";
 
-				// on the Mac, run xcode-select directly
-				DeveloperDir = Utils.RunLocalProcessAndReturnStdOut("xcode-select", "--print-path", Logger);
+				// on the Mac, run xcode-select directly.
+				int ReturnCode;
+				DeveloperDir = Utils.RunLocalProcessAndReturnStdOut("xcode-select", "--print-path", null, out ReturnCode);
+				if (ReturnCode != 0)
+				{
+					string? MinVersion = UEBuildPlatform.GetSDK(UnrealTargetPlatform.Mac)!.GetSDKInfo("Sdk")!.Min;
+					throw new BuildException($"We were unable to find your build tools (via 'xcode-select --print-path'). Please install Xcode, version {MinVersion} or later");
+				}
 
 				// make sure we get a full path
 				if (Directory.Exists(DeveloperDir) == false)
 				{
 					throw new BuildException("Selected Xcode ('{0}') doesn't exist, cannot continue.", DeveloperDir);
+				}
+
+				if (DeveloperDir.Contains("CommandLineTools", StringComparison.InvariantCultureIgnoreCase))
+				{
+					throw new BuildException($"Your Mac is set to use CommandLineTools for its build tools ({DeveloperDir}). Unreal expects Xcode as the build tools. Please install Xcode if it's not already, then do one of the following:\n" +
+						"  - Run Xcode, go to Settings, and in the Locations tab, choose your Xcode in Command Line Tools dropdown.\n" +
+						"  - In Terminal, run 'sudo xcode-select -s /Applications/Xcode.app' (or an alternate location if you installed Xcode to a non-standard location)\n" + 
+						"Either way, you will need to enter your Mac password.");
 				}
 
 				if (DeveloperDir.EndsWith("/") == false)
@@ -54,7 +69,7 @@ namespace UnrealBuildTool
 				Log.TraceInformationOnce("Compiling with non-standard Xcode ({0}): {1}", Reason, DeveloperDir);
 			}
 
-			// Installed engine requires Xcode 11
+			// Installed engine requires Xcode 13
 			if (Unreal.IsEngineInstalled())
 			{
 				string? InstalledSdkVersion = UnrealBuildBase.ApplePlatformSDK.InstalledSDKVersion;
@@ -62,9 +77,9 @@ namespace UnrealBuildTool
 				{
 					throw new BuildException("Unable to get xcode version");
 				}
-				if (int.Parse(InstalledSdkVersion.Substring(0,2)) < 11)
+				if (int.Parse(InstalledSdkVersion.Substring(0,2)) < 13)
 				{
-					throw new BuildException("Building for macOS, iOS and tvOS requires Xcode 11 or newer, Xcode " + InstalledSdkVersion + " detected");
+					throw new BuildException("Building for macOS, iOS and tvOS requires Xcode 13.4.1 or newer, Xcode " + InstalledSdkVersion + " detected");
 				}
 			}
 		}
@@ -162,9 +177,31 @@ namespace UnrealBuildTool
 
 		protected FileReference? ProjectFile;
 
+		protected static bool UseModernXcode(FileReference? ProjectFile)
+		{
+			// Modern Xcode mode does this now
+			bool _bUseModernXcode = false;
+			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, ProjectFile?.Directory, UnrealTargetPlatform.Mac);
+			Ini.TryGetValue("XcodeConfiguration", "bUseModernXcode", out _bUseModernXcode);
+			return _bUseModernXcode;
+		}
+
+		protected bool bUseModernXcode => UseModernXcode(ProjectFile);
+
 		public AppleToolChain(FileReference? InProjectFile, ClangToolChainOptions InOptions, ILogger InLogger) : base(InOptions, InLogger)
 		{
 			ProjectFile = InProjectFile;
+		}
+
+		/// <summary>
+		/// Takes an architecture string as provided by UBT for the target and formats it for Clang. Supports
+		/// multiple architectures joined with '+'
+		/// </summary>
+		/// <param name="InArchitectures"></param>
+		/// <returns></returns>
+		protected string FormatArchitectureArg(UnrealArchitectures InArchitectures)
+		{
+			return "-arch " + string.Join('+', InArchitectures.Architectures.Select(x => x.AppleName));
 		}
 
 		protected DirectoryReference GetMacDevSrcRoot()
@@ -188,10 +225,55 @@ namespace UnrealBuildTool
 			Utils.RunLocalProcessAndLogOutput(StartInfo, Logger);
 		}
 
+		/// <summary>
+		/// Writes a versions.xcconfig file for xcode to pull in when making an app plist
+		/// </summary>
+		/// <param name="LinkEnvironment"></param>
+		/// <param name="Prerequisite">FileItem describing the Prerequisite that this will this depends on (executable or similar) </param>
+		/// <param name="Graph">List of actions to be executed. Additional actions will be added to this list.</param>
+		protected FileItem UpdateVersionFile(LinkEnvironment LinkEnvironment, FileItem Prerequisite, IActionGraphBuilder Graph)
+		{
+			FileItem DestFile;
+
+			// Make the compile action
+			Action UpdateVersionAction = Graph.CreateAction(ActionType.CreateAppBundle);
+			UpdateVersionAction.WorkingDirectory = GetMacDevSrcRoot();
+			UpdateVersionAction.CommandPath = BuildHostPlatform.Current.Shell;
+			UpdateVersionAction.CommandDescription = "";
+
+			// @todo programs right nhow are sharing the Engine build version - one reason for this is that we can't get to the Engine/Programs directory from here
+			// (we can't even get to the Engine/Source/Programs directory without searching on disk), and if we did, we would create a _lot_ of Engine/Programs directories
+			// on disk that don't exist in p4. So, we just re-use Engine version, not Project version
+			//				DirectoryReference ProductDirectory = FindProductDirectory(ProjectFile, LinkEnvironment.OutputDirectory!, Graph.Makefile.TargetType);
+			DirectoryReference ProductDirectory = (ProjectFile?.Directory) ?? Unreal.EngineDirectory;
+			FileReference OutputVersionFile = FileReference.Combine(ProductDirectory, "Intermediate/Build/Versions.xcconfig");
+			DestFile = FileItem.GetItemByFileReference(OutputVersionFile);
+
+			// make path to the script
+			FileItem BundleScript = FileItem.GetItemByFileReference(FileReference.Combine(Unreal.EngineDirectory, "Build/BatchFiles/Mac/UpdateVersionAfterBuild.sh"));
+			UpdateVersionAction.CommandArguments = $"\"{BundleScript.AbsolutePath}\" {ProductDirectory} {LinkEnvironment.Platform}";
+			UpdateVersionAction.PrerequisiteItems.Add(Prerequisite);
+			UpdateVersionAction.ProducedItems.Add(DestFile);
+			UpdateVersionAction.StatusDescription = $"Updating version file: {OutputVersionFile}";
+
+			return DestFile;
+		}
+
+
 		/// <inheritdoc/>
 		protected override string EscapePreprocessorDefinition(string Definition)
 		{
 			return Definition.Contains("\"") ? Definition.Replace("\"", "\\\"") : Definition;
+		}
+
+		protected override void GetCppStandardCompileArgument(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			if (CompileEnvironment.bEnableObjCAutomaticReferenceCounting)
+			{
+				Arguments.Add("-fobjc-arc");
+			}
+
+			base.GetCppStandardCompileArgument(CompileEnvironment, Arguments);
 		}
 
 		protected override void GetCompileArguments_CPP(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
@@ -220,11 +302,7 @@ namespace UnrealBuildTool
 			Arguments.Add("-x objective-c++-header");
 			GetCppStandardCompileArgument(CompileEnvironment, Arguments);
 			Arguments.Add("-stdlib=libc++");
-
-			if (CompilerVersionGreaterOrEqual(13, 0, 0)) // Note this is supported for >=11 on other clang platforms
-			{
-				Arguments.Add("-fpch-instantiate-templates");
-			}
+			Arguments.Add("-fpch-instantiate-templates");
 		}
 
 		/// <inheritdoc/>
@@ -232,20 +310,7 @@ namespace UnrealBuildTool
 		{
 			base.GetCompileArguments_WarningsAndErrors(CompileEnvironment, Arguments);
 
-			// Flags added in Xcode 13.3 (Apple clang 13.1.6)
-			if (CompilerVersionGreaterOrEqual(13, 0, 0) && CompilerVersionLessThan(13, 1, 6))
-			{
-				Arguments.Remove("-Wno-unused-but-set-variable");
-				Arguments.Remove("-Wno-unused-but-set-parameter");
-				Arguments.Remove("-Wno-ordered-compare-function-pointers");
-			}
-
-			// clang 12.00 has a new warning for copies in ranged loops. Instances have all been fixed up (2020/6/26) but
-			// are likely to be reintroduced due to no equivalent on other platforms at this time so disable the warning
-			if (CompilerVersionGreaterOrEqual(12, 0, 0))
-			{
-				Arguments.Add("-Wno-range-loop-analysis");
-			}
+			Arguments.Add("-Wno-range-loop-analysis");
 		}
 
 		/// <inheritdoc/>
@@ -284,7 +349,7 @@ namespace UnrealBuildTool
 				{
 					Arguments.Add("-Os");
 
-					if (CompileEnvironment.Architecture.StartsWith("aarch64"))
+					if (CompileEnvironment.Architecture == UnrealArch.Arm64)
 					{
 						Arguments.Add("-moutline");
 					}
@@ -364,14 +429,6 @@ namespace UnrealBuildTool
 					if (!int.TryParse(Versions[0], out Major) || !int.TryParse(Versions[1], out Minor) || !int.TryParse(Versions[2], out Patch))
 					{
 						Log.TraceInformationOnce("Unable to parse version tokens: {0}", Tokens[3]);
-					}
-					else
-					{
-						if (Major < 12)
-						{
-							Log.TraceInformationOnce("dsymutil version is {0}.{1}.{2}. Using bundled version.", Major, Minor, Patch);
-							bUseInstalledDsymutil = false;
-						}
 					}
 				}
 			}

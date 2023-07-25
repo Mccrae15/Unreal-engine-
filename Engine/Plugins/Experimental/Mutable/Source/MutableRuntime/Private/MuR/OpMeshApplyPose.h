@@ -4,6 +4,7 @@
 
 #include "MuR/MeshPrivate.h"
 #include "MuR/ConvertData.h"
+#include "MuR/MutableTrace.h"
 #include "MuR/Platform.h"
 #include "MuR/OpMeshChartDifference.h"
 
@@ -40,7 +41,7 @@ namespace mu
 
             if( poseBoneIndex != INDEX_NONE )
             {
-				skinTransforms[b] = pPose->m_bonePoses[poseBoneIndex].m_boneTransform;
+				skinTransforms[b] = pPose->BonePoses[poseBoneIndex].BoneTransform;
             }
             else
             {

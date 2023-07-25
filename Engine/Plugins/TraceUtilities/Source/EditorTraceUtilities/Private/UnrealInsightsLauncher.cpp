@@ -3,6 +3,7 @@
 #include "UnrealInsightsLauncher.h"
 #include "EditorTraceUtilities.h"
 
+#include "Async/TaskGraphInterfaces.h"
 #include "Styling/AppStyle.h"
 #include "IUATHelperModule.h"
 #include "Logging/LogMacros.h"
@@ -13,7 +14,6 @@
 #include "Trace/StoreClient.h"
 
 #define LOCTEXT_NAMESPACE "FUnrealInsightsLauncher"
-
 
 TSharedPtr<FUnrealInsightsLauncher> FUnrealInsightsLauncher::Instance = nullptr;
 
@@ -38,6 +38,60 @@ private:
 	FText Message;
 };
 
+class FLiveSessionQueryTask
+{
+public:
+	FLiveSessionQueryTask(TSharedPtr<FLiveSessionTaskData> InOutData)
+		: OutData(InOutData)
+	{}
+
+	FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FLiveSessionQueryTask, STATGROUP_TaskGraphTasks); }
+	ENamedThreads::Type GetDesiredThread() { return ENamedThreads::Type::AnyThread; }
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		using namespace UE::Trace;
+		FStoreClient* StoreClient = FStoreClient::Connect(TEXT("localhost"));
+
+		OutData->TaskLiveSessionData.Empty();
+
+		if (!StoreClient)
+		{
+			return;
+		}
+
+		uint32 SessionCount = StoreClient->GetSessionCount();
+		if (!SessionCount)
+		{
+			return;
+		}
+		
+		OutData->StorePort = StoreClient->GetStorePort();
+
+		for (uint32 Index = 0; Index < SessionCount; ++Index)
+		{
+			const FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(Index);
+
+			if (!SessionInfo)
+			{
+				continue;
+			}
+
+			uint32 TraceId = SessionInfo->GetTraceId();
+			const FStoreClient::FTraceInfo* Info = StoreClient->GetTraceInfoById(TraceId);
+
+			if (Info)
+			{
+				OutData->TaskLiveSessionData.Add(FString(Info->GetName()), TraceId);
+			}
+		}
+	}
+
+	TSharedPtr<FLiveSessionTaskData> OutData;
+};
+
+
 FUnrealInsightsLauncher::FUnrealInsightsLauncher()
 	: LogListingName(TEXT("UnrealInsights"))
 {
@@ -49,45 +103,10 @@ FUnrealInsightsLauncher::~FUnrealInsightsLauncher()
 
 }
 	
-void FUnrealInsightsLauncher::RegisterMenus()
-{
-	FToolMenuOwnerScoped OwnerScoped(this);
-
-	UToolMenu* ProfileMenu = UToolMenus::Get()->ExtendMenu("MainFrame.MainMenu.Tools");
-	if (ProfileMenu)
-	{
-		FToolMenuSection& Section = ProfileMenu->AddSection("Unreal Insights", FText::FromString(TEXT("Unreal Insights")));
-		Section.AddMenuEntry("OpenUnrealInsights",
-			LOCTEXT("OpenUnrealInsights_Label", "Run Unreal Insights"),
-			LOCTEXT("OpenUnrealInsights_Desc", "Run the Unreal Insights standalone application."),
-			FSlateIcon(FAppStyle::GetAppStyleSetName(), "UnrealInsights.MenuIcon"),
-			FUIAction(FExecuteAction::CreateRaw(this, &FUnrealInsightsLauncher::RunUnrealInsights_Execute), FCanExecuteAction())
-		);
-		Section.AddMenuEntry("OpenLiveTrace",
-			LOCTEXT("OpenLiveTrace_Label", "Open active Trace"),
-			LOCTEXT("OpenLiveTrace_Desc", "Opens the currently running trace in Unreal Insights."),
-			FSlateIcon(FAppStyle::GetAppStyleSetName(), "UnrealInsights.MenuIcon"),
-			FUIAction(FExecuteAction::CreateRaw(this, &FUnrealInsightsLauncher::RunUnrealInsights_OpenLiveTrace), FCanExecuteAction::CreateLambda(
-				[](){ return FTraceAuxiliary::IsConnected();}))
-		);
-	}
-}
-
 FString FUnrealInsightsLauncher::GetInsightsApplicationPath()
 {
 	FString Path = FPlatformProcess::GenerateApplicationPath(TEXT("UnrealInsights"), EBuildConfiguration::Development);
 	return FPaths::ConvertRelativePathToFull(Path);
-}
-
-void FUnrealInsightsLauncher::RunUnrealInsights_Execute()
-{
-	FString Path = GetInsightsApplicationPath();
-	StartUnrealInsights(Path);
-}
-
-void FUnrealInsightsLauncher::RunUnrealInsights_OpenLiveTrace()
-{
-	TryOpenTraceFromDestination(FTraceAuxiliary::GetTraceDestination());
 }
 
 void FUnrealInsightsLauncher::StartUnrealInsights(const FString& Path, const FString& Parameters)
@@ -192,6 +211,18 @@ bool FUnrealInsightsLauncher::TryOpenTraceFromDestination(const FString& Destina
 
 bool FUnrealInsightsLauncher::OpenTraceFile(const FString& FilePath)
 {
+	if (!FilePath.StartsWith(TEXT("\"")) && !FilePath.EndsWith(TEXT("\"")))
+	{
+		TStringBuilder<1024> StringBuilder;
+
+		StringBuilder.AppendChar(TEXT('"'));
+		StringBuilder.Append(FilePath);
+		StringBuilder.AppendChar(TEXT('"'));
+
+		StartUnrealInsights(GetInsightsApplicationPath(), StringBuilder.ToString());
+		return true;
+	}
+
 	StartUnrealInsights(GetInsightsApplicationPath(), FilePath);
 	return true;
 }
@@ -242,13 +273,60 @@ bool FUnrealInsightsLauncher::OpenActiveTraceFromStore(const FString& TraceHostA
 	
 	uint32 TraceId = SessionInfo->GetTraceId();
 	
-	if (!OpenRemoteTrace(TraceHostAddress, StoreClient->GetStorePort(), TraceId))
+	if (!OpenRemoteTrace(TraceHostAddress, (uint16)StoreClient->GetStorePort(), TraceId))
 	{
 		//Failed to open Trace File %s
 		return false;
 	}
 
 	return true;
+}
+
+FLiveSessionTracker::FLiveSessionTracker()
+{
+	TaskLiveSessionData = MakeShared<FLiveSessionTaskData>();
+}
+
+void FLiveSessionTracker::Update()
+{
+	if (bIsQueryInProgress && Event.IsValid() && Event->IsComplete())
+	{
+		bIsQueryInProgress = false;
+		LiveSessionMap = TaskLiveSessionData->TaskLiveSessionData;
+		StorePort = TaskLiveSessionData->StorePort;
+
+		if (!LiveSessionMap.IsEmpty())
+		{
+			bHasData = true;
+		}
+	}
+}
+
+void FLiveSessionTracker::StartQuery()
+{
+	if (!bIsQueryInProgress)
+	{
+		Event = TGraphTask<FLiveSessionQueryTask>::CreateTask().ConstructAndDispatchWhenReady(TaskLiveSessionData);
+		bIsQueryInProgress = true;
+	}
+}
+
+const FLiveSessionsMap& FLiveSessionTracker::GetLiveSessions()
+{
+	Update();
+	return LiveSessionMap;
+}
+
+bool FLiveSessionTracker::HasData()
+{
+	Update();
+	return bHasData;
+}
+
+uint32 FLiveSessionTracker::GetStorePort()
+{
+	Update();
+	return StorePort;
 }
 
 #undef LOCTEXT_NAMESPACE

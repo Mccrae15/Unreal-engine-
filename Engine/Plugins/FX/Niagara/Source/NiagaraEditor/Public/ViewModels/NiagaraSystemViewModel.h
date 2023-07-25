@@ -8,6 +8,7 @@
 #include "ISequencerModule.h"
 #include "NiagaraCommon.h"
 #include "NiagaraEditorCommon.h"
+#include "NiagaraEditorModule.h"
 #include "NiagaraOverviewNode.h"
 #include "NiagaraSystemScalabilityViewModel.h"
 #include "NiagaraUserParameterPanelViewModel.h"
@@ -504,7 +505,7 @@ private:
 	 * @param ChangedParameterStore The parameter store that changed.
 	 * @param OwningScript The script that owns the parameter store, if there is one.
 	 */
-	void SystemParameterStoreChanged(const FNiagaraParameterStore& ChangedParameterStore, const UNiagaraScript* OwningScript);
+	void SystemParameterStoreChanged(const FNiagaraParameterStore* ChangedParameterStore, const UNiagaraScript* OwningScript);
 
 	/** Called whenever an emitter's script graph changes. */
 	void EmitterScriptGraphChanged(const FEdGraphEditAction& InAction, const UNiagaraScript& OwningScript, FGuid OwningEmitterHandleId);
@@ -661,6 +662,8 @@ private:
 	FOnExternalRemoveParameter OnExternalRemoveDelegate;
 
 	FOnRequestFocusTab OnRequestFocusTabDelegate;
+
+	FDelegateHandle OnScriptAppliedDelegateHandle;
 
 	/** A flag for preventing reentrancy when syncrhonizing sequencer data. */
 	bool bUpdatingEmittersFromSequencerDataChange;

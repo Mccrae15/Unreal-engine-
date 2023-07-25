@@ -7,11 +7,17 @@
 #pragma once
 
 #include "RHIDefinitions.h"
+#include "RayTracingPayloadType.h"
 
 class FSkyLightSceneProxy;
 class FViewInfo;
 class FLightSceneInfoCompact;
 class FLightSceneInfo;
+class FScene;
+class FSceneView;
+class FSceneViewFamily;
+class FLightSceneProxy;
+struct FEngineShowFlags;
 
 // be sure to also update the definition in the `RayTracingPrimaryRays.usf`
 enum class ERayTracingPrimaryRaysFlag: uint32 
@@ -50,6 +56,19 @@ enum class ERayTracingPipelineCompatibilityFlags
 };
 ENUM_CLASS_FLAGS(ERayTracingPipelineCompatibilityFlags);
 
+namespace RayTracing
+{
+	// Keep in sync with r.RayTracing.Culling
+	enum class ECullingMode : uint8
+	{
+		Disabled,
+		BehindCameraByDistanceAndSolidAngle,
+		DistanceAndSolidAngle,
+		DistanceOrSolidAngle,
+
+		MAX
+	};
+}
 
 #if RHI_RAYTRACING
 
@@ -63,6 +82,7 @@ extern FRayTracingPrimaryRaysOptions GetRayTracingTranslucencyOptions(const FVie
 extern bool ShouldRenderRayTracingSkyLight(const FSkyLightSceneProxy* SkyLightSceneProxy);
 extern bool ShouldRenderRayTracingAmbientOcclusion(const FViewInfo& View);
 extern bool ShouldRenderRayTracingReflections(const FViewInfo& View);
+extern bool ShouldRenderRayTracingReflectionsWater(const FViewInfo& View);
 extern bool ShouldRenderRayTracingGlobalIllumination(const FViewInfo& View);
 extern bool ShouldRenderRayTracingTranslucency(const FViewInfo& View);
 extern bool ShouldRenderRayTracingShadows();
@@ -71,11 +91,16 @@ extern bool ShouldRenderRayTracingShadowsForLight(const FLightSceneInfoCompact& 
 extern bool ShouldRenderPluginRayTracingGlobalIllumination(const FViewInfo& View);
 extern bool HasRayTracedOverlay(const FSceneViewFamily& ViewFamily);
 
+namespace RayTracing
+{
+	extern ECullingMode GetCullingMode(const FEngineShowFlags& ShowFlags);
+}
+
 extern bool EnableRayTracingShadowTwoSidedGeometry();
 extern float GetRaytracingMaxNormalBias();
-extern int32 GetRayTracingCulling();
 extern float GetRayTracingCullingRadius();
 extern bool IsRayTracingInstanceDebugDataEnabled(const FViewInfo& View);
+extern bool IsRayTracingInstanceOverlapEnabled(const FViewInfo& View);
 
 extern bool CanUseRayTracingAMDHitToken();
 
@@ -102,6 +127,11 @@ FORCEINLINE bool ShouldRenderRayTracingAmbientOcclusion(const FViewInfo& View)
 }
 
 FORCEINLINE bool ShouldRenderRayTracingReflections(const FViewInfo& View)
+{
+	return false;
+}
+
+FORCEINLINE bool ShouldRenderRayTracingReflectionsWater(const FViewInfo& View)
 {
 	return false;
 }
@@ -141,9 +171,12 @@ FORCEINLINE bool HasRayTracedOverlay(const FSceneViewFamily& ViewFamily)
 	return false;
 }
 
-FORCEINLINE int32 GetRayTracingCulling()
+namespace RayTracing
 {
-	return 0;
+	FORCEINLINE ECullingMode GetCullingMode(const FEngineShowFlags& ShowFlags)
+	{
+		return ECullingMode::Disabled;
+	}
 }
 
 FORCEINLINE float GetRayTracingCullingRadius()
@@ -156,7 +189,12 @@ FORCEINLINE bool CanUseRayTracingAMDHitToken()
 	return false;
 }
 
-FORCEINLINE bool IsRayTracingInstanceDebugDataEnabled()
+FORCEINLINE bool IsRayTracingInstanceDebugDataEnabled(const FViewInfo& View)
+{
+	return false;
+}
+
+FORCEINLINE bool IsRayTracingInstanceOverlapEnabled(const FViewInfo& View)
 {
 	return false;
 }

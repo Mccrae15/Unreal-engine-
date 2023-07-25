@@ -2,23 +2,32 @@
 
 #pragma once
 
+#include "AlphaBlend.h"
 #include "AnimNodes/AnimNode_SequenceEvaluator.h"
 #include "Animation/AnimExecutionContext.h"
 #include "Animation/AnimNodeReference.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "PoseSearch/PoseSearch.h"
+#include "PoseSearch/PoseSearchHistory.h"
+#include "PoseSearch/PoseSearchResult.h"
 #include "SequenceEvaluatorLibrary.h"
 #include "SequencePlayerLibrary.h"
-
 #include "PoseSearchLibrary.generated.h"
+
+namespace UE::PoseSearch
+{
+	struct FSearchContext;
+} // namespace UE::PoseSearch
+
+struct FGameplayTagContainer;
+struct FTrajectorySampleRange;
+class UPoseSearchSearchableAsset;
 
 UENUM(BlueprintType, Category="Motion Trajectory", meta=(Bitflags, UseEnumValuesAsMaskValuesInEditor="true"))
 enum class EMotionMatchingFlags : uint8
 {
 	None = 0 UMETA(Hidden),
 	JumpedToPose = 1 << 0,		// Signals that motion matching has made a significant deviation in the selected sequence/pose index
-	JumpedToFollowUp = 1 << 1,	// Motion matching chose the follow up animation of the prior sequence
 };
 ENUM_CLASS_FLAGS(EMotionMatchingFlags);
 
@@ -47,7 +56,7 @@ struct POSESEARCH_API FMotionMatchingSettings
 	
 	// Don't jump to poses that are less than this many seconds away
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Settings, meta=(ClampMin="0"))
-	float PoseJumpThresholdTime = 1.f;
+	float PoseJumpThresholdTime = 0.f;
 
 	// Don't jump to poses that has been selected previously within this many seconds in the past
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta = (ClampMin = "0"))
@@ -55,7 +64,13 @@ struct POSESEARCH_API FMotionMatchingSettings
 
 	// Minimum amount of time to wait between pose search queries
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Settings, meta=(ClampMin="0"))
-	float SearchThrottleTime = 0.1f;
+	float SearchThrottleTime = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta = (ClampMin = "0.5", ClampMax = "1.0", UIMin = "0.5", UIMax = "1.0"))
+	float PlayRateMin = 1.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta = (ClampMin = "1.0", ClampMax = "2.0", UIMin = "1.0", UIMax = "2.0"))
+	float PlayRateMax = 1.f;
 };
 
 USTRUCT(BlueprintType, Category="Animation|Pose Search")
@@ -66,10 +81,8 @@ struct POSESEARCH_API FMotionMatchingState
 	// Reset the state to a default state using the current Database
 	void Reset();
 
-	// Checks if the currently playing asset can advance and stay in bounds under the provided DeltaTime. If the 
-	// asset cannot advance but a follow up asset is provided by the database then this function will return true and 
-	// also set bAdvanceToFollowUpAsset to true, while providing the pose to jump to in the follow up asset in OutFollowUpAsset
-	bool CanAdvance(float DeltaTime, bool& bOutAdvanceToFollowUpAsset, UE::PoseSearch::FSearchResult& OutFollowUpAsset) const;
+	// Checks if the currently playing asset can advance and stay in bounds under the provided DeltaTime.
+	bool CanAdvance(float DeltaTime) const;
 
 	// Attempts to set the internal state to match the provided asset time including updating the internal DbPoseIdx. 
 	// If the provided asset time is out of bounds for the currently playing asset then this function will reset the 
@@ -79,15 +92,19 @@ struct POSESEARCH_API FMotionMatchingState
 	// Internally stores the 'jump' to a new pose/sequence index and asset time for evaluation
 	void JumpToPose(const FAnimationUpdateContext& Context, const FMotionMatchingSettings& Settings, const UE::PoseSearch::FSearchResult& Result);
 
-	const FPoseSearchIndexAsset* GetCurrentSearchIndexAsset() const;
-
 	float ComputeJumpBlendTime(const UE::PoseSearch::FSearchResult& Result, const FMotionMatchingSettings& Settings) const;
+
+	void UpdateWantedPlayRate(const UE::PoseSearch::FSearchContext& SearchContext, const FMotionMatchingSettings& Settings);
 
 	UE::PoseSearch::FSearchResult CurrentSearchResult;
 
 	// Time since the last pose jump
 	UPROPERTY(Transient)
 	float ElapsedPoseJumpTime = 0.f;
+
+	// wanted PlayRate to have the selected animation playing at the estimated requested speed from the query
+	UPROPERTY(Transient)
+	float WantedPlayRate = 1.f;
 
 	// Evaluation flags relevant to the state of motion matching
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category=State)

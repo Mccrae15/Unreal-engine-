@@ -2,16 +2,19 @@
 
 #include "Components/DMXPixelMappingScreenComponent.h"
 
-#include "DMXPixelMappingRuntimeCommon.h"
-#include "DMXPixelMappingTypes.h"
 #include "DMXPixelMappingUtils.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
+#include "IDMXPixelMappingRenderer.h"
 #include "IO/DMXOutputPort.h"
+#include "IO/DMXOutputPortReference.h"
 #include "IO/DMXPortManager.h"
+#include "TextureResource.h"
 
 #if WITH_EDITOR
 #include "DMXPixelMappingComponentWidget.h"
 #include "SDMXPixelMappingScreenComponentBox.h"
+#else
+#include "DMXPixelMappingTypes.h"
 #endif // WITH_EDITOR
 
 #include "Engine/Texture.h"
@@ -407,10 +410,8 @@ void UDMXPixelMappingScreenComponent::QueueDownsample()
             const FIntPoint PixelPosition = RendererComponent->GetPixelPosition(InXYIndex + PixelDownsamplePositionRange.Key);
             const FVector2D UV = FVector2D((GetPosition().X + SizePixel.X * XIndex) / TextureSizeX, (GetPosition().Y + SizePixel.Y * YIndex) / TextureSizeY);
 
-            FDMXPixelMappingDownsamplePixelParam DownsamplePixelParam
+            FDMXPixelMappingDownsamplePixelParamsV2 DownsamplePixelParam
             {
-                PixelFactor,
-                InvertPixel,
                 PixelPosition,
                 UV,
                 UVSize,

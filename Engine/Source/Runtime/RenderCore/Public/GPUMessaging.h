@@ -90,6 +90,15 @@ public:
 		return DefaultValue;
 	}
 
+	// Read up to N elements
+	TConstArrayView<uint32> ReadCount(int32 Count)
+	{
+		TConstArrayView<uint32> Payload(PayloadData, PayloadSize);
+		Payload.MidInline(ReadOffset, Count);
+		ReadOffset += Payload.Num();
+		return Payload;
+	}
+
 	uint32 GetPayloadSize() const { return PayloadSize; }
 
 private:

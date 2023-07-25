@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimSet.h"
-#include "UObject/UObjectHash.h"
+#include "Engine/SkeletalMesh.h"
 #include "UObject/UObjectIterator.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSequence.h"

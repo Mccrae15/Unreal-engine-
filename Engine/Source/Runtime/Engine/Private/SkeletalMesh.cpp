@@ -6,65 +6,55 @@
 
 #include "Engine/SkeletalMesh.h"
 
-#include "Serialization/CustomVersion.h"
-#include "Misc/App.h"
-#include "Misc/PackageSegment.h"
-#include "Modules/ModuleManager.h"
+#include "Animation/MeshDeformerGeometry.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "Engine/Blueprint.h"
+#include "Engine/SkeletalMeshSampling.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
-#include "RawIndexBuffer.h"
-#include "Engine/TextureStreamingTypes.h"
-#include "Engine/Brush.h"
+#include "Engine/SkinnedAsset.h"
+#include "Engine/SkinnedAssetAsyncCompileUtils.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "Engine/SkeletalMeshLODSettings.h"
 #include "MaterialShared.h"
 #include "Materials/Material.h"
-#include "Components/SkinnedMeshComponent.h"
-#include "Animation/SmartName.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "MaterialDomain.h"
 #include "Animation/Skeleton.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Engine/CollisionProfile.h"
 #include "ComponentReregisterContext.h"
-#include "UObject/CoreObjectVersion.h"
-#include "UObject/CoreRedirects.h"
-#include "UObject/EditorObjectVersion.h"
+#include "Math/ScaleRotationTranslationMatrix.h"
 #include "UObject/FrameworkObjectVersion.h"
+#include "PhysicsEngine/SphereElem.h"
 #include "UObject/NiagaraObjectVersion.h"
+#include "PhysicsEngine/SphylElem.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/PackageResourceManager.h"
-#include "UObject/PropertyPortFlags.h"
-#include "UObject/RenderingObjectVersion.h"
+#include "PrimitiveViewRelevance.h"
+#include "UObject/Package.h"
+#include "RenderUtils.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
-#include "UObject/UObjectIterator.h"
+#include "SceneInterface.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "EngineUtils.h"
 #include "EditorSupportDelegates.h"
-#include "GPUSkinVertexFactory.h"
+#include "SkeletalMeshLegacyCustomVersions.h"
+#include "SkeletalMeshSceneProxy.h"
 #include "SkeletalRenderPublic.h"
-#include "Logging/TokenizedMessage.h"
-#include "Logging/MessageLog.h"
 #include "SceneManagement.h"
-#include "PhysicsPublic.h"
-#include "Animation/MorphTarget.h"
-#include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Engine/AssetUserData.h"
-#include "Engine/Engine.h"
 #include "Animation/NodeMappingContainer.h"
-#include "GPUSkinCache.h"
-#include "Misc/ConfigCacheIni.h"
-#include "SkeletalMeshTypes.h"
-#include "Rendering/SkeletalMeshVertexBuffer.h"
 #include "Rendering/SkeletalMeshRenderData.h"
-#include "Templates/UniquePtr.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimSequence.h"
-#include "Animation/SkinWeightProfile.h"
 #include "Streaming/SkeletalMeshUpdate.h"
-#include "HAL/FileManager.h"
+#include "Algo/MaxElement.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/ReleaseObjectVersion.h"
 
 #if WITH_EDITOR
-#include "Async/ParallelFor.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetData.h"
 #include "Rendering/SkeletalMeshModel.h"
-#include "Rendering/SkeletalMeshLODImporterData.h"
 #include "IMeshBuilderModule.h"
 #include "IMeshReductionManagerModule.h"
 #include "IMeshReductionInterfaces.h"
@@ -73,40 +63,34 @@
 #include "Engine/SkeletalMeshEditorData.h"
 #include "DerivedDataCacheInterface.h"
 #include "IMeshReductionManagerModule.h"
-#include "SkeletalMeshReductionSettings.h"
 #include "Engine/RendererSettings.h"
-#include "Engine/PoseWatchRenderData.h"
 #include "SkeletalDebugRendering.h"
+#else
+#include "Interfaces/ITargetPlatform.h"
 #endif // #if WITH_EDITOR
 
+#include "UObject/DevObjectVersion.h"
 #include "UnrealEngine.h"
-#include "Misc/CoreMisc.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
 
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "Components/BrushComponent.h"
 #include "Streaming/UVChannelDensity.h"
-#include "Misc/Paths.h"
-#include "Misc/Crc.h"
 
 #include "ClothingAssetBase.h"
 
 #if WITH_EDITOR
-#include "ClothingAssetFactoryInterface.h"
-#include "ClothingSystemEditorInterfaceModule.h"
 #include "ScopedTransaction.h"
 #endif
 #include "SkeletalDebugRendering.h"
 #include "Misc/RuntimeErrors.h"
 #include "PlatformInfo.h"
-#include "Async/Async.h"
 
 #if RHI_RAYTRACING
 #include "RayTracingInstance.h"
 #endif
 #include "Animation/SkinWeightProfileManager.h"
+#include "BoneWeights.h"
 
 #define LOCTEXT_NAMESPACE "SkeltalMesh"
 
@@ -226,13 +210,13 @@ void FreeSkeletalMeshBuffersSinkCallback()
 	{
 		bPreviousFreeSkeletalMeshBuffers = bFreeSkeletalMeshBuffers;
 		if (bFreeSkeletalMeshBuffers)
-	{
-		FlushRenderingCommands();
-			for (TObjectIterator<USkeletalMesh> It; It; ++It)
 		{
+			FlushRenderingCommands();
+			for (TObjectIterator<USkeletalMesh> It; It; ++It)
+			{
 				USkeletalMesh* SkeletalMesh = *It;
 				if (!SkeletalMesh->HasPendingInitOrStreaming() && !SkeletalMesh->GetResourceForRendering()->RequiresCPUSkinning(GMaxRHIFeatureLevel))
-			{
+				{
 					SkeletalMesh->ReleaseCPUResources();
 				}
 			}
@@ -310,12 +294,20 @@ FScopedSkeletalMeshPostEditChange::FScopedSkeletalMeshPostEditChange(USkeletalMe
 
 FScopedSkeletalMeshPostEditChange::~FScopedSkeletalMeshPostEditChange()
 {
-	//If decrementing the post edit change stack counter return 0 it mean we are the first scope call instance, so we have to call posteditchange and re register component
-	if (SkeletalMesh != nullptr && SkeletalMesh->UnStackPostEditChange() == 0)
+	if (SkeletalMesh)
 	{
-		if (bCallPostEditChange)
+		//If decrementing the post edit change stack counter return 0 it mean we are the first scope call instance, so we have to call posteditchange and re register component
+		if (SkeletalMesh->UnStackPostEditChange() == 0)
 		{
-			SkeletalMesh->PostEditChange();
+			if (bCallPostEditChange)
+			{
+				SkeletalMesh->PostEditChange();
+			}
+		}
+		if (bReregisterComponents && SkeletalMesh->IsCompiling())
+		{
+			//wait until the compilation is done
+			FSkinnedAssetCompilingManager::Get().FinishCompilation({ SkeletalMesh });
 		}
 	}
 	//If there is some re register data it will be delete when the destructor go out of scope. This will re register
@@ -436,6 +428,30 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 USkeletalMesh::~USkeletalMesh() = default;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+FSkeletalMeshRenderData* USkeletalMesh::GetSkeletalMeshRenderData() const
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::SkeletalMeshRenderData);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return SkeletalMeshRenderData.Get();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void USkeletalMesh::SetSkeletalMeshRenderData(TUniquePtr<FSkeletalMeshRenderData>&& InSkeletalMeshRenderData)
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::SkeletalMeshRenderData);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SkeletalMeshRenderData = MoveTemp(InSkeletalMeshRenderData);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+FSkeletalMeshRenderData* USkeletalMesh::GetResourceForRendering() const
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::SkeletalMeshRenderData);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return SkeletalMeshRenderData.Get();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 void USkeletalMesh::PostInitProperties()
 {
 #if WITH_EDITORONLY_DATA
@@ -503,7 +519,7 @@ void USkeletalMesh::CalculateExtendedBounds()
 	// Convert back to Origin, Extent and update SphereRadius
 	CalculatedBounds.Origin = (Min + Max) / 2;
 	CalculatedBounds.BoxExtent = (Max - Min) / 2;
-	CalculatedBounds.SphereRadius = CalculatedBounds.BoxExtent.GetAbsMax();
+	CalculatedBounds.SphereRadius = CalculatedBounds.BoxExtent.Size();
 
 	SetExtendedBounds(CalculatedBounds);
 }
@@ -593,6 +609,14 @@ FSkeletalMeshOptimizationSettings USkeletalMesh::GetReductionSettings(int32 LODI
 }
 
 #endif
+
+void USkeletalMesh::SetMaterials(const TArray<FSkeletalMaterial>& InMaterials)
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::Materials);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Materials = InMaterials;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
 
 void USkeletalMesh::AddClothingAsset(UClothingAssetBase* InNewAsset)
 {
@@ -1106,7 +1130,14 @@ bool USkeletalMesh::DoesMipDataExist(const int32 MipIndex) const
 
 bool USkeletalMesh::HasPendingRenderResourceInitialization() const
 {
-	return GetSkeletalMeshRenderData() && !GetSkeletalMeshRenderData()->bReadyForStreaming;
+	// Verify we're not compiling before accessing the renderdata to avoid forcing the compilation
+	// to finish during garbage collection. If we're still compiling, the render data has not
+	// yet been created, hence it is not possible we're actively streaming anything from it...
+
+	// Only check !bReadyForStreaming if the render data is initialized from FSkeletalMeshRenderData::InitResources(), 
+	// otherwise no render commands are pending and the state will never resolve.
+	// Note that bReadyForStreaming is set on the renderthread.
+	return !IsCompiling() && GetSkeletalMeshRenderData() && GetSkeletalMeshRenderData()->IsInitialized() && !GetSkeletalMeshRenderData()->bReadyForStreaming;
 }
 
 bool USkeletalMesh::StreamOut(int32 NewMipCount)
@@ -1476,6 +1507,12 @@ bool USkeletalMesh::IsReadyForFinishDestroy()
 		return false;
 	}
 
+	// Match BeginDestroy() by checking for HasPendingInitOrStreaming().
+	if (HasPendingInitOrStreaming())
+	{
+		return false;
+	}
+
 	ReleaseResources();
 
 	// see if we have hit the resource flush fence
@@ -1604,19 +1641,19 @@ void USkeletalMesh::Serialize( FArchive& Ar )
 				if (bCooked)
 				{
 #if WITH_EDITORONLY_DATA
-				ITargetPlatform* RunningPlatform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
-				const ITargetPlatform* ArchiveCookingTarget = Ar.CookingTarget();
-				constexpr bool bIsSerializeSaving = true;
-				if (ArchiveCookingTarget)
-				{
-					LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, ArchiveCookingTarget, bIsSerializeSaving);
-				}
-				else
-				{
-					//Fall back in case we use an archive that the cooking target has not been set (i.e. Duplicate archive)
-					check(RunningPlatform != NULL);
-					LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, RunningPlatform, bIsSerializeSaving);
-				}
+					ITargetPlatform* RunningPlatform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
+					const ITargetPlatform* ArchiveCookingTarget = Ar.CookingTarget();
+					constexpr bool bIsSerializeSaving = true;
+					if (ArchiveCookingTarget)
+					{
+						LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, ArchiveCookingTarget, bIsSerializeSaving);
+					}
+					else
+					{
+						//Fall back in case we use an archive that the cooking target has not been set (i.e. Duplicate archive)
+						check(RunningPlatform != NULL);
+						LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, RunningPlatform, bIsSerializeSaving);
+					}
 #endif
 					int32 MaxBonesPerChunk = LocalSkeletalMeshRenderData->GetMaxBonesPerSection();
 
@@ -1900,8 +1937,6 @@ void USkeletalMesh::BeginBuildInternal(FSkinnedAssetBuildContext& Context)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(USkeletalMesh::BeginBuildInternal);
 
-	SetInternalFlags(EInternalObjectFlags::Async);
-	
 	// Unregister all instances of this component
 	Context.RecreateRenderStateContext = MakeUnique<FSkinnedMeshComponentRecreateRenderStateContext>(this, false);
 
@@ -1934,9 +1969,6 @@ void USkeletalMesh::ExecuteBuildInternal(FSkinnedAssetBuildContext& Context)
 	// rebuild render data from imported model
 	CacheDerivedData(&Context);
 
-	// Do not need to fix up 16-bit UVs here, as we assume all editor platforms support them.
-	ensure(GVertexElementTypeSupport.IsSupported(VET_Half2));
-
 	GetSamplingInfoInternal().BuildRegions(this);
 	GetSamplingInfoInternal().BuildWholeMesh(this);
 
@@ -1954,8 +1986,6 @@ void USkeletalMesh::ApplyFinishBuildInternalData(FSkinnedAssetCompilationContext
 void USkeletalMesh::FinishBuildInternal(FSkinnedAssetBuildContext& Context)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(USkeletalMesh::FinishBuildInternal);
-
-	ClearInternalFlags(EInternalObjectFlags::Async);
 
 	ReleaseAsyncProperty();
 
@@ -1986,7 +2016,7 @@ void USkeletalMesh::LockPropertiesUntil(FEvent* Event)
 	};
 
 	//Use the async task compile to lock the properties
-	FSkinnedAsyncTaskContext Context(!HasAnyInternalFlags(EInternalObjectFlags::Async), AsyncTaskFunction);
+	FSkinnedAsyncTaskContext Context(AsyncTaskFunction);
 	BeginAsyncTaskInternal(Context);
 	PrepareForAsyncCompilation();
 	FQueuedThreadPool* SkeletalMeshThreadPool = FSkinnedAssetCompilingManager::Get().GetThreadPool();
@@ -2001,10 +2031,6 @@ void USkeletalMesh::BeginAsyncTaskInternal(FSkinnedAsyncTaskContext& Context)
 {
 	check(IsInGameThread());
 
-	if (Context.bResetAsyncFlagOnFinish)
-	{
-		SetInternalFlags(EInternalObjectFlags::Async);
-	}
 	AcquireAsyncProperty();
 	//Allow thumbnail data so content browser get refresh properly
 	ReleaseAsyncProperty((uint64)ESkeletalMeshAsyncProperties::ThumbnailInfo);
@@ -2018,10 +2044,6 @@ void USkeletalMesh::ExecuteAsyncTaskInternal(FSkinnedAsyncTaskContext& Context)
 void USkeletalMesh::FinishAsyncTaskInternal(FSkinnedAsyncTaskContext& Context)
 {
 	check(IsInGameThread());
-	if (Context.bResetAsyncFlagOnFinish)
-	{
-		ClearInternalFlags(EInternalObjectFlags::Async);
-	}
 	ReleaseAsyncProperty();
 }
 
@@ -2657,19 +2679,6 @@ bool USkeletalMesh::IsAsyncTaskComplete() const
 	return AsyncTask == nullptr || AsyncTask->IsWorkDone();
 }
 
-bool USkeletalMesh::TryCancelAsyncTasks()
-{
-	if (AsyncTask)
-	{
-		if (AsyncTask->IsDone() || AsyncTask->Cancel())
-		{
-			AsyncTask.Reset();
-		}
-	}
-
-	return AsyncTask == nullptr;
-}
-
 void USkeletalMesh::PostLoadEnsureImportDataExist()
 {
 	//If we have a LODModel with no import data and the LOD model have at least one section using more bone then any platform max GPU bone count. We will recreate the import data to allow the asset to be build and chunk properly.
@@ -2951,9 +2960,7 @@ bool USkeletalMesh::IsPostLoadThreadSafe() const
 void USkeletalMesh::BeginPostLoadInternal(FSkinnedAssetPostLoadContext& Context)
 {
 #if WITH_EDITOR
-	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::BeginPostLoadInternal);
-
-	SetInternalFlags(EInternalObjectFlags::Async);
+	TRACE_CPUPROFILER_EVENT_SCOPE(USkeletalMesh::BeginPostLoadInternal);
 
 	// Lock all properties that should not be modified/accessed during async post-load
 	AcquireAsyncProperty();
@@ -3182,8 +3189,6 @@ void USkeletalMesh::FinishPostLoadInternal(FSkinnedAssetPostLoadContext& Context
 	TRACE_CPUPROFILER_EVENT_SCOPE(USkeletalMesh::FinishPostLoadInternal);
 	
 #if WITH_EDITOR
-
-	ClearInternalFlags(EInternalObjectFlags::Async);
 
 	// This scope allows us to use any locked properties without causing stalls
 	FSkinnedAssetAsyncBuildScope AsyncBuildScope(this);
@@ -3441,6 +3446,15 @@ void USkeletalMesh::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) con
 	// Avoid accessing properties being compiled, this function will get called again after compilation is finished.
 	if (IsCompiling())
 	{
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (AssetRegistry)
+		{
+			FAssetData AssetData = AssetRegistry->GetAssetByObjectPath(FSoftObjectPath(this), true /* bIncludeOnlyOnDiskAssets */);
+			AssetData.EnumerateTags([&OutTags](const TPair<FName, FAssetTagValueRef>& Pair)
+				{
+					OutTags.Add(FAssetRegistryTag(Pair.Key, Pair.Value.GetStorageString(), FAssetRegistryTag::TT_Alphabetical));
+				});
+		}
 		return;
 	}
 #endif
@@ -3472,7 +3486,27 @@ void USkeletalMesh::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) con
 		GetAssetImportData()->AppendAssetRegistryTags(OutTags);
 #endif
 	}
-#endif
+
+	FString MaxBoneInfluencesString;
+	if (GetImportedModel())
+	{
+		// Find the LOD with the highest maximum bone influences
+		//
+		// This will be nullptr if LODModels is empty
+		const FSkeletalMeshLODModel* MaxBoneInfluencesLODModel = Algo::MaxElementBy(GetImportedModel()->LODModels, &FSkeletalMeshLODModel::GetMaxBoneInfluences);
+
+		if (MaxBoneInfluencesLODModel)
+		{
+			// Note that this value is clamped to FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones, so it's affected
+			// by project settings such as r.GPUSkin.UnlimitedBoneInfluences.
+			MaxBoneInfluencesString = FString::FromInt(MaxBoneInfluencesLODModel->GetMaxBoneInfluences());
+		}
+	}
+
+	// The tag must be added unconditionally, because some code calls this function on the CDO to find out what
+	// tags are available.
+	OutTags.Add(FAssetRegistryTag("MaxBoneInfluences", MaxBoneInfluencesString, FAssetRegistryTag::TT_Numerical));
+#endif // WITH_EDITORONLY_DATA
 	
 	Super::GetAssetRegistryTags(OutTags);
 }
@@ -4341,6 +4375,7 @@ void USkeletalMesh::ValidateBoneWeights(const ITargetPlatform* TargetPlatform)
 
 void USkeletalMesh::BeginCacheForCookedPlatformData(const ITargetPlatform* TargetPlatform)
 {
+	LLM_SCOPE(ELLMTag::SkeletalMesh);
 	// Make sure to cache platform data so it doesn't happen lazily during serialization of the skeletal mesh
 	constexpr bool bIsSerializeSaving = false;
 	GetPlatformSkeletalMeshRenderData(this, TargetPlatform, bIsSerializeSaving);
@@ -4349,6 +4384,7 @@ void USkeletalMesh::BeginCacheForCookedPlatformData(const ITargetPlatform* Targe
 
 void USkeletalMesh::ClearAllCachedCookedPlatformData()
 {
+	LLM_SCOPE(ELLMTag::SkeletalMesh);
 	GetResourceForRendering()->NextCachedRenderData.Reset();
 	
 	if (FApp::CanEverRender())
@@ -4369,7 +4405,6 @@ void USkeletalMesh::ClearAllCachedCookedPlatformData()
 static void SerializeLODInfoForDDC(USkeletalMesh* SkeletalMesh, FString& KeySuffix)
 {
 	TArray<FSkeletalMeshLODInfo>& LODInfos = SkeletalMesh->GetLODInfoArray();
-	const bool bIs16BitfloatBufferSupported = GVertexElementTypeSupport.IsSupported(VET_Half2);
 	for (int32 LODIndex = 0; LODIndex < SkeletalMesh->GetLODNum(); ++LODIndex)
 	{
 		check(LODInfos.IsValidIndex(LODIndex));
@@ -4402,7 +4437,7 @@ FString USkeletalMesh::BuildDerivedDataKey(const ITargetPlatform* TargetPlatform
 		const FSkeletalMeshLODInfo* BaseLODInfo = GetLODInfo(0);
 		bool bUseFullPrecisionUVs = BaseLODInfo ? BaseLODInfo->BuildSettings.bUseFullPrecisionUVs : false;
 		KeySuffix += GetImportedModel()->GetIdString();
-		KeySuffix += (bUseFullPrecisionUVs || !GVertexElementTypeSupport.IsSupported(VET_Half2)) ? "1" : "0";
+		KeySuffix += bUseFullPrecisionUVs ? "1" : "0";
 
 		//Dummy call to update the FSkeletalMeshLODModel::BuildStringID members.
 		GetImportedModel()->GetLODModelIdString();
@@ -4454,8 +4489,11 @@ FString USkeletalMesh::BuildDerivedDataKey(const ITargetPlatform* TargetPlatform
 	}
 
 	IMeshBuilderModule::GetForPlatform(TargetPlatform).AppendToDDCKey(KeySuffix, true);
-	const bool bUnlimitedBoneInfluences = FGPUBaseSkinVertexFactory::GetUnlimitedBoneInfluences();
+	const bool bUnlimitedBoneInfluences = FGPUBaseSkinVertexFactory::GetUnlimitedBoneInfluences(TargetPlatform);
 	KeySuffix += bUnlimitedBoneInfluences ? "1" : "0";
+
+	// Include the global default bone influences limit in case any LODs don't set an explicit limit (highly likely)
+	KeySuffix += FString::FromInt(GetDefault<URendererSettings>()->DefaultBoneInfluenceLimit.GetValueForPlatform(*TargetPlatform->IniPlatformName()));
 
 #if PLATFORM_CPU_ARM_FAMILY
 	// Separate out arm keys as x64 and arm64 clang do not generate the same data for a given
@@ -5043,6 +5081,22 @@ class UNodeMappingContainer* USkeletalMesh::GetNodeMappingContainer(class UBluep
 	return nullptr;
 }
 
+FSkeletalMeshLODInfo* USkeletalMesh::GetLODInfo(int32 Index)
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::LODInfo);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return LODInfo.IsValidIndex(Index) ? &LODInfo[Index] : nullptr;  
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+	
+const FSkeletalMeshLODInfo* USkeletalMesh::GetLODInfo(int32 Index) const
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::LODInfo, ESkinnedAssetAsyncPropertyLockType::ReadOnly);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return LODInfo.IsValidIndex(Index) ? &LODInfo[Index] : nullptr;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 const UAnimSequence* USkeletalMesh::GetBakePose(int32 LODIndex) const
 {
 	const FSkeletalMeshLODInfo* LOD = GetLODInfo(LODIndex);
@@ -5073,6 +5127,24 @@ const USkeletalMeshLODSettings* USkeletalMesh::GetDefaultLODSetting() const
 #endif // WITH_EDITORONLY_DATA
 
 	return GetDefault<USkeletalMeshLODSettings>();
+}
+
+bool USkeletalMesh::IsValidLODIndex(int32 Index) const
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::LODInfo, ESkinnedAssetAsyncPropertyLockType::ReadOnly);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return LODInfo.IsValidIndex(Index);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+/* 
+	* Returns total number of LOD. USkinnedAsset interface.
+	*/
+int32 USkeletalMesh::GetLODNum() const
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::LODInfo, ESkinnedAssetAsyncPropertyLockType::ReadOnly);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return LODInfo.Num();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool USkeletalMesh::IsMaterialUsed(int32 MaterialIndex) const
@@ -5113,6 +5185,16 @@ bool USkeletalMesh::IsMaterialUsed(int32 MaterialIndex) const
 
 	return false;
 }
+
+
+void USkeletalMesh::AddSkinWeightProfile(const FSkinWeightProfileInfo& Profile) 
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::SkinWeightProfiles); 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SkinWeightProfiles.Add(Profile); 
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 
 void USkeletalMesh::ReleaseSkinWeightProfileResources()
 {
@@ -5171,6 +5253,14 @@ FSkeletalMeshLODInfo& USkeletalMesh::AddLODInfo()
 	}
 
 	return LODInfoArray[NewIndex];
+}
+
+void USkeletalMesh::AddLODInfo(const FSkeletalMeshLODInfo& NewLODInfo) 
+{
+	WaitUntilAsyncPropertyReleased(ESkeletalMeshAsyncProperties::LODInfo);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	LODInfo.Add(NewLODInfo);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void USkeletalMesh::RemoveLODInfo(int32 Index)
@@ -5776,7 +5866,7 @@ FSkeletalMeshSceneProxy::FSkeletalMeshSceneProxy(const USkinnedMeshComponent* Co
 
 			// If the material is NULL, or isn't flagged for use with skeletal meshes, it will be replaced by the default material.
 			UMaterialInterface* Material = Component->GetMaterial(UseMaterialIndex);
-			if (GForceDefaultMaterial && Material && !IsTranslucentBlendMode(Material->GetBlendMode()))
+			if (GForceDefaultMaterial && Material && !IsTranslucentBlendMode(*Material))
 			{
 				Material = UMaterial::GetDefaultMaterial(MD_Surface);
 				MaterialRelevance |= Material->GetRelevance(FeatureLevel);
@@ -5906,7 +5996,7 @@ FSkeletalMeshSceneProxy::FSkeletalMeshSceneProxy(const USkinnedMeshComponent* Co
 	}
 
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled(GetScene().GetShaderPlatform()))
+	if (IsRayTracingAllowed())
 	{
 		if (bRenderStatic)
 		{
@@ -5919,6 +6009,11 @@ FSkeletalMeshSceneProxy::FSkeletalMeshSceneProxy(const USkinnedMeshComponent* Co
 		}
 	}
 #endif
+
+	if (IsAllowingApproximateOcclusionQueries())
+	{		
+		bAllowApproximateOcclusion = (bAllowApproximateOcclusion || bRenderStatic);
+	}
 }
 
 
@@ -6287,51 +6382,12 @@ void FSkeletalMeshSceneProxy::CreateBaseMeshBatch(const FSceneView* View, const 
 	BatchElement.IndexBuffer = LODData.MultiSizeIndexContainer.GetIndexBuffer();
 	BatchElement.MinVertexIndex = LODData.RenderSections[SectionIndex].GetVertexBufferIndex();
 	BatchElement.MaxVertexIndex = LODData.RenderSections[SectionIndex].GetVertexBufferIndex() + LODData.RenderSections[SectionIndex].GetNumVertices() - 1;
-#if RHI_RAYTRACING
-	FGPUSkinBatchElementUserData* VertexFactoryUserData = FGPUSkinCache::GetFactoryUserData(VFMode == ESkinVertexFactoryMode::RayTracing ? MeshObject->GetSkinCacheEntryForRayTracing() : MeshObject->SkinCacheEntry, SectionIndex);
-#else
-	FGPUSkinBatchElementUserData* VertexFactoryUserData = FGPUSkinCache::GetFactoryUserData(MeshObject->SkinCacheEntry, SectionIndex);
-#endif
-	BatchElement.VertexFactoryUserData = VertexFactoryUserData;
+
+	FSkinBatchVertexFactoryUserData const* VertexFactoryUserData = MeshObject->GetVertexFactoryUserData(LODIndex, SectionIndex, VFMode);
+	BatchElement.VertexFactoryUserData = (void*)VertexFactoryUserData;
+
 	BatchElement.PrimitiveUniformBuffer = GetUniformBuffer();
 	BatchElement.NumPrimitives = LODData.RenderSections[SectionIndex].NumTriangles;
-
-	UpdateLooseParametersUniformBuffer(View, SectionIndex, Mesh, VertexFactoryUserData);
-}
-
-void FSkeletalMeshSceneProxy::UpdateLooseParametersUniformBuffer(const FSceneView* View, const int32 SectionIndex, const FMeshBatch& Mesh, const FGPUSkinBatchElementUserData* BatchUserData) const
-{
-	// Loose parameters uniform buffer is only needed for PassThroughVF
-	if (!Mesh.VertexFactory || Mesh.VertexFactory->GetType() != &FGPUSkinPassthroughVertexFactory::StaticType)
-	{
-		return;
-	}
-	
-	FLocalVertexFactoryLooseParameters Parameters;
-
-	FVertexFactory* NonConstVertexFactory = const_cast<FVertexFactory*>(Mesh.VertexFactory);
-	FGPUSkinPassthroughVertexFactory* PassthroughVertexFactory = static_cast<FGPUSkinPassthroughVertexFactory*>(NonConstVertexFactory);
-	// Bone data is updated whenever animation triggers a dynamic update, animation can skip frames hence the frequency is not necessary every frame.
-	// So check if bone data is updated this frame, if not then the previous frame data is stale and not suitable for motion blur.
-	bool bBoneDataUpdatedThisFrame = (View->Family->FrameNumber == PassthroughVertexFactory->GetUpdatedFrameNumber());
-	// If world is paused, use current frame bone matrices, so velocity is canceled and skeletal mesh isn't blurred from motion.
-	bool bVerticesInMotion = !View->Family->bWorldIsPaused && bBoneDataUpdatedThisFrame;
-
-	const bool bUsesSkinCache = BatchUserData != nullptr;
-	if (bUsesSkinCache)
-	{
-		Parameters.GPUSkinPassThroughPreviousPositionBuffer = bVerticesInMotion ?
-			FGPUSkinCache::GetPreviousPositionBuffer(BatchUserData->Entry, SectionIndex)->SRV :
-			FGPUSkinCache::GetPositionBuffer(BatchUserData->Entry, SectionIndex)->SRV;
-	}
-	else // Mesh deformer
-	{
-		Parameters.GPUSkinPassThroughPreviousPositionBuffer = (bVerticesInMotion && PassthroughVertexFactory->PrevPositionRDG) ?
-			PassthroughVertexFactory->PrevPositionRDG->GetOrCreateSRV(FRHIBufferSRVCreateInfo(PF_R32_FLOAT)) :
-			PassthroughVertexFactory->GetPositionsSRV();
-	}
-
-	PassthroughVertexFactory->LooseParametersUniformBuffer.UpdateUniformBufferImmediate(Parameters);
 }
 
 uint8 FSkeletalMeshSceneProxy::GetCurrentFirstLODIdx_Internal() const
@@ -6624,8 +6680,6 @@ void FSkeletalMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialG
 				);
 			}
 
-			RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
-
 			OutRayTracingInstances.Add(RayTracingInstance);
 			
 		#if WITH_EDITORONLY_DATA
@@ -6813,6 +6867,12 @@ void FSkeletalMeshSceneProxy::DebugDrawSkeleton(int32 ViewIndex, FMeshElementCol
 	if (!GetWorldMatrices(ProxyLocalToWorld, WorldToLocal))
 	{
 		return; // Cannot draw this, world matrix not valid
+	}
+
+	// Can't draw this, don't have ComponentSpaceTransforms. This happens with sk meshes rendered with FSkeletalMeshObjectStatic.
+	if (!MeshObject->GetComponentSpaceTransforms())
+	{
+		return;
 	}
 
 	FTransform LocalToWorldTransform(ProxyLocalToWorld);
@@ -7047,16 +7107,16 @@ FSkinnedMeshComponentRecreateRenderStateContext::~FSkinnedMeshComponentRecreateR
 	{
 		if(USkinnedMeshComponent* Component = MeshComponents[ComponentIndex].Get())
 		{
-		if (bRefreshBounds)
-		{
-			Component->UpdateBounds();
-		}
+			if (bRefreshBounds)
+			{
+				Component->UpdateBounds();
+			}
 
-		if (Component->IsRegistered() && !Component->IsRenderStateCreated() && Component->ShouldCreateRenderState())
-		{
-			Component->CreateRenderState_Concurrent(nullptr);
+			if (Component->IsRegistered() && !Component->IsRenderStateCreated() && Component->ShouldCreateRenderState())
+			{
+				Component->CreateRenderState_Concurrent(nullptr);
+			}
 		}
-	}
 	}
 }
 
@@ -7083,7 +7143,7 @@ FVector GetRefVertexLocationTyped(
 	for (int32 InfluenceIndex = 0; InfluenceIndex < MaxBoneInfluences; InfluenceIndex++)
 #endif
 	{
-		const float	Weight = (float)SkinWeightVertexBuffer.GetBoneWeight(BufferVertIndex, InfluenceIndex) / 255.0f;
+		const float	Weight = (float)SkinWeightVertexBuffer.GetBoneWeight(BufferVertIndex, InfluenceIndex) * UE::AnimationCore::InvMaxRawBoneWeightFloat;
 		{
 			const FMatrix BoneTransformMatrix = FMatrix::Identity;
 			SkinnedPos += BoneTransformMatrix.TransformPosition((FVector)PositionBuffer.VertexPosition(BufferVertIndex)) * Weight;
@@ -7124,7 +7184,7 @@ void GetRefTangentBasisTyped(const USkeletalMesh* Mesh, const FSkelMeshRenderSec
 	for (int32 InfluenceIndex = 0; InfluenceIndex < MaxBoneInfluences; InfluenceIndex++)
 #endif
 	{
-		const float	Weight = (float)SkinWeightVertexBuffer.GetBoneWeight(BufferVertIndex, InfluenceIndex) / 255.0f;
+		const float	Weight = (float)SkinWeightVertexBuffer.GetBoneWeight(BufferVertIndex, InfluenceIndex) * UE::AnimationCore::InvMaxRawBoneWeightFloat;
 		const FMatrix44f BoneTransformMatrix = FMatrix44f::Identity;
 		OutTangentX += BoneTransformMatrix.TransformVector(VertexTangentX) * Weight;
 		OutTangentY += BoneTransformMatrix.TransformVector(VertexTangentY) * Weight;

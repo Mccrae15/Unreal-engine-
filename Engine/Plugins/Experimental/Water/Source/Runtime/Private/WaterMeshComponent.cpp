@@ -1,17 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterMeshComponent.h"
-#include "Algo/Transform.h"
-#include "DrawDebugHelpers.h"
-#include "Engine/Engine.h"
 #include "EngineUtils.h"
+#include "MaterialDomain.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "Materials/MaterialParameterCollection.h"
-#include "Materials/MaterialParameterCollectionInstance.h"
-#include "Math/NumericLimits.h"
-#include "PhysicsEngine/AggregateGeom.h"
+#include "Materials/Material.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "WaterBodyActor.h"
+#include "WaterBodyComponent.h"
 #include "WaterMeshSceneProxy.h"
 #include "WaterModule.h"
 #include "WaterSplineComponent.h"
@@ -76,29 +71,26 @@ void UWaterMeshComponent::PostLoad()
 	Super::PostLoad();
 }
 
-void UWaterMeshComponent::PrecachePSOs()
+void UWaterMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams)
 {
-	if (!FApp::CanEverRender())
+	const FVertexFactoryType* WaterVertexFactoryType = GetWaterVertexFactoryType(/*bWithWaterSelectionSupport = */ false);
+	if (FarDistanceMaterial)
 	{
-		return;
+		FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+		ComponentParams.Priority = EPSOPrecachePriority::High;
+		ComponentParams.MaterialInterface = FarDistanceMaterial;
+		ComponentParams.VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(WaterVertexFactoryType));
+		ComponentParams.PSOPrecacheParams = BasePrecachePSOParams;
 	}
-
-	if (IsComponentPSOPrecachingEnabled())
+	for (UMaterialInterface* MaterialInterface : UsedMaterials)
 	{
-		FPSOPrecacheParams PrecachePSOParams;
-		SetupPrecachePSOParams(PrecachePSOParams);
-
-		const FVertexFactoryType* WaterVertexFactoryType = GetWaterVertexFactoryType(/*bWithWaterSelectionSupport = */ false);
-		if (FarDistanceMaterial)
+		if (MaterialInterface)
 		{
-			FarDistanceMaterial->PrecachePSOs(WaterVertexFactoryType, PrecachePSOParams);
-		}
-		for (UMaterialInterface* MaterialInterface : UsedMaterials)
-		{
-			if (MaterialInterface)
-			{
-				MaterialInterface->PrecachePSOs(WaterVertexFactoryType, PrecachePSOParams);
-			}
+			FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+			ComponentParams.Priority = EPSOPrecachePriority::High;
+			ComponentParams.MaterialInterface = MaterialInterface;
+			ComponentParams.VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(WaterVertexFactoryType));
+			ComponentParams.PSOPrecacheParams = BasePrecachePSOParams;
 		}
 	}
 }
@@ -241,6 +233,8 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 
 	// Will be updated with the ocean min bound, to be used to place the far mesh just under the ocean to avoid seams
 	float FarMeshHeight = GetComponentLocation().Z;
+	// Only use a far mesh when there is an ocean in the zone.
+	bool bHasOcean = false;
 
 	const UWaterSubsystem* WaterSubsystem = UWaterSubsystem::GetWaterSubsystem(GetWorld());
 
@@ -251,7 +245,7 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 	// Go through all water body actors to figure out bounds and water tiles
 	AWaterZone* OwningZone = GetOwner<AWaterZone>();
 	check(OwningZone);
-	OwningZone->ForEachWaterBodyComponent([this, WaterWorldBox, bIsFlooded, GlobalOceanHeight, OceanFlood, &FarMeshHeight](UWaterBodyComponent* WaterBodyComponent)
+	OwningZone->ForEachWaterBodyComponent([this, WaterWorldBox, bIsFlooded, GlobalOceanHeight, OceanFlood, &FarMeshHeight, &bHasOcean](UWaterBodyComponent* WaterBodyComponent)
 	{
 		check(WaterBodyComponent);
 		AActor* Actor = WaterBodyComponent->GetOwner();
@@ -545,6 +539,7 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 
 			// Place far mesh height just below the ocean level
 			FarMeshHeight = RenderData.SurfaceBaseHeight - WaterBodyComponent->GetMaxWaveHeight();
+			bHasOcean = true;
 
 			break;
 		}
@@ -559,7 +554,7 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 	});
 
 	// Build the far distance mesh instances if needed
-	if (IsMaterialUsedWithWater(FarDistanceMaterial) && FarDistanceMeshExtent > 0.0f)
+	if ((bHasOcean || bUseFarMeshWithoutOcean) && (IsMaterialUsedWithWater(FarDistanceMaterial) && FarDistanceMeshExtent > 0.0f))
 	{
 		UsedMaterials.Add(FarDistanceMaterial);
 
@@ -630,7 +625,8 @@ void UWaterMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Property
 			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, ExtentInTiles)
 			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, ForceCollapseDensityLevel)
 			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, FarDistanceMaterial)
-			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, FarDistanceMeshExtent))
+			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, FarDistanceMeshExtent)
+			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, bUseFarMeshWithoutOcean))
 		{
 			MarkWaterMeshGridDirty();
 			MarkRenderStateDirty();

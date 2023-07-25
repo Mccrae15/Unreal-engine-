@@ -4,32 +4,29 @@
 TextureStreamingBuild.cpp : Contains definitions to build texture streaming data.
 =============================================================================*/
 
-#include "CoreMinimal.h"
-#include "Misc/Guid.h"
+#include "DebugViewModeHelpers.h"
+#include "MeshUVChannelInfo.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Engine/Level.h"
-#include "GameFramework/Actor.h"
 #include "Engine/World.h"
-#include "Engine/TextureStreamingTypes.h"
 #include "Components/PrimitiveComponent.h"
-#include "Components/StaticMeshComponent.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/FeedbackContext.h"
-#include "Engine/Texture.h"
-#include "ShaderCompiler.h"
-#include "Engine/StaticMesh.h"
 #include "Streaming/TextureStreamingHelpers.h"
 #include "Streaming/ActorTextureStreamingBuildDataComponent.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
-#include "UnrealEngine.h"
 #if WITH_EDITOR
-#include "Misc/Crc.h"
 #include "Engine/Texture2D.h"
 #include "Engine/Texture2DArray.h"
 #include "Engine/VolumeTexture.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
+#else
+#include "Engine/Texture.h"
+#include "UnrealEngine.h"
 #endif
 
 

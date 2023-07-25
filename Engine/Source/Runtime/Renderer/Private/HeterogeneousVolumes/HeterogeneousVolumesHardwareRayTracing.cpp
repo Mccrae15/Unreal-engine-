@@ -2,13 +2,16 @@
 
 #include "HeterogeneousVolumes.h"
 
+#include "LightRendering.h"
 #include "PixelShaderUtils.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingInstance.h"
 #include "RayTracingInstanceBufferUtil.h"
+#include "RayTracingPayloadType.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
 #include "SceneManagement.h"
+#include "VolumeLighting.h"
 #include "VolumetricFog.h"
 
 #if RHI_RAYTRACING
@@ -194,19 +197,18 @@ void GenerateRayTracingScene(
 	FRayTracingScene& RayTracingScene
 )
 {
-	RayTracingScene.Reset();
+	RayTracingScene.Reset(false);
 
 	// Collect instances
-	TArray<FRayTracingGeometryInstance> RayTracingInstances;
 	for (int32 GeometryIndex = 0; GeometryIndex < RayTracingGeometries.Num(); ++GeometryIndex)
 	{
-		checkf(RayTracingGeometries[GeometryIndex], TEXT("RayTracingGeometryInstance not created."))
-			FRayTracingGeometryInstance RayTracingGeometryInstance = {};
+		checkf(RayTracingGeometries[GeometryIndex], TEXT("RayTracingGeometryInstance not created."));
+		FRayTracingGeometryInstance RayTracingGeometryInstance = {};
 		RayTracingGeometryInstance.GeometryRHI = RayTracingGeometries[GeometryIndex];
 		RayTracingGeometryInstance.NumTransforms = 1;
 		RayTracingGeometryInstance.Transforms = MakeArrayView(&RayTracingTransforms[GeometryIndex], 1);
 
-		RayTracingInstances.Add(RayTracingGeometryInstance);
+		RayTracingScene.AddInstance(RayTracingGeometryInstance);
 	}
 
 	// Build instance BLAS
@@ -235,7 +237,6 @@ void GenerateRayTracingScene(
 	// Create RayTracingScene
 	const FGPUScene* EmptyGPUScene = nullptr;
 	FViewMatrices EmptyViewMatrices;
-	RayTracingScene.Instances = RayTracingInstances;
 	RayTracingScene.Create(GraphBuilder, EmptyGPUScene, EmptyViewMatrices);
 
 	// Build TLAS
@@ -276,6 +277,8 @@ void GenerateRayTracingScene(
 	);
 }
 
+IMPLEMENT_RT_PAYLOAD_TYPE(ERayTracingPayloadType::SparseVoxel, 28);
+
 class FHeterogeneousVolumesSparseVoxelsHitGroup : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FHeterogeneousVolumesSparseVoxelsHitGroup)
@@ -295,6 +298,11 @@ class FHeterogeneousVolumesSparseVoxelsHitGroup : public FGlobalShader
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::SparseVoxel;
+	}
 };
 
 IMPLEMENT_GLOBAL_SHADER(FHeterogeneousVolumesSparseVoxelsHitGroup, "/Engine/Private/HeterogeneousVolumes/HeterogeneousVolumesHardwareRayTracing.usf", "closesthit=SparseVoxelsClosestHitShader anyhit=SparseVoxelsAnyHitShader intersection=SparseVoxelsIntersectionShader", SF_RayHitGroup);
@@ -313,6 +321,11 @@ class FHeterogeneousVolumesSparseVoxelMS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::SparseVoxel;
 	}
 
 	using FParameters = FEmptyShaderParameters;
@@ -385,6 +398,11 @@ class FRenderLightingCacheWithPreshadingRGS : public FGlobalShader
 			OutEnvironment.SetDefine(TEXT("VIRTUAL_SHADOW_MAP"), 1);
 			FVirtualShadowMapArray::SetShaderDefines(OutEnvironment);
 		}
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::SparseVoxel;
 	}
 };
 
@@ -461,6 +479,11 @@ class FRenderSingleScatteringWithPreshadingRGS : public FGlobalShader
 			FVirtualShadowMapArray::SetShaderDefines(OutEnvironment);
 		}
 	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::SparseVoxel;
+	}
 };
 
 IMPLEMENT_GLOBAL_SHADER(FRenderSingleScatteringWithPreshadingRGS, "/Engine/Private/HeterogeneousVolumes/HeterogeneousVolumesHardwareRayTracing.usf", "RenderSingleScatteringWithPreshadingRGS", SF_RayGen);
@@ -513,7 +536,7 @@ FRayTracingPipelineState* BuildRayTracingPipelineState(
 )
 {
 	FRayTracingPipelineStateInitializer Initializer;
-	Initializer.MaxPayloadSizeInBytes = 32; // sizeof FSparseVoxelPayload
+	Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(ERayTracingPayloadType::SparseVoxel);
 
 	// Get the ray tracing materials
 	auto HitGroupShaders = View.ShaderMap->GetShader<FHeterogeneousVolumesSparseVoxelsHitGroup>();
@@ -565,6 +588,10 @@ void RenderLightingCacheWithPreshadingHardwareRayTracing(
 	FRDGTextureRef& LightingCacheTexture
 )
 {
+	// Note must be done in the same scope as we add the pass otherwise the UB lifetime will not be guaranteed
+	FDeferredLightUniformStruct DeferredLightUniform = GetDeferredLightParameters(View, *LightSceneInfo);
+	TUniformBufferRef<FDeferredLightUniformStruct> DeferredLightUB = CreateUniformBufferImmediate(DeferredLightUniform, UniformBuffer_SingleDraw);
+
 	FRenderLightingCacheWithPreshadingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRenderLightingCacheWithPreshadingRGS::FParameters>();
 	{
 		// Scene
@@ -577,8 +604,7 @@ void RenderLightingCacheWithPreshadingHardwareRayTracing(
 		PassParameters->bApplyEmissionAndTransmittance = bApplyEmissionAndTransmittance;
 		PassParameters->bApplyDirectLighting = bApplyDirectLighting;
 		PassParameters->bApplyShadowTransmittance = bApplyShadowTransmittance;
-		FDeferredLightUniformStruct DeferredLightUniform = GetDeferredLightParameters(View, *LightSceneInfo);
-		PassParameters->DeferredLight = CreateUniformBufferImmediate(DeferredLightUniform, UniformBuffer_SingleDraw);
+		PassParameters->DeferredLight = DeferredLightUB;
 		PassParameters->LightType = LightType;
 		PassParameters->VolumetricScatteringIntensity = LightSceneInfo->Proxy->GetVolumetricScatteringIntensity();
 
@@ -705,6 +731,14 @@ void RenderSingleScatteringWithPreshadingHardwareRayTracing(
 	FRDGTextureRef& HeterogeneousVolumeTexture
 )
 {
+	// Note must be done in the same scope as we add the pass otherwise the UB lifetime will not be guaranteed
+	FDeferredLightUniformStruct DeferredLightUniform;
+	if (bApplyDirectLighting && (LightSceneInfo != nullptr))
+	{
+		DeferredLightUniform = GetDeferredLightParameters(View, *LightSceneInfo);
+	}
+	TUniformBufferRef<FDeferredLightUniformStruct> DeferredLightUB = CreateUniformBufferImmediate(DeferredLightUniform, UniformBuffer_SingleDraw);
+
 	FRenderSingleScatteringWithPreshadingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRenderSingleScatteringWithPreshadingRGS::FParameters>();
 	{
 		// Scene
@@ -713,15 +747,13 @@ void RenderSingleScatteringWithPreshadingHardwareRayTracing(
 		PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, SceneTextures);
 
 		// Light data
-		FDeferredLightUniformStruct DeferredLightUniform;
 		PassParameters->bApplyEmissionAndTransmittance = bApplyEmissionAndTransmittance;
 		PassParameters->bApplyDirectLighting = bApplyDirectLighting;
 		if (PassParameters->bApplyDirectLighting && (LightSceneInfo != nullptr))
 		{
-			DeferredLightUniform = GetDeferredLightParameters(View, *LightSceneInfo);
 			PassParameters->VolumetricScatteringIntensity = LightSceneInfo->Proxy->GetVolumetricScatteringIntensity();
 		}
-		PassParameters->DeferredLight = CreateUniformBufferImmediate(DeferredLightUniform, UniformBuffer_SingleDraw);
+		PassParameters->DeferredLight = DeferredLightUB;
 		PassParameters->LightType = LightType;
 
 		// Shadow data

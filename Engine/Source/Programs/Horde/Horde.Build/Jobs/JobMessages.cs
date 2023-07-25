@@ -7,14 +7,16 @@ using System.Linq;
 using System.Text.Json.Serialization;
 using EpicGames.Core;
 using Horde.Build.Acls;
-using Horde.Build.Jobs;
 using Horde.Build.Jobs.Graphs;
 using Horde.Build.Streams;
 using Horde.Build.Users;
+using Horde.Build.Utilities;
 using HordeCommon;
 
 namespace Horde.Build.Jobs
 {
+	using TemplateId = StringId<ITemplateRef>;
+
 	/// <summary>
 	/// State of the job
 	/// </summary>
@@ -51,7 +53,7 @@ namespace Horde.Build.Jobs
 		/// The template for this job
 		/// </summary>
 		[Required]
-		public string TemplateId { get; set; }
+		public TemplateId TemplateId { get; set; }
 
 		/// <summary>
 		/// Name of the job
@@ -66,7 +68,17 @@ namespace Horde.Build.Jobs
 		/// <summary>
 		/// Parameters to use when selecting the change to execute at.
 		/// </summary>
-		public ChangeQueryRequest? ChangeQuery { get; set; }
+		[Obsolete("Use ChangeQueries instead")]
+		public ChangeQueryConfig? ChangeQuery
+		{
+			get => (ChangeQueries != null && ChangeQueries.Count > 0) ? ChangeQueries[0] : null;
+			set => ChangeQueries = (value == null) ? null : new List<ChangeQueryConfig> { value };
+		}
+			
+		/// <summary>
+		/// List of change queries to evaluate
+		/// </summary>
+		public List<ChangeQueryConfig>? ChangeQueries { get; set; }
 
 		/// <summary>
 		/// The preflight changelist number
@@ -96,7 +108,7 @@ namespace Horde.Build.Jobs
 		/// <summary>
 		/// Private constructor for serialization
 		/// </summary>
-		public CreateJobRequest(string streamId, string templateId)
+		public CreateJobRequest(string streamId, TemplateId templateId)
 		{
 			StreamId = streamId;
 			TemplateId = templateId;
@@ -152,11 +164,6 @@ namespace Horde.Build.Jobs
 		/// New list of arguments for the job. Only -Target= arguments can be modified after the job has started.
 		/// </summary>
 		public List<string>? Arguments { get; set; }
-
-		/// <summary>
-		/// Custom permissions for this object
-		/// </summary>
-		public UpdateAclRequest? Acl { get; set; }
 	}
 
 	/// <summary>
@@ -342,18 +349,12 @@ namespace Horde.Build.Jobs
 		public bool UpdateIssues { get; set; }
 
 		/// <summary>
-		/// Per-object permissions
-		/// </summary>
-		public GetAclResponse? Acl { get; set; }
-
-		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="job">Job to create a response for</param>
 		/// <param name="startedByUserInfo">User that started this job</param>
 		/// <param name="abortedByUserInfo">User that aborted this job</param>
-		/// <param name="aclResponse">The ACL response object</param>
-		public GetJobResponse(IJob job, GetThinUserInfoResponse? startedByUserInfo, GetThinUserInfoResponse? abortedByUserInfo, GetAclResponse? aclResponse)
+		public GetJobResponse(IJob job, GetThinUserInfoResponse? startedByUserInfo, GetThinUserInfoResponse? abortedByUserInfo)
 		{
 			Id = job.Id.ToString();
 			StreamId = job.StreamId.ToString();
@@ -381,7 +382,6 @@ namespace Horde.Build.Jobs
 			Arguments = job.Arguments.ToList();
 			UpdateTime = new DateTimeOffset(job.UpdateTimeUtc);
 			UpdateIssues = job.UpdateIssues;
-			Acl = aclResponse;
 		}
 	}
 
@@ -709,6 +709,11 @@ namespace Horde.Build.Jobs
 		/// An error ocurred while executing the lease. Cannot be retried.
 		/// </summary>
 		ExecutionError = 10,
+
+		/// <summary>
+		/// The change that the job is running against is invalid
+		/// </summary>
+		UnknownShelf = 11,
 	}
 
 	/// <summary>

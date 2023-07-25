@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WebRemoteControlInternalUtils.h"
+
 #include "HttpServerRequest.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Misc/Base64.h"
+#include "RemoteControlSettings.h"
 #include "Serialization/JsonReader.h"
 #include "UObject/StructOnScope.h"
-
 
 namespace RemotePayloadSerializer
 {
@@ -16,7 +18,7 @@ FName NAME_Patch = "PATCH";
 FName NAME_Delete = "DELETE";
 FName NAME_Options = "OPTIONS";
 
-typedef UCS2CHAR PayloadCharType;
+typedef WIDECHAR PayloadCharType;
 const FName ReturnValuePropName(TEXT("ReturnValue"));
 
 void ReplaceFirstOccurence(TConstArrayView<uint8> InPayload, const FString& From, const FString& To, TArray<uint8>& OutModifiedPayload)
@@ -150,7 +152,14 @@ bool DeserializeCall(const FHttpServerRequest& InRequest, FRCCall& OutCall, cons
 			Reader.SetLimitSize(ParametersDelimiters.BlockEnd);
 
 			FRCJsonStructDeserializerBackend Backend(Reader);
-			if (!FStructDeserializer::Deserialize((void*)OutCall.ParamStruct.GetStructMemory(), *const_cast<UStruct*>(OutCall.ParamStruct.GetStruct()), Backend, FStructDeserializerPolicies()))
+			if (FStructDeserializer::Deserialize((void*)OutCall.ParamStruct.GetStructMemory(), *const_cast<UStruct*>(OutCall.ParamStruct.GetStruct()), Backend, FStructDeserializerPolicies()))
+			{
+				if (!WebRemoteControlInternalUtils::ValidateFunctionCall(OutCall, &ErrorText))
+				{
+					bSuccess = false;
+				}
+			}
+			else
 			{
 				ErrorText = TEXT("Parameters object improperly formatted.");
 				bSuccess = false;
@@ -164,7 +173,10 @@ bool DeserializeCall(const FHttpServerRequest& InRequest, FRCCall& OutCall, cons
 
 	if (!bSuccess)
 	{
-		UE_LOG(LogRemoteControl, Error, TEXT("Web Remote Call deserialization error: %s"), *ErrorText);
+		const FString FormattedMsg = FString::Printf(TEXT("Web Remote Call deserialization error: %s"), *ErrorText);
+		UE_LOG(LogRemoteControl, Error, TEXT("%s"), *FormattedMsg);
+		IRemoteControlModule::BroadcastError(FormattedMsg);
+
 		TUniquePtr<FHttpServerResponse> Response = WebRemoteControlInternalUtils::CreateHttpResponse();
 		WebRemoteControlInternalUtils::CreateUTF8ErrorMessage(ErrorText, Response->Body);
 		InCompleteCallback(MoveTemp(Response));
@@ -226,7 +238,10 @@ bool DeserializeObjectRef(const FHttpServerRequest& InRequest, FRCObjectReferenc
 
 	if (!ErrorText.IsEmpty())
 	{
-		UE_LOG(LogRemoteControl, Error, TEXT("Web Remote Object Access error: %s"), *ErrorText);
+		const FString FormattedMsg = FString::Printf(TEXT("Web Remote Object Access error: %s"), *ErrorText);
+		UE_LOG(LogRemoteControl, Error, TEXT("%s"), *FormattedMsg);
+		IRemoteControlModule::BroadcastError(FormattedMsg);
+
 		TUniquePtr<FHttpServerResponse> Response = WebRemoteControlInternalUtils::CreateHttpResponse();
 		WebRemoteControlInternalUtils::CreateUTF8ErrorMessage(ErrorText, Response->Body);
 		InCompleteCallback(MoveTemp(Response));
@@ -246,6 +261,13 @@ TUniquePtr<FHttpServerResponse> WebRemoteControlInternalUtils::CreateHttpRespons
 	return Response;
 }
 
+TUniquePtr<FHttpServerResponse> WebRemoteControlInternalUtils::CreatedInvalidPassphraseResponse()
+{
+	TUniquePtr<FHttpServerResponse> Response = CreateHttpResponse(EHttpServerResponseCodes::Denied);
+	CreateUTF8ErrorMessage(InvalidPassphraseError, Response->Body);
+	return Response;
+}
+
 void WebRemoteControlInternalUtils::CreateUTF8ErrorMessage(const FString& InMessage, TArray<uint8>& OutUTF8Message)
 {
 	WebRemoteControlUtils::ConvertToUTF8(FString::Printf(TEXT("{ \"errorMessage\": \"%s\" }"), *InMessage), OutUTF8Message);
@@ -253,7 +275,7 @@ void WebRemoteControlInternalUtils::CreateUTF8ErrorMessage(const FString& InMess
 
 bool WebRemoteControlInternalUtils::GetStructParametersDelimiters(TConstArrayView<uint8> InTCHARPayload, TMap<FString, FBlockDelimiters>& InOutStructParameters, FString* OutErrorText)
 {
-	typedef UCS2CHAR PayloadCharType;
+	typedef WIDECHAR PayloadCharType;
 	FMemoryReaderView Reader(InTCHARPayload);
 	TSharedRef<TJsonReader<PayloadCharType>> JsonReader = TJsonReader<PayloadCharType>::Create(&Reader);
 
@@ -301,7 +323,10 @@ bool WebRemoteControlInternalUtils::GetStructParametersDelimiters(TConstArrayVie
 
 	if (!ErrorText.IsEmpty())
 	{
-		UE_LOG(LogRemoteControl, Error, TEXT("Web Remote Control deserialization error: %s"), *ErrorText);
+		const FString FormattedMsg = FString::Printf(TEXT("Web Remote Control deserialization error: %s"), *ErrorText);
+		UE_LOG(LogRemoteControl, Error, TEXT("%s"), *FormattedMsg);
+		IRemoteControlModule::BroadcastError(FormattedMsg);
+
 		if (OutErrorText)
 		{
 			*OutErrorText = MoveTemp(ErrorText);
@@ -314,7 +339,7 @@ bool WebRemoteControlInternalUtils::GetStructParametersDelimiters(TConstArrayVie
 
 bool WebRemoteControlInternalUtils::GetBatchRequestStructDelimiters(TConstArrayView<uint8> InTCHARPayload, TMap<int32, FBlockDelimiters>& OutStructParameters, FString* OutErrorText)
 {
-	typedef UCS2CHAR PayloadCharType;
+	typedef WIDECHAR PayloadCharType;
 	FMemoryReaderView Reader(InTCHARPayload);
 	TSharedRef<TJsonReader<PayloadCharType>> JsonReader = TJsonReader<PayloadCharType>::Create(&Reader);
 
@@ -370,7 +395,10 @@ bool WebRemoteControlInternalUtils::GetBatchRequestStructDelimiters(TConstArrayV
 
 	if (!ErrorText.IsEmpty())
 	{
-		UE_LOG(LogRemoteControl, Error, TEXT("Web Remote Control deserialization error: %s"), *ErrorText);
+		const FString FormattedMsg = FString::Printf(TEXT("Web Remote Control deserialization error: %s"), *ErrorText);
+		UE_LOG(LogRemoteControl, Error, TEXT("%s"), *FormattedMsg);
+		IRemoteControlModule::BroadcastError(FormattedMsg);
+
 		if (OutErrorText)
 		{
 			*OutErrorText = MoveTemp(ErrorText);
@@ -383,7 +411,7 @@ bool WebRemoteControlInternalUtils::GetBatchRequestStructDelimiters(TConstArrayV
 
 bool WebRemoteControlInternalUtils::GetBatchWebSocketRequestStructDelimiters(TConstArrayView<uint8> InTCHARPayload, TArray<FBlockDelimiters>& OutStructParameters, FString* OutErrorText)
 {
-	typedef UCS2CHAR PayloadCharType;
+	typedef WIDECHAR PayloadCharType;
 	FMemoryReaderView Reader(InTCHARPayload);
 	TSharedRef<TJsonReader<PayloadCharType>> JsonReader = TJsonReader<PayloadCharType>::Create(&Reader);
 
@@ -450,7 +478,10 @@ bool WebRemoteControlInternalUtils::GetBatchWebSocketRequestStructDelimiters(TCo
 
 	if (!ErrorText.IsEmpty())
 	{
-		UE_LOG(LogRemoteControl, Error, TEXT("Web Remote Control deserialization error: %s"), *ErrorText);
+		const FString FormattedMsg = FString::Printf(TEXT("Web Remote Control deserialization error: %s"), *ErrorText);
+		UE_LOG(LogRemoteControl, Error, TEXT("%s"), *FormattedMsg);
+		IRemoteControlModule::BroadcastError(FormattedMsg);
+		
 		if (OutErrorText)
 		{
 			*OutErrorText = MoveTemp(ErrorText);
@@ -474,6 +505,49 @@ bool WebRemoteControlInternalUtils::ValidateContentType(const FHttpServerRequest
 	return true;
 }
 
+bool WebRemoteControlInternalUtils::ValidateFunctionCall(const FRCCall& InRCCall, FString* OutErrorText)
+{
+	if (!InRCCall.IsValid())
+	{
+		return false;
+	}
+	
+	if (!GetDefault<URemoteControlSettings>()->bEnableRemotePythonExecution
+		&& InRCCall.CallRef.Object->IsA(UKismetSystemLibrary::StaticClass())
+		&& InRCCall.CallRef.Function == UKismetSystemLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, ExecuteConsoleCommand)))
+	{
+		// Make sure python is not called through KismetSystemLibrary.
+		if (const FProperty* Property = InRCCall.CallRef.Function->FindPropertyByName("Command"))
+		{
+			FString FullCommand;
+			Property->GetValue_InContainer(InRCCall.ParamStruct.GetStructMemory(), &FullCommand);
+
+			TArray<FString> SplitCommands;
+			FullCommand.ParseIntoArray(SplitCommands, TEXT("|"));
+
+			for (FString& Command : SplitCommands)
+			{
+				Command.TrimStartAndEndInline();
+				if (Command.StartsWith(TEXT("py ")) || Command.StartsWith(TEXT("python ")))
+				{
+					if (OutErrorText)
+					{
+						*OutErrorText = TEXT("Executing Python remotely is not enabled in the remote control settings.");
+					}
+					return false;
+				}
+			}
+		}
+		else
+		{
+			ensureMsgf(false, TEXT("Could not find the Command parameter on ExecuteConsoleCommand"));
+			return false;
+		}
+	}
+
+	return true;
+}
+
 void WebRemoteControlInternalUtils::AddContentTypeHeaders(FHttpServerResponse* InOutResponse, FString InContentType)
 {
 	InOutResponse->Headers.Add(TEXT("content-type"), { MoveTemp(InContentType) });
@@ -492,7 +566,15 @@ bool WebRemoteControlInternalUtils::IsWrappedRequest(const FHttpServerRequest& R
 void WebRemoteControlInternalUtils::AddCORSHeaders(FHttpServerResponse* InOutResponse)
 {
 	check(InOutResponse != nullptr);
-	InOutResponse->Headers.Add(TEXT("Access-Control-Allow-Origin"), { TEXT("*") });
+	if (GetDefault<URemoteControlSettings>()->bRestrictServerAccess)
+	{
+		InOutResponse->Headers.Add(TEXT("Access-Control-Allow-Origin"), { GetDefault<URemoteControlSettings>()->AllowedOrigin });
+	}
+	else
+	{
+		InOutResponse->Headers.Add(TEXT("Access-Control-Allow-Origin"), { TEXT("*") });
+	}
+	
 	InOutResponse->Headers.Add(TEXT("Access-Control-Allow-Methods"), { TEXT("PUT, POST, GET, OPTIONS") });
 	InOutResponse->Headers.Add(TEXT("Access-Control-Allow-Headers"), { TEXT("Origin, X-Requested-With, Content-Type, Accept") });
 	InOutResponse->Headers.Add(TEXT("Access-Control-Max-Age"), { TEXT("600") });
@@ -508,9 +590,41 @@ bool WebRemoteControlInternalUtils::IsRequestContentType(const FHttpServerReques
 		}
 	}
 
+	const FString ErrorText = FString::Printf(TEXT("Request content type must be %s"), *InContentType);
+	IRemoteControlModule::Get().BroadcastError(ErrorText);
+
 	if (OutErrorText)
 	{
-		*OutErrorText = FString::Printf(TEXT("Request content type must be %s"), *InContentType);
+		*OutErrorText = ErrorText;
 	}
+	
 	return false;
+}
+
+bool WebRemoteControlInternalUtils::CheckPassphrase(const FString& HashedPassphrase)
+{
+	bool bOutResult = !(GetDefault<URemoteControlSettings>()->bEnforcePassphraseForRemoteClients) || !(GetDefault<URemoteControlSettings>()->bRestrictServerAccess);
+
+	if (bOutResult)
+	{
+		return true;
+	}
+
+	TArray<FString> HashedPassphrases = GetDefault<URemoteControlSettings>()->GetHashedPassphrases();
+	if (HashedPassphrases.IsEmpty())
+	{
+		return true;
+	}
+
+	for (const FString& InPassphrase : HashedPassphrases)
+	{
+		bOutResult = bOutResult || InPassphrase == HashedPassphrase;
+
+		if (bOutResult)
+		{
+			break;
+		}
+	}
+
+	return bOutResult;
 }

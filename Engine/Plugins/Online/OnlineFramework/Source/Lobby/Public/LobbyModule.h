@@ -2,10 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Stats/Stats.h"
-#include "Misc/CoreMisc.h"
-#include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 
 /** Logging related to parties */
@@ -20,13 +17,10 @@ DECLARE_STATS_GROUP(TEXT("Lobby"), STATGROUP_Lobby, STATCAT_Advanced);
  * Module for lobbies via online beacon
  */
 class FLobbyModule : 
-	public IModuleInterface, public FSelfRegisteringExec
+	public IModuleInterface
 {
 
 public:
-
-	// FSelfRegisteringExec
-	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 
 	/**
 	 * Singleton-like access to this module's interface.  This is just for convenience!
@@ -66,3 +60,7 @@ private:
 	virtual void ShutdownModule() override;
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

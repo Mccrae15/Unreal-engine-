@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 
 #include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameEnums.h"
+#include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameSettingsEnums.h"
 
 // Settings for render frame builder
 struct FDisplayClusterRenderFrameSettings
@@ -12,8 +13,26 @@ struct FDisplayClusterRenderFrameSettings
 	// customize mono\stereo render modes
 	EDisplayClusterRenderFrameMode RenderMode = EDisplayClusterRenderFrameMode::Mono;
 
-	// Control mGPU for whole cluster
-	EDisplayClusterMultiGPUMode MultiGPUMode = EDisplayClusterMultiGPUMode::Enabled;
+	// nDisplay has its own implementation of cross-GPU transfer.
+	struct FCrossGPUTransfer
+	{
+		// Enable cross-GPU transfers using nDisplay
+		// That replaces the default cross-GPU transfers using UE Core for the nDisplay viewports viewfamilies.
+		bool bEnable = false;
+
+		// The bLockSteps parameter is simply passed to the FTransferResourceParams structure.
+		// Whether the GPUs must handshake before and after the transfer. Required if the texture rect is being written to in several render passes.
+		// Otherwise, minimal synchronization will be used.
+		bool bLockSteps = false;
+
+		// The bPullData parameter is simply passed to the FTransferResourceParams structure.
+		// Whether the data is read by the dest GPU, or written by the src GPU (not allowed if the texture is a backbuffer)
+		bool bPullData = true;
+
+	} CrossGPUTransfer;
+
+	// Alpha channel capture mode for viewports (Lightcard, chromakey)
+	EDisplayClusterRenderFrameAlphaChannelCaptureMode AlphaChannelCaptureMode;
 
 	// Some frame postprocess require additional render targetable resources
 	bool bShouldUseAdditionalFrameTargetableResource = false;

@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "OnlineSubsystemPackage.h"
+#include "Templates/SharedPointer.h"
+
+class FJsonObject;
+class UStruct;
 
 namespace EOnlineKeyValuePairDataType
 {
@@ -166,6 +168,9 @@ private:
 
 		ValueUnion() { FMemory::Memset( this, 0, sizeof( ValueUnion ) ); }
 	} Value;
+
+	/** Cached estimated maximum size of the value when encoded as an escaped string. */
+	mutable int CachedEstimatedMaxEscapedStringSize = 0;
 
 public:
 
@@ -410,6 +415,9 @@ public:
 	*/
 	void GetValue(TArray<TSharedPtr<class FJsonValue>>& OutData) const;
 
+	/** Returns the estimated maximum size of the value when encoded as an escaped string. */
+	int GetEstimatedMaxEscapedStringSize() const;
+
 	/**
 	 * Returns true if Type is numeric
 	 */
@@ -622,3 +630,8 @@ private:
 	static bool ConvertScalarVariantToFProperty(const FVariantData* Variant, FProperty* Property, void* OutValue, int64 CheckFlags, int64 SkipFlags);
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "OnlineSubsystemPackage.h"
+#endif

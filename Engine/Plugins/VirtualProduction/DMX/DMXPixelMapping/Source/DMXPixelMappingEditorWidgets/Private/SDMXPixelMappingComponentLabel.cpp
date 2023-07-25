@@ -2,7 +2,6 @@
 
 #include "SDMXPixelMappingComponentLabel.h"
 
-#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Text/STextBlock.h"
@@ -76,7 +75,7 @@ void SDMXPixelMappingComponentLabel::SetText(const FText& Text)
 	LabelTextBlock->SetText(Text);
 }
 
-const FVector2D& SDMXPixelMappingComponentLabel::GetLocalSize() const
+FVector2f SDMXPixelMappingComponentLabel::GetLocalSize() const
 {
 	return GetCachedGeometry().GetLocalSize();
 }

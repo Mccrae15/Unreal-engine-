@@ -8,6 +8,7 @@
 #include "Chaos/Collision/CapsuleTriangleContactPoint.h"
 #include "Chaos/Collision/ContactPointsMiscShapes.h"
 #include "Chaos/Collision/ContactTriangles.h"
+#include "Chaos/Collision/ConvexTriangleContactPoint.h"
 #include "Chaos/Collision/SphereConvexContactPoint.h"
 #include "Chaos/Collision/PBDCollisionConstraint.h"
 #include "Chaos/Convex.h"
@@ -41,6 +42,7 @@ namespace Chaos
 	extern bool bChaos_Collision_OneSidedHeightField;
 
 	extern bool bChaos_Collision_UseCapsuleTriMesh2;
+	extern bool bChaos_Collision_UseConvexTriMesh2;
 
 	namespace Collisions
 	{
@@ -245,7 +247,7 @@ namespace Chaos
 		}
 
 		template<typename ConvexType>
-		void ConstructSphereConvexManifoldImpl(const FImplicitSphere3& Sphere, const ConvexType& Convex, const FRigidTransform3& SphereToConvexTransform, const FReal CullDistance, TCArray<FContactPoint, 4>& ContactPoints)
+		void ConstructSphereConvexManifoldImpl(const FImplicitSphere3& Sphere, const ConvexType& Convex, const FRigidTransform3& SphereToConvexTransform, const FReal CullDistance, FContactPointManifold& ContactPoints)
 		{
 			FContactPoint ClosestContactPoint = SphereConvexContactPoint(Sphere, Convex, SphereToConvexTransform);
 
@@ -312,7 +314,7 @@ namespace Chaos
 
 			const FRigidTransform3 SphereToConvexTransform = SphereTransform.GetRelativeTransformNoScale(ConvexTransform);
 
-			TCArray<FContactPoint, 4> ContactPoints;
+			FContactPointManifold ContactPoints;
 			if (const FImplicitBox3* RawBox = Convex.template GetObject<FImplicitBox3>())
 			{
 				ConstructSphereConvexManifoldImpl(Sphere, *RawBox, SphereToConvexTransform, Constraint.GetCullDistance(), ContactPoints);
@@ -619,13 +621,20 @@ namespace Chaos
 		 * Templated so we can specialize for some shape types
 		*/
 		template<typename ConvexType>
-		void GenerateConvexTriangleOneShotManifold(const ConvexType& Convex, const FTriangle& Triangle, const FReal CullDistance, TCArray<FContactPoint, 4>& OutContactPoints)
+		void GenerateConvexTriangleOneShotManifold(const ConvexType& Convex, const FTriangle& Triangle, const FReal CullDistance, FContactPointManifold& OutContactPoints)
 		{
-			ConstructPlanarConvexTriangleOneShotManifold(Convex, Triangle, CullDistance, OutContactPoints);
+			if (bChaos_Collision_UseConvexTriMesh2)
+			{
+				ConstructConvexTriangleOneShotManifold2(Convex, Triangle, CullDistance, OutContactPoints);
+			}
+			else
+			{
+				ConstructPlanarConvexTriangleOneShotManifold(Convex, Triangle, CullDistance, OutContactPoints);
+			}
 		}
 
 		template<>
-		void GenerateConvexTriangleOneShotManifold<FCapsule>(const FCapsule& Capsule, const FTriangle& Triangle, const FReal CullDistance, TCArray<FContactPoint, 4>& OutContactPoints)
+		void GenerateConvexTriangleOneShotManifold<FCapsule>(const FCapsule& Capsule, const FTriangle& Triangle, const FReal CullDistance, FContactPointManifold& OutContactPoints)
 		{
 			if (bChaos_Collision_UseCapsuleTriMesh2)
 			{
@@ -650,7 +659,7 @@ namespace Chaos
 		template<typename ConvexType, typename MeshType>
 		void GenerateConvexMeshContactPoints(const ConvexType& Convex, const MeshType& Mesh, const FAABB3& MeshQueryBounds, const FRigidTransform3& MeshToConvexTransform, const FReal CullDistance, FContactTriangleCollector& MeshContacts)
 		{
-			TCArray<FContactPoint, 4> TriangleManifoldPoints;
+			FContactPointManifold TriangleManifoldPoints;
 
 			// Loop over all the triangles, build a manifold and add the points to the total manifold
 			// NOTE: contact points will be in the space of the convex until the end of the function when we convert into shape local space
@@ -664,7 +673,7 @@ namespace Chaos
 				{
 					// Add the points into the main contact array
 					// NOTE: The Contacts' FaceIndices will be an index into the ContactTriangles not the original tri mesh (this will get mapped back to the mesh index below)
-					MeshContacts.AddTriangleContacts(MakeArrayView(&TriangleManifoldPoints[0], TriangleManifoldPoints.Num()), Triangle, TriangleIndex, VertexIndex0, VertexIndex1, VertexIndex2, CullDistance);
+					MeshContacts.AddTriangleContacts(MakeArrayView(TriangleManifoldPoints.begin(), TriangleManifoldPoints.Num()), Triangle, TriangleIndex, VertexIndex0, VertexIndex1, VertexIndex2, CullDistance);
 				}
 			});
 

@@ -3,22 +3,12 @@
 #include "CurveEditorTransformTool.h"
 #include "CurveEditorToolCommands.h"
 #include "CurveEditor.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Framework/Commands/UIAction.h"
-#include "Rendering/DrawElements.h"
-#include "Framework/DelayedDrag.h"
+#include "Rendering/DrawElementPayloads.h"
 #include "SCurveEditorView.h"
-#include "ScopedTransaction.h"
-#include "CurveEditorSelection.h"
 #include "SCurveEditorPanel.h"
 #include "CurveModel.h"
-#include "CurveEditorScreenSpace.h"
-#include "Containers/ArrayView.h"
-#include "CurveDataAbstraction.h"
-#include "CurveEditorSnapMetrics.h"
 #include "UObject/StructOnScope.h"
-#include "Algo/Transform.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CurveEditorTransformTool)
 
@@ -390,7 +380,7 @@ FReply FCurveEditorTransformTool::OnMouseMove(TSharedRef<SWidget> OwningWidget, 
 		}
 		else if (DelayedDrag->AttemptDragStart(MouseEvent))
 		{
-			InitialMousePosition = MouseEvent.GetScreenSpacePosition();
+			LastMousePosition = InitialMousePosition = MouseEvent.GetScreenSpacePosition();
 			OnDragStart();
 
 			// Steal the capture, as we're now the authoritative widget in charge of a mouse-drag operation
@@ -982,7 +972,7 @@ void FCurveEditorTransformTool::OnDrag(const FPointerEvent& InMouseEvent, const 
 		// Dragging the center is the easy case!
 		if (TransformWidget.SelectedAnchorFlags == ECurveEditorAnchorFlags::Center)
 		{
-			const FVector2D AxisLockedMousePosition = CurveEditor->GetAxisSnap().GetSnappedPosition(InitialMousePosition, InMouseEvent.GetScreenSpacePosition(), InMouseEvent, SnappingState);
+			const FVector2D AxisLockedMousePosition = CurveEditor->GetAxisSnap().GetSnappedPosition(InitialMousePosition, LastMousePosition, InMouseEvent.GetScreenSpacePosition(), InMouseEvent, SnappingState);
 			{
 				FVector2D MouseDelta = AxisLockedMousePosition - InitialMousePosition;
 				TransformWidget.Position = TransformWidget.StartPosition + MouseDelta;
@@ -1060,7 +1050,7 @@ void FCurveEditorTransformTool::OnDrag(const FPointerEvent& InMouseEvent, const 
 			}
 		}
 	}
-
+	LastMousePosition = InMouseEvent.GetScreenSpacePosition();
 	UpdateMarqueeBoundingBox();
 
 	UpdateToolOptions();

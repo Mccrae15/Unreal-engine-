@@ -2,11 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Online/CoreOnline.h"
 #include "OnlineSubsystemTypes.h"
 #include "OnlineDelegateMacros.h"
-#include "OnlineIdentityErrors.h"
+
+struct FOnlineError;
 
 
 
@@ -459,11 +458,19 @@ public:
 	 * Gets a user's platform specific authentication ticket used to sign into linked account(s)
 	 *
 	 * @param LocalUserNum the controller number of the associated user
+	 * @param TokenType the platform specific token type you are requesting.
+	 * @param Delegate delegate to execute when the async task completes
 	 */
-	virtual void GetLinkedAccountAuthToken(int32 LocalUserNum, const FOnGetLinkedAccountAuthTokenCompleteDelegate& Delegate) const
+	virtual void GetLinkedAccountAuthToken(int32 LocalUserNum, const FString& TokenType, const FOnGetLinkedAccountAuthTokenCompleteDelegate& Delegate) const
 	{
 		FExternalAuthToken EmptyToken;
 		Delegate.ExecuteIfBound(LocalUserNum, false, EmptyToken);
+	}
+
+	UE_DEPRECATED(5.2, "Please use GetLinkedAccountAuthToken taking a TokenType")
+	virtual void GetLinkedAccountAuthToken(int32 LocalUserNum, const FOnGetLinkedAccountAuthTokenCompleteDelegate& Delegate) const
+	{
+		GetLinkedAccountAuthToken(LocalUserNum, FString(), Delegate);
 	}
 
 	/**
@@ -526,3 +533,8 @@ ONLINESUBSYSTEM_API FString ToDebugString(IOnlineIdentity::EPrivilegeResults Pri
 ONLINESUBSYSTEM_API FString ToDebugString(EUserPrivileges::Type UserPrivilege);
 
 ONLINESUBSYSTEM_API FString ToDebugString(const FControllerPairingChangedUserInfo& ControllerPairingChangedUserInfo);
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "OnlineIdentityErrors.h"
+#endif

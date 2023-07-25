@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using Horde.Build.Agents.Pools;
 
@@ -58,57 +57,36 @@ namespace Horde.Build.Agents.Fleet
 	}
 
 	/// <summary>
-	/// Class for specifying and grouping data together required for calculating pool size
+	/// Result from calculating pool size
 	/// </summary>
-	public class PoolSizeData
+	public class PoolSizeResult
 	{
 		/// <summary>
-		/// Pool being resized
+		/// The agent count as it appeared when pool sizing was calculated
 		/// </summary>
-		public IPool Pool { get; }
-		
-		/// <summary>
-		/// All agents currently associated with the pool
-		/// </summary>
-		public List<IAgent> Agents { get; }
+		public int CurrentAgentCount { get; }
 
 		/// <summary>
-		/// The desired agent count (calculated and updated once the strategy has been run, null otherwise)
+		/// The desired agent count as calculated by pool sizing strategy
 		/// </summary>
-		public int? DesiredAgentCount  { get; }
+		public int DesiredAgentCount { get; }
 		
 		/// <summary>
-		/// Human-readable text describing the status of the pool (data the sizing is based on etc)
+		/// Log-friendly metadata object describing the output of the size calculation through key/values
 		/// </summary>
-		public string StatusMessage { get; }
+		public IReadOnlyDictionary<string, object>? Status { get; }
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="pool"></param>
-		/// <param name="agents"></param>
+		/// <param name="currentAgentCount"></param>
 		/// <param name="desiredAgentCount"></param>
-		/// <param name="statusMessage"></param>
-		public PoolSizeData(IPool pool, List<IAgent> agents, int? desiredAgentCount, string statusMessage = "N/A")
+		/// <param name="status"></param>
+		public PoolSizeResult(int currentAgentCount, int desiredAgentCount, IReadOnlyDictionary<string, object>? status = null)
 		{
-			Pool = pool;
-			Agents = agents;
+			CurrentAgentCount = currentAgentCount;
 			DesiredAgentCount = desiredAgentCount;
-			StatusMessage = statusMessage;
-		}
-
-		/// <summary>
-		/// Copy the object, inheriting any unspecified values from current instance
-		/// Needed because the class is immutable 
-		/// </summary>
-		/// <param name="pool"></param>
-		/// <param name="agents"></param>
-		/// <param name="desiredAgentCount"></param>
-		/// <param name="statusMessage"></param>
-		/// <returns>A new copy</returns>
-		public PoolSizeData Copy(IPool? pool = null, List<IAgent>? agents = null, int? desiredAgentCount = null, string? statusMessage = null)
-		{
-			return new PoolSizeData(pool ?? Pool, agents ?? Agents, desiredAgentCount ?? DesiredAgentCount, statusMessage ?? StatusMessage);
+			Status = status;
 		}
 	}
 	
@@ -120,9 +98,10 @@ namespace Horde.Build.Agents.Fleet
 		/// <summary>
 		/// Calculate the adequate number of agents to be online for given pools
 		/// </summary>
-		/// <param name="pools">Pools including attached agents</param>
-		/// <returns></returns>
-		Task<List<PoolSizeData>> CalcDesiredPoolSizesAsync(List<PoolSizeData> pools);
+		/// <param name="pool">Pool to calculate size for</param>
+		/// <param name="agents">Available agents</param>
+		/// <returns>A result containing the desired agent count</returns>
+		Task<PoolSizeResult> CalculatePoolSizeAsync(IPool pool, List<IAgent> agents);
 		
 		/// <summary>
 		/// Name of the strategy
@@ -137,13 +116,43 @@ namespace Horde.Build.Agents.Fleet
 	public class NoOpPoolSizeStrategy : IPoolSizeStrategy
 	{
 		/// <inheritdoc/>
-		public Task<List<PoolSizeData>> CalcDesiredPoolSizesAsync(List<PoolSizeData> pools)
+		public Task<PoolSizeResult> CalculatePoolSizeAsync(IPool pool, List<IAgent> agents)
 		{
-			List<PoolSizeData> result = pools.Select(x => new PoolSizeData(x.Pool, x.Agents, x.Agents.Count, "(no-op)")).ToList();
-			return Task.FromResult(result);
+			return Task.FromResult(new PoolSizeResult(agents.Count, agents.Count));
 		}
 
 		/// <inheritdoc/>
 		public string Name { get; } = "NoOp";
+	}
+	
+	/// <summary>
+	/// Pool size strategy wrapping a normal strategy and
+	/// applies an extra agent count to the desired agent count.
+	/// </summary>
+	public class ExtraAgentCountStrategy : IPoolSizeStrategy
+	{
+		private readonly IPoolSizeStrategy _backingStrategy;
+		private readonly int _extraAgentCount;
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="backingStrategy">Strategy to be wrapped</param>
+		/// <param name="extraAgentCount">Extra count to apply</param>
+		public ExtraAgentCountStrategy(IPoolSizeStrategy backingStrategy, int extraAgentCount)
+		{
+			_backingStrategy = backingStrategy;
+			_extraAgentCount = extraAgentCount;
+		}
+
+		/// <inheritdoc/>
+		public async Task<PoolSizeResult> CalculatePoolSizeAsync(IPool pool, List<IAgent> agents)
+		{
+			PoolSizeResult result = await _backingStrategy.CalculatePoolSizeAsync(pool, agents);
+			return new PoolSizeResult(result.CurrentAgentCount, result.DesiredAgentCount + _extraAgentCount, result.Status);
+		}
+
+		/// <inheritdoc/>
+		public string Name => _backingStrategy.Name;
 	}
 }

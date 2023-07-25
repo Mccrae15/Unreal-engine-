@@ -239,6 +239,17 @@ class UNREALED_API UPersonaOptions : public UObject
 	UPROPERTY(config)
 	TArray<FName> TimelineEnabledSnaps;
 
+	/** Whether to allow animation assets that are incompatible with the current skeleton/skeletal mesh to be selected. */
+	UPROPERTY(EditAnywhere, config, Category = "Assets")
+	bool bAllowIncompatibleSkeletonSelection;
+
+	/** Whether to use tree view for animation curves*/
+	UPROPERTY(EditAnywhere, config, Category = "Timeline")
+	bool bUseTreeViewForAnimationCurves = false;
+
+	/** Delimiters to split animation curve names for grouping*/
+	UPROPERTY(EditAnywhere, config, Category = "Timeline")
+	FString AnimationCurveGroupingDelimiters = TEXT("._/|\\");
 public:
 	void SetShowGrid( bool bInShowGrid );
 	void SetHighlightOrigin( bool bInHighlightOrigin );
@@ -257,6 +268,8 @@ public:
 	void SetNotifyTimingNodeColor(const FLinearColor& InColor);
 	void SetBranchingPointTimingNodeColor(const FLinearColor& InColor);
 	FAssetEditorOptions& GetAssetEditorOptions(const FName& InContext);
+	bool GetAllowIncompatibleSkeletonSelection() const;
+	void SetAllowIncompatibleSkeletonSelection(bool bState);
 
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnUpdateSettingsMulticaster, const UPersonaOptions*, EPropertyChangeType::Type);
 	FOnUpdateSettingsMulticaster OnSettingsChange;

@@ -1,15 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Engine/World.h"
 #include "MassEntityManager.h"
 #include "MassProcessingTypes.h"
 #include "MassEntityTestTypes.h"
 #include "MassEntityTypes.h"
 #include "MassCommandBuffer.h"
+#include "MassExecutionContext.h"
 
 #define LOCTEXT_NAMESPACE "MassTest"
 
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 
 //----------------------------------------------------------------------//
 // tests 
@@ -38,14 +38,11 @@ struct FTagBaseOperation : FEntityTestBase
 		if (FEntityTestBase::SetUp())
 		{
 			TagObserver = NewObject<UMassTestProcessorBase>();
-			TagObserver->TestGetQuery().AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadOnly);
-			TagObserver->TestGetQuery().AddTagRequirement<FTestTag_A>(EMassFragmentPresence::All);
-			TagObserver->ExecutionFunction = [this](FMassEntityManager& InEntitySubsystem, FMassExecutionContext& Context)
+			TagObserver->EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadOnly);
+			TagObserver->EntityQuery.AddTagRequirement<FTestTag_A>(EMassFragmentPresence::All);
+			TagObserver->ForEachEntityChunkExecutionFunction = [this](FMassExecutionContext& Context)
 			{
-				TagObserver->TestGetQuery().ForEachEntityChunk(InEntitySubsystem, Context, [this](FMassExecutionContext& Context)
-					{
-						AffectedEntities.Append(Context.GetEntities().GetData(), Context.GetEntities().Num());
-					});
+				AffectedEntities.Append(Context.GetEntities().GetData(), Context.GetEntities().Num());
 			};
 
 			return true;
@@ -214,6 +211,6 @@ IMPLEMENT_AI_INSTANT_TEST(FTag_MultipleArchetypeSwap, "System.Mass.Observer.Tag.
 
 } // FMassObserverTest
 
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 #undef LOCTEXT_NAMESPACE

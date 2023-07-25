@@ -2,12 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UnrealClient.h"
 #include "IPropertyTypeCustomization.h"
-#include "StateTreeTypes.h"
+
+enum class EStateTreeTransitionType : uint8;
+template <typename OptionalType> struct TOptional;
 
 class IPropertyHandle;
+class SWidget;
 class UStateTree;
 class UStateTreeState;
 
@@ -28,10 +29,10 @@ public:
 private:
 
 	// Special indices for the combo selection.
-	static const int ComboNotSet = -1;
-	static const int ComboSucceeded = -2;
-	static const int ComboFailed = -3;
-	static const int ComboNextState = -4;
+	inline static constexpr int ComboNotSet = -1;
+	inline static constexpr int ComboSucceeded = -2;
+	inline static constexpr int ComboFailed = -3;
+	inline static constexpr int ComboNextState = -4;
 
 	void CacheStates();
 	void CacheStates(const UStateTreeState* State);
@@ -47,7 +48,7 @@ private:
 
 	TSharedPtr<IPropertyHandle> NameProperty;
 	TSharedPtr<IPropertyHandle> IDProperty;
-	TSharedPtr<IPropertyHandle> TypeProperty;
+	TSharedPtr<IPropertyHandle> LinkTypeProperty;
 
 	// If set, hide selecting meta states like Next or (tree) Succeeded.
 	bool bDirectStatesOnly = false;

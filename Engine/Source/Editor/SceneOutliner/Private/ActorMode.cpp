@@ -15,6 +15,7 @@
 #include "FolderTreeItem.h"
 #include "ComponentTreeItem.h"
 #include "ActorDescTreeItem.h"
+#include "EditorModeManager.h"
 #include "WorldTreeItem.h"
 #include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
@@ -84,6 +85,23 @@ namespace SceneOutliner
 
 		return false;
 	}
+
+	bool FActorDescSelector::operator()(const TWeakPtr<ISceneOutlinerTreeItem>& Item, FWorldPartitionActorDesc*& ActorDescPtrOut) const
+	{
+		if (TSharedPtr<ISceneOutlinerTreeItem> ItemPtr = Item.Pin())
+		{
+			if (FActorDescTreeItem* ActorDescItem = ItemPtr->CastTo<FActorDescTreeItem>())
+			{
+				if (FWorldPartitionActorDesc* ActorDesc = ActorDescItem->ActorDescHandle.Get())
+				{
+					ActorDescPtrOut = ActorDesc;
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
 }
 
 FActorMode::FActorMode(const FActorModeParams& Params)
@@ -94,6 +112,7 @@ FActorMode::FActorMode(const FActorModeParams& Params)
 	, bHideLevelInstanceHierarchy(Params.bHideLevelInstanceHierarchy)
 	, bHideUnloadedActors(Params.bHideUnloadedActors)
 	, bHideEmptyFolders(Params.bHideEmptyFolders)
+	, bCanInteractWithSelectableActorsOnly(Params.bCanInteractWithSelectableActorsOnly)
 {
 	SceneOutliner->AddFilter(MakeShared<FActorFilter>(FActorTreeItem::FFilterPredicate::CreateLambda([this](const AActor* Actor)
 	{
@@ -206,19 +225,12 @@ void FActorMode::ChooseRepresentingWorld()
 
 	if (RepresentingWorld == nullptr)
 	{
-		// still no world so fallback to old logic where we just prefer PIE over Editor
+		// If there is still no world, we query the Level Editor, which prefers the PIE world over the Editor world
+		TWeakPtr<ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 
-		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		if (TSharedPtr<ILevelEditor> LevelEditorPin = LevelEditor.Pin())
 		{
-			if (Context.WorldType == EWorldType::PIE)
-			{
-				RepresentingWorld = Context.World();
-				break;
-			}
-			else if (Context.WorldType == EWorldType::Editor)
-			{
-				RepresentingWorld = Context.World();
-			}
+			RepresentingWorld = LevelEditorPin->GetEditorModeManager().GetWorld();
 		}
 	}
 }
@@ -349,6 +361,37 @@ bool FActorMode::IsActorDisplayable(const SSceneOutliner* SceneOutliner, const A
 		!Actor->IsA(AWorldSettings::StaticClass()) &&											// Don't show the WorldSettings actor, even though it is technically editable
 		IsValidChecked(Actor) &&																// We don't want to show actors that are about to go away
 		FLevelUtils::IsLevelVisible(Actor->GetLevel());											// Only show Actors whose level is visible
+}
+
+bool FActorMode::CanInteract(const ISceneOutlinerTreeItem& Item) const
+{
+	if (bCanInteractWithSelectableActorsOnly)
+	{
+		AActor* FoundActor = nullptr;
+		if (const FActorTreeItem* ActorTreeItem = Item.CastTo<FActorTreeItem>())
+		{
+			FoundActor = ActorTreeItem->Actor.Get();
+		}
+		else if (const FComponentTreeItem* ComponentTreeItem = Item.CastTo<FComponentTreeItem>())
+		{
+			if (UActorComponent* Component = ComponentTreeItem->Component.Get())
+			{
+				FoundActor = Component->GetOwner();
+			}
+		}
+
+		if (FoundActor)
+		{
+			const bool bInSelected = true;
+			const bool bSelectEvenIfHidden = true;		// @todo outliner: Is this actually OK?
+			if (!GEditor->CanSelectActor(FoundActor, bInSelected, bSelectEvenIfHidden))
+			{
+				return false;
+			}
+		}
+	}
+	
+	return true;
 }
 
 bool FActorMode::IsActorLevelDisplayable(ULevel* InLevel)

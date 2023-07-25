@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PCGPartitionActor.h"
+#include "Engine/World.h"
 #include "PCGComponent.h"
-#include "PCGHelpers.h"
+#include "PCGModule.h"
 #include "PCGSubsystem.h"
 #include "PCGWorldActor.h"
 #include "Helpers/PCGActorHelpers.h"
+#include "Helpers/PCGHelpers.h"
 
-#include "Landscape.h"
 #include "Components/BoxComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGPartitionActor)
 
 constexpr uint32 InvalidPCGGridSizeValue = 0u;
 
@@ -31,7 +34,7 @@ APCGPartitionActor::APCGPartitionActor(const FObjectInitializer& ObjectInitializ
 
 UPCGSubsystem* APCGPartitionActor::GetSubsystem() const 
 {
-	return GetWorld() ? GetWorld()->GetSubsystem<UPCGSubsystem>() : nullptr;
+	return UPCGSubsystem::GetInstance(GetWorld());
 }
 
 void APCGPartitionActor::PostLoad()
@@ -44,14 +47,34 @@ void APCGPartitionActor::PostLoad()
 		PCGGridSize = APCGWorldActor::DefaultPartitionGridSize;
 	}
 
+#if WITH_EDITOR
+	if (LocalToOriginalMap_DEPRECATED.Num() > 0)
+	{
+		for (const TPair<TObjectPtr<UPCGComponent>, TWeakObjectPtr<UPCGComponent>>& LocalToOriginalPair : LocalToOriginalMap_DEPRECATED)
+		{
+			LocalToOriginal.Emplace(LocalToOriginalPair.Key, LocalToOriginalPair.Value.Get());
+		}
+
+		LocalToOriginalMap_DEPRECATED.Reset();
+	}
+#endif
+
+	// Safe guard if we ever load a local that was deleted but not removed (like if the user deleted themselves the component)
+	// We can have multiple nullptr entries (if multiple components were removed), hence the while.
+	while (LocalToOriginal.Contains(nullptr))
+	{
+		LocalToOriginal.Remove(nullptr);
+	}
+
 	// Make sure that we don't track objects that do not exist anymore
-	CleanupDeadGraphInstances();
+	CleanupDeadGraphInstances(/*bRemoveNullOnly=*/true);
 
 #if WITH_EDITOR
 	// Mark all our local components as local
 	for (UPCGComponent* LocalComponent : GetAllLocalPCGComponents())
 	{
 		LocalComponent->MarkAsLocalComponent();
+		LocalComponent->ConditionalPostLoad();
 	}
 
 	bWasPostCreatedLoaded = true;
@@ -93,6 +116,14 @@ void APCGPartitionActor::PostRegisterAllComponents()
 	}
 #endif // WITH_EDITOR
 
+	// Reset the OriginalToLocal and build it from the local map
+	OriginalToLocal.Reset();
+	OriginalToLocal.Reserve(LocalToOriginal.Num());
+	for (const auto& It : LocalToOriginal)
+	{
+		OriginalToLocal.Add(It.Value.Get(), It.Key);
+	}
+
 	// Make the Partition actor register itself to the PCG Subsystem
 	// Always do it at runtime, wait for the post load/creation in editor
 	// Only do the mapping if we are at runtime.
@@ -116,7 +147,7 @@ void APCGPartitionActor::PostRegisterAllComponents()
 void APCGPartitionActor::BeginPlay()
 {
 	// Pass through all the pcg components, to verify if we need to generate them
-	for (auto& It : OriginalToLocalMap)
+	for (auto& It : OriginalToLocal)
 	{
 		if (It.Key && It.Value)
 		{
@@ -193,21 +224,21 @@ void APCGPartitionActor::GetActorBounds(bool bOnlyCollidingComponents, FVector& 
 
 UPCGComponent* APCGPartitionActor::GetLocalComponent(const UPCGComponent* OriginalComponent) const
 {
-	const TObjectPtr<UPCGComponent>* LocalComponent = OriginalToLocalMap.Find(OriginalComponent);
+	const TObjectPtr<UPCGComponent>* LocalComponent = OriginalToLocal.Find(OriginalComponent);
 	return LocalComponent ? *LocalComponent : nullptr;
 }
 
 UPCGComponent* APCGPartitionActor::GetOriginalComponent(const UPCGComponent* LocalComponent) const
 {
-	const TObjectPtr<UPCGComponent>* OriginalComponent = LocalToOriginalMap.Find(LocalComponent);
+	const TSoftObjectPtr<UPCGComponent>* OriginalComponent = LocalToOriginal.Find(LocalComponent);
 	return OriginalComponent ? (*OriginalComponent).Get() : nullptr;
 }
 
-void APCGPartitionActor::CleanupDeadGraphInstances()
+void APCGPartitionActor::CleanupDeadGraphInstances(bool bRemoveNonNullOnly)
 {
 	// First find if we have any local dead instance (= nullptr) hooked to an original component.
 	TSet<TObjectPtr<UPCGComponent>> DeadOriginalInstances;
-	for (const auto& OriginalToLocalItem : OriginalToLocalMap)
+	for (const auto& OriginalToLocalItem : OriginalToLocal)
 	{
 		if (!OriginalToLocalItem.Value)
 		{
@@ -221,22 +252,22 @@ void APCGPartitionActor::CleanupDeadGraphInstances()
 
 		for (const TObjectPtr<UPCGComponent>& DeadInstance : DeadOriginalInstances)
 		{
-			OriginalToLocalMap.Remove(DeadInstance);
+			OriginalToLocal.Remove(DeadInstance);
 		}
 
-		LocalToOriginalMap.Remove(nullptr);
+		LocalToOriginal.Remove(nullptr);
 	}
 
 	// And do the same with dead original ones.
 	TSet<TObjectPtr<UPCGComponent>> DeadLocalInstances;
-	for (const auto& LocalToOriginalItem : LocalToOriginalMap)
+	for (const auto& LocalToOriginalItem : LocalToOriginal)
 	{
-		if (!LocalToOriginalItem.Value)
+		if((bRemoveNonNullOnly && LocalToOriginalItem.Value.IsNull()) ||
+			(!bRemoveNonNullOnly && !LocalToOriginalItem.Value.IsValid()))
 		{
 			DeadLocalInstances.Add(LocalToOriginalItem.Key);
 		}
 	}
-
 
 	if (!DeadLocalInstances.IsEmpty())
 	{
@@ -244,7 +275,7 @@ void APCGPartitionActor::CleanupDeadGraphInstances()
 
 		for (const TObjectPtr<UPCGComponent>& DeadInstance : DeadLocalInstances)
 		{
-			LocalToOriginalMap.Remove(DeadInstance);
+			LocalToOriginal.Remove(DeadInstance);
 
 			if (DeadInstance)
 			{
@@ -254,7 +285,7 @@ void APCGPartitionActor::CleanupDeadGraphInstances()
 		}
 
 		// Remove all dead entries
-		OriginalToLocalMap.Remove(nullptr);
+		OriginalToLocal.Remove(nullptr);
 	}
 }
 
@@ -288,12 +319,14 @@ void APCGPartitionActor::AddGraphInstance(UPCGComponent* OriginalComponent)
 	// TODO: check if we should use a non-instanced component?
 	AddInstanceComponent(LocalComponent);
 
-	OriginalToLocalMap.Add(OriginalComponent, LocalComponent);
-	LocalToOriginalMap.Add(LocalComponent, OriginalComponent);
+	OriginalToLocal.Emplace(OriginalComponent, LocalComponent);
+	LocalToOriginal.Emplace(LocalComponent, OriginalComponent);
 }
 
 void APCGPartitionActor::RemapGraphInstance(const UPCGComponent* OldOriginalComponent, UPCGComponent* NewOriginalComponent)
 {
+	check(OldOriginalComponent && NewOriginalComponent);
+
 	UPCGComponent* LocalComponent = GetLocalComponent(OldOriginalComponent);
 
 	if (!LocalComponent)
@@ -301,14 +334,29 @@ void APCGPartitionActor::RemapGraphInstance(const UPCGComponent* OldOriginalComp
 		return;
 	}
 
-	Modify();
+	// If the old original component was loaded, we can assume we are in a loading phase.
+	// In this case, we don't want to dirty or register a transaction
+	const bool bIsLoading = OldOriginalComponent->HasAnyFlags(RF_WasLoaded);
 
-	OriginalToLocalMap.Remove(OldOriginalComponent);
-	LocalToOriginalMap.Remove(LocalComponent);
+	if (!bIsLoading)
+	{
+		Modify();
+	}
+
+	OriginalToLocal.Remove(OldOriginalComponent);
+	LocalToOriginal.Remove(LocalComponent);
 
 	LocalComponent->SetPropertiesFromOriginal(NewOriginalComponent);
-	OriginalToLocalMap.Add(NewOriginalComponent, LocalComponent);
-	LocalToOriginalMap.Add(LocalComponent, NewOriginalComponent);
+	OriginalToLocal.Emplace(NewOriginalComponent, LocalComponent);
+	LocalToOriginal.Emplace(LocalComponent, NewOriginalComponent);
+
+#if WITH_EDITOR
+	// When changing original data, it means that the data we have might point to newly stale data, hence we need to force dirty here
+	if (!bIsLoading)
+	{
+		LocalComponent->DirtyGenerated(EPCGComponentDirtyFlag::Actor);
+	}
+#endif
 }
 
 bool APCGPartitionActor::RemoveGraphInstance(UPCGComponent* OriginalComponent)
@@ -325,14 +373,27 @@ bool APCGPartitionActor::RemoveGraphInstance(UPCGComponent* OriginalComponent)
 
 	Modify();
 
-	OriginalToLocalMap.Remove(OriginalComponent);
-	LocalToOriginalMap.Remove(LocalComponent);
+	OriginalToLocal.Remove(OriginalComponent);
+	LocalToOriginal.Remove(LocalComponent);
 
 	// TODO Add option to not cleanup?
 	LocalComponent->CleanupLocalImmediate(/*bRemoveComponents=*/true);
 	LocalComponent->DestroyComponent();
 
-	return OriginalToLocalMap.IsEmpty();
+	return OriginalToLocal.IsEmpty();
+}
+
+void APCGPartitionActor::RemoveLocalComponent(UPCGComponent* LocalComponent)
+{
+	if (!LocalComponent)
+	{
+		return;
+	}
+
+	UPCGComponent* OriginalComponent = GetOriginalComponent(LocalComponent);
+
+	LocalToOriginal.Remove(LocalComponent);
+	OriginalToLocal.Remove(OriginalComponent);
 }
 
 #if WITH_EDITOR
@@ -364,7 +425,7 @@ void APCGPartitionActor::PostCreation()
 	}
 	else
 	{
-		bUse2DGrid = false;
+		bUse2DGrid = true;
 	}
 
 #if WITH_EDITOR
@@ -401,7 +462,7 @@ bool APCGPartitionActor::IsSafeForDeletion() const
 TSet<TObjectPtr<UPCGComponent>> APCGPartitionActor::GetAllLocalPCGComponents() const
 {
 	TSet<TObjectPtr<UPCGComponent>> ResultComponents;
-	LocalToOriginalMap.GetKeys(ResultComponents);
+	LocalToOriginal.GetKeys(ResultComponents);
 
 	return ResultComponents;
 }
@@ -409,7 +470,10 @@ TSet<TObjectPtr<UPCGComponent>> APCGPartitionActor::GetAllLocalPCGComponents() c
 TSet<TObjectPtr<UPCGComponent>> APCGPartitionActor::GetAllOriginalPCGComponents() const
 {
 	TSet<TObjectPtr<UPCGComponent>> ResultComponents;
-	OriginalToLocalMap.GetKeys(ResultComponents);
+	for(const TPair<TObjectPtr<UPCGComponent>, TObjectPtr<UPCGComponent>>& OriginalPair : OriginalToLocal)
+	{
+		ResultComponents.Add(OriginalPair.Key.Get());
+	}
 
 	return ResultComponents;
 }

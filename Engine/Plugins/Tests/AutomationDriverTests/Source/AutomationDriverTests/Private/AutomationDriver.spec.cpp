@@ -1,13 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/AutomationTest.h"
-#include "AutomationDriverCommon.h"
-#include "AutomationDriverTypeDefs.h"
+#include "DriverConfiguration.h"
 #include "SAutomationDriverSpecSuite.h"
 #include "AutomationDriverSpecSuiteViewModel.h"
-#include "Containers/Ticker.h"
-#include "Async/Async.h"
 #include "Framework/Application/SlateApplication.h"
+#include "IAutomationDriver.h"
+#include "IAutomationDriverModule.h"
+#include "IDriverElement.h"
+#include "IDriverSequence.h"
+#include "Layout/WidgetPath.h"
+#include "LocateBy.h"
+#include "Widgets/SWindow.h"
 
 #define TEST_TRUE(expression) \
 	EPIC_TEST_BOOLEAN_(TEXT(#expression), expression, true)
@@ -969,7 +973,7 @@ void FAutomationDriverSpec::Define()
 							FWidgetPath WidgetPath;
 							FSlateApplication::Get().FindPathToWidget(SuiteWidget->GetKeyWidget(EPianoKey::F).ToSharedRef(), WidgetPath);
 
-							TEST_EQUAL(ElementPosition, WidgetPath.Widgets.Last().Geometry.LocalToAbsolute(FVector2D::ZeroVector));
+							TEST_EQUAL(ElementPosition, FVector2D(WidgetPath.Widgets.Last().Geometry.LocalToAbsolute(FVector2f::ZeroVector)));
 						}
 						Done.Execute();
 					}
@@ -1001,7 +1005,7 @@ void FAutomationDriverSpec::Define()
 							FWidgetPath WidgetPath;
 							FSlateApplication::Get().FindPathToWidget(SuiteWidget->GetKeyWidget(EPianoKey::F).ToSharedRef(), WidgetPath);
 
-							TEST_EQUAL(ElementSize, WidgetPath.Widgets.Last().Geometry.GetLocalSize());
+							TEST_EQUAL(ElementSize, FVector2D(WidgetPath.Widgets.Last().Geometry.GetLocalSize()));
 						}
 						Done.Execute();
 					}

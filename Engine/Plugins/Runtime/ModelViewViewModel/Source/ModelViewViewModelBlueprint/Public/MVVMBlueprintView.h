@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "View/MVVMView.h"
 #include "MVVMBlueprintViewBinding.h"
 #include "MVVMBlueprintViewModelContext.h"
 
 #include "MVVMBlueprintView.generated.h"
+
+class UMVVMWidgetBlueprintExtension_View;
 
 class UWidget;
 class UWidgetBlueprint;
@@ -52,6 +52,8 @@ public:
 
 	FMVVMBlueprintViewBinding* GetBindingAt(int32 Index);
 	const FMVVMBlueprintViewBinding* GetBindingAt(int32 Index) const;
+	FMVVMBlueprintViewBinding* GetBinding(FGuid Id);
+	const FMVVMBlueprintViewBinding* GetBinding(FGuid Id) const;
 
 	TArrayView<FMVVMBlueprintViewBinding> GetBindings()
 	{
@@ -69,6 +71,7 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChainEvent) override;
 
+	void AddAssetTags(TArray<FAssetRegistryTag>& OutTags);
 	void WidgetRenamed(FName OldObjectName, FName NewObjectName);
 #endif
 
@@ -91,3 +94,8 @@ private:
 	UPROPERTY(EditAnywhere, Category = "MVVM")
 	TArray<FMVVMBlueprintViewModelContext> AvailableViewModels;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "View/MVVMView.h"
+#endif

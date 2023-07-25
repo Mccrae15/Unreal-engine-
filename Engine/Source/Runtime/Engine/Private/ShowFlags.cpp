@@ -5,6 +5,9 @@
 =============================================================================*/
 
 #include "ShowFlags.h"
+#include "Engine/EngineBaseTypes.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/ScopeRWLock.h"
 #include "SystemSettings.h"
 
 static bool IsValidNameChar(TCHAR c)
@@ -139,7 +142,7 @@ bool FEngineShowFlags::GetSingleFlag(uint32 Index) const
 	switch( Index )
 	{
 	#define SHOWFLAG_ALWAYS_ACCESSIBLE(a,...) case SF_##a: return a != 0;
-	#include "ShowFlagsValues.inl"
+	#include "ShowFlagsValues.inl" // IWYU pragma: keep
 	default:
 		if (Index >= SF_FirstCustom)
 		{
@@ -179,7 +182,7 @@ void FEngineShowFlags::SetSingleFlag(uint32 Index, bool bSet)
 	#if UE_BUILD_OPTIMIZED_SHOWFLAGS 
 		#define SHOWFLAG_FIXED_IN_SHIPPING(v,a,...) case SF_##a: break;
 	#endif
-	#include "ShowFlagsValues.inl"
+	#include "ShowFlagsValues.inl" // IWYU pragma: keep
 	default:
 		UpdateNewCustomShowFlags();
 		if (Index >= SF_FirstCustom && (Index - SF_FirstCustom) < (uint32)CustomShowFlags.Num())
@@ -208,7 +211,7 @@ int32 FEngineShowFlags::FindIndexByName(const TCHAR* Name, const TCHAR* CommaSep
 
 		#define SHOWFLAG_ALWAYS_ACCESSIBLE(a,...) if(Search == PREPROCESSOR_TO_STRING(a)) { return (int32)SF_##a; }
 
-		#include "ShowFlagsValues.inl"
+		#include "ShowFlagsValues.inl" // IWYU pragma: keep
 
 		ECustomShowFlag CustomFlagIndex = FindCustomShowFlagByName(Name);
 		if (CustomFlagIndex != ECustomShowFlag::None)
@@ -258,7 +261,7 @@ FString FEngineShowFlags::FindNameByIndex(uint32 InIndex)
 
 	switch (InIndex)
 	{
-		#include "ShowFlagsValues.inl"
+		#include "ShowFlagsValues.inl" // IWYU pragma: keep
 	default:
 		return GetCustomShowFlagName(ECustomShowFlag(InIndex - SF_FirstCustom));
 		break;
@@ -274,7 +277,7 @@ void FEngineShowFlags::AddNameByIndex(uint32 InIndex, FString& Out)
 	#define SHOWFLAG_ALWAYS_ACCESSIBLE(a,...) case SF_##a: Out += PREPROCESSOR_TO_STRING(a); break;
 	switch (InIndex)
 	{
-		#include "ShowFlagsValues.inl"
+		#include "ShowFlagsValues.inl" // IWYU pragma: keep
 		default:
 			FString Name = GetCustomShowFlagName(ECustomShowFlag(InIndex - SF_FirstCustom));
 			if (Name.IsEmpty() == false)
@@ -343,6 +346,12 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 		case VMI_VisualizeLumen:
 			bPostProcessing = true;
 			break;
+		case VMI_VisualizeSubstrate:
+			bPostProcessing = true;
+			break;
+		case VMI_VisualizeGroom:
+			bPostProcessing = true;
+			break;
 		case VMI_VisualizeVirtualShadowMap:
 			bPostProcessing = true;
 			break;
@@ -380,6 +389,8 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 	EngineShowFlags.SetVisualizeBuffer(ViewModeIndex == VMI_VisualizeBuffer);
 	EngineShowFlags.SetVisualizeNanite(ViewModeIndex == VMI_VisualizeNanite);
 	EngineShowFlags.SetVisualizeLumen(ViewModeIndex == VMI_VisualizeLumen);
+	EngineShowFlags.SetVisualizeSubstrate(ViewModeIndex == VMI_VisualizeSubstrate);
+	EngineShowFlags.SetVisualizeGroom(ViewModeIndex == VMI_VisualizeGroom);
 	EngineShowFlags.SetVisualizeVirtualShadowMap(ViewModeIndex == VMI_VisualizeVirtualShadowMap);
 	EngineShowFlags.SetVisualizeLightCulling(ViewModeIndex == VMI_LightComplexity);
 	EngineShowFlags.SetShaderComplexity(ViewModeIndex == VMI_ShaderComplexity || ViewModeIndex == VMI_QuadOverdraw || ViewModeIndex == VMI_ShaderComplexityWithQuadOverdraw);
@@ -702,6 +713,14 @@ EViewModeIndex FindViewMode(const FEngineShowFlags& EngineShowFlags)
 	{
 		return VMI_VisualizeLumen;
 	}
+	else if (EngineShowFlags.VisualizeSubstrate)
+	{
+		return VMI_VisualizeSubstrate;
+	}
+	else if (EngineShowFlags.VisualizeGroom)
+	{
+		return VMI_VisualizeGroom;
+	}
 	else if (EngineShowFlags.VisualizeVirtualShadowMap)
 	{
 		return VMI_VisualizeVirtualShadowMap;
@@ -844,6 +863,8 @@ const TCHAR* GetViewModeName(EViewModeIndex ViewModeIndex)
 		case VMI_VisualizeBuffer:			return TEXT("VisualizeBuffer");
 		case VMI_VisualizeNanite:			return TEXT("VisualizeNanite");
 		case VMI_VisualizeLumen:			return TEXT("VisualizeLumen");
+		case VMI_VisualizeSubstrate:		return TEXT("VisualizeSubstrate");
+		case VMI_VisualizeGroom:			return TEXT("VisualizeGroom");
 		case VMI_VisualizeVirtualShadowMap:	return TEXT("VisualizeVirtualShadowMap");
 		case VMI_RayTracingDebug:			return TEXT("RayTracingDebug");
 		case VMI_PathTracing:				return TEXT("PathTracing");

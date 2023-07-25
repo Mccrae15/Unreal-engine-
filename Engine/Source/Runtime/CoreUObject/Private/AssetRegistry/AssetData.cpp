@@ -16,6 +16,7 @@
 #include "Serialization/CompactBinaryWriter.h"
 #include "Serialization/CustomVersion.h"
 #include "String/Find.h"
+#include "UObject/LinkerLoad.h"
 #include "UObject/PropertyPortFlags.h"
 
 DEFINE_LOG_CATEGORY(LogAssetData);
@@ -388,6 +389,35 @@ bool FAssetData::IsTopLevelAsset(UObject* Object)
 	}
 	return Outer->IsA<UPackage>();
 }
+
+UClass* FAssetData::GetClass(EResolveClass ResolveClass) const
+{
+	if ( !IsValid() )
+	{
+		// Dont even try to find the class if the objectpath isn't set
+		return nullptr;
+	}
+
+	UClass* FoundClass = FindObject<UClass>(AssetClassPath);
+	if (!FoundClass)
+	{
+		// Look for class redirectors
+		FString NewPath = FLinkerLoad::FindNewPathNameForClass(AssetClassPath.ToString(), false);
+		if (!NewPath.IsEmpty())
+		{
+			FoundClass = FindObject<UClass>(nullptr, *NewPath);
+		}
+	}
+
+	// If they decided to load the class if unresolved, then lets load it.
+	if (!FoundClass && ResolveClass == EResolveClass::Yes)
+	{
+		FoundClass = LoadObject<UClass>(nullptr, *AssetClassPath.ToString());
+	}
+	
+	return FoundClass;
+}
+
 
 FAssetData::FChunkArrayView FAssetData::GetChunkIDs() const
 {
@@ -821,6 +851,24 @@ void FAssetPackageData::SerializeForCacheInternal(FArchive& Ar, FAssetPackageDat
 		}
 		Ar << PackageData.ImportedClasses;
 	}
+	if (Version >= FAssetRegistryVersion::AssetPackageDataHasExtension)
+	{
+		FString ExtensionText;
+		if (Ar.IsLoading())
+		{
+			Ar << ExtensionText;
+			PackageData.Extension = FPackagePath::ParseExtension(ExtensionText);
+		}
+		else
+		{
+			ExtensionText = LexToString(PackageData.Extension);
+			Ar << ExtensionText;
+		}
+	}
+	else if (Ar.IsLoading())
+	{
+		Extension = EPackageExtension::Unspecified;
+	}
 }
 
 COREUOBJECT_API void FAssetPackageData::SerializeForCache(FArchive& Ar)
@@ -971,6 +1019,17 @@ FArchive& operator<<(FArchive& Ar, UE::AssetRegistry::FPackageCustomVersionsHand
 }
 
 }
+}
+
+FAssetIdentifier::FAssetIdentifier(UObject* SourceObject, FName InValueName)
+{
+	if (SourceObject)
+	{
+		UPackage* Package = SourceObject->GetOutermost();
+		PackageName = Package->GetFName();
+		ObjectName = SourceObject->GetFName();
+		ValueName = InValueName;
+	}
 }
 
 #if WITH_DEV_AUTOMATION_TESTS 

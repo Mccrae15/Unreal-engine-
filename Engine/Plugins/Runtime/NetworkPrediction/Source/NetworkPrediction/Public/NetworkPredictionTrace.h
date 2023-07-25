@@ -2,11 +2,12 @@
 
 #pragma once
 
-#include "Trace/Trace.h"
-#include "Engine/EngineTypes.h" // For ENetRole
-#include "Containers/UnrealString.h"
 #include "NetworkPredictionDriver.h"
 #include "NetworkPredictionID.h"
+
+enum ENetRole : int;
+struct FNetworkPredictionInstanceArchetype;
+struct FNetworkPredictionInstanceConfig;
 
 #ifndef UE_NP_TRACE_ENABLED
 #define UE_NP_TRACE_ENABLED !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -180,7 +181,7 @@ public:
 	static void TraceUserState(const StateType* State, ETraceUserState StateTypeEnum)
 	{
 #if UE_NP_TRACE_USER_STATES_ENABLED
-		if (TIsVoidType<StateType>::Value)
+		if (std::is_void_v<StateType>)
 		{
 			return;
 		}

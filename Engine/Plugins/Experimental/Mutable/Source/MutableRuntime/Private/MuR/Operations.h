@@ -8,8 +8,8 @@
 #include "HAL/PlatformMath.h"
 #include "HAL/UnrealMemory.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
 #include "Templates/Function.h"
-
 
 #define MUTABLE_OP_MAX_INTERPOLATE_COUNT	6
 #define MUTABLE_OP_MAX_ADD_COUNT			7
@@ -73,7 +73,8 @@ namespace mu
         //-----------------------------------------------------------------------------------------
 
         //! Compare two scalars, return true if the first is less than the second.
-        BO_LESS,
+		//! \TODO: Deprecated?
+		BO_LESS,
 
         //! Compare an integerexpression with an integer constant
         BO_EQUAL_INT_CONST,
@@ -96,7 +97,8 @@ namespace mu
         //-----------------------------------------------------------------------------------------
 
         //! Multiply a scalar value by another onw and add a third one to the result
-        SC_MULTIPLYADD,
+		//! \TODO: Deprecated?
+		SC_MULTIPLYADD,
 
         //! Apply an arithmetic operation to two scalars
         SC_ARITHMETIC,
@@ -115,10 +117,12 @@ namespace mu
         CO_SWIZZLE,
 
         //! Make a "color" from the size of an image. Colours are used as a generic vector here.
-        CO_IMAGESIZE,
+		//! \TODO: Deprecated?
+		CO_IMAGESIZE,
 
         //! Encode a layout block transformation in a vector: position = (x,y) size = ( z, w )
-        CO_LAYOUTBLOCKTRANSFORM,
+		//! \TODO: Deprecated?
+		CO_LAYOUTBLOCKTRANSFORM,
 
         //! Compose a vector from 4 scalars
         CO_FROMSCALARS,
@@ -194,7 +198,8 @@ namespace mu
         IM_PLAINCOLOUR,
 
         //! Image resulting from a GPU program
-        IM_GPU,
+		//! \TODO: Deprecated?
+		IM_GPU,
 
         //! Cut a rect from an image
         IM_CROP,
@@ -252,7 +257,8 @@ namespace mu
         ME_MASKDIFF,
 
         //! Remove from a source mesh all the faces in common with another mesh
-        ME_SUBTRACT,
+		//! \TODO: Deprecated?
+		ME_SUBTRACT,
 
         //! Remove all the geometry selected by a mask.
         ME_REMOVEMASK,
@@ -264,7 +270,8 @@ namespace mu
         ME_EXTRACTLAYOUTBLOCK,
 
         //! Extract a fragment of a mesh containing a specific face group.
-        ME_EXTRACTFACEGROUP,
+		//! \TODO: Deprecated?
+		ME_EXTRACTFACEGROUP,
 
         //! Apply a transform in a 4x4 matrix to the geometry channels of the mesh
         ME_TRANSFORM,
@@ -291,6 +298,7 @@ namespace mu
 		ME_REMAPINDICES,
 
 		//! Apply a geometry core operation to a mesh.
+		//! \TODO: Deprecated?
 		ME_GEOMETRYOPERATION,
 
 		//! Calculate the binding of a mesh on a shape
@@ -304,6 +312,9 @@ namespace mu
 	
         //! Mesh morph with Skeleton Reshape based on the morphed mesh.
         ME_MORPHRESHAPE,
+
+		//! Optimize skinning before adding a mesh to the component
+		ME_OPTIMIZESKINNING,
 
         //-----------------------------------------------------------------------------------------
         // Instance operations
@@ -347,6 +358,9 @@ namespace mu
         //! This operation is for the new way of managing layout blocks.
         LA_REMOVEBLOCKS,
 
+		//! Extract a layout from a mesh
+		LA_FROMMESH,
+
         //-----------------------------------------------------------------------------------------
         // Utility values
         //-----------------------------------------------------------------------------------------
@@ -355,7 +369,15 @@ namespace mu
         COUNT
 
     };
-
+	enum class EMeshBindShapeFlags : uint32
+	{
+		None				   = 0,
+		ReshapeSkeleton		   = 1 << 0,
+		EnableRigidParts       = 1 << 2,
+		ReshapePhysicsVolumes  = 1 << 4,
+		ReshapeVertices		   = 1 << 5,
+	};
+	ENUM_CLASS_FLAGS(EMeshBindShapeFlags);
 
     //---------------------------------------------------------------------------------------------
     //!
@@ -508,16 +530,21 @@ namespace mu
             ADDRESS base;
             ADDRESS mask;
             ADDRESS blended;
-			uint8 blendType;	// One of BLEND_TYPE
+			uint8 blendType;		// One of EBlendType
+			uint8 blendTypeAlpha;	// One of EBlendType
 			uint8 flags;
 			typedef enum
             {
-                F_NONE              =	0,
-                //! The mask is considered binary: 0 means 0% and any other value means 100%
-                F_BINARY_MASK       =	1 << 0,
-                //! If the image has 4 channels, apply to the fourth channel as well.
-                F_APPLY_TO_ALPHA    =	1 << 1
-            } FLAGS;
+                F_NONE           = 0,
+                /** The mask is considered binary : 0 means 0% and any other value means 100% */
+                F_BINARY_MASK    = 1 << 0,
+				/** If the image has 4 channels, apply to the fourth channel as well. */
+				F_APPLY_TO_ALPHA = 1 << 1,
+				/** Use the alpha channel of the blended image as mask. Mask should be null.*/
+				F_USE_MASK_FROM_BLENDED = 1 << 2,
+				/** Use the alpha channel of the base image as its RGB.*/
+				F_BASE_RGB_FROM_ALPHA = 1 << 3,
+			} FLAGS;
         };
 
         struct ImageMultiLayerArgs
@@ -527,17 +554,20 @@ namespace mu
             ADDRESS blended;
             ADDRESS rangeSize;
             uint16 rangeId;
-            uint16 blendType; // One of BLEND_TYPE
-        };
+			uint8 blendType;		// One of EBlendType
+			uint8 blendTypeAlpha;	// One of EBlendType
+			uint8 bUseMaskFromBlended;	
+		};
 
         struct ImageLayerColourArgs
         {
             ADDRESS base;
             ADDRESS mask;
             ADDRESS colour;
-            EImageFormat reformat;
-			uint8 blendType;	// One of BLEND_TYPE
-        };
+			uint8 blendType;		// One of EBlendType
+			uint8 blendTypeAlpha;	// One of EBlendType
+			uint8 flags;			// Like in ImageLayerArgs
+		};
 
         struct ImagePixelFormatArgs
         {
@@ -719,19 +749,22 @@ namespace mu
         struct ImageRasterMeshArgs
         {
             ADDRESS mesh;
-            uint16 sizeX, sizeY;
-            int32 blockIndex;
 
-            // These are used in case of projected mesh raster.
-            ADDRESS image;
-            ADDRESS angleFadeProperties;
+			//! These are used in case of projected mesh raster.
+			ADDRESS image;
+			ADDRESS angleFadeProperties;
 
-            //! Mask selecting the pixels in the destination image that may receive projection.
-            ADDRESS mask;
+			//! Mask selecting the pixels in the destination image that may receive projection.
+			ADDRESS mask;
 
-            //! A projector may be needed for some kind of per-pixel raster operations
-            //! like cylindrical projections.
-            ADDRESS projector;
+			//! A projector may be needed for some kind of per-pixel raster operations
+			//! like cylindrical projections.
+			ADDRESS projector;
+			
+			int32 blockIndex;
+			uint16 sizeX, sizeY;
+			uint8 bIsRGBFadingEnabled : 1;
+			uint8 bIsAlphaFadingEnabled : 1;
         };
 
         struct ImageMakeGrowMapArgs
@@ -904,18 +937,6 @@ namespace mu
 			ADDRESS scalarB;
 		};
 
-		enum class EMeshBindShapeFlags : uint32
-		{
-			None				   = 0,
-			ReshapeSkeleton		   = 1 << 0,
-			DiscardInvalidBindings = 1 << 1,
-			EnableRigidParts       = 1 << 2,
-			DeformAllBones		   = 1 << 3,
-			ReshapePhysicsVolumes  = 1 << 4,
-			ReshapeVertices		   = 1 << 5,
-			DeformAllPhysics	   = 1 << 6,
-		};
-
 		struct MeshBindShapeArgs
 		{
 			ADDRESS mesh;
@@ -946,6 +967,11 @@ namespace mu
 			float clipWeightThreshold = 0.9f;
 		};
 
+		struct MeshOptimizeSkinningArgs
+		{
+			ADDRESS source;
+		};
+
 
         //-------------------------------------------------------------------------------------
         struct InstanceAddArgs
@@ -956,7 +982,7 @@ namespace mu
             uint32 externalId;
             ADDRESS name;
 
-            // Index in the PROGRAM::m_parameterLists with the parameters that are relevant
+            // Index in the FProgram::m_parameterLists with the parameters that are relevant
             // for whatever is added by this operation. This is used only for resources like
             // images or meshes.
             ADDRESS relevantParametersListIndex;
@@ -970,24 +996,30 @@ namespace mu
         //-------------------------------------------------------------------------------------
         struct LayoutPackArgs
         {
-            ADDRESS layout;
+            ADDRESS Source;
         };
 
         struct LayoutMergeArgs
         {
-            ADDRESS base;
-            ADDRESS added;
+            ADDRESS Base;
+            ADDRESS Added;
         };
 
-        struct LayoutRemoveBlocksArgs
-        {
-            // Layout to be processed
-            ADDRESS source;
+		struct LayoutRemoveBlocksArgs
+		{
+			/** Layout to be processedand modified. */
+			ADDRESS Source;
 
-            // Source mesh to scan for active blocks
-            ADDRESS mesh;            
-            uint8 meshLayoutIndex;
-        };
+			/** Source layout to scan for active blocks. */
+			ADDRESS ReferenceLayout;
+		};
+
+		struct LayoutFromMeshArgs
+		{
+			/** Source mesh to retrieve the layout from. */
+			ADDRESS Mesh;
+			uint8 LayoutIndex;
+		};
 
 
         //-------------------------------------------------------------------------------------
@@ -1004,7 +1036,7 @@ namespace mu
         {
             if (o.type!=type) return false;
             //if (o.flags!=flags) return false;
-            if (FMemory::Memcmp(&o.args, &args, sizeof(ARGS))) return false;
+            if (FMemory::Memcmp(&o.args, &args, sizeof(FArgs))) return false;
             return true;
         }
 
@@ -1014,7 +1046,7 @@ namespace mu
             if (o.type>type) return false;
 //            if (o.flags<flags) return true;
 //            if (o.flags>flags) return false;
-            if (FMemory::Memcmp(&o.args, &args, sizeof(ARGS))<0) return true;
+            if (FMemory::Memcmp(&o.args, &args, sizeof(FArgs))<0) return true;
             return false;
         }
 
@@ -1060,8 +1092,6 @@ namespace mu
             ArithmeticArgs ColourArithmetic;
 
             //-------------------------------------------------------------------------------------
-            ImageLayerArgs ImageLayer;
-            ImageLayerColourArgs ImageLayerColour;
             ImageResizeArgs ImageResize;
             ImageResizeLikeArgs ImageResizeLike;
             ImageResizeVarArgs ImageResizeVar;
@@ -1072,7 +1102,6 @@ namespace mu
             ImageInterpolate3Args ImageInterpolate3;
             ImageSaturateArgs ImageSaturate;
             ImageLuminanceArgs ImageLuminance;
-            ImageSwizzleArgs ImageSwizzle;
             ImageSelectColourArgs ImageSelectColour;
             ImageColourMapArgs ImageColourMap;
             ImageGradientArgs ImageGradient;
@@ -1080,8 +1109,7 @@ namespace mu
             ImagePlainColourArgs ImagePlainColour;
             ImageGPUArgs ImageGPU;
             ImageCropArgs ImageCrop;
-            ImageRasterMeshArgs ImageRasterMesh;
-            ImageMakeGrowMapArgs ImageMakeGrowMap;
+//            ImageRasterMeshArgs ImageRasterMesh;
             ImageDisplaceArgs ImageDisplace;
 			ImageInvertArgs ImageInvert;
 
@@ -1097,14 +1125,9 @@ namespace mu
             MeshSetSkeletonArgs MeshSetSkeleton;
 			MeshProjectArgs MeshProject;
 
-            //-------------------------------------------------------------------------------------
-            LayoutPackArgs LayoutPack;
-            LayoutMergeArgs LayoutMerge;
-            LayoutRemoveBlocksArgs LayoutRemoveBlocks;
+        } FArgs;
 
-        } ARGS;
-
-        ARGS args;
+        FArgs args;
     };
 
     typedef t_OP<uint32> OP;
@@ -1114,7 +1137,7 @@ namespace mu
     MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE( OP );
     
     // Check that we didn't go out of control with the operation size
-    static_assert( sizeof(OP::ARGS)==28, "Argument union has an unexpected size." );
+    static_assert( sizeof(OP::FArgs)==28, "Argument union has an unexpected size." );
     static_assert( sizeof(OP)==32, "Operation struct has an unexpected size." );
 
 
@@ -1154,9 +1177,6 @@ namespace mu
         //! True if the instruction is worth caching when generating models
         bool cached;
 
-        //! True if the instruction is worth executing in the GPU
-        bool gpuizable;
-
         //! For image instructions, for every image format, true if it is supported as the base
         //! format of the operation.
         //! TODO: Move to tools library?
@@ -1176,7 +1196,7 @@ namespace mu
 	MUTABLERUNTIME_API extern void ForEachReference( OP& op, const TFunctionRef<void(OP::ADDRESS*)> );
 
     //! Utility function to apply a function to all operation references to other operations.
-	MUTABLERUNTIME_API extern void ForEachReference( const struct PROGRAM& program, OP::ADDRESS at, const TFunctionRef<void(OP::ADDRESS)> );
+	MUTABLERUNTIME_API extern void ForEachReference( const struct FProgram& program, OP::ADDRESS at, const TFunctionRef<void(OP::ADDRESS)> );
 
 	//!
 	MUTABLERUNTIME_API inline OP_TYPE GetSwitchForType( DATATYPE d )

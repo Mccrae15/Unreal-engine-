@@ -38,11 +38,15 @@ public:
 	virtual bool IsExtensionEnabled(const FString& Name) const override { return EnabledExtensions.Contains(Name); }
 	virtual bool IsLayerAvailable(const FString& Name) const override { return EnabledLayers.Contains(Name); }
 	virtual bool IsLayerEnabled(const FString& Name) const override { return EnabledLayers.Contains(Name); }
+	virtual XrInstance GetInstance() const override { return Instance; }
+	virtual XrSystemId GetSystemId() const override;
+
+	virtual FName ResolvePathToName(XrPath Path) override;
+	virtual XrPath ResolveNameToPath(FName Name) override;
 
 private:
 	void* LoaderHandle;
 	XrInstance Instance;
-	XrSystemId System;
 	TSet<FString> AvailableExtensions;
 	TSet<FString> AvailableLayers;
 	TArray<const char*> EnabledExtensions;
@@ -51,13 +55,15 @@ private:
 	TRefCountPtr<class FOpenXRRenderBridge> RenderBridge;
 	TSharedPtr< IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe > VulkanExtensions;
 
-	void DestroyInstance();
+	// We cache all attempts to convert between XrPath and FName to avoid costly resolves
+	FRWLock NameMutex;
+	TSortedMap<XrPath, FName> PathToName;
+	TSortedMap<FName, XrPath, FDefaultAllocator, FNameFastLess> NameToPath;
+
 	bool EnumerateExtensions();
 	bool EnumerateLayers();
 	bool InitRenderBridge();
-	bool InitInstanceAndSystem();
 	bool InitInstance();
-	bool InitSystem();
 	PFN_xrGetInstanceProcAddr GetDefaultLoader();
 	bool EnableExtensions(const TArray<const ANSICHAR*>& RequiredExtensions, const TArray<const ANSICHAR*>& OptionalExtensions, TArray<const ANSICHAR*>& OutExtensions);
 	bool GetRequiredExtensions(TArray<const ANSICHAR*>& OutExtensions);

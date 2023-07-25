@@ -23,7 +23,7 @@ struct FFrameNumber
 	/**
 	 * Implicit construction from a signed integer frame number, whilst disallowing any construction from other types.
 	 */
-	template<typename T, typename U = typename TEnableIf<TIsSame<T, int32>::Value>::Type>
+	template<typename T, typename U = typename TEnableIf<std::is_same_v<T, int32>>::Type>
 	constexpr FFrameNumber(T /*int32*/ InValue)
 		: Value(InValue)
 	{}
@@ -66,16 +66,16 @@ struct FFrameNumber
 	friend FFrameNumber operator*(FFrameNumber A, float Scalar)   { return FFrameNumber(static_cast<int32>(FMath::Clamp(FMath::FloorToDouble(double(A.Value) * Scalar), (double)TNumericLimits<int32>::Min(), (double)TNumericLimits<int32>::Max()))); }
 	friend FFrameNumber operator/(FFrameNumber A, float Scalar)   { return FFrameNumber(static_cast<int32>(FMath::Clamp(FMath::FloorToDouble(double(A.Value) / Scalar), (double)TNumericLimits<int32>::Min(), (double)TNumericLimits<int32>::Max()))); }
 
+	friend inline uint32 GetTypeHash(FFrameNumber A)
+	{
+		return A.Value;
+	}
+
 	/**
 	 * The value of the frame number
 	 */
 	int32 Value;
 };
-
-inline uint32 GetTypeHash(FFrameNumber A)
-{
-	return A.Value;
-}
 
 template<>
 struct TNumericLimits<FFrameNumber>

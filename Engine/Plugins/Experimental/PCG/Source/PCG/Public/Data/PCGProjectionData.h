@@ -3,7 +3,6 @@
 #pragma once
 
 #include "PCGSpatialData.h"
-#include "PCGPointData.h"
 
 #include "PCGProjectionData.generated.h"
 
@@ -15,7 +14,9 @@ class PCG_API UPCGProjectionData : public UPCGSpatialDataWithPointCache
 {
 	GENERATED_BODY()
 public:
-	void Initialize(const UPCGSpatialData* InSource, const UPCGSpatialData* InTarget);
+	void Initialize(const UPCGSpatialData* InSource, const UPCGSpatialData* InTarget, const FPCGProjectionParams& InProjectionParams);
+
+	const FPCGProjectionParams& GetProjectionParams() const { return ProjectionParams; }
 
 	//~Begin UPCGSpatialData interface
 	virtual int GetDimension() const override;
@@ -24,14 +25,25 @@ public:
 	virtual FVector GetNormal() const override;
 	virtual bool SamplePoint(const FTransform& Transform, const FBox& Bounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const override;
 	virtual bool HasNonTrivialTransform() const override;
+	virtual bool RequiresCollapseToSample() const override;
+protected:
+	virtual UPCGSpatialData* CopyInternal() const override;
 	//~End UPCGSpatialData interface
 
+public:
 	//~Begin UPCGSpatialDataWithPointCache interface
 	virtual const UPCGPointData* CreatePointData(FPCGContext* Context) const override;
 	//~End UPCGSpatialDataWithPointCache interface
 
 protected:
+	void CopyBaseProjectionClass(UPCGProjectionData* NewProjectionData) const;
+
 	FBox ProjectBounds(const FBox& InBounds) const;
+
+	/** Applies data from target point to projected point, conditionally according to the projection params. */
+	void ApplyProjectionResult(const FPCGPoint& InTargetPoint, FPCGPoint& InOutProjected) const;
+
+	void GetIncludeExcludeAttributeNames(TSet<FName>& OutAttributeNames) const;
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = SpatialData)
 	TObjectPtr<const UPCGSpatialData> Source = nullptr;
@@ -44,4 +56,11 @@ protected:
 
 	UPROPERTY()
 	FBox CachedStrictBounds = FBox(EForceInit::ForceInit);
+
+	UPROPERTY(BlueprintReadwrite, VisibleAnywhere, Category = SpatialData)
+	FPCGProjectionParams ProjectionParams;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "PCGPointData.h"
+#endif

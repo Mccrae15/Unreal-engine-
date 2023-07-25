@@ -774,6 +774,8 @@ OVRP_EXPORT ovrpResult ovrp_GetPredictedDisplayTime(int frameIndex, double* pred
 
 
 
+
+
 OVRP_EXPORT ovrpResult ovrp_GetHandTrackingEnabled(ovrpBool* handTrackingEnabled);
 OVRP_EXPORT ovrpResult ovrp_GetHandState(ovrpStep step, ovrpHand hand, ovrpHandState* handState);
 OVRP_EXPORT ovrpResult ovrp_GetHandState2(ovrpStep step, int frameIndex, ovrpHand hand, ovrpHandState* handState);
@@ -815,6 +817,8 @@ OVRP_EXPORT ovrpResult ovrp_GetSystemHmd3DofModeEnabled(ovrpBool* enabled);
 
 OVRP_EXPORT ovrpResult ovrp_SetClientColorDesc(ovrpColorSpace colorSpace);
 OVRP_EXPORT ovrpResult ovrp_GetHmdColorDesc(ovrpColorSpace* colorSpace);
+
+OVRP_EXPORT ovrpResult ovrp_SetEyeBufferSharpenType(ovrpLayerSubmitFlags sharpenType);
 
 // app should call this in a loop until there are no more events, which will return ovrpSuccess_EventUnavailable and an
 // event of type ovrpEventType_None ovrp_PollEvent and ovrp_PollEvent2 are both in use, Unity needed ovrp_PollEvent2 due
@@ -986,6 +990,8 @@ OVRP_EXPORT ovrpResult ovrp_RequestSceneCapture(const ovrpSceneCaptureRequest* r
 
 
 
+
+
 OVRP_EXPORT ovrpResult ovrp_GetFaceTrackingEnabled(ovrpBool* faceTrackingEnabled);
 
 OVRP_EXPORT ovrpResult ovrp_GetFaceTrackingSupported(ovrpBool* faceTrackingSupported);
@@ -1005,7 +1011,6 @@ OVRP_EXPORT ovrpResult ovrp_GetEyeTrackingEnabled(ovrpBool* eyeTrackingEnabled);
 OVRP_EXPORT ovrpResult ovrp_GetEyeTrackingSupported(ovrpBool* eyeTrackingSupported);
 
 OVRP_EXPORT ovrpResult ovrp_GetEyeGazesState(ovrpStep step, int frameIndex, ovrpEyeGazesState* eyeGazesState);
-
 
 
 
@@ -1109,18 +1114,16 @@ OVRP_EXPORT ovrpResult ovrp_GetEyeLayerRecommendedResolution(ovrpSizei* recommen
 
 OVRP_EXPORT ovrpResult ovrp_IsLayerShapeSupported(ovrpShape shape, ovrpBool* isLayerShapeSupported);
 
-//-----------------------------------------------------------------
-// Environment Depth API
-//-----------------------------------------------------------------
 
-OVRP_EXPORT ovrpResult ovrp_InitializeEnvironmentDepth();
-OVRP_EXPORT ovrpResult ovrp_DestroyEnvironmentDepth();
-OVRP_EXPORT ovrpResult ovrp_GetEnvironmentDepthTextureDesc(ovrpEnvironmentDepthTextureDesc* desc);
-OVRP_EXPORT ovrpResult ovrp_GetEnvironmentDepthTextureStageCount(int* stageCount);
-OVRP_EXPORT ovrpResult ovrp_GetEnvironmentDepthTexture(int stage, ovrpEye eyeId, ovrpTextureHandle* texture);
-OVRP_EXPORT ovrpResult ovrp_StartEnvironmentDepth();
-OVRP_EXPORT ovrpResult ovrp_StopEnvironmentDepth();
-OVRP_EXPORT ovrpResult ovrp_GetEnvironmentDepthFrameDesc(ovrpEye eyeId, ovrpEnvironmentDepthFrameDesc* frameDesc);
+
+
+
+
+
+
+
+
+
 
 #ifdef __cplusplus
 }

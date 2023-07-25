@@ -3154,7 +3154,6 @@ static const VpPropertyDesc propertyDesc = {
                 case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR: {
                     VkPhysicalDeviceProperties2KHR* s = static_cast<VkPhysicalDeviceProperties2KHR*>(static_cast<void*>(p));
                     s->properties.limits.bufferImageGranularity = 4096;
-                    s->properties.limits.lineWidthGranularity = 0.5f;
                     s->properties.limits.maxColorAttachments = 7;
                     s->properties.limits.maxComputeWorkGroupInvocations = 256;
                     s->properties.limits.maxComputeWorkGroupSize[0] = 256;
@@ -3179,7 +3178,6 @@ static const VpPropertyDesc propertyDesc = {
                     s->properties.limits.maxSamplerLodBias = 14;
                     s->properties.limits.maxUniformBufferRange = 65536;
                     s->properties.limits.mipmapPrecisionBits = 6;
-                    s->properties.limits.pointSizeGranularity = 0.125f;
                     s->properties.limits.standardSampleLocations = VK_TRUE;
                     s->properties.limits.subTexelPrecisionBits = 8;
                 } break;
@@ -3218,7 +3216,7 @@ static const VpPropertyDesc propertyDesc = {
                     s->maxDescriptorSetInlineUniformBlocks = 4;
                     s->maxDescriptorSetUpdateAfterBindInlineUniformBlocks = 4;
                     s->maxInlineUniformBlockSize = 256;
-                    s->maxInlineUniformTotalSize = 4;
+                    s->maxInlineUniformTotalSize = 256;
                     s->maxPerStageDescriptorInlineUniformBlocks = 4;
                     s->maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks = 4;
                 } break;
@@ -3232,8 +3230,6 @@ static const VpPropertyDesc propertyDesc = {
                     VkPhysicalDeviceProperties2KHR* s = static_cast<VkPhysicalDeviceProperties2KHR*>(static_cast<void*>(p));
                     ret = ret && (s->properties.limits.bufferImageGranularity <= 4096);
                     ret = ret && ((4096 % s->properties.limits.bufferImageGranularity) == 0);
-                    ret = ret && (s->properties.limits.lineWidthGranularity <= 0.5);
-                    ret = ret && (isMultiple(0.5, s->properties.limits.lineWidthGranularity));
                     ret = ret && (s->properties.limits.maxColorAttachments >= 7);
                     ret = ret && (s->properties.limits.maxComputeWorkGroupInvocations >= 256);
                     ret = ret && (s->properties.limits.maxComputeWorkGroupSize[0] >= 256);
@@ -3258,8 +3254,6 @@ static const VpPropertyDesc propertyDesc = {
                     ret = ret && (s->properties.limits.maxSamplerLodBias >= 14);
                     ret = ret && (s->properties.limits.maxUniformBufferRange >= 65536);
                     ret = ret && (s->properties.limits.mipmapPrecisionBits >= 6);
-                    ret = ret && (s->properties.limits.pointSizeGranularity <= 0.125);
-                    ret = ret && (isMultiple(0.125, s->properties.limits.pointSizeGranularity));
                     ret = ret && (s->properties.limits.standardSampleLocations == VK_TRUE);
                     ret = ret && (s->properties.limits.subTexelPrecisionBits >= 8);
                 } break;
@@ -3299,7 +3293,7 @@ static const VpPropertyDesc propertyDesc = {
                     ret = ret && (s->maxDescriptorSetInlineUniformBlocks >= 4);
                     ret = ret && (s->maxDescriptorSetUpdateAfterBindInlineUniformBlocks >= 4);
                     ret = ret && (s->maxInlineUniformBlockSize >= 256);
-                    ret = ret && (s->maxInlineUniformTotalSize >= 4);
+                    ret = ret && (s->maxInlineUniformTotalSize >= 256);
                     ret = ret && (s->maxPerStageDescriptorInlineUniformBlocks >= 4);
                     ret = ret && (s->maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks >= 4);
                 } break;

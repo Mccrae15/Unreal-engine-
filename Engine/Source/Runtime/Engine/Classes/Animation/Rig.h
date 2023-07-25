@@ -67,7 +67,7 @@ struct FNode
 UENUM()
 namespace EControlConstraint
 {
-	enum Type
+	enum Type : int
 	{
 		/** Rotation constraint. */
 		Orientation,
@@ -83,7 +83,7 @@ namespace EControlConstraint
 UENUM()
 namespace EConstraintTransform
 {
-	enum Type
+	enum Type : int
 	{
 		/** Absolute value. */
 		Absolute,
@@ -101,7 +101,7 @@ struct FRigTransformConstraint
 	UPROPERTY(/*EditAnywhere, Category="FTransformBaseConstraint"*/)
 	TEnumAsByte<EConstraintTransform::Type>	TranformType = EConstraintTransform::Absolute;
 
-	/** Parent space that are define **/
+	/** Parent space that is defined **/
 	UPROPERTY(EditAnywhere, Category="FTransformBaseConstraint")
 	FName	ParentSpace;
 

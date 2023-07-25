@@ -1,15 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderGraphUtils.h"
+
 #include "ClearQuad.h"
 #include "ClearReplacementShaders.h"
-#include "ShaderParameterUtils.h"
-#include "RenderTargetPool.h"
-#include <initializer_list>
+#include "DataDrivenShaderPlatformInfo.h"
 #include "GlobalShader.h"
 #include "PixelShaderUtils.h"
 #include "RenderGraphResourcePool.h"
+#include "RenderTargetPool.h"
 #include "RHIGPUReadback.h"
+#include "ShaderParameterUtils.h"
+
+#include <initializer_list>
 
 void ClearUnusedGraphResourcesImpl(
 	const FShaderParameterBindings& ShaderBindings,
@@ -975,7 +978,7 @@ IMPLEMENT_GLOBAL_SHADER(FInitIndirectArgs1DCS, "/Engine/Private/Tools/SetupIndir
 FRDGBufferRef FComputeShaderUtils::AddIndirectArgsSetupCsPass1D(FRDGBuilder& GraphBuilder, ERHIFeatureLevel::Type FeatureLevel, FRDGBufferRef& InputCountBuffer, const TCHAR* OutputBufferName, uint32 Divisor, uint32 InputCountOffset, uint32 Multiplier)
 {
 	// 1. Add setup pass
-	FRDGBufferRef IndirectArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc(4), OutputBufferName);
+	FRDGBufferRef IndirectArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), OutputBufferName);
 	{
 		FInitIndirectArgs1DCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FInitIndirectArgs1DCS::FParameters>();
 		PassParameters->InputCountBuffer = GraphBuilder.CreateSRV(InputCountBuffer);
@@ -1082,6 +1085,15 @@ FRDGWaitForTasksScope::~FRDGWaitForTasksScope()
 			}
 		});
 	}
+}
+
+void FRDGExternalAccessQueue::Submit(FRDGBuilder& GraphBuilder)
+{
+	for (FResource Resource : Resources)
+	{
+		GraphBuilder.UseExternalAccessMode(Resource.Resource, Resource.Access, Resource.Pipelines);
+	}
+	Resources.Empty();
 }
 
 bool AllocatePooledBuffer(

@@ -4,8 +4,6 @@
 
 #include "InstallBundleSourceInterface.h"
 #include "InstallBundleUtils.h"
-#include "InstallBundleManagerUtil.h"
-#include "Containers/Ticker.h"
 
 class DEFAULTINSTALLBUNDLEMANAGER_API FInstallBundleSourceBulk : public IInstallBundleSource
 {
@@ -51,6 +49,14 @@ public:
 
 	virtual void SetErrorSimulationCommands(const FString& CommandLine) override;
 
+	//Function that loads BulkBundleBuild information from a generated BulkBuildBundleIni instead of applying reg-ex at runtime
+	//Returns true if BulkBundleBuild.ini existed and was parsed successfully, false otherwise
+	//Removes any loaded entries from InOutFileList
+	static bool TryLoadBulkBuildBundleMetadata(TArray<FString>& InOutFileList, TMap<FName, TArray<FString>>& InOutBulkBuildBundles);
+
+	//Serialize out our BulkBundleBuild information to a BulkBundleBuild.ini file for future runs to not have to parse this information
+	static void SerializeBulkBuildBundleMetadata(const TMap<FName, TArray<FString>>& BulkBuildBundles);
+
 protected:
 	FTSTicker::FDelegateHandle TickHandle;
 
@@ -82,3 +88,7 @@ protected:
 
 	TSharedPtr<IAnalyticsProviderET> AnalyticsProvider;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "InstallBundleManagerUtil.h"
+#endif

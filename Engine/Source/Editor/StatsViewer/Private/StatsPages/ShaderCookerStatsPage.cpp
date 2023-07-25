@@ -7,7 +7,7 @@
 #include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
-#include "RHIDefinitions.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "RHIShaderFormatDefinitions.inl"
 #include "StatsPages/ShaderCookerStatsPage.h"
 #include "CoreGlobals.h"
@@ -339,7 +339,7 @@ TSharedPtr<SWidget> FShaderCookerStatsPage::GetCustomWidget(TWeakPtr<IStatsViewe
 			.HAlign(HAlign_Fill)
 			[
 				SAssignNew(PlatformComboButton, SComboButton)
-				.ContentPadding(3)
+				.ContentPadding(3.f)
 				.OnGetMenuContent(this, &FShaderCookerStatsPage::OnGetPlatformButtonMenuContent, InParentStatsViewer)
 				.ButtonContent()
 				[

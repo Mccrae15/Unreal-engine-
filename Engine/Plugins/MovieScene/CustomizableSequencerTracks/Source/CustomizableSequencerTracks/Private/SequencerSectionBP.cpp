@@ -4,12 +4,10 @@
 #include "SequencerSectionBP.h"
 #include "SequencerTrackBP.h"
 
-#include "EntitySystem/MovieSceneEntityManager.h"
 #include "EntitySystem/MovieSceneEntityBuilder.h"
-#include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 
-#include "EntitySystem/TrackInstance/MovieSceneTrackInstanceSystem.h"
+#include "SequencerTrackInstanceBP.h"
 
 USequencerSectionBP::USequencerSectionBP(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
@@ -34,7 +32,7 @@ void USequencerSectionBP::ImportEntityImpl(UMovieSceneEntitySystemLinker* Entity
 			FEntityBuilder()
 			.Add(BuiltInComponents->TrackInstance, FMovieSceneTrackInstanceComponent{ decltype(FMovieSceneTrackInstanceComponent::Owner)(this), CustomTrack->TrackInstanceType })
 			.AddConditional(BuiltInComponents->GenericObjectBinding, ObjectBindingID, ObjectBindingID.IsValid())
-			.AddTagConditional(BuiltInComponents->Tags.Master, !ObjectBindingID.IsValid())
+			.AddTagConditional(BuiltInComponents->Tags.Root, !ObjectBindingID.IsValid())
 		);
 	}
 }

@@ -1,12 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GoogleARCoreCloudARPinManager.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/EngineVersion.h"
 #if PLATFORM_ANDROID
 #include "arcore_c_api.h"
 #elif PLATFORM_IOS
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/EngineVersion.h"
 #include "arcore_ios_c_api.h"
+#endif
+
+#if ARCORE_SERVICE_SUPPORTED_PLATFORM
+#include "IXRTrackingSystem.h"
 #endif
 
 namespace {

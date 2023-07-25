@@ -2,6 +2,7 @@
 
 #include "PixelStreamingEditorModule.h"
 #include "Editor/EditorPerformanceSettings.h"
+#include "Framework/Application/SlateApplication.h"
 #include "PixelStreamingToolbar.h"
 #include "IPixelStreamingModule.h"
 #include "PixelStreamingStyle.h"
@@ -11,17 +12,23 @@
 #include "Settings.h"
 #include "UnrealEngine.h"
 #include "Interfaces/IMainFrameModule.h"
-#include "PixelStreamingProtocol.h"
-#include "Utils.h"
+#include "PixelStreamingInputProtocol.h"
+#include "PixelStreamingUtils.h"
 #include "GenericPlatform/GenericPlatformHttp.h"
 #include "LevelEditorViewport.h"
 #include "Slate/SceneViewport.h"
 #include "SLevelViewport.h"
+#include "PixelStreamingInputEnums.h"
+#include "IPixelStreamingInputModule.h"
+#include "IPixelStreamingInputHandler.h"
+#include "PixelStreamingDelegates.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
+
+#define LOCTEXT_NAMESPACE "PixelStreamingEditorModule"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogPixelStreamingEditor, Log, All);
 DEFINE_LOG_CATEGORY(LogPixelStreamingEditor);
-
-FPixelStreamingEditorModule* FPixelStreamingEditorModule::PixelStreamingEditorModule = nullptr;
 
 /**
  * IModuleInterface implementation
@@ -40,7 +47,8 @@ void FPixelStreamingEditorModule::StartupModule()
 	Settings->PostEditChange();
 
 	Settings::InitialiseSettings();
-		
+	bUseExternalSignallingServer = Settings::CVarEditorPixelStreamingUseRemoteSignallingServer.GetValueOnAnyThread();
+
 	IPixelStreamingModule& Module = IPixelStreamingModule::Get();
 	Module.OnReady().AddRaw(this, &FPixelStreamingEditorModule::InitEditorStreaming);
 }
@@ -52,33 +60,79 @@ void FPixelStreamingEditorModule::ShutdownModule()
 
 void FPixelStreamingEditorModule::InitEditorStreaming(IPixelStreamingModule& Module)
 {
-	TSharedPtr<IPixelStreamingStreamer> Streamer = Module.GetStreamer(Module.GetDefaultStreamerID());
-	if (!Streamer.IsValid())
+	EditorStreamer = Module.CreateStreamer("Editor");
+
+	// Give the editor streamer the default url if the user hasn't specified one when launching the editor
+	if (EditorStreamer->GetSignallingServerURL().IsEmpty())
+	{
+		// No URL was passed on the command line, initialize defaults
+		StreamerPort = 8888;
+		SignallingDomain = TEXT("ws://127.0.0.1");
+
+		EditorStreamer->SetSignallingServerURL(FString::Printf(TEXT("%s:%d"), *SignallingDomain, StreamerPort));
+	}
+	else
+	{
+		FString SpecifiedSignallingURL = EditorStreamer->GetSignallingServerURL();
+		TOptional<uint16> ExtractedStreamerPort = FGenericPlatformHttp::GetUrlPort(SpecifiedSignallingURL);
+		StreamerPort = (int32)ExtractedStreamerPort.Get(8888);
+
+		FString ExtractedSignallingDomain = FGenericPlatformHttp::GetUrlDomain(SpecifiedSignallingURL);
+		if (FGenericPlatformHttp::IsSecureProtocol(SpecifiedSignallingURL).Get(false))
+		{
+			SignallingDomain = FString::Printf(TEXT("wss://%s"), *ExtractedSignallingDomain);
+		}
+		else
+		{
+			SignallingDomain = FString::Printf(TEXT("ws://%s"), *ExtractedSignallingDomain);
+		}
+	}
+
+	EditorStreamer->SetConfigOption(FName(*FString(TEXT("DefaultToHover"))), TEXT("true"));
+
+	IMainFrameModule::Get().OnMainFrameCreationFinished().AddLambda([&](TSharedPtr<SWindow> RootWindow, bool bIsRunningStartupDialog) {
+		MaybeResizeEditor(RootWindow);
+
+		// We don't want to show tooltips in render off screen as they're currently broken
+		bool bIsRenderingOffScreen = FParse::Param(FCommandLine::Get(), TEXT("RenderOffScreen"));
+		FSlateApplication::Get().SetAllowTooltips(!bIsRenderingOffScreen);
+
+		if (UE::EditorPixelStreaming::Settings::CVarEditorPixelStreamingStartOnLaunch.GetValueOnAnyThread())
+		{
+			StartStreaming(UE::EditorPixelStreaming::EStreamTypes::Editor);
+		}
+	});
+
+	if (UPixelStreamingDelegates* Delegates = UPixelStreamingDelegates::GetPixelStreamingDelegates())
+	{
+		Delegates->OnFallbackToSoftwareEncoderingNative.AddLambda([]() {
+			// Creates a new notification info, we pass in our text as the parameter.
+			FNotificationInfo Info(LOCTEXT("PixelStreamingEditorModule_Notification", "Pixel Streaming: All hardware encoders in use, falling back to VP8 software encoding."));
+			// Set a default expire duration
+			Info.ExpireDuration = 5.0f;
+			// And call Add Notification
+			FSlateNotificationManager::Get().AddNotification(Info);
+		});
+	}
+}
+
+void FPixelStreamingEditorModule::StartStreaming(UE::EditorPixelStreaming::EStreamTypes InStreamType)
+{
+	// Activate our editor streamer
+	if (!EditorStreamer.IsValid())
 	{
 		return;
 	}
 
-	// The current handler is the function that will currently be executed if a message with type "Command" is received
-	TFunction<void(FMemoryReader)> CurrentHandler = Module.FindMessageHandler("Command");
-	TFunction<void(FMemoryReader)> ExtendedHandler = [CurrentHandler](FMemoryReader Ar)
+	// Add custom handle for { type: "Command", Resolution.Width: "1920", Resolution.Height: "1080" } when doing Editor streaming
+	// because we cannot resize the game viewport, but instead want to resize the parent window.
+	if (TSharedPtr<IPixelStreamingInputHandler> InputHandler = EditorStreamer->GetInputHandler().Pin())
 	{
-		// We then create our new handler which will execute the "base" handler
-		CurrentHandler(Ar);
-		// and then perform out extended functionality after.
-		// equivalent to the super::DoSomeFunc pattern
-		FString Res;
-		Res.GetCharArray().SetNumUninitialized(Ar.TotalSize() / 2 + 1);
-		Ar.Serialize(Res.GetCharArray().GetData(), Ar.TotalSize());
-		FString Descriptor = Res.Mid(1);
-		FString WidthString;
-		FString HeightString;
-		bool bSuccess;
-		UE::PixelStreaming::ExtractJsonFromDescriptor(Descriptor, TEXT("Resolution.Width"), WidthString, bSuccess);
-		if (bSuccess)
-		{
-			UE::PixelStreaming::ExtractJsonFromDescriptor(Descriptor, TEXT("Resolution.Height"), HeightString, bSuccess);
-			if (bSuccess)
-			{
+		InputHandler->SetCommandHandler("Resolution.Width",
+			[](FString Descriptor, FString WidthString) {
+				bool bSuccess;
+				FString HeightString;
+				UE::PixelStreaming::ExtractJsonFromDescriptor(Descriptor, TEXT("Resolution.Height"), HeightString, bSuccess);
 				int Width = FCString::Atoi(*WidthString);
 				int Height = FCString::Atoi(*HeightString);
 				if (Width < 1 || Height < 1)
@@ -89,69 +143,10 @@ void FPixelStreamingEditorModule::InitEditorStreaming(IPixelStreamingModule& Mod
 				TSharedPtr<SWindow> ParentWindow = IMainFrameModule::Get().GetParentWindow();
 				ParentWindow->Resize(FVector2D(Width, Height));
 				FSlateApplication::Get().OnSizeChanged(ParentWindow->GetNativeWindow().ToSharedRef(), Width, Height);
-			}
-		}
-	};
-	Module.RegisterMessage( Protocol::EPixelStreamingMessageDirection::ToStreamer, 
-							"Command", 
-							Protocol::FPixelStreamingInputMessage(51, 0, {}),
-							[ExtendedHandler](FMemoryReader Ar) {
-								ExtendedHandler(Ar);
-							});
-
-	// Give the editor streamer the default url if the user hasn't specified one when launching the editor
-	if (Streamer->GetSignallingServerURL().IsEmpty())
-	{
-		// No URL was passed on the command line, initialize defaults
-		StreamerPort = 8888;
-		SignallingDomain = TEXT("ws://127.0.0.1");
-
-		Streamer->SetSignallingServerURL(FString::Printf(TEXT("%s:%d"), *SignallingDomain, StreamerPort));
-	} 
-	else
-	{
-		FString SpecifiedSignallingURL = Streamer->GetSignallingServerURL();
-		TOptional<uint16> ExtractedStreamerPort = FGenericPlatformHttp::GetUrlPort(SpecifiedSignallingURL);
-		StreamerPort = (int32) ExtractedStreamerPort.Get(8888);
-
-		FString ExtractedSignallingDomain = FGenericPlatformHttp::GetUrlDomain(SpecifiedSignallingURL);
-		if(FGenericPlatformHttp::IsSecureProtocol(SpecifiedSignallingURL).Get(false))
-		{
-			SignallingDomain = FString::Printf(TEXT("wss://%s"), *ExtractedSignallingDomain);
-		}
-		else
-		{
-			SignallingDomain = FString::Printf(TEXT("ws://%s"), *ExtractedSignallingDomain);
-		}
+			});
 	}
 
-	IMainFrameModule::Get().OnMainFrameCreationFinished().AddLambda([&](TSharedPtr<SWindow> RootWindow, bool bIsNewProjectWindow)
-	{
-		MaybeResizeEditor(RootWindow);
-
-		// We don't want to show tooltips in render off screen as they're currently broken
-		bool bIsRenderingOffScreen = FParse::Param(FCommandLine::Get(), TEXT("RenderOffScreen"));
-		FSlateApplication::Get().SetAllowTooltips(!bIsRenderingOffScreen);
-
-		if(UE::EditorPixelStreaming::Settings::CVarEditorPixelStreamingStartOnLaunch.GetValueOnAnyThread())
-		{
-			StartStreaming(UE::EditorPixelStreaming::EStreamTypes::Editor);
-		}
-	});
-}
-
-void FPixelStreamingEditorModule::StartStreaming(UE::EditorPixelStreaming::EStreamTypes InStreamType)
-{
-	// Activate our level editor streamer
-	IPixelStreamingModule& Module = IPixelStreamingModule::Get();
-	TSharedPtr<IPixelStreamingStreamer> Streamer = Module.GetStreamer(Module.GetDefaultStreamerID());
-	if (!Streamer.IsValid())
-	{
-		return;
-	}
-
-	StreamType = InStreamType;
-	switch(InStreamType)
+	switch (InStreamType)
 	{
 		case UE::EditorPixelStreaming::EStreamTypes::LevelEditorViewport:
 		{
@@ -164,79 +159,75 @@ void FPixelStreamingEditorModule::StartStreaming(UE::EditorPixelStreaming::EStre
 
 			FLevelEditorViewportClient& LevelViewportClient = ActiveLevelViewport->GetLevelViewportClient();
 			FSceneViewport* SceneViewport = static_cast<FSceneViewport*>(LevelViewportClient.Viewport);
-			Streamer->SetTargetViewport(SceneViewport->GetViewportWidget());
-			Streamer->SetTargetWindow(SceneViewport->FindWindow());
-			Streamer->SetInputHandlerType(EPixelStreamingInputType::RouteToWindow);
-			Streamer->SetVideoInput(FPixelStreamingVideoInputViewport::Create());
-		}	
+			EditorStreamer->SetTargetViewport(SceneViewport->GetViewportWidget());
+			EditorStreamer->SetTargetWindow(SceneViewport->FindWindow());
+			EditorStreamer->SetInputHandlerType(EPixelStreamingInputType::RouteToWindow);
+			EditorStreamer->SetVideoInput(FPixelStreamingVideoInputViewport::Create(EditorStreamer));
+		}
 		break;
 		case UE::EditorPixelStreaming::EStreamTypes::Editor:
 		{
-			Streamer->SetTargetViewport(nullptr);
-			Streamer->SetTargetWindow(nullptr);
-			Streamer->SetInputHandlerType(EPixelStreamingInputType::RouteToWindow);
-			Streamer->SetVideoInput(FPixelStreamingVideoInputBackBufferComposited::Create());
+			EditorStreamer->SetTargetViewport(nullptr);
+			EditorStreamer->SetTargetWindow(nullptr);
+			EditorStreamer->SetInputHandlerType(EPixelStreamingInputType::RouteToWindow);
+
+			TSharedPtr<FPixelStreamingVideoInputBackBufferComposited> VideoInput = FPixelStreamingVideoInputBackBufferComposited::Create();
+			VideoInput->OnFrameSizeChanged.AddSP(EditorStreamer.ToSharedRef(), &IPixelStreamingStreamer::SetTargetScreenRect);
+			EditorStreamer->SetVideoInput(VideoInput);
 		}
 		break;
 		default:
 		{
 			UE_LOG(LogPixelStreamingEditor, Warning, TEXT("Specified Stream Type doesn't have an associated FPixelStreamingVideoInput"));
 		}
-		// Return here as we don't want to start streaming if we didn't set a viewport
-		return;
+			// Return here as we don't want to start streaming if we didn't set a viewport
+			return;
 	}
 
-	if(!bUseExternalSignallingServer)
+	if (!bUseExternalSignallingServer)
 	{
-		Streamer->SetSignallingServerURL(FString::Printf(TEXT("%s:%d"), *SignallingDomain, StreamerPort));
+		EditorStreamer->SetSignallingServerURL(FString::Printf(TEXT("%s:%d"), *SignallingDomain, StreamerPort));
 		StartSignalling();
 	}
 
-	// Use the Pixel Streaming module's start streaming method to start all streamers
-	Module.StartStreaming();
+	EditorStreamer->StartStreaming();
 }
 
 void FPixelStreamingEditorModule::StopStreaming()
 {
-	IPixelStreamingModule& Module = IPixelStreamingModule::Get();
-	TSharedPtr<IPixelStreamingStreamer> Streamer = Module.GetStreamer(Module.GetDefaultStreamerID());
-	if (!Streamer.IsValid())
+	if (!EditorStreamer.IsValid())
 	{
 		return;
 	}
 
-	if(!bUseExternalSignallingServer)
+	if (!bUseExternalSignallingServer)
 	{
 		StopSignalling();
 	}
 
-	Streamer->SetTargetViewport(nullptr);
-	Streamer->SetTargetWindow(nullptr);
-	// Use the Pixel Streaming module's stop streaming method to stop all streamers
-	Module.StopStreaming();
-}
+	EditorStreamer->SetTargetViewport(nullptr);
+	EditorStreamer->SetTargetWindow(nullptr);
 
-UE::EditorPixelStreaming::EStreamTypes FPixelStreamingEditorModule::GetStreamType()
-{
-	return StreamType;
+	EditorStreamer->StopStreaming();
 }
 
 void FPixelStreamingEditorModule::StartSignalling()
 {
 	bool bAlreadyLaunched = SignallingServer.IsValid() && SignallingServer->HasLaunched();
-	if(bAlreadyLaunched)
+	if (bAlreadyLaunched)
 	{
 		return;
 	}
 
 	// Download Pixel Streaming servers/frontend if we want to use a browser to view Pixel Streaming output
 	// but only attempt this is we haven't already started a download before.
-	if(!DownloadProcess.IsValid())
+	if (!DownloadProcess.IsValid())
 	{
-		DownloadProcess = UE::PixelStreamingServers::DownloadPixelStreamingServers(/*bSkipIfPresent*/ true);
-		if(DownloadProcess.IsValid())
+		// We set bSkipIfPresent to false, which means the get_ps_servers script will always be run, that script will choose whether to download or not
+		DownloadProcess = UE::PixelStreamingServers::DownloadPixelStreamingServers(/*bSkipIfPresent*/ false);
+		if (DownloadProcess.IsValid())
 		{
-			DownloadProcess->OnCompleted().BindLambda([this](int ExitCode){
+			DownloadProcess->OnCompleted().BindLambda([this](int ExitCode) {
 				StopSignalling();
 				StartSignalling();
 			});
@@ -259,16 +250,16 @@ void FPixelStreamingEditorModule::StartSignalling()
 
 void FPixelStreamingEditorModule::StopSignalling()
 {
-	if(SignallingServer.IsValid())
+	if (SignallingServer.IsValid())
 	{
 		SignallingServer->Stop();
 		SignallingServer.Reset();
 	}
 }
 
-TSharedPtr<UE::PixelStreamingServers::IServer> FPixelStreamingEditorModule::GetSignallingServer() 
+TSharedPtr<UE::PixelStreamingServers::IServer> FPixelStreamingEditorModule::GetSignallingServer()
 {
-	if(SignallingServer.IsValid())
+	if (SignallingServer.IsValid())
 	{
 		return SignallingServer;
 	}
@@ -290,23 +281,18 @@ void FPixelStreamingEditorModule::SetViewerPort(int32 InViewerPort)
 	ViewerPort = InViewerPort;
 }
 
-FPixelStreamingEditorModule* FPixelStreamingEditorModule::GetModule()
+bool FPixelStreamingEditorModule::UseExternalSignallingServer()
 {
-	if (PixelStreamingEditorModule)
-	{
-		return PixelStreamingEditorModule;
-	}
-	FPixelStreamingEditorModule* Module = FModuleManager::Get().LoadModulePtr<FPixelStreamingEditorModule>("PixelStreamingEditor");
-	if (Module)
-	{
-		PixelStreamingEditorModule = Module;
-	}
-	return PixelStreamingEditorModule;
+	return bUseExternalSignallingServer;
+}
+void FPixelStreamingEditorModule::UseExternalSignallingServer(bool bInUseExternalSignallingServer)
+{
+	bUseExternalSignallingServer = bInUseExternalSignallingServer;
 }
 
 bool FPixelStreamingEditorModule::ParseResolution(const TCHAR* InResolution, uint32& OutX, uint32& OutY)
 {
-	if(*InResolution)
+	if (*InResolution)
 	{
 		FString CmdString(InResolution);
 		CmdString = CmdString.TrimStartAndEnd().ToLower();
@@ -319,9 +305,9 @@ bool FPixelStreamingEditorModule::ParseResolution(const TCHAR* InResolution, uin
 
 		// Find separator between values (Example of expected format: 1280x768)
 		const TCHAR* YValue = NULL;
-		if(FCString::Strchr(*CmdString,'x'))
+		if (FCString::Strchr(*CmdString, 'x'))
 		{
-			YValue = const_cast<TCHAR*> (FCString::Strchr(*CmdString,'x')+1);
+			YValue = const_cast<TCHAR*>(FCString::Strchr(*CmdString, 'x') + 1);
 			YString = YValue;
 			// Remove any whitespace from the end of the string
 			YString = YString.TrimStartAndEnd();
@@ -329,7 +315,7 @@ bool FPixelStreamingEditorModule::ParseResolution(const TCHAR* InResolution, uin
 
 		// If the Y dimensional value exists then setup to use the specified resolution.
 		uint32 Y = 0;
-		if ( YValue && YString.Len() > 0 )
+		if (YValue && YString.Len() > 0)
 		{
 			if (YString.IsNumeric())
 			{
@@ -369,11 +355,12 @@ void FPixelStreamingEditorModule::MaybeResizeEditor(TSharedPtr<SWindow> RootWind
 		}
 	}
 
-	if(bSuccess)
+	if (bSuccess)
 	{
 		RootWindow->Resize(FVector2D(ResolutionX, ResolutionY));
 		FSlateApplication::Get().OnSizeChanged(RootWindow->GetNativeWindow().ToSharedRef(), ResolutionX, ResolutionY);
 	}
 }
 
+#undef LOCTEXT_NAMESPACE
 IMPLEMENT_MODULE(FPixelStreamingEditorModule, PixelStreamingEditor)

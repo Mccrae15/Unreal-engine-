@@ -4,12 +4,12 @@
 #include "StateTree.h"
 #include "Kismet2/SClassPickerDialog.h"
 #include "ClassViewerFilter.h"
+#include "StateTreeCompilerLog.h"
 #include "StateTreeEditorModule.h"
 #include "StateTreeNodeClassCache.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeEditor.h"
 #include "StateTreeCompiler.h"
-#include "StateTreeCompilerLog.h"
 #include "StateTreeDelegates.h"
 #include "Modules/ModuleManager.h"
 

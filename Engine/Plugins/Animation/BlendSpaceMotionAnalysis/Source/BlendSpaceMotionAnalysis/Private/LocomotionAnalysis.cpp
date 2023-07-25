@@ -2,8 +2,6 @@
 
 #include "LocomotionAnalysis.h"
 #include "BlendSpaceMotionAnalysis.h"
-#include "Engine/Engine.h"
-#include "Logging/LogMacros.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LocomotionAnalysis)
 
@@ -89,14 +87,14 @@ static bool CalculateLocomotionVelocity(
 	BlendSpaceAnalysis::GetFrameDirs(FrameFacingDir, FrameUpDir, FrameRightDir, FrameTM, AnalysisProperties);
 
 	// The frame time delta
-	float DeltaTime = Animation.GetPlayLength() / NumSampledKeys;
+	double DeltaTime = Animation.GetPlayLength() / double(NumSampledKeys);
 
 	// First step is to figure out the approximate direction. Note that the average velocity will be zero (assuming a
 	// complete cycle) - but if we apply a weight that is based on the height, then we can bias it towards the foot that
 	// is on the ground.
-	float MinHeight = FLT_MAX;
-	float MaxHeight = -FLT_MAX;
-	FVector AveragePos(0.0f);
+	double MinHeight = DBL_MAX;
+	double MaxHeight = -DBL_MAX;
+	FVector AveragePos(0);
 	TArray<FVector> Positions;
 	Positions.SetNum(NumSampledKeys);
 	for (int32 Key = 0; Key != NumSampledKeys; ++Key)
@@ -105,7 +103,7 @@ static bool CalculateLocomotionVelocity(
 		FTransform TM = BoneOffset * BoneTM;
 		FVector Pos = TM.GetTranslation();
 		Positions[Key] = Pos;
-		float Height = Pos | FrameUpDir;
+		double Height = Pos | FrameUpDir;
 		MinHeight = FMath::Min(MinHeight, Height);
 		MaxHeight = FMath::Max(MaxHeight, Height);
 		AveragePos += Pos;
@@ -122,15 +120,15 @@ static bool CalculateLocomotionVelocity(
 	{
 		int32 PrevKey = (Key + NumSampledKeys - 1) % NumSampledKeys;
 		int32 NextKey = (Key +  1) % NumSampledKeys;
-		Velocities[Key] = (Positions[NextKey] - Positions[PrevKey]) / (2.0f * DeltaTime);
+		Velocities[Key] = (Positions[NextKey] - Positions[PrevKey]) / (2.0 * DeltaTime);
 	}
 
 	FVector BiasedFootVel(0);
-	float TotalWeight = 0.0f;
+	double TotalWeight = 0;
 	for (int32 Key = 0 ; Key != NumSampledKeys ; ++Key)
 	{
-		float Height = Positions[Key] | FrameUpDir;
-		float Weight = 1.0f - (Height - MinHeight) / (MaxHeight - MinHeight);
+		double Height = Positions[Key] | FrameUpDir;
+		double Weight = 1.0 - (Height - MinHeight) / (MaxHeight - MinHeight);
 		BiasedFootVel += Velocities[Key] * Weight;
 		TotalWeight += Weight;
 	}
@@ -150,7 +148,7 @@ static bool CalculateLocomotionVelocity(
 	Mask.SetNum(NumSampledKeys);
 	for (int32 Key = 0 ; Key != NumSampledKeys ; ++Key)
 	{
-		Mask[Key] = (Velocities[Key] | ApproxLocoDir) >= 0.0f ? 0 : 1;
+		Mask[Key] = (Velocities[Key] | ApproxLocoDir) >= 0 ? 0 : 1;
 	}
 
 	int32 StartKey = -1;
@@ -208,14 +206,14 @@ static bool CalculateLocomotionVelocity(
 	int32 Threshold = FMath::Max(MaxMask / 2, 1);
 	int32 Num = 0;
 	FVector AverageFootVel(0);
-	float BestSpeed = 0.0f;
+	double BestSpeed = 0;
 	int32 BestSpeedKey = 0;
 	for (int32 K = AZeroKey ; K != AZeroKey + NumSampledKeys ; ++K)
 	{
 		int32 Key = K % NumSampledKeys;
 		if (Mask[Key] >= Threshold)
 		{
-			float Speed = Velocities[Key].Size();
+			double Speed = Velocities[Key].Size();
 #ifdef ANALYSIS_VERBOSE_LOG
 			UE_LOG(LogAnimation, Log, TEXT("Candidate %d Mask %d vel = %f %f %f, speed = %f"), 
 				   Key, Mask[Key], Velocities[Key].X, Velocities[Key].Y, Velocities[Key].Z, Speed);
@@ -228,7 +226,7 @@ static bool CalculateLocomotionVelocity(
 		}
 		else
 		{
-			if (BestSpeed > 0.0f)
+			if (BestSpeed > 0)
 			{
 #ifdef ANALYSIS_VERBOSE_LOG
 				UE_LOG(LogAnimation, Log, TEXT("Picked Candidate %d vel = %f %f %f, speed = %f"), 
@@ -236,12 +234,12 @@ static bool CalculateLocomotionVelocity(
 #endif
 				AverageFootVel += Velocities[BestSpeedKey];
 				++Num;
-				BestSpeed = 0.0f;
+				BestSpeed = 0;
 			}
 		}
 	}
 	// Make sure we didn't miss the last data point
-	if (BestSpeed > 0.0f)
+	if (BestSpeed > 0)
 	{
 #ifdef ANALYSIS_VERBOSE_LOG
 		UE_LOG(LogAnimation, Log, TEXT("Picked Candidate %d vel = %f %f %f, speed = %f"), 
@@ -249,13 +247,13 @@ static bool CalculateLocomotionVelocity(
 #endif
 		AverageFootVel += Velocities[BestSpeedKey];
 		++Num;
-		BestSpeed = 0.0f;
+		BestSpeed = 0;
 	}
 
 	AverageFootVel /= Num;
-	float FacingVel = -AverageFootVel | FrameFacingDir;
-	float RightVel = -AverageFootVel | FrameRightDir;
-	float UpVel = -AverageFootVel | FrameUpDir;
+	double FacingVel = -AverageFootVel | FrameFacingDir;
+	double RightVel = -AverageFootVel | FrameRightDir;
+	double UpVel = -AverageFootVel | FrameUpDir;
 
 	Result.Set(FacingVel, RightVel, UpVel);
 	Result *= Animation.RateScale * RateScale;
@@ -309,7 +307,7 @@ static bool CalculateLocomotionVelocity(
 //======================================================================================================================
 // Calculates the locomotion speed (magnitude)
 static bool CalculateLocomotionSpeed(
-	float&                               Result,
+	double&                              Result,
 	const UBlendSpace&                   BlendSpace,
 	const ULocomotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
@@ -327,7 +325,7 @@ static bool CalculateLocomotionSpeed(
 //======================================================================================================================
 // Calculates the locomotion direction (degrees)
 static bool CalculateLocomotionDirection(
-	float&                               Result,
+	double&                              Result,
 	const UBlendSpace&                   BlendSpace,
 	const ULocomotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
@@ -345,7 +343,7 @@ static bool CalculateLocomotionDirection(
 //======================================================================================================================
 // Calculates the locomotion speed in the character's facing direction
 static bool CalculateLocomotionForwardSpeed(
-	float&                               Result,
+	double&                              Result,
 	const UBlendSpace&                   BlendSpace,
 	const ULocomotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
@@ -363,7 +361,7 @@ static bool CalculateLocomotionForwardSpeed(
 //======================================================================================================================
 // Calculates the locomotion speed in the character's upwards direction
 static bool CalculateLocomotionUpwardSpeed(
-	float&                               Result,
+	double&                              Result,
 	const UBlendSpace&                   BlendSpace,
 	const ULocomotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
@@ -381,7 +379,7 @@ static bool CalculateLocomotionUpwardSpeed(
 //======================================================================================================================
 // Calculates the locomotion speed in the character's right direction
 static bool CalculateLocomotionRightwardSpeed(
-	float&                               Result,
+	double&                              Result,
 	const UBlendSpace&                   BlendSpace,
 	const ULocomotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
@@ -399,7 +397,7 @@ static bool CalculateLocomotionRightwardSpeed(
 //======================================================================================================================
 // Calculates the locomotion slope angle (degrees) going in the facing direction
 static bool CalculateLocomotionForwardSlope(
-	float&                               Result,
+	double&                              Result,
 	const UBlendSpace&                   BlendSpace,
 	const ULocomotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
@@ -408,7 +406,7 @@ static bool CalculateLocomotionForwardSlope(
 	FVector Movement;
 	if (CalculateLocomotionVelocity(Movement, BlendSpace, AnalysisProperties, Animation, RateScale))
 	{
-		if (Movement.X >= 0.0f)
+		if (Movement.X >= 0)
 		{
 			Result = FMath::RadiansToDegrees(FMath::Atan2(Movement.Z, Movement.X));
 		}
@@ -425,7 +423,7 @@ static bool CalculateLocomotionForwardSlope(
 //======================================================================================================================
 // Calculates the locomotion slope angle (degrees) going in the rightwards direction
 static bool CalculateLocomotionRightwardSlope(
-	float&                               Result,
+	double&                              Result,
 	const UBlendSpace&                   BlendSpace,
 	const ULocomotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
@@ -434,7 +432,7 @@ static bool CalculateLocomotionRightwardSlope(
 	FVector Movement;
 	if (CalculateLocomotionVelocity(Movement, BlendSpace, AnalysisProperties, Animation, RateScale))
 	{
-		if (Movement.Y > 0.0f)
+		if (Movement.Y > 0)
 		{
 			Result = FMath::RadiansToDegrees(FMath::Atan2(Movement.Z, Movement.Y));
 		}
@@ -448,8 +446,8 @@ static bool CalculateLocomotionRightwardSlope(
 }
 
 //======================================================================================================================
-bool CalculateLocomotion(
-	float&                               Result,
+static bool CalculateLocomotion(
+	double&                              Result,
 	const UBlendSpace&                   BlendSpace,
 	const ULocomotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
@@ -479,6 +477,22 @@ bool CalculateLocomotion(
 	default:
 		return false;
 	}
+}
+
+//======================================================================================================================
+// Note that it is easier to do the calculations involving world-space positions in doubles, and
+// then cast Result to float here, than it is to be casting in all the functions above.
+bool CalculateLocomotion(
+	float&                               Result,
+	const UBlendSpace&                   BlendSpace,
+	const ULocomotionAnalysisProperties* AnalysisProperties,
+	const UAnimSequence&                 Animation,
+	const float                          RateScale)
+{
+	double ResultDouble = Result;
+	bool bResult = CalculateLocomotion(ResultDouble, BlendSpace, AnalysisProperties, Animation, RateScale);
+	Result = FloatCastChecked<float>(ResultDouble, UE::LWC::DefaultFloatPrecision);
+	return bResult;
 }
 
 #undef LOCTEXT_NAMESPACE

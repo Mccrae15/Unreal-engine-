@@ -9,45 +9,31 @@
 FRigUnit_GetInitialBoneTransform_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
-	const URigHierarchy* Hierarchy = Context.Hierarchy;
+	const URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy)
 	{
-		switch (Context.State)
+		if (!CachedBone.UpdateCache(FRigElementKey(Bone, ERigElementType::Bone), Hierarchy))
 		{
-			case EControlRigState::Init:
+			UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Bone '%s' is not valid."), *Bone.ToString());
+		}
+		else
+		{
+			switch (Space)
 			{
-				CachedBone.Reset();
-			}
-			case EControlRigState::Update:
-			{
-				if (!CachedBone.UpdateCache(FRigElementKey(Bone, ERigElementType::Bone), Hierarchy))
+				case ERigVMTransformSpace::GlobalSpace:
 				{
-					UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Bone '%s' is not valid."), *Bone.ToString());
+					Transform = Hierarchy->GetInitialGlobalTransform(CachedBone);
+					break;
 				}
-				else
+				case ERigVMTransformSpace::LocalSpace:
 				{
-					switch (Space)
-					{
-						case EBoneGetterSetterMode::GlobalSpace:
-						{
-							Transform = Hierarchy->GetInitialGlobalTransform(CachedBone);
-							break;
-						}
-						case EBoneGetterSetterMode::LocalSpace:
-						{
-							Transform = Hierarchy->GetInitialLocalTransform(CachedBone);
-							break;
-						}
-						default:
-						{
-							break;
-						}
-					}
+					Transform = Hierarchy->GetInitialLocalTransform(CachedBone);
+					break;
 				}
-			}
-			default:
-			{
-				break;
+				default:
+				{
+					break;
+				}
 			}
 		}
 	}
@@ -74,19 +60,19 @@ IMPLEMENT_RIGUNIT_AUTOMATION_TEST(FRigUnit_GetInitialBoneTransform)
 	const FRigElementKey BoneA = Controller->AddBone(TEXT("BoneA"), Root, FTransform(FVector(1.f, 2.f, 3.f)), true, ERigBoneType::User);
 
 	Unit.Bone = TEXT("Root");
-	Unit.Space = EBoneGetterSetterMode::GlobalSpace;
-	InitAndExecute();
+	Unit.Space = ERigVMTransformSpace::GlobalSpace;
+	Execute();
 	AddErrorIfFalse(Unit.Transform.GetTranslation().Equals(FVector(1.f, 0.f, 0.f)), TEXT("unexpected global transform"));
-	Unit.Space = EBoneGetterSetterMode::LocalSpace;
-	InitAndExecute();
+	Unit.Space = ERigVMTransformSpace::LocalSpace;
+	Execute();
 	AddErrorIfFalse(Unit.Transform.GetTranslation().Equals(FVector(1.f, 0.f, 0.f)), TEXT("unexpected local transform"));
 
 	Unit.Bone = TEXT("BoneA");
-	Unit.Space = EBoneGetterSetterMode::GlobalSpace;
-	InitAndExecute();
+	Unit.Space = ERigVMTransformSpace::GlobalSpace;
+	Execute();
 	AddErrorIfFalse(Unit.Transform.GetTranslation().Equals(FVector(1.f, 2.f, 3.f)), TEXT("unexpected global transform"));
-	Unit.Space = EBoneGetterSetterMode::LocalSpace;
-	InitAndExecute();
+	Unit.Space = ERigVMTransformSpace::LocalSpace;
+	Execute();
 	AddErrorIfFalse(Unit.Transform.GetTranslation().Equals(FVector(0.f, 2.f, 3.f)), TEXT("unexpected local transform"));
 
 	return true;

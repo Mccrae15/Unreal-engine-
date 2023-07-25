@@ -7,7 +7,8 @@
 #include "Templates/PimplPtr.h"
 #include "Templates/RefCounting.h"
 #include "Iris/IrisConfig.h"
-#include "Iris/ReplicationSystem/NetHandle.h"
+#include "Iris/ReplicationSystem/NetRefHandle.h"
+#include "Net/Core/NetHandle/NetHandle.h"
 
 #include "ReplicationSystem.generated.h"
 
@@ -22,6 +23,7 @@ class UReplicationSystem;
 namespace UE::Net
 {
 	class FNetBitArray;
+	class FNetCullDistanceOverrides;
 	enum class ENetFilterStatus : uint32;
 	class FNetObjectAttachment;
 	enum class ENetObjectDeltaCompressionStatus : unsigned;
@@ -48,8 +50,9 @@ class UReplicationSystem : public UObject
 {
 	GENERATED_BODY()
 
-	using FNetHandle = UE::Net::FNetHandle;
+	using FNetRefHandle = UE::Net::FNetRefHandle;
 	using FNetObjectGroupHandle = UE::Net::FNetObjectGroupHandle;
+	using FNetHandle = UE::Net::FNetHandle;
 
 public:
 
@@ -143,7 +146,7 @@ public:
 	 * @param Priority A value >= 0. 1.0 means the object will be considered for replication every frame, if it has updated replicated properties.
 	 * @see SetPrioritizer
 	 */
-	IRISCORE_API void SetStaticPriority(FNetHandle Handle, float Priority);
+	IRISCORE_API void SetStaticPriority(FNetRefHandle Handle, float Priority);
 
 	/**
 	 * Sets a prioritizer for a replicated object which will be used until the next call to SetPrioritizer or SetStaticPriority.
@@ -156,7 +159,7 @@ public:
 	 * @see GetPrioritizerHandle
 	 * @see SetStaticPriority
 	 */
-	IRISCORE_API bool SetPrioritizer(FNetHandle Handle, UE::Net::FNetObjectPrioritizerHandle PrioritizerHandle);
+	IRISCORE_API bool SetPrioritizer(FNetRefHandle Handle, UE::Net::FNetObjectPrioritizerHandle PrioritizerHandle);
 
 
 	/**
@@ -239,18 +242,18 @@ public:
 	IRISCORE_API UE::Net::FStringTokenStore* GetStringTokenStore();
 
 	/**
-	 * Check whether a FNetHandle is still associated with a replicated object.
+	 * Check whether a FNetRefHandle is still associated with a replicated object.
 	 * @param Handle The handle check.
 	 * @return true if the handle is still valid, false if not. 
 	 */
-	IRISCORE_API bool IsValidHandle(FNetHandle Handle) const;
+	IRISCORE_API bool IsValidHandle(FNetRefHandle Handle) const;
 
 	/**
 	 * Get the ReplicationProtocol for a handle.
 	 * @param Handle The handle to retrieve the protocol for.
 	 * @return A valid pointer to the protocol if the handle is valid, nullptr if not.
 	 */
-	IRISCORE_API const UE::Net::FReplicationProtocol* GetReplicationProtocol(FNetHandle Handle) const;
+	IRISCORE_API const UE::Net::FReplicationProtocol* GetReplicationProtocol(FNetRefHandle Handle) const;
 
 	// Groups
 
@@ -273,20 +276,20 @@ public:
 	 * @param GroupHandle A valid group handle.
 	 * @param Handle A valid handle to an object.
 	 */
-	IRISCORE_API void AddToGroup(FNetObjectGroupHandle GroupHandle, FNetHandle Handle);
+	IRISCORE_API void AddToGroup(FNetObjectGroupHandle GroupHandle, FNetRefHandle Handle);
 
 	/**
 	 * Removes an object from a group.
 	 * @param GroupHandle A valid group handle.
 	 * @param Handle A valid handle to an object.
 	 */
-	IRISCORE_API void RemoveFromGroup(FNetObjectGroupHandle GroupHandle, FNetHandle Handle);
+	IRISCORE_API void RemoveFromGroup(FNetObjectGroupHandle GroupHandle, FNetRefHandle Handle);
 
 	/**
 	 * Removes an object from all groups it's part of.
 	 * @param Handle A valid handle to an object.
 	 */
-	IRISCORE_API void RemoveFromAllGroups(FNetHandle Handle);
+	IRISCORE_API void RemoveFromAllGroups(FNetRefHandle Handle);
 
 	/**
 	 * Check whether an objects belongs to a particular group or not.
@@ -294,7 +297,7 @@ public:
 	 * @param Handle A valid handle to an object.
 	 * @return true if both handles are valid and the object belongs to the group, false otherwise.
 	 */
-	IRISCORE_API bool IsInGroup(FNetObjectGroupHandle GroupHandle, FNetHandle Handle) const;
+	IRISCORE_API bool IsInGroup(FNetObjectGroupHandle GroupHandle, FNetRefHandle Handle) const;
 
 	/**
 	 * Check if a group handle is valid.
@@ -311,13 +314,13 @@ public:
 	 * @param Handle A valid handle to an object.
 	 * @param ConnectionId A valid connection ID to be set as the owner.
 	 */
-	IRISCORE_API void SetOwningNetConnection(FNetHandle Handle, uint32 ConnectionId);
+	IRISCORE_API void SetOwningNetConnection(FNetRefHandle Handle, uint32 ConnectionId);
 
 	/** 
 	 * Get the owning net connection for an object.
 	 * @see SetOwningNetConnection
 	 */
-	IRISCORE_API uint32 GetOwningNetConnection(FNetHandle Handle) const;
+	IRISCORE_API uint32 GetOwningNetConnection(FNetRefHandle Handle) const;
 
 	/**
 	 * Sets a filter for a replicated object which will be used until the next call to SetFilter or SetConnectionFilter.
@@ -332,7 +335,7 @@ public:
 	 * @see GetFilterHandle
 	 * @see SetConnectionFilter
 	 */
-	IRISCORE_API bool SetFilter(FNetHandle Handle, UE::Net::FNetObjectFilterHandle FilterHandle);
+	IRISCORE_API bool SetFilter(FNetRefHandle Handle, UE::Net::FNetObjectFilterHandle FilterHandle);
 
 	/**
 	 * Gets the handle for a filter with a given name. The handle can be used in subsequent calls to SetFilter.
@@ -400,7 +403,7 @@ public:
 	 * @return true if the connection filter was properly set, false if not.
 	 * @see SetFilter
 	 */
-	IRISCORE_API bool SetConnectionFilter(FNetHandle Handle, const TBitArray<>& Connections, UE::Net::ENetFilterStatus ReplicationStatus);
+	IRISCORE_API bool SetConnectionFilter(FNetRefHandle Handle, const TBitArray<>& Connections, UE::Net::ENetFilterStatus ReplicationStatus);
 
 	/**
 	 * Enable or disable a replication condition for a single connection and do the inverse for all other connections. This will affect
@@ -416,7 +419,7 @@ public:
 	 * @return true if the condition was successfully set, false if not.
 	 * @see SetReplicationCondition
 	 */
-	IRISCORE_API bool SetReplicationConditionConnectionFilter(FNetHandle Handle, UE::Net::EReplicationCondition Condition, uint32 ConnectionId, bool bEnable);
+	IRISCORE_API bool SetReplicationConditionConnectionFilter(FNetRefHandle Handle, UE::Net::EReplicationCondition Condition, uint32 ConnectionId, bool bEnable);
 
 	/**
 	 * Enable or disable a replication condition for all connections. This will affect the replication of properties with conditions.
@@ -427,7 +430,7 @@ public:
 	 * @return true if the condition was successfully set, false if not.
 	 * @see SetReplicationCondition, SetReplicationConditionConnectionFilter
 	 */
-	IRISCORE_API bool SetReplicationCondition(FNetHandle Handle, UE::Net::EReplicationCondition Condition, bool bEnable);
+	IRISCORE_API bool SetReplicationCondition(FNetRefHandle Handle, UE::Net::EReplicationCondition Condition, bool bEnable);
 
 
 	/**
@@ -436,19 +439,19 @@ public:
 	 * whether the delta compression feature is enabled or not and other reasons.
 	 * @param Handle A valid handle to a replicated object.
 	 */
-	IRISCORE_API void SetDeltaCompressionStatus(FNetHandle Handle, UE::Net::ENetObjectDeltaCompressionStatus Status);
+	IRISCORE_API void SetDeltaCompressionStatus(FNetRefHandle Handle, UE::Net::ENetObjectDeltaCompressionStatus Status);
 
 	 /**
 	  * Mark an object as a net temporary. Such objects only replicate its
 	  * initial state and ignores future state changes.
 	  */
-	IRISCORE_API void SetIsNetTemporary(FNetHandle Handle);
+	IRISCORE_API void SetIsNetTemporary(FNetRefHandle Handle);
 
 	/**
 	 * Mark an object to be torn off next update.
 	 * @param Handle A valid handle to an object.
 	 */
-	IRISCORE_API void TearOffNextUpdate(FNetHandle Handle);
+	IRISCORE_API void TearOffNextUpdate(FNetRefHandle Handle);
 
 	/**
 	 * Explicitly mark object as dirty. This will make it considered for replication this frame
@@ -457,7 +460,14 @@ public:
 	 * @param Handle A valid handle to an object.
 	 * @see FObjectReplicationBridgePollConfig
 	 */
-	IRISCORE_API void MarkDirty(FNetHandle Handle);
+	IRISCORE_API void MarkDirty(FNetRefHandle Handle);
+
+	/**
+	 * Retrieve the NetCullDistanceOverrides instance which holds cull distances for objects that have explicitly overriden it.
+	 * @return The NetCullDistanceOverrides instance.
+	 * @see UE::Net::FNetCullDistanceOverrides
+	 */
+	IRISCORE_API const UE::Net::FNetCullDistanceOverrides& GetNetCullDistanceOverrides() const;
 
 	/**
 	 * Retrieve the WorldLocations instance which holds world locations for all objects that support it. 
@@ -486,6 +496,17 @@ public:
 	 */
 	IRISCORE_API UObject* GetConnectionUserData(uint32 ConnectionId) const;
 
+	IRISCORE_API int32 GetPIEInstanceID() const { return PIEInstanceID; }
+
+	/** Set the squared cull distance for an object. This can be used by prioritizers and filters like UNetObjectGridFilter for example. For Actors this will override, not overwrite, the NetCullDistanceSquared property. */
+	IRISCORE_API void SetCullDistanceSqrOverride(FNetRefHandle Handle, float DistSqr);
+
+	/** Clears any previously set squared cull distance for an object. For Actors this will cause affected code to respect the NetCullDistanceSquared property. */
+	IRISCORE_API void ClearCullDistanceSqrOverride(FNetRefHandle Handle);
+
+	/** Returns the previously set squared cull distance for an object, or DefaultValue if it wasn't or the Handle isn't valid. */
+	IRISCORE_API float GetCullDistanceSqrOverride(FNetRefHandle Handle, float DefaultValue = -1.0f) const;
+
 public:
 	// For internal use and not exported.
 
@@ -510,10 +531,9 @@ private:
 	IRISCORE_API void ResetGameWorldState();
 	IRISCORE_API void NotifyStreamingLevelUnload(const UObject* Level);
 
+	IRISCORE_API void SetPIEInstanceID(int32 InPIEInstanceID) { PIEInstanceID = InPIEInstanceID; }
+
 private:
-	friend UE::Net::FReplicationSystemUtil;
-	friend class FIrisCoreModule;
-	IRISCORE_API bool SetPropertyCustomCondition(FNetHandle Handle, const void* Owner, uint16 RepIndex, bool bEnable);
 
 	void PostGarbageCollection();
 	void CollectGarbage();
@@ -526,6 +546,7 @@ private:
 	TObjectPtr<UReplicationBridge> ReplicationBridge;
 
 	uint32 Id;
+	int32 PIEInstanceID;
 	uint32 bIsServer : 1;
 	uint32 bAllowObjectReplication : 1;
 	uint32 bDoCollectGarbage : 1;
@@ -555,6 +576,9 @@ public:
 	 */
 	IRISCORE_API static void DestroyReplicationSystem(UReplicationSystem* System);
 
+	/** Returns all replication systems. Entries may be null. */
+	IRISCORE_API static TArrayView<UReplicationSystem*> GetAllReplicationSystems();
+
 	/** Static delegate that is triggered just after creating and initializing a new replication system. */
 	IRISCORE_API static FReplicationSystemCreatedDelegate& GetReplicationSystemCreatedDelegate();
 
@@ -563,31 +587,25 @@ public:
 
 	enum ReplicationSystemConstants : uint32
 	{
+#if UE_NET_ALLOW_MULTIPLE_REPLICATION_SYSTEMS
 		MaxReplicationSystemCount = 16,
+#else
+		MaxReplicationSystemCount = 1,
+#endif
 	};
 
 private:
 
-	friend UReplicationSystem* GetReplicationSystem(uint32);
+	friend UReplicationSystem* GetReplicationSystem(uint32 Id);
 
-#if UE_NET_ALLOW_MULTIPLE_REPLICATION_SYSTEMS
 	IRISCORE_API static UReplicationSystem* ReplicationSystems[];
-#else
-	IRISCORE_API static UReplicationSystem* ReplicationSystem;
-#endif
+	static uint32 MaxReplicationSystemId;
 };
 
-#if UE_NET_ALLOW_MULTIPLE_REPLICATION_SYSTEMS
 inline UReplicationSystem* GetReplicationSystem(uint32 Id)
 {
 	return Id >= FReplicationSystemFactory::MaxReplicationSystemCount ? nullptr : FReplicationSystemFactory::ReplicationSystems[Id];
 }
-#else
-inline UReplicationSystem* GetReplicationSystem(uint32)
-{ 
-	return FReplicationSystemFactory::ReplicationSystem;
-}
-#endif
 
 }
 

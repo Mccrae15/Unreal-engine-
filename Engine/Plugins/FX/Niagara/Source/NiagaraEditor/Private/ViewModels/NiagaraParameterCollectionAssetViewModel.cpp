@@ -10,6 +10,7 @@
 #include "ScopedTransaction.h"
 #include "EditorSupportDelegates.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/UObjectIterator.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
 #include "Math/NumericLimits.h"
 
@@ -102,7 +103,7 @@ FName FNiagaraParameterCollectionAssetViewModel::GenerateNewName(FNiagaraTypeDef
 {
 	check(Collection && Instance);
 
-	FName ProposedName = *(TEXT("New") + Type.GetName());
+	FName ProposedName = FName(Type.GetName());
 	TSet<FName> Existing;
 	Existing.Reserve(ParameterViewModels.Num());
 	for (TSharedRef<INiagaraParameterViewModel> ParameterViewModel : ParameterViewModels)

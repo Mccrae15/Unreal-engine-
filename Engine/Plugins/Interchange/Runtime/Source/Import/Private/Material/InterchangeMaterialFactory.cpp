@@ -1,16 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 #include "Material/InterchangeMaterialFactory.h"
 
+#include "InterchangeAssetImportData.h"
 #include "InterchangeImportCommon.h"
 #include "InterchangeImportLog.h"
 #include "InterchangeMaterialFactoryNode.h"
-#include "InterchangeTextureNode.h"
-#include "InterchangeTextureFactoryNode.h"
 #include "InterchangeShaderGraphNode.h"
 #include "InterchangeSourceData.h"
+#include "InterchangeTextureNode.h"
+#include "InterchangeTextureFactoryNode.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionClearCoatNormalCustomOutput.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionMakeMaterialAttributes.h"
@@ -24,6 +26,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Nodes/InterchangeBaseNode.h"
 #include "Nodes/InterchangeBaseNodeContainer.h"
+#include "UObject/ObjectRedirector.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeMaterialFactory)
 
@@ -113,7 +116,7 @@ namespace UE
 					return 0; // Consider 0 as the default output to connect to since most expressions have a single output
 				}
 
-				void SetupFunctionCallExpression(const UInterchangeFactoryBase::FCreateAssetParams& Arguments, const UInterchangeMaterialExpressionFactoryNode& ExpressionNode, UMaterialExpressionMaterialFunctionCall* FunctionCallExpression)
+				void SetupFunctionCallExpression(const UInterchangeFactoryBase::FImportAssetObjectParams& Arguments, const UInterchangeMaterialExpressionFactoryNode& ExpressionNode, UMaterialExpressionMaterialFunctionCall* FunctionCallExpression)
 				{
 					FInterchangeImportMaterialAsyncHelper& AsyncHelper = FInterchangeImportMaterialAsyncHelper::GetInstance();
 					if (const UInterchangeMaterialFunctionCallExpressionFactoryNode* FunctionCallFactoryNode = Cast<UInterchangeMaterialFunctionCallExpressionFactoryNode>(&ExpressionNode))
@@ -136,7 +139,7 @@ namespace UE
 					AsyncHelper.UpdateFromFunctionResource(FunctionCallExpression);
 				}
 
-				void SetupTextureExpression(const UInterchangeFactoryBase::FCreateAssetParams& Arguments, const UInterchangeMaterialExpressionFactoryNode* ExpressionNode, UMaterialExpressionTextureBase* TextureExpression)
+				void SetupTextureExpression(const UInterchangeFactoryBase::FImportAssetObjectParams& Arguments, const UInterchangeMaterialExpressionFactoryNode* ExpressionNode, UMaterialExpressionTextureBase* TextureExpression)
 				{
 					using namespace UE::Interchange::Materials::Standard::Nodes::TextureSample;
 
@@ -176,12 +179,15 @@ namespace UE
 				class FMaterialExpressionBuilder
 				{
 				public:
-					FMaterialExpressionBuilder(UMaterial* InMaterial, UMaterialFunction* InMaterialFunction, const UInterchangeFactoryBase::FCreateAssetParams& InArguments)
+					FMaterialExpressionBuilder(UMaterial* InMaterial, UMaterialFunction* InMaterialFunction, const UInterchangeFactoryBase::FImportAssetObjectParams& InArguments)
 						: Material(InMaterial)
 						, MaterialFunction(InMaterialFunction)
 						, Arguments(InArguments)
 					{
 						check((Material || MaterialFunction) && !(Material && MaterialFunction));
+
+						//We need to put in place a better mechanism for the reimport, for the moment let's delete all material expressions to avoid duplicates	
+						DeleteAllMaterialExpressions();
 					}
 
 					UMaterialExpression* CreateExpressionsForNode(const UInterchangeMaterialExpressionFactoryNode& ExpressionNode)
@@ -296,10 +302,32 @@ namespace UE
 						return MaterialExpression;
 					}
 
+					void DeleteAllMaterialExpressions()
+					{
+						if(Material)
+						{
+							// Copy the Material Expressions in a TArray, otherwise working directly on the TArrayView messes up with the expressions
+							// and doesn't make a full clean up, especially when we're not in the Game Thread
+							if(TArray<UMaterialExpression*> MaterialExpressions(Material->GetExpressions()); !MaterialExpressions.IsEmpty())
+							{
+								Material->Modify();
+								for(UMaterialExpression* MaterialExpression : MaterialExpressions)
+								{
+									MaterialExpression->Modify();
+									Material->GetExpressionCollection().RemoveExpression(MaterialExpression);
+									Material->RemoveExpressionParameter(MaterialExpression);
+									// Make sure the deleted expression is caught by gc
+									MaterialExpression->MarkAsGarbage();
+								}
+
+								Material->MarkPackageDirty();
+							}
+						}
+					}
 
 					UMaterial* Material = nullptr;
 					UMaterialFunction* MaterialFunction = nullptr;
-					const UInterchangeFactoryBase::FCreateAssetParams& Arguments;
+					const UInterchangeFactoryBase::FImportAssetObjectParams& Arguments;
 					TMap<FString, UMaterialExpression*> Expressions;
 				};
 #endif // #if WITH_EDITOR
@@ -313,24 +341,38 @@ UClass* UInterchangeMaterialFactory::GetFactoryClass() const
 	return UMaterialInterface::StaticClass();
 }
 
-UObject* UInterchangeMaterialFactory::CreateEmptyAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeMaterialFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
 {
 	UObject* Material = nullptr;
 
+	auto CouldNotCreateMaterialLog = [this, &Arguments](const FText& Info)
+	{
+		UInterchangeResultError_Generic* Message = AddMessage<UInterchangeResultError_Generic>();
+		Message->SourceAssetName = Arguments.SourceData->GetFilename();
+		Message->DestinationAssetName = Arguments.AssetName;
+		Message->AssetType = GetFactoryClass();
+		Message->Text = FText::Format(LOCTEXT("MatFactory_CouldNotCreateMat", "Could not create Material asset %s. Reason: %s"), FText::FromString(Arguments.AssetName), Info);
+	};
+	
+	const FText MissMatchClassText = LOCTEXT("MatFactory_CouldNotCreateMat_MissMatchClass", "Missmatch between interchange material factory node class and factory class.");
+
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
+		CouldNotCreateMaterialLog(MissMatchClassText);
 		return nullptr;
 	}
 
 	const UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode = Cast<UInterchangeBaseMaterialFactoryNode>(Arguments.AssetNode);
 	if (MaterialFactoryNode == nullptr)
 	{
+		CouldNotCreateMaterialLog(LOCTEXT("MatFactory_CouldNotCreateMat_CannotCastFactoryNode", "Cannot cast interchange factory node to UInterchangeBaseMaterialFactoryNode."));
 		return nullptr;
 	}
 
 	const UClass* MaterialClass = MaterialFactoryNode->GetObjectClass();
 	if (!ensure(MaterialClass && MaterialClass->IsChildOf(GetFactoryClass())))
 	{
+		CouldNotCreateMaterialLog(MissMatchClassText);
 		return nullptr;
 	}
 
@@ -365,7 +407,7 @@ UObject* UInterchangeMaterialFactory::CreateEmptyAsset(const FCreateAssetParams&
 
 	if (!Material)
 	{
-		UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create Material asset %s"), *Arguments.AssetName);
+		CouldNotCreateMaterialLog(LOCTEXT("MatFactory_CouldNotCreateMat_MaterialCreationFail", "Material creation fail."));
 		return nullptr;
 	}
 
@@ -389,14 +431,14 @@ UObject* UInterchangeMaterialFactory::CreateEmptyAsset(const FCreateAssetParams&
 	return Material;
 }
 
-UObject* UInterchangeMaterialFactory::CreateAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeMaterialFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
 {
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
 		return nullptr;
 	}
 
-	const UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode = Cast<UInterchangeBaseMaterialFactoryNode>(Arguments.AssetNode);
+	UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode = Cast<UInterchangeBaseMaterialFactoryNode>(Arguments.AssetNode);
 	if (MaterialFactoryNode == nullptr)
 	{
 		return nullptr;
@@ -414,8 +456,15 @@ UObject* UInterchangeMaterialFactory::CreateAsset(const FCreateAssetParams& Argu
 	{
 		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
 		//The UObject should have been created by calling CreateEmptyAsset on the main thread.
-		check(IsInGameThread());
-		MaterialObject = NewObject<UObject>(Arguments.Parent, MaterialClass, *Arguments.AssetName, RF_Public | RF_Standalone);
+		if (IsInGameThread())
+		{
+			MaterialObject = NewObject<UObject>(Arguments.Parent, MaterialClass, *Arguments.AssetName, RF_Public | RF_Standalone);
+		}
+		else
+		{
+			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create Material asset [%s] outside of the game thread"), *Arguments.AssetName);
+			return nullptr;
+		}
 	}
 	else if(ExistingAsset->GetClass()->IsChildOf(MaterialClass))
 	{
@@ -447,7 +496,26 @@ UObject* UInterchangeMaterialFactory::CreateAsset(const FCreateAssetParams& Argu
 				MaterialFactoryNode->ApplyAllCustomAttributeToObject(MaterialObject);
 			}
 		}
-		
+#if WITH_EDITORONLY_DATA
+		else
+		{
+			if(UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(MaterialObject))
+			{
+				//Apply the re import strategy 
+				UInterchangeAssetImportData* InterchangeAssetImportData = Cast<UInterchangeAssetImportData>(MaterialInstance->AssetImportData);
+				UInterchangeFactoryBaseNode* PreviousNode = nullptr;
+				if(InterchangeAssetImportData)
+				{
+					PreviousNode = InterchangeAssetImportData->NodeContainer->GetFactoryNode(InterchangeAssetImportData->NodeUniqueID);
+				}
+				UInterchangeFactoryBaseNode* CurrentNode = NewObject<UInterchangeMaterialFactoryNode>(GetTransientPackage());
+				UInterchangeBaseNode::CopyStorage(MaterialFactoryNode, CurrentNode);
+				CurrentNode->FillAllCustomAttributeFromObject(MaterialInstance);
+				UE::Interchange::FFactoryCommon::ApplyReimportStrategyToAsset(MaterialInstance, PreviousNode, CurrentNode, MaterialFactoryNode);
+			}
+		}
+#endif // #if WITH_EDITORONLY_DATA
+
 		//Getting the file Hash will cache it into the source data
 		Arguments.SourceData->GetFileContentHash();
 
@@ -458,10 +526,10 @@ UObject* UInterchangeMaterialFactory::CreateAsset(const FCreateAssetParams& Argu
 }
 
 /* This function is call in the completion task on the main thread, use it to call main thread post creation step for your assets*/
-void UInterchangeMaterialFactory::PreImportPreCompletedCallback(const FImportPreCompletedCallbackParams& Arguments)
+void UInterchangeMaterialFactory::SetupObject_GameThread(const FSetupObjectParams& Arguments)
 {
 	check(IsInGameThread());
-	Super::PreImportPreCompletedCallback(Arguments);
+	Super::SetupObject_GameThread(Arguments);
 
 	if (ensure(Arguments.ImportedObject && Arguments.SourceData))
 	{
@@ -526,7 +594,7 @@ bool UInterchangeMaterialFactory::SetSourceFilename(const UObject* Object, const
 }
 
 #if WITH_EDITOR
-void UInterchangeMaterialFactory::SetupMaterial(UMaterial* Material, const FCreateAssetParams& Arguments, const UInterchangeBaseMaterialFactoryNode* BaseMaterialFactoryNode)
+void UInterchangeMaterialFactory::SetupMaterial(UMaterial* Material, const FImportAssetObjectParams& Arguments, const UInterchangeBaseMaterialFactoryNode* BaseMaterialFactoryNode)
 {
 	using namespace UE::Interchange::Materials;
 	using namespace UE::Interchange::MaterialFactory::Internal;
@@ -986,6 +1054,27 @@ void UInterchangeMaterialFactory::SetupMaterialInstance(UMaterialInstance* Mater
 
 		switch(UInterchangeShaderPortsAPI::GetInputType(MaterialFactoryNode, InputName))
 		{
+#if WITH_EDITORONLY_DATA
+		case UE::Interchange::EAttributeTypes::Bool:
+		    {
+				bool bInstanceValue;
+				FGuid Uid;
+				if(MaterialInstance->GetStaticSwitchParameterValue(ParameterName, bInstanceValue, Uid))
+				{
+					bool bInputValue = false;
+					MaterialFactoryNode->GetBooleanAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), bInputValue);
+
+					if(bInputValue != bInstanceValue)
+					{
+						if(UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(MaterialInstance))
+						{
+							MaterialInstanceConstant->SetStaticSwitchParameterValueEditorOnly(ParameterName, bInputValue);
+						}
+					}
+				}
+		    }
+		    break;
+#endif // #if WITH_EDITORONLY_DATA
 		case UE::Interchange::EAttributeTypes::Float:
 			{
 				float InstanceValue;
@@ -1080,24 +1169,38 @@ UClass* UInterchangeMaterialFunctionFactory::GetFactoryClass() const
 	return UMaterialFunctionInterface::StaticClass();
 }
 
-UObject* UInterchangeMaterialFunctionFactory::CreateEmptyAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeMaterialFunctionFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
 {
 	UObject* Material = nullptr;
 
+	auto CouldNotCreateMaterialLog = [this, &Arguments](const FText& Info)
+	{
+		UInterchangeResultError_Generic* Message = AddMessage<UInterchangeResultError_Generic>();
+		Message->SourceAssetName = Arguments.SourceData->GetFilename();
+		Message->DestinationAssetName = Arguments.AssetName;
+		Message->AssetType = GetFactoryClass();
+		Message->Text = FText::Format(LOCTEXT("MatFunc_CouldNotCreateMat", "Could not create Material asset %s. Reason: %s"), FText::FromString(Arguments.AssetName), Info);
+	};
+
+	const FText MissMatchClassText = LOCTEXT("MatFunc_CouldNotCreateMat_MissMatchClass", "Missmatch between interchange material factory node class and factory class.");
+
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
+		CouldNotCreateMaterialLog(MissMatchClassText);
 		return nullptr;
 	}
 
 	const UInterchangeMaterialFunctionFactoryNode* MaterialFactoryNode = Cast<UInterchangeMaterialFunctionFactoryNode>(Arguments.AssetNode);
 	if (!ensure(MaterialFactoryNode))
 	{
+		CouldNotCreateMaterialLog(LOCTEXT("MatFunc_CouldNotCreateMat_CannotCastFactoryNode", "Cannot cast interchange factory node to UInterchangeBaseMaterialFactoryNode."));
 		return nullptr;
 	}
 
 	const UClass* MaterialClass = MaterialFactoryNode->GetObjectClass();
 	if (!ensure(MaterialClass && MaterialClass->IsChildOf(GetFactoryClass())))
 	{
+		CouldNotCreateMaterialLog(MissMatchClassText);
 		return nullptr;
 	}
 
@@ -1117,7 +1220,7 @@ UObject* UInterchangeMaterialFunctionFactory::CreateEmptyAsset(const FCreateAsse
 
 	if (!Material)
 	{
-		UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create Material asset %s"), *Arguments.AssetName);
+		CouldNotCreateMaterialLog(LOCTEXT("MatFunc_CouldNotCreateMat_MaterialCreationFail", "Material creation fail."));
 		return nullptr;
 	}
 
@@ -1128,7 +1231,7 @@ UObject* UInterchangeMaterialFunctionFactory::CreateEmptyAsset(const FCreateAsse
 	return Material;
 }
 
-UObject* UInterchangeMaterialFunctionFactory::CreateAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeMaterialFunctionFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
 {
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
@@ -1153,8 +1256,15 @@ UObject* UInterchangeMaterialFunctionFactory::CreateAsset(const FCreateAssetPara
 	{
 		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
 		//The UObject should have been created by calling CreateEmptyAsset on the main thread.
-		check(IsInGameThread());
-		MaterialObject = NewObject<UObject>(Arguments.Parent, MaterialClass, *Arguments.AssetName, RF_Public | RF_Standalone);
+		if (IsInGameThread())
+		{
+			MaterialObject = NewObject<UObject>(Arguments.Parent, MaterialClass, *Arguments.AssetName, RF_Public | RF_Standalone);
+		}
+		else
+		{
+			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create Material asset [%s] outside of the game thread"), *Arguments.AssetName);
+			return nullptr;
+		}
 	}
 	else if (ExistingAsset->GetClass()->IsChildOf(MaterialClass))
 	{
@@ -1194,9 +1304,9 @@ UObject* UInterchangeMaterialFunctionFactory::CreateAsset(const FCreateAssetPara
 }
 
 /* This function is call in the completion task on the main thread, use it to call main thread post creation step for your assets*/
-void UInterchangeMaterialFunctionFactory::PreImportPreCompletedCallback(const FImportPreCompletedCallbackParams& Arguments)
+void UInterchangeMaterialFunctionFactory::SetupObject_GameThread(const FSetupObjectParams& Arguments)
 {
-	Super::PreImportPreCompletedCallback(Arguments);
+	Super::SetupObject_GameThread(Arguments);
 
 #if WITH_EDITORONLY_DATA
 	if (ensure(Arguments.ImportedObject && Arguments.SourceData))
@@ -1219,7 +1329,7 @@ void UInterchangeMaterialFunctionFactory::PreImportPreCompletedCallback(const FI
 }
 
 #if WITH_EDITOR
-void UInterchangeMaterialFunctionFactory::SetupMaterial(UMaterialFunction* MaterialFunction, const FCreateAssetParams& Arguments, const UInterchangeMaterialFunctionFactoryNode* MaterialFunctionFactoryNode)
+void UInterchangeMaterialFunctionFactory::SetupMaterial(UMaterialFunction* MaterialFunction, const FImportAssetObjectParams& Arguments, const UInterchangeMaterialFunctionFactoryNode* MaterialFunctionFactoryNode)
 {
 	using namespace UE::Interchange::MaterialFactory::Internal;
 	using namespace UE::Interchange::Materials;
@@ -1280,9 +1390,7 @@ void UInterchangeMaterialFunctionFactory::SetupMaterial(UMaterialFunction* Mater
 void FInterchangeImportMaterialAsyncHelper::UpdateFromFunctionResource(UMaterialExpressionMaterialFunctionCall* MaterialFunctionCall)
 {
 	FScopeLock Lock(&UpdatedMaterialFunctionCallsLock);
-	if(UpdatedMaterialFunctionCalls.Find(MaterialFunctionCall) == nullptr)
 	{
-		UpdatedMaterialFunctionCalls.Add(MaterialFunctionCall);
 		MaterialFunctionCall->UpdateFromFunctionResource();
 	}
 }
@@ -1290,9 +1398,7 @@ void FInterchangeImportMaterialAsyncHelper::UpdateFromFunctionResource(UMaterial
 void FInterchangeImportMaterialAsyncHelper::UpdateFromFunctionResource(UMaterialFunctionInterface* MaterialFunction)
 {
 	FScopeLock Lock(&UpdatedMaterialFunctionsLock);
-	if(UpdatedMaterialFunctions.Find(MaterialFunction) == nullptr)
 	{
-		UpdatedMaterialFunctions.Add(MaterialFunction);
 		MaterialFunction->UpdateFromFunctionResource();
 	}
 }
@@ -1302,12 +1408,6 @@ FInterchangeImportMaterialAsyncHelper& FInterchangeImportMaterialAsyncHelper::Ge
 {
 	static FInterchangeImportMaterialAsyncHelper Instance;
 	return Instance;
-}
-
-void FInterchangeImportMaterialAsyncHelper::CleanUp()
-{
-	UpdatedMaterialFunctionCalls.Empty();
-	UpdatedMaterialFunctions.Empty();
 }
 
 #undef LOCTEXT_NAMESPACE

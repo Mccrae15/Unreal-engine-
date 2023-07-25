@@ -128,7 +128,10 @@ static void SaveTypeDecl(TagDecl *tagDecl,
 class VarReferenceVisitor : public RecursiveASTVisitor<VarReferenceVisitor> {
 private:
   SmallPtrSetImpl<VarDecl*>& m_unusedGlobals;
-  SmallPtrSetImpl<FunctionDecl*>& m_visitedFunctions;
+  // UE Change Begin: Keep track of visited global declarations
+  SmallPtrSetImpl<VarDecl*>& m_visitedGlobals;
+  // UE Change End: Keep track of visited global declarations
+  SmallPtrSetImpl<FunctionDecl *> &m_visitedFunctions;
   SmallVectorImpl<FunctionDecl*>& m_pendingFunctions;
   SmallPtrSetImpl<TypeDecl *> &m_visitedTypes;
 
@@ -139,10 +142,16 @@ private:
 public:
   VarReferenceVisitor(
     SmallPtrSetImpl<VarDecl*>& unusedGlobals,
+    // UE Change Begin: Keep track of visited global declarations
+    SmallPtrSetImpl<VarDecl*>& visitedGlobals,
+    // UE Change End: Keep track of visited global declarations
     SmallPtrSetImpl<FunctionDecl*>& visitedFunctions,
     SmallVectorImpl<FunctionDecl*>& pendingFunctions,
     SmallPtrSetImpl<TypeDecl *> &types)  :
     m_unusedGlobals(unusedGlobals),
+    // UE Change Begin: Keep track of visited global declarations
+    m_visitedGlobals(visitedGlobals),
+    // UE Change End: Keep track of visited global declarations
     m_visitedFunctions(visitedFunctions),
     m_pendingFunctions(pendingFunctions),
     m_visitedTypes(types) {
@@ -177,22 +186,27 @@ public:
       }
     }
     else if (VarDecl* varDecl = dyn_cast_or_null<VarDecl>(valueDecl)) {
-      m_unusedGlobals.erase(varDecl);
-      if (TagDecl *tagDecl = varDecl->getType()->getAsTagDecl()) {
-        AddRecordType(tagDecl);
+      // UE Change Begin: Keep track of visited global declarations
+      if (!m_visitedGlobals.count(varDecl)) {
+        m_visitedGlobals.insert(varDecl);
+        m_unusedGlobals.erase(varDecl);
+        if (TagDecl *tagDecl = varDecl->getType()->getAsTagDecl()) {
+          AddRecordType(tagDecl);
+        }
+        if (Expr *initExp = varDecl->getInit()) {
+          if (InitListExpr *initList =
+                  dyn_cast<InitListExpr>(initExp)) {
+            TraverseInitListExpr(initList);
+          } else if (ImplicitCastExpr *initCast = dyn_cast<ImplicitCastExpr>(initExp)) {
+            TraverseImplicitCastExpr(initCast);
+          } else if (DeclRefExpr *initRef = dyn_cast<DeclRefExpr>(initExp)) {
+            TraverseDeclRefExpr(initRef);
+          } else if (Stmt* initStmt = dyn_cast<Stmt>(initExp)) {
+            TraverseStmt(initStmt);
+          }
+        }
       }
-      if (Expr *initExp = varDecl->getInit()) {
-        if (InitListExpr *initList =
-                dyn_cast<InitListExpr>(initExp)) {
-          TraverseInitListExpr(initList);
-        } else if (ImplicitCastExpr *initCast = dyn_cast<ImplicitCastExpr>(initExp)) {
-          TraverseImplicitCastExpr(initCast);
-        } else if (DeclRefExpr *initRef = dyn_cast<DeclRefExpr>(initExp)) {
-          TraverseDeclRefExpr(initRef);
-        } else if (Stmt* initStmt = dyn_cast<Stmt>(initExp)) {
-          TraverseStmt(initStmt);
-		}
-      }
+      // UE Change End: Keep track of visited global declarations
     }
     return true;
   }
@@ -556,16 +570,10 @@ void SetupCompilerCommon(CompilerInstance &compiler,
     compiler.getDiagnostics().setWarningsAsErrors(true);
   compiler.getDiagnostics().setIgnoreAllWarnings(!opts.OutputWarnings);
   compiler.getLangOpts().HLSLVersion = opts.HLSLVersion;
-  compiler.getLangOpts().StrictUDTCasting = opts.StrictUDTCasting;
   compiler.getLangOpts().UseMinPrecision = !opts.Enable16BitTypes;
   compiler.getLangOpts().EnableDX9CompatMode = opts.EnableDX9CompatMode;
   compiler.getLangOpts().EnableFXCCompatMode = opts.EnableFXCCompatMode;
-  compiler.getLangOpts().EnableTemplates = opts.EnableTemplates;
-  compiler.getLangOpts().EnableOperatorOverloading = opts.EnableOperatorOverloading;
-  compiler.getLangOpts().StrictUDTCasting = opts.StrictUDTCasting;
   compiler.getLangOpts().EnablePayloadAccessQualifiers = opts.EnablePayloadQualifiers;
-  compiler.getLangOpts().EnableShortCircuit = opts.EnableShortCircuit;
-  compiler.getLangOpts().EnableBitfields = opts.EnableBitfields;
 #ifdef ENABLE_SPIRV_CODEGEN
   compiler.getLangOpts().SPIRV = opts.GenSPIRV;
 #endif
@@ -684,7 +692,6 @@ HRESULT GenerateAST(DxcLangExtensionsHelper *pExtHelper, LPCSTR pFileName,
                     dxcutil::DxcArgsFileSystem *msfPtr, raw_ostream &w) {
   // Setup a compiler instance.
   CompilerInstance &compiler = astHelper.compiler;
-  compiler.getLangOpts().EnableTemplates = opts.EnableTemplates;
 
   std::unique_ptr<TextDiagnosticPrinter> diagPrinter =
       llvm::make_unique<TextDiagnosticPrinter>(w,
@@ -743,8 +750,16 @@ HRESULT CollectRewriteHelper(TranslationUnitDecl *tu, LPCSTR pEntryPoint,
     if (tuDecl->isImplicit())
       continue;
 
-    VarDecl *varDecl = dyn_cast_or_null<VarDecl>(tuDecl);
-    if (varDecl != nullptr) {
+    // UE Change Begin: Examine sub declarations of templates
+    if (TemplateDecl *tmplDecl = dyn_cast_or_null<TemplateDecl>(tuDecl)) {
+      tuDecl = tmplDecl->getTemplatedDecl();
+      if (tuDecl == nullptr) {
+        continue;
+      }
+    }
+    // UE Change End: Examine sub declarations of templates
+
+    if (VarDecl *varDecl = dyn_cast_or_null<VarDecl>(tuDecl)) {
       if (!bRemoveGlobals) {
         // Only remove static global when not remove global.
         if (!(varDecl->getStorageClass() == SC_Static ||
@@ -786,8 +801,7 @@ HRESULT CollectRewriteHelper(TranslationUnitDecl *tu, LPCSTR pEntryPoint,
       continue;
     }
 
-    FunctionDecl *fnDecl = dyn_cast_or_null<FunctionDecl>(tuDecl);
-    if (fnDecl != nullptr) {
+    if (FunctionDecl *fnDecl = dyn_cast_or_null<FunctionDecl>(tuDecl)) {
       FunctionDecl *fnDeclWithbody = getFunctionWithBody(fnDecl);
       // Add fnDecl without body which has a define somewhere.
       if (fnDecl->doesThisDeclarationHaveABody() || fnDeclWithbody) {
@@ -802,8 +816,19 @@ HRESULT CollectRewriteHelper(TranslationUnitDecl *tu, LPCSTR pEntryPoint,
 #endif
       // UE Change End: Workaround: Removing unused types not working properly.
       if (CXXRecordDecl *recordDecl = dyn_cast<CXXRecordDecl>(tagDecl)) {
-        for (CXXMethodDecl *methodDecl : recordDecl->methods()) {
-          unusedFunctions.insert(methodDecl);
+        for (Decl *memberDecl : recordDecl->decls()) {
+          // UE Change Begin: Examine sub declarations of templates
+          if (TemplateDecl *memberTmplDecl = dyn_cast_or_null<TemplateDecl>(memberDecl)) {
+            memberDecl = memberTmplDecl->getTemplatedDecl();
+            if (memberDecl == nullptr) {
+              continue;
+            }
+          }
+          if (CXXMethodDecl *memberMethodDecl =
+                  dyn_cast_or_null<CXXMethodDecl>(memberDecl)) {
+            unusedFunctions.insert( memberMethodDecl);
+          }
+          // UE Change End: Examine sub declarations of templates
         }
       }
     }
@@ -830,15 +855,23 @@ HRESULT CollectRewriteHelper(TranslationUnitDecl *tu, LPCSTR pEntryPoint,
   }
 
   // Traverse reachable functions and variables.
+  // UE Change Begin: Keep track of visited global declarations
+  SmallPtrSet<VarDecl *, 128> visitedGlobals;
   SmallPtrSet<FunctionDecl *, 128> visitedFunctions;
   SmallVector<FunctionDecl *, 32> pendingFunctions;
   SmallPtrSet<TypeDecl *, 32> visitedTypes;
-  VarReferenceVisitor visitor(unusedGlobals, visitedFunctions, pendingFunctions,
+  VarReferenceVisitor visitor(unusedGlobals, visitedGlobals, visitedFunctions, pendingFunctions,
                               visitedTypes);
+  // UE Change End: Keep track of visited global declarations
   pendingFunctions.push_back(entryFnDecl);
   while (!pendingFunctions.empty()) {
     FunctionDecl *pendingDecl = pendingFunctions.pop_back_val();
     visitedFunctions.insert(pendingDecl);
+    // UE Change Begin: Mark template pattern as visited as well
+    if (FunctionDecl *primaryTmplFnDecl = pendingDecl->getTemplateInstantiationPattern()) {
+      visitedFunctions.insert(primaryTmplFnDecl);
+    }
+    // UE Change End: Mark template pattern as visited as well
     visitor.TraverseDecl(pendingDecl);
   }
 
@@ -1010,11 +1043,21 @@ static HRESULT DoRewriteUnused( TranslationUnitDecl *tu,
   for (FunctionDecl *unusedFn : helper.unusedFunctions) {
     // remove name of function to workaround assert when update lookup table.
     unusedFn->setDeclName(DeclarationName());
+    // UE Change Begin: Remove parent template declaration and not just sub declaration of templates
     if (CXXMethodDecl *methodDecl = dyn_cast<CXXMethodDecl>(unusedFn)) {
-      methodDecl->getParent()->removeDecl(unusedFn);
+      if (TemplateDecl *methodTmplDecl = methodDecl->getDescribedFunctionTemplate()) {
+        methodDecl->getParent()->removeDecl(methodTmplDecl);
+      } else {
+        methodDecl->getParent()->removeDecl(unusedFn);
+      }
     } else {
-      tu->removeDecl(unusedFn);
+      if (TemplateDecl *tmplDecl = unusedFn->getDescribedFunctionTemplate()) {
+        tu->removeDecl(tmplDecl);
+      } else {
+        tu->removeDecl(unusedFn);
+      }
     }
+    // UE Change End: Remove parent template declaration and not just sub declaration of templates
   }
 
   for (TypeDecl *unusedTy : helper.unusedTypes) {
@@ -1711,7 +1754,7 @@ public:
       std::unique_ptr<llvm::MemoryBuffer> pBuffer(llvm::MemoryBuffer::getMemBufferCopy(Data, fakeName));
       std::unique_ptr<ASTUnit::RemappedFile> pRemap(new ASTUnit::RemappedFile(fakeName, pBuffer.release()));
 
-	  // Parse compiler arguments
+      // Parse compiler arguments
       hlsl::options::DxcOpts opts;
       opts.HLSLVersion = hlsl::LangStd::v2015;
       hlsl::options::MainArgs optsArgs{static_cast<int>(argCount), pArgs, 0};
@@ -1765,7 +1808,7 @@ public:
       std::unique_ptr<llvm::MemoryBuffer> pBuffer(llvm::MemoryBuffer::getMemBufferCopy(Data, fName));
       std::unique_ptr<ASTUnit::RemappedFile> pRemap(new ASTUnit::RemappedFile(fName, pBuffer.release()));
 
-	  // Parse compiler arguments
+      // Parse compiler arguments
       hlsl::options::DxcOpts opts;
       opts.HLSLVersion = hlsl::LangStd::v2015;
       hlsl::options::MainArgs optsArgs{static_cast<int>(argCount), pArgs, 0};

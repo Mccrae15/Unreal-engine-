@@ -3,6 +3,8 @@
 /*=============================================================================
 	SceneVisibility.cpp: Scene visibility determination.
 =============================================================================*/
+
+#include "ScenePrivate.h"
 #include "CoreMinimal.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Stats/Stats.h"
@@ -18,6 +20,7 @@
 #include "SceneInterface.h"
 #include "RendererInterface.h"
 #include "PrimitiveViewRelevance.h"
+#include "Materials/Material.h"
 #include "MaterialShared.h"
 #include "SceneManagement.h"
 #include "ScenePrivateBase.h"
@@ -32,6 +35,7 @@
 #include "FXSystem.h"
 #include "PostProcess/PostProcessing.h"
 #include "SceneView.h"
+#include "SkyAtmosphereRendering.h"
 #include "Engine/LODActor.h"
 #include "GPUScene.h"
 #include "TranslucentRendering.h"
@@ -45,8 +49,12 @@
 #include "InstanceCulling/InstanceCullingManager.h"
 #include "PostProcess/TemporalAA.h"
 #include "RayTracing/RayTracingInstanceCulling.h"
+#include "HeterogeneousVolumes/HeterogeneousVolumes.h"
 #include "RendererModule.h"
 #include "SceneViewExtension.h"
+#include "RenderCore.h"
+#include "StaticMeshBatch.h"
+#include "UnrealEngine.h"
 
 #if !UE_BUILD_SHIPPING
 #include "ViewDebug.h"
@@ -112,6 +120,14 @@ static FAutoConsoleVariableRef CVarHZBOcclusion(
 	ECVF_RenderThreadSafe
 	);
 
+int32 GOcclusionFeedback_Enable = 0;
+static FAutoConsoleVariableRef CVarOcclusionFeedback_Enable(
+	TEXT("r.OcclusionFeedback.Enable"),
+	GOcclusionFeedback_Enable,
+	TEXT("Whether to enable occlusion system based on a rendering feedback. Currently works only with a mobile rendering\n"),
+	ECVF_RenderThreadSafe
+);
+
 static int32 GVisualizeOccludedPrimitives = 0;
 static FAutoConsoleVariableRef CVarVisualizeOccludedPrimitives(
 	TEXT("r.VisualizeOccludedPrimitives"),
@@ -165,7 +181,7 @@ static FAutoConsoleVariableRef CVarILCUpdatePrimitivesTask(
 	ECVF_RenderThreadSafe
 	);
 
-static int32 GEarlyInitDynamicShadows = 1;
+int32 GEarlyInitDynamicShadows = 1;
 static FAutoConsoleVariableRef CVarEarlyInitDynamicShadows(
 	TEXT("r.EarlyInitDynamicShadows"),
 	GEarlyInitDynamicShadows,
@@ -1164,6 +1180,8 @@ static void FetchVisibilityForPrimitives_Range(FVisForPrimParams& Params, FGloba
 	const float CurrentRealTime = View.Family->Time.GetRealTimeSeconds();
 	uint32 OcclusionFrameCounter = ViewState->OcclusionFrameCounter;
 	FHZBOcclusionTester& HZBOcclusionTests = ViewState->HZBOcclusionTests;
+	FOcclusionFeedback& OcclusionFeedback = ViewState->OcclusionFeedback;
+	const bool bUseOcclusionFeedback = bSingleThreaded && OcclusionFeedback.IsInitialized();
 
 	int32 ReadBackLagTolerance = NumBufferedFrames;
 
@@ -1369,7 +1387,12 @@ static void FetchVisibilityForPrimitives_Range(FVisForPrimParams& Params, FGloba
 					}
 					else if (bCanBeOccluded)
 					{
-						if (bHZBOcclusion)
+						if (bUseOcclusionFeedback)
+						{
+							bIsOccluded = OcclusionFeedback.IsOccluded(PrimitiveId);
+							bOcclusionStateIsDefinite = true;
+						}
+						else if (bHZBOcclusion)
 						{
 							if (HZBOcclusionTests.IsValidFrame(PrimitiveOcclusionHistory->LastTestFrameNumber))
 							{
@@ -1387,8 +1410,7 @@ static void FetchVisibilityForPrimitives_Range(FVisForPrimParams& Params, FGloba
 							{
 								//int32 RefCount = PastQuery.GetReference()->GetRefCount();
 								// NOTE: RHIGetOcclusionQueryResult should never fail when using a blocking call, rendering artifacts may show up.
-								//if (RHICmdList.GetRenderQueryResult(PastQuery, NumSamples, true))
-								if (GDynamicRHI->RHIGetRenderQueryResult(PastQuery, NumSamples, true))
+								if (RHIGetRenderQueryResult(PastQuery, NumSamples, true))
 								{
 									// we render occlusion without MSAA
 									uint32 NumPixels = (uint32)NumSamples;
@@ -1520,7 +1542,14 @@ static void FetchVisibilityForPrimitives_Range(FVisForPrimParams& Params, FGloba
 						if (bAllowBoundsTest)
 						{
 							PrimitiveOcclusionHistory->LastTestFrameNumber = OcclusionFrameCounter;
-							if (bHZBOcclusion)
+
+							if (bUseOcclusionFeedback)
+							{
+								const FVector BoundOrigin = OcclusionBounds.Origin + View.ViewMatrices.GetPreViewTranslation();
+								const FVector BoundExtent = OcclusionBounds.BoxExtent;
+								OcclusionFeedback.AddPrimitive(PrimitiveId, BoundOrigin, BoundExtent, *DynamicVertexBufferIfSingleThreaded);
+							}
+							else if (bHZBOcclusion)
 							{
 								// Always run
 								if (bSingleThreaded)
@@ -2025,7 +2054,13 @@ static int32 OcclusionCull(FRHICommandListImmediate& RHICmdList, const FScene* S
 		bSubmitQueries = bSubmitQueries && !ViewState->HasViewParent() && !ViewState->bIsFrozen;
 #endif
 
-		if( bHZBOcclusion )
+		if (ViewState->OcclusionFeedback.IsInitialized())
+		{
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_OcclusionFeedback_ReadbackResults);
+			ViewState->OcclusionFeedback.ReadbackResults(RHICmdList);
+			ViewState->OcclusionFeedback.AdvanceFrame(ViewState->OcclusionFrameCounter);
+		}
+		else if( bHZBOcclusion )
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_MapHZBResults);
 			check(!ViewState->HZBOcclusionTests.IsValidFrame(ViewState->OcclusionFrameCounter));
@@ -2061,6 +2096,19 @@ static int32 OcclusionCull(FRHICommandListImmediate& RHICmdList, const FScene* S
 			if( bSubmitQueries )
 			{
 				ViewState->HZBOcclusionTests.SetValidFrameNumber(ViewState->OcclusionFrameCounter);
+			}
+		}
+
+		if (View.FeatureLevel == ERHIFeatureLevel::ES3_1)
+		{
+			// Initialize/release OcclusionFeedback system on demand
+			if (GOcclusionFeedback_Enable == 0 && ViewState->OcclusionFeedback.IsInitialized())
+			{
+				ViewState->OcclusionFeedback.ReleaseResource();
+			}
+			else if (GOcclusionFeedback_Enable != 0 && !ViewState->OcclusionFeedback.IsInitialized())
+			{
+				ViewState->OcclusionFeedback.InitResource();
 			}
 		}
 	}
@@ -2254,10 +2302,12 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 
 	TArray<FMeshDecalBatch> MeshDecalBatches;
 	TArray<FVolumetricMeshBatch> VolumetricMeshBatches;
+	TArray<FVolumetricMeshBatch> HeterogeneousVolumesMeshBatches;
 	TArray<FSkyMeshBatch> SkyMeshBatches;
 	TArray<FSortedTrianglesMeshBatch> SortedTrianglesMeshBatches;
 	FDrawCommandRelevancePacket DrawCommandPacket;
 	TSet<uint32> CustomDepthStencilValues;
+	FRelevancePrimSet<FPrimitiveInstanceRange> NaniteCustomDepthInstances;
 
 	struct FPrimitiveLODMask
 	{
@@ -2277,6 +2327,8 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 	FRelevancePrimSet<FPrimitiveLODMask> PrimitivesLODMask; // group both lod mask with primitive index to be able to properly merge them in the view
 
 	uint16 CombinedShadingModelMask;
+	uint8 StrataUintPerPixel;
+	uint8 StrataBSDFCountMask;
 	bool bUsesGlobalDistanceField;
 	bool bUsesLightingChannels;
 	bool bTranslucentSurfaceLighting;
@@ -2286,6 +2338,7 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 	bool bSceneHasSkyMaterial;
 	bool bHasSingleLayerWaterMaterial;
 	bool bHasTranslucencySeparateModulation;
+	bool bHasStandardTranslucencyModulation;
 
 	FRelevancePacket(
 		FRHICommandListImmediate& InRHICmdList,
@@ -2314,6 +2367,8 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 		, bHasDistortionPrimitives(false)
 		, bHasCustomDepthPrimitives(false)
 		, CombinedShadingModelMask(0)
+		, StrataUintPerPixel(0)
+		, StrataBSDFCountMask(0)
 		, bUsesGlobalDistanceField(false)
 		, bUsesLightingChannels(false)
 		, bTranslucentSurfaceLighting(false)
@@ -2323,6 +2378,7 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 		, bSceneHasSkyMaterial(false)
 		, bHasSingleLayerWaterMaterial(false)
 		, bHasTranslucencySeparateModulation(false)
+		, bHasStandardTranslucencyModulation(false)
 	{
 	}
 
@@ -2336,9 +2392,12 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 	void ComputeRelevance()
 	{
 		CombinedShadingModelMask = 0;
+		StrataUintPerPixel = 0;
+		StrataBSDFCountMask = 0;
 		bSceneHasSkyMaterial = 0;
 		bHasSingleLayerWaterMaterial = 0;
 		bHasTranslucencySeparateModulation = 0;
+		bHasStandardTranslucencyModulation = 0;
 		bUsesGlobalDistanceField = false;
 		bUsesLightingChannels = false;
 		bTranslucentSurfaceLighting = false;
@@ -2425,9 +2484,14 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 			{
 				if (View.Family->AllowTranslucencyAfterDOF())
 				{
-					if (ViewRelevance.bNormalTranslucency)
+					if ((ViewRelevance.bNormalTranslucency || (View.AutoBeforeDOFTranslucencyBoundary > 0.0f && ViewRelevance.bSeparateTranslucency)))
 					{
-						TranslucentPrimCount.Add(ETranslucencyPass::TPT_StandardTranslucency, ViewRelevance.bUsesSceneColorCopy);
+						TranslucentPrimCount.Add(ETranslucencyPass::TPT_TranslucencyStandard, ViewRelevance.bUsesSceneColorCopy);
+					}
+
+					if ((ViewRelevance.bNormalTranslucency || (View.AutoBeforeDOFTranslucencyBoundary > 0.0f && ViewRelevance.bSeparateTranslucency)) && ViewRelevance.bTranslucencyModulate && View.Family->AllowStandardTranslucencySeparated())
+					{
+						TranslucentPrimCount.Add(ETranslucencyPass::TPT_TranslucencyStandardModulate, ViewRelevance.bUsesSceneColorCopy);
 					}
 
 					if (ViewRelevance.bSeparateTranslucency)
@@ -2435,7 +2499,7 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 						TranslucentPrimCount.Add(ETranslucencyPass::TPT_TranslucencyAfterDOF, ViewRelevance.bUsesSceneColorCopy);
 					}
 
-					if (ViewRelevance.bSeparateTranslucencyModulate)
+					if (ViewRelevance.bSeparateTranslucency && ViewRelevance.bTranslucencyModulate)
 					{
 						TranslucentPrimCount.Add(ETranslucencyPass::TPT_TranslucencyAfterDOFModulate, ViewRelevance.bUsesSceneColorCopy);
 					}
@@ -2458,6 +2522,8 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 			}
 			
 			CombinedShadingModelMask |= ViewRelevance.ShadingModelMask;
+			StrataUintPerPixel = FMath::Max(StrataUintPerPixel, ViewRelevance.StrataUintPerPixel);
+			StrataBSDFCountMask |= ViewRelevance.StrataBSDFCountMask;
 			bUsesGlobalDistanceField |= ViewRelevance.bUsesGlobalDistanceField;
 			bUsesLightingChannels |= ViewRelevance.bUsesLightingChannels;
 			bTranslucentSurfaceLighting |= ViewRelevance.bTranslucentSurfaceLighting;
@@ -2466,12 +2532,25 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 			bUsesCustomStencil |= (ViewRelevance.CustomDepthStencilUsageMask & (1 << 1)) > 0;
 			bSceneHasSkyMaterial |= ViewRelevance.bUsesSkyMaterial;
 			bHasSingleLayerWaterMaterial |= ViewRelevance.bUsesSingleLayerWaterMaterial;
-			bHasTranslucencySeparateModulation |= ViewRelevance.bSeparateTranslucencyModulate;
+			bHasStandardTranslucencyModulation |= ViewRelevance.bNormalTranslucency && ViewRelevance.bTranslucencyModulate && View.Family->AllowStandardTranslucencySeparated();
+			bHasTranslucencySeparateModulation |= ViewRelevance.bSeparateTranslucency && ViewRelevance.bTranslucencyModulate;
 
 			if (ViewRelevance.bRenderCustomDepth)
 			{
 				bHasCustomDepthPrimitives = true;
 				CustomDepthStencilValues.Add(PrimitiveSceneInfo->Proxy->GetCustomDepthStencilValue());
+
+				if (PrimitiveSceneInfo->Proxy->IsNaniteMesh())
+				{
+					check(PrimitiveSceneInfo->IsIndexValid());
+					NaniteCustomDepthInstances.AddPrim(
+						FPrimitiveInstanceRange {
+							PrimitiveSceneInfo->GetIndex(),
+							PrimitiveSceneInfo->GetInstanceSceneDataOffset(),
+							PrimitiveSceneInfo->GetNumInstanceSceneDataEntries()
+						}
+					);
+				}
 			}
 
 			extern bool GUseTranslucencyShadowDepths;
@@ -2768,9 +2847,14 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 						{
 							if (View.Family->AllowTranslucencyAfterDOF())
 							{
-								if (ViewRelevance.bNormalTranslucency)
+								if ((ViewRelevance.bNormalTranslucency || (View.AutoBeforeDOFTranslucencyBoundary > 0.0f && ViewRelevance.bSeparateTranslucency)))
 								{
 									DrawCommandPacket.AddCommandsForMesh(PrimitiveIndex, PrimitiveSceneInfo, StaticMeshRelevance, StaticMesh, Scene, bCanCache, EMeshPass::TranslucencyStandard);
+								}
+
+								if ((ViewRelevance.bNormalTranslucency || (View.AutoBeforeDOFTranslucencyBoundary > 0.0f && ViewRelevance.bSeparateTranslucency)) && ViewRelevance.bTranslucencyModulate && View.Family->AllowStandardTranslucencySeparated())
+								{
+									DrawCommandPacket.AddCommandsForMesh(PrimitiveIndex, PrimitiveSceneInfo, StaticMeshRelevance, StaticMesh, Scene, bCanCache, EMeshPass::TranslucencyStandardModulate);
 								}
 
 								if (ViewRelevance.bSeparateTranslucency)
@@ -2778,7 +2862,7 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 									DrawCommandPacket.AddCommandsForMesh(PrimitiveIndex, PrimitiveSceneInfo, StaticMeshRelevance, StaticMesh, Scene, bCanCache, EMeshPass::TranslucencyAfterDOF);
 								}
 
-								if (ViewRelevance.bSeparateTranslucencyModulate)
+								if (ViewRelevance.bSeparateTranslucency && ViewRelevance.bTranslucencyModulate)
 								{
 									DrawCommandPacket.AddCommandsForMesh(PrimitiveIndex, PrimitiveSceneInfo, StaticMeshRelevance, StaticMesh, Scene, bCanCache, EMeshPass::TranslucencyAfterDOFModulate);
 								}
@@ -2821,10 +2905,20 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 
 						if (ViewRelevance.bHasVolumeMaterialDomain)
 						{
-							VolumetricMeshBatches.AddUninitialized(1);
-							FVolumetricMeshBatch& BatchAndProxy = VolumetricMeshBatches.Last();
-							BatchAndProxy.Mesh = &StaticMesh;
-							BatchAndProxy.Proxy = PrimitiveSceneInfo->Proxy;
+							if (ShouldRenderMeshBatchWithHeterogeneousVolumes(&StaticMesh, PrimitiveSceneInfo->Proxy, View.FeatureLevel))
+							{
+								HeterogeneousVolumesMeshBatches.AddUninitialized(1);
+								FVolumetricMeshBatch& BatchAndProxy = HeterogeneousVolumesMeshBatches.Last();
+								BatchAndProxy.Mesh = &StaticMesh;
+								BatchAndProxy.Proxy = PrimitiveSceneInfo->Proxy;
+							}
+							else
+							{
+								VolumetricMeshBatches.AddUninitialized(1);
+								FVolumetricMeshBatch& BatchAndProxy = VolumetricMeshBatches.Last();
+								BatchAndProxy.Mesh = &StaticMesh;
+								BatchAndProxy.Proxy = PrimitiveSceneInfo->Proxy;
+							}
 						}
 
 						if (ViewRelevance.bUsesSkyMaterial)
@@ -2919,6 +3013,7 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 		WriteView.bSceneHasSkyMaterial |= bSceneHasSkyMaterial;
 		WriteView.bHasSingleLayerWaterMaterial |= bHasSingleLayerWaterMaterial;
 		WriteView.bHasTranslucencySeparateModulation |= bHasTranslucencySeparateModulation;
+		WriteView.bHasStandardTranslucencyModulation |= bHasStandardTranslucencyModulation;
 		VisibleDynamicPrimitivesWithSimpleLights.AppendTo(WriteView.VisibleDynamicPrimitivesWithSimpleLights);
 		WriteView.NumVisibleDynamicPrimitives += NumVisibleDynamicPrimitives;
 		WriteView.NumVisibleDynamicEditorPrimitives += NumVisibleDynamicEditorPrimitives;
@@ -2926,12 +3021,16 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 		WriteView.bHasDistortionPrimitives |= bHasDistortionPrimitives;
 		WriteView.bHasCustomDepthPrimitives |= bHasCustomDepthPrimitives;
 		WriteView.CustomDepthStencilValues.Append(CustomDepthStencilValues);
+		NaniteCustomDepthInstances.AppendTo(WriteView.NaniteCustomDepthInstances);
 		WriteView.bUsesCustomDepth |= bUsesCustomDepth;
 		WriteView.bUsesCustomStencil |= bUsesCustomStencil;
+		WriteView.StrataViewData.MaxBSDFCount = FMath::Max(WriteView.StrataViewData.MaxBSDFCount, 8u - FMath::CountLeadingZeros8(StrataBSDFCountMask));
+		WriteView.StrataViewData.MaxBytePerPixel = FMath::Max(WriteView.StrataViewData.MaxBytePerPixel, StrataUintPerPixel * 4u);
 		DirtyIndirectLightingCacheBufferPrimitives.AppendTo(WriteView.DirtyIndirectLightingCacheBufferPrimitives);
 
 		WriteView.MeshDecalBatches.Append(MeshDecalBatches);
 		WriteView.VolumetricMeshBatches.Append(VolumetricMeshBatches);
+		WriteView.HeterogeneousVolumesMeshBatches.Append(HeterogeneousVolumesMeshBatches);
 		WriteView.SkyMeshBatches.Append(SkyMeshBatches);
 		WriteView.SortedTrianglesMeshBatches.Append(SortedTrianglesMeshBatches);
 
@@ -2939,11 +3038,8 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 		{
 			FPrimitiveSceneInfo* PrimitiveSceneInfo = RecachedReflectionCapturePrimitives.Prims[Index];
 
-			PrimitiveSceneInfo->SetNeedsUniformBufferUpdate(true);
+			PrimitiveSceneInfo->MarkGPUStateDirty(EPrimitiveDirtyState::ChangedAll);
 			PrimitiveSceneInfo->ConditionalUpdateUniformBuffer(RHICmdList);
-
-			FScene& WriteScene = *const_cast<FScene*>(Scene);
-			WriteScene.GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex(), EPrimitiveDirtyState::ChangedAll);
 		}
 
 		for (int32 Index = 0; Index < LazyUpdatePrimitives.NumPrims; Index++)
@@ -3248,10 +3344,16 @@ void ComputeDynamicMeshRelevance(EShadingPath ShadingPath, bool bAddLightmapDens
 	{
 		if (View.Family->AllowTranslucencyAfterDOF())
 		{
-			if (ViewRelevance.bNormalTranslucency)
+			if ((ViewRelevance.bNormalTranslucency || (View.AutoBeforeDOFTranslucencyBoundary > 0.0f && ViewRelevance.bSeparateTranslucency)))
 			{
 				PassMask.Set(EMeshPass::TranslucencyStandard);
 				View.NumVisibleDynamicMeshElements[EMeshPass::TranslucencyStandard] += NumElements;
+			}
+
+			if ((ViewRelevance.bNormalTranslucency || (View.AutoBeforeDOFTranslucencyBoundary > 0.0f && ViewRelevance.bSeparateTranslucency)) && ViewRelevance.bTranslucencyModulate && View.Family->AllowStandardTranslucencySeparated())
+			{
+				PassMask.Set(EMeshPass::TranslucencyStandardModulate);
+				View.NumVisibleDynamicMeshElements[EMeshPass::TranslucencyStandardModulate] += NumElements;
 			}
 
 			if (ViewRelevance.bSeparateTranslucency)
@@ -3260,7 +3362,7 @@ void ComputeDynamicMeshRelevance(EShadingPath ShadingPath, bool bAddLightmapDens
 				View.NumVisibleDynamicMeshElements[EMeshPass::TranslucencyAfterDOF] += NumElements;
 			}
 
-			if (ViewRelevance.bSeparateTranslucencyModulate)
+			if (ViewRelevance.bSeparateTranslucency && ViewRelevance.bTranslucencyModulate)
 			{
 				PassMask.Set(EMeshPass::TranslucencyAfterDOFModulate);
 				View.NumVisibleDynamicMeshElements[EMeshPass::TranslucencyAfterDOFModulate] += NumElements;
@@ -3316,10 +3418,20 @@ void ComputeDynamicMeshRelevance(EShadingPath ShadingPath, bool bAddLightmapDens
 
 	if (ViewRelevance.bHasVolumeMaterialDomain)
 	{
-		View.VolumetricMeshBatches.AddUninitialized(1);
-		FVolumetricMeshBatch& BatchAndProxy = View.VolumetricMeshBatches.Last();
-		BatchAndProxy.Mesh = MeshBatch.Mesh;
-		BatchAndProxy.Proxy = MeshBatch.PrimitiveSceneProxy;
+		if (ShouldRenderMeshBatchWithHeterogeneousVolumes(MeshBatch.Mesh, MeshBatch.PrimitiveSceneProxy, View.FeatureLevel))
+		{
+			View.HeterogeneousVolumesMeshBatches.AddUninitialized(1);
+			FVolumetricMeshBatch& BatchAndProxy = View.HeterogeneousVolumesMeshBatches.Last();
+			BatchAndProxy.Mesh = MeshBatch.Mesh;
+			BatchAndProxy.Proxy = MeshBatch.PrimitiveSceneProxy;
+		}
+		else
+		{
+			View.VolumetricMeshBatches.AddUninitialized(1);
+			FVolumetricMeshBatch& BatchAndProxy = View.VolumetricMeshBatches.Last();
+			BatchAndProxy.Mesh = MeshBatch.Mesh;
+			BatchAndProxy.Proxy = MeshBatch.PrimitiveSceneProxy;
+		}
 	}
 
 	if (ViewRelevance.bUsesSkyMaterial)
@@ -3514,36 +3626,6 @@ void FSceneRenderer::PreVisibilityFrameSetup(FRDGBuilder& GraphBuilder, const FS
 
 	// Notify the RHI we are beginning to render a scene.
 	RHICmdList.BeginScene();
-
-	{
-		static auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DoLazyStaticMeshUpdate"));
-		const bool DoLazyStaticMeshUpdate = (CVar->GetInt() && !GIsEditor);
-
-		if (DoLazyStaticMeshUpdate)
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_PreVisibilityFrameSetup_EvictionForLazyStaticMeshUpdate);
-			static int32 RollingRemoveIndex = 0;
-			static int32 RollingPassShrinkIndex = 0;
-			if (RollingRemoveIndex >= Scene->Primitives.Num())
-			{
-				RollingRemoveIndex = 0;
-				RollingPassShrinkIndex++;
-				if (RollingPassShrinkIndex >= UE_ARRAY_COUNT(Scene->CachedDrawLists))
-				{
-					RollingPassShrinkIndex = 0;
-				}
-				// Periodically shrink the SparseArray containing cached mesh draw commands which we are causing to be regenerated with UpdateStaticMeshes
-				Scene->CachedDrawLists[RollingPassShrinkIndex].MeshDrawCommands.Shrink();
-			}
-			const int32 NumRemovedPerFrame = 10;
-			TArray<FPrimitiveSceneInfo*, TInlineAllocator<10>> SceneInfos;
-			for (int32 NumRemoved = 0; NumRemoved < NumRemovedPerFrame && RollingRemoveIndex < Scene->Primitives.Num(); NumRemoved++, RollingRemoveIndex++)
-			{
-				SceneInfos.Add(Scene->Primitives[RollingRemoveIndex]);
-			}
-			FPrimitiveSceneInfo::UpdateStaticMeshes(RHICmdList, Scene, SceneInfos, EUpdateStaticMeshFlags::AllCommands, false);
-		}
-	}
 
 	if (Views.Num() > 0 && !ViewFamily.EngineShowFlags.HitProxies)
 	{
@@ -3886,14 +3968,6 @@ void FSceneRenderer::PreVisibilityFrameSetup(FRDGBuilder& GraphBuilder, const FS
 			const bool bResetCamera = (bFirstFrameOrTimeWasReset || View.bCameraCut || bIsLargeCameraMovement || View.bForceCameraVisibilityReset);
 			
 #if RHI_RAYTRACING
-			// Note: 0.18 deg is the minimum angle for avoiding numerical precision issue (which would cause constant invalidation)
-			const bool bIsCameraMove = IsLargeCameraMovement(
-				View,
-				ViewState->PrevFrameViewInfo.ViewMatrices.GetViewMatrix(),
-				ViewState->PrevFrameViewInfo.ViewMatrices.GetViewOrigin(),
-				0.18f /*degree*/, 0.1f /*cm*/);
-			const bool bIsProjMatrixDifferent = View.ViewMatrices.GetProjectionNoAAMatrix() != View.ViewState->PrevFrameViewInfo.ViewMatrices.GetProjectionNoAAMatrix();
-			
 			static const auto CVarTemporalDenoiser = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PathTracing.TemporalDenoiser.mode"));
 			const int TemporalDenoiserMode = CVarTemporalDenoiser ? CVarTemporalDenoiser->GetValueOnAnyThread() : 0;
 
@@ -3912,16 +3986,25 @@ void FSceneRenderer::PreVisibilityFrameSetup(FRDGBuilder& GraphBuilder, const FS
 			{
 				// for interactive usage - any movement or scene change should restart the path tracer
 
+				// Note: 0.18 deg is the minimum angle for avoiding numerical precision issue (which would cause constant invalidation)
+				const bool bIsCameraMove = IsLargeCameraMovement(
+					View,
+					ViewState->PrevFrameViewInfo.ViewMatrices.GetViewMatrix(),
+					ViewState->PrevFrameViewInfo.ViewMatrices.GetViewOrigin(),
+					0.18f /*degree*/, 0.1f /*cm*/);
+				const bool bIsProjMatrixDifferent = View.ViewMatrices.GetProjectionNoAAMatrix() != View.ViewState->PrevFrameViewInfo.ViewMatrices.GetProjectionNoAAMatrix();
+
 				// For each view, we remember what the invalidation counter was set to last time we were here so we can catch all changes
-				bool bNeedsInvalidation = ViewState->PathTracingInvalidationCounter != CurrentPathTracingInvalidationCounter;
+				const bool bNeedsInvalidation = ViewState->PathTracingInvalidationCounter != CurrentPathTracingInvalidationCounter;
 				ViewState->PathTracingInvalidationCounter = CurrentPathTracingInvalidationCounter;
 				if (bNeedsInvalidation ||
-					bResetCamera ||
 					bIsProjMatrixDifferent ||
 					bIsCameraMove ||
+					View.bCameraCut ||
+					View.bForceCameraVisibilityReset ||
 					View.bForcePathTracerReset)
 				{
-					const bool bClearTemporalDenoisingHistory = (TemporalDenoiserMode == 2) ? (View.bCameraCut || bResetCamera) : true;
+					const bool bClearTemporalDenoisingHistory = (TemporalDenoiserMode == 2) ? View.bCameraCut : true;
 					ViewState->PathTracingInvalidate(bClearTemporalDenoisingHistory);
 				}
 			}
@@ -4026,10 +4109,10 @@ void FSceneRenderer::PreVisibilityFrameSetup(FRDGBuilder& GraphBuilder, const FS
 	if (Scene && Views.Num())
 	{
 		const int32 ReferenceViewIndex = 0;
-		FViewInfo& ReferenceView = Views[ReferenceViewIndex];
-		FRayTracingScene& RayTracingScene = Scene->RayTracingScene;
+		const FViewInfo& ReferenceView = Views[ReferenceViewIndex];
 
 		Scene->RayTracingScene.InitPreViewTranslation(ReferenceView.ViewMatrices);
+		Scene->RayTracingScene.bNeedsDebugInstanceGPUSceneIndexBuffer = IsRayTracingInstanceOverlapEnabled(ReferenceView);
 	}
 #endif
 
@@ -4562,6 +4645,22 @@ void FSceneRenderer::ComputeViewVisibility(
 	STAT(int32 NumCulledPrimitives = 0);
 	STAT(int32 NumOccludedPrimitives = 0);
 
+	/**
+	  * UpdateStaticMeshes removes and re-creates cached FMeshDrawCommands.  If there are multiple scene renderers being run together,
+	  * we need allocated pipeline state IDs not to change, in case async tasks related to prior scene renderers are still in flight
+	  * (FSubmitNaniteMaterialPassCommandsAnyThreadTask or FDrawVisibleMeshCommandsAnyThreadTask).  So we freeze pipeline state IDs,
+	  * preventing them from being de-allocated even if their reference count temporarily goes to zero during calls to
+	  * RemoveCachedMeshDrawCommands followed by CacheMeshDrawCommands (or the Nanite equivalent).
+	  *
+	  * Note that on the first scene renderer, we do want to de-allocate items, so they can be permanently released if no longer in use
+	  * (for example, if there was an impactful change to a render proxy by game logic), but the assumption is that sequential renders
+	  * of the same scene from different views can't make such changes.
+	  */
+	if (!bIsFirstSceneRenderer)
+	{
+		FGraphicsMinimalPipelineStateId::FreezeIdTable(true);
+	}
+
 	UE::Tasks::FTask ComputeLightVisibilityTask = LaunchSceneRenderTask(UE_SOURCE_LOCATION, [this]
 	{
 		ComputeLightVisibility();
@@ -4581,28 +4680,6 @@ void FSceneRenderer::ComputeViewVisibility(
 	}
 
 	UpdateReflectionSceneData(Scene);
-
-	{
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_ViewVisibilityTime_ConditionalUpdateStaticMeshesWithoutVisibilityCheck);
-		SCOPED_NAMED_EVENT(FSceneRenderer_ConditionalUpdateStaticMeshes, FColor::Red);
-
-		Scene->ConditionalMarkStaticMeshElementsForUpdate();
-
-		TArray<FPrimitiveSceneInfo*> UpdatedSceneInfos;
-		for (TSet<FPrimitiveSceneInfo*>::TIterator It(Scene->PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck); It; ++It)
-		{
-			FPrimitiveSceneInfo* Primitive = *It;
-			if (Primitive->NeedsUpdateStaticMeshes())
-			{
-				UpdatedSceneInfos.Add(Primitive);
-			}
-		}
-		if (UpdatedSceneInfos.Num() > 0)
-		{
-			FPrimitiveSceneInfo::UpdateStaticMeshes(RHICmdList, Scene, UpdatedSceneInfos, EUpdateStaticMeshFlags::AllCommands);
-		}
-		Scene->PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck.Reset();
-	}
 
 	uint8 ViewBit = 0x1;
 	{
@@ -4720,6 +4797,14 @@ void FSceneRenderer::ComputeViewVisibility(
 
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(FSceneRenderer_Cull);
+#if RHI_RAYTRACING
+				if (bAnyRayTracingPassEnabled)
+				{
+					// The logic inside PrimitiveCull makes use of ShouldCullForRayTracing to decide if the primitive should be considered for raytracing
+					// Therefore we must be sure we are done with caching the mesh draw commands (which include raytracing caches) before it runs if raytracing is being used.
+					Scene->WaitForCacheMeshDrawCommandsTask();
+				}
+#endif
 				int32 NumCulledPrimitivesForView = PrimitiveCull(Scene, View, bNeedsFrustumCulling);
 				STAT(NumCulledPrimitives += NumCulledPrimitivesForView);
 			}
@@ -4771,17 +4856,36 @@ void FSceneRenderer::ComputeViewVisibility(
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_ViewVisibilityTime_ConditionalUpdateStaticMeshes);
 				SCOPED_NAMED_EVENT(FSceneRenderer_UpdateStaticMeshes, FColor::Red);
 
+				Scene->WaitForCacheMeshDrawCommandsTask();
+				Scene->ConditionalMarkStaticMeshElementsForUpdate();
+
 				TArray<FPrimitiveSceneInfo*> AddedSceneInfos;
+				for (TSet<FPrimitiveSceneInfo*>::TIterator It(Scene->PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck); It; ++It)
+				{
+					FPrimitiveSceneInfo* Primitive = *It;
+					if (Primitive->NeedsUpdateStaticMeshes())
+					{
+						AddedSceneInfos.Add(Primitive);
+					}
+				}
+
 				for (TConstDualSetBitIterator<SceneRenderingBitArrayAllocator, FDefaultBitArrayAllocator> BitIt(View.PrimitiveVisibilityMap, Scene->PrimitivesNeedingStaticMeshUpdate); BitIt; ++BitIt)
 				{
 					int32 PrimitiveIndex = BitIt.GetIndex();
-					AddedSceneInfos.Add(Scene->Primitives[PrimitiveIndex]);
+					FPrimitiveSceneInfo* SceneInfo = Scene->Primitives[PrimitiveIndex];
+
+					if (!Scene->PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck.Contains(SceneInfo))
+					{
+						AddedSceneInfos.Add(Scene->Primitives[PrimitiveIndex]);
+					}
 				}
 
 				if (AddedSceneInfos.Num() > 0)
 				{
-					FPrimitiveSceneInfo::UpdateStaticMeshes(RHICmdList, Scene, AddedSceneInfos, EUpdateStaticMeshFlags::AllCommands);
+					FPrimitiveSceneInfo::UpdateStaticMeshes(Scene, AddedSceneInfos, EUpdateStaticMeshFlags::AllCommands);
 				}
+
+				Scene->PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck.Reset();
 			}
 
 			// Single-pass stereo views can't compute relevance until all views are visibility culled
@@ -4850,6 +4954,11 @@ void FSceneRenderer::ComputeViewVisibility(
 		}
 	}
 
+	ComputeLightVisibilityTask.Wait();
+	Scene->WaitForCreateLightPrimitiveInteractionsTask();
+
+	PreGatherDynamicMeshElements();
+
 	{
 		SCOPED_NAMED_EVENT(FSceneRenderer_GatherDynamicMeshElements, FColor::Yellow);
 		// Gather FMeshBatches from scene proxies
@@ -4884,8 +4993,12 @@ void FSceneRenderer::ComputeViewVisibility(
 	INC_DWORD_STAT_BY(STAT_ProcessedPrimitives,NumProcessedPrimitives);
 	INC_DWORD_STAT_BY(STAT_CulledPrimitives,NumCulledPrimitives);
 	INC_DWORD_STAT_BY(STAT_OccludedPrimitives,NumOccludedPrimitives);
-	
-	ComputeLightVisibilityTask.Wait();
+
+	// See comment where this is called above
+	if (!bIsFirstSceneRenderer)
+	{
+		FGraphicsMinimalPipelineStateId::FreezeIdTable(false);
+	}
 }
 
 void FDeferredShadingSceneRenderer::ComputeLightVisibility()
@@ -5143,7 +5256,7 @@ void FDeferredShadingSceneRenderer::PreVisibilityFrameSetup(FRDGBuilder& GraphBu
  * Initialize scene's views.
  * Check visibility, build visible mesh commands, etc.
  */
-void FDeferredShadingSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, const FSceneTexturesConfig& SceneTexturesConfig, FExclusiveDepthStencil::Type BasePassDepthStencilAccess, struct FILCUpdatePrimTaskData& ILCTaskData, FInstanceCullingManager& InstanceCullingManager)
+void FDeferredShadingSceneRenderer::BeginInitViews(FRDGBuilder& GraphBuilder, const FSceneTexturesConfig& SceneTexturesConfig, FExclusiveDepthStencil::Type BasePassDepthStencilAccess, struct FILCUpdatePrimTaskData& ILCTaskData, FInstanceCullingManager& InstanceCullingManager)
 {
 	SCOPED_NAMED_EVENT(FDeferredShadingSceneRenderer_InitViews, FColor::Emerald);
 	SCOPE_CYCLE_COUNTER(STAT_InitViewsTime);
@@ -5184,7 +5297,7 @@ void FDeferredShadingSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, const F
 	// This must happen before we start initialising and using views.
 	if (Scene)
 	{
-		UpdateSkyIrradianceGpuBuffer(RHICmdList, ViewFamily.EngineShowFlags, Scene->SkyLight, Scene->SkyIrradianceEnvironmentMap);
+		UpdateSkyIrradianceGpuBuffer(GraphBuilder, ViewFamily.EngineShowFlags, Scene->SkyLight, Scene->SkyIrradianceEnvironmentMap);
 	}
 
 	// Initialise Sky/View resources before the view global uniform buffer is built.
@@ -5194,7 +5307,6 @@ void FDeferredShadingSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, const F
 	}
 
 	PostVisibilityFrameSetup(ILCTaskData);
-	InitViewsBeforePrepass(GraphBuilder, InstanceCullingManager);
 
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_InitViews_InitRHIResources);
@@ -5202,10 +5314,6 @@ void FDeferredShadingSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, const F
 		for (int32 ViewIndex = Views.Num() - 1; ViewIndex >= 0; --ViewIndex)
 		{
 			FViewInfo& View = Views[ViewIndex];
-
-#if RHI_RAYTRACING
-			View.IESLightProfileResource = View.ViewState ? &View.ViewState->IESLightProfileResources : nullptr;
-#endif
 			// Set the pre-exposure before initializing the constant buffers.
 			if (View.ViewState)
 			{
@@ -5227,6 +5335,8 @@ void FDeferredShadingSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, const F
 	{
 		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 	}
+
+	WaitForPrepareDynamicShadowsTask(CurrentDynamicShadowsTaskData);
 }
 
 template<class T>
@@ -5300,21 +5410,7 @@ void FSceneRenderer::SetupSceneReflectionCaptureBuffer(FRHICommandListImmediate&
 	}
 }
 
-void FDeferredShadingSceneRenderer::InitViewsBeforePrepass(FRDGBuilder& GraphBuilder, FInstanceCullingManager& InstanceCullingManager)
-{
-	const bool bHasRayTracedOverlay = HasRayTracedOverlay(ViewFamily);
-
-	if (GEarlyInitDynamicShadows &&
-		CurrentDynamicShadowsTaskData == nullptr &&
-		ViewFamily.EngineShowFlags.DynamicShadows
-		&& !ViewFamily.EngineShowFlags.HitProxies
-		&& !bHasRayTracedOverlay)
-	{
-		CurrentDynamicShadowsTaskData = BeginInitDynamicShadows(true);
-	}
-}
-
-void FDeferredShadingSceneRenderer::InitViewsAfterPrepass(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries, struct FILCUpdatePrimTaskData& ILCTaskData, FInstanceCullingManager& InstanceCullingManager)
+void FDeferredShadingSceneRenderer::EndInitViews(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries, struct FILCUpdatePrimTaskData& ILCTaskData, FInstanceCullingManager& InstanceCullingManager, FRDGExternalAccessQueue& ExternalAccessQueue)
 {
 	SCOPED_NAMED_EVENT(FDeferredShadingSceneRenderer_InitViewsAfterPrepass, FColor::Emerald);
 	SCOPE_CYCLE_COUNTER(STAT_InitViewsPossiblyAfterPrepass);
@@ -5330,12 +5426,12 @@ void FDeferredShadingSceneRenderer::InitViewsAfterPrepass(FRDGBuilder& GraphBuil
 		// Setup dynamic shadows.
 		if (CurrentDynamicShadowsTaskData)
 		{
-			FinishInitDynamicShadows(RHICmdList, CurrentDynamicShadowsTaskData, DynamicIndexBufferForInitShadows, DynamicVertexBufferForInitShadows, DynamicReadBufferForInitShadows, InstanceCullingManager);
+			FinishInitDynamicShadows(GraphBuilder, CurrentDynamicShadowsTaskData, DynamicIndexBufferForInitShadows, DynamicVertexBufferForInitShadows, DynamicReadBufferForInitShadows, InstanceCullingManager, ExternalAccessQueue);
 			CurrentDynamicShadowsTaskData = nullptr;
 		}
 		else
 		{
-			InitDynamicShadows(RHICmdList, DynamicIndexBufferForInitShadows, DynamicVertexBufferForInitShadows, DynamicReadBufferForInitShadows, InstanceCullingManager);
+			InitDynamicShadows(GraphBuilder, DynamicIndexBufferForInitShadows, DynamicVertexBufferForInitShadows, DynamicReadBufferForInitShadows, InstanceCullingManager, ExternalAccessQueue);
 		}
 
 		if (GDynamicRHI->RHIIncludeOptionalFlushes())

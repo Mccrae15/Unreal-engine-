@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RHIBreadcrumbs.h"
+#include "Misc/MemStack.h"
 #include "RHI.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
+#include "Trace/Trace.inl"
 
 #if RHI_WANT_BREADCRUMB_EVENTS
 
@@ -150,7 +152,7 @@ void FRHIBreadcrumbStack::WriteRenderBreadcrumbs(FCrashContextExtendedWriter& Wr
 	TCHAR StaticBreadcrumbName[MAX_BREADCRUMB_NAME_STRING];
 	FCString::Snprintf(StaticBreadcrumbName, MAX_BREADCRUMB_NAME_STRING, TEXT("Breadcrumbs_%s_%d"), ThreadName, BreadcrumbId++);
 	Writer.AddString(StaticBreadcrumbName, StaticBreadcrumbStackString);
-	UE_LOG(LogRHI, Error, StaticBreadcrumbStackString);
+	UE_LOG(LogRHI, Error, TEXT("%s"), StaticBreadcrumbStackString);
 }
 #endif
 

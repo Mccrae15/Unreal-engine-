@@ -4,6 +4,7 @@
 #include "TurnkeySupport.h"
 
 #include "SlateOptMacros.h"
+#include "UObject/Package.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
@@ -30,7 +31,8 @@
 #include "ISourceControlModule.h"
 #include "ITargetDeviceProxy.h"
 #include "ITargetDeviceServicesModule.h"
-#include "Settings/ProjectPackagingSettings.h" // can go away once turnkey menu handles Package
+#include "Settings/ProjectPackagingSettings.h"
+#include "Settings/PlatformsMenuSettings.h"
 #include "IDesktopPlatform.h"
 #include "DesktopPlatformModule.h"
 #include "PlatformInfo.h"
@@ -47,7 +49,8 @@
 #include "ITurnkeyIOModule.h"
 #include "AnalyticsEventAttribute.h"
 #if WITH_EDITOR
-#include "ZenServerInterface.h"
+#include "LevelEditor.h"
+#include "Experimental/ZenServerInterface.h"
 #endif
 
 #include "Misc/App.h"
@@ -128,7 +131,7 @@ protected:
 	}
 
 
-	static bool ShouldBuildProject(UProjectPackagingSettings* PackagingSettings, const ITargetPlatform* TargetPlatform)
+	static bool ShouldBuildProject(const UProjectPackagingSettings* PackagingSettings, const ITargetPlatform* TargetPlatform)
 	{
 		const UProjectPackagingSettings::FConfigurationInfo& ConfigurationInfo = UProjectPackagingSettings::ConfigurationInfo[(int)PackagingSettings->BuildConfiguration];
 
@@ -234,12 +237,6 @@ public:
 			return false;
 		}
 
-// 		// PrepForDebugging needs the platform to specify how
-// 		if (Mode == EPrepareContentMode::PrepareForDebugging)
-// 		{
-// 			return FDataDrivenPlatformInfoRegistry::GetPlatformInfo(IniPlatformName).PrepareForDebuggingOptions != TEXT("");
-// 		}
-
 		return true;
 	}
 
@@ -272,8 +269,9 @@ public:
 		TArray<FAnalyticsEventAttribute> AnalyticsParamArray;
 
 		// get a in-memory defaults which will have the user-settings, like the per-platform config/target platform stuff
-		UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
-	
+		const UProjectPackagingSettings* PackagingSettings = GetPackagingSettingsForPlatform(IniPlatformName);
+		UPlatformsMenuSettings* PlatformsSettings = GetMutableDefault<UPlatformsMenuSettings>();
+
 		// installed builds only support standard Game type builds (not Client, Server, etc) so instead of looking up a setting that the user can't set, 
 		// always use the base PlatformInfo for Game builds, which will be named the same as the platform itself
 		const PlatformInfo::FTargetPlatformInfo* PlatformInfo = nullptr;
@@ -283,7 +281,7 @@ public:
 		}
 		else
 		{
-			PlatformInfo = PlatformInfo::FindPlatformInfo(AllPlatformPackagingSettings->GetTargetFlavorForPlatform(IniPlatformName));
+			PlatformInfo = PlatformInfo::FindPlatformInfo(PlatformsSettings->GetTargetFlavorForPlatform(IniPlatformName));
 		}
 		// this is unexpected to be able to happen, but it could if there was a bad value saved in the UProjectPackagingSettings - if this trips, we should handle errors
 		check(PlatformInfo != nullptr);
@@ -317,9 +315,6 @@ public:
 		// this may delete UProjectPackagingSettings , don't hold it across this call
 		FTurnkeyEditorSupport::SaveAll();
 
-		// get all the helper objects
-		UProjectPackagingSettings* PackagingSettings = GetPackagingSettingsForPlatform(IniPlatformName);
-
 		// basic BuildCookRun params we always want
 		FString BuildCookRunParams = FString::Printf(TEXT("-nop4 -utf8output %s -cook "), GetUATCompilationFlags());
 
@@ -331,7 +326,7 @@ public:
 		}
 
 		bool bIsProjectBuildTarget = false;
-		const FTargetInfo* BuildTargetInfo = AllPlatformPackagingSettings->GetBuildTargetInfoForPlatform(IniPlatformName, bIsProjectBuildTarget);
+		const FTargetInfo* BuildTargetInfo = PlatformsSettings->GetBuildTargetInfoForPlatform(IniPlatformName, bIsProjectBuildTarget);
 
 		// Only add the -Target=... argument for code projects. Content projects will return UnrealGame/UnrealClient/UnrealServer here, but
 		// may need a temporary target generated to enable/disable plugins. Specifying -Target in these cases will cause packaging to fail,
@@ -398,20 +393,20 @@ public:
 			ContentPrepIcon = FAppStyle::Get().GetBrush(TEXT("MainFrame.PackageProject"));
 
 			// let the user pick a target directory
-			if (AllPlatformPackagingSettings->StagingDirectory.Path.IsEmpty())
+			if (PlatformsSettings->StagingDirectory.Path.IsEmpty())
 			{
-				AllPlatformPackagingSettings->StagingDirectory.Path = FPaths::ProjectDir();
+				PlatformsSettings->StagingDirectory.Path = FPaths::ProjectDir();
 			}
 
 			FString OutFolderName;
 
-			if (!FDesktopPlatformModule::Get()->OpenDirectoryDialog(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr), LOCTEXT("PackageDirectoryDialogTitle", "Package project...").ToString(), AllPlatformPackagingSettings->StagingDirectory.Path, OutFolderName))
+			if (!FDesktopPlatformModule::Get()->OpenDirectoryDialog(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr), LOCTEXT("PackageDirectoryDialogTitle", "Package project...").ToString(), PlatformsSettings->StagingDirectory.Path, OutFolderName))
 			{
 				return;
 			}
 
-			AllPlatformPackagingSettings->StagingDirectory.Path = OutFolderName;
-			AllPlatformPackagingSettings->SaveConfig();
+			PlatformsSettings->StagingDirectory.Path = OutFolderName;
+			PlatformsSettings->SaveConfig();
 
 
 			BuildCookRunParams += TEXT(" -stage -archive -package");
@@ -427,9 +422,7 @@ public:
 			}
 
 			// Pak file(s) must be used when using container file(s)
-			PackagingSettings->UsePakFile |= PackagingSettings->bUseIoStore;
-
-			if (PackagingSettings->UsePakFile)
+			if (PackagingSettings->UsePakFile || PackagingSettings->bUseIoStore)
 			{
 				BuildCookRunParams += TEXT(" -pak");
 				if (PackagingSettings->bUseIoStore)
@@ -457,7 +450,7 @@ public:
 				BuildCookRunParams += TEXT(" -applocaldirectory=\"$(EngineDir)/Binaries/ThirdParty/AppLocalDependencies\"");
 			}
 
-			BuildCookRunParams += FString::Printf(TEXT(" -archivedirectory=\"%s\""), *AllPlatformPackagingSettings->StagingDirectory.Path);
+			BuildCookRunParams += FString::Printf(TEXT(" -archivedirectory=\"%s\""), *PlatformsSettings->StagingDirectory.Path);
 
 			if (PackagingSettings->ForDistribution)
 			{
@@ -480,11 +473,11 @@ public:
 				BuildCookRunParams += FString::Printf(TEXT(" -manifests -createchunkinstall -chunkinstalldirectory=\"%s\" -chunkinstallversion=%s"), *(PackagingSettings->HttpChunkInstallDataDirectory.Path), *(PackagingSettings->HttpChunkInstallDataVersion));
 			}
 
-			EProjectPackagingBuildConfigurations BuildConfig = AllPlatformPackagingSettings->GetBuildConfigurationForPlatform(IniPlatformName);
+			EProjectPackagingBuildConfigurations BuildConfig = PlatformsSettings->GetBuildConfigurationForPlatform(IniPlatformName);
 			// if PPBC_MAX is set, then the project default should be used instead of the per platform build config
 			if (BuildConfig == EProjectPackagingBuildConfigurations::PPBC_MAX)
 			{
-				BuildConfig = AllPlatformPackagingSettings->BuildConfiguration;
+				BuildConfig = PackagingSettings->BuildConfiguration;
 			}
 
 			// when distribution is set, always package in shipping, which overrides the per platform build config
@@ -515,15 +508,18 @@ public:
 				BuildCookRunParams += TEXT(" -nodebuginfo");
 			}
 		}
-// 		else if (Mode == EPrepareContentMode::PrepareForDebugging)
-// 		{
-// 			if (ShouldBuildProject(PackagingSettings, TargetPlatform))
-// 			{
-// 				BuildCookRunParams += TEXT(" -build");
-// 			}
-// 
-// 			BuildCookRunParams += FString::Printf(TEXT(" %s"), *FDataDrivenPlatformInfoRegistry::GetPlatformInfo(IniPlatformName).PrepareForDebuggingOptions);
-// 		}
+        else if (Mode == EPrepareContentMode::PrepareForDebugging)
+         {
+             if (IniPlatformName == TEXT("IOS") || IniPlatformName == TEXT("TvOS"))
+             {
+                 FString CommandLine = FString::Printf(TEXT("WrangleContentForDebugging -platform=%s -ProjectFilePath=%s"), *IniPlatformName.ToString().ToLower(), *ProjectPath);
+              
+                 FTurnkeyEditorSupport::RunUAT(CommandLine, PlatformInfo->DisplayName, ContentPrepDescription, ContentPrepTaskName, ContentPrepIcon, &AnalyticsParamArray);
+             
+                 return;
+
+             }
+ 		}
 		else if (Mode == EPrepareContentMode::CookOnly)
 		{
 			ContentPrepDescription = LOCTEXT("CookingContentTaskName", "Cooking content");
@@ -584,29 +580,29 @@ public:
 
 		// pass the editor setting down to UAT in case they aren't saved to the ini's that UAT would read
 		{
-			UProjectPackagingSettings* PackagingSettings = FTurnkeySupportCallbacks::GetPackagingSettingsForPlatform(IniPlatformName);
-			UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
+			UProjectPackagingSettings* PlatformPackagingSettings = FTurnkeySupportCallbacks::GetPackagingSettingsForPlatform(IniPlatformName);
+			const UPlatformsMenuSettings* PlatformsSettings = GetDefault<UPlatformsMenuSettings>();
 			bool bIsProjectBuildTarget = false;
-			const FTargetInfo* BuildTargetInfo = AllPlatformPackagingSettings->GetBuildTargetInfoForPlatform(IniPlatformName, bIsProjectBuildTarget);
+			const FTargetInfo* BuildTargetInfo = PlatformsSettings->GetBuildTargetInfoForPlatform(IniPlatformName, bIsProjectBuildTarget);
 
 			CommandLine.Appendf(TEXT(" -overridetarget=%s"), *BuildTargetInfo->Name);
 
 			// distribution builds can set shipping 
-			EProjectPackagingBuildConfigurations BuildConfig = PackagingSettings->ForDistribution ? 
+			EProjectPackagingBuildConfigurations BuildConfig = PlatformPackagingSettings->ForDistribution ?
 				EProjectPackagingBuildConfigurations::PPBC_Shipping :
-				AllPlatformPackagingSettings->GetBuildConfigurationForPlatform(IniPlatformName);
+			PlatformsSettings->GetBuildConfigurationForPlatform(IniPlatformName);
 
 			// if PPBC_MAX is set, then the project default should be used instead of the per platform build config
 			if (BuildConfig == EProjectPackagingBuildConfigurations::PPBC_MAX)
 			{
-				BuildConfig = AllPlatformPackagingSettings->BuildConfiguration;
+				BuildConfig = PlatformPackagingSettings->BuildConfiguration;
 			}
 			const UProjectPackagingSettings::FConfigurationInfo& ConfigurationInfo = UProjectPackagingSettings::ConfigurationInfo[(int)BuildConfig];
 			CommandLine.Appendf(TEXT(" -overrideconfiguration=%s"), LexToString(ConfigurationInfo.Configuration));
 
 
 			// get the chosen cook flavor (texture format, etc)
-			const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(AllPlatformPackagingSettings->GetTargetFlavorForPlatform(IniPlatformName));
+			const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(PlatformsSettings->GetTargetFlavorForPlatform(IniPlatformName));
 			if (PlatformInfo->IsFlavor())
 			{
 				CommandLine.Appendf(TEXT(" -overrideflavor=%s"), *PlatformInfo->PlatformFlavor.ToString());
@@ -618,7 +614,7 @@ public:
 
 	static void ExecuteCustomBuild(FName IniPlatformName, FString DeviceId, FProjectBuildSettings Build)
 	{
-		const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(GetDefault<UProjectPackagingSettings>()->GetTargetFlavorForPlatform(IniPlatformName));
+		const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(GetDefault<UPlatformsMenuSettings>()->GetTargetFlavorForPlatform(IniPlatformName));
 		const FString ProjectPath = GetProjectPathForTurnkey();
 
 		// throw this on the command before the actual automation name (Turnkey, BuildCOokRun, etc) because they are global-to-UAT options, not options for a single command
@@ -667,15 +663,15 @@ public:
 			if (Build.BuildCookRunParams.Contains("{BrowseForDir}"))
 			{
 				// we reuse the already-presenbt StagingDirectory to save it, although it's more like "BuildOutpuDirectory" now 
-				UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
+				UPlatformsMenuSettings* PlatformsSettings = GetMutableDefault<UPlatformsMenuSettings>();
 				FString OutFolderName;
-				if (!FDesktopPlatformModule::Get()->OpenDirectoryDialog(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr), LOCTEXT("PackageDirectoryDialogTitle", "Package project...").ToString(), AllPlatformPackagingSettings->StagingDirectory.Path, OutFolderName))
+				if (!FDesktopPlatformModule::Get()->OpenDirectoryDialog(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr), LOCTEXT("PackageDirectoryDialogTitle", "Package project...").ToString(), PlatformsSettings->StagingDirectory.Path, OutFolderName))
 				{
 					return;
 				}
 
-				AllPlatformPackagingSettings->StagingDirectory.Path = OutFolderName;
-				AllPlatformPackagingSettings->SaveConfig();
+				PlatformsSettings->StagingDirectory.Path = OutFolderName;
+				PlatformsSettings->SaveConfig();
 
 				CommandLine += FString::Printf(TEXT(" -outputdir=\"%s\""), *OutFolderName);
 			}
@@ -687,21 +683,21 @@ public:
 
 	static void SetPackageBuildConfiguration(const PlatformInfo::FTargetPlatformInfo* Info, EProjectPackagingBuildConfigurations BuildConfiguration)
 	{
-		UProjectPackagingSettings* PackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
-		PackagingSettings->SetBuildConfigurationForPlatform(Info->IniPlatformName, BuildConfiguration);
-		PackagingSettings->SaveConfig();
+		UPlatformsMenuSettings* PlatformsSettings = GetMutableDefault<UPlatformsMenuSettings>();
+		PlatformsSettings->SetBuildConfigurationForPlatform(Info->IniPlatformName, BuildConfiguration);
+		PlatformsSettings->SaveConfig();
 	}
 
 	static bool PackageBuildConfigurationIsChecked(const PlatformInfo::FTargetPlatformInfo* Info, EProjectPackagingBuildConfigurations BuildConfiguration)
 	{
-		return GetDefault<UProjectPackagingSettings>()->GetBuildConfigurationForPlatform(Info->IniPlatformName) == BuildConfiguration;
+		return GetDefault<UPlatformsMenuSettings>()->GetBuildConfigurationForPlatform(Info->IniPlatformName) == BuildConfiguration;
 	}	
 	
 	static void SetActiveFlavor(const PlatformInfo::FTargetPlatformInfo* Info)
 	{
-		UProjectPackagingSettings* PackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
-		PackagingSettings->SetTargetFlavorForPlatform(Info->IniPlatformName, Info->Name);
-		PackagingSettings->SaveConfig();
+		UPlatformsMenuSettings* PlatformsSettings = GetMutableDefault<UPlatformsMenuSettings>();
+		PlatformsSettings->SetTargetFlavorForPlatform(Info->IniPlatformName, Info->Name);
+		PlatformsSettings->SaveConfig();
 	}
 
 	static bool CanSetActiveFlavor(const PlatformInfo::FTargetPlatformInfo* Info)
@@ -711,31 +707,31 @@ public:
 
 	static bool SetActiveFlavorIsChecked(const PlatformInfo::FTargetPlatformInfo* Info)
 	{
-		return GetDefault<UProjectPackagingSettings>()->GetTargetFlavorForPlatform(Info->IniPlatformName) == Info->Name;
+		return GetDefault<UPlatformsMenuSettings>()->GetTargetFlavorForPlatform(Info->IniPlatformName) == Info->Name;
 	}
 
 	static void SetPackageBuildTarget(const PlatformInfo::FTargetPlatformInfo* Info, FString TargetName)
 	{
-		UProjectPackagingSettings* PackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
-		PackagingSettings->SetBuildTargetForPlatform(Info->IniPlatformName, TargetName);
-		PackagingSettings->SaveConfig();
+		UPlatformsMenuSettings* PlatformsSettings = GetMutableDefault<UPlatformsMenuSettings>();
+		PlatformsSettings->SetBuildTargetForPlatform(Info->IniPlatformName, TargetName);
+		PlatformsSettings->SaveConfig();
 	}
 
 	static bool PackageBuildTargetIsChecked(const PlatformInfo::FTargetPlatformInfo* Info, FString TargetName)
 	{
-		return GetDefault<UProjectPackagingSettings>()->GetBuildTargetForPlatform(Info->IniPlatformName) == TargetName;
+		return GetDefault<UPlatformsMenuSettings>()->GetBuildTargetForPlatform(Info->IniPlatformName) == TargetName;
 	}
 
 	static void SetLaunchOnBuildTarget(FString TargetName)
 	{
-		UProjectPackagingSettings* PackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
-		PackagingSettings->LaunchOnTarget = TargetName;
-		PackagingSettings->SaveConfig();
+		UPlatformsMenuSettings* PlatformsSettings = GetMutableDefault<UPlatformsMenuSettings>();
+		PlatformsSettings->LaunchOnTarget = TargetName;
+		PlatformsSettings->SaveConfig();
 	}
 
 	static bool LaunchOnBuildTargetIsChecked(FString TargetName)
 	{
-		return GetDefault<UProjectPackagingSettings>()->GetLaunchOnTargetInfo()->Name == TargetName;
+		return GetDefault<UPlatformsMenuSettings>()->GetLaunchOnTargetInfo()->Name == TargetName;
 	}
 
 	static void SetCookOnTheFly()
@@ -1113,18 +1109,35 @@ static void MakeTurnkeyPlatformMenu(UToolMenu* ToolMenu, FName IniPlatformName, 
 				FCanExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CanCookOrPackage, IniPlatformName, EPrepareContentMode::CookOnly)
 			)
 		);
-// 
-// 		Section.AddMenuEntry(
-//			NAME_None,
-// 			LOCTEXT("Turnkey_PrepareForDebugging", "Prepare For Debugging"),
-// 			LOCTEXT("TurnkeyTooltip_PrepareForDebugging", "Prepare this project for debugging"),
-// 			FSlateIcon(),
-// 			FUIAction(
-// 				FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CookOrPackage, IniPlatformName, EPrepareContentMode::PrepareForDebugging),
-// 				FCanExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CanCookOrPackage, IniPlatformName, EPrepareContentMode::PrepareForDebugging)
-// 			)
-// 		);
-// 
+        // add platforms here when they have their own Prepare for debug flow
+#if PLATFORM_MAC
+        if (IniPlatformName.ToString() == "IOS")
+        {
+            Section.AddMenuEntry(
+                                 NAME_None,
+                                 LOCTEXT("Turnkey_PrepareForDebugging", "Prepare For Debugging"),
+                                 LOCTEXT("TurnkeyTooltip_PrepareForDebuggingIOS", "Prepare this project for debugging. Expects an IPA package with the same name as the project file in the Build/IOS/ folder."),
+                                 FSlateIcon(),
+                                 FUIAction(
+                                           FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CookOrPackage, IniPlatformName, EPrepareContentMode::PrepareForDebugging),
+                                           FCanExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CanCookOrPackage, IniPlatformName, EPrepareContentMode::PrepareForDebugging)
+                                           )
+                                 );
+        }
+        if (IniPlatformName.ToString() == "TvOS")
+        {
+            Section.AddMenuEntry(
+                                 NAME_None,
+                                 LOCTEXT("Turnkey_PrepareForDebugging", "Prepare For Debugging"),
+                                 LOCTEXT("TurnkeyTooltip_PrepareForDebuggingTvOS", "Prepare this project for debugging. Expects an IPA package with the same name as the project file in the Build/TVOS/ folder."),
+                                 FSlateIcon(),
+                                 FUIAction(
+                                           FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CookOrPackage, IniPlatformName, EPrepareContentMode::PrepareForDebugging),
+                                           FCanExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CanCookOrPackage, IniPlatformName, EPrepareContentMode::PrepareForDebugging)
+                                           )
+                                 );
+        }
+#endif
 
 		UProjectPackagingSettings* PackagingSettings = FTurnkeySupportCallbacks::GetPackagingSettingsForPlatform(IniPlatformName);
 
@@ -1149,6 +1162,7 @@ static void MakeTurnkeyPlatformMenu(UToolMenu* ToolMenu, FName IniPlatformName, 
 
 		UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
 
+		// Populate Flavor Selection menu with available flavors
 		// Flavor Selection exists for Android to be able to package ASTC, DXT, ETC2, etc
 		{
 			// gather all valid flavors
@@ -1161,13 +1175,6 @@ static void MakeTurnkeyPlatformMenu(UToolMenu* ToolMenu, FName IniPlatformName, 
 
 			if (ValidFlavors.Num() > 1)
 			{
-				// Set the first flavor as the default if it hasn't been set
-				FName CurrentFlavor = AllPlatformPackagingSettings->GetTargetFlavorForPlatform(IniPlatformName);
-				if (CurrentFlavor == VanillaInfo->Name)
-				{
-					FTurnkeySupportCallbacks::SetActiveFlavor(ValidFlavors[0]);
-				}
-
 				FToolMenuSection& FlavorSection = ToolMenu->AddSection("FlavorSelection", LOCTEXT("TurnkeySection_FlavorSelection", "Flavor Selection"));
 				
 				for (const PlatformInfo::FTargetPlatformInfo* Info : ValidFlavors)
@@ -1559,32 +1566,6 @@ static void GenerateDeviceProxyMenuParams(TSharedPtr<ITargetDeviceProxy> DeviceP
 				// only game and client devices are supported for launch on but devices only signal if they target client builds by their name e.g. "WindowsClient"
 				// if the user has a EBuildTargetType::Client target selected we will launch on a client device, otherwise we fall back to the default game device
 
-				// Initialize default flavor if not yet initialized
-				const PlatformInfo::FTargetPlatformInfo* VanillaInfo = PlatformInfo::FindVanillaPlatformInfo(PlatformName);
-				if(VanillaInfo != nullptr)
-				{
-					
-
-					// gather all valid flavors
-					const TArray<const PlatformInfo::FTargetPlatformInfo*> ValidFlavors = VanillaInfo->Flavors.FilterByPredicate([](const PlatformInfo::FTargetPlatformInfo* Target)
-						{
-							// Editor isn't a valid platform type that users can target
-							// The Build Target will choose client or server, so no need to show them as well
-							return Target->PlatformType != EBuildTargetType::Editor && Target->PlatformType != EBuildTargetType::Client && Target->PlatformType != EBuildTargetType::Server;
-						});
-
-					if (ValidFlavors.Num() > 1)
-					{
-						// Set the first flavor as the default if it hasn't been set
-						UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
-						FName CurrentFlavor = AllPlatformPackagingSettings->GetTargetFlavorForPlatform(PlatformName);
-						if (CurrentFlavor == VanillaInfo->Name)
-						{
-							FTurnkeySupportCallbacks::SetActiveFlavor(ValidFlavors[0]);
-						}
-					}
-				}
-
 				// We need to use flavors to launch on correctly on Android_ASTC / Android_ETC2, etc
 				const PlatformInfo::FTargetPlatformInfo* PlatformInfo = nullptr;
 				if (FApp::IsInstalled())
@@ -1593,7 +1574,7 @@ static void GenerateDeviceProxyMenuParams(TSharedPtr<ITargetDeviceProxy> DeviceP
 				}
 				else
 				{
-					PlatformInfo = PlatformInfo::FindPlatformInfo(GetDefault<UProjectPackagingSettings>()->GetTargetFlavorForPlatform(PlatformName));
+					PlatformInfo = PlatformInfo::FindPlatformInfo(GetDefault<UPlatformsMenuSettings>()->GetTargetFlavorForPlatform(PlatformName));
 				}
 
 				FString VariantName = PlatformInfo->Name.ToString();
@@ -1603,7 +1584,7 @@ static void GenerateDeviceProxyMenuParams(TSharedPtr<ITargetDeviceProxy> DeviceP
 				if (DesktopPlatform->GetTargetsForCurrentProject().Num() > 0)
 				{
 					TArray<FTargetInfo> Targets = DesktopPlatform->GetTargetsForCurrentProject();
-					const FTargetInfo* TargetInfo = GetDefault<UProjectPackagingSettings>()->GetLaunchOnTargetInfo();
+					const FTargetInfo* TargetInfo = GetDefault<UPlatformsMenuSettings>()->GetLaunchOnTargetInfo();
 
 					const TArray<FTargetInfo> ClientTargets = Targets.FilterByPredicate([](const FTargetInfo& Target)
 						{
@@ -1966,7 +1947,12 @@ TSharedRef<SWidget> FTurnkeySupportModule::MakeTurnkeyMenuWidget() const
 		}
 	}
 
+#if WITH_EDITOR
+	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	FToolMenuContext MenuContext(FTurnkeySupportCommands::ActionList, LevelEditorModule.GetToolBarExtensibilityManager()->GetAllExtenders());
+#else
 	FToolMenuContext MenuContext(FTurnkeySupportCommands::ActionList);
+#endif
 	return UToolMenus::Get()->GenerateWidget(MenuName, MenuContext);
 
 }
@@ -2233,6 +2219,32 @@ void FTurnkeySupportModule::UpdateSdkInfo()
 								PerPlatformSdkInfo[PlatformName].SDKVersions.Add(TEXT("AutoSDK"), SdkInfo.SDKVersions[TEXT("AutoSDK")]);
 							}
 						}
+
+						// initialize default flavor if not yet initialized
+						// flavor selection exists for Android to be able to package ASTC, DXT, ETC2, etc
+						const PlatformInfo::FTargetPlatformInfo* VanillaInfo = PlatformInfo::FindVanillaPlatformInfo(PlatformName);
+						if (VanillaInfo != nullptr)
+						{
+							// gather all valid flavors
+							const TArray<const PlatformInfo::FTargetPlatformInfo*> ValidFlavors = VanillaInfo->Flavors.FilterByPredicate([](const PlatformInfo::FTargetPlatformInfo* Target)
+								{
+									// Editor isn't a valid platform type that users can target
+									// The Build Target will choose client or server, so no need to show them as well
+									return Target->PlatformType != EBuildTargetType::Editor && Target->PlatformType != EBuildTargetType::Client && Target->PlatformType != EBuildTargetType::Server;
+								});
+
+							// if platform uses flavors and doesn't already have a default, set default flavor to the first availabl
+							if (ValidFlavors.Num() > 1)
+							{
+								FName CurrentFlavor = GetDefault<UPlatformsMenuSettings>()->GetTargetFlavorForPlatform(PlatformName);
+
+								if (CurrentFlavor == VanillaInfo->Name)
+								{
+									UE_LOG(LogTurnkeySupport, Log, TEXT("Platform %s uses flavors but has no default flavor set. Setting to %s"), *PlatformName.ToString(), *(ValidFlavors[0]->Name.ToString()));
+									FTurnkeySupportCallbacks::SetActiveFlavor(ValidFlavors[0]);
+								}
+							}
+						}
 					}
 				}
 
@@ -2384,7 +2396,7 @@ void FTurnkeySupportModule::UpdateSdkInfoForDevices(TArray<FString> PlatformDevi
 		{
 			FScopeLock Lock(&GTurnkeySection);
 
-			if (ExitCode == 0 || ExitCode == 10)
+			if (!IsEngineExitRequested() && (ExitCode == 0 || ExitCode == 10))
 			{
 				TArray<FString> Contents;
 				if (FFileHelper::LoadFileToStringArray(Contents, *ReportFilename))
@@ -2503,7 +2515,7 @@ void FTurnkeySupportModule::ClearDeviceStatus(FName PlatformName)
 
 
 #if WITH_EDITOR
-bool FTurnkeySupportModule::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
+bool FTurnkeySupportModule::Exec_Editor( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
 	if (FParse::Command( &Cmd, TEXT("Turnkey")) )
 	{

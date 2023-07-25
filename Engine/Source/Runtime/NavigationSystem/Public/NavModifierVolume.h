@@ -6,6 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "Templates/SubclassOf.h"
 #include "AI/Navigation/NavRelevantInterface.h"
+#include "AI/Navigation/NavigationTypes.h"
 #include "NavAreas/NavArea.h"
 #include "GameFramework/Volume.h"
 #include "NavModifierVolume.generated.h"
@@ -28,6 +29,14 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Default, AdvancedDisplay)
 	bool bMaskFillCollisionUnderneathForNavmesh;
 
+	/** Experimental: When not set to None, the navmesh tiles touched by the navigation modifier volume will be built
+	 * using the highest resolution found. */
+	UPROPERTY(EditAnywhere, Category = Default, AdvancedDisplay)
+	ENavigationDataResolution NavMeshResolution;
+
+	FDelegateHandle OnNavAreaRegisteredDelegateHandle;
+	FDelegateHandle OnNavAreaUnregisteredDelegateHandle;
+
 public:
 	ANavModifierVolume(const FObjectInitializer& ObjectInitializer);
 
@@ -44,4 +53,11 @@ public:
 	virtual void PostEditUndo() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
+
+protected:
+	virtual void PostInitProperties() override;
+	virtual void BeginDestroy() override;
+
+	void OnNavAreaRegistered(const UWorld& World, const UClass* NavAreaClass);
+	void OnNavAreaUnregistered(const UWorld& World, const UClass* NavAreaClass);
 };

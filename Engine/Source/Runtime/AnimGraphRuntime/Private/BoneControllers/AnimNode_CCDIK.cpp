@@ -4,6 +4,7 @@
 #include "Animation/AnimTypes.h"
 #include "AnimationRuntime.h"
 #include "DrawDebugHelpers.h"
+#include "EngineDefines.h"
 #include "Animation/AnimInstanceProxy.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_CCDIK)
@@ -97,7 +98,7 @@ void FAnimNode_CCDIK::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseConte
 		OutBoneTransforms[TransformIndex] = FBoneTransform(BoneIndex, BoneCSTransform);
 
 		// Calculate the combined length of this segment of skeleton
-		float const BoneLength = FVector::Dist(BoneCSPosition, OutBoneTransforms[TransformIndex - 1].Transform.GetLocation());
+		double const BoneLength = FVector::Dist(BoneCSPosition, OutBoneTransforms[TransformIndex - 1].Transform.GetLocation());
 
 		if (!FMath::IsNearlyZero(BoneLength))
 		{

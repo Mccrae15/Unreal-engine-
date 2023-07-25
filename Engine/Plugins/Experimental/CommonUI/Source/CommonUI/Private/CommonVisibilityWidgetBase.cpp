@@ -3,11 +3,7 @@
 #include "CommonVisibilityWidgetBase.h"
 #include "CommonInputSubsystem.h"
 #include "CommonUIPrivate.h"
-#include "CommonUISubsystemBase.h"
 
-#include "Components/BorderSlot.h"
-#include "Widgets/Layout/SBox.h"
-#include "Styling/CoreStyle.h"
 #include "CommonInputBaseTypes.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonVisibilityWidgetBase)

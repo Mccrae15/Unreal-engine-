@@ -8,7 +8,7 @@ namespace UnrealBuildTool.Rules
 	public class USDClasses : ModuleRules
 	{
 		public USDClasses(ReadOnlyTargetRules Target) : base(Target)
-        {
+		{
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -25,7 +25,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"DeveloperSettings",
-					"InputCore",
+					"GeometryCache",
 					"Json", // To read/write plugInfo.json files from UnrealUSDWrapper.cpp
 				}
 			);

@@ -45,14 +45,14 @@ public:
 	URemeshMeshToolProperties();
 
 	/** Target triangle count */
-	UPROPERTY(EditAnywhere, Category = Remeshing, meta = (EditCondition = "bUseTargetEdgeLength == false"))
+	UPROPERTY(EditAnywhere, Category = Remeshing, meta = (ClampMin = 0, EditCondition = "bUseTargetEdgeLength == false"))
 	int TargetTriangleCount;
 
 	/** Smoothing type */
 	UPROPERTY(EditAnywhere, Category = Remeshing)
 	ERemeshSmoothingType SmoothingType;
 
-	/** If true, UVs and existing normals are discarded, allowing the remesher to ignore any UV and normal seams. New per-vertex normals are computed. */
+	/** Discard UVs and existing normals, allowing the remesher to ignore any UV and normal seams. New per-vertex normals are computed. */
 	UPROPERTY(EditAnywhere, Category = Remeshing)
 	bool bDiscardAttributes;
 

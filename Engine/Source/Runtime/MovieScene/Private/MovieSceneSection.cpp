@@ -14,6 +14,8 @@
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneEntitySystemTask.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
+#include "EntitySystem/MovieSceneBlenderSystem.h"
+#include "EntitySystem/IMovieSceneBlenderSystemSupport.h"
 #include "Containers/ArrayView.h"
 #include "Channels/MovieSceneChannel.h"
 #include "UObject/SequencerObjectVersion.h"
@@ -49,6 +51,10 @@ UMovieSceneSection::UMovieSceneSection(const FObjectInitializer& ObjectInitializ
 	Easing.EaseOut = DefaultEaseOut;
 
 	ChannelProxyType = EMovieSceneChannelProxyType::Static;
+
+#if WITH_EDITORONLY_DATA
+	ColorTint = FColor(0, 0, 0, 0);
+#endif
 }
 
 
@@ -319,12 +325,28 @@ void UMovieSceneSection::BuildDefaultComponents(UMovieSceneEntitySystemLinker* E
 	const bool bHasSectionPreRoll  = Params.EntityMetaData && EnumHasAnyFlags(Params.EntityMetaData->Flags, ESectionEvaluationFlags::PreRoll | ESectionEvaluationFlags::PostRoll);
 	const bool bHasSequencePreRoll = Params.Sequence.bPreRoll || Params.Sequence.bPostRoll;
 
+	TSubclassOf<UMovieSceneBlenderSystem> BlenderSystemClass = nullptr;
+
+	// Try and find a blender system to use
+	{
+		IMovieSceneBlenderSystemSupport* BlenderSystemSupport = Cast<IMovieSceneBlenderSystemSupport>(this);
+		if (!BlenderSystemSupport)
+		{
+			BlenderSystemSupport = GetImplementingOuter<IMovieSceneBlenderSystemSupport>();
+		}
+		if (BlenderSystemSupport)
+		{
+			BlenderSystemClass = BlenderSystemSupport->GetBlenderSystem();
+		}
+	}
+
 	OutImportedEntity->AddBuilder(
 		FEntityBuilder()
+		.AddConditional(Components->BlenderType,                BlenderSystemClass, BlenderSystemClass.Get() != nullptr)
 		.AddConditional(Components->Easing,                     FEasingComponentData{ decltype(FEasingComponentData::Section)(this) }, bHasEasing)
-		.AddConditional(Components->HierarchicalEasingChannel, uint16(-1), Params.Sequence.bHasHierarchicalEasing)
 		.AddConditional(Components->HierarchicalBias,           Params.Sequence.HierarchicalBias, Params.Sequence.HierarchicalBias != 0)
 		.AddConditional(Components->Interrogation.InputKey,     Params.InterrogationKey, Params.InterrogationKey.IsValid())
+		.AddConditional(Components->Interrogation.Instance,     Params.InterrogationInstance, Params.InterrogationInstance.IsValid())
 		.AddConditional(Components->EvalTime,                   Params.EntityMetaData ? Params.EntityMetaData->ForcedTime : 0, bHasForcedTime)
 		.AddTagConditional(Components->Tags.RestoreState,       bShouldRestoreState)
 		.AddTagConditional(Components->Tags.FixedTime,          bHasForcedTime)
@@ -553,6 +575,24 @@ void UMovieSceneSection::InitialPlacementOnRow(const TArray<UMovieSceneSection*>
 	}
 }
 
+void UMovieSceneSection::SetColorTint(const FColor& InColorTint)
+{
+#if WITH_EDITORONLY_DATA
+	if (TryModify())
+	{
+		ColorTint = InColorTint;
+	}
+#endif
+}
+
+FColor UMovieSceneSection::GetColorTint() const
+{
+#if WITH_EDITORONLY_DATA
+	return ColorTint;
+#endif
+	return FColor(0, 0, 0, 0);
+}
+
 UMovieSceneSection* UMovieSceneSection::SplitSection(FQualifiedFrameTime SplitTime, bool bDeleteKeys)
 {
 	if (!SectionRange.Value.Contains(SplitTime.Time.GetFrame()))
@@ -776,6 +816,19 @@ void UMovieSceneSection::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 		{
 			Track->UpdateEasing();
 		}
+	}
+}
+
+
+void UMovieSceneSection::PostPaste()
+{
+	if (UObject* DefaultEaseIn = Easing.EaseIn.GetObject())
+	{
+		DefaultEaseIn->ClearFlags(RF_Transient);
+	}
+	if (UObject* DefaultEaseOut = Easing.EaseOut.GetObject())
+	{
+		DefaultEaseOut->ClearFlags(RF_Transient);
 	}
 }
 

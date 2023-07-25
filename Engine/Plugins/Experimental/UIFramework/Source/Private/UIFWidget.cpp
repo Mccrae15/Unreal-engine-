@@ -2,21 +2,27 @@
 
 #include "UIFWidget.h"
 //#include "UIFManagerSubsystem.h"
-#include "UIFPlayerComponent.h"
 
 #include "Blueprint/UserWidget.h"
 
-#include "Engine/ActorChannel.h"
-#include "Engine/AssetManager.h"
-#include "Engine/StreamableManager.h"
 #include "Engine/Engine.h"
 #include "Engine/NetDriver.h"
-#include "Engine/StreamableManager.h"
-#include "GameFramework/Actor.h"
-#include "GameFramework/PlayerController.h"
 #include "Net/UnrealNetwork.h"
+#include "Templates/NonNullPointer.h"
 #include "Types/UIFWidgetTree.h"
+#include "Types/UIFWidgetOwner.h"
+#include "Types/UIFWidgetTreeOwner.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UIFWidget)
+
+
+void UUIFrameworkWidget::ForceNetUpdate()
+{
+	if (AActor* OwnerActor = Cast<AActor>(GetOuter()))
+	{
+		OwnerActor->ForceNetUpdate();
+	}
+}
 
 /**
  *
@@ -28,7 +34,7 @@ int32 UUIFrameworkWidget::GetFunctionCallspace(UFunction* Function, FFrame* Stac
 		// This handles absorbing authority/cosmetic
 		return GEngine->GetGlobalFunctionCallspace(Function, this, Stack);
 	}
-	if (AActor* OwnerActor = GetPlayerComponent() ? GetPlayerComponent()->GetOwner() : nullptr)
+	if (AActor* OwnerActor = Cast<AActor>(GetOuter()))
 	{
 		return OwnerActor->GetFunctionCallspace(Function, Stack);
 	}
@@ -40,7 +46,7 @@ bool UUIFrameworkWidget::CallRemoteFunction(UFunction* Function, void* Parameter
 	check(!HasAnyFlags(RF_ClassDefaultObject));
 
 	bool bProcessed = false;
-	AActor* OwnerActor = GetPlayerComponent() ? GetPlayerComponent()->GetOwner() : nullptr;
+	AActor* OwnerActor = Cast<AActor>(GetOuter());
 	FWorldContext* const Context = OwnerActor ? GEngine->GetWorldContextFromWorld(OwnerActor->GetWorld()) : nullptr;
 	if (Context)
 	{
@@ -64,79 +70,25 @@ void UUIFrameworkWidget::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	FDoRepLifetimeParams Params;
 	Params.bIsPushBased = true;
 	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, Id, Params);
+	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, bIsEnabled, Params);
+	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, Visibility, Params);
+
+	Params.Condition = COND_InitialOnly;
+	DOREPLIFETIME_WITH_PARAMS_FAST(UUIFrameworkWidget, WidgetClass, Params);
 }
 
-void UUIFrameworkWidget::AuthoritySetParent(UUIFrameworkPlayerComponent* NewOwner, FUIFrameworkParentWidget NewParent)
+FUIFrameworkWidgetTree* UUIFrameworkWidget::GetWidgetTree() const
 {
-	const bool bDifferentOwner = NewOwner != OwnerPlayerComponent;
-	if (OwnerPlayerComponent)
-	{
-		ensure(OwnerPlayerComponent == NewOwner);
-		NewOwner = OwnerPlayerComponent;
-		NewParent = FUIFrameworkParentWidget();
-	}
-
-	if (AuthorityParent.IsParentValid())
-	{
-		if (AuthorityParent.IsWidget())
-		{
-			AuthorityParent.AsWidget()->AuthorityRemoveChild(this);
-		}
-		else
-		{
-			check(AuthorityParent.IsPlayerComponent());
-			AuthorityParent.AsPlayerComponent()->AuthorityRemoveChild(this);
-		}
-	}
-
-	AuthorityParent = NewParent;
-	OwnerPlayerComponent = NewOwner;
-
-	if (AuthorityParent.IsParentValid() && OwnerPlayerComponent)
-	{
-		if (AuthorityParent.IsWidget())
-		{
-			OwnerPlayerComponent->GetWidgetTree().AddWidget(AuthorityParent.AsWidget(), this);
-		}
-		else
-		{
-			check(AuthorityParent.IsPlayerComponent());
-			OwnerPlayerComponent->GetWidgetTree().AddRoot(this);
-		}
-	}
-	else if (OwnerPlayerComponent)
-	{
-		OwnerPlayerComponent->GetWidgetTree().RemoveWidget(this);
-	}
-
-	if (bDifferentOwner)
-	{
-		SetParentPlayerOwnerRecursive();
-	}
-}
-
-void UUIFrameworkWidget::SetParentPlayerOwnerRecursive()
-{
-	UUIFrameworkWidget* Self = this;
-	AuthorityForEachChildren([Self](UUIFrameworkWidget* Child)
-		{
-			if (Child != nullptr)
-			{
-				check(Child->AuthorityGetParent().IsWidget() && Child->AuthorityGetParent().AsWidget() == Self);
-				Child->OwnerPlayerComponent = Self->OwnerPlayerComponent;
-				Child->AuthorityParent = FUIFrameworkParentWidget(Self);
-				Child->SetParentPlayerOwnerRecursive();
-			}
-		});
+	return WidgetTreeOwner ? &WidgetTreeOwner->GetWidgetTree() : nullptr;
 }
 
 void UUIFrameworkWidget::LocalAddChild(FUIFrameworkWidgetId ChildId)
 {
 	// By default we should remove the widget from its previous parent.
-	//Adding a widget to a new slot will automaticly remove it from its previous parent.
-	if (OwnerPlayerComponent)
+	//Adding a widget to a new slot will automatically remove it from its previous parent.
+	if (FUIFrameworkWidgetTree* WidgetTree = GetWidgetTree())
 	{
-		if (UUIFrameworkWidget* Widget = OwnerPlayerComponent->GetWidgetTree().FindWidgetById(ChildId))
+		if (UUIFrameworkWidget* Widget = WidgetTree->FindWidgetById(ChildId))
 		{
 			if (UWidget* UMGWidget = Widget->LocalGetUMGWidget())
 			{
@@ -146,20 +98,38 @@ void UUIFrameworkWidget::LocalAddChild(FUIFrameworkWidgetId ChildId)
 	}
 }
 
-void UUIFrameworkWidget::LocalCreateUMGWidget(UUIFrameworkPlayerComponent* InOwner)
+void UUIFrameworkWidget::LocalCreateUMGWidget(TNonNullPtr<IUIFrameworkWidgetTreeOwner> InOwner)
 {
-	OwnerPlayerComponent = InOwner;
+	WidgetTreeOwner = InOwner;
 	if (UClass* Class = WidgetClass.Get())
 	{
 		if (Class->IsChildOf(UUserWidget::StaticClass()))
 		{
-			LocalUMGWidget = CreateWidget(OwnerPlayerComponent->GetPlayerController(), Class);
+			FUIFrameworkWidgetOwner UserWidgetOwner = WidgetTreeOwner->GetWidgetOwner();
+			if (UserWidgetOwner.PlayerController)
+			{
+				LocalUMGWidget = CreateWidget(UserWidgetOwner.PlayerController, Class);
+			}
+			else if (UserWidgetOwner.GameInstance)
+			{
+				LocalUMGWidget = CreateWidget(UserWidgetOwner.GameInstance, Class);
+			}
+			else if (UserWidgetOwner.World)
+			{
+				LocalUMGWidget = CreateWidget(UserWidgetOwner.World, Class);
+			}
+			else
+			{
+				ensureAlwaysMsgf(false, TEXT("There are no valid UserWidget owner."));
+			}
 		}
 		else
 		{
 			check(Class->IsChildOf(UWidget::StaticClass()));
 			LocalUMGWidget = NewObject<UWidget>(this, Class, FName(), RF_Transient);
 		}
+		LocalUMGWidget->SetIsEnabled(bIsEnabled);
+		LocalUMGWidget->SetVisibility(Visibility);
 		LocalOnUMGWidgetCreated();
 	}
 }
@@ -172,5 +142,52 @@ void UUIFrameworkWidget::LocalDestroyUMGWidget()
 		LocalUMGWidget->ReleaseSlateResources(true);
 	}
 	LocalUMGWidget = nullptr;
-	OwnerPlayerComponent = nullptr;
+	WidgetTreeOwner = nullptr;
+}
+
+
+ESlateVisibility UUIFrameworkWidget::GetVisibility() const
+{
+	return Visibility;
+}
+
+void UUIFrameworkWidget::SetVisibility(ESlateVisibility InVisibility)
+{
+	if (Visibility != InVisibility)
+	{
+		Visibility = InVisibility;
+		MARK_PROPERTY_DIRTY_FROM_NAME(ThisClass, Visibility, this);
+		ForceNetUpdate();
+	}
+}
+
+bool UUIFrameworkWidget::IsEnabled() const
+{
+	return bIsEnabled;
+}
+
+void UUIFrameworkWidget::SetEnabled(bool bInIsEnabled)
+{
+	if (bIsEnabled != bInIsEnabled)
+	{
+		bIsEnabled = bInIsEnabled;
+		MARK_PROPERTY_DIRTY_FROM_NAME(ThisClass, bIsEnabled, this);
+		ForceNetUpdate();
+	}
+}
+
+void UUIFrameworkWidget::OnRep_IsEnabled()
+{
+	if (LocalUMGWidget)
+	{
+		LocalUMGWidget->SetIsEnabled(bIsEnabled);
+	}
+}
+
+void UUIFrameworkWidget::OnRep_Visibility()
+{
+	if (LocalUMGWidget)
+	{
+		LocalUMGWidget->SetVisibility(Visibility);
+	}
 }

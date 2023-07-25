@@ -1,28 +1,74 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SceneManagement.h"
-#include "Misc/App.h"
-#include "Engine/StaticMesh.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
+#include "RHIStaticStates.h"
 #include "SceneRendering.h"
 #include "SceneCore.h"
+#include "SceneView.h"
 #include "Async/ParallelFor.h"
 #include "LightMap.h"
+#include "LightSceneProxy.h"
 #include "ShadowMap.h"
-#include "Engine/Engine.h"
-#include "Engine/LightMapTexture2D.h"
-#include "Engine/ShadowMapTexture2D.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "TextureResource.h"
 #include "VT/LightmapVirtualTexture.h"
 #include "UnrealEngine.h"
 #include "ColorSpace.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "StaticMeshBatch.h"
 
 static TAutoConsoleVariable<float> CVarLODTemporalLag(
 	TEXT("lod.TemporalLag"),
 	0.5f,
 	TEXT("This controls the the time lag for temporal LOD, in seconds."),
 	ECVF_Scalability | ECVF_Default);
+
+bool AreCompressedTransformsSupported()
+{
+	return FDataDrivenShaderPlatformInfo::GetSupportSceneDataCompressedTransforms(GMaxRHIShaderPlatform);
+}
+
+bool DoesPlatformSupportDistanceFields(const FStaticShaderPlatform Platform)
+{
+	return FDataDrivenShaderPlatformInfo::GetSupportsDistanceFields(Platform);
+}
+
+bool DoesPlatformSupportDistanceFieldShadowing(EShaderPlatform Platform)
+{
+	return DoesPlatformSupportDistanceFields(Platform);
+}
+
+bool DoesPlatformSupportDistanceFieldAO(EShaderPlatform Platform)
+{
+	return DoesPlatformSupportDistanceFields(Platform);
+}
+
+bool DoesProjectSupportDistanceFields()
+{
+	static const auto CVarGenerateDF = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GenerateMeshDistanceFields"));
+	static const auto CVarDFIfNoHWRT = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DistanceFields.SupportEvenIfHardwareRayTracingSupported"));
+
+	return DoesPlatformSupportDistanceFields(GMaxRHIShaderPlatform)
+		&& CVarGenerateDF->GetValueOnAnyThread() != 0
+		&& (CVarDFIfNoHWRT->GetValueOnAnyThread() != 0 || !IsRayTracingAllowed());
+}
+
+bool ShouldAllPrimitivesHaveDistanceField(EShaderPlatform ShaderPlatform)
+{
+	return (DoesPlatformSupportDistanceFieldAO(ShaderPlatform) || DoesPlatformSupportDistanceFieldShadowing(ShaderPlatform))
+		&& IsUsingDistanceFields(ShaderPlatform)
+		&& DoesProjectSupportDistanceFields();
+}
+
+bool ShouldCompileDistanceFieldShaders(EShaderPlatform ShaderPlatform)
+{
+	return IsFeatureLevelSupported(ShaderPlatform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(ShaderPlatform) && IsUsingDistanceFields(ShaderPlatform);
+}
+
 
 void FTemporalLODState::UpdateTemporalLODTransition(const FViewInfo& View, float LastRenderTime)
 {
@@ -56,6 +102,27 @@ void FTemporalLODState::UpdateTemporalLODTransition(const FViewInfo& View, float
 	}
 }
 
+FFrozenSceneViewMatricesGuard::FFrozenSceneViewMatricesGuard(FSceneView& SV)
+	: SceneView(SV)
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (SceneView.State)
+	{
+		SceneView.State->ActivateFrozenViewMatrices(SceneView);
+	}
+#endif
+}
+
+FFrozenSceneViewMatricesGuard::~FFrozenSceneViewMatricesGuard()
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (SceneView.State)
+	{
+		SceneView.State->RestoreUnfrozenViewMatrices(SceneView);
+	}
+#endif
+}
+
 
 IMPLEMENT_STATIC_UNIFORM_BUFFER_SLOT(WorkingColorSpace);
 IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FWorkingColorSpaceShaderParameters, "WorkingColorSpace", WorkingColorSpace);
@@ -71,10 +138,10 @@ void FDefaultWorkingColorSpaceUniformBuffer::Update(const UE::Color::FColorSpace
 	Parameters.ToXYZ = Transpose<float>(InColorSpace.GetRgbToXYZ());
 	Parameters.FromXYZ = Transpose<float>(InColorSpace.GetXYZToRgb());
 
-	Parameters.ToAP1 = Transpose<float>(FColorSpaceTransform(InColorSpace, FColorSpace(EColorSpace::ACESAP1), EChromaticAdaptationMethod::Bradford));
+	Parameters.ToAP1 = Transpose<float>(FColorSpaceTransform(InColorSpace, FColorSpace(EColorSpace::ACESAP1)));
 	Parameters.FromAP1 = Parameters.ToAP1.Inverse();
 	
-	Parameters.ToAP0 = Transpose<float>(FColorSpaceTransform(InColorSpace, FColorSpace(EColorSpace::ACESAP0), EChromaticAdaptationMethod::Bradford));
+	Parameters.ToAP0 = Transpose<float>(FColorSpaceTransform(InColorSpace, FColorSpace(EColorSpace::ACESAP0)));
 
 	Parameters.bIsSRGB = InColorSpace.IsSRGB();
 
@@ -240,9 +307,9 @@ FMeshBatchAndRelevance::FMeshBatchAndRelevance(const FMeshBatch& InMesh, const F
 	Mesh(&InMesh),
 	PrimitiveSceneProxy(InPrimitiveSceneProxy)
 {
-	EBlendMode BlendMode = InMesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel).GetBlendMode();
-	bHasOpaqueMaterial = (BlendMode == BLEND_Opaque);
-	bHasMaskedMaterial = (BlendMode == BLEND_Masked);
+	const FMaterial& Material = InMesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
+	bHasOpaqueMaterial = IsOpaqueBlendMode(Material);
+	bHasMaskedMaterial = IsMaskedBlendMode(Material);
 	bRenderInMainPass = PrimitiveSceneProxy->ShouldRenderInMainPass();
 }
 
@@ -262,6 +329,74 @@ FMeshElementCollector::FMeshElementCollector(ERHIFeatureLevel::Type InFeatureLev
 {	
 }
 
+FMeshElementCollector::~FMeshElementCollector()
+{
+	DeleteTemporaryProxies();
+}
+
+void FMeshElementCollector::DeleteTemporaryProxies()
+{
+	check(!ParallelTasks.Num()); // We should have blocked on this already
+	for (int32 ProxyIndex = 0; ProxyIndex < TemporaryProxies.Num(); ProxyIndex++)
+	{
+		delete TemporaryProxies[ProxyIndex];
+	}
+
+	TemporaryProxies.Empty();
+}
+
+void FMeshElementCollector::SetPrimitive(const FPrimitiveSceneProxy* InPrimitiveSceneProxy, FHitProxyId DefaultHitProxyId)
+{
+	check(InPrimitiveSceneProxy);
+	PrimitiveSceneProxy = InPrimitiveSceneProxy;
+
+	for (int32 ViewIndex = 0; ViewIndex < SimpleElementCollectors.Num(); ViewIndex++)
+	{
+		SimpleElementCollectors[ViewIndex]->HitProxyId = DefaultHitProxyId;
+		SimpleElementCollectors[ViewIndex]->PrimitiveMeshId = 0;
+	}
+
+	for (int32 ViewIndex = 0; ViewIndex < MeshIdInPrimitivePerView.Num(); ++ViewIndex)
+	{
+		MeshIdInPrimitivePerView[ViewIndex] = 0;
+	}
+}
+
+void FMeshElementCollector::ClearViewMeshArrays()
+{
+	Views.Empty();
+	MeshBatches.Empty();
+	SimpleElementCollectors.Empty();
+	MeshIdInPrimitivePerView.Empty();
+	DynamicPrimitiveCollectorPerView.Empty();
+	NumMeshBatchElementsPerView.Empty();
+	DynamicIndexBuffer = nullptr;
+	DynamicVertexBuffer = nullptr;
+	DynamicReadBuffer = nullptr;
+}
+
+void FMeshElementCollector::AddViewMeshArrays(
+	FSceneView* InView,
+	TArray<FMeshBatchAndRelevance, SceneRenderingAllocator>* ViewMeshes,
+	FSimpleElementCollector* ViewSimpleElementCollector,
+	FGPUScenePrimitiveCollector* InDynamicPrimitiveCollector,
+	ERHIFeatureLevel::Type InFeatureLevel,
+	FGlobalDynamicIndexBuffer* InDynamicIndexBuffer,
+	FGlobalDynamicVertexBuffer* InDynamicVertexBuffer,
+	FGlobalDynamicReadBuffer* InDynamicReadBuffer)
+{
+	Views.Add(InView);
+	MeshIdInPrimitivePerView.Add(0);
+	MeshBatches.Add(ViewMeshes);
+	NumMeshBatchElementsPerView.Add(0);
+	SimpleElementCollectors.Add(ViewSimpleElementCollector);
+	DynamicPrimitiveCollectorPerView.Add(InDynamicPrimitiveCollector);
+
+	check(InDynamicIndexBuffer && InDynamicVertexBuffer && InDynamicReadBuffer);
+	DynamicIndexBuffer = InDynamicIndexBuffer;
+	DynamicVertexBuffer = InDynamicVertexBuffer;
+	DynamicReadBuffer = InDynamicReadBuffer;
+}
 
 void FMeshElementCollector::ProcessTasks()
 {
@@ -339,9 +474,16 @@ void FMeshElementCollector::AddMesh(int32 ViewIndex, FMeshBatch& MeshBatch)
 	new (ViewMeshBatches) FMeshBatchAndRelevance(MeshBatch, PrimitiveSceneProxy, FeatureLevel);	
 }
 
+FDynamicPrimitiveUniformBuffer::FDynamicPrimitiveUniformBuffer() = default;
+FDynamicPrimitiveUniformBuffer::~FDynamicPrimitiveUniformBuffer()
+{
+	UniformBuffer.ReleaseResource();
+}
+
 void FDynamicPrimitiveUniformBuffer::Set(
 	const FMatrix& LocalToWorld,
 	const FMatrix& PreviousLocalToWorld,
+	const FVector& ActorPositionWS,
 	const FBoxSphereBounds& WorldBounds,
 	const FBoxSphereBounds& LocalBounds,
 	const FBoxSphereBounds& PreSkinnedLocalBounds,
@@ -356,7 +498,7 @@ void FDynamicPrimitiveUniformBuffer::Set(
 		.Defaults()
 			.LocalToWorld(LocalToWorld)
 			.PreviousLocalToWorld(PreviousLocalToWorld)
-			.ActorWorldPosition(WorldBounds.Origin)
+			.ActorWorldPosition(ActorPositionWS)
 			.WorldBounds(WorldBounds)
 			.LocalBounds(LocalBounds)
 			.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
@@ -367,6 +509,20 @@ void FDynamicPrimitiveUniformBuffer::Set(
 		.Build()
 	);
 	UniformBuffer.InitResource();
+}
+
+void FDynamicPrimitiveUniformBuffer::Set(
+	const FMatrix& LocalToWorld,
+	const FMatrix& PreviousLocalToWorld,
+	const FBoxSphereBounds& WorldBounds,
+	const FBoxSphereBounds& LocalBounds,
+	const FBoxSphereBounds& PreSkinnedLocalBounds,
+	bool bReceivesDecals,
+	bool bHasPrecomputedVolumetricLightmap,
+	bool bOutputVelocity,
+	const FCustomPrimitiveData* CustomPrimitiveData)
+{
+	Set(LocalToWorld, PreviousLocalToWorld, WorldBounds.Origin, WorldBounds, LocalBounds, PreSkinnedLocalBounds, bReceivesDecals, bHasPrecomputedVolumetricLightmap, bOutputVelocity, CustomPrimitiveData);
 }
 
 void FDynamicPrimitiveUniformBuffer::Set(
@@ -815,6 +971,10 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 
 	CameraAerialPerspectiveVolume = GBlackAlpha1VolumeTexture->TextureRHI;
 	CameraAerialPerspectiveVolumeSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+	CameraAerialPerspectiveVolumeMieOnly = GBlackAlpha1VolumeTexture->TextureRHI;
+	CameraAerialPerspectiveVolumeMieOnlySampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+	CameraAerialPerspectiveVolumeRayOnly = GBlackAlpha1VolumeTexture->TextureRHI;
+	CameraAerialPerspectiveVolumeRayOnlySampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 
 	PrimitiveSceneData = GIdentityPrimitiveBuffer.PrimitiveSceneDataBufferSRV;
 	InstanceSceneData = GIdentityPrimitiveBuffer.InstanceSceneDataBufferSRV;
@@ -858,6 +1018,11 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	RectLightAtlasSizeAndInvSize = FVector4f(1, 1, 1, 1);
 	RectLightAtlasTexture = GBlackTextureWithSRV->TextureRHI;
 	RectLightAtlasSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+	// IES atlas
+	IESAtlasSizeAndInvSize = FVector4f(1, 1, 1, 1);
+	IESAtlasTexture = GBlackTextureWithSRV->TextureRHI;
+	IESAtlasSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	// Subsurface profiles/pre-intregrated
 	SSProfilesTextureSizeAndInvSize = FVector4f(1.f,1.f,1.f,1.f);

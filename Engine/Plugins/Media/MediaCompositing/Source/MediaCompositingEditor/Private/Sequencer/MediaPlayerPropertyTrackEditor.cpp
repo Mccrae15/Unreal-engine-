@@ -154,6 +154,7 @@ TSharedPtr<SWidget> FMediaPlayerPropertyTrackEditor::BuildOutlinerEditWidget(con
 			AssetPickerConfig.OnAssetSelected     = FOnAssetSelected::CreateRaw(this,     &FMediaPlayerPropertyTrackEditor::AddNewSection,             MediaTrack);
 			AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateRaw(this, &FMediaPlayerPropertyTrackEditor::AddNewSectionEnterPressed, MediaTrack);
 			AssetPickerConfig.bAllowNullSelection = false;
+			AssetPickerConfig.bAddFilterUI = true;
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			AssetPickerConfig.Filter.bRecursiveClasses = true;
 			AssetPickerConfig.Filter.ClassPaths.Add(UMediaSource::StaticClass()->GetClassPathName());
@@ -190,12 +191,14 @@ TSharedRef<ISequencerSection> FMediaPlayerPropertyTrackEditor::MakeSectionInterf
 
 bool FMediaPlayerPropertyTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
-	if (InSequence && InSequence->IsTrackSupported(UMovieSceneMediaPlayerPropertyTrack::StaticClass()) == ETrackSupport::NotSupported)
+	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneMediaPlayerPropertyTrack::StaticClass()) : ETrackSupport::Default;
+
+	if (TrackSupported == ETrackSupport::NotSupported)
 	{
 		return false;
 	}
 
-	return InSequence && InSequence->IsA(ULevelSequence::StaticClass());
+	return (InSequence && InSequence->IsA(ULevelSequence::StaticClass())) || TrackSupported == ETrackSupport::Supported;
 }
 
 const FSlateBrush* FMediaPlayerPropertyTrackEditor::GetIconBrush() const

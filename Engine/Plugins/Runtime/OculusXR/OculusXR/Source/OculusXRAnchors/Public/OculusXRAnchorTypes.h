@@ -42,7 +42,8 @@ namespace EOculusXRAnchorResult
 		Failure_SpaceMappingInsufficient = -2001,
 		Failure_SpaceLocalizationFailed = -2002,
 		Failure_SpaceNetworkTimeout = -2003,
-		Failure_SpaceNetworkRequestFailed = -2004
+		Failure_SpaceNetworkRequestFailed = -2004,
+
 	};
 } // namespace EOculusXRAnchorResult
 

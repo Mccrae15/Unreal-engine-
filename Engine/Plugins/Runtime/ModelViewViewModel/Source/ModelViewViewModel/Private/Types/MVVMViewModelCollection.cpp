@@ -1,10 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Types/MVVMViewModelCollection.h"
-#include "MVVMViewModelBase.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MVVMViewModelCollection)
-
 
 UMVVMViewModelBase* FMVVMViewModelCollection::FindViewModelInstance(FMVVMViewModelContext Context) const
 {
@@ -12,6 +10,11 @@ UMVVMViewModelBase* FMVVMViewModelCollection::FindViewModelInstance(FMVVMViewMod
 	return FoundInstance ? FoundInstance->GetViewModel() : nullptr;
 }
 
+UMVVMViewModelBase* FMVVMViewModelCollection::FindFirstViewModelInstanceOfType(const TSubclassOf<UMVVMViewModelBase>& ViewModelClass) const
+{
+	FMVVMViewModelContextInstance* FoundInstance = ViewModelInstances.FindByPredicate([ViewModelClass](const FMVVMViewModelContextInstance& Other) { return Other.GetContext().IsCompatibleWith(ViewModelClass); });
+	return FoundInstance ? FoundInstance->GetViewModel() : nullptr;
+}
 
 bool FMVVMViewModelCollection::AddInstance(FMVVMViewModelContext Context, UMVVMViewModelBase* ViewModel)
 {

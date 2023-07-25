@@ -107,8 +107,8 @@ void FWidgetProxy::ProcessLayoutInvalidation(FSlateInvalidationWidgetPostHeap& U
 	SWidget* WidgetPtr = GetWidget();
 	SCOPE_CYCLE_SWIDGET(WidgetPtr);
 	// When layout changes compute a new desired size for this widget
-	const FVector2D CurrentDesiredSize = WidgetPtr->GetDesiredSize();
-	FVector2D NewDesiredSize = FVector2D::ZeroVector;
+	const FVector2f CurrentDesiredSize = WidgetPtr->GetDesiredSize();
+	FVector2f NewDesiredSize = FVector2f::ZeroVector;
 	if (!Visibility.IsCollapseDirectly())
 	{
 		if (WidgetPtr->NeedsPrepass())
@@ -227,7 +227,7 @@ FWidgetProxy::FUpdateResult FWidgetProxy::Repaint(const FPaintArgs& PaintArgs, F
 	const int32 PrevUserIndex = PaintArgs.GetHittestGrid().GetUserIndex();
 
 	PaintArgs.GetHittestGrid().SetUserIndex(MyState.IncomingUserIndex);
-	GSlateFlowDirection = MyState.IncomingFlowDirection;
+	TGuardValue<EFlowDirection> FlowGuard(GSlateFlowDirection, MyState.IncomingFlowDirection);
 	
 	FPaintArgs UpdatedArgs = PaintArgs.WithNewParent(MyState.PaintParent.Pin().Get());
 	UpdatedArgs.SetInheritedHittestability(MyState.bInheritedHittestability);
@@ -257,7 +257,8 @@ FWidgetProxy::FUpdateResult FWidgetProxy::Repaint(const FPaintArgs& PaintArgs, F
 		// clip index should be what it was before.  if this assert fails something internal inside the above paint call did not pop clip properly
 		check(StartingClipIndex == OutDrawElements.GetClippingIndex());
 	}
-
+	
+	OutDrawElements.SetIsInGameLayer(MyState.bIsInGameLayer);
 	return FUpdateResult{ PrevLayerId, NewLayerId };
 }
 

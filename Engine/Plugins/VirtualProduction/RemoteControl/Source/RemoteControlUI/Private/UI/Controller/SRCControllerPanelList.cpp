@@ -375,6 +375,11 @@ void SRCControllerPanelList::Reset()
 			FProperty* Property = Child->CreatePropertyHandle()->GetProperty();
  			check(Property);
 
+			if(Property->IsA<FStrProperty>() || Property->IsA<FTextProperty>())
+			{
+				Property->AppendMetaData({{TEXT("multiline"), TEXT("true")}});
+			}
+
 			if (URCVirtualPropertyBase* Controller = Preset->GetController(Property->GetFName()))
 			{
 				if(ensureAlways(ControllerItems.IsValidIndex(Controller->DisplayIndex)))
@@ -585,9 +590,9 @@ void SRCControllerPanelList::ReorderControllerItem(TSharedRef<FRCControllerModel
 	ControllerItems.Insert(ItemToMove, Index);
 
 	// Update display indices
-	for (int32 i = Index; i < ControllerItems.Num(); i++)
+	for (int32 i = 0; i < ControllerItems.Num(); i++)
 	{
-		if (ensure(ControllerItems[i]))
+		if (ControllerItems[i])
 		{
 			if (URCVirtualPropertyBase* Controller = ControllerItems[i]->GetVirtualProperty())
 			{
@@ -675,7 +680,7 @@ void SRCControllerPanelList::CreateAutoBindForProperty(TSharedPtr<const FRemoteC
 		if(bSuccess)
 		{
 			// Step 1. Create a Controller of matching type
-			URCController* NewController = Cast<URCController>(Preset->AddController(URCController::StaticClass(), PropertyBagType, StructObject));
+			URCController* NewController = Cast<URCController>(Preset->AddController(URCController::StaticClass(), PropertyBagType, StructObject, RemoteControlProperty->FieldName));
 			NewController->DisplayIndex = Preset->GetNumControllers() - 1;
 
 			// Transfer property value from Exposed Property to the New Controller.

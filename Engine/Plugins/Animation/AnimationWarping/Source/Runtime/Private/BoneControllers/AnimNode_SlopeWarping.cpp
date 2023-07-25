@@ -1,13 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BoneControllers/AnimNode_SlopeWarping.h"
-#include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimNodeFunctionRef.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/SkeletalMeshSocket.h"
-#include "DrawDebugHelpers.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_SlopeWarping)
 
 #if ENABLE_ANIM_DEBUG
 TAutoConsoleVariable<int32> CVarAnimNodeSlopeWarpingDebug(TEXT("a.AnimNode.SlopeWarping.Debug"), 0, TEXT("Turn on debug for AnimNode_SlopeWarping"));

@@ -1,18 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaperEditorShared/SpriteGeometryEditing.h"
+#include "GlobalRenderResources.h"
 #include "Materials/Material.h"
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
 #include "Engine/Engine.h"
-#include "EngineGlobals.h"
 #include "SceneManagement.h"
-#include "UnrealWidgetFwd.h"
-#include "PaperEditorShared/AssetEditorSelectedItem.h"
-#include "SpriteEditorOnlyTypes.h"
+#include "SceneView.h"
 #include "SpriteEditor/SpriteEditorSelections.h"
 #include "GeomTools.h"
 #include "DynamicMeshBuilder.h"
+#include "UnrealClient.h"
 
 #define LOCTEXT_NAMESPACE "PaperGeometryEditing"
 

@@ -2,10 +2,11 @@
 
 #include "SubmixEffects/SubmixEffectMultiBandCompressor.h"
 
-#include "AudioDeviceManager.h"
+#include "AudioBusSubsystem.h"
 #include "AudioMixerDevice.h"
 #include "AudioMixerSubmix.h"
 #include "DSP/FloatArrayMath.h"
+#include "Sound/AudioBus.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SubmixEffectMultiBandCompressor)
 
@@ -226,7 +227,9 @@ bool FSubmixEffectMultibandCompressor::UpdateKeySourcePatch()
 				const uint32 ObjectId = KeySource.GetObjectId();
 				if (ObjectId != INDEX_NONE)
 				{
-					KeySource.Patch = MixerDevice->AddPatchForAudioBus(ObjectId, 1.0f /* PatchGain */);
+					UAudioBusSubsystem* AudioBusSubsystem = MixerDevice->GetSubsystem<UAudioBusSubsystem>();
+					check(AudioBusSubsystem);
+					KeySource.Patch = AudioBusSubsystem->AddPatchOutputForAudioBus(ObjectId, MixerDevice->GetNumOutputFrames(), KeySource.GetNumChannels());
 					if (KeySource.Patch.IsValid())
 					{
 						for (Audio::FDynamicsProcessor& DynamicsProcessor : DynamicsProcessors)
@@ -293,6 +296,15 @@ bool FSubmixEffectMultibandCompressor::UpdateKeySourcePatch()
 void FSubmixEffectMultibandCompressor::Initialize(FSubmixEffectMultibandCompressorSettings& Settings)
 {
 	const int32 NumBands = Settings.Bands.Num();
+
+	if(NumBands <= 0)
+	{
+		bInitialized = false;
+		DynamicsProcessors.Reset();
+		PrevCrossovers.Reset();
+		return;
+	}
+	
 	FrameSize = sizeof(float) * NumChannels;
 
 	PrevCrossovers.Reset(NumBands - 1);
@@ -319,7 +331,6 @@ void FSubmixEffectMultibandCompressor::Initialize(FSubmixEffectMultibandCompress
 
 	PrevNumBands = Settings.Bands.Num();
 	bPrevFourPole = Settings.bFourPole;
-
 	bInitialized = true;
 }
 

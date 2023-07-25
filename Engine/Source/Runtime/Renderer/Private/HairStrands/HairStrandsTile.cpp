@@ -4,6 +4,7 @@
 #include "HairStrandsUtils.h"
 #include "HairStrandsInterface.h"
 
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Shader.h"
 #include "GlobalShader.h"
 #include "ShaderParameters.h"
@@ -182,6 +183,7 @@ static FHairStrandsTiles AddHairStrandsGenerateTilesPass_Internal(
 
 	TShaderMapRef<FHairStrandsTileGenerationPassCS> ComputeShader(View.ShaderMap);
 	FHairStrandsTileGenerationPassCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FHairStrandsTileGenerationPassCS::FParameters>();
+	PassParameters->ViewUniformBuffer		= View.ViewUniformBuffer;
 	PassParameters->BufferResolution		= View.ViewRect.Size();
 	PassParameters->bForceOutputAllTiles	= bHasValidInput ? 0 : 1;
 	PassParameters->bUintTexture			= bUintTexture ? 1u : 0u;

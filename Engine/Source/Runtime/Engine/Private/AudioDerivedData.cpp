@@ -1,31 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "AudioDerivedData.h"
+#include "AudioThread.h"
 #include "Interfaces/IAudioFormat.h"
 #include "Misc/CommandLine.h"
-#include "Stats/Stats.h"
 #include "Async/AsyncWork.h"
-#include "Serialization/BulkData.h"
-#include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
-#include "Serialization/EditorBulkData.h"
+#include "Misc/ScopeRWLock.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Audio.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Sound/SoundWave.h"
 #include "Async/Async.h"
 #include "SoundWaveCompiler.h"
-#include "Sound/SoundEffectBase.h"
 #include "DerivedDataCacheInterface.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "AudioResampler.h"
 #include "AudioCompressionSettingsUtils.h"
 #include "Sound/SoundSourceBus.h"
-#include "Sound/SoundWave.h"
 #include "Sound/SoundWaveProcedural.h"
-#include "IWaveformTransformation.h"
 #include "DSP/FloatArrayMath.h"
-#include "DSP/BufferVectorOperations.h"
 #include "DSP/MultichannelBuffer.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAudioDerivedData, Log, All);
@@ -172,7 +164,7 @@ Derived data key generation.
 
 // If you want to bump this version, generate a new guid using
 // VS->Tools->Create GUID and paste it here. https://www.guidgen.com works too.
-#define STREAMEDAUDIO_DERIVEDDATA_VER		TEXT("BC6E92FBBD314E3B9B9EC6778749EB5E")
+#define STREAMEDAUDIO_DERIVEDDATA_VER		TEXT("0E2C7011AFE845488C383F8A3531A3F1")
 
 /**
  * Computes the derived data key suffix for a SoundWave's Streamed Audio.
@@ -1301,7 +1293,7 @@ struct FAudioCookInputs
 #endif
 	{
 #if WITH_EDITORONLY_DATA
-		checkf(IsInGameThread() || IsInAudioThread(), TEXT("FAudioCookInputs creation must happen on the game-thread or audio-thread as it reads from many non-thread safe properties of USoundWave"));
+		checkf(IsInGameThread() || IsInAudioThread() || IsInAsyncLoadingThread(), TEXT("FAudioCookInputs creation must happen on the game-thread or audio-thread as it reads from many non-thread safe properties of USoundWave"));
 
 #if FORCE_RESAMPLE
 		FPlatformAudioCookOverrides NewCompressionOverrides = FPlatformAudioCookOverrides();

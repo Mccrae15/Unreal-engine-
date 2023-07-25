@@ -97,6 +97,28 @@ bool URigVMUnitNode::CanOnlyExistOnce() const
 	return Super::CanOnlyExistOnce();
 }
 
+const TArray<FName>& URigVMUnitNode::GetControlFlowBlocks() const
+{
+	const TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance(true);
+	if (StructOnScope.IsValid())
+	{
+		const FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
+		return StructMemory->GetControlFlowBlocks();
+	}
+	return Super::GetControlFlowBlocks();
+}
+
+const bool URigVMUnitNode::IsControlFlowBlockSliced(const FName& InBlockName) const
+{
+	const TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance(true);
+	if (StructOnScope.IsValid())
+	{
+		const FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
+		return StructMemory->IsControlFlowBlockSliced(InBlockName);
+	}
+	return Super::IsControlFlowBlockSliced(InBlockName);
+}
+
 FText URigVMUnitNode::GetToolTipTextForPin(const URigVMPin* InPin) const
 {
 	if(UScriptStruct* Struct = GetScriptStruct())
@@ -134,6 +156,22 @@ FText URigVMUnitNode::GetToolTipTextForPin(const URigVMPin* InPin) const
 
 	}
 	return URigVMNode::GetToolTipTextForPin(InPin);
+}
+
+bool URigVMUnitNode::ShouldInputPinComputeLazily(const URigVMPin* InPin) const
+{
+	const URigVMPin* RootPin = InPin->GetRootPin();
+	check(RootPin->GetNode() == this);
+
+	if(const UScriptStruct* Struct = GetScriptStruct())
+	{
+		if(const FProperty* Property = Struct->FindPropertyByName(RootPin->GetFName()))
+		{
+			return Property->HasMetaData(FRigVMStruct::ComputeLazilyMetaName);
+		}
+	}
+
+	return Super::ShouldInputPinComputeLazily(InPin);
 }
 
 bool URigVMUnitNode::IsDeprecated() const
@@ -262,17 +300,6 @@ UScriptStruct* URigVMUnitNode::GetScriptStruct() const
 	return ScriptStruct_DEPRECATED;
 }
 
-bool URigVMUnitNode::IsLoopNode() const
-{
-	const TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance(true);
-	if (StructOnScope.IsValid())
-	{
-		const FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
-		return StructMemory->IsForLoop();
-	}
-	return false;
-}
-
 FName URigVMUnitNode::GetMethodName() const
 {
 	const FName ResolvedMethodName = Super::GetMethodName();
@@ -317,11 +344,7 @@ TSharedPtr<FStructOnScope> URigVMUnitNode::ConstructStructInstance(bool bUseDefa
 	{
 		TSharedPtr<FStructOnScope> StructOnScope = MakeShareable(new FStructOnScope(Struct));
 		FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
-		if (bUseDefault)
-		{
-			Struct->InitializeDefaultValue((uint8*)StructMemory);
-		}
-		else
+		if (!bUseDefault)
 		{
 			FString StructDefaultValue = GetStructDefaultValue();
 			Struct->ImportText(*StructDefaultValue, StructMemory, nullptr, PPF_IncludeTransient, GLog, Struct->GetName());

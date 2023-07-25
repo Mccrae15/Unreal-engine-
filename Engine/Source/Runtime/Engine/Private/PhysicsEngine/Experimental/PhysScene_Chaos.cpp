@@ -2,53 +2,34 @@
 
 #include "Physics/Experimental/PhysScene_Chaos.h"
 
-#include "CoreMinimal.h"
-#include "GameDelegates.h"
 
-#include "Async/AsyncWork.h"
-#include "Async/ParallelFor.h"
-#include "Engine/Engine.h"
 
-#include "Misc/CoreDelegates.h"
-#include "Misc/ScopeLock.h"
-#include "PhysicsEngine/BodySetup.h"
+#include "Chaos/PBDJointConstraintData.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#include "Chaos/Particle/ParticleUtilities.h"
 #include "PhysicsEngine/PhysicsSettings.h"
-#include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Physics/PhysicsInterfaceUtils.h"
 #include "PhysicsReplication.h"
-#include "Physics/Experimental/PhysicsUserData_Chaos.h"
+#include "PhysicsEngine/ConstraintInstance.h"
 #include "PhysicsEngine/PhysicsCollisionHandler.h"
+#include "PhysicsEngine/PhysicsObjectExternalInterface.h"
 
-#include "PhysicsSolver.h"
 #include "ChaosSolversModule.h"
-#include "ChaosLog.h"
-#include "ChaosStats.h"
 
-#include "Field/FieldSystem.h"
 
-#include "PhysicsProxy/PerSolverFieldSystem.h"
-#include "PhysicsProxy/GeometryCollectionPhysicsProxy.h"
-#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "PhysicsProxy/SkeletalMeshPhysicsProxy.h"
 #include "PhysicsProxy/StaticMeshPhysicsProxy.h"
-#include "PhysicsProxy/JointConstraintProxy.h"
-#include "Chaos/UniformGrid.h"
-#include "Chaos/BoundingVolume.h"
-#include "Chaos/Framework/DebugSubstep.h"
-#include "Chaos/PBDSpringConstraints.h"
-#include "Chaos/PBDJointConstraints.h"
-#include "Chaos/PerParticleGravity.h"
-#include "PBDRigidActiveParticlesBuffer.h"
-#include "Chaos/GeometryParticlesfwd.h"
-#include "Chaos/Box.h"
 #include "EventsData.h"
-#include "EventManager.h"
-#include "RewindData.h"
 #include "Chaos/PhysicsSolverBaseImpl.h"
-#include "Chaos/Defines.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#else
+#include "Engine/Engine.h"
+#endif
 
 #if !UE_BUILD_SHIPPING
-#include "Engine/World.h"
 #include "DrawDebugHelpers.h"
 
 TAutoConsoleVariable<int32> CVar_ChaosDrawHierarchyEnable(TEXT("P.Chaos.DrawHierarchy.Enable"), 0, TEXT("Enable / disable drawing of the physics hierarchy"));
@@ -65,10 +46,6 @@ int32 GEnableKinematicDeferralStartPhysicsCondition = 1;
 FAutoConsoleVariableRef CVar_EnableKinematicDeferralStartPhysicsCondition(TEXT("p.EnableKinematicDeferralStartPhysicsCondition"), GEnableKinematicDeferralStartPhysicsCondition, TEXT("If is 1, allow kinematics to be deferred in start physics (probably only called from replication tick). If 0, no deferral in startphysics."));
 
 DECLARE_CYCLE_STAT(TEXT("Update Kinematics On Deferred SkelMeshes"), STAT_UpdateKinematicsOnDeferredSkelMeshesChaos, STATGROUP_Physics);
-
-#if WITH_EDITOR
-#include "Editor.h"
-#endif
 
 struct FPendingAsyncPhysicsCommand
 {
@@ -651,9 +628,9 @@ void FPhysScene_Chaos::RemoveObject(FGeometryCollectionPhysicsProxy* InObject)
 {
 	Chaos::FPhysicsSolver* Solver = InObject->GetSolver<Chaos::FPhysicsSolver>();
 
-	for (TUniquePtr<Chaos::TGeometryParticle<Chaos::FReal, 3>>& GTParticleUnique : InObject->GetExternalParticles())
+	for (TUniquePtr<Chaos::TPBDRigidParticle<Chaos::FReal, 3>>& GTParticleUnique : InObject->GetExternalParticles())
 	{
-		Chaos::TGeometryParticle<Chaos::FReal, 3>* GTParticle = GTParticleUnique.Get();
+		Chaos::TPBDRigidParticle<Chaos::FReal, 3>* GTParticle = GTParticleUnique.Get();
 		RemoveActorFromAccelerationStructureImp(GTParticle);
 		if(Solver)
 		{
@@ -1717,7 +1694,7 @@ void FPhysScene_Chaos::OnSyncBodies(Chaos::FPhysicsSolverBase* Solver)
 	TArray<FPhysScenePendingComponentTransform_Chaos> PendingTransforms;
 	TSet<FGeometryCollectionPhysicsProxy*> GCProxies;
 
-	FPhysicsCommand::ExecuteWrite(this, [&Solver, &PendingTransforms](FPhysScene* PhysScene)
+	FPhysicsCommand::ExecuteWrite(this, [this, &Solver, &PendingTransforms](FPhysScene* PhysScene)
 	{
 		auto RigidLambda = [&PhysScene, &PendingTransforms](Chaos::FSingleParticlePhysicsProxy* Proxy)
 		{
@@ -1790,7 +1767,29 @@ void FPhysScene_Chaos::OnSyncBodies(Chaos::FPhysicsSolverBase* Solver)
 
 		};
 
-		Solver->PullPhysicsStateForEachDirtyProxy_External(RigidLambda, ConstraintLambda);
+		auto GeometryCollectionLambda = [this](FGeometryCollectionPhysicsProxy* Proxy)
+		{
+			// Don't pass in anything here so we don't end up locking anything because we can assume the scene is already locked.
+			FLockedWritePhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockWrite({});
+
+			TArray<Chaos::FPhysicsObjectHandle> ActiveHandles = Proxy->GetAllPhysicsObjects().FilterByPredicate(
+				[&Interface](Chaos::FPhysicsObjectHandle Handle)
+				{
+					return !Interface->AreAllDisabled({ &Handle, 1 });
+				}
+			);
+
+			TArray<Chaos::FPhysicsObjectHandle> DisabledHandles = Proxy->GetAllPhysicsObjects().FilterByPredicate(
+				[&Interface](Chaos::FPhysicsObjectHandle Handle)
+				{
+					return Interface->AreAllDisabled({ &Handle, 1 });
+				}
+			);
+			Interface->AddToSpatialAcceleration(ActiveHandles, GetSpacialAcceleration());
+			Interface->RemoveFromSpatialAcceleration(DisabledHandles, GetSpacialAcceleration());
+		};
+
+		Solver->PullPhysicsStateForEachDirtyProxy_External(RigidLambda, ConstraintLambda, GeometryCollectionLambda);
 
 	});
 

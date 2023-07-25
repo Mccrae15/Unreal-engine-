@@ -30,6 +30,11 @@
 #include "DynamicResolutionProxy.h"
 #include "OculusXRHMDRuntimeSettings.h"
 #include "OculusXRDelegates.h"
+#include "Launch/Resources/Version.h"
+#if (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2) || ENGINE_MAJOR_VERSION > 5
+#include "DataDrivenShaderPlatformInfo.h"
+#endif
+#include "GenericPlatform/GenericPlatformMath.h"
 
 #if PLATFORM_ANDROID
 #include "Android/AndroidJNI.h"
@@ -1387,6 +1392,11 @@ namespace OculusXRHMD
 	{
 		CheckInGameThread();
 
+		if (bStereo)
+		{
+			LoadFromSettings();
+		}
+
 		return DoEnableStereo(bStereo);
 	}
 
@@ -1819,7 +1829,15 @@ namespace OculusXRHMD
 
 		if (bUseSeparateRenderTarget && Frame.IsValid())
 		{
-			CachedWindowSize = (Window.IsValid()) ? Window->GetSizeInScreen() : Viewport.GetSizeXY();
+			if (Window.IsValid())
+			{
+				const auto SlateWindowSize = Window->GetSizeInScreen();
+				CachedWindowSize = FIntPoint(static_cast<int>(SlateWindowSize.X), static_cast<int>(SlateWindowSize.Y));
+			}
+			else
+			{
+				CachedWindowSize = Viewport.GetSizeXY();
+			}
 		}
 	}
 
@@ -2295,7 +2313,7 @@ namespace OculusXRHMD
 		DeltaControlRotation = FRotator::ZeroRotator; // used from ApplyHmdRotation
 		LastPlayerOrientation = FQuat::Identity;
 		LastPlayerLocation = FVector::ZeroVector;
-		CachedWindowSize = FVector2D::ZeroVector;
+		CachedWindowSize = FIntPoint::ZeroValue;
 		CachedWorldToMetersScale = 100.0f;
 		LastTrackingToWorld = FTransform::Identity;
 

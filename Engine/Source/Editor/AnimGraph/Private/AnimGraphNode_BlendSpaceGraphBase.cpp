@@ -7,6 +7,7 @@
 #include "BlueprintActionDatabaseRegistrar.h"
 #include "Animation/AimOffsetBlendSpace.h"
 #include "Animation/AimOffsetBlendSpace1D.h"
+#include "Animation/AnimSync.h"
 #include "IAnimBlueprintCopyTermDefaultsContext.h"
 #include "IAnimBlueprintGeneratedClassCompiledData.h"
 #include "AnimationGraph.h"
@@ -164,7 +165,7 @@ void UAnimGraphNode_BlendSpaceGraphBase::SetupFromAsset(const FAssetData& InAsse
 			BlendSpaceGraph->BlendSpace = BlendSpace = DuplicateObject(Asset, BlendSpaceGraph);
 			BlendSpaceGraph->BlendSpace->ClearFlags(RF_Public | RF_Standalone | RF_Transient);
 			BlendSpaceGraph->BlendSpace->SetFlags(RF_Transactional);
-			BlendSpaceGraph->BlendSpace->ResetSkeleton(nullptr);
+			BlendSpaceGraph->BlendSpace->SetSkeleton(nullptr);
 			BlendSpaceGraph->BlendSpace->EmptyMetaData();
 			BlendSpaceGraph->BlendSpace->RemoveUserDataOfClass(UAssetUserData::StaticClass());
 			BlendSpaceGraph->bAllowDeletion = false;
@@ -569,7 +570,7 @@ bool UAnimGraphNode_BlendSpaceGraphBase::IsActionFilteredOut(class FBlueprintAct
 		{
 			if(!SkeletonName.IsEmpty())
 			{
-				if(AnimBlueprint->TargetSkeleton == nullptr || !AnimBlueprint->TargetSkeleton->IsCompatibleSkeletonByAssetString(SkeletonName))
+				if(AnimBlueprint->TargetSkeleton == nullptr || !AnimBlueprint->TargetSkeleton->IsCompatibleForEditor(SkeletonName))
 				{
 					bIsFilteredOut = true;
 					break;

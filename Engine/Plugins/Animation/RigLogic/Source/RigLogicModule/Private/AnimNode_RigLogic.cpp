@@ -2,9 +2,11 @@
 
 #include "AnimNode_RigLogic.h"
 
+#include "Components/SkeletalMeshComponent.h"
 #include "DNAAsset.h"
 #include "DNAIndexMapping.h"
 #include "DNAReader.h"
+#include "Engine/SkeletalMesh.h"
 #include "RigLogic.h"
 #include "RigInstance.h"
 #include "SharedRigRuntimeContext.h"
@@ -35,43 +37,39 @@ FAnimNode_RigLogic::~FAnimNode_RigLogic()
 void FAnimNode_RigLogic::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_AnimNode_RigLogic_Evaluate_AnyThread);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_AnimNode_RigLogic_Initialize_AnyThread);
 	LLM_SCOPE_BYNAME(TEXT("Animation/RigLogic"));
 
-	FAnimNode_Base::Initialize_AnyThread(Context);
 	AnimSequence.Initialize(Context);
-	USkeletalMeshComponent* SkeletalMeshComponent = Context.AnimInstanceProxy->GetSkelMeshComponent();
-	USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
-
-	static FRWLock GlobalCreationLock;
-	FRWScopeLock ScopeLock(GlobalCreationLock, SLT_ReadOnly);
-	UDNAIndexMapping* DNAIndexMappingContainer = Cast<UDNAIndexMapping>(SkeletalMesh->GetAssetUserDataOfClass(UDNAIndexMapping::StaticClass()));
-	if (DNAIndexMappingContainer == nullptr)
-	{
-		ScopeLock.ReleaseReadOnlyLockAndAcquireWriteLock_USE_WITH_CAUTION();
-		DNAIndexMappingContainer = Cast<UDNAIndexMapping>(SkeletalMesh->GetAssetUserDataOfClass(UDNAIndexMapping::StaticClass()));
-		if (DNAIndexMappingContainer == nullptr)
-		{
-			DNAIndexMappingContainer = NewObject<UDNAIndexMapping>();
-			SkeletalMesh->AddAssetUserData(DNAIndexMappingContainer);
-		}
-	}
 }
 
 void FAnimNode_RigLogic::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_AnimNode_RigLogic_Evaluate_AnyThread);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_AnimNode_RigLogic_CacheBones_AnyThread);
 	LLM_SCOPE_BYNAME(TEXT("Animation/RigLogic"));
 
 	AnimSequence.CacheBones(Context);
 
-	// Initialize things that depend on the skeleton of Anim BP
 	USkeletalMeshComponent* SkeletalMeshComponent = Context.AnimInstanceProxy->GetSkelMeshComponent();
+	if (SkeletalMeshComponent == nullptr)
+	{
+		return;
+	}
+
 	USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
+	if (SkeletalMesh == nullptr)
+	{
+		return;
+	}
+
 	USkeleton* Skeleton = Context.AnimInstanceProxy->GetSkeleton();
+	if (Skeleton == nullptr)
+	{
+		return;
+	}
+
 	UDNAAsset* DNAAsset = Cast<UDNAAsset>(SkeletalMesh->GetAssetUserDataOfClass(UDNAAsset::StaticClass()));
-	UDNAIndexMapping* DNAIndexMappingContainer = Cast<UDNAIndexMapping>(SkeletalMesh->GetAssetUserDataOfClass(UDNAIndexMapping::StaticClass()));
 	if (DNAAsset == nullptr)
 	{
 		return;
@@ -93,7 +91,7 @@ void FAnimNode_RigLogic::CacheBones_AnyThread(const FAnimationCacheBonesContext&
 		RigInstance = new FRigInstance(LocalRigRuntimeContext->RigLogic.Get());
 	}
 
-	LocalDNAIndexMapping = DNAIndexMappingContainer->GetCachedMapping(LocalRigRuntimeContext->BehaviorReader.Get(), Skeleton, SkeletalMesh, SkeletalMeshComponent);
+	LocalDNAIndexMapping = DNAAsset->GetDNAIndexMapping(Skeleton, SkeletalMesh, SkeletalMeshComponent);
 	// CacheBones is called on LOD switches as well, in which case compact pose bone indices must be remapped
 	const FBoneContainer& RequiredBones = Context.AnimInstanceProxy->GetRequiredBones();
 	if (RequiredBones.IsValid())
@@ -124,12 +122,12 @@ void FAnimNode_RigLogic::Evaluate_AnyThread(FPoseContext& OutputContext)
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_AnimNode_RigLogic_Evaluate_AnyThread);
 
-	if (!LocalRigRuntimeContext.IsValid())
+	AnimSequence.Evaluate(OutputContext);
+
+	if (!LocalRigRuntimeContext.IsValid() || !LocalDNAIndexMapping.IsValid())
 	{
 		return;
 	}
-	// Initialize things that depend on the skeleton of Anim BP
-	AnimSequence.Evaluate(OutputContext);
 	UpdateControlCurves(OutputContext, LocalDNAIndexMapping.Get());
 	CalculateRigLogic(LocalRigRuntimeContext->RigLogic.Get());
 	const uint16 CurrentLOD = RigInstance->GetLOD();

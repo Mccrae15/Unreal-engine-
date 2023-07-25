@@ -1,13 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-
+#include "AudioBusSubsystem.h"
 #include "AudioMixerBuffer.h"
 #include "AudioMixerBus.h"
 #include "AudioMixerDevice.h"
 #include "AudioMixerSourceOutputBuffer.h"
 #include "AudioMixerSubmix.h"
+#include "AudioMixerTrace.h"
 #include "Containers/MpscQueue.h"
 #include "DSP/BufferVectorOperations.h"
 #include "DSP/EnvelopeFollower.h"
@@ -18,19 +18,6 @@
 #include "Sound/SoundModulationDestination.h"
 #include "Sound/QuartzQuantizationUtilities.h"
 #include "Stats/Stats.h"
-
-// defines for debug data/logging in AudioMixerThreadCommand execution
-// if this hasn't been explicitly defined, assume it is enabled
-#ifndef WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
-#define WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG 1
-#endif // #ifndef WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
-
-#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
-#define AUDIO_MIXER_THREAD_COMMAND_STRING(X) ( FName(X) )
-#else //WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
-static const FName NAME_NONE;
-#define AUDIO_MIXER_THREAD_COMMAND_STRING(X) ( NAME_NONE )
-#endif //WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
 
 
 // Tracks the time it takes to up the source manager (computes source buffers, source effects, sample rate conversion)
@@ -143,7 +130,7 @@ namespace Audio
 
 		FQuartzQuantizedRequestData QuantizedRequestData;
 
-		FSharedISourceBufferListenerPtr SourceBufferListener;		
+		FSharedISourceBufferListenerPtr SourceBufferListener;
 
 		IAudioLinkFactory::FAudioLinkSourcePushedSharedPtr AudioLink;
 
@@ -161,6 +148,8 @@ namespace Audio
 		bool bIsSoundfield = false;
 		bool bIsSeeking = false;
 		bool bShouldSourceBufferListenerZeroBuffer = false;
+
+		uint32 PlayOrder = INDEX_NONE;
 	};
 
 	struct FSourceManagerInitParams
@@ -189,26 +178,29 @@ namespace Audio
 		void InitSource(const int32 SourceId, const FMixerSourceVoiceInitParams& InitParams);
 
 		// Creates and starts an audio bus manually.
-		void StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic);
+		void StartAudioBus(FAudioBusKey InAudioBusKey, int32 InNumChannels, bool bInIsAutomatic);
 
 		// Stops an audio bus manually
-		void StopAudioBus(uint32 InAudioBusId);
+		void StopAudioBus(FAudioBusKey InAudioBusKey);
 
 		// Queries if an audio bus is active. Must be called from the audio thread.
-		bool IsAudioBusActive(uint32 InAudioBusId) const;
+		bool IsAudioBusActive(FAudioBusKey InAudioBusKey) const;
 
 		// Returns the number of channels currently set for the audio bus associated with
 		// the provided BusId.  Returns 0 if the audio bus is inactive.
-		int32 GetAudioBusNumChannels(uint32 InAudioBusId) const;
+		int32 GetAudioBusNumChannels(FAudioBusKey InAudioBusKey) const;
 
 		// Adds a patch output for an audio bus from the Audio Render Thread
-		void AddPatchOutputForAudioBus(uint32 InAudioBusId, const FPatchOutputStrongPtr& InPatchOutputStrongPtr);
+		void AddPatchOutputForAudioBus(FAudioBusKey InAudioBusKey, const FPatchOutputStrongPtr& InPatchOutputStrongPtr);
 
 		// Adds a patch output for an audio bus from the Audio Thread
-		void AddPatchOutputForAudioBus_AudioThread(uint32 InAudioBusId, const FPatchOutputStrongPtr& InPatchOutputStrongPtr);
+		void AddPatchOutputForAudioBus_AudioThread(FAudioBusKey InAudioBusKey, const FPatchOutputStrongPtr& InPatchOutputStrongPtr);
 
 		// Adds a patch input for an audio bus
-		void AddPatchInputForAudioBus(uint32 InAudioBusId, FPatchInput& InPatchInput);
+		void AddPatchInputForAudioBus(FAudioBusKey InAudioBusKey, const FPatchInput& InPatchInput);
+
+		// Adds a patch input for an audio bus from the Audio Thread
+		void AddPatchInputForAudioBus_AudioThread(FAudioBusKey InAudioBusKey, const FPatchInput& InPatchInput);
 
 		void Play(const int32 SourceId);
 		void Stop(const int32 SourceId);
@@ -224,14 +216,15 @@ namespace Audio
 		void SetLPFFrequency(const int32 SourceId, const float Frequency);
 		void SetHPFFrequency(const int32 SourceId, const float Frequency);
 
-		// Sets base (i.e. carrier) frequency of modulateable parameters
+		// Sets base (i.e. carrier) frequency of modulatable parameters
 		void SetModPitch(const int32 SourceId, const float InModPitch);
 		void SetModVolume(const int32 SourceId, const float InModVolume);
 		void SetModLPFFrequency(const int32 SourceId, const float InModFrequency);
 		void SetModHPFFrequency(const int32 SourceId, const float InModFrequency);
+		
+		void SetModulationRouting(const int32 SourceId, FSoundModulationDefaultSettings& ModulationSettings);
 
 		void SetSourceBufferListener(const int32 SourceId, FSharedISourceBufferListenerPtr& InSourceBufferListener, bool InShouldSourceBufferListenerZeroBuffer);
-
 
 		void SetListenerTransforms(const TArray<FTransform>& ListenerTransforms);
 		const TArray<FTransform>* GetListenerTransforms() const;
@@ -306,15 +299,11 @@ namespace Audio
 		struct FAudioMixerThreadCommand
 		{
 			// ctor
-			FAudioMixerThreadCommand(TFunction<void()> InFunction, FName InCallerDebugInfo, bool bInDeferExecution = false);
+			FAudioMixerThreadCommand(TFunction<void()> InFunction, bool bInDeferExecution = false);
 
 			// function-call operator
 			void operator()() const;
 
-			// data
-#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
-			FName CallerDebugInfo;
-#endif // #if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
 			TFunction<void()> Function;
 
 			// Defers the execution by a single call to PumpCommandQueue()
@@ -323,19 +312,7 @@ namespace Audio
 			bool bDeferExecution;
 		};
 
-		struct FCurrentAudioMixerThreadCommandInfo
-		{
-			FName CallerDebugInfo;
-			FThreadSafeCounter64 QueueTimeInCycles;
-
-			void LogWarning() const;
-			void LogError() const;
-			void Reset();
-		};
-
-		FCurrentAudioMixerThreadCommandInfo CurrentAudioMixerThreadCommandInfo;
-
-		void AudioMixerThreadCommand(TFunction<void()> InFunction, FName CallingFunction = {}, bool bInDeferExecution = false);
+		void AudioMixerThreadCommand(TFunction<void()> InFunction, bool bInDeferExecution = false);
 
 		
 		static const int32 NUM_BYTES_PER_SAMPLE = 2;
@@ -528,8 +505,6 @@ namespace Audio
 			uint8 bEnableSubmixSends : 1;
 			uint8 bIsVorbis:1;
 			uint8 bIsSoundfield:1;
-			uint8 bIsBypassingLPF:1;
-			uint8 bIsBypassingHPF:1;
 			uint8 bHasPreDistanceAttenuationSend:1;
 			uint8 bModFiltersUpdated : 1;
 			uint8 bShouldSourceBufferListenerZeroBuffer : 1;
@@ -538,6 +513,8 @@ namespace Audio
 			int32 NumInputChannels;
 			int32 NumPostEffectChannels;
 			int32 NumInputFrames;
+
+			uint32 PlayOrder;
 
 			// ID for associated Audio Component if there is one, 0 otherwise
 			uint64 AudioComponentID;
@@ -577,8 +554,8 @@ namespace Audio
 		TArray<FMixerSourceSubmixOutputBuffer> SourceSubmixOutputBuffers;
 
 		// Map of bus object Id's to audio bus data. 
-		TMap<uint32, TSharedPtr<FMixerAudioBus>> AudioBuses;
-		TArray<uint32> AudioBusIds_AudioThread;
+		TMap<FAudioBusKey, TSharedPtr<FMixerAudioBus>> AudioBuses; 
+		TArray<FAudioBusKey> AudioBusKeys_AudioThread;
 
 		// Async task workers for processing sources in parallel
 		TArray<FAsyncTask<FAudioMixerSourceWorker>*> SourceWorkers;

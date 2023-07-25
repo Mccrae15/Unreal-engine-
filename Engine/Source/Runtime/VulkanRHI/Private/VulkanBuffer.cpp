@@ -119,6 +119,11 @@ VkBufferUsageFlags FVulkanResourceMultiBuffer::UEToVKBufferUsageFlags(FVulkanDev
 			TranslateFlag(BUF_AccelerationStructure, 0, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
 		}
 #endif
+		// For descriptors buffers
+		if (InDevice->SupportsBindless())
+		{
+			OutVkUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+		}
 	}
 
 	return OutVkUsage;
@@ -559,11 +564,5 @@ void FVulkanDynamicRHI::RHITransferBufferUnderlyingResource(FRHIBuffer* DestBuff
 void FVulkanDynamicRHI::RHIUnlockBuffer(FRHICommandListBase& RHICmdList, FRHIBuffer* BufferRHI)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_UnlockBuffer_RenderThread);
-
-	// We might need to queue a copy, make sure we have an active pipeline
-	if (RHICmdList.IsTopOfPipe() && (RHICmdList.GetPipeline() == ERHIPipeline::None))
-	{
-		RHICmdList.SwitchPipeline(ERHIPipeline::Graphics);
-	}
 	FDynamicRHI::RHIUnlockBuffer(RHICmdList, BufferRHI);
 }

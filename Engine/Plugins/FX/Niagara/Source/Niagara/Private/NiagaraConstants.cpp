@@ -60,6 +60,7 @@ const FString FNiagaraConstants::StackContextNamespaceString(TEXT("StackContext"
 const FString FNiagaraConstants::SystemNamespaceString(TEXT("System"));
 const FString FNiagaraConstants::UserNamespaceString(TEXT("User"));
 const FString FNiagaraConstants::InternalNamespaceString(TEXT("__INTERNAL__"));
+const FString FNiagaraConstants::PreviousNamespaceString(TEXT("Previous"));
 
 const FName FNiagaraConstants::InputScopeName(TEXT("Input"));
 const FName FNiagaraConstants::OutputScopeName(TEXT("Output"));
@@ -75,6 +76,7 @@ void FNiagaraConstants::Init()
 {
 	if (SystemParameters.Num() == 0)
 	{
+		SystemParameters.Add(SYS_PARAM_ENGINE_WORLD_DELTA_TIME);
 		SystemParameters.Add(SYS_PARAM_ENGINE_DELTA_TIME);
 		SystemParameters.Add(SYS_PARAM_ENGINE_INV_DELTA_TIME);
 		SystemParameters.Add(SYS_PARAM_ENGINE_TIME);
@@ -112,6 +114,9 @@ void FNiagaraConstants::Init()
 		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS_ALIVE);
 		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_SIGNIFICANCE_INDEX);
 		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_RANDOM_SEED);
+		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_CURRENT_TIME_STEP);
+		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_TIME_STEPS);
+		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_TIME_STEP_FRACTION);
 		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS);
 		SystemParameters.Add(SYS_PARAM_ENGINE_NUM_SYSTEM_INSTANCES);
 		SystemParameters.Add(SYS_PARAM_ENGINE_GLOBAL_SPAWN_COUNT_SCALE);
@@ -159,6 +164,7 @@ void FNiagaraConstants::Init()
 
 	if (UpdatedSystemParameters.Num() == 0)
 	{
+		UpdatedSystemParameters.Add(FName(TEXT("System World Delta Time")), SYS_PARAM_ENGINE_WORLD_DELTA_TIME);
 		UpdatedSystemParameters.Add(FName(TEXT("System Delta Time")), SYS_PARAM_ENGINE_DELTA_TIME);
 		UpdatedSystemParameters.Add(FName(TEXT("System Inv Delta Time")), SYS_PARAM_ENGINE_INV_DELTA_TIME);
 		UpdatedSystemParameters.Add(FName(TEXT("System Position")), SYS_PARAM_ENGINE_POSITION);
@@ -181,6 +187,7 @@ void FNiagaraConstants::Init()
 		UpdatedSystemParameters.Add(FName(TEXT("Emitter Interp Spawn Start Dt")), SYS_PARAM_EMITTER_INTERP_SPAWN_START_DT);
 		UpdatedSystemParameters.Add(FName(TEXT("Emitter Spawn Group")), SYS_PARAM_EMITTER_SPAWN_GROUP);
 
+		UpdatedSystemParameters.Add(FName(TEXT("World Delta Time")), SYS_PARAM_ENGINE_WORLD_DELTA_TIME);
 		UpdatedSystemParameters.Add(FName(TEXT("Delta Time")), SYS_PARAM_ENGINE_DELTA_TIME);
 		UpdatedSystemParameters.Add(FName(TEXT("Emitter Age")), SYS_PARAM_EMITTER_AGE);
 		UpdatedSystemParameters.Add(FName(TEXT("Emitter Local Space")), SYS_PARAM_EMITTER_LOCALSPACE);
@@ -210,7 +217,8 @@ void FNiagaraConstants::Init()
 
 	if (SystemStrMap.Num() == 0)
 	{
-		SystemStrMap.Add(SYS_PARAM_ENGINE_DELTA_TIME, LOCTEXT("EngineDeltaTimeDesc", "Time in seconds since the last tick."));
+		SystemStrMap.Add(SYS_PARAM_ENGINE_WORLD_DELTA_TIME, LOCTEXT("EngineWorldDeltaTimeDesc", "Time in seconds since the last tick of the engine."));
+		SystemStrMap.Add(SYS_PARAM_ENGINE_DELTA_TIME, LOCTEXT("EngineDeltaTimeDesc", "Time in seconds since the last simulation tick."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_INV_DELTA_TIME, LOCTEXT("EngineInvDeltaTimeDesc", "One over Engine.DeltaTime"));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_TIME, LOCTEXT("EngineTimeDesc", "Time in seconds since level began play, but IS paused when the game is paused, and IS dilated/clamped."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_REAL_TIME, LOCTEXT("EngineRealTimeDesc", "Time in seconds since level began play, but IS NOT paused when the game is paused, and IS NOT dilated/clamped."));
@@ -249,8 +257,12 @@ void FNiagaraConstants::Init()
 		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_SIGNIFICANCE_INDEX, LOCTEXT("SystemSignificanceIndex", "Index denoting how significant this system instance is in relation to others of the same system in this scene. e.g. 0 is the most significanct instance."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_RANDOM_SEED, LOCTEXT("SystemRandomSeed", "A random seed controlled used for generating system random numbers."));
 		
+		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_CURRENT_TIME_STEP, LOCTEXT("CurrentTimeStep", "The current time step."));
+		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_TIME_STEPS, LOCTEXT("NumTimeSteps", "Number of steps used, can be > 1 when using fixed delta time."));
+		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_TIME_STEP_FRACTION, LOCTEXT("TimeStepFraction", "The fraction of the world delta time integrated for the current sub step."));
+
 		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS, LOCTEXT("SystemNumEmitters", "The number of emitters attached to this system. Should only be used in System scripts."));
-		SystemStrMap.Add(SYS_PARAM_ENGINE_NUM_SYSTEM_INSTANCES, LOCTEXT("SystemNumInstances", "The number of instances of the this system currently ticking. Should only be used in System scripts."));
+		SystemStrMap.Add(SYS_PARAM_ENGINE_NUM_SYSTEM_INSTANCES, LOCTEXT("SystemNumInstances", "The number of instances of this system currently ticking. Should only be used in System scripts."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_GLOBAL_SPAWN_COUNT_SCALE, LOCTEXT("GlobalSpawnCountScale", "Global Spawn Count Scale. Should only be used in System scripts."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_GLOBAL_SYSTEM_COUNT_SCALE, LOCTEXT("GlobalSystemCountScale", "Global System Count Scale. Should only be used in System scripts."));
 	}

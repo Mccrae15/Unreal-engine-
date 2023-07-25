@@ -5,6 +5,7 @@
 #include "LevelInstance/LevelInstanceEditorInstanceActor.h"
 #include "Components/BillboardComponent.h"
 #include "Engine/Texture2D.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LevelInstanceComponent)
@@ -97,9 +98,9 @@ void ULevelInstanceComponent::UpdateEditorInstanceActor()
 		}
 	}
 
-	if (AActor* EditorInstanceActor = CachedEditorInstanceActorPtr.Get())
+	if (ALevelInstanceEditorInstanceActor* EditorInstanceActor = Cast<ALevelInstanceEditorInstanceActor>(CachedEditorInstanceActorPtr.Get()))
 	{
-		EditorInstanceActor->GetRootComponent()->SetWorldTransform(GetComponentTransform());
+		EditorInstanceActor->UpdateWorldTransform(GetComponentTransform());
 	}
 }
 

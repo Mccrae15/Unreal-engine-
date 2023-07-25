@@ -1,11 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/HLOD/HLODActorDesc.h"
+#include "UObject/Package.h"
+#include "WorldPartition/HLOD/HLODStats.h"
 
 #if WITH_EDITOR
-#include "Algo/Transform.h"
-#include "Algo/RemoveIf.h"
 #include "HAL/FileManager.h"
+#include "Misc/PackageName.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
@@ -21,7 +22,6 @@ void FHLODActorDesc::Init(const AActor* InActor)
 	HLODSubActors.Reserve(HLODActor->GetSubActors().Num());
 	Algo::Transform(HLODActor->GetSubActors(), HLODSubActors, [](const FHLODSubActor& SubActor) { return FHLODSubActorDesc(SubActor.ActorGuid, SubActor.ContainerID); });
 
-	SourceCellName = HLODActor->GetSourceCellName();
 	SourceHLODLayerName = HLODActor->GetSubActorsHLODLayer()->GetFName();
 	HLODStats = HLODActor->GetStats();
 }
@@ -64,8 +64,13 @@ void FHLODActorDesc::Serialize(FArchive& Ar)
 	}
 
 	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::WorldPartitionHLODActorDescSerializeStats)
-	{		
-		Ar << SourceCellName;
+	{
+		if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionHLODActorUseSourceCellGuid)
+		{
+			FName SourceCellName;
+			Ar << SourceCellName;
+		}
+
 		Ar << SourceHLODLayerName;
 		Ar << HLODStats;
 
@@ -82,8 +87,7 @@ bool FHLODActorDesc::Equals(const FWorldPartitionActorDesc* Other) const
 	if (FWorldPartitionActorDesc::Equals(Other))
 	{
 		const FHLODActorDesc& HLODActorDesc = *(FHLODActorDesc*)Other;
-		return SourceCellName == HLODActorDesc.SourceCellName &&
-			   SourceHLODLayerName == HLODActorDesc.SourceHLODLayerName &&
+		return SourceHLODLayerName == HLODActorDesc.SourceHLODLayerName &&
 			   HLODStats.OrderIndependentCompareEqual(HLODActorDesc.GetStats()) &&
 			   CompareUnsortedArrays(HLODSubActors, HLODActorDesc.HLODSubActors);
 	}

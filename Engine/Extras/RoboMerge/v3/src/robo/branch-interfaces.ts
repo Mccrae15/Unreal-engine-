@@ -45,8 +45,6 @@ export interface StompVerificationFile {
 	stompedRevisionsCalculationIssues: boolean
 	
 	targetFileName : string
-
-	branchOrDeleteResolveRequired: boolean // Currently we don't have a good way to handle branch / delete merges. Fail those requests for now.
 }
 
 export interface StompVerification extends OperationResult {
@@ -55,7 +53,6 @@ export interface StompVerification extends OperationResult {
 	svFiles?: StompVerificationFile[] // Array of remaining files
 
 	// Convinence booleans to alert user to problems in verification result
-	branchOrDeleteResolveRequired?: boolean // Currently we don't have a good way to handle branch / delete merges. Fail those requests for now.
 	remainingAllBinary?: boolean // Check to see if unresolved non-binary files are remaining -- we shouldn't stomp those!
 }
 
@@ -124,7 +121,7 @@ export interface TargetInfo {
 	author: string
 
 	targetWorkspaceForShelf?: string // Filled in during the reconsider in case of a createShelf nodeop request
-	sendNoShelfEmail: boolean // Used for internal use shelves, such as stomp changes
+	sendNoShelfNotification: boolean // Used for internal use shelves, such as stomp changes
 
 	forceStompChanges: boolean
 	additionalDescriptionText?: string
@@ -163,6 +160,7 @@ export interface Failure {
 	kind: FailureKind		// short description of integration error or conflict
 	description: string		// detailed description (can be very long - don't want to store this)
 	summary?: string
+	additionalInfo?: any
 }
 
 export interface Blockage {

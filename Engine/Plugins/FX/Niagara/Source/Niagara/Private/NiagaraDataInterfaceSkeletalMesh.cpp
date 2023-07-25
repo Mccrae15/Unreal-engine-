@@ -3,12 +3,14 @@
 #include "NiagaraDataInterfaceSkeletalMesh.h"
 
 #include "Animation/SkeletalMeshActor.h"
+#include "Animation/Skeleton.h"
 #include "Async/ParallelFor.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Canvas.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "Internationalization/Internationalization.h"
 #include "NDISkeletalMeshCommon.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraComponent.h"
 #include "NiagaraDataInterfaceSkeletalMeshConnectivity.h"
@@ -1226,7 +1228,7 @@ void FSkeletalMeshGpuDynamicBufferProxy::NewFrame(const FNDISkeletalMesh_Instanc
 			for (int i=0; i < BoneTransforms.Num(); ++i )
 			{
 				const FTransform& BoneTransform = BoneTransforms[i];
-				const FQuat Rotation = BoneTransform.GetRotation();
+				const FQuat4f Rotation = FQuat4f(BoneTransform.GetRotation());
 				const int32 ParentIndex = ReferenceSkeleton ? ReferenceSkeleton->GetParentIndex(i) : -1;
 				BoneSamplingData.Emplace((FVector3f)BoneTransform.GetLocation()); // LWC_TODO: precision loss
 				BoneSamplingData.Emplace(Rotation.X, Rotation.Y, Rotation.Z, Rotation.W);
@@ -1869,7 +1871,7 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 				else
 				{
 					ensure(Bone <= TNumericLimits<uint16>::Max());
-					FilteredAndUnfilteredBones.Add(Bone);
+					FilteredAndUnfilteredBones.Add(uint16(Bone));
 					++NumFilteredBones;
 				}
 			}
@@ -1894,7 +1896,7 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 				}
 				if (!bExists)
 				{
-					FilteredAndUnfilteredBones.Add(i);
+					FilteredAndUnfilteredBones.Add(uint16(i));
 					++NumUnfilteredBones;
 				}
 			}
@@ -2772,8 +2774,8 @@ bool UNiagaraDataInterfaceSkeletalMesh::AppendCompileHash(FNiagaraCompileHashVis
 	if (!Super::AppendCompileHash(InVisitor))
 		return false;
 
-	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceSkeletalMeshHLSLSource"), GetShaderFileHash(NDISkelMeshLocal::CommonShaderFile, EShaderPlatform::SP_PCD3D_SM5).ToString());
-	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceSkeletalMeshTemplateHLSLSource"), GetShaderFileHash(NDISkelMeshLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5).ToString());
+	InVisitor->UpdateShaderFile(NDISkelMeshLocal::CommonShaderFile);
+	InVisitor->UpdateShaderFile(NDISkelMeshLocal::TemplateShaderFile);
 	InVisitor->UpdateShaderParameters<NDISkelMeshLocal::FShaderParameters>();
 
 	InVisitor->UpdatePOD(TEXT("NDISkelmesh_Influences"), int(GetDefault<UNiagaraSettings>()->NDISkelMesh_GpuMaxInfluences));
@@ -2803,20 +2805,19 @@ void UNiagaraDataInterfaceSkeletalMesh::GetCommonHLSL(FString& OutHLSL)
 
 void UNiagaraDataInterfaceSkeletalMesh::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
-	TMap<FString, FStringFormatArg> TemplateArgs =
+	const TMap<FString, FStringFormatArg> TemplateArgs =
 	{
 		{TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol},
 	};
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDISkelMeshLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, NDISkelMeshLocal::TemplateShaderFile, TemplateArgs);
 }
 
 bool UNiagaraDataInterfaceSkeletalMesh::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	static const TSet<FName> ValidGpuFunctions =
 	{
+		NDISkelMeshLocal::NAME_GetPreSkinnedLocalBounds,
+		//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 		FSkeletalMeshInterfaceHelper::GetTriCoordVerticesName,
 		FSkeletalMeshInterfaceHelper::GetTriangleCountName,
 		FSkeletalMeshInterfaceHelper::GetFilteredTriangleCountName,

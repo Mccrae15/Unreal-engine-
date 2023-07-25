@@ -6,6 +6,7 @@
 #include "Chaos/GeometryParticles.h"
 #include "Chaos/ImplicitFwd.h"
 #include "Chaos/ImplicitObjectScaled.h"
+#include "Chaos/OBBVectorized.h"
 #include "Chaos/SegmentMesh.h"
 #include "Chaos/Triangle.h"
 
@@ -182,6 +183,26 @@ namespace Chaos
 			VisitTree(BoundsFilter, FaceVisitor);
 		}
 
+		template <typename SQVisitor>
+		FORCEINLINE_DEBUGGABLE void OverlapOBB(const Private::FOBBVectorized& Obb, SQVisitor& Visitor) const
+		{
+			const auto BoundsFilter = [&Obb](const FAABBVectorized& Bounds) -> EFilterResult
+			{
+				const bool bHit = Obb.IntersectAABB(Bounds);
+				return bHit ? EFilterResult::Keep : EFilterResult::Skip;
+			};
+
+			const auto FaceVisitor = [&Visitor](int32 FaceIndex)
+			{
+				const bool bContinueVisiting = Visitor.VisitOverlap(FaceIndex);
+				return bContinueVisiting ? EVisitorResult::Continue : EVisitorResult::Stop;
+			};
+
+			VisitTree(BoundsFilter, FaceVisitor);
+		}
+
+		template <typename QueryGeomType>
+		bool FindAllIntersectionsNoMTD(const Private::FOBBVectorized& Intersection, const TRigidTransform<FReal, 3>& Transform, const QueryGeomType& QueryGeom, FReal Thickness, const FVec3& TriMeshScale, const FTriangleMeshImplicitObject* TriMesh) const;
 		template <typename QueryGeomType>
 		bool FindAllIntersectionsNoMTD(const FAABB3& Intersection, const TRigidTransform<FReal, 3>& Transform, const QueryGeomType& QueryGeom, FReal Thickness, const FVec3& TriMeshScale, const FTriangleMeshImplicitObject* TriMesh) const;
 		TArray<int32> FindAllIntersections(const FAABB3& Intersection) const;
@@ -701,6 +722,7 @@ namespace Chaos
 
 		/**
 		 * @brief Generate the triangle at the specified index with the specified transform (including scale)
+		 * @note does not correct winding for negative scales
 		*/
 		void GetTransformedTriangle(const int32 TriangleIndex, const FRigidTransform3& Transform, FTriangle& OutTriangle, int32& OutVertexIndex0, int32& OutVertexIndex1, int32& OutVertexIndex2) const
 		{
@@ -735,12 +757,21 @@ namespace Chaos
 			TArray<int32> OverlapIndices;
 			FindOverlappingTriangles(QueryBounds, OverlapIndices);
 
+			const bool bStandardWinding = ((QueryTransform.GetScale3D().X * QueryTransform.GetScale3D().Y * QueryTransform.GetScale3D().Z) >= FReal(0));
+
 			for (int32 OverlapIndex = 0; OverlapIndex < OverlapIndices.Num(); ++OverlapIndex)
 			{
 				const int32 TriangleIndex = OverlapIndices[OverlapIndex];
 				FTriangle Triangle;
 				int32 VertexIndex0, VertexIndex1, VertexIndex2;
 				GetTransformedTriangle(TriangleIndex, QueryTransform, Triangle, VertexIndex0, VertexIndex1, VertexIndex2);
+
+				if (!bStandardWinding)
+				{
+					Triangle.ReverseWinding();
+					Swap(VertexIndex1, VertexIndex2);
+				}
+
 				Visitor(Triangle, TriangleIndex, VertexIndex0, VertexIndex1, VertexIndex2);
 			}
 		}
@@ -856,7 +887,7 @@ namespace Chaos
 		template <typename QueryGeomType>
 		bool GJKContactPointImp(const QueryGeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& Location, FVec3& Normal, FReal& Penetration, int32& FaceIndex, FVec3 TriMeshScale = FVec3(1.0)) const;
 
-		template<typename QueryGeomType>
+		template<bool IsSpherical, typename QueryGeomType>
 		bool OverlapGeomImp(const QueryGeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD = nullptr, FVec3 TriMeshScale = FVec3(1.0f)) const;
 
 		template<typename QueryGeomType>

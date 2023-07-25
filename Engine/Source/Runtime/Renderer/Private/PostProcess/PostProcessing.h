@@ -2,13 +2,16 @@
 
 #pragma once
 
-#include "ScreenPass.h"
+#include "RenderGraphFwd.h"
+#include "RHIFwd.h"
 #include "TranslucentRendering.h"
-#include "SystemTextures.h"
-#include "ScenePrivate.h"
-#include "DeferredShadingRenderer.h"
+
+enum class EReflectionsMethod;
 
 class FSceneTextureParameters;
+class FSceneTextureUniformParameters;
+class FScreenPassVS;
+class FViewInfo;
 class FVirtualShadowMapArray;
 
 namespace Nanite
@@ -32,7 +35,9 @@ struct FPostProcessingInputs
 	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextures = nullptr;
 	FRDGTextureRef ViewFamilyTexture = nullptr;
 	FRDGTextureRef CustomDepthTexture = nullptr;
+	FRDGTextureRef ExposureIlluminance = nullptr;
 	FTranslucencyViewResourcesMap TranslucencyViewResourcesMap;
+	bool bSeparateCustomStencil = false;
 
 	void Validate() const
 	{
@@ -63,6 +68,7 @@ struct FMobilePostProcessingInputs
 {
 	TRDGUniformBufferRef<FMobileSceneTextureUniformParameters> SceneTextures = nullptr;
 	FRDGTextureRef ViewFamilyTexture = nullptr;
+	bool bRequiresMultiPass = false;
 
 	void Validate() const
 	{

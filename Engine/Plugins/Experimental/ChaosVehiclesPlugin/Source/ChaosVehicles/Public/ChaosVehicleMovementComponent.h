@@ -91,7 +91,7 @@ struct CHAOSVEHICLES_API FVehicleDebugParams
 	bool DisableAerodynamics = false;
 	bool DisableAerofoils = false;
 	bool DisableThrusters = false;
-	bool BatchQueries = true;
+	bool BatchQueries = false;
 	bool CacheTraceOverlap = false;
 	float ForceDebugScaling = 0.0006f;
 	float SleepCounterThreshold = 15;
@@ -816,6 +816,10 @@ class CHAOSVEHICLES_API UChaosVehicleMovementComponent : public UPawnMovementCom
 	/** If true, the brake and reverse controls will behave in a more arcade fashion where holding reverse also functions as brake. For a more realistic approach turn this off*/
 	UPROPERTY(EditAnywhere, Category = VehicleSetup)
 	uint8 bReverseAsBrake : 1;
+
+	/** If true, when reversing the throttle will behave like a brake while the vehicle moving in a backwards direction - requires bReverseAsBrake to be enabled for operation */
+	UPROPERTY(EditAnywhere, Category = VehicleSetup, meta = (EditCondition = "bReverseAsBrake"))
+	uint8 bThrottleAsBrake : 1;
 
 public:
 	/** Mass to set the vehicle chassis to. It's much easier to tweak vehicle settings when

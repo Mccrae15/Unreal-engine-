@@ -2,13 +2,13 @@
 
 #include "DataprepOperationsLibraryUtil.h"
 
+#include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
-#include "Engine/StaticMeshActor.h"
-#include "Materials/Material.h"
-#include "Materials/MaterialFunctionInstance.h"
+#include "Engine/StaticMeshSourceData.h"
 #include "Materials/MaterialInterface.h"
+#include "EngineLogs.h"
 #include "StaticMeshAttributes.h"
-#include "StaticMeshOperations.h"
+#include "StaticMeshResources.h"
 
 namespace DataprepOperationsLibraryUtil
 {

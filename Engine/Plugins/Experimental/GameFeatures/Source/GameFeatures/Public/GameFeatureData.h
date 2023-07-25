@@ -2,12 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
-#include "Engine/AssetManagerTypes.h"
 #include "GameFeatureAction.h"
 
 #include "GameFeatureData.generated.h"
+
+class FConfigFile;
+struct FPrimaryAssetTypeInfo;
+
+struct FAssetData;
 
 /** Data related to a game feature, a collection of code and content that adds a separable discrete feature to the game */
 UCLASS()
@@ -28,6 +31,12 @@ public:
 
 	/** Method to process ini files for the plugin during activation */
 	void InitializeHierarchicalPluginIniFiles(const FString& PluginInstalledFilename) const;
+
+#if WITH_EDITOR
+	static FName GetContentBundleGuidsAssetRegistryTag();
+	static void GetContentBundleGuidsFromAsset(const FAssetData& Asset, TArray<FGuid>& OutContentBundleGuids);
+	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+#endif
 
 public:
 	//~UPrimaryDataAsset interface
@@ -58,3 +67,8 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Game Feature | Asset Manager", meta=(TitleProperty="PrimaryAssetType"))
 	TArray<FPrimaryAssetTypeInfo> PrimaryAssetTypesToScan;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Engine/AssetManagerTypes.h"
+#endif

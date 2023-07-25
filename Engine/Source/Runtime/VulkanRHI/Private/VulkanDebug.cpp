@@ -915,64 +915,17 @@ namespace VulkanRHI
 
 	static FString GetVkImageLayoutString(VkImageLayout Layout)
 	{
-		switch (Layout)
-		{
-			// + 16 to skip "VK_IMAGE_LAYOUT"
-#define VKSWITCHCASE(x)	case x: return &TEXT(#x)[16];
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_UNDEFINED)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_GENERAL)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_PREINITIALIZED)
-			VKSWITCHCASE(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
-#undef VKSWITCHCASE
-		default:
-			break;
-		}
-
-		return FString::Printf(TEXT("Unknown VkImageLayout %d"), (int32)Layout);
+		return FString(VK_TYPE_TO_STRING(VkImageLayout, Layout)).RightChop(16);
 	}
 
 	static FString GetVkImageViewTypeString(VkImageViewType Type)
 	{
-		switch (Type)
-		{
-			// + 19 to skip "VK_IMAGE_VIEW_TYPE_"
-#define VKSWITCHCASE(x)	case x: return &TEXT(#x)[19];
-		VKSWITCHCASE(VK_IMAGE_VIEW_TYPE_1D)
-		VKSWITCHCASE(VK_IMAGE_VIEW_TYPE_2D)
-		VKSWITCHCASE(VK_IMAGE_VIEW_TYPE_3D)
-		VKSWITCHCASE(VK_IMAGE_VIEW_TYPE_CUBE)
-		VKSWITCHCASE(VK_IMAGE_VIEW_TYPE_1D_ARRAY)
-		VKSWITCHCASE(VK_IMAGE_VIEW_TYPE_2D_ARRAY)
-		VKSWITCHCASE(VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
-#undef VKSWITCHCASE
-		default:
-			break;
-		}
-
-		return FString::Printf(TEXT("Unknown VkImageViewType %d"), (int32)Type);
+		return FString(VK_TYPE_TO_STRING(VkImageViewType, Type)).RightChop(19);
 	}
 
 	static FString GetVkImageTypeString(VkImageType Type)
 	{
-		switch (Type)
-		{
-			// + 14 to skip "VK_IMAGE_TYPE_1D"
-#define VKSWITCHCASE(x)	case x: return &TEXT(#x)[14];
-		VKSWITCHCASE(VK_IMAGE_TYPE_1D)
-		VKSWITCHCASE(VK_IMAGE_TYPE_2D)
-		VKSWITCHCASE(VK_IMAGE_TYPE_3D)
-#undef VKSWITCHCASE
-		default:
-			break;
-		}
-
-		return FString::Printf(TEXT("Unknown VkImageType %d"), (int32)Type);
+		return FString(VK_TYPE_TO_STRING(VkImageType, Type)).RightChop(14);
 	}
 
 	static FString GetVkDescriptorTypeString(VkDescriptorType Type)
@@ -2066,9 +2019,12 @@ void FWrapLayer::CreateFramebuffer(VkResult Result, VkDevice Device, const VkFra
 		{
 			FFBInfo Info;
 			Info.Info = *CreateInfo;
-			Info.Attachments.AddUninitialized(CreateInfo->attachmentCount);
-			FMemory::Memcpy(&Info.Attachments[0], CreateInfo->pAttachments, CreateInfo->attachmentCount * sizeof(VkImageView));
-			Info.Info.pAttachments = &Info.Attachments[0];
+			if (CreateInfo->attachmentCount)
+			{
+				Info.Attachments.AddUninitialized(CreateInfo->attachmentCount);
+				FMemory::Memcpy(&Info.Attachments[0], CreateInfo->pAttachments, CreateInfo->attachmentCount * sizeof(VkImageView));
+				Info.Info.pAttachments = &Info.Attachments[0];
+			}
 			GFramebufferInfo.Add(*Framebuffer, Info);
 		}
 #endif
@@ -2240,25 +2196,34 @@ void FWrapLayer::CreateRenderPass2KHR(VkResult Result, VkDevice Device, const Vk
 	else
 	{
 #if VULKAN_ENABLE_DUMP_LAYER
-		/*
-		* @todo
 		PrintResultAndNamedHandle(Result, TEXT("RenderPass"), *RenderPass);
 		if (Result == VK_SUCCESS)
 		{
 			FRenderPassInfo Info;
-			Info.Info = *CreateInfo;
+			Info.Info.sType = CreateInfo->sType;
+			Info.Info.attachmentCount = CreateInfo->attachmentCount;
+			Info.Info.dependencyCount = CreateInfo->dependencyCount;
+			Info.Info.subpassCount = CreateInfo->subpassCount;
+			Info.Info.flags = CreateInfo->flags;
 			Info.Info.pAttachments = nullptr;
 			Info.Info.pSubpasses = nullptr;
 			Info.Info.pDependencies = nullptr;
 			Info.Descriptions.AddUninitialized(CreateInfo->attachmentCount);
-			if (CreateInfo->attachmentCount)
+			for (uint32 Index = 0; Index < CreateInfo->attachmentCount; ++Index)
 			{
-				FMemory::Memcpy(&Info.Descriptions[0], CreateInfo->pAttachments, CreateInfo->attachmentCount * sizeof(VkAttachmentDescription));
+				Info.Descriptions[Index].flags = CreateInfo->pAttachments[Index].flags;
+				Info.Descriptions[Index].format = CreateInfo->pAttachments[Index].format;
+				Info.Descriptions[Index].samples = CreateInfo->pAttachments[Index].samples;
+				Info.Descriptions[Index].loadOp = CreateInfo->pAttachments[Index].loadOp;
+				Info.Descriptions[Index].storeOp = CreateInfo->pAttachments[Index].storeOp;
+				Info.Descriptions[Index].stencilLoadOp = CreateInfo->pAttachments[Index].stencilLoadOp;
+				Info.Descriptions[Index].stencilStoreOp = CreateInfo->pAttachments[Index].stencilStoreOp;
+				Info.Descriptions[Index].initialLayout = CreateInfo->pAttachments[Index].initialLayout;
+				Info.Descriptions[Index].finalLayout = CreateInfo->pAttachments[Index].finalLayout;
 			}
 			GRenderPassInfo.Add(*RenderPass, Info);
 		}
 		FlushDebugWrapperLog();
-		*/
 #endif
 	}
 }
@@ -3833,8 +3798,6 @@ void FWrapLayer::GetPhysicalDeviceQueueFamilyProperties(VkResult Result, VkPhysi
 	}
 }
 
-
-#if VULKAN_SUPPORTS_DEDICATED_ALLOCATION
 void FWrapLayer::GetImageMemoryRequirements2KHR(VkResult Result, VkDevice Device, const VkImageMemoryRequirementsInfo2KHR* Info, VkMemoryRequirements2KHR* MemoryRequirements)
 {
 	if (Result == VK_RESULT_MAX_ENUM)
@@ -3844,7 +3807,16 @@ void FWrapLayer::GetImageMemoryRequirements2KHR(VkResult Result, VkDevice Device
 #endif
 	}
 }
-#endif	// VULKAN_SUPPORTS_DEDICATED_ALLOCATION
+
+void FWrapLayer::GetBufferMemoryRequirements2KHR(VkResult Result, VkDevice Device, const VkBufferMemoryRequirementsInfo2KHR* Info, VkMemoryRequirements2KHR* MemoryRequirements)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		DevicePrintfBegin(Device, FString::Printf(TEXT("vkGetBufferemoryRequirements2KHR(Info=0x%p, MemReqs=0x%p)[...]"), Info, MemoryRequirements));
+#endif
+	}
+}
 
 void FWrapLayer::GetImageSparseMemoryRequirements(VkResult Result, VkDevice Device, VkImage Image, uint32_t* pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements* pSparseMemoryRequirements)
 {
@@ -4406,22 +4378,6 @@ void FWrapLayer::GetRayTracingShaderGroupHandlesKHR(VkResult Result, VkDevice De
 	}
 }
 
-void FWrapLayer::GetBufferDeviceAddressKHR(VkResult Result, VkDevice Device, const VkBufferDeviceAddressInfo* Info)
-{
-	if (Result == VK_RESULT_MAX_ENUM)
-	{
-#if VULKAN_ENABLE_DUMP_LAYER
-		PrintfBeginResult(FString::Printf(TEXT("vkGetBufferDeviceAddressKHR")));
-#endif
-	}
-	else
-	{
-#if VULKAN_ENABLE_DUMP_LAYER
-		PrintResult(Result);
-#endif
-	}
-}
-
 void FWrapLayer::CmdWriteAccelerationStructuresPropertiesKHR(VkResult Result, VkCommandBuffer CommandBuffer, uint32_t AccelerationStructureCount, const VkAccelerationStructureKHR* AccelerationStructures, VkQueryType QueryType, VkQueryPool QueryPool, uint32_t FirstQuery)
 {
 	if (Result == VK_RESULT_MAX_ENUM)
@@ -4455,12 +4411,38 @@ void FWrapLayer::CmdCopyAccelerationStructureKHR(VkResult Result, VkCommandBuffe
 }
 #endif // VULKAN_RHI_RAYTRACING
 
+void FWrapLayer::GetBufferDeviceAddressKHR(VkResult Result, VkDevice Device, const VkBufferDeviceAddressInfo* Info)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("vkGetBufferDeviceAddressKHR(Device=0x%p, Buffer=0x%p)"), Device, Info->buffer));
+#endif
+	}
+	else
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintResult(Result);
+#endif
+	}
+}
+
 void FWrapLayer::GetDeviceImageMemoryRequirementsKHR(VkResult Result, VkDevice Device, const VkDeviceImageMemoryRequirements* Info, VkMemoryRequirements2* MemoryRequirements)
 {
 	if (Result == VK_RESULT_MAX_ENUM)
 	{
 #if VULKAN_ENABLE_DUMP_LAYER
 		PrintfBeginResult(FString::Printf(TEXT("vkGetDeviceImageMemoryRequirementsKHR")));
+#endif
+	}
+}
+
+void FWrapLayer::GetDeviceBufferMemoryRequirementsKHR(VkResult Result, VkDevice Device, const VkDeviceBufferMemoryRequirements* Info, VkMemoryRequirements2* MemoryRequirements)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("vkGetDeviceBufferMemoryRequirementsKHR")));
 #endif
 	}
 }
@@ -4475,6 +4457,104 @@ void FWrapLayer::ResetQueryPoolEXT(VkResult Result, VkDevice Device, VkQueryPool
 	}
 }
 
+void FWrapLayer::GetPhysicalDeviceCalibrateableTimeDomainsEXT(VkResult Result, VkPhysicalDevice PhysicalDevice, uint32_t* TimeDomainCount, VkTimeDomainEXT* TimeDomains)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("PhysicalDeviceCalibrateableTimeDomainsEXT(PhysicalDevice=0x%p, TimeDomains=0x%p)"), PhysicalDevice, TimeDomains));
+#endif
+	}
+}
+
+void FWrapLayer::GetCalibratedTimestampsEXT(VkResult Result, VkDevice Device, uint32_t TimestampCount, const VkCalibratedTimestampInfoEXT* TimestampInfos, uint64_t* Timestamps, uint64_t* MaxDeviation)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("GetCalibratedTimestampsEXT(Device=0x%p, TimestampCount=%u)"), Device, TimestampCount));
+#endif
+	}
+}
+
+void FWrapLayer::BindBufferMemory2KHR(VkResult Result, VkDevice Device, uint32_t BindInfoCount, const VkBindBufferMemoryInfo* BindInfos)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("BindBufferMemory2KHR(Device=0x%p, BindInfoCount=%u)"), Device, BindInfoCount));
+#endif
+	}
+}
+
+void FWrapLayer::BindImageMemory2KHR(VkResult Result, VkDevice Device, uint32_t BindInfoCount, const VkBindImageMemoryInfo* BindInfos)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("BindImageMemory2KHR(Device=0x%p, BindInfoCount=%u)"), Device, BindInfoCount));
+#endif
+	}
+}
+
+void FWrapLayer::GetDescriptorSetLayoutSizeEXT(VkResult Result, VkDevice Device, VkDescriptorSetLayout Layout, VkDeviceSize* OutLayoutSizeInBytes)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("GetDescriptorSetLayoutSizeEXT(Device=0x%p, Layout=0x%p)"), Device, Layout));
+#endif
+	}
+}
+
+void FWrapLayer::GetDescriptorSetLayoutBindingOffsetEXT(VkResult Result, VkDevice Device, VkDescriptorSetLayout Layout, uint32_t Binding, VkDeviceSize* Offset)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("GetDescriptorSetLayoutBindingOffsetEXT(Device=0x%p, Layout=0x%p)"), Device, Layout));
+#endif
+	}
+}
+
+void FWrapLayer::CmdBindDescriptorBuffersEXT(VkResult Result, VkCommandBuffer CommandBuffer, uint32_t BufferCount, const VkDescriptorBufferBindingInfoEXT* BindingInfos)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("CmdBindDescriptorBuffersEXT(CommandBuffer=0x%p, BufferCount=%u)"), CommandBuffer, BufferCount));
+		for (uint32_t Index = 0; Index  < BufferCount; ++Index)
+		{
+			DebugLog += FString::Printf(TEXT("%s%d - Address=0x%p Usage=0x%X\n"), Tabs, Index, BindingInfos[Index].address, BindingInfos[Index].usage);
+		}
+#endif
+	}
+}
+
+void FWrapLayer::CmdSetDescriptorBufferOffsetsEXT(VkResult Result, VkCommandBuffer CommandBuffer, VkPipelineBindPoint PipelineBindPoint, VkPipelineLayout Layout, uint32_t FirstSet, uint32_t SetCount, const uint32_t* BufferIndices, const VkDeviceSize* Offsets)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("CmdSetDescriptorBufferOffsetsEXT(CommandBuffer=0x%p, BindPoint=%s, PipelineLayout=0x%p, FirstSet=%u, SetCount=%u)"), 
+			CommandBuffer, VK_TYPE_TO_STRING(VkPipelineBindPoint, PipelineBindPoint), Layout, FirstSet, SetCount));
+		for (uint32_t Index = 0; Index < SetCount; ++Index)
+		{
+			DebugLog += FString::Printf(TEXT("%sSet %u - BufferIndex=%u Offset=%llu\n"), Tabs, FirstSet + Index, BufferIndices[Index], Offsets[Index]);
+		}
+#endif
+	}
+}
+
+void FWrapLayer::GetDescriptorEXT(VkResult Result, VkDevice Device, const VkDescriptorGetInfoEXT* DescriptorInfo, size_t DataSize, void* Descriptor)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		PrintfBeginResult(FString::Printf(TEXT("GetDescriptorEXT(Device=0x%p, DataSize=%llu DescriptorType=%s)"), Device, DataSize, VK_TYPE_TO_STRING(VkDescriptorType, DescriptorInfo->type)));
+#endif
+	}
+}
 
 void FWrapLayer::CmdPipelineBarrier2KHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkDependencyInfo* DependencyInfo)
 {
@@ -4497,7 +4577,7 @@ void FWrapLayer::CmdPipelineBarrier2KHR(VkResult Result, VkCommandBuffer Command
 				BreakOnTrackingImage(ImageBarrier.image);
 				if (DumpTrackImage(ImageBarrier.image))
 				{
-					CmdPrintfBegin(CommandBuffer, FString::Printf(TEXT("vkCmdPipelineBarrier(Flags=%d, NumMemB=%d, MemB=0x%p,"), (uint32)DependencyInfo->dependencyFlags, DependencyInfo->memoryBarrierCount, DependencyInfo->pMemoryBarriers));
+					CmdPrintfBegin(CommandBuffer, FString::Printf(TEXT("vkCmdPipelineBarrier2(Flags=%d, NumMemB=%d, MemB=0x%p,"), (uint32)DependencyInfo->dependencyFlags, DependencyInfo->memoryBarrierCount, DependencyInfo->pMemoryBarriers));
 					DebugLog += FString::Printf(TEXT("%s\tNumBufferB=%d, BufferB=0x%p, NumImageB=%d, ImageB=0x%p)[...]\n"), Tabs, DependencyInfo->bufferMemoryBarrierCount, DependencyInfo->pBufferMemoryBarriers, DependencyInfo->imageMemoryBarrierCount, DependencyInfo->pImageMemoryBarriers);
 					DumpImageMemoryBarriers(DependencyInfo->imageMemoryBarrierCount, DependencyInfo->pImageMemoryBarriers);
 					FlushDebugWrapperLog();

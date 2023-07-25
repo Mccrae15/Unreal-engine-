@@ -1,18 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderUtils.h"
-#include "Containers/ResourceArray.h"
+
 #include "Containers/DynamicRHIResourceArray.h"
-#include "RenderResource.h"
-#include "RHIStaticStates.h"
-#include "RenderGraphUtils.h"
-#include "PipelineStateCache.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "HAL/ConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
-#include "RenderGraphResourcePool.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "PackedNormal.h"
+#include "PipelineStateCache.h"
+#include "RenderResource.h"
+#include "RHI.h"
+#include "Shader.h"
+#include "ShaderPlatformCachedIniValue.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "RenderCore.h"
 
 #if WITH_EDITOR
-#include "Misc/CoreMisc.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "RHIShaderFormatDefinitions.inl"
@@ -53,6 +57,16 @@ FAutoConsoleVariableRef CVarRayTracingEnableInEditor(
 	ECVF_ReadOnly
 );
 
+static int32 GRayTracingEnableOnDemand = 0;
+static FAutoConsoleVariableRef CVarRayTracingEnableOnDemand(
+	TEXT("r.RayTracing.EnableOnDemand"),
+	GRayTracingEnableOnDemand,
+	TEXT("Controls whether ray tracing features can be toggled on demand at runtime without restarting the game (experimental).\n")
+	TEXT("Requires r.RayTracing=1 and will override GameUserSettings in game. Requires r.RayTracing.EnableInEditor=1 in editor. Has a small performance and memory overhead.\n")
+	TEXT(" 0: off (default)\n")
+	TEXT(" 1: on"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
 static int32 GRayTracingRequireSM6 = 0;
 static FAutoConsoleVariableRef CVarRayTracingRequireSM6(
 	TEXT("r.RayTracing.RequireSM6"),
@@ -60,18 +74,6 @@ static FAutoConsoleVariableRef CVarRayTracingRequireSM6(
 	TEXT("Whether ray tracing shaders and features should only be available when targetting and running SM6. If disabled, ray tracing shaders will also be available when running in SM5 mode. (default = 0, allow SM5 and SM6)"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly
 );
-
-
-FBufferWithRDG::FBufferWithRDG() = default;
-FBufferWithRDG::FBufferWithRDG(const FBufferWithRDG & Other) = default;
-FBufferWithRDG& FBufferWithRDG::operator=(const FBufferWithRDG & Other) = default;
-FBufferWithRDG::~FBufferWithRDG() = default;
-
-void FBufferWithRDG::ReleaseRHI()
-{
-	Buffer = nullptr;
-	FRenderResource::ReleaseRHI();
-}
 
 const uint16 GCubeIndices[12*3] =
 {
@@ -88,11 +90,6 @@ const uint16 GCubeIndices[12*3] =
 	1, 3, 7,
 	1, 7, 5,
 };
-
-TGlobalResource<FCubeIndexBuffer> GCubeIndexBuffer;
-TGlobalResource<FTwoTrianglesIndexBuffer> GTwoTrianglesIndexBuffer;
-TGlobalResource<FScreenSpaceVertexBuffer> GScreenSpaceVertexBuffer;
-TGlobalResource<FTileVertexDeclaration> GTileVertexDeclaration;
 
 //
 // FPackedNormal serializer
@@ -117,599 +114,6 @@ FArchive& operator<<(FArchive& Ar, FPackedRGBA16N& N)
 	Ar << N.W;
 	return Ar;
 }
-
-/**
- * Bulk data interface for providing a single black color used to initialize a
- * volume texture.
- */
-class FBlackVolumeTextureResourceBulkDataInterface : public FResourceBulkDataInterface
-{
-public:
-
-	/** Default constructor. */
-	FBlackVolumeTextureResourceBulkDataInterface(uint8 Alpha)
-		: Color(0, 0, 0, Alpha)
-	{
-	}
-
-	/** Default constructor. */
-	FBlackVolumeTextureResourceBulkDataInterface(FColor InColor)
-		: Color(InColor)
-	{
-	}
-
-	/**
-	 * Returns a pointer to the bulk data.
-	 */
-	virtual const void* GetResourceBulkData() const override
-	{
-		return &Color;
-	}
-
-	/** 
-	 * @return size of resource memory
-	 */
-	virtual uint32 GetResourceBulkDataSize() const override
-	{
-		return sizeof(Color);
-	}
-
-	/**
-	 * Free memory after it has been used to initialize RHI resource 
-	 */
-	virtual void Discard() override
-	{
-	}
-
-private:
-
-	/** Storage for the color. */
-	FColor Color;
-};
-
-//
-// FWhiteTexture implementation
-//
-
-/**
- * A solid-colored 1x1 texture.
- */
-template <int32 R, int32 G, int32 B, int32 A>
-class FColoredTexture : public FTextureWithSRV
-{
-public:
-	// FResource interface.
-	virtual void InitRHI() override
-	{
-		// Create the texture RHI.  		
-		FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData(FColor(R, G, B, A));
-
-		// BGRA typed UAV is unsupported per D3D spec, use RGBA here.
-		const FRHITextureCreateDesc Desc =
-			FRHITextureCreateDesc::Create2D(TEXT("ColoredTexture"), 1, 1, PF_R8G8B8A8)
-			.SetFlags(ETextureCreateFlags::ShaderResource)
-			.SetBulkData(&BlackTextureBulkData);
-
-		TextureRHI = RHICreateTexture(Desc);
-
-		// Create the sampler state RHI resource.
-		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point,AM_Wrap,AM_Wrap,AM_Wrap);
-		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
-
-		// Create a view of the texture
-		ShaderResourceViewRHI = RHICreateShaderResourceView(TextureRHI, 0u);
-	}
-
-	/** Returns the width of the texture in pixels. */
-	virtual uint32 GetSizeX() const override
-	{
-		return 1;
-	}
-
-	/** Returns the height of the texture in pixels. */
-	virtual uint32 GetSizeY() const override
-	{
-		return 1;
-	}
-};
-
-class FEmptyVertexBuffer : public FVertexBufferWithSRV
-{
-public:
-	virtual void InitRHI() override
-	{
-		// Create the texture RHI.  		
-		FRHIResourceCreateInfo CreateInfo(TEXT("EmptyVertexBuffer"));
-		
-		VertexBufferRHI = RHICreateVertexBuffer(16u, BUF_Static | BUF_ShaderResource | BUF_UnorderedAccess, CreateInfo);
-
-		// Create a view of the buffer
-		ShaderResourceViewRHI = RHICreateShaderResourceView(VertexBufferRHI, 4u, PF_R32_UINT);
-		UnorderedAccessViewRHI = RHICreateUnorderedAccessView(VertexBufferRHI, PF_R32_UINT);
-	}
-};
-
-class FBlackTextureWithSRV : public FColoredTexture<0, 0, 0, 255>
-{
-	virtual void InitRHI() override
-	{
-		FColoredTexture::InitRHI();
-		FRHITextureReference::DefaultTexture = TextureRHI;
-	}
-
-	virtual void ReleaseRHI() override
-	{
-		FRHITextureReference::DefaultTexture.SafeRelease();
-		FColoredTexture::ReleaseRHI();
-	}
-};
-
-FTextureWithSRV* GWhiteTextureWithSRV = new TGlobalResource<FColoredTexture<255,255,255,255> >;
-FTextureWithSRV* GBlackTextureWithSRV = new TGlobalResource<FBlackTextureWithSRV>();
-FTextureWithSRV* GTransparentBlackTextureWithSRV = new TGlobalResource<FColoredTexture<0,0,0,0> >;
-FTexture* GWhiteTexture = GWhiteTextureWithSRV;
-FTexture* GBlackTexture = GBlackTextureWithSRV;
-FTexture* GTransparentBlackTexture = GTransparentBlackTextureWithSRV;
-
-FVertexBufferWithSRV* GEmptyVertexBufferWithUAV = new TGlobalResource<FEmptyVertexBuffer>;
-
-class FWhiteVertexBuffer : public FVertexBufferWithSRV
-{
-public:
-	virtual void InitRHI() override
-	{
-		// Create the texture RHI.  		
-		FRHIResourceCreateInfo CreateInfo(TEXT("WhiteVertexBuffer"));
-
-		VertexBufferRHI = RHICreateVertexBuffer(sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
-
-		FVector4f* BufferData = (FVector4f*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector4f), RLM_WriteOnly);
-		*BufferData = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
-		RHIUnlockBuffer(VertexBufferRHI);
-
-		// Create a view of the buffer
-		ShaderResourceViewRHI = RHICreateShaderResourceView(VertexBufferRHI, sizeof(FVector4f), PF_A32B32G32R32F);
-	}
-};
-
-FVertexBufferWithSRV* GWhiteVertexBufferWithSRV = new TGlobalResource<FWhiteVertexBuffer>;
-
-class FWhiteVertexBufferWithRDG : public FBufferWithRDG
-{
-public:
-
-	/**
-	 * Initialize RHI resources.
-	 */
-	virtual void InitRHI() override
-	{
-		if (!Buffer.IsValid())
-		{
-			Buffer = AllocatePooledBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(FVector4f), 1), TEXT("WhiteVertexBufferWithRDG"));
-
-			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-			FVector4f* BufferData = (FVector4f*)RHICmdList.LockBuffer(Buffer->GetRHI(), 0, sizeof(FVector4f), RLM_WriteOnly);
-			*BufferData = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
-			RHICmdList.UnlockBuffer(Buffer->GetRHI());
-		}
-	}
-};
-
-FBufferWithRDG* GWhiteVertexBufferWithRDG = new TGlobalResource<FWhiteVertexBufferWithRDG>();
-
-/**
- * A class representing a 1x1x1 black volume texture.
- */
-template <EPixelFormat PixelFormat, uint8 Alpha>
-class FBlackVolumeTexture : public FTexture
-{
-public:
-	
-	/**
-	 * Initialize RHI resources.
-	 */
-	virtual void InitRHI() override
-	{
-		if (GSupportsTexture3D)
-		{
-			// Create the texture.
-			FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData(Alpha);
-
-			const FRHITextureCreateDesc Desc =
-				FRHITextureCreateDesc::Create3D(TEXT("BlackVolumeTexture3D"), 1, 1, 1, PixelFormat)
-				.SetFlags(ETextureCreateFlags::ShaderResource)
-				.SetBulkData(&BlackTextureBulkData);
-
-			TextureRHI = RHICreateTexture(Desc);
-		}
-		else
-		{
-			// Create a texture, even though it's not a volume texture
-			FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData(Alpha);
-
-			const FRHITextureCreateDesc Desc =
-				FRHITextureCreateDesc::Create2D(TEXT("BlackVolumeTexture2D"), 1, 1, PixelFormat)
-				.SetFlags(ETextureCreateFlags::ShaderResource)
-				.SetBulkData(&BlackTextureBulkData);
-
-			TextureRHI = RHICreateTexture(Desc);
-		}
-
-		// Create the sampler state.
-		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point, AM_Wrap, AM_Wrap, AM_Wrap);
-		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
-	}
-
-	/**
-	 * Return the size of the texture in the X dimension.
-	 */
-	virtual uint32 GetSizeX() const override
-	{
-		return 1;
-	}
-
-	/**
-	 * Return the size of the texture in the Y dimension.
-	 */
-	virtual uint32 GetSizeY() const override
-	{
-		return 1;
-	}
-};
-
-/** Global black volume texture resource. */
-FTexture* GBlackVolumeTexture = new TGlobalResource<FBlackVolumeTexture<PF_B8G8R8A8, 0>>();
-FTexture* GBlackAlpha1VolumeTexture = new TGlobalResource<FBlackVolumeTexture<PF_B8G8R8A8, 255>>();
-
-/** Global black volume texture resource. */
-FTexture* GBlackUintVolumeTexture = new TGlobalResource<FBlackVolumeTexture<PF_R8G8B8A8_UINT, 0>>();
-
-class FBlackArrayTexture : public FTexture
-{
-public:
-	// FResource interface.
-	virtual void InitRHI() override
-	{
-		// Create the texture RHI.
-		FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData(0);
-
-		const FRHITextureCreateDesc Desc =
-			FRHITextureCreateDesc::Create2DArray(TEXT("BlackArrayTexture"), 1, 1, 1, PF_B8G8R8A8)
-			.SetFlags(ETextureCreateFlags::ShaderResource)
-			.SetBulkData(&BlackTextureBulkData);
-
-		TextureRHI = RHICreateTexture(Desc);
-
-		// Create the sampler state RHI resource.
-		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point, AM_Wrap, AM_Wrap, AM_Wrap);
-		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
-	}
-
-	/** Returns the width of the texture in pixels. */
-	virtual uint32 GetSizeX() const override
-	{
-		return 1;
-	}
-
-	/** Returns the height of the texture in pixels. */
-	virtual uint32 GetSizeY() const override
-	{
-		return 1;
-	}
-};
-
-FTexture* GBlackArrayTexture = new TGlobalResource<FBlackArrayTexture>;
-
-//
-// FMipColorTexture implementation
-//
-
-/**
- * A texture that has a different solid color in each mip-level
- */
-class FMipColorTexture : public FTexture
-{
-public:
-	enum
-	{
-		NumMips = 12
-	};
-	static const FColor MipColors[NumMips];
-
-	// FResource interface.
-	virtual void InitRHI() override
-	{
-		// Create the texture RHI.
-		int32 TextureSize = 1 << (NumMips - 1);
-
-		const FRHITextureCreateDesc Desc =
-			FRHITextureCreateDesc::Create2D(TEXT("FMipColorTexture"), TextureSize, TextureSize, PF_B8G8R8A8)
-			.SetNumMips(NumMips)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
-
-		TextureRHI = RHICreateTexture(Desc);
-
-		// Write the contents of the texture.
-		uint32 DestStride;
-		int32 Size = TextureSize;
-		for ( int32 MipIndex=0; MipIndex < NumMips; ++MipIndex )
-		{
-			FColor* DestBuffer = (FColor*)RHILockTexture2D(TextureRHI, MipIndex, RLM_WriteOnly, DestStride, false);
-			for ( int32 Y=0; Y < Size; ++Y )
-			{
-				for ( int32 X=0; X < Size; ++X )
-				{
-					DestBuffer[X] = MipColors[NumMips - 1 - MipIndex];
-				}
-				DestBuffer += DestStride / sizeof(FColor);
-			}
-			RHIUnlockTexture2D(TextureRHI, MipIndex, false);
-			Size >>= 1;
-		}
-
-		// Create the sampler state RHI resource.
-		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point,AM_Wrap,AM_Wrap,AM_Wrap);
-		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
-	}
-
-	/** Returns the width of the texture in pixels. */
-	virtual uint32 GetSizeX() const override
-	{
-		int32 TextureSize = 1 << (NumMips - 1);
-		return TextureSize;
-	}
-
-	/** Returns the height of the texture in pixels. */
-	// PVS-Studio notices that the implementation of GetSizeX is identical to this one
-	// and warns us. In this case, it is intentional, so we disable the warning:
-	virtual uint32 GetSizeY() const override //-V524
-	{
-		int32 TextureSize = 1 << (NumMips - 1);
-		return TextureSize;
-	}
-};
-
-const FColor FMipColorTexture::MipColors[NumMips] =
-{
-	FColor(  80,  80,  80, 0 ),		// Mip  0: 1x1			(dark grey)
-	FColor( 200, 200, 200, 0 ),		// Mip  1: 2x2			(light grey)
-	FColor( 200, 200,   0, 0 ),		// Mip  2: 4x4			(medium yellow)
-	FColor( 255, 255,   0, 0 ),		// Mip  3: 8x8			(yellow)
-	FColor( 160, 255,  40, 0 ),		// Mip  4: 16x16		(light green)
-	FColor(   0, 255,   0, 0 ),		// Mip  5: 32x32		(green)
-	FColor(   0, 255, 200, 0 ),		// Mip  6: 64x64		(cyan)
-	FColor(   0, 170, 170, 0 ),		// Mip  7: 128x128		(light blue)
-	FColor(  60,  60, 255, 0 ),		// Mip  8: 256x256		(dark blue)
-	FColor( 255,   0, 255, 0 ),		// Mip  9: 512x512		(pink)
-	FColor( 255,   0,   0, 0 ),		// Mip 10: 1024x1024	(red)
-	FColor( 255, 130,   0, 0 ),		// Mip 11: 2048x2048	(orange)
-};
-
-RENDERCORE_API FTexture* GMipColorTexture = new FMipColorTexture;
-RENDERCORE_API int32 GMipColorTextureMipLevels = FMipColorTexture::NumMips;
-
-// 4: 8x8 cubemap resolution, shader needs to use the same value as preprocessing
-RENDERCORE_API const uint32 GDiffuseConvolveMipLevel = 4;
-
-/** A solid color cube texture. */
-class FSolidColorTextureCube : public FTexture
-{
-public:
-	FSolidColorTextureCube(const FColor& InColor)
-		: bInitToZero(false)
-		, PixelFormat(PF_B8G8R8A8)
-		, ColorData(InColor.DWColor())
-	{}
-
-	FSolidColorTextureCube(EPixelFormat InPixelFormat)
-		: bInitToZero(true)
-		, PixelFormat(InPixelFormat)
-		, ColorData(0)
-	{}
-
-	// FRenderResource interface.
-	virtual void InitRHI() override
-	{
-		// Create the texture RHI.
-		const FRHITextureCreateDesc Desc =
-			FRHITextureCreateDesc::CreateCube(TEXT("SolidColorCube"), 1, PixelFormat)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
-
-		FTextureCubeRHIRef TextureCube = RHICreateTexture(Desc);
-		TextureRHI = TextureCube;
-
-		// Write the contents of the texture.
-		for (uint32 FaceIndex = 0; FaceIndex < 6; FaceIndex++)
-		{
-			uint32 DestStride;
-			void* DestBuffer = RHILockTextureCubeFace(TextureCube, FaceIndex, 0, 0, RLM_WriteOnly, DestStride, false);
-			if (bInitToZero)
-			{
-				FMemory::Memzero(DestBuffer, GPixelFormats[PixelFormat].BlockBytes);
-			}
-			else
-			{
-				FMemory::Memcpy(DestBuffer, &ColorData, sizeof(ColorData));
-			}
-			RHIUnlockTextureCubeFace(TextureCube, FaceIndex, 0, 0, false);
-		}
-
-		// Create the sampler state RHI resource.
-		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point, AM_Wrap, AM_Wrap, AM_Wrap);
-		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
-	}
-
-	/** Returns the width of the texture in pixels. */
-	virtual uint32 GetSizeX() const override
-	{
-		return 1;
-	}
-
-	/** Returns the height of the texture in pixels. */
-	virtual uint32 GetSizeY() const override
-	{
-		return 1;
-	}
-
-private:
-	const bool bInitToZero;
-	const EPixelFormat PixelFormat;
-	const uint32 ColorData;
-};
-
-/** A white cube texture. */
-class FWhiteTextureCube : public FSolidColorTextureCube
-{
-public:
-	FWhiteTextureCube() : FSolidColorTextureCube(FColor::White) {}
-};
-FTexture* GWhiteTextureCube = new TGlobalResource<FWhiteTextureCube>;
-
-/** A black cube texture. */
-class FBlackTextureCube : public FSolidColorTextureCube
-{
-public:
-	FBlackTextureCube() : FSolidColorTextureCube(FColor::Black) {}
-};
-FTexture* GBlackTextureCube = new TGlobalResource<FBlackTextureCube>;
-
-/** A black cube texture. */
-class FBlackTextureDepthCube : public FSolidColorTextureCube
-{
-public:
-	FBlackTextureDepthCube() : FSolidColorTextureCube(PF_ShadowDepth) {}
-};
-FTexture* GBlackTextureDepthCube = new TGlobalResource<FBlackTextureDepthCube>;
-
-class FBlackCubeArrayTexture : public FTexture
-{
-public:
-	// FResource interface.
-	virtual void InitRHI() override
-	{
-		if (SupportsTextureCubeArray(GetFeatureLevel() ))
-		{
-			const TCHAR* Name = TEXT("BlackCubeArray");
-
-			const FRHITextureCreateDesc Desc =
-				FRHITextureCreateDesc::CreateCubeArray(TEXT("BlackCubeArray"), 1, 1, PF_B8G8R8A8)
-				.SetFlags(ETextureCreateFlags::ShaderResource);
-
-			// Create the texture RHI.
-			TextureRHI = RHICreateTexture(Desc);
-
-			for(uint32 FaceIndex = 0;FaceIndex < 6;FaceIndex++)
-			{
-				uint32 DestStride;
-				FColor* DestBuffer = (FColor*)RHILockTextureCubeFace(TextureRHI, FaceIndex, 0, 0, RLM_WriteOnly, DestStride, false);
-				// Note: alpha is used by reflection environment to say how much of the foreground texture is visible, so 0 says it is completely invisible
-				*DestBuffer = FColor(0, 0, 0, 0);
-				RHIUnlockTextureCubeFace(TextureRHI, FaceIndex, 0, 0, false);
-			}
-
-			// Create the sampler state RHI resource.
-			FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point,AM_Wrap,AM_Wrap,AM_Wrap);
-			SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
-		}
-	}
-
-	/** Returns the width of the texture in pixels. */
-	virtual uint32 GetSizeX() const override
-	{
-		return 1;
-	}
-
-	/** Returns the height of the texture in pixels. */
-	virtual uint32 GetSizeY() const override
-	{
-		return 1;
-	}
-};
-FTexture* GBlackCubeArrayTexture = new TGlobalResource<FBlackCubeArrayTexture>;
-
-/**
- * A UINT 1x1 texture.
- */
-template <EPixelFormat Format, uint32 R = 0, uint32 G = 0, uint32 B = 0, uint32 A = 0>
-class FUintTexture : public FTextureWithSRV
-{
-public:
-	// FResource interface.
-	virtual void InitRHI() override
-	{
-		const FRHITextureCreateDesc Desc =
-			FRHITextureCreateDesc::Create2D(TEXT("UintTexture"), 1, 1, Format)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
-
-		TextureRHI = RHICreateTexture(Desc);
-
-		// Write the contents of the texture.
-		uint32 DestStride;
-		void* DestBuffer = RHILockTexture2D(TextureRHI, 0, RLM_WriteOnly, DestStride, false);
-		WriteData(DestBuffer);
-		RHIUnlockTexture2D(TextureRHI, 0, false);
-
-		// Create the sampler state RHI resource.
-		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point, AM_Wrap, AM_Wrap, AM_Wrap);
-		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
-
-		// Create a view of the texture
-		ShaderResourceViewRHI = RHICreateShaderResourceView(TextureRHI, 0u);
-	}
-
-	/** Returns the width of the texture in pixels. */
-	virtual uint32 GetSizeX() const override
-	{
-		return 1;
-	}
-
-	/** Returns the height of the texture in pixels. */
-	virtual uint32 GetSizeY() const override
-	{
-		return 1;
-	}
-
-protected:
-	static int32 GetNumChannels()
-	{
-		return GPixelFormats[Format].NumComponents;
-	}
-
-	static int32 GetBytesPerChannel()
-	{
-		return GPixelFormats[Format].BlockBytes / GPixelFormats[Format].NumComponents;
-	}
-
-	template<typename T>
-	static void DoWriteData(T* DataPtr)
-	{
-		T Values[] = { R, G, B, A };
-		for (int32 i = 0; i < GetNumChannels(); ++i)
-		{
-			DataPtr[i] = Values[i];
-		}
-	}
-
-	static void WriteData(void* DataPtr)
-	{
-		switch (GetBytesPerChannel())
-		{
-		case 1: 
-			DoWriteData((uint8*)DataPtr);
-			return;
-		case 2:
-			DoWriteData((uint16*)DataPtr);
-			return;
-		case 4:
-			DoWriteData((uint32*)DataPtr);
-			return;
-		}
-		// Unsupported format
-		check(0);
-	}
-};
-
-FTexture* GBlackUintTexture = new TGlobalResource< FUintTexture<PF_R32G32B32A32_UINT> >;
 
 /*
 	3 XYZ packed in 4 bytes. (11:11:10 for X:Y:Z)
@@ -796,13 +200,13 @@ FIntPoint CalcMipMapExtent( uint32 TextureSizeX, uint32 TextureSizeY, EPixelForm
 
 SIZE_T CalcTextureMipWidthInBlocks(uint32 TextureSizeX, EPixelFormat Format, uint32 MipIndex)
 {
-		const uint32 WidthInTexels = FMath::Max<uint32>(TextureSizeX >> MipIndex, 1);
+	const uint32 WidthInTexels = FMath::Max<uint32>(TextureSizeX >> MipIndex, 1);
 	return GPixelFormats[Format].GetBlockCountForWidth(WidthInTexels);
 }
 
 SIZE_T CalcTextureMipHeightInBlocks(uint32 TextureSizeY, EPixelFormat Format, uint32 MipIndex)
 {
-		const uint32 HeightInTexels = FMath::Max<uint32>(TextureSizeY >> MipIndex, 1);
+	const uint32 HeightInTexels = FMath::Max<uint32>(TextureSizeY >> MipIndex, 1);
 	return GPixelFormats[Format].GetBlockCountForHeight(HeightInTexels);
 }
 
@@ -864,8 +268,8 @@ EPixelFormatChannelFlags GetPixelFormatValidChannels(EPixelFormat InPixelFormat)
 		EPixelFormatChannelFlags::None,		// PF_Unknown,
 		EPixelFormatChannelFlags::RGBA,		// PF_A32B32G32R32F
 		EPixelFormatChannelFlags::RGBA,		// PF_B8G8R8A8
-		EPixelFormatChannelFlags::G,		// PF_G8
-		EPixelFormatChannelFlags::G,		// PF_G16
+		EPixelFormatChannelFlags::R,		// PF_G8
+		EPixelFormatChannelFlags::R,		// PF_G16
 		EPixelFormatChannelFlags::RGB,		// PF_DXT1
 		EPixelFormatChannelFlags::RGBA,		// PF_DXT3
 		EPixelFormatChannelFlags::RGBA,		// PF_DXT5
@@ -947,6 +351,7 @@ EPixelFormatChannelFlags GetPixelFormatValidChannels(EPixelFormat InPixelFormat)
 		EPixelFormatChannelFlags::R,		// PF_R8_SINT
 		EPixelFormatChannelFlags::R,		// PF_R64_UINT
 		EPixelFormatChannelFlags::RGB,		// PF_R9G9B9EXP5
+		EPixelFormatChannelFlags::None,		// PF_P010
 	};
 	static_assert(UE_ARRAY_COUNT(PixelFormatToChannelFlags) == (uint8)PF_MAX, "Missing pixel format");
 	return (InPixelFormat < PF_MAX) ? PixelFormatToChannelFlags[(uint8)InPixelFormat] : EPixelFormatChannelFlags::None;
@@ -1100,20 +505,20 @@ RENDERCORE_API bool MobileRequiresSceneDepthAux(const FStaticShaderPlatform Plat
 	static const auto CVarMobileHDR = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileHDR"));
 	const bool bMobileHDR = (CVarMobileHDR && CVarMobileHDR->GetValueOnAnyThread() != 0);
 
-	// SceneDepth is used on most mobile platforms when forward shading is enabled and always on IOS.
+	// SceneDepthAux is used on tiled GPUs (iOS, Android) with forward shading and on iOS only with deferred
 	if (IsMetalMobilePlatform(Platform))
 	{
 		return true;
 	}
-	else if (IsMobileDeferredShadingEnabled(Platform) && IsAndroidOpenGLESPlatform(Platform) && !GSupportsShaderDepthStencilFetch)
+	else if (bMobileHDR && !IsMobileDeferredShadingEnabled(Platform))
 	{
-		return true;
+		return (IsAndroidOpenGLESPlatform(Platform) || IsVulkanMobilePlatform(Platform));
 	}
 	else if (!IsMobileDeferredShadingEnabled(Platform) && bMobileHDR && !IsMobileTonemapSubpassEnabled())
 	{
-		// SceneDepthAux disabled when MobileHDR=false for non-IOS
-		return IsAndroidOpenGLESPlatform(Platform) || IsVulkanMobilePlatform(Platform) || IsSimulatedPlatform(Platform);
+		return (IsAndroidOpenGLESPlatform(Platform) || IsVulkanMobilePlatform(Platform));
 	}
+	
 	return false;
 }
 
@@ -1168,6 +573,8 @@ RENDERCORE_API uint32 GetPlatformShadingModelsMask(const FStaticShaderPlatform P
 	}
 	return 0xFFFFFFFF;
 }
+
+typedef TBitArray<TInlineAllocator<EShaderPlatform::SP_NumPlatforms / 8>> ShaderPlatformMaskType;
 
 RENDERCORE_API ShaderPlatformMaskType GMobileAmbientOcclusionPlatformMask;
 
@@ -1236,7 +643,7 @@ RENDERCORE_API bool MobileBasePassAlwaysUsesCSM(const FStaticShaderPlatform Plat
 	}
 	else
 	{
-	return CVar && (CVar->GetValueOnAnyThread() & 0xF) == 5 && IsMobileDistanceFieldEnabled(Platform);
+		return CVar && (CVar->GetValueOnAnyThread() & 0xF) == 5 && IsMobileDistanceFieldEnabled(Platform);
 	}
 }
 
@@ -1254,6 +661,21 @@ RENDERCORE_API bool SupportsGen4TAA(const FStaticShaderPlatform Platform)
 RENDERCORE_API bool SupportsTSR(const FStaticShaderPlatform Platform)
 {
 	return FDataDrivenShaderPlatformInfo::GetSupportsGen5TemporalAA(Platform);
+}
+
+EShaderPlatform GetEditorShaderPlatform(EShaderPlatform ShaderPlatform)
+{
+	EShaderPlatform ActualShaderPlatform = ShaderPlatform;
+
+	if (GIsEditor)
+	{
+		if (FDataDrivenShaderPlatformInfo::GetIsPreviewPlatform(ActualShaderPlatform))
+		{
+			ActualShaderPlatform = FDataDrivenShaderPlatformInfo::GetPreviewShaderPlatformParent(ActualShaderPlatform);
+		}
+	}
+
+	return ActualShaderPlatform;
 }
 
 // AppSpaceWarp
@@ -1310,7 +732,7 @@ RENDERCORE_API ShaderPlatformMaskType GRayTracingPlatformMask;
 // This takes into account additional factors, such as concrete current GPU/OS/Driver capability, user-set game graphics options, etc.
 // Only safe to make run-time decisions, such as whether to build acceleration structures and render ray tracing effects.
 // Value may be queried using IsRayTracingEnabled().
-RENDERCORE_API bool GUseRayTracing = false;
+RENDERCORE_API ERayTracingMode GRayTracingMode = ERayTracingMode::Disabled;
 
 void GetAllPossiblePreviewPlatformsForMainShaderPlatform(TArray<EShaderPlatform>& OutPreviewPlatforms, EShaderPlatform ParentShaderPlatform)
 {
@@ -1375,9 +797,9 @@ RENDERCORE_API void RenderUtilsInit()
 					uint64 Mask = 1ull << ShaderPlatformToEdit;
 
 					if (!FDataDrivenShaderPlatformInfo::IsValid(ShaderPlatformToEdit))
-				{
+					{
 						continue;
-				}
+					}
 
 					GForwardShadingPlatformMask[ShaderPlatformIndex] = TargetPlatform->UsesForwardShading();
 
@@ -1393,11 +815,11 @@ RENDERCORE_API void RenderUtilsInit()
 
 					GMobileAmbientOcclusionPlatformMask[ShaderPlatformIndex] = TargetPlatform->UsesMobileAmbientOcclusion();
 				}
-				}
+			}
 
 
-				if (TargetPlatform->UsesRayTracing())
-				{
+			if (TargetPlatform->UsesRayTracing())
+			{
 				TArray<FName> PlatformRayTracingShaderFormats;
 				TargetPlatform->GetRayTracingShaderFormats(PlatformRayTracingShaderFormats);
 
@@ -1410,10 +832,10 @@ RENDERCORE_API void RenderUtilsInit()
 					PossiblePreviewPlatformsAndMainPlatform.Add(MainShaderPlatform);
 
 					for (EShaderPlatform ShaderPlatform : PossiblePreviewPlatformsAndMainPlatform)
-				{
+					{
 						uint32 ShaderPlatformIndex = static_cast<uint32>(ShaderPlatform);
 						GRayTracingPlatformMask[ShaderPlatformIndex] = true;
-				}
+					}
 				}
 			}
 		}
@@ -1469,8 +891,39 @@ RENDERCORE_API void RenderUtilsInit()
 	// This is also the reason why IsRayTracingEnabled() lives in RenderCore module, as it controls creation of 
 	// RT pipelines in ShaderPipelineCache.cpp.
 
-	if (RayTracingCVar && RayTracingCVar->GetBool())
+	// There are 2 modes in which ray tracing can be enabled:
+	// 1 - Everything necessary is built and available if platform supports ray tracing
+	// 2 - Same as above but ray tracing can be toggled on/off at runtime
+
+	auto GetRayTracingModeName = [](ERayTracingMode Mode)
 	{
+		switch (Mode)
+		{
+		case ERayTracingMode::Enabled:
+			return TEXT("enabled");
+		case ERayTracingMode::Dynamic:
+			return TEXT("enabled (dynamic)");
+		}
+		return TEXT("disabled");
+	};
+
+	if (RayTracingCVar && RayTracingCVar->GetInt())
+	{
+		const int32 RayTracingInt = RayTracingCVar->GetInt();
+
+		ERayTracingMode DesiredRayTracingMode = ERayTracingMode::Disabled;
+		if (RayTracingInt != 0)
+		{
+			if (GRayTracingEnableOnDemand == 1)
+			{
+				DesiredRayTracingMode = ERayTracingMode::Dynamic;
+			}
+			else
+			{
+				DesiredRayTracingMode = ERayTracingMode::Enabled;
+			}
+		}
+
 		const bool bRayTracingAllowedOnCurrentPlatform = (GRayTracingPlatformMask[(int)GMaxRHIShaderPlatform]);
 		if (GRHISupportsRayTracing && bRayTracingAllowedOnCurrentPlatform)
 		{
@@ -1479,28 +932,41 @@ RENDERCORE_API void RenderUtilsInit()
 				// Ray tracing is enabled for the project and we are running on RT-capable machine,
 				// therefore the core ray tracing features are also enabled, so that required shaders
 				// are loaded, acceleration structures are built, etc.
-				GUseRayTracing = GRayTracingEnableInEditor != 0;
+				GRayTracingMode = (GRayTracingEnableInEditor != 0) ? DesiredRayTracingMode : ERayTracingMode::Disabled;
 
-				UE_LOG(LogRendererCore, Log, TEXT("Ray tracing is %s for the editor. Reason: r.RayTracing=1 and r.RayTracing.EnableInEditor=%d."),
-					GUseRayTracing ? TEXT("enabled") : TEXT("disabled"),
+				UE_LOG(LogRendererCore, Log, TEXT("Ray tracing is %s for the editor. Reason: r.RayTracing=%d and r.RayTracing.EnableInEditor=%d."),
+					GetRayTracingModeName(GRayTracingMode),
+					RayTracingInt,
 					GRayTracingEnableInEditor);
 			}
 			else
 			{
 				// If user preference exists in game settings file, the bRayTracingEnabled will be set based on its value.
 				// Otherwise the current value is preserved.
-				if (GConfig->GetBool(TEXT("RayTracing"), TEXT("r.RayTracing.EnableInGame"), GUseRayTracing, GGameUserSettingsIni))
+				bool bUseRayTracing = false;
+				if (GRayTracingEnableOnDemand == 1)
 				{
+					GRayTracingMode = DesiredRayTracingMode;
+
+					UE_LOG(LogRendererCore, Log, TEXT("Ray tracing is %s for the game. Reason: r.RayTracing=%d and r.RayTracing.EnableOnDemand=1."),
+						GetRayTracingModeName(GRayTracingMode),
+						RayTracingInt);
+				}
+				else if (GConfig->GetBool(TEXT("RayTracing"), TEXT("r.RayTracing.EnableInGame"), bUseRayTracing, GGameUserSettingsIni))
+				{
+					GRayTracingMode = bUseRayTracing ? DesiredRayTracingMode : ERayTracingMode::Disabled;
+
 					UE_LOG(LogRendererCore, Log, TEXT("Ray tracing is %s for the game. Reason: game user setting r.RayTracing.EnableInGame=%d."),
-						GUseRayTracing ? TEXT("enabled") : TEXT("disabled"),
-						(int)GUseRayTracing);
+						GetRayTracingModeName(GRayTracingMode),
+						(int)bUseRayTracing);
 				}
 				else
 				{
-					GUseRayTracing = GRayTracingEnableInGame != 0;
+					GRayTracingMode = GRayTracingEnableInGame != 0 ? DesiredRayTracingMode : ERayTracingMode::Disabled;
 
-					UE_LOG(LogRendererCore, Log, TEXT("Ray tracing is %s for the game. Reason: r.RayTracing=1, and r.RayTracing.EnableInGame game user setting does not exist (using default from CVar: %d)."),
-						GUseRayTracing ? TEXT("enabled") : TEXT("disabled"), 
+					UE_LOG(LogRendererCore, Log, TEXT("Ray tracing is %s for the game. Reason: CVar r.RayTracing=%d, and r.RayTracing.EnableInGame game user setting does not exist (using default from CVar: %d)."),
+						GetRayTracingModeName(GRayTracingMode),
+						RayTracingInt,
 						GRayTracingEnableInGame);
 				}
 			}
@@ -1508,9 +974,10 @@ RENDERCORE_API void RenderUtilsInit()
 			// Sanity check: skin cache is *required* for ray tracing.
 			// It can be dynamically enabled only when its shaders have been compiled.
 			IConsoleVariable* SkinCacheCompileShadersCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.SkinCache.CompileShaders"));
-			if (GUseRayTracing && SkinCacheCompileShadersCVar->GetInt() <= 0)
+			const bool bUseRayTracing = (int32)GRayTracingMode >= (int32)ERayTracingMode::Enabled;
+			if (bUseRayTracing && SkinCacheCompileShadersCVar->GetInt() <= 0)
 			{
-				GUseRayTracing = false;
+				GRayTracingMode = ERayTracingMode::Disabled;
 
 				UE_LOG(LogRendererCore, Fatal, TEXT("Ray tracing requires skin cache to be enabled. Set r.SkinCache.CompileShaders=1."));
 			}
@@ -1643,8 +1110,6 @@ RENDERCORE_API FBufferRHIRef& GetUnitCubeAABBVertexBuffer()
 }
 #endif // RHI_RAYTRACING
 
-bool RenderCore_IsStrataEnabled();
-
 RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntPoint& OutBufferSize)
 {
 	// Ensure sizes are dividable by STRATA_TILE_SIZE (==8) 2d tiles to make it more convenient.
@@ -1655,7 +1120,7 @@ RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntP
 	const uint32 LegacyDividableBy = 4;
 	static_assert(LegacyDividableBy % 4 == 0, "A lot of graphic algorithms where previously assuming DividableBy == 4");
 
-	const uint32 DividableBy = RenderCore_IsStrataEnabled() ? StrataDividableBy : LegacyDividableBy;
+	const uint32 DividableBy = Strata::IsStrataEnabled() ? StrataDividableBy : LegacyDividableBy;
 
 	const uint32 Mask = ~(DividableBy - 1);
 	OutBufferSize.X = (InBufferSize.X + DividableBy - 1) & Mask;
@@ -1743,7 +1208,7 @@ RENDERCORE_API bool PlatformSupportsVelocityRendering(const FStaticShaderPlatfor
 	return true;
 }
 
-RENDERCORE_API bool DoesPlatformSupportNanite(EShaderPlatform Platform, bool bCheckForProjectSetting)
+bool DoesPlatformSupportNanite(EShaderPlatform Platform, bool bCheckForProjectSetting)
 {
 	// Nanite allowed for this project
 	if (bCheckForProjectSetting)
@@ -1768,10 +1233,112 @@ RENDERCORE_API bool DoesPlatformSupportNanite(EShaderPlatform Platform, bool bCh
 	return bFullCheck;
 }
 
-/** Returns whether DBuffer decals are enabled for a given shader platform */
+bool NaniteAtomicsSupported()
+{
+	// Are 64bit image atomics supported by the GPU/Driver/OS/API?
+	bool bAtomicsSupported = GRHISupportsAtomicUInt64;
+
+#if PLATFORM_WINDOWS
+	const ERHIInterfaceType RHIInterface = RHIGetInterfaceType();
+	const bool bIsDx11 = RHIInterface == ERHIInterfaceType::D3D11;
+	const bool bIsDx12 = RHIInterface == ERHIInterfaceType::D3D12;
+
+	static const auto NaniteRequireDX12CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.RequireDX12"));
+	static const uint32 NaniteRequireDX12 = (NaniteRequireDX12CVar != nullptr) ? NaniteRequireDX12CVar->GetInt() : 1;
+
+	if (bAtomicsSupported && NaniteRequireDX12 != 0)
+	{
+		// Only allow Vulkan or D3D12
+		bAtomicsSupported = !bIsDx11;
+
+		// Disable DX12 vendor extensions unless DX12 SM6.6 is supported
+		if (NaniteRequireDX12 == 1 && bIsDx12 && !GRHISupportsDX12AtomicUInt64)
+		{
+			// Vendor extensions currently support atomic64, but SM 6.6 and the DX12 Agility SDK are reporting that atomics are not supported.
+			// Likely due to a pre-1909 Windows 10 version, or outdated drivers without SM 6.6 support.
+			// See: https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/
+			bAtomicsSupported = false;
+		}
+	}
+#endif
+
+	return bAtomicsSupported;
+}
+
+bool NaniteComputeMaterialsSupported()
+{
+	static const auto AllowComputeMaterials = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Nanite.AllowComputeMaterials"));
+	static const bool bAllowComputeMaterials = (AllowComputeMaterials && AllowComputeMaterials->GetValueOnAnyThread() != 0);
+	return bAllowComputeMaterials;
+}
+
+bool DoesRuntimeSupportNanite(EShaderPlatform ShaderPlatform, bool bCheckForAtomicSupport, bool bCheckForProjectSetting)
+{
+	// Does the platform support Nanite?
+	const bool bSupportedPlatform = DoesPlatformSupportNanite(ShaderPlatform, bCheckForProjectSetting);
+
+	// Nanite is not supported with forward shading at this time.
+	const bool bForwardShadingEnabled = IsForwardShadingEnabled(ShaderPlatform);
+
+	return bSupportedPlatform && (!bCheckForAtomicSupport || NaniteAtomicsSupported()) && !bForwardShadingEnabled;
+}
+
+bool UseNanite(EShaderPlatform ShaderPlatform, bool bCheckForAtomicSupport /*= true*/, bool bCheckForProjectSetting /*= true*/)
+{
+	static const auto EnableNaniteCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite"));
+	const bool bNaniteEnabled = (EnableNaniteCVar != nullptr) ? (EnableNaniteCVar->GetInt() != 0) : true;
+	return bNaniteEnabled && DoesRuntimeSupportNanite(ShaderPlatform, bCheckForAtomicSupport, bCheckForProjectSetting);
+}
+
+bool UseVirtualShadowMaps(EShaderPlatform ShaderPlatform, const FStaticFeatureLevel FeatureLevel)
+{
+	static const auto EnableVirtualSMCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Enable"));
+	const bool bVirtualShadowMapsEnabled = EnableVirtualSMCVar ? (EnableVirtualSMCVar->GetInt() != 0) : false;
+	return bVirtualShadowMapsEnabled && DoesRuntimeSupportNanite(ShaderPlatform, true /* check for atomics */, false /* check project setting */);
+}
+
+bool DoesPlatformSupportVirtualShadowMaps(EShaderPlatform Platform)
+{
+	return DoesPlatformSupportNanite(Platform, false /* check project setting */);
+}
+
+bool DoesPlatformSupportNonNaniteVirtualShadowMaps(EShaderPlatform ShaderPlatform)
+{
+	static const auto EnableCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.NonNaniteVSM"));
+	return EnableCVar->GetInt() != 0 && DoesPlatformSupportNanite(ShaderPlatform, false /* check project setting */);
+}
+
+bool UseNonNaniteVirtualShadowMaps(EShaderPlatform ShaderPlatform, const FStaticFeatureLevel FeatureLevel)
+{
+	static const auto EnableCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.NonNaniteVSM"));
+	return EnableCVar->GetInt() != 0 && UseVirtualShadowMaps(ShaderPlatform, FeatureLevel);
+}
+
+bool IsWaterVirtualShadowMapFilteringEnabled(const FStaticShaderPlatform Platform)
+{
+	static const auto CVarWaterSingleLayerShaderSupportVSMFiltering = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Water.SingleLayer.ShadersSupportVSMFiltering"));
+	const bool bWaterVSMFilteringSupported = CVarWaterSingleLayerShaderSupportVSMFiltering && (CVarWaterSingleLayerShaderSupportVSMFiltering->GetInt() > 0);
+
+	const bool bVirtualShadowMapsSupported = DoesPlatformSupportVirtualShadowMaps(Platform);
+
+	return !IsForwardShadingEnabled(Platform) && bWaterVSMFilteringSupported && bVirtualShadowMapsSupported;
+}
+
+bool IsSingleLayerWaterDepthPrepassEnabled(const FStaticShaderPlatform Platform, const FStaticFeatureLevel FeatureLevel)
+{
+	static const auto CVarWaterSingleLayerDepthPrepass = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Water.SingleLayer.DepthPrepass"));
+	const bool bPrepassEnabled = CVarWaterSingleLayerDepthPrepass && CVarWaterSingleLayerDepthPrepass->GetInt() > 0;
+	// Currently VSM is the only feature dependent on the depth prepass which is why we only enable it if VSM could also be enabled.
+	// VSM can be toggled at runtime, but we need a compile time value here, so we fall back to DoesPlatformSupportVirtualShadowMaps() to check if
+	// VSM *could* be enabled.
+	const bool bVSMSupported = DoesPlatformSupportVirtualShadowMaps(Platform);
+
+	return bPrepassEnabled && bVSMSupported;
+
+}
+
 RENDERCORE_API bool IsUsingDBuffers(const FStaticShaderPlatform Platform)
 {
-	extern RENDERCORE_API ShaderPlatformMaskType GDBufferPlatformMask;
 	return (GDBufferPlatformMask[(int)Platform]);
 }
 
@@ -1789,13 +1356,32 @@ RENDERCORE_API bool DoesRuntimeSupportOnePassPointLightShadows(EShaderPlatform P
 		|| (CVar->GetValueOnAnyThread() != 0 && GRHISupportsArrayIndexFromAnyShader != 0);
 }
 
+bool IsForwardShadingEnabled(const FStaticShaderPlatform Platform)
+{
+	return (GForwardShadingPlatformMask[(int)Platform])
+		// Culling uses compute shader
+		&& GetMaxSupportedFeatureLevel(Platform) >= ERHIFeatureLevel::SM5;
+}
+
+bool IsUsingGBuffers(const FStaticShaderPlatform Platform)
+{
+	if (IsMobilePlatform(Platform))
+	{
+		bool bEmulatedTonemapSubpass = !IsVulkanPlatform(Platform) && IsMobileTonemapSubpassEnabled();
+		return IsMobileDeferredShadingEnabled(Platform) || bEmulatedTonemapSubpass;
+	}
+	else
+	{
+		return !IsForwardShadingEnabled(Platform);
+	}
+}
+
 bool IsUsingBasePassVelocity(const FStaticShaderPlatform Platform)
 {
 	static FShaderPlatformCachedIniValue<int32> PerPlatformCVar(TEXT("r.VelocityOutputPass"));
-	static const IConsoleVariable* AntiAliasingCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.AntiAliasingMethod"));
-	// Writing velocity in base pass is disabled for desktop forward when using MSAA
-	const int32 AAM_MSAA = 3;	// see EAntiAliasingMethod in SceneUtils.h
-	if (IsMobilePlatform(Platform) || (AntiAliasingCVar && IsForwardShadingEnabled(Platform) && AntiAliasingCVar->GetInt() == AAM_MSAA))
+	// Writing velocity in base pass is disabled for desktop forward because it may use MSAA (runtime-settable setting) and Velocity isn't a multisample texture.
+	// TSR or vr.AllowMotionBlurInVR=1 case aren't recommended for Desktop Forward renderer, and if enabled, cause a separate Velocity pass.
+	if (IsMobilePlatform(Platform) || IsForwardShadingEnabled(Platform))
 	{
 		return false;
 	}
@@ -1805,7 +1391,316 @@ bool IsUsingBasePassVelocity(const FStaticShaderPlatform Platform)
 	}
 }
 
-RENDERCORE_API bool AllowTranslucencyPerObjectShadows(const FStaticShaderPlatform& Platform)
+bool IsUsingSelectiveBasePassOutputs(const FStaticShaderPlatform Platform)
+{
+	return (GSelectiveBasePassOutputsPlatformMask[(int)Platform]);
+}
+
+bool IsUsingDistanceFields(const FStaticShaderPlatform Platform)
+{
+	return (GDistanceFieldsPlatformMask[(int)Platform]);
+}
+
+bool IsWaterDistanceFieldShadowEnabled(const FStaticShaderPlatform Platform)
+{
+	// Only deferred support such a feature. It is not possible to do that for water without a water depth pre-pass.
+	static const auto CVarWaterSingleLayerShaderSupportDistanceFieldShadow = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Water.SingleLayer.ShadersSupportDistanceFieldShadow"));
+	const bool bWaterSingleLayerShaderSupportDistanceFieldShadow = CVarWaterSingleLayerShaderSupportDistanceFieldShadow && (CVarWaterSingleLayerShaderSupportDistanceFieldShadow->GetInt() > 0);
+	return !IsForwardShadingEnabled(Platform) && IsUsingDistanceFields(Platform) && bWaterSingleLayerShaderSupportDistanceFieldShadow;
+}
+
+bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatureLevel FeatureLevel)
+{
+	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
+	{
+		return MobileSupportsGPUScene();
+	}
+
+	// GPU Scene management uses compute shaders
+	return FeatureLevel >= ERHIFeatureLevel::SM5
+		//@todo - support GPU Scene management compute shaders on these platforms to get dynamic instancing speedups on the Rendering Thread and RHI Thread
+		&& !IsOpenGLPlatform(Platform)
+		&& !IsVulkanMobileSM5Platform(Platform)
+		&& !IsMetalMobileSM5Platform(Platform)
+		// we only check DDSPI for platforms that have been read in - IsValid() can go away once ALL platforms are converted over to this system
+		&& (!FDataDrivenShaderPlatformInfo::IsValid(Platform) || FDataDrivenShaderPlatformInfo::GetSupportsGPUScene(Platform));
+}
+
+bool UseGPUScene(const FStaticShaderPlatform Platform)
+{
+	return UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform));
+}
+
+bool ForceSimpleSkyDiffuse(const FStaticShaderPlatform Platform)
+{
+	return (GSimpleSkyDiffusePlatformMask[(int)Platform]);
+}
+
+bool VelocityEncodeDepth(const FStaticShaderPlatform Platform)
+{
+	return (GVelocityEncodeDepthPlatformMask[(int)Platform]);
+}
+
+RENDERCORE_API bool AllowTranslucencyPerObjectShadows(const FStaticShaderPlatform Platform)
 {
 	return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && GAllowTranslucencyShadowsInProject != 0;
+}
+
+bool PlatformRequires128bitRT(EPixelFormat PixelFormat)
+{
+	switch (PixelFormat)
+	{
+	case PF_R32_FLOAT:
+	case PF_G32R32F:
+	case PF_A32B32G32R32F:
+		return FDataDrivenShaderPlatformInfo::GetRequiresExplicit128bitRT(GMaxRHIShaderPlatform);
+	default:
+		return false;
+	}
+}
+
+bool IsRayTracingEnabledForProject(EShaderPlatform ShaderPlatform)
+{
+	if (RHISupportsRayTracing(ShaderPlatform))
+	{
+		return (GRayTracingPlatformMask[(int)ShaderPlatform]);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool ShouldCompileRayTracingShadersForProject(EShaderPlatform ShaderPlatform)
+{
+	if (RHISupportsRayTracingShaders(ShaderPlatform))
+	{
+		return IsRayTracingEnabledForProject(ShaderPlatform);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool ShouldCompileRayTracingCallableShadersForProject(EShaderPlatform ShaderPlatform)
+{
+	return RHISupportsRayTracingCallableShaders(ShaderPlatform) && ShouldCompileRayTracingShadersForProject(ShaderPlatform);
+}
+
+
+bool IsRayTracingEnabled()
+{
+	bool bRayTracingEnabled = true;
+	static const auto RayTracingEnableCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Raytracing.Enable"));
+	if (GRayTracingMode == ERayTracingMode::Dynamic && RayTracingEnableCVar)
+	{
+		bRayTracingEnabled = RayTracingEnableCVar->GetValueOnAnyThread() != 0;
+	}
+
+	return IsRayTracingAllowed() && bRayTracingEnabled;
+}
+
+bool IsRayTracingAllowed()
+{
+	checkf(GIsRHIInitialized, TEXT("IsRayTracingAllowed() may only be called once RHI is initialized."));
+
+#if DO_CHECK && WITH_EDITOR
+	{
+		// This function must not be called while cooking
+		if (IsRunningCookCommandlet())
+		{
+			return false;
+		}
+	}
+#endif // DO_CHECK && WITH_EDITOR
+
+	return (int32)GRayTracingMode >= (int32)ERayTracingMode::Enabled;
+}
+
+bool IsRayTracingEnabled(EShaderPlatform ShaderPlatform)
+{
+	return IsRayTracingEnabled() && RHISupportsRayTracing(ShaderPlatform);
+}
+
+ERayTracingMode GetRayTracingMode()
+{
+	return IsRayTracingAllowed() ? GRayTracingMode : ERayTracingMode::Disabled;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Strata settings interface
+
+static TAutoConsoleVariable<int32> CVarSubstrate(
+	TEXT("r.Substrate"),
+	0,
+	TEXT("Enable Substrate materials (Beta)."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateBytePerPixel(
+	TEXT("r.Substrate.BytesPerPixel"),
+	80,
+	TEXT("Substrate allocated byte per pixel to store materials data. Higher value means more complex material can be represented."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateBackCompatibility(
+	TEXT("r.SubstrateBackCompatibility"),
+	0,
+	TEXT("Disables Substrate multiple scattering and replaces Chan diffuse by Lambert."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateOpaqueMaterialRoughRefraction(
+	TEXT("r.Substrate.OpaqueMaterialRoughRefraction"),
+	0,
+	TEXT("Enable Substrate opaque material rough refractions effect from top layers over layers below."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateShadingQuality(
+	TEXT("r.Substrate.ShadingQuality"),
+	1,
+	TEXT("Define Substrate shading quality (1: accurate lighting, 2: approximate lighting). This variable is read-only."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateDBufferPass(
+	TEXT("r.Substrate.DBufferPass"),
+	0,
+	TEXT("Apply DBuffer after the base-pass as a separate pass. Read only because when this is changed, it will require the recompilation of all shaders."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+// Transition render settings that will disappear when Substrate gets enabled
+static TAutoConsoleVariable<int32> CVarMaterialRoughDiffuse(
+	TEXT("r.Material.RoughDiffuse"),
+	0,
+	TEXT("Enable rough diffuse material."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateRoughDiffuse(
+	TEXT("r.Substrate.RoughDiffuse"),
+	1,
+	TEXT("Enable Substrate rough diffuse model (works only if r.Material.RoughDiffuse is enabled in the project settings). Togglable at runtime"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateDebugAdvancedVisualizationShaders(
+	TEXT("r.Substrate.Debug.AdvancedVisualizationShaders"),
+	0,
+	TEXT("Enable advanced Substrate material debug visualization shaders. Base pass shaders can output such advanced data."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateTileCoord8Bits(
+	TEXT("r.Substrate.TileCoord8bits"),
+	0,
+	TEXT("Format of tile coord. This variable is read-only."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarSubstrateAccurateSRGB(
+	TEXT("r.Substrate.AccurateSRGB"),
+	0,
+	TEXT("Enable accurate sRGB encoding for pixel data encoding/decoding during rendering passes (base pass, lighting, ...). Otherwise use a simple 'Gamma2' approximation."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+namespace Strata
+{
+	bool IsStrataEnabled()
+	{
+		return CVarSubstrate.GetValueOnAnyThread() > 0;
+	}
+
+	static uint32 InternalGetBytePerPixel(uint32 InBytePerPixel)
+	{	
+		// We enforce at least 20 bytes per pixel because this is the minimal Strata GBuffer footprint of the simplest material.
+		const uint32 MinStrataBytePerPixel = 20u;
+		const uint32 MaxStrataBytePerPixel = /*IsMobilePlatform(GMaxRHI InPlatform) ? 24u : */256u; // STRATA_TODO
+		return FMath::Clamp(InBytePerPixel, MinStrataBytePerPixel, MaxStrataBytePerPixel);
+	}
+
+	uint32 GetBytePerPixel()
+	{
+		return InternalGetBytePerPixel(CVarSubstrateBytePerPixel.GetValueOnAnyThread());
+	}
+
+	uint32 GetBytePerPixel(EShaderPlatform InPlatform)
+	{
+		// Variant for shader compilation per platform
+		static FShaderPlatformCachedIniValue<int32> CVarBudget(TEXT("r.Substrate.BytesPerPixel"));
+		return InternalGetBytePerPixel(CVarBudget.Get(InPlatform));
+	}
+
+	static uint32 InternalGetRayTracingMaterialPayloadSizeInBytes(uint32 InBytePerPixels, uint32 InNormalQuality)
+	{
+		// If Strata is enabled, resize the payload accordingly to the byte per pixel request
+		const uint32 HeaderPayload = sizeof(uint32) * (6u); // See FPackedMaterialClosestHitPayload in RayTracingCommon.ush
+		const uint32 TopNormalPayload = sizeof(uint32) * (InNormalQuality == 1 ? 2u : 1u);
+
+		return HeaderPayload + TopNormalPayload + InBytePerPixels;
+	}
+
+	uint32 GetNormalQuality()
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GBufferFormat"));
+		return CVar && CVar->GetValueOnAnyThread() > 1 ? 1 : 0;
+	}
+
+	uint32 GetRayTracingMaterialPayloadSizeInBytes()
+	{
+		return InternalGetRayTracingMaterialPayloadSizeInBytes(GetBytePerPixel(), GetNormalQuality());
+	}
+
+	uint32 GetRayTracingMaterialPayloadSizeInBytes(EShaderPlatform InPlatform)
+	{
+		return InternalGetRayTracingMaterialPayloadSizeInBytes(GetBytePerPixel(InPlatform), GetNormalQuality());
+	}
+
+	bool IsBackCompatibilityEnabled()
+	{
+		return CVarSubstrateBackCompatibility.GetValueOnAnyThread() > 0 ? 1 : 0;
+	}
+	
+	bool IsRoughDiffuseEnabled()
+	{
+		return CVarSubstrateRoughDiffuse.GetValueOnAnyThread() > 0;
+	}
+
+	bool Is8bitTileCoordEnabled()
+	{
+		return CVarSubstrateTileCoord8Bits.GetValueOnAnyThread() > 0 ? 1 : 0;
+	}
+
+	bool IsAccurateSRGBEnabled()
+	{
+		return CVarSubstrateAccurateSRGB.GetValueOnAnyThread() > 0 ? 1 : 0;
+	}
+
+	uint32 GetShadingQuality()
+	{
+		return CVarSubstrateShadingQuality.GetValueOnAnyThread();
+	}
+
+	uint32 GetShadingQuality(EShaderPlatform InPlatform)
+	{
+		static FShaderPlatformCachedIniValue<int32> CVarSubstrateShadingQualityPlatform(TEXT("r.Substrate.ShadingQuality"));
+		return CVarSubstrateShadingQualityPlatform.Get(InPlatform);
+	}
+	
+	bool IsDBufferPassEnabled(EShaderPlatform InPlatform)
+	{
+		// DBuffer pass is only available if high quality normal is disabled, or if we are on a console.
+		// That is because in high quality normals requires a uint2 UAV which is only supported on some graphic cards on PC 
+		// and this is an unknown when compiling shaders at this stage.
+		// !!! If this is changed, please update all sites reading r.Substrate.DBufferPass !!!
+		const uint32 NormalQuality = GetNormalQuality();
+		const bool bDBufferPassSupported = NormalQuality == 0 || (NormalQuality > 0 && IsConsolePlatform(InPlatform));
+		
+		static FShaderPlatformCachedIniValue<int32> CVarSubstrateDBufferPassPlatform(TEXT("r.Substrate.DBufferPass"));
+		return IsStrataEnabled() && IsUsingDBuffers(InPlatform) && bDBufferPassSupported && CVarSubstrateDBufferPassPlatform.Get(InPlatform) > 0;
+	}
+
+	bool IsOpaqueRoughRefractionEnabled()
+	{
+		return IsStrataEnabled() && CVarSubstrateOpaqueMaterialRoughRefraction.GetValueOnAnyThread() > 0;
+	}
+
+	bool IsAdvancedVisualizationEnabled()
+	{
+		return CVarSubstrateDebugAdvancedVisualizationShaders.GetValueOnAnyThread() > 0;
+	}
 }

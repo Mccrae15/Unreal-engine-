@@ -11,10 +11,7 @@
 #include "DistanceFieldAmbientOcclusion.h"
 #include "CompositionLighting/PostProcessAmbientOcclusion.h"
 #include "PipelineStateCache.h"
-
-#if WITH_MGPU
-DECLARE_GPU_STAT(AFRWaitForDistanceFieldAOHistory);
-#endif
+#include "ScenePrivate.h"
 
 int32 GAOUseHistory = 1;
 FAutoConsoleVariableRef CVarAOUseHistory(
@@ -75,11 +72,11 @@ BEGIN_SHADER_PARAMETER_STRUCT(FGeometryAwareUpsampleParameters, )
 	SHADER_PARAMETER_SAMPLER(SamplerState, DistanceFieldNormalSampler)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, BentNormalAOTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, BentNormalAOSampler)
+	SHADER_PARAMETER(FScreenTransform, UVToScreenPos)
 	SHADER_PARAMETER(FVector4f, BentNormalBufferAndTexelSize)
 	SHADER_PARAMETER(FVector2f, DistanceFieldGBufferTexelSize)
 	SHADER_PARAMETER(FVector2f, DistanceFieldGBufferJitterOffset)
 	SHADER_PARAMETER(FVector2f, JitterOffset)
-	SHADER_PARAMETER(float, MinDownsampleFactorToBaseLevel)
 	SHADER_PARAMETER(float, DistanceFadeScale)
 END_SHADER_PARAMETER_STRUCT()
 
@@ -95,22 +92,21 @@ FGeometryAwareUpsampleParameters SetupGeometryAwareUpsampleParameters(const FVie
 	const FIntPoint ConeTracingBufferSize = GetBufferSizeForConeTracing(View);
 	const FVector4f BentNormalBufferAndTexelSizeValue(ConeTracingBufferSize.X, ConeTracingBufferSize.Y, 1.0f / ConeTracingBufferSize.X, 1.0f / ConeTracingBufferSize.Y);
 
-	extern int32 GConeTraceDownsampleFactor;
-	const float MinDownsampleFactor = GConeTraceDownsampleFactor;
-
 	extern float GAOViewFadeDistanceScale;
 	const float DistanceFadeScaleValue = 1.0f / ((1.0f - GAOViewFadeDistanceScale) * GetMaxAOViewDistance());
 
+	const FIntRect AOViewRect = FIntRect(FIntPoint::ZeroValue, FIntPoint::DivideAndRoundDown(View.ViewRect.Size(), GAODownsampleFactor));
+
 	FGeometryAwareUpsampleParameters ShaderParameters;
 	ShaderParameters.DistanceFieldNormalTexture = DistanceFieldNormal;
-	ShaderParameters.DistanceFieldNormalSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	ShaderParameters.DistanceFieldNormalSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	ShaderParameters.BentNormalAOTexture = DistanceFieldAOBentNormal;
 	ShaderParameters.BentNormalAOSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	ShaderParameters.UVToScreenPos = FScreenTransform::ChangeTextureBasisFromTo(FScreenPassTextureViewport(DownsampledBufferSize, AOViewRect), FScreenTransform::ETextureBasis::TextureUV, FScreenTransform::ETextureBasis::ScreenPosition);
 	ShaderParameters.BentNormalBufferAndTexelSize = BentNormalBufferAndTexelSizeValue;
 	ShaderParameters.DistanceFieldGBufferTexelSize = BaseLevelTexelSizeValue;
 	ShaderParameters.DistanceFieldGBufferJitterOffset = BaseLevelTexelSizeValue * JitterOffsetValue;
 	ShaderParameters.JitterOffset = JitterOffsetValue;
-	ShaderParameters.MinDownsampleFactorToBaseLevel = MinDownsampleFactor;
 	ShaderParameters.DistanceFadeScale = DistanceFadeScaleValue;
 
 	return ShaderParameters;
@@ -162,9 +158,7 @@ public:
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTextures)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, BentNormalAOTexture)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DistanceFieldNormalTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, BentNormalAOSampler)
-		SHADER_PARAMETER_SAMPLER(SamplerState, DistanceFieldNormalSampler)
 		SHADER_PARAMETER(FVector2f, BentNormalAOTexelSize)
 		SHADER_PARAMETER(FVector2f, MaxSampleBufferUV)
 		SHADER_PARAMETER(float, HistoryWeight)
@@ -259,6 +253,8 @@ void GeometryAwareUpsample(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRD
 
 		SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PassParameters);
 
+		FIntPoint BufferSize = GetBufferSizeForAO(View);
+
 		DrawRectangle(
 			RHICmdList,
 			0, 0,
@@ -266,7 +262,7 @@ void GeometryAwareUpsample(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRD
 			0, 0,
 			View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
 			FIntPoint(View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor),
-			View.GetSceneTexturesConfig().Extent / FIntPoint(GAODownsampleFactor, GAODownsampleFactor),
+			BufferSize,
 			VertexShader);
 	});
 }
@@ -322,15 +318,6 @@ void UpdateHistory(
 
 	if (BentNormalHistoryState && DistanceFieldAOUseHistory(View))
 	{
-#if WITH_MGPU
-		RDG_GPU_STAT_SCOPE(GraphBuilder, AFRWaitForDistanceFieldAOHistory);
-		AddPass(GraphBuilder, RDG_EVENT_NAME("WaitForTemporalEffect"), [&View](FRHICommandList& RHICmdList)
-		{
-			static const FName NameForTemporalEffect("DistanceFieldAOHistory");
-			RHICmdList.WaitForTemporalEffect(FName(NameForTemporalEffect, View.ViewState->UniqueID));
-		});
-#endif
-
 		FIntPoint BufferSize = GetBufferSizeForAO(View);
 
 		if (*BentNormalHistoryState 
@@ -422,7 +409,7 @@ void UpdateHistory(
 						RHICmdList,
 						0, 0,
 						View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
-						View.ViewRect.Min.X / GAODownsampleFactor, View.ViewRect.Min.Y / GAODownsampleFactor,
+						0, 0,
 						View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
 						FIntPoint(View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor),
 						SceneTextureExtent / FIntPoint(GAODownsampleFactor, GAODownsampleFactor),
@@ -459,9 +446,7 @@ void UpdateHistory(
 				auto* PassParameters = GraphBuilder.AllocParameters<FFilterHistoryPS::FParameters>();
 				PassParameters->View = View.ViewUniformBuffer;
 				PassParameters->SceneTextures = SceneTexturesUniformBuffer;
-				PassParameters->DistanceFieldNormalTexture = DistanceFieldNormal;
 				PassParameters->BentNormalAOTexture = NewBentNormalHistory;
-				PassParameters->DistanceFieldNormalSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 				PassParameters->BentNormalAOSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 				PassParameters->BentNormalAOTexelSize = FVector2f(1.0f / DownsampledBufferSize.X, 1.0f / DownsampledBufferSize.Y);
 				PassParameters->MaxSampleBufferUV = MaxSampleBufferUV;
@@ -528,11 +513,6 @@ void UpdateHistory(
 		DistanceFieldAOHistoryViewRect->Min = FIntPoint::ZeroValue;
 		DistanceFieldAOHistoryViewRect->Max.X = View.ViewRect.Size().X / GAODownsampleFactor;
 		DistanceFieldAOHistoryViewRect->Max.Y = View.ViewRect.Size().Y / GAODownsampleFactor;
-
-#if WITH_MGPU && 0 // TODO(RDG)
-		FRHITexture* TexturesToCopyForTemporalEffect[] = { BentNormalHistoryOutput->GetRHI() };
-		RHICmdList.BroadcastTemporalEffect(FName(NameForTemporalEffect, View.ViewState->UniqueID), TexturesToCopyForTemporalEffect);
-#endif
 	}
 	else
 	{

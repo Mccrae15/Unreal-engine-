@@ -3,29 +3,12 @@
 #pragma once
 
 #include "Animation/Skeleton.h"
-#include "Containers/Array.h"
-#include "Containers/EnumAsByte.h"
-#include "Containers/Map.h"
-#include "Containers/Set.h"
-#include "Containers/SparseArray.h"
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphPin.h"
 #include "Engine/SkeletalMesh.h"
-#include "Engine/Texture.h"
-#include "Engine/TextureDefines.h"
-#include "Math/NumericLimits.h"
-#include "Math/Transform.h"
-#include "Math/UnrealMathSSE.h"
-#include "Misc/Guid.h"
-#include "MuCO/CustomizableObject.h"
-#include "MuCO/CustomizableObjectClothingTypes.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterialBase.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeObject.h"
-#include "MuR/Mesh.h"
-#include "MuR/RefCounted.h"
-#include "MuT/Node.h"
+#include "MuR/MutableMemory.h"
 #include "MuT/NodeComponentNew.h"
+#include "MuR/Ptr.h"
 #include "MuT/NodeImageConstant.h"
 #include "MuT/NodeMeshApplyPose.h"
 #include "MuT/NodeModifierMeshClipWithMesh.h"
@@ -35,13 +18,11 @@
 #include "MuT/NodeScalarParameter.h"
 #include "MuT/NodeSurfaceNew.h"
 #include "MuT/Table.h"
-#include "RHIDefinitions.h"
-#include "ReferenceSkeleton.h"
-#include "Templates/TypeHash.h"
-#include "UObject/NameTypes.h"
 #include "UObject/Package.h"
-#include "UObject/SoftObjectPtr.h"
-#include "UObject/UnrealNames.h"
+
+class UCustomizableObjectNodeMeshClipWithMesh;
+class UCustomizableObjectNodeTable;
+struct FCustomizableObjectClothingAssetData;
 
 class FCustomizableObjectCompiler;
 class UAnimInstance;
@@ -96,6 +77,33 @@ enum class EMutableMeshConversionFlags : uint32
 	IgnorePhysics = 1 << 1
 };
 
+ENUM_CLASS_FLAGS(EMutableMeshConversionFlags)
+
+/** 
+	Struct to store the necessary data to generate the morphs of a skeletal mesh 
+	This struct allows the stack morph nodes to use the same functions as the mesh morph nodes
+*/
+struct FMorphNodeData
+{
+	// Pointer to the node that owns this morph data
+	UCustomizableObjectNode* OwningNode;
+
+	// Name of the morph that will be applied
+	FString MorphTargetName;
+
+	// Pin to the node that generates the factor of the morph
+	const UEdGraphPin* FactorPin;
+
+	// Pin of the mesh where the morphs will ble apllied
+	const UEdGraphPin* MeshPin;
+
+	bool operator==(const FMorphNodeData& Other) const
+	{
+		return OwningNode == Other.OwningNode && MorphTargetName == Other.MorphTargetName
+			&& FactorPin == Other.FactorPin && MeshPin == Other.MeshPin;
+	}
+};
+
 
 // Key for the data stored for each processed unreal graph node.
 class FGeneratedKey
@@ -116,10 +124,10 @@ private:
 	int32 LOD;
 
 	/** Flag used to generate this mesh. Bit mask of EMutableMeshConversionFlags */
-	uint32 Flags = 0;
+	EMutableMeshConversionFlags Flags = EMutableMeshConversionFlags::None;
 
 	/** Active morphs at the time of mesh generation. */
-	TArray<UCustomizableObjectNodeMeshMorph*> MeshMorphStack;
+	TArray<FMorphNodeData> MeshMorphStack;
 };
 
 
@@ -170,6 +178,8 @@ struct FMutableGraphMeshGenerationData
 	int32 MaxNumTriangles = 0;
 	int32 MinNumTriangles = TNumericLimits<int32>::Max();
 
+	TArray<int32> SkinWeightProfilesSemanticIndices;
+
 	// Combine another generated data looking for the most general case.
 	void Combine(const FMutableGraphMeshGenerationData& other)
 	{
@@ -179,6 +189,11 @@ struct FMutableGraphMeshGenerationData
 		MaxBoneIndexTypeSizeBytes = FMath::Max(other.MaxBoneIndexTypeSizeBytes, MaxBoneIndexTypeSizeBytes);
 		MaxNumTriangles = FMath::Max(other.MaxNumTriangles, MaxNumTriangles);
 		MinNumTriangles = FMath::Min(other.MinNumTriangles, MinNumTriangles);
+
+		for (int32 SemanticIndex : other.SkinWeightProfilesSemanticIndices)
+		{
+			SkinWeightProfilesSemanticIndices.AddUnique(SemanticIndex);
+		}
 	}
 };
 
@@ -508,6 +523,8 @@ private:
 struct FMutableGraphGenerationContext
 {
 	FMutableGraphGenerationContext(UCustomizableObject* CustomizableObject, class FCustomizableObjectCompiler* InCompiler, const FCompilationOptions& InOptions);
+	~FMutableGraphGenerationContext();
+
 	UCustomizableObject* Object = nullptr;
 
 	// Non-owned reference to the compiler object
@@ -539,16 +556,22 @@ struct FMutableGraphGenerationContext
 		{
 			/** Source mesh data. */
 			const UObject* Mesh = nullptr;
-			int LOD = 0;
-			int MaterialIndex = 0;
+			int32 LOD = 0;
+			int32 MaterialIndex = 0;
 
 			/** Flag used to generate this mesh. Bit mask of EMutableMeshConversionFlags */
-			uint32 Flags = 0;
+			EMutableMeshConversionFlags Flags = EMutableMeshConversionFlags::None;
 
-			bool operator==( const FKey& k ) const
+			/** Tags added at the UE level that go through the Mutable core and are merged in the generated mesh.
+			 *  Only add the tags that make the mesh unique and require it not to be cached together with the 
+			 *  same exact mesh but with different tags.
+			*/
+			FString Tags;
+
+			bool operator==( const FKey& OtherKey ) const
 			{
-				return Mesh == k.Mesh && LOD == k.LOD && MaterialIndex == k.MaterialIndex 
-					&& Flags == k.Flags;
+				return Mesh == OtherKey.Mesh && LOD == OtherKey.LOD && MaterialIndex == OtherKey.MaterialIndex
+					&& Flags == OtherKey.Flags && Tags == OtherKey.Tags;
 			}
 		};
 
@@ -561,7 +584,7 @@ struct FMutableGraphGenerationContext
 
 	// Stack of mesh generation flags. The last one is the currently valid.
 	// The value is a bit mask of EMutableMeshConversionFlags
-	TArray<uint32> MeshGenerationFlags;
+	TArray<EMutableMeshConversionFlags> MeshGenerationFlags;
 
 	/** Find a mesh if already generated for a given source and flags. */
 	mu::MeshPtr FindGeneratedMesh(const FGeneratedMeshData::FKey& Key);
@@ -624,6 +647,9 @@ struct FMutableGraphGenerationContext
 	TArray<FCustomizableObjectMeshToMeshVertData> ClothMeshToMeshVertData;
 	TArray<FCustomizableObjectClothingAssetData> ContributingClothingAssetsData;
 
+	// Data used for SkinWeightProfiles reconstruction
+	TArray<FMutableSkinWeightProfileInfo> SkinWeightProfilesInfo;
+
 	// Hierarchy of current ComponentNew nodes, each stored for every LOD
 	struct ObjectParent
 	{
@@ -675,6 +701,14 @@ struct FMutableGraphGenerationContext
 	/** Stores the anim BP assets gathered from the SkeletalMesh nodes during compilation, to be used in mesh generation in-game */
 	TMap<FString, TSoftClassPtr<UAnimInstance>> AnimBPAssetsMap;
 
+	/** Stores the sockets provided by the part skeletal meshes, to be merged in the generated meshes */
+	TArray<FMutableRefSocket> SocketArray;
+
+	/** Used to propagate the socket priority defined in group nodes to their child skeletal mesh nodes
+	* It's a stack because group nodes are recursive
+	*/
+	TArray<int32> SocketPriorityStack;
+
 	// Stores the textures that will be used to mask-out areas in the projection. The cache isn't used for rendering, but for coverage testing
 	TMap<FString, FString> MaskOutMaterialCache; // Maps a UMaterial's asset path to a UTexture's asset path
 	TMap<FString, FMaskOutTexture> MaskOutTextureCache; // Maps a UTexture's asset path to the cached mask-out texture data
@@ -692,7 +726,7 @@ struct FMutableGraphGenerationContext
 	FPinData PinData; // DEPRECATED. DO NOT USE!
 
 	// Stores all morphs to apply them directly to a skeletal mesh node
-	TArray<UCustomizableObjectNodeMeshMorph*> MeshMorphStack;
+	TArray<FMorphNodeData> MeshMorphStack;
 
 	// Current material parameter name to find the corresponding column in a mutable table
 	FString CurrentMaterialTableParameter;
@@ -744,12 +778,17 @@ void PopulateReferenceSkeletalMeshesData(FMutableGraphGenerationContext& Generat
 void CheckNumOutputs(const UEdGraphPin& Pin, const FMutableGraphGenerationContext& GenerationContext);
 
 
-// TODO GMT Remove generation context dependency and move to GraphTraversal.
+// TODO FutureGMT Remove generation context dependency and move to GraphTraversal.
 UTexture2D* FindReferenceImage(const UEdGraphPin* Pin, FMutableGraphGenerationContext& GenerationContext);
 
 
 mu::NodeMeshApplyPosePtr CreateNodeMeshApplyPose(mu::NodeMeshPtr InputMeshNode, UCustomizableObject * CustomizableObject, TArray<FString> ArrayBoneName, TArray<FTransform> ArrayTransform);
 
+
+/** Adds Tag to MutableMesh uniquely, returns the index were the tag has been inserted or the index where an intance of the tag has been found */
+int32 AddTagToMutableMeshUnique(mu::Mesh& MutableMesh, const FString& Tag);
+
+void AddSocketTagsToMesh(const USkeletalMesh* SourceMesh, mu::MeshPtr MutableMesh, FMutableGraphGenerationContext& GenerationContext);
 
 // Generates the tag for an animation instance
 FString GenerateAnimationInstanceTag(const FString& AnimInstance, int32 SlotIndex);
@@ -760,7 +799,7 @@ FString GenerateGameplayTag(const FString& GameplayTag);
 // Computes the LOD bias for a texture given the current mesh LOD and automatic LOD settings, the reference texture settings
 // and whether it's being built for a server or not
 int32 ComputeLODBias(const FMutableGraphGenerationContext& GenerationContext, const UTexture2D* ReferenceTexture, int32 MaxTextureSize,
-	const UCustomizableObjectNodeMaterial* MaterialNode, const int32 ImageIndex);
+	const UCustomizableObjectNodeMaterial* MaterialNode, const int32 ImageIndex, bool bUseLODAsBias = true);
 
 
 int32 GetMaxTextureSize(const UTexture2D* ReferenceTexture, const FMutableGraphGenerationContext& GenerationContext);

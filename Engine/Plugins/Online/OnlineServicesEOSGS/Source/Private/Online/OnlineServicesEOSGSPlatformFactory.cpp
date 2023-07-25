@@ -2,17 +2,18 @@
 
 #include "Online/OnlineServicesEOSGSPlatformFactory.h"
 
+#include "EOSShared.h"
+#include "Online/OnlineExecHandler.h"
 #include "Online/OnlineServicesEOSGS.h"
 
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/LazySingleton.h"
 #include "Modules/ModuleManager.h"
 
-#include "EOSShared.h"
-#include "EOSSharedTypes.h"
 #include "IEOSSDKManager.h"
 
-#include "CoreMinimal.h"
+#include "Online/OnlineServicesLog.h"
+#include <eos_base.h>
 
 struct FEOSPlatformConfig
 {
@@ -33,7 +34,8 @@ FEOSPlatformConfig LoadEOSPlatformConfig()
 	GConfig->GetString(*ConfigSection, TEXT("DeploymentId"), PlatformConfig.DeploymentId, GEngineIni);
 	GConfig->GetString(*ConfigSection, TEXT("ClientId"), PlatformConfig.ClientId, GEngineIni);
 	GConfig->GetString(*ConfigSection, TEXT("ClientSecret"), PlatformConfig.ClientSecret, GEngineIni);
-	GConfig->GetString(*ConfigSection, TEXT("EncryptionKey"), PlatformConfig.EncryptionKey, GEngineIni);
+	// Config key renamed to ClientEncryptionKey as EncryptionKey gets removed from packaged builds due to IniKeyDenylist=EncryptionKey entry in BaseGame.ini.
+	GConfig->GetString(*ConfigSection, TEXT("ClientEncryptionKey"), PlatformConfig.EncryptionKey, GEngineIni);
 	return PlatformConfig;
 }
 
@@ -97,7 +99,8 @@ IEOSPlatformHandlePtr FOnlineServicesEOSGSPlatformFactory::CreatePlatform()
 	const FTCHARToUTF8 CacheDirectory(*(SDKManager->GetCacheDirBase() / TEXT("OnlineServicesEOS")));
 
 	EOS_Platform_Options PlatformOptions = {};
-	PlatformOptions.ApiVersion = EOS_PLATFORM_OPTIONS_API_LATEST;
+	PlatformOptions.ApiVersion = 12;
+	UE_EOS_CHECK_API_MISMATCH(EOS_PLATFORM_OPTIONS_API_LATEST, 12);
 	PlatformOptions.Reserved = nullptr;
 	PlatformOptions.bIsServer = EOS_FALSE;
 	PlatformOptions.OverrideCountryCode = nullptr;
@@ -118,7 +121,15 @@ IEOSPlatformHandlePtr FOnlineServicesEOSGSPlatformFactory::CreatePlatform()
 	PlatformOptions.ClientCredentials.ClientId = ClientId.Get();
 	PlatformOptions.ClientCredentials.ClientSecret = ClientSecret.Get();
 	PlatformOptions.EncryptionKey = EncryptionKey.Get();
-	PlatformOptions.CacheDirectory = CacheDirectory.Get();
+
+	if (FPlatformMisc::IsCacheStorageAvailable())
+	{
+		PlatformOptions.CacheDirectory = CacheDirectory.Get();
+	}
+	else
+	{
+		PlatformOptions.CacheDirectory = nullptr;
+	}
 
 	IEOSPlatformHandlePtr EOSPlatformHandle = SDKManager->CreatePlatform(PlatformOptions);
 	if (!EOSPlatformHandle)

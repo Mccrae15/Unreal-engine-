@@ -2,6 +2,7 @@
 
 #include "DisplayClusterViewportClient.h"
 
+#include "SceneManagement.h"
 #include "SceneView.h"
 #include "Engine/Canvas.h"
 #include "SceneViewExtension.h"
@@ -13,6 +14,7 @@
 #include "Engine/LocalPlayer.h"
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
+#include "ShaderCore.h"
 
 #include "AudioDeviceManager.h"
 #include "AudioDevice.h"
@@ -22,6 +24,7 @@
 #include "Debug/DebugDrawService.h"
 #include "ContentStreaming.h"
 #include "EngineModule.h"
+#include "GlobalRenderResources.h"
 #include "FXSystem.h"
 #include "GameFramework/HUD.h"
 #include "SubtitleManager.h"
@@ -47,6 +50,7 @@
 #include "Render/Viewport/IDisplayClusterViewport.h"
 
 #include "Config/DisplayClusterConfigManager.h"
+#include "UObject/Package.h"
 
 
 // Debug feature to synchronize and force all external resources to be transferred cross GPU at the end of graph execution.
@@ -390,14 +394,6 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 	//Get world for render
 	UWorld* const MyWorld = GetWorld();
 
-	// Initialize new render frame resources
-	FDisplayClusterRenderFrame RenderFrame;
-	if (!DCRenderDevice->BeginNewFrame(InViewport, MyWorld, RenderFrame))
-	{
-		// skip rendering: Can't build render frame
-		return;
-	}
-
 	////////////////////////////////
 	// Otherwise we use our own version of the UGameViewportClient::Draw which is basically
 	// a simpler version of the original one but with multiple ViewFamilies support
@@ -459,6 +455,17 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 
 	// Gather all view families first
 	TArray<FSceneViewFamilyContext*> ViewFamilies;
+
+	// Initialize new render frame resources
+	FDisplayClusterRenderFrame RenderFrame;
+	if (!DCRenderDevice->BeginNewFrame(InViewport, MyWorld, RenderFrame))
+	{
+		// skip rendering: Can't build render frame
+		return;
+	}
+
+	// Handle special viewports game-thread logic at frame begin
+	DCRenderDevice->InitializeNewFrame();
 
 	for (FDisplayClusterRenderFrame::FFrameRenderTarget& DCRenderTarget : RenderFrame.RenderTargets)
 	{

@@ -47,27 +47,19 @@ UReplicationGraph::InitConnectionGraphNodes
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Serialization/BitReader.h"
-#include "Misc/NetworkGuid.h"
-#include "Engine/EngineBaseTypes.h"
-#include "GameFramework/Actor.h"
-#include "Misc/EngineVersion.h"
-#include "GameFramework/PlayerController.h"
 #include "Engine/NetDriver.h"
-#include "Engine/PackageMapClient.h"
-#include "Misc/NetworkVersion.h"
 #include "Engine/ReplicationDriver.h"
+#include "Engine/World.h"
 #include "ReplicationGraphTypes.h"
 
+#include "UObject/Package.h"
 #include "ReplicationGraph.generated.h"
 
 struct FReplicationGraphDestructionSettings;
 
 typedef TObjectKey<class UNetReplicationGraphConnection> FRepGraphConnectionKey;
 
-#define DO_ENABLE_REPGRAPH_DEBUG_ACTOR !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#define DO_ENABLE_REPGRAPH_DEBUG_ACTOR !(UE_BUILD_SHIPPING)
 
 UCLASS(abstract, transient, config=Engine)
 class REPLICATIONGRAPH_API UReplicationGraphNode : public UObject
@@ -165,49 +157,6 @@ protected:
 
 	/** Determines if PrepareForReplication() is called. This currently must be set in the constructor, not dynamically. */
 	bool bRequiresPrepareForReplicationCall = false;
-};
-
-// -----------------------------------
-
-
-struct REPLICATIONGRAPH_API FStreamingLevelActorListCollection
-{
-	void AddActor(const FNewReplicatedActorInfo& ActorInfo);
-	bool RemoveActor(const FNewReplicatedActorInfo& ActorInfo, bool bWarnIfNotFound, UReplicationGraphNode* Outer);
-	bool RemoveActorFast(const FNewReplicatedActorInfo& ActorInfo, UReplicationGraphNode* Outer);
-	void Reset();
-	void Gather(const FConnectionGatherActorListParameters& Params);
-	void DeepCopyFrom(const FStreamingLevelActorListCollection& Source);
-	void GetAll_Debug(TArray<FActorRepListType>& OutArray) const;
-	void Log(FReplicationGraphDebugInfo& DebugInfo) const;
-	int32 NumLevels() const { return StreamingLevelLists.Num(); }
-	void TearDown();
-
-	struct FStreamingLevelActors
-	{
-		FStreamingLevelActors(FName InName) : StreamingLevelName(InName) 
-		{ 
-			repCheck(InName != NAME_None); 
-		}
-
-		FName StreamingLevelName;
-		FActorRepListRefView ReplicationActorList;
-		bool operator==(const FName& InName) const { return InName == StreamingLevelName; };
-	};
-
-	/** Lists for streaming levels. Actors that "came from" streaming levels go here. These lists are only returned if the connection has their streaming level loaded. */
-	static const int32 NumInlineAllocations = 4;
-	TArray<FStreamingLevelActors, TInlineAllocator<NumInlineAllocations>> StreamingLevelLists;
-
-	void CountBytes(FArchive& Ar) const
-	{
-		StreamingLevelLists.CountBytes(Ar);
-
-		for (const FStreamingLevelActors& List : StreamingLevelLists)
-		{
-			List.ReplicationActorList.CountBytes(Ar);
-		}
-	}
 };
 
 // -----------------------------------
@@ -434,10 +383,10 @@ protected:
 	virtual void GatherActors(const FActorRepListRefView& RepList, FGlobalActorReplicationInfoMap& GlobalMap, FPerConnectionActorInfoMap& ConnectionMap, const FConnectionGatherActorListParameters& Params, UNetConnection* NetConnection);
 	virtual void GatherActors_DistanceOnly(const FActorRepListRefView& RepList, FGlobalActorReplicationInfoMap& GlobalMap, FPerConnectionActorInfoMap& ConnectionMap, const FConnectionGatherActorListParameters& Params);
 
-	UE_DEPRECATED(4.27, "Please use version of CalcFrequencyForActor that takes FPerConnectionActorInfoMap instead of FConnectionReplicationActorInfo.")
-	void CalcFrequencyForActor(AActor* Actor, UReplicationGraph* RepGraph, UNetConnection* NetConnection, FGlobalActorReplicationInfo& GlobalInfo, FConnectionReplicationActorInfo& ConnectionInfo, FSettings& MySettings, const FNetViewerArray& Viewers, const uint32 FrameNum, int32 ExistingItemIndex);
-	
+	UE_DEPRECATED(5.2, "This function was replaced with a version that needs to receive a UNetReplicationGraphConnection instead of a NetConnection")
 	void CalcFrequencyForActor(AActor* Actor, UReplicationGraph* RepGraph, UNetConnection* NetConnection, FGlobalActorReplicationInfo& GlobalInfo, FPerConnectionActorInfoMap& ConnectionMap, FSettings& MySettings, const FNetViewerArray& Viewers, const uint32 FrameNum, int32 ExistingItemIndex);
+
+	void CalcFrequencyForActor(AActor* Actor, UReplicationGraph* RepGraph, const UNetReplicationGraphConnection& RepGraphConnection, FGlobalActorReplicationInfo& GlobalInfo, FPerConnectionActorInfoMap& ConnectionMap, FSettings& MySettings, const FNetViewerArray& Viewers, const uint32 FrameNum, int32 ExistingItemIndex);
 };
 
 
@@ -635,15 +584,16 @@ public:
 	// Marks a class as preventing spatial rebuilds when an instance leaves the grid
 	void AddToClassRebuildDenyList(UClass* Class) { ClassRebuildDenyList.Set(Class, true); }
 
-	UE_DEPRECATED(5.0, "Use AddToClassRebuildDenyList instead")
-	void AddSpatialRebuildBlacklistClass(UClass* Class) { AddToClassRebuildDenyList(Class); }
-
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	TArray<FString> DebugActorNames;
 #endif
 
 	// When enabled the RepGraph tells clients to destroy dormant dynamic actors when they go out of relevancy.
 	bool bDestroyDormantDynamicActors = true;
+	// How many frames dormant actors should be outside relevancy range to be destroyed
+	int32 DestroyDormantDynamicActorsCellTTL = 1;
+	// Optimization to spread cost over multiple frames
+	int32 ReplicatedDormantDestructionInfosPerFrame = MAX_int32;
 
 protected:
 
@@ -799,7 +749,7 @@ protected:
 // -----------------------------------
 
 USTRUCT()
-struct FAlwaysRelevantActorInfo
+struct UE_DEPRECATED(5.2, "No longer used") FAlwaysRelevantActorInfo
 {
 	GENERATED_BODY()
 
@@ -818,6 +768,12 @@ struct FAlwaysRelevantActorInfo
 	}
 };
 
+struct FCachedAlwaysRelevantActorInfo
+{
+	TWeakObjectPtr<AActor> LastViewer;
+	TWeakObjectPtr<AActor> LastViewTarget;
+};
+
 /** Adds actors that are always relevant for a connection. This engine version just adds the PlayerController and ViewTarget (usually the pawn) */
 UCLASS()
 class REPLICATIONGRAPH_API UReplicationGraphNode_AlwaysRelevant_ForConnection : public UReplicationGraphNode_ActorList
@@ -833,14 +789,32 @@ public:
 	/** Rebuilt-every-frame list based on UNetConnection state */
 	FActorRepListRefView ReplicationActorList;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** List of previously (or currently if nothing changed last tick) focused actor data per connection */
+	UE_DEPRECATED(5.2, "Please use PastRelevantActorMap instead")
 	UPROPERTY()
 	TArray<FAlwaysRelevantActorInfo> PastRelevantActors;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	template<typename KeyType, typename ValueType>
+	static void CleanupCachedRelevantActors(TMap<TObjectKey<KeyType>, ValueType>& ActorMap)
+	{
+		for (auto MapIt = ActorMap.CreateIterator(); MapIt; ++MapIt)
+		{
+			if (MapIt.Key().ResolveObjectPtr() == nullptr)
+			{
+				MapIt.RemoveCurrent();
+			}
+		}
+	}
 
 protected:
-
 	virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const override;
 
+	void AddCachedRelevantActor(const FConnectionGatherActorListParameters& Params, AActor* NewActor, TWeakObjectPtr<AActor>& LastActor);
+	void UpdateCachedRelevantActor(const FConnectionGatherActorListParameters& Params, AActor* NewActor, TWeakObjectPtr<AActor>& LastActor);
+
+	TMap<TObjectKey<UNetConnection>, FCachedAlwaysRelevantActorInfo> PastRelevantActorMap;
 };
 
 // -----------------------------------
@@ -1058,6 +1032,8 @@ public:
 		return (uint16)FramesBetweenUpdates;
 	}
 
+	UNetReplicationGraphConnection* FindConnectionManager(UNetConnection* NetConnection) const;
+
 protected:
 
 	virtual void InitializeForWorld(UWorld* World);
@@ -1075,7 +1051,11 @@ protected:
 
 	UNetReplicationGraphConnection* FindOrAddConnectionManager(UNetConnection* NetConnection);
 
-	void HandleStarvedActorList(const FPrioritizedRepList& List, int32 StartIdx, FPerConnectionActorInfoMap& ConnectionActorInfoMap, uint32 FrameNum);
+	UE_DEPRECATED(5.2, "This function has been replaced with a version that needs to receive a UNetReplicationGraphConnection")
+	void HandleStarvedActorList(const FPrioritizedRepList& List, int32 StartIdx, FPerConnectionActorInfoMap& ConnectionActorInfoMap, uint32 FrameNum) {}
+
+	/** Sets the next timeout frame for the actors in the list along with their dependent actors */
+	void HandleStarvedActorList(const UNetReplicationGraphConnection& RepGraphConnection, const FPrioritizedRepList& List, int32 StartIdx, FPerConnectionActorInfoMap& ConnectionActorInfoMap, uint32 FrameNum);
 
 	/** How long, in frames, without replicating before an actor channel is closed on a connection. This is a global value added to the individual actor's ActorChannelFrameTimeout */
 	uint32 GlobalActorChannelFrameNumTimeout;
@@ -1240,14 +1220,10 @@ public:
 	bool bEnableDebugging;
 
 	UPROPERTY()
-	TObjectPtr<class AReplicationGraphDebugActor> DebugActor = nullptr;
+	TWeakObjectPtr<class AReplicationGraphDebugActor> DebugActor;
 
 	/** Index of the connection in the global list. Will be reassigned when any client disconnects so it is a key that can be referenced only during a single tick */
 	int32 ConnectionOrderNum;
-
-	// ID that is assigned by the replication graph. Will be reassigned/compacted as clients disconnect. Useful for spacing out connection operations. E.g., not stable but always compact.
-	UE_DEPRECATED(4.26, "This variable was renamed to ConnectionOrderNum to better reflect that it is not persistent and should not be considered an ID.")
-	int32 ConnectionId; 
 
 	UPROPERTY()
 	TArray<FLastLocationGatherInfo> LastGatherLocations;
@@ -1289,9 +1265,28 @@ public:
 	/** Generates a set of all the visible level names for this connection and its subconnections (if any) */
 	virtual void GetClientVisibleLevelNames(TSet<FName>& OutLevelNames) const;
 
+	/** Returns the list of visible levels cached at the start of the gather phase. */
+	const TSet<FName>& GetCachedClientVisibleLevelNames() const { return CachedVisibleLevels; }
+
 	FActorRepListRefView& GetPrevDormantActorListForNode(const UReplicationGraphNode* GridNode);
 
 	void RemoveActorFromAllPrevDormantActorLists(AActor* InActor);
+	
+	struct FVisibleCellInfo
+	{
+		FIntPoint Location = {};
+		int32 Lifetime = 0;
+
+		// For FindByKey
+		friend bool operator==(const FVisibleCellInfo& Cell, const FIntPoint& Point)
+		{
+			return Cell.Location == Point;
+		}
+	};
+
+	TArray<FVisibleCellInfo>& GetVisibleCellsForNode(const UReplicationGraphNode* GridNode);
+
+	void CleanupNodeCaches(const UReplicationGraphNode* Node);
 
 private:
 
@@ -1299,6 +1294,9 @@ private:
 	// the dormant dynamic actor destruction feature.
 	TMap<TObjectKey<UReplicationGraphNode>, FActorRepListRefView> PrevDormantActorListPerNode;
 
+	// History of visible cells per graph node used for defering dormant dynamic actors cleanup
+	TMap<TObjectKey<UReplicationGraphNode>, TArray<FVisibleCellInfo>> NodesVisibleCells;
+	
 	friend UReplicationGraph;
 
 	/** Holds relevant data when parsing deleted actors that could be sent to a viewer */
@@ -1343,6 +1341,8 @@ private:
 	void OnUpdateViewerLocation(FLastLocationGatherInfo* LocationInfo, const FNetViewer& Viewer, const FReplicationGraphDestructionSettings& DestructionSettings);
 
 	void SetActorNotDormantOnConnection(AActor* InActor);
+
+	void BuildVisibleLevels();
 
 	UPROPERTY()
 	TArray<TObjectPtr<UReplicationGraphNode>> ConnectionGraphNodes;
@@ -1395,6 +1395,9 @@ private:
 
 	/** Set used to guard against double adds into PendingDormantDestructList */
 	TSet<FNetworkGUID> TrackedDormantDestructionInfos;
+
+	/** List of level names visible to this connection. Valid during the Gather phase */
+	TSet<FName> CachedVisibleLevels;
 };
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -1475,3 +1478,10 @@ struct FReplicationGraphDestructionSettings
 	float OutOfRangeDistanceCheckThresholdSquared;
 	float MaxPendingListDistanceSquared; 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Engine/PackageMapClient.h"
+#include "GameFramework/PlayerController.h"
+#include "Misc/EngineVersion.h"
+#endif

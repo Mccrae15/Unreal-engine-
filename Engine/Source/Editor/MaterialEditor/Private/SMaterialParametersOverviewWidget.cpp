@@ -31,7 +31,10 @@
 #include "MaterialEditor/MaterialEditorPreviewParameters.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInstance.h"
+#include "Materials/MaterialFunctionInterface.h"
+#include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Framework/Application/SlateApplication.h"
 
 #include "Widgets/Input/SEditableTextBox.h"
@@ -40,6 +43,7 @@
 #include "Widgets/Views/SExpanderArrow.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "MaterialEditor/DEditorRuntimeVirtualTextureParameterValue.h"
+#include "MaterialEditor/DEditorSparseVolumeTextureParameterValue.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "Styling/StyleColors.h"
 
@@ -799,8 +803,10 @@ void SMaterialParametersOverviewTree::ShowSubParameters()
 			}
 
 			UDEditorRuntimeVirtualTextureParameterValue* VTParameter = Cast<UDEditorRuntimeVirtualTextureParameterValue>(Parameter);
-			//Don't show VT samples here
-			if (!VTParameter)
+			UDEditorSparseVolumeTextureParameterValue* SVTParameter = Cast<UDEditorSparseVolumeTextureParameterValue>(Parameter);
+
+			// Don't add child property to this group if parameter is of type 'Virtual Texture' or 'Sparse Volume Texture'
+			if (!VTParameter && !SVTParameter)
 			{
 				for (TSharedPtr<struct FSortedParamData> GroupChild : SortedParameters)
 				{

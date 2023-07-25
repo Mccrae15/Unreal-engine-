@@ -2,13 +2,17 @@
 
 #include "GLTFStaticMeshFactory.h"
 
+#include "Engine/StaticMeshSourceData.h"
 #include "GLTFAsset.h"
+#include "GLTFMesh.h"
 #include "GLTFMeshFactory.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/StaticMesh.h"
-#include "StaticMeshAttributes.h"
+#include "MeshDescription.h"
+#include "Misc/Paths.h"
 #include "PackageTools.h"
+#include "UObject/Package.h"
 
 namespace GLTF
 {

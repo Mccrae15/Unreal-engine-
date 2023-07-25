@@ -20,7 +20,8 @@ namespace AutomationTool
 		int RunExternalCommand(string Command, string Params, bool bRequiresPrivilegeElevation, bool bUnattended, bool bCreateWindow);
 		void Log(string Message);
 		void ReportError(string Message);
-		void PauseForUser(string Message); 
+		void PauseForUser(string Message);
+		int ReadInputInt(string Prompt, List<string> Options, bool bIsCancellable, int DefaultValue = -1);
 	}
 
 	//public interface InputOutput
@@ -472,7 +473,11 @@ namespace AutomationTool
 		/// <returns>Cook platform string.</returns>
 		public virtual string GetCookPlatform(bool bDedicatedServer, bool bIsClientOnly)
 		{
-			throw new AutomationException("{0} does not yet implement GetCookPlatform.", PlatformType);
+			// this should get all cases, but a platform can override if needed
+
+			string Suffix = bIsClientOnly ? "Client" : bDedicatedServer ? "Server" : "";
+			string PlatformName = GetGenericPlatformName(TargetPlatformType);
+			return $"{PlatformName}{Suffix}";
 		}
 
 		/// <summary>
@@ -747,7 +752,9 @@ namespace AutomationTool
 			}
 		}
 
-		public virtual bool PublishSymbols(DirectoryReference SymbolStoreDirectory, List<FileReference> Files, string Product, string BuildVersion = null)
+		public virtual bool PublishSymbols(DirectoryReference SymbolStoreDirectory, List<FileReference> Files,
+			bool bIndexSources, List<FileReference> SourceFiles,
+			string Product, string Branch, int Change, string BuildVersion = null)
 		{
 			CommandUtils.LogWarning("PublishSymbols() has not been implemented for {0}", PlatformType.ToString());
 			return false;
@@ -770,6 +777,16 @@ namespace AutomationTool
 		public virtual bool SymbolServerDeleteIndividualFiles
 		{
 			get { return false; }
+		}
+
+		/// <summary>
+		/// When true, callers of PublishSymbols() must provide an explicit list of source files to create the index from.
+		/// Some platforms discover the source files via other means, so it is possible to turn this step of the process
+		/// off, since it can be slow.
+		/// </summary>
+		public virtual bool SymbolServerSourceIndexingRequiresListOfSourceFiles
+		{
+			get { return true; }
 		}
 
 		/// <summary>
@@ -849,6 +866,11 @@ namespace AutomationTool
 		public virtual DirectoryReference GetProjectRootForStage(DirectoryReference RuntimeRoot, StagedDirectoryReference RelativeProjectRootForStage)
 		{
 			return DirectoryReference.Combine(RuntimeRoot, RelativeProjectRootForStage.Name);
+		}
+
+		public virtual void PrepareForDebugging(string SourcePackage, string ProjectFilePath, string ClientPlatform)
+		{
+			LogError("Not implemented for the %s platform.", ClientPlatform);
 		}
 
 		// let the platform set the exe extension if it chooses (otherwise, use

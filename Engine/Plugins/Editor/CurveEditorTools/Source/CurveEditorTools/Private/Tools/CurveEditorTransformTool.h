@@ -1,11 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-#include "Templates/SharedPointer.h"
+#include "CurveEditorTypes.h"
 #include "ICurveEditorToolExtension.h"
-#include "Misc/EnumClassFlags.h"
 #include "Framework/DelayedDrag.h"
-#include "Curves/KeyHandle.h"
 #include "CurveDataAbstraction.h"
 #include "ScopedTransaction.h"
 #include "CurveEditorSnapMetrics.h"
@@ -184,6 +182,7 @@ private:
 	TRange<double> InputMinMax;
 
 	FVector2D InitialMousePosition;
+	FVector2D LastMousePosition;
 	FCurveEditorAxisSnap::FSnapState SnappingState;
 
 	/** UStruct that displays properties to be modified on screen */

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/SpotLight.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "Components/ArrowComponent.h"
 #include "Components/SpotLightComponent.h"
 
@@ -49,7 +50,7 @@ void ASpotLight::PostLoad()
 
 	if (GetLightComponent()->Mobility == EComponentMobility::Static)
 	{
-		GetLightComponent()->LightFunctionMaterial = NULL;
+		GetLightComponent()->ClearLightFunctionMaterial();
 	}
 
 #if WITH_EDITORONLY_DATA

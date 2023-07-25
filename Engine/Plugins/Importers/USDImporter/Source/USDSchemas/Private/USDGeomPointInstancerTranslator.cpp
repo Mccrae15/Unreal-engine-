@@ -39,6 +39,12 @@
 
 #define LOCTEXT_NAMESPACE "USDGeomPointInstancer"
 
+static bool GCollapseTopLevelPointInstancers = false;
+static FAutoConsoleVariableRef CVarCollapseTopLevelPointInstancers(
+	TEXT( "USD.CollapseTopLevelPointInstancers" ),
+	GCollapseTopLevelPointInstancers,
+	TEXT( "If this is true will cause any point instancer to be collapsed to a single static mesh. Point instancers that are used as prototypes for other point instancers will always be collapsed." ) );
+
 namespace UsdGeomPointInstancerTranslatorImpl
 {
 	void ApplyPointInstanceTransforms( UInstancedStaticMeshComponent* Component, TArray<FTransform>& InstanceTransforms )
@@ -93,7 +99,6 @@ void FUsdGeomPointInstancerCreateAssetsTaskChain::SetupTasks()
 	Do( ESchemaTranslationLaunchPolicy::Async,
 		[this]() -> bool
 		{
-			// TODO: Restore support for LOD prototypes
 			LODIndexToMeshDescription.Reset( 1 );
 			LODIndexToMaterialInfo.Reset( 1 );
 
@@ -109,10 +114,17 @@ void FUsdGeomPointInstancerCreateAssetsTaskChain::SetupTasks()
 				RenderContextToken = UnrealToUsd::ConvertToken( *Context->RenderContext.ToString() ).Get();
 			}
 
+			pxr::TfToken MaterialPurposeToken = pxr::UsdShadeTokens->allPurpose;
+			if (!Context->MaterialPurpose.IsNone())
+			{
+				MaterialPurposeToken = UnrealToUsd::ConvertToken(*Context->MaterialPurpose.ToString()).Get();
+			}
+
 			UsdToUnreal::FUsdMeshConversionOptions Options;
 			Options.TimeCode = Context->Time;
 			Options.PurposesToLoad = Context->PurposesToLoad;
 			Options.RenderContext = RenderContextToken;
+			Options.MaterialPurpose = MaterialPurposeToken;
 			Options.MaterialToPrimvarToUVIndex = MaterialToPrimvarToUVIndex;
 			Options.bMergeIdenticalMaterialSlots = Context->bMergeIdenticalMaterialSlots;
 
@@ -146,7 +158,7 @@ void FUsdGeomPointInstancerTranslator::CreateAssets()
 	// If another FUsdGeomXformableTranslator is collapsing the point instancer prim, it will do so by calling
 	// UsdToUnreal::ConvertGeomMeshHierarchy which will consume the prim directly.
 	// This case right here is if we're collapsing *ourselves*, where we'll essentially pretend we're a single static mesh.
-	if ( Context->bCollapseTopLevelPointInstancers )
+	if ( GCollapseTopLevelPointInstancers )
 	{
 		// Don't bake our actual point instancer's transform or visibility into the mesh as its nice to have these on the static mesh component instead
 		const bool bIgnoreTopLevelTransformAndVisibility = true;
@@ -225,7 +237,7 @@ USceneComponent* FUsdGeomPointInstancerTranslator::CreateComponents()
 	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdGeomPointInstancerTranslator::CreateComponents );
 
 	// If we're collapsing ourselves, we're really just a collapsed Xform prim, so let that translator handle it
-	if ( Context->bCollapseTopLevelPointInstancers )
+	if ( GCollapseTopLevelPointInstancers )
 	{
 		return FUsdGeomXformableTranslator::CreateComponents();
 	}
@@ -256,7 +268,12 @@ USceneComponent* FUsdGeomPointInstancerTranslator::CreateComponents()
 		return MainSceneComponent;
 	}
 
-	UUsdAssetCache& AssetCache = *Context->AssetCache.Get();
+	if (!Context->AssetCache.IsValid() || !Context->InfoCache.IsValid())
+	{
+		return MainSceneComponent;
+	}
+	UUsdAssetCache2& AssetCache = *Context->AssetCache.Get();
+	FUsdInfoCache& InfoCache = *Context->InfoCache.Get();
 
 	// Lets pretend ParentComponent is pointing to the parent USceneComponent while we create the child HISMs, so they get
 	// automatically attached to it as children
@@ -307,7 +324,9 @@ USceneComponent* FUsdGeomPointInstancerTranslator::CreateComponents()
 			continue;
 		}
 
-		UStaticMesh* StaticMesh = Cast< UStaticMesh >( AssetCache.GetAssetForPrim( PrototypePathStr ) );
+		UStaticMesh* StaticMesh = InfoCache.GetSingleAssetForPrim<UStaticMesh>(
+			UE::FSdfPath{*PrototypePathStr}
+		);
 		UsdGeomPointInstancerTranslatorImpl::SetStaticMesh( StaticMesh, *HISMComponent );
 
 		// Evaluating point instancer can take a long time and is thread-safe. Move to async task while we work on something else.
@@ -329,32 +348,24 @@ USceneComponent* FUsdGeomPointInstancerTranslator::CreateComponents()
 		// Handle material overrides
 		if ( StaticMesh )
 		{
-#if WITH_EDITOR
-			// If the prim paths match, it means that it was this prim that created (and so "owns") the static mesh,
-			// so its material assignments will already be directly on the mesh. If they differ, we're using some other prim's mesh,
-			// so we may need material overrides on our component
-			UUsdAssetImportData* UsdImportData = Cast<UUsdAssetImportData>( StaticMesh->AssetImportData );
-			if ( UsdImportData && UsdImportData->PrimPath != PrototypePathStr )
-#endif // WITH_EDITOR
+			TArray<UMaterialInterface*> ExistingAssignments;
+			for ( FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials() )
 			{
-				TArray<UMaterialInterface*> ExistingAssignments;
-				for ( FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials() )
-				{
-					ExistingAssignments.Add( StaticMaterial.MaterialInterface );
-				}
-
-				MeshTranslationImpl::SetMaterialOverrides(
-					PrototypeUsdPrim,
-					ExistingAssignments,
-					*HISMComponent,
-					AssetCache,
-					Context->Time,
-					Context->ObjectFlags,
-					Context->bAllowInterpretingLODs,
-					Context->RenderContext,
-					Context->MaterialPurpose
-				);
+				ExistingAssignments.Add( StaticMaterial.MaterialInterface );
 			}
+
+			MeshTranslationImpl::SetMaterialOverrides(
+				PrototypeUsdPrim,
+				ExistingAssignments,
+				*HISMComponent,
+				AssetCache,
+				InfoCache,
+				Context->Time,
+				Context->ObjectFlags,
+				Context->bAllowInterpretingLODs,
+				Context->RenderContext,
+				Context->MaterialPurpose
+			);
 		}
 	}
 
@@ -371,6 +382,11 @@ USceneComponent* FUsdGeomPointInstancerTranslator::CreateComponents()
 void FUsdGeomPointInstancerTranslator::UpdateComponents( USceneComponent* PointInstancerRootComponent )
 {
 	Super::UpdateComponents( PointInstancerRootComponent );
+}
+
+bool FUsdGeomPointInstancerTranslator::CanBeCollapsed( ECollapsingType CollapsingType ) const
+{
+	return GCollapseTopLevelPointInstancers;
 }
 
 #undef LOCTEXT_NAMESPACE

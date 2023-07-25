@@ -4,33 +4,26 @@
 	StaticMeshRender.cpp: Static mesh rendering code.
 =============================================================================*/
 
-#include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "HAL/IConsoleManager.h"
+#include "BodySetupEnums.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
-#include "HitProxies.h"
+#include "EngineLogs.h"
 #include "PrimitiveViewRelevance.h"
-#include "Materials/MaterialInterface.h"
+#include "LightMap.h"
+#include "MaterialDomain.h"
+#include "RenderUtils.h"
 #include "SceneInterface.h"
-#include "PrimitiveSceneProxy.h"
-#include "Components/StaticMeshComponent.h"
 #include "Engine/MapBuildDataRegistry.h"
-#include "Engine/Brush.h"
-#include "MaterialShared.h"
 #include "Materials/Material.h"
-#include "MeshBatch.h"
-#include "SceneManagement.h"
-#include "Engine/MeshMerging.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "MaterialShared.h"
 #include "Engine/StaticMesh.h"
 #include "ComponentReregisterContext.h"
 #include "EngineUtils.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "StaticMeshResources.h"
-#include "Rendering/NaniteResources.h"
-#include "SpeedTreeWind.h"
+#include "StaticMeshSceneProxy.h"
 #include "PhysicalMaterials/PhysicalMaterialMask.h"
 
-#include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
 #include "DistanceFieldAtlas.h"
@@ -42,9 +35,10 @@
 #include "Engine/LODActor.h"
 #include "WorldPartition/HLOD/HLODActor.h"
 #include "UnrealEngine.h"
-#include "RayTracingInstance.h"
 #include "PrimitiveSceneInfo.h"
 #include "NaniteSceneProxy.h"
+#include "RenderCore.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #if WITH_EDITOR
 #include "Rendering/StaticLightingSystemInterface.h"
@@ -263,7 +257,7 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 #endif
 
 #if PLATFORM_DESKTOP
-	extern int32 GUseMobileLODBiasOnDesktopES31;
+	extern ENGINE_API int32 GUseMobileLODBiasOnDesktopES31;
 	if (GUseMobileLODBiasOnDesktopES31 != 0 && FeatureLevel == ERHIFeatureLevel::ES3_1)
 	{
 		EffectiveMinLOD += InComponent->GetStaticMesh()->GetRenderData()->LODBiasModifier;
@@ -290,15 +284,15 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 	SetWireframeColor(InComponent->GetWireframeColor());
 	SetLevelColor(FLinearColor(1,1,1));
 	SetPropertyColor(FLinearColor(1,1,1));
-	bSupportsDistanceFieldRepresentation = MaterialRelevance.bOpaque && !MaterialRelevance.bUsesSingleLayerWaterMaterial;
-	bSupportsMeshCardRepresentation = MaterialRelevance.bOpaque && !MaterialRelevance.bUsesSingleLayerWaterMaterial;
-	bCastsDynamicIndirectShadow = InComponent->bCastDynamicShadow && InComponent->CastShadow && InComponent->bCastDistanceFieldIndirectShadow && InComponent->Mobility != EComponentMobility::Static;
-	DynamicIndirectShadowMinVisibility = FMath::Clamp(InComponent->DistanceFieldIndirectShadowMinVisibility, 0.0f, 1.0f);
-	DistanceFieldSelfShadowBias = FMath::Max(InComponent->bOverrideDistanceFieldSelfShadowBias ? InComponent->DistanceFieldSelfShadowBias : InComponent->GetStaticMesh()->DistanceFieldSelfShadowBias, 0.0f);
 
 	// Copy the pointer to the volume data, async building of the data may modify the one on FStaticMeshLODResources while we are rendering
 	DistanceFieldData = RenderData->LODResources[0].DistanceFieldData;
 	CardRepresentationData = RenderData->LODResources[0].CardRepresentationData;
+
+	bSupportsDistanceFieldRepresentation = MaterialRelevance.bOpaque && !MaterialRelevance.bUsesSingleLayerWaterMaterial && DistanceFieldData && DistanceFieldData->IsValid();
+	bCastsDynamicIndirectShadow = InComponent->bCastDynamicShadow && InComponent->CastShadow && InComponent->bCastDistanceFieldIndirectShadow && InComponent->Mobility != EComponentMobility::Static;
+	DynamicIndirectShadowMinVisibility = FMath::Clamp(InComponent->DistanceFieldIndirectShadowMinVisibility, 0.0f, 1.0f);
+	DistanceFieldSelfShadowBias = FMath::Max(InComponent->bOverrideDistanceFieldSelfShadowBias ? InComponent->DistanceFieldSelfShadowBias : InComponent->GetStaticMesh()->DistanceFieldSelfShadowBias, 0.0f);
 
 	// Build the proxy's LOD data.
 	bool bAnySectionCastsShadows = false;
@@ -309,7 +303,7 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 	bSupportRayTracing = InComponent->GetStaticMesh()->bSupportRayTracing;
 	bDynamicRayTracingGeometry = false;
 	
-	if (IsRayTracingEnabled(GetScene().GetShaderPlatform()) && bSupportRayTracing)
+	if (IsRayTracingAllowed() && bSupportRayTracing)
 	{
 		if (CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() > 0)
 		{
@@ -344,6 +338,8 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 			{
 				MaterialRelevance |= UMaterial::GetDefaultMaterial(MD_Surface)->GetRelevance(FeatureLevel);
 			}
+
+			MaxWPODisplacement = FMath::Max(MaxWPODisplacement, SectionInfo.Material->GetMaxWorldPositionOffsetDisplacement());
 		}
 	}
 
@@ -416,6 +412,16 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 
 	// Enable dynamic triangle reordering to remove/reduce sorting issue when rendered with a translucent material (i.e., order-independent-transparency)
 	bSupportsSortedTriangles = InComponent->bSortTriangles;
+
+	if (IsAllowingApproximateOcclusionQueries())
+	{
+		bAllowApproximateOcclusion = true;
+	}
+
+	if (MaterialRelevance.bOpaque && !MaterialRelevance.bUsesSingleLayerWaterMaterial)
+	{
+		UpdateVisibleInLumenScene();
+	}
 }
 
 void FStaticMeshSceneProxy::SetEvaluateWorldPositionOffsetInRayTracing(bool NewValue)
@@ -429,7 +435,7 @@ void FStaticMeshSceneProxy::SetEvaluateWorldPositionOffsetInRayTracing(bool NewV
 	if (NewValue && !bDynamicRayTracingGeometry)
 	{
 		bDynamicRayTracingGeometry = true;
-		if (IsRayTracingEnabled())
+		if (IsRayTracingAllowed())
 		{
 			DynamicRayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
 
@@ -461,7 +467,7 @@ void FStaticMeshSceneProxy::SetEvaluateWorldPositionOffsetInRayTracing(bool NewV
 	else if (!NewValue && bDynamicRayTracingGeometry)
 	{
 		bDynamicRayTracingGeometry = false;
-		if (IsRayTracingEnabled())
+		if (IsRayTracingAllowed())
 		{
 			for (auto& Geometry : DynamicRayTracingGeometries)
 			{
@@ -579,7 +585,9 @@ bool FStaticMeshSceneProxy::GetShadowMeshElement(int32 LODIndex, int32 BatchInde
 	const FStaticMeshVertexFactories& VFs = RenderData->LODVertexFactories[LODIndex];
 	const FLODInfo& ProxyLODInfo = LODs[LODIndex];
 
-	const bool bUseReversedIndices = GUseReversedIndexBuffer && IsLocalToWorldDeterminantNegative() && LOD.bHasReversedDepthOnlyIndices;
+	const bool bUseReversedIndices = GUseReversedIndexBuffer &&
+		ShouldRenderBackFaces() &&
+		LOD.bHasReversedDepthOnlyIndices;
 	const bool bNoIndexBufferAvailable = !bUseReversedIndices && !LOD.bHasDepthOnlyIndices;
 
 	if (bNoIndexBufferAvailable)
@@ -694,8 +702,12 @@ bool FStaticMeshSceneProxy::GetMeshElement(
 
 	const bool bWireframe = false;
 
+	// Determine based on the primitive option to reverse culling and current scale if we want to use reversed indices.
 	// Two sided material use bIsFrontFace which is wrong with Reversed Indices.
-	const bool bUseReversedIndices = GUseReversedIndexBuffer && IsLocalToWorldDeterminantNegative() && (LOD.bHasReversedIndices != 0) && !Material.IsTwoSided();
+	const bool bUseReversedIndices = GUseReversedIndexBuffer &&
+		ShouldRenderBackFaces() &&
+		(LOD.bHasReversedIndices != 0) &&
+		!Material.IsTwoSided();
 
 	// No support for stateless dithered LOD transitions for movable meshes
 	const bool bDitheredLODTransition = !IsMovable() && Material.IsDitheredLODTransition();
@@ -740,7 +752,7 @@ bool FStaticMeshSceneProxy::GetMeshElement(
 void FStaticMeshSceneProxy::CreateRenderThreadResources()
 {
 #if RHI_RAYTRACING
-	if(IsRayTracingEnabled() && bSupportRayTracing)
+	if(IsRayTracingAllowed() && bSupportRayTracing)
 	{
 		if (bDynamicRayTracingGeometry)
 		{
@@ -1085,9 +1097,15 @@ void FStaticMeshSceneProxy::SetMeshElementScreenSize(int32 LODIndex, bool bDithe
 	}
 }
 
+bool FStaticMeshSceneProxy::ShouldRenderBackFaces() const
+{
+	// Use != to ensure consistent face direction between negatively and positively scaled primitives
+	return bReverseCulling != IsLocalToWorldDeterminantNegative();
+}
+
 bool FStaticMeshSceneProxy::IsReversedCullingNeeded(bool bUseReversedIndices) const
 {
-	return (bReverseCulling || IsLocalToWorldDeterminantNegative()) && !bUseReversedIndices;
+	return ShouldRenderBackFaces() && !bUseReversedIndices;
 }
 
 // FPrimitiveSceneProxy interface.
@@ -1254,7 +1272,8 @@ void FStaticMeshSceneProxy::DrawStaticElements(FStaticPrimitiveDrawInterface* PD
 							!(bAnySectionUsesDitheredLODTransition && !bAllSectionsUseDitheredLODTransition) // can't use a single section if they are not homogeneous
 							&& Material.WritesEveryPixel()
 							&& !Material.IsTwoSided()
-							&& !IsTranslucentBlendMode(Material.GetBlendMode())
+							&& !Material.IsThinSurface()
+							&& !IsTranslucentBlendMode(Material)
 							&& !Material.MaterialModifiesMeshPosition_RenderThread()
 							&& Material.GetMaterialDomain() == MD_Surface
 							&& !Material.IsSky()
@@ -1384,6 +1403,11 @@ bool FStaticMeshSceneProxy::IsCollisionView(const FEngineShowFlags& EngineShowFl
 	}
 #endif
 	return bInCollisionView;
+}
+
+uint8 FStaticMeshSceneProxy::GetCurrentFirstLODIdx_Internal() const
+{
+	return RenderData->CurrentFirstLODIdx;
 }
 
 void FStaticMeshSceneProxy::GetMeshDescription(int32 LODIndex, TArray<FMeshBatch>& OutMeshElements) const
@@ -1794,9 +1818,7 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 		return;
 	}
 
-	ESceneDepthPriorityGroup PrimitiveDPG = GetStaticDepthPriorityGroup();
-	const int32 LODIndex = FMath::Max(GetLOD(Context.ReferenceView), (int32)GetCurrentFirstLODIdx_RenderThread());
-	const FStaticMeshLODResources& LODModel = RenderData->LODResources[LODIndex];
+	const ESceneDepthPriorityGroup PrimitiveDPG = GetStaticDepthPriorityGroup();
 
 	bool bEvaluateWPO = bDynamicRayTracingGeometry;
 
@@ -1813,8 +1835,31 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 		}
 	}
 
+	const int32 NumLODs = RenderData->LODResources.Num();
+
+	int32 LODIndex = FMath::Max(GetLOD(Context.ReferenceView), (int32)GetCurrentFirstLODIdx_RenderThread());
+	const int32 OriginalLODIndex = LODIndex;
+
+	if (!bEvaluateWPO)
+	{
+		for (; LODIndex < NumLODs; LODIndex++)
+		{
+			if (RenderData->LODResources[LODIndex].RayTracingGeometry.IsValid())
+			{
+				break;
+			}
+		}
+	}
+
+	if (LODIndex == INDEX_NONE || LODIndex >= NumLODs)
+	{
+		return;
+	}
+
+	const FStaticMeshLODResources& LODModel = RenderData->LODResources[LODIndex];
+
 	// TODO: Need to validate that the DynamicRayTracingGeometries are still valid - they could contain streamed out IndexBuffers from the shared StaticMesh (UE-139474)
-	FRayTracingGeometry& Geometry = bEvaluateWPO? DynamicRayTracingGeometries[LODIndex] : RenderData->LODResources[LODIndex].RayTracingGeometry;
+	FRayTracingGeometry& Geometry = bEvaluateWPO ? DynamicRayTracingGeometries[LODIndex] : RenderData->LODResources[LODIndex].RayTracingGeometry;
 	
 	if (LODModel.GetNumVertices() <= 0 || Geometry.Initializer.TotalPrimitiveCount <= 0)
 	{
@@ -1840,27 +1885,32 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 			CachedRayTracingMaterials.Reset();
 			CachedRayTracingMaterials.Reserve(NumRayTracingMaterialEntries);
 
-		for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
-		{
-			for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
+			for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
 			{
+				for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
+				{
 					FMeshBatch &MeshBatch = CachedRayTracingMaterials.AddDefaulted_GetRef();
 
 					bool bResult = GetMeshElement(LODIndex, BatchIndex, SectionIndex, PrimitiveDPG, false, false, MeshBatch);
-				if (!bResult)
-				{
-					// Hidden material
+					if (!bResult)
+					{
+						// Hidden material
 						MeshBatch.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 						MeshBatch.VertexFactory = &RenderData->LODVertexFactories[LODIndex].VertexFactory;
-				}
+					}
 
 					MeshBatch.SegmentIndex = SectionIndex;
 					MeshBatch.MeshIdInPrimitive = SectionIndex;
 				}
 			}
-
-			CachedRayTracingInstanceMaskAndFlags = BuildRayTracingInstanceMaskAndFlags(CachedRayTracingMaterials, GetScene().GetFeatureLevel());
+			
+			RayTracingInstance.MaterialsView = MakeArrayView(CachedRayTracingMaterials);
+			CachedRayTracingInstanceMaskAndFlags = Context.BuildInstanceMaskAndFlags(RayTracingInstance, *this);
 			CachedRayTracingMaterialsLODIndex = LODIndex;
+		}
+		else
+		{
+			RayTracingInstance.MaterialsView = MakeArrayView(CachedRayTracingMaterials);
 		}
 
 		RayTracingInstance.Geometry = &Geometry;
@@ -1868,7 +1918,6 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 		// scene proxies live for the duration of Render(), making array views below safe
 		const FMatrix& ThisLocalToWorld = GetLocalToWorld();
 		RayTracingInstance.InstanceTransformsView = MakeArrayView(&ThisLocalToWorld, 1);
-		RayTracingInstance.MaterialsView = MakeArrayView(CachedRayTracingMaterials);
 
 		if (bEvaluateWPO && RenderData->LODVertexFactories[LODIndex].VertexFactory.GetType()->SupportsRayTracingDynamicGeometry())
 		{
@@ -1894,9 +1943,9 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 			);
 		}
 		
-		RayTracingInstance.Mask = CachedRayTracingInstanceMaskAndFlags.Mask;
-		RayTracingInstance.bForceOpaque = CachedRayTracingInstanceMaskAndFlags.bForceOpaque;
-		RayTracingInstance.bDoubleSided = CachedRayTracingInstanceMaskAndFlags.bDoubleSided;
+		// Skip computing the mask and flags in the renderer since we are using cached values.
+		RayTracingInstance.bInstanceMaskAndFlagsDirty = false;
+		RayTracingInstance.MaskAndFlags = CachedRayTracingInstanceMaskAndFlags;
 
 		check(CachedRayTracingMaterials.Num() == RayTracingInstance.GetMaterials().Num());
 		checkf(RayTracingInstance.Geometry->Initializer.Segments.Num() == CachedRayTracingMaterials.Num(), TEXT("Segments/Materials mismatch. Number of segments: %d. Number of Materials: %d. LOD Index: %d"), 
@@ -2074,6 +2123,11 @@ bool FStaticMeshSceneProxy::HasDistanceFieldRepresentation() const
 	return CastsDynamicShadow() && AffectsDistanceFieldLighting() && DistanceFieldData;
 }
 
+bool FStaticMeshSceneProxy::StaticMeshHasPendingStreaming() const
+{
+	return StaticMesh && StaticMesh->bHasStreamingUpdatePending;
+}
+
 bool FStaticMeshSceneProxy::HasDynamicIndirectShadowCasterRepresentation() const
 {
 	return bCastsDynamicIndirectShadow && FStaticMeshSceneProxy::HasDistanceFieldRepresentation();
@@ -2217,7 +2271,7 @@ FStaticMeshSceneProxy::FLODInfo::FLODInfo(const UStaticMeshComponent* InComponen
 		SectionInfo.MaterialIndex = Section.MaterialIndex;
 #endif
 
-		if (GForceDefaultMaterial && SectionInfo.Material && !IsTranslucentBlendMode(SectionInfo.Material->GetBlendMode()))
+		if (GForceDefaultMaterial && SectionInfo.Material && !IsTranslucentBlendMode(*SectionInfo.Material))
 		{
 			SectionInfo.Material = UMaterial::GetDefaultMaterial(MD_Surface);
 		}
@@ -2441,6 +2495,12 @@ FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
 	if (!GetStaticMesh()->GetRenderData()->IsInitialized())
 	{
 		UE_LOG(LogStaticMesh, Verbose, TEXT("Skipping CreateSceneProxy for StaticMeshComponent %s (RenderData is not initialized)"), *GetFullName());
+		return nullptr;
+	}
+
+	if (IsPSOPrecaching())
+	{
+		UE_LOG(LogStaticMesh, Verbose, TEXT("Skipping CreateSceneProxy for StaticMeshComponent %s (Static mesh component PSOs are still compiling)"), *GetFullName());
 		return nullptr;
 	}
 

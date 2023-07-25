@@ -13,11 +13,19 @@
 
 #include "DetailCustomizations/DisplayClusterLightCardActorDetails.h"
 #include "LightCardTemplates/DisplayClusterLightCardTemplate.h"
+#include "PropertyEditorModule.h"
 #include "Settings/DisplayClusterLightCardEditorSettings.h"
 
 #include "IDisplayClusterOperator.h"
 
 #include "ISettingsModule.h"
+
+#define REGISTER_OBJECT_LAYOUT(ObjectType, CustomizationType) { \
+	const FName LayoutName = ObjectType::StaticClass()->GetFName(); \
+	RegisteredClassLayoutNames.Add(LayoutName); \
+	PropertyModule.RegisterCustomClassLayout(LayoutName, \
+		FOnGetDetailCustomizationInstance::CreateStatic(&CustomizationType::MakeInstance)); \
+}
 
 #define LOCTEXT_NAMESPACE "DisplayClusterLightCardEditor"
 
@@ -102,10 +110,8 @@ void FDisplayClusterLightCardEditorModule::UnregisterSettings()
 void FDisplayClusterLightCardEditorModule::RegisterDetailCustomizations()
 {
 	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	PropertyModule.RegisterCustomClassLayout(
-		ADisplayClusterLightCardActor::StaticClass()->GetFName(), 
-		FOnGetDetailCustomizationInstance::CreateStatic(&FDisplayClusterLightCardActorDetails::MakeInstance)
-	);
+
+	REGISTER_OBJECT_LAYOUT(ADisplayClusterLightCardActor, FDisplayClusterLightCardActorDetails);
 }
 
 void FDisplayClusterLightCardEditorModule::UnregisterDetailCustomizations()
@@ -113,8 +119,13 @@ void FDisplayClusterLightCardEditorModule::UnregisterDetailCustomizations()
 	FPropertyEditorModule* PropertyModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor");
 	if (PropertyModule)
 	{
-		PropertyModule->UnregisterCustomClassLayout(ADisplayClusterLightCardActor::StaticClass()->GetFName());
+		for (const FName& ClassName : RegisteredClassLayoutNames)
+		{
+			PropertyModule->UnregisterCustomClassLayout(ClassName);
+		}
 	}
+
+	RegisteredClassLayoutNames.Empty();
 }
 
 void FDisplayClusterLightCardEditorModule::RegisterOperatorApp()

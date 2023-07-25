@@ -2,9 +2,8 @@
 
 #include "Elements/Metadata/PCGMetadataMakeVector.h"
 
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataMakeVector)
 
 namespace PCGMetadataMakeVectorSettings
 {
@@ -42,6 +41,37 @@ namespace PCGMetadataMakeVectorSettings
 	{
 		return FVector4(XYZ, W);
 	}
+}
+
+void UPCGMetadataMakeVectorSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input3AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource3.SetAttributeName(Input3AttributeName_DEPRECATED);
+		Input3AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input4AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource4.SetAttributeName(Input4AttributeName_DEPRECATED);
+		Input4AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
 }
 
 FName UPCGMetadataMakeVectorSettings::GetInputPinLabel(uint32 Index) const
@@ -129,20 +159,20 @@ bool UPCGMetadataMakeVectorSettings::IsSupportedInputType(uint16 TypeId, uint32 
 	}
 }
 
-FName UPCGMetadataMakeVectorSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataMakeVectorSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	case 2:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input3AttributeName, Params);
+		return InputSource3;
 	case 3:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input4AttributeName, Params);
+		return InputSource4;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
@@ -154,7 +184,12 @@ uint16 UPCGMetadataMakeVectorSettings::GetOutputType(uint16 InputTypeId) const
 #if WITH_EDITOR
 FName UPCGMetadataMakeVectorSettings::GetDefaultNodeName() const
 {
-	return TEXT("Make Vector Attribute");
+	return TEXT("MakeVectorAttribute");
+}
+
+FText UPCGMetadataMakeVectorSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataMakeVectorSettings", "NodeTitle", "Make Vector Attribute");
 }
 #endif // WITH_EDITOR
 

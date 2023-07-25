@@ -1,10 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
  
 #include "CommonUITypes.h"
+
+#include "CommonInputBaseTypes.h"
+#include "CommonInputSubsystem.h"
 #include "CommonUIPrivate.h"
-#include "ICommonInputModule.h"
-#include "CommonInputSettings.h"
+#include "Engine/Blueprint.h"
+#include "EnhancedActionKeyMapping.h"
+#include "EnhancedInputSubsystems.h"
+#include "Engine/LocalPlayer.h"
 #include "HAL/PlatformInput.h"
+#include "ICommonInputModule.h"
+#include "InputAction.h"
+#include "InputActionValue.h"
+#include "PlayerMappableKeySettings.h"
+#include "Styling/SlateTypes.h"
+#include "Styling/StyleDefaults.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonUITypes)
 
@@ -184,6 +195,16 @@ void FCommonInputActionDataBase::AddGamepadInputOverride(const FName& GamepadNam
 	GamepadInputOverrides.Add(GamepadName, InputInfo);
 }
 
+const UCommonInputMetadata* UCommonMappingContextMetadata::GetCommonInputMetadata(const UInputAction* InInputAction) const
+{
+	if (const TObjectPtr<const UCommonInputMetadata>* PerActionMetdata = PerActionEnhancedInputMetadata.Find(InInputAction))
+	{
+		return *PerActionMetdata;
+	}
+
+	return EnhancedInputMetadata;
+}
+
 void CommonUI::SetupStyles()
 {
 	EmptyScrollBoxStyle.BottomShadowBrush.DrawAs = ESlateBrushDrawType::NoDrawType;
@@ -220,4 +241,130 @@ FSlateBrush CommonUI::GetIconForInputActions(const UCommonInputSubsystem* Common
 	}
 
 	return *FStyleDefaults::GetNoBrush();
+}
+
+bool CommonUI::IsEnhancedInputSupportEnabled()
+{
+	static bool bEnabled = ICommonInputModule::Get().GetSettings().GetEnableEnhancedInputSupport();
+	return bEnabled;
+}
+
+TObjectPtr<const UCommonInputMetadata> CommonUI::GetEnhancedInputActionMetadata(const UInputAction* InputAction)
+{
+	if (!InputAction->GetPlayerMappableKeySettings())
+	{
+		return nullptr;
+	}
+
+	if (ICommonMappingContextMetadataInterface* MappingContextMetadata = Cast<ICommonMappingContextMetadataInterface>(InputAction->GetPlayerMappableKeySettings()->Metadata))
+	{
+		return MappingContextMetadata->GetCommonInputMetadata(InputAction);
+	}
+
+	return nullptr;
+}
+
+void CommonUI::GetEnhancedInputActionKeys(const ULocalPlayer* LocalPlayer, const UInputAction* InputAction, TArray<FKey>& OutKeys)
+{
+	if (LocalPlayer)
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* EnhancedInputLocalPlayerSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+		{
+			OutKeys = EnhancedInputLocalPlayerSubsystem->QueryKeysMappedToAction(InputAction);
+		}
+	}
+}
+
+void CommonUI::InjectEnhancedInputForAction(const ULocalPlayer* LocalPlayer, const UInputAction* InputAction, FInputActionValue RawValue)
+{
+	if (LocalPlayer)
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* EnhancedInputLocalPlayerSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+		{
+			EnhancedInputLocalPlayerSubsystem->InjectInputForAction(InputAction, RawValue, {}, {});
+		}
+	}
+}
+
+FSlateBrush CommonUI::GetIconForEnhancedInputAction(const UCommonInputSubsystem* CommonInputSubsystem, const UInputAction* InputAction)
+{
+	FKey FirstKeyForCurrentInput = GetFirstKeyForInputType(CommonInputSubsystem->GetLocalPlayer(), CommonInputSubsystem->GetCurrentInputType(), InputAction);
+
+	FSlateBrush SlateBrush;
+	if (FirstKeyForCurrentInput.IsValid() && UCommonInputPlatformSettings::Get()->TryGetInputBrush(SlateBrush, FirstKeyForCurrentInput, CommonInputSubsystem->GetCurrentInputType(), CommonInputSubsystem->GetCurrentGamepadName()))
+	{
+		return SlateBrush;
+	}
+
+	return *FStyleDefaults::GetNoBrush();
+}
+
+bool CommonUI::ActionValidForInputType(const ULocalPlayer* LocalPlayer, ECommonInputType InputType, const UInputAction* InputAction)
+{
+	if (!LocalPlayer)
+	{
+		return false;
+	}
+
+	TArray<FKey> Keys;
+	if (UEnhancedInputLocalPlayerSubsystem* EnhancedInputLocalPlayerSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+	{
+		Keys = EnhancedInputLocalPlayerSubsystem->QueryKeysMappedToAction(InputAction);
+	}
+
+	for (const FKey& Key : Keys)
+	{
+		if (!Key.IsValid())
+		{
+			continue;
+		}
+
+		bool bIsValidTouch = Key.IsTouch() && InputType == ECommonInputType::Touch;
+		bool bIsValidGamepad = Key.IsGamepadKey() && InputType == ECommonInputType::Gamepad;
+		bool bIsValidMouseAndKeyboard = !Key.IsTouch() && !Key.IsGamepadKey() && InputType == ECommonInputType::MouseAndKeyboard;
+
+		if (bIsValidTouch || bIsValidGamepad || bIsValidMouseAndKeyboard)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+FKey CommonUI::GetFirstKeyForInputType(const ULocalPlayer* LocalPlayer, ECommonInputType InputType, const UInputAction* InputAction)
+{
+	if (!LocalPlayer)
+	{
+		return FKey();
+	}
+
+	TArray<FKey> Keys;
+	if (UEnhancedInputLocalPlayerSubsystem* EnhancedInputLocalPlayerSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+	{
+		Keys = EnhancedInputLocalPlayerSubsystem->QueryKeysMappedToAction(InputAction);
+	}
+
+	for (const FKey& Key : Keys)
+	{
+		if (!Key.IsValid())
+		{
+			continue;
+		}
+
+		if (Key.IsTouch() && InputType == ECommonInputType::Touch)
+		{
+			return Key;
+		}
+		else if (Key.IsGamepadKey() && InputType == ECommonInputType::Gamepad)
+		{
+			return Key;
+		}
+		else if (!Key.IsTouch() && !Key.IsGamepadKey() && InputType == ECommonInputType::MouseAndKeyboard)
+		{
+			return Key;
+		}
+	}
+
+	return FKey();
 }

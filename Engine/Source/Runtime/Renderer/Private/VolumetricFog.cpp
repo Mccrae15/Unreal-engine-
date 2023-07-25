@@ -5,6 +5,8 @@ VolumetricFog.cpp
 =============================================================================*/
 
 #include "VolumetricFog.h"
+#include "BasePassRendering.h"
+#include "FogRendering.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
 #include "SceneUtils.h"
@@ -24,6 +26,7 @@ VolumetricFog.cpp
 #include "GenerateConservativeDepthBuffer.h"
 #include "VirtualShadowMaps/VirtualShadowMapClipmap.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 int32 GVolumetricFog = 1;
 FAutoConsoleVariableRef CVarVolumetricFog(
@@ -248,6 +251,7 @@ class FWriteToBoundingSphereVS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FVolumetricFogIntegrationParameters, VolumetricFogParameters)
 		SHADER_PARAMETER(FMatrix44f, ViewToVolumeClip)
+		SHADER_PARAMETER(FVector2f, ClipRatio)
 		SHADER_PARAMETER(FVector4f, ViewSpaceBoundingSphere)
 		SHADER_PARAMETER(int32, MinZ)
 	END_SHADER_PARAMETER_STRUCT()
@@ -607,6 +611,9 @@ void FDeferredShadingSceneRenderer::RenderLocalLightsForVolumetricFog(
 						VSPassParameters.MinZ = VolumeZBounds.X;
 						VSPassParameters.ViewSpaceBoundingSphere = FVector4f(FVector4f(View.ViewMatrices.GetViewMatrix().TransformPosition(LightBounds.Center)), LightBounds.W); // LWC_TODO: precision loss
 						VSPassParameters.ViewToVolumeClip = FMatrix44f(View.ViewMatrices.ComputeProjectionNoAAMatrix());	// LWC_TODO: Precision loss?
+
+						VSPassParameters.ClipRatio = GetVolumetricFogFroxelToScreenSVPosRatio(View.ViewRect.Size());
+
 						VSPassParameters.VolumetricFogParameters = PassParameters->VolumetricFogParameters;
 						SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSPassParameters);
 
@@ -758,6 +765,16 @@ class FVolumetricFogFinalIntegrationCS : public FGlobalShader
 
 IMPLEMENT_GLOBAL_SHADER(FVolumetricFogFinalIntegrationCS, "/Engine/Private/VolumetricFog.usf", "FinalIntegrationCS", SF_Compute);
 
+bool DoesPlatformSupportVolumetricFog(const FStaticShaderPlatform Platform)
+{
+	return FDataDrivenShaderPlatformInfo::GetSupportsVolumetricFog(Platform);
+}
+
+bool DoesPlatformSupportVolumetricFogVoxelization(const FStaticShaderPlatform Platform)
+{
+	return DoesPlatformSupportVolumetricFog(Platform);
+}
+
 bool ShouldRenderVolumetricFog(const FScene* Scene, const FSceneViewFamily& ViewFamily)
 {
 	return ShouldRenderFog(ViewFamily)
@@ -836,6 +853,17 @@ FIntVector GetVolumetricFogGridSize(FIntPoint ViewRectSize, int32& OutVolumetric
 	return FIntVector(VolumetricFogGridSizeXY.X, VolumetricFogGridSizeXY.Y, GetVolumetricFogGridSizeZ());
 }
 
+FVector2f GetVolumetricFogFroxelToScreenSVPosRatio(FIntPoint ViewRectSize)
+{
+	// Calculate how much the Fog froxel volume "overhangs" the actual view frustum to the right and bottom.
+	// This needs to be applied on SVPos because froxel pixel size (see r.VolumetricFog.GridPixelSize) does not align perfectly with view rect.
+	int32 VolumetricFogGridPixelSize;
+	const FIntVector VolumetricFogGridSize = GetVolumetricFogGridSize(ViewRectSize, VolumetricFogGridPixelSize);
+	const FVector2f FogPhysicalSize = FVector2f(VolumetricFogGridSize.X, VolumetricFogGridSize.Y) * VolumetricFogGridPixelSize;
+	const FVector2f ClipRatio = FogPhysicalSize / FVector2f(ViewRectSize);
+	return ClipRatio;
+}
+
 void SetupVolumetricFogGlobalData(const FViewInfo& View, FVolumetricFogGlobalData& Parameters)
 {
 	const FScene* Scene = (FScene*)View.Family->Scene;
@@ -887,6 +915,7 @@ void FViewInfo::SetupVolumetricFogUniformBufferParameters(FViewUniformShaderPara
 		ViewUniformShaderParameters.VolumetricFogInvGridSize = FVector3f::ZeroVector;
 		ViewUniformShaderParameters.VolumetricFogGridZParams = FVector3f::ZeroVector;
 		ViewUniformShaderParameters.VolumetricFogSVPosToVolumeUV = FVector2f::ZeroVector;
+		ViewUniformShaderParameters.VolumetricFogScreenUVToHistoryVolumeUV = FVector2f::ZeroVector;
 		ViewUniformShaderParameters.VolumetricFogMaxDistance = 0;
 	}
 }
@@ -924,6 +953,7 @@ void FDeferredShadingSceneRenderer::SetupVolumetricFog()
 			{
 				View.ViewState->LightScatteringHistory = NULL;
 				View.ViewState->LightScatteringHistoryPreExposure = 1.0f;
+				View.ViewState->LightScatteringScreenUVToHistoryVolumeUV = FVector2f::One();
 			}
 		}
 	}
@@ -977,11 +1007,6 @@ void FDeferredShadingSceneRenderer::ComputeVolumetricFog(FRDGBuilder& GraphBuild
 		FMatrix44f DirectionalLightFunctionTranslatedWorldToShadow;
 
 		RDG_EVENT_SCOPE(GraphBuilder, "VolumetricFog");
-
-#if WITH_MGPU
-		static const FName NameForTemporalEffect("ComputeVolumetricFog");
-		GraphBuilder.SetNameForTemporalEffect(FName(NameForTemporalEffect, View.ViewState ? View.ViewState->UniqueID : 0));
-#endif
 
 		FRDGTextureRef ConservativeDepthTexture;
 		// To use a depth target format, and depth tests, we will have to render depth from a PS depth output. Keeping it simple for now with all the tests happening in shader.
@@ -1312,11 +1337,13 @@ void FDeferredShadingSceneRenderer::ComputeVolumetricFog(FRDGBuilder& GraphBuild
 		{
 			GraphBuilder.QueueTextureExtraction(IntegrationData.LightScattering, &View.ViewState->LightScatteringHistory);
 			View.ViewState->LightScatteringHistoryPreExposure = View.CachedViewUniformShaderParameters->PreExposure;
+			View.ViewState->LightScatteringScreenUVToHistoryVolumeUV = FVector2f(View.ViewRect.Size()) / (FVector2f(VolumetricFogGridSize.X, VolumetricFogGridSize.Y) * VolumetricFogGridPixelSize);
 		}
 		else if (View.ViewState)
 		{
 			View.ViewState->LightScatteringHistory = nullptr;
 			View.ViewState->LightScatteringHistoryPreExposure = 1.0f;
+			View.ViewState->LightScatteringScreenUVToHistoryVolumeUV = FVector2f::One();
 		}
 
 		if (bUseTemporalReprojection && GVolumetricFogConservativeDepth > 0)

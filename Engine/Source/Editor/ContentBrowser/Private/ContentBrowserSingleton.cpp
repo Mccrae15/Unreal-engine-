@@ -1127,6 +1127,15 @@ void FContentBrowserSingleton::RebuildPrivateContentStateCache()
 	}
 }
 
+bool FContentBrowserSingleton::CanChangeAssetPublicState(FStringView AssetPath)
+{
+	if (CanChangeAssetPublicStateDelegate.IsBound())
+	{
+		return CanChangeAssetPublicStateDelegate.Execute(AssetPath);
+	}
+	return true;
+}
+
 bool FContentBrowserSingleton::IsFolderShowPrivateContentToggleable(const FStringView VirtualFolderPath)
 {
 	if (IsFolderShowPrivateContentToggleableDelegate.IsBound())
@@ -1147,14 +1156,39 @@ void FContentBrowserSingleton::SetPrivateContentPermissionListDirty()
 	ShowPrivateContentState.CachedVirtualPaths.Reset();
 }
 
+void FContentBrowserSingleton::RegisterCanChangeAssetPublicStateDelegate(FCanChangeAssetPublicStateDelegate InCanChangeAssetPublicStateDelegate)
+{
+	CanChangeAssetPublicStateDelegate = MoveTemp(InCanChangeAssetPublicStateDelegate);
+}
+
+void FContentBrowserSingleton::UnregisterCanChangeAssetPublicStateDelegate()
+{
+	CanChangeAssetPublicStateDelegate = FCanChangeAssetPublicStateDelegate();
+}
+
 void FContentBrowserSingleton::RegisterIsFolderShowPrivateContentToggleableDelegate(FIsFolderShowPrivateContentToggleableDelegate InIsFolderShowPrivateContentToggleableDelegate)
 {
-	IsFolderShowPrivateContentToggleableDelegate = InIsFolderShowPrivateContentToggleableDelegate;
+	IsFolderShowPrivateContentToggleableDelegate = MoveTemp(InIsFolderShowPrivateContentToggleableDelegate);
 }
 
 void FContentBrowserSingleton::UnregisterIsFolderShowPrivateContentToggleableDelegate()
 {
 	IsFolderShowPrivateContentToggleableDelegate = FIsFolderShowPrivateContentToggleableDelegate();
+}
+
+FDelegateHandle FContentBrowserSingleton::RegisterOnFavoritesChangedHandler(FSimpleDelegate InOnFavoritesChanged)
+{
+	return OnFavoritesChanged.Add(InOnFavoritesChanged);
+}
+
+void FContentBrowserSingleton::UnregisterOnFavoritesChangedDelegate(FDelegateHandle Handle)
+{
+	OnFavoritesChanged.Remove(Handle);
+}
+
+void FContentBrowserSingleton::BroadcastFavoritesChanged() const
+{
+	OnFavoritesChanged.Broadcast();
 }
 
 void FContentBrowserSingleton::PopulateConfigValues()

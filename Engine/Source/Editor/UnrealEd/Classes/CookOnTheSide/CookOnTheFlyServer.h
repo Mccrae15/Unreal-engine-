@@ -7,6 +7,7 @@
 #include "CookOnTheSide/CookLog.h"
 #include "CookPackageSplitter.h"
 #include "Engine/ICookInfo.h"
+#include "HAL/PlatformMemory.h"
 #include "INetworkFileSystemModule.h"
 #include "IPlatformFileSandboxWrapper.h"
 #include "Misc/EnumClassFlags.h"
@@ -33,6 +34,7 @@ class IPlugin;
 class ITargetPlatform;
 enum class ODSCRecompileCommand;
 struct FBeginCookContext;
+struct FGenericMemoryStats;
 struct FPropertyChangedEvent;
 struct FResourceSizeEx;
 
@@ -49,7 +51,7 @@ enum class ECookInitializationFlags
 	AsyncSave =									0x00000020, // save packages async
 	// unused =									0x00000040,
 	IncludeServerMaps =							0x00000080, // should we include the server maps when cooking
-	UseSerializationForPackageDependencies =	0x00000100, // should we use the serialization code path for generating package dependencies (old method will be deprecated)
+	UseSerializationForPackageDependencies UE_DEPRECATED(4.26, "No longer used.") = 0x00000100,
 	BuildDDCInBackground =						0x00000200, // build ddc content in background while the editor is running (only valid for modes which are in editor IsCookingInEditor())
 	// unused =									0x00000400,
 	OutputVerboseCookerWarnings =				0x00000800, // output additional cooker warnings about content issues
@@ -88,7 +90,6 @@ enum class ECookByTheBookOptions
 
 	// Deprecated flags
 	NoSlatePackages UE_DEPRECATED(5.0, "The [UI]ContentDirectories is deprecated. You may use DirectoriesToAlwaysCook in your project settings instead.") = 0x00000400, // don't include slate content
-	DisableUnsolicitedPackages UE_DEPRECATED(4.26, "Use SkipSoftReferences and/or SkipHardReferences instead") = SkipSoftReferences | SkipHardReferences,
 };
 ENUM_CLASS_FLAGS(ECookByTheBookOptions);
 
@@ -96,7 +97,7 @@ ENUM_CLASS_FLAGS(ECookByTheBookOptions);
 UENUM()
 namespace ECookMode
 {
-	enum Type
+	enum Type : int
 	{
 		/** Default mode, handles requests from network. */
 		CookOnTheFly,
@@ -110,6 +111,26 @@ namespace ECookMode
 		CookWorker,
 	};
 }
+inline bool IsCookByTheBookMode(ECookMode::Type CookMode)
+{
+	return CookMode == ECookMode::CookByTheBookFromTheEditor || CookMode == ECookMode::CookByTheBook;
+}
+inline bool IsRealtimeMode(ECookMode::Type CookMode)
+{
+	return CookMode == ECookMode::CookByTheBookFromTheEditor || CookMode == ECookMode::CookOnTheFlyFromTheEditor;
+}
+inline bool IsCookingInEditor(ECookMode::Type CookMode)
+{
+	return CookMode == ECookMode::CookByTheBookFromTheEditor || CookMode == ECookMode::CookOnTheFlyFromTheEditor;
+}
+inline bool IsCookOnTheFlyMode(ECookMode::Type CookMode)
+{
+	return CookMode == ECookMode::CookOnTheFly || CookMode == ECookMode::CookOnTheFlyFromTheEditor;
+}
+inline bool IsCookWorkerMode(ECookMode::Type CookMode)
+{
+	return CookMode == ECookMode::CookWorker;
+}
 
 UENUM()
 enum class ECookTickFlags : uint8
@@ -122,10 +143,12 @@ ENUM_CLASS_FLAGS(ECookTickFlags);
 
 namespace UE::Cook
 {
+	class FAssetRegistryMPCollector;
 	class FBuildDefinitions;
 	class FCookDirector;
 	class FCookWorkerClient;
 	class FCookWorkerServer;
+	class FPackageWriterMPCollector;
 	class FRequestCluster;
 	class FRequestQueue;
 	class FSaveCookedPackageContext;
@@ -288,6 +311,7 @@ private:
 	uint64 MemoryMaxUsedPhysical;
 	uint64 MemoryMinFreeVirtual;
 	uint64 MemoryMinFreePhysical;
+	FGenericPlatformMemoryStats::EMemoryPressureStatus MemoryTriggerGCAtPressureLevel;
 	float MemoryExpectedFreedToSpreadRatio;
 	/** Max number of packages to save before we partial gc */
 	int32 MaxNumPackagesBeforePartialGC;
@@ -295,6 +319,16 @@ private:
 	int32 MaxConcurrentShaderJobs;
 	/** Min number of free UObject indices before the cooker should partial gc */
 	int32 MinFreeUObjectIndicesBeforeGC;
+	double LastGCTime = 0.;
+	double LastFullGCTime = 0.;
+	double LastSoftGCTime = 0.;
+	int64 SoftGCNextAvailablePhysicalTarget = -1;
+	int32 SoftGCStartNumerator = 5;
+	int32 SoftGCDenominator = 10;
+	bool bUseSoftGC = false;
+	bool bWarnedExceededMaxMemoryWithinGCCooldown = false;
+	bool bGarbageCollectTypeSoft = false;
+
 	/**
 	 * The maximum number of packages that should be preloaded at once. Once this is full, packages in LoadPrepare will
 	 * remain unpreloaded in LoadPrepare until the existing preloaded packages exit {LoadPrepare,LoadReady} state.
@@ -359,10 +393,6 @@ private:
 	int32 LastCookedPackagesCount = 0;
 	double LastProgressDisplayTime = 0;
 	double LastDiagnosticsDisplayTime = 0;
-
-	/** Get dependencies for package */
-	const TArray<FName>& GetFullPackageDependencies(const FName& PackageName) const;
-	mutable TMap<FName, TArray<FName>> CachedFullPackageDependencies;
 
 	/** Cached copy of asset registry */
 	IAssetRegistry* AssetRegistry = nullptr;
@@ -435,8 +465,8 @@ private:
 	};
 	/** Inspect all tasks the scheduler could do and return which one it should do. */
 	ECookAction DecideNextCookAction(UE::Cook::FTickStackData& StackData);
-	/** Is the local CookOnTheFlyServer a CookDirector and it has finished all locally processed Requests? */
-	bool IsMultiprocessLocalWorkerIdle() const;
+	/** How many packages are assigned to the CookOnTheFlyServer for saving/loading? Returns 0 if the current process is not a CookDirector. */
+	int32 NumMultiprocessLocalWorkerAssignments() const;
 	/** Execute any existing external callbacks and push any existing external cook requests into new RequestClusters. */
 	void PumpExternalRequests(const UE::Cook::FCookerTimer& CookerTimer);
 	/** Send the PackageData back to request state to create a request cluster, if it has not yet been explored. */
@@ -533,6 +563,7 @@ public:
 		COSR_RequiresGC_PackageCount= 0x00000100,
 		COSR_RequiresGC_IdleTimer	= 0x00000200,
 		COSR_YieldTick				= 0x00000400,
+		COSR_RequiresGC_Soft_OOM	= 0x00000800,
 	};
 
 	struct FCookByTheBookStartupOptions
@@ -580,9 +611,6 @@ public:
 	ECookMode::Type GetCookMode() const { return CurrentCookMode; }
 	ECookInitializationFlags GetCookFlags() const { return CookFlags; }
 
-	// FExec interface used in the editor
-	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
-
 	// ICookInfo interface
 	virtual UE::Cook::FInstigator GetInstigator(FName PackageName) override;
 	virtual TArray<UE::Cook::FInstigator> GetInstigatorChain(FName PackageName) override;
@@ -624,6 +652,9 @@ public:
 	/** Connect to the CookDirector host, Initialize this UCOTFS, and start the CookWorker session */
 	bool TryInitializeCookWorker();
 
+	/** Log stats for the CookWorker; this is called before the connection to the director is terminated. */
+	void LogCookWorkerStats();
+
 	/** Terminate the CookWorker session */
 	void ShutdownCookAsCookWorker();
 
@@ -634,9 +665,6 @@ public:
 	bool IsInSession() const;
 	/** Is the local CookOnTheFlyServer in a cook session in CookByTheBook Mode? */
 	bool IsCookByTheBookRunning() const;
-
-	UE_DEPRECATED(4.26, "Unsolicited packages are now added directly to the savequeue and are not marked as unsolicited")
-	TArray<UPackage*> GetUnsolicitedPackages(const TArray<const ITargetPlatform*>& TargetPlatforms) const;
 
 	/** Execute class-specific special case cook postloads and reference discovery on a given package. */
 	void PostLoadPackageFixup(UE::Cook::FPackageData& PackageData, UPackage* Package);
@@ -675,19 +703,12 @@ public:
 	 */
 	void ClearCachedCookedPlatformDataForPlatform(const ITargetPlatform* TargetPlatform);
 
-	UE_DEPRECATED(4.25, "Use version that takes const ITargetPlatform* instead")
-	void ClearCachedCookedPlatformDataForPlatform(const FName& PlatformName);
-
-
 	/**
 	 * Clear all the previously cooked data for the platform passed in 
 	 * 
 	 * @param TargetPlatform the platform to clear the cooked packages for
 	 */
 	void ClearPlatformCookedData(const ITargetPlatform* TargetPlatform);
-
-	UE_DEPRECATED(4.25, "Use version that takes const ITargetPlatform* instead")
-	void ClearPlatformCookedData(const FString& PlatformName);
 
 	/**
 	 * Clear platforms' explored flags for all PackageDatas and optionally clear the cookresult flags.
@@ -704,10 +725,6 @@ public:
 	 * @return return true if shaders were recompiled
 	 */
 	bool RecompileChangedShaders(const TArray<const ITargetPlatform*>& TargetPlatforms);
-
-	UE_DEPRECATED(4.25, "Use version that takes const ITargetPlatform* instead")
-	bool RecompileChangedShaders(const TArray<FName>& TargetPlatformNames);
-
 
 	/**
 	 * Force stop whatever pending cook requests are going on and clear all the cooked data
@@ -787,19 +804,16 @@ public:
 	/** Returns the configured amount of idle time before forcing a GC */
 	double GetIdleTimeToGC() const;
 
-	/** Returns the configured amount of memory allowed before forcing a GC */
-	UE_DEPRECATED(4.26, "Use HasExceededMaxMemory instead")
-	uint64 GetMaxMemoryAllowance() const;
+	UE_DEPRECATED(5.2, "UCookOnTheFLyServer now uses a more complicated private GC scheme; HasExceededMaxMemory is no longer used and returns false")
+	bool HasExceededMaxMemory() { return false; }
+	void SetGarbageCollectType(uint32 ResultFlagsFromTick);
+	void ClearGarbageCollectType();
 
-	/** Mark package as keep around for the cooker (don't GC) */
-	UE_DEPRECATED(4.25, "UCookOnTheFlyServer now uses FGCObject to interact with garbage collection")
-	void MarkGCPackagesToKeepForCooker()
-	{
-	}
-
-	bool HasExceededMaxMemory() const;
-	void EvaluateGarbageCollectionResults(int32 NumObjectsBeforeGC, const FPlatformMemoryStats& MemStatsBeforeGC,
-		int32 NumObjectsAfterGC, const FPlatformMemoryStats& MemStatsAfterGC);
+	void EvaluateGarbageCollectionResults(bool bWasDueToOOM, bool bWasPartialGC, uint32 ResultFlags,
+		int32 NumObjectsBeforeGC, const FPlatformMemoryStats& MemStatsBeforeGC,
+		const FGenericMemoryStats& AllocatorStatsBeforeGC,
+		int32 NumObjectsAfterGC, const FPlatformMemoryStats& MemStatsAfterGC,
+		const FGenericMemoryStats& AllocatorStatsAfterGC);
 
 	/**
 	 * RequestPackage to be cooked
@@ -809,10 +823,6 @@ public:
 	 * @param bForceFrontOfQueue should package go to front of the cook queue (next to be processed) or the end
 	 */
 	bool RequestPackage(const FName& StandardFileName, const TArrayView<const ITargetPlatform* const>& TargetPlatforms,
-		const bool bForceFrontOfQueue);
-
-	UE_DEPRECATED(4.25, "Use Version that takes TArray<const ITargetPlatform*> instead")
-	bool RequestPackage(const FName& StandardFileName, const TArrayView<const FName>& TargetPlatformNames,
 		const bool bForceFrontOfQueue);
 
 	/**
@@ -864,7 +874,16 @@ public:
 	void GetShaderLibraryPaths(const ITargetPlatform* TargetPlatform, FString& OutShaderCodeDir,
 		FString& OutMetaDataPath, bool bUseProjectDirForDLC=false);
 
+	/** Print detailed stats from the cook. */
+	void PrintDetailedCookStats();
+
+protected:
+	// FExec interface used in the editor
+	virtual bool Exec_Editor(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
+
 private:
+
+	bool PumpHasExceededMaxMemory(uint32& OutResultFlags);
 
 	/**
 	 * Is the local CookOnTheFlyServer initialized to run in CookOnTheFly AND using the legacy scheduling method
@@ -877,11 +896,6 @@ private:
 	void BeginCookPackageWriters(FBeginCookContext& BeginContext);
 	void BeginCookDirector(FBeginCookContext& BeginContext);
 	void InitializeSession();
-	void PreGarbageCollectImpl(TArray<UPackage*>& GCKeepPackages, TArray<UE::Cook::FPackageData*>& GCKeepPackageDatas,
-		TArray<UObject*>& LocalGCKeepObjects);
-	void PostGarbageCollectImpl(TArray<UObject*>& LocalGCKeepObjects);
-	void GetDirectAndTransitiveResourceSize(FResourceSizeEx& OutDirectSize, FResourceSizeEx& OutTransitiveSize,
-		int64& OutNumDirectPackages, int64& OutNumTransitivePackages, TSet<UPackage*>&& DirectPackages);
 
 	//////////////////////////////////////////////////////////////////////////
 	// cook by the book specific functions
@@ -989,8 +1003,10 @@ private:
 	/** Write a MapDependencyGraph to a metadata file in the sandbox for the given platform. */
 	void WriteMapDependencyGraph(const ITargetPlatform* TargetPlatform, TMap<FName, TSet<FName>>& MapDependencyGraph);
 
+	void InitializeAllCulturesToCook(TConstArrayView<FString> CookCultures);
+	void CompileDLCLocalization(FBeginCookContext& BeginContext);
 	/** Find localization dependencies for all packages, used to add required localization files as soft references. */
-	void GenerateLocalizationReferences(TConstArrayView<FString> CookCultures);
+	void GenerateLocalizationReferences();
 	void RegisterLocalizationChunkDataGenerator();
 
 	//////////////////////////////////////////////////////////////////////////
@@ -1009,6 +1025,9 @@ private:
 	void StartCookAsCookWorker();
 	/** Construct the on-stack data for StartCook functions, based on the CookWorker's configuration */
 	FBeginCookContext CreateCookWorkerContext();
+	void CookAsCookWorkerFinished();
+	/** Return the best packages to retract and give to other workers -the ones with least effort spent so far. */
+	void GetPackagesToRetract(int32 NumToRetract, TArray<FName>& OutRetractionPackages);
 
 	//////////////////////////////////////////////////////////////////////////
 	// general functions
@@ -1125,7 +1144,7 @@ private:
 	/**
 	 * Frees all the memory used to call BeginCacheForCookedPlatformData on all the objects in PackageData.
 	 * If the calls were incomplete because the PackageData's save was cancelled, handles canceling them and
-	 * leaving any required CancelManagers in GetPendingCookedPlatformDatas
+	 * leaving any required CancelManagers in PendingCookedPlatformDatas
 	 * 
 	 * @param bCompletedSave If false, data that can not be efficiently recomputed will be preserved to try
 	 *        the save again. If true, all data will be wiped.
@@ -1134,7 +1153,7 @@ private:
 	void ReleaseCookedPlatformData(UE::Cook::FPackageData& PackageData, UE::Cook::EReleaseSaveReason ReleaseSaveReason);
 
 	/**
-	 * Poll the GetPendingCookedPlatformDatas and release their resources when they are complete.
+	 * Poll the PendingCookedPlatformDatas and release their resources when they are complete.
 	 * This is done inside of PumpSaveQueue, but is also required after a cancelled cook so that references to
 	 * the pending objects will be eventually dropped.
 	 */
@@ -1376,6 +1395,9 @@ private:
 	 * as referenced in CookerAddReferencedObjects.
 	 */
 	TArray<UObject*> GCKeepObjects;
+	/** Packages that were expected to be freed by the last Soft GC and we expect not to load again. */
+	TArray<FName> ExpectedFreedPackageNames;
+
 	UE::Cook::FPackageData* SavingPackageData = nullptr;
 	/** Helper struct for running cooking in diagnostic modes */
 	TUniquePtr<FDiffModeCookServerUtils> DiffModeHelper;
@@ -1404,13 +1426,15 @@ private:
 	float DisplayUpdatePeriodSeconds = 0.0f;
 	EIdleStatus IdleStatus = EIdleStatus::Done;
 
+	friend UE::Cook::FAssetRegistryMPCollector;
 	friend UE::Cook::FBeginCookConfigSettings;
-	friend UE::Cook::FInitializeConfigSettings;
 	friend UE::Cook::FCookDirector;
 	friend UE::Cook::FCookWorkerClient;
 	friend UE::Cook::FCookWorkerServer;
 	friend UE::Cook::FGeneratorPackage;
+	friend UE::Cook::FInitializeConfigSettings;
 	friend UE::Cook::FPackageData;
+	friend UE::Cook::FPackageWriterMPCollector;
 	friend UE::Cook::FPendingCookedPlatformData;
 	friend UE::Cook::FPlatformManager;
 	friend UE::Cook::FRequestCluster;

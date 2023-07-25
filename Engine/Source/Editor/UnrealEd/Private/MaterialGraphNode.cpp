@@ -25,6 +25,7 @@
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionMaterialAttributeLayers.h"
 #include "Materials/MaterialExpressionRuntimeVirtualTextureSample.h"
+#include "Materials/MaterialExpressionSparseVolumeTextureSample.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionStaticBool.h"
 #include "Materials/MaterialExpressionStaticBoolParameter.h"
@@ -37,12 +38,14 @@
 #include "Materials/MaterialExpressionDoubleVectorParameter.h"
 #include "Materials/MaterialExpressionViewProperty.h"
 #include "Materials/MaterialExpressionMaterialLayerOutput.h"
+#include "Materials/MaterialExpressionFontSampleParameter.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionNamedReroute.h"
 #include "Materials/MaterialExpressionReroute.h"
 #include "Materials/MaterialExpressionCurveAtlasRowParameter.h"
 #include "Materials/MaterialExpressionExecBegin.h"
 #include "Materials/MaterialExpressionStrata.h"
+#include "Materials/MaterialFunction.h"
 #include "MaterialEditorUtilities.h"
 #include "MaterialEditorActions.h"
 #include "GraphEditorActions.h"
@@ -73,7 +76,7 @@ void UMaterialGraphNode::PostCopyNode()
 
 FMaterialRenderProxy* UMaterialGraphNode::GetExpressionPreview()
 {
-	return FMaterialEditorUtilities::GetExpressionPreview(GetGraph(), MaterialExpression);
+	return MaterialExpression ? FMaterialEditorUtilities::GetExpressionPreview(GetGraph(), MaterialExpression) : nullptr;
 }
 
 void UMaterialGraphNode::RecreateAndLinkNode()
@@ -141,7 +144,7 @@ bool UMaterialGraphNode::CanPasteHere(const UEdGraph* TargetGraph) const
 		if (MaterialExpression->IsA(UMaterialExpressionStrataLegacyConversion::StaticClass()))
 		{
 			// We could have used CanDuplicateNode() returning false to prevent the copy but it is nicer to have a notification about why the copy is not happening.
-			FText NotificationText = NSLOCTEXT("UMaterialGraphNode", "SkippedStrataLegacyConversion", "StrataLegacyConversion node cannot be copied! It is only used to convert legacy material to Strata.");
+			FText NotificationText = NSLOCTEXT("UMaterialGraphNode", "SkippedSubstrateLegacyConversion", "SubstrateLegacyConversion node cannot be copied! It is only used to convert legacy material to Substrate.");
 			FNotificationInfo Info(NotificationText);
 			Info.ExpireDuration = 5.0f;
 			Info.bUseLargeFont = false;
@@ -433,6 +436,7 @@ void UMaterialGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 				|| MaterialExpression->IsA(UMaterialExpressionConstant4Vector::StaticClass())
 				|| (MaterialExpression->IsA(UMaterialExpressionTextureSample::StaticClass()) && !MaterialExpression->HasAParameterName())
 				|| (MaterialExpression->IsA(UMaterialExpressionRuntimeVirtualTextureSample::StaticClass()) && !MaterialExpression->HasAParameterName())
+				|| (MaterialExpression->IsA(UMaterialExpressionSparseVolumeTextureSampleParameter::StaticClass()) && !MaterialExpression->HasAParameterName())
 				|| MaterialExpression->IsA(UMaterialExpressionTextureObject::StaticClass())
 				|| MaterialExpression->IsA(UMaterialExpressionComponentMask::StaticClass()))
 			{

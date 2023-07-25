@@ -3,17 +3,22 @@
 #pragma once
 #include "Blueprints/TextureShareBlueprintContainers.h"
 #include "Misc/TextureShareCoreStrings.h"
+#include "UObject/Package.h"
 
-//////////////////////////////////////////////////////////////////////////////////////////////
-namespace TextureShareBlueprintContainersHelpers
+namespace UE
 {
-	static FString GetValidTextureShareObjectName(const FString& InShareName)
+	namespace TextureShare
 	{
-		return InShareName.IsEmpty() ? TextureShareCoreStrings::Default::ShareName : InShareName;
+		namespace BlueprintContainers
+		{
+			static FString GetValidTextureShareObjectName(const FString& InShareName)
+			{
+				return InShareName.IsEmpty() ? UE::TextureShareCoreStrings::DefaultShareName : InShareName;
+			}
+		}
 	}
 };
-
-using namespace TextureShareBlueprintContainersHelpers;
+using namespace UE::TextureShare::BlueprintContainers;
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // FTextureShareObjectDesc
@@ -47,7 +52,7 @@ void UTextureShareObject::SendCustomData(const TMap<FString, FString>& InSendPar
 UTextureShare::UTextureShare()
 {
 	// Create default textureshare
-	GetOrCreateTextureShareObject(TextureShareCoreStrings::Default::ShareName);
+	GetOrCreateTextureShareObject(UE::TextureShareCoreStrings::DefaultShareName);
 }
 
 UTextureShare::~UTextureShare()

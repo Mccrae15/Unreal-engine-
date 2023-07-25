@@ -2,21 +2,13 @@
 
 #include "MuCOE/CustomizableObjectCompileRunnable.h"
 
-#include "Engine/Texture.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformCrt.h"
-#include "HAL/PlatformTime.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Misc/Guid.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCO/UnrealMutableModelDiskStreamer.h"
-#include "MuR/Ptr.h"
+#include "MuR/Model.h"
 #include "MuT/Compiler.h"
 #include "MuT/ErrorLog.h"
-#include "Serialization/Archive.h"
 #include "Serialization/MemoryWriter.h"
-#include "Trace/Detail/Channel.h"
+#include "Trace/Trace.inl"
 
 class ITargetPlatform;
 
@@ -96,13 +88,12 @@ uint32 FCustomizableObjectCompileRunnable::Run()
 	const int MinRomSize = 128;
 	CompilerOptions->SetDataPackingStrategy(MinRomSize, MinResidentMips);
 
+	/** At object compilation time we don't know if we will want progressive images or not. Assume we will. */
+	CompilerOptions->SetEnableProgressiveImages(true);
+
 	CompilerOptions->SetTextureLayoutStrategy(bDisableTextureLayout
 		? mu::CompilerOptions::TextureLayoutStrategy::None
 		: mu::CompilerOptions::TextureLayoutStrategy::Pack);
-
-	// \TODO For now force it to be disabled.
-	//CompilerOptions->SetEnableConcurrency(Options.bUseParallelCompilation);
-	CompilerOptions->SetEnableConcurrency(false);
 
 	mu::CompilerPtr Compiler = new mu::Compiler(CompilerOptions);
 
@@ -199,7 +190,7 @@ FCustomizableObjectSaveDDRunnable::FCustomizableObjectSaveDDRunnable(UCustomizab
 
 uint32 FCustomizableObjectSaveDDRunnable::Run()
 {
-	bool bModelSerialized = Model.get() != nullptr;
+	bool bModelSerialized = Model.Get() != nullptr;
 
 	if (Options.bIsCooking && !Options.bSaveCookedDataToDisk)
 	{
@@ -211,7 +202,7 @@ uint32 FCustomizableObjectSaveDDRunnable::Run()
 		if (bModelSerialized)
 		{
 			FUnrealMutableModelBulkStreamer Streamer(&ModelMemoryWriter, &StreamableMemoryWriter);
-			mu::Model::Serialise(Model.get(), Streamer);
+			mu::Model::Serialise(Model.Get(), Streamer);
 		}
 	}
 	else if(bModelSerialized) // Save CO data + mu::Model and streamable resources to disk
@@ -221,36 +212,54 @@ uint32 FCustomizableObjectSaveDDRunnable::Run()
 		FileManager.MakeDirectory(*FolderPath, true);
 
 		// Delete files...
-		FileManager.Delete(*CompildeDataFullFileName, true, false, true);
-		FileManager.Delete(*StreamableDataFullFileName, true, false, true);
+		bool bFilesDeleted = true;
+		if (FileManager.FileExists(*CompildeDataFullFileName)
+			&& !FileManager.Delete(*CompildeDataFullFileName, true, false, true))
+		{
+			UE_LOG(LogMutable, Error, TEXT("Failed to delete compiled data in file [%s]."), *CompildeDataFullFileName);
+			bFilesDeleted = false;
+		}
 
-		// Create file writers...
-		FArchive* ModelMemoryWriter = FileManager.CreateFileWriter(*CompildeDataFullFileName);
-		FArchive* StreamableMemoryWriter = FileManager.CreateFileWriter(*StreamableDataFullFileName);
+		if (FileManager.FileExists(*StreamableDataFullFileName)
+			&& !FileManager.Delete(*StreamableDataFullFileName, true, false, true))
+		{
+			UE_LOG(LogMutable, Error, TEXT("Failed to delete streamed data in file [%s]."), *StreamableDataFullFileName);
+			bFilesDeleted = false;
+		}
 
-		// Serailize headers to validate data
-		*ModelMemoryWriter << CustomizableObjectHeader;
-		*StreamableMemoryWriter << CustomizableObjectHeader;
+		// Store current compiled data
+		if (bFilesDeleted)
+		{
+			// Create file writers...
+			FArchive* ModelMemoryWriter = FileManager.CreateFileWriter(*CompildeDataFullFileName);
+			FArchive* StreamableMemoryWriter = FileManager.CreateFileWriter(*StreamableDataFullFileName);
+			check(ModelMemoryWriter);
+			check(StreamableMemoryWriter);
 
-		// Serialize Customizable Object's Data to disk
-		ModelMemoryWriter->Serialize(reinterpret_cast<void*>(Bytes.GetData()), Bytes.Num() * sizeof(uint8));
-		Bytes.Empty();
+			// Serailize headers to validate data
+			*ModelMemoryWriter << CustomizableObjectHeader;
+			*StreamableMemoryWriter << CustomizableObjectHeader;
 
-		// Serialize mu::Model and streamable resources
-		*ModelMemoryWriter << bModelSerialized;
+			// Serialize Customizable Object's Data to disk
+			ModelMemoryWriter->Serialize(reinterpret_cast<void*>(Bytes.GetData()), Bytes.Num() * sizeof(uint8));
+			Bytes.Empty();
 
-		FUnrealMutableModelBulkStreamer Streamer(ModelMemoryWriter, StreamableMemoryWriter);
-		mu::Model::Serialise(Model.get(), Streamer);
+			// Serialize mu::Model and streamable resources
+			*ModelMemoryWriter << bModelSerialized;
 
-		// Save to disk
-		ModelMemoryWriter->Flush();
-		StreamableMemoryWriter->Flush();
+			FUnrealMutableModelBulkStreamer Streamer(ModelMemoryWriter, StreamableMemoryWriter);
+			mu::Model::Serialise(Model.Get(), Streamer);
 
-		ModelMemoryWriter->Close();
-		StreamableMemoryWriter->Close();
+			// Save to disk
+			ModelMemoryWriter->Flush();
+			StreamableMemoryWriter->Flush();
 
-		delete ModelMemoryWriter;
-		delete StreamableMemoryWriter;
+			ModelMemoryWriter->Close();
+			StreamableMemoryWriter->Close();
+
+			delete ModelMemoryWriter;
+			delete StreamableMemoryWriter;
+		}
 	}
 
 	bThreadCompleted = true;

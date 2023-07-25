@@ -28,18 +28,18 @@ namespace UnrealBuildTool
 
 			// don't register if we don't have an NDKROOT specified
 			if (!String.IsNullOrEmpty(NDKPath))
-		{
+			{
 				return NDKPath.Replace("\"", "");
-		}
+			}
 
 			if (OperatingSystem.IsMacOS())
 			{
 				string BashProfilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), ".bash_profile");
 				if (!File.Exists(BashProfilePath))
-		{
+				{
 					// Try .bashrc if didn't fine .bash_profile
 					BashProfilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), ".bashrc");
-		}
+				}
 				if (File.Exists(BashProfilePath))
 				{
 					string[] BashProfileContents = File.ReadAllLines(BashProfilePath);
@@ -47,16 +47,14 @@ namespace UnrealBuildTool
 					// Walk backwards so we keep the last export setting instead of the first
 					string SdkKey = "NDKROOT";
 					for (int LineIndex = BashProfileContents.Length - 1; LineIndex >= 0; --LineIndex)
-		{
+					{
 						if (BashProfileContents[LineIndex].StartsWith("export " + SdkKey + "="))
-			{
-							string PathVar = BashProfileContents[LineIndex].Split
-('=')[1].Replace("\"", "");
-Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
+						{
+							string PathVar = BashProfileContents[LineIndex].Split('=')[1].Replace("\"", "");
 							return PathVar;
-			}
+						}
 
-		}
+					}
 				}
 			}
 	
@@ -140,17 +138,17 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
 		}
 
 
-		public override SDKStatus PrintSDKInfoAndReturnValidity(LogEventType Verbosity, LogFormatOptions Options, LogEventType ErrorVerbosity, LogFormatOptions ErrorOptions)
-		{
-			SDKStatus Validity = base.PrintSDKInfoAndReturnValidity(Verbosity, Options, ErrorVerbosity, ErrorOptions);
+		//public override SDKStatus PrintSDKInfoAndReturnValidity(LogEventType Verbosity, LogFormatOptions Options, LogEventType ErrorVerbosity, LogFormatOptions ErrorOptions)
+		//{
+		//	SDKStatus Validity = base.PrintSDKInfoAndReturnValidity(Verbosity, Options, ErrorVerbosity, ErrorOptions);
 
-			if (GetInstalledVersion() != GetMainVersion())
-			{
-				Log.WriteLine(Verbosity, Options, "Note: Android toolchain NDK {0} recommended", GetMainVersion());
-			}
+		//	if (GetInstalledVersion() != GetMainVersion())
+		//	{
+		//		Log.WriteLine(Verbosity, Options, "Note: Android toolchain NDK {0} recommended ('{1}' was found)", GetMainVersion(), GetInstalledVersion());
+		//	}
 
-			return Validity;
-		}
+		//	return Validity;
+		//}
 
 
 		protected override bool PlatformSupportsAutoSDKs()
@@ -297,22 +295,6 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
 				return false;
 			}
 			return true;
-		}
-
-		protected override SDKStatus HasRequiredManualSDKInternal()
-		{
-			// if any autosdk setup has been done then the local process environment is suspect
-			if (HasSetupAutoSDK())
-			{
-				return SDKStatus.Invalid;
-			}
-
-			if (HasAnySDK())
-			{
-				return SDKStatus.Valid;
-			}
-
-			return SDKStatus.Invalid;
 		}
 	}
 }

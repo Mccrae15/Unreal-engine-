@@ -2,49 +2,36 @@
 
 
 #include "WaterBodyComponent.h"
-#include "UObject/FortniteMainBranchObjectVersion.h"
+#include "DynamicMesh/InfoTypes.h"
 #include "UObject/UObjectIterator.h"
 #include "EngineUtils.h"
-#include "Landscape.h"
+#include "LandscapeProxy.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "NavCollision.h"
 #include "AI/NavigationSystemBase.h"
-#include "AI/NavigationSystemHelpers.h"
-#include "Algo/AllOf.h"
-#include "Algo/AnyOf.h"
-#include "Algo/MaxElement.h"
-#include "Misc/SecureHash.h"
-#include "PhysicsEngine/BodySetup.h"
-#include "Components/SplineMeshComponent.h"
-#include "Components/BoxComponent.h"
-#include "BuoyancyComponent.h"
+#include "Spatial/MeshAABBTree3.h"
 #include "WaterModule.h"
+#include "WaterBodyActor.h"
 #include "WaterSubsystem.h"
-#include "WaterZoneActor.h"
 #include "WaterBodyExclusionVolume.h"
 #include "WaterBodyIslandActor.h"
-#include "WaterSplineMetadata.h"
+#include "WaterEditorServices.h"
 #include "WaterSplineComponent.h"
 #include "WaterRuntimeSettings.h"
 #include "WaterUtils.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include "GerstnerWaterWaves.h"
+#include "Engine/Texture2D.h"
 #include "WaterMeshComponent.h"
 #include "WaterVersion.h"
-#include "Misc/MapErrors.h"
 #include "Misc/UObjectToken.h"
 #include "Logging/MessageLog.h"
-#include "Logging/TokenizedMessage.h"
 #include "WaterBodySceneProxy.h"
 #include "Engine/StaticMesh.h"
-#include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "Operations/MeshPlaneCut.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyComponent)
 
 #if WITH_EDITOR
-#include "WaterIconHelper.h"
 #include "Components/BillboardComponent.h"
 #include "Modules/ModuleManager.h"
 #include "WaterModule.h"
@@ -70,6 +57,22 @@ TAutoConsoleVariable<float> CVarWaterOceanFallbackDepth(
 	3000.0f,
 	TEXT("Depth to report for the ocean when no terrain is found under the query location. Not used when <= 0."),
 	ECVF_Default);
+
+
+FWaterBodyMeshSection::FWaterBodyMeshSection()
+	: Vertices()
+	, Indices()
+	, SectionBounds()
+{
+}
+
+FWaterBodyMeshSection::~FWaterBodyMeshSection() = default;
+
+uint32 FWaterBodyMeshSection::GetAllocatedSize() const
+{
+	return Vertices.GetAllocatedSize() + Indices.GetAllocatedSize();
+}
+
 
 const FName UWaterBodyComponent::WaterBodyIndexParamName(TEXT("WaterBodyIndex"));
 const FName UWaterBodyComponent::WaterBodyZOffsetParamName(TEXT("WaterBodyZOffset"));
@@ -111,11 +114,7 @@ UWaterBodyComponent::UWaterBodyComponent(const FObjectInitializer& ObjectInitial
 
 bool UWaterBodyComponent::IsHLODRelevant() const
 {
-#if WITH_EDITOR
 	return bEnableAutoLODGeneration;
-#else
-	return false;
-#endif
 }
 
 void UWaterBodyComponent::OnVisibilityChanged()
@@ -201,11 +200,6 @@ FBox UWaterBodyComponent::GetCollisionComponentBounds() const
 		}
 	}
 	return Box;
-}
-
-FBoxSphereBounds UWaterBodyComponent::CalcBounds(const FTransform& LocalToWorld) const
-{
-	return Super::CalcBounds(LocalToWorld);
 }
 
 AWaterBody* UWaterBodyComponent::GetWaterBodyActor() const
@@ -381,20 +375,36 @@ void UWaterBodyComponent::UpdateWaterZones()
 {
 	if (UWorld* World = GetWorld())
 	{
-		AWaterZone* OldWaterZone = GetWaterZone();
-		AWaterZone* FoundZone = FindWaterZone();
-
-		if (OldWaterZone != FoundZone)
+		TSoftObjectPtr<AWaterZone> FoundZone = nullptr;
+		if (!WaterZoneOverride.IsNull())
 		{
-			if (OldWaterZone)
+			FoundZone = WaterZoneOverride.Get();
+		}
+		else
+		{
+			// Don't attempt to find a water zone while cooking and just rely on the serialized pointer from the editor.
+			if (IsRunningCookCommandlet())
 			{
-				OldWaterZone->RemoveWaterBodyComponent(this);
-				OldWaterZone = nullptr;
+				return;
 			}
 
-			if (FoundZone)
+			const FBox Bounds3D = Bounds.GetBox();
+			if (const UWaterSubsystem* WaterSubsystem = UWaterSubsystem::GetWaterSubsystem(GetWorld()))
 			{
-				FoundZone->AddWaterBodyComponent(this);
+				FoundZone = WaterSubsystem->FindWaterZone(FBox2D(FVector2D(Bounds3D.Min), FVector2D(Bounds3D.Max)));
+			}
+		}
+
+		if (OwningWaterZone != FoundZone)
+		{
+			if (AWaterZone* OldOwningZonePtr = OwningWaterZone.Get())
+			{
+				OldOwningZonePtr->RemoveWaterBodyComponent(this);
+			}
+
+			if (AWaterZone* FoundZonePtr = FoundZone.Get())
+			{
+				FoundZonePtr->AddWaterBodyComponent(this);
 			}
 
 			OwningWaterZone = FoundZone;
@@ -1013,6 +1023,7 @@ void UWaterBodyComponent::PostEditImport()
 	FOnWaterBodyChangedParams Params;
 	Params.bShapeOrPositionChanged = true;
 	Params.bWeightmapSettingsChanged = true;
+	Params.bUserTriggered = true;
 	OnWaterBodyChanged(Params);
 
 	RequestGPUWaveDataUpdate();
@@ -1096,6 +1107,7 @@ void UWaterBodyComponent::CheckForErrors()
 void UWaterBodyComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	FOnWaterBodyChangedParams Params(PropertyChangedEvent);
+	Params.bUserTriggered = true;
 	OnPostEditChangeProperty(Params);
 	
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -1111,6 +1123,7 @@ void UWaterBodyComponent::OnWaterSplineDataChanged(const FOnWaterSplineDataChang
 	// Transfer the FOnWaterSplineDataChangedParams parameters to FOnWaterBodyChangedParams :
 	FOnWaterBodyChangedParams Params(InParams.PropertyChangedEvent);
 	Params.bShapeOrPositionChanged = true;
+	Params.bUserTriggered = InParams.bUserTriggered;
 	OnWaterBodyChanged(Params);
 }
 
@@ -1137,14 +1150,15 @@ void UWaterBodyComponent::OnWavesDataUpdated(UWaterWavesBase* InWaterWaves, EPro
 	// Waves data affect the navigation :
 	Params.PropertyChangedEvent.ChangeType = InChangeType;
 	Params.bShapeOrPositionChanged = true;
+	Params.bUserTriggered = true;
 	OnWaterBodyChanged(Params);
 }
 
-void UWaterBodyComponent::OnWaterSplineMetadataChanged(UWaterSplineMetadata* InWaterSplineMetadata, FPropertyChangedEvent& PropertyChangedEvent)
+void UWaterBodyComponent::OnWaterSplineMetadataChanged(const FOnWaterSplineMetadataChangedParams& InParams)
 {
 	bool bShapeOrPositionChanged = false;
 
-	FName ChangedProperty = PropertyChangedEvent.GetPropertyName();
+	FName ChangedProperty = InParams.PropertyChangedEvent.GetPropertyName();
 	if ((ChangedProperty == NAME_None)
 		|| (ChangedProperty == GET_MEMBER_NAME_CHECKED(UWaterSplineMetadata, Depth))
 		|| (ChangedProperty == GET_MEMBER_NAME_CHECKED(UWaterSplineMetadata, RiverWidth))
@@ -1161,8 +1175,12 @@ void UWaterBodyComponent::OnWaterSplineMetadataChanged(UWaterSplineMetadata* InW
 		GetWaterSpline()->SynchronizeWaterProperties();
 	}
 
-	// Waves data affect the navigation : 
-	OnWaterBodyChanged(bShapeOrPositionChanged);
+	// Waves data affect the navigation :
+	FOnWaterBodyChangedParams Params;
+	Params.bShapeOrPositionChanged = bShapeOrPositionChanged;
+	Params.bWeightmapSettingsChanged = false;
+	Params.bUserTriggered = InParams.bUserTriggered;
+	OnWaterBodyChanged(Params); 
 }
 
 void UWaterBodyComponent::RegisterOnChangeWaterSplineData(bool bRegister)
@@ -1183,11 +1201,11 @@ void UWaterBodyComponent::RegisterOnChangeWaterSplineData(bool bRegister)
 	{
 		if (bRegister)
 		{
-			WaterSplineMetadata->OnChangeData.AddUObject(this, &UWaterBodyComponent::OnWaterSplineMetadataChanged);
+			WaterSplineMetadata->OnChangeMetadata.AddUObject(this, &UWaterBodyComponent::OnWaterSplineMetadataChanged);
 		}
 		else
 		{
-			WaterSplineMetadata->OnChangeData.RemoveAll(this);
+			WaterSplineMetadata->OnChangeMetadata.RemoveAll(this);
 		}
 	}
 }
@@ -1337,14 +1355,19 @@ void UWaterBodyComponent::UpdateAll(const FOnWaterBodyChangedParams& InParams)
 	// #todo_water: this should be reconsidered along with the entire concept of non-dynamic water bodies now that evening is runtime-generated.
 	if (bShapeOrPositionChanged)
 	{
+		UpdateWaterZones();
 		UpdateWaterBodyRenderData();
 	}
 }
 
 void UWaterBodyComponent::UpdateSplineComponent()
 {
-	if (USplineComponent* WaterSpline = GetWaterSpline())
+	if (UWaterSplineComponent* WaterSpline = GetWaterSpline())
 	{
+#if WITH_EDITOR
+		// #todo_water: should we expose this at runtime? Might be necessary for dynamically changing water bodies.
+		WaterSpline->SynchronizeWaterProperties();
+#endif // WITH_EDITOR
 		WaterSpline->SetClosedLoop(IsWaterSplineClosedLoop());
 	}
 }
@@ -1378,6 +1401,7 @@ void UWaterBodyComponent::OnWaterBodyChanged(const FOnWaterBodyChangedParams& In
 	AWaterBody* const WaterBodyActor = GetWaterBodyActor();
 	// Transfer the FOnWaterBodyChangedParams parameters to FWaterBrushActorChangedEventParams :
 	IWaterBrushActorInterface::FWaterBrushActorChangedEventParams Params(WaterBodyActor, InParams.PropertyChangedEvent);
+	Params.bUserTriggered = InParams.bUserTriggered;
 	Params.bShapeOrPositionChanged = InParams.bShapeOrPositionChanged;
 	Params.bWeightmapSettingsChanged = InParams.bWeightmapSettingsChanged;
 	WaterBodyActor->BroadcastWaterBrushActorChangedEvent(Params);
@@ -1710,57 +1734,6 @@ UWaterWavesBase* UWaterBodyComponent::GetWaterWaves() const
 		return OwningWaterBody->GetWaterWaves();
 	}
 	return nullptr;
-}
-
-AWaterZone* UWaterBodyComponent::FindWaterZone() const
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UWaterBodyComponent::FindWaterZone);
-
-	if (!WaterZoneOverride.IsNull())
-	{
-		return WaterZoneOverride.Get();
-	}
-
-	// Score each overlapping water zone and then pick the best.
-	TArray<TPair<int32, AWaterZone*>, TInlineAllocator<4>> ViableZones;
-
-	if (const UWorld* World = GetWorld())
-	{
-		const ULevel* PreferredLevel = GetTypedOuter<ULevel>();
-		if (PreferredLevel)
-		{
-			for (AWaterZone* WaterZone : TActorRange<AWaterZone>(World, AWaterZone::StaticClass(), EActorIteratorFlags::SkipPendingKill))
-			{
-				// WaterZone->GetZoneExtents returns the full extent of the zone but BoxSphereBounds expects a half-extent.
-				const FVector2D WaterZoneLocation = FVector2D(WaterZone->GetActorLocation());
-				const FVector2D WaterZoneHalfExtent = WaterZone->GetZoneExtent() / 2.0;
-				const FBox2D WaterZoneBounds(WaterZoneLocation - WaterZoneHalfExtent, WaterZoneLocation + WaterZoneHalfExtent);
-				const FBox ComponentBounds3d = CalcBounds(GetComponentTransform()).GetBox();
-				const FBox2D ComponentBounds = FBox2D(FVector2D(ComponentBounds3d.Min), FVector2D(ComponentBounds3d.Max));
-
-				// Only consider WaterZones which this component overlaps 
-				// but prefer choosing water zones which are part of the same outered level.
-				if (ComponentBounds.Intersect(WaterZoneBounds))
-				{
-					if (WaterZone->GetTypedOuter<ULevel>() == PreferredLevel)
-					{
-						ViableZones.Add({ WaterZone->GetOverlapPriority(), WaterZone });
-						continue;
-					}
-
-					// Fallback to zones not in the preferred level only as a final resort.
-					ViableZones.Add({ TNumericLimits<int32>::Min(), WaterZone});
-				}
-			}
-		}
-	}
-	
-	if (ViableZones.Num() == 0)
-	{
-		return nullptr;
-	}
-
-	return Algo::MaxElementBy(ViableZones, [](const TPair<int32, AWaterZone*>& A) { return A.Key; })->Value;
 }
 
 static inline FColor PackFlowData(float VelocityMagnitude, float DirectionAngle, float MaxVelocity)

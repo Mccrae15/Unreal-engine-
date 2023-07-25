@@ -7,6 +7,7 @@
 #include "IDetailCustomNodeBuilder.h"
 #include "Input/Reply.h"
 #include "NiagaraComponent.h"
+#include "NiagaraSimCacheCapture.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
 #include "ViewModels/HierarchyEditor/NiagaraHierarchyViewModelBase.h"
 #include "ViewModels/HierarchyEditor/NiagaraUserParametersHierarchyViewModel.h"
@@ -18,6 +19,7 @@ class FNiagaraParameterViewModelCustomDetails;
 class INiagaraParameterViewModel;
 class SNiagaraParameterEditor;
 class FNiagaraParameterViewModelCustomDetails;
+class FNiagaraSimCacheCapture;
 class UNiagaraSystem;
 
 USTRUCT()
@@ -46,9 +48,13 @@ protected:
 
 	FReply OnResetSelectedSystem();
 	FReply OnDebugSelectedSystem();
+	FReply OnCaptureSelectedSystem();
 private:
 	TWeakObjectPtr<UNiagaraComponent> Component;
 	IDetailLayoutBuilder* Builder = nullptr;
+
+	TArray<FNiagaraSimCacheCapture> ComponentCaptures;
+	TArray<UNiagaraSimCache*> CapturedCaches;
 };
 
 class FNiagaraSystemUserParameterDetails : public IDetailCustomization
@@ -143,7 +149,7 @@ public:
 			if(UNiagaraSystem* System = Component->GetAsset())
 			{
 				TSharedPtr<FNiagaraSystemViewModel> SystemViewModel = TNiagaraViewModelManager<UNiagaraSystem, FNiagaraSystemViewModel>::GetExistingViewModelForObject(System);
-				if(SystemViewModel.IsValid())
+				if(SystemViewModel.IsValid() && SystemViewModel->GetUserParametersHierarchyViewModel())
 				{
 					SystemViewModel->GetUserParametersHierarchyViewModel()->OnHierarchyChanged().RemoveAll(this);
 				}
@@ -173,8 +179,16 @@ public:
 		if (System.IsValid() && bDelegatesInitialized)
 		{
 			System->GetExposedParameters().OnStructureChanged().RemoveAll(this);
+
+			if(SystemViewModel.IsValid() && SystemViewModel.Pin()->GetUserParameterPanelViewModel().IsValid())
+			{
+				if (TSharedPtr<FNiagaraUserParameterPanelViewModel> PanelViewModel = SystemViewModel.Pin()->GetUserParameterPanelViewModel())
+				{
+					PanelViewModel->OnRefreshRequested().Unbind();
+				}
+			}
 			
-			if(SystemViewModel.IsValid())
+			if(SystemViewModel.IsValid() && SystemViewModel.Pin()->GetUserParametersHierarchyViewModel())
 			{
 				if (UNiagaraUserParametersHierarchyViewModel* HierarchyViewModel = SystemViewModel.Pin()->GetUserParametersHierarchyViewModel())
 				{
@@ -192,15 +206,18 @@ public:
 	/** We want to add rename & delete actions within a system asset */
 	virtual void AddCustomMenuActionsForParameter(FDetailWidgetRow& WidgetRow, FNiagaraVariable UserParameter) override;
 
-	TSharedRef<SWidget> GetAddParameterButton();
+	TSharedRef<SWidget> GetAdditionalHeaderWidgets();
 private:
 	TSharedRef<SWidget> GetAddParameterMenu();
 	void AddParameter(FNiagaraVariable NewParameter) const;
-	bool CanMakeNewParameterOfType(const FNiagaraTypeDefinition& InType) const;
-
+	bool OnAllowMakeType(const FNiagaraTypeDefinition& InType) const;
+	
 	void ParameterValueChanged();
 
+	FReply SummonHierarchyEditor();
 	void DeleteParameter(FNiagaraVariable UserParameter) const;
+	void SelectAllSection();
+	void OnParameterAdded(FNiagaraVariable UserParameter);
 	void RequestRename(FNiagaraVariable UserParameter);
 	void RenameParameter(FNiagaraVariable UserParameter, FName NewName);
 
@@ -210,7 +227,7 @@ private:
 	TWeakPtr<FNiagaraSystemViewModel> SystemViewModel;
 	TOptional<FNiagaraVariable> SelectedParameter;
 	TMap<FNiagaraVariable, TSharedPtr<class SNiagaraParameterNameTextBlock>> UserParamToWidgetMap;
-	TSharedPtr<SWidget> AddParameterButtonContainer;
+	TSharedPtr<SWidget> AdditionalHeaderWidgetsContainer;
 	TSharedPtr<class SComboButton> AddParameterButton;
 	TSharedPtr<class SNiagaraAddParameterFromPanelMenu> AddParameterMenu;
 };

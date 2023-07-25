@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ISequencerPlaylistsModule.h"
 #include "SequencerPlaylistItem.h"
 #include "Templates/SubclassOf.h"
 #include "Templates/UniquePtr.h"
@@ -35,43 +36,54 @@ public:
 	void BeginDestroy() override;
 	//~ End UObject interface
 
-	UFUNCTION(BlueprintCallable, Category="SequencerPlaylists")
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
 	void SetPlaylist(USequencerPlaylist* InPlaylist);
 
-	UFUNCTION(BlueprintPure, Category="SequencerPlaylists")
+	UFUNCTION(BlueprintPure, Category="Sequencer Playlists")
 	USequencerPlaylist* GetPlaylist() { return Playlist; }
 
 	UE_DEPRECATED(5.1, "There is no longer a \"default\" player. Open a specific Playlist asset to create a player associated with it.")
 	UFUNCTION(BlueprintPure, meta=(DeprecatedFunction, DeprecationMessage= "There is no longer a \"default\" player. Open a specific Playlist asset to create a player associated with it.", DisplayName="Get Default Sequencer Playlist Player"), Category="SequencerPlaylists")
 	static USequencerPlaylistPlayer* GetDefaultPlayer() { return nullptr; }
 
-	UPROPERTY(BlueprintAssignable, Category="SequencerPlaylists")
+	UPROPERTY(BlueprintAssignable, Category="Sequencer Playlists")
 	FOnPlayerSequencerPlaylistSet OnPlaylistSet;
 
 public:
-	UFUNCTION(BlueprintCallable, Category="SequencerPlaylists")
-	bool PlayItem(USequencerPlaylistItem* Item);
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
+	bool PlayItem(USequencerPlaylistItem* Item,
+	              ESequencerPlaylistPlaybackDirection Direction = ESequencerPlaylistPlaybackDirection::Forward);
 
-	UFUNCTION(BlueprintCallable, Category="SequencerPlaylists")
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
+	bool PauseItem(USequencerPlaylistItem* Item);
+
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
 	bool StopItem(USequencerPlaylistItem* Item);
 
-	UFUNCTION(BlueprintCallable, Category="SequencerPlaylists")
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
 	bool ResetItem(USequencerPlaylistItem* Item);
 
-	UFUNCTION(BlueprintPure, Category="SequencerPlaylists")
+	UE_DEPRECATED(5.2, "Call GetPlaybackState and use the bIsPlaying flag in FSequencerPlaylistPlaybackState instead.")
+	UFUNCTION(BlueprintPure, Category="Sequencer Playlists")
 	bool IsPlaying(USequencerPlaylistItem* Item);
 
-	UFUNCTION(BlueprintCallable, Category="SequencerPlaylists")
-	bool PlayAll();
+	UFUNCTION(BlueprintPure, Category="Sequencer Playlists")
+	FSequencerPlaylistPlaybackState GetPlaybackState(USequencerPlaylistItem* Item);
 
-	UFUNCTION(BlueprintCallable, Category="SequencerPlaylists")
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
+	bool PlayAll(ESequencerPlaylistPlaybackDirection Direction = ESequencerPlaylistPlaybackDirection::Forward);
+
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
+	bool PauseAll();
+
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
 	bool StopAll();
 
-	UFUNCTION(BlueprintCallable, Category="SequencerPlaylists")
+	UFUNCTION(BlueprintCallable, Category="Sequencer Playlists")
 	bool ResetAll();
 
 private:
-	TSharedPtr<ISequencer> GetSequencer();
+	TSharedPtr<ISequencer> GetOrCreateSequencer();
 
 	/**
 	 * Enters unbounded play (like Take Recorder) if the user is not recording.
@@ -82,9 +94,6 @@ private:
 	 * Ticked by a tickable game object to perform any necessary time-sliced logic
 	 */
 	void Tick(float DeltaTime);
-
-	/** Centralizes additional common assumptions that are convenient for downstream code to make. */
-	TSharedPtr<ISequencer> GetValidatedSequencer();
 
 	void OnTakeRecorderInitialized(UTakeRecorder* InRecorder);
 	void OnTakeRecorderStarted(UTakeRecorder* InRecorder);

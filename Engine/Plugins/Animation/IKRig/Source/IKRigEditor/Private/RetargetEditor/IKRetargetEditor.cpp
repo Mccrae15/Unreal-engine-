@@ -53,9 +53,6 @@ void FIKRetargetEditor::InitAssetEditor(
 	
 	FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
 	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InAsset, PersonaToolkitArgs);
-	
-	TSharedRef<IAssetFamily> AssetFamily = PersonaModule.CreatePersonaAssetFamily(InAsset);
-	AssetFamily->RecordAssetOpened(FAssetData(InAsset));
 
 	const bool bCreateDefaultStandaloneMenu = true;
 	const bool bCreateDefaultToolbar = true;
@@ -91,6 +88,13 @@ void FIKRetargetEditor::InitAssetEditor(
 
 	ExtendToolbar();
 	RegenerateMenusAndToolbars();
+	
+	// initial setup, ignored if IK Rig is already assigned
+	EditorController->PromptUserToAssignIKRig(ERetargetSourceOrTarget::Source);
+	EditorController->PromptUserToAssignIKRig(ERetargetSourceOrTarget::Target);
+
+	// run retarget by default
+	EditorController->SetRetargeterMode(ERetargeterOutputMode::RunRetarget);
 }
 
 void FIKRetargetEditor::OnClose()
@@ -272,12 +276,14 @@ TStatId FIKRetargetEditor::GetStatId() const
 
 void FIKRetargetEditor::PostUndo(bool bSuccess)
 {
-	EditorController->HandleRetargeterNeedsInitialized(EditorController->AssetController->GetAsset());
+	EditorController->HandlePreviewMeshReplaced(ERetargetSourceOrTarget::Source);
+	EditorController->HandleRetargeterNeedsInitialized();
 }
 
 void FIKRetargetEditor::PostRedo(bool bSuccess)
 {
-	EditorController->HandleRetargeterNeedsInitialized(EditorController->AssetController->GetAsset());
+	EditorController->HandlePreviewMeshReplaced(ERetargetSourceOrTarget::Source);
+	EditorController->HandleRetargeterNeedsInitialized();
 }
 
 void FIKRetargetEditor::HandleViewportCreated(const TSharedRef<class IPersonaViewport>& InViewport)
@@ -335,7 +341,7 @@ void FIKRetargetEditor::HandleViewportCreated(const TSharedRef<class IPersonaVie
 }
 
 void FIKRetargetEditor::HandlePreviewSceneCreated(const TSharedRef<IPersonaPreviewScene>& InPersonaPreviewScene)
-{
+{	
 	AAnimationEditorPreviewActor* Actor = InPersonaPreviewScene->GetWorld()->SpawnActor<AAnimationEditorPreviewActor>(AAnimationEditorPreviewActor::StaticClass(), FTransform::Identity);
 	Actor->SetFlags(RF_Transient);
 	InPersonaPreviewScene->SetActor(Actor);
@@ -371,7 +377,7 @@ void FIKRetargetEditor::HandlePreviewSceneCreated(const TSharedRef<IPersonaPrevi
 	
 	InPersonaPreviewScene->AddComponent(EditorController->SourceSkelMeshComponent, FTransform::Identity);
 	InPersonaPreviewScene->AddComponent(EditorController->TargetSkelMeshComponent, FTransform::Identity);
-
+	
 	EditorController->FixZeroHeightRetargetRoot(ERetargetSourceOrTarget::Source);
 	EditorController->FixZeroHeightRetargetRoot(ERetargetSourceOrTarget::Target);
 }
@@ -409,7 +415,7 @@ void FIKRetargetEditor::HandleDetailsCreated(const TSharedRef<class IDetailsView
 
 void FIKRetargetEditor::OnFinishedChangingDetails(const FPropertyChangedEvent& PropertyChangedEvent)
 {
-	const UIKRetargeterController* AssetController = EditorController->AssetController;
+	UIKRetargeterController* AssetController = EditorController->AssetController;
 
 	// determine which properties were modified
 	const bool bSourceIKRigChanged = PropertyChangedEvent.GetPropertyName() == UIKRetargeter::GetSourceIKRigPropertyName();
@@ -420,51 +426,28 @@ void FIKRetargetEditor::OnFinishedChangingDetails(const FPropertyChangedEvent& P
 	// if no override target mesh has been specified, update the override to reflect the mesh in the ik rig asset
 	if (bTargetIKRigChanged)
 	{
-		AssetController->OnIKRigChanged(ERetargetSourceOrTarget::Target);
+		UIKRigDefinition* NewIKRig = AssetController->GetIKRigWriteable(ERetargetSourceOrTarget::Target);
+		AssetController->SetIKRig(ERetargetSourceOrTarget::Target, NewIKRig);
 	}
 
 	// if no override source mesh has been specified, update the override to reflect the mesh in the ik rig asset
 	if (bSourceIKRigChanged)
 	{
-		AssetController->OnIKRigChanged(ERetargetSourceOrTarget::Source);
-	}
-
-	// if either IK Rig asset has been modified, rebind and refresh UI
-	if (bTargetIKRigChanged || bSourceIKRigChanged)
-	{
-		EditorController->ClearOutputLog();
-		EditorController->BindToIKRigAssets(AssetController->GetAsset());
-		EditorController->AssetController->CleanChainMapping();
-		EditorController->AssetController->AutoMapChains();
+		UIKRigDefinition* NewIKRig = AssetController->GetIKRigWriteable(ERetargetSourceOrTarget::Source);
+		AssetController->SetIKRig(ERetargetSourceOrTarget::Source, NewIKRig);
 	}
 
 	// if either the source or target meshes are possibly modified, update scene components, anim instance and UI
-	if (bTargetIKRigChanged || bSourceIKRigChanged || bTargetPreviewChanged || bSourcePreviewChanged)
+	if (bSourcePreviewChanged)
 	{
-		EditorController->ClearOutputLog();
-		
-		// set the source and target skeletal meshes on the component
-		// NOTE: this must be done AFTER setting the AnimInstance so that the correct root anim node is loaded
-		USkeletalMesh* SourceMesh = EditorController->GetSkeletalMesh(ERetargetSourceOrTarget::Source);
-		USkeletalMesh* TargetMesh = EditorController->GetSkeletalMesh(ERetargetSourceOrTarget::Target);
-		EditorController->SourceSkelMeshComponent->SetSkeletalMesh(SourceMesh);
-		EditorController->TargetSkelMeshComponent->SetSkeletalMesh(TargetMesh);
-
-		// reset bone selections in case of incompatible indices
-		EditorController->ClearSelection();
+		USkeletalMesh* Mesh = AssetController->GetPreviewMesh(ERetargetSourceOrTarget::Source);
+		AssetController->SetPreviewMesh(ERetargetSourceOrTarget::Source, Mesh);
+	}
 	
-		// apply mesh to the preview scene
-		TSharedRef<IPersonaPreviewScene> PreviewScene = GetPersonaToolkit()->GetPreviewScene();
-		if (PreviewScene->GetPreviewMesh() != SourceMesh)
-		{
-			PreviewScene->SetPreviewMeshComponent(EditorController->SourceSkelMeshComponent);
-			PreviewScene->SetPreviewMesh(SourceMesh);
-			EditorController->SourceSkelMeshComponent->bCanHighlightSelectedSections = false;
-		}
-	
-		SetupAnimInstance();
-
-		AssetController->BroadcastNeedsReinitialized();
+	if (bTargetPreviewChanged)
+	{
+		USkeletalMesh* Mesh = AssetController->GetPreviewMesh(ERetargetSourceOrTarget::Target);
+		AssetController->SetPreviewMesh(ERetargetSourceOrTarget::Target, Mesh);
 	}
 }
 

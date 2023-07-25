@@ -6,6 +6,8 @@
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/Package.h"
 #include "RigVMModule.h"
+#include "UObject/CoreRedirects.h"
+#include "RigVMTypeUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMMemoryDeprecated)
 
@@ -464,7 +466,7 @@ public:
 	{
 	}
 
-	FORCEINLINE_DEBUGGABLE void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
+	void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
 	{
 #if WITH_EDITOR
 		UE_LOG(LogRigVM, Display, TEXT("Skipping Importing To MemoryContainer: %s"), V);
@@ -595,7 +597,18 @@ void FRigVMMemoryContainer::Load(FArchive& Ar)
 
 	for (const FString& ScriptStructPath : ScriptStructPaths)
 	{
-		UScriptStruct* ScriptStruct = FindObject<UScriptStruct>(nullptr, *ScriptStructPath);
+		UScriptStruct* ScriptStruct = RigVMTypeUtils::FindObjectFromCPPTypeObjectPath<UScriptStruct>(*ScriptStructPath);
+
+		// try to find a redirect
+		if (ScriptStruct == nullptr)
+		{
+			const FCoreRedirectObjectName OldObjectName(ScriptStructPath);
+			const FCoreRedirectObjectName NewObjectName = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Struct, OldObjectName);
+			if (OldObjectName != NewObjectName)
+			{
+				ScriptStruct = FindObject<UScriptStruct>(nullptr, *NewObjectName.ToString());
+			}
+		}
 
 		// this might have happened if a given script struct no longer 
 		// exists or cannot be loaded.

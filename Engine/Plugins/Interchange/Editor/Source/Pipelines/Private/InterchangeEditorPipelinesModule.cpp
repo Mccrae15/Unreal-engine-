@@ -2,17 +2,14 @@
 
 #include "InterchangeEditorPipelinesModule.h"
 
-#include "AssetToolsModule.h"
-#include "CoreMinimal.h"
-#include "Engine/Engine.h"
 #include "InterchangeEditorPipelineDetails.h"
 #include "InterchangeEditorPipelineStyle.h"
+#include "InterchangeGenericMaterialPipeline.h"
 #include "InterchangeManager.h"
+#include "InterchangeMaterialXPipelineSettingsCustomization.h"
 #include "InterchangePipelineBase.h"
 #include "InterchangePipelineFactories.h"
-#include "InterchangePythonPipelineBase.h"
 #include "Misc/CoreDelegates.h"
-#include "Modules/ModuleManager.h"
 #include "Nodes/InterchangeBaseNode.h"
 #include "PropertyEditorModule.h"
 
@@ -41,6 +38,7 @@ private:
 	TSharedPtr<ISlateStyle> InterchangeEditorPipelineStyle = nullptr;
 
 	TMultiMap<FName, FName> RegisteredPropertySections;
+	TArray<FName> PropertiesTypesToUnregisterOnShutdown;
 };
 
 IMPLEMENT_MODULE(FInterchangeEditorPipelinesModule, InterchangeEditorPipelines)
@@ -51,9 +49,7 @@ void FInterchangeEditorPipelinesModule::StartupModule()
 }
 
 void FInterchangeEditorPipelinesModule::ShutdownModule()
-{
-	ReleaseResources();
-}
+{}
 
 void FInterchangeEditorPipelinesModule::AcquireResources()
 {
@@ -83,6 +79,8 @@ void FInterchangeEditorPipelinesModule::AcquireResources()
 	ClassesToUnregisterOnShutdown.Add(UInterchangePipelineBase::StaticClass()->GetFName());
 	PropertyEditorModule.RegisterCustomClassLayout(ClassesToUnregisterOnShutdown.Last(), FOnGetDetailCustomizationInstance::CreateStatic(&FInterchangePipelineBaseDetailsCustomization::MakeInstance));
 
+	PropertiesTypesToUnregisterOnShutdown.Add(FMaterialXPipelineSettings::StaticStruct()->GetFName());
+	PropertyEditorModule.RegisterCustomPropertyTypeLayout(PropertiesTypesToUnregisterOnShutdown.Last(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FInterchangeMaterialXPipelineSettingsCustomization::MakeInstance));
 
 	if (!InterchangeEditorPipelineStyle.IsValid())
 	{
@@ -118,8 +116,14 @@ void FInterchangeEditorPipelinesModule::ReleaseResources()
 		{
 			PropertyEditorModule->UnregisterCustomClassLayout(ClassName);
 		}
+
+		for (FName PropertyName : PropertiesTypesToUnregisterOnShutdown)
+		{
+			PropertyEditorModule->UnregisterCustomPropertyTypeLayout(PropertyName);
+		}
 	}
 	ClassesToUnregisterOnShutdown.Empty();
+	PropertiesTypesToUnregisterOnShutdown.Empty();
 
 	UnregisterPropertySectionMappings();
 

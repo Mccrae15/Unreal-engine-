@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "Drawing/ControlRigDrawInterface.h"
 #include "Units/Highlevel/RigUnit_HighlevelBase.h"
 #include "RigUnit_SphericalPoseReader.generated.h"
 
@@ -93,7 +92,7 @@ struct CONTROLRIG_API FSphericalPoseReaderDebugSettings
 	
 	void DrawDebug(
 		const FTransform WorldOffset,
-		FControlRigDrawInterface* DrawInterface,
+		FRigVMDrawInterface* DrawInterface,
 		const FSphericalRegion& InnerRegion,
 		const FSphericalRegion& OuterRegion,
 		const FVector DriverNormal,
@@ -299,7 +298,7 @@ struct CONTROLRIG_API FRigUnit_SphericalPoseReader: public FRigUnit_HighlevelBas
 	}
 	
 	RIGVM_METHOD()
-    virtual void Execute(const FRigUnitContext& Context) override;
+    virtual void Execute() override;
 
 	static void RemapAndConvertInputs(
 		FSphericalRegion& InnerRegion,

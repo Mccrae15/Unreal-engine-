@@ -2,26 +2,26 @@
 
 #pragma once
 
+#include "Async/AsyncWork.h"
 #include "CoreMinimal.h"
 
+#include <atomic>
+#include "ISourceControlProvider.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/TextFilter.h"
+#include "SSourceControlCommon.h"
+#include "Stats/Stats.h"
+#include "UObject/ObjectSaveContext.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STreeView.h"
 
-#include "ISourceControlProvider.h"
-#include "SSourceControlCommon.h"
-#include "Misc/TextFilter.h"
-
 class FChangelistGroupTreeItem;
+class SExpandableArea;
 class SExpandableChangelistArea;
+class SWidgetSwitcher;
 class SSearchBox;
 class USourceControlSettings;
-
-class SChangelistTree : public STreeView<FChangelistTreeItemPtr>
-{
-private:
-	virtual void Private_SetItemSelection(FChangelistTreeItemPtr TheItem, bool bShouldBeSelected, bool bWasUserDirected = false) override;
-};
-
 
 /**
  * Displays the user source control change lists.
@@ -34,46 +34,68 @@ public:
 
 	/** Constructs the widget */
 	void Construct(const FArguments& InArgs);
+	virtual ~SSourceControlChangelistsWidget();
 
 	/** Set selected files */
 	void SetSelectedFiles(const TArray<FString>& Filenames);
 
 private:
-	// Holds the list/state of selected and expanded items in the changelist views and file views.
-	struct FExpandedAndSelectionStates
+	enum class ERefreshFlags
 	{
-		TSharedPtr<IChangelistTreeItem> SelectedChangelistNode;
-		TSharedPtr<IChangelistTreeItem> SelectedUncontrolledChangelistNode;
-		TArray<TSharedPtr<IChangelistTreeItem>> SelectedFileNodes;
-		TSet<TSharedPtr<IChangelistTreeItem>> ExpandedTreeNodes;
-		bool bShelvedFilesNodeSelected = false;
+		SourceControlChangelists = 1 << 0,
+		UnsavedAssets            = 1 << 1,
+		UncontrolledChangelists  = 1 << 2,
+		All = SourceControlChangelists | UnsavedAssets | UncontrolledChangelists,
+	};
+	FRIEND_ENUM_CLASS_FLAGS(ERefreshFlags)
+
+	/** Queries files timestamp asynchronously. */
+	class FAsyncTimestampUpdater
+	{
+	public:
+		void DoWork();
+		bool CanAbandon() { return true; }
+		void Abandon() { bAbandon = true; }
+		TStatId GetStatId() const { return TStatId(); }
+		static const TCHAR* Name() { return TEXT("SourceControlChangelistsTimestampUpdater"); }
+	public:
+		std::atomic<bool> bAbandon;
+		TSet<FString> RequestedFileTimestamps;
+		TMap<FString, FDateTime> QueriedFileTimestamps;
 	};
 
 private:
-	TSharedRef<SChangelistTree> CreateChangelistTreeView(TArray<TSharedPtr<IChangelistTreeItem>>& ItemSources);
-	TSharedRef<STreeView<FChangelistTreeItemPtr>> CreateChangelistFilesView();
+	TSharedRef<SWidget> MakeToolBar();
+	TSharedRef<STreeView<FChangelistTreeItemPtr>> CreateChangelistTreeView(TArray<TSharedPtr<IChangelistTreeItem>>& ItemSources);
+	TSharedRef<SListView<FChangelistTreeItemPtr>> CreateChangelistFilesView();
+	TSharedRef<SListView<FChangelistTreeItemPtr>> CreateUnsavedAssetsFilesView();
 
 	TSharedRef<ITableRow> OnGenerateRow(FChangelistTreeItemPtr InTreeItem, const TSharedRef<STableViewBase>& OwnerTable);
-	void OnGetFileChildren(FChangelistTreeItemPtr InParent, TArray<FChangelistTreeItemPtr>& OutChildren);
 	void OnGetChangelistChildren(FChangelistTreeItemPtr InParent, TArray<FChangelistTreeItemPtr>& OutChildren);
 	void OnFileViewHiddenColumnsListChanged();
 
 	EColumnSortPriority::Type GetColumnSortPriority(const FName ColumnId) const;
 	EColumnSortMode::Type GetColumnSortMode(const FName ColumnId) const;
 	void OnColumnSortModeChanged(const EColumnSortPriority::Type SortPriority, const FName& ColumnId, const EColumnSortMode::Type InSortMode);
+	bool IsFileViewSortedByFileStatusIcon() const;
+	bool IsFileViewSortedByLastModifiedTimestamp() const;
 	void SortFileView();
 
 	void OnChangelistSearchTextChanged(const FText& InFilterText);
 	void OnUncontrolledChangelistSearchTextChanged(const FText& InFilterText);
 	void OnFileSearchTextChanged(const FText& InFilterText);
 	void PopulateItemSearchStrings(const IChangelistTreeItem& Item, TArray<FString>& OutStrings);
+	void OnUnsavedAssetChanged(const FString& Filepath);
 
 	FReply OnFilesDragged(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent);
 
 	void RequestChangelistsRefresh();
 	void RequestFileStatusRefresh(const IChangelistTreeItem& Changelist);
-	void RequestFileStatusRefresh(const TSet<FString>& Pathnames);
-	void OnRefresh();
+	void RequestFileStatusRefresh(TSet<FString>&& Pathnames);
+	void OnRefreshUI(ERefreshFlags RefreshFlags);
+	void OnRefreshUnsavedAssetsWidgets(int64 CurrUpdateNum, const TFunction<void(TSharedPtr<IFileViewTreeItem>&)>& AddItemToFileView);
+	void OnRefreshSourceControlWidgets(int64 CurreUpdateNum, const TFunction<void(TSharedPtr<IFileViewTreeItem>&)>& AddItemToFileView);
+	void OnRefreshUncontrolledChangelistWidgets(int64 CurreUpdateNum, const TFunction<void(TSharedPtr<IFileViewTreeItem>&)>& AddItemToFileView);
 	void ClearChangelistsTree();
 
 	TSharedPtr<SWidget> OnOpenContextMenu();
@@ -88,6 +110,11 @@ private:
 
 	/** Returns list of currently selected files */
 	TArray<FString> GetSelectedFiles();
+	bool HasFilesSelected() const;
+
+	/** Returns list of currently selected shelved files */
+	TArray<FString> GetSelectedShelvedFiles();
+	bool HasShelvedFilesSelected() const;
 
 	/**
 	 * Splits selected files between Controlled and Uncontrolled files.
@@ -102,9 +129,6 @@ private:
 	 * @param 	OutUncontrolledFileStates	Selected uncontrolled file states will be added to this array.
 	 */
 	void GetSelectedFileStates(TArray<FSourceControlStateRef>& OutControlledFileStates, TArray<FSourceControlStateRef>& OutUncontrolledFileStates);
-
-	/** Returns list of currently selected shelved files */
-	TArray<FString> GetSelectedShelvedFiles();
 
 	/** Intercept Enter and Delete key presses to Submit or Delete the selected changelist (if conditions are met) */
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
@@ -149,6 +173,9 @@ private:
 	void OnDiffAgainstWorkspace();
 	bool CanDiffAgainstWorkspace();
 
+	/** Uncontrolled changelist module callback. */
+	void OnUncontrolledChangelistStateChanged();
+
 	/** Source control callbacks */
 	void OnSourceControlProviderChanged(ISourceControlProvider& OldProvider, ISourceControlProvider& NewProvider);
 	void OnSourceControlStateChanged();
@@ -168,38 +195,49 @@ private:
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
-	void SaveExpandedAndSelectionStates(FExpandedAndSelectionStates& OutStates);
-	void RestoreExpandedAndSelectionStates(const FExpandedAndSelectionStates& InStates);
-
-	TSharedRef<SWidget> MakeToolBar();
-	
 	/** Executes an operation to updates the changelist description of the provided changelist with a new description. */
 	void EditChangelistDescription(const FText& InNewChangelistDescription, const FSourceControlChangelistStatePtr& InChangelistState);
 
+	/** Invoked when a package is saved, to refresh the last saved timestamp. */
+	void OnPackageSaved(const FString& PackageFilename, UPackage* Package, FObjectPostSaveContext ObjectSaveContext);
+
 private:
+	TSharedPtr<SExpandableChangelistArea> UnsavedAssetsExpandableArea;
+	TSharedPtr<STreeView<FChangelistTreeItemPtr>> UnsavedAssetsTreeView;
+	TArray<TSharedPtr<IChangelistTreeItem>> UnsavedAssetsTreeNode;
+	
 	TSharedPtr<SExpandableChangelistArea> ChangelistExpandableArea;
-	TSharedPtr<SExpandableChangelistArea> UncontrolledChangelistExpandableArea;
-
-	/** Hold the nodes displayed by the changelist tree. */
+	TSharedPtr<STreeView<FChangelistTreeItemPtr>> ChangelistTreeView;
 	TArray<TSharedPtr<IChangelistTreeItem>> ChangelistTreeNodes;
+
+	TSharedPtr<SExpandableChangelistArea> UncontrolledChangelistExpandableArea;
+	TSharedPtr<STreeView<FChangelistTreeItemPtr>> UncontrolledChangelistTreeView;
 	TArray<TSharedPtr<IChangelistTreeItem>> UncontrolledChangelistTreeNodes;
-
-	/** Hold the nodes displayed by the file tree. */
-	TArray<TSharedPtr<IChangelistTreeItem>> FileTreeNodes;
-
-	/** Display the changelists, uncontrolled changelists and shelved nodes. */
-	TSharedPtr<SChangelistTree> ChangelistTreeView;
-	TSharedPtr<SChangelistTree> UncontrolledChangelistTreeView;
-
-	/** Display the list of files associated to the selected changelist, uncontrolled changelist or shelved node. */
-	TSharedPtr<STreeView<FChangelistTreeItemPtr>> FileTreeView;
+	
+	TSharedPtr<SListView<FChangelistTreeItemPtr>> FileListView;
+	TArray<TSharedPtr<IChangelistTreeItem>> FileListNodes;
 	TArray<FName> FileViewHiddenColumnsList;
+
+	TSharedPtr<SListView<FChangelistTreeItemPtr>> UnsavedAssetsFileListView;
+	TSharedPtr<SWidgetSwitcher> FileListViewSwitcher;
+	
+	SListView<FChangelistTreeItemPtr>& GetActiveFileListView() const;
+
+	TMap<TSharedPtr<void>, TSharedPtr<IChangelistTreeItem>> SourceControlItemCache;
+	TMap<TSharedPtr<void>, TSharedPtr<IChangelistTreeItem>> UncontrolledChangelistItemCache;
+	TMap<FString, TSharedPtr<IFileViewTreeItem>> OfflineFileItemCache;
+
+	TUniquePtr<FAsyncTask<FAsyncTimestampUpdater>> TimestampUpdateTask;
+	TSet<FString> OutdatedTimestampFiles;
 
 	/** Source control state changed delegate handle */
 	FDelegateHandle SourceControlStateChangedDelegateHandle;
 
+	int64 UpdateRequestNum = 0;
+	bool bInitialRefreshDone = false;
 	bool bShouldRefresh = false;
 	bool bSourceControlAvailable = false;
+	bool bUpdateMonitoredFileStatusList = false;
 
 	/** Files to select after refresh */
 	TArray<FString> FilesToSelect;

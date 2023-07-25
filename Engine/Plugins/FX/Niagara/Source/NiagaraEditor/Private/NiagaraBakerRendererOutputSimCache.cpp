@@ -3,6 +3,7 @@
 #include "NiagaraBakerRendererOutputSimCache.h"
 #include "NiagaraBakerOutputSimCache.h"
 
+#include "NiagaraBakerSettings.h"
 #include "NiagaraComponent.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraSimCacheFactoryNew.h"
@@ -45,7 +46,7 @@ void FNiagaraBakerRendererOutputSimCache::RenderGenerated(UNiagaraBakerOutput* I
 	BakerRenderer.RenderSimCache(RenderTarget, SimCache);
 }
 
-bool FNiagaraBakerRendererOutputSimCache::BeginBake(UNiagaraBakerOutput* InBakerOutput)
+bool FNiagaraBakerRendererOutputSimCache::BeginBake(FNiagaraBakerFeedbackContext& FeedbackContext, UNiagaraBakerOutput* InBakerOutput)
 {
 	UNiagaraBakerOutputSimCache* BakerOutput = CastChecked<UNiagaraBakerOutputSimCache>(InBakerOutput);
 	UNiagaraBakerSettings* BakerSettings = BakerOutput->GetTypedOuter<UNiagaraBakerSettings>();
@@ -63,7 +64,7 @@ bool FNiagaraBakerRendererOutputSimCache::BeginBake(UNiagaraBakerOutput* InBaker
 	return true;
 }
 
-void FNiagaraBakerRendererOutputSimCache::BakeFrame(UNiagaraBakerOutput* InBakerOutput, int FrameIndex, const FNiagaraBakerRenderer& BakerRenderer)
+void FNiagaraBakerRendererOutputSimCache::BakeFrame(FNiagaraBakerFeedbackContext& FeedbackContext, UNiagaraBakerOutput* InBakerOutput, int FrameIndex, const FNiagaraBakerRenderer& BakerRenderer)
 {
 	UNiagaraBakerOutputSimCache* BakerOutput = CastChecked<UNiagaraBakerOutputSimCache>(InBakerOutput);
 	if (BakeSimCache == nullptr)
@@ -71,14 +72,18 @@ void FNiagaraBakerRendererOutputSimCache::BakeFrame(UNiagaraBakerOutput* InBaker
 		return;
 	}
 
+	FNiagaraSimCacheFeedbackContext SimCacheFeedbackContext(false);
 	if ( FrameIndex == 0 )
 	{
-		BakeSimCache->BeginWrite(BakerOutput->CreateParameters, BakerRenderer.GetPreviewComponent());
+		BakeSimCache->BeginWrite(BakerOutput->CreateParameters, BakerRenderer.GetPreviewComponent(), SimCacheFeedbackContext);
 	}
-	BakeSimCache->WriteFrame(BakerRenderer.GetPreviewComponent());
+	BakeSimCache->WriteFrame(BakerRenderer.GetPreviewComponent(), SimCacheFeedbackContext);
+
+	FeedbackContext.Errors.Append(SimCacheFeedbackContext.Errors);
+	FeedbackContext.Warnings.Append(SimCacheFeedbackContext.Warnings);
 }
 
-void FNiagaraBakerRendererOutputSimCache::EndBake(UNiagaraBakerOutput* InBakerOutput)
+void FNiagaraBakerRendererOutputSimCache::EndBake(FNiagaraBakerFeedbackContext& FeedbackContext, UNiagaraBakerOutput* InBakerOutput)
 {
 	UNiagaraBakerOutputSimCache* BakerOutput = CastChecked<UNiagaraBakerOutputSimCache>(InBakerOutput);
 	if (BakeSimCache == nullptr)

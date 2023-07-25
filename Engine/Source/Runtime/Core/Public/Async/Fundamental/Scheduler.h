@@ -57,10 +57,10 @@ namespace LowLevelTasks
 #if DO_CHECK
 				int64 LastRevision = int64(LocalTop.Revision); 
 #endif
-				NodeType* Item = reinterpret_cast<NodeType*>(LocalTop.Address << 3);																 //acquire on failure because we read Item->Next next itteration
-				if (Top.compare_exchange_weak(LocalTop, FTopNode { reinterpret_cast<uintptr_t>(Item->Next) >> 3, uintptr_t(LocalTop.Revision + 1) }, std::memory_order_relaxed, std::memory_order_acquire)) 
+				NodeType* Item = reinterpret_cast<NodeType*>(LocalTop.Address << 3);
+				if (Top.compare_exchange_weak(LocalTop, FTopNode { reinterpret_cast<uintptr_t>(Item->Next.load(std::memory_order_relaxed)) >> 3, uintptr_t(LocalTop.Revision + 1) }, std::memory_order_acq_rel))
 				{
-					Item->Next = nullptr;
+					Item->Next.store(nullptr, std::memory_order_relaxed);
 					return Item;
 				}
 #if DO_CHECK
@@ -77,7 +77,7 @@ namespace LowLevelTasks
 			checkSlow(reinterpret_cast<uintptr_t>(Item) < (1ull << 48));
 			checkSlow((reinterpret_cast<uintptr_t>(Item) & 0x7) == 0);
 #endif
-			checkSlow(Item->Next == nullptr);
+			checkSlow(Item->Next.load(std::memory_order_relaxed) == nullptr);
 
 			FTopNode LocalTop = Top.load(std::memory_order_relaxed);
 			while (true) 
@@ -85,8 +85,8 @@ namespace LowLevelTasks
 #if DO_CHECK
 				int64 LastRevision = int64(LocalTop.Revision); 
 #endif
-				Item->Next = reinterpret_cast<NodeType*>(LocalTop.Address << 3);
-				if (Top.compare_exchange_weak(LocalTop, FTopNode { reinterpret_cast<uintptr_t>(Item) >> 3, uintptr_t(LocalTop.Revision + 1) }, std::memory_order_release, std::memory_order_acquire))  
+				Item->Next.store(reinterpret_cast<NodeType*>(LocalTop.Address << 3), std::memory_order_relaxed);
+				if (Top.compare_exchange_weak(LocalTop, FTopNode { reinterpret_cast<uintptr_t>(Item) >> 3, uintptr_t(LocalTop.Revision + 1) }, std::memory_order_acq_rel))
 				{
 					return;
 				}
@@ -143,15 +143,6 @@ namespace LowLevelTasks
 		// using 16 bytes here because it fits the vtable and one additional pointer
 		using FConditional = TTaskDelegate<bool(), 16>;
 
-	private: 
-		//the FLocalQueueInstaller installs a LocalQueue into the current thread
-		struct FLocalQueueInstaller
-		{
-			bool RegisteredLocalQueue = false;
-			CORE_API FLocalQueueInstaller(FScheduler& Scheduler);
-			CORE_API ~FLocalQueueInstaller();
-		};
-
 	public: // Public Interface of the Scheduler
 		FORCEINLINE_DEBUGGABLE static FScheduler& Get();
 
@@ -182,9 +173,6 @@ namespace LowLevelTasks
 		//number of instantiated workers
 		inline uint32 GetNumWorkers() const;
 
-		//get the Queue registry to register additonal WorkerQueues for this Scheduler
-		inline FSchedulerTls::FQueueRegistry& GetQueueRegistry();
-
 		//get the worker priority set when workers were started
 		inline EThreadPriority GetWorkerPriority() const { return WorkerPriority; }
 
@@ -203,8 +191,8 @@ namespace LowLevelTasks
 		FORCENOINLINE bool TrySleeping(FSleepEvent* WorkerEvent, bool bStopOutOfWorkScope, bool Drowsing, bool bBackgroundWorker);
 		inline bool WakeUpWorker(bool bBackgroundWorker);
 
-		template<FTask* (FSchedulerTls::FLocalQueueType::*DequeueFunction)(bool, bool), bool bIsBusyWaiting>
-		bool TryExecuteTaskFrom(FSchedulerTls::FLocalQueueType* Queue, FSchedulerTls::FQueueRegistry::FOutOfWork& OutOfWork, bool bPermitBackgroundWork, bool bDisableThrottleStealing);
+		template<typename QueueType, FTask* (QueueType::*DequeueFunction)(bool, bool), bool bIsBusyWaiting>
+		bool TryExecuteTaskFrom(QueueType* Queue, FSchedulerTls::FQueueRegistry::FOutOfWork& OutOfWork, bool bPermitBackgroundWork, bool bDisableThrottleStealing);
 
 	private:
 		template<typename ElementType>
@@ -283,7 +271,6 @@ namespace LowLevelTasks
 	{
 		if(!Task.IsCompleted())
 		{
-			FLocalQueueInstaller Installer(*this);
 			FScheduler::BusyWaitInternal([&Task](){ return Task.IsCompleted(); }, ForceAllowBackgroundWork);
 		}
 	}
@@ -292,11 +279,10 @@ namespace LowLevelTasks
 	inline void FScheduler::BusyWaitUntil(Conditional&& Cond, bool ForceAllowBackgroundWork)
 	{
 		static_assert(TIsInvocable<Conditional>::Value, "Conditional is not invocable");
-		static_assert(TIsSame<decltype(Cond()), bool>::Value, "Conditional must return a boolean");
+		static_assert(std::is_same_v<decltype(Cond()), bool>, "Conditional must return a boolean");
 		
 		if(!Cond())
 		{
-			FLocalQueueInstaller Installer(*this);
 			FScheduler::BusyWaitInternal(Forward<Conditional>(Cond), ForceAllowBackgroundWork);
 		}
 	}
@@ -319,7 +305,6 @@ namespace LowLevelTasks
 
 		if (!AllTasksCompleted())
 		{
-			FLocalQueueInstaller Installer(*this);
 			FScheduler::BusyWaitInternal([&AllTasksCompleted](){ return AllTasksCompleted(); }, ForceAllowBackgroundWork);
 		}
 	}
@@ -341,6 +326,7 @@ namespace LowLevelTasks
 			verifySlow(!bStopOutOfWorkScope);
 			bDrowsing = false;
 			WorkerEvent->SleepEvent->Wait(); // State two: ((Running -> Drowsing) -> Sleeping)
+			checkf(WorkerEvent->SleepState.load(std::memory_order_relaxed) == ESleepState::Running, TEXT("Worker was supposed to be running or drowsing: %d"), WorkerEvent->SleepState.load(std::memory_order_relaxed));
 		}
 		else if(WorkerEvent->SleepState.compare_exchange_strong(AffinityState, ESleepState::Drowsing, std::memory_order_release)) //continue drowsing
 		{
@@ -375,11 +361,6 @@ namespace LowLevelTasks
 			} 
 		}
 		return false;
-	}
-
-	inline FSchedulerTls::FQueueRegistry& FScheduler::GetQueueRegistry()
-	{
-		return QueueRegistry;
 	}
 
 	inline FScheduler& FScheduler::Get()

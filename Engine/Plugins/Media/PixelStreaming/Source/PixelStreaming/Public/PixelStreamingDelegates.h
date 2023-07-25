@@ -2,10 +2,10 @@
 
 #pragma once
 
+#include "Delegates/Delegate.h"
 #include "PixelStreamingPlayerId.h"
 #include "PixelStreamingDataChannel.h"
 #include "Containers/UnrealString.h"
-#include "Delegates/DelegateSignatureImpl.inl"
 #include "PixelStreamingDelegates.generated.h"
 
 namespace webrtc
@@ -106,6 +106,17 @@ public:
 	// C++ Delegate
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FStatChangedNative, FPixelStreamingPlayerId, FName, float);
 	FStatChangedNative OnStatChangedNative;
+
+	/**
+	 * The GPU ran out of available HW encoders and fell back to software encoders
+	 */
+	// BP Delegate
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFallbackToSoftwareEncodering);
+	UPROPERTY(BlueprintAssignable, Category = "Pixel Streaming Delegates")
+	FFallbackToSoftwareEncodering OnFallbackToSoftwareEncodering;
+	// C++ Delegate
+	DECLARE_MULTICAST_DELEGATE(FFallbackToSoftwareEncoderingNative);
+	FFallbackToSoftwareEncoderingNative OnFallbackToSoftwareEncoderingNative;
 
 	/**
 	 * Create the singleton.

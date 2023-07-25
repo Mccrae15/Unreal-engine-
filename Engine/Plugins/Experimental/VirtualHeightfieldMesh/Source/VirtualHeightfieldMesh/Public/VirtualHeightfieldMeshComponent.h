@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Components/PrimitiveComponent.h"
+#include "Physics/PhysicsInterfaceTypes.h"
 #include "VirtualHeightfieldMeshComponent.generated.h"
 
 class ARuntimeVirtualTextureVolume;
@@ -78,6 +78,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Rendering, meta = (DisplayName = "Actor Hidden In Editor", DisplayAfter = "bHiddenInGame"))
 	bool bHiddenInEditor = true;
 
+	/** Allows material World Position Offset to contribute to velocity rendering.*/
+	UPROPERTY(EditAnywhere, Category = Rendering, AdvancedDisplay)
+	bool bWorldPositionOffsetVelocity = false;
+
 public:
 	/** Get the HiddenInEditor flag  on this component. */
 	bool GetHiddenInEditor() const { return bHiddenInEditor; }
@@ -142,5 +146,10 @@ protected:
 	virtual void SetMaterial(int32 ElementIndex, class UMaterialInterface* Material) override;
 	virtual UMaterialInterface* GetMaterial(int32 Index) const override { return Material; }
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false) const override;
+	virtual bool SupportsWorldPositionOffsetVelocity() const override { return bWorldPositionOffsetVelocity; }
 	//~ End UPrimitiveComponent Interface
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

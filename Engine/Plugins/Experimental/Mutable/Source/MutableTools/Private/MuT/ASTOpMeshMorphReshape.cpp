@@ -3,7 +3,6 @@
 #include "MuT/ASTOpMeshMorphReshape.h"
 
 #include "HAL/PlatformMath.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/RefCounted.h"
 #include "MuR/Types.h"
@@ -67,7 +66,7 @@ namespace mu
 	}
 
 
-	void ASTOpMeshMorphReshape::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpMeshMorphReshape::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)

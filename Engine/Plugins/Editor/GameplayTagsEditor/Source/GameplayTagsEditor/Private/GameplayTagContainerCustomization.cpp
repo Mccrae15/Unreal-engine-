@@ -1,16 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayTagContainerCustomization.h"
+#include "AssetRegistry/AssetIdentifier.h"
 #include "Widgets/Input/SComboButton.h"
 
-#include "Widgets/Input/SButton.h"
 
 
 #include "Editor.h"
-#include "PropertyHandle.h"
 #include "DetailWidgetRow.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "GameplayTagsEditorModule.h"
+#include "GameplayTagsManager.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Layout/WidgetPath.h"
+#include "SGameplayTagWidget.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Input/SHyperlink.h"
 #include "EditorFontGlyphs.h"
@@ -443,9 +447,14 @@ bool FGameplayTagContainerCustomization::CanPaste()
 {
 	FString TagName;
 	FPlatformApplicationMisc::ClipboardPaste(TagName);
-	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TagName), false);
 
-	return Tag.IsValid();
+	if (TagName.Len() < NAME_SIZE)
+	{
+		const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TagName), false);
+		return Tag.IsValid();
+	}
+	
+    return false;
 }
 
 #undef LOCTEXT_NAMESPACE

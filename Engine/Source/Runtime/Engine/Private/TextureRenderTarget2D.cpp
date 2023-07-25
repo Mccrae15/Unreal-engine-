@@ -5,15 +5,16 @@
 =============================================================================*/
 
 #include "Engine/TextureRenderTarget2D.h"
+#include "HAL/LowLevelMemStats.h"
 #include "Misc/MessageDialog.h"
+#include "RenderingThread.h"
 #include "TextureResource.h"
 #include "Engine/Texture2D.h"
-#include "UnrealEngine.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
-#include "UObject/RenderingObjectVersion.h"
 #include "GenerateMips.h"
 #include "RenderGraphUtils.h"
+#include "UObject/UnrealType.h"
 #if WITH_EDITOR
 #include "Components/SceneCaptureComponent2D.h"
 #include "UObject/UObjectIterator.h"
@@ -559,6 +560,10 @@ FTextureRenderTarget2DResource::FTextureRenderTarget2DResource(const class UText
 	
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FTextureRenderTarget2DResource::~FTextureRenderTarget2DResource() = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 /**
  * Clamp size of the render target resource to max values
  *
@@ -610,6 +615,8 @@ ETextureCreateFlags FTextureRenderTarget2DResource::GetCreateFlags()
  */
 void FTextureRenderTarget2DResource::InitDynamicRHI()
 {
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
+
 	if( TargetSizeX > 0 && TargetSizeY > 0 )
 	{
 		FString ResourceName = Owner->GetName();
@@ -673,7 +680,9 @@ void FTextureRenderTarget2DResource::ReleaseDynamicRHI()
 	RemoveFromDeferredUpdateList();
 }
 
-#include "SceneUtils.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TextureRenderTarget2D)
+
 /**
  * Updates (resolves) the render target texture.
  * Optionally clears the contents of the render target to green.
@@ -681,6 +690,8 @@ void FTextureRenderTarget2DResource::ReleaseDynamicRHI()
  */
 void FTextureRenderTarget2DResource::UpdateDeferredResource( FRHICommandListImmediate& RHICmdList, bool bClearRenderTarget/*=true*/ )
 {
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
+
 	SCOPED_DRAW_EVENT(RHICmdList, GPUResourceUpdate)
 	RemoveFromDeferredUpdateList();
 

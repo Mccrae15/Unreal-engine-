@@ -5,21 +5,10 @@
 =============================================================================*/
 
 #include "TextureDerivedDataTask.h"
-#include "Misc/CommandLine.h"
-#include "Stats/Stats.h"
-#include "Serialization/MemoryWriter.h"
+#include "IImageWrapperModule.h"
 #include "Misc/ScopedSlowTask.h"
-#include "Misc/App.h"
-#include "Modules/ModuleManager.h"
-#include "Serialization/MemoryReader.h"
-#include "UObject/Package.h"
-#include "RenderUtils.h"
 #include "TextureResource.h"
-#include "Engine/Texture.h"
 #include "Engine/Texture2DArray.h"
-#include "DeviceProfiles/DeviceProfile.h"
-#include "DeviceProfiles/DeviceProfileManager.h"
-#include "VT/VirtualTextureBuiltData.h"
 
 #if WITH_EDITOR
 
@@ -27,35 +16,21 @@
 #include "Algo/AnyOf.h"
 #include "ChildTextureFormat.h"
 #include "DerivedDataBuild.h"
-#include "DerivedDataBuildAction.h"
 #include "DerivedDataBuildInputResolver.h"
 #include "DerivedDataBuildInputs.h"
 #include "DerivedDataBuildOutput.h"
 #include "DerivedDataBuildSession.h"
 #include "DerivedDataCache.h"
 #include "DerivedDataRequestOwner.h"
-#include "Engine/TextureCube.h"
+#include "DerivedDataThreadPoolTask.h"
 #include "Engine/VolumeTexture.h"
+#include "EngineLogs.h"
 #include "ImageCoreUtils.h"
-#include "GenericPlatform/GenericPlatformMath.h"
-#include "HAL/CriticalSection.h"
-#include "HAL/PlatformProcess.h"
-#include "HAL/PlatformTime.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Interfaces/ITextureFormat.h"
-#include "Math/NumericLimits.h"
-#include "Math/UnrealMathUtility.h"
-#include "Misc/FeedbackContext.h"
-#include "Misc/Optional.h"
-#include "Misc/ScopeRWLock.h"
-#include "Misc/ScopeExit.h"
-#include "ProfilingDebugging/CookStats.h"
 #include "Serialization/BulkDataRegistry.h"
-#include "Serialization/CompactBinaryWriter.h"
 #include "TextureBuildUtilities.h"
+#include "TextureCompiler.h"
 #include "TextureDerivedDataBuildUtils.h"
-#include "TextureEncodingSettings.h"
 #include "TextureFormatManager.h"
 #include "VT/VirtualTextureChunkDDCCache.h"
 #include "VT/VirtualTextureDataBuilder.h"
@@ -82,7 +57,33 @@ static TAutoConsoleVariable<int32> CVarForceRetileTextures(
 	TEXT("however the linear texture is allowed to fetch from cache.")
 );
 
+static TAutoConsoleVariable<int32> CVarSharedLinearTextureEncoding(
+	TEXT("r.SharedLinearTextureEncoding"),
+	0,
+	TEXT("If set to 1, textures for platforms that tile will reuse a host linear texture instead of reencoding.")
+);
+
+
 void GetTextureDerivedDataKeyFromSuffix(const FString& KeySuffix, FString& OutKey);
+UE::DerivedData::FCacheKey GetTextureDerivedMetadataKeyFromSuffix(const FString& KeySuffix);
+static void PackTextureBuildMetadataInPlatformData(FTexturePlatformData* PlatformData, const UE::TextureBuildUtilities::FTextureBuildMetadata& BuildMetadata)
+{
+	PlatformData->bSourceMipsAlphaDetectedValid = true;
+	PlatformData->bSourceMipsAlphaDetected = BuildMetadata.bSourceMipsAlphaDetected;
+	PlatformData->PreEncodeMipsHash = BuildMetadata.PreEncodeMipsHash;
+}
+void UnpackTextureBuildMetadataFromPlatformData(UE::TextureBuildUtilities::FTextureBuildMetadata* BuildMetadata, const FTexturePlatformData* PlatformData)
+{
+	if (PlatformData->bSourceMipsAlphaDetectedValid)
+	{
+		BuildMetadata->bSourceMipsAlphaDetected = PlatformData->bSourceMipsAlphaDetected;
+	}
+	else
+	{
+		BuildMetadata->bSourceMipsAlphaDetected = false;
+	}
+	BuildMetadata->PreEncodeMipsHash = PlatformData->PreEncodeMipsHash;
+}
 
 static FTextureEngineParameters GenerateTextureEngineParameters()
 {
@@ -195,10 +196,7 @@ void FTextureSourceData::Init(UTexture& InTexture, TextureMipGenSettings InMipGe
 
 		LayerData->ImageFormat = FImageCoreUtils::ConvertToRawImageFormat( InTexture.Source.GetFormat(LayerIndex) );
 
-		FTextureFormatSettings FormatSettings;
-		InTexture.GetLayerFormatSettings(LayerIndex, FormatSettings);
-
-		LayerData->GammaSpace = FormatSettings.SRGB ? (InTexture.bUseLegacyGamma ? EGammaSpace::Pow22 : EGammaSpace::sRGB) : EGammaSpace::Linear;
+		LayerData->SourceGammaSpace = InTexture.Source.GetGammaSpace(LayerIndex);
 	}
 
 	Blocks.Reserve(NumBlocks);
@@ -266,8 +264,13 @@ void FTextureSourceData::GetSourceMips(FTextureSource& Source, IImageWrapperModu
 	{
 		if (Source.HasHadBulkDataCleared())
 		{	// don't do any work we can't reload this
-			UE_LOG(LogTexture, Error, TEXT("Unable to get texture source mips because its bulk data was released. %s"), *TextureFullName)
-				return;
+			UE_LOG(LogTexture, Error, TEXT("Unable to get texture source mips because its bulk data was released. %s"), *TextureFullName);
+			return;
+		}
+		if (!Source.HasPayloadData())
+		{	// don't do any work we can't reload this
+			UE_LOG(LogTexture, Warning, TEXT("Unable to get texture source mips because its bulk data has no payload. This may happen if it was duplicated from cooked data. %s"), *TextureFullName);
+			return;
 		}
 
 		const FTextureSource::FMipData ScopedMipData = Source.GetMipData(InImageWrapper);
@@ -291,7 +294,7 @@ void FTextureSourceData::GetSourceMips(FTextureSource& Source, IImageWrapperModu
 						FImage* SourceMip = new(BlockData.MipsPerLayer[LayerIndex]) FImage(
 							MipSizeX, MipSizeY, MipSizeZ,
 							LayerData.ImageFormat,
-							LayerData.GammaSpace
+							LayerData.SourceGammaSpace
 						);
 
 						if (!ScopedMipData.GetMipData(SourceMip->RawData, BlockIndex, LayerIndex, MipIndex))
@@ -553,10 +556,6 @@ static void DDC1_StoreClassicTextureInDerivedData(
 		check(CompressedImage.RawData.GetTypeSize() == 1);
 		int64 CompressedDataSize = CompressedImage.RawData.Num();
 
-		// check CompressedDataSize against int32_max , except if VT
-		// bForVirtualTextureStreamingBuild is false in this branch
-		check(CompressedDataSize < MAX_int32);
-
 		// CompressedImage sizes were padded up to multiple of 4 for d3d, no longer
 		UE_LOG(LogTextureUpload, Verbose, TEXT("Compressed Mip %d PF=%d : %dx%dx%d : %d ; up4 %dx%d=%d"),
 			MipIndex, (int)CompressedImage.PixelFormat,
@@ -727,8 +726,9 @@ static void DDC1_BuildTexture(
 		uint32 NumMipsInTail;
 		uint32 ExtData;
 
+		UE::TextureBuildUtilities::FTextureBuildMetadata BuildMetadata;
+
 		// Compress the texture by calling texture compressor directly.
-		bool bImageHasAlphaChannel = false;
 		TArray<FCompressedImage2D> CompressedMips;
 		if (Compressor->BuildTexture(TextureData.Blocks[0].MipsPerLayer[0],
 			((bool)Texture.CompositeTexture && CompositeTextureData.Blocks.Num() && CompositeTextureData.Blocks[0].MipsPerLayer.Num()) ? CompositeTextureData.Blocks[0].MipsPerLayer[0] : TArray<FImage>(),
@@ -737,9 +737,11 @@ static void DDC1_BuildTexture(
 			CompressedMips,
 			NumMipsInTail,
 			ExtData,
-			&bImageHasAlphaChannel))
+			&BuildMetadata))
 		{
 			check(CompressedMips.Num());
+
+			PackTextureBuildMetadataInPlatformData(DerivedData, BuildMetadata);
 
 			DDC1_StoreClassicTextureInDerivedData(
 				CompressedMips, DerivedData, InBuildSettingsPerLayer[0].bVolume, InBuildSettingsPerLayer[0].bTextureArray, InBuildSettingsPerLayer[0].bCubemap, 
@@ -1071,10 +1073,10 @@ static int64 GetBuildRequiredMemoryEstimate(UTexture* InTexture,
 
 		MemoryEstimate += OutputSizeBytes;
 
-		// check BlockSize to see if it's uncompressed or a BCN format :
-		if ( PFI.BlockSizeX > 1 )
+		// check to see if it's uncompressed or a BCN format :
+		if ( IsDXTCBlockCompressedTextureFormat(PixelFormat) )
 		{
-			// block-compressed format
+			// block-compressed format ; assume it's using Oodle Texture
 			
 			if ( bRDO )
 			{
@@ -1150,6 +1152,10 @@ static int64 GetBuildRequiredMemoryEstimate(UTexture* InTexture,
 
 				MemoryEstimate += FMath::Max(RDOPhase1MemUse,RDOPhase2MemUse);
 			}
+		}
+		else
+		{
+			// note: memory ues of non-Oodle encoders is not estimated
 		}
 		
 		MemoryEstimate += 64 * 1024; // overhead room
@@ -1239,6 +1245,7 @@ FTextureCacheDerivedDataWorker::FTextureCacheDerivedDataWorker(
 		delete DerivedData->VTData;
 		DerivedData->VTData = nullptr;
 	}
+	DerivedData->bSourceMipsAlphaDetectedValid = false;
 	UTexture::GetPixelFormatEnum();
 		
 	const bool bAllowAsyncBuild = EnumHasAnyFlags(CacheFlags, ETextureCacheFlags::AllowAsyncBuild);
@@ -1346,6 +1353,7 @@ static void DDC1_FetchAndFillDerivedData(
 	bool bForVirtualTextureStreamingBuild = EnumHasAnyFlags(CacheFlags, ETextureCacheFlags::ForVirtualTextureStreamingBuild);
 
 	FSharedBuffer RawDerivedData;
+	const FSharedString SharedTexturePathName(TexturePathName);
 
 	FString LocalDerivedDataKeySuffix;
 	FString LocalDerivedDataKey;
@@ -1365,16 +1373,34 @@ static void DDC1_FetchAndFillDerivedData(
 			FString FetchFirstKey;
 			GetTextureDerivedDataKeyFromSuffix(FetchFirstKeySuffix, FetchFirstKey);
 
+			TArray<FCacheGetValueRequest, TInlineAllocator<2>> Requests;
+			Requests.Add({ SharedTexturePathName, ConvertLegacyCacheKey(FetchFirstKey), ECachePolicy::Default, 0 /* UserData */});
+			Requests.Add({ SharedTexturePathName, GetTextureDerivedMetadataKeyFromSuffix(FetchFirstKeySuffix), ECachePolicy::Default, 1 /* UserData */});
+
 			FRequestOwner BlockingOwner(EPriority::Blocking);
-			GetCache().GetValue({ {{TexturePathName}, ConvertLegacyCacheKey(FetchFirstKey)} }, BlockingOwner, [&RawDerivedData](FCacheGetValueResponse&& Response)
+			FSharedBuffer MetadataBuffer;
+
+			GetCache().GetValue(Requests, BlockingOwner, [&MetadataBuffer, &RawDerivedData](FCacheGetValueResponse&& Response)
 			{
-				RawDerivedData = Response.Value.GetData().Decompress();
+				if (Response.UserData == 0)
+				{
+					RawDerivedData = Response.Value.GetData().Decompress();
+				}
+				else
+				{
+					MetadataBuffer = Response.Value.GetData().Decompress();
+				}
 			});
 			BlockingOwner.Wait();
 
 			bLoadedFromDDC = !RawDerivedData.IsNull();
 			if (bLoadedFromDDC)
 			{
+				// We don't necessarily get the metadata until we force a texture rebuild.
+				if (MetadataBuffer.IsNull() == false)
+				{
+					PackTextureBuildMetadataInPlatformData(DerivedData, FCbObject(MetadataBuffer));
+				}
 				bUsedFetchFirst = true;
 				LocalDerivedDataKey = MoveTemp(FetchFirstKey);
 				LocalDerivedDataKeySuffix = MoveTemp(FetchFirstKeySuffix);
@@ -1388,17 +1414,36 @@ static void DDC1_FetchAndFillDerivedData(
 		LocalDerivedDataKeySuffix = MoveTemp(FetchOrBuildKeySuffix);
 		GetTextureDerivedDataKeyFromSuffix(LocalDerivedDataKeySuffix, LocalDerivedDataKey);
 
-		if (bForceRebuild == false)
+		TArray<FCacheGetValueRequest, TInlineAllocator<2>> Requests;
+		Requests.Add({ SharedTexturePathName, ConvertLegacyCacheKey(LocalDerivedDataKey), ECachePolicy::Default, 0 /* UserData */ });
+		Requests.Add({ SharedTexturePathName, GetTextureDerivedMetadataKeyFromSuffix(LocalDerivedDataKeySuffix), ECachePolicy::Default, 1 /* UserData */ });
+
+		FRequestOwner BlockingOwner(EPriority::Blocking);
+		FSharedBuffer MetadataBuffer;
+
+		GetCache().GetValue(Requests, BlockingOwner, [&MetadataBuffer, &RawDerivedData](FCacheGetValueResponse&& Response)
 		{
-			FRequestOwner BlockingOwner(EPriority::Blocking);
-			GetCache().GetValue({ {{TexturePathName}, ConvertLegacyCacheKey(LocalDerivedDataKey)} }, BlockingOwner, [&RawDerivedData](FCacheGetValueResponse&& Response)
+			if (Response.UserData == 0)
 			{
 				RawDerivedData = Response.Value.GetData().Decompress();
-			});
-			BlockingOwner.Wait();
-		}
+			}
+			else
+			{
+				MetadataBuffer = Response.Value.GetData().Decompress();
+			}
+		});
+		BlockingOwner.Wait();
 
 		bLoadedFromDDC = !RawDerivedData.IsNull();
+		if (bLoadedFromDDC)
+		{
+			// Only read the metadata if we actually got the main data.
+			// We don't necessarily get the metadata until we force a texture rebuild.
+			if (MetadataBuffer.IsNull() == false)
+			{
+				PackTextureBuildMetadataInPlatformData(DerivedData, FCbObject(MetadataBuffer));
+			}
+		}
 	}
 
 	KeySuffix = LocalDerivedDataKeySuffix;
@@ -1693,6 +1738,9 @@ bool DDC1_BuildTiledClassicTexture(
 
 	check(LinearDerivedData.GetNumMipsInTail() == 0);
 
+	UE::TextureBuildUtilities::FTextureBuildMetadata BuildMetadata;
+	UnpackTextureBuildMetadataFromPlatformData(&BuildMetadata, &LinearDerivedData);
+
 	// The linear bits are built - need to fetch
 	void* LinearMipData[MAX_TEXTURE_MIP_COUNT] = {};
 	int64 LinearMipSizes[MAX_TEXTURE_MIP_COUNT];
@@ -1781,6 +1829,8 @@ bool DDC1_BuildTiledClassicTexture(
 		FMemory::Memcpy(TiledMip.RawData.GetData(), MipData.GetData(), MipData.GetSize());
 	} // end for each mip
 
+	PackTextureBuildMetadataInPlatformData(DerivedData, BuildMetadata);
+
 	for (int32 MipIndex = 0; MipIndex < TextureDescription.NumMips; ++MipIndex)
 	{
 		FMemory::Free(LinearMipData[MipIndex]);
@@ -1841,7 +1891,7 @@ void FTextureCacheDerivedDataWorker::DoWork()
 	{
 		if (CVarForceRetileTextures.GetValueOnAnyThread())
 		{
-			// We do this after the fetch so it can fill out the metadata nad key suffix that gets used.
+			// We do this after the fetch so it can fill out the metadata and key suffix that gets used.
 			bSucceeded = false;
 			bLoadedFromDDC = false;
 
@@ -1912,6 +1962,12 @@ void FTextureCacheDerivedDataWorker::Finalize()
 	// --	if the texture compiler cvar disallows async texture compilation
 	if (!bSucceeded)
 	{
+		if (!TextureData.HasPayload() && !Texture.Source.HasPayloadData())
+		{
+			UE_LOG(LogTexture, Warning, TEXT("Unable to build texture source data, no available payload for %s. This may happen if it was duplicated from cooked data."), *TexturePathName);
+			return;
+		}
+
 		TextureData.GetSourceMips(Texture.Source, ImageWrapper);
 		if (Texture.CompositeTexture)
 		{
@@ -1970,6 +2026,11 @@ static bool UnpackPlatformDataFromBuild(FTexturePlatformData& OutPlatformData, U
 {
 	using namespace UE::DerivedData;
 	UE::DerivedData::FBuildOutput& BuildOutput = InBuildCompleteParams.Output;
+
+	{
+		const FValueWithId& Value = BuildOutput.GetValue(FValueId::FromName(UTF8TEXTVIEW("TextureBuildMetadata")));
+		PackTextureBuildMetadataInPlatformData(&OutPlatformData, FCbObject(Value.GetData().Decompress()));
+	}
 
 	// We take this as a build output, however in ideal (future) situations, this is generated prior to build launch and
 	// just routed through the build. Since we currently handle several varying situations, we just always consume it from
@@ -2125,7 +2186,7 @@ static bool UnpackPlatformDataFromBuild(FTexturePlatformData& OutPlatformData, U
 	return true;
 }
 
-void HandleBuildOutputThenUnpack(FTexturePlatformData& OutPlatformData, UE::DerivedData::FBuildCompleteParams&& InBuildCompleteParams, FBuildResultOptions InBuildResultOptions)
+static void HandleBuildOutputThenUnpack(FTexturePlatformData& OutPlatformData, UE::DerivedData::FBuildCompleteParams&& InBuildCompleteParams, FBuildResultOptions InBuildResultOptions)
 {
 	using namespace UE::DerivedData;
 
@@ -2247,10 +2308,10 @@ struct FBuildInfo
 
 static void LaunchBuildWithFallback(
 	FBuildResults& OutBuildResults,
-	FBuildResultOptions InBuildResultOptions,
-	FBuildInfo& InInitialBuild, 
-	TOptional<FBuildInfo> InFallbackBuild, 
-	UE::DerivedData::FRequestOwner& InRequestOwner	// Owner must be valid for the duration of the build.
+	FBuildResultOptions BuildResultOptions,
+	FBuildInfo& InInitialBuild,
+	TOptional<FBuildInfo> InFallbackBuild,
+	UE::DerivedData::FRequestOwner& InRequestOwner // Owner must be valid for the duration of the build.
 )
 {
 	using namespace UE::DerivedData;
@@ -2260,36 +2321,49 @@ static void LaunchBuildWithFallback(
 		OutBuildResults.PlatformData.ResultMetadata = *InInitialBuild.ResultMetadata;
 	}
 
-	InInitialBuild.BuildSession.Build(InInitialBuild.BuildDefinition, {}, InInitialBuild.BuildPolicy, InRequestOwner,
+	LaunchTaskInThreadPool(InRequestOwner, FTextureCompilingManager::Get().GetThreadPool(),
 		[
 			FallbackBuild = MoveTemp(InFallbackBuild),
 			RequestOwner = &InRequestOwner,
 			OutBuildResults = &OutBuildResults,
-			BuildResultOptions = InBuildResultOptions,
+			BuildResultOptions,
+			BuildDefinition = InInitialBuild.BuildDefinition,
+			BuildPolicy = InInitialBuild.BuildPolicy,
+			BuildSession = &InInitialBuild.BuildSession,
 			InitialBuildTilingInputResolver = InInitialBuild.TilingInputResolver
-		](FBuildCompleteParams&& Params) mutable
+		]() mutable
 	{
-		if (Params.Status == EStatus::Error &&
-			FallbackBuild.IsSet())
+		BuildSession->Build(BuildDefinition, {}, BuildPolicy, *RequestOwner,
+			[
+				FallbackBuild = MoveTemp(FallbackBuild),
+				RequestOwner,
+				OutBuildResults,
+				BuildResultOptions,
+				InitialBuildTilingInputResolver
+			](FBuildCompleteParams&& Params) mutable
 		{
-			if (FallbackBuild->ResultMetadata.IsSet())
+			if (Params.Status == EStatus::Error &&
+				FallbackBuild.IsSet())
 			{
-				OutBuildResults->PlatformData.ResultMetadata = *FallbackBuild->ResultMetadata;
+				if (FallbackBuild->ResultMetadata.IsSet())
+				{
+					OutBuildResults->PlatformData.ResultMetadata = *FallbackBuild->ResultMetadata;
+				}
+				FallbackBuild->BuildSession.Build(FallbackBuild->BuildDefinition, {}, FallbackBuild->BuildPolicy, *RequestOwner,
+					[
+						OutBuildResults = OutBuildResults,
+						BuildResultOptions,
+						FallbackBuildTilingInputResolver = FallbackBuild->TilingInputResolver
+					](FBuildCompleteParams&& Params) mutable
+				{
+					GetBuildResultsFromCompleteParams(*OutBuildResults, BuildResultOptions, MoveTemp(Params), FallbackBuildTilingInputResolver);
+				});
 			}
-			FallbackBuild->BuildSession.Build(FallbackBuild->BuildDefinition, {}, FallbackBuild->BuildPolicy, *RequestOwner,
-				[
-					OutBuildResults = OutBuildResults,
-					BuildResultOptions = BuildResultOptions,
-					FallbackBuildTilingInputResolver = FallbackBuild->TilingInputResolver
-				](FBuildCompleteParams&& Params) mutable
+			else
 			{
-				GetBuildResultsFromCompleteParams(*OutBuildResults, BuildResultOptions, MoveTemp(Params), FallbackBuildTilingInputResolver);
-			});
-		}
-		else
-		{			
-			GetBuildResultsFromCompleteParams(*OutBuildResults, BuildResultOptions, MoveTemp(Params), InitialBuildTilingInputResolver);
-		}
+				GetBuildResultsFromCompleteParams(*OutBuildResults, BuildResultOptions, MoveTemp(Params), InitialBuildTilingInputResolver);
+			}
+		});
 	});
 };
 
@@ -2309,10 +2383,9 @@ public:
 		const FTextureBuildSettings& InSettingsFetchOrBuild,
 		const FTexturePlatformData::FTextureEncodeResultMetadata* InFetchFirstMetadata, // can be nullptr
 		const FTexturePlatformData::FTextureEncodeResultMetadata* InFetchOrBuildMetadata, // can be nullptr
-		EQueuedWorkPriority InPriority,
+		EQueuedWorkPriority Priority,
 		ETextureCacheFlags Flags)
 		: BuildResults(InDerivedData)
-		, Priority(InPriority)
 		, InputResolver(Texture)
 	{
 		static bool bLoadedModules = LoadModules();
@@ -2330,7 +2403,7 @@ public:
 
 		using namespace UE::DerivedData;
 
-		EPriority OwnerPriority = EnumHasAnyFlags(Flags, ETextureCacheFlags::Async) ? ConvertPriority(Priority) : UE::DerivedData::EPriority::Blocking;
+		EPriority OwnerPriority = EnumHasAnyFlags(Flags, ETextureCacheFlags::Async) ? ConvertFromQueuedWorkPriority(Priority) : EPriority::Blocking;
 		Owner.Emplace(OwnerPriority);
 
 		bool bUseCompositeTexture;
@@ -2553,6 +2626,7 @@ private:
 			FetchFirstBuildPolicyBuilder.AddValuePolicy(FValueId::FromName(ANSITEXTVIEW("EncodedTextureDescription")), EBuildPolicy::Cache);
 			FetchFirstBuildPolicyBuilder.AddValuePolicy(FValueId::FromName(ANSITEXTVIEW("EncodedTextureExtendedData")), EBuildPolicy::Cache);
 			FetchFirstBuildPolicyBuilder.AddValuePolicy(FValueId::FromName(ANSITEXTVIEW("MipTail")), EBuildPolicy::Cache);
+			FetchFirstBuildPolicyBuilder.AddValuePolicy(FValueId::FromName(ANSITEXTVIEW("TextureBuildMetadata")), EBuildPolicy::Cache);
 			return FetchFirstBuildPolicyBuilder.Build();
 		}		
 	}
@@ -2575,6 +2649,7 @@ private:
 			BuildPolicyBuilder.AddValuePolicy(FValueId::FromName(ANSITEXTVIEW("EncodedTextureDescription")), EBuildPolicy::Cache);
 			BuildPolicyBuilder.AddValuePolicy(FValueId::FromName(ANSITEXTVIEW("EncodedTextureExtendedData")), EBuildPolicy::Cache);
 			BuildPolicyBuilder.AddValuePolicy(FValueId::FromName(ANSITEXTVIEW("MipTail")), EBuildPolicy::Default);
+			BuildPolicyBuilder.AddValuePolicy(FValueId::FromName(ANSITEXTVIEW("TextureBuildMetadata")), EBuildPolicy::Cache);
 			return BuildPolicyBuilder.Build();
 		}
 	}
@@ -2588,13 +2663,14 @@ public:
 
 	EQueuedWorkPriority GetPriority() const final
 	{
-		return Priority;
+		using namespace UE::DerivedData;
+		return ConvertToQueuedWorkPriority(Owner->GetPriority());
 	}
 
 	bool SetPriority(EQueuedWorkPriority QueuedWorkPriority) final
 	{
-		Priority = QueuedWorkPriority;
-		Owner->SetPriority(ConvertPriority(QueuedWorkPriority));
+		using namespace UE::DerivedData;
+		Owner->SetPriority(ConvertFromQueuedWorkPriority(QueuedWorkPriority));
 		return true;
 	}
 
@@ -2781,6 +2857,8 @@ public:
 			DefinitionBuilder.AddConstant(UTF8TEXTVIEW("EncodedTextureExtendedDataConstant"), UE::TextureBuildUtilities::EncodedTextureExtendedData::ToCompactBinary(*InTextureExtendedData));
 		}
 		
+		DefinitionBuilder.AddInputBuild(UTF8TEXTVIEW("TextureBuildMetadata"), { InParentBuildKey, UE::DerivedData::FValueId::FromName(UTF8TEXTVIEW("TextureBuildMetadata")) });
+
 		if (InputTextureNumMips > InputTextureNumStreamingMips)
 		{
 			DefinitionBuilder.AddInputBuild(UTF8TEXTVIEW("MipTail"), { InParentBuildKey, UE::DerivedData::FValueId::FromName(UTF8TEXTVIEW("MipTail")) });
@@ -2794,35 +2872,6 @@ public:
 		}
 
 		return DefinitionBuilder.Build();
-	}
-
-	static UE::DerivedData::EPriority ConvertPriority(EQueuedWorkPriority SourcePriority)
-	{
-		using namespace UE::DerivedData;
-		switch (SourcePriority)
-		{
-		case EQueuedWorkPriority::Lowest:  return EPriority::Lowest;
-		case EQueuedWorkPriority::Low:     return EPriority::Low;
-		case EQueuedWorkPriority::Normal:  return EPriority::Normal;
-		case EQueuedWorkPriority::High:    return EPriority::High;
-		case EQueuedWorkPriority::Highest: return EPriority::Highest;
-		default:                           return EPriority::Normal;
-		}
-	}
-
-	static EQueuedWorkPriority ConvertPriority(UE::DerivedData::EPriority SourcePriority)
-	{
-		using namespace UE::DerivedData;
-		switch (SourcePriority)
-		{
-		case EPriority::Lowest:   return EQueuedWorkPriority::Lowest;
-		case EPriority::Low:      return EQueuedWorkPriority::Low;
-		case EPriority::Normal:   return EQueuedWorkPriority::Normal;
-		case EPriority::High:     return EQueuedWorkPriority::High;
-		case EPriority::Highest:  return EQueuedWorkPriority::Highest;
-		case EPriority::Blocking: return EQueuedWorkPriority::Blocking;
-		default:                  return EQueuedWorkPriority::Normal;
-		}
 	}
 
 	static ITextureCompressorModule* TextureCompressorModule;
@@ -2841,7 +2890,6 @@ public:
 
 	// Build bureaucracy
 	TOptional<UE::DerivedData::FRequestOwner> Owner;
-	EQueuedWorkPriority Priority;
 
 	UE::DerivedData::FOptionalBuildSession BuildSession;
 	UE::TextureDerivedData::FTextureBuildInputResolver InputResolver;

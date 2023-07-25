@@ -1,15 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SocialToolkit.h"
+#include "Interfaces/OnlineUserInterface.h"
 #include "SocialManager.h"
 #include "SocialQuery.h"
-#include "SocialSettings.h"
-#include "User/SocialUser.h"
 #include "User/SocialUserList.h"
 #include "Chat/SocialChatManager.h"
-#include "Stats/Stats.h"
 
-#include "OnlineSubsystem.h"
 #include "OnlineSubsystemUtils.h"
 #include "Engine/LocalPlayer.h"
 
@@ -676,21 +673,16 @@ void USocialToolkit::OnOwnerLoggedOut()
 			IOnlinePartyPtr PartyInterface = OSS->GetPartyInterface();
 			if (PartyInterface.IsValid())
 			{
-				PartyInterface->ClearOnPartyInviteReceivedDelegates(this);
+				PartyInterface->ClearOnPartyInviteReceivedExDelegates(this);
+				PartyInterface->ClearOnPartyInviteRemovedExDelegates(this);
 				PartyInterface->ClearOnPartyRequestToJoinReceivedDelegates(this);
 				PartyInterface->ClearOnPartyRequestToJoinRemovedDelegates(this);
-			}
-
-			IOnlineUserPtr UserInterface = OSS->GetUserInterface();
-			if (UserInterface.IsValid())
-			{
-				UserInterface->ClearOnQueryUserInfoCompleteDelegates(LocalUserNum, this);
 			}
 
 			IOnlinePresencePtr PresenceInterface = OSS->GetPresenceInterface();
 			if (PresenceInterface.IsValid())
 			{
-				PresenceInterface->ClearOnPresenceArrayUpdatedDelegates(this);
+				PresenceInterface->ClearOnPresenceReceivedDelegates(this);
 			}
 		}
 	}
@@ -1240,11 +1232,6 @@ void USocialToolkit::HandlePartyRequestToJoinRemoved(const FUniqueNetId& LocalUs
 				OnPartyRequestToJoinRemoved().Broadcast(User, RequestRef, Reason);
 			});
 	}
-}
-
-bool USocialToolkit::Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out)
-{
-	return false;
 }
 
 #if WITH_EDITOR

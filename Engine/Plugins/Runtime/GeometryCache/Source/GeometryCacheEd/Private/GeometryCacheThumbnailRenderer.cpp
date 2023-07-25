@@ -1,11 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheThumbnailRenderer.h"
-#include "Misc/App.h"
-#include "ShowFlags.h"
 #include "SceneView.h"
 #include "GeometryCacheThumbnailScene.h"
 #include "GeometryCache.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCacheThumbnailRenderer)
 
@@ -52,8 +51,8 @@ void UGeometryCacheThumbnailRenderer::BeginDestroy()
 	Super::BeginDestroy();
 }
 
-bool UGeometryCacheThumbnailRenderer::AllowsRealtimeThumbnails(UObject* Object) const
+EThumbnailRenderFrequency UGeometryCacheThumbnailRenderer::GetThumbnailRenderFrequency(UObject* Object) const
 {
-	return false;
+	return EThumbnailRenderFrequency::OnPropertyChange;
 }
 

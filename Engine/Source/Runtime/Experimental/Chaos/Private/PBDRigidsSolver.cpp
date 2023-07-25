@@ -4,6 +4,7 @@
 
 #include "Async/AsyncWork.h"
 #include "Chaos/ChaosArchive.h"
+#include "Chaos/Character/CharacterGroundConstraint.h"
 #include "Chaos/PBDCollisionConstraintsUtil.h"
 #include "Chaos/Utilities.h"
 #include "Chaos/ChaosDebugDraw.h"
@@ -13,6 +14,7 @@
 #include "ChaosVisualDebugger/ChaosVisualDebuggerTrace.h"
 #include "HAL/FileManager.h"
 #include "Misc/ScopeLock.h"
+#include "PhysicsProxy/CharacterGroundConstraintProxy.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "PhysicsProxy/SkeletalMeshPhysicsProxy.h"
 #include "PhysicsProxy/StaticMeshPhysicsProxy.h"
@@ -51,6 +53,7 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("NumActiveManifoldPoints"), STAT_ChaosCounter_Nu
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumRestoredManifoldPoints"), STAT_ChaosCounter_NumRestoredManifoldPoints, STATGROUP_ChaosCounters);
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumUpdatedManifoldPoints"), STAT_ChaosCounter_NumUpdatedManifoldPoints, STATGROUP_ChaosCounters);
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumJoints"), STAT_ChaosCounter_NumJoints, STATGROUP_ChaosCounters);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumCharacterGroundConstraints"), STAT_ChaosCounter_NumCharacterGroundConstraints, STATGROUP_ChaosCounters);
 
 // Stat Iteration counters
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumPositionIterations"), STAT_ChaosCounter_NumPositionIterations, STATGROUP_ChaosCounters);
@@ -80,6 +83,7 @@ namespace Chaos
 		int32 ChaosSolverDrawShapesShowKinematic = 1;
 		int32 ChaosSolverDrawShapesShowDynamic = 1;
 		int32 ChaosSolverDrawJoints = 0;
+		int32 ChaosSolverDrawCharacterGroundConstraints = 0;
 		int32 ChaosSolverDebugDrawSpatialAccelerationStructure = 0;
 		int32 ChaosSolverDebugDrawSpatialAccelerationStructureShowLeaves = 0;
 		int32 ChaosSolverDebugDrawSpatialAccelerationStructureShowNodes = 0;
@@ -100,6 +104,7 @@ namespace Chaos
 		FAutoConsoleVariableRef CVarChaosSolverDrawShapesShapesKinematic(TEXT("p.Chaos.Solver.DebugDraw.ShowKinematics"), ChaosSolverDrawShapesShowKinematic, TEXT("If DebugDrawShapes is enabled, whether to show kinematic objects"));
 		FAutoConsoleVariableRef CVarChaosSolverDrawShapesShapesDynamic(TEXT("p.Chaos.Solver.DebugDraw.ShowDynamics"), ChaosSolverDrawShapesShowDynamic, TEXT("If DebugDrawShapes is enabled, whether to show dynamic objects"));
 		FAutoConsoleVariableRef CVarChaosSolverDrawJoints(TEXT("p.Chaos.Solver.DebugDrawJoints"), ChaosSolverDrawJoints, TEXT("Draw joints"));
+		FAutoConsoleVariableRef CVarChaosSolverDrawCharacterGroundConstraints(TEXT("p.Chaos.Solver.DebugDrawCharacterGroundConstraints"), ChaosSolverDrawCharacterGroundConstraints, TEXT("Draw character ground constraints"));
 		FAutoConsoleVariableRef CVarChaosSolverDebugDrawSpatialAccelerationStructure(TEXT("p.Chaos.Solver.DebugDrawSpatialAccelerationStructure"), ChaosSolverDebugDrawSpatialAccelerationStructure, TEXT("Draw spatial acceleration structure"));
 		FAutoConsoleVariableRef CVarChaosSolverDebugDrawSpatialAccelerationStructureShowLeaves(TEXT("p.Chaos.Solver.DebugDrawSpatialAccelerationStructure.ShowLeaves"), ChaosSolverDebugDrawSpatialAccelerationStructureShowLeaves, TEXT("Show spatial acceleration structure leaves when its debug draw is enabled"));
 		FAutoConsoleVariableRef CVarChaosSolverDebugDrawSpatialAccelerationStructureShowNodes(TEXT("p.Chaos.Solver.DebugDrawSpatialAccelerationStructure.ShowNodes"), ChaosSolverDebugDrawSpatialAccelerationStructureShowNodes, TEXT("Show spatial acceleration structure nodes when its debug draw is enabled"));
@@ -236,7 +241,7 @@ namespace Chaos
 		int32 ChaosSolverProjectionIterations = -1;
 		FAutoConsoleVariableRef CVarChaosSolverProjectionIterations(TEXT("p.Chaos.Solver.Iterations.Projection"), ChaosSolverProjectionIterations, TEXT("Override number of solver projection iterations (-1 to use config)"));
 
-		int32 ChaosSolverDeterministic = -1;
+		int32 ChaosSolverDeterministic = 1;
 		FAutoConsoleVariableRef CVarChaosSolverDeterministic(TEXT("p.Chaos.Solver.Deterministic"), ChaosSolverDeterministic, TEXT("Override determinism. 0: disabled; 1: enabled; -1: use config"));
 
 		// Copied from RBAN
@@ -333,7 +338,7 @@ namespace Chaos
 					GeoclObj->FieldParameterUpdateCallback(MSolver);
 				}
 
-				MSolver->GetEvolution()->GetBroadPhase().GetIgnoreCollisionManager().ProcessPendingQueues();
+				MSolver->GetEvolution()->GetBroadPhase().GetIgnoreCollisionManager().ProcessPendingQueues(*MSolver);
 			}
 
 			{
@@ -456,11 +461,10 @@ namespace Chaos
 				MSolver->CompleteSceneSimulation();
 			}
 
-			// reset all clustering event needs to be after CompleteSceneSimulation to make sure the cache recording gets them before they get removed
+			// reset all clustering events needs to be after CompleteSceneSimulation to make sure the cache recording gets them before they get removed
 			// they cannot be right after the presolve callback ( as they were before ) because they will cause geometry collection replicated clients to miss them
 			// Todo(chaos) we should probably move all of the solver event reset here in the future
-			MSolver->GetEvolution()->GetRigidClustering().ResetAllClusterBreakings();
-			MSolver->GetEvolution()->GetRigidClustering().ResetAllClusterCrumblings();
+			MSolver->GetEvolution()->GetRigidClustering().ResetAllEvents();
 
 			if (FRewindData* RewindData = MSolver->GetRewindData())
 			{
@@ -490,7 +494,7 @@ namespace Chaos
 		, FloorHeight(0.f)
 		, bIsDeterministic(false)
 		, Particles(UniqueIndices)
-		, MEvolution(new FPBDRigidsEvolution(Particles, SimMaterials, &ContactModifiers, BufferingModeIn == Chaos::EMultiBufferMode::Single))
+		, MEvolution(new FPBDRigidsEvolution(Particles, SimMaterials, &MidPhaseModifiers, &ContactModifiers, BufferingModeIn == Chaos::EMultiBufferMode::Single))
 		, MEventManager(new FEventManager(BufferingModeIn))
 		, MSolverEventFilters(new FSolverEventFilters())
 		, MDirtyParticlesBuffer(new FDirtyParticlesBuffer(BufferingModeIn, BufferingModeIn == Chaos::EMultiBufferMode::Single))
@@ -641,17 +645,13 @@ namespace Chaos
 		InProxy->SetSolver(this);
 		InProxy->Initialize(GetEvolution());
 		InProxy->NewData(); // Buffers data on the proxy.
-		FParticlesType* InParticles = &GetParticles();
 
-		// Finish registration on the physics thread...
-		EnqueueCommandImmediate([InParticles, InProxy, this]()
-		{
-			UE_LOG(LogPBDRigidsSolver, Verbose, 
-				TEXT("FPBDRigidsSolver::RegisterObject(FGeometryCollectionPhysicsProxy*)"));
-			check(InParticles);
-			InProxy->InitializeBodiesPT(this, *InParticles);
-			GeometryCollectionPhysicsProxies_Internal.Add(InProxy);
-		});
+		// There used to be an EnqueueCommandImmediate here to push the initialization of the GC
+		// onto the physics thread. We should use AddDirtyProxy here instead to better match up with
+		// the initialization order done in the ProcessSinglePushedData_Internal. Using EnqueueCommandImmediate
+		// will cause the GC to be initialized after constraints which would preclude it from being
+		// used with joint constraints that get spawned on level load with the GC.
+		AddDirtyProxy(InProxy);
 	}
 	
 	void FPBDRigidsSolver::UnregisterObject(FGeometryCollectionPhysicsProxy* InProxy)
@@ -715,6 +715,43 @@ namespace Chaos
 			JointConstraintPhysicsProxies_Internal.RemoveSingle(JointProxy);
 			delete JointProxy;
 		});
+	}
+
+	void FPBDRigidsSolver::RegisterObject(Chaos::FCharacterGroundConstraint* GTConstraint)
+	{
+		LLM_SCOPE(ELLMTag::ChaosConstraint);
+		FCharacterGroundConstraintProxy* ConstraintProxy = new FCharacterGroundConstraintProxy(GTConstraint);
+		ConstraintProxy->SetSolver(this);
+
+		AddDirtyProxy(ConstraintProxy);
+	}
+
+	void FPBDRigidsSolver::UnregisterObject(Chaos::FCharacterGroundConstraint* GTConstraint)
+	{
+		FCharacterGroundConstraintProxy* ConstraintProxy = GTConstraint->GetProxy<FCharacterGroundConstraintProxy>();
+		check(ConstraintProxy);
+
+		RemoveDirtyProxy(ConstraintProxy);
+
+		// mark proxy timestamp so we avoid trying to pull from sim after deletion
+		GTConstraint->GetProxy()->MarkDeleted();
+		GTConstraint->SetProxy(static_cast<FCharacterGroundConstraintProxy*>(nullptr));
+
+		ConstraintProxy->DestroyOnGameThread();	//destroy the game thread portion of the proxy
+
+		// Finish de-registration on the physics thread...
+		EnqueueCommandImmediate([ConstraintProxy, this]()
+			{
+				// TODO: Add character ground constraint to rewind data
+				//if (FRewindData* RewindData = GetRewindData())
+				//{
+				//	RewindData->RemoveObject(ConstraintProxy->GetPhysicsThreadAPI());
+				//}
+
+				ConstraintProxy->DestroyOnPhysicsThread(this);
+				CharacterGroundConstraintProxies_Internal.RemoveSingle(ConstraintProxy);
+				delete ConstraintProxy;
+			});
 	}
 
 	void FPBDRigidsSolver::RegisterObject(Chaos::FSuspensionConstraint* GTConstraint)
@@ -785,7 +822,7 @@ namespace Chaos
 		SetMaxDeltaTime_External(1.0f);
 		SetMinDeltaTime_External(UE_SMALL_NUMBER);
 		SetMaxSubSteps_External(1);
-		MEvolution = TUniquePtr<FPBDRigidsEvolution>(new FPBDRigidsEvolution(Particles, SimMaterials, &ContactModifiers, BufferMode == EMultiBufferMode::Single)); 
+		MEvolution = TUniquePtr<FPBDRigidsEvolution>(new FPBDRigidsEvolution(Particles, SimMaterials, &MidPhaseModifiers, &ContactModifiers, BufferMode == EMultiBufferMode::Single)); 
 
 		PerSolverField = MakeUnique<FPerSolverFieldSystem>();
 
@@ -878,12 +915,12 @@ namespace Chaos
 	{
 		MEvolution->GetCollisionConstraints().SetCollisionsEnabled(bChaosSolverCollisionEnabled);
 
-		FCollisionDetectorSettings CollisionDetectorSettings = MEvolution->GetCollisionDetector().GetSettings();
+		FCollisionDetectorSettings CollisionDetectorSettings = MEvolution->GetCollisionConstraints().GetDetectorSettings();
 		CollisionDetectorSettings.bAllowManifoldReuse = (ChaosSolverCollisionAllowManifoldUpdate != 0);
 		CollisionDetectorSettings.bDeferNarrowPhase = (ChaosSolverCollisionDeferNarrowPhase != 0);
 		CollisionDetectorSettings.bAllowManifolds = (ChaosSolverCollisionUseManifolds != 0);
 		CollisionDetectorSettings.bAllowCCD = bChaosUseCCD;
-		MEvolution->GetCollisionDetector().SetSettings(CollisionDetectorSettings);
+		MEvolution->GetCollisionConstraints().SetDetectorSettings(CollisionDetectorSettings);
 		
 		FPBDJointSolverSettings JointsSettings = MEvolution->GetJointConstraints().GetSettings();
 		JointsSettings.MinSolverStiffness = ChaosSolverJointMinSolverStiffness;
@@ -897,6 +934,7 @@ namespace Chaos
 		JointsSettings.NumShockPropagationIterations = ChaosSolverJointNumShockProagationIterations;
 		JointsSettings.ShockPropagationOverride = ChaosSolverJointShockPropagation;
 		JointsSettings.bUseLinearSolver = bChaosSolverJointUseLinearSolver;
+		JointsSettings.bSortEnabled = false;
 		MEvolution->GetJointConstraints().SetSettings(JointsSettings);
 
 		// Apply CVAR overrides if set
@@ -1036,6 +1074,13 @@ namespace Chaos
 				Proxy->ResetDirtyIdx();
 				break;
 			}
+			case EPhysicsProxyType::CharacterGroundConstraintType:
+			{
+				auto Proxy = static_cast<FCharacterGroundConstraintProxy*>(Dirty.Proxy);
+				Proxy->PushStateOnGameThread(*Manager, DataIdx, Dirty.PropertyData);
+				Proxy->ResetDirtyIdx();
+				break;
+			}
 
 			default:
 			ensure(0 && TEXT("Unknown proxy type in physics solver."));
@@ -1046,9 +1091,10 @@ namespace Chaos
 		{
 			int32 NumJoints = 0;
 			int32 NumSuspension = 0;
+			int32 NumCharacterGroundConstraints = 0;
 			int32 NumParticles = 0;
 			UE_LOG(LogChaos, Warning, TEXT("LogDirtyParticles:"));
-			DirtyProxiesData->ForEachProxy([&NumJoints, &NumSuspension, &NumParticles](int32 DataIdx, FDirtyProxy& Dirty)
+			DirtyProxiesData->ForEachProxy([&NumJoints, &NumSuspension, &NumCharacterGroundConstraints, &NumParticles](int32 DataIdx, FDirtyProxy& Dirty)
 			{
 				switch (Dirty.Proxy->GetType())
 				{
@@ -1072,12 +1118,17 @@ namespace Chaos
 						++NumSuspension;
 						break;
 					}
+					case EPhysicsProxyType::CharacterGroundConstraintType:
+					{
+						++NumCharacterGroundConstraints;
+						break;
+					}
 
 					default: break;
 				}
 			});
 
-			UE_LOG(LogChaos, Warning, TEXT("Num Particles:%d Num Shapes:%d Num Joints:%d Num Suspensions:%d"), NumParticles, DirtyProxiesData->NumDirtyShapes(), NumJoints, NumSuspension);
+			UE_LOG(LogChaos, Warning, TEXT("Num Particles:%d Num Shapes:%d Num Joints:%d Num Suspensions:%d Num CharGround:%d"), NumParticles, DirtyProxiesData->NumDirtyShapes(), NumJoints, NumSuspension, NumCharacterGroundConstraints);
 		}
 
 		GetEvolution()->GetBroadPhase().GetIgnoreCollisionManager().PushProducerStorageData_External(MarshallingManager.GetExternalTimestamp_External());
@@ -1135,7 +1186,7 @@ namespace Chaos
 				{
 					RewindData->PushGTDirtyData(*Manager, DataIdx, Dirty, ShapeDirtyData);
 				}
-				Proxy->PushToPhysicsState(*Manager, DataIdx, Dirty, ShapeDirtyData, *GetEvolution(), ExternalDt);
+				Proxy->PushToPhysicsState(*Manager, DataIdx, Dirty, ShapeDirtyData, ExternalDt);
 			}
 			else
 			{
@@ -1183,6 +1234,12 @@ namespace Chaos
 					case EPhysicsProxyType::GeometryCollectionType:
 					{
 						auto Proxy = static_cast<FGeometryCollectionPhysicsProxy*>(Dirty.Proxy);
+						if (!Proxy->IsInitializedOnPhysicsThread())
+						{
+							// Finish registration on the physics thread...
+							Proxy->InitializeBodiesPT(this, GetParticles());
+							GeometryCollectionPhysicsProxies_Internal.Add(Proxy);
+						}
 						Proxy->PushToPhysicsState();
 						// Currently no push needed for geometry collections and they handle the particle creation internally
 						// #TODO This skips the rewind data push so GC will not be rewindable until resolved.
@@ -1191,6 +1248,7 @@ namespace Chaos
 					}
 					case EPhysicsProxyType::JointConstraintType:
 					case EPhysicsProxyType::SuspensionConstraintType:
+					case EPhysicsProxyType::CharacterGroundConstraintType:
 					{
 						// Pass until after all bodies are created. 
 						break;
@@ -1248,6 +1306,28 @@ namespace Chaos
 					break;
 				}
 
+				case EPhysicsProxyType::CharacterGroundConstraintType:
+				{
+					auto ConstraintProxy = static_cast<FCharacterGroundConstraintProxy*>(Dirty.Proxy);
+					const bool bIsNew = !ConstraintProxy->IsInitialized();
+					if (bIsNew)
+					{
+						CharacterGroundConstraintProxies_Internal.Add(ConstraintProxy);
+						ConstraintProxy->InitializeOnPhysicsThread(this, *Manager, DataIdx, Dirty.PropertyData);
+						ConstraintProxy->SetInitialized(GetCurrentFrame());
+					}
+
+					//TODO: Support rewind for character ground constraints
+					//if (RewindData)
+					//{
+					//	RewindData->PushGTDirtyData(*Manager, DataIdx, Dirty, nullptr);
+					//}
+
+					ConstraintProxy->PushStateOnPhysicsThread(this, *Manager, DataIdx, Dirty.PropertyData);
+					Dirty.Proxy->ResetDirtyIdx();
+					break;
+				}
+
 				}
 			}
 		});
@@ -1277,6 +1357,11 @@ namespace Chaos
 			if (SimCallbackObject->HasOption(ESimCallbackOptions::Presimulate))
 			{
 				SimCallbackObjects.Add(SimCallbackObject);
+			}
+
+			if (SimCallbackObject->HasOption(ESimCallbackOptions::MidPhaseModification))
+			{
+				MidPhaseModifiers.Add(SimCallbackObject);
 			}
 
 			if (SimCallbackObject->HasOption(ESimCallbackOptions::ContactModification))
@@ -1488,9 +1573,18 @@ namespace Chaos
 				JointConstraintPhysicsProxies_Internal[Idx]->BufferPhysicsResults(PullData->DirtyJointConstraints.Last());
 			}
 		}
-		
 
-		
+		{
+			ensure(PullData->DirtyCharacterGroundConstraints.Num() == 0);	//we only fill this once per frame
+			PullData->DirtyCharacterGroundConstraints.Reserve(CharacterGroundConstraintProxies_Internal.Num());
+
+			for (int32 Idx = 0; Idx < CharacterGroundConstraintProxies_Internal.Num(); ++Idx)
+			{
+				PullData->DirtyCharacterGroundConstraints.AddDefaulted();
+				CharacterGroundConstraintProxies_Internal[Idx]->BufferPhysicsResults(PullData->DirtyCharacterGroundConstraints.Last());
+			}
+		}
+
 		// Now that results have been buffered we have completed a solve step so we can broadcast that event
 		EventPostSolve.Broadcast(MLastDt);
 
@@ -1511,7 +1605,7 @@ namespace Chaos
 	// however.
 	void FPBDRigidsSolver::UpdateGameThreadStructures()
 	{
-		PullPhysicsStateForEachDirtyProxy_External([](auto){}, [](auto) {});
+		PullPhysicsStateForEachDirtyProxy_External([](auto){}, [](auto) {}, [](auto) {});
 	}
 
 	int32 FPBDRigidsSolver::NumJointConstraints() const
@@ -1543,10 +1637,11 @@ CSV_CUSTOM_STAT(PhysicsCounters, Name, Value, ECsvCustomStatOp::Set);
 		CHAOS_COUNTER_STAT(NumGeometryCollectionBodies, (int32)GetEvolution()->GetParticles().GetGeometryCollectionParticles().Size());
 
 		// Constraint counts
-		CHAOS_COUNTER_STAT(NumIslands, GetEvolution()->GetConstraintGraph().NumIslands());
+		CHAOS_COUNTER_STAT(NumIslands, GetEvolution()->GetIslandManager().NumIslands());
 		CHAOS_COUNTER_STAT(NumIslandGroups, GetEvolution()->GetIslandGroupManager().GetNumActiveGroups());
 		CHAOS_COUNTER_STAT(NumContacts, NumCollisionConstraints());
 		CHAOS_COUNTER_STAT(NumJoints, NumJointConstraints());
+		CHAOS_COUNTER_STAT(NumCharacterGroundConstraints, GetEvolution()->GetCharacterGroundConstraints().GetNumConstraints());
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 		UpdateExpensiveStatCounters();
@@ -1569,24 +1664,27 @@ CSV_CUSTOM_STAT(PhysicsCounters, Name, Value, ECsvCustomStatOp::Set);
 		int32 NumUpdatedManifoldPoints = 0;
 		for (const FPBDCollisionConstraintHandle* Collision : GetEvolution()->GetCollisionConstraints().GetConstraints())
 		{
-			if (Collision->GetContact().IsEnabled())
+			const FPBDCollisionConstraint& Contact = Collision->GetContact();
+			if (Contact.IsEnabled())
 			{
-				if (Collision->GetContact().GetManifoldPoints().Num() > 0)
+				if (Contact.GetManifoldPoints().Num() > 0)
 				{
 					++NumValidCollisions;
 				}
-				if (!Collision->GetContact().AccumulatedImpulse.IsNearlyZero())
+				if (!Contact.AccumulatedImpulse.IsNearlyZero())
 				{
 					++NumActiveCollisions;
 				}
-				if (Collision->GetContact().WasManifoldRestored())
+				if (Contact.WasManifoldRestored())
 				{
 					++NumRestoredCollisions;
 				}
-				for (const FManifoldPoint& ManifoldPoint : Collision->GetContact().GetManifoldPoints())
+				for (int32 PointIndex = 0; PointIndex < Contact.NumManifoldPoints(); ++PointIndex)
 				{
+					const FManifoldPoint& ManifoldPoint = Contact.GetManifoldPoint(PointIndex);
+					const FManifoldPointResult& ManifoldPointResult = Contact.GetManifoldPointResult(PointIndex);
 					++NumManifoldPoints;
-					if (ManifoldPoint.Flags.bWasRestored || Collision->GetContact().WasManifoldRestored())
+					if (ManifoldPoint.Flags.bWasRestored || Contact.WasManifoldRestored())
 					{
 						++NumRestoredManifoldPoints;
 					}
@@ -1594,9 +1692,12 @@ CSV_CUSTOM_STAT(PhysicsCounters, Name, Value, ECsvCustomStatOp::Set);
 					{
 						++NumUpdatedManifoldPoints;
 					}
-					if (!ManifoldPoint.NetPushOut.IsNearlyZero())
+					if (ManifoldPointResult.bIsValid)
 					{
-						++NumActiveManifoldPoints;
+						if (!ManifoldPointResult.NetPushOut.IsNearlyZero())
+						{
+							++NumActiveManifoldPoints;
+						}
 					}
 				}
 
@@ -1666,7 +1767,7 @@ CSV_CUSTOM_STAT(PhysicsCounters, Name, Value, ECsvCustomStatOp::Set);
 		}
 		if (ChaosSolverDrawIslands == 1)
 		{
-			DebugDraw::DrawConstraintGraph(FRigidTransform3(), GetEvolution()->GetConstraintGraph(), &ChaosSolverDebugDebugDrawSettings);
+			DebugDraw::DrawConstraintGraph(FRigidTransform3(), GetEvolution()->GetIslandManager(), &ChaosSolverDebugDebugDrawSettings);
 		}
 		if (ChaosSolverDrawClusterConstraints == 1)
 		{
@@ -1679,6 +1780,10 @@ CSV_CUSTOM_STAT(PhysicsCounters, Name, Value, ECsvCustomStatOp::Set);
 		if (ChaosSolverDrawJoints == 1)
 		{
 			DebugDraw::DrawJointConstraints(FRigidTransform3(), MEvolution->GetJointConstraints(), 1.0f, ChaosSolverDrawJointFeatures, &ChaosSolverDebugDebugDrawSettings);
+		}
+		if (ChaosSolverDrawCharacterGroundConstraints == 1)
+		{
+			DebugDraw::DrawCharacterGroundConstraints(FRigidTransform3(), MEvolution->GetCharacterGroundConstraints(), &ChaosSolverDebugDebugDrawSettings);
 		}
 		if (ChaosSolverDebugDrawSpatialAccelerationStructure)
 		{
@@ -1699,18 +1804,24 @@ CSV_CUSTOM_STAT(PhysicsCounters, Name, Value, ECsvCustomStatOp::Set);
 #endif
 	}
 
+	FSingleParticlePhysicsProxy* FPBDRigidsSolver::GetParticleProxy_PT(const FUniqueIdx& Idx)
+	{
+		return SingleParticlePhysicsProxies_PT.IsValidIndex(Idx.Idx) ? SingleParticlePhysicsProxies_PT[Idx.Idx] : nullptr;
+	}
+
+	const FSingleParticlePhysicsProxy* FPBDRigidsSolver::GetParticleProxy_PT(const FUniqueIdx& Idx) const
+	{
+		return SingleParticlePhysicsProxies_PT.IsValidIndex(Idx.Idx) ? SingleParticlePhysicsProxies_PT[Idx.Idx] : nullptr;
+	}
+
 	FSingleParticlePhysicsProxy* FPBDRigidsSolver::GetParticleProxy_PT(const FGeometryParticleHandle& Handle)
 	{
-		const FUniqueIdx UniqueIdx = Handle.UniqueIdx();
-		return SingleParticlePhysicsProxies_PT.IsValidIndex(UniqueIdx.Idx)
-			? SingleParticlePhysicsProxies_PT[UniqueIdx.Idx] : nullptr;
+		return GetParticleProxy_PT(Handle.UniqueIdx());
 	}
 
 	const FSingleParticlePhysicsProxy* FPBDRigidsSolver::GetParticleProxy_PT(const FGeometryParticleHandle& Handle) const
 	{
-		const FUniqueIdx UniqueIdx = Handle.UniqueIdx();
-		return SingleParticlePhysicsProxies_PT.IsValidIndex(UniqueIdx.Idx)
-			? SingleParticlePhysicsProxies_PT[UniqueIdx.Idx] : nullptr;
+		return GetParticleProxy_PT(Handle.UniqueIdx());
 	}
 
 	void FPBDRigidsSolver::PostEvolutionVDBPush() const
@@ -1815,6 +1926,46 @@ CSV_CUSTOM_STAT(PhysicsCounters, Name, Value, ECsvCustomStatOp::Set);
 	void FPBDRigidsSolver::UpdateIsDeterministic()
 	{
 		GetEvolution()->SetIsDeterministic(IsDetemerministic());
+	}
+
+	void FPBDRigidsSolver::SetParticleDynamicMisc(FPBDRigidParticleHandle* Rigid, const FParticleDynamicMisc& DynamicMisc)
+	{
+		if (Rigid == nullptr)
+		{
+			return;
+		}
+
+		// Enable or disable the particle
+		if (Rigid->Disabled() != DynamicMisc.Disabled())
+		{
+			if (DynamicMisc.Disabled())
+			{
+				GetEvolution()->DisableParticle(Rigid);
+			}
+			else
+			{
+				GetEvolution()->EnableParticle(Rigid);
+			}
+		}
+
+		// If we changed kinematics we need to rebuild the inertia conditioning
+		const bool bDirtyInertiaConditioning = (Rigid->ObjectState() != DynamicMisc.ObjectState());
+		if (bDirtyInertiaConditioning)
+		{
+			Rigid->SetInertiaConditioningDirty();
+		}
+
+		Rigid->SetLinearEtherDrag(DynamicMisc.LinearEtherDrag());
+		Rigid->SetAngularEtherDrag(DynamicMisc.AngularEtherDrag());
+		Rigid->SetMaxLinearSpeedSq(DynamicMisc.MaxLinearSpeedSq());
+		Rigid->SetMaxAngularSpeedSq(DynamicMisc.MaxAngularSpeedSq());
+		Rigid->SetCollisionGroup(DynamicMisc.CollisionGroup());
+		Rigid->SetDisabled(DynamicMisc.Disabled());
+		Rigid->SetCollisionConstraintFlags(DynamicMisc.CollisionConstraintFlags());
+		Rigid->SetControlFlags(DynamicMisc.ControlFlags());
+
+		GetEvolution()->SetParticleObjectState(Rigid, DynamicMisc.ObjectState());
+		GetEvolution()->SetParticleSleepType(Rigid, DynamicMisc.SleepType());
 	}
 
 

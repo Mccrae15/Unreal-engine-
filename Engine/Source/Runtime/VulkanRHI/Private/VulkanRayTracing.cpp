@@ -45,6 +45,15 @@ bool FVulkanRayTracingPlatform::CheckVulkanInstanceFunctions(VkInstance inInstan
 #pragma warning(pop) // restore 4191
 #endif
 
+enum class EBLASBuildDataUsage
+{	
+	// Uses provided VB/IB when filling out BLAS build data
+	Rendering = 0,
+
+	// Does not use VB/IB. Special mode for estimating BLAS size.
+	Size = 1
+};
+
 static VkDeviceAddress GetDeviceAddress(VkDevice Device, VkBuffer Buffer)
 {
 	VkBufferDeviceAddressInfoKHR DeviceAddressInfo;
@@ -165,17 +174,29 @@ static void GetBLASBuildData(
 	const TArrayView<const FRayTracingGeometrySegment> Segments,
 	const ERayTracingGeometryType GeometryType,
 	const FBufferRHIRef IndexBufferRHI,
-	const uint32 IndexBufferOffset,	
-	const uint32 IndexStrideInBytes,
+	const uint32 IndexBufferOffset,
 	ERayTracingAccelerationStructureFlags BuildFlags,
 	const EAccelerationStructureBuildMode BuildMode,
+	const EBLASBuildDataUsage Usage,
 	FVkRtBLASBuildData& BuildData)
 {
 	static constexpr uint32 IndicesPerPrimitive = 3; // Only triangle meshes are supported
 
 	FVulkanResourceMultiBuffer* const IndexBuffer = ResourceCast(IndexBufferRHI.GetReference());
 	VkDeviceOrHostAddressConstKHR IndexBufferDeviceAddress = {};
-	IndexBufferDeviceAddress.deviceAddress = IndexBufferRHI ? IndexBuffer->GetDeviceAddress() + IndexBufferOffset : 0;
+	
+	// We only need to get IB/VB address when we are getting data for rendering. For estimating BLAS size we set them to 0.
+	// According to vulkan spec any VkDeviceOrHostAddressKHR members are ignored in vkGetAccelerationStructureBuildSizesKHR.
+	uint32 IndexStrideInBytes = 0;
+	if (IndexBufferRHI)
+	{
+		IndexBufferDeviceAddress.deviceAddress = Usage == EBLASBuildDataUsage::Rendering ? IndexBuffer->GetDeviceAddress() + IndexBufferOffset : 0;
+
+		// In case we are just calculating size but index buffer is not yet in valid state we assume the geometry is using uint32 format
+		IndexStrideInBytes = Usage == EBLASBuildDataUsage::Rendering
+			? IndexBuffer->GetStride()
+			: (IndexBuffer->GetSize() > 0) ? IndexBuffer->GetStride() : 4;
+	}
 
 	TArray<uint32, TInlineAllocator<1>> PrimitiveCounts;
 
@@ -186,7 +207,9 @@ static void GetBLASBuildData(
 		FVulkanResourceMultiBuffer* const VertexBuffer = ResourceCast(Segment.VertexBuffer.GetReference());
 
 		VkDeviceOrHostAddressConstKHR VertexBufferDeviceAddress = {};
-		VertexBufferDeviceAddress.deviceAddress = VertexBuffer->GetDeviceAddress() + Segment.VertexBufferOffset;
+		VertexBufferDeviceAddress.deviceAddress = Usage == EBLASBuildDataUsage::Rendering
+			? VertexBuffer->GetDeviceAddress() + Segment.VertexBufferOffset
+			: 0;
 
 		VkAccelerationStructureGeometryKHR SegmentGeometry;
 		ZeroVulkanStruct(SegmentGeometry, VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR);
@@ -532,7 +555,7 @@ FVulkanRayTracingScene::FVulkanRayTracingScene(FRayTracingSceneInitializer2 InIn
 		Layer.ScratchBufferOffset = Align(SizeInfo.BuildScratchSize, GRHIRayTracingScratchBufferAlignment);
 
 		SizeInfo.ResultSize = Layer.BufferOffset + LayerSizeInfo.ResultSize;
-		SizeInfo.BuildScratchSize = Layer.BufferOffset + LayerSizeInfo.BuildScratchSize;
+		SizeInfo.BuildScratchSize = Layer.ScratchBufferOffset + LayerSizeInfo.BuildScratchSize;
 	}
 
 	const uint32 ParameterBufferSize = FMath::Max<uint32>(1, Initializer.NumTotalSegments) * sizeof(FVulkanRayTracingGeometryParameters);
@@ -736,8 +759,6 @@ FRayTracingAccelerationStructureSize FVulkanDynamicRHI::RHICalcRayTracingSceneSi
 
 FRayTracingAccelerationStructureSize FVulkanDynamicRHI::RHICalcRayTracingGeometrySize(const FRayTracingGeometryInitializer& Initializer)
 {	
-	const uint32 IndexStrideInBytes = Initializer.IndexBuffer ? Initializer.IndexBuffer->GetStride() : 0;
-
 	FVkRtBLASBuildData BuildData;
 	GetBLASBuildData(
 		Device->GetInstanceHandle(),
@@ -745,9 +766,9 @@ FRayTracingAccelerationStructureSize FVulkanDynamicRHI::RHICalcRayTracingGeometr
 		Initializer.GeometryType,
 		Initializer.IndexBuffer,
 		Initializer.IndexBufferOffset,
-		IndexStrideInBytes,
 		GetRayTracingAccelerationStructureBuildFlags(Initializer),
 		EAccelerationStructureBuildMode::Build,
+		EBLASBuildDataUsage::Size,
 		BuildData);
 
 	FRayTracingAccelerationStructureSize Result;
@@ -841,10 +862,10 @@ void FVulkanCommandListContext::RHIBuildAccelerationStructures(const TArrayView<
 			MakeArrayView(Geometry->Initializer.Segments),
 			Geometry->Initializer.GeometryType,
 			Geometry->Initializer.IndexBuffer,
-			Geometry->Initializer.IndexBufferOffset,			
-			Geometry->Initializer.IndexBuffer ? Geometry->Initializer.IndexBuffer->GetStride() : 0,
+			Geometry->Initializer.IndexBufferOffset,
 			GetRayTracingAccelerationStructureBuildFlags(Geometry->Initializer),
 			P.BuildMode,
+			EBLASBuildDataUsage::Rendering,
 			BuildData);
 
 		check(BuildData.SizesInfo.accelerationStructureSize <= Geometry->AccelerationStructureBuffer->GetSize());
@@ -903,12 +924,6 @@ void FVulkanCommandListContext::RHIBuildAccelerationStructure(const FRayTracingS
 		InstanceBuffer, SceneBuildParams.InstanceBufferOffset);
 }
 
-void FVulkanCommandListContext::RHIRayTraceOcclusion(FRHIRayTracingScene* Scene, FRHIShaderResourceView* Rays, FRHIUnorderedAccessView* Output, uint32 NumRays)
-{
-	// todo
-	return;
-}
-
 template<typename ShaderType>
 static FRHIRayTracingShader* GetBuiltInRayTracingShader()
 {
@@ -919,18 +934,10 @@ static FRHIRayTracingShader* GetBuiltInRayTracingShader()
 
 void FVulkanDevice::InitializeRayTracing()
 {
-	check(BasicRayTracingPipeline == nullptr);
-	// the pipeline should be initialized on the first use due to the ability to disable RT in the game settings
-	//BasicRayTracingPipeline = new FVulkanBasicRaytracingPipeline(this);
 }
 
 void FVulkanDevice::CleanUpRayTracing()
 {
-	if (BasicRayTracingPipeline != nullptr)
-	{
-		delete BasicRayTracingPipeline;
-		BasicRayTracingPipeline = nullptr;
-	}
 }
 
 static uint32 GetAlignedSize(uint32 Value, uint32 Alignment)
@@ -1073,9 +1080,9 @@ FVulkanRayTracingPipelineState::FVulkanRayTracingPipelineState(FVulkanDevice* co
 		delete[] EntryPoint;
 	}
 
-	const FRayTracingProperties& Props = InDevice->GetRayTracingProperties();
-	const uint32 HandleSize = Props.RayTracingPipeline.shaderGroupHandleSize;
-	const uint32 HandleSizeAligned = GetAlignedSize(HandleSize, Props.RayTracingPipeline.shaderGroupHandleAlignment);
+	const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& RayTracingPipelineProps = InDevice->GetOptionalExtensionProperties().RayTracingPipelineProps;
+	const uint32 HandleSize = RayTracingPipelineProps.shaderGroupHandleSize;
+	const uint32 HandleSizeAligned = GetAlignedSize(HandleSize, RayTracingPipelineProps.shaderGroupHandleAlignment);
 	const uint32 GroupCount = ShaderGroups.Num();
 	const uint32 SBTSize = GroupCount * HandleSizeAligned;
 
@@ -1118,42 +1125,6 @@ FVulkanRayTracingPipelineState::~FVulkanRayTracingPipelineState()
 	}
 }
 
-FVulkanBasicRaytracingPipeline::FVulkanBasicRaytracingPipeline(FVulkanDevice* const InDevice)
-{
-	check(Occlusion == nullptr);
-
-	// Occlusion pipeline
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-
-		FRayTracingPipelineStateInitializer OcclusionInitializer;
-
-		FRHIRayTracingShader* OcclusionRGSTable[] = { GetBuiltInRayTracingShader<FOcclusionMainRG>() };
-		OcclusionInitializer.SetRayGenShaderTable(OcclusionRGSTable);
-
-		FRHIRayTracingShader* OcclusionMSTable[] = { GetBuiltInRayTracingShader<FDefaultPayloadMS>() };
-		OcclusionInitializer.SetMissShaderTable(OcclusionMSTable);
-
-		FRHIRayTracingShader* OcclusionCHSTable[] = { GetBuiltInRayTracingShader<FDefaultMainCHS>() };
-		OcclusionInitializer.SetHitGroupTable(OcclusionCHSTable);
-
-		OcclusionInitializer.bAllowHitGroupIndexing = false;
-
-		Occlusion = new FVulkanRayTracingPipelineState(InDevice, OcclusionInitializer);
-
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-}
-
-FVulkanBasicRaytracingPipeline::~FVulkanBasicRaytracingPipeline()
-{
-	if (Occlusion != nullptr)
-	{
-		delete Occlusion;
-		Occlusion = nullptr;
-	}
-}
-
 void FVulkanRayTracingCompactedSizeQueryPool::EndBatch(FVulkanCmdBuffer* InCmdBuffer)
 {
 	check(CmdBuffer == nullptr);
@@ -1166,6 +1137,8 @@ void FVulkanRayTracingCompactedSizeQueryPool::Reset(FVulkanCmdBuffer* InCmdBuffe
 	VulkanRHI::vkCmdResetQueryPool(InCmdBuffer->GetHandle(), QueryPool, 0, MaxQueries);
 	FenceSignaledCounter = 0;
 	CmdBuffer = nullptr;
+	check(QueryOutput.Num() == MaxQueries);
+	FMemory::Memzero(QueryOutput.GetData(), MaxQueries * sizeof(uint64));
 }
 
 bool FVulkanRayTracingCompactedSizeQueryPool::TryGetResults(uint32 NumResults)
@@ -1178,7 +1151,7 @@ bool FVulkanRayTracingCompactedSizeQueryPool::TryGetResults(uint32 NumResults)
 		return false;
 	}
 
-	VkResult Result = VulkanRHI::vkGetQueryPoolResults(Device->GetInstanceHandle(), QueryPool, 0, NumResults, NumResults * sizeof(uint64), QueryOutput.GetData(), sizeof(uint64), VK_QUERY_RESULT_WAIT_BIT);
+	VkResult Result = VulkanRHI::vkGetQueryPoolResults(Device->GetInstanceHandle(), QueryPool, 0, NumResults, NumResults * sizeof(uint64), QueryOutput.GetData(), sizeof(uint64), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
 	if (Result == VK_SUCCESS)
 	{
 		return true;

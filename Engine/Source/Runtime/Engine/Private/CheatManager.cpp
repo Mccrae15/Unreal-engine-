@@ -1,26 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/CheatManager.h"
-#include "HAL/FileManager.h"
-#include "Misc/Paths.h"
+#include "Engine/ServerStatReplicator.h"
 #include "Misc/OutputDeviceFile.h"
+#include "GameFramework/CheatManagerDefines.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "UObject/UObjectIterator.h"
 #include "Misc/PackageName.h"
-#include "EngineDefines.h"
+#include "Engine/GameViewportClient.h"
 #include "GameFramework/DamageType.h"
-#include "InputCoreTypes.h"
-#include "GameFramework/Actor.h"
-#include "GameFramework/Pawn.h"
-#include "CollisionQueryParams.h"
-#include "WorldCollision.h"
-#include "Engine/World.h"
-#include "AI/NavigationSystemBase.h"
-#include "UObject/Package.h"
-#include "GameFramework/PlayerController.h"
-#include "GameFramework/Volume.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/LocalPlayer.h"
@@ -604,6 +593,7 @@ void UCheatManager::SetLevelStreamingStatus(FName PackageName, bool bShouldBeLoa
 					LevelStatus.bNewShouldBeLoaded = bShouldBeLoaded;
 					LevelStatus.bNewShouldBeVisible = bShouldBeVisible;
 					LevelStatus.bNewShouldBlockOnLoad = false;
+					LevelStatus.bNewShouldBlockOnUnload = false;
 					LevelStatus.LODIndex = INDEX_NONE;
 				}
 				PC->ClientUpdateMultipleLevelsStreamingStatus(LevelStatuses);

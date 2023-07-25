@@ -3,9 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "MultiSelectionTool.h"
 #include "InteractiveToolBuilder.h"
 #include "BaseTools/MultiSelectionMeshEditingTool.h"
+#include "Baking/BakingTypes.h"
+#include "Baking/RenderCaptureFunctions.h"
 #include "BakeMeshAttributeMapsToolBase.h"
 
 // Render Capture algorithm includes
@@ -14,6 +15,16 @@
 #include "BakeRenderCaptureTool.generated.h"
 
 class UTexture2D;
+
+namespace UE
+{
+namespace Geometry
+{
+
+class FSceneCapturePhotoSet;
+
+}
+}
 
 //
 // Tool Result
@@ -48,6 +59,12 @@ public:
 
 	UPROPERTY(VisibleAnywhere, Category = Results, meta = (TransientToolProperty))
 	TObjectPtr<UTexture2D> EmissiveMap;
+
+	UPROPERTY(VisibleAnywhere, Category = Results, meta = (TransientToolProperty))
+	TObjectPtr<UTexture2D> OpacityMap;
+
+	UPROPERTY(VisibleAnywhere, Category = Results, meta = (TransientToolProperty))
+	TObjectPtr<UTexture2D> SubsurfaceColorMap;
 };
 
 
@@ -114,6 +131,14 @@ public:
 	UPROPERTY(Category = RenderCaptureOptions, EditAnywhere, meta = (NoResetToDefault))
 	bool bEmissiveMap = false;
 
+	// Whether to generate a texture for the Opacity property
+	UPROPERTY(Category = RenderCaptureOptions, EditAnywhere, meta = (NoResetToDefault))
+	bool bOpacityMap = false;
+
+	// Whether to generate a texture for the SubsurfaceColor property
+	UPROPERTY(Category = RenderCaptureOptions, EditAnywhere, meta = (NoResetToDefault))
+	bool bSubsurfaceColorMap = false;
+
 	// Whether to use anti-aliasing in the render captures, this may introduce artefacts if pixels at different scene depths get blended
 	UPROPERTY(Category = RenderCaptureOptions, EditAnywhere, AdvancedDisplay)
 	bool bAntiAliasing = false;
@@ -132,7 +157,6 @@ public:
 
 	bool operator==(const URenderCaptureProperties& Other) const
 	{
-		// Intentionally omitted TransientToolProperty
 		return Resolution == Other.Resolution
 			&& bBaseColorMap == Other.bBaseColorMap
 			&& bNormalMap == Other.bNormalMap
@@ -141,6 +165,8 @@ public:
 			&& bSpecularMap == Other.bSpecularMap
 			&& bPackedMRSMap == Other.bPackedMRSMap
 			&& bEmissiveMap == Other.bEmissiveMap
+			&& bOpacityMap == Other.bOpacityMap
+			&& bSubsurfaceColorMap == Other.bSubsurfaceColorMap
 			&& bAntiAliasing == Other.bAntiAliasing
 			&& CaptureFieldOfView == Other.CaptureFieldOfView
 			&& NearPlaneDist == Other.NearPlaneDist
@@ -227,6 +253,31 @@ public:
 	TArray<FString> TargetUVLayerNamesList;
 };
 
+UCLASS()
+class MESHMODELINGTOOLSEXP_API UBakeRenderCaptureVisualizationProperties : public UInteractiveToolPropertySet
+{
+	GENERATED_BODY()
+public:
+	/**
+	 * If true  preview results by connecting them to corresponding material inputs
+	 * If false connect the selected preview output as the Base Color input and use empty maps for other material inputs
+	 */
+	UPROPERTY(EditAnywhere, Category = Preview)
+	bool bPreviewAsMaterial = false;
+
+	/** Adjust the brightness of the Base Color material input; does not affect results stored in textures */
+	UPROPERTY(EditAnywhere, Category = Preview, meta = (UIMin = "0.0", UIMax = "1.0"))
+	float Brightness = 1.0f;
+
+	/** Adjust the brightness of the Subsurface Color material input; does not affect results stored in textures */
+	UPROPERTY(EditAnywhere, Category = Preview, meta = (UIMin = "0.0", UIMax = "1.0", DisplayName = "SS Brightness"))
+	float SSBrightness = 1.0f;
+
+	/** Adjust the brightness of the Emissive Color material input; does not affect results stored in textures */
+	UPROPERTY(EditAnywhere, Category = Preview, meta = (UIMin = "0.0", UIMax = "1.0"))
+	float EmissiveScale = 1.0f;
+};
+
 
 //
 // Tool
@@ -235,21 +286,25 @@ public:
 
 
 UCLASS()
-class MESHMODELINGTOOLSEXP_API UBakeRenderCaptureTool : public UBakeMeshAttributeMapsToolBase
+class MESHMODELINGTOOLSEXP_API UBakeRenderCaptureTool :
+	public UMultiSelectionMeshEditingTool,
+	public UE::Geometry::IGenericDataOperatorFactory<UE::Geometry::FMeshMapBaker>,
+	public IInteractiveToolExclusiveToolAPI
 {
 	GENERATED_BODY()
 
 public:
 	UBakeRenderCaptureTool() = default;
 
-	// Begin UInteractiveTool interface
+	// Begin UMultiSelectionMeshEditing < UMultiSelectionTool < UInteractiveTool interface
 	virtual void Setup() override;
 	virtual void Render(IToolsContextRenderAPI* RenderAPI) override;
+	virtual void OnTick(float DeltaTime) override;
 	virtual void OnShutdown(EToolShutdownType ShutdownType) override;
 	virtual bool HasCancel() const override { return true; }
 	virtual bool HasAccept() const override { return true; }
 	virtual bool CanAccept() const override;
-	// End UInteractiveTool interface
+	// End UMultiSelectionMeshEditing < UMultiSelectionTool < UInteractiveTool interface
 
 	// Begin IGenericDataOperatorFactory interface
 	virtual TUniquePtr<UE::Geometry::TGenericDataOperator<UE::Geometry::FMeshMapBaker>> MakeNewOperator() override;
@@ -269,6 +324,9 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UBakeRenderCaptureInputToolProperties> InputMeshSettings;
 
+	UPROPERTY()
+	TObjectPtr<UBakeRenderCaptureVisualizationProperties> VisualizationProps;
+
 	// The computed textures are displayed in the details panel and used in the preview material, they are written
 	// out to assest on shutdown.
 	UPROPERTY()
@@ -276,31 +334,51 @@ protected:
 	
 protected:
 
-	// Begin UBakeMeshAttributeMapsToolBase interface
-	virtual void UpdateResult() override;
-	virtual void UpdateVisualization() override;
-	virtual void GatherAnalytics(FBakeAnalytics::FMeshSettings& Data) override;
-	virtual FString GetAnalyticsEventName() const override { return TEXT("BakeRC"); }
-	// End UBakeMeshAttributeMapsToolBase interface
-	
-	void InvalidateResults();
+	void UpdateResult();
+	void UpdateVisualization();
+	void InvalidateResults(UE::Geometry::FRenderCaptureUpdate Update);
+	void InvalidateCompute();
+	void OnMapsUpdated(const TUniquePtr<UE::Geometry::FMeshMapBaker>& NewResult);
 
-	// In this tool we don't call UBakeMeshAttributeMapsToolBase::OnMapsUpdated because it would require e.g, adding
-	// the render capture channels to EBakeMapType.  The implementation is simpler and leads to less coupling if we
-	// just implement custom versions of the following functions.
-	void InvalidateComputeRC();
-	void OnMapsUpdatedRC(const TUniquePtr<UE::Geometry::FMeshMapBaker>& NewResult);
-	
+	/**
+	 * Compute validity of the Target Mesh tangents. Only checks validity
+	 * once and then caches the result for successive calls.
+	 * 
+	 * @return true if the TargetMesh tangents are valid
+	 */
+	bool ValidTargetMeshTangents();
+	bool bCheckTargetMeshTangents = true;
+	bool bValidTargetMeshTangents = false;
+
 	/**
 	 * Create texture assets from our result map of Texture2D
 	 * @param SourceWorld the source world to define where the texture assets will be stored.
 	 * @param SourceAsset if not null, result textures will be stored adjacent to this asset.
 	 */
-	void CreateTextureAssetsRC(UWorld* SourceWorld, UObject* SourceAsset);
+	void CreateTextureAssets(UWorld* SourceWorld, UObject* SourceAsset);
 
-	// empty maps are shown when nothing is computed
+	// The baking background compute operation
+	TUniquePtr<TGenericDataBackgroundCompute<UE::Geometry::FMeshMapBaker>> Compute = nullptr;
+	EBakeOpState OpState = EBakeOpState::Evaluate;
+
+	UE::Geometry::FDynamicMesh3 TargetMesh;
+	UE::Geometry::FDynamicMeshAABBTree3 TargetMeshSpatial;
+	TSharedPtr<TArray<int32>, ESPMode::ThreadSafe> TargetMeshUVCharts;
+	TSharedPtr<UE::Geometry::FMeshTangentsd, ESPMode::ThreadSafe> TargetMeshTangents;
+
+	// Empty maps are shown when nothing is computed
+	UPROPERTY()
+	TObjectPtr<UTexture2D> EmptyNormalMap;
+	UPROPERTY()
+	TObjectPtr<UTexture2D> EmptyColorMapBlack;
+	UPROPERTY()
+	TObjectPtr<UTexture2D> EmptyColorMapWhite;
 	UPROPERTY()
 	TObjectPtr<UTexture2D> EmptyEmissiveMap;
+	UPROPERTY()
+	TObjectPtr<UTexture2D> EmptyOpacityMap;
+	UPROPERTY()
+	TObjectPtr<UTexture2D> EmptySubsurfaceColorMap;
 	UPROPERTY()
 	TObjectPtr<UTexture2D> EmptyPackedMRSMap;
 	UPROPERTY()
@@ -309,29 +387,65 @@ protected:
 	TObjectPtr<UTexture2D> EmptyMetallicMap;
 	UPROPERTY()
 	TObjectPtr<UTexture2D> EmptySpecularMap;
+
+	float SecondsBeforeWorkingMaterial = 0.75;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> WorkingPreviewMaterial;
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> ErrorPreviewMaterial;
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> PreviewMaterialRC;
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> PreviewMaterialPackedRC;
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> PreviewMaterialRC_Subsurface;
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> PreviewMaterialPackedRC_Subsurface;
+
 	void InitializePreviewMaterials();
 
-	// TODO We currently need to compute this on the game thread because the implementation has checks for this
-	TUniquePtr<UE::Geometry::FSceneCapturePhotoSet> SceneCapture;
-	bool bFirstEverSceneCapture = true;
-
-	// If the user cancels a scene capture before the computation completes then the settings which changed to invoke
-	// the capture are reverted to these values
 	UPROPERTY()
-	TObjectPtr<URenderCaptureProperties> ComputedRenderCaptureProperties;
+	TObjectPtr<UPreviewMesh> PreviewMesh;
+
+	// Note: We need to compute this on the game thread because the implementation has checks for this
+	TUniquePtr<UE::Geometry::FSceneCapturePhotoSet> SceneCapture = nullptr;
+
+	// These are used to determine if we need to re-bake results
 	float ComputedValidDepthThreshold;
+	EBakeTextureSamplesPerPixel ComputedSamplesPerPixel = EBakeTextureSamplesPerPixel::Sample1;
+	EBakeTextureResolution ComputedTextureSize = EBakeTextureResolution::Resolution512;
 
 	TMap<int, FText> TargetUVLayerToError;
 
 	//
 	// Analytics
 	//
+	
+	struct FBakeAnalytics
+	{
+		double TotalBakeDuration = 0.0;
+		double WriteToImageDuration = 0.0;
+		double WriteToGutterDuration = 0.0;
+		int64 NumSamplePixels = 0;
+		int64 NumGutterPixels = 0;
 
-	void RecordAnalytics() const;
+		struct FMeshSettings
+		{
+			int32 NumTargetMeshTris = 0;
+			int32 NumDetailMesh = 0;
+			int64 NumDetailMeshTris = 0;
+		};
+		FMeshSettings MeshSettings;
+	};
+
+	FBakeAnalytics BakeAnalytics;
+
+	FString GetAnalyticsEventName() const { return TEXT("BakeRC"); }
+	void GatherAnalytics(FBakeAnalytics::FMeshSettings& Data);
 	void GatherAnalytics(const UE::Geometry::FMeshMapBaker& Result);
+	void RecordAnalytics() const;
 
+private:
+	UE::Geometry::FRenderCaptureUpdate UpdateSceneCapture();
 };

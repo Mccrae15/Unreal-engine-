@@ -19,6 +19,7 @@
 #include "GlobalShader.h"
 #include "RHIValidation.h"
 #include "RenderGraphPrivate.h"
+#include "RenderCore.h"
 
 IDumpGPUUploadServiceProvider* IDumpGPUUploadServiceProvider::GProvider = nullptr;
 
@@ -81,6 +82,16 @@ static TAutoConsoleVariable<int32> GDumpGPUPassParameters(
 	TEXT("r.DumpGPU.PassParameters"), 1,
 	TEXT("Whether to dump the pass parameters."),
 	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> GDumpGPUDelay(
+	TEXT("r.DumpGPU.Delay"), 0.0f,
+	TEXT("Delay in seconds before dumping the frame."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> GDumpGPUFrameCount(
+	TEXT("r.DumpGPU.FrameCount"), 1,
+	TEXT("Number of consecutive frames to dump (default=1)."),
+	ECVF_Default);
 
 static TAutoConsoleVariable<int32> GDumpGPUDraws(
 	TEXT("r.DumpGPU.Draws"), 0,
@@ -195,6 +206,7 @@ public:
 
 	bool bEnableDiskWrite = false;
 	bool bUpload = false;
+	int32 RemainingFrameCount = 1;
 	FName UploadResourceCompressionName;
 	FString DumpingDirectoryPath;
 	FDateTime Time;
@@ -490,7 +502,7 @@ public:
 				return;
 			}
 
-			const TCHAR* SetByName = TEXT("");
+			const TCHAR* SetByName = TEXT("Unknown");
 			switch (CVarFlags & ECVF_SetByMask)
 			{
 			case ECVF_SetByConstructor:
@@ -523,6 +535,11 @@ public:
 				SetByName = TEXT("DeviceProfile");
 				break;
 			}
+			case ECVF_SetByGameOverride:
+			{
+				SetByName = TEXT("GameOverride");
+				break;
+			}
 			case ECVF_SetByConsoleVariablesIni:
 			{
 				SetByName = TEXT("ConsoleVariablesIni");
@@ -544,7 +561,7 @@ public:
 				break;
 			}
 			default:
-				unimplemented();
+				ensure(false);
 			}
 
 			FString Value = CVar->GetString();
@@ -911,6 +928,7 @@ public:
 						.SetFlags(ETextureCreateFlags::UAV | ETextureCreateFlags::ShaderResource | ETextureCreateFlags::HideInVisualizeTexture);
 
 					StagingSrcTexture = RHICreateTexture(Desc);
+					StagingSrcTexture->DisableLifetimeExtension();
 				}
 
 				FUnorderedAccessViewRHIRef StagingOutput = RHICreateUnorderedAccessView(StagingSrcTexture, /* MipLevel = */ 0);
@@ -944,6 +962,7 @@ public:
 					.SetFlags(ETextureCreateFlags::CPUReadback | ETextureCreateFlags::HideInVisualizeTexture);
 
 				StagingTexture = RHICreateTexture(Desc);
+				StagingTexture->DisableLifetimeExtension();
 
 				RHICmdList.Transition(FRHITransitionInfo(StagingTexture, ERHIAccess::Unknown, ERHIAccess::CopyDest));
 
@@ -1464,6 +1483,7 @@ public:
 				{
 					FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::RHIReadbackCommands);
 					StagingBuffer = RHICreateStagingBuffer();
+					StagingBuffer->DisableLifetimeExtension();
 
 					static const FName FenceName(TEXT("DumpGPU.BufferFence"));
 					Fence = RHICreateGPUFence(FenceName);
@@ -1582,6 +1602,9 @@ public:
 static uint64 DumpingFrameCounter_GameThread = 0;
 static FRDGResourceDumpContext* GRDGResourceDumpContext = nullptr;
 
+static float GNextDumpingRemainingTime = -1.0f;
+static FRDGResourceDumpContext* GNextRDGResourceDumpContext = nullptr;
+
 bool IsDumpingRDGResources()
 {
 	return GRDGResourceDumpContext != nullptr;
@@ -1599,7 +1622,7 @@ FString FRDGBuilder::BeginResourceDump(const TCHAR* Cmd)
 {
 	check(IsInGameThread());
 
-	if (DumpingFrameCounter_GameThread != 0)
+	if (DumpingFrameCounter_GameThread != 0 || GNextDumpingRemainingTime > 0.0f)
 	{
 		return FString();
 	}
@@ -1639,59 +1662,77 @@ FString FRDGBuilder::BeginResourceDump(const TCHAR* Cmd)
 		}
 	}
 
-	FRDGResourceDumpContext* NewResourceDumpContext = new FRDGResourceDumpContext;
-
-	NewResourceDumpContext->Time = FDateTime::Now();
+	FRDGResourceDumpContext* NewResourceDumpContext;
+	if (GNextRDGResourceDumpContext == nullptr)
 	{
-		FString CVarDirectoryPath = GDumpGPUDirectoryCVar.GetValueOnGameThread();
-		FString EnvDirectoryPath = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-DumpGPUPath"));
+		NewResourceDumpContext = new FRDGResourceDumpContext;
 
-		FString DirectoryPath;
-		if (!CVarDirectoryPath.IsEmpty())
+		NewResourceDumpContext->Time = FDateTime::Now();
 		{
-			DirectoryPath = CVarDirectoryPath;
+			FString CVarDirectoryPath = GDumpGPUDirectoryCVar.GetValueOnGameThread();
+			FString EnvDirectoryPath = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-DumpGPUPath"));
+
+			FString DirectoryPath;
+			if (!CVarDirectoryPath.IsEmpty())
+			{
+				DirectoryPath = CVarDirectoryPath;
+			}
+			else if (!EnvDirectoryPath.IsEmpty())
+			{
+				DirectoryPath = EnvDirectoryPath;
+			}
+			else
+			{
+				DirectoryPath = FPaths::ProjectSavedDir() / TEXT("GPUDumps/");
+			}
+			NewResourceDumpContext->DumpingDirectoryPath = DirectoryPath / FApp::GetProjectName() + TEXT("-") + FPlatformProperties::PlatformName() + TEXT("-") + NewResourceDumpContext->Time.ToString() + TEXT("/");
 		}
-		else if (!EnvDirectoryPath.IsEmpty())
+		NewResourceDumpContext->bEnableDiskWrite = GDumpTestEnableDiskWrite.GetValueOnGameThread() != 0;
+		NewResourceDumpContext->RemainingFrameCount = FMath::Max(GDumpGPUFrameCount.GetValueOnGameThread(), 1);
+
+		if (Switches.Contains(TEXT("upload")))
 		{
-			DirectoryPath = EnvDirectoryPath;
+			if (!IDumpGPUUploadServiceProvider::GProvider || !NewResourceDumpContext->bEnableDiskWrite)
+			{
+				UE_LOG(LogRendererCore, Warning, TEXT("DumpGPU upload services are not set up."));
+			}
+			else if (GDumpGPUUploadCVar.GetValueOnGameThread() == 0)
+			{
+				UE_LOG(LogRendererCore, Warning, TEXT("DumpGPU upload services are not available because r.DumpGPU.Upload=0."));
+			}
+			else
+			{
+				NewResourceDumpContext->bUpload = true;
+			}
 		}
-		else
+
+		if (NewResourceDumpContext->bUpload)
 		{
-			DirectoryPath = FPaths::ProjectSavedDir() / TEXT("GPUDumps/");
+			if (GDumpGPUUploadCompressResources.GetValueOnGameThread() == 1)
+			{
+				NewResourceDumpContext->UploadResourceCompressionName = NAME_Zlib;
+			}
+			else if (GDumpGPUUploadCompressResources.GetValueOnGameThread() == 2)
+			{
+				NewResourceDumpContext->UploadResourceCompressionName = NAME_Gzip;
+			}
 		}
-		NewResourceDumpContext->DumpingDirectoryPath = DirectoryPath / FApp::GetProjectName() + TEXT("-") + FPlatformProperties::PlatformName() + TEXT("-") + NewResourceDumpContext->Time.ToString() + TEXT("/");
+
+		NewResourceDumpContext->bShowInExplore = NewResourceDumpContext->bEnableDiskWrite && GDumpExploreCVar.GetValueOnGameThread() != 0 && !NewResourceDumpContext->bUpload;
+	
+		if (GDumpGPUDelay.GetValueOnGameThread() > 0.0f)
+		{
+			GNextDumpingRemainingTime = GDumpGPUDelay.GetValueOnGameThread();
+			GNextRDGResourceDumpContext = NewResourceDumpContext;
+			return NewResourceDumpContext->DumpingDirectoryPath;
+		}
 	}
-	NewResourceDumpContext->bEnableDiskWrite = GDumpTestEnableDiskWrite.GetValueOnGameThread() != 0;
-
-	if (Switches.Contains(TEXT("upload")))
+	else
 	{
-		if (!IDumpGPUUploadServiceProvider::GProvider || !NewResourceDumpContext->bEnableDiskWrite)
-		{
-			UE_LOG(LogRendererCore, Warning, TEXT("DumpGPU upload services are not set up."));
-		}
-		else if (GDumpGPUUploadCVar.GetValueOnGameThread() == 0)
-		{
-			UE_LOG(LogRendererCore, Warning, TEXT("DumpGPU upload services are not available because r.DumpGPU.Upload=0."));
-		}
-		else
-		{
-			NewResourceDumpContext->bUpload = true;
-		}
+		NewResourceDumpContext = GNextRDGResourceDumpContext;
+		GNextRDGResourceDumpContext = nullptr;
 	}
-
-	if (NewResourceDumpContext->bUpload)
-	{
-		if (GDumpGPUUploadCompressResources.GetValueOnGameThread() == 1)
-		{
-			NewResourceDumpContext->UploadResourceCompressionName = NAME_Zlib;
-		}
-		else if (GDumpGPUUploadCompressResources.GetValueOnGameThread() == 2)
-		{
-			NewResourceDumpContext->UploadResourceCompressionName = NAME_Gzip;
-		}
-	}
-
-	NewResourceDumpContext->bShowInExplore = NewResourceDumpContext->bEnableDiskWrite && GDumpExploreCVar.GetValueOnGameThread() != 0 && !NewResourceDumpContext->bUpload;
+	
 	NewResourceDumpContext->MemoryConstants = FPlatformMemory::GetConstants();
 	NewResourceDumpContext->MemoryStats = FPlatformMemory::GetStats();
 
@@ -1824,6 +1865,23 @@ void FRDGBuilder::EndResourceDump()
 	if (DumpingFrameCounter_GameThread == 0 ||
 		DumpingFrameCounter_GameThread == MAX_uint64 ||
 		DumpingFrameCounter_GameThread >= GFrameCounter)
+	{
+		if (GNextDumpingRemainingTime > 0.0f)
+		{
+			check(GNextRDGResourceDumpContext);
+			GNextDumpingRemainingTime -= FApp::GetDeltaTime();
+			if (GNextDumpingRemainingTime <= 0.0)
+			{
+				GNextDumpingRemainingTime = -1.0f;
+				FRDGBuilder::BeginResourceDump(TEXT(""));
+				check(!GNextRDGResourceDumpContext);
+			}
+		}
+		return;
+	}
+
+	GRDGResourceDumpContext->RemainingFrameCount--;
+	if (GRDGResourceDumpContext->RemainingFrameCount > 0)
 	{
 		return;
 	}

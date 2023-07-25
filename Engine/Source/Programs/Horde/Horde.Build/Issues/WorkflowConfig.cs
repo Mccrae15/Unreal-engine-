@@ -66,6 +66,11 @@ namespace Horde.Build.Issues
 		public string? TriageAlias { get; set; }
 
 		/// <summary>
+		/// Slack user/alias to ping for specific issue types (such as Systemic), if there is nobody assigned to an issue by default.
+		/// </summary>
+		public Dictionary<string, string>? TriageTypeAliases { get; set; }
+
+		/// <summary>
 		/// Alias to ping if an issue has not been resolved for a certain amount of time
 		/// </summary>
 		public string? EscalateAlias { get; set; }
@@ -84,6 +89,11 @@ namespace Horde.Build.Issues
 		/// Whether to mention people on this thread. Useful to disable for testing.
 		/// </summary>
 		public bool AllowMentions { get; set; } = true;
+
+		/// <summary>
+		/// Uses the admin.conversations.invite API to invite users to the channel
+		/// </summary>
+		public bool InviteRestrictedUsers { get; set; }
 
 		/// <summary>
 		/// Additional node annotations implicit in this workflow

@@ -1,26 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tests/AutomationCommon.h"
-#include "Misc/Paths.h"
+#include "Engine/World.h"
 #include "Misc/EngineVersion.h"
-#include "EngineGlobals.h"
-#include "Widgets/SWidget.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Engine.h"
+#include "HAL/PlatformFile.h"
 #include "HardwareInfo.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectIterator.h"
+#include "Misc/App.h"
 #include "UObject/Package.h"
 #include "Kismet/GameplayStatics.h"
 #include "ContentStreaming.h"
-#include "Widgets/SWindow.h"
 #include "Framework/Application/SlateApplication.h"
+#include "RenderingThread.h"
 #include "ShaderCompiler.h"
 #include "GameFramework/GameStateBase.h"
 #include "Scalability.h"
 #include "StereoRendering.h"
 #include "Misc/PackageName.h"
-#include "TextureCompiler.h"
 #include "Tests/AutomationTestSettings.h"
 #include "GameMapsSettings.h"
 #include "IRenderCaptureProvider.h"
@@ -161,8 +158,7 @@ namespace AutomationCommon
 	{
 		TArray<uint8> FrameTrace;
 
-		bool bDisableFrameTraceCapture = FParse::Param(FCommandLine::Get(), TEXT("DisableFrameTraceCapture"));
-		if (!bDisableFrameTraceCapture && CVarAutomationAllowFrameTraceCapture.GetValueOnGameThread() != 0 && IRenderCaptureProvider::IsAvailable())
+		if (CVarAutomationAllowFrameTraceCapture.GetValueOnGameThread() != 0 && IRenderCaptureProvider::IsAvailable())
 		{
 			const FString MapAndTest = MapOrContext / FPaths::MakeValidFileName(TestName, TEXT('_'));
 			FString ScreenshotName = GetScreenshotName(MapAndTest);
@@ -685,17 +681,6 @@ bool FWaitForInteractiveFrameRate::Update()
 // Common Latent commands which are used across test type. I.e. Engine, Network, etc...
 
 
-bool FPlayMatineeLatentCommand::Update()
-{
-	return true;
-}
-
-
-bool FWaitForMatineeToCompleteLatentCommand::Update()
-{
-	return true;
-}
-
 
 bool FExecStringLatentCommand::Update()
 {
@@ -744,17 +729,6 @@ bool FStreamAllResourcesLatentCommand::Update()
 	return true;
 }
 
-bool FEnqueuePerformanceCaptureCommands::Update()
-{
-	return true;
-}
-
-
-bool FMatineePerformanceCaptureCommand::Update()
-{
-	return true;
-
-}
 
 
 bool FExecWorldStringLatentCommand::Update()

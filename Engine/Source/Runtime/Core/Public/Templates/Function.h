@@ -563,9 +563,7 @@ namespace UE::Core::Private::Function
 		template <
 			typename FunctorType,
 			typename = typename TEnableIf<
-				TNot<
-					TIsSame<TFunctionRefBase, typename TDecay<FunctorType>::Type>
-				>::Value
+				!std::is_same_v<TFunctionRefBase, typename TDecay<FunctorType>::Type>
 			>::Type
 		>
 		TFunctionRefBase(FunctorType&& InFunc)
@@ -785,7 +783,7 @@ public:
 			>::Value
 		>::Type
 	>
-	TFunctionRef(FunctorType&& InFunc)
+	TFunctionRef(FunctorType&& InFunc UE_LIFETIMEBOUND)
 		: Super(Forward<FunctorType>(InFunc))
 	{
 		// This constructor is disabled for TFunctionRef types so it isn't incorrectly selected as copy/move constructors.
@@ -916,6 +914,22 @@ public:
 	{
 		return Super::IsSet();
 	}
+
+	/**
+	 * Nullptr equality operator.
+	 */
+	FORCEINLINE bool operator==(TYPE_OF_NULLPTR) const
+	{
+		return !*this;
+	}
+
+	/**
+	 * Nullptr inequality operator.
+	 */
+	FORCEINLINE bool operator!=(TYPE_OF_NULLPTR) const
+	{
+		return (bool)*this;
+	}
 };
 
 /**
@@ -1022,20 +1036,13 @@ public:
 	}
 };
 
+
+#if !PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
 /**
  * Nullptr equality operator.
  */
 template <typename FuncType>
 FORCEINLINE bool operator==(TYPE_OF_NULLPTR, const TFunction<FuncType>& Func)
-{
-	return !Func;
-}
-
-/**
- * Nullptr equality operator.
- */
-template <typename FuncType>
-FORCEINLINE bool operator==(const TFunction<FuncType>& Func, TYPE_OF_NULLPTR)
 {
 	return !Func;
 }
@@ -1048,12 +1055,4 @@ FORCEINLINE bool operator!=(TYPE_OF_NULLPTR, const TFunction<FuncType>& Func)
 {
 	return (bool)Func;
 }
-
-/**
- * Nullptr inequality operator.
- */
-template <typename FuncType>
-FORCEINLINE bool operator!=(const TFunction<FuncType>& Func, TYPE_OF_NULLPTR)
-{
-	return (bool)Func;
-}
+#endif

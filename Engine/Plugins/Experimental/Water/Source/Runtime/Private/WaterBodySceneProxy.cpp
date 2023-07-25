@@ -1,14 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterBodySceneProxy.h"
-#include "WaterSplineMetadata.h"
-#include "WaterModule.h"
-#include "WaterUtils.h"
+#include "Engine/Engine.h"
+#include "Materials/Material.h"
+#include "PrimitiveViewRelevance.h"
 #include "WaterBodyComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "SceneInterface.h"
-#include "PrimitiveSceneInfo.h"
-#include "Algo/Transform.h"
+#include "SceneManagement.h"
 
 TAutoConsoleVariable<int32> CVarVisualizeWaterInfoSceneProxies(
 		TEXT("r.Water.VisualizeWaterInfoSceneProxies"),

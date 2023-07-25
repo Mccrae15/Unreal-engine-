@@ -47,6 +47,13 @@
 
 #define INSIGHTS_DEBUG_METADATA 0
 
+#if 0
+#define INSIGHTS_API_LOGF(Format, ...) { UE_LOG(LogTraceServices, Log, TEXT("[MemAlloc][API] ") Format, __VA_ARGS__); }
+//#define INSIGHTS_API_LOGF(Format, ...) { FPlatformMisc::LowLevelOutputDebugStringf(TEXT("[MemAlloc][API] ") Format TEXT("\n"), __VA_ARGS__); }
+#else
+#define INSIGHTS_API_LOGF(Format, ...)
+#endif
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace TraceServices
@@ -559,7 +566,7 @@ void FShortLivingAllocs::Reset()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FAllocationItem* FShortLivingAllocs::FindRef(uint64 Address)
+FAllocationItem* FShortLivingAllocs::FindRef(uint64 Address) const
 {
 #if INSIGHTS_SLA_USE_ADDRESS_MAP
 	FNode** NodePtr = AddressMap.Find(Address);
@@ -579,6 +586,51 @@ FAllocationItem* FShortLivingAllocs::FindRef(uint64 Address)
 	}
 	return nullptr;
 #endif
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FAllocationItem* FShortLivingAllocs::FindRange(const uint64 Address) const
+{
+	//TODO: Can we do better than iterating all the nodes?
+	FNode* Node = LastAddedAllocNode;
+	while (Node != nullptr)
+	{
+		if (Node->Alloc->IsContained(Address))
+		{
+			return Node->Alloc;
+		}
+		Node = Node->Prev;
+	}
+	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FShortLivingAllocs::Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
+{
+	FNode* Node = LastAddedAllocNode;
+	while (Node != nullptr)
+	{
+		Callback(*Node->Alloc);
+		Node = Node->Prev;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FShortLivingAllocs::Enumerate(uint64 StartAddress, uint64 EndAddress, TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
+{
+	FNode* Node = LastAddedAllocNode;
+	while (Node != nullptr)
+	{
+		const FAllocationItem& Alloc = *Node->Alloc;
+		if (Alloc.Address >= StartAddress && Alloc.Address < EndAddress)
+		{
+			Callback(Alloc);
+		}
+		Node = Node->Prev;
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -704,34 +756,6 @@ FAllocationItem* FShortLivingAllocs::Remove(uint64 Address)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FShortLivingAllocs::Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
-{
-	FNode* Node = LastAddedAllocNode;
-	while (Node != nullptr)
-	{
-		Callback(*(Node->Alloc));
-		Node = Node->Prev;
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-FAllocationItem* FShortLivingAllocs::FindRange(const uint64 Address) const
-{
-	//todo: Can we do better than iterating all the nodes?
-	FNode* Node = LastAddedAllocNode;
-	while (Node != nullptr)
-	{
-		if (Node->Alloc->IsContained(Address))
-		{
-			return Node->Alloc;
-		}
-		Node = Node->Prev;
-	}
-	return nullptr;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
 // FHeapAllocs
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -770,9 +794,9 @@ void FHeapAllocs::Reset()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FAllocationItem* FHeapAllocs::FindRef(uint64 Address)
+FAllocationItem* FHeapAllocs::FindRef(uint64 Address) const
 {
-	FList* ListPtr = AddressMap.Find(Address);
+	const FList* ListPtr = AddressMap.Find(Address);
 	if (ListPtr)
 	{
 		// Search in reverse added order.
@@ -785,6 +809,56 @@ FAllocationItem* FHeapAllocs::FindRef(uint64 Address)
 		}
 	}
 	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FAllocationItem* FHeapAllocs::FindRange(uint64 Address) const
+{
+	for (const auto& KV : AddressMap)
+	{
+		// Search in reverse added order.
+		for (const FNode* Node = KV.Value.Last; Node != nullptr; Node = Node->Prev)
+		{
+			if (Node->Alloc->IsContained(Address))
+			{
+				return Node->Alloc;
+			}
+		}
+	}
+	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FHeapAllocs::Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
+{
+	for (const auto& KV : AddressMap)
+	{
+		// Iterate in same order as added.
+		for (const FNode* Node = KV.Value.First; Node != nullptr; Node = Node->Next)
+		{
+			Callback(*Node->Alloc);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FHeapAllocs::Enumerate(uint64 StartAddress, uint64 EndAddress, TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
+{
+	for (const auto& KV : AddressMap)
+	{
+		if (KV.Key >= StartAddress && KV.Key < EndAddress)
+		{
+			// Iterate in same order as added.
+			for (const FNode* Node = KV.Value.First; Node != nullptr; Node = Node->Next)
+			{
+				//check(Node->Alloc->Address == KV.Key);
+				Callback(*Node->Alloc);
+			}
+		}
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -843,38 +917,6 @@ FAllocationItem* FHeapAllocs::Remove(uint64 Address)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FHeapAllocs::Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
-{
-	for (const auto& KV : AddressMap)
-	{
-		// Iterate in same order as added.
-		for (const FNode* Node = KV.Value.First; Node != nullptr; Node = Node->Next)
-		{
-			Callback(*Node->Alloc);
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-FAllocationItem* FHeapAllocs::FindRange(uint64 Address) const
-{
-	for (const auto& KV : AddressMap)
-	{
-		// Search in reverse added order.
-		for (const FNode* Node = KV.Value.Last; Node != nullptr; Node = Node->Prev)
-		{
-			if (Node->Alloc->IsContained(Address))
-			{
-				return Node->Alloc;
-			}
-		}
-	}
-	return nullptr;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
 // FLiveAllocCollection
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -890,14 +932,7 @@ FLiveAllocCollection::FLiveAllocCollection()
 FLiveAllocCollection::~FLiveAllocCollection()
 {
 	HeapAllocs.Reset();
-
-	for (const auto& KV : LongLivingAllocs)
-	{
-		const FAllocationItem* Allocation = KV.Value;
-		delete Allocation;
-	}
 	LongLivingAllocs.Reset();
-
 	ShortLivingAllocs.Reset();
 
 #if INSIGHTS_USE_LAST_ALLOC
@@ -911,7 +946,7 @@ FLiveAllocCollection::~FLiveAllocCollection()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FAllocationItem* FLiveAllocCollection::FindRef(uint64 Address)
+FAllocationItem* FLiveAllocCollection::FindRef(uint64 Address) const
 {
 #if INSIGHTS_USE_LAST_ALLOC
 	if (LastAlloc && LastAlloc->Address == Address)
@@ -941,7 +976,7 @@ FAllocationItem* FLiveAllocCollection::FindRef(uint64 Address)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FAllocationItem* FLiveAllocCollection::FindHeapRef(uint64 Address)
+FAllocationItem* FLiveAllocCollection::FindHeapRef(uint64 Address) const
 {
 	FAllocationItem* FoundHeapAlloc = HeapAllocs.FindRef(Address);
 	if (FoundHeapAlloc)
@@ -955,7 +990,7 @@ FAllocationItem* FLiveAllocCollection::FindHeapRef(uint64 Address)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FAllocationItem* FLiveAllocCollection::FindByAddressRange(uint64 Address)
+FAllocationItem* FLiveAllocCollection::FindByAddressRange(uint64 Address) const
 {
 #if INSIGHTS_USE_LAST_ALLOC
 	if (LastAlloc && LastAlloc->IsContained(Address))
@@ -973,12 +1008,11 @@ FAllocationItem* FLiveAllocCollection::FindByAddressRange(uint64 Address)
 	}
 #endif
 
-	for (const auto& Alloc : LongLivingAllocs)
+	FAllocationItem* FoundLongLivingAlloc = LongLivingAllocs.FindRange(Address);
+	if (FoundLongLivingAlloc)
 	{
-		if (Alloc.Value->IsContained(Address))
-		{
-			return Alloc.Value;
-		}
+		INSIGHTS_SLOW_CHECK(FoundLongLivingAlloc->IsContained(Address));
+		return FoundLongLivingAlloc;
 	}
 
 	return nullptr;
@@ -986,7 +1020,7 @@ FAllocationItem* FLiveAllocCollection::FindByAddressRange(uint64 Address)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FAllocationItem* FLiveAllocCollection::FindHeapByAddressRange(uint64 Address)
+FAllocationItem* FLiveAllocCollection::FindHeapByAddressRange(uint64 Address) const
 {
 	FAllocationItem* FoundHeapAlloc = HeapAllocs.FindRange(Address);
 	if (FoundHeapAlloc)
@@ -996,6 +1030,46 @@ FAllocationItem* FLiveAllocCollection::FindHeapByAddressRange(uint64 Address)
 	}
 
 	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FLiveAllocCollection::Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
+{
+	HeapAllocs.Enumerate(Callback);
+
+#if INSIGHTS_USE_LAST_ALLOC
+	if (LastAlloc)
+	{
+		Callback(*LastAlloc);
+	}
+#endif
+
+#if INSIGHTS_USE_SHORT_LIVING_ALLOCS
+	ShortLivingAllocs.Enumerate(Callback);
+#endif
+
+	LongLivingAllocs.Enumerate(Callback);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FLiveAllocCollection::Enumerate(uint64 StartAddress, uint64 EndAddress, TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
+{
+	HeapAllocs.Enumerate(StartAddress, EndAddress, Callback);
+
+#if INSIGHTS_USE_LAST_ALLOC
+	if (LastAlloc && LastAlloc->Address >= StartAddress && LastAlloc->Address < EndAddress)
+	{
+		Callback(*LastAlloc);
+	}
+#endif
+
+#if INSIGHTS_USE_SHORT_LIVING_ALLOCS
+	ShortLivingAllocs.Enumerate(StartAddress, EndAddress, Callback);
+#endif
+
+	LongLivingAllocs.Enumerate(StartAddress, EndAddress, Callback);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1043,7 +1117,7 @@ void FLiveAllocCollection::Add(FAllocationItem* Alloc)
 	}
 #endif
 
-	LongLivingAllocs.Add(Alloc->Address, Alloc);
+	LongLivingAllocs.Add(Alloc);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1096,8 +1170,8 @@ FAllocationItem* FLiveAllocCollection::Remove(uint64 Address)
 	}
 #endif
 
-	FAllocationItem* RemovedLongLivingAlloc;
-	if (LongLivingAllocs.RemoveAndCopyValue(Address, RemovedLongLivingAlloc))
+	FAllocationItem* RemovedLongLivingAlloc = LongLivingAllocs.Remove(Address);
+	if (RemovedLongLivingAlloc)
 	{
 		INSIGHTS_SLOW_CHECK(RemovedLongLivingAlloc->Address == Address);
 		INSIGHTS_SLOW_CHECK(TotalAllocCount > 0);
@@ -1122,30 +1196,6 @@ FAllocationItem* FLiveAllocCollection::RemoveHeap(uint64 Address)
 	}
 
 	return nullptr;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FLiveAllocCollection::Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const
-{
-	HeapAllocs.Enumerate(Callback);
-
-#if INSIGHTS_USE_LAST_ALLOC
-	if (LastAlloc)
-	{
-		Callback(*LastAlloc);
-	}
-#endif
-
-#if INSIGHTS_USE_SHORT_LIVING_ALLOCS
-	ShortLivingAllocs.Enumerate(Callback);
-#endif
-
-	for (const auto& KV : LongLivingAllocs)
-	{
-		const FAllocationItem* Allocation = KV.Value;
-		Callback(*Allocation);
-	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1198,6 +1248,8 @@ void FAllocationsProvider::EditInit(double InTime, uint8 InMinAlignment)
 		return;
 	}
 
+	INSIGHTS_API_LOGF(TEXT("Init(Time=%f, MinAlignment=%u)"), InTime, uint32(InMinAlignment));
+
 	InitTime = InTime;
 	MinAlignment = InMinAlignment;
 
@@ -1211,58 +1263,6 @@ void FAllocationsProvider::EditInit(double InTime, uint8 InMinAlignment)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FAllocationsProvider::AddHeapSpec(HeapId Id, HeapId ParentId, const FStringView& Name, EMemoryTraceHeapFlags Flags)
-{
-	if (Id < MaxRootHeaps)
-	{
-		if (Id == 0 && SbTree[Id] != nullptr)
-		{
-			// "System" root heap is already created. See class constructor.
-			check(LiveAllocs[Id] != nullptr);
-		}
-		else
-		{
-			check(SbTree[Id] == nullptr && LiveAllocs[Id] == nullptr);
-
-			constexpr uint32 ColumnShift = 17; // 1<<17 = 128K
-			SbTree[Id] = new FSbTree(Session.GetLinearAllocator(), ColumnShift);
-			LiveAllocs[Id] = new FLiveAllocCollection();
-		}
-
-		FHeapSpec& RootHeapSpec = HeapSpecs[Id];
-		RootHeapSpec.Name = Session.StoreString(Name);
-		RootHeapSpec.Parent = nullptr;
-		RootHeapSpec.Id = Id;
-		RootHeapSpec.Flags = Flags;
-	}
-	else
-	{
-		FHeapSpec& ParentSpec = HeapSpecs[ParentId];
-		if (ParentSpec.Name == nullptr)
-		{
-			UE_LOG(LogTraceServices, Warning, TEXT("[MemAlloc] Parent heap id (%u) used before it was announced for heap %s."), ParentId, *FString(Name));
-		}
-		FHeapSpec& NewSpec = HeapSpecs[Id];
-		NewSpec.Name = Session.StoreString(Name);
-		NewSpec.Parent = &ParentSpec;
-		NewSpec.Id = Id;
-		NewSpec.Flags = Flags;
-
-		ParentSpec.Children.Add(&NewSpec);
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FAllocationsProvider::EditHeapSpec(HeapId Id, HeapId ParentId, const FStringView& Name, EMemoryTraceHeapFlags Flags)
-{
-	Lock.WriteAccessCheck();
-
-	AddHeapSpec(Id, ParentId, Name, Flags);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 void FAllocationsProvider::EditAlloc(double Time, uint32 CallstackId, uint64 Address, uint64 InSize, uint32 InAlignment, HeapId RootHeap)
 {
 	Lock.WriteAccessCheck();
@@ -1271,6 +1271,8 @@ void FAllocationsProvider::EditAlloc(double Time, uint32 CallstackId, uint64 Add
 	{
 		return;
 	}
+
+	INSIGHTS_API_LOGF(TEXT("Alloc(Time=%f, Address=0x%llX, Size=%llu, Alignment=%u, RootHeap=%u, CallstackId=%u)"), Time, Address, InSize, InAlignment, RootHeap, CallstackId);
 
 	if (Address == 0)
 	{
@@ -1366,7 +1368,7 @@ void FAllocationsProvider::EditAlloc(double Time, uint32 CallstackId, uint64 Add
 		++AllocErrors;
 		if (AllocErrors <= MaxLogMessagesPerErrorType)
 		{
-			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] Invalid ALLOC event (Address=0x%llX, Size=%llu, Tag=%u, RootHeap=%u, Time=%f)!"), Address, InSize, Tag, RootHeap, Time);
+			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] Invalid ALLOC event (Address=0x%llX, Size=%llu, Tag=%u, RootHeap=%u, Time=%f, CallstackId=%u)!"), Address, InSize, Tag, RootHeap, Time, CallstackId);
 		}
 	}
 #endif
@@ -1393,6 +1395,8 @@ void FAllocationsProvider::EditFree(double Time, uint32 CallstackId, uint64 Addr
 	{
 		return;
 	}
+
+	INSIGHTS_API_LOGF(TEXT("Free(Time=%f, Address=0x%llX, RootHeap=%u, CallstackId=%u)"), Time, Address, RootHeap, CallstackId);
 
 	if (Address == 0)
 	{
@@ -1433,6 +1437,20 @@ void FAllocationsProvider::EditFree(double Time, uint32 CallstackId, uint64 Addr
 	{
 		INSIGHTS_SLOW_CHECK(!AllocationPtr->IsHeap());
 	}
+	if (!AllocationPtr)
+	{
+		++FreeErrors;
+		if (FreeErrors <= MaxLogMessagesPerErrorType)
+		{
+			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] Invalid FREE event (Address=0x%llX, RootHeap=%u, Time=%f, CallstackId=%u)! A fake alloc will be created with size 0."), Address, RootHeap, Time, CallstackId);
+		}
+		// Fake the missing alloc.
+		constexpr uint64 FakeAllocSize = 0;
+		constexpr uint32 FakeAllocAlignment = 0;
+		EditAlloc(Time, CallstackId, Address, FakeAllocSize, FakeAllocAlignment, RootHeap);
+		SbTree[RootHeap]->SetTimeForEvent(EventIndex[RootHeap], Time); // for the case where the free event is first event in a new SbTree column after adding the fake alloc
+		AllocationPtr = LiveAllocs[RootHeap]->Remove(Address); // we take ownership of AllocationPtr
+	}
 	if (AllocationPtr)
 	{
 		check(EventIndex[RootHeap] > AllocationPtr->StartEventIndex);
@@ -1463,7 +1481,7 @@ void FAllocationsProvider::EditFree(double Time, uint32 CallstackId, uint64 Addr
 		++FreeErrors;
 		if (FreeErrors <= MaxLogMessagesPerErrorType)
 		{
-			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] Invalid FREE event (Address=0x%llX, RootHeap=%u, Time=%f)!"), Address, RootHeap, Time);
+			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] Invalid FREE event (Address=0x%llX, RootHeap=%u, Time=%f, CallstackId=%u)!"), Address, RootHeap, Time, CallstackId);
 		}
 	}
 
@@ -1481,51 +1499,55 @@ void FAllocationsProvider::EditFree(double Time, uint32 CallstackId, uint64 Addr
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FAllocationsProvider::EditUnmarkAllocationAsHeap(double Time, uint64 Address, HeapId Heap)
+void FAllocationsProvider::EditHeapSpec(HeapId Id, HeapId ParentId, const FStringView& Name, EMemoryTraceHeapFlags Flags)
 {
 	Lock.WriteAccessCheck();
 
-#if INSIGHTS_DEBUG_WATCH
-	for (int32 AddrIndex = 0; AddrIndex < UE_ARRAY_COUNT(GWatchAddresses); ++AddrIndex)
+	INSIGHTS_API_LOGF(TEXT("HeapSpec(Id=%u, ParentId=%u, Name=\"%*s\", Flags=0x%X)"), Id, ParentId, Name.Len(), Name.GetData(), uint32(Flags));
+
+	AddHeapSpec(Id, ParentId, Name, Flags);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FAllocationsProvider::AddHeapSpec(HeapId Id, HeapId ParentId, const FStringView& Name, EMemoryTraceHeapFlags Flags)
+{
+	if (Id < MaxRootHeaps)
 	{
-		if (GWatchAddresses[AddrIndex] == Address)
+		if (Id == 0 && SbTree[Id] != nullptr)
 		{
-			UE_LOG(LogTraceServices, Warning, TEXT("[MemAlloc][%u] HeapUnmarkAlloc 0x%llX : Heap=%u, Time=%f"), CurrentTraceThreadId, Address, Heap, Time);
-			INSIGHTS_DEBUG_WATCH_FOUND;
+			// "System" root heap is already created. See class constructor.
+			check(LiveAllocs[Id] != nullptr);
 		}
-	}
-#endif // INSIGHTS_DEBUG_WATCH
+		else
+		{
+			check(SbTree[Id] == nullptr && LiveAllocs[Id] == nullptr);
 
-	HeapId RootHeap = FindRootHeap(Heap);
+			constexpr uint32 ColumnShift = 17; // 1<<17 = 128K
+			SbTree[Id] = new FSbTree(Session.GetLinearAllocator(), ColumnShift);
+			LiveAllocs[Id] = new FLiveAllocCollection();
+		}
 
-	// Remove the heap allocation from the Live allocs.
-	FAllocationItem* Alloc = LiveAllocs[RootHeap]->RemoveHeap(Address); // we take ownership of Alloc
-	if (Alloc)
-	{
-		const uint64 Size = Alloc->GetSize();
-		const uint32 Alignment = Alloc->GetAlignment();
-		const uint32 CallstackId = Alloc->CallstackId;
-		const uint32 FreeCallstackId = 0; // unknown
-
-		// Re-add this allocation to the Live allocs.
-		LiveAllocs[RootHeap]->Add(Alloc); // the Live allocs takes ownership of Alloc
-
-		// We cannot just unmark the allocation as heap, there is no timestamp support, instead fake a "free"
-		// event and an "alloc" event. Make sure the new allocation retains the tag from the original.
-		CurrentTracker = 1;
-		EditPushTagFromPtr(CurrentSystemThreadId, CurrentTracker, Address);
-		EditFree(Time, FreeCallstackId, Address, RootHeap);
-		EditAlloc(Time, CallstackId, Address, Size, Alignment, RootHeap);
-		EditPopTagFromPtr(CurrentSystemThreadId, CurrentTracker);
-		CurrentTracker = 0;
+		FHeapSpec& RootHeapSpec = HeapSpecs[Id];
+		RootHeapSpec.Name = Session.StoreString(Name);
+		RootHeapSpec.Parent = nullptr;
+		RootHeapSpec.Id = Id;
+		RootHeapSpec.Flags = Flags;
 	}
 	else
 	{
-		++HeapErrors;
-		if (HeapErrors <= MaxLogMessagesPerErrorType)
+		FHeapSpec& ParentSpec = HeapSpecs[ParentId];
+		if (ParentSpec.Name == nullptr)
 		{
-			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] HeapUnmarkAlloc: Could not find address 0x%llX (Heap=%u, Time=%f)!"), Address, Heap, Time);
+			UE_LOG(LogTraceServices, Warning, TEXT("[MemAlloc] Parent heap id (%u) used before it was announced for heap %s."), ParentId, *FString(Name));
 		}
+		FHeapSpec& NewSpec = HeapSpecs[Id];
+		NewSpec.Name = Session.StoreString(Name);
+		NewSpec.Parent = &ParentSpec;
+		NewSpec.Id = Id;
+		NewSpec.Flags = Flags;
+
+		ParentSpec.Children.Add(&NewSpec);
 	}
 }
 
@@ -1533,23 +1555,27 @@ void FAllocationsProvider::EditUnmarkAllocationAsHeap(double Time, uint64 Addres
 
 void FAllocationsProvider::EditMarkAllocationAsHeap(double Time, uint64 Address, HeapId Heap, EMemoryTraceHeapAllocationFlags Flags)
 {
+	uint32 CallstackId = 0; // TODO
+
 	Lock.WriteAccessCheck();
+
+	INSIGHTS_API_LOGF(TEXT("MarkAllocAsHeap(Time=%f, Address=0x%llX, Heap=%u, Flags=0x%X, CallstackId=%u)"), Time, Address, Heap, uint32(Flags), CallstackId);
 
 #if INSIGHTS_DEBUG_WATCH
 	for (int32 AddrIndex = 0; AddrIndex < UE_ARRAY_COUNT(GWatchAddresses); ++AddrIndex)
 	{
 		if (GWatchAddresses[AddrIndex] == Address)
 		{
-			UE_LOG(LogTraceServices, Warning, TEXT("[MemAlloc][%u] HeapMarkAlloc 0x%llX : Heap=%u, Flags=%u, Time=%f"), CurrentTraceThreadId, Address, Heap, uint32(Flags), Time);
+			UE_LOG(LogTraceServices, Warning, TEXT("[MemAlloc][%u] HeapMarkAlloc 0x%llX : Heap=%u, Flags=%u, Time=%f, CallstackId=%u"), CurrentTraceThreadId, Address, Heap, uint32(Flags), Time, CallstackId);
 			INSIGHTS_DEBUG_WATCH_FOUND;
 		}
 	}
 #endif // INSIGHTS_DEBUG_WATCH
 
-	HeapId RootHeap = FindRootHeap(Heap);
+	const HeapId RootHeap = FindRootHeap(Heap);
 
 	// Remove the allocation from the Live allocs.
-	FAllocationItem* Alloc = LiveAllocs[RootHeap]->Remove(Address);
+	FAllocationItem* Alloc = LiveAllocs[RootHeap]->Remove(Address); // we take ownership of Alloc
 	if (Alloc)
 	{
 		// Mark allocation as a "heap" allocation.
@@ -1558,7 +1584,7 @@ void FAllocationsProvider::EditMarkAllocationAsHeap(double Time, uint64 Address,
 		Alloc->RootHeap = static_cast<uint8>(RootHeap);
 
 		// Re-add it to the Live allocs as a heap allocation.
-		LiveAllocs[RootHeap]->AddHeap(Alloc);
+		LiveAllocs[RootHeap]->AddHeap(Alloc); // the Live allocs takes ownership of Alloc
 
 		// Update stats. Remove this allocation from the total.
 		TotalAllocatedMemory -= Alloc->GetSize();
@@ -1571,7 +1597,62 @@ void FAllocationsProvider::EditMarkAllocationAsHeap(double Time, uint64 Address,
 		++HeapErrors;
 		if (HeapErrors <= MaxLogMessagesPerErrorType)
 		{
-			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] HeapMarkAlloc: Could not find address 0x%llX (Heap=%u, Flags=%u, Time=%f)!"), Address, Heap, uint32(Flags), Time);
+			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] HeapMarkAlloc: Could not find address 0x%llX (Heap=%u, Flags=%u, Time=%f, CallstackId=%u)!"), Address, Heap, uint32(Flags), Time, CallstackId);
+		}
+	}
+
+	++HeapCount;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FAllocationsProvider::EditUnmarkAllocationAsHeap(double Time, uint64 Address, HeapId Heap)
+{
+	uint32 CallstackId = 0; // TODO
+
+	Lock.WriteAccessCheck();
+
+	INSIGHTS_API_LOGF(TEXT("UnmarkAllocAsHeap(Time=%f, Address=0x%llX, Heap=%u, CallstackId=%u)"), Time, Address, Heap, CallstackId);
+
+#if INSIGHTS_DEBUG_WATCH
+	for (int32 AddrIndex = 0; AddrIndex < UE_ARRAY_COUNT(GWatchAddresses); ++AddrIndex)
+	{
+		if (GWatchAddresses[AddrIndex] == Address)
+		{
+			UE_LOG(LogTraceServices, Warning, TEXT("[MemAlloc][%u] HeapUnmarkAlloc 0x%llX : Heap=%u, Time=%f, CallstackId=%u"), CurrentTraceThreadId, Address, Heap, Time, CallstackId);
+			INSIGHTS_DEBUG_WATCH_FOUND;
+		}
+	}
+#endif // INSIGHTS_DEBUG_WATCH
+
+	const HeapId RootHeap = FindRootHeap(Heap);
+
+	// Remove the heap allocation from the Live allocs.
+	FAllocationItem* Alloc = LiveAllocs[RootHeap]->RemoveHeap(Address); // we take ownership of Alloc
+	if (Alloc)
+	{
+		const uint64 Size = Alloc->GetSize();
+		const uint32 Alignment = Alloc->GetAlignment();
+		const uint32 AllocCallstackId = Alloc->CallstackId;
+
+		// Re-add this allocation to the Live allocs.
+		LiveAllocs[RootHeap]->Add(Alloc); // the Live allocs takes ownership of Alloc
+
+		// We cannot just unmark the allocation as heap, there is no timestamp support, instead fake a "free"
+		// event and an "alloc" event. Make sure the new allocation retains the tag from the original.
+		CurrentTracker = 1;
+		EditPushTagFromPtr(CurrentSystemThreadId, CurrentTracker, Address);
+		EditFree(Time, CallstackId, Address, RootHeap);
+		EditAlloc(Time, AllocCallstackId, Address, Size, Alignment, RootHeap);
+		EditPopTagFromPtr(CurrentSystemThreadId, CurrentTracker);
+		CurrentTracker = 0;
+	}
+	else
+	{
+		++HeapErrors;
+		if (HeapErrors <= MaxLogMessagesPerErrorType)
+		{
+			UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] HeapUnmarkAlloc: Could not find address 0x%llX (Heap=%u, Time=%f, CallstackId=%u)!"), Address, Heap, Time, CallstackId);
 		}
 	}
 }
@@ -1814,7 +1895,7 @@ void FAllocationsProvider::EditOnAnalysisCompleted(double Time)
 	{
 		TotalEventCount += EventIndex[RootHeap];
 	}
-	UE_LOG(LogTraceServices, Log, TEXT("[MemAlloc] Analysis Completed (%llu events, %llu allocs, %llu frees)"), TotalEventCount, AllocCount, FreeCount);
+	UE_LOG(LogTraceServices, Log, TEXT("[MemAlloc] Analysis Completed (%llu events, %llu allocs, %llu frees, %llu heaps)"), TotalEventCount, AllocCount, FreeCount, HeapCount);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2179,3 +2260,4 @@ const IAllocationsProvider* ReadAllocationsProvider(const IAnalysisSession& Sess
 #undef INSIGHTS_USE_LAST_ALLOC
 #undef INSIGHTS_VALIDATE_ALLOC_EVENTS
 #undef INSIGHTS_DEBUG_METADATA
+#undef INSIGHTS_API_LOGF

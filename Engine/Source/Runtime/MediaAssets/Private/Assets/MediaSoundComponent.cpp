@@ -19,6 +19,8 @@
 #include "MediaPlayer.h"
 #include "MediaPlayerFacade.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MediaSoundComponent)
+
 
 DECLARE_FLOAT_COUNTER_STAT(TEXT("MediaUtils MediaSoundComponent Sync"), STAT_MediaUtils_MediaSoundComponentSync, STATGROUP_Media);
 DECLARE_FLOAT_COUNTER_STAT(TEXT("MediaUtils MediaSoundComponent SampleTime"), STAT_MediaUtils_MediaSoundComponentSampleTime, STATGROUP_Media);
@@ -480,7 +482,7 @@ bool UMediaSoundComponent::Init(int32& SampleRate)
 ISoundGeneratorPtr UMediaSoundComponent::CreateSoundGenerator(const FSoundGeneratorInitParams& InParams)
 {
 	FMediaSoundGenerator::FSoundGeneratorParams Params;
-	Params.SampleRate = InParams.SampleRate;
+	Params.SampleRate = (int32)InParams.SampleRate;
 	Params.NumChannels = InParams.NumChannels;
 	Params.SampleQueue = SampleQueue;
 

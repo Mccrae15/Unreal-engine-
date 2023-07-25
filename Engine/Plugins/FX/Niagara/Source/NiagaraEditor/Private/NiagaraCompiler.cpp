@@ -1475,6 +1475,7 @@ TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModul
 
 	if (System)
 	{
+		CachedPtr->SetSourceSystem(System);
 		ScriptSource = CastChecked<UNiagaraScriptSource>(System->GetSystemSpawnScript()->GetLatestSource());
 		ConstantResolver = FCompileConstantResolver(System, ENiagaraScriptUsage::SystemSpawnScript);
 		System->GatherStaticVariables(StaticVariablesFromSystem, StaticVariablesFromSystemAndEmitters);
@@ -1486,6 +1487,9 @@ TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModul
 	}
 	else if (Emitter)
 	{
+		const FVersionedNiagaraEmitterData* EmitterData = Emitter->GetEmitterData(Version);
+
+		CachedPtr->SetSourceEmitter(EmitterData);
 		UNiagaraSystem* SysParent = Cast<UNiagaraSystem>(Emitter->GetOuter());
 		if (SysParent)
 		{
@@ -1504,7 +1508,6 @@ TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModul
 			}*/
 		}
 		SrcUniqueEmitterName = Emitter->GetUniqueEmitterName();
-		const FVersionedNiagaraEmitterData* EmitterData = Emitter->GetEmitterData(Version);
 		EmitterData->GatherStaticVariables(SrcStaticVariables);
 
 		ScriptSource = CastChecked<UNiagaraScriptSource>(EmitterData->GraphSource);
@@ -1572,6 +1575,7 @@ TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModul
 			Builder.BeginTranslation(TranslationName);
 			Builder.BeginUsage(FoundOutputNode->GetUsage(), SimStageName);
 			Builder.EnableScriptAllowList(true, FoundOutputNode->GetUsage());
+			Builder.IncludeStaticVariablesOnly();
 			Builder.BuildParameterMaps(FoundOutputNode, true);
 			Builder.EndUsage();
 
@@ -1598,6 +1602,8 @@ TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModul
 
 TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::GetCompilationResult(int32 JobID, bool bWait)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FNiagaraEditorModule::GetCompilationResult);
+
 	TSharedPtr<FHlslNiagaraCompiler>* MapEntry = ActiveCompilations.Find(JobID);
 	check(MapEntry && *MapEntry);
 
@@ -2034,8 +2040,6 @@ TOptional<FNiagaraCompileResults> FHlslNiagaraCompiler::GetCompileResult(int32 J
 			}
 		}
 		Results.CompileTime = (float)(FPlatformTime::Seconds() - CompilationJob->StartTime);
-		Results.Data->CompileTime = Results.CompileTime;
-
 
 		Results.Data->CalledVMExternalFunctions.Empty(CompilationOutput.CalledVMFunctionTable.Num());
 		for (FCalledVMFunction& FuncInfo : CompilationOutput.CalledVMFunctionTable)
@@ -2069,16 +2073,20 @@ TOptional<FNiagaraCompileResults> FHlslNiagaraCompiler::GetCompileResult(int32 J
 
 			if (Sig)
 			{
-				int32 NewBindingIdx = Results.Data->CalledVMExternalFunctions.AddDefaulted();
-				Results.Data->CalledVMExternalFunctions[NewBindingIdx].Name = Sig->Name;
-				Results.Data->CalledVMExternalFunctions[NewBindingIdx].OwnerName = Sig->OwnerName;
-				Results.Data->CalledVMExternalFunctions[NewBindingIdx].InputParamLocations = FuncInfo.InputParamLocations;
-				Results.Data->CalledVMExternalFunctions[NewBindingIdx].NumOutputs = FuncInfo.NumOutputs;
+				FVMExternalFunctionBindingInfo& NewBinding = Results.Data->CalledVMExternalFunctions.AddDefaulted_GetRef();
+				NewBinding.Name = Sig->Name;
+				NewBinding.OwnerName = Sig->OwnerName;
+				NewBinding.InputParamLocations = FuncInfo.InputParamLocations;
+				NewBinding.NumOutputs = FuncInfo.NumOutputs;
 				for (auto it = Sig->FunctionSpecifiers.CreateConstIterator(); it; ++it)
 				{
 					// we convert the map into an array here to save runtime memory
-					Results.Data->CalledVMExternalFunctions[NewBindingIdx].FunctionSpecifiers.Emplace(it->Key, it->Value);
+					NewBinding.FunctionSpecifiers.Emplace(it->Key, it->Value);
 				}
+
+				//Write out our variadic parameters to allow proper binding for VM external functions.
+				Sig->GetVariadicInputs(NewBinding.VariadicInputs);
+				Sig->GetVariadicOutputs(NewBinding.VariadicOutputs);
 			}
 			else
 			{

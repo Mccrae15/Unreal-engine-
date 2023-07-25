@@ -698,9 +698,7 @@ public:
 			}
 			// else StatName = none, we need to let the scope empty so that the render thread submits tasks in a timely manner. 
 		}
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		else if (ThreadId != ENamedThreads::StatsThread)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		else
 		{
 			StatName = GET_STATID(STAT_TaskGraph_OtherTasks);
 			StallStatId = GET_STATID(STAT_TaskGraph_OtherStalls);
@@ -851,20 +849,6 @@ private:
 		{
 			return TEXT("RHI Thread");
 		}
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		else if (ThreadId == ENamedThreads::AudioThread)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-		{
-			return TEXT("Audio Thread");
-		}
-#if STATS
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		else if (ThreadId == ENamedThreads::StatsThread)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-		{
-			return TEXT("Stats Thread");
-		}
-#endif
 		else
 		{
 			return TEXT("Unknown Named Thread");
@@ -1413,56 +1397,6 @@ public:
 		FPlatformTLS::FreeTlsSlot(PerThreadIDTLSSlot);
 	}
 
-	// StatsThread was removed and replaced by a pipe. While all engine code was converted where's a tiny possibilty that 
-	// an external code is using it directly. Redirect all stats tasks to the pipe
-	static void RedirectStatsTasksToPipe(FBaseGraphTask* Task)
-	{
-#if STATS
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (ENamedThreads::GetThreadIndex(Task->GetThreadToExecuteOn()) == ENamedThreads::StatsThread)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-		{
-			checkf(ENamedThreads::GetQueueIndex(Task->GetThreadToExecuteOn()) == ENamedThreads::MainQueue, TEXT("`StatsThread_Local` is not supported and unlikely to be used intentionally. Check that `Task->ThreadToExecuteOn` value is not rubbish: %d"), Task->GetThreadToExecuteOn());
-
-			extern CORE_API UE::Tasks::FPipe GStatsPipe;
-			GStatsPipe.Launch(UE_SOURCE_LOCATION,
-				[Task]
-				{
-					TRACE_CPUPROFILER_EVENT_SCOPE(StatsPipeWork);
-					TArray<FBaseGraphTask*> Dummy;
-					Task->Execute(Dummy, ENamedThreads::AnyThread, true);
-				}
-			);
-			return;
-		}
-#endif
-	}
-
-#if UE_AUDIO_THREAD_AS_PIPE
-
-	// AudioThread was removed and replaced by a pipe. While all engine code was converted where's a tiny possibilty that 
-	// an external code is using it directly. Redirect all audio tasks to the pipe
-	static void RedirectAudioTasksToPipe(FBaseGraphTask* Task)
-	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (ENamedThreads::GetThreadIndex(Task->GetThreadToExecuteOn()) == ENamedThreads::AudioThread)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-		{
-			extern CORE_API UE::Tasks::FPipe GAudioPipe;
-			GAudioPipe.Launch(UE_SOURCE_LOCATION,
-				[Task]
-				{
-					TRACE_CPUPROFILER_EVENT_SCOPE(AudioPipeWork);
-					TArray<FBaseGraphTask*> Dummy;
-					Task->Execute(Dummy, ENamedThreads::AnyThread, true);
-				}
-			);
-			return;
-		}
-	}
-
-#endif
-
 	// API inherited from FTaskGraphInterface
 
 	/** 
@@ -1474,13 +1408,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void QueueTask(FBaseGraphTask* Task, bool bWakeUpWorker, ENamedThreads::Type ThreadToExecuteOn, ENamedThreads::Type InCurrentThreadIfKnown = ENamedThreads::AnyThread) final override
 	{
 		TASKGRAPH_SCOPE_CYCLE_COUNTER(2, STAT_TaskGraph_QueueTask);
-
-#if UE_STATS_THREAD_AS_PIPE
-		RedirectStatsTasksToPipe(Task);
-#endif
-#if UE_AUDIO_THREAD_AS_PIPE
-		RedirectAudioTasksToPipe(Task);
-#endif
 
 		if (ENamedThreads::GetThreadIndex(ThreadToExecuteOn) == ENamedThreads::AnyThread)
 		{
@@ -1925,7 +1852,7 @@ public:
 			if (GConfig == nullptr)
 			{
 				// postpone starting reserve workers until GConfig is initialized, to know if reserve workers are disabled
-				FCoreDelegates::ConfigReadyForUse.AddRaw(this, &FTaskGraphCompatibilityImplementation::StartReserveWorkers);
+				FCoreDelegates::TSConfigReadyForUse().AddRaw(this, &FTaskGraphCompatibilityImplementation::StartReserveWorkers);
 			}
 			else
 			{
@@ -1962,7 +1889,7 @@ public:
 
 	~FTaskGraphCompatibilityImplementation() override
 	{
-		FCoreDelegates::ConfigReadyForUse.RemoveAll(this);
+		FCoreDelegates::TSConfigReadyForUse().RemoveAll(this);
 
 		for (auto& Callback : ShutdownCallbacks)
 		{
@@ -2016,7 +1943,7 @@ public:
 			if (bReserveWorkersEnabled)
 			{
 				LowLevelTasks::FReserveScheduler::Get().StopWorkers();
-				LowLevelTasks::FReserveScheduler::Get().StartWorkers(LowLevelTasks::FScheduler::Get(), NumForegroundWorkers + NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskBPThreadPriority());
+				LowLevelTasks::FReserveScheduler::Get().StartWorkers(NumForegroundWorkers + NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskBPThreadPriority());
 			}
 		}
 	}
@@ -2024,13 +1951,6 @@ public:
 private:
 	void QueueTask(class FBaseGraphTask* Task, bool bWakeUpWorker, ENamedThreads::Type InThreadToExecuteOn, ENamedThreads::Type InCurrentThreadIfKnown) override
 	{
-#if UE_STATS_THREAD_AS_PIPE
-		FTaskGraphImplementation::RedirectStatsTasksToPipe(Task);
-#endif
-#if UE_AUDIO_THREAD_AS_PIPE
-		FTaskGraphImplementation::RedirectAudioTasksToPipe(Task);
-#endif
-
 		if (ENamedThreads::GetThreadIndex(InThreadToExecuteOn) == ENamedThreads::AnyThread)
 		{
 #if TASKGRAPH_NEW_FRONTEND
@@ -2406,7 +2326,7 @@ private:
 		if (bEnableReserveWorkers)
 		{
 			bReserveWorkersEnabled = true;
-			LowLevelTasks::FReserveScheduler::Get().StartWorkers(LowLevelTasks::FScheduler::Get(), NumForegroundWorkers + NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskBPThreadPriority());
+			LowLevelTasks::FReserveScheduler::Get().StartWorkers(NumForegroundWorkers + NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskBPThreadPriority());
 		}
 	}
 };
@@ -2481,6 +2401,7 @@ bool FTaskGraphInterface::IsMultithread()
 #if TASKGRAPH_NEW_FRONTEND
 
 FGraphEventImplAllocator GraphEventImplAllocator;
+FGraphTaskAllocator SmallTaskAllocator;
 
 #else
 
@@ -2621,33 +2542,34 @@ public:
 		return DesiredThread;
 	}
 
-	FORCEINLINE TStatId GetStatId() const
+	TStatId GetStatId() const
 	{
 		return GET_STATID(STAT_FBroadcastTask);
 	}
 
-	static FORCEINLINE ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
-	void FORCEINLINE DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
+		auto LogWarningIfSlow = [this](const TCHAR* Msg)
 		{
+			const bool bNamedThread = TaskEvent == nullptr; // we don't wait for named threads broadcasting, as they can be quite busy, 
+			// it may take longer to reach them. do not report slow processing in this case
 			const double ThisTime = FPlatformTime::Seconds() - StartTime;
-			if (ThisTime > 0.02)
+			if (!bNamedThread && ThisTime > 0.02)
 			{
-				UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast."), ThisTime * 1000.0, Name);
+				UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to %s"), ThisTime * 1000.0, Name, Msg);
 			}
-		}
+		};
+
+		LogWarningIfSlow(TEXT("receive broadcast."));
 
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_Broadcast_PayloadFunction);
 			Function(CurrentThread);
 		}
-		{
-			const double ThisTime = FPlatformTime::Seconds() - StartTime;
-			if (ThisTime > 0.02)
-			{
-				UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast and do processing."), ThisTime * 1000.0, Name);
-			}
-		}
+
+		LogWarningIfSlow(TEXT("receive broadcast and do processing."));
+
 		if (StallForTaskThread)
 		{
 			if (StallForTaskThread->Decrement())
@@ -2656,25 +2578,13 @@ public:
 				{
 					QUICK_SCOPE_CYCLE_COUNTER(STAT_Broadcast_WaitForOthers);
 					TaskEvent->Wait();
-					{
-						const double ThisTime = FPlatformTime::Seconds() - StartTime;
-						if (ThisTime > 0.02)
-						{
-							UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast do processing and wait for other task threads."), ThisTime * 1000.0f, Name);
-						}
-					}
+					LogWarningIfSlow(TEXT("receive broadcast do processing and wait for other task threads."));
 				}
 			}
 			else
 			{
 				CallerEvent->Trigger();
-				{
-					const double ThisTime = FPlatformTime::Seconds() - StartTime;
-					if (ThisTime > 0.02)
-					{
-						UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast do processing and trigger other task threads."), ThisTime * 1000.0, Name);
-					}
-				}
+				LogWarningIfSlow(TEXT("to receive broadcast do processing and trigger other task threads."));
 			}
 		}
 	}
@@ -2789,14 +2699,6 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 		}
 	}
 
-#if STATS
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	if (FTaskGraphInterface::Get().IsThreadProcessingTasks(ENamedThreads::StatsThread))
-	{
-		TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("Stats"), ENamedThreads::SetTaskPriority(ENamedThreads::StatsThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr);
-	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-#endif
 	if (IsRHIThreadRunning())
 	{
 		TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("RHIT"), ENamedThreads::SetTaskPriority(ENamedThreads::RHIThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr);
@@ -2806,12 +2708,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("RT"), ENamedThreads::SetTaskPriority(RenderThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr);
 	}
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	if (FTaskGraphInterface::Get().IsThreadProcessingTasks(ENamedThreads::AudioThread))
-	{
-		TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("AudioT"), ENamedThreads::SetTaskPriority(ENamedThreads::AudioThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr);
-	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	for (FEvent* TaskEvent : TaskEvents)
 	{

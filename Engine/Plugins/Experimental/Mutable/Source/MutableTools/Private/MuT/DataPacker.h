@@ -2,13 +2,12 @@
 
 #pragma once
 
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Operations.h"
 #include "MuT/AST.h"
 
 #include <stdint.h>
 
-namespace mu { struct PROGRAM; }
+namespace mu { struct FProgram; }
 
 
 #define MUTABLE_HASH_SEED					((uint32_t)0xcadababa)
@@ -21,7 +20,7 @@ namespace mu
     //! Convert constant data to different formats, based on their usage
     //---------------------------------------------------------------------------------------------
     extern void DataOptimiseAST( int imageCompressionQuality, ASTOpList& roots,
-                                 const MODEL_OPTIMIZATION_OPTIONS& );
+                                 const FModelOptimizationOptions& );
 
     //---------------------------------------------------------------------------------------------
     //! Find the given constant in a subtree
@@ -30,14 +29,14 @@ namespace mu
     {
     public:
 
-        SubtreeSearchConstantVisitor( PROGRAM& program, OP::ADDRESS constant, OP_TYPE optype );
+        SubtreeSearchConstantVisitor( FProgram& program, OP::ADDRESS constant, OP_TYPE optype );
 
         bool Run( OP::ADDRESS root );
 
 
     private:
 
-        PROGRAM& m_program;
+        FProgram& m_program;
         OP::ADDRESS m_constant;
         OP_TYPE m_opType;
 

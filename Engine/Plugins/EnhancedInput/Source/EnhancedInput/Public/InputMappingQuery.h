@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 
 #include "InputMappingQuery.generated.h"
 
@@ -56,9 +55,9 @@ ENUM_CLASS_FLAGS(EMappingQueryIssue);
 // Useful mapping query issue collections.
 namespace DefaultMappingIssues
 {
-constexpr EMappingQueryIssue NoCollisions = EMappingQueryIssue::HidesExistingMapping | EMappingQueryIssue::HiddenByExistingMapping | EMappingQueryIssue::CollisionWithMappingInSameContext;
-constexpr EMappingQueryIssue TypeMismatch = EMappingQueryIssue::ForcesTypePromotion | EMappingQueryIssue::ForcesTypeDemotion;
-constexpr EMappingQueryIssue StandardFatal = EMappingQueryIssue::ReservedByAction | NoCollisions | TypeMismatch;	// Default fatal value for QueryMapKeyIn... function calls.
+inline constexpr EMappingQueryIssue NoCollisions = EMappingQueryIssue::HidesExistingMapping | EMappingQueryIssue::HiddenByExistingMapping | EMappingQueryIssue::CollisionWithMappingInSameContext;
+inline constexpr EMappingQueryIssue TypeMismatch = EMappingQueryIssue::ForcesTypePromotion | EMappingQueryIssue::ForcesTypeDemotion;
+inline constexpr EMappingQueryIssue StandardFatal = EMappingQueryIssue::ReservedByAction | NoCollisions | TypeMismatch;	// Default fatal value for QueryMapKeyIn... function calls.
 }
 
 class UInputMappingContext;
@@ -88,3 +87,7 @@ struct FMappingQueryIssue
 // ************************************************************************************************
 // ************************************************************************************************
 // ************************************************************************************************
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

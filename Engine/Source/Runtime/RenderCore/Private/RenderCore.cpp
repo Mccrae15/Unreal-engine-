@@ -10,10 +10,12 @@
 #include "Modules/ModuleManager.h"
 #include "Shader.h"
 #include "HDRHelper.h"
+#include "RenderCounters.h"
 
 void UpdateShaderDevelopmentMode();
 
 void InitRenderGraph();
+static void InitPixelRenderCounters();
 
 class FRenderCoreModule : public FDefaultModuleImpl
 {
@@ -25,6 +27,7 @@ public:
 		IConsoleManager::Get().RegisterConsoleVariableSink_Handle(FConsoleCommandDelegate::CreateStatic(&UpdateShaderDevelopmentMode));
 
 		InitRenderGraph();
+		InitPixelRenderCounters();
 	}
 };
 
@@ -116,7 +119,8 @@ DEFINE_STAT(STAT_PrimitiveCull);
 DEFINE_STAT(STAT_DecompressPrecomputedOcclusion);
 DEFINE_STAT(STAT_ViewVisibilityTime);
 
-DEFINE_STAT(STAT_RayTracingInstances);
+DEFINE_STAT(STAT_RayTracingTotalInstances);
+DEFINE_STAT(STAT_RayTracingActiveInstances);
 DEFINE_STAT(STAT_ProcessedPrimitives);
 DEFINE_STAT(STAT_CulledPrimitives);
 DEFINE_STAT(STAT_VisibleRayTracingPrimitives);
@@ -176,13 +180,11 @@ DEFINE_STAT(STAT_AddScenePrimitiveRenderThreadTime);
 DEFINE_STAT(STAT_UpdateScenePrimitiveRenderThreadTime);
 DEFINE_STAT(STAT_UpdatePrimitiveTransformRenderThreadTime);
 DEFINE_STAT(STAT_UpdatePrimitiveInstanceRenderThreadTime);
-DEFINE_STAT(STAT_FlushAsyncLPICreation);
 
 DEFINE_STAT(STAT_RemoveScenePrimitiveGT);
 DEFINE_STAT(STAT_AddScenePrimitiveGT);
 DEFINE_STAT(STAT_UpdatePrimitiveTransformGT);
 DEFINE_STAT(STAT_UpdatePrimitiveInstanceGT);
-DEFINE_STAT(STAT_UpdateCustomPrimitiveDataGT);
 
 DEFINE_STAT(STAT_Scene_SetShaderMapsOnMaterialResources_RT);
 DEFINE_STAT(STAT_Scene_UpdateStaticDrawLists_RT);
@@ -222,7 +224,7 @@ static TAutoConsoleVariable<int32> CVarForceLODShadow(
 bool GPauseRenderingRealtimeClock;
 
 /** Global realtime clock for the rendering thread. */
-FTimer GRenderingRealtimeClock;
+FRenderTimer GRenderingRealtimeClock;
 
 FInputLatencyTimer GInputLatencyTimer( 2.0f );
 
@@ -250,6 +252,22 @@ void FInputLatencyTimer::GameThreadTick()
 		}
 	}
 #endif
+}
+
+FPixelRenderCounters GPixelRenderCounters;
+
+void TickPixelRenderCounters()
+{
+	check(IsInRenderingThread());
+	GPixelRenderCounters.PrevPixelRenderCount = GPixelRenderCounters.CurrentPixelRenderCount;
+	GPixelRenderCounters.PrevPixelDisplayCount = GPixelRenderCounters.CurrentPixelDisplayCount;
+	GPixelRenderCounters.CurrentPixelRenderCount = 0;
+	GPixelRenderCounters.CurrentPixelDisplayCount = 0;
+}
+
+void InitPixelRenderCounters()
+{
+	FCoreDelegates::OnBeginFrameRT.AddStatic(TickPixelRenderCounters);
 }
 
 // Can be optimized to avoid the virtual function call but it's compiled out for final release anyway
@@ -304,8 +322,6 @@ RENDERCORE_API int32 GetCVarForceLODShadow_AnyThread()
 
 	return Ret;
 }
-
-FMatrix44f FVirtualTextureUniformData::Invalid = FMatrix44f::Identity;
 
 // Note: Enables or disables HDR support for a project. Typically this would be set on a per-project/per-platform basis in defaultengine.ini
 TAutoConsoleVariable<int32> CVarAllowHDR(
@@ -954,4 +970,46 @@ void ConfigureACESTonemapParams(FACESTonemapParams& OutACESTonemapParams, float 
 
 	OutACESTonemapParams.ACESSceneColorMultiplier = CVarHDRAcesColorMultiplier.GetValueOnAnyThread();
 
+}
+
+// Converts PQ signal to linear values, see https://www.itu.int/rec/R-REC-BT.2124-0-201901-I/en, conversion 3 
+static inline float ST2084ToLinear(float pq)
+{
+	const float m1 = 0.1593017578125; // = 2610. / 4096. * .25;
+	const float m2 = 78.84375; // = 2523. / 4096. *  128;
+	const float c1 = 0.8359375; // = 2392. / 4096. * 32 - 2413./4096.*32 + 1;
+	const float c2 = 18.8515625; // = 2413. / 4096. * 32;
+	const float c3 = 18.6875; // = 2392. / 4096. * 32;
+	const float C = 10000.;
+
+	float Np = FMath::Pow(pq, 1. / m2);
+	float L = Np - c1;
+	L = FMath::Max(0.0f, L);
+	L = L / (c2 - c3 * Np);
+	L = FMath::Pow(L, 1. / m1);
+	float P = L * C;
+
+	return P;
+}
+
+RENDERCORE_API void ConvertPixelDataToSCRGB(TArray<FLinearColor>& InOutRawPixels, EDisplayOutputFormat Pixelformat)
+{
+	int32 PixelCount = InOutRawPixels.Num();
+	if (Pixelformat == EDisplayOutputFormat::HDR_ACES_1000nit_ST2084 || Pixelformat == EDisplayOutputFormat::HDR_ACES_2000nit_ST2084)
+	{
+		const FMatrix44f Rec2020_2_sRGB_MAT = (XYZToGamutMatrix(EDisplayColorGamut::sRGB_D65) * GamutToXYZMatrix(EDisplayColorGamut::Rec2020_D65)).GetTransposed();
+
+		for (int32 PixelIndex = 0; PixelIndex < PixelCount; ++PixelIndex)
+		{
+			FLinearColor& CurrentPixel = InOutRawPixels[PixelIndex];
+			FVector4f PixelFloat4(CurrentPixel.R, CurrentPixel.G, CurrentPixel.B, 0);
+			PixelFloat4.X = ST2084ToLinear(PixelFloat4.X) / 80;
+			PixelFloat4.Y = ST2084ToLinear(PixelFloat4.Y) / 80;
+			PixelFloat4.Z = ST2084ToLinear(PixelFloat4.Z) / 80;
+			PixelFloat4 = Rec2020_2_sRGB_MAT.TransformFVector4(PixelFloat4);
+			CurrentPixel.R = PixelFloat4.X;
+			CurrentPixel.G = PixelFloat4.Y;
+			CurrentPixel.B = PixelFloat4.Z;
+		}
+	}
 }

@@ -13,7 +13,7 @@ class FPlasticSourceControlMenu
 public:
 	void Register();
 	void Unregister();
-	
+
 	/** This functions will be bound to appropriate Command. */
 	void SyncProjectClicked();
 	void RevertUnchangedClicked();
@@ -30,12 +30,8 @@ private:
 
 	bool				SaveDirtyPackages();
 	TArray<FString>		ListAllPackages();
-	TArray<UPackage*>	UnlinkPackages(const TArray<FString>& InPackageNames);
-	void				ReloadPackages(TArray<UPackage*>& InPackagesToReload);
 
-	void AddMenuExtension(FToolMenuSection& Builder);
-
-	TSharedRef<class FExtender> OnExtendLevelEditorViewMenu(const TSharedRef<class FUICommandList> CommandList);
+	void AddMenuExtension(FToolMenuSection& Menu);
 
 	void DisplayInProgressNotification(const FText& InOperationInProgressString);
 	void RemoveInProgressNotification();
@@ -44,8 +40,8 @@ private:
 
 private:
 
-	/** Loaded packages to reload after a Sync or Revert operation */
-	TArray<UPackage*> PackagesToReload;
+	/** Tracks if the menu extension has been registered with the editor or not */
+	bool bHasRegistered = false;
 
 	/** Current source control operation from extended menu if any */
 	TWeakPtr<class SNotificationItem> OperationInProgressNotification;

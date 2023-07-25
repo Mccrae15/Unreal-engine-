@@ -1,26 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/GameUserSettings.h"
+#include "GenericPlatform/GenericPlatformFramePacer.h"
 #include "HAL/FileManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ConfigContext.h"
-#include "Misc/FileHelper.h"
-#include "HAL/IConsoleManager.h"
-#include "GenericPlatform/GenericApplication.h"
 #include "Misc/App.h"
-#include "EngineGlobals.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/GameViewportClient.h"
 #include "UnrealEngine.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/GameEngine.h"
-#include "Sound/AudioSettings.h"
 #include "Sound/SoundCue.h"
 #include "AudioDevice.h"
-#include "DynamicResolutionState.h"
 #include "HAL/PlatformFramePacer.h"
 #include "HDRHelper.h"
+#include "UnrealClient.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameUserSettings)
 
@@ -75,7 +71,7 @@ FIntPoint UGameUserSettings::GetDesktopResolution() const
 
 void UGameUserSettings::SetScreenResolution(FIntPoint Resolution)
 {
-	if (!FPlatformProperties::HasFixedResolution() && (ResolutionSizeX != Resolution.X || ResolutionSizeY != Resolution.Y))
+	if (ResolutionSizeX != Resolution.X || ResolutionSizeY != Resolution.Y)
 	{
 		ResolutionSizeX = Resolution.X;
 		ResolutionSizeY = Resolution.Y;

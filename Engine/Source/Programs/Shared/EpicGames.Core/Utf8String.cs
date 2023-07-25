@@ -55,6 +55,18 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Constructor
 		/// </summary>
+		/// <param name="text">Text to construct from</param>
+		public Utf8String(ReadOnlySpan<char> text)
+		{
+			int length = Encoding.UTF8.GetByteCount(text);
+			byte[] buffer = new byte[length];
+			Encoding.UTF8.GetBytes(text, buffer);
+			Memory = buffer;
+		}
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
 		/// <param name="memory">The data to construct from</param>
 		public Utf8String(ReadOnlyMemory<byte> memory)
 		{
@@ -78,6 +90,11 @@ namespace EpicGames.Core
 		/// <returns></returns>
 		public Utf8String Clone()
 		{
+			if (Memory.Length == 0)
+			{
+				return default;
+			}
+
 			byte[] newBuffer = new byte[Memory.Length];
 			Memory.CopyTo(newBuffer);
 			return new Utf8String(newBuffer);
@@ -110,6 +127,18 @@ namespace EpicGames.Core
 
 		/// <inheritdoc/>
 		public int CompareTo(Utf8String other) => Utf8StringComparer.Ordinal.Compare(Span, other.Span);
+
+		/// <inheritdoc/>
+		public static bool operator <(Utf8String left, Utf8String right) => left.CompareTo(right) < 0;
+
+		/// <inheritdoc/>
+		public static bool operator <=(Utf8String left, Utf8String right) => left.CompareTo(right) <= 0;
+
+		/// <inheritdoc/>
+		public static bool operator >(Utf8String left, Utf8String right) => left.CompareTo(right) > 0;
+
+		/// <inheritdoc/>
+		public static bool operator >=(Utf8String left, Utf8String right) =>  left.CompareTo(right) >= 0;
 
 		/// <inheritdoc cref="String.Contains(String)"/>
 		public bool Contains(Utf8String str) => IndexOf(str) != -1;
@@ -351,7 +380,7 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Ordinal comparer for utf8 strings
 		/// </summary>
-		public sealed class OrdinalComparer : Utf8StringComparer
+		sealed class OrdinalComparer : Utf8StringComparer
 		{
 			/// <inheritdoc/>
 			public override bool Equals(ReadOnlySpan<byte> strA, ReadOnlySpan<byte> strB)
@@ -380,7 +409,7 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Comparison between ReadOnlyUtf8String objects that ignores case for ASCII characters
 		/// </summary>
-		public sealed class OrdinalIgnoreCaseComparer : Utf8StringComparer 
+		sealed class OrdinalIgnoreCaseComparer : Utf8StringComparer 
 		{
 			/// <inheritdoc/>
 			public override bool Equals(ReadOnlySpan<byte> strA, ReadOnlySpan<byte> strB)

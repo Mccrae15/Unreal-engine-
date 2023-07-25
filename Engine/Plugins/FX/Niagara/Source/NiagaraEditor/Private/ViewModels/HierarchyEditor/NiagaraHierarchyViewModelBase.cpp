@@ -16,6 +16,8 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Editor.h"
 #include "ScopedTransaction.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraHierarchyEditor"
 
@@ -79,6 +81,16 @@ bool UNiagaraHierarchyItemBase::Modify(bool bAlwaysMarkDirty)
 	bSavedToTransactionBuffer &= UObject::Modify(bAlwaysMarkDirty);
 
 	return bSavedToTransactionBuffer;
+}
+
+void UNiagaraHierarchyItemBase::PostLoad()
+{
+	if(Guid_DEPRECATED.IsValid())
+	{
+		SetIdentity(FNiagaraHierarchyIdentity({Guid_DEPRECATED}, {}));
+	}
+
+	Super::PostLoad();
 }
 
 void UNiagaraHierarchyRoot::RefreshDataInternal()
@@ -185,8 +197,9 @@ TOptional<EItemDropZone> FNiagaraHierarchyCategoryViewModel::OnCanAcceptDropInte
 {
 	bool bAllowDrop = false;
 
-	if(TSharedPtr<FNiagaraHierarchyDragDropOp> HierarchyDragDropOp = StaticCastSharedPtr<FNiagaraHierarchyDragDropOp>(DragDropOp))
+	if(DragDropOp->IsOfType<FNiagaraHierarchyDragDropOp>())
 	{
+		TSharedPtr<FNiagaraHierarchyDragDropOp> HierarchyDragDropOp = StaticCastSharedPtr<FNiagaraHierarchyDragDropOp>(DragDropOp);
 		TSharedPtr<FNiagaraHierarchyItemViewModelBase> SourceDropItem = HierarchyDragDropOp->GetDraggedItem().Pin();
 		TSharedPtr<FNiagaraHierarchyItemViewModelBase> TargetDropItem = AsShared();
 		
@@ -306,6 +319,15 @@ void UNiagaraHierarchyViewModelBase::Initialize()
 		Section->SetFlags(RF_Transactional);
 	}
 
+	UToolMenus* ToolMenus = UToolMenus::Get();
+
+	FName MenuName("NiagaraHierarchyMenu");
+	if(!ToolMenus->IsMenuRegistered(MenuName))
+	{
+		UToolMenu* HierarchyMenu = ToolMenus->RegisterMenu(MenuName, NAME_None, EMultiBoxType::Menu);
+		HierarchyMenu->AddSection("Base");
+	}
+	
 	SetupCommands();
 
 	HierarchyViewModelRoot = MakeShared<FNiagaraHierarchyRootViewModel>(HierarchyRoot.Get(), this);
@@ -670,8 +692,9 @@ TOptional<EItemDropZone> FNiagaraHierarchyRootViewModel::OnCanAcceptDropInternal
 {
 	bool bAllowDrop = false;
 
-	if(TSharedPtr<FNiagaraHierarchyDragDropOp> HierarchyDragDropOp = StaticCastSharedPtr<FNiagaraHierarchyDragDropOp>(DragDropOp))
+	if(DragDropOp->IsOfType<FNiagaraHierarchyDragDropOp>())
 	{
+		TSharedPtr<FNiagaraHierarchyDragDropOp> HierarchyDragDropOp = StaticCastSharedPtr<FNiagaraHierarchyDragDropOp>(DragDropOp);
 		TSharedPtr<FNiagaraHierarchyItemViewModelBase> SourceDropItem = HierarchyDragDropOp->GetDraggedItem().Pin();
 		TSharedPtr<FNiagaraHierarchyItemViewModelBase> TargetDropItem = AsShared();
 
@@ -927,8 +950,9 @@ TOptional<EItemDropZone> FNiagaraHierarchyItemViewModel::OnCanAcceptDropInternal
 {
 	bool bAllowDrop = false;
 
-	if(TSharedPtr<FNiagaraHierarchyDragDropOp> HierarchyDragDropOp = StaticCastSharedPtr<FNiagaraHierarchyDragDropOp>(DragDropOp))
+	if(DragDropOp->IsOfType<FNiagaraHierarchyDragDropOp>())
 	{
+		TSharedPtr<FNiagaraHierarchyDragDropOp> HierarchyDragDropOp = StaticCastSharedPtr<FNiagaraHierarchyDragDropOp>(DragDropOp);
 		TSharedPtr<FNiagaraHierarchyItemViewModelBase> SourceDropItem = HierarchyDragDropOp->GetDraggedItem().Pin();
 		TSharedPtr<FNiagaraHierarchyItemViewModelBase> TargetDropItem = AsShared();
 

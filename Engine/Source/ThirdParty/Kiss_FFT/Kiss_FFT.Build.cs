@@ -13,7 +13,7 @@ public class Kiss_FFT : ModuleRules
 		// Compile and link with kissFFT
 		string Kiss_FFTPath = Target.UEThirdPartySourceDirectory + "Kiss_FFT/kiss_fft129";
 
-		PublicIncludePaths.Add(Kiss_FFTPath);
+		PublicSystemIncludePaths.Add(Kiss_FFTPath);
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
@@ -44,11 +44,11 @@ public class Kiss_FFT : ModuleRules
 		{
 			if (Target.LinkType == TargetLinkType.Monolithic)
 			{
-				PublicAdditionalLibraries.Add(Kiss_FFTPath + "/Lib/Linux/Release/" + Target.Architecture + "/libKissFFT.a");
+				PublicAdditionalLibraries.Add(Kiss_FFTPath + "/Lib/Linux/Release/" + Target.Architecture.LinuxName + "/libKissFFT.a");
 			}
 			else
 			{
-				PublicAdditionalLibraries.Add(Kiss_FFTPath + "/Lib/Linux/Release/" + Target.Architecture + "/libKissFFT_fPIC.a");
+				PublicAdditionalLibraries.Add(Kiss_FFTPath + "/Lib/Linux/Release/" + Target.Architecture.LinuxName + "/libKissFFT_fPIC.a");
 			}
 
 			if (Target.Platform == UnrealTargetPlatform.LinuxArm64)

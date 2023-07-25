@@ -1,22 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 
 #include "CableComponent.h"
-#include "EngineGlobals.h"
 #include "PrimitiveViewRelevance.h"
-#include "RenderResource.h"
-#include "RenderingThread.h"
-#include "WorldCollision.h"
 #include "PrimitiveSceneProxy.h"
-#include "VertexFactory.h"
-#include "MaterialShared.h"
+#include "MaterialDomain.h"
 #include "SceneManagement.h"
 #include "Engine/CollisionProfile.h"
 #include "Materials/Material.h"
-#include "LocalVertexFactory.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Engine/Engine.h"
 #include "CableComponentStats.h"
 #include "DynamicMeshBuilder.h"
 #include "StaticMeshResources.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CableComponent)
 
@@ -310,6 +306,10 @@ public:
 		FPrimitiveViewRelevance Result;
 		Result.bDrawRelevance = IsShown(View);
 		Result.bShadowRelevance = IsShadowCast(View);
+		Result.bRenderCustomDepth = ShouldRenderCustomDepth();
+		Result.bRenderInMainPass = ShouldRenderInMainPass();
+		Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
+		Result.bTranslucentSelfShadow = bCastVolumetricTranslucentShadow;
 		Result.bDynamicRelevance = true;
 
 		MaterialRelevance.SetPrimitiveViewRelevance(Result);
@@ -366,6 +366,10 @@ UCableComponent::UCableComponent( const FObjectInitializer& ObjectInitializer )
 	CableGravityScale = 1.f;
 
 	SetCollisionProfileName(UCollisionProfile::PhysicsActor_ProfileName);
+
+#if WITH_EDITOR
+	bWantsOnUpdateTransform = true;
+#endif
 }
 
 FPrimitiveSceneProxy* UCableComponent::CreateSceneProxy()
@@ -381,29 +385,19 @@ int32 UCableComponent::GetNumMaterials() const
 void UCableComponent::OnRegister()
 {
 	Super::OnRegister();
-
-	const int32 NumParticles = NumSegments+1;
-
-	Particles.Reset();
-	Particles.AddUninitialized(NumParticles);
-
-	FVector CableStart, CableEnd;
-	GetEndPositions(CableStart, CableEnd);
-
-	const FVector Delta = CableEnd - CableStart;
-
-	for(int32 ParticleIdx=0; ParticleIdx<NumParticles; ParticleIdx++)
-	{
-		FCableParticle& Particle = Particles[ParticleIdx];
-
-		const float Alpha = (float)ParticleIdx/(float)NumSegments;
-		const FVector InitialPosition = CableStart + (Alpha * Delta);
-
-		Particle.Position = InitialPosition;
-		Particle.OldPosition = InitialPosition;
-		Particle.bFree = true; // default to free, will be fixed if desired in TickComponent
-	}
+	
+	InitParticles();
 }
+
+#if WITH_EDITOR
+void UCableComponent::OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport)
+{
+	Super::OnUpdateTransform(UpdateTransformFlags, Teleport);
+
+	InitParticles();
+	UpdateBounds();
+}
+#endif
 
 void UCableComponent::VerletIntegrate(float InSubstepTime, const FVector& Gravity)
 {
@@ -457,6 +451,31 @@ static FORCEINLINE void SolveDistanceConstraint(FCableParticle& ParticleA, FCabl
 	else if(ParticleB.bFree)
 	{
 		ParticleB.Position -= VectorCorrection;
+	}
+}
+
+void UCableComponent::InitParticles()
+{
+	const int32 NumParticles = NumSegments+1;
+
+	Particles.Reset();
+	Particles.AddUninitialized(NumParticles);
+
+	FVector CableStart, CableEnd;
+	GetEndPositions(CableStart, CableEnd);
+
+	const FVector Delta = CableEnd - CableStart;
+
+	for(int32 ParticleIdx=0; ParticleIdx<NumParticles; ParticleIdx++)
+	{
+		FCableParticle& Particle = Particles[ParticleIdx];
+
+		const float Alpha = (float)ParticleIdx/(float)NumSegments;
+		const FVector InitialPosition = CableStart + (Alpha * Delta);
+
+		Particle.Position = InitialPosition;
+		Particle.OldPosition = InitialPosition;
+		Particle.bFree = true; // default to free, will be fixed if desired in TickComponent
 	}
 }
 

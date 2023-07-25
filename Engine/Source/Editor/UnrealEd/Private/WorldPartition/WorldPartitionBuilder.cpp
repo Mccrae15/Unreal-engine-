@@ -265,7 +265,11 @@ bool UWorldPartitionBuilder::Run(UWorld* World, FPackageSourceControlHelper& Pac
 					
 					UE_LOG(LogWorldPartitionBuilder, Display, TEXT("[%d / %d] Processing cells..."), IterationIndex, IterationCount);
 
-					FVector Min(x * IterativeCellSize, y * IterativeCellSize, z * IterativeCellSize);
+					double MinX = static_cast<double>(x * IterativeCellSize);
+					double MinY = static_cast<double>(y * IterativeCellSize);
+					double MinZ = static_cast<double>(z * IterativeCellSize);
+
+					FVector Min(MinX, MinY, MinZ);
 					FVector Max = Min + FVector(IterativeCellSize);
 
 					if (LoadingMode == ELoadingMode::IterativeCells2D)
@@ -425,7 +429,7 @@ bool UWorldPartitionBuilder::AutoSubmitFiles(const TArray<FString>& InModifiedFi
 
 	if (bAutoSubmit)
 	{
-		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Submitting changes to source control..."));
+		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Submitting changes to revision control..."));
 
 		if (!InModifiedFiles.IsEmpty())
 		{
@@ -435,12 +439,12 @@ bool UWorldPartitionBuilder::AutoSubmitFiles(const TArray<FString>& InModifiedFi
 			CheckInOperation->SetDescription(ChangelistDescription);
 			if (ISourceControlModule::Get().GetProvider().Execute(CheckInOperation, InModifiedFiles) != ECommandResult::Succeeded)
 			{
-				UE_LOG(LogWorldPartitionBuilder, Error, TEXT("Failed to submit changes to source control."));
+				UE_LOG(LogWorldPartitionBuilder, Error, TEXT("Failed to submit changes to revision control."));
 				bSucceeded = false;
 			}
 			else
 			{
-				UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Submitted changes to source control"));
+				UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Submitted changes to revision control"));
 			}
 		}
 		else

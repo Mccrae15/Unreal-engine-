@@ -77,11 +77,13 @@ private:
 	/** Construct a property widget. */
 	TSharedRef<SWidget> ConstructWidget();
 	/** Create the wrapper around the field value widget. */
-	TSharedRef<SWidget> MakeFieldWidget(const TSharedRef<SWidget>& InWidget);
+	TSharedRef<SWidget> MakeFieldWidget(const TSharedRef<SWidget>& InWidget, const TSharedRef<SWidget>& EditConditionWidget = SNullWidget::NullWidget);
 	/** Construct this field widget as a property widget. */
 	void ConstructPropertyWidget();
 	/** Construct this field widget as a function widget. */
 	void ConstructFunctionWidget();
+	/** Construct the ResetToDefault Widget that can have CustomReset for certain Property (Right now only Light Intensity) */
+	TSharedRef<SWidget> ConstructResetToDefaultWidget(UObject* InObject, TSharedPtr<IPropertyHandle> InPropertyHandle);
 	/**
 	 * Construct a call function button
 	 * @param bIsEnabled Whether the button should be clickable or not.

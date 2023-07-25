@@ -8,6 +8,7 @@
 #include "ConcertWorkspaceData.h"
 
 #include "UObject/Class.h"
+#include "UObject/LinkerLoad.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/Package.h"
 #include "UObject/PropertyPortFlags.h"
@@ -28,6 +29,7 @@
 #include "Components/ModelComponent.h"
 
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
 
 #if WITH_EDITOR
 	#include "DirectoryWatcherModule.h"
@@ -185,9 +187,7 @@ void AddActorToOwnerLevel(AActor* InActor)
 
 bool ObjectIdsMatch(const FConcertObjectId& One, const FConcertObjectId& Two)
 {
-	return One.ObjectClassPathName == Two.ObjectClassPathName
-		&& One.ObjectOuterPathName == Two.ObjectOuterPathName
-		&& One.ObjectName == Two.ObjectName;
+	return One == Two;
 }
 
 int32 GetObjectPathDepth(UObject* InObjToTest)
@@ -357,6 +357,11 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 				else
 				{
 					ObjectResult = FGetObjectResult(NewObject<UObject>(NewObjectOuter, ObjectClass, *ObjectNameToCreate.ToString(), (EObjectFlags)InObjectId.ObjectPersistentFlags), EGetObjectResultFlags::NewlyCreated);
+
+					if (UActorComponent* NewComponent = Cast<UActorComponent>(ObjectResult.Obj))
+					{
+						NewComponent->RegisterComponent();
+					}
 				}
 				
 				// if we have any package assignment, do it here
@@ -501,6 +506,24 @@ void SynchronizeAssetRegistry()
 #endif // WITH_EDITOR
 }
 
+bool ShouldReloadPersistentLevel(UPackage *PackageToReload)
+{
+	UWorld* CurrentWorld = ConcertSyncClientUtil::GetCurrentWorld();
+	if (CurrentWorld)
+	{
+		const TArray<ULevel*> Levels = CurrentWorld->GetLevels();
+		for (ULevel* Level : Levels)
+		{
+			if (Level->GetPackage() == PackageToReload)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 void HotReloadPackages(TArrayView<const FName> InPackageNames)
 {
 	if (InPackageNames.Num() == 0)
@@ -525,9 +548,12 @@ void HotReloadPackages(TArrayView<const FName> InPackageNames)
 
 	FlushRenderingCommands();
 
+	bool bAddPersistentLevel = false;
+
 	// Find the packages in-memory to content hot-reload
 	TArray<UPackage*> ExistingPackages;
 	ExistingPackages.Reserve(InPackageNames.Num());
+
 	for (const FName& PackageName : InPackageNames)
 	{
 		UPackage* ExistingPackage = FindPackage(nullptr, *PackageName.ToString());
@@ -538,6 +564,20 @@ void HotReloadPackages(TArrayView<const FName> InPackageNames)
 				ExistingPackage->ClearPackageFlags(PKG_NewlyCreated);
 			}
 			ExistingPackages.Add(ExistingPackage);
+			if (ExistingPackage->ContainsMap())
+			{
+				bAddPersistentLevel = ShouldReloadPersistentLevel(ExistingPackage);
+			}
+		}
+	}
+
+	UWorld* CurrentWorld = ConcertSyncClientUtil::GetCurrentWorld();
+	if (CurrentWorld && bAddPersistentLevel)
+	{
+		ULevel* PersistentLevel = CurrentWorld->PersistentLevel;
+		if (PersistentLevel && !ExistingPackages.Contains(PersistentLevel->GetPackage()))
+		{
+			ExistingPackages.Add(PersistentLevel->GetPackage());
 		}
 	}
 

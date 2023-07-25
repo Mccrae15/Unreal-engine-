@@ -18,6 +18,7 @@
 #include "PackageVirtualizationProcess.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "VirtualizationFilterSettings.h"
+#include "AnalyticsEventAttribute.h"
 
 #define LOCTEXT_NAMESPACE "Virtualization"
 
@@ -262,6 +263,15 @@ static bool IsCmdLineValueSet(const TCHAR* Cmd, const TCHAR* AlternativeCmd, T& 
 	}
 
 	return false;
+}
+
+/** Utility to set the same FPushResult on many requests at once */
+static void SetPushRequestsResult(TArrayView<FPushRequest> Requests, FPushResult Result)
+{
+	for (FPushRequest& Request : Requests)
+	{
+		Request.SetResult(Result);
+	}
 }
 
 /* Utility function for building up a lookup table of all available IBackendFactory interfaces*/
@@ -573,9 +583,25 @@ bool FVirtualizationManager::PushData(TArrayView<FPushRequest> Requests, EStorag
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FVirtualizationManager::PushData);
 
+	// No requests always counts as success
 	if (Requests.IsEmpty())
 	{
 		return true;
+	}
+
+	// Attempting to virtualize when the system or process is disabled always counts as a failure
+	if (!IsEnabled() || !bAllowPackageVirtualization)
+	{
+		SetPushRequestsResult(Requests, FPushResult::GetAsProcessDisabled());
+		return false;
+	}
+
+	FBackendArray& Backends = IsCacheType(StorageType) ? CacheStorageBackends : PersistentStorageBackends;
+
+	if (Backends.IsEmpty())
+	{
+		SetPushRequestsResult(Requests, FPushResult::GetAsNoBackend());
+		return false;
 	}
 
 	TArray<FPushRequest> ValidatedRequests;
@@ -628,12 +654,6 @@ bool FVirtualizationManager::PushData(TArrayView<FPushRequest> Requests, EStorag
 		return true;
 	}
 
-	// Early out if there are no backends
-	if (!IsEnabled() || !bAllowPackageVirtualization)
-	{
-		return false;
-	}
-
 	EnsureBackendConnections();
 
 	FConditionalScopeLock _(&DebugValues.ForceSingleThreadedCS, DebugValues.bSingleThreaded);
@@ -644,8 +664,7 @@ bool FVirtualizationManager::PushData(TArrayView<FPushRequest> Requests, EStorag
 
 	int32 ErrorCount = 0;
 	bool bWasPayloadPushed = false;
-	FBackendArray& Backends = IsCacheType(StorageType) ? CacheStorageBackends : PersistentStorageBackends;
-
+	
 	for (IVirtualizationBackend* Backend : Backends)
 	{
 		if (Backend->GetConnectionStatus() != IVirtualizationBackend::EConnectionStatus::Connected)
@@ -821,32 +840,30 @@ EQueryResult FVirtualizationManager::QueryPayloadStatuses(TArrayView<const FIoHa
 	return EQueryResult::Success;
 }
 
-EVirtualizationResult FVirtualizationManager::TryVirtualizePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutDescriptionTags, TArray<FText>& OutErrors)
+FVirtualizationResult FVirtualizationManager::TryVirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOptions Options)
 {
-	OutDescriptionTags.Reset();
-	OutErrors.Reset();
+	FVirtualizationResult Result;
 
 	if (IsEnabled() && IsPushingEnabled(EStorageType::Persistent))
 	{
-		UE::Virtualization::VirtualizePackages(PackagePaths, OutErrors);
+		UE::Virtualization::VirtualizePackages(PackagePaths, Options, Result);
 
-		if (OutErrors.IsEmpty() && !VirtualizationProcessTag.IsEmpty())
+		if (Result.WasSuccessful() && !VirtualizationProcessTag.IsEmpty())
 		{
-			FText Tag = FText::FromString(VirtualizationProcessTag);
-			OutDescriptionTags.Add(Tag);
+			Result.DescriptionTags.Add(FText::FromString(VirtualizationProcessTag));
 		}
 	}
 
-	return OutErrors.IsEmpty() ? EVirtualizationResult::Success : EVirtualizationResult::Failed;
+	return Result;
 }
 
-ERehydrationResult FVirtualizationManager::TryRehydratePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutErrors)
+FRehydrationResult FVirtualizationManager::TryRehydratePackages(TConstArrayView<FString> PackagePaths, ERehydrationOptions Options)
 {
-	OutErrors.Reset();
+	FRehydrationResult Result;
 
-	UE::Virtualization::RehydratePackages(PackagePaths, OutErrors);
+	UE::Virtualization::RehydratePackages(PackagePaths, Options, Result);
 
-	return OutErrors.IsEmpty() ? ERehydrationResult::Success : ERehydrationResult::Failed;
+	return Result;
 }
 
 ERehydrationResult FVirtualizationManager::TryRehydratePackages(TConstArrayView<FString> PackagePaths, uint64 PaddingAlignment, TArray<FText>& OutErrors, TArray<FSharedBuffer>& OutPackages, TArray<FRehydrationInfo>* OutInfo)
@@ -1119,7 +1136,7 @@ void FVirtualizationManager::ApplySettingsFromConfigFiles(const FConfigFile& Con
 	// Check for any legacy settings and print them out (easier to do this in one block rather than one and time)
 	{
 		// Entries that are allows to be in [Core.ContentVirtualization
-		TArrayView<const TCHAR* const> AllowedEntries = { TEXT("SystemName") , TEXT("LazyInit") };
+		static const TArray<FString> AllowedEntries = { TEXT("SystemName") , TEXT("LazyInit") };
 		
 		TArray<FString> LegacyEntries;	
 		if (const FConfigSection* LegacySection = ConfigFile.Find(LegacyConfigSection))
@@ -1603,11 +1620,19 @@ bool FVirtualizationManager::CreateBackend(const FConfigFile& ConfigFile, const 
 			{
 				UE_LOG(LogVirtualization, Fatal, TEXT("IVirtualizationBackendFactory '%s' failed to create an instance!"), *Factory->GetName().ToString());
 				return false;
-
 			}
 
 			if (Backend->Initialize(Cmdine))
 			{
+				// The read only flag can be applied to any backend so we check for it and apply it at this point
+				bool bReadOnly = false;
+				FParse::Bool(*Cmdine, TEXT("ReadOnly="), bReadOnly);
+
+				if (bReadOnly && Backend->DisableOperation(IVirtualizationBackend::EOperations::Push))
+				{
+					UE_LOG(LogVirtualization, Display, TEXT("The backend '%s' was set to readonly by the config file!"), *Backend->GetDebugName());
+				}
+
 				AddBackend(MoveTemp(Backend), PushArray);
 			}
 			else
@@ -1995,6 +2020,71 @@ void FVirtualizationManager::BroadcastEvent(TConstArrayView<FPullRequest> Reques
 	for (const FPullRequest& Request : Requests)
 	{
 		GetNotificationEvent().Broadcast(IVirtualizationSystem::PullEndedNotification, Request.GetIdentifier());
+	}
+}
+
+void FVirtualizationManager::GatherAnalytics(TArray<FAnalyticsEventAttribute>& Attributes) const
+{
+	using namespace UE::Virtualization;
+
+	// Grab the Virtualization stats
+	if (IVirtualizationSystem::IsInitialized())
+	{
+		IVirtualizationSystem& System = IVirtualizationSystem::Get();
+
+		FPayloadActivityInfo PayloadActivityInfo = System.GetAccumualtedPayloadActivityInfo();
+
+		const FString BaseName = TEXT("Virtualization");
+
+		{
+			FString AttrName = BaseName + TEXT(".Enabled");
+			Attributes.Emplace(MoveTemp(AttrName), System.IsEnabled());
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Cache.TimeSpent");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Cache.PayloadCount");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.PayloadCount);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Cache.TotalBytes");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.TotalBytes);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Push.TimeSpent");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Push.PayloadCount");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.PayloadCount);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Push.TotalBytes");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.TotalBytes);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Pull.TimeSpent");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Pull.PayloadCount");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.PayloadCount);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Pull.TotalBytes");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.TotalBytes);
+		}
 	}
 }
 

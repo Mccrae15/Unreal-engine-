@@ -2,18 +2,17 @@
 
 #pragma once
 
-#include "Online/CoreOnline.h"
-#include "Online/OnlineUtils.h"
+#include "HAL/IConsoleManager.h"
+#include "Online/OnlineAsyncOpHandle.h"
 #include "Online/OnlineServicesLog.h"
 #include "Online/OnlineResult.h"
-#include "Online/OnlineAsyncOp.h"
 
-#include "Online/OnlineServicesRegistry.h"
 #include "Online/Auth.h"
 
-#include "Templates/Invoke.h"
-#include "Templates/Models.h"
-#include "Templates/Tuple.h"
+#include "Online/OnlineServices.h"
+#include "Trace/Trace.inl"
+
+template <typename OptionalType> struct TOptional;
 
 /*
 	This file facilitates online command execution.
@@ -47,7 +46,7 @@
 			- commas are optional- [5 3 7 9] is also valid
 			- arrays support internal objects/recursive arrays, e.g. [[2,3], [4,5]]
 		for TMap, you can use {} syntax. 
-			- [licenseData=licenseDataText, kNumUsers=5}
+			- {licenseData=licenseDataText, kNumUsers=5}
 			- please note: TMap does not currently support rich syntax so nested objects/arrays/etc may not parse properly
 
 	Full command examples:
@@ -898,7 +897,7 @@ public:
 			bool bResult = Private::ParseOnlineExecParams(Cmd, Field, Services);
 			if (!bResult)
 			{
-				UE_LOG(LogOnlineServices, Warning, TEXT("Failed to resolve outer field %s"), Name);
+				UE_LOG(LogConsoleResponse, Warning, TEXT("Failed to resolve outer field %s"), Name);
 			}
 			bSuccess &= bResult;
 		});
@@ -914,13 +913,13 @@ public:
 			TOnlineAsyncOpHandle<OpType> AsyncOpHandle = Invoke(Function, Interface, MoveTemp(Params));
 			AsyncOpHandle.OnComplete([&Ar](const TOnlineResult<OpType>& Result)
 				{
-					UE_LOG(LogOnlineServices, Log, TEXT("%s result: %s"), OpType::Name, *ToLogString(Result));
+					UE_LOG(LogConsoleResponse, Display, TEXT("%s result: %s"), OpType::Name, *ToLogString(Result));
 				});
 		}
 		else
 		{
 			TOnlineResult<OpType> Result = Invoke(Function, Interface, MoveTemp(Params));
-			UE_LOG(LogOnlineServices, Log, TEXT("%s result: %s"), OpType::Name, *ToLogString(Result));
+			UE_LOG(LogConsoleResponse, Display, TEXT("%s result: %s"), OpType::Name, *ToLogString(Result));
 		}
 
 		return true;
@@ -969,3 +968,9 @@ private:
 };
 
 /* UE::Online */ }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Online/OnlineAsyncOp.h"
+#include "Online/OnlineServicesRegistry.h"
+#include "Online/OnlineUtils.h"
+#endif

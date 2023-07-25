@@ -9,6 +9,7 @@
 #include "OculusXRHMDPrivate.h"
 #include "IHeadMountedDisplay.h"
 
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 
 //-------------------------------------------------------------------------------------------------

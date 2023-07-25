@@ -2,42 +2,16 @@
 
 #include "MuCOE/SCustomizableObjectNodeLayoutBlocksSelector.h"
 
-#include "Delegates/Delegate.h"
-#include "EdGraph/EdGraph.h"
-#include "EdGraph/EdGraphPin.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/Commands.h"
-#include "Framework/Commands/InputChord.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/UICommandInfo.h"
-#include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "HAL/PlatformCrt.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Layout/Children.h"
-#include "Math/Color.h"
-#include "Math/IntPoint.h"
-#include "Math/Vector2D.h"
-#include "Misc/Attribute.h"
-#include "Misc/Guid.h"
 #include "MuCOE/CustomizableObjectEditorStyle.h"
-#include "MuCOE/CustomizableObjectLayout.h"
 #include "MuCOE/GraphTraversal.h"
-#include "MuCOE/ICustomizableObjectInstanceEditor.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeEditLayoutBlocks.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterial.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeMaterialBase.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/SCustomizableObjectLayoutGrid.h"
-#include "SlotBase.h"
-#include "Styling/AppStyle.h"
-#include "Templates/Casts.h"
-#include "UObject/NameTypes.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/UnrealNames.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -79,9 +53,13 @@ public:
 };
 
 
+SCustomizableObjectNodeLayoutBlocksSelector::SCustomizableObjectNodeLayoutBlocksSelector() : UICommandList(new FUICommandList())
+{
+}
+
+
 void SCustomizableObjectNodeLayoutBlocksSelector::Construct(const FArguments& InArgs)
 {
-	CustomizableObjectEditorPtr = InArgs._CustomizableObjectEditor;
 	CurrentNode = nullptr;
 	
 	BindCommands();
@@ -163,8 +141,7 @@ void SCustomizableObjectNodeLayoutBlocksSelector::AddReferencedObjects( FReferen
 
 TSharedRef<SWidget> SCustomizableObjectNodeLayoutBlocksSelector::BuildLayoutToolBar()
 {
-	TSharedPtr<FUICommandList> CommandList = CustomizableObjectEditorPtr.Pin()->GetToolkitCommands();
-	FToolBarBuilder LayoutToolbarBuilder(CommandList, FMultiBoxCustomization::None);
+	FToolBarBuilder LayoutToolbarBuilder(UICommandList, FMultiBoxCustomization::None);
 
 	// Build toolbar widgets
 
@@ -311,8 +288,6 @@ void SCustomizableObjectNodeLayoutBlocksSelector::BindCommands()
 	FLayoutBlockSelectorCommands::Register();
 
 	const FLayoutBlockSelectorCommands& Commands = FLayoutBlockSelectorCommands::Get();
-
-	const TSharedRef<FUICommandList>& UICommandList = CustomizableObjectEditorPtr.Pin()->GetToolkitCommands();
 
 	UICommandList->MapAction(
 		Commands.SelectAll,

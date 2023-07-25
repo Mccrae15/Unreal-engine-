@@ -1,9 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimNode_CustomProperty.h"
-#include "Animation/AnimClassInterface.h"
-#include "Animation/AnimInstanceProxy.h"
-#include "Animation/AnimNode_LinkedInputPose.h"
+#include "Animation/AnimInstance.h"
+#include "HAL/IConsoleManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_CustomProperty)
 
@@ -103,7 +102,10 @@ void FAnimNode_CustomProperty::HandleObjectsReinstanced_Impl(UObject* InSourceOb
 	static IConsoleVariable* UseLegacyAnimInstanceReinstancingBehavior = IConsoleManager::Get().FindConsoleVariable(TEXT("bp.UseLegacyAnimInstanceReinstancingBehavior"));
 	if(UseLegacyAnimInstanceReinstancingBehavior == nullptr || !UseLegacyAnimInstanceReinstancingBehavior->GetBool())
 	{
-		InitializeProperties(CastChecked<UAnimInstance>(InSourceObject), GetTargetClass());
+		if(InSourceObject)
+		{
+			InitializeProperties(CastChecked<UAnimInstance>(InSourceObject), GetTargetClass());
+		}
 	}
 }
 

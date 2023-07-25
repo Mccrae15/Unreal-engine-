@@ -120,7 +120,9 @@ public:
 	 * @param TrackHeights [OUT]	The computed track heights
 	 *
 	 */
+#if WITH_EDITOR
 	static void CalculateTrackHeights(const FCompressibleAnimData& CompressibleAnimData, int NumTracks, TArray<int32>& TrackHeights);
+#endif // WITH_EDITOR
 
 	/**
 	 * Checks a set of key times to see if the spacing is uniform or non-uniform.
@@ -137,6 +139,8 @@ public:
 	/**
 	 * Perturbs the bone(s) associated with each track in turn, measuring the maximum error introduced in end effectors as a result
 	 */
+	
+#if WITH_EDITOR
 	static void TallyErrorsFromPerturbation(
 		const FCompressibleAnimData& CompressibleAnimData,
 		int32 NumTracks,
@@ -145,7 +149,6 @@ public:
 		const FVector& ScaleNudge,
 		TArray<FAnimPerturbationError>& InducedErrors);
 
-#if WITH_EDITOR
 	/** Preload the bone, curve and recorder compression settings */
 	ENGINE_API static void PreloadCompressionSettings();
 #endif
@@ -168,10 +171,16 @@ public:
 	// Extract specific frame from raw track and place in OutAtom
 	ENGINE_API static void ExtractTransformForFrameFromTrack(const FRawAnimSequenceTrack& RawTrack, int32 Frame, FTransform& OutAtom);
 
+	UE_DEPRECATED(5.1, "ExtractTransformFromTrack has been deprecated, use different signature")
 	ENGINE_API static void ExtractTransformFromTrack(float Time, int32 NumFrames, float SequenceLength, const struct FRawAnimSequenceTrack& RawTrack, EAnimInterpolationType Interpolation, FTransform &OutAtom);
 
+	ENGINE_API static void ExtractTransformFromTrack(const struct FRawAnimSequenceTrack& RawTrack, double Time, int32 NumFrames, double SequenceLength, EAnimInterpolationType Interpolation, FTransform &OutAtom);
+
 #if WITH_EDITOR
+	UE_DEPRECATED(5.1, "ExtractTransformFromCompressionData has been deprecated, use different signature")
 	static void ExtractTransformFromCompressionData(const FCompressibleAnimData& CompressibleAnimData, FCompressibleAnimDataResult& CompressedAnimData, float Time, int32 TrackIndex, bool bUseRawData, FTransform& OutBoneTransform);
+	
+	static void ExtractTransformFromCompressionData(const FCompressibleAnimData& CompressibleAnimData, FCompressibleAnimDataResult& CompressedAnimData, double Time, int32 TrackIndex, bool bUseRawData, FTransform& OutBoneTransform);
 
 	/**
 	 * Compresses the animation bones within a sequence with the chosen settings.

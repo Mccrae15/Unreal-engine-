@@ -57,6 +57,7 @@ ANavigationTestingActor::ANavigationTestingActor(const FObjectInitializer& Objec
 	OffsetFromCornersDistance = 0.f;
 
 	QueryingExtent = FVector(DEFAULT_NAV_QUERY_EXTENT_HORIZONTAL, DEFAULT_NAV_QUERY_EXTENT_HORIZONTAL, DEFAULT_NAV_QUERY_EXTENT_VERTICAL);
+	bRequireNavigableEndLocation = true;
 
 	CapsuleComponent = CreateDefaultSubobject<UCapsuleComponent>(TEXT("CollisionCylinder"));
 	CapsuleComponent->InitCapsuleSize(NavAgentProps.AgentRadius, NavAgentProps.AgentHeight / 2);
@@ -304,7 +305,7 @@ void ANavigationTestingActor::UpdateNavData()
 void ANavigationTestingActor::UpdatePathfinding()
 {
 	PathfindingTime = 0.0f;
-	PathCost = 0.0f;
+	PathCost = 0.;
 	bPathSearchOutOfNodes = false;
 	bPathIsPartial = false;
 	bPathExist = false;
@@ -430,19 +431,19 @@ void ANavigationTestingActor::SearchPathTo(ANavigationTestingActor* Goal)
 	//Apply cost limit factor
 	FSharedConstNavQueryFilter NavQueryFilter = Query.QueryFilter ? Query.QueryFilter : NavData->GetDefaultQueryFilter();
 	const float HeuristicScale = NavQueryFilter->GetHeuristicScale();
-	Query.CostLimit = Query.ComputeCostLimitFromHeuristic(Query.StartLocation, Query.EndLocation, HeuristicScale, CostLimitFactor, MinimumCostLimit);
+	Query.CostLimit = FPathFindingQuery::ComputeCostLimitFromHeuristic(Query.StartLocation, Query.EndLocation, HeuristicScale, CostLimitFactor, MinimumCostLimit);
 
 	EPathFindingMode::Type Mode = bUseHierarchicalPathfinding ? EPathFindingMode::Hierarchical : EPathFindingMode::Regular;
 	FPathFindingResult Result = NavSys->FindPathSync(NavAgentProps, Query, Mode);
 
 	const double EndTime = FPlatformTime::Seconds();
-	const float Duration = (EndTime - StartTime);
-	PathfindingTime = Duration * 1000000.0f;			// in micro seconds [us]
+	const double Duration = (EndTime - StartTime);
+	PathfindingTime = static_cast<float>(Duration * 1000000.);			// in micro seconds [us]
 	bPathIsPartial = Result.IsPartial();
 	bPathExist = Result.IsSuccessful();
 	bPathSearchOutOfNodes = bPathExist ? Result.Path->DidSearchReachedLimit() : false;
 	LastPath = Result.Path;
-	PathCost = bPathExist ? Result.Path->GetCost() : 0.0f;
+	PathCost = bPathExist ? Result.Path->GetCost() : 0.;
 
 	if (bPathExist)
 	{
@@ -495,7 +496,9 @@ FPathFindingQuery ANavigationTestingActor::BuildPathFindingQuery(const ANavigati
 	check(Goal);
 	if (MyNavData)
 	{
-		return FPathFindingQuery(this, *MyNavData, GetNavAgentLocation(), Goal->GetNavAgentLocation(), UNavigationQueryFilter::GetQueryFilter(*MyNavData, this, FilterClass));
+		constexpr float DefaultCostLimit = FLT_MAX;
+		const FNavPathSharedPtr NoSharedPath = nullptr;
+		return FPathFindingQuery(this, *MyNavData, GetNavAgentLocation(), Goal->GetNavAgentLocation(), UNavigationQueryFilter::GetQueryFilter(*MyNavData, this, FilterClass), NoSharedPath, DefaultCostLimit, bRequireNavigableEndLocation);
 	}
 	
 	return FPathFindingQuery();

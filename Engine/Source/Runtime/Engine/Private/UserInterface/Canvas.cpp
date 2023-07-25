@@ -5,30 +5,30 @@
 =============================================================================*/
 
 #include "Engine/Canvas.h"
+#include "CanvasBatchedElementRenderItem.h"
+#include "Internationalization/IBreakIterator.h"
+#include "UnrealEngine.h"
+#include "RenderingThread.h"
 #include "UObject/Package.h"
 #include "UObject/ConstructorHelpers.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
 #include "Materials/MaterialInterface.h"
-#include "Engine/Engine.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/Texture2D.h"
-#include "SceneUtils.h"
 #include "Framework/Application/SlateApplication.h"
 #include "EngineFontServices.h"
 #include "Internationalization/BreakIterator.h"
 #include "Misc/CoreDelegates.h"
-#include "OneColorShader.h"
-#include "PipelineStateCache.h"
+#include "RHIStaticStates.h"
 #include "ClearQuad.h"
 #include "MeshPassProcessor.h"
-#include "StereoRendering.h"
 #include "Debug/ReporterGraph.h"
 #include "Fonts/FontMeasure.h"
 #include "EngineModule.h"
 #include "CanvasRender.h"
+#include "CanvasRendererItem.h"
 #include "RenderGraphUtils.h"
+#include "TextureResource.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(Canvas)
 
@@ -1048,13 +1048,13 @@ void FCanvas::Clear(const FLinearColor& ClearColor)
 		});
 }
 
-void FCanvas::DrawTile(float X, float Y, float SizeX, float SizeY, float U, float V, float SizeU, float SizeV, const FLinearColor& Color,	const FTexture* Texture, bool AlphaBlend)
+void FCanvas::DrawTile(double X, double Y, double SizeX, double SizeY, float U, float V, float SizeU, float SizeV, const FLinearColor& Color,	const FTexture* Texture, bool AlphaBlend)
 {
 	ESimpleElementBlendMode BlendMode = AlphaBlend ? (bUseInternalTexture ? SE_BLEND_TranslucentAlphaOnlyWriteAlpha : SE_BLEND_Translucent) : SE_BLEND_Opaque;
 	DrawTile(X, Y, SizeX, SizeY, U, V, SizeU, SizeV, Color, Texture, BlendMode);
 }
 
-void FCanvas::DrawTile(float X, float Y, float SizeX, float SizeY, float U, float V, float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture, ESimpleElementBlendMode BlendMode)
+void FCanvas::DrawTile(double X, double Y, double SizeX, double SizeY, float U, float V, float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture, ESimpleElementBlendMode BlendMode)
 {
 	SCOPE_CYCLE_COUNTER(STAT_Canvas_DrawTextureTileTime);
 
@@ -1063,7 +1063,7 @@ void FCanvas::DrawTile(float X, float Y, float SizeX, float SizeY, float U, floa
 	DrawItem(TileItem);
 }
 
-int32 FCanvas::DrawShadowedString( float StartX,float StartY,const TCHAR* Text,const UFont* Font,const FLinearColor& Color, const FLinearColor& ShadowColor)
+int32 FCanvas::DrawShadowedString(double StartX, double StartY, const TCHAR* Text, const UFont* Font, const FLinearColor& Color, const FLinearColor& ShadowColor)
 {
 	const float Z = 1.0f;
 	FCanvasTextItem TextItem( FVector2D( StartX, StartY ), FText::FromString( Text ), Font, Color);
@@ -1087,7 +1087,7 @@ void FCanvas::DrawNGon(const FVector2D& Center, const FColor& Color, int32 NumSi
 	DrawItem(NGonItem);
 }
 
-int32 FCanvas::DrawShadowedText( float StartX,float StartY,const FText& Text,const UFont* Font,const FLinearColor& Color, const FLinearColor& ShadowColor )
+int32 FCanvas::DrawShadowedText(double StartX, double StartY, const FText& Text, const UFont* Font, const FLinearColor& Color, const FLinearColor& ShadowColor)
 {
 	const float Z = 1.0f;
 	FCanvasTextItem TextItem( FVector2D( StartX, StartY ), Text, Font, Color );
@@ -1998,6 +1998,17 @@ void FCanvas::DrawItem(FCanvasItem& Item, float X, float Y)
 	{
 		Flush_GameThread();
 	}
+}
+
+EShaderPlatform FCanvas::GetShaderPlatform() const
+{
+	return GShaderPlatformForFeatureLevel[FeatureLevel];
+}
+
+void FScreenMessageWriter::DrawLine(const FText& Message, int32 X, const FLinearColor& Color)
+{
+	Canvas.DrawShadowedText((float)X, (float)Y, Message, GetStatsFont(), Color);
+	EmptyLine();
 }
 
 void UCanvas::SetView(FSceneView* InView)

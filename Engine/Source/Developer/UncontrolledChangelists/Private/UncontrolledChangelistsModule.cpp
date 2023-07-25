@@ -105,7 +105,7 @@ void FUncontrolledChangelistsModule::ShutdownModule()
 
 bool FUncontrolledChangelistsModule::IsEnabled() const
 {
-	return bIsEnabled;
+	return bIsEnabled && ISourceControlModule::Get().GetProvider().UsesUncontrolledChangelists();
 }
 
 TArray<FUncontrolledChangelistStateRef> FUncontrolledChangelistsModule::GetChangelistStates() const
@@ -283,7 +283,7 @@ void FUncontrolledChangelistsModule::OnAssetAddedInternal(const FAssetData& Asse
 		return;
 	}
 
-	if (!IFileManager::Get().IsReadOnly(*Fullpath))
+	if (ISourceControlModule::Get().GetProvider().UsesLocalReadOnlyState() && !IFileManager::Get().IsReadOnly(*Fullpath))
 	{
 		InAddedAssetsCache.Add(MoveTemp(Fullpath));
 	}
@@ -304,7 +304,7 @@ static bool ExecuteRevertOperation(const TArray<FString>& InFilenames)
 
 	if (SourceControlProvider.GetState(InFilenames, UpdatedFilestates, EStateCacheUsage::ForceUpdate) != ECommandResult::Succeeded)
 	{
-		UE_LOG(LogSourceControl, Error, TEXT("Failed to update the source control files states for %s."), *BuildFileString(InFilenames));
+		UE_LOG(LogSourceControl, Error, TEXT("Failed to update the revision control files states for %s."), *BuildFileString(InFilenames));
 		return false;
 	}
 

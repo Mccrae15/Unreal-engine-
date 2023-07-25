@@ -20,7 +20,7 @@
 #include "Editor/ControlRigEditorEditMode.h"
 #include "EditMode/ControlRigEditModeSettings.h"
 #include "EditorModeManager.h"
-#include "ControlRigBlueprintGeneratedClass.h"
+#include "RigVMBlueprintGeneratedClass.h"
 #include "AnimCustomInstanceHelper.h"
 #include "Sequencer/ControlRigLayerInstance.h"
 #include "Animation/DebugSkelMeshComponent.h"
@@ -100,14 +100,17 @@
 #include "ToolMenus.h"
 #include "Styling/AppStyle.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "MaterialDomain.h"
+#include "RigVMFunctions/RigVMFunction_ControlFlow.h"
+#include "RigVMModel/Nodes/RigVMAggregateNode.h"
 
 #define LOCTEXT_NAMESPACE "ControlRigEditor"
+
+TAutoConsoleVariable<bool> CVarControlRigShowTestingToolbar(TEXT("ControlRig.Test.EnableTestingToolbar"), false, TEXT("When true we'll show the testing toolbar in Control Rig Editor."));
 
 const FName ControlRigEditorAppName(TEXT("ControlRigEditorApp"));
 
 const FName FControlRigEditorModes::ControlRigEditorMode("Rigging");
-
-bool FControlRigEditor::bAreFunctionReferencesInitialized = false;
 
 namespace ControlRigEditorTabs
 {
@@ -332,6 +335,7 @@ void FControlRigEditor::InitControlRigEditor(const EToolkitMode::Type Mode, cons
 
 	FPersonaToolkitArgs PersonaToolkitArgs;
 	PersonaToolkitArgs.OnPreviewSceneCreated = FOnPreviewSceneCreated::FDelegate::CreateSP(this, &FControlRigEditor::HandlePreviewSceneCreated);
+	PersonaToolkitArgs.bPreviewMeshCanUseDifferentSkeleton = true;
 	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InControlRigBlueprint, PersonaToolkitArgs);
 
 	// set delegate prior to setting mesh
@@ -369,9 +373,6 @@ void FControlRigEditor::InitControlRigEditor(const EToolkitMode::Type Mode, cons
 	InControlRigBlueprint->InitializeModelIfRequired();
 
 	CommonInitialization(ControlRigBlueprints, false);
-
-	// update function references once
-	InitFunctionReferences();
 	
 	// user-defined-struct can change even after load
 	// refresh the models such that pins are updated to match
@@ -496,7 +497,10 @@ void FControlRigEditor::InitControlRigEditor(const EToolkitMode::Type Mode, cons
 				InControlRigBlueprint->RebuildGraphFromModel();
 
 				// selection state does not need to be persistent, even though it is saved in the RigVM.
-				InControlRigBlueprint->GetController()->ClearNodeSelection(false);
+				for (URigVMGraph* Graph : InControlRigBlueprint->GetAllModels())
+				{
+					InControlRigBlueprint->GetController(Graph)->ClearNodeSelection(false);
+				}
 
 				if (UPackage* Package = InControlRigBlueprint->GetOutermost())
 				{
@@ -601,54 +605,6 @@ void FControlRigEditor::InitControlRigEditor(const EToolkitMode::Type Mode, cons
 	}
 
 	PropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &FControlRigEditor::OnPropertyChanged);
-}
-
-void FControlRigEditor::InitFunctionReferences()
-{
-	if (bAreFunctionReferencesInitialized)
-	{
-		return;
-	}
-	
-	FFunctionGraphTask::CreateAndDispatchWhenReady([]()
-	{
-		if(URigVMBuildData* BuildData = URigVMController::GetBuildData())
-		{
-			const FArrayProperty* ReferenceNodeDataProperty =
-				CastField<FArrayProperty>(UControlRigBlueprint::StaticClass()->FindPropertyByName(TEXT("FunctionReferenceNodeData")));
-			if(ReferenceNodeDataProperty)
-			{
-				const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-
-				// find all control rigs in the project
-				TArray<FAssetData> ControlRigAssetDatas;
-				FARFilter ControlRigAssetFilter;
-				ControlRigAssetFilter.ClassPaths.Add(UControlRigBlueprint::StaticClass()->GetClassPathName());
-				AssetRegistryModule.Get().GetAssets(ControlRigAssetFilter, ControlRigAssetDatas);
-
-				// loop over all control rigs in the project
-				for(const FAssetData& ControlRigAssetData : ControlRigAssetDatas)
-				{
-					const FString ReferenceNodeDataString =
-						ControlRigAssetData.GetTagValueRef<FString>(ReferenceNodeDataProperty->GetFName());
-					if(ReferenceNodeDataString.IsEmpty())
-					{
-						continue;
-					}
-
-					TArray<FRigVMReferenceNodeData> ReferenceNodeDatas;
-					ReferenceNodeDataProperty->ImportText_Direct(*ReferenceNodeDataString, &ReferenceNodeDatas, nullptr, EPropertyPortFlags::PPF_None);
-
-					for(const FRigVMReferenceNodeData& ReferenceNodeData : ReferenceNodeDatas)
-					{
-						BuildData->RegisterFunctionReference(ReferenceNodeData);
-					}
-				}
-			}
-		}
-	}, TStatId(), NULL, ENamedThreads::GameThread);
-	
-	bAreFunctionReferencesInitialized = true;
 }
 
 void FControlRigEditor::BindCommands()
@@ -855,6 +811,213 @@ TSharedRef<SWidget> FControlRigEditor::GenerateExecutionModeMenuContent()
 	return MenuBuilder.MakeWidget();
 }
 
+FText FControlRigEditor::GetTestAssetName() const
+{
+	if(TestDataStrongPtr.IsValid())
+	{
+		return FText::FromString(TestDataStrongPtr->GetName());
+	}
+
+	static const FText NoTestAsset = LOCTEXT("NoTestAsset", "No Test Asset");
+	return NoTestAsset;
+}
+
+FText FControlRigEditor::GetTestAssetTooltip() const
+{
+	if(TestDataStrongPtr.IsValid())
+	{
+		return FText::FromString(TestDataStrongPtr->GetPathName());
+	}
+	static const FText NoTestAssetTooltip = LOCTEXT("NoTestAssetTooltip", "Click the record button to the left to record a new frame");
+	return NoTestAssetTooltip;
+}
+
+bool FControlRigEditor::SetTestAssetPath(const FString& InAssetPath)
+{
+	if(TestDataStrongPtr.IsValid())
+	{
+		if(TestDataStrongPtr->GetPathName().Equals(InAssetPath, ESearchCase::CaseSensitive))
+		{
+			return false;
+		}
+	}
+
+	if(TestDataStrongPtr.IsValid())
+	{
+		TestDataStrongPtr->ReleaseReplay();
+		TestDataStrongPtr.Reset();
+	}
+
+	if(!InAssetPath.IsEmpty())
+	{
+		if(UControlRigTestData* TestData = LoadObject<UControlRigTestData>(GetControlRigBlueprint(), *InAssetPath))
+		{
+			TestDataStrongPtr = TStrongObjectPtr<UControlRigTestData>(TestData);
+		}
+	}
+	return true;
+}
+
+TSharedRef<SWidget> FControlRigEditor::GenerateTestAssetModeMenuContent()
+{
+	FMenuBuilder MenuBuilder(true, GetToolkitCommands());
+
+	MenuBuilder.BeginSection(TEXT("Default"));
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("ClearTestAssset", "Clear"),
+		LOCTEXT("ClearTestAsset_ToolTip", "Clears the test asset"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([this]()
+			{
+				SetTestAssetPath(FString());
+			}
+		)	
+	));
+	MenuBuilder.EndSection();
+
+	const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	TArray<FAssetData> TestDataAssets;
+	FARFilter AssetFilter;
+	AssetFilter.ClassPaths.Add(UControlRigTestData::StaticClass()->GetClassPathName());
+	AssetRegistryModule.Get().GetAssets(AssetFilter, TestDataAssets);
+
+	const FString CurrentObjectPath = GetControlRigBlueprint()->GetPathName();
+	TestDataAssets.RemoveAll([CurrentObjectPath](const FAssetData& InAssetData)
+	{
+		const FString ControlRigObjectPath = InAssetData.GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(UControlRigTestData, ControlRigObjectPath));
+		return ControlRigObjectPath != CurrentObjectPath;
+	});
+
+	if(!TestDataAssets.IsEmpty())
+	{
+		MenuBuilder.BeginSection(TEXT("Assets"));
+		for(const FAssetData& TestDataAsset : TestDataAssets)
+		{
+			const FString TestDataObjectPath = TestDataAsset.GetObjectPathString();
+			FString Right;
+			if(TestDataObjectPath.Split(TEXT("."), nullptr, &Right))
+			{
+				MenuBuilder.AddMenuEntry(FText::FromString(Right), FText::FromString(TestDataObjectPath), FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateLambda([this, TestDataObjectPath]()
+						{
+							SetTestAssetPath(TestDataObjectPath);
+						}
+					)	
+				));
+			}
+		}
+		MenuBuilder.EndSection();
+	}
+	return MenuBuilder.MakeWidget();
+}
+
+TSharedRef<SWidget> FControlRigEditor::GenerateTestAssetRecordMenuContent()
+{
+	FMenuBuilder MenuBuilder(true, GetToolkitCommands());
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("TestAssetRecordSingleFrame", "Single Frame"),
+		LOCTEXT("TestAssetRecordSingleFrame_ToolTip", "Records a single frame into the test data asset"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([this]()
+			{
+				RecordTestData(0);
+			}
+		)	
+	));
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("TestAssetRecordOneSecond", "1 Second"),
+		LOCTEXT("TestAssetRecordOneSecond_ToolTip", "Records 1 second of animation into the test data asset"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([this]()
+			{
+				RecordTestData(1);
+			}
+		)	
+	));
+
+	MenuBuilder.AddMenuEntry(
+	LOCTEXT("TestAssetRecordFiveSeconds", "5 Seconds"),
+	LOCTEXT("TestAssetRecordFiveSeconds_ToolTip", "Records 5 seconds of animation into the test data asset"),
+	FSlateIcon(),
+	FUIAction(
+			FExecuteAction::CreateLambda([this]()
+			{
+				RecordTestData(5);
+			}
+		)	
+	));
+
+	MenuBuilder.AddMenuEntry(
+	LOCTEXT("TestAssetRecordTenSeconds", "10 Seconds"),
+	LOCTEXT("TestAssetRecordTenSeconds_ToolTip", "Records 10 seconds of animation into the test data asset"),
+	FSlateIcon(),
+	FUIAction(
+			FExecuteAction::CreateLambda([this]()
+			{
+				RecordTestData(10);
+			}
+		)	
+	));
+
+	return MenuBuilder.MakeWidget();
+}
+
+bool FControlRigEditor::RecordTestData(double InRecordingDuration)
+{
+	if(ControlRig == nullptr)
+	{
+		return false;
+	}
+	
+	if(!TestDataStrongPtr.IsValid())
+	{
+		// create a new test asset
+		static const FString Folder = TEXT("/Game/Animation/ControlRig/NoCook/");
+		const FString DesiredPackagePath =  FString::Printf(TEXT("%s/%s_TestData"), *Folder, *GetControlRigBlueprint()->GetName());
+
+		if(UControlRigTestData* TestData = UControlRigTestData::CreateNewAsset(DesiredPackagePath, GetControlRigBlueprint()->GetPathName()))
+		{
+			SetTestAssetPath(TestData->GetPathName());
+		}
+	}
+	
+	if(UControlRigTestData* TestData = TestDataStrongPtr.Get())
+	{
+		TestData->Record(ControlRig, InRecordingDuration);
+	}
+	return true;
+}
+
+void FControlRigEditor::ToggleTestData()
+{
+	if(TestDataStrongPtr.IsValid())
+	{
+		switch(TestDataStrongPtr->GetPlaybackMode())
+		{
+			case EControlRigTestDataPlaybackMode::ReplayInputs:
+			{
+				TestDataStrongPtr->ReleaseReplay();
+				break;
+			}
+			case EControlRigTestDataPlaybackMode::GroundTruth:
+			{
+				TestDataStrongPtr->SetupReplay(ControlRig, false);
+				break;
+			}
+			default:
+			{
+				TestDataStrongPtr->SetupReplay(ControlRig, true);
+				break;
+			}
+		}
+	}
+}
+
 void FControlRigEditor::ExtendToolbar()
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
@@ -960,6 +1123,131 @@ void FControlRigEditor::FillToolbar(FToolBarBuilder& ToolbarBuilder)
 
 		ToolbarBuilder.EndStyleOverride();
 
+		if(CVarControlRigShowTestingToolbar.GetValueOnAnyThread())
+		{
+			ToolbarBuilder.AddSeparator();
+
+			FUIAction TestAssetAction;
+			ToolbarBuilder.AddComboButton(
+				FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([this]()
+				{
+					if(TestDataStrongPtr.IsValid())
+					{
+						return !TestDataStrongPtr->IsReplaying() && !TestDataStrongPtr->IsRecording();
+					}
+					return true;
+				})),
+				FOnGetContent::CreateSP(this, &FControlRigEditor::GenerateTestAssetModeMenuContent),
+				TAttribute<FText>::CreateSP(this, &FControlRigEditor::GetTestAssetName),
+				TAttribute<FText>::CreateSP(this, &FControlRigEditor::GetTestAssetTooltip),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "AutomationTools.TestAutomation"),
+				false);
+
+			ToolbarBuilder.AddToolBarButton(FUIAction(
+					FExecuteAction::CreateLambda([this]()
+					{
+						RecordTestData(0.0);
+					}),
+					FCanExecuteAction::CreateLambda([this]()
+					{
+						if(TestDataStrongPtr.IsValid())
+						{
+							return !TestDataStrongPtr->IsReplaying() && !TestDataStrongPtr->IsRecording();
+						}
+						return true;
+					})
+				),
+				NAME_None,
+				LOCTEXT("TestDataRecordButton", "Record"),
+				LOCTEXT("TestDataRecordButton_Tooltip", "Records a new frame into the test data asset.\nA test data asset will be created if necessary."),
+				FSlateIcon(FControlRigEditorStyle::Get().GetStyleSetName(),"ControlRig.TestData.Record")
+				);
+			ToolbarBuilder.AddComboButton(
+				FUIAction(),
+				FOnGetContent::CreateSP(this, &FControlRigEditor::GenerateTestAssetRecordMenuContent),
+				LOCTEXT("TestDataRecordMenu_Label", "Recording Modes"),
+				LOCTEXT("TestDataRecordMenu_ToolTip", "Pick between different modes for recording"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Recompile"),
+				true);
+
+			ToolbarBuilder.AddToolBarButton(FUIAction(
+					FExecuteAction::CreateLambda([this]()
+					{
+						ToggleTestData();
+					}),
+					FCanExecuteAction::CreateLambda([this]
+					{
+						if(TestDataStrongPtr.IsValid())
+						{
+							return !TestDataStrongPtr->IsRecording();
+						}
+						return false;
+					})
+				),
+				NAME_None,
+				TAttribute<FText>::CreateLambda([this]()
+				{
+					static const FText LiveStatus = LOCTEXT("LiveStatus", "Live"); 
+					static const FText ReplayInputsStatus = LOCTEXT("ReplayInputsStatus", "Replay Inputs");
+					static const FText GroundTruthStatus = LOCTEXT("GroundTruthStatus", "Ground Truth");
+					if(TestDataStrongPtr.IsValid())
+					{
+						switch(TestDataStrongPtr->GetPlaybackMode())
+						{
+							case EControlRigTestDataPlaybackMode::ReplayInputs:
+							{
+								return ReplayInputsStatus;
+							}
+							case EControlRigTestDataPlaybackMode::GroundTruth:
+							{
+								return GroundTruthStatus;
+							}
+							default:
+							{
+								break;
+							}
+						}
+					}
+					return LiveStatus;
+				}),
+				TAttribute<FText>::CreateLambda([this]()
+				{
+					static const FText LiveStatusTooltip = LOCTEXT("LiveStatusTooltip", "The test data is not affecting the rig."); 
+					static const FText ReplayInputsStatusTooltip = LOCTEXT("ReplayInputsStatusTooltip", "The test data inputs are being replayed onto the rig.");
+					static const FText GroundTruthStatusTooltip = LOCTEXT("GroundTruthStatusTooltip", "The complete result of the rig is being overwritten.");
+					if(TestDataStrongPtr.IsValid())
+					{
+						switch(TestDataStrongPtr->GetPlaybackMode())
+						{
+							case EControlRigTestDataPlaybackMode::ReplayInputs:
+							{
+								return ReplayInputsStatusTooltip;
+							}
+							case EControlRigTestDataPlaybackMode::GroundTruth:
+							{
+								return GroundTruthStatusTooltip;
+							}
+							default:
+							{
+								break;
+							}
+						}
+					}
+					return LiveStatusTooltip;
+				}),
+				TAttribute<FSlateIcon>::CreateLambda([this]()
+				{
+					static const FSlateIcon LiveIcon = FSlateIcon(FControlRigEditorStyle::Get().GetStyleSetName(),"ClassIcon.ControlRigBlueprint"); 
+					static const FSlateIcon ReplayIcon = FSlateIcon(FControlRigEditorStyle::Get().GetStyleSetName(),"ClassIcon.ControlRigSequence"); 
+					if(TestDataStrongPtr.IsValid() && TestDataStrongPtr->IsReplaying())
+					{
+						return ReplayIcon;
+					}
+					return LiveIcon;
+				}),
+				EUserInterfaceActionType::Button
+			);
+		}
 	}
 	ToolbarBuilder.EndSection();
 }
@@ -1023,6 +1311,12 @@ void FControlRigEditor::SetEventQueue(TArray<FName> InEventQueue, bool bCompile)
 			if (UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(GetBlueprintObj()))
 			{
 				RigBlueprint->Validator->SetControlRig(ControlRig);
+
+				if (LastEventQueue == ConstructionEventQueue)
+				{
+					// This will propagate any user bone transformation done during construction to the preview instance
+					ResetAllBoneModification();
+				}
 			}
 		}
 
@@ -1146,7 +1440,7 @@ void FControlRigEditor::SetExecutionMode(const EControlRigExecutionModeType InEx
 	
 	if (ControlRig)
 	{
-		ControlRig->bIsInDebugMode = InExecutionMode == EControlRigExecutionModeType_Debug;
+		ControlRig->SetIsInDebugMode(InExecutionMode == EControlRigExecutionModeType_Debug);
 	}
 
 	SetHaltedNode(nullptr);
@@ -1198,7 +1492,7 @@ void FControlRigEditor::GetCustomDebugObjects(TArray<FCustomDebugObject>& DebugL
 		DebugList.Add(DebugObject);
 	}
 
-	UControlRigBlueprintGeneratedClass* GeneratedClass = RigBlueprint->GetControlRigBlueprintGeneratedClass();
+	URigVMBlueprintGeneratedClass* GeneratedClass = RigBlueprint->GetControlRigBlueprintGeneratedClass();
 	if (GeneratedClass)
 	{
 		struct Local
@@ -1310,7 +1604,7 @@ void FControlRigEditor::HandleSetObjectBeingDebugged(UObject* InObject)
 
 	if (UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(GetBlueprintObj()))
 	{
-		if (UControlRigBlueprintGeneratedClass* GeneratedClass = RigBlueprint->GetControlRigBlueprintGeneratedClass())
+		if (URigVMBlueprintGeneratedClass* GeneratedClass = RigBlueprint->GetControlRigBlueprintGeneratedClass())
 		{
 			UControlRig* CDO = Cast<UControlRig>(GeneratedClass->GetDefaultObject(true /* create if needed */));
 			if (CDO->VM->GetInstructions().Num() <= 1 /* only exit */)
@@ -1327,7 +1621,7 @@ void FControlRigEditor::HandleSetObjectBeingDebugged(UObject* InObject)
 	{
 		bool bIsExternalControlRig = DebuggedControlRig != ControlRig;
 		bool bShouldExecute = (!bIsExternalControlRig) && bExecutionControlRig;
-		DebuggedControlRig->ControlRigLog = &ControlRigLog;
+		DebuggedControlRig->RigVMLog = &ControlRigLog;
 		GetControlRigBlueprint()->Hierarchy->HierarchyForSelectionPtr = DebuggedControlRig->DynamicHierarchy;
 
 		UControlRigSkeletalMeshComponent* EditorSkelComp = Cast<UControlRigSkeletalMeshComponent>(GetPersonaToolkit()->GetPreviewScene()->GetPreviewMeshComponent());
@@ -1969,9 +2263,9 @@ void FControlRigEditor::Compile()
 		
 		if (ControlRig)
 		{
-			ControlRig->ControlRigLog = &ControlRigLog;
+			ControlRig->RigVMLog = &ControlRigLog;
 
-			UControlRigBlueprintGeneratedClass* GeneratedClass = Cast<UControlRigBlueprintGeneratedClass>(ControlRig->GetClass());
+			URigVMBlueprintGeneratedClass* GeneratedClass = Cast<URigVMBlueprintGeneratedClass>(ControlRig->GetClass());
 			if (GeneratedClass)
 			{
 				UControlRig* CDO = Cast<UControlRig>(GeneratedClass->GetDefaultObject(true /* create if needed */));
@@ -2118,6 +2412,11 @@ void FControlRigEditor::SaveAssetAs_Execute()
 FName FControlRigEditor::GetToolkitFName() const
 {
 	return FName("ControlRigEditor");
+}
+
+FName FControlRigEditor::GetToolkitContextFName() const
+{
+	return GetToolkitFName();
 }
 
 FText FControlRigEditor::GetBaseToolkitName() const
@@ -2329,7 +2628,7 @@ FReply FControlRigEditor::OnSpawnGraphNodeByShortcut(FInputChord InChord, const 
 			{
 				if(InChord.Key == EKeys::B)
 				{
-					Controller->AddBranchNode(InPosition, "", true, true);
+					Controller->AddUnitNode(FRigVMFunction_ControlFlowBranch::StaticStruct(), FRigVMStruct::ExecuteName, InPosition, FString(), true, true);
 				}
 				else if(InChord.Key == EKeys::S)
 				{
@@ -2439,12 +2738,13 @@ void FControlRigEditor::PasteNodes()
 
 	TGuardValue<FRigVMController_RequestLocalizeFunctionDelegate> RequestLocalizeDelegateGuard(
 		GetFocusedController()->RequestLocalizeFunctionDelegate,
-		FRigVMController_RequestLocalizeFunctionDelegate::CreateLambda([this](URigVMLibraryNode* InFunctionToLocalize)
+		FRigVMController_RequestLocalizeFunctionDelegate::CreateLambda([this](FRigVMGraphFunctionIdentifier& InFunctionToLocalize)
 		{
 			OnRequestLocalizeFunctionDialog(InFunctionToLocalize, GetControlRigBlueprint(), true);
 
-			const URigVMLibraryNode* LocalizedFunctionNode = GetControlRigBlueprint()->GetLocalFunctionLibrary()->FindPreviouslyLocalizedFunction(InFunctionToLocalize);
-			return LocalizedFunctionNode != nullptr;
+		   const URigVMLibraryNode* LocalizedFunctionNode = GetControlRigBlueprint()->GetLocalFunctionLibrary()->FindPreviouslyLocalizedFunction(InFunctionToLocalize);
+		   return LocalizedFunctionNode != nullptr;
+		
 		})
 	);
 	
@@ -2759,6 +3059,14 @@ FGraphAppearanceInfo FControlRigEditor::GetGraphAppearance(UEdGraph* InGraph) co
 	if (GetBlueprintObj()->IsA(UControlRigBlueprint::StaticClass()))
 	{
 		AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_ControlRig", "RIG");
+
+		if(ControlRig && ControlRig->VM && ControlRig->VM->IsNativized())
+		{
+			AppearanceInfo.InstructionFade = 1;
+			AppearanceInfo.InstructionText = FText::FromString(
+				FString::Printf(TEXT("This graph runs a nativized VM (U%s)."), *ControlRig->VM->GetNativizedClass()->GetName())
+			);
+		}
 	}
 
 	return AppearanceInfo;
@@ -2776,6 +3084,7 @@ void FControlRigEditor::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, UR
 
 	switch (InNotifType)
 	{
+		case ERigVMGraphNotifType::NodeSelectionChanged:
 		case ERigVMGraphNotifType::NodeSelected:
 		case ERigVMGraphNotifType::NodeDeselected:
 		{
@@ -2783,6 +3092,14 @@ void FControlRigEditor::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, UR
 			{
 				TSharedPtr<SGraphEditor> GraphEd = GetGraphEditor(RigGraph);
 				URigVMNode* Node = Cast<URigVMNode>(InSubject);
+				if (InNotifType == ERigVMGraphNotifType::NodeSelectionChanged)
+				{
+					const TArray<FName> SelectedNodes = InGraph->GetSelectNodes();
+					if (!SelectedNodes.IsEmpty())
+					{
+						Node = Cast<URigVMNode>(InGraph->FindNodeByName(SelectedNodes.Last()));	
+					}
+				}
 
 				if (GraphEd.IsValid() && Node != nullptr)
 				{
@@ -2791,12 +3108,9 @@ void FControlRigEditor::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, UR
 					if (!RigGraph->bIsSelecting)
 					{
 						TGuardValue<bool> SelectingGuard(RigGraph->bIsSelecting, true);
-						if (URigVMNode* ModelNode = Cast<URigVMNode>(InSubject))
+						if (UEdGraphNode* EdNode = RigGraph->FindNodeForModelNodeName(Node->GetFName()))
 						{
-							if (UEdGraphNode* EdNode = RigGraph->FindNodeForModelNodeName(ModelNode->GetFName()))
-							{
-								GraphEd->SetNodeSelection(EdNode, InNotifType == ERigVMGraphNotifType::NodeSelected);
-							}
+							GraphEd->SetNodeSelection(EdNode, InNotifType == ERigVMGraphNotifType::NodeSelected);
 						}
 					}
 				}
@@ -2893,7 +3207,6 @@ void FControlRigEditor::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, UR
 			}
 			break;
 		}
-		case ERigVMGraphNotifType::NodeSelectionChanged:
 		default:
 		{
 			break;
@@ -2935,7 +3248,7 @@ void FControlRigEditor::HandleVMCompiledEvent(UObject* InCompiledObject, URigVM*
 	UpdateGraphCompilerErrors();
 }
 
-void FControlRigEditor::HandleControlRigExecutedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void FControlRigEditor::HandleControlRigExecutedEvent(URigVMHost* InControlRig, const FName& InEventName)
 {
 	if (UControlRigBlueprint* ControlRigBP = GetControlRigBlueprint())
 	{
@@ -3030,10 +3343,10 @@ void FControlRigEditor::HandleControlRigExecutedEvent(UControlRig* InControlRig,
                                     ControlRigBP->RigGraphDisplaySettings.NodeRunLimit
                                 );
 
-								if(DebuggedControlRig->ControlRigLog)
+								if(DebuggedControlRig->RigVMLog)
 								{
-									DebuggedControlRig->ControlRigLog->Entries.Add(
-										FControlRigLog::FLogEntry(EMessageSeverity::Warning, InEventName, InstructionIndex, Message
+									DebuggedControlRig->RigVMLog->Entries.Add(
+										FRigVMLog::FLogEntry(EMessageSeverity::Warning, InEventName, InstructionIndex, Message
 									));
 								}
 
@@ -3234,7 +3547,32 @@ void FControlRigEditor::Tick(float DeltaTime)
 
 bool FControlRigEditor::IsEditable(UEdGraph* InGraph) const
 {
-	return IsGraphInCurrentBlueprint(InGraph);
+	if(!IsGraphInCurrentBlueprint(InGraph))
+	{
+		return false;
+	}
+	
+	if(UControlRigBlueprint* ControlRigBlueprint = CastChecked<UControlRigBlueprint>(GetBlueprintObj()))
+	{
+		// aggregate graphs are always read only
+		if(const URigVMGraph* Model = ControlRigBlueprint->GetModel(InGraph))
+		{
+			if(Model->GetOuter()->IsA<URigVMAggregateNode>())
+			{
+				return false;
+			}
+		}
+
+		if(ControlRig && ControlRig->VM)
+		{
+			const bool bIsReadOnly = ControlRig->VM->IsNativized();
+			const bool bIsEditable = !bIsReadOnly;
+			InGraph->bEditable = bIsEditable ? 1 : 0;
+			return bIsEditable;
+		}
+	}
+
+	return IControlRigEditor::IsEditable(InGraph);
 }
 
 bool FControlRigEditor::IsCompilingEnabled() const
@@ -3945,11 +4283,7 @@ void FControlRigEditor::OnPinControlNameListComboBox(const TArray<TSharedPtr<FSt
 
 bool FControlRigEditor::IsConstructionModeEnabled() const
 {
-	if(ControlRig)
-	{
-		return ControlRig->IsConstructionModeEnabled();
-	}
-	return false;
+	return GetEventQueue() == ConstructionEventQueue;
 }
 
 void FControlRigEditor::HandlePreviewSceneCreated(const TSharedRef<IPersonaPreviewScene>& InPersonaPreviewScene)
@@ -4032,6 +4366,11 @@ void FControlRigEditor::UpdateControlRig()
 		{
 			if (ControlRig)
 			{
+				if(TestDataStrongPtr.IsValid())
+				{
+					TestDataStrongPtr->ReleaseReplay();
+				}
+				
 				// if this control rig is from a temporary step,
 				// for example the reinstancing class, clear it 
 				// and create a new one!
@@ -4046,15 +4385,16 @@ void FControlRigEditor::UpdateControlRig()
 				ControlRig = NewObject<UControlRig>(EditorSkelComp, Class);
 				// this is editing time rig
 				ControlRig->ExecutionType = ERigExecutionType::Editing;
-				ControlRig->ControlRigLog = &ControlRigLog;
+				ControlRig->RigVMLog = &ControlRigLog;
 
 				ControlRig->Initialize(true);
  			}
 
+ 			PreviewInstance = Cast<UAnimPreviewInstance>(AnimInstance->GetSourceAnimInstance());
 			ControlRig->PreviewInstance = PreviewInstance;
 
 #if WITH_EDITOR
-			ControlRig->bIsInDebugMode = ExecutionMode == EControlRigExecutionModeType_Debug;
+			ControlRig->SetIsInDebugMode(ExecutionMode == EControlRigExecutionModeType_Debug);
 #endif
 
 			if (UControlRig* CDO = Cast<UControlRig>(Class->GetDefaultObject()))
@@ -4675,12 +5015,13 @@ void FControlRigEditor::OnWrappedPropertyChangedChainEvent(UDetailsViewWrapperOb
 				GetControlRigBlueprint()->RequestAutoVMRecompilation();
 			}
 			else if (PropertyPath == TEXT("DefaultValue"))
-			{			
+			{
+				FRigVMControllerNotifGuard NotifGuard(Controller, true);
 				for (FRigVMGraphVariableDescription& Variable : Graph->GetLocalVariables())
 				{
 					if (Variable.Name == VariableDescription.Name)
 					{
-						Controller->SetLocalVariableDefaultValue(Variable.Name, VariableDescription.DefaultValue, true, true, false);
+						Controller->SetLocalVariableDefaultValue(Variable.Name, VariableDescription.DefaultValue, true, true);
 						break;
 					}
 				}
@@ -4716,9 +5057,8 @@ void FControlRigEditor::OnWrappedPropertyChangedChainEvent(UDetailsViewWrapperOb
 	}
 }
 
-void FControlRigEditor::OnRequestLocalizeFunctionDialog(URigVMLibraryNode* InFunction, UControlRigBlueprint* InTargetBlueprint, bool bForce)
+void FControlRigEditor::OnRequestLocalizeFunctionDialog(FRigVMGraphFunctionIdentifier& InFunction, UControlRigBlueprint* InTargetBlueprint, bool bForce)
 {
-	check(InFunction);
 	check(InTargetBlueprint);
 
 	if(InTargetBlueprint != GetControlRigBlueprint())
@@ -4728,23 +5068,18 @@ void FControlRigEditor::OnRequestLocalizeFunctionDialog(URigVMLibraryNode* InFun
 	
 	if(URigVMController* TargetController = InTargetBlueprint->GetController(InTargetBlueprint->GetDefaultModel()))
 	{
-		if(URigVMFunctionLibrary* FunctionLibrary = Cast<URigVMFunctionLibrary>(InFunction->GetOuter()))
+		bool bIsPublic;
+		if (FRigVMGraphFunctionData::FindFunctionData(InFunction, &bIsPublic))
 		{
-			if(UControlRigBlueprint* FunctionRigBlueprint = Cast<UControlRigBlueprint>(FunctionLibrary->GetOuter()))
+			if (bForce || bIsPublic)
 			{
-				if(FunctionRigBlueprint != InTargetBlueprint)
-				{
-					if(bForce || !FunctionRigBlueprint->IsFunctionPublic(InFunction->GetFName()))
-					{
-                        TSharedRef<SControlRigFunctionLocalizationDialog> LocalizationDialog = SNew(SControlRigFunctionLocalizationDialog)
-                        .Function(InFunction)
-                        .TargetBlueprint(InTargetBlueprint);
+				TSharedRef<SControlRigFunctionLocalizationDialog> LocalizationDialog = SNew(SControlRigFunctionLocalizationDialog)
+							.Function(InFunction)
+							.TargetBlueprint(InTargetBlueprint);
 
-						if (LocalizationDialog->ShowModal() != EAppReturnType::Cancel)
-						{
-							TargetController->LocalizeFunctions(LocalizationDialog->GetFunctionsToLocalize(), true, true, true);
-						}
-					}
+				if (LocalizationDialog->ShowModal() != EAppReturnType::Cancel)
+				{
+					TargetController->LocalizeFunctions(LocalizationDialog->GetFunctionsToLocalize(), true, true, true);
 				}
 			}
 		}
@@ -4754,7 +5089,7 @@ void FControlRigEditor::OnRequestLocalizeFunctionDialog(URigVMLibraryNode* InFun
 FRigVMController_BulkEditResult FControlRigEditor::OnRequestBulkEditDialog(UControlRigBlueprint* InBlueprint, URigVMController* InController,
 	URigVMLibraryNode* InFunction, ERigVMControllerBulkEditType InEditType)
 {
-	const TArray<FAssetData> FirstLevelReferenceAssets = InController->GetAffectedAssets(InEditType, false, true);
+	const TArray<FAssetData> FirstLevelReferenceAssets = InController->GetAffectedAssets(InEditType, false);
 	if(FirstLevelReferenceAssets.Num() == 0)
 	{
 		return FRigVMController_BulkEditResult();
@@ -5656,12 +5991,9 @@ void FControlRigEditor::CreateRigHierarchyToGraphDragAndDropMenu() const
 										{
 											Controller->OpenUndoBracket(TEXT("Create Item Array From Selection"));
 
-											static const FString ItemArrayCPPType = FString::Printf(TEXT("TArray<%s>"), *RigVMTypeUtils::GetUniqueStructTypeName(FRigElementKey::StaticStruct()));
-											static const FString ItemArrayObjectPath = FRigElementKey::StaticStruct()->GetPathName();
-							
-											if (URigVMNode* ItemsNode = Controller->AddFreeRerouteNode(true, ItemArrayCPPType, *ItemArrayObjectPath, false, NAME_None, FString(), NodePosition))
+											if (URigVMNode* ItemsNode = Controller->AddUnitNode(FRigUnit_ItemArray::StaticStruct(), TEXT("Execute"), NodePosition))
 											{
-												if (URigVMPin* ItemsPin = ItemsNode->FindPin(TEXT("Value")))
+												if (URigVMPin* ItemsPin = ItemsNode->FindPin(TEXT("Items")))
 												{
 													Controller->SetArrayPinSize(ItemsPin->GetPinPath(), DraggedKeys.Num());
 
@@ -6473,7 +6805,15 @@ void FControlRigEditor::OnNodeDoubleClicked(UControlRigBlueprint* InBlueprint, U
 
 	if (URigVMLibraryNode* LibraryNode = Cast<URigVMLibraryNode>(InNode))
 	{
-		if(URigVMGraph* ContainedGraph = LibraryNode->GetContainedGraph())
+		URigVMGraph* ContainedGraph = LibraryNode->GetContainedGraph();
+		if (URigVMFunctionReferenceNode* FunctionReferenceNode = Cast<URigVMFunctionReferenceNode>(LibraryNode))
+		{
+			if (URigVMLibraryNode* ReferencedNode = FunctionReferenceNode->LoadReferencedNode())
+			{
+				ContainedGraph = ReferencedNode->GetContainedGraph();
+			}
+		}
+		if(ContainedGraph)
 		{
 			if (UEdGraph* EdGraph = InBlueprint->GetEdGraph(ContainedGraph))
 			{
@@ -6608,7 +6948,7 @@ void FControlRigEditor::UpdateGraphCompilerErrors()
 			}
 
 			// update the nodes' error messages
-			for (const FControlRigLog::FLogEntry& Entry : ControlRigLog.Entries)
+			for (const FRigVMLog::FLogEntry& Entry : ControlRigLog.Entries)
 			{
 				URigVMNode* ModelNode = Cast<URigVMNode>(ByteCode.GetSubjectForInstruction(Entry.InstructionIndex));
 				if (ModelNode == nullptr)
@@ -6861,14 +7201,12 @@ FString* FControlRigEditor::GetSnippetStorage(int32 InSnippetIndex)
 	return nullptr;
 }
 
-void FControlRigEditor::OnPreConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState,
-	const FName& InEventName)
+void FControlRigEditor::OnPreConstruction_AnyThread(UControlRig* InRig, const FName& InEventName)
 {
 	bIsConstructionEventRunning = true;
 }
 
-void FControlRigEditor::OnPostConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState,
-	const FName& InEventName)
+void FControlRigEditor::OnPostConstruction_AnyThread(UControlRig* InRig, const FName& InEventName)
 {
 	bIsConstructionEventRunning = false;
 	

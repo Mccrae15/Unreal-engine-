@@ -5,6 +5,8 @@
 #include "DisplayClusterConfiguratorCommands.h"
 #include "DisplayClusterConfiguratorAssetTypeActions.h"
 #include "DisplayClusterConfiguratorVersionUtils.h"
+#include "Framework/Application/SlateApplication.h"
+#include "PropertyEditorModule.h"
 #include "Settings/DisplayClusterConfiguratorSettings.h"
 #include "Views/Details/DisplayClusterRootActorDetailsCustomization.h"
 #include "Views/OutputMapping/DisplayClusterConfiguratorOutputMappingCommands.h"
@@ -17,7 +19,6 @@
 #include "Views/Details/Cluster/DisplayClusterConfiguratorClusterDetailsCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorExternalImageTypeCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorGenerateMipsCustomization.h"
-#include "Views/Details/Cluster/DisplayClusterConfiguratorMediaCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorNodeSelectionCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorClusterReferenceListCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorViewportDetailsCustomization.h"
@@ -38,6 +39,7 @@
 #include "ISettingsModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetTypeCategories.h"
+#include "DisplayClusterConfiguratorBlueprintEditor.h"
 #include "HAL/IConsoleManager.h"
 #include "Modules/ModuleManager.h"
 #include "ActorFactories/ActorFactoryBlueprint.h"
@@ -60,6 +62,8 @@
 
 void FDisplayClusterConfiguratorModule::StartupModule()
 {
+	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FDisplayClusterConfiguratorModule::OnPostEngineInit);
+
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
 	/*
@@ -114,6 +118,8 @@ void FDisplayClusterConfiguratorModule::StartupModule()
 
 void FDisplayClusterConfiguratorModule::ShutdownModule()
 {
+	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+
 	if (FAssetToolsModule* AssetTools = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools"))
 	{
 		for (int32 IndexAction = 0; IndexAction < CreatedAssetTypeActions.Num(); ++IndexAction)
@@ -129,6 +135,11 @@ void FDisplayClusterConfiguratorModule::ShutdownModule()
 	MenuExtensibilityManager.Reset();
 	ToolBarExtensibilityManager.Reset();
 
+	if (GEditor)
+	{
+		FDisplayClusterConfiguratorBlueprintEditor::UnregisterPanelExtensionFactory();
+	}
+
 	IKismetCompilerInterface& KismetCompilerModule = FModuleManager::GetModuleChecked<IKismetCompilerInterface>("KismetCompiler");
 	KismetCompilerModule.GetCompilers().Remove(&BlueprintCompiler);
 
@@ -137,6 +148,11 @@ void FDisplayClusterConfiguratorModule::ShutdownModule()
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 		AssetRegistryModule.Get().OnFilesLoaded().Remove(FilesLoadedHandle);
 	}
+}
+
+void FDisplayClusterConfiguratorModule::OnPostEngineInit()
+{
+	FDisplayClusterConfiguratorBlueprintEditor::RegisterPanelExtensionFactory();
 }
 
 const FDisplayClusterConfiguratorCommands& FDisplayClusterConfiguratorModule::GetCommands() const
@@ -202,7 +218,6 @@ void FDisplayClusterConfiguratorModule::RegisterCustomLayouts()
 	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationClusterItemReferenceList, FDisplayClusterConfiguratorClusterReferenceListCustomization);
 	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationViewport_RemapData, FDisplayClusterConfiguratorViewportRemapCustomization);
 	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationRectangle, FDisplayClusterConfiguratorRectangleCustomization);
-	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationMedia, FDisplayClusterConfiguratorMediaCustomization);
 }
 
 void FDisplayClusterConfiguratorModule::UnregisterCustomLayouts()

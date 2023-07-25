@@ -2,11 +2,16 @@
 
 #include "SkeletalMeshExporterUSD.h"
 
+#include "Engine/SkinnedAssetCommon.h"
 #include "EngineAnalytics.h"
 #include "MaterialExporterUSD.h"
+#include "Misc/EngineVersion.h"
+#include "Misc/PackageName.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "SkeletalMeshExporterUSDOptions.h"
 #include "USDClassesModule.h"
 #include "USDConversionUtils.h"
+#include "USDExporterModule.h"
 #include "USDLog.h"
 #include "USDMemory.h"
 #include "USDOptionsWindow.h"
@@ -135,6 +140,12 @@ bool USkeletalMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type,
 		PayloadFilename = FPaths::Combine( PathPart, FilenamePart + TEXT( "_payload." ) + ExtensionPart );
 	}
 
+	if ( !IUsdExporterModule::CanExportToLayer( UExporter::CurrentFilename ) ||
+		( Options->MeshAssetOptions.bUsePayload && !IUsdExporterModule::CanExportToLayer( PayloadFilename ) ) )
+	{
+		return false;
+	}
+
 	// Get a simple GUID hash/identifier of our mesh
 	FString DDCKeyHash;
 	if( FSkeletalMeshRenderData* RenderData = SkeletalMesh->GetResourceForRendering() )
@@ -212,7 +223,6 @@ bool USkeletalMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type,
 						UExporter::CurrentFilename,
 						bIsAssetLayer,
 						Options->MeshAssetOptions.bUsePayload,
-						Options->MeshAssetOptions.bRemoveUnrealMaterials,
 						ExportTask->bReplaceIdentical,
 						Options->bReExportIdenticalAssets,
 						ExportTask->bAutomated
@@ -308,7 +318,6 @@ bool USkeletalMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type,
 			AssetStage.GetRootLayer().GetRealPath(),
 			bIsAssetLayer,
 			Options->MeshAssetOptions.bUsePayload,
-			Options->MeshAssetOptions.bRemoveUnrealMaterials,
 			ExportTask->bReplaceIdentical,
 			Options->bReExportIdenticalAssets,
 			ExportTask->bAutomated

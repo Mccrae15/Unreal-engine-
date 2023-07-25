@@ -1,13 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AITestsCommon.h"
-#include "PropertyBag.h"
 #include "StructUtilsTestTypes.h"
-#include "Engine/World.h"
 
 #define LOCTEXT_NAMESPACE "StructUtilsTests"
-
-PRAGMA_DISABLE_OPTIMIZATION
 
 namespace FPropertyBagTest
 {
@@ -307,7 +303,7 @@ struct FTest_Arrays : FAITestBase
 			{ FloatArrayName, EPropertyBagContainerType::Array, EPropertyBagPropertyType::Float },
 		});
 
-		TValueOrError<FPropertyBagArrayRef, EPropertyBagResult> FloatArrayRes = Bag.GetArrayRef(FloatArrayName);
+		TValueOrError<const FPropertyBagArrayRef, EPropertyBagResult> FloatArrayRes = Bag.GetArrayRef(FloatArrayName);
 		AITEST_TRUE(TEXT("Get float array should succeed"), FloatArrayRes.IsValid());
 
 		FPropertyBagArrayRef FloatArray = FloatArrayRes.GetValue();
@@ -339,7 +335,5 @@ IMPLEMENT_AI_INSTANT_TEST(FTest_Arrays, "System.StructUtils.PropertyBag.Arrays")
 
 
 } // FPropertyBagTest
-
-PRAGMA_ENABLE_OPTIMIZATION
 
 #undef LOCTEXT_NAMESPACE

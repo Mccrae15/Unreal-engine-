@@ -2,6 +2,8 @@
 
 #include "OptimusEditor.h"
 
+#include "Components/StaticMeshComponent.h"
+#include "IDetailsView.h"
 #include "OptimusEditorTabSummoners.h"
 #include "OptimusEditorClipboard.h"
 #include "OptimusEditorCommands.h"
@@ -30,6 +32,7 @@
 #include "IPersonaViewport.h"
 #include "ISkeletonEditorModule.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "MessageLogModule.h"
 #include "OptimusDataTypeRegistry.h"
@@ -42,6 +45,8 @@
 #include "SkeletalRenderPublic.h"
 #include "ToolMenus.h"
 #include "OptimusShaderText.h"
+#include "ISourceCodeAccessModule.h"
+#include "ISourceCodeAccessor.h"
 
 
 #define LOCTEXT_NAMESPACE "OptimusEditor"
@@ -84,6 +89,7 @@ void FOptimusEditor::Construct(
 	
 	FPersonaToolkitArgs PersonaToolkitArgs;
 	PersonaToolkitArgs.OnPreviewSceneCreated = FOnPreviewSceneCreated::FDelegate::CreateSP(this, &FOptimusEditor::HandlePreviewSceneCreated);
+	PersonaToolkitArgs.bPreviewMeshCanUseDifferentSkeleton = true;
 	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InDeformerObject, PersonaToolkitArgs);
 
 	PersonaToolkit->GetPreviewScene()->SetDefaultAnimationMode(EPreviewSceneDefaultAnimationMode::Animation);
@@ -92,10 +98,6 @@ void FOptimusEditor::Construct(
 	// graph component's scene component bindings.
 	PersonaToolkit->GetPreviewScene()->RegisterOnPreviewMeshChanged(FOnPreviewMeshChanged::CreateSP(this, &FOptimusEditor::HandlePreviewMeshChanged));
 
-	// TODO: Do we need this?
-	TSharedRef<IAssetFamily> AssetFamily = PersonaModule.CreatePersonaAssetFamily(InDeformerObject);
-	AssetFamily->RecordAssetOpened(FAssetData(InDeformerObject));
-	
 	// Construct a new graph with a default name
 	// TODO: Use a document manager like blueprints.
 	// FIXME: The deformer asset shouldn't really be the owner.
@@ -328,40 +330,54 @@ void FOptimusEditor::OnCompileMessage(FOptimusCompilerDiagnostic const& Diagnost
 
 	if (Diagnostic.Line != INDEX_NONE)
 	{
-		// Create message with line number.
-		TSharedRef<FTokenizedMessage> Message = FTokenizedMessage::Create(
-			Severity,
-			FText::Format(LOCTEXT("CompileMessageWithLine", "{0} (line {1})"), Diagnostic.Message, FText::AsNumber(Diagnostic.Line)));
+		TSharedRef<FTokenizedMessage> Message = FTokenizedMessage::Create(Severity,	Diagnostic.Message);
 
 		if (UObject const* TokenObject = Diagnostic.Object.Get())
 		{
-			// Add activation which opens a text editor tab for the text provider.
-			auto Activation = [Event = OnSelectedNodesChanged(), TabManagerPtr = GetTabManager(), TokenObject](const TSharedRef<class IMessageToken>&)
+			// Add activation which opens in text editor tab.
+			// Could improve by putting cursor at correct location.
+			Message->AddToken(FActionToken::Create(
+				LOCTEXT("OpenInShaderTextEditor", "Open in shader text editor."),
+				FText::FromString(TokenObject->GetName()),
+				FOnActionTokenExecuted::CreateLambda([Event = OnSelectedNodesChanged(), TabManagerPtr = GetTabManager(), TokenObject]
+					{
+						TabManagerPtr->TryInvokeTab(FOptimusEditorShaderTextEditorTabSummoner::TabId);
+						UObject* MutableTokenObject = const_cast<UObject*>(TokenObject);
+						Event.Broadcast({ MutableTokenObject });
+					})
+			));
+		}
+		else if (!Diagnostic.AbsoluteFilePath.IsEmpty())
+		{
+			// Add activation which opens an external text editor.
+			if (ISourceCodeAccessModule* SourceCodeAccessModule = FModuleManager::LoadModulePtr<ISourceCodeAccessModule>("SourceCodeAccess"))
 			{
-				TabManagerPtr->TryInvokeTab(FOptimusEditorShaderTextEditorTabSummoner::TabId);
-
-				UObject* MutableTokenObject = const_cast<UObject*>(TokenObject);
-				Event.Broadcast({ MutableTokenObject });
-			};
-			Message->AddToken(FUObjectToken::Create(TokenObject)->OnMessageTokenActivated(FOnMessageTokenActivated::CreateLambda(Activation)));
+				Message->AddToken(FActionToken::Create(
+					LOCTEXT("OpenInExternalEditor", "Open in external text editor."),
+					FText::FromString(Diagnostic.AbsoluteFilePath),
+					FOnActionTokenExecuted::CreateLambda([SourceCodeAccessModule, Path = Diagnostic.AbsoluteFilePath, Line = Diagnostic.Line, Column = Diagnostic.ColumnStart]
+						{
+							SourceCodeAccessModule->GetAccessor().OpenFileAtLine(Path, Line, Column);
+						})
+				));
+			}
 		}
 
-		CompilerResultsListing->AddMessage(Message);
+		CompilerResultsListing->AddMessage(Message, false);
 	}
 	else
 	{
-		// Create message.
 		TSharedRef<FTokenizedMessage> Message = FTokenizedMessage::Create(Severity, Diagnostic.Message);
 
 		if (UObject const* TokenObject = Diagnostic.Object.Get())
 		{
 			// Add a dummy activation since default behavior opens content browser.
-			// Could improve this to select node?
+			// Could improve this to select node in deformer graph view?
 			static auto DummyActivation = [](const TSharedRef<class IMessageToken>&) {};
 			Message->AddToken(FUObjectToken::Create(TokenObject)->OnMessageTokenActivated(FOnMessageTokenActivated::CreateLambda(DummyActivation)));
 		}
 	
-		CompilerResultsListing->AddMessage(Message);
+		CompilerResultsListing->AddMessage(Message, false);
 	}
 
 	// Add to diagnostic list which is referenced by syntax highlighters.
@@ -627,6 +643,34 @@ bool FOptimusEditor::CanExpandCollapsedNode() const
 	return !ModelNodes.IsEmpty();
 }
 
+void FOptimusEditor::SubscribeToGraphNotifies(UOptimusNodeGraph* Graph, const FOnGraphNotified& OnGraphNotifiedDelegate)
+{
+	if (IsValid(Graph))
+	{
+		TSet<TWeakObjectPtr<UOptimusNodeGraph>>& Graphs = GraphSubscribers.FindOrAdd(OnGraphNotifiedDelegate.GetHandle());
+		if (!Graphs.Contains(Graph))
+		{
+			Graphs.Add(Graph);
+			Graph->GetNotifyDelegate().Add(OnGraphNotifiedDelegate);
+		}
+	}
+}
+
+void FOptimusEditor::UnsubscribeToGraphNotifies(FDelegateHandle DelegateHandle)
+{
+	if (TSet<TWeakObjectPtr<UOptimusNodeGraph>>* Graphs = GraphSubscribers.Find(DelegateHandle))
+	{
+		for (TWeakObjectPtr<UOptimusNodeGraph> Graph : *Graphs)
+		{
+			if (Graph.IsValid())
+			{
+				Graph->GetNotifyDelegate().Remove(DelegateHandle);
+			}
+		}
+			
+		GraphSubscribers.Remove(DelegateHandle);
+	}
+}
 
 void FOptimusEditor::OnSelectedNodesChanged(const TSet<UObject*>& NewSelection)
 {
@@ -743,24 +787,6 @@ void FOptimusEditor::BindCommands()
 
 void FOptimusEditor::HandlePreviewSceneCreated(const TSharedRef<IPersonaPreviewScene>& InPreviewScene)
 {
-	static const TCHAR* GroundAssetPath = TEXT("/Engine/MapTemplates/SM_Template_Map_Floor.SM_Template_Map_Floor");
-	UStaticMesh* FloorMesh = Cast<UStaticMesh>(StaticLoadObject(UStaticMesh::StaticClass(), nullptr, GroundAssetPath, nullptr, LOAD_None, nullptr));
-	UMaterial* DefaultMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
-	check(FloorMesh);
-	check(DefaultMaterial);
-
-	// Create ground mesh actor if all the pre-requisites are available.
-	if (ensure(FloorMesh) && ensure(DefaultMaterial))
-	{
-		AStaticMeshActor* GroundActor = InPreviewScene->GetWorld()->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), FTransform::Identity);
-		GroundActor->SetFlags(RF_Transient);
-		GroundActor->GetStaticMeshComponent()->SetStaticMesh(FloorMesh);
-		GroundActor->GetStaticMeshComponent()->SetMaterial(0, DefaultMaterial);
-		GroundActor->SetMobility(EComponentMobility::Static);
-		GroundActor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-		GroundActor->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
-		GroundActor->GetStaticMeshComponent()->bSelectable = false;
-	}
 
 	AAnimationEditorPreviewActor* Actor = InPreviewScene->GetWorld()->SpawnActor<AAnimationEditorPreviewActor>(AAnimationEditorPreviewActor::StaticClass(), FTransform::Identity);
 	Actor->SetFlags(RF_Transient);
@@ -809,7 +835,7 @@ void FOptimusEditor::HandlePreviewMeshChanged(
 void FOptimusEditor::CreateMessageLog()
 {
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
-	const FName LogName("LogComputeKernelShaderCompiler");
+	const FName LogName("LogOptimusCompiler");
 	if (MessageLogModule.IsRegisteredLogListing(LogName))
 	{
 		CompilerResultsListing = MessageLogModule.GetLogListing(LogName);

@@ -11,7 +11,7 @@ class FRehydrateCommand final : public FCommand
 {
 public:
 	FRehydrateCommand(FStringView CommandName);
-	virtual ~FRehydrateCommand();
+	virtual ~FRehydrateCommand() = default;
 
 	static void PrintCmdLineHelp();
 private:
@@ -19,9 +19,15 @@ private:
 
 	virtual bool Run(const TArray<FProject>& Projects) override;
 
+	virtual const TArray<FString>& GetPackages() const override;
+
 private:
 
 	FString ClientSpecName;
+
+	TArray<FString> Packages;
+
+	bool bShouldCheckout = false;
 };
 
 } // namespace UE::Virtualization

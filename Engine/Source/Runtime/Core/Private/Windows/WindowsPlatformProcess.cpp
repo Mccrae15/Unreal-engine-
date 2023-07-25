@@ -1,31 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Windows/WindowsPlatformProcess.h"
-#include "HAL/PlatformMisc.h"
-#include "Misc/AssertionMacros.h"
-#include "Logging/LogMacros.h"
-#include "HAL/PlatformAffinity.h"
-#include "HAL/UnrealMemory.h"
-#include "Templates/UnrealTemplate.h"
-#include "CoreGlobals.h"
-#include "HAL/FileManager.h"
-#include "Misc/Parse.h"
+
+#include "Containers/Set.h"
 #include "Containers/StringConv.h"
 #include "Containers/UnrealString.h"
-#include "Containers/Set.h"
-#include "Misc/SingleThreadEvent.h"
-#include "Misc/CommandLine.h"
-#include "Misc/Paths.h"
-#include "Misc/TrackedActivity.h"
-#include "Internationalization/Internationalization.h"
 #include "CoreGlobals.h"
-#include "Stats/Stats.h"
-#include "Misc/CoreStats.h"
-#include "Windows/WindowsHWrapper.h"
+#include "GenericPlatform/GenericPlatformFile.h"
+#include "HAL/PlatformAffinity.h"
+#include "HAL/PlatformMisc.h"
+#include "HAL/UnrealMemory.h"
+#include "Internationalization/Internationalization.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/CoreStats.h"
 #include "Misc/Fork.h"
+#include "Misc/Parse.h"
+#include "Misc/Paths.h"
+#include "Misc/SingleThreadEvent.h"
+#include "Misc/PathViews.h"
+#include "Misc/TrackedActivity.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "Stats/Stats.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Trace.h"
+#include "Trace/Trace.inl"
+#include "Windows/WindowsHWrapper.h"
 
 #include "Windows/AllowWindowsPlatformTypes.h"
 	#include <shellapi.h>
@@ -43,6 +47,7 @@ PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 // static variables
 TArray<FString> FWindowsPlatformProcess::DllDirectoryStack;
 TArray<FString> FWindowsPlatformProcess::DllDirectories;
+TMap<FName, TArray<FString>> FWindowsPlatformProcess::SearchPathDllCache;
 bool IsJobObjectSet = false;
 HANDLE GhJob = NULL;
 
@@ -94,7 +99,24 @@ void FWindowsPlatformProcess::AddDllDirectory(const TCHAR* Directory)
 	FString NormalizedDirectory = FPaths::ConvertRelativePathToFull(Directory);
 	FPaths::NormalizeDirectoryName(NormalizedDirectory);
 	FPaths::MakePlatformFilename(NormalizedDirectory);
-	DllDirectories.AddUnique(NormalizedDirectory);
+
+	if (DllDirectories.Find(NormalizedDirectory) == INDEX_NONE)
+	{
+		DllDirectories.Add(NormalizedDirectory);
+
+		// enumerate the dir and cache all the dlls
+		{
+			TArray<FString> FoundDllFileNames;
+			IPlatformFile::GetPlatformPhysical().FindFiles(FoundDllFileNames, *NormalizedDirectory, TEXT("*.dll"));
+			for (const FString& DllFileName : FoundDllFileNames)
+			{
+				TArray<FString>& Paths = SearchPathDllCache.FindOrAdd(*DllFileName);
+				FString DllPath(NormalizedDirectory / DllFileName);
+				FPaths::NormalizeDirectoryName(DllPath);
+				Paths.Add(DllPath);
+			}
+		}
+	}
 }
 
 void FWindowsPlatformProcess::GetDllDirectories(TArray<FString>& OutDllDirectories)
@@ -107,7 +129,9 @@ void* FWindowsPlatformProcess::GetDllHandle( const TCHAR* FileName )
 	check(FileName);
 
 	// Combine the explicit DLL search directories with the contents of the directory stack 
+	// Note that the search path logic here needs to match the logic found in ResolveImport
 	TArray<FString> SearchPaths;
+	SearchPaths.Reserve(1 + ((DllDirectoryStack.Num() > 0) ? 1 : 0) + DllDirectories.Num());
 	SearchPaths.Add(FPlatformProcess::GetModulesDirectory());
 	if(DllDirectoryStack.Num() > 0)
 	{
@@ -1355,7 +1379,7 @@ bool FWindowsPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHA
 
 void FWindowsPlatformProcess::ExploreFolder( const TCHAR* FilePath )
 {
-	if (IFileManager::Get().DirectoryExists( FilePath ))
+	if (IPlatformFile::GetPlatformPhysical().DirectoryExists( FilePath ))
 	{
 		// Explore the folder
 		::ShellExecuteW( NULL, TEXT("explore"), FilePath, NULL, NULL, SW_SHOWNORMAL );
@@ -1891,39 +1915,87 @@ static bool ReadLibraryImports(const TCHAR* FileName, TArray<FString>& ImportNam
 	return bResult;
 }
 
-/**
- * Resolve an individual import.
- *
- * @param ImportName Name of the imported module
- * @param SearchPaths Search directories to scan for imports
- * @param OutFileName On success, receives the path to the imported file
- * @return true if an import was found.
- */
-static bool ResolveImport(const FString& Name, const TArray<FString>& SearchPaths, FString& OutFileName)
+bool FWindowsPlatformProcess::ResolveImport(const FString& Name, const TArray<FString>& SearchPaths, FString& OutFileName)
 {
-	// Look for the named DLL on any of the search paths
-	for(int Idx = 0; Idx < SearchPaths.Num(); Idx++)
+	IPlatformFile& PlatformFile = IPlatformFile::GetPlatformPhysical();
+	auto SearchPathsFunc = [&PlatformFile, &OutFileName, &SearchPaths, &Name](int StartIdx, int EndIdx)
 	{
-		FString FileName = SearchPaths[Idx] / Name;
-		if(FPaths::FileExists(FileName))
+		for (int Idx = StartIdx; Idx < EndIdx; Idx++)
 		{
-			OutFileName = FPaths::ConvertRelativePathToFull(FileName);
-			return true;
+			TStringBuilder<MAX_PATH> FileName;
+			FPathViews::Append(FileName, SearchPaths[Idx], Name);
+			if (PlatformFile.FileExists(*FileName))
+			{
+				OutFileName = FPaths::ConvertRelativePathToFull(*FileName);
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Search the module and current dll directories found in the search path array first.
+	// Note that there is an assumption that the first slots in the array are the module and
+	// current dll directories.
+	const int FirstAddedSearchPathIdx = 1 + ((DllDirectoryStack.Num() > 0) ? 1 : 0);
+	if (SearchPathsFunc(0, FirstAddedSearchPathIdx))
+	{
+		return true;
+	}
+
+	// Search the dll cache that gets populated by AddDllDirectory
+	FName DllName(*Name, FNAME_Find);
+	if (DllName != NAME_None)
+	{
+		if (TArray<FString>* CachedPaths = SearchPathDllCache.Find(DllName))
+		{
+			for (auto Itr = CachedPaths->CreateIterator(); Itr; ++Itr)
+			{
+				const FString& FoundPath = *Itr;
+				// Double check the dll still exists
+				if (PlatformFile.FileExists(*FoundPath))
+				{
+					OutFileName = FoundPath;
+					return true;
+				}
+				else
+				{
+					// The dll cache is out of date
+					Itr.RemoveCurrent();
+				}
+			}
+
+			// Remove invalid entry
+			if (CachedPaths->Num() == 0)
+			{
+				SearchPathDllCache.Remove(DllName);
+			}
 		}
 	}
+
+	// Fall back to going through the search paths
+	if (SearchPathsFunc(FirstAddedSearchPathIdx, SearchPaths.Num()))
+	{
+		return true;
+	}
+
 	return false;
 }
 
-/**
- * Resolve all the imports for the given library, searching through a set of directories.
- *
- * @param FileName Path to the library to load
- * @param SearchPaths Search directories to scan for imports
- * @param ImportFileNames Array which is filled with a list of the resolved imports found in the given search directories
- * @param VisitedImportNames Array which stores a list of imports which have been checked
- */
-static void ResolveMissingImportsRecursive(const FString& FileName, const TArray<FString>& SearchPaths, TArray<FString>& ImportFileNames, TSet<FString>& VisitedImportNames)
+#if CPUPROFILERTRACE_ENABLED
+
+UE_TRACE_EVENT_BEGIN(Cpu, ResolveMissingImports, NoSync)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
+UE_TRACE_EVENT_END()
+
+#endif // CPUPROFILERTRACE_ENABLED
+
+void FWindowsPlatformProcess::ResolveMissingImportsRecursive(const FString& FileName, const TArray<FString>& SearchPaths, TArray<FString>& ImportFileNames, TSet<FString>& VisitedImportNames)
 {
+#if CPUPROFILERTRACE_ENABLED
+	UE_TRACE_LOG_SCOPED_T(Cpu, ResolveMissingImports, CpuChannel)
+		<< ResolveMissingImports.Name(*FileName);
+#endif // CPUPROFILERTRACE_ENABLED
+
 	// Read the imports for this library
 	TArray<FString> ImportNames;
 	if(ReadLibraryImports(*FileName, ImportNames))
@@ -1982,16 +2054,31 @@ static void LogImportDiagnostics(const FString& FileName, const TArray<FString>&
 	}
 }
 
+#if CPUPROFILERTRACE_ENABLED
+
+UE_TRACE_EVENT_BEGIN(Cpu, Windows_LoadLibrary, NoSync)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
+UE_TRACE_EVENT_END()
+
+#endif // CPUPROFILERTRACE_ENABLED
+
 void *FWindowsPlatformProcess::LoadLibraryWithSearchPaths(const FString& FileName, const TArray<FString>& SearchPaths)
 {
 	UE_SCOPED_IO_ACTIVITY(*WriteToString<256>("Loading Dll ", FileName));
 
 	// Make sure the initial module exists. If we can't find it from the path we're given, it's probably a system dll.
 	FString FullFileName = FileName;
-	if (FPaths::FileExists(FullFileName))
+	IPlatformFile& PlatformFile = IPlatformFile::GetPlatformPhysical();
+	if (PlatformFile.FileExists(*FullFileName))
 	{
 		// Convert it to a full path, since LoadLibrary will try to resolve it against the executable directory (which may not be the same as the working dir)
 		FullFileName = FPaths::ConvertRelativePathToFull(FullFileName);
+
+		// If this library is already loaded then just return now with the handle
+		if (void* Handle = GetModuleHandle(*FullFileName))
+		{
+			return Handle;
+		}
 
 		// Create a list of files which we've already checked for imports. Don't add the initial file to this list to improve the resolution of dependencies for direct circular dependencies of this
 		// module; by allowing the module to be visited twice, any mutually depended on DLLs will be visited first.
@@ -2010,7 +2097,10 @@ void *FWindowsPlatformProcess::LoadLibraryWithSearchPaths(const FString& FileNam
 			{
 				const void* DependencyHandle = [&ImportFileName]() 
 				{
-					TRACE_CPUPROFILER_EVENT_SCOPE(Windows::LoadLibrary);
+#if CPUPROFILERTRACE_ENABLED
+					UE_TRACE_LOG_SCOPED_T(Cpu, Windows_LoadLibrary, CpuChannel)
+						<< Windows_LoadLibrary.Name(*ImportFileName);
+#endif // CPUPROFILERTRACE_ENABLED
 					return LoadLibrary(*ImportFileName);
 				}();
 				
@@ -2028,9 +2118,12 @@ void *FWindowsPlatformProcess::LoadLibraryWithSearchPaths(const FString& FileNam
 	}
 
 	// Try to load the actual library
-	void* Handle = [FullFileName]() 
+	void* Handle = [&FullFileName]() 
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(Windows::LoadLibrary);
+#if CPUPROFILERTRACE_ENABLED
+		UE_TRACE_LOG_SCOPED_T(Cpu, Windows_LoadLibrary, CpuChannel)
+			<< Windows_LoadLibrary.Name(*FullFileName);
+#endif // CPUPROFILERTRACE_ENABLED
 		return LoadLibrary(*FullFileName);
 	}();
 	
@@ -2041,7 +2134,7 @@ void *FWindowsPlatformProcess::LoadLibraryWithSearchPaths(const FString& FileNam
 	else
 	{
 		UE_LOG(LogWindows, Log, TEXT("Failed to load '%s' (GetLastError=%d)"), *FileName, ::GetLastError());
-		if(IFileManager::Get().FileExists(*FileName))
+		if (PlatformFile.FileExists(*FileName))
 		{
 			LogImportDiagnostics(FileName, SearchPaths);
 		}

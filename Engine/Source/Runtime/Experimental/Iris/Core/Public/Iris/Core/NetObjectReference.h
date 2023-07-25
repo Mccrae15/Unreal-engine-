@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Iris/ReplicationSystem/NetHandle.h"
+#include "Iris/ReplicationSystem/NetRefHandle.h"
 #include "Iris/ReplicationSystem/NetToken.h"
 #include "Misc/EnumClassFlags.h"
 #include "Templates/IsPODType.h"
@@ -32,7 +32,7 @@ enum class ENetObjectReferenceTraits : uint32
 ENUM_CLASS_FLAGS(ENetObjectReferenceTraits);
 
 /**
- * A refererence to a network addressable object.
+ * A reference to a network addressable object.
  */
 class FNetObjectReference
 {
@@ -45,9 +45,9 @@ public:
 	inline bool operator==(const FNetObjectReference& Other) const { return RefHandle == Other.GetRefHandle() && PathToken == Other.PathToken; }
 	/** Returns whether this reference doesn't point to the same network addressable objects as some other reference. */
 	inline bool operator!=(const FNetObjectReference& Other) const { return !(*this == Other); }
-
-	/** Returns the NetHandle part of the object reference. */
-	FNetHandle GetRefHandle() const { return RefHandle; }
+		
+	/** Returns the NetRefHandle part of the object reference. */
+	FNetRefHandle GetRefHandle() const { return RefHandle; }
 	/** Returns the NetToken part of the object reference. */
 	FNetToken GetPathToken() const { return PathToken; }
 	/** Returns whether the object reference can be exported. */
@@ -78,19 +78,19 @@ public:
 private:
 	friend class Private::FObjectReferenceCache;
 
-	inline FNetObjectReference(FNetHandle InHandle, FNetToken InPathToken, ENetObjectReferenceTraits InTraits)
+	inline FNetObjectReference(FNetRefHandle InHandle, FNetToken InPathToken, ENetObjectReferenceTraits InTraits)
 		: RefHandle(InHandle)
 		, PathToken(InPathToken)
 		, Traits(InTraits)
 	{
 	}
 
-	inline explicit FNetObjectReference(FNetHandle Handle)
+	inline explicit FNetObjectReference(FNetRefHandle Handle)
 	: FNetObjectReference(Handle, FNetToken(), ENetObjectReferenceTraits::None)
 	{
 	}
 
-	FNetHandle RefHandle;
+	FNetRefHandle RefHandle;
 	FNetToken PathToken;
 	ENetObjectReferenceTraits Traits;
 };

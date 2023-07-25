@@ -2,18 +2,16 @@
 
 #pragma once
 
-#include "DNAReader.h"
-
-#include "Engine/AssetUserData.h"
+#include "CoreMinimal.h"
 #include "BoneIndices.h"
+#include "Engine/AssetUserData.h"
 
 #include "DNAIndexMapping.generated.h"
-
 
 class IBehaviorReader;
 class USkeleton;
 class USkeletalMesh;
-
+class USkeletalMeshComponent;
 
 struct FDNAIndexMapping
 {
@@ -23,7 +21,6 @@ struct FDNAIndexMapping
 		TArray<T> Values;
 	};
 
-	uint32 DNAHash;
 	FGuid SkeletonGuid;
 	// For maps, we use int32 instead of SmartName::UID_Ttype directly to allow storing INDEX_NONE for missing elements
 	// if value is valid, it is cast to SmartName::UID_Type
@@ -41,19 +38,8 @@ struct FDNAIndexMapping
 
 };
 
-UCLASS(NotBlueprintable, hidecategories = (Object))
-class UDNAIndexMapping : public UAssetUserData
+UCLASS(NotBlueprintable, hidecategories = (Object), deprecated)
+class UDEPRECATED_DNAIndexMapping : public UAssetUserData
 {
 	GENERATED_BODY()
-
-public:
-	UDNAIndexMapping();
-	TSharedPtr<FDNAIndexMapping> GetCachedMapping(const IBehaviorReader* DNABehavior,
-												  const USkeleton* Skeleton,
-												  const USkeletalMesh* SkeletalMesh,
-												  const USkeletalMeshComponent* SkeletalMeshComponent);
-
-private:
-	FRWLock Lock;
-	TSharedPtr<FDNAIndexMapping> Cached;
 };

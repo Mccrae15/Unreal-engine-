@@ -1,20 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sound/SoundCue.h"
-#include "Misc/App.h"
-#include "EngineDefines.h"
-#include "EngineGlobals.h"
-#include "Engine/Engine.h"
+#include "EdGraph/EdGraph.h"
 #include "Misc/CoreDelegates.h"
-#include "Components/AudioComponent.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "UObject/UObjectIterator.h"
 #include "EngineUtils.h"
-#include "Sound/SoundClass.h"
-#include "Sound/SoundNode.h"
-#include "Sound/SoundNodeAssetReferencer.h"
-#include "Sound/SoundNodeMixer.h"
+#include "IAudioParameterTransmitter.h"
 #include "Sound/SoundNodeAttenuation.h"
-#include "Sound/SoundNodeModulator.h"
 #include "Sound/SoundNodeQualityLevel.h"
 #include "Sound/SoundNodeRandom.h"
 #include "Sound/SoundNodeSoundClass.h"
@@ -22,21 +15,10 @@
 #include "GameFramework/GameUserSettings.h"
 #include "AudioCompressionSettingsUtils.h"
 #include "AudioDevice.h"
-#include "AudioThread.h"
-#include "DSP/Dsp.h"
 #if WITH_EDITOR
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "SoundCueGraph/SoundCueGraphNode.h"
-#include "SoundCueGraph/SoundCueGraph.h"
-#include "SoundCueGraph/SoundCueGraphNode_Root.h"
-#include "SoundCueGraph/SoundCueGraphSchema.h"
-#include "Audio.h"
 #endif // WITH_EDITOR
 
 #include "Interfaces/ITargetPlatform.h"
-#include "AudioCompressionSettings.h"
-#include "Sound/AudioSettings.h"
-#include "Templates/SharedPointer.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SoundCue)
 
@@ -412,9 +394,14 @@ void USoundCue::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyCha
 }
 #endif // WITH_EDITOR
 
-void USoundCue::RecursiveFindAttenuation( USoundNode* Node, TArray<class USoundNodeAttenuation*> &OutNodes )
+void USoundCue::RecursiveFindAttenuation(USoundNode* Node, TArray<USoundNodeAttenuation*> &OutNodes)
 {
 	RecursiveFindNode<USoundNodeAttenuation>( Node, OutNodes );
+}
+
+void USoundCue::RecursiveFindAttenuation(const USoundNode* Node, TArray<const USoundNodeAttenuation*>& OutNodes) const
+{
+	RecursiveFindNode<USoundNodeAttenuation>(Node, OutNodes);
 }
 
 void USoundCue::RecursiveFindAllNodes( USoundNode* Node, TArray<class USoundNode*> &OutNodes )
@@ -634,6 +621,30 @@ void USoundCue::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceH
 	{
 		FirstNode->ParseNodes(AudioDevice, (UPTRINT)FirstNode, ActiveSound, ParseParams, WaveInstances);
 	}
+
+	if (FSoundCueParameterTransmitter* Transmitter = static_cast<FSoundCueParameterTransmitter*>(ActiveSound.GetTransmitter()))
+	{
+		if (Transmitter->ParamsToSet.IsEmpty())
+		{
+			return;
+		}
+
+		for (const FWaveInstance* Instance : WaveInstances)
+		{
+			if (TSharedPtr<Audio::IParameterTransmitter>* ChildTransmitterPtr = Transmitter->Transmitters.Find(Instance->WaveInstanceHash))
+			{
+				TSharedPtr<Audio::IParameterTransmitter>& ChildTransmitter = *ChildTransmitterPtr;
+				
+				if (ChildTransmitter.IsValid())
+				{
+					TArray<FAudioParameter> Params = Transmitter->ParamsToSet;
+					ChildTransmitter->SetParameters(MoveTemp(Params));
+				}
+			}
+		}
+		
+		Transmitter->ParamsToSet.Reset();
+	}
 }
 
 float USoundCue::GetVolumeMultiplier()
@@ -714,39 +725,6 @@ bool USoundCue::HasCookedAmplitudeEnvelopeData() const
 
 TSharedPtr<Audio::IParameterTransmitter> USoundCue::CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const
 {
-	class FSoundCueParameterTransmitter : public Audio::FParameterTransmitterBase
-	{
-	public:
-		FSoundCueParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams)
-			: Audio::FParameterTransmitterBase(MoveTemp(InParams.DefaultParams))
-		{
-		}
-
-		virtual ~FSoundCueParameterTransmitter() = default;
-
-		TArray<UObject*> GetReferencedObjects() const override
-		{
-			TArray<UObject*> Objects;
-			for (const FAudioParameter& Param : AudioParameters)
-			{
-				if (Param.ObjectParam)
-				{
-					Objects.Add(Param.ObjectParam);
-				}
-
-				for (UObject* Object : Param.ArrayObjectParam)
-				{
-					if (Object)
-					{
-						Objects.Add(Object);
-					}
-				}
-			}
-
-			return Objects;
-		}
-	};
-
 	return MakeShared<FSoundCueParameterTransmitter>(MoveTemp(InParams));
 }
 
@@ -823,3 +801,37 @@ TSharedPtr<ISoundCueAudioEditor> USoundCue::GetSoundCueAudioEditor()
 }
 #endif // WITH_EDITOR
 
+TArray<UObject*> FSoundCueParameterTransmitter::GetReferencedObjects() const
+{
+	TArray<UObject*> Objects;
+	for (const FAudioParameter& Param : AudioParameters)
+	{
+		if (Param.ObjectParam)
+		{
+			Objects.Add(Param.ObjectParam);
+		}
+
+		for (UObject* Object : Param.ArrayObjectParam)
+		{
+			if (Object)
+			{
+				Objects.Add(Object);
+			}
+		}
+	}
+
+	return Objects;
+}
+
+bool FSoundCueParameterTransmitter::SetParameters(TArray<FAudioParameter>&& InParameters)
+{
+	TArray<FAudioParameter> TempParams = InParameters;
+	FAudioParameter::Merge(MoveTemp(TempParams), ParamsToSet);
+
+	InParameters.FilterByPredicate([](const FAudioParameter& Param)
+	{
+		return Param.ParamType != EAudioParameterType::Trigger;
+	});
+		
+	return Audio::FParameterTransmitterBase::SetParameters(MoveTemp(InParameters));
+}

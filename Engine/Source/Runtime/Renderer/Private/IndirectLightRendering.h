@@ -2,9 +2,12 @@
 
 #pragma once
 
-#include "ScenePrivate.h"
+#include "CoreTypes.h"
 #include "SceneTextureParameters.h"
+#include "ShaderParameterMacros.h"
+#include "Strata/Strata.h"
 
+class FSkyLightSceneProxy;
 
 namespace HybridIndirectLighting
 {

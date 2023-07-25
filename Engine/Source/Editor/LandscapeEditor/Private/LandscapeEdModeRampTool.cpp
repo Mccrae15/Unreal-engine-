@@ -22,6 +22,7 @@
 #include "Landscape.h"
 #include "Misc/MessageDialog.h"
 #include "LandscapeEdModeTools.h"
+#include "TextureResource.h"
 
 #define LOCTEXT_NAMESPACE "Landscape"
 
@@ -597,7 +598,7 @@ public:
 					for (ULandscapeComponent* Component : Components)
 					{
 						// Recreate collision for modified components and update the navmesh
-						ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
+						ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->GetCollisionComponent();
 						if (CollisionComponent)
 						{
 							CollisionComponent->RecreateCollision();

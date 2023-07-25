@@ -177,6 +177,8 @@ public:
 	*/
 	void InitResources(bool bNeedsVertexColors, int32 LODIndex, TArray<class UMorphTarget*>& InMorphTargets, USkinnedAsset* Owner);
 
+	void InitMorphResources();
+
 	/**
 	* Releases the LOD's render resources.
 	*/
@@ -229,7 +231,7 @@ public:
 	 * Initialize render data (e.g. vertex buffers) from model info
 	 * @param BuildFlags See ESkeletalMeshVertexFlags.
 	 */
-	void ENGINE_API BuildFromLODModel(const FSkeletalMeshLODModel* LODModel, uint32 BuildFlags);
+	void ENGINE_API BuildFromLODModel(const FSkeletalMeshLODModel* LODModel, ESkeletalMeshVertexFlags BuildFlags = ESkeletalMeshVertexFlags::None);
 #endif // WITH_EDITOR
 
 	uint32 GetNumVertices() const

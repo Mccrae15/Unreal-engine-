@@ -4,6 +4,7 @@
 
 #include "Async/Fundamental/Scheduler.h"
 #include "Async/Fundamental/Task.h"
+#include "Async/TaskGraphFwd.h"
 #include "Async/TaskTrace.h"
 #include "Containers/Array.h"
 #include "Containers/LockFreeFixedSizeAllocator.h"
@@ -30,13 +31,10 @@
 #include "Templates/TypeCompatibleBytes.h"
 #include "Templates/UnrealTemplate.h"
 #include "Templates/UnrealTypeTraits.h"
+#include "Async/InheritedContext.h"
 
 #include <atomic>
 #include <type_traits>
-
-#if !defined(TASKGRAPH_NEW_FRONTEND)
-#define TASKGRAPH_NEW_FRONTEND 0
-#endif
 
 namespace UE::Tasks
 {
@@ -94,7 +92,7 @@ namespace UE::Tasks
 		// Implements internal logic of task prerequisites, nested tasks and deep task retraction.
 		// Implements intrusive ref-counting and so can be used with TRefCountPtr.
 		// It doesn't store task body, instead it expects a derived class to provide a task body as a parameter to `TryExecute` method. @see TExecutableTask
-		class FTaskBase
+		class FTaskBase : private UE::FInheritedContextBase
 		{
 			UE_NONCOPYABLE(FTaskBase);
 
@@ -116,13 +114,15 @@ namespace UE::Tasks
 				uint32 LocalRefCount = RefCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
 				if (LocalRefCount == 0)
 				{
+#if !defined(__clang_analyzer__)
 					delete this;
+#endif
 				}
 			}
 
-			uint32 GetRefCount() const
+			uint32 GetRefCount(std::memory_order MemoryOrder) const
 			{
-				return RefCount.load(std::memory_order_relaxed);
+				return RefCount.load(MemoryOrder);
 			}
 
 		private:
@@ -152,6 +152,8 @@ namespace UE::Tasks
 					}
 				);
 				ExtendedPriority = InExtendedPriority;
+
+				CaptureInheritedContext();
 			}
 
 			virtual ~FTaskBase()
@@ -161,8 +163,8 @@ namespace UE::Tasks
 			}
 
 			// will be called to execute the task, must be implemented by a derived class that should call `FTaskBase::TryExecute` and pass the task body
-			// @see TExecutableTask::TryExecuteTask
-			virtual bool TryExecuteTask() = 0;
+			// @see TExecutableTask::TryExecuteTaskVirtual
+			virtual bool TryExecuteTaskVirtual() = 0;
 
 		public:
 			// returns true if it's valid to wait for the task completion.
@@ -395,7 +397,7 @@ namespace UE::Tasks
 			TaskTrace::FId GetTraceId() const
 			{
 #if UE_TASK_TRACE_ENABLED
-				return TraceId;
+				return TraceId.load(std::memory_order_relaxed);
 #else
 				return TaskTrace::InvalidId;
 #endif
@@ -464,10 +466,12 @@ namespace UE::Tasks
 				}
 
 				TArray<FTaskBase*> Subs;
-				Subsequents.PopAllAndClose(Subs);
-				for (FTaskBase* Sub : Subs)
+				Subsequents.PopAllAndClose(Subs); // gets `Subs` in LIFO order
+				// try to maintain FIFO order where it's possible. e.g. if multiple piped tasks (subsequents) depend on the same (this) task, 
+				// preserve the piping order, which is also the order in which subsequents were added as dependencies of this task
+				for (int32 i = Subs.Num() - 1; i >= 0; --i)
 				{
-					Sub->TryUnlock();
+					Subs[i]->TryUnlock();
 				}
 
 				// release nested tasks
@@ -477,6 +481,12 @@ namespace UE::Tasks
 			}
 
 			CORE_API void ClearPipe();
+
+			bool TryExecuteTask()
+			{
+				UE::FInheritedContextScope InheritedContextScope = RestoreInheritedContext();
+				return TryExecuteTaskVirtual();
+			}
 
 		private:
 			// A task can be locked for execution (by prerequisites or if it's not launched yet) or for completion (by nested tasks).
@@ -591,9 +601,6 @@ namespace UE::Tasks
 			CORE_API void StartPipeExecution();
 			CORE_API void FinishPipeExecution();
 
-			// the task is already executed but it's not completed yet. This method sets completion flag if there're no pending nested tasks.
-			// The task can be deleted as the result of this call.
-
 		private:
 			EExtendedTaskPriority ExtendedPriority; // internal priorities, if any
 
@@ -608,7 +615,7 @@ namespace UE::Tasks
 			std::atomic<uint32> NumLocks{ NumInitialLocks };
 
 #if UE_TASK_TRACE_ENABLED
-			TaskTrace::FId TraceId = TaskTrace::GenerateTaskId();
+			std::atomic<TaskTrace::FId> TraceId { TaskTrace::GenerateTaskId() };
 #endif
 
 			// the task is completed when its subsequents list is closed
@@ -655,33 +662,32 @@ namespace UE::Tasks
 			TTypeCompatibleBytes<ResultType> ResultStorage;
 		};
 
-		struct FTaskBlockAllocationTag : FDefaultBlockAllocationTag
-		{
-			static constexpr uint32 BlockSize = 64 * 1024;
-			static constexpr bool AllowOversizedBlocks = false;
-			static constexpr bool RequiresAccurateSize = false;
-			static constexpr bool InlineBlockAllocation = true;
-			static constexpr const char* TagName = "TaskLinearAllocator";
-
-			using Allocator = TBlockAllocationCache<BlockSize, FAlignedAllocator>;
-		};
-
 		// Task implementation that can be executed, as it stores task body. Generic version (for tasks that return non-void results).
 		// In most cases it should be allocated on the heap and used with TRefCountPtr, e.g. @see FTaskHandle. With care, can be allocated on the stack, e.g. see 
 		// WaitingTask in FTaskBase::Wait().
 		// Implements memory allocation from a pooled fixed-size allocator tuned for the everage UE task size
 		template<typename TaskBodyType, typename ResultType = TInvokeResult_T<TaskBodyType>, typename Enable = void>
-		class TExecutableTask final : public TConcurrentLinearObject<TExecutableTask<TaskBodyType>, FTaskBlockAllocationTag>, public TTaskWithResult<ResultType>
+		class TExecutableTaskBase : public TTaskWithResult<ResultType>
 		{
-			UE_NONCOPYABLE(TExecutableTask);
+			UE_NONCOPYABLE(TExecutableTaskBase);
 
 		public:
-			static TExecutableTask* Create(const TCHAR* DebugName, TaskBodyType TaskBody, ETaskPriority Priority, EExtendedTaskPriority InExtendedPriority = EExtendedTaskPriority::None)
+			virtual bool TryExecuteTaskVirtual() override
 			{
-				return new TExecutableTask(DebugName, MoveTemp(TaskBody), Priority, InExtendedPriority);
+				return FTaskBase::TryExecute(
+					[](FTaskBase& Task)
+					{
+						TExecutableTaskBase& This = static_cast<TExecutableTaskBase&>(Task);
+						new(&This.ResultStorage) ResultType{ Invoke(*This.TaskBodyStorage.GetTypedPtr()) };
+
+						// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
+						DestructItem(This.TaskBodyStorage.GetTypedPtr());
+					}
+				);
 			}
 
-			TExecutableTask(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority):
+		protected:
+			TExecutableTaskBase(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority) :
 				TTaskWithResult<ResultType>(InDebugName, InPriority, InExtendedPriority, 2)
 				// 2 init refs: one for the initial reference (we don't increment it on passing to `TRefCountPtr`), and one for the internal 
 				// reference that keeps the task alive while it's in the system. is released either on task completion or by the scheduler after
@@ -690,13 +696,24 @@ namespace UE::Tasks
 				new(&TaskBodyStorage) TaskBodyType(MoveTemp(TaskBody));
 			}
 
-			virtual bool TryExecuteTask() override
+		private:
+			TTypeCompatibleBytes<TaskBodyType> TaskBodyStorage;
+		};
+
+		// a specialization for tasks that don't return results
+		template<typename TaskBodyType>
+		class TExecutableTaskBase<TaskBodyType, typename TEnableIf<std::is_same_v<TInvokeResult_T<TaskBodyType>, void>>::Type> : public FTaskBase
+		{
+			UE_NONCOPYABLE(TExecutableTaskBase);
+
+		public:
+			virtual bool TryExecuteTaskVirtual() override
 			{
-				return FTaskBase::TryExecute(
-					[](FTaskBase& Task) 
-					{ 
-						TExecutableTask& This = static_cast<TExecutableTask&>(Task);
-						new(&This.ResultStorage) ResultType{ Invoke(*This.TaskBodyStorage.GetTypedPtr()) }; 
+				return TryExecute(
+					[](FTaskBase& Task)
+					{
+						TExecutableTaskBase& This = static_cast<TExecutableTaskBase&>(Task);
+						Invoke(*This.TaskBodyStorage.GetTypedPtr());
 
 						// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
 						DestructItem(This.TaskBodyStorage.GetTypedPtr());
@@ -704,25 +721,9 @@ namespace UE::Tasks
 				);
 			}
 
-		private:
-			TTypeCompatibleBytes<TaskBodyType> TaskBodyStorage;
-		};
-
-		// a specialization for tasks that don't return results
-		template<typename TaskBodyType>
-		class TExecutableTask<TaskBodyType, typename TEnableIf<TIsSame<TInvokeResult_T<TaskBodyType>, void>::Value>::Type> final : public TConcurrentLinearObject<TExecutableTask<TaskBodyType>, FTaskBlockAllocationTag>, public FTaskBase
-		{
-			UE_NONCOPYABLE(TExecutableTask);
-
-		public:
-			static TExecutableTask* Create(const TCHAR* DebugName, TaskBodyType TaskBody, ETaskPriority Priority, EExtendedTaskPriority InExtendedPriority = EExtendedTaskPriority::None)
-			{
-				return new TExecutableTask(DebugName, MoveTemp(TaskBody), Priority, InExtendedPriority);
-			}
-
-			TExecutableTask(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority) :
-				FTaskBase(2)
-				// 2 init refs: one for the initial reference (we don't increment it on passing to `TRefCountPtr`), and one for the internal 
+		protected:
+			TExecutableTaskBase(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority) :
+				FTaskBase(2) // 2 init refs: one for the initial reference (we don't increment it on passing to `TRefCountPtr`), and one for the internal 
 				// reference that keeps the task alive while it's in the system. is released either on task completion or by the scheduler after
 				// trying to execute the task
 			{
@@ -730,22 +731,39 @@ namespace UE::Tasks
 				new(&TaskBodyStorage) TaskBodyType(MoveTemp(TaskBody));
 			}
 
-			virtual bool TryExecuteTask() override
-			{
-				return TryExecute(
-					[](FTaskBase& Task)
-					{
-						TExecutableTask& This = static_cast<TExecutableTask&>(Task);
-						Invoke(*This.TaskBodyStorage.GetTypedPtr()); 
-
-						// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
-						DestructItem(This.TaskBodyStorage.GetTypedPtr());
-					}
-				);
-			}
-
 		private:
 			TTypeCompatibleBytes<TaskBodyType> TaskBodyStorage;
+		};
+
+		inline constexpr int32 SmallTaskSize = 256;
+		using FExecutableTaskAllocator = TLockFreeFixedSizeAllocator_TLSCache<SmallTaskSize, PLATFORM_CACHE_LINE_SIZE>;
+		CORE_API extern FExecutableTaskAllocator SmallTaskAllocator;
+
+		// a separate derived class to add "small task" allocation optimization to both base class specializations
+		template<typename TaskBodyType>
+		class TExecutableTask final : public TExecutableTaskBase<TaskBodyType>
+		{
+		public:
+			TExecutableTask(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority)
+				: TExecutableTaskBase<TaskBodyType>(InDebugName, MoveTemp(TaskBody), InPriority, InExtendedPriority)
+			{
+			}
+
+			// a helper that deduces the template argument
+			static TExecutableTask* Create(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority)
+			{
+				return new TExecutableTask(InDebugName, MoveTemp(TaskBody), InPriority, InExtendedPriority);
+			}
+
+			static void* operator new(size_t Size)
+			{
+				return Size <= SmallTaskSize ? SmallTaskAllocator.Allocate() : GMalloc->Malloc(sizeof(TExecutableTask), PLATFORM_CACHE_LINE_SIZE);
+			}
+
+			static void operator delete(void* Ptr, size_t Size)
+			{
+				Size <= SmallTaskSize ? SmallTaskAllocator.Free(Ptr) : GMalloc->Free(Ptr);
+			}
 		};
 
 		// waiting on named threads that replicates TaskGraph logic
@@ -772,7 +790,7 @@ namespace UE::Tasks
 				Init(InDebugName, ETaskPriority::Normal, EExtendedTaskPriority::TaskEvent);
 			}
 
-			virtual bool TryExecuteTask() override
+			virtual bool TryExecuteTaskVirtual() override
 			{
 				checkNoEntry(); // never executed because it doesn't have a task body
 				return true;

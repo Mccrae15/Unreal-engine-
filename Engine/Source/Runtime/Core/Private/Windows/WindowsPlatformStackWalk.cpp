@@ -19,10 +19,12 @@
 
 #include "Windows/WindowsHWrapper.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
+THIRD_PARTY_INCLUDES_START
 	#include <DbgHelp.h>
 	#include <Shlwapi.h>
 	#include <TlHelp32.h>
 	#include <Psapi.h>
+THIRD_PARTY_INCLUDES_END
 #include "Windows/HideWindowsPlatformTypes.h"
 
 #include "Modules/ModuleManager.h"
@@ -142,11 +144,18 @@ static int32 CaptureStackTraceHelper(uint64 *BackTrace, uint32 MaxDepth, FWindow
 		StackFrame64.AddrStack.Mode      = AddrModeFlat;
 		StackFrame64.AddrFrame.Mode      = AddrModeFlat;
 #if PLATFORM_64BITS
-		StackFrame64.AddrPC.Offset = ContextWapper->Context.Rip;
-		StackFrame64.AddrStack.Offset = ContextWapper->Context.Rsp;
-		StackFrame64.AddrFrame.Offset = ContextWapper->Context.Rbp;
+#if PLATFORM_CPU_X86_FAMILY || defined(_M_ARM64EC)
+		StackFrame64.AddrPC.Offset       = ContextWapper->Context.Rip;
+		StackFrame64.AddrStack.Offset    = ContextWapper->Context.Rsp;
+		StackFrame64.AddrFrame.Offset    = ContextWapper->Context.Rbp;
 		MachineType                      = IMAGE_FILE_MACHINE_AMD64;
-#else	//PLATFORM_64BITS
+#elif PLATFORM_CPU_ARM_FAMILY
+		StackFrame64.AddrPC.Offset       = ContextWapper->Context.Pc;
+		StackFrame64.AddrStack.Offset    = ContextWapper->Context.Sp;
+		StackFrame64.AddrFrame.Offset    = ContextWapper->Context.Fp;
+		MachineType                      = IMAGE_FILE_MACHINE_ARM64;
+#endif
+#else   //PLATFORM_64BITS
 		StackFrame64.AddrPC.Offset       = ContextWapper->Context.Eip;
 		StackFrame64.AddrStack.Offset    = ContextWapper->Context.Esp;
 		StackFrame64.AddrFrame.Offset    = ContextWapper->Context.Ebp;
@@ -761,7 +770,7 @@ void LoadSymbolsForModule(HMODULE ModuleHandle, const FString& RemoteStorage)
 	SymSetSearchPathW(ProcessHandle, *SearchPathList);
 
 	// Load module.
-	const DWORD64 BaseAddress = SymLoadModuleExW(ProcessHandle, ModuleHandle, ImageName, ModuleName, (DWORD64)ModuleInfo.lpBaseOfDll, (uint32)ModuleInfo.SizeOfImage, NULL, 0);
+	const DWORD64 BaseAddress = SymLoadModuleExW(ProcessHandle, ModuleHandle, ImageName, ModuleName, (DWORD64)ModuleInfo.lpBaseOfDll, ModuleInfo.SizeOfImage, NULL, 0);
 	if (!BaseAddress)
 	{
 		ErrorCode = GetLastError();

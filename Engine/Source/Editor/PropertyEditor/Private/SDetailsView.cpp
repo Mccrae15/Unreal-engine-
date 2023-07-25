@@ -86,7 +86,7 @@ void SDetailsView::Construct(const FArguments& InArgs, const FDetailsViewArgs& I
 	//  - We can't use AlwaysShowScrollbar for this, as this will also show the scrollbar when nothing is selected
 	//  - We can't use the Visibility construction parameter, as it gets translated into user visibility and can hide the scrollbar even when objects are selected
 	// We instead have to explicitly set the visibility after the scrollbar has been constructed to get the exact behavior we want
-	TSharedRef<SScrollBar> ExternalScrollbar = SNew(SScrollBar);
+	const TSharedRef<SScrollBar> ExternalScrollbar = InDetailsViewArgs.ExternalScrollbar ? InDetailsViewArgs.ExternalScrollbar.ToSharedRef() : SNew(SScrollBar);
 	ExternalScrollbar->SetVisibility( TAttribute<EVisibility>( this, &SDetailsView::GetScrollBarVisibility ) );
 
 	FMenuBuilder DetailViewOptions( true, nullptr);
@@ -427,7 +427,7 @@ void SDetailsView::Construct(const FArguments& InArgs, const FDetailsViewArgs& I
 	];
 }
 
-TSharedRef<SDetailTree> SDetailsView::ConstructTreeView( TSharedRef<SScrollBar>& ScrollBar )
+TSharedRef<SDetailTree> SDetailsView::ConstructTreeView(const TSharedRef<SScrollBar>& ScrollBar )
 {
 	check( !DetailTree.IsValid() || DetailTree.IsUnique() );
 
@@ -696,6 +696,8 @@ void SDetailsView::SetObjectArrayPrivate(const TArray<UObject*>& InObjects)
 		return;
 	}
 
+	TRACE_CPUPROFILER_EVENT_SCOPE(SDetailsView::SetObjectArrayPrivate);
+
 	TGuardValue<bool> RefreshGuard(bIsRefreshing, true);
 
 	double StartTime = FPlatformTime::Seconds();
@@ -861,6 +863,8 @@ void SDetailsView::RemoveDeletedObjects(const TArray<UObject*>& DeletedObjects)
 /** Called before during SetObjectArray before we change the objects being observed */
 void SDetailsView::PreSetObject(int32 InNewNumObjects)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SDetailsView::PreSetObject);
+
 	TSharedPtr<SColorPicker> ExistingColorPicker = GetColorPicker();
 	if (ExistingColorPicker.IsValid()
 		&& ExistingColorPicker->GetOptionalOwningDetailsView().IsValid()
@@ -896,7 +900,7 @@ void SDetailsView::PreSetObject(int32 InNewNumObjects)
 	}
 
 	RootPropertyNodes.Empty(InNewNumObjects);
-	ExpandedDetailNodes.Empty();
+	ExpandedDetailNodes.Clear();
 
 	for (int32 NewRootIndex = 0; NewRootIndex < InNewNumObjects; ++NewRootIndex)
 	{
@@ -911,6 +915,8 @@ void SDetailsView::PreSetObject(int32 InNewNumObjects)
 /** Called at the end of SetObjectArray after we change the objects being observed */
 void SDetailsView::PostSetObject(const TArray<FDetailsViewObjectRoot>& Roots)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SDetailsView::PostSetObject);
+
 	TSharedPtr<SColorPicker> ExistingColorPicker = GetColorPicker();
 	if (ExistingColorPicker.IsValid()
 		&& (!ExistingColorPicker->GetOptionalOwningDetailsView().IsValid()
@@ -923,7 +929,8 @@ void SDetailsView::PostSetObject(const TArray<FDetailsViewObjectRoot>& Roots)
 
 	// Are we editing PIE objects?  If the bShowHiddenPropertiesWhilePlaying setting is enabled, we may want to
 	// show all of the properties that would normally be hidden for objects that are part of the PIE world.
-	bool bAnyPIEObjects = false;
+	bool bShowHiddenPropertiesWhilePlaying = false;
+	if (IsShowHiddenPropertiesWhilePlayingChecked())
 	{
 		for( int32 RootNodeIndex = 0; RootNodeIndex < RootPropertyNodes.Num(); ++RootNodeIndex )
 		{
@@ -936,7 +943,7 @@ void SDetailsView::PostSetObject(const TArray<FDetailsViewObjectRoot>& Roots)
 					UObject* Object = RootPropertyNode->GetUObject( ObjectIndex );
 					if( Object->GetOutermost()->HasAnyPackageFlags( PKG_PlayInEditor ) )
 					{
-						bAnyPIEObjects = true;
+						bShowHiddenPropertiesWhilePlaying = true;
 						break;
 					}
 				}
@@ -952,7 +959,7 @@ void SDetailsView::PostSetObject(const TArray<FDetailsViewObjectRoot>& Roots)
 	InitParams.bAllowChildren = true;
 	InitParams.bForceHiddenPropertyVisibility = 
 		FPropertySettings::Get().ShowHiddenProperties() || 
-		( GetDefault<UEditorStyleSettings>()->bShowHiddenPropertiesWhilePlaying && bAnyPIEObjects ) ||
+		bShowHiddenPropertiesWhilePlaying ||
 		DetailsViewArgs.bForceHiddenPropertyVisibility;
 
 	switch ( DetailsViewArgs.DefaultsOnlyVisibility )
@@ -967,7 +974,7 @@ void SDetailsView::PostSetObject(const TArray<FDetailsViewObjectRoot>& Roots)
 		InitParams.bCreateDisableEditOnInstanceNodes = HasClassDefaultObject();
 		break;
 	default:
-		check(false);
+		checkNoEntry();
 	}
 
 	for( TSharedPtr<FComplexPropertyNode>& ComplexRootNode : RootPropertyNodes )
@@ -1026,7 +1033,7 @@ bool SDetailsView::IsShowHiddenPropertiesWhilePlayingChecked() const
 		return ViewConfig->bShowHiddenPropertiesWhilePlaying;
 	}
 
-	return false;
+	return GetDefault<UEditorStyleSettings>()->bShowHiddenPropertiesWhilePlaying;
 }
 
 void SDetailsView::OnShowHiddenPropertiesWhilePlayingClicked()

@@ -2,17 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
-#include "Kismet/KismetSystemLibrary.h"
 #include "RootMotionModifier.h"
 #include "MotionWarpingComponent.generated.h"
+
+template <class T> class TAutoConsoleVariable;
 
 class ACharacter;
 class UAnimSequenceBase;
 class UCharacterMovementComponent;
 class UMotionWarpingComponent;
 class UAnimNotifyState_MotionWarping;
+struct FCompactPose;
+template<class PoseType> struct FCSPose;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogMotionWarping, Log, All);
 
@@ -194,3 +196,9 @@ protected:
 
 	FTransform ProcessRootMotionPreConvertToWorld(const FTransform& InRootMotion, class UCharacterMovementComponent* CharacterMovementComponent, float DeltaSeconds);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "HAL/IConsoleManager.h"
+#include "Kismet/KismetSystemLibrary.h"
+#endif

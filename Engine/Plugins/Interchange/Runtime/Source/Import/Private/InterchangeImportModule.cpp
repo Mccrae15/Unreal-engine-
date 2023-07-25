@@ -5,6 +5,7 @@
 #include "Animation/InterchangeAnimSequenceFactory.h"
 #include "Animation/InterchangeAnimationTrackSetFactory.h"
 #include "CoreMinimal.h"
+#include "Engine/Engine.h"
 #include "Fbx/InterchangeFbxTranslator.h"
 #include "Gltf/InterchangeGltfTranslator.h"
 #include "InterchangeImportLog.h"
@@ -100,10 +101,7 @@ void FInterchangeImportModule::StartupModule()
 
 
 void FInterchangeImportModule::ShutdownModule()
-{
-	FInterchangeImportMaterialAsyncHelper& InterchangeMaterialAsyncHelper = FInterchangeImportMaterialAsyncHelper::GetInstance();
-	InterchangeMaterialAsyncHelper.CleanUp();
-}
+{}
 
 
 

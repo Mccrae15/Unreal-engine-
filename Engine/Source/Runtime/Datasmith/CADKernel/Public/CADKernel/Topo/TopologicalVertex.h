@@ -36,6 +36,11 @@ protected:
 
 public:
 
+	virtual ~FTopologicalVertex() override
+	{
+		FTopologicalVertex::Empty();
+	}
+
 	static TSharedRef<FTopologicalVertex> Make(const FPoint& InCoordinate)
 	{
 		TSharedRef<FTopologicalVertex> Vertex = FEntity::MakeShared<FTopologicalVertex>(InCoordinate);
@@ -168,8 +173,15 @@ public:
 				}
 				TopologicalLink.Reset();
 			}
-			SetDeleted();
+			Delete();
 		}
+	}
+
+	virtual void Empty() override
+	{
+		ConnectedEdges.Empty();
+		Mesh.Reset();
+		TLinkable<FTopologicalVertex, FVertexLink>::Empty();
 	}
 
 	bool IsBorderVertex();

@@ -14,6 +14,7 @@ def create_start_process_message(
     *,
 	update_clients_with_stdout: bool = False,
     priority_modifier: int = 0,
+    lock_gpu_clock: bool = False,
 ):
     cmd_id = uuid.uuid4()
     start_cmd = {
@@ -26,6 +27,7 @@ def create_start_process_message(
         'working_dir': working_dir,
         'bUpdateClientsWithStdout': update_clients_with_stdout,
         'priority_modifier': priority_modifier,
+        'bLockGpuClock' : lock_gpu_clock,
     }
 
     message = json.dumps(start_cmd).encode() + b'\x00'
@@ -103,6 +105,13 @@ def create_redeploy_listener_message(base64listener: str, sha1digest: str):
     cmd_id = uuid.uuid4()
     redeploy_cmd = {'command': 'redeploy listener', 'id': str(cmd_id), 'sha1': sha1digest, 'content': base64listener}
     message = json.dumps(redeploy_cmd).encode() + b'\x00'
+    return (cmd_id, message)
+
+def create_free_listener_bin_message():
+    ''' Sends a command to the listener to move its executable. '''
+    cmd_id = uuid.uuid4()
+    rename_proc_cmd = {'command': 'free binary', 'id': str(cmd_id)}
+    message = json.dumps(rename_proc_cmd).encode() + b'\x00'
     return (cmd_id, message)
 
 def create_fixExeFlags_message(puuid):

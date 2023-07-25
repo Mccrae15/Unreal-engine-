@@ -81,7 +81,7 @@ struct FSharedSimulationSizeSpecificData
 //
 //
 //
-enum ESimulationInitializationState { Unintialized = 0, Activated, Created, Initialized };
+enum ESimulationInitializationState : uint8 { Unintialized = 0, Activated, Created, Initialized };
 
 
 /**
@@ -210,6 +210,7 @@ struct FSimulationParameters
 		, SimulationFilterData()
 		, QueryFilterData()
 		, UserData(nullptr)
+		, bEnableStrainOnCollision(true)
 	{}
 
 	FSimulationParameters(const FSimulationParameters& Other)
@@ -258,6 +259,7 @@ struct FSimulationParameters
 		, SimulationFilterData(Other.SimulationFilterData)
 		, QueryFilterData(Other.QueryFilterData)
 		, UserData(Other.UserData)
+		, bEnableStrainOnCollision(Other.bEnableStrainOnCollision)
 	{
 	}
 
@@ -281,6 +283,7 @@ struct FSimulationParameters
 	bool Simulating;
 
 	FTransform WorldTransform;
+	FTransform PrevWorldTransform;
 
 	bool EnableClustering;
 	int32 ClusterGroupIndex;
@@ -330,4 +333,5 @@ struct FSimulationParameters
 	FCollisionFilterData SimulationFilterData;
 	FCollisionFilterData QueryFilterData;
 	void* UserData;
+	bool bEnableStrainOnCollision;
 };

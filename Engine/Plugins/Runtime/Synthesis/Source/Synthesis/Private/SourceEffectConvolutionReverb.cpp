@@ -2,9 +2,10 @@
 
 #include "SourceEffects/SourceEffectConvolutionReverb.h"
 
-#include "Async/Async.h"
+#include "AudioMixerNullDevice.h"
+#include "DSP/AlignedBlockBuffer.h" // IWYU pragma: keep
 #include "DSP/FloatArrayMath.h"
-#include "SynthesisModule.h"
+#include "EffectConvolutionReverb.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SourceEffectConvolutionReverb)
 

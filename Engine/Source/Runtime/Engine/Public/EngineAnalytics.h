@@ -61,3 +61,21 @@ private:
 	static ENGINE_API TSharedPtr<IAnalyticsProviderET> Analytics;
 };
 
+namespace UE::Analytics::Private {
+
+/**
+  * Interface for allowing changes to engine analytics configuration intended for use by internal tools.
+  * 
+  * Internal use only, not intended for licensee use.
+  */
+class IEngineAnalyticsConfigOverride
+{
+public:
+	virtual ~IEngineAnalyticsConfigOverride() = default;
+	virtual void ApplyConfiguration(FAnalyticsET::Config& Config) = 0;
+	virtual void OnProviderCreated(IAnalyticsProviderET& provider) = 0;
+};
+
+extern ENGINE_API IEngineAnalyticsConfigOverride* EngineAnalyticsConfigOverride;
+
+/* UE::Analytics::Private */ }

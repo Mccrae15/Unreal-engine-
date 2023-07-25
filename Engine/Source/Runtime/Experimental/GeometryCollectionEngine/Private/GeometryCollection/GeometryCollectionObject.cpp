@@ -6,6 +6,7 @@
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionCache.h"
+#include "Materials/Material.h"
 #include "UObject/DestructionObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "Serialization/ArchiveCountMem.h"
@@ -17,7 +18,7 @@
 #include "EngineUtils.h"
 #include "Engine/StaticMesh.h"
 #include "PhysicsEngine/PhysicsSettings.h"
-
+#include "EditorFramework/AssetImportData.h"
 
 #if WITH_EDITOR
 #include "GeometryCollection/DerivedDataGeometryCollectionCooker.h"
@@ -51,6 +52,12 @@ FAutoConsoleVariableRef CVarGeometryCollectionEnableForcedConvexGenerationInSeri
 	TEXT("p.GeometryCollectionEnableForcedConvexGenerationInSerialize"),
 	bGeometryCollectionEnableForcedConvexGenerationInSerialize,
 	TEXT("Enable generation of convex geometry on older destruction files.[def:true]"));
+
+bool bGeometryCollectionAlwaysRecreateSimulationData = false;
+FAutoConsoleVariableRef CVarGeometryCollectionAlwaysRecreateSimulationData(
+	TEXT("p.GeometryCollectionAlwaysRecreateSimulationData"),
+	bGeometryCollectionAlwaysRecreateSimulationData,
+	TEXT("always recreate the simulation data even if the simulation data is not marked as dirty - this has runtime cost in editor - only use as a last resort if default has issues [def:false]"));
 
 
 #if ENABLE_COOK_STATS
@@ -283,6 +290,24 @@ void UGeometryCollection::ValidateSizeSpecificDataDefaults()
 	check(SizeSpecificData.Num());
 }
 
+void UGeometryCollection::UpdateGeometryDependentProperties()
+{
+#if WITH_EDITOR
+	// Note: Currently, computing convex hulls also always computes proximity (if missing) as well as volumes and size.
+	// If adding a condition where we do not compute convex hulls, make sure to still compute proximity, volumes and size here
+	UpdateConvexGeometry();
+#endif
+}
+
+void UGeometryCollection::UpdateConvexGeometryIfMissing()
+{
+	const bool bConvexAttributeMissing = !GeometryCollection->HasAttribute("ConvexHull", "Convex");
+	if (GeometryCollection && bConvexAttributeMissing)
+	{
+		UpdateConvexGeometry();
+	}
+}
+
 void UGeometryCollection::UpdateConvexGeometry()
 {
 #if WITH_EDITOR
@@ -296,6 +321,16 @@ void UGeometryCollection::UpdateConvexGeometry()
 #endif
 }
 
+void UGeometryCollection::PostInitProperties()
+{
+#if WITH_EDITORONLY_DATA
+	if (!HasAnyFlags(RF_ClassDefaultObject))
+	{
+		AssetImportData = NewObject<UAssetImportData>(this, TEXT("AssetImportData"));
+	}
+#endif
+	Super::PostInitProperties();
+}
 
 float KgCm3ToKgM3(float Density)
 {
@@ -364,6 +399,22 @@ void UGeometryCollection::Reset()
 		EmbeddedGeometryExemplar.Empty();
 		AutoInstanceMeshes.Empty();
 		InvalidateCollection();
+	}
+}
+
+void UGeometryCollection::ResetFrom(const FManagedArrayCollection& InCollection, const TArray<UMaterial*>& InMaterials, bool bHasInternalMaterials)
+{
+	if (GeometryCollection.IsValid())
+	{
+		Reset();
+
+		InCollection.CopyTo(GeometryCollection.Get());
+
+		// todo(Chaos) : we could certainly run a "dependent attribute update method here instead of having to known about convex specifically 
+		UpdateConvexGeometryIfMissing();
+				
+		Materials.Append(InMaterials);
+		InitializeMaterials(bHasInternalMaterials);
 	}
 }
 
@@ -443,82 +494,109 @@ void UGeometryCollection::ReindexMaterialSections()
 	InvalidateCollection();
 }
 
-void UGeometryCollection::InitializeMaterials()
+void UGeometryCollection::InitializeMaterials(bool bHasInternalMaterials)
 {
 	Modify();
 
 	// Last Material is the selection one
 	UMaterialInterface* BoneSelectedMaterial = LoadObject<UMaterialInterface>(nullptr, GetSelectedMaterialPath(), nullptr, LOAD_None, nullptr);
 
-	TManagedArray<int32>& MaterialID = GeometryCollection->MaterialID;
+	TManagedArray<int32>& MaterialIDs = GeometryCollection->MaterialID;
 
 	// normally we filter out instances of the selection material ID, but if it's actually used on any face we have to keep it
 	bool bBoneSelectedMaterialIsUsed = false;
-	for (int32 FaceIdx = 0; FaceIdx < MaterialID.Num(); ++FaceIdx)
+	for (int32 FaceIdx = 0; FaceIdx < MaterialIDs.Num(); ++FaceIdx)
 	{
-		int32 FaceMaterialID = MaterialID[FaceIdx];
+		int32 FaceMaterialID = MaterialIDs[FaceIdx];
 		if (FaceMaterialID < Materials.Num() && Materials[FaceMaterialID] == BoneSelectedMaterial)
 		{
 			bBoneSelectedMaterialIsUsed = true;
 			break;
 		}
 	}
-	
-	// We're assuming that all materials are arranged in pairs, so first we collect these.
-	using FMaterialPair = TPair<UMaterialInterface*, UMaterialInterface*>;
-	TSet<FMaterialPair> MaterialSet;
-	for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
+
+	TArray<UMaterialInterface*> FinalMaterials;
+	if (bHasInternalMaterials)
 	{
-		UMaterialInterface* ExteriorMaterial = Materials[MaterialIndex];
-		if (ExteriorMaterial == BoneSelectedMaterial && !bBoneSelectedMaterialIsUsed) // skip unused bone selected material
+		// We're assuming that all materials are arranged in pairs, so first we collect these.
+		using FMaterialPair = TPair<UMaterialInterface*, UMaterialInterface*>;
+		TSet<FMaterialPair> MaterialSet;
+		for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
 		{
-			continue;
-		}
-		
-		// If we have an odd number of materials, the last material duplicates itself.
-		UMaterialInterface* InteriorMaterial = Materials[MaterialIndex];
-		while (++MaterialIndex < Materials.Num())
-		{
-			if (Materials[MaterialIndex] == BoneSelectedMaterial && !bBoneSelectedMaterialIsUsed) // skip bone selected material
+			UMaterialInterface* ExteriorMaterial = Materials[MaterialIndex];
+			if (ExteriorMaterial == BoneSelectedMaterial && !bBoneSelectedMaterialIsUsed) // skip unused bone selected material
 			{
 				continue;
 			}
-			InteriorMaterial = Materials[MaterialIndex];
-			break;
+
+			// If we have an odd number of materials, the last material duplicates itself.
+			UMaterialInterface* InteriorMaterial = Materials[MaterialIndex];
+			while (++MaterialIndex < Materials.Num())
+			{
+				if (Materials[MaterialIndex] == BoneSelectedMaterial && !bBoneSelectedMaterialIsUsed) // skip bone selected material
+				{
+					continue;
+				}
+				InteriorMaterial = Materials[MaterialIndex];
+				break;
+			}
+
+			MaterialSet.Add(FMaterialPair(ExteriorMaterial, InteriorMaterial));
 		}
 
-		MaterialSet.Add(FMaterialPair(ExteriorMaterial, InteriorMaterial));
-	}
-	
-	// create the final material array only containing unique materials
-	// alternating exterior and interior materials
-	TMap<UMaterialInterface*, int32> ExteriorMaterialPtrToArrayIndex;
-	TMap<UMaterialInterface*, int32> InteriorMaterialPtrToArrayIndex;
-	TArray<UMaterialInterface*> FinalMaterials;
-	for (const FMaterialPair& Curr : MaterialSet)
-	{
-		// Add base material
-		TTuple< UMaterialInterface*, int32> BaseTuple(Curr.Key, FinalMaterials.Add(Curr.Key));
-		ExteriorMaterialPtrToArrayIndex.Add(BaseTuple);
-
-		// Add interior material
-		TTuple< UMaterialInterface*, int32> InteriorTuple(Curr.Value, FinalMaterials.Add(Curr.Value));
-		InteriorMaterialPtrToArrayIndex.Add(InteriorTuple);
-	}
-
-	// Reassign material ID for each face given the new consolidated array of materials
-	for (int32 Material = 0; Material < MaterialID.Num(); ++Material)
-	{
-		if (MaterialID[Material] < Materials.Num())
+		// create the final material array only containing unique materials
+		// alternating exterior and interior materials
+		TMap<UMaterialInterface*, int32> ExteriorMaterialPtrToArrayIndex;
+		TMap<UMaterialInterface*, int32> InteriorMaterialPtrToArrayIndex;
+		for (const FMaterialPair& Curr : MaterialSet)
 		{
-			UMaterialInterface* OldMaterialPtr = Materials[MaterialID[Material]];
-			if (MaterialID[Material] % 2 == 0)
+			// Add base material
+			TTuple< UMaterialInterface*, int32> BaseTuple(Curr.Key, FinalMaterials.Add(Curr.Key));
+			ExteriorMaterialPtrToArrayIndex.Add(BaseTuple);
+
+			// Add interior material
+			TTuple< UMaterialInterface*, int32> InteriorTuple(Curr.Value, FinalMaterials.Add(Curr.Value));
+			InteriorMaterialPtrToArrayIndex.Add(InteriorTuple);
+		}
+
+		// Reassign material ID for each face given the new consolidated array of materials
+		for (int32 Material = 0; Material < MaterialIDs.Num(); ++Material)
+		{
+			if (MaterialIDs[Material] < Materials.Num())
 			{
-				MaterialID[Material] = *ExteriorMaterialPtrToArrayIndex.Find(OldMaterialPtr);
+				UMaterialInterface* OldMaterialPtr = Materials[MaterialIDs[Material]];
+				if (MaterialIDs[Material] % 2 == 0)
+				{
+					MaterialIDs[Material] = *ExteriorMaterialPtrToArrayIndex.Find(OldMaterialPtr);
+				}
+				else
+				{
+					MaterialIDs[Material] = *InteriorMaterialPtrToArrayIndex.Find(OldMaterialPtr);
+				}
 			}
-			else
+		}
+	}
+	else
+	{
+		// simple deduping process
+		for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
+		{
+			UMaterialInterface* Material = Materials[MaterialIndex];
+			if (Material == BoneSelectedMaterial && !bBoneSelectedMaterialIsUsed) // skip unused bone selected material
 			{
-				MaterialID[Material] = *InteriorMaterialPtrToArrayIndex.Find(OldMaterialPtr);
+				continue;
+			}
+			FinalMaterials.AddUnique(Material);
+		}
+
+		// Reassign material ID for each face given the new consolidated array of materials
+		for (int32 MaterialIDIndex = 0; MaterialIDIndex < MaterialIDs.Num(); MaterialIDIndex++)
+		{
+			const int32 OldMaterialID = MaterialIDs[MaterialIDIndex];
+			if (Materials.IsValidIndex(OldMaterialID))
+			{
+				UMaterialInterface* Material = Materials[OldMaterialID];
+				MaterialIDs[MaterialIDIndex] = FinalMaterials.Find(Material);
 			}
 		}
 	}
@@ -640,6 +718,8 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 	// The Geometry Collection we will be archiving. This may be replaced with a transient, stripped back Geometry Collection if we are cooking.
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> ArchiveGeometryCollection = GeometryCollection;
 
+	TObjectPtr<UDataflow> StrippedDataflowAsset = nullptr;
+
 	bool bIsCookedOrCooking = Ar.IsCooking();
 	if (bIsCookedOrCooking && Ar.IsSaving())
 	{
@@ -652,11 +732,23 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 			Materials[SelectedMaterialIndex] = Materials[0];
 		}
 
-		if (bStripOnCook && EnableNanite && NaniteData)
+		if (bStripOnCook)
 		{
-			// If this is a cooked archive, we strip unnecessary data from the Geometry Collection to keep the memory footprint as small as possible.
-			ArchiveGeometryCollection = GenerateMinimalGeometryCollection();
+			if (EnableNanite && NaniteData)
+			{
+				// If this is a cooked archive, we strip unnecessary data from the Geometry Collection to keep the memory footprint as small as possible.
+				ArchiveGeometryCollection = GenerateMinimalGeometryCollection();
+			}
+			else
+			{
+				// non-nanite path where it may be necessary to remove geometry if the geometry collection is rendered using ISMPool or an external rendering system 
+				ArchiveGeometryCollection = CopyCollectionAndRemoveGeometry(GeometryCollection);
+			}
 		}
+
+		// The dataflow asset is only needed for the editor, so we just remove it when cooking 
+		StrippedDataflowAsset = DataflowAsset;
+		DataflowAsset = nullptr;
 #endif
 	}
 
@@ -699,6 +791,11 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 		Super::Serialize(Ar);
 	}
 
+	// Important : this needs to remain after the call to Super::Serialize
+	if (StrippedDataflowAsset)
+	{
+		DataflowAsset = StrippedDataflowAsset;
+	}
 
 	if (!SizeSpecificData.Num())
 	{
@@ -882,6 +979,14 @@ void UGeometryCollection::CreateSimulationData()
 	SimulationDataGuid = StateGuid;
 }
 
+void UGeometryCollection::CreateSimulationDataIfNeeded()
+{
+	if (IsSimulationDataDirty() || bGeometryCollectionAlwaysRecreateSimulationData)
+	{
+		CreateSimulationData();
+	}
+}
+
 TUniquePtr<FGeometryCollectionNaniteData> UGeometryCollection::CreateNaniteData(FGeometryCollection* Collection)
 {
 	TUniquePtr<FGeometryCollectionNaniteData> NaniteData;
@@ -899,7 +1004,7 @@ TUniquePtr<FGeometryCollectionNaniteData> UGeometryCollection::CreateNaniteData(
 
 	// Vertices Group
 	const TManagedArray<FVector3f>& VertexArray = Collection->Vertex;
-	const TManagedArray<TArray<FVector2f>>& UVsArray = Collection->UVs;
+	GeometryCollection::UV::FUVLayers UVsLayers = GeometryCollection::UV::FindActiveUVLayers(*Collection);
 	const TManagedArray<FLinearColor>& ColorArray = Collection->Color;
 	const TManagedArray<FVector3f>& TangentUArray = Collection->TangentU;
 	const TManagedArray<FVector3f>& TangentVArray = Collection->TangentV;
@@ -950,9 +1055,9 @@ TUniquePtr<FGeometryCollectionNaniteData> UGeometryCollection::CreateNaniteData(
 			Vertex.TangentX = FVector3f::ZeroVector;
 			Vertex.TangentY = FVector3f::ZeroVector;
 			Vertex.TangentZ = NormalArray[VertexStart + VertexIndex];
-			for (int32 UVIdx = 0; UVIdx < UVsArray[VertexStart + VertexIndex].Num(); ++UVIdx)
+			for (int32 UVIdx = 0; UVIdx < UVsLayers.Num(); ++UVIdx)
 			{
-				Vertex.UVs[UVIdx] = UVsArray[VertexStart + VertexIndex][UVIdx];
+				Vertex.UVs[UVIdx] = UVsLayers[UVIdx][VertexStart + VertexIndex];
 				if (Vertex.UVs[UVIdx].ContainsNaN())
 				{
 					Vertex.UVs[UVIdx] = FVector2f::ZeroVector;
@@ -1089,6 +1194,16 @@ TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> UGeometryCollection::Genera
 	return DuplicateGeometryCollection;
 }
 
+TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> UGeometryCollection::CopyCollectionAndRemoveGeometry(const TSharedPtr<const FGeometryCollection, ESPMode::ThreadSafe>& CollectionToCopy)
+{
+	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionToReturn(new FGeometryCollection());
+
+	const TArray<FName> GroupsToSkip{ FGeometryCollection::GeometryGroup, FGeometryCollection::VerticesGroup, FGeometryCollection::FacesGroup };
+	CollectionToCopy->CopyTo(GeometryCollectionToReturn.Get(), GroupsToSkip);
+
+	return GeometryCollectionToReturn;
+}
+
 #endif
 
 void UGeometryCollection::InitResources()
@@ -1146,6 +1261,11 @@ void UGeometryCollection::RemoveExemplars(const TArray<int32>& SortedRemovalIndi
 	}
 }
 
+bool FGeometryCollectionAutoInstanceMesh::operator ==(const FGeometryCollectionAutoInstanceMesh& Other) const
+{
+	return (StaticMesh == Other.StaticMesh) && (Materials == Other.Materials);
+}
+
 /** find or add a auto instance mesh and return its index */
 const FGeometryCollectionAutoInstanceMesh& UGeometryCollection::GetAutoInstanceMesh(int32 AutoInstanceMeshIndex) const
 {
@@ -1155,62 +1275,15 @@ const FGeometryCollectionAutoInstanceMesh& UGeometryCollection::GetAutoInstanceM
 /**  find or add a auto instance mesh from another one and return its index */
 int32 UGeometryCollection::FindOrAddAutoInstanceMesh(const FGeometryCollectionAutoInstanceMesh& AutoInstanecMesh)
 {
-	int32 ReturnedIndex = INDEX_NONE;
-
-	for (int32 MeshIndex = 0; MeshIndex < AutoInstanceMeshes.Num(); MeshIndex++)
-	{
-		const FGeometryCollectionAutoInstanceMesh& Mesh = AutoInstanceMeshes[MeshIndex];
-		if (Mesh.StaticMesh == AutoInstanecMesh.StaticMesh && Mesh.Materials == AutoInstanecMesh.Materials)
-		{
-			ReturnedIndex = MeshIndex;
-			break;
-		}
-	}
-	if (ReturnedIndex == INDEX_NONE)
-	{
-		ReturnedIndex = AutoInstanceMeshes.Add(AutoInstanecMesh);
-	}
-	return ReturnedIndex;
+	return AutoInstanceMeshes.AddUnique(AutoInstanecMesh);
 }
 
 int32 UGeometryCollection::FindOrAddAutoInstanceMesh(const UStaticMesh& StaticMesh, const TArray<UMaterialInterface*>& MeshMaterials)
 {
-	int32 ReturnedIndex = INDEX_NONE;
-
-	FSoftObjectPath StaticMeshSoftPath(&StaticMesh);
-
-	for (int32 MeshIndex = 0; MeshIndex < AutoInstanceMeshes.Num(); MeshIndex++)
-	{
-		const FGeometryCollectionAutoInstanceMesh& Mesh = AutoInstanceMeshes[MeshIndex];
-		if (Mesh.StaticMesh == StaticMeshSoftPath)
-		{
-			if (Mesh.Materials.Num() == MeshMaterials.Num())
-			{
-				bool MaterialAreAllTheSame = true;
-				for (int32 MaterialIndex = 0; MaterialIndex < MeshMaterials.Num(); MaterialIndex++)
-				{
-					if (Mesh.Materials[MaterialIndex] != MeshMaterials[MaterialIndex])
-					{
-						MaterialAreAllTheSame = false;
-						break;
-					}
-				}
-				if (MaterialAreAllTheSame)
-				{
-					ReturnedIndex = MeshIndex;
-					break;
-				}
-			}
-		}
-	}
-	if (ReturnedIndex == INDEX_NONE)
-	{
-		FGeometryCollectionAutoInstanceMesh NewMesh;
-		NewMesh.StaticMesh = StaticMeshSoftPath;
-		NewMesh.Materials = MeshMaterials;
-		ReturnedIndex = AutoInstanceMeshes.Emplace(NewMesh);
-	}
-	return ReturnedIndex;
+	FGeometryCollectionAutoInstanceMesh NewMesh;
+	NewMesh.StaticMesh = FSoftObjectPath(&StaticMesh);
+	NewMesh.Materials = MeshMaterials;
+	return AutoInstanceMeshes.AddUnique(NewMesh);
 }
 
 FGuid UGeometryCollection::GetIdGuid() const

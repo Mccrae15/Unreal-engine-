@@ -1,34 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "WaveTableBankEditor.h"
 
-#include "CommonFrameRates.h"
-#include "Containers/Set.h"
 #include "Curves/CurveFloat.h"
-#include "Curves/CurveLinearColor.h"
 #include "CurveEditor.h"
-#include "CurveEditorCommands.h"
-#include "Styling/AppStyle.h"
-#include "Framework/Commands/UIAction.h"
+#include "DetailsViewArgs.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "ICurveEditorBounds.h"
 #include "IDetailsView.h"
+#include "ICurveEditorModule.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
-#include "RichCurveEditorModel.h"
 #include "SCurveEditorPanel.h"
-#include "Tree/SCurveEditorTree.h"
-#include "Tree/ICurveEditorTreeItem.h"
-#include "Tree/SCurveEditorTreePin.h"
 #include "WaveTableBank.h"
-#include "WaveTableSampler.h"
-#include "WaveTableSettings.h"
-#include "WaveTableTransform.h"
+#include "WaveTableCurveEditorViewStacked.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SNumericDropDown.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/SFrameRatePicker.h"
 
 
 #define LOCTEXT_NAMESPACE "WaveTableEditor"
@@ -198,16 +183,18 @@ namespace WaveTable
 					TArray<float> KeyTable;
 					KeyTable.AddZeroed(PointCount);
 
+					float FinalValue = 0.f;
+
 					// Optimization for really big source files if set to 'File'. Do not recreate WaveTable on the fly
 					// for large samples as caching mechanism is too slow for rapid regeneration (i.e. when making
 					// interactive edits).
 					if (Transform->WaveTableSettings.SourcePCMData.Num() < BankEditorPrivate::MaxLiveEditSamples)
 					{
-						Transform->CreateWaveTable(KeyTable, bIsBipolar);
+						Transform->CreateWaveTable(KeyTable, FinalValue, bIsBipolar);
 					}
 					else
 					{
-						Transform->CopyToWaveTable(KeyTable, bIsBipolar);
+						Transform->CopyToWaveTable(KeyTable, FinalValue, bIsBipolar);
 					}
 
 					const float Delta = 1.0 / KeyTable.Num();

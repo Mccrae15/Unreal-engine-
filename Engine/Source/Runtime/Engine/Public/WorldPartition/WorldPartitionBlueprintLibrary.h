@@ -9,6 +9,7 @@
 #include "WorldPartitionBlueprintLibrary.generated.h"
 
 class FWorldPartitionActorDesc;
+class UWorldPartition;
 
 /**
  * Snapshot of an actor descriptor, which represents the state of an actor on disk.
@@ -111,7 +112,19 @@ public:
 	 * Unload actors
 	 */
 	UFUNCTION(BlueprintCallable, Category="World Partition")
-	static void UnloadActors(const TArray<FGuid>& InActorsToLoad);
+	static void UnloadActors(const TArray<FGuid>& InActorsToUnload);
+
+	/**
+	 * Pin actors
+	 */
+	UFUNCTION(BlueprintCallable, Category="World Partition")
+	static void PinActors(const TArray<FGuid>& InActorsToPin);
+
+	/**
+	 * Unpin actors
+	 */
+	UFUNCTION(BlueprintCallable, Category="World Partition")
+	static void UnpinActors(const TArray<FGuid>& InActorsToUnpin);
 
 	/**
 	 * Gets all the actor descriptors into the provided array, recursing into actor containers.

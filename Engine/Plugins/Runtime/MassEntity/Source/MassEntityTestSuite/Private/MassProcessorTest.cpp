@@ -1,17 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
 #include "AITestsCommon.h"
-
-#include "Engine/World.h"
 #include "MassEntityManager.h"
+#include "MassExecutionContext.h"
 #include "MassProcessingTypes.h"
 #include "MassEntityTestTypes.h"
 #include "MassExecutor.h"
 
 #define LOCTEXT_NAMESPACE "MassTest"
 
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 
 namespace FMassProcessorTest
 {
@@ -21,12 +19,9 @@ int32 SimpleProcessorRun(FMassEntityManager& EntityManager)
 {
 	int32 EntityProcessedCount = 0;
 	TProcessor* Processor = NewObject<TProcessor>();
-	Processor->ExecutionFunction = [Processor, &EntityProcessedCount](FMassEntityManager& InEntitySubsystem, FMassExecutionContext& Context) {
-		check(Processor);
-		Processor->TestGetQuery().ForEachEntityChunk(InEntitySubsystem, Context, [Processor, &EntityProcessedCount](FMassExecutionContext& Context)
-			{
-				EntityProcessedCount += Context.GetNumEntities();
-			});
+	Processor->ForEachEntityChunkExecutionFunction = [&EntityProcessedCount](FMassExecutionContext& Context) 
+	{
+		EntityProcessedCount += Context.GetNumEntities();
 	};
 
 	FMassProcessingContext ProcessingContext(EntityManager, /*DeltaSeconds=*/0.f);
@@ -119,7 +114,7 @@ IMPLEMENT_AI_INSTANT_TEST(FProcessorTest_Requirements, "System.Mass.Processor.Re
 
 } // FMassProcessorTestTest
 
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 #undef LOCTEXT_NAMESPACE
 

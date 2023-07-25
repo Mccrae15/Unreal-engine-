@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ttml/ElectraSubtitleDecoder_TTML.h"
+#include "ElectraSubtitleDecoderFactory.h"
 #include "ttml/TTMLParser.h"
+#include "ElectraSubtitleModule.h"
 #include "ttml/TTMLSubtitleHandler.h"
-#include "ElectraSubtitleUtils.h"
-#include "Containers/StringConv.h"
+#include "MediaDecoderOutput.h"
 
 
 class FElectraSubtitleDecoderFactoryTTML : public IElectraSubtitleDecoderFactory

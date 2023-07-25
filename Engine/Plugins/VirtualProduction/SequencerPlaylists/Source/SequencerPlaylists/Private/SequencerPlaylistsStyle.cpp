@@ -1,14 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerPlaylistsStyle.h"
-#include "Styling/AppStyle.h"
+#include "Brushes/SlateColorBrush.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Brushes/SlateImageBrush.h"
 #include "Interfaces/IPluginManager.h"
-#include "Slate/SlateGameResources.h"
+#include "Brushes/SlateNoResource.h"
 #include "Styling/SlateStyleMacros.h"
+#include "Brushes/SlateRoundedBoxBrush.h"
 #include "Styling/SlateStyleRegistry.h"
+#include "Misc/Paths.h"
 #include "Styling/StyleColors.h"
+#include "Misc/ScopeExit.h"
 #include "Styling/ToolBarStyle.h"
+#include "Rendering/SlateRenderer.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateStyle.h"
 
 
 #define RootToContentDir Style->RootToContentDir
@@ -74,22 +81,28 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 	DimColor.A = 0.5f;
 	Style->Set("SequencerPlaylists.Item.Dim", new FSlateColorBrush(DimColor));
 
-	Style->Set("SequencerPlaylists.NewPlaylist", new IMAGE_BRUSH_SVG("PlaylistNew", Icon16x16));
+	Style->Set("SequencerPlaylists.NewPlaylist", new IMAGE_BRUSH_SVG("PlaylistNew", Icon20x20));
 	// SavePlaylist is registered under a different root below.
-	Style->Set("SequencerPlaylists.OpenPlaylist", new IMAGE_BRUSH_SVG("PlaylistLoad", Icon16x16));
+	Style->Set("SequencerPlaylists.OpenPlaylist", new IMAGE_BRUSH_SVG("PlaylistLoad", Icon20x20));
 
-	Style->Set("SequencerPlaylists.PlayMode", new IMAGE_BRUSH_SVG("PlaybackAuto", Icon16x16));
+	Style->Set("SequencerPlaylists.PlayMode", new IMAGE_BRUSH_SVG("PlaybackAuto", Icon20x20));
 
 	Style->Set("SequencerPlaylists.HoldFrame", new IMAGE_BRUSH_SVG("HoldFrame", Icon16x16));
 
 	Style->Set("SequencerPlaylists.Loop.Disabled", new IMAGE_BRUSH_SVG("LoopNot", Icon16x16));
 	Style->Set("SequencerPlaylists.Loop.Finite", new IMAGE_BRUSH_SVG("LoopNumber", Icon16x16));
 
+	// Play, Stop, Reset are registered under a different root below.
+	Style->Set("SequencerPlaylists.Pause", new IMAGE_BRUSH_SVG("Pause", Icon20x20));
+	Style->Set("SequencerPlaylists.Pause.Small", new IMAGE_BRUSH_SVG("Pause", Icon16x16));
+	Style->Set("SequencerPlaylists.PlayReverse", new IMAGE_BRUSH_SVG("PlayReverse", Icon20x20));
+	Style->Set("SequencerPlaylists.PlayReverse.Small", new IMAGE_BRUSH_SVG("PlayReverse", Icon16x16));
+
 	// Main toolbar
 	{
 		const FToolBarStyle& SlimToolbarStyle = FAppStyle::Get().GetWidgetStyle<FToolBarStyle>("SlimToolBar");
 		FToolBarStyle MainToolbarStyle = FToolBarStyle(SlimToolbarStyle)
-			.SetIconSize(Icon16x16)
+			.SetIconSize(Icon20x20)
 			.SetComboButtonPadding(FMargin(2.0f, 0.0f));
 
 		FButtonStyle MainToolbarButtonStyle = FButtonStyle(SlimToolbarStyle.ButtonStyle)
@@ -121,10 +134,10 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 
 	const FLinearColor PlayColor = FStyleColors::AccentGreen.GetSpecifiedColor();
 	const FLinearColor StopColor = FStyleColors::AccentRed.GetSpecifiedColor();
-	const FLinearColor ResetColor = FStyleColors::AccentBlue.GetSpecifiedColor();
+	const FLinearColor PauseResetColor = FStyleColors::AccentBlue.GetSpecifiedColor();
 	const FLinearColor PlayPressedColor = MakeColorVariation(PlayColor, EColorVariation::Dimmed);
 	const FLinearColor StopPressedColor = MakeColorVariation(StopColor, EColorVariation::Dimmed);
-	const FLinearColor ResetPressedColor = MakeColorVariation(ResetColor, EColorVariation::Dimmed);
+	const FLinearColor PauseResetPressedColor = MakeColorVariation(PauseResetColor, EColorVariation::Dimmed);
 
 	const float CornerRadius = 4.0f;
 	const FVector4 AllCorners(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
@@ -179,7 +192,15 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 		.SetNormalPadding(FMargin(6.f, 4.f, 8.f, 4.f))
 		.SetPressedPadding(FMargin(6.f, 4.f, 8.f, 4.f));
 
-	const FButtonStyle PlayTransportButton = FButtonStyle(LeftTransportButton)
+	const FButtonStyle PlayReverseTransportButton = FButtonStyle(LeftTransportButton)
+		.SetHoveredForeground(PlayColor)
+		.SetPressedForeground(PlayPressedColor);
+
+	const FButtonStyle PauseTransportButton = FButtonStyle(MiddleTransportButton)
+		.SetHoveredForeground(PauseResetColor)
+		.SetPressedForeground(PauseResetPressedColor);
+
+	const FButtonStyle PlayTransportButton = FButtonStyle(MiddleTransportButton)
 		.SetHoveredForeground(PlayColor)
 		.SetPressedForeground(PlayPressedColor);
 
@@ -188,9 +209,11 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 		.SetPressedForeground(StopPressedColor);
 
 	const FButtonStyle ResetTransportButton = FButtonStyle(RightTransportButton)
-		.SetHoveredForeground(ResetColor)
-		.SetPressedForeground(ResetPressedColor);
+		.SetHoveredForeground(PauseResetColor)
+		.SetPressedForeground(PauseResetPressedColor);
 
+	Style->Set("SequencerPlaylists.TransportButton.PlayReverse", PlayReverseTransportButton);
+	Style->Set("SequencerPlaylists.TransportButton.Pause", PauseTransportButton);
 	Style->Set("SequencerPlaylists.TransportButton.Play", PlayTransportButton);
 	Style->Set("SequencerPlaylists.TransportButton.Stop", StopTransportButton);
 	Style->Set("SequencerPlaylists.TransportButton.Reset", ResetTransportButton);
@@ -207,17 +230,27 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 		.SetHoveredForeground(PlayColor)
 		.SetPressedForeground(PlayPressedColor);
 
+	const FButtonStyle PauseHoverTransportButton = FButtonStyle(HoverTransportButtonStyle)
+		.SetHoveredForeground(PauseResetColor)
+		.SetPressedForeground(PauseResetPressedColor);
+
 	const FButtonStyle StopHoverTransportButton = FButtonStyle(HoverTransportButtonStyle)
 		.SetHoveredForeground(StopColor)
 		.SetPressedForeground(StopPressedColor);
 
 	const FButtonStyle ResetHoverTransportButton = FButtonStyle(HoverTransportButtonStyle)
-		.SetHoveredForeground(ResetColor)
-		.SetPressedForeground(ResetPressedColor);
+		.SetHoveredForeground(PauseResetColor)
+		.SetPressedForeground(PauseResetPressedColor);
+
+	const FButtonStyle PlayReverseHoverTransportButton = FButtonStyle(HoverTransportButtonStyle)
+		.SetHoveredForeground(PlayColor)
+		.SetPressedForeground(PlayPressedColor);
 
 	Style->Set("SequencerPlaylists.HoverTransport.Play", PlayHoverTransportButton);
+	Style->Set("SequencerPlaylists.HoverTransport.Pause", PauseHoverTransportButton);
 	Style->Set("SequencerPlaylists.HoverTransport.Stop", StopHoverTransportButton);
 	Style->Set("SequencerPlaylists.HoverTransport.Reset", ResetHoverTransportButton);
+	Style->Set("SequencerPlaylists.HoverTransport.PlayReverse", PlayReverseHoverTransportButton);
 
 	FEditableTextBoxStyle EditableTextStyle = FEditableTextBoxStyle()
 		.SetTextStyle(FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"))
@@ -248,14 +281,14 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 			Style->SetContentRoot(EngineEditorSlateDir);
 			Style->SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
 
-			Style->Set("SequencerPlaylists.SavePlaylist", new IMAGE_BRUSH_SVG("Starship/Common/SaveCurrent", Icon16x16));
+			Style->Set("SequencerPlaylists.SavePlaylist", new IMAGE_BRUSH_SVG("Starship/Common/SaveCurrent", Icon20x20));
 
 			Style->Set("SequencerPlaylists.Play", new IMAGE_BRUSH_SVG("Starship/Common/play", Icon20x20));
-			Style->Set("SequencerPlaylists.Play.Small", new IMAGE_BRUSH_SVG("Starship/Common/play", Icon12x12));
+			Style->Set("SequencerPlaylists.Play.Small", new IMAGE_BRUSH_SVG("Starship/Common/play", Icon16x16));
 			Style->Set("SequencerPlaylists.Stop", new IMAGE_BRUSH_SVG("Starship/Common/stop", Icon20x20));
-			Style->Set("SequencerPlaylists.Stop.Small", new IMAGE_BRUSH_SVG("Starship/Common/stop", Icon12x12));
+			Style->Set("SequencerPlaylists.Stop.Small", new IMAGE_BRUSH_SVG("Starship/Common/stop", Icon16x16));
 			Style->Set("SequencerPlaylists.Reset", new IMAGE_BRUSH_SVG("Starship/Common/Reset", Icon20x20));
-			Style->Set("SequencerPlaylists.Reset.Small", new IMAGE_BRUSH_SVG("Starship/Common/Reset", Icon12x12));
+			Style->Set("SequencerPlaylists.Reset.Small", new IMAGE_BRUSH_SVG("Starship/Common/Reset", Icon16x16));
 		}
 	}
 

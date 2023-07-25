@@ -3,9 +3,13 @@
 #include "Materials/MaterialOverrideNanite.h"
 
 #include "Interfaces/ITargetPlatform.h"
+#include "MaterialShared.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/App.h"
 #include "RenderUtils.h"
 #include "UObject/UObjectThreadContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialOverrideNanite)
 
 
 bool FMaterialOverrideNanite::CanUseOverride(EShaderPlatform ShaderPlatform) const
@@ -23,12 +27,23 @@ void FMaterialOverrideNanite::RefreshOverrideMaterial()
 	{
 		check(IsInGameThread());
 		
-		if (FUObjectThreadContext::Get().IsRoutingPostLoad && !OverrideMaterialRef.IsNull())
-		{
-			UE_LOG(LogMaterial, Warning, TEXT("Attempting to resolve NaniteOverrideMaterial '%s' during PostLoad()."), *OverrideMaterialRef.GetAssetName());
-		}
-
 		OverrideMaterial = bEnableOverride && !OverrideMaterialRef.IsNull() ? OverrideMaterialRef.LoadSynchronous() : nullptr;
+
+		// When we are routing PostLoad, LoadSynchronous can return a valid object pointer when the asset has not loaded.
+		// We can still store the TObjectPtr, but we need to ensure that the material re-inits on completion of the async load.
+		if (OverrideMaterial && OverrideMaterial->HasAnyFlags(RF_NeedLoad))
+		{ 
+			const FString LongPackageName = OverrideMaterialRef.GetLongPackageName();
+			UE_LOG(LogMaterial, Display, TEXT("Async loading NaniteOverrideMaterial '%s'"), *LongPackageName);
+			LoadPackageAsync(LongPackageName, FLoadPackageAsyncDelegate::CreateLambda(
+				[WeakOverrideMaterial = MakeWeakObjectPtr(OverrideMaterial)](const FName&, UPackage*, EAsyncLoadingResult::Type)
+				{
+					if (UMaterialInterface* Material = WeakOverrideMaterial.Get())
+					{
+						Material->ForceRecompileForRendering();
+					}
+				}));
+		}
 	}
 }
 
@@ -77,6 +92,13 @@ bool FMaterialOverrideNanite::Serialize(FArchive& Ar)
 	}
 
 	return true;
+}
+
+void FMaterialOverrideNanite::InitUnsafe(UMaterialInterface* InMaterial)
+{
+	OverrideMaterialRef = InMaterial;
+	OverrideMaterial = InMaterial;
+	bEnableOverride = true;
 }
 
 void FMaterialOverrideNanite::PostLoad()

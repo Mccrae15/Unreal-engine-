@@ -30,11 +30,13 @@
 // Note: OVRP_MINOR_VERSION == OCULUS_SDK_VERSION + 32
 
 #define OVRP_MAJOR_VERSION 1
-#define OVRP_MINOR_VERSION 86
-#define OVRP_PATCH_VERSION 1
+#define OVRP_MINOR_VERSION 87
+#define OVRP_PATCH_VERSION 0
 
 #define OVRP_VERSION OVRP_MAJOR_VERSION, OVRP_MINOR_VERSION, OVRP_PATCH_VERSION
 #define OVRP_VERSION_STR OVRP_STRINGIFY(OVRP_MAJOR_VERSION.OVRP_MINOR_VERSION.OVRP_PATCH_VERSION)
+
+
 
 
 
@@ -1297,11 +1299,8 @@ typedef enum {
   ovrpLayerSubmitFlag_QualitySharpen = (1 << 16),
   // Layer submit flag version of secure content
   ovrpLayerSubmitFlag_SecureContent = (1 << 17),
-
-
-
-
-
+  // Layer flag to automatically apply sharpening or supersamping filter
+  ovrpLayerSubmitFlag_AutoLayerFilter = (1 << 18),
 
 } ovrpLayerSubmitFlags;
 
@@ -2745,8 +2744,6 @@ typedef struct {
 
 
 
-
-
 typedef struct ovrpSpaceQueryResult {
   ovrpSpace space;
   ovrpUuid uuid;
@@ -2961,11 +2958,26 @@ typedef enum {
 
 
 
+
+
   ovrpInteractionProfile_EnumSize = 0x7fffffff
 } ovrpInteractionProfile;
 
+typedef enum {
+  ovrpPassthroughPreferenceFields_Flags = 1 << 0,
+  ovrpPassthroughPreferenceFields_EnumSize = 0x7fffffff
+} ovrpPassthroughPreferenceFields;
 
+typedef enum {
+  ovrpPassthroughPreferenceFlags_DefaultToActive = 1 << 0,
+  // OpenXR flag words are 64 bit, use the same size to make them binary-compatible
+  ovrpPassthroughPreferenceFlags_EnumSize = 0xffffffffffffffff
+} ovrpPassthroughPreferenceFlags;
 
+typedef struct ovrpPassthroughPreferences_ {
+  ovrpPassthroughPreferenceFields Fields;
+  ovrpPassthroughPreferenceFlags Flags;
+} ovrpPassthroughPreferences;
 
 
 
@@ -3348,27 +3360,31 @@ typedef enum {
 
 
 
-// Environment Depth API
-typedef struct ovrpEnvironmentDepthTextureDesc_ {
-  ovrpSizei TextureSize;
-  int MipLevels;
-  int SampleCount;
-  ovrpLayout Layout;
-  ovrpTextureFormat Format;
-} ovrpEnvironmentDepthTextureDesc;
 
-typedef struct ovrpEnvironmentDepthFrameDesc_ {
-  ovrpBool IsValid;
-  double CreateTime;
-  double PredictedDisplayTime;
-  int SwapchainIndex;
-  ovrpPosef CreatePose;
-  ovrpFovf Fov;
-  float NearZ;
-  float FarZ;
-  float MinDepth;
-  float MaxDepth;
-} ovrpEnvironmentDepthFrameDesc;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #ifdef __clang__
 #pragma clang diagnostic pop

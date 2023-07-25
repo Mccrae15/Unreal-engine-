@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "Materials/MaterialInstanceConstant.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialInstanceSupport.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "MaterialCachedData.h"
@@ -13,7 +14,6 @@
 
 #if WITH_EDITOR
 #include "MaterialCachedHLSLTree.h"
-#include "MaterialEditor/DEditorScalarParameterValue.h"
 #include "ObjectCacheEventSink.h"
 #endif
 
@@ -109,7 +109,7 @@ void UMaterialInstanceConstant::CopyMaterialUniformParametersEditorOnly(UMateria
 			FStaticParameterSet MyParamSet;
 			GetStaticParameterValues(MyParamSet);
 
-			MyParamSet.EditorOnly.StaticSwitchParameters = SourceParamSet.EditorOnly.StaticSwitchParameters;
+			MyParamSet.StaticSwitchParameters = SourceParamSet.StaticSwitchParameters;
 
 			UpdateStaticPermutation(MyParamSet);
 
@@ -146,6 +146,12 @@ void UMaterialInstanceConstant::SetRuntimeVirtualTextureParameterValueEditorOnly
 {
 	check(GIsEditor || IsRunningCommandlet());
 	SetRuntimeVirtualTextureParameterValueInternal(ParameterInfo, Value);
+}
+
+void UMaterialInstanceConstant::SetSparseVolumeTextureParameterValueEditorOnly(const FMaterialParameterInfo& ParameterInfo, USparseVolumeTexture* Value)
+{
+	check(GIsEditor || IsRunningCommandlet());
+	SetSparseVolumeTextureParameterValueInternal(ParameterInfo, Value);
 }
 
 void UMaterialInstanceConstant::SetFontParameterValueEditorOnly(const FMaterialParameterInfo& ParameterInfo,class UFont* FontValue,int32 FontPage)

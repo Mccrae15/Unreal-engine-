@@ -2,24 +2,17 @@
 
 #include "SMVVMViewModelBindingListWidget.h"
 
-#include "Algo/Transform.h"
 #include "Bindings/MVVMBindingHelper.h"
 #include "Blueprint/WidgetTree.h"
-#include "Components/Widget.h"
-#include "Editor.h"
-#include "Engine/Engine.h"
-#include "FieldNotification/IFieldValueChanged.h"
-#include "Misc/MemStack.h"
-#include "Misc/Optional.h"
 #include "MVVMBlueprintViewModelContext.h"
 #include "MVVMDeveloperProjectSettings.h"
-#include "MVVMEditorSubsystem.h"
 #include "MVVMSubsystem.h"
-#include "MVVMViewModelBase.h"
+#include "Styling/MVVMEditorStyle.h"
 #include "Types/MVVMAvailableBinding.h"
-#include "Types/MVVMFieldVariant.h"
+#include "Types/MVVMBindingSource.h"
 #include "WidgetBlueprint.h"
-#include "Widgets/PropertyViewer/SPropertyViewer.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBox.h"
 
 #define LOCTEXT_NAMESPACE "SSourceBindingList"
 
@@ -55,19 +48,49 @@ namespace Private
 		{
 			if (FieldVariant.IsFunction())
 			{
-				if (EnumHasAllFlags(FieldVisibilityFlags, EFieldVisibility::Writable) && !Binding.IsWritable())
-				{
-					return TOptional<FFieldVariant>();
-				}
-
-				if (!GetDefault<UMVVMDeveloperProjectSettings>()->IsFunctionAllowed(FieldVariant.GetFunction()))
-				{
-					return TOptional<FFieldVariant>();
-				}
-
 				const UFunction* Function = FieldVariant.GetFunction();
-				if (Function != nullptr && AssignableTo != nullptr && 
-					!BindingHelper::ArePropertiesCompatible(BindingHelper::GetReturnProperty(Function), AssignableTo))
+				if (Function == nullptr)
+				{
+					return TOptional<FFieldVariant>();
+				}
+
+				const FProperty* ReturnProperty = BindingHelper::GetReturnProperty(Function);
+				bool bDoCompatibleTest = ReturnProperty == nullptr || AssignableTo != nullptr;
+				bool bDoWritableTest = true;
+				// Do we allow walking up the tree
+				if (CastField<FObjectPropertyBase>(ReturnProperty))
+				{
+					bDoCompatibleTest = bDoCompatibleTest && bDoObjectProperty;
+					bDoWritableTest = bDoObjectProperty;
+				}
+
+				if (bDoWritableTest)
+				{
+					if (EnumHasAllFlags(FieldVisibilityFlags, EFieldVisibility::Writable) && !Binding.IsWritable())
+					{
+						return TOptional<FFieldVariant>();
+					}
+				}
+
+				if (bDoCompatibleTest)
+				{
+					if (EnumHasAllFlags(FieldVisibilityFlags, EFieldVisibility::Writable))
+					{
+						if (!BindingHelper::ArePropertiesCompatible(AssignableTo, BindingHelper::GetFirstArgumentProperty(Function)))
+						{
+							return TOptional<FFieldVariant>();
+						}
+					}
+					if (EnumHasAllFlags(FieldVisibilityFlags, EFieldVisibility::Readable))
+					{
+						if (!BindingHelper::ArePropertiesCompatible(ReturnProperty, AssignableTo))
+						{
+							return TOptional<FFieldVariant>();
+						}
+					}
+				}
+
+				if (!GetDefault<UMVVMDeveloperProjectSettings>()->IsFunctionAllowed(Function))
 				{
 					return TOptional<FFieldVariant>();
 				}
@@ -76,25 +99,51 @@ namespace Private
 			}
 			else if (FieldVariant.IsProperty())
 			{
-				if (!GetDefault<UMVVMDeveloperProjectSettings>()->IsPropertyAllowed(FieldVariant.GetProperty()))
+				const FProperty* Property = FieldVariant.GetProperty();
+				if (Property == nullptr)
 				{
 					return TOptional<FFieldVariant>();
 				}
 
-				const FProperty* Property = FieldVariant.GetProperty();
-				if (Property != nullptr && AssignableTo != nullptr && 
-					!BindingHelper::ArePropertiesCompatible(Property, AssignableTo))
+				bool bDoCompatibleTest = AssignableTo != nullptr;
+				bool bDoWritableTest = true;
+				// Do we allow walking up the tree
+				if (CastField<FObjectPropertyBase>(Property))
 				{
-					return TOptional<FFieldVariant>();
+					bDoCompatibleTest = bDoCompatibleTest && bDoObjectProperty;
+					bDoWritableTest = bDoObjectProperty;
 				}
 
 				// If the path ends with the object property, then it needs to follow the writable rule
-				if (bDoObjectProperty || !CastField<FObjectPropertyBase>(FieldVariant.GetProperty()))
+				if (bDoWritableTest)
 				{
 					if (EnumHasAllFlags(FieldVisibilityFlags, EFieldVisibility::Writable) && !Binding.IsWritable())
 					{
 						return TOptional<FFieldVariant>();
 					}
+				}
+
+				if (bDoCompatibleTest)
+				{
+					if (EnumHasAllFlags(FieldVisibilityFlags, EFieldVisibility::Writable))
+					{
+						if (!BindingHelper::ArePropertiesCompatible(AssignableTo, Property))
+						{
+							return TOptional<FFieldVariant>();
+						}
+					}
+					if (EnumHasAllFlags(FieldVisibilityFlags, EFieldVisibility::Readable))
+					{
+						if (!BindingHelper::ArePropertiesCompatible(Property, AssignableTo))
+						{
+							return TOptional<FFieldVariant>();
+						}
+					}
+				}
+
+				if (!GetDefault<UMVVMDeveloperProjectSettings>()->IsPropertyAllowed(Property))
+				{
+					return TOptional<FFieldVariant>();
 				}
 
 				return FFieldVariant(Property);
@@ -133,12 +182,12 @@ TArray<FFieldVariant> FFieldIterator_Bindable::GetFields(const UStruct* Struct) 
 	{
 		const UWidgetBlueprint* WidgetBlueprintPtr = WidgetBlueprint.Get();
 		TSubclassOf<UObject> AccessorClass = WidgetBlueprintPtr ? WidgetBlueprintPtr->GeneratedClass : nullptr;
-		TArray<FMVVMAvailableBinding> Bindings = GEngine->GetEngineSubsystem<UMVVMSubsystem>()->GetAvailableBindings(const_cast<UClass*>(Class), AccessorClass);
+		TArray<FMVVMAvailableBinding> Bindings = UMVVMSubsystem::GetAvailableBindings(const_cast<UClass*>(Class), AccessorClass);
 		AddResult(Bindings);
 	}
 	else if (const UScriptStruct* ScriptStruct = Cast<const UScriptStruct>(Struct))
 	{
-		TArray<FMVVMAvailableBinding> Bindings = GEngine->GetEngineSubsystem<UMVVMSubsystem>()->GetAvailableBindingsForStruct(ScriptStruct);
+		TArray<FMVVMAvailableBinding> Bindings = UMVVMSubsystem::GetAvailableBindingsForStruct(ScriptStruct);
 		AddResult(Bindings);
 	}
 
@@ -177,14 +226,86 @@ TArray<FFieldVariant> FFieldIterator_Bindable::GetFields(const UStruct* Struct) 
 }
 
 /** */
+FFieldExpander_Bindable::FFieldExpander_Bindable()
+{
+	SetExpandObject(UE::PropertyViewer::FFieldExpander_Default::EObjectExpandFlag::UseInstanceClass);
+	SetExpandScriptStruct(true);
+	SetExpandFunction(UE::PropertyViewer::FFieldExpander_Default::EFunctionExpand::FunctionProperties);
+}
+
+TOptional<const UStruct*> FFieldExpander_Bindable::GetExpandedFunction(const UFunction* Function) const
+{
+	const FProperty* ReturnProperty = Function ? BindingHelper::GetReturnProperty(Function) : nullptr;
+	if (const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(ReturnProperty))
+	{
+		return ObjectProperty->PropertyClass;
+	}
+	return TOptional<const UStruct*>();
+}
+
+TSharedRef<SWidget> ConstructFieldPreSlot(const UWidgetBlueprint* WidgetBlueprint, UE::PropertyViewer::SPropertyViewer::FHandle Handle, const FFieldVariant FieldPath)
+{
+	TSharedRef<SWidget> ImageWidget = SNullWidget::NullWidget;
+	TSubclassOf<UObject> AccessorClass = WidgetBlueprint ? WidgetBlueprint->SkeletonGeneratedClass : nullptr;
+	FMVVMAvailableBinding Binding = UMVVMSubsystem::GetAvailableBindingForField(FMVVMConstFieldVariant(FieldPath), AccessorClass);
+	if (Binding.IsValid())
+	{
+		const FSlateBrush* Brush = nullptr;
+		if (Binding.HasNotify())
+		{
+			if (Binding.IsReadable() && Binding.IsWritable())
+			{
+				Brush = FMVVMEditorStyle::Get().GetBrush("BindingMode.TwoWay");
+			}
+			else if (Binding.IsReadable())
+			{
+				Brush = FMVVMEditorStyle::Get().GetBrush("BindingMode.OneWayToSource");
+			}
+			else if (Binding.IsWritable())
+			{
+				Brush = FMVVMEditorStyle::Get().GetBrush("BindingMode.OneWay");
+			}
+		}
+		else
+		{
+			if (Binding.IsReadable() && Binding.IsWritable())
+			{
+				Brush = FMVVMEditorStyle::Get().GetBrush("BindingMode.OneTimeTwoWay");
+			}
+			else if (Binding.IsReadable())
+			{
+				Brush = FMVVMEditorStyle::Get().GetBrush("BindingMode.OneTimeOneWay");
+			}
+			else if (Binding.IsWritable())
+			{
+				Brush = FMVVMEditorStyle::Get().GetBrush("BindingMode.OneTimeOneWayToSource");
+			}
+		}
+		
+		if (Brush)
+		{
+			ImageWidget = SNew(SImage)
+				.Image(Brush);
+		}
+	}
+
+	return SNew(SBox)
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.WidthOverride(16.0f)
+		.HeightOverride(16.0f)
+		[
+			ImageWidget
+		];
+}
+
+/** */
 void SSourceBindingList::Construct(const FArguments& InArgs, const UWidgetBlueprint* InWidgetBlueprint)
 {
 	WidgetBlueprint = InWidgetBlueprint;
 	FieldIterator = MakeUnique<FFieldIterator_Bindable>(InWidgetBlueprint, InArgs._FieldVisibilityFlags, InArgs._AssignableTo);
-	FieldExpander = MakeUnique<UE::PropertyViewer::FFieldExpander_Default>();
-	FieldExpander->SetExpandObject(UE::PropertyViewer::FFieldExpander_Default::EObjectExpandFlag::UseInstanceClass);
-	FieldExpander->SetExpandScriptStruct(true);
-	FieldExpander->SetExpandFunction(false);
+	FieldExpander = MakeUnique<FFieldExpander_Bindable>();
+
 
 	OnDoubleClicked = InArgs._OnDoubleClicked;
 
@@ -196,6 +317,7 @@ void SSourceBindingList::Construct(const FArguments& InArgs, const UWidgetBluepr
 		.bSanitizeName(true)
 		.SelectionMode(InArgs._EnableSelection ? ESelectionMode::Single : ESelectionMode::None)
 		.bShowSearchBox(InArgs._ShowSearchBox)
+		.OnGetPreSlot(this, &SSourceBindingList::HandleGetPreSlot)
 		.OnSelectionChanged(this, &SSourceBindingList::HandleSelectionChanged)
 		.OnDoubleClicked(this, &SSourceBindingList::HandleDoubleClicked);
 
@@ -307,7 +429,7 @@ void SSourceBindingList::AddSources(TArrayView<const FBindingSource> InSources)
 
 FMVVMBlueprintPropertyPath SSourceBindingList::CreateBlueprintPropertyPath(SPropertyViewer::FHandle Handle, TArrayView<const FFieldVariant> FieldPath) const
 {
-	if (FieldPath.Num() < 0)
+	if (FieldPath.Num() < 0 || !Handle.IsValid())
 	{
 		return FMVVMBlueprintPropertyPath();
 	}
@@ -330,58 +452,90 @@ FMVVMBlueprintPropertyPath SSourceBindingList::CreateBlueprintPropertyPath(SProp
 		return FMVVMBlueprintPropertyPath();
 	}
 
-	// Backward, test if the object can be access.
-	//The last property can be a struct variable, inside a struct, inside..., inside an object. 
-	bool bPassFilter = false;
-	TSubclassOf<UObject> AccessorClass = WidgetBlueprintPtr ? WidgetBlueprintPtr->GeneratedClass : nullptr;
-	for (int32 Index = FieldPath.Num() - 1; Index >= 0; --Index)
-	{
-		const FFieldVariant& FieldVariant = FieldPath[Index];
-		const UStruct* OwnerStruct = nullptr;
-		FName FieldName;
-		if (const FProperty* Property = FieldVariant.Get<FProperty>())
-		{
-			OwnerStruct = Property->GetOwnerStruct();
-			FieldName = Property->GetFName();
-		}
-		else if (const UFunction* Function = FieldVariant.Get<UFunction>())
-		{
-			OwnerStruct = Function->GetOwnerClass();
-			FieldName = Function->GetFName();
-		}
-
-		if (const UClass* OwnerClass = Cast<const UClass>(OwnerStruct))
-		{
-			FMVVMAvailableBinding Binding = GEngine->GetEngineSubsystem<UMVVMSubsystem>()->GetAvailableBinding(OwnerClass, FMVVMBindingName(FieldName), AccessorClass);
-			if (Binding.IsValid())
-			{
-				bPassFilter = Private::PassFilter(Binding, OwnerClass, FieldIterator->GetFieldVisibilityFlags(), FieldIterator->GetAssignableTo(), true).IsSet();
-			}
-			break;
-		}
-	}
-
+	TSubclassOf<UObject> AccessorClass = WidgetBlueprintPtr ? WidgetBlueprintPtr->SkeletonGeneratedClass : nullptr;
 	FMVVMBlueprintPropertyPath PropertyPath;
-	if (bPassFilter)
+	if (FieldPath.Num() > 0)
 	{
-		if (Source->Key.ViewModelId.IsValid())
+		// Backward, test if the object can be access.
+		//The last property can be a struct variable, inside a struct, inside..., inside an object. 
+		bool bPassFilter = false;
+		for (int32 Index = FieldPath.Num() - 1; Index >= 0; --Index)
 		{
-			PropertyPath.SetViewModelId(Source->Key.ViewModelId);
-		}
-		else
-		{
-			PropertyPath.SetWidgetName(Source->Key.Name);
+			const FFieldVariant& FieldVariant = FieldPath[Index];
+			const UStruct* OwnerStruct = nullptr;
+			FName FieldName;
+			if (const FProperty* Property = FieldVariant.Get<FProperty>())
+			{
+				OwnerStruct = Property->GetOwnerStruct();
+				FieldName = Property->GetFName();
+			}
+			else if (const UFunction* Function = FieldVariant.Get<UFunction>())
+			{
+				OwnerStruct = Function->GetOwnerClass();
+				FieldName = Function->GetFName();
+			}
+
+			if (const UClass* OwnerClass = Cast<const UClass>(OwnerStruct))
+			{
+				FMVVMAvailableBinding Binding = UMVVMSubsystem::GetAvailableBinding(OwnerClass, FMVVMBindingName(FieldName), AccessorClass);
+				if (Binding.IsValid())
+				{
+					bPassFilter = Private::PassFilter(Binding, OwnerClass, FieldIterator->GetFieldVisibilityFlags(), FieldIterator->GetAssignableTo(), true).IsSet();
+				}
+				break;
+			}
 		}
 
-		PropertyPath.ResetBasePropertyPath();
-
-		for (const FFieldVariant& Field : FieldPath)
+		if (bPassFilter)
 		{
-			PropertyPath.AppendBasePropertyPath(FMVVMConstFieldVariant(Field));
+			if (Source->Key.ViewModelId.IsValid())
+			{
+				PropertyPath.SetViewModelId(Source->Key.ViewModelId);
+			}
+			else
+			{
+				PropertyPath.SetWidgetName(Source->Key.Name);
+			}
+
+			PropertyPath.ResetBasePropertyPath();
+
+			for (const FFieldVariant& Field : FieldPath)
+			{
+				PropertyPath.AppendBasePropertyPath(FMVVMConstFieldVariant(Field));
+			}
 		}
 	}
-
+	else if(AccessorClass.Get())
+	{
+		FMVVMBindingName BindingName = Source->Key.ToBindingName(WidgetBlueprintPtr);
+		FMVVMAvailableBinding Binding = UMVVMSubsystem::GetAvailableBinding(AccessorClass, BindingName, AccessorClass);
+		if (Binding.IsValid())
+		{
+			bool bPassFilter = Private::PassFilter(Binding, AccessorClass, FieldIterator->GetFieldVisibilityFlags(), FieldIterator->GetAssignableTo(), true).IsSet();
+			if (bPassFilter)
+			{
+				if (Source->Key.ViewModelId.IsValid())
+				{
+					PropertyPath.SetViewModelId(Source->Key.ViewModelId);
+				}
+				else
+				{
+					PropertyPath.SetWidgetName(Source->Key.Name);
+				}
+				PropertyPath.ResetBasePropertyPath();
+			}
+		}
+	}
 	return PropertyPath;
+}
+
+TSharedPtr<SWidget> SSourceBindingList::HandleGetPreSlot(SPropertyViewer::FHandle Handle, TArrayView<const FFieldVariant> FieldPath)
+{
+	if (FieldPath.Num() > 0)
+	{
+		return ConstructFieldPreSlot(WidgetBlueprint.Get(), Handle, FieldPath.Last());
+	}
+	return TSharedPtr<SWidget>();
 }
 
 void SSourceBindingList::HandleSelectionChanged(SPropertyViewer::FHandle Handle, TArrayView<const FFieldVariant> FieldPath, ESelectInfo::Type SelectionType)

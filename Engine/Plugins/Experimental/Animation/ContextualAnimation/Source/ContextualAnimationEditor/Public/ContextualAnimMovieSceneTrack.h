@@ -2,9 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "MovieSceneNameableTrack.h"
 #include "ContextualAnimMovieSceneTrack.generated.h"
+
+enum class EMovieSceneSectionMovedResult;
+struct FMovieSceneSectionMovedParams;
 
 class FContextualAnimViewModel;
 
@@ -52,6 +54,8 @@ public:
 	virtual EMovieSceneSectionMovedResult OnSectionMoved(UMovieSceneSection& Section, const FMovieSceneSectionMovedParams& Params) override;
 #endif
 
+	virtual bool SupportsMultipleRows() const override { return true; }
+
 private:
 
 	/** List of sections in this track */
@@ -64,3 +68,7 @@ private:
 
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

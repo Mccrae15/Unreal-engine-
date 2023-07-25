@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsAssetEditor.h"
+#include "Components/StaticMeshComponent.h"
+#include "DetailLayoutBuilder.h"
 #include "Framework/MultiBox/MultiBox.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -181,12 +183,12 @@ void FPhysicsAssetEditor::InitPhysicsAssetEditor(const EToolkitMode::Type Mode, 
 	FPersonaToolkitArgs PersonaToolkitArgs;
 	PersonaToolkitArgs.OnPreviewSceneCreated = FOnPreviewSceneCreated::FDelegate::CreateSP(this, &FPhysicsAssetEditor::HandlePreviewSceneCreated);
 	PersonaToolkitArgs.OnPreviewSceneSettingsCustomized = FOnPreviewSceneSettingsCustomized::FDelegate::CreateSP(this, &FPhysicsAssetEditor::HandleOnPreviewSceneSettingsCustomized);
+	PersonaToolkitArgs.bPreviewMeshCanUseDifferentSkeleton = true;
 
 	FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
 	PersonaToolkit = PersonaModule.CreatePersonaToolkit(SharedData->PhysicsAsset, PersonaToolkitArgs);
 
-	TSharedRef<IAssetFamily> AssetFamily = PersonaModule.CreatePersonaAssetFamily(ObjectToEdit);
-	AssetFamily->RecordAssetOpened(FAssetData(ObjectToEdit));
+	PersonaModule.RecordAssetOpened(FAssetData(ObjectToEdit));
 
 	FSkeletonTreeArgs SkeletonTreeArgs;
 	SkeletonTreeArgs.OnSelectionChanged = FOnSkeletonTreeSelectionChanged::CreateSP(this, &FPhysicsAssetEditor::HandleSelectionChanged);
@@ -1739,6 +1741,11 @@ bool FPhysicsAssetEditor::ShouldFilterAssetBasedOnSkeleton( const FAssetData& As
 	}
 
 	return true;
+}
+
+void FPhysicsAssetEditor::SnapConstraintToBone(const FPhysicsAssetEditorSharedData::FSelection* Constraint)
+{
+	SharedData->SnapConstraintToBone(Constraint->Index);
 }
 
 void FPhysicsAssetEditor::CreateOrConvertConstraint(EPhysicsAssetEditorConstraintType ConstraintType)
@@ -3524,8 +3531,6 @@ void FPhysicsAssetEditor::HandlePreviewSceneCreated(const TSharedRef<IPersonaPre
 	Actor->SetRootComponent(SharedData->EditorSkelComp);
 
 	SharedData->EditorSkelComp->Stop();
-
-	SharedData->EditorSkelComp->PreviewInstance = NewObject<UPhysicsAssetEditorAnimInstance>(SharedData->EditorSkelComp, TEXT("PhatAnimScriptInstance"));
 
 	SharedData->PhysicalAnimationComponent = NewObject<UPhysicalAnimationComponent>(Actor);
 	SharedData->PhysicalAnimationComponent->SetSkeletalMeshComponent(SharedData->EditorSkelComp);

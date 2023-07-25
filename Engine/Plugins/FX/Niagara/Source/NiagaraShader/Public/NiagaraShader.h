@@ -18,6 +18,8 @@
 //#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "RenderGraph.h"
 #include "SceneRenderTargetParameters.h"
+
+#include "RendererUtils.h"
 //#endif
 
 class UClass;
@@ -32,6 +34,7 @@ public:
 
 	// This structure is a replication of FNiagaraGlobalParameters with interpolated parameters includes
 	BEGIN_SHADER_PARAMETER_STRUCT(FGlobalParameters, )
+		SHADER_PARAMETER(float,		Engine_WorldDeltaTime)
 		SHADER_PARAMETER(float,		Engine_DeltaTime)
 		SHADER_PARAMETER(float,		Engine_InverseDeltaTime)
 		SHADER_PARAMETER(float,		Engine_Time)
@@ -39,8 +42,8 @@ public:
 		SHADER_PARAMETER(int32,		Engine_QualityLevel)
 		SHADER_PARAMETER(int32,		Engine_Pad0)
 		SHADER_PARAMETER(int32,		Engine_Pad1)
-		SHADER_PARAMETER(int32,		Engine_Pad2)
 
+		SHADER_PARAMETER(float,		PREV_Engine_WorldDeltaTime)
 		SHADER_PARAMETER(float,		PREV_Engine_DeltaTime)
 		SHADER_PARAMETER(float,		PREV_Engine_InverseDeltaTime)
 		SHADER_PARAMETER(float,		PREV_Engine_Time)
@@ -48,7 +51,6 @@ public:
 		SHADER_PARAMETER(int32,		PREV_Engine_QualityLevel)
 		SHADER_PARAMETER(int32,		PREV_Engine_Pad0)
 		SHADER_PARAMETER(int32,		PREV_Engine_Pad1)
-		SHADER_PARAMETER(int32,		PREV_Engine_Pad2)
 	END_SHADER_PARAMETER_STRUCT()
 
 	// This structure is a replication of FNiagaraSystemParameters with interpolated parameters includes
@@ -63,8 +65,12 @@ public:
 		SHADER_PARAMETER(int32,		Engine_System_NumEmittersAlive)
 		SHADER_PARAMETER(int32,		Engine_System_SignificanceIndex)
 		SHADER_PARAMETER(int32,		Engine_System_RandomSeed)
+		SHADER_PARAMETER(int32,		Engine_System_CurrentTimeStep)
+		SHADER_PARAMETER(int32,		Engine_System_NumTimeSteps)
+		SHADER_PARAMETER(float,		Engine_System_TimeStepFraction)
 		SHADER_PARAMETER(int32,		System_Pad0)
 		SHADER_PARAMETER(int32,		System_Pad1)
+		SHADER_PARAMETER(int32,		System_Pad2)
 
 		SHADER_PARAMETER(float,		PREV_Engine_Owner_TimeSinceRendered)
 		SHADER_PARAMETER(float,		PREV_Engine_Owner_LODDistance)
@@ -76,8 +82,12 @@ public:
 		SHADER_PARAMETER(int32,		PREV_Engine_System_NumEmittersAlive)
 		SHADER_PARAMETER(int32,		PREV_Engine_System_SignificanceIndex)
 		SHADER_PARAMETER(int32,		PREV_Engine_System_RandomSeed)
+		SHADER_PARAMETER(int32,		PREV_CurrentTimeStep)
+		SHADER_PARAMETER(int32,		PREV_NumTimeSteps)
+		SHADER_PARAMETER(float,		PREV_TimeStepFraction)
 		SHADER_PARAMETER(int32,		PREV_System_Pad0)
 		SHADER_PARAMETER(int32,		PREV_System_Pad1)
+		SHADER_PARAMETER(int32,		PREV_System_Pad2)
 	END_SHADER_PARAMETER_STRUCT()
 
 	// This structure is a replication of FNiagaraOwnerParameters with interpolated parameters includes
@@ -180,6 +190,10 @@ public:
 		SHADER_PARAMETER(FUintVector3,								DispatchThreadIdBounds)
 		SHADER_PARAMETER(FUintVector3,								DispatchThreadIdToLinear)
 
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint4>,				IndirectDispatchArgs)
+		SHADER_PARAMETER(uint32,									IndirectDispatchArgsOffset)
+		RDG_BUFFER_ACCESS(IndirectDispatchArgsBuffer,				ERHIAccess::IndirectArgs)
+
 		SHADER_PARAMETER_STRUCT_INCLUDE(FGlobalParameters,			GlobalParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSystemParameters,			SystemParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FOwnerParameters,			OwnerParameters)
@@ -187,6 +201,8 @@ public:
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters,	View)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureShaderParameters,	SceneTextures)
+
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataPublicGlobalUniformParameters, StrataPublic)
 	END_SHADER_PARAMETER_STRUCT()
 
 	using FPermutationParameters = FNiagaraShaderPermutationParameters;
@@ -200,7 +216,7 @@ public:
 		{
 			case ENiagaraGpuDispatchType::OneD:		return FIntVector(64, 1, 1);
 			case ENiagaraGpuDispatchType::TwoD:		return FIntVector(8, 8, 1);
-			case ENiagaraGpuDispatchType::ThreeD:	return FIntVector(4, 4, 2);
+			case ENiagaraGpuDispatchType::ThreeD:	return FIntVector(4, 4, 4);
 			default:								return FIntVector(64, 1, 1);
 		}
 	}

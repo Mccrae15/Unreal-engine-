@@ -2,10 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/Object.h"
-#include "UObject/Class.h"
-#include "UObject/Package.h"
 #include "Misc/TransactionObjectEvent.h"
 #include "IdentifierTable/ConcertIdentifierTableData.h"
 #include "ConcertTransactionEvents.generated.h"
@@ -70,6 +66,11 @@ struct FConcertObjectId
 		return FTransactionObjectId(ObjectPackageName, ObjectName, ObjectPathName.ToString(), ObjectOuterPathName, ObjectExternalPackageName, ObjectClassPathName);
 	}
 
+	bool IsValid() const
+	{
+		return !ObjectName.IsNone() && !ObjectOuterPathName.IsNone();
+	}
+
 	UPROPERTY()
 	FName ObjectClassPathName;
 
@@ -88,6 +89,18 @@ struct FConcertObjectId
 	UPROPERTY()
 	uint32 ObjectPersistentFlags = 0;
 };
+
+inline bool operator ==(const FConcertObjectId& A, const FConcertObjectId& B)
+{
+	return A.ObjectClassPathName == B.ObjectClassPathName
+		&& A.ObjectOuterPathName == B.ObjectOuterPathName
+		&& A.ObjectName == B.ObjectName;
+}
+
+inline uint32 GetTypeHash(const FConcertObjectId& ConcertObjectId)
+{
+	return HashCombine(GetTypeHash(ConcertObjectId.ObjectName), GetTypeHash(ConcertObjectId.ObjectOuterPathName));
+}
 
 USTRUCT()
 struct FConcertSerializedObjectData
@@ -208,3 +221,8 @@ struct FConcertTransactionRejectedEvent
 	UPROPERTY()
 	FGuid TransactionId;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "UObject/Package.h"
+#endif

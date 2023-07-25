@@ -1,13 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/WidgetComponent.h"
+#include "Engine/GameInstance.h"
+#include "Materials/Material.h"
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
 #include "UObject/ConstructorHelpers.h"
 #include "EngineGlobals.h"
 #include "MaterialShared.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Widgets/SWindow.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Framework/Application/SlateApplication.h"
@@ -22,6 +26,7 @@
 #include "Slate/SWorldWidgetScreenLayer.h"
 #include "UObject/EditorObjectVersion.h"
 #include "Widgets/SViewport.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WidgetComponent)
 

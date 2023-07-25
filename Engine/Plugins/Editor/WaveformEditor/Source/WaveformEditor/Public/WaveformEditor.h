@@ -3,6 +3,7 @@
 #pragma once
 
 #include "EditorUndoClient.h"
+#include "IWaveformTransformation.h"
 #include "Misc/NotifyHook.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "WaveformEditorTransportController.h"
@@ -112,6 +113,9 @@ private:
 
 	/** Transformations tab */
 	TSharedPtr<IDetailsView> TransformationsDetails;
+
+	/** Hidden details view to propagate property handles to transformation layers */
+	TSharedPtr<IDetailsView> TransformationsPropertiesPropagator;
 
 	/** Settings Editor App Identifier */
 	static const FName AppIdentifier;

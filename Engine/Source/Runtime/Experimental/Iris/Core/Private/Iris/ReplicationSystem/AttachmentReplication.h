@@ -7,6 +7,7 @@
 #include "Iris/ReplicationSystem/NetBlob/ReliableNetBlobQueue.h"
 #include "Containers/Map.h"
 
+class UPartialNetObjectAttachmentHandler;
 namespace UE::Net::Private
 {
 	class FNetBlobHandlerManager;
@@ -62,6 +63,8 @@ public:
 
 	bool IsAllSentAndAcked() const;
 
+	bool IsAllReliableSentAndAcked() const;
+
 	void SetUnreliableQueueCapacity(uint32 QueueCapacity);
 
 private:
@@ -83,9 +86,9 @@ private:
 		FInternalRecord() { CombinedRecord = InvalidReplicationRecord; };
 	};
 
-	EAttachmentWriteStatus Serialize(FNetSerializationContext& Context, FNetHandle NetHandle, ReplicationRecord& OutRecord, bool& bOutHasUnprocessedAttachments);
-	uint32 SerializeReliable(FNetSerializationContext& Context, FNetHandle NetHandle, FReliableNetBlobQueue::ReplicationRecord& OutRecord);
-	uint32 SerializeUnreliable(FNetSerializationContext& Context, FNetHandle NetHandle, uint32& OutRecord);
+	EAttachmentWriteStatus Serialize(FNetSerializationContext& Context, FNetRefHandle RefHandle, ReplicationRecord& OutRecord, bool& bOutHasUnprocessedAttachments);
+	uint32 SerializeReliable(FNetSerializationContext& Context, FNetRefHandle RefHandle, FReliableNetBlobQueue::ReplicationRecord& OutRecord);
+	uint32 SerializeUnreliable(FNetSerializationContext& Context, FNetRefHandle RefHandle, uint32& OutRecord);
 
 	void CommitReplicationRecord(ReplicationRecord Record);
 
@@ -108,13 +111,17 @@ public:
 	bool HasUnsentAttachments(ENetObjectAttachmentType Type, uint32 ObjectIndex) const;
 	// Whether all queued attachments have been sent and that all reliable ones have been acked.
 	bool IsAllSentAndAcked(ENetObjectAttachmentType Type, uint32 ObjectIndex) const;
+
+	// Whether all queued reliable attachments have been sent and acked
+	bool IsAllReliableSentAndAcked(ENetObjectAttachmentType Type, uint32 ObjectIndex) const;
+
 	// Whether the queue can be destroyed without causing issues if more attachments are queued to this instance.
 	bool IsSafeToDestroy(ENetObjectAttachmentType Type, uint32 ObjectIndex) const;
 
 	void DropAllAttachments(ENetObjectAttachmentType Type, uint32 ObjectIndex);
 	void DropUnreliableAttachments(ENetObjectAttachmentType Type, uint32 ObjectIndex, bool& bOutHasUnsentAttachments);
 
-	EAttachmentWriteStatus Serialize(FNetSerializationContext& Context, ENetObjectAttachmentType Type, uint32 ObjectIndex, FNetHandle NetHandle, ReplicationRecord& OutRecord, bool& bOutHasUnsentAttachments);
+	EAttachmentWriteStatus Serialize(FNetSerializationContext& Context, ENetObjectAttachmentType Type, uint32 ObjectIndex, FNetRefHandle RefHandle, ReplicationRecord& OutRecord, bool& bOutHasUnsentAttachments);
 
 	void CommitReplicationRecord(ENetObjectAttachmentType Type, uint32 ObjectIndex, ReplicationRecord Record);
 
@@ -133,13 +140,18 @@ private:
 	TUniquePtr<FNetObjectAttachmentSendQueue> SpecialQueues[uint32(ENetObjectAttachmentType::InternalCount)];
 };
 
+struct FNetObjectAttachmentReceiveQueueInitParams
+{
+	const UPartialNetObjectAttachmentHandler* PartialNetObjectAttachmentHandler = nullptr;
+};
+
 class FNetObjectAttachmentReceiveQueue
 {
 public:
 	FNetObjectAttachmentReceiveQueue();
 	~FNetObjectAttachmentReceiveQueue();
 
-	void SetPartialNetBlobType(FNetBlobType InPartialNetBlobType) { PartialNetBlobType = InPartialNetBlobType; }
+	void Init(const FNetObjectAttachmentReceiveQueueInitParams& InitParams);
 
 	bool IsSafeToDestroy() const;
 	bool HasUnprocessed() const;
@@ -161,15 +173,21 @@ private:
 	bool HasDeferredProcessingQueueUnprocessed() const;
 	bool IsPartialNetBlob(const TRefCountPtr<FNetBlob>& Blob) const;
 
-	void Deserialize(FNetSerializationContext& Context, FNetHandle NetHandle);
-	uint32 DeserializeReliable(FNetSerializationContext& Context, FNetHandle NetHandle);
-	uint32 DeserializeUnreliable(FNetSerializationContext& Context, FNetHandle NetHandle);
+	void Deserialize(FNetSerializationContext& Context, FNetRefHandle RefHandle);
+	uint32 DeserializeReliable(FNetSerializationContext& Context, FNetRefHandle RefHandle);
+	uint32 DeserializeUnreliable(FNetSerializationContext& Context, FNetRefHandle RefHandle);
 
 	TResizableCircularQueue<TRefCountPtr<FNetBlob>> UnreliableQueue;
 	FReliableNetBlobQueue* ReliableQueue;
 	FDeferredProcessingQueue* DeferredProcessingQueue;
 	uint32 MaxUnreliableCount;
 	FNetBlobType PartialNetBlobType;
+	const UPartialNetObjectAttachmentHandler* PartialNetObjectAttachmentHandler = nullptr;
+};
+
+struct FNetObjectAttachmentsReaderInitParams
+{
+	const UPartialNetObjectAttachmentHandler* PartialNetObjectAttachmentHandler = nullptr;
 };
 
 class FNetObjectAttachmentsReader
@@ -178,13 +196,13 @@ public:
 	FNetObjectAttachmentsReader();
 	~FNetObjectAttachmentsReader();
 
-	void SetPartialNetBlobType(FNetBlobType InPartialNetBlobType) { PartialNetBlobType = InPartialNetBlobType; }
+	void Init(const FNetObjectAttachmentsReaderInitParams& InitParams);
 
 	bool HasUnprocessedAttachments(ENetObjectAttachmentType Type, uint32 ObjectIndex) const;
 
 	void DropAllAttachments(ENetObjectAttachmentType Type, uint32 ObjectIndex);
 
-	void Deserialize(FNetSerializationContext& Context, ENetObjectAttachmentType Type, uint32 ObjectIndex, FNetHandle NetHandle);
+	void Deserialize(FNetSerializationContext& Context, ENetObjectAttachmentType Type, uint32 ObjectIndex, FNetRefHandle RefHandle);
 
 	FNetObjectAttachmentReceiveQueue* GetQueue(ENetObjectAttachmentType Type, uint32 ObjectIndex);
 
@@ -195,7 +213,7 @@ private:
 
 	TMap<uint32, FNetObjectAttachmentReceiveQueue> ObjectToQueue;
 	TUniquePtr<FNetObjectAttachmentReceiveQueue> SpecialQueues[uint32(ENetObjectAttachmentType::InternalCount)];
-	FNetBlobType PartialNetBlobType;
+	const UPartialNetObjectAttachmentHandler* PartialNetObjectAttachmentHandler = nullptr;
 };
 
 }

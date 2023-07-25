@@ -12,6 +12,7 @@
 #include "PropertyHandle.h"
 #include "IDetailCustomNodeBuilder.h"
 #include "IDetailCustomization.h"
+#include "SkeletalMeshReductionSettings.h"
 #include "Widgets/Input/SComboBox.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogSkeletalMeshPersonaMeshDetail, Log, All);
@@ -254,6 +255,9 @@ public:
 	DECLARE_DELEGATE_RetVal(float, FGetFloatDelegate);
 	DECLARE_DELEGATE_OneParam(FSetFloatDelegate, float);
 
+	DECLARE_DELEGATE_RetVal(int32, FGetIntegerDelegate);
+	DECLARE_DELEGATE_OneParam(FSetIntegerDelegate, int32);
+
 	void UnbindBuildSettings()
 	{
 		IsBuildSettingsEnabledDelegate.Unbind();
@@ -271,8 +275,17 @@ private:
 
 	bool IsBuildEnabled() const;
 
-		//Custom Row Add utilities
+	//Custom Row Add utilities
 	FDetailWidgetRow& AddFloatRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentTootlipText, const float MinSliderValue, const float MaxSliderValue, FGetFloatDelegate GetterDelegate, FSetFloatDelegate SetterDelegate);
+	FDetailWidgetRow& AddIntegerRow(
+		IDetailChildrenBuilder& ChildrenBuilder,
+		const FText& RowTitleText,
+		const FText& RowNameContentText,
+		const FText& RowNameContentTooltipText,
+		const int32 MinSliderValue,
+		const int32 MaxSliderValue,
+		const FGetIntegerDelegate& GetterDelegate,
+		const FSetIntegerDelegate& SetterDelegate);
 
 	float GetThresholdPosition() const;
 	void SetThresholdPosition(float Value);
@@ -286,12 +299,16 @@ private:
 	float GetMorphThresholdPosition() const;
 	void SetMorphThresholdPosition(float Value);
 
+	int32 GetBoneInfluenceLimit() const;
+	void SetBoneInfluenceLimit(int32 Value);
+
 	ECheckBoxState ShouldRecomputeNormals() const;
 	ECheckBoxState ShouldRecomputeTangents() const;
 	ECheckBoxState ShouldUseMikkTSpace() const;
 	ECheckBoxState ShouldComputeWeightedNormals() const;
 	ECheckBoxState ShouldRemoveDegenerates() const;
 	ECheckBoxState ShouldUseHighPrecisionTangentBasis() const;
+	ECheckBoxState ShouldUseHighPrecisionSkinWeights() const;
 	ECheckBoxState ShouldUseFullPrecisionUVs() const;
 	ECheckBoxState ShouldUseBackwardsCompatibleF16TruncUVs() const;
 
@@ -301,6 +318,7 @@ private:
 	void OnComputeWeightedNormalsChanged(ECheckBoxState NewState);
 	void OnRemoveDegeneratesChanged(ECheckBoxState NewState);
 	void OnUseHighPrecisionTangentBasisChanged(ECheckBoxState NewState);
+	void OnUseHighPrecisionSkinWeightsChanged(ECheckBoxState NewState);
 	void OnUseFullPrecisionUVsChanged(ECheckBoxState NewState);
 	void OnUseBackwardsCompatibleF16TruncUVsChanged(ECheckBoxState NewState);
 
@@ -320,6 +338,7 @@ private:
 	};
 	TArray<FSliderStateData> SliderStateDataArray;
 };
+
 
 class FPersonaMeshDetails : public IDetailCustomization
 {
@@ -573,6 +592,7 @@ private:
 
 	/** Called when a LOD is imported. Refreshes the UI. */
 	void OnAssetPostLODImported(UObject* InObject, int32 InLODIndex);
+	void OnAssetReimport(UObject* InObject);
 	/** Called from the PersonalMeshDetails UI to import a LOD. */
 	void OnImportLOD(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo, IDetailLayoutBuilder* DetailLayout);
 	void UpdateLODNames();

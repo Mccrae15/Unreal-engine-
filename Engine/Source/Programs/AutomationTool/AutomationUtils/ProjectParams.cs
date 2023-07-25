@@ -375,6 +375,8 @@ namespace AutomationTool
 			this.DeviceNames = InParams.DeviceNames;
 			this.ServerDevice = InParams.ServerDevice;
             this.NullRHI = InParams.NullRHI;
+			this.WriteBackMetadataToAssetRegistry = InParams.WriteBackMetadataToAssetRegistry;
+			this.RetainStagedDirectory = InParams.RetainStagedDirectory;
             this.FakeClient = InParams.FakeClient;
             this.EditorTest = InParams.EditorTest;
             this.RunAutomationTests = InParams.RunAutomationTests;
@@ -487,7 +489,7 @@ namespace AutomationTool
 			string BasedOnReleaseVersionBasePath = null,
 			string ReferenceContainerGlobalFileName = null,
 			string ReferenceContainerCryptoKeys = null,
-            bool? GeneratePatch = null,
+			bool? GeneratePatch = null,
 			bool? AddPatchLevel = null,
 			bool? StageBaseReleasePaks = null,
             string DiscVersion = null,
@@ -561,6 +563,10 @@ namespace AutomationTool
 			bool? Prebuilt = null,
             int? RunTimeoutSeconds = null,
 			string SpecifiedArchitecture = null,
+			string ServerArchitecture = null,
+			string EditorArchitecture = null,
+			string ClientArchitecture = null,
+			string ProgramArchitecture = null,
 			string UbtArgs = null,
 			string AdditionalPackageOptions = null,
 			bool? IterativeDeploy = null,
@@ -579,7 +585,8 @@ namespace AutomationTool
 			string SessionLabel = null,
 			ParamList<string> InMapsToRebuildLightMaps = null,
             ParamList<string> InMapsToRebuildHLOD = null,
-            ParamList<string> TitleID = null
+            ParamList<string> TitleID = null,
+            bool? RetainStagedDirectory = null
 			)
 		{
 			//
@@ -667,7 +674,7 @@ namespace AutomationTool
 			this.StageBaseReleasePaks = GetParamValueIfNotSpecified(Command, StageBaseReleasePaks, this.StageBaseReleasePaks, "StageBaseReleasePaks");
 			this.DiscVersion = ParseParamValueIfNotSpecified(Command, DiscVersion, "DiscVersion", String.Empty);
 			this.AdditionalCookerOptions = ParseParamValueIfNotSpecified(Command, AdditionalCookerOptions, "AdditionalCookerOptions", String.Empty);
-			
+		
 			DLCName = ParseParamValueIfNotSpecified(Command, DLCName, "DLCName", String.Empty);
 			if (!String.IsNullOrEmpty(DLCName))
 			{
@@ -706,7 +713,7 @@ namespace AutomationTool
 			this.Clean = GetOptionalParamValueIfNotSpecified(Command, Clean, this.Clean, "clean", null);
 			this.SignPak = ParseParamValueIfNotSpecified(Command, SignPak, "signpak", String.Empty);
 			this.SignedPak = !String.IsNullOrEmpty(this.SignPak) || GetParamValueIfNotSpecified(Command, SignedPak, this.SignedPak, "signedpak");
-			if (string.IsNullOrEmpty(this.SignPak))
+			if (string.IsNullOrEmpty(this.SignPak) && RawProjectPath != null)
 			{
 				this.SignPak = Path.Combine(RawProjectPath.Directory.FullName, @"Restricted\NoRedist\Build\Keys.txt");
 				if (!File.Exists(this.SignPak))
@@ -732,6 +739,10 @@ namespace AutomationTool
 				this.AdditionalCookerOptions += " -ZenStore";
 			}
 			this.NoZenAutoLaunch = ParseParamValueIfNotSpecified(Command, NoZenAutoLaunch, "NoZenAutoLaunch", String.Empty);
+			if (string.IsNullOrEmpty(this.NoZenAutoLaunch) && GetParamValueIfNotSpecified(Command, null, false, "NoZenAutoLaunch"))
+			{
+				this.NoZenAutoLaunch = "127.0.0.1";
+			}
 			if (!string.IsNullOrEmpty(this.NoZenAutoLaunch) && this.Cook && !this.SkipCook)
 			{
 				this.AdditionalCookerOptions += string.Format(" -NoZenAutoLaunch={0}", this.NoZenAutoLaunch);
@@ -938,9 +949,24 @@ namespace AutomationTool
 			this.DeviceUsername = ParseParamValueIfNotSpecified(Command, DeviceUsername, "deviceuser", String.Empty);
 			this.DevicePassword = ParseParamValueIfNotSpecified(Command, DevicePassword, "devicepass", String.Empty);
 			this.CrashReporter = GetParamValueIfNotSpecified(Command, CrashReporter, this.CrashReporter, "crashreporter");
-			this.SpecifiedArchitecture = ParseParamValueIfNotSpecified(Command, SpecifiedArchitecture, "specifiedarchitecture", String.Empty);
 			this.UbtArgs = ParseParamValueIfNotSpecified(Command, UbtArgs, "ubtargs", String.Empty);
 			this.AdditionalPackageOptions = ParseParamValueIfNotSpecified(Command, AdditionalPackageOptions, "AdditionalPackageOptions", String.Empty);
+			this.WriteBackMetadataToAssetRegistry = ParseParamValueIfNotSpecified(Command, WriteBackMetadataToAssetRegistry, "WriteBackMetadataToAssetRegistry", String.Empty);
+			this.RetainStagedDirectory = GetParamValueIfNotSpecified(Command, RetainStagedDirectory, this.RetainStagedDirectory, "RetainStagedDirectory");
+
+			string SpecifiedArchString, ServerArchString, EditorArchString, ClientArchString, ProgramArchString;
+			SpecifiedArchString = ParseParamValueIfNotSpecified(Command, SpecifiedArchitecture, "specifiedarchitecture", null);
+			// if SpecifiedArchitecture is used, then set them all to it, and then allow comandline to override specific ones
+			ServerArchString = EditorArchString = ClientArchString = ProgramArchString = SpecifiedArchString;
+			ServerArchString = ParseParamValueIfNotSpecified(Command, ServerArchitecture, "serverarchitecture", ServerArchString);
+			EditorArchString = ParseParamValueIfNotSpecified(Command, EditorArchitecture, "editorarchitecture", EditorArchString);
+			ClientArchString = ParseParamValueIfNotSpecified(Command, ClientArchitecture, "clientarchitecture", ClientArchString);
+			ProgramArchString = ParseParamValueIfNotSpecified(Command, ProgramArchitecture, "programarchitecture", ProgramArchString);
+			this.SpecifiedArchitecture = UnrealArchitectures.FromString(SpecifiedArchString, null);
+			this.ServerArchitecture = UnrealArchitectures.FromString(ServerArchString, null);
+			this.EditorArchitecture = UnrealArchitectures.FromString(EditorArchString, null);
+			this.ClientArchitecture = UnrealArchitectures.FromString(ClientArchString, null);
+			this.ProgramArchitecture = UnrealArchitectures.FromString(ProgramArchString, null);
 
 			// -trace can be used with or without a value
 			if (Trace != null || GetParamValueIfNotSpecified(Command, null, false, "trace"))
@@ -983,7 +1009,7 @@ namespace AutomationTool
 				this.SessionLabel += "=" + SessionLabel;	
 			}
 
-			if (ClientConfigsToBuild == null)
+				if (ClientConfigsToBuild == null)
 			{
 				if (Command != null)
 				{
@@ -1528,7 +1554,7 @@ namespace AutomationTool
 
 		[Help("CookerSupportFilesSubdirectory=subdir", "Subdirectory under staging to copy CookerSupportFiles (as set in Build.cs files). -CookerSupportFilesSubdirectory=SDK")]
 		public string CookerSupportFilesSubdirectory;
-        
+		
 		[Help("unrealexe=ExecutableName", "Name of the Unreal Editor executable, i.e. -unrealexe=UnrealEditor.exe")]
 		public string UnrealExe;
 
@@ -1564,7 +1590,7 @@ namespace AutomationTool
 		[Help("createappbundle", "When archiving for Mac, set this to true to package it in a .app bundle instead of normal loose files")]
 		public bool CreateAppBundle;
 
-        /// <summary>
+		/// <summary>
 		/// Keeps track of any '-ini:type:[section]:value' arguments on the command line. These will override cached config settings for the current process, and can be passed along to other tools.
 		/// </summary>
 		public List<string> ConfigOverrideParams = new List<string>();
@@ -1781,9 +1807,9 @@ namespace AutomationTool
         public bool StageBaseReleasePaks;
 
 		/// <summary>
-        /// Name of dlc to cook and package (if this paramter is supplied cooks the dlc and packages it into the dlc directory)
-        /// </summary>
-        public FileReference DLCFile;
+		/// Name of dlc to cook and package (if this paramter is supplied cooks the dlc and packages it into the dlc directory)
+		/// </summary>
+		public FileReference DLCFile;
 
         /// <summary>
         /// Enable cooking of engine content when cooking dlc 
@@ -1839,6 +1865,11 @@ namespace AutomationTool
 		/// Do not compress packages during cook, override game ProjectPackagingSettings to force it off
 		/// </summary>
 		public bool ForceUncompressed;
+		
+		/// <summary>
+		/// Compress packages during cook, override game ProjectPackagingSettings and Platform Hardware Compression settings to force it on
+		/// </summary>
+		public bool ForceCompressed;
 
 		/// <summary>
 		/// Additional parameters when generating the PAK file
@@ -1965,15 +1996,20 @@ namespace AutomationTool
 		public Action<ProjectParams, DeploymentContext> PreModifyDeploymentContextCallback = null;
 
 		/// <summary>
-		/// Stage: Optional callback that a build script can use to modify a deployment context before it is applied
+		/// Stage: Optional callback that a build script can use to modify a deployment context before it is applied (and before it is finalized)
 		/// </summary>
 		public Action<ProjectParams, DeploymentContext> ModifyDeploymentContextCallback = null;
 
-        /// <summary>
-        /// On Windows, adds an executable to the root of the staging directory which checks for prerequisites being 
+		/// <summary>
+		/// Stage: Optional callback that a build script can use to finalize a deployment context before it is applied
+		/// </summary>
+		public Action<ProjectParams, DeploymentContext> FinalizeDeploymentContextCallback = null;
+
+		/// <summary>
+		/// On Windows, adds an executable to the root of the staging directory which checks for prerequisites being 
 		/// installed and launches the game with a path to the .uproject file.
 		/// </summary>
-        public bool NoBootstrapExe { get; set; }
+		public bool NoBootstrapExe { get; set; }
 
 		/// <summary>
 		/// By default we don't code sign unless it is required or requested
@@ -2131,6 +2167,12 @@ namespace AutomationTool
         [Help("nullrhi", "add -nullrhi to the client commandlines")]
         public bool NullRHI;
 
+        [Help("WriteBackMetadataToAssetRegistry", "Passthru to iostore staging, see IoStoreUtilities.cpp")]
+        public string WriteBackMetadataToAssetRegistry;
+
+        [Help("RetainStagedDirectory", "If set, retain the staged directory for platforms that modify the I/O store containers for deployment. This is necessary for using the reference container for patch preventing on such platforms.")]
+        public bool RetainStagedDirectory;
+
         /// <summary>
         /// Run:adds ?fake to the server URL
         /// </summary>
@@ -2210,8 +2252,20 @@ namespace AutomationTool
         [Help("RunTimeoutSeconds", "timeout to wait after we lunch the game")]
         public int RunTimeoutSeconds;
 
-		[Help("SpecifiedArchitecture", "Determine a specific Minimum OS")]
-		public string SpecifiedArchitecture;
+		[Help("SpecifiedArchitecture", "Architecture to use for building any executables (see EditorArchitecture, etc for specific target type control)")]
+		private UnrealArchitectures SpecifiedArchitecture;
+
+		[Help("EditorArchitecture", "Architecture to use for building editor executables")]
+		public UnrealArchitectures EditorArchitecture;
+
+		[Help("ServerArchitecture", "Architecture to use for building server executables")]
+		public UnrealArchitectures ServerArchitecture;
+
+		[Help("ClientArchitecture", "Architecture to use for building client/game executables")]
+		public UnrealArchitectures ClientArchitecture;
+
+		[Help("ProgramArchitecture", "Architecture to use for building program executables")]
+		public UnrealArchitectures ProgramArchitecture;
 
 		[Help("UbtArgs", "extra options to pass to ubt")]
 		public string UbtArgs;
@@ -2271,29 +2325,31 @@ namespace AutomationTool
 			}
 		}
 
-		private void SelectDefaultEditorTarget(List<string> AvailableEditorTargets, ref string EditorTarget)
+		private void SelectDefaultTarget(List<string> AvailableTargets, TargetType Type, ref string Target)
 		{
-			string DefaultEditorTarget;
+			string DefaultTarget;
 
-			if (EngineConfigs[BuildHostPlatform.Current.Platform].GetString("/Script/BuildSettings.BuildSettings", "DefaultEditorTarget", out DefaultEditorTarget))
+			string ConfigKey = String.Format($"Default{Type}Target");
+
+			if (EngineConfigs[BuildHostPlatform.Current.Platform].GetString("/Script/BuildSettings.BuildSettings", ConfigKey, out DefaultTarget))
 			{
-				if (!AvailableEditorTargets.Contains(DefaultEditorTarget))
+				if (!AvailableTargets.Contains(DefaultTarget))
 				{
-					throw new AutomationException(string.Format("A default editor target '{0}' was specified in engine.ini but does not exist", DefaultEditorTarget));
+					throw new AutomationException(string.Format($"A default {Type} target '{DefaultTarget}' was specified in engine.ini but does not exist"));
 				}
 
-				EditorTarget = DefaultEditorTarget;
+				Target = DefaultTarget;
 			}
 			else
 			{
-				if (AvailableEditorTargets.Count > 1)
+				if (AvailableTargets.Count > 1)
 				{
-					throw new AutomationException("Project contains multiple editor targets but no DefaultEditorTarget is set in the [/Script/BuildSettings.BuildSettings] section of DefaultEngine.ini");
+					throw new AutomationException($"Project contains multiple {Type} targets ({string.Join(", ", AvailableTargets)}) but no {ConfigKey} is set in the [/Script/BuildSettings.BuildSettings] section of DefaultEngine.ini");
 				}
 
-				if (AvailableEditorTargets.Count > 0)
+				if (AvailableTargets.Count > 0)
 				{
-					EditorTarget = AvailableEditorTargets.First();
+					Target = AvailableTargets.First();
 				}
 			}
 		}
@@ -2410,7 +2466,7 @@ namespace AutomationTool
 				}
 
 				// Find the editor target name
-				SelectDefaultEditorTarget(TargetNamesOfType(TargetType.Editor), ref EditorTarget);
+				SelectDefaultTarget(TargetNamesOfType(TargetType.Editor), TargetType.Editor, ref EditorTarget);
 			}
 			else if (!CommandUtils.IsNullOrEmpty(Properties.Targets))
 			{
@@ -2424,45 +2480,19 @@ namespace AutomationTool
 
 				if (Client)
 				{
-					GameTarget = ChooseTarget(AvailableClientTargets, TargetType.Client);
+					SelectDefaultTarget(AvailableClientTargets, TargetType.Client, ref GameTarget);
 					ProjectType = TargetType.Client;
 				}
-				else if (AvailableGameTargets.Count > 0)
+				else if (AvailableGameTargets.Count > 0 && !NoClient)
 				{
-					if (AvailableGameTargets.Count > 1)
-					{
-						StringBuilder TargetMessage = new StringBuilder("Multiple game targets found for project. Specify the desired target using the -Target=... argument.");
-
-						List<SingleTargetProperties> Targets = DetectedTargets.FindAll(Target => Target.Rules.Type == TargetType.Game);
-						foreach (SingleTargetProperties Target in Targets)
-						{
-							// search the list of script files to see if we can find a likely source for this class
-							// {TargetName}.Target.cs is expected to contain a definition for a class {TargetName}Target
-							// So we can do an imperfect reverse-lookup, and try to find a source file that has the expected pattern.
-
-							List<FileReference> PossibleScriptFiles = Properties.TargetScripts.FindAll(File => String.Equals(File.GetFileNameWithoutAnyExtensions(), Target.TargetName));
-
-							if (PossibleScriptFiles.Count > 0)
-							{
-								TargetMessage.Append($"\n  Could be \"{Target.TargetName}\" ({String.Join(" or ", PossibleScriptFiles)})");
-							}
-							else
-							{
-								TargetMessage.Append($"\n  Could be \"{Target.TargetName}\"");
-							}
-						}
-
-						throw new AutomationException(TargetMessage.ToString());
-					}
-
-					GameTarget = AvailableGameTargets.First();
+					SelectDefaultTarget(AvailableGameTargets, TargetType.Game, ref GameTarget);
 				}
 
-				SelectDefaultEditorTarget(AvailableEditorTargets, ref EditorTarget);
+				SelectDefaultTarget(AvailableEditorTargets, TargetType.Editor, ref EditorTarget);
 
 				if (AvailableServerTargets.Count > 0 && (DedicatedServer || Cook || CookOnTheFly)) // only if server is needed
 				{
-					ServerTarget = ChooseTarget(AvailableServerTargets, TargetType.Server);
+					SelectDefaultTarget(AvailableServerTargets, TargetType.Server, ref ServerTarget);
 				}
 			}
 			else if (!CommandUtils.IsNullOrEmpty(Properties.Programs))
@@ -3095,7 +3125,7 @@ namespace AutomationTool
 				CommandUtils.LogLog("DirectoriesToCook={0}", DirectoriesToCook.ToString());
                 CommandUtils.LogLog("DDCGraph={0}", DDCGraph);
                 CommandUtils.LogLog("CulturesToCook={0}", CommandUtils.IsNullOrEmpty(CulturesToCook) ? "<Not Specified> (Use Defaults)" : CulturesToCook.ToString());
-				CommandUtils.LogLog("EditorTargets={0}", EditorTargets.ToString());
+				CommandUtils.LogLog("EditorTargets={0}", EditorTargets?.ToString());
 				CommandUtils.LogLog("Foreign={0}", Foreign);
 				CommandUtils.LogLog("IsCodeBasedProject={0}", IsCodeBasedProject.ToString());
 				CommandUtils.LogLog("IsProgramTarget={0}", IsProgramTarget.ToString());
@@ -3135,6 +3165,8 @@ namespace AutomationTool
 				CommandUtils.LogLog("Package={0}", Package);
 				CommandUtils.LogLog("ForcePackageData={0}", ForcePackageData);
 				CommandUtils.LogLog("NullRHI={0}", NullRHI);
+				CommandUtils.LogLog("WriteBackMetadataToAssetRegistry={0}", WriteBackMetadataToAssetRegistry);
+				CommandUtils.LogLog("RetainStagedDirectory={0}", RetainStagedDirectory);
 				CommandUtils.LogLog("FakeClient={0}", FakeClient);
                 CommandUtils.LogLog("EditorTest={0}", EditorTest);
                 CommandUtils.LogLog("RunAutomationTests={0}", RunAutomationTests); 

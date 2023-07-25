@@ -10,16 +10,20 @@
 #include "SourceControlWindows.h"
 #include "UnsavedAssetsTrackerModule.h"
 #include "FileHelpers.h"
+#include "Logging/MessageLog.h"
 #include "ToolMenuContext.h"
 #include "ToolMenus.h"
 #include "Styling/AppStyle.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Images/SLayeredImage.h"
 #include "LevelEditorActions.h"
 #include "PackageTools.h"
-#include "AssetViewUtils.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/MessageDialog.h"
+#include "RevisionControlStyle/RevisionControlStyle.h"
 
 #define LOCTEXT_NAMESPACE "SourceControlCommands"
 
@@ -29,7 +33,7 @@ FSourceControlCommands::FSourceControlCommands()
 	: TCommands<FSourceControlCommands>
 (
 	"SourceControl",
-	NSLOCTEXT("Contexts", "SourceControl", "Source Control"),
+	NSLOCTEXT("Contexts", "SourceControl", "Revision Control"),
 	"LevelEditor",
 	FAppStyle::GetAppStyleSetName()
 )
@@ -40,11 +44,12 @@ FSourceControlCommands::FSourceControlCommands()
  */
 void FSourceControlCommands::RegisterCommands()
 {
-	UI_COMMAND(ConnectToSourceControl, "Connect to Source Control...", "Connect to source control to allow source control operations to be performed on content and levels.", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(ChangeSourceControlSettings, "Change Source Control Settings...", "Opens a dialog to change source control settings.", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(ViewChangelists, "View Changelists", "Opens a dialog displaying current changelists.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ConnectToSourceControl, "Connect to Revision Control...", "Connect to a revision control system for tracking changes to your content and levels.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ChangeSourceControlSettings, "Change Revision Control Settings...", "Opens a dialog to change revision control settings.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ViewChangelists, "View Changes", "Opens a dialog displaying current changes.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(SubmitContent, "Submit Content", "Opens a dialog with check in options for content and levels.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(CheckOutModifiedFiles, "Check Out Modified Files", "Opens a dialog to check out any assets which have been modified.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(RevertAll, "Revert All Files", "Opens a dialog to revert any assets which have been modified.", EUserInterfaceActionType::Button, FInputChord());
 
 	ActionList->MapAction(
 		ConnectToSourceControl,
@@ -76,6 +81,12 @@ void FSourceControlCommands::RegisterCommands()
 		CheckOutModifiedFiles,
 		FExecuteAction::CreateStatic(&FSourceControlCommands::CheckOutModifiedFiles_Clicked),
 		FCanExecuteAction::CreateStatic(&FSourceControlCommands::CheckOutModifiedFiles_CanExecute)
+	);
+
+	ActionList->MapAction(
+		RevertAll,
+		FExecuteAction::CreateStatic(&FSourceControlCommands::RevertAllModifiedFiles_Clicked),
+		FCanExecuteAction::CreateLambda([] { return true; })
 	);
 }
 
@@ -143,6 +154,16 @@ void FSourceControlCommands::CheckOutModifiedFiles_Clicked()
 	FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, bCheckDirty, bPromptUserToSave);
 }
 
+void FSourceControlCommands::RevertAllModifiedFiles_Clicked()
+{
+	FText Message = LOCTEXT("RevertAllModifiedFiles", "Are you sure you want to revert all local changes? By proceeding, your local changes will be discarded, and the state of your last synced snapshot will be restored.");
+	FText Title = LOCTEXT("RevertAllModifiedFiles_Title", "Revert all local changes");
+	if (FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::No, Message, &Title) == EAppReturnType::Yes)
+	{
+		FSourceControlWindows::RevertAllChangesAndReloadWorld();
+	}
+}
+
 FSourceControlMenuHelpers& FSourceControlMenuHelpers::Get()
 {
 	// Singleton instance
@@ -179,21 +200,21 @@ TSharedRef<SWidget> FSourceControlMenuHelpers::GenerateSourceControlMenuContent(
 		FSourceControlCommands::Get().ViewChangelists,
 		TAttribute<FText>(),
 		TAttribute<FText>(),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.ChangelistsTab")
+		FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.ChangelistsTab")
 	);
 
 	Section.AddMenuEntry(
 		FSourceControlCommands::Get().SubmitContent,
 		TAttribute<FText>(),
 		TAttribute<FText>(),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Submit")
+		FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.Submit")
 	);
 
 	Section.AddMenuEntry(
 		FSourceControlCommands::Get().CheckOutModifiedFiles,
 		TAttribute<FText>(),
 		TAttribute<FText>(),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.CheckOut")
+		FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.CheckOut")
 	);
 
 	Section.AddDynamicEntry("ConnectToSourceControl", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
@@ -205,7 +226,7 @@ TSharedRef<SWidget> FSourceControlMenuHelpers::GenerateSourceControlMenuContent(
 				FSourceControlCommands::Get().ChangeSourceControlSettings,
 				TAttribute<FText>(),
 				TAttribute<FText>(),
-				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.ChangeSettings")
+				FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.ChangeSettings")
 			);
 		}
 		else
@@ -214,12 +235,35 @@ TSharedRef<SWidget> FSourceControlMenuHelpers::GenerateSourceControlMenuContent(
 				FSourceControlCommands::Get().ConnectToSourceControl,
 				TAttribute<FText>(),
 				TAttribute<FText>(),
-				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Connect")
+				FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Icon")
 			);
 		}
 	}));
 
 	return UToolMenus::Get()->GenerateWidget("StatusBar.ToolBar.SourceControl", FToolMenuContext(FSourceControlCommands::ActionList));
+}
+
+TSharedRef<SWidget> FSourceControlMenuHelpers::GenerateCheckInComboButtonContent()
+{
+	UToolMenu* SourceControlMenu = UToolMenus::Get()->RegisterMenu("StatusBar.ToolBar.SourceControl.CheckInCombo", NAME_None, EMultiBoxType::Menu, false);
+
+	FToolMenuSection& Section = SourceControlMenu->AddSection("SourceControlComboActions", LOCTEXT("SourceControlComboMenuHeadingActions", "Actions"));
+
+	Section.AddMenuEntry(
+		FSourceControlCommands::Get().RevertAll,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Revert")
+	);
+
+	Section.AddMenuEntry(
+		FSourceControlCommands::Get().ViewChangelists,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.ChangelistsTab")
+	);
+
+	return UToolMenus::Get()->GenerateWidget("StatusBar.ToolBar.SourceControl.CheckInCombo", FToolMenuContext(FSourceControlCommands::ActionList));
 }
 
 FText FSourceControlMenuHelpers::GetSourceControlStatusText()
@@ -239,12 +283,12 @@ FText FSourceControlMenuHelpers::GetSourceControlStatusText()
 			}
 			else
 			{
-				return LOCTEXT("SourceControlStatus_Available", "Source Control");
+				return LOCTEXT("SourceControlStatus_Available", "Revision Control");
 			}
 		}
 		else
 		{
-			return LOCTEXT("SourceControlStatus_Error_Off", "Source Control"); // Relies on the icon on the status bar widget to know if the source control is on or off.
+			return LOCTEXT("SourceControlStatus_Error_Off", "Revision Control"); // Relies on the icon on the status bar widget to know if the source control is on or off.
 		}
 	}
 }
@@ -252,7 +296,7 @@ FText FSourceControlMenuHelpers::GetSourceControlTooltip()
 {
 	if (QueryState == EQueryState::Querying)
 	{
-		return LOCTEXT("SourceControlUnknown", "Source control status is unknown");
+		return LOCTEXT("SourceControlUnknown", "Revision control status is unknown");
 	}
 	else
 	{
@@ -260,13 +304,11 @@ FText FSourceControlMenuHelpers::GetSourceControlTooltip()
 	}
 }
 
-const FSlateBrush* FSourceControlMenuHelpers::GetSourceControlIcon()
+const FSlateBrush* FSourceControlMenuHelpers::GetSourceControlIconBadge()
 {
-
 	if (QueryState == EQueryState::Querying)
 	{
-		static const FSlateBrush* QueryBrush = FAppStyle::Get().GetBrush("SourceControl.StatusIcon.Unknown");
-		return QueryBrush;
+		return nullptr;
 	}
 	else
 	{
@@ -275,18 +317,18 @@ const FSlateBrush* FSourceControlMenuHelpers::GetSourceControlIcon()
 		{
 			if (!SourceControlModule.GetProvider().IsAvailable())
 			{
-				static const FSlateBrush* ErrorBrush = FAppStyle::Get().GetBrush("SourceControl.StatusIcon.Error");
+				static const FSlateBrush* ErrorBrush = FRevisionControlStyleManager::Get().GetBrush("RevisionControl.Icon.WarningBadge");
 				return ErrorBrush;
 			}
 			else
 			{
-				static const FSlateBrush* OnBrush = FAppStyle::Get().GetBrush("SourceControl.StatusIcon.On");
+				static const FSlateBrush* OnBrush = FRevisionControlStyleManager::Get().GetBrush("RevisionControl.Icon.ConnectedBadge");
 				return OnBrush;
 			}
 		}
 		else
 		{
-			static const FSlateBrush* OffBrush = FAppStyle::Get().GetBrush("SourceControl.StatusIcon.Off");
+			static const FSlateBrush* OffBrush = nullptr;
 			return OffBrush;
 		}
 	}
@@ -329,13 +371,13 @@ FText FSourceControlMenuHelpers::GetSourceControlSyncStatusTooltipText()
 	{
 		return LOCTEXT("SyncLatestButtonAtHeadTooltipText", "Currently at the latest Snapshot for this project");
 	}
-	return LOCTEXT("SyncLatestButtonNotAtHeadTooltipText", "Get the latest Snapshot for this project");
+	return LOCTEXT("SyncLatestButtonNotAtHeadTooltipText", "Sync to the latest Snapshot for this project");
 }
 
 const FSlateBrush* FSourceControlMenuHelpers::GetSourceControlSyncStatusIcon()
 {
-	static const FSlateBrush* AtHeadBrush = FAppStyle::Get().GetBrush("SourceControl.StatusBar.AtLatestRevision");
-	static const FSlateBrush* NotAtHeadBrush = FAppStyle::Get().GetBrush("SourceControl.StatusBar.NotAtLatestRevision");
+	static const FSlateBrush* AtHeadBrush = FRevisionControlStyleManager::Get().GetBrush("RevisionControl.StatusBar.AtLatestRevision");
+	static const FSlateBrush* NotAtHeadBrush = FRevisionControlStyleManager::Get().GetBrush("RevisionControl.StatusBar.NotAtLatestRevision");
 
 	if (IsAtLatestRevision())
 	{
@@ -346,78 +388,12 @@ const FSlateBrush* FSourceControlMenuHelpers::GetSourceControlSyncStatusIcon()
 
 FReply FSourceControlMenuHelpers::OnSourceControlSyncClicked()
 {
-	FSourceControlMenuHelpers::Get().SyncProject();
+	if (FSourceControlWindows::CanSyncLatest())
+	{
+		FSourceControlWindows::SyncLatest();
+	}
 
 	return FReply::Handled();
-}
-
-void FSourceControlMenuHelpers::SyncProject()
-{
-	const bool bSaved = SaveDirtyPackages();
-	if (bSaved)
-	{
-		AssetViewUtils::SyncPackagesFromSourceControl(ListAllPackages());
-	}
-	else
-	{
-		FMessageLog SourceControlLog("SourceControl");
-		SourceControlLog.Warning(LOCTEXT("SourceControlMenu_Sync_Unsaved", "Save All Assets before attempting to Sync!"));
-		SourceControlLog.Notify();
-	}
-}
-
-/// Prompt to save or discard all packages
-bool FSourceControlMenuHelpers::SaveDirtyPackages()
-{
-	const bool bPromptUserToSave = true;
-	const bool bSaveMapPackages = true;
-	const bool bSaveContentPackages = true;
-	const bool bFastSave = false;
-	const bool bNotifyNoPackagesSaved = false;
-	const bool bCanBeDeclined = true; // If the user clicks "don't save" this will continue and lose their changes
-	bool bHadPackagesToSave = false;
-
-	bool bSaved = FEditorFileUtils::SaveDirtyPackages(bPromptUserToSave, bSaveMapPackages, bSaveContentPackages, bFastSave, bNotifyNoPackagesSaved, bCanBeDeclined, &bHadPackagesToSave);
-
-	// bSaved can be true if the user selects to not save an asset by unchecking it and clicking "save"
-	if (bSaved)
-	{
-		TArray<UPackage*> DirtyPackages;
-		FEditorFileUtils::GetDirtyWorldPackages(DirtyPackages);
-		FEditorFileUtils::GetDirtyContentPackages(DirtyPackages);
-		bSaved = DirtyPackages.Num() == 0;
-	}
-
-	return bSaved;
-}
-
-/// Find all packages in Content directory
-TArray<FString> FSourceControlMenuHelpers::ListAllPackages()
-{
-	const FString ProjectContentDir = FPaths::ProjectContentDir();
-	const FString ProjectSourceControlDir = ISourceControlModule::Get().GetSourceControlProjectDir();
-	const FString& Root = ProjectSourceControlDir.IsEmpty() ? ProjectContentDir : ProjectSourceControlDir;
-
-	TArray<FString> PackageRelativePaths;
-	FPackageName::FindPackagesInDirectory(PackageRelativePaths, FPaths::ConvertRelativePathToFull(Root));
-
-	TArray<FString> PackageNames;
-	PackageNames.Reserve(PackageRelativePaths.Num());
-	for (const FString& Path : PackageRelativePaths)
-	{
-		FString PackageName;
-		FString FailureReason;
-		if (FPackageName::TryConvertFilenameToLongPackageName(Path, PackageName, &FailureReason))
-		{
-			PackageNames.Add(PackageName);
-		}
-		else
-		{
-			FMessageLog("SourceControl").Error(FText::FromString(FailureReason));
-		}
-	}
-
-	return PackageNames;
 }
 
 /** Check-in Status */
@@ -467,8 +443,8 @@ FText FSourceControlMenuHelpers::GetSourceControlCheckInStatusTooltipText()
 
 const FSlateBrush* FSourceControlMenuHelpers::GetSourceControlCheckInStatusIcon()
 {
-	static const FSlateBrush* NoLocalChangesBrush = FAppStyle::Get().GetBrush("SourceControl.StatusBar.NoLocalChanges");
-	static const FSlateBrush* HasLocalChangesBrush = FAppStyle::Get().GetBrush("SourceControl.StatusBar.HasLocalChanges");
+	static const FSlateBrush* NoLocalChangesBrush = FRevisionControlStyleManager::Get().GetBrush("RevisionControl.StatusBar.NoLocalChanges");
+	static const FSlateBrush* HasLocalChangesBrush = FRevisionControlStyleManager::Get().GetBrush("RevisionControl.StatusBar.HasLocalChanges");
 
 	if (GetNumLocalChanges() > 0)
 	{
@@ -489,6 +465,13 @@ FReply FSourceControlMenuHelpers::OnSourceControlCheckInChangesClicked()
 
 TSharedRef<SWidget> FSourceControlMenuHelpers::MakeSourceControlStatusWidget()
 {
+	TSharedRef<SLayeredImage> SourceControlIcon =
+		SNew(SLayeredImage)
+		.Image(FRevisionControlStyleManager::Get().GetBrush("RevisionControl.Icon"));
+
+	SourceControlIcon->AddLayer(TAttribute<const FSlateBrush*>::CreateStatic(&FSourceControlMenuHelpers::GetSourceControlIconBadge));
+
+	
 	return
 		SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
@@ -500,38 +483,7 @@ TSharedRef<SWidget> FSourceControlMenuHelpers::MakeSourceControlStatusWidget()
 			//       ensure its position with respect to the source control button.
 			FUnsavedAssetsTrackerModule::Get().MakeUnsavedAssetsStatusBarWidget()
 		]
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		[
-			SNew(SButton)
-			.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("StatusBar.StatusBarButton"))
-			.ToolTipText_Static(&FSourceControlMenuHelpers::GetSourceControlSyncStatusTooltipText)
-			.Visibility_Static(&FSourceControlMenuHelpers::GetSourceControlSyncStatusVisibility)
-			.IsEnabled_Lambda([]() { return !IsAtLatestRevision(); })
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.HAlign(HAlign_Center)
-				[
-					SNew(SImage)
-					.Image_Static(&FSourceControlMenuHelpers::GetSourceControlSyncStatusIcon)
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(5, 0, 0, 0))
-				[
-					SNew(STextBlock)
-					.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"))
-					.Text_Static(&FSourceControlMenuHelpers::GetSourceControlSyncStatusText)
-				]
-			]
-			.OnClicked_Static(&FSourceControlMenuHelpers::OnSourceControlSyncClicked)
-		]
-		+ SHorizontalBox::Slot()
+		+ SHorizontalBox::Slot() // Check In Changes Button
 		.VAlign(VAlign_Center)
 		.Padding(FMargin(8.0f, 0.0f, 4.0f, 0.0f))
 		.AutoWidth()
@@ -567,6 +519,56 @@ TSharedRef<SWidget> FSourceControlMenuHelpers::MakeSourceControlStatusWidget()
 		.VAlign(VAlign_Center)
 		.AutoWidth()
 		[
+			SNew(SSeparator)
+			.Thickness(1.0)
+			.Orientation(EOrientation::Orient_Vertical)
+		]
+		+SHorizontalBox::Slot() // Check In Kebab Combo button
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		[
+			SNew(SComboButton)
+			.ContentPadding(FMargin(7.f, 0.f))
+			.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("StatusBar.StatusBarEllipsisComboButton"))
+			.MenuPlacement(MenuPlacement_AboveAnchor)
+			.Visibility_Static(&FSourceControlMenuHelpers::GetSourceControlCheckInStatusVisibility)
+			.OnGetMenuContent(FOnGetContent::CreateStatic(&FSourceControlMenuHelpers::GenerateCheckInComboButtonContent))
+		]
+		+ SHorizontalBox::Slot() // Sync Latest Button
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		[
+			SNew(SButton)
+			.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("StatusBar.StatusBarButton"))
+			.ToolTipText_Static(&FSourceControlMenuHelpers::GetSourceControlSyncStatusTooltipText)
+			.Visibility_Static(&FSourceControlMenuHelpers::GetSourceControlSyncStatusVisibility)
+			.IsEnabled_Lambda([]() { return !IsAtLatestRevision(); })
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(SImage)
+					.Image_Static(&FSourceControlMenuHelpers::GetSourceControlSyncStatusIcon)
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(5, 0, 0, 0))
+				[
+					SNew(STextBlock)
+					.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"))
+					.Text_Static(&FSourceControlMenuHelpers::GetSourceControlSyncStatusText)
+				]
+			]
+			.OnClicked_Static(&FSourceControlMenuHelpers::OnSourceControlSyncClicked)
+		]
+		+ SHorizontalBox::Slot() // Source Control Menu
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		[
 			SNew(SComboButton)
 			.ContentPadding(FMargin(6.0f, 0.0f))
 			.ToolTipText_Static(&FSourceControlMenuHelpers::GetSourceControlTooltip)
@@ -580,8 +582,7 @@ TSharedRef<SWidget> FSourceControlMenuHelpers::MakeSourceControlStatusWidget()
 				.VAlign(VAlign_Center)
 				.HAlign(HAlign_Center)
 				[
-					SNew(SImage)
-					.Image_Static(&FSourceControlMenuHelpers::GetSourceControlIcon)
+					SourceControlIcon
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()

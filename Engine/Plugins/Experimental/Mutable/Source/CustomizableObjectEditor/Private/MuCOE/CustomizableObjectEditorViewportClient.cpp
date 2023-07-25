@@ -2,77 +2,30 @@
 
 #include "MuCOE/CustomizableObjectEditorViewportClient.h"
 
-#include "AdvancedPreviewScene.h"
-#include "Animation/AnimationAsset.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Animation/PoseAsset.h"
+#include "Animation/AnimSingleNodeInstance.h"
+#include "Animation/Skeleton.h"
 #include "AssetViewerSettings.h"
-#include "BatchedElements.h"
 #include "CanvasTypes.h"
-#include "Components/LightComponent.h"
-#include "Components/PointLightComponent.h"
 #include "Components/SphereReflectionCaptureComponent.h"
 #include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Containers/ArrayView.h"
-#include "Containers/ContainersFwd.h"
-#include "Containers/IndirectArray.h"
-#include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
-#include "Delegates/Delegate.h"
 #include "DynamicMeshBuilder.h"
-#include "EdGraph/EdGraph.h"
-#include "Editor.h"
-#include "Editor/EditorEngine.h"
 #include "Editor/EditorPerProjectUserSettings.h"
-#include "EditorComponents.h"
+#include "Editor/UnrealEdTypes.h"
 #include "EditorModeManager.h"
-#include "Engine/AssetUserData.h"
-#include "Engine/Engine.h"
-#include "Engine/EngineBaseTypes.h"
-#include "Engine/EngineTypes.h"
-#include "Engine/SkeletalMesh.h"
-#include "Engine/StaticMesh.h"
-#include "Engine/Texture.h"
-#include "Engine/Texture2D.h"
 #include "FileHelpers.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "HAL/PlatformCrt.h"
-#include "HAL/PlatformMisc.h"
-#include "HitProxies.h"
 #include "IContentBrowserSingleton.h"
-#include "Input/Reply.h"
-#include "InputCoreTypes.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Layout/Margin.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "MaterialTypes.h"
-#include "Materials/Material.h"
+#include "InputKeyEventArgs.h"
 #include "Materials/MaterialExpressionTextureBase.h"
-#include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "Materials/MaterialInterface.h"
-#include "Math/Box.h"
-#include "Math/IntPoint.h"
-#include "Math/Transform.h"
-#include "Math/Vector2D.h"
-#include "Math/Vector4.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Attribute.h"
-#include "Misc/CString.h"
-#include "Misc/Guid.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/PackageName.h"
-#include "Misc/Paths.h"
-#include "Modules/ModuleManager.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/CustomizableObjectMipDataProvider.h"
 #include "MuCO/UnrealBakeHelpers.h"
-#include "MuCO/UnrealPortabilityHelpers.h"
 #include "MuCOE/CustomizableObjectBakeHelpers.h"
 #include "MuCOE/CustomizableObjectPreviewScene.h"
 #include "MuCOE/CustomizableObjectWidget.h"
@@ -84,46 +37,13 @@
 #include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "ObjectTools.h"
 #include "Preferences/PersonaOptions.h"
-#include "PreviewScene.h"
-#include "RawIndexBuffer.h"
-#include "Rendering/MultiSizeIndexContainer.h"
-#include "Rendering/SkeletalMeshLODRenderData.h"
-#include "Rendering/SkeletalMeshModel.h"
-#include "Rendering/SkeletalMeshRenderData.h"
-#include "Rendering/StaticMeshVertexBuffer.h"
-#include "SceneManagement.h"
-#include "SceneView.h"
 #include "ScopedTransaction.h"
-#include "ShowFlags.h"
-#include "SlotBase.h"
-#include "StaticMeshResources.h"
-#include "Styling/AppStyle.h"
-#include "Styling/SlateTypes.h"
-#include "Subsystems/AssetEditorSubsystem.h"
-#include "Templates/Casts.h"
-#include "Templates/Decay.h"
-#include "Templates/UnrealTemplate.h"
-#include "Trace/Detail/Channel.h"
-#include "Types/SlateEnums.h"
-#include "UObject/Class.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/Package.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/UnrealNames.h"
-#include "UObject/WeakObjectPtr.h"
-#include "UnrealClient.h"
+#include "SkeletalDebugRendering.h"
 #include "UnrealWidget.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SWindow.h"
-#include "Widgets/Text/STextBlock.h"
 
 class FMaterialRenderProxy;
 class UFont;
@@ -371,6 +291,7 @@ void GizmoRTSProxy::ProjectorParameterChanged(UCustomizableObjectNodeProjectorPa
 			{
 				Value.Position = Node->DefaultValue.Position;
 				Value.Direction = Node->DefaultValue.Direction;
+				Value.Scale = Node->DefaultValue.Scale;
 				Value.Up = Node->DefaultValue.Up;
 				Node->ParameterSetModified = -1;
 				break;
@@ -499,6 +420,11 @@ FCustomizableObjectEditorViewportClient::FCustomizableObjectEditorViewportClient
 
 	bActivateOrbitalCamera = true;
 	bSetOrbitalOnPerspectiveMode = true;
+
+	const int32 CameraSpeed = 3;
+	SetCameraSpeedSetting(CameraSpeed);
+
+	bShowBones = false;
 
 	MaterialToDrawInUVs = 0;
 	MaterialToDrawInUVsLOD = 0;
@@ -897,6 +823,17 @@ void FCustomizableObjectEditorViewportClient::Draw(const FSceneView* View, FPrim
 			{
 				UE_LOG(LogMutable, Warning, TEXT("ERROR: wrong projector type for projector %d"), *GizmoProxy.ProjectorParameterName);
 				break;
+			}
+		}
+	}
+
+	if (bShowBones)
+	{
+		for (TWeakObjectPtr<UDebugSkelMeshComponent> SkeletalMeshComponent : SkeletalMeshComponents)
+		{
+			if (SkeletalMeshComponent.IsValid())
+			{
+				DrawMeshBones(SkeletalMeshComponent.Get(), PDI);
 			}
 		}
 	}
@@ -2092,19 +2029,40 @@ bool FCustomizableObjectEditorViewportClient::CanSetWidgetMode(UE::Widget::EWidg
 void FCustomizableObjectEditorViewportClient::SetAnimation(UAnimationAsset* Animation, EAnimationMode::Type AnimationType)
 {
 	bool bFoundComponent = false;
+
 	for (TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent : SkeletalMeshComponents)
 	{
 		if (SkeletalMeshComponent.IsValid() && Animation != nullptr
 			&& SkeletalMeshComponent->GetSkinnedAsset() != nullptr
-			&& SkeletalMeshComponent->GetSkinnedAsset()->GetSkeleton() == Animation->GetSkeleton()
+			&& SkeletalMeshComponent->GetSkinnedAsset()->GetSkeleton()->IsCompatibleForEditor(Animation->GetSkeleton())
 			)
 		{
-			SkeletalMeshComponent->SetAnimationMode(AnimationType);
-			SkeletalMeshComponent->PlayAnimation(Animation, true);
-			SkeletalMeshComponent->SetPlayRate(1.f);
 			SetRealtime(true);
 			IsPlayingAnimation = true;
 			AnimationBeingPlayed = Animation;
+
+			if (UPoseAsset* PoseAsset = Cast<UPoseAsset>(Animation))
+			{
+				SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+				SkeletalMeshComponent->InitAnim(false);
+				SkeletalMeshComponent->SetAnimation(PoseAsset);
+
+				UAnimSingleNodeInstance* SingleNodeInstance = Cast<UAnimSingleNodeInstance>(SkeletalMeshComponent->GetAnimInstance());
+				if (SingleNodeInstance)
+				{
+					TArray<FSmartName> ArrayPoseSmartNames = PoseAsset->GetPoseNames();
+					for (int32 i = 0; i < ArrayPoseSmartNames.Num(); ++i)
+					{
+						SingleNodeInstance->SetPreviewCurveOverride(ArrayPoseSmartNames[i].DisplayName, 1.0f, false);
+					}
+				}
+			}
+			else
+			{
+				SkeletalMeshComponent->SetAnimationMode(AnimationType);
+				SkeletalMeshComponent->PlayAnimation(Animation, true);
+				SkeletalMeshComponent->SetPlayRate(1.f);
+			}
 
 			bFoundComponent = true;
 		}
@@ -2224,11 +2182,6 @@ public:
 	SLATE_ARGUMENT(FText, DefaultFileName)
 	SLATE_END_ARGS()
 
-	SMutableSelectFolderDlg() : UserResponse(EAppReturnType::Cancel)
-	{
-		AddAllMaterialTextures = false;
-	}
-
 	void Construct(const FArguments& InArgs);
 
 public:
@@ -2241,8 +2194,7 @@ public:
 	/** FileName getter */
 	FString GetFileName();
 
-	/** Getter for AddAllMaterialTextures */
-	bool GetAddAllMaterialTextures();
+	bool GetExportAllResources();
 
 protected:
 	void OnPathChange(const FString& NewPath);
@@ -2250,10 +2202,10 @@ protected:
 	void OnNameChange(const FText& NewName, ETextCommit::Type CommitInfo);
 	void OnBoolParameterChanged(ECheckBoxState InCheckboxState);
 
-	EAppReturnType::Type UserResponse;
+	EAppReturnType::Type UserResponse = EAppReturnType::Cancel; 
 	FText AssetPath;
 	FText FileName;
-	bool AddAllMaterialTextures;
+	bool bExportAllResources = false;
 };
 
 
@@ -2313,7 +2265,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 	UCustomizableObjectInstance* Instance = CustomizableObjectEditorPtr.Pin()->GetPreviewInstance();
 	FString ObjectName = Instance->GetCustomizableObject()->GetName();
 	FText DefaultFileName = FText::Format(LOCTEXT("DefaultFileNameForBakeInstance", "{0}"), FText::AsCultureInvariant(ObjectName));
-	bool AddAllMaterialTextures = false;
+	bool bExportAllResources = false;
 
 	TSharedRef<SMutableSelectFolderDlg> FolderDlg =
 		SNew(SMutableSelectFolderDlg)
@@ -2346,7 +2298,8 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 			}
 		}
 
-		AddAllMaterialTextures = FolderDlg->GetAddAllMaterialTextures();
+		bExportAllResources = FolderDlg->GetExportAllResources();
+
 		BakingOverwritePermission = false;
 		FString CustomObjectPath = Instance->GetCustomizableObject()->GetPathName();
 		FString AssetPath = FolderDlg->GetAssetPath();
@@ -2384,7 +2337,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 				TArray<FString> ArrayCachedElement;
 				TArray<UObject*> ArrayCachedObject;
 
-				if (AddAllMaterialTextures)
+				if (bExportAllResources)
 				{
 					UMaterialInstance* Inst;
 					UMaterial* Material;
@@ -2687,6 +2640,29 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 						}
 					}
 				}
+				
+				// Skeletal Mesh's Skeleton
+				if (Mesh->GetSkeleton())
+				{
+					const bool bTransient = Mesh->GetSkeleton()->GetPackage() == GetTransientPackage();
+
+					// Don't duplicate if not transient or export all assets.
+					if (bTransient || bExportAllResources)
+					{
+						FString SkeletonName = ObjectName + "_Skeleton";
+						if (!ManageBakingAction(AssetPath, SkeletonName))
+						{
+							return;
+						}
+
+						FString SkeletonPkgName = FolderDlg->GetAssetPath() + FString("/") + SkeletonName;
+						UObject* DuplicatedSkeleton = BakeHelper_DuplicateAsset(Mesh->GetSkeleton(), SkeletonName, SkeletonPkgName, false, ReplacementMap, BakingOverwritePermission);
+
+						ArrayCachedObject.Add(DuplicatedSkeleton);
+						PackagesToSave.Add(DuplicatedSkeleton->GetPackage());
+						ReplacementMap.Add(Mesh->GetSkeleton(), DuplicatedSkeleton);
+					}
+				}
 
 				// Make sure source data is present in the mesh before we duplciate:
 				FUnrealBakeHelpers::BakeHelper_RegenerateImportedModel(Mesh);
@@ -2696,6 +2672,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 				{
 					return;
 				}
+
 				FString PkgName = FolderDlg->GetAssetPath() + FString("/") + ObjectName;
 				UObject* DupObject = BakeHelper_DuplicateAsset(Mesh, ObjectName, PkgName, false, ReplacementMap, BakingOverwritePermission);
 				ArrayCachedObject.Add(DupObject);
@@ -3030,6 +3007,7 @@ void FCustomizableObjectEditorViewportClient::AddReferencedObjects(FReferenceCol
 {
 	Collector.AddReferencedObject(ClipMorphMaterial);
 	Collector.AddReferencedObject(TransparentPlaneMaterialXY);
+	Collector.AddReferencedObject(AnimationBeingPlayed);
 }
 
 
@@ -3274,6 +3252,84 @@ void FCustomizableObjectEditorViewportClient::SetCameraMode(bool Value)
 	UpdateCameraSetup();
 }
 
+
+void FCustomizableObjectEditorViewportClient::SetShowBones()
+{
+	bShowBones = !bShowBones;
+}
+
+
+bool FCustomizableObjectEditorViewportClient::IsShowingBones() const
+{
+	return bShowBones;
+}
+
+
+void FCustomizableObjectEditorViewportClient::DrawMeshBones(UDebugSkelMeshComponent* MeshComponent, FPrimitiveDrawInterface* PDI)
+{
+	if (!MeshComponent ||
+		!MeshComponent->GetSkeletalMeshAsset() ||
+		MeshComponent->GetNumDrawTransform() == 0 ||
+		MeshComponent->SkeletonDrawMode == ESkeletonDrawMode::Hidden)
+	{
+		return;
+	}
+
+	TArray<FTransform> WorldTransforms;
+	WorldTransforms.AddUninitialized(MeshComponent->GetNumDrawTransform());
+
+	TArray<FLinearColor> BoneColors;
+	BoneColors.AddUninitialized(MeshComponent->GetNumDrawTransform());
+
+	const FLinearColor BoneColor = GetDefault<UPersonaOptions>()->DefaultBoneColor;
+	const FLinearColor VirtualBoneColor = GetDefault<UPersonaOptions>()->VirtualBoneColor;
+	const TArray<FBoneIndexType>& DrawBoneIndices = MeshComponent->GetDrawBoneIndices();
+	
+	for (int32 Index = 0; Index < DrawBoneIndices.Num(); ++Index)
+	{
+		const int32 BoneIndex = DrawBoneIndices[Index];
+		WorldTransforms[BoneIndex] = MeshComponent->GetDrawTransform(BoneIndex) * MeshComponent->GetComponentTransform();
+		BoneColors[BoneIndex] = BoneColor;
+	}
+
+	// color virtual bones
+	for (int16 VirtualBoneIndex : MeshComponent->GetReferenceSkeleton().GetRequiredVirtualBones())
+	{
+		BoneColors[VirtualBoneIndex] = VirtualBoneColor;
+	}
+
+	constexpr bool bForceDraw = false;
+
+	// don't allow selection if the skeleton draw mode is greyed out
+	//const bool bAddHitProxy = MeshComponent->SkeletonDrawMode != ESkeletonDrawMode::GreyedOut;
+
+	FSkelDebugDrawConfig DrawConfig;
+	DrawConfig.BoneDrawMode = EBoneDrawMode::All;
+	DrawConfig.BoneDrawSize = 1.0f;
+	DrawConfig.bAddHitProxy = false;
+	DrawConfig.bForceDraw = bForceDraw;
+	DrawConfig.DefaultBoneColor = GetMutableDefault<UPersonaOptions>()->DefaultBoneColor;
+	DrawConfig.AffectedBoneColor = GetMutableDefault<UPersonaOptions>()->AffectedBoneColor;
+	DrawConfig.SelectedBoneColor = GetMutableDefault<UPersonaOptions>()->SelectedBoneColor;
+	DrawConfig.ParentOfSelectedBoneColor = GetMutableDefault<UPersonaOptions>()->ParentOfSelectedBoneColor;
+
+	//No user interaction right now
+	TArray<TRefCountPtr<HHitProxy>> HitProxies;
+
+	SkeletalDebugRendering::DrawBones(
+		PDI,
+		MeshComponent->GetComponentLocation(),
+		DrawBoneIndices,
+		MeshComponent->GetReferenceSkeleton(),
+		WorldTransforms,
+		MeshComponent->BonesOfInterest,
+		BoneColors,
+		HitProxies,
+		DrawConfig
+	);
+}
+
+
 /////////////////////////////////////////////////
 // select folder dialog \todo: move to its own file
 //////////////////////////////////////////////////
@@ -3282,7 +3338,7 @@ void SMutableSelectFolderDlg::Construct(const FArguments& InArgs)
 	AssetPath = FText::FromString(FPackageName::GetLongPackagePath(InArgs._DefaultAssetPath.ToString()));
 	FileName = InArgs._DefaultFileName;
 
-	AddAllMaterialTextures = false;
+	bExportAllResources = false;
 
 	if (AssetPath.IsEmpty())
 	{
@@ -3359,16 +3415,16 @@ void SMutableSelectFolderDlg::Construct(const FArguments& InArgs)
 				SNew(STextBlock)
 				.Text(LOCTEXT("ExportAllUsedResources", "Export all used resources  "))
 				.Font(FSlateFontInfo(FPaths::EngineContentDir() / TEXT("Slate/Fonts/Roboto-Regular.ttf"), 14))
-				.ToolTipText(LOCTEXT("Export all used Resources", "All the materials and textures used by the object will be baked/stored in the target folder. Otherwise, only the assets that Mutable modifies will be baked/stored."))
+				.ToolTipText(LOCTEXT("Export all used Resources", "All the resources used by the object will be baked/stored in the target folder. Otherwise, only the assets that Mutable modifies will be baked/stored."))
 			]
 			+ SHorizontalBox::Slot()
 			.HAlign(HAlign_Left)
 			.AutoWidth()
 			[
 				SNew(SCheckBox)
-				.ToolTipText(LOCTEXT("ExportAllTextures", "Export all material's textures"))
+				.ToolTipText(LOCTEXT("ExportAllResources", "Export all resources"))
 				.HAlign(HAlign_Right)
-				.IsChecked(AddAllMaterialTextures ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.IsChecked(bExportAllResources ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
 				.OnCheckStateChanged(this, &SMutableSelectFolderDlg::OnBoolParameterChanged)
 			]
 		]
@@ -3425,7 +3481,7 @@ void SMutableSelectFolderDlg::OnNameChange(const FText& NewName, ETextCommit::Ty
 
 void SMutableSelectFolderDlg::OnBoolParameterChanged(ECheckBoxState InCheckboxState)
 {
-	AddAllMaterialTextures = !AddAllMaterialTextures;
+	bExportAllResources = InCheckboxState == ECheckBoxState::Checked;
 }
 
 
@@ -3447,9 +3503,9 @@ FString SMutableSelectFolderDlg::GetFileName()
 }
 
 
-bool SMutableSelectFolderDlg::GetAddAllMaterialTextures()
+bool SMutableSelectFolderDlg::GetExportAllResources()
 {
-	return AddAllMaterialTextures;
+	return bExportAllResources;
 }
 
 #undef LOCTEXT_NAMESPACE 

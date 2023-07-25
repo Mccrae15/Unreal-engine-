@@ -1,39 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 
-#include "CoreMinimal.h"
 
-#include "AnimationBlueprintLibrary.h"
 #include "AnimationRuntime.h"
-#include "Components/SkinnedMeshComponent.h"
-#include "ComponentReregisterContext.h"
-#include "Engine/MeshMerging.h" 
-#include "Engine/StaticMesh.h"
+#include "Animation/AttributesRuntime.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Features/IModularFeatures.h"
 #include "ISkeletalMeshReduction.h"
 #include "MeshBoneReduction.h"
-#include "MeshMergeData.h"
-#include "Misc/ScopedSlowTask.h"
-#include "Modules/ModuleManager.h"
-#include "RawMesh.h"
 #include "Rendering/SkeletalMeshModel.h"
-#include "Rendering/SkeletalMeshLODImporterData.h"
-#include "SkeletalSimplifierMeshManager.h"
 #include "SkeletalSimplifier.h"
 #include "SkeletalMeshReductionSkinnedMesh.h"
-#include "Stats/StatsMisc.h"
 #include "ClothingAsset.h"
-#include "Factories/FbxSkeletalMeshImportData.h"
 #include "LODUtilities.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Misc/CoreMisc.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimSequenceHelpers.h"
 #include "Async/Async.h"
 
 #include "Animation/AnimSequence.h"
 #include "BonePose.h"
+#include "BoneWeights.h"
 
 #define LOCTEXT_NAMESPACE "SkeletalMeshReduction"
 
@@ -65,6 +52,11 @@ public:
 	*	Returns true if mesh reduction is active. Active mean there will be a reduction of the vertices or triangle number
 	*/
 	virtual bool IsReductionActive(const struct FMeshReductionSettings &ReductionSettings) const
+	{
+		return false;
+	}
+
+	virtual bool IsReductionActive(const struct FMeshReductionSettings& ReductionSettings, uint32 NumVertices, uint32 NumTriangles) const
 	{
 		return false;
 	}
@@ -217,6 +209,7 @@ private:
 		                                const TArray<FMatrix>& BoneMatrices,
 		                                const int32 LODIndex,
 		                                SkeletalSimplifier::FSkinnedSkeletalMesh& OutSkinnedMesh,
+										const FString& SkeletalMeshName,
 										TArray<int32>* VertToSectionMap = nullptr) const;
 
 	/**
@@ -488,6 +481,7 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkelet
 	                                                               const TArray<FMatrix>& BoneMatrices,
 	                                                               const int32 LODIndex,
 	                                                               SkeletalSimplifier::FSkinnedSkeletalMesh& OutSkinnedMesh,
+																   const FString& SkeletalMeshName,
 																   TArray<int32>* VertToSectionMap) const
 {
 
@@ -527,17 +521,17 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkelet
 	{
 		// Compute the inverse of the total bone influence for this vertex.
 		
-		float InvTotalInfluence = 1.f / 255.f;   // expected default - anything else could indicate a problem with the asset.
+		float InvTotalInfluence = UE::AnimationCore::InvMaxRawBoneWeightFloat;   // expected default - anything else could indicate a problem with the asset.
 		{
 			int32 TotalInfluence = 0;
 
 			for (int32 i = 0; i < MAX_TOTAL_INFLUENCES; ++i)
 			{
-				const uint8 BoneInfluence = Vertex.InfluenceWeights[i];
+				const uint16 BoneInfluence = Vertex.InfluenceWeights[i];
 				TotalInfluence += BoneInfluence;
 			}
 
-			if (TotalInfluence != 255) // 255 is the expected value.  This logic just allows for graceful failure.
+			if (TotalInfluence != UE::AnimationCore::MaxRawBoneWeight) // 255 is the expected value.  This logic just allows for graceful failure.
 			{
 				// Not expected value - record that.
 				bValidBoneWeights = false;
@@ -565,7 +559,7 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkelet
 		for (int32 i = 0; i < MAX_TOTAL_INFLUENCES; ++i)
 		{
 			const uint16 BoneIndex    = Vertex.InfluenceBones[i];
-			const uint8 BoneInfluence = Vertex.InfluenceWeights[i];
+			const uint16 BoneInfluence = Vertex.InfluenceWeights[i];
 
 			// Accumulate the bone influence for this vert into the BlendedMatrix
 
@@ -672,13 +666,13 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkelet
 		// Report any error with invalid bone weights
 		if (!bHasValidBoneWeights && !SkipSection(SectionIndex))
 		{
-			UE_LOG(LogSkeletalMeshReduction, Warning, TEXT("Building LOD %d - Encountered questionable vertex weights in source."), LODIndex);
+			UE_LOG(LogSkeletalMeshReduction, Warning, TEXT("Building LOD %d - Encountered non normalized vertex weights in source. %s"), LODIndex, *SkeletalMeshName);
 		}
 	}
 
 	if (NumBadNTBSpace > 0)
 	{
-		UE_LOG(LogSkeletalMeshReduction, Warning, TEXT("There were NaNs in the Tangent Space of %d source model vertices."), NumBadNTBSpace);
+		UE_LOG(LogSkeletalMeshReduction, Warning, TEXT("There were NaNs in the Tangent Space of %d source model vertices. %s"), NumBadNTBSpace, *SkeletalMeshName);
 	}
 
 	// -- Make the index buffer; skipping the "SkipSections"
@@ -773,8 +767,8 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkelet
 				int32 localBoneId = (int32)SkinnedVertex.InfluenceBones[i];
 				const uint16 boneId = BoneMap[localBoneId];
 
-				const uint8 Influence = SkinnedVertex.InfluenceWeights[i];
-				double boneWeight = ((double)Influence) / 255.;
+				const uint16 Influence = SkinnedVertex.InfluenceWeights[i];
+				double boneWeight = ((double)Influence) / UE::AnimationCore::MaxRawBoneWeightFloat;
 
 				// For right now, only store bone weights that are greater than zero,
 				// by default the sparse data structure assumes a value of zero for 
@@ -1202,7 +1196,7 @@ float FQuadricSkeletalMeshReduction::SimplifyMesh( const FSkeletalMeshOptimizati
 
 	// Copy the simplified mesh back into Mesh
 
-	Simplifier.OutputMesh(Mesh.VertexBuffer, Mesh.IndexBuffer, bWeldVertexColorAttributes, NULL);
+	Simplifier.OutputMesh(Mesh.VertexBuffer, Mesh.IndexBuffer, bWeldVertexColorAttributes, nullptr);
 
 	// There might have some unused verts at the end of the vertex buffer that were generated by the possible duplicates
 
@@ -1491,7 +1485,7 @@ void  FQuadricSkeletalMeshReduction::AddSourceModelInfluences( const FSkeletalMe
 					for (int32 b = 0; b < MAX_TOTAL_INFLUENCES; ++b)
 					{
 						FBoneIndexType LocalBoneId = SrcRawSkinWeight.InfluenceBones[b];
-						uint8 Weight = SrcRawSkinWeight.InfluenceWeights[b];
+						uint16 Weight = SrcRawSkinWeight.InfluenceWeights[b];
 
 						checkSlow(LocalBoneId < BoneMap.Num());
 
@@ -1500,7 +1494,7 @@ void  FQuadricSkeletalMeshReduction::AddSourceModelInfluences( const FSkeletalMe
 
 						if (Weight > 0)
 						{
-							SkeletalMeshImportData::FRawBoneInfluence RawBoneInfluence = { (float)Weight / 255.f,  VIdx, BoneId };
+							SkeletalMeshImportData::FRawBoneInfluence RawBoneInfluence = { (float)Weight / UE::AnimationCore::MaxRawBoneWeightFloat,  VIdx, BoneId };
 
 							RawBoneInfluences.Add(RawBoneInfluence);
 						}
@@ -1616,48 +1610,40 @@ void  FQuadricSkeletalMeshReduction::AddSourceModelInfluences( const FSkeletalMe
 
 					// Add each bone / weight. 
 					// keep track of the total weight.  should sum to 255 and the first weight is the largest
-					int32 TotalQuantizedWeight = 0;
 					int32 InfluenceIndex = 0;
+					FBoneIndexType InfluenceBones[MAX_TOTAL_INFLUENCES];
+					float InfluenceWeights[MAX_TOTAL_INFLUENCES];
 					for (const auto& Pair : BoneWeight.GetData())
 					{
-						int32 BoneId = Pair.Key;
-						double Weight = Pair.Value;
-
-						// Transform weight to quantized weight
-						uint8 QuantizedWeight = FMath::Clamp((uint8)(Weight*((double)0xFF)), (uint8)0x00, (uint8)0xFF);
-
-						WeightAndBones.InfluenceWeights[InfluenceIndex] = QuantizedWeight;
-
-						TotalQuantizedWeight += QuantizedWeight;
-
-						// Transform boneID to local boneID 
-						// Use the BoneMap to encode this bone
-						int32 LocalBoneId = BoneMap.Find(BoneId);
-						if (LocalBoneId != INDEX_NONE)
+						const int32 BoneId = Pair.Key;
+						const int32 LocalBoneId = BoneMap.Find(BoneId);
+						if (ensure(LocalBoneId != INDEX_NONE))
 						{
-							WeightAndBones.InfluenceBones[InfluenceIndex] = LocalBoneId;
+							InfluenceBones[InfluenceIndex] = LocalBoneId;
+							InfluenceWeights[InfluenceIndex] = static_cast<float>(Pair.Value);
+							InfluenceIndex++;
 						}
-						else
-						{
-							// Map to root of section
-							WeightAndBones.InfluenceBones[InfluenceIndex] = 0;
-
-							check(0); // should never hit this
-						}
-						InfluenceIndex++;
 					}
-					if (InfluenceIndex > MaxNumInfluences)
+					
+					using namespace UE::AnimationCore;
+					FBoneWeights QuantizedWeights = FBoneWeights::Create(InfluenceBones, InfluenceWeights, InfluenceIndex);
+					
+					if (QuantizedWeights.Num() > MaxNumInfluences)
 					{
-						MaxNumInfluences = InfluenceIndex;
+						MaxNumInfluences = QuantizedWeights.Num();
 						if (MaxNumInfluences > Section.GetMaxBoneInfluences())
 						{
 							Section.MaxBoneInfluences = MaxNumInfluences;
 						}
 					}
-					//Use the same code has the build where we modify the index 0 to have a sum of 255 for all influence per skin vertex
-					int32 ExcessQuantizedWeight = 255 - TotalQuantizedWeight;
 
-					WeightAndBones.InfluenceWeights[0] += ExcessQuantizedWeight;
+					InfluenceIndex = 0;
+					for (FBoneWeight QuantizedWeight: QuantizedWeights)
+					{
+						WeightAndBones.InfluenceBones[InfluenceIndex] = QuantizedWeight.GetBoneIndex();
+						WeightAndBones.InfluenceWeights[InfluenceIndex] = QuantizedWeight.GetRawWeight();
+						InfluenceIndex++;
+					}
 				}
 			}
 			
@@ -1792,7 +1778,7 @@ bool FQuadricSkeletalMeshReduction::ReduceSkeletalLODModel( const FSkeletalMeshL
 	// Generate a single skinned mesh form the SrcModel.  This mesh has per-vertex tangent space.
 	TArray<int32> VertToOriginalSectionId; 
 	SkeletalSimplifier::FSkinnedSkeletalMesh SkinnedSkeletalMesh;
-	ConvertToFSkinnedSkeletalMesh(SrcModel, BoneMatrices, LODIndex, SkinnedSkeletalMesh, &VertToOriginalSectionId);
+	ConvertToFSkinnedSkeletalMesh(SrcModel, BoneMatrices, LODIndex, SkinnedSkeletalMesh, SkeletalMeshName, &VertToOriginalSectionId);
 
 	int32 IterationNum = 0;
 	//We keep the original MaxNumVerts because if we iterate we want to still compare with the original request.
@@ -1858,7 +1844,7 @@ bool FQuadricSkeletalMeshReduction::ReduceSkeletalLODModel( const FSkeletalMeshL
 				}
 
 				UE_LOG(LogSkeletalMeshReduction, Log, TEXT("Chunking to limit unique bones per section generated additional vertices - continuing simplification of LOD %d "), LODIndex);
-				ConvertToFSkinnedSkeletalMesh(SrcModel, BoneMatrices, LODIndex, SkinnedSkeletalMesh);
+				ConvertToFSkinnedSkeletalMesh(SrcModel, BoneMatrices, LODIndex, SkinnedSkeletalMesh, SkeletalMeshName);
 			}
 			else
 			{
@@ -1894,7 +1880,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	// Insert a new LOD model entry if needed.
 	if (LODIndex == SkeletalMeshResource.LODModels.Num())
 	{
-		FSkeletalMeshLODModel* ModelPtr = NULL;
+		FSkeletalMeshLODModel* ModelPtr = nullptr;
 		SkeletalMeshResource.LODModels.Add(ModelPtr);
 		bLODModelAdded = true;
 	}
@@ -1964,7 +1950,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 		if (Settings.BaseLOD == LODIndex && !SkeletalMesh.IsLODImportedDataBuildAvailable(LODIndex))
 		{
 			//Cannot reduce ourself if we are not imported
-			UE_LOG(LogSkeletalMeshReduction, Warning, TEXT("Building LOD %d - Cannot generate LOD with itself if the LOD do not have imported Data. Using Base LOD 0 instead"), LODIndex);
+			UE_ASSET_LOG(LogSkeletalMeshReduction, Warning, &SkeletalMesh, TEXT("Building LOD %d - Cannot generate LOD with itself if the LOD do not have imported Data. Using Base LOD 0 instead"), LODIndex);
 		}
 		else if (Settings.BaseLOD <= LODIndex && SkeletalMeshResource.LODModels.IsValidIndex(Settings.BaseLOD))
 		{
@@ -1974,7 +1960,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 		else
 		{
 			// warn users
-			UE_LOG(LogSkeletalMeshReduction, Warning, TEXT("Building LOD %d - Invalid Base LOD entered. Using Base LOD 0 instead"), LODIndex);
+			UE_ASSET_LOG(LogSkeletalMeshReduction, Warning, &SkeletalMesh, TEXT("Building LOD %d - Invalid Base LOD entered. Using Base LOD 0 instead"), LODIndex);
 		}
 	}
 
@@ -2119,7 +2105,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 
 		// Get component space retarget base pose, will be equivalent of ref-pose if not edited
 		TArray<FTransform> ComponentSpaceRefPose;
-		FAnimationRuntime::FillUpComponentSpaceTransformsRetargetBasePose(&SkeletalMesh, ComponentSpaceRefPose); 
+		FAnimationRuntime::FillUpComponentSpaceTransforms(SkeletalMesh.GetRefSkeleton(), SkeletalMesh.GetRefSkeleton().GetRefBonePose(), ComponentSpaceRefPose);
 		
 		// Retrieve bone indices which will be removed
 		if (MeshBoneReductionInterface != nullptr)
@@ -2142,10 +2128,16 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 		Pose.SetBoneContainer(&RequiredBones);
 		Pose.ResetToRefPose();
 
+		FBlendedCurve TempCurve;
+		TempCurve.InitFrom(RequiredBones);
+		UE::Anim::FStackAttributeContainer TempAttributes;
+		
+		FAnimationPoseData AnimPose(Pose, TempCurve, TempAttributes);
+
 		// Retrieve animated pose from anim sequence (including retargeting)
 		const USkeleton* Skeleton = SkeletalMesh.GetSkeleton();
 		const FName RetargetSource = Skeleton->GetRetargetSourceForMesh(&SkeletalMesh);
-		UE::Anim::BuildPoseFromModel(BakePoseAnim->GetDataModel(), Pose, 0.f, EAnimInterpolationType::Step, RetargetSource, Skeleton->GetRefLocalPoses(RetargetSource));
+		UE::Anim::BuildPoseFromModel(BakePoseAnim->GetDataModel(), AnimPose, 0.0, EAnimInterpolationType::Step, RetargetSource, Skeleton->GetRefLocalPoses(RetargetSource));
 		
 		// Calculate component space animated pose matrices
 		TArray<FMatrix> ComponentSpaceAnimatedPose;
@@ -2246,7 +2238,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 		check(ReducedLODInfoPtr);
 		// Do any joint-welding / bone removal.
 
-		if (MeshBoneReductionInterface != NULL && MeshBoneReductionInterface->GetBoneReductionData(&SkeletalMesh, LODIndex, BonesToRemove))
+		if (MeshBoneReductionInterface != nullptr && MeshBoneReductionInterface->GetBoneReductionData(&SkeletalMesh, LODIndex, BonesToRemove))
 		{
 			// fix up chunks to remove the bones that set to be removed
 			for (int32 SectionIndex = 0; SectionIndex < NewModel->Sections.Num(); ++SectionIndex)
@@ -2289,7 +2281,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 		FSkeletalMeshLODModel::CopyStructure(NewModel, SrcModel);
 
 		// Do any joint-welding / bone removal.
-		if (MeshBoneReductionInterface != NULL && MeshBoneReductionInterface->GetBoneReductionData(&SkeletalMesh, LODIndex, BonesToRemove))
+		if (MeshBoneReductionInterface != nullptr && MeshBoneReductionInterface->GetBoneReductionData(&SkeletalMesh, LODIndex, BonesToRemove))
 		{
 			// fix up chunks to remove the bones that set to be removed
 			for (int32 SectionIndex = 0; SectionIndex < NewModel->Sections.Num(); ++SectionIndex)

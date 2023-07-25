@@ -1,11 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GitSourceControlProvider.h"
-#include "HAL/PlatformProcess.h"
+#include "GitSourceControlState.h"
 #include "Misc/Paths.h"
 #include "Misc/QueuedThreadPool.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "GitSourceControlCommand.h"
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
@@ -218,7 +216,7 @@ ECommandResult::Type FGitSourceControlProvider::Execute( const FSourceControlOpe
 		FFormatNamedArguments Arguments;
 		Arguments.Add( TEXT("OperationName"), FText::FromName(InOperation->GetName()) );
 		Arguments.Add( TEXT("ProviderName"), FText::FromName(GetName()) );
-		FText Message(FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by source control provider '{ProviderName}'"), Arguments));
+		FText Message(FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by revision control provider '{ProviderName}'"), Arguments));
 		FMessageLog("SourceControl").Error(Message);
 		InOperation->AddErrorMessge(Message);
 
@@ -262,6 +260,11 @@ bool FGitSourceControlProvider::UsesChangelists() const
 	return false;
 }
 
+bool FGitSourceControlProvider::UsesUncontrolledChangelists() const
+{
+	return true;
+}
+
 bool FGitSourceControlProvider::UsesCheckout() const
 {
 	return false;
@@ -270,6 +273,16 @@ bool FGitSourceControlProvider::UsesCheckout() const
 bool FGitSourceControlProvider::UsesFileRevisions() const
 {
 	return false;
+}
+
+bool FGitSourceControlProvider::UsesSnapshots() const
+{
+	return false;
+}
+
+bool FGitSourceControlProvider::AllowsDiffAgainstDepot() const
+{
+	return true;
 }
 
 TOptional<bool> FGitSourceControlProvider::IsAtLatestRevision() const
@@ -426,7 +439,7 @@ ECommandResult::Type FGitSourceControlProvider::IssueCommand(FGitSourceControlCo
 	}
 	else
 	{
-		FText Message(LOCTEXT("NoSCCThreads", "There are no threads available to process the source control command."));
+		FText Message(LOCTEXT("NoSCCThreads", "There are no threads available to process the revision control command."));
 
 		FMessageLog("SourceControl").Error(Message);
 		InCommand.bCommandSuccessful = false;

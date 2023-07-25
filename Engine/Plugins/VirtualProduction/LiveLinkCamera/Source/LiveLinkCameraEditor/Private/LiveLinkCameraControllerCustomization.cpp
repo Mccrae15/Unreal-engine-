@@ -2,19 +2,6 @@
 
 #include "LiveLinkCameraControllerCustomization.h"
 
-#include "DetailCategoryBuilder.h"
-#include "DetailLayoutBuilder.h"
-#include "DetailWidgetRow.h"
-#include "Styling/AppStyle.h"
-#include "IDetailPropertyRow.h"
-#include "LiveLinkCameraController.h"
-#include "LiveLinkComponents/Public/LiveLinkComponentController.h"
-#include "Modules/ModuleManager.h"
-#include "Roles/LiveLinkCameraRole.h"
-#include "Styling/CoreStyle.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Text/STextBlock.h"
 
 
 #define LOCTEXT_NAMESPACE "FFileMediaSourceCustomization"
@@ -69,7 +56,7 @@ void FLiveLinkCameraControllerCustomization::CustomizeDetails(IDetailLayoutBuild
 					[
 						SNew(SImage)
 						.Image(FCoreStyle::Get().GetBrush("Icons.Warning"))
-					.ToolTipText(LOCTEXT("LensFileWarning", "The selected LiveLink subjects requires encoder mapping the current lens file is invalid."))
+					.ToolTipText(LOCTEXT("LensFileWarning", "The selected LiveLink subject requires encoder mapping. The current lens file is invalid."))
 					.Visibility(this, &FLiveLinkCameraControllerCustomization::HandleEncoderMappingWarningIconVisibility)
 					]
 					]

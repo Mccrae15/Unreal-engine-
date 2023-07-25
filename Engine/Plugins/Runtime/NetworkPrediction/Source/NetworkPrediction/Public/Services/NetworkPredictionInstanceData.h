@@ -1,8 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+#include "Engine/EngineTypes.h"
+#include "NetworkPredictionBuffer.h"
+#include "NetworkPredictionConditionalState.h"
 #include "NetworkPredictionInstanceMap.h"
 #include "NetworkPredictionCues.h"
+#include "NetworkPredictionModelDef.h"
 
 // Enum that maps to internal NetworkPrediction services, see notes in NetworkPredictionServiceRegistry.h
 enum class ENetworkPredictionService : uint32

@@ -32,6 +32,7 @@
 #include "VirtualShadowMaps/VirtualShadowMapArray.h"
 #include "VolumetricCloudRendering.h"
 #include "Nanite/NaniteMaterials.h"
+#include "BlueNoise.h"
 
 class FScene;
 
@@ -51,9 +52,9 @@ public:
 	FVector4f LightPositionAndInvRadius;
 	FVector4f LightColorAndFalloffExponent;
 	FVector4f LightDirectionAndShadowMapChannelMask;
-	FVector4f SpotAnglesAndSourceRadiusPacked;
-	FVector4f LightTangentAndSoftSourceRadius;
-	FVector4f RectBarnDoorAndVirtualShadowMapIdAndSpecularScale;
+	FVector4f SpotAnglesAndIdAndSourceRadiusPacked;
+	FVector4f LightTangentAndIESDataAndSpecularScale;
+	FVector4f RectDataAndVirtualShadowMapId;
 };
 
 struct FForwardBasePassTextures
@@ -88,7 +89,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FOpaqueBasePassUniformParameters,)
 	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGFTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
 	SHADER_PARAMETER(int32, Is24BitUnormDepthStencil)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FTranslucentBasePassUniformParameters,)
@@ -109,24 +110,26 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FTranslucentBasePassUniformParameters,)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, PrevSceneColor)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PrevSceneColorSampler)
 	// Volumetric cloud
-	SHADER_PARAMETER_TEXTURE(Texture2D, VolumetricCloudColor)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, VolumetricCloudColor)
 	SHADER_PARAMETER_SAMPLER(SamplerState, VolumetricCloudColorSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D, VolumetricCloudDepth)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, VolumetricCloudDepth)
 	SHADER_PARAMETER_SAMPLER(SamplerState, VolumetricCloudDepthSampler)
 	SHADER_PARAMETER(float, ApplyVolumetricCloudOnTransparent)
+	SHADER_PARAMETER(float, SoftBlendingDistanceKm)
 	// Translucency Lighting Volume
 	SHADER_PARAMETER_STRUCT_INCLUDE(FTranslucencyLightingVolumeParameters, TranslucencyLightingVolume)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FLumenTranslucencyLightingParameters, LumenParameters)
 	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGFTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
 	// Misc
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorCopyTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorCopySampler)
+	SHADER_PARAMETER_STRUCT(FBlueNoiseParameters, BlueNoise)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
-
 DECLARE_GPU_DRAWCALL_STAT_EXTERN(Basepass);
+DECLARE_GPU_STAT_NAMED_EXTERN(NaniteBasePass, TEXT("Nanite BasePass"));
 
 extern void SetupSharedBasePassParameters(
 	FRDGBuilder& GraphBuilder,
@@ -293,8 +296,6 @@ public:
 	}
 };
 
-// BEGIN COMPUTE
-
 /**
  * The base type for compute shaders that render the emissive color, and light-mapped/ambient lighting of a mesh.
  * The base type is shared between the versions with and without sky light.
@@ -327,7 +328,20 @@ public:
 		FMeshMaterialShader(Initializer)
 	{
 		LightMapPolicyType::ComputeParametersType::Bind(Initializer.ParameterMap);
+
 		ReflectionCaptureBuffer.Bind(Initializer.ParameterMap, TEXT("ReflectionCapture"));
+
+		ViewRectParam.Bind(Initializer.ParameterMap, TEXT("ViewRect"));
+		PassDataParam.Bind(Initializer.ParameterMap, TEXT("PassData"));
+
+		Target0.Bind(Initializer.ParameterMap, TEXT("OutTarget0UAV"), SPF_Optional);
+		Target1.Bind(Initializer.ParameterMap, TEXT("OutTarget1UAV"), SPF_Optional);
+		Target2.Bind(Initializer.ParameterMap, TEXT("OutTarget2UAV"), SPF_Optional);
+		Target3.Bind(Initializer.ParameterMap, TEXT("OutTarget3UAV"), SPF_Optional);
+		Target4.Bind(Initializer.ParameterMap, TEXT("OutTarget4UAV"), SPF_Optional);
+		Target5.Bind(Initializer.ParameterMap, TEXT("OutTarget5UAV"), SPF_Optional);
+		Target6.Bind(Initializer.ParameterMap, TEXT("OutTarget6UAV"), SPF_Optional);
+		Target7.Bind(Initializer.ParameterMap, TEXT("OutTarget7UAV"), SPF_Optional);
 
 		// These parameters should only be used nested in the base pass uniform buffer
 		check(!Initializer.ParameterMap.ContainsParameterAllocation(FFogUniformParameters::StaticStructMetadata.GetShaderVariableName()));
@@ -346,8 +360,33 @@ public:
 		const TBasePassShaderElementData<LightMapPolicyType>& ShaderElementData,
 		FMeshDrawSingleShaderBindings& ShaderBindings) const;
 
+	void SetPassParameters(
+		FRHIComputeCommandList& RHICmdList,
+		FRHIComputeShader* ComputeShader,
+		const FUintVector4& ViewRect,
+		const FUintVector4& PassData,
+		FRHIUnorderedAccessView* Target0UAV,
+		FRHIUnorderedAccessView* Target1UAV,
+		FRHIUnorderedAccessView* Target2UAV,
+		FRHIUnorderedAccessView* Target3UAV,
+		FRHIUnorderedAccessView* Target4UAV,
+		FRHIUnorderedAccessView* Target5UAV,
+		FRHIUnorderedAccessView* Target6UAV,
+		FRHIUnorderedAccessView* Target7UAV
+	);
+
 private:
-	LAYOUT_FIELD(FShaderUniformBufferParameter, ReflectionCaptureBuffer);
+	LAYOUT_FIELD(FShaderUniformBufferParameter,	ReflectionCaptureBuffer);
+	LAYOUT_FIELD(FShaderParameter,				ViewRectParam);
+	LAYOUT_FIELD(FShaderParameter,				PassDataParam);
+	LAYOUT_FIELD(FShaderResourceParameter,		Target0);
+	LAYOUT_FIELD(FShaderResourceParameter,		Target1);
+	LAYOUT_FIELD(FShaderResourceParameter,		Target2);
+	LAYOUT_FIELD(FShaderResourceParameter,		Target3);
+	LAYOUT_FIELD(FShaderResourceParameter,		Target4);
+	LAYOUT_FIELD(FShaderResourceParameter,		Target5);
+	LAYOUT_FIELD(FShaderResourceParameter,		Target6);
+	LAYOUT_FIELD(FShaderResourceParameter,		Target7);
 };
 
 /**
@@ -393,7 +432,7 @@ public:
 
 		const bool IsSingleLayerWater = Parameters.MaterialParameters.ShadingModels.HasShadingModel(MSM_SingleLayerWater);
 
-		const bool bTranslucent = IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode);
+		const bool bTranslucent = IsTranslucentBlendMode(Parameters.MaterialParameters);
 		const bool bForceAllPermutations = SupportAllShaderPermutations && SupportAllShaderPermutations->GetValueOnAnyThread() != 0;
 		const bool bProjectSupportsStationarySkylight = !SupportStationarySkylight || SupportStationarySkylight->GetValueOnAnyThread() != 0 || bForceAllPermutations;
 
@@ -404,7 +443,7 @@ public:
 			|| ((bProjectSupportsStationarySkylight || IsForwardShadingEnabled(Parameters.Platform)) && Parameters.MaterialParameters.ShadingModels.IsLit());
 		
 		return bCacheShaders
-			&& (IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM6))
+			&& (IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5))
 			&& Parameters.VertexFactoryType->SupportsComputeShading()
 			&& TBasePassComputeShaderBaseType<LightMapPolicyType>::ShouldCompilePermutation(Parameters)
 			&& IsGBufferLayoutSupportedForMaterial(GBufferLayout, Parameters);
@@ -427,8 +466,6 @@ public:
 	/** Default constructor. */
 	TBasePassCS() {}
 };
-
-// END COMPUTE
 
 /**
  * The base type for pixel shaders that render the emissive color, and light-mapped/ambient lighting of a mesh.
@@ -527,7 +564,7 @@ public:
 
 		const bool IsSingleLayerWater = Parameters.MaterialParameters.ShadingModels.HasShadingModel(MSM_SingleLayerWater);
 
-		const bool bTranslucent = IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode);
+		const bool bTranslucent = IsTranslucentBlendMode(Parameters.MaterialParameters);
 		const bool bForceAllPermutations = SupportAllShaderPermutations && SupportAllShaderPermutations->GetValueOnAnyThread() != 0;
 		const bool bProjectSupportsStationarySkylight = !SupportStationarySkylight || SupportStationarySkylight->GetValueOnAnyThread() != 0 || bForceAllPermutations;
 
@@ -574,25 +611,11 @@ class F128BitRTBasePassPS : public TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIG
 {
 	DECLARE_SHADER_TYPE(F128BitRTBasePassPS, MeshMaterial);
 public:
+	F128BitRTBasePassPS();
+	F128BitRTBasePassPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		return FDataDrivenShaderPlatformInfo::GetRequiresExplicit128bitRT(Parameters.Platform);		
-	}
-
-	static void ModifyCompilationEnvironment(const FMeshMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetRenderTargetOutputFormat(0, PF_A32B32G32R32F);
-		TBasePassPS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	/** Initialization constructor. */
-	F128BitRTBasePassPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer): 
-		TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false, GBL_Default>(Initializer)
-	{}
-
-	/** Default constructor. */
-	F128BitRTBasePassPS() {}
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters);
+	static void ModifyCompilationEnvironment(const FMeshMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 };
 
 /**
@@ -761,7 +784,7 @@ public:
 		ETranslucencyPass::Type InTranslucencyPassType = ETranslucencyPass::TPT_MAX);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
-	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 
@@ -791,7 +814,8 @@ private:
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
 		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
 		const FMaterial& RESTRICT MaterialResource,
-		EBlendMode BlendMode,
+		const bool bIsMasked,
+		const bool bIsTranslucent,
 		FMaterialShadingModelField ShadingModels,
 		const LightMapPolicyType& RESTRICT LightMapPolicy,
 		const typename LightMapPolicyType::ElementDataType& RESTRICT LightMapElementData,
@@ -800,7 +824,7 @@ private:
 
 	void CollectPSOInitializersForSkyLight(
 		const FSceneTexturesConfig& SceneTexturesConfig,
-		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FMaterial& RESTRICT MaterialResource,
 		const bool bRenderSkylight,
 		const bool bDitheredLODTransition,
@@ -812,9 +836,8 @@ private:
 	template<typename LightMapPolicyType>
 	void CollectPSOInitializersForLMPolicy(
 		const FSceneTexturesConfig& SceneTexturesConfig,
-		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FMaterial& RESTRICT MaterialResource,
-		EBlendMode BlendMode,
 		FMaterialShadingModelField ShadingModels,
 		const bool bRenderSkylight,
 		const bool bDitheredLODTransition,
@@ -829,6 +852,7 @@ private:
 	const bool bEnableReceiveDecalOutput;
 	EDepthDrawingMode EarlyZPassMode;
 	bool bRequiresExplicit128bitRT;
+	float AutoBeforeDOFTranslucencyBoundary = 0.0f;
 };
 
 ENUM_CLASS_FLAGS(FBasePassMeshProcessor::EFlags);

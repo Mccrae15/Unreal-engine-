@@ -49,7 +49,17 @@ export const VersionModal: React.FC<{ show: boolean, onClose: () => void }> = ({
       { key: 'column2', name: 'Value', fieldName: 'value', minWidth: 100, maxWidth: 200 },
    ];
 
-   const dashboardVersion: string | undefined = process?.env?.REACT_APP_VERSION_INFO;
+   let dashboardVersion: string | undefined;
+
+   try {
+      // note: this must be exactly `process.env.REACT_APP_VERSION_INFO`
+      // as webpack does a simple find and replace to the value in the .env
+      // so process?.env?.REACT_APP_VERSION_INFO for example is invalid
+      dashboardVersion = process.env.REACT_APP_VERSION_INFO;
+   } catch (reason) {
+      console.log("Process env error:", reason);
+   }
+   
    if (dashboardVersion) {
       versionItems.push({ name: "Dashboard", value: dashboardVersion });
    }

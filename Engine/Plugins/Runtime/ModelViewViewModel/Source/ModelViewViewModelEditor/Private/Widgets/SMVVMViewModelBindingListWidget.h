@@ -2,17 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Framework/PropertyViewer/IFieldExpander.h"
 #include "Framework/PropertyViewer/IFieldIterator.h"
-#include "Misc/EnumClassFlags.h"
 #include "MVVMPropertyPath.h"
-#include "Templates/SubclassOf.h"
-#include "Templates/Tuple.h"
-#include "Types/MVVMBindingSource.h"
-#include "UObject/WeakObjectPtr.h"
-#include "Widgets/SCompoundWidget.h"
 #include "Widgets/PropertyViewer/SPropertyViewer.h"
+
+namespace UE::MVVM { struct FBindingSource; }
 
 class UWidgetBlueprint;
 class UWidget;
@@ -54,6 +49,19 @@ namespace UE::MVVM
 		EFieldVisibility FieldVisibilityFlags = EFieldVisibility::All;
 		const FProperty* AssignableTo = nullptr;
 	};
+
+	/**
+	 *
+	 */
+	class FFieldExpander_Bindable : public UE::PropertyViewer::FFieldExpander_Default
+	{
+	public:
+		FFieldExpander_Bindable();
+		virtual TOptional<const UStruct*> GetExpandedFunction(const UFunction* Function) const override;
+	};
+
+	/** Genereate the icon for the binding type. */
+	TSharedRef<SWidget> ConstructFieldPreSlot(const UWidgetBlueprint* WidgetBlueprint, UE::PropertyViewer::SPropertyViewer::FHandle Handle, const FFieldVariant FieldPath);
 
 	/** 
 	 * 
@@ -98,8 +106,9 @@ namespace UE::MVVM
 	private:
 		using SPropertyViewer = UE::PropertyViewer::SPropertyViewer;
 
-		void HandleSelectionChanged(SPropertyViewer::FHandle ViewModel, TArrayView<const FFieldVariant> Path, ESelectInfo::Type SelectionType);
-		void HandleDoubleClicked(SPropertyViewer::FHandle ViewModel, TArrayView<const FFieldVariant> Path);
+		TSharedPtr<SWidget> HandleGetPreSlot(SPropertyViewer::FHandle Handle, TArrayView<const FFieldVariant> Path);
+		void HandleSelectionChanged(SPropertyViewer::FHandle Handle, TArrayView<const FFieldVariant> Path, ESelectInfo::Type SelectionType);
+		void HandleDoubleClicked(SPropertyViewer::FHandle Handle, TArrayView<const FFieldVariant> Path);
 
 		FMVVMBlueprintPropertyPath CreateBlueprintPropertyPath(SPropertyViewer::FHandle Handle, TArrayView<const FFieldVariant> Path) const;
 

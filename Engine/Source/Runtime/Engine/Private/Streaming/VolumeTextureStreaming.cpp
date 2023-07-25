@@ -5,6 +5,8 @@ VolumeTextureStreaming.cpp: Helpers to stream in and out volume texture LODs.
 =============================================================================*/
 
 #include "Streaming/VolumeTextureStreaming.h"
+#include "RenderingThread.h"
+#include "Streaming/TextureMipAllocator.h"
 
 extern RHI_API bool GUseTexture3DBulkDataRHI;
 
@@ -95,7 +97,11 @@ bool FVolumeTextureMipAllocator_Reallocate::FinalizeMips(const FTextureUpdateCon
 		ENQUEUE_RENDER_COMMAND(FCopySharedMipsForTexture3D)(
 			[&](FRHICommandListImmediate& RHICmdList)
 		{
-			RHICmdList.CopySharedMips(IntermediateTextureRHI.GetReference(), Context.Resource->GetTexture3DRHI());
+			FRHITexture* SrcTexture = Context.Resource->GetTexture3DRHI();
+			FRHITexture* DstTexture = IntermediateTextureRHI.GetReference();
+
+			UE::RHI::CopySharedMips_AssumeSRVMaskState(RHICmdList, SrcTexture, DstTexture);
+
 			bCopySharedMipsDone = true;
 		});
 		// Expected to execute immediately since ran on the renderthread.

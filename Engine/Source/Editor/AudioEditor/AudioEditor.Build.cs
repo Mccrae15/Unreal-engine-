@@ -29,6 +29,7 @@ public class AudioEditor : ModuleRules
 				"Core",
 				"CoreUObject",
 				"ApplicationCore",
+				"AssetDefinition",
 				"AudioMixer",
 				"SignalProcessing",
 				"InputCore",
@@ -37,7 +38,6 @@ public class AudioEditor : ModuleRules
 				"UnrealEd",
 				"Slate",
 				"SlateCore",
-				
 				"RenderCore",
 				"LevelEditor",
 				"Landscape",

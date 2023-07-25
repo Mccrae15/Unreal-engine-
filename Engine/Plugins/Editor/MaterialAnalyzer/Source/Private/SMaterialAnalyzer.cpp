@@ -1,21 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SMaterialAnalyzer.h"
-#include "Widgets/Input/SSearchBox.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Async/AsyncWork.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Styling/SlateIconFinder.h"
-#include "Framework/Commands/UIAction.h"
-#include "Materials/MaterialLayersFunctions.h"
-#include "Hash/CityHash.h"
-#include "Styling/AppStyle.h"
+#include "ContentBrowserDataLegacyBridge.h"
 #include "PropertyCustomizationHelpers.h"
-#include "CollectionManagerTypes.h"
 #include "CollectionManagerModule.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "ICollectionManager.h"
 #include "AssetManagerEditorModule.h"
-#include "Widgets/Images/SImage.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstance.h"
+#include "Misc/Paths.h"
+#include "SAnalyzedMaterialNodeWidgetItem.h"
+#include "Widgets/Images/SThrobber.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableText.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Views/STreeView.h"
 
 #define LOCTEXT_NAMESPACE "MaterialAnalyzer"
 
@@ -35,6 +36,7 @@ SMaterialAnalyzer::SMaterialAnalyzer()
 	BasePropertyOverrideNames.Add(TEXT("bOverride_DitheredLODTransition"), TEXT("DitheredLODTransitionOverride"));
 	BasePropertyOverrideNames.Add(TEXT("bOverride_CastDynamicShadowAsMasked"), TEXT("CastDynamicShadowAsMaskedOverride"));
 	BasePropertyOverrideNames.Add(TEXT("bOverride_TwoSided"), TEXT("TwoSidedOverride"));
+	BasePropertyOverrideNames.Add(TEXT("bOverride_bIsThinSurface"), TEXT("bIsThinSurfaceOverride"));
 	BasePropertyOverrideNames.Add(TEXT("bOverride_OutputTranslucentVelocity"), TEXT("bOutputTranslucentVelocity"));
 }
 
@@ -763,6 +765,14 @@ void FAnalyzeMaterialTreeAsyncTask::DoWork()
 			if (CurrentMaterialInstance)
 			{
 				bIsOverridden = CurrentMaterialInstance->BasePropertyOverrides.bOverride_TwoSided;
+			}
+		}
+		else if (BasePropertyOverrideName.Key.IsEqual(TEXT("bOverride_bIsThinSurface")))
+		{
+			TempValue = CurrentMaterialInterface->IsThinSurface();
+			if (CurrentMaterialInstance)
+			{
+				bIsOverridden = CurrentMaterialInstance->BasePropertyOverrides.bOverride_bIsThinSurface;
 			}
 		}
 		else if (BasePropertyOverrideName.Key.IsEqual(TEXT("bOverride_OutputTranslucentVelocity")))

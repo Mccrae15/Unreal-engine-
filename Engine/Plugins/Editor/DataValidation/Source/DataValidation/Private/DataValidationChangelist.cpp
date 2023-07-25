@@ -3,13 +3,10 @@
 #include "DataValidationChangelist.h"
 
 #include "Algo/AnyOf.h"
-#include "Algo/Transform.h"
-#include "Misc/Paths.h"
 #include "Misc/DataValidation.h"
 #include "AssetRegistry/AssetData.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
+#include "Misc/PackageName.h"
 #include "SourceControlHelpers.h"
 #include "SourceControlOperations.h"
 #include "UncontrolledChangelistsModule.h"
@@ -166,7 +163,7 @@ EDataValidationResult UDataValidationChangelist::IsDataValid(FDataValidationCont
 			else
 			{
 				bHasChangelistErrors = true;
-				FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.NotInDepot", "{0} is referenced and must also be added to source control '{1}'"), FText::FromString(GetPrettyPackageName(ExternalDependency)), FText::FromString(ExternalPackageFilename));
+				FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.NotInDepot", "{0} is referenced and must also be added to revision control '{1}'"), FText::FromString(GetPrettyPackageName(ExternalDependency)), FText::FromString(ExternalPackageFilename));
 				Context.AddError(CurrentError);
 			}
 		}

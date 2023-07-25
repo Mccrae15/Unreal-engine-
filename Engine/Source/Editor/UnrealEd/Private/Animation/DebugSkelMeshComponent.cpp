@@ -8,6 +8,7 @@
 #include "Materials/Material.h"
 #include "Animation/AnimMontage.h"
 #include "Engine/Engine.h"
+#include "SceneInterface.h"
 #include "SceneManagement.h"
 #include "EngineGlobals.h"
 #include "GameFramework/WorldSettings.h"
@@ -31,7 +32,7 @@ UDebugSkelMeshComponent::UDebugSkelMeshComponent(const FObjectInitializer& Objec
 	: Super(ObjectInitializer)
 {
 	bDrawMesh = true;
-	PreviewInstance = NULL;
+	PreviewInstance = nullptr;
 	bDisplayRawAnimation = false;
 	bDisplayNonRetargetedPose = false;
 
@@ -453,9 +454,9 @@ bool UDebugSkelMeshComponent::IsTrackingAttachedLOD() const
 
 FPrimitiveSceneProxy* UDebugSkelMeshComponent::CreateSceneProxy()
 {
-	FDebugSkelMeshSceneProxy* Result = NULL;
+	FDebugSkelMeshSceneProxy* Result = nullptr;
 	ERHIFeatureLevel::Type SceneFeatureLevel = GetWorld()->FeatureLevel;
-	FSkeletalMeshRenderData* SkelMeshRenderData = GetSkeletalMeshAsset() ? GetSkeletalMeshAsset()->GetResourceForRendering() : NULL;
+	FSkeletalMeshRenderData* SkelMeshRenderData = GetSkeletalMeshAsset() ? GetSkeletalMeshAsset()->GetResourceForRendering() : nullptr;
 
 	// only create a scene proxy for rendering if
 	// properly initialized
@@ -477,7 +478,7 @@ bool UDebugSkelMeshComponent::ShouldRenderSelected() const
 
 bool UDebugSkelMeshComponent::IsPreviewOn() const
 {
-	return (PreviewInstance != NULL) && (PreviewInstance == AnimScriptInstance);
+	return (PreviewInstance != nullptr) && (PreviewInstance == AnimScriptInstance);
 }
 
 FString UDebugSkelMeshComponent::GetPreviewText() const
@@ -515,19 +516,13 @@ FString UDebugSkelMeshComponent::GetPreviewText() const
 #undef LOCTEXT_NAMESPACE
 }
 
+TObjectPtr<UAnimPreviewInstance> UDebugSkelMeshComponent::CreatePreviewInstance()
+{
+	return NewObject<UAnimPreviewInstance>(this);
+}
+
 void UDebugSkelMeshComponent::InitAnim(bool bForceReinit)
 {
-	// If we already have PreviewInstance and its asset's Skeleton isn't compatible with the mesh's Skeleton
-	// then we need to clear it up to avoid an issue
-	if ( PreviewInstance && PreviewInstance->GetCurrentAsset() && GetSkeletalMeshAsset())
-	{
-		if (!GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(PreviewInstance->GetCurrentAsset()->GetSkeleton()))
-		{
-			// if it doesn't match, just clear it
-			PreviewInstance->SetAnimationAsset(NULL);
-		}
-	}
-
 	if (PreviewInstance != nullptr && AnimScriptInstance == PreviewInstance && bForceReinit)
 	{
 		// Reset current animation data
@@ -537,10 +532,10 @@ void UDebugSkelMeshComponent::InitAnim(bool bForceReinit)
 
 	Super::InitAnim(bForceReinit);
 
-	// if PreviewInstance is NULL, create here once
-	if (PreviewInstance == NULL)
+	// if PreviewInstance is nullptr, create here once
+	if (PreviewInstance == nullptr)
 	{
-		PreviewInstance = NewObject<UAnimPreviewInstance>(this);
+		PreviewInstance = CreatePreviewInstance();
 		check(PreviewInstance);
 
 		//Set transactional flag in order to restore slider position when undo operation is performed
@@ -549,7 +544,7 @@ void UDebugSkelMeshComponent::InitAnim(bool bForceReinit)
 
 	// if anim script instance is null because it's not playing a blueprint, set to PreviewInstnace by default
 	// that way if user would like to modify bones or do extra stuff, it will work
-	if (AnimScriptInstance == NULL)
+	if (AnimScriptInstance == nullptr)
 	{
 		AnimScriptInstance = PreviewInstance;
 		AnimScriptInstance->InitializeAnimation();
@@ -592,7 +587,10 @@ void UDebugSkelMeshComponent::EnablePreview(bool bEnable, UAnimationAsset* Previ
 		    bDisableClothSimulation = bPrevDisableClothSimulation;
     
 			PreviewInstance->SetAnimationAsset(PreviewAsset); 
-
+			
+			// Reset to previous animation asset's root motion playback time to prevent this from influencing the new animation asset previewing during root motion consumption.
+			ConsumeRootMotionPreviousPlaybackTime = 0.0f;
+			
 			// Reset mesh relative transform. It could be offset from the origin if we are processing root motion
 			if (!GetRelativeTransform().Equals(FTransform::Identity))
 			{
@@ -602,7 +600,7 @@ void UDebugSkelMeshComponent::EnablePreview(bool bEnable, UAnimationAsset* Previ
 		}
 		else if (IsPreviewOn())
 		{
-			if (PreviewInstance->GetCurrentAsset() == PreviewAsset || PreviewAsset == NULL)
+			if (PreviewInstance->GetCurrentAsset() == PreviewAsset || PreviewAsset == nullptr)
 			{
 				// now recover to saved AnimScriptInstance;
 				AnimScriptInstance = SavedAnimScriptInstance;
@@ -760,7 +758,7 @@ void UDebugSkelMeshComponent::GenSpaceBases(TArray<FTransform>& OutSpaceBases)
 void UDebugSkelMeshComponent::RefreshBoneTransforms(FActorComponentTickFunction* TickFunction)
 {
 	// Run regular update first so we get RequiredBones up to date.
-	Super::RefreshBoneTransforms(NULL); // Pass NULL so we force non threaded work
+	Super::RefreshBoneTransforms(nullptr); // Pass nullptr so we force non threaded work
 
 	// none of these code works if we don't have anim instance, so no reason to check it for every if
 	if (AnimScriptInstance && AnimScriptInstance->GetRequiredBones().IsValid())
@@ -846,7 +844,7 @@ void UDebugSkelMeshComponent::RefreshBoneTransforms(FActorComponentTickFunction*
 						AdditiveBasePose.SetBoneContainer(&BoneContainer);
 						
 						FAnimationPoseData AnimationPoseData(AdditiveBasePose, AdditiveCurve, AdditiveAttributes);
-						Sequence->GetAdditiveBasePose(AnimationPoseData, FAnimExtractContext(PreviewInstance->GetCurrentTime()));
+						Sequence->GetAdditiveBasePose(AnimationPoseData, FAnimExtractContext(static_cast<double>(PreviewInstance->GetCurrentTime())));
 						CSAdditiveBasePose.InitPose(AnimationPoseData.GetPose());
 					}
 

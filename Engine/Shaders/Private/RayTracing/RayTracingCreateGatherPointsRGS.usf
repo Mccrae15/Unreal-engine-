@@ -9,8 +9,6 @@
 #define DIM_DEFERRED_MATERIAL_MODE DEFERRED_MATERIAL_MODE_NONE
 #endif
 
-#define USE_IES_TERM 0 // this shader doesn't bind the IES atlas, so disable the IES term from path tracer lights
-
 #include "../Common.ush"
 #include "../RectLight.ush"
 #include "../DeferredShadingCommon.ush"
@@ -23,7 +21,6 @@
 #include "RayTracingGatherPoints.ush"
 
 #include "../PathTracing/Light/PathTracingLightSampling.ush"
-#include "../PathTracing/Material/PathTracingMaterialSampling.ush"
 #include "../PathTracing/Utilities/PathTracingRandomSequence.ush"
 
 RaytracingAccelerationStructure TLAS;
@@ -346,7 +343,6 @@ RAY_TRACING_ENTRY_RAYGEN(RayTracingCreateGatherPointsRGS)
 				InstanceInclusionMask,
 				Ray,
 				RayCone,
-				PixelCoord,
 				bEnableSkyLightContribution,
 				bIgnoreTranslucentMaterials);
 
@@ -408,7 +404,6 @@ RAY_TRACING_ENTRY_RAYGEN(RayTracingCreateGatherPointsRGS)
 						TLAS,
 						NeeRayFlags,
 						NeeInstanceInclusionMask,
-						PixelCoord,
 						LightRay);
 
 					// No hit indicates successful next-event connection

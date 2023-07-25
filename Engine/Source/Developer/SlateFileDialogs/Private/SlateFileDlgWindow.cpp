@@ -215,8 +215,52 @@ FSlateFileDlgWindow::FSlateFileDlgWindow(FSlateFileDialogsStyle *InStyleSet)
 	StyleSet = InStyleSet;
 }
 
+namespace
+{
+	TSharedPtr<SWindow> FindMatchingWindowImpl(const TArray<TSharedRef<SWindow>>& RootWindows, const TFunctionRef<bool(const TSharedRef<SWindow>&)> Predicate)
+	{
+		for (const TSharedRef<SWindow>& Window : RootWindows)
+		{
+			if (Predicate(Window))
+			{
+				return Window;
+			}
+
+			if (TSharedPtr<SWindow> ChildWindow = FindMatchingWindowImpl(Window->GetChildWindows(), Predicate))
+			{
+				return ChildWindow;
+			}
+		}
+		return nullptr;
+	}
+
+	TSharedPtr<SWindow> FindMatchingWindow(const TFunctionRef<bool(const TSharedRef<SWindow>&)> Predicate)
+	{
+		return FindMatchingWindowImpl(FSlateApplication::Get().GetTopLevelWindows(), Predicate);
+	}
+
+	TSharedPtr<const SWidget> GetParentWindowWidget(const void* ParentWindowHandle)
+	{
+		if (ParentWindowHandle)
+		{
+			TSharedPtr<SWindow> ParentWindow = FindMatchingWindow([ParentWindowHandle](const TSharedRef<SWindow>& Window)
+			{
+				const TSharedPtr<FGenericWindow> NativeWindow = Window->GetNativeWindow();
+				return NativeWindow && NativeWindow->GetOSWindowHandle() == ParentWindowHandle;
+			});
+
+			if (ParentWindow)
+			{
+				return ParentWindow;
+			}
+		}
+		return FGlobalTabmanager::Get()->GetRootWindow();
+	}
+}
+
 bool FSlateFileDlgWindow::OpenFileDialog(const void* ParentWindowHandle, const FString& DialogTitle, const FString& DefaultPath,
-		const FString& DefaultFile, const FString& FileTypes, uint32 Flags, TArray<FString>& OutFilenames, int32& OutFilterIndex)
+		const FString& DefaultFile, const FString& FileTypes, uint32 Flags, TArray<FString>& OutFilenames, int32& OutFilterIndex,
+		int32 DefaultFilterIndex)
 {
 	FString StartDirectory = DefaultPath;
 	TrimFilenameFromPath(StartDirectory);
@@ -230,7 +274,7 @@ bool FSlateFileDlgWindow::OpenFileDialog(const void* ParentWindowHandle, const F
 		.MinWidth(600.0f)
 		.ActivationPolicy(EWindowActivationPolicy::Always)
 		.ClientSize(FVector2D(800, 500));
-	
+
 	DialogWidget = SNew(SSlateFileOpenDlg)
 		.bMultiSelectEnabled(Flags == 1)
 		.ParentWindow(ModalWindow)
@@ -238,14 +282,14 @@ bool FSlateFileDlgWindow::OpenFileDialog(const void* ParentWindowHandle, const F
 		.Filters(FileTypes)
 		.WindowTitleText(DialogTitle)
 		.StyleSet(StyleSet);
-	
+
 	DialogWidget->SetOutNames(&OutFilenames);
 	DialogWidget->SetOutFilterIndex(&OutFilterIndex);
-	
+	DialogWidget->SetDefaultFilterIndex(DefaultFilterIndex);
+
 	ModalWindow->SetContent( DialogWidget.ToSharedRef() );
-		
-	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
-	FSlateApplication::Get().AddModalWindow(ModalWindow, RootWindow);
+
+	FSlateApplication::Get().AddModalWindow(ModalWindow, GetParentWindowWidget(ParentWindowHandle));
 
 	return (DialogWidget->GetResponse() == EResult::Accept && OutFilenames.Num() > 0);
 }
@@ -292,8 +336,7 @@ bool FSlateFileDlgWindow::OpenDirectoryDialog(const void* ParentWindowHandle, co
 
 	ModalWindow->SetContent( DialogWidget.ToSharedRef() );
 
-	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
-	FSlateApplication::Get().AddModalWindow(ModalWindow, RootWindow);
+	FSlateApplication::Get().AddModalWindow(ModalWindow, GetParentWindowWidget(ParentWindowHandle));
 
 	bool RC = (DialogWidget->GetResponse() == EResult::Accept && TempOut.Num() > 0);
 
@@ -311,10 +354,9 @@ bool FSlateFileDlgWindow::OpenDirectoryDialog(const void* ParentWindowHandle, co
 
 
 bool FSlateFileDlgWindow::SaveFileDialog(const void* ParentWindowHandle, const FString& DialogTitle, const FString& DefaultPath,
-	const FString& DefaultFile, const FString& FileTypes, uint32 Flags, TArray<FString>& OutFilenames)
+	const FString& DefaultFile, const FString& FileTypes, uint32 Flags, TArray<FString>& OutFilenames, int32& OutFilterIndex,
+	int32 DefaultFilterIndex)
 {
-	int32 DummyIndex;
-
 	FString StartDirectory = DefaultPath;
 	TrimFilenameFromPath(StartDirectory);
 
@@ -339,15 +381,22 @@ bool FSlateFileDlgWindow::SaveFileDialog(const void* ParentWindowHandle, const F
 		.StyleSet(StyleSet);
 
 	DialogWidget->SetOutNames(&OutFilenames);
-	DialogWidget->SetOutFilterIndex(&DummyIndex);
+	DialogWidget->SetOutFilterIndex(&OutFilterIndex);
+	DialogWidget->SetDefaultFilterIndex(DefaultFilterIndex);
 	DialogWidget->SetDefaultFile(DefaultFile);
 
 	ModalWindow->SetContent( DialogWidget.ToSharedRef() );
-		
-	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
-	FSlateApplication::Get().AddModalWindow(ModalWindow, RootWindow);
+
+	FSlateApplication::Get().AddModalWindow(ModalWindow, GetParentWindowWidget(ParentWindowHandle));
 
 	return (DialogWidget->GetResponse() == EResult::Accept && OutFilenames.Num() > 0);
+}
+
+bool FSlateFileDlgWindow::SaveFileDialog(const void* ParentWindowHandle, const FString& DialogTitle, const FString& DefaultPath,
+	const FString& DefaultFile, const FString& FileTypes, uint32 Flags, TArray<FString>& OutFilenames)
+{
+	int32 DummyIndex;
+	return SaveFileDialog(ParentWindowHandle, DialogTitle, DefaultPath, DefaultFile, FileTypes, Flags, OutFilenames, DummyIndex);
 }
 
 void FSlateFileDlgWindow::TrimFilenameFromPath(FString &InPath)
@@ -1547,7 +1596,11 @@ void SSlateFileOpenDlg::OnItemSelected(TSharedPtr<FFileEntry> Item, ESelectInfo:
 			FileList = Item->Label;
 		}
 
-		SetDefaultFile(FileList);
+		// Update file name text as long as we aren't saving a file with a directory selected
+		if (!(bSaveFile && Item->bIsDirectory))
+		{
+			SetDefaultFile(FileList);
+		}
 	}
 }
 

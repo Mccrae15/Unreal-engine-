@@ -3,22 +3,10 @@
 #include "MuCO/UnrealMutableModelDiskStreamer.h"
 
 #include "Async/AsyncFileHandle.h"
-#include "Containers/UnrealString.h"
-#include "CoreGlobals.h"
-#include "GenericPlatform/GenericPlatformFile.h"
-#include "HAL/IConsoleManager.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Misc/AssertionMacros.h"
-#include "MuCO/CustomizableObject.h"
+#include "HAL/PlatformFile.h"
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuR/Model.h"
 #include "MuR/MutableTrace.h"
-#include "MuR/Ptr.h"
-#include "Serialization/Archive.h"
-#include "Stats/Stats2.h"
-#include "Templates/UnrealTemplate.h"
-#include "Trace/Detail/Channel.h"
 
 #if WITH_EDITOR
 #include "HAL/PlatformFileManager.h"
@@ -144,14 +132,14 @@ bool FUnrealMutableModelBulkStreamer::PrepareStreamingForObject(UCustomizableObj
 	// Is the object already prepared for streaming?
 	bool bAlreadyStreaming = Objects.FindByPredicate(
 		[CustomizableObject](const FObjectData& d) 
-		{ return d.Model.Pin() == CustomizableObject->GetModel(); })
+		{ return d.Model.Pin().Get() == CustomizableObject->GetModel().Get(); })
 		!= 
 		nullptr;
 
 	if (!bAlreadyStreaming)
 	{
 		FObjectData NewData;
-		NewData.Model = mu::WeakPtr<mu::Model>(CustomizableObject->GetModel());
+		NewData.Model = TWeakPtr<const mu::Model>(CustomizableObject->GetModel());
 
 #if WITH_EDITOR
 		FString FolderPath = CustomizableObject->GetCompiledDataFolderPath(true);
@@ -236,6 +224,32 @@ void FUnrealMutableModelBulkStreamer::CancelStreamingForObject(const UCustomizab
 	}
 }
 
+
+bool FUnrealMutableModelBulkStreamer::AreTherePendingStreamingOperationsForObject(const UCustomizableObject* CustomizableObject) const
+{
+	// This happens in the game thread
+	check(IsInGameThread());
+
+	if (!CustomizableObject)
+	{
+		check(false);
+		return false;
+	}
+
+	for (int32 ObjectIndex = 0; ObjectIndex < Objects.Num(); ++ObjectIndex)
+	{
+		if (Objects[ObjectIndex].Model.Pin() == CustomizableObject->GetModel())
+		{
+			if(!Objects[ObjectIndex].CurrentReadRequests.IsEmpty())
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 #endif // WITH_EDITOR
 
 
@@ -273,7 +287,7 @@ mu::ModelStreamer::OPERATION_ID FUnrealMutableModelBulkStreamer::BeginReadBlock(
 
 	// Find the object we are streaming for
 	FObjectData* ObjectData = Objects.FindByPredicate(
-		[Model](const FObjectData& d) {return d.Model.Pin()==Model; });
+		[Model](const FObjectData& d) {return d.Model.Pin().Get() == Model; });
 
 	if (!ObjectData)
 	{

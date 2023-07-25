@@ -4,11 +4,9 @@
 
 #if WITH_TENCENTSDK
 
-#include "OnlineSubsystem.h"
 #include "OnlineSubsystemImpl.h"
-#include "OnlineSubsystemTencentTypes.h"
-#include "OnlineSubsystemTencentModule.h"
-#include "OnlineSubsystemTencentPackage.h"
+#include "OnlineSubsystemTencentTypes.h" // IWYU pragma: keep
+#include "OnlineSubsystemPackage.h"
 
 /**
  * Delegate called when Tencent requires Anti-Addiction message to be displayed
@@ -204,3 +202,8 @@ private:
 typedef TSharedPtr<FOnlineSubsystemTencent, ESPMode::ThreadSafe> FOnlineSubsystemTencentPtr;
 
 #endif // WITH_TENCENTSDK
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "OnlineSubsystemTencentPackage.h"
+#include "OnlineSubsystemTencentTypes.h"
+#endif

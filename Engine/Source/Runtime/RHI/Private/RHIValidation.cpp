@@ -6,9 +6,13 @@
 
 #include "RHIValidation.h"
 #include "RHIValidationContext.h"
+#include "HAL/IConsoleManager.h"
 #include "RHIValidationTransientResourceAllocator.h"
 #include "HAL/PlatformStackWalk.h"
+#include "Misc/CommandLine.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "RHIContext.h"
+#include "RHIStrings.h"
 
 #if ENABLE_RHI_VALIDATION
 
@@ -83,6 +87,105 @@ namespace RHIValidation
 			CreateDesc.Flags,
 			CreateDesc.InitialState,
 			CreateDesc.DebugName);
+	}
+
+	void FTextureResource::InitBarrierTracking(int32 InNumMips, int32 InNumArraySlices, EPixelFormat PixelFormat, ETextureCreateFlags Flags, ERHIAccess InResourceState, const TCHAR* InDebugName)
+	{
+		FResource* Resource = GetTrackerResource();
+		if (!Resource)
+			return;
+
+		int32 InNumPlanes = 1;
+
+		// @todo: htile tracking
+		if (IsStencilFormat(PixelFormat))
+		{
+			InNumPlanes = 2; // Depth + Stencil
+		}
+		else
+		{
+			InNumPlanes = 1; // Depth only
+		}
+
+		Resource->InitBarrierTracking(InNumMips, InNumArraySlices, InNumPlanes, InResourceState, InDebugName);
+	}
+
+	FResourceIdentity FTextureResource::GetViewIdentity(uint32 InMipIndex, uint32 InNumMips, uint32 InArraySlice, uint32 InNumArraySlices, uint32 InPlaneIndex, uint32 InNumPlanes)
+	{
+		FResource* Resource = GetTrackerResource();
+
+		checkSlow((InMipIndex + InNumMips) <= Resource->NumMips);
+		checkSlow((InArraySlice + InNumArraySlices) <= Resource->NumArraySlices);
+		checkSlow((InPlaneIndex + InNumPlanes) <= Resource->NumPlanes);
+
+		if (InNumMips == 0)
+		{
+			InNumMips = Resource->NumMips;
+		}
+		if (InNumArraySlices == 0)
+		{
+			InNumArraySlices = Resource->NumArraySlices;
+		}
+		if (InNumPlanes == 0)
+		{
+			InNumPlanes = Resource->NumPlanes;
+		}
+
+		FResourceIdentity Identity;
+		Identity.Resource = Resource;
+		Identity.SubresourceRange.MipIndex = InMipIndex;
+		Identity.SubresourceRange.NumMips = InNumMips;
+		Identity.SubresourceRange.ArraySlice = InArraySlice;
+		Identity.SubresourceRange.NumArraySlices = InNumArraySlices;
+		Identity.SubresourceRange.PlaneIndex = InPlaneIndex;
+		Identity.SubresourceRange.NumPlanes = InNumPlanes;
+		return Identity;
+	}
+
+	FResourceIdentity FTextureResource::GetTransitionIdentity(const FRHITransitionInfo& Info)
+	{
+		FResource* Resource = GetTrackerResource();
+
+		FResourceIdentity Identity;
+		Identity.Resource = Resource;
+
+		if (Info.IsAllMips())
+		{
+			Identity.SubresourceRange.MipIndex = 0;
+			Identity.SubresourceRange.NumMips = Resource->NumMips;
+		}
+		else
+		{
+			check(Info.MipIndex < uint32(Resource->NumMips));
+			Identity.SubresourceRange.MipIndex = Info.MipIndex;
+			Identity.SubresourceRange.NumMips = 1;
+		}
+
+		if (Info.IsAllArraySlices())
+		{
+			Identity.SubresourceRange.ArraySlice = 0;
+			Identity.SubresourceRange.NumArraySlices = Resource->NumArraySlices;
+		}
+		else
+		{
+			check(Info.ArraySlice < uint32(Resource->NumArraySlices));
+			Identity.SubresourceRange.ArraySlice = Info.ArraySlice;
+			Identity.SubresourceRange.NumArraySlices = 1;
+		}
+
+		if (Info.IsAllPlaneSlices())
+		{
+			Identity.SubresourceRange.PlaneIndex = 0;
+			Identity.SubresourceRange.NumPlanes = Resource->NumPlanes;
+		}
+		else
+		{
+			check(Info.PlaneSlice < uint32(Resource->NumPlanes));
+			Identity.SubresourceRange.PlaneIndex = Info.PlaneSlice;
+			Identity.SubresourceRange.NumPlanes = 1;
+		}
+
+		return Identity;
 	}
 }
 
@@ -532,8 +635,76 @@ public:
 
 thread_local TConstArrayView<const TCHAR*> FRHIValidationBreadcrumbScope::Breadcrumbs;
 
+static FString GetBreadcrumbPath()
+{
+	FString BreadcrumbMessage;
+
+	for (int32 Index = 0; Index < FRHIValidationBreadcrumbScope::Breadcrumbs.Num() - 1; ++Index)
+	{
+		BreadcrumbMessage += (FRHIValidationBreadcrumbScope::Breadcrumbs[Index] + FString(TEXT("/")));
+	}
+
+	BreadcrumbMessage += FRHIValidationBreadcrumbScope::Breadcrumbs.Last();
+	return BreadcrumbMessage;
+}
+
+// FlushType: Thread safe
+void FValidationRHI::RHIBindDebugLabelName(FRHITexture* Texture, const TCHAR* Name)
+{
+	check(IsInRenderingThread());
+
+	FString NameCopyRT = Name;
+	FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([Texture, NameCopyRHIT = MoveTemp(NameCopyRT)](FRHICommandListImmediate& RHICmdList)
+		{
+			((FValidationContext&)RHICmdList.GetContext()).Tracker->Rename(Texture->GetTrackerResource(), *NameCopyRHIT);
+		});
+
+	RHI->RHIBindDebugLabelName(Texture, Name);
+}
+
+void FValidationRHI::RHIBindDebugLabelName(FRHIBuffer* Buffer, const TCHAR* Name)
+{
+	check(IsInRenderingThread());
+
+	FString NameCopyRT = Name;
+	FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([Buffer, NameCopyRHIT = MoveTemp(NameCopyRT)](FRHICommandListImmediate& RHICmdList)
+		{
+			((FValidationContext&)RHICmdList.GetContext()).Tracker->Rename(Buffer, *NameCopyRHIT);
+		});
+
+	RHI->RHIBindDebugLabelName(Buffer, Name);
+}
+
+void FValidationRHI::RHIBindDebugLabelName(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const TCHAR* Name)
+{
+	RHIValidation::FResource* Resource = UnorderedAccessViewRHI->ViewIdentity.Resource;
+	FString NameCopyRT = Name;
+	FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([Resource, NameCopyRHIT = MoveTemp(NameCopyRT)](FRHICommandListImmediate& RHICmdList)
+		{
+			((FValidationContext&)RHICmdList.GetContext()).Tracker->Rename(Resource, *NameCopyRHIT);
+		});
+
+	RHI->RHIBindDebugLabelName(UnorderedAccessViewRHI, Name);
+}
+
 void FValidationRHI::ReportValidationFailure(const TCHAR* InMessage)
 {
+	// Report failures only once per session, since many of them will happen repeatedly. This is similar to what ensure() does, but
+	// ensure() looks at the source location to determine if it's seen the error before. We want to look at the actual message, since
+	// all failures of a given kind will come from the same place, but (hopefully) the error message contains the name of the resource
+	// and a description of the state, so it should be unique for each failure.
+	uint32 Hash = FCrc::StrCrc32<TCHAR>(InMessage);
+	
+	SeenFailureHashesMutex.Lock();
+	bool bIsAlreadyInSet;
+	SeenFailureHashes.Add(Hash, &bIsAlreadyInSet);
+	SeenFailureHashesMutex.Unlock();
+
+	if (bIsAlreadyInSet)
+	{
+		return;
+	}
+
 	FString Message;
 
 	if (!FRHIValidationBreadcrumbScope::Breadcrumbs.IsEmpty())
@@ -555,22 +726,6 @@ void FValidationRHI::ReportValidationFailure(const TCHAR* InMessage)
 	else
 	{
 		Message = InMessage;
-	}
-
-	// Report failures only once per session, since many of them will happen repeatedly. This is similar to what ensure() does, but
-	// ensure() looks at the source location to determine if it's seen the error before. We want to look at the actual message, since
-	// all failures of a given kind will come from the same place, but (hopefully) the error message contains the name of the resource
-	// and a description of the state, so it should be unique for each failure.
-	uint32 Hash = FCrc::StrCrc32<TCHAR>(*Message);
-	
-	SeenFailureHashesMutex.Lock();
-	bool bIsAlreadyInSet;
-	SeenFailureHashes.Add(Hash, &bIsAlreadyInSet);
-	SeenFailureHashesMutex.Unlock();
-
-	if (bIsAlreadyInSet)
-	{
-		return;
 	}
 
 	UE_LOG(LogRHI, Error, TEXT("%s"), *Message);
@@ -1673,6 +1828,20 @@ namespace RHIValidation
 		}
 
 		return EReplayStatus::Normal;
+	}
+
+	void FTracker::AddOp(const RHIValidation::FOperation& Op)
+	{
+		if (GRHICommandList.Bypass() && CurrentList.Operations.Num() == 0)
+		{
+			auto& OpQueue = OpQueues[GetOpQueueIndex(Pipeline)];
+			if (!EnumHasAllFlags(Op.Replay(Pipeline, OpQueue.bAllowAllUAVsOverlap, OpQueue.Breadcrumbs), EReplayStatus::Waiting))
+			{
+				return;
+			}
+		}
+
+		CurrentList.Operations.Add(Op);
 	}
 
 	void FTracker::ReplayOpQueue(ERHIPipeline DstOpQueue, FOperationsList&& InOpsList)

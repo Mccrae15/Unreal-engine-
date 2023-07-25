@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using EpicGames.Core;
+using Horde.Build.Streams;
 using HordeCommon;
 
 namespace Horde.Build.Jobs.Templates
@@ -431,6 +433,11 @@ namespace Horde.Build.Jobs.Templates
 		public string? SubmitDescription { get; set; }
 
 		/// <summary>
+		/// Default change to build at. Each object has a condition parameter which can evaluated by the server to determine which change to use.
+		/// </summary>
+		public List<ChangeQueryConfig>? DefaultChange { get; set; }
+
+		/// <summary>
 		/// Fixed arguments for the new job
 		/// </summary>
 		public List<string> Arguments { get; set; } = new List<string>();
@@ -439,6 +446,17 @@ namespace Horde.Build.Jobs.Templates
 		/// Parameters for this template
 		/// </summary>
 		public List<ParameterData> Parameters { get; set; } = new List<ParameterData>();
+
+		/// <summary>
+		/// The executor to use for this job. Mainly used for debugging.
+		/// </summary>
+		public string? Executor { get; set; }
+
+		/// <summary>
+		/// The cached hash of this template.
+		/// </summary>
+		[JsonIgnore]
+		internal ContentHash? CachedHash { get; set; }
 	}
 
 	/// <summary>
@@ -540,7 +558,7 @@ namespace Horde.Build.Jobs.Templates
 		public GetTemplateResponse(ITemplate template)
 			: base(template)
 		{
-			Id = template.Id.ToString();
+			Id = template.Hash.ToString();
 		}
 	}
 }

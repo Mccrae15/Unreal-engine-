@@ -18,18 +18,18 @@ public class SDL2 : ModuleRules
 		// assume SDL to be built with extensions
 		PublicDefinitions.Add("SDL_WITH_EPIC_EXTENSIONS=1");
 
-		PublicIncludePaths.Add(SDL2IncPath);
+		PublicSystemIncludePaths.Add(SDL2IncPath);
 
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
 			if (Target.Configuration == UnrealTargetConfiguration.Debug)
 			{
 				// Debug version should be built with -fPIC and usable in all targets
-				PublicAdditionalLibraries.Add(Path.Combine(SDL2LibPath, "Unix", Target.Architecture, "libSDL2_fPIC_Debug.a"));
+				PublicAdditionalLibraries.Add(Path.Combine(SDL2LibPath, "Unix", Target.Architecture.LinuxName, "libSDL2_fPIC_Debug.a"));
 			}
 			else
 			{
-				PublicAdditionalLibraries.Add(Path.Combine(SDL2LibPath, "Unix", Target.Architecture, "libSDL2_fPIC.a"));
+				PublicAdditionalLibraries.Add(Path.Combine(SDL2LibPath, "Unix", Target.Architecture.LinuxName, "libSDL2_fPIC.a"));
 			}
 		}
 	}

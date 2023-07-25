@@ -4,9 +4,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Kismet/KismetRenderingLibrary.h"
 #include "UObject/GCObject.h"
-#include "UObject/SoftObjectPath.h"
+#include "UObject/Package.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "Engine/Texture.h"
 
 struct FCompositingElementAssets : public FGCObject
 {

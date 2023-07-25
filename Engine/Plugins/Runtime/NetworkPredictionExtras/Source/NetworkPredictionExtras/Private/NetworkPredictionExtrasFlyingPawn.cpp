@@ -1,21 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NetworkPredictionExtrasFlyingPawn.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "Components/InputComponent.h"
-#include "FlyingMovementComponent.h"
-#include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerInput.h"
 #include "GameFramework/SpringArmComponent.h"
-#include "DrawDebugHelpers.h"
-#include "Camera/PlayerCameraManager.h"
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
-#include "Components/CapsuleComponent.h"
-#include "DrawDebugHelpers.h"
-#include "NetworkPredictionLog.h"
 
-#include "Misc/AssertionMacros.h"
 #include "HAL/PlatformStackWalk.h"
 #include "HAL/ThreadHeartBeat.h"
 #include "MockAbilitySimulation.h"
@@ -249,9 +242,17 @@ void ANetworkPredictionExtrasFlyingPawn::ProduceInput(const int32 DeltaMS, FFlyi
 		return;
 	}
 
-
 	if (Controller == nullptr)
 	{
+		if (GetLocalRole() == ENetRole::ROLE_Authority && GetRemoteRole() == ENetRole::ROLE_SimulatedProxy)
+		{
+			// If we get here, that means this pawn is not currently possessed and we're choosing to provide default do-nothing input
+			Cmd = FFlyingMovementInputCmd();
+		}
+
+		CachedMoveInput = FVector3f::ZeroVector;
+		CachedLookInput = FVector2D::ZeroVector;
+
 		// We don't have a local controller so we can't run the code below. This is ok. Simulated proxies will just use previous input when extrapolating
 		return;
 	}
@@ -411,10 +412,6 @@ void ANetworkPredictionExtrasFlyingPawn::ProduceInput(const int32 DeltaMS, FFlyi
 			break;
 		}
 	}
-				
-
-	CachedMoveInput = FVector3f::ZeroVector;
-	CachedLookInput = FVector2D::ZeroVector;
 }
 
 // ------------------------------------------------------------------------

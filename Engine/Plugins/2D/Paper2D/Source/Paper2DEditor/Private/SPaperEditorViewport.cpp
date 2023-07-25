@@ -1,15 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPaperEditorViewport.h"
-#include "Rendering/DrawElements.h"
+#include "Math/ColorList.h"
 #include "Widgets/SBoxPanel.h"
-#include "Widgets/SViewport.h"
-#include "Application/ThrottleManager.h"
 #include "Framework/Application/SlateApplication.h"
+#include "PaperEditorViewportClient.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Styling/AppStyle.h"
-#include "Editor.h"
 #include "PaperStyle.h"
 
 const int32 DefaultZoomLevel = 7;
@@ -515,11 +513,12 @@ void SPaperEditorViewport::PaintSoftwareCursor(const FGeometry& AllottedGeometry
 	if (bShowSoftwareCursor)
 	{
 		const FSlateBrush* Brush = FAppStyle::GetBrush(TEXT("SoftwareCursor_Grab"));
+		const FVector2D CursorSize = Brush->ImageSize / AllottedGeometry.Scale;
 
 		FSlateDrawElement::MakeBox(
 			OutDrawElements,
 			DrawLayerId,
-			AllottedGeometry.ToPaintGeometry( GraphCoordToPanelCoord(SoftwareCursorPosition) / AllottedGeometry.Scale - ( Brush->ImageSize / 2 ), Brush->ImageSize ),
+			AllottedGeometry.ToPaintGeometry( CursorSize, FSlateLayoutTransform(GraphCoordToPanelCoord(SoftwareCursorPosition) / AllottedGeometry.Scale - ( CursorSize * .5f )) ),
 			Brush);
 	}
 }

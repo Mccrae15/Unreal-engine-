@@ -3,13 +3,11 @@
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "GameFramework/MovementComponent.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "PhysicsCoreTypes.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 
-#include "Framework/Threading.h"
 
-#include "ChaosSolversModule.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PhysicsSettings)
 
@@ -18,7 +16,6 @@ UPhysicsSettings::UPhysicsSettings(const FObjectInitializer& ObjectInitializer)
 	, LockedAxis_DEPRECATED(ESettingsLockedAxis::Invalid)
 	, bSuppressFaceRemapTable(false)
 	, bDisableActiveActors(false)
-	, bEnableEnhancedDeterminism(false)
 	, AnimPhysicsMinDeltaTime(0.f)
 	, bSimulateAnimPhysicsAfterReset(false)
 	, MinPhysicsDeltaTime(UE_SMALL_NUMBER)

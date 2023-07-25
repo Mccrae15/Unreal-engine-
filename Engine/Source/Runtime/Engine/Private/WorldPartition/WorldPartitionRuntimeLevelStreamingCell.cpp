@@ -2,22 +2,16 @@
 
 #include "WorldPartition/WorldPartitionRuntimeLevelStreamingCell.h"
 #include "WorldPartition/WorldPartitionLevelStreamingDynamic.h"
-#include "WorldPartition/WorldPartition.h"
-#include "Engine/World.h"
-
-#include "WorldPartition/HLOD/HLODSubsystem.h"
-#include "WorldPartition/HLOD/HLODActor.h"
-#include "WorldPartition/WorldPartitionDebugHelper.h"
+#include "WorldPartition/WorldPartitionActorDescView.h"
 #include "WorldPartition/WorldPartitionLevelStreamingPolicy.h"
+#include "Engine/LevelStreaming.h"
+#include "Engine/Level.h"
+#include "Misc/HierarchicalLogArchive.h"
+#include "Misc/Paths.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionRuntimeLevelStreamingCell)
 
 #if WITH_EDITOR
-#include "WorldPartition/ActorDescContainer.h"
-#include "WorldPartition/WorldPartitionLevelHelper.h"
-#include "Engine/LevelStreamingAlwaysLoaded.h"
-#include "Algo/ForEach.h"
-#include "AssetCompilingManager.h"
 #endif
 
 UWorldPartitionRuntimeLevelStreamingCell::UWorldPartitionRuntimeLevelStreamingCell(const FObjectInitializer& ObjectInitializer)
@@ -29,12 +23,12 @@ EWorldPartitionRuntimeCellState UWorldPartitionRuntimeLevelStreamingCell::GetCur
 {
 	if (LevelStreaming)
 	{
-		ULevelStreaming::ECurrentState CurrentStreamingState = LevelStreaming->GetCurrentState();
-		if (CurrentStreamingState == ULevelStreaming::ECurrentState::LoadedVisible)
+		ELevelStreamingState CurrentStreamingState = LevelStreaming->GetLevelStreamingState();
+		if (CurrentStreamingState == ELevelStreamingState::LoadedVisible)
 		{
 			return EWorldPartitionRuntimeCellState::Activated;
 		}
-		else if (CurrentStreamingState >= ULevelStreaming::ECurrentState::LoadedNotVisible)
+		else if (CurrentStreamingState >= ELevelStreamingState::LoadedNotVisible)
 		{
 			return EWorldPartitionRuntimeCellState::Loaded;
 		}
@@ -58,6 +52,51 @@ bool UWorldPartitionRuntimeLevelStreamingCell::HasActors() const
 #endif
 }
 
+#if WITH_EDITOR
+TSet<FName> UWorldPartitionRuntimeLevelStreamingCell::GetActorPackageNames() const
+{
+	TSet<FName> Actors;
+	Actors.Reserve(Packages.Num());
+	for (const FWorldPartitionRuntimeCellObjectMapping& Package : Packages)
+	{
+		Actors.Add(Package.Package);
+	}
+	return Actors;
+}
+#endif
+
+FName UWorldPartitionRuntimeLevelStreamingCell::GetLevelPackageName() const
+{
+#if WITH_EDITOR
+	UWorld* World = GetCellOwner()->GetOwningWorld();
+	if (World->IsPlayInEditor())
+	{
+		return FName(UWorldPartitionLevelStreamingPolicy::GetCellPackagePath(GetFName(), World));
+	}
+#endif
+	if (LevelStreaming)
+	{
+		return LevelStreaming->GetWorldAssetPackageFName();
+	}
+	return Super::GetLevelPackageName();
+}
+
+TArray<FName> UWorldPartitionRuntimeLevelStreamingCell::GetActors() const
+{
+	TArray<FName> Actors;
+
+#if WITH_EDITOR
+	Actors.Reserve(Packages.Num());
+
+	for (const FWorldPartitionRuntimeCellObjectMapping& Package : Packages)
+	{
+		Actors.Add(*FPaths::GetExtension(Package.Path.ToString()));
+	}
+#endif
+
+	return Actors;
+}
+
 void UWorldPartitionRuntimeLevelStreamingCell::CreateAndSetLevelStreaming(const FString& InPackageName)
 {
 	LevelStreaming = CreateLevelStreaming(InPackageName);
@@ -76,6 +115,7 @@ UWorldPartitionLevelStreamingDynamic* UWorldPartitionRuntimeLevelStreamingCell::
 		// When called by Commandlet (PopulateGeneratedPackageForCook), LevelStreaming's outer is set to Cell/WorldPartition's outer to prevent warnings when saving Cell Levels (Warning: Obj in another map). 
 		// At runtime, LevelStreaming's outer will be properly set to the main world (see UWorldPartitionRuntimeLevelStreamingCell::Activate).
 		UWorld* LevelStreamingOuterWorld = IsRunningCommandlet() ? OuterWorld : OwningWorld;
+		check(!FindObject<UWorldPartitionLevelStreamingDynamic>(LevelStreamingOuterWorld, *LevelStreamingName.ToString()));
 		UWorldPartitionLevelStreamingDynamic* NewLevelStreaming = NewObject<UWorldPartitionLevelStreamingDynamic>(LevelStreamingOuterWorld, UWorldPartitionLevelStreamingDynamic::StaticClass(), LevelStreamingName, RF_NoFlags, NULL);
 
 		FName WorldName = OuterWorld->GetFName();
@@ -124,8 +164,8 @@ bool UWorldPartitionRuntimeLevelStreamingCell::IsLoading() const
 {
 	if (LevelStreaming)
 	{
-		ULevelStreaming::ECurrentState CurrentState = LevelStreaming->GetCurrentState();
-		return (CurrentState == ULevelStreaming::ECurrentState::Removed || CurrentState == ULevelStreaming::ECurrentState::Unloaded || CurrentState == ULevelStreaming::ECurrentState::Loading);
+		ELevelStreamingState CurrentState = LevelStreaming->GetLevelStreamingState();
+		return (CurrentState == ELevelStreamingState::Removed || CurrentState == ELevelStreamingState::Unloaded || CurrentState == ELevelStreamingState::Loading);
 	}
 	return Super::IsLoading();
 }
@@ -142,7 +182,7 @@ FLinearColor UWorldPartitionRuntimeLevelStreamingCell::GetDebugColor(EWorldParti
 		{
 			// Return streaming status color
 			FLinearColor Color = LevelStreaming ? ULevelStreaming::GetLevelStreamingStatusColor(GetStreamingStatus()) : FLinearColor::Black;
-			Color.A = 0.25f / (Level + 1);
+			Color.A = 0.25f;
 			return Color;
 		}
 		default:
@@ -310,16 +350,39 @@ UWorldPartitionLevelStreamingDynamic* UWorldPartitionRuntimeLevelStreamingCell::
 		ULevel* PartitionLevel = WorldPartition->GetTypedOuter<ULevel>();
 		if (PartitionLevel->IsInstancedLevel())
 		{
-			FString PackageShortName = FPackageName::GetShortName(PartitionLevel->GetPackage());
-			FString InstancedLevelPackageName = FString::Printf(TEXT("%s_InstanceOf_%s"), *LevelStreaming->PackageNameToLoad.ToString(), *PackageShortName);
+			// Try and extract the instance suffix that was applied to the instanced level itself
+			FString InstancedLevelSuffix;
+			{
+				UPackage* PartitionLevelPackage = PartitionLevel->GetPackage();
+
+				FNameBuilder SourcePackageName(PartitionLevelPackage->GetLoadedPath().GetPackageFName());
+				FNameBuilder InstancedPackageName(PartitionLevelPackage->GetFName());
+				
+				FStringView SourcePackageNameView = SourcePackageName.ToView();
+				FStringView InstancedPackageNameView = InstancedPackageName.ToView();
+
+				if (InstancedPackageNameView.StartsWith(SourcePackageNameView))
+				{
+					InstancedLevelSuffix = InstancedPackageNameView.Mid(SourcePackageNameView.Len());
+				}
+				else
+				{
+					InstancedLevelSuffix =  TEXT("_");
+					InstancedLevelSuffix += FPackageName::GetShortName(PartitionLevelPackage);
+				}
+			}
+			check(!InstancedLevelSuffix.IsEmpty());
+
+			FNameBuilder InstancedLevelPackageName;
+			LevelStreaming->PackageNameToLoad.AppendString(InstancedLevelPackageName);
+			InstancedLevelPackageName += InstancedLevelSuffix;
+
 			LevelStreaming->SetWorldAssetByPackageName(FName(InstancedLevelPackageName));
 		}
 	}
 #endif
 
-	// @todo_ow ContentBundles do not support Hlods and events below are forwarding
-	// Events to the HLodSubsystem which assumes knowledge of all cells (not true with plugins)
-	if (LevelStreaming  && !GetContentBundleID().IsValid())
+	if (LevelStreaming)
 	{
 		LevelStreaming->OnLevelShown.AddUniqueDynamic(this, &UWorldPartitionRuntimeLevelStreamingCell::OnLevelShown);
 		LevelStreaming->OnLevelHidden.AddUniqueDynamic(this, &UWorldPartitionRuntimeLevelStreamingCell::OnLevelHidden);
@@ -353,7 +416,7 @@ bool UWorldPartitionRuntimeLevelStreamingCell::CanAddToWorld() const
 {
 	return LevelStreaming &&
 		   LevelStreaming->GetLoadedLevel() &&
-		   (LevelStreaming->GetCurrentState() == ULevelStreaming::ECurrentState::MakingVisible);
+		   (LevelStreaming->GetLevelStreamingState() == ELevelStreamingState::MakingVisible);
 }
 
 void UWorldPartitionRuntimeLevelStreamingCell::SetStreamingPriority(int32 InStreamingPriority) const
@@ -371,22 +434,6 @@ ULevel* UWorldPartitionRuntimeLevelStreamingCell::GetLevel() const
 
 bool UWorldPartitionRuntimeLevelStreamingCell::CanUnload() const
 {
-	// @todo_ow ContentBundles do not support Hlods and events below are forwarding
-	// Events to the HLodSubsystem which assumes knowledge of all cells (not true with plugins)
-	if (LevelStreaming && !GetContentBundleID().IsValid())
-	{
-		const UWorldPartition* WorldPartition = LevelStreaming->GetWorld()->GetWorldPartition();
-		check(WorldPartition);
-
-		if (WorldPartition->IsStreamingEnabled())
-		{
-			if (UHLODSubsystem* HLODSubsystem = LevelStreaming->GetWorld()->GetSubsystem<UHLODSubsystem>())
-			{
-				return HLODSubsystem->RequestUnloading(this);
-			}
-		}
-	}
-
 	return true;
 }
 
@@ -430,27 +477,16 @@ void UWorldPartitionRuntimeLevelStreamingCell::Deactivate() const
 
 void UWorldPartitionRuntimeLevelStreamingCell::OnLevelShown()
 {
-	check(LevelStreaming);
-
-	const UWorldPartition* WorldPartition = LevelStreaming->GetWorld()->GetWorldPartition();
-	check(WorldPartition);
-
-	if (WorldPartition->IsStreamingEnabled())
+	if (UWorldPartition* WorldPartition = GetCellOwner()->GetWorldPartition())
 	{
-		LevelStreaming->GetWorld()->GetSubsystem<UHLODSubsystem>()->OnCellShown(this);
+		WorldPartition->OnCellShown(this);
 	}
 }
 
 void UWorldPartitionRuntimeLevelStreamingCell::OnLevelHidden()
 {
-	check(LevelStreaming);
-
-	const UWorldPartition* WorldPartition = LevelStreaming->GetWorld()->GetWorldPartition();
-	check(WorldPartition);
-
-	if (WorldPartition->IsStreamingEnabled())
+	if (UWorldPartition* WorldPartition = GetCellOwner()->GetWorldPartition())
 	{
-		LevelStreaming->GetWorld()->GetSubsystem<UHLODSubsystem>()->OnCellHidden(this);
+		WorldPartition->OnCellHidden(this);
 	}
 }
-

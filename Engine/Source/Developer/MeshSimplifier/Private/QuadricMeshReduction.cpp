@@ -15,6 +15,7 @@
 #include "RenderUtils.h"
 #include "Engine/StaticMesh.h"
 #include "Misc/ConfigCacheIni.h"
+#include "RenderMath.h"
 
 class FQuadricSimplifierMeshReductionModule : public IMeshReductionModule
 {
@@ -126,9 +127,9 @@ public:
 			}
 
 			// Don't process degenerate triangles.
-			if( PointsEqual((FVector)CornerPositions[0], (FVector)CornerPositions[1]) ||
-				PointsEqual((FVector)CornerPositions[0], (FVector)CornerPositions[2]) ||
-				PointsEqual((FVector)CornerPositions[1], (FVector)CornerPositions[2]) )
+			if( PointsEqual(CornerPositions[0], CornerPositions[1]) ||
+				PointsEqual(CornerPositions[0], CornerPositions[2]) ||
+				PointsEqual(CornerPositions[1], CornerPositions[2]) )
 			{
 				WedgeIndex += 3;
 				continue;
@@ -236,6 +237,28 @@ public:
 		uint32 NumIndexes = Indexes.Num();
 		uint32 NumTris = NumIndexes / 3;
 
+		//Get the targets tris and verts from the reduction criterion
+		uint32 TargetNumTris = NumTris;;
+		uint32 TargetNumVerts = NumVerts;
+		if (ReductionSettings.TerminationCriterion == EStaticMeshReductionTerimationCriterion::Triangles
+			|| ReductionSettings.TerminationCriterion == EStaticMeshReductionTerimationCriterion::Any)
+		{
+			TargetNumTris = FMath::CeilToInt(NumTris * ReductionSettings.PercentTriangles);
+			TargetNumTris = FMath::Min(ReductionSettings.MaxNumOfTriangles, TargetNumTris);
+		}
+
+		if (ReductionSettings.TerminationCriterion == EStaticMeshReductionTerimationCriterion::Vertices
+			|| ReductionSettings.TerminationCriterion == EStaticMeshReductionTerimationCriterion::Any)
+		{
+			TargetNumVerts = FMath::CeilToInt(NumVerts * ReductionSettings.PercentVertices);
+			TargetNumVerts = FMath::Min(ReductionSettings.MaxNumOfVerts, TargetNumVerts);
+		}
+
+		// We need a minimum of 2 triangles, to see the object on both side. If we use one, we will end up with zero triangle when we will remove a shared edge
+		TargetNumTris = FMath::Max(TargetNumTris, 2u);
+		// Clamp to a minimum of 4 vertices, ReductionSettings.PercentVertices can be zero which makes TargetNumVerts also zero
+		TargetNumVerts = FMath::Max(TargetNumVerts, 4u);
+
 		if (bUseOldMeshSimplifier)
 		{
 			static_assert(NumTexCoords == 8, "NumTexCoords changed, fix AttributeWeights");
@@ -320,12 +343,7 @@ public:
 			//MeshSimp->SetBoundaryLocked();
 			MeshSimp->InitCosts();
 
-			//We need a minimum of 2 triangles, to see the object on both side. If we use one, we will end up with zero triangle when we will remove a shared edge
-			int32 AbsoluteMinTris = 2;
-			int32 TargetNumTriangles = (ReductionSettings.TerminationCriterion != EStaticMeshReductionTerimationCriterion::Vertices) ? FMath::Max(AbsoluteMinTris, FMath::CeilToInt(NumTris * ReductionSettings.PercentTriangles)) : AbsoluteMinTris;
-			int32 TargetNumVertices = (ReductionSettings.TerminationCriterion != EStaticMeshReductionTerimationCriterion::Triangles) ? FMath::CeilToInt(NumVerts * ReductionSettings.PercentVertices) : 0;
-
-			float MaxErrorSqr = MeshSimp->SimplifyMesh(MAX_FLT, TargetNumTriangles, TargetNumVertices);
+			float MaxErrorSqr = MeshSimp->SimplifyMesh(MAX_FLT, TargetNumTris, TargetNumVerts);
 
 			MeshSimp->OutputMesh(Verts.GetData(), Indexes.GetData(), &NumVerts, &NumIndexes);
 			MeshSimp->CompactFaceData(MaterialIndexes);
@@ -336,14 +354,6 @@ public:
 		}
 		else
 		{
-			uint32 TargetNumTris = FMath::CeilToInt( NumTris * ReductionSettings.PercentTriangles );
-			uint32 TargetNumVerts = FMath::CeilToInt( NumVerts * ReductionSettings.PercentVertices );
-
-			// We need a minimum of 2 triangles, to see the object on both side. If we use one, we will end up with zero triangle when we will remove a shared edge
-			TargetNumTris = FMath::Max( TargetNumTris, 2u );
-			// Clamp to a minimum of 4 vertices, ReductionSettings.PercentVertices can be zero which makes TargetNumVerts also zero
-			TargetNumVerts = FMath::Max(TargetNumVerts, 4u);
-
 			if( TargetNumVerts < NumVerts || TargetNumTris < NumTris )
 			{
 				using VertType = TVertSimp< NumTexCoords >;
@@ -573,25 +583,34 @@ public:
 	*/
 	virtual bool IsReductionActive(const struct FMeshReductionSettings &ReductionSettings) const
 	{
-		float Threshold_One = (1.0f - KINDA_SMALL_NUMBER);
+		return IsReductionActive(ReductionSettings, 0, 0);
+	}
+
+	virtual bool IsReductionActive(const struct FMeshReductionSettings& ReductionSettings, uint32 NumVertices, uint32 NumTriangles) const
+	{
+		float Threshold_One = (1.0f - UE_KINDA_SMALL_NUMBER);
 		switch (ReductionSettings.TerminationCriterion)
 		{
-			case EStaticMeshReductionTerimationCriterion::Triangles:
-			{
-				return ReductionSettings.PercentTriangles < Threshold_One;
-			}
-			break;
-			case EStaticMeshReductionTerimationCriterion::Vertices:
-			{
-				return ReductionSettings.PercentVertices < Threshold_One;
-			}
-			break;
-			case EStaticMeshReductionTerimationCriterion::Any:
-			{
-				return ReductionSettings.PercentTriangles < Threshold_One || ReductionSettings.PercentVertices < Threshold_One;
-			}
-			break;
+		case EStaticMeshReductionTerimationCriterion::Triangles:
+		{
+			return ReductionSettings.PercentTriangles < Threshold_One || ReductionSettings.MaxNumOfTriangles < NumTriangles;
 		}
+		break;
+		case EStaticMeshReductionTerimationCriterion::Vertices:
+		{
+			return ReductionSettings.PercentVertices < Threshold_One || ReductionSettings.MaxNumOfVerts < NumVertices;
+		}
+		break;
+		case EStaticMeshReductionTerimationCriterion::Any:
+		{
+			return ReductionSettings.PercentTriangles < Threshold_One
+				|| ReductionSettings.PercentVertices < Threshold_One
+				|| ReductionSettings.MaxNumOfTriangles < NumTriangles
+				|| ReductionSettings.MaxNumOfVerts < NumVertices;
+		}
+		break;
+		}
+
 		return false;
 	}
 

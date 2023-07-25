@@ -110,6 +110,7 @@ ovrp_UpdatePassthroughColorLut(ovrpPassthroughColorLut colorLut, ovrpPassthrough
 
 
 
+OVRP_EXPORT ovrpResult ovrp_GetPassthroughPreferences(ovrpPassthroughPreferences* preferences);
 
 #ifdef __cplusplus
 }

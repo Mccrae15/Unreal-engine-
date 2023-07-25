@@ -102,7 +102,7 @@ public:
 		typename T,
 		typename TEnableIf<TRigVMIsBaseStructure<T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE FName FindFirstVariableOfType() const
+	FName FindFirstVariableOfType() const
 	{
 		return FindFirstVariableOfType(TBaseStructure<T>::Get());
 	}
@@ -112,7 +112,7 @@ public:
 		typename T,
 		typename TEnableIf<TModels<CRigVMUStruct, T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE FName FindFirstVariableOfType() const
+	FName FindFirstVariableOfType() const
 	{
 		return FindFirstVariableOfType(T::StaticStruct());
 	}
@@ -122,7 +122,7 @@ public:
 		typename T,
 		typename TEnableIf<TModels<CRigVMUClass, T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE FName FindFirstVariableOfType() const
+	FName FindFirstVariableOfType() const
 	{
 		return FindFirstVariableOfType(T::StaticClass());
 	}
@@ -132,7 +132,7 @@ public:
 		typename T,
 		typename TEnableIf<TIsEnum<T>::Value>::Type * = nullptr
 	>
-		FORCEINLINE FName FindFirstVariableOfType() const
+		FName FindFirstVariableOfType() const
 	{
 		return FindFirstVariableOfType(StaticEnum<T>());
 	}
@@ -167,15 +167,25 @@ struct RIGVM_API FRigVMStruct
 	virtual FString ProcessPinLabelForInjection(const FString& InLabel) const { return InLabel; }
 	virtual FName GetEventName() const { return NAME_None; }
 	virtual bool CanOnlyExistOnce() const { return false; }
+	virtual FString GetUnitLabel() const { return FString(); };
 
 public:
 
-	// loop related
-	FORCEINLINE virtual bool IsForLoop() const { return false; }
-	FORCEINLINE virtual int32 GetNumSlices() const { return 1; }
+	/** initialize logic for this struct */
+	virtual void Initialize() {}
+
+	/** Execute logic for this struct */
+	virtual void Execute() {}
+
+	// control flow related
+	bool IsForLoop() const;
+	bool IsControlFlowNode() const; 
+	virtual int32 GetNumSlices() const { return 1; }
+	const TArray<FName>& GetControlFlowBlocks() const;
+	virtual const bool IsControlFlowBlockSliced(const FName& InBlockName) const { return false; }
 
 	// node creation
-	FORCEINLINE virtual void OnUnitNodeCreated(FRigVMUnitNodeCreatedContext& InContext) const {}
+	virtual void OnUnitNodeCreated(FRigVMUnitNodeCreatedContext& InContext) const {}
 
 	// user workflow
 	TArray<FRigVMUserWorkflow> GetWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const; 
@@ -196,7 +206,7 @@ public:
 		typename T,
 		typename TEnableIf<TRigVMIsBaseStructure<T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE static FString ExportToFullyQualifiedText(const T& InStructValue)
+	static FString ExportToFullyQualifiedText(const T& InStructValue)
 	{
 		return ExportToFullyQualifiedText(TBaseStructure<T>::Get(), (const uint8*)&InStructValue);
 	}
@@ -205,7 +215,7 @@ public:
 		typename T,
 		typename TEnableIf<TModels<CRigVMUStruct, T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE static FString ExportToFullyQualifiedText(const T& InStructValue)
+	static FString ExportToFullyQualifiedText(const T& InStructValue)
 	{
 		return ExportToFullyQualifiedText(T::StaticStruct(), (const uint8*)&InStructValue);
 	}
@@ -237,6 +247,8 @@ public:
 	static const FName IconMetaName;
 	static const FName KeywordsMetaName;
 	static const FName TemplateNameMetaName;
+	static const FName FixedSizeArrayMetaName;
+	static const FName ArraySizeMetaName;
 	static const FName AggregateMetaName;
 	static const FName ExpandPinByDefaultMetaName;
 	static const FName DefaultArraySizeMetaName;
@@ -249,15 +261,46 @@ public:
 	static const FName ForLoopContinuePinName;
 	static const FName ForLoopCompletedPinName;
 	static const FName ForLoopIndexPinName;
+	static const FName ComputeLazilyMetaName;
+	static const FName ControlFlowBlockToRunName;
+	static const FName ControlFlowCompletedName;
+	static const FName ControlFlowCountName;
+	static const FName ControlFlowIndexName;
 
 protected:
 
 	static float GetRatioFromIndex(int32 InIndex, int32 InCount);
 	TMap<FName, FString> GetDefaultValues(UScriptStruct* InScriptStruct) const;
 	bool ApplyUpgradeInfo(const FRigVMStructUpgradeInfo& InUpgradeInfo);
-	FORCEINLINE virtual TArray<FRigVMUserWorkflow> GetSupportedWorkflows(const UObject* InSubject) const { return TArray<FRigVMUserWorkflow>(); } 
+	virtual TArray<FRigVMUserWorkflow> GetSupportedWorkflows(const UObject* InSubject) const { return TArray<FRigVMUserWorkflow>(); }
+	virtual const TArray<FName>& GetControlFlowBlocks_Impl() const;
+
+#if WITH_EDITOR
+	static void ValidateControlFlowBlocks(const TArray<FName>& InBlocks);
+#endif
 
 	friend struct FRigVMStructUpgradeInfo;
 	friend class FRigVMGraphStructUpgradeInfoTest;
 	friend class URigVMController;
+	friend struct FRigVMDispatchFactory;
+};
+
+/**
+ * The base mutable class for all RigVM enabled structs.
+ */
+USTRUCT()
+struct RIGVM_API FRigVMStructMutable : public FRigVMStruct
+{
+	GENERATED_BODY()
+
+	virtual ~FRigVMStructMutable() {}
+
+public:
+
+
+	/*
+	 * This property is used to chain multiple mutable nodes together
+	 */
+	UPROPERTY(DisplayName = "Execute", Transient, meta = (Input, Output))
+	FRigVMExecuteContext ExecuteContext;
 };

@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/UObjectArray.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/ScopeRWLock.h"
@@ -568,10 +567,12 @@ class FUObjectAnnotationChunked : public FUObjectArray::FUObjectDeleteListener
 			CurrentAllocatedMemory += NumAnnotationsPerChunk * sizeof(TAnnotation);
 			MaxAllocatedMemory = FMath::Max(CurrentAllocatedMemory, MaxAllocatedMemory);
 		}
-		check(Chunk.Items[WithinChunkIndex].IsDefault());
-		Chunk.Num++;
-		check(Chunk.Num <= NumAnnotationsPerChunk);
-		NumAnnotations++;
+		if (Chunk.Items[WithinChunkIndex].IsDefault())
+		{
+			Chunk.Num++;
+			check(Chunk.Num <= NumAnnotationsPerChunk);
+			NumAnnotations++;
+		}
 
 		return Chunk.Items[WithinChunkIndex];
 	}
@@ -584,26 +585,35 @@ class FUObjectAnnotationChunked : public FUObjectArray::FUObjectDeleteListener
 		const int32 ChunkIndex = Index / NumAnnotationsPerChunk;
 		const int32 WithinChunkIndex = Index % NumAnnotationsPerChunk;
 
-		TAnnotationChunk& Chunk = Chunks[ChunkIndex];
-		if (Chunk.Items != nullptr)
+		if (ChunkIndex >= Chunks.Num())
 		{
-			if (!Chunk.Items[WithinChunkIndex].IsDefault())
-			{
-				Chunk.Items[WithinChunkIndex] = TAnnotation();
-				Chunk.Num--;
-				check(Chunk.Num >= 0);
-				if (Chunk.Num == 0)
-				{
-					delete[] Chunk.Items;
-					Chunk.Items = nullptr;
-					const uint32 ChunkMemory = NumAnnotationsPerChunk * sizeof(TAnnotation);
-					check(CurrentAllocatedMemory >= ChunkMemory);
-					CurrentAllocatedMemory -= ChunkMemory;
-				}
-				NumAnnotations--;
-			}
-			check(NumAnnotations >= 0);
+			return;
 		}
+
+		TAnnotationChunk& Chunk = Chunks[ChunkIndex];
+		if (!Chunk.Items)
+		{
+			return;
+		}
+
+		if (Chunk.Items[WithinChunkIndex].IsDefault())
+		{
+			return;
+		}
+
+		Chunk.Items[WithinChunkIndex] = TAnnotation();
+		Chunk.Num--;
+		check(Chunk.Num >= 0);
+		if (Chunk.Num == 0)
+		{
+			delete[] Chunk.Items;
+			Chunk.Items = nullptr;
+			const uint32 ChunkMemory = NumAnnotationsPerChunk * sizeof(TAnnotation);
+			check(CurrentAllocatedMemory >= ChunkMemory);
+			CurrentAllocatedMemory -= ChunkMemory;
+		}
+		NumAnnotations--;
+		check(NumAnnotations >= 0);
 	}
 
 	/**
@@ -1308,3 +1318,7 @@ private:
 	TArray<TBitType> AnnotationArray;
 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

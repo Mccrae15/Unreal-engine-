@@ -110,7 +110,8 @@ public:
 
 	void ApplyPreviewIfScalability()
 	{
-		if (((uint32)Flags & (uint32)ECVF_Scalability) != 0)
+		if (((uint32)Flags & (uint32)ECVF_Scalability) != 0
+			&& ((uint32)Flags & (uint32)ECVF_ExcludeFromPreview) == 0)
 		{
 			Flags = (EConsoleVariableFlags)((uint32)Flags | (uint32)ECVF_Preview);
 		}
@@ -281,7 +282,8 @@ public:
 
 	void ApplyPreviewIfScalability()
 	{
-		if (((uint32)Flags & (uint32)ECVF_Scalability) != 0)
+		if (((uint32)Flags & (uint32)ECVF_Scalability) != 0
+			&& ((uint32)Flags & (uint32)ECVF_ExcludeFromPreview) == 0)
 		{
 			Flags = (EConsoleVariableFlags)((uint32)Flags | (uint32)ECVF_Preview);
 		}
@@ -328,7 +330,15 @@ void OnCVarChange(T& Dst, const T& Src, EConsoleVariableFlags Flags, EConsoleVar
 {
 	FConsoleManager& ConsoleManager = (FConsoleManager&)IConsoleManager::Get();
 
+#if WITH_RELOAD
+	// Unlike HotReload, Live Coding does global initialization outside of the main thread.  During global initialization,
+	// Live Coding does have the main thread stalled so there is a "reduced" chance of threading issues.  During global
+	// initialization with live coding, this code only gets called when a new instance of an existing CVar is created.
+	// Normally this shouldn't happen unless a source file shuffles between two different unity files.
+	if (IsInGameThread() || IsReloadActive())
+#else
 	if(IsInGameThread())
+#endif
 	{
 		if((Flags & ECVF_RenderThreadSafe) && ConsoleManager.GetThreadPropagationCallback())
 		{
@@ -373,6 +383,14 @@ static void ExpandScalabilityCVar(FConfigCacheIni* ConfigSystem, const FString& 
 			}
 		}
 	}
+}
+
+EConsoleVariableFlags GetPreviewFlagsOfCvar(const TCHAR* Name)
+{
+	// now look up the cvar, if it exists (it's okay if it doesn't, it may not exist on host platform, but then it's not previewable!)
+	IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(Name, false /* bTrackFrequentCalls */);
+	EConsoleVariableFlags PreviewFlag = (CVar != nullptr) ? (EConsoleVariableFlags)(CVar->GetFlags() & ECVF_Preview) : ECVF_Default;
+	return PreviewFlag;
 }
 
 bool IConsoleManager::VisitPlatformCVarsForEmulation(FName PlatformName, const FString& DeviceProfileName, TFunctionRef<void(const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetBy)> Visit)
@@ -459,10 +477,7 @@ bool IConsoleManager::VisitPlatformCVarsForEmulation(FName PlatformName, const F
 
 		CVarSetByMap[Name] = SetByInt;
 
-		// now look up the cvar, if it exists (it's okay if it doesn't, it may not exist on host platform, but then it's not previewable!)
-		IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*Name, false /* bTrackFrequentCalls */);
-		EConsoleVariableFlags PreviewFlag = (CVar != nullptr) ? (EConsoleVariableFlags)(CVar->GetFlags() & ECVF_Preview) : ECVF_Default;
-		Visit(Name, Value, (EConsoleVariableFlags)(SetBy | PreviewFlag));
+		Visit(Name, Value, (EConsoleVariableFlags)(SetBy | GetPreviewFlagsOfCvar(*Name)));
 	};
 
 	// now walk up the stack getting current values
@@ -530,8 +545,7 @@ bool IConsoleManager::VisitPlatformCVarsForEmulation(FName PlatformName, const F
 				FString Value = Pair.Value.GetValue();
 
 				// don't bother tracking when looking up other platform cvars
-				IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*Key, false /* bTrackFrequentCalls */);
-				EConsoleVariableFlags PreviewFlag = (CVar != nullptr) ? (EConsoleVariableFlags)(CVar->GetFlags() & ECVF_Preview) : ECVF_Default;
+				EConsoleVariableFlags PreviewFlag = GetPreviewFlagsOfCvar(*Key);
 
 				if (Key.StartsWith(TEXT("sg.")))
 				{
@@ -544,7 +558,17 @@ bool IConsoleManager::VisitPlatformCVarsForEmulation(FName PlatformName, const F
 
 					for (const auto& ScalabilityPair : ScalabilityCVars)
 					{
-						VisitIfAllowed(ScalabilityPair.Key, ScalabilityPair.Value, (EConsoleVariableFlags)(ECVF_SetByScalability | PreviewFlag));
+						// See if the expanded scalability cvar is not allowed to preview and has ECVF_ExcludeFromPreview set
+						IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*ScalabilityPair.Key, false /* bTrackFrequentCalls */);
+						EConsoleVariableFlags ScalabilityCvarFlags = (CVar != nullptr) ? CVar->GetFlags() : ECVF_Default;
+						if (ScalabilityCvarFlags & ECVF_ExcludeFromPreview)
+						{
+							VisitIfAllowed(ScalabilityPair.Key, ScalabilityPair.Value, (EConsoleVariableFlags)(ECVF_SetByScalability));
+						}
+						else
+						{
+							VisitIfAllowed(ScalabilityPair.Key, ScalabilityPair.Value, (EConsoleVariableFlags)(ECVF_SetByScalability | PreviewFlag));
+						}
 					}
 				}
 				else
@@ -2861,7 +2885,7 @@ static TAutoConsoleVariable<int32> CVarContactShadows(
 static TAutoConsoleVariable<float> CVarContactShadowsNonShadowCastingIntensity(
 	TEXT("r.ContactShadows.NonShadowCastingIntensity"),
 	0.0f,
-	TEXT("Intensity of contact shadows from objects with cast contact shadows disabled. Usually 0 (off).\n"),
+	TEXT("DEPRECATED. Please use the parameters on the Light Component directly instead.\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 // Changing this causes a full shader recompile
@@ -3015,6 +3039,15 @@ static TAutoConsoleVariable<int32> CVarMobileDesiredResY(
 	0,
 	TEXT("Desired mobile Y resolution (shortest axis) (non-zero == use for Y, calculate X to retain aspect ratio)"),
 	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarLWCTruncateMode(
+	TEXT("r.MaterialEditor.LWCTruncateMode"),
+	2,
+	TEXT("Whether or not the material compiler respects the truncate LWC node or automatic transforms.\n"
+		"0: no truncate (LWC always used even if asked to truncate)\n"
+		"1: respect the truncate LWC node\n"
+		"2: respect the truncate LWC node and automatic transforms"),
+	ECVF_ReadOnly);
 
 // this cvar can be removed in shipping to not compile shaders for development (faster)
 static TAutoConsoleVariable<int32> CVarCompileShadersForDevelopment(
@@ -3177,12 +3210,6 @@ static TAutoConsoleVariable<float> CVarSkeletalMeshLODRadiusScale(
 	1.0f,
 	TEXT("Scale factor for the screen radius used in computing discrete LOD for skeletal meshes. (0.25-1)"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarSharedLinearTextureEncoding(
-	TEXT("r.SharedLinearTextureEncoding"),
-	0,
-	TEXT("If set to 1, textures for platforms that tile will reuse a host linear texture instead of reencoding."),
-	ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarPreTileTextures(
 	TEXT("r.PreTileTextures"),

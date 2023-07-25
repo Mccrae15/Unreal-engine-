@@ -2,12 +2,16 @@
 
 #pragma once
 
-#include "PCGEditorModule.h"
-#include "PCGSettings.h"
 
 #include "EditorUndoClient.h"
+#include "PCGContext.h"
 #include "Toolkits/AssetEditorToolkit.h"
 
+class FSpawnTabArgs;
+enum class ECheckBoxState : uint8;
+namespace ETextCommit { enum Type : int; }
+
+struct FPropertyAndParent;
 class FUICommandList;
 class IDetailsView;
 class SGraphEditor;
@@ -16,6 +20,8 @@ class SPCGEditorGraphDeterminismListView;
 class SPCGEditorGraphFind;
 class SPCGEditorGraphNodePalette;
 class SPCGEditorGraphProfilingView;
+class SPCGEditorGraphLogView;
+class UEdGraphNode;
 class UPCGComponent;
 class UPCGEditorGraph;
 class UPCGEditorGraphNodeBase;
@@ -23,7 +29,7 @@ class UPCGGraph;
 class UPCGNode;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnDebugObjectChanged, UPCGComponent*);
-DECLARE_MULTICAST_DELEGATE_OneParam(FOnInspectedNodeChanged, UPCGNode*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnInspectedNodeChanged, UPCGEditorGraphNodeBase*);
 
 class FPCGEditor : public FAssetEditorToolkit, public FGCObject, public FSelfRegisteringEditorUndoClient
 {
@@ -38,13 +44,7 @@ public:
 	void SetPCGComponentBeingDebugged(UPCGComponent* InPCGComponent);
 
 	/** Gets the PCG component we are debugging */
-	UPCGComponent* GetPCGComponentBeingDebugged() const { return PCGComponentBeingDebugged; }
-
-	/** Sets the PCG node we want to inspect */
-	void SetPCGNodeBeingInspected(UPCGNode* InPCGNode);
-
-	/** Gets the PCG node we are inspecting */
-	UPCGNode* GetPCGNodeBeingInspected() const { return PCGNodeBeingInspected; }
+	UPCGComponent* GetPCGComponentBeingDebugged() const { return PCGComponentBeingDebugged.Get(); }
 
 	/** Focus the graph view on a specific node */
 	void JumpToNode(const UEdGraphNode* InNode);
@@ -77,6 +77,9 @@ public:
 	virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
 	// ~End FAssetEditorToolkit interface
 
+	// Methods used by schema actions
+	UEdGraphNode* AddNode(UPCGSettings* InSettings, bool bIsInstance, const FVector2D& InLocation);
+
 	FOnDebugObjectChanged OnDebugObjectChangedDelegate;
 	FOnInspectedNodeChanged OnInspectedNodeChangedDelegate;
 
@@ -104,10 +107,34 @@ private:
 	/** Force a regeneration by invoking the graph notifications  */
 	void OnForceGraphRegeneration_Clicked();
 
-	/** Start inspecting the current selected node */
-	void OnStartInspectNode();
-	/** Stop inspecting the current inspected node */
-	void OnStopInspectNode();
+	/** Toggle node inspection state for selected nodes */
+	void OnToggleInspected();
+	/** Whether we can toggle inspection of selected nodes */
+	bool CanToggleInspected() const;
+	/** Whether selected nodes are inspected or not */
+	ECheckBoxState GetInspectedCheckState() const;
+	
+	/** Toggle node enabled state for selected nodes */
+	void OnToggleEnabled();
+	/** Whether selected nodes are enabled or not */
+	ECheckBoxState GetEnabledCheckState() const;
+	
+	/** Toggle node debug state for selected nodes */
+	void OnToggleDebug();
+	/** Whether selected nodes are being debugged or not */
+	ECheckBoxState GetDebugCheckState() const;
+
+	/** Enable node debug state for selected nodes and disable for others */
+	void OnDebugOnlySelected();
+
+	/** Disable node debug state for all nodes */
+	void OnDisableDebugOnAllNodes();
+
+	/** Cancels the current execution of the selected graph */
+	void OnCancelExecution_Clicked();
+
+	/* Returns true if inspected graph is currently scheduled or executing */
+	bool IsCurrentlyGenerating() const;
 
 	/** Can determinism be tested on the selected node(s) */
 	bool CanRunDeterminismNodeTest() const;
@@ -120,15 +147,9 @@ private:
 	void OnDeterminismGraphTest();
 
 	/** Open details view for the PCG object being edited */
-	void OnEditClassDefaults() const;
+	void OnEditGraphSettings() const;
 	/** Whether the PCG object being edited is opened in details view or not */
-	bool IsEditClassDefaultsToggled() const;
-
-	/** Whether or not an execution mode is active for the selected nodes */
-	bool IsExecutionModeActive(EPCGSettingsExecutionMode InExecutionMode) const;
-
-	/** Set execution mode for selected nodes */
-	void OnSetExecutionMode(EPCGSettingsExecutionMode InExecutionMode);
+	bool IsEditGraphSettingsToggled() const;
 
 	/** Select every node in the graph */
 	void SelectAllNodes();
@@ -161,6 +182,18 @@ private:
 	void DuplicateNodes();
 	/** Whether we are able to duplicate the currently selected nodes */
 	bool CanDuplicateNodes() const;
+
+	/** Exports node settings to assets */
+	void OnExportNodes();
+
+	/** Whether we are able to export the currently selected nodes */
+	bool CanExportNodes() const;
+
+	/** Converts instanced nodes to independent nodes */
+	void OnConvertToStandaloneNodes();
+
+	/** Whether we are able to convert the selected nodes to standalone */
+	bool CanConvertToStandaloneNodes() const;
 
 	/** Collapse the currently selected nodes in a subgraph */
 	void OnCollapseNodesInSubgraph();
@@ -196,6 +229,9 @@ private:
 	/** Create a new profiling tab widget */
 	TSharedRef<SPCGEditorGraphProfilingView> CreateProfilingWidget();
 
+	/** Create a new profiling tab widget */
+	TSharedRef<SPCGEditorGraphLogView> CreateLogWidget();
+
 	/** Called when the selection changes in the GraphEditor */
 	void OnSelectedNodesChanged(const TSet<UObject*>& NewSelection);
 
@@ -219,6 +255,15 @@ private:
 	/** To be called everytime we need to replicate our extra nodes to the underlying PCGGraph */
 	void ReplicateExtraNodes() const;
 
+	/** Returns whether a property should be readonly (used for instances) */
+	bool IsReadOnlyProperty(const FPropertyAndParent& InPropertyAndParent, IDetailsView* InDetailsView) const;
+
+	/** Returns whether a property should be visible (used for instance vs. settings properties) */
+	bool IsVisibleProperty(const FPropertyAndParent& InPropertyAndParent, IDetailsView* InDetailsView) const;
+
+	/** Helper to get to the subsystem. */
+	static class UPCGSubsystem* GetSubsystem();
+
 	TSharedRef<SDockTab> SpawnTab_GraphEditor(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_PropertyDetails(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Palette(const FSpawnTabArgs& Args);
@@ -226,6 +271,7 @@ private:
 	TSharedRef<SDockTab> SpawnTab_Find(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Determinism(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Profiling(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTab_Log(const FSpawnTabArgs& Args);
 
 	TSharedPtr<SGraphEditor> GraphEditorWidget;
 	TSharedPtr<IDetailsView> PropertyDetailsWidget;
@@ -234,13 +280,13 @@ private:
 	TSharedPtr<SPCGEditorGraphAttributeListView> AttributesWidget;
 	TSharedPtr<SPCGEditorGraphDeterminismListView> DeterminismWidget;
 	TSharedPtr<SPCGEditorGraphProfilingView> ProfilingWidget;
+	TSharedPtr<SPCGEditorGraphLogView> LogWidget;
 
 	TSharedPtr<FUICommandList> GraphEditorCommands;
 
 	UPCGGraph* PCGGraphBeingEdited = nullptr;
 	UPCGEditorGraph* PCGEditorGraph = nullptr;
 
-	UPCGComponent* PCGComponentBeingDebugged = nullptr;
-	UPCGNode* PCGNodeBeingInspected = nullptr;
+	TWeakObjectPtr<UPCGComponent> PCGComponentBeingDebugged;
 	UPCGEditorGraphNodeBase* PCGGraphNodeBeingInspected = nullptr;
 };

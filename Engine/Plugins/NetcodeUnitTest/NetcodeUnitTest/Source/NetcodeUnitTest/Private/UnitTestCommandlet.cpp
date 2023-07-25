@@ -2,16 +2,15 @@
 
 #include "UnitTestCommandlet.h"
 
-#include "Containers/Ticker.h"
+#include "Engine/GameInstance.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/App.h"
 #include "Modules/ModuleManager.h"
-#include "UnrealClient.h"
+#include "DummyViewport.h"
 #include "Engine/GameViewportClient.h"
 #include "Widgets/SWindow.h"
 #include "Engine/GameEngine.h"
 #include "Framework/Application/SlateApplication.h"
-#include "NetcodeUnitTest.h"
 #include "NUTUtil.h"
 #include "Net/NUTUtilNet.h"
 

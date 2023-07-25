@@ -58,11 +58,11 @@ MOVIERENDERPIPELINECORE_API void GetPassCompositeData(FMoviePipelineMergerOutput
 		if(bUseOverride) \
 		{ \
 			InOutVariable = CVar->GetInt(); \
-			CVar->Set(OverrideValue, EConsoleVariableFlags::ECVF_SetByConsole); \
+			CVar->SetWithCurrentPriority(OverrideValue); \
 		} \
 		else \
 		{ \
-			CVar->Set(InOutVariable, EConsoleVariableFlags::ECVF_SetByConsole); \
+			CVar->SetWithCurrentPriority(InOutVariable); \
 		} \
 	} \
 }
@@ -75,11 +75,11 @@ MOVIERENDERPIPELINECORE_API void GetPassCompositeData(FMoviePipelineMergerOutput
 		if(bUseOverride) \
 		{ \
 			InOutVariable = CVar->GetFloat(); \
-			CVar->Set(OverrideValue, EConsoleVariableFlags::ECVF_SetByConsole); \
+			CVar->SetWithCurrentPriority(OverrideValue); \
 		} \
 		else \
 		{ \
-			CVar->Set(InOutVariable, EConsoleVariableFlags::ECVF_SetByConsole); \
+			CVar->SetWithCurrentPriority(InOutVariable); \
 		} \
 	} \
 }
@@ -92,11 +92,11 @@ MOVIERENDERPIPELINECORE_API void GetPassCompositeData(FMoviePipelineMergerOutput
 		if(bUseOverride) \
 		{ \
 			InOutVariable = CVar->GetInt(); \
-			CVar->Set(OverrideValue, EConsoleVariableFlags::ECVF_SetByConsole); \
+			CVar->SetWithCurrentPriority(OverrideValue); \
 		} \
 		else \
 		{ \
-			CVar->Set(InOutVariable, EConsoleVariableFlags::ECVF_SetByConsole); \
+			CVar->SetWithCurrentPriority(InOutVariable); \
 		} \
 	} \
 }
@@ -109,11 +109,11 @@ MOVIERENDERPIPELINECORE_API void GetPassCompositeData(FMoviePipelineMergerOutput
 		if(bUseOverride) \
 		{ \
 			InOutVariable = CVar->GetFloat(); \
-			CVar->Set(OverrideValue, EConsoleVariableFlags::ECVF_SetByConsole); \
+			CVar->SetWithCurrentPriority(OverrideValue); \
 		} \
 		else \
 		{ \
-			CVar->Set(InOutVariable, EConsoleVariableFlags::ECVF_SetByConsole); \
+			CVar->SetWithCurrentPriority(InOutVariablee); \
 		} \
 	} \
 }
@@ -130,13 +130,15 @@ namespace UE
 	{
 		MOVIERENDERPIPELINECORE_API void ValidateOutputFormatString(FString& InOutFilenameFormatString, const bool bTestRenderPass, const bool bTestFrameNumber, const bool bIncludeCameraName = false);
 		MOVIERENDERPIPELINECORE_API void RemoveFrameNumberFormatStrings(FString& InOutFilenameFormatString, const bool bIncludeShots);
+		/** De-duplicates the provided array of strings by appending (1), (2), etc to the end of duplicates. */
+		MOVIERENDERPIPELINECORE_API void DeduplicateNameArray(TArray<FString>& InOutNames);
 
 		MOVIERENDERPIPELINECORE_API FString GetJobAuthor(const UMoviePipelineExecutorJob* InJob);
 		MOVIERENDERPIPELINECORE_API void GetSharedFormatArguments(TMap<FString, FString>& InFilenameArguments, TMap<FString, FString>& InFileMetadata, const FDateTime& InDateTime, const int32 InVersionNumber, const UMoviePipelineExecutorJob* InJob);
 		MOVIERENDERPIPELINECORE_API void GetHardwareUsageMetadata(TMap<FString, FString>& InFileMetadata, const FString& InOutputDir);
 		MOVIERENDERPIPELINECORE_API void GetMetadataFromCineCamera(class UCineCameraComponent* InComponent, const FString& InCameraName, const FString& InRenderPassName, TMap<FString, FString>& InOutMetadata);
 		MOVIERENDERPIPELINECORE_API void GetMetadataFromCameraLocRot(const FString& InCameraName, const FString& InRenderPassName, const FVector& InCurLoc, const FRotator& InCurRot, const FVector& InPrevLoc, const FRotator& InPrevRot, TMap<FString, FString>& InOutMetadata);
-		MOVIERENDERPIPELINECORE_API FMoviePipelineRenderPassMetrics GetRenderPassMetrics(UMoviePipelineMasterConfig* InMasterConfig, UMoviePipelineExecutorShot* InPipelineExecutorShot, const FMoviePipelineRenderPassMetrics& InRenderPassMetrics, const FIntPoint& InEffectiveOutputResolution);
+		MOVIERENDERPIPELINECORE_API FMoviePipelineRenderPassMetrics GetRenderPassMetrics(UMoviePipelinePrimaryConfig* InPrimaryConfig, UMoviePipelineExecutorShot* InPipelineExecutorShot, const FMoviePipelineRenderPassMetrics& InRenderPassMetrics, const FIntPoint& InEffectiveOutputResolution);
 	}
 }
 
@@ -157,5 +159,5 @@ namespace MoviePipeline
 	/** Given a leaf node, appropriately sets the IsActive flags for the whole hierarchy chain up to root for soloing a shot. */
 	void SetSubSectionHierarchyActive(TSharedPtr<FCameraCutSubSectionHierarchyNode> InRoot, bool bInActive);
 	/** Given a leaf node, searches for sections that will be partially evaluated when using temporal sub-sampling and prints a warning. */
-	void CheckPartialSectionEvaluationAndWarn(const FFrameNumber& LeftDeltaTicks, TSharedPtr<FCameraCutSubSectionHierarchyNode> Node, UMoviePipelineExecutorShot* InShot, const FFrameRate& InMasterDisplayRate);
+	void CheckPartialSectionEvaluationAndWarn(const FFrameNumber& LeftDeltaTicks, TSharedPtr<FCameraCutSubSectionHierarchyNode> Node, UMoviePipelineExecutorShot* InShot, const FFrameRate& InRootDisplayRate);
 }

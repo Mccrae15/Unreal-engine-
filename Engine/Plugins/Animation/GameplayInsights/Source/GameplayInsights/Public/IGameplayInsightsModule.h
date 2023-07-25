@@ -2,7 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Modules/ModuleInterface.h"
+#include "UObject/NameTypes.h"
 
 namespace GameplayInsightsTabs
 {
@@ -14,7 +15,7 @@ namespace TraceServices
 	class IAnalysisSession;
 }
 
-class IGameplayInsightsModule
+class GAMEPLAYINSIGHTS_API IGameplayInsightsModule
 	: public IModuleInterface
 {
 public:

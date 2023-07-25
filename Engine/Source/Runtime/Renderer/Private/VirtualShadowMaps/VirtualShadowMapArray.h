@@ -1,12 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-/*=============================================================================
-	VirtualShadowMapArray.h:
-=============================================================================*/
+
 #pragma once
 
-#include "MeshDrawCommands.h"
-#include "Nanite/Nanite.h"
-#include "SceneTypes.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
 #include "VirtualShadowMapDefinitions.h"
 
 struct FMinimalSceneTextures;
@@ -19,6 +16,17 @@ class FVirtualShadowMapArrayCacheManager;
 struct FSortedLightSetSceneInfo;
 class FVirtualShadowMapClipmap;
 struct FScreenPassTexture;
+struct FSingleLayerWaterPrePassResult;
+class FNaniteVisibilityResults;
+class FSceneRenderer;
+struct FShaderCompilerEnvironment;
+struct FFrontLayerTranslucencyData;
+
+namespace Nanite
+{
+	struct FPackedView;
+	struct FRasterResults;
+}
 
 // TODO: does this exist?
 constexpr uint32 ILog2Const(uint32 n)
@@ -175,7 +183,7 @@ public:
 
 	int GetVirtualShadowMapId() const { return FoundVirtualShadowMapId; }
 	const FLightSceneProxy* GetProxy() const { return FoundProxy; }
-	const FString GetLightName() const { return FoundProxy->GetOwnerNameOrLabel(); }
+	const FString GetLightName() const;
 
 private:
 	union SortKey
@@ -263,7 +271,8 @@ public:
 		const FSortedLightSetSceneInfo& SortedLights, 
 		const TArray<FVisibleLightInfo, SceneRenderingAllocator> &VisibleLightInfos, 
 		const TArray<Nanite::FRasterResults, TInlineAllocator<2>> &NaniteRasterResults,
-		FRDGTextureRef SingleLayerWaterDepthTexture);
+		const FSingleLayerWaterPrePassResult* SingleLayerWaterPrePassResult,
+		const FFrontLayerTranslucencyData& FrontLayerTranslucencyData);
 
 	bool IsAllocated() const
 	{
@@ -278,13 +287,18 @@ public:
 	void CreateMipViews( TArray<Nanite::FPackedView, SceneRenderingAllocator>& Views ) const;
 
 	/**
+	 * Draw Nanite geometry into the VSMs.
+	 */
+	void RenderVirtualShadowMapsNanite(FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer, float ShadowsLODScaleFactor, bool bUpdateNaniteStreaming, bool bNaniteProgrammableRaster, const FNaniteVisibilityResults& VisibilityResults);
+
+	/**
 	 * Draw Non-Nanite geometry into the VSMs.
 	 */
 	void RenderVirtualShadowMapsNonNanite(FRDGBuilder& GraphBuilder, const TArray<FProjectedShadowInfo*, SceneRenderingAllocator>& VirtualSmMeshCommandPasses, TArrayView<FViewInfo> Views);
 
 	void RenderDebugInfo(FRDGBuilder& GraphBuilder, TArrayView<FViewInfo> Views);
 	
-	void PrintStats(FRDGBuilder& GraphBuilder, const FViewInfo& View);
+	void LogStats(FRDGBuilder& GraphBuilder, const FViewInfo& View);
 
 	// Get shader parameters necessary to sample virtual shadow maps
 	// It is safe to bind this buffer even if VSMs are disabled, but the sampling should be branched around in the shader.
@@ -302,8 +316,7 @@ public:
 	void UpdateHZB(FRDGBuilder& GraphBuilder);		
 
 	// Add render views, and mark shadow maps as rendered for a given clipmap or set of VSMs, returns the number of primary views added.
-	uint32 AddRenderViews(const TSharedPtr<FVirtualShadowMapClipmap>& Clipmap, float LODScaleFactor, bool bSetHzbParams, bool bUpdateHZBMetaData, bool bClampToNearPlane, TArray<Nanite::FPackedView, SceneRenderingAllocator>& OutVirtualShadowViews);
-	uint32 AddRenderViews(const FProjectedShadowInfo* ProjectedShadowInfo, float LODScaleFactor, bool bSetHzbParams, bool bUpdateHZBMetaData, bool bClampToNearPlane, TArray<Nanite::FPackedView, SceneRenderingAllocator>& OutVirtualShadowViews);
+	uint32 AddRenderViews(const FProjectedShadowInfo* ProjectedShadowInfo, TConstArrayView<FViewInfo> Views, float LODScaleFactor, bool bSetHzbParams, bool bUpdateHZBMetaData, bool bClampToNearPlane, TArray<Nanite::FPackedView, SceneRenderingAllocator>& OutVirtualShadowViews);
 
 	// Add visualization composite pass, if enabled
 	void AddVisualizePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, int32 ViewIndex, FScreenPassTexture Output);
@@ -349,14 +362,18 @@ public:
 
 	// See Engine\Shaders\Private\VirtualShadowMaps\VirtualShadowMapStats.ush for definitions of the different stat indexes
 	static constexpr uint32 NumStats = 16;
+	static constexpr uint32 MaxPageAreaDiagnosticSlots = 32;
 
 	FRDGBufferRef StatsBufferRDG = nullptr;
+	FRDGBufferRef StatsNaniteBufferRDG = nullptr;
 
 	// Debug visualization
 	TArray<FRDGTextureRef> DebugVisualizationOutput;
 	TArray<FVirtualShadowMapVisualizeLightSearch> VisualizeLight;
 
 private:
+	uint32 AddRenderViews(const TSharedPtr<FVirtualShadowMapClipmap>& Clipmap, float LODScaleFactor, bool bSetHzbParams, bool bUpdateHZBMetaData, const FVector &CullingViewOrigin, TArray<Nanite::FPackedView, SceneRenderingAllocator>& OutVirtualShadowViews);
+
 	TRDGUniformBufferRef<FVirtualShadowMapUniformParameters> GetUncachedUniformBuffer(FRDGBuilder& GraphBuilder) const;
 	void UpdateCachedUniformBuffer(FRDGBuilder& GraphBuilder);
 

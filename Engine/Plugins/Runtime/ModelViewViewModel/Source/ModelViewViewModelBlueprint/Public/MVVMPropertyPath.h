@@ -3,9 +3,8 @@
 #pragma once
 
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
-#include "Types/MVVMBindingName.h"
+#include "Engine/MemberReference.h"
 #include "Types/MVVMFieldVariant.h"
-#include "UObject/Class.h"
 
 #include "MVVMPropertyPath.generated.h"
 
@@ -214,6 +213,11 @@ private:
 #endif
 
 public:
+	bool HasPaths() const
+	{
+		return Paths.Num() > 0;
+	}
+
 	/** Get the binding name, resolves reference deprecation / redirectors / etc before returning */
 	TArray<FName> GetPaths() const
 	{
@@ -372,3 +376,7 @@ struct TStructOpsTypeTraits<FMVVMBlueprintPropertyPath> : public TStructOpsTypeT
 		WithPostSerialize = true,
 	};
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Types/MVVMBindingName.h"
+#endif

@@ -10,6 +10,8 @@
 #include "TargetInterfaces/MeshDescriptionProvider.h"
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "TargetInterfaces/AssetBackedTarget.h"
+#include "TargetInterfaces/SkeletalMeshBackedTarget.h"
+#include "TargetInterfaces/StaticMeshBackedTarget.h"
 #include "TargetInterfaces/DynamicMeshSource.h"
 #include "TargetInterfaces/PhysicsDataSource.h"
 
@@ -24,6 +26,8 @@
 #include "MeshDescriptionToDynamicMesh.h"
 #include "DynamicMeshToMeshDescription.h"
 #include "StaticMeshAttributes.h"
+
+#include "DynamicMesh/NonManifoldMappingSupport.h"
 
 #define LOCTEXT_NAMESPACE "ModelingToolTargetUtil"
 
@@ -206,6 +210,7 @@ FDynamicMesh3 UE::ToolTarget::GetDynamicMeshCopy(UToolTarget* Target, bool bWant
 	if (MeshDescriptionProvider)
 	{
 		FMeshDescriptionToDynamicMesh Converter;
+		Converter.bVIDsFromNonManifoldMeshDescriptionAttr= true;
 		if (bWantMeshTangents)
 		{
 			FGetMeshParameters GetMeshParams;
@@ -307,6 +312,7 @@ void UE::ToolTarget::Internal::CommitDynamicMeshViaIPersistentDynamicMeshSource(
 	DynamicMesh->EditMesh([&](FDynamicMesh3& EditMesh)
 		{
 			EditMesh.CompactCopy(UpdatedMesh);
+			FNonManifoldMappingSupport::RemoveAllNonManifoldMappingData(EditMesh);
 		});
 
 	TSharedPtr<FDynamicMesh3> NewMeshShared = MakeShared<FDynamicMesh3>();
@@ -482,6 +488,34 @@ UE::ToolTarget::EDynamicMeshUpdateResult UE::ToolTarget::CommitDynamicMeshNormal
 
 
 
+bool UE::ToolTarget::SupportsIncrementalMeshChanges(UToolTarget* Target)
+{
+	IPersistentDynamicMeshSource* DynamicMeshSource = Cast<IPersistentDynamicMeshSource>(Target);
+	if (DynamicMeshSource)
+	{
+		return DynamicMeshSource->HasDynamicMeshComponent();
+	}
+	return false;
+}
+
+
+bool UE::ToolTarget::ApplyIncrementalMeshEditChange(
+	UToolTarget* Target,
+	TFunctionRef<bool(FDynamicMesh3& EditMesh, UObject* TransactionTarget)> MeshEditChangeFunc )
+{
+	IPersistentDynamicMeshSource* DynamicMeshSource = Cast<IPersistentDynamicMeshSource>(Target);
+	if (DynamicMeshSource && DynamicMeshSource->HasDynamicMeshComponent())
+	{
+		bool bOK;
+		UDynamicMeshComponent* Component = DynamicMeshSource->GetDynamicMeshComponent();
+		Component->EditMesh([&](FDynamicMesh3& EditMesh)
+		{
+			bOK = MeshEditChangeFunc(EditMesh, Component);
+		});
+		return bOK;
+	}
+	return false;
+}
 
 
 bool UE::ToolTarget::ConfigureCreateMeshObjectParams(UToolTarget* SourceTarget, FCreateMeshObjectParams& DerivedParamsOut)
@@ -531,7 +565,19 @@ IInterface_CollisionDataProvider* UE::ToolTarget::GetPhysicsCollisionDataProvide
 	return nullptr;
 }
 
+UStaticMesh* UE::ToolTarget::GetStaticMeshFromTargetIfAvailable(UToolTarget* Target)
+{
+	IStaticMeshBackedTarget* TargetStaticMeshTarget = Cast<IStaticMeshBackedTarget>(Target);
+	UStaticMesh* TargetStaticMesh = TargetStaticMeshTarget ? TargetStaticMeshTarget->GetStaticMesh() : nullptr;
+	return TargetStaticMesh;
+}
 
+USkeletalMesh* UE::ToolTarget::GetSkeletalMeshFromTargetIfAvailable(UToolTarget* Target)
+{
+	ISkeletalMeshBackedTarget* TargetSkeletalMeshTarget = Cast<ISkeletalMeshBackedTarget>(Target);
+	USkeletalMesh* TargetSkeletalMesh = TargetSkeletalMeshTarget ? TargetSkeletalMeshTarget->GetSkeletalMesh() : nullptr;
+	return TargetSkeletalMesh;
+}
 
 
 

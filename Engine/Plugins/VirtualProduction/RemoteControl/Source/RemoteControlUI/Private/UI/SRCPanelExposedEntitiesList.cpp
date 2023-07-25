@@ -17,6 +17,7 @@
 #include "Misc/Attribute.h"
 #include "Misc/Guid.h"
 #include "Misc/MessageDialog.h"
+#include "PropertyPath.h"
 #include "RemoteControlPanelStyle.h"
 #include "RemoteControlPreset.h"
 #include "RemoteControlUIModule.h"
@@ -34,6 +35,7 @@
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STreeView.h"
+
 
 #define LOCTEXT_NAMESPACE "RemoteControlPanelEntitiesList"
 
@@ -281,28 +283,43 @@ void SRCPanelExposedEntitiesList::Construct(const FArguments& InArgs, URemoteCon
 		.HeaderRow(
 			SAssignNew(FieldsHeaderRow, SHeaderRow)
 			.Style(&RCPanelStyle->HeaderRowStyle)
+			.CanSelectGeneratedColumn(true) //To show/hide columns
 
 			+ SHeaderRow::Column(RemoteControlPresetColumns::DragDropHandle)
 			.DefaultLabel(LOCTEXT("RCPresetDragDropHandleColumnHeader", ""))
 			.FixedWidth(25.f)
 			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
+			.ShouldGenerateWidget(true)
+
+			+ SHeaderRow::Column(RemoteControlPresetColumns::OwnerName)
+			.DefaultLabel(LOCTEXT("RCPresetOwnerNameColumnHeader", "Owner Name"))
+			.HAlignHeader(HAlign_Center)
+			.FillWidth(0.15f)
+			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
+
+			+ SHeaderRow::Column(RemoteControlPresetColumns::SubobjectPath)
+			.DefaultLabel(LOCTEXT("RCPresetSubobjectPathColumnHeader", "Subobject Path"))
+			.HAlignHeader(HAlign_Center)
+			.FillWidth(0.15f)
+			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
 
 			+ SHeaderRow::Column(RemoteControlPresetColumns::Description)
 			.DefaultLabel(LOCTEXT("RCPresetDescColumnHeader", "Description"))
 			.HAlignHeader(HAlign_Center)
-			.FillWidth(0.5f)
+			.FillWidth(0.35f)
 			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
 
 			+ SHeaderRow::Column(RemoteControlPresetColumns::Value)
 			.DefaultLabel(LOCTEXT("RCPresetValueColumnHeader", "Value"))
 			.HAlignHeader(HAlign_Center)
-			.FillWidth(0.5f)
+			.FillWidth(0.4f)
 			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
 
 			+ SHeaderRow::Column(RemoteControlPresetColumns::Reset)
 			.DefaultLabel(LOCTEXT("RCPresetResetButtonColumnHeader", ""))
 			.FixedWidth(48.f)
 			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
+			.ShouldGenerateWidget(true)
 		);
 
 	// Exposed Entities Dock Panel
@@ -459,6 +476,12 @@ void SRCPanelExposedEntitiesList::Tick(const FGeometry& AllottedGeometry, const 
 		ApplyFilters();
 
 		bFilterApplicationRequested = false;
+	}
+
+	if (bRefreshRequested)
+	{
+		ProcessRefresh();
+		bRefreshRequested = false;
 	}
 }
 
@@ -655,26 +678,7 @@ void SRCPanelExposedEntitiesList::OnObjectPropertyChange(UObject* InObject, FPro
 
 void SRCPanelExposedEntitiesList::Refresh()
 {
-	GenerateListWidgets();
-
-	RefreshGroups();
-
-	if (Preset.IsValid())
-	{
-		constexpr bool bForceMouseClick = true;
-
-		if (const FRemoteControlPresetGroup* SelectedGroup = Preset->Layout.GetGroup(CurrentlySelectedGroup))
-		{
-			GenerateListWidgets(*SelectedGroup);
-			SetSelection(FindGroupById(SelectedGroup->Id), bForceMouseClick);
-		}
-		else
-		{
-			const FRemoteControlPresetGroup& DefaultGroup = Preset->Layout.GetDefaultGroup();
-			GenerateListWidgets(DefaultGroup);
-			SetSelection(FindGroupById(DefaultGroup.Id), bForceMouseClick);
-		}
-	}
+	bRefreshRequested = true;
 }
 
 void SRCPanelExposedEntitiesList::TryRefreshingSearch(const FText& InSearchText, bool bApplyFilter)
@@ -729,6 +733,8 @@ void SRCPanelExposedEntitiesList::TryRefreshingSearch(const FText& InSearchText,
 
 void SRCPanelExposedEntitiesList::GenerateListWidgets()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SRCPanelExposedEntitiesList::GenerateListWidgets);
+
 	FieldWidgetMap.Reset();
 
 	for (TWeakPtr<FRemoteControlEntity> WeakEntity : Preset->GetExposedEntities())
@@ -749,6 +755,8 @@ void SRCPanelExposedEntitiesList::GenerateListWidgets()
 
 void SRCPanelExposedEntitiesList::GenerateListWidgets(const FRemoteControlPresetGroup& FromGroup)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SRCPanelExposedEntitiesList::GenerateListWidgetsFromGroup);
+
 	FieldEntities.Reset();
 
 	if (FieldWidgetMap.IsEmpty())
@@ -823,7 +831,7 @@ TSharedRef<ITableRow> SRCPanelExposedEntitiesList::OnGenerateRow(TSharedPtr<SRCP
 
 		return FReply::Unhandled();
 	};
-	
+
 	if (Node->GetRCType() == SRCPanelTreeNode::Group)
 	{
 		return SNew(STableRow<TSharedPtr<SWidget>>, OwnerTable)
@@ -874,13 +882,13 @@ void SRCPanelExposedEntitiesList::OnSelectionChanged(TSharedPtr<SRCPanelTreeNode
 			CurrentlySelectedGroup = RCGroup->Id;
 
 			GenerateListWidgets(*RCGroup);
-			
+
 			if (BackendFilter.HasAnyActiveFilters())
 			{
 				bFilterApplicationRequested = true;
 			}
 		}
-	
+
 		FieldsListView->ClearSelection();
 	}
 	else
@@ -888,7 +896,8 @@ void SRCPanelExposedEntitiesList::OnSelectionChanged(TSharedPtr<SRCPanelTreeNode
 		// todo call handler on node itself
 		if (TSharedPtr<FRemoteControlField> RCField = Preset->GetExposedEntity<FRemoteControlField>(Node->GetRCId()).Pin())
 		{
-			TSet<UObject*> Objects = TSet<UObject*>{ RCField->GetBoundObjects() };
+			TArray<UObject*> BoundObjects = RCField->GetBoundObjects();
+			TSet<UObject*> Objects = TSet<UObject*>{ BoundObjects };
 
 			TArray<UObject*> OwnerActors;
 			for (UObject* Object : Objects)
@@ -903,7 +912,61 @@ void SRCPanelExposedEntitiesList::OnSelectionChanged(TSharedPtr<SRCPanelTreeNode
 				}
 			}
 
-			SelectActorsInlevel(OwnerActors);
+			if (RCField->GetStruct() == FRemoteControlProperty::StaticStruct())
+			{
+				TSharedPtr<FRemoteControlProperty> RCProp = StaticCastSharedPtr<FRemoteControlProperty>(RCField);
+
+				// Resolve it to get the property path.
+				RCProp->FieldPathInfo.Resolve(RCProp->GetBoundObject());
+				if (RCProp->FieldPathInfo.IsResolved())
+				{
+					TSharedRef<FPropertyPath> PropertyPath = RCProp->FieldPathInfo.ToPropertyPath();
+
+					for (auto It = BoundObjects.CreateIterator(); It; ++It)
+					{
+						if (AActor* OwnerActor = (*It)->GetTypedOuter<AActor>())
+						{
+							UObject* BindingObject = *It;
+
+							// When we encounter a non-component object, 
+							if (!BindingObject->IsA<UActorComponent>())
+							{
+								BoundObjects.Add(OwnerActor);
+								It.RemoveCurrent();
+							}
+
+							// --- Special NDisplay handling because of their customization ---
+							// Since display cluster config data is not created as a defaeult subobject, therefore we have no way of retrieving the CurrentConfigData property from the config object itself.
+							static FName DisplayClusterConfigDataClassName = "DisplayClusterConfigurationData";
+							if (BindingObject->GetClass()->GetFName() == DisplayClusterConfigDataClassName)
+							{
+								if (FProperty* Property = OwnerActor->GetClass()->FindPropertyByName("CurrentConfigData"))
+								{
+									// Append "CurrentConfigData" to the beginning of the path.
+									TSharedRef<FPropertyPath> NewPropertyPath = FPropertyPath::Create(Property);
+									for (int32 Index = 0; Index < PropertyPath->GetNumProperties(); Index++)
+									{
+										NewPropertyPath->AddProperty(PropertyPath->GetPropertyInfo(Index));
+									}
+
+									PropertyPath = NewPropertyPath;
+								}
+							}
+						}
+					}
+
+					FRemoteControlUIModule::Get().SelectObjects(BoundObjects);
+				
+					FTimerHandle Handle;
+					FTimerDelegate Delegate = FTimerDelegate::CreateLambda(([PropertyPath]()
+						{
+							FRemoteControlUIModule::Get().HighlightPropertyInDetailsPanel(*PropertyPath);
+						}));
+
+					// Needed because modifying the selection set is asynchronous.
+					GEditor->GetTimerManager()->SetTimer(Handle, Delegate, 0.1, 0, -1);
+				}
+			}
 		}
 	}
 
@@ -1601,6 +1664,32 @@ void SRCPanelExposedEntitiesList::OnProtocolBindingAddedOrRemoved(ERCProtocolBin
 void SRCPanelExposedEntitiesList::OnWidgetRegistryRefreshed(const TArray<UObject*>& Objects)
 {
 	Refresh();
+}
+
+void SRCPanelExposedEntitiesList::ProcessRefresh()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(SRCPanelExposedEntitiesList::Refresh);
+
+	GenerateListWidgets();
+
+	RefreshGroups();
+
+	if (Preset.IsValid())
+	{
+		constexpr bool bForceMouseClick = true;
+
+		if (const FRemoteControlPresetGroup* SelectedGroup = Preset->Layout.GetGroup(CurrentlySelectedGroup))
+		{
+			GenerateListWidgets(*SelectedGroup);
+			SetSelection(FindGroupById(SelectedGroup->Id), bForceMouseClick);
+		}
+		else
+		{
+			const FRemoteControlPresetGroup& DefaultGroup = Preset->Layout.GetDefaultGroup();
+			GenerateListWidgets(DefaultGroup);
+			SetSelection(FindGroupById(DefaultGroup.Id), bForceMouseClick);
+		}
+	}
 }
 
 bool FGroupDragEvent::IsDraggedFromSameGroup() const

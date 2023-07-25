@@ -2,15 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "AssetRegistry/ARFilter.h"
 #include "ContentBrowserDataSource.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/IAssetRegistry.h"
-#include "UObject/GCObject.h"
+#include "ContentBrowserDataFilter.h"
 #include "Misc/NamePermissionList.h"
 #include "ContentBrowserDataMenuContexts.h"
-#include "ContentBrowserAssetDataPayload.h"
-#include "Input/Reply.h"
 #include "ContentBrowserAssetDataSource.generated.h"
+
+class FContentBrowserAssetFileItemDataPayload;
+class FContentBrowserAssetFolderItemDataPayload;
+class FReply;
+struct FPropertyChangedEvent;
 
 class IAssetTools;
 class IAssetTypeActions;
@@ -187,6 +191,12 @@ public:
 	virtual bool EditItem(const FContentBrowserItemData& InItem) override;
 
 	virtual bool BulkEditItems(TArrayView<const FContentBrowserItemData> InItems) override;
+	
+	virtual bool CanViewItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg) override;
+
+	virtual bool ViewItem(const FContentBrowserItemData& InItem) override;
+
+	virtual bool BulkViewItems(TArrayView<const FContentBrowserItemData> InItems) override;
 
 	virtual bool CanPreviewItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg) override;
 
@@ -290,6 +300,8 @@ private:
 
 	void OnObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& InPropertyChangedEvent);
 
+	void OnObjectPreSave(UObject* InObject, class FObjectPreSaveContext InObjectPreSaveContext);
+
 	void OnPathAdded(const FString& InPath);
 
 	void OnPathRemoved(const FString& InPath);
@@ -358,10 +370,22 @@ private:
 	 * The set of folders that should always be visible, even if they contain no assets in the Content Browser view.
 	 * This will include root content folders, and any folders that have been created directly (or indirectly) by a user action.
 	 */
-	TSet<FString> AlwaysVisibleAssetFolders;
+	TSet<FName> AlwaysVisibleAssetFolders;
 
 	/**
 	 * A cache of folders that contain no assets in the Content Browser view.
 	 */
-	TSet<FString> EmptyAssetFolders;
+	TSet<FName> EmptyAssetFolders;
+	
+	/**
+	 * A cache of folders that visited since the last time any empty asset folders were added.
+	 */
+	TSet<FName> VisitedEmptyAssetFolders;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "ContentBrowserAssetDataPayload.h"
+#include "CoreMinimal.h"
+#include "Input/Reply.h"
+#include "UObject/GCObject.h"
+#endif

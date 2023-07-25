@@ -680,27 +680,22 @@ namespace Gauntlet
 
 		public TargetDeviceHoloLens(string Host, string InCachePath, string InParam = null)
 		{
-			string TargetEntryString = ""; // String returned by command tools "<Name>\t<IP>"
-
 			bool bIsDefault = Host.Equals("default", StringComparison.OrdinalIgnoreCase);
 			bool bNeedsRemove = false;
 
+			// If testing locally, assume it's IpOverUSB (so localhost)
 			if (bIsDefault)
 			{
-				TargetEntryString = "Local";
+				Host = "http://127.0.0.1:10080/";
 			}
+			// Otherwise assume it's a remote URL and (thus needs HTTPS)
 			else
 			{
-				// Not supported yet
-				TargetEntryString = "Local";
+				Host = "https://" + Host;
 			}
-			string Hostname = TargetEntryString;
 
-			// default to IPoverUSB localhost address, and not HTTPS to avoid having to add credentials
-			// TODO: Make this data-driven
-			string IPAddress = "http://127.0.0.1:10080/";
-
-			StaticDeviceInfo = new DeviceInfo(Hostname, IPAddress, bIsDefault, bNeedsRemove);
+			// Not immediately clear how to get a "host name" to pass into Device Info, so just use the host IP for that and IP for now.
+			StaticDeviceInfo = new DeviceInfo(Host, Host, bIsDefault, bNeedsRemove);
 			CachedStateInfo = new StateInfo();
 			CachedStateInfo.ConnectionState = StateInfo.eConnectionState.CONNECTION_UNKNOWN;
 			CachedStateInfo.PowerStatus = StateInfo.ePowerStatus.POWER_STATUS_UNKNOWN;
@@ -709,14 +704,34 @@ namespace Gauntlet
 			{
 				// fake success, mark device as powered on
 				CachedStateInfo.PowerStatus = StateInfo.ePowerStatus.POWER_STATUS_ON;
+			}	
+
+			string DeviceUsername = "";
+			string DevicePassword = "";
+
+			string DeviceLoginCredentialsFile = CommandUtils.ParseParamValue(Environment.GetCommandLineArgs(), "-HoloLensDeviceCredentialsFileLocation", null);
+
+			if (DeviceLoginCredentialsFile != null && DeviceLoginCredentialsFile.Length > 0)
+			{
+				string[] lines = System.IO.File.ReadAllLines(DeviceLoginCredentialsFile);
+
+				if (lines.Length > 1)
+				{
+
+					DeviceUsername = lines[0];
+					DevicePassword = lines[1];
+				}
+				else
+				{
+					throw new AutomationException(ExitCode.Error_Arguments,"Device login credential file not found or invalid: " + DeviceLoginCredentialsFile);
+				}
+			}
+			else
+			{
+				throw new AutomationException(ExitCode.Error_Arguments, "Device login credential file not specified. Specify with -HoloLensDeviceCredentialsFileLocation=path.");
 			}
 
-			// Placeholder login info
-			// TODO: make this data-driven
-			string DeviceUsername = "admin";
-			string DevicePassword = "password";
-
-			Microsoft.Tools.WindowsDevicePortal.DefaultDevicePortalConnection DevicePortalConnection = new Microsoft.Tools.WindowsDevicePortal.DefaultDevicePortalConnection(IPAddress, DeviceUsername, DevicePassword);
+			Microsoft.Tools.WindowsDevicePortal.DefaultDevicePortalConnection DevicePortalConnection = new Microsoft.Tools.WindowsDevicePortal.DefaultDevicePortalConnection(Host, DeviceUsername, DevicePassword);
 			DevicePortal = new Microsoft.Tools.WindowsDevicePortal.DevicePortal(DevicePortalConnection);
 			DevicePortal.UnvalidatedCert += (sender, certificate, chain, sslPolicyErrors) =>
 			{
@@ -883,7 +898,7 @@ namespace Gauntlet
 		// If a test is being run multiple times, we only want to install the first time
 		static Dictionary<string, string> PackagedInstalls = new Dictionary<string, string>();
 
-		public static string[] GetPathToVCLibsPackages(bool UseDebugCrt, WindowsCompiler Compiler, WindowsArchitecture[] ActualArchitectures)
+		public static string[] GetPathToVCLibsPackages(bool UseDebugCrt, WindowsCompiler Compiler, UnrealArch[] ActualArchitectures)
 		{
 			List<DirectoryReference> SdkRootDirs = new List<DirectoryReference>();
 			WindowsExports.EnumerateSdkRootDirs(SdkRootDirs, EpicGames.Core.Log.Logger);
@@ -912,7 +927,7 @@ namespace Gauntlet
 				{
 					foreach (var Arch in ActualArchitectures)
 					{
-						string ArchitectureFragment = WindowsExports.GetArchitectureSubpath(Arch);
+						string ArchitectureFragment = Arch.WindowsName;
 
 						// For whatever reason, VCLibs are not in Windows Kits/, but Microsoft SDKs/Windows Kits, so go up two directories and start from there.
 						if (Directory.Exists(SdkRootDir.ParentDirectory.ToString()) && Directory.Exists(SdkRootDir.ParentDirectory.ParentDirectory.ToString()))
@@ -1048,7 +1063,7 @@ namespace Gauntlet
 					Log.Verbose("Unable to uninstall {0}", PackageName);
 				}
 
-					try
+				try
 				{
 					string PackagePath = PackagedBuild.SourceAppxBundlePath;
 					string CertPath = PackagedBuild.SourceCertPath;
@@ -1059,7 +1074,7 @@ namespace Gauntlet
 					bool UseDebugCrt = AppConfig.Configuration == UnrealTargetConfiguration.Debug;
 					WindowsCompiler Compiler = WindowsCompiler.Default;
 
-					WindowsArchitecture[] ActualArchitectures = { WindowsArchitecture.ARM64 };
+					UnrealArch[] ActualArchitectures = { UnrealArch.Arm64 };
 					Dependencies.AddRange(GetPathToVCLibsPackages(UseDebugCrt, Compiler, ActualArchitectures));
 
 					DevicePortal.AppInstallStatus += Portal_AppInstallStatus;

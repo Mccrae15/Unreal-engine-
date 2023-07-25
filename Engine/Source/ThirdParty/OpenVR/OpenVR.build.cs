@@ -20,7 +20,7 @@ public class OpenVR : ModuleRules
 			throw new BuildException(Err);
 		}
 
-		PublicIncludePaths.Add(SdkBase + "/headers");
+		PublicSystemIncludePaths.Add(SdkBase + "/headers");
 
 		string LibraryPath = SdkBase + "/lib/";
 
@@ -39,7 +39,7 @@ public class OpenVR : ModuleRules
 			PublicDelayLoadDLLs.Add(DylibPath);
 			RuntimeDependencies.Add(DylibPath);
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Linux && Target.Architecture.StartsWith("x86_64"))
+		else if (Target.Platform == UnrealTargetPlatform.Linux && Target.Architecture == UnrealArch.X64)
 		{
 			LibraryPath += "linux64/";
 			PublicAdditionalLibraries.Add(LibraryPath + "libopenvr_api.so");

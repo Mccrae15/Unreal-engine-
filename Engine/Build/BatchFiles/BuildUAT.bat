@@ -21,17 +21,47 @@ rem find ".cs" files to only lines that match those names - excludes lines that 
 md ..\Intermediate\Build >nul 2>nul
 
 dir /s^
- Programs\Shared\EpicGames.Core\*.cs^
- Programs\Shared\EpicGames.Core\*.csproj^
  Programs\Shared\EpicGames.Build\*.cs^
  Programs\Shared\EpicGames.Build\*.csproj^
+ Programs\Shared\EpicGames.Core\*.cs^
+ Programs\Shared\EpicGames.Core\*.csproj^
+ Programs\Shared\EpicGames.IoHash\*.cs^
+ Programs\Shared\EpicGames.IoHash\*.csproj^
  Programs\Shared\EpicGames.MsBuild\*.cs^
  Programs\Shared\EpicGames.MsBuild\*.csproj^
+ Programs\Shared\EpicGames.Serialization\*.cs^
+ Programs\Shared\EpicGames.Serialization\*.csproj^
  Programs\Shared\EpicGames.UHT\*.cs^
  Programs\Shared\EpicGames.UHT\*.csproj^
  Programs\UnrealBuildTool\*.cs^
  Programs\UnrealBuildTool\*.csproj^
  | find ".cs" >..\Intermediate\Build\AutomationToolFiles.txt
+
+if not exist ..\Platforms goto NoPlatforms
+for /d %%D in (..\Platforms\*) do (
+	if exist %%D\Source\Programs\UnrealBuildTool (
+		dir /s^
+		 %%D\Source\Programs\AutomationTool\*.cs^
+		 %%D\Source\Programs\AutomationTool\*.csproj^
+		 %%D\Source\Programs\UnrealBuildTool\*.cs^
+		 %%D\Source\Programs\UnrealBuildTool\*.csproj^
+		 | find ".cs" >> ..\Intermediate\Build\AutomationToolFiles.txt
+	)
+)
+:NoPlatforms
+
+if not exist ..\Restricted goto NoRestricted
+for /d %%D in (..\Restricted\*) do (
+	if exist %%D\Source\Programs\UnrealBuildTool (
+		dir /s^
+		 %%D\Source\Programs\AutomationTool\*.cs^
+		 %%D\Source\Programs\AutomationTool\*.csproj^
+		 %%D\Source\Programs\UnrealBuildTool\*.cs^
+		 %%D\Source\Programs\UnrealBuildTool\*.csproj^
+		 | find ".cs" >> ..\Intermediate\Build\AutomationToolFiles.txt
+	)
+)
+:NoRestricted
 
 rem note: no /s
 dir ^
@@ -39,8 +69,6 @@ dir ^
  Programs\AutomationTool\*.cs^
  Programs\AutomationTool\*.csproj^
  | find ".cs" >>..\Intermediate\Build\AutomationToolFiles.txt
-
-if not exist ..\Binaries\DotNET\AutomationTool\AutomationTool.dll goto Build_AutomationTool
 
 set MSBUILD_LOGLEVEL=%1
 if not defined %MSBUILD_LOGLEVEL set MSBUILD_LOGLEVEL=quiet
@@ -50,6 +78,7 @@ if not defined %ARGUMENT goto Check_UpToDate
 if /I "%ARGUMENT%" == "FORCE" goto Build_AutomationTool
 
 :Check_UpToDate
+if not exist ..\Binaries\DotNET\AutomationTool\AutomationTool.dll goto Build_AutomationTool
 set RUNUAT_EXITCODE=0
 rem per https://ss64.com/nt/fc.html using redirection syntax rather than errorlevel, based on observed inconsistent results from this function
 fc ..\Intermediate\Build\AutomationToolFiles.txt ..\Intermediate\Build\AutomationToolPrevFiles.txt >nul && goto Exit

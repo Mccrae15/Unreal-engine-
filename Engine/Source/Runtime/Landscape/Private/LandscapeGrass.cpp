@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
+#include "EdGraph/EdGraphNode.h"
 #include "GenericPlatform/GenericPlatformStackWalk.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -19,6 +20,7 @@
 #include "ShowFlags.h"
 #include "RHI.h"
 #include "RenderingThread.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "ShaderParameters.h"
 #include "RHIStaticStates.h"
 #include "SceneView.h"
@@ -30,6 +32,7 @@
 #include "Engine/MapBuildDataRegistry.h"
 #include "ShadowMap.h"
 #include "LandscapeComponent.h"
+#include "LandscapeSubsystem.h"
 #include "LandscapeVersion.h"
 #include "MaterialShaderType.h"
 #include "MeshMaterialShaderType.h"
@@ -39,6 +42,7 @@
 #include "Materials/MaterialExpressionLandscapeGrassOutput.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "LandscapeDataAccess.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "StaticMeshResources.h"
 #include "LandscapeLight.h"
 #include "GrassInstancedStaticMeshComponent.h"
@@ -63,6 +67,7 @@
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "MaterialCachedData.h"
 #include "SceneRenderTargetParameters.h"
+#include "TextureResource.h"
 
 #define LOCTEXT_NAMESPACE "Landscape"
 
@@ -179,6 +184,12 @@ static FAutoConsoleVariableRef CVarGrassMaxCreatePerFrame(
 	GGrassMaxCreatePerFrame,
 	TEXT("Maximum number of Grass components to create per frame"));
 
+static int32 GGrassCreationPrioritizedMultipler = 4;
+static FAutoConsoleVariableRef CVarGrassCreationPrioritizedMultipler(
+	TEXT("grass.GrassCreationPrioritizedMultipler"),
+	GGrassCreationPrioritizedMultipler,
+	TEXT("Multipler applied to MaxCreatePerFrame and MaxAsyncTasks when grass creation is prioritized."));
+
 static int32 GGrassUpdateAllOnRebuild = 0;
 static FAutoConsoleVariableRef CVarUpdateAllOnRebuild(
 	TEXT("grass.UpdateAllOnRebuild"),
@@ -198,6 +209,19 @@ static TAutoConsoleVariable<int32> CVarRayTracingLandscapeGrass(
 	0,
 	TEXT("Include landscapes grass in ray tracing effects (default = 1)"));
 #endif
+
+const TCHAR* GGrassQualityLevelCVarName = TEXT("r.grass.DensityQualityLevel");
+const TCHAR* GGrassQualityLevelScalabilitySection = TEXT("ViewDistanceQuality");
+
+int32 GGrassQualityLevel = -1;
+static FAutoConsoleVariableRef CVarGGrassDensityQualityLevelCVar(
+	GGrassQualityLevelCVarName,
+	GGrassQualityLevel,
+	TEXT("The quality level for grass (low, medium, high, epic). \n"),
+	ECVF_Scalability);
+	
+struct FPerQualityLevelInt;
+struct FPerQualityLevelFloat;
 
 DECLARE_CYCLE_STAT(TEXT("Grass Async Build Time"), STAT_FoliageGrassAsyncBuildTime, STATGROUP_Foliage);
 DECLARE_CYCLE_STAT(TEXT("Grass Start Comp"), STAT_FoliageGrassStartComp, STATGROUP_Foliage);
@@ -224,17 +248,26 @@ static void GrassCVarSinkFunction()
 	static int32 CachedDetailMode = DetailModeCVar ? DetailModeCVar->GetInt() : 0;
 	int32 DetailMode = DetailModeCVar ? DetailModeCVar->GetInt() : 0;
 
+	static const IConsoleVariable* NaniteEnabledCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite"));
+	static int32 CachedNaniteEnabled = NaniteEnabledCVar ? NaniteEnabledCVar->GetInt() : 0;
+	int32 NaniteEnabled = NaniteEnabledCVar ? NaniteEnabledCVar->GetInt() : 0;
+
 	if (DetailMode != CachedDetailMode || 
 		GrassDensityScale != CachedGrassDensityScale || 
-		GrassCullDistanceScale != CachedGrassCullDistanceScale)
+		GrassCullDistanceScale != CachedGrassCullDistanceScale || 
+		CachedNaniteEnabled != NaniteEnabled)
 	{
 		CachedGrassDensityScale = GrassDensityScale;
 		CachedGrassCullDistanceScale = GrassCullDistanceScale;
 		CachedDetailMode = DetailMode;
+		CachedNaniteEnabled = NaniteEnabled;
 
-		for (auto* Landscape : TObjectRange<ALandscapeProxy>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
+		for (UWorld* World : TObjectRange<UWorld>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
 		{
-			Landscape->FlushGrassComponents(nullptr, false);
+			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+			{
+				LandscapeSubsystem->RegenerateGrass(/*bInFlushGrass = */true, /*bInForceSync = */true);
+			}
 		}
 	}
 }
@@ -939,7 +972,8 @@ bool ULandscapeComponent::MaterialHasGrass() const
 
 bool ULandscapeComponent::IsGrassMapOutdated() const
 {
-	if (GrassData->HasValidData())
+	// Don't mark a component as outdated if we won't be able to render it anyway : 
+	if (GrassData->HasValidData() && CanRenderGrassMap())
 	{
 		// check material / instances haven't changed
 		const auto& MaterialStateIds = GrassData->MaterialStateIds;
@@ -1212,7 +1246,7 @@ int32 UMaterialExpressionLandscapeGrassOutput::Compile(class FMaterialCompiler* 
 
 void UMaterialExpressionLandscapeGrassOutput::GetCaption(TArray<FString>& OutCaptions) const
 {
-	OutCaptions.Add(TEXT("Grass"));
+	OutCaptions.Add(TEXT("Landscape Grass"));
 }
 
 const TArray<FExpressionInput*> UMaterialExpressionLandscapeGrassOutput::GetInputs()
@@ -1302,6 +1336,81 @@ void UMaterialExpressionLandscapeGrassOutput::ValidateInputName(FGrassInput& InI
 #endif
 
 //
+// FGrassVariety
+//
+
+FGrassVariety::FGrassVariety()
+	: GrassMesh(nullptr)
+	, GrassDensity(400)
+	, GrassDensityQuality(400.0f)
+	, bUseGrid(true)
+	, PlacementJitter(1.0f)
+	, StartCullDistance(10000)
+	, StartCullDistanceQuality(10000)
+	, EndCullDistance(10000)
+	, EndCullDistanceQuality(10000)
+	, MinLOD(-1)
+	, Scaling(EGrassScaling::Uniform)
+	, ScaleX(1.0f, 1.0f)
+	, ScaleY(1.0f, 1.0f)
+	, ScaleZ(1.0f, 1.0f)
+	, RandomRotation(true)
+	, AlignToSurface(true)
+	, bUseLandscapeLightmap(false)
+	, bReceivesDecals(true)
+	, bAffectDistanceFieldLighting(false)
+	, bCastDynamicShadow(true)
+	, bCastContactShadow(true)
+	, bKeepInstanceBufferCPUCopy(false)
+	, InstanceWorldPositionOffsetDisableDistance(0)
+{
+	GrassDensityQuality.Init(GGrassQualityLevelCVarName, GGrassQualityLevelScalabilitySection);
+	StartCullDistanceQuality.Init(GGrassQualityLevelCVarName, GGrassQualityLevelScalabilitySection);
+	EndCullDistanceQuality.Init(GGrassQualityLevelCVarName, GGrassQualityLevelScalabilitySection);
+}
+
+bool FGrassVariety::IsGrassQualityLevelEnable() const
+{
+	return (GEngine && GEngine->UseGrassVarityPerQualityLevels);
+}
+
+int32 FGrassVariety::GetStartCullDistance() const
+{
+	if (IsGrassQualityLevelEnable())
+	{
+		return StartCullDistanceQuality.GetValue(GGrassQualityLevel);
+	}
+	else
+	{
+		return StartCullDistance.GetValue();
+	}
+}
+
+int32 FGrassVariety::GetEndCullDistance() const
+{
+	if (IsGrassQualityLevelEnable())
+	{
+		return EndCullDistanceQuality.GetValue(GGrassQualityLevel);
+	}
+	else
+	{
+		return EndCullDistance.GetValue();
+	}
+}
+
+float FGrassVariety::GetDensity() const
+{
+	if (IsGrassQualityLevelEnable())
+	{
+		return GrassDensityQuality.GetValue(GGrassQualityLevel);
+	}
+	else
+	{
+		return GrassDensity.GetValue();
+	}
+}
+
+
 // ULandscapeGrassType
 //
 
@@ -1637,7 +1746,9 @@ void ALandscapeProxy::TickGrass(const TArray<FVector>& Cameras, int32& InOutNumC
 #if WITH_EDITORONLY_DATA
 	if (ALandscape* Landscape = GetLandscapeActor())
 	{
-		if (!Landscape->IsUpToDate() || !Landscape->bGrassUpdateEnabled)
+		// Don't allow grass to tick, except in ES3.1 preview mode, since landscape update is not possible there : IsUpToDate might return false and we'll never see grass in the preview mode as a result :
+		bool bAllowGrassTick = Landscape->IsUpToDate() || (GetWorld()->FeatureLevel < ERHIFeatureLevel::SM5);
+		if (!bAllowGrassTick || !Landscape->bGrassUpdateEnabled)
 		{
 			return;
 		}
@@ -1667,7 +1778,7 @@ struct FGrassBuilderBase
 	FGrassBuilderBase(ALandscapeProxy* Landscape, ULandscapeComponent* Component, const FGrassVariety& GrassVariety, ERHIFeatureLevel::Type FeatureLevel, int32 SqrtSubsections = 1, int32 SubX = 0, int32 SubY = 0, bool bEnableDensityScaling = true)
 	{
 		const float DensityScale = bEnableDensityScaling ? GGrassDensityScale : 1.0f;
-		GrassDensity = GrassVariety.GrassDensity.GetValue() * DensityScale;
+		GrassDensity = GrassVariety.GetDensity() * DensityScale;
 
 		DrawScale = Landscape->GetRootComponent()->GetRelativeScale3D();
 		DrawLoc = Landscape->GetActorLocation();
@@ -1812,7 +1923,7 @@ struct FAsyncGrassBuilder : public FGrassBuilderBase
 		, RequireCPUAccess(GrassVariety.bKeepInstanceBufferCPUCopy)
 
 		// output
-		, InstanceBuffer(/*bSupportsVertexHalfFloat*/ GVertexElementTypeSupport.IsSupported(VET_Half2))
+		, InstanceBuffer(/*bSupportsVertexHalfFloat*/ true)
 		, ClusterTree()
 		, OutOcclusionLayerNum(0)
 	{		
@@ -2350,7 +2461,7 @@ void ALandscapeProxy::GetGrassTypes(const UWorld* World, UMaterialInterface* Lan
 			{
 				for (auto& GrassVariety : GrassType->GrassVarieties)
 				{
-					const int32 EndCullDistance = GrassVariety.EndCullDistance.GetValue();
+					int32 EndCullDistance = GrassVariety.GetEndCullDistance();
 					if (EndCullDistance > OutMaxDiscardDistance)
 					{
 						OutMaxDiscardDistance = EndCullDistance;
@@ -2696,10 +2807,13 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 		}
 	}
 
+	UWorld* World = GetWorld();
+	ULandscapeSubsystem* LandscapeSubsystem = World ? World->GetSubsystem<ULandscapeSubsystem>() : nullptr;
+	const bool bIsGrassCreationPrioritized = LandscapeSubsystem ? LandscapeSubsystem->IsGrassCreationPrioritized() : false;
+	const bool bWaitAsyncTasks = bForceSync || bIsGrassCreationPrioritized;
+
 	if (GGrassEnable > 0)
 	{
-		UWorld* World = GetWorld();
-
 		float GuardBand = GGuardBandMultiplier;
 		float DiscardGuardBand = GGuardBandDiscardMultiplier;
 		bool bCullSubsections = GCullSubsections > 0;
@@ -2707,6 +2821,13 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 		bool bDisableDynamicShadows = GDisableDynamicShadows > 0;
 		int32 MaxInstancesPerComponent = FMath::Max<int32>(1024, GMaxInstancesPerComponent);
 		int32 MaxTasks = GMaxAsyncTasks;
+		int32 GrassMaxCreatePerFrame = GGrassMaxCreatePerFrame;
+		if (bIsGrassCreationPrioritized && GGrassCreationPrioritizedMultipler > 1)
+		{
+			MaxTasks *= GGrassCreationPrioritizedMultipler;
+			GrassMaxCreatePerFrame *= GGrassCreationPrioritizedMultipler;
+		}
+			
 		const float CullDistanceScale = GGrassCullDistanceScale;
 
 		if (World)
@@ -2786,13 +2907,16 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 				SortedLandscapeComponents.Emplace(Component, FMath::Sqrt(MinSqrDistanceToComponent), WorldBounds.GetBox());
 			}
 			
+			// Prioritize components that are closer to camera when grass creation is prioritized
+			bool bShouldSort = bIsGrassCreationPrioritized;
 #if WITH_EDITOR
-			// When editing landscape, prioritize components that are closer to camera for a more reactive update
-			if (GLandscapeEditModeActive)
+			// Also when editing landscape (for a more reactive update)
+			bShouldSort = bShouldSort || GLandscapeEditModeActive;
+#endif
+			if (bShouldSort)
 			{
 				Algo::Sort(SortedLandscapeComponents, [](const SortedLandscapeElement& A, const SortedLandscapeElement& B) { return A.MinDistance < B.MinDistance; });
 			}
-#endif
 
 			for (const SortedLandscapeElement& SortedLandscapeComponent : SortedLandscapeComponents)
 			{
@@ -2831,8 +2955,8 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 						for (auto& GrassVariety : GrassType->GrassVarieties)
 						{
 							GrassVarietyIndex++;
-							int32 EndCullDistance = GrassVariety.EndCullDistance.GetValue();
-							if (GrassVariety.GrassMesh && GrassVariety.GrassDensity.GetValue() > 0.0f && EndCullDistance > 0)
+							int32 EndCullDistance = GrassVariety.GetEndCullDistance();
+							if (GrassVariety.GrassMesh && GrassVariety.GetDensity() > 0.0f && EndCullDistance > 0)
 							{
 								float MustHaveDistance = GuardBand * (float)EndCullDistance * CullDistanceScale;
 								float DiscardDistance = DiscardGuardBand * (float)EndCullDistance * CullDistanceScale;
@@ -2954,7 +3078,7 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 											}
 										}
 
-										if (!bRebuildForBoxes && !bForceSync && (InOutNumCompsCreated >= GGrassMaxCreatePerFrame || AsyncFoliageTasks.Num() >= MaxTasks))
+										if (!bRebuildForBoxes && !bForceSync && (InOutNumCompsCreated >= GrassMaxCreatePerFrame || AsyncFoliageTasks.Num() >= MaxTasks))
 										{
 											continue; // one per frame, but we still want to touch the existing ones and we must do the rebuilds because we changed the tag
 										}
@@ -3039,6 +3163,7 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 										GrassInstancedStaticMeshComponent->LightingChannels = GrassVariety.LightingChannels;
 										GrassInstancedStaticMeshComponent->bCastStaticShadow = false;
 										GrassInstancedStaticMeshComponent->CastShadow = (GrassVariety.bCastDynamicShadow || GrassVariety.bCastContactShadow) && !bDisableDynamicShadows;
+										GrassInstancedStaticMeshComponent->bAffectDistanceFieldLighting = GrassVariety.bAffectDistanceFieldLighting;
 										GrassInstancedStaticMeshComponent->bCastDynamicShadow = GrassVariety.bCastDynamicShadow && !bDisableDynamicShadows;
 										GrassInstancedStaticMeshComponent->bCastContactShadow = GrassVariety.bCastContactShadow && !bDisableDynamicShadows;
 										GrassInstancedStaticMeshComponent->OverrideMaterials = GrassVariety.OverrideMaterials;
@@ -3077,12 +3202,9 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 										}
 										else
 										{
-											GrassInstancedStaticMeshComponent->InstanceStartCullDistance = GrassVariety.StartCullDistance.GetValue() * CullDistanceScale;
-											GrassInstancedStaticMeshComponent->InstanceEndCullDistance = GrassVariety.EndCullDistance.GetValue() * CullDistanceScale;
+											GrassInstancedStaticMeshComponent->InstanceStartCullDistance = GrassVariety.GetStartCullDistance() * CullDistanceScale;
+											GrassInstancedStaticMeshComponent->InstanceEndCullDistance = GrassVariety.GetEndCullDistance() * CullDistanceScale;
 										}
-
-										//@todo - take the settings from a UFoliageType object.  For now, disable distance field lighting on grass so we don't hitch.
-										GrassInstancedStaticMeshComponent->bAffectDistanceFieldLighting = false;
 
 										{
 											QUICK_SCOPE_CYCLE_COUNTER(STAT_GrassAttachComp);
@@ -3286,7 +3408,7 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 		for (int32 Index = 0; Index < AsyncFoliageTasks.Num(); Index++)
 		{
 			FAsyncTask<FAsyncGrassTask>* Task = AsyncFoliageTasks[Index];
-			if (bForceSync)
+			if (bWaitAsyncTasks)
 			{
 				Task->EnsureCompletion();
 			}
@@ -3343,7 +3465,7 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 					Existing->Touch();
 				}
 				delete Task;
-				if (!bForceSync)
+				if (!bWaitAsyncTasks)
 				{
 					break; // one per frame is fine
 				}

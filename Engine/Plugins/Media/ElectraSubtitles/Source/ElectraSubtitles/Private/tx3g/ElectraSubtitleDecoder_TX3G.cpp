@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "tx3g/ElectraSubtitleDecoder_TX3G.h"
-#include "Containers/StringConv.h"
+#include "ElectraSubtitleDecoderFactory.h"
+#include "ElectraSubtitleModule.h"
+#include "MediaDecoderOutput.h"
 
 namespace ElectraSubtitleDecoderTX3GUtils
 {

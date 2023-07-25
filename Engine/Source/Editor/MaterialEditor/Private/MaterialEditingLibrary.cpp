@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialEditingLibrary.h"
+#include "Engine/Texture.h"
 #include "Editor.h"
 #include "MaterialEditor.h"
 #include "MaterialInstanceEditor.h"
 #include "MaterialEditorUtilities.h"
 #include "MaterialShared.h"
 #include "MaterialGraph/MaterialGraphNode.h"
+#include "Materials/MaterialFunction.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInstanceConstant.h"
@@ -31,6 +33,9 @@
 #include "DebugViewModeHelpers.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "ShaderCompiler.h"
+#include "UObject/UObjectIterator.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialEditingLibrary)
 
 DEFINE_LOG_CATEGORY_STATIC(LogMaterialEditingLibrary, Warning, All);
 
@@ -1061,6 +1066,27 @@ bool UMaterialEditingLibrary::SetMaterialInstanceRuntimeVirtualTextureParameterV
 	if (Instance)
 	{
 		Instance->SetRuntimeVirtualTextureParameterValueEditorOnly(FMaterialParameterInfo(ParameterName, Association, Association == EMaterialParameterAssociation::LayerParameter ? 0 : INDEX_NONE), Value);
+	}
+	return bResult;
+}
+
+
+USparseVolumeTexture* UMaterialEditingLibrary::GetMaterialInstanceSparseVolumeTextureParameterValue(UMaterialInstanceConstant* Instance, FName ParameterName, EMaterialParameterAssociation Association)
+{
+	USparseVolumeTexture* Result = nullptr;
+	if (Instance)
+	{
+		Instance->GetSparseVolumeTextureParameterValue(FHashedMaterialParameterInfo(ParameterName, Association, Association == EMaterialParameterAssociation::LayerParameter ? 0 : INDEX_NONE), Result);
+	}
+	return Result;
+}
+
+bool UMaterialEditingLibrary::SetMaterialInstanceSparseVolumeTextureParameterValue(UMaterialInstanceConstant* Instance, FName ParameterName, USparseVolumeTexture* Value, EMaterialParameterAssociation Association)
+{
+	bool bResult = false;
+	if (Instance)
+	{
+		Instance->SetSparseVolumeTextureParameterValueEditorOnly(FMaterialParameterInfo(ParameterName, Association, Association == EMaterialParameterAssociation::LayerParameter ? 0 : INDEX_NONE), Value);
 	}
 	return bResult;
 }

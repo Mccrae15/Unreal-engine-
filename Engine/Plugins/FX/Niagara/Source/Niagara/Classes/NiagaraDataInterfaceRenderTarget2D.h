@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Engine/TextureDefines.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "RenderGraphDefinitions.h"
+
 #include "NiagaraDataInterface.h"
 #include "NiagaraDataInterfaceRW.h"
-#include "ClearQuad.h"
 #include "NiagaraComponent.h"
 #include "NiagaraGenerateMips.h"
 #include "NiagaraDataInterfaceRenderTarget2D.generated.h"
@@ -22,6 +25,7 @@ struct FRenderTarget2DRWInstanceData_GameThread
 
 	FIntPoint Size = FIntPoint(EForceInit::ForceInitToZero);
 	ETextureRenderTargetFormat Format = RTF_RGBA16f;
+	TextureFilter Filter = TextureFilter::TF_Default;
 	ENiagaraMipMapGeneration MipMapGeneration = ENiagaraMipMapGeneration::Disabled;
 	ENiagaraMipMapGenerationType MipMapGenerationType = ENiagaraMipMapGenerationType::Linear;
 	
@@ -42,6 +46,7 @@ struct FRenderTarget2DRWInstanceData_RenderThread
 	}
 
 	FIntPoint Size = FIntPoint(EForceInit::ForceInitToZero);
+	int MipLevels = 0;
 	ENiagaraMipMapGeneration MipMapGeneration = ENiagaraMipMapGeneration::Disabled;
 	ENiagaraMipMapGenerationType MipMapGenerationType = ENiagaraMipMapGenerationType::Linear;
 	bool bRebuildMips = false;
@@ -80,7 +85,7 @@ struct FNiagaraDataInterfaceProxyRenderTarget2DProxy : public FNiagaraDataInterf
 	TMap<FNiagaraSystemInstanceID, FRenderTarget2DRWInstanceData_RenderThread> SystemInstancesToProxyData_RT;
 };
 
-UCLASS(EditInlineNew, Category = "Grid", meta = (DisplayName = "Render Target 2D", Experimental), Blueprintable, BlueprintType)
+UCLASS(EditInlineNew, Category = "Rendering", meta = (DisplayName = "Render Target 2D"), Blueprintable, BlueprintType)
 class NIAGARA_API UNiagaraDataInterfaceRenderTarget2D : public UNiagaraDataInterfaceRWBase
 {
 	GENERATED_UCLASS_BODY()
@@ -106,7 +111,6 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const  override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
@@ -128,40 +132,46 @@ public:
 	virtual bool RenderVariableToCanvas(FNiagaraSystemInstanceID SystemInstanceID, FName VariableName, class FCanvas* Canvas, const FIntRect& DrawRect) const override;
 	//~ UNiagaraDataInterface interface END
 
-	void VMGetSize(FVectorVMExternalFunctionContext& Context); 
+	void VMGetSize(FVectorVMExternalFunctionContext& Context);
 	void VMSetSize(FVectorVMExternalFunctionContext& Context);
+	void VMGetNumMipLevels(FVectorVMExternalFunctionContext& Context);
+	void VMSetFormat(FVectorVMExternalFunctionContext& Context);
 
-	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "!bInheritUserParameterSettings"))
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 2, EditCondition = "!bInheritUserParameterSettings", EditConditionHides))
 	FIntPoint Size;
 
 	/** Controls if and when we generate mips for the render target. */
-	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "!bInheritUserParameterSettings"))
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 20, EditCondition = "!bInheritUserParameterSettings", EditConditionHides))
 	ENiagaraMipMapGeneration MipMapGeneration = ENiagaraMipMapGeneration::Disabled;
 
-	UPROPERTY(EditAnywhere, Category = "Render Target")
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 21, EditCondition = "!bInheritUserParameterSettings && MipMapGeneration != ENiagaraMipMapGeneration::Disabled", EditConditionHides))
 	ENiagaraMipMapGenerationType MipMapGenerationType = ENiagaraMipMapGenerationType::Linear;
 
 	/** When enabled overrides the format of the render target, otherwise uses the project default setting. */
-	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "!bInheritUserParameterSettings && bOverrideFormat"))
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 11, EditCondition = "!bInheritUserParameterSettings && bOverrideFormat", EditConditionHides))
 	TEnumAsByte<ETextureRenderTargetFormat> OverrideRenderTargetFormat;
+
+	/** When enabled overrides the filter of the render target, otherwise uses the project default setting. */
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 12, EditCondition = "!bInheritUserParameterSettings", EditConditionHides))
+	TEnumAsByte<TextureFilter> OverrideRenderTargetFilter = TextureFilter::TF_Default;
 
 	/**
 	When enabled texture parameters (size / etc) are taken from the user provided render target.
 	If no valid user parameter is set the system will be invalid.
 	Note: The resource will be recreated if UAV access is not available, which will reset the contents.
 	*/
-	UPROPERTY(EditAnywhere, Category = "Render Target")
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 0))
 	uint8 bInheritUserParameterSettings : 1;
 
-	UPROPERTY(EditAnywhere, Category = "Render Target")
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 10, EditCondition = "!bInheritUserParameterSettings", EditConditionHides))
 	uint8 bOverrideFormat : 1;
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(EditAnywhere, Category = "Render Target")
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 30))
 	uint8 bPreviewRenderTarget : 1;
 #endif
 
-	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (ToolTip = "When valid the user parameter is used as the render target rather than creating one internal, note that the input render target will be adjusted by the Niagara simulation"))
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (DisplayPriority = 1, ToolTip = "When valid the user parameter is used as the render target rather than creating one internal, note that the input render target will be adjusted by the Niagara simulation"))
 	FNiagaraUserParameterBinding RenderTargetUserParameter;
 
 protected:

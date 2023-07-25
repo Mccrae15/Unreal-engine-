@@ -113,6 +113,8 @@ void FCameraCutSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilder, const
 		return;
 	}
 
+	AllCameras.Sort([](const AActor& A, const AActor& B) { return A.GetActorLabel().Compare(B.GetActorLabel()) < 0; });
+
 	MenuBuilder.BeginSection(NAME_None, LOCTEXT("ChangeCameraMenuText", "Change Camera"));
 	{
 		for (auto EachCamera : AllCameras)
@@ -174,9 +176,29 @@ FMargin FCameraCutSection::GetContentPadding() const
 
 int32 FCameraCutSection::OnPaintSection(FSequencerSectionPainter& InPainter) const
 {
-	static const FSlateBrush* FilmBorder = FAppStyle::GetBrush("Sequencer.Section.FilmBorder");
-
 	InPainter.LayerId = InPainter.PaintSectionBackground();
+
+	// Draw a red frame around the edges to indicate an error since we can't highlight the error text right now.
+	AActor* CameraActor = GetCameraForFrame(Section->GetInclusiveStartFrame());
+	if (!CameraActor)
+	{
+		static const FSlateBrush* ErroredSectionOverlay = FAppStyle::Get().GetBrush("Sequencer.Section.ErroredSectionOverlay");
+		const ESlateDrawEffect DrawEffects = InPainter.bParentEnabled
+			? ESlateDrawEffect::None
+			: ESlateDrawEffect::DisabledEffect;
+
+		FLinearColor ErrorColor = FLinearColor::Red;
+		FSlateDrawElement::MakeBox(
+			InPainter.DrawElements,
+			InPainter.LayerId,
+			InPainter.SectionGeometry.ToPaintGeometry(InPainter.SectionGeometry.GetLocalSize() - FVector2D(1.f, 1.f), FSlateLayoutTransform(FVector2D(1.f, 1.f))),
+			ErroredSectionOverlay,
+			DrawEffects,
+			ErrorColor.CopyWithNewOpacity(0.8f)
+		);
+		InPainter.LayerId++;
+	}
+
 	return FViewportThumbnailSection::OnPaintSection(InPainter);
 }
 
@@ -186,6 +208,19 @@ FText FCameraCutSection::HandleThumbnailTextBlockText() const
 	if (CameraActor)
 	{
 		return FText::FromString(CameraActor->GetActorLabel());
+	}
+
+	UMovieSceneCameraCutSection* CameraCutSection = Cast<UMovieSceneCameraCutSection>(Section);
+	if (CameraCutSection)
+	{
+		if(!CameraCutSection->GetCameraBindingID().IsValid())
+		{
+			return LOCTEXT("CameraBindingError_NoBinding", "No Object Binding specified.");
+		}
+		else
+		{
+			return LOCTEXT("CameraBindingError_MissingBinding", "Object Binding / Bound Object is missing!");
+		}
 	}
 
 	return FText::GetEmpty();

@@ -16,12 +16,20 @@ class UMaterialInstance;
 class UTexture2D;
 
 UENUM()
-enum ELandscapeGizmoType
+enum ELandscapeGizmoType : int
 {
 	LGT_None,
 	LGT_Height,
 	LGT_Weight,
 	LGT_MAX,
+};
+
+UENUM()
+enum class ELandscapeGizmoSnapType
+{
+	None,
+	Component,
+	Texel
 };
 
 USTRUCT()
@@ -102,7 +110,10 @@ class ALandscapeGizmoActiveActor : public ALandscapeGizmoActor
 	TArray<TObjectPtr<ULandscapeLayerInfoObject>> LayerInfos;
 
 	UPROPERTY(transient)
-	bool bSnapToLandscapeGrid;
+	ELandscapeGizmoSnapType SnapType = ELandscapeGizmoSnapType::None;
+
+	UPROPERTY(transient)
+	bool bFollowTerrainHeight = true;
 
 	UPROPERTY(transient)
 	FRotator UnsnappedRotation;
@@ -170,25 +181,25 @@ public:
 	// @todo document
 	float GetWidth() const
 	{
-		return Width * GetRootComponent()->GetRelativeScale3D().X;
+		return static_cast<float>(Width * GetRootComponent()->GetRelativeScale3D().X);
 	}
 
 	// @todo document
 	float GetHeight() const
 	{
-		return Height * GetRootComponent()->GetRelativeScale3D().Y;
+		return static_cast<float>(Height * GetRootComponent()->GetRelativeScale3D().Y);
 	}
 
 	// @todo document
 	float GetLength() const
 	{
-		return LengthZ * GetRootComponent()->GetRelativeScale3D().Z;
+		return static_cast<float>(LengthZ * GetRootComponent()->GetRelativeScale3D().Z);
 	}
 
 	// @todo document
 	void SetLength(float WorldLength)
 	{
-		LengthZ = WorldLength / GetRootComponent()->GetRelativeScale3D().Z;
+		LengthZ = static_cast<float>(WorldLength / GetRootComponent()->GetRelativeScale3D().Z);
 	}
 
 	static const int32 DataTexSize = 128;

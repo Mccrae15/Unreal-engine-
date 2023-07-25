@@ -5,7 +5,6 @@
 =============================================================================*/
 
 #include "MeshMaterialShader.h"
-#include "MaterialShaderMapLayout.h"
 #include "ShaderCompiler.h"
 #include "ProfilingDebugging/CookStats.h"
 
@@ -22,9 +21,12 @@ namespace MaterialMeshCookStats
 }
 #endif
 
+#if WITH_EDITOR
+
 static void PrepareMeshMaterialShaderCompileJob(EShaderPlatform Platform,
 	EShaderPermutationFlags PermutationFlags,
 	const FMaterial* Material,
+	const FMaterialShaderMapId& MaterialShaderMapId,
 	FSharedShaderCompilerEnvironment* MaterialEnvironment,
 	const FShaderPipelineType* ShaderPipeline,
 	const TCHAR* DebugDescription,
@@ -62,7 +64,7 @@ static void PrepareMeshMaterialShaderCompileJob(EShaderPlatform Platform,
 
 	// Compile the shader environment passed in with the shader type's source code.
 	::GlobalBeginCompileShader(
-		Material->GetFriendlyName() / LexToString(Material->GetQualityLevel()),
+		Material->GetUniqueAssetName(Platform, MaterialShaderMapId) / LexToString(Material->GetQualityLevel()),
 		VertexFactoryType,
 		ShaderType,
 		ShaderPipeline,
@@ -86,32 +88,34 @@ static void PrepareMeshMaterialShaderCompileJob(EShaderPlatform Platform,
  */
 void FMeshMaterialShaderType::BeginCompileShader(
 	EShaderCompileJobPriority Priority,
-	uint32 ShaderMapId,
+	uint32 ShaderMapJobId,
 	int32 PermutationId,
 	EShaderPlatform Platform,
 	EShaderPermutationFlags PermutationFlags,
 	const FMaterial* Material,
+	const FMaterialShaderMapId& ShaderMapId,
 	FSharedShaderCompilerEnvironment* MaterialEnvironment,
 	const FVertexFactoryType* VertexFactoryType,
 	TArray<FShaderCommonCompileJobPtr>& NewJobs,
 	const TCHAR* DebugDescription,
 	const TCHAR* DebugExtension) const
 {
-	FShaderCompileJob* NewJob = GShaderCompilingManager->PrepareShaderCompileJob(ShaderMapId, FShaderCompileJobKey(this, VertexFactoryType, PermutationId), Priority);
+	FShaderCompileJob* NewJob = GShaderCompilingManager->PrepareShaderCompileJob(ShaderMapJobId, FShaderCompileJobKey(this, VertexFactoryType, PermutationId), Priority);
 	if (NewJob)
 	{
-		PrepareMeshMaterialShaderCompileJob(Platform, PermutationFlags, Material, MaterialEnvironment, nullptr, DebugDescription, DebugExtension, NewJob);
+		PrepareMeshMaterialShaderCompileJob(Platform, PermutationFlags, Material, ShaderMapId, MaterialEnvironment, nullptr, DebugDescription, DebugExtension, NewJob);
 		NewJobs.Add(FShaderCommonCompileJobPtr(NewJob));
 	}
 }
 
 void FMeshMaterialShaderType::BeginCompileShaderPipeline(
 	EShaderCompileJobPriority Priority,
-	uint32 ShaderMapId,
+	uint32 ShaderMapJobId,
 	int32 PermutationId,
 	EShaderPlatform Platform,
 	EShaderPermutationFlags PermutationFlags,
 	const FMaterial* Material,
+	const FMaterialShaderMapId& ShaderMapId,
 	FSharedShaderCompilerEnvironment* MaterialEnvironment,
 	const FVertexFactoryType* VertexFactoryType,
 	const FShaderPipelineType* ShaderPipeline,
@@ -123,12 +127,12 @@ void FMeshMaterialShaderType::BeginCompileShaderPipeline(
 	UE_LOG(LogShaders, Verbose, TEXT("	Pipeline: %s"), ShaderPipeline->GetName());
 
 	// Add all the jobs as individual first, then add the dependencies into a pipeline job
-	auto* NewPipelineJob = GShaderCompilingManager->PreparePipelineCompileJob(ShaderMapId, FShaderPipelineCompileJobKey(ShaderPipeline, VertexFactoryType, PermutationId), Priority);
+	auto* NewPipelineJob = GShaderCompilingManager->PreparePipelineCompileJob(ShaderMapJobId, FShaderPipelineCompileJobKey(ShaderPipeline, VertexFactoryType, PermutationId), Priority);
 	if (NewPipelineJob)
 	{
 		for (FShaderCompileJob* StageJob : NewPipelineJob->StageJobs)
 		{
-			PrepareMeshMaterialShaderCompileJob(Platform, PermutationFlags, Material, MaterialEnvironment, ShaderPipeline, DebugDescription, DebugExtension, StageJob);
+			PrepareMeshMaterialShaderCompileJob(Platform, PermutationFlags, Material, ShaderMapId, MaterialEnvironment, ShaderPipeline, DebugDescription, DebugExtension, StageJob);
 		}
 		NewJobs.Add(FShaderCommonCompileJobPtr(NewPipelineJob));
 	}
@@ -178,6 +182,8 @@ FShader* FMeshMaterialShaderType::FinishCompileShader(
 	return Shader;
 }
 
+#endif // WITH_EDITOR
+
 bool FMeshMaterialShaderType::ShouldCompilePermutation(EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, int32 PermutationId, EShaderPermutationFlags Flags) const
 {
 	return FShaderType::ShouldCompilePermutation(FMeshMaterialShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, PermutationId, Flags));
@@ -217,13 +223,13 @@ bool FMeshMaterialShaderType::ShouldCompileVertexFactoryPipeline(const FShaderPi
 	return true;
 }
 
+#if WITH_EDITOR
 void FMeshMaterialShaderType::SetupCompileEnvironment(EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, int32 PermutationId, EShaderPermutationFlags Flags, FShaderCompilerEnvironment& Environment) const
 {
 	// Allow the shader type to modify its compile environment.
 	FShaderType::ModifyCompilationEnvironment(FMeshMaterialShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, PermutationId, Flags), Environment);
 }
 
-#if WITH_EDITOR
 void FMeshMaterialShaderMap::LoadMissingShadersFromMemory(
 	const FSHAHash& MaterialShaderMapHash, 
 	const FMaterial* Material, 
@@ -299,27 +305,3 @@ void FMeshMaterialShaderMap::LoadMissingShadersFromMemory(
 #endif
 }
 #endif // WITH_EDITOR
-
-/**
- * Removes all entries in the cache with exceptions based on a shader type
- * @param ShaderType - The shader type to flush
- */
-void FMeshMaterialShaderMap::FlushShadersByShaderType(const FShaderType* ShaderType)
-{
-	if (ShaderType->GetMeshMaterialShaderType())
-	{
-		const int32 PermutationCount = ShaderType->GetPermutationCount();
-		for (int32 PermutationId = 0; PermutationId < PermutationCount; ++PermutationId)
-		{
-			RemoveShaderTypePermutaion(ShaderType, PermutationId);
-		}
-	}
-}
-
-void FMeshMaterialShaderMap::FlushShadersByShaderPipelineType(const FShaderPipelineType* ShaderPipelineType)
-{
-	if (ShaderPipelineType->IsMeshMaterialTypePipeline())
-	{
-		RemoveShaderPipelineType(ShaderPipelineType);
-	}
-}

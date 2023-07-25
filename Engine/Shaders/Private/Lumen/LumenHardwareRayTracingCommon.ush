@@ -115,6 +115,7 @@ struct FRayTracedLightingContext
 	uint LinearCoord;
 	uint InstanceMask;
 	uint MaxTraversalIterations; // Max ray tracing traversal iterations on supported platforms
+	float MinTraceDistanceToSampleSurfaceCache;
 	float FarFieldMaxTraceDistance;
 	float3 FarFieldReferencePos;
 
@@ -148,10 +149,11 @@ FRayTracedLightingContext CreateRayTracedLightingContext(
 	Context.LinearCoord = LinearCoord;
 	Context.InstanceMask = RAY_TRACING_MASK_OPAQUE;
 	Context.TranslucentSkipCountMax = TranslucentSkipCountMax;
-	Context.bAlphaMasking = false;
+	Context.bAlphaMasking = true;
 	Context.FarFieldMaxTraceDistance = -1.0;
 	Context.FarFieldReferencePos = 0;
 	Context.MaxTraversalIterations = MaxTraversalIterations;
+	Context.MinTraceDistanceToSampleSurfaceCache = 0.0f;
 	Context.CullingMode = CullingMode;
 	Context.bHiResSurface = bHiResSurface;
 	Context.bAcceptFirstHitAndEndSearch = false;
@@ -209,7 +211,9 @@ struct FRayTracedLightingResult
 	bool bIsRadianceCompleted; // Is radiance computation completed or do we need a fallback shading pass
 	float3 Radiance;
 
+	float3 GeometryWorldNormal;
 	float3 WorldVelocity;
+
 	bool bValidSurfaceCache;
 	uint MaterialShaderIndex;
 	FLumenRayHitBookmark Bookmark;
@@ -225,6 +229,7 @@ FRayTracedLightingResult CreateRayTracedLightingResult()
 	Result.TraceHitDistance = 0;
 	Result.bIsRadianceCompleted = true;
 	Result.Radiance = 0;
+	Result.GeometryWorldNormal = 0.0f;
 	Result.WorldVelocity = 0;
 	Result.bValidSurfaceCache = false;
 	Result.MaterialShaderIndex = RAY_TRACING_DEFERRED_MATERIAL_KEY_INVALID;
@@ -254,6 +259,7 @@ FRayTracedLightingResult CreateRayTracedLightingResult(
 		Result.Bookmark = MinimalRayResult.Bookmark;
 		Result.bIsRadianceCompleted = SurfaceCacheSample.bValid;
 		Result.Radiance = SurfaceCacheSample.Lighting;
+		Result.GeometryWorldNormal = MinimalRayResult.HitNormal;
 	}
 
 	if (MinimalRayResult.bHit && Context.bCalculateHitVelocity)
@@ -411,6 +417,12 @@ FSurfaceCacheSample CalculateSurfaceCacheLighting(
 		AtlasId
 	);
 
+	// Surface cache has limited resolution. Make sure we don't self-intersect and cause leaking or GI feedback loop
+	if (HitDistance < Context.MinTraceDistanceToSampleSurfaceCache)
+	{
+		SurfaceCacheSample.Lighting = float3(0, 0, 0);
+	}
+
 	// Apply shading when evaluating the material
 	if (LightingMode != LIGHTING_FROM_SURFACE_CACHE)
 	{
@@ -441,8 +453,17 @@ FSurfaceCacheSample SampleLumenMinimalRayHit(
 	// The Surface Cache lighting was computed using the front face, don't leak to the backface
 	if (dot(Ray.Direction, MinimalRayResult.HitNormal) > 0 && !MinimalRayResult.bTwoSided)
 	{
-		SurfaceCacheSample.Lighting = 0.0f;
-		SurfaceCacheSample.bValid = false;
+		if (SurfaceCacheSample.bHeightfield)
+		{
+			// Reuse alpha from the other side of the heightfield, so that Landscape opacity works correctly when viewed from the other side
+			SurfaceCacheSample.Lighting = 0.0f;
+		}
+		else
+		{
+			SurfaceCacheSample.Lighting = 0.0f;
+			SurfaceCacheSample.Opacity = 1.0f;
+			SurfaceCacheSample.bValid = false;
+		}
 	}
 
 	return SurfaceCacheSample;
@@ -480,7 +501,7 @@ float3 CalculateDirectLighting(
 	uint SampleOffset = 0;
 	RandomSequence_Initialize(RandSequence, Context.LinearCoord, View.StateFrameIndex + SampleOffset * 16);
 	float MaxNormalBias = 0.05;
-	uint ReflectedShadowsType = 2;
+	uint ReflectedShadowsType = 1; // Point sampled shadows, as soft shadows can be too noisy with 1 sample and no denosing
 	bool bShouldDoDirectLighting = true;
 	bool bShouldDoEmissiveAndIndirectLighting = false;
 	bool bTopLayerRayTraceSkyLightContribution = false;
@@ -505,39 +526,58 @@ float3 CalculateDirectLighting(
 	return DirectLighting;
 }
 
-float3 GetDirectionalAlbedo(inout FPackedMaterialClosestHitPayload PackedPayload, in FRayDesc Ray)
-#if STRATA_ENABLED
+/**
+ * Return approximate diffuse color as if the entire surface was diffuse in order to conserve energy in secondary bounces
+ * Keep in sync with LumenCardPixelShader.usf
+ * #lumen_todo: refactor and merge with LumenCardPixelShader.usf to ensure that their logic is the same
+ */
+float3 GetApproxFullyRoughDiffuseColor(inout FPackedMaterialClosestHitPayload PackedPayload, in FRayDesc Ray)
 {
-	float3 Out = 0;
+	float3 DiffuseColor = 0.0f;
+	float3 SpecularColor = 0.0f;
 
-	const float3 V = -Ray.Direction;
-	const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings();
-
-	FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(0, 0, 0);
-	FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(PackedPayload.StrataData, StrataAddressing, PackedPayload.StrataData);
-
-	Strata_for(uint BSDFIndex = 0, BSDFIndex < StrataPixelHeader.BSDFCount, ++BSDFIndex)
+	#if STRATA_ENABLED
 	{
-		FStrataBSDF BSDF = UnpackStrataBSDF(PackedPayload.StrataData, StrataAddressing, StrataPixelHeader);
+		const float3 V = -Ray.Direction;
 
-		// Create the BSDF context
-		FStrataBSDFContext StrataBSDFContext = StrataCreateBSDFContext(StrataPixelHeader, BSDF, StrataAddressing, V);
-		const float3 BSDFThroughput = LuminanceWeight(StrataBSDFContext, BSDF);
+		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(true /*bForceFullyRough*/, true /*bRoughDiffuseEnabled*/, 0 /*PeelLayersAboveDepth*/, false/*bRoughnessTracking*/);
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(0, 0, 0);
+		FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(PackedPayload.StrataData, StrataAddressing, PackedPayload.StrataData);
 
-		// Evaluate environment lighting
-		FStrataEnvLightResult StrataEnvLight = StrataEvaluateForEnvLight(StrataBSDFContext, true /*bEnableSpecular*/, Settings);
+		Strata_for(uint BSDFIndex = 0, BSDFIndex < StrataPixelHeader.BSDFCount, ++BSDFIndex)
+		{
+			FStrataBSDF BSDF = UnpackStrataBSDF(PackedPayload.StrataData, StrataAddressing, StrataPixelHeader);
+			if (StrataIsBSDFVisible(BSDF))
+			{
+				// Create the BSDF context
+				FStrataBSDFContext StrataBSDFContext = StrataCreateBSDFContext(StrataPixelHeader, BSDF, StrataAddressing, V);
+				const float3 BSDFThroughput = LuminanceWeight(StrataBSDFContext, BSDF);
 
-		Out += BSDFThroughput * StrataEnvLight.DiffuseWeight;
-		Out += BSDFThroughput * StrataEnvLight.SpecularWeight;
+				// Evaluate environment lighting
+				FStrataEnvLightResult StrataEnvLight = StrataEvaluateForEnvLight(StrataBSDFContext, true /*bEnableSpecular*/, Settings);
+
+				DiffuseColor += BSDFThroughput * (StrataEnvLight.DiffuseWeight + StrataEnvLight.DiffuseBackFaceWeight);
+				SpecularColor += BSDFThroughput * StrataEnvLight.SpecularWeight;
+			}
+		}
 	}
+	#else
+	{
+		DiffuseColor = PackedPayload.GetDiffuseColor();
+		SpecularColor = PackedPayload.GetSpecularColor();
 
-	return Out;
+		const uint ShadingModelID = PackedPayload.GetShadingModelID();
+		if (ShadingModelID == SHADINGMODELID_TWOSIDED_FOLIAGE || ShadingModelID == SHADINGMODELID_SUBSURFACE)
+		{
+			// Add subsurface following EncodeSubsurfaceColor/ExtractSubsurfaceColor
+			DiffuseColor += Pow2(PackedPayload.GetCustomData().xyz);
+		}
+	}
+	#endif // STRATA_ENABLED
+
+	EnvBRDFApproxFullyRough(DiffuseColor, SpecularColor);
+	return DiffuseColor;
 }
-#else
-{
-	return PackedPayload.GetDiffuseColor();
-}
-#endif // STRATA_ENABLED
 
 float3 CalculateRayTracedLighting(
 	in FRayDesc Ray,
@@ -559,26 +599,27 @@ float3 CalculateRayTracedLighting(
 		Radiance += CalculateDirectLighting(Ray, Context, Payload, RayHitTranslatedWorldPosition, RayHitWorldNormal);
 	}
 	
-	float3 DiffuseColor = GetDirectionalAlbedo(Payload, Ray);
+	float3 ApproxFullyRoughDiffuseColor = GetApproxFullyRoughDiffuseColor(Payload, Ray);
 
 	if (LightingMode == EVALUATE_MATERIAL_AND_DIRECT_LIGHTING_AND_SKY_LIGHTING)
 	{
 		// STRATA_TODO: this path is not supported yet, as PackedPayload does not have space for indirect irradiance
-		Radiance += DiffuseColor * Payload.GetIndirectIrradiance();
+		Radiance += ApproxFullyRoughDiffuseColor * Payload.GetIndirectIrradiance();
 	}
 	else
 	{
-		// STRATA_TODO: current when HWRT is enabled, this part will crash with Strata enabled when running Lumen scene visualization. 
-		// It seems to be related to cards data not be properly bound at shader compilation but it is unclear why as all seems correct.
-		#if ENABLE_VISUALIZE_MODE && STRATA_ENABLED
-		FSurfaceCacheSample SurfaceCacheSample = InitSurfaceCacheSample();
-		#else
-		FSurfaceCacheSample SurfaceCacheSample = CalculateSurfaceCacheLighting(Ray, Context, RayHitTranslatedWorldPosition, RayHitWorldNormal, HitDistance, SceneInstanceIndex, DiffuseColor, LightingMode);
-		#endif
+		float3 RayHitGeometryWorldNormal = Payload.GetGeometryNormal();
 
 		// The Surface Cache lighting was computed using the front face, don't leak to the backface
-		if (dot(Ray.Direction, RayHitWorldNormal) <= 0 || (Payload.GetFlags() | RAY_TRACING_PAYLOAD_OUTPUT_FLAG_TWO_SIDED))
+		if (dot(Ray.Direction, RayHitGeometryWorldNormal) <= 0 || Payload.IsTwoSided())
 		{
+			// Reverse surface cache lookup normal to match non hit lighting path (usually surface cache is only valid on front faces)
+			if (Payload.IsTwoSided() && !Payload.IsFrontFace())
+			{
+				RayHitGeometryWorldNormal = -RayHitGeometryWorldNormal;
+			}
+
+			FSurfaceCacheSample SurfaceCacheSample = CalculateSurfaceCacheLighting(Ray, Context, RayHitTranslatedWorldPosition, RayHitGeometryWorldNormal, HitDistance, SceneInstanceIndex, ApproxFullyRoughDiffuseColor, LightingMode);
 			Radiance += SurfaceCacheSample.Lighting;
 		}
 	}
@@ -621,6 +662,7 @@ FRayTracedLightingResult TraceAndCalculateRayTracedLighting(
 		uint SceneInstanceIndex = Payload.GetSceneInstanceIndex();
 		Result.TraceHitDistance = Payload.HitT;
 		Result.Radiance = CalculateRayTracedLighting(Ray, Context, Payload, Result.TraceHitDistance, SceneInstanceIndex, LightingMode);
+		Result.GeometryWorldNormal = Payload.GetGeometryNormal();
 	}
 
 	return Result;

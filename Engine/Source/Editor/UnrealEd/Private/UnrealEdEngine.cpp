@@ -7,6 +7,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/App.h"
+#include "Model.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectIterator.h"
 #include "Framework/Application/SlateApplication.h"
@@ -26,6 +27,7 @@
 #include "Components/ArrowComponent.h"
 #include "Components/BillboardComponent.h"
 #include "Components/BrushComponent.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/Selection.h"
 #include "Editor.h"
 #include "LevelEditorViewport.h"
@@ -577,7 +579,7 @@ void UUnrealEdEngine::OnPackageDirtyStateUpdated( UPackage* Pkg)
 
 			const UEditorLoadingSavingSettings* Settings = GetDefault<UEditorLoadingSavingSettings>();
 			if (!bAlreadyAsked && // Don't ask if we already asked once!
-				(Settings->bPromptForCheckoutOnAssetModification || Settings->bAutomaticallyCheckoutOnAssetModification))
+				Settings->bPromptForCheckoutOnAssetModification)
 			{
 				PackageToNotifyState.Add(Package, NS_Updating);
 			}
@@ -690,7 +692,7 @@ void UUnrealEdEngine::OnSourceControlStateUpdated(const FSourceControlOperationR
 						}
 						else
 						{
-							if (Settings->bAutomaticallyCheckoutOnAssetModification)
+							if (Settings->GetAutomaticallyCheckoutOnAssetModification())
 							{
 								PackagesToAutomaticallyCheckOut.Add(PackagePtr);
 								FilesToAutomaticallyCheckOut.Add(SourceControlHelpers::PackageFilename(Package));
@@ -1417,7 +1419,7 @@ void UUnrealEdEngine::RegisterComponentVisualizer(FName ComponentClassName, TSha
 void UUnrealEdEngine::UnregisterComponentVisualizer(FName ComponentClassName)
 {
 	TSharedPtr<FComponentVisualizer> Visualizer = FindComponentVisualizer(ComponentClassName);
-	VisualizersForSelection.RemoveAll([&Visualizer](const auto& CachedComponentVisualizer) { return CachedComponentVisualizer.Visualizer == Visualizer; });
+	VisualizersForSelection.RemoveAll([&Visualizer](const FComponentVisualizerForSelection& VisualizerForSelection) { return VisualizerForSelection.ComponentVisualizer.Visualizer == Visualizer; });
 
 	ComponentVisualizerMap.Remove(ComponentClassName);
 }
@@ -1452,24 +1454,30 @@ TSharedPtr<class FComponentVisualizer> UUnrealEdEngine::FindComponentVisualizer(
 
 void UUnrealEdEngine::DrawComponentVisualizers(const FSceneView* View, FPrimitiveDrawInterface* PDI)
 {
-	for(FCachedComponentVisualizer& CachedVisualizer : VisualizersForSelection)
+	for(FComponentVisualizerForSelection& VisualizerForSelection : VisualizersForSelection)
 	{
-		CachedVisualizer.Visualizer->DrawVisualization(CachedVisualizer.ComponentPropertyPath.GetComponent(), View, PDI);
+		if (!VisualizerForSelection.IsEnabledDelegate.IsSet() || VisualizerForSelection.IsEnabledDelegate.GetValue()())
+		{
+			VisualizerForSelection.ComponentVisualizer.Visualizer->DrawVisualization(VisualizerForSelection.ComponentVisualizer.ComponentPropertyPath.GetComponent(), View, PDI);
+		}
 	}
 }
 
 
 void UUnrealEdEngine::DrawComponentVisualizersHUD(const FViewport* Viewport, const FSceneView* View, FCanvas* Canvas)
 {
-	for(FCachedComponentVisualizer& CachedVisualizer : VisualizersForSelection)
+	for(FComponentVisualizerForSelection& VisualizerForSelection : VisualizersForSelection)
 	{
-		CachedVisualizer.Visualizer->DrawVisualizationHUD(CachedVisualizer.ComponentPropertyPath.GetComponent(), Viewport, View, Canvas);
+		if (!VisualizerForSelection.IsEnabledDelegate.IsSet() || VisualizerForSelection.IsEnabledDelegate.GetValue()())
+		{
+			VisualizerForSelection.ComponentVisualizer.Visualizer->DrawVisualizationHUD(VisualizerForSelection.ComponentVisualizer.ComponentPropertyPath.GetComponent(), Viewport, View, Canvas);
+		}
 	}
 }
 
 void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 {
-	auto GetVisualizersForSelection = [&](AActor* Actor)
+	auto GetVisualizersForSelection = [this](AActor* Actor, const UActorComponent* SelectedComponent)
 	{
 		// Iterate over components of that actor (and recurse through child components)
 		TInlineComponentArray<UActorComponent*> Components;
@@ -1484,7 +1492,15 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 				TSharedPtr<FComponentVisualizer> Visualizer = FindComponentVisualizer(Comp->GetClass());
 				if (Visualizer.IsValid())
 				{
-					VisualizersForSelection.Add(FCachedComponentVisualizer(Comp, Visualizer));
+					FCachedComponentVisualizer CachedComponentVisualizer(Comp, Visualizer);
+					FComponentVisualizerForSelection Temp{CachedComponentVisualizer};
+
+					FComponentVisualizerForSelection& ComponentVisualizerForSelection = VisualizersForSelection.Add_GetRef(MoveTemp(Temp));
+
+					if (Comp != SelectedComponent)
+					{
+						ComponentVisualizerForSelection.IsEnabledDelegate.Emplace([](){ return GetDefault<UEditorPerProjectUserSettings>()->bShowSelectionSubcomponents == true; });
+					}
 				}
 			}
 		}
@@ -1502,7 +1518,7 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 			AActor* Actor = Cast<AActor>(*It);
 			if (Actor != nullptr)
 			{
-				GetVisualizersForSelection(Actor);
+				GetVisualizersForSelection(Actor, Actor->GetRootComponent());
 			}
 		}
 	}
@@ -1528,7 +1544,7 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 						{
 							if (!ActorsProcessed.Contains(Actor))
 							{
-								GetVisualizersForSelection(Actor);
+								GetVisualizersForSelection(Actor, Comp);
 								ActorsProcessed.Emplace(Actor);
 							}
 						}
@@ -1541,11 +1557,11 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 	// If there is an undo/redo operation in progress, restore the active component visualizer.
 	if (GIsTransacting)
 	{
-		for (FCachedComponentVisualizer& CachedComponentVisualizer : VisualizersForSelection)
+		for (FComponentVisualizerForSelection& VisualizerForSelection : VisualizersForSelection)
 		{
-			if (CachedComponentVisualizer.Visualizer->GetEditedComponent() != nullptr)
+			if (VisualizerForSelection.ComponentVisualizer.Visualizer->GetEditedComponent() != nullptr)
 			{
-				ComponentVisManager.SetActiveComponentVis(GCurrentLevelEditingViewportClient, CachedComponentVisualizer.Visualizer);
+				ComponentVisManager.SetActiveComponentVis(GCurrentLevelEditingViewportClient, VisualizerForSelection.ComponentVisualizer.Visualizer);
 				break;
 			}
 		}

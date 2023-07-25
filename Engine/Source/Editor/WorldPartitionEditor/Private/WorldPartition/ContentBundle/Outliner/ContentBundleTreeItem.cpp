@@ -30,7 +30,7 @@ FSceneOutlinerTreeItemID FContentBundleTreeItem::GetID() const
 	TSharedPtr<FContentBundleEditor> ContentBundleEditorPin = ContentBundleEditor.Pin();
 	if (ContentBundleEditorPin != nullptr)
 	{
-		return FSceneOutlinerTreeItemID(ContentBundleEditorPin->GetGuid());
+		return FSceneOutlinerTreeItemID(ContentBundleEditorPin->GetTreeItemID());
 	}
 
 	return FSceneOutlinerTreeItemID();
@@ -41,7 +41,7 @@ FString FContentBundleTreeItem::GetDisplayString() const
 	TSharedPtr<FContentBundleEditor> ContentBundleEditorPin = ContentBundleEditor.Pin();
 	if (ContentBundleEditorPin != nullptr)
 	{
-		return ContentBundleEditorPin->GetDisplayName();
+		return FString::Printf(TEXT("%s%s"), *ContentBundleEditorPin->GetDisplayName(), ContentBundleEditorPin->IsBeingEdited() ? TEXT(" (Current)") : TEXT(""));
 	}
 
 	return LOCTEXT("ContentBundleMissingForTreeItem", "(Invalid Content Bundle)").ToString();

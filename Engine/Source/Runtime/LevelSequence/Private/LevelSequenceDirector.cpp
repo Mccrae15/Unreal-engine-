@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequenceDirector.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "UObject/Stack.h"
 #include "MovieSceneObjectBindingID.h"
@@ -22,7 +23,7 @@ UWorld* ULevelSequenceDirector::GetWorld() const
 	return GetTypedOuter<UWorld>();
 }
 
-FQualifiedFrameTime ULevelSequenceDirector::GetMasterSequenceTime() const
+FQualifiedFrameTime ULevelSequenceDirector::GetRootSequenceTime() const
 {
 	using namespace UE::MovieScene;
 

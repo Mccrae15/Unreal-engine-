@@ -2,16 +2,21 @@
 
 #include "NiagaraRendererRibbons.h"
 
+#include "GlobalRenderResources.h"
 #include "GPUSortManager.h"
 #include "ParticleResources.h"
 #include "NiagaraRibbonVertexFactory.h"
 #include "NiagaraDataSet.h"
 #include "NiagaraDataSetAccessor.h"
+#include "NiagaraSceneProxy.h"
 #include "NiagaraStats.h"
+#include "NiagaraSystemInstance.h"
 #include "NiagaraComponent.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingDynamicGeometryCollection.h"
 #include "RayTracingInstance.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "MaterialDomain.h"
 #include "Math/NumericLimits.h"
 #include "NiagaraCullProxyComponent.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
@@ -161,8 +166,8 @@ static TAutoConsoleVariable<int32> CVarRayTracingNiagaraRibbons(
 FORCEINLINE float AcosFast(float InX)
 {
 	float X = FMath::Abs(InX);
-	float Res = -0.156583f * X + (0.5 * PI);
-	Res *= sqrt(FMath::Max(0.f, 1.0f - X));
+	float Res = -0.156583f * X + (0.5f * PI);
+	Res *= FMath::Sqrt(FMath::Max(0.f, 1.0f - X));
 	return (InX >= 0) ? Res : PI - Res;
 }
 
@@ -221,30 +226,22 @@ struct FNiagaraRibbonCommandBufferLayout
 	float TessCurrentFrame_AverageWidth;
 };
 
-
+// This data must match INDEX_GEN_INDIRECT_ARGS_STRIDE in NiagaraRibbonCommon.ush
+// Be careful if we ever allocate more than 1 of these as ExecuteIndirect arguments have boundary restrictions on some platforms
 struct FNiagaraRibbonIndirectDrawBufferLayout
 {
-	static constexpr int32 NumElements = 12;
-	static constexpr int32 GenerateIndicesCommandOffset = 0;
-	static constexpr int32 IndirectDrawCommandIndex = 4;
-	static constexpr int32 IndirectDrawCommandByteOffset = IndirectDrawCommandIndex * sizeof(uint32);
-
-	// This is passed from InitializeIndices to GenerateIndices
-	uint32 IndexGenIndirectArgsXDim;
-	uint32 IndexGenIndirectArgsYDim;
-	uint32 IndexGenIndirectArgsZDim;
-	uint32 TessellationFactor;
-
-	// This is the indirect draw args and then resulting information for the vertex shader	
-	uint32 IndexCount;
-	uint32 NumInstances;
-	uint32 FirstIndexOffset;
-	uint32 FirstVertexOffset;
-	uint32 FirstInstanceOffset;
+	FRHIDispatchIndirectParametersNoPadding	IndexGenIndirectArgs;			//  0 - 3 uints
+	FRHIDrawIndexedIndirectParameters		DrawIndirectParameters;			//  3 - 5 uints
+	FRHIDrawIndexedIndirectParameters		StereoDrawIndirectParameters;	//  8 - 5 uints
 	
-	uint32 NumSegments;
-	uint32 NumSubSegments;
-	float OneOverSubSegmentCount;	
+	uint32	TessellationFactor;												// 13 - 1 uint
+	uint32	NumSegments;													// 14 - 1 uint
+	uint32	NumSubSegments;													// 15 - 1 uint
+	float	OneOverSubSegmentCount;											// 16 - 1 uint
+
+	static constexpr int32 DrawIndirectParametersByteOffset			= 3 * sizeof(uint32);
+	static constexpr int32 StereoDrawIndirectParametersByteOffset	= 8 * sizeof(uint32);
+	static constexpr int32 NumElements								= 17;
 };
 
 struct FNiagaraRibbonIndexBuffer final : FIndexBuffer
@@ -329,9 +326,6 @@ struct FNiagaraRibbonRenderingFrameViewResources
 	FNiagaraRibbonIndexBuffer		IndexBuffer;
 	FRWBuffer						IndirectDrawBuffer;
 	FNiagaraIndexGenerationInput	IndexGenerationSettings;
-
-	int32 IndirectDrawBufferStartOffset = FNiagaraRibbonIndirectDrawBufferLayout::IndirectDrawCommandIndex;
-	int32 IndirectDrawBufferStartByteOffset = FNiagaraRibbonIndirectDrawBufferLayout::IndirectDrawCommandByteOffset;
 
 	~FNiagaraRibbonRenderingFrameViewResources()
 	{
@@ -704,7 +698,7 @@ void FNiagaraRendererRibbons::CreateRenderThreadResources()
 	
 	
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingAllowed())
 	{
 		FRayTracingGeometryInitializer Initializer;
 		static const FName DebugName("FNiagaraRendererRibbons");
@@ -729,7 +723,7 @@ void FNiagaraRendererRibbons::ReleaseRenderThreadResources()
 	ShapeState.SliceVertexDataBuffer.Release();
 	
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingAllowed())
 	{
 		RayTracingGeometry.ReleaseResource();
 		RayTracingDynamicVertexBuffer.Release();
@@ -916,13 +910,8 @@ int FNiagaraRendererRibbons::GetDynamicDataSize()const
 {
 	uint32 Size = sizeof(FNiagaraDynamicDataRibbon);
 
-	Size += ShapeState.SliceVertexData.GetAllocatedSize();
+	Size += uint32(ShapeState.SliceVertexData.GetAllocatedSize());
 
-	if (DynamicDataRender)
-	{
-		const FNiagaraDynamicDataRibbon* RibbonDynamicData = static_cast<FNiagaraDynamicDataRibbon*>(DynamicDataRender);
-		Size += RibbonDynamicData->GetAllocatedSize();
-	}
 	return Size;
 }
 
@@ -1055,8 +1044,6 @@ void FNiagaraRendererRibbons::GetDynamicRayTracingInstances(FRayTracingMaterialG
 		}
 	);
 	
-	RayTracingInstance.BuildInstanceMaskAndFlags(FeatureLevel);
-	
 	OutRayTracingInstances.Add(RayTracingInstance);
 }
 #endif
@@ -1137,6 +1124,7 @@ void FNiagaraRendererRibbons::GenerateShapeStateTube(FNiagaraRibbonShapeGeometry
 	State.BitsNeededForShape = CalculateBitsForRange(State.NumVerticesInSlice);
 	State.BitMaskForShape = CalculateBitMask(State.BitsNeededForShape);
 	
+	State.SliceVertexData.Reserve(TubeSubdivisions + 1);
 	for (int32 VertexId = 0; VertexId <= TubeSubdivisions; VertexId++)
 	{
 		const float RotationAngle = (static_cast<float>(VertexId) / TubeSubdivisions) * -360.0f;
@@ -1147,7 +1135,7 @@ void FNiagaraRendererRibbons::GenerateShapeStateTube(FNiagaraRibbonShapeGeometry
 		State.SliceVertexData.Emplace(Position, Normal, TextureV);
 	}
 	
-	State.SliceTriangleToVertexIds.Reserve(TubeSubdivisions);
+	State.SliceTriangleToVertexIds.Reserve(TubeSubdivisions * 2);
 	for (int32 VertexIdx = 0; VertexIdx < TubeSubdivisions; VertexIdx++)
 	{
 		State.SliceTriangleToVertexIds.Add(VertexIdx);
@@ -1186,7 +1174,7 @@ void FNiagaraRendererRibbons::GenerateShapeStateCustom(FNiagaraRibbonShapeGeomet
 		State.SliceVertexData.Emplace(Position, Normal, TextureV);
 	}
 
-	State.SliceTriangleToVertexIds.Reserve(CustomVertices.Num());
+	State.SliceTriangleToVertexIds.Reserve(CustomVertices.Num() * 2);
 	for (int32 VertexIdx = 0; VertexIdx < CustomVertices.Num(); VertexIdx++)
 	{
 		State.SliceTriangleToVertexIds.Add(VertexIdx);
@@ -1204,6 +1192,7 @@ void FNiagaraRendererRibbons::GenerateShapeStatePlane(FNiagaraRibbonShapeGeometr
 	State.BitsNeededForShape = CalculateBitsForRange(State.NumVerticesInSlice);
 	State.BitMaskForShape = CalculateBitMask(State.BitsNeededForShape);
 	
+	State.SliceVertexData.Reserve(WidthSegmentationCount + 1);
 	for (int32 VertexId = 0; VertexId <= WidthSegmentationCount; VertexId++)
 	{
 		const FVector2f Position = FVector2f((static_cast<float>(VertexId) / WidthSegmentationCount) - 0.5f, 0);
@@ -1213,7 +1202,7 @@ void FNiagaraRendererRibbons::GenerateShapeStatePlane(FNiagaraRibbonShapeGeometr
 		State.SliceVertexData.Emplace(Position, Normal, TextureV);
 	}
 	
-	State.SliceTriangleToVertexIds.Reserve(WidthSegmentationCount);
+	State.SliceTriangleToVertexIds.Reserve(WidthSegmentationCount * 2);
 	for (int32 VertexIdx = 0; VertexIdx < WidthSegmentationCount; VertexIdx++)
 	{
 		State.SliceTriangleToVertexIds.Add(VertexIdx);
@@ -1343,16 +1332,15 @@ void FNiagaraRendererRibbons::CalculateUVScaleAndOffsets(const FNiagaraRibbonUVS
 		checkf(false, TEXT("Unsupported ribbon distribution mode"));
 	}
 
-	OutUScale = CalculatedUScale * UVSettings.Scale.X;
-	OutUOffset = (CalculatedUOffset * UVSettings.Scale.X) + UVSettings.Offset.X;
+	OutUScale = float(CalculatedUScale * UVSettings.Scale.X);
+	OutUOffset = float((CalculatedUOffset * UVSettings.Scale.X) + UVSettings.Offset.X);
 }
 
 
 template<bool bWantsTessellation, bool bHasTwist, bool bWantsMultiRibbon>
-void FNiagaraRendererRibbons::GenerateVertexBufferForRibbonPart(const FNiagaraGenerationInputDataCPUAccessors& CPUData, const TArray<uint32>& RibbonIndices, uint32 RibbonIndex, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const
+void FNiagaraRendererRibbons::GenerateVertexBufferForRibbonPart(const FNiagaraGenerationInputDataCPUAccessors& CPUData, TConstArrayView<uint32> RibbonIndices, uint32 RibbonIndex, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const
 {
 	TArray<uint32>& SegmentData = OutputData.SegmentData;
-	TArray<FRibbonMultiRibbonInfo>& MultiRibbonInfos = OutputData.RibbonInfoLookup;
 	
 	const FNiagaraDataSetReaderFloat<FNiagaraPosition>& PosData = CPUData.PosData;	
 	const FNiagaraDataSetReaderFloat<float>& AgeData = CPUData.AgeData;
@@ -1361,23 +1349,20 @@ void FNiagaraRendererRibbons::GenerateVertexBufferForRibbonPart(const FNiagaraGe
 	
 	const int32 StartIndex = OutputData.SortedIndices.Num();
 
-	const FVector FirstPos = static_cast<FVector>(PosData[RibbonIndices[0]]);
-	FVector CurrPos = FirstPos;
-	FVector LastToCurrVec = FVector::ZeroVector;
+	const FVector3f FirstPos = PosData[RibbonIndices[0]];
+	FVector3f CurrPos = FirstPos;
+	FVector3f LastToCurrVec = FVector3f::ZeroVector;
 	float LastToCurrSize = 0;	
 	float LastTwist = 0;
 	float LastWidth = 0;
-	double TotalDistance = 0.0f;
-
-	OutputData.SortedIndices.Reserve(OutputData.SortedIndices.Num() + RibbonIndices.Num());
-	OutputData.TangentAndDistances.Reserve(OutputData.TangentAndDistances.Num() + RibbonIndices.Num());
+	float TotalDistance = 0.0f;
 
 	// Find the first position with enough distance.
 	int32 CurrentIndex = 1;
 	while (CurrentIndex < RibbonIndices.Num())
 	{
 		const int32 CurrentDataIndex = RibbonIndices[CurrentIndex];
-		CurrPos = static_cast<FVector>(PosData[CurrentDataIndex]);
+		CurrPos = PosData[CurrentDataIndex];
 		LastToCurrVec = CurrPos - FirstPos;
 		LastToCurrSize = LastToCurrVec.Size();
 		if constexpr (bHasTwist)
@@ -1413,8 +1398,8 @@ void FNiagaraRendererRibbons::GenerateVertexBufferForRibbonPart(const FNiagaraGe
 	while (NextIndex < RibbonIndices.Num())
 	{
 		const int32 NextDataIndex = RibbonIndices[NextIndex];
-		const FVector NextPos = static_cast<FVector>(PosData[NextDataIndex]);
-		FVector CurrToNextVec = NextPos - CurrPos;
+		const FVector3f NextPos = PosData[NextDataIndex];
+		FVector3f CurrToNextVec = NextPos - CurrPos;
 		const float CurrToNextSize = CurrToNextVec.Size();
 
 		float NextTwist = 0;
@@ -1430,7 +1415,7 @@ void FNiagaraRendererRibbons::GenerateVertexBufferForRibbonPart(const FNiagaraGe
 		{
 			// Normalize CurrToNextVec
 			CurrToNextVec *= 1.f / FMath::Max(GNiagaraRibbonMinSegmentLength, CurrToNextSize);
-			const FVector Tangent = (1.f - GenerationConfig.GetCurveTension()) * (LastToCurrVec + CurrToNextVec).GetSafeNormal();
+			const FVector3f Tangent = (1.f - GenerationConfig.GetCurveTension()) * (LastToCurrVec + CurrToNextVec).GetSafeNormal();
 
 			// Update the distance for CurrentIndex.
 			TotalDistance += LastToCurrSize;
@@ -1450,7 +1435,7 @@ void FNiagaraRendererRibbons::GenerateVertexBufferForRibbonPart(const FNiagaraGe
 			if constexpr (bWantsTessellation)
 			{
 				OutputData.AverageSegmentLength += CurrToNextSize * CurrToNextSize;
-				OutputData.AverageSegmentAngle += CurrToNextSize * AcosFast(FVector::DotProduct(LastToCurrVec, CurrToNextVec));
+				OutputData.AverageSegmentAngle += CurrToNextSize * AcosFast(FVector3f::DotProduct(LastToCurrVec, CurrToNextVec));
 				if constexpr (bHasTwist)
 				{
 					OutputData.AverageTwistAngle += CurrToNextSize * FMath::Abs(NextTwist - LastTwist);
@@ -1491,7 +1476,7 @@ void FNiagaraRendererRibbons::GenerateVertexBufferForRibbonPart(const FNiagaraGe
 
 	if (NumSegments > 0)
 	{
-		FRibbonMultiRibbonInfo& MultiRibbonInfo = MultiRibbonInfos[RibbonIndex];
+		FRibbonMultiRibbonInfo& MultiRibbonInfo = OutputData.RibbonInfoLookup[RibbonIndex];
 		MultiRibbonInfo.StartPos = (FVector)PosData[RibbonIndices[0]];
 		MultiRibbonInfo.EndPos = (FVector)PosData[RibbonIndices.Last()];
 		MultiRibbonInfo.BaseSegmentDataIndex = SegmentData.Num();
@@ -1567,23 +1552,29 @@ void FNiagaraRendererRibbons::GenerateVertexBufferForRibbonPart(const FNiagaraGe
 template<typename IDType, typename ReaderType, bool bWantsTessellation, bool bHasTwist>
 void FNiagaraRendererRibbons::GenerateVertexBufferForMultiRibbonInternal(const FNiagaraGenerationInputDataCPUAccessors& CPUData, const ReaderType& IDReader, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const
 {
-	//-OPT: Consider MemStack
-	TMap<IDType, TArray<uint32>> MultiRibbonSortedIndices;
+	using FIndexArray = TArray<uint32, TMemStackAllocator<>>;
+	TMap<IDType, FIndexArray> MultiRibbonSortedIndices;
 
-	for (uint32 i = 0; i < CPUData.TotalNumParticles; ++i)
+	for (uint32 i=0; i < CPUData.TotalNumParticles; ++i)
 	{
-		TArray<uint32>& Indices = MultiRibbonSortedIndices.FindOrAdd(IDReader[i]);
+		FIndexArray& Indices = MultiRibbonSortedIndices.FindOrAdd(IDReader[i]);
 		Indices.Add(i);
 	}
+
+	const int32 NumRibbons = MultiRibbonSortedIndices.Num();
 	OutputData.RibbonInfoLookup.AddZeroed(MultiRibbonSortedIndices.Num());
+	OutputData.SortedIndices.Reserve(OutputData.SortedIndices.Num() + CPUData.TotalNumParticles + NumRibbons);
+	OutputData.TangentAndDistances.Reserve(OutputData.TangentAndDistances.Num() + CPUData.TotalNumParticles + NumRibbons);
+	OutputData.MultiRibbonIndices.Reserve(OutputData.MultiRibbonIndices.Num() + CPUData.TotalNumParticles + NumRibbons);
+	OutputData.SegmentData.Reserve(OutputData.SegmentData.Num() + CPUData.TotalNumParticles + NumRibbons);
 
 	// Sort the ribbons by ID so that the draw order stays consistent.
 	MultiRibbonSortedIndices.KeySort(TLess<IDType>());
 
 	uint32 RibbonIndex = 0;
-	for (TPair<IDType, TArray<uint32>>& Pair : MultiRibbonSortedIndices)
+	for (TPair<IDType, FIndexArray>& Pair : MultiRibbonSortedIndices)
 	{
-		TArray<uint32>& SortedIndices = Pair.Value;
+		FIndexArray& SortedIndices = Pair.Value;
 		const auto& SortKeyReader = CPUData.SortKeyReader;
 		SortedIndices.Sort([&SortKeyReader](const uint32& A, const uint32& B) { return (SortKeyReader[A] < SortKeyReader[B]); });
 		GenerateVertexBufferForRibbonPart<bWantsTessellation, bHasTwist, true>(CPUData, SortedIndices, RibbonIndex, OutputData);
@@ -1618,6 +1609,7 @@ void FNiagaraRendererRibbons::GenerateVertexBufferCPU(const FNiagaraGenerationIn
 	check(CPUData.PosData.IsValid() && CPUData.SortKeyReader.IsValid());
 
 	// TODO: Move sorting to share code with sprite and mesh sorting and support the custom sorting key.
+	FMemMark Mark(FMemStack::Get());
 	if (GenerationConfig.HasRibbonIDs())
 	{
 		if (GenerationConfig.HasFullRibbonIDs())
@@ -1634,8 +1626,7 @@ void FNiagaraRendererRibbons::GenerateVertexBufferCPU(const FNiagaraGenerationIn
 	}
 	else
 	{
-		//-OPT: Consider MemStack
-		TArray<uint32> SortedIndices;
+		TArray<uint32, TMemStackAllocator<>> SortedIndices;
 		SortedIndices.Reserve(CPUData.TotalNumParticles + 1);
 		for (uint32 i = 0; i < CPUData.TotalNumParticles; ++i)
 		{
@@ -1645,7 +1636,11 @@ void FNiagaraRendererRibbons::GenerateVertexBufferCPU(const FNiagaraGenerationIn
 
 		const auto& SortKeyReader = CPUData.SortKeyReader;
 		SortedIndices.Sort([&SortKeyReader](const uint32& A, const uint32& B) {	return (SortKeyReader[A] < SortKeyReader[B]); });
-		
+
+		OutputData.SortedIndices.Reserve(OutputData.SortedIndices.Num() + CPUData.TotalNumParticles + 1);
+		OutputData.TangentAndDistances.Reserve(OutputData.TangentAndDistances.Num() + CPUData.TotalNumParticles + 1);
+		OutputData.SegmentData.Reserve(OutputData.SegmentData.Num() + CPUData.TotalNumParticles + 1);
+
 		if (GenerationConfig.WantsAutomaticTessellation())
 		{
 			if (GenerationConfig.HasTwist())
@@ -1665,13 +1660,13 @@ void FNiagaraRendererRibbons::GenerateVertexBufferCPU(const FNiagaraGenerationIn
 	
 	if (OutputData.TotalSegmentLength > 0.0)
 	{
-		const double& TotalSegmentLength = OutputData.TotalSegmentLength;
+		const float& TotalSegmentLength = OutputData.TotalSegmentLength;
 	
 		// weighted sum based on the segment length :
-		double& AverageSegmentLength = OutputData.AverageSegmentLength;
-		double& AverageSegmentAngle = OutputData.AverageSegmentAngle;
-		double& AverageTwistAngle = OutputData.AverageTwistAngle;
-		double& AverageWidth = OutputData.AverageWidth;
+		float& AverageSegmentLength = OutputData.AverageSegmentLength;
+		float& AverageSegmentAngle = OutputData.AverageSegmentAngle;
+		float& AverageTwistAngle = OutputData.AverageTwistAngle;
+		float& AverageWidth = OutputData.AverageWidth;
 		
 		// Blend the result between the last frame tessellation factors and the current frame base on the total length of all segments.
 		// This is only used to increase the tessellation value of the current frame data to prevent glitches where tessellation is significantly changin between frames.
@@ -1742,7 +1737,7 @@ int32 FNiagaraRendererRibbons::CalculateTessellationFactor(const FNiagaraScenePr
 			                             FMath::Max<float>(1.f, FMath::Max(TessellationSmoothingData.TessellationTwistAngle, TessellationSmoothingData.TessellationAngle) / FMath::Max<float>(SMALL_NUMBER, TessellationMinAngle));
 
 		constexpr float MAX_CURVATURE_FACTOR = 0.002f; // This will clamp the curvature to around 2.5 km and avoid numerical issues.
-		const float ViewDistance = SceneProxy->GetProxyDynamicData().LODDistanceOverride >= 0.0f ? SceneProxy->GetProxyDynamicData().LODDistanceOverride : SceneProxy->GetBounds().ComputeSquaredDistanceFromBoxToPoint(ViewOriginForDistanceCulling);
+		const float ViewDistance = SceneProxy->GetProxyDynamicData().LODDistanceOverride >= 0.0f ? SceneProxy->GetProxyDynamicData().LODDistanceOverride : float(SceneProxy->GetBounds().ComputeSquaredDistanceFromBoxToPoint(ViewOriginForDistanceCulling));
 		const float MaxDisplacementError = FMath::Max(GNiagaraRibbonTessellationMinDisplacementError, ScreenPercentage * FMath::Sqrt(ViewDistance) / View->LODDistanceFactor);
 		float Tess = TessellationSmoothingData.TessellationAngle / FMath::Max(MAX_CURVATURE_FACTOR, AcosFast(TessellationSmoothingData.TessellationCurvature / (TessellationSmoothingData.TessellationCurvature + MaxDisplacementError)));
 		// FMath::RoundUpToPowerOfTwo ? This could avoid vertices moving around as tesselation increases
@@ -1764,7 +1759,7 @@ FNiagaraIndexGenerationInput FNiagaraRendererRibbons::CalculateIndexBufferConfig
 {
 	FNiagaraIndexGenerationInput IndexGenInput;
 
-	IndexGenInput.ViewDistance = SceneProxy->GetProxyDynamicData().LODDistanceOverride >= 0.0f ? SceneProxy->GetProxyDynamicData().LODDistanceOverride : SceneProxy->GetBounds().ComputeSquaredDistanceFromBoxToPoint(ViewOriginForDistanceCulling);
+	IndexGenInput.ViewDistance = SceneProxy->GetProxyDynamicData().LODDistanceOverride >= 0.0f ? SceneProxy->GetProxyDynamicData().LODDistanceOverride : float(SceneProxy->GetBounds().ComputeSquaredDistanceFromBoxToPoint(ViewOriginForDistanceCulling));
 	IndexGenInput.LODDistanceFactor = View->LODDistanceFactor;
 
 	if (bShouldUseGPUInitIndices)
@@ -1852,12 +1847,12 @@ void FNiagaraRendererRibbons::GenerateIndexBufferCPU(FNiagaraIndexGenerationInpu
 
 	FMaterialRenderProxy* MaterialRenderProxy = DynamicDataRibbon->Material;
 	check(MaterialRenderProxy);
-	const EBlendMode BlendMode = MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel).GetBlendMode();
+	const bool bIsTranslucent = IsTranslucentBlendMode(MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel));
 	
 	const TSharedPtr<FNiagaraRibbonCPUGeneratedVertexData>& GeneratedGeometryData = DynamicDataRibbon->GenerationOutput;
 
 	TValue* CurrentIndexBuffer = StartIndexBuffer;
-	if (IsTranslucentBlendMode(BlendMode) && GeneratedGeometryData->RibbonInfoLookup.Num())
+	if (bIsTranslucent && GeneratedGeometryData->RibbonInfoLookup.Num())
 	{
 		for (const FRibbonMultiRibbonInfo& MultiRibbonInfo : GeneratedGeometryData->RibbonInfoLookup)
 		{
@@ -1870,7 +1865,7 @@ void FNiagaraRendererRibbons::GenerateIndexBufferCPU(FNiagaraIndexGenerationInpu
 		const TArrayView<uint32> CurrentSegmentData(GeneratedGeometryData->SegmentData.GetData(), GeneratedGeometryData->SegmentData.Num());
 		CurrentIndexBuffer = AppendToIndexBufferCPU<TValue>(CurrentIndexBuffer, GeneratedData, ShapeState, CurrentSegmentData, false);
 	}
-	GeneratedData.CPUTriangleCount = (CurrentIndexBuffer - StartIndexBuffer) / 3;
+	GeneratedData.CPUTriangleCount = uint32(CurrentIndexBuffer - StartIndexBuffer) / 3;
 	check(CurrentIndexBuffer <= StartIndexBuffer + GeneratedData.TotalNumIndices);
 }
 
@@ -1910,11 +1905,11 @@ TValue* FNiagaraRendererRibbons::AppendToIndexBufferCPU(TValue* OutIndices, cons
 				const int32 FirstIndex = ShapeState.SliceTriangleToVertexIds[TriangleId];
 				const int32 SecondIndex = ShapeState.SliceTriangleToVertexIds[TriangleId + 1];
 				
-				OutIndices[0] = CurrSegment | FirstIndex;
-				OutIndices[1] = CurrSegment | SecondIndex;
-				OutIndices[2] = NextSegment | FirstIndex;
+				OutIndices[0] = TValue(CurrSegment | FirstIndex);
+				OutIndices[1] = TValue(CurrSegment | SecondIndex);
+				OutIndices[2] = TValue(NextSegment | FirstIndex);
 				OutIndices[3] = OutIndices[1];
-				OutIndices[4] = NextSegment | SecondIndex;
+				OutIndices[4] = TValue(NextSegment | SecondIndex);
 				OutIndices[5] = OutIndices[2];
 
 				OutIndices += 6;
@@ -1924,12 +1919,12 @@ TValue* FNiagaraRendererRibbons::AppendToIndexBufferCPU(TValue* OutIndices, cons
 				const uint32 FirstIndex = ShapeState.SliceTriangleToVertexIds[TriangleId];
 				const uint32 SecondIndex = ShapeState.SliceTriangleToVertexIds[TriangleId + 1];
 
-				OutIndices[0] = CurrSegment | FirstIndex;
-				OutIndices[1] = CurrSegment | SecondIndex;
-				OutIndices[2] = NextSegment | SecondIndex;
+				OutIndices[0] = TValue(CurrSegment | FirstIndex);
+				OutIndices[1] = TValue(CurrSegment | SecondIndex);
+				OutIndices[2] = TValue(NextSegment | SecondIndex);
 				OutIndices[3] = OutIndices[0];
 				OutIndices[4] = OutIndices[2];
-				OutIndices[5] = NextSegment | FirstIndex;
+				OutIndices[5] = TValue(NextSegment | FirstIndex);
 
 				OutIndices += 6;
 			}			
@@ -1996,7 +1991,10 @@ void FNiagaraRendererRibbons::SetupPerViewUniformBuffer(FNiagaraIndexGenerationI
 
 	PerViewUniformParameters.U0DistributionMode = static_cast<int32>(UV0Settings.DistributionMode);
 	PerViewUniformParameters.U1DistributionMode = static_cast<int32>(UV1Settings.DistributionMode);
-	PerViewUniformParameters.PackedVData = FVector4f(UV0Settings.Scale.Y, UV0Settings.Offset.Y, UV1Settings.Scale.Y, UV1Settings.Offset.Y);
+	PerViewUniformParameters.PackedVData.X = float(UV0Settings.Scale.Y);
+	PerViewUniformParameters.PackedVData.Y = float(UV0Settings.Offset.Y);
+	PerViewUniformParameters.PackedVData.Z = float(UV1Settings.Scale.Y);
+	PerViewUniformParameters.PackedVData.W = float(UV1Settings.Offset.Y);
 
 	OutUniformBuffer = FNiagaraRibbonUniformBufferRef::CreateUniformBufferImmediate(PerViewUniformParameters, UniformBuffer_SingleFrame);
 }
@@ -2061,7 +2059,7 @@ inline void FNiagaraRendererRibbons::SetupMeshBatchAndCollectorResourceForView(c
 	{
 		MeshElement.NumPrimitives = 0;
 		MeshElement.IndirectArgsBuffer = RenderingViewResources->IndirectDrawBuffer.Buffer;
-		MeshElement.IndirectArgsOffset = RenderingViewResources->IndirectDrawBufferStartByteOffset;
+		MeshElement.IndirectArgsOffset = View->IsInstancedStereoPass() ? FNiagaraRibbonIndirectDrawBufferLayout::StereoDrawIndirectParametersByteOffset : FNiagaraRibbonIndirectDrawBufferLayout::DrawIndirectParametersByteOffset;
 	}
 	else
 	{

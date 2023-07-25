@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "SmartObjectDefinition.h"
-#include "SmartObjectTypes.h"
+#include "SmartObjectSubsystem.h"
 #include "SmartObjectTestTypes.generated.h"
 
 /**
@@ -13,6 +12,39 @@ UCLASS(HideDropdown)
 class SMARTOBJECTSTESTSUITE_API USmartObjectTestBehaviorDefinition : public USmartObjectBehaviorDefinition
 {
 	GENERATED_BODY()
+};
+
+/**
+ * Test-time SmartObjectSubsystem override, aimed at encapsulating test-time smart object instances and functionality
+ */
+UCLASS(HideDropdown)
+class USmartObjectTestSubsystem : public USmartObjectSubsystem
+{
+	GENERATED_BODY()
+
+public:
+	USmartObjectTestSubsystem(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	void RebuildAndInitializeForTesting(const TSharedPtr<FMassEntityManager>& InEntityManager);
+	FMassEntityManager* GetEntityManagerForTesting();
+
+protected:
+#if WITH_EDITOR
+#endif // WITH_EDITOR
+	virtual bool ShouldCreateSubsystem(UObject* Outer) const { return false; }
+};
+
+/**
+ * Test-time ASmartObjectPersistentCollection override, aimed at encapsulating test-time smart object instances and functionality
+ */
+UCLASS(HideDropdown)
+class ASmartObjectTestCollection : public ASmartObjectPersistentCollection
+{
+	GENERATED_BODY()
+
+public:
+	virtual bool RegisterWithSubsystem(const FString& Context) override;
+	virtual bool UnregisterWithSubsystem(const FString& Context) override;
 };
 
 /**

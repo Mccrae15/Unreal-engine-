@@ -3,12 +3,11 @@
 #include "EnhancedPlayerInput.h"
 #include "EnhancedInputComponent.h"
 #include "GameFramework/PlayerController.h"
-#include "InputAction.h"
-#include "InputModifiers.h"
-#include "InputTriggers.h"
+#include "HAL/IConsoleManager.h"
 #include "Engine/World.h"
 #include "GameFramework/WorldSettings.h"
 #include "EnhancedInputDeveloperSettings.h"
+#include "InputMappingContext.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EnhancedPlayerInput)
 
@@ -20,13 +19,26 @@ namespace UE
 		static FAutoConsoleVariableRef CVarShouldOnlyTriggerLastActionInChord(TEXT("EnhancedInput.OnlyTriggerLastActionInChord"),
 			ShouldOnlyTriggerLastActionInChord,
 			TEXT("Should only the last action in a ChordedAction trigger be fired? If this is disabled, then the dependant chords will be fired as well"));
-		static int32 ShouldReplaceAxisFKeyWithActionFKey = 1;
-		static TAutoConsoleVariable<int32> CVarReplaceAxisFKeyWithActionFKey(
-			TEXT("EnhancedInput.ReplaceAxisFKeyWithActionFKey"),
-			ShouldReplaceAxisFKeyWithActionFKey,
-			TEXT("Should an axis FKey bound to a boolean action be replaced by its corresponding action FKey if there is one?\n"),
-			ECVF_Scalability | ECVF_RenderThreadSafe);
 
+		static int32 EnableDefaultMappingContexts = 1;
+		static FAutoConsoleVariableRef CVarEnableDefaultMappingContexts(TEXT("EnhancedInput.EnableDefaultMappingContexts"),
+			EnableDefaultMappingContexts,
+			TEXT("Should the UEnhancedInputDeveloperSettings::DefaultMappingContexts be applied to every UEnhancedPlayerInput?"));
+	}
+}
+
+UEnhancedPlayerInput::UEnhancedPlayerInput()
+	: Super()
+{
+	if (UE::Input::EnableDefaultMappingContexts)
+	{
+		for (const FDefaultContextSetting& DefaultContext : GetDefault<UEnhancedInputDeveloperSettings>()->DefaultMappingContexts)
+		{
+			if (const UInputMappingContext* IMC = DefaultContext.InputMappingContext.LoadSynchronous())
+			{
+				AppliedInputContexts.Add(IMC, DefaultContext.Priority);
+			}
+		}
 	}
 }
 
@@ -623,25 +635,7 @@ FInputActionValue UEnhancedPlayerInput::GetActionValue(TObjectPtr<const UInputAc
 int32 UEnhancedPlayerInput::AddMapping(const FEnhancedActionKeyMapping& Mapping)
 {
 	int32 MappingIndex = EnhancedActionMappings.AddUnique(Mapping);
-	
-	FKey Key = Mapping.Key;
-	if (UE::Input::CVarReplaceAxisFKeyWithActionFKey.GetValueOnAnyThread())
-	{
-		static TMap<FKey, FKey> LookUpTable ={ 
-			{FKey("OculusTouch_Left_Trigger_Axis"), FKey("OculusTouch_Left_Trigger")}
-			, {FKey("OculusTouch_Right_Trigger_Axis"), FKey("OculusTouch_Right_Trigger")}
-			, {FKey("OculusTouch_Right_Trigger_Axis"), FKey("OculusTouch_Right_Trigger")}
-			, {FKey("OculusTouch_Left_Grip_Axis"), FKey("OculusTouch_Left_Grip_Click")}
-			, {FKey("OculusTouch_Right_Grip_Axis"), FKey("OculusTouch_Right_Grip_Click")}
-		};
-		if (Mapping.Action->ValueType == EInputActionValueType::Boolean &&
-			LookUpTable.Contains(Mapping.Key))
-		{
-			Key = LookUpTable[Mapping.Key];
-			EnhancedActionMappings[MappingIndex].Key = Key;
-		}
-	}
-	++EnhancedKeyBinds.FindOrAdd(Key);
+	++EnhancedKeyBinds.FindOrAdd(Mapping.Key);
 	bKeyMapsBuilt = false;
 
 	return MappingIndex;

@@ -38,11 +38,8 @@ namespace UnrealBuildTool
 			}
 		}
 
-		/** Flavor of the current build (target triplet)*/
-		string Architecture;
-
-		/** Whether the compiler is set up to produce PIE executables by default */
-		bool bSuppressPIE = false;
+		/** Flavor of the current build (will map to target triplet)*/
+		UnrealArch Architecture;
 
 		/** Pass --gdb-index option to linker to generate .gdb_index section. */
 		protected bool bGdbIndexSection = true;
@@ -56,22 +53,20 @@ namespace UnrealBuildTool
 
 		protected LinuxToolChainInfo LinuxInfo => (Info as LinuxToolChainInfo)!;
 
-		public LinuxToolChain(string InArchitecture, LinuxPlatformSDK InSDK, ClangToolChainOptions InOptions, ILogger InLogger)
+		public LinuxToolChain(UnrealArch InArchitecture, LinuxPlatformSDK InSDK, ClangToolChainOptions InOptions, ILogger InLogger)
 			: this(UnrealTargetPlatform.Linux, InArchitecture, InSDK, InOptions, InLogger)
 		{
-			CheckDefaultCompilerSettings();
-
 			// prevent unknown clangs since the build is likely to fail on too old or too new compilers
-			if (CompilerVersionLessThan(13, 0, 0) || CompilerVersionGreaterOrEqual(14, 0, 0))
+			if (CompilerVersionLessThan(15, 0, 0) || CompilerVersionGreaterOrEqual(16, 0, 0))
 			{
 				throw new BuildException(
-					string.Format("This version of the Unreal Engine can only be compiled with clang 13.0. clang {0} may not build it - please use a different version.",
+					string.Format("This version of the Unreal Engine can only be compiled with clang 15.0. clang {0} may not build it - please use a different version.",
 						Info.ClangVersion)
 					);
 			}
 		}
 
-		public LinuxToolChain(UnrealTargetPlatform InPlatform, string InArchitecture, LinuxPlatformSDK InSDK, ClangToolChainOptions InOptions, ILogger InLogger)
+		public LinuxToolChain(UnrealTargetPlatform InPlatform, UnrealArch InArchitecture, LinuxPlatformSDK InSDK, ClangToolChainOptions InOptions, ILogger InLogger)
 			: base(InOptions, InLogger)
 		{
 			Architecture = InArchitecture;
@@ -255,56 +250,13 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Checks default compiler settings
-		/// </summary>
-		private void CheckDefaultCompilerSettings()
-		{
-			using (Process Proc = new Process())
-			{
-				Proc.StartInfo.UseShellExecute = false;
-				Proc.StartInfo.CreateNoWindow = true;
-				Proc.StartInfo.RedirectStandardOutput = true;
-				Proc.StartInfo.RedirectStandardError = true;
-				Proc.StartInfo.RedirectStandardInput = true;
-
-				if (FileReference.Exists(Info.Clang))
-				{
-					Proc.StartInfo.FileName = Info.Clang.FullName;
-					Proc.StartInfo.Arguments = " -E -dM -";
-
-					Proc.Start();
-					Proc.StandardInput.Close();
-
-					for (; ; )
-					{
-						string? CompilerDefine = Proc.StandardOutput.ReadLine();
-						if (string.IsNullOrEmpty(CompilerDefine))
-						{
-							Proc.WaitForExit();
-							break;
-						}
-
-						if (CompilerDefine.Contains("__PIE__") || CompilerDefine.Contains("__pie__"))
-						{
-							bSuppressPIE = true;
-						}
-					}
-				}
-				else
-				{
-					// other compilers aren't implemented atm
-				}
-			}
-		}
-
-		/// <summary>
 		/// Architecture-specific compiler switches
 		/// </summary>
-		static string ArchitectureSpecificSwitches(string Architecture)
+		static string ArchitectureSpecificSwitches(UnrealArch Architecture)
 		{
 			string Result = "";
 
-			if (Architecture.StartsWith("arm") || Architecture.StartsWith("aarch64"))
+			if (Architecture == UnrealArch.Arm64)
 			{
 				Result += "-fsigned-char";
 			}
@@ -312,26 +264,13 @@ namespace UnrealBuildTool
 			return Result;
 		}
 
-		static string ArchitectureSpecificDefines(string Architecture)
-		{
-			string Result = "";
-
-			if (Architecture.StartsWith("x86_64") || Architecture.StartsWith("aarch64"))
-			{
-				Result += "-D_LINUX64";
-			}
-
-			return Result;
-		}
-
-		private static bool ShouldUseLibcxx(string Architecture)
+		private static bool ShouldUseLibcxx()
 		{
 			// set UE_LINUX_USE_LIBCXX to either 0 or 1. If unset, defaults to 1.
 			string? UseLibcxxEnvVarOverride = Environment.GetEnvironmentVariable("UE_LINUX_USE_LIBCXX");
 			if (string.IsNullOrEmpty(UseLibcxxEnvVarOverride) || UseLibcxxEnvVarOverride == "1")
 			{
-				// at the moment ARM32 libc++ remains missing
-				return Architecture.StartsWith("x86_64") || Architecture.StartsWith("aarch64");
+				return true;
 			}
 			return false;
 		}
@@ -392,7 +331,7 @@ namespace UnrealBuildTool
 					else if (CompileEnvironment.OptimizationLevel == OptimizationMode.SizeAndSpeed)
 					{
 						Arguments.Add("-Os");
-						if (Architecture.StartsWith("aarch64"))
+						if (Architecture == UnrealArch.Arm64)
 						{
 							Arguments.Add("-moutline");
 						}
@@ -405,7 +344,7 @@ namespace UnrealBuildTool
 			}
 
 			bool bRetainFramePointers = CompileEnvironment.bRetainFramePointers
-				|| Options.HasFlag(ClangToolChainOptions.EnableAddressSanitizer) || Options.HasFlag(ClangToolChainOptions.EnableMemorySanitizer)
+				|| Options.HasFlag(ClangToolChainOptions.EnableAddressSanitizer) || Options.HasFlag(ClangToolChainOptions.EnableMemorySanitizer) || Options.HasFlag(ClangToolChainOptions.EnableThreadSanitizer)
 				|| CompileEnvironment.Configuration == CppConfiguration.Debug;
 
 			if (CompileEnvironment.Configuration == CppConfiguration.Shipping)
@@ -503,7 +442,7 @@ namespace UnrealBuildTool
 
 			// build up the commandline common to C and C++
 
-			if (ShouldUseLibcxx(CompileEnvironment.Architecture))
+			if (ShouldUseLibcxx())
 			{
 				Arguments.Add("-nostdinc++");
 				Arguments.Add(GetSystemIncludePathArgument(DirectoryReference.Combine(Unreal.EngineSourceDirectory, "ThirdParty", "Unix", "LibCxx", "include")));
@@ -515,7 +454,7 @@ namespace UnrealBuildTool
 				Arguments.Add("-fbinutils-version=2.36");
 			}
 
-			if (!CompileEnvironment.Architecture.StartsWith("x86_64"))
+			if (CompileEnvironment.Architecture == UnrealArch.Arm64)
 			{
 				Arguments.Add("-funwind-tables");               // generate unwind tables as they are needed for backtrace (on x86(64) they are generated implicitly)
 			}
@@ -526,7 +465,7 @@ namespace UnrealBuildTool
 
 			Arguments.Add(GetRTTIFlag(CompileEnvironment)); // flag for run-time type info
 
-			if (CompileEnvironment.Architecture.StartsWith("x86_64"))
+			if (CompileEnvironment.Architecture == UnrealArch.X64)
 			{
 				Arguments.Add("-mssse3"); // enable ssse3 by default for x86. This is default on for MSVC so lets reflect that here
 			}
@@ -546,9 +485,22 @@ namespace UnrealBuildTool
 				Arguments.Add("-fdata-sections");
 			}
 
-			if (bSuppressPIE && !CompileEnvironment.bIsBuildingDLL)
+			// only suppress if happen to be using a system compiler and we have not explicitly requested pie
+			if (!CompileEnvironment.bIsBuildingDLL)
 			{
-				Arguments.Add("-fno-PIE");
+				if (CompileEnvironment.bUsePIE)
+				{
+					Arguments.Add("-fPIE");
+				}
+				else
+				{
+					Arguments.Add("-fno-PIE");
+				}
+			}
+
+			if (CompileEnvironment.bUseStackProtection)
+			{
+				Arguments.Add("-fstack-protector");
 			}
 
 			if (PlatformSDK.bVerboseCompiler)
@@ -556,13 +508,9 @@ namespace UnrealBuildTool
 				Arguments.Add("-v");                            // for better error diagnosis
 			}
 
-			Arguments.Add(ArchitectureSpecificDefines(CompileEnvironment.Architecture));
 			if (CrossCompiling())
 			{
-				if (!String.IsNullOrEmpty(CompileEnvironment.Architecture))
-				{
-					Arguments.Add($"-target {CompileEnvironment.Architecture}");        // Set target triple
-				}
+				Arguments.Add($"-target {CompileEnvironment.Architecture.LinuxName}");        // Set target triple
 				Arguments.Add($"--sysroot=\"{NormalizeCommandLinePath(LinuxInfo.BaseLinuxPath!)}\"");
 			}
 		}
@@ -620,6 +568,11 @@ namespace UnrealBuildTool
 				if (Options.HasFlag(ClangToolChainOptions.EnableSharedSanitizer))
 				{
 					Arguments.Add("-shared-libsan");
+
+					// LLVM 15 compiler-rt introduced a new bug causing ASan to crash when going over net code
+					// https://github.com/llvm/llvm-project/issues/59007
+					// adding this fixes it, may be required now?
+					Arguments.Add("-lresolv");
 				}
 
 				if (Options.HasFlag(ClangToolChainOptions.EnableAddressSanitizer))
@@ -643,8 +596,17 @@ namespace UnrealBuildTool
 
 				if (CrossCompiling())
 				{
-					Arguments.Add(string.Format("-Wl,-rpath=\"{0}/lib/clang/{1}.{2}.{3}/lib/linux\"",
-							LinuxInfo.BaseLinuxPath, Info.ClangVersion.Major, Info.ClangVersion.Minor, Info.ClangVersion.Build));
+					// x64 only replaced the linux folder with arch, while on arm64 its still linux
+					if (LinkEnvironment.Architecture == UnrealArch.Arm64)
+					{
+						Arguments.Add(string.Format("-Wl,-rpath=\"{0}/lib/clang/{1}.{2}.{3}/lib/linux\"",
+								LinuxInfo.BaseLinuxPath, Info.ClangVersion.Major, Info.ClangVersion.Minor, Info.ClangVersion.Build));
+					}
+					else
+					{
+						Arguments.Add(string.Format("-Wl,-rpath=\"{0}/lib/clang/{1}.{2}.{3}/lib/x86_64-unknown-linux-gnu\"",
+								LinuxInfo.BaseLinuxPath, Info.ClangVersion.Major, Info.ClangVersion.Minor, Info.ClangVersion.Build));
+					}
 				}
 			}
 
@@ -659,14 +621,14 @@ namespace UnrealBuildTool
 			Arguments.Add("-Wl,-rpath=${ORIGIN}");
 			Arguments.Add("-Wl,-rpath-link=${ORIGIN}");
 			Arguments.Add("-Wl,-rpath=${ORIGIN}/..");   // for modules that are in sub-folders of the main Engine/Binary/Linux folder
-			if (LinkEnvironment.Architecture.StartsWith("x86_64"))
+			if (LinkEnvironment.Architecture == UnrealArch.X64)
 			{
 				Arguments.Add("-Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/Qualcomm/Linux");
 			}
 			else
 			{
 				// x86_64 is now using updated ICU that doesn't need extra .so
-				Arguments.Add("-Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/ICU/icu4c-53_1/Unix/" + LinkEnvironment.Architecture);
+				Arguments.Add("-Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/ICU/icu4c-53_1/Unix/" + LinkEnvironment.Architecture.LinuxName);
 			}
 
 			Arguments.Add("-Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/OpenVR/OpenVRv1_5_17/linux64");
@@ -691,7 +653,11 @@ namespace UnrealBuildTool
 			{
 				Arguments.Add("-Wl,--gc-sections");
 
-				if (bSuppressPIE)
+				if (LinkEnvironment.bUsePIE)
+				{
+					Arguments.Add("-pie");
+				}
+				else
 				{
 					Arguments.Add("-Wl,-no-pie");
 				}
@@ -733,7 +699,7 @@ namespace UnrealBuildTool
 
 			if (CrossCompiling())
 			{
-				Arguments.Add($"-target {LinkEnvironment.Architecture}");        // Set target triple
+				Arguments.Add($"-target {LinkEnvironment.Architecture.LinuxName}");        // Set target triple
 				DirectoryReference SysRootPath = LinuxInfo.BaseLinuxPath!;
 				Arguments.Add($"--sysroot=\"{NormalizeCommandLinePath(SysRootPath)}\"");
 
@@ -783,7 +749,7 @@ namespace UnrealBuildTool
 				Info.Clang, Info.ClangVersionString, Info.ClangVersion.Major, Info.ClangVersion.Minor, Info.ClangVersion.Build);
 
 			// inform the user which C++ library the engine is going to be compiled against - important for compatibility with third party code that uses STL
-			Logger.LogInformation("Using {Lib} standard C++ library.", ShouldUseLibcxx(CompileEnvironment.Architecture) ? "bundled libc++" : "compiler default (most likely libstdc++)");
+			Logger.LogInformation("Using {Lib} standard C++ library.", ShouldUseLibcxx() ? "bundled libc++" : "compiler default (most likely libstdc++)");
 			Logger.LogInformation("Using lld linker");
 			Logger.LogInformation("Using llvm-ar ({LlvmAr}) version '{LlvmArVersionString} (string)'", Info.Archiver, Info.ArchiverVersionString);
 
@@ -830,14 +796,20 @@ namespace UnrealBuildTool
 				Logger.LogInformation("Using LTO (link-time optimization).");
 			}
 
-			if (bSuppressPIE)
+			if (CompileEnvironment.bUsePIE)
 			{
-				Logger.LogInformation("Compiler is set up to generate position independent executables by default, but we're suppressing it.");
+				Logger.LogInformation("Using position independent executables (PIE)");
 			}
+
+			if (CompileEnvironment.bUseStackProtection)
+			{
+				Logger.LogInformation("Using stack protection");
+			}
+
 			Logger.LogInformation("------------------------------");
 		}
 
-		public override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
+		protected override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
 		{
 			List<string> GlobalArguments = new();
 			GetCompileArguments_Global(CompileEnvironment, GlobalArguments);
@@ -1258,13 +1230,13 @@ namespace UnrealBuildTool
 			LinkCommandString += " -lrt"; // needed for clock_gettime()
 			LinkCommandString += " -lm"; // math
 
-			if (ShouldUseLibcxx(LinkEnvironment.Architecture))
+			if (ShouldUseLibcxx())
 			{
 				// libc++ and its abi lib
 				LinkCommandString += " -nodefaultlibs";
-				LinkCommandString += " -L" + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture + "/";
-				LinkCommandString += " " + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture + "/libc++.a";
-				LinkCommandString += " " + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture + "/libc++abi.a";
+				LinkCommandString += " -L" + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture.LinuxName + "/";
+				LinkCommandString += " " + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture.LinuxName + "/libc++.a";
+				LinkCommandString += " " + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture.LinuxName + "/libc++abi.a";
 				LinkCommandString += " -lm";
 				LinkCommandString += " -lc";
 				LinkCommandString += " -lpthread"; // pthread_mutex_trylock is missing from libc stubs
@@ -1436,7 +1408,7 @@ namespace UnrealBuildTool
 					RelinkAction.CommandDescription = "Relink";
 					RelinkAction.bCanExecuteRemotely = false;
 					RelinkAction.ProducedItems.Clear();
-					RelinkAction.PrerequisiteItems = new List<FileItem>(LinkAction.PrerequisiteItems);
+					RelinkAction.PrerequisiteItems = new SortedSet<FileItem>(LinkAction.PrerequisiteItems);
 					foreach (FileItem Dependency in EngineAndGameLibrariesFiles)
 					{
 						RelinkAction.PrerequisiteItems.Add(Dependency);

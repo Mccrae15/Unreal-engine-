@@ -888,7 +888,7 @@ void FRetargetChainSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder&
 			const FName SourceChainName = FName(*InString.Get());
 			for (TWeakObjectPtr<URetargetChainSettings> ChainMapSettings : ChainSettingsObjects)
 			{
-				Controller->AssetController->SetSourceChainForTargetChain(ChainMapSettings.Get(), SourceChainName);
+				Controller->AssetController->SetSourceChain(SourceChainName, ChainMapSettings->TargetChain);
 			}
 		})
 		[
@@ -1004,7 +1004,7 @@ void FRetargetChainSettingsCustomization::AddSettingsSection(
 				.OnCheckStateChanged_Lambda([this, IsEnabledProperty](ECheckBoxState State)
 				{
 					IsEnabledProperty->SetValue(State == ECheckBoxState::Checked);
-					Controller->HandleRetargeterNeedsInitialized(Controller->AssetController->GetAsset());
+					Controller->HandleRetargeterNeedsInitialized();
 				})
 			];
 	}

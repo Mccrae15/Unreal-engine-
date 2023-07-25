@@ -9,7 +9,7 @@
 #include "binka_ue_decode.h"
 
 #if !defined(PLATFORM_LITTLE_ENDIAN) || !PLATFORM_LITTLE_ENDIAN
-#error Bink Audio hasn't been updated for big endian.
+#error "Bink Audio hasn't been updated for big endian."
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogBinkAudioDecoder, Log, All);
@@ -94,6 +94,20 @@ FBinkAudioInfo::FBinkAudioInfo()
 FBinkAudioInfo::~FBinkAudioInfo()
 {
 	FMemory::Free(RawMemory);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void FBinkAudioInfo::PrepareToLoop()
+{
+#if WITH_BINK_AUDIO
+	UEBinkAudioDecodeInterface* BinkInterface = UnrealBinkAudioDecodeInterface();
+	void** Streams = Decoder->Decoders();
+	for (uint8 i = 0; i < Decoder->StreamCount; i++)
+	{
+		BinkInterface->ResetStartFn(Streams[i]);
+	}
+#endif // WITH_BINK_AUDIO
 }
 
 //-----------------------------------------------------------------------------

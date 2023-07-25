@@ -8,6 +8,7 @@
 #include "PackedNormal.h"
 #include "RenderGraphResources.h"
 #include "Serialization/BulkData.h"
+#include "HairStrandsDefinitions.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogHairStrands, Log, All);
 
@@ -26,25 +27,6 @@ struct FPackedHairAttribute0Vertex
 
 	uint8 NormalizedLength;
 	uint8 Seed;
-};
-
-struct FPackedHairAttribute1Vertex
-{
-	typedef uint32 BulkType;
-
-	uint32 Packed;
-};
-
-struct FHairMaterialVertex
-{
-	typedef uint32 BulkType;
-
-	// sRGB color space
-	uint8 BaseColorR;
-	uint8 BaseColorG;
-	uint8 BaseColorB;
-
-	uint8 Roughness;
 };
 
 struct FHairInterpolationVertex
@@ -85,6 +67,14 @@ struct FHairInterpolation1Vertex
 	uint8 Pad1;
 };
 
+struct FPackedHairCurve
+{
+	typedef uint32 BulkType;
+
+	uint32 PointOffset : 24;
+	uint32 PointCount  : 8;
+};
+
 struct FVector4_16
 {
 	FFloat16 X;
@@ -113,34 +103,34 @@ struct FHairStrandsPositionOffsetFormat
 	static const EPixelFormat Format = PF_A32B32G32R32F;
 };
 
-struct FHairStrandsAttribute0Format
+struct FHairStrandsAttributeFormat
 {
-	typedef FPackedHairAttribute0Vertex Type;
-	typedef FPackedHairAttribute0Vertex::BulkType BulkType;
-	static const uint32 ComponentCount = 1;
-	static const uint32 SizeInByte = sizeof(Type);
-	static const EVertexElementType VertexElementType = VET_UByte4;
-	static const EPixelFormat Format = PF_R8G8;
-};
-
-struct FHairStrandsAttribute1Format
-{
-	typedef FPackedHairAttribute1Vertex Type;
-	typedef FPackedHairAttribute1Vertex::BulkType BulkType;
+	typedef uint32 Type;
+	typedef uint32 BulkType;
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
 	static const EVertexElementType VertexElementType = VET_UInt;
 	static const EPixelFormat Format = PF_R32_UINT;
 };
 
-struct FHairStrandsMaterialFormat
+struct FHairStrandsVertexToCurveFormat16
 {
-	typedef FHairMaterialVertex Type;
-	typedef FHairMaterialVertex::BulkType BulkType;
+	typedef uint16 Type;
+	typedef uint16 BulkType;
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
-	static const EVertexElementType VertexElementType = VET_UByte4;
-	static const EPixelFormat Format = PF_R8G8B8A8;
+	static const EVertexElementType VertexElementType = VET_MAX;
+	static const EPixelFormat Format = PF_R16_UINT;
+};
+
+struct FHairStrandsVertexToCurveFormat32
+{
+	typedef uint32 Type;
+	typedef uint32 BulkType;
+	static const uint32 ComponentCount = 1;
+	static const uint32 SizeInByte = sizeof(Type);
+	static const EVertexElementType VertexElementType = VET_UInt;
+	static const EPixelFormat Format = PF_R32_UINT;
 };
 
 struct FHairStrandsTangentFormat
@@ -191,6 +181,17 @@ struct FHairStrandsRootIndexFormat
 {
 	typedef uint32 Type;
 	typedef uint32 BulkType;
+
+	static const uint32 ComponentCount = 1;
+	static const uint32 SizeInByte = sizeof(Type);
+	static const EVertexElementType VertexElementType = VET_UInt;
+	static const EPixelFormat Format = PF_R32_UINT;
+};
+
+struct FHairStrandsCurveFormat
+{
+	typedef FPackedHairCurve Type;
+	typedef FPackedHairCurve::BulkType BulkType;
 
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
@@ -358,11 +359,14 @@ struct HAIRSTRANDSCORE_API FHairStrandsPoints
 	/** Normalized length */
 	TArray<float> PointsCoordU; // [0..1]
 
-	/** Material base color */
+	/** Material per-vertex 'baked' base color (optional) */
 	TArray<FLinearColor> PointsBaseColor; // [0..1]
 
-	/** Material roughness */
+	/** Material per-vertex 'baked' roughness (optional) */
 	TArray<float> PointsRoughness; // [0..1]
+
+	/** Material per-vertex 'baked' AO (optional) */
+	TArray<float> PointsAO; // [0..1]	
 };
 
 /** Hair strands Curves attribute */
@@ -394,13 +398,16 @@ struct HAIRSTRANDSCORE_API FHairStrandsCurves
 	/** Strand ID associated with each curve */
 	TArray<int> StrandIDs;
 
+	/** Clump ID associated with each curve (optional) */
+	TArray<uint16> ClumpIDs;
+
 	/** Mapping of imported Groom ID to index */
 	TMap<int, int> GroomIDToIndex;
 
-	/** Custom guide IDs (indexed with StrandID) */
+	/** Custom guide IDs (indexed with StrandID) (optional) */
 	TArray<FIntVector> CurvesClosestGuideIDs;
 
-	/** Custom guid weights (indexed with StrandID) */
+	/** Custom guid weights (indexed with StrandID) (optional) */
 	TArray<FVector> CurvesClosestGuideWeights;
 
 	/** Max strands Curves length */
@@ -435,15 +442,15 @@ struct HAIRSTRANDSCORE_API FHairStrandsDatas
 	float HairDensity = 1;
 
 	/* Strands bounding box */
-	FBox BoundingBox;
+	FBox BoundingBox = FBox(EForceInit::ForceInit);
 };
 
 struct HAIRSTRANDSCORE_API FHairStrandsBulkData
 {
 	enum EDataFlags
 	{
-		DataFlags_HasData = 1,			// Contains valid data. Otherwise: Position, Attributes, ... are all empty
-		DataFlags_HasMaterialData = 2	// Contains material data (albedo and/or roughness)
+		DataFlags_HasData = 1,				// Contains valid data. Otherwise: Position, Attributes, ... are all empty
+		DataFlags_Has16bitsCurveIndex = 2,	// Use 16bits index for vertex to curve mapping
 	};
 
 	void Serialize(FArchive& Ar, UObject* Owner);
@@ -462,14 +469,14 @@ struct HAIRSTRANDSCORE_API FHairStrandsBulkData
 	uint32 PointCount = 0;
 	float MaxLength = 0;
 	float MaxRadius = 0;
-	FBox BoundingBox;
+	FBox BoundingBox = FBox(EForceInit::ForceInit);
 	uint32 Flags = 0;
+	uint32 AttributeOffsets[HAIR_ATTRIBUTE_COUNT] = {0};
 
 	FByteBulkData Positions;	// Size = PointCount
-	FByteBulkData Attributes0;	// Size = PointCount
-	FByteBulkData Attributes1;	// Size = PointCount
-	FByteBulkData Materials;	// Size = PointCount
-	FByteBulkData CurveOffsets;	// Size = CurveCount+1 - Store the root point index for the curve
+	FByteBulkData Attributes;	// Size = x*PointCount + y*CurveCount (depends on the stored attributes, which could be per-vertex(x) or per-curve(y))
+	FByteBulkData VertexToCurve;// Size = PointCount
+	FByteBulkData Curves;		// Size = CurveCount
 };
 
 /** Hair strands debug data */
@@ -525,7 +532,6 @@ struct FHairStrandsRootBulkData
 	uint32 GetDataSize() const
 	{
 		uint32 Total = 0;
-		Total += VertexToCurveIndexBuffer.IsBulkDataLoaded() ? VertexToCurveIndexBuffer.GetBulkDataSize() : 0u;
 		for (const FMeshProjectionLOD& LOD : MeshProjectionLODs)
 		{
 			Total += LOD.UniqueTriangleIndexBuffer.IsBulkDataLoaded() ?			LOD.UniqueTriangleIndexBuffer.GetBulkDataSize() : 0u;
@@ -582,9 +588,6 @@ struct FHairStrandsRootBulkData
 	/* Number of control points */
 	uint32 PointCount = 0;
 
-	/* Curve index for every vertices */
-	FByteBulkData VertexToCurveIndexBuffer;
-
 	/* Store the hair projection information for each mesh LOD */
 	TArray<FMeshProjectionLOD> MeshProjectionLODs;
 };
@@ -634,9 +637,6 @@ struct FHairStrandsRootData
 
 	/* Number of control points */
 	uint32 PointCount = 0;
-
-	/* Curve index for every vertices */
-	TArray<FHairStrandsIndexFormat::Type> VertexToCurveIndexBuffer;
 
 	/* Store the hair projection information for each mesh LOD */
 	TArray<FMeshProjectionLOD> MeshProjectionLODs;

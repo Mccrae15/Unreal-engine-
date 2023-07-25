@@ -884,7 +884,7 @@ TIoStatusOr<FIoContainerHeader> FFileIoStoreReader::ReadContainerHeader() const
 	// Check for flag - compressed containers still have CompressionBlockSize != 0 and CompressionMethod "None".
 	if (EnumHasAnyFlags(ContainerFile.ContainerFlags, EIoContainerFlags::Compressed)) 
 	{
-		FileCache_PostIoStoreCompressionBlockSize(CompressionBlockSize, Partition.FilePath);
+		FileCache_PostIoStoreCompressionBlockSize(IntCastChecked<int32>(CompressionBlockSize), Partition.FilePath);
 	}
 #endif
 
@@ -1215,7 +1215,7 @@ FFileIoStore::FFileIoStore(TUniquePtr<IPlatformFileIoStore>&& InPlatformImpl)
 
 FFileIoStore::~FFileIoStore()
 {
-	delete Thread;
+	StopThread();
 }
 
 void FFileIoStore::Initialize(TSharedRef<const FIoDispatcherBackendContext> InContext)
@@ -1252,6 +1252,20 @@ void FFileIoStore::Initialize(TSharedRef<const FIoDispatcherBackendContext> InCo
 	}
 
 	Thread = FRunnableThread::Create(this, TEXT("IoService"), 0, TPri_AboveNormal);
+}
+
+void FFileIoStore::StopThread()
+{
+	if (Thread)
+	{
+		delete Thread;
+		Thread = nullptr;
+	}
+}
+
+void FFileIoStore::Shutdown()
+{
+	StopThread();
 }
 
 TIoStatusOr<FIoContainerHeader> FFileIoStore::Mount(const TCHAR* InTocPath, int32 Order, const FGuid& EncryptionKeyGuid, const FAES::FAESKey& EncryptionKey)
@@ -1392,6 +1406,14 @@ bool FFileIoStore::Resolve(FIoRequestImpl* Request)
 			else
 			{
 				// Nothing to read
+				if (RequestedOffset > OffsetAndLength->GetLength())
+				{
+					ResolvedRequest->bFailed = true;
+				}
+				else
+				{
+					ResolvedRequest->CreateBuffer(0);
+				}
 				CompleteDispatcherRequest(ResolvedRequest);
 				RequestTracker.ReleaseIoRequestReferences(*ResolvedRequest);
 			}

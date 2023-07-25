@@ -129,6 +129,7 @@ void UOculusXRBodyTrackingComponent::BeginPlay()
 		return;
 	}
 
+
 	if (!UOculusXRMovementFunctionLibrary::StartBodyTracking())
 	{
 		UE_LOG(LogOculusXRMovement, Warning, TEXT("Failed to start body tracking. (%s: %s)"), *GetOwner()->GetName(), *GetName());
@@ -142,6 +143,7 @@ void UOculusXRBodyTrackingComponent::EndPlay(const EEndPlayReason::Type EndPlayR
 {
 	if (IsComponentTickEnabled())
 	{
+
 		if (--TrackingInstanceCount == 0)
 		{
 			if (!UOculusXRMovementFunctionLibrary::StopBodyTracking())
@@ -165,6 +167,11 @@ void UOculusXRBodyTrackingComponent::TickComponent(float DeltaTime, enum ELevelT
 			for (int i = 0; i < BodyState.Joints.Num(); ++i)
 			{
 				const FOculusXRBodyJoint& Joint = BodyState.Joints[i];
+				if (!Joint.bIsValid)
+				{
+					continue;
+				}
+
 				const FVector& Position = Joint.Position;
 				const FRotator& Orientation = Joint.Orientation;
 

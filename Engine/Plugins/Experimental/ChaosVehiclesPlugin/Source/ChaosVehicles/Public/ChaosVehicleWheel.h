@@ -97,12 +97,16 @@ class UChaosWheeledVehicleMovementComponent;
 		UPROPERTY(EditAnywhere, Category = Wheel, meta = (ClampMin = "0.01", UIMin = "0.01"))
 		float WheelWidth;
 
+		/** Mass of the wheel Kg */
+		UPROPERTY(EditAnywhere, Category = Wheel, meta = (ClampMin = "0.01", UIMin = "0.01"))
+		float WheelMass;
+
 		/** Tyre Cornering Ability */
-		UPROPERTY(EditAnywhere, Category = Wheel, meta = (EditCondition = "bNewWheelSimulation"))
+		UPROPERTY(EditAnywhere, Category = Wheel)
 		float CorneringStiffness;
 
 		/** Friction Force Multiplier */
-		UPROPERTY(EditAnywhere, Category = Wheel, meta = (EditCondition = "bNewWheelSimulation"))
+		UPROPERTY(EditAnywhere, Category = Wheel)
 		float FrictionForceMultiplier;
 
 		/** Wheel Lateral Skid Grip Loss, lower number less grip on skid */
@@ -144,6 +148,10 @@ class UChaosWheeledVehicleMovementComponent;
 		/** Straight Line Traction Control Enabled */
 		UPROPERTY(EditAnywhere, Category = Wheel)
 		bool bTractionControlEnabled;
+
+		/** Max Wheelspin rotation rad/sec */
+		UPROPERTY(EditAnywhere, Category = Wheel)
+		float MaxWheelspinRotation;
 
 		/** Determines how the SetDriveTorque/SetBrakeTorque inputs are combined with the internal torques */
 		UPROPERTY(EditAnywhere, Category = Wheel)
@@ -197,11 +205,11 @@ class UChaosWheeledVehicleMovementComponent;
 		UPROPERTY(EditAnywhere, Category = Suspension, meta = (ClampMin = "0.0", UIMin = "0", ClampMax = "1.0", UIMax = "1"))
 		float RollbarScaling;
 
-		/** Whether wheel suspension considers simple, complex, or both */
+		/** Wheel suspension trace type, defaults to ray trace */
 		UPROPERTY(EditAnywhere, Category = Suspension)
 		ESweepShape SweepShape;
 
-		/** Whether wheel suspension considers simple, complex, or both */
+		/** Whether wheel suspension considers simple, complex */
 		UPROPERTY(EditAnywhere, Category = Suspension)
 		ESweepType SweepType;
 
@@ -338,6 +346,7 @@ class UChaosWheeledVehicleMovementComponent;
 			//PWheelConfig.WheelMass = this->WheelMass;
 			PWheelConfig.WheelRadius = this->WheelRadius;
 			PWheelConfig.WheelWidth = this->WheelWidth;
+			PWheelConfig.WheelMass = this->WheelMass;
 			PWheelConfig.MaxSteeringAngle = this->MaxSteerAngle;
 			PWheelConfig.MaxBrakeTorque = this->MaxBrakeTorque;
 			PWheelConfig.HandbrakeTorque = this->MaxHandBrakeTorque;
@@ -348,6 +357,7 @@ class UChaosWheeledVehicleMovementComponent;
 			PWheelConfig.TorqueRatio = 0.f;							// calculated later after all wheel info is known
 			PWheelConfig.ABSEnabled = this->bABSEnabled;
 			PWheelConfig.TractionControlEnabled = this->bTractionControlEnabled;
+			PWheelConfig.MaxSpinRotation = this->MaxWheelspinRotation;
 			PWheelConfig.AxleType = static_cast<Chaos::FSimpleWheelConfig::EAxleType>(this->AxleType);
 			PWheelConfig.FrictionMultiplier = this->FrictionForceMultiplier;
 			PWheelConfig.CorneringStiffness = this->CorneringStiffness * 10000.0f;

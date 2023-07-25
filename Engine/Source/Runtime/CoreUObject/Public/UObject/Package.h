@@ -43,6 +43,7 @@ class FString;
 class ITargetPlatform;
 class UFunction;
 class UMetaData;
+struct FAssetData;
 struct FMD5Hash;
 struct FPackageSaveInfo;
 struct FSavePackageArgs;
@@ -82,7 +83,6 @@ enum class ESavePackageResult
 /**
 * Struct returned from save package, contains the enum as well as extra data about what was written
 */
-PRAGMA_DISABLE_DEPRECATION_WARNINGS // Silence deprecation warnings for deprecated CookedHash member in implicit constructors
 struct FSavePackageResultStruct
 {
 	/** Success/failure of the save operation */
@@ -100,11 +100,17 @@ struct FSavePackageResultStruct
 	/** Linker for linker comparison after save. */
 	TPimplPtr<FLinkerSave> LinkerSave;
 
+	TArray<FAssetData> SavedAssets;
+
 	/** Constructors, it will implicitly construct from the result enum */
-	FSavePackageResultStruct() : Result(ESavePackageResult::Error), TotalFileSize(0), SerializedPackageFlags(0) {}
-	FSavePackageResultStruct(ESavePackageResult InResult) : Result(InResult), TotalFileSize(0), SerializedPackageFlags(0) {}
-	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize) : Result(InResult), TotalFileSize(InTotalFileSize), SerializedPackageFlags(0) {}
-	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize, uint32 InSerializedPackageFlags, TPimplPtr<FLinkerSave> Linker = nullptr) : Result(InResult), TotalFileSize(InTotalFileSize), SerializedPackageFlags(InSerializedPackageFlags), LinkerSave(MoveTemp(Linker)) {}
+	COREUOBJECT_API FSavePackageResultStruct();
+	COREUOBJECT_API FSavePackageResultStruct(ESavePackageResult InResult);
+	COREUOBJECT_API FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize);
+	COREUOBJECT_API FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize,
+		uint32 InSerializedPackageFlags, TPimplPtr<FLinkerSave> Linker = nullptr);
+	COREUOBJECT_API FSavePackageResultStruct(FSavePackageResultStruct&& Other);
+	COREUOBJECT_API FSavePackageResultStruct& operator=(FSavePackageResultStruct&& Other);
+	COREUOBJECT_API ~FSavePackageResultStruct();
 
 	bool operator==(const FSavePackageResultStruct& Other) const
 	{
@@ -125,7 +131,6 @@ struct FSavePackageResultStruct
 			Result == ESavePackageResult::ReplaceCompletely;
 	}
 };
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /**
 * A package.
@@ -498,6 +503,27 @@ public:
 	{
 		return bDirty;
 	}
+
+#if WITH_EDITOR
+	/**
+	* Marks this package as newly created (has no corresponding file on disk).
+	*/
+	void MarkAsNewlyCreated()
+	{
+		MarkAsUnloaded();
+		SetPackageFlags(PKG_NewlyCreated);
+		SetFileSize(0);
+	}
+
+	/**
+	* Marks this package as unloaded.
+	*/
+	void MarkAsUnloaded()
+	{
+		bHasBeenFullyLoaded = false;
+		ClearFlags(RF_WasLoaded);
+	}
+#endif
 
 	/**
 	* Marks this package as being fully loaded.
@@ -911,6 +937,9 @@ public:
 
 	/** Wait for any SAVE_Async file writes to complete **/
 	static void WaitForAsyncFileWrites();
+
+	/** Return true if SAVE_Async file writes are pending **/
+	static bool HasAsyncFileWrites();
 
 	/**
 	* Determines if a package contains no more assets.

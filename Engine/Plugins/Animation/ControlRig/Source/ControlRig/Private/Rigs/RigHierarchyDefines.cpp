@@ -2,6 +2,7 @@
 
 #include "Rigs/RigHierarchyDefines.h"
 #include "Rigs/RigHierarchy.h"
+#include "Misc/WildcardString.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigHierarchyDefines)
 
@@ -166,6 +167,15 @@ FRigElementKeyCollection FRigElementKeyCollection::MakeFromName(
 	constexpr bool bTraverse = true;
 
 	const FString PartialNameString = InPartialName.ToString();
+	const FWildcardString WildcardString(PartialNameString);
+	if(WildcardString.ContainsWildcards())
+	{
+		return InHierarchy->GetKeysByPredicate([WildcardString, InElementTypes](const FRigBaseElement& InElement) -> bool
+		{
+			return InElement.IsTypeOf(static_cast<ERigElementType>(InElementTypes)) &&
+				   WildcardString.IsMatch(InElement.GetNameString());
+		}, bTraverse);
+	}
 	
 	return InHierarchy->GetKeysByPredicate([PartialNameString, InElementTypes](const FRigBaseElement& InElement) -> bool
 	{
@@ -312,55 +322,6 @@ FRigElementKeyCollection FRigElementKeyCollection::FilterByName(const FName& InP
 		}
 	}
 	return Collection;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// FRigMirrorSettings
-////////////////////////////////////////////////////////////////////////////////
-
-FTransform FRigMirrorSettings::MirrorTransform(const FTransform& InTransform) const
-{
-	FTransform Transform = InTransform;
-	FQuat Quat = Transform.GetRotation();
-
-	Transform.SetLocation(MirrorVector(Transform.GetLocation()));
-
-	switch (AxisToFlip)
-	{
-	case EAxis::X:
-		{
-			FVector Y = MirrorVector(Quat.GetAxisY());
-			FVector Z = MirrorVector(Quat.GetAxisZ());
-			FMatrix Rotation = FRotationMatrix::MakeFromYZ(Y, Z);
-			Transform.SetRotation(FQuat(Rotation));
-			break;
-		}
-	case EAxis::Y:
-		{
-			FVector X = MirrorVector(Quat.GetAxisX());
-			FVector Z = MirrorVector(Quat.GetAxisZ());
-			FMatrix Rotation = FRotationMatrix::MakeFromXZ(X, Z);
-			Transform.SetRotation(FQuat(Rotation));
-			break;
-		}
-	default:
-		{
-			FVector X = MirrorVector(Quat.GetAxisX());
-			FVector Y = MirrorVector(Quat.GetAxisY());
-			FMatrix Rotation = FRotationMatrix::MakeFromXY(X, Y);
-			Transform.SetRotation(FQuat(Rotation));
-			break;
-		}
-	}
-
-	return Transform;
-}
-
-FVector FRigMirrorSettings::MirrorVector(const FVector& InVector) const
-{
-	FVector Axis = FVector::ZeroVector;
-	Axis.SetComponentForAxis(MirrorAxis, 1.f);
-	return InVector.MirrorByVector(Axis);
 }
 
 FArchive& operator<<(FArchive& Ar, FRigControlValue& Value)

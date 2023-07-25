@@ -6,14 +6,18 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Animation/AnimTypes.h"
-#include "Animation/Skeleton.h"
 #include "Animation/AnimationAsset.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Animation/AnimCurveTypes.h"
 #include "Animation/AnimMontage.h"
+#include "Animation/AttributesRuntime.h"
+#include "Animation/Skeleton.h"
 #include "BonePose.h"
 #include "Components/SkeletalMeshComponent.h"
+#endif
 #include "Animation/AnimNotifyQueue.h"
 #include "Animation/AnimSubsystemInstance.h"
+#include "Animation/AnimSync.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "AnimInstance.generated.h"
 
@@ -25,15 +29,26 @@ class FDebugDisplayInfo;
 class IAnimClassInterface;
 class UAnimInstance;
 class UCanvas;
+class USkeletalMeshComponent;
+class USkeleton;
+struct FAlphaBlend;
+struct FAlphaBlendArgs;
 struct FAnimInstanceProxy;
+struct FAnimMontageInstance;
+struct FAnimationEvaluationContext;
 struct FAnimNode_AssetPlayerBase;
 struct FAnimNode_AssetPlayerRelevancyBase;
 struct FAnimNode_StateMachine;
 struct FAnimNode_LinkedInputPose;
 struct FBakedAnimationStateMachine;
+struct FCompactPose;
+struct FCurveEvaluationOption;
 class FCompilerResultsLog;
+struct FBlendedHeapCurve;
 struct FBoneContainer;
+struct FSmartNameMapping;
 struct FAnimNode_LinkedAnimLayer;
+struct FNodeDebugData;
 enum class ETransitionRequestQueueMode : uint8;
 enum class ETransitionRequestOverwriteMode : uint8;
 
@@ -41,6 +56,7 @@ typedef TArray<FTransform> FTransformArrayA2;
 
 namespace UE::Anim
 {
+	struct FHeapAttributeContainer;
 	using FSlotInertializationRequest = TPair<float, const UBlendProfile*>;
 }	// namespace UE::Anim
 
@@ -169,53 +185,6 @@ private:
 	friend class FAnimationRuntime;
 };
 
-
-
-/** Helper struct for Slot node pose evaluation. */
-USTRUCT()
-struct FSlotEvaluationPose
-{
-	GENERATED_USTRUCT_BODY()
-
-	/** Type of additive for pose */
-	UPROPERTY()
-	TEnumAsByte<EAdditiveAnimationType> AdditiveType;
-
-	/** Weight of pose */
-	UPROPERTY()
-	float Weight;
-
-	/*** ATTENTION *****/
-	/* These Pose/Curve is stack allocator. You should not use it outside of stack. */
-	FCompactPose Pose;
-	FBlendedCurve Curve;
-	UE::Anim::FStackAttributeContainer Attributes;
-
-	FSlotEvaluationPose()
-		: AdditiveType(AAT_None)
-		, Weight(0.0f)
-	{
-	}
-
-	FSlotEvaluationPose(float InWeight, EAdditiveAnimationType InAdditiveType)
-		: AdditiveType(InAdditiveType)
-		, Weight(InWeight)
-	{
-	}
-
-	FSlotEvaluationPose(FSlotEvaluationPose&& InEvaluationPose)
-		: AdditiveType(InEvaluationPose.AdditiveType)
-		, Weight(InEvaluationPose.Weight)
-	{
-		Pose.MoveBonesFrom(InEvaluationPose.Pose);
-		Curve.MoveFrom(InEvaluationPose.Curve);
-		Attributes.MoveFrom(InEvaluationPose.Attributes);
-	}
-
-	FSlotEvaluationPose(const FSlotEvaluationPose& InEvaluationPose) = default;
-	FSlotEvaluationPose& operator=(const FSlotEvaluationPose& InEvaluationPose) = default;
-};
-
 /** Helper struct to store a Queued Montage BlendingOut event. */
 struct FQueuedMontageBlendingOutEvent
 {
@@ -338,45 +307,6 @@ struct FMontageActiveSlotTracker
 		, bIsRelevantThisTick(false)
 		, bWasRelevantOnPreviousTick(false) 
 	{}
-};
-
-struct FMontageEvaluationState
-{
-	FMontageEvaluationState(UAnimMontage* InMontage, float InPosition, FDeltaTimeRecord InDeltaTimeRecord, bool bInIsPlaying, bool bInIsActive, const FAlphaBlend& InBlendInfo, const UBlendProfile* InActiveBlendProfile, float InBlendStartAlpha)
-		: Montage(InMontage)
-		, BlendInfo(InBlendInfo)
-		, ActiveBlendProfile(InActiveBlendProfile)
-		, MontagePosition(InPosition)
-		, DeltaTimeRecord(InDeltaTimeRecord)
-		, BlendStartAlpha(InBlendStartAlpha)
-		, bIsPlaying(bInIsPlaying)
-		, bIsActive(bInIsActive)
-	{
-	}
-
-	// The montage to evaluate
-	TWeakObjectPtr<UAnimMontage> Montage;
-
-	// The current blend information.
-	FAlphaBlend BlendInfo;
-
-	// The active blend profile. Montages have a profile for blending in and blending out.
-	const UBlendProfile* ActiveBlendProfile;
-
-	// The position to evaluate this montage at
-	float MontagePosition;
-	
-	// The previous MontagePosition and delta leading into current
-	FDeltaTimeRecord DeltaTimeRecord;
-
-	// The linear alpha value where to start blending from. So not the blended value that already has been curve sampled.
-	float BlendStartAlpha;
-
-	// Whether this montage is playing
-	bool bIsPlaying;
-
-	// Whether this montage is valid and not stopped
-	bool bIsActive;
 };
 
 UCLASS(transient, Blueprintable, hideCategories=AnimInstance, BlueprintType, Within=SkeletalMeshComponent)
@@ -504,6 +434,18 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Animation|Pose")
 	virtual void SnapshotPose(UPARAM(ref) FPoseSnapshot& Snapshot);
+	
+	/** Get the sync group we are currently reading from */
+	const TMap<FName, FAnimGroupInstance>& GetSyncGroupMapRead() const;
+
+	/** Get the ungrouped active player we are currently reading from */
+	const TArray<FAnimTickRecord>& GetUngroupedActivePlayersRead();
+
+	/** Get the current value of all animation curves **/
+	const TMap<FName, float>& GetAnimationCurves(EAnimCurveType InCurveType) const;
+
+	/** Gather debug data from this instance proxy and the blend tree for display */
+	void GatherDebugData(FNodeDebugData& DebugData);
 
 	// Can this animation instance run Update or Evaluation work in parallel
 	virtual bool CanRunParallelWork() const { return true; }
@@ -700,11 +642,17 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
 	float Montage_GetBlendTime(const UAnimMontage* Montage) const;
 
-	/** Get PlayRate for Montage.
+	/** Get PlayRate for Montage. This does not account for RateScale, so it may not reflect the actual play rate seen in game (see Montage_GetEffectivePlayRate).
 	If Montage reference is NULL, PlayRate for any Active Montage will be returned.
 	If Montage is not playing, 0 is returned. */
 	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
 	float Montage_GetPlayRate(const UAnimMontage* Montage) const;
+
+	/** Get scaled PlayRate for Montage. This accounts for RateScale, so it will reflect the actual play rate seen in game.
+	If Montage reference is NULL, scaled PlayRate for any Active Montage will be returned.
+	If Montage is not playing, 0 is returned. */
+	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
+	float Montage_GetEffectivePlayRate(const UAnimMontage* Montage) const;
 
 	/*********************************************************************************************
 	* AnimMontage sync. See notes in AnimMontage.h
@@ -1454,7 +1402,7 @@ public:
 	void RecalcRequiredCurves(const FCurveEvaluationOption& CurveEvalOption);
 
 	// @todo document
-	inline USkeletalMeshComponent* GetSkelMeshComponent() const { return CastChecked<USkeletalMeshComponent>(GetOuter()); }
+	USkeletalMeshComponent* GetSkelMeshComponent() const;
 
 	virtual UWorld* GetWorld() const override;
 
@@ -1471,7 +1419,7 @@ public:
 	void EndNotifyStates();
 
 	/** Add curve float data using a curve Uid, the name of the curve will be resolved from the skeleton **/
-	void AddCurveValue(const USkeleton::AnimCurveUID Uid, float Value);
+	void AddCurveValue(const SmartName::UID_Type Uid, float Value);
 
 	/** Add curve float data using a curve Uid, the name of the curve will be resolved from the skeleton. This uses an already-resolved proxy and mapping table for efficency **/
 	void AddCurveValue(const FSmartNameMapping& Mapping, const FName& CurveName, float Value);
@@ -1568,11 +1516,9 @@ protected:
 		{
 			check(IsInGameThread());
 			UObject* OuterObj = InAnimInstance->GetOuter();
-			if (OuterObj && OuterObj->IsA<USkeletalMeshComponent>())
+			if (IsSkeletalMeshComponent(OuterObj))
 			{
-				bool bBlockOnTask = true;
-				bool bPerformPostAnimEvaluation = true;
-				InAnimInstance->GetSkelMeshComponent()->HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
+				HandleExistingParallelEvaluationTask(InAnimInstance->GetSkelMeshComponent());
 			}
 			if (InAnimInstance->AnimInstanceProxy == nullptr)
 			{
@@ -1595,11 +1541,9 @@ protected:
 	FORCEINLINE const T& GetProxyOnGameThread() const
 	{
 		check(IsInGameThread());
-		if(GetOuter() && GetOuter()->IsA<USkeletalMeshComponent>())
+		if(IsSkeletalMeshComponent(GetOuter()))
 		{
-			bool bBlockOnTask = true;
-			bool bPerformPostAnimEvaluation = true;
-			GetSkelMeshComponent()->HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
+			HandleExistingParallelEvaluationTask(GetSkelMeshComponent());
 		}
 		if(AnimInstanceProxy == nullptr)
 		{
@@ -1612,13 +1556,11 @@ protected:
 	template <typename T/* = FAnimInstanceProxy*/>	// @TODO: Cant default parameters to this function on Xbox One until we move off the VS2012 compiler
 	FORCEINLINE T& GetProxyOnAnyThread()
 	{
-		if(GetOuter() && GetOuter()->IsA<USkeletalMeshComponent>())
+		if(IsSkeletalMeshComponent(GetOuter()))
 		{
 			if(IsInGameThread())
 			{
-				bool bBlockOnTask = true;
-				bool bPerformPostAnimEvaluation = true;
-				GetSkelMeshComponent()->HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
+				HandleExistingParallelEvaluationTask(GetSkelMeshComponent());
 			}
 		}
 		if(AnimInstanceProxy == nullptr)
@@ -1632,13 +1574,11 @@ protected:
 	template <typename T/* = FAnimInstanceProxy*/>	// @TODO: Cant default parameters to this function on Xbox One until we move off the VS2012 compiler
 	FORCEINLINE const T& GetProxyOnAnyThread() const
 	{
-		if(GetOuter() && GetOuter()->IsA<USkeletalMeshComponent>())
+		if(IsSkeletalMeshComponent(GetOuter()))
 		{
 			if(IsInGameThread())
 			{
-				bool bBlockOnTask = true;
-				bool bPerformPostAnimEvaluation = true;
-				GetSkelMeshComponent()->HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
+				HandleExistingParallelEvaluationTask(GetSkelMeshComponent());
 			}
 		}
 		if(AnimInstanceProxy == nullptr)
@@ -1657,6 +1597,9 @@ public:
 	virtual bool ShouldTriggerAnimNotifyState(const UAnimNotifyState* AnimNotifyState) const;
 
 protected:
+	static bool IsSkeletalMeshComponent(const UObject* Object);
+	static void HandleExistingParallelEvaluationTask(USkeletalMeshComponent* Component);
+
 	/** Proxy object, nothing should access this from an externally-callable API as it is used as a scratch area on worker threads */
 	mutable FAnimInstanceProxy* AnimInstanceProxy;
 

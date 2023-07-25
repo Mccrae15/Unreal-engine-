@@ -381,8 +381,9 @@ bool FProfilerSession::HandleTicker( float DeltaTime )
 		NumFramesProcessedLastTime = 0;
 	}
 
-	// Limit processing to 50ms per frame.
-	const double TimeLimit = 250 / 1000.0;
+	// Limit processing per frame. For a live preview this must be severely limited so we can respond to the pings from the game in time
+	const double TimeLimitMS = ( bDataPreviewing && SessionType == EProfilerSessionTypes::Live ) ? 25.0 : 250.0;
+	const double TimeLimit = TimeLimitMS / 1000.0;
 	double Seconds = 0;
 
 	for( int32 It = 0; It < FrameToProcess.Num(); It++ )
@@ -460,7 +461,7 @@ bool FProfilerSession::HandleTicker( float DeltaTime )
 					ThreadDuration.DurationCycles, 1, 
 					FrameRootSampleIndex 
 				);
-				ThreadMS.FindOrAdd( ThreadID ) = StatMetaData->ConvertCyclesToMS( ThreadDuration.DurationCycles );
+				ThreadMS.FindOrAdd( ThreadID ) = static_cast<float>(StatMetaData->ConvertCyclesToMS( ThreadDuration.DurationCycles ));
 
 				// Recursively add children and parent to the root samples.
 				for( int32 Index = 0; Index < ThreadGraph.Children.Num(); Index++ )
@@ -486,7 +487,7 @@ bool FProfilerSession::HandleTicker( float DeltaTime )
 		MutableCollection[FrameRootSampleIndex].SetDurationCycles( GameThreadCycles != 0 ? GameThreadCycles : MaxThreadCycles );
 
 		// Update FPS analyzer.
-		const float GameThreadTimeMS = StatMetaData->ConvertCyclesToMS( GameThreadCycles );
+		const float GameThreadTimeMS = static_cast<float>(StatMetaData->ConvertCyclesToMS( GameThreadCycles ));
 		FPSAnalyzer->AddSample( GameThreadTimeMS > 0.0f ? 1000.0f / GameThreadTimeMS : 0.0f );
 
 		// Process the non-hierarchical samples for the specified frame.
@@ -509,7 +510,7 @@ bool FProfilerSession::HandleTicker( float DeltaTime )
 
 		// Advance frame
 		const uint32 DataProviderFrameIndex = DataProvider->GetNumFrames();
-		DataProvider->AdvanceFrame( StatMetaData->ConvertCyclesToMS( MaxThreadCycles ) );
+		DataProvider->AdvanceFrame( static_cast<float>(StatMetaData->ConvertCyclesToMS( MaxThreadCycles )) );
 
 		// Update aggregated stats
 		UpdateAggregatedStats( DataProviderFrameIndex );
@@ -948,17 +949,17 @@ void FProfilerAggregatedStat::Advance()
 		}
 
 		{
-			_MinValueAllFrames = FMath::Min<float>( _MinValueAllFrames, _ValueOneFrame );
-			_MaxValueAllFrames = FMath::Max<float>( _MaxValueAllFrames, _ValueOneFrame );
+			_MinValueAllFrames = FMath::Min<double>( _MinValueAllFrames, _ValueOneFrame );
+			_MaxValueAllFrames = FMath::Max<double>( _MaxValueAllFrames, _ValueOneFrame );
 
-			_MinNumCallsAllFrames = FMath::Min<float>( _MinNumCallsAllFrames, _NumCallsOneFrame );
-			_MaxNumCallsAllFrames = FMath::Max<float>( _MaxNumCallsAllFrames, _NumCallsOneFrame );
+			_MinNumCallsAllFrames = FMath::Min<uint32>( _MinNumCallsAllFrames, _NumCallsOneFrame );
+			_MaxNumCallsAllFrames = FMath::Max<uint32>( _MaxNumCallsAllFrames, _NumCallsOneFrame );
 		}
 	}
 	else
 	{
-		_MinValueAllFrames = FMath::Min<float>( _MinValueAllFrames, _ValueOneFrame );
-		_MaxValueAllFrames = FMath::Max<float>( _MaxValueAllFrames, _ValueOneFrame );
+		_MinValueAllFrames = FMath::Min<double>( _MinValueAllFrames, _ValueOneFrame );
+		_MaxValueAllFrames = FMath::Max<double>( _MaxValueAllFrames, _ValueOneFrame );
 	}
 
 	_ValueOneFrame = 0.0f;

@@ -3,15 +3,18 @@
 #include "MassEntityTestTypes.h"
 #include "MassEntityManager.h"
 #include "MassExecutor.h"
+#include "MassExecutionContext.h"
 #include "Engine/World.h"
+
+
+UE_DISABLE_OPTIMIZATION_SHIP
 
 //----------------------------------------------------------------------//
 // Test bases 
 //----------------------------------------------------------------------//
 bool FExecutionTestBase::SetUp()
 {
-	World = FAITestHelpers::GetWorld();
-	EntityManager = MakeShareable(new FMassEntityManager);
+	EntityManager = MakeShareable(new FMassEntityManager(bMakeWorldEntityManagersOwner ? FAITestHelpers::GetWorld() : nullptr));
 	EntityManager->SetDebugName(TEXT("MassEntityTestSuite"));
 	EntityManager->Initialize();
 
@@ -50,34 +53,43 @@ UMassTestProcessorBase::UMassTestProcessorBase()
 	bAutoRegisterWithProcessingPhases = false;
 	ExecutionFlags = int32(EProcessorExecutionFlags::All);
 
-	ExecutionFunction = [](FMassEntityManager& InEntitySubsystem, FMassExecutionContext& Context) {};
-	RequirementsFunction = [](FMassEntityQuery& Query){};
+	ForEachEntityChunkExecutionFunction = [](FMassExecutionContext& Context) {};
+	ExecutionFunction = [this](FMassEntityManager& InEntitySubsystem, FMassExecutionContext& Context) 
+	{
+		EntityQuery.ForEachEntityChunk(InEntitySubsystem, Context, ForEachEntityChunkExecutionFunction);
+	};
+}
+
+void UMassTestProcessorBase::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
+{
+	ExecutionFunction(EntityManager, Context);
 }
 
 UMassTestProcessor_Floats::UMassTestProcessor_Floats()
 {
-	RequirementsFunction = [this](FMassEntityQuery& Query)
-	{
-		EntityQuery.AddRequirement<FTestFragment_Float>(EMassFragmentAccess::ReadWrite);
-	};
+	EntityQuery.AddRequirement<FTestFragment_Float>(EMassFragmentAccess::ReadWrite);
 }
 
 UMassTestProcessor_Ints::UMassTestProcessor_Ints()
 {
-	RequirementsFunction = [this](FMassEntityQuery& Query)
-	{
-		EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadWrite);
-	};
+	EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadWrite);
 }
 
 UMassTestProcessor_FloatsInts::UMassTestProcessor_FloatsInts()
 {
-	RequirementsFunction = [this](FMassEntityQuery& Query)
-	{
-		EntityQuery.AddRequirement<FTestFragment_Float>(EMassFragmentAccess::ReadWrite);
-		EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadWrite);
-	};
+	EntityQuery.AddRequirement<FTestFragment_Float>(EMassFragmentAccess::ReadWrite);
+	EntityQuery.AddRequirement<FTestFragment_Int>(EMassFragmentAccess::ReadWrite);
 }
+
+ int UMassTestStaticCounterProcessor::StaticCounter = 0;
+ UMassTestStaticCounterProcessor::UMassTestStaticCounterProcessor()
+ {
+#if WITH_EDITORONLY_DATA
+	 bCanShowUpInSettings = false;
+#endif // WITH_EDITORONLY_DATA
+	 bAutoRegisterWithProcessingPhases = false;
+	 ExecutionFlags = int32(EProcessorExecutionFlags::All);
+ }
 
 //----------------------------------------------------------------------//
 // UMassTestWorldSubsystem
@@ -94,3 +106,61 @@ int32 UMassTestWorldSubsystem::Read() const
 	return Number;
 }
 
+
+namespace UE::Mass::Testing
+{
+//----------------------------------------------------------------------//
+// FMassTestPhaseTickTask
+//----------------------------------------------------------------------//
+FMassTestPhaseTickTask::FMassTestPhaseTickTask(const TSharedRef<FMassProcessingPhaseManager>& InPhaseManager, const EMassProcessingPhase InPhase, const float InDeltaTime)
+	: PhaseManager(InPhaseManager)
+	, Phase(InPhase)
+	, DeltaTime(InDeltaTime)
+{
+}
+
+TStatId FMassTestPhaseTickTask::GetStatId()
+{
+	RETURN_QUICK_DECLARE_CYCLE_STAT(FMassTestPhaseTickTask, STATGROUP_TaskGraphTasks);
+}
+
+ENamedThreads::Type FMassTestPhaseTickTask::GetDesiredThread()
+{ 
+	return ENamedThreads::GameThread; 
+}
+
+ESubsequentsMode::Type FMassTestPhaseTickTask::GetSubsequentsMode()
+{ 
+	return ESubsequentsMode::TrackSubsequents; 
+}
+
+void FMassTestPhaseTickTask::DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FMassTestPhaseTickTask);
+	PhaseManager->TriggerPhase(Phase, DeltaTime, MyCompletionGraphEvent);
+}
+
+
+//----------------------------------------------------------------------//
+// FMassTestPhaseTickTask
+//----------------------------------------------------------------------//
+void FMassTestProcessingPhaseManager::Start(const TSharedPtr<FMassEntityManager>& InEntityManager)
+{
+	EntityManager = InEntityManager;
+
+	OnNewArchetypeHandle = EntityManager->GetOnNewArchetypeEvent().AddRaw(this, &FMassTestProcessingPhaseManager::OnNewArchetype);
+
+	// at this point FMassProcessingPhaseManager would call EnableTickFunctions if a world was available
+	// here we're skipping it on purpose
+
+	bIsAllowedToTick = true;
+}
+
+void FMassTestProcessingPhaseManager::OnNewArchetype(const FMassArchetypeHandle& NewArchetype)
+{
+	FMassProcessingPhaseManager::OnNewArchetype(NewArchetype);
+}
+
+} // namespace UE::Mass::Testing
+
+UE_ENABLE_OPTIMIZATION_SHIP

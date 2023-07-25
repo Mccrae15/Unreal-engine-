@@ -341,7 +341,7 @@ public:
 	{
 		if ( WidthLastFrame != AllottedGeometry.Size.X )
 		{
-			WidthLastFrame = AllottedGeometry.Size.X;
+			WidthLastFrame = static_cast<float>(AllottedGeometry.Size.X);
 
 			// The width changed, update the font
 			if ( GenericLabelTextBlock.IsValid() )
@@ -927,12 +927,9 @@ FAssetThumbnailPool::FAssetThumbnailPool( uint32 InNumInPool, double InMaxFrameT
 	, MaxRealTimeThumbnailsPerFrame( InMaxRealTimeThumbnailsPerFrame )
 	, MaxFrameTimeAllowance( InMaxFrameTimeAllowance )
 {
-	FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FAssetThumbnailPool::OnObjectPropertyChanged);
 	FCoreUObjectDelegates::OnAssetLoaded.AddRaw(this, &FAssetThumbnailPool::OnAssetLoaded);
-	if ( GEditor )
-	{
-		GEditor->OnActorMoved().AddRaw( this, &FAssetThumbnailPool::OnActorPostEditMove );
-	}
+
+	UThumbnailManager::Get().GetOnThumbnailDirtied().AddRaw(this, &FAssetThumbnailPool::OnThumbnailDirtied);
 
 	// Add the custom thumbnail tag to the list of tags that the asset registry can parse
 	TSet<FName>& MetaDataTagsForAssetRegistry = UObject::GetMetaDataTagsForAssetRegistry();
@@ -941,12 +938,14 @@ FAssetThumbnailPool::FAssetThumbnailPool( uint32 InNumInPool, double InMaxFrameT
 
 FAssetThumbnailPool::~FAssetThumbnailPool()
 {
-	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
-	FCoreUObjectDelegates::OnAssetLoaded.RemoveAll(this);
-	if ( GEditor )
+	UThumbnailManager* ThumbnailManager = UThumbnailManager::TryGet();
+	if ( IsValid( ThumbnailManager ) &&
+		 !ThumbnailManager->HasAnyFlags( RF_BeginDestroyed | RF_FinishDestroyed ) )
 	{
-		GEditor->OnActorMoved().RemoveAll(this);
+		ThumbnailManager->GetOnThumbnailDirtied().RemoveAll(this);
 	}
+
+	FCoreUObjectDelegates::OnAssetLoaded.RemoveAll(this);
 
 	// Release all the texture resources
 	ReleaseResources();
@@ -1128,15 +1127,27 @@ void FAssetThumbnailPool::Tick( float DeltaTime )
 					bool bLoadedThumbnail = LoadThumbnail(InfoRef, bIsAssetStillCompiling, CustomThumbnailAsset);
 
 					// If we failed to load a custom thumbnail, then load the custom thumbnail's asset and try again
-					if (!bLoadedThumbnail && CustomThumbnailAsset.IsValid())
+					if (!bLoadedThumbnail && !bIsAssetStillCompiling && CustomThumbnailAsset.IsValid())
 					{
-						// Only load the custom thumbnail if the original asset is also loaded
-						//if (InfoRef->AssetData.IsAssetLoaded())
+						if (UPackage* CustomThumbnailPackage = CustomThumbnailAsset.GetPackage())
 						{
-							if (UObject* CustomThumbnail = CustomThumbnailAsset.GetAsset())
+							UObject* CustomThumbnail = FindObjectFast<UObject>(CustomThumbnailPackage, CustomThumbnailAsset.AssetName);
+							if (!CustomThumbnail)
+							{
+								// Because the custom thumbnail asset can be GCed (RF_Standalone flag cleared), 
+								// its package might need to be reloaded
+								CustomThumbnailPackage = LoadPackage(NULL, *CustomThumbnailAsset.PackageName.ToString(), LOAD_None);
+								CustomThumbnail = FindObjectFast<UObject>(CustomThumbnailPackage, CustomThumbnailAsset.AssetName);
+							}
+
+							if (CustomThumbnail)
 							{
 								bLoadedThumbnail = LoadThumbnail(InfoRef, bIsAssetStillCompiling, CustomThumbnailAsset);
-								CustomThumbnail->ClearFlags(RF_Standalone);
+								if (!bIsAssetStillCompiling)
+								{
+									// Clear RF_Standalone flag on the loaded custom thumbnail asset so it gets GCed eventually
+									CustomThumbnail->ClearFlags(RF_Standalone);
+								}
 							}
 						}
 					}
@@ -1151,7 +1162,7 @@ void FAssetThumbnailPool::Tick( float DeltaTime )
 					}
 					// Do not send a failure event for this asset yet if shaders are still compiling or the asset itself is compiling.
 					// The failure event will disable the rendering of this asset for good and we need to have a chance to 
-					// rerender it when everything settles down.
+					// re-render it when everything settles down.
 					else if (!bAreShadersCompiling && !bIsAssetStillCompiling)
 					{
 						// Notify listeners that a thumbnail render has failed
@@ -1163,13 +1174,16 @@ void FAssetThumbnailPool::Tick( float DeltaTime )
 	}
 }
 
-bool FAssetThumbnailPool::LoadThumbnail(TSharedRef<FThumbnailInfo> ThumbnailInfo, bool &bIsAssetStillCompiling, const FAssetData& CustomAssetToRender)
+bool FAssetThumbnailPool::LoadThumbnail(TSharedRef<FThumbnailInfo> ThumbnailInfo, bool& bIsAssetStillCompiling, const FAssetData& CustomAssetToRender)
 {
 	const FAssetData& AssetData = CustomAssetToRender.IsValid() ? CustomAssetToRender : ThumbnailInfo->AssetData;
-	UObject* Asset = AssetData.IsAssetLoaded() ? AssetData.GetAsset() : nullptr;
+	UObject* Asset = AssetData.FastGetAsset();
+	if (Asset && !IsValidChecked(Asset))
+	{
+		Asset = nullptr;
+	}
 
 	const bool bAreShadersCompiling = (GShaderCompilingManager && GShaderCompilingManager->IsCompiling());
-	
 	if (Asset && !bAreShadersCompiling)
 	{
 		//Avoid rendering the thumbnail of an asset that is currently edited asynchronously
@@ -1181,19 +1195,20 @@ bool FAssetThumbnailPool::LoadThumbnail(TSharedRef<FThumbnailInfo> ThumbnailInfo
 			if (RenderInfo != nullptr && RenderInfo->Renderer != nullptr)
 			{
 				FThumbnailInfo_RenderThread ThumbInfo = ThumbnailInfo.Get();
-				ENQUEUE_RENDER_COMMAND(SyncSlateTextureCommand)(
-					[ThumbInfo](FRHICommandListImmediate& RHICmdList)
-				{
-					if (ThumbInfo.ThumbnailTexture->GetTypedResource() != ThumbInfo.ThumbnailRenderTarget->GetTextureRHI())
-					{
-						ThumbInfo.ThumbnailTexture->ClearTextureData();
-						ThumbInfo.ThumbnailTexture->ReleaseDynamicRHI();
-						ThumbInfo.ThumbnailTexture->SetRHIRef(ThumbInfo.ThumbnailRenderTarget->GetTextureRHI(), ThumbInfo.Width, ThumbInfo.Height);
-					}
-				});
 
-				if (ThumbnailInfo->LastUpdateTime <= 0.0f || RenderInfo->Renderer->AllowsRealtimeThumbnails(Asset))
+				auto EnqueueThumbnailRender = [Asset, ThumbInfo, ThumbnailInfo]()
 				{
+					ENQUEUE_RENDER_COMMAND(SyncSlateTextureCommand)(
+						[ThumbInfo](FRHICommandListImmediate& RHICmdList)
+						{
+							if (ThumbInfo.ThumbnailTexture->GetTypedResource() != ThumbInfo.ThumbnailRenderTarget->GetTextureRHI())
+							{
+								ThumbInfo.ThumbnailTexture->ClearTextureData();
+								ThumbInfo.ThumbnailTexture->ReleaseDynamicRHI();
+								ThumbInfo.ThumbnailTexture->SetRHIRef(ThumbInfo.ThumbnailRenderTarget->GetTextureRHI(), ThumbInfo.Width, ThumbInfo.Height);
+							}
+						});
+
 					//@todo: this should be done on the GPU only but it is not supported by thumbnail tools yet
 					ThumbnailTools::RenderThumbnail(
 						Asset,
@@ -1202,30 +1217,60 @@ bool FAssetThumbnailPool::LoadThumbnail(TSharedRef<FThumbnailInfo> ThumbnailInfo
 						ThumbnailTools::EThumbnailTextureFlushMode::NeverFlush,
 						ThumbnailInfo->ThumbnailRenderTarget
 					);
-				}
+				};
 
-				return true;
+				EThumbnailRenderFrequency ThumbnailRenderFrequency = RenderInfo->Renderer->GetThumbnailRenderFrequency(Asset);
+
+				switch (ThumbnailRenderFrequency)
+				{
+					case EThumbnailRenderFrequency::Realtime:
+					{
+						EnqueueThumbnailRender();
+						return true;
+					}
+					case EThumbnailRenderFrequency::OnPropertyChange:
+					{
+						if (ThumbnailInfo->LastUpdateTime <= 0.0f)
+						{
+							EnqueueThumbnailRender();
+							return true;
+						}
+						break;
+					}
+					case EThumbnailRenderFrequency::OnAssetSave:
+					{
+						// OnAssetSave is default behavior below, so nohing to do
+						break;
+					}
+					case EThumbnailRenderFrequency::Once:
+					{
+						// Eagerly return if we aren't interested in cached thumbnails
+						return true;
+					}
+					default:
+					{
+						break;
+					}
+				}
 			}
 		}
 	}
 
-	FThumbnailMap ThumbnailMap;
 	// If we could not render a fresh thumbnail, see if we already have a cached one to load
 	const FObjectThumbnail* FoundThumbnail = ThumbnailTools::FindCachedThumbnail(AssetData.GetFullName());
+
+	// If we don't have a cached thumbnail, try to find it on disk
+	FThumbnailMap ThumbnailMap;
 	if (!FoundThumbnail)
 	{
-		// If we don't have a cached thumbnail, try to find it on disk
 		FString PackageFilename;
 		if (FPackageName::DoesPackageExist(AssetData.PackageName.ToString(), &PackageFilename))
 		{
+			const FName ObjectFullName = FName(*AssetData.GetFullName());
 			TSet<FName> ObjectFullNames;
-
-
-			FName ObjectFullName = FName(*AssetData.GetFullName());
 			ObjectFullNames.Add(ObjectFullName);
 
 			ThumbnailTools::LoadThumbnailsFromPackage(PackageFilename, ObjectFullNames, ThumbnailMap);
-
 			FoundThumbnail = ThumbnailMap.Find(ObjectFullName);
 		}
 	}
@@ -1279,7 +1324,7 @@ FSlateTexture2DRHIRef* FAssetThumbnailPool::AccessTexture( const FAssetData& Ass
 			if( FreeThumbnails.Num() == 0 && ThumbnailToTextureMap.Num() == NumInPool )
 			{
 				// Find the thumbnail which was accessed last and use it for the new thumbnail
-				float LastAccessTime = FLT_MAX;
+				double LastAccessTime = std::numeric_limits<double>::max();
 				const FThumbId* AssetToRemove = NULL;
 				for( TMap< FThumbId, TSharedRef<FThumbnailInfo> >::TConstIterator It(ThumbnailToTextureMap); It; ++It )
 				{
@@ -1563,79 +1608,7 @@ void FAssetThumbnailPool::OnAssetLoaded( UObject* Asset )
 	}
 }
 
-void FAssetThumbnailPool::OnActorPostEditMove( AActor* Actor )
+void FAssetThumbnailPool::OnThumbnailDirtied( const FSoftObjectPath& ObjectPath )
 {
-	DirtyThumbnailForObject(Actor);
-}
-
-void FAssetThumbnailPool::OnObjectPropertyChanged( UObject* ObjectBeingModified, FPropertyChangedEvent& PropertyChangedEvent )
-{
-	if(PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
-	{
-		DirtyThumbnailForObject(ObjectBeingModified);
-	}
-}
-
-void FAssetThumbnailPool::DirtyThumbnailForObject(UObject* ObjectBeingModified)
-{
-	if (!ObjectBeingModified)
-	{
-		return;
-	}
-
-	if (ObjectBeingModified->HasAnyFlags(RF_ClassDefaultObject))
-	{
-		if (ObjectBeingModified->GetClass()->ClassGeneratedBy != nullptr)
-		{
-			// This is a blueprint modification. Check to see if this thumbnail is the blueprint of the modified CDO
-			ObjectBeingModified = ObjectBeingModified->GetClass()->ClassGeneratedBy;
-		}
-	}
-	else if (AActor* ActorBeingModified = Cast<AActor>(ObjectBeingModified))
-	{
-		// This is a non CDO actor getting modified. Update the actor's world's thumbnail.
-		ObjectBeingModified = ActorBeingModified->GetWorld();
-	}
-
-	if (ObjectBeingModified)
-	{
-		// An object in memory was modified.  We'll mark it's thumbnail as dirty so that it'll be
-		// regenerated on demand later. (Before being displayed in the browser, or package saves, etc.)
-		FObjectThumbnail* Thumbnail = ThumbnailTools::GetThumbnailForObject(ObjectBeingModified);
-
-		// If we don't yet have a thumbnail map, load one from disk if possible
-		if (Thumbnail == nullptr)
-		{
-			UPackage* ObjectPackage = ObjectBeingModified->GetOutermost();
-
-			const bool bMemoryPackage = FPackageName::IsMemoryPackage(ObjectBeingModified->GetPathName());	// Don't try to load from disk if the package is a memory package
-			const bool bUnsavedPackage = ObjectPackage->HasAnyPackageFlags(PKG_NewlyCreated);				// Don't try loading thumbnails for package that have never been saved
-			const bool bIsGarbageCollecting = IsGarbageCollecting();										// Don't attempt to do this while garbage collecting since loading or finding objects during GC is illegal
-
-			const bool bTryLoadThumbnailFromDisk = !bIsGarbageCollecting && !bMemoryPackage && !bUnsavedPackage;
-			if (bTryLoadThumbnailFromDisk)
-			{
-				FName ObjectFullName = FName(*ObjectBeingModified->GetFullName());
-
-				FThumbnailMap LoadedThumbnails;
-				if (ThumbnailTools::ConditionallyLoadThumbnailsForObjects({ ObjectFullName }, LoadedThumbnails))
-				{
-					Thumbnail = LoadedThumbnails.Find(ObjectFullName);
-
-					if (Thumbnail != nullptr)
-					{
-						Thumbnail = ThumbnailTools::CacheThumbnail(ObjectBeingModified->GetFullName(), Thumbnail, ObjectPackage);
-					}
-				}
-			}
-		}
-
-		if (Thumbnail != nullptr)
-		{
-			// Mark the thumbnail as dirty
-			Thumbnail->MarkAsDirty();
-		}
-
-		RefreshThumbnailsFor(FSoftObjectPath(ObjectBeingModified));
-	}
+	RefreshThumbnailsFor( ObjectPath );
 }

@@ -2,11 +2,18 @@
 
 #pragma once
 
+#include "FBIKConstraint.h"
 #include "Units/Highlevel/RigUnit_HighlevelBase.h"
 #include "FBIKConstraintOption.h"
 #include "FBIKDebugOption.h"
 #include "FBIKShared.h"
+#include "Misc/TVariantMeta.h"
+#include "RigVMCore/RigVMFunction.h"
+#include "RigVMCore/RigVMMemoryStorage.h"
 #include "RigUnit_FullbodyIK.generated.h"
+
+struct FControlRigExecuteContext;
+struct FRigVMStructUpgradeInfo;
 
 USTRUCT()
 struct FFBIKEndEffector
@@ -105,7 +112,7 @@ struct FRigUnit_FullbodyIK : public FRigUnit_HighlevelBaseMutable
 	GENERATED_BODY()
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	FRigUnit_FullbodyIK()
 		: Root(NAME_None, ERigElementType::Bone)

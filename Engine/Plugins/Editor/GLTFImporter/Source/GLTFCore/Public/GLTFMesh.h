@@ -4,7 +4,6 @@
 
 #include "GLTFAccessor.h"
 
-#include "CoreMinimal.h"
 
 struct FMD5Hash;
 
@@ -107,6 +106,8 @@ namespace GLTF
 	{
 		FString				Name;
 		TArray<FPrimitive>	Primitives;
+
+		FString				UniqueId; //will be generated in FAsset::GenerateNames
 	
 		bool HasNormals() const;
 		bool HasTangents() const;
@@ -223,3 +224,7 @@ namespace GLTF
 	}
 
 }  // namespace GLTF
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

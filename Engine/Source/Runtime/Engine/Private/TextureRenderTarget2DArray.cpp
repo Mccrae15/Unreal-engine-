@@ -5,13 +5,13 @@
 =============================================================================*/
 
 #include "Engine/TextureRenderTarget2DArray.h"
-#include "RenderUtils.h"
+#include "HAL/LowLevelMemStats.h"
+#include "RenderingThread.h"
 #include "TextureRenderTarget2DArrayResource.h"
 #include "UnrealEngine.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/Texture2DArray.h"
-#include "ClearQuad.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TextureRenderTarget2DArray)
 
@@ -221,6 +221,8 @@ UTexture2DArray* UTextureRenderTarget2DArray::ConstructTexture2DArray(UObject* O
  */
 void FTextureRenderTarget2DArrayResource::InitDynamicRHI()
 {
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
+
 	if((Owner->SizeX > 0) && (Owner->SizeY > 0) && (Owner->Slices > 0))
 	{
 		bool bIsSRGB = true;
@@ -298,6 +300,10 @@ void FTextureRenderTarget2DArrayResource::ReleaseDynamicRHI()
  */
 void FTextureRenderTarget2DArrayResource::UpdateDeferredResource(FRHICommandListImmediate& RHICmdList, bool bClearRenderTarget/*=true*/)
 {
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
+
+	RemoveFromDeferredUpdateList();
+
 	if (!bClearRenderTarget)
 	{
 		return;

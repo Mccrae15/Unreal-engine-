@@ -6,6 +6,7 @@
 #include "OpenXRHMD_Swapchain.h"
 #include "OpenXRCore.h"
 #include "IOpenXRExtensionPlugin.h"
+#include "IOpenXRHMDModule.h"
 
 #include "Misc/App.h"
 #include "Misc/ConfigCacheIni.h"
@@ -23,6 +24,7 @@
 #include "ClearQuad.h"
 #include "XRThreadUtils.h"
 #include "RenderUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "PipelineStateCache.h"
 #include "Slate/SceneViewport.h"
 #include "Engine/GameEngine.h"
@@ -34,11 +36,17 @@
 #include "HDRHelper.h"
 #include "Shader.h"
 #include "ScreenRendering.h"
+#include "StereoRenderUtils.h"
 #include "DefaultStereoLayers.h"
 
 #if WITH_EDITOR
-#include "Editor/UnrealEd/Classes/Editor/EditorEngine.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Misc/MessageDialog.h"
+#include "UnrealEdMisc.h"
 #endif
+
+#define LOCTEXT_NAMESPACE "OpenXR"
 
 #define OPENXR_PAUSED_IDLE_FPS 10
 static const int64 OPENXR_SWAPCHAIN_WAIT_TIMEOUT = 100000000ll;		// 100ms in nanoseconds.
@@ -56,8 +64,25 @@ static TAutoConsoleVariable<int32> CVarOpenXREnvironmentBlendMode(
 	TEXT("Override the XrEnvironmentBlendMode used when submitting frames. 1 = Opaque, 2 = Additive, 3 = Alpha Blend\n"),
 	ECVF_Default);
 
+static TAutoConsoleVariable<bool> CVarOpenXRForceStereoLayerEmulation(
+	TEXT("xr.OpenXRForceStereoLayerEmulation"),
+	false,
+	TEXT("Force the emulation of stereo layers instead of using native ones (if supported).\n"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<bool> CVarOpenXRDoNotCopyEmulatedLayersToSpectatorScreen(
+	TEXT("xr.OpenXRDoNotCopyEmulatedLayersToSpectatorScreen"),
+	false,
+	TEXT("If face locked stereo layers emulation is active, avoid copying the face locked stereo layers to the spectator screen.\n"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarOpenXRAcquireMode(
+	TEXT("xr.OpenXRAcquireMode"),
+	2,
+	TEXT("Override the swapchain acquire mode. 1 = Acquire on any thread, 2 = Only acquire on RHI thread\n"),
+	ECVF_Default);
+
 namespace {
-	static TSet<XrEnvironmentBlendMode> SupportedBlendModes{ XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND, XR_ENVIRONMENT_BLEND_MODE_ADDITIVE, XR_ENVIRONMENT_BLEND_MODE_OPAQUE };
 	static TSet<XrViewConfigurationType> SupportedViewConfigurations{ XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_QUAD_VARJO };
 
 	/** Helper function for acquiring the appropriate FSceneViewport */
@@ -97,6 +122,13 @@ namespace {
 //---------------------------------------------------
 // OpenXRHMD IHeadMountedDisplay Implementation
 //---------------------------------------------------
+
+enum FOpenXRHMD::ETextureCopyBlendModifier : uint8
+{
+	Opaque,
+	TransparentAlphaPassthrough,
+	PremultipliedAlphaBlend,
+};
 
 bool FOpenXRHMD::FVulkanExtensions::GetVulkanInstanceExtensionsRequired(TArray<const ANSICHAR*>& Out)
 {
@@ -163,7 +195,7 @@ void FOpenXRHMD::GetMotionControllerData(UObject* WorldContext, const EControlle
 			if (XR_SUCCEEDED(xrGetCurrentInteractionProfile(Session, GetTrackedDevicePath(Devices[(int32)Hand]), &Profile)) &&
 				Profile.interactionProfile != XR_NULL_PATH)
 			{
-				XR_ENSURE(OpenXRPathToFName(Instance, Profile.interactionProfile, MotionControllerData.DeviceName));
+				MotionControllerData.DeviceName = FOpenXRPath(Profile.interactionProfile);
 			}
 		}
 	}
@@ -194,10 +226,9 @@ void FOpenXRHMD::GetMotionControllerData(UObject* WorldContext, const EControlle
 			}
 		}
 
+		const float WorldToMeters = GetWorldToMetersScale();
 		if (MotionController)
 		{
-			const float WorldToMeters = GetWorldToMetersScale();
-
 			bool bSuccess = false;
 			FVector Position = FVector::ZeroVector;
 			FRotator Rotation = FRotator::ZeroRotator;
@@ -220,6 +251,15 @@ void FOpenXRHMD::GetMotionControllerData(UObject* WorldContext, const EControlle
 			}
 			MotionControllerData.bValid |= bSuccess;
 
+			FName PalmSource = Hand == EControllerHand::Left ? FName("LeftPalm") : FName("RightPalm");
+			bSuccess = MotionController->GetControllerOrientationAndPosition(0, PalmSource, Rotation, Position, WorldToMeters);
+			if (bSuccess)
+			{
+				MotionControllerData.GripPosition = trackingToWorld.TransformPosition(Position);
+				MotionControllerData.GripRotation = trackingToWorld.TransformRotation(FQuat(Rotation));
+			}
+			MotionControllerData.bValid |= bSuccess;
+
 			MotionControllerData.TrackingStatus = MotionController->GetControllerTrackingStatus(0, GripSource);
 		}
 
@@ -230,7 +270,7 @@ void FOpenXRHMD::GetMotionControllerData(UObject* WorldContext, const EControlle
 
 			MotionControllerData.bValid = HandTracker->GetAllKeypointStates(Hand, MotionControllerData.HandKeyPositions, MotionControllerData.HandKeyRotations, MotionControllerData.HandKeyRadii);
 			check(!MotionControllerData.bValid || (MotionControllerData.HandKeyPositions.Num() == EHandKeypointCount && MotionControllerData.HandKeyRotations.Num() == EHandKeypointCount && MotionControllerData.HandKeyRadii.Num() == EHandKeypointCount));
-		}	
+		}
 	}
 
 	//TODO: this is reportedly a wmr specific convenience function for rapid prototyping.  Not sure it is useful for openxr.
@@ -277,18 +317,13 @@ bool FOpenXRHMD::GetCurrentInteractionProfile(const EControllerHand Hand, FStrin
 			}
 			else
 			{				
-				XR_ENSURE(OpenXRPathToFString(Instance, Profile.interactionProfile, InteractionProfile));
+				InteractionProfile = FOpenXRPath(Profile.interactionProfile);
 				return true;
 			}
 		}
 		else
 		{
-			FString PathStr;
-			XrResult PathResult = OpenXRPathToFString(Instance, Path, PathStr);
-			if (!XR_SUCCEEDED(PathResult))
-			{
-				PathStr = FString::Printf(TEXT("xrPathToString returned %s"), OpenXRResultToString(Result));
-			}
+			FString PathStr = FOpenXRPath(Path);
 			UE_LOG(LogHMD, Warning, TEXT("GetCurrentInteractionProfile for %i (%s) failed because xrGetCurrentInteractionProfile failed with result %s."), Hand, *PathStr, OpenXRResultToString(Result));
 			return false;
 		}
@@ -454,6 +489,11 @@ FString FOpenXRHMD::GetVersionString() const
 		XR_VERSION_MAJOR(InstanceProperties.runtimeVersion),
 		XR_VERSION_MINOR(InstanceProperties.runtimeVersion),
 		XR_VERSION_PATCH(InstanceProperties.runtimeVersion));
+}
+
+bool FOpenXRHMD::IsHMDConnected()
+{
+	return IOpenXRHMDModule::Get().GetSystemId() != XR_NULL_SYSTEM_ID;
 }
 
 bool FOpenXRHMD::IsHMDEnabled() const
@@ -662,9 +702,12 @@ void FOpenXRHMD::ResetPosition()
 
 void FOpenXRHMD::Recenter(EOrientPositionSelector::Type Selector, float Yaw)
 {
-	const FPipelinedFrameState& PipelineState = GetPipelinedFrameStateForThread();
-	const XrTime TargetTime = PipelineState.FrameState.predictedDisplayTime;
-	check(PipelineState.bXrFrameStateUpdated);
+	const XrTime TargetTime = GetDisplayTime();
+	if (TargetTime == 0)
+	{
+		UE_LOG(LogHMD, Warning, TEXT("Could not retrieve a valid head pose for recentering."));
+		return;
+	}
 
 	XrSpace DeviceSpace = XR_NULL_HANDLE;
 	{
@@ -709,6 +752,7 @@ void FOpenXRHMD::Recenter(EOrientPositionSelector::Type Selector, float Yaw)
 	}
 
 	bTrackingSpaceInvalid = true;
+	OnTrackingOriginChanged();
 }
 
 void FOpenXRHMD::SetBaseRotation(const FRotator& InBaseRotation)
@@ -755,6 +799,11 @@ bool FOpenXRHMD::EnableStereo(bool stereo)
 		return true;
 	}
 
+	if (bIsTrackingOnlySession)
+	{
+		return false;
+	}
+
 	bStereoEnabled = stereo;
 	if (stereo)
 	{
@@ -792,6 +841,7 @@ bool FOpenXRHMD::EnableStereo(bool stereo)
 
 			return true;
 		}
+		bStereoEnabled = false;
 		return false;
 	}
 	else
@@ -909,8 +959,14 @@ void FOpenXRHMD::SetFinalViewRect(FRHICommandListImmediate& RHICmdList, const in
 	XrSwapchainSubImage& DepthImage = PipelinedLayerStateRendering.DepthImages[ViewIndex];
 	if (bDepthExtensionSupported)
 	{
-		DepthImage.imageArrayIndex = bIsMobileMultiViewEnabled && ViewIndex < 2 ? ViewIndex : 0;
+		DepthImage.imageArrayIndex = ColorImage.imageArrayIndex;
 		DepthImage.imageRect = ColorImage.imageRect;
+	}
+	XrSwapchainSubImage& EmulationImage = PipelinedLayerStateRendering.EmulatedLayerState.EmulationImages[ViewIndex];
+	if(PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive)
+	{
+		EmulationImage.imageArrayIndex = ColorImage.imageArrayIndex;
+		EmulationImage.imageRect = ColorImage.imageRect;
 	}
 }
 
@@ -1046,9 +1102,11 @@ void FOpenXRHMD::BeginRenderViewFamily(FSceneViewFamily& InViewFamily)
 
 	PipelinedLayerStateRendering.ProjectionLayers.SetNum(ViewConfigCount);
 	PipelinedLayerStateRendering.DepthLayers.SetNum(ViewConfigCount);
+	PipelinedLayerStateRendering.EmulatedLayerState.CompositedProjectionLayers.SetNum(ViewConfigCount);
 
 	PipelinedLayerStateRendering.ColorImages.SetNum(PipelinedFrameStateRendering.ViewConfigs.Num());
 	PipelinedLayerStateRendering.DepthImages.SetNum(PipelinedFrameStateRendering.ViewConfigs.Num());
+	PipelinedLayerStateRendering.EmulatedLayerState.EmulationImages.SetNum(PipelinedFrameStateRendering.ViewConfigs.Num());
 
 	if (SpectatorScreenController)
 	{
@@ -1063,7 +1121,7 @@ void FOpenXRHMD::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneVie
 
 void FOpenXRHMD::PostRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 {
-	DrawEmulatedQuadLayers_RenderThread(GraphBuilder, InView);
+	DrawEmulatedLayers_RenderThread(GraphBuilder, InView);
 }
 
 void FOpenXRHMD::PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& ViewFamily)
@@ -1092,11 +1150,16 @@ void FOpenXRHMD::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FS
 		// Update SubImages with latest swapchain
 		XrSwapchainSubImage& ColorImage = PipelinedLayerStateRendering.ColorImages[ViewIndex];
 		XrSwapchainSubImage& DepthImage = PipelinedLayerStateRendering.DepthImages[ViewIndex];
+		XrSwapchainSubImage& EmulationImage = PipelinedLayerStateRendering.EmulatedLayerState.EmulationImages[ViewIndex];
 
 		ColorImage.swapchain = PipelinedLayerStateRendering.ColorSwapchain.IsValid() ? static_cast<FOpenXRSwapchain*>(PipelinedLayerStateRendering.ColorSwapchain.Get())->GetHandle() : XR_NULL_HANDLE;
 		if (bDepthExtensionSupported)
 		{
 			DepthImage.swapchain = PipelinedLayerStateRendering.DepthSwapchain.IsValid() ? static_cast<FOpenXRSwapchain*>(PipelinedLayerStateRendering.DepthSwapchain.Get())->GetHandle() : XR_NULL_HANDLE;
+		}
+		if(PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive)
+		{
+			EmulationImage.swapchain = PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain.IsValid() ? static_cast<FOpenXRSwapchain*>(PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain.Get())->GetHandle() : XR_NULL_HANDLE;
 		}
 
 		if (IsViewManagedByPlugin(ViewIndex))
@@ -1129,6 +1192,14 @@ void FOpenXRHMD::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FS
 			}
 
 			Projection.next = &DepthLayer;
+		}
+		if (PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive)
+		{
+			XrCompositionLayerProjectionView& CompositedProjection = PipelinedLayerStateRendering.EmulatedLayerState.CompositedProjectionLayers[ViewIndex];
+
+			CompositedProjection.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+			CompositedProjection.next = nullptr;
+			CompositedProjection.subImage = EmulationImage;
 		}
 
 		for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
@@ -1166,7 +1237,21 @@ bool CheckPlatformDepthExtensionSupport(const XrInstanceProperties& InstanceProp
 	return true;
 }
 
-FOpenXRHMD::FOpenXRHMD(const FAutoRegister& AutoRegister, XrInstance InInstance, XrSystemId InSystem, TRefCountPtr<FOpenXRRenderBridge>& InRenderBridge, TArray<const char*> InEnabledExtensions, TArray<IOpenXRExtensionPlugin*> InExtensionPlugins, IARSystemSupport* ARSystemSupport)
+bool CheckPlatformAcquireOnAnyThreadSupport(const XrInstanceProperties& InstanceProps)
+{
+	int32 AcquireMode = CVarOpenXRAcquireMode.GetValueOnAnyThread();
+	if (AcquireMode > 0)
+	{
+		return AcquireMode == 1;
+	}
+	else if (RHIGetInterfaceType() != ERHIInterfaceType::Vulkan || FCStringAnsi::Strstr(InstanceProps.runtimeName, "Oculus"))
+	{
+		return true;
+	}
+	return false;
+}
+
+FOpenXRHMD::FOpenXRHMD(const FAutoRegister& AutoRegister, XrInstance InInstance, TRefCountPtr<FOpenXRRenderBridge>& InRenderBridge, TArray<const char*> InEnabledExtensions, TArray<IOpenXRExtensionPlugin*> InExtensionPlugins, IARSystemSupport* ARSystemSupport)
 	: FHeadMountedDisplayBase(ARSystemSupport)
 	, FHMDSceneViewExtension(AutoRegister)
 	, FOpenXRAssetManager(InInstance, this)
@@ -1177,17 +1262,17 @@ FOpenXRHMD::FOpenXRHMD(const FAutoRegister& AutoRegister, XrInstance InInstance,
 	, bIsSynchronized(false)
 	, bShouldWait(true)
 	, bIsExitingSessionByxrRequestExitSession(false)
-	, bNeedReAllocatedDepth(false)
 	, bNeedReBuildOcclusionMesh(true)
 	, bIsMobileMultiViewEnabled(false)
 	, bSupportsHandTracking(false)
 	, bIsStandaloneStereoOnlyDevice(false)
+	, bIsTrackingOnlySession(false)
 	, CurrentSessionState(XR_SESSION_STATE_UNKNOWN)
 	, EnabledExtensions(std::move(InEnabledExtensions))
 	, InputModule(nullptr)
 	, ExtensionPlugins(std::move(InExtensionPlugins))
 	, Instance(InInstance)
-	, System(InSystem)
+	, System(IOpenXRHMDModule::Get().GetSystemId())
 	, Session(XR_NULL_HANDLE)
 	, LocalSpace(XR_NULL_HANDLE)
 	, StageSpace(XR_NULL_HANDLE)
@@ -1213,100 +1298,10 @@ FOpenXRHMD::FOpenXRHMD(const FAutoRegister& AutoRegister, XrInstance InInstance,
 	bHiddenAreaMaskSupported = IsExtensionEnabled(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME) &&
 		!FCStringAnsi::Strstr(InstanceProperties.runtimeName, "Oculus");
 	bViewConfigurationFovSupported = IsExtensionEnabled(XR_EPIC_VIEW_CONFIGURATION_FOV_EXTENSION_NAME);
-
-	// Retrieve system properties and check for hand tracking support
-	XrSystemHandTrackingPropertiesEXT HandTrackingSystemProperties = { XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT };
-	SystemProperties = XrSystemProperties{ XR_TYPE_SYSTEM_PROPERTIES, &HandTrackingSystemProperties };
-	XR_ENSURE(xrGetSystemProperties(Instance, System, &SystemProperties));
-	bSupportsHandTracking = HandTrackingSystemProperties.supportsHandTracking == XR_TRUE;
-	SystemProperties.next = nullptr;
-
-	// Some runtimes aren't compliant with their number of layers supported.
-	// We support a fallback by emulating non-facelocked layers
-	bNativeWorldQuadLayerSupport = SystemProperties.graphicsProperties.maxLayerCount >= XR_MIN_COMPOSITION_LAYERS_SUPPORTED;
-
+	bSupportsHandTracking = IsExtensionEnabled(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
 	bSpaceAccellerationSupported = IsExtensionEnabled(XR_EPIC_SPACE_ACCELERATION_NAME);
-
-	static const auto CVarMobileMultiView = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
-	const bool bMobileMultiView = (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
-#if PLATFORM_HOLOLENS
-	bIsMobileMultiViewEnabled = bMobileMultiView && GRHISupportsArrayIndexFromAnyShader;
-#else
-	bIsMobileMultiViewEnabled = bMobileMultiView && RHISupportsMobileMultiView(GMaxRHIShaderPlatform);
-#endif
-
-	static const auto CVarPropagateAlpha = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PostProcessing.PropagateAlpha"));
-	bProjectionLayerAlphaEnabled = !IsMobilePlatform(GMaxRHIShaderPlatform) && CVarPropagateAlpha->GetValueOnAnyThread() != 0;
-
-	// Enumerate the viewport configurations
-	uint32 ConfigurationCount;
-	TArray<XrViewConfigurationType> ViewConfigTypes;
-	XR_ENSURE(xrEnumerateViewConfigurations(Instance, System, 0, &ConfigurationCount, nullptr));
-	ViewConfigTypes.SetNum(ConfigurationCount);
-	// Fill the initial array with valid enum types (this will fail in the validation layer otherwise).
-	for (auto & TypeIter : ViewConfigTypes)
-		TypeIter = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO;
-	XR_ENSURE(xrEnumerateViewConfigurations(Instance, System, ConfigurationCount, &ConfigurationCount, ViewConfigTypes.GetData()));
-
-	// Select the first view configuration returned by the runtime that is supported.
-	// This is the view configuration preferred by the runtime.
-	for (XrViewConfigurationType ViewConfigType : ViewConfigTypes)
-	{
-		if (SupportedViewConfigurations.Contains(ViewConfigType))
-		{
-			SelectedViewConfigurationType = ViewConfigType;
-			break;
-		}
-	}
-
-	// If there is no supported view configuration type, use the first option as a last resort.
-	if (!ensure(SelectedViewConfigurationType != XR_VIEW_CONFIGURATION_TYPE_MAX_ENUM))
-	{
-		UE_LOG(LogHMD, Error, TEXT("No compatible view configuration type found, falling back to runtime preferred type."));
-		SelectedViewConfigurationType = ViewConfigTypes[0];
-	}
-
-	// Enumerate the views we will be simulating with.
-	EnumerateViews(PipelinedFrameStateGame);
-
-	for (const XrViewConfigurationView& Config : PipelinedFrameStateGame.ViewConfigs)
-	{
-		const float WidthDensityMax = float(Config.maxImageRectWidth) / Config.recommendedImageRectWidth;
-		const float HeightDensitymax = float(Config.maxImageRectHeight) / Config.recommendedImageRectHeight;
-		const float PerViewPixelDensityMax = FMath::Min(WidthDensityMax, HeightDensitymax);
-		RuntimePixelDensityMax = FMath::Min(RuntimePixelDensityMax, PerViewPixelDensityMax);
-	}
-
-	// Enumerate environment blend modes and select the best one.
-	{
-		uint32 BlendModeCount;
-		TArray<XrEnvironmentBlendMode> BlendModes;
-		XR_ENSURE(xrEnumerateEnvironmentBlendModes(Instance, System, SelectedViewConfigurationType, 0, &BlendModeCount, nullptr));
-		// Fill the initial array with valid enum types (this will fail in the validation layer otherwise).
-		for (auto& TypeIter : BlendModes)
-			TypeIter = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-		BlendModes.SetNum(BlendModeCount);
-		XR_ENSURE(xrEnumerateEnvironmentBlendModes(Instance, System, SelectedViewConfigurationType, BlendModeCount, &BlendModeCount, BlendModes.GetData()));
-
-		// Select the first blend mode returned by the runtime that is supported.
-		// This is the environment blend mode preferred by the runtime.
-		for (XrEnvironmentBlendMode BlendMode : BlendModes)
-		{
-			if (SupportedBlendModes.Contains(BlendMode) &&
-				// On mobile platforms the alpha channel can contain depth information, so we can't use alpha blend.
-				(BlendMode != XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND || !IsMobilePlatform(GMaxRHIShaderPlatform)))
-			{
-				SelectedEnvironmentBlendMode = BlendMode;
-				break;
-			}
-		}
-
-		// If there is no supported environment blend mode, use the first option as a last resort.
-		if (!ensure(SelectedEnvironmentBlendMode != XR_ENVIRONMENT_BLEND_MODE_MAX_ENUM))
-		{
-			SelectedEnvironmentBlendMode = BlendModes[0];
-		}
-	}
+	bIsAcquireOnAnyThreadSupported = CheckPlatformAcquireOnAnyThreadSupport(InstanceProperties);
+	ReconfigureForShaderPlatform(GMaxRHIShaderPlatform);
 
 #if PLATFORM_HOLOLENS || PLATFORM_ANDROID
 	bool bStartInVR = false;
@@ -1322,13 +1317,12 @@ FOpenXRHMD::FOpenXRHMD(const FAutoRegister& AutoRegister, XrInstance InInstance,
 	}
 #endif
 
+	bIsTrackingOnlySession = FParse::Param(FCommandLine::Get(), TEXT("xrtrackingonly"));
+
 	// Add a device space for the HMD without an action handle and ensure it has the correct index
 	XrPath UserHead = XR_NULL_PATH;
 	XR_ENSURE(xrStringToPath(Instance, "/user/head", &UserHead));
 	ensure(DeviceSpaces.Emplace(XR_NULL_HANDLE, UserHead) == HMDDeviceId);
-
-	// Give the all frame states the same initial values.
-	PipelinedFrameStateRHI = PipelinedFrameStateRendering = PipelinedFrameStateGame;
 
 	for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
 	{
@@ -1339,6 +1333,36 @@ FOpenXRHMD::FOpenXRHMD(const FAutoRegister& AutoRegister, XrInstance InInstance,
 FOpenXRHMD::~FOpenXRHMD()
 {
 	DestroySession();
+}
+
+bool FOpenXRHMD::ReconfigureForShaderPlatform(EShaderPlatform NewShaderPlatform)
+{
+	UE::StereoRenderUtils::FStereoShaderAspects Aspects(NewShaderPlatform);
+	bIsMobileMultiViewEnabled = Aspects.IsMobileMultiViewEnabled();
+
+	static const auto CVarPropagateAlpha = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PostProcessing.PropagateAlpha"));
+	bProjectionLayerAlphaEnabled = !IsMobilePlatform(NewShaderPlatform) && CVarPropagateAlpha->GetValueOnAnyThread() != 0;
+
+	ConfiguredShaderPlatform = NewShaderPlatform;
+
+	UE_LOG(LogHMD, Log, TEXT("HMD configured for shader platform %s, bIsMobileMultiViewEnabled=%d, bProjectionLayerAlphaEnabled=%d"),
+		*LexToString(ConfiguredShaderPlatform),
+		bIsMobileMultiViewEnabled,
+		bProjectionLayerAlphaEnabled
+		);
+
+	return true;
+}
+
+TArray<XrEnvironmentBlendMode> FOpenXRHMD::RetrieveEnvironmentBlendModes() const
+{
+	TArray<XrEnvironmentBlendMode> BlendModes;
+	uint32 BlendModeCount;
+	XR_ENSURE(xrEnumerateEnvironmentBlendModes(Instance, System, SelectedViewConfigurationType, 0, &BlendModeCount, nullptr));
+	// Fill the initial array with valid enum types (this will fail in the validation layer otherwise).
+	BlendModes.Init(XR_ENVIRONMENT_BLEND_MODE_OPAQUE, BlendModeCount);
+	XR_ENSURE(xrEnumerateEnvironmentBlendModes(Instance, System, SelectedViewConfigurationType, BlendModeCount, &BlendModeCount, BlendModes.GetData()));
+	return BlendModes;
 }
 
 const FOpenXRHMD::FPipelinedFrameState& FOpenXRHMD::GetPipelinedFrameStateForThread() const
@@ -1469,7 +1493,9 @@ void FOpenXRHMD::EnumerateViews(FPipelinedFrameState& PipelineState)
 	for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
 	{
 		TArray<XrViewConfigurationView> ViewConfigs;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 		Module->GetViewConfigurations(System, ViewConfigs);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 
 		const EStereoscopicPass PluginPassType = ViewConfigs.Num() > 1 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_FULL;
 		for (int32 i = 0; i < ViewConfigs.Num(); i++)
@@ -1496,7 +1522,9 @@ void FOpenXRHMD::EnumerateViews(FPipelinedFrameState& PipelineState)
 			if (PipelineState.PluginViewInfos.ContainsByPredicate(Predicate))
 			{
 				TArray<XrView> Views;
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 				Module->GetViewLocations(Session, PipelineState.FrameState.predictedDisplayTime, DeviceSpaces[HMDDeviceId].Space, Views);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 				check(Views.Num() > 0);
 				PipelineState.Views.Append(Views);
 			}
@@ -1511,7 +1539,6 @@ void FOpenXRHMD::EnumerateViews(FPipelinedFrameState& PipelineState)
 			XrView& View = PipelineState.Views[ViewIndex];
 			View.type = XR_TYPE_VIEW;
 			View.next = nullptr;
-			// FIXME: should be recommendedFov
 			View.fov = ViewFov[ViewIndex].recommendedFov;
 			View.pose = ToXrPose(FTransform::Identity);
 		}
@@ -1655,16 +1682,111 @@ bool FOpenXRHMD::BuildOcclusionMesh(XrVisibilityMaskTypeKHR Type, int View, FHMD
 }
 #endif
 
+#if WITH_EDITOR
+// Show a warning that the editor will require a restart
+void ShowRestartWarning(const FText& Title)
+{
+	if (EAppReturnType::Ok == FMessageDialog::Open(EAppMsgType::OkCancel,
+		LOCTEXT("EditorRestartMsg", "The OpenXR runtime requires switching to a different GPU adapter, this requires an editor restart. Do you wish to restart now (you will be prompted to save any changes)?"),
+		&Title))
+	{
+		FUnrealEdMisc::Get().RestartEditor(false);
+	}
+}
+#endif
+
 bool FOpenXRHMD::OnStereoStartup()
 {
 	FWriteScopeLock Lock(SessionHandleMutex);
 
-	check(Session == XR_NULL_HANDLE);
 	bIsExitingSessionByxrRequestExitSession = false;  // clear in case we requested exit for a previous session, but it ended in some other way before that happened.
+
+	if (Session)
+	{
+		return false;
+	}
+
+	System = IOpenXRHMDModule::Get().GetSystemId();
+	if (!System)
+	{
+		UE_LOG(LogHMD, Error, TEXT("Failed to get an OpenXR system, please check that you have a VR headset connected."));
+		return false;
+	}
+
+	// Retrieve system properties and check for hand tracking support
+	XrSystemHandTrackingPropertiesEXT HandTrackingSystemProperties = { XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT };
+	SystemProperties = XrSystemProperties{ XR_TYPE_SYSTEM_PROPERTIES, &HandTrackingSystemProperties };
+	XR_ENSURE(xrGetSystemProperties(Instance, System, &SystemProperties));
+	bSupportsHandTracking = HandTrackingSystemProperties.supportsHandTracking == XR_TRUE;
+
+	// Some runtimes aren't compliant with their number of layers supported.
+	// We support a fallback by emulating non-facelocked layers
+	bLayerSupportOpenXRCompliant = SystemProperties.graphicsProperties.maxLayerCount >= XR_MIN_COMPOSITION_LAYERS_SUPPORTED; 
+
+	// Enumerate the viewport configurations
+	uint32 ConfigurationCount;
+	TArray<XrViewConfigurationType> ViewConfigTypes;
+	XR_ENSURE(xrEnumerateViewConfigurations(Instance, System, 0, &ConfigurationCount, nullptr));
+	// Fill the initial array with valid enum types (this will fail in the validation layer otherwise).
+	ViewConfigTypes.Init(XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO, ConfigurationCount);
+	XR_ENSURE(xrEnumerateViewConfigurations(Instance, System, ConfigurationCount, &ConfigurationCount, ViewConfigTypes.GetData()));
+
+	// Select the first view configuration returned by the runtime that is supported.
+	// This is the view configuration preferred by the runtime.
+	for (XrViewConfigurationType ViewConfigType : ViewConfigTypes)
+	{
+		if (SupportedViewConfigurations.Contains(ViewConfigType))
+		{
+			SelectedViewConfigurationType = ViewConfigType;
+			break;
+		}
+	}
+
+	// If there is no supported view configuration type, use the first option as a last resort.
+	if (!ensure(SelectedViewConfigurationType != XR_VIEW_CONFIGURATION_TYPE_MAX_ENUM))
+	{
+		UE_LOG(LogHMD, Error, TEXT("No compatible view configuration type found, falling back to runtime preferred type."));
+		SelectedViewConfigurationType = ViewConfigTypes[0];
+	}
+
+	// Enumerate the views we will be simulating with.
+	EnumerateViews(PipelinedFrameStateGame);
+
+	for (const XrViewConfigurationView& Config : PipelinedFrameStateGame.ViewConfigs)
+	{
+		const float WidthDensityMax = float(Config.maxImageRectWidth) / Config.recommendedImageRectWidth;
+		const float HeightDensitymax = float(Config.maxImageRectHeight) / Config.recommendedImageRectHeight;
+		const float PerViewPixelDensityMax = FMath::Min(WidthDensityMax, HeightDensitymax);
+		RuntimePixelDensityMax = FMath::Min(RuntimePixelDensityMax, PerViewPixelDensityMax);
+	}
+
+	// Select the first blend mode returned by the runtime - as per spec, environment blend modes should be in order from highest to lowest runtime preference
+	{
+		TArray<XrEnvironmentBlendMode> BlendModes = RetrieveEnvironmentBlendModes();
+		if (!BlendModes.IsEmpty())
+		{
+			SelectedEnvironmentBlendMode = BlendModes[0];
+		}
+	}
+
+	// Give the all frame states the same initial values.
+	PipelinedFrameStateRHI = PipelinedFrameStateRendering = PipelinedFrameStateGame;
 
 	XrSessionCreateInfo SessionInfo;
 	SessionInfo.type = XR_TYPE_SESSION_CREATE_INFO;
-	SessionInfo.next = RenderBridge.IsValid() ? RenderBridge->GetGraphicsBinding() : nullptr;
+	SessionInfo.next = nullptr;
+	if (RenderBridge.IsValid())
+	{
+		SessionInfo.next = RenderBridge->GetGraphicsBinding(System);
+		if (!SessionInfo.next)
+		{
+			UE_LOG(LogHMD, Warning, TEXT("Failed to get an OpenXR graphics binding, editor restart required."));
+#if WITH_EDITOR
+			ShowRestartWarning(LOCTEXT("EditorRestartMsg_Title", "Editor Restart Required"));
+#endif
+			return false;
+		}
+	}
 	SessionInfo.createFlags = 0;
 	SessionInfo.systemId = System;
 	for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
@@ -1833,7 +1955,7 @@ void FOpenXRHMD::DestroySession()
 	FlushRenderingCommands();
 
 	// Clear all the tracked devices
-	ResetActionDevices();
+	ResetTrackedDevices();
 
 	FWriteScopeLock SessionLock(SessionHandleMutex);
 
@@ -1855,10 +1977,12 @@ void FOpenXRHMD::DestroySession()
 		});
 
 		NativeQuadLayers.Reset();
+		EmulatedFaceLockedLayers.Reset();
 
 		PipelinedLayerStateRendering.ColorSwapchain.Reset();
 		PipelinedLayerStateRendering.DepthSwapchain.Reset();
 		PipelinedLayerStateRendering.QuadSwapchains.Reset();
+		PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain.Reset();
 
 		// TODO: Once we handle OnFinishRendering_RHIThread + StopSession interactions
 		// properly, we can release these shared pointers in that function, and use
@@ -1866,6 +1990,7 @@ void FOpenXRHMD::DestroySession()
 		PipelinedLayerStateRHI.ColorSwapchain.Reset();
 		PipelinedLayerStateRHI.DepthSwapchain.Reset();
 		PipelinedLayerStateRHI.QuadSwapchains.Reset();
+		PipelinedLayerStateRHI.EmulatedLayerState.EmulationSwapchain.Reset();
 
 		PipelinedFrameStateGame.TrackingSpace.Reset();
 		PipelinedFrameStateRendering.TrackingSpace.Reset();
@@ -1904,12 +2029,11 @@ void FOpenXRHMD::DestroySession()
 		bIsRunning = false;
 		bIsRendering = false;
 		bIsSynchronized = false;
-		bNeedReAllocatedDepth = true;
 		bNeedReBuildOcclusionMesh = true;
 	}
 }
 
-int32 FOpenXRHMD::AddActionDevice(XrAction Action, XrPath Path)
+int32 FOpenXRHMD::AddTrackedDevice(XrAction Action, XrPath Path)
 {
 	FWriteScopeLock DeviceLock(DeviceMutex);
 
@@ -1927,7 +2051,7 @@ int32 FOpenXRHMD::AddActionDevice(XrAction Action, XrPath Path)
 	return DeviceId;
 }
 
-void FOpenXRHMD::ResetActionDevices()
+void FOpenXRHMD::ResetTrackedDevices()
 {
 	FWriteScopeLock DeviceLock(DeviceMutex);
 
@@ -1992,6 +2116,32 @@ bool FOpenXRHMD::IsFocused() const
 	return CurrentSessionState == XR_SESSION_STATE_FOCUSED;
 }
 
+void FOpenXRHMD::SetEnvironmentBlendMode(XrEnvironmentBlendMode NewBlendMode) 
+{
+	if (NewBlendMode == XR_ENVIRONMENT_BLEND_MODE_MAX_ENUM) 
+	{
+		UE_LOG(LogHMD, Error, TEXT("Environment Blend Mode can't be set to XR_ENVIRONMENT_BLEND_MODE_MAX_ENUM."));
+		return;
+	}
+
+	if(!Instance || !System)
+	{
+		return;
+	}
+
+	TArray<XrEnvironmentBlendMode> BlendModes = RetrieveEnvironmentBlendModes();
+
+	if (BlendModes.Contains(NewBlendMode))
+	{
+		SelectedEnvironmentBlendMode = NewBlendMode;
+		UE_LOG(LogHMD, Log, TEXT("Environment Blend Mode set to: %d."), SelectedEnvironmentBlendMode);
+	}
+	else
+	{
+		UE_LOG(LogHMD, Error, TEXT("Environment Blend Mode %d is not supported. Environment Blend Mode remains %d."), NewBlendMode, SelectedEnvironmentBlendMode);
+	}
+}
+
 bool FOpenXRHMD::StartSession()
 {
 	// If the session is not yet ready, we'll call into this function again when it is
@@ -2039,7 +2189,24 @@ IStereoRenderTargetManager* FOpenXRHMD::GetRenderTargetManager()
 	return this;
 }
 
-bool FOpenXRHMD::AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples)
+int32 FOpenXRHMD::AcquireColorTexture()
+{
+	if (Session)
+	{
+		const FXRSwapChainPtr& ColorSwapchain = PipelinedLayerStateRendering.ColorSwapchain;
+		if (ColorSwapchain)
+		{
+			if (bIsAcquireOnAnyThreadSupported)
+			{
+				ColorSwapchain->IncrementSwapChainIndex_RHIThread();
+			}
+			return ColorSwapchain->GetSwapChainIndex_RHIThread();
+		}
+	}
+	return 0;
+}
+
+bool FOpenXRHMD::AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<FTexture2DRHIRef>& OutTargetableTextures, TArray<FTexture2DRHIRef>& OutShaderResourceTextures, uint32 NumSamples)
 {
 	check(IsInRenderingThread());
 
@@ -2067,18 +2234,18 @@ bool FOpenXRHMD::AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 
 	UnifiedCreateFlags |= TexCreate_RenderTargetable;
 
 	// On mobile without HDR all render targets need to be marked sRGB
-	bool MobileHWsRGB = IsMobileColorsRGB() && IsMobilePlatform(GMaxRHIShaderPlatform);
+	bool MobileHWsRGB = IsMobileColorsRGB() && IsMobilePlatform(GetConfiguredShaderPlatform());
 	if (MobileHWsRGB)
 	{
 		UnifiedCreateFlags |= TexCreate_SRGB;
 	}
 
-
 	// Temporary workaround to swapchain formats - OpenXR doesn't support 10-bit sRGB swapchains, so prefer 8-bit sRGB instead.
 	if (Format == PF_A2B10G10R10 && !RenderBridge->Support10BitSwapchain())
 	{
 		UE_LOG(LogHMD, Warning, TEXT("Requesting 10 bit swapchain, but not supported: fall back to 8bpc"));
-		Format = PF_R8G8B8A8;
+		// Match the default logic in GetDefaultMobileSceneColorLowPrecisionFormat() in SceneTexturesConfig.cpp
+		Format = IsStandaloneStereoOnlyDevice() ? PF_R8G8B8A8 : PF_B8G8R8A8;
 	}
 
 	FClearValueBinding ClearColor = FClearValueBinding::Transparent;
@@ -2095,23 +2262,52 @@ bool FOpenXRHMD::AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 
 		{
 			return false;
 		}
+
+		// Image will be acquired by the viewport if supported, if not we acquire it ahead of time here
+		if (!bIsAcquireOnAnyThreadSupported)
+		{
+			ExecuteOnRHIThread([Swapchain]() {
+				Swapchain->IncrementSwapChainIndex_RHIThread();
+			});
+		}
 	}
 
 	// Grab the presentation texture out of the swapchain.
-	OutTargetableTexture = OutShaderResourceTexture = (FTexture2DRHIRef&)Swapchain->GetTextureRef();
+	OutTargetableTextures = Swapchain->GetSwapChain();
+	OutShaderResourceTextures = OutTargetableTextures;
 	LastRequestedColorSwapchainFormat = Format;
 	LastActualColorSwapchainFormat = ActualFormat;
 
+	if (IsEmulatingStereoLayers() && (SystemProperties.graphicsProperties.maxLayerCount > 1))
+	{
+		// If we have at least two native layers, use non-background layer to render the composited image of all the emulated face locked layers.
+		FXRSwapChainPtr& EmulationSwapchain = PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain;
+		const FRHITexture2D* const EmulationSwapchainTexture = EmulationSwapchain == nullptr ? nullptr : EmulationSwapchain->GetTexture2DArray() ? EmulationSwapchain->GetTexture2DArray() : EmulationSwapchain->GetTexture2D();
+		if (EmulationSwapchain == nullptr || EmulationSwapchainTexture == nullptr || EmulationSwapchainTexture->GetSizeX() != SizeX || EmulationSwapchainTexture->GetSizeY() != SizeY)
+		{
+			const ETextureCreateFlags EmulationCreateFlags = TexCreate_Dynamic | TexCreate_ShaderResource | TexCreate_RenderTargetable;
+
+			uint8 UnusedActualFormat = 0;
+			EmulationSwapchain = RenderBridge->CreateSwapchain(Session, IStereoRenderTargetManager::GetStereoLayerPixelFormat(), UnusedActualFormat, SizeX, SizeY, bIsMobileMultiViewEnabled ? 2 : 1, NumMips, NumSamples, EmulationCreateFlags, FClearValueBinding::Transparent);
+
+			// Image will be acquired by SetupFrameLayers_RenderThread if supported, if not we acquire it ahead of time here
+			if (!bIsAcquireOnAnyThreadSupported)
+			{
+				ExecuteOnRHIThread([EmulationSwapchain]() {
+					EmulationSwapchain->IncrementSwapChainIndex_RHIThread();
+				});
+			}
+		}
+	}
+
 	// TODO: Pass in known depth parameters (format + flags)? Do we know that at viewport setup time?
-	AllocateDepthTextureInternal(Index, SizeX, SizeY, NumSamples);
+	AllocateDepthTextureInternal(SizeX, SizeY, NumSamples, bIsMobileMultiViewEnabled ? 2 : 1);
 
 	return true;
 }
 
-void FOpenXRHMD::AllocateDepthTextureInternal(uint32 Index, uint32 SizeX, uint32 SizeY, uint32 NumSamples)
+void FOpenXRHMD::AllocateDepthTextureInternal(uint32 SizeX, uint32 SizeY, uint32 NumSamples, uint32 InArraySize)
 {
-	// TODO: Allocate depth texture by checking bNeedReAllocatedDepth
-
 	check(IsInRenderingThread());
 
 	FReadScopeLock Lock(SessionHandleMutex);
@@ -2120,12 +2316,10 @@ void FOpenXRHMD::AllocateDepthTextureInternal(uint32 Index, uint32 SizeX, uint32
 		return;
 	}
 
-	check(LastRequestedDepthSwapchainFormat == PF_DepthStencil);
-
 	FXRSwapChainPtr& DepthSwapchain = PipelinedLayerStateRendering.DepthSwapchain;
 	const FRHITexture2D* const DepthSwapchainTexture = DepthSwapchain == nullptr ? nullptr : DepthSwapchain->GetTexture2DArray() ? DepthSwapchain->GetTexture2DArray() : DepthSwapchain->GetTexture2D();
-	if (DepthSwapchain == nullptr || DepthSwapchainTexture == nullptr || 
-		DepthSwapchainTexture->GetSizeX() != SizeX || DepthSwapchainTexture->GetSizeY() != SizeY)
+	if (DepthSwapchain == nullptr || DepthSwapchainTexture == nullptr ||
+		DepthSwapchainTexture->GetSizeX() != SizeX || DepthSwapchainTexture->GetSizeY() != SizeY || DepthSwapchainTexture->GetDesc().ArraySize != InArraySize)
 	{
 		// We're only creating a 1x target here, but we don't know whether it'll be the targeted texture
 		// or the resolve texture. Because of this, we unify the input flags.
@@ -2142,16 +2336,20 @@ void FOpenXRHMD::AllocateDepthTextureInternal(uint32 Index, uint32 SizeX, uint32
 		constexpr uint32 NumMipsExpected = 1;
 
 		uint8 UnusedActualFormat = 0;
-		DepthSwapchain = RenderBridge->CreateSwapchain(Session, PF_DepthStencil, UnusedActualFormat, SizeX, SizeY, bIsMobileMultiViewEnabled ? 2 : 1, NumMipsExpected, NumSamplesExpected, UnifiedCreateFlags, FClearValueBinding::DepthFar);
+		DepthSwapchain = RenderBridge->CreateSwapchain(Session, PF_DepthStencil, UnusedActualFormat, SizeX, SizeY, InArraySize, NumMipsExpected, NumSamplesExpected, UnifiedCreateFlags, FClearValueBinding::DepthFar);
 		if (!DepthSwapchain)
 		{
 			return;
 		}
 
-		// image will be acquired next time we begin the rendering
+		// Image will be acquired by the renderer if supported, if not we acquire it ahead of time here
+		if (!bIsAcquireOnAnyThreadSupported)
+		{
+			ExecuteOnRHIThread([DepthSwapchain]() {
+				DepthSwapchain->IncrementSwapChainIndex_RHIThread();
+			});
+		}
 	}
-
-	bNeedReAllocatedDepth = false;
 }
 
 // TODO: in the future, we can rename the interface to GetDepthTexture because allocate could happen in AllocateRenderTargetTexture
@@ -2174,6 +2372,10 @@ bool FOpenXRHMD::AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, 
 
 	const ETextureCreateFlags UnifiedCreateFlags = Flags | TargetableTextureFlags;
 	ensure(EnumHasAllFlags(UnifiedCreateFlags, TexCreate_DepthStencilTargetable)); // We can't use the depth swapchain w/o this flag
+	if (bIsAcquireOnAnyThreadSupported)
+	{
+		DepthSwapchain->IncrementSwapChainIndex_RHIThread();
+	}
 
 	const FRHITexture2D* const DepthSwapchainTexture = DepthSwapchain->GetTexture2DArray() ? DepthSwapchain->GetTexture2DArray() : DepthSwapchain->GetTexture2D();
 	const FRHITextureDesc& DepthSwapchainDesc = DepthSwapchainTexture->GetDesc();
@@ -2226,25 +2428,79 @@ void CreateNativeLayerSwapchain(FOpenXRLayer& Layer, TRefCountPtr<FOpenXRRenderB
 	}
 }
 
+bool FOpenXRHMD::IsEmulatingStereoLayers()
+{
+	return !bLayerSupportOpenXRCompliant || CVarOpenXRForceStereoLayerEmulation.GetValueOnAnyThread();
+}
+
 void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHICmdList)
 {
 	ensure(IsInRenderingThread());
 
 	if (GetStereoLayersDirty())
 	{
+		// When SetupFrameQuadLayers_RenderThread is called more than once with GetStereoLayersDirty = true,
+		// NativeQuadLayers is rebuilt from the internal array of stereo layers. However, the internal array is
+		// not updated after a static swapchain is created for a layer and it always retains bUpdateTexture = true
+		// which leads to the swapchain trying to acquire a second image and resulting in a crash.
+		// This serves as a workaround that updates the internal state of the layers mirroring the most recent state
+		// of the NativeQuadLayers.
+		TArray<FOpenXRLayer> NativeQuadLayersBackup = NativeQuadLayers;
 		// Go over the dirtied layers to bin them into either native or emulated
-		EmulatedSceneLayers.Reset();
+		BackgroundCompositedEmulatedLayers.Reset();
+		EmulatedFaceLockedLayers.Reset();
 		NativeQuadLayers.Reset();
 
 		ForEachLayer([&](uint32 /* unused */, FOpenXRLayer& Layer)
 		{
-			// We use native layer for facelocked and when world-locked has proper support
-			if ((Layer.Desc.PositionType == ELayerType::FaceLocked) || bNativeWorldQuadLayerSupport)
+			// OpenXR currently supports only Quad layers
+			if (!Layer.Desc.HasShape<FQuadLayer>())
 			{
-				if (Layer.Desc.IsVisible() && Layer.Desc.HasShape<FQuadLayer>())
+				return;
+			}
+			if (IsEmulatingStereoLayers())
+			{
+
+				if (!Layer.Desc.IsVisible())
+				{
+					return;
+				}
+				if(Layer.Desc.PositionType == ELayerType::FaceLocked)
+				{
+					// If we have at least one native layer, use it to render the 
+					// composited image of all the emulated face locked layers.
+					if (SystemProperties.graphicsProperties.maxLayerCount > 0)
+					{
+						EmulatedFaceLockedLayers.Add(Layer.Desc);
+					}
+					else
+					{
+						BackgroundCompositedEmulatedLayers.Add(Layer.Desc);
+					}
+				}else // Layer is not face locked
+				{
+					BackgroundCompositedEmulatedLayers.Add(Layer.Desc);
+				}
+			} // OpenXR compliant layer support (16 layers).
+			else 
+			{
+				if (Layer.Desc.IsVisible())
 				{
 					CreateNativeLayerSwapchain(Layer, RenderBridge, Session);
-					NativeQuadLayers.Add(Layer);
+					FOpenXRLayer& LastLayer = NativeQuadLayers.Add_GetRef(Layer);
+					FOpenXRLayer* FoundLayer = NativeQuadLayersBackup.FindByPredicate([LayerId = LastLayer.GetLayerId()](const FOpenXRLayer& Layer)
+					{
+						if (Layer.GetLayerId() == LayerId)
+						{
+							return true;
+						}
+						return false;
+					});
+					if (FoundLayer != nullptr)
+					{
+						LastLayer.RightEye.bUpdateTexture = FoundLayer->RightEye.bUpdateTexture;
+						LastLayer.LeftEye.bUpdateTexture = FoundLayer->LeftEye.bUpdateTexture;
+					}
 				}
 				else
 				{
@@ -2252,10 +2508,6 @@ void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHI
 					Layer.RightEye.Swapchain.Reset();
 					Layer.LeftEye.Swapchain.Reset();
 				}
-			}
-			else if (Layer.Desc.IsVisible())
-			{
-				EmulatedSceneLayers.Add(Layer.Desc);
 			}
 		});
 
@@ -2277,8 +2529,16 @@ void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHI
 			return false;
 		};
 
-		EmulatedSceneLayers.Sort(LayerCompare);
+		BackgroundCompositedEmulatedLayers.Sort(LayerCompare);
+		EmulatedFaceLockedLayers.Sort(LayerCompare);
 		NativeQuadLayers.Sort(LayerCompare);
+
+		PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive = !EmulatedFaceLockedLayers.IsEmpty();
+	}
+
+	if (bIsAcquireOnAnyThreadSupported && PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain)
+	{
+		PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain->IncrementSwapChainIndex_RHIThread();
 	}
 
 	const FTransform InvTrackingToWorld = GetTrackingToWorldTransform().Inverse();
@@ -2305,6 +2565,10 @@ void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHI
 			Quad.subImage.imageArrayIndex = 0;
 			Quad.pose = ToXrPose(Layer.Desc.Transform * PositionTransform, WorldToMeters);
 
+			// The layer pose doesn't take the transform scale into consideration, so we need to manually apply it the quad size.
+			const FVector2D LayerComponentScaler(Layer.Desc.Transform.GetScale3D().Y, Layer.Desc.Transform.GetScale3D().Z);
+			const ETextureCopyBlendModifier SrcTextureCopyModifier = bNoAlpha ? ETextureCopyBlendModifier::Opaque : ETextureCopyBlendModifier::TransparentAlphaPassthrough;
+
 			// We need to copy each layer into an OpenXR swapchain so they can be displayed by the compositor
 			if (Layer.RightEye.Swapchain.IsValid() && Layer.Desc.Texture.IsValid())
 			{
@@ -2312,14 +2576,14 @@ void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHI
 				{
 					FRHITexture2D* SrcTexture = Layer.Desc.Texture->GetTexture2D();
 					const FIntRect DstRect(FIntPoint(0, 0), Layer.RightEye.SwapchainSize.IntPoint());
-					CopyTexture_RenderThread(RHICmdList, SrcTexture, FIntRect(), Layer.RightEye.Swapchain, DstRect, false, bNoAlpha);
+					CopyTexture_RenderThread(RHICmdList, SrcTexture, FIntRect(), Layer.RightEye.Swapchain, DstRect, false, SrcTextureCopyModifier);
 				}
 
 				Quad.eyeVisibility = bIsStereo ? XR_EYE_VISIBILITY_RIGHT : XR_EYE_VISIBILITY_BOTH;
 
 				Quad.subImage.imageRect = ToXrRect(Layer.GetRightViewportSize());
 				Quad.subImage.swapchain = static_cast<FOpenXRSwapchain*>(Layer.RightEye.Swapchain.Get())->GetHandle();
-				Quad.size = ToXrExtent2D(Layer.GetRightQuadSize(), WorldToMeters);
+				Quad.size = ToXrExtent2D(Layer.GetRightQuadSize() * LayerComponentScaler, WorldToMeters);
 				PipelinedLayerStateRendering.QuadLayers.Add(Quad);
 				PipelinedLayerStateRendering.QuadSwapchains.Add(Layer.RightEye.Swapchain);
 			}
@@ -2330,13 +2594,13 @@ void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHI
 				{
 					FRHITexture2D* SrcTexture = Layer.Desc.LeftTexture->GetTexture2D();
 					const FIntRect DstRect(FIntPoint(0, 0), Layer.LeftEye.SwapchainSize.IntPoint());
-					CopyTexture_RenderThread(RHICmdList, SrcTexture, FIntRect(), Layer.LeftEye.Swapchain, DstRect, false, bNoAlpha);
+					CopyTexture_RenderThread(RHICmdList, SrcTexture, FIntRect(), Layer.LeftEye.Swapchain, DstRect, false, SrcTextureCopyModifier);
 				}
 
 				Quad.eyeVisibility = XR_EYE_VISIBILITY_LEFT;
 				Quad.subImage.imageRect = ToXrRect(Layer.GetLeftViewportSize());
 				Quad.subImage.swapchain = static_cast<FOpenXRSwapchain*>(Layer.LeftEye.Swapchain.Get())->GetHandle();
-				Quad.size = ToXrExtent2D(Layer.GetLeftQuadSize(), WorldToMeters);
+				Quad.size = ToXrExtent2D(Layer.GetLeftQuadSize() * LayerComponentScaler, WorldToMeters);
 				PipelinedLayerStateRendering.QuadLayers.Add(Quad);
 				PipelinedLayerStateRendering.QuadSwapchains.Add(Layer.LeftEye.Swapchain);
 			}
@@ -2344,62 +2608,55 @@ void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHI
 	}
 }
 
-void FOpenXRHMD::DrawEmulatedQuadLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView)
-{
+void FOpenXRHMD::DrawEmulatedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView)
+{	
 	check(IsInRenderingThread());
 
-	if (bNativeWorldQuadLayerSupport || !IStereoRendering::IsStereoEyeView(InView))
+	if (!IsEmulatingStereoLayers() || !IStereoRendering::IsStereoEyeView(InView))
 	{
 		return;
 	}
 
+	DrawBackgroundCompositedEmulatedLayers_RenderThread(GraphBuilder, InView);
+	DrawEmulatedFaceLockedLayers_RenderThread(GraphBuilder, InView);
+}
+void FOpenXRHMD::DrawEmulatedFaceLockedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView)
+{
+	if (!PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive || !PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain)
+	{
+		return;
+	}
+
+	AddPass(GraphBuilder, RDG_EVENT_NAME("OpenXREmulatedFaceLockedLayerRender"), [this, &InView](FRHICommandListImmediate& RHICmdList)
+	{
+		FXRSwapChainPtr EmulationSwapchain = PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain;
+		FTexture2DRHIRef RenderTarget = EmulationSwapchain->GetTextureRef();
+
+		FDefaultStereoLayers_LayerRenderParams RenderParams;
+		FRHIRenderPassInfo RPInfo = SetupEmulatedLayersRenderPass(RHICmdList, InView, EmulatedFaceLockedLayers, RenderTarget, RenderParams);
+
+		RHICmdList.BeginRenderPass(RPInfo, TEXT("EmulatedFaceLockedStereoLayerRender"));
+		RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0.0f, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
+
+		// We need to clear to black + 0 alpha in order to composite opaque + transparent layers correctly
+		DrawClearQuad(RHICmdList, FLinearColor::Transparent);
+
+		FDefaultStereoLayers::StereoLayerRender(RHICmdList, EmulatedFaceLockedLayers, RenderParams);
+
+		RHICmdList.EndRenderPass();
+	});
+}
+
+void FOpenXRHMD::DrawBackgroundCompositedEmulatedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView)
+{
 	// Partially borrowed from FDefaultStereoLayers
 	AddPass(GraphBuilder, RDG_EVENT_NAME("OpenXREmulatedLayerRender"), [this, &InView](FRHICommandListImmediate& RHICmdList)
 	{
-		FViewMatrices ModifiedViewMatrices = InView.ViewMatrices;
-		ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
-		const FMatrix& ProjectionMatrix = ModifiedViewMatrices.GetProjectionMatrix();
-		const FMatrix& ViewProjectionMatrix = ModifiedViewMatrices.GetViewProjectionMatrix();
-
-		// Calculate a view matrix that only adjusts for eye position, ignoring head position, orientation and world position.
-		FVector EyeShift;
-		FQuat EyeOrientation;
-		GetRelativeEyePose(IXRTrackingSystem::HMDDeviceId, InView.StereoViewIndex, EyeOrientation, EyeShift);
-
-		FMatrix EyeMatrix = FTranslationMatrix(-EyeShift) * FInverseRotationMatrix(EyeOrientation.Rotator()) * FMatrix(
-			FPlane(0, 0, 1, 0),
-			FPlane(1, 0, 0, 0),
-			FPlane(0, 1, 0, 0),
-			FPlane(0, 0, 0, 1));
-
-		FQuat HmdOrientation = FQuat::Identity;
-		FVector HmdLocation = FVector::ZeroVector;
-		GetCurrentPose(IXRTrackingSystem::HMDDeviceId, HmdOrientation, HmdLocation);
-
-		FMatrix TrackerMatrix = FTranslationMatrix(-HmdLocation) * FInverseRotationMatrix(HmdOrientation.Rotator()) * EyeMatrix;
-
-		FDefaultStereoLayers::FLayerRenderParams RenderParams{
-			InView.UnscaledViewRect, // Viewport
-			{
-				ViewProjectionMatrix,				// WorldLocked,
-				TrackerMatrix * ProjectionMatrix,	// TrackerLocked,
-				EyeMatrix * ProjectionMatrix		// FaceLocked
-			}
-		};
-
-		TArray<FRHITransitionInfo, TInlineAllocator<16>> Infos;
-		for (const FLayerDesc& Layer : EmulatedSceneLayers)
-		{
-			Infos.Add(FRHITransitionInfo(Layer.Texture, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
-		}
-		if (Infos.Num())
-		{
-			RHICmdList.Transition(Infos);
-		}
-
 		FTexture2DRHIRef RenderTarget = InView.Family->RenderTarget->GetRenderTargetTexture();
 
-		FRHIRenderPassInfo RPInfo(RenderTarget, ERenderTargetActions::Load_Store);
+		FDefaultStereoLayers_LayerRenderParams RenderParams;
+		FRHIRenderPassInfo RPInfo = SetupEmulatedLayersRenderPass(RHICmdList, InView, BackgroundCompositedEmulatedLayers, RenderTarget, RenderParams);
+
 		RHICmdList.BeginRenderPass(RPInfo, TEXT("EmulatedStereoLayerRender"));
 		RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0.0f, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
 
@@ -2408,10 +2665,62 @@ void FOpenXRHMD::DrawEmulatedQuadLayers_RenderThread(FRDGBuilder& GraphBuilder, 
 			DrawClearQuad(RHICmdList, FLinearColor::Black);
 		}
 
-		FDefaultStereoLayers::StereoLayerRender(RHICmdList, EmulatedSceneLayers, RenderParams);
+		FDefaultStereoLayers::StereoLayerRender(RHICmdList, BackgroundCompositedEmulatedLayers, RenderParams);
 
 		RHICmdList.EndRenderPass();
 	});
+}
+
+FRHIRenderPassInfo FOpenXRHMD::SetupEmulatedLayersRenderPass(FRHICommandListImmediate& RHICmdList, const FSceneView& InView, TArray<IStereoLayers::FLayerDesc>& Layers, FTexture2DRHIRef RenderTarget, FDefaultStereoLayers_LayerRenderParams& OutRenderParams)
+{
+	OutRenderParams = CalculateEmulatedLayerRenderParams(InView);
+	TArray<FRHITransitionInfo, TInlineAllocator<16>> Infos;
+	for (const FLayerDesc& Layer : Layers)
+	{
+		Infos.Add(FRHITransitionInfo(Layer.Texture, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
+	}
+	if (Infos.Num())
+	{
+		RHICmdList.Transition(Infos);
+	}
+
+	FRHIRenderPassInfo RPInfo(RenderTarget, ERenderTargetActions::Load_Store);
+	return RPInfo;
+}
+
+FDefaultStereoLayers_LayerRenderParams FOpenXRHMD::CalculateEmulatedLayerRenderParams(const FSceneView& InView)
+{
+	FViewMatrices ModifiedViewMatrices = InView.ViewMatrices;
+	ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
+	const FMatrix& ProjectionMatrix = ModifiedViewMatrices.GetProjectionMatrix();
+	const FMatrix& ViewProjectionMatrix = ModifiedViewMatrices.GetViewProjectionMatrix();
+
+	// Calculate a view matrix that only adjusts for eye position, ignoring head position, orientation and world position.
+	FVector EyeShift;
+	FQuat EyeOrientation;
+	GetRelativeEyePose(IXRTrackingSystem::HMDDeviceId, InView.StereoViewIndex, EyeOrientation, EyeShift);
+
+	FMatrix EyeMatrix = FTranslationMatrix(-EyeShift) * FInverseRotationMatrix(EyeOrientation.Rotator()) * FMatrix(
+		FPlane(0, 0, 1, 0),
+		FPlane(1, 0, 0, 0),
+		FPlane(0, 1, 0, 0),
+		FPlane(0, 0, 0, 1));
+
+	FQuat HmdOrientation = FQuat::Identity;
+	FVector HmdLocation = FVector::ZeroVector;
+	GetCurrentPose(IXRTrackingSystem::HMDDeviceId, HmdOrientation, HmdLocation);
+
+	FMatrix TrackerMatrix = FTranslationMatrix(-HmdLocation) * FInverseRotationMatrix(HmdOrientation.Rotator()) * EyeMatrix;
+
+	FDefaultStereoLayers_LayerRenderParams RenderParams{
+		InView.UnscaledViewRect, // Viewport
+		{
+			ViewProjectionMatrix,				// WorldLocked,
+			TrackerMatrix * ProjectionMatrix,	// TrackerLocked,
+			EyeMatrix * ProjectionMatrix		// FaceLocked
+		}
+	};
+	return RenderParams;
 }
 
 void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& ViewFamily)
@@ -2442,11 +2751,19 @@ void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdL
 
 		// Apply the base HMD pose to each eye pose, we will late update this pose for late update in another callback
 		FTransform BasePose(ViewFamily.Views[ViewIndex]->BaseHmdOrientation, ViewFamily.Views[ViewIndex]->BaseHmdLocation);
-		XrCompositionLayerProjectionView& Projection = PipelinedLayerStateRendering.ProjectionLayers[ViewIndex];
 		FTransform BasePoseTransform = EyePose * BasePose;
 		BasePoseTransform.NormalizeRotation();
+		
+		XrCompositionLayerProjectionView& Projection = PipelinedLayerStateRendering.ProjectionLayers[ViewIndex];
 		Projection.pose = ToXrPose(BasePoseTransform, WorldToMeters);
 		Projection.fov = View.fov;
+
+		if(PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive)
+		{
+			XrCompositionLayerProjectionView& CompositedProjection = PipelinedLayerStateRendering.EmulatedLayerState.CompositedProjectionLayers[ViewIndex];
+			CompositedProjection.pose = ToXrPose(EyePose, WorldToMeters);
+			CompositedProjection.fov = View.fov;
+		}
 	}
 
 	SetupFrameQuadLayers_RenderThread(RHICmdList);
@@ -2477,14 +2794,16 @@ void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdL
 
 		FXRSwapChainPtr ColorSwapchain = PipelinedLayerStateRendering.ColorSwapchain;
 		FXRSwapChainPtr DepthSwapchain = PipelinedLayerStateRendering.DepthSwapchain;
-		RHICmdList.EnqueueLambda([this, FrameState = PipelinedFrameStateRendering, ColorSwapchain, DepthSwapchain](FRHICommandListImmediate& InRHICmdList)
-		{
-			OnBeginRendering_RHIThread(FrameState, ColorSwapchain, DepthSwapchain);
-		});
+		// This swapchain might not be present depending on the platform support for stereo layers.
+		// Always check for sanity before using it.
+		FXRSwapChainPtr EmulationSwapchain = PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain;
 
-		// We need to sync with the RHI thread to ensure we've acquired the next swapchain image.
-		// TODO: The acquire needs to be moved to the Render thread as soon as it's allowed by the spec.
-		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+		RHICmdList.EnqueueLambda([this, FrameState = PipelinedFrameStateRendering, bIsFaceLockedLayerEmulationActive = PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive, ColorSwapchain, DepthSwapchain, EmulationSwapchain](FRHICommandListImmediate& InRHICmdList)
+		{
+			// This needs to be passed here or the first frame will not have the correct value and will not acquire the swapchain image even if the emulation is active.
+			PipelinedLayerStateRHI.EmulatedLayerState.bIsFaceLockedLayerEmulationActive = bIsFaceLockedLayerEmulationActive;
+			OnBeginRendering_RHIThread(FrameState, ColorSwapchain, DepthSwapchain, EmulationSwapchain);
+		});
 	}
 
 	// Snapshot new poses for late update.
@@ -2542,11 +2861,19 @@ void FOpenXRHMD::OnLateUpdateApplied_RenderThread(FRHICommandListImmediate& RHIC
 
 		// Update the field-of-view to match the final projection matrix
 		Projection.fov = View.fov;
+
+		if(PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive)
+		{
+			XrCompositionLayerProjectionView& CompositedProjection = PipelinedLayerStateRendering.EmulatedLayerState.CompositedProjectionLayers[ViewIndex];
+			CompositedProjection.pose = ToXrPose(EyePose, GetWorldToMetersScale());
+			CompositedProjection.fov = View.fov;
+		}
 	}
 
-	RHICmdList.EnqueueLambda([this, ProjectionLayers = PipelinedLayerStateRendering.ProjectionLayers](FRHICommandListImmediate& InRHICmdList)
+	RHICmdList.EnqueueLambda([this, ProjectionLayers = PipelinedLayerStateRendering.ProjectionLayers, CompositedProjectionLayers = PipelinedLayerStateRendering.EmulatedLayerState.CompositedProjectionLayers](FRHICommandListImmediate& InRHICmdList)
 	{
 		PipelinedLayerStateRHI.ProjectionLayers = ProjectionLayers;
+		PipelinedLayerStateRHI.EmulatedLayerState.CompositedProjectionLayers = CompositedProjectionLayers;
 	});
 }
 
@@ -2567,7 +2894,7 @@ void FOpenXRHMD::OnBeginRendering_GameThread()
 
 			// If we are emulating layers, we still need to submit background layer since we composite into it
 			PipelinedLayerStateRendering.bBackgroundLayerVisible = bBackgroundLayerVisible;
-			PipelinedLayerStateRendering.bSubmitBackgroundLayer = bBackgroundLayerVisible || !bNativeWorldQuadLayerSupport;
+			PipelinedLayerStateRendering.bSubmitBackgroundLayer = bBackgroundLayerVisible || IsEmulatingStereoLayers();
 		});
 }
 
@@ -2646,16 +2973,41 @@ bool FOpenXRHMD::ReadNextEvent(XrEventDataBuffer* buffer)
 
 bool FOpenXRHMD::OnStartGameFrame(FWorldContext& WorldContext)
 {
+#if WITH_EDITOR
+	// In the editor there can be multiple worlds.  An editor world, pie worlds, other viewport worlds for editor pages.
+	// XR hardware can only be running with one of them.
+	if (GIsEditor && GEditor && GEditor->GetPIEWorldContext() != nullptr)
+	{
+		if (!WorldContext.bIsPrimaryPIEInstance && !bIsTrackingOnlySession)
+		{
+			return false;
+		}
+	}
+#endif // WITH_EDITOR
+
 	const AWorldSettings* const WorldSettings = WorldContext.World() ? WorldContext.World()->GetWorldSettings() : nullptr;
 	if (WorldSettings)
 	{
 		WorldToMetersScale = WorldSettings->WorldToMeters;
 	}
 
-	// Only refresh this based on the game world.  When remoting there is also an editor world, which we do not want to have affect the transform.
-	if (WorldContext.World()->IsGameWorld())
+	RefreshTrackingToWorldTransform(WorldContext);
+
+	if (!System)
 	{
-		RefreshTrackingToWorldTransform(WorldContext);
+		System = IOpenXRHMDModule::Get().GetSystemId();
+		if (System)
+		{
+			FCoreDelegates::VRHeadsetReconnected.Broadcast();
+		}
+	}
+
+	if (bIsTrackingOnlySession)
+	{
+		if (OnStereoStartup())
+		{
+			StartSession();
+		}
 	}
 
 	// Process all pending messages.
@@ -2679,6 +3031,7 @@ bool FOpenXRHMD::OnStartGameFrame(FWorldContext& WorldContext)
 				{
 					GEngine->SetMaxFPS(0);
 				}
+				FCoreDelegates::VRHeadsetPutOnHead.Broadcast();
 				bIsReady = true;
 				StartSession();
 			}
@@ -2696,6 +3049,7 @@ bool FOpenXRHMD::OnStartGameFrame(FWorldContext& WorldContext)
 				{
 					GEngine->SetMaxFPS(OPENXR_PAUSED_IDLE_FPS);
 				}
+				FCoreDelegates::VRHeadsetRemovedFromHead.Broadcast();
 				bIsReady = false;
 				StopSession();
 			}
@@ -2705,6 +3059,12 @@ bool FOpenXRHMD::OnStartGameFrame(FWorldContext& WorldContext)
 				if (!GIsEditor)
 				{
 					GEngine->SetMaxFPS(0);
+				}
+
+				if (SessionState.state == XR_SESSION_STATE_LOSS_PENDING)
+				{
+					FCoreDelegates::VRHeadsetLost.Broadcast();
+					System = XR_NULL_SYSTEM_ID;
 				}
 				
 				FApp::SetHasVRFocus(false);
@@ -2761,10 +3121,16 @@ bool FOpenXRHMD::OnStartGameFrame(FWorldContext& WorldContext)
 
 			break;
 		}
+		case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED:
+		{
+			OnInteractionProfileChanged();
+			break;
+		}
 		case XR_TYPE_EVENT_DATA_VISIBILITY_MASK_CHANGED_KHR:
 		{
 			bHiddenAreaMaskSupported = ensure(IsExtensionEnabled(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME));  // Ensure fail indicates a non-conformant openxr implementation.
 			bNeedReBuildOcclusionMesh = true;
+			break;
 		}
 		}
 	}
@@ -2804,7 +3170,7 @@ void FOpenXRHMD::RequestExitApp()
 	}
 }
 
-void FOpenXRHMD::OnBeginRendering_RHIThread(const FPipelinedFrameState& InFrameState, FXRSwapChainPtr ColorSwapchain, FXRSwapChainPtr DepthSwapchain)
+void FOpenXRHMD::OnBeginRendering_RHIThread(const FPipelinedFrameState& InFrameState, FXRSwapChainPtr ColorSwapchain, FXRSwapChainPtr DepthSwapchain, FXRSwapChainPtr EmulationSwapchain)
 {
 	ensure(IsInRenderingThread() || IsInRHIThread());
 
@@ -2839,16 +3205,32 @@ void FOpenXRHMD::OnBeginRendering_RHIThread(const FPipelinedFrameState& InFrameS
 		// TODO Possibly move these Waits to SetFinalViewRect??
 		PipelinedLayerStateRHI.ColorSwapchain = ColorSwapchain;
 		PipelinedLayerStateRHI.DepthSwapchain = DepthSwapchain;
+		PipelinedLayerStateRHI.EmulatedLayerState.EmulationSwapchain = EmulationSwapchain;
 
 		// We need a new swapchain image unless we've already acquired one for rendering
 		if (!bIsRendering && ColorSwapchain)
 		{
-			ColorSwapchain->IncrementSwapChainIndex_RHIThread();
+			TArray<XrSwapchain> Swapchains;
 			ColorSwapchain->WaitCurrentImage_RHIThread(OPENXR_SWAPCHAIN_WAIT_TIMEOUT);
-			if (bDepthExtensionSupported && DepthSwapchain)
+			if (!bIsAcquireOnAnyThreadSupported)
 			{
-				DepthSwapchain->IncrementSwapChainIndex_RHIThread();
+				ColorSwapchain->IncrementSwapChainIndex_RHIThread();
+			}
+			if (DepthSwapchain)
+			{
 				DepthSwapchain->WaitCurrentImage_RHIThread(OPENXR_SWAPCHAIN_WAIT_TIMEOUT);
+				if (!bIsAcquireOnAnyThreadSupported)
+				{
+					DepthSwapchain->IncrementSwapChainIndex_RHIThread();
+				}
+			}
+			if (EmulationSwapchain)
+			{
+				EmulationSwapchain->WaitCurrentImage_RHIThread(OPENXR_SWAPCHAIN_WAIT_TIMEOUT);
+				if (!bIsAcquireOnAnyThreadSupported)
+				{
+					EmulationSwapchain->IncrementSwapChainIndex_RHIThread();
+				}
 			}
 		}
 
@@ -2887,6 +3269,10 @@ void FOpenXRHMD::OnFinishRendering_RHIThread()
 		{
 			PipelinedLayerStateRHI.DepthSwapchain->ReleaseCurrentImage_RHIThread();
 		}
+		if (PipelinedLayerStateRHI.EmulatedLayerState.EmulationSwapchain)
+		{
+			PipelinedLayerStateRHI.EmulatedLayerState.EmulationSwapchain->ReleaseCurrentImage_RHIThread();
+		}
 	}
 
 	FReadScopeLock Lock(SessionHandleMutex);
@@ -2913,6 +3299,22 @@ void FOpenXRHMD::OnFinishRendering_RHIThread()
 			// @todo: temporary workaround for Quest compositor issue, see UE-145546
 			Layer.layerFlags |= XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
 #endif
+		}
+		
+		XrCompositionLayerProjection CompositedLayer = {};
+		if (PipelinedLayerStateRHI.EmulatedLayerState.bIsFaceLockedLayerEmulationActive && PipelinedLayerStateRHI.EmulatedLayerState.EmulationSwapchain)
+		{
+			CompositedLayer.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
+			CompositedLayer.next = nullptr;
+			// Alpha always enabled to allow for transparency between the composited layers.
+			CompositedLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+			{
+				FReadScopeLock DeviceLock(DeviceMutex);
+				CompositedLayer.space = DeviceSpaces[HMDDeviceId].Space;
+			}
+			CompositedLayer.viewCount = PipelinedLayerStateRHI.EmulatedLayerState.CompositedProjectionLayers.Num();
+			CompositedLayer.views = PipelinedLayerStateRHI.EmulatedLayerState.CompositedProjectionLayers.GetData();
+			Headers.Add(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&CompositedLayer));
 		}
 
 		for (const XrCompositionLayerQuad& Quad : PipelinedLayerStateRHI.QuadLayers)
@@ -3017,8 +3419,9 @@ FIntPoint FOpenXRHMD::GetIdealRenderTargetSize() const
 FIntRect FOpenXRHMD::GetFullFlatEyeRect_RenderThread(FTexture2DRHIRef EyeTexture) const
 {
 	FVector2D SrcNormRectMin(0.05f, 0.2f);
-	FVector2D SrcNormRectMax(0.45f, 0.8f);
-	if (GetDesiredNumberOfViews(bStereoEnabled) > 2)
+	// with MMV, each eye occupies the whole RT layer, so we don't need to limit the source rect to the left half of the RT.
+	FVector2D SrcNormRectMax(bIsMobileMultiViewEnabled ? 0.95f : 0.45f, 0.8f);
+	if (!bIsMobileMultiViewEnabled && GetDesiredNumberOfViews(bStereoEnabled) > 2)
 	{
 		SrcNormRectMin.X /= 2;
 		SrcNormRectMax.X /= 2;
@@ -3031,6 +3434,9 @@ class FDisplayMappingPS : public FGlobalShader
 {
 	DECLARE_SHADER_TYPE(FDisplayMappingPS, Global);
 public:
+
+	class FArraySource : SHADER_PERMUTATION_BOOL("DISPLAY_MAPPING_PS_FROM_ARRAY");
+	using FPermutationDomain = TShaderPermutationDomain<FArraySource>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -3169,8 +3575,20 @@ private:
 
 IMPLEMENT_SHADER_TYPE(, FDisplayMappingPS, TEXT("/Engine/Private/CompositeUIPixelShader.usf"), TEXT("DisplayMappingPS"), SF_Pixel);
 
+// We use CopyTexture for a number of subtley different use cases.
+// * SpectatorScreen, background layer - optional clear to black, opaque
+// * SpectatorScreen, emulated facelocked layer - no clears, blend premultiplied alpha onto background layer
+// * Native layer texture init, ignore alpha component - no color clear, opaque
+// * Native layer texture init, export alpha component - no color clear, export source texture alpha
+//
+// With this information, we can extract some common usages
+// * opaque copies should clear alpha to 1.0f, and write RGB
+//	* background layer can optionally clear to black
+// * transparent export just writes thru RGBA, no clears needed
+// * premultiplied alpha blend needs custom blend, no clears needed
+
 void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, FRHITexture2D* DstTexture, FIntRect DstRect, 
-											bool bClearBlack, bool bNoAlpha, ERenderTargetActions RTAction, ERHIAccess FinalDstAccess) const
+											bool bClearBlack, ERenderTargetActions RTAction, ERHIAccess FinalDstAccess, ETextureCopyBlendModifier SrcTextureCopyModifier) const
 {
 	check(IsInRenderingThread());
 
@@ -3202,24 +3620,53 @@ void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, 
 	FRHIRenderPassInfo RenderPassInfo(ColorRT, RTAction);
 	RHICmdList.BeginRenderPass(RenderPassInfo, TEXT("OpenXRHMD_CopyTexture"));
 	{
-		if (bClearBlack)
+		if (bClearBlack || SrcTextureCopyModifier == ETextureCopyBlendModifier::Opaque)
 		{
 			const FIntRect ClearRect(0, 0, DstTexture->GetSizeX(), DstTexture->GetSizeY());
 			RHICmdList.SetViewport(ClearRect.Min.X, ClearRect.Min.Y, 0, ClearRect.Max.X, ClearRect.Max.Y, 1.0f);
-			DrawClearQuad(RHICmdList, FLinearColor::Black);
+
+			if (bClearBlack)
+			{
+				DrawClearQuad(RHICmdList, FLinearColor::Black);
+			}
+			else
+			{
+				// For opaque texture copies, we want to make sure alpha is initialized to 1.0f
+				DrawClearQuadAlpha(RHICmdList, 1.0f);
+			}
 		}
 
 		RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0, DstRect.Max.X, DstRect.Max.Y, 1.0f);
 
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-		GraphicsPSOInit.BlendState = bNoAlpha ? TStaticBlendState<>::GetRHI() : TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
+
+		// We need to differentiate between types of layers: opaque, unpremultiplied alpha (regular texture copy) and premultiplied alpha (emulation texture)
+		switch (SrcTextureCopyModifier)
+		{
+			case ETextureCopyBlendModifier::Opaque:
+				GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGB>::GetRHI();
+				break;
+			case ETextureCopyBlendModifier::TransparentAlphaPassthrough:
+				GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA>::GetRHI();
+				break;
+			case ETextureCopyBlendModifier::PremultipliedAlphaBlend:
+				// Because StereoLayerRender actually enables alpha blending as it composites the layers into the emulation texture
+				// the color values for the emulation swapchain are PREMULTIPLIED ALPHA. That means we don't want to multiply alpha again!
+				// So we can just do SourceColor * 1.0f + DestColor (1 - SourceAlpha)
+				GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
+				break;
+			default:
+				check(!"Unsupported copy modifier");
+				GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+				break;
+		}
+		
 		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
 		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-		const auto FeatureLevel = GMaxRHIFeatureLevel;
-		auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
+		FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GetConfiguredShaderPlatform());
 
 		TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
 
@@ -3249,19 +3696,36 @@ void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, 
 			}
 		}
 
-		bNeedsDisplayMapping &= (GMaxRHIFeatureLevel > ERHIFeatureLevel::ES3_1);
+		bNeedsDisplayMapping &= IsFeatureLevelSupported(GetConfiguredShaderPlatform(), ERHIFeatureLevel::ES3_1);
+
+		bool bIsArraySource = SrcTexture->GetDesc().IsTextureArray();
 
 		if (bNeedsDisplayMapping)
 		{
-			TShaderMapRef<FDisplayMappingPS> DisplayMappingPSRef(ShaderMap);
+			FDisplayMappingPS::FPermutationDomain PermutationVector;
+			PermutationVector.Set<FDisplayMappingPS::FArraySource>(bIsArraySource);
+
+			TShaderMapRef<FDisplayMappingPS> DisplayMappingPSRef(ShaderMap, PermutationVector);
+
+			ensureMsgf(!bIsArraySource, TEXT("Stub implementation for array source exists, but this path is not fully supported because post-processing not working with MMV"));
+
 			DisplayMappingPS = DisplayMappingPSRef.GetShader();
 			PixelShader = DisplayMappingPSRef;
 		}
 		else
 		{
-			TShaderMapRef<FScreenPS> ScreenPSRef(ShaderMap);
-			ScreenPS = ScreenPSRef.GetShader();
-			PixelShader = ScreenPSRef;
+			if (LIKELY(!bIsArraySource))
+			{
+				TShaderMapRef<FScreenPS> ScreenPSRef(ShaderMap);
+				ScreenPS = ScreenPSRef.GetShader();
+				PixelShader = ScreenPSRef;
+			}
+			else
+			{
+				TShaderMapRef<FScreenFromSlice0PS> ScreenPSRef(ShaderMap);
+				ScreenPS = ScreenPSRef.GetShader();
+				PixelShader = ScreenPSRef;
+			}
 		}
 
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
@@ -3306,7 +3770,7 @@ void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, 
 	RHICmdList.Transition(FRHITransitionInfo(DstTexture, ERHIAccess::RTV, FinalDstAccess));
 }
 
-void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, const FXRSwapChainPtr& DstSwapChain, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const
+void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, const FXRSwapChainPtr& DstSwapChain, FIntRect DstRect, bool bClearBlack, ETextureCopyBlendModifier SrcTextureCopyModifier) const
 {
 	RHICmdList.EnqueueLambda([DstSwapChain](FRHICommandListImmediate& InRHICmdList)
 	{
@@ -3316,7 +3780,7 @@ void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, 
 
 	// Now that we've enqueued the swapchain wait we can add the commands to do the actual texture copy
 	FRHITexture2D* const DstTexture = DstSwapChain->GetTexture2DArray() ? DstSwapChain->GetTexture2DArray() : DstSwapChain->GetTexture2D();
-	CopyTexture_RenderThread(RHICmdList, SrcTexture, SrcRect, DstTexture, DstRect, bClearBlack, bNoAlpha, ERenderTargetActions::Clear_Store, ERHIAccess::SRVMask);
+	CopyTexture_RenderThread(RHICmdList, SrcTexture, SrcRect, DstTexture, DstRect, bClearBlack, ERenderTargetActions::Clear_Store, ERHIAccess::SRVMask, SrcTextureCopyModifier);
 
 	// Enqueue a command to release the image after the copy is done
 	RHICmdList.EnqueueLambda([DstSwapChain](FRHICommandListImmediate& InRHICmdList)
@@ -3327,15 +3791,18 @@ void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, 
 
 void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, FRHITexture2D* DstTexture, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const
 {
-	// FIXME: This should probably use the Load_Store action since the spectator controller does multiple overlaying copies.
-	CopyTexture_RenderThread(RHICmdList, SrcTexture, SrcRect, DstTexture, DstRect, bClearBlack, bNoAlpha, ERenderTargetActions::DontLoad_Store, ERHIAccess::Present);
+	// This call only comes from the spectator screen so we expect alpha to be premultiplied.
+	const ETextureCopyBlendModifier SrcTextureCopyModifier = bNoAlpha ? ETextureCopyBlendModifier::Opaque : ETextureCopyBlendModifier::PremultipliedAlphaBlend;
+	CopyTexture_RenderThread(RHICmdList, SrcTexture, SrcRect, DstTexture, DstRect, bClearBlack, ERenderTargetActions::Load_Store, ERHIAccess::Present, SrcTextureCopyModifier);
 }
 
 void FOpenXRHMD::RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture* BackBuffer, class FRHITexture* SrcTexture, FVector2D WindowSize) const
 {
 	if (SpectatorScreenController)
 	{
-		SpectatorScreenController->RenderSpectatorScreen_RenderThread(RHICmdList, BackBuffer, SrcTexture, WindowSize);
+		const bool bShouldPassLayersTexture = PipelinedLayerStateRendering.EmulatedLayerState.bIsFaceLockedLayerEmulationActive && PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain && !CVarOpenXRDoNotCopyEmulatedLayersToSpectatorScreen.GetValueOnRenderThread();
+		const FTexture2DRHIRef LayersTexture = bShouldPassLayersTexture ? PipelinedLayerStateRendering.EmulatedLayerState.EmulationSwapchain->GetTextureRef() : nullptr;
+		SpectatorScreenController->RenderSpectatorScreen_RenderThread(RHICmdList, BackBuffer, SrcTexture, LayersTexture, WindowSize);
 	}
 }
 
@@ -3490,3 +3957,5 @@ void FOpenXRHMD::FTrackingSpace::DestroySpace()
 	}
 	Handle = XR_NULL_HANDLE;
 }
+
+#undef LOCTEXT_NAMESPACE

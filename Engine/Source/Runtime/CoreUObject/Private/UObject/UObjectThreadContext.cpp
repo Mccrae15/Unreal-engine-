@@ -17,14 +17,19 @@ FUObjectThreadContext::FUObjectThreadContext()
 , IsInConstructor(0)
 , ConstructedObject(nullptr)
 , AsyncPackage(nullptr)
-#if WITH_IOSTORE_IN_EDITOR
 , AsyncPackageLoader(nullptr)
-#endif
 , SerializeContext(new FUObjectSerializeContext())
 {}
 
 FUObjectThreadContext::~FUObjectThreadContext()
 {
+}
+
+FObjectInitializer& FUObjectThreadContext::ReportNull()
+{
+	FObjectInitializer* ObjectInitializerPtr = TopInitializer();
+	UE_CLOG(!ObjectInitializerPtr, LogUObjectThreadContext, Fatal, TEXT("Tried to get the current ObjectInitializer, but none is set. Please use NewObject to construct new UObject-derived classes."));
+	return *ObjectInitializerPtr;
 }
 
 FUObjectSerializeContext::FUObjectSerializeContext()

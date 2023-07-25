@@ -6,7 +6,7 @@
 	"Description": "Utility classes and functions for Virtual Production",
 	"Category": "Virtual Production",
 	"CreatedBy": "Epic Games, Inc.",
-	"CreatedByURL": "http://epicgames.com",
+	"CreatedByURL": "https://epicgames.com",
 	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "",
@@ -38,16 +38,6 @@
 			"Name": "VPMaterialsEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostDefault"
-		},
-		{
-			"Name": "VPRoles",
-			"Type": "Runtime",
-			"LoadingPhase": "Default"
-		},
-		{
-			"Name": "VPRolesEditor",
-			"Type": "Editor",
-			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
@@ -76,7 +66,11 @@
 			"Enabled": true
 		},
 		{
-			"Name": "GameplayTagsEditor",
+			"Name": "VPRoles",
+			"Enabled": true
+		},
+		{
+			"Name": "VPSettings",
 			"Enabled": true
 		},
 		{

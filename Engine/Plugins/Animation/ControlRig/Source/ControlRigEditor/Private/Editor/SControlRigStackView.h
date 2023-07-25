@@ -58,6 +58,7 @@ private:
 	FText GetIndexText() const;
 	FText GetLabelText() const;
 	FSlateFontInfo GetLabelFont() const;
+	FText GetTooltip() const;
 	FText GetVisitedCountText() const;
 	FText GetDurationText() const;
 };
@@ -96,6 +97,9 @@ private:
 	/** Focus on the selected operator in the graph*/
 	void HandleFocusOnSelectedGraphNode();
 
+	/** Offers a dialog to move to a specific instruction */
+	void HandleGoToInstruction();
+
 	void OnVMCompiled(UObject* InCompiledObject, URigVM* InCompiledVM);
 
 	//* Focus on the instruction when the execution is halted */
@@ -110,7 +114,7 @@ private:
 	bool bSuspendModelNotifications;
 	bool bSuspendControllerSelection;
 	void HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
-	void HandleControlRigInitializedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
+	void HandleControlRigInitializedEvent(URigVMHost* InControlRig, const FName& InEventName);
 	void HandlePreviewControlRigUpdated(FControlRigEditor* InEditor);
 	void HandleItemMouseDoubleClick(TSharedPtr<FRigStackEntry> InItem);
 
@@ -124,7 +128,6 @@ private:
 
 	TWeakPtr<FControlRigEditor> ControlRigEditor;
 	TWeakObjectPtr<UControlRigBlueprint> ControlRigBlueprint;
-	TWeakObjectPtr<UControlRigGraph> Graph;
 
 	TArray<TSharedPtr<FRigStackEntry>> Operators;
 

@@ -2,23 +2,29 @@
 
 #include "PCGEditorGraphSchema.h"
 
-#include "Elements/PCGExecuteBlueprint.h"
+#include "Blueprint/BlueprintSupport.h"
+#include "PCGEdge.h"
+#include "PCGGraph.h"
+#include "PCGPin.h"
+#include "Elements/PCGUserParameterGet.h"
+
 #include "PCGEditorCommon.h"
 #include "PCGEditorGraph.h"
 #include "PCGEditorGraphNodeBase.h"
+#include "PCGEditorGraphNodeReroute.h"
 #include "PCGEditorGraphSchemaActions.h"
 #include "PCGEditorSettings.h"
-#include "PCGGraph.h"
-#include "PCGSettings.h"
-
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "Engine/Blueprint.h"
-#include "ScopedTransaction.h"
-#include "UObject/UObjectIterator.h"
 #include "PCGEditorUtils.h"
 
-#define LOCTEXT_NAMESPACE "PCGEditorGraphSchema"
+#include "AssetRegistry/AssetData.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Application/SlateApplication.h"
+#include "ScopedTransaction.h"
+#include "UObject/UObjectIterator.h"
 
+#include "SGraphPanel.h"
+
+#define LOCTEXT_NAMESPACE "PCGEditorGraphSchema"
 
 void UPCGEditorGraphSchema::GetPaletteActions(FGraphActionMenuBuilder& ActionMenuBuilder, const EPCGElementType InPCGElementTypeFilter) const
 {
@@ -34,6 +40,10 @@ void UPCGEditorGraphSchema::GetPaletteActions(FGraphActionMenuBuilder& ActionMen
 	{
 		GetBlueprintElementActions(ActionMenuBuilder);
 	}
+	if (!!(InPCGElementTypeFilter & EPCGElementType::Settings))
+	{
+		GetSettingsElementActions(ActionMenuBuilder, /*bIsContextual=*/false);
+	}
 	if (!!(InPCGElementTypeFilter & EPCGElementType::Other))
 	{
 		GetExtraElementActions(ActionMenuBuilder);
@@ -44,9 +54,10 @@ void UPCGEditorGraphSchema::GetGraphContextActions(FGraphContextMenuBuilder& Con
 {
 	Super::GetGraphContextActions(ContextMenuBuilder);
 
-	GetNativeElementActions(ContextMenuBuilder);
+	GetNativeElementActions(ContextMenuBuilder, ContextMenuBuilder.CurrentGraph);
 	GetSubgraphElementActions(ContextMenuBuilder);
 	GetBlueprintElementActions(ContextMenuBuilder);
+	GetSettingsElementActions(ContextMenuBuilder, /*bIsContextual=*/true);
 	GetExtraElementActions(ContextMenuBuilder);
 }
 
@@ -104,19 +115,24 @@ const FPinConnectionResponse UPCGEditorGraphSchema::CanCreateConnection(const UE
 		return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("ConnectionTypesIncompatible", "Pins are incompatible"));
 	}
 
+	if (!InputPin->AllowMultipleConnections() && InputPin->EdgeCount() > 0)
+	{
+		return FPinConnectionResponse((A->Direction == EGPD_Output) ? CONNECT_RESPONSE_BREAK_OTHERS_B : CONNECT_RESPONSE_BREAK_OTHERS_A, LOCTEXT("ConnectionBreakExisting", "Break existing connection?"));
+	}
+
 	return FPinConnectionResponse();
 }
 
 bool UPCGEditorGraphSchema::TryCreateConnection(UEdGraphPin* InA, UEdGraphPin* InB) const
 {
 	// TODO: check if we need to verify connectivity first
-	bool bModified = Super::TryCreateConnection(InA, InB);
+	const bool bModified = Super::TryCreateConnection(InA, InB);
 
 	if (bModified)
 	{
 		check(InA && InB);
-		UEdGraphPin* A = (InA->Direction == EGPD_Output) ? InA : InB;
-		UEdGraphPin* B = (InA->Direction == EGPD_Input) ? InA : InB;
+		const UEdGraphPin* A = (InA->Direction == EGPD_Output) ? InA : InB;
+		const UEdGraphPin* B = (InA->Direction == EGPD_Input) ? InA : InB;
 		
 		check(A->Direction == EGPD_Output && B->Direction == EGPD_Input);
 
@@ -134,19 +150,6 @@ bool UPCGEditorGraphSchema::TryCreateConnection(UEdGraphPin* InA, UEdGraphPin* I
 		check(PCGGraph);
 
 		PCGGraph->AddLabeledEdge(PCGNodeA, A->PinName, PCGNodeB, B->PinName);
-
-		// TODO: unclear if that kind of behavior should be down the code hierarchy or not,
-		// Since we really want to do cleanup only on manual interaction
-		if (UPCGPin* InputPin = PCGNodeB->GetInputPin(B->PinName))
-		{
-			if (!InputPin->Properties.bAllowMultipleConnections)
-			{
-				if (InputPin->BreakAllIncompatibleEdges())
-				{
-					PCGGraphNodeB->ReconstructNode();
-				}
-			}
-		}
 	}
 
 	return bModified;
@@ -198,7 +201,7 @@ void UPCGEditorGraphSchema::BreakSinglePinLink(UEdGraphPin* SourcePin, UEdGraphP
 	PCGGraph->RemoveEdge(SourcePCGNode, SourcePin->PinName, TargetPCGNode, TargetPin->PinName);
 }
 
-void UPCGEditorGraphSchema::GetNativeElementActions(FGraphActionMenuBuilder& ActionMenuBuilder) const
+void UPCGEditorGraphSchema::GetNativeElementActions(FGraphActionMenuBuilder& ActionMenuBuilder, const UEdGraph* CurrentGraph) const
 {
 	TArray<UClass*> SettingsClasses;
 	for (TObjectIterator<UClass> It; It; ++It)
@@ -216,30 +219,49 @@ void UPCGEditorGraphSchema::GetNativeElementActions(FGraphActionMenuBuilder& Act
 	{
 		if (const UPCGSettings* PCGSettings = SettingsClass->GetDefaultObject<UPCGSettings>())
 		{
-			const FText MenuDesc = FText::FromName(PCGSettings->GetDefaultNodeName());
-			const FText Category = StaticEnum<EPCGSettingsType>()->GetDisplayNameTextByValue(static_cast<__underlying_type(EPCGSettingsType)>(PCGSettings->GetType()));
-			const FText Description = FText::GetEmpty();
+			if (PCGSettings->bExposeToLibrary)
+			{
+				const FText MenuDesc = PCGSettings->GetDefaultNodeTitle();
+				const FText Category = StaticEnum<EPCGSettingsType>()->GetDisplayNameTextByValue(static_cast<__underlying_type(EPCGSettingsType)>(PCGSettings->GetType()));
+				const FText Description = PCGSettings->GetNodeTooltipText();
 
-			TSharedPtr<FPCGEditorGraphSchemaAction_NewNativeElement> NewAction(new FPCGEditorGraphSchemaAction_NewNativeElement(Category, MenuDesc, Description, 0));
-			NewAction->SettingsClass = SettingsClass;
-			ActionMenuBuilder.AddAction(NewAction);
+				TSharedPtr<FPCGEditorGraphSchemaAction_NewNativeElement> NewAction(new FPCGEditorGraphSchemaAction_NewNativeElement(Category, MenuDesc, Description, 0));
+				NewAction->SettingsClass = SettingsClass;
+				ActionMenuBuilder.AddAction(NewAction);
+			}
+		}
+	}
+
+	if (const UPCGEditorGraph* Graph = Cast<UPCGEditorGraph>(CurrentGraph))
+	{
+		if (const UPCGGraph* PCGGraph = const_cast<UPCGEditorGraph*>(Graph)->GetPCGGraph())
+		{
+			if (const FInstancedPropertyBag* UserParameters = PCGGraph->GetUserParametersStruct())
+			{
+				if (const UPropertyBag* BagStruct = UserParameters->GetPropertyBagStruct())
+				{
+					const FText Category = LOCTEXT("UserParametersCategoryName", "Graph Parameters");
+
+					for (const FPropertyBagPropertyDesc& PropertyDesc : BagStruct->GetPropertyDescs())
+					{
+						const FText MenuDesc = FText::Format(FText::FromString(TEXT("Get {0}")), FText::FromName(PropertyDesc.Name));
+						const FText Description = FText::Format(LOCTEXT("NodeTooltip", "Get the value from '{0}' parameter, can be overridden by the graph instance."), FText::FromName(PropertyDesc.Name));
+
+						TSharedPtr<FPCGEditorGraphSchemaAction_NewGetParameterElement> NewAction(new FPCGEditorGraphSchemaAction_NewGetParameterElement(Category, MenuDesc, Description, 0));
+						NewAction->SettingsClass = UPCGUserParameterGetSettings::StaticClass();
+						NewAction->PropertyName = PropertyDesc.Name;
+						NewAction->PropertyGuid = PropertyDesc.ID;
+						ActionMenuBuilder.AddAction(NewAction);
+					}
+				}
+			}
 		}
 	}
 }
 
 void UPCGEditorGraphSchema::GetBlueprintElementActions(FGraphActionMenuBuilder& ActionMenuBuilder) const
 {
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-
-	FARFilter Filter;
-	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
-	Filter.bRecursiveClasses = true;
-	Filter.TagsAndValues.Add(FBlueprintTags::NativeParentClassPath, UPCGBlueprintElement::GetParentClassName());
-
-	TArray<FAssetData> BlueprintElementAssets;
-	AssetRegistryModule.Get().GetAssets(Filter, BlueprintElementAssets);
-
-	for (const FAssetData& AssetData : BlueprintElementAssets)
+	PCGEditorUtils::ForEachPCGBlueprintAssetData([&ActionMenuBuilder](const FAssetData& AssetData)
 	{
 		const bool bExposeToLibrary = AssetData.GetTagValueRef<bool>(TEXT("bExposeToLibrary"));
 		if (bExposeToLibrary)
@@ -254,17 +276,51 @@ void UPCGEditorGraphSchema::GetBlueprintElementActions(FGraphActionMenuBuilder& 
 			NewBlueprintAction->BlueprintClassPath = FSoftClassPath(GeneratedClass);
 			ActionMenuBuilder.AddAction(NewBlueprintAction);
 		}
-	}
+
+		return true;
+	});
+}
+
+void UPCGEditorGraphSchema::GetSettingsElementActions(FGraphActionMenuBuilder& ActionMenuBuilder, bool bIsContextual) const
+{
+	PCGEditorUtils::ForEachPCGSettingsAssetData([&ActionMenuBuilder, bIsContextual](const FAssetData& AssetData)
+	{
+		const bool bExposeToLibrary = AssetData.GetTagValueRef<bool>(TEXT("bExposeToLibrary"));
+		if (bExposeToLibrary)
+		{
+			const FText MenuDesc = FText::FromName(AssetData.AssetName);
+			const FText Category = AssetData.GetTagValueRef<FText>(TEXT("Category"));
+			const FText Description = AssetData.GetTagValueRef<FText>(TEXT("Description"));
+
+			if (!bIsContextual)
+			{
+				TSharedPtr<FPCGEditorGraphSchemaAction_NewSettingsElement> NewSettingsAction(new FPCGEditorGraphSchemaAction_NewSettingsElement(Category, MenuDesc, Description, 0));
+				NewSettingsAction->SettingsObjectPath = AssetData.GetSoftObjectPath();
+				ActionMenuBuilder.AddAction(NewSettingsAction);
+			}
+			else
+			{
+				const FText MenuAndSubCategory = FText::Join(LOCTEXT("MenuDelimiter", "|"), Category, MenuDesc);
+
+				TSharedPtr<FPCGEditorGraphSchemaAction_NewSettingsElement> NewSettingsActionCopy(new FPCGEditorGraphSchemaAction_NewSettingsElement(MenuAndSubCategory, LOCTEXT("ContextMenuCopySettings", "Copy"), Description, 0));
+				NewSettingsActionCopy->SettingsObjectPath = AssetData.GetSoftObjectPath();
+				NewSettingsActionCopy->Behavior = EPCGEditorNewSettingsBehavior::ForceCopy;
+				ActionMenuBuilder.AddAction(NewSettingsActionCopy);
+
+				TSharedPtr<FPCGEditorGraphSchemaAction_NewSettingsElement> NewSettingsActionInstance(new FPCGEditorGraphSchemaAction_NewSettingsElement(MenuAndSubCategory, LOCTEXT("ContextMenuInstanceSettings", "Instance"), Description, 0));
+				NewSettingsActionInstance->SettingsObjectPath = AssetData.GetSoftObjectPath();
+				NewSettingsActionInstance->Behavior = EPCGEditorNewSettingsBehavior::ForceInstance;
+				ActionMenuBuilder.AddAction(NewSettingsActionInstance);
+			}
+		}
+
+		return true;
+	});
 }
 
 void UPCGEditorGraphSchema::GetSubgraphElementActions(FGraphActionMenuBuilder& ActionMenuBuilder) const
 {
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-
-	TArray<FAssetData> AssetDataList;
-	AssetRegistryModule.Get().GetAssetsByClass(UPCGGraph::StaticClass()->GetClassPathName(), AssetDataList);
-
-	for (const FAssetData& AssetData : AssetDataList)
+	PCGEditorUtils::ForEachPCGGraphAssetData([&ActionMenuBuilder](const FAssetData& AssetData)
 	{
 		const bool bExposeToLibrary = AssetData.GetTagValueRef<bool>(TEXT("bExposeToLibrary"));
 		if (bExposeToLibrary)
@@ -274,23 +330,31 @@ void UPCGEditorGraphSchema::GetSubgraphElementActions(FGraphActionMenuBuilder& A
 			const FText Description = AssetData.GetTagValueRef<FText>(TEXT("Description"));
 
 			TSharedPtr<FPCGEditorGraphSchemaAction_NewSubgraphElement> NewSubgraphAction(new FPCGEditorGraphSchemaAction_NewSubgraphElement(Category, MenuDesc, Description, 0));
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			NewSubgraphAction->SubgraphObjectPath = AssetData.ObjectPath;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			NewSubgraphAction->SubgraphObjectPath = AssetData.GetSoftObjectPath();
 			ActionMenuBuilder.AddAction(NewSubgraphAction);
 		}
-	}
+
+		return true;
+	});
 }
 
 void UPCGEditorGraphSchema::GetExtraElementActions(FGraphActionMenuBuilder& ActionMenuBuilder) const
 {
 	// Comment action
-	const FText MenuDesc = LOCTEXT("PCGAddComment", "Add Comment...");
-	const FText Category;
-	const FText Description = LOCTEXT("PCGAddCommentTooltip", "Create a resizable comment box.");
+	const FText CommentMenuDesc = LOCTEXT("PCGAddComment", "Add Comment...");
+	const FText CommentCategory;
+	const FText CommentDescription = LOCTEXT("PCGAddCommentTooltip", "Create a resizable comment box.");
 
-	TSharedPtr<FPCGEditorGraphSchemaAction_NewComment> NewCommentAction(new FPCGEditorGraphSchemaAction_NewComment(Category, MenuDesc, Description, 0));
+	const TSharedPtr<FPCGEditorGraphSchemaAction_NewComment> NewCommentAction(new FPCGEditorGraphSchemaAction_NewComment(CommentCategory, CommentMenuDesc, CommentDescription, 0));
 	ActionMenuBuilder.AddAction(NewCommentAction);
+
+	// Reroute action
+	const FText RerouteMenuDesc = LOCTEXT("PCGAddRerouteNode", "Add Reroute Node");
+	const FText RerouteCategory;
+	const FText RerouteDescription = LOCTEXT("PCGAddRerouteNodeTooltip", "Add a reroute node, aka knot.");
+
+	const TSharedPtr<FPCGEditorGraphSchemaAction_NewReroute> NewRerouteAction(new FPCGEditorGraphSchemaAction_NewReroute(RerouteCategory, RerouteMenuDesc, RerouteDescription, 0));
+	ActionMenuBuilder.AddAction(NewRerouteAction);
 }
 
 void UPCGEditorGraphSchema::DroppedAssetsOnGraph(const TArray<FAssetData>& Assets, const FVector2D& GraphPosition, UEdGraph* Graph) const
@@ -299,6 +363,9 @@ void UPCGEditorGraphSchema::DroppedAssetsOnGraph(const TArray<FAssetData>& Asset
 	constexpr float PositionOffsetIncrementY = 50.f;
 	UEdGraphPin* NullFromPin = nullptr;
 
+	TArray<FSoftObjectPath> SettingsPaths;
+	TArray<FVector2D> GraphPositions;
+
 	for (const FAssetData& AssetData : Assets)
 	{
 		if (const UObject* Asset = AssetData.GetAsset())
@@ -306,9 +373,7 @@ void UPCGEditorGraphSchema::DroppedAssetsOnGraph(const TArray<FAssetData>& Asset
 			if (Asset->IsA<UPCGGraph>())
 			{
 				FPCGEditorGraphSchemaAction_NewSubgraphElement NewSubgraphAction;
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				NewSubgraphAction.SubgraphObjectPath = AssetData.ObjectPath;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+				NewSubgraphAction.SubgraphObjectPath = AssetData.GetSoftObjectPath();
 				NewSubgraphAction.PerformAction(Graph, NullFromPin, GraphPositionOffset);
 				GraphPositionOffset.Y += PositionOffsetIncrementY;
 			}
@@ -321,7 +386,26 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				NewBlueprintAction.PerformAction(Graph, NullFromPin, GraphPositionOffset);
 				GraphPositionOffset.Y += PositionOffsetIncrementY;
 			}
+			else if (Asset->IsA<UPCGSettings>())
+			{
+				// Delay creation so we can open a menu, once, if needed.
+				SettingsPaths.Add(AssetData.GetSoftObjectPath());
+				GraphPositions.Add(GraphPositionOffset);
+				GraphPositionOffset.Y += PositionOffsetIncrementY;
+			}
 		}
+	}
+
+	// If we've dragged settings assets, we might want to open a menu (ergo this call)
+	if (!SettingsPaths.IsEmpty())
+	{
+		UPCGEditorGraph* EditorGraph = CastChecked<UPCGEditorGraph>(Graph);
+		
+		TSharedPtr<SGraphEditor> GraphEditor = SGraphEditor::FindGraphEditorForGraph(EditorGraph);
+		const FVector2D MouseCursorLocation = FSlateApplication::Get().GetCursorPos();
+
+		check(SettingsPaths.Num() == GraphPositions.Num());
+		FPCGEditorGraphSchemaAction_NewSettingsElement::MakeSettingsNodesOrContextualMenu(GraphEditor->GetGraphPanel()->AsShared(), MouseCursorLocation, Graph, SettingsPaths, GraphPositions, /*bSelectNewNodes=*/true);
 	}
 }
 
@@ -331,7 +415,7 @@ void UPCGEditorGraphSchema::GetAssetsGraphHoverMessage(const TArray<FAssetData>&
 	{
 		if (const UObject* Asset = AssetData.GetAsset())
 		{
-			if (Asset->IsA<UPCGGraph>() || PCGEditorUtils::IsAssetPCGBlueprint(AssetData))
+			if (Asset->IsA<UPCGGraph>() || Asset->IsA<UPCGSettings>() || PCGEditorUtils::IsAssetPCGBlueprint(AssetData))
 			{
 				OutOkIcon = true;
 				return;
@@ -349,6 +433,38 @@ void UPCGEditorGraphSchema::GetAssetsGraphHoverMessage(const TArray<FAssetData>&
 	OutOkIcon = false;
 }
 
+void UPCGEditorGraphSchema::OnPinConnectionDoubleCicked(UEdGraphPin* PinA, UEdGraphPin* PinB, const FVector2D& GraphPosition) const
+{
+	const FScopedTransaction Transaction(*FPCGEditorCommon::ContextIdentifier, LOCTEXT("PCGCreateRerouteNodeOnWire", "Create Reroute Node"), nullptr);
+
+	const FVector2D NodeSpacerSize(42.0f, 24.0f);
+	const FVector2D KnotTopLeft = GraphPosition - (NodeSpacerSize * 0.5f);
+
+	UEdGraph* EditorGraph = PinA->GetOwningNode()->GetGraph();
+	EditorGraph->Modify();
+
+	FPCGEditorGraphSchemaAction_NewReroute Action;
+
+	if (UPCGEditorGraphNodeReroute* RerouteNode = Cast<UPCGEditorGraphNodeReroute>(Action.PerformAction(EditorGraph, nullptr, KnotTopLeft, /*bSelectNewNode=*/true)))
+	{
+		UEdGraphNode* SourceGraphNode = PinA->GetOwningNode();
+		UEdGraphNode* TargetGraphNode = PinB->GetOwningNode();
+
+		UPCGEditorGraphNodeBase* SourcePCGGraphNode = CastChecked<UPCGEditorGraphNodeBase>(SourceGraphNode);
+		UPCGEditorGraphNodeBase* TargetPCGGraphNode = CastChecked<UPCGEditorGraphNodeBase>(TargetGraphNode);
+
+		// We need to disable full node reconstruction to make sure the pins are valid when creating the connections.
+		SourcePCGGraphNode->EnableDeferredReconstruct();
+		TargetPCGGraphNode->EnableDeferredReconstruct();
+		
+		BreakSinglePinLink(PinA, PinB);
+		TryCreateConnection(PinA, (PinA->Direction == EGPD_Output) ? RerouteNode->GetInputPin() : RerouteNode->GetOutputPin());
+		TryCreateConnection(PinB, (PinB->Direction == EGPD_Output) ? RerouteNode->GetInputPin() : RerouteNode->GetOutputPin());
+
+		SourcePCGGraphNode->DisableDeferredReconstruct();
+		TargetPCGGraphNode->DisableDeferredReconstruct();
+	}
+}
 
 FPCGEditorConnectionDrawingPolicy::FPCGEditorConnectionDrawingPolicy(int32 InBackLayerID, int32 InFrontLayerID, float InZoomFactor, const FSlateRect& InClippingRect, FSlateWindowElementList& InDrawElements, UEdGraph* InGraph)
 	: FConnectionDrawingPolicy(InBackLayerID, InFrontLayerID, InZoomFactor, InClippingRect, InDrawElements)
@@ -361,6 +477,7 @@ FPCGEditorConnectionDrawingPolicy::FPCGEditorConnectionDrawingPolicy(int32 InBac
 void FPCGEditorConnectionDrawingPolicy::DetermineWiringStyle(UEdGraphPin* OutputPin, UEdGraphPin* InputPin, /*inout*/ FConnectionParams& Params)
 {
 	FConnectionDrawingPolicy::DetermineWiringStyle(OutputPin, InputPin, Params);
+
 	// Emphasize wire thickness on hovered pins
 	if (HoveredPins.Contains(InputPin) && HoveredPins.Contains(OutputPin))
 	{
@@ -371,6 +488,30 @@ void FPCGEditorConnectionDrawingPolicy::DetermineWiringStyle(UEdGraphPin* Output
 	if (OutputPin)
 	{
 		Params.WireColor = GetDefault<UPCGEditorSettings>()->GetPinColor(OutputPin->PinType);
+	}
+
+	// Desaturate and connection if the node is disabled and the data on this wire won't be used
+	if (InputPin && OutputPin)
+	{
+		const UPCGEditorGraphNodeBase* EditorNode = CastChecked<const UPCGEditorGraphNodeBase>(InputPin->GetOwningNode());
+		const UPCGNode* PCGNode = EditorNode ? EditorNode->GetPCGNode() : nullptr;
+		const UPCGPin* PCGPin = PCGNode ? PCGNode->GetInputPin(InputPin->GetFName()) : nullptr;
+		const UPCGEditorGraphNodeBase* UpstreamEditorNode = CastChecked<const UPCGEditorGraphNodeBase>(OutputPin->GetOwningNode());
+
+		if (PCGPin && UpstreamEditorNode)
+		{
+			// Look for the PCG edge that correlates with passed in (OutputPin, InputPin) edge
+			const TObjectPtr<UPCGEdge>* PCGEdge = PCGPin->Edges.FindByPredicate([UpstreamEditorNode, OutputPin](const UPCGEdge* ConnectedPCGEdge)
+			{
+				return UpstreamEditorNode->GetPCGNode() == ConnectedPCGEdge->InputPin->Node && ConnectedPCGEdge->InputPin->Properties.Label == OutputPin->GetFName();
+			});
+
+			// If edge found and is not used, gray it out
+			if (PCGEdge && !PCGNode->IsEdgeUsedByNodeExecution(*PCGEdge))
+			{
+				Params.WireColor = Params.WireColor.Desaturate(0.7f);
+			}
+		}
 	}
 }
 

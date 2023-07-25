@@ -14,6 +14,11 @@
 #include "Nodes/InterchangeSourceNode.h"
 #include "UObject/GCObjectScopeGuard.h"
 
+#include "Materials/MaterialExpressionNoise.h"
+#include "Materials/MaterialExpressionTransform.h"
+#include "Materials/MaterialExpressionTransformPosition.h"
+#include "Materials/MaterialExpressionVectorNoise.h"
+
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeMaterialXTranslator)
 
 #define LOCTEXT_NAMESPACE "InterchangeMaterialXTranslator"
@@ -33,21 +38,26 @@ UInterchangeMaterialXTranslator::UInterchangeMaterialXTranslator()
 	:
 InputNamesMaterialX2UE
 {
-	{{TEXT(""),                         TEXT("bg")},		TEXT("B")},
-	{{TEXT(""),                         TEXT("center")},		TEXT("Center")},
-	{{TEXT(""),                         TEXT("fg")},		TEXT("A")},
-	{{TEXT(""),                         TEXT("high")},		TEXT("Max")},
-	{{TEXT(""),                         TEXT("in")},		TEXT("Input")},
-	{{TEXT(""),                         TEXT("in1")},		TEXT("A")},
-	{{TEXT(""),                         TEXT("in2")},		TEXT("B")},
-	{{TEXT(""),                         TEXT("in3")},		TEXT("C")},
-	{{TEXT(""),                         TEXT("in4")},		TEXT("D")},
+	{{TEXT(""),                         TEXT("amplitude")}, TEXT("Amplitude")},
+	{{TEXT(""),                         TEXT("bg")},        TEXT("B")},
+	{{TEXT(""),                         TEXT("center")},    TEXT("Center")},
+	{{TEXT(""),                         TEXT("diminish")},  TEXT("Diminish")},
+	{{TEXT(""),                         TEXT("fg")},        TEXT("A")},
+	{{TEXT(""),                         TEXT("high")},      TEXT("Max")},
+	{{TEXT(""),                         TEXT("in")},        TEXT("Input")},
+	{{TEXT(""),                         TEXT("in1")},       TEXT("A")},
+	{{TEXT(""),                         TEXT("in2")},       TEXT("B")},
+	{{TEXT(""),                         TEXT("in3")},       TEXT("C")},
+	{{TEXT(""),                         TEXT("in4")},       TEXT("D")},
 	{{TEXT(""),                         TEXT("inlow")},     TEXT("InputLow")},
 	{{TEXT(""),                         TEXT("inhigh")},    TEXT("InputHigh")},
-	{{TEXT(""),                         TEXT("low")},		TEXT("Min")},
+	{{TEXT(""),                         TEXT("lacunarity")},TEXT("Lacunarity")},
+	{{TEXT(""),                         TEXT("low")},       TEXT("Min")},
 	{{TEXT(""),                         TEXT("lumacoeffs")},TEXT("LuminanceFactors")}, // for the moment not yet handled by Interchange, because of the attribute being an advanced pin
-	{{TEXT(""),                         TEXT("mix")},		TEXT("Factor")},
+	{{TEXT(""),                         TEXT("mix")},       TEXT("Alpha")},
+	{{TEXT(""),                         TEXT("position")},  TEXT("Position")},
 	{{TEXT(""),                         TEXT("texcoord")},  TEXT("Coordinates")},
+	{{TEXT(""),                         TEXT("octaves")},   TEXT("Octaves")},
 	{{TEXT(""),                         TEXT("outlow")},    TEXT("TargetLow")},
 	{{TEXT(""),                         TEXT("outhigh")},   TEXT("TargetHigh")},
 	{{TEXT(""),                         TEXT("valuel")},    TEXT("A")},
@@ -65,13 +75,20 @@ InputNamesMaterialX2UE
 	{{MaterialX::Category::IfEqual,     TEXT("value1")},    TEXT("A")},
 	{{MaterialX::Category::IfEqual,     TEXT("value2")},    TEXT("B")},
 	{{MaterialX::Category::IfEqual,     TEXT("in1")},       TEXT("AEqualsB")},
-	{{MaterialX::Category::IfEqual,     TEXT("in2")},       TEXT("ALessThanB")}, //another input is added for the case greater see ConnectIfEqual
+	{{MaterialX::Category::IfEqual,     TEXT("in2")},       TEXT("ALessThanB")},  // another input is added for the case greater see ConnectIfEqual
+	{{MaterialX::Category::Inside,      TEXT("in")},        TEXT("A")},			  // Inside is treated as a Multiply node
+	{{MaterialX::Category::Inside,      TEXT("mask")},      TEXT("B")},			  // Inside is treated as a Multiply node
 	{{MaterialX::Category::Invert,      TEXT("amount")},    TEXT("A")},
 	{{MaterialX::Category::Invert,      TEXT("in")},        TEXT("B")},
 	{{MaterialX::Category::Magnitude,   TEXT("in")},        TEXT("A")},
 	{{MaterialX::Category::Mix,         TEXT("fg")},        TEXT("B")},
 	{{MaterialX::Category::Mix,         TEXT("bg")},        TEXT("A")},
+	{{MaterialX::Category::Mix,         TEXT("mix")},		TEXT("Factor")},
+	{{MaterialX::Category::Noise3D,     TEXT("amplitude")}, TEXT("B")},            // The amplitude of the noise is connected to a multiply node
+	{{MaterialX::Category::Noise3D,     TEXT("pivot")},     TEXT("B")},            // The pivot of the noise is connected to a add node
 	{{MaterialX::Category::Normalize,   TEXT("in")},        TEXT("VectorInput")},
+	{{MaterialX::Category::Outside,     TEXT("in")},        TEXT("A")},				// Outside is treated as Multiply node
+	{{MaterialX::Category::Outside,     TEXT("mask")},      TEXT("B")},				// Outside is treated as Multiply node
 	{{MaterialX::Category::Power,       TEXT("in1")},       TEXT("Base")},
 	{{MaterialX::Category::Power,	    TEXT("in2")},       TEXT("Exponent")},
 	{{MaterialX::Category::Rotate2D,    TEXT("amount")},    TEXT("RotationAngle")},
@@ -116,12 +133,31 @@ NodeNamesMaterialX2UE{
 	{MaterialX::Category::Sub,          TEXT("Subtract")},
 	{MaterialX::Category::Tan,          TEXT("Tangent")},
 	// Compositing nodes
+	{MaterialX::Category::Burn,         TEXT("Burn")},
+	{MaterialX::Category::Difference,   TEXT("Difference")},
+	{MaterialX::Category::Disjointover, TEXT("Disjointover")},
+	{MaterialX::Category::Dodge,        TEXT("Dodge")},
+	{MaterialX::Category::In,           TEXT("In")},
+	{MaterialX::Category::Inside,       TEXT("Multiply")},
+	{MaterialX::Category::Mask,         TEXT("Mask")},
+	{MaterialX::Category::Matte,        TEXT("Matte")},
+	{MaterialX::Category::Minus,        TEXT("Minus")},
 	{MaterialX::Category::Mix,          TEXT("Lerp")},
+	{MaterialX::Category::Out,          TEXT("Out")},
+	{MaterialX::Category::Over,         TEXT("Over")},
+	{MaterialX::Category::Overlay,      TEXT("Overlay")},
+	{MaterialX::Category::Plus,         TEXT("Plus")},
+	{MaterialX::Category::Premult,      TEXT("Premult")},
+	{MaterialX::Category::Screen,       TEXT("Screen")},
+	{MaterialX::Category::Unpremult,    TEXT("Unpremult")},
 	// Channel nodes
 	{MaterialX::Category::Combine2,     TEXT("AppendVector")},
 	{MaterialX::Category::Combine3,     TEXT("Append3Vector")},
 	{MaterialX::Category::Combine4,     TEXT("Append4Vector")},
+	// Procedural3D nodes
+	{MaterialX::Category::Fractal3D,    TEXT("Fractal3D")}, 
 	// Geometric nodes 
+	{MaterialX::Category::GeomColor,	TEXT("VertexColor")},
 	{MaterialX::Category::TexCoord,		TEXT("TextureCoordinate")},
 	// Adjustment nodes,
 	{MaterialX::Category::HsvToRgb,		TEXT("HsvToRgb")},
@@ -134,6 +170,8 @@ NodeNamesMaterialX2UE{
 UEInputs
 {
     TEXT("A"),
+	TEXT("Alpha"),
+	TEXT("Amplitude"),
 	TEXT("B"),
     TEXT("Base"),
     TEXT("C"),
@@ -145,9 +183,12 @@ UEInputs
     TEXT("Input"),
 	TEXT("InputLow"),
 	TEXT("InputHigh"),
+	TEXT("Lacunarity"),
 	TEXT("LuminanceFactors"),
     TEXT("Max"),
     TEXT("Min"),
+	TEXT("Octaves"),
+	TEXT("Position"),
 	TEXT("TargetLow"),
 	TEXT("TargetHigh"),
 	TEXT("Value"),
@@ -887,7 +928,7 @@ bool UInterchangeMaterialXTranslator::ConnectNodeGraphOutputToInput(MaterialX::I
 
 				if(mx::NodePtr DownstreamNode = Edge.getDownstreamElement()->asA<mx::Node>())
 				{
-					if(UInterchangeShaderNode** FoundNode = NamesToShaderNodes.Find(DownstreamNode->getName().c_str()))
+					if(UInterchangeShaderNode** FoundNode = NamesToShaderNodes.Find(GetAttributeParentName(DownstreamNode)))// DownstreamNode->getName().c_str()))
 					{
 						ParentShaderNode = *FoundNode;
 					}
@@ -951,6 +992,42 @@ bool UInterchangeMaterialXTranslator::ConnectNodeGraphOutputToInput(MaterialX::I
 				{
 					ConnectIfEqualInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
 				}
+				else if(UpstreamNode->getCategory() == mx::Category::Outside)
+				{
+					ConnectOutsideInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}
+				else if(UpstreamNode->getCategory() == mx::Category::Position)
+				{
+					ConnectPositionInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}
+				else if(UpstreamNode->getCategory() == mx::Category::Normal)
+				{
+					ConnectNormalInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}
+				else if(UpstreamNode->getCategory() == mx::Category::Tangent)
+				{
+					ConnectTangentInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}
+				else if(UpstreamNode->getCategory() == mx::Category::Bitangent)
+				{
+					ConnectBitangentInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}
+				else if(UpstreamNode->getCategory() == mx::Category::Time)
+				{
+					ConnectTimeInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}
+				else if(UpstreamNode->getCategory() == mx::Category::Noise3D)
+				{
+					ConnectNoise3DInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}
+				else if(UpstreamNode->getCategory() == mx::Category::CellNoise3D)
+				{
+					ConnectCellNoise3DInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}
+				else if(UpstreamNode->getCategory() == mx::Category::WorleyNoise3D)
+				{
+					ConnectWorleyNoise3DInputToOutput(UpstreamNode, ParentShaderNode, InputChannelName, NamesToShaderNodes, NodeContainer);
+				}				
 				else
 				{
 					UInterchangeResultWarning_Generic* Message = AddMessage<UInterchangeResultWarning_Generic>();
@@ -1162,8 +1239,11 @@ bool UInterchangeMaterialXTranslator::AddAttribute(MaterialX::InputPtr Input, co
 		{
 			return ShaderNode->AddFloatAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputChannelName), mx::fromValueString<float>(Input->getValueString()));
 		}
-
-		if(Input->getType() == mx::Type::Color3 || Input->getType() == mx::Type::Color4)
+		else if(Input->getType() == mx::Type::Integer) //Let's add it a Float attribute, because Interchange doesn't create a scalar if it's an int
+		{
+			return ShaderNode->AddFloatAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputChannelName), mx::fromValueString<int32>(Input->getValueString()));
+		}
+		else if(Input->getType() == mx::Type::Color3 || Input->getType() == mx::Type::Color4)
 		{
 			FLinearColor LinearColor = GetLinearColor(Input);
 			return ShaderNode->AddLinearColorAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputChannelName), LinearColor);
@@ -1411,17 +1491,20 @@ void UInterchangeMaterialXTranslator::ConnectRotate3DInputToOutput(mx::NodePtr U
 	AddAttributeFromValueOrInterface(UpstreamNode->getInput("axis"), TEXT("NormalizedRotationAxis"), Rotate3DNode);
 
 	// we create a Divide node to convert MaterialX angle in degrees to UE's angle which is a value between [0,1]
-	if(mx::InputPtr Input = UpstreamNode->getInput("amount"); !AddAttributeFromValueOrInterface(Input, TEXT("RotationAngle"), Rotate3DNode))
+	if(mx::InputPtr Input = UpstreamNode->getInput("amount"))
 	{
-		//copy "in" input into "in1" and create "amount" input as "in2" with the value 360 because UE's angle is a value between [0,1]
-		mx::NodePtr NewDivideNode = CreateNode(UpstreamNode->getParent()->asA<mx::NodeGraph>(),
-											   UpstreamNode->getName().c_str(),
-											   mx::Category::Divide,
-											   { {"in1", Input} }, // rename input to match <divide> input "in1"
-											   { {"in2", FAttributeValueArray{{"type", "float"}, {"value", "360"}}} });
+		if(!AddAttributeFromValueOrInterface(Input, TEXT("RotationAngle"), Rotate3DNode))
+		{
+			//copy "in" input into "in1" and create "amount" input as "in2" with the value 360 because UE's angle is a value between [0,1]
+			mx::NodePtr NewDivideNode = CreateNode(UpstreamNode->getParent()->asA<mx::NodeGraph>(),
+												   UpstreamNode->getName().c_str(),
+												   mx::Category::Divide,
+												   { {"in1", Input} }, // rename input to match <divide> input "in1"
+												   { {"in2", FAttributeValueArray{{"type", "float"}, {"value", "360"}}} });
 
-		// Input now points to the new node
-		Input->setNodeName(NewDivideNode->getName());
+				// Input now points to the new node
+				Input->setNodeName(NewDivideNode->getName());
+		}
 	}
 
 	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, Rotate3DNode->GetUniqueID());
@@ -1701,6 +1784,273 @@ void UInterchangeMaterialXTranslator::ConnectIfEqualInputToOutput(MaterialX::Nod
 	}
 }
 
+void UInterchangeMaterialXTranslator::ConnectOutsideInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	//in * (1 - mask)
+	UInterchangeShaderNode* NodeMultiply = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), TEXT("Multiply"), NamesToShaderNodes, NodeContainer);
+	AddAttributeFromValueOrInterface(UpstreamNode->getInput("in"), TEXT("A"), NodeMultiply);
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, NodeMultiply->GetUniqueID());
+
+	UInterchangeShaderNode* NodeOneMinus = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str() + FString(TEXT("_OneMinus")), TEXT("OneMinus"), NamesToShaderNodes, NodeContainer);
+	AddAttributeFromValueOrInterface(UpstreamNode->getInput("mask"), TEXT("Input"), NodeOneMinus);
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(NodeMultiply, TEXT("B"), NodeOneMinus->GetUniqueID());
+}
+
+void UInterchangeMaterialXTranslator::ConnectPositionInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	// MaterialX defines the space as: object, model, world
+	// model: The local coordinate space of the geometry, before any local deformations or global transforms have been applied.
+	// object: The local coordinate space of the geometry, after local deformations have been applied, but before any global transforms.
+	// world : The global coordinate space of the geometry, after local deformationsand global transforms have been applied.
+
+	// For the moment we don't have the distinction between model/object, so let's just create an UMaterialExpressionWorldPosition
+	// In case of model/object we need to add a TransformPoint from world to local space
+	UInterchangeShaderNode* PositionNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str() + FString(TEXT("_Position")), TEXT("WorldPosition"), NamesToShaderNodes, NodeContainer);
+
+	// In case of the position node, it seems that the unit is different, we assume for now a conversion from mm -> m, even if UE by default is cm
+	// See standard_surface_marble_solid file, especially on the fractal3d node
+	UInterchangeShaderNode* UnitNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), TEXT("Multiply"), NamesToShaderNodes, NodeContainer);
+	UnitNode->AddFloatAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(TEXT("B")), 0.001f);
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(UnitNode, TEXT("A"), PositionNode->GetUniqueID());
+
+	UInterchangeShaderNode* NodeToConnectTo = ParentShaderNode;
+	FString InputToConnectTo = InputChannelName;
+
+	std::string Space = "world";
+	mx::InputPtr InputSpace = UpstreamNode->getInput("space");
+
+	if(InputSpace)
+	{
+		Space = InputSpace->getValueString();
+	}
+
+	//the default space defined by the nodedef is "object"
+	if(Space != "world" || !InputSpace)
+	{
+		using namespace UE::Interchange::Materials::Standard::Nodes;
+
+		UInterchangeShaderNode* TransformNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str() + FString(TEXT("_Transform")), TransformPosition::Name.ToString(), NamesToShaderNodes, NodeContainer);
+		NodeToConnectTo = TransformNode;
+		InputToConnectTo = TransformPosition::Inputs::Input.ToString();
+		TransformNode->AddInt32Attribute(TransformPosition::Attributes::TransformSourceType, EMaterialPositionTransformSource::TRANSFORMPOSSOURCE_World);
+		TransformNode->AddInt32Attribute(TransformPosition::Attributes::TransformType, EMaterialPositionTransformSource::TRANSFORMPOSSOURCE_Local);
+		UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, TransformNode->GetUniqueID());
+	}
+
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(NodeToConnectTo, InputToConnectTo, UnitNode->GetUniqueID());
+}
+
+void UInterchangeMaterialXTranslator::ConnectNormalInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	// MaterialX defines the space as: object, model, world
+	// model: The local coordinate space of the geometry, before any local deformations or global transforms have been applied.
+	// object: The local coordinate space of the geometry, after local deformations have been applied, but before any global transforms.
+	// world : The global coordinate space of the geometry, after local deformationsand global transforms have been applied.
+
+	// For the moment we don't have the distinction between model/object, so let's just create an UMaterialExpressionVertexNormalWS
+	// In case of model/object we need to add a TransformVector from world to local space
+	UInterchangeShaderNode* NormalNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), TEXT("VertexNormalWS"), NamesToShaderNodes, NodeContainer);
+	UInterchangeShaderNode* NodeToConnectTo = ParentShaderNode;
+	FString InputToConnectTo = InputChannelName;
+
+	std::string Space = "world";
+	mx::InputPtr InputSpace = UpstreamNode->getInput("space");
+
+	if(InputSpace)
+	{
+		Space = InputSpace->getValueString();
+	}
+
+	//the default space defined by the nodedef is "object"
+	if(Space != "world" || !InputSpace)
+	{
+		using namespace UE::Interchange::Materials::Standard::Nodes;
+
+		UInterchangeShaderNode* TransformNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str() + FString(TEXT("_Transform")), TransformVector::Name.ToString(), NamesToShaderNodes, NodeContainer);
+		NodeToConnectTo = TransformNode;
+		InputToConnectTo = TransformVector::Inputs::Input.ToString();
+		TransformNode->AddInt32Attribute(TransformVector::Attributes::TransformSourceType, EMaterialVectorCoordTransformSource::TRANSFORMSOURCE_World);
+		TransformNode->AddInt32Attribute(TransformVector::Attributes::TransformType, EMaterialVectorCoordTransform::TRANSFORM_Local);
+		UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, TransformNode->GetUniqueID());
+	}
+
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(NodeToConnectTo, InputToConnectTo, NormalNode->GetUniqueID());
+}
+
+void UInterchangeMaterialXTranslator::ConnectTangentInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	// MaterialX defines the space as: object, model, world
+	// model: The local coordinate space of the geometry, before any local deformations or global transforms have been applied.
+	// object: The local coordinate space of the geometry, after local deformations have been applied, but before any global transforms.
+	// world : The global coordinate space of the geometry, after local deformationsand global transforms have been applied.
+
+	// For the moment we don't have the distinction between model/object, so let's just create an UMaterialExpressionVertexTangentWS
+	// In case of model/object we need to add a TransformVector from world to local space
+	UInterchangeShaderNode* TangentNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), TEXT("VertexTangentWS"), NamesToShaderNodes, NodeContainer);
+	UInterchangeShaderNode* NodeToConnectTo = ParentShaderNode;
+	FString InputToConnectTo = InputChannelName;
+
+	std::string Space = "world";
+	mx::InputPtr InputSpace = UpstreamNode->getInput("space");
+
+	if(InputSpace)
+	{
+		Space = InputSpace->getValueString();
+	}
+
+	//the default space defined by the nodedef is "object"
+	if(Space != "world" || !InputSpace)
+	{
+		using namespace UE::Interchange::Materials::Standard::Nodes;
+
+		UInterchangeShaderNode* TransformNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str() + FString(TEXT("_Transform")), TransformVector::Name.ToString(), NamesToShaderNodes, NodeContainer);
+		NodeToConnectTo = TransformNode;
+		InputToConnectTo = TransformVector::Inputs::Input.ToString();
+		TransformNode->AddInt32Attribute(TransformVector::Attributes::TransformSourceType, EMaterialVectorCoordTransformSource::TRANSFORMSOURCE_World);
+		TransformNode->AddInt32Attribute(TransformVector::Attributes::TransformType, EMaterialVectorCoordTransform::TRANSFORM_Local);
+		UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, TransformNode->GetUniqueID());
+	}
+
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(NodeToConnectTo, InputToConnectTo, TangentNode->GetUniqueID());
+}
+
+void UInterchangeMaterialXTranslator::ConnectBitangentInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	// MaterialX defines the space as: object, model, world
+	// model: The local coordinate space of the geometry, before any local deformations or global transforms have been applied.
+	// object: The local coordinate space of the geometry, after local deformations have been applied, but before any global transforms.
+	// world : The global coordinate space of the geometry, after local deformationsand global transforms have been applied.
+
+	// For the moment we don't have the distinction between model/object, so let's just do the cross product between the normal and the tangent
+	// In case of model/object we need to add a TransformVector from world to local space
+	UInterchangeShaderNode* NormalNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str() + FString(TEXT("_Normal")), TEXT("VertexNormalWS"), NamesToShaderNodes, NodeContainer);
+	UInterchangeShaderNode* TangentNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str() + FString(TEXT("_Tangent")), TEXT("VertexTangentWS"), NamesToShaderNodes, NodeContainer);
+	UInterchangeShaderNode* BitangentNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), TEXT("CrossProduct"), NamesToShaderNodes, NodeContainer);
+	
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(BitangentNode, TEXT("A"), NormalNode->GetUniqueID());
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(BitangentNode, TEXT("B"), TangentNode->GetUniqueID());
+
+
+	UInterchangeShaderNode* NodeToConnectTo = ParentShaderNode;
+	FString InputToConnectTo = InputChannelName;
+
+	std::string Space = "world";
+	mx::InputPtr InputSpace = UpstreamNode->getInput("space");
+
+	if(InputSpace)
+	{
+		Space = InputSpace->getValueString();
+	}
+
+	//the default space defined by the nodedef is "object"
+	if(Space != "world" || !InputSpace)
+	{
+		using namespace UE::Interchange::Materials::Standard::Nodes;
+
+		UInterchangeShaderNode* TransformNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str() + FString(TEXT("_Transform")), TransformVector::Name.ToString(), NamesToShaderNodes, NodeContainer);
+		NodeToConnectTo = TransformNode;
+		InputToConnectTo = TransformVector::Inputs::Input.ToString();
+		TransformNode->AddInt32Attribute(TransformVector::Attributes::TransformSourceType, EMaterialVectorCoordTransformSource::TRANSFORMSOURCE_World);
+		TransformNode->AddInt32Attribute(TransformVector::Attributes::TransformType, EMaterialVectorCoordTransform::TRANSFORM_Local);
+		UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, TransformNode->GetUniqueID());
+	}
+
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(NodeToConnectTo, InputToConnectTo, BitangentNode->GetUniqueID());
+}
+
+void UInterchangeMaterialXTranslator::ConnectTimeInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	using namespace UE::Interchange::Materials::Standard::Nodes;
+	UInterchangeShaderNode* TimeNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), TEXT("Time"), NamesToShaderNodes, NodeContainer);
+	TimeNode->AddBooleanAttribute(Time::Attributes::OverridePeriod, true);
+
+	float FPS; 
+	mx::InputPtr Input = UpstreamNode->getInput("fps");
+
+	//Take the default value from the node definition
+	if(!Input)
+	{
+		Input = UpstreamNode->getNodeDef()->getInput("fps");
+	}
+
+	FPS = mx::fromValueString<float>(Input->getValueString());
+
+	//UE is a period
+	TimeNode->AddFloatAttribute(Time::Attributes::Period, 1.f / FPS);
+
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, TimeNode->GetUniqueID());
+}
+
+void UInterchangeMaterialXTranslator::ConnectNoise3DInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	using namespace UE::Interchange::Materials::Standard::Nodes;
+
+	// MaterialX defines the Noise3d as Perlin Noise which is multiplied by the Amplitude then Added to Pivot
+	UInterchangeShaderNode* NoiseNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), Noise::Name.ToString(), NamesToShaderNodes, NodeContainer);
+	NoiseNode->AddInt32Attribute(Noise::Attributes::Function, ENoiseFunction::NOISEFUNCTION_GradientTex);
+	NoiseNode->AddBooleanAttribute(Noise::Attributes::Turbulence, false);
+	NoiseNode->AddFloatAttribute(Noise::Attributes::OutputMin, 0);
+
+	UInterchangeShaderNode* NodeToConnect = NoiseNode;
+
+	// Multiply Node
+	auto ConnectNodeToInput = [&](mx::InputPtr Input, UInterchangeShaderNode * NodeToConnectTo, const FString & ShaderType, int32 IndexAttrib) -> UInterchangeShaderNode*
+	{
+		if(!Input)
+		{
+			return nullptr;
+		}
+
+		const FString ShaderNodeName = UpstreamNode->getName().c_str() + FString{ TEXT("_") } + ShaderType;
+		UInterchangeShaderNode* ShaderNode = CreateShaderNode<UInterchangeShaderNode>(ShaderNodeName, ShaderType, NamesToShaderNodes, NodeContainer);
+
+		UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ShaderNode, TEXT("A"), NodeToConnectTo->GetUniqueID());
+
+		// Connect the amplitude node to the shader node not the noise
+		// it will be handle during the upstream-downstream connection phase
+		// The index is here for the unicity of the attribute
+		UpstreamNode->setAttribute(mx::Attributes::ParentName + std::to_string(IndexAttrib), TCHAR_TO_ANSI(*ShaderNodeName));
+		AddAttributeFromValueOrInterface(Input, TEXT("B"), ShaderNode);
+
+		return ShaderNode;
+	};
+
+	if(UInterchangeShaderNode* MultiplyNode = ConnectNodeToInput(UpstreamNode->getInput("amplitude"), NoiseNode, TEXT("Multiply"), 0))
+	{
+		NodeToConnect = MultiplyNode;
+	}
+
+
+	if(UInterchangeShaderNode* AddNode = ConnectNodeToInput(UpstreamNode->getInput("pivot"), NodeToConnect, TEXT("Add"), 1))
+	{
+		NodeToConnect = AddNode;
+	}
+
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, NodeToConnect->GetUniqueID());
+}
+
+void UInterchangeMaterialXTranslator::ConnectCellNoise3DInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	using namespace UE::Interchange::Materials::Standard::Nodes;
+
+	// Let's use a vector noise for this one, the only one that is close to MaterialX implementation
+	UInterchangeShaderNode* NoiseNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), VectorNoise::Name.ToString(), NamesToShaderNodes, NodeContainer);
+	NoiseNode->AddInt32Attribute(VectorNoise::Attributes::Function, EVectorNoiseFunction::VNF_CellnoiseALU);
+
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, NoiseNode->GetUniqueID());
+}
+
+void UInterchangeMaterialXTranslator::ConnectWorleyNoise3DInputToOutput(MaterialX::NodePtr UpstreamNode, UInterchangeShaderNode* ParentShaderNode, const FString& InputChannelName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
+{
+	using namespace UE::Interchange::Materials::Standard::Nodes;
+
+	//Also called Voronoi, the implementation is a bit different in UE, especially we don't have access to the jitter
+	UInterchangeShaderNode* NoiseNode = CreateShaderNode<UInterchangeShaderNode>(UpstreamNode->getName().c_str(), Noise::Name.ToString(), NamesToShaderNodes, NodeContainer);
+	NoiseNode->AddInt32Attribute(Noise::Attributes::Function, ENoiseFunction::NOISEFUNCTION_VoronoiALU);
+
+	UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(ParentShaderNode, InputChannelName, NoiseNode->GetUniqueID());
+}
+
 UInterchangeShaderNode* UInterchangeMaterialXTranslator::CreateMaskShaderNode(uint8 RGBA, const FString& NodeName, TMap<FString, UInterchangeShaderNode*>& NamesToShaderNodes, UInterchangeBaseNodeContainer& NodeContainer) const
 {
 	bool bR = (0b1000 & RGBA) >> 3;
@@ -1883,6 +2233,26 @@ void UInterchangeMaterialXTranslator::AddTexCoordToTiledImageNodes(MaterialX::No
 			InputTexCoord->setNodeName(NodeTexCoord->getName());
 		}
 	}
+}
+
+FString UInterchangeMaterialXTranslator::GetAttributeParentName(MaterialX::NodePtr Node) const
+{
+	FString ParentName;
+	const mx::StringVec & Attributes =  Node->getAttributeNames();
+
+	// For consistency the parent attribute has an index attach to it to ensure unicity
+	// Attributes are set in order, we only need to take the first one (it will be remove after that)
+	for(const std::string& Attrib : Attributes)
+	{
+		if(Attrib.find(mx::Attributes::ParentName) != std::string::npos)
+		{
+			ParentName = Node->getAttribute(Attrib).c_str();
+			Node->removeAttribute(Attrib);
+			break;
+		}
+	}
+
+	return ParentName.IsEmpty() ? Node->getName().c_str() : ParentName;
 }
 
 #endif //WITH_EDITOR

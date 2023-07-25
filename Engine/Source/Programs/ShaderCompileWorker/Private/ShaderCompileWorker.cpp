@@ -6,6 +6,8 @@
 
 #include "CoreMinimal.h"
 #include "RequiredProgramMainCPPInclude.h"
+#include "ShaderCompilerCore.h"
+#include "ShaderCompilerCommon.h"
 #include "ShaderCore.h"
 #include "HAL/ExceptionHandling.h"
 #include "Interfaces/IShaderFormat.h"
@@ -14,6 +16,7 @@
 #include "RHIShaderFormatDefinitions.inl"
 #include "ShaderCompilerCommon.h"
 #include "Serialization/MemoryReader.h"
+#include "SocketSubsystem.h"
 
 #define DEBUG_USING_CONSOLE	0
 
@@ -34,7 +37,7 @@ inline bool IsUsingXGE()
 	return GXGEMode != EXGEMode::None;
 }
 
-static ESCWErrorCode GFailedErrorCode = ESCWErrorCode::Success;
+static FSCWErrorCode::ECode GFailedErrorCode = FSCWErrorCode::Success;
 
 static void OnXGEJobCompleted(const TCHAR* WorkingDirectory)
 {
@@ -47,10 +50,10 @@ static void OnXGEJobCompleted(const TCHAR* WorkingDirectory)
 }
 
 #if USING_CODE_ANALYSIS
-	UE_NORETURN static inline void ExitWithoutCrash(ESCWErrorCode ErrorCode, const FString& Message);
+	UE_NORETURN static inline void ExitWithoutCrash(FSCWErrorCode::ECode ErrorCode, const FString& Message);
 #endif
 
-static inline void ExitWithoutCrash(ESCWErrorCode ErrorCode, const FString& Message)
+static inline void ExitWithoutCrash(FSCWErrorCode::ECode ErrorCode, const FString& Message)
 {
 	GFailedErrorCode = ErrorCode;
 	FCString::Snprintf(GErrorExceptionDescription, sizeof(GErrorExceptionDescription), TEXT("%s"), *Message);
@@ -72,7 +75,7 @@ static const TArray<const IShaderFormat*>& GetShaderFormats()
 
 		if (!Modules.Num())
 		{
-			ExitWithoutCrash(ESCWErrorCode::NoTargetShaderFormatsFound, TEXT("No target shader formats found!"));
+			ExitWithoutCrash(FSCWErrorCode::NoTargetShaderFormatsFound, TEXT("No target shader formats found!"));
 		}
 
 		for (int32 Index = 0; Index < Modules.Num(); Index++)
@@ -87,65 +90,6 @@ static const TArray<const IShaderFormat*>& GetShaderFormats()
 	return Results;
 }
 
-static const IShaderFormat* FindShaderFormat(FName Name)
-{
-	const TArray<const IShaderFormat*>& ShaderFormats = GetShaderFormats();	
-
-	for (int32 Index = 0; Index < ShaderFormats.Num(); Index++)
-	{
-		TArray<FName> Formats;
-		ShaderFormats[Index]->GetSupportedFormats(Formats);
-		for (int32 FormatIndex = 0; FormatIndex < Formats.Num(); FormatIndex++)
-		{
-			if (Formats[FormatIndex] == Name)
-			{
-				return ShaderFormats[Index];
-			}
-		}
-	}
-
-	return nullptr;
-}
-
-/** Processes a compilation job. */
-static void ProcessCompilationJob(const FShaderCompilerInput& Input,FShaderCompilerOutput& Output,const FString& WorkingDirectory)
-{
-	const IShaderFormat* Compiler = FindShaderFormat(Input.ShaderFormat);
-	if (!Compiler)
-	{
-		ExitWithoutCrash(ESCWErrorCode::CantCompileForSpecificFormat, FString::Printf(TEXT("Can't compile shaders for format %s"), *Input.ShaderFormat.ToString()));
-	}
-
-	// Apply the console variable values from the input environment before calling the platform shader compiler
-	for (const auto& Pair : Input.Environment.ShaderFormatCVars)
-	{
-		IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*Pair.Key);
-		if (CVar)
-		{
-			CVar->Set(*Pair.Value, ECVF_SetByCode);
-		}
-	}
-
-	// Compile the shader directly through the platform dll (directly from the shader dir as the working directory)
-	double TimeStart = FPlatformTime::Seconds();
-	Compiler->CompileShader(Input.ShaderFormat, Input, Output, WorkingDirectory);
-	if (Output.bSucceeded)
-	{
-		Output.GenerateOutputHash();
-		if (Input.CompressionFormat != NAME_None)
-		{
-			Output.CompressOutput(Input.CompressionFormat, Input.OodleCompressor, Input.OodleLevel);
-		}
-	}
-	Output.CompileTime = FPlatformTime::Seconds() - TimeStart;
-
-	if (Compiler->UsesHLSLcc(Input))
-	{
-		Output.bUsedHLSLccCompiler = true;
-	}
-
-	++GNumProcessedJobs;
-}
 
 static void UpdateFileSize(FArchive& OutputFile, int64 FileSizePosition)
 {
@@ -155,9 +99,32 @@ static void UpdateFileSize(FArchive& OutputFile, int64 FileSizePosition)
 	OutputFile.Seek(Current);
 };
 
+static const TCHAR* GetLocalHostname(int32* OutHostnameLength = nullptr)
+{
+	static FString Hostname;
+	if (Hostname.IsEmpty())
+	{
+		ISocketSubsystem::Get()->GetHostName(Hostname);
+	}
+	if (OutHostnameLength)
+	{
+		*OutHostnameLength = Hostname.Len();
+	}
+	return *Hostname;
+}
+
+static void GetMemoryStats(uint64& OutAvailablePhysical, uint64& OutUsedPhysical)
+{
+	const FPlatformMemoryStats MemoryStats = FPlatformMemory::GetStats();
+	OutAvailablePhysical = MemoryStats.AvailablePhysical;
+	OutUsedPhysical = MemoryStats.UsedPhysical;
+}
+
 static int64 WriteOutputFileHeader(FArchive& OutputFile, int32 ErrorCode, int32 CallstackLength, const TCHAR* Callstack,
 	int32 ExceptionInfoLength, const TCHAR* ExceptionInfo)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WriteOutputFileHeader);
+
 	int64 FileSizePosition = 0;
 	int32 OutputVersion = ShaderCompileWorkerOutputVersion;
 	OutputFile << OutputVersion;
@@ -176,15 +143,38 @@ static int64 WriteOutputFileHeader(FArchive& OutputFile, int32 ErrorCode, int32 
 
 	OutputFile << ExceptionInfoLength;
 
-	if (CallstackLength > 0)
+	int32 HostnameLength = 0;
+	const TCHAR* Hostname = GetLocalHostname(&HostnameLength);
+	OutputFile << HostnameLength;
+
+	if (ErrorCode != FSCWErrorCode::Success)
 	{
-		OutputFile.Serialize((void*)Callstack, CallstackLength * sizeof(TCHAR));
+		if (CallstackLength > 0)
+		{
+			OutputFile.Serialize((void*)Callstack, CallstackLength * sizeof(TCHAR));
+		}
+
+		if (ExceptionInfoLength > 0)
+		{
+			OutputFile.Serialize((void*)ExceptionInfo, ExceptionInfoLength * sizeof(TCHAR));
+		}
+
+		if (HostnameLength > 0)
+		{
+			OutputFile.Serialize((void*)Hostname, HostnameLength * sizeof(TCHAR));
+		}
+
+		// Store available and used physical memory of host machine on OOM error
+		if (ErrorCode == FSCWErrorCode::OutOfMemory)
+		{
+			uint64 AvailablePhysical = 0, UsedPhysical = 0;
+			GetMemoryStats(AvailablePhysical, UsedPhysical);
+			OutputFile << AvailablePhysical << UsedPhysical;
+		}
 	}
 
-	if (ExceptionInfoLength > 0)
-	{
-		OutputFile.Serialize((void*)ExceptionInfo, ExceptionInfoLength * sizeof(TCHAR));
-	}
+	// Reset error code as it can be receive a new value now
+	FSCWErrorCode::Reset();
 
 	UpdateFileSize(OutputFile, FileSizePosition);
 	return FileSizePosition;
@@ -196,14 +186,16 @@ class FWorkLoop
 public:
 	// If we have been idle for 20 seconds then exit. Can be overriden from the cmd line with -TimeToLive=N where N is in seconds (and a float value)
 	float TimeToLive = 20.0f;
+	bool DisableFileWrite = false;
+	bool KeepInput = false;
 
 	FWorkLoop(const TCHAR* ParentProcessIdText,const TCHAR* InWorkingDirectory,const TCHAR* InInputFilename,const TCHAR* InOutputFilename, TMap<FString, uint32>& InFormatVersionMap)
 	:	ParentProcessId(FCString::Atoi(ParentProcessIdText))
 	,	WorkingDirectory(InWorkingDirectory)
 	,	InputFilename(InInputFilename)
 	,	OutputFilename(InOutputFilename)
-	,	InputFilePath(FString(InWorkingDirectory) + InInputFilename)
-	,	OutputFilePath(FString(InWorkingDirectory) + InOutputFilename)
+	,	InputFilePath(FString(InWorkingDirectory) / InInputFilename)
+	,	OutputFilePath(FString(InWorkingDirectory) / InOutputFilename)
 	,	FormatVersionMap(InFormatVersionMap)
 	{
 		TArray<FString> Tokens, Switches;
@@ -212,12 +204,15 @@ public:
 		{
 			if (Switch.StartsWith(TEXT("TimeToLive=")))
 			{
-				float TokenTime = FCString::Atof(Switch.GetCharArray().GetData() + 11);
-				if (TokenTime > 0)
-				{
-					TimeToLive = TokenTime;
-					break;
-				}
+				TimeToLive = FCString::Atof(Switch.GetCharArray().GetData() + 11);
+			}
+			else if (Switch.Equals(TEXT("DisableFileWrite")))
+			{
+				DisableFileWrite = true;
+			}
+			else if (Switch.Equals(TEXT("KeepInput")))
+			{
+				KeepInput = true;
 			}
 		}
 	}
@@ -225,6 +220,7 @@ public:
 	void Loop()
 	{
 		UE_LOG(LogShaders, Log, TEXT("Entering job loop"));
+		TRACE_CPUPROFILER_EVENT_SCOPE(Loop);
 
 		while(true)
 		{
@@ -233,6 +229,8 @@ public:
 
 			// Read & Process Input
 			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(ReadInput);
+
 				FArchive* InputFilePtr = OpenInputFile();
 				if(!InputFilePtr)
 				{
@@ -250,23 +248,24 @@ public:
 			}
 
 			// Prepare for output
-#if UE_BUILD_DEBUG
-			TArray<uint8> MemBlock;
-			FMemoryWriter MemWriter(MemBlock);
-			FArchive* OutputFilePtr = &MemWriter;
-#else
-			FArchive* OutputFilePtr = CreateOutputArchive();
-			check(OutputFilePtr);
-#endif
-			WriteToOutputArchive(OutputFilePtr, SingleJobResults, PipelineJobResults);
+			if (DisableFileWrite)
+			{
+				// write to in-memory bytestream instead for debugging purposes
+				TArray<uint8> MemBlock;
+				FMemoryWriter MemWriter(MemBlock);
+				WriteToOutputArchive(&MemWriter, SingleJobResults, PipelineJobResults);
+			}
+			else
+			{
+				FArchive* OutputFilePtr = CreateOutputArchive();
+				check(OutputFilePtr);
+				WriteToOutputArchive(OutputFilePtr, SingleJobResults, PipelineJobResults);
+				// Close the output file.
+				delete OutputFilePtr;
 
-#if !UE_BUILD_DEBUG
-			// Close the output file.
-			delete OutputFilePtr;
-#endif
-
-			// Change the output file name to requested one
-			IFileManager::Get().Move(*OutputFilePath, *TempFilePath);
+				// Change the output file name to requested one
+				IFileManager::Get().Move(*OutputFilePath, *TempFilePath);
+			}
 
 			if (IsUsingXGE())
 			{
@@ -282,6 +281,14 @@ public:
 				UE_LOG(LogShaders, Log, TEXT("TimeToLive set to 0, or used HLSLcc compiler, exiting after single job"));
 				break;
 			}
+
+#if ENABLE_LOW_LEVEL_MEM_TRACKER
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(UpdateStatsPerFrame);
+
+				FLowLevelMemTracker::Get().UpdateStatsPerFrame();
+			}
+#endif
 		}
 
 		UE_LOG(LogShaders, Log, TEXT("Exiting job loop"));
@@ -339,7 +346,7 @@ private:
 			{
 				if (Pair.Value != *Found)
 				{
-					ExitWithoutCrash(ESCWErrorCode::BadShaderFormatVersion, FString::Printf(TEXT("Mismatched shader version for format %s: Found version %u but expected %u; did you forget to build ShaderCompilerWorker?"), *Pair.Key, *Found, Pair.Value));
+					ExitWithoutCrash(FSCWErrorCode::BadShaderFormatVersion, FString::Printf(TEXT("Mismatched shader version for format %s: Found version %u but expected %u; did you forget to build ShaderCompilerWorker?"), *Pair.Key, *Found, Pair.Value));
 				}
 			}
 		}
@@ -347,11 +354,13 @@ private:
 
 	void ProcessInputFromArchive(FArchive* InputFilePtr, TArray<FJobResult>& OutSingleJobResults, TArray<FPipelineJobResult>& OutPipelineJobResults)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(ProcessInputFromArchive);
+
 		int32 InputVersion;
 		*InputFilePtr << InputVersion;
 		if (ShaderCompileWorkerInputVersion != InputVersion)
 		{
-			ExitWithoutCrash(ESCWErrorCode::BadInputVersion, FString::Printf(TEXT("Exiting due to ShaderCompilerWorker expecting input version %d, got %d instead! Did you forget to build ShaderCompilerWorker?"), ShaderCompileWorkerInputVersion, InputVersion));
+			ExitWithoutCrash(FSCWErrorCode::BadInputVersion, FString::Printf(TEXT("Exiting due to ShaderCompilerWorker expecting input version %d, got %d instead! Did you forget to build ShaderCompilerWorker?"), ShaderCompileWorkerInputVersion, InputVersion));
 		}
 
 		FString CompressionFormatString;
@@ -368,7 +377,7 @@ private:
 
 			if (UncompressedDataSize == 0)
 			{
-				ExitWithoutCrash(ESCWErrorCode::BadInputFile, TEXT("Exiting due to bad input file to ShaderCompilerWorker (uncompressed size is 0)! Did you forget to build ShaderCompilerWorker?"));
+				ExitWithoutCrash(FSCWErrorCode::BadInputFile, TEXT("Exiting due to bad input file to ShaderCompilerWorker (uncompressed size is 0)! Did you forget to build ShaderCompilerWorker?"));
 				// unreachable
 				return;
 			}
@@ -378,7 +387,7 @@ private:
 			*InputFilePtr << CompressedData;
 			if (!FCompression::UncompressMemory(CompressionFormat, UncompressedData.GetData(), UncompressedDataSize, CompressedData.GetData(), CompressedData.Num()))
 			{
-				ExitWithoutCrash(ESCWErrorCode::BadInputFile, FString::Printf(TEXT("Exiting due to bad input file to ShaderCompilerWorker (cannot uncompress with the format %s)! Did you forget to build ShaderCompilerWorker?"), *CompressionFormatString));
+				ExitWithoutCrash(FSCWErrorCode::BadInputFile, FString::Printf(TEXT("Exiting due to bad input file to ShaderCompilerWorker (cannot uncompress with the format %s)! Did you forget to build ShaderCompilerWorker?"), *CompressionFormatString));
 				// unreachable
 				return;
 			}
@@ -591,18 +600,13 @@ private:
 			InputFile << SingleJobHeader;
 			if (ShaderCompileWorkerSingleJobHeader != SingleJobHeader)
 			{
-				ExitWithoutCrash(ESCWErrorCode::BadSingleJobHeader, FString::Printf(TEXT("Exiting due to ShaderCompilerWorker expecting job header %d, got %d instead! Did you forget to build ShaderCompilerWorker?"), ShaderCompileWorkerSingleJobHeader, SingleJobHeader));
+				ExitWithoutCrash(FSCWErrorCode::BadSingleJobHeader, FString::Printf(TEXT("Exiting due to ShaderCompilerWorker expecting job header %d, got %d instead! Did you forget to build ShaderCompilerWorker?"), ShaderCompileWorkerSingleJobHeader, SingleJobHeader));
 			}
 
 			int32 NumBatches = 0;
 			InputFile << NumBatches;
-			// Flush cache, to make sure we load the latest version of the input file.
-			// (Otherwise quick changes to a shader file can result in the wrong output.)
-			FString ShaderPlatformNameString;
-			InputFile << ShaderPlatformNameString;
-			FName ShaderPlatformName = FName(*ShaderPlatformNameString);
 
-			FlushShaderFileCache(&ShaderPlatformName);
+			FlushShaderFileCache();
 			
 			for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
 			{
@@ -619,15 +623,9 @@ private:
 					UpdateIncludeDirectoryForPreviewPlatform((EShaderPlatform)CompilerInput.Target.Platform, ShaderPlatform);
 				}
 
-				if (IsValidRef(CompilerInput.SharedEnvironment))
-				{
-					// Merge the shared environment into the per-shader environment before calling into the compile function
-					CompilerInput.Environment.Merge(*CompilerInput.SharedEnvironment);
-				}
-
 				// Process the job.
 				FShaderCompilerOutput CompilerOutput;
-				ProcessCompilationJob(CompilerInput, CompilerOutput, WorkingDirectory);
+				CompileShader(GetShaderFormats(), CompilerInput, CompilerOutput, WorkingDirectory, &GNumProcessedJobs);
 
 				// Serialize the job's output.
 				FJobResult& JobResult = *new(OutSingleJobResults) FJobResult;
@@ -641,7 +639,7 @@ private:
 			InputFile << PipelineJobHeader;
 			if (ShaderCompileWorkerPipelineJobHeader != PipelineJobHeader)
 			{
-				ExitWithoutCrash(ESCWErrorCode::BadPipelineJobHeader, FString::Printf(TEXT("Exiting due to ShaderCompilerWorker expecting pipeline job header %d, got %d instead! Did you forget to build ShaderCompilerWorker?"), ShaderCompileWorkerSingleJobHeader, PipelineJobHeader));
+				ExitWithoutCrash(FSCWErrorCode::BadPipelineJobHeader, FString::Printf(TEXT("Exiting due to ShaderCompilerWorker expecting pipeline job header %d, got %d instead! Did you forget to build ShaderCompilerWorker?"), ShaderCompileWorkerSingleJobHeader, PipelineJobHeader));
 			}
 
 			int32 NumPipelines = 0;
@@ -672,12 +670,6 @@ private:
 						const EShaderPlatform ShaderPlatform = ShaderFormatNameToShaderPlatform(CompilerInputs[StageIndex].ShaderFormat);
 						UpdateIncludeDirectoryForPreviewPlatform((EShaderPlatform)CompilerInputs[StageIndex].Target.Platform, ShaderPlatform);
 					}
-
-					if (IsValidRef(CompilerInputs[StageIndex].SharedEnvironment))
-					{
-						// Merge the shared environment into the per-shader environment before calling into the compile function
-						CompilerInputs[StageIndex].Environment.Merge(*CompilerInputs[StageIndex].SharedEnvironment);
-					}
 				}
 
 				ProcessShaderPipelineCompilationJob(PipelineJob, CompilerInputs);
@@ -693,7 +685,7 @@ private:
 		FShaderCompilerOutput FirstCompilerOutput;
 		CompilerInputs[0].bCompilingForShaderPipeline = true;
 		CompilerInputs[0].bIncludeUsedOutputs = false;
-		ProcessCompilationJob(CompilerInputs[0], FirstCompilerOutput, WorkingDirectory);
+		CompileShader(GetShaderFormats(), CompilerInputs[0], FirstCompilerOutput, WorkingDirectory, &GNumProcessedJobs);
 
 		// Serialize the job's output.
 		{
@@ -724,7 +716,7 @@ private:
 			}
 
 			FShaderCompilerOutput CompilerOutput;
-			ProcessCompilationJob(CompilerInputs[Index], CompilerOutput, WorkingDirectory);
+			CompileShader(GetShaderFormats(), CompilerInputs[Index], CompilerOutput, WorkingDirectory, &GNumProcessedJobs);
 
 			// Serialize the job's output.
 			FJobResult& JobResult = *new(PipelineJob.SingleJobs) FJobResult;
@@ -734,15 +726,17 @@ private:
 
 	FArchive* CreateOutputArchive()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(CreateOutputArchive);
+
 		FArchive* OutputFilePtr = nullptr;
 		const double StartTime = FPlatformTime::Seconds();
 		bool bResult = false;
 
 		// It seems XGE does not support deleting files.
-		// Don't delete the input file if we are running under Incredibuild.
+		// Don't delete the input file if we are running under Incredibuild (or if the cmdline args explicitly told us to keep it).
 		// In xml mode, we signal completion by creating a zero byte "Success" file after the output file has been fully written.
 		// In intercept mode, completion is signaled by this process terminating.
-		if (!IsUsingXGE())
+		if (!IsUsingXGE() && !KeepInput)
 		{
 			do 
 			{
@@ -753,7 +747,7 @@ private:
 
 			if (!bResult)
 			{
-				ExitWithoutCrash(ESCWErrorCode::CantDeleteInputFile, FString::Printf(TEXT("Couldn't delete input file %s, is it readonly?"), *InputFilePath));
+				ExitWithoutCrash(FSCWErrorCode::CantDeleteInputFile, FString::Printf(TEXT("Couldn't delete input file %s, is it readonly?"), *InputFilePath));
 			}
 		}
 
@@ -777,7 +771,7 @@ private:
 			
 		if (!OutputFilePtr)
 		{
-			ExitWithoutCrash(ESCWErrorCode::CantSaveOutputFile, FString::Printf(TEXT("Couldn't save output file %s"), *TempFilePath));
+			ExitWithoutCrash(FSCWErrorCode::CantSaveOutputFile, FString::Printf(TEXT("Couldn't save output file %s"), *TempFilePath));
 		}
 
 		return OutputFilePtr;
@@ -785,8 +779,12 @@ private:
 
 	void WriteToOutputArchive(FArchive* OutputFilePtr, TArray<FJobResult>& SingleJobResults, TArray<FPipelineJobResult>& PipelineJobResults)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(WriteToOutputArchive);
+
 		FArchive& OutputFile = *OutputFilePtr;
-		int64 FileSizePosition = WriteOutputFileHeader(OutputFile, (int32)ESCWErrorCode::Success, 0, nullptr, 0, nullptr);
+		const int64 FileSizePosition = FSCWErrorCode::IsSet()
+			? WriteOutputFileHeader(OutputFile, FSCWErrorCode::Get(), 0, nullptr, FSCWErrorCode::GetInfo().Len(), *FSCWErrorCode::GetInfo())
+			: WriteOutputFileHeader(OutputFile, FSCWErrorCode::Success, 0, nullptr, 0, nullptr);
 
 		{
 			int32 SingleJobHeader = ShaderCompileWorkerSingleJobHeader;
@@ -900,6 +898,8 @@ private:
 	
 	static bool AnyJobUsedHLSLccCompiler(TArray<FJobResult>& SingleJobResults, TArray<FPipelineJobResult>& PipelineJobResults)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AnyJobUsedHLSLccCompiler);
+
 		for (int32 ResultIndex = 0; ResultIndex < SingleJobResults.Num(); ResultIndex++)
 		{
 			FJobResult& JobResult = SingleJobResults[ResultIndex];
@@ -927,6 +927,8 @@ private:
 
 static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormats)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(DirectCompile);
+
 	// Find all the info required for compiling a single shader
 	TArray<FString> Tokens, Switches;
 	FCommandLine::Parse(FCommandLine::Get(), Tokens, Switches);
@@ -1069,7 +1071,7 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
 	Input.UsedOutputs = UsedOutputs;
 
 	FShaderCompilerOutput Output;
-	ProcessCompilationJob(Input, Output, Dir);
+	CompileShader(GetShaderFormats(), Input, Output, Dir, &GNumProcessedJobs);
 }
 
 
@@ -1083,7 +1085,7 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
  */
 static int32 GuardedMain(int32 argc, TCHAR* argv[], bool bDirectMode)
 {
-	FString ExtraCmdLine = TEXT("-NOPACKAGECACHE -ReduceThreadUsage -cpuprofilertrace -nocrashreports -nothreading");
+	FString ExtraCmdLine = TEXT("-NOPACKAGECACHE -ReduceThreadUsage -cpuprofilertrace -nocrashreports");
 
 	// When executing tasks remotely through XGE, enumerating files requires tcp/ip round-trips with
 	// the initiator, which can slow down engine initialization quite drastically.
@@ -1091,6 +1093,14 @@ static int32 GuardedMain(int32 argc, TCHAR* argv[], bool bDirectMode)
 	// to avoid all those directory enumeration during engine init.
 	FString IniBootstrapFilename;
 	FString ModulesBootstrapFilename;
+
+	// Register out-of-memory delegate to report error code on exit
+	FCoreDelegates::GetOutOfMemoryDelegate().AddLambda(
+		[]()
+		{
+			FSCWErrorCode::Report(FSCWErrorCode::OutOfMemory);
+		}
+	);
 
 	if (IsUsingXGE())
 	{
@@ -1150,6 +1160,8 @@ static int32 GuardedMain(int32 argc, TCHAR* argv[], bool bDirectMode)
 	GLogConsole->Show( true );
 #endif
 
+	TRACE_CPUPROFILER_EVENT_SCOPE(Main);
+
 	auto AtomicSave = 
 		[](const FString& Filename, TFunctionRef<void (const FString& TmpFile)> SaveFunction)
 		{
@@ -1171,12 +1183,17 @@ static int32 GuardedMain(int32 argc, TCHAR* argv[], bool bDirectMode)
 	AtomicSave(IniBootstrapFilename,     [](const FString& TmpFile) { GConfig->SaveCurrentStateForBootstrap(*TmpFile); });
 	AtomicSave(ModulesBootstrapFilename, [](const FString& TmpFile) { FModuleManager::Get().SaveCurrentStateForBootstrap(*TmpFile); });
 
+	// Explicitly load ShaderPreprocessor module so it will run its initialization step
+	FModuleManager::LoadModuleChecked<IModuleInterface>(TEXT("ShaderPreprocessor"));
+
 	// We just enumerate the shader formats here for debugging.
 	const TArray<const class IShaderFormat*>& ShaderFormats = GetShaderFormats();
 	check(ShaderFormats.Num());
 	TMap<FString, uint32> FormatVersionMap;
 	for (int32 Index = 0; Index < ShaderFormats.Num(); Index++)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(ShaderFormat);
+
 		TArray<FName> OutFormats;
 		ShaderFormats[Index]->GetSupportedFormats(OutFormats);
 		check(OutFormats.Num());
@@ -1201,12 +1218,15 @@ static int32 GuardedMain(int32 argc, TCHAR* argv[], bool bDirectMode)
 		SetConsoleTitle(argv[3]);
 #endif
 
+		TRACE_CPUPROFILER_EVENT_SCOPE(FWorkLoop);
+
 		FWorkLoop WorkLoop(argv[2], argv[1], argv[4], argv[5], FormatVersionMap);
 		WorkLoop.Loop();
 	}
 
 	return 0;
 }
+
 
 static int32 GuardedMainWrapper(int32 ArgC, TCHAR* ArgV[], const TCHAR* CrashOutputFile, bool bDirectMode)
 {
@@ -1238,31 +1258,34 @@ static int32 GuardedMainWrapper(int32 ArgC, TCHAR* ArgV[], const TCHAR* CrashOut
 	{
 		// Don't want 32 dialogs popping up when SCW fails
 		GUseCrashReportClient = false;
+		FString ExceptionMsg;
+		FString ExceptionCallStack;
 		__try
 		{
 			GIsGuarded = 1;
 			ReturnCode = GuardedMain(ArgC, ArgV, bDirectMode);
 			GIsGuarded = 0;
 		}
-		__except(EXCEPTION_EXECUTE_HANDLER)
+		__except(HandleShaderCompileException(GetExceptionInformation(), ExceptionMsg, ExceptionCallStack))
 		{
 			FArchive& OutputFile = *IFileManager::Get().CreateFileWriter(CrashOutputFile, FILEWRITE_EvenIfReadOnly);
 
-			if (GFailedErrorCode == ESCWErrorCode::Success)
+			if (GFailedErrorCode == FSCWErrorCode::Success)
 			{
-				if (GSCWErrorCode != ESCWErrorCode::NotSet)
+				if (FSCWErrorCode::IsSet())
 				{
 					// Use the value set inside the shader format
-					GFailedErrorCode = GSCWErrorCode;
+					GFailedErrorCode = FSCWErrorCode::Get();
 				}
 				else
 				{
 					// Something else failed before we could set the error code, so mark it as a General Crash
-					GFailedErrorCode = ESCWErrorCode::GeneralCrash;
+					GFailedErrorCode = FSCWErrorCode::GeneralCrash;
 				}
 			}
-			int64 FileSizePosition = WriteOutputFileHeader(OutputFile, (int32)GFailedErrorCode, FCString::Strlen(GErrorHist), GErrorHist,
-				FCString::Strlen(GErrorExceptionDescription), GErrorExceptionDescription);
+
+			int64 FileSizePosition = WriteOutputFileHeader(OutputFile, GFailedErrorCode, ExceptionCallStack.Len(), *ExceptionCallStack,
+				ExceptionMsg.Len(), *ExceptionMsg);
 
 			int32 NumBatches = 0;
 			OutputFile << NumBatches;
@@ -1327,7 +1350,7 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 	{
 		if (ArgC < 6)
 		{
-			printf("ShaderCompileWorker is called by UnrealEditor, it requires specific command line arguments.\n");
+			printf("ShaderCompileWorker (v%d) is called by UnrealEditor, it requires specific command line arguments.\n", ShaderCompileWorkerOutputVersion);
 			return -1;
 		}
 

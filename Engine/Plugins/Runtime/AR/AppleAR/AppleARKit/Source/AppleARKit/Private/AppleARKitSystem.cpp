@@ -25,6 +25,7 @@
 #include "ARBlueprintLibrary.h"
 #include "ARKitGeoTrackingSupport.h"
 #include "RenderGraphBuilder.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 // For mesh occlusion
 #include "MRMeshComponent.h"
@@ -949,6 +950,26 @@ UARPin* FAppleARKitSystem::OnPinComponent( USceneComponent* ComponentToPin, cons
 
 void FAppleARKitSystem::OnRemovePin(UARPin* PinToRemove)
 {
+#if SUPPORTS_ARKIT_1_0
+	// Release the underlying ARKit anchor for this pin.
+	{
+		ARAnchor* Anchor = static_cast<ARAnchor*>(PinToRemove->GetNativeResource());
+		if (Anchor)
+		{
+			FScopeLock ScopeLock(&AnchorsLock);
+
+			const auto Guid = FAppleARKitConversion::ToFGuid(Anchor.identifier);
+			if (auto Record = AllAnchors.Find(Guid))
+			{
+				ARAnchor* SavedAnchor = *Record;
+				check(SavedAnchor == Anchor); // SavedAnchor should be the same as Anchor.
+				[SavedAnchor release] ;
+				AllAnchors.Remove(Guid);
+			}
+		}
+	}
+#endif
+
 	Pins.RemoveSingleSwap(PinToRemove);
 }
 
@@ -1572,8 +1593,6 @@ void FAppleARKitSystem::OnSpawnARActor(AARActor* NewARActor, UARComponent* NewAR
 	}
 }
 
-
-PRAGMA_DISABLE_OPTIMIZATION
 bool FAppleARKitSystem::Run(UARSessionConfig* SessionConfig)
 {
 	TimecodeProvider = UAppleARKitSettings::GetTimecodeProvider();
@@ -1752,7 +1771,6 @@ bool FAppleARKitSystem::Run(UARSessionConfig* SessionConfig)
 	}
 	return true;
 }
-PRAGMA_ENABLE_OPTIMIZATION
 
 bool FAppleARKitSystem::IsRunning() const
 {

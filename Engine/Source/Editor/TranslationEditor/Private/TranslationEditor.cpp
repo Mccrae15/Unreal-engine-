@@ -7,6 +7,7 @@
 #include "Widgets/Input/SButton.h"
 #include "TranslationEditorModule.h"
 #include "TranslationEditorMenu.h"
+#include "PropertyEditorModule.h"
 #include "PropertyPath.h"
 
 #include "Logging/MessageLog.h"
@@ -816,7 +817,7 @@ void FTranslationEditor::ChangeSourceFont()
 
 	if ( bOpened && NewFontFilename != "")
 	{
-		SourceFont = FSlateFontInfo(NewFontFilename, SourceFont.Size);
+		SourceFont = FSlateFontInfo(NewFontFilename, IntCastChecked<uint16>(SourceFont.Size));
 		RefreshUI();
 	}
 }
@@ -831,7 +832,7 @@ void FTranslationEditor::ChangeTranslationTargetFont()
 
 	if ( bOpened && NewFontFilename != "")
 	{
-		TranslationTargetFont = FSlateFontInfo(NewFontFilename, TranslationTargetFont.Size);
+		TranslationTargetFont = FSlateFontInfo(NewFontFilename, IntCastChecked<uint16>(TranslationTargetFont.Size));
 		RefreshUI();
 	}
 }

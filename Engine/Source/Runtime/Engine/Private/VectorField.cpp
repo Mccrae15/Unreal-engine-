@@ -5,19 +5,19 @@
 ==============================================================================*/
 
 #include "VectorField.h"
+#include "Components/PrimitiveComponent.h"
 #include "PrimitiveViewRelevance.h"
-#include "RenderingThread.h"
-#include "UniformBuffer.h"
-#include "ShaderParameters.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "RHIStaticStates.h"
 #include "PrimitiveSceneProxy.h"
-#include "Containers/ResourceArray.h"
-#include "Shader.h"
-#include "SceneUtils.h"
+#include "SceneInterface.h"
 #include "SceneManagement.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/Texture2D.h"
 #include "ComponentReregisterContext.h"
+#include "UObject/UnrealType.h"
 #include "VectorFieldVisualization.h"
+#include "Serialization/MemoryWriter.h"
 #include "ShaderParameterUtils.h"
 #include "GlobalShader.h"
 #include "FXSystem.h"
@@ -28,6 +28,9 @@
 #include "PrimitiveSceneProxy.h"
 #include "Materials/Material.h"
 #include "Engine/Engine.h"
+#include "TextureResource.h"
+#include "GlobalRenderResources.h"
+#include "PipelineStateCache.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(VectorField)
 
@@ -41,6 +44,9 @@ DEFINE_LOG_CATEGORY(LogVectorField)
 /*------------------------------------------------------------------------------
 	FVectorFieldResource implementation.
 ------------------------------------------------------------------------------*/
+
+FVectorFieldResource::FVectorFieldResource() {}
+FVectorFieldResource::~FVectorFieldResource(){}
 
 /**
  * Release RHI resources.
@@ -1015,10 +1021,7 @@ public:
 	void SetOutput(FRHICommandList& RHICmdList, FRHIUnorderedAccessView* VolumeTextureUAV)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( OutVolumeTexture.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutVolumeTexture.GetBaseIndex(), VolumeTextureUAV);
-		}
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutVolumeTexture, VolumeTextureUAV);
 	}
 
 	/**
@@ -1027,10 +1030,7 @@ public:
 	void UnbindBuffers(FRHICommandList& RHICmdList)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( OutVolumeTexture.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutVolumeTexture.GetBaseIndex(), nullptr);
-		}
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutVolumeTexture, nullptr);
 	}
 
 private:

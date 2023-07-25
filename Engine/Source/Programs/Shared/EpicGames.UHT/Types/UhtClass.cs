@@ -88,6 +88,12 @@ namespace EpicGames.UHT.Types
 		/// Class has destructor
 		/// </summary>
 		HasDestructor = 1 << 11,
+
+		/// <summary>
+		/// The GENERATED_UCLASS_BODY, GENERATED_UINTERFACE_BODY, and GENERATED_IINTERFACE_BODY macros use the 
+		/// legacy generated body.  If this flag is set, generate the legacy instead of the GENERATED_BODY macros.
+		/// </summary>
+		UsesGeneratedBodyLegacy = 1 << 12,
 	}
 
 	/// <summary>
@@ -635,6 +641,14 @@ namespace EpicGames.UHT.Types
 		}
 
 		/// <inheritdoc/>
+		public override void BindSuperAndBases()
+		{
+			BindSuper(SuperIdentifier, UhtFindOptions.Class);
+			BindBases(BaseIdentifiers, UhtFindOptions.Class);
+			base.BindSuperAndBases();
+		}
+
+		/// <inheritdoc/>
 		protected override void ResolveSuper(UhtResolvePhase resolvePhase)
 		{
 			base.ResolveSuper(resolvePhase);
@@ -648,8 +662,7 @@ namespace EpicGames.UHT.Types
 			switch (resolvePhase)
 			{
 				case UhtResolvePhase.Bases:
-					BindAndResolveSuper(SuperIdentifier, UhtFindOptions.Class);
-					BindAndResolveBases(BaseIdentifiers, UhtFindOptions.Class);
+					UhtClass? superClass = SuperClass;
 
 					// Force the MatchedSerializers on for anything being exported
 					if (!ClassExportFlags.HasAnyFlags(UhtClassExportFlags.NoExport))
@@ -661,7 +674,6 @@ namespace EpicGames.UHT.Types
 					{
 						case UhtClassType.Class:
 							{
-								UhtClass? superClass = SuperClass;
 
 								// Merge the super class flags
 								if (superClass != null)
@@ -713,7 +725,6 @@ namespace EpicGames.UHT.Types
 
 						case UhtClassType.Interface:
 							{
-								UhtClass? superClass = SuperClass;
 								if (superClass != null)
 								{
 									ClassFlags |= superClass.ClassFlags & EClassFlags.ScriptInherit;

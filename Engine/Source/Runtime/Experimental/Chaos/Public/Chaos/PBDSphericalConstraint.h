@@ -3,6 +3,7 @@
 
 #include "Chaos/PBDSoftsEvolutionFwd.h"
 #include "Chaos/PBDSoftsSolverParticles.h"
+#include "Chaos/CollectionPropertyFacade.h"
 #include "ChaosStats.h"
 #include "Containers/ArrayView.h"
 #include "Containers/ContainersFwd.h"
@@ -28,6 +29,27 @@ namespace Chaos::Softs
 class CHAOS_API FPBDSphericalConstraint final
 {
 public:
+	static bool IsEnabled(const FCollectionPropertyConstFacade& PropertyCollection)
+	{
+		return IsMaxDistanceEnabled(PropertyCollection, false);
+	}
+
+	FPBDSphericalConstraint(
+		const uint32 InParticleOffset,
+		const uint32 InParticleCount,
+		const TArray<FSolverVec3>& InAnimationPositions,  // Use global indexation (will need adding ParticleOffset)
+		const TConstArrayView<FRealSingle>& InSphereRadii,  // Use local indexation
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		FSolverReal MeshScale
+	)
+		: AnimationPositions(InAnimationPositions)
+		, SphereRadii(InSphereRadii)
+		, ParticleOffset(InParticleOffset)
+		, Scale(MeshScale)
+	{
+		check(InSphereRadii.Num() == InParticleCount);
+	}
+
 	FPBDSphericalConstraint(
 		const uint32 InParticleOffset,
 		const uint32 InParticleCount,
@@ -37,11 +59,17 @@ public:
 		: AnimationPositions(InAnimationPositions)
 		, SphereRadii(InSphereRadii)
 		, ParticleOffset(InParticleOffset)
-		, SphereRadiiMultiplier((FSolverReal)1.)
+		, Scale((FSolverReal)1.)
 	{
 		check(InSphereRadii.Num() == InParticleCount);
 	}
 	~FPBDSphericalConstraint() {}
+
+	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection, FSolverReal MeshScale)
+	{
+		SetScale((FSolverReal)1., MeshScale);
+		// TODO: MaxDistance
+	}
 
 	void Apply(FSolverParticles& Particles, const FSolverReal Dt) const
 	{
@@ -57,9 +85,17 @@ public:
 		}
 	}
 
-	void SetSphereRadiiMultiplier(const FSolverReal InSphereRadiiMultiplier)
+	void SetScale(FSolverReal MaxDistanceScale, FSolverReal MeshScale)
 	{
-		SphereRadiiMultiplier = FMath::Max((FSolverReal)0., InSphereRadiiMultiplier);
+		Scale = FMath::Max(MaxDistanceScale, (FSolverReal)0.) * MeshScale;
+	}
+
+	FSolverReal GetScale() const { return Scale; }
+
+	UE_DEPRECATED(5.2, "Use SetScale instead.")
+	void SetSphereRadiiMultiplier(FSolverReal InSphereRadiiMultiplier, FSolverReal MeshScale)
+	{
+		SetScale(InSphereRadiiMultiplier, MeshScale);
 	}
 
 private:
@@ -76,7 +112,7 @@ private:
 				return;
 			}
 
-			const FSolverReal Radius = SphereRadii[Index] * SphereRadiiMultiplier;
+			const FSolverReal Radius = SphereRadii[Index] * Scale;
 			const FSolverVec3& Center = AnimationPositions[ParticleIndex];
 
 			const FSolverVec3 CenterToParticle = Particles.P(ParticleIndex) - Center;
@@ -85,7 +121,7 @@ private:
 			static const FSolverReal DeadZoneSquareRadius = UE_SMALL_NUMBER; // We will not push the particle away in the dead zone
 			if (DistanceSquared > FMath::Square(Radius) + DeadZoneSquareRadius)
 			{
-				const FSolverReal Distance = sqrt(DistanceSquared);
+				const FSolverReal Distance = FMath::Sqrt(DistanceSquared);
 				const FSolverVec3 PositionOnSphere = (Radius / Distance) * CenterToParticle;
 				Particles.P(ParticleIndex) = Center + PositionOnSphere;
 			}
@@ -98,12 +134,47 @@ protected:
 	const TArray<FSolverVec3>& AnimationPositions;  // Use global indexation (will need adding ParticleOffset)
 	const TConstArrayView<FRealSingle> SphereRadii;  // Use local indexation
 	const int32 ParticleOffset;
-	FSolverReal SphereRadiiMultiplier;
+	UE_DEPRECATED(5.2, "Use Scale instead.")
+	FSolverReal SphereRadiiMultiplier = 1.f;
+
+private:
+	FSolverReal Scale;
+
+	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(MaxDistance, float);
 };
 
 class CHAOS_API FPBDSphericalBackstopConstraint final
 {
 public:
+	static bool IsEnabled(const FCollectionPropertyConstFacade& PropertyCollection)
+	{
+		return IsBackstopDistanceEnabled(PropertyCollection, false) ||
+			IsBackstopDistanceAnimatable(PropertyCollection, false);  // Backstop can be re-enabled if animated
+	}
+
+	FPBDSphericalBackstopConstraint(
+		const int32 InParticleOffset,
+		const int32 InParticleCount,
+		const TArray<FSolverVec3>& InAnimationPositions,  // Use global indexation (will need adding ParticleOffset)
+		const TArray<FSolverVec3>& InAnimationNormals,  // Use global indexation (will need adding ParticleOffset)
+		const TConstArrayView<FRealSingle>& InSphereRadii,  // Use local indexation
+		const TConstArrayView<FRealSingle>& InSphereOffsetDistances,  // Use local indexation
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		FSolverReal MeshScale
+	)
+		: AnimationPositions(InAnimationPositions)
+		, AnimationNormals(InAnimationNormals)
+		, SphereRadii(InSphereRadii)
+		, SphereOffsetDistances(InSphereOffsetDistances)
+		, ParticleOffset(InParticleOffset)
+		, Scale(MeshScale)
+		, bEnabled(true)
+		, bUseLegacyBackstop(false)
+	{
+		check(InSphereRadii.Num() == InParticleCount);
+		check(InSphereOffsetDistances.Num() == InParticleCount);
+	}
+
 	FPBDSphericalBackstopConstraint(
 		const int32 InParticleOffset,
 		const int32 InParticleCount,
@@ -118,7 +189,7 @@ public:
 		, SphereRadii(InSphereRadii)
 		, SphereOffsetDistances(InSphereOffsetDistances)
 		, ParticleOffset(InParticleOffset)
-		, SphereRadiiMultiplier((FSolverReal)1.)
+		, Scale((FSolverReal)1.)
 		, bEnabled(true)
 		, bUseLegacyBackstop(bInUseLegacyBackstop)
 	{
@@ -126,6 +197,12 @@ public:
 		check(InSphereOffsetDistances.Num() == InParticleCount);
 	}
 	~FPBDSphericalBackstopConstraint() {}
+
+	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection, FSolverReal MeshScale)
+	{
+		SetScale((FSolverReal)1., MeshScale);
+		// TODO: BackstopDistance and BackstopRadius
+	}
 
 	void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
 	bool IsEnabled() const { return bEnabled; }
@@ -165,15 +242,21 @@ public:
 		}
 	}
 
-	void SetSphereRadiiMultiplier(const FSolverReal InSphereRadiiMultiplier)
+	void SetScale(FSolverReal BackstopScale, FSolverReal MeshScale)
 	{
-		SphereRadiiMultiplier = FMath::Max((FSolverReal)0., InSphereRadiiMultiplier);
+		Scale = FMath::Max(BackstopScale, (FSolverReal)0.) * MeshScale;
 	}
 
-	FSolverReal GetSphereRadiiMultiplier() const
+	FSolverReal GetScale() const { return Scale; }
+
+	UE_DEPRECATED(5.2, "Use SetScale instead.")
+	void SetSphereRadiiMultiplier(FSolverReal InSphereRadiiMultiplier, FSolverReal MeshScale = (FSolverReal)1.)
 	{
-		return SphereRadiiMultiplier;
+		SetScale(InSphereRadiiMultiplier, MeshScale);
 	}
+
+	UE_DEPRECATED(5.2, "Use GetScale() instead.")
+	FSolverReal GetSphereRadiiMultiplier() const { return GetScale(); }
 
 	bool UseLegacyBackstop() const
 	{
@@ -197,8 +280,8 @@ private:
 			const FSolverVec3& AnimationPosition = AnimationPositions[ParticleIndex];
 			const FSolverVec3& AnimationNormal = AnimationNormals[ParticleIndex];
 
-			const FSolverReal SphereOffsetDistance = SphereOffsetDistances[Index];
-			const FSolverReal Radius = SphereRadii[Index] * SphereRadiiMultiplier;
+			const FSolverReal SphereOffsetDistance = SphereOffsetDistances[Index] * Scale;
+			const FSolverReal Radius = SphereRadii[Index] * Scale;
 
 			const FSolverVec3 Center = AnimationPosition - (Radius + SphereOffsetDistance) * AnimationNormal;  // Non legacy version adds radius to the distance
 			const FSolverVec3 CenterToParticle = Particles.P(ParticleIndex) - Center;
@@ -234,8 +317,8 @@ private:
 			const FSolverVec3& AnimationPosition = AnimationPositions[ParticleIndex];
 			const FSolverVec3& AnimationNormal = AnimationNormals[ParticleIndex];
 
-			const FSolverReal SphereOffsetDistance = SphereOffsetDistances[Index];
-			const FSolverReal Radius = SphereRadii[Index] * SphereRadiiMultiplier;
+			const FSolverReal SphereOffsetDistance = SphereOffsetDistances[Index] * Scale;
+			const FSolverReal Radius = SphereRadii[Index] * Scale;
 
 			const FSolverVec3 Center = AnimationPosition - SphereOffsetDistance * AnimationNormal;  // Legacy version already includes the radius within the distance
 			const FSolverVec3 CenterToParticle = Particles.P(ParticleIndex) - Center;
@@ -264,9 +347,12 @@ private:
 	const TConstArrayView<FRealSingle> SphereRadii; // Start at index 0, use local indexation
 	const TConstArrayView<FRealSingle> SphereOffsetDistances;  // Sphere position offsets, use local indexation
 	const int32 ParticleOffset;
-	FSolverReal SphereRadiiMultiplier;
+	FSolverReal Scale;
 	bool bEnabled;
 	bool bUseLegacyBackstop;
+
+	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(BackstopDistance, float);
+	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(BackstopRadius, float);
 };
 
 }  // End namespace Chaos::Softs

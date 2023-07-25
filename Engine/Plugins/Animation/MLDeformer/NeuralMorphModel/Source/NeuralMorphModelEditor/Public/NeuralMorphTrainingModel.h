@@ -2,7 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Containers/Array.h"
 #include "MLDeformerTrainingModel.h"
 #include "NeuralMorphTrainingModel.generated.h"
 
@@ -24,4 +25,16 @@ public:
 	 */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Training Model")
 	int32 Train() const;
+
+	UFUNCTION(BlueprintPure, Category = "Training Model")
+	int32 GetNumBoneGroups() const;
+
+	UFUNCTION(BlueprintPure, Category = "Training Model")
+	int32 GetNumCurveGroups() const;
+
+	UFUNCTION(BlueprintPure, Category = "Training Model")
+	TArray<int32> GenerateBoneGroupIndices() const;
+
+	UFUNCTION(BlueprintPure, Category = "Training Model")
+	TArray<int32> GenerateCurveGroupIndices() const;
 };

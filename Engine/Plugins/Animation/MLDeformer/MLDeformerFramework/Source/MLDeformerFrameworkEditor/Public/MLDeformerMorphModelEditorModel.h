@@ -46,13 +46,15 @@ namespace UE::MLDeformer
 		 * the first morph target, etc. In other words, the layout is: [morph0_deltas][morph1_deltas][morph2_deltas][...].
 		 * @param Deltas The deltas for all morph targets concatenated. So the number of items in this array is a multiple of Model->GetNumBaseVerts().
 		 */
-		void InitEngineMorphTargets(const TArray<FVector3f>& Deltas);
+		virtual void InitEngineMorphTargets(const TArray<FVector3f>& Deltas);
 
 		/**
 		 * Clamp the current morph target number inside the visualization settings to a valid range.
 		 * This won't let the number of the morph target that we are visualizing go above the total number of morph targets.
 		 */
 		void ClampMorphTargetNumber();
+
+		void UpdateMorphErrorValues(TArrayView<UMorphTarget*> MorphTargets);
 
 	protected:
 		/**

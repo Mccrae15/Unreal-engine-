@@ -2,13 +2,6 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
-#include "UObject/NameTypes.h"
-#include "UObject/ObjectPtr.h"
 
 #include "MultilayerProjector.generated.h"
 
@@ -53,7 +46,7 @@ struct FMultilayerProjectorLayer
 	/** Layer scale. */
 	FVector Scale;
 
-	/** Layer angle*/
+	/** Layer angle. */
 	float Angle;
 
 	/** Layer selected image. */

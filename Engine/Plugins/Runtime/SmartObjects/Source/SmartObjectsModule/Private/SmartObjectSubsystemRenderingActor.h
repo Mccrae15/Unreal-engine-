@@ -3,7 +3,6 @@
 #pragma once
 
 #include "SmartObjectDebugRenderingComponent.h"
-#include "GameFramework/Actor.h"
 #include "SmartObjectSubsystemRenderingActor.generated.h"
 
 /** Rendering component for SmartObjectRendering actor. */
@@ -17,7 +16,7 @@ public:
 		: USmartObjectDebugRenderingComponent(ObjectInitializer)
 	{
 #if UE_ENABLE_DEBUG_DRAWING
-		ViewFlagName = TEXT("Game");
+		ViewFlagName = TEXT("SmartObjects");
 #endif
 	}
 

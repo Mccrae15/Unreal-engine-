@@ -109,8 +109,8 @@ private:
 	{
 		if (const FSceneOutlinerTreeItemPtr TreeItem = TreeItemPtr.Pin())
 		{
-			FText Description = IsInActorEditorContext() ? LOCTEXT("ActorFolderIsCurrentDescription", "This Folder is set as Current Folder. New actors will be added to this Folder.") : FText::GetEmpty();
-			return FText::Format(LOCTEXT("DataLayerTooltipText", "{0}\n{1}"), FText::FromString(TreeItem->GetDisplayString()), Description);
+			FText Description = IsInActorEditorContext() ? LOCTEXT("ActorFolderIsCurrentDescription", "\nThis is your current folder. New actors you create will appear here.") : FText::GetEmpty();
+			return FText::Format(LOCTEXT("DataLayerTooltipText", "{0}{1}"), FText::FromString(TreeItem->GetDisplayString()), Description);
 		}
 
 		return FText();
@@ -306,6 +306,12 @@ void FActorFolderTreeItem::Delete(const FFolder& InNewParentFolder)
 	}
 
 	FActorFolders::Get().DeleteFolder(*World, GetFolder());
+
+	// Remove this folder from parent otherwise when parent folder and child folder deleted together, parent will call MoveTo on deleted child folder leading to crash
+	if (FSceneOutlinerTreeItemPtr ParentPtr = GetParent())
+	{
+		ParentPtr->RemoveChild(SharedThis(this));
+	}
 }
 
 void FActorFolderTreeItem::MoveTo(const FFolder& InNewParentFolder)
@@ -348,7 +354,7 @@ TSharedRef<SWidget> FActorFolderTreeItem::GenerateLabelWidget(ISceneOutliner& Ou
 	return SNew(SActorFolderTreeLabel, *this, Outliner, InRow);
 }
 
-bool FActorFolderTreeItem::ShouldShowPinnedState() const
+bool FActorFolderTreeItem::CanChangeChildrenPinnedState() const
 {
 	if (World.IsValid() && !World->IsGameWorld() && World->IsPartitionedWorld())
 	{

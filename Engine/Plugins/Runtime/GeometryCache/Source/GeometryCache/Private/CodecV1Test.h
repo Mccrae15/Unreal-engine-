@@ -1,14 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Containers/UnrealString.h"
 #include "CodecV1.h"
 #include "Serialization/MemoryWriter.h"
 #include "GeometryCacheCodecBase.h"
 #include "Misc/FileHelper.h"
 #include "GeometryCacheMeshData.h"
-#include "HAL/IConsoleManager.h"
 #include "MeshBuild.h"
 
 /** 
@@ -93,7 +90,7 @@ public:
 					const FVector3f& PositionA = OriginalMeshData.Positions[Index];
 					const FVector3f& PositionB = DecodedMeshData.Positions[Index];
 
-					if (!PointsEqual((FVector)PositionA, (FVector)PositionB, true))
+					if (!PointsEqual(PositionA, PositionB, true))
 					{
 						check(true);
 					}
@@ -133,7 +130,7 @@ public:
 					// Motion vectors if we have any
 					if (OriginalMeshData.Positions.Num() == OriginalMeshData.MotionVectors.Num())
 					{
-						if (!PointsEqual((FVector)OriginalMeshData.MotionVectors[Index], (FVector)DecodedMeshData.MotionVectors[Index]))
+						if (!PointsEqual(OriginalMeshData.MotionVectors[Index], DecodedMeshData.MotionVectors[Index]))
 						{
 							check(true);
 						}

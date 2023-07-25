@@ -4,15 +4,12 @@
 
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/OptionalFwd.h"
 #include "Templates/TypeCompatibleBytes.h"
 #include "Templates/UnrealTemplate.h"
 #include "Serialization/Archive.h"
 
-struct FNullOpt
-{
-	explicit constexpr FNullOpt(int) {}
-};
-constexpr FNullOpt NullOpt{0};
+inline constexpr FNullOpt NullOpt{0};
 
 /**
  * When we have an optional value IsSet() returns true, and GetValue() is meaningful.
@@ -166,33 +163,32 @@ public:
 		return !(lhs == rhs);
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, TOptional& Optional)
+	void Serialize(FArchive& Ar)
 	{
-		bool bOptionalIsSet = Optional.bIsSet;
+		bool bOptionalIsSet = bIsSet;
 		Ar << bOptionalIsSet;
 		if (Ar.IsLoading())
 		{
 			if (bOptionalIsSet)
 			{
-				if (!Optional.bIsSet)
+				if (!bIsSet)
 				{
-					Optional.Emplace();
+					Emplace();
 				}
-				Ar << Optional.GetValue();
+				Ar << GetValue();
 			}
 			else
 			{
-				Optional.Reset();
+				Reset();
 			}
 		}
 		else
 		{
 			if (bOptionalIsSet)
 			{
-				Ar << Optional.GetValue();
+				Ar << GetValue();
 			}
 		}
-		return Ar;
 	}
 
 	/** @return true when the value is meaningful; false if calling GetValue() is undefined. */
@@ -220,3 +216,19 @@ private:
 	TTypeCompatibleBytes<OptionalType> Value;
 	bool bIsSet;
 };
+
+template<typename OptionalType>
+FArchive& operator<<(FArchive& Ar, TOptional<OptionalType>& Optional)
+{
+	Optional.Serialize(Ar);
+	return Ar;
+}
+
+/**
+ * Trait which determines whether or not a type is a TOptional.
+ */
+template <typename T> static constexpr bool TIsTOptional_V                              = false;
+template <typename T> static constexpr bool TIsTOptional_V<               TOptional<T>> = true;
+template <typename T> static constexpr bool TIsTOptional_V<const          TOptional<T>> = true;
+template <typename T> static constexpr bool TIsTOptional_V<      volatile TOptional<T>> = true;
+template <typename T> static constexpr bool TIsTOptional_V<const volatile TOptional<T>> = true;

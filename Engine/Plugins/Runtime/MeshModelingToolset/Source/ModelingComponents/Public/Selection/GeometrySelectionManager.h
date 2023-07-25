@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ConvexVolume.h"
 #include "Selections/GeometrySelection.h"
 #include "Selection/GeometrySelector.h"
 #include "Selection/GeometrySelectionChanges.h"
@@ -13,7 +14,6 @@ class IGeometrySelector;
 class UInteractiveToolsContext;
 class IToolsContextRenderAPI;
 class IToolsContextTransactionsAPI;
-class UPersistentMeshSelection;
 class UGeometrySelectionEditCommand;
 class UGeometrySelectionEditCommandArguments;
 
@@ -170,12 +170,84 @@ public:
 	);
 
 
+	/**
+	 * Use the given ConvexVolume to update the active element selection based on UpdateConfig.
+	 * @param ResultOut information on any element selection modifications is returned here
+	 */
+	virtual void UpdateSelectionViaConvex(
+		const FConvexVolume& ConvexVolume,
+		const FGeometrySelectionUpdateConfig& UpdateConfig,
+		FGeometrySelectionUpdateResult& ResultOut
+	);
+
+
+
+	//
+	// Support for more complex selection changes that might (eg) occur over multiple frames, 
+	// or be computed externally. The usage pattern is:
+	//   - verify that CanBeginTrackedSelectionChange() returns true
+	//   - call BeginTrackedSelectionChange(), this opens transacation
+	//      - modify selection here, eg via multiple calls to AccumulateSelectionUpdate_Raycast
+	//   - call EndTrackedSelectionChange() to emit changes and close transaction
+
+	/** @return true if a tracked selection change can be initialized */
+	virtual bool CanBeginTrackedSelectionChange() const;
+
+	/** @return true if an active tracked selection change is in flight */
+	virtual bool IsInTrackedSelectionChange() const { return bInTrackedSelectionChange; }
+
+	/**
+	 * Begin a tracked selection change. CanBeginTrackedSelectionChange() must return true to call this function.
+	 * EndTrackedSelectionChange() must be called to close the selection change.
+	 * @param UpdateConfig how the selection will be modified. Currently this must be consistent across the entire tracked change (ie, only add, only subtract, etc)
+	 * @param bClearOnBegin if true, selection will be initially cleared (eg Replace-style)
+	 */
+	virtual bool BeginTrackedSelectionChange(FGeometrySelectionUpdateConfig UpdateConfig, bool bClearOnBegin);
+
+	/**
+	 * Update the tracked selection change via a single Raycast, using the active UpdateConfig mode passed to BeginTrackedSelectionChange
+	 * @param ResultOut information on any element selection modifications is returned here* 
+	 */
+	virtual void AccumulateSelectionUpdate_Raycast(
+		const FRay3d& WorldRay,
+		FGeometrySelectionUpdateResult& ResultOut
+	);	
+
+	/**
+	 * Close an active tracked selection change. 
+	 * This will emit one or more FChanges for the selection modifications, and then close the open Transaction
+	 */
+	virtual void EndTrackedSelectionChange();
+
+
+	/**
+	 * Directly set the current Selection for the specified Component to NewSelection.
+	 * This function allows external code to construct explicit selections, eg for a Tool or Command to emit a new Selection.
+	 * Component must already be an active target, ie set via AddActiveTarget.
+	 * If the selection of the Target would be modified, a selection-change transaction will be emitted.
+	 */
+	virtual bool SetSelectionForComponent(UPrimitiveComponent* Component, const FGeometrySelection& NewSelection);
+
+
 	DECLARE_MULTICAST_DELEGATE(FModelingSelectionInteraction_SelectionModified);
 	/**
 	 * OnSelectionModified is broadcast if the selection is modified via the above functions.
 	 * There are no arguments.
 	 */
 	FModelingSelectionInteraction_SelectionModified OnSelectionModified;
+
+
+
+	//
+	// Hover/Preview support
+	//
+public:
+
+	virtual bool UpdateSelectionPreviewViaRaycast(
+		const FRay3d& WorldRay
+	);
+
+	virtual void ClearSelectionPreview();
 
 
 	//
@@ -274,14 +346,6 @@ public:
 	/** Visualize the active selection using PDI drawing */
 	virtual void DebugRender(IToolsContextRenderAPI* RenderAPI);
 
-	/**
-	 * Convert the active selection to a UPersistentMeshSelection. 
-	 * SelectionManager will hold a reference to UPersistentMeshSelection to prevent it from being garbage collected,
-	 * but only until the next call to GetActiveSingleSelectionConverted_Legacy()
-	 * This function will be removed in future when UPersistentMeshSelection is no longer needed.
-	 */
-	UPersistentMeshSelection* GetActiveSingleSelectionConverted_Legacy(UPrimitiveComponent* ForComponent);
-
 
 protected:
 
@@ -292,6 +356,8 @@ protected:
 
 	EMeshTopologyMode MeshTopologyMode = EMeshTopologyMode::None;
 	void SetMeshTopologyModeInternal(EMeshTopologyMode NewTopologyMode);
+
+	UE::Geometry::FGeometrySelectionHitQueryConfig GetCurrentSelectionQueryConfig() const;
 
 	// ITF references
 
@@ -352,17 +418,29 @@ protected:
 	void UpdateSelectionRenderCacheOnTargetChange();
 	void RebuildSelectionRenderCaches();
 
+
+	//
+	// 3D geometry for active hover/preview highlight
+	// note: currently only supporting single target here, will need to be refactored to handle multiple targets...
+	//
+	FGeometrySelection ActivePreviewSelection;
+	FGeometrySelectionElements CachedPreviewRenderElements;
+	void ClearActivePreview();
+
+
 	// various change types need internal access
 
 	friend class FGeometrySelectionManager_SelectionTypeChange;
 	friend class FGeometrySelectionManager_ActiveTargetsChange;
 
 
-	// legacy / to-deprecate/remove
-	
-	// this is to support GetActiveSingleSelectionConverted_Legacy, which will eventually be removed
-	UPROPERTY()
-	TObjectPtr<UPersistentMeshSelection> OldSelection;
+	// support for complex selection changes that are driven externally
+	bool bInTrackedSelectionChange = false;
+	FGeometrySelectionUpdateConfig ActiveTrackedUpdateConfig;
+	FGeometrySelection ActiveTrackedSelection;
+	UE::Geometry::FGeometrySelectionDelta InitialTrackedDelta;
+	UE::Geometry::FGeometrySelectionDelta ActiveTrackedDelta;
+	bool bSelectionModifiedDuringTrackedChange = false;
 
 };
 

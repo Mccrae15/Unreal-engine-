@@ -3,8 +3,12 @@
 #pragma once
 
 #include "RemoteSession.h"
-#include "RemoteSessionRole.h"
+#include "Stats/Stats2.h"
 #include "Tickable.h"
+
+enum class EStatFlags : uint8;
+struct FStatGroup_STATGROUP_Tickables;
+struct TStatIdData;
 
 class FRemoteSessionHost;
 class FRemoteSessionClient;

@@ -7,7 +7,7 @@
 #include "MoviePipelineQueue.h"
 #include "MoviePipelineOutputSetting.h"
 #include "MoviePipelineQueueSubsystem.h"
-#include "MoviePipelineMasterConfig.h"
+#include "MoviePipelinePrimaryConfig.h"
 #include "MovieRenderPipelineStyle.h"
 #include "MovieRenderPipelineSettings.h"
 #include "Sections/MovieSceneCameraCutSection.h"
@@ -198,15 +198,23 @@ public:
 		return FText();
 	}
 
-	FText GetMasterConfigLabel() const
+	FText GetPrimaryConfigLabel() const
 	{
 		UMoviePipelineExecutorJob* Job = WeakJob.Get();
 		if (Job)
 		{
+			// If the job has a preset origin (ie, its config is based off a preset w/o any modifications), use its
+			// display name. If the config has a preset origin (ie, it's based off a preset, but has modifications), use
+			// that display name. Otherwise, fall back to the config's display name.
 			UMoviePipelineConfigBase* Config = Job->GetPresetOrigin();
 			if (!Config)
 			{
 				Config = Job->GetConfiguration();
+
+				if (Config && Config->GetConfigOrigin())
+				{
+					Config = Config->GetConfigOrigin();
+				}
 			}
 
 			if (Config)
@@ -226,7 +234,7 @@ public:
 		UMoviePipelineExecutorJob* Job = WeakJob.Get();
 		if (Job)
 		{
-			Job->SetPresetOrigin(CastChecked<UMoviePipelineMasterConfig>(AssetData.GetAsset()));
+			Job->SetPresetOrigin(CastChecked<UMoviePipelinePrimaryConfig>(AssetData.GetAsset()));
 		}
 
 		OnChosePresetCallback.ExecuteIfBound(WeakJob, nullptr);
@@ -248,7 +256,7 @@ public:
 		OnChosePresetCallback.ExecuteIfBound(WeakJob, nullptr);
 	}
 
-	EVisibility GetMasterConfigModifiedVisibility() const
+	EVisibility GetPrimaryConfigModifiedVisibility() const
 	{
 		UMoviePipelineExecutorJob* Job = WeakJob.Get();
 		if (Job)
@@ -259,7 +267,7 @@ public:
 		return EVisibility::Collapsed;
 	}
 
-	void OnEditMasterConfigForJob()
+	void OnEditPrimaryConfigForJob()
 	{
 		OnEditConfigCallback.ExecuteIfBound(WeakJob, nullptr);
 	}
@@ -339,7 +347,7 @@ public:
 
 	TSharedRef<SWidget> OnGenerateConfigPresetPickerMenu()
 	{
-		return OnGenerateConfigPresetPickerMenuFromClass(UMoviePipelineMasterConfig::StaticClass(),
+		return OnGenerateConfigPresetPickerMenuFromClass(UMoviePipelinePrimaryConfig::StaticClass(),
 			FOnAssetSelected::CreateRaw(this, &FMoviePipelineQueueJobTreeItem::OnPickPresetFromAsset),
 			FExecuteAction::CreateRaw(this, &FMoviePipelineQueueJobTreeItem::OnPickNewPreset)
 			);
@@ -366,7 +374,7 @@ public:
 			AssetPickerConfig.ThumbnailScale = 0.1f;
 			AssetPickerConfig.SaveSettingsName = TEXT("MoviePipelineConfigAsset");
 
-			AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoConfigs_Warning", "No Master Configurations Found");
+			AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoConfigs_Warning", "No Primary Configurations Found");
 			AssetPickerConfig.Filter.ClassPaths.Add(InClass->GetClassPathName());
 			AssetPickerConfig.OnAssetSelected = InOnAssetSelected;
 		}
@@ -461,8 +469,8 @@ TSharedRef<SWidget> SQueueJobListRow::GenerateWidgetForColumn(const FName& Colum
 		.Padding(2, 0)
 		[
 			SNew(SHyperlink)
-			.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetMasterConfigLabel)))
-			.OnNavigate(Item.Get(), &FMoviePipelineQueueJobTreeItem::OnEditMasterConfigForJob)
+			.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetPrimaryConfigLabel)))
+			.OnNavigate(Item.Get(), &FMoviePipelineQueueJobTreeItem::OnEditPrimaryConfigForJob)
 		]
 
 		+ SHorizontalBox::Slot()
@@ -470,7 +478,7 @@ TSharedRef<SWidget> SQueueJobListRow::GenerateWidgetForColumn(const FName& Colum
 		[
 			SNew(STextBlock)
 			.Text(LOCTEXT("ModifiedConfigIndicator", "*"))
-			.Visibility(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetMasterConfigModifiedVisibility)
+			.Visibility(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetPrimaryConfigModifiedVisibility)
 		]
 
 		+ SHorizontalBox::Slot()
@@ -794,10 +802,18 @@ struct FMoviePipelineShotItem : IMoviePipelineQueueTreeItem
 		UMoviePipelineExecutorShot* Shot = WeakShot.Get();
 		if (Shot)
 		{
+			// If the shot has a preset origin (ie, its config is based off a preset w/o any modifications), use its
+			// display name. If the config has a preset origin (ie, it's based off a preset, but has modifications), use
+			// that display name. Otherwise, fall back to the config's display name.
 			UMoviePipelineShotConfig* Config = Shot->GetShotOverridePresetOrigin();
 			if (!Config)
 			{
 				Config = Shot->GetShotOverrideConfiguration();
+
+				if (Config && Config->GetConfigOrigin())
+				{
+					Config = Cast<UMoviePipelineShotConfig>(Config->GetConfigOrigin());
+				}
 			}
 
 			if (Config)
@@ -1000,7 +1016,7 @@ TSharedRef<SWidget> SQueueShotListRow::GenerateWidgetForColumn(const FName& Colu
 }
 
 
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 void SMoviePipelineQueueEditor::Construct(const FArguments& InArgs)
 {
 	CachedQueueSerialNumber = uint32(-1);
@@ -1150,7 +1166,7 @@ TSharedRef<SWidget> SMoviePipelineQueueEditor::OnGenerateNewJobFromAssetMenu()
 	return MenuBuilder.MakeWidget();
 }
 
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 void SMoviePipelineQueueEditor::OnCreateJobFromAsset(const FAssetData& InAsset)
 {

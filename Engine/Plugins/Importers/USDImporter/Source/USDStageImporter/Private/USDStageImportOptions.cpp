@@ -17,15 +17,18 @@ UUsdStageImportOptions::UUsdStageImportOptions(const FObjectInitializer& ObjectI
 	bImportSkeletalAnimations = true;
 	bImportLevelSequences = true;
 	bImportMaterials = true;
+	bImportOnlyUsedMaterials = false;
 
 	PurposesToImport = (int32) (EUsdPurpose::Default | EUsdPurpose::Proxy | EUsdPurpose::Render | EUsdPurpose::Guide);
 	NaniteTriangleThreshold = INT32_MAX;
 	IUsdSchemasModule& UsdSchemasModule = FModuleManager::Get().LoadModuleChecked< IUsdSchemasModule >( TEXT("USDSchemas") );
 	RenderContextToImport = UsdSchemasModule.GetRenderContextRegistry().GetUnrealRenderContext();
-	MaterialPurpose = *UnrealIdentifiers::MaterialAllPurpose;
+	MaterialPurpose = *UnrealIdentifiers::MaterialPreviewPurpose;
 	bOverrideStageOptions = false;
 	StageOptions.MetersPerUnit = 0.01f;
 	StageOptions.UpAxis = EUsdUpAxis::ZAxis;
+	bImportAtSpecificTimeCode = false;
+	ImportTimeCode = 0.0f;
 
 	ExistingActorPolicy = EReplaceActorPolicy::Replace;
 	ExistingAssetPolicy = EReplaceAssetPolicy::Replace;
@@ -33,7 +36,6 @@ UUsdStageImportOptions::UUsdStageImportOptions(const FObjectInitializer& ObjectI
 	bPrimPathFolderStructure = false;
 	KindsToCollapse = ( int32 ) ( EUsdDefaultKind::Component | EUsdDefaultKind::Subcomponent );
 	bMergeIdenticalMaterialSlots = true;
-	bCollapseTopLevelPointInstancers = false;
 	bInterpretLODs = true;
 }
 
@@ -80,6 +82,7 @@ void UsdUtils::AddAnalyticsAttributes(
 	InOutAttributes.Emplace( TEXT( "ImportSkeletalAnimations" ), LexToString( Options.bImportSkeletalAnimations ) );
 	InOutAttributes.Emplace( TEXT( "ImportLevelSequences" ), LexToString( Options.bImportLevelSequences ) );
 	InOutAttributes.Emplace( TEXT( "ImportMaterials" ), LexToString( Options.bImportMaterials ) );
+	InOutAttributes.Emplace( TEXT( "ImportOnlyUsedMaterials" ), LexToString( Options.bImportOnlyUsedMaterials) );
 	if ( Options.PrimsToImport != TArray<FString>{ TEXT( "/" ) } )
 	{
 		InOutAttributes.Emplace( TEXT( "NumPrimsToImport" ), LexToString( Options.PrimsToImport.Num() ) );
@@ -94,12 +97,16 @@ void UsdUtils::AddAnalyticsAttributes(
 	{
 		UsdUtils::AddAnalyticsAttributes( Options.StageOptions, InOutAttributes );
 	}
+	InOutAttributes.Emplace( TEXT( "ImportAtSpecificTimeCode" ), Options.bImportAtSpecificTimeCode );
+	if ( Options.bImportAtSpecificTimeCode )
+	{
+		InOutAttributes.Emplace( TEXT( "ImportTimeCode" ), LexToString( Options.ImportTimeCode ) );
+	}
 	InOutAttributes.Emplace( TEXT( "NumGroomInterpolationSettings" ), LexToString( Options.GroomInterpolationSettings.Num() ) );
 	InOutAttributes.Emplace( TEXT( "ReplaceActorPolicy" ), LexToString( ( uint8 ) Options.ExistingActorPolicy ) );
 	InOutAttributes.Emplace( TEXT( "ReplaceAssetPolicy" ), LexToString( ( uint8 ) Options.ExistingAssetPolicy ) );
 	InOutAttributes.Emplace( TEXT( "PrimPathFolderStructure" ), LexToString( Options.bPrimPathFolderStructure ) );
 	InOutAttributes.Emplace( TEXT( "KindsToCollapse" ), LexToString( Options.KindsToCollapse ) );
 	InOutAttributes.Emplace( TEXT( "MergeIdenticalMaterialSlots" ), LexToString( Options.bMergeIdenticalMaterialSlots ) );
-	InOutAttributes.Emplace( TEXT( "CollapseTopLevelPointInstancers" ), LexToString( Options.bCollapseTopLevelPointInstancers ) );
 	InOutAttributes.Emplace( TEXT( "InterpretLODs" ), LexToString( Options.bInterpretLODs ) );
 }

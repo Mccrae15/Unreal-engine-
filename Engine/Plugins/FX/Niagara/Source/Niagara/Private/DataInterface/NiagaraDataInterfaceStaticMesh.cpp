@@ -10,8 +10,12 @@
 #include "NiagaraSettings.h"
 #include "NiagaraScript.h"
 #include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraWorldManager.h"
 #include "NiagaraDataInterfaceUtilities.h"
+#include "ScenePrivate.h"
+#include "SceneRendering.h"
 #include "ShaderParameterUtils.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "NiagaraStats.h"
 
 #if WITH_EDITOR
@@ -19,6 +23,7 @@
 #include "Subsystems/ImportSubsystem.h"
 #endif
 
+#include "DistanceFieldLightingShared.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMeshSocket.h"
 #include "NiagaraDataInterfaceStaticMeshUvMapping.h"
@@ -77,6 +82,9 @@ namespace NDIStaticMeshLocal
 
 		SHADER_PARAMETER(FVector3f,				PreSkinnedLocalBoundsCenter)
 		SHADER_PARAMETER(FVector3f,				PreSkinnedLocalBoundsExtents)
+		SHADER_PARAMETER(FVector3f,				MeshBoundsWSCenter)
+		SHADER_PARAMETER(FVector3f,				MeshBoundsWSExtents)
+		SHADER_PARAMETER(FVector3f,				OwnerToMeshVector)
 		SHADER_PARAMETER(FVector3f,				SystemLWCTile)
 
 		SHADER_PARAMETER_SRV(Buffer<int>,		UvMappingBuffer)
@@ -94,11 +102,14 @@ namespace NDIStaticMeshLocal
 		ECVF_Default
 	);
 
-	static int32 GNDIStaticMesh_UseInlineLODsOnly = 1;
+	static int32 GNDIStaticMesh_UseInlineLODsOnly = 2;
 	static FAutoConsoleVariableRef CVarNDIStaticMesh_UseInlineLODsOnly(
 		TEXT("fx.Niagara.NDIStaticMesh.UseInlineLODsOnly"),
 		GNDIStaticMesh_UseInlineLODsOnly,
-		TEXT("When enabled Niagara will never use streaming LOD levels, only inline LODs."),
+		TEXT("When enabled Niagara will never use streaming LOD levels, only inline LODs."
+		"0 = Streaming LODs can be sampled."
+		"1 = Only inlined LODs can be sampled."
+		"2 = Only inlined LODs can be sampled by default but each DI can override this if desired. "),
 		ECVF_Default
 	);
 
@@ -202,6 +213,8 @@ namespace NDIStaticMeshLocal
 	static const FName	IsValidName("IsValid");
 
 	static const FName	GetPreSkinnedLocalBoundsName("GetPreSkinnedLocalBounds");
+	static const FName	GetMeshBoundsName("GetMeshBounds");
+	static const FName	GetMeshBoundsWSName("GetMeshBoundsWS");
 
 	static const FName	GetLocalToWorldName("GetLocalToWorld");
 	static const FName	GetLocalToWorldInverseTransposedName("GetLocalToWorldInverseTransposed");
@@ -238,46 +251,33 @@ namespace NDIStaticMeshLocal
 	//static const FName Deprecated_GetMeshLocalToWorldInverseTransposedName("DeprecatedGetMeshLocalToWorldInverseTransposed");
 
 	//////////////////////////////////////////////////////////////////////////
-	// Shader Parameters
-	static FString	NumTriangles_String("NumTriangles_");
-	static FString	NumVertices_String("NumVertices_");
-	static FString	NumUVs_String("NumUVs_");
-	static FString	HasColors_String("HasColors_");
-	static FString	IndexBuffer_String("IndexBuffer_");
-	static FString	PositionBuffer_String("PositionBuffer_");
-	static FString	TangentBuffer_String("TangentBuffer_");
-	static FString	UVBuffer_String("UVBuffer_");
-	static FString	ColorBuffer_String("ColorBuffer_");
-
-	static FString	HasUniformSampling_String("HasUniformSampling_");
-	static FString	UniformSamplingTriangles_String("UniformSamplingTriangles_");
-
-	static FString	SectionCounts_String("SectionCounts_");
-	static FString	SectionInfos_String("SectionInfos_");
-	static FString	FilteredAndUnfilteredSections_String("FilteredAndUnfilteredSections_");
-
-	static FString	SocketCounts_String("SocketCounts_");
-	static FString	SocketTransforms_String("SocketTransforms_");
-	static FString	FilteredAndUnfilteredSockets_String("FilteredAndUnfilteredSockets_");
-
-	static FString	InvDeltaSeconds_String("InvDeltaSeconds_");
-	static FString	InstanceTransform_String("InstanceTransform_");
-	static FString	InstanceTransformInverseTransposed_String("InstanceTransformInverseTransposed_");
-	static FString	InstanceRotation_String("InstanceRotation_");
-	static FString	InstancePreviousTransform_String("InstancePreviousTransform_");
-	static FString	InstancePreviousTransformInverseTransposed_String("InstancePreviousTransformInverseTransposed_");
-	static FString	InstancePreviousRotation_String("InstancePreviousRotation_");
-	static FString	InstanceWorldVelocity_String("InstanceWorldVelocity_");
-
-	static FString	InstanceDistanceFieldIndex_String("InstanceDistanceFieldIndex_");
-
-	//////////////////////////////////////////////////////////////////////////
 	struct FNDISectionInfo
 	{
 		uint32 FirstTriangle = 0;
 		uint32 NumTriangles = 0;
 		float  Prob = 0.0f;
 		uint32 Alias = 0;
+	};
+
+	struct FNDITangentBasis
+	{
+		FVector3f TangentX;
+		FVector3f TangentY;
+		FVector3f TangentZ;
+	
+		template<typename TTransformHandler = FNDITransformHandlerNoop>
+		void TransformAndEnsureValid(const TTransformHandler& TransformHandler, const FMatrix44f& Matrix)
+		{
+			if (TangentY.SquaredLength() <= 0.001f)
+			{
+				TangentX = FVector3f(1.0f, 0.0f, 0.0f);
+				TangentY = FVector3f(0.0f, 1.0f, 0.0f);
+				TangentZ = FVector3f(0.0f, 0.0f, 1.0f);
+			}
+			TransformHandler.TransformVector(TangentX, Matrix);
+			TransformHandler.TransformVector(TangentY, Matrix);
+			TransformHandler.TransformVector(TangentZ, Matrix);
+		}
 	};
 
 	class FNDISectionAreaWeightedSampler : public FWeightedRandomSampler
@@ -386,6 +386,7 @@ namespace NDIStaticMeshLocal
 		float		DeltaSeconds = 0.0f;
 		FVector3f	PreSkinnedLocalBoundsCenter = FVector3f::ZeroVector;
 		FVector3f	PreSkinnedLocalBoundsExtents = FVector3f::ZeroVector;
+		FVector3f	OwnerToMeshVector = FVector3f::ZeroVector;
 		FPrimitiveComponentId	DistanceFieldPrimitiveId;
 
 		FIntVector NumTriangles = FIntVector::ZeroValue;
@@ -544,6 +545,7 @@ namespace NDIStaticMeshLocal
 		float					DeltaSeconds = 0.0f;
 		FVector3f				PreSkinnedLocalBoundsCenter = FVector3f::ZeroVector;
 		FVector3f				PreSkinnedLocalBoundsExtents = FVector3f::ZeroVector;
+		FVector3f				OwnerToMeshVector = FVector3f::ZeroVector;
 		FPrimitiveComponentId	DistanceFieldPrimitiveId;
 
 		const FMeshUvMappingBufferProxy* UvMappingBuffer = nullptr;
@@ -564,6 +566,9 @@ namespace NDIStaticMeshLocal
 
 		/** Handle to our uv mapping data. */
 		FStaticMeshUvMappingHandle UvMapping;
+
+		/** Vector from system owners instance location to the sampled mesh location. */
+		FVector3f OwnerToMeshVector = FVector3f::ZeroVector;
 
 		/** Cached ComponentToWorld. (Falls back to WorldTransform of the system instance) */
 		FMatrix Transform;
@@ -624,6 +629,8 @@ namespace NDIStaticMeshLocal
 		/** The cached LODIdx used to initialize the FNDIStaticMesh_InstanceData.*/
 		int32 CachedLODIdx = 0;
 
+		FNiagaraParameterDirectBinding<int32> LODIndexUserBinding;
+
 		/** Cached socket information, if available */
 		TArray<FTransform3f> CachedSockets;
 
@@ -637,6 +644,45 @@ namespace NDIStaticMeshLocal
 		int32 UvMappingIndexSet = -1;
 
 		FMeshUvMappingUsage UvMappingUsage;
+
+		bool CalculateLODIndex(UNiagaraDataInterfaceStaticMesh* Interface, FNiagaraSystemInstance* Instance, UStaticMesh* StaticMesh, int32& OutLOD, int32& OutMinLOD)
+		{
+			FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData();
+
+			OutLOD = INDEX_NONE;
+			OutMinLOD = INDEX_NONE;
+			if(Interface == nullptr || Instance == nullptr || RenderData == nullptr)
+			{
+				return false;
+			}
+
+			OutMinLOD = StaticMesh->GetMinLOD().GetValue();
+			if (GNDIStaticMesh_UseInlineLODsOnly == 1 || (GNDIStaticMesh_UseInlineLODsOnly == 2 && !Interface->bAllowSamplingFromStreamingLODs))
+			{
+				OutMinLOD = StaticMesh->GetNumLODs() - StaticMesh->GetRenderData()->NumInlinedLODs;
+			}
+
+			int32 RequestedLOD = Interface->LODIndex;
+			if(LODIndexUserBinding.IsBound())
+			{
+				RequestedLOD = LODIndexUserBinding.GetValue();
+			}
+			else if(Interface->LODIndexUserParameter.Parameter.IsValid())
+			{
+				if (int32* UserLODIndex = LODIndexUserBinding.Init(Instance->GetInstanceParameters(), Interface->LODIndexUserParameter.Parameter))
+				{
+					RequestedLOD = *UserLODIndex;
+				}				
+			}
+
+			int32 MinSampleLOD = RenderData->GetCurrentFirstLODIdx(MinLOD);
+			int32 MaxSampleLOD = StaticMesh->GetNumLODs() - 1;
+
+			OutLOD = RequestedLOD >= 0 ? RequestedLOD : (StaticMesh->GetNumLODs() + RequestedLOD);
+			OutLOD = FMath::Clamp(CachedLODIdx, MinSampleLOD, MaxSampleLOD);
+
+			return StaticMesh->GetRenderData()->LODResources.IsValidIndex(OutLOD);
+		}
 
 #if WITH_EDITOR
 		FDelegateHandle OnMeshChanged;
@@ -654,14 +700,14 @@ namespace NDIStaticMeshLocal
 					StaticMesh->GetOnMeshChanged().Remove(OnMeshChanged);
 					StaticMesh->OnPostMeshBuild().Remove(OnPostMeshBuild);
 				}
+				OnMeshChanged.Reset();
+				OnPostMeshBuild.Reset();
 				if (UImportSubsystem* ImportSubsystem = GEditor->GetEditorSubsystem<UImportSubsystem>())
 				{
 					ImportSubsystem->OnAssetReimport.Remove(OnMeshReimported);
 				}
+				OnMeshReimported.Reset();
 			}
-			OnMeshChanged.Reset();
-			OnPostMeshBuild.Reset();
-			OnMeshReimported.Reset();
 		}
 #endif
 
@@ -681,6 +727,7 @@ namespace NDIStaticMeshLocal
 			DeltaSeconds = 0.0f;
 			PreSkinnedLocalBoundsCenter = FVector3f::ZeroVector;
 			PreSkinnedLocalBoundsExtents = FVector3f::ZeroVector;
+			OwnerToMeshVector = FVector3f::ZeroVector;
 			PhysicsVelocity = FVector::ZeroVector;
 			bUsePhysicsVelocity = Interface->bUsePhysicsBodyVelocity;
 			bComponentValid = false;
@@ -709,6 +756,7 @@ namespace NDIStaticMeshLocal
 			// Gather attached information
 			bComponentValid = SceneComponent != nullptr;
 			FTransform ComponentTransform = bComponentValid ? SceneComponent->GetComponentToWorld() : SystemInstance->GetWorldTransform();
+			OwnerToMeshVector = FVector3f(ComponentTransform.GetLocation() -  SystemInstance->GetWorldTransform().GetLocation());
 			ComponentTransform.AddToTranslation(FVector(SystemInstance->GetLWCTile()) * -FLargeWorldRenderScalar::GetTileSize());
 
 			Transform = ComponentTransform.ToMatrixWithScale();
@@ -745,13 +793,16 @@ namespace NDIStaticMeshLocal
 				{
 					if (!FNiagaraUtilities::AreBufferSRVsAlwaysCreated(GMaxRHIShaderPlatform))
 					{
-						UE_LOG(LogNiagara, Log, TEXT("NiagaraStaticMeshDataInterface used by GPU emitter but does not have SRV access on this platform.  Enable CPU access to fix this issue. Interface: %s, Mesh: %s"), *GetFullNameSafe(Interface), *GetFullNameSafe(StaticMesh));
+						UE_LOG(LogNiagara, Log, TEXT("NiagaraStaticMeshDataInterface used by GPU emitter but does not have SRV access on this platform.  Enable CPU access to fix this issue. System: %s, Mesh: %s"), *GetFullNameSafe(SystemInstance->GetSystem()), *GetFullNameSafe(StaticMesh));
 						StaticMesh = nullptr;
 					}
 				}
 				else
 				{
-					UE_LOG(LogNiagara, Log, TEXT("NiagaraStaticMeshDataInterface used by CPU emitter and does not allow CPU access. Interface: %s, Mesh: %s"), *GetFullNameSafe(Interface), *GetFullNameSafe(StaticMesh));
+					if (Interface->IsUsedWithCPUEmitter())
+					{
+						UE_LOG(LogNiagara, Log, TEXT("NiagaraStaticMeshDataInterface used by CPU emitter and does not allow CPU access. System: %s, Mesh: %s"), *GetFullNameSafe(SystemInstance->GetSystem()), *GetFullNameSafe(StaticMesh));
+					}
 					StaticMesh = nullptr;
 				}
 			}
@@ -759,18 +810,10 @@ namespace NDIStaticMeshLocal
 			TRefCountPtr<const FStaticMeshLODResources> LODData;
 			if (StaticMesh != nullptr)
 			{
-				// Check if any valid LODs are found. If not, we won't use this mesh
-				MinLOD = StaticMesh->GetMinLOD().GetValue();
-				if (GNDIStaticMesh_UseInlineLODsOnly)
-				{
-					MinLOD = StaticMesh->GetNumLODs() - StaticMesh->GetRenderData()->NumInlinedLODs;
-				}
-
 				FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData();
 				if (RenderData)
 				{
-					CachedLODIdx = RenderData->GetCurrentFirstLODIdx(MinLOD);
-					if (RenderData->LODResources.IsValidIndex(CachedLODIdx))
+					if (CalculateLODIndex(Interface, SystemInstance, StaticMesh, CachedLODIdx, MinLOD))
 					{
 						LODData = &RenderData->LODResources[CachedLODIdx];
 					}
@@ -931,7 +974,11 @@ namespace NDIStaticMeshLocal
 
 		bool Tick(UNiagaraDataInterfaceStaticMesh* Interface, FNiagaraSystemInstance* SystemInstance, float InDeltaSeconds)
 		{
-			if (ResetRequired(Interface))
+			//TODO: Recache LOD info.
+			//TODO: Currently we just grab a LOD on init and then fail/reset if that's changed or becomes invalid.
+			//TODO: If we recache here, the DI can just continue with new LODs when desired and more gracefully handle streamed out LODs.
+
+			if (ResetRequired(Interface, SystemInstance))
 			{
 				return true;
 			}
@@ -940,6 +987,7 @@ namespace NDIStaticMeshLocal
 
 			USceneComponent* SceneComponent = SceneComponentWeakPtr.Get();
 			FTransform ComponentTransform = SceneComponent != nullptr ? SceneComponent->GetComponentToWorld() : SystemInstance->GetWorldTransform();
+			OwnerToMeshVector = FVector3f(ComponentTransform.GetLocation() - SystemInstance->GetWorldTransform().GetLocation());
 			ComponentTransform.AddToTranslation(FVector(SystemInstance->GetLWCTile()) * -FLargeWorldRenderScalar::GetTileSize());
 
 			PrevTransform = Transform;
@@ -981,7 +1029,7 @@ namespace NDIStaticMeshLocal
 #endif
 		}
 
-		bool ResetRequired(UNiagaraDataInterfaceStaticMesh* Interface) const
+		bool ResetRequired(UNiagaraDataInterfaceStaticMesh* Interface, FNiagaraSystemInstance* Instance)
 		{
 			USceneComponent* Component = SceneComponentWeakPtr.Get();
 			if (bComponentValid && !Component)
@@ -1015,9 +1063,12 @@ namespace NDIStaticMeshLocal
 
 			if (Mesh != nullptr)
 			{
-				// Currently we only reset if the cached LOD was streamed out, to avoid performance hits. To revisit.
-				// We could probably just recache the data derived from the LOD instead of resetting everything.
-				if (Mesh->GetRenderData()->GetCurrentFirstLODIdx(MinLOD) > CachedLODIdx)
+				//TODO: If the LOD index selection changes then we reset the system
+				//TODO: We should just recache all the relevant data and continue on our way.
+				int32 NewLODIndex = INDEX_NONE;
+				int32 NewMinLOD = INDEX_NONE;
+				bool bSuccess = CalculateLODIndex(Interface, Instance, Mesh, NewLODIndex, NewMinLOD);
+				if (!bSuccess || NewLODIndex != CachedLODIdx)
 				{
 					return true;
 				}
@@ -1026,39 +1077,53 @@ namespace NDIStaticMeshLocal
 			return false;
 		}
 
-		const FStaticMeshLODResources* GetCurrentFirstLOD()
+		const FStaticMeshLODResources* GetCurrentLOD()
 		{
 			//-OPT: Perhaps we could cache this during the tick function?
 			UStaticMesh* StaticMesh = StaticMeshWeakPtr.Get();
 			if ( bMeshValid && StaticMesh )
 			{
-				if ( const FStaticMeshLODResources* LODResource = StaticMesh->GetRenderData()->GetCurrentFirstLOD(MinLOD) )
+				int32 CurrentFirstLOD = StaticMesh->GetRenderData()->GetCurrentFirstLODIdx(MinLOD);
+				if(CachedLODIdx >= CurrentFirstLOD && StaticMesh->GetRenderData()->LODResources.IsValidIndex(CachedLODIdx))
 				{
-					return LODResource;
+					if (const FStaticMeshLODResources* LODResource = &StaticMesh->GetRenderData()->LODResources[CachedLODIdx])
+					{
+						if(LODResource->GetNumVertices() > 0 && LODResource->BuffersSize > 0)
+						{
+							return LODResource;
+						}
+					}
 				}
 			}
 			return nullptr;
 		}
 
-		const FStaticMeshLODResources* GetCurrentFirstLODWithVertexColorOverrides(FColorVertexBuffer*& OutVertexColorOverrides)
+		const FStaticMeshLODResources* GetCurrentLODWithVertexColorOverrides(FColorVertexBuffer*& OutVertexColorOverrides)
 		{
 			//-OPT: Perhaps we could cache this during the tick function?
 			UStaticMesh* StaticMesh = StaticMeshWeakPtr.Get();
 			OutVertexColorOverrides = nullptr;
 			if (bMeshValid && StaticMesh)
 			{
-				if(UStaticMeshComponent* SMComp = Cast<UStaticMeshComponent>(SceneComponentWeakPtr.Get()))
-				{
-					int32 LODIdx = StaticMesh->GetRenderData()->GetCurrentFirstLODIdx(MinLOD);
-					if(SMComp->LODData.IsValidIndex(LODIdx))
-					{
-						OutVertexColorOverrides = SMComp->LODData[LODIdx].OverrideVertexColors;
-					}
-				}
+				int32 CurrentFirstLOD = StaticMesh->GetRenderData()->GetCurrentFirstLODIdx(MinLOD);
 
-				if (const FStaticMeshLODResources* LODResource = StaticMesh->GetRenderData()->GetCurrentFirstLOD(MinLOD))
+				if (CachedLODIdx >= CurrentFirstLOD && StaticMesh->GetRenderData()->LODResources.IsValidIndex(CachedLODIdx))
 				{
-					return LODResource;
+					if(UStaticMeshComponent* SMComp = Cast<UStaticMeshComponent>(SceneComponentWeakPtr.Get()))
+					{
+						if(SMComp->LODData.IsValidIndex(CachedLODIdx))
+						{
+							OutVertexColorOverrides = SMComp->LODData[CachedLODIdx].OverrideVertexColors;
+						}
+					}
+				
+					if (const FStaticMeshLODResources* LODResource = &StaticMesh->GetRenderData()->LODResources[CachedLODIdx])
+					{
+						if (LODResource->GetNumVertices() > 0 && LODResource->BuffersSize > 0)
+						{
+							return LODResource;
+						}
+					}
 				}
 
 			}
@@ -1088,6 +1153,7 @@ namespace NDIStaticMeshLocal
 			InstanceData->DeltaSeconds				= FromGameThread->DeltaSeconds;
 			InstanceData->PreSkinnedLocalBoundsCenter = FromGameThread->PreSkinnedLocalBoundsCenter;
 			InstanceData->PreSkinnedLocalBoundsExtents = FromGameThread->PreSkinnedLocalBoundsExtents;
+			InstanceData->OwnerToMeshVector			= FromGameThread->OwnerToMeshVector;
 			InstanceData->DistanceFieldPrimitiveId	= FromGameThread->DistanceFieldPrimitiveId;
 
 			InstanceData->UvMappingBuffer			= FromGameThread->UvMappingBuffer;
@@ -1123,7 +1189,7 @@ namespace NDIStaticMeshLocal
 		FORCEINLINE FStaticMeshCpuHelper(FVectorVMExternalFunctionContext& Context)
 			: InstanceData(Context)
 		{
-			LODResource = InstanceData->GetCurrentFirstLODWithVertexColorOverrides(OverrideVertexColors);
+			LODResource = InstanceData->GetCurrentLODWithVertexColorOverrides(OverrideVertexColors);
 		}
 
 
@@ -1327,52 +1393,28 @@ namespace NDIStaticMeshLocal
 			return LODResource->VertexBuffers.PositionVertexBuffer.VertexPosition(Vertex);
 		}
 
-		FORCEINLINE FVector3f GetTangentX(int32 Vertex) const
+		FORCEINLINE FNDITangentBasis GetTangentBasis(int32 Vertex) const
 		{
-			FVector3f TangentX = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(Vertex);
-			TransformHandler.TransformVector(TangentX, FMatrix44f(InstanceData->TransformInverseTransposed));		// LWC_TODO: Precision loss?
-			return TangentX;
+			FNDITangentBasis TangentBasis;
+			TangentBasis.TangentX = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(Vertex);
+			TangentBasis.TangentY = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentY(Vertex);
+			TangentBasis.TangentZ = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(Vertex);
+			TangentBasis.TransformAndEnsureValid(TransformHandler, FMatrix44f(InstanceData->TransformInverseTransposed));		// LWC_TODO: Precision loss?
+			return TangentBasis;
 		}
 
-		FORCEINLINE FVector3f GetTangentY(int32 Vertex) const
+		FORCEINLINE FNDITangentBasis GetTangentBasisInterpolated(int32 Vertex, float Interp) const
 		{
-			FVector3f TangentY = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentY(Vertex);
-			TransformHandler.TransformVector(TangentY, FMatrix44f(InstanceData->TransformInverseTransposed));		// LWC_TODO: Precision loss?
-			return TangentY;
-		}
+			FNDITangentBasis TangentBasisCurr = GetTangentBasis(Vertex);
+			FNDITangentBasis TangentBasisPrev = TangentBasisCurr;
+			TangentBasisCurr.TransformAndEnsureValid(TransformHandler, FMatrix44f(InstanceData->TransformInverseTransposed));		// LWC_TODO: Precision loss?
+			TangentBasisPrev.TransformAndEnsureValid(TransformHandler, FMatrix44f(InstanceData->PrevTransformInverseTransposed));	// LWC_TODO: Precision loss?
 
-		FORCEINLINE FVector3f GetTangentZ(int32 Vertex) const
-		{
-			FVector3f TangentZ = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(Vertex);
-			TransformHandler.TransformVector(TangentZ, FMatrix44f(InstanceData->TransformInverseTransposed));		// LWC_TODO: Precision loss?
-			return TangentZ;
-		}
-
-		FORCEINLINE FVector3f GetTangentXInterpolated(int32 Vertex, float Interp) const
-		{
-			FVector3f TangentXPrev = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(Vertex);
-			FVector3f TangentXCurr = TangentXPrev;
-			TransformHandler.TransformVector(TangentXPrev, FMatrix44f(InstanceData->PrevTransformInverseTransposed));		// LWC_TODO: Precision loss?
-			TransformHandler.TransformVector(TangentXCurr, FMatrix44f(InstanceData->TransformInverseTransposed));				// LWC_TODO: Precision loss?
-			return FMath::Lerp(TangentXPrev, TangentXCurr, Interp);
-		}
-
-		FORCEINLINE FVector3f GetTangentYInterpolated(int32 Vertex, float Interp) const
-		{
-			FVector3f TangentYPrev = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentY(Vertex);
-			FVector3f TangentYCurr = TangentYPrev;
-			TransformHandler.TransformVector(TangentYPrev, FMatrix44f(InstanceData->PrevTransformInverseTransposed));		// LWC_TODO: Precision loss?
-			TransformHandler.TransformVector(TangentYCurr, FMatrix44f(InstanceData->TransformInverseTransposed));				// LWC_TODO: Precision loss?
-			return FMath::Lerp(TangentYPrev, TangentYCurr, Interp);
-		}
-
-		FORCEINLINE FVector3f GetTangentZInterpolated(int32 Vertex, float Interp) const
-		{
-			FVector3f TangentZPrev = LODResource->VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(Vertex);
-			FVector3f TangentZCurr = TangentZPrev;
-			TransformHandler.TransformVector(TangentZPrev, FMatrix44f(InstanceData->PrevTransformInverseTransposed));		// LWC_TODO: Precision loss?
-			TransformHandler.TransformVector(TangentZCurr, FMatrix44f(InstanceData->TransformInverseTransposed));				// LWC_TODO: Precision loss?
-			return FMath::Lerp(TangentZPrev, TangentZCurr, Interp);
+			FNDITangentBasis InterpolatedBasis;
+			InterpolatedBasis.TangentX = FMath::Lerp(TangentBasisPrev.TangentX, TangentBasisCurr.TangentX, Interp);
+			InterpolatedBasis.TangentY = FMath::Lerp(TangentBasisPrev.TangentY, TangentBasisCurr.TangentY, Interp);
+			InterpolatedBasis.TangentZ = FMath::Lerp(TangentBasisPrev.TangentZ, TangentBasisCurr.TangentZ, Interp);
+			return InterpolatedBasis;
 		}
 
 		FORCEINLINE FLinearColor GetColor(int32 Vertex) const
@@ -1411,7 +1453,7 @@ namespace NDIStaticMeshLocal
 		FORCEINLINE int32 RandomUniformTriangle(const TRandomHelper& RandHelper, int32 InstanceIndex, const TConstArrayView<FNDISectionInfo>& SectionInfos, TConstArrayView<int32>& SectionRemap) const
 		{
 			int32 Triangle = 0;
-			int32 SectionIndex = RandHelper.Rand(InstanceIndex) * SectionInfos.Num();
+			int32 SectionIndex = int32(RandHelper.Rand(InstanceIndex) * float(SectionInfos.Num()));
 			SectionIndex = RandHelper.Rand(InstanceIndex) < SectionInfos[SectionIndex].Prob ? SectionIndex : SectionInfos[SectionIndex].Alias;
 			const int32 Section = SectionRemap[SectionIndex];
 			if ( LODResource->AreaWeightedSectionSamplers.IsValidIndex(Section) && LODResource->AreaWeightedSectionSamplers[Section].GetNumEntries() )
@@ -1425,8 +1467,8 @@ namespace NDIStaticMeshLocal
 		template<typename TRandomHelper>
 		FORCEINLINE int32 RandomTriangle(const TRandomHelper& RandHelper, int32 InstanceIndex, const TConstArrayView<FNDISectionInfo>& SectionInfos) const
 		{
-			const int32 Section = RandHelper.Rand(InstanceIndex) * SectionInfos.Num();
-			const int32 Triangle = SectionInfos[Section].FirstTriangle + (RandHelper.Rand(InstanceIndex) * SectionInfos[Section].NumTriangles);
+			const int32 Section = int32(RandHelper.Rand(InstanceIndex) * float(SectionInfos.Num()));
+			const int32 Triangle = SectionInfos[Section].FirstTriangle + int32(RandHelper.Rand(InstanceIndex) * float(SectionInfos[Section].NumTriangles));
 			return Triangle;
 		}
 
@@ -1439,7 +1481,7 @@ namespace NDIStaticMeshLocal
 		template<typename TRandomHelper>
 		FORCEINLINE int32 RandomUniformSection(const TRandomHelper& RandHelper, int32 InstanceIndex, const TConstArrayView<FNDISectionInfo>& SectionInfos, TConstArrayView<int32>& SectionRemap) const
 		{
-			int32 SectionIndex = RandHelper.Rand(InstanceIndex) * SectionInfos.Num();
+			int32 SectionIndex = int32(RandHelper.Rand(InstanceIndex) * float(SectionInfos.Num()));
 			SectionIndex = RandHelper.Rand(InstanceIndex) < SectionInfos[SectionIndex].Prob ? SectionIndex : SectionInfos[SectionIndex].Alias;
 			return SectionRemap[SectionIndex];
 		}
@@ -1459,7 +1501,7 @@ namespace NDIStaticMeshLocal
 		template<typename TRandomHelper>
 		FORCEINLINE int32 RandomSectionTriangle(const TRandomHelper& RandHelper, int32 InstanceIndex, int32 Section) const
 		{
-			const int32 Triangle = (LODResource->Sections[Section].FirstIndex / 3) + (RandHelper.Rand(InstanceIndex) * LODResource->Sections[Section].NumTriangles);
+			const int32 Triangle = (LODResource->Sections[Section].FirstIndex / 3) + int32(RandHelper.Rand(InstanceIndex) * float(LODResource->Sections[Section].NumTriangles));
 			return Triangle;
 		}
 
@@ -1522,6 +1564,8 @@ UNiagaraDataInterfaceStaticMesh::UNiagaraDataInterfaceStaticMesh(FObjectInitiali
 	: Super(ObjectInitializer)
 {
 	Proxy.Reset(new NDIStaticMeshLocal::FRenderProxy());
+
+	LODIndexUserParameter.Parameter.SetType(FNiagaraTypeDefinition::GetIntDef());
 }
 
 void UNiagaraDataInterfaceStaticMesh::PostInitProperties()
@@ -1578,6 +1622,9 @@ void UNiagaraDataInterfaceStaticMesh::PostEditChangeProperty(struct FPropertyCha
 			DefaultMesh = nullptr;
 		}
 	}
+
+	//Temp hack to prevent the reset to default breaking this user binding.
+	LODIndexUserParameter.Parameter.SetType(FNiagaraTypeDefinition::GetIntDef());
 }
 
 bool UNiagaraDataInterfaceStaticMesh::CanEditChange(const FProperty* InProperty) const
@@ -1622,9 +1669,9 @@ bool UNiagaraDataInterfaceStaticMesh::InitPerInstanceData(void* PerInstanceData,
 		//This is safe to ref on the RT as it's freed on the RT in FStaticMeshComponentLODInfo::BeginReleaseOverrideVertexColors()
 		//However, it's seems unsafe to reference in Niagara's instance data this way as there looks to be a window between this RT command and it's actual use where the data could have been freed.
 #if WITH_EDITOR
-		GpuInitializeData->LODResource = InstanceData->GetCurrentFirstLOD();
+		GpuInitializeData->LODResource = InstanceData->GetCurrentLOD();
 #else
-		GpuInitializeData->LODResource = InstanceData->GetCurrentFirstLODWithVertexColorOverrides(GpuInitializeData->OverrideColorBuffer);
+		GpuInitializeData->LODResource = InstanceData->GetCurrentLODWithVertexColorOverrides(GpuInitializeData->OverrideColorBuffer);
 #endif
 
 		if ( GpuInitializeData->LODResource )
@@ -1662,7 +1709,7 @@ bool UNiagaraDataInterfaceStaticMesh::InitPerInstanceData(void* PerInstanceData,
 				}
 				for (int Section : InstanceData->GetFilteredSections())
 				{
-					GpuInitializeData->FilteredAndUnfilteredSections.Add(Section);
+					GpuInitializeData->FilteredAndUnfilteredSections.Add(uint16(Section));
 				}
 
 				GpuInitializeData->NumUnfilteredSections = InstanceData->NumUnfilteredSections;
@@ -1672,7 +1719,7 @@ bool UNiagaraDataInterfaceStaticMesh::InitPerInstanceData(void* PerInstanceData,
 				}
 				for (int Section : InstanceData->GetUnfilteredSections())
 				{
-					GpuInitializeData->FilteredAndUnfilteredSections.Add(Section);
+					GpuInitializeData->FilteredAndUnfilteredSections.Add(uint16(Section));
 				}
 			}
 		}
@@ -1760,12 +1807,13 @@ void UNiagaraDataInterfaceStaticMesh::ProvidePerInstanceDataForRenderThread(void
 	DataFromGT->DeltaSeconds				= InstanceData->DeltaSeconds;
 	DataFromGT->PreSkinnedLocalBoundsCenter = InstanceData->PreSkinnedLocalBoundsCenter;
 	DataFromGT->PreSkinnedLocalBoundsExtents = InstanceData->PreSkinnedLocalBoundsExtents;
+	DataFromGT->OwnerToMeshVector			= InstanceData->OwnerToMeshVector;
 	DataFromGT->DistanceFieldPrimitiveId	= FPrimitiveComponentId();
 	DataFromGT->UvMappingBuffer				= InstanceData->UvMapping.GetQuadTreeProxy();
 	DataFromGT->UvMappingSet				= InstanceData->UvMapping.GetUvSetIndex();
 
 #if WITH_EDITOR
-	InstanceData->GetCurrentFirstLODWithVertexColorOverrides(DataFromGT->OverrideVertexColors);
+	InstanceData->GetCurrentLODWithVertexColorOverrides(DataFromGT->OverrideVertexColors);
 #endif
 
 	if ( UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(InstanceData->SceneComponentWeakPtr) )
@@ -2127,7 +2175,30 @@ void UNiagaraDataInterfaceStaticMesh::GetMiscFunctions(TArray<FNiagaraFunctionSi
 		Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("ExtentsMax"));
 		Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Extents"));
 		Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Half Extents"));
-		Sig.SetDescription(LOCTEXT("GetPreSkinnedLocalBoundsDesc", "Returns the local bounds of the static mesh"));
+		Sig.SetDescription(LOCTEXT("GetPreSkinnedLocalBoundsDesc", "Returns the bounding information of the mesh vertices."));
+		Sig.SetOutputDescription(Sig.Outputs[0], LOCTEXT("PreSkinnedLocalBounds_CenterDesc", "Center of the mesh vertices bounding box, i.e. ((max - min) * 0.5) + min"));
+		Sig.SetOutputDescription(Sig.Outputs[1], LOCTEXT("PreSkinnedLocalBounds_ExtentsMinDesc", "Min of the mesh vertices."));
+		Sig.SetOutputDescription(Sig.Outputs[2], LOCTEXT("PreSkinnedLocalBounds_ExtentsMaxDesc", "Max of the mesh vertices."));
+		Sig.SetOutputDescription(Sig.Outputs[3], LOCTEXT("PreSkinnedLocalBounds_ExtentsDesc", "Extents of the mesh vertices bounding box, i.e. max - min"));
+		Sig.SetOutputDescription(Sig.Outputs[4], LOCTEXT("PreSkinnedLocalBounds_HalfExtentsDesc", "Extents * 0.5f of the mesh vertices bounding box, i.e. (max - min) * 0.5"));
+	}
+	{
+		FNiagaraFunctionSignature BoundsSig = BaseSignature;
+		BoundsSig.Outputs.Emplace(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Center"));
+		BoundsSig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("ExtentsMin"));
+		BoundsSig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("ExtentsMax"));
+		BoundsSig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Extents"));
+		BoundsSig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Half Extents"));
+		BoundsSig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("OwnerToMeshVector"));
+		BoundsSig.SetOutputDescription(BoundsSig.Outputs.Last(), LOCTEXT("GetMeshBounds_MeshComponentOffsetDesc", "Offset vector to the Source Mesh Component from the Niagara instances location."));
+
+		FNiagaraFunctionSignature& LSSig = OutFunctions.Add_GetRef(BoundsSig);
+		LSSig.Name = GetMeshBoundsName;
+		LSSig.SetDescription(LOCTEXT("GetMeshBoundsDesc", "Returns the bounding information of the mesh in local space."));
+
+		FNiagaraFunctionSignature& WSSig = OutFunctions.Add_GetRef(BoundsSig);
+		WSSig.Name = GetMeshBoundsWSName;
+		WSSig.SetDescription(LOCTEXT("GetMeshBoundsWSDesc", "Returns the bounding information of the mesh in world space."));
 	}
 	{
 		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(BaseSignature);
@@ -2681,7 +2752,15 @@ void UNiagaraDataInterfaceStaticMesh::GetVMExternalFunction(const FVMExternalFun
 	}
 	else if (BindingInfo.Name == GetPreSkinnedLocalBoundsName)
 	{
-	OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceStaticMesh::VMGetPreSkinnedLocalBounds);
+		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceStaticMesh::VMGetPreSkinnedLocalBounds);
+	}
+	else if (BindingInfo.Name == GetMeshBoundsName)
+	{
+		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceStaticMesh::VMGetMeshBounds<true>);
+	}
+	else if (BindingInfo.Name == GetMeshBoundsWSName)
+	{
+		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceStaticMesh::VMGetMeshBounds<false>);
 	}
 	else if (BindingInfo.Name == GetLocalToWorldName)
 	{
@@ -2781,8 +2860,7 @@ bool UNiagaraDataInterfaceStaticMesh::RequiresDistanceFieldData() const
 bool UNiagaraDataInterfaceStaticMesh::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
-	FSHAHash Hash = GetShaderFileHash(NDIStaticMeshLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5);
-	bSuccess &= InVisitor->UpdateString(TEXT("NiagaraDataInterfaceStaticMeshTemplateHLSLSource"), Hash.ToString());
+	bSuccess &= InVisitor->UpdateShaderFile(NDIStaticMeshLocal::TemplateShaderFile);
 	bSuccess &= InVisitor->UpdatePOD(TEXT("NDIStaticMesh_AllowDistanceField"), GetDefault<UNiagaraSettings>()->NDIStaticMesh_AllowDistanceFields ? 1 : 0);
 	bSuccess &= InVisitor->UpdateShaderParameters<NDIStaticMeshLocal::FShaderParameters>();
 	return bSuccess;
@@ -2797,15 +2875,11 @@ void UNiagaraDataInterfaceStaticMesh::ModifyCompilationEnvironment(EShaderPlatfo
 
 void UNiagaraDataInterfaceStaticMesh::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
-	TMap<FString, FStringFormatArg> TemplateArgs =
+	const TMap<FString, FStringFormatArg> TemplateArgs =
 	{
 		{TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol},
 	};
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDIStaticMeshLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
-	OutHLSL.AppendChar('\n');
+	AppendTemplateHLSL(OutHLSL, NDIStaticMeshLocal::TemplateShaderFile, TemplateArgs);
 }
 
 bool UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
@@ -2979,7 +3053,13 @@ void UNiagaraDataInterfaceStaticMesh::SetShaderParameters(const FNiagaraDataInte
 	ShaderParameters->InstancePreviousRotation						= InstanceData.PrevRotation;
 	ShaderParameters->InstanceWorldVelocity							= DeltaPosition;
 
-	const FDistanceFieldSceneData* DistanceFieldSceneData = static_cast<const FNiagaraGpuComputeDispatch&>(Context.GetComputeDispatchInterface()).GetMeshDistanceFieldParameters();	//-BATCHERTODO:
+	const FDistanceFieldSceneData* DistanceFieldSceneData = nullptr;
+	TConstArrayView<FViewInfo> SimulationViewInfos = Context.GetComputeDispatchInterface().GetSimulationViewInfos();
+	if (SimulationViewInfos.Num() > 0 && SimulationViewInfos[0].Family && SimulationViewInfos[0].Family->Scene && SimulationViewInfos[0].Family->Scene->GetRenderScene())
+	{
+		DistanceFieldSceneData = &SimulationViewInfos[0].Family->Scene->GetRenderScene()->DistanceFieldSceneData;
+	}
+
 	if (Context.IsParameterBound(&ShaderParameters->InstanceDistanceFieldIndex))
 	{
 		int32 DistanceFieldIndex = -1;
@@ -3008,8 +3088,14 @@ void UNiagaraDataInterfaceStaticMesh::SetShaderParameters(const FNiagaraDataInte
 		FNiagaraDistanceFieldHelper::SetMeshDistanceFieldParameters(Context.GetGraphBuilder(), DistanceFieldSceneData, *ShaderDistanceFieldObjectParameters, *ShaderDistanceFieldAtlasParameters, FNiagaraRenderer::GetDummyFloat4Buffer());
 	}
 
+	const FBox3f MeshBounds(InstanceData.PreSkinnedLocalBoundsCenter - InstanceData.PreSkinnedLocalBoundsExtents, InstanceData.PreSkinnedLocalBoundsCenter + InstanceData.PreSkinnedLocalBoundsExtents);
+	const FBox3f WorldBounds = MeshBounds.TransformBy(InstanceData.Transform);
+
 	ShaderParameters->PreSkinnedLocalBoundsCenter = InstanceData.PreSkinnedLocalBoundsCenter;
 	ShaderParameters->PreSkinnedLocalBoundsExtents = InstanceData.PreSkinnedLocalBoundsExtents;
+	ShaderParameters->MeshBoundsWSCenter = WorldBounds.GetCenter();
+	ShaderParameters->MeshBoundsWSExtents = WorldBounds.GetExtent();
+	ShaderParameters->OwnerToMeshVector = InstanceData.OwnerToMeshVector;
 
 	ShaderParameters->SystemLWCTile = Context.GetSystemLWCTile();
 
@@ -3044,6 +3130,9 @@ bool UNiagaraDataInterfaceStaticMesh::Equals(const UNiagaraDataInterface* Other)
 		OtherTyped->SourceComponent == SourceComponent &&
 		OtherTyped->SectionFilter.AllowedMaterialSlots == SectionFilter.AllowedMaterialSlots &&
 		OtherTyped->bUsePhysicsBodyVelocity == bUsePhysicsBodyVelocity &&
+		OtherTyped->bAllowSamplingFromStreamingLODs == bAllowSamplingFromStreamingLODs &&
+		OtherTyped->LODIndex == LODIndex &&
+		OtherTyped->LODIndexUserParameter == LODIndexUserParameter &&
 		OtherTyped->FilteredSockets == FilteredSockets;
 }
 
@@ -3066,6 +3155,9 @@ bool UNiagaraDataInterfaceStaticMesh::CopyToInternal(UNiagaraDataInterface* Dest
 	OtherTyped->SectionFilter = SectionFilter;
 	OtherTyped->bUsePhysicsBodyVelocity = bUsePhysicsBodyVelocity;
 	OtherTyped->FilteredSockets = FilteredSockets;
+	OtherTyped->bAllowSamplingFromStreamingLODs = bAllowSamplingFromStreamingLODs;
+	OtherTyped->LODIndex = LODIndex;
+	OtherTyped->LODIndexUserParameter = LODIndexUserParameter;
 	OtherTyped->BindSourceDelegates();
 	return true;
 }
@@ -3111,7 +3203,7 @@ void UNiagaraDataInterfaceStaticMesh::GetFeedback(UNiagaraSystem* Asset, UNiagar
 			FNiagaraDataInterfaceUtilities::ForEachVMFunctionEquals(
 				this,
 				Asset,
-				[&](const FVMExternalFunctionBindingInfo& VMFunction) -> bool
+				[&](const UNiagaraScript* Script, const FVMExternalFunctionBindingInfo& VMFunction) -> bool
 				{
 					bCpuAccessWarning |= CpuAccessFunctions.ContainsByPredicate([&](const FNiagaraFunctionSignature& CheckFunction) { return CheckFunction.Name == VMFunction.Name; });
 					return bCpuAccessWarning == false;
@@ -3121,7 +3213,7 @@ void UNiagaraDataInterfaceStaticMesh::GetFeedback(UNiagaraSystem* Asset, UNiagar
 			FNiagaraDataInterfaceUtilities::ForEachGpuFunctionEquals(
 				this,
 				Asset,
-				[&](const FNiagaraDataInterfaceGeneratedFunction& GpuFunction) -> bool
+				[&](const UNiagaraScript* Script,const FNiagaraDataInterfaceGeneratedFunction& GpuFunction) -> bool
 				{
 					bCpuAccessWarning |= CpuAccessFunctions.ContainsByPredicate([&](const FNiagaraFunctionSignature& CheckFunction) { return CheckFunction.Name == GpuFunction.DefinitionName; });
 					return bCpuAccessWarning == false;
@@ -3159,7 +3251,7 @@ void UNiagaraDataInterfaceStaticMesh::GetFeedback(UNiagaraSystem* Asset, UNiagar
 	{
 		FNiagaraDataInterfaceUtilities::ForEachGpuFunctionEquals(
 			this, Asset, Component,
-			[&](const FNiagaraDataInterfaceGeneratedFunction& FunctionBinding)
+			[&](const UNiagaraScript* Script, const FNiagaraDataInterfaceGeneratedFunction& FunctionBinding)
 			{
 				if (FunctionBinding.DefinitionName == NDIStaticMeshLocal::QueryDistanceFieldName )
 				{
@@ -3362,6 +3454,38 @@ void UNiagaraDataInterfaceStaticMesh::VMGetPreSkinnedLocalBounds(FVectorVMExtern
 	}
 }
 
+template<bool bLocalSpace>
+void UNiagaraDataInterfaceStaticMesh::VMGetMeshBounds(FVectorVMExternalFunctionContext& Context)
+{
+	NDIStaticMeshLocal::FStaticMeshCpuHelper<FNDITransformHandlerNoop> StaticMeshHelper(Context);
+	FNDIOutputParam<FVector3f>	OutCenter(Context);
+	FNDIOutputParam<FVector3f>	OutExtentsMin(Context);
+	FNDIOutputParam<FVector3f>	OutExtentsMax(Context);
+	FNDIOutputParam<FVector3f>	OutExtents(Context);
+	FNDIOutputParam<FVector3f>	OutHalfExtents(Context);
+	FNDIOutputParam<FVector3f>	OutOwnerToMeshVector(Context);
+
+	const FBox MeshBounds(StaticMeshHelper.InstanceData->PreSkinnedLocalBoundsCenter - StaticMeshHelper.InstanceData->PreSkinnedLocalBoundsExtents, StaticMeshHelper.InstanceData->PreSkinnedLocalBoundsCenter + StaticMeshHelper.InstanceData->PreSkinnedLocalBoundsExtents);
+	const FBox WorldBounds = MeshBounds.TransformBy(StaticMeshHelper.InstanceData->Transform);
+
+	const FVector3f Center = bLocalSpace ? FVector3f(MeshBounds.GetCenter())  : FVector3f(WorldBounds.GetCenter());
+	const FVector3f HalfExtents = FVector3f(WorldBounds.GetExtent());
+	const FVector3f Extents = HalfExtents * 2.0f;
+	const FVector3f ExtentsMin = Center - HalfExtents;
+	const FVector3f ExtentsMax = Center + HalfExtents;
+	const FVector3f OwnerToMeshVector = StaticMeshHelper.InstanceData->OwnerToMeshVector;
+
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+	{
+		OutCenter.SetAndAdvance(Center);
+		OutExtentsMin.SetAndAdvance(ExtentsMin);
+		OutExtentsMax.SetAndAdvance(ExtentsMax);
+		OutExtents.SetAndAdvance(Extents);
+		OutHalfExtents.SetAndAdvance(HalfExtents);
+		OutOwnerToMeshVector.SetAndAdvance(OwnerToMeshVector);
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 // VM Vertex Sampling
 void UNiagaraDataInterfaceStaticMesh::VMIsValidVertex(FVectorVMExternalFunctionContext& Context)
@@ -3444,11 +3568,12 @@ void UNiagaraDataInterfaceStaticMesh::VMGetVertex(FVectorVMExternalFunctionConte
 			const FVector3f Position = StaticMeshHelper.TransformPosition(LocalPosition);
 			const FVector3f PreviousPosition = StaticMeshHelper.PreviousTransformPosition(LocalPosition);
 			const FVector3f Velocity = (Position - PreviousPosition) * InvDt;
+			const NDIStaticMeshLocal::FNDITangentBasis TangentBasis = StaticMeshHelper.GetTangentBasis(Vertex);
 			OutPosition.SetAndAdvance(Position);
 			OutVelocity.SetAndAdvance(Velocity);
-			OutNormal.SetAndAdvance(StaticMeshHelper.GetTangentZ(Vertex));
-			OutBitangent.SetAndAdvance(StaticMeshHelper.GetTangentY(Vertex));
-			OutTangent.SetAndAdvance(StaticMeshHelper.GetTangentX(Vertex));
+			OutNormal.SetAndAdvance(TangentBasis.TangentZ);
+			OutBitangent.SetAndAdvance(TangentBasis.TangentY);
+			OutTangent.SetAndAdvance(TangentBasis.TangentX);
 		}
 	}
 	else
@@ -3494,11 +3619,12 @@ void UNiagaraDataInterfaceStaticMesh::VMGetVertexInterpolated(FVectorVMExternalF
 			const FVector3f Position = StaticMeshHelper.TransformPosition(LocalPosition);
 			const FVector3f PreviousPosition = StaticMeshHelper.PreviousTransformPosition(LocalPosition);
 			const FVector3f Velocity = (Position - PreviousPosition) * InvDt;
+			const NDIStaticMeshLocal::FNDITangentBasis TangentBasis = StaticMeshHelper.GetTangentBasisInterpolated(Vertex, Interp);
 			OutPosition.SetAndAdvance(FMath::Lerp(PreviousPosition, Position, Interp));
 			OutVelocity.SetAndAdvance(Velocity);
-			OutNormal.SetAndAdvance(StaticMeshHelper.GetTangentZInterpolated(Vertex, Interp));
-			OutBitangent.SetAndAdvance(StaticMeshHelper.GetTangentYInterpolated(Vertex, Interp));
-			OutTangent.SetAndAdvance(StaticMeshHelper.GetTangentXInterpolated(Vertex, Interp));
+			OutNormal.SetAndAdvance(TangentBasis.TangentZ);
+			OutBitangent.SetAndAdvance(TangentBasis.TangentY);
+			OutTangent.SetAndAdvance(TangentBasis.TangentX);
 		}
 	}
 	else
@@ -5097,4 +5223,3 @@ FStaticMeshUvMappingHandle FNDI_StaticMesh_GeneratedData::GetCachedUvMapping(TWe
 }
 
 #undef LOCTEXT_NAMESPACE
-

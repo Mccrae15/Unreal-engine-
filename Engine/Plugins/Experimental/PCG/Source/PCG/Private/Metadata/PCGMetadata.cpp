@@ -2,14 +2,18 @@
 
 #include "Metadata/PCGMetadata.h"
 
-#include "Misc/ScopeRWLock.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "Helpers/PCGPropertyHelpers.h"
+#include "PCGPoint.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadata)
 
 void UPCGMetadata::Serialize(FArchive& InArchive)
 {
 	Super::Serialize(InArchive);
 
 	int32 NumAttributes = (InArchive.IsLoading() ? 0 : Attributes.Num());
+	// We need to keep track of the max attribute Id, since it won't necessary be equal to the number of attributes + 1.
+	int64 MaxAttributeId = -1;
 
 	InArchive << NumAttributes;
 
@@ -29,6 +33,7 @@ void UPCGMetadata::Serialize(FArchive& InArchive)
 				SerializedAttribute->Name = AttributeName;
 				SerializedAttribute->Serialize(this, InArchive);
 				Attributes.Add(AttributeName, SerializedAttribute);
+				MaxAttributeId = FMath::Max(SerializedAttribute->AttributeId, MaxAttributeId);
 			}
 		}
 	}
@@ -50,8 +55,11 @@ void UPCGMetadata::Serialize(FArchive& InArchive)
 	// Finally, initialize non-serialized members
 	if (InArchive.IsLoading())
 	{
-		NextAttributeId = Attributes.Num();
-		ItemKeyOffset = (Parent.IsValid() ? Parent->GetItemCountForChild() : 0);
+		// The next attribute id need to be bigger than the max attribute id of all attributes (or we could have collisions).
+		// Therefore by construction, it should never be less than the number of attributes (but can be greater).
+		NextAttributeId = MaxAttributeId + 1;
+		check(NextAttributeId >= Attributes.Num());
+		ItemKeyOffset = (Parent ? Parent->GetItemCountForChild() : 0);
 	}
 }
 
@@ -68,20 +76,39 @@ void UPCGMetadata::BeginDestroy()
 	Super::BeginDestroy();
 }
 
-void UPCGMetadata::Initialize(const UPCGMetadata* InParent)
+void UPCGMetadata::Initialize(const UPCGMetadata* InParent, bool bAddAttributesFromParent)
 {
-	if (Parent.IsValid() || Attributes.Num() != 0)
+	// If we are adding attributes from parent, then we use exclude filter with empty list so
+	// that all parameters added. Otherwise use include filter with empty list so none are added.
+	const EPCGMetadataFilterMode bFilter = bAddAttributesFromParent ? EPCGMetadataFilterMode::ExcludeAttributes : EPCGMetadataFilterMode::IncludeAttributes;
+	InitializeWithAttributeFilter(InParent, TSet<FName>(), bFilter);
+}
+
+void UPCGMetadata::InitializeWithAttributeFilter(const UPCGMetadata* InParent, const TSet<FName>& InFilteredAttributes, EPCGMetadataFilterMode InFilterMode)
+{
+	if (Parent || Attributes.Num() != 0)
 	{
 		// Already initialized; note that while that might be construed as a warning, there are legit cases where this is correct
 		return;
 	}
 
 	Parent = ((InParent != this) ? InParent : nullptr);
-	ItemKeyOffset = Parent.IsValid() ? Parent->GetItemCountForChild() : 0;
-	AddAttributes(InParent);
+	ItemKeyOffset = Parent ? Parent->GetItemCountForChild() : 0;
+
+	// If we have been given an include list which is empty, then don't bother adding any attributes
+	const bool bSkipAddingAttributesFromParent = (InFilterMode == EPCGMetadataFilterMode::IncludeAttributes) && (InFilteredAttributes.Num() == 0);
+	if (!bSkipAddingAttributesFromParent)
+	{
+		AddAttributesFiltered(InParent, InFilteredAttributes, InFilterMode);
+	}
 }
 
 void UPCGMetadata::InitializeAsCopy(const UPCGMetadata* InMetadataToCopy)
+{
+	InitializeAsCopyWithAttributeFilter(InMetadataToCopy, TSet<FName>(), EPCGMetadataFilterMode::ExcludeAttributes);
+}
+
+void UPCGMetadata::InitializeAsCopyWithAttributeFilter(const UPCGMetadata* InMetadataToCopy, const TSet<FName>& InFilteredAttributes, EPCGMetadataFilterMode InFilterMode)
 {
 	if (!InMetadataToCopy)
 	{
@@ -89,7 +116,7 @@ void UPCGMetadata::InitializeAsCopy(const UPCGMetadata* InMetadataToCopy)
 	}
 
 	check(InMetadataToCopy);
-	if (Parent.IsValid() || Attributes.Num() != 0)
+	if (Parent || Attributes.Num() != 0)
 	{
 		UE_LOG(LogPCG, Error, TEXT("Metadata has already been initialized or already contains attributes"));
 		return;
@@ -100,33 +127,51 @@ void UPCGMetadata::InitializeAsCopy(const UPCGMetadata* InMetadataToCopy)
 	ParentKeys = InMetadataToCopy->ParentKeys;
 	ItemKeyOffset = InMetadataToCopy->ItemKeyOffset;
 
+	const bool bSkipAttributesInFilterList = (InFilterMode == EPCGMetadataFilterMode::ExcludeAttributes);
+
 	// Copy attributes
 	for (const TPair<FName, FPCGMetadataAttributeBase*>& OtherAttribute : InMetadataToCopy->Attributes)
 	{
-		CopyAttribute(OtherAttribute.Value, OtherAttribute.Key, /*bKeepParent=*/false, /*bCopyEntries=*/true, /*bCopyValues=*/true);
+		const bool bAttributeInFilterList = InFilteredAttributes.Contains(OtherAttribute.Key);
+		const bool bSkipThisAttribute = (bSkipAttributesInFilterList == bAttributeInFilterList);
+
+		if (!bSkipThisAttribute)
+		{
+			CopyAttribute(OtherAttribute.Value, OtherAttribute.Key, /*bKeepParent=*/false, /*bCopyEntries=*/true, /*bCopyValues=*/true);
+		}
 	}
 }
 
-void UPCGMetadata::AddAttributes(const UPCGMetadata* InOther)
+void UPCGMetadata::AddAttributesFiltered(const UPCGMetadata* InOther, const TSet<FName>& InFilteredAttributes, EPCGMetadataFilterMode InFilterMode)
 {
 	if (!InOther)
 	{
 		return;
 	}
 
+	bool bAttributeAdded = false;
+
 	for (const TPair<FName, FPCGMetadataAttributeBase*> OtherAttribute : InOther->Attributes)
 	{
-		if (HasAttribute(OtherAttribute.Key))
+		// Skip this attribute if it is in an exclude list, or if it is not in an include list
+		const bool bAttributeInFilterList = InFilteredAttributes.Contains(OtherAttribute.Key);
+		const bool bSkipAttributesInFilterList = InFilterMode == EPCGMetadataFilterMode::ExcludeAttributes;
+		const bool bSkipThisAttribute = bSkipAttributesInFilterList == bAttributeInFilterList;
+
+		if (bSkipThisAttribute || HasAttribute(OtherAttribute.Key))
 		{
 			continue;
 		}
 		else
 		{
-			CopyAttribute(OtherAttribute.Value, OtherAttribute.Key, /*bKeepParent=*/InOther == Parent, /*bCopyEntries=*/false, /*bCopyValues=*/false);
+			if (CopyAttribute(OtherAttribute.Value, OtherAttribute.Key, /*bKeepParent=*/InOther == Parent, /*bCopyEntries=*/false, /*bCopyValues=*/false))
+			{
+				bAttributeAdded = true;
+			}
 		}
 	}
 
-	if(InOther != Parent)
+	if (InOther != Parent && bAttributeAdded)
 	{
 		OtherParents.Add(InOther);
 	}
@@ -139,8 +184,12 @@ void UPCGMetadata::AddAttribute(const UPCGMetadata* InOther, FName AttributeName
 		return;
 	}
 
-	CopyAttribute(InOther->GetConstAttribute(AttributeName), AttributeName, /*bKeepParent=*/false, /*bCopyEntries=*/false, /*bCopyValues=*/false);
-	OtherParents.Add(InOther);
+	const bool bAttributeAdded = CopyAttribute(InOther->GetConstAttribute(AttributeName), AttributeName, /*bKeepParent=*/InOther == Parent, /*bCopyEntries=*/false, /*bCopyValues=*/false) != nullptr;
+
+	if (InOther != Parent && bAttributeAdded)
+	{
+		OtherParents.Add(InOther);
+	}
 }
 
 void UPCGMetadata::CopyAttributes(const UPCGMetadata* InOther)
@@ -196,7 +245,7 @@ void UPCGMetadata::CopyAttribute(const UPCGMetadata* InOther, FName AttributeToC
 
 const UPCGMetadata* UPCGMetadata::GetRoot() const
 {
-	if (Parent.IsValid())
+	if (Parent)
 	{
 		return Parent->GetRoot();
 	}
@@ -220,6 +269,44 @@ bool UPCGMetadata::HasParent(const UPCGMetadata* InTentativeParent) const
 	}
 
 	return HierarchicalParent == InTentativeParent;
+}
+
+void UPCGMetadata::Flatten()
+{
+	Modify();
+
+	const int32 NumEntries = GetItemCountForChild();
+
+	AttributeLock.WriteLock();
+	for (auto& AttributePair : Attributes)
+	{
+		FPCGMetadataAttributeBase* Attribute = AttributePair.Value;
+		check(Attribute);
+
+		// For all stored entries (from the root), we need to make sure that entries that should have a concrete value have it
+		// Optimization notes:
+		// - we could skip entries that existed prior to attribute existence, etc.
+		// - we could skip entries that have no parent, but that would require checking against the parent entries in the parent hierarchy
+		for (int64 EntryKey = 0; EntryKey < NumEntries; ++EntryKey)
+		{
+			// Get value using value inheritance as expected
+			PCGMetadataValueKey ValueKey = Attribute->GetValueKey(EntryKey);
+			if (ValueKey != PCGDefaultValueKey)
+			{
+				// Set concrete non-default value
+				Attribute->SetValueFromValueKey(EntryKey, ValueKey);
+			}
+		}
+
+		// Finally, flatten values
+		Attribute->Flatten();
+	}
+	AttributeLock.WriteUnlock();
+
+	Parent = nullptr;
+	ParentKeys.Reset();
+	ParentKeys.Init(PCGInvalidEntryKey, NumEntries);
+	ItemKeyOffset = 0;
 }
 
 void UPCGMetadata::AddAttributeInternal(FName AttributeName, FPCGMetadataAttributeBase* Attribute)
@@ -285,6 +372,29 @@ bool UPCGMetadata::HasAttribute(FName AttributeName) const
 	return Attributes.Contains(AttributeName);
 }
 
+bool UPCGMetadata::HasCommonAttributes(const UPCGMetadata* InMetadata) const
+{
+	if (!InMetadata)
+	{
+		return false;
+	}
+
+	bool bHasCommonAttribute = false;
+
+	AttributeLock.ReadLock();
+	for (const TPair<FName, FPCGMetadataAttributeBase*>& AttributePair : Attributes)
+	{
+		if (InMetadata->HasAttribute(AttributePair.Key))
+		{
+			bHasCommonAttribute = true;
+			break;
+		}
+	}
+	AttributeLock.ReadUnlock();
+
+	return bHasCommonAttribute;
+}
+
 int32 UPCGMetadata::GetAttributeCount() const
 {
 	FReadScopeLock ScopeLock(AttributeLock);
@@ -317,12 +427,16 @@ void UPCGMetadata::GetAttributes(TArray<FName>& AttributeNames, TArray<EPCGMetad
 FName UPCGMetadata::GetLatestAttributeNameOrNone() const
 {
 	FName LatestAttributeName = NAME_None;
+	int64 MaxAttributeId = -1;
+	
 	AttributeLock.ReadLock();
-	if (!Attributes.IsEmpty())
+	for (const TPair<FName, FPCGMetadataAttributeBase*>& It : Attributes)
 	{
-		TArray<FName> Keys;
-		Attributes.GenerateKeyArray(Keys);
-		LatestAttributeName = Keys.Last();
+		if (It.Value && (It.Value->AttributeId > MaxAttributeId))
+		{
+			MaxAttributeId = It.Value->AttributeId;
+			LatestAttributeName = It.Key;
+		}
 	}
 	AttributeLock.ReadUnlock();
 
@@ -331,7 +445,12 @@ FName UPCGMetadata::GetLatestAttributeNameOrNone() const
 
 bool UPCGMetadata::ParentHasAttribute(FName AttributeName) const
 {
-	return Parent.IsValid() && Parent->HasAttribute(AttributeName);
+	return Parent && Parent->HasAttribute(AttributeName);
+}
+
+void UPCGMetadata::CreateInteger32Attribute(FName AttributeName, int32 DefaultValue, bool bAllowsInterpolation, bool bOverrideParent)
+{
+	CreateAttribute<int32>(AttributeName, DefaultValue, bAllowsInterpolation, bOverrideParent);
 }
 
 void UPCGMetadata::CreateInteger64Attribute(FName AttributeName, int64 DefaultValue, bool bAllowsInterpolation, bool bOverrideParent)
@@ -384,65 +503,86 @@ void UPCGMetadata::CreateStringAttribute(FName AttributeName, FString DefaultVal
 	CreateAttribute<FString>(AttributeName, DefaultValue, bAllowsInterpolation, bOverrideParent);
 }
 
-bool UPCGMetadata::SetAttributeFromProperty(FName AttributeName, PCGMetadataEntryKey& EntryKey, const UObject* Object, const FProperty* InProperty, bool bCreate)
+void UPCGMetadata::CreateBoolAttribute(FName AttributeName, bool DefaultValue, bool bAllowsInterpolation, bool bOverrideParent)
 {
-	if (!InProperty || !Object)
+	CreateAttribute<bool>(AttributeName, DefaultValue, bAllowsInterpolation, bOverrideParent);
+}
+
+namespace PCGMetadata
+{
+	template<typename DataType>
+	bool SetAttributeFromPropertyHelper(UPCGMetadata* Metadata, FName AttributeName, PCGMetadataEntryKey& EntryKey, const DataType* DataPtr, const FProperty* InProperty, bool bCreate)
 	{
-		return false;
-	}
-
-	// Check if an attribute already exists or not if we ask to create a new one
-	if (!bCreate && !HasAttribute(AttributeName))
-	{
-		return false;
-	}
-
-	auto CreateAttributeAndSet = [&AttributeName, this, bCreate, &EntryKey](auto&& PropertyValue) -> bool
-	{
-		using PropertyType = std::remove_const_t<std::remove_reference_t<decltype(PropertyValue)>>;
-
-		FPCGMetadataAttributeBase* BaseAttribute = GetMutableAttribute(AttributeName);
-
-		if (!BaseAttribute && bCreate)
-		{
-			// Interpolation is disabled and no parent override.
-			BaseAttribute = CreateAttribute<PropertyType>(AttributeName, PropertyValue, false, false);
-		}
-
-		if (!BaseAttribute)
+		if (!InProperty || !DataPtr || !Metadata)
 		{
 			return false;
 		}
 
-		// Allow to set the value if both type matches or if we can construct AttributeType from PropertyType.
-		return PCGMetadataAttribute::CallbackWithRightType(BaseAttribute->GetTypeId(), [&](auto AttributeValue) -> bool
+		// Check if an attribute already exists or not if we ask to create a new one
+		if (!bCreate && !Metadata->HasAttribute(AttributeName))
+		{
+			return false;
+		}
+
+		auto CreateAttributeAndSet = [AttributeName, Metadata, bCreate, &EntryKey](auto&& PropertyValue) -> bool
+		{
+			using PropertyType = std::remove_const_t<std::remove_reference_t<decltype(PropertyValue)>>;
+
+			FPCGMetadataAttributeBase* BaseAttribute = Metadata->GetMutableAttribute(AttributeName);
+
+			if (!BaseAttribute && bCreate)
 			{
-				using AttributeType = decltype(AttributeValue);
-				FPCGMetadataAttribute<AttributeType>* Attribute = static_cast<FPCGMetadataAttribute<AttributeType>*>(BaseAttribute);
+				// Interpolation is disabled and no parent override.
+				BaseAttribute = Metadata->CreateAttribute<PropertyType>(AttributeName, PropertyValue, false, false);
+			}
 
-				if constexpr (std::is_same_v<AttributeType, PropertyType>)
-				{
-					Attribute->SetValue(EntryKey, PropertyValue);
-					return true;
-				}
-				else if constexpr (std::is_constructible_v<AttributeType, PropertyType>)
-				{
-					Attribute->SetValue(EntryKey, AttributeType(PropertyValue));
-					return true;
-				}
-				else
-				{
-					return false;
-				}
-			});
-	};
+			if (!BaseAttribute)
+			{
+				return false;
+			}
 
-	return PCGSettingsHelpers::GetPropertyValueWithCallback(Object, InProperty, CreateAttributeAndSet);
+			// Allow to set the value if both type matches or if we can construct AttributeType from PropertyType.
+			return PCGMetadataAttribute::CallbackWithRightType(BaseAttribute->GetTypeId(), [&EntryKey, &PropertyValue, BaseAttribute, Metadata](auto AttributeValue) -> bool
+				{
+					using AttributeType = decltype(AttributeValue);
+					FPCGMetadataAttribute<AttributeType>* Attribute = static_cast<FPCGMetadataAttribute<AttributeType>*>(BaseAttribute);
+
+					if constexpr (std::is_same_v<AttributeType, PropertyType>)
+					{
+						Metadata->InitializeOnSet(EntryKey);
+						Attribute->SetValue(EntryKey, PropertyValue);
+						return true;
+					}
+					else if constexpr (std::is_constructible_v<AttributeType, PropertyType>)
+					{
+						Metadata->InitializeOnSet(EntryKey);
+						Attribute->SetValue(EntryKey, AttributeType(PropertyValue));
+						return true;
+					}
+					else
+					{
+						return false;
+					}
+				});
+		};
+
+		return PCGPropertyHelpers::GetPropertyValueWithCallback(DataPtr, InProperty, CreateAttributeAndSet);
+	}
 }
 
-void UPCGMetadata::CopyExistingAttribute(FName AttributeToCopy, FName NewAttributeName, bool bKeepParent)
+bool UPCGMetadata::SetAttributeFromProperty(FName AttributeName, PCGMetadataEntryKey& EntryKey, const UObject* Object, const FProperty* InProperty, bool bCreate)
 {
-	CopyAttribute(AttributeToCopy, NewAttributeName, bKeepParent, /*bCopyEntries=*/true, /*bCopyValues=*/true);
+	return PCGMetadata::SetAttributeFromPropertyHelper<UObject>(this, AttributeName, EntryKey, Object, InProperty, bCreate);
+}
+
+bool UPCGMetadata::SetAttributeFromDataProperty(FName AttributeName, PCGMetadataEntryKey& EntryKey, const void* Data, const FProperty* InProperty, bool bCreate)
+{
+	return PCGMetadata::SetAttributeFromPropertyHelper<void>(this, AttributeName, EntryKey, Data, InProperty, bCreate);
+}
+
+bool UPCGMetadata::CopyExistingAttribute(FName AttributeToCopy, FName NewAttributeName, bool bKeepParent)
+{
+	return CopyAttribute(AttributeToCopy, NewAttributeName, bKeepParent, /*bCopyEntries=*/true, /*bCopyValues=*/true) != nullptr;
 }
 
 FPCGMetadataAttributeBase* UPCGMetadata::CopyAttribute(FName AttributeToCopy, FName NewAttributeName, bool bKeepParent, bool bCopyEntries, bool bCopyValues)
@@ -456,7 +596,7 @@ FPCGMetadataAttributeBase* UPCGMetadata::CopyAttribute(FName AttributeToCopy, FN
 	}
 	AttributeLock.ReadUnlock();
 
-	if (!OriginalAttribute && Parent.IsValid())
+	if (!OriginalAttribute && Parent)
 	{
 		OriginalAttribute = Parent->GetConstAttribute(AttributeToCopy);
 	}
@@ -476,16 +616,25 @@ FPCGMetadataAttributeBase* UPCGMetadata::CopyAttribute(const FPCGMetadataAttribu
 	check(OriginalAttribute->GetMetadata()->GetRoot() == GetRoot() || !bKeepParent);
 	FPCGMetadataAttributeBase* NewAttribute = OriginalAttribute->Copy(NewAttributeName, this, bKeepParent, bCopyEntries, bCopyValues);
 
-	AttributeLock.WriteLock();
-	NewAttribute->AttributeId = NextAttributeId++;
-	AddAttributeInternal(NewAttributeName, NewAttribute);
-	AttributeLock.WriteUnlock();
+	if (NewAttribute)
+	{
+		AttributeLock.WriteLock();
+		NewAttribute->AttributeId = NextAttributeId++;
+		AddAttributeInternal(NewAttributeName, NewAttribute);
+		AttributeLock.WriteUnlock();
+	}
 
 	return NewAttribute;
 }
 
-void UPCGMetadata::RenameAttribute(FName AttributeToRename, FName NewAttributeName)
+bool UPCGMetadata::RenameAttribute(FName AttributeToRename, FName NewAttributeName)
 {
+	if (!FPCGMetadataAttributeBase::IsValidName(NewAttributeName))
+	{
+		UE_LOG(LogPCG, Error, TEXT("New attribute name %s is not valid"), *NewAttributeName.ToString());
+		return false;
+	}
+
 	bool bRenamed = false;
 	AttributeLock.WriteLock();
 	if (FPCGMetadataAttributeBase** AttributeFound = Attributes.Find(AttributeToRename))
@@ -503,6 +652,8 @@ void UPCGMetadata::RenameAttribute(FName AttributeToRename, FName NewAttributeNa
 	{
 		UE_LOG(LogPCG, Warning, TEXT("Attribute %s does not exist and therefore cannot be renamed"), *AttributeToRename.ToString());
 	}
+
+	return bRenamed;
 }
 
 void UPCGMetadata::ClearAttribute(FName AttributeToClear)
@@ -960,3 +1111,4 @@ void UPCGMetadata::AccumulatePointWeightedAttributes(const FPCGPoint& InPoint, c
 {
 	AccumulateWeightedAttributes(InPoint.MetadataEntry, InMetadata, Weight, bSetNonInterpolableAttributes, OutPoint.MetadataEntry);
 }
+

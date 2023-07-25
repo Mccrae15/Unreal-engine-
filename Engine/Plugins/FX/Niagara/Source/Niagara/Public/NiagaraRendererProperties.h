@@ -14,13 +14,17 @@
 struct FVersionedNiagaraEmitterData;
 class FNiagaraRenderer;
 class FNiagaraSystemInstanceController;
+class FVertexFactoryType;
 class UMaterial;
 class UMaterialInterface;
+class UMaterialInstanceConstant;
+class UTexture;
 class FNiagaraEmitterInstance;
 class SWidget;
 class FAssetThumbnailPool;
 struct FNiagaraDataSetCompiledData;
 struct FSlateBrush;
+struct FStreamingRenderAssetPrimitiveInfo;
 
 #if WITH_EDITOR
 // Helper class for GUI error handling
@@ -208,6 +212,19 @@ struct FNiagaraRendererMaterialTextureParameter
 	TObjectPtr<UTexture> Texture;
 };
 
+USTRUCT()
+struct FNiagaraRendererMaterialStaticBoolParameter
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Material")
+	FName MaterialParameterName;
+
+	UPROPERTY(EditAnywhere, Category = "Material")
+	FName StaticVariableName;
+};
+
+
 /**
 * Parameters to apply to the material, these are both constant and dynamic bindings
 * Having any bindings set will cause a MID to be generated
@@ -229,7 +246,12 @@ struct FNiagaraRendererMaterialParameters
 	UPROPERTY(EditAnywhere, Category = "Material")
 	TArray<FNiagaraRendererMaterialTextureParameter> TextureParameters;
 
+	UPROPERTY(EditAnywhere, Category = "Material")
+	TArray<FNiagaraRendererMaterialStaticBoolParameter> StaticBoolParameters;
+
 #if WITH_EDITORONLY_DATA
+	void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode SourceMode);
+	void RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode SourceMode);
 	void GetFeedback(TArrayView<UMaterialInterface*> Materials, TArray<FNiagaraRendererFeedback>& OutWarnings) const;
 #endif
 
@@ -347,10 +369,14 @@ public:
 	virtual bool NeedsSystemCompletion() const { return false; }
 
 	bool NeedsPreciseMotionVectors() const;
+	virtual bool UseHeterogeneousVolumes() const { return false; }
 
 	static bool IsSortHighPrecision(ENiagaraRendererSortPrecision SortPrecision);
 
-	static bool IsGpuTranslucentThisFrame(ENiagaraRendererGpuTranslucentLatency Latency);
+	/** Should the Gpu translucent data be this frame or not? */
+	static bool ShouldGpuTranslucentThisFrame(ENiagaraRendererGpuTranslucentLatency Latency);
+	/** Is the Gpu translucent data going to be this frame, this can be restricted by things like feature level. */
+	static bool IsGpuTranslucentThisFrame(ERHIFeatureLevel::Type FeatureLevel, ENiagaraRendererGpuTranslucentLatency Latency);
 
 	template<typename TAction>
 	void ForEachPlatformSet(TAction Func);
@@ -364,14 +390,18 @@ public:
 
 	/** By default, emitters are drawn in the order that they are added to the system. This value will allow you to control the order in a more fine-grained manner.
 	Materials of the same type (i.e. Transparent) will draw in order from lowest to highest within the system. The default value is 0.*/
-	UPROPERTY(EditAnywhere, Category = "Sort Order")
+	UPROPERTY(EditAnywhere, Category = "Rendering")
 	int32 SortOrderHint;
 
 	/** Hint about how to generate motion (velocity) vectors for this renderer. */
-	UPROPERTY(EditAnywhere, Category = "Motion Blur")
+	UPROPERTY(EditAnywhere, Category = "Rendering")
 	ENiagaraRendererMotionVectorSetting MotionVectorSetting;
 
-	/** Optional bool binding to dynamically enable / disable the renderer. */
+	/**
+	Binding to control if the renderer is enabled or disabled.
+	When disabled the renderer does not generate or render any particle data.
+	When disabled via a static bool the renderer will be removed in cooked content.
+	*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding RendererEnabledBinding;
 
@@ -399,6 +429,13 @@ protected:
 
 	/** utility function that can be used to fix up old vec3 bindings into position bindings. */
 	static void ChangeToPositionBinding(FNiagaraVariableAttributeBinding& Binding);
+
+	/** Update MIC Static Parameters. */
+	bool UpdateMaterialStaticParameters(const FNiagaraRendererMaterialParameters& MaterialParameters, UMaterialInstanceConstant* MIC);
+
+	/** Utility function to updates MICs. */
+	void UpdateMaterialParametersMIC(const FNiagaraRendererMaterialParameters& MaterialParameters, TObjectPtr<UMaterialInterface>& InOutMaterial, TObjectPtr<UMaterialInstanceConstant>& InOutMIC);
+	void UpdateMaterialParametersMIC(const FNiagaraRendererMaterialParameters& MaterialParameters, TArrayView<UMaterialInterface*> Materials, TArray<TObjectPtr<UMaterialInstanceConstant>>& InOutMICs);
 #endif
 
 #if WITH_EDITOR

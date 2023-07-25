@@ -191,8 +191,6 @@ FVulkanCommandListContext::~FVulkanCommandListContext()
 	delete CommandBufferManager;
 	CommandBufferManager = nullptr;
 
-	LayoutManager.Destroy(*Device, Immediate ? &LayoutManager : nullptr);
-
 	delete UniformBufferUploader;
 	delete PendingGfxState;
 	delete PendingComputeState;
@@ -777,16 +775,15 @@ void FVulkanDynamicRHI::InitInstance()
 		GSupportsMobileMultiView = Device->GetOptionalExtensions().HasKHRMultiview ? true : false;
 #endif
 #if VULKAN_RHI_RAYTRACING
-		GRHISupportsRayTracing = RHISupportsRayTracing(GMaxRHIShaderPlatform) && Device->GetOptionalExtensions().HasRaytracingExtensions();
+		GRHISupportsRayTracing = RHISupportsRayTracing(GMaxRHIShaderPlatform) && Device->GetOptionalExtensions().HasRaytracingExtensions() && Device->GetPhysicalFeatures().shaderInt64;
 
 		if (GRHISupportsRayTracing)
 		{
 			GRHISupportsRayTracingShaders = RHISupportsRayTracingShaders(GMaxRHIShaderPlatform);
 			GRHISupportsInlineRayTracing = RHISupportsInlineRayTracing(GMaxRHIShaderPlatform) && Device->GetOptionalExtensions().HasRayQuery;
 
-			const FRayTracingProperties& RayTracingProps = Device->GetRayTracingProperties();
 			GRHIRayTracingAccelerationStructureAlignment = 256; // TODO (currently handled by FVulkanAccelerationStructureBuffer)
-			GRHIRayTracingScratchBufferAlignment = RayTracingProps.AccelerationStructure.minAccelerationStructureScratchOffsetAlignment;
+			GRHIRayTracingScratchBufferAlignment = Device->GetOptionalExtensionProperties().AccelerationStructureProps.minAccelerationStructureScratchOffsetAlignment;
 			GRHIRayTracingInstanceDescriptorSize = uint32(sizeof(VkAccelerationStructureInstanceKHR));
 		}
 #endif
@@ -824,7 +821,11 @@ void FVulkanDynamicRHI::InitInstance()
 		GMaxTextureArrayLayers = Props.limits.maxImageArrayLayers;
 		GRHISupportsBaseVertexIndex = true;
 		GSupportsSeparateRenderTargetBlendState = true;
-		GRHISupportsSeparateDepthStencilCopyAccess = false;
+		GRHISupportsSeparateDepthStencilCopyAccess = Device->SupportsParallelRendering();
+		GRHIBindlessSupport = Device->SupportsBindless() ? RHIGetBindlessSupport(GMaxRHIShaderPlatform) : ERHIBindlessSupport::Unsupported;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		GRHISupportsBindless = GRHIBindlessSupport != ERHIBindlessSupport::Unsupported;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		GRHIMaxDispatchThreadGroupsPerDimension.X = FMath::Min<uint32>(Limits.maxComputeWorkGroupCount[0], 0x7fffffff);
 		GRHIMaxDispatchThreadGroupsPerDimension.Y = FMath::Min<uint32>(Limits.maxComputeWorkGroupCount[1], 0x7fffffff);
@@ -1335,10 +1336,15 @@ FVulkanRHIImageViewInfo FVulkanDynamicRHI::RHIGetImageViewInfo(FRHITexture* InTe
 	return Info;
 }
 
+// todo-jn: deprecate
 VkImageLayout& FVulkanDynamicRHI::RHIFindOrAddLayoutRW(FRHITexture* InTexture, VkImageLayout LayoutIfNotFound)
 {
 	FVulkanTexture* VulkanTexture = ResourceCast(InTexture);
-	return GetDevice()->GetImmediateContext().GetLayoutManager().FindOrAddLayoutRW(*VulkanTexture, LayoutIfNotFound);
+	FVulkanCommandListContext& ImmediateContext = GetDevice()->GetImmediateContext();
+	FVulkanCmdBuffer* CmdBuffer = ImmediateContext.GetCommandBufferManager()->GetActiveCmdBuffer();
+	// Removing const to allow original functionality even when parallel rendering is enabled.
+	FVulkanImageLayout* VulkanImageLayout = const_cast<FVulkanImageLayout*>(CmdBuffer->GetLayoutManager().GetFullLayout(*VulkanTexture, true, LayoutIfNotFound));
+	return VulkanImageLayout->MainLayout;
 }
 
 void FVulkanDynamicRHI::RHISetImageLayout(VkImage Image, VkImageLayout OldLayout, VkImageLayout NewLayout, const VkImageSubresourceRange& SubresourceRange)
@@ -1664,7 +1670,7 @@ void FVulkanDescriptorSetsLayout::Compile(FVulkanDescriptorSetLayoutMap& DSetLay
 #if VULKAN_RHI_RAYTRACING
 	if (GRHISupportsRayTracing)
 	{
-		check(LayoutTypes[VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR] < Device->GetRayTracingProperties().AccelerationStructure.maxDescriptorSetAccelerationStructures);
+		check(LayoutTypes[VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR] < Device->GetOptionalExtensionProperties().AccelerationStructureProps.maxDescriptorSetAccelerationStructures);
 	}
 #endif
 	
@@ -1924,9 +1930,11 @@ void FVulkanDynamicRHI::RecreateSwapChain(void* NewNativeWindow)
 	}
 }
 
-void FVulkanDynamicRHI::VulkanSetImageLayout( VkCommandBuffer CmdBuffer, VkImage Image, VkImageLayout OldLayout, VkImageLayout NewLayout, const VkImageSubresourceRange& SubresourceRange )
+void FVulkanDynamicRHI::VulkanSetImageLayout(VkCommandBuffer CmdBuffer, VkImage Image, VkImageLayout OldLayout, VkImageLayout NewLayout, const VkImageSubresourceRange& SubresourceRange)
 {
-	::VulkanSetImageLayout( CmdBuffer, Image, OldLayout, NewLayout, SubresourceRange );
+	FVulkanPipelineBarrier Barrier;
+	Barrier.AddImageLayoutTransition(Image, OldLayout, NewLayout, SubresourceRange);
+	Barrier.Execute(CmdBuffer);
 }
 
 IRHITransientResourceAllocator* FVulkanDynamicRHI::RHICreateTransientResourceAllocator()

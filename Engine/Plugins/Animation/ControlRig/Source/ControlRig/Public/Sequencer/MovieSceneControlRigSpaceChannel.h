@@ -73,7 +73,7 @@ struct CONTROLRIG_API FMovieSceneControlRigSpaceChannel : public FMovieSceneChan
 	*
 	* @return An object that is able to manipulate this channel's data
 	*/
-	FORCEINLINE TMovieSceneChannelData<FMovieSceneControlRigSpaceBaseKey> GetData()
+	TMovieSceneChannelData<FMovieSceneControlRigSpaceBaseKey> GetData()
 	{
 		return TMovieSceneChannelData<FMovieSceneControlRigSpaceBaseKey>(&KeyTimes, &KeyValues, &KeyHandles, this);
 	}
@@ -83,7 +83,7 @@ struct CONTROLRIG_API FMovieSceneControlRigSpaceChannel : public FMovieSceneChan
 	*
 	* @return An object that is able to interrogate this channel's data
 	*/
-	FORCEINLINE TMovieSceneChannelData<const FMovieSceneControlRigSpaceBaseKey> GetData() const
+	TMovieSceneChannelData<const FMovieSceneControlRigSpaceBaseKey> GetData() const
 	{
 		return TMovieSceneChannelData<const FMovieSceneControlRigSpaceBaseKey>(&KeyTimes, &KeyValues);
 	}
@@ -129,6 +129,8 @@ private:
 	UPROPERTY(meta = (KeyValues))
 	TArray<FMovieSceneControlRigSpaceBaseKey> KeyValues;
 
+	/** This needs to be a UPROPERTY so it gets saved into editor transactions but transient so it doesn't get saved into assets. */
+	UPROPERTY(Transient)
 	FMovieSceneKeyHandleMap KeyHandles;
 	
 	FMovieSceneControlRigSpaceChannelSpaceNoLongerUsedEvent SpaceNoLongerUsedEvent;

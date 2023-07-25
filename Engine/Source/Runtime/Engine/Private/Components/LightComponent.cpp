@@ -6,27 +6,28 @@
 
 #include "Components/LightComponent.h"
 
-#include "Misc/App.h"
-#include "RenderingThread.h"
+#include "ColorSpace.h"
+#include "Engine/Level.h"
 #include "Engine/MapBuildDataRegistry.h"
+#include "Engine/World.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
 #include "UObject/ObjectSaveContext.h"
+#include "SceneInterface.h"
 #include "UObject/RenderingObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
-#include "UObject/UObjectHash.h"
+#include "UObject/UObjectAnnotation.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/Package.h"
-#include "Engine/Texture2D.h"
 #include "Engine/TextureLightProfile.h"
 #include "SceneManagement.h"
-#include "ComponentReregisterContext.h"
-#include "Logging/TokenizedMessage.h"
+#include "SceneView.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Components/PointLightComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/BillboardComponent.h"
 #include "ComponentRecreateRenderStateContext.h"
+#include "UObject/UnrealType.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LightComponent)
 
@@ -331,6 +332,7 @@ void FLightRenderParameters::MakeShaderParameters(const FViewMatrices& ViewMatri
 	OutShaderParameters.RectLightAtlasUVOffset = RectLightAtlasUVOffset;
 	OutShaderParameters.RectLightAtlasUVScale = RectLightAtlasUVScale;
 	OutShaderParameters.RectLightAtlasMaxLevel = RectLightAtlasMaxLevel;
+	OutShaderParameters.IESAtlasIndex = IESAtlasIndex;
 }
 
 // match logic in EyeAdaptationInverseLookup(...)
@@ -360,141 +362,6 @@ float FLightRenderParameters::GetLightExposureScale(float Exposure, float Invers
 float FLightRenderParameters::GetLightExposureScale(float Exposure) const
 {
 	return GetLightExposureScale(Exposure, InverseExposureBlend);
-}
-
-FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
-	: LightComponent(InLightComponent)
-	, SceneInterface(InLightComponent->GetScene())
-	, IndirectLightingScale(InLightComponent->IndirectLightingIntensity)
-	, VolumetricScatteringIntensity(FMath::Max(InLightComponent->VolumetricScatteringIntensity, 0.0f))
-	, ShadowResolutionScale(InLightComponent->ShadowResolutionScale)
-	, ShadowBias(InLightComponent->ShadowBias)
-	, ShadowSlopeBias(InLightComponent->ShadowSlopeBias)
-	, ShadowSharpen(InLightComponent->ShadowSharpen)
-	, ContactShadowLength(InLightComponent->ContactShadowLength)
-	, SpecularScale(InLightComponent->SpecularScale)
-	, LightGuid(InLightComponent->LightGuid)
-	, RayStartOffsetDepthScale(InLightComponent->RayStartOffsetDepthScale)
-	, IESTexture(0)
-	, bContactShadowLengthInWS(InLightComponent->ContactShadowLengthInWS ? true : false)
-	, bMovable(InLightComponent->IsMovable())
-	, bStaticLighting(InLightComponent->HasStaticLighting())
-	, bStaticShadowing(InLightComponent->HasStaticShadowing())
-	, bCastDynamicShadow(InLightComponent->CastShadows && InLightComponent->CastDynamicShadows)
-	, bCastStaticShadow(InLightComponent->CastShadows && InLightComponent->CastStaticShadows)
-	, bCastTranslucentShadows(InLightComponent->CastTranslucentShadows)
-	, bTransmission(InLightComponent->bTransmission && bCastDynamicShadow && !bStaticShadowing)
-	, bCastVolumetricShadow(InLightComponent->bCastVolumetricShadow)
-	, bCastHairStrandsDeepShadow(InLightComponent->bCastDeepShadow)
-	, bCastShadowsFromCinematicObjectsOnly(InLightComponent->bCastShadowsFromCinematicObjectsOnly)
-	, bForceCachedShadowsForMovablePrimitives(InLightComponent->bForceCachedShadowsForMovablePrimitives)
-	, CastRaytracedShadow(InLightComponent->CastShadows == 0? (TEnumAsByte<ECastRayTracedShadow::Type>) ECastRayTracedShadow::Disabled : InLightComponent->CastRaytracedShadow)
-	, bAffectReflection(InLightComponent->bAffectReflection)
-	, bAffectGlobalIllumination(InLightComponent->bAffectGlobalIllumination)
-	, bAffectTranslucentLighting(InLightComponent->bAffectTranslucentLighting)
-	, bUsedAsAtmosphereSunLight(InLightComponent->IsUsedAsAtmosphereSunLight())
-	, bAffectDynamicIndirectLighting(InLightComponent->bAffectDynamicIndirectLighting)
-	, bUseRayTracedDistanceFieldShadows(InLightComponent->bUseRayTracedDistanceFieldShadows)
-	, bUseVirtualShadowMaps(false)	// See below
-	, bCastModulatedShadows(false)
-	, bUseWholeSceneCSMForMovableObjects(false)
-	, AtmosphereSunLightIndex(InLightComponent->GetAtmosphereSunLightIndex())
-	, AtmosphereSunDiskColorScale(InLightComponent->GetAtmosphereSunDiskColorScale())
-	, LightType(InLightComponent->GetLightType())	
-	, LightingChannelMask(GetLightingChannelMaskForStruct(InLightComponent->LightingChannels))
-	, StatId(InLightComponent->GetStatID(true))
-	, ComponentName(InLightComponent->GetFName())
-	, LevelName(InLightComponent->GetOwner() ? InLightComponent->GetOwner()->GetLevel()->GetOutermost()->GetFName() : NAME_None)
-	, FarShadowDistance(0)
-	, FarShadowCascadeCount(0)
-	, ShadowAmount(1.0f)
-	, SamplesPerPixel(1)
-	, DeepShadowLayerDistribution(InLightComponent->DeepShadowLayerDistribution)
-#if ACTOR_HAS_LABELS
-	, OwnerNameOrLabel(InLightComponent->GetOwner() ? InLightComponent->GetOwner()->GetActorNameOrLabel() : InLightComponent->GetName())
-#endif
-{
-	check(SceneInterface);
-
-	// Currently we use virtual shadows maps for all lights when the global setting is enabled
-	bUseVirtualShadowMaps = ::UseVirtualShadowMaps(SceneInterface->GetShaderPlatform(), SceneInterface->GetFeatureLevel());
-
-	// Treat stationary lights as movable when non-nanite VSMs are enabled
-	const bool bNonNaniteVirtualShadowMaps = UseNonNaniteVirtualShadowMaps(SceneInterface->GetShaderPlatform(), SceneInterface->GetFeatureLevel());
-	if (bNonNaniteVirtualShadowMaps)
-	{
-		bStaticShadowing = bStaticLighting;
-	}
-
-	const FLightComponentMapBuildData* MapBuildData = InLightComponent->GetLightComponentMapBuildData();
-	
-	if (MapBuildData && bStaticShadowing && !bStaticLighting)
-	{
-		ShadowMapChannel = MapBuildData->ShadowMapChannel;
-	}
-	else
-	{
-		ShadowMapChannel = INDEX_NONE;
-	}
-
-	// Use the preview channel if valid, otherwise fallback to the lighting build channel
-	PreviewShadowMapChannel = InLightComponent->PreviewShadowMapChannel != INDEX_NONE ? InLightComponent->PreviewShadowMapChannel : ShadowMapChannel;
-
-	StaticShadowDepthMap = &LightComponent->StaticShadowDepthMap;
-
-	if(LightComponent->IESTexture)
-	{
-		IESTexture = LightComponent->IESTexture;
-	}
-	 
-	Color = LightComponent->GetColoredLightBrightness();
-
-	if(LightComponent->LightFunctionMaterial &&
-		LightComponent->LightFunctionMaterial->GetMaterial()->MaterialDomain == MD_LightFunction )
-	{
-		LightFunctionMaterial = LightComponent->LightFunctionMaterial->GetRenderProxy();
-	}
-	else
-	{
-		LightFunctionMaterial = NULL;
-	}
-
-	LightFunctionScale = LightComponent->LightFunctionScale;
-	LightFunctionFadeDistance = LightComponent->LightFunctionFadeDistance;
-	LightFunctionDisabledBrightness = LightComponent->DisabledBrightness;
-
-	SamplesPerPixel = LightComponent->SamplesPerPixel;
-}
-
-bool FLightSceneProxy::ShouldCreatePerObjectShadowsForDynamicObjects() const
-{
-	// Only create per-object shadows for Stationary lights, which use static shadowing from the world and therefore need a way to integrate dynamic objects
-	return HasStaticShadowing() && !HasStaticLighting();
-}
-
-/** Whether this light should create CSM for dynamic objects only (mobile renderer) */
-bool FLightSceneProxy::UseCSMForDynamicObjects() const
-{
-	return false;
-}
-
-void FLightSceneProxy::SetTransform(const FMatrix& InLightToWorld,const FVector4& InPosition)
-{
-	LightToWorld = InLightToWorld;
-	WorldToLight = InLightToWorld.InverseFast();
-	Position = InPosition;
-}
-
-void FLightSceneProxy::SetColor(const FLinearColor& InColor)
-{
-	Color = InColor;
-}
-
-void FLightSceneProxy::ApplyWorldOffset(FVector InOffset)
-{
-	FMatrix NewLightToWorld = LightToWorld.ConcatTranslation(InOffset);
-	FVector4 NewPosition = Position + InOffset;
-	SetTransform(NewLightToWorld, NewPosition);
 }
 
 ULightComponentBase::ULightComponentBase(const FObjectInitializer& ObjectInitializer)
@@ -536,6 +403,8 @@ ULightComponent::ULightComponent(const FObjectInitializer& ObjectInitializer)
 	ShadowSharpen = 0.0f;
 	ContactShadowLength = 0.0f;
 	ContactShadowLengthInWS = false;
+	ContactShadowCastingIntensity = 1.0f;
+	ContactShadowNonCastingIntensity = 0.0f;
 	bUseIESBrightness = false;
 	IESBrightnessScale = 1.0f;
 	IESTexture = NULL;
@@ -663,7 +532,7 @@ void ULightComponent::PostLoad()
 	if (LightFunctionMaterial && HasStaticLighting())
 	{
 		// Light functions can only be used on dynamic lights
-		LightFunctionMaterial = NULL;
+		ClearLightFunctionMaterial();
 	}
 
 	PreviewShadowMapChannel = INDEX_NONE;
@@ -781,8 +650,19 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	if (HasStaticLighting())
 	{
 		// Lightmapped lights must not have light functions
-		LightFunctionMaterial = NULL;
+		ClearLightFunctionMaterial();
 	}
+#if WITH_EDITOR
+	else if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, LightFunctionMaterial))
+	{
+		StashedLightFunctionMaterial = nullptr;
+	}
+	else if (StashedLightFunctionMaterial != nullptr)
+	{
+		// Light has been made non-static, restore previous light function
+		LightFunctionMaterial = StashedLightFunctionMaterial;
+	}
+#endif
 
 	// Unbuild lighting because a property changed
 	// Exclude properties that don't affect built lighting
@@ -802,6 +682,8 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ShadowSlopeBias) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ShadowSharpen) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ContactShadowLength) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ContactShadowCastingIntensity) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ContactShadowNonCastingIntensity) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ContactShadowLengthInWS) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bEnableLightShaftBloom) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomScale) &&
@@ -1087,9 +969,20 @@ void ULightComponent::SetLightFunctionMaterial(UMaterialInterface* NewLightFunct
 	if (AreDynamicDataChangesAllowed()
 		&& NewLightFunctionMaterial != LightFunctionMaterial)
 	{
+#if WITH_EDITOR
+		StashedLightFunctionMaterial = nullptr;
+#endif
 		LightFunctionMaterial = NewLightFunctionMaterial;
 		MarkRenderStateDirty();
 	}
+}
+
+void ULightComponent::ClearLightFunctionMaterial()
+{
+#if WITH_EDITOR
+	StashedLightFunctionMaterial = LightFunctionMaterial;
+#endif
+	LightFunctionMaterial = nullptr;
 }
 
 void ULightComponent::SetLightFunctionScale(FVector NewLightFunctionScale)
@@ -1472,10 +1365,15 @@ FLinearColor ULightComponent::GetColoredLightBrightness() const
 	FLinearColor Energy = FLinearColor(LightColor) * LightBrightness;
 	if (bUseTemperature)
 	{
-		Energy *= FLinearColor::MakeFromColorTemperature(Temperature);
+		Energy *= GetColorTemperature();
 	}
 
 	return Energy;
+}
+
+FLinearColor ULightComponent::GetColorTemperature() const
+{
+	return UE::Color::FColorSpace::GetWorking().MakeFromColorTemperature(Temperature);
 }
 
 UMaterialInterface* ULightComponent::GetMaterial(int32 ElementIndex) const
@@ -1494,6 +1392,9 @@ void ULightComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* InMate
 {
 	if (ElementIndex == 0)
 	{
+#if WITH_EDITOR
+		StashedLightFunctionMaterial = nullptr;
+#endif
 		LightFunctionMaterial = InMaterial;
 		MarkRenderStateDirty();
 	}

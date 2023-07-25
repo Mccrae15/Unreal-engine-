@@ -2,11 +2,15 @@
 
 #include "WorldPartition/HLOD/HLODBuilder.h"
 
-#include "AssetCompilingManager.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/HLODProxy.h"
 #include "Engine/StaticMesh.h"
-#include "Components/InstancedStaticMeshComponent.h"
+#include "Engine/Texture.h"
+#include "HLOD/HLODBatchingPolicy.h"
+#include "ISMPartition/ISMComponentBatcher.h"
 #include "ISMPartition/ISMComponentDescriptor.h"
+#include "Materials/MaterialInterface.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(HLODBuilder)
 
@@ -40,11 +44,6 @@ void UHLODBuilder::SetHLODBuilderSettings(const UHLODBuilderSettings* InHLODBuil
 {
 	check(InHLODBuilderSettings->IsA(GetSettingsClass()));
 	HLODBuilderSettings = InHLODBuilderSettings;
-}
-
-bool UHLODBuilder::RequiresCompiledAssets() const
-{
-	return true;
 }
 
 bool UHLODBuilder::RequiresWarmup() const
@@ -168,19 +167,6 @@ namespace
 			ComputeHash();
 		}
 	};
-
-	// Store batched instances data
-	struct FInstancingData
-	{
-		int32							NumInstances = 0;
-
-		TArray<FTransform>				InstancesTransforms;
-
-		int32							NumCustomDataFloats = 0;
-		TArray<float>					InstancesCustomData;
-
-		TArray<FInstancedStaticMeshRandomSeed> RandomSeeds;
-	};
 }
 
 TArray<UActorComponent*> UHLODBuilder::BatchInstances(const TArray<UActorComponent*>& InSourceComponents)
@@ -190,64 +176,12 @@ TArray<UActorComponent*> UHLODBuilder::BatchInstances(const TArray<UActorCompone
 	TArray<UStaticMeshComponent*> SourceStaticMeshComponents = FilterComponents<UStaticMeshComponent>(InSourceComponents);
 
 	// Prepare instance batches
-	TMap<FISMComponentDescriptor, FInstancingData> InstancesData;
+	TMap<FISMComponentDescriptor, FISMComponentBatcher> InstancesData;
 	for (UStaticMeshComponent* SMC : SourceStaticMeshComponents)
 	{
 		FCustomISMComponentDescriptor ISMComponentDescriptor(SMC);
-		FInstancingData& InstancingData = InstancesData.FindOrAdd(ISMComponentDescriptor);
-
-		if (UInstancedStaticMeshComponent* ISMC = Cast<UInstancedStaticMeshComponent>(SMC))
-		{
-			InstancingData.NumCustomDataFloats = FMath::Max(InstancingData.NumCustomDataFloats, ISMC->NumCustomDataFloats);
-			InstancingData.RandomSeeds.Add({ InstancingData.NumInstances, ISMC->InstancingRandomSeed });
-			InstancingData.NumInstances += ISMC->GetInstanceCount();
-		}
-		else
-		{
-			InstancingData.NumCustomDataFloats = FMath::Max(InstancingData.NumCustomDataFloats, SMC->GetCustomPrimitiveData().Data.Num());
-			InstancingData.NumInstances++;
-		}
-	}
-
-	// Resize arrays
-	for (auto& Entry : InstancesData)
-	{
-		const FISMComponentDescriptor& ISMComponentDescriptor = Entry.Key;
-		FInstancingData& EntryInstancingData = Entry.Value;
-
-		EntryInstancingData.InstancesTransforms.Reset(EntryInstancingData.NumInstances);
-		EntryInstancingData.InstancesCustomData.Reset(EntryInstancingData.NumInstances * EntryInstancingData.NumCustomDataFloats);
-	}
-
-	// Append all transforms & per instance custom data
-	for (UStaticMeshComponent* SMC : SourceStaticMeshComponents)
-	{
-		FCustomISMComponentDescriptor ISMComponentDescriptor(SMC);
-		FInstancingData& InstancingData = InstancesData.FindChecked(ISMComponentDescriptor);
-
-		if (UInstancedStaticMeshComponent* ISMC = Cast<UInstancedStaticMeshComponent>(SMC))
-		{
-			// Add transforms
-			for (int32 InstanceIdx = 0; InstanceIdx < ISMC->GetInstanceCount(); InstanceIdx++)
-			{
-				FTransform& InstanceTransform = InstancingData.InstancesTransforms.AddDefaulted_GetRef();
-				ISMC->GetInstanceTransform(InstanceIdx, InstanceTransform, true);
-			}
-
-			// Add per instance custom data
-			int32 NumCustomDataFloatToAdd = ISMC->GetInstanceCount() * InstancingData.NumCustomDataFloats;
-			InstancingData.InstancesCustomData.Append(ISMC->PerInstanceSMCustomData);
-			InstancingData.InstancesCustomData.AddDefaulted(NumCustomDataFloatToAdd - ISMC->PerInstanceSMCustomData.Num());
-		}
-		else
-		{
-			// Add transform
-			InstancingData.InstancesTransforms.Add(SMC->GetComponentTransform());
-
-			// Add custom data
-			InstancingData.InstancesCustomData.Append(SMC->GetCustomPrimitiveData().Data);
-			InstancingData.InstancesCustomData.AddDefaulted(InstancingData.NumCustomDataFloats - SMC->GetCustomPrimitiveData().Data.Num());
-		}
+		FISMComponentBatcher& ISMComponentBatcher = InstancesData.FindOrAdd(ISMComponentDescriptor);
+		ISMComponentBatcher.Add(SMC);
 	}
 
 	// Create an ISMC for each SM asset we found
@@ -255,27 +189,14 @@ TArray<UActorComponent*> UHLODBuilder::BatchInstances(const TArray<UActorCompone
 	for (auto& Entry : InstancesData)
 	{
 		const FISMComponentDescriptor& ISMComponentDescriptor = Entry.Key;
-		FInstancingData& EntryInstancingData = Entry.Value;
+		const FISMComponentBatcher& ISMComponentBatcher = Entry.Value;
 
-		check(EntryInstancingData.InstancesTransforms.Num() * EntryInstancingData.NumCustomDataFloats == EntryInstancingData.InstancesCustomData.Num());
+		UInstancedStaticMeshComponent* ISMComponent = ISMComponentDescriptor.CreateComponent(GetTransientPackage());
+		ISMComponentBatcher.InitComponent(ISMComponent);
 
-		UInstancedStaticMeshComponent* Component = ISMComponentDescriptor.CreateComponent(GetTransientPackage());
-		Component->SetForcedLodModel(Component->GetStaticMesh()->GetNumLODs());
-		Component->NumCustomDataFloats = EntryInstancingData.NumCustomDataFloats;
-		Component->AddInstances(EntryInstancingData.InstancesTransforms, /*bShouldReturnIndices*/false, /*bWorldSpace*/true);
-		Component->PerInstanceSMCustomData = MoveTemp(EntryInstancingData.InstancesCustomData);
+		ISMComponent->SetForcedLodModel(ISMComponent->GetStaticMesh()->GetNumLODs());
 
-		if (!EntryInstancingData.RandomSeeds.IsEmpty())
-		{
-			Component->InstancingRandomSeed = EntryInstancingData.RandomSeeds[0].RandomSeed;
-		}
-
-		if (EntryInstancingData.RandomSeeds.Num() > 1)
-		{
-			Component->AdditionalRandomSeeds = TArrayView<FInstancedStaticMeshRandomSeed>(&EntryInstancingData.RandomSeeds[1], EntryInstancingData.RandomSeeds.Num() - 1);
-		}
-
-		HLODComponents.Add(Component);
+		HLODComponents.Add(ISMComponent);
 	};
 
 	return HLODComponents;
@@ -296,7 +217,7 @@ static bool ShouldBatchComponent(UActorComponent* ActorComponent)
 			break;
 		case EHLODBatchingPolicy::MeshSection:
 			bShouldBatch = true;
-			UE_LOG(LogHLODBuilder, Warning, TEXT("EHLODBatchingPolicy::MeshSection is not yet supported by the HLOD builder, falling back to EHLODBatchingPolicy::Instancing."));
+			UE_LOG(LogHLODBuilder, Warning, TEXT("EHLODBatchingPolicy::MeshSection is not yet supported by the HLOD builder, falling back to EHLODBatchingPolicy::Instancing for component %s (from actor %s)."), *ActorComponent->GetName(), *ActorComponent->GetOwner()->GetActorLabel());
 			break;
 		default:
 			checkNoEntry();
@@ -306,9 +227,9 @@ static bool ShouldBatchComponent(UActorComponent* ActorComponent)
 	return bShouldBatch;
 }
 
-TArray<UActorComponent*> UHLODBuilder::Build(const FHLODBuildContext& InHLODBuildContext, const TArray<AActor*>& InSourceActors) const
+TArray<UActorComponent*> UHLODBuilder::Build(const FHLODBuildContext& InHLODBuildContext) const
 {
-	TArray<UActorComponent*> HLODRelevantComponents = GatherHLODRelevantComponents(InSourceActors);
+	TArray<UActorComponent*> HLODRelevantComponents = GatherHLODRelevantComponents(InHLODBuildContext.SourceActors);
 	if (HLODRelevantComponents.IsEmpty())
 	{
 		return {};
@@ -317,16 +238,24 @@ TArray<UActorComponent*> UHLODBuilder::Build(const FHLODBuildContext& InHLODBuil
 	// Handle components using a batching policy separately
 	TArray<UActorComponent*> InputComponents;
 	TArray<UActorComponent*> ComponentsToBatch;
-	for (UActorComponent* SourceComponent : HLODRelevantComponents)
+
+	if (!ShouldIgnoreBatchingPolicy())
+	{				
+		for (UActorComponent* SourceComponent : HLODRelevantComponents)
+		{
+			if (ShouldBatchComponent(SourceComponent))
+			{
+				ComponentsToBatch.Add(SourceComponent);
+			}
+			else
+			{
+				InputComponents.Add(SourceComponent);
+			}
+		}
+	}
+	else
 	{
-		if (ShouldBatchComponent(SourceComponent))
-		{
-			ComponentsToBatch.Add(SourceComponent);
-		}
-		else
-		{
-			InputComponents.Add(SourceComponent);
-		}
+		InputComponents = MoveTemp(HLODRelevantComponents);
 	}
 
 	TMap<TSubclassOf<UHLODBuilder>, TArray<UActorComponent*>> HLODBuildersForComponents;
@@ -338,17 +267,6 @@ TArray<UActorComponent*> UHLODBuilder::Build(const FHLODBuildContext& InHLODBuil
 		HLODBuildersForComponents.FindOrAdd(HLODBuilderClass).Add(SourceComponent);
 	}
 
-	// If any of the builders requires it, wait for assets compilation to finish
-	for (const auto& HLODBuilderPair : HLODBuildersForComponents)
-	{
-		const UHLODBuilder* HLODBuilder = HLODBuilderPair.Key ? HLODBuilderPair.Key->GetDefaultObject<UHLODBuilder>() : this;
-		if (HLODBuilder->RequiresCompiledAssets())
-		{
-			FAssetCompilingManager::Get().FinishAllCompilation();
-			break;
-		}
-	}	
-	
 	// Build HLOD components by sending source components to the individual builders, in batch
 	TArray<UActorComponent*> HLODComponents;
 	for (const auto& HLODBuilderPair : HLODBuildersForComponents)

@@ -5,6 +5,7 @@
 #include "Misc/EnumClassFlags.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Class.h"
+#include "Chaos/PhysicsObject.h"
 #include "EngineDefines.h"
 #include "PhysicsEngine/ConstraintTypes.h"
 #include "PhysicsEngine/ConstraintDrives.h"
@@ -133,6 +134,15 @@ struct ENGINE_API FConstraintProfileProperties
 	*/
 	UPROPERTY(EditAnywhere, Category = Projection)
 	uint8 bEnableProjection : 1;
+
+	/** 
+	 * Whether mass conditioning is enabled for this joint. Mass conditioning applies a non-physical scale to the mass and inertia of the two
+	 * bodies that only affects this joint, so that the mass and inertia ratios are smaller. This helps stabilize joints where the bodies
+	 * are very different sizes, and especially when the parent body is heavier than the child. However, it can lead to unrealistic
+	 * behaviour, especially when collisions are involved.
+	*/
+	UPROPERTY(EditAnywhere, Category = Projection)
+	uint8 bEnableMassConditioning : 1;
 
 	/** Whether it is possible to break the joint with angular force. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Angular)
@@ -866,9 +876,11 @@ public:
 
 	/** Create physics engine constraint. */
 	void InitConstraint(FBodyInstance* Body1, FBodyInstance* Body2, float Scale, UObject* DebugOwner, FOnConstraintBroken InConstraintBrokenDelegate = FOnConstraintBroken(), FOnPlasticDeformation InPlasticDeformationDelegate = FOnPlasticDeformation());
+	void InitConstraint(Chaos::FPhysicsObject* Body1, Chaos::FPhysicsObject* Body2, float Scale, UObject* DebugOwner, FOnConstraintBroken InConstraintBrokenDelegate = FOnConstraintBroken(), FOnPlasticDeformation InPlasticDeformationDelegate = FOnPlasticDeformation());
 
 	/** Create physics engine constraint using physx actors. */
 	void InitConstraint_AssumesLocked(const FPhysicsActorHandle& ActorRef1, const FPhysicsActorHandle& ActorRef2, float InScale, FOnConstraintBroken InConstraintBrokenDelegate = FOnConstraintBroken(), FOnPlasticDeformation InPlasticDeformationDelegate = FOnPlasticDeformation());
+	void InitConstraint_AssumesLocked(Chaos::FPhysicsObject* Body1, Chaos::FPhysicsObject* Body2, float InScale, FOnConstraintBroken InConstraintBrokenDelegate = FOnConstraintBroken(), FOnPlasticDeformation InPlasticDeformationDelegate = FOnPlasticDeformation());
 
 	/** Terminate physics engine constraint */
 	void TermConstraint();
@@ -959,6 +971,21 @@ public:
 	void EnableParentDominates();
 	void DisableParentDominates();
 
+	/** Whether mass conditioning is enabled. @see FConstraintProfileProperties::bEnableMassConditioning */
+	bool IsMassConditioningEnabled() const
+	{
+		return ProfileInstance.bEnableMassConditioning;
+	}
+
+	/**
+	 * Enable maxx conditioning. @see FConstraintProfileProperties::bEnableMassConditioning
+	*/
+	void EnableMassConditioning();
+
+	/**
+	 * Disable maxx conditioning. @see FConstraintProfileProperties::bEnableMassConditioning
+	*/
+	void DisableMassConditioning();
 
 	float GetLastKnownScale() const { return LastKnownScale; }
 
@@ -968,8 +995,8 @@ public:
 
 private:
 
-	bool CreateJoint_AssumesLocked(const FPhysicsActorHandle& InActorRef1, const FPhysicsActorHandle& InActorRef2);
-	void UpdateAverageMass_AssumesLocked(const FPhysicsActorHandle& InActorRef1, const FPhysicsActorHandle& InActorRef2);
+	bool CreateJoint_AssumesLocked(Chaos::FPhysicsObject* Body1, Chaos::FPhysicsObject* Body2);
+	void UpdateAverageMass_AssumesLocked(Chaos::FPhysicsObject* Body1, Chaos::FPhysicsObject* Body2);
 
 	struct FPDIOrCollector
 	{

@@ -4,20 +4,16 @@
 
 #include "EngineModule.h"
 #include "Components/PrimitiveComponent.h"
-#include "PrimitiveSceneProxy.h"
-#include "Materials/MaterialExpressionPhysicalMaterialOutput.h"
-#include "Materials/MaterialInstanceConstant.h"
-#include "MeshMaterialShader.h"
-#include "MeshPassProcessor.h"
+#include "Materials/Material.h"
+#include "Math/OrthoMatrix.h"
 #include "MeshPassProcessor.inl"
-#include "RenderCommandFence.h"
-#include "RenderTargetPool.h"
 #include "RenderGraphUtils.h"
 #include "RHIGPUReadback.h"
-#include "RHIResources.h"
-#include "SceneRenderTargetParameters.h"
+#include "RenderingThread.h"
+#include "SceneInterface.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "SceneTexturesConfig.h"
 #include "SimpleMeshDrawCommandPass.h"
-#include "Logging/LogMacros.h"
 
 DEFINE_LOG_CATEGORY(LogRenderTrace);
 

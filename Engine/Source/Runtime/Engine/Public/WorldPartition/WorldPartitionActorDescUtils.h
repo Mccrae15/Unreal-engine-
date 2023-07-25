@@ -11,6 +11,11 @@ struct FAssetData;
 
 struct ENGINE_API FWorldPartitionActorDescUtils
 {
+	/** @return The asset registry tag name for ActorMetaDataClass */
+	static FName ActorMetaDataClassTagName();
+	/** @return The asset registry tag name for ActorMetaData */
+	static FName ActorMetaDataTagName();
+
 	/** 
 	 * Checks if the provided asset data contains a valid actor descriptor.
 	 * @param InAssetData	The asset data to look into.
@@ -28,7 +33,7 @@ struct ENGINE_API FWorldPartitionActorDescUtils
 	/** 
 	 * Creates a valid actor descriptor from the provided asset data.
 	 * @param InAssetData	The asset data to look into.
-	 * @return				Actor descriptor retrieved from the provided asset data..
+	 * @return				Actor descriptor retrieved from the provided asset data.
 	 */
 	static TUniquePtr<FWorldPartitionActorDesc> GetActorDescriptorFromAssetData(const FAssetData& InAssetData);
 
@@ -40,11 +45,25 @@ struct ENGINE_API FWorldPartitionActorDescUtils
 	static void AppendAssetDataTagsFromActor(const AActor* InActor, TArray<UObject::FAssetRegistryTag>& OutTags);
 
 	/** 
+	 * Return the actor descriptor data.
+	 * @param InActorDesc	The actor descriptor that will generate the data.
+	 * @return				The actor descriptor data.
+	 */
+	static FString GetAssetDataFromActorDescriptor(TUniquePtr<FWorldPartitionActorDesc>& InActorDesc);
+
+	/** 
 	 * Update an actor descriptor with new values coming from the provided actor.
-	 * @param InActor		The actor to update from..
+	 * @param InActor		The actor to update from.
 	 * @param OutActorDesc	Actor descriptor unique pointer that will get updated with the new actor descriptor.
 	 */
-	static void UpdateActorDescriptorFomActor(const AActor* InActor, TUniquePtr<FWorldPartitionActorDesc>& OutActorDesc);
+	static void UpdateActorDescriptorFromActor(const AActor* InActor, TUniquePtr<FWorldPartitionActorDesc>& OutActorDesc);
+
+	/** 
+	 * Update an actor descriptor with new values coming from the provided actor descriptor.
+	 * @param InActorDesc	The actor descriptor to update from.
+	 * @param OutActorDesc	Actor descriptor unique pointer that will get updated with the new actor descriptor.
+	 */
+	static void UpdateActorDescriptorFromActorDescriptor(TUniquePtr<FWorldPartitionActorDesc>& InActorDesc, TUniquePtr<FWorldPartitionActorDesc>& OutActorDesc);
 
 	/** 
 	 * Replaces the actor descriptor's actor pointer with the provided new actor pointer.

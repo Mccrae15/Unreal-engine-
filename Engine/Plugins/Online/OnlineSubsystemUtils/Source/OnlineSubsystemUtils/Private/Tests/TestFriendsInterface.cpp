@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tests/TestFriendsInterface.h"
-#include "OnlineSubsystemNames.h"
+#include "Interfaces/OnlinePresenceInterface.h"
 #include "OnlineSubsystemUtils.h"
 #include "Interfaces/OnlineSharingInterface.h"
 

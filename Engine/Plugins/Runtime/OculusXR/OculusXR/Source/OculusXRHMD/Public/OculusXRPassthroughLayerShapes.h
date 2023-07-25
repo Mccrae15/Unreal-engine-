@@ -19,11 +19,11 @@ enum EOculusXRColorMapType
 	/** Color Adjustment */
 	ColorMapType_ColorAdjustment = 3 UMETA(DisplayName = "Color Adjustment"),
 
-	/** Color Lut */
-	ColorMapType_ColorLut = 4 UMETA(Experimental, DisplayName = "Color LUT (Experimental)", ToolTip = "Experimental features must be enabled in the Project Settings (Edit > Project Settings > Meta XR) in order to use this feature."),
+	/** Color LUT */
+	ColorMapType_ColorLut = 4 UMETA(DisplayName = "Color LUT"),
 
-	/** Color Lut Interpolated */
-	ColorMapType_ColorLut_Interpolated = 5 UMETA(Experimental, DisplayName = "Interpolated Color LUT", ToolTip = "Experimental features must be enabled in the Project Settings (Edit > Project Settings > Meta XR) in order to use this feature."),
+	/** Interpolated Color LUT */
+	ColorMapType_ColorLut_Interpolated = 5 UMETA(DisplayName = "Interpolated Color LUT"),
 
 	ColorMapType_MAX = 255,
 };

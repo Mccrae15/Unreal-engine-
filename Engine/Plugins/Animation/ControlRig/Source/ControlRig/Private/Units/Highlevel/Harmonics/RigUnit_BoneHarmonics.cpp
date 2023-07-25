@@ -3,6 +3,7 @@
 #include "Units/Highlevel/Harmonics/RigUnit_BoneHarmonics.h"
 #include "Units/RigUnitContext.h"
 #include "AnimationCoreLibrary.h"
+#include "Math/ControlRigMathLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_BoneHarmonics)
 
@@ -19,7 +20,7 @@ FRigUnit_BoneHarmonics_Execute()
 
 
 	FRigUnit_ItemHarmonics::StaticExecute(
-		RigVMExecuteContext, 
+		ExecuteContext, 
 		Targets,
 		WaveSpeed,
 		WaveFrequency,
@@ -30,9 +31,7 @@ FRigUnit_BoneHarmonics_Execute()
 		WaveMinimum,
 		WaveMaximum,
 		RotationOrder,
-		WorkData,
-		ExecuteContext, 
-		Context);
+		WorkData);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_BoneHarmonics::GetUpgradeInfo() const
@@ -79,22 +78,21 @@ FRigUnit_ItemHarmonics_Execute()
 	TArray<FCachedRigElement>& CachedItems = WorkData.CachedItems;
 	FVector& WaveTime = WorkData.WaveTime;
 
-	if (Context.State == EControlRigState::Init ||
-		CachedItems.Num() != Targets.Num())
+	if (CachedItems.Num() != Targets.Num())
 	{
-		CachedItems.Reset();
+		CachedItems.Reset(Targets.Num());
+		
 		WaveTime = FVector::ZeroVector;
-		return;
-	}
 
-	for (int32 ItemIndex = 0; ItemIndex < Targets.Num(); ItemIndex++)
-	{
-		FCachedRigElement CachedItem(Targets[ItemIndex].Item, Hierarchy);
-		if (!CachedItem.IsValid())
+		for (int32 ItemIndex = 0; ItemIndex < Targets.Num(); ItemIndex++)
 		{
-			UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Item not found."));
+			FCachedRigElement CachedItem(Targets[ItemIndex].Item, Hierarchy);
+			if (!CachedItem.IsValid())
+			{
+				UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Item not found."));
+			}
+			CachedItems.Add(CachedItem);
 		}
-		CachedItems.Add(CachedItem);
 	}
 
 	for (int32 ItemIndex = 0; ItemIndex < CachedItems.Num(); ItemIndex++)
@@ -128,6 +126,6 @@ FRigUnit_ItemHarmonics_Execute()
 		}
 	}
 
-	WaveTime += WaveSpeed * Context.DeltaTime;
+	WaveTime += WaveSpeed * ExecuteContext.GetDeltaTime();
 }
 

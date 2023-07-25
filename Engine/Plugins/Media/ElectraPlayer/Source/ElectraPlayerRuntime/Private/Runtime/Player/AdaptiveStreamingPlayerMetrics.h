@@ -8,6 +8,7 @@
 #include "Player/AdaptiveStreamingPlayerABR_State.h"
 #include "Player/Playlist.h"
 #include "ElectraHTTPStream.h"
+#include "Utilities/UtilsMP4.h"
 
 namespace Electra
 {
@@ -146,6 +147,7 @@ namespace Metrics
 		bool			bParseFailure = false;				//!< true if the segment could not be parsed
 		bool			bInsertedFillerData = false;
 		bool			bIsCachedResponse = false;
+		bool			bWaitingForRemoteRetryElement = false;
 
 		// Chunk timing
 		struct FMovieChunkInfo
@@ -329,6 +331,11 @@ public:
 	 * Future data may still be buffering.
 	 */
 	virtual void ReportSeekCompleted() = 0;
+
+	/**
+	 * Called when the media metadata has changed.
+	 */
+	virtual void ReportMediaMetadataChanged(TSharedPtrTS<UtilsMP4::FMetadataParser> Metadata) = 0;
 
 	/**
 	 * Called when an error occurs. Errors always result in termination of playback.

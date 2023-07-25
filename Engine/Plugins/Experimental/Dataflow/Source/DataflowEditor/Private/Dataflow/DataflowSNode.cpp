@@ -3,11 +3,19 @@
 #include "Dataflow/DataflowSNode.h"
 
 #include "Dataflow/DataflowEdNode.h"
+#include "Dataflow/DataflowEditorStyle.h"
+#include "Dataflow/DataflowEngineUtil.h"
+#include "Dataflow/DataflowGraphEditor.h"
 #include "Dataflow/DataflowNodeFactory.h"
 #include "Dataflow/DataflowObject.h"
 #include "Dataflow/DataflowCore.h"
 #include "Logging/LogMacros.h"
+#include "SourceCodeNavigation.h"
+#include "Styling/SlateTypes.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Input/SCheckBox.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(DataflowSNode)
 
@@ -19,14 +27,141 @@
 void SDataflowEdNode::Construct(const FArguments& InArgs, UDataflowEdNode* InNode)
 {
 	GraphNode = InNode;
+	DataflowGraphNode = Cast<UDataflowEdNode>(InNode);
 	UpdateGraphNode();
+
+	
+	const FSlateBrush* DisabledSwitchBrush = FDataflowEditorStyle::Get().GetBrush(TEXT("Dataflow.Render.Disabled"));
+	const FSlateBrush* EnabledSwitchBrush = FDataflowEditorStyle::Get().GetBrush(TEXT("Dataflow.Render.Enabled"));
+
+	//
+	// Render
+	//
+	CheckBoxStyle = FCheckBoxStyle()
+		.SetCheckBoxType(ESlateCheckBoxType::CheckBox)
+		.SetUncheckedImage(*DisabledSwitchBrush)
+		.SetUncheckedHoveredImage(*DisabledSwitchBrush)
+		.SetUncheckedPressedImage(*DisabledSwitchBrush)
+		.SetCheckedImage(*EnabledSwitchBrush)
+		.SetCheckedHoveredImage(*EnabledSwitchBrush)
+		.SetCheckedPressedImage(*EnabledSwitchBrush)
+		.SetPadding(FMargin(0, 0, 0, 1));
+	
+	RenderCheckBoxWidget = SNew(SCheckBox)
+		.Style(&CheckBoxStyle)
+		.IsChecked_Lambda([this]()-> ECheckBoxState
+			{
+				if (DataflowGraphNode && DataflowGraphNode->DoAssetRender())
+				{
+					return ECheckBoxState::Checked;
+				}
+				return ECheckBoxState::Unchecked;
+			})
+		.OnCheckStateChanged_Lambda([&](const ECheckBoxState NewState)
+			{
+				if (DataflowGraphNode)
+				{
+					if (NewState == ECheckBoxState::Checked)
+						DataflowGraphNode->SetAssetRender(true);
+					else
+						DataflowGraphNode->SetAssetRender(false);
+				}
+			});
+
+
+	//
+	//  Cached
+	//
+	/*
+	const FSlateBrush* CachedFalseBrush = FDataflowEditorStyle::Get().GetBrush(TEXT("Dataflow.Cached.False"));
+	const FSlateBrush* CachedTrueBrush = FDataflowEditorStyle::Get().GetBrush(TEXT("Dataflow.Cached.True"));
+
+	CacheStatusStyle = FCheckBoxStyle()
+		.SetCheckBoxType(ESlateCheckBoxType::CheckBox)
+		.SetUncheckedImage(*CachedFalseBrush)
+		.SetUncheckedHoveredImage(*CachedFalseBrush)
+		.SetUncheckedPressedImage(*CachedFalseBrush)
+		.SetCheckedImage(*CachedTrueBrush)
+		.SetCheckedHoveredImage(*CachedTrueBrush)
+		.SetCheckedPressedImage(*CachedTrueBrush)
+		.SetPadding(FMargin(0, 0, 0, 1));
+
+		CacheStatus = SNew(SCheckBox)
+		.Style(&CacheStatusStyle)
+		.IsChecked_Lambda([this]()-> ECheckBoxState
+		{
+			if (DataflowGraphNode)
+			{
+				return ECheckBoxState::Checked;
+				// @todo(dataflow) : Missing connection to FToolkit
+			}
+			return ECheckBoxState::Unchecked;
+		});
+	*/
+}
+
+TArray<FOverlayWidgetInfo> SDataflowEdNode::GetOverlayWidgets(bool bSelected, const FVector2D& WidgetSize) const
+{
+	TArray<FOverlayWidgetInfo> Widgets = SGraphNode::GetOverlayWidgets(bSelected, WidgetSize);
+
+	if (DataflowGraphNode && DataflowGraphNode->GetDataflowNode() && DataflowGraphNode->GetDataflowNode()->GetRenderParameters().Num())
+	{
+		const FVector2D ImageSize = RenderCheckBoxWidget->GetDesiredSize();
+
+		FOverlayWidgetInfo Info;
+		Info.OverlayOffset = FVector2D(WidgetSize.X - ImageSize.X - 6.f, 6.f);
+		Info.Widget = RenderCheckBoxWidget;
+
+		Widgets.Add(Info);
+	}
+
+	/*
+	if (DataflowGraphNode )
+	{
+		// @todo(dataflow) : Need to bump the title box over 6px
+		const FVector2D ImageSize = CacheStatus->GetDesiredSize();
+
+		FOverlayWidgetInfo Info;
+		Info.OverlayOffset = FVector2D(6.f, 6.f);
+		Info.Widget = CacheStatus;
+
+		Widgets.Add(Info);
+	}
+	*/
+	return Widgets;
 }
 
 FReply SDataflowEdNode::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (GraphNode)
+	{
+		if (UDataflowEdNode* DataflowNode = Cast<UDataflowEdNode>(GraphNode))
+		{
+			if (TSharedPtr<Dataflow::FGraph> Graph = DataflowNode->GetDataflowGraph())
+			{
+				if (TSharedPtr<FDataflowNode> Node = Graph->FindBaseNode(DataflowNode->GetDataflowNodeGuid()))
+				{
+					if (FSourceCodeNavigation::CanNavigateToStruct(Node->TypedScriptStruct()))
+					{
+						FSourceCodeNavigation::NavigateToStruct(Node->TypedScriptStruct());
+					}
+				}
+			}
+		}
+	}
 	return Super::OnMouseButtonDoubleClick(InMyGeometry, InMouseEvent);
 }
 
+void SDataflowEdNode::AddReferencedObjects(FReferenceCollector& Collector)
+{
+	if (DataflowGraphNode)
+	{
+		if (TSharedPtr<FDataflowNode> DataflowNode = DataflowGraphNode->GetDataflowNode())
+		{
+			Collector.AddPropertyReferences(DataflowNode->TypedScriptStruct(), DataflowNode.Get());
+		}
+	}
+}
 
 
 //
@@ -58,12 +193,22 @@ UEdGraphNode* FAssetSchemaAction_Dataflow_CreateNode_DataflowEdNode::PerformActi
 {
 	if (UDataflow* Dataflow = Cast<UDataflow>(ParentGraph))
 	{
-		const FName NodeName = MakeUniqueObjectName(Dataflow, UDataflowEdNode::StaticClass(), FName(GetMenuDescription().ToString()));
+		// by default use the type name and check if it is unique in the context of the graph
+		// if not, then generate a unique name 
+		const FString NodeBaseName = GetMenuDescription().ToString();
+		FName NodeUniqueName{ NodeBaseName };
+		int32 NameIndex= 0;
+		while (Dataflow->GetDataflow()->FindBaseNode(FName(NodeUniqueName)) != nullptr)
+		{ 
+			NodeUniqueName = FName(NodeBaseName + FString::Printf(TEXT("_%d"), NameIndex));
+			NameIndex++;
+		}
+
 		if (Dataflow::FNodeFactory* Factory = Dataflow::FNodeFactory::GetInstance())
 		{
-			if (TSharedPtr<FDataflowNode> DataflowNode = Factory->NewNodeFromRegisteredType(*Dataflow->GetDataflow(), { FGuid::NewGuid(),NodeTypeName,NodeName}))
+			if (TSharedPtr<FDataflowNode> DataflowNode = Factory->NewNodeFromRegisteredType(*Dataflow->GetDataflow(), { FGuid::NewGuid(), NodeTypeName, NodeUniqueName }))
 			{
-				if (UDataflowEdNode* EdNode = NewObject<UDataflowEdNode>(Dataflow, UDataflowEdNode::StaticClass(), NodeName))
+				if (UDataflowEdNode* EdNode = NewObject<UDataflowEdNode>(Dataflow, UDataflowEdNode::StaticClass(), NodeUniqueName))
 				{
 					Dataflow->Modify();
 					if (FromPin != nullptr)
@@ -98,6 +243,9 @@ UEdGraphNode* FAssetSchemaAction_Dataflow_CreateNode_DataflowEdNode::PerformActi
 //	FEdGraphSchemaAction::AddReferencedObjects(Collector);
 //	Collector.AddReferencedObject(NodeTemplate);
 //}
+
+
+
 
 #undef LOCTEXT_NAMESPACE
 

@@ -76,7 +76,7 @@ UMovieSceneSectionChannelOverrideRegistry* UMovieSceneFloatSection::GetChannelOv
 {
 	if (bCreateIfMissing && OverrideRegistry == nullptr)
 	{
-		OverrideRegistry = NewObject<UMovieSceneSectionChannelOverrideRegistry>(this);
+		OverrideRegistry = NewObject<UMovieSceneSectionChannelOverrideRegistry>(this, NAME_None, RF_Transactional);
 	}
 	return OverrideRegistry;
 }
@@ -92,4 +92,18 @@ void UMovieSceneFloatSection::OnChannelOverridesChanged()
 {
 	ChannelProxy = nullptr;
 }
+
+#if WITH_EDITOR
+
+void UMovieSceneFloatSection::PostPaste()
+{
+	Super::PostPaste();
+	
+	if (OverrideRegistry)
+	{
+		OverrideRegistry->OnPostPaste();
+	}
+}
+
+#endif
 

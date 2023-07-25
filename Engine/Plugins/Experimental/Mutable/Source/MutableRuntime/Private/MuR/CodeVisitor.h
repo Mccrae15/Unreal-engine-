@@ -5,7 +5,6 @@
 #include "HAL/PlatformMath.h"
 #include "HAL/UnrealMemory.h"
 #include "Misc/AssertionMacros.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Model.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/MutableMemory.h"
@@ -105,7 +104,7 @@ class Parameters;
         }
 
 
-        void Traverse( OP::ADDRESS root, PROGRAM& program, bool visitDecorators = true )
+        void Traverse( OP::ADDRESS root, FProgram& program, bool visitDecorators = true )
         {
             m_pending.Reserve( program.m_opAddress.Num() );
 
@@ -127,7 +126,7 @@ class Parameters;
             }
         }
 
-        void FullTraverse( PROGRAM& program, bool visitDecorators = true )
+        void FullTraverse( FProgram& program, bool visitDecorators = true )
         {
             // Visit all the state roots
             for ( std::size_t p=0; p<program.m_states.Num(); ++p )
@@ -155,7 +154,7 @@ class Parameters;
 
         //! Do the actual work by overriding this in the derived classes.
         //! Return true if the traverse has to continue with the children of "at"
-        virtual bool Visit( OP::ADDRESS at, PROGRAM& program ) = 0;
+        virtual bool Visit( OP::ADDRESS at, FProgram& program ) = 0;
 
         //! Operations to be processed
         struct PENDING
@@ -191,7 +190,7 @@ class Parameters;
 		TArray<TArray<int>> m_visited;
 
         //! Process all the pending operations and visit all children if necessary
-        void Recurse( PROGRAM& program )
+        void Recurse( FProgram& program )
         {
 			m_visited.Empty();
 			m_visited.SetNum(program.m_opAddress.Num());
@@ -308,7 +307,7 @@ class Parameters;
         }
 
 
-        void Traverse( OP::ADDRESS root, PROGRAM& program, bool visitDecorators = true )
+        void Traverse( OP::ADDRESS root, FProgram& program, bool visitDecorators = true )
         {
             m_pending.reserve( program.m_opAddress.Num() );
 
@@ -330,7 +329,7 @@ class Parameters;
             }
         }
 
-        void FullTraverse( PROGRAM& program, bool visitDecorators = true )
+        void FullTraverse( FProgram& program, bool visitDecorators = true )
         {
             // Visit all the state roots
             for ( std::size_t p=0; p<program.m_states.Num(); ++p )
@@ -358,7 +357,7 @@ class Parameters;
 
         //! Do the actual work by overriding this in the derived classes.
         //! Return true if the traverse has to continue with the children of "at"
-        virtual bool Visit( OP::ADDRESS at, PROGRAM& program ) = 0;
+        virtual bool Visit( OP::ADDRESS at, FProgram& program ) = 0;
 
         //! Operations to be processed
         struct PENDING
@@ -391,7 +390,7 @@ class Parameters;
 
 
         //! Process all the pending operations and visit all children if necessary
-        void Recurse( PROGRAM& program )
+        void Recurse( FProgram& program )
         {
             while ( m_pending.Num() )
             {
@@ -462,7 +461,7 @@ class Parameters;
         DiscreteCoveredCodeVisitorBase
             (
                 System::Private* pSystem,
-                const ModelPtrConst& pModel,
+                const TSharedPtr<const Model>& pModel,
                 const ParametersPtrConst& pParams,
                 unsigned lodMask,
                 bool skipResources=false
@@ -487,7 +486,7 @@ class Parameters;
 
     protected:
 
-        virtual bool Visit( OP::ADDRESS at, PROGRAM& program )
+        virtual bool Visit( OP::ADDRESS at, FProgram& program )
         {
             bool recurse = true;
 
@@ -655,7 +654,7 @@ class Parameters;
 
     protected:
         System::Private* m_pSystem = nullptr;
-        ModelPtrConst m_pModel;
+		TSharedPtr<const Model> m_pModel;
         const Parameters* m_pParams = nullptr;
         unsigned m_lodMask = 0;
     };
@@ -688,7 +687,7 @@ class Parameters;
         UniqueDiscreteCoveredCodeVisitor
             (
                 System::Private* pSystem,
-                const ModelPtrConst& pModel,
+				const TSharedPtr<const Model>& pModel,
                 const ParametersPtrConst& pParams,
                 unsigned lodMask
             )
@@ -708,7 +707,7 @@ class Parameters;
     {
     public:
 
-        void Run( OP::ADDRESS root, PROGRAM& program );
+        void Run( OP::ADDRESS root, FProgram& program );
 
         //! After Run, list of relevant parameters.
 		TArray<int> m_params;

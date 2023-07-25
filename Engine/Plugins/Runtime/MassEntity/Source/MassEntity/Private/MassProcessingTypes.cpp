@@ -45,11 +45,22 @@ FMassProcessingContext::~FMassProcessingContext()
 //----------------------------------------------------------------------//
 void FMassRuntimePipeline::Reset()
 {
+	for (UMassProcessor* Processor : Processors)
+	{
+		if (Processor)
+		{
+			Processor->MarkAsGarbage();
+		}
+	}
 	Processors.Reset();
 }
 
 void FMassRuntimePipeline::Initialize(UObject& Owner)
 {
+	// having nulls in Processors should be rare so we run the "remove all nulls" operation below only if we know 
+	// for sure that there are any nulls to be removed
+	bool bNullsFound = false;
+
 	for (UMassProcessor* Proc : Processors)
 	{
 		if (Proc)
@@ -57,11 +68,21 @@ void FMassRuntimePipeline::Initialize(UObject& Owner)
 			REDIRECT_OBJECT_TO_VLOG(Proc, &Owner);
 			Proc->Initialize(Owner);
 		}
+		else
+		{
+			bNullsFound = true;
+		}
+	}
+
+	if (bNullsFound)
+	{
+		Processors.RemoveAll([](const UMassProcessor* Proc) { return Proc == nullptr; });
 	}
 }
 
 void FMassRuntimePipeline::SetProcessors(TArray<UMassProcessor*>&& InProcessors)
 {
+	Reset();
 	Processors = InProcessors;
 }
 
@@ -119,7 +140,7 @@ void FMassRuntimePipeline::AppendUniqueRuntimeProcessorCopies(TConstArrayView<co
 	for (const UMassProcessor* Proc : InProcessors)
 	{
 		if (Proc && Proc->ShouldExecute(WorldExecutionFlags)
-			&& (Proc->AllowDuplicates() || (HasProcessorOfExactClass(Proc->GetClass()) == false)))
+			&& (Proc->ShouldAllowMultipleInstances() || (HasProcessorOfExactClass(Proc->GetClass()) == false)))
 		{
 			// unfortunately the const cast is required since NewObject doesn't support const Template object
 			UMassProcessor* ProcCopy = NewObject<UMassProcessor>(&InOwner, Proc->GetClass(), FName(), RF_NoFlags, const_cast<UMassProcessor*>(Proc));
@@ -132,7 +153,7 @@ void FMassRuntimePipeline::AppendUniqueRuntimeProcessorCopies(TConstArrayView<co
 			{
 				UE_VLOG(&InOwner, LogMass, Log, TEXT("Skipping %s due to ExecutionFlags"), *Proc->GetName());
 			}
-			else if (Proc->AllowDuplicates() == false)
+			else if (Proc->ShouldAllowMultipleInstances() == false)
 			{
 				UE_VLOG(&InOwner, LogMass, Log, TEXT("Skipping %s due to it being a duplicate"), *Proc->GetName());
 			}
@@ -162,7 +183,7 @@ void FMassRuntimePipeline::AppendOrOverrideRuntimeProcessorCopies(TConstArrayVie
 			UMassProcessor* ProcCopy = NewObject<UMassProcessor>(&InOwner, Proc->GetClass(), FName(), RF_NoFlags, const_cast<UMassProcessor*>(Proc));
 			check(ProcCopy);
 
-			if (ProcCopy->AllowDuplicates())
+			if (ProcCopy->ShouldAllowMultipleInstances())
 			{
 				// we don't care if there are instances of this class in Processors already
 				Processors.Add(ProcCopy);
@@ -201,6 +222,11 @@ void FMassRuntimePipeline::AppendProcessor(TSubclassOf<UMassProcessor> Processor
 	check(ProcessorClass);
 	UMassProcessor* ProcInstance = NewObject<UMassProcessor>(&InOwner, ProcessorClass);
 	AppendProcessor(*ProcInstance);
+}
+
+void FMassRuntimePipeline::RemoveProcessor(UMassProcessor& InProcessor)
+{
+	Processors.Remove(&InProcessor);
 }
 
 UMassCompositeProcessor* FMassRuntimePipeline::FindTopLevelGroupByName(FName GroupName)

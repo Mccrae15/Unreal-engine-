@@ -4,6 +4,7 @@
 #include "Chaos/Box.h"
 #include "Chaos/Defines.h"
 #include "Chaos/Plane.h"
+#include "Chaos/SmoothProject.h"
 #include "Chaos/Triangle.h"
 #include "Chaos/TriangleCollisionPoint.h"
 #include "HAL/IConsoleManager.h"
@@ -171,6 +172,26 @@ void FTriangleMesh::GetVertexSet(TSet<int32>& VertexSet) const
 	}
 }
 
+void FTriangleMesh::GetVertexSetAsArray(TArray<int32>& VertexSet) const
+{
+	TBitArray<> VisitedVertices; // using local index
+	VisitedVertices.Init(false, MNumIndices);
+	VertexSet.Reserve(MNumIndices);
+	for (const TVec3<int32>& Element : MElements)
+	{
+		for (int32 Corner = 0; Corner < 3; Corner++)
+		{
+			const int32 VertexIndex = Element[Corner];
+			FBitReference VisitedRef = VisitedVertices[VertexIndex-MStartIdx];
+			if (VisitedRef == false)
+			{
+				VisitedRef = true;
+				VertexSet.Add(VertexIndex);
+			}
+		}
+	}
+}
+
 const TMap<int32, TSet<int32>>& FTriangleMesh::GetPointToNeighborsMap() const
 {
 	if (MPointToNeighborsMap.Num())
@@ -290,7 +311,7 @@ void FTriangleMesh::GetFaceNormals(TArray<TVec3<T>>& Normals, const TConstArrayV
 	else
 	{
 #if INTEL_ISPC
-		if (bChaos_TriangleMesh_ISPC_Enabled && TAreTypesEqual<T, FRealSingle>::Value)
+		if (bChaos_TriangleMesh_ISPC_Enabled && std::is_same_v<T, FRealSingle>)
 		{
 			Normals.SetNumUninitialized(MElements.Num());
 			ispc::GetFaceNormals(
@@ -325,14 +346,14 @@ TArray<TVec3<T>> FTriangleMesh::GetFaceNormals(const TConstArrayView<TVec3<T>>& 
 template CHAOS_API TArray<TVec3<FRealSingle>> FTriangleMesh::GetFaceNormals<FRealSingle>(const TConstArrayView<TVec3<FRealSingle>>&, const bool) const;
 template CHAOS_API TArray<TVec3<FRealDouble>> FTriangleMesh::GetFaceNormals<FRealDouble>(const TConstArrayView<TVec3<FRealDouble>>&, const bool) const;
 
-TArray<FVec3> FTriangleMesh::GetPointNormals(const TConstArrayView<FVec3>& Points, const bool ReturnEmptyOnError)
+TArray<FVec3> FTriangleMesh::GetPointNormals(const TConstArrayView<FVec3>& Points, const bool ReturnEmptyOnError, const bool bUseGlobalArray)
 {
 	TArray<FVec3> PointNormals;
 	const TArray<FVec3> FaceNormals = GetFaceNormals(Points, ReturnEmptyOnError);
 	if (FaceNormals.Num())
 	{
-		PointNormals.SetNumUninitialized(MNumIndices);
-		GetPointNormals(PointNormals, FaceNormals, /*bUseGlobalArray =*/ false);
+		PointNormals.SetNumUninitialized(bUseGlobalArray ? MNumIndices+MStartIdx : MNumIndices);
+		GetPointNormals(PointNormals, FaceNormals, bUseGlobalArray);
 	}
 	return PointNormals;
 }
@@ -1476,8 +1497,8 @@ void FTriangleMesh::BuildBVH(const TConstArrayView<TVec3<T>>& Points, TBVHType<T
 	}
 	BVH.Reinitialize(BVEntries);
 }
-template void FTriangleMesh::BuildBVH<FRealSingle>(const TConstArrayView<TVec3<FRealSingle>>& Points, TBVHType<FRealSingle>& BVH) const;
-template void FTriangleMesh::BuildBVH<FRealDouble>(const TConstArrayView<TVec3<FRealDouble>>& Points, TBVHType<FRealDouble>& BVH) const;
+template CHAOS_API void FTriangleMesh::BuildBVH<FRealSingle>(const TConstArrayView<TVec3<FRealSingle>>& Points, TBVHType<FRealSingle>& BVH) const;
+template CHAOS_API void FTriangleMesh::BuildBVH<FRealDouble>(const TConstArrayView<TVec3<FRealDouble>>& Points, TBVHType<FRealDouble>& BVH) const;
 
 template<typename T>
 bool FTriangleMesh::PointProximityQuery(const TBVHType<T>& BVH, const TConstArrayView<TVec3<T>>& Points, const int32 PointIndex, const TVec3<T>& PointPosition, const T PointThickness, const T ThisThickness, 
@@ -1575,6 +1596,60 @@ template bool FTriangleMesh::EdgeIntersectionQuery<FRealSingle>(const TBVHType<F
 	TFunctionRef<bool(const int32 EdgeIndex, const int32 TriangleIndex)> BroadphaseTest, TArray<TTriangleCollisionPoint<FRealSingle>>& Result) const;
 template bool FTriangleMesh::EdgeIntersectionQuery<FRealDouble>(const TBVHType<FRealDouble>& BVH, const TConstArrayView<TVec3<FRealDouble>>& Points, const int32 EdgeIndex, const TVec3<FRealDouble>& EdgePosition1, const TVec3<FRealDouble>& EdgePosition2,
 	TFunctionRef<bool(const int32 EdgeIndex, const int32 TriangleIndex)> BroadphaseTest, TArray<TTriangleCollisionPoint<FRealDouble>>& Result) const;
+
+
+
+template<typename T>
+bool FTriangleMesh::SmoothProject(
+	const TBVHType<T>& BVH, 
+	const TConstArrayView<FVec3>& Points,
+	const TArray<FVec3>& PointNormals,
+	const FVec3& Pos,
+	int32& TriangleIndex,
+	FVec3& Weights, 
+	const int32 MaxIters) const
+{
+	TSet<int32> SkipTris;
+	int32 Iter = 0;
+	do {
+		TArray<int32> CandidateTris;
+		do {
+			FAABB3 Box(Pos - FVec3(.5 * Iter), Pos + FVec3(.5 * Iter));
+			CandidateTris = BVH.FindAllIntersections(Box);
+			// Remove candidates we've already considered
+			for (int32 i = CandidateTris.Num() - 1; i >= 0; i--)
+			{
+				if (SkipTris.Contains(CandidateTris[i]))
+				{
+					CandidateTris.RemoveAt(i);
+				}
+			}
+			++Iter;
+		} while (!CandidateTris.Num() && Iter < MaxIters);
+		if (!CandidateTris.Num())
+		{
+			// If we exited the BVH loop with no candidates, then we've exceeded MaxIters.
+			return false;
+		}
+		// Test candidates
+		TArray<FVec3> CandidateWeights;
+		TArray<bool> Success = Chaos::SmoothProject<T>(Points, MElements, PointNormals, Pos, CandidateTris, CandidateWeights, true);
+		for (int32 i = 0; i < Success.Num(); i++)
+		{
+			if (Success[i])
+			{
+				TriangleIndex = CandidateTris[i];
+				Weights = CandidateWeights[i];
+				return true;
+			}
+		}
+		// No hits. Add candidates to skip list, and go searching for more.
+		SkipTris.Append(CandidateTris);
+	} while (Iter < MaxIters);
+	return false;
+}
+template CHAOS_API bool FTriangleMesh::SmoothProject<FRealSingle>(const TBVHType<FRealSingle>& BVH, const TConstArrayView<FVec3>& Points, const TArray<FVec3>& PointNormals, const FVec3& Point, int32& TriangleIndex, FVec3& Weights, const int32 MaxIters) const;
+template CHAOS_API bool FTriangleMesh::SmoothProject<FRealDouble>(const TBVHType<FRealDouble>& BVH, const TConstArrayView<FVec3>& Points, const TArray<FVec3>& PointNormals, const FVec3& Point, int32& TriangleIndex, FVec3& Weights, const int32 MaxIters) const;
 
 template<typename T>
 void FTriangleMesh::BuildSpatialHash(const TConstArrayView<TVec3<T>>& Points, TSpatialHashType<T>& SpatialHash) const

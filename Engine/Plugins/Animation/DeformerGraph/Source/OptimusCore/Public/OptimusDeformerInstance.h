@@ -123,9 +123,6 @@ public:
 protected:
 	friend class FOptimusDeformerInstanceComponentBindingCustomization;
 
-	/** Get the actor associated with this object. Used only by details customization. */
-	AActor* GetActor() const;
-
 	/** Get a full component source binding object by binding name. Used only by details customization. */
 	UOptimusComponentSourceBinding const* GetComponentBindingByName(FName InBindingName) const;
 };
@@ -182,6 +179,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Deformer", meta=(DisplayName="Set Variable (Vector4)"))
 	bool SetVector4Variable(FName InVariableName, const FVector4& InValue);
 
+	/** Set the value of a transform variable. */
+	UFUNCTION(BlueprintCallable, Category = "Deformer", meta = (DisplayName = "Set Variable (Transform)"))
+	bool SetTransformVariable(FName InVariableName, const FTransform& InValue);
+
 	/** Get an array containing all the variables. */
 	UFUNCTION(BlueprintGetter)
 	const TArray<UOptimusVariableDescription*>& GetVariables() const;
@@ -203,8 +204,7 @@ protected:
 	/** Implementation of UMeshDeformerInstance. */
 	void AllocateResources() override;
 	void ReleaseResources() override;
-	bool IsActive() const override;
-	void EnqueueWork(FSceneInterface* InScene, EWorkLoad InWorkLoadType, FName InOwnerName) override;
+	void EnqueueWork(FEnqueueWorkDesc const& InDesc) override;
 
 private:
 	/** The Mesh Component that owns this Mesh Deformer Instance. */

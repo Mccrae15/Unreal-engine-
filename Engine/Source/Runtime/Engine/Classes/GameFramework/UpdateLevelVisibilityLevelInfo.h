@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "UpdateLevelVisibilityLevelInfo.generated.h"
 
 /** This structure is used to to identify NetLevelVisibility transactions between server and client */
@@ -91,6 +89,7 @@ struct ENGINE_API FUpdateLevelVisibilityLevelInfo
 	uint32 bTryMakeVisible : 1;
 
 	/** Skip connection close if level can't be found (not net serialized) */
+	UPROPERTY(NotReplicated)
 	uint32 bSkipCloseOnError : 1;
 
 	bool NetSerialize(FArchive& Ar, UPackageMap* PackageMap, bool& bOutSuccess);
@@ -126,3 +125,7 @@ inline uint32 FNetLevelVisibilityTransactionId::IncrementTransactionIndex()
 	SetTransactionIndex(NewIndex);
 	return NewIndex;
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

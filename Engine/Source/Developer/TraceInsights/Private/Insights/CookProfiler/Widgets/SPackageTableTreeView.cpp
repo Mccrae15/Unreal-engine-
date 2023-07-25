@@ -48,12 +48,9 @@ public:
 	{
 	}
 
-	// UI_COMMAND takes long for the compiler to optimize
-	PRAGMA_DISABLE_OPTIMIZATION
 	virtual void RegisterCommands() override
 	{
 	}
-	PRAGMA_ENABLE_OPTIMIZATION
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -300,13 +297,13 @@ void SPackageTableTreeView::InitAvailableViewPresets()
 		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
 			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(), true, 500.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::IdColumnId, true, 100.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::IdColumnId, true, 80.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::LoadTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::SaveTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::BeginCacheForCookedPlatformDataTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::GetIsCachedCookedPlatformDataLoadedColumnId, true, 100.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::PackageAssetClassColumnId, true, 100.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::NameColumnId, false, 100.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::PackageAssetClassColumnId, true, 200.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::NameColumnId, false, 400.0f });
 		}
 	};
 	AvailableViewPresets.Add(MakeShared<FDefaultViewPreset>());
@@ -355,13 +352,13 @@ void SPackageTableTreeView::InitAvailableViewPresets()
 		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
 			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(), true, 500.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::IdColumnId, true, 100.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::IdColumnId, true, 80.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::LoadTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::SaveTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::BeginCacheForCookedPlatformDataTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::GetIsCachedCookedPlatformDataLoadedColumnId, true, 100.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::PackageAssetClassColumnId, true, 100.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::NameColumnId, false, 100.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::PackageAssetClassColumnId, true, 200.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::NameColumnId, false, 400.0f });
 		}
 	};
 	AvailableViewPresets.Add(MakeShared<FPackagePathViewPreset>());
@@ -409,14 +406,14 @@ void SPackageTableTreeView::InitAvailableViewPresets()
 		}
 		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
-			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(), true, 500.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::IdColumnId, true, 100.0f });
+			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(), true, 300.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::IdColumnId, true, 80.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::LoadTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::SaveTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::BeginCacheForCookedPlatformDataTimeColumnId, true, 100.0f });
 			InOutConfigSet.Add({ FPackageTableColumns::GetIsCachedCookedPlatformDataLoadedColumnId, true, 100.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::NameColumnId, true, 100.0f });
-			InOutConfigSet.Add({ FPackageTableColumns::PackageAssetClassColumnId, false, 100.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::NameColumnId, true, 400.0f });
+			InOutConfigSet.Add({ FPackageTableColumns::PackageAssetClassColumnId, false, 200.0f });
 		}
 	};
 	AvailableViewPresets.Add(MakeShared<FAssetClassViewPreset>());

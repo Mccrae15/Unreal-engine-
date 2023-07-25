@@ -2,25 +2,9 @@
 
 #include "MVVMPropertyPathCustomization.h"
 
-#include "Algo/RemoveIf.h"
-#include "Algo/Transform.h"
-#include "Bindings/MVVMBindingHelper.h"
-#include "BlueprintEditor.h"
-#include "Components/Widget.h"
 #include "DetailWidgetRow.h"
-#include "MVVMEditorSubsystem.h"
-#include "MVVMSubsystem.h"
-#include "MVVMWidgetBlueprintExtension_View.h"
-#include "PropertyHandle.h"
-#include "SSimpleButton.h"
-#include "Templates/UnrealTemplate.h"
 #include "WidgetBlueprint.h"
-#include "Widgets/Images/SLayeredImage.h"
-#include "Widgets/Input/SComboBox.h" 
-#include "Widgets/SMVVMFieldIcon.h"
 #include "Widgets/SMVVMFieldSelector.h"
-#include "Widgets/SOverlay.h"
-#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "MVVMPropertyPathCustomization"
 
@@ -45,13 +29,17 @@ void FPropertyPathCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InP
 	PropertyHandle = InPropertyHandle;
 
 	const FName PropertyName = PropertyHandle->GetProperty()->GetFName();
+	FText PropertyDisplayName;
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, WidgetPath))
 	{
 		bIsWidget = true;
+		PropertyDisplayName = LOCTEXT("PropertyDisplay_Widget", "Destination");
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, ViewModelPath))
 	{
 		bIsWidget = false;
+
+		PropertyDisplayName = LOCTEXT("PropertyDisplay_Source", "Source");
 	}
 	else
 	{
@@ -96,7 +84,7 @@ void FPropertyPathCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InP
 		.NameWidget
 		.VAlign(VAlign_Center)
 		[
-			PropertyHandle->CreatePropertyNameWidget()
+			PropertyHandle->CreatePropertyNameWidget(PropertyDisplayName)
 		]
 		.ValueWidget
 		.VAlign(VAlign_Center)

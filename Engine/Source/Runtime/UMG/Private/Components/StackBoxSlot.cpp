@@ -32,6 +32,36 @@ void UStackBoxSlot::BuildSlot(TSharedRef<SStackBox> StackBox)
 		];
 }
 
+void UStackBoxSlot::ReplaceContent(UWidget* NewContent)
+{
+	if (Content != NewContent)
+	{
+		if (NewContent)
+		{
+			NewContent->RemoveFromParent();
+		}
+
+		if (UWidget* PreviousWidget = Content)
+		{
+			// Setting Slot=null before RemoveFromParent to prevent destroying this slot
+			PreviousWidget->Slot = nullptr;
+			PreviousWidget->RemoveFromParent();
+		}
+
+		Content = NewContent;
+
+		if (Content)
+		{
+			Content->Slot = this;
+		}
+
+		if (Slot)
+		{
+			Slot->AttachWidget(Content == nullptr ? SNullWidget::NullWidget : Content->TakeWidget());
+		}
+	}
+}
+
 FMargin UStackBoxSlot::GetPadding() const
 {
 	return Padding;

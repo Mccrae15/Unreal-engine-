@@ -99,7 +99,7 @@ namespace UE::Interchange::Private
 
 		FFrameNumber MinFrameNumber;
 		FFrameNumber MaxFrameNumber;
-		bool ClearSubsequenceMasterTrack = true;
+		bool ClearSubsequenceTrack = true;
 	};
 
 	void FAnimationTrackSetHelper::PopulateLevelSequence()
@@ -293,12 +293,12 @@ namespace UE::Interchange::Private
 		UMovieSceneSequence* TargetMovieSceneSequence = CastChecked<UMovieSceneSequence>(ReferenceObject.TryLoad());
 
 		// Create SubTrack
-		UMovieSceneSubTrack* SubTrack = MovieScene->FindMasterTrack<UMovieSceneSubTrack>();
+		UMovieSceneSubTrack* SubTrack = MovieScene->FindTrack<UMovieSceneSubTrack>();
 		if (!SubTrack)
 		{
-			SubTrack = MovieScene->AddMasterTrack<UMovieSceneSubTrack>();
+			SubTrack = MovieScene->AddTrack<UMovieSceneSubTrack>();
 		}
-		else if (SubTrack && ClearSubsequenceMasterTrack)
+		else if (SubTrack && ClearSubsequenceTrack)
 		{
 			SubTrack->RemoveAllAnimationData();
 		}
@@ -348,7 +348,7 @@ namespace UE::Interchange::Private
 		MinFrameNumber = FMath::Min(MinFrameNumber, NewSection->GetRange().GetLowerBoundValue());
 		MaxFrameNumber = FMath::Max(MaxFrameNumber, NewSection->GetRange().GetUpperBoundValue());
 
-		ClearSubsequenceMasterTrack = false;
+		ClearSubsequenceTrack = false;
 	}
 
 	void FAnimationTrackSetHelper::PopulateAnimationTrack(const UInterchangeAnimationTrackNode& AnimationTrackNode, int32 TrackIndex)
@@ -560,7 +560,7 @@ UClass* UInterchangeAnimationTrackSetFactory::GetFactoryClass() const
 	return ULevelSequence::StaticClass();
 }
 
-UObject* UInterchangeAnimationTrackSetFactory::CreateEmptyAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeAnimationTrackSetFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
 {
 #if !WITH_EDITOR || !WITH_EDITORONLY_DATA
 
@@ -612,11 +612,11 @@ UObject* UInterchangeAnimationTrackSetFactory::CreateEmptyAsset(const FCreateAss
 
 	LevelSequence->PreEditChange(nullptr);
 
-	return LevelSequence;
+	return ImportObjectSourceData(Arguments);
 #endif //else !WITH_EDITOR || !WITH_EDITORONLY_DATA
 }
 
-UObject* UInterchangeAnimationTrackSetFactory::CreateAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeAnimationTrackSetFactory::ImportObjectSourceData(const FImportAssetObjectParams& Arguments)
 {
 #if !WITH_EDITOR || !WITH_EDITORONLY_DATA
 	// TODO: Can we import ULevelSequence at runtime
@@ -670,8 +670,15 @@ UObject* UInterchangeAnimationTrackSetFactory::CreateAsset(const FCreateAssetPar
 	{
 		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
 		//The UObject should have been create by calling CreateEmptyAsset on the main thread.
-		check(IsInGameThread());
-		LevelSequence = NewObject<ULevelSequence>(Arguments.Parent, LevelSequenceClass, *Arguments.AssetName, RF_Public | RF_Standalone);
+		if (IsInGameThread())
+		{
+			LevelSequence = NewObject<ULevelSequence>(Arguments.Parent, LevelSequenceClass, *Arguments.AssetName, RF_Public | RF_Standalone);
+		}
+		else
+		{
+			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create LevelSequence asset [%s] outside of the game thread"), *Arguments.AssetName);
+			return nullptr;
+		}
 	}
 	else if (ExistingAsset->GetClass()->IsChildOf(LevelSequenceClass))
 	{
@@ -706,15 +713,15 @@ UObject* UInterchangeAnimationTrackSetFactory::CreateAsset(const FCreateAssetPar
 }
 
 /* This function is call in the completion task on the main thread, use it to call main thread post creation step for your assets*/
-void UInterchangeAnimationTrackSetFactory::PreImportPreCompletedCallback(const FImportPreCompletedCallbackParams& Arguments)
+void UInterchangeAnimationTrackSetFactory::SetupObject_GameThread(const FSetupObjectParams& Arguments)
 {
 	check(IsInGameThread());
-	Super::PreImportPreCompletedCallback(Arguments);
+	Super::SetupObject_GameThread(Arguments);
 
 	// TODO: Talk with sequence team about adding AssetImportData to ULevelSequence for re-import 
 }
 
-void UInterchangeAnimationTrackSetFactory::PostImportPreCompletedCallback(const FImportPreCompletedCallbackParams& Arguments)
+void UInterchangeAnimationTrackSetFactory::FinalizeObject_GameThread(const FSetupObjectParams& Arguments)
 {
 	check(IsInGameThread());
 	if (ULevelSequence* LevelSequence = Cast<ULevelSequence>(Arguments.ImportedObject))
@@ -726,7 +733,7 @@ void UInterchangeAnimationTrackSetFactory::PostImportPreCompletedCallback(const 
 		// Note: Sequencer team is aware of the issue and will look their design in a future release
 		UMovieSceneSignedObject::ResetImplicitScopedModifyDefer();
 	}
-	Super::PostImportPreCompletedCallback(Arguments);
+	Super::FinalizeObject_GameThread(Arguments);
 }
 
 #undef LOCTEXT_NAMESPACE

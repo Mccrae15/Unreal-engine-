@@ -5,6 +5,7 @@
 #include "IConcertModule.h"
 #include "IConcertClient.h"
 #include "IConcertSession.h"
+#include "ConcertClientSettings.h"
 #include "ConcertSyncClientLiveSession.h"
 #include "ConcertClientWorkspace.h"
 #include "ConcertClientSequencerManager.h"
@@ -15,7 +16,7 @@ LLM_DECLARE_TAG(Concert_ConcertSyncClient);
 #define LOCTEXT_NAMESPACE "ConcertSyncClient"
 
 FConcertSyncClient::FConcertSyncClient(const FString& InRole, IConcertClientPackageBridge* InPackageBridge, IConcertClientTransactionBridge* InTransactionBridge)
-	: ConcertClient(IConcertModule::Get().CreateClient(InRole))
+	: ConcertClient(IConcertClientModule::Get().CreateClient(InRole))
 	, SessionFlags(EConcertSyncSessionFlags::None)
 	, PackageBridge(InPackageBridge)
 	, TransactionBridge(InTransactionBridge)
@@ -106,6 +107,16 @@ FOnConcertClientSyncSessionStartupOrShutdown& FConcertSyncClient::OnSyncSessionS
 	return OnSyncSessionShutdownDelegate;
 }
 
+void FConcertSyncClient::PersistSpecificChanges(TArrayView<const FName> InPackages)
+{
+#if WITH_EDITOR
+	if (Workspace)
+	{
+		Workspace->PersistSessionChanges({InPackages, SourceControlProxy.Get()});
+	}
+#endif
+}
+
 void FConcertSyncClient::PersistAllSessionChanges()
 {
 #if WITH_EDITOR
@@ -188,6 +199,11 @@ void FConcertSyncClient::RegisterConcertSyncHandlers(TSharedRef<IConcertClientSe
 IConcertClientTransactionBridge* FConcertSyncClient::GetTransactionBridge() const
 {
 	return TransactionBridge;
+}
+
+IConcertClientPackageBridge* FConcertSyncClient::GetPackageBridge() const
+{
+	return PackageBridge;
 }
 
 void FConcertSyncClient::UnregisterConcertSyncHandlers(TSharedRef<IConcertClientSession> InSession)

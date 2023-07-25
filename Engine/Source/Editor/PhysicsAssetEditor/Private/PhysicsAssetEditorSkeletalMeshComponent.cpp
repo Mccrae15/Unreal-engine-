@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsAssetEditorSkeletalMeshComponent.h"
+#include "MaterialDomain.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -68,6 +69,12 @@ UPhysicsAssetEditorSkeletalMeshComponent::UPhysicsAssetEditorSkeletalMeshCompone
 
 	bSelectable = false;
 }
+
+TObjectPtr<UAnimPreviewInstance> UPhysicsAssetEditorSkeletalMeshComponent::CreatePreviewInstance()
+{
+	return NewObject<UPhysicsAssetEditorAnimInstance>(this, TEXT("PhatAnimScriptInstance"));
+}
+
 void UPhysicsAssetEditorSkeletalMeshComponent::DebugDraw(const FSceneView* View, FPrimitiveDrawInterface* PDI)
 {
 	check(SharedData);

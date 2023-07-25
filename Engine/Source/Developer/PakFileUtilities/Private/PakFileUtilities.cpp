@@ -72,6 +72,68 @@ int64 GDDCHits = 0;
 int64 GDDCMisses = 0;
 #endif
 
+
+bool SignPakFile(const FString& InPakFilename, const FRSAKeyHandle InSigningKey)
+{
+	FString SignatureFilename(FPaths::ChangeExtension(InPakFilename, TEXT(".sig")));
+	TUniquePtr<FArchive> PakFile(IFileManager::Get().CreateFileReader(*InPakFilename));
+
+	const int64 TotalSize = PakFile->TotalSize();
+	bool bFoundMagic = false;
+	FPakInfo PakInfo;
+	const int64 FileInfoSize = PakInfo.GetSerializedSize(FPakInfo::PakFile_Version_Latest);
+	if (TotalSize >= FileInfoSize)
+	{
+		const int64 FileInfoPos = TotalSize - FileInfoSize;
+		PakFile->Seek(FileInfoPos);
+		PakInfo.Serialize(*PakFile.Get(), FPakInfo::PakFile_Version_Latest);
+		bFoundMagic = (PakInfo.Magic == FPakInfo::PakFile_Magic);
+	}
+
+	// TODO: This should probably mimic the logic of FPakFile::Initialize which iterates back through pak versions until it find a compatible one
+	if (!bFoundMagic)
+	{
+		return false;
+	}
+
+	TArray<uint8> ComputedSignatureData;
+	ComputedSignatureData.Append(PakInfo.IndexHash.Hash, UE_ARRAY_COUNT(FSHAHash::Hash));
+
+	const uint64 BlockSize = FPakInfo::MaxChunkDataSize;
+	uint64 Remaining = PakFile->TotalSize();
+
+	PakFile->Seek(0);
+
+	TArray<uint8> Buffer;
+	Buffer.SetNum(BlockSize);
+
+	TArray<TPakChunkHash> Hashes;
+	Hashes.Empty(IntCastChecked<int32>(PakFile->TotalSize() / BlockSize));
+
+	while (Remaining > 0)
+	{
+		const uint64 CurrentBlockSize = FMath::Min(BlockSize, Remaining);
+		Remaining -= CurrentBlockSize;
+
+		PakFile->Serialize(Buffer.GetData(), CurrentBlockSize);
+		Hashes.Add(ComputePakChunkHash(Buffer.GetData(), CurrentBlockSize));
+	}
+
+	FPakSignatureFile Signatures;
+	Signatures.SetChunkHashesAndSign(Hashes, ComputedSignatureData, InSigningKey);
+
+	TUniquePtr<FArchive> SignatureFile(IFileManager::Get().CreateFileWriter(*SignatureFilename));
+	Signatures.Serialize(*SignatureFile.Get());
+
+	return true;
+}
+
+bool SignIOStoreContainer(FArchive& ContainerAr)
+{
+	return true;
+}
+
+
 class FMemoryCompressor;
 
 /**
@@ -180,11 +242,12 @@ public:
 		}
 		else
 		{
-			RemainingTasksCounter = BlockCompressAsyncTasks.Num();
-
-			for (FAsyncTask<FBlockCompressTask>* AsyncTask : BlockCompressAsyncTasks)
+			int32 AsyncTasksCount = BlockCompressAsyncTasks.Num();
+			RemainingTasksCounter = AsyncTasksCount;
+			
+			for (int32 TaskIndex = 0; TaskIndex < AsyncTasksCount; ++TaskIndex)
 			{
-				AsyncTask->StartBackgroundTask();
+				BlockCompressAsyncTasks[TaskIndex]->StartBackgroundTask();
 			}
 		}
 	}
@@ -578,7 +641,7 @@ struct FCompressedFileBuffer
 		FileCompressionBlockSize = 0;
 		FileCompressionMethod = CompressionMethod;
 		CompressedBlocks.Reset();
-		CompressedBlocks.AddUninitialized((OriginalSize+CompressionBlockSize-1)/CompressionBlockSize);
+		CompressedBlocks.AddUninitialized(IntCastChecked<int32>((OriginalSize+CompressionBlockSize-1)/CompressionBlockSize));
 	}
 
 	void Empty()
@@ -927,7 +990,7 @@ bool FCompressedFileBuffer::EndCompressFileToWorkingBuffer(const FPakInputPair& 
 
 			if (InFile.bNeedEncryption)
 			{
-				int32 EncryptionBlockPadding = Align(TotalCompressedSize, FAES::AESBlockSize);
+				int64 EncryptionBlockPadding = Align(TotalCompressedSize, FAES::AESBlockSize);
 				for (int64 FillIndex = TotalCompressedSize; FillIndex < EncryptionBlockPadding; ++FillIndex)
 				{
 					// Fill the trailing buffer with bytes from file. Note that this is now from a fixed location
@@ -1633,7 +1696,7 @@ bool UncompressCopyFile(FArchive& Dest, FArchive& Source, const FPakEntry& Entry
 	int32 MaxCompressionBlockSize = FCompression::CompressMemoryBound(EntryCompressionMethod, Entry.CompressionBlockSize);
 	for (const FPakCompressedBlock& Block : Entry.CompressionBlocks)
 	{
-		MaxCompressionBlockSize = FMath::Max<int32>(MaxCompressionBlockSize, Block.CompressedEnd - Block.CompressedStart);
+		MaxCompressionBlockSize = FMath::Max<int32>(MaxCompressionBlockSize, IntCastChecked<int32>(Block.CompressedEnd - Block.CompressedStart));
 	}
 
 	int64 WorkingSize = Entry.CompressionBlockSize + MaxCompressionBlockSize;
@@ -1647,10 +1710,10 @@ bool UncompressCopyFile(FArchive& Dest, FArchive& Source, const FPakEntry& Entry
 
 	for (uint32 BlockIndex=0, BlockIndexNum=Entry.CompressionBlocks.Num(); BlockIndex < BlockIndexNum; ++BlockIndex)
 	{
-		uint32 CompressedBlockSize = Entry.CompressionBlocks[BlockIndex].CompressedEnd - Entry.CompressionBlocks[BlockIndex].CompressedStart;
-		uint32 UncompressedBlockSize = (uint32)FMath::Min<int64>(Entry.UncompressedSize - Entry.CompressionBlockSize*BlockIndex, Entry.CompressionBlockSize);
+		int64 CompressedBlockSize = Entry.CompressionBlocks[BlockIndex].CompressedEnd - Entry.CompressionBlocks[BlockIndex].CompressedStart;
+		int64 UncompressedBlockSize = FMath::Min<int64>(Entry.UncompressedSize - Entry.CompressionBlockSize*BlockIndex, Entry.CompressionBlockSize);
 		Source.Seek(Entry.CompressionBlocks[BlockIndex].CompressedStart + (PakFile.GetInfo().HasRelativeCompressedChunkOffsets() ? Entry.Offset : 0));
-		uint32 SizeToRead = Entry.IsEncrypted() ? Align(CompressedBlockSize, FAES::AESBlockSize) : CompressedBlockSize;
+		int64 SizeToRead = Entry.IsEncrypted() ? Align(CompressedBlockSize, FAES::AESBlockSize) : CompressedBlockSize;
 		Source.Serialize(PersistentBuffer, SizeToRead);
 
 		if (Entry.IsEncrypted())
@@ -1664,7 +1727,7 @@ bool UncompressCopyFile(FArchive& Dest, FArchive& Source, const FPakEntry& Entry
 			FAES::DecryptData(PersistentBuffer, SizeToRead, Key->Key);
 		}
 
-		if (!FCompression::UncompressMemory(EntryCompressionMethod, UncompressedBuffer, UncompressedBlockSize, PersistentBuffer, CompressedBlockSize))
+		if (!FCompression::UncompressMemory(EntryCompressionMethod, UncompressedBuffer, IntCastChecked<int32>(UncompressedBlockSize), PersistentBuffer, IntCastChecked<int32>(CompressedBlockSize)))
 		{
 			return false;
 		}
@@ -2366,7 +2429,7 @@ void FPakWriterContext::EndCompress(FOutputPakFileEntry* Entry)
 					// Check the compression ratio, if it's too low just store uncompressed. Also take into account read size
 					// if we still save 64KB it's probably worthwhile compressing, as that saves a file read operation in the runtime.
 					// TODO: drive this threshold from the command line
-					float PercentLess = ((float)Entry->GetCompressedBuffer().TotalCompressedSize / (Entry->OriginalFileSize / 100.f));
+					float PercentLess = ((float)Entry->GetCompressedBuffer().TotalCompressedSize / ((float)Entry->OriginalFileSize / 100.f));
 					bNotEnoughCompression = (PercentLess > 90.f) && ((Entry->OriginalFileSize - Entry->GetCompressedBuffer().TotalCompressedSize) < 65536);
 				}
 			}
@@ -2471,7 +2534,7 @@ void FPakWriterContext::CompressionThreadFunc()
 
 void FPakWriterContext::WriterThreadFunc()
 {
-	const uint32 RequiredPatchPadding = CmdLineParameters.PatchFilePadAlign;
+	const int64 RequiredPatchPadding = CmdLineParameters.PatchFilePadAlign;
 
 	for (;;)
 	{
@@ -2720,7 +2783,7 @@ bool FPakWriterContext::Flush()
 	CompressionQueueEntryAddedEvent->Trigger();
 	WriteQueueEntryAddedEvent->Trigger();
 
-	const uint32 RequiredPatchPadding = CmdLineParameters.PatchFilePadAlign;
+	const int64 RequiredPatchPadding = CmdLineParameters.PatchFilePadAlign;
 
 	for (TUniquePtr<FOutputPakFile>& OutputPakFile : OutputPakFiles)
 	{
@@ -2760,7 +2823,7 @@ bool FPakWriterContext::Flush()
 
 				if (OutputEntry.InputPair.bNeedsCompression && OutputEntry.CompressionMethod != NAME_None)
 				{
-					float PercentLess = ((float)OutputEntry.Entry.Info.Size / (OutputEntry.Entry.Info.UncompressedSize / 100.f));
+					float PercentLess = ((float)OutputEntry.Entry.Info.Size / ((float)OutputEntry.Entry.Info.UncompressedSize / 100.f));
 					if (OutputEntry.InputPair.SuggestedOrder < MAX_uint64)
 					{
 						UE_LOG(LogPakFile, Verbose, TEXT("Added compressed %sfile \"%s\", %.2f%% of original size. Compressed with %s, Size %lld bytes, Original Size %lld bytes (order %llu)."), EncryptedString, *OutputEntry.Entry.Filename, PercentLess, *OutputEntry.CompressionMethod.ToString(), OutputEntry.Entry.Info.Size, OutputEntry.Entry.Info.UncompressedSize, OutputEntry.InputPair.SuggestedOrder);
@@ -2857,7 +2920,7 @@ bool FPakWriterContext::Flush()
 		UE_LOG(LogPakFile, Display, TEXT("FullDirectoryIndex size: %d bytes"), Footer.FullDirectoryIndexSize);
 		if (OutputPakFile->TotalUncompressedSize)
 		{
-			float PercentLess = ((float)OutputPakFile->TotalCompressedSize / (OutputPakFile->TotalUncompressedSize / 100.f));
+			float PercentLess = ((float)OutputPakFile->TotalCompressedSize / ((float)OutputPakFile->TotalUncompressedSize / 100.f));
 			UE_LOG(LogPakFile, Display, TEXT("Compression summary: %.2f%% of original size. Compressed Size %lld bytes, Original Size %lld bytes. "), PercentLess, OutputPakFile->TotalCompressedSize, OutputPakFile->TotalUncompressedSize);
 		}
 
@@ -3238,8 +3301,8 @@ bool ListFilesInPak(const TCHAR * InPakFilename, int64 SizeFilter, bool bInclude
 			{
 				if (InspectChunkRanges.Num() > 0)
 				{
-					int32 FirstChunk = Entry.Offset / (64 * 1024);
-					int32 LastChunk = (Entry.Offset + Entry.Size) / (64 * 1024);
+					int32 FirstChunk = IntCastChecked<int32>(Entry.Offset) / (64 * 1024);
+					int32 LastChunk = IntCastChecked<int32>(Entry.Offset + Entry.Size) / (64 * 1024);
 
 					for (int32 Chunk = FirstChunk; Chunk <= LastChunk; ++Chunk)
 					{
@@ -3355,7 +3418,7 @@ bool AuditPakFiles( const FString& InputPath, bool bOnlyDeleted, const FString& 
 	{
 		FString PakFilename;
 		int32 PakPriority;
-		int32 Size;
+		int64 Size;
 	};
 	TMap<FString, FFilePakRevision> FileRevisions;
 	TMap<FString, FFilePakRevision> DeletedRevisions;
@@ -3617,7 +3680,7 @@ bool AuditPakFiles( const FString& InputPath, bool bOnlyDeleted, const FString& 
 	//write seek summary
 	if( bSortByOrdering && bHasOpenOrder && NumReads > 0 )
 	{
-		UE_LOG( LogPakFile, Display, TEXT("%d guaranteed seeks out of %d files read (%.2f%%) with the given open order"), NumSeeks, NumReads, (NumSeeks*100.0f)/NumReads );
+		UE_LOG( LogPakFile, Display, TEXT("%d guaranteed seeks out of %d files read (%.2f%%) with the given open order"), NumSeeks, NumReads, (float)(NumSeeks*100.0) / (float)NumReads );
 	}
 
 	return true;
@@ -3740,7 +3803,7 @@ bool ShowCompressionBlockCRCs( const TCHAR* InPakFileName, TArray<int64>& InOffs
 		int32 MaxCompressionBlockSize = FCompression::CompressMemoryBound(EntryCompressionMethod, Entry->CompressionBlockSize);
 		for (const FPakCompressedBlock& Block : Entry->CompressionBlocks)
 		{
-			MaxCompressionBlockSize = FMath::Max<int32>(MaxCompressionBlockSize, Block.CompressedEnd - Block.CompressedStart);
+			MaxCompressionBlockSize = FMath::Max<int32>(MaxCompressionBlockSize, IntCastChecked<int32>(Block.CompressedEnd - Block.CompressedStart));
 		}
 
 		int64 WorkingSize = Entry->CompressionBlockSize + MaxCompressionBlockSize;
@@ -3748,10 +3811,9 @@ bool ShowCompressionBlockCRCs( const TCHAR* InPakFileName, TArray<int64>& InOffs
 
 		for (uint32 BlockIndex=0, BlockIndexNum=Entry->CompressionBlocks.Num(); BlockIndex < BlockIndexNum; ++BlockIndex)
 		{
-			uint32 CompressedBlockSize = Entry->CompressionBlocks[BlockIndex].CompressedEnd - Entry->CompressionBlocks[BlockIndex].CompressedStart;
-			uint32 UncompressedBlockSize = (uint32)FMath::Min<int64>(Entry->UncompressedSize - Entry->CompressionBlockSize*BlockIndex, Entry->CompressionBlockSize);
+			int64 CompressedBlockSize = Entry->CompressionBlocks[BlockIndex].CompressedEnd - Entry->CompressionBlocks[BlockIndex].CompressedStart;
 			PakReader->Seek(Entry->CompressionBlocks[BlockIndex].CompressedStart + (PakFile.GetInfo().HasRelativeCompressedChunkOffsets() ? Entry->Offset : 0));
-			uint32 SizeToRead = Entry->IsEncrypted() ? Align(CompressedBlockSize, FAES::AESBlockSize) : CompressedBlockSize;
+			int64 SizeToRead = Entry->IsEncrypted() ? Align(CompressedBlockSize, FAES::AESBlockSize) : CompressedBlockSize;
 			PakReader->Serialize(PersistentBuffer, SizeToRead);
 
 			if (Entry->IsEncrypted())
@@ -3773,8 +3835,9 @@ bool ShowCompressionBlockCRCs( const TCHAR* InPakFileName, TArray<int64>& InOffs
 			}
 
 			// compute checksum and log out the block information
-			const uint32 BlockCrc32 = FCrc::MemCrc32( PersistentBuffer, CompressedBlockSize );
-			const FString HexBytes = BytesToHex(PersistentBuffer,FMath::Min(CompressedBlockSize,32U));
+			uint32 TruncatedCompressedBlockSize = IntCastChecked<uint32>(CompressedBlockSize);
+			const uint32 BlockCrc32 = FCrc::MemCrc32(PersistentBuffer, TruncatedCompressedBlockSize);
+			const FString HexBytes = BytesToHex(PersistentBuffer,FMath::Min(TruncatedCompressedBlockSize,32U));
 			UE_LOG(LogPakFile, Display, TEXT("    Block:%-6d  ProcessedSize: %-6d  DecompressionRawSize: %-6d  Crc32: %-12u [%s...]"), BlockIndex, ProcessedSize, CompressedBlockSize, BlockCrc32, *HexBytes );
 		}
 
@@ -4486,7 +4549,7 @@ bool FileIsIdentical(FString SourceFile, FString DestFilename, const FFileInfo* 
 	return true;
 }
 
-float GetFragmentationPercentage(const TArray<FPakInputPair>& FilesToPak, const TBitArray<>& IncludeBitMask, int32 MaxAdjacentOrderDiff, bool bConsiderSecondaryFiles)
+float GetFragmentationPercentage(const TArray<FPakInputPair>& FilesToPak, const TBitArray<>& IncludeBitMask, int64 MaxAdjacentOrderDiff, bool bConsiderSecondaryFiles)
 {
 	uint64 PrevOrder = MAX_uint64;
 	bool bPrevBit = false;
@@ -4502,7 +4565,7 @@ float GetFragmentationPercentage(const TArray<FPakInputPair>& FilesToPak, const 
 		uint64 CurrentOrder = FilesToPak[i].SuggestedOrder;
 		bool bCurrentBit = IncludeBitMask[i];
 		uint64 OrderDiff = CurrentOrder - PrevOrder;
-		if (OrderDiff > MaxAdjacentOrderDiff || bCurrentBit != bPrevBit)
+		if (OrderDiff > (uint64)(MaxAdjacentOrderDiff) || bCurrentBit != bPrevBit)
 		{
 			DiffCount++;
 		}
@@ -4566,7 +4629,7 @@ int32 AddOrphanedFiles(const TArray<FPakInputPair>& FilesToPak, const TArray<int
 }
 
 
-bool DoGapFillingIteration(const TArray<FPakInputPair>& FilesToPak, const TArray<int64>& FileSizes, const TArray<int32>& UAssetToUexpMapping, TBitArray<>& InOutIncludeFilesMask, int64 MaxGapSizeBytes, int32 MaxAdjacentOrderDiff, bool bForce, int64 MaxPatchSize = 0, bool bFillPrimaryOrderFiles = true, bool bFillSecondaryOrderFiles = true)
+bool DoGapFillingIteration(const TArray<FPakInputPair>& FilesToPak, const TArray<int64>& FileSizes, const TArray<int32>& UAssetToUexpMapping, TBitArray<>& InOutIncludeFilesMask, int64 MaxGapSizeBytes, int64 MaxAdjacentOrderDiff, bool bForce, int64 MaxPatchSize = 0, bool bFillPrimaryOrderFiles = true, bool bFillSecondaryOrderFiles = true)
 {
 	TBitArray<> IncludeFilesMask = InOutIncludeFilesMask;
 
@@ -4688,7 +4751,7 @@ bool DoIncrementalGapFilling(const TArray<FPakInputPair>& FilesToPak, const TArr
 		else
 		{
 			// Try with 75% of the max gap size
-			bSuccess |= DoGapFillingIteration(FilesToPak, FileSizes, UAssetToUexpMapping, IncludeFilesMask, GapSize*0.75, MaxAdjacentOrderDiff, false, MaxPatchSize, bFillPrimaryOrderFiles, bFillSecondaryOrderFiles);
+			bSuccess |= DoGapFillingIteration(FilesToPak, FileSizes, UAssetToUexpMapping, IncludeFilesMask, (int64)((double)GapSize*0.75), MaxAdjacentOrderDiff, false, MaxPatchSize, bFillPrimaryOrderFiles, bFillSecondaryOrderFiles);
 			break;
 		}
 		GapSize *= 2;
@@ -4727,7 +4790,7 @@ void ApplyGapFilling(const TArray<FPakInputPair>& FilesToPak, const TArray<int64
 	{
 		UE_CLOG(SeekOptParams.MaxInflationPercent == 0.0f, LogPakFile, Fatal, TEXT("ESeekOptMode::Incremental* requires MaxInflationPercent > 0.0"));
 		int64 PassMaxPatchSize[3];
-		PassMaxPatchSize[0] = OriginalPatchSize + (IncrementalMaxPatchSize - OriginalPatchSize) * 0.9f;
+		PassMaxPatchSize[0] = OriginalPatchSize + (int64)((double)(IncrementalMaxPatchSize - OriginalPatchSize) * 0.9);
 		PassMaxPatchSize[1] = IncrementalMaxPatchSize;
 		PassMaxPatchSize[2] = IncrementalMaxPatchSize;
 		for (int32 i = 0; i < 3; i++)
@@ -5291,7 +5354,10 @@ bool MakeBinaryConfig(const TCHAR* CmdLine)
 
 	// allow delegates to modify the config data with some tagged binary data
 	FCoreDelegates::FExtraBinaryConfigData ExtraData(Config, true);
+	FCoreDelegates::TSAccessExtraBinaryConfigData().Broadcast(ExtraData);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FCoreDelegates::AccessExtraBinaryConfigData.Broadcast(ExtraData);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// write it all out!
 	TArray<uint8> FileContent;

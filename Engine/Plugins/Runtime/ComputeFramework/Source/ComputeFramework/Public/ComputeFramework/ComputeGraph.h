@@ -3,14 +3,21 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHIDefinitions.h"
+#endif
+#if WITH_EDITORONLY_DATA
+#include "RHIFeatureLevel.h"
+#endif
+
 #include "ComputeGraph.generated.h"
 
+enum EShaderPlatform : uint16;
 class FArchive;
+struct FComputeKernelCompileResults;
 struct FComputeKernelDefinitionSet;
 struct FComputeKernelPermutationVector;
 class FComputeKernelResource;
-class UComputeKernelSource;
 class FComputeGraphRenderProxy;
 class ITargetPlatform;
 class FShaderParametersMetadata;
@@ -18,6 +25,7 @@ struct FShaderParametersMetadataAllocations;
 class UComputeDataInterface;
 class UComputeDataProvider;
 class UComputeKernel;
+class UComputeKernelSource;
 
 /** 
  * Description of a single edge in a UComputeGraph. 
@@ -95,16 +103,13 @@ public:
 	virtual ~UComputeGraph();
 
 	/** Called each time that a single kernel shader compilation is completed. */
-	virtual void OnKernelCompilationComplete(int32 InKernelIndex, const TArray<FString>& InCompileOutputMessages) {}
+	virtual void OnKernelCompilationComplete(int32 InKernelIndex, FComputeKernelCompileResults const& InCompileResults) {}
 
 	/** 
 	 * Returns true if graph is valid. 
 	 * A valid graph should be guaranteed to compile, assuming the underlying shader code is well formed. 
 	 */
 	bool ValidateGraph(FString* OutErrors = nullptr);
-
-	/** Returns true if graph has a full set of compiled shaders. */
-	bool IsCompiled() const;
 
 	/** 
 	 * Create UComputeDataProvider objects to match the current UComputeDataInterface objects. 
@@ -155,7 +160,8 @@ private:
 		UComputeKernelSource const& InKernelSource,
 		TMap<FString, FString> const& InAdditionalSources,
 		FString& OutHashKey,
-		FComputeKernelDefinitionSet& OutDefinitionSet, 
+		TMap<FString, FString>& OutGeneratedSources,
+		FComputeKernelDefinitionSet& OutDefinitionSet,
 		FComputeKernelPermutationVector& OutPermutationVector) const;
 
 	/** Cache shader resources for all kernels in the graph. */

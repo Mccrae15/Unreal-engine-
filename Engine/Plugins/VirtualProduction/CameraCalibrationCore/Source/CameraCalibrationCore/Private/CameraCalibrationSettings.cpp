@@ -1,15 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CameraCalibrationSettings.h"
-#include "CameraCalibrationSubsystem.h"
 
+#include "AnamorphicLensDistortionModelHandler.h"
+#include "CameraCalibrationSubsystem.h"
+#include "Engine/Engine.h"
+#include "Misc/CoreDelegates.h"
 #include "SphericalLensDistortionModelHandler.h"
 
 UCameraCalibrationSettings::UCameraCalibrationSettings()
 {
+	// Default materials to use for the spherical lens model
 	DefaultUndistortionDisplacementMaterials.Add(USphericalLensDistortionModelHandler::StaticClass(), TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/CameraCalibrationCore/Materials/M_SphericalUndistortionDisplacementMap.M_SphericalUndistortionDisplacementMap"))));
 	DefaultDistortionDisplacementMaterials.Add(USphericalLensDistortionModelHandler::StaticClass(), TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/CameraCalibrationCore/Materials/M_SphericalDistortionDisplacementMap.M_SphericalDistortionDisplacementMap"))));
 	DefaultDistortionMaterials.Add(USphericalLensDistortionModelHandler::StaticClass(), TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/CameraCalibrationCore/Materials/M_DistortionPostProcess.M_DistortionPostProcess"))));
+
+	// Default materials to use for the anamorphic lens model
+	DefaultUndistortionDisplacementMaterials.Add(UAnamorphicLensDistortionModelHandler::StaticClass(), TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/CameraCalibrationCore/Materials/M_AnamorphicUndistortionDisplacementMap.M_AnamorphicUndistortionDisplacementMap"))));
+	DefaultDistortionDisplacementMaterials.Add(UAnamorphicLensDistortionModelHandler::StaticClass(), TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/CameraCalibrationCore/Materials/M_AnamorphicDistortionDisplacementMap.M_AnamorphicDistortionDisplacementMap"))));
+	DefaultDistortionMaterials.Add(UAnamorphicLensDistortionModelHandler::StaticClass(), TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/CameraCalibrationCore/Materials/M_DistortionPostProcess.M_DistortionPostProcess"))));
 
 #if WITH_EDITORONLY_DATA
 	auto InitOverlayOverrides = [this]()

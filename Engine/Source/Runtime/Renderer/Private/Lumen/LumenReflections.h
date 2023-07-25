@@ -2,14 +2,26 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RendererInterface.h"
+#include "CoreTypes.h"
 #include "BlueNoise.h"
-#include "LumenRadianceCache.h"
-#include "SceneTextureParameters.h"
-#include "IndirectLightRendering.h"
-#include "RendererPrivate.h"
-#include "ScenePrivate.h"
+#include "ShaderParameterMacros.h"
+
+enum class ERDGPassFlags : uint16;
+
+class FLumenCardTracingInputs;
+class FLumenCardTracingParameters;
+class FLumenMeshSDFGridParameters;
+class FRDGBuilder;
+class FScene;
+class FSceneTextureParameters;
+class FSceneView;
+class FSceneViewFamily;
+class FViewInfo;
+
+struct FLumenSceneFrameTemporaries;
+struct FSceneTextures;
+
+namespace LumenRadianceCache { class FRadianceCacheInterpolationParameters; }
 
 const static int32 ReflectionThreadGroupSize2D = 8;
 
@@ -27,6 +39,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenReflectionTracingParameters, )
 	SHADER_PARAMETER(float, ReflectionSmoothBias)
 	SHADER_PARAMETER(uint32, ReflectionPass)
 	SHADER_PARAMETER(uint32, UseJitter)
+	SHADER_PARAMETER(uint32, UseHighResSurface)
 
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, RayBuffer)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, RayTraceDistance)
@@ -58,9 +71,11 @@ END_SHADER_PARAMETER_STRUCT()
 
 namespace LumenReflections
 {
-	bool UseFarFieldForReflections(const FSceneViewFamily& ViewFamily);
+	bool UseFarField(const FSceneViewFamily& ViewFamily);
+	bool UseHitLighting(const FViewInfo& View);
 	bool IsHitLightingForceEnabled(const FViewInfo& View);
-	bool UseHitLightingForReflections(const FViewInfo& View);
+	bool UseSurfaceCacheFeedback();
+	float GetSampleSceneColorNormalTreshold();
 };
 
 extern void TraceReflections(
@@ -70,7 +85,6 @@ extern void TraceReflections(
 	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	bool bTraceMeshObjects,
 	const FSceneTextures& SceneTextures,
-	const FLumenCardTracingInputs& TracingInputs,
 	const FLumenReflectionTracingParameters& ReflectionTracingParameters, 
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
 	const FLumenMeshSDFGridParameters& InMeshSDFGridParameters,
@@ -82,13 +96,16 @@ class FLumenReflectionTracingParameters;
 class FLumenReflectionTileParameters;
 extern void RenderLumenHardwareRayTracingReflections(
 	FRDGBuilder& GraphBuilder,
-	const FSceneTextureParameters& SceneTextures,
+	const FSceneTextures& SceneTextures,
+	const FSceneTextureParameters& SceneTextureParameters,
 	const FScene* Scene,
 	const FViewInfo& View,
+	const FLumenCardTracingParameters& TracingParameters,
 	const FLumenReflectionTracingParameters& ReflectionTracingParameters,
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
-	const FLumenCardTracingInputs& TracingInputs,
 	const FCompactedReflectionTraceParameters& CompactedTraceParameters,
 	float MaxTraceDistance,
 	bool bUseRadianceCache,
-	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters);
+	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
+	bool bSampleSceneColorAtHit,
+	ERDGPassFlags ComputePassFlags);

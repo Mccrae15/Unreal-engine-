@@ -13,6 +13,7 @@
 #include "EditorUndoClient.h"
 #include "RigSpacePickerBakeSettings.h"
 
+class IMenu;
 
 DECLARE_DELEGATE_RetVal_TwoParams(FRigElementKey, FRigSpacePickerGetActiveSpace, URigHierarchy*, const FRigElementKey&);
 DECLARE_DELEGATE_RetVal_TwoParams(const FRigControlElementCustomization*, FRigSpacePickerGetControlCustomization, URigHierarchy*, const FRigElementKey&);
@@ -128,9 +129,10 @@ private:
 public:
 	
 	FReply HandleAddElementClicked();
+	bool IsRestricted() const;
 
 private:
-	
+
 	bool IsSpaceMoveUpEnabled(FRigElementKey InKey) const;
 	bool IsSpaceMoveDownEnabled(FRigElementKey InKey) const;
 

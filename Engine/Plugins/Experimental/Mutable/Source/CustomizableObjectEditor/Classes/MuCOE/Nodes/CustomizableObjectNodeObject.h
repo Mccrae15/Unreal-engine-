@@ -2,22 +2,11 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphNode.h"
-#include "EdGraph/EdGraphPin.h"
-#include "HAL/Platform.h"
-#include "Internationalization/Text.h"
-#include "Math/Color.h"
-#include "Misc/Guid.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "MuCOE/Nodes/CustomizableObjectNode.h"
-#include "UObject/NameTypes.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 
 #include "CustomizableObjectNodeObject.generated.h"
+
+namespace ENodeTitleType { enum Type : int; }
 
 class UCustomizableObject;
 class UCustomizableObjectNodeMaterial;
@@ -40,6 +29,16 @@ struct CUSTOMIZABLEOBJECTEDITOR_API FCustomizableObjectState
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
 	bool bDontCompressRuntimeTextures = false;
+
+	/** LiveUpdateMode will reuse instance temp. data between updates and speed up update times, but spend much more memory. Good for customization screens, not for actual gameplay modes. */
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	bool bLiveUpdateMode = false;
+
+	// Enables the reuse of all possible textures when the instance is updated without any changes in geometry or state (the first update after creation doesn't reuse any)
+	// It will only work if the textures aren't compressed, so set the instance to a Mutable state with texture compression disabled
+	// WARNING! If texture reuse is enabled, do NOT keep external references to the textures of the instance. The instance owns the textures.
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	bool bReuseInstanceTextures = false;
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
 	bool bBuildOnlyFirstLOD = false;

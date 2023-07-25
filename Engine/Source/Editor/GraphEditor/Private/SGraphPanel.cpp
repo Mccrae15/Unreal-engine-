@@ -415,7 +415,7 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 							const FSlateBrush* OverlayBrush = OverlayInfo.Brush;
 							if (OverlayBrush != nullptr)
 							{
-								FPaintGeometry BouncedGeometry = CurWidget.Geometry.ToPaintGeometry(OverlayInfo.OverlayOffset, OverlayBrush->ImageSize, 1.f);
+								FPaintGeometry BouncedGeometry = CurWidget.Geometry.ToPaintGeometry(OverlayBrush->ImageSize, FSlateLayoutTransform(OverlayInfo.OverlayOffset));
 
 								// Handle bouncing during PIE
 								const float BounceValue = FMath::Sin(2.0f * PI * BounceCurve.GetLerp());
@@ -452,7 +452,7 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 									// call SlatePrepass as these widgets are not in the 'normal' child hierarchy
 									Widget->SlatePrepass(AllottedGeometry.GetAccumulatedLayoutTransform().GetScale());
 
-									const FGeometry WidgetGeometry = CurWidget.Geometry.MakeChild(OverlayInfo.OverlayOffset, Widget->GetDesiredSize());
+									const FGeometry WidgetGeometry = CurWidget.Geometry.MakeChild(Widget->GetDesiredSize(), FSlateLayoutTransform(OverlayInfo.OverlayOffset));
 
 									Widget->Paint(NewArgs, WidgetGeometry, MyCullingRect, OutDrawElements, CurWidgetsMaxLayerId, InWidgetStyle, bParentEnabled);
 								}
@@ -467,7 +467,6 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 	}
 
 	MaxLayerId += 1;
-
 
 	// Draw connections between pins 
 	if (Children.Num() > 0 )
@@ -494,6 +493,12 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 		ConnectionDrawingPolicy->SetHoveredPins(CurrentHoveredPins, OverridePins, TimeWhenMouseEnteredPin);
 		ConnectionDrawingPolicy->SetMarkedPin(MarkedPin);
 		ConnectionDrawingPolicy->SetMousePosition(AllottedGeometry.LocalToAbsolute(SavedMousePosForOnPaintEventLocalSpace));
+
+		if (IsRelinkingConnection())
+		{
+			ConnectionDrawingPolicy->SetRelinkConnections(RelinkConnections);
+			ConnectionDrawingPolicy->SetSelectedNodes(GetSelectedGraphNodes());
+		}
 
 		// Get the set of pins for all children and synthesize geometry for culled out pins so lines can be drawn to them.
 		TMap<TSharedRef<SWidget>, FArrangedWidget> PinGeometries;
@@ -826,7 +831,45 @@ FReply SGraphPanel::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointe
 		}
 	}
 
+	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		FGraphPinHandle Pin1Handle = PreviousFrameSplineOverlap.GetPin1Handle();
+		if (Pin1Handle.IsValid())
+		{
+			TSharedPtr<class SGraphPin> SourcePin = Pin1Handle.FindInGraphPanel(*this);
+			if (SourcePin.IsValid())
+			{
+				const UEdGraphSchema* Schema = GraphObj->GetSchema();
+				if (Schema->IsConnectionRelinkingAllowed(SourcePin->GetPinObj()))
+				{
+					return SourcePin->OnPinMouseDown(MyGeometry, MouseEvent);
+				}
+			}
+		}
+	}
+
 	return SNodePanel::OnMouseButtonDown(MyGeometry, MouseEvent);
+}
+
+TArray<UEdGraphNode*> SGraphPanel::GetSelectedGraphNodes() const
+{
+	TArray<UEdGraphNode*> SelectedGraphNodes;
+	SelectedGraphNodes.Reserve(SelectionManager.SelectedNodes.Num());
+
+	for (FGraphPanelSelectionSet::TConstIterator NodeIt(SelectionManager.SelectedNodes); NodeIt; ++NodeIt)
+	{
+		const TSharedRef<SNode>* SelectedNode = NodeToWidgetLookup.Find(*NodeIt);
+		if (SelectedNode)
+		{
+			UEdGraphNode* SelectedGraphNode = Cast<UEdGraphNode>(SelectedNode->Get().GetObjectBeingDisplayed());
+			if (SelectedGraphNode)
+			{
+				SelectedGraphNodes.Add(SelectedGraphNode);
+			}
+		}
+	}
+
+	return SelectedGraphNodes;
 }
 
 FReply SGraphPanel::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
@@ -1262,6 +1305,23 @@ void SGraphPanel::OnStopMakingConnection(bool bForceStop)
 		PreviewConnectorFromPins.Reset();
 		bPreservePinPreviewConnection = false;
 	}
+}
+
+void SGraphPanel::OnBeginRelinkConnection(const FGraphPinHandle& InSourcePinHandle, const FGraphPinHandle& InTargetPinHandle)
+{
+	RelinkConnections.Add({ InSourcePinHandle.GetPinObj(*this), InTargetPinHandle.GetPinObj(*this) });
+	OnBeginMakingConnection(InSourcePinHandle);
+}
+
+void SGraphPanel::OnEndRelinkConnection(bool bForceStop)
+{
+	OnStopMakingConnection(bForceStop);
+	RelinkConnections.Empty();
+}
+
+bool SGraphPanel::IsRelinkingConnection() const
+{
+	return (RelinkConnections.IsEmpty() == false);
 }
 
 void SGraphPanel::PreservePinPreviewUntilForced()

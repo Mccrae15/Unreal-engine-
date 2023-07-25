@@ -51,17 +51,19 @@ public:
 	}
 
 	virtual void BeginPackage(const FBeginPackageInfo& Info) override;
-	virtual void AddToExportsSize(int64& ExportsSize) override;
+	virtual int64 GetExportsFooterSize() override;
 
 	virtual FDateTime GetPreviousCookTime() const override;
 	virtual void Initialize(const FCookInfo& Info) override;
-	virtual void BeginCook() override;
-	virtual void EndCook() override;
+	virtual void BeginCook(const FCookInfo& Info) override;
+	virtual void EndCook(const FCookInfo& Info) override;
 	virtual TUniquePtr<FAssetRegistryState> LoadPreviousAssetRegistry() override;
 	virtual FCbObject GetOplogAttachment(FName PackageName, FUtf8StringView AttachmentKey) override;
 	virtual void RemoveCookedPackages(TArrayView<const FName> PackageNamesToRemove) override;
 	virtual void RemoveCookedPackages() override;
 	virtual void MarkPackagesUpToDate(TArrayView<const FName> UpToDatePackages) override;
+	virtual TFuture<FCbObject> WriteMPCookMessageForPackage(FName PackageName) override;
+	virtual bool TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message) override;
 	virtual bool GetPreviousCookedBytes(const FPackageInfo& Info, FPreviousCookedBytesData& OutData) override;
 	virtual void CompleteExportsArchiveForDiff(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive) override;
 	virtual void CommitPackageInternal(FPackageWriterRecords::FPackage&& BaseRecord,
@@ -131,6 +133,7 @@ private:
 	void CollectForSaveLinkerAdditionalDataRecords(FRecord& Record, FCommitContext& Context);
 	void CollectForSaveAdditionalFileRecords(FRecord& Record, FCommitContext& Context);
 	void CollectForSaveExportsFooter(FRecord& Record, FCommitContext& Context);
+	void CollectForSaveExportsPackageTrailer(FRecord& Record, FCommitContext& Context);
 	void CollectForSaveExportsBuffers(FRecord& Record, FCommitContext& Context);
 	void AsyncSaveOutputFiles(FRecord& Record, FCommitContext& Context);
 	void UpdateManifest(FRecord& Record);
@@ -144,7 +147,8 @@ private:
 	TMap<FName, TRefCountPtr<FPackageHashes>> AllPackageHashes;
 
 	TMap<FName, FName> UncookedPathToCookedPath;
-	FCriticalSection ConcurrentSaveLock;
+	/** CommitPackage can be called in parallel if using recursive save, so we need a lock for shared containers used during CommitPackage */
+	FCriticalSection PackageHashesLock;
 	FString OutputPath;
 	FString MetadataDirectoryPath;
 	const ITargetPlatform& TargetPlatform;
@@ -152,5 +156,6 @@ private:
 	FPackageStoreManifest PackageStoreManifest;
 	const TArray<TSharedRef<IPlugin>>& PluginsToRemap;
 	FAsyncIODelete& AsyncIODelete;
-	bool bIterateSharedBuild;
+	bool bIterateSharedBuild = false;
+	bool bProvidePerPackageResults = false;
 };

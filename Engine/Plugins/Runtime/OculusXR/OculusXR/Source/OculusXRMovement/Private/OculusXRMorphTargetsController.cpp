@@ -41,10 +41,10 @@ void FOculusXRMorphTargetsController::ApplyMorphTargets(USkinnedMeshComponent* T
 {
 	if (TargetMeshComponent != nullptr)
 	{
-		USkeletalMesh* TargetMesh = Cast<USkeletalMesh>(TargetMeshComponent->GetSkinnedAsset());
+		const USkeletalMesh* TargetMesh = Cast<USkeletalMesh>(TargetMeshComponent->GetSkinnedAsset());
 		if (TargetMesh != nullptr && MorphTargetCurves.Num() > 0)
 		{
-			FAnimationRuntime::AppendActiveMorphTargets(TargetMeshComponent->SkeletalMesh, MorphTargetCurves, TargetMeshComponent->ActiveMorphTargets, TargetMeshComponent->MorphTargetWeights);
+			FAnimationRuntime::AppendActiveMorphTargets(TargetMesh, MorphTargetCurves, TargetMeshComponent->ActiveMorphTargets, TargetMeshComponent->MorphTargetWeights);
 		}
 	}
 }

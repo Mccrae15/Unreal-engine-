@@ -36,13 +36,6 @@ class SOURCECONTROLWINDOWS_API FSourceControlWindows
 {
 public:
 	/**
-	 * Get the list of files and directories that source control should check when looking for changes.
-	 *
-	 * @param	bContentOnly	True to only include content directories.
-	 */
-	static TArray<FString> GetSourceControlLocations(const bool bContentOnly = false);
-
-	/**
 	 * Opens a user dialog to choose packages to submit.
 	 *
 	 * @param	OnCompleteDelegate	Delegate to call when this user-based operation is complete. Also see FCheckinResultInfo.
@@ -50,11 +43,21 @@ public:
 	 */
 	static bool ChoosePackagesToCheckIn(const FSourceControlWindowsOnCheckInComplete& OnCompleteDelegate = FSourceControlWindowsOnCheckInComplete());
 
-	/** Determines whether we can choose packages to check in (we cant if an operation is already in progress) */
+	/** Determines whether we can choose packages to check in (we can't if an operation is already in progress) */
 	static bool CanChoosePackagesToCheckIn();
 
 	/** Determines if the Submit Content action should be visible or not */
 	static bool ShouldChoosePackagesToCheckBeVisible();
+	
+	/**
+	 * Saves all unsaved levels and assets and then - conditionally - performs an FSync operation to get latest and reloads the world
+	 * 
+	 * @return	true - if command completed successfully.
+	 */
+	static bool SyncLatest();
+
+	/** Determines whether we can sync to latest */
+	static bool CanSyncLatest();
 
 	/**
 	 * Display check in dialog for the specified packages and get additional result information
@@ -92,10 +95,16 @@ public:
 	 * Prompt the user with a revert files dialog, allowing them to specify which packages, if any, should be reverted.
 	 *
 	 * @param	InPackageNames	Names of the packages to consider for reverting
+	 * @param	bInReloadWorld	Reload the world as part of the revert operation
 	 *
 	 * @return	true if the files were reverted; false if the user canceled out of the dialog
 	 */
-	static bool PromptForRevert(const TArray<FString>& InPackageNames );
+	static bool PromptForRevert(const TArray<FString>& InPackageNames, bool bInReloadWorld = false );
+
+	/**
+	 * Revert all locally modified files, and reload the world
+	 */
+	static bool RevertAllChangesAndReloadWorld();
 
 	/**
 	 * Displays file diff against workspace version

@@ -7,6 +7,7 @@
 #include "ISourceControlProvider.h"
 
 class FUICommandList;
+class FReply;
 class SWidget;
 
 class FSourceControlCommands : public TCommands<FSourceControlCommands>
@@ -28,6 +29,7 @@ private:
 	static void ViewChangelists_Clicked();
 	static bool CheckOutModifiedFiles_CanExecute();
 	static void CheckOutModifiedFiles_Clicked();
+	static void RevertAllModifiedFiles_Clicked();
 
 public:
 	/**
@@ -38,6 +40,7 @@ public:
 	TSharedPtr< FUICommandInfo > ViewChangelists;
 	TSharedPtr< FUICommandInfo > SubmitContent;
 	TSharedPtr< FUICommandInfo > CheckOutModifiedFiles;
+	TSharedPtr< FUICommandInfo > RevertAll;
 
 	static TSharedRef<FUICommandList> ActionList;
 };
@@ -71,9 +74,10 @@ public:
 private:
 	static void OnSourceControlOperationComplete(const FSourceControlOperationRef& InOperation, ECommandResult::Type InResult);
 	static TSharedRef<SWidget> GenerateSourceControlMenuContent();
+	static TSharedRef<SWidget> GenerateCheckInComboButtonContent();
 	static FText GetSourceControlStatusText();
 	static FText GetSourceControlTooltip();
-	static const FSlateBrush* GetSourceControlIcon();	
+	static const FSlateBrush* GetSourceControlIconBadge();
 
 	/** Sync button */
 	static bool IsAtLatestRevision();
@@ -82,13 +86,6 @@ private:
 	static FText GetSourceControlSyncStatusTooltipText();
 	static const FSlateBrush* GetSourceControlSyncStatusIcon();
 	static FReply OnSourceControlSyncClicked();
-
-	void SyncProject();
-	bool SaveDirtyPackages();
-	TArray<FString> ListAllPackages();
-
-	/** Loaded packages to reload after a Sync or Revert operation */
-	TArray<UPackage*> PackagesToReload;
 
 	/** Check-in button */
 	static int GetNumLocalChanges();

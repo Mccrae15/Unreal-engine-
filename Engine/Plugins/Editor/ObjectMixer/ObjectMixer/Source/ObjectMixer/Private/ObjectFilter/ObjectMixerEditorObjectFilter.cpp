@@ -2,7 +2,6 @@
 
 #include "ObjectFilter/ObjectMixerEditorObjectFilter.h"
 
-#include "GameFramework/Actor.h"
 #include "Kismet2/ComponentEditorUtils.h"
 
 FText UObjectMixerObjectFilter::GetRowDisplayName(UObject* InObject, const bool bIsHybridRow) const
@@ -133,6 +132,11 @@ EObjectMixerInheritanceInclusionOptions UObjectMixerObjectFilter::GetObjectMixer
 bool UObjectMixerObjectFilter::ShouldIncludeUnsupportedProperties() const
 {
 	return false;
+}
+
+TSet<FName> UObjectMixerObjectFilter::GetPropertiesThatRequireListRefresh() const
+{
+	return { "Mobility" };
 }
 
 TSet<UClass*> UObjectMixerObjectFilter::GetParentAndChildClassesFromSpecifiedClasses(

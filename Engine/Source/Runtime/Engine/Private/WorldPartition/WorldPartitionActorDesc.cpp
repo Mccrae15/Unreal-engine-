@@ -2,21 +2,18 @@
 
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionActorDesc.h"
+#include "Misc/Paths.h"
 #include "WorldPartition/WorldPartitionActorDescArchive.h"
 
-#include "Misc/HashBuilder.h"
-#include "UObject/LinkerInstancingContext.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/MetaData.h"
 #include "AssetRegistry/AssetData.h"
-#include "Algo/Transform.h"
-#include "Engine/World.h"
-#include "Engine/Level.h"
-#include "Misc/PackageName.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "UObject/FortniteNCBranchObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "WorldPartition/WorldPartitionActorDescView.h"
 #include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/HLOD/HLODLayer.h"
@@ -225,21 +222,10 @@ void FWorldPartitionActorDesc::RegisterActorDescDeprecator(TSubclassOf<AActor> A
 	Deprecators.Add(ActorClass, Deprecator);
 }
 
-void FWorldPartitionActorDesc::TransformInstance(const FString& From, const FString& To, const FTransform& InstanceTransform)
+void FWorldPartitionActorDesc::TransformInstance(const FString& From, const FString& To)
 {
 	check(!HardRefCount);
-
 	ActorPath = *ActorPath.ToString().Replace(*From, *To);
-
-	// Transform BoundsLocation and BoundsExtent if necessary
-	if (!InstanceTransform.Equals(FTransform::Identity))
-	{
-		//@todo_ow: This will result in a new BoundsExtent that is larger than it should. To fix this, we would need the Object Oriented BoundingBox of the actor (the BV of the actor without rotation)
-		const FVector BoundsMin = BoundsLocation - BoundsExtent;
-		const FVector BoundsMax = BoundsLocation + BoundsExtent;
-		const FBox NewBounds = FBox(BoundsMin, BoundsMax).TransformBy(InstanceTransform);
-		NewBounds.GetCenterAndExtents(BoundsLocation, BoundsExtent);
-	}
 }
 
 FString FWorldPartitionActorDesc::ToString(EToStringMode Mode) const
@@ -254,6 +240,18 @@ FString FWorldPartitionActorDesc::ToString(EToStringMode Mode) const
 
 	if (Mode >= EToStringMode::Compact)
 	{
+		FString BoundsStr;
+		const FBox EditorBounds = GetEditorBounds();
+		const FBox RuntimeBounds = GetRuntimeBounds();
+		if (EditorBounds.Equals(RuntimeBounds))
+		{
+			BoundsStr = RuntimeBounds.ToString();
+		}
+		else
+		{
+			BoundsStr = *FString::Printf(TEXT("(Editor:%s Runtime:%s)"), *EditorBounds.ToString(), *RuntimeBounds.ToString());
+		}
+
 		Result.Appendf(
 			TEXT(" BaseClass:%s NativeClass:%s Name:%s Label:%s SpatiallyLoaded:%s Bounds:%s RuntimeGrid:%s EditorOnly:%s RuntimeOnly:%s HLODRelevant:%s"),
 			*BaseClass.ToString(), 
@@ -261,7 +259,7 @@ FString FWorldPartitionActorDesc::ToString(EToStringMode Mode) const
 			*GetActorName().ToString(),
 			*GetActorLabel().ToString(),
 			GetBoolStr(bIsSpatiallyLoaded),
-			*GetBounds().ToString(),
+			*BoundsStr,
 			*RuntimeGrid.ToString(),
 			GetBoolStr(bActorIsEditorOnly),
 			GetBoolStr(bActorIsRuntimeOnly),
@@ -331,7 +329,7 @@ void FWorldPartitionActorDesc::Serialize(FArchive& Ar)
 			FName BaseClassPathName;
 			Ar << BaseClassPathName;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			BaseClass = FAssetData::TryConvertShortClassNameToPathName(BaseClassPathName);
+			BaseClass = FAssetData::TryConvertShortClassNameToPathName(BaseClassPathName, ELogVerbosity::NoLogging);
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 		else
@@ -345,7 +343,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		FName NativeClassPathName;
 		Ar << NativeClassPathName;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		NativeClass = FAssetData::TryConvertShortClassNameToPathName(NativeClassPathName);
+		NativeClass = FAssetData::TryConvertShortClassNameToPathName(NativeClassPathName, ELogVerbosity::NoLogging);
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	else
@@ -481,10 +479,25 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	else
 	{
 		Ar << ContentBundleGuid;
+		// @todo_ow: remove once we find why some actors end up with invalid ContentBundleGuids
+		if (Ar.IsLoading())
+		{
+			FGuid FixupContentBundleGuid = ContentBundlePaths::GetContentBundleGuidFromExternalActorPackagePath(ActorPackage.ToString());
+			if (ContentBundleGuid != FixupContentBundleGuid)
+			{
+				UE_LOG(LogWorldPartition, Log, TEXT("ActorDesc ContentBundleGuid was fixed up: %s"), *GetActorName().ToString());
+				ContentBundleGuid = FixupContentBundleGuid;
+			}
+		}
 	}
 }
 
-FBox FWorldPartitionActorDesc::GetBounds() const
+FBox FWorldPartitionActorDesc::GetEditorBounds() const
+{
+	return FBox(BoundsLocation - BoundsExtent, BoundsLocation + BoundsExtent);
+}
+
+FBox FWorldPartitionActorDesc::GetRuntimeBounds() const
 {
 	return FBox(BoundsLocation - BoundsExtent, BoundsLocation + BoundsExtent);
 }

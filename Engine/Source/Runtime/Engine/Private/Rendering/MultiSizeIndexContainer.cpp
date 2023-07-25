@@ -2,12 +2,23 @@
 
 #include "Rendering/MultiSizeIndexContainer.h"
 #include "EngineLogs.h"
+#include "RawIndexBuffer.h"
+#include "Stats/Stats.h"
 
 FMultiSizeIndexContainer::~FMultiSizeIndexContainer()
 {
 	if (IndexBuffer)
 	{
 		delete IndexBuffer;
+	}
+}
+
+void FMultiSizeIndexContainer::SetOwnerName(const FName& OwnerName)
+{
+	check(IsInGameThread());
+	if (IndexBuffer)
+	{
+		IndexBuffer->SetOwnerName(OwnerName);
 	}
 }
 
@@ -212,6 +223,37 @@ FBufferRHIRef FMultiSizeIndexContainer::CreateRHIBuffer_Async()
 		}
 	}
 	return nullptr;
+}
+
+void FMultiSizeIndexContainer::InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher)
+{
+	check(!((uint32)!!IntermediateBuffer ^ (uint32)!!IndexBuffer));
+	if (IntermediateBuffer)
+	{
+		if (DataTypeSize == sizeof(uint16))
+		{
+			static_cast<FRawStaticIndexBuffer16or32<uint16>*>(IndexBuffer)->InitRHIForStreaming(IntermediateBuffer, Batcher);
+		}
+		else
+		{
+			static_cast<FRawStaticIndexBuffer16or32<uint32>*>(IndexBuffer)->InitRHIForStreaming(IntermediateBuffer, Batcher);
+		}
+	}
+}
+
+void FMultiSizeIndexContainer::ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher)
+{
+	if (IndexBuffer)
+	{
+		if (DataTypeSize == sizeof(uint16))
+		{
+			static_cast<FRawStaticIndexBuffer16or32<uint16>*>(IndexBuffer)->ReleaseRHIForStreaming(Batcher);
+		}
+		else
+		{
+			static_cast<FRawStaticIndexBuffer16or32<uint32>*>(IndexBuffer)->ReleaseRHIForStreaming(Batcher);
+		}
+	}
 }
 
 #if WITH_EDITOR

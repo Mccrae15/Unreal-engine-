@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "PipelineCacheUtilities.h"
-#if WITH_EDITOR	// this has no business existing in a cooked game
+#if UE_WITH_PIPELINE_CACHE_UTILITIES
 #include "Misc/SecureHash.h"
 #include "Serialization/NameAsStringIndexProxyArchive.h"
 #include "Serialization/VarInt.h"
@@ -48,7 +48,12 @@ namespace Private
 			return Ar << Info.Magic << Info.Version << Info.NumEntries;
 		}
 	};
+#pragma pack(pop)
 
+#if WITH_EDITOR
+
+#pragma pack(push)
+#pragma pack(1)
 	/** Header of the binary stable pipeline cache file. */
 	struct FStablePipelineCacheSerializedHeader
 	{
@@ -290,6 +295,8 @@ namespace Private
 			Current = 1
 		};
 	};
+
+#endif // WITH_EDITOR
 }
 }
 }
@@ -356,6 +363,10 @@ bool UE::PipelineCacheUtilities::LoadStableKeysFile(const FStringView& Filename,
 		uint64 HashIdx = ReadVarUIntFromArchive(*Archive);
 		Item.PipelineHash = Hashes[static_cast<int32>(HashIdx)];
 		HashIdx = ReadVarUIntFromArchive(*Archive);
+		if (HashIdx >= Hashes.Num())
+		{
+			return false;
+		}
 		Item.OutputHash = Hashes[static_cast<int32>(HashIdx)];
 
 		// Standardize on all CompactNames being parsed from string. This is a temporary hack until the names are parsed from CSV when reading StablePC
@@ -368,6 +379,8 @@ bool UE::PipelineCacheUtilities::LoadStableKeysFile(const FStringView& Filename,
 
 	return true;
 }
+
+#if WITH_EDITOR
 
 bool UE::PipelineCacheUtilities::SaveStableKeysFile(const FStringView& Filename, const TSet<FStableShaderKeyAndValue>& Values)
 {
@@ -707,7 +720,7 @@ bool UE::PipelineCacheUtilities::LoadStablePipelineCacheFile(const FString& File
 	TArray<FPipelineCacheFileFormatPSO> OriginalPSOs;
 	PermutationGroups.Reserve(Header.NumPermutationGroups);
 	OriginalPSOs.AddDefaulted(Header.NumPermutationGroups);	// need to avoid resizes and invalidating the pointeers
-	for (int32 PermutationGroupIdx = 0; PermutationGroupIdx < Header.NumPermutationGroups; ++PermutationGroupIdx)
+	for (int64 PermutationGroupIdx = 0; PermutationGroupIdx < Header.NumPermutationGroups; ++PermutationGroupIdx)
 	{
 		FPermsPerPSO Item;
 		UE::PipelineCacheUtilities::Private::LoadActiveSlots(MemReader, Item);
@@ -1016,5 +1029,5 @@ bool UE::PipelineCacheUtilities::LoadChunkInfo(const FString& Filename, const FS
 
 	return true;
 }
-
 #endif // WITH_EDITOR
+#endif // UE_WITH_PIPELINE_CACHE_UTILITIES

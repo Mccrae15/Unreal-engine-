@@ -10,6 +10,7 @@
 #include "GlobalShader.h"
 #include "Serialization/MemoryReader.h"
 #include "VulkanLLM.h"
+#include "VulkanDescriptorSets.h"
 
 TAutoConsoleVariable<int32> GDynamicGlobalUBs(
 	TEXT("r.Vulkan.DynamicGlobalUBs"),
@@ -51,23 +52,50 @@ FVulkanShaderFactory::~FVulkanShaderFactory()
 template <typename ShaderType> 
 ShaderType* FVulkanShaderFactory::CreateShader(TArrayView<const uint8> Code, FVulkanDevice* Device)
 {
-	uint32 ShaderCodeLen = Code.Num();
-	uint32 ShaderCodeCRC = FCrc::MemCrc32(Code.GetData(), Code.Num());
-	uint64 ShaderKey = ((uint64)ShaderCodeLen | ((uint64)ShaderCodeCRC << 32));
+	const uint32 ShaderCodeLen = Code.Num();
+	const uint32 ShaderCodeCRC = FCrc::MemCrc32(Code.GetData(), Code.Num());
+	const uint64 ShaderKey = ((uint64)ShaderCodeLen | ((uint64)ShaderCodeCRC << 32));
 
 	ShaderType* RetShader = LookupShader<ShaderType>(ShaderKey);
+
 	if (RetShader == nullptr)
 	{
-		RetShader = new ShaderType(Device);
-		RetShader->Setup(Code, ShaderKey);
-			
-		FRWScopeLock ScopedLock(Lock, SLT_Write);
-		ShaderMap[ShaderType::StaticFrequency].Add(ShaderKey, RetShader);
+		// Do serialize outside of lock
+		FMemoryReaderView Ar(Code, true);
+		FVulkanShaderHeader CodeHeader;
+		Ar << CodeHeader;
+		FVulkanShader::FSpirvContainer SpirvContainer;
+		Ar << SpirvContainer;
+
+		{
+			FRWScopeLock ScopedLock(RWLock[ShaderType::StaticFrequency], SLT_Write);
+			FVulkanShader* const* FoundShaderPtr = ShaderMap[ShaderType::StaticFrequency].Find(ShaderKey);
+			if (FoundShaderPtr)
+			{
+				RetShader = static_cast<ShaderType*>(*FoundShaderPtr);
+			}
+			else
+			{
+				RetShader = new ShaderType(Device);
+				RetShader->Setup(MoveTemp(CodeHeader), MoveTemp(SpirvContainer), ShaderKey);
+				if constexpr (
+					ShaderType::StaticFrequency == SF_RayCallable ||
+					ShaderType::StaticFrequency == SF_RayGen ||
+					ShaderType::StaticFrequency == SF_RayHitGroup ||
+					ShaderType::StaticFrequency == SF_RayMiss)
+				{
+					RetShader->RayTracingPayloadType = RetShader->CodeHeader.RayTracingPayloadType;
+					RetShader->RayTracingPayloadSize = RetShader->CodeHeader.RayTracingPayloadSize;
+				}
+
+				ShaderMap[ShaderType::StaticFrequency].Add(ShaderKey, RetShader);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-		FShaderCodeReader ShaderCode(Code);
-		RetShader->ShaderName = ShaderCode.FindOptionalData(FShaderCodeName::Key);
+				FShaderCodeReader ShaderCode(Code);
+				RetShader->Debug.ShaderName = ShaderCode.FindOptionalData(FShaderCodeName::Key);
 #endif
+			}
+		}
 	}
 
 	return RetShader;
@@ -75,14 +103,13 @@ ShaderType* FVulkanShaderFactory::CreateShader(TArrayView<const uint8> Code, FVu
 
 void FVulkanShaderFactory::LookupShaders(const uint64 InShaderKeys[ShaderStage::NumStages], FVulkanShader* OutShaders[ShaderStage::NumStages]) const
 {
-	FRWScopeLock ScopedLock(Lock, SLT_ReadOnly);
-	
 	for (int32 Idx = 0; Idx < ShaderStage::NumStages; ++Idx)
 	{
 		uint64 ShaderKey = InShaderKeys[Idx];
 		if (ShaderKey)
 		{
 			EShaderFrequency ShaderFrequency = ShaderStage::GetFrequencyForGfxStage((ShaderStage::EStage)Idx);
+			FRWScopeLock ScopedLock(RWLock[ShaderFrequency], SLT_ReadOnly);
 			FVulkanShader* const * FoundShaderPtr = ShaderMap[ShaderFrequency].Find(ShaderKey);
 			if (FoundShaderPtr)
 			{
@@ -94,8 +121,8 @@ void FVulkanShaderFactory::LookupShaders(const uint64 InShaderKeys[ShaderStage::
 
 void FVulkanShaderFactory::OnDeleteShader(const FVulkanShader& Shader)
 {
-	FRWScopeLock ScopedLock(Lock, SLT_Write);
-	uint64 ShaderKey = Shader.GetShaderKey(); 
+	const uint64 ShaderKey = Shader.GetShaderKey(); 
+	FRWScopeLock ScopedLock(RWLock[Shader.Frequency], SLT_Write);
 	ShaderMap[Shader.Frequency].Remove(ShaderKey);
 }
 
@@ -165,18 +192,16 @@ FVulkanShader::FSpirvCode FVulkanShader::GetSpirvCode()
 }
 
 
-void FVulkanShader::Setup(TArrayView<const uint8> InShaderHeaderAndCode, uint64 InShaderKey)
+void FVulkanShader::Setup(FVulkanShaderHeader&& InCodeHeader, FSpirvContainer&& InSpirvContainer, uint64 InShaderKey)
 {
 	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanShaders);
 	check(Device);
 
 	ShaderKey = InShaderKey;
 
-	FMemoryReaderView Ar(InShaderHeaderAndCode, true);
+	CodeHeader = MoveTemp(InCodeHeader);
 
-	Ar << CodeHeader;
-
-	Ar << SpirvContainer;
+	SpirvContainer = MoveTemp(InSpirvContainer);
 
 	checkf(SpirvContainer.GetSizeBytes() != 0, TEXT("Empty SPIR-V! %s"), *CodeHeader.DebugName);
 
@@ -369,7 +394,8 @@ void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, ESh
 	TArrayView<uint32> Spirv = SprivCode.GetCodeView();	//#todo-rco: Do we need an actual copy of the SPIR-V?
 	ShaderStage::EStage Stage = ShaderStage::GetStageForFrequency(Frequency);
 	const FDescriptorSetRemappingInfo::FStageInfo& StageInfo = DescriptorSetLayout.RemappingInfo.StageInfos[Stage];
-	
+	const uint32 FirstSet = Device->SupportsBindless() ? VulkanBindless::NumBindlessSets : 0;
+
 	checkSlow(StageInfo.UniformBuffers.Num() == CodeHeader.UniformBufferSpirvInfos.Num());
 	for (int32 Index = 0; Index < CodeHeader.UniformBufferSpirvInfos.Num(); ++Index)
 	{
@@ -379,7 +405,7 @@ void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, ESh
 			const uint32 OffsetBindingIndex = CodeHeader.UniformBufferSpirvInfos[Index].BindingIndexOffset;
 			check(OffsetDescriptorSet != UINT32_MAX && OffsetBindingIndex != UINT32_MAX);
 			uint16 NewDescriptorSet = StageInfo.UniformBuffers[Index].Remapping.NewDescriptorSet;
-			Spirv[OffsetDescriptorSet] = NewDescriptorSet;
+			Spirv[OffsetDescriptorSet] = FirstSet + NewDescriptorSet;
 			uint16 NewBindingIndex = StageInfo.UniformBuffers[Index].Remapping.NewBindingIndex;
 			Spirv[OffsetBindingIndex] = NewBindingIndex;
 		}
@@ -392,7 +418,7 @@ void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, ESh
 		const uint32 OffsetBindingIndex = CodeHeader.GlobalSpirvInfos[Index].BindingIndexOffset;
 		check(OffsetDescriptorSet != UINT32_MAX && OffsetBindingIndex != UINT32_MAX);
 		uint16 NewDescriptorSet = StageInfo.Globals[Index].NewDescriptorSet;
-		Spirv[OffsetDescriptorSet] = NewDescriptorSet;
+		Spirv[OffsetDescriptorSet] = FirstSet + NewDescriptorSet;
 		uint16 NewBindingIndex = StageInfo.Globals[Index].NewBindingIndex;
 		Spirv[OffsetBindingIndex] = NewBindingIndex;
 	}
@@ -403,7 +429,7 @@ void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, ESh
 		const uint32 OffsetDescriptorSet = CodeHeader.PackedUBs[Index].SPIRVDescriptorSetOffset;
 		const uint32 OffsetBindingIndex = CodeHeader.PackedUBs[Index].SPIRVBindingIndexOffset;
 		check(OffsetDescriptorSet != UINT32_MAX && OffsetBindingIndex != UINT32_MAX);
-		Spirv[OffsetDescriptorSet] = StageInfo.PackedUBDescriptorSet;
+		Spirv[OffsetDescriptorSet] = FirstSet + StageInfo.PackedUBDescriptorSet;
 		Spirv[OffsetBindingIndex] = StageInfo.PackedUBBindingIndices[Index];
 	}
 }
@@ -474,15 +500,17 @@ void FVulkanLayout::Compile(FVulkanDescriptorSetLayoutMap& DSetLayoutMap)
 
 	DescriptorSetLayout.Compile(DSetLayoutMap);
 
-	const TArray<VkDescriptorSetLayout>& LayoutHandles = DescriptorSetLayout.GetHandles();
+	if (!Device->SupportsBindless())
+	{
+		VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo;
+		ZeroVulkanStruct(PipelineLayoutCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
 
-	VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo;
-	ZeroVulkanStruct(PipelineLayoutCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
-	PipelineLayoutCreateInfo.setLayoutCount = LayoutHandles.Num();
-	PipelineLayoutCreateInfo.pSetLayouts = LayoutHandles.GetData();
-	//PipelineLayoutCreateInfo.pushConstantRangeCount = 0;
-
-	VERIFYVULKANRESULT(VulkanRHI::vkCreatePipelineLayout(Device->GetInstanceHandle(), &PipelineLayoutCreateInfo, VULKAN_CPU_ALLOCATOR, &PipelineLayout));
+		const TArray<VkDescriptorSetLayout>& LayoutHandles = DescriptorSetLayout.GetHandles();
+		PipelineLayoutCreateInfo.setLayoutCount = LayoutHandles.Num();
+		PipelineLayoutCreateInfo.pSetLayouts = LayoutHandles.GetData();
+		//PipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+		VERIFYVULKANRESULT(VulkanRHI::vkCreatePipelineLayout(Device->GetInstanceHandle(), &PipelineLayoutCreateInfo, VULKAN_CPU_ALLOCATOR, &PipelineLayout));
+	}
 }
 
 bool FVulkanGfxLayout::UsesInputAttachment(FVulkanShaderHeader::EAttachmentType AttachmentType) const
@@ -815,9 +843,9 @@ void FVulkanComputePipelineDescriptorInfo::Initialize(const FDescriptorSetRemapp
 {
 	check(!bInitialized);
 
-	RemappingGlobalInfos = InRemappingInfo.StageInfos[0].Globals.GetData();
-	RemappingUBInfos = InRemappingInfo.StageInfos[0].UniformBuffers.GetData();
-	RemappingPackedUBInfos = InRemappingInfo.StageInfos[0].PackedUBBindingIndices.GetData();
+	RemappingGlobalInfos = InRemappingInfo.StageInfos[0].Globals;
+	RemappingUBInfos = InRemappingInfo.StageInfos[0].UniformBuffers;
+	RemappingPackedUBInfos = InRemappingInfo.StageInfos[0].PackedUBBindingIndices;
 
 	RemappingInfo = &InRemappingInfo;
 
@@ -845,9 +873,9 @@ void FVulkanGfxPipelineDescriptorInfo::Initialize(const FDescriptorSetRemappingI
 	for (int32 StageIndex = 0; StageIndex < ShaderStage::NumStages; ++StageIndex)
 	{
 		//#todo-rco: Enable this!
-		RemappingUBInfos[StageIndex] = InRemappingInfo.StageInfos[StageIndex].UniformBuffers.GetData();
-		RemappingGlobalInfos[StageIndex] = InRemappingInfo.StageInfos[StageIndex].Globals.GetData();
-		RemappingPackedUBInfos[StageIndex] = InRemappingInfo.StageInfos[StageIndex].PackedUBBindingIndices.GetData();
+		RemappingUBInfos[StageIndex] = InRemappingInfo.StageInfos[StageIndex].UniformBuffers;
+		RemappingGlobalInfos[StageIndex] = InRemappingInfo.StageInfos[StageIndex].Globals;
+		RemappingPackedUBInfos[StageIndex] = InRemappingInfo.StageInfos[StageIndex].PackedUBBindingIndices;
 	}
 
 	RemappingInfo = &InRemappingInfo;

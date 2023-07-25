@@ -2,12 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Layout/Margin.h"
-#include "Fonts/SlateFontInfo.h"
 #include "Misc/Paths.h"
 #include "Brushes/SlateBorderBrush.h"
-#include "Brushes/SlateBoxBrush.h"
 #include "Brushes/SlateImageBrush.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateStyle.h"
@@ -41,8 +37,8 @@ public:
 		Set("LevelSequenceEditor.CreateNewLevelSequenceInLevel", new IMAGE_BRUSH_SVG("LevelSequence", Icon16x16));
 		Set("LevelSequenceEditor.CreateNewLevelSequenceInLevel.Small", new IMAGE_BRUSH_SVG("LevelSequence", Icon16x16));
 
-		Set("LevelSequenceEditor.CreateNewMasterSequenceInLevel", new IMAGE_BRUSH_SVG("MasterSequence", Icon16x16));
-		Set("LevelSequenceEditor.CreateNewMasterSequenceInLevel.Small", new IMAGE_BRUSH_SVG("MasterSequence", Icon16x16));
+		Set("LevelSequenceEditor.CreateNewLevelSequenceWithShotsInLevel", new IMAGE_BRUSH_SVG("LevelSequenceWithShots", Icon16x16));
+		Set("LevelSequenceEditor.CreateNewLevelSequenceWithShotsInLevel.Small", new IMAGE_BRUSH_SVG("LevelSequenceWithShots", Icon16x16));
 		
 		Set("LevelSequenceEditor.CinematicViewportPlayMarker", new IMAGE_BRUSH("CinematicViewportPlayMarker", FVector2D(11, 6)));
 		Set("LevelSequenceEditor.CinematicViewportRangeStart", new BORDER_BRUSH("CinematicViewportRangeStart", FMargin(1.f,.3f,0.f,.6f)));

@@ -3,18 +3,19 @@
 #include "USDStageImporter.h"
 
 #include "USDAssetCache.h"
+#include "USDAssetCache2.h"
 #include "USDAssetImportData.h"
 #include "USDClassesModule.h"
 #include "USDConversionUtils.h"
 #include "USDErrorUtils.h"
 #include "USDGeomMeshConversion.h"
 #include "USDLog.h"
+#include "USDPrimTwin.h"
 #include "USDSchemasModule.h"
 #include "USDSchemaTranslator.h"
 #include "USDStageImportContext.h"
 #include "USDStageImportOptions.h"
 #include "USDTypesConversion.h"
-
 #include "UsdWrappers/SdfLayer.h"
 #include "UsdWrappers/UsdStage.h"
 #include "UsdWrappers/UsdTyped.h"
@@ -26,9 +27,11 @@
 #include "AssetToolsModule.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Dialogs/DlgPickPath.h"
 #include "Editor.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "Engine/World.h"
@@ -48,9 +51,11 @@
 #include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
 #include "PackageTools.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 #include "Serialization/ArchiveReplaceObjectRef.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectIterator.h"
 
 #define LOCTEXT_NAMESPACE "USDStageImporter"
 
@@ -503,8 +508,23 @@ namespace UsdStageImporterImpl
 			if (UUsdAssetImportData* AssetImportData = Cast<UUsdAssetImportData>(Material->AssetImportData))
 			{
 				// The only materials with no prim path are our auto-generated displayColor materials
-				AssetPath = AssetImportData->PrimPath.IsEmpty()? TEXT("DisplayColor") : AssetImportData->PrimPath;
-				AssetName = FPaths::GetBaseFilename( AssetPath );
+				if ( AssetImportData->PrimPath.IsEmpty() )
+				{
+					AssetPath = TEXT("DisplayColor");
+					AssetName = FPaths::GetBaseFilename( AssetPath );
+				}
+				else
+				{
+					AssetPath = AssetImportData->PrimPath;
+					AssetName = FPaths::GetBaseFilename( AssetPath );
+
+					// If we have a preview surface two-sided material we'll also have a one-sided with the same name,
+					// so add a suffix here so we can clearly tell which is which
+					if ( Material->IsTwoSided() )
+					{
+						AssetName += UnrealIdentifiers::TwoSidedMaterialSuffix;
+					}
+				}
 			}
 		}
 		else if (UTexture* Texture = Cast<UTexture>(Asset))
@@ -642,10 +662,26 @@ namespace UsdStageImporterImpl
 
 		FSoftObjectPath OldPath = Asset;
 
+		// If the asset is currently being referenced on its asset cache we can't just take it, and must duplicate it
+		// below with the DuplicateObject call
+		TStrongObjectPtr<UObject> TakenAsset = nullptr;
+		if (UUsdAssetCache2* Cache = ImportContext.AssetCache.Get())
+		{
+			FString Hash = Cache->GetHashForAsset(Asset);
+			if (!Hash.IsEmpty() && Cache->CanRemoveAsset(Hash))
+			{
+				TakenAsset.Reset(Cache->RemoveAsset(Hash));
+				if (!TakenAsset.IsValid())
+				{
+					UE_LOG(LogUsd, Log, TEXT("About to duplicate asset '%s' on import as it can't be taken directly from the asset cache"), *Asset->GetPathName());
+				}
+			}
+		}
+
 		// Strategy copied from FDatasmithImporterImpl::PublicizeAsset
 		// Replace existing asset (reimport or conflict) with new asset
 		UObject* MovedAsset = ExistingAsset;
-		if (ExistingAsset != nullptr && ExistingAsset != Asset && ReplacePolicy == EReplaceAssetPolicy::Replace)
+		if (!TakenAsset || (ExistingAsset != nullptr && ExistingAsset != Asset && ReplacePolicy == EReplaceAssetPolicy::Replace))
 		{
 			// We must do this here or else on the next engine tick the USkeletalMeshComponent::ParallelAnimationEvaluation
 			// will try to use the old anim instance, which will try using the old Skeleton's SmartNameContainer and crash.
@@ -662,7 +698,7 @@ namespace UsdStageImporterImpl
 
 			// If our DuplicateObject didn't stomp the old asset because TargetAssetName != ExistingAsset->GetName(),
 			// mark the existing asset as garbage so that we collect it when we run GC after the import
-			if ( ExistingAsset->GetName() != TargetAssetName )
+			if ( ExistingAsset && ExistingAsset->GetName() != TargetAssetName )
 			{
 				ExistingAsset->MarkAsGarbage();
 				ImportContext.bNeedsGarbageCollection = true;
@@ -730,81 +766,137 @@ namespace UsdStageImporterImpl
 	// Move imported assets from transient folder to their final package, updating AssetCache to point to the moved assets
 	void PublishAssets(FUsdStageImportContext& ImportContext, const TSet<UObject*>& AssetsToPublish, TMap<UObject*, UObject*>& ObjectsToRemap, TMap<FSoftObjectPath, FSoftObjectPath>& SoftObjectsToRemap )
 	{
+		TArray<UObject*> Textures;
+		TArray<UObject*> Materials;
+		TArray<UObject*> StaticMeshes;
+		TArray<UObject*> PhysicsAssets;
+		TArray<UObject*> Skeletons;
+		TArray<UObject*> SkeletalMeshes;
+		TArray<UObject*> AnimSequences;
+		TArray<UObject*> AnimBlueprints;
+		TArray<UObject*> LevelSequences;
+
 		TSet<FString> UniqueAssetNames;
+		TMap<UObject*, FString> AssetToContentFolder;
 
-		for ( UObject* Asset : AssetsToPublish )
+		for (UObject* Asset : AssetsToPublish)
 		{
-			if ( !Asset )
+			if (!Asset)
 			{
 				continue;
 			}
 
-			if ( Asset->IsA( UGeometryCache::StaticClass() ) )
+			const static FString TexturesFolder       = TEXT("Textures");
+			const static FString MaterialsFolder      = TEXT("Materials");
+			const static FString StaticMeshesFolder   = TEXT("StaticMeshes");
+			const static FString SkeletalMeshesFolder = TEXT("SkeletalMeshes");
+			const static FString LevelSequencesFolder = TEXT("LevelSequences");
+
+			const FString* AssetTypeFolderPtr = nullptr;
+			if (Asset->IsA(UGeometryCache::StaticClass()))
 			{
-				UE_LOG( LogUsd, Warning, TEXT( "Ignoring asset '%s': Importing GeometryCaches assets from USD is not supported at this time" ), *Asset->GetName() );
+				UE_LOG(LogUsd, Warning, TEXT("Ignoring asset '%s': Importing GeometryCaches assets from USD is not supported at this time"), *Asset->GetName());
+				continue;
+			}
+			else if (Asset->IsA(UMaterialInterface::StaticClass()))
+			{
+				AssetTypeFolderPtr = &MaterialsFolder;
+				Materials.Add(Asset);
+			}
+			else if (Asset->IsA(UStaticMesh::StaticClass()))
+			{
+				AssetTypeFolderPtr = &StaticMeshesFolder;
+				StaticMeshes.Add(Asset);
+			}
+			else if (Asset->IsA(UTexture::StaticClass()))
+			{
+				AssetTypeFolderPtr = &TexturesFolder;
+				Textures.Add(Asset);
+			}
+			else if (Asset->IsA(USkeletalMesh::StaticClass()))
+			{
+				AssetTypeFolderPtr = &SkeletalMeshesFolder;
+				SkeletalMeshes.Add(Asset);
+			}
+			else if (Asset->IsA(USkeleton::StaticClass()))
+			{
+				AssetTypeFolderPtr = &SkeletalMeshesFolder;
+				Skeletons.Add(Asset);
+			}
+			else if (Asset->IsA(UPhysicsAsset::StaticClass()))
+			{
+				AssetTypeFolderPtr = &SkeletalMeshesFolder;
+				PhysicsAssets.Add(Asset);
+			}
+			else if (Asset->IsA(UAnimSequence::StaticClass()))
+			{
+				AssetTypeFolderPtr = &SkeletalMeshesFolder;
+				AnimSequences.Add(Asset);
+			}
+			else if (Asset->IsA(UAnimBlueprint::StaticClass()))
+			{
+				AssetTypeFolderPtr = &SkeletalMeshesFolder;
+				AnimBlueprints.Add(Asset);
+			}
+			else if (Asset->IsA(ULevelSequence::StaticClass()))
+			{
+				AssetTypeFolderPtr = &LevelSequencesFolder;
+				LevelSequences.Add(Asset);
+			}
+			else
+			{
+				// We don't know what to do with this asset
+				ensure(false);
 				continue;
 			}
 
-			FString AssetTypeFolder;
-			if ( ImportContext.ImportOptions->bPrimPathFolderStructure )
+			if (ImportContext.ImportOptions->bPrimPathFolderStructure)
 			{
-				if ( UUsdAssetImportData* ImportData = UsdUtils::GetAssetImportData( Asset ) )
+				if (UUsdAssetImportData* ImportData = UsdUtils::GetAssetImportData(Asset))
 				{
 					// For skeletal stuff, the primpaths point to the SkelRoot, so it is useful to place the assets in there,
 					// as we'll always have at least the skeletal mesh and the skeleton
-					if ( Asset->IsA( USkeletalMesh::StaticClass() ) ||
-						 Asset->IsA( USkeleton::StaticClass() ) ||
-						 Asset->IsA( UPhysicsAsset::StaticClass() ) ||
-						 Asset->IsA( UAnimSequence::StaticClass() ) ||
-						 Asset->IsA( UAnimBlueprint::StaticClass() )
-					)
+					if (AssetTypeFolderPtr == &SkeletalMeshesFolder)
 					{
-						AssetTypeFolder = ImportData->PrimPath;
+						AssetToContentFolder.Add(Asset, ImportData->PrimPath);
 					}
 					else
 					{
-						AssetTypeFolder = FPaths::GetPath( ImportData->PrimPath );
+						AssetToContentFolder.Add(Asset, FPaths::GetPath(ImportData->PrimPath));
 					}
 				}
 			}
 			else
 			{
-				if (Asset->IsA(UMaterialInterface::StaticClass()))
+				AssetToContentFolder.Add(Asset, *AssetTypeFolderPtr);
+			}
+		}
+
+		TFunction<void(const TArray<UObject*>&)> PublishAssetType = [&](const TArray<UObject*>& Assets)
+		{
+			for (UObject* Asset : Assets)
+			{
+				if (FString* AssetTypeFolder = AssetToContentFolder.Find(Asset))
 				{
-					AssetTypeFolder = TEXT("Materials");
-				}
-				else if (Asset->IsA(UStaticMesh::StaticClass()))
-				{
-					AssetTypeFolder = TEXT("StaticMeshes");
-				}
-				else if (Asset->IsA(UGeometryCache::StaticClass()))
-				{
-					AssetTypeFolder = TEXT("GeometryCaches");
-				}
-				else if (Asset->IsA(UTexture::StaticClass()))
-				{
-					AssetTypeFolder = TEXT("Textures");
-				}
-				else if (
-					Asset->IsA( USkeletalMesh::StaticClass() ) ||
-					Asset->IsA( USkeleton::StaticClass() ) ||
-					Asset->IsA( UPhysicsAsset::StaticClass() ) ||
-					Asset->IsA( UAnimSequence::StaticClass() ) ||
-					Asset->IsA( UAnimBlueprint::StaticClass() )
-				)
-				{
-					AssetTypeFolder = TEXT("SkeletalMeshes");
-				}
-				else if ( Asset->IsA( ULevelSequence::StaticClass() ) )
-				{
-					AssetTypeFolder = TEXT("LevelSequences");
+					FString TargetAssetName = GetUserFriendlyName(Asset, UniqueAssetNames);
+					FString DestPackagePath = FPaths::Combine(ImportContext.PackagePath, *AssetTypeFolder, TargetAssetName);
+					PublishAsset(ImportContext, Asset, DestPackagePath, ObjectsToRemap, SoftObjectsToRemap);
 				}
 			}
+		};
 
-			FString TargetAssetName = GetUserFriendlyName(Asset, UniqueAssetNames);
-			FString DestPackagePath = FPaths::Combine(ImportContext.PackagePath, AssetTypeFolder, TargetAssetName);
-			PublishAsset(ImportContext, Asset, DestPackagePath, ObjectsToRemap, SoftObjectsToRemap);
-		}
+		// We should publish them in the order of dependents before dependencies, because publishing will involve
+		// taking these assets from the asset cache, which can only happen in that order. If we don't follow this order
+		// we may end up unnecessarily duplicating assets
+		PublishAssetType(LevelSequences);
+		PublishAssetType(AnimBlueprints);
+		PublishAssetType(AnimSequences);
+		PublishAssetType(SkeletalMeshes);
+		PublishAssetType(Skeletons);
+		PublishAssetType(PhysicsAssets);
+		PublishAssetType(StaticMeshes);
+		PublishAssetType(Materials);
+		PublishAssetType(Textures);
 	}
 
 	void ResolveComponentConflict(USceneComponent* NewRoot, USceneComponent* ExistingRoot, EReplaceActorPolicy ReplacePolicy, TMap<UObject*, UObject*>& ObjectsToRemap, TMap<FSoftObjectPath, FSoftObjectPath>& SoftObjectsToRemap )
@@ -1183,7 +1275,7 @@ namespace UsdStageImporterImpl
 	}
 
 	/**
-	 * FUsdAssetCache can track which assets are requested/added to itself during translation, but it may miss some dependencies
+	 * UUsdAssetCache2 can track which assets are requested/added to itself during translation, but it may miss some dependencies
 	 * that are only retrieved/added themselves when the original asset is first parsed. This function recursively collects all of those.
 	 * Example: An UMaterialInstance is already in the cache, so when translating we just retrieve the existing asset --> The textures that it's using won't be retrieved or marked as "Used"
 	 * Example: An USkeletalMesh is already in the cache, so in the same way we would miss its USkeleton, materials and textures of those materials
@@ -1222,124 +1314,13 @@ namespace UsdStageImporterImpl
 
 				// Only add it as a dependency if it's owned by the asset cache, but still traverse it because
 				// we may be in some strange situation where the material shouldn't be in this list, but one of its used textures should
-				if ( ImportContext.AssetCache->IsAssetOwnedByCache( Asset ) )
+				if ( Asset && ImportContext.AssetCache->IsAssetOwnedByCache( Asset->GetPathName() ) )
 				{
 					OutAssetsAndDependencies.Add( Asset );
 				}
 
-				if ( UMaterial* Material = Cast<UMaterial>( Asset ) )
-				{
-					TArray<UTexture*> UsedTextures;
-					const bool bAllQualityLevels = true;
-					const bool bAllFeatureLevels = true;
-					Material->GetUsedTextures( UsedTextures, EMaterialQualityLevel::High, bAllQualityLevels, ERHIFeatureLevel::SM5, bAllFeatureLevels );
-
-					OutAssetsAndDependencies.Reserve( OutAssetsAndDependencies.Num() + UsedTextures.Num() );
-					for ( UTexture* UsedTexture : UsedTextures )
-					{
-						if ( ImportContext.AssetCache->IsAssetOwnedByCache( UsedTexture ) )
-						{
-							OutAssetsAndDependencies.Add( UsedTexture );
-						}
-					}
-				}
-				else if ( UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>( Asset ) )
-				{
-					OutAssetsAndDependencies.Reserve( OutAssetsAndDependencies.Num() + MaterialInstance->TextureParameterValues.Num() );
-					for ( const FTextureParameterValue& TextureValue : MaterialInstance->TextureParameterValues )
-					{
-						if ( UTexture* Texture = TextureValue.ParameterValue )
-						{
-							if ( ImportContext.AssetCache->IsAssetOwnedByCache( Texture ) )
-							{
-								OutAssetsAndDependencies.Add( Texture );
-							}
-						}
-					}
-				}
-				else if ( USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>( Asset ) )
-				{
-					if ( USkeleton* Skeleton = SkeletalMesh->GetSkeleton() )
-					{
-						if ( ImportContext.AssetCache->IsAssetOwnedByCache( Skeleton ) )
-						{
-							OutAssetsAndDependencies.Add( Skeleton );
-						}
-					}
-
-					if ( UPhysicsAsset* PhysicsAsset = SkeletalMesh->GetPhysicsAsset() )
-					{
-						if ( ImportContext.AssetCache->IsAssetOwnedByCache( PhysicsAsset ) )
-						{
-							OutAssetsAndDependencies.Add( PhysicsAsset );
-						}
-					}
-
-					AssetQueue.Reserve( AssetQueue.Num() + SkeletalMesh->GetMaterials().Num() );
-					for ( const FSkeletalMaterial& SkeletalMaterial : SkeletalMesh->GetMaterials() )
-					{
-						if ( UMaterialInterface* UsedMaterial = SkeletalMaterial.MaterialInterface )
-						{
-							AssetQueue.Add( UsedMaterial );
-						}
-					}
-				}
-				else if ( UStaticMesh* StaticMesh = Cast<UStaticMesh>( Asset ) )
-				{
-					AssetQueue.Reserve( AssetQueue.Num() + StaticMesh->GetStaticMaterials().Num() );
-					for ( const FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials() )
-					{
-						if ( UMaterialInterface* UsedMaterial = StaticMaterial.MaterialInterface )
-						{
-							AssetQueue.Add( UsedMaterial );
-						}
-					}
-				}
-				else if ( UGeometryCache* GeometryCache = Cast<UGeometryCache>( Asset ) )
-				{
-					for ( UMaterialInterface* UsedMaterial : GeometryCache->Materials )
-					{
-						if ( UsedMaterial )
-						{
-							AssetQueue.Add( UsedMaterial );
-						}
-					}
-				}
-				else if ( UAnimSequence* AnimSequence = Cast<UAnimSequence>( Asset ) )
-				{
-					if ( USkeletalMesh* Mesh = AnimSequence->GetPreviewMesh() )
-					{
-						AssetQueue.Add( Mesh );
-					}
-
-					if ( USkeleton* Skeleton = AnimSequence->GetSkeleton() )
-					{
-						if ( ImportContext.AssetCache->IsAssetOwnedByCache( Skeleton ) )
-						{
-							OutAssetsAndDependencies.Add( Skeleton );
-						}
-					}
-				}
-				else if ( UTexture* Texture = Cast<UTexture>( Asset ) )
-				{
-					// Do nothing. Textures have no additional dependencies
-				}
-				else if ( USkeleton* Skeleton = Cast<USkeleton>( Asset ) )
-				{
-					// Do nothing. Skeletons have no additional dependencies
-				}
-				else if ( UPhysicsAsset* PhysicsAsset = Cast<UPhysicsAsset>( Asset ) )
-				{
-					// Do nothing. PhysicsAssets have no additional dependencies
-				}
-				else if ( UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>( Asset ) )
-				{
-					// Do nothing. AnimBlueprints have no additional dependencies
-				}
-				else
-				{
-					UE_LOG( LogUsd, Warning, TEXT( "Unknown asset '%s' encountered when collecting used assets before USD import." ), Asset ? *Asset->GetName() : TEXT( "nullptr" ) );
-				}
+				TSet<UObject*> Dependencies = IUsdClassesModule::GetAssetDependencies(Asset);
+				AssetQueue.Append(Dependencies.Array());
 			}
 		}
 	}
@@ -1416,7 +1397,7 @@ namespace UsdStageImporterImpl
 		for ( UObject* Object : UsedAssetsAndDependencies )
 		{
 			// If it's still on the transient package it means we abandoned this one (maybe we had asset replace policy ignore and hit a conflict)
-			if ( Object->GetOutermost() != GetTransientPackage() )
+			if ( Object && Object->GetOutermost() != GetTransientPackage() )
 			{
 				FAssetRegistryModule::AssetCreated( Object );
 			}
@@ -1578,7 +1559,7 @@ namespace UsdStageImporterImpl
 	// Also, skeletal mesh components need to be manually ticked, or else they may be showing an animated state of an animation that
 	// we chose not to import, and wouldn't update otherwise until manually ticked by the user (or after save/reload), which may look
 	// like a bug
-	void RefreshComponents( AActor* RootSceneActor )
+	void RefreshComponents( AActor* RootSceneActor, bool bImportAtSpecificTimeCode )
 	{
 		if ( !RootSceneActor )
 		{
@@ -1602,6 +1583,30 @@ namespace UsdStageImporterImpl
 					SkeletalMeshComponent->FinalizeBoneTransform();
 					SkeletalMeshComponent->MarkRenderTransformDirty();
 					SkeletalMeshComponent->MarkRenderDynamicDataDirty();
+				}
+				else if ( bImportAtSpecificTimeCode )
+				{
+					// The asset we return from the import factories may lead to
+					// USkeletalMesh::PostEditChangeProperty being called. The FMultiComponentReregisterContext in
+					// there will call USkeletalMeshComponent::InitAnim on all components that use the mesh, which will
+					// wipe out the Position value on SkeletalMeshComponents. This value describes the current state of
+					// animating the AnimSequence according to the import TimeCode, and we need to keep it.
+					// If we store the position via this function however, it will store it inside the position within
+					// the AnimationData member, so that when USkeletalMeshComponent::InitAnim calls
+					// USkeletalMeshComponent::InitializeAnimScriptInstance, it will use that AnimationData to
+					// initialize the new AnimScriptInstance and retain our desired Position value.
+					// This is also nice because it will serialize this animation position and restore it whenever the
+					// component updates, which should provide some persistent to this animation state (which we assume
+					// was desirable since the user imported at a particular time)
+					const bool bIsLooping = false;
+					const bool bIsPlaying = false;
+					const float Position = SkeletalMeshComponent->GetPosition();
+					SkeletalMeshComponent->OverrideAnimationData(
+						SkeletalMeshComponent->AnimationData.AnimToPlay,
+						bIsLooping,
+						bIsPlaying,
+						Position
+					);
 				}
 
 				// It does need us to manually set this to dirty regardless or else it won't update in case we changed material
@@ -1663,11 +1668,21 @@ void UUsdStageImporter::ImportFromFile(FUsdStageImportContext& ImportContext)
 	// Ensure a valid asset cache
 	if ( !ImportContext.AssetCache )
 	{
-		ImportContext.AssetCache = NewObject<UUsdAssetCache>();
+		UE_LOG(LogUsd, Log, TEXT("Generating a temporary USD Asset Cache when importing '%s'."),
+			*ImportContext.FilePath
+		);
+		ImportContext.AssetCache = NewObject<UUsdAssetCache2>();
+	}
+	if (!ImportContext.InfoCache)
+	{
+		UE_LOG(LogUsd, Log, TEXT("Generating a temporary USD Info Cache when importing '%s'."),
+			*ImportContext.FilePath
+		);
+		ImportContext.InfoCache = MakeShared<FUsdInfoCache>();
 	}
 	ImportContext.AssetCache->MarkAssetsAsStale();
-	ImportContext.LevelSequenceHelper.SetAssetCache( ImportContext.AssetCache );
-	ImportContext.LevelSequenceHelper.Init( ImportContext.Stage );  // Must happen after the context gets an AssetCache!
+	ImportContext.LevelSequenceHelper.SetInfoCache(ImportContext.InfoCache);
+	ImportContext.LevelSequenceHelper.Init( ImportContext.Stage );  // Must happen after the context gets an InfoCache!
 
 	// Shotgun approach to recreate all render states because we may want to reimport/delete/reassign a material/static/skeletalmesh while it is currently being drawn
 	FGlobalComponentRecreateRenderStateContext RecreateRenderStateContext;
@@ -1676,7 +1691,9 @@ void UUsdStageImporter::ImportFromFile(FUsdStageImportContext& ImportContext)
 	TranslationContext->bIsImporting = true;
 	TranslationContext->Level = ImportContext.World->GetCurrentLevel();
 	TranslationContext->ObjectFlags = ImportContext.ImportObjectFlags;
-	TranslationContext->Time = static_cast< float >( UsdUtils::GetDefaultTimeCode() );
+	TranslationContext->Time = ImportContext.ImportOptions->bImportAtSpecificTimeCode
+		? ImportContext.ImportOptions->ImportTimeCode
+		: static_cast< float >( UsdUtils::GetDefaultTimeCode() );
 	TranslationContext->PurposesToLoad = ( EUsdPurpose ) ImportContext.ImportOptions->PurposesToImport;
 	TranslationContext->NaniteTriangleThreshold = ImportContext.ImportOptions->NaniteTriangleThreshold;
 	TranslationContext->RenderContext = ImportContext.ImportOptions->RenderContextToImport;
@@ -1685,9 +1702,9 @@ void UUsdStageImporter::ImportFromFile(FUsdStageImportContext& ImportContext)
 	TranslationContext->ParentComponent = ImportContext.SceneActor ? ImportContext.SceneActor->GetRootComponent() : nullptr;
 	TranslationContext->KindsToCollapse = ( EUsdDefaultKind ) ImportContext.ImportOptions->KindsToCollapse;
 	TranslationContext->bMergeIdenticalMaterialSlots = ImportContext.ImportOptions->bMergeIdenticalMaterialSlots;
-	TranslationContext->bCollapseTopLevelPointInstancers = ImportContext.ImportOptions->bCollapseTopLevelPointInstancers;
 	TranslationContext->bAllowInterpretingLODs = ImportContext.ImportOptions->bInterpretLODs;
 	TranslationContext->bAllowParsingSkeletalAnimations = ImportContext.ImportOptions->bImportGeometry && ImportContext.ImportOptions->bImportSkeletalAnimations;
+	TranslationContext->bTranslateOnlyUsedMaterials = ImportContext.ImportOptions->bImportOnlyUsedMaterials;
 	TranslationContext->MaterialToPrimvarToUVIndex = &ImportContext.MaterialToPrimvarToUVIndex;
 	TranslationContext->InfoCache = ImportContext.InfoCache;
 	TranslationContext->BlendShapesByPath = &BlendShapesByPath;
@@ -1711,7 +1728,7 @@ void UUsdStageImporter::ImportFromFile(FUsdStageImportContext& ImportContext)
 	UsdStageImporterImpl::CallAssetsPostEditChange(PublishedAssetsAndDependencies);
 	UsdStageImporterImpl::Cleanup( ImportContext.SceneActor, ExistingSceneActor, ImportContext.ImportOptions->ExistingActorPolicy );
 	UsdStageImporterImpl::NotifyAssetRegistry(PublishedAssetsAndDependencies);
-	UsdStageImporterImpl::RefreshComponents( ImportContext.SceneActor );
+	UsdStageImporterImpl::RefreshComponents( ImportContext.SceneActor, ImportContext.ImportOptions->bImportAtSpecificTimeCode );
 
 	FUsdDelegates::OnPostUsdImport.Broadcast( ImportContext.FilePath );
 
@@ -1768,9 +1785,21 @@ bool UUsdStageImporter::ReimportSingleAsset(FUsdStageImportContext& ImportContex
 	// Ensure a valid asset cache
 	if ( !ImportContext.AssetCache )
 	{
-		ImportContext.AssetCache = NewObject<UUsdAssetCache>();
+		UE_LOG(LogUsd, Log, TEXT("Generating a temporary USD Asset Cache when importing '%s'."),
+			*ImportContext.FilePath
+		);
+		ImportContext.AssetCache = NewObject<UUsdAssetCache2>();
+	}
+	if (!ImportContext.InfoCache)
+	{
+		UE_LOG(LogUsd, Log, TEXT("Generating a temporary USD Info Cache when importing '%s'."),
+			*ImportContext.FilePath
+		);
+		ImportContext.InfoCache = MakeShared<FUsdInfoCache>();
 	}
 	ImportContext.AssetCache->MarkAssetsAsStale();
+	ImportContext.LevelSequenceHelper.SetInfoCache(ImportContext.InfoCache);
+	ImportContext.LevelSequenceHelper.Init(ImportContext.Stage);  // Must happen after the context gets an InfoCache!
 
 	// Shotgun approach to recreate all render states because we may want to reimport/delete/reassign a material/static/skeletalmesh while it is currently being drawn
 	FGlobalComponentRecreateRenderStateContext RecreateRenderStateContext;
@@ -1779,7 +1808,9 @@ bool UUsdStageImporter::ReimportSingleAsset(FUsdStageImportContext& ImportContex
 	TranslationContext->bIsImporting = true;
 	TranslationContext->Level = ImportContext.World->GetCurrentLevel();
 	TranslationContext->ObjectFlags = ImportContext.ImportObjectFlags;
-	TranslationContext->Time = static_cast< float >( UsdUtils::GetDefaultTimeCode() );
+	TranslationContext->Time = ImportContext.ImportOptions->bImportAtSpecificTimeCode
+		? ImportContext.ImportOptions->ImportTimeCode
+		: static_cast< float >( UsdUtils::GetDefaultTimeCode() );
 	TranslationContext->PurposesToLoad = ( EUsdPurpose ) ImportContext.ImportOptions->PurposesToImport;
 	TranslationContext->NaniteTriangleThreshold = ImportContext.ImportOptions->NaniteTriangleThreshold;
 	TranslationContext->RenderContext = ImportContext.ImportOptions->RenderContextToImport;
@@ -1787,9 +1818,9 @@ bool UUsdStageImporter::ReimportSingleAsset(FUsdStageImportContext& ImportContex
 	TranslationContext->RootMotionHandling = ImportContext.ImportOptions->RootMotionHandling;
 	TranslationContext->KindsToCollapse = ( EUsdDefaultKind ) ImportContext.ImportOptions->KindsToCollapse;
 	TranslationContext->bMergeIdenticalMaterialSlots = ImportContext.ImportOptions->bMergeIdenticalMaterialSlots;
-	TranslationContext->bCollapseTopLevelPointInstancers = ImportContext.ImportOptions->bCollapseTopLevelPointInstancers;
 	TranslationContext->bAllowInterpretingLODs = ImportContext.ImportOptions->bInterpretLODs;
 	TranslationContext->bAllowParsingSkeletalAnimations = ImportContext.ImportOptions->bImportGeometry && ImportContext.ImportOptions->bImportSkeletalAnimations;
+	TranslationContext->bTranslateOnlyUsedMaterials = ImportContext.ImportOptions->bImportOnlyUsedMaterials;
 	TranslationContext->MaterialToPrimvarToUVIndex = &ImportContext.MaterialToPrimvarToUVIndex;
 	TranslationContext->InfoCache = ImportContext.InfoCache;
 	TranslationContext->BlendShapesByPath = &BlendShapesByPath;
@@ -1844,7 +1875,7 @@ bool UUsdStageImporter::ReimportSingleAsset(FUsdStageImportContext& ImportContex
 
 	UsdStageImporterImpl::Cleanup( ImportContext.SceneActor, nullptr, ImportContext.ImportOptions->ExistingActorPolicy );
 	UsdStageImporterImpl::NotifyAssetRegistry( { ReimportedObject } );
-	UsdStageImporterImpl::RefreshComponents( ImportContext.SceneActor );
+	UsdStageImporterImpl::RefreshComponents( ImportContext.SceneActor, ImportContext.ImportOptions->bImportAtSpecificTimeCode );
 
 	FUsdDelegates::OnPostUsdImport.Broadcast(ImportContext.FilePath);
 

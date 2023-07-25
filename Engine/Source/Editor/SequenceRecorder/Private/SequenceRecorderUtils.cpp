@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequenceRecorderUtils.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Actor.h"
 #include "Animation/AnimSingleNodeInstance.h"
 #include "AnimationRecorder.h"
@@ -281,11 +282,11 @@ void GatherTakeInfo(ULevelSequence* InLevelSequence, TArray<FTakeInfo>& TakeInfo
 {
 	UMovieScene* MovieScene = InLevelSequence->GetMovieScene();
 
-	for (auto MasterTrack : MovieScene->GetMasterTracks())
+	for (auto Track : MovieScene->GetTracks())
 	{
-		if (MasterTrack->IsA<UMovieSceneSubTrack>())
+		if (Track->IsA<UMovieSceneSubTrack>())
 		{
-			UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(MasterTrack);
+			UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track);
 			for (auto Section : SubTrack->GetAllSections())
 			{
 				if (Section->IsA<UMovieSceneSubSection>())

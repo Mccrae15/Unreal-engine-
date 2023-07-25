@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VelocityRendering.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "SceneUtils.h"
 #include "Materials/Material.h"
 #include "PostProcess/SceneRenderTargets.h"
@@ -23,6 +24,7 @@
 #include "MeshPassProcessor.inl"
 #include "DebugProbeRendering.h"
 #include "RendererModule.h"
+#include "RenderCore.h"
 
 // Changing this causes a full shader recompile
 static TAutoConsoleVariable<int32> CVarVelocityOutputPass(
@@ -100,7 +102,7 @@ public:
 		const bool bIsMasked = !Parameters.MaterialParameters.bWritesEveryPixel;
 
 		// Compile for opaque and two-sided materials.
-		const bool bIsOpaqueAndTwoSided = (Parameters.MaterialParameters.bIsTwoSided && !IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode));
+		const bool bIsOpaqueAndTwoSided = (Parameters.MaterialParameters.bIsTwoSided && !IsTranslucentBlendMode(Parameters.MaterialParameters));
 
 		// Compile for materials which modify meshes.
 		const bool bMayModifyMeshes = Parameters.MaterialParameters.bMaterialMayModifyMeshPosition;
@@ -195,10 +197,12 @@ bool FDeferredShadingSceneRenderer::ShouldRenderVelocities() const
 
 		bool bTemporalAA = IsTemporalAccumulationBasedMethod(View.AntiAliasingMethod) && !View.bCameraCut;
 		bool bMotionBlur = IsMotionBlurEnabled(View);
-		bool bVisualizeMotionblur = View.Family->EngineShowFlags.VisualizeMotionBlur;
+		bool bVisualizeMotionblur = View.Family->EngineShowFlags.VisualizeMotionBlur || View.Family->EngineShowFlags.VisualizeTemporalUpscaler;
 		bool bDistanceFieldAO = ShouldPrepareForDistanceFieldAO();
 
-		bool bSSRTemporal = ViewPipelineState.ReflectionsMethod == EReflectionsMethod::SSR && ScreenSpaceRayTracing::ShouldRenderScreenSpaceReflections(View) && ScreenSpaceRayTracing::IsSSRTemporalPassRequired(View);
+		bool bSceneSSREnabled = ViewPipelineState.ReflectionsMethod == EReflectionsMethod::SSR && ScreenSpaceRayTracing::ShouldRenderScreenSpaceReflections(View);
+		bool bWaterSSREnabled = ViewPipelineState.ReflectionsMethodWater == EReflectionsMethod::SSR && ScreenSpaceRayTracing::ShouldRenderScreenSpaceReflectionsWater(View);
+		bool bSSRTemporal = (bSceneSSREnabled || bWaterSSREnabled) && ScreenSpaceRayTracing::IsSSRTemporalPassRequired(View);
 
 		bool bRayTracing = IsRayTracingEnabled();
 		bool bDenoise = bRayTracing;
@@ -520,8 +524,7 @@ bool FOpaqueVelocityMeshProcessor::TryAddMeshBatch(
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const FMaterial* Material)
 {
-	const EBlendMode BlendMode = Material->GetBlendMode();
-	const bool bIsNotTranslucent = BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked;
+	const bool bIsNotTranslucent = IsOpaqueOrMaskedBlendMode(*Material);
 
 	bool bResult = true;
 	if (MeshBatch.bUseForMaterial && bIsNotTranslucent && ShouldIncludeMaterialInDefaultOpaquePass(*Material))
@@ -595,7 +598,7 @@ void FOpaqueVelocityMeshProcessor::AddMeshBatch(
 	}
 }
 
-void FOpaqueVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
+void FOpaqueVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
 {
 	const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
 	bool bDrawsVelocity = (PreCacheParams.Mobility == EComponentMobility::Movable || PreCacheParams.Mobility == EComponentMobility::Stationary || PreCacheParams.bHasWorldPositionOffsetVelocity);
@@ -608,16 +611,17 @@ void FOpaqueVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesCo
 		return;
 	}
 
+	const FMaterial* EffectiveMaterial = &Material;
+	
 	bool bCollectPSOs = false;
-	if (Material.IsDefaultMaterial())
+	if (PreCacheParams.bDefaultMaterial)
 	{
 		// Precache all cull modes for default material?
 		bCollectPSOs = true;
 	}
 	else
 	{
-		const EBlendMode BlendMode = Material.GetBlendMode();
-		const bool bIsNotTranslucent = BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked;
+		const bool bIsNotTranslucent = IsOpaqueOrMaskedBlendMode(Material);
 
 		if (PreCacheParams.bRenderInMainPass && bIsNotTranslucent && ShouldIncludeMaterialInDefaultOpaquePass(Material))
 		{			
@@ -626,6 +630,13 @@ void FOpaqueVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesCo
 			{
 				bCollectPSOs = true;
 			}
+			else if (VertexFactoryData.CustomDefaultVertexDeclaration)
+			{
+				EMaterialQualityLevel::Type ActiveQualityLevel = GetCachedScalabilityCVars().MaterialQualityLevel;
+				EffectiveMaterial = UMaterial::GetDefaultMaterial(MD_Surface)->GetMaterialResource(FeatureLevel, ActiveQualityLevel);
+				bCollectPSOs = true;
+			}
+
 		}
 	}
 
@@ -634,7 +645,16 @@ void FOpaqueVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesCo
 		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(PreCacheParams);
 		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
 		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
-		CollectPSOInitializersInternal(SceneTexturesConfig, VertexFactoryType, Material, MeshFillMode, MeshCullMode, PSOInitializers);
+		if (!CollectPSOInitializersInternal(SceneTexturesConfig, VertexFactoryData, *EffectiveMaterial, MeshFillMode, MeshCullMode, PSOInitializers))
+		{
+			// try again with default material (should use fallback material proxy here but currently only have FMaterial during PSO precaching)
+			EMaterialQualityLevel::Type ActiveQualityLevel = GetCachedScalabilityCVars().MaterialQualityLevel;
+			const FMaterial* DefaultMaterial = UMaterial::GetDefaultMaterial(MD_Surface)->GetMaterialResource(FeatureLevel, ActiveQualityLevel);
+			if (DefaultMaterial != EffectiveMaterial)
+			{
+				CollectPSOInitializersInternal(SceneTexturesConfig, VertexFactoryData, *DefaultMaterial, MeshFillMode, MeshCullMode, PSOInitializers);
+			}
+		}
 	}
 }
 
@@ -721,7 +741,7 @@ void FTranslucentVelocityMeshProcessor::AddMeshBatch(
 	}
 }
 
-void FTranslucentVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
+void FTranslucentVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
 {
 	const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
 	if (!PrimitiveCanHaveVelocity(ShaderPlatform, nullptr))
@@ -736,7 +756,7 @@ void FTranslucentVelocityMeshProcessor::CollectPSOInitializers(const FSceneTextu
 		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(PreCacheParams);
 		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
 		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
-		CollectPSOInitializersInternal(SceneTexturesConfig, VertexFactoryType, Material, MeshFillMode, MeshCullMode, PSOInitializers);
+		CollectPSOInitializersInternal(SceneTexturesConfig, VertexFactoryData, Material, MeshFillMode, MeshCullMode, PSOInitializers);
 	}
 }
 
@@ -814,9 +834,9 @@ bool FVelocityMeshProcessor::Process(
 	return true;
 }
 
-void FVelocityMeshProcessor::CollectPSOInitializersInternal(
+bool FVelocityMeshProcessor::CollectPSOInitializersInternal(
 	const FSceneTexturesConfig& SceneTexturesConfig,
-	const FVertexFactoryType* VertexFactoryType, 
+	const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 	const FMaterial& RESTRICT MaterialResource, 
 	ERasterizerFillMode MeshFillMode, 
 	ERasterizerCullMode MeshCullMode,
@@ -828,12 +848,12 @@ void FVelocityMeshProcessor::CollectPSOInitializersInternal(
 
 	if (!GetVelocityPassShaders(
 		MaterialResource,
-		VertexFactoryType,
+		VertexFactoryData.VertexFactoryType,
 		FeatureLevel,
 		VelocityPassShaders.VertexShader,
 		VelocityPassShaders.PixelShader))
 	{
-		return;
+		return false;
 	}
 
 	EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
@@ -848,7 +868,7 @@ void FVelocityMeshProcessor::CollectPSOInitializersInternal(
 	}
 
 	AddGraphicsPipelineStateInitializer(
-		VertexFactoryType,
+		VertexFactoryData,
 		MaterialResource,
 		PassDrawRenderState,
 		RenderTargetsInfo,
@@ -857,7 +877,10 @@ void FVelocityMeshProcessor::CollectPSOInitializersInternal(
 		MeshCullMode,
 		PT_TriangleList,
 		EMeshPassFeatures::Default,
+		true /*bRequired*/,
 		PSOInitializers);
+
+	return true;
 }
 
 FVelocityMeshProcessor::FVelocityMeshProcessor(EMeshPass::Type MeshPassType, const FScene* Scene, ERHIFeatureLevel::Type FeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext)

@@ -3,25 +3,30 @@
 #include "Widgets/SessionTabs/Archived/ArchivedConcertSessionTab.h"
 
 #include "ArchivedSessionHistoryController.h"
-#include "ConcertFrontendStyle.h"
 #include "ConcertLogGlobal.h"
+#include "IConcertServer.h"
 #include "ConcertSyncSessionDatabase.h"
+#include "ConcertSyncSessionTypes.h"
+
 #include "HistoryEdition/ActivityNode.h"
 #include "HistoryEdition/HistoryAnalysis.h"
 #include "HistoryEdition/HistoryEdition.h"
+#include "HistoryEdition/ActivityGraphIDs.h"
 #include "MultiUserServerModule.h"
-#include "Session/History/SEditableSessionHistory.h"
-#include "Session/History/SSessionHistory.h"
+#include "IConcertModule.h"
 #include "Window/ModalWindowManager.h"
+#include "Templates/NonNullPointer.h"
 #include "Widgets/HistoryEdition/SDeleteActivityDependenciesDialog.h"
+#include "Widgets/HistoryEdition/SActivityDependencyDialog.h"
 #include "Widgets/SessionTabs/Archived/SConcertArchivedSessionTabView.h"
 #include "Widgets/HistoryEdition/SMuteActivityDependenciesDialog.h"
 
+
 #include "Algo/AllOf.h"
-#include "Algo/Transform.h"
 #include "Dialog/SMessageDialog.h"
 #include "Settings/MultiUserServerUserPreferences.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/SConcertTabViewBase.h"
 #include "Widgets/Util/SDoNotShowAgainDialog.h"
 
 #define LOCTEXT_NAMESPACE "UnrealMultiUserUI.FArchivedConcertSessionTab"
@@ -62,6 +67,82 @@ const FSlateBrush* FArchivedConcertSessionTab::GetTabIconBrush() const
 {
 	return FConcertFrontendStyle::Get()->GetBrush("Concert.ArchivedSession.Icon");
 }
+
+namespace UE::MultiUserServer::Private
+{
+
+FConcertSessionFilter BuildFilterFrom(const TSet<FActivityID>& ToDelete)
+{
+	FConcertSessionFilter Result;
+	Result.ActivityIdsToExclude.Reserve(ToDelete.Num());
+	for (const FActivityID ActivityID : ToDelete)
+	{
+		Result.ActivityIdsToExclude.Add(ActivityID);
+	}
+	return Result;
+}
+
+}
+
+UE::ConcertSyncCore::FOperationErrorResult DeleteActivitiesInArchivedSession(const TSharedRef<IConcertServer>& Server, const FGuid& ArchivedSessionId, const TSet<FActivityID>& ToDelete)
+{
+	using namespace UE::ConcertSyncCore;
+
+	const FString SessionId = ArchivedSessionId.ToString(EGuidFormats::DigitsWithHyphens);
+	UE_LOG(LogConcert, Log, TEXT("Deleting %d activities from session %s..."), ToDelete.Num(), *SessionId);
+	TOptional<FString> ErrorMessage;
+	ON_SCOPE_EXIT
+	{
+		if (ErrorMessage)
+		{
+			UE_LOG(LogConcert, Error, TEXT("Finished deleting activities from %s with error: %s."), *SessionId, **ErrorMessage);
+		}
+		else
+		{
+			UE_LOG(LogConcert, Log, TEXT("Finished deleting activities from %s successfully."), *SessionId);
+		}
+	};
+
+	const TOptional<FConcertSessionInfo> DeletedSessionInfo = Server->GetArchivedSessionInfo(ArchivedSessionId);
+	if (!DeletedSessionInfo)
+	{
+		ErrorMessage = FString::Printf(TEXT("Session ID %s does not resolve to any archived session!"), *ArchivedSessionId.ToString());
+		return FOperationErrorResult::MakeError(FText::FromString(*ErrorMessage));
+	}
+
+	// Restore the session while skipping all to be deleted activities
+	FText FailureReason;
+	const FConcertSessionFilter Filter = UE::MultiUserServer::Private::BuildFilterFrom(ToDelete);
+	// Do not use same name in case user already created a live session from this archived session (would fail in that case) 
+	FConcertSessionInfo OverrideInfo = *DeletedSessionInfo;
+	OverrideInfo.SessionName = DeletedSessionInfo->SessionName + FGuid::NewGuid().ToString();
+	const TSharedPtr<IConcertServerSession> LiveSession = Server->RestoreSession(ArchivedSessionId, OverrideInfo, Filter, FailureReason);
+	if (!LiveSession)
+	{
+		ErrorMessage = FailureReason.ToString();
+		return FOperationErrorResult::MakeError(FailureReason);
+	}
+	ON_SCOPE_EXIT
+	{
+		Server->DestroySession(LiveSession->GetId(), FailureReason);
+	};
+
+	// The archived session must be removed before it can be overwritten
+	if (!Server->DestroySession(ArchivedSessionId, FailureReason))
+	{
+		ErrorMessage = FailureReason.ToString();
+		return FOperationErrorResult::MakeError(FailureReason); 
+	}
+
+	if (!Server->ArchiveSession(LiveSession->GetId(), DeletedSessionInfo->SessionName, Filter, FailureReason, ArchivedSessionId).IsValid())
+	{
+		ErrorMessage = FailureReason.ToString();
+		return FOperationErrorResult::MakeError(FailureReason); 
+	}
+
+	return FOperationErrorResult::MakeSuccess(); 
+}
+
 
 void FArchivedConcertSessionTab::OnRequestDeleteActivities(const TSet<TSharedRef<FConcertSessionActivity>>& ActivitiesToDelete) const
 {

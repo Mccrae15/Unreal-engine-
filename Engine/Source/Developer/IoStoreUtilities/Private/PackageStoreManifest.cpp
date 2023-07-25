@@ -1,22 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PackageStoreManifest.h"
+#include "Serialization/CompactBinaryContainerSerialization.h"
+#include "Serialization/CompactBinarySerialization.h"
+#include "Serialization/CompactBinaryWriter.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Dom/JsonObject.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "IO/IoStore.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/Paths.h"
 
+LLM_DEFINE_TAG(Cooker_PackageStoreManifest);
 FPackageStoreManifest::FPackageStoreManifest(const FString& InCookedOutputPath)
 	: CookedOutputPath(InCookedOutputPath)
 {
+	LLM_SCOPE_BYTAG(Cooker_PackageStoreManifest);
 	FPaths::NormalizeFilename(CookedOutputPath);
 }
 
 void FPackageStoreManifest::BeginPackage(FName PackageName)
 {
+	LLM_SCOPE_BYTAG(Cooker_PackageStoreManifest);
 	FScopeLock Lock(&CriticalSection);
 	FPackageInfo& PackageInfo = PackageInfoByNameMap.FindOrAdd(PackageName);
 	PackageInfo.PackageName = PackageName;
@@ -33,30 +41,47 @@ void FPackageStoreManifest::BeginPackage(FName PackageName)
 
 void FPackageStoreManifest::AddPackageData(FName PackageName, const FString& FileName, const FIoChunkId& ChunkId)
 {
+	LLM_SCOPE_BYTAG(Cooker_PackageStoreManifest);
 	FScopeLock Lock(&CriticalSection);
 	FPackageInfo* PackageInfo = GetPackageInfo_NoLock(PackageName);
 	check(PackageInfo);
 	PackageInfo->ExportBundleChunkIds.Add(ChunkId);
 	if (!FileName.IsEmpty())
 	{
-		FileNameByChunkIdMap.Add(ChunkId, FileName);
+		if (!bTrackPackageData)
+		{
+			FileNameByChunkIdMap.Add(ChunkId, FileName);
+		}
+		else
+		{
+			PackageFileChunkIds.FindOrAdd(PackageName).Emplace(FileName, ChunkId);
+		}
 	}
 }
 
 void FPackageStoreManifest::AddBulkData(FName PackageName, const FString& FileName, const FIoChunkId& ChunkId)
 {
+	LLM_SCOPE_BYTAG(Cooker_PackageStoreManifest);
 	FScopeLock Lock(&CriticalSection);
 	FPackageInfo* PackageInfo = GetPackageInfo_NoLock(PackageName);
 	check(PackageInfo);
 	PackageInfo->BulkDataChunkIds.Add(ChunkId);
 	if (!FileName.IsEmpty())
 	{
-		FileNameByChunkIdMap.Add(ChunkId, FileName);
+		if (!bTrackPackageData)
+		{
+			FileNameByChunkIdMap.Add(ChunkId, FileName);
+		}
+		else
+		{
+			PackageFileChunkIds.FindOrAdd(PackageName).Emplace(FileName, ChunkId);
+		}
 	}
 }
 
 FIoStatus FPackageStoreManifest::Save(const TCHAR* Filename) const
 {
+	LLM_SCOPE_BYTAG(Cooker_PackageStoreManifest);
 	FScopeLock Lock(&CriticalSection);
 	TStringBuilder<64> ChunkIdStringBuilder;
 	auto ChunkIdToString = [&ChunkIdStringBuilder](const FIoChunkId& ChunkId)
@@ -82,18 +107,36 @@ FIoStatus FPackageStoreManifest::Save(const TCHAR* Filename) const
 	}
 	
 	Writer->WriteArrayStart(TEXT("Files"));
-	for (const auto& KV : FileNameByChunkIdMap)
+
+	// Convert FilePaths in ChunkIdMap to RelativePaths from the CookedOutput folder
+	// Sort by RelativePath for determinism
+	TArray<TPair<const FIoChunkId*, FString>> SortedFileNameByChunkIdMap;
+	SortedFileNameByChunkIdMap.Reserve(FileNameByChunkIdMap.Num());
+	for (const TPair<FIoChunkId, FString>& KV : FileNameByChunkIdMap)
 	{
-		Writer->WriteObjectStart();
 		FString RelativePath = KV.Value;
 		FPaths::MakePathRelativeTo(RelativePath, *CookedOutputPath);
-		Writer->WriteValue(TEXT("Path"), RelativePath);
-		Writer->WriteValue(TEXT("ChunkId"), ChunkIdToString(KV.Key));
+		SortedFileNameByChunkIdMap.Emplace(&KV.Key, MoveTemp(RelativePath));
+	}
+	SortedFileNameByChunkIdMap.Sort([]
+		(const TPair<const FIoChunkId*, FString>& A, const TPair<const FIoChunkId*, FString>& B)
+		{
+			return A.Value < B.Value;
+		});
+	for (const TPair<const FIoChunkId*, FString>& KV : SortedFileNameByChunkIdMap)
+	{
+		Writer->WriteObjectStart();
+		Writer->WriteValue(TEXT("Path"), KV.Value);
+		Writer->WriteValue(TEXT("ChunkId"), ChunkIdToString(*KV.Key));
 		Writer->WriteObjectEnd();
 	}
+	SortedFileNameByChunkIdMap.Empty();
 	Writer->WriteArrayEnd();
 
-	auto WritePackageInfoObject = [Writer, &ChunkIdToString](const FPackageInfo& PackageInfo, const TCHAR* Name = nullptr)
+	constexpr int32 ChunkIdStringsBufferSize = 10;
+	TArray<FString, TInlineAllocator<ChunkIdStringsBufferSize>> ChunkIdStringsBuffer;
+	auto WritePackageInfoObject = [Writer, &ChunkIdStringsBuffer, ChunkIdStringsBufferSize]
+	(const FPackageInfo& PackageInfo, const TCHAR* Name = nullptr)
 	{
 		if (Name)
 		{
@@ -103,22 +146,54 @@ FIoStatus FPackageStoreManifest::Save(const TCHAR* Filename) const
 		{
 			Writer->WriteObjectStart();
 		}
+		auto AllocateChunkIdStrings = [&ChunkIdStringsBuffer, ChunkIdStringsBufferSize](int32 Num)
+		{
+			if (ChunkIdStringsBuffer.Num() < Num)
+			{
+				if (ChunkIdStringsBuffer.Max() < Num)
+				{
+					ChunkIdStringsBuffer.SetNum(Num * 2 + ChunkIdStringsBufferSize, false /* bAllowShrinking */);
+				}
+				else
+				{
+					ChunkIdStringsBuffer.SetNum(ChunkIdStringsBuffer.Max(), false /* bAllowShrinking */);
+				}
+			}
+			return TArrayView<FString>(ChunkIdStringsBuffer.GetData(), Num);
+		};
 		Writer->WriteValue(TEXT("Name"), PackageInfo.PackageName.ToString());
 		if (!PackageInfo.ExportBundleChunkIds.IsEmpty())
 		{
-			Writer->WriteArrayStart(TEXT("ExportBundleChunkIds"));
+			// Determinism: Sort ExportBundleChunkIds by string
+			TArrayView<FString> ChunkIdStrings = AllocateChunkIdStrings(PackageInfo.ExportBundleChunkIds.Num());
+			int32 Index = 0;
 			for (const FIoChunkId& ChunkId : PackageInfo.ExportBundleChunkIds)
 			{
-				Writer->WriteValue(ChunkIdToString(ChunkId));
+				ChunkId.ToString(ChunkIdStrings[Index++]);
+			}
+			Algo::Sort(ChunkIdStrings);
+
+			Writer->WriteArrayStart(TEXT("ExportBundleChunkIds"));
+			for (const FString& ChunkIdString : ChunkIdStrings)
+			{
+				Writer->WriteValue(ChunkIdString);
 			}
 			Writer->WriteArrayEnd();
 		}
 		if (!PackageInfo.BulkDataChunkIds.IsEmpty())
 		{
-			Writer->WriteArrayStart(TEXT("BulkDataChunkIds"));
+			// Determinism: Sort BulkDataChunkIds by string
+			TArrayView<FString> ChunkIdStrings = AllocateChunkIdStrings(PackageInfo.BulkDataChunkIds.Num());
+			int32 Index = 0;
 			for (const FIoChunkId& ChunkId : PackageInfo.BulkDataChunkIds)
 			{
-				Writer->WriteValue(ChunkIdToString(ChunkId));
+				ChunkId.ToString(ChunkIdStrings[Index++]);
+			}
+
+			Writer->WriteArrayStart(TEXT("BulkDataChunkIds"));
+			for (const FString& ChunkIdString : ChunkIdStrings)
+			{
+				Writer->WriteValue(ChunkIdString);
 			}
 			Writer->WriteArrayEnd();
 		}
@@ -126,12 +201,24 @@ FIoStatus FPackageStoreManifest::Save(const TCHAR* Filename) const
 	};
 
 	Writer->WriteArrayStart(TEXT("Packages"));
-	for (const auto& PackageNameInfoPair : PackageInfoByNameMap)
+	// Sort PackageInfoByNameMap by PackageName
+	TArray<TPair<FName, const FPackageInfo*>> SortedPackageInfoByNameMap;
+	SortedPackageInfoByNameMap.Reserve(PackageInfoByNameMap.Num());
+	for (const TPair<FName, FPackageInfo>& KV : PackageInfoByNameMap)
 	{
-		const FPackageInfo& PackageInfo = PackageNameInfoPair.Value;
-		WritePackageInfoObject(PackageInfo);
+		SortedPackageInfoByNameMap.Emplace(KV.Key, &KV.Value);
+	}
+	SortedPackageInfoByNameMap.Sort([]
+	(const TPair<FName, const FPackageInfo*>& A, const TPair<FName, const FPackageInfo*>& B)
+		{
+			return A.Key.LexicalLess(B.Key);
+		});
+	for (const TPair<FName, const FPackageInfo*>& KV : SortedPackageInfoByNameMap)
+	{
+		WritePackageInfoObject(*KV.Value);
 	}
 	Writer->WriteArrayEnd();
+	ChunkIdStringsBuffer.Empty();
 
 	Writer->WriteObjectEnd();
 	Writer->Close();
@@ -146,6 +233,7 @@ FIoStatus FPackageStoreManifest::Save(const TCHAR* Filename) const
 
 FIoStatus FPackageStoreManifest::Load(const TCHAR* Filename)
 {
+	LLM_SCOPE_BYTAG(Cooker_PackageStoreManifest);
 	FScopeLock Lock(&CriticalSection);
 	PackageInfoByNameMap.Empty();
 	FileNameByChunkIdMap.Empty();
@@ -282,5 +370,55 @@ const FPackageStoreManifest::FZenServerInfo* FPackageStoreManifest::ReadZenServe
 FPackageStoreManifest::FPackageInfo* FPackageStoreManifest::GetPackageInfo_NoLock(FName PackageName)
 {
 	return PackageInfoByNameMap.Find(PackageName);
+}
+
+void FPackageStoreManifest::SetTrackPackageData(bool bInTrackPackageData)
+{
+	FScopeLock Lock(&CriticalSection);
+	bTrackPackageData = bInTrackPackageData;
+}
+
+void FPackageStoreManifest::WritePackage(FCbWriter& Writer, FName PackageName)
+{
+	FPackageStoreManifest::FPackageInfo PackageInfo;
+	TArray<TPair<FString, FIoChunkId>> FileChunkIds;
+	bool bHasPackageInfo;
+
+	{
+		FScopeLock Lock(&CriticalSection);
+		bHasPackageInfo = PackageInfoByNameMap.RemoveAndCopyValue(PackageName, PackageInfo);
+		PackageFileChunkIds.RemoveAndCopyValue(PackageName, FileChunkIds);
+	}
+
+	// For a failed package, CommitPackage may have never been called. Send empty values in that case.
+
+	Writer.BeginObject();
+	Writer << "ExportBundleChunkIds" << PackageInfo.ExportBundleChunkIds;
+	Writer << "BulkDataChunkIds" << PackageInfo.BulkDataChunkIds;
+	Writer << "FileChunkIds" << FileChunkIds;
+	Writer.EndObject();
+}
+
+bool FPackageStoreManifest::TryReadPackage(FCbFieldView Field, FName PackageName)
+{
+	FPackageInfo PackageInfo;
+	TArray<TPair<FString, FIoChunkId>> FileChunkIds;
+
+	bool bOk = true;
+	PackageInfo.PackageName = PackageName;
+	bOk = LoadFromCompactBinary(Field["ExportBundleChunkIds"], PackageInfo.ExportBundleChunkIds) & bOk;
+	bOk = LoadFromCompactBinary(Field["BulkDataChunkIds"], PackageInfo.BulkDataChunkIds) & bOk;
+	bOk = LoadFromCompactBinary(Field["FileChunkIds"], FileChunkIds) & bOk;
+
+	{
+		FScopeLock Lock(&CriticalSection);
+		PackageInfoByNameMap.Add(PackageName, MoveTemp(PackageInfo));
+		for (TPair<FString, FIoChunkId>& Pair : FileChunkIds)
+		{
+			FileNameByChunkIdMap.Add(Pair.Value, Pair.Key);
+		}
+	}
+
+	return bOk;
 }
 

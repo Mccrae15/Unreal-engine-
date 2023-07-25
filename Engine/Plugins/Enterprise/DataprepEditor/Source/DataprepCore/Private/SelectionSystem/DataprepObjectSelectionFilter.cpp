@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SelectionSystem/DataprepObjectSelectionFilter.h"
+#include "Engine/Level.h"
 #include "SelectionSystem/DataprepSelectionSystemStructs.h"
-#include "Shared/DataprepCorePrivateUtils.h"
 
 #include "Engine/Texture.h"
 #include "Engine/StaticMesh.h"

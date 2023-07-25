@@ -2,14 +2,112 @@
 
 
 #include "BatchedElements.h"
-#include "Misc/App.h"
-#include "Shader.h"
+
 #include "SimpleElementShaders.h"
-#include "PipelineStateCache.h"
+#include "RHIStaticStates.h"
 #include "MeshPassProcessor.h"
+#include "Misc/LargeWorldRenderPosition.h"
+#include "PipelineStateCache.h"
 #include "SceneRelativeViewMatrices.h"
+#include "GlobalRenderResources.h"
+#include "HDRHelper.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogBatchedElements, Log, All);
+
+FSimpleElementVertex::FSimpleElementVertex() = default;
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector4f& InPosition, const FVector2f& InTextureCoordinate, const FLinearColor& InColor, const FColor& InHitProxyColor)
+	: RelativePosition(InPosition)
+	, TilePosition(ForceInitToZero)
+	, TextureCoordinate(InTextureCoordinate)
+	, Color(InColor)
+	, HitProxyIdColor(InHitProxyColor)
+{
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector4f& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, const FColor& InHitProxyColor)
+	: RelativePosition(InPosition)
+	, TilePosition(ForceInitToZero)
+	, TextureCoordinate(InTextureCoordinate)
+	, Color(InColor)
+	, HitProxyIdColor(InHitProxyColor)
+{
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector3f& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, const FColor& InHitProxyColor)
+	: RelativePosition(InPosition)
+	, TilePosition(ForceInitToZero)
+	, TextureCoordinate(FVector2f(InTextureCoordinate))
+	, Color(InColor)
+	, HitProxyIdColor(InHitProxyColor)
+{
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector4d& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, const FColor& InHitProxyColor)
+	: TextureCoordinate(InTextureCoordinate)
+	, Color(InColor)
+	, HitProxyIdColor(InHitProxyColor)
+{
+	const FLargeWorldRenderPosition AbsolutePosition(InPosition);
+	RelativePosition = FVector4f(AbsolutePosition.GetOffset(), (float)InPosition.W); // Don't bother with LWC W-component
+	TilePosition = FVector4f(AbsolutePosition.GetTile(), 0.0f);
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector3d& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, const FColor& InHitProxyColor)
+	: TextureCoordinate(InTextureCoordinate)
+	, Color(InColor)
+	, HitProxyIdColor(InHitProxyColor)
+{
+	const FLargeWorldRenderPosition AbsolutePosition(InPosition);
+	RelativePosition = FVector4f(AbsolutePosition.GetOffset(), 1.0f);
+	TilePosition = FVector4f(AbsolutePosition.GetTile(), 0.0f);
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector4f& InPosition, const FVector2f& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId InHitProxyId)
+	: FSimpleElementVertex(InPosition, InTextureCoordinate, InColor, InHitProxyId.GetColor())
+{
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector4f& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId InHitProxyId)
+	: FSimpleElementVertex(InPosition, InTextureCoordinate, InColor, InHitProxyId.GetColor())
+{
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector3f& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId InHitProxyId)
+	: FSimpleElementVertex(InPosition, InTextureCoordinate, InColor, InHitProxyId.GetColor())
+{
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector4d& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId InHitProxyId)
+	: FSimpleElementVertex(InPosition, InTextureCoordinate, InColor, InHitProxyId.GetColor())
+{
+}
+
+FSimpleElementVertex::FSimpleElementVertex(const FVector3d& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId InHitProxyId)
+	: FSimpleElementVertex(InPosition, InTextureCoordinate, InColor, InHitProxyId.GetColor())
+{
+}
+
+FSimpleElementVertexDeclaration::FSimpleElementVertexDeclaration() = default;
+FSimpleElementVertexDeclaration::FSimpleElementVertexDeclaration(FSimpleElementVertexDeclaration&&) = default;
+FSimpleElementVertexDeclaration::~FSimpleElementVertexDeclaration() = default;
+
+void FSimpleElementVertexDeclaration::InitRHI()
+{
+	FVertexDeclarationElementList Elements;
+	uint16 Stride = sizeof(FSimpleElementVertex);
+	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSimpleElementVertex, RelativePosition), VET_Float4, 0, Stride));
+	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSimpleElementVertex, TilePosition), VET_Float4, 1, Stride));
+	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSimpleElementVertex, TextureCoordinate), VET_Float2, 2, Stride));
+	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSimpleElementVertex, Color), VET_Float4, 3, Stride));
+	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSimpleElementVertex, HitProxyIdColor), VET_Color, 4, Stride));
+	VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
+}
+
+void FSimpleElementVertexDeclaration::ReleaseRHI()
+{
+	VertexDeclarationRHI.SafeRelease();
+}
 
 /** The simple element vertex declaration. */
 TGlobalResource<FSimpleElementVertexDeclaration> GSimpleElementVertexDeclaration;
@@ -24,6 +122,15 @@ EBlendModeFilter::Type GetBlendModeFilter(ESimpleElementBlendMode BlendMode)
 	{
 		return EBlendModeFilter::Translucent;
 	}
+}
+
+FBatchedElements::FBatchedElements()
+	: WireTriVerts(/*InNeedsCPUAccess*/true) // Keep vertices on buffer creation
+	, MaxMeshIndicesAllowed(GDrawUPIndexCheckCount / sizeof(int32))
+	// the index buffer is 2 bytes, so make sure we only address 0xFFFF vertices in the index buffer
+	, MaxMeshVerticesAllowed(FMath::Min<uint32>(0xFFFF, GDrawUPVertexCheckCount / sizeof(FSimpleElementVertex)))
+	, bEnableHDREncoding(true)
+{
 }
 
 void FBatchedElements::AddLine(const FVector& Start, const FVector& End, const FLinearColor& Color, FHitProxyId HitProxyId, float Thickness, float DepthBias, bool bScreenSpace)
@@ -56,7 +163,7 @@ void FBatchedElements::AddLine(const FVector& Start, const FVector& End, const F
 		ThickLine->End = End;
 		ThickLine->Thickness = Thickness;
 		ThickLine->Color = OpaqueColor;
-		ThickLine->HitProxyId = HitProxyId;
+		ThickLine->HitProxyColor = HitProxyId.GetColor();
 		ThickLine->DepthBias = DepthBias;
 		ThickLine->bScreenSpace = bScreenSpace;
 	}
@@ -88,7 +195,7 @@ void FBatchedElements::AddTranslucentLine(const FVector& Start, const FVector& E
 		ThickLine->End = End;
 		ThickLine->Thickness = Thickness;
 		ThickLine->Color = Color;
-		ThickLine->HitProxyId = HitProxyId;
+		ThickLine->HitProxyColor = HitProxyId.GetColor();
 		ThickLine->DepthBias = DepthBias;
 		ThickLine->bScreenSpace = bScreenSpace;
 
@@ -105,7 +212,7 @@ void FBatchedElements::AddPoint(const FVector& Position,float Size,const FLinear
 	Point->Position = Position;
 	Point->Size = Size;
 	Point->Color = OpaqueColor.ToFColor(true);
-	Point->HitProxyId = HitProxyId;
+	Point->HitProxyColor = HitProxyId.GetColor();
 }
 
 int32 FBatchedElements::AddVertex(const FVector4& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId HitProxyId)
@@ -332,7 +439,7 @@ void FBatchedElements::AddSprite(
 	Sprite->SizeY = SizeY;
 	Sprite->Texture = Texture;
 	Sprite->Color = Color;
-	Sprite->HitProxyId = HitProxyId;
+	Sprite->HitProxyColor = HitProxyId.GetColor();
 	Sprite->U = U;
 	Sprite->UL = UL == 0.f ? Texture->GetSizeX() : UL;
 	Sprite->V = V;
@@ -726,9 +833,16 @@ void FBatchedElements::DrawPointElements(FRHICommandList& RHICmdList, const FMat
 	if( Points.Num() > 0 )
 	{
 		// preallocate some memory to directly fill out
-		const int32 NumPoints = Points.Num();
-		const int32 NumTris = NumPoints * 2;
-		const int32 NumVertices = NumTris * 3;
+		const uint32 NumTris = ((uint32)Points.Num()) * 2; // even if Points.Num() == INT32_MAX, this won't overflow a uint32
+		const uint32 NumVertices = NumTris * 3; // but this could
+
+		// Prevent integer overflow to buffer overflow.
+		if (NumTris > (UINT32_MAX / 3) ||
+			NumVertices > UINT32_MAX / sizeof(FSimpleElementVertex))
+		{
+			UE_LOG(LogBatchedElements, Error, TEXT("Too many points. Will overflow uint32 buffer size. NumPoints: %d"), Points.Num());
+			return;
+		}
 
 		FRHIResourceCreateInfo CreateInfo(TEXT("FBatchedElements_Points"));
 		FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FSimpleElementVertex) * NumVertices, BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
@@ -736,8 +850,8 @@ void FBatchedElements::DrawPointElements(FRHICommandList& RHICmdList, const FMat
 
 		FSimpleElementVertex* PointVertices = (FSimpleElementVertex*)VerticesPtr;
 
-		int32 VertIdx = 0;
-		for(int32 PointIndex = 0;PointIndex < NumPoints;PointIndex++)
+		uint32 VertIdx = 0;
+		for(int32 PointIndex = 0; PointIndex < Points.Num(); PointIndex++)
 		{
 			// TODO: Support quad primitives here
 			const FBatchedPoint& Point = Points[PointIndex];
@@ -748,12 +862,12 @@ void FBatchedElements::DrawPointElements(FRHICommandList& RHICmdList, const FMat
 			const FVector WorldPointX = CameraX * Point.Size / ViewportMajorAxis * TransformedPosition.W;
 			const FVector WorldPointY = CameraY * -Point.Size / ViewportMajorAxis * TransformedPosition.W;
 					
-			PointVertices[VertIdx + 0] = FSimpleElementVertex(Point.Position + WorldPointX - WorldPointY,FVector2D(1,0),Point.Color,Point.HitProxyId);
-			PointVertices[VertIdx + 1] = FSimpleElementVertex(Point.Position + WorldPointX + WorldPointY,FVector2D(1,1),Point.Color,Point.HitProxyId);
-			PointVertices[VertIdx + 2] = FSimpleElementVertex(Point.Position - WorldPointX - WorldPointY,FVector2D(0,0),Point.Color,Point.HitProxyId);
-			PointVertices[VertIdx + 3] = FSimpleElementVertex(Point.Position + WorldPointX + WorldPointY,FVector2D(1,1),Point.Color,Point.HitProxyId);
-			PointVertices[VertIdx + 4] = FSimpleElementVertex(Point.Position - WorldPointX - WorldPointY,FVector2D(0,0),Point.Color,Point.HitProxyId);
-			PointVertices[VertIdx + 5] = FSimpleElementVertex(Point.Position - WorldPointX + WorldPointY,FVector2D(0,1),Point.Color,Point.HitProxyId);
+			PointVertices[VertIdx + 0] = FSimpleElementVertex(Point.Position + WorldPointX - WorldPointY,FVector2D(1,0),Point.Color,Point.HitProxyColor);
+			PointVertices[VertIdx + 1] = FSimpleElementVertex(Point.Position + WorldPointX + WorldPointY,FVector2D(1,1),Point.Color,Point.HitProxyColor);
+			PointVertices[VertIdx + 2] = FSimpleElementVertex(Point.Position - WorldPointX - WorldPointY,FVector2D(0,0),Point.Color,Point.HitProxyColor);
+			PointVertices[VertIdx + 3] = FSimpleElementVertex(Point.Position + WorldPointX + WorldPointY,FVector2D(1,1),Point.Color,Point.HitProxyColor);
+			PointVertices[VertIdx + 4] = FSimpleElementVertex(Point.Position - WorldPointX - WorldPointY,FVector2D(0,0),Point.Color,Point.HitProxyColor);
+			PointVertices[VertIdx + 5] = FSimpleElementVertex(Point.Position - WorldPointX + WorldPointY,FVector2D(0,1),Point.Color,Point.HitProxyColor);
 
 			VertIdx += 6;
 		}
@@ -813,6 +927,13 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 			// Draw the line elements.
 			if( LineVertices.Num() > 0 )
 			{
+				// Prevent integer overflow to buffer overflow.
+				if (LineVertices.Num() > UINT32_MAX / sizeof(FSimpleElementVertex))
+				{
+					UE_LOG(LogBatchedElements, Error, TEXT("Too many line vertices. Will overflow uint32 buffer size. LineVertices: %d"), LineVertices.Num());
+					return false;
+				}
+
 				GraphicsPSOInit.PrimitiveType = PT_LineList;
 
 				// Set the appropriate pixel shader parameters & shader state for the non-textured elements.
@@ -923,40 +1044,40 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 						const FVector WorldPointY = CameraY * Thickness * StartW / ViewportSizeX;
 
 						// Begin point
-						ThickVertices[0] = FSimpleElementVertex(Line.Start + WorldPointXS - WorldPointYS,FVector2D(1,0),Line.Color,Line.HitProxyId); // 0S
-						ThickVertices[1] = FSimpleElementVertex(Line.Start + WorldPointXS + WorldPointYS,FVector2D(1,1),Line.Color,Line.HitProxyId); // 1S
-						ThickVertices[2] = FSimpleElementVertex(Line.Start - WorldPointXS - WorldPointYS,FVector2D(0,0),Line.Color,Line.HitProxyId); // 2S
+						ThickVertices[0] = FSimpleElementVertex(Line.Start + WorldPointXS - WorldPointYS,FVector2D(1,0),Line.Color,Line.HitProxyColor); // 0S
+						ThickVertices[1] = FSimpleElementVertex(Line.Start + WorldPointXS + WorldPointYS,FVector2D(1,1),Line.Color,Line.HitProxyColor); // 1S
+						ThickVertices[2] = FSimpleElementVertex(Line.Start - WorldPointXS - WorldPointYS,FVector2D(0,0),Line.Color,Line.HitProxyColor); // 2S
 					
-						ThickVertices[3] = FSimpleElementVertex(Line.Start + WorldPointXS + WorldPointYS,FVector2D(1,1),Line.Color,Line.HitProxyId); // 1S
-						ThickVertices[4] = FSimpleElementVertex(Line.Start - WorldPointXS - WorldPointYS,FVector2D(0,0),Line.Color,Line.HitProxyId); // 2S
-						ThickVertices[5] = FSimpleElementVertex(Line.Start - WorldPointXS + WorldPointYS,FVector2D(0,1),Line.Color,Line.HitProxyId); // 3S
+						ThickVertices[3] = FSimpleElementVertex(Line.Start + WorldPointXS + WorldPointYS,FVector2D(1,1),Line.Color,Line.HitProxyColor); // 1S
+						ThickVertices[4] = FSimpleElementVertex(Line.Start - WorldPointXS - WorldPointYS,FVector2D(0,0),Line.Color,Line.HitProxyColor); // 2S
+						ThickVertices[5] = FSimpleElementVertex(Line.Start - WorldPointXS + WorldPointYS,FVector2D(0,1),Line.Color,Line.HitProxyColor); // 3S
 
 						// Ending point
-						ThickVertices[0+ 6] = FSimpleElementVertex(Line.End + WorldPointXE - WorldPointYE,FVector2D(1,0),Line.Color,Line.HitProxyId); // 0E
-						ThickVertices[1+ 6] = FSimpleElementVertex(Line.End + WorldPointXE + WorldPointYE,FVector2D(1,1),Line.Color,Line.HitProxyId); // 1E
-						ThickVertices[2+ 6] = FSimpleElementVertex(Line.End - WorldPointXE - WorldPointYE,FVector2D(0,0),Line.Color,Line.HitProxyId); // 2E
+						ThickVertices[0+ 6] = FSimpleElementVertex(Line.End + WorldPointXE - WorldPointYE,FVector2D(1,0),Line.Color,Line.HitProxyColor); // 0E
+						ThickVertices[1+ 6] = FSimpleElementVertex(Line.End + WorldPointXE + WorldPointYE,FVector2D(1,1),Line.Color,Line.HitProxyColor); // 1E
+						ThickVertices[2+ 6] = FSimpleElementVertex(Line.End - WorldPointXE - WorldPointYE,FVector2D(0,0),Line.Color,Line.HitProxyColor); // 2E
 																																							  
-						ThickVertices[3+ 6] = FSimpleElementVertex(Line.End + WorldPointXE + WorldPointYE,FVector2D(1,1),Line.Color,Line.HitProxyId); // 1E
-						ThickVertices[4+ 6] = FSimpleElementVertex(Line.End - WorldPointXE - WorldPointYE,FVector2D(0,0),Line.Color,Line.HitProxyId); // 2E
-						ThickVertices[5+ 6] = FSimpleElementVertex(Line.End - WorldPointXE + WorldPointYE,FVector2D(0,1),Line.Color,Line.HitProxyId); // 3E
+						ThickVertices[3+ 6] = FSimpleElementVertex(Line.End + WorldPointXE + WorldPointYE,FVector2D(1,1),Line.Color,Line.HitProxyColor); // 1E
+						ThickVertices[4+ 6] = FSimpleElementVertex(Line.End - WorldPointXE - WorldPointYE,FVector2D(0,0),Line.Color,Line.HitProxyColor); // 2E
+						ThickVertices[5+ 6] = FSimpleElementVertex(Line.End - WorldPointXE + WorldPointYE,FVector2D(0,1),Line.Color,Line.HitProxyColor); // 3E
 
 						// First part of line
-						ThickVertices[0+12] = FSimpleElementVertex(Line.Start - WorldPointXS - WorldPointYS,FVector2D(0,0),Line.Color,Line.HitProxyId); // 2S
-						ThickVertices[1+12] = FSimpleElementVertex(Line.Start + WorldPointXS + WorldPointYS,FVector2D(1,1),Line.Color,Line.HitProxyId); // 1S
-						ThickVertices[2+12] = FSimpleElementVertex(Line.End   - WorldPointXE - WorldPointYE,FVector2D(0,0),Line.Color,Line.HitProxyId); // 2E
+						ThickVertices[0+12] = FSimpleElementVertex(Line.Start - WorldPointXS - WorldPointYS,FVector2D(0,0),Line.Color,Line.HitProxyColor); // 2S
+						ThickVertices[1+12] = FSimpleElementVertex(Line.Start + WorldPointXS + WorldPointYS,FVector2D(1,1),Line.Color,Line.HitProxyColor); // 1S
+						ThickVertices[2+12] = FSimpleElementVertex(Line.End   - WorldPointXE - WorldPointYE,FVector2D(0,0),Line.Color,Line.HitProxyColor); // 2E
 
-						ThickVertices[3+12] = FSimpleElementVertex(Line.Start + WorldPointXS + WorldPointYS,FVector2D(1,1),Line.Color,Line.HitProxyId); // 1S
-						ThickVertices[4+12] = FSimpleElementVertex(Line.End   + WorldPointXE + WorldPointYE,FVector2D(1,1),Line.Color,Line.HitProxyId); // 1E
-						ThickVertices[5+12] = FSimpleElementVertex(Line.End   - WorldPointXE - WorldPointYE,FVector2D(0,0),Line.Color,Line.HitProxyId); // 2E
+						ThickVertices[3+12] = FSimpleElementVertex(Line.Start + WorldPointXS + WorldPointYS,FVector2D(1,1),Line.Color,Line.HitProxyColor); // 1S
+						ThickVertices[4+12] = FSimpleElementVertex(Line.End   + WorldPointXE + WorldPointYE,FVector2D(1,1),Line.Color,Line.HitProxyColor); // 1E
+						ThickVertices[5+12] = FSimpleElementVertex(Line.End   - WorldPointXE - WorldPointYE,FVector2D(0,0),Line.Color,Line.HitProxyColor); // 2E
 
 						// Second part of line
-						ThickVertices[0+18] = FSimpleElementVertex(Line.Start - WorldPointXS + WorldPointYS,FVector2D(0,1),Line.Color,Line.HitProxyId); // 3S
-						ThickVertices[1+18] = FSimpleElementVertex(Line.Start + WorldPointXS - WorldPointYS,FVector2D(1,0),Line.Color,Line.HitProxyId); // 0S
-						ThickVertices[2+18] = FSimpleElementVertex(Line.End   - WorldPointXE + WorldPointYE,FVector2D(0,1),Line.Color,Line.HitProxyId); // 3E
+						ThickVertices[0+18] = FSimpleElementVertex(Line.Start - WorldPointXS + WorldPointYS,FVector2D(0,1),Line.Color,Line.HitProxyColor); // 3S
+						ThickVertices[1+18] = FSimpleElementVertex(Line.Start + WorldPointXS - WorldPointYS,FVector2D(1,0),Line.Color,Line.HitProxyColor); // 0S
+						ThickVertices[2+18] = FSimpleElementVertex(Line.End   - WorldPointXE + WorldPointYE,FVector2D(0,1),Line.Color,Line.HitProxyColor); // 3E
 
-						ThickVertices[3+18] = FSimpleElementVertex(Line.Start + WorldPointXS - WorldPointYS,FVector2D(1,0),Line.Color,Line.HitProxyId); // 0S
-						ThickVertices[4+18] = FSimpleElementVertex(Line.End   + WorldPointXE - WorldPointYE,FVector2D(1,0),Line.Color,Line.HitProxyId); // 0E
-						ThickVertices[5+18] = FSimpleElementVertex(Line.End   - WorldPointXE + WorldPointYE,FVector2D(0,1),Line.Color,Line.HitProxyId); // 3E
+						ThickVertices[3+18] = FSimpleElementVertex(Line.Start + WorldPointXS - WorldPointYS,FVector2D(1,0),Line.Color,Line.HitProxyColor); // 0S
+						ThickVertices[4+18] = FSimpleElementVertex(Line.End   + WorldPointXE - WorldPointYE,FVector2D(1,0),Line.Color,Line.HitProxyColor); // 0E
+						ThickVertices[5+18] = FSimpleElementVertex(Line.End   - WorldPointXE + WorldPointYE,FVector2D(0,1),Line.Color,Line.HitProxyColor); // 3E
 
 						ThickVertices += 24;
 					}
@@ -1060,6 +1181,13 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 
 			if (ValidSpriteCount > 0)
 			{
+				// Prevent integer overflow to buffer overflow.
+				if (ValidSpriteCount > UINT32_MAX / sizeof(FSimpleElementVertex) * 6)
+				{
+					UE_LOG(LogBatchedElements, Error, TEXT("Too many sprites. Will overflow uint32 buffer size. ValidSpriteCount: %d"), ValidSpriteCount);
+					return false;
+				}
+
 				FRHIResourceCreateInfo CreateInfo(TEXT("Sprites"));
 				FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FSimpleElementVertex) * ValidSpriteCount * 6, BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 				void* VoidPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * ValidSpriteCount * 6, RLM_WriteOnly);
@@ -1079,13 +1207,13 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 					const float VStart = Sprite.V / Sprite.Texture->GetSizeY();
 					const float VEnd = (Sprite.V + Sprite.VL) / Sprite.Texture->GetSizeY();
 
-					Vertex[0] = FSimpleElementVertex(Sprite.Position + WorldSpriteX - WorldSpriteY, FVector2D(UEnd, VStart), Sprite.Color, Sprite.HitProxyId);
-					Vertex[1] = FSimpleElementVertex(Sprite.Position + WorldSpriteX + WorldSpriteY, FVector2D(UEnd, VEnd), Sprite.Color, Sprite.HitProxyId);
-					Vertex[2] = FSimpleElementVertex(Sprite.Position - WorldSpriteX - WorldSpriteY, FVector2D(UStart, VStart), Sprite.Color, Sprite.HitProxyId);
+					Vertex[0] = FSimpleElementVertex(Sprite.Position + WorldSpriteX - WorldSpriteY, FVector2D(UEnd, VStart), Sprite.Color, Sprite.HitProxyColor);
+					Vertex[1] = FSimpleElementVertex(Sprite.Position + WorldSpriteX + WorldSpriteY, FVector2D(UEnd, VEnd), Sprite.Color, Sprite.HitProxyColor);
+					Vertex[2] = FSimpleElementVertex(Sprite.Position - WorldSpriteX - WorldSpriteY, FVector2D(UStart, VStart), Sprite.Color, Sprite.HitProxyColor);
 
-					Vertex[3] = FSimpleElementVertex(Sprite.Position + WorldSpriteX + WorldSpriteY, FVector2D(UEnd, VEnd), Sprite.Color, Sprite.HitProxyId);
-					Vertex[4] = FSimpleElementVertex(Sprite.Position - WorldSpriteX - WorldSpriteY, FVector2D(UStart, VStart), Sprite.Color, Sprite.HitProxyId);
-					Vertex[5] = FSimpleElementVertex(Sprite.Position - WorldSpriteX + WorldSpriteY, FVector2D(UStart, VEnd), Sprite.Color, Sprite.HitProxyId);
+					Vertex[3] = FSimpleElementVertex(Sprite.Position + WorldSpriteX + WorldSpriteY, FVector2D(UEnd, VEnd), Sprite.Color, Sprite.HitProxyColor);
+					Vertex[4] = FSimpleElementVertex(Sprite.Position - WorldSpriteX - WorldSpriteY, FVector2D(UStart, VStart), Sprite.Color, Sprite.HitProxyColor);
+					Vertex[5] = FSimpleElementVertex(Sprite.Position - WorldSpriteX + WorldSpriteY, FVector2D(UStart, VEnd), Sprite.Color, Sprite.HitProxyColor);
 				}
 				RHICmdList.UnlockBuffer(VertexBufferRHI);
 
@@ -1127,6 +1255,13 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 
 		if( MeshElements.Num() > 0)
 		{
+			// Prevent integer overflow to buffer overflow.
+			if (MeshVertices.Num() > UINT32_MAX / sizeof(FSimpleElementVertex))
+			{
+				UE_LOG(LogBatchedElements, Error, TEXT("Too many mesh vertices. Will overflow uint32 buffer size. MeshVertices.Num(): %d"), MeshVertices.Num());
+				return false;
+			}
+
 			FRHIResourceCreateInfo CreateInfo(TEXT("MeshElements"));
 			FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FSimpleElementVertex) * MeshVertices.Num(), BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 			void* VoidPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * MeshVertices.Num(), RLM_WriteOnly);

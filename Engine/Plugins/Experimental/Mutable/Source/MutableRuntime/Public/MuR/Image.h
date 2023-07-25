@@ -65,6 +65,13 @@ namespace mu
         IF_ASTC_4x4_RGBA_LDR,
         IF_ASTC_4x4_RG_LDR,
 
+		IF_ASTC_8x8_RGB_LDR,
+		IF_ASTC_8x8_RGBA_LDR,
+		IF_ASTC_8x8_RG_LDR,
+		IF_ASTC_12x12_RGB_LDR,
+		IF_ASTC_12x12_RGBA_LDR,
+		IF_ASTC_12x12_RG_LDR,
+
         IF_COUNT
 	};
 
@@ -107,7 +114,8 @@ namespace mu
 	//! List of supported modes in generic image layering operations.
 	enum class EBlendType
 	{
-		BT_SOFTLIGHT = 0,
+		BT_NONE = 0,
+		BT_SOFTLIGHT,
 		BT_HARDLIGHT,
 		BT_BURN,
 		BT_DODGE,
@@ -115,7 +123,7 @@ namespace mu
 		BT_OVERLAY,
 		BT_BLEND,
 		BT_MULTIPLY,
-		BT_ALPHA_OVERLAY, // TODO: This name is not descriptive.
+		BT_LIGHTEN,				// Increase the channel value by a given proportion of what is missing from white 
 		BT_NORMAL_COMBINE,
 		_BT_COUNT
 	};
@@ -243,7 +251,7 @@ namespace mu
 			IF_IS_PLAIN_COLOUR = 1 << 1,
 
 			// If this is set, the image shouldn't be scaled: it's contents is resoultion-dependent.
-			IF_CANNOT_BE_SCALED = 2 << 1
+			IF_CANNOT_BE_SCALED = 1 << 2
 		} EImageFlags;
 
 		//! Persistent flags with some image properties. The meaning will depend of every
@@ -319,7 +327,7 @@ namespace mu
 		//-----------------------------------------------------------------------------------------
 
 		//! Sample the image and return an RGB colour.
-		vec4<float> Sample(vec2<float> coords) const;
+		FVector4f Sample(FVector2f coords) const;
 
 		//! Calculate the size of the image data in bytes, regardless of what is allocated in
 		//! m_data, only using the image descriptions. For non-block-compressed images, it returns
@@ -343,7 +351,7 @@ namespace mu
 
 		//! Calculate the size in pixels of a particular mipmap of this image. The size doesn't
 		//! include pixels necessary for completing blocks in block-compressed formats.
-		vec2<int> CalculateMipSize(int lod) const;
+		FIntVector2 CalculateMipSize(int lod) const;
 
 		//! Return a pointer to the beginning of the data for a particular mip.
 		uint8* GetMipData(int mip);
@@ -354,7 +362,7 @@ namespace mu
 		int32 GetMipsDataSize() const;
 
 		//! See if all the pixels in the image are equal and return the colour.
-		bool IsPlainColour(vec4<float>& colour) const;
+		bool IsPlainColour(FVector4f& colour) const;
 
 		//! See if all the pixels in the alpha channel are the max value of the pixel format
 		//! (white).

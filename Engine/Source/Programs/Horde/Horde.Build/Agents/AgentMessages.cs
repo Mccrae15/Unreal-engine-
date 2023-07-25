@@ -5,7 +5,6 @@ using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using Horde.Build.Acls;
-using Horde.Build.Agents;
 using EpicGames.Core;
 using HordeCommon;
 using Horde.Build.Agents.Leases;
@@ -33,11 +32,6 @@ namespace Horde.Build.Agents
 		/// Whether the agent is ephemeral (ie. should not be shown when inactive)
 		/// </summary>
 		public bool Ephemeral { get; set; }
-
-		/// <summary>
-		/// Per-agent override for the desired agent software channel
-		/// </summary>
-		public string? Channel { get; set; }
 
 		/// <summary>
 		/// Pools for this agent
@@ -101,19 +95,9 @@ namespace Horde.Build.Agents
 		public bool? RequestShutdown { get; set; }
 
 		/// <summary>
-		/// Per-agent override for the desired agent software channel
-		/// </summary>
-		public string? Channel { get; set; }
-
-		/// <summary>
 		/// Pools for this agent
 		/// </summary>
 		public List<string>? Pools { get; set; }
-
-		/// <summary>
-		/// New ACL for this agent
-		/// </summary>
-		public UpdateAclRequest? Acl { get; set; }
 		
 		/// <summary>
 		/// New comment
@@ -299,6 +283,11 @@ namespace Horde.Build.Agents
 		/// Whether to use an incremental workspace
 		/// </summary>
 		public bool BIncremental { get; set; }
+		
+		/// <summary>
+		/// Method to use when syncing/materializing data from Perforce
+		/// </summary>
+		public string? Method { get; set; }
 
 		/// <summary>
 		/// Constructor
@@ -311,7 +300,8 @@ namespace Horde.Build.Agents
 			Identifier = workspace.Identifier;
 			Stream = workspace.Stream;
 			View = workspace.View;
-			BIncremental = workspace.BIncremental;
+			BIncremental = workspace.Incremental;
+			Method = workspace.Method;
 		}
 	}
 
@@ -406,11 +396,6 @@ namespace Horde.Build.Agents
 		public string? Version { get; set; }
 
 		/// <summary>
-		/// Per-agent override for the desired agent software channel
-		/// </summary>
-		public string? Channel { get; set; }
-
-		/// <summary>
 		/// Properties for the agent
 		/// </summary>
 		public List<string> Properties { get; set; }
@@ -446,11 +431,6 @@ namespace Horde.Build.Agents
 		public List<GetAgentLeaseResponse> Leases { get; }
 
 		/// <summary>
-		/// Per-object permissions
-		/// </summary>
-		public GetAclResponse? Acl { get; set; }
-		
-		/// <summary>
 		/// Comment for this agent
 		/// </summary>
 		public string? Comment { get; set; }
@@ -461,8 +441,7 @@ namespace Horde.Build.Agents
 		/// <param name="agent">The agent to construct from</param>
 		/// <param name="leases">Active leases</param>
 		/// <param name="rate">Rate for this agent</param>
-		/// <param name="bIncludeAcl">Whether to include the ACL in the response</param>
-		public GetAgentResponse(IAgent agent, List<GetAgentLeaseResponse> leases, double? rate, bool bIncludeAcl)
+		public GetAgentResponse(IAgent agent, List<GetAgentLeaseResponse> leases, double? rate)
 		{
 			Id = agent.Id.ToString();
 			Name = agent.Id.ToString();
@@ -482,18 +461,12 @@ namespace Horde.Build.Agents
 			NextConformTime =   agent.LastConformTime;
 			ConformAttemptCount = agent.ConformAttemptCount;
 			Version = agent.Version?.ToString() ?? "Unknown";
-			if(agent.Channel != null)
-			{
-				Version += $" ({agent.Channel})";
-			}
 			Version = agent.Version?.ToString();
-			Channel = agent.Channel?.ToString();
 			UpdateTime = agent.UpdateTime;
 			Pools = agent.GetPools().Select(x => x.ToString()).ToList();
 			Workspaces = agent.Workspaces.ConvertAll(x => new GetAgentWorkspaceResponse(x));
 			Capabilities = new { Devices = new[] { new { agent.Properties, agent.Resources } } };
 			Leases = leases;
-			Acl = (bIncludeAcl && agent.Acl != null) ? new GetAclResponse(agent.Acl) : null;
 			Comment = agent.Comment;
 		}
 	}

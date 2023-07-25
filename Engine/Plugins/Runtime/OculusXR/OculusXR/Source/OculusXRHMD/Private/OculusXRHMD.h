@@ -205,6 +205,8 @@ namespace OculusXRHMD
 #ifdef WITH_OCULUS_BRANCH
 		virtual bool AllocateMotionVectorTexture(uint32 Index, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize, FTexture2DRHIRef& OutDepthTexture, FIntPoint& OutDepthTextureSize) override;
 #endif // WITH_OCULUS_BRANCH
+
+
 		virtual void UpdateViewportWidget(bool bUseSeparateRenderTarget, const class FViewport& Viewport, class SViewport* ViewportWidget) override;
 		virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget);
 		void AllocateEyeBuffer();
@@ -507,7 +509,7 @@ namespace OculusXRHMD
 		FRotator DeltaControlRotation; // used from ApplyHmdRotation
 		TWeakPtr<SWidget> CachedViewportWidget;
 		TWeakPtr<SWindow> CachedWindow;
-		FVector2D CachedWindowSize;
+		FIntPoint CachedWindowSize;
 		float CachedWorldToMetersScale;
 		bool bIsStandaloneStereoOnlyDevice;
 		// Stores TrackingToWorld from previous frame

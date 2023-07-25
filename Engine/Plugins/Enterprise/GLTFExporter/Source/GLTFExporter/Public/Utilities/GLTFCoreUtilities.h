@@ -26,18 +26,18 @@ struct GLTFEXPORTER_API FGLTFCoreUtilities
 	static FGLTFVector3 ConvertScale(const FVector3f& Scale);
 
 	static FGLTFVector3 ConvertNormal(const FVector3f& Normal);
-	static FGLTFInt16Vector4 ConvertNormal(const FPackedRGBA16N& Normal);
 	static FGLTFInt8Vector4 ConvertNormal(const FPackedNormal& Normal);
+	static FGLTFInt16Vector4 ConvertNormal(const FPackedRGBA16N& Normal);
 
-	static FGLTFVector4 ConvertTangent(const FVector3f& Tangent);
-	static FGLTFInt16Vector4 ConvertTangent(const FPackedRGBA16N& Tangent);
-	static FGLTFInt8Vector4 ConvertTangent(const FPackedNormal& Tangent);
+	static FGLTFVector4 ConvertTangent(const FVector3f& Tangent, const FVector4f& Normal = FVector4f(ForceInitToZero));
+	static FGLTFInt8Vector4 ConvertTangent(const FPackedNormal& Tangent, const FPackedNormal& Normal = FPackedNormal());
+	static FGLTFInt16Vector4 ConvertTangent(const FPackedRGBA16N& Tangent, const FPackedRGBA16N& Normal = FPackedRGBA16N());
 
 	static FGLTFVector2 ConvertUV(const FVector2f& UV);
 	static FGLTFVector2 ConvertUV(const FVector2DHalf& UV);
 
-	static FGLTFColor4 ConvertColor(const FLinearColor& Color, bool bForceLDR);
-	static FGLTFColor3 ConvertColor3(const FLinearColor& Color, bool bForceLDR);
+	static FGLTFColor4 ConvertColor(const FLinearColor& Color);
+	static FGLTFColor3 ConvertColor3(const FLinearColor& Color);
 	static FGLTFUInt8Color4 ConvertColor(const FColor& Color);
 
 	static FGLTFQuaternion ConvertRotation(const FRotator3f& Rotation);
@@ -62,28 +62,22 @@ struct GLTFEXPORTER_API FGLTFCoreUtilities
 	static EGLTFJsonShadingModel ConvertShadingModel(EMaterialShadingModel ShadingModel);
 
 	static EGLTFJsonAlphaMode ConvertAlphaMode(EBlendMode Mode);
-	static EGLTFJsonBlendMode ConvertBlendMode(EBlendMode Mode);
 
 	static EGLTFJsonTextureWrap ConvertWrap(TextureAddress Address);
 
 	static EGLTFJsonTextureFilter ConvertMinFilter(TextureFilter Filter);
 	static EGLTFJsonTextureFilter ConvertMagFilter(TextureFilter Filter);
 
-	static EGLTFJsonTextureFilter ConvertMinFilter(TextureFilter Filter, TextureGroup LODGroup);
-	static EGLTFJsonTextureFilter ConvertMagFilter(TextureFilter Filter, TextureGroup LODGroup);
-
-	static EGLTFJsonCubeFace ConvertCubeFace(ECubeFace CubeFace);
-
 	template <typename ComponentType>
 	static EGLTFJsonComponentType GetComponentType()
 	{
-		if (TIsSame<ComponentType, int8  >::Value) return EGLTFJsonComponentType::Int8;
-		if (TIsSame<ComponentType, uint8 >::Value) return EGLTFJsonComponentType::UInt8;
-		if (TIsSame<ComponentType, int16 >::Value) return EGLTFJsonComponentType::Int16;
-		if (TIsSame<ComponentType, uint16>::Value) return EGLTFJsonComponentType::UInt16;
-		if (TIsSame<ComponentType, int32 >::Value) return EGLTFJsonComponentType::Int32;
-		if (TIsSame<ComponentType, uint32>::Value) return EGLTFJsonComponentType::UInt32;
-		if (TIsSame<ComponentType, float >::Value) return EGLTFJsonComponentType::Float;
-		return EGLTFJsonComponentType::None;
+		     if constexpr (std::is_same_v<ComponentType, int8  >) return EGLTFJsonComponentType::Int8;
+		else if constexpr (std::is_same_v<ComponentType, uint8 >) return EGLTFJsonComponentType::UInt8;
+		else if constexpr (std::is_same_v<ComponentType, int16 >) return EGLTFJsonComponentType::Int16;
+		else if constexpr (std::is_same_v<ComponentType, uint16>) return EGLTFJsonComponentType::UInt16;
+		else if constexpr (std::is_same_v<ComponentType, int32 >) return EGLTFJsonComponentType::Int32;
+		else if constexpr (std::is_same_v<ComponentType, uint32>) return EGLTFJsonComponentType::UInt32;
+		else if constexpr (std::is_same_v<ComponentType, float >) return EGLTFJsonComponentType::Float;
+		else return EGLTFJsonComponentType::None;
 	}
 };

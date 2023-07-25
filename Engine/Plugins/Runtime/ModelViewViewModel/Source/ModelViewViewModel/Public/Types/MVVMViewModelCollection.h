@@ -2,11 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Templates/SubclassOf.h"
 #include "Types/MVVMViewModelContext.h"
-#include "Types/MVVMViewModelContextInstance.h"
-
+#include "Types/MVVMViewModelContextInstance.h" // IWYU pragma: keep
 #include "MVVMViewModelCollection.generated.h"
 
 class UMVVMViewModelBase;
@@ -19,6 +16,7 @@ struct MODELVIEWVIEWMODEL_API FMVVMViewModelCollection
 
 public:
 	UMVVMViewModelBase* FindViewModelInstance(FMVVMViewModelContext Context) const;
+	UMVVMViewModelBase* FindFirstViewModelInstanceOfType(const TSubclassOf<UMVVMViewModelBase>& ViewModelClass) const;
 
 	bool AddInstance(FMVVMViewModelContext Context, UMVVMViewModelBase* ViewModel);
 	bool RemoveInstance(FMVVMViewModelContext Context);
@@ -51,6 +49,16 @@ public:
 	{
 		return ViewModelCollection.FindViewModelInstance(Context);
 	}
+
+	/**
+	 * Finds a View Model of the given type.
+	 * If the collection contains multiple instances of the same type then this will return the first one found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "MVVM")
+	UMVVMViewModelBase* FindFirstViewModelInstanceOfType(const TSubclassOf<UMVVMViewModelBase>& ViewModelClass) const
+	{
+		return ViewModelCollection.FindFirstViewModelInstanceOfType(ViewModelClass);
+	}
 	
 	UFUNCTION(BlueprintCallable, Category = "MVVM")
 	bool AddViewModelInstance(FMVVMViewModelContext Context, UMVVMViewModelBase* ViewModel)
@@ -79,3 +87,7 @@ private:
 	UPROPERTY(Transient)
 	FMVVMViewModelCollection ViewModelCollection;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

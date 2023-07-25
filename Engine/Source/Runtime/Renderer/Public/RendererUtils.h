@@ -8,7 +8,11 @@
 #include "RHIDefinitions.h"
 #include "RenderGraph.h"
 #include "RenderGraphDefinitions.h"
+#include "ShaderParameterMacros.h"
+#include "RenderGraphFwd.h"
 
+struct FStrataSceneData;
+class FScene;
 class FGlobalShaderMap;
 class FRDGBuilder;
 class FRHICommandListImmediate;
@@ -47,3 +51,16 @@ public:
 
 	static FDepthBoundsValues CalculateNearFarDepthExcludingSky();
 };
+
+// A minimal uniform struct providing necessary access for external systems to Strata parameters.
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FStrataPublicGlobalUniformParameters, RENDERER_API)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint2>, TopLayerTexture)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+namespace Strata
+{
+	void PreInitViews(FScene& Scene);
+	void PostRender(FScene& Scene);
+
+	RENDERER_API TRDGUniformBufferRef<FStrataPublicGlobalUniformParameters> GetPublicGlobalUniformBuffer(FRDGBuilder& GraphBuilder, FScene& Scene);
+}

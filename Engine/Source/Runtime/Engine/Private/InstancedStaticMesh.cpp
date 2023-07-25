@@ -5,49 +5,54 @@
 =============================================================================*/
 
 #include "Engine/InstancedStaticMesh.h"
-#include "InstancedStaticMeshDelegates.h"
+#include "Elements/SMInstance/SMInstanceElementId.h"
+#include "Engine/Level.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "Components/LightComponent.h"
-#include "Logging/TokenizedMessage.h"
+#include "EngineLogs.h"
 #include "Logging/MessageLog.h"
+#include "Materials/Material.h"
 #include "UnrealEngine.h"
 #include "AI/NavigationSystemHelpers.h"
 #include "AI/Navigation/NavCollisionBase.h"
-#include "ShaderParameterUtils.h"
+#include "MeshDrawShaderBindings.h"
 #include "Misc/UObjectToken.h"
-#include "PhysXPublic.h"
-#include "PhysicsEngine/PhysXSupport.h"
+#include "Misc/DelayedAutoRegister.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "GameFramework/WorldSettings.h"
 #include "ComponentRecreateRenderStateContext.h"
-#include "SceneManagement.h"
-#include "Algo/Transform.h"
+#include "PrimitiveInstanceUpdateCommand.h"
 #include "UObject/MobileObjectVersion.h"
 #include "EngineStats.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "MaterialDomain.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "MeshMaterialShader.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
+#include "RenderUtils.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "NaniteSceneProxy.h"
 #include "MaterialCachedData.h"
 #include "Collision.h"
-#include "PipelineStateCache.h"
+#include "CollisionDebugDrawingPublic.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #include "Elements/Framework/EngineElementsLibrary.h"
-#include "Elements/SMInstance/SMInstanceElementData.h"
 #include "Elements/Interfaces/TypedElementWorldInterface.h"
+#include "UObject/UObjectIterator.h"
+#include "GenericPlatform/ICursor.h"
 
 #if RHI_RAYTRACING
-#include "RayTracingInstance.h"
 #endif
 
 #if WITH_EDITOR
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #endif // WITH_EDITOR
+#include "Templates/Greater.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/EditorObjectVersion.h"
-#include "UObject/RenderingObjectVersion.h"
 
 
 #if WITH_EDITOR
@@ -230,6 +235,11 @@ FTypedElementHandle HInstancedStaticMeshInstance::GetElementHandle() const
 	}
 #endif	// WITH_EDITOR
 	return FTypedElementHandle();
+}
+
+EMouseCursor::Type HInstancedStaticMeshInstance::GetMouseCursor()
+{
+	return EMouseCursor::Crosshairs;
 }
 
 FInstanceUpdateCmdBuffer::FInstanceUpdateCmdBuffer()
@@ -732,6 +742,14 @@ void FStaticMeshInstanceData::Serialize(FArchive& Ar)
 
 	if (Ar.IsLoading())
 	{
+		const int64 NumTotalCustomDataFloats = (int64)NumCustomDataFloats * NumInstances;
+		if (!IntFitsIn<int32>(NumTotalCustomDataFloats))
+		{
+			// Sanitize inputs. Allocate no custom data to avoid out of range access
+			NumCustomDataFloats = 0;
+			ensureMsgf(false, TEXT("Total Custom Instance Data Floats count is out of range."));
+		}
+
 		AllocateBuffers(NumInstances);
 	}
 
@@ -814,12 +832,12 @@ void FInstancedStaticMeshVertexFactory::ModifyCompilationEnvironment(const FVert
 
 	if (IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5))
 	{
-		OutEnvironment.SetDefine(TEXT("USE_DITHERED_LOD_TRANSITION_FOR_INSTANCED"), ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES);
+		OutEnvironment.SetDefine(TEXT("USE_DITHERED_LOD_TRANSITION_FOR_INSTANCED"), true);
 	}
 	else
 	{
 		// On mobile dithered LOD transition has to be explicitly enabled in material and project settings
-		OutEnvironment.SetDefine(TEXT("USE_DITHERED_LOD_TRANSITION_FOR_INSTANCED"), Parameters.MaterialParameters.bIsDitheredLODTransition && ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES);
+		OutEnvironment.SetDefine(TEXT("USE_DITHERED_LOD_TRANSITION_FOR_INSTANCED"), static_cast<bool>(Parameters.MaterialParameters.bIsDitheredLODTransition));
 	}
 
 	FLocalVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
@@ -830,8 +848,7 @@ void FInstancedStaticMeshVertexFactory::ModifyCompilationEnvironment(const FVert
  */
 void FInstancedStaticMeshVertexFactory::GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements)
 {
-	// Fallback to local vertex factory because manual vertex fetch is supported but special case handling might be needed when 
-	// ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES is disabled (does that code path still work?)
+	// Fallback to local vertex factory because manual vertex fetch is supported
 	FLocalVertexFactory::GetPSOPrecacheVertexFetchElements(VertexInputStreamType, Elements);
 }
 
@@ -858,34 +875,6 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 	SCOPED_LOADTIMER(FInstancedStaticMeshVertexFactory_InitRHI);
 
 	check(HasValidFeatureLevel());
-
-#if !ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES // position(and normal) only shaders cannot work with dithered LOD
-	// If the vertex buffer containing position is not the same vertex buffer containing the rest of the data,
-	// then initialize PositionStream and PositionDeclaration.
-	if (Data.PositionComponent.VertexBuffer != Data.TangentBasisComponents[0].VertexBuffer)
-	{
-		auto AddDeclaration = [&](EVertexInputStreamType InputStreamType)
-		{
-			FVertexDeclarationElementList StreamElements;
-			StreamElements.Add(AccessStreamComponent(Data.PositionComponent, 0, InputStreamType));
-
-			if (InputStreamType == EVertexInputStreamType::PositionAndNormalOnly && Data.TangentBasisComponents[1].VertexBuffer != NULL)
-			{
-				StreamElements.Add(AccessStreamComponent(Data.TangentBasisComponents[1], 2, InputStreamType));
-			}
-
-			// Add the instanced location streams
-			StreamElements.Add(AccessStreamComponent(Data.InstanceOriginComponent, 8, InputStreamType));
-			StreamElements.Add(AccessStreamComponent(Data.InstanceTransformComponent[0], 9, InputStreamType));
-			StreamElements.Add(AccessStreamComponent(Data.InstanceTransformComponent[1], 10, InputStreamType));
-			StreamElements.Add(AccessStreamComponent(Data.InstanceTransformComponent[2], 11, InputStreamType));
-
-			InitDeclaration(StreamElements, InputStreamType);
-		};
-		AddDeclaration(EVertexInputStreamType::PositionOnly);
-		AddDeclaration(EVertexInputStreamType::PositionAndNormalOnly);
-	}
-#endif
 
 	FVertexDeclarationElementList Elements;
 	if(Data.PositionComponent.VertexBuffer != NULL)
@@ -952,10 +941,9 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 			}
 		}
 
-		// PreSkinPosition is only used when skin cache is on, in which case skinned mesh uses local vertex factory as pass through.
+		// PreSkinPosition attribute is only used for GPUSkinPassthrough variation of local vertex factory.
 		// It is not used by ISM so fill with dummy buffer.
-		extern ENGINE_API bool IsGPUSkinCacheAvailable(EShaderPlatform Platform);
-		if (IsGPUSkinCacheAvailable(GMaxRHIShaderPlatform))
+		if (FLocalVertexFactory::IsGPUSkinPassThroughSupported(GMaxRHIShaderPlatform))
 		{
 			FVertexStreamComponent NullComponent(&GNullVertexBuffer, 0, 0, VET_Float4);
 			Elements.Add(AccessStreamComponent(NullComponent, 14));
@@ -1027,16 +1015,46 @@ IMPLEMENT_VERTEX_FACTORY_TYPE(FInstancedStaticMeshVertexFactory,"/Engine/Private
 	| EVertexFactoryFlags::SupportsStaticLighting
 	| EVertexFactoryFlags::SupportsDynamicLighting
 	| EVertexFactoryFlags::SupportsPrecisePrevWorldPos
-	| (!ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES ? EVertexFactoryFlags::SupportsPositionOnly : EVertexFactoryFlags::None)
 	| EVertexFactoryFlags::SupportsCachingMeshDrawCommands
 	| EVertexFactoryFlags::SupportsRayTracing
 	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
 	| EVertexFactoryFlags::SupportsLightmapBaking
 	| EVertexFactoryFlags::SupportsPrimitiveIdStream
-	| (ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES ? EVertexFactoryFlags::DoesNotSupportNullPixelShader : EVertexFactoryFlags::None)
+	| EVertexFactoryFlags::DoesNotSupportNullPixelShader
 	| EVertexFactoryFlags::SupportsManualVertexFetch
 	| EVertexFactoryFlags::SupportsPSOPrecaching
+	| EVertexFactoryFlags::SupportsLumenMeshCards
 );
+
+FInstancedStaticMeshRenderData::FInstancedStaticMeshRenderData(UInstancedStaticMeshComponent* InComponent, ERHIFeatureLevel::Type InFeatureLevel)
+	: Component(InComponent)
+	, LightMapCoordinateIndex(Component->GetStaticMesh()->GetLightMapCoordinateIndex())
+	, PerInstanceRenderData(InComponent->PerInstanceRenderData)
+	, LODModels(Component->GetStaticMesh()->GetRenderData()->LODResources)
+	, FeatureLevel(InFeatureLevel)
+{
+	check(PerInstanceRenderData.IsValid());
+	// Allocate the vertex factories for each LOD
+	InitVertexFactories();
+	RegisterSpeedTreeWind();
+}
+
+void FInstancedStaticMeshRenderData::ReleaseResources(FSceneInterface* Scene, const UStaticMesh* StaticMesh)
+{
+	// unregister SpeedTree wind with the scene
+	if (Scene && StaticMesh && StaticMesh->SpeedTreeWind.IsValid())
+	{
+		for (int32 LODIndex = 0; LODIndex < VertexFactories.Num(); LODIndex++)
+		{
+			Scene->RemoveSpeedTreeWind_RenderThread(&VertexFactories[LODIndex], StaticMesh);
+		}
+	}
+
+	for (int32 LODIndex = 0; LODIndex < VertexFactories.Num(); LODIndex++)
+	{
+		VertexFactories[LODIndex].ReleaseResource();
+	}
+}
 
 void FInstancedStaticMeshRenderData::BindBuffersToVertexFactories()
 {
@@ -1044,6 +1062,7 @@ void FInstancedStaticMeshRenderData::BindBuffersToVertexFactories()
 
 	check(IsInRenderingThread());
 
+	const bool bRHISupportsManualVertexFetch = RHISupportsManualVertexFetch(GShaderPlatformForFeatureLevel[FeatureLevel]);
 	const bool bCanUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel);
 	if (!bCanUseGPUScene)
 	{
@@ -1072,7 +1091,7 @@ void FInstancedStaticMeshRenderData::BindBuffersToVertexFactories()
 		}
 		else
 		{
-			FColorVertexBuffer::BindDefaultColorVertexBuffer(&VertexFactory, Data, FColorVertexBuffer::NullBindStride::FColorSizeForComponentOverride);
+			FColorVertexBuffer::BindDefaultColorVertexBuffer(&VertexFactory, Data, bRHISupportsManualVertexFetch ? FColorVertexBuffer::NullBindStride::FColorSizeForComponentOverride : FColorVertexBuffer::NullBindStride::ZeroForDefaultBufferBind);
 		}
 
 		check(PerInstanceRenderData);
@@ -1101,6 +1120,20 @@ void FInstancedStaticMeshRenderData::InitVertexFactories()
 		});
 }
 
+void FInstancedStaticMeshRenderData::RegisterSpeedTreeWind()
+{
+	// register SpeedTree wind with the scene
+	if (Component->GetStaticMesh()->SpeedTreeWind.IsValid())
+	{
+		for (int32 LODIndex = 0; LODIndex < LODModels.Num(); LODIndex++)
+		{
+			if (Component->GetScene())
+			{
+				Component->GetScene()->AddSpeedTreeWind(&VertexFactories[LODIndex], Component->GetStaticMesh());
+			}
+		}
+	}
+}
 
 FPerInstanceRenderData::FPerInstanceRenderData(FStaticMeshInstanceData& Other, ERHIFeatureLevel::Type InFeaureLevel, bool InRequireCPUAccess, FBox InBounds, bool bTrack, bool bDeferGPUUploadIn)
 	: ResourceSize(InRequireCPUAccess ? Other.GetResourceSize() : 0)
@@ -1380,7 +1413,7 @@ void FInstancedStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const F
 				const FRenderTransform PrimitiveToWorld = (FMatrix44f)GetLocalToWorld();
 				for (int i = 0; i < InstanceSceneData.Num(); ++i)
 				{
-					const FPrimitiveInstance& Instance = InstanceSceneData[i];
+					const FInstanceSceneData& Instance = InstanceSceneData[i];
 
 					FRenderTransform InstanceToWorld = Instance.ComputeLocalToWorld(PrimitiveToWorld);
 					DrawWireStar(Collector.GetPDI(ViewIndex), (FVector)InstanceToWorld.Origin, 40.0f, WasInstanceXFormUpdatedThisFrame(i) ? FColor::Red : FColor::Green, View->Family->EngineShowFlags.Game ? SDPG_World : SDPG_Foreground);
@@ -1526,7 +1559,7 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 				continue;
 			}
 
-			FPrimitiveInstance& SceneData = InstanceSceneData[RenderInstanceIndex];
+			FInstanceSceneData& SceneData = InstanceSceneData[RenderInstanceIndex];
 
 			FTransform InstanceTransform;
 			InComponent->GetInstanceTransform(InstanceIndex, InstanceTransform);
@@ -1614,7 +1647,7 @@ void FInstancedStaticMeshSceneProxy::CreateRenderThreadResources()
 
 				for (int32 InstanceIndex = 0; InstanceIndex < InstanceSceneData.Num(); ++InstanceIndex)
 				{
-					FPrimitiveInstance& SceneData = InstanceSceneData[InstanceIndex];
+					FInstanceSceneData& SceneData = InstanceSceneData[InstanceIndex];
 					InstanceBuffer.GetInstanceTransform(InstanceIndex, SceneData.LocalToPrimitive);
 
 					if (bHasRandomID)
@@ -1664,11 +1697,12 @@ void FInstancedStaticMeshSceneProxy::OnTransformChanged()
 		InstanceLocalBounds.SetNumUninitialized(1);
 		if (StaticMesh != nullptr)
 		{
-			InstanceLocalBounds[0] = StaticMesh->GetBounds();
+			SetInstanceLocalBounds(0, StaticMesh->GetBounds());
 		}
 		else
 		{
-			InstanceLocalBounds[0] = GetLocalBounds();
+			// NOTE: The proxy's local bounds have already been padded for WPO
+			SetInstanceLocalBounds(0, GetLocalBounds(), false);
 		}
 	}
 }
@@ -1702,7 +1736,7 @@ void FInstancedStaticMeshSceneProxy::SetupInstancedMeshBatch(int32 LODIndex, int
 		if (FeatureLevel > ERHIFeatureLevel::ES3_1)
 		{
 			const FMaterial& Material = OutMeshBatch.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
-			BatchElement0.bPreserveInstanceOrder = IsTranslucentBlendMode(Material.GetBlendMode());
+			BatchElement0.bPreserveInstanceOrder = IsTranslucentBlendMode(Material);
 		}
 	}
 
@@ -1860,16 +1894,26 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 			FMeshBatch MeshBatch;
 			FMeshBatch DynamicMeshBatch;
 
-			GetMeshElement(LOD, 0, SectionIdx, 0, false, false, DynamicMeshBatch);
+			if (!GetMeshElement(LOD, 0, SectionIdx, 0, false, false, DynamicMeshBatch))
+			{
+				DynamicMeshBatch.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+				DynamicMeshBatch.SegmentIndex = SectionIdx;
+				DynamicMeshBatch.MeshIdInPrimitive = SectionIdx;
+			}
 
-			FStaticMeshSceneProxy::GetMeshElement(LOD, 0, SectionIdx, 0, false, false, MeshBatch);
+			if (!FStaticMeshSceneProxy::GetMeshElement(LOD, 0, SectionIdx, 0, false, false, MeshBatch))
+			{				
+				MeshBatch.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+				MeshBatch.VertexFactory = &RenderData->LODVertexFactories[LOD].VertexFactory;
+				MeshBatch.SegmentIndex = SectionIdx;
+				MeshBatch.MeshIdInPrimitive = SectionIdx;
+			};
 
 			DynamicMeshBatch.VertexFactory = &InstancedRenderData.VertexFactories[LOD];
 
 			RayTracingWPOInstanceTemplate.Materials.Add(MeshBatch);
 			RayTracingWPODynamicTemplate.Materials.Add(DynamicMeshBatch);
 		}
-		RayTracingWPOInstanceTemplate.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 	
 		if (RayTracingDynamicData.Num() != SimulatedInstances || LOD != CachedRayTracingLOD)
 		{
@@ -2059,7 +2103,7 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 						RayTracingWPODynamicTemplate.Materials,
 						false,
 						(uint32)LODModel.GetNumVertices(),
-						uint32((SIZE_T)LODModel.GetNumVertices() * sizeof(FVector)),
+						uint32((SIZE_T)LODModel.GetNumVertices() * sizeof(FVector3f)),
 						DynamicData.DynamicGeometry.Initializer.TotalPrimitiveCount,
 						&DynamicData.DynamicGeometry,
 						nullptr,
@@ -2091,11 +2135,19 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 		{
 			//#dxr_todo: so far we use the parent static mesh path to get material data
 			FMeshBatch MeshBatch;
-			FStaticMeshSceneProxy::GetMeshElement(LOD, 0, SectionIdx, 0, false, false, MeshBatch);
 
+			bool bResult = FStaticMeshSceneProxy::GetMeshElement(LOD, 0, SectionIdx, 0, false, false, MeshBatch);
+			if (!bResult)
+			{
+				// Hidden material
+				MeshBatch.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+				MeshBatch.VertexFactory = &RenderData->LODVertexFactories[LOD].VertexFactory;
+				MeshBatch.SegmentIndex = SectionIdx;
+				MeshBatch.MeshIdInPrimitive = SectionIdx;
+			}
+			
 			RayTracingInstanceTemplate.Materials.Add(MeshBatch);
 		}
-		RayTracingInstanceTemplate.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 
 		OutRayTracingInstances.Add(RayTracingInstanceTemplate);
 	}
@@ -2289,9 +2341,12 @@ void UInstancedStaticMeshComponent::FlushInstanceUpdateCommands(bool bFlushInsta
 		InstanceUpdateCmdBuffer.Reset();
 	}
 
-	FStaticMeshInstanceData RenderInstanceData = FStaticMeshInstanceData(GVertexElementTypeSupport.IsSupported(VET_Half2));
-	BuildRenderData(RenderInstanceData, PerInstanceRenderData->HitProxies);
-	PerInstanceRenderData->UpdateFromPreallocatedData(RenderInstanceData);
+	if (PerInstanceRenderData)
+	{
+		FStaticMeshInstanceData RenderInstanceData = FStaticMeshInstanceData(/*bInUseHalfFloat = */ true);
+		BuildRenderData(RenderInstanceData, PerInstanceRenderData->HitProxies);
+		PerInstanceRenderData->UpdateFromPreallocatedData(RenderInstanceData);
+	}
 }
 
 bool UInstancedStaticMeshComponent::IsHLODRelevant() const
@@ -2345,7 +2400,8 @@ FPrimitiveSceneProxy* UInstancedStaticMeshComponent::CreateSceneProxy()
 		// make sure we have an actual static mesh
 		GetStaticMesh() &&
 		GetStaticMesh()->IsCompiling() == false &&
-		GetStaticMesh()->HasValidRenderData();
+		GetStaticMesh()->HasValidRenderData() &&
+		!IsPSOPrecaching();
 
 	if (bMeshIsValid)
 	{
@@ -3185,6 +3241,8 @@ TArray<int32> UInstancedStaticMeshComponent::AddInstancesInternal(const TArray<F
 #if WITH_EDITOR
 	SelectedInstances.Add(false, Count);
 #endif
+
+	PerInstanceSMData.Reserve(InstanceIndex + Count);
 
 	for (const FTransform& InstanceTransform : InstanceTransforms)
 	{
@@ -4256,7 +4314,7 @@ void UInstancedStaticMeshComponent::InitPerInstanceRenderData(bool InitializeFro
 	else
 	{
 		TArray<TRefCountPtr<HHitProxy>> HitProxies;
-		FStaticMeshInstanceData InstanceBufferData = FStaticMeshInstanceData(GVertexElementTypeSupport.IsSupported(VET_Half2));
+		FStaticMeshInstanceData InstanceBufferData = FStaticMeshInstanceData(/*bInUseHalfFloat = */ true);
 		
 		if (InitializeFromCurrentData)
 		{
@@ -4476,22 +4534,48 @@ void UInstancedStaticMeshComponent::PostLoad()
 	Super::PostLoad();
 
 	// Ensure we have the proper amount of per instance custom float data.
-	// We have instances, and we have custom float data per instance, but we don't have custom float data allocated.
-	if (PerInstanceSMData.Num() > 0 && 
-		PerInstanceSMCustomData.Num() == 0 &&
-		NumCustomDataFloats > 0)
+	// We have instances, and we have custom float data per instance, but we don't have the right amount of custom float data allocated.
+	if ((PerInstanceSMData.Num() * NumCustomDataFloats) != PerInstanceSMCustomData.Num() && PerInstanceSMData.Num() > 0)
 	{
-		UE_LOG(LogStaticMesh, Warning, TEXT("%s has %d instances, and %d NumCustomDataFloats, but no PerInstanceSMCustomData.  Allocating %d custom floats."), *GetFullName(), PerInstanceSMData.Num(), NumCustomDataFloats, PerInstanceSMData.Num() * NumCustomDataFloats);
-		PerInstanceSMCustomData.AddZeroed(PerInstanceSMData.Num() * NumCustomDataFloats);
+		// No custom data at all, add all zeroes
+		if (PerInstanceSMCustomData.Num() == 0)
+		{
+			UE_LOG(LogStaticMesh, Warning, TEXT("%s has %d instances, and %d NumCustomDataFloats, but no PerInstanceSMCustomData.  Allocating %d custom floats."), *GetFullName(), PerInstanceSMData.Num(), NumCustomDataFloats, PerInstanceSMData.Num() * NumCustomDataFloats);
+			PerInstanceSMCustomData.AddZeroed(PerInstanceSMData.Num() * NumCustomDataFloats);
+		}
+		else
+		{
+			// Custom data exists, so we preserve it in our new allocation
+			UE_LOG(LogStaticMesh, Warning, TEXT("%s has %d instances, and %d NumCustomDataFloats, but has %d PerInstanceSMCustomData.  Allocating %d custom floats to match."), *GetFullName(), PerInstanceSMData.Num(), NumCustomDataFloats, PerInstanceSMCustomData.Num(), PerInstanceSMData.Num() * NumCustomDataFloats);
+
+			const int32 NumCustomDataFloatsPrev = PerInstanceSMCustomData.Num() / PerInstanceSMData.Num();
+
+			TArray<float> OldPerInstanceSMCustomData;
+			Exchange(OldPerInstanceSMCustomData, PerInstanceSMCustomData);
+
+			// Allocate the proper amount and zero it
+			PerInstanceSMCustomData.AddZeroed(PerInstanceSMData.Num() * NumCustomDataFloats);
+
+			const int32 NumFloatsToCopy = FMath::Min(NumCustomDataFloatsPrev, NumCustomDataFloats);
+
+			// Copy over existing data 
+			for (int32 InstanceID = 0; InstanceID < PerInstanceSMData.Num(); InstanceID++)
+			{
+				for (int32 CopyID = 0; CopyID < NumFloatsToCopy; CopyID++)
+				{
+					PerInstanceSMCustomData[InstanceID * NumCustomDataFloats + CopyID] = OldPerInstanceSMCustomData[InstanceID * NumCustomDataFloatsPrev + CopyID];
+				}
+			}
+		}
 	}
 
 	// Has different implementation in HISMC
 	OnPostLoadPerInstanceData();
 }
 
-void UInstancedStaticMeshComponent::PrecachePSOs()
+void UInstancedStaticMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams)
 {	
-	if (!IsComponentPSOPrecachingEnabled() || GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
+	if (GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
 	{
 		return;
 	}
@@ -4507,8 +4591,7 @@ void UInstancedStaticMeshComponent::PrecachePSOs()
 		}
 	}
 
-	FPSOPrecacheParams PrecachePSOParams;
-	SetupPrecachePSOParams(PrecachePSOParams);
+	FPSOPrecacheParams PrecachePSOParams = BasePrecachePSOParams;
 	PrecachePSOParams.bCastShadow = bAnySectionCastsShadows;
 	PrecachePSOParams.bReverseCulling = bReverseCulling;
 	
@@ -4519,7 +4602,10 @@ void UInstancedStaticMeshComponent::PrecachePSOs()
 		UMaterialInterface* MaterialInterface = GetMaterial(MaterialIndex);
 		if (MaterialInterface)
 		{
-			MaterialInterface->PrecachePSOs(VFType, PrecachePSOParams);
+			FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+			ComponentParams.MaterialInterface = MaterialInterface;
+			ComponentParams.VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(VFType));
+			ComponentParams.PSOPrecacheParams = PrecachePSOParams;
 		}
 	}
 }
@@ -4592,6 +4678,125 @@ bool UInstancedStaticMeshComponent::DoCustomNavigableGeometryExport(FNavigableGe
 
 	// we don't want "regular" collision export for this component
 	return false;
+}
+
+extern float DebugLineLifetime;
+
+bool UInstancedStaticMeshComponent::LineTraceComponent(FHitResult& OutHit, const FVector Start, const FVector End, const FCollisionQueryParams& Params)
+{
+	bool bHaveHit = false;	
+	float MinTime = UE_MAX_FLT;
+	FHitResult Hit;
+
+	// TODO: use spatial acceleration instead
+	for (FBodyInstance* Body : InstanceBodies)
+	{
+		if (Body->LineTrace(Hit, Start, End, Params.bTraceComplex, Params.bReturnPhysicalMaterial))
+		{
+			bHaveHit = true;
+			if (MinTime > Hit.Time)
+			{
+				MinTime = Hit.Time;
+				OutHit = Hit;
+			}
+		}
+	}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	UWorld* const World = GetWorld();
+	if (World && World->DebugDrawSceneQueries(Params.TraceTag))
+	{
+		TArray<FHitResult> Hits;
+		if (bHaveHit)
+		{
+			Hits.Add(OutHit);
+		}
+		DrawLineTraces(GetWorld(), Start, End, Hits, DebugLineLifetime);
+	}
+#endif //!(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+	return bHaveHit;
+}
+
+bool UInstancedStaticMeshComponent::SweepComponent(FHitResult& OutHit, const FVector Start, const FVector End, const FQuat& ShapeWorldRotation, const FCollisionShape& CollisionShape, bool bTraceComplex)
+{
+	bool bHaveHit = false;
+	
+	FHitResult Hit;
+	// TODO: use spatial acceleration instead
+	for (FBodyInstance* Body : InstanceBodies)
+	{
+		if (Body->Sweep(Hit, Start, End, ShapeWorldRotation, CollisionShape, bTraceComplex))
+		{
+			if (!bHaveHit || Hit.Time < OutHit.Time)
+			{
+				OutHit = Hit;
+			}
+			bHaveHit = true;
+		}
+	}
+	return bHaveHit;
+}
+
+bool UInstancedStaticMeshComponent::OverlapComponent(const FVector& Pos, const FQuat& Rot, const FCollisionShape& CollisionShape) const
+{	
+	for (FBodyInstance* Body : InstanceBodies)
+	{
+		if (Body->OverlapTest(Pos, Rot, CollisionShape))
+		{
+			return true;
+		}
+	}
+
+	return false;	
+}
+
+bool UInstancedStaticMeshComponent::ComponentOverlapComponentImpl(class UPrimitiveComponent* PrimComp, const FVector Pos, const FQuat& Quat, const FCollisionQueryParams& Params)
+{
+	//we do not support skeletal mesh vs InstancedStaticMesh overlap test
+	// Todo Add this warning again
+	/*if (PrimComp->IsA<USkeletalMeshComponent>())
+	{
+		UE_LOG(LogCollision, Warning, TEXT("ComponentOverlapComponent : (%s) Does not support InstancedStaticMesh with Physics Asset"), *PrimComp->GetPathName());
+		return false;
+	}*/
+
+	//We do not support Instanced static meshes vs Instanced static meshes
+	if (PrimComp->IsA<UInstancedStaticMeshComponent>())
+	{
+		UE_LOG(LogCollision, Warning, TEXT("ComponentOverlapComponent : (%s) Does not support InstancedStaticMesh with Physics Asset"), *PrimComp->GetPathName());
+		return false;
+	}
+
+	if (FBodyInstance* BI = PrimComp->GetBodyInstance())
+	{
+		return BI->OverlapTestForBodies(Pos, Quat, InstanceBodies);
+	}
+
+	return false;
+}
+
+bool UInstancedStaticMeshComponent::ComponentOverlapMultiImpl(TArray<struct FOverlapResult>& OutOverlaps, const class UWorld* InWorld, const FVector& Pos, const FQuat& Rot, ECollisionChannel TestChannel, const struct FComponentQueryParams& Params, const struct FCollisionObjectQueryParams& ObjectQueryParams) const
+{
+	OutOverlaps.Reset();
+
+	const FTransform WorldToComponent(GetComponentTransform().Inverse());
+	const FCollisionResponseParams ResponseParams(GetCollisionResponseToChannels());
+
+	FComponentQueryParams ParamsWithSelf = Params;
+	ParamsWithSelf.AddIgnoredComponent(this);
+
+	bool bHaveBlockingHit = false;
+	for (FBodyInstance* Body : InstanceBodies)
+	{
+		checkSlow(Body);
+		if (Body->OverlapMulti(OutOverlaps, InWorld, &WorldToComponent, Pos, Rot, TestChannel, ParamsWithSelf, ResponseParams, ObjectQueryParams))
+		{
+			bHaveBlockingHit = true;
+		}
+	}
+
+	return bHaveBlockingHit;
 }
 
 void UInstancedStaticMeshComponent::GetNavigationData(FNavigationRelevantData& Data) const

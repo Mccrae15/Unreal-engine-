@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "HAL/Platform.h"
 
 /*-----------------------------------------------------------------------------
 	Configuration defines
@@ -54,3 +54,10 @@
 #define UE_DOUBLE_HUGE_DISTANCE		562949953421312.0		/* Maximum distance representable by a double whilst maintaining precision of at least 0.0625 units (1/16th of a cm) - Precision issues may occur for positions/distances represented by double types that exceed this value */
 
 #define DEFAULT_ORTHOZOOM			10000.0					/* Default 2D viewport zoom */
+
+/** bits needed to store DPG value */
+#define SDPG_NumBits 3
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

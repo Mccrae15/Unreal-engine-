@@ -2,11 +2,11 @@
 
 #pragma once
 
-#include "UIActionBindingHandle.h"
+#include "Engine/DataTable.h"
 #include "UITag.h"
-#include "Misc/EnumRange.h"
 #include "CommonInputModeTypes.h"
-#include "InputCoreTypes.h"
+#include "Engine/EngineBaseTypes.h"
+#include "InputAction.h"
 
 struct COMMONUI_API FBindUIActionArgs
 {
@@ -21,15 +21,26 @@ struct COMMONUI_API FBindUIActionArgs
 		, OnExecuteAction(InOnExecuteAction)
 	{}
 
-	// @TODO: DarenC - Remove legacy.
+	// @TODO: Rename non-legacy in 5.3. We no longer have any active plans to remove data tables in CommonUI.
 	FBindUIActionArgs(const FDataTableRowHandle& InLegacyActionTableRow, const FSimpleDelegate& InOnExecuteAction)
 		: LegacyActionTableRow(InLegacyActionTableRow)
 		, OnExecuteAction(InOnExecuteAction)
 	{}
 
-	// @TODO: DarenC - Remove legacy.
+	// @TODO: Rename non-legacy in 5.3. We no longer have any active plans to remove data tables in CommonUI.
 	FBindUIActionArgs(const FDataTableRowHandle& InLegacyActionTableRow, bool bShouldDisplayInActionBar, const FSimpleDelegate& InOnExecuteAction)
 		: LegacyActionTableRow(InLegacyActionTableRow)
+		, bDisplayInActionBar(bShouldDisplayInActionBar)
+		, OnExecuteAction(InOnExecuteAction)
+	{}
+
+	FBindUIActionArgs(const UInputAction* InInputAction, const FSimpleDelegate & InOnExecuteAction)
+		: InputAction(InInputAction)
+		, OnExecuteAction(InOnExecuteAction)
+	{}
+
+	FBindUIActionArgs(const UInputAction* InInputAction, bool bShouldDisplayInActionBar, const FSimpleDelegate & InOnExecuteAction)
+		: InputAction(InInputAction)
 		, bDisplayInActionBar(bShouldDisplayInActionBar)
 		, OnExecuteAction(InOnExecuteAction)
 	{}
@@ -39,7 +50,11 @@ struct COMMONUI_API FBindUIActionArgs
 	bool ActionHasHoldMappings() const;
 
 	FUIActionTag ActionTag;
+
+	// @TODO: Rename non-legacy in 5.3. We no longer have any active plans to remove data tables in CommonUI.
 	FDataTableRowHandle LegacyActionTableRow;
+
+	TWeakObjectPtr<const UInputAction> InputAction;
 
 	ECommonInputMode InputMode = ECommonInputMode::Menu;
 	EInputEvent KeyEvent = IE_Pressed;
@@ -69,3 +84,9 @@ struct COMMONUI_API FBindUIActionArgs
 	DECLARE_DELEGATE_OneParam(FOnHoldActionProgressed, float);
 	FOnHoldActionProgressed OnHoldActionProgressed;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "InputCoreTypes.h"
+#include "Misc/EnumRange.h"
+#include "UIActionBindingHandle.h"
+#endif

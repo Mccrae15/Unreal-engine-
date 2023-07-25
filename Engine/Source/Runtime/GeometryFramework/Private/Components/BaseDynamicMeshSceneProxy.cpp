@@ -1,9 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 
 #include "Components/BaseDynamicMeshSceneProxy.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingInstance.h"
+#include "SceneInterface.h"
+#include "SceneManagement.h"
 
 FBaseDynamicMeshSceneProxy::FBaseDynamicMeshSceneProxy(UBaseDynamicMeshComponent* Component)
 	: FPrimitiveSceneProxy(Component),
@@ -361,7 +365,6 @@ void FBaseDynamicMeshSceneProxy::DrawRayTracingBatch(FRayTracingMaterialGatherin
 
 	RayTracingInstance.Materials.Add(MeshBatch);
 
-	RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 	OutRayTracingInstances.Add(RayTracingInstance);
 }
 

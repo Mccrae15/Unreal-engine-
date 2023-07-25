@@ -21,8 +21,8 @@ class ULandscapeLayerInfoObject;
 
 namespace LandscapeDataAccess
 {
-	const int32 MaxValue = 65535;
-	const float MidValue = 32768.f;
+	inline const int32 MaxValue = 65535;
+	inline const float MidValue = 32768.f;
 	// Reserved 2 bits for other purpose
 	// Most significant bit - Visibility, 0 is visible(default), 1 is invisible
 	// 2nd significant bit - Triangle flip, not implemented yet
@@ -33,7 +33,7 @@ namespace LandscapeDataAccess
 
 	FORCEINLINE uint16 GetTexHeight(float Height)
 	{
-		return FMath::RoundToInt(FMath::Clamp<float>(Height * LANDSCAPE_INV_ZSCALE + MidValue, 0.f, MaxValue));		
+		return static_cast<uint16>(FMath::RoundToInt(FMath::Clamp<float>(Height * LANDSCAPE_INV_ZSCALE + MidValue, 0.f, MaxValue)));		
 	}
 
 	FORCEINLINE FColor PackHeight(uint16 Height)

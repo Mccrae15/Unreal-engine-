@@ -18,7 +18,7 @@ class UBodySetup;
 UENUM(BlueprintType)
 namespace ESplineMeshAxis
 {
-	enum Type
+	enum Type : int
 	{
 		X,
 		Y,
@@ -153,6 +153,16 @@ class ENGINE_API USplineMeshComponent : public UStaticMeshComponent, public IInt
 	uint8 bSelected:1;
 #endif
 
+private:
+	/** Indicates that we will never use convex or trimesh shapes. This is an optimization to skip checking for binary data. */
+	/**
+	* TODO Chaos this is to opt out of CreatePhysicsMeshes for certain meshes
+	* Better long term mesh is to not call CreatePhysicsMeshes until it is known there is a mesh instance that needs it.
+	*/
+	UPROPERTY(EditAnywhere, Getter, Setter, Category = Collision)
+	uint8 bNeverNeedsCookedCollisionData:1;
+
+public:
 	//Begin UObject Interface
 	virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITOR
@@ -330,6 +340,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = SplineMesh)
 	void SetBoundaryMax(float InBoundaryMax, bool bUpdateMesh = true);
 
+	/** Setter for bNeverNeedsCookedCollisionData */
+	void SetbNeverNeedsCookedCollisionData(bool bInValue); 
+
+	/** Getter for bNeverNeedsCookedCollisionData */
+	bool GetbNeverNeedsCookedCollisionData() const { return bNeverNeedsCookedCollisionData; }
+
 	// Destroys the body setup, used to clear collision if the mesh goes missing
 	void DestroyBodySetup();
 	// Builds collision for the spline mesh (if collision is enabled)
@@ -346,18 +362,28 @@ public:
 	 */
 	FTransform CalcSliceTransformAtSplineOffset(const float Alpha) const;
 
-	inline static const double& GetAxisValue(const FVector3d& InVector, ESplineMeshAxis::Type InAxis);
-	inline static double& GetAxisValue(FVector3d& InVector, ESplineMeshAxis::Type InAxis);
+	UE_DEPRECATED(5.2, "Use GetAxisValueRef() instead.")
+	static const double& GetAxisValue(const FVector3d& InVector, ESplineMeshAxis::Type InAxis) { return GetAxisValueRef(InVector, InAxis); }
+	UE_DEPRECATED(5.2, "Use GetAxisValueRef() instead.")
+	static double& GetAxisValue(FVector3d& InVector, ESplineMeshAxis::Type InAxis) { return GetAxisValueRef(InVector, InAxis); }
 
-	inline static const float& GetAxisValue(const FVector3f& InVector, ESplineMeshAxis::Type InAxis);
-	inline static float& GetAxisValue(FVector3f& InVector, ESplineMeshAxis::Type InAxis);
+	UE_DEPRECATED(5.2, "Use GetAxisValueRef() instead.")
+	static const float& GetAxisValue(const FVector3f& InVector, ESplineMeshAxis::Type InAxis) { return GetAxisValueRef(InVector, InAxis); }
+	UE_DEPRECATED(5.2, "Use GetAxisValueRef() instead.")
+	static float& GetAxisValue(FVector3f& InVector, ESplineMeshAxis::Type InAxis) { return GetAxisValueRef(InVector, InAxis); }
+
+	inline static const double& GetAxisValueRef(const FVector3d& InVector, ESplineMeshAxis::Type InAxis);
+	inline static double& GetAxisValueRef(FVector3d& InVector, ESplineMeshAxis::Type InAxis);
+
+	inline static const float& GetAxisValueRef(const FVector3f& InVector, ESplineMeshAxis::Type InAxis);
+	inline static float& GetAxisValueRef(FVector3f& InVector, ESplineMeshAxis::Type InAxis);
 
 	/** Returns a vector which, when componentwise-multiplied by another vector, will zero all the components not corresponding to the supplied ESplineMeshAxis */
 	inline static FVector GetAxisMask(ESplineMeshAxis::Type InAxis);
 
 	virtual float GetTextureStreamingTransformScale() const override;
 
-	virtual void PrecachePSOs() override;
+	virtual void CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams) override;
 
 private:
 	void UpdateRenderStateAndCollision_Internal(bool bConcurrent);
@@ -372,7 +398,7 @@ public:
 	FSplineMeshInstanceData() = default;
 	explicit FSplineMeshInstanceData(const USplineMeshComponent* SourceComponent);
 
-	virtual ~FSplineMeshInstanceData() = default;
+	virtual ~FSplineMeshInstanceData() override = default;
 
 	virtual bool ContainsData() const override
 	{
@@ -398,7 +424,7 @@ public:
 	FVector EndTangent = FVector::ZeroVector;
 };
 
-const double& USplineMeshComponent::GetAxisValue(const FVector3d& InVector, ESplineMeshAxis::Type InAxis)
+const double& USplineMeshComponent::GetAxisValueRef(const FVector3d& InVector, ESplineMeshAxis::Type InAxis)
 {
 	switch (InAxis)
 	{
@@ -414,7 +440,7 @@ const double& USplineMeshComponent::GetAxisValue(const FVector3d& InVector, ESpl
 	}
 }
 
-double& USplineMeshComponent::GetAxisValue(FVector3d& InVector, ESplineMeshAxis::Type InAxis)
+double& USplineMeshComponent::GetAxisValueRef(FVector3d& InVector, ESplineMeshAxis::Type InAxis)
 {
 	switch (InAxis)
 	{
@@ -431,7 +457,7 @@ double& USplineMeshComponent::GetAxisValue(FVector3d& InVector, ESplineMeshAxis:
 }
 
 
-const float& USplineMeshComponent::GetAxisValue(const FVector3f& InVector, ESplineMeshAxis::Type InAxis)
+const float& USplineMeshComponent::GetAxisValueRef(const FVector3f& InVector, ESplineMeshAxis::Type InAxis)
 {
 	switch (InAxis)
 	{
@@ -447,7 +473,7 @@ const float& USplineMeshComponent::GetAxisValue(const FVector3f& InVector, ESpli
 	}
 }
 
-float& USplineMeshComponent::GetAxisValue(FVector3f& InVector, ESplineMeshAxis::Type InAxis)
+float& USplineMeshComponent::GetAxisValueRef(FVector3f& InVector, ESplineMeshAxis::Type InAxis)
 {
 	switch (InAxis)
 	{

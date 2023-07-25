@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequenceBindingReference.h"
+#include "Engine/Level.h"
 #include "LevelSequenceLegacyObjectReference.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/Package.h"
@@ -66,8 +67,12 @@ UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, const FTopL
 			return nullptr;
 		}
 
-		// ExternalObjectPath.GetSubPathString() specifies the path from the package (so includes PersistentLevel.) so we must do a FindObject from its outer
-		return FindObject<UObject>(InContext->GetOuter(), *ExternalObjectPath.GetSubPathString());
+		UObject* ResolvedObject = nullptr;
+		// ExternalObjectPath.GetSubPathString() specifies the path from the package (so includes PersistentLevel.) so we must do a ResolveSubObject from its outer
+		UObject* ContextOuter = InContext->GetOuter();
+		check(ContextOuter);
+		ContextOuter->ResolveSubobject(*ExternalObjectPath.GetSubPathString(), ResolvedObject, /*bLoadIfExists*/false);
+		return ResolvedObject;
 	}
 	else
 	{

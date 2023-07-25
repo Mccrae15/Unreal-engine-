@@ -84,9 +84,6 @@ echo Android Studio Path: $STUDIO_PATH
 if [ "$STUDIO_SDK_PATH" == "" ]; then
 	STUDIO_SDK_PATH=~/Library/Android/sdk
 fi
-if [ "$1" != "" ]; then
-	STUDIO_SDK_PATH=$1
-fi
 if [ ! -d "$STUDIO_SDK_PATH" ]; then
 	echo Android SDK not found at: $STUDIO_SDK_PATH
 	echo Unable to locate local Android SDK location. Did you run Android Studio after installing?
@@ -100,7 +97,7 @@ export JAVA_HOME="$STUDIO_PATH/Contents/jre/jdk/Contents/Home"
 NDKINSTALLPATH="$STUDIO_SDK_PATH/ndk/${NDK_VERSION}"
 PLATFORMTOOLS="$STUDIO_SDK_PATH/platform-tools:$STUDIO_SDK_PATH/build-tools/${BUILDTOOLS_VERSION}:$STUDIO_SDK_PATH/tools/bin"
 adbPath=$(type -P "adb")
-SDKMANAGERPATH="$STUDIO_SDK_PATH/cmdline-tools/latest/bin"
+SDKMANAGERPATH="$STUDIO_SDK_PATH/cmdline-tools/8.0/bin"
 if [ ! -d "$SDKMANAGERPATH" ]; then
 	SDKMANAGERPATH="$STUDIO_SDK_PATH/tools/bin"
 	if [ ! -d "$SDKMANAGERPATH" ]; then

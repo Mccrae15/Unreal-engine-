@@ -36,6 +36,8 @@
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
+#include "FindInBlueprintManager.generated.h"
+
 class FArchive;
 class SDockTab;
 class SWidget;
@@ -141,7 +143,7 @@ struct KISMET_API FFindInBlueprintSearchTags
 
 /** FiB data versioning */
 UENUM()
-enum EFiBVersion
+enum EFiBVersion : int
 {
 	FIB_VER_NONE = -1, // Unknown version (not set)
 

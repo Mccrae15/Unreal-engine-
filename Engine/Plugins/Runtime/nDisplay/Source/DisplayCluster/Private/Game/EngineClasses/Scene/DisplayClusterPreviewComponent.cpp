@@ -30,6 +30,7 @@
 #include "IDisplayClusterProjection.h"
 #include "Render/Viewport/IDisplayClusterViewport.h"
 
+#include "TextureResource.h"
 #include "UObject/ConstructorHelpers.h"
 
 
@@ -101,7 +102,12 @@ bool UDisplayClusterPreviewComponent::InitializePreviewComponent(ADisplayCluster
 
 bool UDisplayClusterPreviewComponent::IsPreviewEnabled() const
 {
-	return (ViewportConfig && RootActor && RootActor->IsPreviewEnabled());
+	return ViewportConfig && RootActor && RootActor->IsPreviewEnabled();
+}
+
+bool UDisplayClusterPreviewComponent::IsPreviewDrawnToScreen() const
+{
+	return ViewportConfig && RootActor && (RootActor->IsPreviewDrawnToScreens() || OverrideTexture);
 }
 
 void UDisplayClusterPreviewComponent::RestorePreviewMeshMaterial()
@@ -113,6 +119,15 @@ void UDisplayClusterPreviewComponent::RestorePreviewMeshMaterial()
 		// Restore
 		PreviewMesh->SetMaterial(0, OriginalMaterial);
 		OriginalMaterial = nullptr;
+	}
+
+	// Release RTTs
+	// To fix UE-176749, we only want to do this if the root actor is not rendering previews, which can happen even if the previews
+	// are not being output to the meshes (for example, if the ICVFX panel is open)
+	// TODO: We will eventually want to separate out the preview rendering and resources from the preview mesh and material management
+	if (!IsPreviewEnabled())
+	{
+		ReleasePreviewRenderTarget();
 	}
 }
 
@@ -162,15 +177,21 @@ bool UDisplayClusterPreviewComponent::UpdatePreviewMesh()
 
 	UpdatePreviewMeshReference();
 
-	if (IsPreviewEnabled())
+	if (IsPreviewDrawnToScreen())
 	{
 		check(ViewportConfig);
 
 		// And search for new mesh reference
 		IDisplayClusterViewport* Viewport = GetCurrentViewport();
-		const bool bIsViewportEnabled = (RenderTarget != nullptr || RenderTargetPostProcess != nullptr)
-		&& Viewport != nullptr && Viewport->GetRenderSettings().bEnable && Viewport->GetProjectionPolicy().IsValid();
-		if (bIsViewportEnabled)
+
+		// Determine if the preview component needs to output a render or texture to the stage's screen meshes.
+		// It must have a renderable resource (preview render target or override texture), have a valid viewport configured,
+		// and have that viewport either actively being rendered to by the preview renderer OR have an override texture supplied
+		// externally
+		const bool bHasRenderableResource = RenderTarget != nullptr || RenderTargetPostProcess != nullptr || OverrideTexture != nullptr;
+		const bool bIsViewportValid = Viewport != nullptr && Viewport->GetProjectionPolicy().IsValid();
+		const bool bOutputToPreviewMesh = bHasRenderableResource && bIsViewportValid && (Viewport->GetRenderSettings().bEnable || OverrideTexture);
+		if (bOutputToPreviewMesh)
 		{
 			// Handle preview mesh:
 			if (Viewport->GetProjectionPolicy()->HasPreviewMesh())
@@ -272,7 +293,13 @@ void UDisplayClusterPreviewComponent::ReleasePreviewMaterial()
 {
 	if (PreviewMaterialInstance != nullptr)
 	{
-		PreviewMaterialInstance->SetTextureParameterValue(TEXT("Preview"), nullptr);
+		// Clear the material parameters to ensure that no pointers to the texture resources are being kept around
+		// Materials destroy their resources in BeginDestroy, so only clear the parameters BeginDestroy hasn't already been called
+		if (!PreviewMaterialInstance->HasAnyFlags(RF_BeginDestroyed))
+		{
+			PreviewMaterialInstance->ClearParameterValues();
+		}
+
 		PreviewMaterialInstance = nullptr;
 	}
 }
@@ -302,7 +329,15 @@ template<typename T>
 void UDisplayClusterPreviewComponent::ReleaseRenderTargetImpl(T* InOutRenderTarget)
 {
 	checkSlow(InOutRenderTarget);
-	*InOutRenderTarget = nullptr;
+	T& RenderTargetPtr = *InOutRenderTarget;
+
+	if (RenderTargetPtr != nullptr)
+	{
+		RenderTargetPtr->ReleaseResource();
+		RenderTargetPtr->MarkAsGarbage();
+
+		RenderTargetPtr = nullptr;
+	}
 }
 
 template<typename T>
@@ -408,6 +443,10 @@ void UDisplayClusterPreviewComponent::SetOverrideTexture(UTexture* InOverrideTex
 	if (OverrideTexture != InOverrideTexture)
 	{
 		OverrideTexture = InOverrideTexture;
+
+		// Update the entire preview mesh here, as the preview mesh may not be configured for rendering the override texture if
+		// the owning root actor has previews disabled.
+		UpdatePreviewMesh();
 		UpdatePreviewMaterial();
 	}
 }

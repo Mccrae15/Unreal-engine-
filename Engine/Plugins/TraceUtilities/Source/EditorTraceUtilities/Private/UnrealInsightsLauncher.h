@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Async/TaskGraphFwd.h"
 #include "CoreMinimal.h"
 
 class FUnrealInsightsLauncher : public TSharedFromThis<FUnrealInsightsLauncher>
@@ -22,9 +23,6 @@ public:
 		}
 		return Instance;
 	}
-
-	
-	void RegisterMenus();
 
 	/**
 	 * Returns the full path to UnrealInsights.exe for the current engine installation 
@@ -75,14 +73,6 @@ private:
 	 */
 	void TryBuildUnrealInsightsExe(const FString& Path, const FString& LaunchParameters = TEXT(""));
 
-	/// callback from Options Menu Entry "Start Unreal Insights"
-	void RunUnrealInsights_Execute();
-
-	/**
-	 * Opens the currently live trace if connected.
-	 */
-	 void RunUnrealInsights_OpenLiveTrace();
-
 	/// Logs an error message to the MessageLog window
 	void LogMessage(const FText& Message);
 
@@ -92,5 +82,37 @@ private:
 private:
 	/** The name of the Unreal Insights log listing. */
 	FName LogListingName;
+};
+
+typedef TMap<FString, uint32> FLiveSessionsMap;
+
+struct FLiveSessionTaskData
+{
+	FLiveSessionsMap TaskLiveSessionData;
+	uint32 StorePort;
+};
+
+class FLiveSessionTracker
+{
+public:
+	FLiveSessionTracker();
+	~FLiveSessionTracker() {}
+
+	void Update();
+	void StartQuery();
+
+	bool HasData();
+	const FLiveSessionsMap& GetLiveSessions();
+	uint32 GetStorePort();
+
+private:
+	bool bHasData = false;
+	bool bIsQueryInProgress = false;
+	uint32 StorePort;
+
+	FLiveSessionsMap LiveSessionMap;
+	TSharedPtr<FLiveSessionTaskData> TaskLiveSessionData;
+
+	FGraphEventRef Event;
 };
 

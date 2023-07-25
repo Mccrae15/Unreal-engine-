@@ -14,7 +14,8 @@ public class ObjectMixerEditor : ModuleRules
 			{
 				"Core",
 				"OutputLog",
-				"PropertyEditor"
+				"PropertyEditor", 
+				"SceneOutliner"
 			}
 		);
 
@@ -28,11 +29,13 @@ public class ObjectMixerEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"ApplicationCore",
 				"AssetRegistry",
 				"AssetTools",
 				"CoreUObject",
 				"ContentBrowser",
 				"Engine",
+				"EditorConfig",
 				"EditorStyle",
 				"EditorWidgets",
 				"InputCore",
@@ -46,6 +49,7 @@ public class ObjectMixerEditor : ModuleRules
 				"ToolWidgets",
 				"TypedElementFramework",
 				"TypedElementRuntime",
+				"UMG",
 				"UnrealEd",
 				"WorkspaceMenuStructure"
 			}

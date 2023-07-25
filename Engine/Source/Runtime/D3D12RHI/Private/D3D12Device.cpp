@@ -118,7 +118,7 @@ FD3D12Device::FD3D12Device(FRHIGPUMask InGPUMask, FD3D12Adapter* InAdapter)
 {
 	check(IsInGameThread());
 
-	for (uint32 HeapType = 0; HeapType < (uint32)ERHIDescriptorHeapType::count; ++HeapType)
+	for (uint32 HeapType = 0; HeapType < (uint32)ERHIDescriptorHeapType::Count; ++HeapType)
 	{
 		OfflineDescriptorManagers.Emplace(this, (ERHIDescriptorHeapType)HeapType);
 	}
@@ -250,7 +250,7 @@ void FD3D12Device::SetupAfterDeviceCreation()
 				ConvertCap1(FormatSupport, EPixelFormatCapabilities::DepthStencil,        D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL);
 				ConvertCap1(FormatSupport, EPixelFormatCapabilities::TextureMipmaps,      D3D12_FORMAT_SUPPORT1_MIP);
 				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureLoad,      D3D12_FORMAT_SUPPORT1_SHADER_LOAD);
-				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureSample,    D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE);
+				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureSample | EPixelFormatCapabilities::TextureFilterable,    D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE);
 				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureGather,    D3D12_FORMAT_SUPPORT1_SHADER_GATHER);
 				ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TextureAtomics,   D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE);
 				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureBlendable, D3D12_FORMAT_SUPPORT1_BLENDABLE);
@@ -510,6 +510,7 @@ void FD3D12Device::BlockUntilIdle()
 
 		FD3D12Payload* Payload = new FD3D12Payload(this, (ED3D12QueueType)QueueTypeIndex);
 		Payload->SyncPointsToSignal.Add(SyncPoint);
+		Payload->bAlwaysSignal = true;
 
 		Payloads.Add(Payload);
 		SyncPoints.Add(SyncPoint);
@@ -541,7 +542,7 @@ D3D12_RESOURCE_ALLOCATION_INFO FD3D12Device::GetResourceAllocationInfo(const FD3
 	{
 		D3D12_RESOURCE_ALLOCATION_INFO Result;
 #if INTEL_EXTENSIONS
-		if (InDesc.bRequires64BitAtomicSupport && IsRHIDeviceIntel() && GRHISupportsAtomicUInt64)
+		if (InDesc.bRequires64BitAtomicSupport && IsRHIDeviceIntel() && GDX12INTCAtomicUInt64Emulation)
 		{
 			FD3D12ResourceDesc LocalDesc = InDesc;
 
@@ -555,6 +556,12 @@ D3D12_RESOURCE_ALLOCATION_INFO FD3D12Device::GetResourceAllocationInfo(const FD3
 #endif
 		{
 			Result = GetDevice()->GetResourceAllocationInfo(0, 1, &InDesc);
+		    if (Result.SizeInBytes == UINT64_MAX)
+		    {
+			    // The description provided caused an error per the docs. This will almost certainly crash outside this fn.
+			    UE_LOG(LogD3D12RHI, Error, TEXT("D3D12 GetResourceAllocationInfo failed - likely a resource was requested that has invalid allocation info (e.g. is an invalid texture size)"));
+			    UE_LOG(LogD3D12RHI, Error, TEXT("     W %llu H %d depth %d mips %d pf %d"), InDesc.Width, InDesc.Height, InDesc.DepthOrArraySize, InDesc.MipLevels, InDesc.PixelFormat);
+			}
 		}
 
 		ResourceAllocationInfoMapMutex.WriteLock();
@@ -577,9 +584,9 @@ FD3D12ContextCommon* FD3D12Device::ObtainContext(ED3D12QueueType QueueType)
 		switch (QueueType)
 		{
 		default: checkNoEntry(); // fallthrough
-		case ED3D12QueueType::Direct: Context = new FD3D12CommandContext(this, QueueType, false); break;
-		case ED3D12QueueType::Async : Context = new FD3D12CommandContext(this, QueueType, false); break;
-		case ED3D12QueueType::Copy  : Context = new FD3D12ContextCopy   (this);                   break;
+		case ED3D12QueueType::Direct: Context = FD3D12DynamicRHI::GetD3DRHI()->CreateCommandContext(this, QueueType, false); break;
+		case ED3D12QueueType::Async : Context = FD3D12DynamicRHI::GetD3DRHI()->CreateCommandContext(this, QueueType, false); break;
+		case ED3D12QueueType::Copy  : Context = new FD3D12ContextCopy(this); break;
 		}
 	}
 

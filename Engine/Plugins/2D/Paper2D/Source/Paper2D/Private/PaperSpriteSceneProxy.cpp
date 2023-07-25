@@ -2,9 +2,9 @@
 
 #include "PaperSpriteSceneProxy.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "SceneManagement.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "PaperSpriteComponent.h"
 

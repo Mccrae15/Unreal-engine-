@@ -2,6 +2,8 @@
 
 #include "AnimNodes/AnimNode_RetargetPoseFromMesh.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_RetargetPoseFromMesh)
 
@@ -96,18 +98,11 @@ void FAnimNode_RetargetPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 		return;
 	}
 
-#if WITH_EDITOR
+	#if WITH_EDITOR
 	// live preview source asset settings in the retarget, editor only
 	// NOTE: this copies goal targets as well, but these are overwritten by IK chain goals
-	if (bDriveWithAsset)
-	{
-		Processor->ApplySettingsFromAsset();
-		if (const FRetargetProfile* CurrentProfile = IKRetargeterAsset->GetCurrentProfile())
-		{
-			Processor->ApplySettingsFromProfile(*CurrentProfile);
-		}
-	}
-#endif
+	Processor->ApplySettingsFromAsset();
+	#endif
 
 	// apply custom profile settings to the processor
 	Processor->ApplySettingsFromProfile(CustomRetargetProfile);

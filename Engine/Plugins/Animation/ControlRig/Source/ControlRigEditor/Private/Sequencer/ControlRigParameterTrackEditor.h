@@ -20,6 +20,7 @@
 #include "EditorUndoClient.h"
 #include "ScopedTransaction.h"
 
+class UTickableTransformConstraint;
 struct FAssetData;
 class FMenuBuilder;
 class USkeleton;
@@ -126,7 +127,7 @@ private:
 	void HandleControlModified(UControlRig* Subject, FRigControlElement* ControlElement, const FRigControlModifiedContext& Context);
 	void HandleControlSelected(UControlRig* Subject, FRigControlElement* ControlElement, bool bSelected);
 	void HandleControlUndoBracket(UControlRig* Subject, bool bOpenUndoBracket);
-	void HandleOnInitialized(UControlRig* Subject, const EControlRigState InState, const FName& InEventName);
+	void HandleOnInitialized(URigVMHost* Subject, const FName& InEventName);
 	void HandleOnControlRigBound(UControlRig* InControlRig);
 	void HandleOnObjectBoundToControlRig(UObject* InObject);
 
@@ -160,6 +161,7 @@ private:
 		const FMovieSceneConstraintChannel* InConstraintChannel,
 		const TArray<FKeyMoveEventItem>& InMovedItems);
 	void HandleConstraintRemoved(IMovieSceneConstrainedSection* InSection);
+	void HandleConstraintPropertyChanged(UTickableTransformConstraint* InConstraint, const FPropertyChangedEvent& InPropertyChangedEvent) const;
 
 	/** Select control rig if not selected, select controls from key areas */
 	void SelectRigsAndControls(UControlRig* Subject, const TArray<const IKeyArea*>& KeyAreas);
@@ -174,7 +176,7 @@ private:
 	void ImportFBX(UMovieSceneControlRigParameterTrack* InTrack, UMovieSceneControlRigParameterSection* InSection, 
 		TArray<FFBXNodeAndChannels>* NodeAndChannels);
 	/** Find Track for given ControlRig*/
-	UMovieSceneControlRigParameterTrack* FindTrack(UControlRig* InControlRig);
+	UMovieSceneControlRigParameterTrack* FindTrack(const UControlRig* InControlRig) const;
 
 	/** Select Bones to Animate on FK Rig*/
 	void SelectFKBonesToAnimate(UFKControlRig* FKControlRig, UMovieSceneControlRigParameterTrack* Track);
@@ -271,6 +273,9 @@ private:
 
 	/** An index counter for the opened undo brackets */
 	int32 ControlUndoBracket;
+
+	/** Lock to avoid registering multiple transactions from different tracks at the same time */
+	static FCriticalSection ControlUndoTransactionMutex;
 
 	/** A transaction used to group multiple key events */
 	TSharedPtr<FScopedTransaction> ControlUndoTransaction;

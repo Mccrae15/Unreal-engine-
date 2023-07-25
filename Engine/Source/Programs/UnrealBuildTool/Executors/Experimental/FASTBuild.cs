@@ -427,22 +427,27 @@ namespace UnrealBuildTool
 		}
 
 		[SupportedOSPlatform("windows")]
-		public override bool ExecuteActions(List<LinkedAction> Actions, ILogger Logger)
+		public override bool ExecuteActions(IEnumerable<LinkedAction> Actions, ILogger Logger)
 		{
-			if (Actions.Count <= 0)
+			if (!Actions.Any())
+			{
 				return true;
+			}
+
 
 			IEnumerable<LinkedAction> CompileActions = Actions.Where(Action => Action.ActionType == ActionType.Compile && Action.bCanExecuteRemotely && Action.bCanExecuteRemotelyWithSNDBS);
 			if (CompileActions.Any() && DetectBuildType(CompileActions, Logger))
 			{
 				string FASTBuildFilePath = Path.Combine(Unreal.EngineDirectory.FullName, "Intermediate", "Build", "fbuild.bff");
 				if (!CreateBffFile(Actions, FASTBuildFilePath, Logger))
+				{
 					return false;
+				}
 
 				return ExecuteBffFile(FASTBuildFilePath, Logger);
 			}
 
-			return LocalExecutor.ExecuteActions(Actions.Distinct().ToList(), Logger); ;
+			return LocalExecutor.ExecuteActions(Actions, Logger);
 		}
 
 		private void AddText(string StringToWrite)
@@ -767,7 +772,7 @@ namespace UnrealBuildTool
 				// it probably means we are building for another platform.
                 if(BuildType == FBBuildType.Windows)
                 {
-					VCEnv = VCEnvironment.Create(WindowsPlatform.GetDefaultCompiler(null, WindowsArchitecture.x64, Logger), WindowsCompiler.Default, UnrealTargetPlatform.Win64, WindowsArchitecture.x64, null, null, null, false, Logger);
+					VCEnv = VCEnvironment.Create(WindowsPlatform.GetDefaultCompiler(null, UnrealArch.X64, Logger), WindowsCompiler.Default, UnrealTargetPlatform.Win64, UnrealArch.X64, null, null, null, false, false, Logger);
 				}
             }
 			catch (Exception)

@@ -9,6 +9,7 @@
 #include "InterchangeEngineLogPrivate.h"
 #include "InterchangeFactoryBase.h"
 #include "InterchangeManager.h"
+#include "InterchangePipelineBase.h"
 #include "InterchangeResultsContainer.h"
 #include "Nodes/InterchangeFactoryBaseNode.h"
 #include "Stats/Stats.h"
@@ -60,19 +61,21 @@ void UE::Interchange::FTaskPreCompletion::DoTask(ENamedThreads::Type CurrentThre
 						ObjectInfo.Factory->Cancel();
 					}
 				}
-				break;
+				//Skip if cancel
+				continue;
 			}
 
 			const int32 SourceIndex = ObjectInfosPerSourceIndexPair.Key;
 			const bool bCallPostImportGameThreadCallback = ensure(AsyncHelper->SourceDatas.IsValidIndex(SourceIndex));
 
+			//First iteration to call SetupObject_GameThread and pipeline ExecutePostFactoryPipeline
 			for (const FImportAsyncHelper::FImportedObjectInfo& ObjectInfo : ObjectInfosPerSourceIndexPair.Value)
 			{
 				UObject* ImportedObject = ObjectInfo.ImportedObject;
 				//In case Some factory code cannot run outside of the main thread we offer this callback to finish the work before calling post edit change (building the asset)
 				if (bCallPostImportGameThreadCallback && ObjectInfo.Factory)
 				{
-					UInterchangeFactoryBase::FImportPreCompletedCallbackParams Arguments;
+					UInterchangeFactoryBase::FSetupObjectParams Arguments;
 					Arguments.ImportedObject = ImportedObject;
 					Arguments.SourceData = AsyncHelper->SourceDatas[SourceIndex];
 					Arguments.FactoryNode = ObjectInfo.FactoryNode;
@@ -82,7 +85,7 @@ void UE::Interchange::FTaskPreCompletion::DoTask(ENamedThreads::Type CurrentThre
 					Arguments.Pipelines = AsyncHelper->Pipelines;
 					Arguments.OriginalPipelines = AsyncHelper->OriginalPipelines;
 					Arguments.bIsReimport = ObjectInfo.bIsReimport;
-					ObjectInfo.Factory->PreImportPreCompletedCallback(Arguments);
+					ObjectInfo.Factory->SetupObject_GameThread(Arguments);
 				}
 
 				if (ImportedObject == nullptr || !IsValid(ImportedObject))
@@ -122,10 +125,36 @@ void UE::Interchange::FTaskPreCompletion::DoTask(ENamedThreads::Type CurrentThre
 					}
 				}
 
-#if WITH_EDITOR
-				ImportedObject->PostEditChange();
-#endif
+				for (UInterchangePipelineBase* PipelineBase : AsyncHelper->Pipelines)
+				{
+					PipelineBase->ScriptedExecutePostFactoryPipeline(AsyncHelper->BaseNodeContainers[SourceIndex].Get()
+						, ObjectInfo.FactoryNode ? ObjectInfo.FactoryNode->GetUniqueID() : FString()
+						, ImportedObject
+						, ObjectInfo.bIsReimport);
+				}
+			}
 
+#if WITH_EDITOR
+			//Second iteration to call PostEditChange
+			for (const FImportAsyncHelper::FImportedObjectInfo& ObjectInfo : ObjectInfosPerSourceIndexPair.Value)
+			{
+				UObject* ImportedObject = ObjectInfo.ImportedObject;
+				if (ImportedObject == nullptr || !IsValid(ImportedObject))
+				{
+					continue;
+				}
+				ImportedObject->PostEditChange();
+			}
+#endif //WITH_EDITOR
+
+			//Third iteration to call FinalizeObject_GameThread
+			for (const FImportAsyncHelper::FImportedObjectInfo& ObjectInfo : ObjectInfosPerSourceIndexPair.Value)
+			{
+				UObject* ImportedObject = ObjectInfo.ImportedObject;
+				if (ImportedObject == nullptr || !IsValid(ImportedObject))
+				{
+					continue;
+				}
 				//Post import broadcast
 				if (bIsAsset)
 				{
@@ -146,7 +175,7 @@ void UE::Interchange::FTaskPreCompletion::DoTask(ENamedThreads::Type CurrentThre
 				//Its possible the build of the asset to be asynchronous, the factory must handle is own asset correctly
 				if (bCallPostImportGameThreadCallback && ObjectInfo.Factory)
 				{
-					UInterchangeFactoryBase::FImportPreCompletedCallbackParams Arguments;
+					UInterchangeFactoryBase::FSetupObjectParams Arguments;
 					Arguments.ImportedObject = ImportedObject;
 					Arguments.SourceData = AsyncHelper->SourceDatas[SourceIndex];
 					Arguments.FactoryNode = ObjectInfo.FactoryNode;
@@ -155,7 +184,7 @@ void UE::Interchange::FTaskPreCompletion::DoTask(ENamedThreads::Type CurrentThre
 					Arguments.Pipelines = AsyncHelper->Pipelines;
 					Arguments.OriginalPipelines = AsyncHelper->OriginalPipelines;
 					Arguments.bIsReimport = ObjectInfo.bIsReimport;
-					ObjectInfo.Factory->PostImportPreCompletedCallback(Arguments);
+					ObjectInfo.Factory->FinalizeObject_GameThread(Arguments);
 				}
 			}
 		}

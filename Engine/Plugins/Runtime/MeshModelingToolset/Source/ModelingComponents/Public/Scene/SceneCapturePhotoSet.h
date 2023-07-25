@@ -26,6 +26,8 @@ namespace Geometry
  *		Specular
  *		PackedMRS   (Metallic / Roughness / Specular)
  *		Emissive
+ *		Opacity
+ *		SubsurfaceColor
  *		WorldNormal
  *		DeviceDepth
  *
@@ -47,25 +49,50 @@ public:
 
 	/**
 	 * Set the target World and set of Actors
+	 * If World != this->World or Actors != this->Actors all existing photo sets are cleared
 	 */
 	void SetCaptureSceneActors(UWorld* World, const TArray<AActor*>& Actors);
+	TArray<AActor*> GetCaptureSceneActors();
+	UWorld* GetCaptureTargetWorld();
+
+	/**
+	 * Set the parameters positioning the virtual cameras used to capture the photo sets
+	 * If SpatialParams != this->PhotoSetParams all existing photo sets are cleared (TODO clear on a more granular level)
+	 */
+	void SetSpatialPhotoParams(const TArray<FSpatialPhotoParams>& SpatialParams);
+	const TArray<FSpatialPhotoParams>& GetSpatialPhotoParams() const;
+
+	/**
+	 * Disable all capture types. By default a standard set of capture types is enabled but, for performance reasons,
+	 * you can use this function to disable them all and then only enable the ones you need.
+	 */
+	void DisableAllCaptureTypes();
 
 	/**
 	 * Enable/Disable a particular capture type
+	 * If bEnabled == false the corresponding photo set will be cleared
 	 */
 	void SetCaptureTypeEnabled(ERenderCaptureType CaptureType, bool bEnabled);
 	bool GetCaptureTypeEnabled(ERenderCaptureType CaptureType) const;
 
 	/**
 	 * Configure the given capture type
+	 * If Config != the existing capture config the corresponding photo set will be cleared
 	 */
 	void SetCaptureConfig(ERenderCaptureType CaptureType, const FRenderCaptureConfig& Config);
 	FRenderCaptureConfig GetCaptureConfig(ERenderCaptureType CaptureType) const;
 
 	/**
+	 * Render the configured scene, for the configured capture types from the configured viewpoints.
+	 * This function the does most of the work.
+	 */
+	void Compute();
+
+	/**
 	 * Add captures at the corners and face centers of the "view box",
 	 * ie the bounding box that contains the view sphere (see AddExteriorCaptures)
 	 */
+	UE_DEPRECATED(5.2, "AddStandardExteriorCapturesFromBoundingBox is deprecated, please use SetSpatialPhotoParams and Compute instead.")
 	void AddStandardExteriorCapturesFromBoundingBox(
 		FImageDimensions PhotoDimensions,
 		double HorizontalFOVDegrees,
@@ -81,6 +108,7 @@ public:
 	 * will be fully contained inside a square image rendered from locations on the sphere, where
 	 * the view direction is towards the sphere center. The Directions array defines the directions.
 	 */
+	UE_DEPRECATED(5.2, "AddExteriorCaptures is deprecated, please use SetSpatialPhotoParams and Compute instead.")
 	void AddExteriorCaptures(
 		FImageDimensions PhotoDimensions,
 		double HorizontalFOVDegrees,
@@ -107,6 +135,8 @@ public:
 		FVector3f Emissive;
 		FVector3f WorldNormal;
 		float DeviceDepth;
+		float Opacity;
+		FVector3f SubsurfaceColor;
 
 		FSceneSample();
 
@@ -162,6 +192,8 @@ public:
 	const FSpatialPhotoSet3f& GetPackedMRSPhotoSet() { return PackedMRSPhotoSet; }
 	const FSpatialPhotoSet3f& GetWorldNormalPhotoSet() { return WorldNormalPhotoSet; }
 	const FSpatialPhotoSet3f& GetEmissivePhotoSet() { return EmissivePhotoSet; }
+	const FSpatialPhotoSet1f& GetOpacityPhotoSet() { return OpacityPhotoSet; }
+	const FSpatialPhotoSet3f& GetSubsurfaceColorPhotoSet() { return SubsurfaceColorPhotoSet; }
 	const FSpatialPhotoSet1f& GetDeviceDepthPhotoSet() { return DeviceDepthPhotoSet; }
 
 	/**
@@ -202,6 +234,8 @@ protected:
 	bool bEnablePackedMRS = true;
 	bool bEnableWorldNormal = true;
 	bool bEnableEmissive = true;
+	bool bEnableOpacity = true;
+	bool bEnableSubsurfaceColor = true;
 	bool bEnableDeviceDepth = true;
 
 	FSpatialPhotoSet3f BaseColorPhotoSet;
@@ -211,6 +245,8 @@ protected:
 	FSpatialPhotoSet3f PackedMRSPhotoSet;
 	FSpatialPhotoSet3f WorldNormalPhotoSet;
 	FSpatialPhotoSet3f EmissivePhotoSet;
+	FSpatialPhotoSet1f OpacityPhotoSet;
+	FSpatialPhotoSet3f SubsurfaceColorPhotoSet;
 	FSpatialPhotoSet1f DeviceDepthPhotoSet;
 
 	FRenderCaptureConfig BaseColorConfig;
@@ -220,15 +256,23 @@ protected:
 	FRenderCaptureConfig PackedMRSConfig;
 	FRenderCaptureConfig WorldNormalConfig;
 	FRenderCaptureConfig EmissiveConfig;
+	FRenderCaptureConfig OpacityConfig;
+	FRenderCaptureConfig SubsurfaceColorConfig;
 	FRenderCaptureConfig DeviceDepthConfig;
 
 	TArray<FSpatialPhotoParams> PhotoSetParams;
+
+	// This used to unproject the DeviceDepth render capture
+	TArray<FViewMatrices> PhotoViewMatricies;
 
 	bool bWriteDebugImages = false;
 	FString DebugImagesFolderName = TEXT("SceneCapturePhotoSet");
 
 	bool bAllowCancel = false;
 	bool bWasCancelled = false;
+
+private:
+	void EmptyAllPhotoSets();
 };
 
 
@@ -275,6 +319,18 @@ FVector4f FSceneCapturePhotoSet::ComputeSampleNearest(
 		return FVector4f(Emissive, 1.f);
 	}
 
+	if constexpr (CaptureType == ERenderCaptureType::Opacity)
+	{
+		float Opacity = OpacityPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.Opacity);
+		return FVector4f(Opacity, Opacity, Opacity, 1.f);
+	}
+
+	if constexpr (CaptureType == ERenderCaptureType::SubsurfaceColor)
+	{
+		FVector3f SubsurfaceColor = SubsurfaceColorPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.SubsurfaceColor);
+		return FVector4f(SubsurfaceColor, 1.f);
+	}
+
 	if constexpr (CaptureType == ERenderCaptureType::WorldNormal)
 	{
 		FVector3f WorldNormal = WorldNormalPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.WorldNormal);
@@ -291,6 +347,18 @@ FVector4f FSceneCapturePhotoSet::ComputeSampleNearest(
 	return FVector4f::Zero();
 }
 
+MODELINGCOMPONENTS_API
+TArray<FSpatialPhotoParams> ComputeStandardExteriorSpatialPhotoParameters(
+	UWorld* World,
+	const TArray<AActor*>& Actors,
+	FImageDimensions PhotoDimensions,
+	double HorizontalFOVDegrees,
+	double NearPlaneDist,
+	bool bFaces,
+	bool bUpperCorners,
+	bool bLowerCorners,
+	bool bUpperEdges,
+	bool bSideEdges);
 
 } // end namespace UE::Geometry
 } // end namespace UE

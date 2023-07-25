@@ -4,6 +4,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameTime.h"
+#include "RendererInterface.h"
 #include "Rendering/RenderingCommon.h"
 #include "Rendering/ShaderResourceManager.h"
 #include "Rendering/DrawElements.h"
@@ -23,6 +25,8 @@ class UDeviceProfile;
 class FSlateElementPS;
 class FSlateMaterialShaderPS;
 class FSlateMaterialShaderVS;
+struct FMaterialShaderTypes;
+struct IPooledRenderTarget;
 
 struct FSlateRenderingParams
 {
@@ -84,7 +88,7 @@ private:
 	 * @param DrawEffects	Draw effects being used
 	 * @return The pixel shader for use with the shader type and draw effects
 	 */
-	TShaderRef<FSlateElementPS> GetTexturePixelShader(FGlobalShaderMap* ShaderMap, ESlateShader ShaderType, ESlateDrawEffect DrawEffects, bool bIsVirtualTexture);
+	TShaderRef<FSlateElementPS> GetTexturePixelShader(FGlobalShaderMap* ShaderMap, ESlateShader ShaderType, ESlateDrawEffect DrawEffects, bool bUseTextureGrayscale,  bool bIsVirtualTexture);
 	void ChooseMaterialShaderTypes(ESlateShader ShaderType, bool bUseInstancing, FMaterialShaderTypes& OutShaderTypes);
 
 	/** @return The RHI primitive type from the Slate primitive type */

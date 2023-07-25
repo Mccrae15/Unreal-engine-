@@ -18,8 +18,10 @@
 #include "PrecomputedLightVolume.h"
 #include "PrecomputedVolumetricLightmap.h"
 #include "Engine/MapBuildDataRegistry.h"
+#include "Engine/TextureLightProfile.h"
 #include "ModelLight.h"
 #include "LandscapeLight.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Camera/CameraActor.h"
 #include "Components/PointLightComponent.h"
@@ -51,10 +53,11 @@
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 #include "ImageCoreUtils.h"
+#include "Misc/FileHelper.h"
 
 extern FSwarmDebugOptions GSwarmDebugOptions;
 
-bool Lightmass_IsStrataEnabled();
+bool Lightmass_IsSubstrateEnabled();
 
 DEFINE_LOG_CATEGORY_STATIC(LogLightmassSolver, Warning, All);
 /**
@@ -213,7 +216,7 @@ void Copy( const ULightComponent* In, Lightmass::FLightData& Out )
 
 	if( In->bUseTemperature )
 	{
-		Out.Color *= FLinearColor::MakeFromColorTemperature(In->Temperature);
+		Out.Color *= In->GetColorTemperature();
 	}
 }
 
@@ -503,6 +506,13 @@ FLightmassExporter::FLightmassExporter( UWorld* InWorld )
 	{
 		SceneGuid = FGuid::NewGuid();
 	}
+
+	// Compute the hash of UnrealLightmass executable and store it into LightmassExecutableHash
+	// Guaranteed success as the executable has been checked by CheckLightmassExecutableVersion()
+	TArray<uint8> Bytes;
+	FFileHelper::LoadFileToArray(Bytes, *FPlatformProcess::GenerateApplicationPath(TEXT("UnrealLightmass"), EBuildConfiguration::Development));
+	FSHA1::HashBuffer(&Bytes[0], Bytes.Num(), LightmassExecutableHash.Hash);
+	
 	ChannelName = Lightmass::CreateChannelName(SceneGuid, Lightmass::LM_SCENE_VERSION, Lightmass::LM_SCENE_EXTENSION);
 }
 
@@ -1224,7 +1234,7 @@ void FLightmassExporter::WriteStaticMeshes()
 		BaseMeshData.Guid = StaticMesh->GetLightingGuid();
 
 		// create a channel name to write the mesh out to
-		FString NewChannelName = Lightmass::CreateChannelName(BaseMeshData.Guid, Lightmass::LM_STATICMESH_VERSION, Lightmass::LM_STATICMESH_EXTENSION);
+		FString NewChannelName = Lightmass::CreateChannelNameWithLMExecutableHash(BaseMeshData.Guid, Lightmass::LM_STATICMESH_VERSION, LightmassExecutableHash, Lightmass::LM_STATICMESH_EXTENSION);
 
 		// Warn the user if there is an invalid lightmap UV channel specified.
 		if( StaticMesh->GetLightMapCoordinateIndex() > 0
@@ -1347,10 +1357,10 @@ void FLightmassExporter::GetMaterialHash(const UMaterialInterface* Material, FSH
 		}
 	}
 
-	if (Lightmass_IsStrataEnabled())
+	if (Lightmass_IsSubstrateEnabled())
 	{
-		uint32 LightmassStrataVersion = 0XB6A0D99F; // This can be change when the code/logic for converting material to strata for lightmap has changed.
-		HashState.Update((const uint8*)&LightmassStrataVersion, sizeof(LightmassStrataVersion));
+		uint32 LightmassSubstrateVersion = 0XB6A0D99F; // This can be change when the code/logic for converting material to Substrate for lightmap has changed.
+		HashState.Update((const uint8*)&LightmassSubstrateVersion, sizeof(LightmassSubstrateVersion));
 	}
 
 	HashState.Final();
@@ -1365,7 +1375,7 @@ void FLightmassExporter::BuildMaterialMap(UMaterialInterface* Material)
 		GetMaterialHash(Material, MaterialHash);
 
 		// create a channel name to write the material out to
-		FString NewChannelName = Lightmass::CreateChannelName(MaterialHash, Lightmass::LM_MATERIAL_VERSION, Lightmass::LM_MATERIAL_EXTENSION);
+		FString NewChannelName = Lightmass::CreateChannelNameWithLMExecutableHash(MaterialHash, Lightmass::LM_MATERIAL_VERSION, LightmassExecutableHash, Lightmass::LM_MATERIAL_EXTENSION);
 
 		// only export the material if it's not currently in the cache
 		int32 ErrorCode;
@@ -1420,6 +1430,7 @@ void FLightmassExporter::ExportMaterial(UMaterialInterface* Material, const FLig
 		FMemory::Memzero(&MaterialData,sizeof(MaterialData));
 		UMaterial* BaseMaterial = Material->GetMaterial();
 		MaterialData.bTwoSided = (uint32)Material->IsTwoSided();
+		MaterialData.bIsThinSurface = (uint32)Material->IsThinSurface();
 		MaterialData.EmissiveBoost = Material->GetEmissiveBoost();
 		MaterialData.DiffuseBoost = Material->GetDiffuseBoost();
 

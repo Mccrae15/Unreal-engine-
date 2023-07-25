@@ -7,15 +7,18 @@
 #include "Field/FieldSystem.h"
 #include "Field/FieldSystemActor.h"
 #include "Field/FieldSystemNodes.h"
-#include "Field/FieldSystemObjects.h"
 #include "GameFramework/Actor.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Field/FieldSystemObjects.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionSimulationTypes.h"
 #include "GeometryCollection/GeometryCollectionSimulationCoreTypes.h"
-#include "Physics/Experimental/PhysScene_Chaos.h"
-#include "GeometryCollectionProxyData.h"
 #include "GeometryCollectionObject.h"
+#include "GeometryCollectionProxyData.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
+#endif
 #include "GeometryCollectionEditorSelection.h"
+#include "GeometryCollection/GeometryCollectionDamagePropagationData.h"
 #include "GeometryCollection/RecordedTransformTrack.h"
 #include "Templates/UniquePtr.h"
 #include "Chaos/ChaosGameplayEventDispatcher.h"
@@ -30,6 +33,7 @@
 
 struct FGeometryCollectionConstantData;
 struct FGeometryCollectionDynamicData;
+class FManagedArrayBase;
 class UGeometryCollectionComponent;
 class UBoxComponent;
 class UGeometryCollectionCache;
@@ -38,9 +42,18 @@ class AChaosSolverActor;
 struct FGeometryCollectionEmbeddedExemplar;
 class UInstancedStaticMeshComponent;
 class FGeometryCollectionDecayDynamicFacade;
+class FGeometryDynamicCollection;
 struct FGeometryCollectionDecayContext;
+struct FGeometryCollectionSection;
 struct FDamageCollector;
+class FPhysScene_Chaos;
 class AGeometryCollectionISMPoolActor;
+enum ESimulationInitializationState : uint8;
+enum class EClusterConnectionTypeEnum : uint8;
+enum class EInitialVelocityTypeEnum : uint8;
+enum class EObjectStateTypeEnum : uint8;
+namespace Chaos { enum class EObjectStateType: int8; }
+template<class InElementType> class TManagedArray;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnChaosBreakEvent, const FChaosBreakEvent&, BreakEvent);
 
@@ -258,37 +271,13 @@ private:
 //GetArrayRest (gives original rest value)
 //This generates pointers to arrays marked private. Macro assumes getters are public
 //todo(ocohen): may want to take in a static name
-#define COPY_ON_WRITE_ATTRIBUTE(Type, Name, Group)								\
-FORCEINLINE const TManagedArray<Type>& Get##Name##Array() const 				\
-{																				\
-	return Indirect##Name##Array ?												\
-		*Indirect##Name##Array : RestCollection->GetGeometryCollection()->Name;	\
-}																				\
-FORCEINLINE TManagedArray<Type>& Get##Name##ArrayCopyOnWrite()					\
-{																				\
-	if(!Indirect##Name##Array)													\
-	{																			\
-		static FName StaticName(#Name);											\
-		DynamicCollection->AddAttribute<Type>(StaticName, Group);				\
-		DynamicCollection->CopyAttribute(										\
-			*RestCollection->GetGeometryCollection(), StaticName, Group);		\
-		Indirect##Name##Array =													\
-			&DynamicCollection->ModifyAttribute<Type>(StaticName, Group);		\
-		CopyOnWriteAttributeList.Add(											\
-			reinterpret_cast<FManagedArrayBase**>(&Indirect##Name##Array));		\
-	}																			\
-	return *Indirect##Name##Array;												\
-}																				\
-FORCEINLINE void Reset##Name##ArrayDynamic()									\
-{																				\
-	Indirect##Name##Array = NULL;												\
-}																				\
-FORCEINLINE const TManagedArray<Type>& Get##Name##ArrayRest() const				\
-{																				\
-	return RestCollection->GetGeometryCollection()->Name;						\
-}																				\
-private:																		\
-	TManagedArray<Type>* Indirect##Name##Array;									\
+#define COPY_ON_WRITE_ATTRIBUTE(Type, Name, Group)			\
+	const TManagedArray<Type>& Get##Name##Array() const;	\
+	TManagedArray<Type>& Get##Name##ArrayCopyOnWrite();		\
+	void Reset##Name##ArrayDynamic();						\
+	const TManagedArray<Type>& Get##Name##ArrayRest() const;\
+private:													\
+	TManagedArray<Type>* Indirect##Name##Array;				\
 public:
 
 /**
@@ -396,7 +385,7 @@ struct FGeometryCollectionRepData
 	GENERATED_BODY()
 
 	FGeometryCollectionRepData()
-		: Version(0)
+		: Version(0), ServerFrame(0)
 	{
 
 	}
@@ -410,6 +399,9 @@ struct FGeometryCollectionRepData
 	// Version counter, every write to the rep data is a new state so Identical only references this version
 	// as there's no reason to compare the Poses array.
 	int32 Version;
+
+	// For Network Prediction Mode we require the frame number on the server when the data was gathered
+	int32 ServerFrame;
 
 	// Just test version to skip having to traverse the whole pose array for replication
 	bool Identical(const FGeometryCollectionRepData* Other, uint32 PortFlags) const;
@@ -452,6 +444,7 @@ public:
 	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void SendRenderDynamicData_Concurrent() override;
 	FORCEINLINE void SetRenderStateDirty() { bRenderStateDirty = true; }
+	virtual void SetCollisionObjectType(ECollisionChannel Channel) override;
 	virtual void OnActorEnableCollisionChanged() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type ReasonEnd) override;
@@ -515,6 +508,12 @@ public:
 	TObjectPtr<AChaosSolverActor> ChaosSolverActor;
 
 	/**
+	* Get local bounds of the geometry collection
+	*/
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	FBox GetLocalBounds() const { return LocalBounds; }
+
+	/**
 	 * Apply an external strain to specific piece of the geometry collection
 	 * @param ItemIndex item index ( from HitResult) of the piece to apply strain on
 	 * @param Location world location of where to apply the strain
@@ -553,7 +552,25 @@ public:
 	void CrumbleActiveClusters();
 
 	/**
-	* this will remove anchors on all the pieces ( inlcuding the static and kinematic initial states ones ) of the geometry colection
+	* Set a piece or cluster to be anchored or not 
+	*/
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void SetAnchoredByIndex(int32 Index, bool bAnchored);
+
+	/**
+	* Set all pieces within a world space bounding box to be anchored or not 
+	*/
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void SetAnchoredByBox(FBox WorldSpaceBox, bool bAnchored, int32 MaxLevel = -1);
+
+	/**
+	* Set all pieces within a world transformed bounding box to be anchored or not
+	*/
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void SetAnchoredByTransformedBox(FBox Box, FTransform Transform, bool bAnchored, int32 MaxLevel = -1);
+
+	/**
+	* this will remove anchors on all the pieces ( including the static and kinematic initial states ones ) of the geometry colection
 	*/
 	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
 	void RemoveAllAnchors();
@@ -601,6 +618,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
 	int32 GetInitialLevel(int32 ItemIndex);
 	
+	/** Get the root item index of the hierarchy */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	int32 GetRootIndex() const;
+
 	/**
 	* Get mass and extent of a specific piece
 	* @param ItemIndex item index ( from HitResult) of the cluster to get level from
@@ -613,6 +634,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
 	void SetRestCollection(const UGeometryCollection * RestCollectionIn);
 
+	/** RestCollection */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	FString GetDebugInfo();
 
 	FORCEINLINE const UGeometryCollection* GetRestCollection() const { return RestCollection; }
 
@@ -624,55 +648,56 @@ public:
 	void SelectEmbeddedGeometry();
 #endif
 
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void SetEnableDamageFromCollision(bool bValue);
+
 	/** API for getting at geometry collection data */
-	FORCEINLINE int32 GetNumElements(FName Group) const
-	{
-		int32 Size = RestCollection->NumElements(Group);	//assume rest collection has the group and is connected to dynamic.
-		return Size > 0 ? Size : DynamicCollection->NumElements(Group);	//if not, maybe dynamic has the group
-	}
+	int32 GetNumElements(FName Group) const;
 
 	// Update cached bounds; used e.g. when updating the exploded view of the geometry collection
 	void UpdateCachedBounds();
 
-	// Vertices Group
-	COPY_ON_WRITE_ATTRIBUTE(FVector3f, Vertex, FGeometryCollection::VerticesGroup) 	//GetVertexArray, GetVertexArrayCopyOnWrite, GetVertexArrayRest
-	COPY_ON_WRITE_ATTRIBUTE(TArray<FVector2f>, UVs, FGeometryCollection::VerticesGroup)		//GetUVsArray
-	COPY_ON_WRITE_ATTRIBUTE(FLinearColor, Color, FGeometryCollection::VerticesGroup)//GetColorArray
-	COPY_ON_WRITE_ATTRIBUTE(FVector3f, TangentU, FGeometryCollection::VerticesGroup)	//GetTangentUArray
-	COPY_ON_WRITE_ATTRIBUTE(FVector3f, TangentV, FGeometryCollection::VerticesGroup)	//...
-	COPY_ON_WRITE_ATTRIBUTE(FVector3f, Normal, FGeometryCollection::VerticesGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, BoneMap, FGeometryCollection::VerticesGroup)
+#define COPY_ON_WRITE_ATTRIBUTES \
+	/* Vertices Group */ \
+	COPY_ON_WRITE_ATTRIBUTE(FVector3f, Vertex, FGeometryCollection::VerticesGroup)		/* GetVertexArray, GetVertexArrayCopyOnWrite, GetVertexArrayRest */ \
+	COPY_ON_WRITE_ATTRIBUTE(FLinearColor, Color, FGeometryCollection::VerticesGroup)	/* GetColorArray */		\
+	COPY_ON_WRITE_ATTRIBUTE(FVector3f, TangentU, FGeometryCollection::VerticesGroup)	/* GetTangentUArray */	\
+	COPY_ON_WRITE_ATTRIBUTE(FVector3f, TangentV, FGeometryCollection::VerticesGroup)	/* //... */		\
+	COPY_ON_WRITE_ATTRIBUTE(FVector3f, Normal, FGeometryCollection::VerticesGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(int32, BoneMap, FGeometryCollection::VerticesGroup)							\
+																										\
+	/* Faces Group */																					\
+	COPY_ON_WRITE_ATTRIBUTE(FIntVector, Indices, FGeometryCollection::FacesGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(bool, Visible, FGeometryCollection::FacesGroup)								\
+	COPY_ON_WRITE_ATTRIBUTE(int32, MaterialIndex, FGeometryCollection::FacesGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(int32, MaterialID, FGeometryCollection::FacesGroup)							\
+																										\
+	/* Geometry Group */																				\
+	COPY_ON_WRITE_ATTRIBUTE(int32, TransformIndex, FGeometryCollection::GeometryGroup)					\
+	COPY_ON_WRITE_ATTRIBUTE(FBox, BoundingBox, FGeometryCollection::GeometryGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(float, InnerRadius, FGeometryCollection::GeometryGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(float, OuterRadius, FGeometryCollection::GeometryGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(int32, VertexStart, FGeometryCollection::GeometryGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(int32, VertexCount, FGeometryCollection::GeometryGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(int32, FaceStart, FGeometryCollection::GeometryGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(int32, FaceCount, FGeometryCollection::GeometryGroup)						\
+																										\
+	/* Material Group */																				\
+	COPY_ON_WRITE_ATTRIBUTE(FGeometryCollectionSection, Sections, FGeometryCollection::MaterialGroup)	\
+																										\
+	/* Transform group */																				\
+	COPY_ON_WRITE_ATTRIBUTE(FString, BoneName, FTransformCollection::TransformGroup)					\
+	COPY_ON_WRITE_ATTRIBUTE(FLinearColor, BoneColor, FTransformCollection::TransformGroup)				\
+	COPY_ON_WRITE_ATTRIBUTE(FTransform, Transform, FTransformCollection::TransformGroup)				\
+	COPY_ON_WRITE_ATTRIBUTE(int32, Parent, FTransformCollection::TransformGroup)						\
+	COPY_ON_WRITE_ATTRIBUTE(TSet<int32>, Children, FTransformCollection::TransformGroup)				\
+	COPY_ON_WRITE_ATTRIBUTE(int32, SimulationType, FTransformCollection::TransformGroup)				\
+	COPY_ON_WRITE_ATTRIBUTE(int32, TransformToGeometryIndex, FTransformCollection::TransformGroup)		\
+	COPY_ON_WRITE_ATTRIBUTE(int32, StatusFlags, FTransformCollection::TransformGroup)					\
+	COPY_ON_WRITE_ATTRIBUTE(int32, ExemplarIndex, FTransformCollection::TransformGroup)					\
 
-	// Faces Group
-	COPY_ON_WRITE_ATTRIBUTE(FIntVector, Indices, FGeometryCollection::FacesGroup)
-	COPY_ON_WRITE_ATTRIBUTE(bool, Visible, FGeometryCollection::FacesGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, MaterialIndex, FGeometryCollection::FacesGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, MaterialID, FGeometryCollection::FacesGroup)
-
-	// Geometry Group
-	COPY_ON_WRITE_ATTRIBUTE(int32, TransformIndex, FGeometryCollection::GeometryGroup)
-	COPY_ON_WRITE_ATTRIBUTE(FBox, BoundingBox, FGeometryCollection::GeometryGroup)
-	COPY_ON_WRITE_ATTRIBUTE(float, InnerRadius, FGeometryCollection::GeometryGroup)
-	COPY_ON_WRITE_ATTRIBUTE(float, OuterRadius, FGeometryCollection::GeometryGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, VertexStart, FGeometryCollection::GeometryGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, VertexCount, FGeometryCollection::GeometryGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, FaceStart, FGeometryCollection::GeometryGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, FaceCount, FGeometryCollection::GeometryGroup)
-
-	// Material Group
-	COPY_ON_WRITE_ATTRIBUTE(FGeometryCollectionSection, Sections, FGeometryCollection::MaterialGroup)
-
-	// Transform group
-	COPY_ON_WRITE_ATTRIBUTE(FString, BoneName, FTransformCollection::TransformGroup)
-	COPY_ON_WRITE_ATTRIBUTE(FLinearColor, BoneColor, FTransformCollection::TransformGroup)
-	COPY_ON_WRITE_ATTRIBUTE(FTransform, Transform, FTransformCollection::TransformGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, Parent, FTransformCollection::TransformGroup)
-	COPY_ON_WRITE_ATTRIBUTE(TSet<int32>, Children, FTransformCollection::TransformGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, SimulationType, FTransformCollection::TransformGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, TransformToGeometryIndex, FTransformCollection::TransformGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, StatusFlags, FTransformCollection::TransformGroup)
-	COPY_ON_WRITE_ATTRIBUTE(int32, ExemplarIndex, FTransformCollection::TransformGroup)
-
+	// Declare all the methods
+	COPY_ON_WRITE_ATTRIBUTES
 
 	UPROPERTY(EditAnywhere, NoClear, BlueprintReadOnly, Category = "ChaosPhysics")
 	TObjectPtr<const UGeometryCollection> RestCollection;
@@ -714,6 +739,10 @@ public:
 	/** Data about how damage propagation shoudl behave. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Damage")
 	FGeometryCollectionDamagePropagationData DamagePropagationData;
+
+	/** Whether or not collisions against this geometry collection will apply strain which could cause the geometry collection to fracture. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ChaosPhysics|Damage")
+	bool bEnableDamageFromCollision;
 
 	/** Allow removal on sleep for the instance if the rest collection has it enabled */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Removal")
@@ -829,9 +858,9 @@ public:
 	bool GetShowBoneColors() const { return bShowBoneColors; }
 	bool GetEnableBoneSelection() const { return bEnableBoneSelection; }
 	
-	bool GetSuppressSelectionMaterial() const { return RestCollection->GetGeometryCollection()->HasAttribute("Hide", FGeometryCollection::TransformGroup); }
+	bool GetSuppressSelectionMaterial() const;
 	
-	FORCEINLINE const int GetBoneSelectedMaterialID() const { return RestCollection->GetBoneSelectedMaterialIndex(); }
+	const int GetBoneSelectedMaterialID() const;
 	
 #if WITH_EDITORONLY_DATA
 	FORCEINLINE const TArray<int32>& GetSelectedBones() const { return SelectedBones; }
@@ -884,7 +913,7 @@ public:
 
 	/** Changes whether or not this component will get future break notifications. */
 	UFUNCTION(BlueprintCallable, Category = "Physics")
-	void SetNotifyCrumblings(bool bNewNotifyCrumblings);
+	void SetNotifyCrumblings(bool bNewNotifyCrumblings, bool bNewCrumblingEventIncludesChildren = false);
 	
 	/** Overrideable native notification */
 	virtual void NotifyBreak(const FChaosBreakEvent& Event) {};
@@ -948,8 +977,8 @@ public:
 	/** Used by Niagara DI to query global matrices rather than recalculating them again */
 	const TArray<FMatrix>& GetGlobalMatrices() { return GlobalMatrices; }
 
-	const FGeometryDynamicCollection* GetDynamicCollection() const { return DynamicCollection.Get(); }
-	FGeometryDynamicCollection* GetDynamicCollection() { return DynamicCollection.Get(); } // TEMP HACK?
+	const FGeometryDynamicCollection* GetDynamicCollection() const;
+	FGeometryDynamicCollection* GetDynamicCollection();  // TEMP HACK?
 
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Collision")
@@ -962,27 +991,27 @@ public:
 	virtual void DispatchChaosPhysicsCollisionBlueprintEvents(const FChaosPhysicsCollisionInfo& CollisionInfo) override;
 	
 	/** If true, this component will generate breaking events that other systems may subscribe to. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|Events")
 	bool bNotifyBreaks;
 
 	/** If true, this component will generate collision events that other systems may subscribe to. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|Events")
 	bool bNotifyCollisions;
 
 	/** If true, this component will generate trailing events that other systems may subscribe to. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|Events")
 	bool bNotifyTrailing;
 
 	/** If true, this component will generate removal events that other systems may subscribe to. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|Events")
 	bool bNotifyRemovals;
 
 	/** If true, this component will generate crumbling events that other systems may subscribe to. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|Events")
 	bool bNotifyCrumblings;
 
 	/** If this and bNotifyCrumblings are true, the crumbling events will contain released children indices. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General", meta = (EditCondition = "bNotifyCrumblings"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|Events", meta = (EditCondition = "bNotifyCrumblings"))
 	bool bCrumblingEventIncludesChildren;
 	
 	/** If true, this component will save linear and angular velocities on its DynamicCollection. */
@@ -994,6 +1023,12 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|General")
 	bool bShowBoneColors;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Collision, AdvancedDisplay, config)
+	bool bUseRootProxyForNavigation;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Collision, AdvancedDisplay, config)
+	bool bUpdateNavigationInTick;
+
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(EditAnywhere, Category = "ChaosPhysics|General")
 	bool bEnableRunTimeDataCollection;
@@ -1003,10 +1038,11 @@ protected:
 #endif
 	
 	/** ISM pool to use to render the geometry collection - only works for unfractured geometry collections  */
-	UPROPERTY(EditAnywhere, Category = "ChaosPhysics|Rendering", meta = (DisplayName = "ISM Pool"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Rendering", meta = (DisplayName = "ISM Pool"))
 	TObjectPtr<AGeometryCollectionISMPoolActor> ISMPool;
 
 	int32 ISMPoolMeshGroupIndex = INDEX_NONE;
+	int32 ISMPoolRootProxyMeshId = INDEX_NONE;
 
 	/** Populate the static geometry structures for the render thread. */
 	void InitConstantData(FGeometryCollectionConstantData* ConstantData) const;
@@ -1023,6 +1059,7 @@ protected:
 	/** Issue a field command for the physics thread */
 	void DispatchFieldCommand(const FFieldSystemCommand& InCommand);
 
+	Chaos::FPhysicsSolver* GetSolver(const UGeometryCollectionComponent& GeometryCollectionComponent);
 	void CalculateLocalBounds();
 	void CalculateGlobalMatrices();
 	FBox ComputeBounds(const FMatrix& LocalToWorldWithScale) const;
@@ -1034,14 +1071,14 @@ protected:
 	void UpdateCrumblingEventRegistration();
 	
 	/* Per-instance override to enable/disable replication for the geometry collection */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Network)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Network)
 	bool bEnableReplication;
 
 	/** 
 	 * Enables use of ReplicationAbandonAfterLevel to stop providing network updates to
 	 * clients when the updated particle is of a level higher then specified.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Network)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Network)
 	bool bEnableAbandonAfterLevel;
 
 	/**
@@ -1057,17 +1094,20 @@ protected:
 	* If replicating - the cluster level after which replication will not happen 
 	* @see bEnableAbandonAfterLevel
 	*/
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Network)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Network)
 	int32 ReplicationAbandonAfterLevel;
 
 	UPROPERTY(Replicated)
 	FGeometryCollectionRepData RepData;
 
 	/** Called post solve to allow authoritative components to update their replication data */
-	void UpdateRepData();
+	virtual void UpdateRepData();
 
 	/** Clear all rep data, this is required if the physics proxy has been recreated */
-	void ResetRepData();
+	virtual void ResetRepData();
+
+	virtual void ProcessRepData();
+	int32 VersionProcessed = INDEX_NONE;
 
 private:
 
@@ -1149,12 +1189,13 @@ private:
 	/** update ISM transforms */
 	void RefreshISMPoolInstances();
 
+	/** return true if the root cluster is not longer active at runtime */
+	bool IsRootBroken() const;
 
 	void IncrementSleepTimer(float DeltaTime);
 	void IncrementBreakTimer(float DeltaTime);
 	bool CalculateInnerSphere(int32 TransformIndex, UE::Math::TSphere<double>& SphereOut) const;
 	void UpdateDecay(int32 TransformIdx, float UpdatedDecay, bool UseClusterCrumbling, bool HasDynamicInternalClusterParent, FGeometryCollectionDecayContext& ContextInOut);
-	void ProcessRepData();
 
 	void UpdateAttachedChildrenTransform() const;
 	
@@ -1165,9 +1206,15 @@ private:
 
 	/** One off activation is processed in the same order as server so remember the last one we processed */
 	int32 OneOffActivatedProcessed = 0;
-	int32 VersionProcessed = INDEX_NONE;
 	double LastHardsnapTimeInMs = 0;
 
 	/** True if GeometryCollection transforms have changed from previous tick. */
 	bool bIsMoving;
+
+	//~ Begin IPhysicsComponent Interface.
+public:
+	virtual Chaos::FPhysicsObject* GetPhysicsObjectById(int32 Id) const override;
+	virtual Chaos::FPhysicsObject* GetPhysicsObjectByName(const FName& Name) const override;
+	virtual TArray<Chaos::FPhysicsObject*> GetAllPhysicsObjects() const override;
+	//~ End IPhysicsComponent Interface.
 };

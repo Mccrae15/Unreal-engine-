@@ -1,12 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationEditorUtils.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UIAction.h"
 #include "Textures/SlateIcon.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/FeedbackContext.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -458,20 +461,22 @@ namespace AnimationEditorUtils
 		AssetToolsModule.Get().CreateUniqueAssetName(InBasePackageName, InSuffix, OutPackageName, OutAssetName);
 	}
 
-	void CreateAnimationAssets(const TArray<TWeakObjectPtr<UObject>>& SkeletonsOrSkeletalMeshes, TSubclassOf<UAnimationAsset> AssetClass, const FString& InPrefix, FAnimAssetCreated AssetCreated, UObject* NameBaseObject /*= nullptr*/, bool bDoNotShowNameDialog /*= false*/, bool bAllowReplaceExisting /*= false*/)
+	void CreateAnimationAssets(const TArray<TSoftObjectPtr<UObject>>& SkeletonsOrSkeletalMeshes, TSubclassOf<UAnimationAsset> AssetClass, const FString& InPrefix, FAnimAssetCreated AssetCreated, UObject* NameBaseObject /*= nullptr*/, bool bDoNotShowNameDialog /*= false*/, bool bAllowReplaceExisting /*= false*/)
 	{
 		TArray<UObject*> ObjectsToSync;
-		for(auto SkelIt = SkeletonsOrSkeletalMeshes.CreateConstIterator(); SkelIt; ++SkelIt)
+		for (auto SkelIt = SkeletonsOrSkeletalMeshes.CreateConstIterator(); SkelIt; ++SkelIt)
 		{
+			UObject* SkeletonOrSkeletalMeshObject = SkelIt->LoadSynchronous();
+			
 			USkeletalMesh* SkeletalMesh = nullptr;
-			USkeleton* Skeleton = Cast<USkeleton>(SkelIt->Get());
+			USkeleton* Skeleton = Cast<USkeleton>(SkeletonOrSkeletalMeshObject);
 			if (Skeleton == nullptr)
 			{
-				SkeletalMesh = CastChecked<USkeletalMesh>(SkelIt->Get());
+				SkeletalMesh = CastChecked<USkeletalMesh>(SkeletonOrSkeletalMeshObject);
 				Skeleton = SkeletalMesh->GetSkeleton();
 			}
 
-			if(Skeleton)
+			if (Skeleton)
 			{
 				FString Name;
 				FString PackageName;
@@ -524,12 +529,18 @@ namespace AnimationEditorUtils
 				
 				if (!NewAsset)
 				{
-					NewAsset = Cast<UAnimationAsset>(AssetToolsModule.Get().CreateAsset(Name, FPackageName::GetLongPackagePath(PackageName), AssetClass, NULL));
+					NewAsset = Cast<UAnimationAsset>(AssetToolsModule.Get().CreateAsset(Name, FPackageName::GetLongPackagePath(PackageName), AssetClass, nullptr));
 				}
 				
 				if(NewAsset)
 				{
 					NewAsset->SetSkeleton(Skeleton);
+
+					if (UAnimSequenceBase* SequenceBase = Cast<UAnimSequenceBase>(NewAsset))
+					{
+						SequenceBase->GetController().InitializeModel();
+					}
+					
 					if (SkeletalMesh)
 					{
 						NewAsset->SetPreviewMesh(SkeletalMesh);
@@ -556,17 +567,33 @@ namespace AnimationEditorUtils
 		}
 	}
 
-	void CreateNewAnimBlueprint(TArray<TWeakObjectPtr<UObject>> SkeletonsOrSkeletalMeshes, FAnimAssetCreated AssetCreated, bool bInContentBrowser)
+	void CreateNewAnimBlueprint(TArray<TSoftObjectPtr<UObject>> SkeletonsOrSkeletalMeshes, FAnimAssetCreated AssetCreated, bool bInContentBrowser)
 	{
+		TArray<TWeakObjectPtr<UObject>> SkeletonsOrSkeletalMeshesLoaded;
+		for (TSoftObjectPtr<UObject>& SkeletonsOrSkeletalMesh : SkeletonsOrSkeletalMeshes)
+		{
+			if (UObject* SkeletonOrSkeletalMeshObject = SkeletonsOrSkeletalMesh.LoadSynchronous())
+			{
+				SkeletonsOrSkeletalMeshesLoaded.Add(SkeletonOrSkeletalMeshObject);
+			}
+		}
+
+		CreateNewAnimBlueprint(SkeletonsOrSkeletalMeshesLoaded, AssetCreated, bInContentBrowser);
+	}
+	
+	void CreateNewAnimBlueprint(TArray<TWeakObjectPtr<UObject>> SkeletonsOrSkeletalMeshes, FAnimAssetCreated AssetCreated, bool bInContentBrowser)
+    {
 		const FString DefaultSuffix = TEXT("_AnimBlueprint");
 
 		if (SkeletonsOrSkeletalMeshes.Num() == 1)
 		{
+			UObject* SkeletonOrSkeletalMeshObject = SkeletonsOrSkeletalMeshes[0].Get();
+			
 			USkeletalMesh* SkeletalMesh = nullptr;
-			USkeleton* Skeleton = Cast<USkeleton>(SkeletonsOrSkeletalMeshes[0].Get());
+			USkeleton* Skeleton = Cast<USkeleton>(SkeletonOrSkeletalMeshObject);
 			if (Skeleton == nullptr)
 			{
-				SkeletalMesh = CastChecked<USkeletalMesh>(SkeletonsOrSkeletalMeshes[0].Get());
+				SkeletalMesh = CastChecked<USkeletalMesh>(SkeletonOrSkeletalMeshObject);
 				Skeleton = SkeletalMesh->GetSkeleton();
 			}
 
@@ -668,7 +695,7 @@ namespace AnimationEditorUtils
 		return AssetTools.IsAssetClassSupported(InClass);
 	}
 
-	void FillCreateAssetMenu(FMenuBuilder& MenuBuilder, const TArray<TWeakObjectPtr<UObject>>& SkeletonsOrSkeletalMeshes, FAnimAssetCreated AssetCreated, bool bInContentBrowser)
+	void FillCreateAssetMenu(FMenuBuilder& MenuBuilder, const TArray<TSoftObjectPtr<UObject>>& SkeletonsOrSkeletalMeshes, FAnimAssetCreated AssetCreated, bool bInContentBrowser)
 	{
 		const bool bAllowReplaceExisting = false;
 
@@ -786,8 +813,7 @@ namespace AnimationEditorUtils
 			GWarn->BeginSlowTask(LOCTEXT("AnimCompressing", "Compressing"), true);
 
 			{
-				TSharedPtr<FAnimCompressContext> CompressContext = MakeShareable(new FAnimCompressContext(false, true, AnimSequencePtrs.Num()));
-
+				UE::Anim::Compression::FAnimationCompressionMemorySummaryScope Scope;
 				for (UAnimSequence* AnimSeq : AnimSequencePtrs)
 				{
 					if (OverrideSettings != nullptr)
@@ -797,8 +823,8 @@ namespace AnimationEditorUtils
 
 					// Clear CompressCommandletVersion so we can recompress these animations later.
 					AnimSeq->CompressCommandletVersion = 0;
-					AnimSeq->RequestAnimCompression(FRequestAnimCompressionParams(true, CompressContext));
-					++CompressContext->AnimIndex;
+					AnimSeq->ClearAllCachedCookedPlatformData();
+					AnimSeq->CacheDerivedDataForCurrentPlatform();
 				}
 			}
 
@@ -900,7 +926,7 @@ namespace AnimationEditorUtils
 			if (UAnimGraphNode_Base* TargetNode = Cast<UAnimGraphNode_Base>(PoseWatch->Node))
 			{
 				UAnimBlueprint* AnimBlueprint = AnimBlueprintIfKnown ? AnimBlueprintIfKnown : Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(TargetNode));
-				if ((AnimBlueprint != NULL) && (AnimBlueprint->GeneratedClass != NULL))
+				if ((AnimBlueprint != nullptr) && (AnimBlueprint->GeneratedClass != nullptr))
 				{
 					if (UAnimBlueprintGeneratedClass* AnimBPGenClass = Cast<UAnimBlueprintGeneratedClass>(*AnimBlueprint->GeneratedClass))
 					{

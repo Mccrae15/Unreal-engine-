@@ -6,6 +6,7 @@
 #include "Components/InputComponent.h"
 #include "Materials/MaterialInterface.h"
 
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 
 UOculusXRHandComponent::UOculusXRHandComponent(const FObjectInitializer& ObjectInitializer)

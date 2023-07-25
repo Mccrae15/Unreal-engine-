@@ -2,13 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
 #include "IdentifierTable/ConcertTransportArchives.h"
+
+struct FLazyObjectPtr;
+struct FObjectPtr;
+struct FSoftObjectPtr;
+struct FWeakObjectPtr;
 
 struct FConcertSessionVersionInfo;
 
 DECLARE_DELEGATE_OneParam(FConcertSyncRemapObjectPath, FString& /*ObjectPath*/)
 DECLARE_DELEGATE_RetVal_OneParam(bool, FConcertSyncObjectPathBelongsToWorld, const FStringView /*ObjectPath*/)
+DECLARE_DELEGATE_OneParam(FConcertSyncEncounteredMissingObject, const FStringView /*ObjectPath*/)
 
 namespace ConcertSyncUtil
 {
@@ -77,6 +83,7 @@ private:
 class CONCERTSYNCCORE_API FConcertSyncObjectReader : public FConcertIdentifierReader
 {
 public:
+	FConcertSyncObjectReader(const FConcertLocalIdentifierTable* InLocalIdentifierTable, FConcertSyncWorldRemapper InWorldRemapper, const FConcertSessionVersionInfo* InVersionInfo, UObject* InObj, const TArray<uint8>& InBytes, const FConcertSyncEncounteredMissingObject& InEncounteredMissingObjectDelegate);
 	FConcertSyncObjectReader(const FConcertLocalIdentifierTable* InLocalIdentifierTable, FConcertSyncWorldRemapper InWorldRemapper, const FConcertSessionVersionInfo* InVersionInfo, UObject* InObj, const TArray<uint8>& InBytes);
 
 	void SerializeObject(UObject* InObject);
@@ -96,4 +103,9 @@ public:
 
 private:
 	FConcertSyncWorldRemapper WorldRemapper;
+	FConcertSyncEncounteredMissingObject EncounteredMissingObjectDelegate;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

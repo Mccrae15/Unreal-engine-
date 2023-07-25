@@ -4,10 +4,12 @@
 
 #include "ResonanceAudioAmbisonicsSettings.h"
 
-#include "AudioDevice.h"
+#include "IAudioExtensionPlugin.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "ResonanceAudioAmbisonicsSettingsProxy.h"
 #include "ResonanceAudioCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ResonanceAudioAmbisonicsSettings)
 
 TUniquePtr<ISoundfieldEncodingSettingsProxy> UResonanceAudioSoundfieldSettings::GetProxy() const
 {

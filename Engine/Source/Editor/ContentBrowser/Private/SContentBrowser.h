@@ -39,11 +39,11 @@ class SBorder;
 class SCollectionView;
 class SComboButton;
 class SExpandableArea;
+class SFavoritePathView;
 class SFilterList;
 class SPathView;
 class SSearchToggleButton;
 class SWidget;
-class SWidgetSwitcher;
 class UClass;
 class UContentBrowserToolbarMenuContext;
 class UFactory;
@@ -51,16 +51,16 @@ class UToolMenu;
 struct FAssetData;
 struct FAssetSearchBoxSuggestion;
 struct FCollectionNameType;
+struct FContentBrowserInstanceConfig;
 struct FContentBrowserItem;
 struct FContentBrowserItemPath;
 struct FGeometry;
 struct FKeyEvent;
 struct FPointerEvent;
 struct FSlateBrush;
+struct FToolMenuContext;
 
 enum class EFilterBarLayout : uint8;
-
-struct FToolMenuContext;
 
 enum class EContentBrowserViewContext : uint8
 {
@@ -373,25 +373,19 @@ private:
 	FText GetLockMenuText() const;
 
 	/** Gets icon for the lock button */
-	const FSlateBrush* GetLockIcon() const;
+	FSlateIcon GetLockIcon() const;
+
+	/** Gets brush for the lock button */
+	const FSlateBrush* GetLockIconBrush() const;
 
 	/** Gets the visibility state of the asset tree */
 	EVisibility GetSourcesViewVisibility() const;
+	
+	/** Set whether or not we the sources view is expanded. */
+	void SetSourcesViewExpanded(bool bExpanded);
 
 	/** Handler for clicking the tree expand/collapse button */
 	FReply SourcesViewExpandClicked();
-
-	/** Gets the visibility of the source switch button */
-	EVisibility GetSourcesSwitcherVisibility() const;
-
-	/** Gets the icon used on the source switch button */
-	const FSlateBrush* GetSourcesSwitcherIcon() const;
-
-	/** Gets the tooltip text used on the source switch button */
-	FText GetSourcesSwitcherToolTipText() const;
-
-	/** Handler for clicking the source switch button */
-	FReply OnSourcesSwitcherClicked();
 
 	/** Called to handle the Content Browser settings changing */
 	void OnContentBrowserSettingsChanged(FName PropertyName);
@@ -428,6 +422,9 @@ private:
 
 	/** Handler for Delete */
 	void HandleDeleteCommandExecute();
+
+	/** Handler for deleting a favorite using a keybind. */
+	void HandleDeleteFavorite(TSharedPtr<SWidget> ParentWidget);
 
 	/** Handler for opening assets or folders */
 	void HandleOpenAssetsOrFoldersCommandExecute();
@@ -534,14 +531,8 @@ private:
 	/** Gets the visibility of the favorites view */
 	EVisibility GetFavoriteFolderVisibility() const;
 
-	/** Get the visibility of the docked collections view */
-	EVisibility GetDockedCollectionsVisibility() const;
-
 	/** Get the visibility of the lock button */
 	EVisibility GetLockButtonVisibility() const;
-
-	/** Whether or not the collections view is docked or exists in its own panel in the same area as the sources view */
-	bool IsCollectionViewDocked() const;
 
 	/** Toggles the favorite status of an array of folders*/
 	void ToggleFolderFavorite(const TArray<FString>& FolderPaths);
@@ -570,6 +561,9 @@ private:
 	TSharedRef<SWidget> CreateDockedCollectionsView(const FContentBrowserConfig* Config);
 	TSharedRef<SWidget> CreateDrawerDockButton(const FContentBrowserConfig* Config);
 
+	void SetFavoritesExpanded(bool bExpanded);
+	void SetPathViewExpanded(bool bExpanded);
+
 	/** Adds menu options to the view menu */
 	void ExtendViewOptionsMenu(const FContentBrowserConfig* Config);
 
@@ -583,10 +577,18 @@ private:
 
 	/** Gets the min size for various areas. When areas are not visible the min size is 0, otherwise there is a minimum size to prevent overlap */
 	float GetFavoritesAreaMinSize() const;
-	float GetCollectionsAreaMinSize() const;
 
 	/** Called when the layout of the SFilterList is changing */
 	void OnFilterBarLayoutChanging(EFilterBarLayout NewLayout);
+
+	/** Fetch the const config for this content browser instance. */
+	const FContentBrowserInstanceConfig* GetConstInstanceConfig() const;
+
+	/** Fetch the mutable config for this content browser instance. */
+	FContentBrowserInstanceConfig* GetMutableInstanceConfig();
+
+	/** Initialize an editor config for this instance if one does not exist. */
+	FContentBrowserInstanceConfig* CreateEditorConfigIfRequired();
 
 private:
 
@@ -615,7 +617,7 @@ private:
 	TSharedPtr<SPathView> PathViewPtr;
 
 	/** The favorites tree widget */
-	TSharedPtr<class SFavoritePathView> FavoritePathViewPtr;
+	TSharedPtr<SFavoritePathView> FavoritePathViewPtr;
 
 	/** The collection widget */
 	TSharedPtr<SCollectionView> CollectionViewPtr;
@@ -659,29 +661,26 @@ private:
 	/** Toggle button for showing/hiding collection search area */
 	TSharedPtr<SSearchToggleButton> CollectionSearchToggleButton;
 
-	/** Index of the active sources widget */
-	int32 ActiveSourcesWidgetIndex = 0;
-
 	/** The expanded state of the asset tree */
-	bool bSourcesViewExpanded;
+	bool bSourcesViewExpanded = true;
 
 	/** True if this browser is the primary content browser */
-	bool bIsPrimaryBrowser;
+	bool bIsPrimaryBrowser = false;
 
 	/** True if this content browser can be set to the primary browser. */
-	bool bCanSetAsPrimaryBrowser;
+	bool bCanSetAsPrimaryBrowser = true;
 
 	/** True if this content browser is an a drawer */
-	bool bIsDrawer;
-
-	/** Unique name for this Content Browser. */
-	FName InstanceName;
+	bool bIsDrawer = false;
 
 	/** True if source should not be changed from an outside source */
-	bool bIsLocked;
+	bool bIsLocked = false;
 
 	/** Cached result of CanWriteToPath to avoid recalculating it every frame */
 	mutable bool bCachedCanWriteToCurrentPath = false;
+	
+	/** Unique name for this Content Browser. */
+	FName InstanceName;
 
 	/** Path that was last used to determine bCachedCanWriteToCurrentPath */
 	mutable TOptional<FName> CachedCanWriteToCurrentPath;
@@ -697,9 +696,6 @@ private:
 
 	/** Delegate used to create a new folder */
 	FOnCreateNewFolder OnCreateNewFolder;
-
-	/** Switcher between the different sources views */
-	TSharedPtr<SWidgetSwitcher> SourcesWidgetSwitcher;
 
 	/** The splitter between the path & asset view */
 	TSharedPtr<SSplitter> PathAssetSplitterPtr;

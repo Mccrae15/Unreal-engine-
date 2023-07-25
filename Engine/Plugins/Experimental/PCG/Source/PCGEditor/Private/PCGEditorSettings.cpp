@@ -4,28 +4,39 @@
 #include "PCGEditorCommon.h"
 
 #include "EdGraph/EdGraphPin.h"
+#include "PCGSettings.h"
 
 UPCGEditorSettings::UPCGEditorSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	DefaultNodeColor = FLinearColor(0.4f, 0.62f, 1.0f);
-	IsolatedNodeColor = FLinearColor(0.0f, 0.0f, 1.0f);
+	InstancedNodeBodyTintColor = FLinearColor(0.5f, 0.5f, 0.5f);
 	InputOutputNodeColor = FLinearColor(1.0f, 0.0f, 0.0f);
-	SetOperationNodeColor = FLinearColor(0.8f, 0.2f, 0.8f);
-	DensityOperationNodeColor = FLinearColor(0.6f, 1.0f, 0.6f);
-	BlueprintNodeColor = FLinearColor(0.0f, 0.6f, 1.0f);
-	MetadataNodeColor = FLinearColor(0.4f, 0.4f, 0.8f);
-	FilterNodeColor = FLinearColor(0.4f, 0.8f, 0.4f);
-	SamplerNodeColor = FLinearColor(0.8f, 1.0f, 0.4f);
-	SpawnerNodeColor = FLinearColor(1.0f, 0.6f, 0.4f);
-	SubgraphNodeColor = FLinearColor(1.0f, 0.1f, 0.1f);
-	ParamDataNodeColor = FLinearColor(1.0f, 0.6f, 0.0f);
+	SetOperationNodeColor = FLinearColor(1.0f, 0.2f, 1.0f);
+	DensityOperationNodeColor = FLinearColor(0.2f, 0.59f, 0.99f);
+	BlueprintNodeColor = FLinearColor(0.02f, 0.18f, 1.0f);
+	MetadataNodeColor = FLinearColor(1.0f, 0.99f, 0.99f);
+	FilterNodeColor = FLinearColor(0.24f, 0.09f, 0.85f);
+	SamplerNodeColor = FLinearColor(0.0f, 0.0f, 0.0f);
+	SpawnerNodeColor = FLinearColor(0.0f, 1.0f, 0.69f);
+	SubgraphNodeColor = FLinearColor(1.0f, 0.05f, 0.05f);
+	ParamDataNodeColor = FLinearColor(1.0f, 0.38f, 0.02f);
 	DebugNodeColor = FLinearColor(1.0f, 0.0f, 1.0f);
 
-	DefaultPinColor = FLinearColor(1.0f, 1.0f, 1.0f);
-	SpatialDataPinColor = FLinearColor(0.2f, 0.2f, 1.0f);
-	RenderTargetDataPinColor = FLinearColor(1.0f, 0.3f, 0.f);
-	ParamDataPinColor = FLinearColor(1.0f, 0.6f, 0.0f);
+	DefaultPinColor = FLinearColor(0.29f, 0.29f, 0.29f);
+
+	SpatialDataPinColor = FLinearColor(1.0f, 1.0f, 1.0f);
+	ConcreteDataPinColor = FLinearColor(0.45f, 0.38f, 0.96f);
+	PointDataPinColor = FLinearColor(0.05f, 0.25f, 1.0f);
+	PolyLineDataPinColor = FLinearColor(0.05f, 0.75f, 0.82f);
+	SurfaceDataPinColor = FLinearColor(0.06f, 0.55f, 0.21f);
+	LandscapeDataPinColor = FLinearColor(0.66f, 0.66f, 0.07f);
+	TextureDataPinColor = FLinearColor(0.79f, 0.08f, 0.01f);
+	RenderTargetDataPinColor = FLinearColor(0.8f, 0.18f, 0.12f);
+	VolumeDataPinColor = FLinearColor(0.79f, 0.06f, 0.5f);
+	PrimitiveDataPinColor = FLinearColor(0.22f, 0.05f, 1.0f);
+
+	ParamDataPinColor = FLinearColor(1.0f, 0.38f, 0.02f);
 	UnknownDataPinColor = FLinearColor(0.3f, 0.3f, 0.3f);
 
 	bEnableNavigateToNativeNodes = true;
@@ -96,16 +107,49 @@ FLinearColor UPCGEditorSettings::GetColor(UPCGSettings* Settings) const
 
 FLinearColor UPCGEditorSettings::GetPinColor(const FEdGraphPinType& PinType) const
 {
-	if (PinType.PinCategory == FPCGEditorCommon::SpatialDataType)
+	if (PinType.PinCategory == FPCGEditorCommon::ConcreteDataType)
 	{
-		if (PinType.PinSubCategory == FPCGEditorCommon::RenderTargetDataType)
+		// Clauses below try to pick the narrowest type possible, falling back to Spatial
+		if (PinType.PinSubCategory == FPCGEditorCommon::PointDataType)
+		{
+			return PointDataPinColor;
+		}
+		else if (PinType.PinSubCategory == FPCGEditorCommon::PolyLineDataType)
+		{
+			return PolyLineDataPinColor;
+		}
+		else if (PinType.PinSubCategory == FPCGEditorCommon::LandscapeDataType)
+		{
+			return LandscapeDataPinColor;
+		}
+		else if (PinType.PinSubCategory == FPCGEditorCommon::TextureDataType)
+		{
+			return TextureDataPinColor;
+		}
+		else if (PinType.PinSubCategory == FPCGEditorCommon::RenderTargetDataType)
 		{
 			return RenderTargetDataPinColor;
 		}
+		else if (PinType.PinSubCategory == FPCGEditorCommon::SurfaceDataType)
+		{
+			return SurfaceDataPinColor;
+		}
+		else if (PinType.PinSubCategory == FPCGEditorCommon::VolumeDataType)
+		{
+			return VolumeDataPinColor;
+		}
+		else if (PinType.PinSubCategory == FPCGEditorCommon::PrimitiveDataType)
+		{
+			return PrimitiveDataPinColor;
+		}
 		else
 		{
-			return SpatialDataPinColor;
+			return ConcreteDataPinColor;
 		}
+	}
+	else if (PinType.PinCategory == FPCGEditorCommon::SpatialDataType)
+	{
+		return SpatialDataPinColor;
 	}
 	else if (PinType.PinCategory == FPCGEditorCommon::ParamDataType)
 	{

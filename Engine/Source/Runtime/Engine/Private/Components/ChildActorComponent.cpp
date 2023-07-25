@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ChildActorComponent.h"
+#include "Blueprint/BlueprintSupport.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/Package.h"
-#include "UObject/PropertyPortFlags.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/Engine.h"
 #include "Engine/DemoNetDriver.h"
@@ -710,6 +710,8 @@ void UChildActorComponent::CreateChildActor(TFunction<void(AActor*)> CustomizerF
 		}
 	}
 
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_CreateChildActor);
+
 	// Kill spawned actor if we have one
 	DestroyChildActor();
 
@@ -855,6 +857,8 @@ void UChildActorComponent::DestroyChildActor()
 
 	if (ChildActor && (ChildActor->HasAuthority() || !IsChildActorReplicated()) && !IsBeingRemovedFromLevel())
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_DestroyChildActor);
+
 		if (!GExitPurge)
 		{
 			// if still alive, destroy, otherwise just clear the pointer

@@ -331,7 +331,7 @@ struct FShaderPrintContext
 void ShaderPrint_Internal(FShaderPrintContext Ctx, in FShaderPrintItem Item)
 {
 	// If MaxValueCount is 0 then we don't reset the buffer counter so early out here
-	if (Ctx.Config.MaxValueCount == 0)
+	if (!Ctx.bIsActive || Ctx.Config.MaxValueCount == 0)
 	{
 		return;
 	}
@@ -376,8 +376,11 @@ void PrintSymbol(inout FShaderPrintContext Ctx, in int Symbol) { PrintSymbol(Ctx
 
 void Newline(inout FShaderPrintContext Ctx)
 {
-	Ctx.Pos.x = Ctx.StartPos.x;
-	Ctx.Pos.y += Ctx.Config.FontSpacing.y;
+	if (Ctx.bIsActive)
+	{
+		Ctx.Pos.x = Ctx.StartPos.x;
+		Ctx.Pos.y += Ctx.Config.FontSpacing.y;
+	}
 }
 
 int2 GetCursorPos(FShaderPrintContext Ctx)
@@ -501,6 +504,33 @@ void   Print(inout FShaderPrintContext Ctx, InType Value)																						{
 SHADER_PRINT_OVERLOAD_NN(3, 3, float3x3)
 SHADER_PRINT_OVERLOAD_NN(4, 3, float4x3)
 SHADER_PRINT_OVERLOAD_NN(4, 4, float4x4)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Bool printing
+
+void PrintBool(inout FShaderPrintContext Ctx, bool In)
+{
+	if (In)
+	{
+		Print(Ctx, TEXT("Yes "), FontGreen);
+	}
+	else
+	{
+		Print(Ctx, TEXT("No  "), FontRed);
+	}
+}
+
+void PrintBool(inout FShaderPrintContext Ctx, bool In, FFontColor InColor)
+{
+	if (In)
+	{
+		Print(Ctx, TEXT("Yes "), InColor);
+	}
+	else
+	{
+		Print(Ctx, TEXT("No  "), InColor);
+	}
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Widgets (experimental)

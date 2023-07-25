@@ -1,28 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/ActorDescContainer.h"
+#include "WorldPartition/DataLayer/DataLayerLoadingPolicy.h"
+#include "WorldPartition/DataLayer/DataLayer.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/DataLayer/DataLayerEditorContext.h"
 #include "WorldPartition/DataLayer/WorldDataLayersActorDesc.h"
-#include "WorldPartition/DataLayer/DataLayerAsset.h"
 #include "WorldPartition/WorldPartitionDebugHelper.h"
+#include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/WorldPartitionRuntimeCell.h"
-#include "WorldPartition/WorldPartition.h"
-#include "Engine/Engine.h"
-#include "Engine/World.h"
 #include "Engine/Canvas.h"
-#include "EngineUtils.h"
-#include "Algo/Transform.h"
+#include "UObject/UObjectIterator.h"
+#include "WorldPartition/WorldPartitionStreamingSource.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(DataLayerSubsystem)
 
 #if WITH_EDITOR
 #include "Editor.h"
 #include "Modules/ModuleManager.h"
-#include "ProfilingDebugging/ScopedTimers.h"
 #include "WorldPartition/DataLayer/DataLayerUtils.h"
 #include "WorldPartition/DataLayer/IDataLayerEditorModule.h"
 #include "WorldPartition/WorldPartitionEditorPerProjectUserSettings.h"
+#else
+#include "Engine/Engine.h"
 #endif
 
 extern int32 GDrawDataLayersLoadTime;
@@ -65,6 +67,7 @@ void FDataLayersEditorBroadcast::StaticOnActorDataLayersEditorLoadingStateChange
 #endif
 
 UDataLayerSubsystem::UDataLayerSubsystem()
+	: bIsCachedEffectiveStateDirty(true)
 {
 #if WITH_EDITOR
 	DataLayerActorEditorContextID = 0;
@@ -75,7 +78,17 @@ void UDataLayerSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
+	bIsCachedEffectiveStateDirty = true;
+
 #if WITH_EDITOR
+	UClass* DataLayerLoadingPolicyClassValue = DataLayerLoadingPolicyClass.Get();
+	if (!DataLayerLoadingPolicyClassValue)
+	{
+		DataLayerLoadingPolicyClassValue = UDataLayerLoadingPolicy::StaticClass();
+	}
+	DataLayerLoadingPolicy = NewObject<UDataLayerLoadingPolicy>(this, DataLayerLoadingPolicyClassValue);
+	check(DataLayerLoadingPolicy);
+
 	if (GEditor)
 	{
 		FModuleManager::LoadModuleChecked<IDataLayerEditorModule>("DataLayerEditor");
@@ -105,6 +118,23 @@ bool UDataLayerSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType)
 
 
 #if WITH_EDITOR
+
+bool UDataLayerSubsystem::ResolveIsLoadedInEditor(const TArray<FName>& InDataLayerInstanceNames) const
+{
+	TArray<const UDataLayerInstance*> DataLayerInstances;
+	for (const FName& DataLayerInstanceName : InDataLayerInstanceNames)
+	{
+		if (const UDataLayerInstance* DataLayerInstance = GetDataLayerInstance(DataLayerInstanceName))
+		{
+			DataLayerInstances.Add(DataLayerInstance);
+		}
+	}
+	if (!DataLayerInstances.IsEmpty())
+	{
+		return DataLayerLoadingPolicy->ResolveIsLoadedInEditor(DataLayerInstances);
+	}
+	return true;
+}
 
 bool UDataLayerSubsystem::CanResolveDataLayers() const
 {
@@ -205,26 +235,41 @@ TArray<const UDataLayerInstance*> UDataLayerSubsystem::GetRuntimeDataLayerInstan
 
 #endif
 
-TSet<FName> UDataLayerSubsystem::GetEffectiveActiveDataLayerNames() const
+const TSet<FName>& UDataLayerSubsystem::GetEffectiveActiveDataLayerNames() const
 {
-	TSet<FName> EffectiveActiveDataLayerNames;
-	WorldDataLayerCollection.ForEachWorldDataLayers([&EffectiveActiveDataLayerNames](AWorldDataLayers* WorldDataLayers)
-	{
-		EffectiveActiveDataLayerNames.Append(WorldDataLayers->GetEffectiveActiveDataLayerNames());
-	});
-	
-	return EffectiveActiveDataLayerNames;
+	UpdateCachedEffectiveRuntimeStates();
+	return CachedEffectiveActiveDataLayerNames;
 }
 
-TSet<FName> UDataLayerSubsystem::GetEffectiveLoadedDataLayerNames() const
+const TSet<FName>& UDataLayerSubsystem::GetEffectiveLoadedDataLayerNames() const
 {
-	TSet<FName> EffectiveLoadedDataLayerNames;
-	WorldDataLayerCollection.ForEachWorldDataLayers([&EffectiveLoadedDataLayerNames](AWorldDataLayers* WorldDataLayers)
-	{
-		EffectiveLoadedDataLayerNames.Append(WorldDataLayers->GetEffectiveLoadedDataLayerNames());
-	});
+	UpdateCachedEffectiveRuntimeStates();
+	return CachedEffectiveLoadedDataLayerNames;
+}
 
-	return EffectiveLoadedDataLayerNames;
+void UDataLayerSubsystem::OnEffectiveRuntimeDataLayerStatesChanged(AWorldDataLayers* InWorldDataLayers)
+{
+	bIsCachedEffectiveStateDirty = true;
+}
+
+void UDataLayerSubsystem::UpdateCachedEffectiveRuntimeStates() const
+{
+	if (bIsCachedEffectiveStateDirty)
+	{
+		bIsCachedEffectiveStateDirty = false;
+
+		CachedEffectiveActiveDataLayerNames.Reset();
+		WorldDataLayerCollection.ForEachWorldDataLayers([this](AWorldDataLayers* WorldDataLayers)
+		{
+			CachedEffectiveActiveDataLayerNames.Append(WorldDataLayers->GetEffectiveActiveDataLayerNames());
+		});
+
+		CachedEffectiveLoadedDataLayerNames.Reset();
+		WorldDataLayerCollection.ForEachWorldDataLayers([this](AWorldDataLayers* WorldDataLayers)
+		{
+			CachedEffectiveLoadedDataLayerNames.Append(WorldDataLayers->GetEffectiveLoadedDataLayerNames());
+		});
+	}
 }
 
 void UDataLayerSubsystem::RegisterWorldDataLayer(AWorldDataLayers* WorldDataLayers)
@@ -237,6 +282,7 @@ void UDataLayerSubsystem::RegisterWorldDataLayer(AWorldDataLayers* WorldDataLaye
 
 	if (WorldDataLayerCollection.RegisterWorldDataLayer(WorldDataLayers))
 	{
+		bIsCachedEffectiveStateDirty = true;
 #if WITH_EDITOR
 		OnWorldDataLayerPostRegister.Broadcast(WorldDataLayers);
 #endif
@@ -250,7 +296,7 @@ void UDataLayerSubsystem::UnregisterWorldDataLayer(AWorldDataLayers* WorldDataLa
 #if WITH_EDITOR
 		OnWorldDataLayerPreUnregister.Broadcast(WorldDataLayers);
 #endif
-
+		bIsCachedEffectiveStateDirty = true;
 		WorldDataLayerCollection.UnregisterWorldDataLayer(WorldDataLayers);
 	}
 }
@@ -272,17 +318,36 @@ UDataLayerInstance* UDataLayerSubsystem::GetDataLayerInstanceFromAsset(const UDa
 
 void UDataLayerSubsystem::SetDataLayerInstanceRuntimeState(const UDataLayerAsset* InDataLayerAsset, EDataLayerRuntimeState InState, bool bInIsRecursive)
 {
-	SetDataLayerRuntimeState(GetDataLayerInstanceFromAsset(InDataLayerAsset), InState, bInIsRecursive);
+	if (UDataLayerInstance* DataLayerInstance = GetDataLayerInstanceFromAsset(InDataLayerAsset))
+	{
+		SetDataLayerRuntimeState(DataLayerInstance, InState, bInIsRecursive);
+	}
+	else
+	{
+		UE_LOG(LogWorldPartition, Warning, TEXT("UDataLayerSubsystem::SetDataLayerInstanceRuntimeState called with a Data Layer Asset that does not have a Data Layer Instance in this world : %s"), *GetWorld()->GetName());
+	}
 }
 
 EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerInstanceRuntimeState(const UDataLayerAsset* InDataLayerAsset) const
 {
-	return GetDataLayerRuntimeState(GetDataLayerInstanceFromAsset(InDataLayerAsset));
+	if (UDataLayerInstance* DataLayerInstance = GetDataLayerInstanceFromAsset(InDataLayerAsset))
+	{
+		return GetDataLayerRuntimeState(DataLayerInstance);
+	}
+	
+	UE_LOG(LogWorldPartition, Warning, TEXT("UDataLayerSubsystem::GetDataLayerInstanceRuntimeState called with a Data Layer Asset that does not have a Data Layer Instance in this world : %s"), *GetWorld()->GetName());
+	return EDataLayerRuntimeState::Unloaded;
 }
 
 EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerInstanceEffectiveRuntimeState(const UDataLayerAsset* InDataLayerAsset) const
 {
-	return GetDataLayerEffectiveRuntimeState(GetDataLayerInstanceFromAsset(InDataLayerAsset));
+	if (UDataLayerInstance* DataLayerInstance = GetDataLayerInstanceFromAsset(InDataLayerAsset))
+	{
+		return GetDataLayerEffectiveRuntimeState(DataLayerInstance);
+	}
+
+	UE_LOG(LogWorldPartition, Warning, TEXT("UDataLayerSubsystem::GetDataLayerInstanceEffectiveRuntimeState called with a Data Layer Asset that does not have a Data Layer Instance in this world : %s"), *GetWorld()->GetName());
+	return EDataLayerRuntimeState::Unloaded;
 }
 
 void UDataLayerSubsystem::SetDataLayerRuntimeState(const UDataLayerInstance* InDataLayerInstance, EDataLayerRuntimeState InState, bool bInIsRecursive)
@@ -334,11 +399,26 @@ EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerEffectiveRuntimeStateByN
 
 bool UDataLayerSubsystem::IsAnyDataLayerInEffectiveRuntimeState(const TArray<FName>& InDataLayerNames, EDataLayerRuntimeState InState) const
 {
-	for (FName DataLayerName : InDataLayerNames)
+	if (InState == EDataLayerRuntimeState::Activated)
 	{
-		if (GetDataLayerEffectiveRuntimeStateByName(DataLayerName) == InState)
+		const TSet<FName>& Activated = GetEffectiveActiveDataLayerNames();
+		for (const FName& DataLayerName : InDataLayerNames)
 		{
-			return true;
+			if (Activated.Contains(DataLayerName))
+			{
+				return true;
+			}
+		}
+	}
+	else if (InState == EDataLayerRuntimeState::Loaded)
+	{
+		const TSet<FName>& Loaded = GetEffectiveLoadedDataLayerNames();
+		for (const FName& DataLayerName : InDataLayerNames)
+		{
+			if (Loaded.Contains(DataLayerName))
+			{
+				return true;
+			}
 		}
 	}
 	return false;
@@ -704,6 +784,11 @@ uint32 UDataLayerSubsystem::GetDataLayerEditorContextHash() const
 
 void UDataLayerSubsystem::OnActorDescContainerInitialized(UActorDescContainer* InActorDescContainer)
 {
+	ResolveActorDescContainer(InActorDescContainer);
+}
+
+void UDataLayerSubsystem::ResolveActorDescContainer(UActorDescContainer* InActorDescContainer)
+{
 	check(InActorDescContainer);
 
 	auto GetWorldDataLayersActorDesc = [](const UActorDescContainer* InContainer) -> TArray<const FWorldDataLayersActorDesc*>
@@ -730,6 +815,17 @@ void UDataLayerSubsystem::OnActorDescContainerInitialized(UActorDescContainer* I
 		FWorldPartitionActorDesc* ActorDesc = *Iterator;
 		check(ActorDesc->GetContainer() == InActorDescContainer);
 		ActorDesc->SetDataLayerInstanceNames(FDataLayerUtils::ResolvedDataLayerInstanceNames(ActorDesc, WorldDataLayersActorDescs));
+	}
+}
+
+void UDataLayerSubsystem::ResolveActorDescContainers()
+{
+	for (TObjectIterator<UActorDescContainer> ContainerIt; ContainerIt; ++ContainerIt)
+	{
+		if (UActorDescContainer* ActorDescContainer = *ContainerIt; ActorDescContainer && GetWorld() == ActorDescContainer->GetWorld())
+		{
+			ResolveActorDescContainer(ActorDescContainer);
+		}
 	}
 }
 

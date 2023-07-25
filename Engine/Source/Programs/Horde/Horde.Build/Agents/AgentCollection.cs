@@ -7,10 +7,8 @@ using System.Linq.Expressions;
 using System.Threading.Tasks;
 using EpicGames.Redis;
 using Google.Protobuf.WellKnownTypes;
-using Horde.Build.Acls;
 using Horde.Build.Agents.Pools;
 using Horde.Build.Agents.Sessions;
-using Horde.Build.Agents.Software;
 using Horde.Build.Auditing;
 using Horde.Build.Server;
 using Horde.Build.Utilities;
@@ -22,7 +20,6 @@ using MongoDB.Driver;
 
 namespace Horde.Build.Agents
 {
-	using AgentSoftwareChannelName = StringId<AgentSoftwareChannels>;
 	using PoolId = StringId<IPool>;
 	using SessionId = ObjectId<ISession>;
 
@@ -84,9 +81,6 @@ namespace Horde.Build.Agents
 			public Dictionary<string, int>? Resources { get; set; }
 
 			[BsonIgnoreIfNull]
-			public AgentSoftwareChannelName? Channel { get; set; }
-
-			[BsonIgnoreIfNull]
 			public string? LastUpgradeVersion { get; set; }
 
 			[BsonIgnoreIfNull]
@@ -118,7 +112,6 @@ namespace Horde.Build.Agents
 
 			public AgentCapabilities Capabilities { get; set; } = new AgentCapabilities();
 			public List<AgentLease>? Leases { get; set; }
-			public Acl? Acl { get; set; }
 			public DateTime UpdateTime { get; set; }
 			public uint UpdateIndex { get; set; }
 			public string? Comment { get; set; }
@@ -135,12 +128,10 @@ namespace Horde.Build.Agents
 			{
 			}
 
-			public AgentDocument(AgentId id, bool bEnabled, AgentSoftwareChannelName? channel, List<PoolId> pools)
+			public AgentDocument(AgentId id, bool enabled, List<PoolId> pools)
 			{
 				Id = id;
-				Acl = new Acl();
-				Enabled = bEnabled;
-				Channel = channel;
+				Enabled = enabled;
 				Pools = pools;
 			}
 		}
@@ -165,9 +156,9 @@ namespace Horde.Build.Agents
 		}
 
 		/// <inheritdoc/>
-		public async Task<IAgent> AddAsync(AgentId id, bool bEnabled, AgentSoftwareChannelName? channel, List<PoolId>? pools)
+		public async Task<IAgent> AddAsync(AgentId id, bool enabled, List<PoolId>? pools)
 		{
-			AgentDocument agent = new AgentDocument(id, bEnabled, channel, pools ?? new List<PoolId>());
+			AgentDocument agent = new AgentDocument(id, enabled, pools ?? new List<PoolId>());
 			await _agents.InsertOneAsync(agent);
 			return agent;
 		}
@@ -289,7 +280,7 @@ namespace Horde.Build.Agents
 		}
 
 		/// <inheritdoc/>
-		public async Task<IAgent?> TryUpdateSettingsAsync(IAgent agentInterface, bool? enabled = null, bool? requestConform = null, bool? requestFullConform = null, bool? requestRestart = null, bool? requestShutdown = null, string? shutdownReason = null, AgentSoftwareChannelName? channel = null, List<PoolId>? pools = null, Acl? acl = null, string? comment = null)
+		public async Task<IAgent?> TryUpdateSettingsAsync(IAgent agentInterface, bool? enabled = null, bool? requestConform = null, bool? requestFullConform = null, bool? requestRestart = null, bool? requestShutdown = null, string? shutdownReason = null, List<PoolId>? pools = null, string? comment = null)
 		{
 			AgentDocument agent = (AgentDocument)agentInterface;
 
@@ -343,21 +334,6 @@ namespace Horde.Build.Agents
 				updates.Add(updateBuilder.Set(x => x.LastShutdownReason, shutdownReason));
 			}
 
-			if (channel != null)
-			{
-				if (channel.Value == AgentSoftwareService.DefaultChannelName)
-				{
-					updates.Add(updateBuilder.Unset(x => x.Channel));
-				}
-				else
-				{
-					updates.Add(updateBuilder.Set(x => x.Channel, channel));
-				}
-			}
-			if (acl != null)
-			{
-				updates.Add(Acl.CreateUpdate<AgentDocument>(x => x.Acl!, acl));
-			}
 			if (comment != null)
 			{
 				updates.Add(updateBuilder.Set(x => x.Comment, comment));
@@ -367,7 +343,7 @@ namespace Horde.Build.Agents
 			IAgent? newAgent = await TryUpdateAsyncWithRetries(agent, updateBuilder.Combine(updates));
 			if (newAgent != null)
 			{
-				if (newAgent.RequestRestart != agent.RequestRestart || newAgent.RequestConform != agent.RequestConform || newAgent.RequestShutdown != agent.RequestShutdown || newAgent.Channel != agent.Channel)
+				if (newAgent.RequestRestart != agent.RequestRestart || newAgent.RequestConform != agent.RequestConform || newAgent.RequestShutdown != agent.RequestShutdown)
 				{
 					await PublishUpdateEventAsync(agent.Id);
 				}
@@ -523,8 +499,8 @@ namespace Horde.Build.Agents
 			update = update.Unset(x => x.Leases);
 			update = update.Set(x => x.Status, AgentStatus.Stopped);
 
-			bool bDeleted = agent.Deleted || agent.Ephemeral;
-			if (bDeleted != agent.Deleted)
+			bool deleted = agent.Deleted || agent.Ephemeral;
+			if (deleted != agent.Deleted)
 			{
 				update = update.Set(x => x.Deleted, agent.Deleted);
 			}
@@ -575,9 +551,9 @@ namespace Horde.Build.Agents
 		}
 
 		/// <inheritdoc/>
-		public async Task<IDisposable> SubscribeToUpdateEventsAsync(Action<AgentId> onUpdate)
+		public async Task<IAsyncDisposable> SubscribeToUpdateEventsAsync(Action<AgentId> onUpdate)
 		{
-			return await _redisService.GetDatabase().Multiplexer.GetSubscriber().SubscribeAsync(_updateEventChannel, (channel, agentId) => onUpdate(agentId));
+			return await _redisService.GetDatabase().Multiplexer.SubscribeAsync(_updateEventChannel, onUpdate);
 		}
 	}
 }

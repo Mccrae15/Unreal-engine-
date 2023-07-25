@@ -97,9 +97,9 @@ namespace GeometryCollectionTest
 
 		TManagedArray<bool>& Active = Collection->DynamicCollection->Active;
 
-		EXPECT_TRUE(Active[0]);
-		EXPECT_TRUE(Active[1]);
-		EXPECT_TRUE(Active[2]);
+		EXPECT_FALSE(Active[0]);
+		EXPECT_FALSE(Active[1]);
+		EXPECT_TRUE(Active[2]); // only the root cluster should be active when using clustering 
 		UnitTest.Advance();
 		EXPECT_FALSE(Active[0]);
 		EXPECT_FALSE(Active[1]);
@@ -307,7 +307,7 @@ namespace GeometryCollectionTest
 
 			if (Frame == 2)
 			{
-				ParticleHandles[0]->SetExternalStrain(50.0f);
+				Clustering.SetExternalStrain(ParticleHandles[0], 50.0f);
 				Clustering.BreakingModel();
 			}
 

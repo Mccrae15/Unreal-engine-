@@ -49,13 +49,19 @@ FShell::FShell(const TArray<TSharedPtr<FTopologicalFace>>& InTopologicalFaces, c
 	}
 }
 
-void FShell::Empty(int32 NewSize)
+void FShell::RemoveFaces()
 {
-	for(FOrientedFace& Face : TopologicalFaces)
+	for (FOrientedFace& Face : TopologicalFaces)
 	{
 		Face.Entity->ResetHost();
 	}
-	TopologicalFaces.Empty(NewSize);
+	TopologicalFaces.Empty();
+}
+
+void FShell::Empty()
+{
+	RemoveFaces();
+	FTopologicalShapeEntity::Empty();
 }
 
 void FShell::Add(TArray<FTopologicalFace*> Faces)
@@ -69,7 +75,6 @@ void FShell::Add(TArray<FTopologicalFace*> Faces)
 		Face->SetHost(this);
 	}
 }
-
 
 void FShell::Add(TSharedRef<FTopologicalFace> InTopologicalFace, EOrientation Orientation)
 {
@@ -395,7 +400,7 @@ int32 FShell::Orient()
 
 		for (FTopologicalFace* Face : Subshell)
 		{
-			if (Face == nullptr)
+			if (Face == nullptr || Face->IsDeleted())
 			{
 				continue;
 			}

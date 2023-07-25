@@ -3,11 +3,11 @@
 #pragma once
 
 #include "NiagaraDataInterface.h"
-#include "NiagaraCommon.h"
-#include "VectorVM.h"
-#include "GeometryCollection/GeometryCollectionActor.h"
 
 #include "NiagaraDataInterfaceGeometryCollection.generated.h"
+
+class AGeometryCollectionActor;
+struct FNiagaraDataInterfaceGeneratedFunction;
 
 
 /** Arrays in which the cpu datas will be str */
@@ -163,7 +163,6 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
@@ -195,3 +194,7 @@ struct FNDIGeometryCollectionProxy : public FNiagaraDataInterfaceProxy
 	/** List of proxy data for each system instances*/
 	TMap<FNiagaraSystemInstanceID, FNDIGeometryCollectionData> SystemInstancesToProxyData;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "GeometryCollection/GeometryCollectionActor.h"
+#endif

@@ -120,16 +120,25 @@ namespace UnrealBuildTool
 		V1,
 
 		/// <summary>
-		/// New defaults for 4.24: ModuleRules.PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs, ModuleRules.bLegacyPublicIncludePaths = false.
+		/// New defaults for 4.24:
+		/// * ModuleRules.PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs
+		/// * ModuleRules.bLegacyPublicIncludePaths = false
 		/// </summary>
 		V2,
+
+		/// <summary>
+		/// New defaults for 5.2:
+		/// * ModuleRules.bLegacyParentIncludePaths = false
+		/// Work in progress, not ready to be enabled as Latest.
+		/// </summary>
+		V3,
 
 		// *** When adding new entries here, be sure to update GameProjectUtils::GetDefaultBuildSettingsVersion() to ensure that new projects are created correctly. ***
 
 		/// <summary>
 		/// Always use the defaults for the current engine version. Note that this may cause compatibility issues when upgrading.
 		/// </summary>
-		Latest
+		Latest = V2,
 	}
 
 	/// <summary>
@@ -147,12 +156,17 @@ namespace UnrealBuildTool
 		/// </summary>
 		Unreal5_1,
 
+		/// <summary>
+		/// Include order used in Unreal 5.2
+		/// </summary>
+		Unreal5_2,
+
 		// *** When adding new entries here, be sure to update UEBuildModuleCPP.CurrentIncludeOrderDefine to ensure that the correct guard is used. ***
 
 		/// <summary>
 		/// Always use the latest version of include order.
 		/// </summary>
-		Latest = Unreal5_1,
+		Latest = Unreal5_2,
 
 		/// <summary>
 		/// Contains the oldest version of include order that the engine supports.
@@ -253,10 +267,50 @@ namespace UnrealBuildTool
 	}
 
 	/// <summary>
+	/// Determines how the Gameplay Debugger plugin will be activated.
+	/// </summary>
+	public enum GameplayDebuggerOverrideState
+	{
+		/// <summary>
+		/// Default => Not overriden, default usage behavior.
+		/// </summary>
+		Default,
+
+		/// <summary>
+		/// Core => WITH_GAMEPLAY_DEBUGGER = 0 and WITH_GAMEPLAY_DEBUGGER_CORE = 1
+		/// </summary>
+		Core,
+
+		/// <summary>
+		/// Full => WITH_GAMEPLAY_DEBUGGER = 1 and WITH_GAMEPLAY_DEBUGGER_CORE = 1
+		/// </summary>
+		Full
+	}
+
+	/// <summary>
 	/// Utility class for EngineIncludeOrderVersion defines
 	/// </summary>
 	public class EngineIncludeOrderHelper
 	{
+		private static string GetDeprecationDefine(EngineIncludeOrderVersion InVersion)
+		{
+			switch (InVersion)
+			{
+				default:
+				case EngineIncludeOrderVersion.Unreal5_2:
+					return "UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2";
+				case EngineIncludeOrderVersion.Unreal5_1:
+					return "UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1";
+				case EngineIncludeOrderVersion.Unreal5_0:
+					return "UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_0";
+			}
+		}
+
+		private static string GetDeprecationDefine(EngineIncludeOrderVersion InTestVersion, EngineIncludeOrderVersion InVersion)
+		{
+			return GetDeprecationDefine(InTestVersion) + "=" + (InVersion < InTestVersion ? "1" : "0");
+		}
+
 		/// <summary>
 		/// Returns a list of every deprecation define available.
 		/// </summary>
@@ -265,7 +319,8 @@ namespace UnrealBuildTool
 		{
 			return new List<string>()
 			{
-				"UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1",
+				GetDeprecationDefine(EngineIncludeOrderVersion.Unreal5_1),
+				GetDeprecationDefine(EngineIncludeOrderVersion.Unreal5_2),
 			};
 		}
 
@@ -278,8 +333,18 @@ namespace UnrealBuildTool
 		{
 			return new List<string>()
 			{
-				"UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1=" + (InVersion < EngineIncludeOrderVersion.Unreal5_1 ? "1" : "0"),
+				GetDeprecationDefine(EngineIncludeOrderVersion.Unreal5_1, InVersion),
+				GetDeprecationDefine(EngineIncludeOrderVersion.Unreal5_2, InVersion),
 			};
+		}
+
+		/// <summary>
+		/// Returns the latest deprecation define.
+		/// </summary>
+		/// <returns></returns>
+		public static string GetLatestDeprecationDefine()
+		{
+			return GetDeprecationDefine(EngineIncludeOrderVersion.Latest);
 		}
 	}
 
@@ -345,6 +410,10 @@ namespace UnrealBuildTool
 				if (!String.IsNullOrEmpty(NameOverride))
 				{
 					return NameOverride;
+				}
+				else if (!bUseUnityBuild)
+				{
+					return DefaultName + "NonUnity";
 				}
 
 				return DefaultName;
@@ -420,6 +489,11 @@ namespace UnrealBuildTool
 		internal FileReference? TargetSourceFile { get; set; }
 
 		/// <summary>
+		/// All target files that could be referenced by this target and will require updating the Makefile if changed
+		/// </summary>
+		internal HashSet<FileReference>? TargetFiles { get; set; }
+
+		/// <summary>
 		/// Logger for output relating to this target. Set before the constructor is run from <see cref="RulesCompiler"/>
 		/// </summary>
 		internal ILogger Logger { get; set; }
@@ -437,7 +511,13 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Architecture that the target is being built for (or an empty string for the default).
 		/// </summary>
-		public readonly string Architecture;
+		public readonly UnrealArchitectures Architectures;
+
+		/// <summary>
+		/// Gets the Architecture in the normal case where there is a single Architecture in Architectures
+		/// (this will throw an exception if there is more than one architecture specified)
+		/// </summary>
+		public UnrealArch Architecture => Architectures.SingleArchitecture;
 
 		/// <summary>
 		/// Path to the project file for the project containing this target.
@@ -750,15 +830,51 @@ namespace UnrealBuildTool
 		public bool bCompilePython = true;
 
 		/// <summary>
-		/// Whether to compile with WITH_GAMEPLAY_DEBUGGER enabled and use GameplayDebugger.
+		/// Whether to compile with WITH_GAMEPLAY_DEBUGGER enabled with all Engine's default gameplay debugger categories.
 		/// </summary>
 		[RequiresUniqueBuildEnvironment]
 		public bool bUseGameplayDebugger
 		{
-			get { return bUseGameplayDebuggerOverride ?? (bBuildDeveloperTools || (Configuration != UnrealTargetConfiguration.Test && Configuration != UnrealTargetConfiguration.Shipping)); }
-			set { bUseGameplayDebuggerOverride = value; }
+			get
+			{
+				if (UseGameplayDebuggerOverride == GameplayDebuggerOverrideState.Default)
+				{
+					return (bBuildDeveloperTools || (Configuration != UnrealTargetConfiguration.Test && Configuration != UnrealTargetConfiguration.Shipping));
+				}
+				else
+				{
+					return UseGameplayDebuggerOverride == GameplayDebuggerOverrideState.Full;
+				}
+			}
+			set
+			{
+				if (value)
+				{
+					UseGameplayDebuggerOverride = GameplayDebuggerOverrideState.Full;
+				}
+				else if (UseGameplayDebuggerOverride != GameplayDebuggerOverrideState.Core)
+				{
+					UseGameplayDebuggerOverride = GameplayDebuggerOverrideState.Default;
+				}
+			}
 		}
-		bool? bUseGameplayDebuggerOverride;
+
+		/// <summary>
+		/// Set to true when bUseGameplayDebugger is false but GameplayDebugger's core parts are required.
+		/// </summary>
+		[RequiresUniqueBuildEnvironment]
+		public bool bUseGameplayDebuggerCore
+		{
+			get { return (UseGameplayDebuggerOverride == GameplayDebuggerOverrideState.Core) || bUseGameplayDebugger; }
+			set
+			{
+				if (UseGameplayDebuggerOverride != GameplayDebuggerOverrideState.Full)
+				{
+					UseGameplayDebuggerOverride = value ? GameplayDebuggerOverrideState.Core : GameplayDebuggerOverrideState.Default;
+				}
+			}
+		}
+		GameplayDebuggerOverrideState UseGameplayDebuggerOverride;
 
 		/// <summary>
 		/// Whether to use Iris.
@@ -766,7 +882,7 @@ namespace UnrealBuildTool
 		[RequiresUniqueBuildEnvironment]
 		[CommandLine("-NoUseIris", Value = "false")]
 		[CommandLine("-UseIris", Value = "true")]
-		public bool bUseIris = false;
+		public bool bUseIris = true;
 
 		/// <summary>
 		/// Whether we are compiling editor code or not. Prefer the more explicit bCompileAgainstEditor instead.
@@ -979,6 +1095,18 @@ namespace UnrealBuildTool
 		public bool bForceEnableRTTI = false;
 
 		/// <summary>
+		/// Enable Position Independent Executable (PIE). Has an overhead cost
+		/// </summary>
+		[CommandLine("-pie")]
+		public bool bEnablePIE = false;
+
+		/// <summary>
+		/// Enable Stack Protection. Has an overhead cost
+		/// </summary>
+		[CommandLine("-stack-protect")]
+		public bool bEnableStackProtection = false;
+
+		/// <summary>
 		/// Compile server-only code.
 		/// </summary>
 		[RequiresUniqueBuildEnvironment]
@@ -988,30 +1116,6 @@ namespace UnrealBuildTool
 			set { bWithServerCodeOverride = value; }
 		}
 		private bool? bWithServerCodeOverride;
-
-		/// <summary>
-		/// Compile trusted-server-only code.
-		/// </summary>
-		[RequiresUniqueBuildEnvironment]
-		public bool bWithServerCodeTrusted
-		{
-			get { return bWithServerCode && bWithServerCodeTrustedPrivate; }
-			set { bWithServerCodeTrustedPrivate = value; }
-		}
-
-		/// <summary>
-		/// Compile untrusted-server-only code.
-		/// </summary>
-		[RequiresUniqueBuildEnvironment]
-		public bool bWithServerCodeUntrusted
-		{
-			get { return bWithServerCode && !bWithServerCodeTrustedPrivate; }
-			set { bWithServerCodeTrustedPrivate = !value; }
-		}
-
-		[CommandLine("-TrustedServer", Value = "true")]
-		[CommandLine("-NoTrustedServer", Value = "false")]
-		private bool bWithServerCodeTrustedPrivate = true;
 
 		/// <summary>
 		/// Compile with FName storing the number part in the name table. 
@@ -1094,7 +1198,7 @@ namespace UnrealBuildTool
 		[RequiresUniqueBuildEnvironment]
 		public bool bWithLiveCoding
 		{
-			get { return bWithLiveCodingPrivate ?? (Platform == UnrealTargetPlatform.Win64 && Configuration != UnrealTargetConfiguration.Shipping && Configuration != UnrealTargetConfiguration.Test && Type != TargetType.Program); }
+			get { return bWithLiveCodingPrivate ?? (Platform == UnrealTargetPlatform.Win64 && Architecture.bIsX64 && Configuration != UnrealTargetConfiguration.Shipping && Configuration != UnrealTargetConfiguration.Test && Type != TargetType.Program); }
 			set { bWithLiveCodingPrivate = value; }
 		}
 		bool? bWithLiveCodingPrivate;
@@ -1112,6 +1216,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		[RequiresUniqueBuildEnvironment]
 		public bool bWithDirectXMath = false;
+
+		/// <summary>
+		/// Whether to enable the support for FixedTimeStep in the engine
+		/// </summary>
+		[RequiresUniqueBuildEnvironment]
+		public bool bWithFixedTimeStepSupport = true;
 
 		/// <summary>
 		/// Whether to turn on logging for test/shipping builds.
@@ -1157,6 +1267,12 @@ namespace UnrealBuildTool
 		public bool bCompileFreeType = true;
 
 		/// <summary>
+		/// Whether to turn allow exec commands for shipping builds.
+		/// </summary>
+		[RequiresUniqueBuildEnvironment]
+		public bool bUseExecCommandsInShipping = true;
+
+		/// <summary>
 		/// True if we want to favor optimizing size over speed.
 		/// </summary>
 		[RequiresUniqueBuildEnvironment]
@@ -1168,6 +1284,7 @@ namespace UnrealBuildTool
 		/// Allows to fine tune optimizations level for speed and\or code size
 		/// </summary>
 		[RequiresUniqueBuildEnvironment]
+		[CommandLine("-OptimizationLevel=")]
 		public OptimizationMode OptimizationLevel = OptimizationMode.Speed;
 
 		/// <summary>
@@ -1208,6 +1325,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		[CommandLine("-IWYU")]
 		public bool bIWYU = false;
+
+		/// <summary>
+		/// Tells "include what you use" to only compile header files.
+		/// </summary>
+		[CommandLine("-IWYUHeadersOnly")]
+		public bool bIWYUHeadersOnly = false;
 
 		/// <summary>
 		/// Enforce "include what you use" rules; warns if monolithic headers (Engine.h, UnrealEd.h, etc...) are used, and checks that source files include their matching header first.
@@ -1441,6 +1564,13 @@ namespace UnrealBuildTool
 		public int NumIncludedBytesPerUnityCPP = 384 * 1024;
 
 		/// <summary>
+		/// Disables overrides that are set by the module
+		/// </summary>
+		[CommandLine("-DisableModuleNumIncludedBytesPerUnityCPPOverride", Value = "true")]
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public bool bDisableModuleNumIncludedBytesPerUnityCPPOverride = false;
+
+		/// <summary>
 		/// Whether to stress test the C++ unity build robustness by including all C++ files files in a project from a single unified file.
 		/// </summary>
 		[CommandLine("-StressTestUnity")]
@@ -1592,6 +1722,21 @@ namespace UnrealBuildTool
 		public bool bPreferThinLTO = false;
 
 		/// <summary>
+		/// Directory where to put the ThinLTO cache on supported platforms.
+		/// </summary>
+		[CommandLine("-ThinLTOCacheDirectory")]
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public string? ThinLTOCacheDirectory = null;
+
+		/// <summary>
+		/// Arguments that will be applied to prune the ThinLTO cache on supported platforms.
+		/// Arguments will only be applied if ThinLTOCacheDirectory is set.
+		/// </summary>
+		[CommandLine("-ThinLTOCachePruningArguments")]
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public string? ThinLTOCachePruningArguments = null;
+
+		/// <summary>
 		/// Whether to enable Profile Guided Optimization (PGO) instrumentation in this build.
 		/// </summary>
 		[CommandLine("-PGOProfile", Value = "true")]
@@ -1606,7 +1751,7 @@ namespace UnrealBuildTool
 		public bool bPGOOptimize = false;
 
 		/// <summary>
-		/// Whether to support edit and continue.  Only works on Microsoft compilers.
+		/// Whether to support edit and continue.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		public bool bSupportEditAndContinue = false;
@@ -1641,6 +1786,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		public bool bUseMallocProfiler = false;
+
+		/// <summary>
+		/// If true, then enable Unreal Insights (utrace) profiling in the build for the Shader Compiler Worker (defines USE_SHADER_COMPILER_WORKER_TRACE=1).
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public bool bShaderCompilerWorkerTrace = false;
 
 		/// <summary>
 		/// Enables "Shared PCHs", a feature which significantly speeds up compile times by attempting to
@@ -1823,6 +1974,16 @@ namespace UnrealBuildTool
 			set { bLegacyPublicIncludePathsPrivate = value; }
 		}
 		private bool? bLegacyPublicIncludePathsPrivate;
+
+		/// <summary>
+		/// Add all the parent folders as include paths for the compile environment.
+		/// </summary>
+		public bool bLegacyParentIncludePaths
+		{
+			get { return bLegacyParentIncludePathsPrivate ?? (DefaultBuildSettings < BuildSettingsVersion.V3); }
+			set { bLegacyParentIncludePathsPrivate = value; }
+		}
+		private bool? bLegacyParentIncludePathsPrivate;
 
 		/// <summary>
 		/// Which C++ stanard to use for compiling this target
@@ -2083,10 +2244,11 @@ namespace UnrealBuildTool
 		/// <param name="TargetInfo">Target info</param>
 		/// <param name="BaseFile">Path to the file for the rules assembly</param>
 		/// <param name="PlatformFile">Path to the platform specific rules file</param>
+		/// <param name="TargetFiles">Path to all possible rules file</param>
 		/// <param name="DefaultBuildSettings"></param>
 		/// <param name="Logger">Logger for the new target rules</param>
 		/// <returns>Target instance</returns>
-		public static TargetRules Create(Type RulesType, TargetInfo TargetInfo, FileReference? BaseFile, FileReference? PlatformFile, BuildSettingsVersion? DefaultBuildSettings, ILogger Logger)
+		public static TargetRules Create(Type RulesType, TargetInfo TargetInfo, FileReference? BaseFile, FileReference? PlatformFile, IEnumerable<FileReference>? TargetFiles, BuildSettingsVersion? DefaultBuildSettings, ILogger Logger)
 		{
 			TargetRules Rules = (TargetRules)FormatterServices.GetUninitializedObject(RulesType);
 			if (DefaultBuildSettings.HasValue)
@@ -2099,6 +2261,9 @@ namespace UnrealBuildTool
 
 			// The platform/group-specific target file name
 			Rules.TargetSourceFile = PlatformFile;
+
+			// All target files for this target that could cause invalidation
+			Rules.TargetFiles = TargetFiles?.ToHashSet() ?? new();
 
 			// Initialize the logger
 			Rules.Logger = Logger;
@@ -2132,7 +2297,7 @@ namespace UnrealBuildTool
 			this.DefaultName = Target.Name;
 			this.Platform = Target.Platform;
 			this.Configuration = Target.Configuration;
-			this.Architecture = Target.Architecture;
+			this.Architectures = Target.Architectures;
 			this.ProjectFile = Target.ProjectFile;
 			this.Version = Target.Version;
 			this.WindowsPlatform = new WindowsTargetRules(this);
@@ -2238,14 +2403,6 @@ namespace UnrealBuildTool
 			{
 				GlobalDefinitions.Add("UE_SERVER=1");
 				GlobalDefinitions.Add("USE_NULL_RHI=1");
-				if(bWithServerCodeTrusted)
-                {
-					GlobalDefinitions.Add("UE_SERVER_TRUSTED=1");
-                }
-                else
-                {
-					GlobalDefinitions.Add("UE_SERVER_UNTRUSTED=1");
-				}
 			}
 		}
 
@@ -2389,6 +2546,14 @@ namespace UnrealBuildTool
 					}
 				}
 			}
+			foreach (UnrealTargetPlatform Platform in UnrealTargetPlatform.GetValidPlatforms())
+			{
+				UEBuildPlatform? BuildPlatform;
+				if (UEBuildPlatform.TryGetBuildPlatform(Platform, out BuildPlatform))
+				{
+					yield return BuildPlatform.ArchitectureConfig;
+				}
+			}
 		}
 
 		/// <summary>
@@ -2434,17 +2599,32 @@ namespace UnrealBuildTool
 		/// <param name="Diagnostics">List of diagnostic messages</param>
 		internal void GetBuildSettingsInfo(List<string> Diagnostics)
 		{
-			if(DefaultBuildSettings < BuildSettingsVersion.V2)
+			// Resolve BuildSettingsVersion.Latest to the version it's assigned to
+			BuildSettingsVersion LatestVersion = BuildSettingsVersion.Latest;
+			foreach (BuildSettingsVersion Value in Enum.GetValues(typeof(BuildSettingsVersion)))
+			{
+				if ((int)Value == (int)BuildSettingsVersion.Latest)
+				{
+					LatestVersion = Value;
+				}
+			}
+
+			if (DefaultBuildSettings < LatestVersion) 
 			{
 				Diagnostics.Add("[Upgrade]");
 				Diagnostics.Add("[Upgrade] Using backward-compatible build settings. The latest version of UE sets the following values by default, which may require code changes:");
 
 				List<Tuple<string, string>> ModifiedSettings = new List<Tuple<string, string>>();
-				if(DefaultBuildSettings < BuildSettingsVersion.V2)
+				if (BuildSettingsVersion.V2 <= LatestVersion && DefaultBuildSettings < BuildSettingsVersion.V2)
 				{
 					ModifiedSettings.Add(Tuple.Create(String.Format("{0} = false", nameof(bLegacyPublicIncludePaths)), "Omits subfolders from public include paths to reduce compiler command line length. (Previously: true)."));
 					ModifiedSettings.Add(Tuple.Create(String.Format("{0} = WarningLevel.Error", nameof(ShadowVariableWarningLevel)), "Treats shadowed variable warnings as errors. (Previously: WarningLevel.Warning)."));
 					ModifiedSettings.Add(Tuple.Create(String.Format("{0} = PCHUsageMode.UseExplicitOrSharedPCHs", nameof(ModuleRules.PCHUsage)), "Set in build.cs files to enables IWYU-style PCH model. See https://docs.unrealengine.com/en-US/Programming/BuildTools/UnrealBuildTool/IWYU/index.html. (Previously: PCHUsageMode.UseSharedPCHs)."));
+				}
+
+				if (BuildSettingsVersion.V3 <= LatestVersion && DefaultBuildSettings < BuildSettingsVersion.V3)
+				{
+					ModifiedSettings.Add(Tuple.Create(String.Format("{0} = false", nameof(bLegacyParentIncludePaths)), "Omits module parent folders from include paths to reduce compiler command line length. (Previously: true)."));
 				}
 
 				if (ModifiedSettings.Count > 0)
@@ -2455,7 +2635,7 @@ namespace UnrealBuildTool
 						Diagnostics.Add(String.Format(FormatString, ModifiedSetting.Item1, ModifiedSetting.Item2));
 					}
 				}
-				Diagnostics.Add(String.Format("[Upgrade] Suppress this message by setting 'DefaultBuildSettings = BuildSettingsVersion.{0};' in {1}, and explicitly overriding settings that differ from the new defaults.", (BuildSettingsVersion)(BuildSettingsVersion.Latest - 1), File!.GetFileName()));
+				Diagnostics.Add(String.Format("[Upgrade] Suppress this message by setting 'DefaultBuildSettings = BuildSettingsVersion.{0};' in {1}, and explicitly overriding settings that differ from the new defaults.", LatestVersion, File!.GetFileName()));
 				Diagnostics.Add("[Upgrade]");
 			}
 
@@ -2518,6 +2698,12 @@ namespace UnrealBuildTool
 			get { return Inner.TargetSourceFile!; }
 		}
 
+
+		internal ReadOnlyHashSet<FileReference> TargetFiles
+		{
+			get { return Inner.TargetFiles!; }
+		}
+
 		public UnrealTargetPlatform Platform
 		{
 			get { return Inner.Platform; }
@@ -2528,7 +2714,12 @@ namespace UnrealBuildTool
 			get { return Inner.Configuration; }
 		}
 
-		public string Architecture
+		public UnrealArchitectures Architectures
+		{
+			get { return Inner.Architectures; }
+		}
+
+		public UnrealArch Architecture
 		{
 			get { return Inner.Architecture; }
 		}
@@ -2751,7 +2942,12 @@ namespace UnrealBuildTool
 		{
 			get { return Inner.bUseGameplayDebugger; }
 		}
-		
+
+		public bool bUseGameplayDebuggerCore
+		{
+			get { return Inner.bUseGameplayDebuggerCore; }
+		}
+
 		public bool bUseIris
 		{
 			get { return Inner.bUseIris; }
@@ -2872,6 +3068,16 @@ namespace UnrealBuildTool
 			get { return Inner.bForceEnableRTTI; }
 		}
 
+		public bool bEnablePIE
+		{
+			get { return Inner.bEnablePIE; }
+		}
+
+		public bool bEnableStackProtection
+		{
+			get { return Inner.bEnableStackProtection; }
+		}
+
 		public bool bUseInlining
 		{
 			get { return Inner.bUseInlining; }
@@ -2880,16 +3086,6 @@ namespace UnrealBuildTool
 		public bool bWithServerCode
 		{
 			get { return Inner.bWithServerCode; }
-		}
-
-		public bool bWithServerCodeTrusted
-		{
-			get { return Inner.bWithServerCodeTrusted; }
-		}
-
-		public bool bWithServerCodeUntrusted
-		{
-			get { return Inner.bWithServerCodeUntrusted; }
 		}
 
 		public bool bFNameOutlineNumber
@@ -2942,6 +3138,11 @@ namespace UnrealBuildTool
 			get { return Inner.bWithDirectXMath; }
 		}
 
+		public bool bWithFixedTimeStepSupport
+		{
+			get { return Inner.bWithFixedTimeStepSupport; }
+		}
+
 		public bool bUseLoggingInShipping
 		{
 			get { return Inner.bUseLoggingInShipping; }
@@ -2975,6 +3176,11 @@ namespace UnrealBuildTool
 		public bool bCompileFreeType
 		{
 			get { return Inner.bCompileFreeType; }
+		}
+
+		public bool bUseExecCommandsInShipping
+		{
+			get { return Inner.bUseExecCommandsInShipping; }
 		}
 
 		[Obsolete("Deprecated in UE5.1 - Please use OptimizationLevel instead.")]
@@ -3026,6 +3232,11 @@ namespace UnrealBuildTool
 		public bool bIWYU
 		{
 			get { return Inner.bIWYU; }
+		}
+
+		public bool bIWYUHeadersOnly
+		{
+			get { return Inner.bIWYUHeadersOnly; }
 		}
 
 		public bool bEnforceIWYU
@@ -3150,6 +3361,11 @@ namespace UnrealBuildTool
 		public int NumIncludedBytesPerUnityCPP
 		{
 			get { return Inner.NumIncludedBytesPerUnityCPP; }
+		}
+
+		public bool bDisableModuleNumIncludedBytesPerUnityCPPOverride
+		{
+			get { return Inner.bDisableModuleNumIncludedBytesPerUnityCPPOverride; }
 		}
 
 		public bool bStressTestUnity
@@ -3292,6 +3508,11 @@ namespace UnrealBuildTool
 			get { return Inner.bUseMallocProfiler; }
 		}
 
+		public bool bShaderCompilerWorkerTrace
+        {
+			get { return Inner.bShaderCompilerWorkerTrace;  }
+        }
+
 		public bool bUseSharedPCHs
 		{
 			get { return Inner.bUseSharedPCHs; }
@@ -3340,6 +3561,16 @@ namespace UnrealBuildTool
 		public string? CrashDiagnosticDirectory
 		{
 			get { return Inner.CrashDiagnosticDirectory; }
+		}
+
+		public string? ThinLTOCacheDirectory
+		{
+			get { return Inner.ThinLTOCacheDirectory; }
+		}
+
+		public string? ThinLTOCachePruningArguments
+		{
+			get { return Inner.ThinLTOCachePruningArguments; }
 		}
 
 		public string? BundleVersion
@@ -3415,6 +3646,11 @@ namespace UnrealBuildTool
 		public bool bLegacyPublicIncludePaths
 		{
 			get { return Inner.bLegacyPublicIncludePaths; }
+		}
+
+		public bool bLegacyParentIncludePaths
+		{
+			get { return Inner.bLegacyParentIncludePaths; }
 		}
 
 		public CppStandardVersion CppStandard

@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSessionTencentRail.h"
-#include "OnlineSubsystemTencentPrivate.h"
-#include "OnlinePresenceTencent.h"
-#include "Misc/CommandLine.h"
-#include "Misc/App.h"
 
 #if WITH_TENCENT_RAIL_SDK
+#include "Interfaces/OnlineIdentityInterface.h"
+#include "Online/OnlineBase.h"
 #include "OnlineAsyncTasksTencent.h"
+#include "OnlinePresenceTencent.h"
+#include "OnlineSubsystemTencent.h"
+#include "OnlineSubsystemTencentPrivate.h"
 #include "MetadataKeysRail.h"
+#include "Misc/App.h"
+#include "Misc/CommandLine.h"
 
 #define RAIL_INVITE_RAILID TEXT("--rail_connect_to_railid=")
 #define RAIL_INVITE_CMDLINE TEXT("--rail_connect_cmd=")

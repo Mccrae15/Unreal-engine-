@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "WebSocket.h"
-#include "WebSocketNetworkingPrivate.h"
-#include "IPAddress.h"
+#include "WebSocketNetworkingPrivate.h" // IWYU pragma: keep
 
 #if USE_LIBWEBSOCKET
 
@@ -76,8 +75,10 @@ FWebSocket::FWebSocket(
 
 	check(Context);
 
+	auto ServerAddressString = StringCast<ANSICHAR>(*ServerAddress.ToString(false));
+
 	struct lws_client_connect_info ConnectInfo = {
-			Context, TCHAR_TO_ANSI(*ServerAddress.ToString(false)), ServerAddress.GetPort(), false, "/", TCHAR_TO_ANSI(*ServerAddress.ToString(false)), TCHAR_TO_ANSI(*ServerAddress.ToString(false)), Protocols[1].name, -1, this
+			Context, ServerAddressString.Get(), ServerAddress.GetPort(), false, "/", ServerAddressString.Get(), ServerAddressString.Get(), Protocols[1].name, -1, this
 	};
 	Wsi = lws_client_connect_via_info(&ConnectInfo);
 	check(Wsi);

@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #pragma  once
 
 #include "CoreMinimal.h"
@@ -8,6 +9,8 @@
 #include "RemoteControlFieldPath.h"
 #include "UObject/StructOnScope.h"
 #include "UObject/WeakFieldPtr.h"
+
+#include "IRemoteControlModule.generated.h"
 
 REMOTECONTROL_API DECLARE_LOG_CATEGORY_EXTERN(LogRemoteControl, Log, All);
 
@@ -19,6 +22,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 struct FExposedProperty;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 struct FRCMaskingOperation;
+struct FRCResetToDefaultArgs;
 struct FRemoteControlProperty;
 class IRemoteControlPropertyFactory;
 
@@ -242,6 +246,16 @@ public:
 	UE_DEPRECATED(4.27, "OnPresetUnregistered is deprecated.")
 	virtual FOnPresetUnregistered& OnPresetUnregistered() = 0;
 
+	/** Delegate triggered when an error occurs, which aren't necessarily written to UE LOG */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnError, const FString& /*Message*/, ELogVerbosity::Type /*Verbosity*/);
+	virtual FOnError& OnError() = 0;
+
+	/** Broadcast an error to the OnError delegate */
+	static void BroadcastError(const FString& Message, ELogVerbosity::Type Verbosity = ELogVerbosity::Error)
+	{
+		Get().OnError().Broadcast(Message, Verbosity);
+	}
+
 	/**
 	 * Register the preset with the module, enabling using the preset remotely using its name.
 	 * @return whether registration was successful.
@@ -265,6 +279,27 @@ public:
 	 */
 	virtual void UnregisterEmbeddedPreset(FName Name) = 0;
 	virtual void UnregisterEmbeddedPreset(URemoteControlPreset* Preset) = 0;
+
+	/**
+	 * Returns true when the given object can be reset to its default value, false otherwise.
+	 * @param InObject Reference to the exposed object.
+	 * @param InArgs Arguments to be passed.
+	 */
+	virtual bool CanResetToDefaultValue(UObject* InObject, const FRCResetToDefaultArgs& InArgs) const = 0;
+
+	/**
+	 * Returns true when the given object and property has custom default value, false otherwise.
+	 * @param InObject Reference to the exposed object.
+	 * @param InProperty Reference to the exposed property.
+	 */
+	virtual bool HasDefaultValueCustomization(const UObject* InObject, const FProperty* InProperty) const = 0;
+
+	/**
+	 * Performs actual data reset on the given object.
+	 * @param InObject Reference to the exposed object.
+	 * @param InArgs Arguments to be passed.
+	 */
+	virtual void ResetToDefaultValue(UObject* InObject, FRCResetToDefaultArgs& InArgs) = 0;
 
 	/**
 	 * Performs the given masking operation.
@@ -520,5 +555,11 @@ public:
 
 	/** Get map of the factories which is responsible for the Remote Control property creation */
 	virtual const TMap<FName, TSharedPtr<IRemoteControlPropertyFactory>>& GetEntityFactories() const = 0;
+
+	/**
+	 *  @return whether an object can be accessed remotely.
+	 *  @note Check Remote Control project settings to configure.
+	 */
+	virtual bool CanBeAccessedRemotely(UObject* InObject) const = 0;
 };
 

@@ -22,6 +22,7 @@
 #define VULKAN_MEMORY_HIGHEST_PRIORITY 1.f
 
 class FVulkanCommandListContext;
+class FVulkanDevice;
 class FVulkanQueue;
 class FVulkanCmdBuffer;
 class FVulkanTexture;
@@ -231,13 +232,19 @@ namespace VulkanRHI
 		{
 			check(NextView == 0);
 		}
+
 		FVulkanViewBase(FVulkanDevice* Device = nullptr)
 		: FDeviceChild(Device)
 		, NextView(0)
 		{
 		}
-		virtual void Invalidate(){}
+
+		virtual void Invalidate() {}
 		FVulkanViewBase* NextView;
+
+	protected:
+		void FreeBindlessHandle();
+		FRHIDescriptorHandle BindlessHandle;
 	};
 	// An Allocation off a Device Heap. Lowest level of allocations and bounded by VkPhysicalDeviceLimits::maxMemoryAllocationCount.
 	class FDeviceMemoryAllocation
@@ -801,7 +808,7 @@ namespace VulkanRHI
 		void DumpMemory(bool bFullDump = true);
 
 
-		void AllocUniformBuffer(FVulkanAllocation& OutAllocation, uint32 Size, const void* Contents);
+		void AllocUniformBuffer(FVulkanAllocation& OutAllocation, uint32 Size);
 		void FreeUniformBuffer(FVulkanAllocation& InAllocation);
 
 		void HandleOOM(bool bCanResume = false, VkResult Result = VK_SUCCESS, uint64 AllocationSize = 0, uint32 MemoryTypeIndex = 0);

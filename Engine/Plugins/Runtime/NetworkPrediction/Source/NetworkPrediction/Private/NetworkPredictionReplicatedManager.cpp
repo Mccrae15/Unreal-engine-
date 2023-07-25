@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NetworkPredictionReplicatedManager.h"
-#include "Net/UnrealNetwork.h"
+#include "Net/Core/PushModel/PushModel.h"
+#include "Engine/World.h"
 #include "NetworkPredictionWorldManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NetworkPredictionReplicatedManager)

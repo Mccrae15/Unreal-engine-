@@ -16,6 +16,7 @@
 class UNiagaraNodeInput;
 class UNiagaraNodeOutput;
 class UNiagaraNodeFunctionCall;
+class UNiagaraNodeParameterMapGet;
 struct FNiagaraVariable;
 struct FNiagaraTypeDefinition;
 class UNiagaraGraph;
@@ -27,6 +28,7 @@ class UNiagaraScript;
 class FStructOnScope;
 class UEdGraph;
 class UEdGraphNode;
+class SToolTip;
 class SWidget;
 class UNiagaraNode;
 class UEdGraphSchema_Niagara;
@@ -167,6 +169,7 @@ namespace FNiagaraEditorUtilities
 	NIAGARAEDITOR_API bool AreTypesAssignable(const FNiagaraTypeDefinition& TypeA, const FNiagaraTypeDefinition& TypeB);
 
 	void MarkDependentCompilableAssetsDirty(TArray<UObject*> InObjects);
+	void MarkDependentCompilableAssetsDirty(const TArray<FAssetData>& InAssets);
 
 	void ResolveNumerics(UNiagaraGraph* SourceGraph, bool bForceParametersToResolveNumerics, TArray<FNiagaraVariable>& ChangedNumericParams);
 
@@ -276,11 +279,15 @@ namespace FNiagaraEditorUtilities
 	 * @returns Bool for whether adding the parameter succeeded.
 	 */
 	bool AddParameter(FNiagaraVariable& NewParameterVariable, FNiagaraParameterStore& TargetParameterStore, UObject& ParameterStoreOwner, UNiagaraStackEditorData* StackEditorData);
-
+	
+	TArray<FNiagaraVariable> GetReferencedUserParametersFromEmitter(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel);
+	TArray<UNiagaraNodeParameterMapGet*> GetParameterMapGetNodesWithUserParameter(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel, FNiagaraVariable UserParameter);
+	TArray<FNiagaraUserParameterBinding*> GetUserParameterBindingsForUserParameter(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel, FNiagaraVariable UserParameter);
 	NIAGARAEDITOR_API TObjectPtr<UNiagaraScriptVariable> GetScriptVariableForUserParameter(const FNiagaraVariable& UserParameter, TSharedPtr<FNiagaraSystemViewModel> SystemViewModel);
 	NIAGARAEDITOR_API TObjectPtr<UNiagaraScriptVariable> GetScriptVariableForUserParameter(const FNiagaraVariable& UserParameter, UNiagaraSystem& System);
 	NIAGARAEDITOR_API TObjectPtr<UNiagaraScriptVariable> FindScriptVariableForUserParameter(const FGuid& UserParameterGuid, UNiagaraSystem& System);
-	
+	void ReplaceUserParameterReferences(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel, FNiagaraVariable OldUserParameter, FNiagaraVariable NewUserParameter);
+
 	NIAGARAEDITOR_API bool AddEmitterContextMenuActions(FMenuBuilder& MenuBuilder, const TSharedPtr<FNiagaraEmitterHandleViewModel>& EmitterHandleViewModel);
 
 	void ShowParentEmitterInContentBrowser(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel);
@@ -367,10 +374,6 @@ namespace FNiagaraEditorUtilities
 	};
 
 	NIAGARAEDITOR_API int GetReferencedAssetCount(const FAssetData& SourceAsset, TFunction<ETrackAssetResult(const FAssetData&)> Predicate);
-	
-	/** Gets a list of the registered types which are allowed in the current editor context.  This API should be 
-		called when providing a list types to the user instead of getting the type list directly from the type registry. */
-	void GetAllowedTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes);
 
 	/** Gets a list of the registered user variable types which are allowed in the current editor context.  This API should be
 		called when providing a list types to the user instead of getting the type list directly from the type registry. */

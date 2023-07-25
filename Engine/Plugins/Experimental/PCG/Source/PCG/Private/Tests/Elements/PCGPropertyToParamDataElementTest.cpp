@@ -2,13 +2,14 @@
 
 #include "Tests/Elements/PCGPropertyToParamDataElementTest.h"
 #include "PCGComponent.h"
+#include "PCGContext.h"
 #include "PCGGraph.h"
 #include "PCGParamData.h"
 #include "PCGVolume.h"
 #include "Elements/PCGPropertyToParamData.h"
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataAttributeTraits.h"
+#include "Tests/PCGTestsCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGPropertyToParamDataElementTest)
 
 // To run: automation runtest pcg.tests.PropertyToParamData
 
@@ -44,8 +45,7 @@ bool VerifyAttributeValue(FPCGTestBaseClass* TestInstance, PCGTestsCommon::FTest
 	TestNode->GetOutputPins()[0]->AddEdgeTo(TrivialNode->GetInputPins()[0]);
 
 	FPCGElementPtr Element = Settings->GetElement();
-	TUniquePtr<FPCGContext> Context(Element->Initialize(FPCGDataCollection(), TestData.TestPCGComponent, TestNode));
-	Context->NumAvailableTasks = 1;
+	TUniquePtr<FPCGContext> Context = PCGTestsCommon::InitializeTestContext(Element.Get(), FPCGDataCollection(), TestData.TestPCGComponent, TestNode);
 
 	// Run the element, can throw an error.
 	while (!Element->Execute(Context.Get()))
@@ -108,9 +108,9 @@ bool FPCGPropertyToParamDataPropertyTypeTest::RunTest(const FString& Parameters)
 	bool bSuccess = true;
 
 	UPCGPropertyToParamDataSettings* Settings = NewObject<UPCGPropertyToParamDataSettings>();
-	Settings->ActorSelection = EPCGActorSelection::ByClass;
-	Settings->ActorSelectionClass = APCGUnitTestDummyActor::StaticClass();
-	Settings->ActorFilter = EPCGActorFilter::Self;
+	Settings->ActorSelector.ActorSelection = EPCGActorSelection::ByClass;
+	Settings->ActorSelector.ActorSelectionClass = APCGUnitTestDummyActor::StaticClass();
+	Settings->ActorSelector.ActorFilter = EPCGActorFilter::Self;
 
 	static constexpr int32 Seed = 42;
 	const FString ExtraTestWhat = "PropertyToParamDataPropertyTypeTest";
@@ -171,12 +171,12 @@ bool FPCGPropertyToParamDataPropertyTypeTest::RunTest(const FString& Parameters)
 	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, EnumProperty), (int64)EPCGUnitTestDummyEnum::Three, ExtraTestWhat);
 
 	// Struct Properties
+	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, Vector2Property), Vector2Value, ExtraTestWhat);
 	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, VectorProperty), VectorValue, ExtraTestWhat);
 	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, Vector4Property), Vector4Value, ExtraTestWhat);
 	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, RotatorProperty), RotatorValue, ExtraTestWhat);
 	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, QuatProperty), QuatValue, ExtraTestWhat);
-	/** TODO: Uncomment this when the == & != operators are defined for FTransform on FN */
-	//bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, TransformProperty), TransformValue, ExtraTestWhat);
+	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, TransformProperty), TransformValue, ExtraTestWhat);
 	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, SoftObjectPathProperty), SoftObjectPathValue.ToString(), ExtraTestWhat);
 	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, SoftClassPathProperty), SoftClassPathValue.ToString(), ExtraTestWhat);
 
@@ -185,8 +185,7 @@ bool FPCGPropertyToParamDataPropertyTypeTest::RunTest(const FString& Parameters)
 	bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, ObjectProperty), PCGVolume->GetPathName(), ExtraTestWhat);
 
 	// Unsupported properties
-	AddExpectedError(TEXT("Error while creating an attribute. Either the property type is not supported by PCG or attribute creation failed."), EAutomationExpectedErrorFlags::Contains, 2);
-	bSuccess &= VerifyAttributeValueInvalid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, Vector2Property), Vector2Value, ExtraTestWhat);
+	AddExpectedError(TEXT("Error while creating an attribute for property"), EAutomationExpectedErrorFlags::Contains, 1);
 	bSuccess &= VerifyAttributeValueInvalid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, ColorProperty), ColorValue, ExtraTestWhat);
 
 	// Unknown property
@@ -209,15 +208,14 @@ bool FPCGPropertyToParamDataActorFindTest::RunTest(const FString& Parameters)
 	static const FString Name = TEXT("MyPCGUnitTestDummyActor");
 
 	UPCGPropertyToParamDataSettings* Settings = NewObject<UPCGPropertyToParamDataSettings>();
-	Settings->ActorSelectionClass = APCGUnitTestDummyActor::StaticClass();
-	Settings->ActorSelectionTag = Tag;
-	Settings->ActorSelectionName = APCGUnitTestDummyActor::StaticClass()->GetFName();
+	Settings->ActorSelector.ActorSelectionClass = APCGUnitTestDummyActor::StaticClass();
+	Settings->ActorSelector.ActorSelectionTag = Tag;
 	Settings->ComponentClass = UPCGUnitTestDummyComponent::StaticClass();
 
 	// Self by class
 	{
-		Settings->ActorSelection = EPCGActorSelection::ByClass;
-		Settings->ActorFilter = EPCGActorFilter::Self;
+		Settings->ActorSelector.ActorSelection = EPCGActorSelection::ByClass;
+		Settings->ActorSelector.ActorFilter = EPCGActorFilter::Self;
 
 		PCGTestsCommon::FTestData TestData(Seed, Settings, APCGUnitTestDummyActor::StaticClass());
 		Cast<APCGUnitTestDummyActor>(TestData.TestActor)->IntProperty = 42;
@@ -227,25 +225,14 @@ bool FPCGPropertyToParamDataActorFindTest::RunTest(const FString& Parameters)
 
 	// Self by tag
 	{
-		Settings->ActorSelection = EPCGActorSelection::ByTag;
-		Settings->ActorFilter = EPCGActorFilter::Self;
+		Settings->ActorSelector.ActorSelection = EPCGActorSelection::ByTag;
+		Settings->ActorSelector.ActorFilter = EPCGActorFilter::Self;
 
 		PCGTestsCommon::FTestData TestData(Seed, Settings, APCGUnitTestDummyActor::StaticClass());
 		TestData.TestActor->Tags.Add(Tag);
 		Cast<APCGUnitTestDummyActor>(TestData.TestActor)->IntProperty = 42;
 
 		bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, IntProperty), 42ll, "PropertyToParamDataActorFindTest_Self_Tag");
-	}
-
-	// Self by name
-	{
-		Settings->ActorSelection = EPCGActorSelection::ByName;
-		Settings->ActorFilter = EPCGActorFilter::Self;
-
-		PCGTestsCommon::FTestData TestData(Seed, Settings, APCGUnitTestDummyActor::StaticClass());
-		Cast<APCGUnitTestDummyActor>(TestData.TestActor)->IntProperty = 42;
-
-		bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, IntProperty), 42ll, "PropertyToParamDataActorFindTest_Self_Name");
 	}
 
 	// TODO: Need a good way to spawn actors with parenting relation between them
@@ -294,8 +281,8 @@ bool FPCGPropertyToParamDataActorFindTest::RunTest(const FString& Parameters)
 
 	// Self by class including component
 	{
-		Settings->ActorSelection = EPCGActorSelection::ByTag;
-		Settings->ActorFilter = EPCGActorFilter::Self;
+		Settings->ActorSelector.ActorSelection = EPCGActorSelection::ByTag;
+		Settings->ActorSelector.ActorFilter = EPCGActorFilter::Self;
 		Settings->bSelectComponent = true;
 		
 		PCGTestsCommon::FTestData TestData(Seed, Settings, AActor::StaticClass());
@@ -309,8 +296,8 @@ bool FPCGPropertyToParamDataActorFindTest::RunTest(const FString& Parameters)
 
 	// World by class
 	{
-		Settings->ActorSelection = EPCGActorSelection::ByClass;
-		Settings->ActorFilter = EPCGActorFilter::AllWorldActors;
+		Settings->ActorSelector.ActorSelection = EPCGActorSelection::ByClass;
+		Settings->ActorSelector.ActorFilter = EPCGActorFilter::AllWorldActors;
 
 		PCGTestsCommon::FTestData TestData(Seed, Settings, APCGUnitTestDummyActor::StaticClass());
 		Cast<APCGUnitTestDummyActor>(TestData.TestActor)->IntProperty = 42;
@@ -320,25 +307,14 @@ bool FPCGPropertyToParamDataActorFindTest::RunTest(const FString& Parameters)
 
 	// World by tag
 	{
-		Settings->ActorSelection = EPCGActorSelection::ByTag;
-		Settings->ActorFilter = EPCGActorFilter::AllWorldActors;
+		Settings->ActorSelector.ActorSelection = EPCGActorSelection::ByTag;
+		Settings->ActorSelector.ActorFilter = EPCGActorFilter::AllWorldActors;
 
 		PCGTestsCommon::FTestData TestData(Seed, Settings, APCGUnitTestDummyActor::StaticClass());
 		TestData.TestActor->Tags.Add(Tag);
 		Cast<APCGUnitTestDummyActor>(TestData.TestActor)->IntProperty = 42;
 
 		bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, IntProperty), 42ll, "PropertyToParamDataActorFindTest_World_Tag");
-	}
-
-	// World by name
-	{
-		Settings->ActorSelection = EPCGActorSelection::ByName;
-		Settings->ActorFilter = EPCGActorFilter::AllWorldActors;
-
-		PCGTestsCommon::FTestData TestData(Seed, Settings, APCGUnitTestDummyActor::StaticClass());
-		Cast<APCGUnitTestDummyActor>(TestData.TestActor)->IntProperty = 42;
-
-		bSuccess &= VerifyAttributeValueValid(this, TestData, GET_MEMBER_NAME_CHECKED(APCGUnitTestDummyActor, IntProperty), 42ll, "PropertyToParamDataActorFindTest_World_Name");
 	}
 
 	return bSuccess;

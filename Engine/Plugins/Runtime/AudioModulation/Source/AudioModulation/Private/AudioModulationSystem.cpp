@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "AudioModulationSystem.h"
+#include "UObject/Package.h"
 
 #if WITH_AUDIOMODULATION
 
@@ -364,6 +365,19 @@ namespace AudioModulation
 		FScopeLock Lock(&ThreadSafeModValueCritSection);
 
 		if (const float* Value = ThreadSafeModValueMap.Find(InModulatorHandle.GetModulatorId()))
+		{
+			OutValue = *Value;
+			return true;
+		}
+
+		return false;
+	}
+
+	bool FAudioModulationSystem::GetModulatorValueThreadSafe(uint32 ModulatorID, float& OutValue) const
+	{
+		FScopeLock Lock(&ThreadSafeModValueCritSection);
+
+		if (const float* Value = ThreadSafeModValueMap.Find(ModulatorID))
 		{
 			OutValue = *Value;
 			return true;

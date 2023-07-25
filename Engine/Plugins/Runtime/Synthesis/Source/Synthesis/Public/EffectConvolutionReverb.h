@@ -1,12 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
-#include "CoreMinimal.h"
-#include "Async/Async.h"
 #include "ConvolutionReverb.h"
-#include "DSP/ConvolutionAlgorithm.h"
 #include "DSP/Dsp.h"
-#include "SynthesisModule.h"
 #include "EffectConvolutionReverb.generated.h"
+
+struct FPropertyChangedEvent;
 
 /** Block size of convolution reverb algorithm. */
 UENUM()
@@ -54,17 +52,23 @@ public:
 	float NormalizationVolumeDb;
 
 	/* If true, impulse response channels are interpreted as true stereo which allows channel crosstalk. If false, impulse response channels are interpreted as independent channel impulses. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = SubmixEffectPreset, meta = (EditCondition = "(NumChannels > 0) && (NumChannels % 2 == 0)"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = SubmixEffectPreset, meta = (EditCondition = "(NumChannels > 0) && bIsEvenChannelCount"))
 	bool bTrueStereo;
 
 	UPROPERTY(meta = (DeprecatedProperty))
 	TArray<float> IRData_DEPRECATED;
+
+	virtual void Serialize(FArchive& Ar) override;
 
 #if WITH_EDITORONLY_DATA
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
 	// This delegate is called whenever PostEditChangeProperty called.
 	FAudioImpulseResponsePropertyChange OnObjectPropertyChanged;
+
+	// Used to evaluate whether TrueStereo should be editable
+	UPROPERTY()
+	bool bIsEvenChannelCount;
 #endif
 };
 
@@ -147,3 +151,9 @@ namespace Audio
 		float SampleRate = 0.f;
 	};
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Async/Async.h"
+#include "CoreMinimal.h"
+#include "SynthesisModule.h"
+#endif

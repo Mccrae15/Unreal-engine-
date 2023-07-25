@@ -29,6 +29,7 @@ bool UOculusXRMovementFunctionLibrary::IsBodyTrackingSupported()
 	return OculusXRMovement::IsBodyTrackingSupported();
 }
 
+
 bool UOculusXRMovementFunctionLibrary::StartBodyTracking()
 {
 	return OculusXRMovement::StartBodyTracking();

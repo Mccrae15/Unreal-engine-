@@ -11,7 +11,7 @@
 
 void FDefaultSourceControlProvider::Init(bool bForceConnection)
 {
-	FMessageLog("SourceControl").Info(LOCTEXT("SourceControlDisabled", "Source control is disabled"));
+	FMessageLog("SourceControl").Info(LOCTEXT("SourceControlDisabled", "Revision control is disabled"));
 }
 
 void FDefaultSourceControlProvider::Close()
@@ -21,7 +21,7 @@ void FDefaultSourceControlProvider::Close()
 
 FText FDefaultSourceControlProvider::GetStatusText() const
 {
-	return LOCTEXT("SourceControlDisabled", "Source control is disabled");
+	return LOCTEXT("SourceControlDisabled", "Revision control is disabled");
 }
 
 bool FDefaultSourceControlProvider::IsAvailable() const
@@ -89,12 +89,27 @@ bool FDefaultSourceControlProvider::UsesChangelists() const
 	return false;
 }
 
+bool FDefaultSourceControlProvider::UsesUncontrolledChangelists() const
+{
+	return true;
+}
+
 bool FDefaultSourceControlProvider::UsesCheckout() const
 {
 	return false;
 }
 
 bool FDefaultSourceControlProvider::UsesFileRevisions() const
+{
+	return true;
+}
+
+bool FDefaultSourceControlProvider::UsesSnapshots() const
+{
+	return false;
+}
+
+bool FDefaultSourceControlProvider::AllowsDiffAgainstDepot() const
 {
 	return true;
 }

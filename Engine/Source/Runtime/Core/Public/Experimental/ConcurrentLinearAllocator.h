@@ -2,7 +2,9 @@
 
 #pragma once
 #include <atomic>
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"
+#endif
 #include "HAL/MallocAnsi.h"
 #include "HAL/UnrealMemory.h"
 #include "HAL/LowLevelMemTracker.h"
@@ -638,7 +640,6 @@ public:
 template <typename BlockAllocationTag>
 struct TAllocatorTraits<TConcurrentLinearArrayAllocator<BlockAllocationTag>> : TAllocatorTraitsBase<TConcurrentLinearArrayAllocator<BlockAllocationTag>>
 {
-	enum { SupportsMove = true };
 	enum { IsZeroConstruct = true };
 };
 

@@ -43,6 +43,7 @@
 #include "VertexFactory.h"
 #include "CanvasTypes.h"
 #include "CachedGeometry.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 class FGPUSkinPassthroughVertexFactory;
 class FGPUBaseSkinVertexFactory;
@@ -55,6 +56,7 @@ struct FClothSimulData;
 struct FSkelMeshRenderSection;
 struct FVertexBufferAndSRV;
 struct FRayTracingGeometrySegment;
+struct FSkinBatchVertexFactoryUserData;
 
 // Can the skin cache be used (ie shaders added, etc)
 extern ENGINE_API bool IsGPUSkinCacheAvailable(EShaderPlatform Platform);
@@ -87,12 +89,6 @@ struct FClothSimulEntry
 		   << V.Normal;
 		return Ar;
 	}
-};
-
-struct FGPUSkinBatchElementUserData
-{
-	FGPUSkinCacheEntry* Entry;
-	int32 Section;
 };
 
 enum class EGPUSkinCacheEntryMode
@@ -143,30 +139,22 @@ public:
 		const FClothSimulData* SimData,
 		const FMatrix44f& ClothToLocal,
 		float ClothBlendWeight, 
+		FVector3f ClothScale,
 		uint32 RevisionNumber, 
 		int32 Section,
 		int32 LOD,
 		FGPUSkinCacheEntry*& InOutEntry
 		);
 
-	static void GetShaderBindings(
+	static void GetShaderVertexStreams(
 		const FGPUSkinCacheEntry* Entry,
 		int32 Section,
 		const FGPUSkinPassthroughVertexFactory* VertexFactory,
-		FShaderResourceParameter GPUSkinCachePositionBuffer,
-		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams);
 
 	static void Release(FGPUSkinCacheEntry*& SkinCacheEntry);
 
-	static inline FGPUSkinBatchElementUserData* GetFactoryUserData(FGPUSkinCacheEntry* Entry, int32 Section)
-	{
-		if (Entry)
-		{
-			return InternalGetFactoryUserData(Entry, Section);
-		}
-		return nullptr;
-	}
+	static const FSkinBatchVertexFactoryUserData* GetVertexFactoryUserData(FGPUSkinCacheEntry* Entry, int32 Section);
 
 	static bool IsEntryValid(FGPUSkinCacheEntry* SkinCacheEntry, int32 Section);
 	static FColor GetVisualizationDebugColor(const FName& GPUSkinCacheVisualizationMode, FGPUSkinCacheEntry* Entry, FGPUSkinCacheEntry* RayTracingEntry, uint32 SectionIndex);
@@ -205,12 +193,13 @@ public:
 	{
 		friend struct FRWBufferTracker;
 
-		FRWBuffersAllocation(uint32 InNumVertices, bool InWithTangents, bool InUseIntermediateTangents, uint32 InIntermediateAccumulatedTangentsSize, FRHICommandListImmediate& RHICmdList)
+		FRWBuffersAllocation(uint32 InNumVertices, bool InWithTangents, bool InUseIntermediateTangents, uint32 InIntermediateAccumulatedTangentsSize, FRHICommandListImmediate& RHICmdList, const FName& OwnerName)
 			: NumVertices(InNumVertices), WithTangents(InWithTangents), UseIntermediateTangents(InUseIntermediateTangents), IntermediateAccumulatedTangentsSize(InIntermediateAccumulatedTangentsSize)
 		{
 			for (int32 Index = 0; Index < NUM_BUFFERS; ++Index)
 			{
 				PositionBuffers[Index].Buffer.Initialize(TEXT("SkinCachePositions"), PosBufferBytesPerElement, NumVertices * 3, PF_R32_FLOAT, BUF_Static);
+				PositionBuffers[Index].Buffer.Buffer->SetOwnerName(OwnerName);
 				PositionBuffers[Index].AccessState = ERHIAccess::Unknown;
 			}
 			if (WithTangents)
@@ -219,16 +208,19 @@ public:
 				const EPixelFormat TangentsFormat = IsOpenGLPlatform(GMaxRHIShaderPlatform) ? PF_R16G16B16A16_SINT : PF_R16G16B16A16_SNORM;
 				
 				Tangents.Buffer.Initialize(TEXT("SkinCacheTangents"), TangentBufferBytesPerElement, NumVertices * 2, TangentsFormat, BUF_Static);
+				Tangents.Buffer.Buffer->SetOwnerName(OwnerName);
 				Tangents.AccessState = ERHIAccess::Unknown;
 				if (UseIntermediateTangents)
 				{
 					IntermediateTangents.Buffer.Initialize(TEXT("SkinCacheIntermediateTangents"), TangentBufferBytesPerElement, NumVertices * 2, TangentsFormat, BUF_Static);
+					IntermediateTangents.Buffer.Buffer->SetOwnerName(OwnerName);
 					IntermediateTangents.AccessState = ERHIAccess::Unknown;
 				}
 			}
 			if (IntermediateAccumulatedTangentsSize > 0)
 			{
 				IntermediateAccumulatedTangents.Buffer.Initialize(TEXT("SkinCacheIntermediateAccumulatedTangents"), sizeof(int32), IntermediateAccumulatedTangentsSize * FGPUSkinCache::IntermediateAccumBufferNumInts, PF_R32_SINT, BUF_UnorderedAccess);
+				IntermediateAccumulatedTangents.Buffer.Buffer->SetOwnerName(OwnerName);
 				IntermediateAccumulatedTangents.AccessState = ERHIAccess::Unknown;
 				// The UAV must be zero-filled. We leave it zeroed after each round (see RecomputeTangentsPerVertexPass.usf), so this is only needed on when the buffer is first created.
 				RHICmdList.ClearUAVUint(IntermediateAccumulatedTangents.Buffer.UAV, FUintVector4(0, 0, 0, 0));
@@ -389,6 +381,7 @@ public:
 	FGPUSkinCacheEntry const* GetSkinCacheEntry(uint32 ComponentId) const;
 	static FRWBuffer* GetPositionBuffer(FGPUSkinCacheEntry const* Entry, uint32 SectionIndex);
 	static FRWBuffer* GetPreviousPositionBuffer(FGPUSkinCacheEntry const* Entry, uint32 SectionIndex);
+	static uint32 GetUpdatedFrame(FGPUSkinCacheEntry const* Entry, uint32 SectionIndex);
 
 	// Deprecated function. Can remove include of CachedGeometry.h when this is removed.
 	UE_DEPRECATED(5.1, "Use GetPositionBuffer() or similar instead.")
@@ -412,7 +405,7 @@ protected:
 	TSet<FGPUSkinCacheEntry*> PendingProcessRTGeometryEntries;
 	TArray<FDispatchEntry> BatchDispatches;
 
-	FRWBuffersAllocation* TryAllocBuffer(uint32 NumVertices, bool WithTangnents, bool UseIntermediateTangents, uint32 NumTriangles, FRHICommandListImmediate& RHICmdList);
+	FRWBuffersAllocation* TryAllocBuffer(uint32 NumVertices, bool WithTangnents, bool UseIntermediateTangents, uint32 NumTriangles, FRHICommandListImmediate& RHICmdList, const FName& OwnerName);
 	void DoDispatch(FRHICommandListImmediate& RHICmdList);
 	void DoDispatch(FRHICommandListImmediate& RHICmdList, FGPUSkinCacheEntry* SkinCacheEntry, int32 Section, int32 RevisionNumber);
 	void DispatchUpdateSkinTangents(FRHICommandListImmediate& RHICmdList, FGPUSkinCacheEntry* Entry, int32 SectionIndex, FSkinCacheRWBuffer*& StagingBuffer, bool bTrianglePass);
@@ -435,7 +428,6 @@ protected:
 	void Cleanup();
 	static void TransitionAllToReadable(FRHICommandList& RHICmdList, const TSet<FSkinCacheRWBuffer*>& BuffersToTransitionToRead);
 	static void ReleaseSkinCacheEntry(FGPUSkinCacheEntry* SkinCacheEntry);
-	static FGPUSkinBatchElementUserData* InternalGetFactoryUserData(FGPUSkinCacheEntry* Entry, int32 Section);
 	void InvalidateAllEntries();
 	uint64 UsedMemoryInBytes;
 	uint64 ExtraRequiredMemory;

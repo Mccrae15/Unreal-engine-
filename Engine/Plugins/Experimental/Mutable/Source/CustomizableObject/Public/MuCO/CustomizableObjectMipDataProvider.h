@@ -3,22 +3,16 @@
 #pragma once
 
 #include "Async/TaskGraphInterfaces.h"
-#include "Containers/Array.h"
 #include "Engine/TextureMipDataProviderFactory.h"
-#include "HAL/CriticalSection.h"
-#include "HAL/Platform.h"
-#include "Misc/AssertionMacros.h"
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuR/Image.h"
-#include "MuR/Parameters.h"
-#include "MuR/RefCounted.h"
-#include "MuR/System.h"
 #include "Streaming/TextureMipDataProvider.h"
-#include "Templates/SharedPointer.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 
 #include "CustomizableObjectMipDataProvider.generated.h"
+
+enum EPixelFormat : uint8;
+namespace mu { class Parameters; }
+namespace mu { class System; }
 
 class FThreadSafeCounter;
 class UCustomizableObjectInstance;
@@ -30,12 +24,12 @@ class UTexture;
 */
 struct FMutableUpdateContext
 {
-	mu::SystemPtr System;
-	mu::ModelPtr Model;
-	mu::ParametersPtrConst Parameters;
+	mu::Ptr<mu::System> System;
+	TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model;
+	mu::Ptr<const mu::Parameters> Parameters;
 	int32 State = -1;
 
-	TArray<mu::ImagePtrConst> ImageParameterValues;
+	TArray<mu::Ptr<const mu::Image>> ImageParameterValues;
 };
 
 
@@ -90,6 +84,7 @@ public:
 
 private:
 	void CancelCounterSafely();
+	void PrintWarningAndAdvanceToCleanup();
 
 public:
 	// Todo: Simplify by replacing the reference to the Instance with some static parametrization or hash with enough info to reconstruct the texture
@@ -133,3 +128,8 @@ public:
 	TSharedPtr<FMutableUpdateContext> UpdateContext;
 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "MuR/Parameters.h"
+#include "MuR/System.h"
+#endif

@@ -21,7 +21,7 @@
 #define NUM_SAMPLER_DESCRIPTORS D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE
 
 // Keep set state functions inline to reduce call overhead
-#define D3D12_STATE_CACHE_INLINE FORCEINLINE
+#define D3D12_STATE_CACHE_INLINE FORCEINLINE_DEBUGGABLE
 
 #if D3D12_STATE_CACHE_RUNTIME_TOGGLE
 extern bool GD3D12SkipStateCaching;
@@ -269,38 +269,6 @@ static inline D3D_PRIMITIVE_TOPOLOGY GetD3D12PrimitiveType(uint32 PrimitiveType)
 #else
 		0,
 #endif
-		D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST,  // PT_1_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_2_CONTROL_POINT_PATCHLIST,  // PT_2_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST,  // PT_3_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST,  // PT_4_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_5_CONTROL_POINT_PATCHLIST,  // PT_5_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_6_CONTROL_POINT_PATCHLIST,  // PT_6_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_7_CONTROL_POINT_PATCHLIST,  // PT_7_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_8_CONTROL_POINT_PATCHLIST,  // PT_8_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_9_CONTROL_POINT_PATCHLIST,  // PT_9_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_10_CONTROL_POINT_PATCHLIST, // PT_10_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_11_CONTROL_POINT_PATCHLIST, // PT_11_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_12_CONTROL_POINT_PATCHLIST, // PT_12_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_13_CONTROL_POINT_PATCHLIST, // PT_13_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_14_CONTROL_POINT_PATCHLIST, // PT_14_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_15_CONTROL_POINT_PATCHLIST, // PT_15_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_16_CONTROL_POINT_PATCHLIST, // PT_16_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_17_CONTROL_POINT_PATCHLIST, // PT_17_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_18_CONTROL_POINT_PATCHLIST, // PT_18_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_19_CONTROL_POINT_PATCHLIST, // PT_19_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_20_CONTROL_POINT_PATCHLIST, // PT_20_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_21_CONTROL_POINT_PATCHLIST, // PT_21_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_22_CONTROL_POINT_PATCHLIST, // PT_22_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_23_CONTROL_POINT_PATCHLIST, // PT_23_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_24_CONTROL_POINT_PATCHLIST, // PT_24_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_25_CONTROL_POINT_PATCHLIST, // PT_25_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_26_CONTROL_POINT_PATCHLIST, // PT_26_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_27_CONTROL_POINT_PATCHLIST, // PT_27_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_28_CONTROL_POINT_PATCHLIST, // PT_28_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_29_CONTROL_POINT_PATCHLIST, // PT_29_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_30_CONTROL_POINT_PATCHLIST, // PT_30_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_31_CONTROL_POINT_PATCHLIST, // PT_31_ControlPointPatchList
-		D3D_PRIMITIVE_TOPOLOGY_32_CONTROL_POINT_PATCHLIST, // PT_32_ControlPointPatchList
 	};
 	static_assert(UE_ARRAY_COUNT(D3D12PrimitiveType) == PT_Num, "Primitive lookup table is wrong size");
 
@@ -434,33 +402,16 @@ protected:
 			uint32 CurrentShaderSRVCounts    [SF_NumStandardFrequencies] = {};
 			uint32 CurrentShaderCBCounts     [SF_NumStandardFrequencies] = {};
 			uint32 CurrentShaderUAVCounts    [SF_NumStandardFrequencies] = {};
+
+			TArray<FD3D12ShaderResourceView*> QueuedBindlessSRVs[SF_NumStandardFrequencies];
+			TArray<FD3D12UnorderedAccessView*> QueuedBindlessUAVs[SF_NumStandardFrequencies];
 		} Common = {};
 	} PipelineState = {};
 
 	FD3D12DescriptorCache DescriptorCache;
 
 	void InternalSetIndexBuffer(FD3D12Resource* Resource);
-
 	void InternalSetStreamSource(FD3D12ResourceLocation* VertexBufferLocation, uint32 StreamIndex, uint32 Stride, uint32 Offset);
-
-	template <typename TShader> struct StateCacheShaderTraits;
-#define DECLARE_SHADER_TRAITS(Name) \
-	template <> struct StateCacheShaderTraits<FD3D12##Name##Shader> \
-	{ \
-		static const EShaderFrequency Frequency = SF_##Name; \
-		static FD3D12##Name##Shader* GetShader(FD3D12BoundShaderState* BSS) { return BSS ? BSS->Get##Name##Shader() : nullptr; } \
-		static FD3D12##Name##Shader* GetShader(FD3D12GraphicsPipelineState* PSO) { return PSO ? (FD3D12##Name##Shader*)PSO->PipelineStateInitializer.BoundShaderState.Get##Name##Shader() : nullptr; } \
-	}
-	DECLARE_SHADER_TRAITS(Vertex);
-#if PLATFORM_SUPPORTS_MESH_SHADERS
-	DECLARE_SHADER_TRAITS(Mesh);
-	DECLARE_SHADER_TRAITS(Amplification);
-#endif
-	DECLARE_SHADER_TRAITS(Pixel);
-#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-	DECLARE_SHADER_TRAITS(Geometry);
-#endif
-#undef DECLARE_SHADER_TRAITS
 
 	bool InternalSetRootSignature(ED3D12PipelineType InPipelineType, const FD3D12RootSignature* InRootSignature);
 	void InternalSetPipelineState(FD3D12PipelineState* InPipelineState);
@@ -506,28 +457,9 @@ public:
 
 	void ClearSRVs();
 
-	template <EShaderFrequency ShaderFrequency>
-	void ClearShaderResourceViews(FD3D12ResourceLocation*& ResourceLocation)
-	{
-		//SCOPE_CYCLE_COUNTER(STAT_D3D12ClearShaderResourceViewsTime);
+	void ClearShaderResourceViews(EShaderFrequency ShaderFrequency, FD3D12ResourceLocation*& ResourceLocation);
 
-		if (PipelineState.Common.SRVCache.MaxBoundIndex[ShaderFrequency] < 0)
-		{
-			return;
-		}
-
-		auto& CurrentShaderResourceViews = PipelineState.Common.SRVCache.Views[ShaderFrequency];
-		for (int32 i = 0; i <= PipelineState.Common.SRVCache.MaxBoundIndex[ShaderFrequency]; ++i)
-		{
-			if (CurrentShaderResourceViews[i] && CurrentShaderResourceViews[i]->GetResourceLocation() == ResourceLocation)
-			{
-				SetShaderResourceView<ShaderFrequency>(nullptr, i);
-			}
-		}
-	}
-
-	template <EShaderFrequency ShaderFrequency>
-	void SetShaderResourceView(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
+	void SetShaderResourceView(EShaderFrequency ShaderFrequency, FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
 	
 	void SetScissorRects(uint32 Count, const D3D12_RECT* const ScissorRects);
 	void SetScissorRect(const D3D12_RECT& ScissorRect);
@@ -571,8 +503,7 @@ public:
 		*Count = PipelineState.Graphics.CurrentNumberOfViewports;
 	}
 
-	template <EShaderFrequency ShaderFrequency>
-	D3D12_STATE_CACHE_INLINE void SetSamplerState(FD3D12SamplerState* SamplerState, uint32 SamplerIndex)
+	D3D12_STATE_CACHE_INLINE void SetSamplerState(EShaderFrequency ShaderFrequency, FD3D12SamplerState* SamplerState, uint32 SamplerIndex)
 	{
 		check(SamplerIndex < MAX_SAMPLERS);
 		auto& Samplers = PipelineState.Common.SamplerCache.States[ShaderFrequency];
@@ -583,8 +514,7 @@ public:
 		}
 	}
 
-	template <EShaderFrequency ShaderFrequency>
-	void D3D12_STATE_CACHE_INLINE SetConstantsFromUniformBuffer(uint32 SlotIndex, FD3D12UniformBuffer* UniformBuffer)
+	D3D12_STATE_CACHE_INLINE void SetConstantsFromUniformBuffer(EShaderFrequency ShaderFrequency, uint32 SlotIndex, FD3D12UniformBuffer* UniformBuffer)
 	{
 		check(SlotIndex < MAX_CBS);
 		FD3D12ConstantBufferCache& CBVCache = PipelineState.Common.CBVCache;
@@ -622,8 +552,7 @@ public:
 		}
 	}
 
-	template <EShaderFrequency ShaderFrequency>
-	void D3D12_STATE_CACHE_INLINE SetConstantBuffer(FD3D12ConstantBuffer& Buffer, bool bDiscardSharedConstants)
+	D3D12_STATE_CACHE_INLINE void SetConstantBuffer(EShaderFrequency ShaderFrequency, FD3D12ConstantBuffer& Buffer, bool bDiscardSharedConstants)
 	{
 		FD3D12ResourceLocation Location(GetParentDevice());
 
@@ -648,10 +577,18 @@ public:
 	void SetBlendFactor(const float BlendFactor[4]);
 	void SetStencilRef(uint32 StencilRef);
 
-	template <typename TShader>
-	D3D12_STATE_CACHE_INLINE TShader* GetShader()
+	FRHIShader* GetShader(EShaderFrequency InFrequency)
 	{
-		return StateCacheShaderTraits<TShader>::GetShader(GetGraphicsPipelineState());
+		switch (InFrequency)
+		{
+		case SF_Vertex:        return GetGraphicsPipelineState()->GetVertexShader();
+		case SF_Mesh:          return GetGraphicsPipelineState()->GetMeshShader();
+		case SF_Amplification: return GetGraphicsPipelineState()->GetAmplificationShader();
+		case SF_Pixel:         return GetGraphicsPipelineState()->GetPixelShader();
+		case SF_Geometry:      return GetGraphicsPipelineState()->GetGeometryShader();
+		case SF_Compute:       return GetComputePipelineState()->GetComputeShader();
+		default:               return nullptr;
+		}
 	}
 
 	void SetNewShaderData(EShaderFrequency InFrequency, const FD3D12ShaderData* InShaderData);
@@ -721,10 +658,11 @@ public:
 	ED3D12PipelineType LastComputePipelineType = ED3D12PipelineType::Compute;
 #endif // D3D12_RHI_RAYTRACING
 
-	template <ED3D12PipelineType PipelineType> 
-	void ApplyState();
+	void ApplyState(ED3D12PipelineType PipelineType);
 	void ApplySamplers(const FD3D12RootSignature* const pRootSignature, uint32 StartStage, uint32 EndStage);
 	void ApplyResources(const FD3D12RootSignature* const pRootSignature, uint32 StartStage, uint32 EndStage);
+	void ApplyBindlessResources(const FD3D12RootSignature* const pRootSignature, uint32 StartStage, uint32 EndStage);
+	void ApplyConstants(const FD3D12RootSignature* const pRootSignature, uint32 StartStage, uint32 EndStage);
 	void DirtyStateForNewCommandList();
 	void DirtyState();
 	void DirtyViewDescriptorTables();
@@ -746,11 +684,9 @@ public:
 		}
 	}
 
-	template <EShaderFrequency ShaderStage>
-	void SetUAVs(uint32 UAVStartSlot, uint32 NumSimultaneousUAVs, FD3D12UnorderedAccessView** UAVArray, uint32* UAVInitialCountArray);
-	template <EShaderFrequency ShaderStage>
-	void ClearUAVs();
+	void SetUAV(EShaderFrequency ShaderStage, uint32 SlotIndex, FD3D12UnorderedAccessView* UAV, uint32 InitialCount = -1);
 
+	void ClearUAVs(EShaderFrequency ShaderStage);
 
 	void SetDepthBounds(float MinDepth, float MaxDepth)
 	{
@@ -806,4 +742,13 @@ public:
 	void ClearState();
 
 	void ForceSetComputeRootSignature() { PipelineState.Compute.bNeedSetRootSignature = true; }
+
+	void QueueBindlessSRV(EShaderFrequency ShaderFrequency, FD3D12ShaderResourceView* SRV)
+	{
+		PipelineState.Common.QueuedBindlessSRVs[ShaderFrequency].Emplace(SRV);
+	}
+	void QueueBindlessUAV(EShaderFrequency ShaderFrequency, FD3D12UnorderedAccessView* UAV)
+	{
+		PipelineState.Common.QueuedBindlessUAVs[ShaderFrequency].Emplace(UAV);
+	}
 };

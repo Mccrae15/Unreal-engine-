@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "ScreenSpaceDenoise.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "LightSceneProxy.h"
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"
 #include "PostProcess/SceneRenderTargets.h"
@@ -13,6 +15,7 @@
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
 #include "SceneTextureParameters.h"
+#include "SystemTextures.h"
 #include "Lumen/LumenSceneRendering.h"
 
 
@@ -142,35 +145,6 @@ DECLARE_GPU_STAT(ReflectionsDenoiser)
 DECLARE_GPU_STAT(ShadowsDenoiser)
 DECLARE_GPU_STAT(AmbientOcclusionDenoiser)
 DECLARE_GPU_STAT(DiffuseIndirectDenoiser)
-
-#if WITH_MGPU
-extern const FName SSDAmbientOcclusionEffectName;
-
-const FName SSDShadowVisibilityMasksEffectName("SSDShadowVisibility");
-const FName SSDMultiPolychromaticPenumbraHarmonicsEffectNames[4] =
-{
-	"SSDPolychromaticPenumbra0",
-	"SSDPolychromaticPenumbra1",
-	"SSDPolychromaticPenumbra2",
-	"SSDPolychromaticPenumbra3",
-};
-const FName SSDMultiPolychromaticPenumbraIntegralEffectName("SSDPolychromaticPenumbraIntegrand");
-const FName SSDMultiPolychromaticPenumbraFinalEffectName("SSDPolychromaticPenumbraFinal");
-const FName SSDReflectionsEffectName("SSDReflections");
-const FName SSDWaterReflectionsEffectName("SSDWaterReflections");
-const FName SSDAmbientOcclusionEffectName("SSDAmbientOcclusion");
-const FName SSDDiffuseIndirectEffectName("SSDDiffuseIndirect");
-const FName SSDSkyLightEffectName("SSDSkyLight");
-const FName SSDReflectedSkyLightEffectName("SSDReflectedSkyLight");
-const FName SSDDiffuseIndirectHarmonicEffectName("SSDDiffuseIndirectHarmonic");
-const FName SSDScreenSpaceDiffuseIndirectEffectName("SSDScreenSpaceDiffuseIndirect");
-const FName SSDIndirectProbeHierarchyEffectName("SSDIndirectProbeHierarchy");
-
-#define DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(EFFECT_NAME) FSSDConstantPixelDensitySettings Settings(EFFECT_NAME)
-
-#else  // WITH_MGPU
-#define DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(EFFECT_NAME) FSSDConstantPixelDensitySettings Settings
-#endif  // !WITH_MGPU
 
 namespace
 {
@@ -833,7 +807,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FSSDCommonParameters, )
 
 	SHADER_PARAMETER_RDG_TEXTURE_ARRAY(Texture2D<uint>, CompressedMetadata, [kCompressedMetadataTextures])
 
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, TileClassificationTexture)
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 
@@ -1367,13 +1341,6 @@ struct FSSDConstantPixelDensitySettings
 	TStaticArray<const FLightSceneInfo*, IScreenSpaceDenoiser::kMaxBatchSize> LightSceneInfo;
 	FRDGTextureRef CompressedDepthTexture = nullptr;
 	FRDGTextureRef CompressedShadingModelTexture = nullptr;
-#if WITH_MGPU
-	FName EffectName;
-
-	FSSDConstantPixelDensitySettings(const FName& InEffectName)
-		: EffectName(InEffectName)
-	{}
-#endif  // WITH_MGPU
 };
 
 /** Denoises a signal at constant pixel density across the viewport. */
@@ -1578,7 +1545,7 @@ static void DenoiseSignalAtConstantPixelDensity(
 		CommonParameters.SceneTextures = SceneTextures;
 		CommonParameters.Strata = Strata::BindStrataGlobalUniformParameters(View);
 		CommonParameters.ViewUniformBuffer = View.ViewUniformBuffer;
-		CommonParameters.EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+		CommonParameters.EyeAdaptationBuffer = GraphBuilder.CreateSRV(GetEyeAdaptationBuffer(GraphBuilder, View));
 
 		// Remove dependency of the velocity buffer on camera cut, given it's going to be ignored by the shaders.
 		if (View.bCameraCut || !CommonParameters.SceneTextures.GBufferVelocityTexture)
@@ -2060,42 +2027,6 @@ static void DenoiseSignalAtConstantPixelDensity(
 				bExtractCompressedMetadata[i] = PassParameters->PrevCompressedMetadata[i] != nullptr;
 		}
 
-#if WITH_MGPU
-		{
-			FName EffectName = Settings.EffectName;
-
-			FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(Viewport.Size(), FComputeShaderUtils::kGolden2DGroupSize);
-			FComputeShaderUtils::ValidateGroupCount(GroupCount);
-
-			const FShaderParametersMetadata* ParametersMetadata = FSSDTemporalAccumulationCS::FParameters::FTypeInfo::GetStructMetadata();
-
-			GraphBuilder.AddPass(
-				RDG_EVENT_NAME("SSD TemporalAccumulation%s",
-					(!Settings.bUseTemporalAccumulation || bGlobalCameraCut) ? TEXT("(Disabled)") : TEXT("")),
-				ParametersMetadata,
-				PassParameters,
-				ERDGPassFlags::Compute,
-				[ParametersMetadata, PassParameters, ComputeShader, GroupCount, EffectName](FRHIComputeCommandList& RHICmdList)
-				{
-					RHICmdList.WaitForTemporalEffect(EffectName);
-
-					FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, ParametersMetadata, *PassParameters, GroupCount);
-
-					TArray<FRHITexture*, TFixedAllocator<kMaxBufferProcessingCount>> SignalOutputTexturesRHI;
-					for (FRDGTextureUAV* TextureUAV : PassParameters->SignalHistoryOutput.UAVs)
-					{
-						if (TextureUAV)
-						{
-							SignalOutputTexturesRHI.Add(TextureUAV->GetParentRHI());
-						}
-					}
-
-					RHICmdList.BroadcastTemporalEffect(
-						EffectName, MakeArrayView(SignalOutputTexturesRHI.GetData(), SignalOutputTexturesRHI.Num()));
-				});
-		}
-#else  // WITH_MGPU
-
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("SSD TemporalAccumulation%s",
@@ -2103,8 +2034,6 @@ static void DenoiseSignalAtConstantPixelDensity(
 			ComputeShader,
 			PassParameters,
 			FComputeShaderUtils::GetGroupCount(Viewport.Size(), FComputeShaderUtils::kGolden2DGroupSize));
-
-#endif  // !WITH_MGPU
 
 		SignalHistory = SignalOutput;
 	} // if (View.ViewState && Settings.bUseTemporalAccumulation)
@@ -2354,7 +2283,7 @@ public:
 
 		FSSDSignalTextures InputSignal;
 
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDShadowVisibilityMasksEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.SignalProcessing = ESignalProcessing::ShadowVisibilityMask;
 		Settings.InputResolutionFraction = 1.0f;
 		Settings.ReconstructionSamples = FMath::Clamp(CVarShadowReconstructionSampleCount.GetValueOnRenderThread(), 1, kStackowiakMaxSampleCountPerSet);
@@ -2478,7 +2407,7 @@ public:
 			FViewInfoPooledRenderTargets ViewInfoPooledRenderTargets;
 			SetupSceneViewInfoPooledRenderTargets(View, &ViewInfoPooledRenderTargets);
 
-			DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDMultiPolychromaticPenumbraHarmonicsEffectNames[HarmonicId]);
+			FSSDConstantPixelDensitySettings Settings;
 			Settings.FullResViewport = View.ViewRect;
 			Settings.SignalProcessing = ESignalProcessing::PolychromaticPenumbraHarmonic;
 			Settings.HarmonicPeriode = Periode;
@@ -2517,7 +2446,7 @@ public:
 			FViewInfoPooledRenderTargets ViewInfoPooledRenderTargets;
 			SetupSceneViewInfoPooledRenderTargets(View, &ViewInfoPooledRenderTargets);
 
-			DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDMultiPolychromaticPenumbraIntegralEffectName);
+			FSSDConstantPixelDensitySettings Settings;
 			Settings.FullResViewport = View.ViewRect;
 			Settings.SignalProcessing = ESignalProcessing::PolychromaticPenumbraHarmonic;
 			Settings.HarmonicPeriode = Periode;
@@ -2602,7 +2531,7 @@ public:
 			FViewInfoPooledRenderTargets ViewInfoPooledRenderTargets;
 			SetupSceneViewInfoPooledRenderTargets(View, &ViewInfoPooledRenderTargets);
 
-			DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDMultiPolychromaticPenumbraFinalEffectName);
+			FSSDConstantPixelDensitySettings Settings;
 			Settings.FullResViewport = View.ViewRect;
 			Settings.SignalProcessing = ESignalProcessing::PolychromaticPenumbraHarmonic;
 			Settings.bEnableReconstruction = false;
@@ -2648,7 +2577,7 @@ public:
 		InputSignal.Textures[0] = ReflectionInputs.Color;
 		InputSignal.Textures[1] = ReflectionInputs.RayHitDistance;
 
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDReflectionsEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.FullResViewport = View.ViewRect;
 		Settings.SignalProcessing = ESignalProcessing::Reflections;
 		Settings.InputResolutionFraction = RayTracingConfig.ResolutionFraction;
@@ -2697,7 +2626,7 @@ public:
 		InputSignal.Textures[0] = ReflectionInputs.Color;
 		InputSignal.Textures[1] = ReflectionInputs.RayHitDistance;
 
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDWaterReflectionsEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.FullResViewport = View.ViewRect;
 		Settings.SignalProcessing = ESignalProcessing::Reflections; // TODO: water reflection to denoise only water pixels
 		Settings.InputResolutionFraction = RayTracingConfig.ResolutionFraction;
@@ -2742,7 +2671,7 @@ public:
 		InputSignal.Textures[0] = ReflectionInputs.Mask;
 		InputSignal.Textures[1] = ReflectionInputs.RayHitDistance;
 		
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDAmbientOcclusionEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.FullResViewport = View.ViewRect;
 		Settings.SignalProcessing = ESignalProcessing::AmbientOcclusion;
 		Settings.InputResolutionFraction = RayTracingConfig.ResolutionFraction;
@@ -2789,7 +2718,7 @@ public:
 		InputSignal.Textures[0] = Inputs.Color;
 		InputSignal.Textures[1] = Inputs.RayHitDistance;
 
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDDiffuseIndirectEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.FullResViewport = View.ViewRect;
 		Settings.SignalProcessing = ESignalProcessing::DiffuseAndAmbientOcclusion;
 		Settings.InputResolutionFraction = Config.ResolutionFraction;
@@ -2833,7 +2762,7 @@ public:
 		InputSignal.Textures[0] = Inputs.Color;
 		InputSignal.Textures[1] = Inputs.RayHitDistance;
 
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDSkyLightEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.FullResViewport = View.ViewRect;
 		Settings.SignalProcessing = ESignalProcessing::DiffuseAndAmbientOcclusion;
 		Settings.InputResolutionFraction = Config.ResolutionFraction;
@@ -2879,7 +2808,7 @@ public:
 		InputSignal.Textures[0] = Inputs.Color;
 		InputSignal.Textures[1] = Inputs.RayHitDistance;
 
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDReflectedSkyLightEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.FullResViewport = View.ViewRect;
 		Settings.SignalProcessing = ESignalProcessing::DiffuseAndAmbientOcclusion;
 		Settings.InputResolutionFraction = Config.ResolutionFraction;
@@ -2925,7 +2854,7 @@ public:
 		for (int32 i = 0; i < IScreenSpaceDenoiser::kSphericalHarmonicTextureCount; i++)
 			InputSignal.Textures[i] = Inputs.SphericalHarmonic[i];
 
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDDiffuseIndirectHarmonicEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.FullResViewport = View.ViewRect;
 		Settings.SignalProcessing = ESignalProcessing::DiffuseSphericalHarmonic;
 		Settings.InputResolutionFraction = 1.0f / float(CommonDiffuseParameters.DownscaleFactor);
@@ -2972,7 +2901,7 @@ public:
 		InputSignal.Textures[0] = Inputs.Color;
 		InputSignal.Textures[1] = Inputs.AmbientOcclusionMask;
 
-		DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDScreenSpaceDiffuseIndirectEffectName);
+		FSSDConstantPixelDensitySettings Settings;
 		Settings.FullResViewport = View.ViewRect;
 		Settings.SignalProcessing = ESignalProcessing::ScreenSpaceDiffuseIndirect;
 		Settings.InputResolutionFraction = Config.ResolutionFraction;
@@ -3008,7 +2937,7 @@ FSSDSignalTextures IScreenSpaceDenoiser::DenoiseIndirectProbeHierarchy(
 	FRDGTextureRef CompressedDepthTexture,
 	FRDGTextureRef CompressedShadingModelTexture)
 {
-	DECLARE_FSSD_CONSTANT_PIXEL_DENSITY_SETTINGS(SSDIndirectProbeHierarchyEffectName);
+	FSSDConstantPixelDensitySettings Settings;
 	Settings.FullResViewport = View.ViewRect;
 	Settings.SignalProcessing = ESignalProcessing::IndirectProbeHierarchy;
 	Settings.bEnableReconstruction = false;

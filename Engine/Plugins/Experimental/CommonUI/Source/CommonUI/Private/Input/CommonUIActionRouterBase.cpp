@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Input/CommonUIActionRouterBase.h"
+#include "CommonInputSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "CommonInputTypeEnum.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Input/CommonAnalogCursor.h"
 #include "Input/CommonUIInputSettings.h"
 #include "Input/UIActionBinding.h"
 #include "Input/UIActionRouterTypes.h"
-#include "CommonInputSettings.h"
-#include "CommonInputActionDomain.h"
-#include "ICommonInputModule.h"
 
 #include "Framework/Application/SlateUser.h"
 #include "Slate/SObjectWidget.h"
@@ -16,13 +17,10 @@
 #include "GameFramework/HUD.h"
 #include "Engine/Console.h"
 #include "Engine/Canvas.h"
-#include "Stats/Stats.h"
 
 #include "CommonGameViewportClient.h"
-#include "CommonUIPrivate.h"
 #include "CommonActivatableWidget.h"
 #include "CommonUIUtils.h"
-#include "CommonUISubsystemBase.h"
 #include "Slate/SGameLayerManager.h"
 #include "Framework/Commands/InputBindingManager.h"
 
@@ -610,7 +608,21 @@ void UCommonUIActionRouterBase::HandleRootNodeActivated(TWeakPtr<FActivatableTre
 {
 	FActivatableTreeRootRef ActivatedRoot = WeakActivatedRoot.Pin().ToSharedRef();
 	UCommonActivatableWidget* NodeWidget = ActivatedRoot->GetWidget();
-	if (UCommonInputActionDomain* WidgetActionDomain = NodeWidget ? NodeWidget->GetCalculatedActionDomain() : nullptr)
+
+	if (RootNodes.Contains(ActivatedRoot) && ActivatedRoot->GetLastPaintLayer() > 0)
+	{
+		const int32 CurrentRootLayer = ActiveRootNode ? ActiveRootNode->GetLastPaintLayer() : INDEX_NONE;
+		if (ActivatedRoot->GetLastPaintLayer() > CurrentRootLayer)
+		{
+			// Ensure we have a local player so the action router local player subsystem will handle root change
+			const ULocalPlayer* LocalPlayer = GetLocalPlayer();
+			if (LocalPlayer && LocalPlayer->ViewportClient)
+			{
+				SetActiveRoot(ActivatedRoot);
+			}
+		}
+	}
+	else if (UCommonInputActionDomain* WidgetActionDomain = NodeWidget ? NodeWidget->GetCalculatedActionDomain() : nullptr)
 	{
 		const FActionDomainSortedRootList* ActionDomainRootList = ActionDomainRootNodes.Find(WidgetActionDomain);
 		if (ActionDomainRootList && ensure(ActionDomainRootList->Contains(ActivatedRoot)))
@@ -621,9 +633,9 @@ void UCommonUIActionRouterBase::HandleRootNodeActivated(TWeakPtr<FActivatableTre
 			UCommonInputSubsystem& CommonInputSubsystem = GetInputSubsystem();
 			if (UCommonInputActionDomainTable* ActionDomainTable = CommonInputSubsystem.GetActionDomainTable())
 			{
-				// We find the first root node that isn't the activated root and bail early. 
+				// We find the first root node that is receiving input and bail early. 
 				// The action domains and root lists are sorted so we should end up with a node with a higher paint layer
-				// or we just stop at the activated node and make sure it's leaf node is updated.
+				// or we just stop at the activated root node and make sure it's leaf node is updated.
 				for (const UCommonInputActionDomain* ActionDomain : ActionDomainTable->ActionDomains)
 				{
 					if (FActionDomainSortedRootList* SortedRootList = ActionDomainRootNodes.Find(ActionDomain))
@@ -632,7 +644,7 @@ void UCommonUIActionRouterBase::HandleRootNodeActivated(TWeakPtr<FActivatableTre
 						{
 							if (RootNode->IsReceivingInput() && RootNode->DoesWidgetSupportActivationFocus())
 							{
-								if (RootNode == ActivatedRoot)
+								if (RootNode == ActivatedRoot && !ActiveRootNode.IsValid())
 								{
 									// This will allow us to update the leaf node config on the activated root.
 									ActivatedRoot->UpdateLeafNode();
@@ -645,45 +657,32 @@ void UCommonUIActionRouterBase::HandleRootNodeActivated(TWeakPtr<FActivatableTre
 				}
 			}
 		}
-
-		return;
-	}
-
-	if (RootNodes.Contains(ActivatedRoot))
-	{
-		if (ActivatedRoot->GetLastPaintLayer() > 0)
-		{
-			const int32 CurrentRootLayer = ActiveRootNode ? ActiveRootNode->GetLastPaintLayer() : INDEX_NONE;
-			if (ActivatedRoot->GetLastPaintLayer() > CurrentRootLayer)
-			{
-				// Ensure we have a local player so the action router local player subsystem will handle root change
-				const ULocalPlayer* LocalPlayer = GetLocalPlayer();
-				if (LocalPlayer && LocalPlayer->ViewportClient)
-				{
-					SetActiveRoot(ActivatedRoot);
-				}
-			}
-		}
 	}
 }
 
 void UCommonUIActionRouterBase::HandleRootNodeDeactivated(TWeakPtr<FActivatableTreeRoot> WeakDeactivatedRoot)
 {
 	FActivatableTreeRootPtr DeactivatedRoot = WeakDeactivatedRoot.Pin();
-	UCommonActivatableWidget* NodeWidget = DeactivatedRoot ? DeactivatedRoot->GetWidget() : nullptr;
-	UCommonInputActionDomain* ActionDomain = NodeWidget ? NodeWidget->GetCalculatedActionDomain() : nullptr;
-	
-	if (ActionDomain || (ActiveRootNode && ActiveRootNode == DeactivatedRoot))
+	if (ActiveRootNode.IsValid() && ActiveRootNode == DeactivatedRoot)
 	{
-		// Action domain root nodes will need to recalibrate during deactivation since we're not relying on 
-		// timing to fix up the input config as RootNodes does.
-		RefreshActionDomainLeafNodeConfig();
-
 		// Reset the active root widget - we'll re-establish it on the next tick
-		if (ActiveRootNode.IsValid())
+		SetActiveRoot(nullptr);
+	}
+
+	bool bActivatedRootNodeExists = false;
+	for (const FActivatableTreeRootRef& Root : RootNodes)
+	{
+		if (Root->IsWidgetActivated())
 		{
-			SetActiveRoot(nullptr);
+			bActivatedRootNodeExists = true;
+			break;
 		}
+	}
+
+	// In the case that all root nodes are not activated we need to re-establish input for the highest paint layer node in action domain nodes.
+	if (!bActivatedRootNodeExists)
+	{
+		RefreshActionDomainLeafNodeConfig();
 	}
 }
 
@@ -753,7 +752,7 @@ bool UCommonUIActionRouterBase::ProcessInputOnActionDomains(ECommonInputMode Act
 		{
 			if (RootNode->IsWidgetActivated())
 			{
-				bool bInputEventHandled = RootNode->ProcessActionDomainNormalInput(ActiveInputMode, Key, InputEvent);
+				bool bInputEventHandled = RootNode->ProcessNormalInput(ActiveInputMode, Key, InputEvent);
 				bInputEventHandledInDomain |= bInputEventHandled;
 				bDomainHadActiveRoots = true;
 
@@ -777,15 +776,15 @@ bool UCommonUIActionRouterBase::ProcessInputOnActionDomains(ECommonInputMode Act
 
 EProcessHoldActionResult UCommonUIActionRouterBase::ProcessHoldInputOnActionDomains(ECommonInputMode ActiveInputMode, FKey Key, EInputEvent InputEvent) const
 {
+	EProcessHoldActionResult HoldActionResult = EProcessHoldActionResult::Unhandled;
+
 	UCommonInputSubsystem& CommonInputSubsystem = GetInputSubsystem();
 	UCommonInputActionDomainTable* ActionDomainTable = CommonInputSubsystem.GetActionDomainTable();
 
 	if (!ActionDomainTable)
 	{
-		return EProcessHoldActionResult::Unhandled;
+		return HoldActionResult;
 	}
-
-	EProcessHoldActionResult OutHoldActionResult = EProcessHoldActionResult::Unhandled;
 
 	for (const UCommonInputActionDomain* ActionDomain : ActionDomainTable->ActionDomains)
 	{
@@ -801,13 +800,13 @@ EProcessHoldActionResult UCommonUIActionRouterBase::ProcessHoldInputOnActionDoma
 
 		for (const FActivatableTreeRootRef& RootNode : SortedRootList->RootList)
 		{
-			if (RootNode->IsWidgetActivated())
+			if (RootNode->IsReceivingInput() && HoldActionResult == EProcessHoldActionResult::Unhandled)
 			{
-				bool bInputEventHandled = RootNode->ProcessActionDomainHoldInput(ActiveInputMode, Key, InputEvent, OutHoldActionResult);
-				bInputEventHandledInDomain |= bInputEventHandled;
+				HoldActionResult = RootNode->ProcessHoldInput(ActiveInputMode, Key, InputEvent);
+				bInputEventHandledInDomain |= HoldActionResult == EProcessHoldActionResult::Handled;
 				bDomainHadActiveRoots = true;
 
-				if (ActionDomain->ShouldBreakInnerEventFlow(bInputEventHandled))
+				if (ActionDomain->ShouldBreakInnerEventFlow(HoldActionResult == EProcessHoldActionResult::Handled))
 				{
 					break;
 				}
@@ -821,7 +820,7 @@ EProcessHoldActionResult UCommonUIActionRouterBase::ProcessHoldInputOnActionDoma
 		}
 	}
 
-	return OutHoldActionResult;
+	return HoldActionResult;
 }
 
 void UCommonUIActionRouterBase::ProcessRebuiltWidgets()
@@ -1145,10 +1144,17 @@ void UCommonUIActionRouterBase::UpdateLeafNodeAndConfig(FActivatableTreeRootPtr 
 {
 	if (DesiredRoot.IsValid())
 	{
-		// We're updating both the leaf node and it's config if we're the active root.
-		if (!DesiredRoot->UpdateLeafmostActiveNode(DesiredLeafNode, DesiredRoot == ActiveRootNode))
+		if (DesiredRoot == ActiveRootNode)
 		{
-			UE_LOG(LogUIActionRouter, Warning, TEXT("LeafmostActiveNode not updated."));
+			// We're updating both the leaf node and it's config if we're the active root.
+			if (!DesiredRoot->UpdateLeafmostActiveNode(DesiredLeafNode))
+			{
+				UE_LOG(LogUIActionRouter, Warning, TEXT("LeafmostActiveNode not updated."));
+			}
+		}
+		else
+		{
+			RefreshActionDomainLeafNodeConfig();
 		}
 	}
 }
@@ -1324,6 +1330,7 @@ void UCommonUIActionRouterBase::ApplyUIInputConfig(const FUIInputConfig& NewConf
 
 		const ECommonInputMode PreviousInputMode = GetActiveInputMode();
 
+		TOptional<FUIInputConfig> OldConfig = ActiveInputConfig;
 		ActiveInputConfig = NewConfig;
 
 		ULocalPlayer& LocalPlayer = *GetLocalPlayerChecked();
@@ -1335,8 +1342,15 @@ void UCommonUIActionRouterBase::ApplyUIInputConfig(const FUIInputConfig& NewConf
 			{
 				if (APlayerController* PC = LocalPlayer.GetPlayerController(GetWorld()))
 				{
-					PC->SetIgnoreMoveInput(NewConfig.bIgnoreMoveInput);
-					PC->SetIgnoreLookInput(NewConfig.bIgnoreLookInput);
+					if (!OldConfig.IsSet() || OldConfig.GetValue().bIgnoreMoveInput != NewConfig.bIgnoreMoveInput)
+					{
+						PC->SetIgnoreMoveInput(NewConfig.bIgnoreMoveInput);						
+					}
+					
+					if (!OldConfig.IsSet() || OldConfig.GetValue().bIgnoreLookInput != NewConfig.bIgnoreLookInput)
+					{
+						PC->SetIgnoreLookInput(NewConfig.bIgnoreLookInput);						
+					}
 
 					EMouseCaptureMode PrevCaptureMode = GameViewportClient->GetMouseCaptureMode();
 					const bool bWasPermanentlyCaptured = PrevCaptureMode == EMouseCaptureMode::CapturePermanently || PrevCaptureMode == EMouseCaptureMode::CapturePermanently_IncludingInitialMouseDown;

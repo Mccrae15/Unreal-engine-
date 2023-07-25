@@ -142,3 +142,4 @@ public:
 		Type = EOculusXRSpaceComponentType::Storable;
 	}
 };
+

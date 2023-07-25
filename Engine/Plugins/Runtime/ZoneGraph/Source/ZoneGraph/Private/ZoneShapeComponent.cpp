@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ZoneShapeComponent.h"
+#include "Engine/World.h"
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
 #include "ZoneGraphSubsystem.h"
@@ -9,6 +10,7 @@
 #include "ZoneGraphRenderingUtilities.h"
 #include "BezierUtilities.h"
 #include "ZoneGraphObjectCRC32.h"
+#include "Serialization/CustomVersion.h"
 
 
 const FGuid FZoneShapeCustomVersion::GUID(0xA6FC0560, 0x45B83348, 0xD0E5E18A, 0x3129CD45);

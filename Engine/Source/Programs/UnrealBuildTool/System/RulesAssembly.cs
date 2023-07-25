@@ -134,8 +134,22 @@ namespace UnrealBuildTool
 			// Compile the assembly
 			if (AssemblySourceFiles.Count > 0)
 			{
+				// Add the parent assemblies as references so they can be used
+				List<string>? ReferencedAssembies = null;
+				var CurrentParent = Parent;
+				while (CurrentParent != null && CurrentParent.CompiledAssembly != null)
+				{
+					if (ReferencedAssembies == null)
+					{
+						ReferencedAssembies = new List<string>();
+					}
+
+					ReferencedAssembies.Add(CurrentParent.CompiledAssembly.Location);
+					CurrentParent = CurrentParent.Parent;
+				}
+
 				PreprocessorDefines = GetPreprocessorDefinitions();
-				CompiledAssembly = DynamicCompilation.CompileAndLoadAssembly(AssemblyFileName, AssemblySourceFiles, Logger, PreprocessorDefines: PreprocessorDefines, DoNotCompile: bSkipCompile, ForceCompile: bForceCompile);
+				CompiledAssembly = DynamicCompilation.CompileAndLoadAssembly(AssemblyFileName, AssemblySourceFiles, Logger, ReferencedAssembies: ReferencedAssembies, PreprocessorDefines: PreprocessorDefines, DoNotCompile: bSkipCompile, ForceCompile: bForceCompile);
 			}
 
 			// Setup the module map
@@ -158,7 +172,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			// Write any deprecation warnings for methods overriden from a base with the [ObsoleteOverride] attribute. Unlike the [Obsolete] attribute, this ensures the message
+			// Write any deprecation warnings for methods overridden from a base with the [ObsoleteOverride] attribute. Unlike the [Obsolete] attribute, this ensures the message
 			// is given because the method is implemented, not because it's called.
 			if (CompiledAssembly != null)
 			{
@@ -512,6 +526,15 @@ namespace UnrealBuildTool
 				{
 					throw new BuildException("No valid constructor found for {0}.", ModuleName);
 				}
+
+				// Add the parent assemblies to the assembly cache so the types in them can be used when the constructor is called
+				var CurrentParent = Parent;
+				while (CurrentParent != null && CurrentParent.CompiledAssembly != null)
+				{
+					EpicGames.Core.AssemblyUtils.AddFileToAssemblyCache(CurrentParent.CompiledAssembly.Location);
+					CurrentParent = CurrentParent.Parent;
+				}
+
 				Constructor.Invoke(RulesObject, new object[] { Target });
 
 				if (Target.IsTestTarget && !RulesObject.IsTestModule)
@@ -543,8 +566,9 @@ namespace UnrealBuildTool
 		/// <param name="TargetInfo">Target configuration information to pass to the constructor</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <param name="IsTestTarget">If building a low level tests target</param>
+		/// <param name="bSkipValidation">If validation should be skipped (QueryTargetMode)</param>
 		/// <returns>Instance of the corresponding TargetRules or null if requested type name does not exist</returns>
-		protected TargetRules? CreateTargetRulesInstance(string TypeName, TargetInfo TargetInfo, ILogger Logger, bool IsTestTarget = false)
+		protected TargetRules? CreateTargetRulesInstance(string TypeName, TargetInfo TargetInfo, ILogger Logger, bool IsTestTarget = false, bool bSkipValidation = false)
 		{
 			// The build module must define a type named '<TargetName>Target' that derives from our 'TargetRules' type.  
 			Type? BaseRulesType = CompiledAssembly?.GetType(TypeName);
@@ -587,7 +611,7 @@ namespace UnrealBuildTool
 			Type RulesType = PlatformRulesType ?? BaseRulesType;
 			FileReference BaseFile = TargetNameToTargetFile[TargetInfo.Name];
 			FileReference PlatformFile = TargetNameToTargetFile.TryGetValue(PlatformRulesName, out FileReference? PlatformTargetFile) ? PlatformTargetFile : BaseFile;
-			TargetRules Rules = TargetRules.Create(RulesType, TargetInfo, BaseFile, PlatformFile, DefaultBuildSettings, Logger);
+			TargetRules Rules = TargetRules.Create(RulesType, TargetInfo, BaseFile, PlatformFile, TargetNameToTargetFile.Values, DefaultBuildSettings, Logger);
 
 			// Set the default overriddes for the configured target type
 			Rules.SetOverridesForTargetType();
@@ -630,6 +654,16 @@ namespace UnrealBuildTool
 				Rules.GlobalDefinitions.Add("USE_MALLOC_PROFILER=1");
 			}
 
+			// Setup utrace for Shader Compiler Worker
+			if (Rules.bShaderCompilerWorkerTrace)
+            {
+				Rules.GlobalDefinitions.Add("USE_SHADER_COMPILER_WORKER_TRACE=1");
+			}
+            else
+            {
+				Rules.GlobalDefinitions.Add("USE_SHADER_COMPILER_WORKER_TRACE=0");
+            }
+
 			// Set a macro if we allow using generated inis
 			if (!Rules.bAllowGeneratedIniWhenCooked)
 			{
@@ -664,8 +698,11 @@ namespace UnrealBuildTool
 			}
 
 			// Allow the platform to finalize the settings
-			UEBuildPlatform Platform = UEBuildPlatform.GetBuildPlatform(Rules.Platform);
-			Platform.ValidateTarget(Rules);
+			if (!bSkipValidation)
+			{
+				UEBuildPlatform Platform = UEBuildPlatform.GetBuildPlatform(Rules.Platform);
+				Platform.ValidateTarget(Rules);
+			}
 
 			// Some platforms may *require* monolithic compilation...
 			if (Rules.LinkType != TargetLinkType.Monolithic && UEBuildPlatform.PlatformRequiresMonolithicBuilds(Rules.Platform, Rules.Configuration))
@@ -687,18 +724,25 @@ namespace UnrealBuildTool
 		/// <param name="TargetName">Name of the target</param>
 		/// <param name="Platform">Platform being compiled</param>
 		/// <param name="Configuration">Configuration being compiled</param>
-		/// <param name="Architecture">Architecture being built</param>
+		/// <param name="Architectures">Architectures being built</param>
 		/// <param name="ProjectFile">Path to the project file for this target</param>
 		/// <param name="Arguments">Command line arguments for this target</param>
 		/// <param name="Logger"></param>
 		/// <param name="IsTestTarget">If building a low level test target</param>
+		/// <param name="bSkipValidation">If validation should be skipped (QueryTargetMode)</param>
 		/// <returns>The build target rules for the specified target</returns>
-		public TargetRules CreateTargetRules(string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string Architecture, FileReference? ProjectFile, CommandLineArguments? Arguments, ILogger Logger, bool IsTestTarget = false)
+		public TargetRules CreateTargetRules(string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, UnrealArchitectures? Architectures, FileReference? ProjectFile, CommandLineArguments? Arguments, ILogger Logger, bool IsTestTarget = false, bool bSkipValidation = false)
 		{
 			if (IsTestTarget)
 			{
 				TargetName = TargetDescriptor.GetTestedTargetName(TargetName);
 			}
+
+			if (Architectures == null)
+			{
+				Architectures = UnrealArchitectureConfig.ForPlatform(Platform).ActiveArchitectures(ProjectFile, TargetName);
+			}
+
 			bool bFoundTargetName = TargetNameToTargetFile.ContainsKey(TargetName);
 			if (bFoundTargetName == false)
 			{
@@ -723,7 +767,7 @@ namespace UnrealBuildTool
 				}
 				else
 				{
-					return Parent.CreateTargetRules(TargetName, Platform, Configuration, Architecture, ProjectFile, Arguments, Logger, IsTestTarget);
+					return Parent.CreateTargetRules(TargetName, Platform, Configuration, Architectures, ProjectFile, Arguments, Logger, IsTestTarget, bSkipValidation);
 				}
 			}
 
@@ -731,7 +775,7 @@ namespace UnrealBuildTool
 			string TargetTypeName = TargetName + "Target";
 
 			// The build module must define a type named '<TargetName>Target' that derives from our 'TargetRules' type.  
-			TargetRules? TargetRules = CreateTargetRulesInstance(TargetTypeName, new TargetInfo(TargetName, Platform, Configuration, Architecture, ProjectFile, Arguments), Logger, IsTestTarget);
+			TargetRules? TargetRules = CreateTargetRulesInstance(TargetTypeName, new TargetInfo(TargetName, Platform, Configuration, Architectures, ProjectFile, Arguments), Logger, IsTestTarget, bSkipValidation);
 
 			if (TargetRules == null)
             {
@@ -747,17 +791,16 @@ namespace UnrealBuildTool
 		/// <param name="Type">The type of target to look for</param>
 		/// <param name="Platform">The platform being built</param>
 		/// <param name="Configuration">The configuration being built</param>
-		/// <param name="Architecture">The architecture being built</param>
 		/// <param name="ProjectFile">Project file for the target being built</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>Name of the target for the given type</returns>
-		public string GetTargetNameByType(TargetType Type, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string Architecture, FileReference? ProjectFile, ILogger Logger)
+		public string GetTargetNameByType(TargetType Type, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, FileReference? ProjectFile, ILogger Logger)
 		{
 			// Create all the targets in this assembly 
 			List<string> Matches = new List<string>();
 			foreach(KeyValuePair<string, FileReference> TargetPair in TargetNameToTargetFile)
 			{
-				TargetRules? Rules = CreateTargetRulesInstance(TargetPair.Key + "Target", new TargetInfo(TargetPair.Key, Platform, Configuration, Architecture, ProjectFile, null), Logger);
+				TargetRules? Rules = CreateTargetRulesInstance(TargetPair.Key + "Target", new TargetInfo(TargetPair.Key, Platform, Configuration, null, ProjectFile, null), Logger);
 				if(Rules != null && Rules.Type == Type)
 				{
 					Matches.Add(TargetPair.Key);
@@ -773,7 +816,7 @@ namespace UnrealBuildTool
 				}
 				else
 				{
-					return Parent.GetTargetNameByType(Type, Platform, Configuration, Architecture, ProjectFile, Logger);
+					return Parent.GetTargetNameByType(Type, Platform, Configuration, ProjectFile, Logger);
 				}
 			}
 			else

@@ -2,19 +2,24 @@
 
 #include "Animation/PoseAsset.h"
 
+#include "Animation/AnimStats.h"
+#include "BonePose.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 #include "AnimationRuntime.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSequence.h"
-#include "Animation/AnimSequenceBase.h"
 #include "Animation/AnimationPoseData.h"
 #include "Animation/AnimData/AnimDataModel.h"
 #include "Animation/AnimSequenceHelpers.h"
-#include "Framework/Notifications/NotificationManager.h"
+#include "Engine/SkeletalMesh.h"
+#include "UObject/LinkerLoad.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/UE5ReleaseStreamObjectVersion.h"
-#include "Widgets/Notifications/SNotificationList.h"
+#include "UObject/Package.h"
+#include "UObject/UnrealType.h"
+#include "SkeletonRemappingRegistry.h"
+#include "Animation/SkeletonRemapping.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PoseAsset)
 
@@ -397,9 +402,10 @@ void UPoseAsset::GetBaseAnimationPose(FAnimationPoseData& OutAnimationPoseData) 
         const int32 TrackNum = PoseContainer.Tracks.Num();
 		BoneIndices.SetNumUninitialized(TrackNum, false);
 
+		const FSkeletonRemapping& SkeletonRemapping = UE::Anim::FSkeletonRemappingRegistry::Get().GetRemapping(GetSkeleton(), RequiredBones.GetSkeletonAsset());
 		for(int32 TrackIndex = 0; TrackIndex < TrackNum; ++TrackIndex)
 		{
-			const int32 SkeletonBoneIndex = PoseContainer.TrackBoneIndices[TrackIndex];
+			const int32 SkeletonBoneIndex = SkeletonRemapping.IsValid() ? SkeletonRemapping.GetTargetSkeletonBoneIndex(PoseContainer.TrackBoneIndices[TrackIndex]) : PoseContainer.TrackBoneIndices[TrackIndex];
 			const FCompactPoseBoneIndex PoseBoneIndex = RequiredBones.GetCompactPoseIndexFromSkeletonIndex(SkeletonBoneIndex);
 			// we add even if it's invalid because we want it to match with track index
 			BoneIndices[TrackIndex].SkeletonBoneIndex = SkeletonBoneIndex;
@@ -586,6 +592,7 @@ bool UPoseAsset::GetAnimationPose(struct FAnimationPoseData& OutAnimationPoseDat
 
 		const int32 TrackNum = PoseContainer.Tracks.Num();
 
+		const FSkeletonRemapping& SkeletonRemapping = UE::Anim::FSkeletonRemappingRegistry::Get().GetRemapping(GetSkeleton(), RequiredBones.GetSkeletonAsset());
 		// Single pose optimized evaluation path - explicitly used by PoseByName Animation Node
 		if (ExtractionContext.PoseCurves.Num() == 1)
 		{
@@ -606,17 +613,20 @@ bool UPoseAsset::GetAnimationPose(struct FAnimationPoseData& OutAnimationPoseDat
 					// Per-track (bone) transform
 					for (int32 TrackIndex = 0; TrackIndex < TrackNum; ++TrackIndex)
 					{
-						const int32 SkeletonBoneIndex = PoseContainer.TrackBoneIndices[TrackIndex];
-						const FCompactPoseBoneIndex CompactIndex = RequiredBones.GetCompactPoseIndexFromSkeletonIndex(SkeletonBoneIndex);
+						const FSkeletonPoseBoneIndex SkeletonBoneIndex = FSkeletonPoseBoneIndex(SkeletonRemapping.IsValid() ? SkeletonRemapping.GetTargetSkeletonBoneIndex(PoseContainer.TrackBoneIndices[TrackIndex]) : PoseContainer.TrackBoneIndices[TrackIndex]);
+
+						//UE_CLOG(!RequiredBones.IsSkeletonPoseIndexValid(SkeletonBoneIndex), LogAnimation, Warning, TEXT("PoseAsset [%s] with skeleton [%s] has bones not present in the evaluation container. Bone index(%d) not found."), *GetPathName(), MySkeleton ? *MySkeleton->GetPathName() : TEXT("<Skeleton Not Found>"), SkeletonBoneIndex.GetInt());
+
+						const FCompactPoseBoneIndex CompactIndex = RequiredBones.GetCompactPoseIndexFromSkeletonPoseIndex(SkeletonBoneIndex);
 						
 						// If bone index is invalid, or not required for the pose - skip
-						if (CompactIndex == INDEX_NONE || !ExtractionContext.IsBoneRequired(CompactIndex.GetInt()))
+						if (!CompactIndex.IsValid() || !ExtractionContext.IsBoneRequired(CompactIndex.GetInt()))
 						{
 							continue;
 						}
 					
 						// Check if this track is part of the pose
-						const TArray<FPoseAssetInfluence>& PoseInfluences = PoseContainer.TrackPoseInfluenceIndices[TrackIndex].Influences;						
+						const TArray<FPoseAssetInfluence>& PoseInfluences = PoseContainer.TrackPoseInfluenceIndices[TrackIndex].Influences;
 						const int32 InfluenceIndex = PoseInfluences.IndexOfByPredicate([PoseIndex](const FPoseAssetInfluence& Influence) -> bool
 						{
 							return Influence.PoseIndex == PoseIndex;
@@ -647,7 +657,7 @@ bool UPoseAsset::GetAnimationPose(struct FAnimationPoseData& OutAnimationPoseDat
 							}
 
 							// Retarget the bone transform
-							FAnimationRuntime::RetargetBoneTransform(MySkeleton, GetRetargetTransformsSourceName(), GetRetargetTransforms(), OutBoneTransform, SkeletonBoneIndex, CompactIndex, RequiredBones, bAdditivePose);
+							FAnimationRuntime::RetargetBoneTransform(MySkeleton, GetRetargetTransformsSourceName(), GetRetargetTransforms(), OutBoneTransform, SkeletonBoneIndex.GetInt(), CompactIndex, RequiredBones, bAdditivePose);
 							OutBoneTransform.NormalizeRotation();
 						}
 					}					
@@ -667,11 +677,15 @@ bool UPoseAsset::GetAnimationPose(struct FAnimationPoseData& OutAnimationPoseDat
 
 			for(int32 TrackIndex = 0; TrackIndex < TrackNum; ++TrackIndex)
 			{
-				const int32 SkeletonBoneIndex = PoseContainer.TrackBoneIndices[TrackIndex];
-				const FCompactPoseBoneIndex PoseBoneIndex = RequiredBones.GetCompactPoseIndexFromSkeletonIndex(SkeletonBoneIndex);
+				const FSkeletonPoseBoneIndex SkeletonBoneIndex = FSkeletonPoseBoneIndex(SkeletonRemapping.IsValid() ? SkeletonRemapping.GetTargetSkeletonBoneIndex(PoseContainer.TrackBoneIndices[TrackIndex]) : PoseContainer.TrackBoneIndices[TrackIndex]);
+
+				//UE_CLOG(!RequiredBones.IsSkeletonPoseIndexValid(SkeletonBoneIndex), LogAnimation, Warning, TEXT("PoseAsset [%s] with skeleton [%s] has bones not present in the evaluation container. Bone index(%d) not found."), *GetPathName(), MySkeleton ? *MySkeleton->GetPathName() : TEXT("<Skeleton Not Found>"), SkeletonBoneIndex.GetInt());
+
+				const FCompactPoseBoneIndex CompactIndex = RequiredBones.GetCompactPoseIndexFromSkeletonPoseIndex(SkeletonBoneIndex);
+
 				// we add even if it's invalid because we want it to match with track index
-				BoneIndices[TrackIndex].SkeletonBoneIndex = SkeletonBoneIndex;
-				BoneIndices[TrackIndex].CompactBoneIndex = PoseBoneIndex;
+				BoneIndices[TrackIndex].SkeletonBoneIndex = SkeletonBoneIndex.GetInt();
+				BoneIndices[TrackIndex].CompactBoneIndex = CompactIndex;
 			}
 
 			// you could only have morphtargets
@@ -890,7 +904,7 @@ void UPoseAsset::PostLoad()
 		PostProcessData();
     }
 
-	if (GetLinkerCustomVersion(FUE5ReleaseStreamObjectVersion::GUID) >= FUE5ReleaseStreamObjectVersion::PoseAssetRawDataGUID)
+	if (GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::PoseAssetRawDataGUIDUpdate)
 	{
 		if (SourceAnimation)
 		{
@@ -904,13 +918,17 @@ void UPoseAsset::PostLoad()
 			}
 			SourceAnimation->ConditionalPostLoad();
 			
-			if (!SourceAnimationRawDataGUID.IsValid() || SourceAnimationRawDataGUID != SourceAnimation->GetRawDataGuid())
+			if (!SourceAnimationRawDataGUID.IsValid() || SourceAnimationRawDataGUID != SourceAnimation->GetDataModel()->GenerateGuid())
 			{
 				FFormatNamedArguments Args;
 				Args.Add(TEXT("AssetName"), FText::FromString(GetPathName()));
 				Args.Add(TEXT("SourceAsset"), FText::FromString(SourceAnimation->GetPathName()));
-				const FText ResultText = FText::Format(LOCTEXT("PoseAssetSourceOutOfDate", "PoseAsset {AssetName} is out-of-date with its source animation {SourceAsset}"), Args);
-				UE_LOG(LogAnimation, Warning,TEXT("%s"), *ResultText.ToString());
+
+				Args.Add(TEXT("Stored"), FText::FromString(SourceAnimationRawDataGUID.ToString()));
+				Args.Add(TEXT("Found"), FText::FromString(SourceAnimation->GetDataModel()->GenerateGuid().ToString()));
+				
+				const FText ResultText = FText::Format(LOCTEXT("PoseAssetSourceOutOfDate", "PoseAsset {AssetName} is out-of-date with its source animation {SourceAsset} {Stored} vs {Found}"), Args);
+				//UE_LOG(LogAnimation, Warning,TEXT("%s"), *ResultText.ToString());
 			}
 		}	
 	}	
@@ -1383,7 +1401,7 @@ void UPoseAsset::CreatePoseFromAnimation(class UAnimSequence* AnimSequence, cons
 		{
 			SetSkeleton(TargetSkeleton);
 			SourceAnimation = AnimSequence;
-			SourceAnimationRawDataGUID = AnimSequence->GetRawDataGuid();
+			SourceAnimationRawDataGUID = AnimSequence->GetDataModel()->GenerateGuid();
 
 			// reinitialize, now we're making new pose from this animation
 			Reinitialize();
@@ -1400,7 +1418,7 @@ void UPoseAsset::CreatePoseFromAnimation(class UAnimSequence* AnimSequence, cons
 				FMemMark Mark(FMemStack::Get());
 
 				// set up track data - @todo: add revaliation code when checked
-				UAnimDataModel* DataModel = AnimSequence->GetDataModel();
+				IAnimationDataModel* DataModel = AnimSequence->GetDataModel();
 
 				TArray<FName> TrackNames;
 				DataModel->GetBoneTrackNames(TrackNames);
@@ -1447,7 +1465,7 @@ void UPoseAsset::CreatePoseFromAnimation(class UAnimSequence* AnimSequence, cons
 					// now get rawanimationdata, and each key is converted to new pose
 					for (int32 TrackIndex = 0; TrackIndex < NumTracks; ++TrackIndex)
 					{
-						UE::Anim::GetBoneTransformFromModel(AnimSequence->GetDataModel(), NewPose[TrackIndex], TrackIndex, PoseIndex);
+						NewPose[TrackIndex] = AnimSequence->GetDataModel()->GetBoneTrackTransform(TrackNames[TrackIndex], FFrameNumber(PoseIndex));
 					}
 
 					if (TotalFloatCurveCount > 0)

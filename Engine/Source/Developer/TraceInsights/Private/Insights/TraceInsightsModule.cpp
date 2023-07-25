@@ -82,7 +82,6 @@ void FTraceInsightsModule::StartupModule()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-PRAGMA_DISABLE_OPTIMIZATION
 void FTraceInsightsModule::ShutdownModule()
 {
 	LLM_SCOPE_BYTAG(Insights);
@@ -151,7 +150,6 @@ void FTraceInsightsModule::ShutdownModule()
 
 	FInsightsStyle::Shutdown();
 }
-PRAGMA_ENABLE_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -304,6 +302,7 @@ void FTraceInsightsModule::CreateSessionBrowser(const FCreateSessionBrowserParam
 	const EOutputCanBeNullptr OutputCanBeNullptr = EOutputCanBeNullptr::Never;
 	TSharedPtr<SWidget> Content = FGlobalTabmanager::Get()->RestoreFrom(PersistentLayout.ToSharedRef(), RootWindow, bEmbedTitleAreaContent, OutputCanBeNullptr);
 	RootWindow->SetContent(Content.ToSharedRef());
+	RootWindow->GetOnWindowClosedEvent().AddRaw(this, &FTraceInsightsModule::OnWindowClosedEvent);
 
 	//////////////////////////////////////////////////
 	// Show the window.
@@ -373,7 +372,7 @@ void FTraceInsightsModule::CreateSessionViewer(bool bAllowDebugTools)
 	//////////////////////////////////////////////////
 	// Setup the window's content.
 
-	TSharedRef<FTabManager::FLayout> DefaultLayout = FTabManager::NewLayout("UnrealInsightsLayout_v1.0");
+	TSharedRef<FTabManager::FLayout> DefaultLayout = FTabManager::NewLayout("UnrealInsightsLayout_v1.1");
 
 	AddAreaForSessionViewer(DefaultLayout);
 
@@ -427,6 +426,7 @@ void FTraceInsightsModule::AddAreaForSessionViewer(TSharedRef<FTabManager::FLayo
 	Stack->AddTab(FInsightsManagerTabs::LoadingProfilerTabId, ETabState::ClosedTab);
 	Stack->AddTab(FInsightsManagerTabs::NetworkingProfilerTabId, ETabState::ClosedTab);
 	Stack->AddTab(FInsightsManagerTabs::MemoryProfilerTabId, ETabState::ClosedTab);
+	Stack->AddTab(FInsightsManagerTabs::MessageLogTabId, ETabState::ClosedTab);
 	Stack->SetForegroundTab(FTabId(FInsightsManagerTabs::TimingProfilerTabId));
 
 	Layout->AddArea
@@ -544,9 +544,9 @@ void FTraceInsightsModule::StartAnalysisForTrace(uint32 InTraceId, bool InAutoQu
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FTraceInsightsModule::StartAnalysisForLastLiveSession()
+void FTraceInsightsModule::StartAnalysisForLastLiveSession(float InRetryTime)
 {
-	FInsightsManager::Get()->LoadLastLiveSession();
+	FInsightsManager::Get()->LoadLastLiveSession(InRetryTime);
 	UpdateAppTitle();
 }
 

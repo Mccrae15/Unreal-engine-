@@ -7,6 +7,7 @@
 #include "WorldPartitionSubsystem.generated.h"
 
 class UWorldPartition;
+class FWorldPartitionActorDesc;
 
 enum class EWorldPartitionRuntimeCellState : uint8;
 
@@ -53,14 +54,20 @@ public:
 
 	void DumpStreamingSources(FOutputDevice& OutputDevice) const;
 
-	TSet<IWorldPartitionStreamingSourceProvider*> GetStreamingSourceProviders() const { return StreamingSourceProviders; }
+	TSet<IWorldPartitionStreamingSourceProvider*> GetStreamingSourceProviders() const;
 	void RegisterStreamingSourceProvider(IWorldPartitionStreamingSourceProvider* StreamingSource);
+	bool IsStreamingSourceProviderRegistered(IWorldPartitionStreamingSourceProvider* StreamingSource) const;
 	bool UnregisterStreamingSourceProvider(IWorldPartitionStreamingSourceProvider* StreamingSource);
+
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FWorldPartitionStreamingSourceProviderFilter, const IWorldPartitionStreamingSourceProvider*);
+	FWorldPartitionStreamingSourceProviderFilter& OnIsStreamingSourceProviderFiltered() { return IsStreamingSourceProviderFiltered; }
 
 #if WITH_EDITOR
 	void ForEachWorldPartition(TFunctionRef<bool(UWorldPartition*)> Func);
 
 	static bool IsRunningConvertWorldPartitionCommandlet();
+
+	TSet<FWorldPartitionActorDesc*> SelectedActorDescs;
 #endif
 
 private:
@@ -76,6 +83,8 @@ private:
 	TArray<TObjectPtr<UWorldPartition>> RegisteredWorldPartitions;
 
 	TSet<IWorldPartitionStreamingSourceProvider*> StreamingSourceProviders;
+
+	FWorldPartitionStreamingSourceProviderFilter IsStreamingSourceProviderFiltered;
 
 	FDelegateHandle	DrawHandle;
 

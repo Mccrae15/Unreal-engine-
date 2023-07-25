@@ -1,23 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineBeaconClient.h"
+#include "Engine/GameInstance.h"
+#include "PacketHandler.h"
 #include "TimerManager.h"
-#include "GameFramework/OnlineReplStructs.h"
 #include "OnlineBeaconHostObject.h"
-#include "EngineGlobals.h"
-#include "Engine/Engine.h"
-#include "PacketHandlers/StatelessConnectHandlerComponent.h"
 #include "Engine/PackageMapClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Net/DataChannel.h"
-#include "Misc/NetworkVersion.h"
-#include "Interfaces/OnlineIdentityInterface.h"
 #include "OnlineSubsystemUtils.h"
-#include "Containers/StringFwd.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineBeaconClient)
-
-#define BEACON_RPC_TIMEOUT 15.0f
 
 /** For backwards compatibility with newer engine encryption API */
 #ifndef NETCONNECTION_HAS_SETENCRYPTIONKEY
@@ -312,6 +305,8 @@ void AOnlineBeaconClient::OnFailure()
 
 void AOnlineBeaconClient::ClientOnConnected_Implementation()
 {
+	UE_LOG(LogBeacon, Verbose, TEXT("%s: Received first RPC from server"), *GetName());
+
 	SetConnectionState(EBeaconConnectionState::Open);
 	BeaconConnection->SetConnectionState(USOCK_Open);
 
@@ -410,19 +405,12 @@ void AOnlineBeaconClient::NotifyControlMessage(UNetConnection* Connection, uint8
 			{
 				// build a URL
 				FURL URL(nullptr, TEXT(""), TRAVEL_Absolute);
-				FString URLString;
-
-				// Append authentication token to URL options
-				IOnlineIdentityPtr IdentityPtr = Online::GetIdentityInterface(GetWorld());
-				if (IdentityPtr.IsValid())
+				FString AuthTicket = GetAuthTicket(*Connection->PlayerId);
+				if (!AuthTicket.IsEmpty())
 				{
-					TSharedPtr<FUserOnlineAccount> UserAcct = IdentityPtr->GetUserAccount(*Connection->PlayerId);
-					if (UserAcct.IsValid())
-					{
-						URL.AddOption(*FString::Printf(TEXT("AuthTicket=%s"), *UserAcct->GetAccessToken()));
-					}
+					URL.AddOption(*FString::Printf(TEXT("AuthTicket=%s"), *AuthTicket));
 				}
-				URLString = URL.ToString();
+				FString URLString = URL.ToString();
 
 				// compute the player's online platform name
 				FName OnlinePlatformName = NAME_None;
@@ -482,8 +470,13 @@ void AOnlineBeaconClient::NotifyControlMessage(UNetConnection* Connection, uint8
 						// Server will send ClientOnConnected() when it gets this control message
 
 						// Fail safe for connection to server but no client connection RPC
-						FTimerDelegate TimerDelegate = FTimerDelegate::CreateUObject(this, &AOnlineBeaconClient::OnFailure);
-						GetWorldTimerManager().SetTimer(TimerHandle_OnFailure, TimerDelegate, BEACON_RPC_TIMEOUT, false);
+						if (!Connection->Driver->bNoTimeouts)
+						{
+							float Timeout = Connection->GetTimeoutValue();
+							UE_LOG(LogBeacon, Verbose, TEXT("%s: Waiting for first RPC from server, timeout: %.3f"), *GetName(), Timeout);
+							FTimerDelegate TimerDelegate = FTimerDelegate::CreateUObject(this, &AOnlineBeaconClient::OnFailure);
+							GetWorldTimerManager().SetTimer(TimerHandle_OnFailure, TimerDelegate, Timeout, false);
+						}
 					}
 					else
 					{
@@ -503,22 +496,7 @@ void AOnlineBeaconClient::NotifyControlMessage(UNetConnection* Connection, uint8
 
 				if (FNetControlMessage<NMT_Upgrade>::Receive(Bunch, RemoteNetworkVersion, RemoteNetworkFeatures))
 				{
-					TStringBuilder<128> RemoteFeaturesDescription;
-					FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(RemoteNetworkFeatures, RemoteFeaturesDescription);
-
-					TStringBuilder<128> LocalFeaturesDescription;
-					FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(NetDriver->GetNetworkRuntimeFeatures(), LocalFeaturesDescription);
-
-					UE_LOG(LogBeacon, Error, TEXT("Beacon is incompatible with the local version of the game: RemoteNetworkVersion=%u, RemoteNetworkFeatures=%s vs LocalNetworkVersion=%u, LocalNetworkFeatures=%s"), 
-						RemoteNetworkVersion, RemoteFeaturesDescription.ToString(),
-						FNetworkVersion::GetLocalNetworkVersion(), LocalFeaturesDescription.ToString()
-					);
-				
-					// Upgrade
-					const FString ConnectionError = NSLOCTEXT("Engine", "ClientOutdated",
-						"The match you are trying to join is running an incompatible version of the game.  Please try upgrading your game version.").ToString();
-
-					GEngine->BroadcastNetworkFailure(GetWorld(), NetDriver, ENetworkFailure::OutdatedClient, ConnectionError);
+					Connection->HandleReceiveNetUpgrade(RemoteNetworkVersion, RemoteNetworkFeatures);
 				}
 
 				break;
@@ -552,6 +530,23 @@ void AOnlineBeaconClient::NotifyControlMessage(UNetConnection* Connection, uint8
 			}
 		}
 	}	
+}
+
+FString AOnlineBeaconClient::GetAuthTicket(const FUniqueNetIdRepl& PlayerId)
+{
+	FString AuthTicket;
+
+	IOnlineIdentityPtr IdentityPtr = Online::GetIdentityInterface(GetWorld());
+	if (IdentityPtr.IsValid() && ensure(PlayerId.IsValid()))
+	{
+		TSharedPtr<FUserOnlineAccount> UserAcct = IdentityPtr->GetUserAccount(*PlayerId);
+		if (UserAcct.IsValid())
+		{
+			AuthTicket = *UserAcct->GetAccessToken();
+		}
+	}
+
+	return AuthTicket;
 }
 
 void AOnlineBeaconClient::FinalizeEncryptedConnection(const FEncryptionKeyResponse& Response, TWeakObjectPtr<UNetConnection> WeakConnection)

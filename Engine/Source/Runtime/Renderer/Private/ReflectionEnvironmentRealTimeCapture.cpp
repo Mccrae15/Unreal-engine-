@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "ReflectionEnvironmentCapture.h"
+#include "BasePassRendering.h"
 #include "ClearQuad.h"
 #include "MeshPassProcessor.h"
 #include "PrimitiveSceneProxy.h"
@@ -17,6 +18,7 @@
 #include "FogRendering.h"
 #include "GPUScene.h"
 #include "ScreenPass.h"
+#include "SkyAtmosphereRendering.h"
 
 #if WITH_EDITOR
 #include "CanvasTypes.h"
@@ -294,7 +296,7 @@ END_SHADER_PARAMETER_STRUCT()
 
 void FScene::AllocateAndCaptureFrameSkyEnvMap(
 	FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer, FViewInfo& MainView,
-	bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud, FInstanceCullingManager& InstanceCullingManager)
+	bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud, FInstanceCullingManager& InstanceCullingManager, FRDGExternalAccessQueue& ExternalAccessQueue)
 {
 	check(SkyLight && SkyLight->bRealTimeCaptureEnabled && !SkyLight->bHasStaticLighting);
 
@@ -360,8 +362,6 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 	FPooledRenderTargetDesc SkyCubeTexDesc = FPooledRenderTargetDesc::CreateCubemapDesc(CubeWidth, 
 		PF_FloatR11G11B10, FClearValueBinding::Black, TexCreate_TargetArraySlicesIndependently,
 		TexCreate_ShaderResource | TexCreate_UAV | TexCreate_RenderTargetable, false, 1, CubeMipCount, false);
-
-	FRDGExternalAccessQueue ExternalAccessQueue;
 
 	const bool bTimeSlicedRealTimeCapture = CVarRealTimeReflectionCaptureTimeSlicing.GetValueOnRenderThread() > 0 && !MainView.Family->bCurrentlyBeingEdited;
 
@@ -565,17 +565,20 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 					CubeView.CachedViewUniformShaderParameters->CameraAerialPerspectiveVolume = GSystemTextures.VolumetricBlackDummy->GetRHI();
 				}
 
-				CubeView.CreateViewUniformBuffers(*CubeView.CachedViewUniformShaderParameters);
 				if (CubeView.bSceneHasSkyMaterial)
 				{
-					GPUScene.UploadDynamicPrimitiveShaderDataForView(GraphBuilder, *this, CubeView, ExternalAccessQueue);
+					GPUScene.FillViewShaderParameters(*CubeView.CachedViewUniformShaderParameters);
 				}
+
+				CubeView.CreateViewUniformBuffers(*CubeView.CachedViewUniformShaderParameters);
 
 				SkyRC.ViewUniformBuffer = CubeView.ViewUniformBuffer;
 				SkyRC.ViewMatrices = &CubeViewMatrices;
 
 				SkyRC.SkyAtmosphereViewLutTexture = BlackDummy2dTex;
 				SkyRC.SkyAtmosphereCameraAerialPerspectiveVolume = BlackDummy3dTex;
+				SkyRC.SkyAtmosphereCameraAerialPerspectiveVolumeMieOnly = BlackDummy3dTex;
+				SkyRC.SkyAtmosphereCameraAerialPerspectiveVolumeRayOnly = BlackDummy3dTex;
 
 				SkyRC.Viewport = FIntRect(FIntPoint(0, 0), FIntPoint(CubeWidth, CubeWidth));
 				SkyRC.bLightDiskEnabled = false;
@@ -872,6 +875,7 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 		// the flag, RDG will split the transition to UAV to the start of the graph, which results in a validation error. With the flag, RDG
 		// will transition to UAV at the start of the pass instead.
 		FRDGBuffer* SkyIrradianceEnvironmentMapRDG = GraphBuilder.RegisterExternalBuffer(SkyIrradianceEnvironmentMap, ERDGBufferFlags::ForceImmediateFirstBarrier);
+		GraphBuilder.UseInternalAccessMode(SkyIrradianceEnvironmentMapRDG);
 
 		TShaderMapRef<FComputeSkyEnvMapDiffuseIrradianceCS> ComputeShader(GetGlobalShaderMap(FeatureLevel));
 
@@ -893,7 +897,7 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 		const FIntVector NumGroups = FIntVector(1, 1, 1);
 		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("ComputeSkyEnvMapDiffuseIrradianceCS"), ComputeShader, PassParameters, NumGroups);
 
-		ExternalAccessQueue.Add(SkyIrradianceEnvironmentMapRDG, ERHIAccess::SRVMask);
+		ExternalAccessQueue.Add(SkyIrradianceEnvironmentMapRDG, ERHIAccess::SRVMask, ERHIPipeline::All);
 	};
 
 	const uint32 LastMipLevel = CubeMipCount - 1;
@@ -974,11 +978,12 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 
 #define DEBUG_TIME_SLICE 0
 #if DEBUG_TIME_SLICE
-		RealTimeSlicedReflectionCaptureState = -1;
-		RealTimeSlicedReflectionCaptureStateStep = 0;
+		Capture = FRealTimeSlicedReflectionCapture();
+		Capture.FirstFrameState = FRealTimeSlicedReflectionCapture::EFirstFrameState::BEYOND_FIRST_FRAME;
+		Capture.GpusWithFullCube |= MainView.GPUMask.GetNative();
 		while(true)
 		{
-			if (RealTimeSlicedReflectionCaptureState+1 >= TimeSliceCount)
+			if (Capture.State+1 >= TimeSliceCount)
 			{
 				break;
 			}
@@ -1000,7 +1005,7 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 			}
 
 			// Update the current time-slicing state if this is a new frame and if the current step is done.
-			// Note: RealTimeSlicedReflectionCaptureState will initially be -1.
+			// Note: Capture.State will initially be -1.
 			if (bStateFaceStepsDone)
 			{
 				if (++Capture.State >= TimeSliceCount)
@@ -1108,15 +1113,16 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 
 #if DEBUG_TIME_SLICE
 		}
+		ConvolvedSkyRenderTargetReadyIndex = 1 - ConvolvedSkyRenderTargetReadyIndex;
+		Capture.State = 0;
+		Capture.StateSubStep = 0;
 #endif
 	}
 
 	if (ConvolvedSkyRenderTarget[ConvolvedSkyRenderTargetReadyIndex])
 	{
-		ExternalAccessQueue.Add(GraphBuilder.RegisterExternalTexture(ConvolvedSkyRenderTarget[ConvolvedSkyRenderTargetReadyIndex]), ERHIAccess::SRVMask);
+		ExternalAccessQueue.Add(GraphBuilder.RegisterExternalTexture(ConvolvedSkyRenderTarget[ConvolvedSkyRenderTargetReadyIndex]), ERHIAccess::SRVMask, ERHIPipeline::All);
 	}
-
-	ExternalAccessQueue.Submit(GraphBuilder);
 }
 
 

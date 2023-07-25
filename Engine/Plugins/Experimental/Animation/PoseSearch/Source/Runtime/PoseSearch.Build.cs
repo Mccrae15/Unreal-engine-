@@ -23,7 +23,7 @@ public class PoseSearch : ModuleRules
 				"TraceLog",
 				"AnimGraphRuntime",
 				"GameplayTags",
-				"MotionTrajectory"
+				"StructUtils"
 			}
 		);
 
@@ -40,7 +40,8 @@ public class PoseSearch : ModuleRules
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-					"DerivedDataCache"
+					"DerivedDataCache",
+					"UnrealEd"
 				}
 			);
 		}

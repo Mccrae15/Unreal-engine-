@@ -95,10 +95,10 @@ void FAndroidApplication::PollGameDeviceState( const float TimeDelta )
 
 		bWindowSizeChanged = false;
 	}
-
+    
 	if (!bDisableOrientationPolling)
 	{
-		HandleDeviceOrientation();
+    HandleDeviceOrientation();
 	}
 }
 
@@ -111,7 +111,10 @@ void FAndroidApplication::HandleDeviceOrientation()
 	if (PreviousDeviceOrientation != DeviceOrientation)
 	{
 		FCoreDelegates::ApplicationReceivedScreenOrientationChangedNotificationDelegate.Broadcast((int32)DeviceOrientation);
+	}
 
+	if (FAndroidWindow::SafezoneUpdated())
+	{
 		//we also want to fire off the safe frame event
 		FCoreDelegates::OnSafeFrameChangedEvent.Broadcast();
 	}
@@ -159,10 +162,10 @@ void FDisplayMetrics::RebuildDisplayMetrics( FDisplayMetrics& OutDisplayMetrics 
 	// Apply the debug safe zones
 	OutDisplayMetrics.ApplyDefaultSafeZones();
 
-	float Inset_Left = -1.0f;
-	float Inset_Top = -1.0f;
-	float Inset_Right = -1.0f;
-	float Inset_Bottom = -1.0f;
+	double Inset_Left = -1.0f;
+	double Inset_Top = -1.0f;
+	double Inset_Right = -1.0f;
+	double Inset_Bottom = -1.0f;
 
 	bool bIsPortrait = FAndroidWindow::IsPortraitOrientation();
 

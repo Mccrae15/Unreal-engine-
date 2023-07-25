@@ -36,7 +36,7 @@ struct STRUCTUTILS_API FStructSharedMemory
 	{
 		// Align RequiredSize to InScriptStruct's alignment to effectively add padding in between ScriptStruct and
 		// StructMemory. GetMemory will then round &StructMemory up past this 'padding' to the nearest aligned address.
-		const int32 RequiredSize = Align(sizeof(FStructSharedMemory), InScriptStruct.GetMinAlignment()) + InScriptStruct.GetStructureSize();
+		const int32 RequiredSize = static_cast<int32>(Align(sizeof(FStructSharedMemory), InScriptStruct.GetMinAlignment())) + InScriptStruct.GetStructureSize();
 		// Code analysis is unable to understand correctly what we are doing here, so disabling the warning C6386: Buffer overrun while writing to...
 		CA_SUPPRESS( 6386 )
 		FStructSharedMemory* StructMemory = new(FMemory::Malloc(RequiredSize, InScriptStruct.GetMinAlignment())) FStructSharedMemory(InScriptStruct, InStructMemory);
@@ -280,7 +280,7 @@ struct STRUCTUTILS_API FSharedStruct : public FConstSharedStruct
 	}
 
 	/** Returns a mutable pointer to struct memory. This const_cast here is safe as a ClassName can only be setup from mutable non const memory. */
-	uint8* GetMutableMemory() const
+	uint8* GetMutableMemory()
 	{
 		const uint8* Memory = GetMemory();
 		return const_cast<uint8*>(Memory);
@@ -288,7 +288,7 @@ struct STRUCTUTILS_API FSharedStruct : public FConstSharedStruct
 
 	/** Returns mutable reference to the struct, this getter assumes that all data is valid. */
 	template<typename T>
-	T& GetMutable() const
+	T& GetMutable()
 	{
 		uint8* Memory = GetMutableMemory();
 		const UScriptStruct* Struct = GetScriptStruct();
@@ -300,7 +300,7 @@ struct STRUCTUTILS_API FSharedStruct : public FConstSharedStruct
 
 	/** Returns mutable pointer to the struct, or nullptr if cast is not valid. */
 	template<typename T>
-	T* GetMutablePtr() const
+	T* GetMutablePtr()
 	{
 		uint8* Memory = GetMutableMemory();
 		const UScriptStruct* Struct = GetScriptStruct();

@@ -5,18 +5,16 @@ Texture2DStreamIn_DDC.cpp: Stream in helper for 2D textures loading DDC files.
 =============================================================================*/
 
 #include "Streaming/Texture2DStreamIn_DDC.h"
+#include "EngineLogs.h"
 #include "Rendering/Texture2DResource.h"
 #include "RenderUtils.h"
-#include "Serialization/MemoryReader.h"
+#include "Streaming/Texture2DStreamIn.h"
 #include "Streaming/TextureStreamingHelpers.h"
+#include "Streaming/Texture2DUpdate.h"
 
 #if WITH_EDITORONLY_DATA
 
 #include "DerivedDataCache.h"
-#include "DerivedDataCacheInterface.h"
-#include "DerivedDataCacheKey.h"
-#include "DerivedDataRequestOwner.h"
-#include "Misc/ScopeExit.h"
 
 int32 GStreamingUseAsyncRequestsForDDC = 1;
 static FAutoConsoleVariableRef CVarStreamingDDCPendingSleep(

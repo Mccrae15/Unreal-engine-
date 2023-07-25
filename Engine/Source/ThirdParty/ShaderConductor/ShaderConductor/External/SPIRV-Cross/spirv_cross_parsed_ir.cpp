@@ -66,7 +66,7 @@ ParsedIR &ParsedIR::operator=(ParsedIR &&other) SPIRV_CROSS_NOEXCEPT
 		meta = std::move(other.meta);
 		for (int i = 0; i < TypeCount; i++)
 			ids_for_type[i] = std::move(other.ids_for_type[i]);
-		ids_for_constant_or_type = std::move(other.ids_for_constant_or_type);
+		ids_for_constant_undef_or_type = std::move(other.ids_for_constant_undef_or_type);
 		ids_for_constant_or_variable = std::move(other.ids_for_constant_or_variable);
 		declared_capabilities = std::move(other.declared_capabilities);
 		declared_extensions = std::move(other.declared_extensions);
@@ -102,7 +102,7 @@ ParsedIR &ParsedIR::operator=(const ParsedIR &other)
 		meta = other.meta;
 		for (int i = 0; i < TypeCount; i++)
 			ids_for_type[i] = other.ids_for_type[i];
-		ids_for_constant_or_type = other.ids_for_constant_or_type;
+		ids_for_constant_undef_or_type = other.ids_for_constant_undef_or_type;
 		ids_for_constant_or_variable = other.ids_for_constant_or_variable;
 		declared_capabilities = other.declared_capabilities;
 		declared_extensions = other.declared_extensions;
@@ -330,6 +330,12 @@ void ParsedIR::fixup_reserved_names()
 {
 	for (uint32_t id : meta_needing_name_fixup)
 	{
+		// UE CHANGE BEGIN - Rolled back 10f2aa7
+		// Don't rename remapped variables like 'gl_LastFragDepthARM'.
+		//if (ids[id].get_type() == TypeVariable && get<SPIRVariable>(id).remapped_variable)
+		//	continue;
+		// UE CHANGE END - Rolled back 10f2aa7
+
 		auto &m = meta[id];
 		sanitize_identifier(m.decoration.alias, false, false);
 		for (auto &memb : m.members)
@@ -342,6 +348,12 @@ void ParsedIR::set_name(ID id, const string &name)
 {
 	auto &m = meta[id];
 	m.decoration.alias = name;
+
+	// UE CHANGE BEGIN - Rolled back 10f2aa7
+	if (ids[id].get_type() == TypeVariable && get<SPIRVariable>(id).remapped_variable)
+		return;
+	// UE CHANGE END - Rolled back 10f2aa7
+
 	if (!is_valid_identifier(name) || is_reserved_identifier(name, false, false))
 		meta_needing_name_fixup.insert(id);
 }
@@ -930,7 +942,7 @@ void ParsedIR::add_typed_id(Types type, ID id)
 		{
 		case TypeConstant:
 			ids_for_constant_or_variable.push_back(id);
-			ids_for_constant_or_type.push_back(id);
+			ids_for_constant_undef_or_type.push_back(id);
 			break;
 
 		case TypeVariable:
@@ -939,7 +951,8 @@ void ParsedIR::add_typed_id(Types type, ID id)
 
 		case TypeType:
 		case TypeConstantOp:
-			ids_for_constant_or_type.push_back(id);
+		case TypeUndef:
+			ids_for_constant_undef_or_type.push_back(id);
 			break;
 
 		default:

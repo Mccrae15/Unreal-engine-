@@ -16,6 +16,7 @@
 #include "PropertyPath.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "Engine/MemberReference.h"
+#include "Widgets/Layout/LinkableScrollBar.h"
 
 class UObject;
 
@@ -27,11 +28,13 @@ FDetailsDiff::FDetailsDiff(const UObject* InObject, FOnDisplayedPropertiesChange
 	FDetailsViewArgs DetailsViewArgs;
 	DetailsViewArgs.bShowDifferingPropertiesOption = true;
 	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	ScrollBar = SNew(SLinkableScrollBar);
+	DetailsViewArgs.ExternalScrollbar = ScrollBar;
 
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	DetailsView = EditModule.CreateDetailView(DetailsViewArgs);
 	DetailsView->SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled::CreateStatic([]{return false; }));
-	if (InObject->IsA<UBlueprint>())
+	if (InObject && InObject->IsA<UBlueprint>())
 	{
 		// create a custom property layout so that sections like interfaces will be included in the diff view
 		const FOnGetDetailCustomizationInstance LayoutOptionDetails = FOnGetDetailCustomizationInstance::CreateStatic(
@@ -86,6 +89,11 @@ TArray<FPropertySoftPath> FDetailsDiff::GetDisplayedProperties() const
 
 void FDetailsDiff::DiffAgainst(const FDetailsDiff& Newer, TArray< FSingleObjectDiffEntry > &OutDifferences, bool bSortByDisplayOrder) const
 {
+	if (!DisplayedObject || !Newer.DisplayedObject)
+	{
+		return;
+	}
+
 	TSharedPtr< class IDetailsView > OldDetailsView = DetailsView;
 	TSharedPtr< class IDetailsView > NewDetailsView = Newer.DetailsView;
 
@@ -234,4 +242,10 @@ void FDetailsDiff::DiffAgainst(const FDetailsDiff& Newer, TArray< FSingleObjectD
 			OutDifferences.Add(*Difference);
 		}
 	}
+}
+
+void FDetailsDiff::LinkScrolling(FDetailsDiff& LeftPanel, FDetailsDiff& RightPanel,
+	const TAttribute<TArray<FVector2f>>& ScrollRate)
+{
+	SLinkableScrollBar::LinkScrollBars(LeftPanel.ScrollBar.ToSharedRef(), RightPanel.ScrollBar.ToSharedRef(), ScrollRate);
 }

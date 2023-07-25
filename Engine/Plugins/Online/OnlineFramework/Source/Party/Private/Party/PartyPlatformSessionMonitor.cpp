@@ -2,23 +2,19 @@
 
 #include "Party/PartyPlatformSessionMonitor.h"
 
+#include "Interfaces/OnlineSessionDelegates.h"
 #include "Party/SocialParty.h"
+#include "Online/OnlineSessionNames.h"
 #include "Party/PartyMember.h"
 #include "SocialToolkit.h"
 #include "SocialManager.h"
-#include "SocialSettings.h"
-#include "Containers/Ticker.h"
-#include "User/SocialUser.h"
 
-#include "HAL/IConsoleManager.h"
-#include "Misc/Base64.h"
-
-#include "OnlineSubsystemSessionSettings.h"
 #include "OnlineSessionSettings.h"
 #include "OnlineSubsystemUtils.h"
-#include "Containers/Ticker.h"
-#include "Engine/LocalPlayer.h"
-#include "Stats/Stats.h"
+
+#if PARTY_PLATFORM_SESSIONS_XBL
+#include "Misc/Base64.h"
+#endif
 
 static bool IsTencentPlatform()
 {
@@ -102,6 +98,10 @@ static FAutoConsoleVariableRef CVar_EstablishSessionRetryDelay(
 	TEXT("Time in seconds to wait between reattempts to create or join a party platform session."),
 	ECVF_Default
 );
+
+#if PARTY_PLATFORM_SESSIONS_XBL
+extern TAutoConsoleVariable<bool> CVarXboxMpaEnabled;
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 // FPartySessionManager
@@ -192,6 +192,11 @@ bool FPartyPlatformSessionManager::FindSession(const FPartyPlatformSessionInfo& 
 IOnlineSessionPtr FPartyPlatformSessionManager::GetSessionInterface()
 {
 	return Online::GetSessionInterfaceChecked(SocialManager.GetWorld(), PlatformOssName);
+}
+
+IOnlineFriendsPtr FPartyPlatformSessionManager::GetFriendsInterface()
+{
+	return Online::GetFriendsInterfaceChecked(SocialManager.GetWorld(), PlatformOssName);
 }
 
 FUniqueNetIdRepl FPartyPlatformSessionManager::GetLocalUserPlatformId() const
@@ -469,15 +474,22 @@ void FPartyPlatformSessionMonitor::EvaluateCurrentSession()
 		}
 		else
 		{
-			for (UPartyMember* Member : MonitoredParty->GetPartyMembers())
+			if (ShouldAlwaysCreateLocalPlatformSession())
 			{
-				if (Member->IsLocalPlayer())
+				CreateSession(SessionManager->GetLocalUserPlatformId());
+			}
+			else
+			{
+				for (UPartyMember* Member : MonitoredParty->GetPartyMembers())
 				{
-					if (ExistingSessionInfo->IsSessionOwner(*Member))
+					if (Member->IsLocalPlayer())
 					{
-						// There is no session ID yet, but the session owner is a local player, so it's on us to create it now
-						CreateSession(Member->GetRepData().GetPlatformDataUniqueId());
-						break;
+						if (ExistingSessionInfo->IsSessionOwner(*Member))
+						{
+							// There is no session ID yet, but the session owner is a local player, so it's on us to create it now
+							CreateSession(Member->GetRepData().GetPlatformDataUniqueId());
+							break;
+						}
 					}
 				}
 			}
@@ -504,6 +516,13 @@ void FPartyPlatformSessionMonitor::Initialize()
 	Party.OnPartyMemberLeft().AddSP(this, &FPartyPlatformSessionMonitor::HandlePartyMemberLeft);
 
 	EvaluateCurrentSession();
+
+#if PARTY_PLATFORM_SESSIONS_XBL
+	if (CVarXboxMpaEnabled.GetValueOnAnyThread())
+	{
+		UpdateRecentPlayersOfLocalMembers(MonitoredParty->GetPartyMembers());
+	}
+#endif
 }
 
 void FPartyPlatformSessionMonitor::ShutdownInternal()
@@ -813,6 +832,71 @@ void FPartyPlatformSessionMonitor::HandlePartyMemberCreated(UPartyMember& NewMem
 	}
 }
 
+bool FPartyPlatformSessionMonitor::ShouldAlwaysCreateLocalPlatformSession() const
+{
+#if PARTY_PLATFORM_SESSIONS_XBL
+	if (CVarXboxMpaEnabled.GetValueOnAnyThread())
+	{
+		return true;
+	}
+#endif
+
+	return false;
+}
+
+bool FPartyPlatformSessionMonitor::ShouldRecordAsRecentPlayer(const FUniqueNetId& LocalUserId, const UPartyMember* PartyMember)
+{
+	if (PartyMember->GetPlatformOssName() != LocalUserId.GetType())
+	{
+		return false;
+	}
+
+	const FUniqueNetIdRepl PartyMemberPlatformUniqueId = PartyMember->GetRepData().GetPlatformDataUniqueId();
+	if (!PartyMemberPlatformUniqueId.IsValid())
+	{
+		return false;
+	}
+
+	if (*PartyMember->GetRepData().GetPlatformDataUniqueId() == LocalUserId)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+void FPartyPlatformSessionMonitor::UpdateRecentPlayersOfLocalMembers(const TArray<UPartyMember*>& RecentPlayers)
+{
+	for (UPartyMember* Member : MonitoredParty->GetPartyMembers())
+	{
+		if (Member->IsLocalPlayer())
+		{
+			const FUniqueNetIdRepl PartyMemberPlatformUniqueId = Member->GetRepData().GetPlatformDataUniqueId();
+			if (PartyMemberPlatformUniqueId.IsValid())
+			{
+				UpdateRecentPlayersOfLocalUser(*PartyMemberPlatformUniqueId, RecentPlayers);
+			}
+		}
+	}
+}
+
+void FPartyPlatformSessionMonitor::UpdateRecentPlayersOfLocalUser(const FUniqueNetId& LocalUserId, const TArray<UPartyMember*>& Members)
+{
+	TArray<FReportPlayedWithUser> RecentPlayers;
+	for (UPartyMember* Member : Members)
+	{
+		if (ShouldRecordAsRecentPlayer(LocalUserId, Member))
+		{
+			RecentPlayers.Emplace(Member->GetRepData().GetPlatformDataUniqueId().GetUniqueNetId().ToSharedRef(), "", ERecentPlayerEncounterType::Teammate);
+		}
+	}
+
+	if (!RecentPlayers.IsEmpty())
+	{
+		SessionManager->GetFriendsInterface()->AddRecentPlayers(LocalUserId, RecentPlayers, TEXT(""), FOnAddRecentPlayersComplete());
+	}
+}
+
 void FPartyPlatformSessionMonitor::HandlePartyMemberInitialized(UPartyMember* InitializedMember)
 {
 	if (IsTencentPlatform() && InitializedMember->GetPlatformOssName() == TENCENT_SUBSYSTEM)
@@ -825,12 +909,38 @@ void FPartyPlatformSessionMonitor::HandlePartyMemberInitialized(UPartyMember* In
 	{
 		AddLocalPlayerToSession(InitializedMember);
 	}
+
+#if PARTY_PLATFORM_SESSIONS_XBL
+	if (CVarXboxMpaEnabled.GetValueOnAnyThread())
+	{
+		TArray<UPartyMember*> RecentPlayers{ InitializedMember };
+		UpdateRecentPlayersOfLocalMembers(RecentPlayers);
+
+		if (InitializedMember->IsLocalPlayer())
+		{
+			const FUniqueNetIdRepl PartyMemberPlatformUniqueId = InitializedMember->GetRepData().GetPlatformDataUniqueId();
+			if (PartyMemberPlatformUniqueId.IsValid())
+			{
+				UpdateRecentPlayersOfLocalUser(*PartyMemberPlatformUniqueId, MonitoredParty->GetPartyMembers());
+			}
+		}	
+	}
+#endif
 }
 
 void FPartyPlatformSessionMonitor::HandlePartyMemberLeft(UPartyMember* OldMember, const EMemberExitedReason ExitReason)
 {
-	UE_LOG(LogParty, Verbose, TEXT("HandlePartyMemberLeft: PartyMember=%s User=%s ExitReason=%s"),
-		*OldMember->ToDebugString(true), *OldMember->GetRepData().GetPlatformDataUniqueId().ToDebugString(), ToString(ExitReason));
+	const FUniqueNetIdRepl PartyMemberPlatformUniqueId = OldMember->GetRepData().GetPlatformDataUniqueId();
+
+	if (PartyMemberPlatformUniqueId.IsValid())
+	{
+		UE_LOG(LogParty, Verbose, TEXT("HandlePartyMemberLeft: PartyMember=%s User=%s ExitReason=%s"),
+			*OldMember->ToDebugString(true), *PartyMemberPlatformUniqueId.ToDebugString(), ToString(ExitReason));
+	}
+	else
+	{
+		UE_LOG(LogParty, Warning, TEXT("HandlePartyMemberLeft: PartyMember=Unknown ExitReason=%s"), ToString(ExitReason));
+	}
 
 	if (IsTencentPlatform() && OldMember->GetPlatformOssName() == TENCENT_SUBSYSTEM)
 	{
@@ -1010,27 +1120,40 @@ bool FPartyPlatformSessionMonitor::ConfigurePlatformSessionSettings(FOnlineSessi
 	IOnlinePartyPtr PartyInterface = MonitoredParty.IsValid() ? Online::GetPartyInterface(MonitoredParty->GetWorld()) : nullptr;
 	if (PartyInterface.IsValid())
 	{
-		const FString JoinInfoJson = PartyInterface->MakeJoinInfoJson(*MonitoredParty->GetOwningLocalUserId(), MonitoredParty->GetPartyId());
-		if (ensure(!JoinInfoJson.IsEmpty()))
+#if PARTY_PLATFORM_SESSIONS_XBL
+		if (CVarXboxMpaEnabled.GetValueOnAnyThread())
 		{
-			bEstablishedPartySettings = true;
+			if (IOnlinePartyJoinInfoConstPtr JoinInfo = PartyInterface->MakeJoinInfo(*MonitoredParty->GetOwningLocalUserId(), MonitoredParty->GetPartyId()))
+			{
+				SessionSettings.Set(SETTING_CUSTOM_JOIN_INFO, PartyInterface->MakeTokenFromJoinInfo(*JoinInfo), EOnlineDataAdvertisementType::ViaOnlineService);
+				bEstablishedPartySettings = true;
+			}
+		}
+		else
+#endif
+		{
+			const FString JoinInfoJson = PartyInterface->MakeJoinInfoJson(*MonitoredParty->GetOwningLocalUserId(), MonitoredParty->GetPartyId());
+			if (ensure(!JoinInfoJson.IsEmpty()))
+			{
+				bEstablishedPartySettings = true;
 
 #if PARTY_PLATFORM_SESSIONS_PSN
-			SessionSettings.Set(SETTING_HOST_MIGRATION, true, EOnlineDataAdvertisementType::DontAdvertise);
-			SessionSettings.Set(SETTING_CUSTOM, JoinInfoJson, EOnlineDataAdvertisementType::ViaOnlineService);
+				SessionSettings.Set(SETTING_HOST_MIGRATION, true, EOnlineDataAdvertisementType::DontAdvertise);
+				SessionSettings.Set(SETTING_CUSTOM, JoinInfoJson, EOnlineDataAdvertisementType::ViaOnlineService);
 #elif PARTY_PLATFORM_SESSIONS_XBL
-			// This needs to match our value on the XDP service configuration
-			SessionSettings.Set(SETTING_SESSION_TEMPLATE_NAME, FString(TEXT("MultiplayerGameSession")), EOnlineDataAdvertisementType::DontAdvertise);
+				// This needs to match our value on the XDP service configuration
+				SessionSettings.Set(SETTING_SESSION_TEMPLATE_NAME, FString(TEXT("MultiplayerGameSession")), EOnlineDataAdvertisementType::DontAdvertise);
 
-			// XBOX has their own value for this as SETTING_CUSTOM is hard-coded to constant data in the OSS, and is the actual originator of
-			// SETTING_CUSTOM.  Everyone else co-opted it and made it dynamic, so we need to use something else just here so other OSS' still
-			// work out of the box for this functionality
-			// Encode our JoinInfo into Base64 to prevent XboxLive from parsing our json
-			SessionSettings.Set(SETTING_CUSTOM_JOIN_INFO, FBase64::Encode(JoinInfoJson), EOnlineDataAdvertisementType::ViaOnlineService);
+				// XBOX has their own value for this as SETTING_CUSTOM is hard-coded to constant data in the OSS, and is the actual originator of
+				// SETTING_CUSTOM.  Everyone else co-opted it and made it dynamic, so we need to use something else just here so other OSS' still
+				// work out of the box for this functionality
+				// Encode our JoinInfo into Base64 to prevent XboxLive from parsing our json
+				SessionSettings.Set(SETTING_CUSTOM_JOIN_INFO, FBase64::Encode(JoinInfoJson), EOnlineDataAdvertisementType::ViaOnlineService);
 #elif PLATFORM_DESKTOP
-			// PC (Tencent)
-			SessionSettings.Set(SETTING_CUSTOM, JoinInfoJson, EOnlineDataAdvertisementType::ViaOnlineService);
+				// PC (Tencent)
+				SessionSettings.Set(SETTING_CUSTOM, JoinInfoJson, EOnlineDataAdvertisementType::ViaOnlineService);
 #endif
+			}
 		}
 	}
 

@@ -25,7 +25,6 @@ namespace UnrealGameSync
 
 	class PerforceMonitor : IDisposable, IArchiveInfoSource
 	{
-
 		class PerforceChangeSorter : IComparer<ChangesRecord>
 		{
 			public int Compare(ChangesRecord? summaryA, ChangesRecord? summaryB)
@@ -35,6 +34,7 @@ namespace UnrealGameSync
 		}
 
 		public int InitialMaxChangesValue = 100;
+		public bool ShowChangesForAllProjects = true;
 
 		IPerforceSettings _perforceSettings;
 		readonly string _branchClientPath;
@@ -53,6 +53,7 @@ namespace UnrealGameSync
 		DirectoryReference _cacheFolder;
 		List<KeyValuePair<FileReference, DateTime>> _localConfigFiles;
 		IAsyncDisposer _asyncDisposeTasks;
+		string[] prevCodeRules = Array.Empty<string>();
 
 		SynchronizationContext _synchronizationContext;
 		public event Action? OnUpdate;
@@ -223,8 +224,14 @@ namespace UnrealGameSync
 					}
 				}
 
-				// Wait for another request, or scan for new builds after a timeout
-				Task delayTask = Task.Delay(TimeSpan.FromMinutes(IsActive ? 2 : 10), cancellationToken);
+                // Wait for another request, or scan for new builds after a timeout
+				// Add random deviation to refresh event, to try and combat many UGS clients getting in sync and DDoSing Perforce
+                TimeSpan baseDelay = TimeSpan.FromMinutes(IsActive ? 5 : 30);
+
+                Random random = new Random();
+                TimeSpan randomDeviation = TimeSpan.FromSeconds(random.Next(0, 60));
+
+                Task delayTask = Task.Delay(baseDelay + randomDeviation, cancellationToken);
 				await Task.WhenAny(nextRefreshTask, delayTask);
 			}
 		}
@@ -251,7 +258,7 @@ namespace UnrealGameSync
 
 			// Build a full list of all the paths to sync
 			List<string> depotPaths = new List<string>();
-			if (_selectedClientFileName.EndsWith(".uprojectdirs", StringComparison.InvariantCultureIgnoreCase))
+			if (ShowChangesForAllProjects || _selectedClientFileName.EndsWith(".uprojectdirs", StringComparison.InvariantCultureIgnoreCase))
 			{
 				depotPaths.Add(String.Format("{0}/...", _branchClientPath));
 			}
@@ -278,13 +285,15 @@ namespace UnrealGameSync
 
 			// Read any new changes
 			List<ChangesRecord> newChanges;
-			if(maxChanges > CurrentMaxChanges)
+			if(maxChanges > CurrentMaxChanges || newestChangeNumber == -1)
 			{
 				newChanges = await perforce.GetChangesAsync(ChangesOptions.IncludeTimes | ChangesOptions.LongOutput, maxChanges, ChangeStatus.Submitted, depotPaths, cancellationToken);
 			}
 			else
 			{
-				newChanges = await perforce.GetChangesAsync(ChangesOptions.IncludeTimes | ChangesOptions.LongOutput, -1, ChangeStatus.Submitted, depotPaths.Select(x => $"{x}@>{newestChangeNumber}").ToArray(), cancellationToken);
+				List<string> depotPathsWithRange = depotPaths.ConvertAll(x => $"{x}@{newestChangeNumber + 1},#head");
+//				newChanges = await perforce.GetChangesAsync(ChangesOptions.IncludeTimes | ChangesOptions.LongOutput, maxChanges, ChangeStatus.Submitted, depotPaths.Select(x => $"{x}@>{newestChangeNumber}").ToArray(), cancellationToken);
+				newChanges = await perforce.GetChangesAsync(ChangesOptions.IncludeTimes | ChangesOptions.LongOutput, clientName: null, minChangeNumber: newestChangeNumber + 1, maxChanges: maxChanges, status: ChangeStatus.Submitted, userName: null, fileSpecs: depotPathsWithRange, cancellationToken);
 			}
 
 			// Remove anything we already have
@@ -297,6 +306,8 @@ namespace UnrealGameSync
 				newestChangeNumber = Math.Min(newestChangeNumber, newChanges.First().Number);
 			}
 
+			// The code below is correct, but can cause a lot of load on the Perforce server when we query a large number of changes because PCBs are far behind.
+#if false
 			// If we are using zipped binaries, make sure we have every change since the last zip containing them. This is necessary for ensuring that content changes show as
 			// syncable in the workspace view if there have been a large number of content changes since the last code change.
 			int minZippedChangeNumber = -1;
@@ -316,6 +327,7 @@ namespace UnrealGameSync
 				List<ChangesRecord> zipChanges = await perforce.GetChangesAsync(ChangesOptions.None, -1, ChangeStatus.Submitted, filteredPaths, cancellationToken);
 				newChanges.AddRange(zipChanges);
 			}
+#endif
 
 			// Fixup any ROBOMERGE authors
 			const string roboMergePrefix = "#ROBOMERGE-AUTHOR:";
@@ -385,8 +397,48 @@ namespace UnrealGameSync
 			return true;
 		}
 
+		Func<string, bool>? CreateCodeFilterFunc()
+		{
+			ConfigSection projectConfigSection = LatestProjectConfigFile.FindSection("Perforce");
+
+			string[] rules = projectConfigSection.GetValues("CodeFilter", new string[0]);
+			if (rules.Length == 0)
+			{
+				return null;
+			}
+
+			FileFilter filter = new FileFilter(PerforceUtils.CodeExtensions.Select(x => $"*.{x}"));
+			foreach (string rule in rules)
+			{
+				filter.AddRule(rule);
+			}
+
+			return filter.Matches;
+		}
+
 		public async Task<bool> UpdateChangeTypesAsync(IPerforceConnection perforce, CancellationToken cancellationToken)
 		{
+			// Get the filter for code changes
+			ConfigSection projectConfigSection = LatestProjectConfigFile.FindSection("Perforce");
+
+			string[] codeRules = projectConfigSection?.GetValues("CodeFilter", (string[]?)null) ?? Array.Empty<string>();
+			if (!Enumerable.SequenceEqual(codeRules, prevCodeRules))
+			{
+				_changeDetails.Clear();
+				prevCodeRules = codeRules;
+			}
+
+			Func<string, bool>? isCodeFile = null;
+			if (codeRules.Length > 0)
+			{
+				FileFilter filter = new FileFilter(PerforceUtils.CodeExtensions.Select(x => $"*{x}"));
+				foreach (string codeRule in codeRules)
+				{
+					filter.AddRule(codeRule);
+				}
+				isCodeFile = filter.Matches;
+			}
+
 			// Find the changes we need to query
 			List<int> queryChangeNumbers = new List<int>();
 			lock(this)
@@ -424,7 +476,7 @@ namespace UnrealGameSync
 						DescribeRecord describeRecord = describeRecordLoop;
 						int queryChangeNumber = describeRecord.Number;
 
-						PerforceChangeDetails details = new PerforceChangeDetails(describeRecord);
+						PerforceChangeDetails details = new PerforceChangeDetails(describeRecord, isCodeFile);
 
 						// Content only changes must be flagged accurately, because code changes invalidate precompiled binaries. Increase the number of files fetched until we can classify it correctly.
 						while (describeRecord.Files.Count >= maxFiles && !details.ContainsCode)
@@ -439,7 +491,7 @@ namespace UnrealGameSync
 							}
 
 							describeRecord = newDescribeRecords[0];
-							details = new PerforceChangeDetails(describeRecord);
+							details = new PerforceChangeDetails(describeRecord, isCodeFile);
 						}
 
 						lock (this)

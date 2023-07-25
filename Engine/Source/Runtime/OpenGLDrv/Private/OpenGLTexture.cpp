@@ -68,6 +68,17 @@ static FAutoConsoleVariableRef CVarTextureEvictionLogging(
 	ECVF_RenderThreadSafe
 );
 
+static int32 GOGLTextureMinLRUCapacity = 0;
+static FAutoConsoleVariableRef CVarTextureEvictionMinLRUCapacity(
+	TEXT("r.OpenGL.TextureEvictionMinLRUCapacity"),
+	GOGLTextureMinLRUCapacity,
+	TEXT("Keep a minimum number of textures resident in GL When using the texture LRU\n")
+	TEXT("This can reduce LRU restore times when resuming from static scenes.\n")
+	TEXT("0: (default)")
+	,
+	ECVF_RenderThreadSafe
+);
+
 /*-----------------------------------------------------------------------------
 	Texture allocator support.
 -----------------------------------------------------------------------------*/
@@ -187,7 +198,7 @@ FOpenGLTextureDesc::FOpenGLTextureDesc(FRHITextureDesc const& InDesc)
 
 	// Special case for multiview MSAA depth target. It has to be a non-MSAA texture with multisample rendering
 	const bool bMultiviewMSAADepthTarget = (bDepthStencil && InDesc.NumSamples > 1 && InDesc.Dimension == ETextureDimension::Texture2DArray);
-	if (bMultiviewMSAADepthTarget)
+	if (bMultiviewMSAADepthTarget || FOpenGL::GetMaxMSAASamplesTileMem() == 1)
 	{
 		bMultisampleRenderbuffer = false;
 	}
@@ -238,7 +249,6 @@ FOpenGLTextureDesc::FOpenGLTextureDesc(FRHITextureDesc const& InDesc)
 	// can run on RT.
 	bCanCreateAsEvicted =
 		CanDeferTextureCreation()
-		&& FOpenGL::SupportsCopyImage()
 		&& InDesc.Flags != TexCreate_None // ignore TexCreate_None
 		&& !EnumHasAnyFlags((ETextureCreateFlags)CVarDeferTextureCreationExcludeMask.GetValueOnAnyThread(), InDesc.Flags)  // Anything outside of these flags cannot be evicted.
 		&& Target == GL_TEXTURE_2D
@@ -246,8 +256,8 @@ FOpenGLTextureDesc::FOpenGLTextureDesc(FRHITextureDesc const& InDesc)
 
 	if (GOGLTextureEvictLogging)
 	{
-		UE_CLOG(!bCanCreateAsEvicted, LogRHI, Warning, TEXT("CanDeferTextureCreation:%d, SupportsCopyImage:%d, Flags:%llx Mask:%x, Target:%x"),
-			bCanCreateAsEvicted, FOpenGL::SupportsCopyImage(), InDesc.Flags, CVarDeferTextureCreationExcludeMask.GetValueOnAnyThread(), Target);
+		UE_CLOG(!bCanCreateAsEvicted, LogRHI, Warning, TEXT("CanDeferTextureCreation:%d, Flags:%llx Mask:%x, Target:%x"),
+			bCanCreateAsEvicted, InDesc.Flags, CVarDeferTextureCreationExcludeMask.GetValueOnAnyThread(), Target);
 	}
 
 	bIsPowerOfTwo = 
@@ -1401,8 +1411,6 @@ void FOpenGLTexture::CloneViaCopyImage(FOpenGLTexture* Src, uint32 InNumMips, in
 {
 	VERIFY_GL_SCOPE();
 
-	check(FOpenGL::SupportsCopyImage());
-	
 	check(Src->bCanCreateAsEvicted == bCanCreateAsEvicted);
 	if (bCanCreateAsEvicted)
 	{
@@ -1447,190 +1455,6 @@ void FOpenGLTexture::CloneViaCopyImage(FOpenGLTexture* Src, uint32 InNumMips, in
 	
 }
 
-void FOpenGLTexture::CloneViaPBO(FOpenGLTexture* Src, uint32 InNumMips, int32 SrcOffset, int32 DstOffset)
-{
-	VERIFY_GL_SCOPE();
-	
-	// apparently it's not possible to retrieve compressed image from GL_TEXTURE_2D_ARRAY in OpenGL for compressed images
-	// and for uncompressed ones it's not possible to specify the image index
-	check(this->GetSizeZ() == 0);
-
-	EPixelFormat PixelFormat = this->GetFormat();
-	check(PixelFormat == Src->GetFormat());
-
-	const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[PixelFormat];
-	const bool bSRGB = EnumHasAnyFlags(this->GetFlags(), TexCreate_SRGB);
-	check(bSRGB == EnumHasAnyFlags(Src->GetFlags(), TexCreate_SRGB));
-	
-	const uint32 BlockSizeX = GPixelFormats[PixelFormat].BlockSizeX;
-	const uint32 BlockSizeY = GPixelFormats[PixelFormat].BlockSizeY;
-	const uint32 BlockBytes = GPixelFormats[PixelFormat].BlockBytes;
-	
-	FOpenGLContextState& ContextState = FOpenGLDynamicRHI::Get().GetContextStateForCurrentContext();
-	
-	for (uint32 ArrayIndex = 0; ArrayIndex < this->GetEffectiveSizeZ(); ArrayIndex++)
-	{
-		// use PBO functionality to copy mip level by mip level
-		for(uint32 MipIndex = 0;MipIndex < InNumMips;++MipIndex)
-		{
-			// Actual mip levels
-			const uint32 DstMipIndex = MipIndex + DstOffset;
-			const uint32 SrcMipIndex = MipIndex + SrcOffset;
-			
-			// Calculate the dimensions of the mip-map.
-			const uint32 MipSizeX = FMath::Max(this->GetSizeX() >> DstMipIndex,1u);
-			const uint32 MipSizeY = FMath::Max(this->GetSizeY() >> DstMipIndex,1u);
-			
-			// Then the rounded PBO size required to capture this mip
-			const uint32 DataSizeX = FMath::Max(MipSizeX,BlockSizeX);
-			const uint32 DataSizeY = FMath::Max(MipSizeY,BlockSizeY);
-			uint32 NumBlocksX = (DataSizeX + BlockSizeX - 1) / BlockSizeX;
-			uint32 NumBlocksY = (DataSizeY + BlockSizeY - 1) / BlockSizeY;
-
-			const uint32 MipBytes = NumBlocksX * NumBlocksY * BlockBytes;
-			const int32 BufferIndex = DstMipIndex * (bCubemap ? 6 : 1) * this->GetEffectiveSizeZ() + ArrayIndex;
-			const int32 SrcBufferIndex = SrcMipIndex * (Src->bCubemap ? 6 : 1) * Src->GetEffectiveSizeZ() + ArrayIndex;
-			
-			// Standard path with a PBO mirroring ever slice of a texture to allow multiple simulataneous maps
-			if (!IsValidRef(PixelBuffers[BufferIndex]))
-			{
-				PixelBuffers[BufferIndex] = new FOpenGLPixelBuffer(nullptr, GL_PIXEL_UNPACK_BUFFER, 0, MipBytes, BUF_Dynamic, nullptr);
-			}
-			
-			TRefCountPtr<FOpenGLPixelBuffer> PixelBuffer = PixelBuffers[BufferIndex];
-			check(PixelBuffer->GetSize() == MipBytes);
-			check(!PixelBuffer->IsLocked());
-			
-			// Transfer data from texture to pixel buffer.
-			// This may be further optimized by caching information if surface content was changed since last lock.
-			// Use a texture stage that's not likely to be used for draws, to avoid waiting
-			FOpenGLDynamicRHI::Get().CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, Src->Target, Src->GetResource(), -1, this->GetNumMips());
-			
-			glBindBuffer( GL_PIXEL_PACK_BUFFER, PixelBuffer->Resource );
-			
-			if (GLFormat.bCompressed)
-			{
-				FOpenGL::GetCompressedTexImage(Src->bCubemap ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + ArrayIndex : Src->Target,
-											   SrcMipIndex,
-											   0);	// offset into PBO
-			}
-			else
-			{
-				glPixelStorei(GL_PACK_ALIGNMENT, 1);
-				FOpenGL::GetTexImage(Src->bCubemap ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + ArrayIndex : Src->Target,
-									 SrcMipIndex,
-									 GLFormat.Format,
-									 GLFormat.Type,
-									 0);	// offset into PBO
-				glPixelStorei(GL_PACK_ALIGNMENT, 4);
-			}
-			
-			// copy the texture data
-			// Upload directly into Dst to avoid out-of-band synchronization caused by glMapBuffer!
-			{
-				CachedBindPixelUnpackBuffer( GL_PIXEL_UNPACK_BUFFER, PixelBuffer->Resource );
-				
-				// Use a texture stage that's not likely to be used for draws, to avoid waiting
-				FOpenGLDynamicRHI::Get().CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, Target, GetResource(), -1, this->GetNumMips());
-				
-				if( this->GetSizeZ() )
-				{
-					// texture 2D array
-					if (GLFormat.bCompressed)
-					{
-						FOpenGL::CompressedTexSubImage3D(Target,
-														 DstMipIndex,
-														 0,
-														 0,
-														 ArrayIndex,
-														 MipSizeX,
-														 MipSizeY,
-														 1,
-														 GLFormat.InternalFormat[bSRGB],
-														 PixelBuffer->GetSize(),
-														 0);
-					}
-					else
-					{
-						glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-						check( FOpenGL::SupportsTexture3D() );
-						FOpenGL::TexSubImage3D(Target,
-											   DstMipIndex,
-											   0,
-											   0,
-											   ArrayIndex,
-											   MipSizeX,
-											   MipSizeY,
-											   1,
-											   GLFormat.Format,
-											   GLFormat.Type,
-											   0);	// offset into PBO
-						glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-					}
-				}
-				else
-				{
-					if (GLFormat.bCompressed)
-					{
-						if (GetAllocatedStorageForMip(DstMipIndex,ArrayIndex))
-						{
-							glCompressedTexSubImage2D(bCubemap ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + ArrayIndex : Target,
-													  DstMipIndex,
-													  0,
-													  0,
-													  MipSizeX,
-													  MipSizeY,
-													  GLFormat.InternalFormat[bSRGB],
-													  PixelBuffer->GetSize(),
-													  0);	// offset into PBO
-						}
-						else
-						{
-							glCompressedTexImage2D(bCubemap ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + ArrayIndex : Target,
-												   DstMipIndex,
-												   GLFormat.InternalFormat[bSRGB],
-												   MipSizeX,
-												   MipSizeY,
-												   0,
-												   PixelBuffer->GetSize(),
-												   0);	// offset into PBO
-							SetAllocatedStorageForMip(DstMipIndex,ArrayIndex);
-						}
-					}
-					else
-					{
-						// All construction paths should have called TexStorage2D or TexImage2D. So we will
-						// always call TexSubImage2D.
-						check(GetAllocatedStorageForMip(DstMipIndex,ArrayIndex) == true);
-						glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-						glTexSubImage2D(bCubemap ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + ArrayIndex : Target,
-										DstMipIndex,
-										0,
-										0,
-										MipSizeX,
-										MipSizeY,
-										GLFormat.Format,
-										GLFormat.Type,
-										0);	// offset into PBO
-						glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-					}
-				}
-			}
-			
-			// need to free PBO if we aren't keeping shadow copies
-			PixelBuffers[BufferIndex] = NULL;
-			
-			// No need to restore texture stage; leave it like this,
-			// and the next draw will take care of cleaning it up; or
-			// next operation that needs the stage will switch something else in on it.
-		}
-	}
-	
-	// Reset the buffer bindings on exit only
-	glBindBuffer( GL_PIXEL_PACK_BUFFER, 0 );
-	CachedBindPixelUnpackBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-}
-
 /*-----------------------------------------------------------------------------
 	2D texture support.
 -----------------------------------------------------------------------------*/
@@ -1644,11 +1468,6 @@ FTextureRHIRef FOpenGLDynamicRHI::RHIAsyncCreateTexture2D(uint32 SizeX, uint32 S
 {
 	check(0);
 	return FTexture2DRHIRef();
-}
-
-void FOpenGLDynamicRHI::RHICopySharedMips(FRHITexture2D* DestTexture2D, FRHITexture2D* SrcTexture2D)
-{
-	check(0);
 }
 
 FOpenGLShaderResourceView::FOpenGLShaderResourceView(FOpenGLTexture* InTexture, const FRHITextureSRVCreateInfo& CreateInfo)
@@ -1770,14 +1589,7 @@ FTexture2DRHIRef FOpenGLDynamicRHI::RHIAsyncReallocateTexture2D(FRHITexture2D* T
 		const uint32 SourceMipOffset = SourceMipCount - NumSharedMips;
 		const uint32 DestMipOffset = NewMipCount - NumSharedMips;
 
-		if (FOpenGL::SupportsCopyImage())
-		{
-			NewTexture->CloneViaCopyImage(OldTexture, NumSharedMips, SourceMipOffset, DestMipOffset);
-		}
-		else
-		{
-			NewTexture->CloneViaPBO(OldTexture, NumSharedMips, SourceMipOffset, DestMipOffset);
-		}
+		NewTexture->CloneViaCopyImage(OldTexture, NumSharedMips, SourceMipOffset, DestMipOffset);
 
 		RequestStatus->Decrement();
 	});
@@ -1832,9 +1644,8 @@ void FOpenGLDynamicRHI::RHIUnlockTexture2DArray(FRHITexture2DArray* TextureRHI, 
 	GetOpenGLTextureFromRHITexture(TextureRHI)->Unlock(MipIndex, TextureIndex);
 }
 
-void FOpenGLDynamicRHI::RHIUpdateTexture2D(FRHITexture2D* TextureRHI, uint32 MipIndex, const FUpdateTextureRegion2D& UpdateRegionIn, uint32 SourcePitch, const uint8* SourceDataIn)
+void FOpenGLDynamicRHI::RHIUpdateTexture2D(FRHICommandListBase& RHICmdList, FRHITexture2D* TextureRHI, uint32 MipIndex, const FUpdateTextureRegion2D& UpdateRegionIn, uint32 SourcePitch, const uint8* SourceDataIn)
 {
-	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	const FUpdateTextureRegion2D UpdateRegion = UpdateRegionIn;
 
 	uint8* RHITSourceData = nullptr;
@@ -1847,7 +1658,7 @@ void FOpenGLDynamicRHI::RHIUpdateTexture2D(FRHITexture2D* TextureRHI, uint32 Mip
 		FMemory::Memcpy(RHITSourceData, SourceDataIn, DataSize);
 	}
 	const uint8* SourceData = RHITSourceData ? RHITSourceData : SourceDataIn;
-	RunOnGLRenderContextThread([=]()
+	RHICmdList.EnqueueLambda([this, TextureRHI, MipIndex, UpdateRegion, SourcePitch, SourceData, RHITSourceData](FRHICommandListBase&)
 	{
 		VERIFY_GL_SCOPE();
 
@@ -1886,59 +1697,76 @@ void FOpenGLDynamicRHI::RHIUpdateTexture2D(FRHITexture2D* TextureRHI, uint32 Mip
 	});
 }
 
-void FOpenGLDynamicRHI::RHIUpdateTexture3D(FRHITexture3D* TextureRHI, uint32 MipIndex, const FUpdateTextureRegion3D& UpdateRegion, uint32 SourceRowPitch, uint32 SourceDepthPitch, const uint8* SourceData)
+void FOpenGLDynamicRHI::RHIUpdateTexture3D(FRHICommandListBase& RHICmdList, FRHITexture3D* TextureRHI, uint32 MipIndex, const FUpdateTextureRegion3D& UpdateRegion, uint32 SourceRowPitch, uint32 SourceDepthPitch, const uint8* SourceData)
 {
-	VERIFY_GL_SCOPE();
-	check( FOpenGL::SupportsTexture3D() );
-	FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
-
-	// Use a texture stage that's not likely to be used for draws, to avoid waiting
-	FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
-	CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, Texture->Target, Texture->GetResource(), 0, Texture->GetNumMips());
-	CachedBindPixelUnpackBuffer(ContextState, 0);
-
-	EPixelFormat PixelFormat = Texture->GetFormat();
-	const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[PixelFormat];
-	const FPixelFormatInfo& FormatInfo = GPixelFormats[PixelFormat];
-	const uint32 FormatBPP = FormatInfo.BlockBytes;
-
-	check( FOpenGL::SupportsTexture3D() );
-	// TO DO - add appropriate offsets to source data when necessary
-	check(UpdateRegion.SrcX == 0);
-	check(UpdateRegion.SrcY == 0);
-	check(UpdateRegion.SrcZ == 0);
-	
-	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-	const bool bSRGB = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_SRGB);
-
-	if (GLFormat.bCompressed)
+	uint8* RHITSourceData = nullptr;
+	if (!ShouldRunGLRenderContextOpOnThisThread(RHICmdList))
 	{
-		FOpenGL::CompressedTexSubImage3D(
-			Texture->Target,
-			MipIndex,
-			UpdateRegion.DestX, UpdateRegion.DestY, UpdateRegion.DestZ,
-			UpdateRegion.Width, UpdateRegion.Height, UpdateRegion.Depth,
-			GLFormat.InternalFormat[bSRGB],
-			SourceDepthPitch * UpdateRegion.Depth,
-			SourceData);
-	}
-	else
-	{
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, UpdateRegion.Width / FormatInfo.BlockSizeX);
-		glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, UpdateRegion.Height / FormatInfo.BlockSizeY);
-
-		FOpenGL::TexSubImage3D(Texture->Target, MipIndex, UpdateRegion.DestX, UpdateRegion.DestY, UpdateRegion.DestZ, UpdateRegion.Width, UpdateRegion.Height, UpdateRegion.Depth, GLFormat.Format, GLFormat.Type, SourceData);
+		uint32 DataSize = SourceDepthPitch * UpdateRegion.Depth;
+		RHITSourceData = (uint8*)FMemory::Malloc(DataSize, 16);
+		FMemory::Memcpy(RHITSourceData, SourceData, DataSize);
+		SourceData = RHITSourceData;
 	}
 
-	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-	glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
-	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+	RHICmdList.EnqueueLambda([this, TextureRHI, MipIndex, UpdateRegion, SourceRowPitch, SourceDepthPitch, SourceData, RHITSourceData](FRHICommandListBase&)
+	{
+		VERIFY_GL_SCOPE();
+		check(FOpenGL::SupportsTexture3D());
+		FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
 
+		// Use a texture stage that's not likely to be used for draws, to avoid waiting
+		FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
+		CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, Texture->Target, Texture->GetResource(), 0, Texture->GetNumMips());
+		CachedBindPixelUnpackBuffer(ContextState, 0);
 
-	// No need to restore texture stage; leave it like this,
-	// and the next draw will take care of cleaning it up; or
-	// next operation that needs the stage will switch something else in on it.
+		EPixelFormat PixelFormat = Texture->GetFormat();
+		const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[PixelFormat];
+		const FPixelFormatInfo& FormatInfo = GPixelFormats[PixelFormat];
+		const uint32 FormatBPP = FormatInfo.BlockBytes;
+
+		check(FOpenGL::SupportsTexture3D());
+		// TO DO - add appropriate offsets to source data when necessary
+		check(UpdateRegion.SrcX == 0);
+		check(UpdateRegion.SrcY == 0);
+		check(UpdateRegion.SrcZ == 0);
+
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+		const bool bSRGB = EnumHasAnyFlags(Texture->GetFlags(), TexCreate_SRGB);
+
+		if (GLFormat.bCompressed)
+		{
+			FOpenGL::CompressedTexSubImage3D(
+				Texture->Target,
+				MipIndex,
+				UpdateRegion.DestX, UpdateRegion.DestY, UpdateRegion.DestZ,
+				UpdateRegion.Width, UpdateRegion.Height, UpdateRegion.Depth,
+				GLFormat.InternalFormat[bSRGB],
+				SourceDepthPitch * UpdateRegion.Depth,
+				SourceData);
+		}
+		else
+		{
+			glPixelStorei(GL_UNPACK_ROW_LENGTH, UpdateRegion.Width / FormatInfo.BlockSizeX);
+			glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, UpdateRegion.Height / FormatInfo.BlockSizeY);
+
+			FOpenGL::TexSubImage3D(Texture->Target, MipIndex, UpdateRegion.DestX, UpdateRegion.DestY, UpdateRegion.DestZ, UpdateRegion.Width, UpdateRegion.Height, UpdateRegion.Depth, GLFormat.Format, GLFormat.Type, SourceData);
+		}
+
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+		glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+
+		// free source data if we're on RHIT
+		if (RHITSourceData)
+		{
+			FMemory::Free(RHITSourceData);
+		}
+
+		// No need to restore texture stage; leave it like this,
+		// and the next draw will take care of cleaning it up; or
+		// next operation that needs the stage will switch something else in on it.
+	});
 }
 
 void FOpenGLDynamicRHI::InvalidateTextureResourceInCache(GLuint Resource)
@@ -2060,15 +1888,6 @@ void FOpenGLDynamicRHI::RHICopyTexture(FRHITexture* SourceTextureRHI, FRHITextur
 	FOpenGLTexture* SourceTexture = GetOpenGLTextureFromRHITexture(SourceTextureRHI);
 	FOpenGLTexture* DestTexture = GetOpenGLTextureFromRHITexture(DestTextureRHI);
 
-	checkf(SourceTexture->Target == DestTexture->Target, TEXT("Cannot copy between different texture targets, SourceTexture Target=%x, Format=%d, Flags=%x; DestTexture Target=%x, Format=%d, Flags=%x"),
-		SourceTexture->Target, SourceTextureRHI->GetFormat(), SourceTextureRHI->GetFlags(),
-		DestTexture->Target, DestTextureRHI->GetFormat(), DestTextureRHI->GetFlags()
-	);
-	
-	checkf((SourceTextureRHI->GetFlags() & TexCreate_SRGB) == (DestTextureRHI->GetFlags() & TexCreate_SRGB), TEXT("Cannot copy between sRGB and linear, SourceTexture Format=%d, Flags=%x; DestTexture Format=%d, Flags=%x"),
-		SourceTextureRHI->GetFormat(), SourceTextureRHI->GetFlags(),
-		DestTextureRHI->GetFormat(), DestTextureRHI->GetFlags()
-	);
 
 	GLsizei Width, Height, Depth;
 
@@ -2103,120 +1922,52 @@ void FOpenGLDynamicRHI::RHICopyTexture(FRHITexture* SourceTextureRHI, FRHITextur
 	GLint SrcMip = CopyInfo.SourceMipIndex;
 	GLint DestMip = CopyInfo.DestMipIndex;
 
-	if (FOpenGL::SupportsCopyImage())
+	for (uint32 MipIndex = 0; MipIndex < CopyInfo.NumMips; ++MipIndex)
 	{
-		for (uint32 MipIndex = 0; MipIndex < CopyInfo.NumMips; ++MipIndex)
+		// X, Y, Z
+		FIntVector Src, Dst;
+
+		auto SetOffsets = [MipIndex, &CopyInfo, &Depth] (const GLenum Target, const FIntVector& Position, const uint32& SliceIndex, FIntVector& OutOffsets)
 		{
-			GLint SrcZOffset, DestZOffset;
-			switch (SourceTexture->Target)
+			switch (Target)
 			{
 			case GL_TEXTURE_3D:
 			case GL_TEXTURE_CUBE_MAP:
 				// For cube maps, the Z offsets select the starting faces.
-				SrcZOffset = CopyInfo.SourcePosition.Z >> MipIndex;
-				DestZOffset = CopyInfo.DestPosition.Z  >> MipIndex;
+				OutOffsets.Z = Position.Z >> MipIndex;
 				break;
 			case GL_TEXTURE_1D_ARRAY:
 			case GL_TEXTURE_2D_ARRAY:
 				// For texture arrays, the Z offsets and depth actually refer to the range of slices to copy.
-				SrcZOffset = CopyInfo.SourceSliceIndex;
-				DestZOffset = CopyInfo.DestSliceIndex;
+				OutOffsets.Z = SliceIndex;
 				Depth = CopyInfo.NumSlices;
 				break;
 			default:
-				SrcZOffset = 0;
-				DestZOffset = 0;
+				OutOffsets.Z = 0;
 				break;
 			}
 
-			GLint SourceX = CopyInfo.SourcePosition.X >> MipIndex;
-			GLint SourceY = CopyInfo.SourcePosition.Y >> MipIndex;
+			OutOffsets.X = Position.X >> MipIndex;
+			OutOffsets.Y = Position.Y >> MipIndex;
+		};
 
-			GLint DestX = CopyInfo.DestPosition.X >> MipIndex;
-			GLint DestY = CopyInfo.DestPosition.Y >> MipIndex;
+		SetOffsets(SourceTexture->Target, CopyInfo.SourcePosition, CopyInfo.SourceSliceIndex, Src);
+		SetOffsets(DestTexture->Target, CopyInfo.DestPosition, CopyInfo.DestSliceIndex, Dst);
 
-			FOpenGL::CopyImageSubData(SourceTexture->GetResource(), SourceTexture->Target, SrcMip, SourceX, SourceY, SrcZOffset,
-				DestTexture->GetResource(), DestTexture->Target, DestMip, DestX, DestY, DestZOffset,
-				Width, Height, Depth);
-
-			++SrcMip;
-			++DestMip;
-
-			Width = FMath::Max(1, Width >> 1);
-			Height = FMath::Max(1, Height >> 1);
-			if(DestTexture->Target == GL_TEXTURE_3D)
-			{
-				Depth = FMath::Max(1, Depth >> 1);
-			}
-		}
-
-		return;
-	}
-	
-	// Convert sub texture regions to GL types
-	GLint XOffset = CopyInfo.DestPosition.X;
-	GLint YOffset = CopyInfo.DestPosition.Y;
-	GLint ZOffset = CopyInfo.DestPosition.Z;
-	GLint X = CopyInfo.SourcePosition.X;
-	GLint Y = CopyInfo.SourcePosition.Y;
-	GLint Z = CopyInfo.SourcePosition.Z;
-
-	// Use a texture stage that's not likely to be used for draws, to avoid waiting
-	FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
-	CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, DestTexture->Target, DestTexture->GetResource(), 0, DestTextureRHI->GetNumMips());
-	CachedBindPixelUnpackBuffer(ContextState, 0);
-
-	// Bind source texture to an FBO to read from
-	for (uint32 SliceIndex = 0; SliceIndex < CopyInfo.NumSlices; ++SliceIndex)
-	{
-		for (uint32 MipIndex = 0; MipIndex < CopyInfo.NumMips; ++MipIndex)
-		{
-			FOpenGLTexture* RenderTargets[1] = { SourceTexture };
-			uint32 MipLevels[1] = { static_cast<uint32>(SrcMip) };
-			uint32 ArrayIndices[1] = { CopyInfo.SourceSliceIndex + SliceIndex };
-
-			GLuint SourceFBO = GetOpenGLFramebuffer(1, RenderTargets, ArrayIndices, MipLevels, nullptr);
-			check(SourceFBO != 0);
-
-			glBindFramebuffer(GL_FRAMEBUFFER, SourceFBO);
-
-			FOpenGL::ReadBuffer(GL_COLOR_ATTACHMENT0);
-
-			switch (DestTexture->Target)
-			{
-				case GL_TEXTURE_1D:
-					FOpenGL::CopyTexSubImage1D(DestTexture->Target, DestMip, XOffset >> MipIndex, X >> MipIndex, 0, Width);
-					break;
-				case GL_TEXTURE_1D_ARRAY:
-					FOpenGL::CopyTexSubImage2D(DestTexture->Target, DestMip, XOffset >> MipIndex, CopyInfo.DestSliceIndex + SliceIndex, X >> MipIndex, 0, Width, 1);
-					break;
-				case GL_TEXTURE_2D:
-				case GL_TEXTURE_RECTANGLE:
-					FOpenGL::CopyTexSubImage2D(DestTexture->Target, DestMip, XOffset >> MipIndex, YOffset >> MipIndex, X >> MipIndex, Y >> MipIndex, Width, Height);
-					break;
-				case GL_TEXTURE_2D_ARRAY:
-					FOpenGL::CopyTexSubImage3D(DestTexture->Target, DestMip, XOffset >> MipIndex, YOffset >> MipIndex, CopyInfo.DestSliceIndex + SliceIndex, X >> MipIndex, Y >> MipIndex, Width, Height);
-					break;
-				case GL_TEXTURE_3D:
-					FOpenGL::CopyTexSubImage3D(DestTexture->Target, DestMip, XOffset >> MipIndex, YOffset >> MipIndex, ZOffset >> MipIndex, X >> MipIndex, Y >> MipIndex, Width, Height);
-					break;
-				case GL_TEXTURE_CUBE_MAP:
-					for (int32 FaceIndex = FMath::Min((int32)CopyInfo.NumSlices, 6) - 1; FaceIndex >= 0; FaceIndex--)
-					{
-						FOpenGL::CopyTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + (uint32)FaceIndex, CopyInfo.DestMipIndex, XOffset >> MipIndex, YOffset >> MipIndex, X >> MipIndex, Y >> MipIndex, Width, Height);
-					}					
-					break;
-			}
-		}
+		FOpenGL::CopyImageSubData(SourceTexture->GetResource(), SourceTexture->Target, SrcMip, Src.X, Src.Y, Src.Z,
+			DestTexture->GetResource(), DestTexture->Target, DestMip, Dst.X, Dst.Y, Dst.Z,
+			Width, Height, Depth);
 
 		++SrcMip;
 		++DestMip;
 
 		Width = FMath::Max(1, Width >> 1);
 		Height = FMath::Max(1, Height >> 1);
+		if(DestTexture->Target == GL_TEXTURE_3D)
+		{
+			Depth = FMath::Max(1, Depth >> 1);
+		}
 	}
-
-	ContextState.Framebuffer = (GLuint)-1;
 }
 
 
@@ -2471,8 +2222,9 @@ void FTextureEvictionLRU::TickEviction()
 
 	FScopeLock Lock(&TextureLRULock);
 	FOpenGLTextureLRUContainer& TextureLRU = GetLRUContainer();
+
 	for (int32 EvictCount = 0; 
-		TextureLRU.Num() && (TextureLRU.GetLeastRecent()->EvictionParamsPtr->FrameLastRendered + GOGLTextureEvictFramesToLive) < GFrameNumberRenderThread && EvictCount < GOGLTexturesToEvictPerFrame
+		TextureLRU.Num() > FMath::Max(0, GOGLTextureMinLRUCapacity) && (TextureLRU.GetLeastRecent()->EvictionParamsPtr->FrameLastRendered + GOGLTextureEvictFramesToLive) < GFrameNumberRenderThread && EvictCount < GOGLTexturesToEvictPerFrame
 		;EvictCount++)
 	{
 		FOpenGLTexture* RemovedFromLRU = TextureLRU.RemoveLeastRecent();

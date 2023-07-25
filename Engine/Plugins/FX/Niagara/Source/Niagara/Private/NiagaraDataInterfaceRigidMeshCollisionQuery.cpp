@@ -1,12 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceRigidMeshCollisionQuery.h"
+#include "Algo/Accumulate.h"
 #include "Algo/ForEach.h"
+#include "Algo/RemoveIf.h"
 #include "Animation/SkeletalMeshActor.h"
 #include "AnimationRuntime.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "DistanceFieldLightingShared.h"
 #include "Engine/Canvas.h"
+#include "Engine/Engine.h"
 #include "EngineUtils.h"
 #include "SkeletalRenderPublic.h"
 
@@ -20,7 +24,11 @@
 #include "NiagaraShader.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSimStageData.h"
+#include "NiagaraSystemImpl.h"
 #include "NiagaraSystemInstance.h"
+#include "NiagaraSystemSimulation.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#include "ScenePrivate.h"
 #include "ShaderParameterUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceRigidMeshCollisionQuery)
@@ -62,6 +70,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters,)
 	SHADER_PARAMETER_SRV(Buffer<float4>,	WorldTransformBuffer)
 	SHADER_PARAMETER_SRV(Buffer<float4>,	InverseTransformBuffer)
 	SHADER_PARAMETER_SRV(Buffer<float4>,	ElementExtentBuffer)
+	SHADER_PARAMETER_SRV(Buffer<float4>,	MeshScaleBuffer)
 	SHADER_PARAMETER_SRV(Buffer<uint32>,	PhysicsTypeBuffer)
 	SHADER_PARAMETER_SRV(Buffer<uint32>,	DFIndexBuffer)
 	SHADER_PARAMETER(FVector3f,				SystemLWCTile)
@@ -101,7 +110,7 @@ static const FText OverlapRotationDescription = IF_WITH_EDITORONLY_DATA(
 );
 
 static const FText OverlapExtentDescription = IF_WITH_EDITORONLY_DATA(
-	LOCTEXT("RigidBodyOverlapExtentDescription", "The extent, in world space, of the overlap trace."),
+	LOCTEXT("RigidBodyOverlapExtentDescription", "The full extent (max-min), in world space, of the overlap trace."),
 	FText()
 );
 
@@ -262,11 +271,14 @@ void ForEachBodySetup(UStaticMeshComponent* Component, TBodySetupPredicate Predi
 /// End UStaticMeshComponent
 
 template<typename TComponentType>
-void CountCollisionPrimitives(TConstArrayView<TComponentType*> Components, uint32& BoxCount, uint32& SphereCount, uint32& CapsuleCount)
+void CountCollisionPrimitives(TConstArrayView<TComponentType*> Components, TArray<FNDIRigidMeshCollisionData::FComponentBodyCount>& PerComponentCounts, uint32& TotalBoxCount, uint32& TotalSphereCount, uint32& TotalCapsuleCount)
 {
+	PerComponentCounts.Reserve(Components.Num());
+
 	for (TComponentType* Component : Components)
 	{
-		bool HasConvexElements = false;
+		FNDIRigidMeshCollisionData::FComponentBodyCount& BodyCount = PerComponentCounts.AddDefaulted_GetRef();
+		BodyCount.ComponentHash = GetTypeHash(Component);
 
 		ForEachBodySetup(Component, [&](TComponentType* Component, const UBodySetup* BodySetup)
 		{
@@ -274,37 +286,44 @@ void CountCollisionPrimitives(TConstArrayView<TComponentType*> Components, uint3
 			{
 				if (CollisionEnabledHasPhysics(ConvexElem.GetCollisionEnabled()))
 				{
-					HasConvexElements = true;
-					++BoxCount;
+					++BodyCount.BoxCount;
 				}
 			}
 			for (const FKBoxElem& BoxElem : BodySetup->AggGeom.BoxElems)
 			{
 				if (CollisionEnabledHasPhysics(BoxElem.GetCollisionEnabled()))
 				{
-					++BoxCount;
+					++BodyCount.BoxCount;
 				}
 			}
 			for (const FKSphereElem& SphereElem : BodySetup->AggGeom.SphereElems)
 			{
 				if (CollisionEnabledHasPhysics(SphereElem.GetCollisionEnabled()))
 				{
-					++SphereCount;
+					++BodyCount.SphereCount;
 				}
 			}
 			for (const FKSphylElem& CapsuleElem : BodySetup->AggGeom.SphylElems)
 			{
 				if (CollisionEnabledHasPhysics(CapsuleElem.GetCollisionEnabled()))
 				{
-					++CapsuleCount;
+					++BodyCount.CapsuleCount;
 				}
+			}
+
+			// if we have no supported bodies associated with a mesh, but we want to collide with it, add a single box
+			if (BodySetup->AggGeom.ConvexElems.Num() == 0 &&
+				BodySetup->AggGeom.BoxElems.Num() == 0 &&
+				BodySetup->AggGeom.SphereElems.Num() == 0 &&
+				BodySetup->AggGeom.SphylElems.Num() == 0)
+			{
+				++BodyCount.BoxCount;
 			}
 		});
 
-		if (HasConvexElements)
-		{
-			UE_LOG(LogRigidMeshCollision, Warning, TEXT("Convex collision objects encountered and will be interpreted as a bounding box on %s"), *Component->GetOwner()->GetName());
-		}
+		TotalBoxCount += BodyCount.BoxCount;
+		TotalSphereCount += BodyCount.SphereCount;
+		TotalCapsuleCount += BodyCount.CapsuleCount;
 	}
 }
 
@@ -344,6 +363,8 @@ void UpdateAssetArrays(TConstArrayView<TComponentType*> Components, const FVecto
 		FTransform MeshTransform = CreateElementTransform(Component, BodySetup);
 		MeshTransform.AddToTranslation(LWCTile * -FLargeWorldRenderScalar::GetTileSize());
 
+		const FVector3f CurrMeshScale(MeshTransform.GetScale3D());
+
 		const int32 ComponentIdIndex = OutAssetArrays->UniqueCompnentId.AddUnique(Component->ComponentId);
 
 		for (const FKConvexElem& ConvexElem : BodySetup->AggGeom.ConvexElems)
@@ -355,7 +376,8 @@ void UpdateAssetArrays(TConstArrayView<TComponentType*> Components, const FVecto
 				if (InitializeStatics)
 				{
 					FVector3f Extent = FVector3f(BBox.Max - BBox.Min);
-					OutAssetArrays->ElementExtent[BoxIndex] = FVector4f(Extent.X, Extent.Y, Extent.Z, 0);
+					OutAssetArrays->ElementExtent[BoxIndex] = FVector4f(Extent.X, Extent.Y, Extent.Z, 0);					
+					OutAssetArrays->MeshScale[BoxIndex] = FVector4f(CurrMeshScale.X, CurrMeshScale.Y, CurrMeshScale.Z, 0);
 					OutAssetArrays->PhysicsType[BoxIndex] = (ConvexElem.GetCollisionEnabled() == ECollisionEnabled::QueryAndPhysics);
 					OutAssetArrays->ComponentIdIndex[BoxIndex] = ComponentIdIndex;
 				}
@@ -373,6 +395,7 @@ void UpdateAssetArrays(TConstArrayView<TComponentType*> Components, const FVecto
 				if (InitializeStatics)
 				{
 					OutAssetArrays->ElementExtent[BoxIndex] = FVector4f(BoxElem.X, BoxElem.Y, BoxElem.Z, 0);
+					OutAssetArrays->MeshScale[BoxIndex] = FVector4f(CurrMeshScale.X, CurrMeshScale.Y, CurrMeshScale.Z, 0);
 					OutAssetArrays->PhysicsType[BoxIndex] = (BoxElem.GetCollisionEnabled() == ECollisionEnabled::QueryAndPhysics);
 					OutAssetArrays->ComponentIdIndex[BoxIndex] = ComponentIdIndex;
 				}
@@ -390,6 +413,7 @@ void UpdateAssetArrays(TConstArrayView<TComponentType*> Components, const FVecto
 				if (InitializeStatics)
 				{
 					OutAssetArrays->ElementExtent[SphereIndex] = FVector4f(SphereElem.Radius, 0, 0, 0);
+					OutAssetArrays->MeshScale[BoxIndex] = FVector4f(CurrMeshScale.X, CurrMeshScale.Y, CurrMeshScale.Z, 0);
 					OutAssetArrays->PhysicsType[SphereIndex] = (SphereElem.GetCollisionEnabled() == ECollisionEnabled::QueryAndPhysics);
 					OutAssetArrays->ComponentIdIndex[SphereIndex] = ComponentIdIndex;
 				}
@@ -407,6 +431,7 @@ void UpdateAssetArrays(TConstArrayView<TComponentType*> Components, const FVecto
 				if (InitializeStatics)
 				{
 					OutAssetArrays->ElementExtent[CapsuleIndex] = FVector4f(CapsuleElem.Radius, CapsuleElem.Length, 0, 0);
+					OutAssetArrays->MeshScale[BoxIndex] = FVector4f(CurrMeshScale.X, CurrMeshScale.Y, CurrMeshScale.Z, 0);
 					OutAssetArrays->PhysicsType[CapsuleIndex] = (CapsuleElem.GetCollisionEnabled() == ECollisionEnabled::QueryAndPhysics);
 					OutAssetArrays->ComponentIdIndex[CapsuleIndex] = ComponentIdIndex;
 				}
@@ -416,6 +441,35 @@ void UpdateAssetArrays(TConstArrayView<TComponentType*> Components, const FVecto
 				++CapsuleIndex;
 			}
 		}
+
+		// if we have no supported bodies associated with a mesh, but we want to collide with it, add a single box
+		if (BodySetup->AggGeom.ConvexElems.Num() == 0 &&
+			BodySetup->AggGeom.BoxElems.Num() == 0 &&
+			BodySetup->AggGeom.SphereElems.Num() == 0 &&
+			BodySetup->AggGeom.SphylElems.Num() == 0)
+		{
+			FVector Extent;
+			FVector Center;
+		
+			FBoxSphereBounds Bounds = static_cast< USceneComponent* >(Component)->GetLocalBounds();
+			Extent = Bounds.BoxExtent;
+			Center = Bounds.Origin;
+			
+			if (InitializeStatics)
+			{			
+				// local bounds extent is half the world extents of the bounding box in local space
+				Extent *= 2.0;
+
+				OutAssetArrays->ElementExtent[BoxIndex] = FVector4f(float(Extent.X), float(Extent.Y), float(Extent.Z), 0);
+				OutAssetArrays->MeshScale[BoxIndex] = FVector4f(CurrMeshScale.X, CurrMeshScale.Y, CurrMeshScale.Z, 0);
+				OutAssetArrays->PhysicsType[BoxIndex] = true;
+				OutAssetArrays->ComponentIdIndex[BoxIndex] = ComponentIdIndex;
+			}
+			
+			const FTransform ElementTransform = FTransform(Center) * MeshTransform;
+			FillCurrentTransforms(ElementTransform, BoxIndex, OutAssetArrays->CurrentTransform, OutAssetArrays->CurrentInverse);
+			++BoxIndex;
+		}
 	};
 
 	for (TComponentType* Component : Components)
@@ -424,70 +478,183 @@ void UpdateAssetArrays(TConstArrayView<TComponentType*> Components, const FVecto
 	}
 }
 
-void UpdateInternalArrays(TConstArrayView<AActor*> Actors, TConstArrayView<FName> ComponentTags, FVector LWCTile, bool bFullUpdate, FNDIRigidMeshCollisionArrays* OutAssetArrays)
+template<bool FirstStage>
+void RemapPreviousTransforms(
+	TConstArrayView<FNDIRigidMeshCollisionData::FComponentBodyCount> PreviousCounts,
+	TConstArrayView<FNDIRigidMeshCollisionData::FComponentBodyCount> CurrentCounts,
+	FNDIRigidMeshCollisionArrays* OutAssetArrays)
+{
+	const FNDIRigidMeshCollisionElementOffset& CurrentOffsets = OutAssetArrays->ElementOffsets;
+
+	uint32 BoxCount = 0;
+	uint32 SphereCount = 0;
+	uint32 CapsuleCount = 0;
+
+	auto CopyComponent = [&BoxCount, &SphereCount, &CapsuleCount]
+		(const TArray<FVector4f>& Src, TArray<FVector4f>& Dst, const FNDIRigidMeshCollisionElementOffset& Offsets, const FNDIRigidMeshCollisionData::FComponentBodyCount& BodyCounts) -> void
+	{
+		const uint32 BoxStartIndex = 3 * (Offsets.BoxOffset + BoxCount);
+		for (uint32 ElementIt = 0; ElementIt < 3 * BodyCounts.BoxCount; ++ElementIt)
+		{
+			Dst[BoxStartIndex + ElementIt] = Src[BoxStartIndex + ElementIt];
+		}
+
+		const uint32 SphereStartIndex = 3 * (Offsets.SphereOffset + SphereCount);
+		for (uint32 ElementIt = 0; ElementIt < 3 * BodyCounts.SphereCount; ++ElementIt)
+		{
+			Dst[SphereStartIndex + ElementIt] = Src[SphereStartIndex + ElementIt];
+		}
+
+		const uint32 CapsuleStartIndex = 3 * (Offsets.CapsuleOffset + CapsuleCount);
+		for (uint32 ElementIt = 0; ElementIt < 3 * BodyCounts.CapsuleCount; ++ElementIt)
+		{
+			Dst[CapsuleStartIndex + ElementIt] = Src[CapsuleStartIndex + ElementIt];
+		}
+	};
+
+	int32 PreviousIndex = 0;
+	for (const FNDIRigidMeshCollisionData::FComponentBodyCount& CurrentCount : CurrentCounts)
+	{
+		bool bPreviousValuesCopied = false;
+
+		while (PreviousCounts.IsValidIndex(PreviousIndex) && !bPreviousValuesCopied)
+		{
+			const FNDIRigidMeshCollisionData::FComponentBodyCount& PreviousCount = PreviousCounts[PreviousIndex];
+
+			// skip through the previous components until we find a match
+			if (PreviousCount.ComponentHash < CurrentCount.ComponentHash)
+			{
+				++PreviousIndex;
+				continue;
+			}
+
+			if (PreviousCount.ComponentHash == CurrentCount.ComponentHash)
+			{
+				check(PreviousCount.BoxCount == CurrentCount.BoxCount);
+				check(PreviousCount.SphereCount == CurrentCount.SphereCount);
+				check(PreviousCount.CapsuleCount == CurrentCount.CapsuleCount);
+
+				bPreviousValuesCopied = true;
+
+				if (FirstStage)
+				{
+					CopyComponent(OutAssetArrays->CurrentTransform, OutAssetArrays->PreviousTransform, CurrentOffsets, CurrentCount);
+					CopyComponent(OutAssetArrays->CurrentInverse, OutAssetArrays->PreviousInverse, CurrentOffsets, CurrentCount);
+				}
+			}
+
+			break;
+		}
+
+		// copy the defaults over to the previous
+		if (!bPreviousValuesCopied && !FirstStage)
+		{
+			CopyComponent(OutAssetArrays->CurrentTransform, OutAssetArrays->PreviousTransform, CurrentOffsets, CurrentCount);
+			CopyComponent(OutAssetArrays->CurrentInverse, OutAssetArrays->PreviousInverse, CurrentOffsets, CurrentCount);
+		}
+
+		BoxCount += CurrentCount.BoxCount;
+		SphereCount += CurrentCount.SphereCount;
+		CapsuleCount += CurrentCount.CapsuleCount;
+	}
+}
+
+void UpdateInternalArrays(
+	TConstArrayView<UStaticMeshComponent*> StaticMeshView,
+	TConstArrayView<USkeletalMeshComponent*> SkeletalMeshView,
+	FVector LWCTile,
+	bool bFullUpdate,
+	TArray<FNDIRigidMeshCollisionData::FComponentBodyCount>& BodyCounts,
+	FNDIRigidMeshCollisionArrays* OutAssetArrays)
 {
 	if (OutAssetArrays != nullptr && OutAssetArrays->ElementOffsets.NumElements < OutAssetArrays->MaxPrimitives)
 	{
-		TInlineComponentArray<UStaticMeshComponent*> StaticMeshes;
-		TInlineComponentArray<USkeletalMeshComponent*> SkeletalMeshes;
+		// when we are in game and we don't need to worry about bodies changing for a given mesh component we can try to optimize
+		// the update by just targeting the dynamic elements (transforms) and using the original values as the previous run
+#if !WITH_EDITOR
+		if (!bFullUpdate)
+		{
+			// if we're updating, then copy over last frame's transforms before we generate new ones
+			Swap(OutAssetArrays->PreviousTransform, OutAssetArrays->CurrentTransform);
+			Swap(OutAssetArrays->PreviousInverse, OutAssetArrays->CurrentInverse);
 
-		uint32 BoxCount = 0;
-		uint32 SphereCount = 0;
-		uint32 CapsuleCount = 0;
+			uint32 BoxIndex = OutAssetArrays->ElementOffsets.BoxOffset;
+			uint32 SphereIndex = OutAssetArrays->ElementOffsets.SphereOffset;
+			uint32 CapsuleIndex = OutAssetArrays->ElementOffsets.CapsuleOffset;
 
-		CollectComponents(Actors, ComponentTags, StaticMeshes);
-		CollectComponents(Actors, ComponentTags, SkeletalMeshes);
+			UpdateAssetArrays<UStaticMeshComponent, false>(StaticMeshView, LWCTile, OutAssetArrays, BoxIndex, SphereIndex, CapsuleIndex);
+			UpdateAssetArrays<USkeletalMeshComponent, false>(SkeletalMeshView, LWCTile, OutAssetArrays, BoxIndex, SphereIndex, CapsuleIndex);
 
-		TConstArrayView<UStaticMeshComponent*> StaticMeshView = MakeArrayView(StaticMeshes.GetData(), StaticMeshes.Num());
-		TConstArrayView<USkeletalMeshComponent*> SkeletalMeshView = MakeArrayView(SkeletalMeshes.GetData(), SkeletalMeshes.Num());
+			return;
+		}
+#endif
 
-		CountCollisionPrimitives(StaticMeshView, BoxCount, SphereCount, CapsuleCount);
-		CountCollisionPrimitives(SkeletalMeshView, BoxCount, SphereCount, CapsuleCount);
+		TArray<FNDIRigidMeshCollisionData::FComponentBodyCount> CurrentBodyCounts;
 
-		if ((BoxCount + SphereCount + CapsuleCount) >= OutAssetArrays->MaxPrimitives)
+		uint32 TotalBoxCount = 0;
+		uint32 TotalSphereCount = 0;
+		uint32 TotalCapsuleCount = 0;
+
+		CountCollisionPrimitives(StaticMeshView, CurrentBodyCounts, TotalBoxCount, TotalSphereCount, TotalCapsuleCount);
+		CountCollisionPrimitives(SkeletalMeshView, CurrentBodyCounts, TotalBoxCount, TotalSphereCount, TotalCapsuleCount);
+
+		if ((TotalBoxCount + TotalSphereCount + TotalCapsuleCount) >= OutAssetArrays->MaxPrimitives)
 		{
 			UE_LOG(LogRigidMeshCollision, Error, TEXT("Number of Collision DI primitives is higher than the %d limit.  Please increase it."), OutAssetArrays->MaxPrimitives);
 			return;
 		}
 
-		const bool MismatchOffsets = ((OutAssetArrays->ElementOffsets.SphereOffset - OutAssetArrays->ElementOffsets.BoxOffset) != BoxCount) ||
-			((OutAssetArrays->ElementOffsets.CapsuleOffset - OutAssetArrays->ElementOffsets.SphereOffset) != SphereCount) ||
-			((OutAssetArrays->ElementOffsets.NumElements - OutAssetArrays->ElementOffsets.CapsuleOffset) != CapsuleCount);
-
-		// if we're only running an update, then make sure that the offsets aren't mismatched
-		check(!MismatchOffsets || bFullUpdate);
-
-		if (bFullUpdate)
-		{			
-			OutAssetArrays->ElementOffsets.BoxOffset = 0;
-			OutAssetArrays->ElementOffsets.SphereOffset = OutAssetArrays->ElementOffsets.BoxOffset + BoxCount;
-			OutAssetArrays->ElementOffsets.CapsuleOffset = OutAssetArrays->ElementOffsets.SphereOffset + SphereCount;
-			OutAssetArrays->ElementOffsets.NumElements = OutAssetArrays->ElementOffsets.CapsuleOffset + CapsuleCount;
-		}
+		OutAssetArrays->ElementOffsets.BoxOffset = 0;
+		OutAssetArrays->ElementOffsets.SphereOffset = OutAssetArrays->ElementOffsets.BoxOffset + TotalBoxCount;
+		OutAssetArrays->ElementOffsets.CapsuleOffset = OutAssetArrays->ElementOffsets.SphereOffset + TotalSphereCount;
+		OutAssetArrays->ElementOffsets.NumElements = OutAssetArrays->ElementOffsets.CapsuleOffset + TotalCapsuleCount;
 
 		uint32 BoxIndex = OutAssetArrays->ElementOffsets.BoxOffset;
 		uint32 SphereIndex = OutAssetArrays->ElementOffsets.SphereOffset;
 		uint32 CapsuleIndex = OutAssetArrays->ElementOffsets.CapsuleOffset;
 
-		if (bFullUpdate)
-		{
-			UpdateAssetArrays<UStaticMeshComponent, true>(StaticMeshView, LWCTile, OutAssetArrays, BoxIndex, SphereIndex, CapsuleIndex);
-			UpdateAssetArrays<USkeletalMeshComponent, true>(SkeletalMeshView, LWCTile, OutAssetArrays, BoxIndex, SphereIndex, CapsuleIndex);
+		// where possible PreviousTransform & PreviousInverse should be pulled from the current values of CurrentTransform &
+		// CurrentInverse based on the remapped entries
+		RemapPreviousTransforms<true>(BodyCounts, CurrentBodyCounts, OutAssetArrays);
 
-			// for newly created array data we need to duplicate the transforms to our previous transforms
-			OutAssetArrays->PreviousTransform = OutAssetArrays->CurrentTransform;
-			OutAssetArrays->PreviousInverse = OutAssetArrays->CurrentInverse;
-		}
-		else
-		{
-			// if we're updating, then copy over last frame's transforms before we generate new ones
-			OutAssetArrays->PreviousTransform = OutAssetArrays->CurrentTransform;
-			OutAssetArrays->PreviousInverse = OutAssetArrays->CurrentInverse;
+		UpdateAssetArrays<UStaticMeshComponent, true>(StaticMeshView, LWCTile, OutAssetArrays, BoxIndex, SphereIndex, CapsuleIndex);
+		UpdateAssetArrays<USkeletalMeshComponent, true>(SkeletalMeshView, LWCTile, OutAssetArrays, BoxIndex, SphereIndex, CapsuleIndex);
 
-			UpdateAssetArrays<UStaticMeshComponent, false>(StaticMeshView, LWCTile, OutAssetArrays, BoxIndex, SphereIndex, CapsuleIndex);
-			UpdateAssetArrays<USkeletalMeshComponent, false>(SkeletalMeshView, LWCTile, OutAssetArrays, BoxIndex, SphereIndex, CapsuleIndex);
-		}
+		RemapPreviousTransforms<false>(BodyCounts, CurrentBodyCounts, OutAssetArrays);
+
+		BodyCounts = MoveTemp(CurrentBodyCounts);
 	}
+}
+
+static bool SystemHasFindActorsFunction(UNiagaraSystem* System)
+{
+	bool FindActorsFunctionFound = false;
+
+	if (System)
+	{
+		System->ForEachScript([&](UNiagaraScript* NiagaraScript)
+		{
+			const FNiagaraVMExecutableData& ScriptExecutableData = NiagaraScript->GetVMExecutableData();
+			if (ScriptExecutableData.IsValid())
+			{
+				for (const FVMExternalFunctionBindingInfo& FunctionBinding : ScriptExecutableData.CalledVMExternalFunctions)
+				{
+					if (FunctionBinding.Name == FindActorsName)
+					{
+						FindActorsFunctionFound = true;
+						break;
+					}
+				}
+			}
+		});
+	}
+
+	return FindActorsFunctionFound;
+}
+
+bool WeakActorPtrLess(const TWeakObjectPtr<AActor>& Lhs, const TWeakObjectPtr<AActor>& Rhs)
+{
+	return GetTypeHash(Lhs) < GetTypeHash(Rhs);
 }
 
 } // NDIRigidMeshCollisionLocal
@@ -502,6 +669,7 @@ void FNDIRigidMeshCollisionBuffer::InitRHI()
 	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(InverseTransformBuffer, 3 * MaxNumTransforms);
 
 	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ElementExtentBuffer, MaxNumPrimitives);
+	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(MeshScaleBuffer, MaxNumPrimitives);
 	CreateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(PhysicsTypeBuffer, MaxNumPrimitives);
 	CreateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(DFIndexBuffer, MaxNumPrimitives);
 }
@@ -511,6 +679,7 @@ void FNDIRigidMeshCollisionBuffer::ReleaseRHI()
 	WorldTransformBuffer.Release();
 	InverseTransformBuffer.Release();
 	ElementExtentBuffer.Release();
+	MeshScaleBuffer.Release();
 	PhysicsTypeBuffer.Release();
 	DFIndexBuffer.Release();
 }
@@ -540,7 +709,9 @@ bool FNDIRigidMeshCollisionData::HasActors() const
 
 bool FNDIRigidMeshCollisionData::ShouldRunGlobalSearch(UNiagaraDataInterfaceRigidMeshCollisionQuery* Interface) const
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return Interface->GlobalSearchAllowed && (Interface->GlobalSearchForced || (Interface->GlobalSearchFallback_Unscripted && !bHasScriptedFindActor));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void FNDIRigidMeshCollisionData::MergeActors(FMergedActorArray& MergedActors) const
@@ -557,6 +728,22 @@ void FNDIRigidMeshCollisionData::MergeActors(FMergedActorArray& MergedActors) co
 
 	Algo::ForEach(ExplicitActors, AppendActors);
 	Algo::ForEach(FoundActors, AppendActors);
+}
+
+bool FNDIRigidMeshCollisionData::TrimMissingActors()
+{
+	auto EvaluateWeakActor = [&](const TWeakObjectPtr<AActor>& ActorPtr)
+	{
+		return !ActorPtr.IsValid();
+	};
+
+	const int32 ExplicitActorCount = ExplicitActors.Num();
+	ExplicitActors.SetNum(Algo::StableRemoveIf(ExplicitActors, EvaluateWeakActor));
+
+	const int32 FoundActorCount = FoundActors.Num();
+	FoundActors.SetNum(Algo::StableRemoveIf(FoundActors, EvaluateWeakActor));
+
+	return ExplicitActorCount != ExplicitActors.Num() || FoundActorCount != FoundActors.Num();
 }
 
 void FNDIRigidMeshCollisionData::Init(int32 MaxNumPrimitives)
@@ -584,7 +771,6 @@ void FNDIRigidMeshCollisionData::Init(int32 MaxNumPrimitives)
 		ReleaseBuffers();
 	}
 
-	bFoundActorsUpdated = false;
 	bRequiresFullUpdate = true;
 }
 
@@ -592,19 +778,19 @@ void FNDIRigidMeshCollisionData::Update(UNiagaraDataInterfaceRigidMeshCollisionQ
 {
 	using namespace NDIRigidMeshCollisionLocal;
 
-	if (!Interface || !SystemInstance || !bRequiresSourceActors)
+	if (!Interface || !SystemInstance)
 	{
 		return;
 	}
 
-	const bool bExplicitActorsChanged = Interface->GetExplicitActors(*this);
+	Interface->GetExplicitActors(*this);
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (ShouldRunGlobalSearch(Interface))
 	{
-		if (Interface->GlobalFindActors(SystemInstance->GetWorld(), *this))
-		{
-			bFoundActorsUpdated = true;
-		}
+		Interface->GlobalFindActors(SystemInstance->GetWorld(), *this);
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// see if we need to reinitialize the internals
 	const bool bAlreadyInited = AssetArrays != nullptr;
@@ -616,15 +802,64 @@ void FNDIRigidMeshCollisionData::Update(UNiagaraDataInterfaceRigidMeshCollisionQ
 
 	if (bHasActors)
 	{
-		FMergedActorArray MergedActors;
-		MergeActors(MergedActors);
+		TrimMissingActors();
 
-		const bool bFullUpdate = bRequiresFullUpdate || bExplicitActorsChanged || bFoundActorsUpdated;
-		UpdateInternalArrays(MergedActors, Interface->ComponentTags, FVector(SystemInstance->GetLWCTile()), bFullUpdate, AssetArrays.Get());
+		TInlineComponentArray<UStaticMeshComponent*> StaticMeshes;
+		TInlineComponentArray<USkeletalMeshComponent*> SkeletalMeshes;
+
+		{
+			FMergedActorArray MergedActors;
+			MergeActors(MergedActors);
+
+			CollectComponents(MergedActors, Interface->ComponentTags, StaticMeshes);
+			CollectComponents(MergedActors, Interface->ComponentTags, SkeletalMeshes);
+
+			// in order to better keep track of our possibly changing set of components over time we
+			// sort our collected components by their TypeHash
+			auto SortPredicateByTypeHash = [](const UMeshComponent& Lhs, const UMeshComponent& Rhs) -> bool
+			{
+				return GetTypeHash(&Lhs) < GetTypeHash(&Rhs);
+			};
+
+			StaticMeshes.Sort(SortPredicateByTypeHash);
+			SkeletalMeshes.Sort(SortPredicateByTypeHash);
+
+			auto HashComponentObject = [](const UMeshComponent* MeshComponent) -> uint32
+			{
+				return GetTypeHash(MeshComponent);
+			};
+
+			auto AccumulateHash = [](uint32 Lhs, uint32 Rhs) -> uint32
+			{
+				return HashCombine(Lhs, Rhs);
+			};
+
+			// generate a hash with the collected components so that we can see if on subsequent frames we
+			// have a different collection, in which case we'll want to do a full rebuild of the array of transforms
+			uint32 NewHashValue = 0;
+			NewHashValue = Algo::TransformAccumulate(StaticMeshes, HashComponentObject, NewHashValue, AccumulateHash);
+			NewHashValue = Algo::TransformAccumulate(SkeletalMeshes, HashComponentObject, NewHashValue, AccumulateHash);
+
+			if (NewHashValue != ComponentCollectionHash)
+			{
+				ComponentCollectionHash = NewHashValue;
+				bRequiresFullUpdate = true;
+			}
+		}
+
+		TConstArrayView<UStaticMeshComponent*> StaticMeshView = MakeArrayView(StaticMeshes.GetData(), StaticMeshes.Num());
+		TConstArrayView<USkeletalMeshComponent*> SkeletalMeshView = MakeArrayView(SkeletalMeshes.GetData(), SkeletalMeshes.Num());
+
+		UpdateInternalArrays(
+			StaticMeshView,
+			SkeletalMeshView,
+			FVector(SystemInstance->GetLWCTile()),
+			bRequiresFullUpdate,
+			MeshBodyCounts,
+			AssetArrays.Get());
 	}
 
 	bRequiresFullUpdate = false;
-	bFoundActorsUpdated = false;
 }
 
 //------------------------------------------------------------------------------------------------------------
@@ -638,6 +873,7 @@ struct FNDIRigidMeshCollisionProxy : public FNiagaraDataInterfaceProxy
 		TArray<FVector4f> WorldTransform;
 		TArray<FVector4f> InverseTransform;
 		TArray<FVector4f> ElementExtent;
+		TArray<FVector4f> MeshScale;
 		TArray<uint32> PhysicsType;
 		TArray<int32> ComponentIdIndex;
 		uint32 MaxPrimitiveCount;
@@ -645,6 +881,13 @@ struct FNDIRigidMeshCollisionProxy : public FNiagaraDataInterfaceProxy
 
 		FNDIRigidMeshCollisionBuffer* AssetBuffer = nullptr;
 	};
+
+	void RemoveInstance(const FNiagaraSystemInstanceID& Instance)
+	{
+		check(IsInRenderingThread());
+
+		SystemInstancesToProxyData_RT.Remove(Instance);
+	}
 
 	/** Get the size of the data that will be passed to render*/
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override
@@ -683,6 +926,7 @@ struct FNDIRigidMeshCollisionProxy : public FNiagaraDataInterfaceProxy
 				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ProxyData->WorldTransform, ProxyData->AssetBuffer->WorldTransformBuffer);
 				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ProxyData->InverseTransform, ProxyData->AssetBuffer->InverseTransformBuffer);
 				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ProxyData->ElementExtent, ProxyData->AssetBuffer->ElementExtentBuffer);
+				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ProxyData->MeshScale, ProxyData->AssetBuffer->MeshScaleBuffer);
 				UpdateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(ProxyData->PhysicsType, ProxyData->AssetBuffer->PhysicsTypeBuffer);
 
 				// the distance field indexing needs to be generated using the scene
@@ -819,6 +1063,50 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::DrawDebugHud(UCanvas* Canvas,
 				DrawDebugCanvasCapsule(Canvas, CurrentTransform, HalfTotalLength, RadiusLength.X, FColor::Blue);
 			}
 		}
+
+		if (!InstanceData_GT->ExplicitActors.IsEmpty() || !InstanceData_GT->FoundActors.IsEmpty())
+		{
+			const UFont* Font = GEngine->GetMediumFont();
+			Canvas->SetDrawColor(FColor::White);
+
+			auto DrawDebugActor = [&](TWeakObjectPtr<AActor>& InWeakActor, const TCHAR* ActorSourceString)
+			{
+				if (AActor* Actor = InWeakActor.Get())
+				{
+					FVector ActorOrigin;
+					FVector ActorBoundsExtent;
+					Actor->GetActorBounds(true, ActorOrigin, ActorBoundsExtent);
+
+					const FMatrix CurrentTransform = FTranslationMatrix(ActorOrigin);
+					if (!ShouldClip(Canvas, CurrentTransform, FSphere(FVector::ZeroVector, ActorBoundsExtent.Size())))
+					{
+						DrawDebugCanvasWireBox(Canvas, CurrentTransform, FBox(-ActorBoundsExtent, ActorBoundsExtent), FColor::Yellow);
+
+						FString ActorLabel;
+#if WITH_EDITOR
+						ActorLabel = Actor->GetActorLabel();
+#endif
+						if (ActorLabel.Len() == 0)
+						{
+							ActorLabel = Actor->GetName();
+						}
+
+						const FVector ScreenLoc = Canvas->Project(ActorOrigin);
+						Canvas->DrawText(Font, FString::Printf(TEXT("RigidMeshDI[%s Actor] - %s"), ActorSourceString, *ActorLabel), float(ScreenLoc.X), float(ScreenLoc.Y));
+					}
+				}
+			};
+
+			for (TWeakObjectPtr<AActor>& ExplicitActor : InstanceData_GT->ExplicitActors)
+			{
+				DrawDebugActor(ExplicitActor, TEXT("Explicit"));
+			}
+
+			for (TWeakObjectPtr<AActor>& FoundActor : InstanceData_GT->FoundActors)
+			{
+				DrawDebugActor(FoundActor, TEXT("Found"));
+			}
+		}
 	}
 }
 #endif
@@ -827,34 +1115,19 @@ bool UNiagaraDataInterfaceRigidMeshCollisionQuery::InitPerInstanceData(void* Per
 {
 	using namespace NDIRigidMeshCollisionLocal;
 
-	bool RequiresSourceActors = false;
-	bool HasScriptedFindActor = false;
+	const bool HasScriptedFindActor = SystemHasFindActorsFunction(SystemInstance->GetSystem());
 
-	FNiagaraDataInterfaceUtilities::ForEachGpuFunctionEquals(this, SystemInstance->GetSystem(), SystemInstance, [&](const FNiagaraDataInterfaceGeneratedFunction Function)
-	{
-		RequiresSourceActors = true;
-		return false;
-	});
-
-	FNiagaraDataInterfaceUtilities::ForEachVMFunctionEquals(this, SystemInstance->GetSystem(), SystemInstance, [&](const FVMExternalFunctionBindingInfo& Binding)
-	{
-		if (Binding.Name == FindActorsName)
-		{
-			HasScriptedFindActor = true;
-			return false;
-		}
-		return true;
-	});
-
-	FNDIRigidMeshCollisionData* InstanceData = new (PerInstanceData) FNDIRigidMeshCollisionData(SystemInstance, RequiresSourceActors, HasScriptedFindActor);
+	FNDIRigidMeshCollisionData* InstanceData = new (PerInstanceData) FNDIRigidMeshCollisionData(SystemInstance, HasScriptedFindActor);
 
 	GetExplicitActors(*InstanceData);
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// if we're running a global search, then run that now
 	if (InstanceData->ShouldRunGlobalSearch(this))
 	{
 		GlobalFindActors(SystemInstance->GetWorld(), *InstanceData);
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	InstanceData->Init(MaxNumPrimitives);
 
@@ -913,17 +1186,24 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::DestroyPerInstanceData(void* 
 	ENQUEUE_RENDER_COMMAND(FNiagaraDIDestroyInstanceData) (
 		[ThisProxy, InstanceID = SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
 	{
-		ThisProxy->SystemInstancesToProxyData_RT.Remove(InstanceID);
+		ThisProxy->RemoveInstance(InstanceID);
 	});
 }
 
-bool UNiagaraDataInterfaceRigidMeshCollisionQuery::PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float InDeltaSeconds)
+// we use PostSimulate so that the results from s will be ready and pushed to the render thread for handling the GPU queries
+bool UNiagaraDataInterfaceRigidMeshCollisionQuery::PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float InDeltaSeconds)
 {
 	FNDIRigidMeshCollisionData* InstanceData = static_cast<FNDIRigidMeshCollisionData*>(PerInstanceData);
 	if (InstanceData && SystemInstance)
 	{
-		check(InstanceData->SystemInstance == SystemInstance);
-		InstanceData->Update(this);
+		const FNiagaraTickInfo &TickInfo = SystemInstance->GetSystemSimulation()->GetTickInfo();
+
+		// only update on the first tick
+		if (TickInfo.TickNumber == 0)
+		{
+			check(InstanceData->SystemInstance == SystemInstance);
+			InstanceData->Update(this);
+		}
 	}
 	return false;
 }
@@ -941,9 +1221,12 @@ bool UNiagaraDataInterfaceRigidMeshCollisionQuery::CopyToInternal(UNiagaraDataIn
 	OtherTyped->ComponentTags = ComponentTags;
 	OtherTyped->SourceActors = SourceActors;
 	OtherTyped->OnlyUseMoveable = OnlyUseMoveable;
+	OtherTyped->UseComplexCollisions = UseComplexCollisions;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OtherTyped->GlobalSearchAllowed = GlobalSearchAllowed;
 	OtherTyped->GlobalSearchForced = GlobalSearchForced;
 	OtherTyped->GlobalSearchFallback_Unscripted = GlobalSearchFallback_Unscripted;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	OtherTyped->MaxNumPrimitives = MaxNumPrimitives;
 
 	return true;
@@ -961,9 +1244,12 @@ bool UNiagaraDataInterfaceRigidMeshCollisionQuery::Equals(const UNiagaraDataInte
 		&& (OtherTyped->ComponentTags == ComponentTags)
 		&& (OtherTyped->SourceActors == SourceActors)
 		&& (OtherTyped->OnlyUseMoveable == OnlyUseMoveable)
+		&& (OtherTyped->UseComplexCollisions == UseComplexCollisions)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		&& (OtherTyped->GlobalSearchAllowed == GlobalSearchAllowed)
 		&& (OtherTyped->GlobalSearchForced == GlobalSearchForced)
 		&& (OtherTyped->GlobalSearchFallback_Unscripted == GlobalSearchFallback_Unscripted)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		&& (OtherTyped->MaxNumPrimitives == MaxNumPrimitives);
 }
 
@@ -1337,14 +1623,11 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::GetParameterDefinitionHLSL(co
 {
 	Super::GetParameterDefinitionHLSL(ParamInfo, OutHLSL);
 
-	TMap<FString, FStringFormatArg> TemplateArgs =
+	const TMap<FString, FStringFormatArg> TemplateArgs =
 	{
 		{TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol},
 	};
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDIRigidMeshCollisionLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, NDIRigidMeshCollisionLocal::TemplateShaderFile, TemplateArgs);
 }
 
 bool UNiagaraDataInterfaceRigidMeshCollisionQuery::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
@@ -1354,8 +1637,7 @@ bool UNiagaraDataInterfaceRigidMeshCollisionQuery::AppendCompileHash(FNiagaraCom
 		return false;
 	}
 
-	FSHAHash Hash = GetShaderFileHash(NDIRigidMeshCollisionLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5);
-	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceRigidMeshCollisionQueryHLSLSource"), Hash.ToString());
+	InVisitor->UpdateShaderFile(NDIRigidMeshCollisionLocal::TemplateShaderFile);
 	InVisitor->UpdateShaderParameters<NDIRigidMeshCollisionLocal::FShaderParameters>();
 
 	return true;
@@ -1389,6 +1671,7 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::SetShaderParameters(const FNi
 		ShaderParameters->WorldTransformBuffer = FNiagaraRenderer::GetSrvOrDefaultFloat4(AssetBuffer->WorldTransformBuffer.SRV);
 		ShaderParameters->InverseTransformBuffer = FNiagaraRenderer::GetSrvOrDefaultFloat4(AssetBuffer->InverseTransformBuffer.SRV);
 		ShaderParameters->ElementExtentBuffer = FNiagaraRenderer::GetSrvOrDefaultFloat4(AssetBuffer->ElementExtentBuffer.SRV);
+		ShaderParameters->MeshScaleBuffer = FNiagaraRenderer::GetSrvOrDefaultFloat4(AssetBuffer->MeshScaleBuffer.SRV);
 		ShaderParameters->PhysicsTypeBuffer = FNiagaraRenderer::GetSrvOrDefaultUInt(AssetBuffer->PhysicsTypeBuffer.SRV);
 		ShaderParameters->DFIndexBuffer = FNiagaraRenderer::GetSrvOrDefaultUInt(AssetBuffer->DFIndexBuffer.SRV);
 
@@ -1403,7 +1686,11 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::SetShaderParameters(const FNi
 
 		if (bDistanceFieldDataBound)
 		{
-			DistanceFieldSceneData = static_cast<const FNiagaraGpuComputeDispatch&>(Context.GetComputeDispatchInterface()).GetMeshDistanceFieldParameters();	//-BATCHERTODO:
+			TConstArrayView<FViewInfo> SimulationViewInfos = Context.GetComputeDispatchInterface().GetSimulationViewInfos();
+			if (SimulationViewInfos.Num() > 0 && SimulationViewInfos[0].Family && SimulationViewInfos[0].Family->Scene && SimulationViewInfos[0].Family->Scene->GetRenderScene())
+			{
+				DistanceFieldSceneData = &SimulationViewInfos[0].Family->Scene->GetRenderScene()->DistanceFieldSceneData;
+			}
 		}
 	}
 	else
@@ -1411,6 +1698,7 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::SetShaderParameters(const FNi
 		ShaderParameters->WorldTransformBuffer = FNiagaraRenderer::GetDummyFloat4Buffer();
 		ShaderParameters->InverseTransformBuffer = FNiagaraRenderer::GetDummyFloat4Buffer();
 		ShaderParameters->ElementExtentBuffer = FNiagaraRenderer::GetDummyFloat4Buffer();
+		ShaderParameters->MeshScaleBuffer = FNiagaraRenderer::GetDummyFloat4Buffer();
 		ShaderParameters->PhysicsTypeBuffer = FNiagaraRenderer::GetDummyUIntBuffer();
 		ShaderParameters->DFIndexBuffer = FNiagaraRenderer::GetDummyUIntBuffer();
 
@@ -1452,28 +1740,33 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::ProvidePerInstanceDataForRend
 	{
 		if (const FNDIRigidMeshCollisionArrays* SourceArrayData = GameThreadData->AssetArrays.Get())
 		{
+			const int32 ElementCount = GameThreadData->AssetArrays->ElementOffsets.NumElements;
+
 			RenderThreadData->ElementOffsets = GameThreadData->AssetArrays->ElementOffsets;
 
 			// compact the world/inverse transforms
-			const int32 TransformVectorCount = GameThreadData->AssetArrays->MaxPrimitives * 3;
+			const int32 TransformVectorCount = ElementCount * 3;
 
 			auto CompactTransforms = [&](const TArray<FVector4f>& Current, const TArray<FVector4f>& Previous, TArray<FVector4f>& Compact)
 			{
-				Compact.Reset(2 * TransformVectorCount);
-				Compact.Append(Current);
-				Compact.SetNumUninitialized(TransformVectorCount, false);
-				Compact.Append(Previous);
-				Compact.SetNumUninitialized(2 * TransformVectorCount, false);
+				check(Current.Num() >= TransformVectorCount);
+				check(Previous.Num() >= TransformVectorCount);
+
+				Compact.Reset(2 * TransformVectorCount); // space for current and previous transforms
+				Compact.Append(Current.GetData(), TransformVectorCount);
+				Compact.Append(Previous.GetData(), TransformVectorCount);
 			};
 
 			CompactTransforms(GameThreadData->AssetArrays->CurrentTransform, GameThreadData->AssetArrays->PreviousTransform, RenderThreadData->WorldTransform);
 			CompactTransforms(GameThreadData->AssetArrays->CurrentInverse, GameThreadData->AssetArrays->PreviousInverse, RenderThreadData->InverseTransform);
 
-			RenderThreadData->ElementExtent = GameThreadData->AssetArrays->ElementExtent;
-			RenderThreadData->PhysicsType = GameThreadData->AssetArrays->PhysicsType;
-			RenderThreadData->ComponentIdIndex = GameThreadData->AssetArrays->ComponentIdIndex;
+			RenderThreadData->ElementExtent.Append(GameThreadData->AssetArrays->ElementExtent.GetData(), ElementCount);
+			RenderThreadData->MeshScale.Append(GameThreadData->AssetArrays->MeshScale.GetData(), ElementCount);
+			RenderThreadData->PhysicsType.Append(GameThreadData->AssetArrays->PhysicsType.GetData(), ElementCount);
+			RenderThreadData->ComponentIdIndex.Append(GameThreadData->AssetArrays->ComponentIdIndex.GetData(), ElementCount);
+
 			RenderThreadData->UniqueComponentIds = GameThreadData->AssetArrays->UniqueCompnentId;
-			RenderThreadData->MaxPrimitiveCount = GameThreadData->AssetArrays->MaxPrimitives;
+			RenderThreadData->MaxPrimitiveCount = ElementCount;
 			RenderThreadData->AssetBuffer = GameThreadData->AssetBuffer;
 		}
 	}
@@ -1521,6 +1814,8 @@ bool UNiagaraDataInterfaceRigidMeshCollisionQuery::GlobalFindActors(UWorld* Worl
 		}
 	}
 
+	Algo::Sort(InstanceData.FoundActors, NDIRigidMeshCollisionLocal::WeakActorPtrLess);
+
 	return PreviousActors != InstanceData.FoundActors;
 }
 
@@ -1531,13 +1826,22 @@ bool UNiagaraDataInterfaceRigidMeshCollisionQuery::FindActors(UWorld* World, FND
 
 	if (ensure(World))
 	{
-		FCollisionObjectQueryParams ObjectParams;
-		ObjectParams.AddObjectTypesToQuery(Channel);
-
 		TArray<FOverlapResult> Overlaps;
-		FCollisionQueryParams Params(SCENE_QUERY_STAT(NiagaraRigidMeshCollisionQuery), false);
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(NiagaraRigidMeshCollisionQuery), UseComplexCollisions);
 
-		World->OverlapMultiByChannel(Overlaps, OverlapLocation, OverlapRotation, Channel, FCollisionShape::MakeBox(0.5f * OverlapExtent), Params);
+		// it is not clear the best strategy for filtering out results between ByObjectType and ByChannel.  For now we're going to preserve existing behavior
+		constexpr bool bFilterByObjectType = false;
+		if (bFilterByObjectType)
+		{
+			FCollisionObjectQueryParams ObjectParams;
+			ObjectParams.AddObjectTypesToQuery(Channel);
+
+			World->OverlapMultiByObjectType(Overlaps, OverlapLocation, OverlapRotation, ObjectParams, FCollisionShape::MakeBox(0.5f * OverlapExtent), Params);
+		}
+		else
+		{
+			World->OverlapMultiByChannel(Overlaps, OverlapLocation, OverlapRotation, Channel, FCollisionShape::MakeBox(0.5f * OverlapExtent), Params);
+		}
 
 		for (const FOverlapResult& OverlapResult : Overlaps)
 		{
@@ -1560,16 +1864,13 @@ bool UNiagaraDataInterfaceRigidMeshCollisionQuery::FindActors(UWorld* World, FND
 		}
 	}
 
+	Algo::Sort(InstanceData.FoundActors, NDIRigidMeshCollisionLocal::WeakActorPtrLess);
+
 	return PreviousActors != InstanceData.FoundActors;
 }
 
 bool UNiagaraDataInterfaceRigidMeshCollisionQuery::GetExplicitActors(FNDIRigidMeshCollisionData& InstanceData)
 {
-	if (!InstanceData.bRequiresSourceActors)
-	{
-		return false;
-	}
-
 	TArray<TWeakObjectPtr<AActor>> PreviousActors;
 	Swap(InstanceData.ExplicitActors, PreviousActors);
 
@@ -1609,7 +1910,7 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::FindActorsCPU(FVectorVMExtern
 				FQuat4f OverlapRotation = OverlapRotationParam.GetAndAdvance();
 				FVector3f OverlapExtent = OverlapExtentParam.GetAndAdvance();
 				ECollisionChannel TraceChannel = TraceChannelParam.GetAndAdvance();
-				bool SkipOverlap = SkipOverlapParam.GetAndAdvance() || !InstanceData->bRequiresSourceActors;
+				bool SkipOverlap = SkipOverlapParam.GetAndAdvance();
 
 				bool ActorsChanged = false;
 
@@ -1619,7 +1920,6 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::FindActorsCPU(FVectorVMExtern
 					if (FindActors(World, *InstanceData, TraceChannel, ConvertedOrigin, FVector(OverlapExtent), FQuat(OverlapRotation)))
 					{
 						ActorsChanged = true;
-						InstanceData->bFoundActorsUpdated = true;
 					}
 				}
 
@@ -1635,6 +1935,52 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::FindActorsCPU(FVectorVMExtern
 		ActorsChangedParam.SetAndAdvance(false);
 	}
 }
+
+#if WITH_EDITOR
+
+void UNiagaraDataInterfaceRigidMeshCollisionQuery::GetFeedback(UNiagaraSystem* InAsset, UNiagaraComponent* InComponent, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo)
+{
+	using namespace NDIRigidMeshCollisionLocal;
+
+	auto IsValidActor = [](const TSoftObjectPtr<AActor>& SoftPtrActor) -> bool
+	{
+		return SoftPtrActor.IsValid();
+	};
+
+	const bool bHasScriptedFindActor = SystemHasFindActorsFunction(InAsset);
+	const bool bHasSourceActor = SourceActors.ContainsByPredicate(IsValidActor);
+
+	if (!bHasScriptedFindActor && !bHasSourceActor)
+	{
+		OutWarnings.Emplace(
+			LOCTEXT("RigidMeshDI_MissingFindActor", "RigidMeshCollisionQuery is missing call to FindActors which is needed to find collision primitives."),
+			LOCTEXT("RigidMeshDI_MissingFindActor_Summary", "Missing FIndActors."),
+			FNiagaraDataInterfaceFix()
+		);
+	}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (GlobalSearchAllowed)
+	{
+		OutWarnings.Emplace(
+			LOCTEXT("RigidMeshDI_GlobalSearch", "Use of Global Search options is deprecated in favor of using FindActors."),
+			LOCTEXT("RigidMeshDI_GlobalSearch_Summary", "Deprecated Global Search."),
+			FNiagaraDataInterfaceFix::CreateLambda(
+				[this]()
+				{
+					GlobalSearchAllowed = false;
+					GlobalSearchForced = false;
+					GlobalSearchFallback_Unscripted = false;
+					return true;
+				}
+			)
+		);
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+#endif
+
 
 void UNiagaraDIRigidMeshCollisionFunctionLibrary::SetSourceActors(UNiagaraComponent* NiagaraComponent, FName OverrideName, const TArray<AActor*>& InSourceActors)
 {

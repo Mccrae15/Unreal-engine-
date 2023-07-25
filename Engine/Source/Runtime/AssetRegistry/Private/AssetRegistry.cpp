@@ -12,6 +12,7 @@
 #include "Blueprint/BlueprintSupport.h"
 #include "DependsNode.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
+#include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/ThreadHeartBeat.h"
 #include "Interfaces/IPluginManager.h"
@@ -20,6 +21,8 @@
 #include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Optional.h"
+#include "Misc/PackageAccessTracking.h"
+#include "Misc/PackageAccessTrackingOps.h"
 #include "Misc/Paths.h"
 #include "Misc/PathViews.h"
 #include "Misc/RedirectCollector.h"
@@ -35,6 +38,7 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IAssetRegistry)
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AssetRegistry)
 
 #if WITH_EDITOR
@@ -173,14 +177,6 @@ static bool CanLoadAsync()
 	return FPlatformProcess::SupportsMultithreading() && FTaskGraphInterface::IsRunning();
 }
 
-static bool CanConsumeAsync()
-{
-	// Async Consumption (copying the preloaded Premade FAssetRegistryState into the global AR) is only
-	// available when async is available, and is not currently used in the cooked game because we have
-	// to block on it anyway.
-	return CanLoadAsync() && !FPlatformProperties::RequiresCookedData();
-}
-
 /** Returns the paths to possible Premade AssetRegistry files, ordered from highest priority to lowest. */
 TArray<FString, TInlineAllocator<2>> GetPriorityPaths()
 {
@@ -303,6 +299,8 @@ private:
 
 	ELoadResult TryLoad()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FCookedAssetRegistryPreloader::TryLoad);
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		checkf(!ARPath.IsEmpty(), TEXT("TryLoad must not be called until after TrySetPath has succeeded."));
 
 		FAssetRegistryLoadOptions Options;
@@ -318,6 +316,7 @@ private:
 
 	void DelayedInitialize()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FCookedAssetRegistryPreloader::DelayedInitialize);
 		// This function will run before any UObject (ie UAssetRegistryImpl) code can run, so we don't need to do any thread safety
 		// CanLoadAsync - we have to check this after the task graph is ready
 		if (!CanLoadAsync())
@@ -359,6 +358,7 @@ private:
 
 	void KickPreload()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FCookedAssetRegistryPreloader::KickPreload);
 		// Called from Within the Lock
 		check(LoadState == EState::NotFound && !ARPath.IsEmpty());
 		LoadState = EState::Loading;
@@ -499,7 +499,6 @@ private:
 }
 GPreloader;
 
-#if ASSETREGISTRY_ENABLE_PREMADE_REGISTRY_IN_EDITOR
 FAsyncConsumer::~FAsyncConsumer()
 {
 	if (Consumed)
@@ -547,7 +546,7 @@ void FAsyncConsumer::Wait(UAssetRegistryImpl& UARI, FWriteScopeLock& ScopeLock)
 void FAsyncConsumer::Consume(UAssetRegistryImpl& UARI, UE::AssetRegistry::Impl::FEventContext& EventContext, ELoadResult LoadResult, FAssetRegistryState&& ARState)
 {
 	// Called within the lock
-	UARI.GuardedData.LoadPremadeAssetRegistry(EventContext, LoadResult, MoveTemp(ARState), FAssetRegistryState::EInitializationMode::OnlyUpdateNew);
+	UARI.GuardedData.LoadPremadeAssetRegistry(EventContext, LoadResult, MoveTemp(ARState));
 	check(ReferenceCount >= 1);
 	check(Consumed != nullptr);
 	Consumed->Trigger();
@@ -560,58 +559,54 @@ void FAsyncConsumer::Consume(UAssetRegistryImpl& UARI, UE::AssetRegistry::Impl::
 	}
 }
 
-#endif
-
 }
 
 namespace UE::AssetRegistry
 {
 void FAssetRegistryImpl::ConditionalLoadPremadeAssetRegistry(UAssetRegistryImpl& UARI, Impl::FEventContext& EventContext, FWriteScopeLock& ScopeLock)
 {
-#if ASSETREGISTRY_ENABLE_PREMADE_REGISTRY_IN_EDITOR
 	AsyncConsumer.Wait(UARI, ScopeLock);
-#endif
 }
 
 void FAssetRegistryImpl::ConsumeOrDeferPreloadedPremade(UAssetRegistryImpl& UARI, Impl::FEventContext& EventContext)
 {
 	// Called from inside WriteLock on InterfaceLock
 	using namespace UE::AssetRegistry::Premade;
-	if (!UE::AssetRegistry::Premade::IsEnabled())
+	if (!Premade::IsEnabled())
 	{
 		// if we aren't doing any preloading, then we can set the initial search is done right away.
 		// Otherwise, it is set from LoadPremadeAssetRegistry
 		bCanFinishInitialSearch = true;
 		return;
 	}
-#if ASSETREGISTRY_ENABLE_PREMADE_REGISTRY_IN_EDITOR
-	FPreloader::FConsumeFunction ConsumeFromAsyncThread = [this, &UARI](Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState)
+
+	if (Premade::CanLoadAsync())
 	{
-		Impl::FEventContext EventContext;
+		FPreloader::FConsumeFunction ConsumeFromAsyncThread = [this, &UARI](Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState)
 		{
-			FWriteScopeLock InterfaceScopeLock(UARI.InterfaceLock);
-			AsyncConsumer.Consume(UARI, EventContext, LoadResult, MoveTemp(ARState));
-		}
-		UARI.Broadcast(EventContext);
-	};
-	auto ConsumeOnCurrentThread = [ConsumeFromAsyncThread](Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState) mutable
-	{
-		Async(EAsyncExecution::TaskGraph, [LoadResult, ARState=MoveTemp(ARState), ConsumeFromAsyncThread=MoveTemp(ConsumeFromAsyncThread)]() mutable
+			Impl::FEventContext EventContext;
+			{
+				FWriteScopeLock InterfaceScopeLock(UARI.InterfaceLock);
+				AsyncConsumer.Consume(UARI, EventContext, LoadResult, MoveTemp(ARState));
+			}
+			UARI.Broadcast(EventContext);
+		};
+		auto ConsumeOnCurrentThread = [ConsumeFromAsyncThread](Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState) mutable
 		{
-			ConsumeFromAsyncThread(LoadResult, MoveTemp(ARState));
-		});
-	};
-	if (CanConsumeAsync())
-	{
+			Async(EAsyncExecution::TaskGraph, [LoadResult, ARState=MoveTemp(ARState), ConsumeFromAsyncThread=MoveTemp(ConsumeFromAsyncThread)]() mutable
+			{
+				ConsumeFromAsyncThread(LoadResult, MoveTemp(ARState));
+			});
+		};
+
 		AsyncConsumer.PrepareForConsume();
 		GPreloader.ConsumeOrDefer(MoveTemp(ConsumeOnCurrentThread), MoveTemp(ConsumeFromAsyncThread));
 	}
 	else
-#endif
 	{
 		GPreloader.Consume([this, &EventContext](Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState)
 			{
-				LoadPremadeAssetRegistry(EventContext, LoadResult, MoveTemp(ARState), FAssetRegistryState::EInitializationMode::Rebuild);
+				LoadPremadeAssetRegistry(EventContext, LoadResult, MoveTemp(ARState));
 			});
 	}
 }
@@ -641,6 +636,19 @@ const TCHAR* GetDevelopmentAssetRegistryFilename()
 {
 	return TEXT("DevelopmentAssetRegistry.bin");
 }
+
+FAssetData IAssetRegistry::K2_GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets) const
+{
+	return GetAssetByObjectPath(ObjectPath, bIncludeOnlyOnDiskAssets);
+}
+
+IAssetRegistry::FLoadPackageRegistryData::FLoadPackageRegistryData(bool bInGetDependencies)
+	: bGetDependencies(bInGetDependencies)
+{
+}
+
+IAssetRegistry::FLoadPackageRegistryData::~FLoadPackageRegistryData() = default;
+
 
 UAssetRegistry::UAssetRegistry(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -672,6 +680,7 @@ UAssetRegistryImpl::UAssetRegistryImpl(const FObjectInitializer& ObjectInitializ
 	UE::AssetRegistry::Impl::FInitializeContext Context{ *this };
 
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GetInheritanceContextWithRequiredLock(InterfaceScopeLock, Context.InheritanceContext,
 			Context.InheritanceBuffer);
@@ -695,24 +704,31 @@ FAssetRegistryImpl::FAssetRegistryImpl()
 }
 
 void FAssetRegistryImpl::LoadPremadeAssetRegistry(Impl::FEventContext& EventContext,
-	Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState, FAssetRegistryState::EInitializationMode Mode)
+	Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState)
 {
 	SCOPED_BOOT_TIMING("LoadPremadeAssetRegistry");
 	UE_SCOPED_ENGINE_ACTIVITY("Loading premade asset registry");
 
 	if (SerializationOptions.bSerializeAssetRegistry)
 	{
+		SCOPED_BOOT_TIMING("LoadPremadeAssetRegistry_Main");
 		if (LoadResult == Premade::ELoadResult::Succeeded)
 		{
-			if (Mode == FAssetRegistryState::EInitializationMode::Rebuild)
+			if (State.GetNumAssets() == 0)
 			{
 				State = MoveTemp(ARState);
 				CachePathsFromState(EventContext, State);
 			}
+			else if (State.GetNumAssets() < ARState.GetNumAssets())
+			{
+				FAssetRegistryState ExistingState = MoveTemp(State);
+				State = MoveTemp(ARState);
+				CachePathsFromState(EventContext, State);
+				AppendState(EventContext, ExistingState);
+			}
 			else
 			{
-				State.InitializeFromExisting(ARState, SerializationOptions, Mode);
-				CachePathsFromState(EventContext, ARState);
+				AppendState(EventContext, ARState, FAssetRegistryState::EInitializationMode::OnlyUpdateNew);
 			}
 		}
 		else
@@ -722,21 +738,23 @@ void FAssetRegistryImpl::LoadPremadeAssetRegistry(Impl::FEventContext& EventCont
 		}
 	}
 
-	TArray<TSharedRef<IPlugin>> ContentPlugins = IPluginManager::Get().GetEnabledPluginsWithContent();
-	for (const TSharedRef<IPlugin>& ContentPlugin : ContentPlugins)
 	{
-		if (ContentPlugin->CanContainContent())
+		SCOPED_BOOT_TIMING("LoadPremadeAssetRegistry_Plugins");
+		TArray<TSharedRef<IPlugin>> ContentPlugins = IPluginManager::Get().GetEnabledPluginsWithContent();
+		for (const TSharedRef<IPlugin>& ContentPlugin : ContentPlugins)
 		{
-			FArrayReader SerializedAssetData;
-			FString PluginAssetRegistry = ContentPlugin->GetBaseDir() / TEXT("AssetRegistry.bin");
-			if (IFileManager::Get().FileExists(*PluginAssetRegistry) && FFileHelper::LoadFileToArray(SerializedAssetData, *PluginAssetRegistry))
+			if (ContentPlugin->CanContainContent())
 			{
-				SerializedAssetData.Seek(0);
-				FAssetRegistryState PluginState;
-				PluginState.Load(SerializedAssetData);
+				FArrayReader SerializedAssetData;
+				FString PluginAssetRegistry = ContentPlugin->GetBaseDir() / TEXT("AssetRegistry.bin");
+				if (IFileManager::Get().FileExists(*PluginAssetRegistry) && FFileHelper::LoadFileToArray(SerializedAssetData, *PluginAssetRegistry))
+				{
+					SerializedAssetData.Seek(0);
+					FAssetRegistryState PluginState;
+					PluginState.Load(SerializedAssetData);
 
-				State.InitializeFromExisting(PluginState, SerializationOptions, FAssetRegistryState::EInitializationMode::Append);
-				CachePathsFromState(EventContext, PluginState);
+					AppendState(EventContext, PluginState);
+				}
 			}
 		}
 	}
@@ -747,16 +765,13 @@ void FAssetRegistryImpl::LoadPremadeAssetRegistry(Impl::FEventContext& EventCont
 
 void FAssetRegistryImpl::Initialize(Impl::FInitializeContext& Context)
 {
-	LLM_SCOPE(ELLMTag::AssetRegistry);
-
 	const double StartupStartTime = FPlatformTime::Seconds();
 
 	bInitialSearchStarted = false;
 	bInitialSearchCompleted = true;
 	GatherStatus = Impl::EGatherStatus::Active;
 	bSearchAllAssets = false;
-	AmortizeStartTime = 0;
-	TotalAmortizeTime = 0;
+	StoreGatherResultsTimeSeconds = 0.f;
 
 	// By default update the disk cache once on asset load, to incorporate changes made in PostLoad. This only happens in editor builds
 	bUpdateDiskCacheAfterLoad = true;
@@ -788,17 +803,7 @@ void FAssetRegistryImpl::Initialize(Impl::FInitializeContext& Context)
 	Utils::InitializeSerializationOptionsFromIni(SerializationOptions, FString());
 	Utils::InitializeSerializationOptionsFromIni(DevelopmentSerializationOptions, FString(), UE::AssetRegistry::ESerializationTarget::ForDevelopment);
 
-	// If in the editor or cookcommandlet, we start the GlobalGatherer now
-	// In the game or other commandlets, we do not construct it until project or commandlet code calls SearchAllAssets or ScanPathsSynchronous
-	bool bSearchAllAssetsAtStart = GIsEditor && (!IsRunningCommandlet() || IsRunningCookCommandlet());
-#if !UE_BUILD_SHIPPING
-	bool bCommandlineAllAssetsAtStart;
-	if (FParse::Bool(FCommandLine::Get(), TEXT("AssetGatherAll="), bCommandlineAllAssetsAtStart))
-	{
-		bSearchAllAssetsAtStart = bCommandlineAllAssetsAtStart;
-	}
-#endif
-	if (bSearchAllAssetsAtStart)
+	if (ShouldSearchAllAssetsAtStart())
 	{
 		ConstructGatherer();
 		if (!GlobalGatherer->IsSynchronous())
@@ -835,26 +840,42 @@ void FAssetRegistryImpl::Initialize(Impl::FInitializeContext& Context)
 	InitRedirectors(Context.Events, Context.InheritanceContext, Context.bRedirectorsNeedSubscribe);
 
 #if WITH_EDITOR
-	if (!UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer::IsEmpty())
-	{
-		TArray<UObject*> Classes;
-		GetObjectsOfClass(UClass::StaticClass(), Classes);
-
-		/** Per Class dependency gatherers */
-		UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer::ForEach([&](UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer* RegisteredAssetDependencyGatherer)
-		{
-			UClass* AssetClass = RegisteredAssetDependencyGatherer->GetAssetClass();
-			for(UObject* ClassObject : Classes)
-			{
-				if (UClass* Class = Cast<UClass>(ClassObject); Class && Class->IsChildOf(AssetClass) && !Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
-				{
-					RegisteredDependencyGathererClasses.Add(Class, RegisteredAssetDependencyGatherer);
-				}
-			}
-		});
-	}
+	// Makae sure first call to LoadCalculatedDependencies builds the Gatherer list. At that point Classes should be loaded.
+	bRegisteredDependencyGathererClassesDirty = true;
 #endif
 }
+
+#if WITH_EDITOR
+
+void FAssetRegistryImpl::RebuildAssetDependencyGathererMapIfNeeded()
+{
+	if (!bRegisteredDependencyGathererClassesDirty)
+	{
+		return;
+	}
+
+	RegisteredDependencyGathererClasses.Reset();
+
+	TArray<UObject*> Classes;
+	GetObjectsOfClass(UClass::StaticClass(), Classes);
+
+	/** Per Class dependency gatherers */
+	UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer::ForEach([&](UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer* RegisteredAssetDependencyGatherer)
+	{
+		UClass* AssetClass = RegisteredAssetDependencyGatherer->GetAssetClass();
+		for (UObject* ClassObject : Classes)
+		{
+			if (UClass* Class = Cast<UClass>(ClassObject); Class && Class->IsChildOf(AssetClass) && !Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+			{
+				RegisteredDependencyGathererClasses.Add(Class, RegisteredAssetDependencyGatherer);
+			}
+		}
+	});
+
+	bRegisteredDependencyGathererClassesDirty = false;
+}
+
+#endif
 
 }
 
@@ -869,7 +890,7 @@ void UAssetRegistryImpl::InitializeEvents(UE::AssetRegistry::Impl::FInitializeCo
 
 	if (Context.bRedirectorsNeedSubscribe)
 	{
-		FCoreDelegates::FResolvePackageNameDelegate PackageResolveDelegate;
+		TDelegate<bool(const FString&, FString&)> PackageResolveDelegate;
 		PackageResolveDelegate.BindUObject(this, &UAssetRegistryImpl::OnResolveRedirect);
 		FCoreDelegates::PackageNameResolvers.Add(PackageResolveDelegate);
 	}
@@ -883,24 +904,24 @@ void UAssetRegistryImpl::InitializeEvents(UE::AssetRegistry::Impl::FInitializeCo
 
 		if (DirectoryWatcher)
 		{
+			FString ContentFolder;
 			for (TArray<FString>::TConstIterator RootPathIt(Context.RootContentPaths); RootPathIt; ++RootPathIt)
 			{
 				const FString& RootPath = *RootPathIt;
-				const FString& ContentFolder = FPackageName::LongPackageNameToFilename(RootPath);
+				ContentFolder = FPackageName::LongPackageNameToFilename(RootPath);
 
-				// A missing directory here could be due to a plugin that specifies it contains content, yet has no content yet. PluginManager
-				// Mounts these folders anyway which results in them being returned from QueryRootContentPaths
-				if (IFileManager::Get().DirectoryExists(*ContentFolder))
-				{
-					FDelegateHandle NewHandle;
-					DirectoryWatcher->RegisterDirectoryChangedCallback_Handle(
+				// A missing directory here could be due to a plugin that specifies it contains content, yet has no content yet.
+				// PluginManager mounts these folders anyway which results in them being returned from QueryRootContentPaths.
+				// Make sure the directory exits on disk so that the OS level DirectoryWatcher can be used to monitor it.
+				IPlatformFile::GetPlatformPhysical().CreateDirectoryTree(*ContentFolder);
+				FDelegateHandle NewHandle;
+				DirectoryWatcher->RegisterDirectoryChangedCallback_Handle(
 						ContentFolder,
 						IDirectoryWatcher::FDirectoryChanged::CreateUObject(this, &UAssetRegistryImpl::OnDirectoryChanged),
 						NewHandle,
 						IDirectoryWatcher::WatchOptions::IncludeDirectoryChanges);
 
-					OnDirectoryChangedDelegateHandles.Add(RootPath, NewHandle);
-				}
+				OnDirectoryChangedDelegateHandles.Add(RootPath, NewHandle);
 			}
 		}
 	}
@@ -918,6 +939,8 @@ void UAssetRegistryImpl::InitializeEvents(UE::AssetRegistry::Impl::FInitializeCo
 	{
 		FCoreDelegates::OnFEngineLoopInitComplete.AddUObject(this, &UAssetRegistryImpl::OnFEngineLoopInitCompleteSearchAllAssets);
 	}
+
+	UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer::OnAssetDependencyGathererRegistered.AddUObject(this, &UAssetRegistryImpl::OnAssetDependencyGathererRegistered);
 #endif // WITH_EDITOR
 
 	FCoreDelegates::OnEnginePreExit.AddUObject(this, &UAssetRegistryImpl::OnEnginePreExit);
@@ -1040,6 +1063,7 @@ void UAssetRegistryImpl::OnPluginLoadingPhaseComplete(ELoadingPhase::Type Loadin
 		return;
 	}
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GuardedData.OnPostEngineInit(bPhaseSuccessful);
 	}
@@ -1145,16 +1169,9 @@ static TSet<FName> MakeNameSet(const TArray<FString>& Strings)
 
 void InitializeSerializationOptionsFromIni(FAssetRegistrySerializationOptions& Options, const FString& PlatformIniName, UE::AssetRegistry::ESerializationTarget Target)
 {
-	FConfigFile* EngineIni = nullptr;
-#if WITH_EDITOR
 	// Use passed in platform, or current platform if empty
-	FConfigFile PlatformEngineIni;
-	FConfigCacheIni::LoadLocalIniFile(PlatformEngineIni, TEXT("Engine"), true, (!PlatformIniName.IsEmpty() ? *PlatformIniName : ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName())));
-	EngineIni = &PlatformEngineIni;
-#else
-	// In cooked builds, always use the normal engine INI
-	EngineIni = GConfig->FindConfigFile(GEngineIni);
-#endif
+	FConfigFile LocalEngineIni;
+	FConfigFile* EngineIni = FConfigCacheIni::FindOrLoadPlatformConfig(LocalEngineIni, TEXT("Engine"), (!PlatformIniName.IsEmpty() ? *PlatformIniName : ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName())));
 
 	Options = FAssetRegistrySerializationOptions(Target);
 	// For DevelopmentAssetRegistry, all non-tag options are overridden in the constructor
@@ -1222,15 +1239,19 @@ void InitializeSerializationOptionsFromIni(FAssetRegistrySerializationOptions& O
 			{
 				KeyString.TrimStartAndEndInline();
 				ValueString.TrimStartAndEndInline();
-				if (KeyString == TEXT("Class"))
+				if (KeyString.Equals(TEXT("Class"), ESearchCase::IgnoreCase))
 				{
 					ClassName = ValueString;
 				}
-				else if (KeyString == TEXT("Tag"))
+				else if (KeyString.Equals(TEXT("Tag"), ESearchCase::IgnoreCase))
 				{
 					TagName = ValueString;
 				}
-				else if (KeyString == TEXT("KeepInDevOnly"))
+			}
+			else
+			{
+				KeyString = Token.TrimStartAndEnd();
+				if (KeyString.Equals(TEXT("KeepInDevOnly"), ESearchCase::IgnoreCase))
 				{
 					bKeepInDevOnly = true;
 				}
@@ -1284,6 +1305,7 @@ void InitializeSerializationOptionsFromIni(FAssetRegistrySerializationOptions& O
 
 void FAssetRegistryImpl::CollectCodeGeneratorClasses()
 {
+	LLM_SCOPE(ELLMTag::AssetRegistry); // Tagged here instead of a higher level because it can occur even when reading
 	// Only refresh the list if our registered classes have changed
 	if (ClassGeneratorNamesRegisteredClassesVersionNumber == GetRegisteredClassesVersionNumber())
 	{
@@ -1342,6 +1364,7 @@ void FAssetRegistryImpl::CollectCodeGeneratorClasses()
 
 void UAssetRegistryImpl::OnRefreshNativeClasses()
 {
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	GuardedData.RefreshNativeClasses();
 }
@@ -1358,6 +1381,7 @@ void FAssetRegistryImpl::RefreshNativeClasses()
 
 	// Read default serialization options
 	Utils::InitializeSerializationOptionsFromIni(SerializationOptions, FString());
+	Utils::InitializeSerializationOptionsFromIni(DevelopmentSerializationOptions, FString(), UE::AssetRegistry::ESerializationTarget::ForDevelopment);
 }
 
 }
@@ -1367,16 +1391,25 @@ void UAssetRegistryImpl::OnFEngineLoopInitCompleteSearchAllAssets()
 {
 	SearchAllAssets(true);
 }
+
+void UAssetRegistryImpl::OnAssetDependencyGathererRegistered()
+{
+	LLM_SCOPE(ELLMTag::AssetRegistry);
+	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
+	GuardedData.OnAssetDependencyGathererRegistered();
+}
 #endif
 
 void UAssetRegistryImpl::OnEnginePreExit()
 {
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	GuardedData.OnEnginePreExit();
 }
 
 void UAssetRegistryImpl::FinishDestroy()
 {
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	{
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 
@@ -1421,6 +1454,7 @@ void UAssetRegistryImpl::FinishDestroy()
 		}
 		FCoreDelegates::OnFEngineLoopInitComplete.RemoveAll(this);
 
+		UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer::OnAssetDependencyGathererRegistered.RemoveAll(this);
 #endif // WITH_EDITOR
 
 		if (HasAnyFlags(RF_ClassDefaultObject))
@@ -1497,7 +1531,6 @@ void FAssetRegistryImpl::SearchAllAssetsInitialAsync(Impl::FEventContext& EventC
 {
 	bInitialSearchStarted = true;
 	bInitialSearchCompleted = false;
-	FullSearchStartTime = FPlatformTime::Seconds();
 	SearchAllAssets(EventContext, InheritanceContext, false /* bSynchronousSearch */);
 }
 
@@ -1509,6 +1542,7 @@ void UAssetRegistryImpl::SearchAllAssets(bool bSynchronousSearch)
 
 	FEventContext EventContext;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		FClassInheritanceContext InheritanceContext;
 		FClassInheritanceBuffer InheritanceBuffer;
@@ -1519,6 +1553,10 @@ void UAssetRegistryImpl::SearchAllAssets(bool bSynchronousSearch)
 			GuardedData.ConditionalLoadPremadeAssetRegistry(*this, EventContext, InterfaceScopeLock);
 		}
 		GuardedData.SearchAllAssets(EventContext, InheritanceContext, bSynchronousSearch);
+		if (bSynchronousSearch)
+		{
+			GuardedData.LogSearchDiagnostics();
+		}
 	}
 #if WITH_EDITOR
 	if (bSynchronousSearch)
@@ -1547,8 +1585,6 @@ namespace UE::AssetRegistry
 void FAssetRegistryImpl::SearchAllAssets(Impl::FEventContext& EventContext,
 	Impl::FClassInheritanceContext& InheritanceContext, bool bSynchronousSearch)
 {
-	LLM_SCOPE(ELLMTag::AssetRegistry);
-
 	ConstructGatherer();
 	FAssetDataGatherer& Gatherer = *GlobalGatherer;
 	if (Gatherer.IsSynchronous())
@@ -1595,18 +1631,22 @@ void FAssetRegistryImpl::SearchAllAssets(Impl::FEventContext& EventContext,
 
 void UAssetRegistryImpl::WaitForCompletion()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UAssetRegistryImpl::WaitForCompletion);
+
 	using namespace UE::AssetRegistry::Impl;
-	LLM_SCOPE(ELLMTag::AssetRegistry);
 
 	for (;;)
 	{
 		FEventContext EventContext;
 		EGatherStatus Status;
 		{
+			LLM_SCOPE(ELLMTag::AssetRegistry);
 			FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 			FClassInheritanceContext InheritanceContext;
 			FClassInheritanceBuffer InheritanceBuffer;
 			GetInheritanceContextWithRequiredLock(InterfaceScopeLock, InheritanceContext, InheritanceBuffer);
+
+			GuardedData.WaitForGathererIdleIfSynchronous();
 
 			bool bUnusedInterrupted;
 			Status = GuardedData.TickGatherer(EventContext, InheritanceContext, -1., bUnusedInterrupted);
@@ -1625,10 +1665,33 @@ void UAssetRegistryImpl::WaitForCompletion()
 	}
 }
 
+void UAssetRegistryImpl::ClearGathererCache()
+{
+	LLM_SCOPE(ELLMTag::AssetRegistry);
+	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
+	GuardedData.ClearGathererCache();
+}
+
+namespace UE::AssetRegistry
+{
+
+void FAssetRegistryImpl::ClearGathererCache()
+{
+	if (GlobalGatherer)
+	{
+		GlobalGatherer->ClearCache();
+	}
+}
+
+}
+
 void UAssetRegistryImpl::WaitForPackage(const FString& PackageName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UAssetRegistryImpl::WaitForPackage);
+
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		if (GuardedData.IsLoadingAssets())
 		{
@@ -2424,6 +2487,7 @@ bool IAssetRegistry::K2_GetReferencers(FName PackageName, const FAssetRegistryDe
 
 const FAssetPackageData* UAssetRegistryImpl::GetAssetPackageData(FName PackageName) const
 {
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return const_cast<UE::AssetRegistry::FAssetRegistryImpl&>(GuardedData).GetAssetPackageData(PackageName);
@@ -2541,11 +2605,28 @@ bool UAssetRegistryImpl::DoesPackageExistOnDisk(FName PackageName, FString* OutC
 		}
 		if (OutExtension)
 		{
-			// TODO: Save the extension on the AssetPackageData rather than deriving it here
-			// Guessing the extension based on map vs non-map also does not support text assets and maps which have a different extension
-			TArray<FAssetData> Assets;
-			GetAssetsByPackageName(PackageName, Assets, /*bIncludeOnlyDiskAssets*/ true);
-			*OutExtension = CalculateExtension(PackageNameStr, Assets);
+			if (AssetPackageData->Extension == EPackageExtension::Unspecified || AssetPackageData->Extension == EPackageExtension::Custom)
+			{
+				FString FileName;
+				if (FPackageName::DoesPackageExist(PackageNameStr, &FileName, false /* InAllowTextFormats */))
+				{
+					check(!FileName.IsEmpty());
+					*OutExtension = FPaths::GetExtension(FileName, true /* bIncludeDot */);
+				}
+				else
+				{
+					UE_LOG(LogAssetRegistry, Error,
+						TEXT("UAssetRegistryImpl::DoesPackageExistOnDisk failed to find the extension for %s. The package exists in the AssetRegistry but does not exist on disk."),
+						*PackageNameStr);
+					TArray<FAssetData> Assets;
+					GetAssetsByPackageName(PackageName, Assets, /*bIncludeOnlyDiskAssets*/ true);
+					*OutExtension = CalculateExtension(PackageNameStr, Assets);
+				}
+			}
+			else
+			{
+				*OutExtension = LexToString(AssetPackageData->Extension);
+			}
 		}
 		return true;
 	}
@@ -2892,6 +2973,11 @@ void UAssetRegistryImpl::UseFilterToExcludeAssets(TArray<FAssetData>& AssetDataL
 	}
 	FARCompiledFilter CompiledFilter;
 	CompileFilter(Filter, CompiledFilter);
+	UseFilterToExcludeAssets(AssetDataList, CompiledFilter);
+}
+
+void UAssetRegistryImpl::UseFilterToExcludeAssets(TArray<FAssetData>& AssetDataList, const FARCompiledFilter& CompiledFilter) const
+{
 	UE::AssetRegistry::Utils::RunAssetsThroughFilter(AssetDataList, CompiledFilter, UE::AssetRegistry::Utils::EFilterMode::Exclusive);
 }
 
@@ -3302,6 +3388,7 @@ bool UAssetRegistryImpl::AddPath(const FString& PathToAdd)
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	bool bResult;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		bResult = GuardedData.AddPath(EventContext, PathToAdd);
 	}
@@ -3338,6 +3425,7 @@ bool UAssetRegistryImpl::RemovePath(const FString& PathToRemove)
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	bool bResult;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		bResult = GuardedData.RemoveAssetPath(EventContext, FName(*PathToRemove));
 	}
@@ -3384,6 +3472,7 @@ void UAssetRegistryImpl::ScanPathsSynchronousInternal(const TArray<FString>& InD
 		bInForceRescan, bInIgnoreDenyListScanFilters, nullptr /* OutFindAssets */);
 
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GetInheritanceContextWithRequiredLock(InterfaceScopeLock, InheritanceContext, InheritanceBuffer);
 
@@ -3418,6 +3507,7 @@ void UAssetRegistryImpl::ScanPathsSynchronousInternal(const TArray<FString>& InD
 
 void UAssetRegistryImpl::PrioritizeSearchPath(const FString& PathToPrioritize)
 {
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	GuardedData.PrioritizeSearchPath(PathToPrioritize);
 }
@@ -3432,26 +3522,6 @@ void FAssetRegistryImpl::PrioritizeSearchPath(const FString& PathToPrioritize)
 		return;
 	}
 	GlobalGatherer->PrioritizeSearchPath(PathToPrioritize);
-
-	// Also prioritize the queue of background search results
-	int32 FirstNonPriorityIndex = 0;
-	for (int Index = 0; Index < BackgroundResults.Assets.Num(); ++Index)
-	{
-		FAssetData* PriorityElement = BackgroundResults.Assets[Index];
-		if (PriorityElement && PriorityElement->PackagePath.ToString().StartsWith(PathToPrioritize))
-		{
-			Swap(BackgroundResults.Assets[FirstNonPriorityIndex++], BackgroundResults.Assets[Index]);
-		}
-	}
-	FirstNonPriorityIndex = 0;
-	for (int Index = 0; Index < BackgroundResults.Paths.Num(); ++Index)
-	{
-		FString& PriorityElement = BackgroundResults.Paths[Index];
-		if (PriorityElement.StartsWith(PathToPrioritize))
-		{
-			Swap(BackgroundResults.Paths[FirstNonPriorityIndex++], BackgroundResults.Paths[Index]);
-		}
-	}
 }
 
 }
@@ -3473,6 +3543,7 @@ void UAssetRegistryImpl::AssetCreated(UObject* NewAsset)
 		bool bShouldSkipAssset;
 		UE::AssetRegistry::Impl::FEventContext EventContext;
 		{
+			LLM_SCOPE(ELLMTag::AssetRegistry);
 			FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 			// If this package was marked as an empty package before, it is no longer empty, so remove it from the list
 			GuardedData.RemoveEmptyPackage(NewPackage->GetFName());
@@ -3506,6 +3577,7 @@ void UAssetRegistryImpl::AssetDeleted(UObject* DeletedAsset)
 
 		bool bShouldSkipAsset;
 		{
+			LLM_SCOPE(ELLMTag::AssetRegistry);
 			FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 
 			// Deleting the last asset in a package causes the package to be garbage collected.
@@ -3573,6 +3645,7 @@ void UAssetRegistryImpl::AssetRenamed(const UObject* RenamedAsset, const FString
 		bool bShouldSkipAsset;
 		UE::AssetRegistry::Impl::FEventContext EventContext;
 		{
+			LLM_SCOPE(ELLMTag::AssetRegistry);
 			FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 			GuardedData.RemoveEmptyPackage(NewPackage->GetFName());
 
@@ -3597,15 +3670,64 @@ void UAssetRegistryImpl::AssetRenamed(const UObject* RenamedAsset, const FString
 
 void UAssetRegistryImpl::AssetSaved(const UObject& SavedAsset)
 {
-#if WITH_EDITOR
-	if (!ensure(SavedAsset.IsAsset()))
-	{
-		return;
-	}
+	AssetFullyUpdateTags(const_cast<UObject*>(&SavedAsset));
+}
 
-	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
-	GuardedData.AddLoadedAssetToProcess(SavedAsset);
+void UAssetRegistryImpl::AssetsSaved(TArray<FAssetData>&& Assets)
+{
+#if WITH_EDITOR
+	UE::AssetRegistry::Impl::FEventContext EventContext;
+	{
+		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
+		GuardedData.AssetsSaved(EventContext, MoveTemp(Assets));
+	}
+	Broadcast(EventContext);
 #endif
+}
+
+void UAssetRegistryImpl::AssetFullyUpdateTags(UObject* Object)
+{
+#if WITH_EDITOR
+	FAssetData AssetData(Object);
+	TArray<FAssetData> Assets;
+	Assets.Add(MoveTemp(AssetData));
+
+	UE::AssetRegistry::Impl::FEventContext EventContext;
+	{
+		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
+		GuardedData.AssetsSaved(EventContext, MoveTemp(Assets));
+	}
+	Broadcast(EventContext);
+#endif
+}
+
+namespace UE::AssetRegistry
+{
+
+#if WITH_EDITOR
+void FAssetRegistryImpl::AssetsSaved(UE::AssetRegistry::Impl::FEventContext& EventContext, TArray<FAssetData>&& Assets)
+{
+	LLM_SCOPE(ELLMTag::AssetRegistry);
+	for (FAssetData& NewAssetData : Assets)
+	{
+		FCachedAssetKey Key(NewAssetData);
+		FAssetData** DataFromGather = State.CachedAssets.Find(Key);
+
+		AssetDataObjectPathsUpdatedOnLoad.Add(NewAssetData.GetSoftObjectPath());
+
+		if (!DataFromGather)
+		{
+			FAssetData* ClonedAssetData = new FAssetData(MoveTemp(NewAssetData));
+			AddAssetData(EventContext, ClonedAssetData);
+		}
+		else
+		{
+			UpdateAssetData(EventContext, *DataFromGather, MoveTemp(NewAssetData), false /* bKeepDeletedTags */);
+		}
+	}
+}
+#endif
+
 }
 
 void UAssetRegistryImpl::AssetTagsFinalized(const UObject& FinalizedAsset)
@@ -3615,6 +3737,7 @@ void UAssetRegistryImpl::AssetTagsFinalized(const UObject& FinalizedAsset)
 	{
 		return;
 	}
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	GuardedData.AddLoadedAssetToProcess(FinalizedAsset);
@@ -3627,6 +3750,7 @@ void UAssetRegistryImpl::PackageDeleted(UPackage* DeletedPackage)
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	if (ensure(DeletedPackage))
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GuardedData.RemovePackageData(EventContext, DeletedPackage->GetFName());
 	}
@@ -3652,7 +3776,6 @@ bool FAssetRegistryImpl::IsLoadingAssets() const
 void UAssetRegistryImpl::Tick(float DeltaTime)
 {
 	checkf(IsInGameThread(), TEXT("The tick function executes deferred loads and events and must be on the game thread to do so."));
-	LLM_SCOPE(ELLMTag::AssetRegistry);
 
 	UE::AssetRegistry::Impl::EGatherStatus Status = UE::AssetRegistry::Impl::EGatherStatus::Active;
 	double TickStartTime = -1; // Force a full flush if DeltaTime < 0
@@ -3668,6 +3791,7 @@ void UAssetRegistryImpl::Tick(float DeltaTime)
 		bInterrupted = false;
 		UE::AssetRegistry::Impl::FEventContext EventContext;
 		{
+			LLM_SCOPE(ELLMTag::AssetRegistry);
 			FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 			UE::AssetRegistry::Impl::FClassInheritanceContext InheritanceContext;
 			UE::AssetRegistry::Impl::FClassInheritanceBuffer InheritanceBuffer;
@@ -3715,6 +3839,14 @@ void FAssetRegistryImpl::TickDeletes()
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
+void FAssetRegistryImpl::WaitForGathererIdleIfSynchronous()
+{
+	if (GlobalGatherer && GlobalGatherer->IsSynchronous())
+	{
+		GlobalGatherer->WaitForIdle();
+	}
+}
+
 Impl::EGatherStatus FAssetRegistryImpl::TickGatherer(Impl::FEventContext& EventContext,
 	Impl::FClassInheritanceContext& InheritanceContext, const double TickStartTime, bool& bOutInterrupted,
 	TOptional<FAssetsFoundCallback> AssetsFoundCallback)
@@ -3727,6 +3859,26 @@ Impl::EGatherStatus FAssetRegistryImpl::TickGatherer(Impl::FEventContext& EventC
 	{
 		return OutStatus;
 	}
+	double TimingStartTime = -1.;
+	auto LazyStartTimer = [&TimingStartTime]()
+	{
+		if (TimingStartTime <= 0.)
+		{
+			TimingStartTime = FPlatformTime::Seconds();
+		}
+	};
+	auto RecordTimer = [this, &TimingStartTime]()
+	{
+		if (TimingStartTime > 0.)
+		{
+			StoreGatherResultsTimeSeconds += static_cast<float>(FPlatformTime::Seconds() - TimingStartTime);
+			TimingStartTime = -1.;
+		}
+	};
+	ON_SCOPE_EXIT
+	{
+		RecordTimer();
+	};
 
 	// Gather results from the background search
 	FAssetDataGatherer::FResultContext ResultContext;
@@ -3778,44 +3930,37 @@ Impl::EGatherStatus FAssetRegistryImpl::TickGatherer(Impl::FEventContext& EventC
 		this->GatherStatus = OutStatus;
 	};
 
-
 	// Add discovered paths
 	if (BackgroundResults.Paths.Num())
 	{
+		LazyStartTimer();
 		PathDataGathered(EventContext, TickStartTime, BackgroundResults.Paths);
 	}
 
 	// Process the asset results
 	if (BackgroundResults.Assets.Num())
 	{
+		LazyStartTimer();
 		// Mark the first amortize time
-		if (AmortizeStartTime == 0)
-		{
-			AmortizeStartTime = FPlatformTime::Seconds();
-		}
 		if (AssetsFoundCallback.IsSet())
 		{
 			AssetsFoundCallback.GetValue()(BackgroundResults.Assets);
 		}
 
 		AssetSearchDataGathered(EventContext, TickStartTime, BackgroundResults.Assets);
-
-		if (BackgroundResults.Assets.Num() == 0)
-		{
-			TotalAmortizeTime += FPlatformTime::Seconds() - AmortizeStartTime;
-			AmortizeStartTime = 0;
-		}
 	}
 
 	// Add dependencies
 	if (BackgroundResults.Dependencies.Num())
 	{
+		LazyStartTimer();
 		DependencyDataGathered(TickStartTime, BackgroundResults.Dependencies);
 	}
 
 	// Load cooked packages that do not have asset data
 	if (BackgroundResults.CookedPackageNamesWithoutAssetData.Num())
 	{
+		LazyStartTimer();
 		CookedPackageNamesWithoutAssetDataGathered(EventContext, TickStartTime, BackgroundResults.CookedPackageNamesWithoutAssetData, bOutInterrupted);
 		if (bOutInterrupted)
 		{
@@ -3827,6 +3972,7 @@ Impl::EGatherStatus FAssetRegistryImpl::TickGatherer(Impl::FEventContext& EventC
 	// Add Verse files
 	if (BackgroundResults.VerseFiles.Num())
 	{
+		LazyStartTimer();
 		VerseFilesGathered(TickStartTime, BackgroundResults.VerseFiles);
 	}
 
@@ -3836,6 +3982,7 @@ Impl::EGatherStatus FAssetRegistryImpl::TickGatherer(Impl::FEventContext& EventC
 	bool bDiskGatherComplete = !ResultContext.bIsSearching && NumGatherFromDiskPending == 0;
 	if (bDiskGatherComplete && PackagesNeedingDependencyCalculation.Num())
 	{
+		LazyStartTimer();
 		LoadCalculatedDependencies(nullptr, TickStartTime, InheritanceContext, bOutInterrupted);
 		if (bOutInterrupted)
 		{
@@ -3851,6 +3998,7 @@ Impl::EGatherStatus FAssetRegistryImpl::TickGatherer(Impl::FEventContext& EventC
 	if (OutStatus == EGatherStatus::Complete)
 	{
 		HighestPending = 0;
+		BackgroundResults.Shrink();
 
 		if (!bInitialSearchCompleted && bCanFinishInitialSearch)
 		{
@@ -3858,8 +4006,8 @@ Impl::EGatherStatus FAssetRegistryImpl::TickGatherer(Impl::FEventContext& EventC
 			// update redirectors
 			UpdateRedirectCollector();
 #endif
-			UE_LOG(LogAssetRegistry, Verbose, TEXT("### Time spent amortizing search results: %0.4f seconds"), TotalAmortizeTime);
-			UE_LOG(LogAssetRegistry, Log, TEXT("Asset discovery search completed in %0.4f seconds"), FPlatformTime::Seconds() - FullSearchStartTime);
+			RecordTimer();
+			LogSearchDiagnostics();
 
 			bInitialSearchCompleted = true;
 
@@ -3870,6 +4018,16 @@ Impl::EGatherStatus FAssetRegistryImpl::TickGatherer(Impl::FEventContext& EventC
 	return OutStatus;
 }
 
+void FAssetRegistryImpl::LogSearchDiagnostics() const
+{
+	float GatherTimeSeconds;
+	float DiscoveryTimeSeconds;
+	GlobalGatherer->GetDiagnostics(GatherTimeSeconds, DiscoveryTimeSeconds);
+	float Total = DiscoveryTimeSeconds + GatherTimeSeconds + StoreGatherResultsTimeSeconds;
+	UE_LOG(LogAssetRegistry, Log, TEXT("AssetRegistryGather time %.4fs: AssetDataDiscovery %0.4fs, AssetDataGather %0.4fs, StoreResults %0.4fs."),
+		Total, DiscoveryTimeSeconds, GatherTimeSeconds, StoreGatherResultsTimeSeconds);
+}
+
 void FAssetRegistryImpl::TickGatherPackage(Impl::FEventContext& EventContext, const FString& PackageName, const FString& LocalPath)
 {
 	if (!GlobalGatherer.IsValid())
@@ -3877,41 +4035,55 @@ void FAssetRegistryImpl::TickGatherPackage(Impl::FEventContext& EventContext, co
 		return;
 	}
 	GlobalGatherer->WaitOnPath(LocalPath);
+	double TimingStartTime = -1.;
+	auto LazyStartTimer = [&TimingStartTime]()
+	{
+		if (TimingStartTime <= 0.)
+		{
+			TimingStartTime = FPlatformTime::Seconds();
+		}
+	};
+	ON_SCOPE_EXIT
+	{
+		if (TimingStartTime > 0.)
+		{
+			StoreGatherResultsTimeSeconds += static_cast<float>(FPlatformTime::Seconds() - TimingStartTime);
+			TimingStartTime = -1.;
+		}
+	};
 
 	FName PackageFName(PackageName);
 
 	// Gather results from the background search
 	GlobalGatherer->GetPackageResults(BackgroundResults.Assets, BackgroundResults.Dependencies);
 
-	TRingBuffer<FAssetData*> PackageAssets;
-	TRingBuffer<FPackageDependencyData> PackageDependencyDatas;
-	for (int n = 0; n < BackgroundResults.Assets.Num(); ++n)
-	{
-		FAssetData* Asset = BackgroundResults.Assets[n];
-		if (Asset->PackageName == PackageFName)
-		{
-			Swap(BackgroundResults.Assets[n], BackgroundResults.Assets.Last());
-			PackageAssets.Add(BackgroundResults.Assets.PopValue());
-			--n;
-		}
-	}
-	for (int n = 0; n < BackgroundResults.Dependencies.Num(); ++n)
-	{
-		FPackageDependencyData& DependencyData = BackgroundResults.Dependencies[n];
-		if (DependencyData.PackageName == PackageFName)
-		{
-			Swap(BackgroundResults.Dependencies[n], BackgroundResults.Dependencies.Last());
-			PackageDependencyDatas.Add(BackgroundResults.Dependencies.PopValue());
-			--n;
-		}
-	}
+	TArray<FAssetData*> PackageAssets;
+	TArray<FPackageDependencyData> PackageDependencyDatas;
+	BackgroundResults.Assets.MultiFind(PackageFName, PackageAssets);
+	BackgroundResults.Assets.Remove(PackageFName);
+	BackgroundResults.Dependencies.MultiFind(PackageFName, PackageDependencyDatas);
+	BackgroundResults.Dependencies.Remove(PackageFName);
 	if (PackageAssets.Num() > 0)
 	{
-		AssetSearchDataGathered(EventContext, -1., PackageAssets);
+		LazyStartTimer();
+		TMultiMap<FName, FAssetData*> PackageAssetsMap;
+		PackageAssetsMap.Reserve(PackageAssets.Num());
+		for (FAssetData* PackageAsset : PackageAssets)
+		{
+			PackageAssetsMap.Add(PackageFName, PackageAsset);
+		}
+		AssetSearchDataGathered(EventContext, -1., PackageAssetsMap);
 	}
 	if (PackageDependencyDatas.Num() > 0)
 	{
-		DependencyDataGathered(-1., PackageDependencyDatas);
+		LazyStartTimer();
+		TMultiMap<FName, FPackageDependencyData> PackageDependencyDatasMap;
+		PackageDependencyDatasMap.Reserve(PackageDependencyDatas.Num());
+		for (FPackageDependencyData& DependencyData : PackageDependencyDatas)
+		{
+			PackageDependencyDatasMap.Add(PackageFName, MoveTemp(DependencyData));
+		}
+		DependencyDataGathered(-1., PackageDependencyDatasMap);
 	}
 }
 
@@ -3933,6 +4105,8 @@ void FAssetRegistryImpl::LoadCalculatedDependencies(TArray<FName>* AssetPackageN
 		}
 		return false;
 	};
+
+	RebuildAssetDependencyGathererMapIfNeeded();
 
 	if (AssetPackageNamesToCalculate)
 	{
@@ -4055,6 +4229,7 @@ void UAssetRegistryImpl::Serialize(FArchive& Ar)
 {
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GuardedData.Serialize(Ar, EventContext);
 	}
@@ -4089,6 +4264,7 @@ void UAssetRegistryImpl::AppendState(const FAssetRegistryState& InState)
 {
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GuardedData.AppendState(EventContext, InState);
 	}
@@ -4106,17 +4282,24 @@ void UAssetRegistryImpl::AppendState(const FAssetRegistryState& InState)
 namespace UE::AssetRegistry
 {
 
-void FAssetRegistryImpl::AppendState(Impl::FEventContext& EventContext, const FAssetRegistryState& InState)
+void FAssetRegistryImpl::AppendState(Impl::FEventContext& EventContext, const FAssetRegistryState& InState, FAssetRegistryState::EInitializationMode Mode)
 {
-	State.InitializeFromExisting(InState, SerializationOptions, FAssetRegistryState::EInitializationMode::Append);
+	// @note Using this define to identify cooked editor for now. We might want to change the name later if we find more differences.
+	State.InitializeFromExisting(
+		InState,
+#if ASSETREGISTRY_ENABLE_PREMADE_REGISTRY_IN_EDITOR
+		DevelopmentSerializationOptions,
+#else
+		SerializationOptions,
+#endif
+		Mode);
+
 	CachePathsFromState(EventContext, InState);
 }
 
 void FAssetRegistryImpl::CachePathsFromState(Impl::FEventContext& EventContext, const FAssetRegistryState& InState)
 {
 	SCOPED_BOOT_TIMING("FAssetRegistryImpl::CachePathsFromState");
-
-	LLM_SCOPE(ELLMTag::AssetRegistry);
 
 	// Refreshes ClassGeneratorNames if out of date due to module load
 	CollectCodeGeneratorClasses();
@@ -4398,7 +4581,7 @@ void FAssetRegistryImpl::ScanPathsSynchronous(Impl::FScanPathContext& Context)
 
 	// Add a cache file for any not-yet-scanned dirs
 	TArray<FString> CacheFilePackagePaths;
-	if (!Context.bForceRescan && Gatherer.IsCacheEnabled())
+	if (!Context.bForceRescan && (Gatherer.IsCacheReadEnabled() || Gatherer.IsCacheWriteEnabled()))
 	{
 		for (int n = 0; n < Context.LocalDirs.Num(); ++n)
 		{
@@ -4427,7 +4610,7 @@ void FAssetRegistryImpl::ScanPathsSynchronous(Impl::FScanPathContext& Context)
 	Gatherer.ScanPathsSynchronous(Context.LocalPaths, Context.bForceRescan, Context.bIgnoreDenyListScanFilters, CacheFilename, Context.PackageDirs);
 	TArray<FName> FoundAssetPackageNames;
 
-	auto AssetsFoundCallback = [&Context, &FoundAssetPackageNames, this](const TRingBuffer<FAssetData*>& InFoundAssets)
+	auto AssetsFoundCallback = [&Context, &FoundAssetPackageNames, this](const TMultiMap<FName, FAssetData*>& InFoundAssets)
 	{
 		Context.NumFoundAssets = InFoundAssets.Num();
 
@@ -4435,8 +4618,9 @@ void FAssetRegistryImpl::ScanPathsSynchronous(Impl::FScanPathContext& Context)
 		FoundAssetPackageNames.Reserve(Context.NumFoundAssets);
 
 		// The gatherer may have added other assets that were scanned as part of the ongoing background scan; remove any assets that were not in the requested paths
-		for (FAssetData* AssetData : InFoundAssets)
+		for (const TPair<FName,FAssetData*>& Pair : InFoundAssets)
 		{
+			FAssetData* AssetData = Pair.Value;
 			bool bIsInRequestedPaths = false;
 
 			TStringBuilder<128> PackageNameStr;
@@ -4547,8 +4731,8 @@ void FAssetRegistryImpl::PostLoadAssetRegistryTags(FAssetData* AssetData)
 					FAssetDataTagMap TagsAndValues = AssetData->TagsAndValues.CopyMap();
 					for (const UObject::FAssetRegistryTag& Tag : TagsToModify)
 					{
-						TagsAndValues.Remove(Tag.Name);
-						TagsAndValues.Add(Tag.Name, Tag.Value);
+						FString& Value = TagsAndValues.FindOrAdd(Tag.Name);
+						Value = Tag.Value;
 					}
 					AssetData->TagsAndValues = FAssetDataTagMapSharedView(MoveTemp(TagsAndValues));
 				}
@@ -4558,7 +4742,7 @@ void FAssetRegistryImpl::PostLoadAssetRegistryTags(FAssetData* AssetData)
 }
 #endif
 
-void FAssetRegistryImpl::AssetSearchDataGathered(Impl::FEventContext& EventContext, const double TickStartTime, TRingBuffer<FAssetData*>& AssetResults)
+void FAssetRegistryImpl::AssetSearchDataGathered(Impl::FEventContext& EventContext, const double TickStartTime, TMultiMap<FName, FAssetData*>& AssetResults)
 {
 	const bool bFlushFullBuffer = TickStartTime < 0;
 
@@ -4576,11 +4760,12 @@ void FAssetRegistryImpl::AssetSearchDataGathered(Impl::FEventContext& EventConte
 	}
 
 	// Add the found assets
-	while (AssetResults.Num() > 0)
+	for (TMultiMap<FName, FAssetData*>::TIterator Iter(AssetResults); Iter; ++Iter)
 	{
 		// Delete or take ownership of the BackgroundResult; it was originally new'd by an FPackageReader
-		TUniquePtr<FAssetData> BackgroundResult(AssetResults.PopFrontValue());
+		TUniquePtr<FAssetData> BackgroundResult(Iter.Value());
 		CA_ASSUME(BackgroundResult.Get() != nullptr);
+		Iter.RemoveCurrent();
 
 		// Try to update any asset data that may already exist
 		FCachedAssetKey Key(*BackgroundResult);
@@ -4614,7 +4799,7 @@ void FAssetRegistryImpl::AssetSearchDataGathered(Impl::FEventContext& EventConte
 					PostLoadAssetRegistryTags(BackgroundResult.Get());
 #endif
 					// The asset exists in the cache from disk and has not yet been loaded into memory, update it with the new background data
-					UpdateAssetData(EventContext, ExistingAssetData, MoveTemp(*BackgroundResult));
+					UpdateAssetData(EventContext, ExistingAssetData, MoveTemp(*BackgroundResult), false /* bKeepDeletedTags */);
 				}
 			}
 		}
@@ -4683,14 +4868,16 @@ void FAssetRegistryImpl::PathDataGathered(Impl::FEventContext& EventContext, con
 	}
 }
 
-void FAssetRegistryImpl::DependencyDataGathered(const double TickStartTime, TRingBuffer<FPackageDependencyData>& DependsResults)
+void FAssetRegistryImpl::DependencyDataGathered(const double TickStartTime, TMultiMap<FName, FPackageDependencyData>& DependsResults)
 {
 	using namespace UE::AssetRegistry;
 	const bool bFlushFullBuffer = TickStartTime < 0;
 
-	while (DependsResults.Num() > 0)
+	TMap<FName, FName> CachedDepToRedirect;
+	for (TMultiMap<FName, FPackageDependencyData>::TIterator Iter(DependsResults); Iter; ++Iter)
 	{
-		FPackageDependencyData Result = DependsResults.PopFrontValue();
+		FPackageDependencyData Result = MoveTemp(Iter.Value());
+		Iter.RemoveCurrent();
 
 		checkf(!GIsEditor || Result.bHasPackageData, TEXT("We rely on PackageData being read for every gathered Asset in the editor."));
 		if (Result.bHasPackageData)
@@ -4732,9 +4919,14 @@ void FAssetRegistryImpl::DependencyDataGathered(const double TickStartTime, TRin
 				{
 					continue;
 				}
-				FName Redirected = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Package,
-					FCoreRedirectObjectName(NAME_None, NAME_None, DependencyPackageName)).PackageName;
-				DependencyPackageName = Redirected;
+				
+				FName& RedirectedName = CachedDepToRedirect.FindOrAdd(DependencyPackageName, NAME_None);
+				if (RedirectedName.IsNone())
+				{
+					RedirectedName = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Package,
+						FCoreRedirectObjectName(NAME_None, NAME_None, DependencyPackageName)).PackageName;
+				}
+				DependencyPackageName = RedirectedName;
 
 				FDependsNode::FPackageFlagSet& PackageFlagSet = PackageDependencies.FindOrAdd(DependencyPackageName);
 				PackageFlagSet.Add(FDependsNode::PackagePropertiesToByte(DependencyData.Property));
@@ -4943,7 +5135,8 @@ void FAssetRegistryImpl::AddAssetData(Impl::FEventContext& EventContext, FAssetD
 	}
 }
 
-void FAssetRegistryImpl::UpdateAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData, FAssetData&& NewAssetData)
+void FAssetRegistryImpl::UpdateAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData,
+	FAssetData&& NewAssetData, bool bKeepDeletedTags)
 {
 	// Update the class map if updating a blueprint
 	if (ClassGeneratorNames.Contains(AssetData->AssetClassPath))
@@ -4982,6 +5175,33 @@ void FAssetRegistryImpl::UpdateAssetData(Impl::FEventContext& EventContext, FAss
 				// Invalidate caching because CachedBPInheritanceMap got modified
 				TempCachedInheritanceBuffer.bDirty = true;
 			}
+		}
+	}
+
+	if (bKeepDeletedTags)
+	{
+		TOptional<FAssetDataTagMap> UpdatedTags;
+		AssetData->TagsAndValues.ForEach([&NewAssetData, &UpdatedTags](const TPair<FName, FAssetTagValueRef>& TagPair)
+			{
+				if (UpdatedTags)
+				{
+					if (!UpdatedTags->Contains(TagPair.Key))
+					{
+						UpdatedTags->Add(TagPair.Key, TagPair.Value.GetStorageString());
+					}
+				}
+				else
+				{
+					if (!NewAssetData.TagsAndValues.Contains(TagPair.Key))
+					{
+						UpdatedTags.Emplace(NewAssetData.TagsAndValues.CopyMap());
+						UpdatedTags->Add(TagPair.Key, TagPair.Value.GetStorageString());
+					}
+				}
+			});
+		if (UpdatedTags)
+		{
+			NewAssetData.TagsAndValues = FAssetDataTagMapSharedView(MoveTemp(*UpdatedTags));
 		}
 	}
 
@@ -5127,6 +5347,7 @@ void UAssetRegistryImpl::OnDirectoryChanged(const TArray<FFileChangeData>& FileC
 
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		UE::AssetRegistry::Impl::FClassInheritanceContext InheritanceContext;
 		UE::AssetRegistry::Impl::FClassInheritanceBuffer InheritanceBuffer;
@@ -5147,6 +5368,12 @@ void FAssetRegistryImpl::OnDirectoryChanged(Impl::FEventContext& EventContext,
 	TArray<FString> ModifiedFiles;
 	for (int32 FileIdx = 0; FileIdx < FileChangesProcessed.Num(); ++FileIdx)
 	{
+		if (FileChangesProcessed[FileIdx].Action == FFileChangeData::FCA_RescanRequired)
+		{
+			OnDirectoryRescanRequired(EventContext, InheritanceContext, FileChangesProcessed[FileIdx].Filename,
+				FileChangesProcessed[FileIdx].TimeStamp);
+			continue;
+		}
 		FString LongPackageName;
 		const FString File = FString(FileChangesProcessed[FileIdx].Filename);
 		const bool bIsPackageFile = FPackageName::IsPackageExtension(*FPaths::GetExtension(File, true));
@@ -5285,10 +5512,105 @@ void FAssetRegistryImpl::OnDirectoryChanged(Impl::FEventContext& EventContext,
 	ScanModifiedAssetFiles(EventContext, InheritanceContext, ModifiedFiles);
 }
 
+void FAssetRegistryImpl::OnDirectoryRescanRequired(Impl::FEventContext& EventContext,
+	Impl::FClassInheritanceContext& InheritanceContext, FString& DirPath, int64 BeforeTimeStamp)
+{
+	FString PackageNamePath;
+	FString NormalizedDirPath = FPaths::CreateStandardFilename(DirPath);
+	if (!FPackageName::TryConvertFilenameToLongPackageName(NormalizedDirPath, PackageNamePath))
+	{
+		return;
+	}
+
+	TArray<FString> NewFiles;
+	TArray<FString> NewDirs;
+	TArray<FString> ModifiedFiles;
+	TSet<FName> RemovedLongPackageNames;
+
+	FDateTime BeforeDateTime = FDateTime::FromUnixTimestamp(BeforeTimeStamp);
+	EnumerateAssetsByPathNoTags(*PackageNamePath, [&RemovedLongPackageNames](const FAssetData& AssetData)
+		{
+			RemovedLongPackageNames.Add(AssetData.PackageName);
+			return true;
+		}, true /* bRecursive */, true /* bIncludeOnlyOnDiskAssets */);
+
+	FPackageName::IteratePackagesInDirectory(DirPath,
+		[&DirPath, &PackageNamePath, &BeforeDateTime, &NewFiles, &ModifiedFiles, &RemovedLongPackageNames, &NormalizedDirPath]
+		(const TCHAR* Filename, const FFileStatData& StatData)
+		{
+			// Convert Filename to a PackagePath. We know the base dir so its faster to use that than FPackageName
+			// which has to scan all mount dirs
+			FStringView RelPath;
+			FString NormalizedFilename = FPaths::CreateStandardFilename(Filename);
+			if (!FPathViews::TryMakeChildPathRelativeTo(NormalizedFilename, NormalizedDirPath, RelPath))
+			{
+				return true;
+			}
+			const bool bIsPackageFile = FPackageName::IsPackageExtension(*FString(FPathViews::GetExtension(RelPath, true /* bIncludeDot */)));
+			RelPath = FPathViews::GetBaseFilenameWithPath(RelPath);
+			TStringBuilder<256> FilePackagePath;
+			FilePackagePath << PackageNamePath;
+			FPathViews::AppendPath(FilePackagePath, RelPath);
+			for (int32 Index = 0; Index < FilePackagePath.Len(); ++Index)
+			{
+				TCHAR& Char = FilePackagePath.GetData()[Index];
+				if (Char == '\\')
+				{
+					Char = '/';
+				}
+			}
+			const bool bIsValidPackageName = FPackageName::IsValidTextForLongPackageName(FilePackagePath);
+			if (!bIsPackageFile || !bIsValidPackageName)
+			{
+				return true;
+			}
+
+			if (StatData.CreationTime > BeforeDateTime)
+			{
+				NewFiles.Add(NormalizedFilename);
+			}
+			else if (StatData.ModificationTime > BeforeDateTime)
+			{
+				ModifiedFiles.Add(NormalizedFilename);
+			}
+			RemovedLongPackageNames.Remove(FName(FilePackagePath.ToView()));
+
+			return true;
+		});
+
+	for (FName LongPackageName : RemovedLongPackageNames)
+	{
+		// This file was deleted. Remove all assets in the package from the registry.
+		RemovePackageData(EventContext, LongPackageName);
+		// If the package was a package we were tracking as empty (due to e.g. a rename in editor), remove it.
+		// Disk now matches editor
+		RemoveEmptyPackage(LongPackageName);
+	}
+	if (NewFiles.Num() || NewDirs.Num())
+	{
+		if (GlobalGatherer.IsValid())
+		{
+			for (FString& NewDir : NewDirs)
+			{
+				GlobalGatherer->OnDirectoryCreated(NewDir);
+			}
+			GlobalGatherer->OnFilesCreated(NewFiles);
+			if (GlobalGatherer->IsSynchronous())
+			{
+				Impl::FScanPathContext Context(EventContext, InheritanceContext, NewDirs, NewFiles,
+					false /* bForceRescan */, false /* bIgnoreDenyListScanFilters */, nullptr /* OutFoundAssets */);
+				ScanPathsSynchronous(Context);
+			}
+		}
+	}
+	ScanModifiedAssetFiles(EventContext, InheritanceContext, ModifiedFiles);
+}
+
 }
 
 void UAssetRegistryImpl::OnAssetLoaded(UObject *AssetLoaded)
 {
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	GuardedData.AddLoadedAssetToProcess(*AssetLoaded);
 }
@@ -5310,14 +5632,12 @@ void UAssetRegistryImpl::ProcessLoadedAssetsToUpdateCache(UE::AssetRegistry::Imp
 		return;
 	}
 
-	LLM_SCOPE(ELLMTag::AssetRegistry);
-
-
 	constexpr int32 BatchSize = 16;
 	TArray<const UObject*> BatchObjects;
 	TArray<FAssetData, TInlineAllocator<BatchSize>> BatchAssetDatas;
 
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GuardedData.GetProcessLoadedAssetsBatch(BatchObjects, BatchSize);
 		if (BatchObjects.Num() == 0)
@@ -5354,6 +5674,7 @@ void UAssetRegistryImpl::ProcessLoadedAssetsToUpdateCache(UE::AssetRegistry::Imp
 			}
 		}
 
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GuardedData.PushProcessLoadedAssetsBatch(EventContext, BatchAssetDatas,
 			TArrayView<const UObject*>(BatchObjects).Slice(Index, CurrentBatchSize-Index));
@@ -5388,12 +5709,6 @@ void FAssetRegistryImpl::GetProcessLoadedAssetsBatch(TArray<const UObject*>& Out
 		if (!LoadedAsset)
 		{
 			// This could be null, in which case it already got freed, ignore
-			continue;
-		}
-
-		//@todo_ow: this will skip actors because after postload some actors might not have proper transform
-		if (LoadedAsset->HasAnyFlags(RF_HasExternalPackage))
-		{
 			continue;
 		}
 
@@ -5434,7 +5749,14 @@ void FAssetRegistryImpl::PushProcessLoadedAssetsBatch(Impl::FEventContext& Event
 		}
 		else
 		{
-			UpdateAssetData(EventContext, *DataFromGather, MoveTemp(NewAssetData));
+			// When updating disk-based AssetData with the AssetData from a loaded UObject, we keep
+			// existing tags from disk even if they no are no longer returned from the GetAssetRegistryTags
+			// function on the loaded UObject. We do this because they might come from GetAssetRegistryTagsExtended,
+			// which is only called during Save.
+			// Modified tag values on the other hand do overwrite the old values from disk.
+			// This means that the only way to delete no-longer present tags from an AssetData
+			// is to resave the package, or to manually call AssetFullyUpdateTags from c++.
+			UpdateAssetData(EventContext, *DataFromGather, MoveTemp(NewAssetData), true /* bKeepDeletedTags */);
 		}
 	}
 
@@ -5470,6 +5792,7 @@ void UAssetRegistryImpl::ScanModifiedAssetFiles(const TArray<FString>& InFilePat
 {
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		UE::AssetRegistry::Impl::FClassInheritanceContext InheritanceContext;
 		UE::AssetRegistry::Impl::FClassInheritanceBuffer InheritanceBuffer;
@@ -5571,11 +5894,12 @@ void UAssetRegistryImpl::OnContentPathMounted(const FString& InAssetPath, const 
 	IDirectoryWatcher* DirectoryWatcher = nullptr;
 	if (GIsEditor) 	// In-game doesn't listen for directory changes
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		DirectoryWatcher = DirectoryWatcherModule.Get();
 		if (DirectoryWatcher)
 		{
-			// If the path doesn't exist on disk, make it so the watcher will work.
-			IFileManager::Get().MakeDirectory(*FileSystemPath, /*Tree=*/true);
+			// Make sure the directory exits on disk so that the OS level DirectoryWatcher can be used to monitor it.
+			IPlatformFile::GetPlatformPhysical().CreateDirectoryTree(*FileSystemPath);
 		}
 	}
 		
@@ -5583,6 +5907,7 @@ void UAssetRegistryImpl::OnContentPathMounted(const FString& InAssetPath, const 
 
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		UE::AssetRegistry::Impl::FClassInheritanceContext InheritanceContext;
 		UE::AssetRegistry::Impl::FClassInheritanceBuffer InheritanceBuffer;
@@ -5661,6 +5986,7 @@ void UAssetRegistryImpl::OnContentPathDismounted(const FString& InAssetPath, con
 
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		GuardedData.OnContentPathDismounted(EventContext, InAssetPath, AssetPathNoTrailingSlash, FileSystemPath);
 
@@ -5735,6 +6061,7 @@ void FAssetRegistryImpl::OnContentPathDismounted(Impl::FEventContext& EventConte
 void UAssetRegistryImpl::SetTemporaryCachingMode(bool bEnable)
 {
 	checkf(IsInGameThread(), TEXT("Changing Caching mode is only available on the game thread because it affects behavior on all threads"));
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	GuardedData.SetTemporaryCachingMode(bEnable);
 }
@@ -5762,6 +6089,7 @@ void FAssetRegistryImpl::SetTemporaryCachingMode(bool bEnable)
 void UAssetRegistryImpl::SetTemporaryCachingModeInvalidated()
 {
 	checkf(IsInGameThread(), TEXT("Invalidating temporary cache is only available on the game thread because it affects behavior on all threads"));
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	GuardedData.SetTemporaryCachingModeInvalidated();
 }
@@ -5813,6 +6141,7 @@ void FAssetRegistryImpl::AddCachedBPClassParent(const FTopLevelAssetPath& ClassP
 void FAssetRegistryImpl::UpdateInheritanceBuffer(Impl::FClassInheritanceBuffer& OutBuffer) const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UAssetRegistryImpl::UpdateTemporaryCaches)
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 
 	TMap<UClass*, TSet<UClass*>> NativeSubclasses = GetAllDerivedClasses();
 
@@ -6103,6 +6432,7 @@ void UAssetRegistryImpl::SetManageReferences(const TMultiMap<FAssetIdentifier, F
 {
 	// For performance reasons we call the ShouldSetManager callback when inside the lock. Licensee UAssetManagers
 	// are responsible for not calling AssetRegistry functions from ShouldSetManager as that would create a deadlock
+	LLM_SCOPE(ELLMTag::AssetRegistry);
 	FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 	GuardedData.SetManageReferences(ManagerMap, bClearExisting, RecurseType, ExistingManagedNodes, ShouldSetManager);
 }
@@ -6238,7 +6568,7 @@ void FAssetRegistryImpl::SetManageReferences(const TMultiMap<FAssetIdentifier, F
 				{
 					// Pull off end of array, order doesn't matter
 					SourceNode = NodesToRecurse.Pop();
-
+										
 					Visited.Add(SourceNode);
 
 					SourceNode->IterateOverDependencies([&IterateFunction, SourceNode](FDependsNode* TargetNode, EDependencyCategory DependencyCategory, EDependencyProperty DependencyProperties, bool bDuplicate)
@@ -6291,6 +6621,7 @@ bool UAssetRegistryImpl::SetPrimaryAssetIdForObjectPath(const FSoftObjectPath& O
 	UE::AssetRegistry::Impl::FEventContext EventContext;
 	bool bResult;
 	{
+		LLM_SCOPE(ELLMTag::AssetRegistry);
 		FWriteScopeLock InterfaceScopeLock(InterfaceLock);
 		bResult = GuardedData.SetPrimaryAssetIdForObjectPath(EventContext, ObjectPath, PrimaryAssetId);
 	}
@@ -6318,7 +6649,7 @@ bool FAssetRegistryImpl::SetPrimaryAssetIdForObjectPath(Impl::FEventContext& Eve
 
 	FAssetData NewAssetData(*AssetData);
 	NewAssetData.TagsAndValues = FAssetDataTagMapSharedView(MoveTemp(TagsAndValues));
-	UpdateAssetData(EventContext, AssetData, MoveTemp(NewAssetData));
+	UpdateAssetData(EventContext, AssetData, MoveTemp(NewAssetData), false /* bKeepDeletedTags */);
 
 	return true;
 }
@@ -6545,67 +6876,56 @@ void UAssetRegistryImpl::Broadcast(UE::AssetRegistry::Impl::FEventContext& Event
 
 UAssetRegistryImpl::FPathAddedEvent& UAssetRegistryImpl::OnPathAdded()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return PathAddedEvent;
 }
 
 UAssetRegistryImpl::FPathRemovedEvent& UAssetRegistryImpl::OnPathRemoved()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return PathRemovedEvent;
 }
 
 UAssetRegistryImpl::FAssetAddedEvent& UAssetRegistryImpl::OnAssetAdded()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return AssetAddedEvent;
 }
 
 UAssetRegistryImpl::FAssetRemovedEvent& UAssetRegistryImpl::OnAssetRemoved()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return AssetRemovedEvent;
 }
 
 UAssetRegistryImpl::FAssetRenamedEvent& UAssetRegistryImpl::OnAssetRenamed()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return AssetRenamedEvent;
 }
 
 UAssetRegistryImpl::FAssetUpdatedEvent& UAssetRegistryImpl::OnAssetUpdated()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return AssetUpdatedEvent;
 }
 
 UAssetRegistryImpl::FAssetUpdatedEvent& UAssetRegistryImpl::OnAssetUpdatedOnDisk()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return AssetUpdatedOnDiskEvent;
 }
 
 UAssetRegistryImpl::FInMemoryAssetCreatedEvent& UAssetRegistryImpl::OnInMemoryAssetCreated()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return InMemoryAssetCreatedEvent;
 }
 
 UAssetRegistryImpl::FInMemoryAssetDeletedEvent& UAssetRegistryImpl::OnInMemoryAssetDeleted()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return InMemoryAssetDeletedEvent;
 }
 
 UAssetRegistryImpl::FFilesLoadedEvent& UAssetRegistryImpl::OnFilesLoaded()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return FileLoadedEvent;
 }
 
 UAssetRegistryImpl::FFileLoadProgressUpdatedEvent& UAssetRegistryImpl::OnFileLoadProgressUpdated()
 {
-	checkf(IsInGameThread(), TEXT("Registering to AssetRegistry events is not supported from multiple threads."));
 	return FileLoadProgressUpdatedEvent;
 }
 
@@ -6726,6 +7046,21 @@ void GetAssetForPackages(TConstArrayView<FName> PackageNames, TMap<FName, FAsset
 
 	OutPackageToAssetData.FindOrAdd(CurrentPackageName) = *GetMostImportantAsset(PackageAssetDatas, false);
 
+}
+
+bool ShouldSearchAllAssetsAtStart()
+{
+	// If in the editor or cookcommandlet, we start the GlobalGatherer now
+	// In the game or other commandlets, we do not construct it until project or commandlet code calls SearchAllAssets or ScanPathsSynchronous
+	bool bSearchAllAssetsAtStart = GIsEditor && (!IsRunningCommandlet() || IsRunningCookCommandlet());
+#if !UE_BUILD_SHIPPING
+	bool bCommandlineAllAssetsAtStart;
+	if (FParse::Bool(FCommandLine::Get(), TEXT("AssetGatherAll="), bCommandlineAllAssetsAtStart))
+	{
+		bSearchAllAssetsAtStart = bCommandlineAllAssetsAtStart;
+	}
+#endif // !UE_BUILD_SHIPPING
+	return bSearchAllAssetsAtStart;
 }
 
 } // namespace AssetRegistry

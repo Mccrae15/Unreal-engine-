@@ -3,6 +3,7 @@
 #include "Factories/FbxFactory.h"
 
 #include "Animation/AnimSequence.h"
+#include "Animation/Skeleton.h"
 #include "AssetImportTask.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "ContentBrowserModule.h"
@@ -10,6 +11,7 @@
 #include "Editor/EditorEngine.h"
 #include "EditorReimportHandler.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Engine/StaticMesh.h"
 #include "Factories/FbxAnimSequenceImportData.h"
 #include "Factories/FbxImportUI.h"
@@ -34,6 +36,7 @@
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
 #include "ObjectTools.h"
+#include "StaticMeshResources.h"
 #include "UObject/UnrealType.h"
 
 #define LOCTEXT_NAMESPACE "FBXFactory"

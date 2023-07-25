@@ -66,9 +66,7 @@ void LumenRadianceCacheHardwareRayTracingIndirectArgsCS()
 	uint NumGroups = (NumRays + OutputThreadGroupSize.x - 1) / OutputThreadGroupSize.x;
 
 	int3 IndirectArgs = GetRayTracingThreadCountWrapped(NumGroups, RADIANCE_CACHE_TRACE_TILE_SIZE_1D);
-	RWHardwareRayTracingIndirectArgs[0] = IndirectArgs.x;
-	RWHardwareRayTracingIndirectArgs[1] = IndirectArgs.y;
-	RWHardwareRayTracingIndirectArgs[2] = IndirectArgs.z;
+	WriteDispatchIndirectArgs(RWHardwareRayTracingIndirectArgs, 0, IndirectArgs);
 }
 
 #if LUMEN_HARDWARE_RAYTRACING || LUMEN_HARDWARE_INLINE_RAYTRACING
@@ -194,7 +192,7 @@ void LumenRadianceCacheHardwareRayTracingCommon(uint ThreadIndex)
 		{
 			float2 ProbeTexelCenter = float2(0.5, 0.5);
 			float2 ProbeUV = (ProbeTexelCoord + ProbeTexelCenter) / float(TraceResolution);
-			float3 WorldConeDirection = OctahedronToUnitVector(ProbeUV * 2.0 - 1.0);
+			float3 WorldConeDirection = EquiAreaSphericalMapping(ProbeUV);
 
 			float FinalMinTraceDistance = max(MinTraceDistance, GetRadianceProbeTMin(ClipmapIndex));
 			float FinalMaxTraceDistance = MaxTraceDistance;

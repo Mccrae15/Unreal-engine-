@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimNotifies/AnimNotifyState_Trail.h"
-#include "GameFramework/Actor.h"
-#include "UObject/UObjectHash.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/World.h"
 #include "ParticleEmitterInstances.h"
+#include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Particles/TypeData/ParticleModuleTypeDataAnimTrail.h"
 #include "Animation/AnimInstance.h"

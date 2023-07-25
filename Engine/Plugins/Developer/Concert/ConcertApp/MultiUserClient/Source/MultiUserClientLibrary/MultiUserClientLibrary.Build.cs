@@ -19,14 +19,16 @@ namespace UnrealBuildTool.Rules
 			{
 				PrivateDefinitions.Add("WITH_CONCERT=1");
 
-                PrivateDependencyModuleNames.AddRange(
-                    new string[]
-                    {
-                        "Concert"
-                    }
-                );
+				PrivateDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"Concert",
+						"ConcertClient",
+						"ConcertSyncCore"
+					}
+				);
 
-                PrivateIncludePathModuleNames.AddRange(
+				PrivateIncludePathModuleNames.AddRange(
 					new string[]
 					{
 						"ConcertSyncCore",

@@ -64,7 +64,7 @@ HEADMOUNTEDDISPLAY_API DECLARE_LOG_CATEGORY_EXTERN(LogLoadingSplash, Log, All);
 UENUM()
 namespace EOrientPositionSelector
 {
-	enum Type
+	enum Type : int
 	{
 		Orientation UMETA(DisplayName = "Orientation"),
 		Position UMETA(DisplayName = "Position"),
@@ -78,7 +78,7 @@ namespace EOrientPositionSelector
 UENUM()
 namespace EHMDTrackingOrigin
 {
-	enum Type
+	enum Type : int
 	{
 		Floor UMETA(DisplayName = "Floor Level"),
 		Eye UMETA(DisplayName = "Eye Level"),
@@ -92,7 +92,7 @@ namespace EHMDTrackingOrigin
 UENUM()
 namespace EHMDWornState
 {
-	enum Type
+	enum Type : int
 	{
 		Unknown UMETA(DisplayName = "Unknown"),
 		Worn UMETA(DisplayName = "Worn"),
@@ -107,7 +107,7 @@ namespace EHMDWornState
 UENUM(BlueprintType)
 namespace EXRDeviceConnectionResult
 {
-	enum Type
+	enum Type : int
 	{
 		NoTrackingSystem,
 		FeatureNotSupported,
@@ -123,7 +123,7 @@ namespace EXRDeviceConnectionResult
 UENUM(BlueprintType)
 namespace EXRSystemFlags
 {
-	enum Type
+	enum Type : int
 	{
 		NoFlags       = 0x00 UMETA(Hidden),
 		IsAR          = 0x01,
@@ -240,6 +240,8 @@ enum class EXRTrackedDeviceType : uint8
 	Controller,
 	/** Represents a static tracking reference device, such as a Lighthouse or tracking camera */
 	TrackingReference,
+	/** Represents trackers, such as a Vive tracker */
+	Tracker,
 	/** Misc. device types, for future expansion */
 	Other,
 	/** DeviceId is invalid */
@@ -350,17 +352,27 @@ struct HEADMOUNTEDDISPLAY_API FXRMotionControllerData
 
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
 	ETrackingStatus TrackingStatus = ETrackingStatus::NotTracked;
-	
+
+	// Vector representing an object being held in the player's hand
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
 	FVector GripPosition = FVector(0.0f);
+	// Quaternion representing an object being held in the player's hand
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
 	FQuat GripRotation = FQuat(EForceInit::ForceInitToZero);
 
-	//for hand controllers, provides a more steady vector based on the elbow
+	// For handheld controllers, gives a vector for pointing at objects
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
-	FVector AimPosition = FVector(0.0f);;
+	FVector AimPosition = FVector(0.0f);
+	// For handheld controllers, gives a quaternion for pointing at objects
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
 	FQuat AimRotation = FQuat(EForceInit::ForceInitToZero);
+
+	// For handheld controllers, gives a vector for representing the hand
+	UPROPERTY(BlueprintReadOnly, Category = "XR")
+	FVector PalmPosition = FVector(0.0f);
+	// For handheld controllers, gives a quaternion for representing the hand
+	UPROPERTY(BlueprintReadOnly, Category = "XR")
+	FQuat PalmRotation = FQuat(EForceInit::ForceInitToZero);
 
 	// The indices of this array are the values of EHandKeypoint (Palm, Wrist, ThumbMetacarpal, etc).
 	UPROPERTY(BlueprintReadOnly, Category = "XR")

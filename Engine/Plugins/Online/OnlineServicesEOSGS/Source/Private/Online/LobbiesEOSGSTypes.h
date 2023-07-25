@@ -2,17 +2,20 @@
 
 #pragma once
 
-#include "Online/Lobbies.h"
 #include "Online/LobbiesCommonTypes.h"
-#include "Online/OnlineIdEOSGS.h"
-#include "Online/OnlineServicesEOSGSTypes.h"
-#include "CoreMinimal.h"
 
 #if defined(EOS_PLATFORM_BASE_FILE_NAME)
 #include EOS_PLATFORM_BASE_FILE_NAME
 #endif
 
-#include "eos_lobby.h"
+#include <eos_common.h>
+#include <eos_lobby_types.h>
+#include <eos_ui_types.h>
+
+enum class ESPMode : uint8;
+namespace UE::Online { template <typename Result> class TDefaultErrorResultInternal; }
+template <typename ResultType> class TFuture;
+
 
 namespace UE::Online {
 

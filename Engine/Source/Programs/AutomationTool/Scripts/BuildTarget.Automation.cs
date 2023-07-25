@@ -139,7 +139,6 @@ namespace AutomationTool
 			if (!SingleBuild || (ContainsEditor && !NoTools))
 			{
 				UnrealBuild Build = new UnrealBuild(this);
-				Build.AlwaysBuildUHT = true;
 
 				UnrealBuild.BuildAgenda Agenda = new UnrealBuild.BuildAgenda();
 
@@ -157,6 +156,7 @@ namespace AutomationTool
 						Agenda.AddTarget("UnrealPak", CurrentPlatform, UnrealTargetConfiguration.Development, ProjectFile, UBTArgs);
 						Agenda.AddTarget("ShaderCompileWorker", CurrentPlatform, UnrealTargetConfiguration.Development, ProjectFile, UBTArgs);
 						Agenda.AddTarget("UnrealLightmass", CurrentPlatform, UnrealTargetConfiguration.Development, ProjectFile, UBTArgs);
+						Agenda.AddTarget("InterchangeWorker", CurrentPlatform, UnrealTargetConfiguration.Development, ProjectFile, UBTArgs);
 						Agenda.AddTarget("CrashReportClient", CurrentPlatform, UnrealTargetConfiguration.Shipping, ProjectFile, UBTArgs);
 						Agenda.AddTarget("CrashReportClientEditor", CurrentPlatform, UnrealTargetConfiguration.Shipping, ProjectFile, UBTArgs);
 					}

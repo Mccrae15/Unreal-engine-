@@ -9,9 +9,11 @@
 #include "Editor/UnrealEdEngine.h"
 #include "EngineModule.h"
 #include "EngineUtils.h"
+#include "Framework/Application/SlateApplication.h"
 #include "ImageUtils.h"
 #include "Slate/SceneViewport.h"
 #include "Texture2DPreview.h"
+#include "TextureResource.h"
 #include "UnrealEdGlobals.h"
 
 
@@ -53,7 +55,7 @@ void FSimulcamEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	constexpr float SliceIndex = 0;
 
 	TRefCountPtr<FBatchedElementParameters> BatchedElementParameters;
-	BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false);
+	BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false, false);
 
 	if (Texture->GetResource() != nullptr)
 	{

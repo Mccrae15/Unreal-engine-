@@ -465,6 +465,26 @@ public:
 	}
 
 	/**
+	 * Converts a shared reference to a shared pointer.
+	 *
+	 * @return  Shared pointer to the object
+	 */
+	[[nodiscard]] FORCEINLINE TSharedPtr<ObjectType, Mode> ToSharedPtr() const
+	{
+		return TSharedPtr<ObjectType, Mode>(*this);
+	}
+
+	/**
+	 * Converts a shared reference to a weak ptr.
+	 *
+	 * @return  Weak pointer to the object
+	 */
+	[[nodiscard]] FORCEINLINE TWeakPtr<ObjectType, Mode> ToWeakPtr() const
+	{
+		return TWeakPtr<ObjectType, Mode>(*this);
+	}
+
+	/**
 	 * Returns a C++ reference to the object this shared reference is referencing
 	 *
 	 * @return  The object owned by this shared reference
@@ -585,18 +605,6 @@ private:
 		return Object != nullptr;
 	}
 
-	/**
-	 * Computes a hash code for this object
-	 *
-	 * @param  InSharedRef  Shared pointer to compute hash code for
-	 *
-	 * @return  Hash code value
-	 */
-	[[nodiscard]] friend uint32 GetTypeHash( const TSharedRef< ObjectType, Mode >& InSharedRef )
-	{
-		return ::PointerHash( InSharedRef.Object );
-	}
-
 	// We declare ourselves as a friend (templated using OtherType) so we can access members as needed
     template< class OtherType, ESPMode OtherMode > friend class TSharedRef;
 
@@ -634,6 +642,15 @@ private:
 		Init(InObject);
 	}
 };
+
+/**
+ * Trait which determines whether or not a type is a TSharedRef.
+ */
+template <typename T>                       constexpr bool TIsTSharedRef_V                                                = false;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedRef_V<               TSharedRef<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedRef_V<const          TSharedRef<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedRef_V<      volatile TSharedRef<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedRef_V<const volatile TSharedRef<ObjectType, InMode>> = true;
 
 
 /**
@@ -1032,6 +1049,16 @@ public:
 	}
 
 	/**
+	 * Converts a shared pointer to a weak ptr.
+	 *
+	 * @return  Weak pointer to the object
+	 */
+	[[nodiscard]] FORCEINLINE TWeakPtr<ObjectType, Mode> ToWeakPtr() const
+	{
+		return TWeakPtr<ObjectType, Mode>(*this);
+	}
+
+	/**
 	 * Returns the object referenced by this pointer, or nullptr if no object is reference
 	 *
 	 * @return  The object owned by this shared pointer, or nullptr
@@ -1168,18 +1195,6 @@ private:
 		}
 	}
 
-	/**
-	 * Computes a hash code for this object
-	 *
-	 * @param  InSharedPtr  Shared pointer to compute hash code for
-	 *
-	 * @return  Hash code value
-	 */
-	[[nodiscard]] friend uint32 GetTypeHash( const TSharedPtr< ObjectType, Mode >& InSharedPtr )
-	{
-		return ::PointerHash( InSharedPtr.Object );
-	}
-
 	// We declare ourselves as a friend (templated using OtherType) so we can access members as needed
 	template< class OtherType, ESPMode OtherMode > friend class TSharedPtr;
 
@@ -1197,6 +1212,15 @@ private:
 		controller object is shared by all shared and weak pointers that refer to the object */
 	SharedPointerInternals::FSharedReferencer< Mode > SharedReferenceCount;
 };
+
+/**
+ * Trait which determines whether or not a type is a TSharedPtr.
+ */
+template <typename T>                       constexpr bool TIsTSharedPtr_V                                                = false;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedPtr_V<               TSharedPtr<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedPtr_V<const          TSharedPtr<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedPtr_V<      volatile TSharedPtr<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedPtr_V<const volatile TSharedPtr<ObjectType, InMode>> = true;
 
 namespace Freeze
 {
@@ -1481,20 +1505,13 @@ public:
 		return Pin().Get() == InOtherPtr;
 	}
 
-private:
-	
-	/**
-	 * Computes a hash code for this object
-	 *
-	 * @param  InWeakPtr  Weak pointer to compute hash code for
-	 *
-	 * @return  Hash code value
-	 */
-	[[nodiscard]] friend uint32 GetTypeHash( const TWeakPtr< ObjectType, Mode >& InWeakPtr )
+	FORCEINLINE uint32 GetWeakPtrTypeHash() const
 	{
-		return ::PointerHash( InWeakPtr.Object );
+		return ::PointerHash( Object );
 	}
 
+private:
+	
 	// We declare ourselves as a friend (templated using OtherType) so we can access members as needed
     template< class OtherType, ESPMode OtherMode > friend class TWeakPtr;
 
@@ -1511,6 +1528,15 @@ private:
 		controller object is shared by all shared and weak pointers that refer to the object */
 	SharedPointerInternals::FWeakReferencer< Mode > WeakReferenceCount;
 };
+
+/**
+ * Trait which determines whether or not a type is a TWeakPtr.
+ */
+template <typename T>                       constexpr bool TIsTWeakPtr_V                                              = false;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTWeakPtr_V<               TWeakPtr<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTWeakPtr_V<const          TWeakPtr<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTWeakPtr_V<      volatile TWeakPtr<ObjectType, InMode>> = true;
+template <class ObjectType, ESPMode InMode> constexpr bool TIsTWeakPtr_V<const volatile TWeakPtr<ObjectType, InMode>> = true;
 
 
 template<class T, ESPMode Mode> struct TIsWeakPointerType<TWeakPtr<T, Mode> > { enum { Value = true }; };
@@ -1719,6 +1745,27 @@ private:
 	    with ourselves.  Note this is declared mutable only so that UpdateWeakReferenceInternal() can update it. */
 	mutable TWeakPtr< ObjectType, Mode > WeakThis;	
 };
+
+
+namespace UE::Core::Private
+{
+	template <typename T>
+	constexpr bool IsDerivedFromSharedFromThisImpl(const TSharedFromThis<T>*)
+	{
+		return true;
+	}
+
+	constexpr bool IsDerivedFromSharedFromThisImpl(...)
+	{
+		return false;
+	}
+}
+
+template <typename T>
+constexpr bool IsDerivedFromSharedFromThis()
+{
+	return UE::Core::Private::IsDerivedFromSharedFromThisImpl((const T*)nullptr);
+}
 
 
 /**
@@ -2172,6 +2219,44 @@ FORCEINLINE void CleanupPointerMap(TMap< TWeakPtr<KeyType>, ValueType >& Pointer
 	PointerMap = NewMap;
 }
 
+/**
+* Computes a hash code for this object
+*
+* @param  InSharedRef  Shared pointer to compute hash code for
+*
+* @return  Hash code value
+*/
+template <typename ObjectType, ESPMode Mode>
+[[nodiscard]] uint32 GetTypeHash( const TSharedRef< ObjectType, Mode >& InSharedRef )
+{
+	return ::PointerHash( &InSharedRef.Get() );
+}
+
+/**
+* Computes a hash code for this object
+*
+* @param  InSharedPtr  Shared pointer to compute hash code for
+*
+* @return  Hash code value
+*/
+template <typename ObjectType, ESPMode Mode>
+[[nodiscard]] uint32 GetTypeHash( const TSharedPtr< ObjectType, Mode >& InSharedPtr )
+{
+	return ::PointerHash( InSharedPtr.Get() );
+}
+
+/**
+* Computes a hash code for this object
+*
+* @param  InWeakPtr  Weak pointer to compute hash code for
+*
+* @return  Hash code value
+*/
+template <typename ObjectType, ESPMode Mode>
+[[nodiscard]] uint32 GetTypeHash( const TWeakPtr< ObjectType, Mode >& InWeakPtr )
+{
+	return InWeakPtr.GetWeakPtrTypeHash();
+}
 
 // Shared pointer testing
 #include "Templates/SharedPointerTesting.inl" // IWYU pragma: export

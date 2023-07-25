@@ -146,10 +146,6 @@ struct FMovieSceneSubSequenceData
 	UPROPERTY()
 	int16 HierarchicalBias;
 
-	/** Whether this sub-sequence has hierarchical easing. */
-	UPROPERTY()
-	bool bHasHierarchicalEasing;
-
 	/** Instance data that should be used for any tracks contained immediately within this sub sequence */
 	UPROPERTY()
 	FMovieSceneSequenceInstanceDataPtr InstanceData;
@@ -236,7 +232,7 @@ struct FMovieSceneSubSequenceTree
 template<> struct TStructOpsTypeTraits<FMovieSceneSubSequenceTree> : public TStructOpsTypeTraitsBase2<FMovieSceneSubSequenceTree> { enum { WithSerializer = true, WithIdenticalViaEquality = true }; };
 
 /**
- * Structure that stores hierarchical information pertaining to all sequences contained within a master sequence
+ * Structure that stores hierarchical information pertaining to all sequences contained within a root sequence
  */
 USTRUCT()
 struct FMovieSceneSequenceHierarchy

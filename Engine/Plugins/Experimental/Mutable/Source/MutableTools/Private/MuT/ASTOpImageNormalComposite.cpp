@@ -5,7 +5,6 @@
 #include "Containers/Map.h"
 #include "HAL/PlatformMath.h"
 #include "HAL/UnrealMemory.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/RefCounted.h"
 #include "MuR/Types.h"
@@ -71,7 +70,7 @@ namespace mu
 	}
 
 
-	void ASTOpImageNormalComposite::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpImageNormalComposite::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -101,12 +100,12 @@ namespace mu
 	}
 
 
-	FImageDesc ASTOpImageNormalComposite::GetImageDesc(bool returnBestOption, GetImageDescContext* context)
+	FImageDesc ASTOpImageNormalComposite::GetImageDesc(bool returnBestOption, FGetImageDescContext* context) const
 	{
 		FImageDesc res;
 
 		// Local context in case it is necessary
-		GetImageDescContext localContext;
+		FGetImageDescContext localContext;
 		if (!context)
 		{
 			context = &localContext;

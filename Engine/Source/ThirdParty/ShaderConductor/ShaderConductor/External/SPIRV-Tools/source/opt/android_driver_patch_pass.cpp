@@ -18,6 +18,7 @@
 
 #include "source/opt/instruction.h"
 #include "source/opt/ir_context.h"
+#include "source/opt/ir_builder.h"
 
 namespace spvtools {
 namespace opt {
@@ -31,10 +32,10 @@ Pass::Status AndroidDriverPatchPass::Process() {
     functionIter->ForEachInst([this, &modified, &entryPoint](Instruction* inst) {
       if (entryPoint == nullptr) {
 		switch(inst->opcode()) {
-		  case SpvOpFunction:
-		  case SpvOpFunctionParameter:
-		  case SpvOpVariable:
-		  case SpvOpLabel:
+		  case spv::Op::OpFunction:
+		  case spv::Op::OpFunctionParameter:
+		  case spv::Op::OpVariable:
+		  case spv::Op::OpLabel:
 	        break;
 		  default:
 		    entryPoint = inst;
@@ -45,6 +46,8 @@ Pass::Status AndroidDriverPatchPass::Process() {
 	    modified |= FixupOpPhiMatrix4x3(inst, entryPoint);
 	    modified |= FixupOpVectorShuffle(inst);
         modified |= FixupOpVariableFunctionPrecision(inst);
+        modified |= StripFMA(inst);
+        modified |= FixupNMinMax(inst);
 	  }
     });
   }
@@ -59,7 +62,7 @@ Pass::Status AndroidDriverPatchPass::Process() {
 void InsertAfterOpPhi(Instruction* curInst, Instruction* newInst) {
   // OpPhi Instructions must be the first instructions after a branch
   Instruction* nextAvailableNode = curInst;
-  while (nextAvailableNode->NextNode()->opcode() == SpvOpPhi) {
+  while (nextAvailableNode->NextNode()->opcode() == spv::Op::OpPhi) {
     if (nextAvailableNode->NextNode()) {
       nextAvailableNode = nextAvailableNode->NextNode();
     } else {
@@ -71,14 +74,14 @@ void InsertAfterOpPhi(Instruction* curInst, Instruction* newInst) {
 
 bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
                                                  Instruction* entryPoint) {
-  if (inst->opcode() != SpvOpPhi) {
+  if (inst->opcode() != spv::Op::OpPhi) {
     return false;
   }
 
   // Only care about Matrix types
   Operand typeOp = inst->GetOperand(0);
   Instruction* typeInst = context()->get_def_use_mgr()->GetDef(typeOp.words[0]);
-  if (typeInst->opcode() != SpvOpTypeMatrix) {
+  if (typeInst->opcode() != spv::Op::OpTypeMatrix) {
     return false;
   }
 
@@ -97,7 +100,7 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
 
   // Check it's a float
   const Instruction* floatType = context()->get_def_use_mgr()->GetDef(vectorType->GetSingleWordOperand(1));
-  if (floatType->opcode() != SpvOpTypeFloat) {
+  if (floatType->opcode() != spv::Op::OpTypeFloat) {
     return false;
   }
 
@@ -111,7 +114,7 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
     Operand valueTypeOp = inst->GetInOperand(n*2);
     Instruction* valueTypeInst = context()->get_def_use_mgr()->GetDef(valueTypeOp.words[0]);
 
-	if (valueTypeInst->opcode() == SpvOpUndef)
+	if (valueTypeInst->opcode() == spv::Op::OpUndef)
 	  return false;
     
 	valueTypeComponents.insert({n, {}});
@@ -123,7 +126,7 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
       operands.push_back({SPV_OPERAND_TYPE_ID, {valueTypeOp.words[0]}});
       operands.push_back({SPV_OPERAND_TYPE_LITERAL_INTEGER, {i}});
 
-      Instruction* newVar = new Instruction(context(), SpvOpCompositeExtract, typeInst->GetOperand(1).words[0], newVarID, operands);
+      Instruction* newVar = new Instruction(context(), spv::Op::OpCompositeExtract, typeInst->GetOperand(1).words[0], newVarID, operands);
       valueTypeComponents[n].push_back(newVarID);
 
 	  if (HasRelaxedPrecision(valueTypeOp.words[0])) {
@@ -154,7 +157,7 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
       operands.push_back({SPV_OPERAND_TYPE_ID, {inst->GetInOperand(n*2 + 1).words[0]}});
 	}
 
-    Instruction* newVar = new Instruction(context(), SpvOpPhi, typeInst->GetOperand(1).words[0], newVarID, operands);
+    Instruction* newVar = new Instruction(context(), spv::Op::OpPhi, typeInst->GetOperand(1).words[0], newVarID, operands);
     
 	if (HasRelaxedPrecision(inst->GetInOperand(1).words[0]) && HasRelaxedPrecision(inst->GetInOperand(3).words[0])) {
       AddRelaxedPrecision(newVarID);
@@ -175,7 +178,7 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
 	operands.push_back({SPV_OPERAND_TYPE_ID, {opPhiInstructs[i]}});
   }
 
-  Instruction* compositeConstruction = new Instruction(context(), SpvOpCompositeConstruct, typeOp.words[0], compositeVarID, operands);
+  Instruction* compositeConstruction = new Instruction(context(), spv::Op::OpCompositeConstruct, typeOp.words[0], compositeVarID, operands);
   get_def_use_mgr()->AnalyzeInstDef(compositeConstruction);
   get_def_use_mgr()->AnalyzeInstUse(compositeConstruction);
 
@@ -191,7 +194,7 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
 }
 
 bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
-  if (inst->opcode() != SpvOpVectorShuffle) {
+  if (inst->opcode() != spv::Op::OpVectorShuffle) {
     return false;
   }
 
@@ -203,7 +206,8 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
   const Instruction* inputInst2 = context()->get_def_use_mgr()->GetDef(inputOp2.words[0]);
 
   // OpUnDef is supported in vectorshuffle but not in compositeextract, we could assign literals in this case
-  if (inputInst1->opcode() == SpvOpUndef || inputInst2->opcode() == SpvOpUndef) {
+  if (inputInst1->opcode() == spv::Op::OpUndef ||
+      inputInst2->opcode() == spv::Op::OpUndef) {
     return false;
   }
 
@@ -211,15 +215,16 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
   const Instruction* inputType1 = get_def_use_mgr()->GetDef(inputInst1->type_id());
   const Instruction* inputType2 = get_def_use_mgr()->GetDef(inputInst2->type_id());
 
-  bool bValidOutput = outputType->opcode() == SpvOpTypeVector && outputType->GetSingleWordOperand(2) == 3;
-  bool bValidInput1 = (inputType1->opcode() == SpvOpTypeVector && inputType1->GetSingleWordOperand(2) == 4);
-  bool bValidInput2 = (inputType2->opcode() == SpvOpTypeVector && inputType2->GetSingleWordOperand(2) == 4);
+  bool bValidOutput = outputType->opcode() == spv::Op::OpTypeVector && outputType->GetSingleWordOperand(2) == 3;
+  bool bValidInput1 = (inputType1->opcode() == spv::Op::OpTypeVector || inputType1->GetSingleWordOperand(2) == 4);
+  bool bValidInput2 = (inputType2->opcode() == spv::Op::OpTypeVector || inputType2->GetSingleWordOperand(2) == 4);
 
   if (!bValidOutput || (!bValidInput1 && !bValidInput2)) {
     return false;
   }
 
   bool bOutputHasRelaxedPrecision = HasRelaxedPrecision(inst->GetOperand(0).words[0]);
+  //bool bInputHasRelaxedPrecision = HasRelaxedPrecision(inputOp1.words[0]) || HasRelaxedPrecision(inputOp2.words[0]);
 
   uint32_t inputCompCount1 = inputType1->GetSingleWordOperand(2);
 
@@ -243,7 +248,7 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
     const Instruction* inVector = bUseVector2 ? inputInst2 : inputInst1;
     uint32_t finalIndex = bUseVector2 ? index - inputCompCount1 : index;
 
-	if (inVector->opcode() == SpvOpUndef) {
+	if (inVector->opcode() == spv::Op::OpUndef) {
       const analysis::Constant* constFloat = context()->get_constant_mgr()->GetFloatConst(0.0);
 	  outputVariables.push_back(constFloat->AsFloatConstant()->words()[0]);
 	} else {
@@ -254,7 +259,7 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
       operands.push_back({SPV_OPERAND_TYPE_LITERAL_INTEGER, {finalIndex}});
 
       Instruction* compositeExtractVar =
-        new Instruction(context(), SpvOpCompositeExtract,
+        new Instruction(context(), spv::Op::OpCompositeExtract,
                                           inputType1->GetOperand(1).words[0],
                                           compositeExtractID, operands);
 
@@ -277,7 +282,7 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
     operands.push_back({SPV_OPERAND_TYPE_ID, {outVar}});
   }
 
-  Instruction* compositeConstruction = new Instruction(context(), SpvOpCompositeConstruct, inst->GetOperand(0).words[0], compositeVarID, operands);
+  Instruction* compositeConstruction = new Instruction(context(), spv::Op::OpCompositeConstruct, inst->GetOperand(0).words[0], compositeVarID, operands);
 
   if (bOutputHasRelaxedPrecision) {
     AddRelaxedPrecision(compositeVarID);
@@ -293,19 +298,19 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
 }
 
 bool AndroidDriverPatchPass::FixupOpVariableFunctionPrecision(Instruction* inst) {
-  if (inst->opcode() != SpvOpVariable) {
+  if (inst->opcode() != spv::Op::OpVariable) {
     return false;
   }
  
   // Check the storage class for this variable is a function
   uint32_t storageClass = inst->GetOperand(2).words[0];
-  if (storageClass != SpvStorageClassFunction) {
+  if (spv::StorageClass(storageClass) != spv::StorageClass::Function) {
     return false;
   }
 	
   std::vector<Instruction*> decorations = get_decoration_mgr()->GetDecorationsFor(inst->GetOperand(0).words[0], false);
   for (Instruction* decoration : decorations) {
-    if (decoration->GetSingleWordInOperand(1) == SpvDecorationRelaxedPrecision) {
+    if (spv::Decoration(decoration->GetSingleWordInOperand(1)) == spv::Decoration::RelaxedPrecision) {
       decoration->RemoveFromList();
       return true;
     }
@@ -315,13 +320,13 @@ bool AndroidDriverPatchPass::FixupOpVariableFunctionPrecision(Instruction* inst)
 }
 
 bool AndroidDriverPatchPass::FixupOpTypeImage(Instruction* inst) {
-  if (inst->opcode() != SpvOpTypeImage) {
+  if (inst->opcode() != spv::Op::OpTypeImage) {
     return false;
   }
   
   // If input dim is not subpass return
   uint32_t dimParam = inst->GetInOperand(1).words[0];
-  if (dimParam != SpvDimSubpassData) {
+  if (spv::Dim(dimParam) != spv::Dim::SubpassData) {
     return false;
   }
 	
@@ -336,12 +341,56 @@ bool AndroidDriverPatchPass::FixupOpTypeImage(Instruction* inst) {
   return true;
 }
 
+bool AndroidDriverPatchPass::StripFMA(Instruction* inst) {
+  if (inst->opcode() != spv::Op::OpExtInst) {
+    return false;
+  }
+
+  uint32_t extInstType = inst->GetOperand(3).words[0];
+  if (extInstType != GLSLstd450Fma) 
+	return false;
+
+  InstructionBuilder builder(context(), inst, IRContext::kAnalysisDefUse | IRContext::kAnalysisInstrToBlockMapping);
+
+  Instruction* inputInstructions[3];
+  for (uint32_t idx = 0; idx < 3; ++idx) {
+    inputInstructions[idx] = context()->get_def_use_mgr()->GetDef(inst->GetOperand(4 + idx).words[0]);
+  }
+
+  // Add new multiply and add instructions
+  Instruction* mul = builder.AddBinaryOp(inst->GetOperand(0).words[0], spv::Op::OpFMul, inputInstructions[0]->result_id(), inputInstructions[1]->result_id());
+  Instruction* add = builder.AddBinaryOp(inst->GetOperand(0).words[0], spv::Op::OpFAdd, mul->result_id(), inputInstructions[2]->result_id());
+
+  context()->ReplaceAllUsesWith(inst->result_id(), add->result_id());
+  context()->UpdateDefUse(add);
+
+  inst->RemoveFromList();
+
+  return true;
+}
+
+bool AndroidDriverPatchPass::FixupNMinMax(Instruction* inst) {
+  if (inst->opcode() != spv::Op::OpExtInst) {
+    return false;
+  }
+  spvtools::opt::Operand& Op = inst->GetOperand(3);
+  uint32_t extInstType = Op.words[0];
+
+  if (extInstType == GLSLstd450NMin) {
+    Op.words[0] = GLSLstd450FMin;
+    return true;
+  } else if (extInstType == GLSLstd450NMax) {
+    Op.words[0] = GLSLstd450FMax;
+    return true;
+  }
+
+  return false;
+}
+
 bool AndroidDriverPatchPass::HasRelaxedPrecision(uint32_t operand_id) {
-  std::vector<Instruction*> decorations =
-      get_decoration_mgr()->GetDecorationsFor(operand_id, false);
+  std::vector<Instruction*> decorations = get_decoration_mgr()->GetDecorationsFor(operand_id, false);
   for (Instruction* decoration : decorations) {
-    if (decoration->GetSingleWordInOperand(1) ==
-        SpvDecorationRelaxedPrecision) {
+    if (spv::Decoration(decoration->GetSingleWordInOperand(1)) == spv::Decoration::RelaxedPrecision) {
       return true;
     }
   }
@@ -353,7 +402,7 @@ void AndroidDriverPatchPass::AddRelaxedPrecision(uint32_t operand_id) {
     return;
   }
 
-  get_decoration_mgr()->AddDecoration(operand_id, SpvDecorationRelaxedPrecision);
+  get_decoration_mgr()->AddDecoration(operand_id, uint32_t(spv::Decoration::RelaxedPrecision));
 
   return;
 }
@@ -362,8 +411,9 @@ bool AndroidDriverPatchPass::RemoveRelaxedPrecision(uint32_t operand_id) {
   std::vector<Instruction*> decorations = get_decoration_mgr()->GetDecorationsFor(operand_id, false);
 
   for (Instruction* decoration : decorations) {
-    if (decoration->GetSingleWordInOperand(1) == SpvDecorationRelaxedPrecision) {
+    if (spv::Decoration(decoration->GetSingleWordInOperand(1)) == spv::Decoration::RelaxedPrecision) {
       get_decoration_mgr()->RemoveDecoration(decoration);
+      decoration->RemoveFromList();
       return true;
     }
   }

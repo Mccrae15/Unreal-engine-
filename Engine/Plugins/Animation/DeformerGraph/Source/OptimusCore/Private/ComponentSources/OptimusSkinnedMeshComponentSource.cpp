@@ -2,8 +2,13 @@
 
 #include "OptimusSkinnedMeshComponentSource.h"
 
-#include "SkeletalRenderPublic.h"
 #include "Components/SkinnedMeshComponent.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+#include "SkeletalRenderPublic.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusSkinnedMeshComponentSource)
 
 
 #define LOCTEXT_NAMESPACE "OptimusSkinnedMeshComponentSource"
@@ -11,6 +16,7 @@
 
 FName UOptimusSkinnedMeshComponentSource::Domains::Vertex("Vertex");
 FName UOptimusSkinnedMeshComponentSource::Domains::Triangle("Triangle");
+FName UOptimusSkinnedMeshComponentSource::Domains::DuplicateVertex("DuplicateVertex");
 
 
 FText UOptimusSkinnedMeshComponentSource::GetDisplayName() const
@@ -32,8 +38,7 @@ TArray<FName> UOptimusSkinnedMeshComponentSource::GetExecutionDomains() const
 int32 UOptimusSkinnedMeshComponentSource::GetLodIndex(const UActorComponent* InComponent) const
 {
 	const USkinnedMeshComponent* SkinnedMeshComponent = Cast<USkinnedMeshComponent>(InComponent);
-	const FSkeletalMeshObject* SkeletalMeshObject = SkinnedMeshComponent ? SkinnedMeshComponent->MeshObject : nullptr;
-	return SkeletalMeshObject ? SkeletalMeshObject->GetLOD() : 0;
+	return SkinnedMeshComponent ? SkinnedMeshComponent->GetPredictedLODLevel() : 0;
 }
 
 bool UOptimusSkinnedMeshComponentSource::GetComponentElementCountsForExecutionDomain(
@@ -50,6 +55,11 @@ bool UOptimusSkinnedMeshComponentSource::GetComponentElementCountsForExecutionDo
 	}
 
 	const FSkeletalMeshObject* SkeletalMeshObject = SkinnedMeshComponent->MeshObject;
+	if (!SkeletalMeshObject)
+	{
+		return false;
+	}
+
 	FSkeletalMeshRenderData const& SkeletalMeshRenderData = SkeletalMeshObject->GetSkeletalMeshRenderData();
 	FSkeletalMeshLODRenderData const* LodRenderData = &SkeletalMeshRenderData.LODRenderData[InLodIndex];
 

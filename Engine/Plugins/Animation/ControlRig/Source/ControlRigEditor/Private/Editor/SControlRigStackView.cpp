@@ -6,16 +6,18 @@
 #include "Widgets/Layout/SScrollBar.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 #include "Editor/ControlRigEditor.h"
 #include "ControlRigEditorStyle.h"
 #include "ControlRigStackCommands.h"
 #include "ControlRig.h"
-#include "ControlRigBlueprintGeneratedClass.h"
+#include "RigVMBlueprintGeneratedClass.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Styling/AppStyle.h"
 #include "DetailLayoutBuilder.h"
 #include "RigVMModel/Nodes/RigVMAggregateNode.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Dialog/SCustomDialog.h"
 
 #define LOCTEXT_NAMESPACE "SControlRigStackView"
 
@@ -121,6 +123,7 @@ void SRigStackItem::Construct(const FArguments& InArgs, const TSharedRef<STableV
 					SAssignNew(TextWidget, STextBlock)
 					.Text(this, &SRigStackItem::GetLabelText)
 					.Font(this, &SRigStackItem::GetLabelFont)
+					.ToolTipText(this, &SRigStackItem::GetTooltip)
 					.Justification(ETextJustify::Left)
 				]
 			]
@@ -179,6 +182,11 @@ FSlateFontInfo SRigStackItem::GetLabelFont() const
 		return IDetailLayoutBuilder::GetDetailFont();
 	}
 	return IDetailLayoutBuilder::GetDetailFontBold();
+}
+
+FText SRigStackItem::GetTooltip() const
+{
+	return FText::FromString(WeakStackEntry.Pin()->Callstack.GetCallPath(true));
 }
 
 FText SRigStackItem::GetVisitedCountText() const
@@ -265,7 +273,6 @@ void SControlRigStackView::Construct( const FArguments& InArgs, TSharedRef<FCont
 {
 	ControlRigEditor = InControlRigEditor;
 	ControlRigBlueprint = ControlRigEditor.Pin()->GetControlRigBlueprint();
-	Graph = Cast<UControlRigGraph>(ControlRigBlueprint->GetLastEditedUberGraph());
 	CommandList = MakeShared<FUICommandList>();
 	bSuspendModelNotifications = false;
 	bSuspendControllerSelection = false;
@@ -371,7 +378,7 @@ void SControlRigStackView::OnSelectionChanged(TSharedPtr<FRigStackEntry> Selecti
 			return;
 		}
 
-		UControlRigBlueprintGeneratedClass* GeneratedClass = ControlRigBlueprint->GetControlRigBlueprintGeneratedClass();
+		URigVMBlueprintGeneratedClass* GeneratedClass = ControlRigBlueprint->GetControlRigBlueprintGeneratedClass();
 		if (GeneratedClass == nullptr)
 		{
 			return;
@@ -426,6 +433,7 @@ void SControlRigStackView::BindCommands()
 	// create new command
 	const FControlRigStackCommands& Commands = FControlRigStackCommands::Get();
 	CommandList->MapAction(Commands.FocusOnSelection, FExecuteAction::CreateSP(this, &SControlRigStackView::HandleFocusOnSelectedGraphNode));
+	CommandList->MapAction(Commands.GoToInstruction, FExecuteAction::CreateSP(this, &SControlRigStackView::HandleGoToInstruction));
 }
 
 TSharedRef<ITableRow> SControlRigStackView::MakeTableRowWidget(TSharedPtr<FRigStackEntry> InItem, const TSharedRef<STableViewBase>& OwnerTable, TWeakObjectPtr<UControlRigBlueprint> InBlueprint)
@@ -625,6 +633,12 @@ void SControlRigStackView::PopulateStackView(URigVM* InVM)
 						Label = FString::Printf(TEXT("Run %s Event"), *Op.EntryName.ToString());
 						break;
 					}
+					case ERigVMOpCode::JumpToBranch:
+					{
+						const FRigVMJumpToBranchOp& Op = ByteCode.GetOpAt<FRigVMJumpToBranchOp>(Instructions[InstructionIndex]);
+						Label = TEXT("Jump To Branch");
+						break;
+					}
 					case ERigVMOpCode::Exit:
 					{
 						Label = TEXT("Exit");
@@ -773,10 +787,10 @@ void SControlRigStackView::RefreshTreeView(URigVM* InVM)
 		if (ControlRigEditor.IsValid())
 		{
 			UControlRig* ControlRig = ControlRigEditor.Pin()->ControlRig;
-			if(ControlRig && ControlRig->ControlRigLog)
+			if(ControlRig && ControlRig->RigVMLog)
 			{
-				const TArray<FControlRigLog::FLogEntry>& LogEntries = ControlRig->ControlRigLog->Entries;
-				for (const FControlRigLog::FLogEntry& LogEntry : LogEntries)
+				const TArray<FRigVMLog::FLogEntry>& LogEntries = ControlRig->RigVMLog->Entries;
+				for (const FRigVMLog::FLogEntry& LogEntry : LogEntries)
 				{
 					if (Operators.Num() <= LogEntry.InstructionIndex)
 					{
@@ -834,6 +848,7 @@ TSharedPtr< SWidget > SControlRigStackView::CreateContextMenu()
 	{
 		MenuBuilder.BeginSection("RigStackToolsAction", LOCTEXT("ToolsAction", "Tools"));
 		MenuBuilder.AddMenuEntry(Actions.FocusOnSelection);
+		MenuBuilder.AddMenuEntry(Actions.GoToInstruction);
 		MenuBuilder.EndSection();
 	}
 
@@ -873,6 +888,60 @@ void SControlRigStackView::HandleFocusOnSelectedGraphNode()
 				ControlRigEditor.Pin()->HandleModifiedEvent(ERigVMGraphNotifType::NodeSelected, GraphToFocus, SelectedNode);
 			}
 		}
+	}
+}
+
+void SControlRigStackView::HandleGoToInstruction()
+{
+	// figure out the current instruction's index
+	int32 Index = 0;
+	TArray<TSharedPtr<FRigStackEntry>> SelectedItems = TreeView->GetSelectedItems();
+	if (SelectedItems.Num() > 0)
+	{
+		Index = SelectedItems[0]->InstructionIndex;
+	}
+	
+	const FVector2D MouseCursorLocation = FSlateApplication::Get().GetCursorPos();
+	
+	SWindow::FArguments WindowArguments;
+	WindowArguments.ScreenPosition(MouseCursorLocation);
+	WindowArguments.AutoCenter(EAutoCenter::None);
+	WindowArguments.FocusWhenFirstShown(true);
+
+	TSharedPtr<SNumericEntryBox<int32>> NumericBox;
+	const TSharedRef<SCustomDialog> OptionsDialog = SNew(SCustomDialog)
+	.Title(FText(LOCTEXT("GoToInstructionDialog", "Go to...")))
+	.WindowArguments(WindowArguments)
+	.Content()
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.FillWidth(1)
+		.VAlign(VAlign_Center)
+		.HAlign(HAlign_Left)
+		[
+			SAssignNew(NumericBox, SNumericEntryBox<int32>)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Value(Index)
+			.MinDesiredValueWidth(250)
+			.MinValue(0)
+			.MaxValue(Operators.Num() - 1)
+			.OnValueChanged_Lambda([&Index](const int32& InIndex)
+			{
+				Index = InIndex;
+			})
+			.IsEnabled(true)
+		]
+	]
+	.Buttons({
+		SCustomDialog::FButton(LOCTEXT("OK", "OK")),
+		SCustomDialog::FButton(LOCTEXT("Cancel", "Cancel"))
+	});
+
+	if(OptionsDialog->ShowModal() == 0)
+	{
+		TreeView->SetSelection(Operators[Index]);
+		TreeView->SetScrollOffset(FMath::Max(Index-5, 0));
 	}
 }
 
@@ -933,17 +1002,33 @@ void SControlRigStackView::HandleModifiedEvent(ERigVMGraphNotifType InNotifType,
 
 	switch (InNotifType)
 	{
-		case ERigVMGraphNotifType::NodeSelected:
-		case ERigVMGraphNotifType::NodeDeselected:
+		case ERigVMGraphNotifType::NodeSelectionChanged:
 		{
+			const TGuardValue<bool> SuspendNotifs(bSuspendModelNotifications, true);
+			TreeView->ClearSelection();
+			TArray<const URigVMNode*> SelectedNodes;
+			const TArray<FName>& SelectedNames = InGraph->GetSelectNodes();
+			for (const FName& Selected : SelectedNames)
+			{
+				if (const URigVMNode* Node = InGraph->FindNodeByName(Selected))
+				{
+					SelectedNodes.Add(Node);
+				}
+			}		
+
+			TArray<TSharedPtr<FRigStackEntry>> SelectedItems;
 			for (TSharedPtr<FRigStackEntry>& Operator : Operators)
 			{
-				if(Operator->Callstack.Contains(InSubject))
+				for (const URigVMNode* Node : SelectedNodes)
 				{
-					const TGuardValue<bool> SuspendNotifs(bSuspendModelNotifications, true);
-					TreeView->SetItemSelection(Operator, InNotifType == ERigVMGraphNotifType::NodeSelected, ESelectInfo::Direct);
+					if(Operator->Callstack.Contains(Node))
+					{
+						SelectedItems.Add(Operator);
+						break;
+					}
 				}
 			}
+			TreeView->SetItemSelection(SelectedItems, true, ESelectInfo::Direct);
 			break;
 		}
 		default:
@@ -953,11 +1038,11 @@ void SControlRigStackView::HandleModifiedEvent(ERigVMGraphNotifType InNotifType,
 	}
 }
 
-void SControlRigStackView::HandleControlRigInitializedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void SControlRigStackView::HandleControlRigInitializedEvent(URigVMHost* InControlRig, const FName& InEventName)
 {
 	TGuardValue<bool> SuspendControllerSelection(bSuspendControllerSelection, true);
 
-	RefreshTreeView(InControlRig->VM);
+	RefreshTreeView(InControlRig->GetVM());
 	OnSelectionChanged(TSharedPtr<FRigStackEntry>(), ESelectInfo::Direct);
 
 	for (TSharedPtr<FRigStackEntry>& Operator : Operators)

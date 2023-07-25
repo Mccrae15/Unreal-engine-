@@ -8,8 +8,8 @@ class FContentBundleBase;
 
 namespace ContentBundlePaths
 {
-	constexpr FStringView ContentBundleFolder = TEXTVIEW("/ContentBundle/");
-	constexpr FStringView GeneratedFolder = TEXTVIEW("/_Generated_/");
+	inline constexpr FStringView ContentBundleFolder = TEXTVIEW("/ContentBundle/");
+	inline constexpr FStringView GeneratedFolder = TEXTVIEW("/_Generated_/");
 
 	// Returns "/ContentBundle/"
 	constexpr FStringView GetContentBundleFolder() { return ContentBundleFolder; }
@@ -39,6 +39,12 @@ namespace ContentBundlePaths
 	FString GetRelativeLevelFolder(const FContentBundleBase& ContentBundle);
 
 #if WITH_EDITOR
+	// return format is /{MountPoint}/{ExternalActorFolder}/{ContentBundleFolder}/{ContentBundleUID}/
+	ENGINE_API bool BuildContentBundleRootPath(const FString& InContenBundleMountPoint, const FGuid& InContentBundleGuid, FString& OutContentBundleRootPath);
+
+	// return format is /{MountPoint}/{ExternalActorFolder}/{ContentBundleFolder}/{ContentBundleUID}/{LevelPath}/
+	ENGINE_API bool BuildActorDescContainerPackgePath(const FString& InContenBundleMountPoint, const FGuid& InContentBundleGuid, const FString& InLevelPackagePath, FString& OutContainerPackagePath);
+
 	// return an ExternalActor path following the format : /{MountPoint}/{ExternalActorFolder}/{ContentBundleFolder}/{ContentBundleUID}/{LevelPath}/{ExternalActorPackagePath}
 	ENGINE_API FString MakeExternalActorPackagePath(const FString& ContentBundleExternalActorFolder, const FString& ActorName);
 

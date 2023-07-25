@@ -1,25 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/SkinWeightProfile.h"
-#include "Engine/SkeletalMesh.h"
-#include "UObject/UObjectIterator.h"
+
+#include "Animation/SkinWeightProfileManager.h"
+#include "RenderingThread.h"
+#include "ComponentRecreateRenderStateContext.h"
+#include "Components/SkinnedMeshComponent.h"
 #include "ContentStreaming.h"
 #include "UObject/AnimObjectVersion.h"
-#include "Components/SkinnedMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/World.h"
 #include "Rendering/SkeletalMeshRenderData.h"
-#include "Rendering/SkinWeightVertexBuffer.h"
-#include "Animation/SkinWeightProfileManager.h"
+#include "SkeletalMeshTypes.h"
+#include "UObject/AnimObjectVersion.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/UObjectIterator.h"
 
 #if WITH_EDITOR
 #include "Rendering/SkeletalMeshLODImporterData.h"
-#include "Animation/DebugSkelMeshComponent.h"
-#endif
-#include "ComponentRecreateRenderStateContext.h"
-#include "SkeletalMeshTypes.h"
-#include "UObject/WeakObjectPtrTemplates.h"
+#else
 #include "Engine/GameEngine.h"
-#include "UObject/ObjectVersion.h"
-#include "Engine/World.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SkinWeightProfile)
 
@@ -188,6 +190,7 @@ FArchive& operator<<(FArchive& Ar, FImportedSkinWeightProfileData& ProfileData)
 FArchive& operator<<(FArchive& Ar, FRawSkinWeight& OverrideEntry)
 {
 	Ar.UsingCustomVersion(FAnimObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
 	if (Ar.IsLoading())
 	{
@@ -199,7 +202,7 @@ FArchive& operator<<(FArchive& Ar, FRawSkinWeight& OverrideEntry)
 	{
 		for (int32 InfluenceIndex = 0; InfluenceIndex < EXTRA_BONE_INFLUENCES; ++InfluenceIndex)
 		{
-			if (Ar.IsLoading() && Ar.CustomVer(FAnimObjectVersion::GUID) < FAnimObjectVersion::IncreaseBoneIndexLimitPerChunk)
+			if (Ar.CustomVer(FAnimObjectVersion::GUID) < FAnimObjectVersion::IncreaseBoneIndexLimitPerChunk)
 			{
 				uint8 BoneIndex = 0;
 				Ar << BoneIndex;
@@ -210,7 +213,19 @@ FArchive& operator<<(FArchive& Ar, FRawSkinWeight& OverrideEntry)
 				Ar << OverrideEntry.InfluenceBones[InfluenceIndex];
 			}
 
-			Ar << OverrideEntry.InfluenceWeights[InfluenceIndex];
+			uint8 Weight = 0;
+			Ar << Weight;
+			OverrideEntry.InfluenceWeights[InfluenceIndex] = (static_cast<uint16>(Weight) << 8) | Weight;
+		}
+	}
+	else if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::IncreasedSkinWeightPrecision)
+	{
+		for (int32 InfluenceIndex = 0; InfluenceIndex < MAX_TOTAL_INFLUENCES; ++InfluenceIndex)
+		{
+			uint8 Weight = 0;
+			Ar << OverrideEntry.InfluenceBones[InfluenceIndex];
+			Ar << Weight;
+			OverrideEntry.InfluenceWeights[InfluenceIndex] = (static_cast<uint16>(Weight) << 8) | Weight;
 		}
 	}
 	else
@@ -330,7 +345,7 @@ void FSkinWeightProfilesData::SetDynamicDefaultSkinWeightProfile(USkeletalMesh* 
 					if (bSerialization)
 					{
 						// During serialization the CPU copy of the weight should still be available
-						const void* BaseBufferData = BaseBuffer->GetDataVertexBuffer()->GetWeightData();
+						const uint8* BaseBufferData = BaseBuffer->GetDataVertexBuffer()->GetWeightData();
 						
 						if (ensure(BaseBufferData))
 						{
@@ -346,17 +361,14 @@ void FSkinWeightProfilesData::SetDynamicDefaultSkinWeightProfile(USkeletalMesh* 
 								OverrideBuffer->CopyMetaData(*BaseBuffer);
 								ProfileNameToBuffer.Add(ProfileName, OverrideBuffer);
 								
-								const uint32 NumInfluences = BaseBuffer->GetMaxBoneInfluences();
-								OverrideBuffer->SetMaxBoneInfluences(NumInfluences);
-								const bool bUse16BitBoneIndex = BaseBuffer->Use16BitBoneIndex();
-								OverrideBuffer->SetUse16BitBoneIndex(bUse16BitBoneIndex);
-								
 								ProfilePtr->ApplyOverrides(OverrideBuffer, BaseBufferData, BaseBuffer->GetNumVertices());
 
 								DefaultOverrideSkinWeightBuffer = OverrideBuffer;
 								bDefaultOverriden = true;
 								DefaultProfileName = Profiles[DefaultProfileIndex].Name;
-
+								
+								const FName OwnerName(USkinnedAsset::GetLODPathName(Mesh, LODIndex));
+								OverrideBuffer->SetOwnerName(OwnerName);
 								OverrideBuffer->BeginInitResources();
 							}
 						}
@@ -478,7 +490,7 @@ bool FSkinWeightProfilesData::ContainsOverrideBuffer(const FName& ProfileName) c
 	return ProfileNameToBuffer.Contains(ProfileName);
 }
 
-#if WITH_EDITOR
+
 const FRuntimeSkinWeightProfileData* FSkinWeightProfilesData::GetOverrideData(const FName& ProfileName) const
 {
 	return OverrideData.Find(ProfileName);
@@ -488,7 +500,7 @@ FRuntimeSkinWeightProfileData& FSkinWeightProfilesData::AddOverrideData(const FN
 {
 	return OverrideData.FindOrAdd(ProfileName);
 }
-#endif // WITH_EDITOR
+
 
 void FSkinWeightProfilesData::ReleaseBuffer(const FName& ProfileName, bool bForceRelease /*= false*/)
 {
@@ -697,7 +709,8 @@ void FSkinWeightProfilesData::InitialiseProfileBuffer(const FName& ProfileName)
 
 	if (BaseBuffer)
 	{
-		const void* BaseBufferData = nullptr;
+		const uint8* BaseBufferData;
+		
 		if (BaseBuffer->GetNeedsCPUAccess())
 		{
 			BaseBufferData = BaseBuffer->GetDataVertexBuffer()->GetWeightData();
@@ -710,18 +723,11 @@ void FSkinWeightProfilesData::InitialiseProfileBuffer(const FName& ProfileName)
 		
 		if (ensure(BaseBufferData))
 		{
-			FSkinWeightVertexBuffer* OverrideBuffer = nullptr;
-
-			OverrideBuffer = new FSkinWeightVertexBuffer();
+			FSkinWeightVertexBuffer* OverrideBuffer = new FSkinWeightVertexBuffer();
 			OverrideBuffer->CopyMetaData(*BaseBuffer);
 			ProfileNameToBuffer.Add(ProfileName, OverrideBuffer);
 
-			const uint32 NumInfluences = BaseBuffer->GetMaxBoneInfluences();
-			OverrideBuffer->SetMaxBoneInfluences(NumInfluences);
-			const bool bUse16BitBoneIndex = BaseBuffer->Use16BitBoneIndex();
-			OverrideBuffer->SetUse16BitBoneIndex(bUse16BitBoneIndex);
-			const bool bNeedsCPUAccess = BaseBuffer->GetNeedsCPUAccess();
-			OverrideBuffer->SetNeedsCPUAccess(bNeedsCPUAccess);
+			OverrideBuffer->SetNeedsCPUAccess(BaseBuffer->GetNeedsCPUAccess());
 			
 			const FRuntimeSkinWeightProfileData* ProfilePtr = OverrideData.Find(ProfileName);
 			if (ProfilePtr)
@@ -729,6 +735,10 @@ void FSkinWeightProfilesData::InitialiseProfileBuffer(const FName& ProfileName)
 				ProfilePtr->ApplyOverrides(OverrideBuffer, BaseBufferData, BaseBuffer->GetNumVertices());
 			}
 
+#if RHI_ENABLE_RESOURCE_INFO
+			const FName OwnerName = FName(ProfileName.ToString() + TEXT("_FSkinWeightProfilesData"));
+			OverrideBuffer->SetOwnerName(OwnerName);
+#endif
 			OverrideBuffer->BeginInitResources();
 		}	
 	}
@@ -736,10 +746,7 @@ void FSkinWeightProfilesData::InitialiseProfileBuffer(const FName& ProfileName)
 
 void FSkinWeightProfilesData::ApplyOverrideProfile(FSkinWeightVertexBuffer* OverrideBuffer, const FName& ProfileName)
 {
-	const uint32 NumInfluences = BaseBuffer->GetMaxBoneInfluences();
-	OverrideBuffer->SetMaxBoneInfluences(NumInfluences);
-	const bool bUse16BitBoneIndex = BaseBuffer->Use16BitBoneIndex();
-	OverrideBuffer->SetUse16BitBoneIndex(bUse16BitBoneIndex);
+	OverrideBuffer->CopyMetaData(*BaseBuffer);
 
 	const FRuntimeSkinWeightProfileData* ProfilePtr = OverrideData.Find(ProfileName);
 	if (ProfilePtr)
@@ -758,16 +765,33 @@ void FSkinWeightProfilesData::CreateRHIBuffers_Async(TArray<TPair<FName, FSkinWe
 	CreateRHIBuffers_Internal<false>(OutBuffers);
 }
 
-void FRuntimeSkinWeightProfileData::ApplyOverrides(FSkinWeightVertexBuffer* OverrideBuffer, const void* DataBuffer, const int32 NumVerts) const
+void FSkinWeightProfilesData::InitRHIForStreaming(const TArray<TPair<FName, FSkinWeightRHIInfo>>& IntermediateBuffers, FRHIResourceUpdateBatcher& Batcher)
+{
+	for (int32 Idx = 0; Idx < IntermediateBuffers.Num(); ++Idx)
+	{
+		const FName& ProfileName = IntermediateBuffers[Idx].Key;
+		const FSkinWeightRHIInfo& IntermediateBuffer = IntermediateBuffers[Idx].Value;
+		ProfileNameToBuffer.FindChecked(ProfileName)->InitRHIForStreaming(IntermediateBuffer, Batcher);
+	}
+}
+
+void FSkinWeightProfilesData::ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher)
+{
+	for (TMap<FName, FSkinWeightVertexBuffer*>::TIterator It(ProfileNameToBuffer); It; ++It)
+	{
+		It->Value->ReleaseRHIForStreaming(Batcher);
+	}
+}
+
+void FRuntimeSkinWeightProfileData::ApplyOverrides(FSkinWeightVertexBuffer* OverrideBuffer, const uint8* DataBuffer, const int32 NumVerts) const
 {
 	if (DataBuffer)
 	{
 		if (OverrideBuffer)
 		{
-			const FSkinWeightInfo* BaseSkinWeights = (const FSkinWeightInfo*)DataBuffer;
-			OverrideBuffer->CopySkinWeightInfoData(TArrayView<const FSkinWeightInfo>(BaseSkinWeights, NumVerts));
+			OverrideBuffer->CopySkinWeightRawDataFromBuffer(DataBuffer, NumVerts);
 
-			uint8* TargetSkinWeightData = (uint8*)OverrideBuffer->GetDataVertexBuffer()->GetWeightData();
+			uint8* TargetSkinWeightData = OverrideBuffer->GetDataVertexBuffer()->GetWeightData();
 			
 			const uint8 VertexStride = OverrideBuffer->GetConstantInfluencesVertexStride();
 			const uint8 WeightDataOffset = OverrideBuffer->GetBoneIndexByteSize() * OverrideBuffer->GetMaxBoneInfluences();
@@ -778,8 +802,8 @@ void FRuntimeSkinWeightProfileData::ApplyOverrides(FSkinWeightVertexBuffer* Over
 				const uint32 VertexIndex = VertexIndexOverridePair.Key;
 				const uint32 InfluenceOffset = VertexIndexOverridePair.Value;
 				
-				const uint8* BoneData = TargetSkinWeightData + (VertexIndex * VertexStride);
-				const uint8* WeightData = BoneData + WeightDataOffset;
+				uint8* BoneData = TargetSkinWeightData + (VertexIndex * VertexStride);
+				uint8* WeightData = BoneData + WeightDataOffset;
 
 #if !UE_BUILD_SHIPPING
 				uint32 VertexOffset = 0;
@@ -790,8 +814,10 @@ void FRuntimeSkinWeightProfileData::ApplyOverrides(FSkinWeightVertexBuffer* Over
 				check(b16BitBoneIndices == OverrideBuffer->Use16BitBoneIndex());
 #endif
 				// BoneIDs either contains FBoneIndexType entries spanning (2) uint8 values, or single uint8 bone indices (1)
-				FMemory::Memcpy((void*)BoneData, &BoneIDs[InfluenceOffset * NumWeightsPerVertex * OverrideBuffer->GetBoneIndexByteSize()], OverrideBuffer->GetBoneIndexByteSize() * NumWeightsPerVertex);
-				FMemory::Memcpy((void*)WeightData, &BoneWeights[InfluenceOffset * NumWeightsPerVertex], sizeof(uint8) * NumWeightsPerVertex);
+				const uint32 BoneIndexByteSize = OverrideBuffer->GetBoneIndexByteSize();
+				const uint32 BoneWeightByteSize = OverrideBuffer->GetBoneWeightByteSize();
+				FMemory::Memcpy(BoneData, &BoneIDs[InfluenceOffset * NumWeightsPerVertex * BoneIndexByteSize], BoneIndexByteSize * NumWeightsPerVertex);
+				FMemory::Memcpy(WeightData, &BoneWeights[InfluenceOffset * NumWeightsPerVertex * BoneWeightByteSize], BoneWeightByteSize * NumWeightsPerVertex);
 			}
 		}
 	}

@@ -138,8 +138,10 @@ export enum JobStepBatchError {
 	Incomplete = "Incomplete",
 
 	/** An error ocurred while executing the lease. Cannot be retried. */
-	ExecutionError = "ExecutionError"
+	ExecutionError = "ExecutionError",
 
+	/** The change that the job is running against is invalid. */
+	UnknownShelf = "UnknownShelf"
 
 }
 
@@ -227,10 +229,6 @@ export type StreamData = GetStreamResponse & {
 	// full path as returned by server
 	fullname?: string;
 
-}
-
-export type TemplateData = GetTemplateResponse & {
-	ref?: GetTemplateRefResponse;
 }
 
 export type JobData = GetJobResponse & {
@@ -504,10 +502,10 @@ export type UpdatePoolRequest = {
 
 	/// Frequency to run conforms, in hours, set 0 to disable
 	conformInterval?: number;
-		
+
 	/** Pool sizing strategy */
 	sizeStrategy?: PoolSizeStrategy;
-		
+
 	/** The minimum nunmber of agents to retain in this pool */
 	minAgents?: number;
 
@@ -745,14 +743,13 @@ export type Condition = {
 }
 
 /// Available pool sizing strategies
-export enum PoolSizeStrategy
-{
+export enum PoolSizeStrategy {
 	/// Strategy based on lease utilization
 	LeaseUtilization = "LeaseUtilization",
-	
+
 	/// Strategy based on size of job build queue
 	JobQueue = "JobQueue",
-	
+
 	/// No-op strategy used as fallback/default behavior
 	NoOp = "NoOp"
 }
@@ -792,7 +789,7 @@ export type GetPoolResponse = {
 
 	/// Frequency to run conforms, in hours, set 0 to disable
 	conformInterval?: number;
-		
+
 	/// Cooldown time between scale-out events in seconds
 	scaleOutCooldown?: number;
 
@@ -950,19 +947,6 @@ export type CreateLabelRequest = {
 	includedNodes: string[];
 }
 
-/** Query selecting the base changelist to use */
-export type ChangeQueryRequest = {
-
-	/** The template id to query */
-	templateId?: string;
-
-	/** The target to query	*/
-	target?: string;
-
-	/** Whether to match a job that produced warnings */
-	outcomes?: JobStepOutcome[];
-}
-
 
 /**Parameters required to create a job */
 export type CreateJobRequest = {
@@ -979,8 +963,8 @@ export type CreateJobRequest = {
 	/** The changelist number to build. Can be null for latest. */
 	change?: number;
 
-	/** Parameters to use when selecting the change to execute at. */
-	changeQuery?: ChangeQueryRequest;
+	/// List of change queries to evaluate
+	changeQueries?: ChangeQueryConfig[];
 
 	/** The preflight changelist number */
 	preflightChange?: number;
@@ -1741,6 +1725,9 @@ export type GetScheduleResponse = {
 	/** Last time that the schedule was triggered */
 	lastTriggerTime: Date | string;
 
+	/// Next trigger times for schedule
+	nextTriggerTimesUTC: Date[];
+
 	/** List of active jobs */
 	activeJobs: string[];
 
@@ -1910,13 +1897,61 @@ export type UpdateStepStateRequest = {
 
 }
 
-/**Information about a template in this stream */
-export type GetTemplateRefResponse = {
 
-	/** The name of the template */
+/// Response describing a template
+export type GetTemplateResponseBase = {
+
+	/// Name of the template
 	name: string;
 
-	/**Unique id of this template ref */
+	/// Default priority for this job
+	priority?: Priority;
+
+	/// Whether to allow preflights of this template
+	allowPreflights: boolean;
+
+	/// Whether to always update issues on jobs using this template
+	updateIssues: boolean;
+
+	/// The initial agent type to parse the BuildGraph script on
+	initialAgentType?: string;
+
+	/// Path to a file within the stream to submit to generate a new changelist for jobs
+	submitNewChange?: string;
+
+	/// Parameters for the job.
+	arguments: string[];
+
+	/// List of parameters for this template
+	parameters: ParameterData[];
+}
+
+/// Query selecting the base changelist to use
+export type ChangeQueryConfig = {
+
+	/// Name of this query, for display on the dashboard.
+	name?: string;
+
+	/// Condition to evaluate before deciding to use this query. May query tags in a preflight.	
+	condition?: any;
+
+	/// The template id to query	
+	templateId?: string;
+
+	/// The target to query	
+	target?: string;
+
+	/// Whether to match a job that produced warnings	
+	outcomes?: JobStepOutcome[];
+
+	/// Finds the last commit with this tag	
+	commitTag?: any;
+}
+
+/**Information about a template in this stream */
+export type GetTemplateRefResponse = GetTemplateResponseBase & {
+
+	/**Unique id of this template ref, (sanitized name) */
 	id: string;
 
 	/**Hash of the template definition */
@@ -1927,19 +1962,19 @@ export type GetTemplateRefResponse = {
 
 	/** Step state for template in stream */
 	stepStates?: GetTemplateStepStateResponse[];
+
+	/** List of queries for the default changelist */
+	defaultChange?: ChangeQueryConfig[];
+
 }
 
 /** Specifies defaults for running a preflight */
-export type DefaultPreflightRequest = {
+export type DefaultPreflightConfig = {
 
 	/** The template id to query */
 	templateId?: string;
 
-	/** Query for the change to use */
-	change?: ChangeQueryRequest;
-
-	/**  The last successful job type to use for the base changelist (DEPRECATED!)*/
-	changeTemplateId?: string;
+	change?: ChangeQueryConfig;
 }
 
 
@@ -1975,11 +2010,8 @@ export type GetStreamResponse = {
 	/**List of tabs to display for this stream*/
 	tabs: GetStreamTabResponse[];
 
-	/**  Default template to use for preflights (deprecated)*/
-	defaultPreflightTemplate?: string;
-
 	/** Default template for running preflights */
-	defaultPreflight?: DefaultPreflightRequest;
+	defaultPreflight?: DefaultPreflightConfig;
 
 	/**Map of agent name to type */
 	agentTypes: { [key: string]: GetAgentTypeResponse };
@@ -2182,41 +2214,6 @@ export type BoolParameterData = ParameterData & {
 
 }
 
-
-/**Response describing a template */
-export type GetTemplateResponse = {
-
-	/**Unique id of the template */
-	id: string;
-
-	/**Name of the template */
-	name: string;
-
-	/**Default priority for this job */
-	priority?: Priority;
-
-	/**Whether to allow preflights of this template */
-	allowPreflights: boolean;
-
-	/**Whether to always update issues on jobs that use this template */
-	updateIssues: boolean;
-
-	/**List of node groups for this job */
-	groups: CreateGroupRequest[];
-
-	/**List of template aggregates */
-	aggregates: CreateAggregateRequest[];
-
-	/**Parameters for the job. */
-	arguments: string[];
-
-	/**List of parameters for this template */
-	parameters: ParameterData[];
-
-	/**Custom permissions for this object */
-	acl?: GetAclResponse;
-}
-
 /** Information about a commit */
 export type GetChangeSummaryResponse = {
 
@@ -2231,7 +2228,6 @@ export type GetChangeSummaryResponse = {
 
 
 }
-
 
 /**Information about a device attached to this agent */
 export type GetDeviceCapabilitiesResponse = {
@@ -2408,9 +2404,11 @@ export type GetStreamTabResponse = {
 /**Describes a job page */
 export type GetJobsTabResponse = GetStreamTabResponse & {
 
-	/**  Whether to show names on the page */
+	/** Whether to show names on the page */
 	showNames: boolean;
 
+	/** Whether to show preflights */
+	showPreflights?: boolean;
 
 	/** List of templates to show on the page */
 	templates?: string[];
@@ -2520,7 +2518,7 @@ export type GetGraphResponse = {
 
 /**The timing info for a job*/
 export type GetJobTimingResponse = {
-	
+
 	/** The job response */
 	jobResponse: JobData;
 
@@ -2871,7 +2869,7 @@ export type GetIssueResponse = {
 	promoted: boolean;
 
 	/** Owner of the issue */
-	ownerInfo: GetThinUserInfoResponse;
+	ownerInfo?: GetThinUserInfoResponse;
 
 	/** Use that nominated the current owner */
 	nominatedByInfo: GetThinUserInfoResponse;
@@ -2886,7 +2884,7 @@ export type GetIssueResponse = {
 	resolvedAt?: Date | string;
 
 	/** Use info for the person that resolved the issue */
-	resolvedByInfo: GetThinUserInfoResponse;
+	resolvedByInfo?: GetThinUserInfoResponse;
 
 	/**  List of stream paths affected by this issue */
 	streams: string[];
@@ -2913,6 +2911,9 @@ export type GetIssueResponse = {
 
 	/** The UTC time when the issue was quarantined */
 	quarantineTimeUtc?: Date | string;
+
+	/** User info for who force closed the issue */
+	forceClosedByUserInfo?: GetThinUserInfoResponse;
 
 }
 
@@ -2957,6 +2958,9 @@ export type UpdateIssueRequest = {
 
 	/** Id of user quarantining issue */
 	quarantinedById?: string;
+
+	/** Id of user force closing the issue */
+	forceClosedById?: string;
 
 }
 
@@ -3011,7 +3015,8 @@ export enum DashboardPreference {
 	ColorRunning = "ColorRunning",
 	LocalCache = "LocalCache",
 	LeftAlignLog = "LeftAlignLog",
-	CompactViews = "CompactViews"
+	CompactViews = "CompactViews",
+	ShowPreflights = "ShowPreflights"
 }
 
 export type DashboardSettings = {
@@ -3231,6 +3236,9 @@ export type GetDeviceResponse = {
 
 	/// The last time the device was checked out
 	checkOutTime?: Date | string;
+
+	/// The time the device checkout will expire
+	checkOutExpirationTime?: Date | string;
 
 	/** Id of the user which last modified this device */
 	modifiedByUser?: string;
@@ -3863,7 +3871,7 @@ export type StreamConfig = {
 	defaultPreflightTemplate?: string;
 
 	/// Default template for running preflights
-	defaultPreflight?: DefaultPreflightRequest;
+	defaultPreflight?: DefaultPreflightConfig;
 
 	/// <summary>
 	/// List of tabs to show for the new stream
@@ -4168,4 +4176,282 @@ export type GetNoticeResponse = {
 	/** User id who created the notice, otherwise null if a system message */
 	createdByUser?: GetThinUserInfoResponse;
 
+}
+
+// Device telemetry
+
+export type DevicePoolTelemetryQuery = {
+	minCreateTime?: string;
+	maxCreateTime?: string;
+	index?: number;
+	count?: number;
+};
+
+export type DeviceTelemetryQuery = {
+	deviceIds?: string[];
+	poolId?: string;
+	platformId?: string;
+	minCreateTime?: string;
+	maxCreateTime?: string;
+	index?: number;
+	count?: number;
+};
+
+export type GetDevicePoolReservationTelemetryResponse = {
+
+	/** Device id for reservation */
+	deviceId: string;
+
+	/** Job id associated with reservation */
+	jobId?: string;
+
+	/** The step id of reservation */
+	stepId?: string;
+
+	/** The name of the job holding reservation */
+	jobName?: string;
+
+	/** The name of the step holding reservation */
+	stepName?: string;
+
+}
+
+/** Device pool telemetry respponse */
+export type GetDevicePlatformTelemetryResponse = {
+
+	/** The corresponding platform id */
+	platformId: string;
+
+	/** Available device ids of this platform */
+	available?: string[];
+
+	/** Device ids in maintenance state */
+	maintenance?: string[];
+
+	/** Device ids in problem state */
+	problem?: string[];
+
+	/** Device ids in disabled state */
+	disabled?: string[];
+
+	/** Stream id => reserved devices of this platform */
+	reserved?: Record<string, GetDevicePoolReservationTelemetryResponse[]>;
+}
+
+
+/** Device telemetry respponse */
+export type GetDevicePoolTelemetryResponse = {
+
+	/** The UTC time the telemetry data was created */
+	createTimeUtc: Date | string;
+
+
+	/** Individual pool id -> telemetry data points */
+	telemetry: Record<string, GetDevicePlatformTelemetryResponse[]>;
+}
+
+/// Device telemetry respponse
+export type GetTelemetryInfoResponse = {
+
+	/// The UTC time the telemetry data was created	
+	createTimeUtc: Date | string;
+
+	/// The stream id which utilized device	
+	streamId?: string;
+
+	/// The job id which utilized device	
+	jobId?: string;
+
+	/// The job's step id	
+	stepId?: string;
+
+	/// The job name which utilized device	
+	jobName?: string;
+
+	/// The job's step name
+	stepName?: string;
+
+	/// If this telemetry has a reservation, the start time of the reservation	
+	reservationStartUtc?: Date | string;
+
+	/// If this telemetry has a reservation, the finish time of the reservation
+	reservationFinishUtc?: Date | string;
+
+	/// If this telemetry marks a detected device issue, the time of the issue	
+	problemTimeUtc?: Date | string;
+}
+
+
+/// Device telemetry respponse
+export type GetDeviceTelemetryResponse = {
+
+	/// The device id for the telemetry data
+	deviceId: string;
+
+	/// Individual telemetry data points	
+	telemetry: GetTelemetryInfoResponse[];
+
+}
+
+// Test Data ----------------------------
+
+/// A test emvironment running in a stream	
+export type GetTestMetaResponse = {
+
+	/// Meta unique id for environment
+	id: string;
+
+	/// The platforms in the environment		
+	platforms: string[];
+
+	/// The build configurations being tested		
+	configurations: string[];
+
+	/// The build targets being tested		
+	buildTargets: string[];
+
+	/// The test project name		
+	projectName: string;
+
+	/// The rendering hardware interface being used with the test		
+	rhi: string;
+
+	/// The test variation identifier (or "default")
+	variation: string;
+
+}
+
+
+/// A test that runs in a stream
+export type GetTestResponse = {
+
+	/// The id of the test
+	id: string;
+
+	/// The name of the test 		
+	name: string;
+
+	/// The display name of the test, if any 		
+	displayName?: string;
+
+	/// The suite the test belongs to, if any
+	suiteName?: string;
+
+	/// The environments the test runs in
+	metadata: string[];
+}
+
+/// A test that runs in a stream
+export type GetTestsRequest = {
+	/// The id of the test
+	testIds: string[];
+}
+
+
+/// A test suite that runs in a stream, contain subtests	
+export type GetTestSuiteResponse = {
+
+	/// The id of the test suite
+	id: string;
+
+	/// The name of the test suite		
+	name: string;
+
+	/// The environments the suite runs in
+	metadata: string[];
+}
+
+/// Describes tests running in a stream
+export type GetTestStreamResponse = {
+
+	/// The stream id	
+	streamId: string;
+
+	/// Individual tests which run in the stream	
+	tests: GetTestResponse[];
+
+	/// Test suites that run in the stream	
+	testSuites: GetTestSuiteResponse[];
+
+	/// Test suites that run in the stream	
+	testMetadata: GetTestMetaResponse[];
+}
+
+/// Test outcome
+export enum TestOutcome {
+	/// The test was successful
+	Success = "Success",
+	/// The test failed
+	Failure = "Failure",
+	/// The test was skipped
+	Skipped = "Skipped",
+	/// The test had an unspecified result
+	Unspecified = "Unspecified"
+}
+
+
+/// Suite test data
+export type GetSuiteTestDataResponse = {
+
+	/// The test id	
+	testId: string;
+
+	/// The ourcome of the suite test	
+	outcome: TestOutcome;
+
+	/// How long the suite test ran	 (TimeSpan)
+	duration: string;
+
+	/// Test UID for looking up in test details
+	uid: string;
+}
+
+/// Test details
+export type GetTestDataDetailsResponse = {
+
+	/// The corresponding test ref	
+	id: string;
+
+	/// The test documents for this ref	
+	testDataIds: string[];
+
+	/// Suite test data		
+	suiteTests?: GetSuiteTestDataResponse[];
+
+}
+
+/// Testt data ref
+export type GetTestDataRefResponse = {
+	/// ref id
+	id: string;
+
+	/// The associated stream
+	streamId: string;
+
+	/// How long the test ran (TimeSpan)
+	duration: string;
+
+	/// The build changelist upon which the test ran, may not correspond to the job changelist
+	buildChangeList: number;
+
+	/// The environment the test ran on 
+	metaId: string;
+
+	/// The test id in stream
+	testId?: string;
+
+	/// The outcome of the test
+	outcome?: TestOutcome;
+
+	/// The if of the stream test suite
+	suiteId?: string;
+
+	/// The number of suite tests skipped
+	suiteSkipCount?: number;
+
+	/// The number of suite tests with warnings
+	suiteWaringCount?: number;
+
+	/// The number of suite tests swith errors
+	suiteErrorCount?: number;
 }

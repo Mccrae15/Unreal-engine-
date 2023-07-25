@@ -2,7 +2,7 @@
 
 #include "Iris/ReplicationState/ReplicationStateStorage.h"
 #include "Iris/Core/IrisMemoryTracker.h"
-#include "Iris/ReplicationSystem/NetHandleManager.h"
+#include "Iris/ReplicationSystem/NetRefHandleManager.h"
 #include "Iris/ReplicationSystem/ReplicationOperations.h"
 #include "Iris/ReplicationSystem/ReplicationOperationsInternal.h"
 #include "Iris/ReplicationSystem/ReplicationProtocol.h"
@@ -30,7 +30,7 @@ void FReplicationStateStorage::Init(FReplicationStateStorageInitParams& InitPara
 	// Make sure the MaxObjectInfoCount calculation can't overflow.
 	static_assert(std::numeric_limits<decltype(MaxObjectInfoCount)>::max() > std::numeric_limits<ObjectInfoIndexType>::max(), "");
 
-	NetHandleManager = InitParams.NetHandleManager;
+	NetRefHandleManager = InitParams.NetRefHandleManager;
 
 	UsedPerObjectInfos.Init(MaxObjectInfoCount);
 	UsedPerObjectInfos.SetBit(InvalidObjectInfoIndex);
@@ -56,31 +56,42 @@ const uint8* FReplicationStateStorage::GetState(uint32 ObjectIndex, EReplication
 
 	if (const FPerObjectInfo* ObjectInfo = GetPerObjectInfoForObject(ObjectIndex))
 	{
-		if (StateType == EReplicationStateType::CurrentSendState)
+		switch (StateType)
 		{
-			return ObjectInfo->StateBuffers[(unsigned)EStateBufferType::SendState];
+			case EReplicationStateType::CurrentSendState:
+			{
+				return ObjectInfo->StateBuffers[(unsigned)EStateBufferType::SendState];
+			}
+			case EReplicationStateType::CurrentRecvState:
+			{
+				return ObjectInfo->StateBuffers[(unsigned)EStateBufferType::RecvState];
+			}
+			default:
+			{
+				checkf(false, TEXT("Unknown EReplicationStateType"));
+				return nullptr;
+			}
 		}
-
-		if (StateType == EReplicationStateType::CurrentRecvState)
-		{
-			return ObjectInfo->StateBuffers[(unsigned)EStateBufferType::RecvState];
-		}
-
-		return nullptr;
 	}
 
 	// Slow path but we don't want to keep PerObjectInfo around unless we have to.
-	if (StateType == EReplicationStateType::CurrentSendState)
+	switch (StateType)
 	{
-		return NetHandleManager->GetReplicatedObjectStateBufferNoCheck(ObjectIndex);
+		case EReplicationStateType::CurrentSendState:
+		{
+			return NetRefHandleManager->GetReplicatedObjectStateBufferNoCheck(ObjectIndex);
+		}
+		case EReplicationStateType::CurrentRecvState:
+		{
+			const Private::FNetRefHandleManager::FReplicatedObjectData& ReplicatedObjectData = NetRefHandleManager->GetReplicatedObjectData(ObjectIndex);
+			return ReplicatedObjectData.ReceiveStateBuffer;
+		}
+		default:
+		{
+			checkf(false, TEXT("Unknown EReplicationStateType"));
+			return nullptr;
+		}
 	}
-	else if (StateType == EReplicationStateType::CurrentSendState)
-	{
-		const Private::FNetHandleManager::FReplicatedObjectData& ReplicatedObjectData = NetHandleManager->GetReplicatedObjectData(ObjectIndex);
-		return ReplicatedObjectData.ReceiveStateBuffer;
-	}
-
-	return nullptr;
 }
 
 uint8* FReplicationStateStorage::AllocBaseline(uint32 ObjectIndex, EReplicationStateType Base)
@@ -321,10 +332,10 @@ FReplicationStateStorage::FPerObjectInfo* FReplicationStateStorage::GetOrCreateP
 		FPerObjectInfo& ObjectInfo = ObjectInfos[NewInfoIndex];
 		
 		// Cache some info
-		const Private::FNetHandleManager::FReplicatedObjectData& ReplicatedObjectData = NetHandleManager->GetReplicatedObjectData(ObjectIndex);
+		const Private::FNetRefHandleManager::FReplicatedObjectData& ReplicatedObjectData = NetRefHandleManager->GetReplicatedObjectData(ObjectIndex);
 		const FReplicationProtocol* Protocol = ReplicatedObjectData.Protocol;
 		ObjectInfo.Protocol = Protocol;
-		ObjectInfo.StateBuffers[(unsigned)EStateBufferType::SendState] = NetHandleManager->GetReplicatedObjectStateBufferNoCheck(ObjectIndex);
+		ObjectInfo.StateBuffers[(unsigned)EStateBufferType::SendState] = NetRefHandleManager->GetReplicatedObjectStateBufferNoCheck(ObjectIndex);
 		ObjectInfo.StateBuffers[(unsigned)EStateBufferType::RecvState] = ReplicatedObjectData.ReceiveStateBuffer;
 		return &ObjectInfo;
 	}

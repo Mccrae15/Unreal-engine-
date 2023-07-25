@@ -1,7 +1,9 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Retargeter/IKRetargetSettings.h"
 #include "Retargeter/IKRetargeter.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IKRetargetSettings)
 
 bool FTargetChainSpeedPlantSettings::operator==(const FTargetChainSpeedPlantSettings& Other) const
 {
@@ -31,6 +33,7 @@ bool FTargetChainIKSettings::operator==(const FTargetChainIKSettings& Other) con
 	&& StaticOffset.Equals(Other.StaticOffset)
 	&& StaticLocalOffset.Equals(Other.StaticLocalOffset)
 	&& StaticRotationOffset.Equals(Other.StaticRotationOffset)
+	&& FMath::IsNearlyEqualByULP(ScaleVertical, Other.ScaleVertical)
 	&& FMath::IsNearlyEqualByULP(Extension, Other.Extension)
 	&& bAffectedByIKWarping == Other.bAffectedByIKWarping;
 }

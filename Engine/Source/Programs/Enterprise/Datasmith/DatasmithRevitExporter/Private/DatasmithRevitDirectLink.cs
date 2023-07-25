@@ -407,7 +407,7 @@ namespace DatasmithRevitExporter
 #elif REVIT_API_2023
 				CmdGUID = "CB3186CC-1714-497A-9A54-A5D4B726524A";
 #else
-				#error This version of Revit is not supported yet.
+#error This version of Revit is not supported yet.
 #endif
 
 				if (UIApp == null)

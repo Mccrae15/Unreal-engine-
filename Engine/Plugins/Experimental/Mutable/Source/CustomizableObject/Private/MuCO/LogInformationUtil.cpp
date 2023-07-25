@@ -2,26 +2,11 @@
 
 #include "MuCO/LogInformationUtil.h"
 
-#include "Containers/IndirectArray.h"
-#include "Containers/UnrealString.h"
 #include "Engine/SkeletalMesh.h"
-#include "Engine/Texture.h"
-#include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Math/Color.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
 #include "MuCO/CustomizableInstancePrivateData.h"
-#include "MuCO/CustomizableObject.h"
-#include "MuCO/CustomizableObjectInstance.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
 #include "TextureResource.h"
-#include "Trace/Detail/Channel.h"
-#include "UObject/Class.h"
-#include "UObject/ObjectPtr.h"
 
 int LogInformationUtil::CountLOD0 = 0;
 int LogInformationUtil::CountLOD1 = 0;
@@ -125,8 +110,8 @@ void LogInformationUtil::LogShowInstanceData(const UCustomizableObjectInstance* 
 	LogData += FString::Printf(TEXT("bIsUpdating=%d "), InstanceFlags & ECOInstanceFlags::Updating);
 	LogData += FString::Printf(TEXT("bShouldUpdateLODs=%d "), InstanceFlags & ECOInstanceFlags::PendingLODsUpdate);
 
-	LogData += FString::Printf(TEXT("CurrentMinLOD=%d "), CustomizableObjectInstance->GetPrivate()->LastUpdateMinLOD);
-	LogData += FString::Printf(TEXT("CurrentMaxLOD=%d "), CustomizableObjectInstance->GetPrivate()->LastUpdateMaxLOD);
+	LogData += FString::Printf(TEXT("CurrentMinLOD=%d "), CustomizableObjectInstance->GetCurrentMinLOD());
+	LogData += FString::Printf(TEXT("CurrentMaxLOD=%d "), CustomizableObjectInstance->GetCurrentMaxLOD());
 	LogData += FString::Printf(TEXT("MinLODToLoad=%d "), CustomizableObjectInstance->GetMinLODToLoad());
 	LogData += FString::Printf(TEXT("MaxLODToLoad=%d\n"), CustomizableObjectInstance->GetMaxLODToLoad());
 }
@@ -174,14 +159,13 @@ void LogInformationUtil::LogShowInstanceDataFull(const UCustomizableObjectInstan
 	MessageChunk += FString::Printf(TEXT("        LastMinSquareDistFromComponentToPlayer = %.2f\n"), CustomizableObjectInstance->GetPrivate()->LastMinSquareDistFromComponentToPlayer);
 	LogData += MessageChunk;
 
-	MessageChunk = FString::Printf(TEXT("        CurrentMinLOD = %d\n"), CustomizableObjectInstance->GetPrivate()->LastUpdateMinLOD);
-	MessageChunk += FString::Printf(TEXT("        CurrentMaxLOD = %d\n"), CustomizableObjectInstance->GetPrivate()->LastUpdateMaxLOD);
+	MessageChunk = FString::Printf(TEXT("        CurrentMinLOD = %d\n"), CustomizableObjectInstance->GetCurrentMinLOD());
+	MessageChunk += FString::Printf(TEXT("        CurrentMaxLOD = %d\n"), CustomizableObjectInstance->GetCurrentMaxLOD());
 	MessageChunk += FString::Printf(TEXT("        MinLODToLoad = %d\n"), CustomizableObjectInstance->GetMinLODToLoad());
 	MessageChunk += FString::Printf(TEXT("        MaxLODToLoad = %d\n"), CustomizableObjectInstance->GetMaxLODToLoad());
 	MessageChunk += FString::Printf(TEXT("        bShouldUpdateLODs = %d\n"), InstanceFlags & ECOInstanceFlags::PendingLODsUpdate);
 	LogData += MessageChunk;
 
-	MessageChunk = FString::Printf(TEXT("        bShouldUpdateLODsSecondStage = %d\n"), InstanceFlags & ECOInstanceFlags::PendingLODsUpdateSecondStage);
 	MessageChunk += FString::Printf(TEXT("        bIsDowngradeLODUpdate = %d\n"), InstanceFlags & ECOInstanceFlags::PendingLODsDowngrade);
 	MessageChunk += FString::Printf(TEXT("        bIsUpdating = %d\n"), InstanceFlags & ECOInstanceFlags::Updating);
 	MessageChunk += FString::Printf(TEXT("        bIsCreatingSkeletalMesh = %d\n"), InstanceFlags & ECOInstanceFlags::CreatingSkeletalMesh);
@@ -192,11 +176,11 @@ void LogInformationUtil::LogShowInstanceDataFull(const UCustomizableObjectInstan
 	{
 		if ((CustomizableObjectInstance->GetSkeletalMesh(ComponentIndex) != nullptr) && (CustomizableObjectInstance->GetSkeletalMesh(ComponentIndex)->GetResourceForRendering()))
 		{
-			if (CustomizableObjectInstance->GetPrivate()->LastUpdateMinLOD < 1)
+			if (CustomizableObjectInstance->GetCurrentMinLOD() < 1)
 			{
 				CountLOD0++;
 			}
-			else if (CustomizableObjectInstance->GetPrivate()->LastUpdateMinLOD < 2)
+			else if (CustomizableObjectInstance->GetCurrentMinLOD() < 2)
 			{
 				CountLOD1++;
 			}

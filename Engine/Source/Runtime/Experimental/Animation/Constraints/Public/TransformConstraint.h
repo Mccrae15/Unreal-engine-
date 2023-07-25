@@ -6,6 +6,9 @@
 #include "ConstraintsManager.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 
+#include "Delegates/DelegateCombinations.h"
+#include "Delegates/Delegate.h"
+
 #include "TransformConstraint.generated.h"
 
 enum class EHandleEvent : uint8;
@@ -148,6 +151,9 @@ protected:
 	/** Returns the handle's tick function (ensuring it lives in the same world). */
 	FTickFunction* GetHandleTickFunction(const TObjectPtr<UTransformableHandle>& InHandle) const;
 
+	/** (Re-)Registers the constraint function and (re-)binds the required delegates*/
+	void InitConstraint();
+
 #if WITH_EDITOR
 public:
 	/** Returns the constraint's label used for UI. */
@@ -159,7 +165,18 @@ public:
 
 	// UObject interface
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PostEditUndo() override;
 	// End of UObject interface
+
+	/** Returns a delegate that can be used to monitor for property changes. This can be used to monitor constraints changes
+	 * only instead of using FCoreUObjectDelegates::OnObjectPropertyChanged that is listening to every objects.
+	 * Note that bScaling is currently the only property change we monitor but this can be used for other properties.
+	 */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnConstraintChanged, UTickableTransformConstraint*, const FPropertyChangedEvent&);
+	static FOnConstraintChanged& GetOnConstraintChanged();
+
+protected:
+	static FOnConstraintChanged OnConstraintChanged;
 #endif
 };
 
@@ -197,6 +214,10 @@ protected:
 	/** Defines the local child's translation offset in the parent space. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Offset", meta=(EditCondition="bMaintainOffset"))
 	FVector OffsetTranslation = FVector::ZeroVector;
+
+	/** Defines which translation axis is constrained. */
+	UPROPERTY(BlueprintReadWrite, Category = "Axis Filter")
+	FFilterOptionPerAxis AxisFilter;
 
 #if WITH_EDITOR
 public:
@@ -241,6 +262,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Offset", meta=(EditCondition="bMaintainOffset"))
 	FQuat OffsetRotation = FQuat::Identity;
 
+	/** Defines which rotation axis is constrained. */
+	UPROPERTY(BlueprintReadWrite, Category = "Axis Filter")
+	FFilterOptionPerAxis AxisFilter;
+
 #if WITH_EDITOR
 public:
 	// UObject interface
@@ -283,6 +308,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Offset", meta=(EditCondition="bMaintainOffset"))
 	FVector OffsetScale = FVector::OneVector;
 
+	/** Defines which scale axis is constrained. */
+	UPROPERTY(BlueprintReadWrite, Category = "Axis Filter")
+	FFilterOptionPerAxis AxisFilter;
+
 #if WITH_EDITOR
 public:
 	// UObject interface
@@ -311,6 +340,12 @@ public:
 		return bScaling;
 	}
 	
+	void SetScaling(const bool bInScale)
+	{
+		bScaling = bInScale;
+	}
+
+	static FName GetScalingPropertyName() { return GET_MEMBER_NAME_CHECKED(UTickableParentConstraint, bScaling); }
 
 	/** Updates the dynamic offset based on external child's transform changes. */
 	virtual void OnHandleModified(UTransformableHandle* InHandle, EHandleEvent InEvent) override;
@@ -334,6 +369,10 @@ protected:
 	/** Defines whether we propagate the parent scale. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Properties")
 	bool bScaling = false;
+
+	/** Defines which translation/rotation/scale axis are constrained. */
+	UPROPERTY(BlueprintReadWrite, Category = "Axis Filter") 
+	FTransformFilter TransformFilter;
 
 #if WITH_EDITOR
 public:
@@ -408,11 +447,10 @@ struct CONSTRAINTS_API FTransformConstraintUtils
 		const ETransformConstraintType InType);
 
 	/** Creates respective handles and creates a new InType transform constraint. */	
-	static UTickableTransformConstraint* CreateAndAddFromActors(
+	static UTickableTransformConstraint* CreateAndAddFromObjects(
 		UWorld* InWorld,
-		AActor* InParent,
-		const FName& InSocketName,
-		AActor* InChild,
+		UObject* InParent, const FName& InParentSocketName,
+		UObject* InChild, const FName& InChildSocketName,
 		const ETransformConstraintType InType,
 		const bool bMaintainOffset = true);
 

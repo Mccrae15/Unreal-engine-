@@ -145,3 +145,28 @@ private:
 #endif
 };
 
+inline FRHICommandListScopedPipelineGuard::FRHICommandListScopedPipelineGuard(FRHICommandListBase& RHICmdList)
+	: RHICmdList(RHICmdList)
+{
+	if (RHICmdList.GetPipeline() == ERHIPipeline::None)
+	{
+		RHICmdList.SwitchPipeline(ERHIPipeline::Graphics);
+		bPipelineSet = true;
+	}
+}
+
+inline FRHICommandListScopedPipelineGuard::~FRHICommandListScopedPipelineGuard()
+{
+	if (bPipelineSet)
+	{
+		RHICmdList.SwitchPipeline(ERHIPipeline::None);
+	}
+}
+
+FORCEINLINE void FRHICommandListImmediate::CopySharedMips(FRHITexture* DestTexture, FRHITexture* SrcTexture)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_CopySharedMips_Flush);
+
+	// Use the version that assumes SRVMask state on both textures to maintain behaviour of the old code path.
+	UE::RHI::CopySharedMips_AssumeSRVMaskState(*this, SrcTexture, DestTexture);
+}

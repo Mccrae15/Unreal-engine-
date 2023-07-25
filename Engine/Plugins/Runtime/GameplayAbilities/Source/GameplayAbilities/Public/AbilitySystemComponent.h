@@ -7,21 +7,27 @@
 #include "Templates/SubclassOf.h"
 #include "Engine/NetSerialization.h"
 #include "Engine/EngineTypes.h"
+#include "Engine/TimerHandle.h"
 #include "GameplayTagContainer.h"
 #include "AttributeSet.h"
 #include "EngineDefines.h"
-#include "GameplayEffectTypes.h"
 #include "GameplayPrediction.h"
 #include "GameplayCueInterface.h"
 #include "GameplayTagAssetInterface.h"
 #include "GameplayAbilitySpec.h"
 #include "GameplayEffect.h"
-#include "Abilities/GameplayAbilityTypes.h"
 #include "GameplayTasksComponent.h"
+#include "Abilities/GameplayAbilityRepAnimMontage.h"
 #include "Abilities/GameplayAbilityTargetTypes.h"
 #include "Abilities/GameplayAbility.h"
 #include "AbilitySystemReplicationProxyInterface.h"
 #include "Net/Core/PushModel/PushModel.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Abilities/GameplayAbilityTypes.h"
+#include "GameplayEffectTypes.h"
+#endif
+
 #include "AbilitySystemComponent.generated.h"
 
 class AGameplayAbilityTargetActor;
@@ -262,6 +268,9 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 
 	/** Returns true if this component's actor has authority */
 	virtual bool IsOwnerActorAuthoritative() const;
+
+	/** Returns true if this component should record montage replication info. */
+	virtual bool ShouldRecordMontageReplication() const;
 
 	/** Replicate that an ability has ended/canceled, to the client or server as appropriate */
 	virtual void ReplicateEndOrCancelAbility(FGameplayAbilitySpecHandle Handle, FGameplayAbilityActivationInfo ActivationInfo, UGameplayAbility* Ability, bool bWasCanceled);
@@ -505,7 +514,7 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 	/** A generic callback anytime an ability is committed (cost/cooldown applied) */
 	FGenericAbilityDelegate AbilityCommittedCallbacks;
 
-	/** Called with a failure reason when an ability fails to execute */
+	/** Called with a failure reason when an ability fails to activate */
 	FAbilityFailedDelegate AbilityFailedCallbacks;
 
 	/** Called when an ability spec's internals have changed */
@@ -546,6 +555,7 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 
 	FORCEINLINE void GetOwnedGameplayTags(FGameplayTagContainer& TagContainer) const override
 	{
+		TagContainer.Reset();
 		TagContainer.AppendTags(GameplayTagCountContainer.GetExplicitGameplayTags());
 	}
 

@@ -271,7 +271,7 @@ TUniquePtr<FCVarIniHistoryHelper> IniHistoryHelper;
 class FConfigHistoryHelper
 {
 private:
-	enum class HistoryType
+	enum class HistoryType : int
 	{
 		Value,
 		Section,
@@ -301,9 +301,9 @@ private:
 	friend uint32 GetTypeHash(const FConfigHistory& CH)
 	{
 		uint32 Hash = ::GetTypeHash(CH.Type);
-		Hash = HashCombine(Hash, ::GetTypeHash(CH.FileName));
-		Hash = HashCombine(Hash, ::GetTypeHash(CH.SectionName));
-		Hash = HashCombine(Hash, ::GetTypeHash(CH.Key));
+		Hash = HashCombine(Hash, GetTypeHash(CH.FileName));
+		Hash = HashCombine(Hash, GetTypeHash(CH.SectionName));
+		Hash = HashCombine(Hash, GetTypeHash(CH.Key));
 		return Hash;
 	}
 	friend bool operator==(const FConfigHistory& A, const FConfigHistory& B)
@@ -335,16 +335,16 @@ private:
 public:
 	FConfigHistoryHelper()
 	{
-		FCoreDelegates::OnConfigValueRead.AddRaw(this, &FConfigHistoryHelper::OnConfigValueRead);
-		FCoreDelegates::OnConfigSectionRead.AddRaw(this, &FConfigHistoryHelper::OnConfigSectionRead);
-		FCoreDelegates::OnConfigSectionNameRead.AddRaw(this, &FConfigHistoryHelper::OnConfigSectionNameRead);
+		FCoreDelegates::TSOnConfigValueRead().AddRaw(this, &FConfigHistoryHelper::OnConfigValueRead);
+		FCoreDelegates::TSOnConfigSectionRead().AddRaw(this, &FConfigHistoryHelper::OnConfigSectionRead);
+		FCoreDelegates::TSOnConfigSectionNameRead().AddRaw(this, &FConfigHistoryHelper::OnConfigSectionNameRead);
 	}
 
 	~FConfigHistoryHelper()
 	{
-		FCoreDelegates::OnConfigValueRead.RemoveAll(this);
-		FCoreDelegates::OnConfigSectionRead.RemoveAll(this);
-		FCoreDelegates::OnConfigSectionNameRead.RemoveAll(this);
+		FCoreDelegates::TSOnConfigValueRead().RemoveAll(this);
+		FCoreDelegates::TSOnConfigSectionRead().RemoveAll(this);
+		FCoreDelegates::TSOnConfigSectionNameRead().RemoveAll(this);
 	}
 
 	void DumpHistory()

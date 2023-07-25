@@ -5,10 +5,10 @@
 
 #include "DisplayClusterRootActor.h"
 
-#include "IDisplayClusterConfiguration.h"
 #include "DisplayClusterConfigurationTypes.h"
+#include "IDisplayClusterConfiguration.h"
 
-#include "DisplayCluster/Private/IPDisplayCluster.h"
+#include "IPDisplayCluster.h"
 
 #include "Engine/LevelStreaming.h"
 
@@ -92,7 +92,7 @@ void UDisplayClusterEditorEngine::StartPlayInEditorSession(FRequestPlaySessionPa
 			const TArray<ULevelStreaming*>& StreamingLevels = EditorWorldPreDup->GetStreamingLevels();
 			for (const ULevelStreaming* const StreamingLevel : StreamingLevels)
 			{
-				if (StreamingLevel && StreamingLevel->GetCurrentState() == ULevelStreaming::ECurrentState::LoadedVisible)
+				if (StreamingLevel && StreamingLevel->GetLevelStreamingState() == ELevelStreamingState::LoadedVisible)
 				{
 					// Look for the actor in those sub-levels that have been loaded already
 					const TSoftObjectPtr<UWorld>& SubWorldAsset = StreamingLevel->GetWorldAsset();

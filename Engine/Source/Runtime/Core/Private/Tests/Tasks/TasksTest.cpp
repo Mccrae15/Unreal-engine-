@@ -571,6 +571,18 @@ namespace UE { namespace TasksTests
 			Task.Wait();
 		}
 
+		{	// multiple "inline" tasks piped in one go, check that pipe maintains FIFO order in this case
+			FPipe Pipe{ UE_SOURCE_LOCATION };
+			FTaskEvent Block{ UE_SOURCE_LOCATION };
+			bool bFirstDone = false;
+			bool bSecondDone = false;
+			FTask Task1 = Pipe.Launch(UE_SOURCE_LOCATION, [&] { check(!bSecondDone); bFirstDone = true; }, Prerequisites(Block), ETaskPriority::Normal, EExtendedTaskPriority::Inline);
+			FTask Task2 = Pipe.Launch(UE_SOURCE_LOCATION, [&] { check(bFirstDone); bSecondDone = true; }, Prerequisites(Block), ETaskPriority::Normal, EExtendedTaskPriority::Inline);
+			Block.Trigger();
+			Wait(TArray{ Task1, Task2 });
+			check(bFirstDone && bSecondDone);
+		}
+
 		UE_BENCHMARK(5, PipeStressTest<200, 100>);
 
 		return true;
@@ -693,45 +705,37 @@ namespace UE { namespace TasksTests
 
 	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTasksDependenciesTest, "System.Core.Tasks.Dependencies", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter);
 
-	template<uint64 NumBranches, uint64 NumLoops, uint64 NumTasks>
+	template<uint64 NumBranches, uint64 NumTasks>
 	void DependenciesPerfTest()
 	{
-		auto Branch = []
+
+		TArray<TTask<FTaskEvent>> Branches;
+		Branches.Reserve(NumBranches);
+		for (uint64 BranchIndex = 0; BranchIndex != NumBranches; ++BranchIndex)
 		{
-			FTask Joiner;
-			for (uint64 LoopIndex = 0; LoopIndex != NumLoops; ++LoopIndex)
+			auto Branch = []
 			{
 				TArray<FTask> Tasks;
 				Tasks.Reserve(NumTasks);
 				for (uint64 TaskIndex = 0; TaskIndex != NumTasks; ++TaskIndex)
 				{
-					if (Joiner.IsValid())
-					{
-						Tasks.Add(Launch(UE_SOURCE_LOCATION, [] { /*FPlatformProcess::YieldCycles(100000);*/ }, Joiner));
-					}
-					else
-					{
-						Tasks.Add(Launch(UE_SOURCE_LOCATION, [] { /*FPlatformProcess::YieldCycles(100000);*/ }));
-					}
+					Tasks.Add(Launch(UE_SOURCE_LOCATION, [] { /*FPlatformProcess::YieldCycles(100000);*/ }));
 				}
-				Joiner = Launch(UE_SOURCE_LOCATION, [] {}, Tasks);
-			}
-			return Joiner;
-		};
+				FTaskEvent Joiner{ UE_SOURCE_LOCATION };
+				Joiner.AddPrerequisites(Tasks);
+				Joiner.Trigger();
+				return Joiner;
+			};
 
-		TArray<TTask<FTask>> Branches;
-		Branches.Reserve(NumBranches);
-		for (uint64 BranchIndex = 0; BranchIndex != NumBranches; ++BranchIndex)
-		{
-			Branches.Add(Launch(UE_SOURCE_LOCATION, Branch));
+			Branches.Add(Launch(UE_SOURCE_LOCATION, MoveTemp(Branch)));
 		}
-		TArray<FTask> BranchTasks;
+		TArray<FTaskEvent> BranchTasks;
 		BranchTasks.Reserve(NumBranches);
-		for (TTask<FTask>& Task : Branches)
+		for (TTask<FTaskEvent>& Task : Branches)
 		{
 			BranchTasks.Add(Task.GetResult());
 		}
-		Wait(Branches);
+		Wait(BranchTasks);
 	}
 
 	bool FTasksDependenciesTest::RunTest(const FString& Parameters)
@@ -870,7 +874,7 @@ namespace UE { namespace TasksTests
 			Task.Wait();
 		}
 
-		UE_BENCHMARK(5, DependenciesPerfTest<50, 5, 50>);
+		UE_BENCHMARK(5, DependenciesPerfTest<150, 150>);
 
 		return true;
 	}
@@ -1321,20 +1325,20 @@ namespace UE { namespace TasksTests
 		return true;
 	}
 
-	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTasksCreateCompletionHandleTest, "System.Core.Async.Tasks.CreateCompletionHandle", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter);
+	// test Pipe support for `-nothreading` config (`FPlatformProcess::SupportsMultithreading()` is false)
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTasksPipeNoThreadingTest, "System.Core.Tasks.PipeNoThreading", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter);
 
-	bool FTasksCreateCompletionHandleTest::RunTest(const FString& Parameters)
+	bool FTasksPipeNoThreadingTest::RunTest(const FString& Parameters)
 	{
-		FTaskEvent UnblockTask{ UE_SOURCE_LOCATION }; // to block initially the following task
-		FTask Task = Launch(UE_SOURCE_LOCATION, [] {}, Prerequisites(UnblockTask)); // supposedly long-living task
-		FTask CompletionHandle = Task.CreateCompletionHandle();
-		// check that the completion handle is not signalling as the task is blocked
-		FPlatformProcess::Sleep(0.1f);
-		check(!CompletionHandle.IsCompleted());
-		// unblock the task
-		UnblockTask.Trigger();
-		// wating for the completion handle instead of waiting for the task, should succeed
-		check(CompletionHandle.Wait(FTimespan::FromMilliseconds(100)));
+		if (FPlatformProcess::SupportsMultithreading())
+		{
+			return true; // run with `-nothreading` for this test to make any sense
+		}
+
+		FPipe Pipe{ UE_SOURCE_LOCATION };
+		Pipe.Launch(UE_SOURCE_LOCATION, [] {});
+		FTask FinalTask = Pipe.Launch(UE_SOURCE_LOCATION, [] {});
+		check(FinalTask.Wait(FTimespan::FromMilliseconds(1.0)));
 
 		return true;
 	}

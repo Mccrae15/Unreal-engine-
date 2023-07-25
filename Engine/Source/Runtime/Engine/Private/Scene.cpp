@@ -1,10 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/Scene.h"
+#include "Engine/EngineTypes.h"
 #include "HAL/IConsoleManager.h"
+#include "SceneUtils.h"
 #include "UObject/RenderingObjectVersion.h"
 #include "UObject/ReleaseObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "UObject/UnrealType.h"
+
+int32 GetMobilePlanarReflectionMode()
+{
+	static const auto MobilePlanarReflectionModeCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.PlanarReflectionMode"));
+
+	return MobilePlanarReflectionModeCVar->GetValueOnAnyThread();
+}
+
+int32 GetMobilePixelProjectedReflectionQuality()
+{
+	static const auto MobilePixelProjectedReflectionQualityCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.PixelProjectedReflectionQuality"));
+
+	return MobilePixelProjectedReflectionQualityCVar->GetValueOnAnyThread();
+}
+
+bool IsMobilePixelProjectedReflectionEnabled(EShaderPlatform ShaderPlatform)
+{
+	return IsMobilePlatform(ShaderPlatform) && IsMobileHDR() && (GetMobilePlanarReflectionMode() == EMobilePlanarReflectionMode::MobilePPRExclusive || GetMobilePlanarReflectionMode() == EMobilePlanarReflectionMode::MobilePPR);
+}
+
+bool IsUsingMobilePixelProjectedReflection(EShaderPlatform ShaderPlatform)
+{
+	return IsMobilePixelProjectedReflectionEnabled(ShaderPlatform) && GetMobilePixelProjectedReflectionQuality() > EMobilePixelProjectedReflectionQuality::Disabled;
+}
 
 void FColorGradingSettings::ExportToPostProcessSettings(FPostProcessSettings* OutPostProcessSettings) const
 {
@@ -603,12 +631,20 @@ FPostProcessSettings::FPostProcessSettings()
 	PathTracingMaxBounces = 32;
 	PathTracingSamplesPerPixel = 2048;
 	PathTracingFilterWidth = 3.0f;
-	PathTracingEnableEmissive = 1;
 	PathTracingMaxPathExposure = 30.0f;
 	PathTracingEnableReferenceDOF = 0;
 	PathTracingEnableReferenceAtmosphere = 0;
 	PathTracingEnableDenoiser = 1;
-	
+
+	PathTracingIncludeEmissive = 1;
+	PathTracingIncludeIndirectEmissive = 1;
+	PathTracingIncludeDiffuse = 1;
+	PathTracingIncludeIndirectDiffuse = 1;
+	PathTracingIncludeSpecular = 1;
+	PathTracingIncludeIndirectSpecular = 1;
+	PathTracingIncludeVolume = 1;
+	PathTracingIncludeIndirectVolume = 1;
+
 	bMobileHQGaussian = false;
 
 #if DO_CHECK && WITH_EDITOR
@@ -811,11 +847,18 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_PathTracingMaxBounces(Settings.bOverride_PathTracingMaxBounces)
 	, bOverride_PathTracingSamplesPerPixel(Settings.bOverride_PathTracingSamplesPerPixel)
 	, bOverride_PathTracingFilterWidth(Settings.bOverride_PathTracingFilterWidth)
-	, bOverride_PathTracingEnableEmissive(Settings.bOverride_PathTracingEnableEmissive)
 	, bOverride_PathTracingMaxPathExposure(Settings.bOverride_PathTracingMaxPathExposure)
 	, bOverride_PathTracingEnableReferenceDOF(Settings.bOverride_PathTracingEnableReferenceDOF)
 	, bOverride_PathTracingEnableReferenceAtmosphere(Settings.bOverride_PathTracingEnableReferenceAtmosphere)
 	, bOverride_PathTracingEnableDenoiser(Settings.bOverride_PathTracingEnableDenoiser)
+	, bOverride_PathTracingIncludeEmissive(Settings.bOverride_PathTracingIncludeEmissive)
+	, bOverride_PathTracingIncludeIndirectEmissive(Settings.bOverride_PathTracingIncludeIndirectEmissive)
+	, bOverride_PathTracingIncludeDiffuse(Settings.bOverride_PathTracingIncludeDiffuse)
+	, bOverride_PathTracingIncludeIndirectDiffuse(Settings.bOverride_PathTracingIncludeIndirectDiffuse)
+	, bOverride_PathTracingIncludeSpecular(Settings.bOverride_PathTracingIncludeSpecular)
+	, bOverride_PathTracingIncludeIndirectSpecular(Settings.bOverride_PathTracingIncludeIndirectSpecular)
+	, bOverride_PathTracingIncludeVolume(Settings.bOverride_PathTracingIncludeVolume)
+	, bOverride_PathTracingIncludeIndirectVolume(Settings.bOverride_PathTracingIncludeIndirectVolume)
 
 	, bMobileHQGaussian(Settings.bMobileHQGaussian)
 	, BloomMethod(Settings.BloomMethod)
@@ -1006,11 +1049,18 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, PathTracingMaxBounces(Settings.PathTracingMaxBounces)
 	, PathTracingSamplesPerPixel(Settings.PathTracingSamplesPerPixel)
 	, PathTracingFilterWidth(Settings.PathTracingFilterWidth)
-	, PathTracingEnableEmissive(Settings.PathTracingEnableEmissive)
 	, PathTracingMaxPathExposure(Settings.PathTracingMaxPathExposure)
 	, PathTracingEnableReferenceDOF(Settings.PathTracingEnableReferenceDOF)
 	, PathTracingEnableReferenceAtmosphere(Settings.PathTracingEnableReferenceAtmosphere)
 	, PathTracingEnableDenoiser(Settings.PathTracingEnableDenoiser)
+	, PathTracingIncludeEmissive(Settings.PathTracingIncludeEmissive)
+	, PathTracingIncludeIndirectEmissive(Settings.PathTracingIncludeIndirectEmissive)
+	, PathTracingIncludeDiffuse(Settings.PathTracingIncludeDiffuse)
+	, PathTracingIncludeIndirectDiffuse(Settings.PathTracingIncludeIndirectDiffuse)
+	, PathTracingIncludeSpecular(Settings.PathTracingIncludeSpecular)
+	, PathTracingIncludeIndirectSpecular(Settings.PathTracingIncludeIndirectSpecular)
+	, PathTracingIncludeVolume(Settings.PathTracingIncludeVolume)
+	, PathTracingIncludeIndirectVolume(Settings.PathTracingIncludeIndirectVolume)
 
 	, ScreenPercentage_DEPRECATED(Settings.ScreenPercentage_DEPRECATED)
 

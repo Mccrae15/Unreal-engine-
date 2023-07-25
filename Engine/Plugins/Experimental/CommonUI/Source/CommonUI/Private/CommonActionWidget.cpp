@@ -1,16 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonActionWidget.h"
-#include "CommonUIPrivate.h"
-#include "CommonUISubsystemBase.h"
 #include "CommonInputSubsystem.h"
+#include "CommonInputTypeEnum.h"
 #include "CommonWidgetPaletteCategories.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/SOverlay.h"
 #include "CommonUITypes.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "InputAction.h"
+#include "InputTriggers.h"
 #include "Input/UIActionBinding.h"
-#include "Input/UIActionRouterTypes.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonActionWidget)
 
@@ -109,7 +110,9 @@ void UCommonActionWidget::SynchronizeProperties()
 
 FSlateBrush UCommonActionWidget::GetIcon() const
 {
-	return CommonUI::GetIconForInputActions(GetInputSubsystem(), InputActions);
+	return EnhancedInputAction && CommonUI::IsEnhancedInputSupportEnabled()
+		? CommonUI::GetIconForEnhancedInputAction(GetInputSubsystem(), EnhancedInputAction)
+		: CommonUI::GetIconForInputActions(GetInputSubsystem(), InputActions);
 }
 
 UCommonInputSubsystem* UCommonActionWidget::GetInputSubsystem() const
@@ -134,6 +137,11 @@ const FCommonInputActionDataBase* UCommonActionWidget::GetInputActionData() cons
 
 FText UCommonActionWidget::GetDisplayText() const
 {
+	if (EnhancedInputAction && CommonUI::IsEnhancedInputSupportEnabled())
+	{
+		return EnhancedInputAction->ActionDescription;
+	}
+
 	const UCommonInputSubsystem* CommonInputSubsystem = GetInputSubsystem();
 	if (GetGameInstance() && ensure(CommonInputSubsystem))
 	{
@@ -153,6 +161,19 @@ FText UCommonActionWidget::GetDisplayText() const
 
 bool UCommonActionWidget::IsHeldAction() const
 {
+	if (EnhancedInputAction && CommonUI::IsEnhancedInputSupportEnabled())
+	{
+		for (const TObjectPtr<UInputTrigger> Trigger : EnhancedInputAction->Triggers)
+		{
+			if (EnumHasAnyFlags(Trigger->GetSupportedTriggerEvents(), ETriggerEventsSupported::Ongoing))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	const UCommonInputSubsystem* CommonInputSubsystem = GetInputSubsystem();
 	if (GetGameInstance() && ensure(CommonInputSubsystem))
 	{
@@ -164,6 +185,13 @@ bool UCommonActionWidget::IsHeldAction() const
 		}
 	}
 	return false;
+}
+
+void UCommonActionWidget::SetEnhancedInputAction(UInputAction* InInputAction)
+{
+	UpdateBindingHandleInternal(FUIActionBindingHandle());
+	EnhancedInputAction = InInputAction;
+	UpdateActionWidget();
 }
 
 void UCommonActionWidget::SetInputAction(FDataTableRowHandle InputActionRow)
@@ -182,6 +210,14 @@ void UCommonActionWidget::SetInputActionBinding(FUIActionBindingHandle BindingHa
 	UpdateBindingHandleInternal(BindingHandle);
 	if (TSharedPtr<FUIActionBinding> Binding = FUIActionBinding::FindBinding(BindingHandle))
 	{
+		if (CommonUI::IsEnhancedInputSupportEnabled())
+		{
+			if (const UInputAction* InputAction = Binding->InputAction.Get())
+			{
+				EnhancedInputAction = const_cast<UInputAction*>(InputAction);
+			}
+		}
+
 		InputActions.Reset();
 		InputActions.Add(Binding->LegacyActionTableRow);
 
@@ -227,7 +263,8 @@ void UCommonActionWidget::UpdateActionWidget()
 		const UCommonInputSubsystem* CommonInputSubsystem = GetInputSubsystem();
 		if (GetGameInstance() && ensure(CommonInputSubsystem) && CommonInputSubsystem->ShouldShowInputKeys())
 		{
-			if (const FCommonInputActionDataBase* InputActionData = GetInputActionData())
+			const FCommonInputActionDataBase* InputActionData = GetInputActionData();
+			if (InputActionData || (EnhancedInputAction && CommonUI::IsEnhancedInputSupportEnabled()))
 			{
 				if (bAlwaysHideOverride)
 				{
@@ -252,7 +289,7 @@ void UCommonActionWidget::UpdateActionWidget()
 							MyIcon->Invalidate(EInvalidateWidgetReason::Layout);
 						}
 
-						if (InputActionData->GetCurrentInputTypeInfo(CommonInputSubsystem).bActionRequiresHold)
+						if (IsHeldAction())
 						{
 							MyProgressImage->SetVisibility(EVisibility::SelfHitTestInvisible);
 						}

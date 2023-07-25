@@ -3,7 +3,13 @@
 #include "Elements/Metadata/PCGMetadataPartition.h"
 #include "Data/PCGSpatialData.h"
 #include "Data/PCGPointData.h"
-#include "Helpers/PCGSettingsHelpers.h"
+
+#include "Algo/Find.h"
+#include "PCGContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataPartition)
+
+#define LOCTEXT_NAMESPACE "PCGMetadataPartitionElement"
 
 FPCGElementPtr UPCGMetadataPartitionSettings::CreateElement() const
 {
@@ -19,13 +25,9 @@ bool FPCGMetadataPartitionElement::ExecuteInternal(FPCGContext* Context) const
 	check(Settings);
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
-	UPCGParamData* Params = Context->InputData.GetParams();
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
 
-	// Forward any non-input data
-	Outputs.Append(Context->InputData.GetAllSettings());
-
-	const FName PartitionAttribute = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGMetadataPartitionSettings, PartitionAttribute), Settings->PartitionAttribute, Params);
+	const FName PartitionAttribute = Settings->PartitionAttribute;
 
 	for (const FPCGTaggedData& Input : Inputs)
 	{
@@ -34,7 +36,7 @@ bool FPCGMetadataPartitionElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!SpatialInput->ConstMetadata())
 		{
-			PCGE_LOG(Error, "Input does not have metadata");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("InputMissingMetadata", "Input does not have metadata"));
 			continue;
 		}
 
@@ -42,7 +44,7 @@ bool FPCGMetadataPartitionElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!SpatialInput->ConstMetadata()->HasAttribute(LocalPartitionAttribute))
 		{
-			PCGE_LOG(Error, "Input does not have the %s attribute", *LocalPartitionAttribute.ToString());
+			PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("InputMissingAttribute", "Input does not have the '{0}' attribute"), FText::FromName(LocalPartitionAttribute)));
 			continue;
 		}
 
@@ -51,7 +53,7 @@ bool FPCGMetadataPartitionElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!InputData)
 		{
-			PCGE_LOG(Error, "Unable to get points out of spatial data");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("CouldNotObtainPoints", "Unable to get points out of spatial data"));
 			continue;
 		}
 
@@ -70,11 +72,22 @@ bool FPCGMetadataPartitionElement::ExecuteInternal(FPCGContext* Context) const
 		TArray<PCGMetadataValueKey> ValueKeyMapping;
 		ValueKeyMapping.Reserve(MetadataValueKeyCount);
 
+		const bool bUsesValueKeys = AttributeBase->UsesValueKeys();
+
 		for (PCGMetadataValueKey ValueKey = 0; ValueKey < MetadataValueKeyCount; ++ValueKey)
 		{
 			if (AttributeBase->IsEqualToDefaultValue(ValueKey))
 			{
 				ValueKeyMapping.Add(-1);
+			}
+			else if (bUsesValueKeys)
+			{
+				PCGMetadataValueKey* MatchingVK = Algo::FindByPredicate(ValueKeyMapping, [ValueKey, AttributeBase](const PCGMetadataValueKey& Key)
+				{
+					return AttributeBase->AreValuesEqual(ValueKey, Key);
+				});
+
+				ValueKeyMapping.Add(MatchingVK ? *MatchingVK : ValueKey);
 			}
 			else
 			{
@@ -124,3 +137,5 @@ bool FPCGMetadataPartitionElement::ExecuteInternal(FPCGContext* Context) const
 
 	return true;
 }
+
+#undef LOCTEXT_NAMESPACE

@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UI/SSynth2DSlider.h"
-#include "Rendering/DrawElements.h"
 #include "Framework/Application/SlateApplication.h"
 
 void SSynth2DSlider::Construct(const SSynth2DSlider::FArguments& InDeclaration)
@@ -63,7 +62,7 @@ int32 SSynth2DSlider::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedG
 	FSlateDrawElement::MakeBox(
 		OutDrawElements,
 		LayerId++,
-		SliderGeometry.ToPaintGeometry(HandleTopLeftPoint, Style->NormalThumbImage.ImageSize),
+		SliderGeometry.ToPaintGeometry(Style->NormalThumbImage.ImageSize, FSlateLayoutTransform(HandleTopLeftPoint)),
 		LockedAttribute.Get() ? &Style->DisabledThumbImage : &Style->NormalThumbImage,
 		DrawEffects,
 		SliderHandleColor.Get().GetColor(InWidgetStyle) * InWidgetStyle.GetColorAndOpacityTint()

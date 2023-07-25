@@ -2,27 +2,28 @@
 
 #include "PCGEditorModule.h"
 
-#include "AssetTypeActions/PCGGraphAssetTypeActions.h"
-#include "AssetTypeActions/PCGSettingsAssetTypeActions.h"
-#include "PCGComponentDetails.h"
 #include "PCGEditorCommands.h"
 #include "PCGEditorGraphNodeFactory.h"
 #include "PCGEditorSettings.h"
 #include "PCGEditorStyle.h"
-#include "PCGGraphDetails.h"
+#include "PCGEditorUtils.h"
 #include "PCGSubsystem.h"
-#include "PCGVolumeDetails.h"
 #include "PCGVolumeFactory.h"
-#include "PCGWorldActor.h"
+#include "AssetTypeActions/PCGCommonAssetTypeActions.h"
+#include "AssetTypeActions/PCGGraphAssetTypeActions.h"
+#include "AssetTypeActions/PCGSettingsAssetTypeActions.h"
 
-#include "EdGraphUtilities.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "IAssetTools.h"
 #include "ISettingsModule.h"
 #include "LevelEditor.h"
-#include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
-#include "Toolkits/IToolkit.h"
+#include "ToolMenus.h"
+#include "Details/PCGAttributePropertySelectorDetails.h"
+#include "Details/PCGBlueprintSettingsDetails.h"
+#include "Details/PCGGraphDetails.h"
+#include "Details/PCGGraphInstanceDetails.h"
+#include "Details/PCGInstancedPropertyBagOverrideDetails.h"
+#include "Details/PCGVolumeDetails.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 
 #define LOCTEXT_NAMESPACE "FPCGEditorModule"
 
@@ -73,20 +74,32 @@ bool FPCGEditorModule::SupportsDynamicReloading()
 void FPCGEditorModule::RegisterDetailsCustomizations()
 {
 	FPropertyEditorModule& PropertyEditor = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	PropertyEditor.RegisterCustomClassLayout("PCGBlueprintSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FPCGBlueprintSettingsDetails::MakeInstance));
 	PropertyEditor.RegisterCustomClassLayout("PCGComponent", FOnGetDetailCustomizationInstance::CreateStatic(&FPCGComponentDetails::MakeInstance));
 	PropertyEditor.RegisterCustomClassLayout("PCGGraph", FOnGetDetailCustomizationInstance::CreateStatic(&FPCGGraphDetails::MakeInstance));
+	PropertyEditor.RegisterCustomClassLayout("PCGGraphInstance", FOnGetDetailCustomizationInstance::CreateStatic(&FPCGGraphInstanceDetails::MakeInstance));
 	PropertyEditor.RegisterCustomClassLayout("PCGVolume", FOnGetDetailCustomizationInstance::CreateStatic(&FPCGVolumeDetails::MakeInstance));
+
+	PropertyEditor.RegisterCustomPropertyTypeLayout("PCGAttributePropertySelector", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPCGAttributePropertySelectorDetails::MakeInstance));
+	PropertyEditor.RegisterCustomPropertyTypeLayout("PCGOverrideInstancedPropertyBag", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPCGOverrideInstancedPropertyBagDetails::MakeInstance));
+
+	PropertyEditor.NotifyCustomizationModuleChanged();
 }
 
 void FPCGEditorModule::UnregisterDetailsCustomizations()
 {
-	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+	if (FPropertyEditorModule* PropertyModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
 	{
-		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-		PropertyModule.UnregisterCustomClassLayout("PCGComponent");
-		PropertyModule.UnregisterCustomClassLayout("PCGGraph");
-		PropertyModule.UnregisterCustomClassLayout("PCGVolume");
-		PropertyModule.NotifyCustomizationModuleChanged();
+		PropertyModule->UnregisterCustomClassLayout("PCGBlueprintSettings");
+		PropertyModule->UnregisterCustomClassLayout("PCGComponent");
+		PropertyModule->UnregisterCustomClassLayout("PCGGraph");
+		PropertyModule->UnregisterCustomClassLayout("PCGGraphInstance");
+		PropertyModule->UnregisterCustomClassLayout("PCGVolume");
+
+		PropertyModule->UnregisterCustomPropertyTypeLayout("PCGAttributePropertySelector");
+		PropertyModule->UnregisterCustomPropertyTypeLayout("PCGOverrideInstancedPropertyBag");
+
+		PropertyModule->NotifyCustomizationModuleChanged();
 	}
 }
 
@@ -96,6 +109,8 @@ void FPCGEditorModule::RegisterAssetTypeActions()
 	PCGAssetCategory = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("PCG")), LOCTEXT("PCGAssetCategory", "PCG"));
 
 	RegisteredAssetTypeActions.Emplace(MakeShareable(new FPCGGraphAssetTypeActions()));
+	RegisteredAssetTypeActions.Emplace(MakeShareable(new FPCGGraphInstanceAssetTypeActions()));
+	RegisteredAssetTypeActions.Emplace(MakeShareable(new FPCGGraphInterfaceAssetTypeActions()));
 	RegisteredAssetTypeActions.Emplace(MakeShareable(new FPCGSettingsAssetTypeActions()));
 
 	for (auto Action : RegisteredAssetTypeActions)
@@ -106,55 +121,33 @@ void FPCGEditorModule::RegisterAssetTypeActions()
 
 void FPCGEditorModule::UnregisterAssetTypeActions()
 {
-	FAssetToolsModule* AssetToolsModule = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools");
-
-	if (!AssetToolsModule)
+	if (FAssetToolsModule* AssetToolsModule = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools"))
 	{
-		return;
-	}
+		IAssetTools& AssetTools = AssetToolsModule->Get();
 
-	IAssetTools& AssetTools = AssetToolsModule->Get();
-
-	for (auto Action : RegisteredAssetTypeActions)
-	{
-		AssetTools.UnregisterAssetTypeActions(Action);
+		for (auto Action : RegisteredAssetTypeActions)
+		{
+			AssetTools.UnregisterAssetTypeActions(Action);
+		}
 	}
 }
 
 void FPCGEditorModule::RegisterMenuExtensions()
 {
-	MenuExtensibilityManager = MakeShareable(new FExtensibilityManager);
-	ToolBarExtensibilityManager = MakeShareable(new FExtensibilityManager);
-
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-
-	{
-		TSharedPtr<FExtender> NewMenuExtender = MakeShareable(new FExtender);
-		NewMenuExtender->AddMenuExtension("LevelEditor",
-			EExtensionHook::After,
-			nullptr,
-			FMenuExtensionDelegate::CreateRaw(this, &FPCGEditorModule::AddMenuEntry));
-
-		LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(NewMenuExtender);
-	}
-}
-
-void FPCGEditorModule::UnregisterMenuExtensions()
-{
-	MenuExtensibilityManager.Reset();
-	ToolBarExtensibilityManager.Reset();
-}
-
-void FPCGEditorModule::AddMenuEntry(FMenuBuilder& MenuBuilder)
-{
-	MenuBuilder.BeginSection("PCGMenu", TAttribute<FText>(FText::FromString("PCG Tools")));
-
-	MenuBuilder.AddSubMenu(
+	FToolMenuOwnerScoped OwnerScoped(this);
+	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Tools");
+	FToolMenuSection& Section = Menu->AddSection("PCGToolsSection", LOCTEXT("PCGToolsSection", "Procedural Generation Tools"));
+	
+	Section.AddSubMenu(
+		"PCGToolsSubMenu",
 		LOCTEXT("PCGSubMenu", "PCG Framework"),
 		LOCTEXT("PCGSubMenu_Tooltip", "PCG Framework related functionality"),
 		FNewMenuDelegate::CreateRaw(this, &FPCGEditorModule::PopulateMenuActions));
-	
-	MenuBuilder.EndSection();
+}
+
+void FPCGEditorModule::UnregisterMenuExtensions()
+{	
+	UToolMenus::UnregisterOwner(this);
 }
 
 void FPCGEditorModule::PopulateMenuActions(FMenuBuilder& MenuBuilder)
@@ -167,9 +160,9 @@ void FPCGEditorModule::PopulateMenuActions(FMenuBuilder& MenuBuilder)
 			FExecuteAction::CreateLambda([]() {
 				if (GEditor)
 				{
-					if (UWorld* World = GEditor->GetEditorWorldContext().World())
+					if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(GEditor->GetEditorWorldContext().World()))
 					{
-						World->GetSubsystem<UPCGSubsystem>()->DeletePartitionActors(/*bOnlyDeleteUnused=*/false);
+						PCGSubsystem->DeletePartitionActors(/*bOnlyDeleteUnused=*/false);
 					}
 				}
 			})),
@@ -183,9 +176,9 @@ void FPCGEditorModule::PopulateMenuActions(FMenuBuilder& MenuBuilder)
 			FExecuteAction::CreateLambda([]() {
 				if (GEditor)
 				{
-					if (UWorld* World = GEditor->GetEditorWorldContext().World())
+					if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(GEditor->GetEditorWorldContext().World()))
 					{
-						World->GetSubsystem<UPCGSubsystem>()->DeletePartitionActors(/*bOnlyDeleteUnused=*/true);
+						PCGSubsystem->DeletePartitionActors(/*bOnlyDeleteUnused=*/true);
 					}
 				}
 			})),
@@ -199,11 +192,11 @@ void FPCGEditorModule::PopulateMenuActions(FMenuBuilder& MenuBuilder)
 			FExecuteAction::CreateLambda([]() {
 				if (GEditor)
 				{
-					if (UWorld* World = GEditor->GetEditorWorldContext().World())
+					if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(GEditor->GetEditorWorldContext().World()))
 					{
-						if (APCGWorldActor* PCGWorldActor = World->GetSubsystem<UPCGSubsystem>()->GetPCGWorldActor())
+						if (APCGWorldActor* PCGWorldActor = PCGSubsystem->GetPCGWorldActor())
 						{
-							World->GetSubsystem<UPCGSubsystem>()->DestroyPCGWorldActor();
+							PCGSubsystem->DestroyPCGWorldActor();
 						}
 					}
 				}
@@ -218,12 +211,9 @@ void FPCGEditorModule::PopulateMenuActions(FMenuBuilder& MenuBuilder)
 			FExecuteAction::CreateLambda([]() {
 				if (GEditor)
 				{
-					if (UWorld* World = GEditor->GetEditorWorldContext().World())
+					if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(GEditor->GetEditorWorldContext().World()))
 					{
-						if (UPCGSubsystem* Subsystem = World->GetSubsystem<UPCGSubsystem>())
-						{
-							Subsystem->BuildLandscapeCache();
-						}
+						PCGSubsystem->BuildLandscapeCache();
 					}
 				}
 			})),
@@ -237,14 +227,37 @@ void FPCGEditorModule::PopulateMenuActions(FMenuBuilder& MenuBuilder)
 			FExecuteAction::CreateLambda([]() {
 				if (GEditor)
 				{
-					if (UWorld* World = GEditor->GetEditorWorldContext().World())
+					if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(GEditor->GetEditorWorldContext().World()))
 					{
-						if (UPCGSubsystem* Subsystem = World->GetSubsystem<UPCGSubsystem>())
-						{
-							Subsystem->ClearLandscapeCache();
-						}
+						PCGSubsystem->ClearLandscapeCache();
 					}
 				}
+				})),
+		NAME_None);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("CancelAllGeneration", "Cancel all PCG tasks"),
+		LOCTEXT("CancelAllGeneration_Tooltip", "Cancels all PCG tasks running"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([]() {
+				if (GEditor)
+				{
+					if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(GEditor->GetEditorWorldContext().World()))
+					{
+						PCGSubsystem->CancelAllGeneration();
+					}
+				}
+				})),
+		NAME_None);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("UpdatePCGBlueprintVariableVisibility", "Make all PCG blueprint variables visible to instances"),
+		LOCTEXT("UpdatePCGBlueprintVariableVisibility_Tooltip", "Will visit all PCG blueprints, update their Instance editable flag, unless there is already one variable that is visible"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([]() {
+				PCGEditorUtils::ForcePCGBlueprintVariableVisibility();
 				})),
 		NAME_None);
 }

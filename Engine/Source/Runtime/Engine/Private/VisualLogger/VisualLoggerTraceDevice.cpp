@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "VisualLogger/VisualLoggerTraceDevice.h"
-#include "VisualLogger/VisualLogger.h"
-#include "Serialization/BufferArchive.h"
-#include "ObjectTrace.h"
-
-#include "Trace/Trace.inl"
 
 #if ENABLE_VISUAL_LOG
+
+#include "Serialization/BufferArchive.h"
+#include "ObjectTrace.h"
+#include "Trace/Trace.inl"
+#include "VisualLogger/VisualLoggerCustomVersion.h"
 
 UE_TRACE_CHANNEL_DEFINE(VisualLoggerChannel);
 
@@ -26,14 +26,14 @@ void FVisualLoggerTraceDevice::Cleanup(bool bReleaseMemory)
 
 }
 
-void FVisualLoggerTraceDevice::StartRecordingToFile(float TimeStamp)
+void FVisualLoggerTraceDevice::StartRecordingToFile(double TimeStamp)
 {
 #if UE_TRACE_ENABLED
 	UE::Trace::ToggleChannel(TEXT("VisualLogger"), true); 
 #endif
 }
 
-void FVisualLoggerTraceDevice::StopRecordingToFile(float TimeStamp)
+void FVisualLoggerTraceDevice::StopRecordingToFile(double TimeStamp)
 {
 #if UE_TRACE_ENABLED
 	UE::Trace::ToggleChannel(TEXT("VisualLogger"), false); 

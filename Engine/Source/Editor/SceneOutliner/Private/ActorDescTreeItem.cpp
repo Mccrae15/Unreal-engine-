@@ -4,6 +4,7 @@
 #include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/LoaderAdapter/LoaderAdapterPinnedActors.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Layout/WidgetPath.h"
 #include "Framework/Application/MenuStack.h"
@@ -116,24 +117,13 @@ private:
 	{
 		if (TSharedPtr<FActorDescTreeItem> TreeItem = TreeItemPtr.Pin())
 		{
-			if (const FWorldPartitionActorDesc* ActorDesc = TreeItem->ActorDescHandle.Get())
+			if (FWorldPartitionActorDesc* ActorDesc = TreeItem->ActorDescHandle.Get())
 			{
 				FFormatNamedArguments Args;
 				Args.Add(TEXT("ActorLabel"), FText::FromString(TreeItem->GetDisplayString()));
-				
-				UActorDescContainer* ActorDescContainer = ActorDesc->GetContainer();
-				UWorld* World = ActorDescContainer != nullptr ? ActorDescContainer->GetWorld() : nullptr;
-				UWorldPartition* WorldPartition = World != nullptr ? World->GetWorldPartition() : nullptr;
-				if (WorldPartition && WorldPartition->IsActorPinned(ActorDesc->GetGuid()))
-				{
-					Args.Add(TEXT("UnloadState"), LOCTEXT("UnloadedDataLayer", "(Unloaded DataLayer)"));
-				}
-				else
-				{
-					Args.Add(TEXT("UnloadState"), LOCTEXT("UnloadedActorLabel", "(Unloaded)"));
-				}
+				Args.Add(TEXT("UnloadState"), FLoaderAdapterPinnedActors::GetUnloadedReason(ActorDesc));
 
-				return FText::Format(LOCTEXT("UnloadedActorDisplay", "{ActorLabel} {UnloadState}"), Args);
+				return FText::Format(LOCTEXT("UnloadedActorDisplay", "{ActorLabel} ({UnloadState})"), Args);
 			}
 		}
 		return FText();
@@ -288,7 +278,7 @@ void FActorDescTreeItem::FocusActorBounds() const
 	if (FWorldPartitionActorDesc const* ActorDesc = ActorDescHandle.Get())
 	{
 		const bool bActiveViewportOnly = true;
-		GEditor->MoveViewportCamerasToBox(ActorDesc->GetBounds(), bActiveViewportOnly, 0.5f);
+		GEditor->MoveViewportCamerasToBox(ActorDesc->GetEditorBounds(), bActiveViewportOnly, 0.5f);
 	}
 }
 
@@ -319,21 +309,12 @@ bool FActorDescTreeItem::GetVisibility() const
 
 bool FActorDescTreeItem::ShouldShowPinnedState() const
 {
-	if (ActorDescHandle.IsValid())
-	{
-		// Pinning of ActorDescs is only supported on the main world partition
-		if (UActorDescContainer* Container = ActorDescHandle->GetContainer())
-		{
-			return Container->IsMainPartitionContainer();
-		}
-	}
-
-	return false;
+	return FLoaderAdapterPinnedActors::SupportsPinning(ActorDescHandle.Get());
 }
 
 bool FActorDescTreeItem::GetPinnedState() const
 {
-	if (ActorDescHandle.IsValid())
+	if (ActorDescHandle.IsValid() && ActorDescHandle->GetContainer())
 	{
 		UWorldPartition* WorldPartition = ActorDescHandle->GetContainer()->GetWorld()->GetWorldPartition();
 		return WorldPartition ? WorldPartition->IsActorPinned(GetGuid()) : false;

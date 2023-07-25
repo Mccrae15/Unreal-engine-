@@ -1,34 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "AssetImporters/ProgressiveImportSurfaces.h"
+#include "BridgeDragDropHelper.h"
 #include "Utilities/MiscUtils.h"
+#include "Engine/StaticMeshActor.h"
 #include "Utilities/MaterialUtils.h"
 #include "MSSettings.h"
 
-#include "Misc/FileHelper.h"
-#include "Misc/ScopedSlowTask.h"
-#include "JsonObjectConverter.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Misc/Paths.h"
 
-#include "UObject/SoftObjectPath.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/AssetManager.h"
 
 #include "EditorViewportClient.h"
-#include "UnrealClient.h"
-#include "Engine/StaticMesh.h"
+#include "Engine/Texture.h"
 
 #include "MaterialEditingLibrary.h"
 
-#include "Async/AsyncWork.h"
-#include "Async/Async.h"
 
-#include "Kismet/GameplayStatics.h"
-#include "GameFramework/Actor.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/DecalActor.h"
+#include "Modules/ModuleManager.h"
 
 
 
@@ -209,7 +202,7 @@ void FImportProgressiveSurfaces::ImportAsset(TSharedPtr<FJsonObject> AssetImport
 
 void FImportProgressiveSurfaces::HandlePreviewTextureLoad(FAssetData TextureData, FString AssetID, FString Type)
 {
-	if (!IsValid(PreviewDetails[AssetID]->PreviewInstance))
+	if (!PreviewDetails.Contains(AssetID) || !IsValid(PreviewDetails[AssetID]->PreviewInstance))
 	{
 		return;
 	}
@@ -307,6 +300,7 @@ void FImportProgressiveSurfaces::HandleHighInstanceLoad(FAssetData HighInstanceD
 	for (AStaticMeshActor* UsedActor : PreviewDetails[AssetID]->ActorsInLevel)
 	{
 		if (!IsValid(UsedActor)) continue;
+		if (!IsValid(UsedActor->GetStaticMeshComponent())) continue;
 		if (!UsedActor) continue;
 		if (UsedActor == nullptr) continue;			
 

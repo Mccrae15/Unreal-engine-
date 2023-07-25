@@ -219,6 +219,7 @@ void UOculusXRMetahumanBodyRetargetAssetFactory::SetDefaults(const TSubclassOf<U
 		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightHandLittleDistal, "pinky_03_r");
 		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightHandLittleTip, NAME_None);
 
+
 		{
 			FOculusXRBoneCorrection FromOculusToUnreal;
 			FromOculusToUnreal.RotationOffset.Roll = -90;

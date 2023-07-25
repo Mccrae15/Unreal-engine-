@@ -281,7 +281,18 @@ public:
 	 * @return True if the builder was created and appended successfully and false if any error was encountered
 	 */
 	[[nodiscard]] bool BuildAndAppendTrailer(FLinkerSave* Linker, FArchive& DataArchive);
-	
+
+	/**
+	 * @param ExportsArchive	The linker associated with the package being written to disk.
+	 * @param DataArchive		The archive where the package data has been written to. This is where the FPackageTrailer will be written to
+	 * @param InOutPackageFileOffset The offset at which the trailer is written in the package file. In this function version,
+	 *        DataArchive might be an archive for the entire package file, or it might be a separate archive solely for the package trailer.
+	 *        The caller must provide the initial value with the accumulated offset, and the function will increment this value by how many
+	 *        bytes are written to DataArchive.
+	 * @return True if the builder was created and appended successfully and false if any error was encountered
+	 */
+	[[nodiscard]] bool BuildAndAppendTrailer(FLinkerSave* Linker, FArchive& DataArchive, int64& InOutPackageFileOffset);
+
 	/** Returns if the builder has any payload entries or not */
 	[[nodiscard]] bool IsEmpty() const;
 
@@ -421,11 +432,21 @@ public:
 	FPackageTrailer& operator=(FPackageTrailer&& Other) = default;
 
 	/** 
+	 * Returns true if the trailer contains actual data from a package file and false if it just contains the defaults of an unloaded
+	 * trailer.
+	 */
+	[[nodiscard]] bool IsValid() const
+	{
+		return Header.Tag == FHeader::HeaderTag;
+	}
+
+	/** 
 	 * Serializes the trailer from the given archive assuming that the seek position of the archive is already at the correct position
 	 * for the trailer.
 	 * 
 	 * @param Ar	The archive to load the trailer from
-	 * @return		True if a valid trailer was found and was able to be loaded, otherwise false.
+	 * @return		True if a valid trailer was found and was able to be loaded, otherwise false. If the trailer was found but failed
+	 *				to load then the archive will be set to the error state.
 	 */
 	[[nodiscard]] bool TryLoad(FArchive& Ar);
 
@@ -434,7 +455,8 @@ public:
 	 * and so will attempt to read the footer first and use that to find the start of the trailer in order to read the header.
 	 * 
 	 * @param Ar	The archive to load the trailer from
-	 * @return		True if a valid trailer was found and was able to be loaded, otherwise false.
+	 * @return		True if a valid trailer was found and was able to be loaded, otherwise false. If the trailer was found but failed
+	 *				to load then the archive will be set to the error state.
 	 */
 	[[nodiscard]] bool TryLoadBackwards(FArchive& Ar);
 
@@ -457,6 +479,11 @@ public:
 	 * @return True if the payload was in the trailer, otherwise false
 	 */
 	[[nodiscard]] bool UpdatePayloadAsVirtualized(const FIoHash& Identifier);
+
+	/**
+	 * Iterates over all payloads in the trailer and invokes the provoided callback on them
+	 */
+	void ForEachPayload(TFunctionRef<void(const FIoHash&, uint64, uint64, EPayloadAccessMode, UE::Virtualization::EPayloadFilterReason)> Callback) const;
 
 	/** Attempt to find the status of the given payload. @See EPayloadStatus */
 	[[nodiscard]] EPayloadStatus FindPayloadStatus(const FIoHash& Id) const;
@@ -562,6 +589,30 @@ private:
  * @return 				True if the package was parsed successfully (although it might not have contained any payloads) and false if opening or parsing the package file failed.
  */
 [[nodiscard]] COREUOBJECT_API bool FindPayloadsInPackageFile(const FPackagePath& PackagePath, EPayloadStorageType Filter, TArray<FIoHash>& OutPayloadIds);
+
+/** Allow EPayloadAccessMode to work with string builder */
+template <typename CharType>
+inline TStringBuilderBase<CharType>& operator<<(TStringBuilderBase<CharType>& Builder, EPayloadAccessMode Mode)
+{
+	switch (Mode)
+	{
+		case UE::EPayloadAccessMode::Local:
+			Builder << TEXT("Local");
+			break;
+		case UE::EPayloadAccessMode::Referenced:
+			Builder << TEXT("Referenced");
+			break;
+		case UE::EPayloadAccessMode::Virtualized:
+			Builder << TEXT("Virtualized");
+			break;
+		default:
+			Builder << TEXT("Invalid");
+			break;
+	}
+
+	return Builder;
+}
+
 
 } //namespace UE
 

@@ -14,6 +14,7 @@
 #include "Internationalization/TextKey.h"
 #include "Internationalization/LocKeyFuncs.h"
 #include "Internationalization/CulturePointer.h"
+#include "Internationalization/TextComparison.h"
 #include "Internationalization/TextLocalizationManager.h"
 #include "Internationalization/StringTableCoreFwd.h"
 #include "Internationalization/ITextData.h"
@@ -42,19 +43,6 @@ namespace ETextFlag
 		ConvertedProperty = (1 << 2),
 		Immutable = (1 << 3),
 		InitializedFromString = (1<<4),  // this ftext was initialized using FromString
-	};
-}
-
-namespace ETextComparisonLevel
-{
-	enum Type
-	{
-		Default,	// Locale-specific Default
-		Primary,	// Base
-		Secondary,	// Accent
-		Tertiary,	// Case
-		Quaternary,	// Punctuation
-		Quinary		// Identical
 	};
 }
 
@@ -134,7 +122,7 @@ CORE_API const TCHAR* LexToString(EDateTimeStyle::Type InValue);
 /** Redeclared in KismetTextLibrary for meta-data extraction purposes, be sure to update there as well */
 namespace EFormatArgumentType
 {
-	enum Type
+	enum Type : int
 	{
 		Int,
 		UInt,
@@ -155,7 +143,7 @@ typedef TSharedRef<const FTextFormatPatternDefinition, ESPMode::ThreadSafe> FTex
 typedef TSharedPtr<const FTextFormatPatternDefinition, ESPMode::ThreadSafe> FTextFormatPatternDefinitionConstPtr;
 
 /** Redeclared in KismetTextLibrary for meta-data extraction purposes, be sure to update there as well */
-enum ERoundingMode
+enum ERoundingMode : int
 {
 	/** Rounds to the nearest place, equidistant ties go to the value which is closest to an even value: 1.5 becomes 2, 0.5 becomes 0 */
 	HalfToEven,
@@ -259,7 +247,8 @@ struct CORE_API FNumberParsingOptions
 
 /**
  * Cached compiled expression used by the text formatter.
- * The compiled expression will automatically update if the display string is changed.
+ * The compiled expression will automatically update if the display string is changed,
+ * and is safe to be used as a function-level static.
  * See TextFormatter.cpp for the definition.
  */
 class CORE_API FTextFormat
@@ -560,12 +549,44 @@ public:
 
 	static void GetFormatPatternParameters(const FTextFormat& Fmt, TArray<FString>& ParameterNames);
 
+	/**
+	 * Format the given map of key->value pairs as named arguments within the given format pattern
+	 *
+	 * @note You may want to pre-compile your FText pattern into a FTextFormat prior to performing formats within a loop or on a critical path,
+	 *       as this can save CPU cycles, memory, and mutex resources vs re-compiling the pattern for each format call. See FTextFormat for more info.
+	 *
+	 * @param Fmt The format pattern to use
+	 * @param InArguments The map of key->value pairs to inject into the format pattern
+	 * @return The formatted FText
+	 */
 	static FText Format(FTextFormat Fmt, const FFormatNamedArguments& InArguments);
 	static FText Format(FTextFormat Fmt, FFormatNamedArguments&& InArguments);
 
+	/**
+	 * Format the given list values as ordered arguments within the given format pattern
+	 *
+	 * @note You may want to pre-compile your FText pattern into a FTextFormat prior to performing formats within a loop or on a critical path,
+	 *       as this can save CPU cycles, memory, and mutex resources vs re-compiling the pattern for each format call. See FTextFormat for more info.
+	 *
+	 * @param Fmt The format pattern to use
+	 * @param InArguments The list of values to inject into the format pattern
+	 * @return The formatted FText
+	 */
 	static FText Format(FTextFormat Fmt, const FFormatOrderedArguments& InArguments);
 	static FText Format(FTextFormat Fmt, FFormatOrderedArguments&& InArguments);
 
+	/**
+	 * Format the given list of variadic values as ordered arguments within the given format pattern
+	 *
+	 * @note You may want to pre-compile your FText pattern into a FTextFormat prior to performing formats within a loop or on a critical path, 
+	 *       as this can save CPU cycles, memory, and mutex resources vs re-compiling the pattern for each format call. See FTextFormat for more info.
+	 * 
+	 * @usage FText::Format(LOCTEXT("PlayerNameFmt", "{0} is really cool"), FText::FromString(PlayerName));
+	 * 
+	 * @param Fmt The format pattern to use
+	 * @param Args A variadic list of values to inject into the format pattern
+	 * @return The formatted FText
+	 */
 	template <typename... ArgTypes>
 	static FORCEINLINE FText Format(FTextFormat Fmt, ArgTypes... Args)
 	{
@@ -580,23 +601,31 @@ public:
 	}
 
 	/**
-	 * FormatNamed allows you to pass name <-> value pairs to the function to format automatically
+	 * Format the given list of variadic key->value pairs as named arguments within the given format pattern
 	 *
-	 * @usage FText::FormatNamed( FText::FromString( TEXT( "{PlayerName} is really cool" ) ), TEXT( "PlayerName" ), FText::FromString( TEXT( "Awesomegirl" ) ) );
-	 *
-	 * @param Fmt the format to create from
-	 * @param Args a variadic list of FString to Value (must be even numbered)
-	 * @return a formatted FText
+	 * @note You may want to pre-compile your FText pattern into a FTextFormat prior to performing formats within a loop or on a critical path,
+	 *       as this can save CPU cycles, memory, and mutex resources vs re-compiling the pattern for each format call. See FTextFormat for more info.
+	 * 
+	 * @usage FText::FormatNamed(LOCTEXT("PlayerNameFmt", "{PlayerName} is really cool"), TEXT("PlayerName"), FText::FromString(PlayerName));
+	 * 
+	 * @param Fmt The format pattern to use
+	 * @param Args A variadic list of "key then value" pairs to inject into the format pattern (must be an even number)
+	 * @return The formatted FText
 	 */
 	template < typename... TArguments >
 	static FText FormatNamed( FTextFormat Fmt, TArguments&&... Args );
 
 	/**
-	 * FormatOrdered allows you to pass a variadic list of types to use for formatting in order desired
+	 * Format the given list of variadic values as ordered arguments within the given format pattern
 	 *
-	 * @param Fmt the format to create from
-	 * @param Args a variadic list of values in order of desired formatting
-	 * @return a formatted FText
+	 * @note You may want to pre-compile your FText pattern into a FTextFormat prior to performing formats within a loop or on a critical path,
+	 *       as this can save CPU cycles, memory, and mutex resources vs re-compiling the pattern for each format call. See FTextFormat for more info.
+	 * 
+	 * @usage FText::FormatOrdered(LOCTEXT("PlayerNameFmt", "{0} is really cool"), FText::FromString(PlayerName));
+	 * 
+	 * @param Fmt The format pattern to use
+	 * @param Args A variadic list of values to inject into the format pattern
+	 * @return The formatted FText
 	 */
 	template < typename... TArguments >
 	static FText FormatOrdered( FTextFormat Fmt, TArguments&&... Args );

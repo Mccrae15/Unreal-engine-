@@ -10,19 +10,22 @@ namespace UnrealBuildTool.Rules
 
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
+					"Chaos",
 					"Core",
 					"CoreUObject",
 					"Engine",
 					"Landscape",
 					"Foliage",
+					"PhysicsCore",
 					"Projects",
 					"RenderCore",
 					"RHI",
+					"StructUtils"
 				});
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
-				{					
+				{
 					"Voronoi",
 				}
 			);
@@ -33,6 +36,7 @@ namespace UnrealBuildTool.Rules
 					new string[]
 					{
 						"UnrealEd",
+						"Settings",
 						"SourceControl",
 					}
 				);

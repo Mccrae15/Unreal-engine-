@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Diagnostics.CodeAnalysis;
+using System.Collections;
+using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -11,7 +12,7 @@ namespace EpicGames.Core
 	/// <summary>
 	/// Defines a preformatted Json log event, which can pass through raw Json data directly or format it as a regular string
 	/// </summary>
-	public struct JsonLogEvent
+	public struct JsonLogEvent : IEnumerable<KeyValuePair<string, object?>>
 	{
 		/// <summary>
 		/// The log level
@@ -37,6 +38,14 @@ namespace EpicGames.Core
 		/// The utf-8 encoded JSON event
 		/// </summary>
 		public ReadOnlyMemory<byte> Data { get; }
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		public JsonLogEvent(LogEvent logEvent)
+			: this(logEvent.Level, logEvent.Id, logEvent.LineIndex, logEvent.LineCount, logEvent.ToJsonBytes())
+		{
+		}
 
 		/// <summary>
 		/// Constructor
@@ -147,7 +156,9 @@ namespace EpicGames.Core
 		static readonly sbyte[] s_firstCharToLogLevel;
 		static readonly byte[][] s_logLevelNames;
 
+#pragma warning disable CA2207 // Initialize value type static fields inline
 		static JsonLogEvent()
+#pragma warning restore CA2207 // Initialize value type static fields inline
 		{
 			const int LogLevelCount = (int)LogLevel.None;
 
@@ -235,5 +246,27 @@ namespace EpicGames.Core
 
 		/// <inheritdoc/>
 		public override string ToString() => Encoding.UTF8.GetString(Data.ToArray());
+
+		/// <inheritdoc/>
+		public IEnumerator<KeyValuePair<string, object?>> GetEnumerator() => LogEvent.Read(Data.Span).GetEnumerator();
+
+		/// <inheritdoc/>
+		IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+	}
+
+	/// <summary>
+	/// Extension methods for <see cref="JsonLogEvent"/>
+	/// </summary>
+	public static class JsonLogEventExtensions
+	{
+		/// <summary>
+		/// Logs a <see cref="JsonLogEvent"/> to the given logger
+		/// </summary>
+		/// <param name="logger">Logger to write to</param>
+		/// <param name="jsonLogEvent">Json log event to write</param>
+		public static void LogJsonLogEvent(this ILogger logger, JsonLogEvent jsonLogEvent)
+		{
+			logger.Log(jsonLogEvent.Level, jsonLogEvent.EventId, jsonLogEvent, null, JsonLogEvent.Format);
+		}
 	}
 }

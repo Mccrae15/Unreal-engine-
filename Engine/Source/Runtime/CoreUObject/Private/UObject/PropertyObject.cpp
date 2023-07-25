@@ -10,6 +10,27 @@
 #include "UObject/LinkerPlaceholderClass.h"
 #include "UObject/PropertyHelper.h"
 
+namespace UE::Core::Private
+{
+	// Dummy struct to satisfy [Get/Set]WrappedUObjectPtrValues_InContainer API requirements (Get() function)
+	struct FWrappedObjectPtr
+	{
+		UObject* Obj = nullptr;
+
+		FWrappedObjectPtr() = default;
+
+		FWrappedObjectPtr(UObject* InObj)
+			: Obj(InObj)
+		{
+		}
+
+		UObject* Get() const
+		{
+			return Obj;
+		}
+	};
+}
+
 /*-----------------------------------------------------------------------------
 	FObjectProperty.
 -----------------------------------------------------------------------------*/
@@ -101,10 +122,12 @@ void FObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* Value
 		TObjectPtr<UObject>* ObjectPtr = GetPropertyValuePtr(Value);
 		Slot << (*ObjectPtr);
 
+#if !(UE_BUILD_TEST || UE_BUILD_SHIPPING) 
 		if(!UnderlyingArchive.IsSaving())
 		{
 			CheckValidObject(ObjectPtr, *ObjectPtr);
 		}
+#endif
 	}
 	else
 	{
@@ -190,16 +213,9 @@ UObject* FObjectProperty::GetObjectPropertyValue(const void* PropertyValueAddres
 
 UObject* FObjectProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
 {
-	// Dummy struct to satisfy GetWrappedObjectPropertyValue_InContainer API requirements (Get() function)
-	struct FWrappedObjectPtr
-	{
-		UObject* Obj = nullptr;
-		UObject* Get() const
-		{
-			return Obj;
-		}
-	};
-	return GetWrappedObjectPropertyValue_InContainer<FWrappedObjectPtr>(ContainerAddress, ArrayIndex);
+	UObject* Result = nullptr;
+	GetWrappedUObjectPtrValues_InContainer<UE::Core::Private::FWrappedObjectPtr>(&Result, ContainerAddress, ArrayIndex, 1);
+	return Result;
 }
 
 void FObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const
@@ -216,22 +232,22 @@ void FObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UObject
 
 void FObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex) const
 {
-	// Dummy struct to satisfy SetWrappedObjectPropertyValue_InContainer API requirements
-	struct FWrappedObjectPtr
-	{
-		FWrappedObjectPtr() = default;
-		FWrappedObjectPtr(UObject* InObj)
-			: Obj(InObj)
-		{
-		}
-		UObject* Obj = nullptr;
-	};
 	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
 	{
-		SetWrappedObjectPropertyValue_InContainer<FWrappedObjectPtr>(ContainerAddress, Value, ArrayIndex);
+		SetWrappedUObjectPtrValues_InContainer<UE::Core::Private::FWrappedObjectPtr>(ContainerAddress, &Value, ArrayIndex, 1);
 	}
 	else
 	{
 		UE_LOG(LogProperty, Verbose /*Warning*/, TEXT("Trying to assign null object value to non-nullable \"%s\""), *GetFullName());
 	}
+}
+
+void FObjectProperty::CopyCompleteValueToScriptVM_InContainer(void* OutValue, void const* InContainer) const
+{
+	GetWrappedUObjectPtrValues_InContainer<UE::Core::Private::FWrappedObjectPtr>((UObject**)OutValue, InContainer, 0, ArrayDim);
+}
+
+void FObjectProperty::CopyCompleteValueFromScriptVM_InContainer(void* OutContainer, void const* InValue) const
+{
+	SetWrappedUObjectPtrValues_InContainer<UE::Core::Private::FWrappedObjectPtr>(OutContainer, (UObject**)InValue, 0, ArrayDim);
 }

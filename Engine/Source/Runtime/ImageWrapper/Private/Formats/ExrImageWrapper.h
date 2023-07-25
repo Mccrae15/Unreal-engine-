@@ -6,8 +6,9 @@
 
 #include "ImageWrapperBase.h"
 
-#if WITH_UNREALEXR
+#if WITH_UNREALEXR || WITH_UNREALEXR_MINIMAL
 
+#if WITH_UNREALEXR
 THIRD_PARTY_INCLUDES_START
 	#include "Imath/ImathBox.h"
 	#include "OpenEXR/ImfArray.h"
@@ -17,10 +18,11 @@ THIRD_PARTY_INCLUDES_START
 	#include "OpenEXR/ImfInputFile.h"
 	#include "OpenEXR/ImfOutputFile.h"
 	#include "OpenEXR/ImfRgbaFile.h"
+	#include "OpenEXR/ImfStandardAttributes.h"
 	#include "OpenEXR/ImfStdIO.h"
 	#include "OpenEXR/ImfVersion.h"
 THIRD_PARTY_INCLUDES_END
-
+#endif
 
 /**
  * OpenEXR implementation of the helper class
@@ -39,7 +41,6 @@ public:
 
 	//~ FImageWrapper interface
 
-	virtual bool SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth, const int32 InBytesPerRow = 0) override;
 	virtual bool SetCompressed(const void* InCompressedData, int64 InCompressedSize) override;
 	virtual void Compress(int32 Quality) override;
 	virtual void Uncompress(const ERGBFormat InFormat, int32 InBitDepth) override;

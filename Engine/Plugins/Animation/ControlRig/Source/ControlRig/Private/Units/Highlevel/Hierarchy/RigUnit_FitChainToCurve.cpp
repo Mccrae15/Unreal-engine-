@@ -1,23 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Units/Highlevel/Hierarchy/RigUnit_FitChainToCurve.h"
+#include "Units/Debug/RigUnit_DebugBezier.h"
 #include "Units/RigUnitContext.h"
+#include "Math/ControlRigMathLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_FitChainToCurve)
 
 FRigUnit_FitChainToCurve_Execute()
 {
-	if (Context.State == EControlRigState::Init)
-	{
-		WorkData.CachedItems.Reset();
-		return;
-	}
-
 	FRigElementKeyCollection Items;
 	if(WorkData.CachedItems.Num() == 0)
 	{
 		Items = FRigElementKeyCollection::MakeFromChain(
-			Context.Hierarchy,
+			ExecuteContext.Hierarchy,
 			FRigElementKey(StartBone, ERigElementType::Bone),
 			FRigElementKey(EndBone, ERigElementType::Bone),
 			false /* reverse */
@@ -25,7 +21,7 @@ FRigUnit_FitChainToCurve_Execute()
 	}
 
 	FRigUnit_FitChainToCurvePerItem::StaticExecute(
-		RigVMExecuteContext, 
+		ExecuteContext, 
 		Items,
 		Bezier,
 		Alignment,
@@ -40,9 +36,7 @@ FRigUnit_FitChainToCurve_Execute()
 		Weight,
 		bPropagateToChildren,
 		DebugSettings,
-		WorkData,
-		ExecuteContext, 
-		Context);
+		WorkData);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_FitChainToCurve::GetUpgradeInfo() const
@@ -54,7 +48,7 @@ FRigVMStructUpgradeInfo FRigUnit_FitChainToCurve::GetUpgradeInfo() const
 FRigUnit_FitChainToCurvePerItem_Execute()
 {
 	FRigUnit_FitChainToCurveItemArray::StaticExecute(
-		RigVMExecuteContext,
+		ExecuteContext,
 		Items.Keys,
 		Bezier,
 		Alignment,
@@ -69,9 +63,7 @@ FRigUnit_FitChainToCurvePerItem_Execute()
 		Weight,
 		bPropagateToChildren,
 		DebugSettings,
-		WorkData,
-		ExecuteContext,
-		Context);
+		WorkData);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_FitChainToCurvePerItem::GetUpgradeInfo() const
@@ -100,12 +92,6 @@ FRigUnit_FitChainToCurveItemArray_Execute()
 	TArray<int32>& ItemRotationB = WorkData.ItemRotationB;
 	TArray<float>& ItemRotationT = WorkData.ItemRotationT;
 	TArray<FTransform>& ItemLocalTransforms = WorkData.ItemLocalTransforms;
-
-	if (Context.State == EControlRigState::Init)
-	{
-		CachedItems.Reset();
-		return;
-	}
 
 	if(CachedItems.Num() == 0 && Items.Num() > 1)
 	{
@@ -456,17 +442,17 @@ FRigUnit_FitChainToCurveItemArray_Execute()
 		}
 	}
 
-	if (Context.DrawInterface != nullptr && DebugSettings.bEnabled)
+	if (ExecuteContext.GetDrawInterface() != nullptr && DebugSettings.bEnabled)
 	{
-		Context.DrawInterface->DrawBezier(DebugSettings.WorldOffset, Bezier, 0.f, 1.f, DebugSettings.CurveColor, DebugSettings.Scale, 64);
-		Context.DrawInterface->DrawPoint(DebugSettings.WorldOffset, Bezier.A, DebugSettings.Scale * 6, DebugSettings.CurveColor);
-		Context.DrawInterface->DrawPoint(DebugSettings.WorldOffset, Bezier.B, DebugSettings.Scale * 6, DebugSettings.CurveColor);
-		Context.DrawInterface->DrawPoint(DebugSettings.WorldOffset, Bezier.C, DebugSettings.Scale * 6, DebugSettings.CurveColor);
-		Context.DrawInterface->DrawPoint(DebugSettings.WorldOffset, Bezier.D, DebugSettings.Scale * 6, DebugSettings.CurveColor);
-		Context.DrawInterface->DrawLineStrip(DebugSettings.WorldOffset, CurvePositions, DebugSettings.SegmentsColor, DebugSettings.Scale);
-		Context.DrawInterface->DrawPoints(DebugSettings.WorldOffset, CurvePositions, DebugSettings.Scale * 4.f, DebugSettings.SegmentsColor);
-		// Context.DrawInterface->DrawPoints(DebugSettings.WorldOffset, CurvePositions, DebugSettings.Scale * 3.f, FLinearColor::Blue);
-		// Context.DrawInterface->DrawPoints(DebugSettings.WorldOffset, ItemPositions, DebugSettings.Scale * 6.f, DebugSettings.SegmentsColor);
+		FRigUnit_DebugBezierItemSpace::DrawBezier(ExecuteContext, DebugSettings.WorldOffset, Bezier, 0.f, 1.f, DebugSettings.CurveColor, DebugSettings.Scale, 64);
+		ExecuteContext.GetDrawInterface()->DrawPoint(DebugSettings.WorldOffset, Bezier.A, DebugSettings.Scale * 6, DebugSettings.CurveColor);
+		ExecuteContext.GetDrawInterface()->DrawPoint(DebugSettings.WorldOffset, Bezier.B, DebugSettings.Scale * 6, DebugSettings.CurveColor);
+		ExecuteContext.GetDrawInterface()->DrawPoint(DebugSettings.WorldOffset, Bezier.C, DebugSettings.Scale * 6, DebugSettings.CurveColor);
+		ExecuteContext.GetDrawInterface()->DrawPoint(DebugSettings.WorldOffset, Bezier.D, DebugSettings.Scale * 6, DebugSettings.CurveColor);
+		ExecuteContext.GetDrawInterface()->DrawLineStrip(DebugSettings.WorldOffset, CurvePositions, DebugSettings.SegmentsColor, DebugSettings.Scale);
+		ExecuteContext.GetDrawInterface()->DrawPoints(DebugSettings.WorldOffset, CurvePositions, DebugSettings.Scale * 4.f, DebugSettings.SegmentsColor);
+		// ExecuteContext.GetDrawInterface()->DrawPoints(DebugSettings.WorldOffset, CurvePositions, DebugSettings.Scale * 3.f, FLinearColor::Blue);
+		// ExecuteContext.GetDrawInterface()->DrawPoints(DebugSettings.WorldOffset, ItemPositions, DebugSettings.Scale * 6.f, DebugSettings.SegmentsColor);
 	}
 }
 

@@ -39,9 +39,16 @@ enum class EPCGDataType : uint32
 	Volume = 1 << 7,
 	Primitive = 1 << 8,
 
-	Spatial = Point | PolyLine | Surface | Volume | Primitive,
+	/** Simple concrete data. */
+	Concrete = Point | PolyLine | Surface | Volume | Primitive,
 
-	Param = 1 << 27,
+	/** Boolean operations like union, difference, intersection. */
+	Composite = 1 << 9 UMETA(Hidden),
+
+	/** Combinations of concrete data and/or boolean operations. */
+	Spatial = Composite | Concrete,
+
+	Param = 1 << 27 UMETA(DisplayName = "Attribute Set"),
 	Settings = 1 << 28 UMETA(Hidden),
 	Other = 1 << 29,
 	Any = (1 << 30) - 1
@@ -52,5 +59,18 @@ namespace PCGPinConstants
 {
 	const FName DefaultInputLabel = TEXT("In");
 	const FName DefaultOutputLabel = TEXT("Out");
-	const FName DefaultParamsLabel = TEXT("Params");
+	const FName DefaultParamsLabel = TEXT("Overrides");
+}
+
+// Metadata used by PCG
+namespace PCGObjectMetadata
+{
+	const FName Overridable = TEXT("PCG_Overridable");
+
+	// Metadata usable in UPROPERTY for customizing the behavior when displaying the property in a property panel or graph node
+	enum
+	{
+		/// [PropertyMetadata] Indicates that the property is overridable by params.
+		PCG_Overridable
+	};
 }

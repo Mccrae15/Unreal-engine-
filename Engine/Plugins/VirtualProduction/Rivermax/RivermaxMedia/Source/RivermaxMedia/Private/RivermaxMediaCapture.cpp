@@ -2,6 +2,7 @@
 
 #include "RivermaxMediaCapture.h"
 
+#include "Async/Fundamental/Task.h"
 #include "IRivermaxCoreModule.h"
 #include "IRivermaxManager.h"
 #include "IRivermaxOutputStream.h"
@@ -21,6 +22,13 @@
 
 DECLARE_GPU_STAT(Rivermax_Capture);
 DECLARE_GPU_STAT(Rivermax_SyncPointPass);
+
+
+static TAutoConsoleVariable<int32> CVarRivermaxPollTaskPriority(
+	TEXT("Rivermax.Output.PollTaskPriority"), static_cast<int32>(LowLevelTasks::ETaskPriority::High),
+	TEXT("Priority of the task responsible to poll the render fence"),
+	ECVF_Default);
+
 
 
 /** Structure holding data used for synchronization of buffer output */
@@ -88,7 +96,7 @@ namespace UE::RivermaxMediaCaptureUtil
 		return FIntPoint(AlignedHorizontalResolution, InSize.Y);
 	}
 
-	void GetOutputEncodingInfo(ERivermaxMediaOutputPixelFormat InPixelFormat, const FIntPoint& InSize, uint32& OutBytesPerElement, uint32& ElementsPerRow)
+	void GetOutputEncodingInfo(ERivermaxMediaOutputPixelFormat InPixelFormat, const FIntPoint& InSize, uint32& OutBytesPerElement, uint32& OutElementsPerFrame)
 	{
 		using namespace UE::RivermaxCore;
 
@@ -98,8 +106,9 @@ namespace UE::RivermaxMediaCaptureUtil
 		// Compute horizontal byte count (stride) of aligned resolution
 		const uint32 PixelAlignment = Info.PixelGroupCoverage;
 		const FIntPoint AlignedResolution = GetAlignedResolution(Info, InSize);
-		const uint32 PixelGroupCount = AlignedResolution.X / PixelAlignment;
-		const uint32 HorizontalByteCount = PixelGroupCount * Info.PixelGroupSize;
+		const uint32 PixelCount = AlignedResolution.X * AlignedResolution.Y;
+		const uint32 PixelGroupCount = PixelCount / PixelAlignment;
+		const uint32 FrameByteCount = PixelGroupCount * Info.PixelGroupSize;
 
 		switch (InPixelFormat)
 		{
@@ -136,7 +145,7 @@ namespace UE::RivermaxMediaCaptureUtil
 		}
 
 		// Shader encoding might not align with pixel group size so we need to have enough elements to represent the last pixel group
-		ElementsPerRow = FMath::CeilToInt32((float)HorizontalByteCount / OutBytesPerElement);
+		OutElementsPerFrame = FMath::CeilToInt32((float)FrameByteCount / OutBytesPerElement);
 	}
 }
 
@@ -272,7 +281,7 @@ bool URivermaxMediaCapture::AreSyncHandlersBusy() const
 	return SyncHandlers.ContainsByPredicate(IsBusyFunc);
 }
 
-bool URivermaxMediaCapture::ConfigureStream(URivermaxMediaOutput* InMediaOutput, UE::RivermaxCore::FRivermaxStreamOptions& OutOptions) const
+bool URivermaxMediaCapture::ConfigureStream(URivermaxMediaOutput* InMediaOutput, UE::RivermaxCore::FRivermaxOutputStreamOptions& OutOptions) const
 {
 	using namespace UE::RivermaxCore;
 
@@ -292,14 +301,26 @@ bool URivermaxMediaCapture::ConfigureStream(URivermaxMediaOutput* InMediaOutput,
 
 	OutOptions.StreamAddress = InMediaOutput->StreamAddress;
 	OutOptions.Port = InMediaOutput->Port;
-	OutOptions.Resolution = InMediaOutput->Resolution;
+	OutOptions.Resolution = GetDesiredSize();
+
+	if (OutOptions.Resolution.X <= 0 || OutOptions.Resolution.Y <= 0)
+	{
+		UE_LOG(LogRivermaxMedia, Warning, TEXT("Can't start capture. Invalid resolution requested: %dx%d"), OutOptions.Resolution.X, OutOptions.Resolution.Y);
+		return false;
+	}
+
 	OutOptions.FrameRate = InMediaOutput->FrameRate;
 	OutOptions.NumberOfBuffers = InMediaOutput->NumberOfTextureBuffers;
 	OutOptions.bUseGPUDirect = InMediaOutput->bUseGPUDirect;
+	OutOptions.AlignmentMode = UE::RivermaxMediaUtils::Private::MediaOutputAlignmentToRivermaxAlignment(InMediaOutput->AlignmentMode);
+
+	// Setup alignment dependent configs
+	OutOptions.bDoContinuousOutput = OutOptions.AlignmentMode == ERivermaxAlignmentMode::AlignmentPoint ? InMediaOutput->bDoContinuousOutput : false;
+	OutOptions.bDoFrameCounterTimestamping = OutOptions.AlignmentMode == ERivermaxAlignmentMode::FrameCreation ? InMediaOutput->bDoFrameCounterTimestamping : false;
 
 	OutOptions.PixelFormat = UE::RivermaxMediaUtils::Private::MediaOutputPixelFormatToRivermaxSamplingType(InMediaOutput->PixelFormat);
 	const FVideoFormatInfo Info = FStandardVideoFormat::GetVideoFormatInfo(OutOptions.PixelFormat);
-	OutOptions.AlignedResolution = UE::RivermaxMediaCaptureUtil::GetAlignedResolution(Info, InMediaOutput->Resolution);
+	OutOptions.AlignedResolution = UE::RivermaxMediaCaptureUtil::GetAlignedResolution(Info, OutOptions.Resolution);
 
 	return true;
 }
@@ -321,7 +342,7 @@ void URivermaxMediaCapture::AddSyncPointPass(FRDGBuilder& GraphBuilder, const FC
 
 	// Prepare frame info we are going to push
 	UE::RivermaxCore::FRivermaxOutputVideoFrameInfo NewFrameInfo;
-	NewFrameInfo.FrameIdentifier = InBaseData.SourceFrameNumber;
+	NewFrameInfo.FrameIdentifier = InBaseData.SourceFrameNumberRenderThread;
 
 	URivermaxMediaCapture* Capturer = this;
 	GraphBuilder.AddPass(
@@ -350,7 +371,8 @@ void URivermaxMediaCapture::AddSyncPointPass(FRDGBuilder& GraphBuilder, const FC
 						// Wait until fence has been written (shader has completed)
 						while (SyncDataPtr->RHIFence->Poll() == false && Capturer->bIsActive)
 						{
-							FPlatformProcess::SleepNoStats(0);
+							constexpr float SleepTimeSeconds = 50 * 1E-6;
+							FPlatformProcess::SleepNoStats(SleepTimeSeconds);
 						}
 
 						SyncDataPtr->RHIFence->Clear();
@@ -365,7 +387,7 @@ void URivermaxMediaCapture::AddSyncPointPass(FRDGBuilder& GraphBuilder, const FC
 							}
 						}
 
-					}, LowLevelTasks::ETaskPriority::BackgroundHigh);
+					}, static_cast<LowLevelTasks::ETaskPriority>(CVarRivermaxPollTaskPriority.GetValueOnAnyThread()));
 				}
 			}
 		});
@@ -382,7 +404,30 @@ void URivermaxMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseDa
 	NewFrame.Width = Width;
 	NewFrame.Stride = BytesPerRow;
 	NewFrame.VideoBuffer = InBuffer;
-	NewFrame.FrameIdentifier = InBaseData.SourceFrameNumber;
+	NewFrame.FrameIdentifier = InBaseData.SourceFrameNumberRenderThread;
+	if (RivermaxStream->PushVideoFrame(NewFrame) == false)
+	{
+		UE_LOG(LogRivermaxMedia, Verbose, TEXT("Failed to pushed captured frame"));
+	}
+}
+
+void URivermaxMediaCapture::OnRHIResourceCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FBufferRHIRef InBuffer)
+{
+	// To implement when we start using media capture fence task
+}
+
+void URivermaxMediaCapture::OnFrameCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, const FMediaCaptureResourceData& InResourceData)
+{
+	using namespace UE::RivermaxCore;
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(URivermaxMediaCapture::OnFrameCaptured_AnyThread);
+	
+	FRivermaxOutputVideoFrameInfo NewFrame;
+	NewFrame.Height = InResourceData.Height;
+	NewFrame.Width = InResourceData.Width;
+	NewFrame.Stride = InResourceData.BytesPerRow;
+	NewFrame.VideoBuffer = InResourceData.Buffer;
+	NewFrame.FrameIdentifier = InBaseData.SourceFrameNumberRenderThread;
 	if (RivermaxStream->PushVideoFrame(NewFrame) == false)
 	{
 		UE_LOG(LogRivermaxMedia, Verbose, TEXT("Failed to pushed captured frame"));
@@ -394,9 +439,9 @@ FIntPoint URivermaxMediaCapture::GetCustomOutputSize(const FIntPoint& InSize) co
 	URivermaxMediaOutput* RivermaxOutput = CastChecked<URivermaxMediaOutput>(MediaOutput);
 
 	uint32 BytesPerElement = 0;
-	uint32 ElementsPerRow = 0;
-	UE::RivermaxMediaCaptureUtil::GetOutputEncodingInfo(RivermaxOutput->PixelFormat, InSize, BytesPerElement, ElementsPerRow);
-	return FIntPoint(ElementsPerRow, InSize.Y);
+	uint32 ElementsPerFrame = 0;
+	UE::RivermaxMediaCaptureUtil::GetOutputEncodingInfo(RivermaxOutput->PixelFormat, InSize, BytesPerElement, ElementsPerFrame);
+	return FIntPoint(ElementsPerFrame, 1);
 }
 
 EMediaCaptureResourceType URivermaxMediaCapture::GetCustomOutputResourceType() const
@@ -424,9 +469,9 @@ FRDGBufferDesc URivermaxMediaCapture::GetCustomBufferDescription(const FIntPoint
 	URivermaxMediaOutput* RivermaxOutput = CastChecked<URivermaxMediaOutput>(MediaOutput);
 
 	uint32 BytesPerElement = 0;
-	uint32 ElementsPerRow = 0;
-	UE::RivermaxMediaCaptureUtil::GetOutputEncodingInfo(RivermaxOutput->PixelFormat, InDesiredSize, BytesPerElement, ElementsPerRow);
-	FRDGBufferDesc Desc = FRDGBufferDesc::CreateStructuredDesc(BytesPerElement, ElementsPerRow * InDesiredSize.Y);
+	uint32 ElementsPerFrame = 0;
+	UE::RivermaxMediaCaptureUtil::GetOutputEncodingInfo(RivermaxOutput->PixelFormat, InDesiredSize, BytesPerElement, ElementsPerFrame);
+	FRDGBufferDesc Desc = FRDGBufferDesc::CreateStructuredDesc(BytesPerElement, ElementsPerFrame);
 	
 	// Required when GPUDirect using CUDA will be involved
 	Desc.Usage |= EBufferUsageFlags::Shared;
@@ -446,15 +491,15 @@ void URivermaxMediaCapture::OnCustomCapture_RenderingThread(FRDGBuilder& GraphBu
 	// Rectangle area to use from source. This is used when source render target is bigger than output resolution
 	const FIntRect ViewRect(CopyInfo.GetSourceRect());
 	constexpr bool bDoLinearToSRGB = false;
-	const FIntPoint SourceSize = { InSourceTexture->Desc.Extent.X, InSourceTexture->Desc.Extent.Y };
-	const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(DesiredOutputSize, FComputeShaderUtils::kGolden2DGroupSize);
+	const FIntPoint CaptureSize = Options.AlignedResolution;
+	const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(DesiredOutputSize.X, 64);
 	
 	switch (RivermaxOutput->PixelFormat)
 	{
 	case ERivermaxMediaOutputPixelFormat::PF_8BIT_YUV422:
 	{
 		TShaderMapRef<FRGBToYUV8Bit422CS> ComputeShader(GlobalShaderMap);
-		FRGBToYUV8Bit422CS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, SourceSize, ViewRect, DesiredOutputSize, MediaShaders::RgbToYuvRec709Scaled, MediaShaders::YUVOffset8bits, bDoLinearToSRGB, OutputBuffer);
+		FRGBToYUV8Bit422CS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, CaptureSize, ViewRect, DesiredOutputSize, MediaShaders::RgbToYuvRec709Scaled, MediaShaders::YUVOffset8bits, bDoLinearToSRGB, OutputBuffer);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder
@@ -468,7 +513,7 @@ void URivermaxMediaCapture::OnCustomCapture_RenderingThread(FRDGBuilder& GraphBu
 	case ERivermaxMediaOutputPixelFormat::PF_10BIT_YUV422:
 	{
 		TShaderMapRef<FRGBToYUV10Bit422LittleEndianCS> ComputeShader(GlobalShaderMap);
-		FRGBToYUV10Bit422LittleEndianCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, SourceSize, ViewRect, DesiredOutputSize, MediaShaders::RgbToYuvRec709Scaled, MediaShaders::YUVOffset10bits, bDoLinearToSRGB, OutputBuffer);
+		FRGBToYUV10Bit422LittleEndianCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, CaptureSize, ViewRect, DesiredOutputSize, MediaShaders::RgbToYuvRec709Scaled, MediaShaders::YUVOffset10bits, bDoLinearToSRGB, OutputBuffer);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder
@@ -482,7 +527,7 @@ void URivermaxMediaCapture::OnCustomCapture_RenderingThread(FRDGBuilder& GraphBu
 	case ERivermaxMediaOutputPixelFormat::PF_8BIT_RGB:
 	{
 		TShaderMapRef<FRGBToRGB8BitCS> ComputeShader(GlobalShaderMap);
-		FRGBToRGB8BitCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, SourceSize, ViewRect, DesiredOutputSize, OutputBuffer);
+		FRGBToRGB8BitCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, CaptureSize, ViewRect, DesiredOutputSize, OutputBuffer);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder
@@ -496,7 +541,7 @@ void URivermaxMediaCapture::OnCustomCapture_RenderingThread(FRDGBuilder& GraphBu
 	case ERivermaxMediaOutputPixelFormat::PF_10BIT_RGB:
 	{
 		TShaderMapRef<FRGBToRGB10BitCS> ComputeShader(GlobalShaderMap);
-		FRGBToRGB10BitCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, SourceSize, ViewRect, DesiredOutputSize, OutputBuffer);
+		FRGBToRGB10BitCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, CaptureSize, ViewRect, DesiredOutputSize, OutputBuffer);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder
@@ -510,7 +555,7 @@ void URivermaxMediaCapture::OnCustomCapture_RenderingThread(FRDGBuilder& GraphBu
 	case ERivermaxMediaOutputPixelFormat::PF_12BIT_RGB:
 	{
 		TShaderMapRef<FRGBToRGB12BitCS> ComputeShader(GlobalShaderMap);
-		FRGBToRGB12BitCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, SourceSize, ViewRect, DesiredOutputSize, OutputBuffer);
+		FRGBToRGB12BitCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, CaptureSize, ViewRect, DesiredOutputSize, OutputBuffer);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder
@@ -524,7 +569,7 @@ void URivermaxMediaCapture::OnCustomCapture_RenderingThread(FRDGBuilder& GraphBu
 	case ERivermaxMediaOutputPixelFormat::PF_FLOAT16_RGB:
 	{
 		TShaderMapRef<FRGBToRGB16fCS> ComputeShader(GlobalShaderMap);
-		FRGBToRGB16fCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, SourceSize, ViewRect, DesiredOutputSize, OutputBuffer);
+		FRGBToRGB16fCS::FParameters* Parameters = ComputeShader->AllocateAndSetParameters(GraphBuilder, InSourceTexture, CaptureSize, ViewRect, DesiredOutputSize, OutputBuffer);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder

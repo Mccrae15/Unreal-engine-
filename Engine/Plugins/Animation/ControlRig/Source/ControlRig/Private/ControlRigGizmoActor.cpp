@@ -19,6 +19,7 @@ AControlRigShapeActor::AControlRigShapeActor(const FObjectInitializer& ObjectIni
 	, OverrideColor(0, 0, 0, 0)
 	, bSelected(false)
 	, bHovered(false)
+	, bSelectable(true)
 {
 
 	ActorRootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("SceneComponent0"));
@@ -31,6 +32,10 @@ AControlRigShapeActor::AControlRigShapeActor(const FObjectInitializer& ObjectIni
 	StaticMeshComponent->HitProxyPriority = HPP_Wireframe;
 #endif
 
+#if WITH_EDITOR
+	StaticMeshComponent->bAlwaysAllowTranslucentSelect = true;
+#endif
+
 	RootComponent = ActorRootComponent;
 	StaticMeshComponent->SetupAttachment(RootComponent);
 	StaticMeshComponent->bCastStaticShadow = false;
@@ -38,12 +43,9 @@ AControlRigShapeActor::AControlRigShapeActor(const FObjectInitializer& ObjectIni
 	StaticMeshComponent->bSelectable = true;
 }
 
+//client should check to see if it's seletable based upon how the selection occurs (viewport or outliner,etc..)
 void AControlRigShapeActor::SetSelected(bool bInSelected)
 {
-	if(!IsSelectable() && bInSelected)
-	{
-		return;
-	}
 	if(bSelected != bInSelected)
 	{
 		bSelected = bInSelected;
@@ -59,15 +61,16 @@ bool AControlRigShapeActor::IsSelectedInEditor() const
 
 bool AControlRigShapeActor::IsSelectable() const
 {
-	return StaticMeshComponent->bSelectable;
+	return bSelectable;
 }
 
+//we no longer set the StaticMeshComponent bSelectable flag since that drives if it can move with a gizmo or not
 void AControlRigShapeActor::SetSelectable(bool bInSelectable)
 {
-	if (StaticMeshComponent->bSelectable != bInSelectable)
+	if (bSelectable != bInSelectable)
 	{
-		StaticMeshComponent->bSelectable = bInSelectable;
-		if (!StaticMeshComponent->bSelectable)
+		bSelectable = bInSelectable;
+		if (!bSelectable)
 		{
 			SetSelected(false);
 		}

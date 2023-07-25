@@ -5,15 +5,19 @@
 =============================================================================*/
 
 #include "Engine/TextureCubeArray.h"
-#include "Containers/ResourceArray.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "Engine/TextureCube.h"
 #include "EngineUtils.h"
+#include "EngineLogs.h"
 #include "ImageUtils.h"
+#include "Misc/CoreStats.h"
 #include "Misc/ScopedSlowTask.h"
 #include "RenderUtils.h"
+#include "Stats/StatsTrace.h"
 #include "TextureCompiler.h"
 #include "TextureResource.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TextureCubeArray)
@@ -135,6 +139,7 @@ public:
 
 		TextureCubeRHI = RHICreateTexture(Desc);
 		TextureRHI = TextureCubeRHI;
+		TextureRHI->SetOwnerName(GetOwnerName());
 		TextureRHI->SetName(Owner->GetFName());
 
 		RHIBindDebugLabelName(TextureRHI, *Name);

@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Online/SessionsEOSGSTypes.h"
+#include "Online/Sessions.h"
+
+#include "EOSShared.h"
 
 namespace UE::Online {
 
@@ -82,8 +85,8 @@ FSessionAttributeConverter<ESessionAttributeConversionType::ToService>::FSession
 FSessionAttributeConverter<ESessionAttributeConversionType::ToService>::FSessionAttributeConverter(const TPair<FSchemaAttributeId, FSchemaVariant>& InData)
 	: KeyConverterStorage(*InData.Key.ToString())
 {
-	AttributeData.ApiVersion = EOS_SESSIONS_ATTRIBUTEDATA_API_LATEST;
-	static_assert(EOS_SESSIONS_ATTRIBUTEDATA_API_LATEST == 1, "EOS_Sessions_AttributeData updated, check new fields");
+	AttributeData.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_ATTRIBUTEDATA_API_LATEST, 1);
 
 	AttributeData.Key = KeyConverterStorage.Get();
 

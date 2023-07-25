@@ -3,6 +3,7 @@
 import concurrent.futures
 import json
 import os
+import sys
 from pathlib import Path
 import socket
 import struct
@@ -16,12 +17,12 @@ from switchboard import message_protocol
 from switchboard import switchboard_utils as sb_utils
 from switchboard import switchboard_widgets as sb_widgets
 from switchboard import switchboard_dialog as sb_dialog
-from switchboard.config import CONFIG, BoolSetting, FilePathSetting, \
+from switchboard.config import CONFIG, BoolSetting, IntSetting, FilePathSetting, \
     LoggingSetting, OptionSetting, Setting, StringSetting, SETTINGS, \
     StringListSetting, migrate_comma_separated_string_to_list
 from switchboard.devices.device_widget_base import AddDeviceDialog
 from switchboard.devices.unreal.plugin_unreal import DeviceUnreal, \
-    DeviceWidgetUnreal
+    DeviceWidgetUnreal, LiveLinkPresetSetting, MediaProfileSetting
 from switchboard.devices.unreal.uassetparser import UassetParser
 from switchboard.switchboard_logging import LOGGER
 
@@ -96,16 +97,32 @@ class AddnDisplayDialog(AddDeviceDialog):
         Populate the config combobox with the already found configs, avoiding
         having to re-find every time.
         '''
+
+         # cache the current value of the combo box (currently selected preset for this device)
+        cur_item = self.cbConfigs.currentData()
+
         self.cbConfigs.clear()
 
-        itemDatas = DevicenDisplay.csettings[
-            'populated_config_itemDatas'].get_value()
+        itemDatas = DeviceUnreal.csettings['asset_itemDatas'].get_value()
+
+        def asset_is_nDisplay_config(itemData:dict) -> bool:
+            ''' Convenience function to filter the nDisplay configs '''
+
+            # Only return assets of the correct class
+            return itemData['classname'] in DeviceUnreal.NDISPLAY_CLASS_NAMES
 
         try:
-            for itemData in itemDatas:
+            for itemData in [itemData for itemData in itemDatas if asset_is_nDisplay_config(itemData)]:
                 self.cbConfigs.addItem(itemData['name'], itemData)
         except Exception:
             LOGGER.error('Error recalling config itemDatas')
+
+        # restore selected item
+        for item_idx in range(self.cbConfigs.count()):
+            if cur_item and (cur_item['name'] == self.cbConfigs.itemData(item_idx)['name']):
+                self.cbConfigs.setCurrentIndex(item_idx)
+                break
+
 
     def current_config_path(self):
         ''' Get currently selected config path in the combobox '''
@@ -137,20 +154,33 @@ class AddnDisplayDialog(AddDeviceDialog):
     def on_clicked_btnBrowse(self):
         ''' Opens a file dialog to browse for the config file
         '''
-        start_path = str(Path.home())
 
-        if (SETTINGS.LAST_BROWSED_PATH and
-                os.path.exists(SETTINGS.LAST_BROWSED_PATH)):
-            start_path = SETTINGS.LAST_BROWSED_PATH
+        start_path = ''
 
+        # prefer starting at the folder of the last ndisplay config
+        last_config_path = DevicenDisplay.csettings['ndisplay_config_file'].get_value()
+
+        if os.path.exists(last_config_path):
+            start_path = os.path.split(last_config_path)[0]
+
+        # otherwise, use the project's Content folder
+        if not start_path:
+            content_path = os.path.join(os.path.split(CONFIG.UPROJECT_PATH.get_value())[0],'Content')
+            if os.path.exists(content_path):
+                start_path = content_path
+
+        # our fallback is the home folder
+        if not start_path:
+            start_path = str(Path.home())
+
+        # show the open file dialog
         cfg_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select nDisplay config file", start_path,
             "nDisplay Config (*.ndisplay *.uasset)")
 
+        # update the field with the selected path
         if len(cfg_path) > 0 and os.path.exists(cfg_path):
             self.cbConfigs.setCurrentText(cfg_path)
-            SETTINGS.LAST_BROWSED_PATH = os.path.dirname(cfg_path)
-            SETTINGS.save()
 
     def generate_short_unique_config_name(config_path: str, file_name: str) -> str:
         config_path = CONFIG.shrink_path(config_path)
@@ -159,103 +189,7 @@ class AddnDisplayDialog(AddDeviceDialog):
     def on_clicked_btnFindConfigs(self):
         ''' Finds and populates config combobox '''
 
-        # We will look for config files in the project's Content folder
-        configs_path = os.path.normpath(
-            os.path.join(
-                os.path.dirname(
-                    CONFIG.UPROJECT_PATH.get_value().replace('"', '')),
-                'Content'))
-        config_names = []
-        config_paths = []
-
-        assets = []
-
-        for dirpath, _, files in os.walk(configs_path):
-            for name in files:
-                if not name.lower().endswith(('.uasset', '.ndisplay')):
-                    continue
-
-                if name not in config_names:
-                    config_path = os.path.join(dirpath, name)
-                    ext = os.path.splitext(name)[1]
-
-                    # Since .uasset is generic a asset container, only add
-                    # assets of the right config class.
-                    if ext.lower() == '.uasset':
-                        assets.append({'name': name, 'path': config_path})
-                    else:
-                        config_names.append(name)
-                        config_paths.append(config_path)
-
-        # process the assets in a multi-threaded fashion
-
-        # show a progress bar if it is taking more a trivial amount of time
-        progressDiag = QtWidgets.QProgressDialog(
-            'Parsing assets...', 'Cancel', 0, 0, parent=self)
-        progressDiag.setWindowTitle('nDisplay Config Finder')
-        progressDiag.setModal(True)
-        progressDiag.setMinimumDuration(1000)  # time before it shows up
-        progressDiag.setRange(0, len(assets))
-        progressDiag.setCancelButton(None)
-        # Looks much better without the window frame.
-        progressDiag.setWindowFlag(QtCore.Qt.FramelessWindowHint)
-
-        ''' Returns the asset if it is an nDisplay config '''
-        def validateConfigAsset(asset):
-
-            with open(asset['path'], 'rb') as file:
-
-                aparser = UassetParser(file, allowUnversioned=True)
-
-                for assetdata in aparser.aregdata:
-                    if assetdata.ObjectClassName in DisplayConfig.VALID_CLASS_NAMES:
-                        return asset
-
-            raise ValueError
-
-        numThreads = 8
-        doneAssetCount = 0
-
-        with concurrent.futures.ThreadPoolExecutor(
-                max_workers=numThreads) as executor:
-            futures = [
-                executor.submit(validateConfigAsset, asset)
-                for asset in assets]
-
-            for future in concurrent.futures.as_completed(futures):
-
-                # Update progress bar.
-                doneAssetCount += 1
-                progressDiag.setValue(doneAssetCount)
-
-                # Get the future result and add to list of config names and
-                # paths.
-                try:
-                    asset = future.result()
-                    config_names.append(asset['name'])
-                    config_paths.append(asset['path'])
-                except Exception:
-                    pass
-
-        config_names, _ = sb_dialog.SwitchboardDialog.generate_disambiguated_names(config_paths, AddnDisplayDialog.generate_short_unique_config_name)
-
-        # close progress bar window
-        progressDiag.close()
-
-        # collect the found config files into the itemDatas list
-
-        itemDatas = []
-
-        for idx, config_name in enumerate(config_names):
-            itemData = {'name': config_name, 'path': config_paths[idx]}
-            itemDatas.append(itemData)
-
-        # sort by name
-        itemDatas.sort(key=lambda itemData: itemData['name'])
-
-        # update settings that should survive device removal and addition
-        DevicenDisplay.csettings['populated_config_itemDatas'].update_value(
-            itemDatas)
+        DeviceUnreal.analyze_project_assets()
 
         # update the combo box with the items.
         self.recall_config_itemDatas()
@@ -345,11 +279,6 @@ class DeviceWidgetnDisplay(DeviceWidgetUnreal):
 class DisplayConfig(object):
     ''' Encapsulates nDisplay config'''
 
-    VALID_CLASS_NAMES = (
-        'DisplayClusterBlueprint',
-        '/Script/DisplayCluster.DisplayClusterBlueprint'
-    )
-
     def __init__(self):
         self.nodes = []
         self.uasset_path = ''
@@ -382,7 +311,15 @@ class DevicenDisplay(DeviceUnreal):
             attr_name="render_api",
             nice_name="Render API",
             value="dx12",
-            possible_values=["dx11", "dx12", "vulkan"],
+            possible_values=[
+                "dx11",
+                "dx11 -sm5",
+                "dx11 -sm6",
+                "dx12", 
+                "dx12 -sm5", 
+                "dx12 -sm6", 
+                "vulkan"
+            ],
         ),
         'render_mode': OptionSetting(
             attr_name="render_mode",
@@ -529,6 +466,40 @@ class DevicenDisplay(DeviceUnreal):
             value=True,
             tool_tip="When checked, adds DisableAllScreenMessages to ExecCmds"
         ),
+        'livelink_preset': LiveLinkPresetSetting(
+            attr_name='livelink_preset',
+            nice_name='LiveLink Preset',
+            value='',
+            tool_tip=(
+                'Adds the selected LiveLink preset to the command line \n')
+        ),
+        'graphics_adapter': OptionSetting(
+            attr_name="graphics_adapter",
+            nice_name="Graphics Adapter",
+            value='Config',
+            possible_values=['Config'] + list(range(8)),
+            tool_tip=(
+                "Select which graphics adapter to use (will set r.GraphicsAdapter early CVar) \n"
+                "- 'Config' : Use the setting in the nDisplay config file \n"
+                "- 0, 1, .. : The specified gpu index \n"
+            ),
+        ),
+        'mediaprofile': MediaProfileSetting(
+            attr_name='mediaprofile',
+            nice_name='Media Profile',
+            value='',
+            tool_tip=('Adds the selected Media Profile to the command line')
+        ),
+        'lock_gpu_clock': BoolSetting(
+            attr_name="lock_gpu_clock",
+            nice_name="Lock GPU Clock",
+            value=False,
+            tool_tip=(
+                "Hint to lock the GPU clock to its allowed maximum. Requires SwitchboardListenerHelper \n"
+                "to be running on the client machine, otherwise this option will be ignored."
+            ),
+            show_ui = True if sys.platform in ('win32','linux') else False, # Gpu Clocker is available in select platforms
+        ),
     }
 
     ndisplay_monitor_ui = None
@@ -561,6 +532,18 @@ class DevicenDisplay(DeviceUnreal):
                 attr_name="fullscreen",
                 nice_name="fullscreen",
                 value=kwargs.get("fullscreen", False),
+                show_ui=False
+            ),
+            'headless' : BoolSetting(
+                attr_name="headless",
+                nice_name="headless",
+                value=kwargs.get("renderHeadless", False),
+                show_ui=False
+            ),
+            'config_graphics_adapter' : IntSetting(
+                attr_name="config_graphics_adapter",
+                nice_name="Config Graphics Adapter",
+                value=kwargs.get("graphics_adapter", -1),
                 show_ui=False
             ),
         }
@@ -657,6 +640,9 @@ class DevicenDisplay(DeviceUnreal):
             DevicenDisplay.csettings['priority_modifier'],
             DevicenDisplay.csettings['udpmessaging_unicast_endpoint'],
             DevicenDisplay.csettings['udpmessaging_extra_static_endpoints'],
+            DevicenDisplay.csettings['livelink_preset'],
+            DevicenDisplay.csettings['mediaprofile'],
+            DevicenDisplay.csettings['graphics_adapter'],
             CONFIG.ENGINE_DIR,
             CONFIG.SOURCE_CONTROL_WORKSPACE,
             CONFIG.UPROJECT_PATH,
@@ -704,6 +690,7 @@ class DevicenDisplay(DeviceUnreal):
         win_pos = self.settings['window_position'].get_value()
         win_res = self.settings['window_resolution'].get_value()
         fullscreen = self.settings['fullscreen'].get_value()
+        headless = self.settings['headless'].get_value()
 
         # Misc settings
         render_mode = self.render_mode_cmdline_opts[
@@ -748,6 +735,11 @@ class DevicenDisplay(DeviceUnreal):
             "-ini:Game:"
             "[/Script/EngineSettings.GeneralProjectSettings]:"
             "bUseBorderlessWindow=True")
+
+        ini_input = (
+            "-ini:Input:"
+            "[/Script/Engine.InputSettings]:"
+            "DefaultPlayerInputClass=/Script/DisplayCluster.DisplayClusterPlayerInput")
 
         # VP roles
         vproles, missing_roles = self.get_vproles()
@@ -801,23 +793,24 @@ class DevicenDisplay(DeviceUnreal):
             if DevicenDisplay.csettings['disable_ensures'].get_value()
             else '')
 
+        no_screen_messages = (
+            '-NoScreenMessages'
+            if DevicenDisplay.csettings['disable_all_screen_messages'].get_value()
+            else '')
+
         # fill in fixed arguments
         args = [
             f'"{uproject}"',
             "-game",                      # render nodes run in -game
             f'{map_name}',                # map to open
-            "-messaging",                 # enables messaging, needed for
-                                          # MultiUser
+            "-messaging",                 # enables messaging, needed for MultiUser
             "-dc_cluster",                # this is a cluster node
             "-nosplash",                  # avoids splash screen
             "-fixedseed",                 # for determinism
             "-NoVerifyGC",                # improves performance
             "-noxrstereo",                # avoids a conflict with steam/oculus
-            "-xrtrackingonly",            # allows multi-UE SteamVR for
-                                          # trackers (but disallows sending
-                                          # frames)
-            "-RemoteControlIsHeadless",   # avoids notification window when
-                                          # using RemoteControlWebUI
+            "-xrtrackingonly",            # allows multi-UE SteamVR for trackers (but disallows sending frames)
+            "-RemoteControlIsHeadless",   # avoids notification window when using RemoteControlWebUI
             f'{additional_args}',         # specified in settings
             f'{vproles}',                 # VP roles for this instance
             f'{friendly_name}',           # Stage Friendly Name
@@ -828,12 +821,13 @@ class DevicenDisplay(DeviceUnreal):
             f'{render_mode}',             # mono/...
             f'{use_all_cores}',           # -useallavailablecores
             f'{no_texture_streaming}',    # -notexturestreaming
-            f'-dc_node={self.name}',      # name of this node in the nDisplay
-                                          # cluster
+            f'-dc_node={self.name}',      # name of this node in the nDisplay cluster
             f'Log={self.log_filename}',   # log file
             f'{ini_engine}',              # Engine ini injections
             f'{ini_game}',                # Game ini injections
+            f'{ini_input}',               # Input ini injections
             f'{unattended}',              # -unattended
+            f'{no_screen_messages}',      # -NoScreenMessages
             f'{disable_ensures}',         # -handleensurepercent=0
             f'{udpm_transport_multi}',    # -UDPMESSAGING_TRANSPORT_MULTICAST=
             f'{udpm_transport_unicast}',  # -UDPMESSAGING_TRANSPORT_UNICAST=
@@ -845,7 +839,13 @@ class DevicenDisplay(DeviceUnreal):
 
         if DevicenDisplay.csettings['disable_all_screen_messages'].get_value() and 'DisableAllScreenMessages' not in exec_cmds:
             exec_cmds.append('DisableAllScreenMessages')
-            
+        
+        # LiveLink preset
+        livelink_preset_gamepath = DevicenDisplay.csettings["livelink_preset"].get_value(self.name)
+        if livelink_preset_gamepath:
+            exec_cmds.append(self.exec_command_for_livelink_preset(livelink_preset_gamepath))
+
+        # Format exec cmds
         exec_cmds = [cmd for cmd in exec_cmds if len(cmd.strip())]
 
         if len(exec_cmds):
@@ -867,6 +867,11 @@ class DevicenDisplay(DeviceUnreal):
                 f'ResY={win_res[1]}',
             ])
 
+        if headless:
+            args.extend([
+                '-RenderOffscreen',
+            ])
+
         # MultiUser parameters
         if CONFIG.MUSERVER_AUTO_JOIN.get_value() and self.autojoin_mu_server.get_value():
             args.extend([
@@ -882,6 +887,10 @@ class DevicenDisplay(DeviceUnreal):
 
         # Device profile CVars.
         dp_cvars = []
+
+        # If choosing unattended, complement with disabling toasts
+        if DevicenDisplay.csettings['ndisplay_unattended'].get_value():
+            dp_cvars.append('Slate.bAllowNotifications=0')
 
         # Insights traces parameters
         if CONFIG.INSIGHTS_TRACE_ENABLE.get_value():
@@ -901,11 +910,24 @@ class DevicenDisplay(DeviceUnreal):
                 args.append("-statnamedevents")
 
             # if bookmarks are enabled, also enable the vblank monitoring thread
-            if 'bookmark' in traces.split(','):
+            if any(bmtrace in traces.split(',') for bmtrace in ('bookmark','default')) :
                 dp_cvars.append('nDisplay.sync.diag.VBlankMonitoring=1')
+
+        # Graphics Adapter
+        graphics_adapter = DevicenDisplay.csettings["graphics_adapter"].get_value(self.name)
+        if graphics_adapter == 'Config':
+            graphics_adapter = self.settings["config_graphics_adapter"].get_value(self.name)
+
+        if graphics_adapter >= 0:
+            dp_cvars.append(f'r.GraphicsAdapter={graphics_adapter}')
 
         # Always tell Chaos to be deterministic
         dp_cvars.append('p.Chaos.Solver.Deterministic=1')
+
+        # mediaprofile
+        mediaprofile_gamepath = DevicenDisplay.csettings["mediaprofile"].get_value(self.name)
+        if mediaprofile_gamepath:
+            dp_cvars.append(self.dpcvar_for_mediaprofile(mediaprofile_gamepath))
 
         # Add user set dp cvars, overriding any of the forced ones.
         user_dp_cvars = self.csettings['ndisplay_dp_cvars'].get_value(self.name)
@@ -1029,7 +1051,7 @@ class DevicenDisplay(DeviceUnreal):
             # ConfigExport tag and parse it.
 
             for assetdata in aparser.aregdata:
-                if assetdata.ObjectClassName in DisplayConfig.VALID_CLASS_NAMES:
+                if assetdata.ObjectClassName in DeviceUnreal.NDISPLAY_CLASS_NAMES:
                     return assetdata.tags['ConfigExport']
 
         raise ValueError('Invalid nDisplay config .uasset')
@@ -1102,6 +1124,11 @@ class DevicenDisplay(DeviceUnreal):
             if (device.name == DevicenDisplay.csettings['primary_device_name'].get_value()):
                 primaryNodeId = device.name
 
+            # override GraphicsAdapter
+            graphics_adapter = DevicenDisplay.csettings['graphics_adapter'].get_value(device.name)
+            if graphics_adapter != 'Config':
+                node['graphicsAdapter'] = int(graphics_adapter)
+
         data['nDisplay']['cluster']['nodes'] = activenodes
         data['nDisplay']['cluster'][primaryNodeKey]['id'] = primaryNodeId
 
@@ -1167,8 +1194,10 @@ class DevicenDisplay(DeviceUnreal):
 
             kwargs["window_position"] = (winx, winy)
             kwargs["window_resolution"] = (resx, resy)
-            # Note the capital 'S'.
+            # Note the capital 'S', 'H'...
             kwargs["fullscreen"] = bool(cnode.get('fullScreen', False))
+            kwargs["headless"] = bool(cnode.get('renderHeadless', False))
+            kwargs["config_graphics_adapter"] = int(cnode.get('graphicsAdapter', -1))
 
             primary = True if primaryNode['id'] == name else False
 
@@ -1228,6 +1257,10 @@ class DevicenDisplay(DeviceUnreal):
             menode['kwargs'].get("window_resolution", (100, 100)))
         self.settings['fullscreen'].update_value(
             menode['kwargs'].get("fullscreen", False))
+        self.settings['headless'].update_value(
+            menode['kwargs'].get("headless", False))
+        self.settings['config_graphics_adapter'].update_value(
+            menode['kwargs'].get("config_graphics_adapter", -1))
 
     @classmethod
     def uasset_path_from_object_path(

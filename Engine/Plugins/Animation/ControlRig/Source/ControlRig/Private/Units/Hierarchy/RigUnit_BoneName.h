@@ -17,13 +17,34 @@ struct CONTROLRIG_API FRigUnit_Item : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The item
 	 */
 	UPROPERTY(meta = (Input, Output, ExpandByDefault))
 	FRigElementKey Item;
+};
+
+/**
+ * The Item Array node is used to share an array of items across the graph
+ */
+USTRUCT(meta=(DisplayName="Item Array", Category="Hierarchy", NodeColor = "0.4627450108528137 1.0 0.3294120132923126", DocumentationPolicy = "Strict", Constant))
+struct CONTROLRIG_API FRigUnit_ItemArray : public FRigUnit
+{
+	GENERATED_BODY()
+
+	FRigUnit_ItemArray()
+	{}
+
+	RIGVM_METHOD()
+	virtual void Execute() override;
+
+	/**
+	 * The items
+	 */
+	UPROPERTY(meta = (Input, Output, ExpandByDefault))
+	TArray<FRigElementKey> Items;
 };
 
 /**
@@ -38,7 +59,7 @@ struct CONTROLRIG_API FRigUnit_BoneName : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Bone
@@ -62,7 +83,7 @@ struct CONTROLRIG_API FRigUnit_SpaceName : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Space
@@ -86,7 +107,7 @@ struct CONTROLRIG_API FRigUnit_ControlName : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control

@@ -41,7 +41,10 @@ public:
 	virtual ITextureShareSerializeStream& operator<<(ETextureShareFrameSyncTemplate& In) override { return this->SerializeData(&In, sizeof(In)); }
 	virtual ITextureShareSerializeStream& operator<<(ETextureShareSyncPass& In)     override { return this->SerializeData(&In, sizeof(In)); }
 	virtual ITextureShareSerializeStream& operator<<(ETextureShareSyncState& In)    override { return this->SerializeData(&In, sizeof(In)); }
-	virtual ITextureShareSerializeStream& operator<<(ETextureShareSyncStep& In)    override { return this->SerializeData(&In, sizeof(In)); }
+
+	virtual ITextureShareSerializeStream& operator<<(ETextureShareSyncStep& In)     override { return this->SerializeData(&In, sizeof(In)); }
+	virtual ITextureShareSerializeStream& operator<<(ETextureShareResourceType& In) override { return this->SerializeData(&In, sizeof(In)); }
+
 	virtual ITextureShareSerializeStream& operator<<(ETextureShareTextureOp& In)   override { return this->SerializeData(&In, sizeof(In)); }
 	virtual ITextureShareSerializeStream& operator<<(ETextureShareEyeType& In)     override { return this->SerializeData(&In, sizeof(In)); }
 	virtual ITextureShareSerializeStream& operator<<(ETextureShareProcessType& In) override { return this->SerializeData(&In, sizeof(In)); }
@@ -63,12 +66,13 @@ public:
 		int32 StrLen = InOutData.Len();
 		*this << StrLen;
 
+		// Always serialize string as wchar_t (An external application from the SDK side can easily use this string type without conversion)
 		if (StrLen > 0)
 		{
 			if (IsWriteStream())
 			{
-				const wchar_t* WCharValue = FTCHARToWChar(*InOutData).Get();
-				SerializeData(WCharValue, sizeof(wchar_t) * StrLen);
+				FTCHARToWChar WCharString(*InOutData, StrLen);
+				SerializeData(WCharString.Get(), sizeof(wchar_t) * StrLen);
 			}
 			else
 			{
@@ -76,7 +80,8 @@ public:
 				WCharBuffer.AddZeroed(StrLen + 1);
 				SerializeData(WCharBuffer.GetData(), sizeof(wchar_t) * StrLen);
 
-				InOutData = FWCharToTCHAR(WCharBuffer.GetData()).Get();
+				FWCharToTCHAR TCHARString(WCharBuffer.GetData());
+				InOutData = TCHARString.Get();
 			}
 		}
 

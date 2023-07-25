@@ -1,22 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceChaosDestruction.h"
-#include "Chaos/CollisionResolutionTypes.h"
-#include "Chaos/PBDCollisionConstraintsUtil.h"
-#include "Misc/FileHelper.h"
-#include "NiagaraComponent.h"
+#include "Chaos/ChaosSolverActor.h"
+#include "Engine/World.h"
+#include "EventManager.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
+#include "EventsData.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
-#include "NiagaraShader.h"
+#include "GeometryCollection/TransformCollection.h"
 #include "NiagaraShaderParametersBuilder.h"
-#include "NiagaraStats.h"
-#include "NiagaraTypes.h"
+#include "GeometryCollectionProxyData.h"
+#include "NiagaraSystemInstance.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
-#include "PhysicsProxy/GeometryCollectionPhysicsProxy.h"
-#include "PhysicsSolver.h"
-#include "ShaderParameterUtils.h"
 
-#include <memory>
 #include "GeometryCollection/GeometryCollectionComponent.h"
+#include "PBDRigidsSolver.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
+#include "RenderGraphBuilder.h"
+#include "RenderingThread.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceChaosDestruction)
 
@@ -3353,7 +3355,7 @@ void UNiagaraDataInterfaceChaosDestruction::GetTrailingData(FVectorVMExternalFun
 bool UNiagaraDataInterfaceChaosDestruction::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
-	bSuccess &= InVisitor->UpdateString(TEXT("UNiagaraDataInterfaceChaosDestructionSource"), GetShaderFileHash(NDIChaosDestructionLocal::TemplateShaderFilePath, EShaderPlatform::SP_PCD3D_SM5).ToString());
+	bSuccess &= InVisitor->UpdateShaderFile(NDIChaosDestructionLocal::TemplateShaderFilePath);
 	bSuccess &= InVisitor->UpdateShaderParameters<NDIChaosDestructionLocal::FShaderParameters>();
 	return bSuccess;
 }
@@ -3361,10 +3363,7 @@ bool UNiagaraDataInterfaceChaosDestruction::AppendCompileHash(FNiagaraCompileHas
 void UNiagaraDataInterfaceChaosDestruction::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 	const TMap<FString, FStringFormatArg> TemplateArgs = { {TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol}, };
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDIChaosDestructionLocal::TemplateShaderFilePath, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, NDIChaosDestructionLocal::TemplateShaderFilePath, TemplateArgs);
 }
 
 bool UNiagaraDataInterfaceChaosDestruction::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)

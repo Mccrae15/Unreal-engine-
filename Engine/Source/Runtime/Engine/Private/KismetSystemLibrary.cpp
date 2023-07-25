@@ -1,25 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/KismetSystemLibrary.h"
-#include "HAL/IConsoleManager.h"
+#include "AssetRegistry/ARFilter.h"
+#include "Blueprint/BlueprintSupport.h"
+#include "Engine/AssetManagerTypes.h"
 #include "HAL/FileManager.h"
-#include "GenericPlatform/GenericApplication.h"
-#include "Misc/CommandLine.h"
-#include "Misc/App.h"
+#include "Engine/World.h"
 #include "Misc/EngineVersion.h"
-#include "Misc/Paths.h"
+#include "EngineLogs.h"
+#include "Misc/PackageName.h"
+#include "GameFramework/PlayerController.h"
 #include "Misc/RuntimeErrors.h"
-#include "UObject/GCObject.h"
-#include "EngineGlobals.h"
-#include "Components/ActorComponent.h"
+#include "Misc/URLRequestFilter.h"
 #include "TimerManager.h"
-#include "GameFramework/Actor.h"
-#include "CollisionQueryParams.h"
-#include "WorldCollision.h"
+#include "UObject/EnumProperty.h"
+#include "UObject/Package.h"
 #include "Components/PrimitiveComponent.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/GameViewportClient.h"
 #include "Kismet/GameplayStatics.h"
-#include "LatentActions.h"
 #include "Engine/LocalPlayer.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/GameEngine.h"
@@ -32,13 +31,17 @@
 #include "Camera/CameraComponent.h"
 #include "Engine/StreamableManager.h"
 #include "Net/OnlineEngineInterface.h"
+#include "UObject/FieldPath.h"
 #include "UserActivityTracking.h"
 #include "KismetTraceUtils.h"
 #include "Engine/AssetManager.h"
+#include "RHI.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "UObject/FieldPathProperty.h"
 #include "Commandlets/Commandlet.h"
-#include "PlatformFeatures.h"
+#include "UObject/PropertyAccessUtil.h"
+#include "UObject/TextProperty.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(KismetSystemLibrary)
 
@@ -56,6 +59,30 @@ namespace UE::Blueprint::Private
 	FAutoConsoleVariableRef CVarBlamePrintString(TEXT("bp.BlamePrintString"), 
 		bBlamePrintString,
 		TEXT("When true, prints the Blueprint Asset and Function that generated calls to Print String. Useful for tracking down screen message spam."));
+
+	void Generic_SetStructurePropertyByName(UObject* OwnerObject, FName StructPropertyName, FStructProperty* SrcStructProperty, const void* SrcStructAddr)
+	{
+		if (OwnerObject != nullptr)
+		{
+			FStructProperty* DestStructProperty = FindFProperty<FStructProperty>(OwnerObject->GetClass(), StructPropertyName);
+
+			// SrcStructAddr and SrcStructProperty can be null in certain scenarios.
+			// For example, retrieving an element reference from an array of user structs in BP can result in a null source.
+			// We'll report a BP exception in that case, but we also need to soft-fail here to prevent an assert in CopyValuesInternal.
+
+			bool bCanSetStructureProperty =
+				(DestStructProperty != nullptr) &&
+				(SrcStructProperty != nullptr) &&
+				(SrcStructAddr != nullptr) &&
+				SrcStructProperty->SameType(DestStructProperty);
+
+			if (bCanSetStructureProperty)
+			{
+				void* DestStructAddr = DestStructProperty->ContainerPtrToValuePtr<void>(OwnerObject);
+				DestStructProperty->CopyValuesInternal(DestStructAddr, SrcStructAddr, 1);
+			}
+		}
+	}
 }
 
 UKismetSystemLibrary::UKismetSystemLibrary(const FObjectInitializer& ObjectInitializer)
@@ -290,7 +317,7 @@ UObject* UKismetSystemLibrary::Conv_InterfaceToObject(const FScriptInterface& In
 
 void UKismetSystemLibrary::LogString(const FString& InString, bool bPrintToLog)
 {
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) // Do not Print in Shipping or Test
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) || USE_LOGGING_IN_SHIPPING // Do not Print in Shipping or Test unless explictly enabled.
 	if(bPrintToLog)
 	{
 		UE_LOG(LogBlueprintUserMessages, Log, TEXT("%s"), *InString);
@@ -304,7 +331,7 @@ void UKismetSystemLibrary::LogString(const FString& InString, bool bPrintToLog)
 
 void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const FString& InString, bool bPrintToScreen, bool bPrintToLog, FLinearColor TextColor, float Duration, const FName Key)
 {
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) // Do not Print in Shipping or Test
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) || USE_LOGGING_IN_SHIPPING // Do not Print in Shipping or Test unless explictly enabled.
 
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
 	FString Prefix;
@@ -329,6 +356,7 @@ void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const 
 		}
 	}
 
+#if DO_BLUEPRINT_GUARD
 	if (UE::Blueprint::Private::bBlamePrintString && !FBlueprintContextTracker::Get().GetCurrentScriptStack().IsEmpty())
 	{
 		const TArrayView<const FFrame* const> ScriptStack = FBlueprintContextTracker::Get().GetCurrentScriptStack();
@@ -337,6 +365,7 @@ void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const 
 			*ScriptStack.Last()->Node->GetName(),
 			*Prefix);
 	}
+#endif
 
 	const FString FinalDisplayString = Prefix + InString;
 	FString FinalLogString = FinalDisplayString;
@@ -390,14 +419,14 @@ void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const 
 
 void UKismetSystemLibrary::PrintText(const UObject* WorldContextObject, const FText InText, bool bPrintToScreen, bool bPrintToLog, FLinearColor TextColor, float Duration, const FName Key)
 {
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) // Do not Print in Shipping or Test
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) || USE_LOGGING_IN_SHIPPING // Do not Print in Shipping or Test unless explictly enabled.
 	PrintString(WorldContextObject, InText.ToString(), bPrintToScreen, bPrintToLog, TextColor, Duration, Key);
 #endif
 }
 
 void UKismetSystemLibrary::PrintWarning(const FString& InString)
 {
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) // Do not Print in Shipping or Test
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) || USE_LOGGING_IN_SHIPPING // Do not Print in Shipping or Test unless explictly enabled.
 	PrintString(NULL, InString, true, true);
 #endif
 }
@@ -417,17 +446,41 @@ void UKismetSystemLibrary::SetWindowTitle(const FText& Title)
 
 void UKismetSystemLibrary::ExecuteConsoleCommand(const UObject* WorldContextObject, const FString& Command, APlayerController* Player)
 {
-	// First, try routing through the primary player
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
-	APlayerController* TargetPC = Player || !World ? Player : World->GetFirstPlayerController();
-	if (TargetPC)
+
+	// First, try routing through the console manager directly.
+	// This is needed in case the Exec commands have been compiled out, meaning that GEngine->Exec wouldn't route to anywhere.
+	if (IConsoleManager::Get().ProcessUserConsoleInput(*Command, *GLog, World) == false)
 	{
-		TargetPC->ConsoleCommand(Command, true);
+		APlayerController* TargetPC = Player || !World ? Player : World->GetFirstPlayerController();
+
+		// Second, try routing through the primary player
+		if (TargetPC)
+		{
+			TargetPC->ConsoleCommand(Command, true);
+		}
+		else
+		{
+			GEngine->Exec(World, *Command);
+		}
+	}
+}
+
+FString UKismetSystemLibrary::GetConsoleVariableStringValue(const FString& VariableName)
+{
+	FString Value = "";
+	
+	IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*VariableName);
+	if (Variable)
+	{
+		Value = Variable->GetString();
 	}
 	else
 	{
-		GEngine->Exec(World, *Command);
+		UE_LOG(LogBlueprintUserMessages, Warning, TEXT("Failed to find console variable '%s'."), *VariableName);
 	}
+	
+	return Value;
 }
 
 float UKismetSystemLibrary::GetConsoleVariableFloatValue(const FString& VariableName)
@@ -1129,6 +1182,36 @@ void UKismetSystemLibrary::SetFieldPathPropertyByName(UObject* Object, FName Pro
 	}
 }
 
+DEFINE_FUNCTION(UKismetSystemLibrary::execSetCollisionProfileNameProperty)
+{
+	P_GET_OBJECT(UObject, OwnerObject);
+	P_GET_PROPERTY(FNameProperty, StructPropertyName);
+
+	Stack.StepCompiledIn<FStructProperty>(nullptr);
+	FStructProperty* SrcStructProperty = CastField<FStructProperty>(Stack.MostRecentProperty);
+	void* SrcStructAddr = Stack.MostRecentPropertyAddress;
+
+	P_FINISH;
+	P_NATIVE_BEGIN;
+	UE::Blueprint::Private::Generic_SetStructurePropertyByName(OwnerObject, StructPropertyName, SrcStructProperty, SrcStructAddr);
+	P_NATIVE_END;
+}
+
+DEFINE_FUNCTION(UKismetSystemLibrary::execSetStructurePropertyByName)
+{
+	P_GET_OBJECT(UObject, OwnerObject);
+	P_GET_PROPERTY(FNameProperty, StructPropertyName);
+
+	Stack.StepCompiledIn<FStructProperty>(nullptr);
+	FStructProperty* SrcStructProperty = CastField<FStructProperty>(Stack.MostRecentProperty);
+	void* SrcStructAddr = Stack.MostRecentPropertyAddress;
+
+	P_FINISH;
+	P_NATIVE_BEGIN;
+	UE::Blueprint::Private::Generic_SetStructurePropertyByName(OwnerObject, StructPropertyName, SrcStructProperty, SrcStructAddr);
+	P_NATIVE_END;
+}
+
 void UKismetSystemLibrary::SetSoftClassPropertyByName(UObject* Object, FName PropertyName, const TSoftClassPtr<UObject>& Value)
 {
 	if (Object != NULL)
@@ -1165,6 +1248,50 @@ TSoftObjectPtr<UObject> UKismetSystemLibrary::Conv_SoftObjPathToSoftObjRef(const
 FSoftObjectPath UKismetSystemLibrary::Conv_SoftObjRefToSoftObjPath(TSoftObjectPtr<UObject> SoftObjectReference)
 {
 	return SoftObjectReference.ToSoftObjectPath();
+}
+
+FTopLevelAssetPath UKismetSystemLibrary::MakeTopLevelAssetPath(const FString& FullPathOrPackageName, const FString& AssetName)
+{
+	if (!FullPathOrPackageName.StartsWith(TEXT("/")))
+	{
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("PathString"), FText::AsCultureInvariant(FullPathOrPackageName));
+		LogRuntimeError(FText::Format(NSLOCTEXT("KismetSystemLibrary", "TopLevelAssetPath_UnrootedPath",
+			"Short path \"{PathString}\" not valid for MakeTopLevelAssetPath. Path must be rooted with /, for example /Game."), Args));
+
+		return FTopLevelAssetPath();
+	}
+	
+	if (AssetName.IsEmpty())
+	{
+		FTopLevelAssetPath Result = FTopLevelAssetPath(FullPathOrPackageName);
+		if (!Result.IsValid() && !FullPathOrPackageName.IsEmpty())
+		{
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("PathString"), FText::AsCultureInvariant(FullPathOrPackageName));
+			LogRuntimeError(FText::Format(NSLOCTEXT("KismetSystemLibrary", "TopLevelAssetPath_PathStringInvalid",
+				"String \"{PathString}\" is invalid for MakeTopLevelAssetPath."), Args));
+		}
+		return Result;
+	}
+	else
+	{
+		FTopLevelAssetPath Result = FTopLevelAssetPath(*FullPathOrPackageName, *AssetName);
+		if (!Result.IsValid())
+		{
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("PackageName"), FText::AsCultureInvariant(FullPathOrPackageName));
+			Args.Add(TEXT("AssetName"), FText::AsCultureInvariant(AssetName));
+			LogRuntimeError(FText::Format(NSLOCTEXT("KismetSystemLibrary", "TopLevelAssetPath_PackageAndAssetStringsInvalid",
+				"Strings (\"{PackageName}\", \"{AssetName}\") are invalid for MakeTopLevelAssetPath."), Args));
+		}
+		return Result;
+	}
+}
+
+void UKismetSystemLibrary::BreakTopLevelAssetPath(const FTopLevelAssetPath& InTopLevelAssetPath, FString& PathString)
+{
+	InTopLevelAssetPath.ToString(PathString);
 }
 
 FSoftClassPath UKismetSystemLibrary::MakeSoftClassPath(const FString& PathString)
@@ -2530,7 +2657,9 @@ void UKismetSystemLibrary::LaunchURL(const FString& URL)
 {
 	if (!URL.IsEmpty())
 	{
-		FPlatformProcess::LaunchURL(*URL, nullptr, nullptr);
+		UE::Core::FURLRequestFilter Filter(TEXT("SystemLibrary.LaunchURLFilter"), GEngineIni);
+
+		FPlatformProcess::LaunchURLFiltered(*URL, nullptr, nullptr, Filter);
 	}
 }
 

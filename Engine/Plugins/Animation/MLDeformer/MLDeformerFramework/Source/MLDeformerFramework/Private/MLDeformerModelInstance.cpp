@@ -5,9 +5,18 @@
 #include "MLDeformerModule.h"
 #include "MLDeformerAsset.h"
 #include "MLDeformerInputInfo.h"
+#include "MLDeformerComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Animation/AnimInstance.h"
-#include "NeuralNetwork.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerModelInstance)
+
+CSV_DEFINE_CATEGORY_MODULE(MLDEFORMERFRAMEWORK_API, MLDeformer, false);
+
+#if STATS
+DEFINE_STAT(STAT_MLDeformerInference);
+#endif
 
 void UMLDeformerModelInstance::BeginDestroy()
 {
@@ -21,14 +30,6 @@ void UMLDeformerModelInstance::Release()
 	// that we are about to delete.
 	RenderCommandFence.BeginFence();
 	RenderCommandFence.Wait();
-
-	// Destroy the neural network instance.
-	UNeuralNetwork* NeuralNetwork = Model.Get() ? Model->GetNeuralNetwork() : nullptr;
-	if (NeuralNetwork && NeuralNetworkInferenceHandle != -1)
-	{
-		NeuralNetwork->DestroyInferenceContext(NeuralNetworkInferenceHandle);
-		NeuralNetworkInferenceHandle = -1;
-	}
 }
 
 USkeletalMeshComponent* UMLDeformerModelInstance::GetSkeletalMeshComponent() const
@@ -44,6 +45,11 @@ UMLDeformerModel* UMLDeformerModelInstance::GetModel() const
 void UMLDeformerModelInstance::SetModel(UMLDeformerModel* InModel)
 { 
 	Model = InModel;
+}
+
+UMLDeformerComponent* UMLDeformerModelInstance::GetMLDeformerComponent() const
+{ 
+	return Cast<UMLDeformerComponent>(GetOuter());
 }
 
 int32 UMLDeformerModelInstance::GetNeuralNetworkInferenceHandle() const
@@ -117,7 +123,7 @@ void UMLDeformerModelInstance::UpdateCompatibilityStatus()
 	bIsCompatible = SkeletalMeshComponent->GetSkeletalMeshAsset() && CheckCompatibility(SkeletalMeshComponent, true).IsEmpty();
 }
 
-FString UMLDeformerModelInstance::CheckCompatibility(USkeletalMeshComponent* InSkelMeshComponent, bool LogIssues)
+FString UMLDeformerModelInstance::CheckCompatibility(USkeletalMeshComponent* InSkelMeshComponent, bool bLogIssues)
 {
 	ErrorText = FString();
 
@@ -128,29 +134,12 @@ FString UMLDeformerModelInstance::CheckCompatibility(USkeletalMeshComponent* InS
 	{
 		ErrorText += InputInfo->GenerateCompatibilityErrorString(SkelMesh);
 		ErrorText += "\n";
-		if (LogIssues)
+		if (bLogIssues)
 		{
 			UE_LOG(LogMLDeformer, Error, TEXT("ML Deformer '%s' isn't compatible with Skeletal Mesh '%s'.\nReason(s):\n%s"), 
 				*Model->GetDeformerAsset()->GetName(), 
 				*SkelMesh->GetName(), 
 				*ErrorText);
-		}
-	}
-
-	// Verify the number of inputs versus the expected number of inputs.
-	UNeuralNetwork* NeuralNetwork = Model->GetNeuralNetwork();
-	if (NeuralNetwork && NeuralNetwork->IsLoaded() && Model->GetDeformerAsset())
-	{
-		const int64 NumNeuralNetInputs = NeuralNetwork->GetInputTensor().Num();
-		const int64 NumDeformerAssetInputs = static_cast<int64>(Model->GetInputInfo()->CalcNumNeuralNetInputs());
-		if (NumNeuralNetInputs != NumDeformerAssetInputs)
-		{
-			const FString InputErrorString = "The number of network inputs doesn't match the asset. Please retrain the asset."; 
-			ErrorText += InputErrorString + "\n";
-			if (LogIssues)
-			{
-				UE_LOG(LogMLDeformer, Error, TEXT("Deformer '%s': %s"), *(Model->GetDeformerAsset()->GetName()), *InputErrorString);
-			}
 		}
 	}
 
@@ -164,34 +153,41 @@ void UMLDeformerModelInstance::UpdateBoneTransforms()
 	if (LeaderPoseComponent)
 	{
 		const TArray<FTransform>& LeaderTransforms = LeaderPoseComponent->GetComponentSpaceTransforms();
-		USkinnedAsset* SkinnedAsset = LeaderPoseComponent->GetSkinnedAsset();
-		const int32 NumTrainingBones = AssetBonesToSkelMeshMappings.Num();
-		for (int32 Index = 0; Index < NumTrainingBones; ++Index)
+		if (!LeaderTransforms.IsEmpty())
 		{
-			const int32 ComponentBoneIndex = AssetBonesToSkelMeshMappings[Index];
-			const FTransform& ComponentSpaceTransform = LeaderTransforms[ComponentBoneIndex];
-			const int32 ParentIndex = SkinnedAsset->GetRefSkeleton().GetParentIndex(ComponentBoneIndex);
-			if (ParentIndex != INDEX_NONE)
+			USkinnedAsset* SkinnedAsset = LeaderPoseComponent->GetSkinnedAsset();
+			const int32 NumTrainingBones = AssetBonesToSkelMeshMappings.Num();
+			for (int32 Index = 0; Index < NumTrainingBones; ++Index)
 			{
-				TrainingBoneTransforms[Index] = ComponentSpaceTransform.GetRelativeTransform(LeaderTransforms[ParentIndex]);
+				const int32 ComponentBoneIndex = AssetBonesToSkelMeshMappings[Index];
+				checkSlow(LeaderTransforms.IsValidIndex(ComponentBoneIndex));			
+				const FTransform& ComponentSpaceTransform = LeaderTransforms[ComponentBoneIndex];
+				const int32 ParentIndex = SkinnedAsset->GetRefSkeleton().GetParentIndex(ComponentBoneIndex);
+				if (LeaderTransforms.IsValidIndex(ParentIndex))
+				{
+					TrainingBoneTransforms[Index] = ComponentSpaceTransform.GetRelativeTransform(LeaderTransforms[ParentIndex]);
+				}
+				else
+				{
+					TrainingBoneTransforms[Index] = ComponentSpaceTransform;
+				}
+				TrainingBoneTransforms[Index].NormalizeRotation();
 			}
-			else
-			{
-				TrainingBoneTransforms[Index] = ComponentSpaceTransform;
-			}
-			TrainingBoneTransforms[Index].NormalizeRotation();
 		}
 	}
 	else
 	{
 		// Grab the transforms from our own skeletal mesh component.
 		// These are local space transforms, relative to the parent bone.
-		BoneTransforms = SkeletalMeshComponent->GetBoneSpaceTransforms();
-		const int32 NumTrainingBones = AssetBonesToSkelMeshMappings.Num();
-		for (int32 Index = 0; Index < NumTrainingBones; ++Index)
+		const TArrayView<const FTransform> Transforms = SkeletalMeshComponent->GetBoneSpaceTransformsView();
+		if (!Transforms.IsEmpty())
 		{
-			const int32 ComponentBoneIndex = AssetBonesToSkelMeshMappings[Index];
-			TrainingBoneTransforms[Index] = BoneTransforms[ComponentBoneIndex];
+			const int32 NumTrainingBones = AssetBonesToSkelMeshMappings.Num();
+			for (int32 Index = 0; Index < NumTrainingBones; ++Index)
+			{
+				const int32 ComponentBoneIndex = AssetBonesToSkelMeshMappings[Index];
+				TrainingBoneTransforms[Index] = Transforms[ComponentBoneIndex];
+			}
 		}
 	}
 }
@@ -202,37 +198,23 @@ int64 UMLDeformerModelInstance::SetBoneTransforms(float* OutputBuffer, int64 Out
 	// These are in the space relative to their parent.
 	UpdateBoneTransforms();
 
-	// Write the transforms into the output buffer.
-	const UMLDeformerInputInfo* InputInfo = Model->GetInputInfo();
-	const int32 AssetNumBones = InputInfo->GetNumBones();
-	int64 Index = StartIndex;
+	// Make sure we don't write past the OutputBuffer. Six, because of two columns of the 3x3 rotation matrix.
+	const int32 AssetNumBones = Model->GetInputInfo()->GetNumBones();
+	checkfSlow((StartIndex + AssetNumBones * 6) <= OutputBufferSize, TEXT("Writing bones past the end of the input buffer."));
 
-	// Make sure we don't write past the OutputBuffer. (6 because of two columns of the 3x3 rotation matrix)
-	checkf((Index + AssetNumBones * 6) <= OutputBufferSize, TEXT("Writing bones past the end of the input buffer."));
+	// Write 6 floats to the buffer, for each bone.
+	UMLDeformerInputInfo::RotationToTwoVectorsAsSixFloats(TrainingBoneTransforms, OutputBuffer + StartIndex);
 
-	for (int32 BoneIndex = 0; BoneIndex < AssetNumBones; ++BoneIndex)
-	{
-		const FMatrix RotationMatrix = TrainingBoneTransforms[BoneIndex].GetRotation().ToMatrix();
-		const FVector X = RotationMatrix.GetColumn(0);
-		const FVector Y = RotationMatrix.GetColumn(1);	
-		OutputBuffer[Index++] = X.X;
-		OutputBuffer[Index++] = X.Y;
-		OutputBuffer[Index++] = X.Z;
-		OutputBuffer[Index++] = Y.X;
-		OutputBuffer[Index++] = Y.Y;
-		OutputBuffer[Index++] = Y.Z;
-	}
-
-	return Index;
+	// Return the new buffer offset, where we stopped writing.
+	return StartIndex + AssetNumBones * 6;
 }
 
 int64 UMLDeformerModelInstance::SetCurveValues(float* OutputBuffer, int64 OutputBufferSize, int64 StartIndex)
 {
 	const UMLDeformerInputInfo* InputInfo = Model->GetInputInfo();
 
-	// Write the weights into the output buffer.
 	int64 Index = StartIndex;
-	const int32 AssetNumCurves = InputInfo->GetNumCurves();	
+	const int32 AssetNumCurves = InputInfo->GetNumCurves();
 	checkf((Index + AssetNumCurves) <= OutputBufferSize, TEXT("Writing curves past the end of the input buffer"));
 
 	// Write the curve weights to the output buffer.
@@ -259,8 +241,6 @@ int64 UMLDeformerModelInstance::SetCurveValues(float* OutputBuffer, int64 Output
 
 int64 UMLDeformerModelInstance::SetNeuralNetworkInputValues(float* InputData, int64 NumInputFloats)
 {
-	check(SkeletalMeshComponent);
-
 	// Feed data to the network inputs.
 	int64 BufferOffset = 0;
 	if (Model->DoesSupportBones())
@@ -278,105 +258,28 @@ int64 UMLDeformerModelInstance::SetNeuralNetworkInputValues(float* InputData, in
 
 bool UMLDeformerModelInstance::IsValidForDataProvider() const
 {
-	const UNeuralNetwork* NeuralNetwork = Model->GetNeuralNetwork();
-	if (NeuralNetwork == nullptr || !NeuralNetwork->IsLoaded())
+	return true;
+}
+
+bool UMLDeformerModelInstance::HasValidTransforms() const
+{
+	if (!SkeletalMeshComponent)
 	{
 		return false;
 	}
 
-	// We expect to run on the GPU when using a data provider for the deformer graph system (Optimus).
-	if (Model->IsNeuralNetworkOnGPU())
+	const USkinnedMeshComponent* LeaderPoseComponent = SkeletalMeshComponent->LeaderPoseComponent.Get();
+	if (LeaderPoseComponent)
 	{
-		// Make sure we're actually running the network on the GPU.
-		// Inputs are expected to come from the CPU though.
-		if (NeuralNetwork->GetDeviceType() != ENeuralDeviceType::GPU || NeuralNetwork->GetOutputDeviceType() != ENeuralDeviceType::GPU || NeuralNetwork->GetInputDeviceType() != ENeuralDeviceType::CPU)
+		if (LeaderPoseComponent->GetComponentSpaceTransforms().IsEmpty())
 		{
 			return false;
 		}
 	}
-
-	return (Model->GetVertexMapBuffer().ShaderResourceViewRHI != nullptr) && (GetNeuralNetworkInferenceHandle() != -1);
-}
-
-void UMLDeformerModelInstance::Execute(float ModelWeight)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UMLDeformerModelInstance::Execute)
-
-	UNeuralNetwork* NeuralNetwork = Model->GetNeuralNetwork();
-	if (NeuralNetwork == nullptr)
-	{
-		return;
-	}
-
-	if (Model->IsNeuralNetworkOnGPU())
-	{
-		// Even if the model needs the GPU it is possible that the hardware does not support GPU evaluation
-		if (NeuralNetwork->GetDeviceType() == ENeuralDeviceType::GPU)
-		{
-			// NOTE: Inputs still come from the CPU.
-			check(NeuralNetwork->GetDeviceType() == ENeuralDeviceType::GPU && NeuralNetwork->GetInputDeviceType() == ENeuralDeviceType::CPU && NeuralNetwork->GetOutputDeviceType() == ENeuralDeviceType::GPU);
-			ENQUEUE_RENDER_COMMAND(RunNeuralNetwork)
-				(
-					[NeuralNetwork, Handle = NeuralNetworkInferenceHandle](FRHICommandListImmediate& RHICmdList)
-					{
-						// Output deltas will be available on GPU for DeformerGraph via UMLDeformerDataProvider.
-						FRDGBuilder GraphBuilder(RHICmdList);
-						NeuralNetwork->Run(GraphBuilder, Handle);
-						GraphBuilder.Execute();
-					}
-			);
-		}
-	}
-	else
-	{
-		// Run on the CPU.
-		check(NeuralNetwork->GetDeviceType() == ENeuralDeviceType::CPU && NeuralNetwork->GetInputDeviceType() == ENeuralDeviceType::CPU && NeuralNetwork->GetOutputDeviceType() == ENeuralDeviceType::CPU);
-		NeuralNetwork->Run(NeuralNetworkInferenceHandle);
-	}
-}
-
-bool UMLDeformerModelInstance::SetupInputs()
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UMLDeformerModelInstance::SetupInputs)
-
-	// Some safety checks.
-	if (Model == nullptr ||
-		SkeletalMeshComponent == nullptr ||
-		SkeletalMeshComponent->GetSkeletalMeshAsset() == nullptr ||
-		!bIsCompatible)
+	else if (SkeletalMeshComponent->GetBoneSpaceTransformsView().IsEmpty())
 	{
 		return false;
 	}
-
-	// Get the network and make sure it's loaded.
-	UNeuralNetwork* NeuralNetwork = Model->GetNeuralNetwork();
-	if (NeuralNetwork == nullptr || !NeuralNetwork->IsLoaded())
-	{
-		return false;
-	}
-
-	// Allocate an inference context if none has already been allocated.
-	if (NeuralNetworkInferenceHandle == -1)
-	{
-		NeuralNetworkInferenceHandle = NeuralNetwork->CreateInferenceContext();
-		if (NeuralNetworkInferenceHandle == -1)
-		{
-			return false;
-		}
-	}
-
-	// If the neural network expects a different number of inputs, do nothing.
-	const int64 NumNeuralNetInputs = NeuralNetwork->GetInputTensorForContext(NeuralNetworkInferenceHandle).Num();
-	const int64 NumDeformerAssetInputs = Model->GetInputInfo()->CalcNumNeuralNetInputs();
-	if (NumNeuralNetInputs != NumDeformerAssetInputs)
-	{
-		return false;
-	}
-
-	// Update and write the input values directly into the input tensor.
-	float* InputDataPointer = static_cast<float*>(NeuralNetwork->GetInputDataPointerMutableForContext(NeuralNetworkInferenceHandle));
-	const int64 NumFloatsWritten = SetNeuralNetworkInputValues(InputDataPointer, NumNeuralNetInputs);
-	check(NumFloatsWritten == NumNeuralNetInputs);
 
 	return true;
 }
@@ -390,7 +293,7 @@ void UMLDeformerModelInstance::Tick(float DeltaTime, float ModelWeight)
 		PostMLDeformerComponentInit();
 	}
 
-	if (ModelWeight > 0.0001f && SetupInputs())
+	if (ModelWeight > 0.0001f && HasValidTransforms() && SetupInputs())
 	{
 		// Execute the model instance.
 		// For models using neural networks this will perform the inference, 

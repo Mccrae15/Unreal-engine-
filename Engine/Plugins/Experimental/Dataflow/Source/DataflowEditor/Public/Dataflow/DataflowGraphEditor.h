@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 
-#include "Dataflow/DataflowEditorActions.h"
+#include "Dataflow/DataflowEditorCommands.h"
 #include "EdGraphUtilities.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Framework/Commands/UICommandList.h"
@@ -49,7 +49,17 @@ public:
 	SLATE_ARGUMENT(FDataflowEditorCommands::FOnDragDropEventCallback, OnDragDropEvent)
 	SLATE_END_ARGS()
 
+	// This delegate exists in SGraphEditor but it is not multicast, and we are going to bind it to OnSelectedNodesChanged().
+	// This new multicast delegate will be broadcast from the OnSelectedNodesChanged handler in case another class wants to be notified.
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSelectionChangedMulticast, const FGraphPanelSelectionSet&)
+	FOnSelectionChangedMulticast OnSelectionChangedMulticast;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnNodeDeletedMulticast, const FGraphPanelSelectionSet&)
+	FOnNodeDeletedMulticast OnNodeDeletedMulticast;
+
 	// SWidget overrides
+	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+	virtual FReply OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
 	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
 	//virtual void OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
@@ -70,6 +80,9 @@ public:
 
 	/** */
 	void CreateComment();
+
+	/** */
+	void CreateVertexSelectionNode(const FString& InArray);
 
 	/** */
 	void AlignTop();
@@ -121,4 +134,8 @@ private:
 
 	/** The details view that responds to this widget. */
 	TSharedPtr<IStructureDetailsView> DetailsView;
+
+	bool VKeyDown = false;
+	bool LeftControlKeyDown = false;
+	bool RightControlKeyDown = false;
 };

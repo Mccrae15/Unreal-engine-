@@ -19,6 +19,7 @@
 #include "MVVM/ViewModels/SequencerModelUtils.h"
 #include "MVVM/ViewModels/ViewModelIterators.h"
 #include "MVVM/ViewModels/OutlinerViewModel.h"
+#include "MVVM/ViewModels/TrackModel.h"
 #include "MVVM/Views/SOutlinerView.h"
 #include "MVVM/Views/SOutlinerItemViewBase.h"
 #include "MVVM/Views/SSequencerKeyNavigationButtons.h"
@@ -32,6 +33,7 @@
 #include "SKeyAreaEditorSwitcher.h"
 #include "SequencerCoreFwd.h"
 #include "SequencerSectionPainter.h"
+#include "SequencerSelection.h"
 #include "SequencerSettings.h"
 #include "SlotBase.h"
 #include "Styling/AppStyle.h"
@@ -300,6 +302,11 @@ uint32 FChannelGroupModel::GetChannelsSerialNumber() const
 	return ChannelsSerialNumber;
 }
 
+void FChannelGroupModel::OnChannelOverridesChanged()
+{
+	++ChannelsSerialNumber;
+}
+
 void FChannelGroupModel::CleanupChannels()
 {
 	const int32 NumRemoved = Channels.RemoveAll([](TWeakViewModelPtr<FChannelModel> Item) { return !Item.IsValid(); });
@@ -426,20 +433,83 @@ bool FChannelGroupModel::HasCurves() const
 
 void FChannelGroupModel::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder)
 {
+	TSharedPtr<FSequenceModel> SequenceModel = FindAncestorOfType<FSequenceModel>();
+	FChannelGroupOverrideHelper::BuildChannelOverrideMenu(MenuBuilder, SequenceModel);
+}
+
+bool FChannelGroupOverrideHelper::GetChannelsFromOutlinerSelection(TSharedPtr<FSequenceModel> SequenceModel, TArray<TViewModelPtr<FChannelModel>>& OutChannelModels)
+{
+	// Sanity checks.
+	if (!SequenceModel)
+	{
+		return false;
+	}
+
+	TSharedPtr<ISequencer> Sequencer = SequenceModel->GetSequencer();
+	if (!Sequencer)
+	{
+		return false;
+	}
+
+	// Get all selected outliner items. We will filter out those that aren't channel groups.
+	TArray<TSharedRef<FViewModel>> SelectedItems;
+	Sequencer->GetSelection().GetSelectedOutlinerItems(SelectedItems);
+
+	// The selected items could either be channel groups, or tracks/track-rows with top-level channel groups that
+	// don't explicitly show up in the outliner (they are view-models that live under the track or row, but the
+	// user interface shows them as the track or row itself).
+	for (TSharedRef<FViewModel> SelectedItem : SelectedItems)
+	{
+		if (FChannelGroupModel* ChannelGroup = SelectedItem->CastThis<FChannelGroupModel>())
+		{
+			const int32 NumChannels = ChannelGroup->GetChannels().Num();
+			for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
+			{
+				if (TSharedPtr<FChannelModel> Channel = ChannelGroup->GetChannel(ChannelIndex))
+				{
+					OutChannelModels.Add(Channel);
+				}
+			}
+		}
+		else
+		{
+			const EViewModelListType ListType = FTrackModel::GetTopLevelChannelGroupType();
+			TOptional<FViewModelChildren> TopLevelChannels = SelectedItem->FindChildList(ListType);
+			if (TopLevelChannels.IsSet())
+			{
+				for (auto It(TopLevelChannels->IterateSubList<FChannelGroupModel>()); It; ++It)
+				{
+					for (TWeakViewModelPtr<FChannelModel> WeakChannel : It->GetChannels())
+					{
+						if (TViewModelPtr<FChannelModel> Channel = WeakChannel.Pin())
+						{
+							OutChannelModels.Add(Channel);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+void FChannelGroupOverrideHelper::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FSequenceModel> SequenceModel)
+{
+	TArray<TViewModelPtr<FChannelModel>> Channels;
+	if (!GetChannelsFromOutlinerSelection(SequenceModel, Channels))
+	{
+		return;
+	}
+
 	// Gather up information:
-	// - Candidates for overriding each of the channel types found in this group.
+	// - Candidates for overriding each of the channel types found in each group.
 	// - Already overriden channels.
 	int32 NumOverridableChannels = 0;
 	TMap<UClass*, TArray<UMovieSceneChannelOverrideContainer*>> ExistingOverrides;
 	TArray<UMovieSceneChannelOverrideContainer::FOverrideCandidates> AllCandidateOverrides;
-	for (int32 Index = 0; Index < GetChannels().Num(); ++Index)
+	for (TViewModelPtr Channel : Channels)
 	{
-		TSharedPtr<FChannelModel> Channel = GetChannel(Index);
-		if (!Channel)
-		{
-			continue;
-		}
-
 		UMovieSceneSection* Section = Channel->GetSection();
 		if (!Section)
 		{
@@ -458,13 +528,13 @@ void FChannelGroupModel::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder)
 		UE::MovieScene::FChannelOverrideProviderTraitsHandle OverrideTraits = OverrideProvider->GetChannelOverrideProviderTraits();
 
 		UMovieSceneChannelOverrideContainer* OverrideContainer = OverrideRegistry ? 
-			OverrideRegistry->GetChannel(GetChannelName()) : nullptr;
+			OverrideRegistry->GetChannel(Channel->GetChannelName()) : nullptr;
 		if (OverrideContainer)
 		{
 			ExistingOverrides.FindOrAdd(OverrideContainer->GetClass()).Add(OverrideContainer);
 		}
-		
-		const FName DefaultChannelTypeName = OverrideTraits->GetDefaultChannelTypeName(GetChannelName());
+
+		const FName DefaultChannelTypeName = OverrideTraits->GetDefaultChannelTypeName(Channel->GetChannelName());
 		if (!DefaultChannelTypeName.IsNone())
 		{
 			UMovieSceneChannelOverrideContainer::FOverrideCandidates OverrideCandidates;
@@ -499,14 +569,14 @@ void FChannelGroupModel::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder)
 
 		if (CommonCandidateOverrides.Num() == 1)
 		{
-			BuildChannelOverrideMenu(MenuBuilder, CommonCandidateOverrides);
+			BuildChannelOverrideMenu(MenuBuilder, SequenceModel, CommonCandidateOverrides);
 		}
 		else if (CommonCandidateOverrides.Num() > 1)
 		{
 			MenuBuilder.AddSubMenu(
 				LOCTEXT("OverrideChannelChoiceLabel", "Override with..."),
 				LOCTEXT("OverrideChannelChoiceTooltip", "Overrides all channels with the specified channel"),
-				FNewMenuDelegate::CreateSP(this, &FChannelGroupOutlinerModel::BuildChannelOverrideMenu, CommonCandidateOverrides));
+				FNewMenuDelegate::CreateStatic(&FChannelGroupOverrideHelper::BuildChannelOverrideMenu, SequenceModel, CommonCandidateOverrides));
 		}
 
 		if (ExistingOverrides.Num() > 0)
@@ -516,7 +586,7 @@ void FChannelGroupModel::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder)
 				LOCTEXT("RemoveOverrideChannelTooltip", "Removes the channel override and revert back to the default channel type"),
 				FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateSP(this, &FChannelGroupOutlinerModel::RemoveChannelOverrides),
+					FExecuteAction::CreateStatic(&FChannelGroupOverrideHelper::RemoveChannelOverrides, SequenceModel),
 					FCanExecuteAction()));
 		}
 
@@ -524,7 +594,7 @@ void FChannelGroupModel::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder)
 	}
 }
 
-void FChannelGroupModel::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder, UMovieSceneChannelOverrideContainer::FOverrideCandidates OverrideCandidates)
+void FChannelGroupOverrideHelper::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FSequenceModel> SequenceModel, UMovieSceneChannelOverrideContainer::FOverrideCandidates OverrideCandidates)
 {
 	for (TSubclassOf<UMovieSceneChannelOverrideContainer> OverrideCandidate : OverrideCandidates)
 	{
@@ -535,23 +605,25 @@ void FChannelGroupModel::BuildChannelOverrideMenu(FMenuBuilder& MenuBuilder, UMo
 				OverrideCandidate->GetDisplayNameText()),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP(this, &FChannelGroupModel::OverrideChannels, OverrideCandidate),
+				FExecuteAction::CreateStatic(&FChannelGroupOverrideHelper::OverrideChannels, SequenceModel, OverrideCandidate),
 				FCanExecuteAction()));
 	}
 }
 
-void FChannelGroupModel::OverrideChannels(TSubclassOf<UMovieSceneChannelOverrideContainer> OverrideClass)
+void FChannelGroupOverrideHelper::OverrideChannels(TSharedPtr<FSequenceModel> SequenceModel, TSubclassOf<UMovieSceneChannelOverrideContainer> OverrideClass)
 {
-	const FScopedTransaction Transaction(LOCTEXT("OverrideChannels", "Override Channels"));
-
-	for (TWeakViewModelPtr<FChannelModel> WeakChannel : GetChannels())
+	TArray<TViewModelPtr<FChannelModel>> Channels;
+	if (!GetChannelsFromOutlinerSelection(SequenceModel, Channels))
 	{
-		TSharedPtr<FChannelModel> Channel = WeakChannel.Pin();
-		if (!Channel || !Channel->GetSection())
-		{
-			continue;
-		}
+		return;
+	}
 
+	bool bAnyChannelsChanged = false;
+	TSet<TSharedPtr<FChannelGroupModel>> ChangedChannelGroups;
+	FScopedTransaction Transaction(LOCTEXT("OverrideChannels", "Override Channels"));
+
+	for (TViewModelPtr<FChannelModel> Channel : Channels)
+	{
 		UMovieSceneSection* Section = Channel->GetSection();
 		IMovieSceneChannelOverrideProvider* OverrideProvider = Cast<IMovieSceneChannelOverrideProvider>(Section);
 		if (!OverrideProvider)
@@ -567,43 +639,49 @@ void FChannelGroupModel::OverrideChannels(TSubclassOf<UMovieSceneChannelOverride
 		UMovieSceneSectionChannelOverrideRegistry* OverrideRegistry = OverrideProvider->GetChannelOverrideRegistry(true);
 		check(OverrideRegistry);
 
-		UMovieSceneChannelOverrideContainer* OverrideChannelContainer = NewObject<UMovieSceneChannelOverrideContainer>(Section, OverrideClass);
+		UMovieSceneChannelOverrideContainer* OverrideChannelContainer = NewObject<UMovieSceneChannelOverrideContainer>(
+				OverrideRegistry, OverrideClass, NAME_None, RF_Transactional);
 		OverrideChannelContainer->InitializeOverride(Channel->GetChannel());
-		OverrideRegistry->AddChannel(GetChannelName(), OverrideChannelContainer);	
-		
+		OverrideRegistry->AddChannel(Channel->GetChannelName(), OverrideChannelContainer);	
+
 		OverrideProvider->OnChannelOverridesChanged();
 
-		++ChannelsSerialNumber;
+		bAnyChannelsChanged = true;
+		if (TSharedPtr<FChannelGroupModel> ParentGroupModel = Channel->CastParent<FChannelGroupModel>())
+		{
+			ChangedChannelGroups.Add(ParentGroupModel);
+		}
 	}
 
-	TSharedPtr<FSequenceModel> SequenceModel = FindAncestorOfType<FSequenceModel>();
-	if (!SequenceModel)
+	for (TSharedPtr<FChannelGroupModel> ChangedChannelGroup : ChangedChannelGroups)
 	{
-		return;
+		ChangedChannelGroup->OnChannelOverridesChanged();
 	}
 
-	TSharedPtr<ISequencer> Sequencer = SequenceModel->GetSequencer();
-	if (!Sequencer)
+	if (!bAnyChannelsChanged)
 	{
-		return;
+		Transaction.Cancel();
 	}
 
-	Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
+	SequenceModel->GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
 }
 
-void FChannelGroupModel::RemoveChannelOverrides()
+void FChannelGroupOverrideHelper::RemoveChannelOverrides(TSharedPtr<FSequenceModel> SequenceModel)
 {
-	const FScopedTransaction Transaction(LOCTEXT("RemoveChannelOverrides", "Remove Override Channels"));
-
-	for (TWeakViewModelPtr<FChannelModel> WeakChannel : GetChannels())
+	TArray<TViewModelPtr<FChannelModel>> Channels;
+	if (!GetChannelsFromOutlinerSelection(SequenceModel, Channels))
 	{
-		TSharedPtr<FChannelModel> Channel = WeakChannel.Pin();
-		if (!Channel || !Channel->GetSection())
-		{
-			continue;
-		}
+		return;
+	}
 
-		IMovieSceneChannelOverrideProvider* OverrideProvider = Cast<IMovieSceneChannelOverrideProvider>(Channel->GetSection());
+	bool bAnyChannelsChanged = false;
+	TSet<TSharedPtr<FChannelGroupModel>> ChangedChannelGroups;
+	FScopedTransaction Transaction(LOCTEXT("RemoveChannelOverrides", "Remove Override Channels"));
+
+	for (TViewModelPtr<FChannelModel> Channel : Channels)
+	{
+		UMovieSceneSection* Section = Channel->GetSection();
+		IMovieSceneChannelOverrideProvider* OverrideProvider = Cast<IMovieSceneChannelOverrideProvider>(Section);
 		if (!OverrideProvider)
 		{
 			continue;
@@ -615,31 +693,33 @@ void FChannelGroupModel::RemoveChannelOverrides()
 			continue;
 		}
 
-		if (!Channel->GetSection()->TryModify())
+		if (!Section->TryModify())
 		{
 			continue;
 		}
 
-		OverrideRegistry->RemoveChannel(GetChannelName());
+		OverrideRegistry->RemoveChannel(Channel->GetChannelName());
 
 		OverrideProvider->OnChannelOverridesChanged();
 
-		++ChannelsSerialNumber;
+		bAnyChannelsChanged = true;
+		if (TSharedPtr<FChannelGroupModel> ParentGroupModel = Channel->CastParent<FChannelGroupModel>())
+		{
+			ChangedChannelGroups.Add(ParentGroupModel);
+		}
 	}
 
-	TSharedPtr<FSequenceModel> SequenceModel = FindAncestorOfType<FSequenceModel>();
-	if (!SequenceModel)
+	for (TSharedPtr<FChannelGroupModel> ChangedChannelGroup : ChangedChannelGroups)
 	{
-		return;
+		ChangedChannelGroup->OnChannelOverridesChanged();
 	}
 
-	TSharedPtr<ISequencer> Sequencer = SequenceModel->GetSequencer();
-	if (!Sequencer)
+	if (!bAnyChannelsChanged)
 	{
-		return;
+		Transaction.Cancel();
 	}
 
-	Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
+	SequenceModel->GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
 }
 
 FChannelGroupOutlinerModel::FChannelGroupOutlinerModel(FName InChannelName, const FText& InDisplayText)

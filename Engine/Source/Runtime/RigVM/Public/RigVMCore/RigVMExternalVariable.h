@@ -9,14 +9,21 @@
 #include "RigVMModule.h"
 #include "RigVMTypeUtils.h"
 #include "UObject/UnrealType.h"
+#if WITH_EDITOR
+#include "EdGraphSchema_K2.h"
+#endif
+#include "RigVMExternalVariable.generated.h"
 
 /**
  * The external variable can be used to map external / unowned
  * memory into the VM and back out
  */
+USTRUCT(BlueprintType)
 struct RIGVM_API FRigVMExternalVariable
 {
-	FORCEINLINE FRigVMExternalVariable()
+	GENERATED_BODY()
+	
+	FRigVMExternalVariable()
 		: Name(NAME_None)
 		, Property(nullptr)
 		, TypeName(NAME_None)
@@ -29,7 +36,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 	}
 
-	FORCEINLINE static void GetTypeFromProperty(const FProperty* InProperty, FName& OutTypeName, UObject*& OutTypeObject)
+	static void GetTypeFromProperty(const FProperty* InProperty, FName& OutTypeName, UObject*& OutTypeObject)
 	{
 		if (CastField<FBoolProperty>(InProperty))
 		{
@@ -78,6 +85,12 @@ struct RIGVM_API FRigVMExternalVariable
 		{
 			OutTypeName = *RigVMTypeUtils::GetUniqueStructTypeName(StructProperty->Struct);
 			OutTypeObject = StructProperty->Struct;
+		}
+		else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(InProperty))
+		{
+			FName InnerTypeName = NAME_None;
+			GetTypeFromProperty(ArrayProperty->Inner, InnerTypeName, OutTypeObject);
+			OutTypeName = *RigVMTypeUtils::ArrayTypeFromBaseType(InnerTypeName.ToString());
 		}
 		else if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(InProperty))
 		{
@@ -193,7 +206,7 @@ struct RIGVM_API FRigVMExternalVariable
 	}
 	
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FProperty* InProperty, void* InContainer, const FName& InOptionalName = NAME_None)
+	static FRigVMExternalVariable Make(const FProperty* InProperty, void* InContainer, const FName& InOptionalName = NAME_None)
 	{
 		check(InProperty);
 
@@ -225,7 +238,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return ExternalVariable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, bool& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, bool& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -237,7 +250,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<bool>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<bool>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -249,7 +262,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, int32& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, int32& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -261,7 +274,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<int32>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<int32>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -273,7 +286,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, uint8& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, uint8& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -285,7 +298,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<uint8>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<uint8>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -297,7 +310,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, float& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, float& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -309,7 +322,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<float>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<float>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -321,7 +334,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, double& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, double& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -333,7 +346,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<double>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<double>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -345,7 +358,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, FString& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, FString& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -357,7 +370,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<FString>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<FString>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -369,7 +382,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, FName& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, FName& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -381,7 +394,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<FName>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<FName>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -397,7 +410,7 @@ struct RIGVM_API FRigVMExternalVariable
 		typename T,
 		typename TEnableIf<TIsEnum<T>::Value>::Type* = nullptr
 	>
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, T& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, T& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -413,7 +426,7 @@ struct RIGVM_API FRigVMExternalVariable
 		typename T,
 		typename TEnableIf<TIsEnum<T>::Value>::Type* = nullptr
 	>
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -429,7 +442,7 @@ struct RIGVM_API FRigVMExternalVariable
 		typename T,
 		typename TEnableIf<TRigVMIsBaseStructure<T>::Value, T>::Type* = nullptr
 	>
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, T& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, T& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -445,7 +458,7 @@ struct RIGVM_API FRigVMExternalVariable
 		typename T,
 		typename TEnableIf<TRigVMIsBaseStructure<T>::Value, T>::Type* = nullptr
 	>
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -461,7 +474,7 @@ struct RIGVM_API FRigVMExternalVariable
 		typename T,
 		typename TEnableIf<TModels<CRigVMUStruct, T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, T& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, T& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -477,7 +490,7 @@ struct RIGVM_API FRigVMExternalVariable
 		typename T,
 		typename TEnableIf<TModels<CRigVMUStruct, T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -493,7 +506,7 @@ struct RIGVM_API FRigVMExternalVariable
 		typename T,
 		typename TEnableIf<TModels<CRigVMUClass, T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, T& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, T& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -509,7 +522,7 @@ struct RIGVM_API FRigVMExternalVariable
 		typename T,
 		typename TEnableIf<TModels<CRigVMUClass, T>::Value>::Type * = nullptr
 	>
-	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
+	static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
@@ -522,48 +535,48 @@ struct RIGVM_API FRigVMExternalVariable
 	}
 
 	template<typename T>
-	FORCEINLINE T GetValue() const
+	T GetValue() const
 	{
 		ensure(IsValid() && !bIsArray);
 		return *(T*)Memory;
 	}
 
 	template<typename T>
-	FORCEINLINE T& GetRef()
+	T& GetRef()
 	{
 		ensure(IsValid() && !bIsArray);
 		return *(T*)Memory;
 	}
 
 	template<typename T>
-	FORCEINLINE const T& GetRef() const
+	const T& GetRef() const
 	{
 		ensure(IsValid() && !bIsArray);
 		return *(T*)Memory;
 	}
 
 	template<typename T>
-	FORCEINLINE void SetValue(const T& InValue)
+	void SetValue(const T& InValue)
 	{
 		ensure(IsValid() && !bIsArray);
 		(*(T*)Memory) = InValue;
 	}
 
 	template<typename T>
-	FORCEINLINE TArray<T> GetArray()
+	TArray<T> GetArray()
 	{
 		ensure(IsValid() && bIsArray);
 		return *(TArray<T>*)Memory;
 	}
 
 	template<typename T>
-	FORCEINLINE void SetArray(const TArray<T>& InValue)
+	void SetArray(const TArray<T>& InValue)
 	{
 		ensure(IsValid() && bIsArray);
 		(*(TArray<T>*)Memory) = InValue;
 	}
 
-	FORCEINLINE bool IsValid(bool bAllowNullPtr = false) const
+	bool IsValid(bool bAllowNullPtr = false) const
 	{
 		return Name.IsValid() && 
 			!Name.IsNone() &&
@@ -572,7 +585,7 @@ struct RIGVM_API FRigVMExternalVariable
 			(bAllowNullPtr || Memory != nullptr);
 	}
 
-	FORCEINLINE FName GetExtendedCPPType() const
+	FName GetExtendedCPPType() const
 	{
 		if(bIsArray)
 		{
@@ -581,7 +594,7 @@ struct RIGVM_API FRigVMExternalVariable
 		return TypeName;
 	}
 
-	FORCEINLINE static void MergeExternalVariable(TArray<FRigVMExternalVariable>& OutVariables, const FRigVMExternalVariable& InVariable)
+	static void MergeExternalVariable(TArray<FRigVMExternalVariable>& OutVariables, const FRigVMExternalVariable& InVariable)
 	{
 		if(!InVariable.IsValid(true))
 		{
@@ -611,3 +624,40 @@ struct RIGVM_API FRigVMExternalVariable
 	int32 Size;
 	uint8* Memory;
 };
+
+inline FArchive& operator<<(FArchive& Ar, FRigVMExternalVariable& Variable)
+{
+	Ar << Variable.Name;
+	Ar << Variable.TypeName;
+
+	if (Ar.IsSaving())
+	{
+		FSoftObjectPath TypeObjectPath(Variable.TypeObject);
+		Ar << TypeObjectPath;
+	}
+	else if (Ar.IsLoading())
+	{
+		FSoftObjectPath TypeObjectPath;
+		Ar << TypeObjectPath;
+		Variable.TypeObject = TypeObjectPath.ResolveObject();
+	}
+	
+	Ar << Variable.bIsArray;
+	Ar << Variable.bIsPublic;
+	Ar << Variable.bIsReadOnly;
+	Ar << Variable.Size;
+	return Ar;
+}
+
+namespace RigVMTypeUtils
+{
+#if WITH_EDITOR
+ 	RIGVM_API FRigVMExternalVariable ExternalVariableFromBPVariableDescription(const FBPVariableDescription& InVariableDescription);
+
+	RIGVM_API FRigVMExternalVariable ExternalVariableFromPinType(const FName& InName, const FEdGraphPinType& InPinType, bool bInPublic = false, bool bInReadonly = false);
+
+	RIGVM_API FRigVMExternalVariable ExternalVariableFromCPPTypePath(const FName& InName, const FString& InCPPTypePath, bool bInPublic = false, bool bInReadonly = false);
+
+	RIGVM_API FRigVMExternalVariable ExternalVariableFromCPPType(const FName& InName, const FString& InCPPType, UObject* InCPPTypeObject, bool bInPublic = false, bool bInReadonly = false);
+#endif
+}

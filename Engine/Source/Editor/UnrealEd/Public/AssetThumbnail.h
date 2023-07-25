@@ -264,14 +264,8 @@ private:
 	/** Handler for when an asset is loaded */
 	void OnAssetLoaded( UObject* Asset );
 
-	/** Handler for when an actor is moved in a level. Used to update world asset thumbnails. */
-	void OnActorPostEditMove( AActor* Actor );
-
-	/** Handler for when an asset is loaded */
-	void OnObjectPropertyChanged( UObject* Asset, FPropertyChangedEvent& PropertyChangedEvent );
-
-	/** Handler to dirty cached thumbnails in packages to make sure they are re-rendered later */
-	void DirtyThumbnailForObject( UObject* ObjectBeingModified );
+	/** Handler for when a thumbnail gets flagged as dirty. Used to refresh the thumbnail. */
+	void OnThumbnailDirtied( const FSoftObjectPath& ObjectPath );
 
 private:
 	/** Information about a thumbnail */
@@ -284,9 +278,9 @@ private:
 		/** Render target for slate */
 		FSlateTextureRenderTarget2DResource* ThumbnailRenderTarget;
 		/** The time since last access */
-		float LastAccessTime;
+		double LastAccessTime;
 		/** The time since last update */
-		float LastUpdateTime;
+		double LastUpdateTime;
 		/** Width of the thumbnail */
 		uint32 Width;
 		/** Height of the thumbnail */

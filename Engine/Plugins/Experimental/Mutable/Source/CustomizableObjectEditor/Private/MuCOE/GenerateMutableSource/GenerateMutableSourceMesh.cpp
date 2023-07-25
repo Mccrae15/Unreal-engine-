@@ -2,64 +2,21 @@
 
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceMesh.h"
 
-#include "Algo/BinarySearch.h"
 #include "Algo/Count.h"
-#include "Animation/MorphTarget.h"
 #include "Animation/PoseAsset.h"
-#include "Animation/Skeleton.h"
-#include "BoneContainer.h"
-#include "BoneIndices.h"
 #include "ClothConfigBase.h"
-#include "ClothLODData.h"
 #include "ClothingAsset.h"
-#include "ClothingAssetBase.h"
-#include "Containers/Array.h"
-#include "Containers/ArrayView.h"
-#include "Containers/IndirectArray.h"
-#include "Containers/Map.h"
-#include "Containers/Queue.h"
-#include "Containers/Set.h"
-#include "Containers/StringConv.h"
-#include "EdGraph/EdGraphNode.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/DataTable.h"
-#include "Engine/SkeletalMesh.h"
-#include "Engine/StaticMesh.h"
-#include "GPUSkinPublicDefs.h"
-#include "GameplayTagContainer.h"
-#include "HAL/PlatformCrt.h"
-#include "HAL/UnrealMemory.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Logging/TokenizedMessage.h"
-#include "Math/IntPoint.h"
-#include "Math/Matrix.h"
-#include "Math/NumericLimits.h"
-#include "Math/Quat.h"
-#include "Math/Rotator.h"
-#include "Math/Transform.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
-#include "Math/Vector2D.h"
 #include "MeshUtilities.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Guid.h"
 #include "Modules/ModuleManager.h"
-#include "MuCO/CustomizableObject.h"
-#include "MuCO/CustomizableObjectClothingTypes.h"
 #include "MuCO/CustomizableObjectInstance.h"
-#include "MuCO/CustomizableObjectUIData.h"
-#include "MuCO/UnrealPortabilityHelpers.h"
+#include "MuCO/CustomizableObjectSystem.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
 #include "MuCOE/CustomizableObjectLayout.h"
-#include "MuCOE/GenerateMutableSource/GenerateMutableSource.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceFloat.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceLayout.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceTable.h"
+#include "MuCOE/EdGraphSchema_CustomizableObject.h"
 #include "MuCOE/GraphTraversal.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeAnimationPose.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeFloatConstant.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeFloatParameter.h"
@@ -71,22 +28,10 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshReshapeCommon.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshSwitch.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshVariation.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeObject.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeStaticMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/UnrealEditorPortabilityHelpers.h"
-#include "MuR/Layout.h"
-#include "MuR/Mesh.h"
-#include "MuR/MeshBufferSet.h"
-#include "MuR/PhysicsBody.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
-#include "MuR/Skeleton.h"
-#include "MuT/Node.h"
-#include "MuT/NodeLayout.h"
-#include "MuT/NodeMesh.h"
-#include "MuT/NodeMeshApplyPose.h"
 #include "MuT/NodeMeshConstant.h"
 #include "MuT/NodeMeshGeometryOperation.h"
 #include "MuT/NodeMeshMakeMorph.h"
@@ -95,42 +40,7 @@
 #include "MuT/NodeMeshSwitch.h"
 #include "MuT/NodeMeshTable.h"
 #include "MuT/NodeMeshVariation.h"
-#include "MuT/NodeScalar.h"
-#include "MuT/NodeScalarEnumParameter.h"
-#include "PhysicsEngine/AggregateGeom.h"
-#include "PhysicsEngine/BoxElem.h"
-#include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/PhysicsAsset.h"
-#include "PhysicsEngine/ShapeElem.h"
-#include "PhysicsEngine/SphereElem.h"
-#include "PhysicsEngine/SphylElem.h"
-#include "PhysicsEngine/TaperedCapsuleElem.h"
-#include "RawIndexBuffer.h"
-#include "ReferenceSkeleton.h"
-#include "Rendering/MultiSizeIndexContainer.h"
-#include "Rendering/PositionVertexBuffer.h"
-#include "Rendering/SkeletalMeshLODModel.h"
-#include "Rendering/SkeletalMeshLODRenderData.h"
-#include "Rendering/SkeletalMeshModel.h"
-#include "Rendering/SkeletalMeshRenderData.h"
-#include "Rendering/StaticMeshVertexBuffer.h"
-#include "Serialization/MemoryWriter.h"
-#include "Serialization/StructuredArchiveAdapters.h"
-#include "SkeletalMeshTypes.h"
-#include "StaticMeshResources.h"
-#include "Templates/Casts.h"
-#include "Templates/Decay.h"
-#include "Templates/TypeHash.h"
-#include "Templates/UnrealTemplate.h"
-#include "Trace/Detail/Channel.h"
-#include "UObject/Class.h"
-#include "UObject/NameTypes.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/Package.h"
-#include "UObject/SoftObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
 
@@ -289,12 +199,186 @@ TObjectPtr<const USkeletalMesh> GetMeshWithBoneRemovalApplied(TObjectPtr<USkelet
 	return CacheEntry.Mesh;
 }
 
+
+void TransferRemovedBonesInfluences(FBoneIndexType* InfluenceBones, uint16* InfluenceWeights, const int32 InfluenceCount, const TMap<int32, int32>& ReplacementMap)
+{
+	for (int32 i = 0; i < InfluenceCount; ++i)
+	{
+		if (const int32* IndexPtr = ReplacementMap.Find(InfluenceBones[i]))
+		{
+			bool bParentFound = false;
+			int32 ParentIndex = *IndexPtr;
+			for (int32 j = 0; j < InfluenceCount; ++j)
+			{
+				if (InfluenceBones[j] == ParentIndex)
+				{
+					InfluenceWeights[j] += InfluenceWeights[i];
+					InfluenceWeights[i] = 0.f;
+					bParentFound = true;
+					break;
+				}
+			}
+
+			if (!bParentFound)
+			{
+				InfluenceBones[i] = ParentIndex;
+			}
+		}
+	}
+}
+
+
+void NormalizeWeights(FBoneIndexType* InfluenceBones, uint16* InfluenceWeights, const int32 InfluenceCount, const int32 MutableInfluenceCount,
+	int32* MutableMaxOrderedWeighsIndices, const int32 MaxSectionBoneMapIndex, const int32 MaxBoneWeight)
+{
+	// First get the indices of the 4 heaviest influences
+	for (int32 i = 0; i < MutableInfluenceCount; ++i)
+	{
+		int32 CurrentMaxWeight = -1;
+
+		for (int32 j = 0; j < InfluenceCount; ++j)
+		{
+			bool bIndexAlreadyUsed = false;
+
+			for (int32 k = 0; k < i; ++k)
+			{
+				if (MutableMaxOrderedWeighsIndices[k] == j)
+				{
+					bIndexAlreadyUsed = true;
+					break;
+				}
+				else if (MutableMaxOrderedWeighsIndices[k] < 0)
+				{
+					break;
+				}
+			}
+
+			if (!bIndexAlreadyUsed && InfluenceWeights[j] > CurrentMaxWeight
+				&& InfluenceBones[j] < MaxSectionBoneMapIndex)
+			{
+				MutableMaxOrderedWeighsIndices[i] = j;
+				CurrentMaxWeight = InfluenceWeights[j];
+			}
+		}
+	}
+
+	// Copy 4 heaviest influences to 4 first indices
+	for (int32 i = 0; i < MutableInfluenceCount; ++i)
+	{
+		if (i < InfluenceCount)
+		{
+			InfluenceWeights[i] = InfluenceWeights[MutableMaxOrderedWeighsIndices[i]];
+			InfluenceBones[i] = InfluenceBones[MutableMaxOrderedWeighsIndices[i]];
+		}
+		else
+		{
+			InfluenceWeights[i] = 0;
+			InfluenceBones[i] = 0;
+		}
+	}
+
+	// Actually renormalize the first 4 influences
+	int32 TotalWeight = 0;
+
+	for (int32 j = 0; j < MutableInfluenceCount; ++j)
+	{
+		TotalWeight += InfluenceWeights[j];
+	}
+
+	if (TotalWeight > 0)
+	{
+		int32 AssignedWeight = 0;
+
+		for (int32 j = 1; j < MAX_TOTAL_INFLUENCES; ++j)
+		{
+			if (j < MutableInfluenceCount)
+			{
+				float Aux = InfluenceWeights[j];
+				int32 Res = FMath::RoundToInt(Aux / TotalWeight * MaxBoneWeight);
+				AssignedWeight += Res;
+				InfluenceWeights[j] = Res;
+			}
+			else
+			{
+				InfluenceWeights[j] = 0;
+			}
+		}
+
+		InfluenceWeights[0] = MaxBoneWeight - AssignedWeight;
+	}
+	else
+	{
+		FMemory::Memzero(InfluenceWeights, MutableInfluenceCount*sizeof(InfluenceWeights[0]));
+		InfluenceWeights[0] = MaxBoneWeight;
+	}
+}
+
+void SetAndPropagatePoseBoneUsage(
+		mu::Mesh& MutableMesh, int32 PoseIndex, mu::EBoneUsageFlags Usage, 
+		const TMap<FName, int32>* BoneNameToSkeletonIndexMap = nullptr,
+		const TMap<FName, int32>* BoneNameToPoseIndexMap = nullptr)
+{
+	if (!MutableMesh.GetSkeleton())
+	{
+		return;
+	}
+
+	const mu::Skeleton& MutableSkeleton = *MutableMesh.GetSkeleton();
+
+	if (PoseIndex < 0 || PoseIndex >= MutableMesh.BonePoses.Num())
+	{
+		check(false);
+		return;
+	}
+
+	int32 BoneIndex = [&]() 
+	{
+		if (BoneNameToSkeletonIndexMap)
+		{
+			const int32* Found = BoneNameToSkeletonIndexMap->Find(FName(MutableMesh.BonePoses[PoseIndex].BoneName.c_str()));
+			return Found ? *Found : INDEX_NONE;
+		}
+		else
+		{
+			return MutableSkeleton.FindBone(MutableMesh.BonePoses[PoseIndex].BoneName.c_str());
+		}
+	}();
+
+	while (BoneIndex != INDEX_NONE)
+	{
+		PoseIndex = [&]()
+		{
+			if (BoneNameToPoseIndexMap)
+			{
+				const int32* Found = BoneNameToPoseIndexMap->Find(FName(MutableSkeleton.GetBoneName(BoneIndex)));
+				return Found ? *Found : INDEX_NONE;
+			}
+			else
+			{
+				return MutableMesh.FindBonePose(MutableSkeleton.GetBoneName(BoneIndex));
+			}
+		}();
+
+		if (PoseIndex == INDEX_NONE)
+		{
+			check(false);
+			return;
+		}
+
+		EnumAddFlags(MutableMesh.BonePoses[PoseIndex].BoneUsageFlags, Usage);
+
+		BoneIndex = MutableSkeleton.GetBoneParent(BoneIndex);
+	}
+
+}
+
 mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD, int MaterialIndex, FMutableGraphGenerationContext& GenerationContext, const UCustomizableObjectNode* CurrentNode)
 {
 	// Get the mesh generation flags to use
-	uint32 CurrentFlags = GenerationContext.MeshGenerationFlags.Last();
-	bool bIgnoreSkeleton = CurrentFlags & uint32(EMutableMeshConversionFlags::IgnoreSkinning);
-	bool bIgnorePhysics = CurrentFlags & uint32(EMutableMeshConversionFlags::IgnorePhysics);
+	const EMutableMeshConversionFlags CurrentFlags = GenerationContext.MeshGenerationFlags.Last();
+	const bool bIgnoreSkeleton = EnumHasAnyFlags(CurrentFlags, EMutableMeshConversionFlags::IgnoreSkinning);
+	const bool bIgnorePhysics = EnumHasAnyFlags(CurrentFlags, EMutableMeshConversionFlags::IgnorePhysics) || 
+								!GenerationContext.Options.bPhysicsAssetMergeEnebled;
 
 	mu::MeshPtr MutableMesh = new mu::Mesh();
 		
@@ -305,16 +389,22 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 	}
 	
 	USkeleton* InSkeleton = InSkeletalMesh->GetSkeleton();
-	check(InSkeleton);
+	if (!InSkeleton)
+	{
+		FString Msg = FString::Printf(
+			TEXT("No skeleton provided when converting SkeletalMesh [%s]."),
+			*InSkeletalMesh->GetName()
+		);
+		GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), CurrentNode);
+		return nullptr;
+	}
 
 	TObjectPtr<const USkeletalMesh> SkeletalMesh = InSkeletalMesh;
 
-	FMutableComponentInfo& MutComponentInfo = GenerationContext.GetCurrentComponentInfo();
-	USkeletalMesh* ComponentRefSkeletalMesh = MutComponentInfo.RefSkeletalMesh;
-	USkeleton* ComponentRefSkeleton = MutComponentInfo.RefSkeleton;
-	check(ComponentRefSkeletalMesh);
-	check(ComponentRefSkeleton);
-	
+	// CurrentMeshComponent < 0 implies IgnoreSkeleton flag.  
+	// CurrentMeshComponent < 0 will only happen with modifiers and, for now, any mesh generated from a modifier
+	// should ignore skinning.
+	check(!(GenerationContext.CurrentMeshComponent < 0) || bIgnoreSkeleton);
 
 	// Apply removed bones
 	TMap<int32, int32> RemovedBonesActiveParentIndices;
@@ -358,15 +448,24 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 		return nullptr;
 	}
 
-	// Use this to set bone IDs in Mutable to specify to which skeleton they belong
-	int32 SkeletonID = 0;
-
 	// This map will be used to find and replace vertex influences.
 	TMap<int32, int32> InfluencesToReplaceMap;
 
 	// Check for a matching skeleton to the reference mesh
 	if (!bIgnoreSkeleton)
 	{
+		check(GenerationContext.CurrentMeshComponent >= 0);
+
+		FMutableComponentInfo& MutComponentInfo = GenerationContext.GetCurrentComponentInfo();
+		USkeletalMesh* ComponentRefSkeletalMesh = MutComponentInfo.RefSkeletalMesh;
+		USkeleton* ComponentRefSkeleton = MutComponentInfo.RefSkeleton;
+		check(ComponentRefSkeletalMesh);
+		check(ComponentRefSkeleton);
+
+		// Add the RefSkeleton ID to the mesh.
+		const int32 RefSkeletonID = GenerationContext.ReferencedSkeletons.AddUnique(ComponentRefSkeleton);
+		MutableMesh->AddSkeletonID(RefSkeletonID);
+
 		if (InSkeleton != ComponentRefSkeleton)
 		{
 			bool* SkeletonCompatibility = MutComponentInfo.SkeletonCompatibility.Find(InSkeleton);
@@ -425,14 +524,10 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 				// Incompatible skeleton 
 				return nullptr;
 			}
-			
-			// Is it a skeleton that we have already used?
-			SkeletonID = GenerationContext.ReferencedSkeletons.AddUnique(InSkeleton);
-		}
-		else
-		{
-			// Since we could have multiple reference skeletons, we can't assume its index is 0 
-			SkeletonID = GenerationContext.ReferencedSkeletons.Find(InSkeleton);
+
+			// Add the skeleton to the list of referenced skeletons and add its index to the mesh
+			const int32 SkeletonID = GenerationContext.ReferencedSkeletons.AddUnique(InSkeleton);
+			MutableMesh->AddSkeletonID(SkeletonID);
 		}
 
 		{
@@ -585,175 +680,31 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 			}
 		}
 
-		if (GenerationContext.Options.bExtraBoneInfluencesEnabled && MaxSectionInfluences < EXTRA_BONE_INFLUENCES)
-		{
-			for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount && VertexIndex < Vertices.Num(); ++VertexIndex)
-			{
-				FSoftSkinVertex& Vertex = Vertices[VertexIndex];
+		const int32 MaxSectionBoneMapIndex = ImportedModel->LODModels[LOD].Sections[MaterialIndex].BoneMap.Num();
 
-				for (int32 i = MaxSectionInfluences; i < EXTRA_BONE_INFLUENCES; ++i)
-				{
-					check(Vertex.InfluenceWeights[i] == 0);
-				}
+		for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount && VertexIndex < Vertices.Num(); ++VertexIndex)
+		{
+			FSoftSkinVertex& Vertex = Vertices[VertexIndex];
+
+			// Transfer removed bones influences to parent bones
+			if (!InfluencesToReplaceMap.IsEmpty())
+			{
+				TransferRemovedBonesInfluences(&Vertex.InfluenceBones[0], &Vertex.InfluenceWeights[0], MaxSectionInfluences, InfluencesToReplaceMap);
 			}
-		}
-		else if (!GenerationContext.Options.bExtraBoneInfluencesEnabled)
-		{
-			const int32 MaxBoneWeightValue = BoneWeightFormat == MBF_NUINT16 ? 65535 : 255;
-			const int32 MaxSectionBoneMapIndex = ImportedModel->LODModels[LOD].Sections[MaterialIndex].BoneMap.Num();
 
-			// Renormalize to 4 weights per vertex
-			for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount && VertexIndex < Vertices.Num(); ++VertexIndex)
+			if (!GenerationContext.Options.bExtraBoneInfluencesEnabled)
 			{
-				FSoftSkinVertex& Vertex = Vertices[VertexIndex];
-
+				// Normalize weights
 				const int32 MaxMutableWeights = 4;
 				int32 MaxOrderedWeighsIndices[MaxMutableWeights] = { -1, -1, -1, -1 };
 
-				// Transfer removed bones influences to parent bones
-				if (InfluencesToReplaceMap.Num() > 0)
-				{
-					for (int32 i = 0; i < MaxSectionInfluences; ++i)
-					{
-						if (const int32* IndexPtr = InfluencesToReplaceMap.Find(Vertex.InfluenceBones[i]))
-						{
-							bool bParentFound = false;
-							int32 ParentIndex = *IndexPtr;
-							for (int32 j = 0; j < MaxSectionInfluences; ++j)
-							{
-								if (Vertex.InfluenceBones[j] == ParentIndex)
-								{
-									Vertex.InfluenceWeights[j] += Vertex.InfluenceWeights[i];
-									Vertex.InfluenceWeights[i] = 0.f;
-									bParentFound = true;
-									break;
-								}
-							}
-
-							if (!bParentFound)
-							{
-								Vertex.InfluenceBones[i] = ParentIndex;
-							}
-						}
-					}
-				}
-
-				// First get the indices of the 4 heaviest influences
-				for (int32 i = 0; i < MaxMutableWeights; ++i)
-				{
-					int32 CurrentMaxWeight = -1;
-
-					for (int32 j = 0; j < MaxSectionInfluences; ++j)
-					{
-						bool bIndexAlreadyUsed = false;
-
-						for (int32 k = 0; k < i; ++k)
-						{
-							if (MaxOrderedWeighsIndices[k] == j)
-							{
-								bIndexAlreadyUsed = true;
-								break;
-							}
-							else if (MaxOrderedWeighsIndices[k] < 0)
-							{
-								break;
-							}
-						}
-
-						if (!bIndexAlreadyUsed && Vertex.InfluenceWeights[j] > CurrentMaxWeight
-							&& Vertex.InfluenceBones[j] < MaxSectionBoneMapIndex)
-						{
-							MaxOrderedWeighsIndices[i] = j;
-							CurrentMaxWeight = Vertex.InfluenceWeights[j];
-						}
-					}
-				}
-
-				// Copy 4 heaviest influences to 4 first indices
-				for (int32 i = 0; i < MaxMutableWeights; ++i)
-				{
-					if (i < MaxSectionInfluences)
-					{
-						Vertex.InfluenceWeights[i] = Vertex.InfluenceWeights[MaxOrderedWeighsIndices[i]];
-						Vertex.InfluenceBones[i] = Vertex.InfluenceBones[MaxOrderedWeighsIndices[i]];
-					}
-					else
-					{
-						Vertex.InfluenceWeights[i] = 0;
-						Vertex.InfluenceBones[i] = 0;
-					}
-				}
-
-				// Actually renormalize the first 4 influences
-				int32 TotalWeight = 0;
-
-				for (int32 j = 0; j < MaxMutableWeights; ++j)
-				{
-					TotalWeight += Vertex.InfluenceWeights[j];
-				}
-
-				if (TotalWeight > 0)
-				{
-					int32 AssignedWeight = 0;
-
-					for (int32 j = 1; j < MAX_TOTAL_INFLUENCES; ++j)
-					{
-						if (j < MaxMutableWeights)
-						{
-							float Aux = Vertex.InfluenceWeights[j];
-							int32 Res = FMath::RoundToInt(Aux / TotalWeight * MaxBoneWeightValue);
-							AssignedWeight += Res;
-							Vertex.InfluenceWeights[j] = Res;
-						}
-						else
-						{
-							Vertex.InfluenceWeights[j] = 0;
-						}
-					}
-
-					Vertex.InfluenceWeights[0] = MaxBoneWeightValue - AssignedWeight;
-				}
-				else
-				{
-					Vertex.InfluenceWeights[0] = MaxBoneWeightValue;
-
-					for (int32 j = 1; j < MaxMutableWeights; ++j)
-					{
-						Vertex.InfluenceWeights[j] = 0;
-					}
-				}
+				const int32 MaxBoneWeightValue = BoneWeightFormat == MBF_NUINT16 ? 65535 : 255;
+				NormalizeWeights(&Vertex.InfluenceBones[0], &Vertex.InfluenceWeights[0], MaxSectionInfluences, MaxMutableWeights,
+					&MaxOrderedWeighsIndices[0], MaxSectionBoneMapIndex, MaxBoneWeightValue);
 			}
-		}
-		else if (InfluencesToReplaceMap.Num() > 0)
-		{
-			// Transfer removed bones influences to parent bones
-			for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount && VertexIndex < Vertices.Num(); ++VertexIndex)
+			else if (MaxSectionInfluences < EXTRA_BONE_INFLUENCES)
 			{
-				FSoftSkinVertex& Vertex = Vertices[VertexIndex];
-
-				for (int32 i = 0; i < MAX_TOTAL_INFLUENCES; ++i)
-				{
-					if (const int32* ParentBoneIndexPtr = InfluencesToReplaceMap.Find(Vertex.InfluenceBones[i]))
-					{
-						bool bParentFound = false;
-						int32 ParentIndex = *ParentBoneIndexPtr;
-						for (int32 j = 0; j < MAX_TOTAL_INFLUENCES; ++j)
-						{
-							if (Vertex.InfluenceBones[j] == ParentIndex)
-							{
-								Vertex.InfluenceWeights[j] += Vertex.InfluenceWeights[i];
-								Vertex.InfluenceWeights[i] = 0.f;
-								bParentFound = true;
-								break;
-							}
-						}
-
-						if (!bParentFound)
-						{
-							Vertex.InfluenceBones[i] = ParentIndex;
-						}
-					}
-				}
+				FMemory::Memzero(&Vertex.InfluenceWeights[MaxSectionInfluences], EXTRA_BONE_INFLUENCES - MaxSectionInfluences);
 			}
 		}
 
@@ -761,6 +712,8 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 		FMemory::Memcpy(MutableMesh->GetVertexBuffers().GetBufferData(0), Vertices.GetData() + VertexStart, VertexCount * ElementSize);
 	}
 
+
+	// TODO: Add Mesh generation flags to not include RT Morph and clothing if not needed.
 	int32 nextBufferIndex = 1;
 	if (GenerationContext.Options.bRealTimeMorphTargetsEnabled)
 	{
@@ -801,7 +754,7 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 
         // Add SkeletalMesh node used defined realtime morph targets to a temporal array where
         // the actual to be used real-time morphs names will be placed.        
-        TArray<FName> UsedMorphTargetsNames = [&]()
+        TArray<FName> UsedMorphTargetsNames = Invoke([&]()
         {
             TArray<FName> MorphTargetsNames;
             MorphTargetsNames.Reserve(SkeletalMeshMorphTargets.Num());
@@ -823,30 +776,31 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
             }
 
             return MorphTargetsNames;
-        }(); // lambda is invoked.
+        });
 
         //Apply global morph targets overrides to the SkeletalMesh user defined RT morph targets. 
         for (FRealTimeMorphSelectionOverride& MorphTargetOverride : RealTimeMorphTargetOverrides)
         {
-            const ECustomizableObjectSelectionOverride OverrideValue = [&]() -> ECustomizableObjectSelectionOverride
-                {
-                    const ECustomizableObjectSelectionOverride GlobalOverrideValue = MorphTargetOverride.SelectionOverride;
-                    
-                    if (GlobalOverrideValue != ECustomizableObjectSelectionOverride::NoOverride)
-                    {
-                        return GlobalOverrideValue;
-                    } 
-                
-                    const int32 FoundIdx = 
-                            MorphTargetOverride.SkeletalMeshesNames.Find(SkeletalMesh->GetFName());
+            const ECustomizableObjectSelectionOverride OverrideValue = 
+				Invoke([&]() -> ECustomizableObjectSelectionOverride
+				{
+					const ECustomizableObjectSelectionOverride GlobalOverrideValue = MorphTargetOverride.SelectionOverride;
+					
+					if (GlobalOverrideValue != ECustomizableObjectSelectionOverride::NoOverride)
+					{
+						return GlobalOverrideValue;
+					} 
+				
+					const int32 FoundIdx = 
+							MorphTargetOverride.SkeletalMeshesNames.Find(SkeletalMesh->GetFName());
 
-                    if (FoundIdx != INDEX_NONE)
-                    {
-                        return MorphTargetOverride.Override[FoundIdx];
-                    }
+					if (FoundIdx != INDEX_NONE)
+					{
+						return MorphTargetOverride.Override[FoundIdx];
+					}
 
-                    return ECustomizableObjectSelectionOverride::NoOverride;
-                }(); // lambda is invoked.
+					return ECustomizableObjectSelectionOverride::NoOverride;
+				});
 
             if (OverrideValue == ECustomizableObjectSelectionOverride::Enable)
             {
@@ -1002,7 +956,7 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 
 		// Create new asset or find an already created one if the section has clothing assets.
 		// clothing assets are shared among all LODs in a section
-		const int32 ClothingAssetIndex = [&]() -> int32
+		const int32 ClothingAssetIndex = Invoke([&]() -> int32
 		{
 			const UClothingAssetBase* ClothingAssetBase = SkeletalMesh->GetSectionClothingAsset(LOD, MaterialIndex);
 
@@ -1048,7 +1002,7 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 			}
 
 			return NewAssetIndex;
-		}(); // lambda is invoked
+		});
 
 		if (ClothingAssetIndex != INDEX_NONE)
 		{
@@ -1115,6 +1069,114 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 				// this value will be ignored anyway.
 				ClothingDataElem.Weight = 1.0f;
 			}
+		}
+
+		++nextBufferIndex;
+	}
+
+
+	// SkinWeightProfiles vertex info.
+	if (GenerationContext.Options.bSkinWeightProfilesEnabled)
+	{
+		using namespace mu;
+
+		// TODO: Remove BoneWeightFormat after merge
+		const int32 BoneWeightTypeSizeBytes = sizeof(TDecay<decltype(DeclVal<FRawSkinWeight>().InfluenceWeights[0])>::Type);
+		MESH_BUFFER_FORMAT BoneWeightFormat = BoneWeightTypeSizeBytes == 1 ? MBF_NUINT8 : MBF_NUINT16;
+
+		// Limit skinning weights if necessary
+		// \todo: make it more flexible to support 3 or 5 or 1 weight, since there is support for this in 4.25
+		const int32 MutableBonesPerVertex = GenerationContext.Options.bExtraBoneInfluencesEnabled ? EXTRA_BONE_INFLUENCES : 4;
+		const int32 BoneIndicesSize = MutableBonesPerVertex * sizeof(FBoneIndexType);
+		const int32 BoneWeightsSize = MutableBonesPerVertex * BoneWeightTypeSizeBytes;
+		const int32 SkinWeightProfileVertexSize = sizeof(int32) + BoneIndicesSize + BoneWeightsSize;
+
+		const int32 MaxSectionInfluences = ImportedModel->LODModels[LOD].Sections[MaterialIndex].GetMaxBoneInfluences();
+		const int32 MaxSectionBoneMapIndex = ImportedModel->LODModels[LOD].Sections[MaterialIndex].BoneMap.Num();
+
+		const TArray<FSkinWeightProfileInfo>& SkinWeightProfilesInfo = SkeletalMesh->GetSkinWeightProfiles();
+		for (const FSkinWeightProfileInfo& Profile : SkinWeightProfilesInfo)
+		{
+			const FImportedSkinWeightProfileData* ImportedProfileData = ImportedModel->LODModels[LOD].SkinWeightProfiles.Find(Profile.Name);
+			if (!ImportedProfileData)
+			{
+				continue;
+			}
+
+			check(Vertices.Num() == ImportedProfileData->SkinWeights.Num());
+
+			TArray<uint8> MutSkinWeights;
+			MutSkinWeights.SetNumZeroed(VertexCount * SkinWeightProfileVertexSize);
+			uint8* MutSkinWeightData = MutSkinWeights.GetData();
+
+			for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount; ++VertexIndex)
+			{
+				FRawSkinWeight SkinWeight = ImportedProfileData->SkinWeights[VertexIndex];
+
+				if (!InfluencesToReplaceMap.IsEmpty())
+				{
+					TransferRemovedBonesInfluences(&SkinWeight.InfluenceBones[0], &SkinWeight.InfluenceWeights[0], MaxSectionInfluences, InfluencesToReplaceMap);
+				}
+
+				if (!GenerationContext.Options.bExtraBoneInfluencesEnabled)
+				{
+					// Normalize weights
+					const int32 MaxMutableWeights = 4;
+					int32 MaxOrderedWeighsIndices[MaxMutableWeights] = { -1, -1, -1, -1 };
+
+					const int32 MaxBoneWeightValue = BoneWeightFormat == MBF_NUINT16 ? 65535 : 255;
+					NormalizeWeights(&SkinWeight.InfluenceBones[0], &SkinWeight.InfluenceWeights[0], MaxSectionInfluences, MaxMutableWeights,
+						&MaxOrderedWeighsIndices[0], MaxSectionBoneMapIndex, MaxBoneWeightValue);
+				}
+				else if (MaxSectionInfluences < MutableBonesPerVertex)
+				{
+					FMemory::Memzero(&SkinWeight.InfluenceWeights[MaxSectionInfluences], MutableBonesPerVertex - MaxSectionInfluences);
+				}
+
+				if (FMemory::Memcmp(&Vertices[VertexIndex].InfluenceBones[0], &SkinWeight.InfluenceBones[0], BoneIndicesSize) == 0
+					&&
+					FMemory::Memcmp(&Vertices[VertexIndex].InfluenceWeights[0], &SkinWeight.InfluenceWeights[0], BoneWeightsSize) == 0)
+				{
+					MutSkinWeightData += SkinWeightProfileVertexSize;
+					continue;
+				}
+
+				int32 SkinWeightVertexHash = 0;
+				for (int32 InfluenceIndex = 0; InfluenceIndex < MutableBonesPerVertex; ++InfluenceIndex)
+				{
+					SkinWeightVertexHash = HashCombine(SkinWeightVertexHash, SkinWeight.InfluenceBones[InfluenceIndex]);
+					SkinWeightVertexHash = HashCombine(SkinWeightVertexHash, SkinWeight.InfluenceWeights[InfluenceIndex]);
+				}
+
+				FMemory::Memcpy(MutSkinWeightData, &SkinWeightVertexHash, sizeof(int32));
+				MutSkinWeightData += sizeof(int32);
+				FMemory::Memcpy(MutSkinWeightData, &SkinWeight.InfluenceBones[0], BoneIndicesSize);
+				MutSkinWeightData += BoneIndicesSize;
+				FMemory::Memcpy(MutSkinWeightData, &SkinWeight.InfluenceWeights[0], BoneWeightsSize);
+				MutSkinWeightData += BoneWeightsSize;
+			}
+
+			const int32 ProfileIndex = GenerationContext.SkinWeightProfilesInfo.AddUnique({Profile.Name, false, 0});
+			const int32 ProfileSemanticIndex = ProfileIndex + 10;
+
+			const FName PlatformName = *GenerationContext.Options.TargetPlatform->PlatformName();
+			FMutableSkinWeightProfileInfo& MutSkinWeightProfileInfo = GenerationContext.SkinWeightProfilesInfo[ProfileIndex];
+			MutSkinWeightProfileInfo.DefaultProfile = MutSkinWeightProfileInfo.DefaultProfile || Profile.DefaultProfile.GetValueForPlatform(PlatformName);
+			MutSkinWeightProfileInfo.DefaultProfileFromLODIndex = FMath::Min(MutSkinWeightProfileInfo.DefaultProfileFromLODIndex, Profile.DefaultProfileFromLODIndex.GetValueForPlatform(PlatformName));
+
+			// Set up SkinWeightPRofile BufferData
+			const int32 ElementSize = sizeof(int32) + sizeof(FBoneIndexType) + BoneWeightTypeSizeBytes;
+			const int32 ChannelCount = 3;
+			const MESH_BUFFER_SEMANTIC Semantics[ChannelCount] = { MBS_OTHER, MBS_BONEINDICES, MBS_BONEWEIGHTS };
+			const int32 SemanticIndices[ChannelCount] = { ProfileSemanticIndex, ProfileSemanticIndex, ProfileSemanticIndex };
+			const MESH_BUFFER_FORMAT Formats[ChannelCount] = { MBF_INT32, MBF_UINT16, BoneWeightFormat };
+			const int32 Components[ChannelCount] = { 1, MutableBonesPerVertex, MutableBonesPerVertex };
+			const int32 Offsets[ChannelCount] = { 0, sizeof(int32), sizeof(int32) + BoneIndicesSize };
+
+			MutableMesh->GetVertexBuffers().SetBufferCount(nextBufferIndex + 1);
+			MutableMesh->GetVertexBuffers().SetBuffer(nextBufferIndex, ElementSize, ChannelCount, Semantics, SemanticIndices, Formats, Components, Offsets);
+			FMemory::Memcpy(MutableMesh->GetVertexBuffers().GetBufferData(nextBufferIndex), MutSkinWeights.GetData(), VertexCount * SkinWeightProfileVertexSize);
+			++nextBufferIndex;
 		}
 	}
 
@@ -1197,12 +1259,12 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 	if (!bIgnoreSkeleton)
 	{
 		// Skeleton
-		int32 NumBonesInMesh = ImportedModel->LODModels[LOD].Sections[MaterialIndex].BoneMap.Num();
-
 
 		// Add the bones in the order they are used in the mesh
 		TMap<int32, int32> InverseBoneMap; // Inverse of ImportedModel->LODModels[LOD].Chunks[MaterialIndex].BoneMap for the chunk's bone indices
 		TQueue<int32> SkippedBoneMapIndices; // The order and index of the bones in the BoneMap must remain the same even if some bones are removed
+
+		const int32 NumBonesInMesh = ImportedModel->LODModels[LOD].Sections[MaterialIndex].BoneMap.Num();
 		for (int32 BoneMapIndex = 0; BoneMapIndex < NumBonesInMesh; ++BoneMapIndex)
 		{
 			if (InfluencesToReplaceMap.Find(BoneMapIndex))
@@ -1259,15 +1321,22 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 			int32 ParentRefSkeletonIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(RefSkelIndex);
 			int ParentBoneMapIndex = ParentRefSkeletonIndex >= 0 ? InverseBoneMap[ParentRefSkeletonIndex] : -1;
 			MutableSkeleton->SetBoneParent(BoneMapIndex, ParentBoneMapIndex);
-			MutableSkeleton->SetBoneId(BoneMapIndex,SkeletonID);
 
 			FMatrix44f BaseInvMatrix = SkeletalMesh->GetRefBasesInvMatrix()[RefSkelIndex];
 			FTransform3f BaseInvTransform;
 			BaseInvTransform.SetFromMatrix(BaseInvMatrix);
-			MutableMesh->SetBonePose(BoneMapIndex, TCHAR_TO_ANSI(*BoneName), BaseInvTransform.Inverse(), bSkinned);
+
+			mu::EBoneUsageFlags BoneUsageFlags = bSkinned ? mu::EBoneUsageFlags::Skinning : mu::EBoneUsageFlags::None;
+			
+			if (SkeletalMesh->GetRefSkeleton().GetParentIndex(RefSkelIndex) == INDEX_NONE)
+			{
+				EnumAddFlags(BoneUsageFlags, mu::EBoneUsageFlags::Root);
+			}
+
+			MutableMesh->SetBonePose(BoneMapIndex, TCHAR_TO_ANSI(*BoneName), BaseInvTransform.Inverse(), BoneUsageFlags);
 		}
 	}
-	
+
 	if (!bIgnorePhysics && SkeletalMesh->GetPhysicsAsset() && MutableMesh->GetSkeleton())
 	{
 		// Find BodySetups with relevant bones.
@@ -1292,18 +1361,20 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 			const int32 SkeletonBoneCount = MutableMesh->GetSkeleton()->GetBoneCount();
 			for ( int32 I = 0; I < SkeletonBoneCount; ++I )
 			{
-				FString SkeletonBoneName = MutableMesh->GetSkeleton()->GetBoneName( I );
+				FString SkeletonBoneName = MutableMesh->GetSkeleton()->GetBoneName(I);
 				
 				if (SkeletonBoneName.Equals(BodyBoneName))
 				{
 					RelevantBodySetups.Add(BodySetup);
 					DiscardedBodySetups[BodySetupIndex] = 0;
+					int32 BonePoseIndex = MutableMesh->FindBonePose(TCHAR_TO_ANSI(*BodyBoneName));
+					
+					EnumAddFlags(MutableMesh->BonePoses[BonePoseIndex].BoneUsageFlags, mu::EBoneUsageFlags::Physics);
 				}
 			}
 		}
 
 		const int32 NumDiscardedSetups = Algo::CountIf(DiscardedBodySetups, [](const uint8& V) { return V; });
-
 
 		constexpr bool bOptOutOfIncompleteBodyWarnings = true;
 		if (NumDiscardedSetups > 0 && !bOptOutOfIncompleteBodyWarnings)
@@ -1400,10 +1471,11 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 					VertexData[Elem] = FVector3f(ConvexElem.VertexData[Elem]);
 				}
 				
-				PhysicsBody->SetConvex( B, I, 
-						VertexData.GetData(), ConvexElem.VertexData.Num(), 
-						ConvexElem.IndexData.GetData(), ConvexElem.IndexData.Num(), 
-						FTransform3f(ConvexElem.GetTransform()) );
+				PhysicsBody->SetConvexMesh(B, I,
+						TArrayView<const FVector3f>(VertexData.GetData(), ConvexElem.VertexData.Num()),
+						TArrayView<const int32>(ConvexElem.IndexData.GetData(), ConvexElem.IndexData.Num()));
+
+				PhysicsBody->SetConvexTransform(B, I, FTransform3f(ConvexElem.GetTransform()));
 				
 				const FString KElemName = ConvexElem.GetName().ToString();
 				PhysicsBody->SetConvexName(B, I, TCHAR_TO_ANSI(*KElemName));
@@ -1446,9 +1518,43 @@ mu::MeshPtr ConvertSkeletalMeshToMutable(USkeletalMesh* InSkeletalMesh, int LOD,
 		MutableMesh->SetPhysicsBody(PhysicsBody);
 	}
 	
+	// Set Bone Parenting usages. This has to be done after all primary usages are set.
+	for (int32 I = MutableMesh->GetBonePoseCount() - 1; I >= 0; --I)
+	{
+		mu::Mesh::FBonePose& BonePose = MutableMesh->BonePoses[I];
+
+		constexpr mu::EBoneUsageFlags FlagsToPropagate =
+				mu::EBoneUsageFlags::Skinning | mu::EBoneUsageFlags::Physics | mu::EBoneUsageFlags::Deform;
+		if (EnumHasAnyFlags(BonePose.BoneUsageFlags, FlagsToPropagate))
+		{
+			const int32 BoneIndex = MutableMesh->GetSkeleton()->FindBone(MutableMesh->GetBonePoseName(I));
+
+			if (BoneIndex == INDEX_NONE)
+			{
+				continue;
+			}
+
+			const int32 ParentIndex = MutableMesh->GetSkeleton()->GetBoneParent(BoneIndex);
+
+			if (ParentIndex == INDEX_NONE)
+			{	
+				continue;
+			}
+
+			const mu::EBoneUsageFlags ParentPropagationFlags =
+				(EnumHasAnyFlags(BonePose.BoneUsageFlags, mu::EBoneUsageFlags::Skinning) 
+					? mu::EBoneUsageFlags::SkinningParent : mu::EBoneUsageFlags::None) |
+				(EnumHasAnyFlags(BonePose.BoneUsageFlags, mu::EBoneUsageFlags::Physics) 
+					? mu::EBoneUsageFlags::PhysicsParent : mu::EBoneUsageFlags::None) |
+				(EnumHasAnyFlags(BonePose.BoneUsageFlags, mu::EBoneUsageFlags::Deform) 
+					? mu::EBoneUsageFlags::DeformParent : mu::EBoneUsageFlags::None);
+
+			SetAndPropagatePoseBoneUsage(*MutableMesh, ParentIndex, ParentPropagationFlags);
+		}
+	}
+
 	return MutableMesh;
 }
-
 
 mu::MeshPtr ConvertStaticMeshToMutable(UStaticMesh* StaticMesh, int LOD, int MaterialIndex, FMutableGraphGenerationContext& GenerationContext, const UCustomizableObjectNode* CurrentNode)
 {
@@ -1638,12 +1744,14 @@ mu::MeshPtr ConvertStaticMeshToMutable(UStaticMesh* StaticMesh, int LOD, int Mat
 }
 
 
-// Convert a mesh constant to a mutable format.
-mu::MeshPtr GenerateMutableMesh(UObject * Mesh, int32 LOD, int32 MaterialIndex, FMutableGraphGenerationContext & GenerationContext, const UCustomizableObjectNode* CurrentNode)
+// Convert a Mesh constant to a mutable format. UniqueTags are the tags that make this Mesh unique that cannot be merged in the cache 
+//  with the exact same Mesh with other tags
+mu::MeshPtr GenerateMutableMesh(UObject * Mesh, int32 LOD, int32 MaterialIndex, const FString& UniqueTags, FMutableGraphGenerationContext & GenerationContext, const UCustomizableObjectNode* CurrentNode)
 {
 	// Get the mesh generation flags to use
-	uint32 CurrentFlags = GenerationContext.MeshGenerationFlags.Last();
-	FMutableGraphGenerationContext::FGeneratedMeshData::FKey Key = { Mesh, LOD, MaterialIndex, CurrentFlags };
+	EMutableMeshConversionFlags CurrentFlags = GenerationContext.MeshGenerationFlags.Last();
+
+	FMutableGraphGenerationContext::FGeneratedMeshData::FKey Key = { Mesh, LOD, MaterialIndex, CurrentFlags, UniqueTags };
 	mu::MeshPtr MutableMesh = GenerationContext.FindGeneratedMesh(Key);
 	
 	if (!MutableMesh)
@@ -1666,10 +1774,10 @@ mu::MeshPtr GenerateMutableMesh(UObject * Mesh, int32 LOD, int32 MaterialIndex, 
 			GenerationContext.GeneratedMeshes.Push({ Key, MutableMesh });
 		}
 	}
-
+	
 	if (MutableMesh)
 	{
-		FMeshData MeshData; 
+		FMeshData MeshData;
 		MeshData.Mesh = Mesh;
 		MeshData.LOD = LOD;
 		MeshData.MaterialIndex = MaterialIndex;
@@ -1748,7 +1856,7 @@ mu::MeshPtr BuildMorphedMutableMesh(const UEdGraphPin* BaseSourcePin, const FStr
 
 
 		// Get the base mesh
-		mu::MeshPtr BaseSourceMesh = GenerateMutableMesh(SkeletalMesh, LODIndex, SectionIndex, GenerationContext, Node);
+		mu::MeshPtr BaseSourceMesh = GenerateMutableMesh(SkeletalMesh, LODIndex, SectionIndex, FString(), GenerationContext, Node);
 		if (BaseSourceMesh)
 		{
 			// Clone it (it will probably be shared)
@@ -1889,6 +1997,9 @@ bool GetAndValidateReshapeBonesToDeform(
 {
 	bool bSetRefreshWarning = false;
 
+	TArray<uint8> MissingBones;
+	MissingBones.Init(true, InBonesToDeform.Num());
+
 	if(SelectionMethod == EBoneDeformSelectionMethod::ONLY_SELECTED)
 	{
 		int32 NumBonesToDeform = InBonesToDeform.Num();
@@ -1908,16 +2019,51 @@ bool GetAndValidateReshapeBonesToDeform(
 						OutBonesToDeform.AddUnique(BoneName.ToString());
 					}
 
-					bMissingBone = false;
+					MissingBones[InBoneIndex] &= false;
 					break;
 				}
 			}
+		}
 
-			if (bMissingBone)
+		constexpr bool bEmitWarnings = false;
+		// Don't emit wanings for now, the expected usage of the list is to include all possible bones for all meshes and
+		// ignore the ones that are not present in the specific mesh.
+		if (bEmitWarnings)
+		{
+			const auto MakeCompactMissingBoneListMessage = [&MissingBones, &InBonesToDeform]() -> FString
 			{
-				FString msg = FString::Printf(TEXT("Could not find the selected Bone to Deform [%s] in Skeleton"), *(BoneName.ToString()));
+				FString Msg = "";
 
-				GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node);
+				constexpr int32 MaxNumDisplayElems = 3;
+				int32 NumDisplayedElems = 0;
+
+				const int32 NumBones = InBonesToDeform.Num();
+				for (int32 IndexToDeform = 0; IndexToDeform < NumBones && NumDisplayedElems < MaxNumDisplayElems; ++IndexToDeform)
+				{
+					if (MissingBones[IndexToDeform])
+					{
+						Msg += (NumDisplayedElems == 0 ? " " : ", ") + InBonesToDeform[IndexToDeform].BoneName.ToString();
+						++NumDisplayedElems;
+					}
+				}
+
+				if (NumDisplayedElems >= MaxNumDisplayElems)
+				{
+					const int32 NumMissingBones = Algo::CountIf(MissingBones, [](const uint8& B) { return B; });
+					Msg += FString::Printf(TEXT(", ... and %d more"), NumMissingBones - NumDisplayedElems);
+				}
+
+				return Msg;
+			};
+
+			if (Algo::AnyOf(MissingBones, [](const uint8& B) { return B; }))
+			{
+				GenerationContext.Compiler->CompilerLog(
+					FText::FromString(
+						"Could not find the selected bones to deform " +
+						MakeCompactMissingBoneListMessage() +
+						" in the Skeleton."),
+					Node, EMessageSeverity::Warning);
 
 				bSetRefreshWarning = true;
 			}
@@ -1928,7 +2074,7 @@ bool GetAndValidateReshapeBonesToDeform(
 	{
 		for (const USkeletalMesh* SkeletalMesh : SkeletalMeshes)
 		{
-			int32 NumBonesToDeform = SkeletalMesh->GetRefSkeleton().GetNum();
+			int32 NumBonesToDeform = SkeletalMesh->GetRefSkeleton().GetRawBoneNum();
 
 			for (int32 BoneIndex = 0; BoneIndex < NumBonesToDeform; ++BoneIndex)
 			{
@@ -1957,7 +2103,7 @@ bool GetAndValidateReshapeBonesToDeform(
 	{
 		// Getting reference skeleton from the reference skeletal mesh of the current component
 		const FReferenceSkeleton RefSkeleton = GenerationContext.ComponentInfos[GenerationContext.CurrentMeshComponent].RefSkeletalMesh->GetRefSkeleton();
-		int32 NumBones = RefSkeleton.GetNum();
+		int32 NumBones = RefSkeleton.GetRawBoneNum();
 
 		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 		{
@@ -1975,7 +2121,7 @@ bool GetAndValidateReshapeBonesToDeform(
 
 		for (const USkeletalMesh* SkeletalMesh : SkeletalMeshes)
 		{
-			int32 NumBones = SkeletalMesh->GetRefSkeleton().GetNum();
+			int32 NumBones = SkeletalMesh->GetRefSkeleton().GetRawBoneNum();
 
 			for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 			{
@@ -1998,67 +2144,188 @@ bool GetAndValidateReshapePhysicsToDeform(
 	TArray<FString>& OutPhysiscsToDeform,
 	const TArray<FMeshReshapeBoneReference>& InPhysicsToDeform,
 	const TArray<USkeletalMesh*>& SkeletalMeshes,
+	EBoneDeformSelectionMethod SelectionMethod,
 	const UCustomizableObjectNode* Node,
 	FMutableGraphGenerationContext& GenerationContext)
 {
-	bool bSetRefreshWarning = false;
 
-	int32 NumPhysicsToDeform = InPhysicsToDeform.Num();
-	for (int32 BodyIndex = 0; BodyIndex < NumPhysicsToDeform; ++BodyIndex)
+	const bool bIsReferenceSkeletalMeshMethod =
+		SelectionMethod == EBoneDeformSelectionMethod::DEFORM_REF_SKELETON ||
+		SelectionMethod == EBoneDeformSelectionMethod::DEFORM_NONE_REF_SKELETON;
+
+	// Get the participant bone names.
+	TArray<FName> BoneNamesInUserSelection;
+	if (bIsReferenceSkeletalMeshMethod)
 	{
-		bool bMissingBone = true;
-		bool bMissingBody = true;
+		const FReferenceSkeleton& RefSkeleton =
+			GenerationContext.ComponentInfos[GenerationContext.CurrentMeshComponent].RefSkeletalMesh->GetRefSkeleton();
 
-		const FName BodyBoneName = InPhysicsToDeform[BodyIndex].BoneName;
-		for (const USkeletalMesh* SkeletalMesh : SkeletalMeshes)
+		const int32 RefSkeletonNumBones = RefSkeleton.GetRawBoneNum();
+		BoneNamesInUserSelection.SetNum(RefSkeletonNumBones);
+		for (int32 I = 0; I < RefSkeletonNumBones; ++I)
 		{
-			if (SkeletalMesh->GetRefSkeleton().FindBoneIndex(BodyBoneName) != INDEX_NONE)
-			{
-				bMissingBone = false;
-			}
+			BoneNamesInUserSelection[I] = RefSkeleton.GetBoneName(I);
+		}
+	}
+	else
+	{
+		BoneNamesInUserSelection.Reserve(InPhysicsToDeform.Num());
+		Algo::Transform(InPhysicsToDeform, BoneNamesInUserSelection, [](const FMeshReshapeBoneReference& B) { return B.BoneName; });
+	}
 
-			UPhysicsAsset* PhysicsAsset = SkeletalMesh->GetPhysicsAsset();
-			if (PhysicsAsset && !bMissingBone)
+	int32 NumUserSelectedBones = BoneNamesInUserSelection.Num();
+
+	struct FMissingBoneStatus
+	{
+		uint8 bMissingBone : 1;
+		uint8 bMissingBody : 1;
+	};
+
+	TArray<FMissingBoneStatus> MissingBones;
+	MissingBones.Init(FMissingBoneStatus{ false, true }, NumUserSelectedBones);
+
+	for (const USkeletalMesh* SkeletalMesh : SkeletalMeshes)
+	{
+		check(SkeletalMesh)
+		check(GenerationContext.ComponentInfos[GenerationContext.CurrentMeshComponent].RefSkeletalMesh);
+
+		UPhysicsAsset* PhysicsAsset = SkeletalMesh->GetPhysicsAsset();
+
+		if (!PhysicsAsset)
+		{
+			continue;
+		}
+
+		const FReferenceSkeleton& RefSkeleton = bIsReferenceSkeletalMeshMethod
+			? GenerationContext.ComponentInfos[GenerationContext.CurrentMeshComponent].RefSkeletalMesh->GetRefSkeleton()
+			: SkeletalMesh->GetRefSkeleton();
+
+		TArray<uint8> BoneInclusionSet;
+		BoneInclusionSet.Init(0, PhysicsAsset->SkeletalBodySetups.Num());
+
+		// Find to which SkeletalBodySetups the user selection bones belong to. 
+		for (int32 IndexToDeform = 0; IndexToDeform < NumUserSelectedBones; ++IndexToDeform)
+		{
+			const FName& BodyBoneName = BoneNamesInUserSelection[IndexToDeform];
+			const bool bBoneFound = RefSkeleton.FindBoneIndex(BodyBoneName) == INDEX_NONE;
+
+			MissingBones[IndexToDeform].bMissingBone = RefSkeleton.FindBoneIndex(BodyBoneName) == INDEX_NONE;
+
+			if (!bBoneFound)
 			{
+				MissingBones[IndexToDeform].bMissingBone |= false;
+
 				const int32 FoundIndex = PhysicsAsset->SkeletalBodySetups.IndexOfByPredicate(
-					[&BodyBoneName]( const TObjectPtr<USkeletalBodySetup>& Setup ) {  return Setup->BoneName == BodyBoneName; });
+					[&BodyBoneName](const TObjectPtr<USkeletalBodySetup>& Setup) {  return Setup->BoneName == BodyBoneName; });
 
 				if (FoundIndex != INDEX_NONE)
 				{
-					OutPhysiscsToDeform.AddUnique(BodyBoneName.ToString());
-					bMissingBody = false;
-					break;
+					BoneInclusionSet[FoundIndex] = 1;
+					MissingBones[IndexToDeform].bMissingBody = false;
 				}
 			}
 		}
 
-		if (bMissingBone)
+		const bool bFlipSelection =
+			SelectionMethod == EBoneDeformSelectionMethod::ALL_BUT_SELECTED ||
+			SelectionMethod == EBoneDeformSelectionMethod::DEFORM_NONE_REF_SKELETON;
+		if (bFlipSelection)
 		{
-			FString BoneName = InPhysicsToDeform[BodyIndex].BoneName.ToString();
-			FString msg = FString::Printf(TEXT("Could not find the selected Physics Body bone to Deform [%s] in Skeleton"), *BoneName);
+			for (uint8& Elem : BoneInclusionSet)
+			{
+				Elem = 1 - Elem;
+			}
+		}
 
-			GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node);
+		// Append the bones in the inclusion set to the output bone names list.
+		const int32 BoneInclusionSetNum = BoneInclusionSet.Num();
+		for (int32 I = 0; I < BoneInclusionSetNum; ++I)
+		{
+			if (BoneInclusionSet[I])
+			{
+				FName SetupBoneName = PhysicsAsset->SkeletalBodySetups[I]->BoneName;
+				OutPhysiscsToDeform.AddUnique(SetupBoneName.ToString());
+			}
+		}
+	}
+
+	// Don't warn if the selection is not explicit.
+	if (SelectionMethod != EBoneDeformSelectionMethod::ONLY_SELECTED)
+	{
+		return false;
+	}
+
+	// Emit info message if some explicitly selected bone is not present or has no phyiscs attached.
+	// Usually the list of bones will contain bones referenced thruout the CO (the same list for all deforms.)
+
+	constexpr bool bEmitWarnings = false;
+
+	bool bSetRefreshWarning = false;
+	// Don't emit wanings for now, the expected usage of the list is to include all possible bones for all meshes and
+	// ignore the ones that are not present in the specific mesh.
+	if (bEmitWarnings)
+	{
+		const auto MakeCompactMissingBoneListMessage = [&MissingBones, &BoneNamesInUserSelection]
+		(auto&& MissingBonesStatusProjection) -> FString
+		{
+			FString Msg = "";
+
+			constexpr int32 MaxNumDisplayElems = 3;
+			int32 NumDisplayedElems = 0;
+
+			const int32 NumBones = BoneNamesInUserSelection.Num();
+			for (int32 IndexToDeform = 0; IndexToDeform < NumBones && NumDisplayedElems < MaxNumDisplayElems; ++IndexToDeform)
+			{
+				if (MissingBonesStatusProjection(MissingBones[IndexToDeform]))
+				{
+					Msg += (NumDisplayedElems == 0 ? " " : ", ") + BoneNamesInUserSelection[IndexToDeform].ToString();
+					++NumDisplayedElems;
+				}
+			}
+
+			if (NumDisplayedElems >= MaxNumDisplayElems)
+			{
+				const int32 NumMissingBones = Algo::CountIf(MissingBones, MissingBonesStatusProjection);
+				Msg += FString::Printf(TEXT(", ... and %d more"), NumMissingBones - NumDisplayedElems);
+			}
+
+			return Msg;
+		};
+
+		auto IsMissingBone = [](const FMissingBoneStatus& S) -> bool { return S.bMissingBone; };
+		auto IsMissingBody = [](const FMissingBoneStatus& S) -> bool { return S.bMissingBody; };
+
+		if (Algo::AnyOf(MissingBones, IsMissingBone))
+		{
+			GenerationContext.Compiler->CompilerLog(
+				FText::FromString(
+					"Could not find the selected physics bodies bones to deform " +
+					MakeCompactMissingBoneListMessage(IsMissingBone) +
+					" in the Skeleton."),
+				Node, EMessageSeverity::Warning);
 
 			bSetRefreshWarning = true;
 		}
 
-		if (bMissingBody && !bMissingBone)
+		if (Algo::AnyOf(MissingBones, IsMissingBody))
 		{
-			FString BoneName = InPhysicsToDeform[BodyIndex].BoneName.ToString();
-			FString msg = FString::Printf(TEXT("Selected Bone to Deform [%s] does not have any physics body attached."), *BoneName);
-
-			GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node);
-
-			bSetRefreshWarning = true;
-		}
+			GenerationContext.Compiler->CompilerLog(
+				FText::FromString(
+					"Selected Bones to deform " +
+					MakeCompactMissingBoneListMessage(IsMissingBody) +
+					" do not have any physics body attached."),
+				Node, EMessageSeverity::Warning);
 			
+			bSetRefreshWarning = true;
+		}
+
 	}
 	return bSetRefreshWarning;
 }
 
 
 mu::NodeMeshPtr GenerateMorphMesh(const UEdGraphPin* Pin,
-	TArray<UCustomizableObjectNodeMeshMorph*> TypedNodeMorphs,
+	TArray<FMorphNodeData> TypedNodeMorphs,
 	int32 MorphIndex,
 	mu::NodeMeshPtr SourceNode,
 	FMutableGraphGenerationContext & GenerationContext,
@@ -2072,14 +2339,14 @@ mu::NodeMeshPtr GenerateMorphMesh(const UEdGraphPin* Pin,
 	check(MeshNode);
 	
 	// Current morph node
-	const UCustomizableObjectNode* MorphNode = TypedNodeMorphs[MorphIndex];
+	const UCustomizableObjectNode* MorphNode = TypedNodeMorphs[MorphIndex].OwningNode;
 	check(MorphNode);
 	
 	mu::NodeMeshMorphPtr Result = new mu::NodeMeshMorph();
 	Result->SetMorphCount(2);
 	
 	// Factor
-	GenerateMorphFactor(MorphNode, *TypedNodeMorphs[MorphIndex]->FactorPin(), GenerationContext, Result);
+	GenerateMorphFactor(MorphNode, *TypedNodeMorphs[MorphIndex].FactorPin, GenerationContext, Result);
 	
 	// Base
 	if (MorphIndex == TypedNodeMorphs.Num() - 1)
@@ -2107,8 +2374,8 @@ mu::NodeMeshPtr GenerateMorphMesh(const UEdGraphPin* Pin,
 		// Should exist
 		mu::TablePtr Table = GenerationContext.GeneratedTables[TypedNodeTable->Table->GetName()];
 
-		FString ColumnName = TableColumnName + TypedNodeMorphs[MorphIndex]->MorphTargetName;
-		int32 ColumnIndex = -1;
+		FString ColumnName = TableColumnName + TypedNodeMorphs[MorphIndex].MorphTargetName;
+		int32 ColumnIndex = INDEX_NONE;
 
 		for (int32 RowIndex = 0; RowIndex < NumRows; ++RowIndex)
 		{
@@ -2116,16 +2383,16 @@ mu::NodeMeshPtr GenerateMorphMesh(const UEdGraphPin* Pin,
 
 			ColumnIndex = Table->FindColumn(TCHAR_TO_ANSI(*ColumnName));
 
-			if (ColumnIndex == -1)
+			if (ColumnIndex == INDEX_NONE)
 			{
 				ColumnIndex = Table->AddColumn(TCHAR_TO_ANSI(*ColumnName), mu::TABLE_COLUMN_TYPE::TCT_MESH);
 			}
 
-			mu::MeshPtr MorphedSourceTableMesh = BuildMorphedMutableMesh(Pin, TypedNodeMorphs[MorphIndex]->MorphTargetName, GenerationContext, RowName);
+			mu::MeshPtr MorphedSourceTableMesh = BuildMorphedMutableMesh(Pin, TypedNodeMorphs[MorphIndex].MorphTargetName, GenerationContext, RowName);
 			Table->SetCell(ColumnIndex, RowIndex, MorphedSourceTableMesh.get());
 		}
 
-		if (ColumnIndex > -1)
+		if (ColumnIndex > INDEX_NONE)
 		{
 			bSuccess = true;
 
@@ -2135,11 +2402,8 @@ mu::NodeMeshPtr GenerateMorphMesh(const UEdGraphPin* Pin,
 			MorphedSourceMeshNodeTable->SetParameterName(TCHAR_TO_ANSI(*TypedNodeTable->ParameterName));
 			MorphedSourceMeshNodeTable->SetMessageContext(MorphNode);
 
-			mu::NodeMeshMakeMorphPtr IdentityMorph = new mu::NodeMeshMakeMorph;
-			IdentityMorph->SetBase(BaseSourceMesh.get());
-			IdentityMorph->SetTarget(BaseSourceMesh.get());
-			IdentityMorph->SetMessageContext(MorphNode);
-
+			// A null target will leave the base unchanged
+			mu::NodeMeshPtr IdentityMorph = nullptr;
 			Result->SetMorph(0, IdentityMorph);
 
 			mu::NodeMeshMakeMorphPtr Morph = new mu::NodeMeshMakeMorph;
@@ -2152,7 +2416,7 @@ mu::NodeMeshPtr GenerateMorphMesh(const UEdGraphPin* Pin,
 	}
 	else
 	{
-		MorphedSourceMesh = BuildMorphedMutableMesh(Pin, TypedNodeMorphs[MorphIndex]->MorphTargetName, GenerationContext);
+		MorphedSourceMesh = BuildMorphedMutableMesh(Pin, TypedNodeMorphs[MorphIndex].MorphTargetName, GenerationContext);
 
 		if (MorphedSourceMesh)
 		{
@@ -2176,46 +2440,50 @@ mu::NodeMeshPtr GenerateMorphMesh(const UEdGraphPin* Pin,
 
 			Result->SetMorph(1, Morph);
 
-			UCustomizableObjectNodeMeshMorph* TypedMorphNode = TypedNodeMorphs[MorphIndex];
-
-			Result->SetDeformAllPhysics(TypedMorphNode->bDeformAllPhysicsBodies);
-			Result->SetReshapeSkeleton(TypedMorphNode->bReshapeSkeleton);
-			Result->SetReshapePhysicsVolumes(TypedMorphNode->bReshapePhysicsVolumes);	
+			if (UCustomizableObjectNodeMeshMorph* TypedMorphNode = Cast<UCustomizableObjectNodeMeshMorph>(TypedNodeMorphs[MorphIndex].OwningNode))
 			{
-				const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedMorphNode->MeshPin());
-				const UEdGraphPin* SourceMeshPin = ConnectedPin ? FindMeshBaseSource(*ConnectedPin, false) : nullptr;
-				const UEdGraphNode* SkeletalMeshNode = SourceMeshPin ? SourceMeshPin->GetOwningNode() : nullptr;
-
-				TArray<USkeletalMesh*> SkeletalMeshesToDeform = GetSkeletalMeshesForReshapeSelection(SkeletalMeshNode, SourceMeshPin);
-				
-				bool bWarningFound = false;
-				if (TypedMorphNode->bReshapeSkeleton)
+				Result->SetReshapeSkeleton(TypedMorphNode->bReshapeSkeleton);
+				Result->SetReshapePhysicsVolumes(TypedMorphNode->bReshapePhysicsVolumes);
 				{
-					TArray<FString> BonesToDeform;
-					bWarningFound = GetAndValidateReshapeBonesToDeform(
-						BonesToDeform, TypedMorphNode->BonesToDeform, SkeletalMeshesToDeform, TypedMorphNode, TypedMorphNode->SelectionMethod, GenerationContext);
-					
-					for (const FString& BoneName : BonesToDeform)
+					const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedMorphNode->MeshPin());
+					const UEdGraphPin* SourceMeshPin = ConnectedPin ? FindMeshBaseSource(*ConnectedPin, false) : nullptr;
+					const UEdGraphNode* SkeletalMeshNode = SourceMeshPin ? SourceMeshPin->GetOwningNode() : nullptr;
+
+					TArray<USkeletalMesh*> SkeletalMeshesToDeform = GetSkeletalMeshesForReshapeSelection(SkeletalMeshNode, SourceMeshPin);
+
+					bool bWarningFound = false;
+					if (TypedMorphNode->bReshapeSkeleton)
 					{
-						Result->AddBoneToDeform(TCHAR_TO_ANSI(*BoneName));
+						TArray<FString> BonesToDeform;
+						bWarningFound = GetAndValidateReshapeBonesToDeform(
+							BonesToDeform, TypedMorphNode->BonesToDeform, SkeletalMeshesToDeform, TypedMorphNode, TypedMorphNode->SelectionMethod, GenerationContext);
+
+						for (const FString& BoneName : BonesToDeform)
+						{
+							Result->AddBoneToDeform(TCHAR_TO_ANSI(*BoneName));
+						}
 					}
-				}
 
-				if (TypedMorphNode->bReshapePhysicsVolumes && !TypedMorphNode->bDeformAllPhysicsBodies)
-				{
-					TArray<FString> PhysicsToDeform;
-					bWarningFound = bWarningFound || GetAndValidateReshapePhysicsToDeform(
-						PhysicsToDeform, TypedMorphNode->PhysicsBodiesToDeform, SkeletalMeshesToDeform, TypedMorphNode, GenerationContext);
-	
-					for (const FString& PhysicsBoneName : PhysicsToDeform)
+					if (TypedMorphNode->bReshapePhysicsVolumes)
 					{
-						Result->AddPhysicsBodyToDeform(TCHAR_TO_ANSI(*PhysicsBoneName));
-					}	
-				}
-				
-				if (bWarningFound)
-				{
-					TypedMorphNode->SetRefreshNodeWarning();
+						TArray<FString> PhysicsToDeform;
+
+						const EBoneDeformSelectionMethod SelectionMethod = TypedMorphNode->PhysicsSelectionMethod;
+						bWarningFound = bWarningFound || GetAndValidateReshapePhysicsToDeform(
+							PhysicsToDeform, 
+							TypedMorphNode->PhysicsBodiesToDeform, SkeletalMeshesToDeform, SelectionMethod, 
+							TypedMorphNode, GenerationContext);
+	
+						for (const FString& PhysicsBoneName : PhysicsToDeform)
+						{
+							Result->AddPhysicsBodyToDeform(TCHAR_TO_ANSI(*PhysicsBoneName));
+						}
+					}
+						
+					if (bWarningFound)
+					{
+						TypedMorphNode->SetRefreshNodeWarning();
+					}
 				}
 			}
 		}
@@ -2244,11 +2512,8 @@ void GenerateMorphTarget(const UCustomizableObjectNode* Node, const UEdGraphPin*
 		MorphedSourceMeshNode->SetValue(MorphedSourceMesh);
 		MorphedSourceMeshNode->SetMessageContext(Node);
 
-		mu::NodeMeshMakeMorphPtr IdentityMorph = new mu::NodeMeshMakeMorph;
-		IdentityMorph->SetBase(BaseSourceMesh.get());
-		IdentityMorph->SetTarget(BaseSourceMesh.get());
-		IdentityMorph->SetMessageContext(Node);
-
+		// A null target will leave the base unchanged
+		mu::NodeMeshPtr IdentityMorph = nullptr;
 		MeshNode->SetMorph(0, IdentityMorph);
 
 		mu::NodeMeshMakeMorphPtr Morph = new mu::NodeMeshMakeMorph;
@@ -2263,6 +2528,7 @@ void GenerateMorphTarget(const UCustomizableObjectNode* Node, const UEdGraphPin*
 		GenerationContext.Compiler->CompilerLog(LOCTEXT("MorphGenerationFailed", "Failed to generate morph target."), Node);
 	}
 }
+
 
 /** Convert a CustomizableObject Source Graph into a mutable source graph  */
 mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
@@ -2340,7 +2606,30 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 				}
 			}
 
-			mu::MeshPtr MutableMesh = GenerateMutableMesh(TypedNodeSkel->SkeletalMesh, LOD, SectionIndex, GenerationContext, TypedNodeSkel);
+			// First process the mesh tags that are going to make the mesh unique and affect whether it's repeated in 
+			// the mesh cache or not
+			FString MeshUniqueTags;
+			FString AnimBPAssetTag;
+
+			if (!TypedNodeSkel->AnimInstance.IsNull())
+			{
+				int32 SlotIndex = TypedNodeSkel->AnimBlueprintSlot;
+				GenerationContext.AnimBPAssetsMap.Add(TypedNodeSkel->AnimInstance.ToString(), TypedNodeSkel->AnimInstance);
+
+				AnimBPAssetTag = GenerateAnimationInstanceTag(TypedNodeSkel->AnimInstance.ToString(), SlotIndex);
+				MeshUniqueTags += AnimBPAssetTag;
+			}
+
+			TArray<FString> ArrayAnimBPTags;
+
+			for (const FGameplayTag& GamePlayTag : TypedNodeSkel->AnimationGameplayTags)
+			{
+				const FString AnimBPTag = GenerateGameplayTag(GamePlayTag.ToString());
+				ArrayAnimBPTags.Add(AnimBPTag);
+				MeshUniqueTags += AnimBPTag;
+			}
+
+			mu::MeshPtr MutableMesh = GenerateMutableMesh(TypedNodeSkel->SkeletalMesh, LOD, SectionIndex, MeshUniqueTags, GenerationContext, TypedNodeSkel);
 			if (MutableMesh)
 			{
 				MeshNode->SetValue(MutableMesh);
@@ -2352,8 +2641,8 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 					TSoftObjectPtr<UPhysicsAsset> PhysicsAsset = TypedNodeSkel->SkeletalMesh->GetPhysicsAsset();
 					GenerationContext.PhysicsAssetMap.Add(PhysicsAsset.ToString(), PhysicsAsset);
 					FString PhysicsAssetTag = FString("__PhysicsAsset:") + PhysicsAsset.ToString();
-					MutableMesh->SetTagCount(1);
-					MutableMesh->SetTag(0, TCHAR_TO_ANSI(*PhysicsAssetTag));
+
+					AddTagToMutableMeshUnique(*MutableMesh, PhysicsAssetTag);
 				}
 
 				if (GenerationContext.Options.bClothingEnabled)
@@ -2377,29 +2666,43 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 						
 						GenerationContext.PhysicsAssetMap.Add(PhysicsAsset.ToString(), ClothingAssetCommon->PhysicsAsset.Get());
 
-						int32 CurrentTagCount = MutableMesh->GetTagCount();
-						MutableMesh->SetTagCount(CurrentTagCount + 1);
-						MutableMesh->SetTag(CurrentTagCount, TCHAR_TO_ANSI(*ClothPhysicsAssetTag));
+						AddTagToMutableMeshUnique(*MutableMesh, ClothPhysicsAssetTag);
+					}
+				}
+
+				if (GenerationContext.Options.bSkinWeightProfilesEnabled)
+				{
+					FSkeletalMeshModel* ImportModel = Helper_GetImportedModel(TypedNodeSkel->SkeletalMesh);
+
+					const int32 SkinWeightProfilesCount = GenerationContext.SkinWeightProfilesInfo.Num();
+					for (int32 ProfileIndex = 0; ProfileIndex < SkinWeightProfilesCount; ++ProfileIndex)
+					{
+						if (ImportModel->LODModels[LOD].SkinWeightProfiles.Find(GenerationContext.SkinWeightProfilesInfo[ProfileIndex].Name))
+						{
+							const int32 ProfileScemanticIndex = ProfileIndex + 10;
+							MeshData.SkinWeightProfilesSemanticIndices.AddUnique(ProfileScemanticIndex);
+						}
 					}
 				}
 
 				if (!TypedNodeSkel->AnimInstance.IsNull())
 				{
-					int32 SlotIndex= TypedNodeSkel->AnimBlueprintSlot;
-					GenerationContext.AnimBPAssetsMap.Add(TypedNodeSkel->AnimInstance.ToString(), TypedNodeSkel->AnimInstance);
-
-					FString AnimBPAssetTag = GenerateAnimationInstanceTag(TypedNodeSkel->AnimInstance.ToString(), SlotIndex);
-					int32 CurrentTagCount = MutableMesh->GetTagCount();
-					MutableMesh->SetTagCount(CurrentTagCount + 1);
-					MutableMesh->SetTag(CurrentTagCount, TCHAR_TO_ANSI(*AnimBPAssetTag));
+					AddTagToMutableMeshUnique(*MutableMesh, AnimBPAssetTag);
 				}
 
-				for (const FGameplayTag& GamePlayTag : TypedNodeSkel->AnimationGameplayTags)
+				for (const FString& GamePlayTag : ArrayAnimBPTags)
 				{
-					const FString AnimBPTag = GenerateGameplayTag(GamePlayTag.ToString());
-					const int32 CurrentTagCount = MutableMesh->GetTagCount();
-					MutableMesh->SetTagCount(CurrentTagCount + 1);
-					MutableMesh->SetTag(CurrentTagCount, TCHAR_TO_ANSI(*AnimBPTag));
+					AddTagToMutableMeshUnique(*MutableMesh, GamePlayTag);
+				}
+
+				AddSocketTagsToMesh(TypedNodeSkel->SkeletalMesh, MutableMesh, GenerationContext);
+
+				if (UCustomizableObjectSystem::GetInstance()->IsMutableAnimInfoDebuggingEnabled())
+				{
+					FString MeshPath;
+					TypedNodeSkel->SkeletalMesh->GetOuter()->GetPathName(nullptr, MeshPath);
+					FString MeshTag = FString("__MeshPath:") + MeshPath;
+					AddTagToMutableMeshUnique(*MutableMesh, MeshTag);
 				}
 
 				MeshData.bHasVertexColors = TypedNodeSkel->SkeletalMesh->GetHasVertexColors();
@@ -2516,7 +2819,7 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 			}
 			check(MaterialIndex < TypedNodeStatic->LODs[LOD].Materials.Num());
 
-			mu::MeshPtr MutableMesh = GenerateMutableMesh(TypedNodeStatic->StaticMesh, LOD, MaterialIndex, GenerationContext, TypedNodeStatic);
+			mu::MeshPtr MutableMesh = GenerateMutableMesh(TypedNodeStatic->StaticMesh, LOD, MaterialIndex, FString(), GenerationContext, TypedNodeStatic);
 			if (MutableMesh)
 			{
 				MeshNode->SetValue(MutableMesh);
@@ -2557,7 +2860,8 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeMorph->MeshPin()))
 		{
 			// Mesh Morph Stack Management
-			GenerationContext.MeshMorphStack.Push(TypedNodeMorph);
+			FMorphNodeData NewMorphData = { TypedNodeMorph, TypedNodeMorph->MorphTargetName ,TypedNodeMorph->FactorPin(), TypedNodeMorph->MeshPin() };
+			GenerationContext.MeshMorphStack.Push(NewMorphData);
 			Result = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, MeshData);
 			GenerationContext.MeshMorphStack.Pop(true);
 		}
@@ -2586,73 +2890,46 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 
 				MeshNode->SetMorphCount(2);
 
-				int32 NextPin = -1;
-				bool bAddNewMorph = true;
+				TArray<UEdGraphPin*> MorphPins = TypedNodeMeshMorphStackDef->GetAllNonOrphanPins();
 
-				while (bAddNewMorph)
+				int32 AddedMorphs = 0;
+
+				for (int32 PinIndex = 0; PinIndex < MorphPins.Num(); ++PinIndex)
 				{
-					//Getting next connected pin index
-					NextPin = TypedNodeMeshMorphStackDef->NextConnectedPin(NextPin, TypedNodeMeshMorphStackApp->MorphNames);
+					UEdGraphPin* MorphPin = MorphPins[PinIndex];
 
-					UEdGraphPin* FactorPin = nullptr;
+					const UEdGraphSchema_CustomizableObject* Schema = GetDefault<UEdGraphSchema_CustomizableObject>();
 
-					// If Next Pin is -1 then there is no pin connected, which is a warning
-					if (NextPin != -1)
+					// Checking if it's a valid pin
+					if (MorphPin->Direction == EEdGraphPinDirection::EGPD_Output 
+						|| MorphPin->PinType.PinCategory != Helper_GetPinCategory(Schema->PC_Float) 
+						|| !MorphPins[PinIndex]->LinkedTo.Num())
 					{
-						FactorPin = TypedNodeMeshMorphStackDef->GetMorphPin(NextPin);
+						continue;
 					}
 
-					// Checking if there is another pin connected to add a new morph
-					bAddNewMorph = (TypedNodeMeshMorphStackDef->NextConnectedPin(NextPin, TypedNodeMeshMorphStackApp->MorphNames) != -1);
-
-					// Factor
-					GenerateMorphFactor(Node, *FactorPin, GenerationContext, MeshNode);
-
-					// Base
-					if (const UEdGraphPin* ConnectedMehsPin = FollowInputPin(*TypedNodeMeshMorphStackApp->GetMeshPin()))
+					// Cheking if the morph exists in the application node
+					FString MorphName = MorphPin->PinFriendlyName.ToString();
+					if (!TypedNodeMeshMorphStackApp->MorphNames.Contains(MorphName))
 					{
-						mu::NodeMeshPtr SourceNode = nullptr;
-
-						if (bAddNewMorph)
-						{
-							mu::NodeMeshMorphPtr NextMorph = new mu::NodeMeshMorph();
-
-							SourceNode = NextMorph;
-							MeshNode->SetBase(SourceNode);
-
-							if (const UEdGraphPin* BaseSourcePin = FindMeshBaseSource(*ConnectedMehsPin, false))
-							{
-								FString MorphName = "";
-								if (NextPin != -1)
-								{
-									MorphName = TypedNodeMeshMorphStackDef->MorphNames[NextPin];
-								}
-
-								//Target
-								GenerateMorphTarget(Node, BaseSourcePin, GenerationContext, MeshNode, MorphName);
-							}
-
-							MeshNode = NextMorph;
-							MeshNode->SetMorphCount(2);
-						}
-						else
-						{
-							SourceNode = GenerateMutableSourceMesh(ConnectedMehsPin, GenerationContext, MeshData);
-							MeshNode->SetBase(SourceNode);
-
-							if (const UEdGraphPin* BaseSourcePin = FindMeshBaseSource(*ConnectedMehsPin, false))
-							{
-								FString MorphName = "";
-								if (NextPin != -1)
-								{
-									MorphName = TypedNodeMeshMorphStackDef->MorphNames[NextPin];
-								}
-
-								//Target
-								GenerateMorphTarget(Node, BaseSourcePin, GenerationContext, MeshNode, MorphName);
-							}
-						}
+						continue;
 					}
+
+					// Mesh Morph Stack Management. TODO(Max): should we add the stack application node here instead of the def? Or both?
+					FMorphNodeData NewMorphData = { TypedNodeMeshMorphStackDef, MorphName, MorphPin, TypedNodeMeshMorphStackApp->GetMeshPin() };
+					GenerationContext.MeshMorphStack.Push(NewMorphData);
+
+					AddedMorphs++;
+				}
+
+				if (const UEdGraphPin* MeshConnectedPin = FollowInputPin(*TypedNodeMeshMorphStackApp->GetMeshPin()))
+				{
+					Result = GenerateMutableSourceMesh(MeshConnectedPin, GenerationContext, MeshData);
+				}
+
+				for (int32 MorphIndex = 0; MorphIndex < AddedMorphs; ++MorphIndex)
+				{
+					GenerationContext.MeshMorphStack.Pop(true);
 				}
 			}
 			else
@@ -2871,7 +3148,6 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 			MeshNode->SetReshapeSkeleton(TypedNodeReshape->bReshapeSkeleton);
 			MeshNode->SetReshapePhysicsVolumes(TypedNodeReshape->bReshapePhysicsVolumes);
 			MeshNode->SetEnableRigidParts(TypedNodeReshape->bEnableRigidParts);
-			MeshNode->SetDeformAllPhysics(TypedNodeReshape->bDeformAllPhysicsBodies);
 				
 			const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeReshape->BaseMeshPin());
 			const UEdGraphPin* SourceMeshPin = ConnectedPin ? FindMeshBaseSource(*ConnectedPin, false) : nullptr;
@@ -2892,11 +3168,14 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 				}
 			}
 
-			if (TypedNodeReshape->bReshapePhysicsVolumes && !TypedNodeReshape->bDeformAllPhysicsBodies)
+			if (TypedNodeReshape->bReshapePhysicsVolumes)
 			{
+				EBoneDeformSelectionMethod SelectionMethod = TypedNodeReshape->PhysicsSelectionMethod;
 				TArray<FString> PhysicsToDeform;
 				bWarningFound = bWarningFound || GetAndValidateReshapePhysicsToDeform(
-					PhysicsToDeform, TypedNodeReshape->PhysicsBodiesToDeform, SkeletalMeshesToDeform, TypedNodeReshape, GenerationContext);
+					PhysicsToDeform, 
+					TypedNodeReshape->PhysicsBodiesToDeform, SkeletalMeshesToDeform, SelectionMethod, 
+					TypedNodeReshape, GenerationContext);
 
 				for (const FString& PhysicsBoneName : PhysicsToDeform)
 				{
@@ -2910,8 +3189,9 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 			}		
 		}
 		// We don't need all the data for the shape meshes
-		const uint32 ShapeFlags = uint32(EMutableMeshConversionFlags::IgnoreSkinning) & 
-								  uint32(EMutableMeshConversionFlags::IgnorePhysics);
+		const EMutableMeshConversionFlags ShapeFlags = 
+				EMutableMeshConversionFlags::IgnoreSkinning |
+				EMutableMeshConversionFlags::IgnorePhysics;
 
 		GenerationContext.MeshGenerationFlags.Push( ShapeFlags );
 			
@@ -3003,9 +3283,7 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 		mu::TablePtr Table = nullptr;
 
 		if (TypedNodeTable->Table)
-		{
-			Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
-	
+		{			
 			USkeletalMesh* SkeletalMesh = TypedNodeTable->GetColumnDefaultAssetByType<USkeletalMesh>(Pin);
 			
 			int32 CurrentLOD = 0;
@@ -3015,11 +3293,11 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 
 			if (GenerationContext.CurrentAutoLODStrategy == ECustomizableObjectAutomaticLODStrategy::AutomaticFromMesh)
 			{
-				CurrentLOD += GenerationContext.CurrentLOD;
-
-				if (SkeletalMesh)
+				if (SkeletalMesh && Helper_GetImportedModel(SkeletalMesh))
 				{
 					FSkeletalMeshModel* ImportedModel = Helper_GetImportedModel(SkeletalMesh);
+
+					CurrentLOD += GenerationContext.CurrentLOD;
 
 					// Checking if the current LOD is valid
 					if (ImportedModel->LODModels.Num() <= CurrentLOD
@@ -3039,10 +3317,21 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 				}
 			}
 
-			FString ColumnName = TypedNodeTable->GetMutableColumnName(Pin, CurrentLOD);
+			// Generating a new data table if not exists
+			Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
+
+			// Getting mutable and data table column names
+			FString MutableColumnName = TypedNodeTable->GetMutableColumnName(Pin, CurrentLOD);
+			FString DataTableColumnName = TypedNodeTable->GetColumnNameByPin(Pin);
+
+			// Generating a new Mesh column if not exists
+			if (Table && Table->FindColumn(TCHAR_TO_ANSI(*MutableColumnName)) == INDEX_NONE)
+			{
+				GenerateTableColumn(TypedNodeTable, Pin, Table, DataTableColumnName, CurrentLOD, GenerationContext);
+			}
 
 			MeshTableNode->SetTable(Table);
-			MeshTableNode->SetColumn(TCHAR_TO_ANSI(*ColumnName));
+			MeshTableNode->SetColumn(TCHAR_TO_ANSI(*MutableColumnName));
 			MeshTableNode->SetParameterName(TCHAR_TO_ANSI(*TypedNodeTable->ParameterName));
 
 			GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
@@ -3074,7 +3363,7 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 
 					LayoutNode->SetGridSize(Layouts[i]->GetGridSize().X, Layouts[i]->GetGridSize().Y);
 					LayoutNode->SetMaxGridSize(Layouts[i]->GetMaxGridSize().X, Layouts[i]->GetMaxGridSize().Y);
-					LayoutNode->SetBlockCount(Layouts[i]->Blocks.Num());
+					LayoutNode->SetBlockCount(Layouts[i]->Blocks.Num() ? Layouts[i]->Blocks.Num() : 1);
 
 					mu::EPackStrategy strategy = mu::EPackStrategy::RESIZABLE_LAYOUT;
 
@@ -3107,7 +3396,11 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 					}
 					else
 					{
+						FString msg = "Mesh Column [" + MutableColumnName + "] Layout doesn't has any block. A grid sized block will be used instead.";
+						GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node, EMessageSeverity::Warning);
+
 						LayoutNode->SetBlock(0, 0, 0, Layouts[i]->GetGridSize().X, Layouts[i]->GetGridSize().Y);
+						LayoutNode->SetBlockPriority(0, 0);
 					}
 
 					MeshTableNode->SetLayout(i, LayoutNode);
@@ -3117,12 +3410,12 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 			// Applying Mesh Morph Nodes
 			if (GenerationContext.MeshMorphStack.Num())
 			{
-				MorphResult = GenerateMorphMesh(Pin, GenerationContext.MeshMorphStack, 0, Result, GenerationContext, MeshData, ColumnName);
+				MorphResult = GenerateMorphMesh(Pin, GenerationContext.MeshMorphStack, 0, Result, GenerationContext, MeshData, MutableColumnName);
 			}
 
-			if (Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == -1)
+			if (Table->FindColumn(TCHAR_TO_ANSI(*MutableColumnName)) == INDEX_NONE)
 			{
-				FString Msg = FString::Printf(TEXT("Couldn't find pin column with name %s"), *ColumnName);
+				FString Msg = FString::Printf(TEXT("Couldn't find pin column with name %s"), *MutableColumnName);
 				GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
 			}
 		}
@@ -3158,4 +3451,3 @@ mu::NodeMeshPtr GenerateMutableSourceMesh(const UEdGraphPin * Pin,
 }
 
 #undef LOCTEXT_NAMESPACE
-

@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CopyBonesModifier.h"
-#include "AnimationBlueprintLibrary.h"
+#include "Animation/AnimData/AnimDataModel.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimData/IAnimationDataController.h"
+#include "EngineLogs.h"
 
 #define LOCTEXT_NAMESPACE "CopyBonesModifier"
 
@@ -20,7 +22,7 @@ void UCopyBonesModifier::OnApply_Implementation(UAnimSequence* Animation)
 	}
 
 	IAnimationDataController& Controller = Animation->GetController();
-	const UAnimDataModel* Model = Animation->GetDataModel();
+	const IAnimationDataModel* Model = Animation->GetDataModel();
 
 	if (Model == nullptr)
 	{
@@ -39,18 +41,21 @@ void UCopyBonesModifier::OnApply_Implementation(UAnimSequence* Animation)
 			: SourceBoneName(InSourceBoneName), TargetBoneName(InTargetBoneName), SourceBoneIdx(InSourceBoneIdx), TargetBoneIdx(InTargetBoneIdx) {}
 	};
 
+	const USkeleton* Skeleton = Animation->GetSkeleton();
+	const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+
 	// Validate input
 	TArray<FCopyBoneData> CopyBoneDataContainer;
 	CopyBoneDataContainer.Reserve(BonePairs.Num());
 	for (const FBoneReferencePair& Pair : BonePairs)
 	{
-		const int32 SourceBoneIdx = Model->GetBoneTrackIndexByName(Pair.SourceBone.BoneName);
+		const int32 SourceBoneIdx = RefSkeleton.FindBoneIndex(Pair.SourceBone.BoneName);
 		if (SourceBoneIdx == INDEX_NONE)
 		{
 			continue;
 		}
 
-		const int32 TargetBoneIdx = Model->GetBoneTrackIndexByName(Pair.TargetBone.BoneName);
+		const int32 TargetBoneIdx = RefSkeleton.FindBoneIndex(Pair.TargetBone.BoneName);
 		if (TargetBoneIdx == INDEX_NONE)
 		{
 			continue;
@@ -66,7 +71,7 @@ void UCopyBonesModifier::OnApply_Implementation(UAnimSequence* Animation)
 	TGuardValue<bool> ForceRootLockGuard(Animation->bForceRootLock, true);
 
 	// Start editing animation data
-	const bool bShouldTransact = false;
+	constexpr bool bShouldTransact = false;
 	Controller.OpenBracket(LOCTEXT("CopyBonesModifier_Bracket", "Updating bones"), bShouldTransact);
 
 	// Get the transform of all the source bones in the desired space

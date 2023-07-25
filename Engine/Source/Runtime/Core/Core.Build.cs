@@ -8,6 +8,8 @@ public class Core : ModuleRules
 {
 	public Core(ReadOnlyTargetRules Target) : base(Target)
 	{
+		NumIncludedBytesPerUnityCPPOverride = 491520; // best unity size found from using UBT ProfileUnitySizes mode
+
 		PrivatePCHHeaderFile = "Private/CorePrivatePCH.h";
 
 		SharedPCHHeaderFile = "Public/CoreSharedPCH.h";
@@ -53,12 +55,16 @@ public class Core : ModuleRules
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
-				"zlib");
-
-			AddEngineThirdPartyPrivateStaticDependencies(Target, 
 				"IntelTBB",
-				"IntelVTune"
+				"zlib"
 				);
+
+			if (Target.Architecture.bIsX64)
+			{
+				AddEngineThirdPartyPrivateStaticDependencies(Target,
+					"IntelVTune"
+					);
+			}
 
 			// We do not want the static analyzer to run on thirdparty code
 			if (Target.StaticAnalyzer == StaticAnalyzer.None) 
@@ -314,6 +320,8 @@ public class Core : ModuleRules
 		PrivateDefinitions.Add("UE_DEFINE_LEGACY_MATH_CONSTANT_MACRO_NAMES=0");
 
 		UnsafeTypeCastWarningLevel = WarningLevel.Error;
+
+		IWYUSupport = IWYUSupport.KeepAsIs;
 	}
 
 	protected virtual bool SupportsBinaryConfig(ReadOnlyTargetRules Target)

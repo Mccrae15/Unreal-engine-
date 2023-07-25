@@ -24,8 +24,7 @@ void UE::RenderGrid::Private::SRenderGridViewer::Construct(const FArguments& InA
 		.BorderImage(new FSlateNoResource());
 
 	Refresh();
-	InBlueprintEditor->OnRenderGridBatchRenderingStarted().AddSP(this, &SRenderGridViewer::OnBatchRenderingStarted);
-	InBlueprintEditor->OnRenderGridBatchRenderingFinished().AddSP(this, &SRenderGridViewer::OnBatchRenderingFinished);
+	InBlueprintEditor->OnRenderGridShouldHideUIChanged().AddSP(this, &SRenderGridViewer::Refresh);
 
 	ChildSlot
 	[
@@ -99,7 +98,7 @@ void UE::RenderGrid::Private::SRenderGridViewer::Refresh()
 	}
 	if (const TSharedPtr<IRenderGridEditor> BlueprintEditor = BlueprintEditorWeakPtr.Pin())
 	{
-		ERenderGridViewerMode CurrentViewerMode = (BlueprintEditor->IsBatchRendering() ? ERenderGridViewerMode::None : ViewerMode);
+		ERenderGridViewerMode CurrentViewerMode = (BlueprintEditor->ShouldHideUI() ? ERenderGridViewerMode::None : ViewerMode);
 		if (CurrentViewerMode == CachedViewerMode)
 		{
 			return;
@@ -108,17 +107,23 @@ void UE::RenderGrid::Private::SRenderGridViewer::Refresh()
 		CachedViewerMode = CurrentViewerMode;
 		WidgetContainer->ClearContent();
 
-		if (CurrentViewerMode == ERenderGridViewerMode::Live)
+		switch (CachedViewerMode)
 		{
-			WidgetContainer->SetContent(SNew(SRenderGridViewerLive, BlueprintEditor));
-		}
-		else if (CurrentViewerMode == ERenderGridViewerMode::Preview)
-		{
-			WidgetContainer->SetContent(SNew(SRenderGridViewerPreview, BlueprintEditor));
-		}
-		else if (CurrentViewerMode == ERenderGridViewerMode::Rendered)
-		{
-			WidgetContainer->SetContent(SNew(SRenderGridViewerRendered, BlueprintEditor));
+			case ERenderGridViewerMode::Preview:
+				WidgetContainer->SetContent(SNew(SRenderGridViewerPreview, BlueprintEditor));
+				break;
+
+			case ERenderGridViewerMode::Rendered:
+				WidgetContainer->SetContent(SNew(SRenderGridViewerRendered, BlueprintEditor));
+				break;
+
+			case ERenderGridViewerMode::None:
+				break;
+
+			case ERenderGridViewerMode::Live:
+			default:
+				WidgetContainer->SetContent(SNew(SRenderGridViewerLive, BlueprintEditor));
+				break;
 		}
 	}
 }

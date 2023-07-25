@@ -29,12 +29,17 @@
 
 #define LOCTEXT_NAMESPACE "ControlRigFunctionRefNodeSpawner"
 
+// 3 possible creation types:
+// - CreateFromFunction(URigVMLibraryNode) --> This is a local function. Valid Header.
+// - CreateFromAssetData(const FAssetData& InAssetData, const FRigVMGraphFunctionHeader& InPublicFunction) --> Public function. Valid Header.
+// - CreateFromAssetData(const FAssetData& InAssetData, const FControlRigPublicFunctionData& InPublicFunction) --> Public function. Valid AssetData and Header.Name
+
 UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFromFunction(URigVMLibraryNode* InFunction)
 {
 	check(InFunction);
 
 	UControlRigFunctionRefNodeSpawner* NodeSpawner = NewObject<UControlRigFunctionRefNodeSpawner>(GetTransientPackage());
-	NodeSpawner->ReferencedFunctionPtr = InFunction;
+	NodeSpawner->ReferencedPublicFunctionHeader = InFunction->GetFunctionHeader();
 	NodeSpawner->NodeClass = UControlRigGraphNode::StaticClass();
 	NodeSpawner->bIsLocalFunction = true;
 
@@ -83,15 +88,77 @@ UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFrom
 	return NodeSpawner;
 }
 
+UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFromAssetData(const FAssetData& InAssetData, const FRigVMGraphFunctionHeader& InPublicFunction)
+{
+	UControlRigFunctionRefNodeSpawner* NodeSpawner = NewObject<UControlRigFunctionRefNodeSpawner>(GetTransientPackage());
+	NodeSpawner->ReferencedPublicFunctionHeader = InPublicFunction;
+	NodeSpawner->NodeClass = UControlRigGraphNode::StaticClass();
+	NodeSpawner->bIsLocalFunction = false;
+
+	FBlueprintActionUiSpec& MenuSignature = NodeSpawner->DefaultMenuSignature;
+
+	MenuSignature.MenuName = FText::FromName(InPublicFunction.Name);
+	MenuSignature.Category = FText::FromString(InPublicFunction.Category);
+	MenuSignature.Keywords = FText::FromString(InPublicFunction.Keywords);
+	MenuSignature.Tooltip = InPublicFunction.Tooltip;
+
+	const FString PackagePathString = InAssetData.PackageName.ToString();
+	if(MenuSignature.Tooltip.IsEmpty())
+	{
+		MenuSignature.Tooltip = FText::FromString(PackagePathString);
+	}
+	else
+	{
+		static constexpr TCHAR Format[] = TEXT("%s\n\n%s");
+		MenuSignature.Tooltip = FText::FromString(FString::Printf(Format, *MenuSignature.Tooltip.ToString(), *PackagePathString));
+	}
+
+	// add at least one character, so that PrimeDefaultUiSpec() doesn't 
+	// attempt to query the template node
+	if (MenuSignature.Keywords.IsEmpty())
+	{
+		// want to set it to something so we won't end up back in this condition
+		MenuSignature.Keywords = FText::FromString(TEXT(" "));
+	}
+
+	MenuSignature.Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.FunctionIcon");
+
+#if WITH_EDITOR
+	if (InPublicFunction.IsMutable())
+	{
+		MenuSignature.IconTint = GetDefault<UGraphEditorSettings>()->FunctionCallNodeTitleColor;
+	}
+	else
+	{
+		MenuSignature.IconTint = GetDefault<UGraphEditorSettings>()->PureFunctionCallNodeTitleColor;
+	}
+#endif
+	
+	return NodeSpawner;
+}
+
 UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFromAssetData(const FAssetData& InAssetData, const FControlRigPublicFunctionData& InPublicFunction)
 {
 	UControlRigFunctionRefNodeSpawner* NodeSpawner = NewObject<UControlRigFunctionRefNodeSpawner>(GetTransientPackage());
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	NodeSpawner->ReferencedAssetObjectPath = InAssetData.ToSoftObjectPath().ToFName();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	NodeSpawner->ReferencedPublicFunctionData = InPublicFunction;
 	NodeSpawner->NodeClass = UControlRigGraphNode::StaticClass();
 	NodeSpawner->bIsLocalFunction = false;
+
+	FRigVMGraphFunctionHeader& Header = NodeSpawner->ReferencedPublicFunctionHeader;
+	Header.Name = InPublicFunction.Name;
+	Header.Arguments.Reserve(InPublicFunction.Arguments.Num());
+	for (const FControlRigPublicFunctionArg& Arg : InPublicFunction.Arguments)
+	{
+		FRigVMGraphFunctionArgument NewArgument;
+		NewArgument.Name = Arg.Name;
+		NewArgument.Direction = Arg.Direction;
+		NewArgument.bIsArray = Arg.bIsArray;
+		NewArgument.CPPType = Arg.CPPType;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		NewArgument.CPPTypeObject = FSoftObjectPath(Arg.CPPTypeObjectPath);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		Header.Arguments.Add(NewArgument);
+	}
+	NodeSpawner->AssetPath = InAssetData.ToSoftObjectPath();
 
 	FBlueprintActionUiSpec& MenuSignature = NodeSpawner->DefaultMenuSignature;
 
@@ -156,25 +223,18 @@ void UControlRigFunctionRefNodeSpawner::Prime()
 FBlueprintNodeSignature UControlRigFunctionRefNodeSpawner::GetSpawnerSignature() const
 {
 	FString SignatureString = TEXT("Invalid RigFunction");
-	if(ReferencedFunctionPtr.IsValid())
-	{
-		if(UObject* FunctionLibrary = ReferencedFunctionPtr->GetOuter())
-		{
-			if(UObject* Blueprint = FunctionLibrary->GetOuter())
-			{
-				SignatureString = 
-					FString::Printf(TEXT("RigFunction=%s::%s"),
-					*Blueprint->GetPathName(),
-					*ReferencedFunctionPtr->GetName());
-			}
-		}
-	}
-	else if(ReferencedAssetObjectPath.IsValid() && ReferencedPublicFunctionData.Name.IsValid())
+	if (ReferencedPublicFunctionHeader.IsValid())
 	{
 		SignatureString = 
-			FString::Printf(TEXT("RigFunction=%s::%s"),
-			*ReferencedAssetObjectPath.ToString(),
-			*ReferencedPublicFunctionData.Name.ToString());
+			FString::Printf(TEXT("RigFunction=%s"),
+			*ReferencedPublicFunctionHeader.GetHash());
+	}
+	else
+	{
+		SignatureString = 
+			FString::Printf(TEXT("RigFunction=%s:%s"),
+			*AssetPath.ToString(),
+			*ReferencedPublicFunctionHeader.Name.ToString());
 	}
 
 	if(bIsLocalFunction)
@@ -201,31 +261,16 @@ UEdGraphNode* UControlRigFunctionRefNodeSpawner::Invoke(UEdGraph* ParentGraph, F
 	// if we are trying to build the real function ref - but we haven't loaded the asset yet...
 	if(!FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph))
 	{
-		if(!ReferencedFunctionPtr.IsValid() && !ReferencedAssetObjectPath.IsNone() && !ReferencedPublicFunctionData.Name.IsNone())
+		if (!ReferencedPublicFunctionHeader.IsValid() && AssetPath.IsValid())
 		{
-			UControlRigBlueprint* ReferencedBlueprint = LoadObject<UControlRigBlueprint>(nullptr, *ReferencedAssetObjectPath.ToString());
-			if(ReferencedBlueprint == nullptr)
+			if (UControlRigBlueprint* Blueprint = Cast<UControlRigBlueprint>(AssetPath.TryLoad()))
 			{
-				return nullptr;
+				ReferencedPublicFunctionHeader = Blueprint->GetLocalFunctionLibrary()->FindFunction(ReferencedPublicFunctionHeader.Name)->GetFunctionHeader();			
 			}
-
-			URigVMFunctionLibrary* FunctionLibrary = ReferencedBlueprint->GetLocalFunctionLibrary();
-			if(FunctionLibrary == nullptr)
-			{
-				return nullptr;
-			}
-
-			URigVMLibraryNode* FunctionNode = FunctionLibrary->FindFunction(ReferencedPublicFunctionData.Name);
-			if(FunctionNode == nullptr)
-			{
-				return nullptr;
-			}
-
-			ReferencedFunctionPtr = FunctionNode;
 		}
 	}
-
-	if(ReferencedFunctionPtr.IsValid())
+		
+	if(ReferencedPublicFunctionHeader.IsValid())
 	{
 #if WITH_EDITOR
 		if (GEditor)
@@ -235,7 +280,7 @@ UEdGraphNode* UControlRigFunctionRefNodeSpawner::Invoke(UEdGraph* ParentGraph, F
 #endif
 
 		UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(ParentGraph);
-		NewNode = SpawnNode(ParentGraph, Blueprint, ReferencedFunctionPtr.Get(), Location);
+		NewNode = SpawnNode(ParentGraph, Blueprint, ReferencedPublicFunctionHeader, Location);
 	}
 	else
 	{
@@ -246,7 +291,7 @@ UEdGraphNode* UControlRigFunctionRefNodeSpawner::Invoke(UEdGraph* ParentGraph, F
 		NewNode->CreateNewGuid();
 		NewNode->PostPlacedNewNode();
 
-		for(const FControlRigPublicFunctionArg& Arg : ReferencedPublicFunctionData.Arguments)
+		for(const FRigVMGraphFunctionArgument& Arg : ReferencedPublicFunctionHeader.Arguments)
 		{
 			if(Arg.Direction ==  ERigVMPinDirection::Input ||
 				Arg.Direction ==  ERigVMPinDirection::IO)
@@ -255,7 +300,7 @@ UEdGraphNode* UControlRigFunctionRefNodeSpawner::Invoke(UEdGraph* ParentGraph, F
 				NewNode->Pins.Add(InputPin);
 
 				InputPin->Direction = EGPD_Input;
-				InputPin->PinType = Arg.GetPinType();
+				InputPin->PinType = RigVMTypeUtils::PinTypeFromCPPType(Arg.CPPType, Arg.CPPTypeObject.Get());
 			}
 
 			if(Arg.Direction ==  ERigVMPinDirection::Output ||
@@ -265,17 +310,17 @@ UEdGraphNode* UControlRigFunctionRefNodeSpawner::Invoke(UEdGraph* ParentGraph, F
 				NewNode->Pins.Add(OutputPin);
 
 				OutputPin->Direction = EGPD_Output;
-				OutputPin->PinType = Arg.GetPinType();
+				OutputPin->PinType = RigVMTypeUtils::PinTypeFromCPPType(Arg.CPPType, Arg.CPPTypeObject.Get());
 			}
 		}
 
 		NewNode->SetFlags(RF_Transactional);
-	}
+}
 
 	return NewNode;
 }
 
-UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* ParentGraph, UBlueprint* Blueprint, URigVMLibraryNode* InFunction, FVector2D const Location)
+UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* ParentGraph, UBlueprint* Blueprint, FRigVMGraphFunctionHeader& InFunction, FVector2D const Location)
 {
 	UControlRigGraphNode* NewNode = nullptr;
 	UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
@@ -286,7 +331,7 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 		bool const bIsTemplateNode = FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph);
 		bool const bIsUserFacingNode = !bIsTemplateNode;
 
-		FName Name = bIsTemplateNode ? *InFunction->GetName() : FControlRigBlueprintUtils::ValidateName(RigBlueprint, InFunction->GetName());
+		FName Name = bIsTemplateNode ? InFunction.Name : FControlRigBlueprintUtils::ValidateName(RigBlueprint, InFunction.Name.ToString());
 		URigVMController* Controller = bIsTemplateNode ? RigGraph->GetTemplateController() : RigBlueprint->GetController(ParentGraph);
 
 		if (!bIsTemplateNode)
@@ -294,7 +339,7 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 			Controller->OpenUndoBracket(FString::Printf(TEXT("Add '%s' Node"), *Name.ToString()));
 		}
 
-		if (URigVMFunctionReferenceNode* ModelNode = Controller->AddFunctionReferenceNode(InFunction, Location, Name.ToString(), bIsUserFacingNode, !bIsTemplateNode))
+		if (URigVMFunctionReferenceNode* ModelNode = Controller->AddFunctionReferenceNodeFromDescription(InFunction, Location, Name.ToString(), bIsUserFacingNode, !bIsTemplateNode, bIsTemplateNode))
 		{
 			NewNode = Cast<UControlRigGraphNode>(RigGraph->FindNodeForModelNodeName(ModelNode->GetFName()));
 			check(NewNode);
@@ -322,7 +367,7 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 						continue;
 					}
 
-					if(ExistingFunctionReferenceNode->GetReferencedNode() != InFunction)
+					if(!(ExistingFunctionReferenceNode->GetReferencedFunctionHeader().LibraryPointer == InFunction.LibraryPointer))
 					{
 						continue;
 					}
@@ -340,9 +385,8 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 			{
 				// If the package is a template, do not remove the ControlRigGraphNode
 				// We might be spawning a node to populate the PROTO_ context menu for function declarations.
-				Controller->SuspendNotifications(true);
+				FRigVMControllerNotifGuard NotifGuard(Controller, true);
 				Controller->RemoveNode(ModelNode, false);
-				Controller->SuspendNotifications(false);
 			}
 
 			if (bIsUserFacingNode)
@@ -369,26 +413,23 @@ bool UControlRigFunctionRefNodeSpawner::IsTemplateNodeFilteredOut(FBlueprintActi
 {
 	if(bIsLocalFunction)
 	{
-		if(ReferencedFunctionPtr.IsValid())
+		if(ReferencedPublicFunctionHeader.IsValid())
 		{
 			for (UBlueprint* Blueprint : Filter.Context.Blueprints)
 			{
-				if(Blueprint->GetOutermost() != ReferencedFunctionPtr.Get()->GetOutermost())
+				if(Cast<IRigVMGraphFunctionHost>(Blueprint->GeneratedClass) != ReferencedPublicFunctionHeader.GetFunctionHost())
 				{
 					return true;
 				}
 			}
 		}
 	}
-	else if(ReferencedAssetObjectPath.IsValid())
+	const FString ReferencedAssetObjectPathString = ReferencedPublicFunctionHeader.LibraryPointer.LibraryNode.GetAssetName();
+	for (UBlueprint* Blueprint : Filter.Context.Blueprints)
 	{
-		const FString ReferencedAssetObjectPathString = ReferencedAssetObjectPath.ToString();
-		for (UBlueprint* Blueprint : Filter.Context.Blueprints)
+		if(Blueprint->GetPathName() == ReferencedAssetObjectPathString)
 		{
-			if(Blueprint->GetPathName() == ReferencedAssetObjectPathString)
-			{
-				return true;
-			}
+			return true;
 		}
 	}
 	return false;

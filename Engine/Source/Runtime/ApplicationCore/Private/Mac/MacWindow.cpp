@@ -15,6 +15,7 @@ FMacWindow::FMacWindow()
 ,	bIsVisible(false)
 ,	bIsClosed(false)
 ,	bIsFirstTimeVisible(true)
+,   bIsMainEditorWindow(false)
 {
 }
 
@@ -35,6 +36,9 @@ void FMacWindow::Initialize( FMacApplication* const Application, const TSharedRe
 
 	OwningApplication = Application;
 	Definition = InDefinition;
+    
+    // The main Editor window, like Batman, doesn't have a valid parent
+    bIsMainEditorWindow = !InParent.IsValid();
 
 	// Finally, let's initialize the new native window object.  Calling this function will often cause OS
 	// window messages to be sent! (such as activation messages)
@@ -50,8 +54,8 @@ void FMacWindow::Initialize( FMacApplication* const Application, const TSharedRe
 	const double ScreenDPIScaleFactor = FPlatformApplicationMisc::IsHighDPIModeEnabled() ? TargetScreen->Screen.backingScaleFactor : 1.0;
 	const FVector2D CocoaPosition = FMacApplication::ConvertSlatePositionToCocoa(PositionX, PositionY);
 	const NSRect ViewRect = NSMakeRect(CocoaPosition.X, CocoaPosition.Y - (SizeY / ScreenDPIScaleFactor) + 1, SizeX / ScreenDPIScaleFactor, SizeY / ScreenDPIScaleFactor);
-
 	uint32 WindowStyle = 0;
+
 	if( Definition->IsRegularWindow )
 	{
 		if( Definition->HasCloseButton )
@@ -60,7 +64,7 @@ void FMacWindow::Initialize( FMacApplication* const Application, const TSharedRe
 		}
 
 		// In order to support rounded, shadowed windows set the window to be titled - we'll set the content view to cover the whole window
-		WindowStyle |= NSWindowStyleMaskTitled | (FPlatformMisc::IsRunningOnMavericks() ? NSWindowStyleMaskTexturedBackground : NSWindowStyleMaskFullSizeContentView);
+		WindowStyle |= NSWindowStyleMaskTitled | NSWindowStyleMaskFullSizeContentView;
 		
 		if( Definition->SupportsMinimize )
 		{
@@ -79,7 +83,7 @@ void FMacWindow::Initialize( FMacApplication* const Application, const TSharedRe
 	if( Definition->HasOSWindowBorder )
 	{
 		WindowStyle |= NSWindowStyleMaskTitled;
-		WindowStyle &= FPlatformMisc::IsRunningOnMavericks() ? ~NSWindowStyleMaskTexturedBackground : ~NSWindowStyleMaskFullSizeContentView;
+		WindowStyle &= ~NSWindowStyleMaskFullSizeContentView;
 	}
 
 	MainThreadCall(^{
@@ -256,8 +260,8 @@ void FMacWindow::MoveWindowTo( int32 X, int32 Y )
 void FMacWindow::BringToFront( bool bForce )
 {
 	bIsVisible = (bIsVisible || bForce);
-
-	if (!bIsClosed && bIsVisible)
+    
+	if (!bIsClosed && bIsVisible && !bIsMainEditorWindow) // Don't try to bring editor window to front
 	{
 		SCOPED_AUTORELEASE_POOL;
 
@@ -384,7 +388,8 @@ void FMacWindow::SetWindowMode(EWindowMode::Type NewWindowMode)
 {
 	if(WindowHandle)
 	{
-		ApplySizeAndModeChanges(PositionX, PositionY, FMath::TruncToInt(WindowHandle.contentView.frame.size.width), FMath::TruncToInt(WindowHandle.contentView.frame.size.height), NewWindowMode);
+		ApplySizeAndModeChanges(PositionX, PositionY, FMath::TruncToInt(WindowHandle.contentView.frame.size.width),
+								FMath::TruncToInt(WindowHandle.contentView.frame.size.height), NewWindowMode);
 	}
 }
 
@@ -437,12 +442,7 @@ bool FMacWindow::GetRestoredDimensions(int32& X, int32& Y, int32& Width, int32& 
 
 void FMacWindow::SetWindowFocus()
 {
-	MainThreadCall(^{
-		SCOPED_AUTORELEASE_POOL;
-		[WindowHandle orderFrontAndMakeMain:true andKey:true];
-	}, UnrealShowEventMode, true);
-
-	MacApplication->OnWindowOrderedFront(SharedThis(this));
+    BringToFront(true);
 }
 
 void FMacWindow::SetOpacity( const float InOpacity )
@@ -732,7 +732,9 @@ void FMacWindow::UpdateFullScreenState(bool bToggleFullScreen)
 				WindowedModeSavedState.WindowLevel = WindowHandle.level;
 				[WindowHandle setLevel:CGShieldingWindowLevel() + 1];
 			}
-			[NSApp setPresentationOptions:NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar];
+			
+			// -toggleFullScreen implicitly sets these, but it doesn't hurt to set them ourselves to match.
+			[NSApp setPresentationOptions:NSApplicationPresentationAutoHideDock | NSApplicationPresentationAutoHideMenuBar];
 		}
 		else if (WindowHandle.level != WindowedModeSavedState.WindowLevel)
 		{

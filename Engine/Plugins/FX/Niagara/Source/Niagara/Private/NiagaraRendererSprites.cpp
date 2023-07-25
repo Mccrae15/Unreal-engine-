@@ -2,14 +2,17 @@
 
 #include "NiagaraRendererSprites.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "NiagaraComponent.h"
 #include "NiagaraCullProxyComponent.h"
 #include "NiagaraCutoutVertexBuffer.h"
 #include "NiagaraDataSet.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraSceneProxy.h"
 #include "NiagaraSettings.h"
 #include "NiagaraSortingGPU.h"
 #include "NiagaraStats.h"
+#include "NiagaraSystemInstance.h"
 #include "ParticleResources.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingDynamicGeometryCollection.h"
@@ -93,7 +96,7 @@ FNiagaraRendererSprites::FNiagaraRendererSprites(ERHIFeatureLevel::Type FeatureL
 	bRemoveHMDRollInVR = Properties->bRemoveHMDRollInVR;
 	bSortHighPrecision = UNiagaraRendererProperties::IsSortHighPrecision(Properties->SortPrecision);
 	bSortOnlyWhenTranslucent = Properties->bSortOnlyWhenTranslucent;
-	bGpuLowLatencyTranslucency = UNiagaraRendererProperties::IsGpuTranslucentThisFrame(Properties->GpuTranslucentLatency);
+	bGpuLowLatencyTranslucency = UNiagaraRendererProperties::IsGpuTranslucentThisFrame(FeatureLevel, Properties->GpuTranslucentLatency);
 	MinFacingCameraBlendDistance = Properties->MinFacingCameraBlendDistance;
 	MaxFacingCameraBlendDistance = Properties->MaxFacingCameraBlendDistance;
 	RendererVisibility = Properties->RendererVisibility;
@@ -177,7 +180,7 @@ void FNiagaraRendererSprites::ReleaseRenderThreadResources()
 
 	CutoutVertexBuffer.ReleaseResource();
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingAllowed())
 	{
 		RayTracingGeometry.ReleaseResource();
 		RayTracingDynamicVertexBuffer.Release();
@@ -191,7 +194,7 @@ void FNiagaraRendererSprites::CreateRenderThreadResources()
 	CutoutVertexBuffer.InitResource();
 
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingAllowed())
 	{
 		FRayTracingGeometryInitializer Initializer;
 		static const FName DebugName("FNiagaraRendererSprites");
@@ -207,7 +210,7 @@ void FNiagaraRendererSprites::CreateRenderThreadResources()
 #endif
 }
 
-void FNiagaraRendererSprites::PrepareParticleSpriteRenderData(FParticleSpriteRenderData& ParticleSpriteRenderData, FNiagaraDynamicDataBase* InDynamicData, const FNiagaraSceneProxy* SceneProxy) const
+void FNiagaraRendererSprites::PrepareParticleSpriteRenderData(FParticleSpriteRenderData& ParticleSpriteRenderData, const FSceneViewFamily& ViewFamily, FNiagaraDynamicDataBase* InDynamicData, const FNiagaraSceneProxy* SceneProxy, ENiagaraGpuComputeTickStage::Type GpuReadyTickStage) const
 {
 	ParticleSpriteRenderData.DynamicDataSprites = static_cast<FNiagaraDynamicDataSprites*>(InDynamicData);
 	if (!ParticleSpriteRenderData.DynamicDataSprites || !SceneProxy->GetComputeDispatchInterface())
@@ -227,10 +230,19 @@ void FNiagaraRendererSprites::PrepareParticleSpriteRenderData(FParticleSpriteRen
 	check(MaterialRenderProxy);
 
 	// Do we have anything to render?
-	const EBlendMode BlendMode = MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel).GetBlendMode();
-	ParticleSpriteRenderData.BlendMode = BlendMode;
-	ParticleSpriteRenderData.bHasTranslucentMaterials = IsTranslucentBlendMode(BlendMode);
-	ParticleSpriteRenderData.SourceParticleData = ParticleSpriteRenderData.DynamicDataSprites->GetParticleDataToRender(ParticleSpriteRenderData.bHasTranslucentMaterials && bGpuLowLatencyTranslucency && !SceneProxy->CastsVolumetricTranslucentShadow());
+	const FMaterial& Material = MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
+	ParticleSpriteRenderData.BlendMode = Material.GetBlendMode();
+	ParticleSpriteRenderData.bHasTranslucentMaterials = IsTranslucentBlendMode(Material);
+
+	// If these conditions change please update the DebugHUD display also to reflect it
+	const bool bLowLatencyTranslucencyEnabled =
+		ParticleSpriteRenderData.bHasTranslucentMaterials &&
+		bGpuLowLatencyTranslucency &&
+		GpuReadyTickStage >= CurrentParticleData->GetGPUDataReadyStage() &&
+		!SceneProxy->CastsVolumetricTranslucentShadow() &&
+		ViewFamilySupportLowLatencyTranslucency(ViewFamily);
+
+	ParticleSpriteRenderData.SourceParticleData = ParticleSpriteRenderData.DynamicDataSprites->GetParticleDataToRender(bLowLatencyTranslucencyEnabled);
 	if ( !ParticleSpriteRenderData.SourceParticleData || (SourceMode == ENiagaraRendererSourceDataMode::Particles && ParticleSpriteRenderData.SourceParticleData->GetNumInstances() == 0) )
 	{
 		ParticleSpriteRenderData.SourceParticleData = nullptr;
@@ -255,7 +267,7 @@ void FNiagaraRendererSprites::PrepareParticleSpriteRenderData(FParticleSpriteRen
 		const EShaderPlatform ShaderPlatform = SceneProxy->GetComputeDispatchInterface()->GetShaderPlatform();
 
 		// Determine if we need sorting
-		ParticleSpriteRenderData.bNeedsSort = SortMode != ENiagaraSortMode::None && (BlendMode == BLEND_AlphaComposite || BlendMode == BLEND_AlphaHoldout || BlendMode == BLEND_Translucent || !bSortOnlyWhenTranslucent);
+		ParticleSpriteRenderData.bNeedsSort = SortMode != ENiagaraSortMode::None && (IsAlphaCompositeBlendMode(Material) || IsAlphaHoldoutBlendMode(Material) || IsTranslucentOnlyBlendMode(Material) || !bSortOnlyWhenTranslucent);
 		const bool bNeedCustomSort = ParticleSpriteRenderData.bNeedsSort && (SortMode == ENiagaraSortMode::CustomAscending || SortMode == ENiagaraSortMode::CustomDecending);
 		ParticleSpriteRenderData.RendererLayout = bNeedCustomSort ? RendererLayoutWithCustomSort : RendererLayoutWithoutCustomSort;
 		ParticleSpriteRenderData.SortVariable = bNeedCustomSort ? ENiagaraSpriteVFLayout::CustomSorting : ENiagaraSpriteVFLayout::Position;
@@ -508,7 +520,7 @@ FNiagaraSpriteUniformBufferRef FNiagaraRendererSprites::CreateViewUniformBuffer(
 	PerViewUniformParameters.NormalsCylinderUnitDirection = FVector4f(0.0f, 0.0f, 1.0f, 0.0f);
 	PerViewUniformParameters.MacroUVParameters = CalcMacroUVParameters(View, SceneProxy.GetActorPosition(), MacroUVRadius);
 	PerViewUniformParameters.CameraFacingBlend = FVector4f(0.0f, 0.0f, 0.0f, 1.0f);
-	PerViewUniformParameters.RemoveHMDRoll = bRemoveHMDRollInVR;
+	PerViewUniformParameters.RemoveHMDRoll = bRemoveHMDRollInVR ? 0.0f : 1.0f;
 	PerViewUniformParameters.SubImageSize = FVector4f(SubImageSize.X, SubImageSize.Y, 1.0f / SubImageSize.X, 1.0f / SubImageSize.Y);
 
 	if (bUseLocalSpace)
@@ -565,23 +577,23 @@ FNiagaraSpriteUniformBufferRef FNiagaraRendererSprites::CreateViewUniformBuffer(
 			PerViewUniformParameters.PixelCoverageEnabled = ParticleSpriteRenderData.bHasTranslucentMaterials;
 			if (PerViewUniformParameters.PixelCoverageEnabled)
 			{
-				switch (ParticleSpriteRenderData.BlendMode)
+				if (IsTranslucentOnlyBlendMode(ParticleSpriteRenderData.BlendMode))
 				{
-					case BLEND_Translucent:
-						ParticleSpriteRenderData.bHasTranslucentMaterials = true;
-						PerViewUniformParameters.PixelCoverageColorBlend = FVector4f(PixelCoverageBlend, PixelCoverageBlend, PixelCoverageBlend, 0.0f);
-						break;
-					case BLEND_Additive:
-						ParticleSpriteRenderData.bHasTranslucentMaterials = true;
-						PerViewUniformParameters.PixelCoverageColorBlend = FVector4f(PixelCoverageBlend, PixelCoverageBlend, PixelCoverageBlend, PixelCoverageBlend);
-						break;
+					ParticleSpriteRenderData.bHasTranslucentMaterials = true;
+					PerViewUniformParameters.PixelCoverageColorBlend = FVector4f(PixelCoverageBlend, PixelCoverageBlend, PixelCoverageBlend, 0.0f);
+				}
+				else if (IsAdditiveBlendMode(ParticleSpriteRenderData.BlendMode))
+				{
+					ParticleSpriteRenderData.bHasTranslucentMaterials = true;
+					PerViewUniformParameters.PixelCoverageColorBlend = FVector4f(PixelCoverageBlend, PixelCoverageBlend, PixelCoverageBlend, PixelCoverageBlend);
+				}
+				else
+				{
 					//-TODO: Support these blend modes
 					//BLEND_Modulate
 					//BLEND_AlphaComposite
 					//BLEND_AlphaHoldout
-					default:
-						ParticleSpriteRenderData.bHasTranslucentMaterials = false;
-						break;
+					ParticleSpriteRenderData.bHasTranslucentMaterials = false;
 				}
 			}
 		}
@@ -921,8 +933,9 @@ void FNiagaraRendererSprites::GetDynamicMeshElements(const TArray<const FSceneVi
 
 	// Prepare our particle render data
 	// This will also determine if we have anything to render
+	// ENiagaraGpuComputeTickStage::Last is used as the GPU ready stage as we can support reading translucent data after PostRenderOpaque sims have run
 	FParticleSpriteRenderData ParticleSpriteRenderData;
-	PrepareParticleSpriteRenderData(ParticleSpriteRenderData, DynamicDataRender, SceneProxy);
+	PrepareParticleSpriteRenderData(ParticleSpriteRenderData, ViewFamily, DynamicDataRender, SceneProxy, ENiagaraGpuComputeTickStage::Last);
 
 	if (ParticleSpriteRenderData.SourceParticleData == nullptr)
 	{
@@ -948,7 +961,7 @@ void FNiagaraRendererSprites::GetDynamicMeshElements(const TArray<const FSceneVi
 
 			if (SourceMode == ENiagaraRendererSourceDataMode::Emitter && bEnableDistanceCulling)
 			{
-				FVector ViewOrigin = View->ViewMatrices.GetViewOrigin();
+				const FVector ViewOrigin = View->ViewMatrices.GetViewOrigin();
 				FVector RefPosition = SceneProxy->GetLocalToWorld().GetOrigin();
 				const int32 BoundPosOffset = VFBoundOffsetsInParamStore[ENiagaraSpriteVFLayout::Type::Position];
 				if (BoundPosOffset != INDEX_NONE && ParticleSpriteRenderData.DynamicDataSprites->ParameterDataBound.IsValidIndex(BoundPosOffset))
@@ -962,7 +975,7 @@ void FNiagaraRendererSprites::GetDynamicMeshElements(const TArray<const FSceneVi
 					}
 				}
 
-				float DistSquared = SceneProxy->GetProxyDynamicData().LODDistanceOverride >= 0.0f ? FMath::Square(SceneProxy->GetProxyDynamicData().LODDistanceOverride) : FVector::DistSquared(RefPosition, ViewOrigin);
+				const float DistSquared = SceneProxy->GetProxyDynamicData().LODDistanceOverride >= 0.0f ? FMath::Square(SceneProxy->GetProxyDynamicData().LODDistanceOverride) : float(FVector::DistSquared(RefPosition, ViewOrigin));
 				if (DistSquared < DistanceCullRange.X * DistanceCullRange.X || DistSquared > DistanceCullRange.Y * DistanceCullRange.Y)
 				{
 					// Distance cull the whole emitter
@@ -1034,8 +1047,9 @@ void FNiagaraRendererSprites::GetDynamicRayTracingInstances(FRayTracingMaterialG
 
 	// Prepare our particle render data
 	// This will also determine if we have anything to render
+	// ENiagaraGpuComputeTickStage::PostInitViews is used as we need the data one InitViews is complete as the HWRT BVH will be generated before other sims have run
 	FParticleSpriteRenderData ParticleSpriteRenderData;
-	PrepareParticleSpriteRenderData(ParticleSpriteRenderData, DynamicDataRender, SceneProxy);
+	PrepareParticleSpriteRenderData(ParticleSpriteRenderData, *Context.ReferenceView->Family, DynamicDataRender, SceneProxy, ENiagaraGpuComputeTickStage::PostInitViews);
 
 	if (ParticleSpriteRenderData.SourceParticleData == nullptr)
 	{
@@ -1126,8 +1140,6 @@ void FNiagaraRendererSprites::GetDynamicRayTracingInstances(FRayTracingMaterialG
 				true
 			}
 		);
-
-		RayTracingInstance.BuildInstanceMaskAndFlags(FeatureLevel);
 
 		OutRayTracingInstances.Add(RayTracingInstance);
 	}

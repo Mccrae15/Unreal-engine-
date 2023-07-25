@@ -28,6 +28,7 @@
 #include "Materials/MaterialExpressionMaterialAttributeLayers.h"
 #include "Materials/MaterialExpressionStaticBoolParameter.h"
 #include "Materials/MaterialExpressionStaticComponentMaskParameter.h"
+#include "Materials/MaterialFunction.h"
 #include "UObject/UObjectIterator.h"
 #include "PropertyEditorDelegates.h"
 #include "IDetailsView.h"
@@ -98,13 +99,9 @@ public:
 					return false;
 				}
 
-				extern ENGINE_API bool IsGPUSkinCacheAvailable(EShaderPlatform Platform);
-				bool bSkinCache = IsGPUSkinCacheAvailable(Platform) && (VertexFactoryType == FindVertexFactoryType(FName(TEXT("FGPUSkinPassthroughVertexFactory"), FNAME_Find)));
-					
 				if (
 					VertexFactoryType != FindVertexFactoryType(FName(TEXT("TGPUSkinVertexFactoryDefault"), FNAME_Find)) &&
-					VertexFactoryType != FindVertexFactoryType(FName(TEXT("TGPUSkinVertexFactoryUnlimited"), FNAME_Find)) &&
-					!bSkinCache
+					VertexFactoryType != FindVertexFactoryType(FName(TEXT("TGPUSkinVertexFactoryUnlimited"), FNAME_Find))
 					)
 				{
 					return false;
@@ -833,10 +830,12 @@ void UMaterialEditorInstanceConstant::ApplySourceFunctionChanges()
 		SourceFunction->DoubleVectorParameterValues = SourceInstance->DoubleVectorParameterValues;
 		SourceFunction->TextureParameterValues = SourceInstance->TextureParameterValues;
 		SourceFunction->RuntimeVirtualTextureParameterValues = SourceInstance->RuntimeVirtualTextureParameterValues;
+		SourceFunction->SparseVolumeTextureParameterValues = SourceInstance->SparseVolumeTextureParameterValues;
 		SourceFunction->FontParameterValues = SourceInstance->FontParameterValues;
 
+		
+		SourceFunction->StaticSwitchParameterValues = SourceInstance->GetStaticParameters().StaticSwitchParameters;
 		const FStaticParameterSetEditorOnlyData& StaticParameters = SourceInstance->GetEditorOnlyStaticParameters();
-		SourceFunction->StaticSwitchParameterValues = StaticParameters.StaticSwitchParameters;
 		SourceFunction->StaticComponentMaskParameterValues = StaticParameters.StaticComponentMaskParameters;
 
 		SourceFunction->MarkPackageDirty();
@@ -934,6 +933,10 @@ void UMaterialEditorInstanceConstant::CopyBasePropertiesFromParent()
 	{
 		BasePropertyOverrides.TwoSided = SourceInstance->IsTwoSided();
 	}
+	if (!BasePropertyOverrides.bOverride_bIsThinSurface)
+	{
+		BasePropertyOverrides.bIsThinSurface = SourceInstance->IsThinSurface();
+	}
 	if (!BasePropertyOverrides.bOverride_OutputTranslucentVelocity)
 	{
 		BasePropertyOverrides.bOutputTranslucentVelocity = SourceInstance->IsTranslucencyWritingVelocity();
@@ -941,6 +944,10 @@ void UMaterialEditorInstanceConstant::CopyBasePropertiesFromParent()
 	if (!BasePropertyOverrides.DitheredLODTransition)
 	{
 		BasePropertyOverrides.DitheredLODTransition = SourceInstance->IsDitheredLODTransition();
+	}
+	if (!BasePropertyOverrides.bOverride_MaxWorldPositionOffsetDisplacement)
+	{
+		BasePropertyOverrides.MaxWorldPositionOffsetDisplacement = SourceInstance->GetMaxWorldPositionOffsetDisplacement();
 	}
 
 	// Copy the Lightmass settings...

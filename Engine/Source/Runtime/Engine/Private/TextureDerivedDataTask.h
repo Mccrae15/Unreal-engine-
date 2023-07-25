@@ -61,8 +61,8 @@ ENUM_CLASS_FLAGS(ETextureCacheFlags);
 // Everything required to get the texture source data.
 struct FTextureSourceLayerData
 {
-	ERawImageFormat::Type ImageFormat;
-	EGammaSpace GammaSpace;
+	ERawImageFormat::Type ImageFormat = ERawImageFormat::Invalid;
+	EGammaSpace SourceGammaSpace = EGammaSpace::Invalid;
 };
 
 struct FTextureSourceBlockData
@@ -91,6 +91,11 @@ struct FTextureSourceData
 
 	void Init(UTexture& InTexture, TextureMipGenSettings InMipGenSettings, bool bInCubeMap, bool bInTextureArray, bool bInVolumeTexture, bool bAllowAsyncLoading);
 	bool IsValid() const { return bValid; }
+
+	bool HasPayload() const
+	{
+		return AsyncSource.HasPayloadData();
+	}
 	
 	// ImageWrapperModule is not used
 	void GetSourceMips(FTextureSource& Source, IImageWrapperModule* InImageWrapper = nullptr);

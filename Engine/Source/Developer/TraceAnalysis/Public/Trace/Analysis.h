@@ -4,6 +4,8 @@
 
 #include "Containers/Array.h"
 
+class FMessageLog;
+
 namespace UE {
 namespace Trace {
 
@@ -31,6 +33,12 @@ public:
 	/** Pause or resume the processing.
 	 * @param bState Pause if true, resume if false. */
 	void Pause(bool bState);
+
+
+	/**
+	 * Gets the message log. Must be called after analysis has finished.
+	 */
+	FMessageLog* GetLog();
 
 						~FAnalysisProcessor();
 						FAnalysisProcessor() = default;

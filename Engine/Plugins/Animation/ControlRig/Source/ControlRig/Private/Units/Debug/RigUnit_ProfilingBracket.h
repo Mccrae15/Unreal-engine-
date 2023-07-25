@@ -2,14 +2,14 @@
 
 #pragma once
 
-#include "RigUnit_DebugBase.h"
+#include "RigVMFunctions/Debug/RigVMFunction_DebugBase.h"
 #include "RigUnit_ProfilingBracket.generated.h"
 
 /**
  * Starts a profiling timer for debugging, used in conjunction with End Profiling Timer
  */
 USTRUCT(meta=(DisplayName="Start Profiling Timer", Keywords="Measure,BeginProfiling,Profile", NodeColor="0.25, 0.25, 0.05000000074505806"))
-struct CONTROLRIG_API FRigUnit_StartProfilingTimer : public FRigUnit_DebugBaseMutable
+struct CONTROLRIG_API FRigUnit_StartProfilingTimer : public FRigVMFunction_DebugBaseMutable
 {
 	GENERATED_BODY()
 
@@ -18,14 +18,14 @@ struct CONTROLRIG_API FRigUnit_StartProfilingTimer : public FRigUnit_DebugBaseMu
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 };
 
 /**
  * Ends an existing profiling timer for debugging, used in conjunction with Start Profiling Timer
  */
 USTRUCT(meta = (DisplayName = "End Profiling Timer", Keywords = "Measure,StopProfiling,Meter,Profile", NodeColor="0.25, 0.25, 0.05000000074505806"))
-struct CONTROLRIG_API FRigUnit_EndProfilingTimer : public FRigUnit_DebugBaseMutable
+struct CONTROLRIG_API FRigUnit_EndProfilingTimer : public FRigVMFunction_DebugBaseMutable
 {
 	GENERATED_BODY()
 
@@ -35,10 +35,11 @@ struct CONTROLRIG_API FRigUnit_EndProfilingTimer : public FRigUnit_DebugBaseMuta
 		AccumulatedTime = 0.f;
 		MeasurementsLeft = 0;
 		Prefix = TEXT("Timer");
+		bIsInitialized = false;
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, Constant))
 	int32 NumberOfMeasurements;
@@ -51,4 +52,7 @@ struct CONTROLRIG_API FRigUnit_EndProfilingTimer : public FRigUnit_DebugBaseMuta
 
 	UPROPERTY()
 	int32 MeasurementsLeft;
+
+	UPROPERTY()
+	bool bIsInitialized;
 };

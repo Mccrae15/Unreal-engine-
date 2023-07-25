@@ -23,9 +23,11 @@
 #include "Misc/CoreDelegates.h"
 #include "Misc/Char.h"
 #include "Misc/CString.h"
+#include "Misc/DelayedAutoRegister.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
+#include "Misc/ScopedSlowTask.h"
 #include "HAL/FileManager.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformMisc.h"
@@ -480,7 +482,7 @@ FPythonScriptPlugin::FPythonScriptPlugin()
 	, CmdREPLExec(this)
 	, CmdMenu(nullptr)
 	, bInitialized(false)
-	, bHasTicked(false)
+	, bRanStartupScripts(false)
 #endif	// WITH_PYTHON
 {
 }
@@ -602,6 +604,15 @@ bool FPythonScriptPlugin::ExecPythonCommandEx(FPythonCommandEx& InOutPythonComma
 	{
 		return RunString(InOutPythonCommand);
 	}	
+#endif	// WITH_PYTHON
+}
+
+FString FPythonScriptPlugin::GetInterpreterExecutablePath() const
+{
+#if WITH_PYTHON
+	return PyUtil::GetInterpreterExecutablePath();
+#else	// WITH_PYTHON
+	return FString();
 #endif	// WITH_PYTHON
 }
 
@@ -1110,13 +1121,13 @@ void FPythonScriptPlugin::ShutdownPython()
 	Py_Finalize();
 
 	bInitialized = false;
-	bHasTicked = false;
+	bRanStartupScripts = false;
 }
 
 void FPythonScriptPlugin::RequestStubCodeGeneration()
 {
-	// Ignore requests made before the fist Tick
-	if (!bHasTicked)
+	// Ignore requests made before the startup scripts have ran
+	if (!bRanStartupScripts)
 	{
 		return;
 	}
@@ -1160,51 +1171,68 @@ void FPythonScriptPlugin::GenerateStubCode()
 	}
 }
 
-void FPythonScriptPlugin::Tick(const float InDeltaTime)
+void FPythonScriptPlugin::RunStartupScripts()
 {
-	// If this is our first Tick, handle any post-init logic that should happen once the engine is fully initialized
-	if (!bHasTicked)
+	if (bRanStartupScripts)
 	{
-		bHasTicked = true;
+		return;
+	}
 
-		// Run start-up scripts now
-		TArray<FString> PySysPaths;
-		{
-			FPyScopedGIL GIL;
-			PySysPaths = PyUtil::GetSystemPaths();
-		}
-		for (const FString& PySysPath : PySysPaths)
-		{
-			const FString PotentialFilePath = PySysPath / TEXT("init_unreal.py");
-			if (FPaths::FileExists(PotentialFilePath))
-			{
-				// Execute these files in the "public" scope, as if their contents had been run directly in the console
-				// This allows them to be used to set-up an editor environment for the console
-				FPythonCommandEx InitUnrealPythonCommand;
-				InitUnrealPythonCommand.FileExecutionScope = EPythonFileExecutionScope::Public;
-				RunFile(*PotentialFilePath, *InitUnrealPythonCommand.Command, InitUnrealPythonCommand);
-			}
-		}
-		for (const FString& StartupScript : GetDefault<UPythonScriptPluginSettings>()->StartupScripts)
-		{
-			ExecPythonCommand(*StartupScript);
-		}
+	bRanStartupScripts = true;
 
-		// Notify any external listeners
-		OnPythonInitializedDelegate.Broadcast();
+	// Run start-up scripts now
+	TArray<FString> PySysPaths;
+	{
+		FPyScopedGIL GIL;
+		PySysPaths = PyUtil::GetSystemPaths();
+	}
+
+	FScopedSlowTask Progress(PySysPaths.Num() + GetDefault<UPythonScriptPluginSettings>()->StartupScripts.Num(), LOCTEXT("PythonScriptPluginInitScripts", "Running Python start-up scripts..."), true);
+	Progress.MakeDialogDelayed(0.1f);
+	for (const FString& PySysPath : PySysPaths)
+	{
+		const FString PotentialFilePath = PySysPath / TEXT("init_unreal.py");
+		if (FPaths::FileExists(PotentialFilePath))
+		{
+			Progress.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("PythonScriptPluginInitScripts_Running", "Running {0}..."), FText::FromString(PotentialFilePath)));
+
+			// Execute these files in the "public" scope, as if their contents had been run directly in the console
+			// This allows them to be used to set-up an editor environment for the console
+			FPythonCommandEx InitUnrealPythonCommand;
+			InitUnrealPythonCommand.FileExecutionScope = EPythonFileExecutionScope::Public;
+			RunFile(*PotentialFilePath, *InitUnrealPythonCommand.Command, InitUnrealPythonCommand);
+		}
+		else
+		{
+			Progress.EnterProgressFrame();
+		}
+	}
+
+	for (const FString& StartupScript : GetDefault<UPythonScriptPluginSettings>()->StartupScripts)
+	{
+		Progress.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("PythonScriptPluginInitScripts_Running", "Running {0}..."), FText::FromString(StartupScript)));
+		ExecPythonCommand(*StartupScript);
+	}
+
+	// Notify any external listeners
+	OnPythonInitializedDelegate.Broadcast();
 
 #if WITH_EDITOR
-		// Activate the Content Browser integration (now that editor subsystems are available)
-		if (PythonFileDataSource)
-		{
-			UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
-			ContentBrowserData->ActivateDataSource("PythonData");
-		}
-
-		// Register to generate stub code after a short delay
-		RequestStubCodeGeneration();
-#endif	// WITH_EDITOR
+	// Activate the Content Browser integration (now that editor subsystems are available)
+	if (PythonFileDataSource)
+	{
+		UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
+		ContentBrowserData->ActivateDataSource("PythonData");
 	}
+
+	// Register to generate stub code after a short delay
+	RequestStubCodeGeneration();
+#endif	// WITH_EDITOR
+}
+
+void FPythonScriptPlugin::Tick(const float InDeltaTime)
+{
+	RunStartupScripts();
 
 	RemoteExecution->Tick(InDeltaTime);
 
@@ -1290,23 +1318,7 @@ PyObject* FPythonScriptPlugin::EvalString(const TCHAR* InStr, const TCHAR* InCon
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPythonScriptPlugin::EvalString)
 
-	PyCompilerFlags *PyCompFlags = nullptr;
-
-	PyArena* PyArena = PyArena_New();
-	if (!PyArena)
-	{
-		return nullptr;
-	}
-
-	_mod* PyModule = PyParser_ASTFromString(TCHAR_TO_UTF8(InStr), TCHAR_TO_UTF8(InContext), InMode, PyCompFlags, PyArena);
-	if (!PyModule)
-	{
-		PyArena_Free(PyArena);
-		return nullptr;
-	}
-
-	typedef TPyPtr<PyCodeObject> PyCodeObjectPtr;
-	PyCodeObjectPtr PyCodeObj = PyCodeObjectPtr::StealReference(PyAST_Compile(PyModule, TCHAR_TO_UTF8(InContext), PyCompFlags, PyArena));
+	FPyObjectPtr PyCodeObj = FPyObjectPtr::StealReference(Py_CompileString(TCHAR_TO_UTF8(InStr), TCHAR_TO_UTF8(InContext), InMode));
 	if (!PyCodeObj)
 	{
 		return nullptr;

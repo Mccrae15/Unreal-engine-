@@ -18,8 +18,8 @@ struct FRigVMTemplate;
 /**
  * A select node is used to select between multiple values
  */
-UCLASS(BlueprintType)
-class RIGVMDEVELOPER_API URigVMSelectNode : public URigVMTemplateNode
+UCLASS(BlueprintType, Deprecated)
+class RIGVMDEVELOPER_API UDEPRECATED_RigVMSelectNode : public URigVMTemplateNode
 {
 	GENERATED_BODY()
 
@@ -52,5 +52,6 @@ private:
 	friend class FRigVMParserAST;
 	friend class FRigVMSelectExprAST;
 	friend struct FRigVMRemoveNodeAction;
+	friend class URigVMPin;
 };
 

@@ -861,7 +861,6 @@ bool UOculusXRFunctionLibrary::IsColorPassthroughSupported()
 			return (capabilities & ovrpInsightPassthroughCapabilityFlags::ovrpInsightPassthroughCapabilityFlags_Color)
 				== ovrpInsightPassthroughCapabilityFlags::ovrpInsightPassthroughCapabilityFlags_Color;
 		}
-
 		return false;
 	}
 #endif
@@ -870,4 +869,20 @@ bool UOculusXRFunctionLibrary::IsColorPassthroughSupported()
 
 
 
+bool UOculusXRFunctionLibrary::IsPassthroughRecommended()
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	const OculusXRHMD::FOculusXRHMD* OculusHMD = GetOculusXRHMD();
+	if (OculusHMD != nullptr)
+	{
+		ovrpPassthroughPreferences Preferences;
+		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPassthroughPreferences(&Preferences)))
+		{
+			return (Preferences.Flags & ovrpPassthroughPreferenceFlags::ovrpPassthroughPreferenceFlags_DefaultToActive)
+				== ovrpPassthroughPreferenceFlags::ovrpPassthroughPreferenceFlags_DefaultToActive;
+		};
+	}
+#endif
+	return false;
+}
 #undef LOCTEXT_NAMESPACE

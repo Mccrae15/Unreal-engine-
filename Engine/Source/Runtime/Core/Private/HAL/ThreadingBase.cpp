@@ -121,7 +121,7 @@ FTaskTagScope::FTaskTagScope(bool InTagOnlyIfNone, ETaskTag InTag) : Tag(InTag),
 	{
 		ActiveTaskTag = Tag;
 	}
-	else if (TagOnlyIfNone)
+	else if (TagOnlyIfNone && ActiveTaskTag != Tag)
 	{
 		if (EnumHasAllFlags(Tag, ETaskTag::EParallelRenderingThread))
 		{
@@ -228,11 +228,6 @@ CORE_API std::atomic<bool> GIsAudioThreadRunning{ false };
 
 CORE_API std::atomic<bool> GIsAudioThreadSuspended{ false };
 
-#if !UE_AUDIO_THREAD_AS_PIPE
-CORE_API FRunnableThread* GAudioThread = nullptr;
-#endif
-
-
 CORE_API bool IsAudioThreadRunning()
 {
 	return GIsAudioThreadRunning.load(std::memory_order_acquire) && !GIsAudioThreadSuspended.load(std::memory_order_acquire);
@@ -240,31 +235,7 @@ CORE_API bool IsAudioThreadRunning()
 
 CORE_API bool IsInAudioThread()
 {
-#if UE_AUDIO_THREAD_AS_PIPE
-
 	return GIsAudioThreadRunning.load(std::memory_order_acquire) && !GIsAudioThreadSuspended.load(std::memory_order_acquire) ? GAudioPipe.IsInContext() : IsInGameThread();
-
-#else
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	// True if this is the audio thread or if there is no audio thread, then if it is the game thread
-	bool newValue = (nullptr == GAudioThread || GIsAudioThreadSuspended.load(std::memory_order_relaxed))
-		? FTaskTagScope::IsCurrentTag(ETaskTag::EGameThread)
-		: FTaskTagScope::IsCurrentTag(ETaskTag::EAudioThread);
-#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting() &&
-		!CoroTask_Detail::FCoroLocalState::IsCoroLaunchedTask() &&
-		!UE::Tasks::Private::IsThreadRetractingTask())
-	{
-		bool oldValue = FPlatformTLS::GetCurrentThreadId() == ((nullptr == GAudioThread || GIsAudioThreadSuspended.load(std::memory_order_relaxed)) ? GGameThreadId : GAudioThread->GetThreadID());
-		ensureMsgf(oldValue == newValue, TEXT("oldValue(%i) newValue(%i) If this check fails make sure that there is a FTaskTagScope(ETaskTag::EAudioThread) as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(%x)"), oldValue, newValue, FTaskTagScope::GetCurrentTag());
-		newValue = oldValue;
-	}
-#endif
-	return newValue;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-#endif
 }
 
 CORE_API TAtomic<int32> GIsRenderingThreadSuspended(0);
@@ -543,17 +514,16 @@ void FThreadManager::Tick()
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FSingleThreadManager_Tick);
 
-		FScopeLock ThreadsLock(&ThreadsCritical);
-
-		// Tick all registered fake threads.
-		for (TPair<uint32, FRunnableThread*>& ThreadPair : Threads)
-		{
-			// Only fake and forkable threads are ticked by the ThreadManager
-			if( ThreadPair.Value->GetThreadType() != FRunnableThread::ThreadType::Real )
+		ForEachThread(
+			[] (uint32 ThreadId, FRunnableThread* Thread)
 			{
-				ThreadPair.Value->Tick();
+				// Only fake and forkable threads are ticked by the ThreadManager
+				if (Thread->GetThreadType() != FRunnableThread::ThreadType::Real)
+				{
+					Thread->Tick();
+				}
 			}
-		}
+		);
 	}
 }
 
@@ -602,19 +572,23 @@ void FThreadManager::GetAllThreadStackBackTraces(TArray<FThreadStackBackTrace>& 
 	StackTraces.Empty(NumThreads);
 	GetAllThreadStackBackTraces_ProcessSingle(CurThreadId, GGameThreadId, TEXT("GameThread"), StackTraces.AddDefaulted_GetRef());
 
-	for (const TPair<uint32, FRunnableThread*>& Pair : Threads)
-	{
-		const uint32 Id = Pair.Key;
-		const FString& Name = Pair.Value->GetThreadName();
-		GetAllThreadStackBackTraces_ProcessSingle(CurThreadId, Id, *Name, StackTraces.AddDefaulted_GetRef());
-	}
+	ForEachThread(
+		[CurThreadId, &StackTraces] (uint32 ThreadId, FRunnableThread* Thread)
+		{
+			const FString& Name = Thread->GetThreadName();
+			GetAllThreadStackBackTraces_ProcessSingle(CurThreadId, ThreadId, *Name, StackTraces.AddDefaulted_GetRef());
+		}
+	);
 }
 #endif
 
-void FThreadManager::ForEachThread(TFunction<void(uint32, class FRunnableThread*)> Func)
+void FThreadManager::ForEachThread(TFunction<void(uint32, FRunnableThread*)> Func)
 {
 	FScopeLock Lock(&ThreadsCritical);
-	for (const TPair<uint32, FRunnableThread*>& Pair : Threads)
+	// threads can be added or removed while iterating over them, thus invalidating the iterator, so we iterate over the copy of threads collection
+	FThreads ThreadsCopy = Threads;
+
+	for (const TPair<uint32, FRunnableThread*>& Pair : ThreadsCopy)
 	{
 		Func(Pair.Key, Pair.Value);
 	}
@@ -629,14 +603,15 @@ FThreadManager& FThreadManager::Get()
 TArray<FRunnableThread*> FThreadManager::GetForkableThreads()
 {
 	TArray<FRunnableThread*> ForkableThreads;
-	FScopeLock Lock(&ThreadsCritical);
-	for (const TPair<uint32, FRunnableThread*>& Pair : Threads)
-	{
-		if (Pair.Value->GetThreadType() == FRunnableThread::ThreadType::Forkable)
+	ForEachThread(
+		[&ForkableThreads] (uint32 ThreadId, FRunnableThread* Thread)
 		{
-			ForkableThreads.Add(Pair.Value);
+			if (Thread->GetThreadType() == FRunnableThread::ThreadType::Forkable)
+			{
+				ForkableThreads.Add(Thread);
+			}
 		}
-	}
+	);
 
 	return ForkableThreads;
 }

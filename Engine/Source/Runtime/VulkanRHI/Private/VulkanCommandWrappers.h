@@ -101,9 +101,7 @@ struct FWrapLayer
 	static void CreateFramebuffer(VkResult Result, VkDevice Device, const VkFramebufferCreateInfo* CreateInfo, VkFramebuffer* Framebuffer) VULKAN_LAYER_BODY
 	static void DestroyFramebuffer(VkResult Result, VkDevice Device, VkFramebuffer Framebuffer) VULKAN_LAYER_BODY
 	static void CreateRenderPass(VkResult Result, VkDevice Device, const VkRenderPassCreateInfo* CreateInfo, VkRenderPass* RenderPass) VULKAN_LAYER_BODY
-#if VULKAN_SUPPORTS_RENDERPASS2
 	static void CreateRenderPass2KHR(VkResult Result, VkDevice Device, const VkRenderPassCreateInfo2* CreateInfo, VkRenderPass* RenderPass) VULKAN_LAYER_BODY
-#endif
 	static void DestroyRenderPass(VkResult Result, VkDevice Device, VkRenderPass RenderPass) VULKAN_LAYER_BODY
 	static void GetRenderAreaGranularity(VkResult Result, VkDevice Device, VkRenderPass RenderPass, VkExtent2D* pGranularity) VULKAN_LAYER_BODY
 	static void CreateCommandPool(VkResult Result, VkDevice Device, const VkCommandPoolCreateInfo* CreateInfo, VkCommandPool* CommandPool) VULKAN_LAYER_BODY
@@ -156,10 +154,8 @@ struct FWrapLayer
 	static void CmdCopyQueryPoolResults(VkResult Result, VkCommandBuffer CommandBuffer, VkQueryPool QueryPool, uint32 FirstQuery, uint32 QueryCount, VkBuffer DstBuffer, VkDeviceSize DstOffset, VkDeviceSize Stride, VkQueryResultFlags Flags) VULKAN_LAYER_BODY
 	static void CmdPushConstants(VkResult Result, VkCommandBuffer CommandBuffer, VkPipelineLayout Layout, VkShaderStageFlags StageFlags, uint32_t Offset, uint32_t Size, const void* pValues) VULKAN_LAYER_BODY
 	static void CmdBeginRenderPass(VkResult Result, VkCommandBuffer CommandBuffer, const VkRenderPassBeginInfo* RenderPassBegin, VkSubpassContents Contents) VULKAN_LAYER_BODY
-#if VULKAN_SUPPORTS_RENDERPASS2
 	static void CmdBeginRenderPass2KHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkRenderPassBeginInfo* RenderPassBegin, const VkSubpassBeginInfo* pSubpassBeginInfo) VULKAN_LAYER_BODY
 	static void CmdEndRenderPass2KHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkSubpassEndInfo* pSubpassEndInfo) VULKAN_LAYER_BODY
-#endif
 	static void CmdNextSubpass(VkResult Result, VkCommandBuffer CommandBuffer, VkSubpassContents Contents) VULKAN_LAYER_BODY
 	static void CmdEndRenderPass(VkResult Result, VkCommandBuffer CommandBuffer) VULKAN_LAYER_BODY
 	static void CmdExecuteCommands(VkResult Result, VkCommandBuffer CommandBuffer, uint32 CommandBufferCount, const VkCommandBuffer* pCommandBuffers) VULKAN_LAYER_BODY
@@ -170,10 +166,10 @@ struct FWrapLayer
 	static void AcquireNextImageKHR(VkResult Result, VkDevice Device, VkSwapchainKHR Swapchain, uint64_t Timeout, VkSemaphore Semaphore, VkFence Fence, uint32_t* ImageIndex) VULKAN_LAYER_BODY
 	static void DestroySurfaceKHR(VkResult Result, VkInstance Instance, VkSurfaceKHR SurfaceKHR) VULKAN_LAYER_BODY
 	static void DestroySwapchainKHR(VkResult Result, VkDevice Device, VkSwapchainKHR Swapchain) VULKAN_LAYER_BODY
-#if VULKAN_SUPPORTS_DEDICATED_ALLOCATION
 	static void GetImageMemoryRequirements2KHR(VkResult Result, VkDevice Device, const VkImageMemoryRequirementsInfo2KHR* Info, VkMemoryRequirements2KHR* MemoryRequirements) VULKAN_LAYER_BODY
-#endif
-	VULKAN_EXTERN_EXPORT static void GetPhysicalDeviceMemoryProperties2(VkResult Result, VkPhysicalDevice PhysicalDevice, VkPhysicalDeviceMemoryProperties2* MemoryProperties) VULKAN_LAYER_BODY 
+	static void GetBufferMemoryRequirements2KHR(VkResult Result, VkDevice Device, const VkBufferMemoryRequirementsInfo2KHR* Info, VkMemoryRequirements2KHR* MemoryRequirements) VULKAN_LAYER_BODY
+
+		VULKAN_EXTERN_EXPORT static void GetPhysicalDeviceMemoryProperties2(VkResult Result, VkPhysicalDevice PhysicalDevice, VkPhysicalDeviceMemoryProperties2* MemoryProperties) VULKAN_LAYER_BODY 
 #if VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 	VULKAN_EXTERN_EXPORT static void GetPhysicalDeviceProperties2KHR(VkResult Result, VkPhysicalDevice PhysicalDevice, VkPhysicalDeviceProperties2KHR* Properties) VULKAN_LAYER_BODY
 	VULKAN_EXTERN_EXPORT static void GetPhysicalDeviceFeatures2KHR(VkResult Result, VkPhysicalDevice PhysicalDevice, VkPhysicalDeviceFeatures2KHR* Features) VULKAN_LAYER_BODY
@@ -200,12 +196,27 @@ struct FWrapLayer
 	static void CmdTraceRaysKHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkStridedDeviceAddressRegionKHR* RaygenShaderBindingTable, const VkStridedDeviceAddressRegionKHR* MissShaderBindingTable, const VkStridedDeviceAddressRegionKHR* HitShaderBindingTable, const VkStridedDeviceAddressRegionKHR* CallableShaderBindingTable, uint32 width, uint32 height, uint32 depth);
 	static void CreateRayTracingPipelinesKHR(VkResult Result, VkDevice Device, VkDeferredOperationKHR DeferredOperation, VkPipelineCache PipelineCache, uint32_t CreateInfoCount, const VkRayTracingPipelineCreateInfoKHR* CreateInfos, const VkAllocationCallbacks* Allocator, VkPipeline* Pipelines);
 	static void GetRayTracingShaderGroupHandlesKHR(VkResult Result, VkDevice Device, VkPipeline Pipeline, uint32_t FirstGroup, uint32_t GroupCount, size_t DataSize, void* Data);
-	static void GetBufferDeviceAddressKHR(VkResult Result, VkDevice Device, const VkBufferDeviceAddressInfo* Info);
 	static void CmdWriteAccelerationStructuresPropertiesKHR(VkResult Result, VkCommandBuffer CommandBuffer, uint32_t AccelerationStructureCount, const VkAccelerationStructureKHR* AccelerationStructures, VkQueryType QueryType, VkQueryPool QueryPool, uint32_t FirstQuery);
 	static void CmdCopyAccelerationStructureKHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkCopyAccelerationStructureInfoKHR* Info);
 #endif
+	static void GetBufferDeviceAddressKHR(VkResult Result, VkDevice Device, const VkBufferDeviceAddressInfo* Info) VULKAN_LAYER_BODY
 	static void GetDeviceImageMemoryRequirementsKHR(VkResult Result, VkDevice Device, const VkDeviceImageMemoryRequirements* Info, VkMemoryRequirements2* MemoryRequirements) VULKAN_LAYER_BODY
+	static void GetDeviceBufferMemoryRequirementsKHR(VkResult Result, VkDevice Device, const VkDeviceBufferMemoryRequirements* Info, VkMemoryRequirements2* MemoryRequirements) VULKAN_LAYER_BODY
 	static void ResetQueryPoolEXT(VkResult Result, VkDevice Device, VkQueryPool QueryPool, uint32_t FirstQuery, uint32_t QueryCount) VULKAN_LAYER_BODY
+	static void GetPhysicalDeviceCalibrateableTimeDomainsEXT(VkResult Result, VkPhysicalDevice PhysicalDevice, uint32_t* TimeDomainCount, VkTimeDomainEXT* TimeDomains) VULKAN_LAYER_BODY
+	static void GetCalibratedTimestampsEXT(VkResult Result, VkDevice Device, uint32_t TimestampCount, const VkCalibratedTimestampInfoEXT* TimestampInfos, uint64_t* Timestamps, uint64_t* MaxDeviation) VULKAN_LAYER_BODY
+	static void BindBufferMemory2KHR(VkResult Result, VkDevice Device, uint32_t BindInfoCount, const VkBindBufferMemoryInfo* BindInfos) VULKAN_LAYER_BODY
+	static void BindImageMemory2KHR(VkResult Result, VkDevice Device, uint32_t BindInfoCount, const VkBindImageMemoryInfo* BindInfos) VULKAN_LAYER_BODY
+	static void CmdPipelineBarrier2KHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkDependencyInfo* DependencyInfo) VULKAN_LAYER_BODY
+	static void CmdResetEvent2KHR(VkResult Result, VkCommandBuffer CommandBuffer, VkEvent Event, VkPipelineStageFlags2 StageMask) VULKAN_LAYER_BODY
+	static void CmdSetEvent2KHR(VkResult Result, VkCommandBuffer CommandBuffer, VkEvent Event, const VkDependencyInfo* DependencyInfo) VULKAN_LAYER_BODY
+	static void CmdWaitEvents2KHR(VkResult Result, VkCommandBuffer CommandBuffer, uint32_t EventCount, const VkEvent* Events, const VkDependencyInfo* DependencyInfos) VULKAN_LAYER_BODY
+	static void QueueSubmit2KHR(VkResult Result, VkQueue Queue, uint32_t SubmitCount, const VkSubmitInfo2* Submits, VkFence Fence) VULKAN_LAYER_BODY
+	static void GetDescriptorSetLayoutSizeEXT(VkResult Result, VkDevice Device, VkDescriptorSetLayout Layout, VkDeviceSize* OutLayoutSizeInBytes) VULKAN_LAYER_BODY
+	static void GetDescriptorSetLayoutBindingOffsetEXT(VkResult Result, VkDevice Device, VkDescriptorSetLayout Layout, uint32_t Binding, VkDeviceSize* Offset) VULKAN_LAYER_BODY
+	static void CmdBindDescriptorBuffersEXT(VkResult Result, VkCommandBuffer CommandBuffer, uint32_t BufferCount, const VkDescriptorBufferBindingInfoEXT* BindingInfos) VULKAN_LAYER_BODY
+	static void CmdSetDescriptorBufferOffsetsEXT(VkResult Result, VkCommandBuffer CommandBuffer, VkPipelineBindPoint PipelineBindPoint, VkPipelineLayout Layout, uint32_t FirstSet, uint32_t SetCount, const uint32_t* BufferIndices, const VkDeviceSize* Offsets) VULKAN_LAYER_BODY
+	static void GetDescriptorEXT(VkResult Result, VkDevice Device, const VkDescriptorGetInfoEXT* DescriptorInfo, size_t DataSize, void* Descriptor) VULKAN_LAYER_BODY
 };
 
 #undef VULKAN_LAYER_BODY
@@ -878,7 +889,6 @@ namespace VulkanRHI
 		return Result;
 	}
 
-#if VULKAN_SUPPORTS_RENDERPASS2
 	static FORCEINLINE_DEBUGGABLE VkResult vkCreateRenderPass2KHR(VkDevice Device, const VkRenderPassCreateInfo2* CreateInfo, const VkAllocationCallbacks* Allocator, VkRenderPass* RenderPass)
 	{
 		FWrapLayer::CreateRenderPass2KHR(VK_RESULT_MAX_ENUM, Device, CreateInfo, RenderPass);
@@ -893,7 +903,6 @@ namespace VulkanRHI
 		VULKANAPINAMESPACE::vkCmdEndRenderPass2KHR(CommandBuffer, pSubpassEndInfo);
 		FWrapLayer::CmdEndRenderPass2KHR(VK_SUCCESS, CommandBuffer, pSubpassEndInfo);
 	}
-#endif
 
 	static FORCEINLINE_DEBUGGABLE void  vkDestroyRenderPass(VkDevice Device, VkRenderPass RenderPass, const VkAllocationCallbacks* Allocator)
 	{
@@ -1274,14 +1283,12 @@ namespace VulkanRHI
 		FWrapLayer::CmdBeginRenderPass(VK_SUCCESS, CommandBuffer, RenderPassBegin, Contents);
 	}
 
-#if VULKAN_SUPPORTS_RENDERPASS2
 	static FORCEINLINE_DEBUGGABLE void vkCmdBeginRenderPass2KHR(VkCommandBuffer CommandBuffer, const VkRenderPassBeginInfo* RenderPassBegin, const VkSubpassBeginInfo* SubpassBeginInfo)
 	{
 		FWrapLayer::CmdBeginRenderPass2KHR(VK_RESULT_MAX_ENUM, CommandBuffer, RenderPassBegin, SubpassBeginInfo);
 		VULKANAPINAMESPACE::vkCmdBeginRenderPass2KHR(CommandBuffer, RenderPassBegin, SubpassBeginInfo);
 		FWrapLayer::CmdBeginRenderPass2KHR(VK_SUCCESS, CommandBuffer, RenderPassBegin, SubpassBeginInfo);
 	}
-#endif
 
 	static FORCEINLINE_DEBUGGABLE void  vkCmdNextSubpass(VkCommandBuffer CommandBuffer, VkSubpassContents Contents)
 	{
@@ -1402,14 +1409,19 @@ namespace VulkanRHI
 		FWrapLayer::DestroySurfaceKHR(VK_SUCCESS, Instance, Surface);
 	}
 
-#if VULKAN_SUPPORTS_DEDICATED_ALLOCATION
 	static FORCEINLINE_DEBUGGABLE void vkGetImageMemoryRequirements2KHR(VkDevice Device, const VkImageMemoryRequirementsInfo2KHR* Info, VkMemoryRequirements2KHR* MemoryRequirements)
 	{
 		FWrapLayer::GetImageMemoryRequirements2KHR(VK_RESULT_MAX_ENUM, Device, Info, MemoryRequirements);
 		VULKANAPINAMESPACE::vkGetImageMemoryRequirements2KHR(Device, Info, MemoryRequirements);
 		FWrapLayer::GetImageMemoryRequirements2KHR(VK_SUCCESS, Device, Info, MemoryRequirements);
 	}
-#endif
+
+	static FORCEINLINE_DEBUGGABLE void vkGetBufferMemoryRequirements2KHR(VkDevice Device, const VkBufferMemoryRequirementsInfo2KHR* Info, VkMemoryRequirements2KHR* MemoryRequirements)
+	{
+		FWrapLayer::GetBufferMemoryRequirements2KHR(VK_RESULT_MAX_ENUM, Device, Info, MemoryRequirements);
+		VULKANAPINAMESPACE::vkGetBufferMemoryRequirements2KHR(Device, Info, MemoryRequirements);
+		FWrapLayer::GetBufferMemoryRequirements2KHR(VK_SUCCESS, Device, Info, MemoryRequirements);
+	}
 
 #if VULKAN_RHI_RAYTRACING
 	static FORCEINLINE_DEBUGGABLE VkResult vkCreateAccelerationStructureKHR(VkDevice Device, const VkAccelerationStructureCreateInfoKHR* CreateInfo, const VkAllocationCallbacks* Allocator, VkAccelerationStructureKHR* AccelerationStructure)
@@ -1441,11 +1453,12 @@ namespace VulkanRHI
 		FWrapLayer::GetAccelerationStructureBuildSizesKHR(VK_SUCCESS, Device, BuildType, BuildInfo, MaxPrimitiveCounts, SizeInfo);
 	}
 
-	static FORCEINLINE_DEBUGGABLE void vkGetAccelerationStructureDeviceAddressKHR(VkDevice Device, const VkAccelerationStructureDeviceAddressInfoKHR* Info)
+	static FORCEINLINE_DEBUGGABLE VkDeviceAddress vkGetAccelerationStructureDeviceAddressKHR(VkDevice Device, const VkAccelerationStructureDeviceAddressInfoKHR* Info)
 	{
 		FWrapLayer::GetAccelerationStructureDeviceAddressKHR(VK_RESULT_MAX_ENUM, Device, Info);
-		VULKANAPINAMESPACE::vkGetAccelerationStructureDeviceAddressKHR(Device, Info);
+		VkDeviceAddress Result = VULKANAPINAMESPACE::vkGetAccelerationStructureDeviceAddressKHR(Device, Info);
 		FWrapLayer::GetAccelerationStructureDeviceAddressKHR(VK_SUCCESS, Device, Info);
+		return Result;
 	}
 
 	static FORCEINLINE_DEBUGGABLE void vkCmdTraceRaysKHR(VkCommandBuffer CommandBuffer, const VkStridedDeviceAddressRegionKHR* RaygenShaderBindingTable, const VkStridedDeviceAddressRegionKHR* MissShaderBindingTable, const VkStridedDeviceAddressRegionKHR* HitShaderBindingTable, const VkStridedDeviceAddressRegionKHR* CallableShaderBindingTable, uint32 width, uint32 height, uint32 depth)
@@ -1471,14 +1484,6 @@ namespace VulkanRHI
 		return Result;
 	}
 
-	static FORCEINLINE_DEBUGGABLE VkDeviceAddress vkGetBufferDeviceAddressKHR(VkDevice Device, const VkBufferDeviceAddressInfo* Info)
-	{
-		FWrapLayer::GetBufferDeviceAddressKHR(VK_RESULT_MAX_ENUM, Device, Info);
-		const VkDeviceAddress Result = VULKANAPINAMESPACE::vkGetBufferDeviceAddressKHR(Device, Info);
-		FWrapLayer::GetBufferDeviceAddressKHR(VK_SUCCESS, Device, Info);
-		return Result;
-	}
-
 	static FORCEINLINE_DEBUGGABLE void vkCmdWriteAccelerationStructuresPropertiesKHR(VkCommandBuffer CommandBuffer,	uint32_t AccelerationStructureCount, const VkAccelerationStructureKHR* AccelerationStructures, VkQueryType QueryType, VkQueryPool QueryPool, uint32_t FirstQuery)
 	{
 		FWrapLayer::CmdWriteAccelerationStructuresPropertiesKHR(VK_RESULT_MAX_ENUM, CommandBuffer, AccelerationStructureCount, AccelerationStructures, QueryType, QueryPool, FirstQuery);
@@ -1490,9 +1495,17 @@ namespace VulkanRHI
 	{
 		FWrapLayer::CmdCopyAccelerationStructureKHR(VK_RESULT_MAX_ENUM, CommandBuffer, Info);
 		VULKANAPINAMESPACE::vkCmdCopyAccelerationStructureKHR(CommandBuffer, Info);
-		FWrapLayer::CmdCopyAccelerationStructureKHR(VK_SUCCESS, CommandBuffer, CommandBuffer, Info);
+		FWrapLayer::CmdCopyAccelerationStructureKHR(VK_SUCCESS, CommandBuffer, Info);
 	}
 #endif
+
+	static FORCEINLINE_DEBUGGABLE VkDeviceAddress vkGetBufferDeviceAddressKHR(VkDevice Device, const VkBufferDeviceAddressInfo* Info)
+	{
+		FWrapLayer::GetBufferDeviceAddressKHR(VK_RESULT_MAX_ENUM, Device, Info);
+		const VkDeviceAddress Result = VULKANAPINAMESPACE::vkGetBufferDeviceAddressKHR(Device, Info);
+		FWrapLayer::GetBufferDeviceAddressKHR(VK_SUCCESS, Device, Info);
+		return Result;
+	}
 
 	static FORCEINLINE_DEBUGGABLE void vkGetDeviceImageMemoryRequirementsKHR(VkDevice Device, const VkDeviceImageMemoryRequirements* Info, VkMemoryRequirements2* MemoryRequirements)
 	{
@@ -1501,11 +1514,120 @@ namespace VulkanRHI
 		FWrapLayer::GetDeviceImageMemoryRequirementsKHR(VK_SUCCESS, Device, Info, MemoryRequirements);
 	}
 
+	static FORCEINLINE_DEBUGGABLE void vkGetDeviceBufferMemoryRequirementsKHR(VkDevice Device, const VkDeviceBufferMemoryRequirements* Info, VkMemoryRequirements2* MemoryRequirements)
+	{
+		FWrapLayer::GetDeviceBufferMemoryRequirementsKHR(VK_RESULT_MAX_ENUM, Device, Info, MemoryRequirements);
+		VULKANAPINAMESPACE::vkGetDeviceBufferMemoryRequirementsKHR(Device, Info, MemoryRequirements);
+		FWrapLayer::GetDeviceBufferMemoryRequirementsKHR(VK_SUCCESS, Device, Info, MemoryRequirements);
+	}
+
 	static FORCEINLINE_DEBUGGABLE void vkResetQueryPoolEXT(VkDevice Device, VkQueryPool QueryPool, uint32_t FirstQuery, uint32_t QueryCount)
 	{
 		FWrapLayer::ResetQueryPoolEXT(VK_RESULT_MAX_ENUM, Device, QueryPool, FirstQuery, QueryCount);
 		VULKANAPINAMESPACE::vkResetQueryPoolEXT(Device, QueryPool, FirstQuery, QueryCount);
 		FWrapLayer::ResetQueryPoolEXT(VK_SUCCESS, Device, QueryPool, FirstQuery, QueryCount);
+	}
+
+	static FORCEINLINE_DEBUGGABLE VkResult vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(VkPhysicalDevice PhysicalDevice, uint32_t* TimeDomainCount, VkTimeDomainEXT* TimeDomains)
+	{
+		FWrapLayer::GetPhysicalDeviceCalibrateableTimeDomainsEXT(VK_RESULT_MAX_ENUM, PhysicalDevice, TimeDomainCount, TimeDomains);
+		const VkResult Result = VULKANAPINAMESPACE::vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(PhysicalDevice, TimeDomainCount, TimeDomains);
+		FWrapLayer::GetPhysicalDeviceCalibrateableTimeDomainsEXT(Result, PhysicalDevice, TimeDomainCount, TimeDomains);
+		return Result;
+	}
+
+	static FORCEINLINE_DEBUGGABLE VkResult vkGetCalibratedTimestampsEXT(VkDevice Device, uint32_t TimestampCount, const VkCalibratedTimestampInfoEXT* TimestampInfos, uint64_t* Timestamps, uint64_t* MaxDeviation)
+	{
+		FWrapLayer::GetCalibratedTimestampsEXT(VK_RESULT_MAX_ENUM, Device, TimestampCount, TimestampInfos, Timestamps, MaxDeviation);
+		const VkResult Result = VULKANAPINAMESPACE::vkGetCalibratedTimestampsEXT(Device, TimestampCount, TimestampInfos, Timestamps, MaxDeviation);
+		FWrapLayer::GetCalibratedTimestampsEXT(Result, Device, TimestampCount, TimestampInfos, Timestamps, MaxDeviation);
+		return Result;
+	}
+
+	static FORCEINLINE_DEBUGGABLE VkResult vkBindBufferMemory2KHR(VkDevice Device, uint32_t BindInfoCount, const VkBindBufferMemoryInfo* BindInfos)
+	{
+		FWrapLayer::BindBufferMemory2KHR(VK_RESULT_MAX_ENUM, Device, BindInfoCount, BindInfos);
+		const VkResult Result = VULKANAPINAMESPACE::vkBindBufferMemory2KHR(Device, BindInfoCount, BindInfos);
+		FWrapLayer::BindBufferMemory2KHR(Result, Device, BindInfoCount, BindInfos);
+		return Result;
+	}
+
+	static FORCEINLINE_DEBUGGABLE VkResult vkBindImageMemory2KHR(VkDevice Device, uint32_t BindInfoCount, const VkBindImageMemoryInfo* BindInfos)
+	{
+		FWrapLayer::BindImageMemory2KHR(VK_RESULT_MAX_ENUM, Device, BindInfoCount, BindInfos);
+		const VkResult Result = VULKANAPINAMESPACE::vkBindImageMemory2KHR(Device, BindInfoCount, BindInfos);
+		FWrapLayer::BindImageMemory2KHR(Result, Device, BindInfoCount, BindInfos);
+		return Result;
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkCmdPipelineBarrier2KHR(VkCommandBuffer CommandBuffer, const VkDependencyInfo* DependencyInfo)
+	{
+		FWrapLayer::CmdPipelineBarrier2KHR(VK_RESULT_MAX_ENUM, CommandBuffer, DependencyInfo);
+		VULKANAPINAMESPACE::vkCmdPipelineBarrier2KHR(CommandBuffer, DependencyInfo);
+		FWrapLayer::CmdPipelineBarrier2KHR(VK_SUCCESS, CommandBuffer, DependencyInfo);
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkCmdResetEvent2KHR(VkCommandBuffer CommandBuffer, VkEvent Event, VkPipelineStageFlags2 StageMask)
+	{
+		FWrapLayer::CmdResetEvent2KHR(VK_RESULT_MAX_ENUM, CommandBuffer, Event, StageMask);
+		VULKANAPINAMESPACE::vkCmdResetEvent2KHR(CommandBuffer, Event, StageMask);
+		FWrapLayer::CmdResetEvent2KHR(VK_SUCCESS, CommandBuffer, Event, StageMask);
+	}
+	
+	static FORCEINLINE_DEBUGGABLE void vkCmdSetEvent2KHR(VkCommandBuffer CommandBuffer, VkEvent Event, const VkDependencyInfo* DependencyInfo)
+	{
+		FWrapLayer::CmdSetEvent2KHR(VK_RESULT_MAX_ENUM, CommandBuffer, Event, DependencyInfo);
+		VULKANAPINAMESPACE::vkCmdSetEvent2KHR(CommandBuffer, Event, DependencyInfo);
+		FWrapLayer::CmdSetEvent2KHR(VK_SUCCESS, CommandBuffer, Event, DependencyInfo);
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkCmdWaitEvents2KHR(VkCommandBuffer CommandBuffer, uint32_t EventCount, const VkEvent* Events, const VkDependencyInfo* DependencyInfos)
+	{
+		FWrapLayer::CmdWaitEvents2KHR(VK_RESULT_MAX_ENUM, CommandBuffer, EventCount, Events, DependencyInfos);
+		VULKANAPINAMESPACE::vkCmdWaitEvents2KHR(CommandBuffer, EventCount, Events, DependencyInfos);
+		FWrapLayer::CmdWaitEvents2KHR(VK_SUCCESS, CommandBuffer, EventCount, Events, DependencyInfos);
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkQueueSubmit2KHR(VkQueue Queue, uint32_t SubmitCount, const VkSubmitInfo2* Submits, VkFence Fence)
+	{
+		FWrapLayer::QueueSubmit2KHR(VK_RESULT_MAX_ENUM, Queue, SubmitCount, Submits, Fence);
+		VULKANAPINAMESPACE::vkQueueSubmit2KHR(Queue, SubmitCount, Submits, Fence);
+		FWrapLayer::QueueSubmit2KHR(VK_SUCCESS, Queue, SubmitCount, Submits, Fence);
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkGetDescriptorSetLayoutSizeEXT(VkDevice Device, VkDescriptorSetLayout Layout, VkDeviceSize* OutLayoutSizeInBytes)
+	{
+		FWrapLayer::GetDescriptorSetLayoutSizeEXT(VK_RESULT_MAX_ENUM, Device, Layout, OutLayoutSizeInBytes);
+		VULKANAPINAMESPACE::vkGetDescriptorSetLayoutSizeEXT(Device, Layout, OutLayoutSizeInBytes);
+		FWrapLayer::GetDescriptorSetLayoutSizeEXT(VK_SUCCESS, Device, Layout, OutLayoutSizeInBytes);
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkGetDescriptorSetLayoutBindingOffsetEXT(VkDevice Device, VkDescriptorSetLayout Layout, uint32_t Binding, VkDeviceSize* Offset)
+	{
+		FWrapLayer::GetDescriptorSetLayoutBindingOffsetEXT(VK_RESULT_MAX_ENUM, Device, Layout, Binding, Offset);
+		VULKANAPINAMESPACE::vkGetDescriptorSetLayoutBindingOffsetEXT(Device, Layout, Binding, Offset);
+		FWrapLayer::GetDescriptorSetLayoutBindingOffsetEXT(VK_SUCCESS, Device, Layout, Binding, Offset);
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkCmdBindDescriptorBuffersEXT(VkCommandBuffer CommandBuffer, uint32_t BufferCount, const VkDescriptorBufferBindingInfoEXT* BindingInfos)
+	{
+		FWrapLayer::CmdBindDescriptorBuffersEXT(VK_RESULT_MAX_ENUM, CommandBuffer, BufferCount, BindingInfos);
+		VULKANAPINAMESPACE::vkCmdBindDescriptorBuffersEXT(CommandBuffer, BufferCount, BindingInfos);
+		FWrapLayer::CmdBindDescriptorBuffersEXT(VK_SUCCESS, CommandBuffer, BufferCount, BindingInfos);
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkCmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer CommandBuffer, VkPipelineBindPoint PipelineBindPoint, VkPipelineLayout Layout, uint32_t FirstSet, uint32_t SetCount, const uint32_t* BufferIndices, const VkDeviceSize* Offsets)
+	{
+		FWrapLayer::CmdSetDescriptorBufferOffsetsEXT(VK_RESULT_MAX_ENUM, CommandBuffer, PipelineBindPoint, Layout, FirstSet, SetCount, BufferIndices, Offsets);
+		VULKANAPINAMESPACE::vkCmdSetDescriptorBufferOffsetsEXT(CommandBuffer, PipelineBindPoint, Layout, FirstSet, SetCount, BufferIndices, Offsets);
+		FWrapLayer::CmdSetDescriptorBufferOffsetsEXT(VK_SUCCESS, CommandBuffer, PipelineBindPoint, Layout, FirstSet, SetCount, BufferIndices, Offsets);
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkGetDescriptorEXT(VkDevice Device, const VkDescriptorGetInfoEXT* DescriptorInfo, size_t DataSize, void* Descriptor)
+	{
+		FWrapLayer::GetDescriptorEXT(VK_RESULT_MAX_ENUM, Device, DescriptorInfo, DataSize, Descriptor);
+		VULKANAPINAMESPACE::vkGetDescriptorEXT(Device, DescriptorInfo,  DataSize, Descriptor);
+		FWrapLayer::GetDescriptorEXT(VK_SUCCESS, Device, DescriptorInfo,  DataSize, Descriptor);
 	}
 
 #if VULKAN_ENABLE_IMAGE_TRACKING_LAYER

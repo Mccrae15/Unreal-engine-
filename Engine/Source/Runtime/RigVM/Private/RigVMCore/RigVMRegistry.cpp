@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigVMCore/RigVMRegistry.h"
+#include "AssetRegistry/AssetData.h"
 #include "RigVMCore/RigVMStruct.h"
 #include "RigVMTypeUtils.h"
 #include "RigVMModule.h"
@@ -11,6 +12,7 @@
 #include "UObject/UObjectIterator.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/DelayedAutoRegister.h"
+#include "RigVMFunctions/RigVMDispatch_Core.h"
 
 const FName FRigVMRegistry::TemplateNameMetaName = TEXT("TemplateName");
 
@@ -128,6 +130,7 @@ void FRigVMRegistry::InitializeIfNeeded()
 	ArgumentsPerCategory.Add(FRigVMTemplateArgument::ETypeCategory_ArrayArrayObjectValue, TArray<TPair<int32,int32>>()).Reserve(64);
 
 	RigVMTypeUtils::TypeIndex::Execute = FindOrAddType(FRigVMTemplateArgumentType(FRigVMExecuteContext::StaticStruct()));
+	RigVMTypeUtils::TypeIndex::ExecuteArray = FindOrAddType(FRigVMTemplateArgumentType(FRigVMExecuteContext::StaticStruct()).ConvertToArray());
 	RigVMTypeUtils::TypeIndex::Bool = FindOrAddType(FRigVMTemplateArgumentType(RigVMTypeUtils::BoolTypeName, nullptr));
 	RigVMTypeUtils::TypeIndex::Float = FindOrAddType(FRigVMTemplateArgumentType(RigVMTypeUtils::FloatTypeName, nullptr));
 	RigVMTypeUtils::TypeIndex::Double = FindOrAddType(FRigVMTemplateArgumentType(RigVMTypeUtils::DoubleTypeName, nullptr));
@@ -182,35 +185,31 @@ void FRigVMRegistry::RefreshEngineTypes()
 	TArray<UScriptStruct*> DispatchFactoriesToRegister;
 	DispatchFactoriesToRegister.Reserve(32);
 
-	static TArray<const UClass *> ClassesToEnumerate{UScriptStruct::StaticClass(), UEnum::StaticClass()};
-	ForEachObjectOfClasses(
-		ClassesToEnumerate,
-		[this, &DispatchFactoriesToRegister](UObject* InObject) -> void
+	for (TObjectIterator<UScriptStruct> ScriptStructIt; ScriptStructIt; ++ScriptStructIt)
+	{
+		UScriptStruct* ScriptStruct = *ScriptStructIt;
+		
+		// if this is a C++ type - skip it
+		if(ScriptStruct->IsA<UUserDefinedStruct>() || ScriptStruct->IsChildOf(FRigVMExecuteContext::StaticStruct()))
 		{
-			if (UScriptStruct* ScriptStruct = Cast<UScriptStruct>(InObject))
-			{
-				// if this is a C++ type - skip it
-				if(ScriptStruct->IsA<UUserDefinedStruct>() || ScriptStruct->IsChildOf(FRigVMExecuteContext::StaticStruct()))
-				{
-					FindOrAddType(FRigVMTemplateArgumentType(ScriptStruct));
-				}
-				else if (ScriptStruct != FRigVMDispatchFactory::StaticStruct() &&
-						 ScriptStruct->IsChildOf(FRigVMDispatchFactory::StaticStruct()))
-				{
-					DispatchFactoriesToRegister.Add(ScriptStruct);
-				}
-			}
-			else if (UEnum* Enum = Cast<UEnum>(InObject))
-			{
-				// Ignore reflected C++ enums.
-				if(IsAllowedType(Enum) && !Enum->IsNative())
-				{
-					const FString CPPType = Enum->CppType.IsEmpty() ? Enum->GetName() : Enum->CppType;
-					FindOrAddType(FRigVMTemplateArgumentType(*CPPType, Enum));
-				}
-			}
+			FindOrAddType(FRigVMTemplateArgumentType(ScriptStruct));
 		}
-	);
+		else if (ScriptStruct != FRigVMDispatchFactory::StaticStruct() &&
+				 ScriptStruct->IsChildOf(FRigVMDispatchFactory::StaticStruct()))
+		{
+			DispatchFactoriesToRegister.Add(ScriptStruct);
+		}
+	}
+
+	for (TObjectIterator<UEnum> EnumIt; EnumIt; ++EnumIt)
+	{
+		UEnum* Enum = *EnumIt;
+		if(IsAllowedType(Enum))
+		{
+			const FString CPPType = Enum->CppType.IsEmpty() ? Enum->GetName() : Enum->CppType;
+			FindOrAddType(FRigVMTemplateArgumentType(*CPPType, Enum));
+		}
+	}
 	
 	// Register all dispatch factories only after all other types have been registered.
 	for (UScriptStruct* DispatchFactoryStruct: DispatchFactoriesToRegister)
@@ -704,15 +703,41 @@ const FRigVMTemplateArgumentType& FRigVMRegistry::FindTypeFromCPPType(const FStr
 
 TRigVMTypeIndex FRigVMRegistry::GetTypeIndexFromCPPType(const FString& InCPPType) const
 {
+	TRigVMTypeIndex Result = INDEX_NONE;
 	if(ensure(!InCPPType.IsEmpty()))
 	{
 		const FName CPPTypeName = *InCPPType;
-		return Types.IndexOfByPredicate([CPPTypeName](const FTypeInfo& Info) -> bool
+
+		auto Predicate = [CPPTypeName](const FTypeInfo& Info) -> bool
 		{
 			return Info.Type.CPPType == CPPTypeName;
-		});
+		};
+
+		Result = Types.IndexOfByPredicate(Predicate);
+
+#if !WITH_EDITOR
+		// in game / non-editor it's possible that a user defined struct or enum 
+		// has not been registered. thus we'll call RefreshEngineTypes to bring
+		// things up to date here. 
+		if(Result == INDEX_NONE)
+		{
+			// we may need ot 
+			FRigVMRegistry::Get().RefreshEngineTypes();
+			Result = Types.IndexOfByPredicate(Predicate);
+		}
+#endif
+
+		// If not found, try to find a redirect
+		if (Result == INDEX_NONE)
+		{
+			const FString NewCPPType = RigVMTypeUtils::PostProcessCPPType(InCPPType);
+			Result = Types.IndexOfByPredicate([NewCPPType](const FTypeInfo& Info) -> bool
+			{
+				return Info.Type.CPPType == *NewCPPType;
+			});
+		}
 	}
-	return INDEX_NONE;
+	return Result;
 }
 
 bool FRigVMRegistry::IsArrayType(TRigVMTypeIndex InTypeIndex) const
@@ -973,6 +998,15 @@ void FRigVMRegistry::Register(const TCHAR* InName, FRigVMFunctionPtr InFunctionP
 		return;
 	}
 
+#if WITH_EDITOR
+	FString StructureError;
+	if (!FRigVMStruct::ValidateStruct(InStruct, &StructureError))
+	{
+		UE_LOG(LogRigVM, Error, TEXT("Failed to validate struct '%s': %s"), *InStruct->GetName(), *StructureError);
+		return;
+	}
+#endif
+
 	const FRigVMFunction Function(InName, InFunctionPtr, InStruct, Functions.Num(), InArguments);
 	Functions.AddElement(Function);
 	FunctionNameToIndex.Add(InName, Function.Index);
@@ -1090,15 +1124,15 @@ const FRigVMFunction* FRigVMRegistry::FindFunction(const TCHAR* InName) const
 
 	// Otherwise ask the associated dispatch factory for a function matching this signature.
 	const FString NameString(InName);
-	FString FactoryName, ArgumentsString;
-	if(NameString.Split(TEXT("::"), &FactoryName, &ArgumentsString))
+	FString StructOrFactoryName, SuffixString;
+	if(NameString.Split(TEXT("::"), &StructOrFactoryName, &SuffixString))
 	{
 		// if the factory has never been registered - FindDispatchFactory will try to look it up and register
-		if(const FRigVMDispatchFactory* Factory = FindDispatchFactory(*FactoryName))
+		if(const FRigVMDispatchFactory* Factory = FindDispatchFactory(*StructOrFactoryName))
 		{
 			if(const FRigVMTemplate* Template = Factory->GetTemplate())
 			{
-				const FRigVMTemplateTypeMap ArgumentTypes = Template->GetArgumentTypesFromString(ArgumentsString);
+				const FRigVMTemplateTypeMap ArgumentTypes = Template->GetArgumentTypesFromString(SuffixString);
 				if(ArgumentTypes.Num() == Template->NumArguments())
 				{
 					const int32 PermutationIndex = Template->FindPermutation(ArgumentTypes);
@@ -1112,6 +1146,47 @@ const FRigVMFunction* FRigVMRegistry::FindFunction(const TCHAR* InName) const
 		}
 	}
 
+#if WITH_EDITOR
+	// if we haven't been able to find the function - try to see if we can get the dispatch or rigvmstruct
+	// from a core redirect
+	if(!StructOrFactoryName.IsEmpty())
+	{
+		static const FString StructPrefix = TEXT("F");
+		const bool bIsDispatchFactory = StructOrFactoryName.StartsWith(FRigVMDispatchFactory::DispatchPrefix, ESearchCase::CaseSensitive);
+		if(bIsDispatchFactory)
+		{
+			StructOrFactoryName = StructOrFactoryName.Mid(FRigVMDispatchFactory::DispatchPrefix.Len());
+		}
+
+		if(StructOrFactoryName.StartsWith(StructPrefix, ESearchCase::CaseSensitive))
+		{
+			StructOrFactoryName = StructOrFactoryName.Mid(StructPrefix.Len());
+		}
+		
+		const FCoreRedirectObjectName OldObjectName(StructOrFactoryName);
+		TArray<const FCoreRedirect*> Redirects;
+		if(FCoreRedirects::GetMatchingRedirects(ECoreRedirectFlags::Type_Struct, OldObjectName, Redirects, ECoreRedirectMatchFlags::AllowPartialMatch))
+		{
+			for(const FCoreRedirect* Redirect : Redirects)
+			{
+				FString NewStructOrFactoryName = Redirect->NewName.ObjectName.ToString();
+				NewStructOrFactoryName = StructPrefix + NewStructOrFactoryName;
+				if(bIsDispatchFactory)
+				{
+					NewStructOrFactoryName = FRigVMDispatchFactory::DispatchPrefix + NewStructOrFactoryName;
+				}
+				const FRigVMFunction* RedirectedFunction = FindFunction(*(NewStructOrFactoryName + TEXT("::") + SuffixString));
+				if(RedirectedFunction)
+				{
+					FRigVMRegistry& MutableRegistry = FRigVMRegistry::Get();
+					MutableRegistry.FunctionNameToIndex.Add(InName, RedirectedFunction->Index);
+					return RedirectedFunction;
+				}
+			}
+		}
+	}
+#endif
+	
 	return nullptr;
 }
 
@@ -1151,6 +1226,26 @@ const FRigVMTemplate* FRigVMRegistry::FindTemplate(const FName& InNotation, bool
 	FString FactoryName, ArgumentsString;
 	if(NotationString.Split(TEXT("("), &FactoryName, &ArgumentsString))
 	{
+		FRigVMRegistry* MutableThis = (FRigVMRegistry*)this;
+		
+		// deal with a couple of custom cases
+		static const TMap<FString, FString> CoreDispatchMap =
+		{
+			{
+				TEXT("Equals::Execute"),
+				MutableThis->FindOrAddDispatchFactory<FRigVMDispatch_CoreEquals>()->GetFactoryName().ToString()
+			},
+			{
+				TEXT("NotEquals::Execute"),
+				MutableThis->FindOrAddDispatchFactory<FRigVMDispatch_CoreNotEquals>()->GetFactoryName().ToString()
+			},
+		};
+
+		if(const FString* RemappedDispatch = CoreDispatchMap.Find(FactoryName))
+		{
+			FactoryName = *RemappedDispatch;
+		}
+		
 		if(const FRigVMDispatchFactory* Factory = FindDispatchFactory(*FactoryName))
 		{
 			TGuardValue<bool> ReEntryGuard(IsDispatchingFunction, true);
@@ -1163,6 +1258,65 @@ const FRigVMTemplate* FRigVMRegistry::FindTemplate(const FName& InNotation, bool
 		if(const int32* TemplateIndexPtr = DeprecatedTemplateNotationToIndex.Find(InNotation))
 		{
 			return &DeprecatedTemplates[*TemplateIndexPtr];
+		}
+	}
+
+	const FString OriginalNotation = InNotation.ToString();
+
+	// we may have a dispatch factory which has to be redirected
+#if WITH_EDITOR
+	if(OriginalNotation.StartsWith(FRigVMDispatchFactory::DispatchPrefix))
+	{
+		const FString OriginalDispatchFactoryName = OriginalNotation
+			.Left(OriginalNotation.Find(TEXT("(")))
+			.RightChop(FRigVMDispatchFactory::DispatchPrefix.Len());
+
+		const FCoreRedirectObjectName OldObjectName(OriginalDispatchFactoryName);
+		TArray<const FCoreRedirect*> Redirects;
+		if(FCoreRedirects::GetMatchingRedirects(ECoreRedirectFlags::Type_Struct, OldObjectName, Redirects, ECoreRedirectMatchFlags::AllowPartialMatch))
+		{
+			for(const FCoreRedirect* Redirect : Redirects)
+			{
+				const FString NewDispatchFactoryName = FRigVMDispatchFactory::DispatchPrefix + Redirect->NewName.ObjectName.ToString();
+				if(const FRigVMDispatchFactory* NewDispatchFactory = FindDispatchFactory(*NewDispatchFactoryName))
+				{
+					return NewDispatchFactory->GetTemplate();
+				}
+			}
+		}
+	}
+#endif
+
+	// if we still arrive here we may have a template that used to contain an executecontext.
+	{
+		FString SanitizedNotation = OriginalNotation;
+
+		static const TArray<TPair<FString, FString>> ExecuteContextArgs = {
+			{ TEXT("FRigUnit_SequenceExecution::Execute(in ExecuteContext,out A,out B,out C,out D)"), TEXT("FRigUnit_SequenceExecution::Execute()") },
+			{ TEXT("FRigUnit_SequenceAggregate::Execute(in ExecuteContext,out A,out B)"), TEXT("FRigUnit_SequenceAggregate::Execute()") },
+			{ TEXT(",io ExecuteContext"), TEXT("") },
+			{ TEXT("io ExecuteContext,"), TEXT("") },
+			{ TEXT("(io ExecuteContext)"), TEXT("()") },
+			{ TEXT(",out ExecuteContext"), TEXT("") },
+			{ TEXT("out ExecuteContext,"), TEXT("") },
+			{ TEXT("(out ExecuteContext)"), TEXT("()") },
+			{ TEXT(",out Completed"), TEXT("") },
+			{ TEXT("out Completed,"), TEXT("") },
+			{ TEXT("(out Completed)"), TEXT("()") },
+		};
+
+		for(int32 Index = 0; Index < ExecuteContextArgs.Num(); Index++)
+		{
+			const TPair<FString, FString>& Pair = ExecuteContextArgs[Index];
+			if(SanitizedNotation.Contains(Pair.Key))
+			{
+				SanitizedNotation = SanitizedNotation.Replace(*Pair.Key, *Pair.Value);
+			}
+		}
+
+		if(SanitizedNotation != OriginalNotation)
+		{
+			return FindTemplate(*SanitizedNotation, bIncludeDeprecated);
 		}
 	}
 
@@ -1324,6 +1478,28 @@ FRigVMDispatchFactory* FRigVMRegistry::FindDispatchFactory(const FName& InFactor
 FRigVMDispatchFactory* FRigVMRegistry::FindOrAddDispatchFactory(UScriptStruct* InFactoryStruct)
 {
 	return (FRigVMDispatchFactory*)RegisterFactory(InFactoryStruct);
+}
+
+FString FRigVMRegistry::FindOrAddSingletonDispatchFunction(UScriptStruct* InFactoryStruct)
+{
+	if(const FRigVMDispatchFactory* Factory = FindOrAddDispatchFactory(InFactoryStruct))
+	{
+		if(Factory->IsSingleton())
+		{
+			if(const FRigVMTemplate* Template = Factory->GetTemplate())
+			{
+				// use the types for the first permutation - since we don't care
+				// for a singleton dispatch
+				const FRigVMTemplateTypeMap TypesForPrimaryPermutation = Template->GetTypesForPermutation(0);
+				const FString Name = Factory->GetPermutationName(TypesForPrimaryPermutation);
+				if(const FRigVMFunction* Function = FindFunction(*Name))
+				{
+					return Function->Name;
+				}
+			}
+		}
+	}
+	return FString();
 }
 
 const TArray<FRigVMDispatchFactory*>& FRigVMRegistry::GetFactories() const

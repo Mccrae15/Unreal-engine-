@@ -2,6 +2,7 @@
 
 #include "DisplayClusterLightCardEditor.h"
 
+#include "DisplayClusterChromakeyCardActor.h"
 #include "DisplayClusterLightCardEditorCommands.h"
 #include "DisplayClusterLightCardEditorUtils.h"
 #include "DisplayClusterLightCardEditorStyle.h"
@@ -23,6 +24,7 @@
 #include "DisplayClusterRootActor.h"
 #include "Blueprints/DisplayClusterBlueprintLib.h"
 #include "Components/DisplayClusterCameraComponent.h"
+#include "Components/DisplayClusterICVFXCameraComponent.h"
 
 #include "ContentBrowserModule.h"
 #include "FileHelpers.h"
@@ -36,11 +38,13 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor/Transactor.h"
 #include "Editor/UnrealEdEngine.h"
+#include "Engine/Blueprint.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Framework/Docking/LayoutExtender.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "Layers/LayersSubsystem.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ITransaction.h"
@@ -48,7 +52,9 @@
 #include "Styling/SlateIconFinder.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/Workflow/SWizard.h"
 
 #define LOCTEXT_NAMESPACE "FDisplayClusterLightCardEditor"
@@ -131,6 +137,13 @@ TArray<AActor*> FDisplayClusterLightCardEditor::FindAllManagedActors() const
 		TSet<ADisplayClusterLightCardActor*> RootActorLightCardActors;
 		UDisplayClusterBlueprintLib::FindLightCardsForRootActor(ActiveRootActor.Get(), RootActorLightCardActors);
 
+		// Find chromakey cards
+		{
+			TSet<ADisplayClusterChromakeyCardActor*> ChromakeyCardActors;
+			UDisplayClusterBlueprintLib::FindChromakeyCardsForRootActor(ActiveRootActor.Get(), ChromakeyCardActors);
+			RootActorLightCardActors.Append(reinterpret_cast<TSet<ADisplayClusterLightCardActor*>&>(ChromakeyCardActors));
+		}
+		
 		for (TObjectPtr<ADisplayClusterLightCardActor> LightCardActor : RootActorLightCardActors)
 		{
 			ManagedActors.Add(LightCardActor);
@@ -201,6 +214,8 @@ AActor* FDisplayClusterLightCardEditor::SpawnActor(TSubclassOf<AActor> InActorCl
 	{
 		return nullptr;
 	}
+
+	const UClass* ClassToUse = InTemplate ? InTemplate->GetClass() : InActorClass.Get(); 
 	
 	FScopedTransaction Transaction(LOCTEXT("SpawnActorTransactionMessage", "Spawn Actor"));
 
@@ -208,8 +223,11 @@ AActor* FDisplayClusterLightCardEditor::SpawnActor(TSubclassOf<AActor> InActorCl
 	
 	FDisplayClusterLightCardEditorHelper::FSpawnActorArgs SpawnArgs;
 	{
+		FString ActorNameStr = InActorName.IsNone() ? ClassToUse->GetDisplayNameText().ToString() : InActorName.ToString();
+		ActorNameStr.RemoveSpacesInline();
+		
 		SpawnArgs.ActorClass = InActorClass;
-		SpawnArgs.ActorName = InActorName;
+		SpawnArgs.ActorName = *ActorNameStr;
 		SpawnArgs.RootActor = ActiveRootActor.Get();
 		SpawnArgs.Template = InTemplate;
 		SpawnArgs.Level = InLevel;
@@ -402,6 +420,8 @@ void FDisplayClusterLightCardEditor::AddNewFlag()
 			// When adding a new lightcard, usually the desired location is in the middle of the viewport
 			CenterActorInView(NewLightCard);
 		}
+
+		NewLightCard->SetIsLightCardFlag(true);
 		
 		FDisplayClusterLightCardEditorRecentItem RecentlyPlacedItem;
 		RecentlyPlacedItem.ObjectPath = NewLightCard->GetClass();
@@ -435,34 +455,15 @@ void FDisplayClusterLightCardEditor::AddLightCardsToActor(const TArray<ADisplayC
 {
 	if (ActiveRootActor.IsValid())
 	{
-		UDisplayClusterConfigurationData* ConfigData = ActiveRootActor->GetConfigData();
-		ConfigData->Modify();
-		FDisplayClusterConfigurationICVFX_VisibilityList& RootActorLightCards = ConfigData->StageSettings.Lightcard.ShowOnlyList;
-
+		FDisplayClusterLightCardEditorHelper::FAddLightCardArgs AddLightCardArgs;
+		AddLightCardArgs.bShowLabels = ShouldShowLightCardLabels();
+		AddLightCardArgs.LabelScale = *GetLightCardLabelScale();
+		
+		FDisplayClusterLightCardEditorHelper::AddLightCardsToRootActor(LightCards, ActiveRootActor.Get(), MoveTemp(AddLightCardArgs));
+		
 		for (ADisplayClusterLightCardActor* LightCard : LightCards)
 		{
 			check(LightCard);
-
-			if (!RootActorLightCards.Actors.ContainsByPredicate([&](const TSoftObjectPtr<AActor>& Actor)
-				{
-					// Don't add if a loaded actor is already present.
-					return Actor.Get() == LightCard;
-				}))
-			{
-				LightCard->ShowLightCardLabel(ShouldShowLightCardLabels(), *GetLightCardLabelScale(), ActiveRootActor.Get());
-				
-				const TSoftObjectPtr<AActor> LightCardSoftObject(LightCard);
-
-				// Remove any exact paths to this actor. It's possible invalid actors are present if a light card
-				// was force deleted from a level.
-				RootActorLightCards.Actors.RemoveAll([&](const TSoftObjectPtr<AActor>& Actor)
-					{
-						return Actor == LightCardSoftObject;
-					});
-
-				LightCard->AddToLightCardLayer(ActiveRootActor.Get());
-			}
-
 			RefreshPreviewStageActor(LightCard);
 		}
 	}
@@ -470,7 +471,20 @@ void FDisplayClusterLightCardEditor::AddLightCardsToActor(const TArray<ADisplayC
 
 bool FDisplayClusterLightCardEditor::CanAddNewActor() const
 {
-	return ActiveRootActor.IsValid() && ActiveRootActor->GetWorld() != nullptr;
+	return CanAddNewActor(nullptr);
+}
+
+bool FDisplayClusterLightCardEditor::CanAddNewActor(UClass* InClass) const
+{
+	bool bClassAllowed = true;
+	if (InClass && InClass->IsChildOf(ADisplayClusterChromakeyCardActor::StaticClass()))
+	{
+		// @todo uv chromakey cards
+		bClassAllowed = !ViewportView.IsValid() ||
+			ViewportView->GetLightCardEditorViewportClient()->GetProjectionMode() != EDisplayClusterMeshProjectionType::UV;
+	}
+
+	return bClassAllowed && ActiveRootActor.IsValid() && ActiveRootActor->GetWorld() != nullptr;
 }
 
 void FDisplayClusterLightCardEditor::CutSelectedActors()
@@ -730,6 +744,8 @@ void FDisplayClusterLightCardEditor::RemoveActors(
 					{
 						return InActor.Get() == LightCard;
 					});
+
+				LightCard->RemoveFromRootActor();
 				
 				if (!bDeleteActors)
 				{
@@ -822,6 +838,7 @@ void FDisplayClusterLightCardEditor::CreateLightCardTemplate()
 	}
 	
 	FString DefaultAssetName = LightCardActor->GetActorLabel();
+	DefaultAssetName.RemoveSpacesInline();
 	if (!DefaultAssetName.EndsWith(TEXT("Template")))
 	{
 		DefaultAssetName += TEXT("Template");
@@ -1091,7 +1108,7 @@ TSharedRef<SWidget> FDisplayClusterLightCardEditor::GeneratePlaceActorsMenu()
 			FSlateIcon StageActorIcon = FSlateIconFinder::FindIconForClass(Class);
 			MenuBuilder.AddMenuEntry(Label, LOCTEXT("AddStageActorHeader", "Add a stage actor to the scene"), StageActorIcon,
 				FUIAction(FExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::AddNewDynamic, Class),
-					FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddNewActor)));
+					FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddNewActor, Class)));
 		}
 
 		if (CanAddNewActor())
@@ -1749,19 +1766,31 @@ void FDisplayClusterLightCardEditor::OnActorPropertyChanged(UObject* ObjectBeing
                                                             FPropertyChangedEvent& PropertyChangedEvent)
 {
 	EDisplayClusterLightCardEditorProxyType ProxyType;
-	if (IsOurObject(ObjectBeingModified, ProxyType))
+	// When a level instance actor property is changed we want to update our proxy version here. However,
+	// sometimes the viewport client is responsible for the property change call and in that case we want to avoid
+	// double processing an update.
+	if (IsOurObject(ObjectBeingModified, ProxyType) && (!ViewportView.IsValid() ||
+		!ViewportView->GetLightCardEditorViewportClient()->HasCalledPostEditChangeProperty()))
 	{
 		IDisplayClusterStageActor* StageActor = Cast<IDisplayClusterStageActor>(ObjectBeingModified);
 		
 		const FName PropertyName = PropertyChangedEvent.GetPropertyName();
-		const bool bTransformationChanged =
-				(PropertyName == USceneComponent::GetRelativeLocationPropertyName() ||
-					PropertyName == USceneComponent::GetRelativeRotationPropertyName() ||
-					PropertyName == USceneComponent::GetRelativeScale3DPropertyName() ||
-					(StageActor && StageActor->GetPositionalPropertyNames().Contains(PropertyName)));
+		const bool bComponentTransformPropertyChanged = PropertyName == USceneComponent::GetRelativeLocationPropertyName()
+		|| PropertyName == USceneComponent::GetRelativeRotationPropertyName()
+		|| PropertyName == USceneComponent::GetRelativeScale3DPropertyName();
+		
+		const bool bTransformationChanged = (bComponentTransformPropertyChanged
+				|| (StageActor && StageActor->GetPositionalPropertyNames().Contains(PropertyName)));
+		
 		if (PropertyChangedEvent.ChangeType == EPropertyChangeType::Interactive ||
 			(bTransformationChanged && !ObjectBeingModified->IsA<ADisplayClusterRootActor>()))
 		{
+			if (bComponentTransformPropertyChanged && ObjectBeingModified->IsA<USceneComponent>())
+			{
+				// The owning scene component actor will also fire a property change. Prevent double processing.
+				return;
+			}
+			
 			// Real-time & efficient update when dragging a slider or when we know the property type doesn't
 			// require a full refresh
 			if (ViewportView.IsValid())

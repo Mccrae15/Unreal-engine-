@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#pragma once
+
 #include "ConcertSyncServerLoop.h"
 #include "ConcertSettings.h"
+#include "ConcertServerSettings.h"
 #include "IConcertServer.h"
 #include "IConcertSyncServer.h"
 #include "IConcertSyncServerModule.h"
@@ -188,7 +191,10 @@ int32 ConcertSyncServerLoop(const TCHAR* CommandLine, const FConcertSyncServerLo
 	// Unloading Modules isn't handled by AppExit
 	FModuleManager::Get().UnloadModulesAtShutdown();
 
+	// On Mac AppExit is passed as delegate to the OS, which will call it implicitly
+#if !PLATFORM_MAC
 	FEngineLoop::AppExit();
+#endif
 
 	return Result;
 }

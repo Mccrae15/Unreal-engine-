@@ -1,27 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Rendering/SkeletalMeshRenderData.h"
-#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Engine/SkinnedAsset.h"
 #include "Rendering/SkeletalMeshModel.h"
-#include "Rendering/SkeletalMeshLODModel.h"
 #include "Engine/SkeletalMesh.h"
-#include "UObject/DevObjectVersion.h"
+#include "Engine/SkinnedAssetAsyncCompileUtils.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "EngineLogs.h"
 #include "UObject/Package.h"
 
 #if WITH_EDITOR
 #include "ProfilingDebugging/CookStats.h"
 #include "DerivedDataCacheInterface.h"
-#include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Misc/CoreMisc.h"
-#include "PlatformInfo.h"
 #include "IMeshBuilderModule.h"
-#include "EngineUtils.h"
+#include "RenderingThread.h"
 #include "Serialization/LargeMemoryReader.h"
 #include "Serialization/LargeMemoryWriter.h"
-#include "Async/Async.h"
 
 #if ENABLE_COOK_STATS
 namespace SkeletalMeshCookStats
@@ -345,12 +339,13 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkin
 				LODRenderData.Add(LODData);
 				
 				//Get the UVs and tangents precision build settings flag specific for this LOD index
-				uint32 VertexBufferBuildFlags = Owner->GetVertexBufferFlags();
+				ESkeletalMeshVertexFlags VertexBufferBuildFlags = Owner->GetVertexBufferFlags();
 				{
-					bool bUseFullPrecisionUVs = LODInfo->BuildSettings.bUseFullPrecisionUVs;
-					bool bUseHighPrecisionTangentBasis = LODInfo->BuildSettings.bUseHighPrecisionTangentBasis;
-					bool bUseBackwardsCompatibleF16TruncUVs = LODInfo->BuildSettings.bUseBackwardsCompatibleF16TruncUVs;
-					if (bUseFullPrecisionUVs || !GVertexElementTypeSupport.IsSupported(VET_Half2))
+					const bool bUseFullPrecisionUVs = LODInfo->BuildSettings.bUseFullPrecisionUVs;
+					const bool bUseHighPrecisionTangentBasis = LODInfo->BuildSettings.bUseHighPrecisionTangentBasis;
+					const bool bUseBackwardsCompatibleF16TruncUVs = LODInfo->BuildSettings.bUseBackwardsCompatibleF16TruncUVs;
+					const bool bUseHighPrecisionWeights = LODInfo->BuildSettings.bUseHighPrecisionSkinWeights;
+					if (bUseFullPrecisionUVs)
 					{
 						VertexBufferBuildFlags |= ESkeletalMeshVertexFlags::UseFullPrecisionUVs;
 					}
@@ -361,6 +356,10 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkin
 					if (bUseBackwardsCompatibleF16TruncUVs)
 					{
 						VertexBufferBuildFlags |= ESkeletalMeshVertexFlags::UseBackwardsCompatibleF16TruncUVs;
+					}
+					if (bUseHighPrecisionWeights)
+					{
+						VertexBufferBuildFlags |= ESkeletalMeshVertexFlags::UseHighPrecisionWeights;
 					}
 				}
 				LODData->BuildFromLODModel(LODModel, VertexBufferBuildFlags);

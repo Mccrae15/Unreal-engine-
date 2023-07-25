@@ -10,6 +10,14 @@
 #include "UObject/ObjectHandle.h"
 #include "Misc/ScopeLock.h"
 
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+inline FObjectHandle MakeUnresolvedHandle(const UObject* Obj)
+{
+	UE::CoreUObject::Private::FPackedObjectRef PackedObjectRef = UE::CoreUObject::Private::MakePackedObjectRef(Obj);
+	return { PackedObjectRef.EncodedRef };
+}
+
+#endif
 
 class FObjectRefTrackingTestBase
 {
@@ -27,48 +35,43 @@ public:
 		, OriginalNumFailedResolves(Test.GetNumFailedResolves())
 		, OriginalNumReads(Test.GetNumReads())
 		{
-			Test.ConditionalInstallCallbacks();
+			Test.InstallCallbacks();
 		}
 
-		bool TestNumResolves(const TCHAR* What, uint32 ExpectedDelta)
+		~FSnapshotObjectRefMetrics()
+		{
+			Test.RemoveCallbacks();
+		}
+
+		void TestNumResolves(const TCHAR* What, uint32 ExpectedDelta)
 		{
 #if UE_WITH_OBJECT_HANDLE_TRACKING
-			bool bValue = OriginalNumResolves + ExpectedDelta == Test.GetNumResolves();
-			TEST_TRUE(What, bValue);
-			return bValue;
+			TEST_EQUAL(What, OriginalNumResolves + ExpectedDelta, Test.GetNumResolves());
 #endif
-			return true;
 		}
 
-		bool TestNumFailedResolves(const TCHAR* What, uint32 ExpectedDelta)
+		void TestNumFailedResolves(const TCHAR* What, uint32 ExpectedDelta)
 		{
 #if UE_WITH_OBJECT_HANDLE_TRACKING
-			bool bValue = OriginalNumFailedResolves + ExpectedDelta == Test.GetNumFailedResolves();
-			TEST_TRUE(What, bValue);
-			return bValue;
+			TEST_EQUAL(What, OriginalNumFailedResolves + ExpectedDelta, Test.GetNumFailedResolves());
 #endif
-			return true;
-
 		}
 
-		bool TestNumReads(const TCHAR* What, uint32 ExpectedDelta, bool bAllowAdditionalReads = false)
+		void TestNumReads(const TCHAR* What, uint32 ExpectedDelta, bool bAllowAdditionalReads = false)
 		{
 #if UE_WITH_OBJECT_HANDLE_TRACKING
 			bool bValue = false;
 			if (bAllowAdditionalReads)
 			{
-				bValue = Test.GetNumReads() >= OriginalNumReads + ExpectedDelta;
-				TEST_TRUE(What, bValue);
+				INFO(What);
+				CHECK(Test.GetNumReads() >= OriginalNumReads + ExpectedDelta);
 			}
 			else
 			{
 				bValue = OriginalNumReads + ExpectedDelta == Test.GetNumReads();
 				TEST_TRUE(What, bValue);
 			}
-			return bValue;
 #endif
-			return true;
-
 		}
 	private:
 		FObjectRefTrackingTestBase& Test;
@@ -82,43 +85,36 @@ private:
 	static void OnRefResolved(const FObjectRef& ObjectRef, UPackage* Pkg, UObject* Obj)
 	{
 		NumResolves++;
-		if (!IsObjectRefNull(ObjectRef) && !Obj)
+		if (!ObjectRef.IsNull() && !Obj)
 		{
 			NumFailedResolves++;
 		}
 	}
-	static void OnRefRead(UObject* Obj)
+	static void OnRefRead(TArrayView<const UObject* const> Objects)
 	{
 		NumReads++;
 	}
 #endif
 	
-	static void ConditionalInstallCallbacks()
+	static void InstallCallbacks()
 	{
-		static bool bCallbacksInstalled = false;
-		static FCriticalSection CallbackInstallationLock;
-
-		if (bCallbacksInstalled)
-		{
-			return;
-		}
-
-		FScopeLock ScopeLock(&CallbackInstallationLock);
-		if (!bCallbacksInstalled)
-		{
 #if UE_WITH_OBJECT_HANDLE_TRACKING
-			ResolvedCallbackHandle = AddObjectHandleReferenceResolvedCallback(FObjectHandleReferenceResolvedDelegate::CreateStatic(OnRefResolved));
-			HandleReadCallbackHandle = AddObjectHandleReadCallback(FObjectHandleReadDelegate::CreateStatic(OnRefRead));
-			// TODO We should unhook these handles somewhere, but i don't want to refactor the test, it's not as if they were
-			// being unhooked before.  So...
+		ResolvedCallbackHandle = UE::CoreUObject::AddObjectHandleReferenceResolvedCallback(OnRefResolved);
+		HandleReadCallbackHandle = UE::CoreUObject::AddObjectHandleReadCallback(OnRefRead);
 #endif
-			bCallbacksInstalled = true;
-		}
+	}
+
+	static void RemoveCallbacks()
+	{
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+		UE::CoreUObject::RemoveObjectHandleReferenceResolvedCallback(ResolvedCallbackHandle);
+		UE::CoreUObject::RemoveObjectHandleReadCallback(HandleReadCallbackHandle);
+#endif
 	}
 
 #if UE_WITH_OBJECT_HANDLE_TRACKING
-	static FDelegateHandle ResolvedCallbackHandle;
-	static FDelegateHandle HandleReadCallbackHandle;
+	static UE::CoreUObject::FObjectHandleTrackingCallbackId ResolvedCallbackHandle;
+	static UE::CoreUObject::FObjectHandleTrackingCallbackId HandleReadCallbackHandle;
 #endif
 	static thread_local uint32 NumResolves;
 	static thread_local uint32 NumFailedResolves;

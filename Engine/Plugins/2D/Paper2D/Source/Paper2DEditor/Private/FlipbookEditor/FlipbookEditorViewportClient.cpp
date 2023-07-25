@@ -1,10 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FlipbookEditor/FlipbookEditorViewportClient.h"
+#include "PaperFlipbook.h"
 #include "PaperFlipbookComponent.h"
 #include "CanvasItem.h"
-#include "Engine/Engine.h"
-#include "EngineGlobals.h"
 #include "Engine/CollisionProfile.h"
 #include "Utils.h"
 
@@ -103,10 +102,7 @@ void FFlipbookEditorViewportClient::Tick(float DeltaSeconds)
 
 	FPaperEditorViewportClient::Tick(DeltaSeconds);
 
-	if (!GIntraFrameDebuggingGameThread)
-	{
-		OwnedPreviewScene.GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
-	}
+	OwnedPreviewScene.GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
 }
 
 bool FFlipbookEditorViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)

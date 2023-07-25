@@ -1,48 +1,31 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Physics/Experimental/PhysInterface_Chaos.h"
+#include "Chaos/CollisionConvexMesh.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
+#include "CollisionShape.h"
 #include "Physics/Experimental/ChaosInterfaceUtils.h"
+#include "EngineLogs.h"
+#include "Physics/Experimental/ChaosScopedSceneLock.h"
+#include "Physics/Experimental/ChaosInterfaceWrapper.h"
 #include "Physics/PhysicsInterfaceTypes.h"
-#include "PhysicsEngine/AggregateGeom.h"
-#include "Templates/UniquePtr.h"
 
-#include "PhysicsSolver.h"
-#include "Chaos/Box.h"
-#include "Chaos/Cylinder.h"
-#include "Chaos/TaperedCylinder.h"
-#include "Chaos/Capsule.h"
-#include "Chaos/ImplicitObjectTransformed.h"
-#include "Chaos/ImplicitObjectUnion.h"
-#include "Chaos/TriangleMeshImplicitObject.h"
-#include "Chaos/Levelset.h"
-#include "Chaos/PBDRigidParticles.h"
-#include "Chaos/Sphere.h"
-#include "Chaos/Matrix.h"
-#include "Chaos/MassProperties.h"
-#include "ChaosSolversModule.h"
-#include "Chaos/ErrorReporter.h"
-#include "Chaos/ImplicitObjectScaled.h"
-#include "Chaos/Convex.h"
 #include "Chaos/GeometryQueries.h"
-#include "Chaos/Plane.h"
-#include "ChaosCheck.h"
-#include "Chaos/Particle/ParticleUtilities.h"
-#include "Chaos/PBDJointConstraints.h"
 #include "Chaos/PBDJointConstraintData.h"
 #include "Chaos/ChaosConstraintSettings.h"
 
-#include "Async/ParallelFor.h"
 #include "Collision/CollisionConversions.h"
 #include "Components/PrimitiveComponent.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "Math/UnrealMathUtility.h"
+#include "Materials/MaterialInterface.h"
 #include "PBDRigidsSolver.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "Physics/Experimental/ChaosScopedSceneLock.h"
 #include "Physics/PhysicsFiltering.h"
-#include "PhysicsInterfaceUtilsCore.h"
 #include "PhysicalMaterials/PhysicalMaterialMask.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "PhysicsEngine/ConstraintDrives.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
+#include "PhysicsEngine/ConstraintTypes.h"
 
 DEFINE_STAT(STAT_TotalPhysicsTime);
 DEFINE_STAT(STAT_NumCloths);
@@ -81,7 +64,7 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("(ASync) Shapes"), STAT_NumShapesAsync, STATGROU
 
 ECollisionShapeType GetGeometryType(const Chaos::FPerShapeData& Shape)
 {
-	return GetType(*Shape.GetGeometry());
+	return ChaosInterface::GetType(*Shape.GetGeometry());
 }
 
 Chaos::FChaosPhysicsMaterial* GetMaterialFromInternalFaceIndex(const FPhysicsShape& Shape, const FPhysicsActor& Actor, uint32 InternalFaceIndex)
@@ -112,6 +95,8 @@ Chaos::FChaosPhysicsMaterial* GetMaterialFromInternalFaceIndex(const FPhysicsSha
 
 Chaos::FChaosPhysicsMaterial* GetMaterialFromInternalFaceIndexAndHitLocation(const FPhysicsShape& Shape, const FPhysicsActor& Actor, uint32 InternalFaceIndex, const FVector& HitLocation)
 {
+	using namespace ChaosInterface;
+
 	{
 		SCOPE_CYCLE_COUNTER(STAT_QueryPhysicalMaterialMaskHit);
 
@@ -277,6 +262,11 @@ Chaos::EJointMotionType ConvertMotionType(EAngularConstraintMotion InEngineType)
 
 void FPhysInterface_Chaos::SetAngularMotionLimitType_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, PhysicsInterfaceTypes::ELimitAxis InAxis, EAngularConstraintMotion InMotion)
 {
+	// Twist is X component, Swing1 is Z component, and Swing2 is Y component in Chaos (see EJointAngularConstraintIndex)
+	static_assert(((int32)Chaos::EJointAngularConstraintIndex::Twist == 0), "EJointAngularConstraintIndex has changed");
+	static_assert(((int32)Chaos::EJointAngularConstraintIndex::Swing1 == 2), "EJointAngularConstraintIndex has changed");
+	static_assert(((int32)Chaos::EJointAngularConstraintIndex::Swing2 == 1), "EJointAngularConstraintIndex has changed");
+
 	if (InConstraintRef.IsValid() && InConstraintRef.Constraint->IsType(Chaos::EConstraintType::JointConstraintType))
 	{
 		if (Chaos::FJointConstraint* Constraint = static_cast<Chaos::FJointConstraint*>(InConstraintRef.Constraint))
@@ -288,11 +278,11 @@ void FPhysInterface_Chaos::SetAngularMotionLimitType_AssumesLocked(const FPhysic
 				break;
 
 			case PhysicsInterfaceTypes::ELimitAxis::Swing1:
-				Constraint->SetAngularMotionTypesY(ConvertMotionType(InMotion));
+				Constraint->SetAngularMotionTypesZ(ConvertMotionType(InMotion));
 				break;
 
 			case PhysicsInterfaceTypes::ELimitAxis::Swing2:
-				Constraint->SetAngularMotionTypesZ(ConvertMotionType(InMotion));
+				Constraint->SetAngularMotionTypesY(ConvertMotionType(InMotion));
 				break;
 			default:
 				ensure(false);
@@ -399,6 +389,7 @@ void FPhysInterface_Chaos::UpdateLinearDrive_AssumesLocked(const FPhysicsConstra
 			Constraint->SetLinearDriveForceMode(Chaos::EJointForceMode::Acceleration);
 			Constraint->SetLinearDriveStiffness(Chaos::ConstraintSettings::LinearDriveStiffnessScale() * Chaos::FVec3(InDriveParams.XDrive.Stiffness, InDriveParams.YDrive.Stiffness, InDriveParams.ZDrive.Stiffness));
 			Constraint->SetLinearDriveDamping(Chaos::ConstraintSettings::LinearDriveDampingScale() * Chaos::FVec3(InDriveParams.XDrive.Damping, InDriveParams.YDrive.Damping, InDriveParams.ZDrive.Damping));
+			Constraint->SetLinearDriveMaxForce(Chaos::FVec3(InDriveParams.XDrive.MaxForce, InDriveParams.YDrive.MaxForce, InDriveParams.ZDrive.MaxForce));
 		}
 	}
 }
@@ -469,11 +460,13 @@ void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstr
 			{
 				Constraint->SetAngularDriveStiffness(Chaos::ConstraintSettings::AngularDriveStiffnessScale() * Chaos::FVec3(InDriveParams.TwistDrive.Stiffness, InDriveParams.SwingDrive.Stiffness, InDriveParams.SwingDrive.Stiffness));
 				Constraint->SetAngularDriveDamping(Chaos::ConstraintSettings::AngularDriveDampingScale() * Chaos::FVec3(InDriveParams.TwistDrive.Damping, InDriveParams.SwingDrive.Damping, InDriveParams.SwingDrive.Damping));
+				Constraint->SetAngularDriveMaxTorque(Chaos::FVec3(InDriveParams.TwistDrive.MaxForce, InDriveParams.SwingDrive.MaxForce, InDriveParams.SwingDrive.MaxForce));
 			}
 			else
 			{
 				Constraint->SetAngularDriveStiffness(Chaos::ConstraintSettings::AngularDriveStiffnessScale() * Chaos::FVec3(InDriveParams.SlerpDrive.Stiffness));
 				Constraint->SetAngularDriveDamping(Chaos::ConstraintSettings::AngularDriveDampingScale() * Chaos::FVec3(InDriveParams.SlerpDrive.Damping));
+				Constraint->SetAngularDriveMaxTorque(Chaos::FVec3(InDriveParams.TwistDrive.MaxForce, InDriveParams.SwingDrive.MaxForce, InDriveParams.SwingDrive.MaxForce));
 			}
 		}
 	}
@@ -487,167 +480,6 @@ void FPhysInterface_Chaos::UpdateDriveTarget_AssumesLocked(const FPhysicsConstra
 		UpdateAngularDrive_AssumesLocked(InConstraintRef, InAngDrive, InInitialize);
 	}
 }
-
-
-
-enum class EPhysicsInterfaceScopedLockType : uint8
-{
-	Read,
-	Write
-};
-
-struct FScopedSceneLock_Chaos
-{
-	FScopedSceneLock_Chaos(FPhysicsActorHandle const * InActorHandle, EPhysicsInterfaceScopedLockType InLockType)
-		: LockType(InLockType)
-	{
-		auto Scene = GetSceneForActor(InActorHandle);
-		Solver = Scene ? Scene->GetSolver() : nullptr;
-		LockScene();
-	}
-
-	FScopedSceneLock_Chaos(FPhysicsActorHandle const * InActorHandleA, FPhysicsActorHandle const * InActorHandleB, EPhysicsInterfaceScopedLockType InLockType)
-		: LockType(InLockType)
-	{
-		FPhysScene_Chaos* SceneA = GetSceneForActor(InActorHandleA);
-		FPhysScene_Chaos* SceneB = GetSceneForActor(InActorHandleB);
-		FPhysScene_Chaos* Scene = nullptr;
-
-		if(SceneA == SceneB)
-		{
-			Scene = SceneA;
-		}
-		else if(!SceneA || !SceneB)
-		{
-			Scene = SceneA ? SceneA : SceneB;
-		}
-		else
-		{
-			UE_LOG(LogPhysics, Warning, TEXT("Attempted to aquire a physics scene lock for two paired actors that were not in the same scene. Skipping lock"));
-		}
-
-		Solver = Scene ? Scene->GetSolver() : nullptr;
-		LockScene();
-	}
-
-	FScopedSceneLock_Chaos(FPhysicsConstraintHandle const * InConstraintHandle, EPhysicsInterfaceScopedLockType InLockType)
-		: Solver(nullptr)
-		, LockType(InLockType)
-	{
-		if (InConstraintHandle)
-		{
-			auto Scene = GetSceneForActor(InConstraintHandle);
-			Solver = Scene ? Scene->GetSolver() : nullptr;
-		}
-#if CHAOS_CHECKED
-		if (!Solver)
-		{
-			UE_LOG(LogPhysics, Warning, TEXT("Failed to find Scene for constraint. Skipping lock"));
-		}
-#endif
-		LockScene();
-	}
-
-	FScopedSceneLock_Chaos(USkeletalMeshComponent* InSkelMeshComp, EPhysicsInterfaceScopedLockType InLockType)
-		: LockType(InLockType)
-	{
-		Solver = nullptr;
-
-		if(InSkelMeshComp)
-		{
-			for(FBodyInstance* BI : InSkelMeshComp->Bodies)
-			{
-				auto Scene = GetSceneForActor(&BI->GetPhysicsActorHandle());
-				if(Scene)
-				{
-					Solver = Scene->GetSolver();
-					break;
-				}
-			}
-		}
-
-		LockScene();
-	}
-
-	FScopedSceneLock_Chaos(FPhysScene_Chaos* InScene, EPhysicsInterfaceScopedLockType InLockType)
-		: Solver(InScene ? InScene->GetSolver() : nullptr)
-		, LockType(InLockType)
-	{
-		LockScene();
-	}
-
-	~FScopedSceneLock_Chaos()
-	{
-		UnlockScene();
-	}
-
-private:
-
-	void LockScene()
-	{
-		if(!Solver)
-		{
-			return;
-		}
-
-		switch(LockType)
-		{
-		case EPhysicsInterfaceScopedLockType::Read:
-			Solver->GetExternalDataLock_External().ReadLock();
-			break;
-		case EPhysicsInterfaceScopedLockType::Write:
-			Solver->GetExternalDataLock_External().WriteLock();
-			break;
-		}
-	}
-
-	void UnlockScene()
-	{
-		if(!Solver)
-		{
-			return;
-		}
-
-		switch(LockType)
-		{
-		case EPhysicsInterfaceScopedLockType::Read:
-			Solver->GetExternalDataLock_External().ReadUnlock();
-			break;
-		case EPhysicsInterfaceScopedLockType::Write:
-			Solver->GetExternalDataLock_External().WriteUnlock();
-			break;
-		}
-	}
-
-	FPhysScene_Chaos* GetSceneForActor(FPhysicsActorHandle const * InActorHandle)
-	{
-		if(InActorHandle)
-		{
-			return static_cast<FPhysScene*>(FChaosEngineInterface::GetCurrentScene(*InActorHandle));
-		}
-		
-		return nullptr;
-	}
-
-	FPhysScene_Chaos* GetSceneForActor(FPhysicsConstraintHandle const* InConstraintHandle)
-	{		
-		if (InConstraintHandle && InConstraintHandle->IsValid() && InConstraintHandle->Constraint->IsType(Chaos::EConstraintType::JointConstraintType))
-		{
-			Chaos::FJointConstraint* Constraint = static_cast<Chaos::FJointConstraint*>(InConstraintHandle->Constraint);
-
-			FConstraintInstanceBase* ConstraintInstance = (Constraint) ? FPhysicsUserData_Chaos::Get<FConstraintInstanceBase>(Constraint->GetUserData()) : nullptr;
-			if (ConstraintInstance)
-			{
-				return ConstraintInstance->GetPhysicsScene();
-			}
-		}
-	
-		return nullptr;
-	}
-
-	Chaos::FPBDRigidsSolver* Solver;
-	EPhysicsInterfaceScopedLockType LockType;
-};
 
 bool FPhysInterface_Chaos::ExecuteOnUnbrokenConstraintReadOnly(const FPhysicsConstraintHandle& InConstraintRef, TFunctionRef<void(const FPhysicsConstraintHandle&)> Func)
 {
@@ -719,6 +551,13 @@ bool FPhysInterface_Chaos::ExecuteRead(FPhysScene* InScene, TFunctionRef<void()>
 	}
 
 	return false;
+}
+
+bool FPhysInterface_Chaos::ExecuteRead(Chaos::FPhysicsObject* InObjectA, Chaos::FPhysicsObject* InObjectB, TFunctionRef<void(Chaos::FPhysicsObject* InObjectA, Chaos::FPhysicsObject* InObjectB)> InCallable)
+{
+	FScopedSceneLock_Chaos SceneLock(InObjectA, InObjectB, EPhysicsInterfaceScopedLockType::Read);
+	InCallable(InObjectA, InObjectB);
+	return true;
 }
 
 bool FPhysInterface_Chaos::ExecuteWrite(const FPhysicsActorHandle& InActorReference, TFunctionRef<void(const FPhysicsActorHandle& Actor)> InCallable)
@@ -793,6 +632,13 @@ bool FPhysInterface_Chaos::ExecuteWrite(FPhysScene* InScene, TFunctionRef<void(F
 	}
 
 	return false;
+}
+
+bool FPhysInterface_Chaos::ExecuteWrite(Chaos::FPhysicsObject* InObjectA, Chaos::FPhysicsObject* InObjectB, TFunctionRef<void(Chaos::FPhysicsObject* InObjectA, Chaos::FPhysicsObject* InObjectB)> InCallable)
+{
+	FScopedSceneLock_Chaos SceneLock(InObjectA, InObjectB, EPhysicsInterfaceScopedLockType::Write);
+	InCallable(InObjectA, InObjectB);
+	return true;
 }
 
 void FPhysInterface_Chaos::ExecuteShapeWrite(FBodyInstance* InInstance, FPhysicsShapeHandle& InShape, TFunctionRef<void(FPhysicsShapeHandle& InShape)> InCallable)
@@ -978,6 +824,8 @@ void FinishSceneStat()
 
 bool FPhysInterface_Chaos::LineTrace_Geom(FHitResult& OutHit, const FBodyInstance* InInstance, const FVector& WorldStart, const FVector& WorldEnd, bool bTraceComplex, bool bExtractPhysMaterial)
 {
+	using namespace ChaosInterface;
+
 	// Need an instance to trace against
 	check(InInstance);
 
@@ -1074,6 +922,8 @@ bool FPhysInterface_Chaos::LineTrace_Geom(FHitResult& OutHit, const FBodyInstanc
 
 bool FPhysInterface_Chaos::Sweep_Geom(FHitResult& OutHit, const FBodyInstance* InInstance, const FVector& InStart, const FVector& InEnd, const FQuat& InShapeRotation, const FCollisionShape& InShape, bool bSweepComplex)
 {
+	using namespace ChaosInterface;
+
 	bool bSweepHit = false;
 
 	if (InShape.IsNearlyZero())
@@ -1186,6 +1036,12 @@ bool Overlap_GeomInternal(const FBodyInstance* InInstance, const Chaos::FImplici
 
 	const FTransform ActorTM(RigidBody->GetGameThreadAPI().R(), RigidBody->GetGameThreadAPI().X());
 
+	if (OutOptResult)
+	{
+		OutOptResult->Distance = 0.0;
+	}
+
+	bool bHasOverlap = false;
 	// Iterate over each shape
 	for (int32 ShapeIdx = 0; ShapeIdx < NumShapes; ++ShapeIdx)
 	{
@@ -1203,16 +1059,19 @@ bool Overlap_GeomInternal(const FBodyInstance* InInstance, const Chaos::FImplici
 				if (OutOptResult)
 				{
 					Chaos::FMTDInfo MTDInfo;
-					if (Chaos::Utilities::CastHelper(InGeom, ActorTM, [&](const auto& Downcast, const auto& FullActorTM) { return Chaos::OverlapQuery(*Shape->GetGeometry(), FullActorTM, Downcast, GeomTransform, /*Thickness=*/0, &MTDInfo); }))
+					if (Chaos::Utilities::CastHelper(InGeom, GeomTransform, [&](const auto& Downcast, const auto& FullGeomTransform) { return Chaos::OverlapQuery(*Shape->GetGeometry(), ActorTM, Downcast, FullGeomTransform, /*Thickness=*/0, &MTDInfo); }))
 					{
-						OutOptResult->Distance = MTDInfo.Penetration;
-						OutOptResult->Direction = MTDInfo.Normal;
-						return true;	//question: should we take most shallow penetration?
+						bHasOverlap = true;
+						if (MTDInfo.Penetration > OutOptResult->Distance)
+						{
+							OutOptResult->Distance = MTDInfo.Penetration;
+							OutOptResult->Direction = MTDInfo.Normal;
+						}
 					}
 				}
 				else	//question: why do we even allow user to not pass in MTD info?
 				{
-					if (Chaos::Utilities::CastHelper(InGeom, ActorTM, [&](const auto& Downcast, const auto& FullActorTM) { return Chaos::OverlapQuery(*Shape->GetGeometry(), FullActorTM, Downcast, GeomTransform); }))
+					if (Chaos::Utilities::CastHelper(InGeom, GeomTransform, [&](const auto& Downcast, const auto& FullGeomTransform) { return Chaos::OverlapQuery(*Shape->GetGeometry(), ActorTM, Downcast, FullGeomTransform); }))
 					{
 						return true;
 					}
@@ -1222,7 +1081,7 @@ bool Overlap_GeomInternal(const FBodyInstance* InInstance, const Chaos::FImplici
 		}
 	}
 
-	return false;
+	return bHasOverlap;
 }
 
 bool FPhysInterface_Chaos::Overlap_Geom(const FBodyInstance* InBodyInstance, const FPhysicsGeometryCollection& InGeometry, const FTransform& InShapeTransform, FMTDResult* OutOptResult, bool bTraceComplex)

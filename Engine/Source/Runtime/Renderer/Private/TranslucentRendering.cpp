@@ -21,12 +21,17 @@
 #include "OIT/OITParameters.h"
 #include "DynamicResolutionState.h"
 #include "PostProcess/TemporalAA.h"
+#include "BlueNoise.h"
 
 DECLARE_CYCLE_STAT(TEXT("TranslucencyTimestampQueryFence Wait"), STAT_TranslucencyTimestampQueryFence_Wait, STATGROUP_SceneRendering);
 DECLARE_CYCLE_STAT(TEXT("TranslucencyTimestampQuery Wait"), STAT_TranslucencyTimestampQuery_Wait, STATGROUP_SceneRendering);
 DECLARE_CYCLE_STAT(TEXT("Translucency"), STAT_CLP_Translucency, STATGROUP_ParallelCommandListMarkers);
 DECLARE_FLOAT_COUNTER_STAT(TEXT("Translucency GPU Time (MS)"), STAT_TranslucencyGPU, STATGROUP_SceneRendering);
 DEFINE_GPU_DRAWCALL_STAT(Translucency);
+
+// Forward declarations
+bool ShouldRenderVolumetricCloud(const FScene* Scene, const FEngineShowFlags& EngineShowFlags);
+bool IsVSMTranslucentHighQualityEnabled();
 
 static TAutoConsoleVariable<float> CVarSeparateTranslucencyScreenPercentage(
 	TEXT("r.SeparateTranslucencyScreenPercentage"),
@@ -81,6 +86,10 @@ static TAutoConsoleVariable<int32> CVarTranslucencyUpperBoundQuantization(
 	TEXT("Only recommended for use with the transient allocator (on supported platforms) with a large transient texture cache (e.g RHI.TransientAllocator.TextureCacheSize=512)"),
 	ECVF_RenderThreadSafe | ECVF_Default);
 
+static TAutoConsoleVariable<float> CVarVolumetricCloudSoftBlendingDistanceOnTranslucent(
+	TEXT("r.VolumetricCloud.SoftBlendingDistanceOnTranslucent"), 0.5,
+	TEXT("The soft blending in distance in kilometer used to soft blend in cloud over translucent from the evaluated start depth."),
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 int32 GSeparateTranslucencyUpsampleMode = 1;
 static FAutoConsoleVariableRef CVarSeparateTranslucencyUpsampleMode(
@@ -120,6 +129,7 @@ DynamicRenderScaling::FBudget GDynamicTranslucencyResolution(TEXT("DynamicTransl
 
 static const TCHAR* kTranslucencyPassName[] = {
 	TEXT("BeforeDistortion"),
+	TEXT("BeforeDistortionModulate"),
 	TEXT("AfterDOF"),
 	TEXT("AfterDOFModulate"),
 	TEXT("AfterMotionBlur"),
@@ -129,6 +139,7 @@ static_assert(UE_ARRAY_COUNT(kTranslucencyPassName) == int32(ETranslucencyPass::
 
 static const TCHAR* kTranslucencyColorTextureName[] = {
 	TEXT("Translucency.BeforeDistortion.Color"),
+	TEXT("Translucency.BeforeDistortion.Modulate"),
 	TEXT("Translucency.AfterDOF.Color"),
 	TEXT("Translucency.AfterDOF.Modulate"),
 	TEXT("Translucency.AfterMotionBlur.Color"),
@@ -147,11 +158,12 @@ EMeshPass::Type TranslucencyPassToMeshPass(ETranslucencyPass::Type TranslucencyP
 
 	switch (TranslucencyPass)
 	{
-	case ETranslucencyPass::TPT_StandardTranslucency: TranslucencyMeshPass = EMeshPass::TranslucencyStandard; break;
-	case ETranslucencyPass::TPT_TranslucencyAfterDOF: TranslucencyMeshPass = EMeshPass::TranslucencyAfterDOF; break;
-	case ETranslucencyPass::TPT_TranslucencyAfterDOFModulate: TranslucencyMeshPass = EMeshPass::TranslucencyAfterDOFModulate; break;
-	case ETranslucencyPass::TPT_TranslucencyAfterMotionBlur: TranslucencyMeshPass = EMeshPass::TranslucencyAfterMotionBlur; break;
-	case ETranslucencyPass::TPT_AllTranslucency: TranslucencyMeshPass = EMeshPass::TranslucencyAll; break;
+	case ETranslucencyPass::TPT_TranslucencyStandard:			TranslucencyMeshPass = EMeshPass::TranslucencyStandard; break;
+	case ETranslucencyPass::TPT_TranslucencyStandardModulate:	TranslucencyMeshPass = EMeshPass::TranslucencyStandardModulate; break;
+	case ETranslucencyPass::TPT_TranslucencyAfterDOF:			TranslucencyMeshPass = EMeshPass::TranslucencyAfterDOF; break;
+	case ETranslucencyPass::TPT_TranslucencyAfterDOFModulate:	TranslucencyMeshPass = EMeshPass::TranslucencyAfterDOFModulate; break;
+	case ETranslucencyPass::TPT_TranslucencyAfterMotionBlur:	TranslucencyMeshPass = EMeshPass::TranslucencyAfterMotionBlur; break;
+	case ETranslucencyPass::TPT_AllTranslucency:				TranslucencyMeshPass = EMeshPass::TranslucencyAll; break;
 	}
 
 	check(TranslucencyMeshPass != EMeshPass::Num);
@@ -183,7 +195,7 @@ ETranslucencyView GetTranslucencyViews(TArrayView<const FViewInfo> Views)
 /** Mostly used to know if debug rendering should be drawn in this pass */
 static bool IsMainTranslucencyPass(ETranslucencyPass::Type TranslucencyPass)
 {
-	return TranslucencyPass == ETranslucencyPass::TPT_AllTranslucency || TranslucencyPass == ETranslucencyPass::TPT_StandardTranslucency;
+	return TranslucencyPass == ETranslucencyPass::TPT_AllTranslucency || TranslucencyPass == ETranslucencyPass::TPT_TranslucencyStandard;
 }
 
 static bool IsParallelTranslucencyEnabled()
@@ -199,8 +211,9 @@ static bool IsTranslucencyWaitForTasksEnabled()
 bool IsSeparateTranslucencyEnabled(ETranslucencyPass::Type TranslucencyPass, float DownsampleScale)
 {
 	// Currently AfterDOF is rendered earlier in the frame and must be rendered in a separate texture.
-	if (TranslucencyPass == ETranslucencyPass::TPT_TranslucencyAfterDOF
+	if (   TranslucencyPass == ETranslucencyPass::TPT_TranslucencyAfterDOF
 		|| TranslucencyPass == ETranslucencyPass::TPT_TranslucencyAfterDOFModulate
+		|| TranslucencyPass == ETranslucencyPass::TPT_TranslucencyStandardModulate
 		|| TranslucencyPass == ETranslucencyPass::TPT_TranslucencyAfterMotionBlur
 		)
 	{
@@ -681,7 +694,7 @@ bool FSceneRenderer::ShouldRenderTranslucency(ETranslucencyPass::Type Translucen
 		}
 	}
 
-	// If lightshafts are rendered in low res, we must reset the offscreen buffer in case is was also used in TPT_StandardTranslucency.
+	// If lightshafts are rendered in low res, we must reset the offscreen buffer in case is was also used in TPT_TranslucencyStandard.
 	if (GLightShaftRenderAfterDOF && TranslucencyPass == ETranslucencyPass::TPT_TranslucencyAfterDOF)
 	{
 		return true;
@@ -872,27 +885,41 @@ TRDGUniformBufferRef<FTranslucentBasePassUniformParameters> CreateTranslucentBas
 			BasePassParameters.PrevSceneColorBilinearUVMax = FVector2f(1.0f, 1.0f);
 		}
 
+		BasePassParameters.SoftBlendingDistanceKm = FMath::Max(0.0001f, CVarVolumetricCloudSoftBlendingDistanceOnTranslucent.GetValueOnRenderThread());
 		BasePassParameters.ApplyVolumetricCloudOnTransparent = 0.0f;
 		BasePassParameters.VolumetricCloudColor = nullptr;
 		BasePassParameters.VolumetricCloudDepth = nullptr;
 		BasePassParameters.VolumetricCloudColorSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 		BasePassParameters.VolumetricCloudDepthSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-		if (IsVolumetricRenderTargetEnabled() && View.ViewState)
+		if (IsVolumetricRenderTargetEnabled() && View.ViewState && ShouldRenderVolumetricCloud(Scene, View.Family->EngineShowFlags))
 		{
-			TRefCountPtr<IPooledRenderTarget> VolumetricReconstructRT = View.ViewState->VolumetricCloudRenderTarget.GetDstVolumetricReconstructRT();
-			if (VolumetricReconstructRT.IsValid())
+			int32 VRTMode = View.ViewState->VolumetricCloudRenderTarget.GetMode();
+			if (VRTMode == 1 || VRTMode == 3)
 			{
-				TRefCountPtr<IPooledRenderTarget> VolumetricReconstructRTDepth = View.ViewState->VolumetricCloudRenderTarget.GetDstVolumetricReconstructRTDepth();
-
-				BasePassParameters.VolumetricCloudColor = VolumetricReconstructRT->GetRHI();
-				BasePassParameters.VolumetricCloudDepth = VolumetricReconstructRTDepth->GetRHI();
-				BasePassParameters.ApplyVolumetricCloudOnTransparent = 1.0f;
+				FRDGTextureRef VolumetricReconstructRT = View.ViewState->VolumetricCloudRenderTarget.GetOrCreateVolumetricTracingRT(GraphBuilder);
+				if (VolumetricReconstructRT)
+				{
+					BasePassParameters.VolumetricCloudColor = VolumetricReconstructRT;
+					BasePassParameters.VolumetricCloudDepth = View.ViewState->VolumetricCloudRenderTarget.GetOrCreateVolumetricTracingRTDepth(GraphBuilder);
+					BasePassParameters.ApplyVolumetricCloudOnTransparent = 1.0f;
+				}
+			}
+			else
+			{
+				TRefCountPtr<IPooledRenderTarget> VolumetricReconstructRT = View.ViewState->VolumetricCloudRenderTarget.GetDstVolumetricReconstructRT();
+				if (VolumetricReconstructRT.IsValid())
+				{
+					TRefCountPtr<IPooledRenderTarget> VolumetricReconstructRTDepth = View.ViewState->VolumetricCloudRenderTarget.GetDstVolumetricReconstructRTDepth();
+					BasePassParameters.VolumetricCloudColor = GraphBuilder.RegisterExternalTexture(VolumetricReconstructRT);
+					BasePassParameters.VolumetricCloudDepth = GraphBuilder.RegisterExternalTexture(VolumetricReconstructRTDepth);
+					BasePassParameters.ApplyVolumetricCloudOnTransparent = 1.0f;
+				}
 			}
 		}
 		if (BasePassParameters.VolumetricCloudColor == nullptr)
 		{
-			BasePassParameters.VolumetricCloudColor = GSystemTextures.BlackAlphaOneDummy->GetRHI();
-			BasePassParameters.VolumetricCloudDepth = GSystemTextures.BlackDummy->GetRHI();
+			BasePassParameters.VolumetricCloudColor = GSystemTextures.GetBlackAlphaOneDummy(GraphBuilder);
+			BasePassParameters.VolumetricCloudDepth = GSystemTextures.GetBlackDummy(GraphBuilder);
 		}
 
 		FIntPoint ViewportOffset = View.ViewRect.Min;
@@ -952,11 +979,21 @@ TRDGUniformBufferRef<FTranslucentBasePassUniformParameters> CreateTranslucentBas
 		BasePassParameters.SceneColorCopyTexture = SceneColorCopyTexture;
 	}
 
-	BasePassParameters.EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+	BasePassParameters.EyeAdaptationBuffer = GraphBuilder.CreateSRV(GetEyeAdaptationBuffer(GraphBuilder, View));
 	BasePassParameters.PreIntegratedGFTexture = GSystemTextures.PreintegratedGF->GetRHI();
 	BasePassParameters.PreIntegratedGFSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	OIT::SetOITParameters(GraphBuilder, View, BasePassParameters.OIT, OITData);
+
+	// Only use blue noise resources if VSM quality is set to high
+	if (IsVSMTranslucentHighQualityEnabled())
+	{
+		BasePassParameters.BlueNoise = GetBlueNoiseParameters();
+	}
+	else
+	{
+		BasePassParameters.BlueNoise = GetBlueNoiseDummyParameters();
+	}
 
 	return GraphBuilder.CreateUniformBuffer(&BasePassParameters);
 }
@@ -1015,7 +1052,7 @@ static FViewShaderParameters GetSeparateTranslucencyViewParameters(const FViewIn
 			}
 
 			ViewParameters.InstancedView = TUniformBufferRef<FInstancedViewUniformShaderParameters>::CreateUniformBufferImmediate(
-				LocalInstancedViewUniformShaderParameters,
+				reinterpret_cast<const FInstancedViewUniformShaderParameters&>(LocalInstancedViewUniformShaderParameters),
 				UniformBuffer_SingleFrame);
 		}
 	}
@@ -1050,7 +1087,7 @@ static FViewShaderParameters GetSeparateTranslucencyViewParameters(const FViewIn
 			}
 
 			ViewParameters.InstancedView = TUniformBufferRef<FInstancedViewUniformShaderParameters>::CreateUniformBufferImmediate(
-				LocalInstancedViewUniformShaderParameters,
+				reinterpret_cast<const FInstancedViewUniformShaderParameters&>(LocalInstancedViewUniformShaderParameters ),
 				UniformBuffer_SingleFrame);
 		}
 	}
@@ -1209,7 +1246,7 @@ static void RenderTranslucencyViewInner(
 	{
 		PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(SceneDepthTexture, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilWrite);
 	}
-	PassParameters->RenderTargets.ShadingRateTexture = GVRSImageManager.GetVariableRateShadingImage(GraphBuilder, SceneRenderer.ViewFamily, nullptr);
+	PassParameters->RenderTargets.ShadingRateTexture = GVRSImageManager.GetVariableRateShadingImage(GraphBuilder, View, FVariableRateShadingImageManager::EVRSPassType::TranslucencyAll, nullptr);
 	PassParameters->RenderTargets.ResolveRect = FResolveRect(Viewport.Rect);
 
 	const EMeshPass::Type MeshPass = TranslucencyPassToMeshPass(TranslucencyPass);
@@ -1260,7 +1297,8 @@ void FDeferredShadingSceneRenderer::RenderTranslucencyInner(
 	ETranslucencyView ViewsToRender,
 	FRDGTextureRef SceneColorCopyTexture,
 	ETranslucencyPass::Type TranslucencyPass,
-	FInstanceCullingManager& InstanceCullingManager)
+	FInstanceCullingManager& InstanceCullingManager,
+	bool bStandardTranslucentCanRenderSeparate)
 {
 	if (!ShouldRenderTranslucency(TranslucencyPass))
 	{
@@ -1269,11 +1307,12 @@ void FDeferredShadingSceneRenderer::RenderTranslucencyInner(
 
 	RDG_WAIT_FOR_TASKS_CONDITIONAL(GraphBuilder, IsTranslucencyWaitForTasksEnabled());
 
-	const bool bIsModulate = TranslucencyPass == ETranslucencyPass::TPT_TranslucencyAfterDOFModulate;
+	const bool bIsModulate = TranslucencyPass == ETranslucencyPass::TPT_TranslucencyAfterDOFModulate || TranslucencyPass == ETranslucencyPass::TPT_TranslucencyStandardModulate;
 	const bool bDepthTest = TranslucencyPass != ETranslucencyPass::TPT_TranslucencyAfterMotionBlur;
 	const bool bRenderInParallel = IsParallelTranslucencyEnabled();
 	const bool bIsScalingTranslucency = SeparateTranslucencyDimensions.Scale < 1.0f;
-	const bool bRenderInSeparateTranslucency = IsSeparateTranslucencyEnabled(TranslucencyPass, SeparateTranslucencyDimensions.Scale);
+	const bool bIsStandardSeparatedTranslucency = bStandardTranslucentCanRenderSeparate && TranslucencyPass == ETranslucencyPass::TPT_TranslucencyStandard && ViewFamily.AllowStandardTranslucencySeparated();
+	const bool bRenderInSeparateTranslucency = IsSeparateTranslucencyEnabled(TranslucencyPass, SeparateTranslucencyDimensions.Scale) || bIsStandardSeparatedTranslucency;
 
 	// Can't reference scene color in scene textures. Scene color copy is used instead.
 	ESceneTextureSetupMode SceneTextureSetupMode = ESceneTextureSetupMode::All;
@@ -1300,7 +1339,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucencyInner(
 			FIntRect ScaledViewRect = GetScaledRect(View.ViewRect, SeparateTranslucencyDimensions.Scale);
 
 			const FScreenPassTextureViewport SeparateTranslucencyViewport = SeparateTranslucencyDimensions.GetInstancedStereoViewport(View);
-			const bool bCompositeBackToSceneColor = IsMainTranslucencyPass(TranslucencyPass) || EnumHasAnyFlags(TranslucencyView, ETranslucencyView::UnderWater);
+			const bool bCompositeBackToSceneColor = (IsMainTranslucencyPass(TranslucencyPass) && !bIsStandardSeparatedTranslucency) || EnumHasAnyFlags(TranslucencyView, ETranslucencyView::UnderWater);
 			const bool bLumenGIEnabled = GetViewPipelineState(View).DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen;
 
 			/** Separate translucency color is either composited immediately or later during post processing. If done immediately, it's because the view doesn't support
@@ -1388,6 +1427,13 @@ void FDeferredShadingSceneRenderer::RenderTranslucencyInner(
 					ensure(TranslucencyPassResources.DepthTexture == SharedDepthTexture);
 					TranslucencyPassResources.ColorModulateTexture = SharedColorTexture;
 				}
+				else if (TranslucencyPass == ETranslucencyPass::TPT_TranslucencyStandardModulate)
+				{
+					FTranslucencyPassResources& TranslucencyPassResources = OutTranslucencyResourceMap->Get(ViewIndex, ETranslucencyPass::TPT_TranslucencyStandard);
+					ensure(TranslucencyPassResources.ViewRect == ScaledViewRect);
+					ensure(TranslucencyPassResources.DepthTexture == SharedDepthTexture);
+					TranslucencyPassResources.ColorModulateTexture = SharedColorTexture;
+				}
 				else
 				{
 					check(!bIsModulate);
@@ -1449,7 +1495,8 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(
 	const FTranslucencyLightingVolumeTextures& TranslucentLightingVolumeTextures,
 	FTranslucencyPassResourcesMap* OutTranslucencyResourceMap,
 	ETranslucencyView ViewsToRender,
-	FInstanceCullingManager& InstanceCullingManager)
+	FInstanceCullingManager& InstanceCullingManager,
+	bool bStandardTranslucentCanRenderSeparate)
 {
 	if (!EnumHasAnyFlags(ViewsToRender, ETranslucencyView::UnderWater | ETranslucencyView::AboveWater))
 	{
@@ -1516,18 +1563,23 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(
 
 	if (ViewFamily.AllowTranslucencyAfterDOF())
 	{
-		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_StandardTranslucency, InstanceCullingManager);
+		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyStandard, InstanceCullingManager, bStandardTranslucentCanRenderSeparate);
+		if (ViewFamily.AllowStandardTranslucencySeparated() && bStandardTranslucentCanRenderSeparate)
+		{
+			RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyStandardModulate, InstanceCullingManager, bStandardTranslucentCanRenderSeparate);
+		}
+
 		if (GetHairStrandsComposition() == EHairStrandsCompositionType::AfterTranslucentBeforeTranslucentAfterDOF)
 		{
-			RenderHairComposition(GraphBuilder, Views, SceneTextures.Color.Target, SceneTextures.Depth.Target, SceneTextures.Velocity);
+			RenderHairComposition(GraphBuilder, Views, SceneTextures.Color.Target, SceneTextures.Depth.Target, SceneTextures.Velocity, *OutTranslucencyResourceMap);
 		}
-		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyAfterDOF, InstanceCullingManager);
-		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyAfterDOFModulate, InstanceCullingManager);
-		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyAfterMotionBlur, InstanceCullingManager);
+		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyAfterDOF, InstanceCullingManager, bStandardTranslucentCanRenderSeparate);
+		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyAfterDOFModulate, InstanceCullingManager, bStandardTranslucentCanRenderSeparate);
+		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyAfterMotionBlur, InstanceCullingManager, bStandardTranslucentCanRenderSeparate);
 	}
 	else // Otherwise render translucent primitives in a single bucket.
 	{
-		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_AllTranslucency, InstanceCullingManager);
+		RenderTranslucencyInner(GraphBuilder, SceneTextures, TranslucentLightingVolumeTextures, OutTranslucencyResourceMap, SharedDepthTexture, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_AllTranslucency, InstanceCullingManager, bStandardTranslucentCanRenderSeparate);
 	}
 
 	bool bUpscalePostDOFTranslucency = true;

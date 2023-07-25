@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ActorReferencesUtils.h"
-#include "Serialization/ArchiveUObject.h"
 #include "GameFramework/Actor.h"
 
 class FArchiveGatherExternalActorRefs : public FArchiveUObject
@@ -44,6 +43,15 @@ public:
 					Obj->Serialize(*this);
 				}
 			}
+		}
+		return *this;
+	}
+
+	virtual FArchive& operator<<(FWeakObjectPtr& Value) override
+	{
+		if (UObject* Object = Value.Get(true))
+		{
+			return *this << Object;
 		}
 		return *this;
 	}

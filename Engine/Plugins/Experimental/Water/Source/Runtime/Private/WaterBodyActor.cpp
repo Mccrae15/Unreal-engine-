@@ -2,33 +2,24 @@
 
 
 #include "WaterBodyActor.h"
-#include "EngineUtils.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "NavCollision.h"
-#include "Algo/AllOf.h"
-#include "Algo/AnyOf.h"
 #include "Components/BoxComponent.h"
 #include "BuoyancyComponent.h"
-#include "Modules/ModuleManager.h"
-#include "WaterModule.h"
+#include "PropertyPairsMap.h"
 #include "WaterSubsystem.h"
 #include "WaterBodyIslandActor.h"
-#include "WaterSplineMetadata.h"
 #include "WaterSplineComponent.h"
 #include "WaterRuntimeSettings.h"
-#include "GerstnerWaterWaves.h"
 #include "WaterBodyCustomComponent.h"
 #include "WaterBodyLakeComponent.h"
 #include "WaterBodyOceanComponent.h"
 #include "WaterBodyRiverComponent.h"
 #include "WaterVersion.h"
-#include "Misc/MapErrors.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyActor)
 
 #if WITH_EDITOR
-#include "WaterIconHelper.h"
-#include "Components/BillboardComponent.h"
 #include "Editor/EditorEngine.h"
 #include "Landscape.h"
 #endif
@@ -117,6 +108,12 @@ void AWaterBody::PostEditMove(bool bFinished)
 {
 	Super::PostEditMove(bFinished);
 
+	// It's possible that the WaterBodyComponent is invalid here if, for example, we are part of a ChildActorComponent and are being destroyed/recreated every move.
+	if (!IsValid(WaterBodyComponent))
+	{
+		return;
+	}
+
 	if (bFinished)
 	{
 		WaterBodyComponent->UpdateWaterHeight();
@@ -125,6 +122,7 @@ void AWaterBody::PostEditMove(bool bFinished)
 	FOnWaterBodyChangedParams Params;
 	Params.PropertyChangedEvent.ChangeType = bFinished ? EPropertyChangeType::ValueSet : EPropertyChangeType::Interactive;
 	Params.bShapeOrPositionChanged = true;
+	Params.bUserTriggered = true;
 	WaterBodyComponent->OnWaterBodyChanged(Params);
 }
 

@@ -5,17 +5,12 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Texture2D.h"
+#include "EnhancedInputLibrary.h"
 #include "EnhancedInputModule.h"
-#include "EnhancedPlayerInput.h"
-#include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 #include "InputMappingContext.h"
-#include "InputModifiers.h"
-#include "InputTriggers.h"
 #include "ImageUtils.h"
-#include "EnhancedInputPlatformSettings.h"
-#include "Framework/Application/SlateApplication.h"
-#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+#include "UObject/Package.h"
 
 /* Shared input subsystem debug functionality.
  * See EnhancedInputSubsystemInterface.cpp for main functionality.
@@ -54,8 +49,7 @@ struct FVisualizationTexture
 };
 static TMap<uint64, FVisualizationTexture> CachedModifierVisualizations;
 
-
-void IEnhancedInputSubsystemInterface::ShowDebugInfo(UCanvas* Canvas)
+void IEnhancedInputSubsystemInterface::ShowMappingContextDebugInfo(UCanvas* Canvas, const UEnhancedPlayerInput* PlayerInput)
 {
 	if (!Canvas)
 	{
@@ -64,37 +58,17 @@ void IEnhancedInputSubsystemInterface::ShowDebugInfo(UCanvas* Canvas)
 
 	FDisplayDebugManager& DisplayDebugManager = Canvas->DisplayDebugManager;
 
-	// TODO: Localize some/all debug output?
-	const UEnhancedPlayerInput* PlayerInput = GetPlayerInput();
 	if (!PlayerInput)
 	{
-		DisplayDebugManager.SetDrawColor(FColor::Orange);
-		DisplayDebugManager.DrawString(TEXT("This player does not support Enhanced Input. To enable it update Project Settings -> Input -> Default Classes to the Enhanced versions."));
+		DisplayDebugManager.SetDrawColor(FColor::Red);
+		DisplayDebugManager.DrawString(TEXT("Invalid Player Input!"));
 		return;
-	}
-
-	if (APlayerController* PC = Cast<APlayerController>(PlayerInput->GetOuter()))
-	{
-		DisplayDebugManager.SetDrawColor(FColor::White);
-		DisplayDebugManager.DrawString(FString::Printf(TEXT("Player: %s"), *PC->GetFName().ToString()));
-
-		// TODO: Display input stack? Remove input stack?
-		//TArray<UInputComponent*> InputStack;
-		//PC->BuildInputStack(InputStack);
-		//FString InputStackStr;
-		//for(UInputComponent* IC : InputStack)
-		//{
-		//	AActor* Owner = InputStack[i]->GetOwner();
-		//	InputStackStr += Owner ? Owner->GetFName().ToString() + "." : "" + IC->GetFName().ToString() + " > ";
-		//}
-		//DisplayDebugManager.SetDrawColor(FColor::White);
-		//DisplayDebugManager.DrawString(FString::Printf(TEXT("Input stack: %s"), *InputStackStr.LeftChop(3)));
 	}
 
 	if (PlayerInput->EnhancedActionMappings.Num() + PlayerInput->LastInjectedActions.Num() == 0)
 	{
 		DisplayDebugManager.SetDrawColor(FColor::Orange);
-		DisplayDebugManager.DrawString(TEXT("No enhanced player input action mappings have been applied to this player."));
+		DisplayDebugManager.DrawString(TEXT("No enhanced player input action mappings have been applied to this input."));
 	}
 	else
 	{
@@ -159,6 +133,16 @@ void IEnhancedInputSubsystemInterface::ShowDebugInfo(UCanvas* Canvas)
 					TArray<FEnhancedActionKeyMapping>& Mappings = ActionMappings.FindOrAdd(Mapping.Action);
 					Mappings.Add(Mapping);
 					OrderedActions.AddUnique(Mapping.Action);
+				}
+			}
+
+			const TArray<FEnhancedActionKeyMapping>& EnhancedActionMappings = PlayerInput->GetEnhancedActionMappings();
+			for (const FEnhancedActionKeyMapping& EnhancedActionMapping : EnhancedActionMappings)
+			{
+				if (TArray<FEnhancedActionKeyMapping>* Mappings = ActionMappings.Find(EnhancedActionMapping.Action))
+				{
+					//Add any mapping that might have been added as player mappable keys.
+					Mappings->AddUnique(EnhancedActionMapping);
 				}
 			}
 
@@ -273,91 +257,43 @@ void IEnhancedInputSubsystemInterface::ShowDebugInfo(UCanvas* Canvas)
 	}
 }
 
-void IEnhancedInputSubsystemInterface::ShowPlatformInputDebugInfo(class UCanvas* Canvas)
+void IEnhancedInputSubsystemInterface::ShowDebugInfo(UCanvas* Canvas)
 {
 	if (!Canvas)
 	{
 		return;
 	}
+
 	FDisplayDebugManager& DisplayDebugManager = Canvas->DisplayDebugManager;
 
-	// Show title
-	DisplayDebugManager.SetFont(GEngine->GetMediumFont());
-	DisplayDebugManager.SetDrawColor(FColor::Orange);
-	DisplayDebugManager.DrawString(TEXT("\n\nPlatform Input Devices"));
-
-	// Gather all current platform users
-	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
-	TArray<FPlatformUserId> PlatformUsers;
-	const int32 NumUsers = DeviceMapper.GetAllActiveUsers(PlatformUsers);
-	
-	DisplayDebugManager.SetDrawColor(FColor::White);
-	DisplayDebugManager.DrawString(FString::Printf(TEXT("Total Platform Users: %d\n"), NumUsers));
-
-	// Show all the connected input devices for each available platform user
-	// TODO: We could make two commands, one to display all platform users and one to only show this local player's data
-	TArray<FInputDeviceId> UserDeviceIds;
-	for (FPlatformUserId& PlatUser : PlatformUsers)
+	// TODO: Localize some/all debug output?
+	UEnhancedPlayerInput* PlayerInput = GetPlayerInput();
+	if (!PlayerInput)
 	{
-		const int32 NumDevices = DeviceMapper.GetAllInputDevicesForUser(PlatUser, UserDeviceIds);
-		FString UserDebugInfo = FString::Printf(TEXT("Platform User ID '%d' has '%d' input devices"), PlatUser.GetInternalId(), NumDevices);
-		// Show in red if there are no devices, that is a problem!
-		DisplayDebugManager.SetDrawColor(NumDevices > 0 ? FColor::White : FColor::Red);
-		DisplayDebugManager.DrawString(UserDebugInfo);
-
-		// Display the debug info about each input device
-		for (FInputDeviceId& Device : UserDeviceIds)
-		{
-			static const float InputDeviceXOffset = 10.0f;
-			// Display the input device ID
-			FString DeviceIdString = FString::Printf(TEXT("Device ID: %d"), Device.GetId());
-			FString SlateUserIdString = TEXT("Slate UserID is unknown (Application is not initialized)");
-			if (FSlateApplication::IsInitialized())
-			{
-				TOptional<int32> SlateUserId = FSlateApplication::Get().GetUserIndexForInputDevice(Device);
-				if (SlateUserId.IsSet())
-				{
-					SlateUserIdString = FString::Printf(TEXT("Slate UserId ID: %d"), SlateUserId.GetValue());
-				}
-				else
-				{
-					SlateUserIdString = TEXT("Slate UserId ID: invalid");
-				}
-			}
-			
-			DisplayDebugManager.SetDrawColor(FColor::White);
-			DisplayDebugManager.DrawString(DeviceIdString, InputDeviceXOffset);
-			DisplayDebugManager.DrawString(SlateUserIdString, InputDeviceXOffset);
-			
-			// Display the connection state
-			FString ConnectionStateString;
-			FColor ConnectionStateColor = FColor::White;
-			const EInputDeviceConnectionState DeviceState = DeviceMapper.GetInputDeviceConnectionState(Device);
-			
-			switch(DeviceState)
-			{
-				case EInputDeviceConnectionState::Invalid:
-					ConnectionStateString = TEXT("INVALID");
-					ConnectionStateColor = FColor::Red;
-					break;
-				case EInputDeviceConnectionState::Unknown:
-					ConnectionStateString = TEXT("Unknown");
-					ConnectionStateColor = FColor::Orange;
-					break;
-				case EInputDeviceConnectionState::Disconnected:
-					ConnectionStateString = TEXT("Disconnected");
-					ConnectionStateColor = FColor::Silver;
-					break;
-				case EInputDeviceConnectionState::Connected:
-					ConnectionStateString = TEXT("Connected");
-					ConnectionStateColor = FColor::Green;
-					break;
-			}
-			
-			DisplayDebugManager.SetDrawColor(ConnectionStateColor);
-			DisplayDebugManager.DrawString(ConnectionStateString, InputDeviceXOffset);
-		}
+		DisplayDebugManager.SetDrawColor(FColor::Orange);
+		DisplayDebugManager.DrawString(TEXT("This player does not support Enhanced Input. To enable it update Project Settings -> Input -> Default Classes to the Enhanced versions."));
+		return;
 	}
+
+	if (APlayerController* PC = Cast<APlayerController>(PlayerInput->GetOuter()))
+	{
+		DisplayDebugManager.SetDrawColor(FColor::White);
+		DisplayDebugManager.DrawString(FString::Printf(TEXT("Player: %s"), *PC->GetFName().ToString()));
+
+		// TODO: Display input stack? Remove input stack?
+		//TArray<UInputComponent*> InputStack;
+		//PC->BuildInputStack(InputStack);
+		//FString InputStackStr;
+		//for(UInputComponent* IC : InputStack)
+		//{
+		//	AActor* Owner = InputStack[i]->GetOwner();
+		//	InputStackStr += Owner ? Owner->GetFName().ToString() + "." : "" + IC->GetFName().ToString() + " > ";
+		//}
+		//DisplayDebugManager.SetDrawColor(FColor::White);
+		//DisplayDebugManager.DrawString(FString::Printf(TEXT("Input stack: %s"), *InputStackStr.LeftChop(3)));
+	}
+
+	ShowMappingContextDebugInfo(Canvas, PlayerInput);
 }
 
 void IEnhancedInputSubsystemInterface::ShowDebugActionModifiers(UCanvas* Canvas, const UInputAction* Action)

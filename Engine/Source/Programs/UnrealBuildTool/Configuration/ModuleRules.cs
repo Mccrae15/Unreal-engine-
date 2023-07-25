@@ -60,6 +60,39 @@ namespace UnrealBuildTool
 	}
 
 	/// <summary>
+	/// To what extent a module supports include-what-you-use
+	/// </summary>
+	public enum IWYUSupport
+	{
+		/// <summary>
+		/// None means code does not even compile. IWYU needs to skip this module entirely
+		/// </summary>
+		None,
+
+		/// <summary>
+		/// Module could be modified with iwyu but we want it to stay the way it is and handle changes manually
+		/// </summary>
+		KeepAsIs,
+
+		/// <summary>
+		/// Module is parsed and processed. This means that from the outside it is stripped for includes
+		/// even though the files are not modified. This can be used to defer iwyu work on a module.
+		/// When it comes to transitive includes this module is seen as modified from the outside.
+		/// </summary>
+		KeepAsIsForNow,
+
+		/// <summary>
+		/// Same as KeepAsIsForNow but will allow iwyu to update private headers and cpp files.
+		/// </summary>
+		KeepPublicAsIsForNow,
+
+		/// <summary>
+		/// Full iwyu support. When running with -Mode=IWYU this module will be modified if needed
+		/// </summary>
+		Full,
+	}
+
+	/// <summary>
 	/// ModuleRules is a data structure that contains the rules for defining a module
 	/// </summary>
 	public class ModuleRules
@@ -225,22 +258,6 @@ namespace UnrealBuildTool
 			/// Make sure symbols in this module are visible in Dll builds
 			/// </summary>
 			VisibileForDll,
-		}
-
-		/// <summary>
-		/// Alter build order of source files for specific cases where necessary
-		/// An example is test files that must be executed first for module level setup or last for module level teardown
-		/// </summary>
-		public enum SourceFileBuildOrder
-		{
-			/// <summary>
-			/// Moves the order of the module source file at the beginning of compilation
-			/// </summary>
-			First,
-			/// <summary>
-			/// Moves the order of the module source file at the end of compilation
-			/// </summary>
-			Last,
 		}
 
 		/// <summary>
@@ -482,51 +499,6 @@ namespace UnrealBuildTool
 				this.Attributes = Attributes;
 				this.Header = Header;
 			}
-		}
-
-		/// <summary>
-		/// Specifies build order overrides for source files in this module
-		/// A source file can be moved towards the beginning or end of compilation
-		/// Example use case: test setup and test teardown files that need to compile first and last respectively in a module
-		/// </summary>
-		public class SourceFilesBuildOrderSettings
-		{
-			private DirectoryReference ModuleDirectory;
-			private Dictionary<FileItem, SourceFileBuildOrder> BuildOrderOverridesPrivate;
-
-			/// <summary>
-			/// Constructs <see cref="SourceFilesBuildOrderSettings"/> given module directory.
-			/// </summary>
-			/// <param name="InModuleDirectory">Module source directory</param>
-			public SourceFilesBuildOrderSettings(DirectoryReference InModuleDirectory)
-			{
-				ModuleDirectory = InModuleDirectory;
-				BuildOrderOverridesPrivate = new Dictionary<FileItem, SourceFileBuildOrder>();
-			}
-
-			/// <summary>
-			/// Slightly alter the order of build of a module source file by placing it either at the beginning or end of compilation
-			/// </summary>
-			/// <param name="InRelativeSourceFile">Relative path of source file to module's directory</param>
-			/// <param name="InBuildOrderOverride">A <see cref="SourceFileBuildOrder"/> specifying order placement: 
-			/// <see cref="SourceFileBuildOrder.First"/> for beginning of compilation, <see cref="SourceFileBuildOrder.Last"/> for end</param>
-			public void AddBuildOrderOverride(string InRelativeSourceFile, SourceFileBuildOrder InBuildOrderOverride)
-			{
-				FileItem File = FileItem.GetItemByPath(Path.Combine(ModuleDirectory.FullName, InRelativeSourceFile));
-				if (File.Exists)
-				{
-					BuildOrderOverridesPrivate.Add(File, InBuildOrderOverride);
-				}
-				else
-				{
-					throw new BuildException($"Cannot apply build order override, file doesn't exist: {File.AbsolutePath}");
-				}
-			}
-
-			/// <summary>
-			/// Get build order overrides map of module source file to <see cref="SourceFileBuildOrder"/>.
-			/// </summary>
-			public IReadOnlyDictionary<FileItem, SourceFileBuildOrder> Overrides => BuildOrderOverridesPrivate;
 		}
 
 		/// <summary>
@@ -782,6 +754,13 @@ namespace UnrealBuildTool
 		public bool bEnableObjCExceptions = false;
 
 		/// <summary>
+		/// Enable objective C automatic reference counting (ARC)
+		/// If you set this to true you should not use shared PCHs for this module. The engine won't be extensively using ARC in the short term  
+		/// Not doing this will result in a compile errors because shared PCHs were compiled with different flags than consumer
+		/// </summary>
+		public bool bEnableObjCAutomaticReferenceCounting = false;
+		
+		/// <summary>
 		/// How to treat shadow variable warnings
 		/// </summary>
 		public WarningLevel ShadowVariableWarningLevel
@@ -814,6 +793,19 @@ namespace UnrealBuildTool
 		/// Disable all static analysis - clang, msvc, pvs-studio.
 		/// </summary>
 		public bool bDisableStaticAnalysis = false;
+
+		/// <summary>
+		/// Enable additional analyzer extension warnings using the EspXEngine plugin. This is only supported for MSVC.
+		/// See https://learn.microsoft.com/en-us/cpp/code-quality/using-the-cpp-core-guidelines-checkers
+		/// This will add a large number of warnings by default. It's recommended to use StaticAnalyzerRulesets if this is enabled.
+		/// </summary>
+		public bool bStaticAnalyzerExtensions = false;
+
+		/// <summary>
+		/// The static analyzer rulesets that should be used to filter warnings. This is only supported for MSVC.
+		/// See https://learn.microsoft.com/en-us/cpp/code-quality/using-rule-sets-to-specify-the-cpp-rules-to-run
+		/// </summary>
+		public HashSet<FileReference> StaticAnalyzerRulesets = new HashSet<FileReference>();
 
 		/// <summary>
 		/// The static analyzer checkers that should be enabled rather than the defaults. This is only supported for Clang.
@@ -885,6 +877,14 @@ namespace UnrealBuildTool
 		public int NumIncludedBytesPerUnityCPPOverride = 0;
 
 		/// <summary>
+		/// Helper function to get the number of byes per unity cpp file
+		/// </summary>
+		public int GetNumIncludedBytesPerUnityCPP()
+		{
+			return (NumIncludedBytesPerUnityCPPOverride != 0 && !Target.bDisableModuleNumIncludedBytesPerUnityCPPOverride) ? NumIncludedBytesPerUnityCPPOverride : Target.NumIncludedBytesPerUnityCPP;
+		}
+
+		/// <summary>
 		/// Module uses a #import so must be built locally when compiling with SN-DBS
 		/// </summary>
 		public bool bBuildLocallyWithSNDBS = false;
@@ -920,7 +920,14 @@ namespace UnrealBuildTool
 		/// Enforce "include what you use" rules when PCHUsage is set to ExplicitOrSharedPCH; warns when monolithic headers (Engine.h, UnrealEd.h, etc...) 
 		/// are used, and checks that source files include their matching header first.
 		/// </summary>
-		public bool bEnforceIWYU = true;
+		[Obsolete("Deprecated in UE5.2 - Use IWYUSupport instead.")]
+		public bool bEnforceIWYU { set { if (!value) IWYUSupport = IWYUSupport.None; } }
+
+		/// <summary>
+		/// Allows "include what you use" to modify the source code when run. bEnforceIWYU must be true for this variable to matter.
+		/// 
+		/// </summary>
+		public IWYUSupport IWYUSupport = IWYUSupport.Full;
 
 		/// <summary>
 		/// Whether to add all the default include paths to the module (eg. the Source/Classes folder, subfolders under Source/Public).
@@ -1014,6 +1021,11 @@ namespace UnrealBuildTool
 		/// List of additional libraries (names of the .lib files including extension) - typically used for External (third party) modules
 		/// </summary>
 		public List<string> PublicAdditionalLibraries = new List<string>();
+
+		/// <summary>
+		/// Per-architecture lists of dependencies for linking to ignore (useful when building for multiple architectures, and a lib only is needed for one architecture), it's up to the Toolchain to use this
+		/// </summary>
+		public Dictionary<string, List<UnrealArch>> DependenciesToSkipPerArchitecture = new();
 
 		/// <summary>
 		/// Returns the directory of where the passed in module name lives.
@@ -1157,11 +1169,22 @@ namespace UnrealBuildTool
 			get { return bLegacyPublicIncludePathsPrivate ?? ((DefaultBuildSettings < BuildSettingsVersion.V2) ? Target.bLegacyPublicIncludePaths : false); }
 		}
 		private bool? bLegacyPublicIncludePathsPrivate;
-		
+
+		/// <summary>
+		/// Whether this module qualifies included headers from other modules relative to the parent directory. This reduces the number
+		/// of search paths that have to be passed to the compiler, improving performance and reducing the length of the compiler command line.
+		/// </summary>
+		public bool bLegacyParentIncludePaths
+		{
+			set { bLegacyParentIncludePathsPrivate = value; }
+			get { return bLegacyParentIncludePathsPrivate ?? ((DefaultBuildSettings < BuildSettingsVersion.V3) ? Target.bLegacyParentIncludePaths : false); }
+		}
+		private bool? bLegacyParentIncludePathsPrivate;
+
 		/// <summary>
 		/// Whether circular dependencies will be validated against the allow list
 		/// Circular module dependencies result in slower builds. Disabling this option is strongly discouraged.
-        /// This option is ignored for Engine modules which will always be validated against the allow list.
+		/// This option is ignored for Engine modules which will always be validated against the allow list.
 		/// </summary>
 		public bool bValidateCircularDependencies = true;
 
@@ -1244,22 +1267,6 @@ namespace UnrealBuildTool
 			}
 		}
 
-		/// <summary>
-		/// Optional compilation order override rules for module's source files.
-		/// </summary>
-		public SourceFilesBuildOrderSettings BuildOrderSettings
-		{
-			get
-			{
-				if (BuildOrderOverridesPrivate == null)
-				{
-					BuildOrderOverridesPrivate = new SourceFilesBuildOrderSettings(Directory);
-				}
-				return BuildOrderOverridesPrivate;
-			}
-		}
-		private SourceFilesBuildOrderSettings BuildOrderOverridesPrivate;
-
 #nullable disable
 		/// <summary>
 		/// Constructor. For backwards compatibility while the parameterless constructor is being phased out, initialization which would happen here is done by 
@@ -1325,22 +1332,41 @@ namespace UnrealBuildTool
 		/// </summary>
 		public void SetupGameplayDebuggerSupport(ReadOnlyTargetRules Target, bool bAddAsPublicDependency = false)
 		{
-			if (Target.bUseGameplayDebugger)
+			if (Target.bUseGameplayDebugger || Target.bUseGameplayDebuggerCore)
 			{
-				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=1");
+				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER_CORE=1");
+				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=" + (Target.bUseGameplayDebugger ? 1 : 0));
+				if (Target.bUseGameplayDebugger || (Target.bUseGameplayDebuggerCore && Target.Configuration != UnrealTargetConfiguration.Shipping))
+				{
+					PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER_MENU=1");
+				}
+				else
+				{
+					PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER_MENU=0");
+				}
 
 				if (bAddAsPublicDependency)
 				{
 					PublicDependencyModuleNames.Add("GameplayDebugger");
+					if (Target.Type == TargetType.Editor)
+					{
+						PublicDependencyModuleNames.Add("GameplayDebuggerEditor");
+					}					
 				}
 				else
 				{
 					PrivateDependencyModuleNames.Add("GameplayDebugger");
+					if (Target.Type == TargetType.Editor)
+					{
+						PrivateDependencyModuleNames.Add("GameplayDebuggerEditor");
+					}
 				}
 			}
 			else
 			{
+				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER_CORE=0");
 				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=0");
+				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER_MENU=0");
 			}
 		}
 
@@ -1352,6 +1378,7 @@ namespace UnrealBuildTool
 			if (Target.bUseIris == true)
 			{
 				PublicDefinitions.Add("UE_WITH_IRIS=1");
+				PrivateDefinitions.Add("UE_NET_HAS_IRIS_FASTARRAY_BINDING=1");
 
 				if (bAddAsPublicDependency)
 				{
@@ -1392,6 +1419,7 @@ namespace UnrealBuildTool
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
 					"PhysicsCore",
+					"ChaosCore",
 					"Chaos",
 					}
 				);

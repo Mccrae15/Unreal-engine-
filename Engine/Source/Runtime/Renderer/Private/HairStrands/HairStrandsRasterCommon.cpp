@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HairStrandsRasterCommon.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "HairStrandsUtils.h"
 #include "PrimitiveSceneProxy.h"
 #include "Shader.h"
@@ -10,6 +11,8 @@
 #include "MeshPassProcessor.h"
 #include "MeshPassProcessor.inl"
 #include "ScenePrivate.h"
+#include "RenderCore.h"
+#include "SimpleMeshDrawCommandPass.h"
 
 IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FHairDeepShadowRasterUniformParameters, "DeepRasterPass", SceneTextures);
 

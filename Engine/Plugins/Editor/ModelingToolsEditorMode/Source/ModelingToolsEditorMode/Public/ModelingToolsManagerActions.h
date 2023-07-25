@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
 
 
@@ -132,28 +131,40 @@ public:
 	TSharedPtr<FUICommandInfo> BeginGenerateStaticMeshLODAssetTool;
 	TSharedPtr<FUICommandInfo> BeginISMEditorTool;
 
-	TSharedPtr<FUICommandInfo> BeginPolyModelTool_FaceSelect;
-	TSharedPtr<FUICommandInfo> BeginPolyModelTool_EdgeSelect;
-	TSharedPtr<FUICommandInfo> BeginPolyModelTool_VertexSelect;
-	TSharedPtr<FUICommandInfo> BeginPolyModelTool_AllSelect;
-	TSharedPtr<FUICommandInfo> BeginPolyModelTool_LoopSelect;
-	TSharedPtr<FUICommandInfo> BeginPolyModelTool_RingSelect;
-
-	TSharedPtr<FUICommandInfo> BeginPolyModelTool_Extrude;
 	TSharedPtr<FUICommandInfo> BeginPolyModelTool_Inset;
 	TSharedPtr<FUICommandInfo> BeginPolyModelTool_Outset;
 	TSharedPtr<FUICommandInfo> BeginPolyModelTool_CutFaces;
+	TSharedPtr<FUICommandInfo> BeginPolyModelTool_InsertEdgeLoop;
+	TSharedPtr<FUICommandInfo> BeginPolyModelTool_PushPull;
+	TSharedPtr<FUICommandInfo> BeginPolyModelTool_Bevel;
+	
+	TSharedPtr<FUICommandInfo> BeginPolyModelTool_PolyEd;
+	TSharedPtr<FUICommandInfo> BeginPolyModelTool_TriSel;
 
 
-	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToVertexType;
-	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToEdgeType;
-	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToFaceType;
+	// selection state actions
+	TSharedPtr<FUICommandInfo> MeshSelectionModeAction_NoSelection;
+	TSharedPtr<FUICommandInfo> MeshSelectionModeAction_MeshTriangles;
+	TSharedPtr<FUICommandInfo> MeshSelectionModeAction_MeshVertices;
+	TSharedPtr<FUICommandInfo> MeshSelectionModeAction_MeshEdges;
+	TSharedPtr<FUICommandInfo> MeshSelectionModeAction_GroupFaces;
+	TSharedPtr<FUICommandInfo> MeshSelectionModeAction_GroupCorners;
+	TSharedPtr<FUICommandInfo> MeshSelectionModeAction_GroupEdges;
 
-	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToObjectType;
-	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToTriangleType;
-	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToPolygroupType;
 
 	TSharedPtr<FUICommandInfo> BeginSelectionAction_Delete;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_Disconnect;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_Retriangulate;
+
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_SelectAll;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_ExpandToConnected;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_Invert;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_InvertConnected;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_Expand;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_Contract;
+
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_Extrude;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_Offset;
 
 	// For connecting ModelingMode with UVEditor plugin
 	TSharedPtr<FUICommandInfo> LaunchUVEditor;
@@ -175,3 +186,7 @@ public:
 	virtual void RegisterCommands() override;
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

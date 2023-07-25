@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StorageServerIoDispatcherBackend.h"
+#include "Misc/QueuedThreadPool.h"
 #include "StorageServerConnection.h"
 #include "Misc/ScopeLock.h"
 #include "HAL/RunnableThread.h"
@@ -31,9 +32,18 @@ FStorageServerIoDispatcherBackend::FStorageServerIoDispatcherBackend(FStorageSer
 
 FStorageServerIoDispatcherBackend::~FStorageServerIoDispatcherBackend()
 {
-	delete Thread;
+	Shutdown();
 	FPlatformProcess::ReturnSynchEventToPool(NewRequestEvent);
 	FPlatformProcess::ReturnSynchEventToPool(BatchCompletedEvent);
+}
+
+void FStorageServerIoDispatcherBackend::Shutdown()
+{
+	if (Thread)
+	{
+		delete Thread;
+		Thread = nullptr;
+	}
 }
 
 void FStorageServerIoDispatcherBackend::Initialize(TSharedRef<const FIoDispatcherBackendContext> InContext)
@@ -50,7 +60,9 @@ void FStorageServerIoDispatcherBackend::Stop()
 
 uint32 FStorageServerIoDispatcherBackend::Run()
 {
-	for (int32 BatchIndex = 0; BatchIndex < GStorageServerIoDispatcherMaxActiveBatchCount; ++BatchIndex)
+	LLM_SCOPE(ELLMTag::FileSystem);
+	const int32 BatchCount = GStorageServerIoDispatcherMaxActiveBatchCount;
+	for (int32 BatchIndex = 0; BatchIndex < BatchCount; ++BatchIndex)
 	{
 		FBatch* Batch = new FBatch(*this, MakeUnique<FStorageServerSerializationContext>());
 		Batch->Next = FirstAvailableBatch;
@@ -107,6 +119,21 @@ uint32 FStorageServerIoDispatcherBackend::Run()
 		NewRequestEvent->Wait();
 	}
 
+	for (int32 BatchIndex = 0; BatchIndex < BatchCount; ++BatchIndex)
+	{
+		if (!FirstAvailableBatch)
+		{
+			if (!WaitForBatchToComplete(10000))
+			{
+				UE_LOG(LogIoDispatcher, Warning, TEXT("Outstanding requests when shutting down storage server backend"));
+				return 0;
+			}
+		}
+		check(FirstAvailableBatch);
+		FBatch* Batch = FirstAvailableBatch;
+		FirstAvailableBatch = FirstAvailableBatch->Next;
+		delete Batch;
+	}
 	return 0;
 }
 
@@ -184,12 +211,15 @@ void FStorageServerIoDispatcherBackend::SubmitBatch(FBatch* Batch)
 	++SubmittedBatchesCount;
 }
 
-void FStorageServerIoDispatcherBackend::WaitForBatchToComplete()
+bool FStorageServerIoDispatcherBackend::WaitForBatchToComplete(uint32 WaitTime)
 {
 	bool bAtLeastOneCompleted = false;
 	while (!bAtLeastOneCompleted)
 	{
-		BatchCompletedEvent->Wait();
+		if (!BatchCompletedEvent->Wait(WaitTime))
+		{
+			return false;
+		}
 
 		FBatch* LocalCompletedBatches;
 		{
@@ -208,6 +238,7 @@ void FStorageServerIoDispatcherBackend::WaitForBatchToComplete()
 			bAtLeastOneCompleted = true;
 		}
 	}
+	return true;
 }
 
 void FStorageServerIoDispatcherBackend::OnBatchCompleted(FBatch* Batch)
@@ -236,8 +267,16 @@ void FStorageServerIoDispatcherBackend::OnBatchCompleted(FBatch* Batch)
 	BatchCompletedEvent->Trigger();
 }
 
+FStorageServerIoDispatcherBackend::FBatch::FBatch(FStorageServerIoDispatcherBackend& InOwner, TUniquePtr<FStorageServerSerializationContext> InSerializationContext)
+	: Owner(InOwner)
+	, SerializationContext(MoveTemp(InSerializationContext))
+{
+
+}
+
 void FStorageServerIoDispatcherBackend::FBatch::DoThreadedWork()
 {
+	LLM_SCOPE(ELLMTag::FileSystem);
 	TRACE_CPUPROFILER_EVENT_SCOPE(StorageServerIoDispatcherProcessBatch);
 	FIoRequestImpl* Request = RequestsHead;
 #if 0
@@ -269,7 +308,6 @@ void FStorageServerIoDispatcherBackend::FBatch::DoThreadedWork()
 				}
 				else
 				{
-					LLM_SCOPE(ELLMTag::FileSystem);
 					TRACE_CPUPROFILER_EVENT_SCOPE(AllocMemoryForRequest);
 					Request->IoBuffer = FIoBuffer(RequestSize);
 				}

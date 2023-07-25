@@ -5,19 +5,17 @@
  * This file contains the rendering functions used in the stats code
  */
 
-#include "CoreMinimal.h"
-#include "Misc/CoreMisc.h"
-#include "Stats/Stats.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
-#include "CanvasItem.h"
 #include "Engine/Canvas.h"
 #include "Engine/Texture2D.h"
+#include "TextureResource.h"
+#include "ViewportClient.h"
 
 #if STATS
 
 #include "Stats/StatsData.h"
 #include "Performance/EnginePerformanceTargets.h"
+#include "GlobalRenderResources.h"
 
 TAutoConsoleVariable<int32> CVarNumStatsPerGroup(
 	TEXT("stats.MaxPerGroup"),

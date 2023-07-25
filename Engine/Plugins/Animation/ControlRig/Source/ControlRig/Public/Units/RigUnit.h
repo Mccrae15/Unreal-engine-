@@ -5,12 +5,14 @@
 #include "ControlRigDefines.h"
 #include "RigVMCore/RigVMStruct.h"
 #include "RigVMCore/RigVMRegistry.h"
+#include "RigUnitContext.h"
+#include "RigVMFunctions/RigVMFunctionDefines.h"
 #include "RigUnit.generated.h"
 
 struct FRigUnitContext;
 
 /** Base class for all rig units */
-USTRUCT(BlueprintType, meta=(Abstract, NodeColor = "0.1 0.1 0.1"), BlueprintInternalUseOnlyHierarchical)
+USTRUCT(BlueprintType, meta=(Abstract, NodeColor = "0.1 0.1 0.1", ExecuteContext="FControlRigExecuteContext"))
 struct CONTROLRIG_API FRigUnit : public FRigVMStruct
 {
 	GENERATED_BODY()
@@ -21,18 +23,12 @@ struct CONTROLRIG_API FRigUnit : public FRigVMStruct
 	/** Virtual destructor */
 	virtual ~FRigUnit() {}
 
-	/** Returns the label of this unit */
-	virtual FString GetUnitLabel() const { return FString(); }
-
-	/** Execute logic for this rig unit */
-	virtual void Execute(const FRigUnitContext& Context) {}
-
 	virtual FRigElementKey DetermineSpaceForPin(const FString& InPinPath, void* InUserContext) const { return FRigElementKey(); }
 	
 	virtual FTransform DetermineOffsetTransformForPin(const FString& InPinPath, void* InUserContext) const { return FTransform::Identity; }
 	
 	/** The name of the method used within each rig unit */
-	FORCEINLINE_DEBUGGABLE static FName GetMethodName()
+	static FName GetMethodName()
 	{
 		static FName MethodName = FName(NAME_None);
 		if(MethodName.IsNone())

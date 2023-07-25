@@ -14,6 +14,7 @@
 	<Option Name="CompileCategory" DefaultValue="Editors" Description="Category string for Compile Label"/>
 	<Option Name="RunCategory" DefaultValue="Test" Description="Category string for Run Label"/>
 	<Option Name="BaselineCategory" DefaultValue="Test" Description="Category string for Baseline Label"/>
+	<Option Name="SingleAgentCompile" Restrict="true|false" DefaultValue="false" Description="Run all compile steps on same agent"/>
 
 	<!-- Projects setup-->
 	<Option Name="Projects" DefaultValue="false" Restrict=".+" Description="The projects to test"/>
@@ -26,6 +27,7 @@
 	<Error Message="No platforms specified" If="'$(Platforms)' == ''"/>
 
 	<!-- Build Options -->
+	<Option Name="NoDebugInfo" Restrict="true|false" DefaultValue="false" Description="Compile without including debug info"/>
 	<Property Name="ExtraPluginsCommaDelims" Value="EditorTests"/>
 	<Property Name="ExtraPluginsPlusDelims" Value=""/> <!-- populated programmatically -->
 	<ForEach Name="Plugin" Values="$(ExtraPluginsCommaDelims)">
@@ -35,6 +37,7 @@
 	</ForEach>
 	<Property Name="EditorCompileArgs" Value=""/>
 	<Property Name="EditorCompileArgs" Value="-BuildPlugin=$(ExtraPluginsPlusDelims)" If="'$(ExtraPluginsPlusDelims)' != ''"/>
+	<Property Name="EditorCompileArgs" Value="$(EditorCompileArgs) -nodebuginfo" If="$(NoDebugInfo)"/>
 
 	<!-- Automation uses its own network output directory -->
 	<Property Name="AutomationNetworkRootDir" Value="\\epicgames.net\root\Builds\Automation\Reports\EditorPerf"/>
@@ -60,12 +63,64 @@
 	<Property Name="TraceDir" Value="$(RootDir)/Engine/Programs/UnrealInsights/Saved/TraceSessions"/>
 
 	<!-- Arguments for phases, keep in mind that these are passed to both the DDCCleanupCommandlet and RunUnreal -->
+	<Option Name="EnableBasePhaseTests" DefaultValue="true" Description="Enable the base phase perf tests."/>
 	<Option Name="ColdArgs" DefaultValue="-ddc=Cold" Description="Arguments to unreal for the cold phase"/>
 	<Option Name="IncrArgs" DefaultValue="-ddc=Warm" Description="Arguments to unreal for the incremental phase"/>
 	<Option Name="WarmArgs" DefaultValue="-ddc=Warm" Description="Arguments to unreal for the warm phase"/>
 
 	<!-- Iterations to run and average together -->
 	<Option Name="Iterations" DefaultValue="1" Description="The list of iteration numbers to run. For example '1;2;3' for three iterations"/>
+
+	<!-- Full Map Asset Path to run for tests per project -->
+	<Option Name="MapAssetPerProjects" DefaultValue="" Description="Comma separated pair of project and map asset to load for it (i.e. 'FortniteGame,/Game/MyMap') "/>
+
+	<!-- Project Map Args - do to not being able to export property in an outer scope, these needs to be predefined -->
+	<Property Name="AncientGameMapArgs" Value=""/>
+	<Property Name="CitySampleMapArgs" Value=""/>
+	<Property Name="EngineTestMapArgs" Value=""/>
+	<Property Name="FortniteGameMapArgs" Value=""/>
+	<Property Name="LyraMapArgs" Value=""/>
+	<Property Name="ShooterGameMapArgs" Value=""/>
+	
+	<!-- Set Project Map Args based on MapAssetPerProjects list -->
+	<ForEach Name="ProjectPair" Values="$(MapAssetPerProjects)" Separator=";">
+		<!-- Split the Pair -->
+		<Property Name="Project" Value=""/>
+		<Property Name="MapAsset" Value=""/>
+		<Regex Pattern="(.*),(.*)" Capture="Project;MapAsset" Input="$(ProjectPair)" />
+
+		<Property Name="$(Project)MapArgs" Value=""/>
+		<Property Name="$(Project)MapArgs" Value="-ini:Engine:[/Script/Engine.AutomationTestSettings]:MapsToPIETest=&quot;$(MapAsset)&quot;" If="'$(MapAsset)' != ''" />
+	</ForEach>
+
+	<!-- Options for extra Zen Loader tests -->
+	<Option Name="EnableZenLoaderTest" DefaultValue="true" Description="Enable additional test per phase that uses the Zen Loader."/>
+	<Option Name="EnableZenAsyncThreadTest" DefaultValue="true" Description="Enable additional test per phase that uses the Zen Loader."/>
+	<Option Name="EnableZenTestsWithoutEditorDomain" DefaultValue="true" Description="Enable additional test per phase that uses the Zen Loader."/>
+
+	<!-- Zen Loader tests specifc arguments -->
+	<Property Name="ZenLoaderTestArgs" Value="-zenloader"/>
+	<Property Name="ZenLoaderAsyncTestArgs" Value="$(ZenLoaderTestArgs),-asyncloadingthread" />
+	
+	<Property Name="ZenLoaderTestArgs" Value="$(ZenLoaderTestArgs),-noeditordomain" If="$(EnableZenTestsWithoutEditorDomain)" />
+	<Property Name="ZenLoaderAsyncTestArgs" Value="$(ZenLoaderAsyncTestArgs),-noeditordomain" If="$(EnableZenTestsWithoutEditorDomain)" />
+
+	<!-- Options for extra Zen Store tests -->
+	<Option Name="EnableZenStoreDDCTest" DefaultValue="false" Description="Enable additional test on warm phase that uses the Zen Store DDC."/>
+
+	<!-- Zen Store tests specific arguments -->
+	<Property Name="ZenServerCache" Value="$(RootDir)\ZenCache" />
+	<Property Name="ZenStoreCommonArgs" Value="-ini:Engine:[Zen.AutoLaunch]:LimitProcessLifetime=true,-ZenDataPath=$(ZenServerCache) "/>
+	<Property Name="ZenStoreDDCPhaseArgs" Value="-ddc=ZenDDC"/>
+	<Property Name="ZenStoreDDCTestArgs" Value="$(ZenStoreCommonArgs)"/>
+
+	<!-- Options for extra LazyLoad tests -->
+	<Option Name="EnableLazyLoadTest" DefaultValue="false" Description="Enable additional test on warm phase that uses LazyLoad."/>
+	<Option Name="EnableLazyLoadZenTest" DefaultValue="false" Description="Enable additional test on warm phase that uses LazyLoad with Zen Loader."/>
+	
+	<!-- LazyLoad tests specific arguments -->
+	<Property Name="LazyLoadTestArgs" Value="-LazyLoadImports"/>
+	<Property Name="LazyLoadZenTestArgs" Value="$(LazyLoadTestArgs),-zenloader" />
 
 	<!-- Gauntlet arguments for all runs -->
 	<Property Name="GauntletArgs" Value="-build=editor -UseEditor -verbose -tempdir=&quot;$(RootDir)/Tests&quot;"/>
@@ -91,28 +146,35 @@
 	<Property Name="TelemetryConfig" Value="UETelemetry" If="$(IsBuildMachine) And '$(TelemetryConfig)' == ''"/>
 
 	<!-- The main test running macro logic that is expanded with platform and dependency node names -->
-	<Macro Name="RunTest" Arguments="OutputName;Platform;Project;NodeName;Phase;Iteration;Args">
+	<Macro Name="RunTest" Arguments="TestNameSuffix;Platform;Project;NodeName;Phase;Iteration;Args;EditorArgs">
 
-		<Property Name="TestName" Value="EditorPerf$(Phase)"/>
-		<Property Name="IterationName" Value="$(Project)$(Platform)$(TestName)$(Iteration)"/>
+		<Property Name="TestName" Value="EditorPerf$(Phase)$(TestNameSuffix)"/>
+		<Property Name="IterationSuffix" Value=""/>
+		<Property Name="IterationSuffix" Value="$(Iteration)" If="'$(Iteration)' != '1'"/>
+
+		<Property Name="TestOutputDir" Value="$(AutomationOutputDir)/$(Project)$(Platform)EditorPerf"/>
+
+		<Property Name="IterationName" Value="$(Project)$(Platform)$(TestName)$(IterationSuffix)"/>
 		<Property Name="TraceFilePath" Value="$(TraceDir)/$(IterationName).utrace"/>
 		<Property Name="TelemetryFileName" Value="$(IterationName)Telemetry.csv"/>
 		<Property Name="TelemetryFilePath" Value="$(TraceDir)/$(TelemetryFileName)"/>
-		<Property Name="LogOutputParams" Value="-logdir=&quot;$(AutomationOutputDir)/$(OutputName)&quot;"/>
+		<Property Name="LogOutputParams" Value="-logdir=&quot;$(TestOutputDir)&quot;"/>
 		<Property Name="ReportParams" Value="-WriteTestResultsForHorde -HordeTestDataKey=&quot;$(NodeName)$(PreflightSuffix)&quot;"/>
-		<Property Name="AllGauntletArgs" Value="-Project=$(Project) -Platform=$(Platform) $(GauntletArgs) $(ReportParams) $(LogOutputParams) -artifactname=&quot;$(Phase)$(Iteration)&quot;"/>
+		<Property Name="ArtifactName" Value="$(Phase)$(IterationSuffix)$(TestNameSuffix)"/>
+		<Property Name="AllGauntletArgs" Value="-Project=$(Project) -Platform=$(Platform) $(GauntletArgs) $(ReportParams) $(LogOutputParams) -artifactname=&quot;$(ArtifactName)&quot;"/>
+		<Property Name="RunArgs" Value="$(Args) -editorargs=&quot;$(EditorArgs)&quot;"/>
 
 		<!-- Do DDC cleanup outside the editor process, handles Cold cleanup without changing stats -->
 		<Commandlet Project="$(Project)" Name="DDCCleanup" Arguments="$(Args) $(CommandletArgs)"/>
 
 		<!-- Run the Gauntlet EditorPerf Tests -->
-		<Command Name="RunUnreal" Arguments="$(AllGauntletArgs) $(ProfileArgs) $(Args) -sessionlabel=&quot;$(TestName)&quot; -tracefile=&quot;$(TraceFilePath)&quot;"/>
+		<Command Name="RunUnreal" Arguments="$(AllGauntletArgs) $(ProfileArgs) $(RunArgs) -sessionlabel=&quot;$(TestName)&quot; -tracefile=&quot;$(TraceFilePath)&quot;"/>
 
 		<!-- Translate the utrace file into csv data -->
 		<Commandlet Project="$(Project)" Name="SummarizeTrace" Arguments="-inputfile=&quot;$(TraceFilePath)&quot; -testname=&quot;$(TestName)&quot; $(SummarizeArgs) $(CommandletArgs)"/>
 
 		<!-- Save all files named for this run in the trace directory -->
-		<Copy From="$(TraceDir)/$(IterationName)*.*" To="$(AutomationOutputDir)"/>
+		<Copy From="$(TraceDir)/$(IterationName)*.*" To="$(TestOutputDir)"/>
 
 		<Do If="'$(TelemetryConfig)' != ''">
 			<!-- Publish telemetry to the db -->
@@ -150,16 +212,19 @@
 			<Property Name="EditorTarget" Value="$(Project)Editor"/>
 			<Regex Pattern="(.*)\[(.*)\]" Capture="Project;EditorTarget" Input="$(Project)" Optional="true"/>
 
+			<!-- Project Map Args-->
+			<Property Name="ProjectMapArgs" Value="$($(Project)MapArgs)"/>
+
 			<!-- Use as base string for directories and key for node names -->
 			<Property Name="OutputName" Value="$(Project)$(Platform)EditorPerf"/>
 
 			<!-- Compile the Editor -->
 			<Property Name="CompileNodeName" Value="Compile $(Project) $(Platform)"/>
-			<Agent Name="Compile Editor Agent $(Platform) $(Project)" Type="$($(Platform)CompileAgentType)">
+			<Property Name="AgentModifier" Value=""/>
+			<Property Name="AgentModifier" Value=" $(Project)" If="!$(SingleAgentCompile)"/>
+			<Agent Name="Compile Editor Agent $(Platform)$(AgentModifier" Type="$($(Platform)CompileAgentType)">
 				<Node Name="$(CompileNodeName)">
 					<SetVersion Change="$(Change)" Branch="$(EscapedBranch)" If="$(IsBuildMachine)"/>
-					<Compile Target="UnrealHeaderTool" Platform="$(Platform)" Configuration="Development"/>
-					<Compile Target="UnrealHeaderTool" Platform="$(Platform)" Project="$(Project)" Configuration="Development"/>
 					<Compile Target="ShaderCompileWorker" Platform="$(Platform)" Configuration="Development"/>
 					<Compile Target="CrashReportClientEditor" Platform="$(Platform)" Project="$(Project)" Configuration="Shipping"/>
 					<Compile Target="$(EditorTarget)" Platform="$(Platform)" Project="$(Project)" Configuration="Development" Arguments="$(EditorCompileArgs)"/>
@@ -172,16 +237,57 @@
 			<Property Name="RunNodeList" Value=""/> <!-- Each node in this the nested loops below, they need to depend on predecessors -->
 			<Agent Name="EditorPerf Agent $(Platform) $(Project)" Type="EditorPerf$(Platform)">
 				<ForEach Name="Phase" Values="$(Phases)">
-					<ForEach Name="Iteration" Values="$(Iterations)">
-						<!-- Only ever do one iteration of incremental, because it will warm up the workspace -->
-						<Do If="'$(Phase)' != 'Incr' or '$(Iteration)' == '1'">
-							<Property Name="RunNodeName" Value="Run $(OutputName) $(Phase)$(Iteration)"/>
-							<Node Name="$(RunNodeName)" Requires="$(RunNodeRequires);$(RunNodeList)">
-								<Expand Name="RunTest" OutputName="$(OutputName)" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeName)" Phase="$(Phase)" Iteration="$(Iteration)" Args="$($(Phase)Args)"/>
-							</Node>
-							<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeName)"/>
-						</Do>
-					</ForEach>
+					<Do If="$(EnableBasePhaseTests)">
+						<ForEach Name="Iteration" Values="$(Iterations)">
+							<!-- Only ever do one iteration of incremental, because it will warm up the workspace -->
+							<Do If="'$(Phase)' != 'Incr' or '$(Iteration)' == '1'">
+								<Property Name="IterationSuffix" Value=""/>
+								<Property Name="IterationSuffix" Value="$(Iteration)" If="'$(Iteration)' != '1'"/>
+								<Property Name="RunNodeName" Value="Run $(OutputName) $(Phase)$(IterationSuffix)"/>
+								<Node Name="$(RunNodeName)" Requires="$(RunNodeRequires);$(RunNodeList)">
+									<Expand Name="RunTest" TestNameSuffix="" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeName)" Phase="$(Phase)" Iteration="$(Iteration)" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs)"/>
+								</Node>
+								<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeName)"/>
+							</Do>
+						</ForEach>
+					</Do>	
+					<!-- Don't run Zen tests on incremental runs -->
+					<Do If="'$(Phase)' != 'Incr'">
+						<!-- Zen Loader TestRun if enabled -->
+						<Property Name="RunNodeZenName" Value="Run $(OutputName) $(Phase) Zen"/>
+						<Node Name="$(RunNodeZenName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableZenLoaderTest)">
+							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeZenName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs),$(ZenLoaderTestArgs)"/>
+						</Node>
+						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeZenName)" If="$(EnableZenLoaderTest)"/>
+						<!-- Zen Loader Async TestRun if enabled -->
+						<Property Name="RunNodeZenAsyncName" Value="Run $(OutputName) $(Phase) Zen Async"/>
+						<Node Name="$(RunNodeZenAsyncName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableZenAsyncThreadTest)">
+							<Expand Name="RunTest" TestNameSuffix="ZenAsync" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeZenAsyncName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs),$(ZenLoaderAsyncTestArgs)"/>
+						</Node>
+						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeZenAsyncName)" If="$(EnableZenAsyncThreadTest)"/>
+					
+						<!-- Zen Store DDC TestRun if enabled -->
+						<Property Name="RunNodeZenStoreDDCName" Value="Run $(OutputName) $(Phase) Zen Store DDC"/>
+						<Node Name="$(RunNodeZenStoreDDCName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableZenStoreDDCTest)">
+							<Expand Name="RunTest" TestNameSuffix="ZenAsync" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeZenStoreDDCName)" Phase="$(Phase)" Iteration="1" Args="$(ZenStoreDDCPhaseArgs)" EditorArgs="$(ProjectMapArgs),$(ZenStoreDDCTestArgs)"/>
+						</Node>
+						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeZenStoreDDCName)" If="$(EnableZenStoreDDCTest)"/>
+					</Do>
+					<!-- Warm only test runs e.g LazyLoad -->
+					<Do If="'$(Phase)' == 'Warm'">
+						<!-- Legacy LazyLoad TestRun if enabled -->
+						<Property Name="RunNodeLazyLoadName" Value="Run $(OutputName) $(Phase) LazyLoad"/>
+						<Node Name="$(RunNodeLazyLoadName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableLazyLoadTest)">
+							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeLazyLoadName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs),$(LazyLoadTestArgs)"/>
+						</Node>
+						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeLazyLoadName)" If="$(EnableLazyLoadTest)"/>
+						<!-- Zen LazyLoad TestRun if enabled -->
+						<Property Name="RunNodeLazyLoadZenName" Value="Run $(OutputName) $(Phase) LazyLoad Zen"/>
+						<Node Name="$(RunNodeLazyLoadZenName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableLazyLoadZenTest)">
+							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeLazyLoadZenName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs),$(LazyLoadZenTestArgs)"/>
+						</Node>
+						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeLazyLoadZenName)" If="$(EnableLazyLoadZenTest)"/>
+					</Do>
 				</ForEach>
 			</Agent>
 			<Label Category="$(RunCategory)" Name="$(Project) Editor Run" Requires="$(RunNodeRequires);$(RunNodeList)" UgsBadge="$(Project) Editor Run"/>

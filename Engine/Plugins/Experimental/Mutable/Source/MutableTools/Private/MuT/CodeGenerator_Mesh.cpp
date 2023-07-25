@@ -5,7 +5,6 @@
 #include "Math/UnrealMathSSE.h"
 #include "Misc/AssertionMacros.h"
 #include "MuR/Layout.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Mesh.h"
 #include "MuR/MeshBufferSet.h"
 #include "MuR/MutableMath.h"
@@ -382,21 +381,14 @@ class Node;
 			FMeshGenerationOptions TargetOptions = InOptions;
 			TargetOptions.bUniqueVertexIDs = false;
 			TargetOptions.bLayouts = false;
-			TargetOptions.OverrideLayouts.Empty();
+			// We need to override the layouts with the layouts that were generated for the base to make
+			// sure that we get the correct mesh when generating the target
+			TargetOptions.OverrideLayouts = BaseResult.GeneratedLayouts;
 			TargetOptions.ActiveTags.Empty();
             GenerateMesh(TargetOptions, TargetResult, node.m_morphs[t]);
 
             // TODO: Make sure that the target is a mesh with the morph format
             Ptr<ASTOp> target = TargetResult.meshOp;
-
-            // If the vertex indices are supposed to be relative in the targets, adjust them
-            //if (node.m_vertexIndicesAreRelative)
-            //{
-            //    Ptr<ASTOpMeshRemapIndices> remapIndices = new ASTOpMeshRemapIndices;
-            //    remapIndices->source = target;
-            //    remapIndices->reference = baseResult.baseMeshOp;
-            //    target = remapIndices;
-            //}
 
             OpMorph->AddTarget( target );
         }
@@ -409,23 +401,21 @@ class Node;
 		    Ptr<ASTOpMeshBindShape> OpBind = new ASTOpMeshBindShape();
 		    Ptr<ASTOpMeshApplyShape> OpApply = new ASTOpMeshApplyShape();
 
-			// Setting reshapeVertices to false the bind op will remove all mesh members except 
+			// Setting bReshapeVertices to false the bind op will remove all mesh members except 
 			// PhysicsBodies and the Skeleton.
-            OpBind->m_reshapeVertices = false;
-		    OpBind->m_reshapeSkeleton = node.m_reshapeSkeleton;
-		    OpBind->m_deformAllBones = false; //TODO: Remove deprecated var from node
-		    OpBind->m_bonesToDeform = node.m_bonesToDeform;
-    	    OpBind->m_reshapePhysicsVolumes = node.m_reshapePhysicsVolumes; 
-			OpBind->m_physicsToDeform = node.m_physicsToDeform;
-			OpBind->m_deformAllPhysics = node.m_deformAllPhysics;
-			OpBind->m_bindingMethod = static_cast<uint32>(EShapeBindingMethod::ReshapeClosestProject);
+            OpBind->bReshapeVertices = false;
+		    OpBind->bReshapeSkeleton = node.m_reshapeSkeleton;
+		    OpBind->BonesToDeform = node.m_bonesToDeform;
+    	    OpBind->bReshapePhysicsVolumes = node.m_reshapePhysicsVolumes; 
+			OpBind->PhysicsToDeform = node.m_physicsToDeform;
+			OpBind->BindingMethod = static_cast<uint32>(EShapeBindingMethod::ReshapeClosestProject);
             
 			OpBind->Mesh = BaseResult.meshOp;
             OpBind->Shape = BaseResult.meshOp;
            
-			OpApply->m_reshapeVertices = OpBind->m_reshapeVertices;
-		    OpApply->m_reshapeSkeleton = OpBind->m_reshapeSkeleton;
-		    OpApply->m_reshapePhysicsVolumes = OpBind->m_reshapePhysicsVolumes;
+			OpApply->bReshapeVertices = OpBind->bReshapeVertices;
+		    OpApply->bReshapeSkeleton = OpBind->bReshapeSkeleton;
+		    OpApply->bReshapePhysicsVolumes = OpBind->bReshapePhysicsVolumes;
 
 			OpApply->Mesh = OpBind;
             OpApply->Shape = OpMorph;
@@ -814,8 +804,10 @@ class Node;
 
             if ( tagIndex < 0 )
             {
+				const char* Aux = nullptr;
+				Aux = tag.c_str();
                 m_pErrorLog->GetPrivate()->Add( 
-					FString::Printf(TEXT("Unknown tag found in mesh variation [%s]."), tag.c_str()), 
+					FString::Printf(TEXT("Unknown tag found in mesh variation [%s]."), ANSI_TO_TCHAR(Aux)),
 					ELMT_WARNING, 
 					node.m_errorContext
 				);
@@ -910,7 +902,7 @@ class Node;
 
 				// If it is similar and we are overriding the layouts, we must compare the layouts of the candidate with the ones
 				// we are using to override.
-				if (InOptions.bLayouts && bIsOverridingLayouts)
+				if (bIsOverridingLayouts)
 				{
 					if (Candidate->GetLayoutCount() != InOptions.OverrideLayouts.Num())
 					{
@@ -1170,7 +1162,7 @@ class Node;
 
         // Morph to an ellipse
         {
-            op->morphShape.type = (uint8_t)SHAPE::Type::Ellipse;
+            op->morphShape.type = (uint8_t)FShape::Type::Ellipse;
             op->morphShape.position = node.m_origin;
             op->morphShape.up = node.m_normal;
             op->morphShape.size = vec3f(node.m_radius1, node.m_radius2, node.m_rotation); // TODO: Move rotation to ellipse rotation reference base instead of passing it directly
@@ -1194,7 +1186,7 @@ class Node;
         if (node.m_vertexSelectionType== NodeMeshClipMorphPlane::Private::VS_SHAPE)
         {
             op->vertexSelectionType = OP::MeshClipMorphPlaneArgs::VS_SHAPE;
-            op->selectionShape.type = (uint8_t)SHAPE::Type::AABox;
+            op->selectionShape.type = (uint8_t)FShape::Type::AABox;
             op->selectionShape.position = node.m_selectionBoxOrigin;
             op->selectionShape.size = node.m_selectionBoxRadius;
         }
@@ -1299,7 +1291,6 @@ class Node;
 			OpClipDeform->ClipShape = baseResult.meshOp;
 		}
 
-    	OpBind->m_discardInvalidBindings = false;
 		OpClipDeform->Mesh = OpBind;
 
 		Result.meshOp = OpClipDeform;
@@ -1396,28 +1387,26 @@ class Node;
 	{
 		const NodeMeshReshape::Private& node = *reshape->GetPrivate();
 
-		Ptr<ASTOpMeshBindShape> opBind = new ASTOpMeshBindShape();
-		Ptr<ASTOpMeshApplyShape> opApply = new ASTOpMeshApplyShape();
+		Ptr<ASTOpMeshBindShape> OpBind = new ASTOpMeshBindShape();
+		Ptr<ASTOpMeshApplyShape> OpApply = new ASTOpMeshApplyShape();
 
-		opBind->m_reshapeSkeleton = node.m_reshapeSkeleton;
-    	opBind->m_enableRigidParts = node.m_enableRigidParts;
-		opBind->m_deformAllBones = false; //TODO: Remove deprecated var from node
-		opBind->m_bonesToDeform = node.m_bonesToDeform;
-    	opBind->m_reshapePhysicsVolumes = node.m_reshapePhysicsVolumes;
-		opBind->m_deformAllPhysics = node.m_deformAllPhysics;
-		opBind->m_physicsToDeform = node.m_physicsToDeform;
-		opBind->m_reshapeVertices = true;
-		opBind->m_bindingMethod = static_cast<uint32>(EShapeBindingMethod::ReshapeClosestProject);
+		OpBind->bReshapeSkeleton = node.m_reshapeSkeleton;
+    	OpBind->bEnableRigidParts = node.m_enableRigidParts;
+		OpBind->BonesToDeform = node.m_bonesToDeform;
+    	OpBind->bReshapePhysicsVolumes = node.m_reshapePhysicsVolumes;
+		OpBind->PhysicsToDeform = node.m_physicsToDeform;
+		OpBind->bReshapeVertices = true;
+		OpBind->BindingMethod = static_cast<uint32>(EShapeBindingMethod::ReshapeClosestProject);
 
-		opApply->m_reshapeVertices = true;	
-		opApply->m_reshapeSkeleton = node.m_reshapeSkeleton;
-		opApply->m_reshapePhysicsVolumes = node.m_reshapePhysicsVolumes;
+		OpApply->bReshapeVertices = OpBind->bReshapeVertices;
+		OpApply->bReshapeSkeleton = OpBind->bReshapeSkeleton;
+		OpApply->bReshapePhysicsVolumes = OpBind->bReshapePhysicsVolumes;
 
 		// Base Mesh
 		if (node.m_pBaseMesh)
 		{
 			GenerateMesh(InOptions, OutResult, node.m_pBaseMesh);
-			opBind->Mesh = OutResult.meshOp;
+			OpBind->Mesh = OutResult.meshOp;
 		}
 		else
 		{
@@ -1437,20 +1426,20 @@ class Node;
 		{
 			FMeshGenerationResult baseResult;
 			GenerateMesh(ShapeOptions, baseResult, node.m_pBaseShape);
-			opBind->Shape = baseResult.meshOp;
+			OpBind->Shape = baseResult.meshOp;
 		}
 
-		opApply->Mesh = opBind;
+		OpApply->Mesh = OpBind;
 
 		// Target Shape
 		if (node.m_pTargetShape)
 		{
 			FMeshGenerationResult targetResult;
 			GenerateMesh(ShapeOptions, targetResult, node.m_pTargetShape);
-			opApply->Shape = targetResult.meshOp;
+			OpApply->Shape = targetResult.meshOp;
 		}
 
-		OutResult.meshOp = opApply;
+		OutResult.meshOp = OpApply;
 	}
 
 }

@@ -2,16 +2,28 @@
 
 #include "Elements/PCGDifferenceElement.h"
 
-#include "PCGCommon.h"
+#include "PCGContext.h"
+#include "PCGCustomVersion.h"
+#include "PCGPin.h"
 #include "Data/PCGPointData.h"
+#include "Data/PCGSpatialData.h"
 #include "Data/PCGUnionData.h"
-#include "Helpers/PCGSettingsHelpers.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGDifferenceElement)
 
 TArray<FPCGPinProperties> UPCGDifferenceSettings::InputPinProperties() const
 {
 	TArray<FPCGPinProperties> PinProperties;
-	PinProperties.Emplace(PCGDifferenceConstants::SourceLabel, EPCGDataType::Any);
+	PinProperties.Emplace(PCGDifferenceConstants::SourceLabel, EPCGDataType::Spatial);
 	PinProperties.Emplace(PCGDifferenceConstants::DifferencesLabel, EPCGDataType::Spatial);
+
+	return PinProperties;
+}
+
+TArray<FPCGPinProperties> UPCGDifferenceSettings::OutputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultOutputLabel, EPCGDataType::Spatial);
 
 	return PinProperties;
 }
@@ -102,7 +114,7 @@ bool FPCGDifferenceElement::ExecuteInternal(FPCGContext* Context) const
 					DifferenceData = (UnionData ? UnionData : FirstSpatialData)->Subtract(SpatialData);
 					DifferenceData->SetDensityFunction(Settings->DensityFunction);
 					DifferenceData->bDiffMetadata = Settings->bDiffMetadata;
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 					DifferenceData->bKeepZeroDensityPoints = Settings->bKeepZeroDensityPoints;
 #endif
 
@@ -137,11 +149,10 @@ void FPCGDifferenceElement::LabellessProcessing(FPCGContext* Context) const
 	check(Settings);
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
-	UPCGParamData* Params = Context->InputData.GetParams();
 
-	const EPCGDifferenceDensityFunction DensityFunction = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGDifferenceSettings, DensityFunction), Settings->DensityFunction, Params);
-#if WITH_EDITORONLY_DATA
-	const bool bKeepZeroDensityPoints = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGDifferenceSettings, bKeepZeroDensityPoints), Settings->bKeepZeroDensityPoints, Params);
+	const EPCGDifferenceDensityFunction DensityFunction = Settings->DensityFunction;
+#if WITH_EDITOR
+	const bool bKeepZeroDensityPoints = Settings->bKeepZeroDensityPoints;
 #else
 	const bool bKeepZeroDensityPoints = false;
 #endif
@@ -157,7 +168,7 @@ void FPCGDifferenceElement::LabellessProcessing(FPCGContext* Context) const
 		{
 			DifferenceData = FirstSpatialData->Subtract(SpatialData);
 			DifferenceData->SetDensityFunction(DensityFunction);
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 			DifferenceData->bKeepZeroDensityPoints = bKeepZeroDensityPoints;
 #endif
 
@@ -194,7 +205,4 @@ void FPCGDifferenceElement::LabellessProcessing(FPCGContext* Context) const
 
 		AddToDifference(SpatialData);
 	}
-
-	// Finally, pass-through settings
-	Outputs.Append(Context->InputData.GetAllSettings());
 }

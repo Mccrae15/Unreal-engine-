@@ -4,8 +4,13 @@
 
 #include "Async/ParallelFor.h"
 #include "Engine/Engine.h"
+#include "GeometryCollection/GeometryCollection.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
+#include "MaterialDomain.h"
+#include "MaterialShared.h"
 #include "MaterialShaderType.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "CommonRenderResources.h"
 #include "Rendering/NaniteResources.h"
 #include "PrimitiveSceneInfo.h"
@@ -81,6 +86,22 @@ FAutoConsoleVariableRef CVarRayTracingGeometryCollectionProxyMeshes(
 	TEXT("r.RayTracing.Geometry.GeometryCollection"),
 	GRayTracingGeometryCollectionProxyMeshes,
 	TEXT("Include geometry collection proxy meshes in ray tracing effects (default = 0 (Geometry collection meshes disabled in ray tracing))"),
+	ECVF_RenderThreadSafe
+);
+
+static int32 GeometryCollectionBuildGeometryParallelVertexProcessingMinBatch = 5000;
+FAutoConsoleVariableRef CVarGeometryCollectionBuildGeometryParallelVertexProcessingMinBatch(
+	TEXT("r.GeometryCollectionBuildGeometry.ParallelVertexProcessingMinBatch"),
+	GeometryCollectionBuildGeometryParallelVertexProcessingMinBatch,
+	TEXT("When building geometry collection rendering geometry, minimum number of vertices to batch for parallel processing performance tuning"),
+	ECVF_RenderThreadSafe
+);
+
+static int32 GeometryCollectionBuildGeometryParallelIndexProcessingMinBatch = 5000;
+FAutoConsoleVariableRef CVarGeometryCollectionBuildGeometryParallelIndexProcessingMinBatch(
+	TEXT("r.GeometryCollectionBuildGeometry.ParallelIndexProcessingMinBatch"),
+	GeometryCollectionBuildGeometryParallelIndexProcessingMinBatch,
+	TEXT("When building geometry collection rendering geometry, minimum number of indices to batch for parallel processing performance tuning"),
 	ECVF_RenderThreadSafe
 );
 
@@ -228,7 +249,7 @@ FGeometryCollectionSceneProxy::FGeometryCollectionSceneProxy(UGeometryCollection
 	}
 
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingAllowed())
 	{
 
 		ENQUEUE_RENDER_COMMAND(InitGeometryCollectionRayTracingGeometry)(
@@ -268,7 +289,7 @@ void FGeometryCollectionSceneProxy::DestroyRenderThreadResources()
 	}
 
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingAllowed())
 	{
 		RayTracingGeometry.ReleaseResource();
 		RayTracingDynamicVertexBuffer.Release();
@@ -438,49 +459,81 @@ void FGeometryCollectionSceneProxy::ReleaseResources()
 	VertexFactory.ReleaseResource();
 }
 
+inline static FColor GetOnlyVertexColors(const FGeometryCollectionConstantData* ConstantDataIn, int32 PointIdx, bool bShowBoneColors)
+{
+	return ConstantDataIn->Colors[PointIdx].ToFColor(true);
+};
+
+inline static FColor GetBonesColors(const FGeometryCollectionConstantData* ConstantDataIn, int32 PointIdx, bool bShowBoneColors)
+{
+	return bShowBoneColors
+		? ConstantDataIn->BoneColors[PointIdx].ToFColor(true)
+		: (ConstantDataIn->BoneColors[PointIdx] * ConstantDataIn->Colors[PointIdx]).ToFColor(true);
+};
+
 void FGeometryCollectionSceneProxy::BuildGeometry( const FGeometryCollectionConstantData* ConstantDataIn, TArray<FDynamicMeshVertex>& OutVertices, TArray<int32>& OutIndices, TArray<int32> &OutOriginalMeshIndices)
 {
-	OutVertices.SetNumUninitialized(ConstantDataIn->Vertices.Num());
-	ParallelFor(ConstantData->Vertices.Num(), [&](int32 PointIdx)
+	const bool bCapturedShowBoneColors = this->bShowBoneColors;
+	const auto SetOutVertex = [&OutVertices, &ConstantDataIn, bCapturedShowBoneColors](int32 PointIdx, FColor (*GetColorFunc)(const FGeometryCollectionConstantData*, int32, bool) )
 	{
 		OutVertices[PointIdx] =
 			FDynamicMeshVertex(
 				ConstantDataIn->Vertices[PointIdx],
-				ConstantDataIn->UVs[PointIdx][0],
-				(bShowBoneColors||bEnableBoneSelection) 
-					? bShowBoneColors 
-						? ConstantDataIn->BoneColors[PointIdx].ToFColor(true)
-						: (ConstantDataIn->BoneColors[PointIdx] * ConstantDataIn->Colors[PointIdx]).ToFColor(true)
-					: ConstantDataIn->Colors[PointIdx].ToFColor(true)
+				ConstantDataIn->UVChannels[0][PointIdx],
+				GetColorFunc(ConstantDataIn, PointIdx, bCapturedShowBoneColors)
 			);
 		OutVertices[PointIdx].SetTangents(ConstantDataIn->TangentU[PointIdx], ConstantDataIn->TangentV[PointIdx], ConstantDataIn->Normals[PointIdx]);
 
-		if (ConstantDataIn->UVs[PointIdx].Num() > 1)
+		const int32 NumUvChannels = ConstantDataIn->UVChannels.Num();
+		if (ConstantDataIn->UVChannels.Num() > 1)
 		{
-			for (int32 UVLayerIdx = 1; UVLayerIdx < ConstantDataIn->UVs[PointIdx].Num(); ++UVLayerIdx)
+			for (int32 UVLayerIdx = 1; UVLayerIdx < NumUvChannels; ++UVLayerIdx)
 			{
-				OutVertices[PointIdx].TextureCoordinate[UVLayerIdx] = ConstantDataIn->UVs[PointIdx][UVLayerIdx];
+				const FGeometryCollectionConstantData::FUVChannel& UVChannel = ConstantDataIn->UVChannels[UVLayerIdx];
+				OutVertices[PointIdx].TextureCoordinate[UVLayerIdx] = UVChannel[PointIdx];
 			}
 		}
-	});
+	};
 
+	OutVertices.SetNumUninitialized(ConstantDataIn->Vertices.Num());
+	const int32 MinVertexBatchSize = GeometryCollectionBuildGeometryParallelVertexProcessingMinBatch;
+	if (bShowBoneColors || bEnableBoneSelection)
+	{
+		ParallelFor(TEXT("GCSceneProxy::BuildGeometry(Vertices)"), ConstantData->Vertices.Num(), MinVertexBatchSize,
+			[&SetOutVertex](int32 PointIdx)
+			{
+				SetOutVertex(PointIdx, GetBonesColors);
+			});
+	}
+	else
+	{
+		ParallelFor(TEXT("GCSceneProxy::BuildGeometry(Vertices)"), ConstantData->Vertices.Num(), MinVertexBatchSize,
+			[&SetOutVertex](int32 PointIdx)
+			{
+				SetOutVertex(PointIdx, GetOnlyVertexColors);
+			});
+	}
 	check(ConstantDataIn->Indices.Num() * 3 == NumIndices);
 
+	const int32 MinIndexBatchSize = GeometryCollectionBuildGeometryParallelIndexProcessingMinBatch;
+
 	OutIndices.SetNumUninitialized(NumIndices);
-	ParallelFor(ConstantDataIn->Indices.Num(), [&](int32 IndexIdx)
-	{
-		OutIndices[IndexIdx * 3 ]    = ConstantDataIn->Indices[IndexIdx].X;
-		OutIndices[IndexIdx * 3 + 1] = ConstantDataIn->Indices[IndexIdx].Y;
-		OutIndices[IndexIdx * 3 + 2] = ConstantDataIn->Indices[IndexIdx].Z;
-	});
+	ParallelFor(TEXT("GCSceneProxy::BuildGeometry(Indices)"), ConstantDataIn->Indices.Num(), MinIndexBatchSize, 
+		[&OutIndices, &ConstantDataIn](int32 IndexIdx)
+		{
+			OutIndices[IndexIdx * 3 ]    = ConstantDataIn->Indices[IndexIdx].X;
+			OutIndices[IndexIdx * 3 + 1] = ConstantDataIn->Indices[IndexIdx].Y;
+			OutIndices[IndexIdx * 3 + 2] = ConstantDataIn->Indices[IndexIdx].Z;
+		});
 	
 	OutOriginalMeshIndices.SetNumUninitialized(ConstantDataIn->OriginalMeshIndices.Num() * 3);
-	ParallelFor(ConstantDataIn->OriginalMeshIndices.Num(), [&](int32 IndexIdx)
-	{
-		OutOriginalMeshIndices[IndexIdx * 3] = ConstantDataIn->OriginalMeshIndices[IndexIdx].X;
-		OutOriginalMeshIndices[IndexIdx * 3 + 1] = ConstantDataIn->OriginalMeshIndices[IndexIdx].Y;
-		OutOriginalMeshIndices[IndexIdx * 3 + 2] = ConstantDataIn->OriginalMeshIndices[IndexIdx].Z;
-	});
+	ParallelFor(TEXT("GCSceneProxy::BuildGeometry(OriginalMeshIndices)"), ConstantDataIn->OriginalMeshIndices.Num(), MinIndexBatchSize, 
+		[&OutOriginalMeshIndices, &ConstantDataIn](int32 IndexIdx)
+		{
+			OutOriginalMeshIndices[IndexIdx * 3] = ConstantDataIn->OriginalMeshIndices[IndexIdx].X;
+			OutOriginalMeshIndices[IndexIdx * 3 + 1] = ConstantDataIn->OriginalMeshIndices[IndexIdx].Y;
+			OutOriginalMeshIndices[IndexIdx * 3 + 2] = ConstantDataIn->OriginalMeshIndices[IndexIdx].Z;
+		});
 }
 
 void FGeometryCollectionSceneProxy::SetConstantData_RenderThread(FGeometryCollectionConstantData* NewConstantData, bool ForceInit)
@@ -818,7 +871,7 @@ FMaterialRenderProxy* FGeometryCollectionSceneProxy::GetMaterial(FMeshElementCol
 		Collector.RegisterOneFrameMaterialProxy(VertexColorVisualizationMaterialInstance);
 		MaterialProxy = VertexColorVisualizationMaterialInstance;
 	}
-	else
+	else if(Materials.IsValidIndex(MaterialIndex))
 	{
 		MaterialProxy = Materials[MaterialIndex]->GetRenderProxy();
 	}
@@ -1179,8 +1232,6 @@ void FGeometryCollectionSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 				}
 			);
 
-			RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
-
 			OutRayTracingInstances.Emplace(RayTracingInstance);
 		}
 
@@ -1486,7 +1537,9 @@ FNaniteGeometryCollectionSceneProxy::FNaniteGeometryCollectionSceneProxy(UGeomet
 	bShouldUpdateGPUSceneTransforms = (GGeometryCollectionOptimizedTransforms == 0);
 
 	bSupportsDistanceFieldRepresentation = false;
-	bSupportsMeshCardRepresentation = false;
+
+	// Dynamic draw path without Nanite isn't supported by Lumen
+	bVisibleInLumenScene = false;
 
 	// Use fast path that does not update static draw lists.
 	bStaticElementsAlwaysUseProxyPrimitiveUniformBuffer = true;
@@ -1526,7 +1579,7 @@ FNaniteGeometryCollectionSceneProxy::FNaniteGeometryCollectionSceneProxy(UGeomet
 		UMaterialInterface* MaterialInterface = bValidMeshSection ? Component->GetMaterial(MeshSection.MaterialID) : nullptr;
 
 		// TODO: PROG_RASTER (Implement programmable raster support)
-		const bool bInvalidMaterial = !MaterialInterface || MaterialInterface->GetBlendMode() != BLEND_Opaque;
+		const bool bInvalidMaterial = !MaterialInterface || !IsOpaqueBlendMode(*MaterialInterface);
 		if (bInvalidMaterial)
 		{
 			bHasMaterialErrors = true;
@@ -1553,7 +1606,7 @@ FNaniteGeometryCollectionSceneProxy::FNaniteGeometryCollectionSceneProxy(UGeomet
 		check(MaterialInterface != nullptr);
 
 		// Should always be opaque blend mode here.
-		check(MaterialInterface->GetBlendMode() == BLEND_Opaque);
+		check(IsOpaqueBlendMode(*MaterialInterface));
 
 		MaterialSections[SectionIndex].ShadingMaterialProxy = MaterialInterface->GetRenderProxy();
 		MaterialSections[SectionIndex].RasterMaterialProxy  = MaterialInterface->GetRenderProxy(); // TODO: PROG_RASTER (Implement programmable raster support)
@@ -1614,13 +1667,13 @@ FNaniteGeometryCollectionSceneProxy::FNaniteGeometryCollectionSceneProxy(UGeomet
 
 	for (int32 GeometryIndex = 0; GeometryIndex < NumGeometry; ++GeometryIndex)
 	{
-		FPrimitiveInstance& SceneData = InstanceSceneData[GeometryIndex];
+		FInstanceSceneData& SceneData = InstanceSceneData[GeometryIndex];
 		SceneData.LocalToPrimitive.SetIdentity();
 
-		FPrimitiveInstanceDynamicData& DynamicData = InstanceDynamicData[GeometryIndex];
+		FInstanceDynamicData& DynamicData = InstanceDynamicData[GeometryIndex];
 		DynamicData.PrevLocalToPrimitive.SetIdentity();
 
-		InstanceLocalBounds[GeometryIndex] = FRenderBounds();
+		SetInstanceLocalBounds(GeometryIndex, FRenderBounds(), false);
 	}
 }
 
@@ -1705,6 +1758,12 @@ void FNaniteGeometryCollectionSceneProxy::GetNaniteResourceInfo(uint32& Resource
 	ImposterIndex = INDEX_NONE;	// Imposters are not supported (yet?)
 }
 
+void FNaniteGeometryCollectionSceneProxy::GetNaniteMaterialMask(FUint32Vector2& OutMaterialMask) const
+{
+	// TODO: Implement support
+	OutMaterialMask = FUint32Vector2(~uint32(0), ~uint32(0));
+}
+
 Nanite::FResourceMeshInfo FNaniteGeometryCollectionSceneProxy::GetResourceMeshInfo() const
 {
 	Nanite::FResources& Resource = GeometryCollection->NaniteData->NaniteResource;
@@ -1746,13 +1805,16 @@ void FNaniteGeometryCollectionSceneProxy::SetConstantData_RenderThread(FGeometry
 
 		const FGeometryNaniteData& NaniteData = GeometryNaniteData[TransformToGeometryIndex];
 
-		FPrimitiveInstance& Instance	= InstanceSceneData.Emplace_GetRef();
+		FInstanceSceneData& Instance	= InstanceSceneData.Emplace_GetRef();
 		Instance.LocalToPrimitive		= NewConstantData->RestTransforms[TransformIndex];
 
-		FPrimitiveInstanceDynamicData& DynamicData = InstanceDynamicData.Emplace_GetRef();
+		FInstanceDynamicData& DynamicData = InstanceDynamicData.Emplace_GetRef();
 		DynamicData.PrevLocalToPrimitive = Instance.LocalToPrimitive;
 
-		InstanceLocalBounds.Emplace(NaniteData.LocalBounds);
+		int32 InstanceIndex = InstanceLocalBounds.Num();
+		InstanceLocalBounds.SetNumUninitialized(InstanceIndex + 1);
+		SetInstanceLocalBounds(InstanceIndex, NaniteData.LocalBounds);
+		
 		InstanceHierarchyOffset.Emplace(NaniteData.HierarchyOffset);
 	}
 
@@ -1788,10 +1850,10 @@ void FNaniteGeometryCollectionSceneProxy::SetDynamicData_RenderThread(FGeometryC
 
 			const FGeometryNaniteData& NaniteData = GeometryNaniteData[TransformToGeometryIndex];
 
-			FPrimitiveInstance& Instance = InstanceSceneData.Emplace_GetRef();
+			FInstanceSceneData& Instance = InstanceSceneData.Emplace_GetRef();
 			Instance.LocalToPrimitive = NewDynamicData->Transforms[TransformIndex];
 
-			FPrimitiveInstanceDynamicData& DynamicData = InstanceDynamicData.Emplace_GetRef();
+			FInstanceDynamicData& DynamicData = InstanceDynamicData.Emplace_GetRef();
 
 			if (bCurrentlyInMotion)
 			{
@@ -1802,7 +1864,10 @@ void FNaniteGeometryCollectionSceneProxy::SetDynamicData_RenderThread(FGeometryC
 				DynamicData.PrevLocalToPrimitive = Instance.LocalToPrimitive;
 			}
 
-			InstanceLocalBounds.Emplace(NaniteData.LocalBounds);
+			int32 InstanceIndex = InstanceLocalBounds.Num();
+			InstanceLocalBounds.SetNumUninitialized(InstanceIndex + 1);
+			SetInstanceLocalBounds(InstanceIndex, NaniteData.LocalBounds);
+			
 			InstanceHierarchyOffset.Emplace(NaniteData.HierarchyOffset);
 		}
 	}

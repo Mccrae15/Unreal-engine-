@@ -1,19 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 
 #include "CustomMeshComponent.h"
-#include "RenderingThread.h"
-#include "RenderResource.h"
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
-#include "VertexFactory.h"
-#include "MaterialShared.h"
+#include "MaterialDomain.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Engine/CollisionProfile.h"
 #include "Materials/Material.h"
-#include "LocalVertexFactory.h"
 #include "SceneManagement.h"
 #include "DynamicMeshBuilder.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
+#include "SceneInterface.h"
 #include "StaticMeshResources.h"
 
 /** Scene proxy */

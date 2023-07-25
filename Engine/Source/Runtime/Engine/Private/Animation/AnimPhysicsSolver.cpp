@@ -29,7 +29,10 @@ SOFTWARE.
 */
 
 #include "Animation/AnimPhysicsSolver.h"
+#include "HAL/IConsoleManager.h"
+#include "Math/QuatRotationTranslationMatrix.h"
 #include "PhysicsEngine/PhysicsSettings.h"
+#include "Stats/Stats.h"
 
 DEFINE_STAT(STAT_AnimDynamicsUpdate);
 DEFINE_STAT(STAT_AnimDynamicsLinearPre);

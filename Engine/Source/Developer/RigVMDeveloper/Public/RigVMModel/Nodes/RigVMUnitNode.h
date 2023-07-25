@@ -29,7 +29,8 @@ public:
 	virtual bool IsDefinedAsVarying() const override;
 	virtual FName GetEventName() const override;
 	virtual bool CanOnlyExistOnce() const override;
-	virtual bool IsLoopNode() const override;
+	virtual const TArray<FName>& GetControlFlowBlocks() const override;
+	virtual const bool IsControlFlowBlockSliced(const FName& InBlockName) const override;
 	virtual TArray<FRigVMUserWorkflow> GetSupportedWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const override;
 	virtual TArray<URigVMPin*> GetAggregateInputs() const override;
 	virtual TArray<URigVMPin*> GetAggregateOutputs() const override;
@@ -59,7 +60,7 @@ public:
 		typename T,
 		typename TEnableIf<TModels<CRigVMUStruct, T>::Value>::Type* = nullptr
 	>
-	FORCEINLINE T ConstructStructInstance() const
+	T ConstructStructInstance() const
 	{
 		if(!ensure(T::StaticStruct() == GetScriptStruct()))
 		{
@@ -76,14 +77,17 @@ public:
 protected:
 
 	virtual FText GetToolTipTextForPin(const URigVMPin* InPin) const override;
+	virtual bool ShouldInputPinComputeLazily(const URigVMPin* InPin) const override;
 
 private:
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TObjectPtr<UScriptStruct> ScriptStruct_DEPRECATED;
 
 	UPROPERTY()
 	FName MethodName_DEPRECATED;
+#endif
 
 	friend class URigVMController;
 };

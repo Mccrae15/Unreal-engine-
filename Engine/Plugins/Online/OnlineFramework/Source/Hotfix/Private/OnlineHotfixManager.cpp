@@ -1,18 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineHotfixManager.h"
+#include "HttpModule.h"
+#include "Online.h"
 #include "OnlineSubsystemUtils.h"
-#include "GenericPlatform/GenericPlatformFile.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
-#include "Http.h"
 
 #include "Logging/LogSuppressionInterface.h"
 
-#include "Misc/NetworkVersion.h"
 
 #include "Misc/PackageName.h"
-#include "Misc/CommandLine.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/FileHelper.h"
 #include "Misc/CoreDelegates.h"
@@ -30,10 +28,6 @@
 #include "Serialization/AsyncLoadingFlushContext.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineHotfixManager)
-
-#ifdef WITH_ONLINETRACING
-#include "OnlineTracingModule.h"
-#endif
 
 DEFINE_LOG_CATEGORY(LogHotfixManager);
 
@@ -227,7 +221,7 @@ void UOnlineHotfixManager::PostInitProperties()
 	PlatformPrefix = DebugPrefix + ANSI_TO_TCHAR(FPlatformProperties::PlatformName());
 	PlatformPrefix += HOTFIX_SEPARATOR;
 	// Server prefix
-	ServerPrefix = DebugPrefix + TEXT("DedicatedServer");
+	ServerPrefix = DebugPrefix + GetDedicatedServerPrefix();
 	// Build the default prefix too
 	DefaultPrefix = DebugPrefix + TEXT("Default");
 
@@ -922,7 +916,6 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 	bool bUpdateLogSuppression = false;
 	bool bUpdateConsoleVariables = false;
 	bool bUpdateHttpConfigs = false;
-	bool bUpdateOnlineTracing = false;
 	TSet<FString> OnlineSubSections;
 	TSet<FString> UpdatedSectionNames;
 	// Find the set of object classes that were affected
@@ -979,12 +972,11 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 
 				if (bIsEngineIni)
 				{
-					// TODO replace all of this with bindees to FCoreDelegates::OnConfigSectionsChanged
+					// TODO replace all of this with bindees to FCoreDelegates::TSOnConfigSectionsChanged()
 					const TCHAR* LogConfigSection = TEXT("[Core.Log]");
 					const TCHAR* ConsoleVariableSection = TEXT("[ConsoleVariables]");
 					const TCHAR* HttpSection = TEXT("[HTTP"); // note "]" omitted on purpose since we want a partial match
 					const TCHAR* OnlineSubSectionKey = TEXT("[OnlineSubsystem"); // note "]" omitted on purpose since we want a partial match
-					const TCHAR* OnlineTracingSection = TEXT("[OnlineTracing]");
 					if (!bUpdateLogSuppression && FCString::Strnicmp(*IniData + StartIndex, LogConfigSection, FCString::Strlen(LogConfigSection)) == 0)
 					{
 						bUpdateLogSuppression = true;
@@ -996,10 +988,6 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 					else if (!bUpdateHttpConfigs &&	FCString::Strnicmp(*IniData + StartIndex, HttpSection, FCString::Strlen(HttpSection)) == 0)
 					{
 						bUpdateHttpConfigs = true;
-					}
-					else if (!bUpdateOnlineTracing && FCString::Strnicmp(*IniData + StartIndex, OnlineTracingSection, FCString::Strlen(OnlineTracingSection)) == 0)
-					{
-						bUpdateOnlineTracing = true;
 					}
 					else if (FCString::Strnicmp(*IniData + StartIndex, OnlineSubSectionKey, FCString::Strlen(OnlineSubSectionKey)) == 0)
 					{
@@ -1104,7 +1092,10 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 	}
 
 	const FString ConfigFileName = ConfigFile->Name.ToString();
+	FCoreDelegates::TSOnConfigSectionsChanged().Broadcast(ConfigFileName, UpdatedSectionNames);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FCoreDelegates::OnConfigSectionsChanged.Broadcast(ConfigFileName, UpdatedSectionNames);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// Reload log suppression if configs changed
 	if (bUpdateLogSuppression)
@@ -1124,30 +1115,11 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 		FHttpModule::Get().UpdateConfigs();
 	}
 
-	// Reload configs for tracing system, this may init or tear it down if enable is toggled
-#ifdef WITH_ONLINETRACING
-	if (bUpdateOnlineTracing && 
-		FOnlineTracingModule::IsAvailable())
-	{
-		FOnlineTracingModule::Get().UpdateConfig();
-	}
-#endif
-
 	// Reload configs relevant to OSS config sections that were updated
 	IOnlineSubsystem* OnlineSub = IOnlineSubsystem::Get(OSSName.Len() ? FName(*OSSName, FNAME_Find) : NAME_None);
 	if (OnlineSub != nullptr)
 	{
 		OnlineSub->ReloadConfigs(OnlineSubSections);
-	}
-
-	// If there is an embedded MCP and it's loaded, Reload configs relevant to OSS config sections that were updated
-	if (IOnlineSubsystem::IsLoaded(MCP_SUBSYSTEM_EMBEDDED))
-	{
-		IOnlineSubsystem* OnlineSubEmbedded = IOnlineSubsystem::Get(MCP_SUBSYSTEM_EMBEDDED);
-		if (OnlineSubEmbedded != nullptr)
-		{
-			OnlineSubEmbedded->ReloadConfigs(OnlineSubSections);
-		}
 	}
 
 	UE_LOG(LogHotfixManager, Log, TEXT("Updating config from %s took %f seconds and reloaded %d objects"),
@@ -1951,6 +1923,11 @@ void UOnlineHotfixManager::HotfixTableUpdate(UObject* Asset, const FString& Asse
 bool UOnlineHotfixManager::ShouldPerformHotfix()
 {
 	return IsRunningGame() || IsRunningDedicatedServer() || IsRunningClientOnly();
+}
+
+FString UOnlineHotfixManager::GetDedicatedServerPrefix() const
+{
+	return TEXT("DedicatedServer");
 }
 
 UWorld* UOnlineHotfixManager::GetWorld() const

@@ -3,14 +3,17 @@
 #pragma once
 
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "Engine/DataTable.h"
-#include "Styling/SlateBrush.h"
 
 #include "CommonUISubsystemBase.generated.h"
+
+enum class ECommonInputType : uint8;
+struct FDataTableRowHandle;
+struct FSlateBrush;
 
 class IAnalyticsProviderET;
 class UWidget;
 class ULocalPlayer;
+class UInputAction;
 
 UCLASS(DisplayName = "CommonUI")
 class COMMONUI_API UCommonUISubsystemBase : public UGameInstanceSubsystem
@@ -30,6 +33,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = CommonUISubsystem)
 	FSlateBrush GetInputActionButtonIcon(const FDataTableRowHandle& InputActionRowHandle, ECommonInputType InputType, const FName& GamepadName) const;
 
+	// Gets Action Button Icon for given action and player, enhanced input API currently does not allow input type specification
+	UFUNCTION(BlueprintCallable, Category = CommonUISubsystem)
+	FSlateBrush GetEnhancedInputActionButtonIcon(const UInputAction* InputAction, const ULocalPlayer* LocalPlayer) const;
+
 	/** Analytic Events **/
 
 	//CommonUI.ButtonClicked
@@ -47,3 +54,8 @@ private:
 
 	TWeakPtr<class IAnalyticsProviderET> AnalyticProviderWeakPtr;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Engine/DataTable.h"
+#include "Styling/SlateBrush.h"
+#endif

@@ -2,7 +2,7 @@
 
 #include "GameplayDebugger/GameplayDebuggerCategory_BehaviorTree.h"
 
-#if WITH_GAMEPLAY_DEBUGGER
+#if WITH_GAMEPLAY_DEBUGGER_MENU
 
 #include "GameFramework/Pawn.h"
 #include "BrainComponent.h"
@@ -54,8 +54,8 @@ void FGameplayDebuggerCategory_BehaviorTree::DrawData(APlayerController* OwnerPC
 		TArray<FString> BlackboardLines;
 		DataPack.BlackboardDesc.ParseIntoArrayLines(BlackboardLines, true);
 
-		int32 SavedDefX = CanvasContext.DefaultX;
-		int32 SavedPosY = CanvasContext.CursorY;
+		const float SavedDefX = CanvasContext.DefaultX;
+		const float SavedPosY = CanvasContext.CursorY;
 		CanvasContext.DefaultX = CanvasContext.CursorX = 600.0f;
 		CanvasContext.CursorY = CanvasContext.DefaultY;
 
@@ -80,4 +80,4 @@ void FGameplayDebuggerCategory_BehaviorTree::DrawData(APlayerController* OwnerPC
 	}
 }
 
-#endif // WITH_GAMEPLAY_DEBUGGER
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU

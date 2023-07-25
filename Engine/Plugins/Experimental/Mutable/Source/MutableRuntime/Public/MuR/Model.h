@@ -6,30 +6,25 @@
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
 #include "Templates/Function.h"
-
-namespace mu { class InputArchive; }
-namespace mu { class ModelStreamer; }
-namespace mu { class OutputArchive; }
+#include "Templates/SharedPointer.h"
 
 
 //! This version number changes whenever there is a compatibility-breaking change in the Model
 //! data structures. Compiled models are not necessarily compatible when the runtime is updated,
 //! so this version number can be used externally to verify this. It is not used internally, and
 //! serializing models from different versions than this runtime will probably result in a crash.
-#define MUTABLE_COMPILED_MODEL_CODE_VERSION		uint32( 48 )
+#define MUTABLE_COMPILED_MODEL_CODE_VERSION		uint32( 54 )
 #define MUTABLE_PARAMETERS_VERSION              uint32( 1 )
 
 
 namespace mu
 {
+	class InputArchive;
+	class ModelStreamer;
+	class OutputArchive;
 
 	typedef Ptr<Parameters> ParametersPtr;
 	typedef Ptr<const Parameters> ParametersPtrConst;
-
-    class Model;
-
-    typedef Ptr<Model> ModelPtr;
-    typedef Ptr<const Model> ModelPtrConst;
 
     class ModelParametersGenerator;
 
@@ -47,7 +42,7 @@ namespace mu
     //! When values are given to the parameters, specific Instances can be built, which hold the
     //! built application-usable data.
 	//! \ingroup runtime
-    class MUTABLERUNTIME_API Model : public RefCountedWeak
+    class MUTABLERUNTIME_API Model
 	{
 	public:
 
@@ -56,8 +51,11 @@ namespace mu
 		//-----------------------------------------------------------------------------------------
 		Model();
 
+		//! Don't call directly. Manage with a TSharedPtr.
+		~Model();
+
 		static void Serialise( const Model* p, OutputArchive& arch );
-		static ModelPtr StaticUnserialise( InputArchive& arch );
+		static TSharedPtr<Model> StaticUnserialise( InputArchive& arch );
 
 		//! Special serialise operation that serialises the data in separate "files". An object
         //! with the ModelStreamer interface is responsible of storing this data and providing
@@ -81,7 +79,7 @@ namespace mu
 		//! Create a set of new parameters of the model with the default values.
 		//! If old parameters are provided, they will be reused when possible instead of the
 		//! default values.
-        ParametersPtr NewParameters( const Parameters* pOld = nullptr ) const;
+        static ParametersPtr NewParameters( TSharedPtr<const Model> Model, const Parameters* pOld = nullptr );
 
 		//! Get the number of states in the model.
 		int GetStateCount() const;
@@ -114,11 +112,6 @@ namespace mu
 
 		Private* GetPrivate() const;
 
-	protected:
-
-		//! Forbidden. Manage with the Ptr<> template.
-        ~Model() override;
-
 	private:
 
 		Private* m_pD;
@@ -131,12 +124,7 @@ namespace mu
     //!
     //! This class can be used to generate all the possible instances of a model, or to generate
     //! random instances. It only takes into account discrete parameters (bools and ints) but not
-    //! continuous parameters like colours and floats.
-    //!
-    //! The use of this class can be very expensive for complex models, since the number of
-    //! combinations grows geometrically. If considerRelevancy is set to false, a brute force
-    //! approach will be used, but this will generate duplicated instances when changing parameters
-    //! that are not relevant.
+    //! continuous parameters like colours and floats, which may be set to random values.
     //!
     //! \ingroup runtime
     class MUTABLERUNTIME_API ModelParametersGenerator : public RefCounted
@@ -144,7 +132,7 @@ namespace mu
     public:
 
         //!
-        ModelParametersGenerator( const Model* pModel, System* pSystem, bool considerRelevancy=true );
+        ModelParametersGenerator( TSharedPtr<const Model>, System* );
 
         //! Return the number of different possible instances that can be built from the model.
         int64 GetInstanceCount();
@@ -153,12 +141,12 @@ namespace mu
         //! \param index is an index in the range of 0 to GetInstanceCount-1
         //! \param randomGenerator if not null, this function will be used to generate random values
         //! for the continuous parameters of the instance.
-        ParametersPtr GetInstance( int64 index, float (*randomGenerator )() );
+        ParametersPtr GetInstance( int64 index, TFunction<float()> RandomGenerator);
 
         //! Return the parameters of one of a random instance of the model.
         //! \param randomGenerator This function will be used to generate random values
         //! for the continuous parameters of the instance.
-        ParametersPtr GetRandomInstance(TFunctionRef<float()> randomGenerator );
+        ParametersPtr GetRandomInstance(TFunctionRef<float()> RandomGenerator );
 
         //-----------------------------------------------------------------------------------------
         // Interface pattern

@@ -11,8 +11,11 @@
 #include "MuR/Platform.h"
 #include "MuT/ASTOpConstantResource.h"
 #include "MuT/ASTOpMeshRemoveMask.h"
+#include "MuT/ASTOpImageMultiLayer.h"
+#include "MuT/ASTOpParameter.h"
 #include "MuT/StreamsPrivate.h"
 #include "MuT/Platform.h"
+#include "MuT/ErrorLogPrivate.h"
 #include "Trace/Detail/Channel.h"
 
 #include <atomic>
@@ -86,15 +89,15 @@ ASTChild& ASTChild::operator=( ASTChild&& rhs )
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
-void ASTOp::ForEachParent(const TFunctionRef<void(ASTOp*)> f )
+void ASTOp::ForEachParent(const TFunctionRef<void(ASTOp*)> f) const
 {
-    for( auto& p: m_parents )
-    {
-        if (p)
-        {
-            f(p);
-        }
-    }
+	for (auto& p : m_parents)
+	{
+		if (p)
+		{
+			f(p);
+		}
+	}
 }
 
 
@@ -118,7 +121,7 @@ void ASTOp::RemoveChildren()
             if (c)
             {
                 // Are we clearing the last reference?
-                if (c.child()->GetRefCount()==1)
+                if (c.child()->IsUnique())
                 {
                     toDestroy.Add(c.child());
                     pending.Add(c.child().get());
@@ -240,7 +243,7 @@ mu::Ptr<ASTOp> ASTOp::DeepClone( const Ptr<ASTOp>& root )
 
 
 //-------------------------------------------------------------------------------------------------
-void ASTOp::FullLink( Ptr<ASTOp>& root, PROGRAM& program, const FLinkerOptions* Options )
+void ASTOp::FullLink( Ptr<ASTOp>& root, FProgram& program, const FLinkerOptions* Options )
 {
     MUTABLE_CPUPROFILER_SCOPE(AST_FullLink);
     Traverse_BottomUp_Unique( root,
@@ -265,40 +268,69 @@ void ASTOp::LogHistogram( ASTOpList& roots )
 {
     (void)roots;
 
-#if 0
-    uint64_t countPerType[(int)OP_TYPE::COUNT];
-    FMemory::Memzero(countPerType,sizeof(countPerType));
+ //   uint64 CountPerType[(int)OP_TYPE::COUNT];
+ //   FMemory::Memzero(CountPerType,sizeof(CountPerType));
 
-    size_t count=0;
+ //   size_t count=0;
 
-    Traverse_TopRandom_Unique_NonReentrant( roots,
-                             [&](const Ptr<ASTOp>& n)
-    {
-        ++count;
-        countPerType[(int)n->GetOpType()]++;
-        return true;
-    });
+ //   Traverse_TopRandom_Unique_NonReentrant( roots,
+ //                            [&](const Ptr<ASTOp>& n)
+ //   {
+ //       ++count;
+	//	CountPerType[(int)n->GetOpType()]++;
+ //       return true;
+ //   });
 
-    vector< pair<uint64_t,OP_TYPE> > sorted((int)OP_TYPE::COUNT);
-    for (int i=0; i<(int)OP_TYPE::COUNT; ++i)
-    {
-        sorted[i].second = (OP_TYPE)i;
-        sorted[i].first = countPerType[i];
-    }
+	//TArray< TPair<uint64, OP_TYPE> > Sorted;
+	//Sorted.SetNum((int)OP_TYPE::COUNT);
+ //   for (int i=0; i<(int)OP_TYPE::COUNT; ++i)
+ //   {
+ //       Sorted[i].Value = (OP_TYPE)i;
+ //       Sorted[i].Key = CountPerType[i];
+ //   }
 
-    std::sort(sorted.begin(),sorted.end(), []( const pair<uint64_t,OP_TYPE>& a, const pair<uint64_t,OP_TYPE>& b )
-    {
-        return a.first>b.first;
-    });
 
-    UE_LOG(LogMutableCore,Log, TEXT("Op histogram (%llu ops):"), count);
-    for(int i=0; i<8; ++i)
-    {
-        float p = sorted[i].first/float(count)*100.0f;
-        int op = (int)sorted[i].second;
-        UE_LOG(LogMutableCore,Log, TEXT("  %5.2f%% : %s"), p, s_opNames[op] );
-    }
-#endif
+	//Sorted.Sort( [](const TPair<uint64, OP_TYPE>& a, const TPair<uint64, OP_TYPE>& b)
+ //   {
+ //       return a.Key >b.Key;
+ //   });
+
+ //   UE_LOG(LogMutableCore,Log, TEXT("Op histogram (%llu ops):"), count);
+ //   for(int i=0; i<8; ++i)
+ //   {
+ //       float p = Sorted[i].Key/float(count)*100.0f;
+ //       int OpType = (int)Sorted[i].Value;
+ //       UE_LOG(LogMutableCore, Log, TEXT("  %5.2f%% : %s"), p, s_opNames[OpType] );
+ //   }
+
+	//// Debug log part of the tree
+	//Traverse_TopDown_Unique( roots,
+	//	[&](const Ptr<ASTOp>& n)
+	//	{
+	//		if (n->GetOpType() == OP_TYPE::IM_MULTILAYER)
+	//		{
+	//			Ptr<const ASTOpImageMultiLayer> Typed = dynamic_cast<const ASTOpImageMultiLayer*>(n.get());
+	//			Ptr<const ASTOp> Base = Typed->base.child();
+	//			Ptr<const ASTOpConstantResource> Constant = dynamic_cast<const ASTOpConstantResource*>(Base.get());
+
+	//			// Log the op
+	//			UE_LOG(LogMutableCore, Log, TEXT("Multilayer at %x:"), n.get());
+	//			UE_LOG(LogMutableCore, Log, TEXT("    base is type %s:"), s_opNames[(int)Base->GetOpType()]);
+	//			if (Constant)
+	//			{
+	//				int Format = int( ((mu::Image*)Constant->GetValue().get())->GetFormat() );
+	//				UE_LOG(LogMutableCore, Log, TEXT("    constant image format is %d:"), Format);
+	//			}
+	//			else
+	//			{
+	//				FGetImageDescContext Context;
+	//				FImageDesc Desc = Base->GetImageDesc(true, &Context);
+	//				UE_LOG(LogMutableCore, Log, TEXT("    estimated image format is %d:"), int(Desc.m_format) );
+	//			}
+	//		}
+	//		return true;
+	//	});
+
 }
 
 
@@ -569,8 +601,7 @@ void Visitor_TopDown_Unique_Cloning::Process()
                 // Proceed with children
                 if (processChildren)
                 {
-                    // TODO: Shouldn't we recurse newAt?
-					m_pending.Add({ true,at });
+					m_pending.Add({ true, newAt });
 
                     at->ForEachChild( [&](ASTChild& ref)
                     {
@@ -827,10 +858,10 @@ void ASTOp::Traverse_BottomUp_Unique
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
-int ASTOp::GetParentCount()
+int ASTOp::GetParentCount() const
 {
     int result=0;
-    ForEachParent( [&](ASTOp* p)
+    ForEachParent( [&](const ASTOp* p)
     {
         if (p!=nullptr) ++result;
     });
@@ -863,37 +894,39 @@ void ASTOp::Replace( const Ptr<ASTOp>& node, const Ptr<ASTOp>& other )
 }
 
 
-FImageDesc ASTOp::GetImageDesc( bool, GetImageDescContext* )
+FImageDesc ASTOp::GetImageDesc( bool, FGetImageDescContext* ) const
 {
     check(false);
     return FImageDesc();
 }
 
 
-bool ASTOp::IsImagePlainConstant( vec4<float>& ) const
+bool ASTOp::IsImagePlainConstant(FVector4f&) const
+{
+	// Some image operations don't have this implmented and hit here.
+	// \TODO: Optimize for those cases.
+    //check(false);
+    return false;
+}
+
+
+bool ASTOp::IsColourConstant(FVector4f&) const
 {
     check(false);
     return false;
 }
 
 
-bool ASTOp::IsColourConstant( vec4<float>& ) const
-{
-    check(false);
-    return false;
-}
-
-
-void ASTOp::GetBlockLayoutSize( int, int*, int*, BLOCK_LAYOUT_SIZE_CACHE* )
+void ASTOp::GetBlockLayoutSize( int, int*, int*, FBlockLayoutSizeCache* )
 {
     check(false);
 }
 
 void ASTOp::GetBlockLayoutSizeCached( int blockIndex, int* pBlockX, int* pBlockY,
-                               BLOCK_LAYOUT_SIZE_CACHE* cache )
+                               FBlockLayoutSizeCache* cache )
 {
-	BLOCK_LAYOUT_SIZE_CACHE::KeyType key(this,blockIndex);
-	BLOCK_LAYOUT_SIZE_CACHE::ValueType* ValuePtr = cache->Find( key );
+	FBlockLayoutSizeCache::KeyType key(this,blockIndex);
+	FBlockLayoutSizeCache::ValueType* ValuePtr = cache->Find( key );
     if (ValuePtr)
     {
         *pBlockX = ValuePtr->Key;
@@ -903,7 +936,7 @@ void ASTOp::GetBlockLayoutSizeCached( int blockIndex, int* pBlockX, int* pBlockY
 
     GetBlockLayoutSize( blockIndex, pBlockX, pBlockY, cache );
 
-	cache->Add(key, BLOCK_LAYOUT_SIZE_CACHE::ValueType( *pBlockX, *pBlockY) );
+	cache->Add(key, FBlockLayoutSizeCache::ValueType( *pBlockX, *pBlockY) );
 }
 
 
@@ -919,11 +952,51 @@ bool ASTOp::GetNonBlackRect( FImageRect& ) const
 }
 
 
+void ASTOp::LinkRange(FProgram& program,
+	const FRangeData& range,
+	OP::ADDRESS& rangeSize,
+	uint16& rangeId)
+{
+	if (range.rangeSize)
+	{
+		if (range.rangeSize->linkedRange < 0)
+		{
+			check(program.m_ranges.Num() < 255);
+			range.rangeSize->linkedRange = int8(program.m_ranges.Num());
+			FRangeDesc rangeData;
+			rangeData.m_name = range.rangeName;
+			rangeData.m_uid = range.rangeUID;
+
+			// Try to see if a parameter directly controls de size of the range. This is used
+			// to store hint data for instance generation in tools or randomizers that want to
+			// support multilayer, but it is not critical otherwise.
+			int32 EstimatedSizeParameter = -1;
+			if ( range.rangeSize->GetOpType() == OP_TYPE::SC_PARAMETER
+				||
+				range.rangeSize->GetOpType() == OP_TYPE::NU_PARAMETER )
+			{
+				const ASTOpParameter* ParamOp = dynamic_cast<const ASTOpParameter*>(range.rangeSize.child().get());
+
+				EstimatedSizeParameter = ParamOp->LinkedParameterIndex;
+			}
+			rangeData.m_dimensionParameter = EstimatedSizeParameter;
+
+			program.m_ranges.Add(rangeData);
+		}
+		rangeSize = range.rangeSize->linkedAddress;
+		rangeId = uint16(range.rangeSize->linkedRange);
+	}
+}
+
+
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
 ASTOpFixed::ASTOpFixed()
-    : children({{ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr)}})
+    : children({{
+			ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr),
+			ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr),ASTChild(this,nullptr)
+		}})
 {
 }
 
@@ -949,7 +1022,7 @@ void ASTOpFixed::ForEachChild( const TFunctionRef<void(ASTChild&)> f )
 }
 
 
-void ASTOpFixed::Link( PROGRAM& program, const FLinkerOptions* )
+void ASTOpFixed::Link( FProgram& program, const FLinkerOptions* )
 {
     if (!linkedAddress)
     {
@@ -1022,12 +1095,12 @@ uint64 ASTOpFixed::Hash() const
 
 
 //!
-FImageDesc ASTOpFixed::GetImageDesc( bool returnBestOption, GetImageDescContext* context )
+FImageDesc ASTOpFixed::GetImageDesc( bool returnBestOption, FGetImageDescContext* context ) const
 {
     FImageDesc res;
 
     // Local context in case it is necessary
-    GetImageDescContext localContext;
+    FGetImageDescContext localContext;
     if (!context)
     {
       context = &localContext;
@@ -1048,22 +1121,6 @@ FImageDesc ASTOpFixed::GetImageDesc( bool returnBestOption, GetImageDescContext*
     {
 
     case OP_TYPE::NONE:
-        break;
-
-    case OP_TYPE::IM_LAYER:
-        res = GetImageDesc( op.args.ImageLayer.base, returnBestOption, context );
-        if ( res.m_format==EImageFormat::IF_L_UBYTE )
-        {
-            res.m_format = EImageFormat::IF_RGB_UBYTE;
-        }
-        break;
-
-    case OP_TYPE::IM_LAYERCOLOUR:
-        res = GetImageDesc( op.args.ImageLayerColour.base, returnBestOption, context );
-        if ( res.m_format==EImageFormat::IF_L_UBYTE )
-        {
-            res.m_format = EImageFormat::IF_RGB_UBYTE;
-        }
         break;
 
     case OP_TYPE::IM_SATURATE:
@@ -1133,12 +1190,6 @@ FImageDesc ASTOpFixed::GetImageDesc( bool returnBestOption, GetImageDescContext*
         }
         break;
 
-    case OP_TYPE::IM_SWIZZLE:
-        res = GetImageDesc( op.args.ImageSwizzle.sources[0], returnBestOption, context );
-        res.m_format = op.args.ImageSwizzle.format;
-        check( res.m_format != EImageFormat::IF_NONE );
-        break;
-
     case OP_TYPE::IM_SELECTCOLOUR:
         res = GetImageDesc( op.args.ImageSelectColour.base, returnBestOption, context );
         res.m_format = EImageFormat::IF_L_UBYTE;
@@ -1159,31 +1210,6 @@ FImageDesc ASTOpFixed::GetImageDesc( bool returnBestOption, GetImageDescContext*
 
     case OP_TYPE::IM_BINARISE:
         res = GetImageDesc( op.args.ImageBinarise.base, returnBestOption, context );
-        res.m_format = EImageFormat::IF_L_UBYTE;
-        break;
-
-    case OP_TYPE::IM_GPU:
-    {
-        check(false);
-        // The size comes from a special instruction
-//                const GPU_PROGRAM& gpuProg = program.m_gpuPrograms[ op.args.ImageGPU.program ];
-//                if (gpuProg.m_size)
-//                {
-//                    res = children[op.args.VolumeLayer.source]->GetImageDesc( returnBestOption, context );
-//                }
-//                // The format is fixed in the program description
-//                res.m_format = gpuProg.m_format;
-        break;
-    }
-
-    case OP_TYPE::IM_RASTERMESH:
-        res = GetImageDesc( op.args.ImageRasterMesh.image, returnBestOption, context );
-        res.m_size[0]=op.args.ImageRasterMesh.sizeX;
-        res.m_size[1]=op.args.ImageRasterMesh.sizeY;
-        break;
-
-    case OP_TYPE::IM_MAKEGROWMAP:
-        res = GetImageDesc( op.args.ImageMakeGrowMap.mask, returnBestOption, context );
         res.m_format = EImageFormat::IF_L_UBYTE;
         break;
 
@@ -1215,45 +1241,6 @@ FImageDesc ASTOpFixed::GetImageDesc( bool returnBestOption, GetImageDescContext*
     }
 
     return res;
-}
-
-
-void ASTOpFixed::GetBlockLayoutSize( int blockIndex, int* pBlockX, int* pBlockY,
-                                     BLOCK_LAYOUT_SIZE_CACHE* cache )
-{
-    switch ( op.type )
-    {
-    case OP_TYPE::LA_PACK:
-    {
-        GetBlockLayoutSize( blockIndex, op.args.LayoutPack.layout,
-                            pBlockX, pBlockY, cache );
-        break;
-    }
-
-    case OP_TYPE::LA_MERGE:
-    {
-        GetBlockLayoutSize( blockIndex, op.args.LayoutMerge.base,
-                            pBlockX, pBlockY, cache );
-
-        if (!*pBlockX)
-        {
-            GetBlockLayoutSize( blockIndex, op.args.LayoutMerge.added,
-                                pBlockX, pBlockY, cache );
-        }
-
-        break;
-    }
-
-    case OP_TYPE::LA_REMOVEBLOCKS:
-    {
-        GetBlockLayoutSize( blockIndex, op.args.LayoutRemoveBlocks.source,
-                            pBlockX, pBlockY, cache );
-        break;
-    }
-
-    default:
-        checkf( false, TEXT("Instruction not supported") );
-    }
 }
 
 
@@ -1295,24 +1282,6 @@ void ASTOpFixed::GetLayoutBlockSize( int* pBlockX, int* pBlockY )
 		break;
 	}
 
-    case OP_TYPE::IM_SWIZZLE:
-    {
-        GetLayoutBlockSize( op.args.ImageSwizzle.sources[0], pBlockX, pBlockY );
-        break;
-    }
-
-    case OP_TYPE::IM_LAYER:
-    {
-        GetLayoutBlockSize(op.args.ImageLayer.base, pBlockX, pBlockY);
-        break;
-    }
-
-    case OP_TYPE::IM_LAYERCOLOUR:
-    {
-        GetLayoutBlockSize(op.args.ImageLayerColour.base, pBlockX, pBlockY);
-        break;
-    }
-
 	case OP_TYPE::IM_BLANKLAYOUT:
 	{
 		*pBlockX = int(op.args.ImageBlankLayout.blockSize[0]);
@@ -1335,9 +1304,9 @@ void ASTOpFixed::GetLayoutBlockSize( int* pBlockX, int* pBlockY )
 }
 
 
-ASTOp::BOOL_EVAL_RESULT ASTOpFixed::EvaluateBool( ASTOpList& facts, EVALUATE_BOOL_CACHE* cache ) const
+ASTOp::FBoolEvalResult ASTOpFixed::EvaluateBool( ASTOpList& facts, FEvaluateBoolCache* cache ) const
 {
-    EVALUATE_BOOL_CACHE localCache;
+    FEvaluateBoolCache localCache;
     if (!cache)
     {
         cache = &localCache;
@@ -1352,14 +1321,14 @@ ASTOp::BOOL_EVAL_RESULT ASTOpFixed::EvaluateBool( ASTOpList& facts, EVALUATE_BOO
         }
     }
 
-    BOOL_EVAL_RESULT result = BET_UNKNOWN;
+    FBoolEvalResult result = BET_UNKNOWN;
     switch(op.type)
     {
     case OP_TYPE::BO_NOT:
     {
         if (children[op.args.BoolNot.source])
         {
-            BOOL_EVAL_RESULT child = children[op.args.BoolNot.source]->EvaluateBool(facts,cache);
+            FBoolEvalResult child = children[op.args.BoolNot.source]->EvaluateBool(facts,cache);
             if (child==BET_TRUE)
             {
                 result = BET_FALSE;
@@ -1397,8 +1366,8 @@ ASTOp::BOOL_EVAL_RESULT ASTOpFixed::EvaluateBool( ASTOpList& facts, EVALUATE_BOO
     {
         const auto& a = children[op.args.BoolBinary.a].child();
         const auto& b = children[op.args.BoolBinary.b].child();
-        BOOL_EVAL_RESULT resultA = BET_UNKNOWN;
-        BOOL_EVAL_RESULT resultB = BET_UNKNOWN;
+        FBoolEvalResult resultA = BET_UNKNOWN;
+        FBoolEvalResult resultB = BET_UNKNOWN;
         for ( size_t f=0; f<facts.Num(); ++f )
         {
             if ( a && resultA == BET_UNKNOWN )
@@ -1439,8 +1408,8 @@ ASTOp::BOOL_EVAL_RESULT ASTOpFixed::EvaluateBool( ASTOpList& facts, EVALUATE_BOO
     {
         const auto& a = children[op.args.BoolBinary.a].child();
         const auto& b = children[op.args.BoolBinary.b].child();
-        BOOL_EVAL_RESULT resultA = BET_UNKNOWN;
-        BOOL_EVAL_RESULT resultB = BET_UNKNOWN;
+        FBoolEvalResult resultA = BET_UNKNOWN;
+        FBoolEvalResult resultB = BET_UNKNOWN;
         for ( size_t f=0; f<facts.Num(); ++f )
         {
             if ( a && resultA == BET_UNKNOWN )
@@ -1521,7 +1490,7 @@ int ASTOpFixed::EvaluateInt( ASTOpList& /*facts*/, bool &unknown ) const
 }
 
 
-bool ASTOpFixed::IsImagePlainConstant( vec4<float>& colour ) const
+bool ASTOpFixed::IsImagePlainConstant(FVector4f& colour) const
 {
     bool res = false;
     switch( op.type )
@@ -1555,13 +1524,13 @@ bool ASTOpFixed::IsImagePlainConstant( vec4<float>& colour ) const
         res = children[op.args.ImageInterpolate3.target0]->IsColourConstant( colour );
         if (res)
         {
-            vec4<float> baseColour;
+			FVector4f baseColour;
             res = children[op.args.ImageInterpolate3.target1]->IsColourConstant( colour );
             res &= (colour==baseColour);
         }
         if (res)
         {
-            vec4<float> baseColour;
+			FVector4f baseColour;
             res = children[op.args.ImageInterpolate3.target2]->IsColourConstant( colour );
             res &= (colour==baseColour);
         }
@@ -1579,7 +1548,7 @@ bool ASTOpFixed::IsImagePlainConstant( vec4<float>& colour ) const
 
 
 //-------------------------------------------------------------------------------------------------
-bool ASTOpFixed::IsColourConstant( vec4<float>& colour ) const
+bool ASTOpFixed::IsColourConstant(FVector4f& colour) const
 {
     bool res = false;
     switch( op.type )
@@ -1625,20 +1594,6 @@ mu::Ptr<ImageSizeExpression> ASTOpFixed::GetImageSizeExpression() const
         pRes->size[1]=0;
         break;
     }
-
-    case OP_TYPE::IM_LAYER:
-        if ( children[op.args.ImageLayer.base] )
-        {
-            pRes = children[op.args.ImageLayer.base].child()->GetImageSizeExpression();
-        }
-        break;
-
-    case OP_TYPE::IM_LAYERCOLOUR:
-        if ( children[op.args.ImageLayerColour.base] )
-        {
-            pRes = children[op.args.ImageLayerColour.base].child()->GetImageSizeExpression();
-        }
-        break;
 
     case OP_TYPE::IM_RESIZE:
         pRes->type = ImageSizeExpression::ISET_CONSTANT;
@@ -1740,24 +1695,10 @@ mu::Ptr<ImageSizeExpression> ASTOpFixed::GetImageSizeExpression() const
         }
         break;
 
-    case OP_TYPE::IM_SWIZZLE:
-        if ( children[op.args.ImageSwizzle.sources[0]] )
-        {
-            pRes = children[op.args.ImageSwizzle.sources[0]].child()->GetImageSizeExpression();
-        }
-        break;
-
     case OP_TYPE::IM_GRADIENT:
         pRes->type = ImageSizeExpression::ISET_CONSTANT;
         pRes->size[0] = op.args.ImageGradient.size[0];
         pRes->size[1] = op.args.ImageGradient.size[1];
-        break;
-
-    case OP_TYPE::IM_MAKEGROWMAP:
-        if ( children[op.args.ImageMakeGrowMap.mask] )
-        {
-            pRes = children[op.args.ImageMakeGrowMap.mask].child()->GetImageSizeExpression();
-        }
         break;
 
     case OP_TYPE::IM_DISPLACE:
@@ -1772,12 +1713,6 @@ mu::Ptr<ImageSizeExpression> ASTOpFixed::GetImageSizeExpression() const
 		{
 			pRes = children[op.args.ImageInvert.base].child()->GetImageSizeExpression();
 		}
-		break;
-
-	case OP_TYPE::IM_RASTERMESH:
-		pRes->type = ImageSizeExpression::ISET_CONSTANT;
-		pRes->size[0] = op.args.ImageRasterMesh.sizeX ? op.args.ImageRasterMesh.sizeX : 256;
-		pRes->size[1] = op.args.ImageRasterMesh.sizeY ? op.args.ImageRasterMesh.sizeY : 256;
 		break;
     	
     case OP_TYPE::IM_CROP:

@@ -10,6 +10,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"Core",
+					"ApplicationCore",
 					"CoreUObject",
 				    "Slate",
 				    "SlateCore",
@@ -32,8 +33,11 @@ namespace UnrealBuildTool.Rules
 					"GraphEditor",
 					"DataflowCore",
 					"DataflowEngine",
+					"DataflowEnginePlugin",
+					"DataflowNodes",
 					"Slate",
-					"DeveloperSettings",
+					"Chaos",
+					"XmlParser",
 				}
 			);
 		}

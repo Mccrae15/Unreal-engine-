@@ -2,12 +2,16 @@
 
 #pragma once
 
+#include "Animation/Skeleton.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Trail.h"
 #include "TrajectoryCache.h"
-#include "TrajectoryDrawInfo.h"
 
-#include "Sequencer/MovieSceneControlRigParameterSection.h"
 #include "Animation/AnimSequence.h"
+#include "UObject/GCObject.h"
+
+class ISequencer;
 
 namespace UE 
 {
@@ -23,7 +27,7 @@ public:
 		, CachedAnimSequence(NewObject<UAnimSequence>())
 		, GlobalBoneTransforms()
 		, ComponentBoneTransforms()
-		, SkelToTrackIdx()
+		, SkelToBoneName()
 		, AnimRange()
 		, Spacing()
 		, bDirty(true)
@@ -54,7 +58,7 @@ private:
 	UAnimSequence* CachedAnimSequence;
 	TArray<TArray<FTransform>> GlobalBoneTransforms;
 	TArray<TArray<FTransform>> ComponentBoneTransforms;
-	TArray<int32> SkelToTrackIdx;
+	TArray<FName> SkelToBoneName;
 	TRange<double> AnimRange;
 	double Spacing;
 	bool bDirty;

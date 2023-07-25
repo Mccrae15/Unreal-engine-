@@ -22,6 +22,8 @@
 #include "Widgets/SNullWidget.h"
 #include "Widgets/SWidget.h"
 
+#include "ISequencerSection.generated.h"
+
 class FMenuBuilder;
 class FSequencerSectionPainter;
 class IDetailsView;
@@ -44,7 +46,7 @@ namespace UE::Sequencer
 
 /** Enumerates which edge is being resized */
 UENUM()
-enum ESequencerSectionResizeMode
+enum ESequencerSectionResizeMode : int
 {
 	SSRM_LeadingEdge,
 	SSRM_TrailingEdge

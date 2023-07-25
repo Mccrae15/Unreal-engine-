@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimBlueprint.h"
+#include "Animation/AnimInstance.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 
@@ -8,7 +9,6 @@
 
 #if WITH_EDITOR
 #include "Settings/AnimBlueprintSettings.h"
-#include "Modules/ModuleManager.h"
 #endif
 #if WITH_EDITORONLY_DATA
 #include "AnimationEditorUtils.h"
@@ -260,20 +260,29 @@ bool UAnimBlueprint::AllowFunctionOverride(const UFunction* const InFunction) co
 	}
 }
 
+void UAnimBlueprint::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	const FName PropertyName = (PropertyChangedEvent.Property != NULL) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+
+	// Make sure we add / remove linked anim layer sharing blueprint extension
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UAnimBlueprint, bEnableLinkedAnimLayerInstanceSharing))
+	{
+		bRefreshExtensions = true;
+	}
+}
+
 #endif
 
 USkeletalMesh* UAnimBlueprint::GetPreviewMesh(bool bFindIfNotSet/*=false*/)
 {
 #if WITH_EDITORONLY_DATA
-	USkeletalMesh* PreviewMesh = PreviewSkeletalMesh.LoadSynchronous();
-	// if somehow skeleton changes, just nullify it. 
-	if (PreviewMesh && PreviewMesh->GetSkeleton() != TargetSkeleton)
+	if (!PreviewSkeletalMesh.IsValid())
 	{
-		PreviewMesh = nullptr;
-		SetPreviewMesh(nullptr);
+		PreviewSkeletalMesh.LoadSynchronous();
 	}
-
-	return PreviewMesh;
+	return PreviewSkeletalMesh.Get();
 #else
 	return nullptr;
 #endif
@@ -400,7 +409,7 @@ bool UAnimBlueprint::IsCompatible(const UAnimBlueprint* InAnimBlueprint) const
 		return true;
 	}
 
-	return (TargetSkeleton != nullptr && TargetSkeleton->IsCompatible(InAnimBlueprint->TargetSkeleton));
+	return (TargetSkeleton != nullptr && TargetSkeleton->IsCompatibleForEditor(InAnimBlueprint->TargetSkeleton));
 }
 
 bool UAnimBlueprint::IsCompatibleByAssetString(const FString& InSkeletonAsset, bool bInIsTemplate, bool bInIsInterface) const
@@ -417,6 +426,6 @@ bool UAnimBlueprint::IsCompatibleByAssetString(const FString& InSkeletonAsset, b
 		return true;
 	}
 
-	return (TargetSkeleton != nullptr && TargetSkeleton->IsCompatibleSkeletonByAssetString(InSkeletonAsset));
+	return (TargetSkeleton != nullptr && TargetSkeleton->IsCompatibleForEditor(InSkeletonAsset));
 }
 #endif

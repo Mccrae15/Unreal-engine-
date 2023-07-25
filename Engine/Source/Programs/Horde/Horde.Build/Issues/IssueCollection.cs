@@ -9,10 +9,10 @@ using EpicGames.Redis.Utility;
 using Horde.Build.Auditing;
 using Horde.Build.Jobs;
 using Horde.Build.Jobs.Graphs;
-using Horde.Build.Issues;
 using Horde.Build.Logs;
 using Horde.Build.Server;
 using Horde.Build.Streams;
+using Horde.Build.Telemetry;
 using Horde.Build.Users;
 using Horde.Build.Utilities;
 using Microsoft.Extensions.Caching.Memory;
@@ -26,12 +26,12 @@ namespace Horde.Build.Issues
 	using JobId = ObjectId<IJob>;
 	using LogId = ObjectId<ILogFile>;
 	using StreamId = StringId<IStream>;
-	using TemplateRefId = StringId<TemplateRef>;
+	using TemplateId = StringId<ITemplateRef>;
 	using UserId = ObjectId<IUser>;
 
 	class IssueCollection : IIssueCollection
 	{
-		[SingletonDocument("5e4c226440ce25fa3207a9af")]
+		[SingletonDocument("issue-ledger", "5e4c226440ce25fa3207a9af")]
 		class IssueLedger : SingletonBase
 		{
 			public int NextId { get; set; }
@@ -123,6 +123,8 @@ namespace Horde.Build.Issues
 			[BsonIgnoreIfNull]
 			public DateTime? QuarantineTimeUtc { get; set; }
 
+			[BsonIgnoreIfNull]
+			public UserId? ForceClosedByUserId { get; set; }
 
 			[BsonConstructor]
 			private Issue()
@@ -260,7 +262,7 @@ namespace Horde.Build.Issues
 			public string StreamName { get; set; }
 
 			[BsonRequired]
-			public TemplateRefId TemplateRefId { get; set; }
+			public TemplateId TemplateRefId { get; set; }
 
 			[BsonRequired]
 			public string NodeName { get; set; }
@@ -421,12 +423,14 @@ namespace Horde.Build.Issues
 		readonly IMongoCollection<IssueStep> _issueSteps;
 		readonly IMongoCollection<IssueSuspect> _issueSuspects;
 		readonly IAuditLog<int> _auditLog;
+		readonly ITelemetrySink _telemetrySink;
 		readonly ILogger _logger;
 
-		public IssueCollection(MongoService mongoService, RedisService redisService, IUserCollection userCollection, IAuditLogFactory<int> auditLogFactory, ILogger<IssueCollection> logger)
+		public IssueCollection(MongoService mongoService, RedisService redisService, IUserCollection userCollection, IAuditLogFactory<int> auditLogFactory, ITelemetrySink telemetrySink, ILogger<IssueCollection> logger)
 		{
 			_redisService = redisService;
 			_userCollection = userCollection;
+			_telemetrySink = telemetrySink;
 			_logger = logger;
 
 			_ledgerSingleton = new SingletonDocument<IssueLedger>(mongoService);
@@ -454,12 +458,6 @@ namespace Horde.Build.Issues
 			_issueSuspects = mongoService.GetCollection<IssueSuspect>("IssuesV2.Suspects", issueSuspectIndexes);
 
 			_auditLog = auditLogFactory.Create("IssuesV2.History", "IssueId");
-
-			if (!mongoService.ReadOnlyMode)
-			{
-				
-
-			}
 		}
 
 		/// <inheritdoc/>
@@ -489,7 +487,13 @@ namespace Horde.Build.Issues
 			update = update.Set(x => x.UpdateIndex, prevUpdateIndex + 1);
 
 			FindOneAndUpdateOptions<Issue, Issue> options = new FindOneAndUpdateOptions<Issue, Issue> { ReturnDocument = ReturnDocument.After };
-			return await _issues.FindOneAndUpdateAsync<Issue>(x => x.Id == issueDocument.Id && x.UpdateIndex == prevUpdateIndex, update, options);
+
+			Issue? newIssue = await _issues.FindOneAndUpdateAsync<Issue>(x => x.Id == issueDocument.Id && x.UpdateIndex == prevUpdateIndex, update, options);
+			if (newIssue != null)
+			{
+				SendTelemetry(newIssue);
+			}
+			return newIssue;
 		}
 
 		async Task<IssueSpan?> TryUpdateSpanAsync(IIssueSpan issueSpan, UpdateDefinition<IssueSpan> update)
@@ -500,7 +504,13 @@ namespace Horde.Build.Issues
 			update = update.Set(x => x.UpdateIndex, prevUpdateIndex + 1);
 
 			FindOneAndUpdateOptions<IssueSpan, IssueSpan> options = new FindOneAndUpdateOptions<IssueSpan, IssueSpan> { ReturnDocument = ReturnDocument.After };
-			return await _issueSpans.FindOneAndUpdateAsync<IssueSpan>(x => x.Id == issueSpanDocument.Id && x.UpdateIndex == prevUpdateIndex, update, options);
+
+			IssueSpan? newIssueSpan = await _issueSpans.FindOneAndUpdateAsync<IssueSpan>(x => x.Id == issueSpanDocument.Id && x.UpdateIndex == prevUpdateIndex, update, options);
+			if (newIssueSpan != null)
+			{
+				SendTelemetry(newIssueSpan);
+			}
+			return newIssueSpan;
 		}
 
 		#region Issues
@@ -512,6 +522,7 @@ namespace Horde.Build.Issues
 
 			Issue newIssue = new Issue(ledger.NextId, summary);
 			await _issues.InsertOneAsync(newIssue);
+			SendTelemetry(newIssue);
 
 			ILogger issueLogger = GetLogger(newIssue.Id);
 			issueLogger.LogInformation("Created issue {IssueId}", newIssue.Id);
@@ -519,7 +530,61 @@ namespace Horde.Build.Issues
 			return newIssue;
 		}
 
-		static void LogIssueChanges(ILogger issueLogger, Issue oldIssue, Issue newIssue)
+		void SendTelemetry(IIssue issue)
+		{
+			if (_telemetrySink.Enabled)
+			{
+				_telemetrySink.SendEvent("State.Issue", new
+				{
+					Id = issue.Id,
+					AcknowledgedAt = issue.AcknowledgedAt,
+					CreatedAt = issue.CreatedAt,
+					OwnerId = issue.OwnerId,
+					FixChange = issue.FixChange,
+					LastSeenAt = issue.LastSeenAt,
+					NominatedAt = issue.NominatedAt,
+					NominatedById = issue.NominatedById,
+					ResolvedAt = issue.ResolvedAt,
+					ResolvedById = issue.ResolvedById,
+					Severity = issue.Severity,
+					Summary = issue.Summary,
+					VerifiedAt = issue.VerifiedAt
+				});
+			}
+		}
+
+		async ValueTask<string> GetUserNameAsync(UserId? UserId)
+		{
+			if (UserId == null)
+			{
+				return "null";
+			}
+			else if (UserId == IIssue.ResolvedByUnknownId)
+			{
+				return "Horde (Unknown)";
+			}
+			else if (UserId == IIssue.ResolvedByTimeoutId)
+			{
+				return "Horde (Timeout)";
+			}
+
+			IUser? user = await _userCollection.GetCachedUserAsync(UserId);
+			if (user == null)
+			{
+				return "Unknown user";
+			}
+
+			return user.Name;
+		}
+
+		async Task LogIssueChangesAsync(UserId? initiatedByUserId, Issue oldIssue, Issue newIssue)
+		{
+			ILogger issueLogger = GetLogger(oldIssue.Id);
+			using IDisposable scope = issueLogger.BeginScope("User {UserName} ({UserId})", await GetUserNameAsync(initiatedByUserId), initiatedByUserId ?? UserId.Empty);
+			await LogIssueChangesImplAsync(issueLogger, oldIssue, newIssue);
+		}
+
+		async Task LogIssueChangesImplAsync(ILogger issueLogger, Issue oldIssue, Issue newIssue)
 		{
 			if (newIssue.Severity != oldIssue.Severity)
 			{
@@ -540,23 +605,23 @@ namespace Horde.Build.Issues
 			if (newIssue.OwnerId != oldIssue.OwnerId)
 			{
 				if (newIssue.NominatedById != null)
-				{
-					issueLogger.LogInformation("User {UserId} was nominated by {NominatedByUserId}", newIssue.OwnerId, newIssue.NominatedById);
+				{					
+					issueLogger.LogInformation("User {UserName} ({UserId}) was nominated by {NominatedByUserName} ({NominatedByUserId})", await GetUserNameAsync(newIssue.OwnerId), newIssue.OwnerId, await GetUserNameAsync(newIssue.NominatedById), newIssue.NominatedById);
 				}
 				else
 				{
-					issueLogger.LogInformation("User {UserId} was nominated by default", newIssue.OwnerId);
+					issueLogger.LogInformation("User {UserName} ({UserId}) was nominated by default", await GetUserNameAsync(newIssue.OwnerId), newIssue.OwnerId);
 				}
 			}
 			if (newIssue.AcknowledgedAt != oldIssue.AcknowledgedAt)
 			{
 				if (newIssue.AcknowledgedAt == null)
 				{
-					issueLogger.LogInformation("Issue was un-acknowledged by {UserId}", oldIssue.OwnerId);
+					issueLogger.LogInformation("Issue was un-acknowledged by {UserName} ({UserId})", await GetUserNameAsync(oldIssue.OwnerId), oldIssue.OwnerId);
 				}
 				else
 				{
-					issueLogger.LogInformation("Issue was acknowledged by {UserId}", oldIssue.OwnerId);
+					issueLogger.LogInformation("Issue was acknowledged by {UserName} ({UserId})", await GetUserNameAsync(newIssue.OwnerId), newIssue.OwnerId);
 				}
 			}
 			if (newIssue.FixChange != oldIssue.FixChange)
@@ -578,7 +643,7 @@ namespace Horde.Build.Issues
 				}
 				else
 				{
-					issueLogger.LogInformation("Resolved by {UserId}", newIssue.ResolvedById);
+					issueLogger.LogInformation("Resolved by {UserName} ({UserId})", await GetUserNameAsync(newIssue.ResolvedById), newIssue.ResolvedById);
 				}
 			}
 
@@ -606,7 +671,6 @@ namespace Horde.Build.Issues
 				}
 			}
 
-
 			if (newIssue.ExternalIssueKey != oldIssue.ExternalIssueKey)
 			{
 				if (newIssue.ExternalIssueKey != null)
@@ -623,7 +687,7 @@ namespace Horde.Build.Issues
 			{
 				if (newIssue.QuarantinedByUserId != null)
 				{
-					issueLogger.LogInformation("Quarantined by {UserId}", newIssue.QuarantinedByUserId);
+					issueLogger.LogInformation("Quarantined by {UserName} ({UserId})", await GetUserNameAsync(newIssue.QuarantinedByUserId), newIssue.QuarantinedByUserId);
 				}
 				else
 				{
@@ -631,6 +695,17 @@ namespace Horde.Build.Issues
 				}
 			}
 
+			if (newIssue.ForceClosedByUserId != oldIssue.ForceClosedByUserId)
+			{
+				if (newIssue.ForceClosedByUserId != null)
+				{
+					issueLogger.LogInformation("Forced closed by {UserName} ({UserId})", await GetUserNameAsync(newIssue.ForceClosedByUserId), newIssue.ForceClosedByUserId);
+				}
+				else
+				{
+					issueLogger.LogInformation("Force closed cleared");
+				}
+			}
 
 			string oldFingerprints = oldIssue.FingerprintsDesc;
 			string newFingerprints = newIssue.FingerprintsDesc;
@@ -651,28 +726,28 @@ namespace Horde.Build.Issues
 			}
 		}
 
-		static void LogIssueSuspectChanges(ILogger issueLogger, List<IssueSuspect> oldIssueSuspects, List<IssueSuspect> newIssueSuspects)
+		async Task LogIssueSuspectChangesAsync(ILogger issueLogger, List<IssueSuspect> oldIssueSuspects, List<IssueSuspect> newIssueSuspects)
 		{
 			HashSet<(UserId, int)> oldSuspects = new HashSet<(UserId, int)>(oldIssueSuspects.Select(x => (x.AuthorId, x.Change)));
 			HashSet<(UserId, int)> newSuspects = new HashSet<(UserId, int)>(newIssueSuspects.Select(x => (x.AuthorId, x.Change)));
 			foreach ((UserId userId, int change) in newSuspects.Where(x => !oldSuspects.Contains(x)))
 			{
-				issueLogger.LogInformation("Added suspect {UserId} for change {Change}", userId, change);
+				issueLogger.LogInformation("Added suspect {UserName} ({UserId}) for change {Change}", await GetUserNameAsync(userId), userId, change);
 			}
 			foreach ((UserId userId, int change) in oldSuspects.Where(x => !newSuspects.Contains(x)))
 			{
-				issueLogger.LogInformation("Removed suspect {UserId} for change {Change}", userId, change);
+				issueLogger.LogInformation("Removed suspect {UserName} ({UserId}) for change {Change}", await GetUserNameAsync(userId), userId, change);
 			}
 
 			HashSet<UserId> oldDeclinedBy = new HashSet<UserId>(oldIssueSuspects.Where(x => x.DeclinedAt != null).Select(x => x.AuthorId));
 			HashSet<UserId> newDeclinedBy = new HashSet<UserId>(newIssueSuspects.Where(x => x.DeclinedAt != null).Select(x => x.AuthorId));
 			foreach (UserId addDeclinedBy in newDeclinedBy.Where(x => !oldDeclinedBy.Contains(x)))
 			{
-				issueLogger.LogInformation("Declined by {UserId}", addDeclinedBy);
+				issueLogger.LogInformation("Declined by {UserName} ({UserId})", await GetUserNameAsync(addDeclinedBy), addDeclinedBy);
 			}
 			foreach (UserId removeDeclinedBy in oldDeclinedBy.Where(x => !newDeclinedBy.Contains(x)))
 			{
-				issueLogger.LogInformation("Un-declined by {UserId}", removeDeclinedBy);
+				issueLogger.LogInformation("Un-declined by {UserName} ({UserId})", await GetUserNameAsync(removeDeclinedBy), removeDeclinedBy);
 			}
 		}
 
@@ -849,13 +924,18 @@ namespace Horde.Build.Issues
 		}
 
 		/// <inheritdoc/>
-		public async Task<IIssue?> TryUpdateIssueAsync(IIssue issue, IssueSeverity? newSeverity = null, string? newSummary = null, string? newUserSummary = null, string? newDescription = null, bool? newManuallyPromoted = null, UserId? newOwnerId = null, UserId? newNominatedById = null, bool? newAcknowledged = null, UserId? newDeclinedById = null, int? newFixChange = null, UserId? newResolvedById = null, List<ObjectId>? newExcludeSpanIds = null, DateTime? newLastSeenAt = null, string? newExternaIssueKey = null, UserId? newQuarantinedById = null)
+		public async Task<IIssue?> TryUpdateIssueAsync(IIssue issue, UserId? initiatedByUserId, IssueSeverity? newSeverity = null, string? newSummary = null, string? newUserSummary = null, string? newDescription = null, bool? newManuallyPromoted = null, UserId? newOwnerId = null, UserId? newNominatedById = null, bool? newAcknowledged = null, UserId? newDeclinedById = null, int? newFixChange = null, UserId? newResolvedById = null, List<ObjectId>? newExcludeSpanIds = null, DateTime? newLastSeenAt = null, string? newExternaIssueKey = null, UserId? newQuarantinedById = null, UserId? newForceClosedById = null)
 		{
 			Issue issueDocument = (Issue)issue;
 
 			if (newDeclinedById != null && newDeclinedById == issueDocument.OwnerId)
 			{
 				newOwnerId = UserId.Empty;
+			}
+
+			if (issue.ResolvedById == null && (newForceClosedById != null && newResolvedById == null))
+			{
+				newResolvedById = newForceClosedById;
 			}
 
 			DateTime utcNow = DateTime.UtcNow;
@@ -990,6 +1070,7 @@ namespace Horde.Build.Issues
 
 			if (newDeclinedById != null)
 			{
+				GetLogger(issue.Id).LogInformation("Declined by {UserId}", newDeclinedById.Value);
 				await _issueSuspects.UpdateManyAsync(x => x.IssueId == issue.Id && x.AuthorId == newDeclinedById.Value, Builders<IssueSuspect>.Update.Set(x => x.DeclinedAt, DateTime.UtcNow));
 			}
 			if (newQuarantinedById != null)
@@ -1003,6 +1084,18 @@ namespace Horde.Build.Issues
 				{
 					updates.Add(Builders<Issue>.Update.Set(x => x.QuarantinedByUserId!, newQuarantinedById.Value));
 					updates.Add(Builders<Issue>.Update.Set(x => x.QuarantineTimeUtc, DateTime.UtcNow));
+				}
+			}
+
+			if (newForceClosedById != null)
+			{
+				if (newForceClosedById.Value == UserId.Empty)
+				{
+					updates.Add(Builders<Issue>.Update.Unset(x => x.ForceClosedByUserId));
+				}
+				else
+				{
+					updates.Add(Builders<Issue>.Update.Set(x => x.ForceClosedByUserId, newForceClosedById.Value));					
 				}
 			}
 
@@ -1022,8 +1115,7 @@ namespace Horde.Build.Issues
 				return null;
 			}
 
-			ILogger issueLogger = GetLogger(issue.Id);
-			LogIssueChanges(issueLogger, issueDocument, newIssue);
+			await LogIssueChangesAsync(initiatedByUserId, issueDocument, newIssue);
 			return newIssue;
 		}
 
@@ -1145,9 +1237,8 @@ namespace Horde.Build.Issues
 			Issue? newIssue = await TryUpdateIssueAsync(issue, Builders<Issue>.Update.Combine(updates));
 			if(newIssue != null)
 			{
-				ILogger issueLogger = GetLogger(issue.Id);
-				LogIssueChanges(GetLogger(issue.Id), issueImpl, newIssue);
-				LogIssueSuspectChanges(issueLogger, oldSuspectImpls, newSuspectImpls);
+				await LogIssueChangesAsync(null, issueImpl, newIssue);
+				await LogIssueSuspectChangesAsync(GetLogger(issue.Id), oldSuspectImpls, newSuspectImpls);
 				return newIssue;
 			}
 			return null;
@@ -1193,7 +1284,26 @@ namespace Horde.Build.Issues
 		{
 			IssueSpan span = new IssueSpan(issueId, newSpan);
 			await _issueSpans.InsertOneAsync(span);
+			SendTelemetry(span);
 			return span;
+		}
+
+		void SendTelemetry(IIssueSpan issueSpan)
+		{
+			if (_telemetrySink.Enabled)
+			{
+				_telemetrySink.SendEvent("State.IssueSpan", new
+				{
+					Id = issueSpan.Id,
+					IssueId = issueSpan.IssueId,
+					Fingerprint = new { Type = issueSpan.Fingerprint.Type, Keys = issueSpan.Fingerprint.Keys },
+					FirstFailure = new { JobId = issueSpan.FirstFailure.JobId, JobName = issueSpan.FirstFailure.JobName, Change = issueSpan.FirstFailure.Change, StepId = issueSpan.FirstFailure.SpanId },
+					LastFailure = (issueSpan.LastFailure != null) ? new { JobId = issueSpan.LastFailure.JobId, JobName = issueSpan.LastFailure.JobName, Change = issueSpan.LastFailure.Change, StepId = issueSpan.LastFailure.SpanId } : null,
+					StreamId = issueSpan.StreamId,
+					StreamName = issueSpan.StreamName,
+					TemplateRefId = issueSpan.TemplateRefId
+				});
+			}
 		}
 
 		/// <inheritdoc/>
@@ -1261,6 +1371,7 @@ namespace Horde.Build.Issues
 				{
 					logger.LogInformation("Added failure for span {SpanId} in job {JobId} at CL {Change}", newSpan.Id, newFailure.JobId, newFailure.Change);
 				}
+				SendTelemetry(newSpan);
 			}
 			return newSpan;
 		}
@@ -1278,7 +1389,7 @@ namespace Horde.Build.Issues
 		}
 
 		/// <inheritdoc/>
-		public async Task<List<IIssueSpan>> FindOpenSpansAsync(StreamId streamId, TemplateRefId templateId, string nodeName, int change)
+		public async Task<List<IIssueSpan>> FindOpenSpansAsync(StreamId streamId, TemplateId templateId, string nodeName, int change)
 		{
 			List<IssueSpan> spans = await _issueSpans.Find(x => x.StreamId == streamId && x.TemplateRefId == templateId && x.NodeName == nodeName && change >= x.MinChange && change <= x.MaxChange).ToListAsync();
 			return spans.ConvertAll<IIssueSpan>(x => x);

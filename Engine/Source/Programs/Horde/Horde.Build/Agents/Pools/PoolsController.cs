@@ -2,12 +2,15 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Horde.Build.Acls;
 using Horde.Build.Agents.Fleet;
+using Horde.Build.Server;
 using Horde.Build.Utilities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Horde.Build.Agents.Pools
 {
@@ -21,25 +24,16 @@ namespace Horde.Build.Agents.Pools
 	[Route("[controller]")]
 	public class PoolsController : HordeControllerBase
 	{
-		/// <summary>
-		/// Singleton instance of the ACL service
-		/// </summary>
-		private readonly AclService _aclService;
-
-		/// <summary>
-		/// Singleton instance of the pool service
-		/// </summary>
 		private readonly PoolService _poolService;
+		private readonly IOptionsSnapshot<GlobalConfig> _globalConfig;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="aclService">The ACL service</param>
-		/// <param name="poolService">The pool service</param>
-		public PoolsController(AclService aclService, PoolService poolService)
+		public PoolsController(PoolService poolService, IOptionsSnapshot<GlobalConfig> globalConfig)
 		{
-			_aclService = aclService;
 			_poolService = poolService;
+			_globalConfig = globalConfig;
 		}
 
 		/// <summary>
@@ -51,11 +45,13 @@ namespace Horde.Build.Agents.Pools
 		[Route("/api/v1/pools")]
 		public async Task<ActionResult<CreatePoolResponse>> CreatePoolAsync([FromBody] CreatePoolRequest create)
 		{
-			if(!await _aclService.AuthorizeAsync(AclAction.CreatePool, User))
+			if(!_globalConfig.Value.Authorize(AclAction.CreatePool, User))
 			{
 				return Forbid(AclAction.CreatePool);
 			}
 
+			List<PoolSizeStrategyInfo>? sizeStrategies = create.SizeStrategies?.Select(x => x.Convert()).ToList();
+			List<FleetManagerInfo>? fleetManagers = create.FleetManagers?.Select(x => x.Convert()).ToList();
 			LeaseUtilizationSettings? luSettings = create.LeaseUtilizationSettings?.Convert();
 			JobQueueSettings? jqSettings = create.JobQueueSettings?.Convert();
 			ComputeQueueAwsMetricSettings? cqamSettings = create.ComputeQueueAwsMetricSettings?.Convert();
@@ -66,7 +62,7 @@ namespace Horde.Build.Agents.Pools
 
 			IPool newPool = await _poolService.CreatePoolAsync(
 				create.Name, create.Condition, create.EnableAutoscaling, create.MinAgents, create.NumReserveAgents, conformInterval,
-				scaleOutCooldown, scaleInCooldown, create.SizeStrategy, luSettings, jqSettings, cqamSettings, create.Properties);
+				scaleOutCooldown, scaleInCooldown, sizeStrategies, fleetManagers, create.SizeStrategy, luSettings, jqSettings, cqamSettings, create.Properties);
 			return new CreatePoolResponse(newPool.Id.ToString());
 		}
 
@@ -80,7 +76,7 @@ namespace Horde.Build.Agents.Pools
 		[ProducesResponseType(typeof(List<GetPoolResponse>), 200)]
 		public async Task<ActionResult<List<object>>> GetPoolsAsync([FromQuery] PropertyFilter? filter = null)
 		{
-			if (!await _aclService.AuthorizeAsync(AclAction.ListPools, User))
+			if (!_globalConfig.Value.Authorize(AclAction.ListPools, User))
 			{
 				return Forbid(AclAction.ListPools);
 			}
@@ -106,7 +102,7 @@ namespace Horde.Build.Agents.Pools
 		[ProducesResponseType(typeof(GetPoolResponse), 200)]
 		public async Task<ActionResult<object>> GetPoolAsync(string poolId, [FromQuery] PropertyFilter? filter = null)
 		{
-			if (!await _aclService.AuthorizeAsync(AclAction.ViewPool, User))
+			if (!_globalConfig.Value.Authorize(AclAction.ViewPool, User))
 			{
 				return Forbid(AclAction.ViewPool);
 			}
@@ -132,7 +128,7 @@ namespace Horde.Build.Agents.Pools
 		[Route("/api/v1/pools/{poolId}")]
 		public async Task<ActionResult> UpdatePoolAsync(string poolId, [FromBody] UpdatePoolRequest update)
 		{
-			if (!await _aclService.AuthorizeAsync(AclAction.UpdatePool, User))
+			if (!_globalConfig.Value.Authorize(AclAction.UpdatePool, User))
 			{
 				return Forbid(AclAction.UpdatePool);
 			}
@@ -145,12 +141,14 @@ namespace Horde.Build.Agents.Pools
 				return NotFound(poolIdValue);
 			}
 
+			List<PoolSizeStrategyInfo>? newSizeStrategies = update.SizeStrategies?.Select(x => x.Convert()).ToList();
+			List<FleetManagerInfo>? newFleetManagers = update.FleetManagers?.Select(x => x.Convert()).ToList();
 			TimeSpan? conformInterval = update.ConformInterval == null ? null : TimeSpan.FromHours(update.ConformInterval.Value);
 			TimeSpan? scaleOutCooldown = update.ScaleOutCooldown == null ? null : TimeSpan.FromSeconds(update.ScaleOutCooldown.Value);
 			TimeSpan? scaleInCooldown = update.ScaleInCooldown == null ? null : TimeSpan.FromSeconds(update.ScaleInCooldown.Value);
 
 			await _poolService.UpdatePoolAsync(pool, update.Name, update.Condition, update.EnableAutoscaling,
-				update.MinAgents, update.NumReserveAgents, update.Properties, conformInterval, scaleOutCooldown, scaleInCooldown, update.SizeStrategy,
+				update.MinAgents, update.NumReserveAgents, update.Properties, conformInterval, scaleOutCooldown, scaleInCooldown, update.SizeStrategy, newSizeStrategies, newFleetManagers,
 				update.LeaseUtilizationSettings?.Convert(), update.JobQueueSettings?.Convert(), update.ComputeQueueAwsMetricSettings?.Convert(), update.UseDefaultStrategy);
 			return new OkResult();
 		}
@@ -164,7 +162,7 @@ namespace Horde.Build.Agents.Pools
 		[Route("/api/v1/pools/{poolId}")]
 		public async Task<ActionResult> DeletePoolAsync(string poolId)
 		{
-			if (!await _aclService.AuthorizeAsync(AclAction.DeletePool, User))
+			if (!_globalConfig.Value.Authorize(AclAction.DeletePool, User))
 			{
 				return Forbid(AclAction.DeletePool);
 			}
@@ -186,7 +184,7 @@ namespace Horde.Build.Agents.Pools
 		[Route("/api/v1/pools")]
 		public async Task<ActionResult> UpdatePoolAsync([FromBody] List<BatchUpdatePoolRequest> batchUpdates)
 		{
-			if (!await _aclService.AuthorizeAsync(AclAction.UpdatePool, User))
+			if (!_globalConfig.Value.Authorize(AclAction.UpdatePool, User))
 			{
 				return Forbid(AclAction.UpdatePool);
 			}

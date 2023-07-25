@@ -3,16 +3,19 @@
 /*=============================================================================
 =============================================================================*/
 #include "EngineUtils.h"
-#include "Misc/Paths.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "GameFramework/Pawn.h"
+#include "Elements/Framework/TypedElementHandle.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Modules/ModuleManager.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "Misc/EngineVersion.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/LightWeightInstanceSubsystem.h"
+#include "GenericPlatform/ICursor.h"
 #include "Elements/Framework/EngineElementsLibrary.h"
-#include "EngineGlobals.h"
 #include "Components/PrimitiveComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
@@ -21,17 +24,11 @@
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Misc/MapErrors.h"
-#include "EngineModule.h"
-#include "Engine/AssetManager.h"
 #include "Misc/PathViews.h"
-#include "IO/IoDispatcher.h"
 
 #include "ProfilingDebugging/DiagnosticTable.h"
 #include "Interfaces/ITargetPlatform.h"
 
-#include "TextureResource.h"
-#include "Engine/Texture2D.h"
-#include "VirtualTexturing.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEngineUtils, Log, All);
 
@@ -41,6 +38,17 @@ IMPLEMENT_HIT_PROXY(HStaticMeshVert,HHitProxy);
 IMPLEMENT_HIT_PROXY(HTranslucentActor,HActor)
 
 #define LOCTEXT_NAMESPACE "EngineUtils"
+
+void HActor::AddReferencedObjects(FReferenceCollector& Collector)
+{
+	Collector.AddReferencedObject(Actor);
+	Collector.AddReferencedObject(PrimComponent);
+}
+
+EMouseCursor::Type HActor::GetMouseCursor()
+{
+	return EMouseCursor::Crosshairs;
+}
 
 FTypedElementHandle HActor::GetElementHandle() const
 {
@@ -55,6 +63,25 @@ FTypedElementHandle HActor::GetElementHandle() const
 	}
 #endif	// WITH_EDITOR
 	return FTypedElementHandle();
+}
+
+bool HActor::AlwaysAllowsTranslucentPrimitives() const
+{
+#if WITH_EDITOR
+	return PrimComponent->bAlwaysAllowTranslucentSelect;
+#endif
+
+	return false;
+}
+
+EMouseCursor::Type HTranslucentActor::GetMouseCursor()
+{
+	return EMouseCursor::Crosshairs;
+}
+
+bool HTranslucentActor::AlwaysAllowsTranslucentPrimitives() const
+{
+	return true;
 }
 
 #if !UE_BUILD_SHIPPING

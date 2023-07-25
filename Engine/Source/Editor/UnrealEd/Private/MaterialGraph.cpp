@@ -11,15 +11,18 @@
 #include "MaterialGraph/MaterialGraphNode_Root.h"
 #include "MaterialGraph/MaterialGraphSchema.h"
 
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionComposite.h"
 #include "Materials/MaterialExpressionPinBase.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionCustomOutput.h"
 #include "Materials/MaterialExpressionReroute.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionNamedReroute.h"
 #include "Materials/MaterialExpressionExecBegin.h"
 #include "Materials/MaterialExpressionExecEnd.h"
+#include "Materials/MaterialFunction.h"
 
 #include "MaterialCachedHLSLTree.h"
 #include "HLSLTree/HLSLTreeEmit.h"
@@ -258,6 +261,7 @@ void UMaterialGraph::RebuildGraphInternal(const TMap<UMaterialExpression*, TArra
 
 		MaterialInputs.Add(FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_PixelDepthOffset, Material), MP_PixelDepthOffset, LOCTEXT("PixelDepthOffsetToolTip", "Pixel Depth Offset")));
 		MaterialInputs.Add(FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_ShadingModel, Material), MP_ShadingModel, LOCTEXT("ShadingModelToolTip", "Selects which shading model should be used per pixel")));
+		MaterialInputs.Add(FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_SurfaceThickness, Material), MP_SurfaceThickness, LOCTEXT("SurfaceThicknessToolTip", "Defines the surface's thickness when IsThinSurface is enabled")));
 		MaterialInputs.Add(FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_FrontMaterial, Material), MP_FrontMaterial, LOCTEXT("FrontMaterialToolTip", "Specify the front facing material")));
 
 		//^^^ New material properties go above here. ^^^^
@@ -725,7 +729,10 @@ void UMaterialGraph::LinkMaterialExpressionsFromGraph()
 						|| Comment->Text != CommentNode->NodeComment
 						|| Comment->SizeX != CommentNode->NodeWidth
 						|| Comment->SizeY != CommentNode->NodeHeight
-						|| Comment->CommentColor != CommentNode->CommentColor)
+						|| Comment->CommentColor != CommentNode->CommentColor
+						|| Comment->bCommentBubbleVisible_InDetailsPanel != CommentNode->bCommentBubbleVisible_InDetailsPanel
+						|| Comment->bGroupMode != (CommentNode->MoveMode == ECommentBoxMode::GroupMovement)
+						|| Comment->bColorCommentBubble != CommentNode->bColorCommentBubble)
 					{
 						Comment->Modify();
 
@@ -736,6 +743,9 @@ void UMaterialGraph::LinkMaterialExpressionsFromGraph()
 						Comment->SizeX = CommentNode->NodeWidth;
 						Comment->SizeY = CommentNode->NodeHeight;
 						Comment->CommentColor = CommentNode->CommentColor;
+						Comment->bCommentBubbleVisible_InDetailsPanel = CommentNode->bCommentBubbleVisible_InDetailsPanel;
+						Comment->bGroupMode = (CommentNode->MoveMode == ECommentBoxMode::GroupMovement);
+						Comment->bColorCommentBubble = CommentNode->bColorCommentBubble;
 					}
 				}
 			}

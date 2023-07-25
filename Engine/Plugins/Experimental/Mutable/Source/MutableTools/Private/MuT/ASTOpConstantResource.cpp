@@ -7,7 +7,6 @@
 #include "Hash/CityHash.h"
 #include "Misc/AssertionMacros.h"
 #include "MuR/Layout.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Mesh.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/MutableMath.h"
@@ -66,7 +65,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpConstantResource::Link(PROGRAM& program, const FLinkerOptions* Options)
+	void ASTOpConstantResource::Link(FProgram& program, const FLinkerOptions* Options)
 	{
 		if (!linkedAddress && !bLinkedAndNull)
 		{
@@ -177,7 +176,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	FImageDesc ASTOpConstantResource::GetImageDesc(bool, class GetImageDescContext*)
+	FImageDesc ASTOpConstantResource::GetImageDesc(bool, class FGetImageDescContext*) const
 	{
 		FImageDesc res;
 
@@ -200,7 +199,7 @@ namespace mu
 
 	//-------------------------------------------------------------------------------------------------
 	void ASTOpConstantResource::GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY,
-		BLOCK_LAYOUT_SIZE_CACHE*)
+		FBlockLayoutSizeCache*)
 	{
 		switch (type)
 		{
@@ -268,7 +267,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	bool ASTOpConstantResource::IsImagePlainConstant(vec4<float>& colour) const
+	bool ASTOpConstantResource::IsImagePlainConstant(FVector4f& colour) const
 	{
 		bool res = false;
 		switch (type)
@@ -277,15 +276,17 @@ namespace mu
 		case OP_TYPE::IM_CONSTANT:
 		{
 			Ptr<const Image> pImage = static_cast<const Image*>(GetValue().get());
-			check(pImage->m_size[0] > 0);
-			check(pImage->m_size[1] > 0);
-
-			if (pImage->m_flags & Image::IF_IS_PLAIN_COLOUR_VALID)
+			if ( (pImage->m_size[0] <= 0) || (pImage->m_size[1] <= 0) )
+			{
+				res = true;
+				colour = FVector4f(0.0f,0.0f,0.0f,1.0f);
+			}
+			else if (pImage->m_flags & Image::IF_IS_PLAIN_COLOUR_VALID)
 			{
 				if (pImage->m_flags & Image::IF_IS_PLAIN_COLOUR)
 				{
 					res = true;
-					colour = pImage->Sample(vec2<float>(0, 0));
+					colour = pImage->Sample(FVector2f(0, 0));
 				}
 				else
 				{

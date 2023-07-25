@@ -279,13 +279,13 @@ void UMovieScenePiecewiseIntegerBlenderSystem::OnRun(FSystemTaskPrerequisites& I
 		.Read(BuiltInComponents->BlendChannelInput)
 		.Read(BuiltInComponents->IntegerResult)
 		.ReadOptional(BuiltInComponents->WeightAndEasingResult)
-		.FilterAll({ BuiltInComponents->Tags.AbsoluteBlend })
+		.FilterAll({ BuiltInComponents->Tags.AbsoluteBlend, GetBlenderTypeTag() })
 		.FilterNone({ BuiltInComponents->Tags.Ignored })
 		.Dispatch_PerAllocation<FIntegerAccumulationTask>(&Linker->EntityManager, InPrerequisites, nullptr, &AccumulationBuffers.Absolute);
 
 		if (Task)
 		{
-			Prereqs.AddMasterTask(Task);
+			Prereqs.AddRootTask(Task);
 		}
 	}
 
@@ -295,13 +295,13 @@ void UMovieScenePiecewiseIntegerBlenderSystem::OnRun(FSystemTaskPrerequisites& I
 		.Read(BuiltInComponents->BlendChannelInput)
 		.Read(BuiltInComponents->IntegerResult)
 		.ReadOptional(BuiltInComponents->WeightAndEasingResult)
-		.FilterAll({ BuiltInComponents->Tags.RelativeBlend })
+		.FilterAll({ BuiltInComponents->Tags.RelativeBlend, GetBlenderTypeTag() })
 		.FilterNone({ BuiltInComponents->Tags.Ignored })
 		.Dispatch_PerAllocation<FIntegerAccumulationTask>(&Linker->EntityManager, InPrerequisites, nullptr, &AccumulationBuffers.Relative);
 
 		if (Task)
 		{
-			Prereqs.AddMasterTask(Task);
+			Prereqs.AddRootTask(Task);
 		}
 	}
 
@@ -311,13 +311,13 @@ void UMovieScenePiecewiseIntegerBlenderSystem::OnRun(FSystemTaskPrerequisites& I
 		.Read(BuiltInComponents->BlendChannelInput)
 		.Read(BuiltInComponents->IntegerResult)
 		.ReadOptional(BuiltInComponents->WeightAndEasingResult)
-		.FilterAll({ BuiltInComponents->Tags.AdditiveBlend })
+		.FilterAll({ BuiltInComponents->Tags.AdditiveBlend, GetBlenderTypeTag() })
 		.FilterNone({ BuiltInComponents->Tags.Ignored })
 		.Dispatch_PerAllocation<FIntegerAccumulationTask>(&Linker->EntityManager, InPrerequisites, nullptr, &AccumulationBuffers.Additive);
 
 		if (Task)
 		{
-			Prereqs.AddMasterTask(Task);
+			Prereqs.AddRootTask(Task);
 		}
 	}
 
@@ -328,21 +328,22 @@ void UMovieScenePiecewiseIntegerBlenderSystem::OnRun(FSystemTaskPrerequisites& I
 		.Read(BuiltInComponents->IntegerResult)
 		.Read(BuiltInComponents->BaseInteger)
 		.ReadOptional(BuiltInComponents->WeightAndEasingResult)
-		.FilterAll({ BuiltInComponents->Tags.AdditiveFromBaseBlend })
+		.FilterAll({ BuiltInComponents->Tags.AdditiveFromBaseBlend, GetBlenderTypeTag() })
 		.FilterNone({ BuiltInComponents->Tags.Ignored })
 		.Dispatch_PerAllocation<FIntegerAdditiveFromBaseBlendTask>(&Linker->EntityManager, InPrerequisites, nullptr, &AccumulationBuffers.AdditiveFromBase);
 
 		if (Task)
 		{
-			Prereqs.AddMasterTask(Task);
+			Prereqs.AddRootTask(Task);
 		}
 	}
 
-	// Master task that performs the actual blends
+	// Root task that performs the actual blends
 	FEntityTaskBuilder()
 	.Read(BuiltInComponents->BlendChannelOutput)
 	.ReadOptional(TracksComponents->Integer.InitialValue)
 	.Write(BuiltInComponents->IntegerResult)
+	.FilterAll({ GetBlenderTypeTag() })
 	.Dispatch_PerAllocation<FIntegerCombineBlends>(&Linker->EntityManager, Prereqs, &Subsequents, &AccumulationBuffers);
 }
 
@@ -359,10 +360,10 @@ void UMovieScenePiecewiseIntegerBlenderSystem::ReinitializeAccumulationBuffers()
 	// Find if we have any integer results to blend using any supported blend types.
 	const TComponentTypeID<int32> Component = BuiltInComponents->IntegerResult;
 
-	const bool bHasAbsolutes         = Linker->EntityManager.Contains(FEntityComponentFilter().All({ Component, BuiltInComponents->BlendChannelInput, BuiltInComponents->Tags.AbsoluteBlend }));
-	const bool bHasRelatives         = Linker->EntityManager.Contains(FEntityComponentFilter().All({ Component, BuiltInComponents->BlendChannelInput, BuiltInComponents->Tags.RelativeBlend }));
-	const bool bHasAdditives         = Linker->EntityManager.Contains(FEntityComponentFilter().All({ Component, BuiltInComponents->BlendChannelInput, BuiltInComponents->Tags.AdditiveBlend }));
-	const bool bHasAdditivesFromBase = Linker->EntityManager.Contains(FEntityComponentFilter().All({ Component, BuiltInComponents->BlendChannelInput, BuiltInComponents->Tags.AdditiveFromBaseBlend }));
+	const bool bHasAbsolutes         = Linker->EntityManager.Contains(FEntityComponentFilter().All({ GetBlenderTypeTag(), Component, BuiltInComponents->BlendChannelInput, BuiltInComponents->Tags.AbsoluteBlend }));
+	const bool bHasRelatives         = Linker->EntityManager.Contains(FEntityComponentFilter().All({ GetBlenderTypeTag(), Component, BuiltInComponents->BlendChannelInput, BuiltInComponents->Tags.RelativeBlend }));
+	const bool bHasAdditives         = Linker->EntityManager.Contains(FEntityComponentFilter().All({ GetBlenderTypeTag(), Component, BuiltInComponents->BlendChannelInput, BuiltInComponents->Tags.AdditiveBlend }));
+	const bool bHasAdditivesFromBase = Linker->EntityManager.Contains(FEntityComponentFilter().All({ GetBlenderTypeTag(), Component, BuiltInComponents->BlendChannelInput, BuiltInComponents->Tags.AdditiveFromBaseBlend }));
 
 	if (bHasAbsolutes)
 	{

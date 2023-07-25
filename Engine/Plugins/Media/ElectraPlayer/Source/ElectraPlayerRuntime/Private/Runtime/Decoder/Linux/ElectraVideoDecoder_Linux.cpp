@@ -8,6 +8,7 @@ namespace Electra
 FElectraPlayerVideoDecoderOutputLinux::FElectraPlayerVideoDecoderOutputLinux()
 {
 	Stride = 0;
+	NumBits = 0;
 }
 
 FElectraPlayerVideoDecoderOutputLinux::~FElectraPlayerVideoDecoderOutputLinux()
@@ -19,11 +20,12 @@ void FElectraPlayerVideoDecoderOutputLinux::SetDecodedImage(TSharedPtr<ILibavDec
 	DecodedImage = MoveTemp(InDecodedImage);
 }
 
-bool FElectraPlayerVideoDecoderOutputLinux::InitializeForBuffer(FIntPoint Dim, EPixelFormat PixFmt, FParamDict* InParamDict)
+bool FElectraPlayerVideoDecoderOutputLinux::InitializeForBuffer(FIntPoint Dim, EPixelFormat PixFmt, int32 InNumBits, FParamDict* InParamDict)
 {
 	FVideoDecoderOutputLinux::Initialize(InParamDict);
-	check(PixFmt == EPixelFormat::PF_NV12);
-	if (PixFmt != EPixelFormat::PF_NV12)
+	NumBits = InNumBits;
+	check(PixFmt == EPixelFormat::PF_NV12 || PixFmt == EPixelFormat::PF_P010);
+	if (PixFmt != EPixelFormat::PF_NV12 && PixFmt != EPixelFormat::PF_P010)
 	{
 		return false;
 	}
@@ -32,7 +34,11 @@ bool FElectraPlayerVideoDecoderOutputLinux::InitializeForBuffer(FIntPoint Dim, E
 	Dim.X = ((Dim.X + 1) / 2) * 2;
 	Dim.Y = ((Dim.Y + 1) / 2) * 2;
 
-	int32 AllocSize = (Dim.X * Dim.Y) * 3 / 2;
+	int32 AllocSize = (Dim.X * Dim.Y) * 3;
+	if (NumBits <= 8)
+	{
+		AllocSize /= 2;
+	}
 	if (Buffer.Num() < AllocSize)
 	{
 		Buffer.SetNum(AllocSize);

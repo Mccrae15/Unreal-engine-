@@ -5,6 +5,7 @@
 #include "HAL/PlatformMath.h"
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
+#include "Templates/SharedPointer.h"
 
 
 namespace mu
@@ -37,19 +38,6 @@ namespace mu
     class Node;
     class NodeTransformedObject;
 
-    //! Available GPU families
-    typedef enum
-    {
-        GPU_NONE			= 0,
-        GPU_GL4,
-        GPU_GLES2,
-
-        GPU_COUNT
-    } GPU_TYPE;
-
-    //! Return a readable string for a GPU.
-    extern const char* GetGPUName( GPU_TYPE );
-
     //! \brief Options used to compile the models with a compiler.
     class MUTABLETOOLS_API CompilerOptions : public RefCounted
     {
@@ -68,12 +56,6 @@ namespace mu
         void SetConstReductionEnabled( bool bEnabled );
 
         //!
-        void SetEnablePartialOptimisation( bool bEnabled );
-
-		//!
-		void SetEnableConcurrency(bool bEnabled);
-
-        //!
         void SetOptimisationMaxIteration( int maxIterations );
 
         //!
@@ -89,6 +71,9 @@ namespace mu
 
         //! 
         void SetDataPackingStrategy( int32 minRomSize, int32 MinTextureResidentMipCount );
+
+		/** If enabled it will make sure that the object is compile to generate smaller mips of the images. */
+		void SetEnableProgressiveImages(bool bEnabled);
 
         //! Different data packing strategies
         enum class TextureLayoutStrategy : std::uint8_t
@@ -111,13 +96,6 @@ namespace mu
         //! be enabled AND the appropiate serialisation function needs to be called (see
         //! rutime/Model.h).
         void SetTextureLayoutStrategy( TextureLayoutStrategy strategy );
-
-        //! Set the GPU type to optimise for, if any. Defaults to none.
-        void SetGPUType( GPU_TYPE );
-
-        //! If GPU optimsiation is enabled, set the maximum number of fragment textures the gpu can
-        //! use.
-        void SetGPUMaxFragmentTextures( int );
 
         //-----------------------------------------------------------------------------------------
         // Interface pattern
@@ -153,7 +131,7 @@ namespace mu
         Compiler( CompilerOptionsPtr options=nullptr );
 
         //! Compile the expression into a run-time model.
-        ModelPtr Compile( const Ptr<Node>& pNode );
+		TSharedPtr<Model> Compile( const Ptr<Node>& pNode );
 
         //! Return the log of messages of all the compile operations executed so far.
         ErrorLogPtrConst GetLog() const;

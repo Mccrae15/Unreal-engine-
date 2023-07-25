@@ -41,12 +41,12 @@ FStrataDeferredLighting StrataDeferredLighting(
 {
 	FStrataDeferredLighting StrataLighting = GetInitialisedStrataDeferredLighting();
 #if STRATA_MATERIALCONTAINER_IS_VIEWRESOURCE
-	const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, Strata.bRoughDiffuse, Strata.PeelLayersAboveDepth);
+	const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, Strata.bRoughDiffuse, Strata.PeelLayersAboveDepth, Strata.bRoughnessTracking);
 #else
 	const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings();
 #endif
 
-	FRectTexture RectTexture = InitRectTexture(LightData);
+	FRectTexture RectTexture = ConvertToRectTexture(LightData);
 
 	Strata_for (uint BSDFIndex = 0, BSDFIndex < StrataPixelHeader.BSDFCount, ++BSDFIndex)
 	{
@@ -70,18 +70,26 @@ FStrataDeferredLighting StrataDeferredLighting(
 
 			// We must have the StrataIntegrateBSDF inside the if due to the rectlight texture: it must be non ambiguous which texture is going to be used.
 			// After the compilation, a local resource must map to a unique global resource (the default or the actual rect light texture).
-			BSDFEvaluate = StrataIntegrateBSDF(BSDFContext, ShadowTerms, AreaLightContext, Settings);
+			BSDFEvaluate = StrataEvaluateBSDFCommon(BSDFContext, ShadowTerms, AreaLightContext, Settings, INTEGRATION_AREA_LIGHT_RECT);
 		}
 		else
 		{
 			FCapsuleLight Capsule = GetCapsule(ToLight, LightData);
 			AreaLightContext = CreateCapsuleIntegrateContext(Roughness, BSDFContext.N, BSDFContext.V, Capsule, LightData.bInverseSquared);
 
-			BSDFEvaluate = StrataIntegrateBSDF(BSDFContext, ShadowTerms, AreaLightContext, Settings);
+			BRANCH
+			if(IsAreaLight(AreaLightContext.AreaLight))
+			{
+				BSDFEvaluate = StrataEvaluateBSDFCommon(BSDFContext, ShadowTerms, AreaLightContext, Settings, INTEGRATION_AREA_LIGHT_CAPSULE);
+			}
+			else
+			{
+				BSDFEvaluate = StrataEvaluateBSDFCommon(BSDFContext, ShadowTerms, AreaLightContext, Settings, INTEGRATION_PUNCTUAL_LIGHT);
+			}
 		}
 
 		float3 DiffuseLuminance = BSDFEvaluate.IntegratedDiffuseValue;
-		float3 SpecularLuminance = BSDFEvaluate.IntegratedSpecularValue;
+		float3 SpecularLuminance = BSDFEvaluate.IntegratedSpecularValue * LightData.SpecularScale;
 
 		const float3 CommonMultiplier = LightData.Color * LightMask * LuminanceWeight(BSDFContext, BSDF);
 

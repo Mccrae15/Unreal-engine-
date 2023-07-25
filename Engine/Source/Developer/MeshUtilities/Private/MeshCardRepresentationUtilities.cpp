@@ -2,15 +2,18 @@
 
 #include "MeshUtilities.h"
 #include "MeshUtilitiesPrivate.h"
+#include "Async/ParallelFor.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/Material.h"
 #include "RawMesh.h"
 #include "StaticMeshResources.h"
+#include "MeshCardBuild.h"
 #include "MeshCardRepresentation.h"
 #include "DistanceFieldAtlas.h"
 #include "MeshRepresentationCommon.h"
 #include "Containers/BinaryHeap.h"
+#include <cmath>
 
 static TAutoConsoleVariable<int32> CVarCardRepresentationParallelBuild(
 	TEXT("r.MeshCardRepresentation.ParallelBuild"),
@@ -425,7 +428,9 @@ void GenerateSurfelsForDirection(
 
 						// Move ray to the next intersection
 						LastHitCoordZ = HitCoordZ;
-						RayTNear = std::nextafter(FMath::Max(NearPlaneOffset + (LastHitCoordZ + 1) * ClusteringParams.VoxelSize, EmbreeRay.ray.tfar), std::numeric_limits<float>::infinity());
+						// Sometimes EmbreeRay.ray.tnear was further than EmbreeRay.ray.tfar causing an infinite loop
+						const float SafeTFar = FMath::Max(EmbreeRay.ray.tfar, EmbreeRay.ray.tnear);
+						RayTNear = std::nextafter(FMath::Max(NearPlaneOffset + (LastHitCoordZ + 1) * ClusteringParams.VoxelSize, SafeTFar), std::numeric_limits<float>::infinity());
 						SkipPrimId = EmbreeRay.hit.primID;
 					}
 					else
@@ -1030,6 +1035,7 @@ void BuildMeshCards(const FBox& MeshBounds, const FGenerateCardMeshContext& Cont
 	BuildSurfelClusters(MeshBounds, Context, SurfelScene, ClusteringParams, MeshCards);
 
 	OutData.MeshCardsBuildData.Bounds = MeshCardsBounds;
+	OutData.MeshCardsBuildData.bMostlyTwoSided = Context.EmbreeScene.bMostlyTwoSided;
 	OutData.MeshCardsBuildData.CardBuildData.Reset();
 
 	SerializeLOD(Context, ClusteringParams, SurfelScene, MeshCards, MeshCardsBounds, OutData.MeshCardsBuildData);

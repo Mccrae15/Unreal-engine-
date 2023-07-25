@@ -10,6 +10,8 @@
 #include "EngineGlobals.h"
 #include "VulkanLLM.h"
 #include "RenderUtils.h"
+#include "GlobalRenderResources.h"
+#include "RHIShaderParametersShared.h"
 
 static TAutoConsoleVariable<int32> GCVarSubmitOnDispatch(
 	TEXT("r.Vulkan.SubmitOnDispatch"),
@@ -168,34 +170,37 @@ void FVulkanCommandListContext::RHIDispatchIndirectComputeShader(FRHIBuffer* Arg
 
 void FVulkanCommandListContext::RHISetUAVParameter(FRHIPixelShader* PixelShaderRHI, uint32 UAVIndex, FRHIUnorderedAccessView* UAVRHI)
 {
+	if (UAVRHI)
+	{
 	FVulkanUnorderedAccessView* UAV = ResourceCast(UAVRHI);
 	PendingGfxState->SetUAVForStage(ShaderStage::Pixel, UAVIndex, UAV);
+}
 }
 
 void FVulkanCommandListContext::RHISetUAVParameter(FRHIComputeShader* ComputeShaderRHI, uint32 UAVIndex, FRHIUnorderedAccessView* UAVRHI)
 {
-	check(PendingComputeState->GetCurrentShader() == ResourceCast(ComputeShaderRHI));
+	if (UAVRHI)
+	{
+		check(PendingComputeState->GetCurrentShader() == ResourceCast(ComputeShaderRHI));
 
 	FVulkanUnorderedAccessView* UAV = ResourceCast(UAVRHI);
 	PendingComputeState->SetUAVForStage(UAVIndex, UAV);
 }
+}
 
 void FVulkanCommandListContext::RHISetUAVParameter(FRHIComputeShader* ComputeShaderRHI,uint32 UAVIndex, FRHIUnorderedAccessView* UAVRHI, uint32 InitialCount)
 {
-	check(PendingComputeState->GetCurrentShader() == ResourceCast(ComputeShaderRHI));
-
-	FVulkanUnorderedAccessView* UAV = ResourceCast(UAVRHI);
 	ensure(0);
 }
 
 
 void FVulkanCommandListContext::RHISetShaderTexture(FRHIGraphicsShader* ShaderRHI, uint32 TextureIndex, FRHITexture* NewTextureRHI)
 {
-	FVulkanTexture* Texture = FVulkanTexture::Cast(NewTextureRHI);
-	VkImageLayout Layout = LayoutManager.FindLayoutChecked(Texture->Image);
+	FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(NewTextureRHI);
+	const VkImageLayout ExpectedLayout = FVulkanLayoutManager::GetDefaultLayout(GetCommandBufferManager()->GetActiveCmdBuffer(), *VulkanTexture, ERHIAccess::SRVGraphics);
 
 	ShaderStage::EStage Stage = GetAndVerifyShaderStage(ShaderRHI, PendingGfxState);
-	PendingGfxState->SetTextureForStage(Stage, TextureIndex, Texture, Layout);
+	PendingGfxState->SetTextureForStage(Stage, TextureIndex, VulkanTexture, ExpectedLayout);
 	NewTextureRHI->SetLastRenderTime((float)FPlatformTime::Seconds());
 }
 
@@ -205,24 +210,30 @@ void FVulkanCommandListContext::RHISetShaderTexture(FRHIComputeShader* ComputeSh
 	check(PendingComputeState->GetCurrentShader() == ComputeShader);
 
 	FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(NewTextureRHI);
-	VkImageLayout Layout = LayoutManager.FindLayoutChecked(VulkanTexture->Image);
-	PendingComputeState->SetTextureForStage(TextureIndex, VulkanTexture, Layout);
+	const VkImageLayout ExpectedLayout = FVulkanLayoutManager::GetDefaultLayout(GetCommandBufferManager()->GetActiveCmdBuffer(), *VulkanTexture, ERHIAccess::SRVCompute);
+	PendingComputeState->SetTextureForStage(TextureIndex, VulkanTexture, ExpectedLayout);
 	NewTextureRHI->SetLastRenderTime((float)FPlatformTime::Seconds());
 }
 
 void FVulkanCommandListContext::RHISetShaderResourceViewParameter(FRHIGraphicsShader* ShaderRHI, uint32 TextureIndex, FRHIShaderResourceView* SRVRHI)
 {
+	if (SRVRHI)
+	{
 	ShaderStage::EStage Stage = GetAndVerifyShaderStage(ShaderRHI, PendingGfxState);
 	FVulkanShaderResourceView* SRV = ResourceCast(SRVRHI);
 	PendingGfxState->SetSRVForStage(Stage, TextureIndex, SRV);
 }
+}
 
 void FVulkanCommandListContext::RHISetShaderResourceViewParameter(FRHIComputeShader* ComputeShaderRHI,uint32 TextureIndex, FRHIShaderResourceView* SRVRHI)
 {
-	check(PendingComputeState->GetCurrentShader() == ResourceCast(ComputeShaderRHI));
+	if (SRVRHI)
+	{
+		check(PendingComputeState->GetCurrentShader() == ResourceCast(ComputeShaderRHI));
 
 	FVulkanShaderResourceView* SRV = ResourceCast(SRVRHI);
 	PendingComputeState->SetSRVForStage(TextureIndex, SRV);
+}
 }
 
 void FVulkanCommandListContext::RHISetShaderSampler(FRHIGraphicsShader* ShaderRHI, uint32 SamplerIndex, FRHISamplerState* NewStateRHI)
@@ -255,12 +266,70 @@ void FVulkanCommandListContext::RHISetShaderParameter(FRHIComputeShader* Compute
 	PendingComputeState->SetPackedGlobalShaderParameter(BufferIndex, BaseIndex, NumBytes, NewValue);
 }
 
+static void UpdateBindlessHandles(TConstArrayView<FRHIShaderParameterResource> InBindlessParameters)
+{
+	for (const FRHIShaderParameterResource& Parameter : InBindlessParameters)
+	{
+		if (FRHIResource* Resource = Parameter.Resource)
+		{
+			switch (Parameter.Type)
+			{
+			case FRHIShaderParameterResource::EType::ResourceView:
+			{
+				FRHIShaderResourceView* ShaderResourceView = static_cast<FRHIShaderResourceView*>(Resource);
+				FVulkanShaderResourceView* VKShaderResourceView = ResourceCast(ShaderResourceView);
+				VKShaderResourceView->UpdateView();
+				checkSlow(VKShaderResourceView->GetBindlessHandle().IsValid());
+			}
+			break;
+			case FRHIShaderParameterResource::EType::UnorderedAccessView:
+			{
+				FRHIUnorderedAccessView* UnorderedAccessView = static_cast<FRHIUnorderedAccessView*>(Resource);
+				FVulkanUnorderedAccessView* VKUnorderedAccessView = ResourceCast(UnorderedAccessView);
+				VKUnorderedAccessView->UpdateView();
+				checkSlow(VKUnorderedAccessView->GetBindlessHandle().IsValid());
+			}
+			default:
+				break;
+			}
+		}
+	}
+}
+
+void FVulkanCommandListContext::RHISetShaderParameters(FRHIGraphicsShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters)
+{
+	UpdateBindlessHandles(InBindlessParameters);
+
+	UE::RHICore::RHISetShaderParametersShared(
+		*this
+		, Shader
+		, InParametersData
+		, InParameters
+		, InResourceParameters
+		, InBindlessParameters
+	);
+}
+
+void FVulkanCommandListContext::RHISetShaderParameters(FRHIComputeShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters)
+{
+	UpdateBindlessHandles(InBindlessParameters);
+
+	UE::RHICore::RHISetShaderParametersShared(
+		*this
+		, Shader
+		, InParametersData
+		, InParameters
+		, InResourceParameters
+		, InBindlessParameters
+	);
+}
+
 template <typename TState>
 inline void SetShaderUniformBufferResources(FVulkanCommandListContext* Context, TState* State, const FVulkanShader* Shader, const TArray<FVulkanShaderHeader::FGlobalInfo>& GlobalInfos, const TArray<TEnumAsByte<EVulkanBindingType::EType>>& DescriptorTypes, const FVulkanShaderHeader::FUniformBufferInfo& HeaderUBInfo, const FVulkanUniformBuffer* UniformBuffer, const TArray<FDescriptorSetRemappingInfo::FRemappingInfo>& GlobalRemappingInfo)
 {
 #if ENABLE_RHI_VALIDATION
-	static_assert(TIsSame<TState, FVulkanPendingGfxState>::Value || TIsSame<TState, FVulkanPendingComputeState>::Value, "TState must be FVulkanPendingGfxState or FVulkanPendingComputeState");
-	constexpr bool bIsGfx = TIsSame<TState, FVulkanPendingGfxState>::Value;
+	static_assert(std::is_same_v<TState, FVulkanPendingGfxState> || std::is_same_v<TState, FVulkanPendingComputeState>, "TState must be FVulkanPendingGfxState or FVulkanPendingComputeState");
+	constexpr bool bIsGfx = std::is_same_v<TState, FVulkanPendingGfxState>;
 	constexpr ERHIAccess SRVAccess = bIsGfx ? ERHIAccess::SRVGraphics : ERHIAccess::SRVCompute;
 	constexpr ERHIAccess UAVAccess = bIsGfx ? ERHIAccess::UAVGraphics : ERHIAccess::UAVCompute;
 #endif
@@ -319,8 +388,8 @@ inline void SetShaderUniformBufferResources(FVulkanCommandListContext* Context, 
 				}
 #endif
 
-				const VkImageLayout Layout = Context->GetLayoutManager().FindLayoutChecked(VulkanTexture->Image);
-				State->SetTextureForUBResource(GlobalRemappingInfo[ResourceInfo.GlobalIndex].NewDescriptorSet, GlobalRemappingInfo[ResourceInfo.GlobalIndex].NewBindingIndex, VulkanTexture, Layout);
+				const VkImageLayout ExpectedLayout = FVulkanLayoutManager::GetDefaultLayout(Context->GetCommandBufferManager()->GetActiveCmdBuffer(), *VulkanTexture, ERHIAccess::SRVMask);
+				State->SetTextureForUBResource(GlobalRemappingInfo[ResourceInfo.GlobalIndex].NewDescriptorSet, GlobalRemappingInfo[ResourceInfo.GlobalIndex].NewBindingIndex, VulkanTexture, ExpectedLayout);
 				TexRef->SetLastRenderTime(CurrentTime);
 			}
 			else
@@ -646,16 +715,16 @@ void FVulkanCommandListContext::RHIClearMRT(bool bClearColor, int32 NumClearColo
 	FVulkanCmdBuffer* CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
 	//FRCLog::Printf(TEXT("RHIClearMRT"));
 
-	const uint32 NumColorAttachments = LayoutManager.CurrentFramebuffer->GetNumColorAttachments();
+	const uint32 NumColorAttachments = CurrentFramebuffer->GetNumColorAttachments();
 	check(!bClearColor || (uint32)NumClearColors <= NumColorAttachments);
 	InternalClearMRT(CmdBuffer, bClearColor, bClearColor ? NumClearColors : 0, ClearColorArray, bClearDepth, Depth, bClearStencil, Stencil);
 }
 
 void FVulkanCommandListContext::InternalClearMRT(FVulkanCmdBuffer* CmdBuffer, bool bClearColor, int32 NumClearColors, const FLinearColor* ClearColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil)
 {
-	if (LayoutManager.CurrentRenderPass)
+	if (CurrentRenderPass)
 	{
-		const VkExtent2D& Extents = LayoutManager.CurrentRenderPass->GetLayout().GetExtent2D();
+		const VkExtent2D& Extents = CurrentRenderPass->GetLayout().GetExtent2D();
 		VkClearRect Rect;
 		FMemory::Memzero(Rect);
 		Rect.rect.offset.x = 0;
@@ -723,11 +792,6 @@ uint32 FVulkanDynamicRHI::RHIGetGPUFrameCycles(uint32 GPUIndex)
 	return GGPUFrameTime;
 }
 
-void FVulkanDynamicRHI::RHIExecuteCommandList(FRHICommandList* CmdList)
-{
-	VULKAN_SIGNAL_UNIMPLEMENTED();
-}
-
 void FVulkanCommandListContext::RHISetDepthBounds(float MinDepth, float MaxDepth)
 {
 	FVulkanCmdBuffer* CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
@@ -786,12 +850,6 @@ void FVulkanCommandListContext::RHISubmitCommandsHint()
 	CommandBufferManager->RefreshFenceStatus();
 }
 
-void FVulkanCommandListContext::PrepareParallelFromBase(const FVulkanCommandListContext& BaseContext)
-{
-	//#todo-rco: Temp
-	LayoutManager.TempCopy(BaseContext.LayoutManager);
-}
-
 void FVulkanCommandListContext::RHICopyToStagingBuffer(FRHIBuffer* SourceBufferRHI, FRHIStagingBuffer* StagingBufferRHI, uint32 Offset, uint32 NumBytes)
 {
 	FVulkanCmdBuffer* CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
@@ -812,7 +870,6 @@ void FVulkanCommandListContext::RHICopyToStagingBuffer(FRHIBuffer* SourceBufferR
 		StagingBuffer->Device = Device;
 	}
 
-	StagingBuffer->QueuedOffset = Offset;
 	StagingBuffer->QueuedNumBytes = NumBytes;
 
 	VkBufferCopy Region;

@@ -6,7 +6,10 @@
 #include "Containers/Map.h"
 #include "HAL/CriticalSection.h"
 #include "ProfilingDebugging/MemoryTrace.h" // for EMemoryTraceHeapFlags and EMemoryTraceHeapAllocationFlags
+
 #include "TraceServices/Model/AllocationsProvider.h"
+#include "AllocationItem.h"
+#include "AllocMap.h"
 
 namespace TraceServices
 {
@@ -102,40 +105,6 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct FAllocationItem
-{
-	static constexpr uint32 AlignmentBits = 8;
-	static constexpr uint32 AlignmentShift = 56;
-	static constexpr uint64 SizeMask = (1ULL << AlignmentShift) - 1;
-
-	static uint64 UnpackSize(uint64 SizeAndAlignment) { return (SizeAndAlignment & SizeMask); }
-	static uint32 UnpackAlignment(uint64 SizeAndAlignment) { return static_cast<uint32>(SizeAndAlignment >> AlignmentShift); }
-	static uint64 PackSizeAndAlignment(uint64 Size, uint8 Alignment) { return (Size | (static_cast<uint64>(Alignment) << AlignmentShift)); }
-
-	FORCEINLINE bool IsContained(uint64 InAddress) const { return Address >= InAddress && Address < (Address + GetSize()); }
-	uint64 GetSize() const { return UnpackSize(SizeAndAlignment); }
-	uint32 GetAlignment() const { return UnpackAlignment(SizeAndAlignment); }
-	bool IsHeap() const { return EnumHasAnyFlags(Flags, EMemoryTraceHeapAllocationFlags::Heap); }
-
-	uint64 Address;
-	uint64 SizeAndAlignment; // (Alignment << AlignmentShift) | Size
-	uint32 StartEventIndex;
-	uint32 EndEventIndex;
-	double StartTime;
-	double EndTime;
-	uint32 ThreadId;
-	uint32 CallstackId;
-	uint32 FreeCallstackId;
-	uint32 MetadataId;
-	TagIdType Tag;
-	uint8 RootHeap;
-	EMemoryTraceHeapAllocationFlags Flags;
-};
-
-static_assert(sizeof(FAllocationItem) == 64, "struct FAllocationItem needs packing");
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 class FShortLivingAllocs
 {
 private:
@@ -158,7 +127,16 @@ public:
 	bool IsFull() const { return AllocCount == MaxAllocCount; }
 	int32 Num() const { return AllocCount; }
 
-	FORCEINLINE FAllocationItem* FindRef(uint64 Address);
+	// Finds the allocation with the specified address.
+	// Returns the found allocation or nullptr if not found.
+	FORCEINLINE FAllocationItem* FindRef(uint64 Address) const;
+
+	// Finds an allocation containing the specified address.
+	// Returns the found allocation or nullptr if not found.
+	FORCEINLINE FAllocationItem* FindRange(uint64 Address) const;
+
+	FORCEINLINE void Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
+	FORCEINLINE void Enumerate(uint64 StartAddress, uint64 EndAddress, TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
 
 	// The collection keeps ownership of FAllocationItem* until Remove is called or until the oldest allocation is removed.
 	// Returns the removed oldest allocation if collection is already full; nullptr otherwise.
@@ -168,13 +146,8 @@ public:
 	// The caller takes ownership of FAllocationItem*. Returns nullptr if Address is not found.
 	FORCEINLINE FAllocationItem* Remove(uint64 Address);
 
-	void Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
-
-	// Finds an allocation that contains the address specified or null if not found.
-	FAllocationItem* FindRange(uint64 Address) const;
-
 private:
-	//TMap<uint64, FNode*> AddressMap; // map for short living allocations: Address -> FNode*
+	//TMap<uint64, FNode*> AddressMap; // map for short living allocations: Address -> FNode* // #if INSIGHTS_SLA_USE_ADDRESS_MAP
 	FNode* AllNodes = nullptr; // preallocated array of nodes (MaxAllocCount nodes)
 	FNode* LastAddedAllocNode = nullptr; // the last added alloc; double linked list: Prev -> .. -> OldestAlloc
 	FNode* OldestAllocNode = nullptr; // the oldest alloc; double linked list: Next -> .. -> LastAddedAlloc
@@ -210,18 +183,20 @@ public:
 
 	// Finds the last heap allocation with specified address.
 	// Returns the found allocation or nullptr if not found.
-	FORCEINLINE FAllocationItem* FindRef(uint64 Address);
+	FORCEINLINE FAllocationItem* FindRef(uint64 Address) const;
+
+	// Finds a heap allocation containing the specified address.
+	// Returns the found allocation or nullptr if not found.
+	FORCEINLINE FAllocationItem* FindRange(uint64 Address) const;
+
+	FORCEINLINE void Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
+	FORCEINLINE void Enumerate(uint64 StartAddress, uint64 EndAddress, TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
 
 	// The collection keeps ownership of FAllocationItem* until Remove is called.
 	FORCEINLINE void Add(FAllocationItem* Alloc);
 
 	// The caller takes ownership of FAllocationItem*. Returns nullptr if Address is not found.
 	FORCEINLINE FAllocationItem* Remove(uint64 Address);
-
-	void Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
-
-	// Finds an allocation that contains the address specified or null if not found.
-	FAllocationItem* FindRange(uint64 Address) const;
 
 private:
 	TMap<uint64, FList> AddressMap; // map heap allocs: Address -> list of heap allocs
@@ -241,19 +216,25 @@ public:
 
 	// Finds the allocation with specified address.
 	// Returns the found allocation or nullptr if not found.
-	FORCEINLINE FAllocationItem* FindRef(uint64 Address);
+	FORCEINLINE FAllocationItem* FindRef(uint64 Address) const;
 
 	// Finds the heap allocation with specified address.
 	// Returns the found allocation or nullptr if not found.
-	FORCEINLINE FAllocationItem* FindHeapRef(uint64 Address);
+	FORCEINLINE FAllocationItem* FindHeapRef(uint64 Address) const;
 
 	// Finds an allocation containing the address.
 	// Returns the found allocation or nullptr if not found.
-	FORCEINLINE FAllocationItem* FindByAddressRange(uint64 Address);
+	FORCEINLINE FAllocationItem* FindByAddressRange(uint64 Address) const;
 
 	// Finds the heap allocation containing the address.
 	// Returns the found allocation or nullptr if not found.
-	FORCEINLINE FAllocationItem* FindHeapByAddressRange(uint64 Address);
+	FORCEINLINE FAllocationItem* FindHeapByAddressRange(uint64 Address) const;
+
+	// Enumerates all allocations (including heap allocations).
+	FORCEINLINE void Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
+
+	// Enumerates allocations in a sprecified address range (including heap allocations).
+	FORCEINLINE void Enumerate(uint64 StartAddress, uint64 EndAddress, TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
 
 	// Adds a new allocation with specified address.
 	// The collection keeps ownership of FAllocationItem* until Remove is called.
@@ -283,37 +264,11 @@ public:
 	// Returns the removed heap allocation or nullptr if not found.
 	FORCEINLINE FAllocationItem* RemoveHeap(uint64 Address);
 
-	// Enumerates all allocations (including heap allocations).
-	void Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
-
-private:
-	template<typename ValueType>
-	struct TAddressKeyFuncs : BaseKeyFuncs<TPair<uint64, ValueType>, uint64, false>
-	{
-		typedef typename TTypeTraits<uint64>::ConstPointerType KeyInitType;
-		typedef const TPairInitializer<typename TTypeTraits<uint64>::ConstInitType, typename TTypeTraits<ValueType>::ConstInitType>& ElementInitType;
-
-		static FORCEINLINE uint64 GetSetKey(ElementInitType Element)
-		{
-			return Element.Key;
-		}
-
-		static FORCEINLINE bool Matches(uint64 A, uint64 B)
-		{
-			return A == B;
-		}
-
-		static FORCEINLINE uint32 GetKeyHash(uint64 Key)
-		{
-			return uint32(Key >> 6);
-		}
-	};
-
 private:
 	FAllocationItem* LastAlloc = nullptr; // last allocation
-	FShortLivingAllocs ShortLivingAllocs; // short living allocs
-	TMap<uint64, FAllocationItem*, FDefaultSetAllocator, TAddressKeyFuncs<FAllocationItem*>> LongLivingAllocs; // long living allocations
-	FHeapAllocs HeapAllocs; // heap allocs
+	FShortLivingAllocs ShortLivingAllocs; // short living allocations
+	FAllocMap LongLivingAllocs; // long living allocations
+	FHeapAllocs HeapAllocs; // heap allocations
 
 	uint32 TotalAllocCount = 0;
 	uint32 MaxAllocCount = 0; // debug stats
@@ -374,10 +329,10 @@ public:
 
 	void EditInit(double Time, uint8 MinAlignment);
 
-	void EditHeapSpec(HeapId Id, HeapId ParentId, const FStringView& Name, EMemoryTraceHeapFlags Flags);
-
 	void EditAlloc(double Time, uint32 CallstackId, uint64 Address, uint64 Size, uint32 Alignment, HeapId RootHeap);
 	void EditFree(double Time, uint32 CallstackId, uint64 Address, HeapId RootHeap);
+
+	void EditHeapSpec(HeapId Id, HeapId ParentId, const FStringView& Name, EMemoryTraceHeapFlags Flags);
 	void EditMarkAllocationAsHeap(double Time, uint64 Address, HeapId Heap, EMemoryTraceHeapAllocationFlags Flags);
 	void EditUnmarkAllocationAsHeap(double Time, uint64 Address, HeapId Heap);
 
@@ -433,6 +388,7 @@ private:
 
 	uint64 AllocCount = 0;
 	uint64 FreeCount = 0;
+	uint64 HeapCount = 0;
 
 	uint64 MiscErrors = 0;
 	uint64 HeapErrors = 0;

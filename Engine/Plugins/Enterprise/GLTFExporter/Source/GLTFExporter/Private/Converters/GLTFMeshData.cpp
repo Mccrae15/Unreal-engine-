@@ -1,8 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Converters/GLTFMeshData.h"
-#include "Converters/GLTFNameUtility.h"
-
+#include "Converters/GLTFNameUtilities.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -11,6 +10,7 @@
 #include "Editor.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "MeshMergeHelpers.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "StaticMeshAttributes.h"
 #endif
@@ -30,11 +30,11 @@ FGLTFMeshData::FGLTFMeshData(const UStaticMesh* StaticMesh, const UStaticMeshCom
 
 	if (StaticMeshComponent != nullptr)
 	{
-		Name = FGLTFNameUtility::GetName(StaticMeshComponent);
+		Name = FGLTFNameUtilities::GetName(StaticMeshComponent);
 
 #if WITH_EDITOR
 		PrimitiveData = { StaticMeshComponent };
-		FMeshMergeHelpers::RetrieveMesh(StaticMeshComponent, LODIndex, Description, true);
+		FMeshMergeHelpers::RetrieveMesh(StaticMeshComponent, LODIndex, Description, true, false);
 
 		constexpr int32 LightMapLODIndex = 0; // TODO: why is this zero?
 		if (StaticMeshComponent->LODData.IsValidIndex(LightMapLODIndex))
@@ -82,11 +82,11 @@ FGLTFMeshData::FGLTFMeshData(const USkeletalMesh* SkeletalMesh, const USkeletalM
 
 	if (SkeletalMeshComponent != nullptr)
 	{
-		Name = FGLTFNameUtility::GetName(SkeletalMeshComponent);
+		Name = FGLTFNameUtilities::GetName(SkeletalMeshComponent);
 
 #if WITH_EDITOR
 		PrimitiveData = { SkeletalMeshComponent };
-		FMeshMergeHelpers::RetrieveMesh(SkeletalMeshComponent, LODIndex, Description, true);
+		FMeshMergeHelpers::RetrieveMesh(SkeletalMeshComponent, LODIndex, Description, true, false);
 #endif
 	}
 	else
@@ -108,15 +108,15 @@ FGLTFMeshData::FGLTFMeshData(const USkeletalMesh* SkeletalMesh, const USkeletalM
 			SpawnParams.ObjectFlags |= RF_Transient;
 			SpawnParams.bAllowDuringConstructionScript = true;
 
-			if (AActor* Actor = World->SpawnActor<AActor>(SpawnParams))
+			if (AActor* TempActor = World->SpawnActor<AActor>(SpawnParams))
 			{
-				USkeletalMeshComponent* Component = NewObject<USkeletalMeshComponent>(Actor, TEXT(""), RF_Transient);
-				Component->RegisterComponent();
-				Component->SetSkeletalMesh(const_cast<USkeletalMesh*>(SkeletalMesh));
+				USkeletalMeshComponent* TempComponent = NewObject<USkeletalMeshComponent>(TempActor, TEXT(""), RF_Transient);
+				TempComponent->RegisterComponent();
+				TempComponent->SetSkeletalMesh(const_cast<USkeletalMesh*>(SkeletalMesh));
 
-				FMeshMergeHelpers::RetrieveMesh(Component, LODIndex, Description, true);
+				FMeshMergeHelpers::RetrieveMesh(TempComponent, LODIndex, Description, true, false);
 
-				World->DestroyActor(Actor, false, false);
+				World->DestroyActor(TempActor, false, false);
 			}
 		}
 #endif

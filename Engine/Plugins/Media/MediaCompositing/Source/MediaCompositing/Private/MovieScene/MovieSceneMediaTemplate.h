@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include "Channels/MovieSceneFloatChannel.h"
 #include "Evaluation/MovieSceneEvalTemplate.h"
 #include "Evaluation/MovieScenePropertyTemplate.h"
+#include "MovieSceneObjectBindingID.h"
 
 #include "MovieSceneMediaTemplate.generated.h"
 
@@ -27,6 +29,12 @@ struct FMovieSceneMediaSectionParams
 	TObjectPtr<UMediaSource> MediaSource;
 
 	UPROPERTY()
+	FMovieSceneObjectBindingID MediaSourceProxy;
+
+	UPROPERTY()
+	int32 MediaSourceProxyIndex;
+
+	UPROPERTY()
 	TObjectPtr<UMediaTexture> MediaTexture;
 
 	UPROPERTY()
@@ -44,9 +52,13 @@ struct FMovieSceneMediaSectionParams
 	UPROPERTY()
 	FFrameNumber StartFrameOffset;
 
+	UPROPERTY()
+	FMovieSceneFloatChannel ProxyTextureBlend;
+
 	FMovieSceneMediaSectionParams()
 		: MediaSoundComponent(nullptr)
 		, MediaSource(nullptr)
+		, MediaSourceProxyIndex(0)
 		, MediaTexture(nullptr)
 		, MediaPlayer(nullptr)
 		, bLooping(false)
@@ -85,4 +97,7 @@ private:
 
 	UPROPERTY()
 	FMovieSceneMediaSectionParams Params;
+
+	UPROPERTY()
+	TObjectPtr<const UMovieSceneMediaSection> MediaSection;
 };

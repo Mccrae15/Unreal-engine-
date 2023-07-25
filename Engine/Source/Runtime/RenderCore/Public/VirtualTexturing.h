@@ -12,7 +12,9 @@
 #include "Misc/AssertionMacros.h"
 #include "Misc/EnumClassFlags.h"
 #include "PixelFormat.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHIDefinitions.h"
+#endif
 #include "Stats/Stats.h"
 #include "Stats/Stats2.h"
 #include "Templates/RefCounting.h"
@@ -20,10 +22,12 @@
 #include "UObject/NameTypes.h"
 
 class FRDGBuilder;
+class FRHICommandList;
 class FRHICommandListImmediate;
 class FRHIShaderResourceView;
 class FRHITexture;
 class FRHIUnorderedAccessView;
+namespace ERHIFeatureLevel { enum Type : int; }
 
 union FVirtualTextureProducerHandle
 {
@@ -40,11 +44,11 @@ union FVirtualTextureProducerHandle
 		uint32 Index : 22;
 		uint32 Magic : 10;
 	};
+
+	friend inline bool operator==(const FVirtualTextureProducerHandle& Lhs, const FVirtualTextureProducerHandle& Rhs) { return Lhs.PackedValue == Rhs.PackedValue; }
+	friend inline bool operator!=(const FVirtualTextureProducerHandle& Lhs, const FVirtualTextureProducerHandle& Rhs) { return Lhs.PackedValue != Rhs.PackedValue; }
 };
 static_assert(sizeof(FVirtualTextureProducerHandle) == sizeof(uint32), "Bad packing");
-
-inline bool operator==(const FVirtualTextureProducerHandle& Lhs, const FVirtualTextureProducerHandle& Rhs) { return Lhs.PackedValue == Rhs.PackedValue; }
-inline bool operator!=(const FVirtualTextureProducerHandle& Lhs, const FVirtualTextureProducerHandle& Rhs) { return Lhs.PackedValue != Rhs.PackedValue; }
 
 /** Maximum number of layers that can be allocated in a single VT page table */
 #define VIRTUALTEXTURE_SPACE_MAXLAYERS 8
@@ -95,47 +99,47 @@ struct FAllocatedVTDescription
 			uint8 bShareDuplicateLayers : 1;
 		};
 	};
-};
 
-inline bool operator==(const FAllocatedVTDescription& Lhs, const FAllocatedVTDescription& Rhs)
-{
-	if (Lhs.TileSize != Rhs.TileSize ||
-		Lhs.TileBorderSize != Rhs.TileBorderSize ||
-		Lhs.Dimensions != Rhs.Dimensions ||
-		Lhs.NumTextureLayers != Rhs.NumTextureLayers ||
-		Lhs.PackedFlags != Rhs.PackedFlags)
+	friend inline bool operator==(const FAllocatedVTDescription& Lhs, const FAllocatedVTDescription& Rhs)
 	{
-		return false;
-	}
-	for (uint32 LayerIndex = 0u; LayerIndex < Lhs.NumTextureLayers; ++LayerIndex)
-	{
-		if (Lhs.ProducerHandle[LayerIndex] != Rhs.ProducerHandle[LayerIndex] ||
-			Lhs.ProducerLayerIndex[LayerIndex] != Rhs.ProducerLayerIndex[LayerIndex])
+		if (Lhs.TileSize != Rhs.TileSize ||
+			Lhs.TileBorderSize != Rhs.TileBorderSize ||
+			Lhs.Dimensions != Rhs.Dimensions ||
+			Lhs.NumTextureLayers != Rhs.NumTextureLayers ||
+			Lhs.PackedFlags != Rhs.PackedFlags)
 		{
 			return false;
 		}
+		for (uint32 LayerIndex = 0u; LayerIndex < Lhs.NumTextureLayers; ++LayerIndex)
+		{
+			if (Lhs.ProducerHandle[LayerIndex] != Rhs.ProducerHandle[LayerIndex] ||
+				Lhs.ProducerLayerIndex[LayerIndex] != Rhs.ProducerLayerIndex[LayerIndex])
+			{
+				return false;
+			}
+		}
+		return true;
 	}
-	return true;
-}
-inline bool operator!=(const FAllocatedVTDescription& Lhs, const FAllocatedVTDescription& Rhs)
-{
-	return !operator==(Lhs, Rhs);
-}
-
-inline uint32 GetTypeHash(const FAllocatedVTDescription& Description)
-{
-	uint32 Hash = GetTypeHash(Description.TileSize);
-	Hash = HashCombine(Hash, GetTypeHash(Description.TileBorderSize));
-	Hash = HashCombine(Hash, GetTypeHash(Description.Dimensions));
-	Hash = HashCombine(Hash, GetTypeHash(Description.NumTextureLayers));
-	Hash = HashCombine(Hash, GetTypeHash(Description.PackedFlags));
-	for (uint32 LayerIndex = 0u; LayerIndex < Description.NumTextureLayers; ++LayerIndex)
+	friend inline bool operator!=(const FAllocatedVTDescription& Lhs, const FAllocatedVTDescription& Rhs)
 	{
-		Hash = HashCombine(Hash, GetTypeHash(Description.ProducerHandle[LayerIndex].PackedValue));
-		Hash = HashCombine(Hash, GetTypeHash(Description.ProducerLayerIndex[LayerIndex]));
+		return !operator==(Lhs, Rhs);
 	}
-	return Hash;
-}
+
+	friend inline uint32 GetTypeHash(const FAllocatedVTDescription& Description)
+	{
+		uint32 Hash = GetTypeHash(Description.TileSize);
+		Hash = HashCombine(Hash, GetTypeHash(Description.TileBorderSize));
+		Hash = HashCombine(Hash, GetTypeHash(Description.Dimensions));
+		Hash = HashCombine(Hash, GetTypeHash(Description.NumTextureLayers));
+		Hash = HashCombine(Hash, GetTypeHash(Description.PackedFlags));
+		for (uint32 LayerIndex = 0u; LayerIndex < Description.NumTextureLayers; ++LayerIndex)
+		{
+			Hash = HashCombine(Hash, GetTypeHash(Description.ProducerHandle[LayerIndex].PackedValue));
+			Hash = HashCombine(Hash, GetTypeHash(Description.ProducerLayerIndex[LayerIndex]));
+		}
+		return Hash;
+	}
+};
 
 struct FVTProducerDescription
 {
@@ -172,6 +176,7 @@ struct FVTProducerDescription
 	uint8 NumTextureLayers = 0u;
 	TEnumAsByte<EPixelFormat> LayerFormat[VIRTUALTEXTURE_SPACE_MAXLAYERS] = { PF_Unknown };
 	FLinearColor LayerFallbackColor[VIRTUALTEXTURE_SPACE_MAXLAYERS] = { FLinearColor::Black };
+	bool bIsLayerSRGB[VIRTUALTEXTURE_SPACE_MAXLAYERS] = { false };
 	
 	uint8 NumPhysicalGroups = 0u;
 	uint8 PhysicalGroupIndex[VIRTUALTEXTURE_SPACE_MAXLAYERS] = { 0 };
@@ -183,9 +188,6 @@ class IVirtualTextureFinalizer
 {
 public:
 	virtual void Finalize(FRDGBuilder& GraphBuilder) = 0;
-
-	UE_DEPRECATED(5.0, "This method has been refactored to use an FRDGBuilder instead.")
-	virtual void Finalize(FRHICommandListImmediate& RHICmdList) {}
 };
 
 enum class EVTRequestPageStatus
@@ -293,7 +295,10 @@ public:
 	* @param Priority Priority of the request, used to drive async IO/task priority needed to generate data for request
 	* @return FVTRequestPageResult describing the availability of the request
 	*/
-	virtual FVTRequestPageResult RequestPageData(const FVirtualTextureProducerHandle& ProducerHandle, uint8 LayerMask, uint8 vLevel, uint64 vAddress, EVTRequestPagePriority Priority) = 0;
+	virtual FVTRequestPageResult RequestPageData(FRHICommandList& RHICmdList, const FVirtualTextureProducerHandle& ProducerHandle, uint8 LayerMask, uint8 vLevel, uint64 vAddress, EVTRequestPagePriority Priority) = 0;
+
+	UE_DEPRECATED(5.2, "RequestPageData now requires an RHI command list.")
+	virtual FVTRequestPageResult RequestPageData(const FVirtualTextureProducerHandle& ProducerHandle, uint8 LayerMask, uint8 vLevel, uint64 vAddress, EVTRequestPagePriority Priority) { return {}; }
 
 	/**
 	* Upload page data to the cache, data must have been previously requested, and reported either 'Available' or 'Pending'
@@ -311,7 +316,7 @@ public:
 	* @param TargetLayers Array of 'FVTProduceTargetLayer' structs, gives location where each layer should write data
 	* @return a 'IVirtualTextureFinalizer' which must be finalized to complete the operation
 	*/
-	virtual IVirtualTextureFinalizer* ProducePageData(FRHICommandListImmediate& RHICmdList,
+	virtual IVirtualTextureFinalizer* ProducePageData(FRHICommandList& RHICmdList,
 		ERHIFeatureLevel::Type FeatureLevel,
 		EVTProducePageFlags Flags,
 		const FVirtualTextureProducerHandle& ProducerHandle, uint8 LayerMask, uint8 vLevel, uint64 vAddress,
@@ -481,12 +486,12 @@ union FVirtualTextureLocalTile
 		uint32 Local_vLevel : 4;
 		uint32 Pad : 4;
 	};
+
+	friend inline bool operator==(const FVirtualTextureLocalTile& Lhs, const FVirtualTextureLocalTile& Rhs) { return Lhs.PackedValue == Rhs.PackedValue; }
+	friend inline bool operator!=(const FVirtualTextureLocalTile& Lhs, const FVirtualTextureLocalTile& Rhs) { return Lhs.PackedValue != Rhs.PackedValue; }
+	friend inline uint64 GetTypeHash(const FVirtualTextureLocalTile& T) { return T.PackedValue; }
 };
 static_assert(sizeof(FVirtualTextureLocalTile) == sizeof(uint64), "Bad packing");
-
-inline uint64 GetTypeHash(const FVirtualTextureLocalTile& T) { return T.PackedValue; }
-inline bool operator==(const FVirtualTextureLocalTile& Lhs, const FVirtualTextureLocalTile& Rhs) { return Lhs.PackedValue == Rhs.PackedValue; }
-inline bool operator!=(const FVirtualTextureLocalTile& Lhs, const FVirtualTextureLocalTile& Rhs) { return Lhs.PackedValue != Rhs.PackedValue; }
 
 RENDERCORE_API DECLARE_LOG_CATEGORY_EXTERN(LogVirtualTexturing, Log, All);
 

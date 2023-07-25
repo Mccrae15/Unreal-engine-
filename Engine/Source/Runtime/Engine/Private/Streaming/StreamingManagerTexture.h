@@ -93,7 +93,7 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 	virtual int64 GetMemoryOverBudget() const override { return MemoryOverBudget; }
 
 	/** Pool size for streaming. */
-	virtual int64 GetPoolSize() const override { return GTexturePoolSize;  }
+	virtual int64 GetPoolSize() const override;
 
 	virtual int64 GetRequiredPoolSize() const override { return DisplayedStats.RequiredPool; }
 
@@ -138,6 +138,9 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 
 	/** Removes a texture/mesh from the streaming manager. */
 	virtual void RemoveStreamingRenderAsset( UStreamableRenderAsset* RenderAsset ) override;
+
+	/** Only call on the game thread. */
+	virtual bool IsFullyStreamedIn(UStreamableRenderAsset* RenderAsset) override;
 
 	/** Adds a ULevel to the streaming manager. */
 	virtual void AddLevel( class ULevel* Level ) override;

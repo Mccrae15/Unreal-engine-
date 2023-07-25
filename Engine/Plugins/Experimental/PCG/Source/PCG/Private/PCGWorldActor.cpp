@@ -2,17 +2,21 @@
 
 #include "PCGWorldActor.h"
 
+#include "Grid/PCGLandscapeCache.h"
 #include "PCGComponent.h"
+#include "PCGModule.h"
 #include "PCGSubsystem.h"
 #include "Grid/PCGPartitionActor.h"
 #include "Helpers/PCGActorHelpers.h"
 
 #include "Engine/World.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGWorldActor)
+
 APCGWorldActor::APCGWorldActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 	bIsSpatiallyLoaded = false;
 	bDefaultOutlinerExpansionState = false;
 #endif
@@ -29,16 +33,16 @@ void APCGWorldActor::BeginCacheForCookedPlatformData(const ITargetPlatform* Targ
 }
 #endif
 
-void APCGWorldActor::PostLoad()
+void APCGWorldActor::BeginPlay()
 {
-	Super::PostLoad();
+	Super::BeginPlay();
 	RegisterToSubsystem();
 }
 
-void APCGWorldActor::BeginDestroy()
+void APCGWorldActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	UnregisterFromSubsystem();
-	Super::BeginDestroy();
+	Super::EndPlay(EndPlayReason);
 }
 
 #if WITH_EDITOR
@@ -54,8 +58,7 @@ APCGWorldActor* APCGWorldActor::CreatePCGWorldActor(UWorld* InWorld)
 
 void APCGWorldActor::RegisterToSubsystem()
 {
-	UPCGSubsystem* PCGSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UPCGSubsystem>() : nullptr;
-	if (PCGSubsystem)
+	if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(GetWorld()))
 	{
 		PCGSubsystem->RegisterPCGWorldActor(this);
 	}
@@ -63,8 +66,7 @@ void APCGWorldActor::RegisterToSubsystem()
 
 void APCGWorldActor::UnregisterFromSubsystem()
 {
-	UPCGSubsystem* PCGSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UPCGSubsystem>() : nullptr;
-	if (PCGSubsystem)
+	if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(GetWorld()))
 	{
 		PCGSubsystem->UnregisterPCGWorldActor(this);
 	}
@@ -81,7 +83,7 @@ void APCGWorldActor::OnPartitionGridSizeChanged()
 		return;
 	}
 
-	UPCGSubsystem* PCGSubsystem = World->GetSubsystem<UPCGSubsystem>();
+	UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(World);
 	ULevel* Level = World->GetCurrentLevel();
 	if (!PCGSubsystem || !Level)
 	{
@@ -118,7 +120,7 @@ void APCGWorldActor::OnPartitionGridSizeChanged()
 
 	// And finally, refresh all components that are partitioned (registered to the PCGSubsystem)
 	// to let them recreate the needed PCG Partition Actors.
-	for (UPCGComponent* PCGComponent : PCGSubsystem->GetAllRegisteredComponents())
+	for (UPCGComponent* PCGComponent : PCGSubsystem->GetAllRegisteredPartitionedComponents())
 	{
 		check(PCGComponent);
 		PCGComponent->DirtyGenerated();

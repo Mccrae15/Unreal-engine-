@@ -4,28 +4,20 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "Containers/Array.h"
 #include "Containers/Map.h"
-#include "UObject/NameTypes.h"
-#include "SceneViewExtension.h"
-
+#include "UObject/ObjectKey.h"
 #include "HLODSubsystem.generated.h"
 
+
+class AWorldPartitionHLOD;
+class FSceneViewFamily;
+class FHLODResourcesResidencySceneViewExtension;
 class UWorldPartition;
 class UWorldPartitionRuntimeCell;
-class AWorldPartitionHLOD;
+class UWorld;
 
-class FHLODResourcesResidencySceneViewExtension : public FWorldSceneViewExtension
-{
-public:
-	FHLODResourcesResidencySceneViewExtension(const FAutoRegister& AutoRegister, UWorld* InWorld)
-		: FWorldSceneViewExtension(AutoRegister, InWorld)
-	{
-	}
+DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPartitionHLODActorRegisteredEvent, AWorldPartitionHLOD* /* InHLODActor */);
+DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPartitionHLODActorUnregisteredEvent, AWorldPartitionHLOD* /* InHLODActor */);
 
-	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
-	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
-
-	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override;
-};
 
 /**
  * UHLODSubsystem
@@ -46,6 +38,7 @@ public:
 
 	//~ Begin UWorldSubsystem Interface.
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
+	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 	//~ End UWorldSubsystem Interface.
 
 	void RegisterHLODActor(AWorldPartitionHLOD* InWorldPartitionHLOD);
@@ -54,40 +47,54 @@ public:
 	void OnCellShown(const UWorldPartitionRuntimeCell* InCell);
 	void OnCellHidden(const UWorldPartitionRuntimeCell* InCell);
 
-	bool RequestUnloading(const UWorldPartitionRuntimeCell* InCell);
+	bool CanMakeVisible(const UWorldPartitionRuntimeCell* InCell);
+	bool CanMakeInvisible(const UWorldPartitionRuntimeCell* InCell);
+
+	const TArray<AWorldPartitionHLOD*>& GetHLODActorsForCell(const UWorldPartitionRuntimeCell* InCell) const;
 
 	static bool IsHLODEnabled();
+
+	FWorldPartitionHLODActorRegisteredEvent& OnHLODActorRegisteredEvent() { return HLODActorRegisteredEvent; }
+	FWorldPartitionHLODActorUnregisteredEvent& OnHLODActorUnregisteredEvent() { return HLODActorUnregisteredEvent; }
+
+	void SetHLODAlwaysLoadedCullDistance(int32 InCullDistance);
+
+	void OnCVarsChanged();
 	
 private:
 	struct FCellData
 	{
-		bool						bIsCellVisible;
-		TSet<AWorldPartitionHLOD*>	LoadedHLODs;
-
-		uint32						WarmupStartFrame;
-		uint32						WarmupEndFrame;
-
-		FCellData() 
-			: bIsCellVisible(false)
-			, WarmupStartFrame(INDEX_NONE)
-			, WarmupEndFrame(INDEX_NONE)
-		{
-		}
+		bool bIsCellVisible = false;
+		TArray<AWorldPartitionHLOD*> LoadedHLODs;
 	};
 
 	struct FWorldPartitionHLODRuntimeData
 	{
-		TMap<FName, FCellData> CellsData;
-		TSet<FCellData*> CellsToWarmup;
+		TMap<FGuid, FCellData> CellsData;
 	};
 	
 	TMap<TObjectPtr<UWorldPartition>, FWorldPartitionHLODRuntimeData> WorldPartitionsHLODRuntimeData;
-		
-	void OnWorldPartitionInitialized(UWorldPartition* InWorldPartition);
-	void OnWorldPartitionUninitialized(UWorldPartition* InWorldPartition);
-	void OnBeginRenderViews(const FSceneViewFamily& InViewFamily);
+	const FCellData* GetCellData(const UWorldPartitionRuntimeCell* InCell) const;
+	FCellData* GetCellData(const UWorldPartitionRuntimeCell* InCell);
+	FCellData* GetCellData(AWorldPartitionHLOD* InWorldPartitionHLOD);
 
-	void MakeRenderResourcesResident(const FCellData& CellHLODs, const FSceneViewFamily& InViewFamily);
+	TArray<AWorldPartitionHLOD*> AlwaysLoadedHLODActors;
+
+	struct FWorldPartitionHLODWarmupState
+	{
+		uint32 WarmupStartFrame = INDEX_NONE;
+		uint32 WarmupEndFrame = INDEX_NONE;
+		FVector Location;
+	};
+
+	typedef TMap<FObjectKey, FWorldPartitionHLODWarmupState> FHLODWarmupStateMap;
+	FHLODWarmupStateMap HLODActorsToWarmup;
+
+	void OnBeginRenderViews(const FSceneViewFamily& InViewFamily);
+	bool PrepareToWarmup(const UWorldPartitionRuntimeCell* InCell, AWorldPartitionHLOD* InHLODActor);
+	bool ShouldPerformWarmup() const;
+	bool ShouldPerformWarmupForCell(const UWorldPartitionRuntimeCell* InCell) const;
+	bool bCachedShouldPerformWarmup;
 
 	/** Console command used to turn on/off loading & rendering of world partition HLODs */
 	static class FAutoConsoleCommand EnableHLODCommand;
@@ -96,4 +103,11 @@ private:
 
 	friend class FHLODResourcesResidencySceneViewExtension;
 	TSharedPtr<FHLODResourcesResidencySceneViewExtension, ESPMode::ThreadSafe> SceneViewExtension;
+
+	void OnWorldPartitionInitialized(UWorldPartition* InWorldPartition);
+	void OnWorldPartitionUninitialized(UWorldPartition* InWorldPartition);
+
+	FWorldPartitionHLODActorRegisteredEvent		HLODActorRegisteredEvent;
+	FWorldPartitionHLODActorUnregisteredEvent	HLODActorUnregisteredEvent;
 };
+

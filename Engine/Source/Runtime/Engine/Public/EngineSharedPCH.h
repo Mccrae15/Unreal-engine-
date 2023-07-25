@@ -23,7 +23,6 @@
 #include "Misc/VarArgs.h"
 #include "HAL/PlatformAtomics.h"
 #include "GenericPlatform/GenericPlatformAtomics.h"
-#include "Templates/AreTypesEqual.h"
 #include "Templates/UnrealTypeTraits.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/IsArithmetic.h"
@@ -437,7 +436,9 @@
 // From RenderCore:
 #include "RenderCommandFence.h"
 #include "RenderResource.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RenderCore.h"
+#endif
 #include "RenderingThread.h"
 #include "UniformBuffer.h"
 #include "PackedNormal.h"

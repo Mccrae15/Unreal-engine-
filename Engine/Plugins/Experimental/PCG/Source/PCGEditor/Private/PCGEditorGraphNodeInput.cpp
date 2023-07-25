@@ -3,22 +3,20 @@
 #include "PCGEditorGraphNodeInput.h"
 
 #include "PCGNode.h"
+#include "PCGPin.h"
 
 #define LOCTEXT_NAMESPACE "PCGEditorGraphNodeInput"
 
 FText UPCGEditorGraphNodeInput::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {	
-	return FText::FromName(TEXT("Input"));
+	return LOCTEXT("NodeTitle", "Input");
 }
 
 void UPCGEditorGraphNodeInput::AllocateDefaultPins()
 {
 	if (PCGNode)
 	{
-		for (const UPCGPin* OutPin : PCGNode->GetOutputPins())
-		{
-			CreatePin(EEdGraphPinDirection::EGPD_Output, GetPinType(OutPin), OutPin->Properties.Label);
-		}
+		CreatePins(/*InInputPins=*/{}, PCGNode->GetOutputPins());
 	}
 }
 

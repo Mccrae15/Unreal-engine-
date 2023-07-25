@@ -3,11 +3,18 @@
 #include "PieFixupSerializer.h"
 
 #include "Components/InstancedStaticMeshComponent.h"
+#include "UObject/Package.h"
+#include "UObject/UnrealType.h"
 
 class FMulticastDelegateProperty;
 
+namespace
+{
+	void DefaultSoftObjectPathFixupFunction(int32, FSoftObjectPath&) {}
+}
+
 FPIEFixupSerializer::FPIEFixupSerializer(UObject* InRoot, int32 InPIEInstanceID)
-	: SoftObjectPathFixupFunction([](int32, FSoftObjectPath&) {})
+	: SoftObjectPathFixupFunction(DefaultSoftObjectPathFixupFunction)
 	, Root(InRoot)
 	, PIEInstanceID(InPIEInstanceID)
 {
@@ -32,6 +39,15 @@ FArchive& FPIEFixupSerializer::operator<<(UObject*& Object)
 	if (Object && (Object == Root ||Object->IsIn(Root)) && !VisitedObjects.Contains(Object))
 	{
 		VisitedObjects.Add(Object);
+
+#if WITH_EDITOR
+		if (UPackage* ExternalPackage = Object->GetExternalPackage())
+		{
+			check(Object->IsPackageExternal());
+			check(ExternalPackage->HasAnyPackageFlags(PKG_PlayInEditor));
+			ExternalPackage->SetPIEInstanceID(PIEInstanceID);
+		}
+#endif
 
 		// Skip instanced static mesh component as their impact on serialization is enormous and they don't contain lazy ptrs.
 		if (!Cast<UInstancedStaticMeshComponent>(Object))

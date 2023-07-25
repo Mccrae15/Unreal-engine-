@@ -4,6 +4,7 @@
 #include "HairStrandsData.h"
 #include "SceneRendering.h"
 #include "ScenePrivate.h"
+#include "SystemTextures.h"
 #include "RenderGraphUtils.h"
 
 static TRDGUniformBufferRef<FHairStrandsViewUniformParameters> InternalCreateHairStrandsViewUniformBuffer(
@@ -96,8 +97,14 @@ void RenderHairPrePass(
 			continue;
 
 		// For stereo rendering, hair groups/voxelization/deep-shadow are only produced once
+		FVector PreViewStereoCorrection = FVector::ZeroVector;
 		if (IStereoRendering::IsStereoEyeView(View))
 		{
+			// nDisplay uses StereoRendering code path with a mono-view
+			if (Views.Num() >= 2)
+			{
+				PreViewStereoCorrection = Views[0].ViewMatrices.GetPreViewTranslation() - Views[1].ViewMatrices.GetPreViewTranslation();
+			}
 			if (IStereoRendering::IsASecondaryView(View))
 			{
 				// No need to copy the view state (i.e., HairStrandsViewStateData) as it is only used for 
@@ -121,7 +128,7 @@ void RenderHairPrePass(
 		GraphBuilder.AddDispatchHint();
 
 		// Voxelization and Deep Opacity Maps
-		VoxelizeHairStrands(GraphBuilder, Scene, View, InstanceCullingManager);
+		VoxelizeHairStrands(GraphBuilder, Scene, View, InstanceCullingManager, PreViewStereoCorrection);
 		if (View.HairStrandsViewData.MacroGroupDatas.Num() > 0)
 		{
 			AddMeshDrawTransitionPass(GraphBuilder, View, View.HairStrandsViewData.MacroGroupDatas);

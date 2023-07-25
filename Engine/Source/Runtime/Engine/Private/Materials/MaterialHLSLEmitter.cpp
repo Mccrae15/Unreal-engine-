@@ -3,22 +3,20 @@
 
 #if WITH_EDITOR
 
-#include "Materials/MaterialExpression.h"
-#include "Materials/MaterialExpressionTextureBase.h"
-#include "Materials/MaterialExpressionExecBegin.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionVolumetricAdvancedMaterialOutput.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
 #include "MaterialHLSLTree.h"
 #include "MaterialCachedHLSLTree.h"
-#include "ShaderCore.h"
-#include "HLSLTree/HLSLTree.h"
-#include "HLSLTree/HLSLTreeCommon.h"
+#include "MaterialShared.h"
 #include "HLSLTree/HLSLTreeEmit.h"
 #include "Containers/LazyPrintf.h"
 #include "RenderUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 static bool SharedPixelProperties[CompiledMP_MAX];
 
@@ -42,6 +40,11 @@ static const TCHAR* HLSLTypeString(EMaterialValueType Type)
 	case MCT_TextureVirtual:		return TEXT("TextureVirtual");
 	case MCT_VTPageTableResult:		return TEXT("VTPageTableResult");
 	case MCT_ShadingModel:			return TEXT("uint");
+	case MCT_UInt:					return TEXT("uint");
+	case MCT_UInt1:					return TEXT("uint");
+	case MCT_UInt2:					return TEXT("uint2");
+	case MCT_UInt3:					return TEXT("uint3");
+	case MCT_UInt4:					return TEXT("uint4");
 	case MCT_Strata:				return TEXT("FStrataData");
 	default:						return TEXT("unknown");
 	};
@@ -135,7 +138,10 @@ static FString GenerateMaterialTemplateHLSL(EShaderPlatform ShaderPlatform,
 		case MCT_Float2: HLSLType = TEXT("float2"); break;
 		case MCT_Float3: HLSLType = TEXT("float3"); break;
 		case MCT_Float4: HLSLType = TEXT("float4"); break;
-		case MCT_ShadingModel: HLSLType = TEXT("uint"); break;
+		case MCT_ShadingModel: case MCT_UInt:  case MCT_UInt1:  HLSLType = TEXT("uint"); break;
+		case MCT_UInt2:  HLSLType = TEXT("uint2"); break;
+		case MCT_UInt3:  HLSLType = TEXT("uint3"); break;
+		case MCT_UInt4:  HLSLType = TEXT("uint4"); break;
 		case MCT_Strata: HLSLType = TEXT("FStrataData"); break;
 		default: break;
 		}
@@ -782,6 +788,7 @@ bool MaterialEmitHLSL(const FMaterialCompileTargetParameters& InCompilerTarget,
 	SharedPixelProperties[MP_PixelDepthOffset] = true;
 	SharedPixelProperties[MP_SubsurfaceColor] = true;
 	SharedPixelProperties[MP_ShadingModel] = true;
+	SharedPixelProperties[MP_SurfaceThickness] = true;
 	SharedPixelProperties[MP_FrontMaterial] = true;
 
 	bool bUsesWorldPositionOffset = false;

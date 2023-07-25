@@ -12,6 +12,7 @@
 
 #include "PostProcess/PostProcessSubsurface.h"
 #include "PostProcess/SceneRenderTargets.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Engine/SubsurfaceProfile.h"
 #include "CanvasTypes.h"
 #include "RenderTargetTemp.h"
@@ -21,6 +22,7 @@
 #include "Strata/Strata.h"
 #include "PostProcess/TemporalAA.h"
 #include "SubsurfaceTiles.h"
+#include "UnrealEngine.h"
 
 namespace
 {
@@ -297,7 +299,8 @@ bool IsSubsurfaceRequiredForView(const FViewInfo& View)
 
 bool IsProfileIdCacheEnabled()
 {
-	return RHIIsTypedUAVLoadSupported(PF_R8_UINT) && CVarSSSBurleyEnableProfileIdCache.GetValueOnRenderThread() != 0;
+	return UE::PixelFormat::HasCapabilities(PF_R8_UINT, EPixelFormatCapabilities::TypedUAVLoad)
+		&& CVarSSSBurleyEnableProfileIdCache.GetValueOnRenderThread() != 0;
 }
 
 uint32 GetSubsurfaceRequiredViewMask(TArrayView<const FViewInfo> Views)
@@ -323,7 +326,7 @@ uint32 GetSubsurfaceRequiredViewMask(TArrayView<const FViewInfo> Views)
 
 bool IsSubsurfaceCheckerboardFormat(EPixelFormat SceneColorFormat)
 {
-	if (Strata::IsStrataOpaqueMaterialRoughRefractionEnabled())
+	if (Strata::IsOpaqueRoughRefractionEnabled())
 	{
 		// With this mode, specular and subsurface colors are correctly separated so checkboard is not required.
 		return false;
@@ -1013,8 +1016,8 @@ void AddSubsurfaceViewPass(
 	const FScreenPassTextureViewportParameters SubsurfaceViewportParameters = GetScreenPassTextureViewportParameters(SubsurfaceViewport);
 	const FScreenPassTextureViewportParameters SceneViewportParameters = GetScreenPassTextureViewportParameters(SceneViewport);
 
-	const bool bReadSeparatedSubSurfaceSceneColor = Strata::IsStrataOpaqueMaterialRoughRefractionEnabled();
-	const bool bWriteSeparatedOpaqueRoughRefractionSceneColor = Strata::IsStrataOpaqueMaterialRoughRefractionEnabled();
+	const bool bReadSeparatedSubSurfaceSceneColor = Strata::IsOpaqueRoughRefractionEnabled();
+	const bool bWriteSeparatedOpaqueRoughRefractionSceneColor = Strata::IsOpaqueRoughRefractionEnabled();
 	FRDGTextureRef SeparatedSubSurfaceSceneColor = View.StrataViewData.SceneData->SeparatedSubSurfaceSceneColor;
 	FRDGTextureRef SeparatedOpaqueRoughRefractionSceneColor = View.StrataViewData.SceneData->SeparatedOpaqueRoughRefractionSceneColor;
 

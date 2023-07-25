@@ -1,7 +1,10 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CodeGen/Dom/WebAPICodeGenSettings.h"
 
+#include "CodeGen/Dom/WebAPICodeGenBase.h"
+#include "UObject/Package.h"
+#include "WebAPIDefinition.h"
 #include "WebAPIEditorUtilities.h"
 #include "Dom/WebAPIType.h"
 #include "Templates/SubclassOf.h"

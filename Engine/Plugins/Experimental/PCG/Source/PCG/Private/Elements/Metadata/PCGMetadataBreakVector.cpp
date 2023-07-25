@@ -2,13 +2,9 @@
 
 #include "Elements/Metadata/PCGMetadataBreakVector.h"
 
-#include "PCGParamData.h"
-#include "Data/PCGSpatialData.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataBreakVector)
 
 namespace PCGMetadataBreakVectorSettings
 {
@@ -78,9 +74,22 @@ namespace PCGMetadataBreakVectorSettings
 	}
 }
 
-FName UPCGMetadataBreakVectorSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+void UPCGMetadataBreakVectorSettings::PostLoad()
 {
-	return PCG_GET_OVERRIDEN_VALUE(this, InputAttributeName, Params);
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (InputAttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource.SetAttributeName(InputAttributeName_DEPRECATED);
+		InputAttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
+}
+
+FPCGAttributePropertySelector UPCGMetadataBreakVectorSettings::GetInputSource(uint32 Index) const
+{
+	return InputSource;
 }
 
 FName UPCGMetadataBreakVectorSettings::GetOutputPinLabel(uint32 Index) const 
@@ -137,7 +146,12 @@ FName UPCGMetadataBreakVectorSettings::GetOutputAttributeName(FName BaseName, ui
 #if WITH_EDITOR
 FName UPCGMetadataBreakVectorSettings::GetDefaultNodeName() const
 {
-	return TEXT("Break Vector Attribute");
+	return TEXT("BreakVectorAttribute");
+}
+
+FText UPCGMetadataBreakVectorSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataBreakVectorSettings", "NodeTitle", "Break Vector Attribute");
 }
 #endif // WITH_EDITOR
 
@@ -173,3 +187,4 @@ bool FPCGMetadataBreakVectorElement::DoOperation(FOperationData& OperationData) 
 
 	return PCGMetadataAttribute::CallbackWithRightType(OperationData.MostComplexInputType, BreakFunc);
 }
+

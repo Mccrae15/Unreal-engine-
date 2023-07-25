@@ -15,7 +15,6 @@
 #include "Delegates/Delegate.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/Platform.h"
-#include "IO/IoContainerId.h"
 #include "IO/IoDispatcher.h"
 #include "IO/PackageStore.h"
 #include "Misc/AssertionMacros.h"
@@ -68,11 +67,13 @@ public:
 	IOSTOREUTILITIES_API virtual void WritePackageData(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive, const TArray<FFileRegion>& FileRegions) override;
 	IOSTOREUTILITIES_API virtual void WriteAdditionalFile(const FAdditionalFileInfo& Info, const FIoBuffer& FileData) override;
 	IOSTOREUTILITIES_API virtual void WriteLinkerAdditionalData(const FLinkerAdditionalDataInfo& Info, const FIoBuffer& Data, const TArray<FFileRegion>& FileRegions) override;
+	IOSTOREUTILITIES_API virtual void WritePackageTrailer(const FPackageTrailerInfo& Info, const FIoBuffer& Data) override;
+
 
 	IOSTOREUTILITIES_API virtual void WriteBulkData(const FBulkDataInfo& Info, const FIoBuffer& BulkData, const TArray<FFileRegion>& FileRegions) override;
 	IOSTOREUTILITIES_API virtual void Initialize(const FCookInfo& Info) override;
-	IOSTOREUTILITIES_API virtual void BeginCook() override;
-	IOSTOREUTILITIES_API virtual void EndCook() override;
+	IOSTOREUTILITIES_API virtual void BeginCook(const FCookInfo& Info) override;
+	IOSTOREUTILITIES_API virtual void EndCook(const FCookInfo& Info) override;
 
 	IOSTOREUTILITIES_API virtual void GetEntries(TFunction<void(TArrayView<const FPackageStoreEntryResource>, TArrayView<const FOplogCookInfo>)>&& Callback) override;
 
@@ -99,6 +100,9 @@ public:
 	IOSTOREUTILITIES_API virtual void RemoveCookedPackages(TArrayView<const FName> PackageNamesToRemove) override;
 	IOSTOREUTILITIES_API virtual void RemoveCookedPackages() override;
 	IOSTOREUTILITIES_API virtual void MarkPackagesUpToDate(TArrayView<const FName> UpToDatePackages) override;
+	IOSTOREUTILITIES_API virtual TFuture<FCbObject> WriteMPCookMessageForPackage(FName PackageName) override;
+	IOSTOREUTILITIES_API virtual bool TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message) override;
+
 	IOSTOREUTILITIES_API virtual TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() override
 	{
 		return AllPackageHashes;
@@ -137,6 +141,7 @@ private:
 		TArray<FBulkDataEntry> BulkData;
 		TArray<FFileDataEntry> FileData;
 		TRefCountPtr<FPackageHashes> PackageHashes;
+		TUniquePtr<TPromise<int>> PackageHashesCompletionPromise;
 	};
 
 	FPendingPackageState& GetPendingPackage(const FName& PackageName)
@@ -162,7 +167,7 @@ private:
 		return PendingPackages.FindAndRemoveChecked(PackageName);
 	}
 
-	void CreateProjectMetaData(FCbPackage& Pkg, FCbWriter& PackageObj, bool bGenerateContainerHeader);
+	void CreateProjectMetaData(FCbPackage& Pkg, FCbWriter& PackageObj);
 	void BroadcastCommit(IPackageStoreWriter::FCommitEventArgs& EventArgs);
 	void BroadcastMarkUpToDate(IPackageStoreWriter::FMarkUpToDateEventArgs& EventArgs);
 	struct FZenCommitInfo;
@@ -182,7 +187,6 @@ private:
 	FString								OplogId;
 	FString								OutputPath;
 	FString								MetadataDirectoryPath;
-	FIoContainerId						ContainerId = FIoContainerId::FromName(TEXT("global"));
 	TMap<FName, TRefCountPtr<FPackageHashes>> AllPackageHashes;
 
 	FPackageStoreManifest				PackageStoreManifest;
@@ -194,7 +198,8 @@ private:
 	TMap<FName, int32>					PackageNameToIndex;
 
 	TUniquePtr<FZenFileSystemManifest>	ZenFileSystemManifest;
-	
+	TMap<FName, TArray<FString>>		PackageAdditionalFiles;
+
 	FEntryCreatedEvent					EntryCreatedEvent;
 	FCriticalSection					CommitEventCriticalSection;
 	FCommitEvent						CommitEvent;
@@ -211,6 +216,7 @@ private:
 	TFuture<void>						CommitThread;
 
 	bool								bInitialized;
+	bool								bProvidePerPackageResults;
 
 	static void StaticInit();
 	static bool IsReservedOplogKey(FUtf8StringView Key);

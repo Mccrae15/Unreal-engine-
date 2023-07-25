@@ -117,6 +117,7 @@ static bool ParseSpirvCrossOptionGlsl(spirv_cross::CompilerGLSL::Options& opt, c
 	PARSE_SPIRVCROSS_OPTION(define, "pad_ubo_blocks", opt.pad_ubo_blocks);
 	PARSE_SPIRVCROSS_OPTION(define, "force_temporary", opt.force_temporary);
 	PARSE_SPIRVCROSS_OPTION(define, "force_glsl_clipspace", opt.force_glsl_clipspace);
+	PARSE_SPIRVCROSS_OPTION(define, "relax_nan_checks", opt.relax_nan_checks);
     return false;
 }
 
@@ -156,6 +157,15 @@ static bool ParseSpirvCrossOptionMetal(spirv_cross::CompilerMSL::Options& opt, c
     PARSE_SPIRVCROSS_OPTION(define, "emulate_cube_array", opt.emulate_cube_array);
     // Allow user to enable decoration binding.
     PARSE_SPIRVCROSS_OPTION(define, "enable_decoration_binding", opt.enable_decoration_binding);
+
+// UE Change Begin: MetalRT Support
+    PARSE_SPIRVCROSS_OPTION(define, "raytracing_instance_descriptor_table_index", opt.raytracing_instance_descriptor_table_index);
+// UE Change End: MetalRT Support
+
+// UE Change Begin: Experimental support for Nanite on M2+ based devices
+// Allow implicit 2Darray to 2D conversion (for VSM)
+    PARSE_SPIRVCROSS_OPTION(define, "flatten_2d_array", opt.flatten_2d_array);
+// UE Change End: Experimental support for Nanite on M2+ based devices
 
     // Specify dimension of subpass input attachments.
     static const char* subpassInputDimIdent = "subpass_input_dimension";
@@ -613,7 +623,7 @@ namespace
         bool m_linkerSupport;
     };
 
-    class ScIncludeHandler : public IDxcIncludeHandler
+    class ScIncludeHandler final : public IDxcIncludeHandler
     {
     public:
         explicit ScIncludeHandler(std::function<Blob(const char* includeName)> loadCallback) : m_loadCallback(std::move(loadCallback))
@@ -1466,7 +1476,7 @@ namespace
 			auto pls_outputs = remap_pls(PLSOutputs, res.stage_outputs, nullptr);
 			auto pls_inouts = remap_pls_inout(*glslCompiler, PLSInOuts, res.stage_outputs, res.subpass_inputs);
 
-			compiler->remap_pixel_local_storage(move(pls_inputs), move(pls_outputs), move(pls_inouts));
+			compiler->remap_pixel_local_storage(std::move(pls_inputs), std::move(pls_outputs), std::move(pls_inouts));
 			for (FBFArg & fetch : FBFArgs)
 			{
 				compiler->remap_ext_framebuffer_fetch(fetch.input_index, fetch.color_attachment, true);

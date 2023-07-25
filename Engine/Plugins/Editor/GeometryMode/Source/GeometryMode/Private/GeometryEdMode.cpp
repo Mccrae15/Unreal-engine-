@@ -2,21 +2,20 @@
 
 #include "GeometryEdMode.h"
 #include "EditorViewportClient.h"
+#include "Engine/Texture2D.h"
 #include "Misc/FeedbackContext.h"
-#include "Modules/ModuleManager.h"
-#include "Styling/AppStyle.h"
+#include "SceneView.h"
+#include "Selection.h"
 #include "Settings/EditorStyleSettings.h"
 #include "Materials/Material.h"
-#include "Engine/Selection.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
+#include "TextureResource.h"
 #include "Toolkits/ToolkitManager.h"
 #include "BSPOps.h"
 #include "GeometryMode.h"
 #include "EditorGeometry.h"
 #include "DynamicMeshBuilder.h"
-#include "GeomModifier.h"
-#include "GeomModifier_Edit.h"
 #include "GeomModifier_Clip.h"
 #include "GeomModifier_Create.h"
 #include "GeomModifier_Delete.h"
@@ -25,14 +24,12 @@
 #include "GeomModifier_Lathe.h"
 #include "GeomModifier_Pen.h"
 #include "GeomModifier_Split.h"
-#include "GeomModifier_Triangulate.h"
 #include "GeomModifier_Optimize.h"
 #include "GeomModifier_Turn.h"
 #include "GeomModifier_Weld.h"
 #include "NavMesh/NavMeshBoundsVolume.h"
 #include "NavigationSystem.h"
 #include "GeometryModeModule.h"
-#include "Engine/Brush.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGeometryMode, Log, All);
 
@@ -664,7 +661,7 @@ void FEdModeGeometry::RenderVertex( const FSceneView* View, FPrimitiveDrawInterf
 			check(GeomObject->GetActualBrush());
 
 			Location = (FVector)GeomObject->GetActualBrush()->ActorToWorld().TransformPosition( (FVector)*GeomVertex );
-			Scale = View->WorldToScreen( Location ).W * ( 4.0f / View->UnscaledViewRect.Width() / View->ViewMatrices.GetProjectionMatrix().M[0][0] );
+			Scale = static_cast<float>( View->WorldToScreen( Location ).W * ( 4.0 / View->UnscaledViewRect.Width() / View->ViewMatrices.GetProjectionMatrix().M[0][0] ) );
 			Color = GeomVertex->IsSelected() ? FColor(255,128,64) : GeomObject->GetActualBrush()->GetWireColor();
 
 			PDI->SetHitProxy( new HGeomVertexProxy( GeomObject, VertIdx) );

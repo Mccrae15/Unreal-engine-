@@ -219,9 +219,7 @@ typedef enum {
 
   ovrpOverlayFlag_Hidden = 0x00000200,
 
-
-
-
+  ovrpOverlayFlag_AutoFilter = 0x00000400,
 
   // Internal flags
   /// If true, the overlay is a loading screen.

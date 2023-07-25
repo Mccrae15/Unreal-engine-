@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ExternalTexture.h"
+#include "MaterialShared.h"
+#include "Materials/MaterialRenderProxy.h"
 
 
 #define EXTERNALTEXTURE_TRACE_REGISTRY 0

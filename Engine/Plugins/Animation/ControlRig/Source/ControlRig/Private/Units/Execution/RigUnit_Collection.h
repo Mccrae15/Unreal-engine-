@@ -34,7 +34,7 @@ struct CONTROLRIG_API FRigUnit_CollectionChain : public FRigUnit_CollectionBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey FirstItem;
@@ -68,7 +68,7 @@ struct CONTROLRIG_API FRigUnit_CollectionChainArray : public FRigUnit_Collection
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey FirstItem;
@@ -99,7 +99,7 @@ struct CONTROLRIG_API FRigUnit_CollectionNameSearch : public FRigUnit_Collection
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FName PartialName;
@@ -130,7 +130,7 @@ struct CONTROLRIG_API FRigUnit_CollectionNameSearchArray : public FRigUnit_Colle
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FName PartialName;
@@ -160,7 +160,7 @@ struct CONTROLRIG_API FRigUnit_CollectionChildren : public FRigUnit_CollectionBa
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey Parent;
@@ -199,7 +199,7 @@ struct CONTROLRIG_API FRigUnit_CollectionChildrenArray : public FRigUnit_Collect
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey Parent;
@@ -231,7 +231,7 @@ struct CONTROLRIG_API FRigUnit_CollectionGetAll : public FRigUnit_CollectionBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	ERigElementType TypeToSearch;
@@ -256,7 +256,7 @@ struct CONTROLRIG_API FRigUnit_CollectionReplaceItems : public FRigUnit_Collecti
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection Items;
@@ -296,7 +296,7 @@ struct CONTROLRIG_API FRigUnit_CollectionReplaceItemsArray : public FRigUnit_Col
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	TArray<FRigElementKey> Items;
@@ -332,7 +332,7 @@ struct CONTROLRIG_API FRigUnit_CollectionItems : public FRigUnit_CollectionBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	TArray<FRigElementKey> Items;
@@ -357,7 +357,7 @@ struct CONTROLRIG_API FRigUnit_CollectionGetItems : public FRigUnit_CollectionBa
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection Collection;
@@ -382,7 +382,7 @@ struct CONTROLRIG_API FRigUnit_CollectionGetParentIndices : public FRigUnit_Coll
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection Collection;
@@ -410,7 +410,7 @@ struct CONTROLRIG_API FRigUnit_CollectionGetParentIndicesItemArray : public FRig
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	TArray<FRigElementKey> Items;
@@ -434,7 +434,7 @@ struct CONTROLRIG_API FRigUnit_CollectionUnion : public FRigUnit_CollectionBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection A;
@@ -466,7 +466,7 @@ struct CONTROLRIG_API FRigUnit_CollectionIntersection : public FRigUnit_Collecti
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection A;
@@ -495,7 +495,7 @@ struct CONTROLRIG_API FRigUnit_CollectionDifference : public FRigUnit_Collection
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection A;
@@ -523,7 +523,7 @@ struct CONTROLRIG_API FRigUnit_CollectionReverse : public FRigUnit_CollectionBas
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection Collection;
@@ -550,7 +550,7 @@ struct CONTROLRIG_API FRigUnit_CollectionCount : public FRigUnit_CollectionBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection Collection;
@@ -578,7 +578,7 @@ struct CONTROLRIG_API FRigUnit_CollectionItemAtIndex : public FRigUnit_Collectio
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection Collection;
@@ -603,18 +603,26 @@ struct CONTROLRIG_API FRigUnit_CollectionLoop : public FRigUnit_CollectionBaseMu
 
 	FRigUnit_CollectionLoop()
 	{
+		BlockToRun = NAME_None;
 		Count = 0;
 		Index = 0;
 		Ratio = 0.f;
-		Continue = false;
 	}
 
 	// FRigVMStruct overrides
-	FORCEINLINE virtual bool IsForLoop() const override { return true; }
-	FORCEINLINE virtual int32 GetNumSlices() const override { return Count; }
+	virtual const TArray<FName>& GetControlFlowBlocks_Impl() const override
+	{
+		static const TArray<FName> Blocks = {ExecuteContextName, ForLoopCompletedPinName};
+		return Blocks;
+	}
+	virtual const bool IsControlFlowBlockSliced(const FName& InBlockName) const { return InBlockName == ExecuteContextName; }
+	virtual int32 GetNumSlices() const override { return Count; }
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
+
+	UPROPERTY(meta = (Singleton))
+	FName BlockToRun;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection Collection;
@@ -635,9 +643,6 @@ struct CONTROLRIG_API FRigUnit_CollectionLoop : public FRigUnit_CollectionBaseMu
 	 */
 	UPROPERTY(meta = (Singleton, Output))
 	float Ratio;
-
-	UPROPERTY(meta = (Singleton))
-	bool Continue;
 
 	UPROPERTY(meta = (Output))
 	FControlRigExecuteContext Completed;
@@ -661,7 +666,7 @@ struct CONTROLRIG_API FRigUnit_CollectionAddItem : public FRigUnit_CollectionBas
 	}
 
 	RIGVM_METHOD()
-    virtual void Execute(const FRigUnitContext& Context) override;
+    virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigElementKeyCollection Collection;

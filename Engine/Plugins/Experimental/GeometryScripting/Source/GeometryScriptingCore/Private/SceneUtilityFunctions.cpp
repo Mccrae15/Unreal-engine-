@@ -12,9 +12,13 @@
 #include "Engine/SkeletalMesh.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SkinnedMeshComponent.h"
 #include "Components/BrushComponent.h"
 #include "Components/DynamicMeshComponent.h"
+#include "Components/SplineMeshComponent.h"
 #include "ConversionUtils/VolumeToDynamicMesh.h"
+#include "ConversionUtils/SkinnedMeshToDynamicMesh.h"
+#include "ConversionUtils/SplineComponentDeformDynamicMesh.h"
 #include "Physics/ComponentCollisionUtil.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SceneUtilityFunctions)
@@ -35,12 +39,62 @@ UDynamicMesh* UGeometryScriptLibrary_SceneUtilityFunctions::CopyMeshFromComponen
 	FGeometryScriptCopyMeshFromComponentOptions Options,
 	bool bTransformToWorld,
 	FTransform& LocalToWorld,
-	TEnumAsByte<EGeometryScriptOutcomePins>& Outcome,
+	EGeometryScriptOutcomePins& Outcome,
 	UGeometryScriptDebug* Debug)
 {
 	Outcome = EGeometryScriptOutcomePins::Failure;
 
-	if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
+	if (USkinnedMeshComponent* SkinnedMeshComponent = Cast<USkinnedMeshComponent>(Component))
+	{
+		LocalToWorld = SkinnedMeshComponent->GetComponentTransform();
+
+		const int32 NumLODs = SkinnedMeshComponent->GetNumLODs();
+		const int32 RequestedLOD = Options.RequestedLOD.LODIndex;
+		if (RequestedLOD < 0 || RequestedLOD > NumLODs - 1)
+		{
+			UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("CopyMeshFromComponent_MissingSkinnedMeshComponentLOD", "CopyMeshFromComponent: SkinnedMeshComponent requested LOD does not exist"));
+		}
+		else
+		{ 
+			USkinnedAsset* SkinnedAsset = SkinnedMeshComponent->GetSkinnedAsset();
+			if (SkinnedAsset)
+			{
+				FDynamicMesh3 NewMesh;
+				UE::Conversion::SkinnedMeshComponentToDynamicMesh(*SkinnedMeshComponent, NewMesh, RequestedLOD, Options.bWantTangents);
+				NewMesh.DiscardTriangleGroups();
+				ToDynamicMesh->SetMesh(MoveTemp(NewMesh));
+				Outcome = EGeometryScriptOutcomePins::Success;
+			}
+			else
+			{
+				UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("CopyMeshFromComponent_MissingSkinnedAsset", "CopyMeshFromComponent: SkinnedMeshComponent has a null SkinnedAsset"));
+			}
+		}
+
+	}
+	else if (USplineMeshComponent* SplineMeshComponent = Cast<USplineMeshComponent>(Component))
+	{
+		LocalToWorld = SplineMeshComponent->GetComponentTransform();
+		UStaticMesh* StaticMesh = SplineMeshComponent->GetStaticMesh();
+		if (StaticMesh)
+		{
+			FGeometryScriptCopyMeshFromAssetOptions AssetOptions;
+			AssetOptions.bApplyBuildSettings = (Options.bWantNormals || Options.bWantTangents);
+			AssetOptions.bRequestTangents = Options.bWantTangents;
+			UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromStaticMesh(
+				StaticMesh, ToDynamicMesh, AssetOptions, Options.RequestedLOD, Outcome, Debug);	// will set Outcome pin
+
+			// deform the dynamic mesh and its tangent space with the spline
+			constexpr bool bUpdateTangentSpace = true;
+			UE::Geometry::SplineDeformDynamicMesh(*SplineMeshComponent, ToDynamicMesh->GetMeshRef(), bUpdateTangentSpace);
+
+		}
+		else
+		{
+			UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("CopyMeshFromSplineMeshComponent_MissingStaticMesh", "CopyMeshFromComponent: SplineMeshComponent has a null StaticMesh"));
+		}
+	}
+	else if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
 	{
 		LocalToWorld = StaticMeshComponent->GetComponentTransform();
 		UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh();
@@ -147,7 +201,7 @@ UDynamicMesh* UGeometryScriptLibrary_SceneUtilityFunctions::CopyCollisionMeshesF
 	UDynamicMesh* ToDynamicMesh,
 	bool bTransformToWorld,
 	FTransform& LocalToWorld,
-	TEnumAsByte<EGeometryScriptOutcomePins>& Outcome,
+	EGeometryScriptOutcomePins& Outcome,
 	bool bUseComplexCollision,
 	int SphereResolution,
 	UGeometryScriptDebug* Debug)

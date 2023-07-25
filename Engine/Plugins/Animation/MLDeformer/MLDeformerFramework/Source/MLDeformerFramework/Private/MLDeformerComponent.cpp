@@ -4,9 +4,23 @@
 #include "MLDeformerAsset.h"
 #include "MLDeformerModelInstance.h"
 #include "MLDeformerModel.h"
+#include "MLDeformerInputInfo.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/MeshDeformer.h"
 #include "Animation/MeshDeformerInstance.h"
+#include "Engine/SkeletalMesh.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerComponent)
+
+static float GMLDeformerOverrideWeight = -1;
+static FAutoConsoleVariableRef CVarMLDeformerOverrideWeight(
+	TEXT("MLDeformer.ForceWeight"),
+	GMLDeformerOverrideWeight,
+	TEXT("Force the Weight for MLDeformer components.")
+	TEXT("1 will force completely on, 0 will force completely off.")
+	TEXT("Negative values (the default) will use default weights."),
+	ECVF_Default
+);
 
 UMLDeformerComponent::UMLDeformerComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -25,6 +39,7 @@ void UMLDeformerComponent::Init()
 		if (ModelInstance)
 		{
 			ModelInstance->Release();
+			ModelInstance->ConditionalBeginDestroy();
 			ModelInstance = nullptr;
 		}
 		return;
@@ -37,6 +52,7 @@ void UMLDeformerComponent::Init()
 		if (ModelInstance)
 		{
 			ModelInstance->Release();
+			ModelInstance->ConditionalBeginDestroy();
 			ModelInstance = nullptr;
 		}
 		ModelInstance = Model->CreateModelInstance(this);
@@ -96,6 +112,10 @@ void UMLDeformerComponent::SetupComponent(UMLDeformerAsset* InDeformerAsset, USk
 			);
 		}
 	}
+
+	#if WITH_EDITOR
+		TickPerfCounter.Reset();
+	#endif
 }
 
 void UMLDeformerComponent::AddNeuralNetworkModifyDelegate()
@@ -136,7 +156,7 @@ void UMLDeformerComponent::BeginDestroy()
 	Super::BeginDestroy();
 }
 
-USkeletalMeshComponent* UMLDeformerComponent::FindSkeletalMeshComponent(UMLDeformerAsset* Asset)
+USkeletalMeshComponent* UMLDeformerComponent::FindSkeletalMeshComponent(const UMLDeformerAsset* const Asset) const
 {
 	USkeletalMeshComponent* ResultingComponent = nullptr;
 	if (Asset != nullptr)
@@ -145,7 +165,7 @@ USkeletalMeshComponent* UMLDeformerComponent::FindSkeletalMeshComponent(UMLDefor
 		const UMLDeformerModel* Model = Asset ? Asset->GetModel() : nullptr;
 		if (Model && Model->GetSkeletalMesh())
 		{
-			const USkeletalMesh* ModelSkeletalMesh = Model->GetSkeletalMesh();
+			const FSoftObjectPath& ModelSkeletalMesh = Model->GetInputInfo()->GetSkeletalMesh();
 
 			// Get a list of all skeletal mesh components on the actor.
 			TArray<USkeletalMeshComponent*> Components;
@@ -158,23 +178,13 @@ USkeletalMeshComponent* UMLDeformerComponent::FindSkeletalMeshComponent(UMLDefor
 				for (USkeletalMeshComponent* Component : Components)
 				{
 					const USkeletalMesh* ComponentSkeletalMesh = Component->GetSkeletalMeshAsset();
-					if (ComponentSkeletalMesh == ModelSkeletalMesh)
+					if (FSoftObjectPath(ComponentSkeletalMesh) == ModelSkeletalMesh)
 					{
 						ResultingComponent = Component;
 						break;
 					}
 				}
 			}
-		}
-	}
-
-	if (ResultingComponent == nullptr)
-	{
-		// Fall back to the first skeletal mesh component.
-		const AActor* Actor = Cast<AActor>(GetOuter());
-		if (Actor)
-		{
-			ResultingComponent = Actor->FindComponentByClass<USkeletalMeshComponent>();
 		}
 	}
 
@@ -190,12 +200,15 @@ void UMLDeformerComponent::UpdateSkeletalMeshComponent()
 void UMLDeformerComponent::Activate(bool bReset)
 {
 	UpdateSkeletalMeshComponent();
-	SetupComponent(DeformerAsset, SkelMeshComponent);
 	Super::Activate(bReset);
 }
 
 void UMLDeformerComponent::Deactivate()
 {
+	#if WITH_EDITOR
+		TickPerfCounter.Reset();
+	#endif
+
 	RemoveNeuralNetworkModifyDelegate();
 	if (ModelInstance)
 	{
@@ -207,6 +220,10 @@ void UMLDeformerComponent::Deactivate()
 
 void UMLDeformerComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
+	#if WITH_EDITOR
+		TickPerfCounter.BeginSample();
+	#endif
+	SCOPE_CYCLE_COUNTER(STAT_MLDeformerInference);
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	if (TickType != ELevelTick::LEVELTICK_PauseTick)
 	{
@@ -215,9 +232,28 @@ void UMLDeformerComponent::TickComponent(float DeltaTime, enum ELevelTick TickTy
 			SkelMeshComponent->GetPredictedLODLevel() == 0)
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(UMLDeformerComponent::TickComponent)
-			ModelInstance->Tick(DeltaTime, Weight);
+			float ApplyWeight = Weight;
+			if (GMLDeformerOverrideWeight >= 0.0f)
+			{
+				ApplyWeight = FMath::Min(GMLDeformerOverrideWeight, 1.0f);
+			}
+			ModelInstance->Tick(DeltaTime, ApplyWeight);
+
+			#if WITH_EDITOR
+				// Update our memory usage if desired.
+				// This can be pretty slow.
+				UMLDeformerModel* Model = ModelInstance->GetModel();
+				if (Model->IsMemUsageInvalidated())
+				{
+					Model->UpdateMemoryUsage();
+				}
+			#endif
 		}
 	}
+
+	#if WITH_EDITOR
+		TickPerfCounter.EndSample();
+	#endif
 }
 
 #if WITH_EDITOR

@@ -62,20 +62,64 @@ public:
 	}
 
 	// UI_COMMAND takes long for the compiler to optimize
-	PRAGMA_DISABLE_OPTIMIZATION
+	UE_DISABLE_OPTIMIZATION_SHIP
 	virtual void RegisterCommands() override
 	{
-		UI_COMMAND(Command_CopyToClipboard, "Copy To Clipboard", "Copies the selection to clipboard.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::C));
-		UI_COMMAND(Command_CopyColumnToClipboard, "Copy Column Value To Clipboard", "Copies the value of the hovered column to clipboard.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control | EModifierKey::Shift, EKeys::C));
-		UI_COMMAND(Command_CopyColumnTooltipToClipboard, "Copy Column Tooltip To Clipboard", "Copies the value of the hovered column's tooltip to clipboard.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control | EModifierKey::Alt, EKeys::C));
-		UI_COMMAND(Command_ExpandSubtree, "Expand Subtree", "Expand the subtree that starts from the selected group node.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::None, EKeys::E));
-		UI_COMMAND(Command_ExpandCriticalPath, "Expand Critical Path", "Expand the first group child node recursively until a leaf nodes in reached.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::None, EKeys::R));
-		UI_COMMAND(Command_CollapseSubtree, "Collapse Subtree", "Collapse the subtree that starts from the selected group node.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::None, EKeys::C));
-		UI_COMMAND(Command_ExportToFile, "Export Visible Tree to File...", "Exports the tree/table content to a file. It exports only the tree nodes currently expanded in the tree, including leaf nodes.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::E));
-		UI_COMMAND(Command_ExportEntireTreeToFile, "Export Entire Tree to File...", "Exports the entire tree/table content to a file. It exports also the collapsed tree nodes, including the leaf nodes. Filtered out nodes are not exported.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Shift, EKeys::E));
-		UI_COMMAND(Command_ExportEntireTreeToFileNoLeafs, "Export Entire Tree (No Leafs) to File...", "Exports the entire tree/table content to a file, but not the leaf nodes. It exports the collapsed tree nodes. Filtered out nodes are not exported.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Alt, EKeys::E));
+		UI_COMMAND(Command_CopyToClipboard,
+			"Copy To Clipboard",
+			"Copies the selection to clipboard.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::Control, EKeys::C));
+
+		UI_COMMAND(Command_CopyColumnToClipboard,
+			"Copy Column Value To Clipboard",
+			"Copies the value of the hovered column to clipboard.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::Control | EModifierKey::Shift, EKeys::C));
+
+		UI_COMMAND(Command_CopyColumnTooltipToClipboard,
+			"Copy Column Tooltip To Clipboard",
+			"Copies the value of the hovered column's tooltip to clipboard.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::Control | EModifierKey::Alt, EKeys::C));
+
+		UI_COMMAND(Command_ExpandSubtree,
+			"Expand Subtree",
+			"Expand the subtree that starts from the selected group node.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::None, EKeys::E));
+
+		UI_COMMAND(Command_ExpandCriticalPath,
+			"Expand Critical Path",
+			"Expand the first group child node recursively until a leaf nodes in reached.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::None, EKeys::R));
+
+		UI_COMMAND(Command_CollapseSubtree,
+			"Collapse Subtree",
+			"Collapse the subtree that starts from the selected group node.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::None, EKeys::C));
+
+		UI_COMMAND(Command_ExportToFile,
+			"Export Visible Tree to File...",
+			"Exports the tree/table content to a file. It exports only the tree nodes currently expanded in the tree, including leaf nodes.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::Control, EKeys::E));
+
+		UI_COMMAND(Command_ExportEntireTreeToFile,
+			"Export Entire Tree to File...",
+			"Exports the entire tree/table content to a file. It exports also the collapsed tree nodes, including the leaf nodes. Filtered out nodes are not exported.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::Shift, EKeys::E));
+
+		UI_COMMAND(Command_ExportEntireTreeToFileNoLeafs,
+			"Export Entire Tree (No Leafs) to File...",
+			"Exports the entire tree/table content to a file, but not the leaf nodes. It exports the collapsed tree nodes. Filtered out nodes are not exported.",
+			EUserInterfaceActionType::Button,
+			FInputChord(EModifierKey::Alt, EKeys::E));
 	}
-	PRAGMA_ENABLE_OPTIMIZATION
+	UE_ENABLE_OPTIMIZATION_SHIP
 
 	TSharedPtr<FUICommandInfo> Command_CopyToClipboard;
 	TSharedPtr<FUICommandInfo> Command_CopyColumnToClipboard;
@@ -128,10 +172,9 @@ STableTreeView::STableTreeView()
 
 STableTreeView::~STableTreeView()
 {
-	// Remove ourselves from the Insights manager.
-	if (FInsightsManager::Get().IsValid())
+	if (bRunInAsyncMode)
 	{
-		FInsightsManager::Get()->GetSessionChangedEvent().RemoveAll(this);
+		checkf(bIsCloseScheduled, TEXT("TableTreeView running in async mode was closed but OnClose() was not called. This can lead to a crash. Call OnClose() from the owner tab/window."))
 	}
 
 	if (CurrentAsyncOpFilterConfigurator)
@@ -141,8 +184,6 @@ STableTreeView::~STableTreeView()
 	}
 
 	//FTableTreeViewCommands::Unregister();
-
-	Session.Reset();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -151,15 +192,42 @@ void STableTreeView::InitCommandList()
 {
 	FTableTreeViewCommands::Register();
 	CommandList = MakeShared<FUICommandList>();
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_CopyToClipboard, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopySelectedToClipboard_Execute), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopySelectedToClipboard_CanExecute));
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_CopyColumnToClipboard, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopyColumnToClipboard_Execute), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopyColumnToClipboard_CanExecute));
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_CopyColumnTooltipToClipboard, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopyColumnTooltipToClipboard_Execute), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopyColumnTooltipToClipboard_CanExecute));
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExpandSubtree, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExpandSubtree_Execute), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExpandSubtree_CanExecute));
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExpandCriticalPath, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExpandCriticalPath_Execute), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExpandCriticalPath_CanExecute));
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_CollapseSubtree, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CollapseSubtree_Execute), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CollapseSubtree_CanExecute));
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExportToFile, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_Execute, false, true), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_CanExecute));
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExportEntireTreeToFile, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_Execute, true, true), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_CanExecute));
-	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExportEntireTreeToFileNoLeafs, FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_Execute, true, false), FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_CopyToClipboard,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopySelectedToClipboard_Execute),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopySelectedToClipboard_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_CopyColumnToClipboard,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopyColumnToClipboard_Execute),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopyColumnToClipboard_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_CopyColumnTooltipToClipboard,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopyColumnTooltipToClipboard_Execute),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CopyColumnTooltipToClipboard_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExpandSubtree,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExpandSubtree_Execute),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExpandSubtree_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExpandCriticalPath,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExpandCriticalPath_Execute),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExpandCriticalPath_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_CollapseSubtree,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CollapseSubtree_Execute),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_CollapseSubtree_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExportToFile,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_Execute, false, true),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExportEntireTreeToFile,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_Execute, true, true),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_CanExecute));
+
+	CommandList->MapAction(FTableTreeViewCommands::Get().Command_ExportEntireTreeToFileNoLeafs,
+		FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_Execute, true, false),
+		FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_ExportToFile_CanExecute));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -299,15 +367,6 @@ void STableTreeView::ConstructWidget(TSharedPtr<FTable> InTablePtr)
 	InitializeAndShowHeaderColumns();
 
 	InitCommandList();
-
-	// Register ourselves with the Insights manager.
-	FInsightsManager::Get()->GetSessionChangedEvent().AddSP(this, &STableTreeView::InsightsManager_OnSessionChanged);
-
-	// Update the Session (i.e. when analysis session was already started).
-	InsightsManager_OnSessionChanged();
-
-	CreateGroupings();
-	CreateSortings();
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
@@ -877,26 +936,25 @@ TSharedRef<SWidget> STableTreeView::TreeViewHeaderRow_GenerateColumnMenu(const F
 			NAME_None,
 			EUserInterfaceActionType::Button
 		);
+
+		FUIAction Action_HideAllColumns
+		(
+			FExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_HideAllColumns_Execute),
+			FCanExecuteAction::CreateSP(this, &STableTreeView::ContextMenu_HideAllColumns_CanExecute)
+		);
+		MenuBuilder.AddMenuEntry
+		(
+			LOCTEXT("ContextMenu_HideAllColumns", "Hide All Columns"),
+			LOCTEXT("ContextMenu_HideAllColumns_Desc", "Resets tree view to hide all columns (except hierarchy)."),
+			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.ResetColumn"),
+			Action_HideAllColumns,
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
 	}
 	MenuBuilder.EndSection();
 
 	return MenuBuilder.MakeWidget();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void STableTreeView::InsightsManager_OnSessionChanged()
-{
-	TSharedPtr<const TraceServices::IAnalysisSession> NewSession = FInsightsManager::Get()->GetSession();
-	if (NewSession != Session)
-	{
-		Session = NewSession;
-		Reset();
-	}
-	else
-	{
-		UpdateTree();
-	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1667,12 +1725,11 @@ void STableTreeView::UpdateCStringSameValueAggregationRec(FTableColumn& Column, 
 			if (!NodePtr->IsGroup())
 			{
 				const TOptional<FTableCellValue> NodeValue = Column.GetValue(*NodePtr);
-				if (!NodeValue.IsSet() ||
-					NodeValue.GetValue().DataType != ETableCellDataType::CString ||
-					AggregatedValue != NodeValue.GetValue().CString)
+				if (NodeValue.IsSet() &&
+					NodeValue.GetValue().DataType == ETableCellDataType::CString &&
+					AggregatedValue == NodeValue.GetValue().CString)
 				{
-					AggregatedValue = nullptr;
-					break;
+					continue;
 				}
 			}
 			else
@@ -1681,14 +1738,16 @@ void STableTreeView::UpdateCStringSameValueAggregationRec(FTableColumn& Column, 
 				if (TableNode.HasAggregatedValue(Column.GetId()))
 				{
 					const FTableCellValue& ChildGroupAggregatedValue = TableNode.GetAggregatedValue(Column.GetId());
-					if (ChildGroupAggregatedValue.DataType != ETableCellDataType::CString ||
-						AggregatedValue != ChildGroupAggregatedValue.CString)
+					if (ChildGroupAggregatedValue.DataType == ETableCellDataType::CString &&
+						AggregatedValue == ChildGroupAggregatedValue.CString)
 					{
-						AggregatedValue = nullptr;
-						break;
+						continue;
 					}
 				}
 			}
+
+			AggregatedValue = nullptr;
+			break;
 		}
 	}
 
@@ -2733,6 +2792,36 @@ void STableTreeView::ContextMenu_ResetColumns_Execute()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+bool STableTreeView::ContextMenu_HideAllColumns_CanExecute() const
+{
+	if (bIsUpdateRunning)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STableTreeView::ContextMenu_HideAllColumns_Execute()
+{
+	ColumnBeingSorted = GetDefaultColumnBeingSorted();
+	ColumnSortMode = GetDefaultColumnSortMode();
+	UpdateCurrentSortingByColumn();
+
+	for (const TSharedRef<FTableColumn>& ColumnRef : Table->GetColumns())
+	{
+		FTableColumn& Column = ColumnRef.Get();
+		if (Column.IsVisible() && Column.CanBeHidden())
+		{
+			HideColumn(Column);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void STableTreeView::Reset()
 {
 	StatsStartTime = 0.0;
@@ -2988,9 +3077,15 @@ FGraphEventRef STableTreeView::StartApplyFiltersTask(FGraphEventRef Prerequisite
 
 void STableTreeView::OnClose()
 {
-	if (bIsUpdateRunning && !bIsCloseScheduled && InProgressAsyncOperationEvent.IsValid() && !InProgressAsyncOperationEvent->IsComplete())
+	if (bIsCloseScheduled)
 	{
-		bIsCloseScheduled = true;
+		return;
+	}
+
+	bIsCloseScheduled = true;
+
+	if (bIsUpdateRunning && InProgressAsyncOperationEvent.IsValid() && !InProgressAsyncOperationEvent->IsComplete())
+	{
 		CancelCurrentAsyncOp();
 
 		FGraphEventArray Prerequisites;
@@ -3657,7 +3752,7 @@ FText STableTreeView::ViewPreset_GetSelectedToolTipText() const
 void STableTreeView::StopAllTableDataTasks(bool bWait)
 {
 	DataTaskInfos.RemoveAllSwap([](TSharedPtr<FTableTaskInfo> Data) { return Data->Event->IsComplete(); });
-	
+
 	for (int32 Index = 0; Index < DataTaskInfos.Num(); ++Index)
 	{
 		DataTaskInfos[Index]->CancellationToken->Cancel();
@@ -3671,6 +3766,52 @@ void STableTreeView::StopAllTableDataTasks(bool bWait)
 		}
 
 		DataTaskInfos.Empty();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// SSessionTableTreeView
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+SSessionTableTreeView::~SSessionTableTreeView()
+{
+	// Remove ourselves from the Insights manager.
+	if (FInsightsManager::Get().IsValid())
+	{
+		FInsightsManager::Get()->GetSessionChangedEvent().RemoveAll(this);
+	}
+
+	Session.Reset();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SSessionTableTreeView::ConstructWidget(TSharedPtr<FTable> InTablePtr)
+{
+	STableTreeView::ConstructWidget(InTablePtr);
+	// Register ourselves with the Insights manager.
+	FInsightsManager::Get()->GetSessionChangedEvent().AddSP(this, &SSessionTableTreeView::InsightsManager_OnSessionChanged);
+
+	// Update the Session (i.e. when analysis session was already started).
+	InsightsManager_OnSessionChanged();
+
+	CreateGroupings();
+	CreateSortings();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SSessionTableTreeView::InsightsManager_OnSessionChanged()
+{
+	TSharedPtr<const TraceServices::IAnalysisSession> NewSession = FInsightsManager::Get()->GetSession();
+	if (NewSession != Session)
+	{
+		Session = NewSession;
+		Reset();
+	}
+	else
+	{
+		UpdateTree();
 	}
 }
 

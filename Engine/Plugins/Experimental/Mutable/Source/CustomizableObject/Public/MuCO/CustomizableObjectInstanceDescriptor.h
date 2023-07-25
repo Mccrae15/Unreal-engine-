@@ -2,22 +2,26 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "Math/Color.h"
-#include "Math/UnrealMathSSE.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCO/MultilayerProjector.h"
-#include "UObject/ObjectPtr.h"
 
 #include "CustomizableObjectInstanceDescriptor.generated.h"
+
+class UTexture2D;
+enum class ECustomizableObjectProjectorType : uint8;
+struct FCustomizableObjectBoolParameterValue;
+struct FCustomizableObjectFloatParameterValue;
+struct FCustomizableObjectIntParameterValue;
+struct FCustomizableObjectProjector;
+struct FCustomizableObjectProjectorParameterValue;
+struct FCustomizableObjectTextureParameterValue;
+struct FCustomizableObjectVectorParameterValue;
 
 class FArchive;
 class UCustomizableInstancePrivateData;
 class UCustomizableObject;
 class UCustomizableObjectInstance;
+class FDescriptorHash;
+class FDescriptorRuntimeHash;
 
 namespace mu
 {
@@ -30,7 +34,7 @@ namespace mu
 
 /** Set of parameters + state that defines a CustomizableObjectInstance.
  *
- * This object has the same parameters + state interfice as UCustomizableObjectInstance.
+ * This object has the same parameters + state interface as UCustomizableObjectInstance.
  * UCustomizableObjectInstance must share the same interface. Any public methods added here should also end up in the Instance. */
 USTRUCT()
 struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
@@ -43,22 +47,35 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 
 	FCustomizableObjectInstanceDescriptor(const FCustomizableObjectInstanceDescriptor& Other) = default;
 
-	/** Serialize this object. */
+	/** Serialize this object. Does not support Multilayer Projectors! */
 	void SaveDescriptor(FArchive &Ar);
 
-	/** Deserialize this object. */
+	/** Deserialize this object. Does not support Multilayer Projectors! */
 	void LoadDescriptor(FArchive &Ar);
 
 	UCustomizableObject* GetCustomizableObject() const;
 
+	void SetCustomizableObject(UCustomizableObject& InCustomizableObject);
+	
 	bool GetBuildParameterDecorations() const;
 	
 	void SetBuildParameterDecorations(bool Value);
 	
-	void SetCustomizableObject(UCustomizableObject* InCustomizableObject);
-
-	mu::Ptr<mu::Parameters> ReloadParametersFromObject(); // TODO Split function in 2: 1. Load parameters from model, 2. Get mu::ParametersPtr
+	/** Update all parameters to be up to date with the Mutable Core parameters. */
+	void ReloadParameters();
     
+	int32 GetMinLod() const;
+
+	void SetMinLod(int32 InMinLOD);
+
+	int32 GetMaxLod() const;
+
+	void SetMaxLod(int32 InMaxLOD);
+
+	void SetRequestedLODLevels(const TArray<uint16>& InRequestedLODLevels);
+
+	const TArray<uint16>& GetRequestedLODLevels() const;
+
 	// ------------------------------------------------------------
 	// Parameters
 	// ------------------------------------------------------------
@@ -104,6 +121,18 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 
 	/** Sets the float value "FloatValue" of a float parameter with index "FloatParamIndex". */
 	void SetFloatParameterSelectedOption(const FString& FloatParamName, float FloatValue, int32 RangeIndex = -1);
+
+	/** Gets the value of a texture parameter with name "TextureParamName". */
+	uint64 GetTextureParameterSelectedOption(const FString& TextureParamName, int32 RangeIndex) const;
+
+	/** Gets the texture of a texture parameter with name "TextureParamName". */
+	UTexture2D* GetTextureParameterSelectedOptionT(const FString& TextureParamName, int32 RangeIndex) const;
+
+	/** Sets the texture value "TextureValue" of a texture parameter with index "TextureParamIndex". */
+	void SetTextureParameterSelectedOption(const FString& TextureParamName, uint64 TextureValue, int32 RangeIndex);
+
+	/** Sets the texture "Texture" of a texture parameter with index "TextureParamIndex". */
+	void SetTextureParameterSelectedOptionT(const FString& TextureParamName, UTexture2D* TextureValue, int32 RangeIndex);
 
 	/** Gets the value of a color parameter with name "ColorParamName". */
 	FLinearColor GetColorParameterSelectedOption(const FString& ColorParamName) const;
@@ -168,6 +197,9 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 	/** Finds in FloatParameters a parameter with name ParamName, returns the index if found, -1 otherwise. */
 	int32 FindFloatParameterNameIndex(const FString& ParamName) const;
 
+	/** Finds in TextureParameters a parameter with name ParamName, returns the index if found, -1 otherwise. */
+	int32 FindTextureParameterNameIndex(const FString& ParamName) const;
+
 	/** Finds in BoolParameters a parameter with name ParamName, returns the index if found, -1 otherwise. */
 	int32 FindBoolParameterNameIndex(const FString& ParamName) const;
 
@@ -185,7 +217,8 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 	/** Returns true if the parameter is multidimensional (has multiple ranges). */
 	bool IsParamMultidimensional(int32 ParamIndex) const;
 
-	int32 CurrentParamRange(const FString& ParamName) const;
+	/** Gets the range of values of the projector with ParamName, returns -1 if the parameter does not exist. */
+	int32 GetProjectorValueRange(const FString& ParamName) const;
 
 	/** Increases the range of values of the integer with ParamName, returns the index of the new integer value, -1 otherwise.
 	 * The added value is initialized with the first integer option and is the last one of the range. */
@@ -194,6 +227,10 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 	/** Increases the range of values of the float with ParamName, returns the index of the new float value, -1 otherwise.
 	 * The added value is initialized with 0.5f and is the last one of the range. */
 	int32 AddValueToFloatRange(const FString& ParamName);
+
+	/** Increases the range of values of the float with ParamName, returns the index of the new float value, -1 otherwise. 
+	 * The added value is not initialized. */
+	int32 AddValueToTextureRange(const FString& ParamName);
 
 	/** Increases the range of values of the projector with ParamName, returns the index of the new projector value, -1 otherwise.
 	 * The added value is initialized with the default projector as set up in the editor and is the last one of the range. */
@@ -210,6 +247,12 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 
 	/** Remove the RangeIndex element of the float range of values from the parameter ParamName, returns the index of the last valid float, -1 if no values left. */
 	int32 RemoveValueFromFloatRange(const FString& ParamName, int32 RangeIndex);
+
+	/** Remove the last of the texture range of values from the parameter ParamName, returns the index of the last valid float, -1 if no values left. */
+	int32 RemoveValueFromTextureRange(const FString& ParamName);
+
+	/** Remove the RangeIndex element of the texture range of values from the parameter ParamName, returns the index of the last valid float, -1 if no values left. */
+	int32 RemoveValueFromTextureRange(const FString& ParamName, int32 RangeIndex);
 
 	/** Remove the last of the projector range of values from the parameter ParamName, returns the index of the last valid projector, -1 if no values left. */
 	int32 RemoveValueFromProjectorRange(const FString& ParamName);
@@ -320,9 +363,12 @@ private:
      * These descriptions get generated with every instance update, so it should be disabled when not needed. */
 	bool bBuildParameterDecorations = false;
 
-	/** These are the LODs we want to have, they MUST NOT be used in an update (Mutable thread). */
-	int32 MinLODToLoad = 0;
-	int32 MaxLODToLoad = INT32_MAX;
+	/** These are the LODs Mutable can generate, they MUST NOT be used in an update (Mutable thread). */
+	int32 MinLOD = 0;
+	int32 MaxLOD = INT32_MAX;
+
+	/** Array of RequestedLODs per component to generate, they MUST NOT be used in an update (Mutable thread). */
+	TArray<uint16> RequestedLODLevels;
 
 	/** Lookup of UCustomizableObjectDescriptor::IntParameters. */
 	TMap<FString, int32> IntParametersLookupTable;
@@ -330,17 +376,72 @@ private:
 	/** Multilayer Projector helpers. See FMultilayerProjector.*/
 	UPROPERTY()
 	TMap<FName, FMultilayerProjector> MultilayerProjectors;
-	
-	void Init();
+
+	/** Return a Mutable Core object containing all parameters. */
+	mu::Ptr<mu::Parameters> GetParameters() const;
 
 	void CreateParametersLookupTable();
 	
 	// Friends
-	friend CUSTOMIZABLEOBJECT_API uint32 GetTypeHash(const FCustomizableObjectInstanceDescriptor& Key);
+	friend FDescriptorHash;
+	friend FDescriptorRuntimeHash;
 	friend UCustomizableObjectInstance;
 	friend UCustomizableInstancePrivateData;
 	friend FMultilayerProjector;
 };
 
 
-CUSTOMIZABLEOBJECT_API uint32 GetTypeHash(const FCustomizableObjectInstanceDescriptor& Key);
+/** Hash of the Descriptor. Hashes everything except runtime information. */
+class CUSTOMIZABLEOBJECT_API FDescriptorHash
+{
+public:
+	FDescriptorHash() = default;
+
+	explicit FDescriptorHash(const FCustomizableObjectInstanceDescriptor& Descriptor);
+
+	bool operator==(const FDescriptorHash& Other) const;
+
+	bool operator!=(const FDescriptorHash& Other) const;
+
+	bool operator<(const FDescriptorHash& Other) const;
+
+	FString ToString() const;
+	
+private:
+	uint32 Hash = 0;
+};
+
+
+/** Hash of the Descriptor. Hashes everything including runtime information. */
+class CUSTOMIZABLEOBJECT_API FDescriptorRuntimeHash : public FDescriptorHash
+{
+public:
+	FDescriptorRuntimeHash() = default;
+
+	explicit FDescriptorRuntimeHash(const FCustomizableObjectInstanceDescriptor& Descriptor);
+
+	/** Return true if this Hash is a subset of the other Hash (i.e., this Descriptor is a subset of the other Descriptor). */
+	bool IsSubset(const FDescriptorRuntimeHash& Other) const;
+
+	void UpdateMinMaxLOD(int32 InMinLOD, int32 InMaxLOD);
+
+	int32 GetMinLOD() const;
+
+	int32 GetMaxLOD() const;
+
+	void UpdateRequestedLODs(const TArray<uint16>& InRequestedLODs);
+
+	const TArray<uint16>& GetRequestedLODs() const;
+
+private:
+	int32 MinLOD = 0;
+	int32 MaxLOD = INT32_MAX;
+
+	// Array of bitmasks that indicate which LODs of each component have been requested
+	TArray<uint16> RequestedLODsPerComponent;
+};
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "MuCO/CustomizableObject.h"
+#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
+#endif

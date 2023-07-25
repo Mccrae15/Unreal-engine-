@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakeRecorderMicrophoneAudioSource.h"
+#include "AssetRegistry/AssetData.h"
 #include "TakeRecorderSources.h"
 #include "TakeRecorderSettings.h"
 #include "TakesUtils.h"
@@ -28,6 +29,7 @@
 UTakeRecorderMicrophoneAudioSourceSettings::UTakeRecorderMicrophoneAudioSourceSettings(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 	, AudioTrackName(NSLOCTEXT("UTakeRecorderMicrophoneAudioSource", "DefaultAudioTrackName", "Recorded Audio"))
+	, AudioAssetName(TEXT("Audio_{slate}_{take}"))
 	, AudioSubDirectory(TEXT("Audio"))
 {
 	TrackTint = FColor(75, 67, 148);
@@ -47,7 +49,7 @@ FString UTakeRecorderMicrophoneAudioSourceSettings::GetSubsceneTrackName(ULevelS
 {
 	if (UTakeMetaData* TakeMetaData = InSequence->FindMetaData<UTakeMetaData>())
 	{
-		return FString::Printf(TEXT("Audio_%s"), *TakeMetaData->GenerateAssetPath("{slate}"));
+		return FString::Printf(TEXT("%s_%s"), *AudioTrackName.ToString(), *TakeMetaData->GenerateAssetPath("{slate}"));
 	}
 	return TEXT("MicrophoneAudio");
 }
@@ -56,7 +58,7 @@ FString UTakeRecorderMicrophoneAudioSourceSettings::GetSubsceneAssetName(ULevelS
 {
 	if (UTakeMetaData* TakeMetaData = InSequence->FindMetaData<UTakeMetaData>())
 	{
-		return FString::Printf(TEXT("Audio_%s"), *TakeMetaData->GenerateAssetPath("{slate}_{take}"));
+		return TakeMetaData->GenerateAssetPath(AudioAssetName);
 	}
 	return TEXT("MicrophoneAudio");
 }
@@ -96,20 +98,20 @@ static FString MakeNewAssetName(const FString& BaseAssetPath, const FString& Bas
 	return AssetName;
 }
 
-TArray<UTakeRecorderSource*> UTakeRecorderMicrophoneAudioSource::PreRecording(ULevelSequence* InSequence, FMovieSceneSequenceID InSequenceID, ULevelSequence* InMasterSequence, FManifestSerializer* InManifestSerializer)
+TArray<UTakeRecorderSource*> UTakeRecorderMicrophoneAudioSource::PreRecording(ULevelSequence* InSequence, FMovieSceneSequenceID InSequenceID, ULevelSequence* InRootSequence, FManifestSerializer* InManifestSerializer)
 {
 	UMovieScene* MovieScene = InSequence->GetMovieScene();
-	for (auto MasterTrack : MovieScene->GetMasterTracks())
+	for (auto Track : MovieScene->GetTracks())
 	{
-		if (MasterTrack->IsA(UMovieSceneAudioTrack::StaticClass()) && MasterTrack->GetDisplayName().EqualTo(AudioTrackName))
+		if (Track->IsA(UMovieSceneAudioTrack::StaticClass()) && Track->GetDisplayName().EqualTo(AudioTrackName))
 		{
-			CachedAudioTrack = Cast<UMovieSceneAudioTrack>(MasterTrack);
+			CachedAudioTrack = Cast<UMovieSceneAudioTrack>(Track);
 		}
 	}
 
 	if (!CachedAudioTrack.IsValid())
 	{
-		CachedAudioTrack = MovieScene->AddMasterTrack<UMovieSceneAudioTrack>();
+		CachedAudioTrack = MovieScene->AddTrack<UMovieSceneAudioTrack>();
 		CachedAudioTrack->SetDisplayName(AudioTrackName);
 	}
 
@@ -131,7 +133,7 @@ void UTakeRecorderMicrophoneAudioSource::AddContentsToFolder(UMovieSceneFolder* 
 {
 	if (CachedAudioTrack.IsValid())
 	{
-		InFolder->AddChildMasterTrack(CachedAudioTrack.Get());
+		InFolder->AddChildTrack(CachedAudioTrack.Get());
 	}
 }
 
@@ -179,7 +181,7 @@ void UTakeRecorderMicrophoneAudioSource::StopRecording(class ULevelSequence* InS
 	AudioRecorder.Reset();
 }
 
-TArray<UTakeRecorderSource*> UTakeRecorderMicrophoneAudioSource::PostRecording(ULevelSequence* InSequence, class ULevelSequence* InMasterSequence, const bool bCancelled)
+TArray<UTakeRecorderSource*> UTakeRecorderMicrophoneAudioSource::PostRecording(ULevelSequence* InSequence, class ULevelSequence* InRootSequence, const bool bCancelled)
 {
 	if (!RecordedSoundWaves.Num())
 	{
@@ -236,6 +238,7 @@ TArray<UTakeRecorderSource*> UTakeRecorderMicrophoneAudioSource::PostRecording(U
 
 				FFrameNumber RecordStartFrame = MovieScene->GetPlaybackRange().GetLowerBoundValue();
 
+				NewAudioSection->SetRowIndex(RowIndex + 1);
 				NewAudioSection->SetSound(RecordedSoundWave);
 				NewAudioSection->SetRange(TRange<FFrameNumber>(RecordStartFrame, RecordStartFrame + (RecordedSoundWave->GetDuration() * TickResolution).CeilToFrame()));
 				NewAudioSection->TimecodeSource = FTimecode::FromFrameNumber(RecordStartFrame, DisplayRate);

@@ -1,8 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceRW.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraShader.h"
+#include "NiagaraSimStageData.h"
+#include "RenderGraph.h"
 #include "ShaderParameterUtils.h"
 #include "ClearQuad.h"
+
+#include "UObject/UE5MainStreamObjectVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceRW)
 
@@ -16,6 +21,9 @@ const FString UNiagaraDataInterfaceRWBase::NumCellsName(TEXT("_NumCells"));
 const FString UNiagaraDataInterfaceRWBase::UnitToUVName(TEXT("_UnitToUV"));
 const FString UNiagaraDataInterfaceRWBase::CellSizeName(TEXT("_CellSize"));
 const FString UNiagaraDataInterfaceRWBase::WorldBBoxSizeName(TEXT("_WorldBBoxSize"));
+
+// Attribute names
+const FName UNiagaraDataInterfaceRWBase::NAME_Attribute("Attribute");
 
 // Global VM function names, also used by the shaders code generation methods.
 const FName UNiagaraDataInterfaceRWBase::NumCellsFunctionName("GetNumCells");
@@ -37,6 +45,138 @@ const FName UNiagaraDataInterfaceRWBase::LinearToIndexFunctionName("LinearToInde
 const FName UNiagaraDataInterfaceRWBase::ExecutionIndexToUnitFunctionName("ExecutionIndexToUnit");
 const FName UNiagaraDataInterfaceRWBase::ExecutionIndexToGridIndexFunctionName("ExecutionIndexToGridIndex");
 
+/*--------------------------------------------------------------------------------------------------------------------------*/
+
+void FNDIGpuComputeDispatchArgsGenContext::SetDirect(const FIntVector3& InElementCount, uint32 GpuCountOffset) const
+{
+	SimStageData->DispatchArgs.ElementCount = InElementCount;
+	SimStageData->DispatchArgs.GpuElementCountOffset = GpuCountOffset;
+}
+
+void FNDIGpuComputeDispatchArgsGenContext::SetIndirect(FRDGBuffer* InBuffer, uint32 BufferByteOffset) const
+{
+	SimStageData->DispatchArgs.IndirectBuffer = InBuffer;
+	SimStageData->DispatchArgs.IndirectOffset = BufferByteOffset;
+}
+
+void FNDIGpuComputeDispatchArgsGenContext::SetIndirect(FRDGBuffer* InBuffer, uint32 BufferByteOffset, FCreateIndirectCallback&& Callback) const
+{
+	SimStageData->DispatchArgs.IndirectBuffer = InBuffer;
+	SimStageData->DispatchArgs.IndirectOffset = BufferByteOffset;
+
+	auto& IndirectCallback = IndirectCallbacks.AddDefaulted_GetRef();
+	IndirectCallback.Key = Callback;
+	IndirectCallback.Value.Key = InBuffer;
+	IndirectCallback.Value.Value = BufferByteOffset;
+}
+
+FNDIGpuComputeDispatchArgsGenContext::FIndirectArgs FNDIGpuComputeDispatchArgsGenContext::CreateIndirect(const FUintVector3& InCounterOffsets) const
+{
+	const int32 BatchSize = FNiagaraDispatchIndirectArgsGenCS::ThreadCount;
+
+	// Do we need to allocate new indirect buffer?
+	if (IndirectBuffer == nullptr)
+	{
+		IndirectCounterGenArgs = GraphBuilder.AllocPODArray<FNiagaraDispatchIndirectInfoCS>(BatchSize);
+		NumIndirectCounterGenArgs = 0;
+
+		IndirectBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FNiagaraDispatchIndirectParametersCS>(BatchSize), TEXT("NiagaraIndirectBuffer"));
+	}
+
+	SimStageData->DispatchArgs.IndirectBuffer = IndirectBuffer;
+	SimStageData->DispatchArgs.IndirectOffset = NumIndirectCounterGenArgs * sizeof(FNiagaraDispatchIndirectParametersCS);
+
+	FIndirectArgs IndirectArgs;
+	IndirectArgs.Key = IndirectBuffer;
+	IndirectArgs.Value = NumIndirectCounterGenArgs;
+	IndirectCounterGenArgs[NumIndirectCounterGenArgs++] = FNiagaraDispatchIndirectInfoCS(InCounterOffsets, SimStageData->StageMetaData->GpuDispatchNumThreads, IndirectArgs.Value);
+	if (NumIndirectCounterGenArgs == BatchSize)
+	{
+		FlushPass();
+	}
+	return IndirectArgs;
+}
+
+void FNDIGpuComputeDispatchArgsGenContext::AddBufferAccess(FRDGBuffer* InBuffer, ERHIAccess InAccess) const
+{
+	GetPassParameters()->BufferAccessArray.Emplace(InBuffer, InAccess);
+}
+
+void FNDIGpuComputeDispatchArgsGenContext::AddTextureAccess(FRDGTexture* InTexture, ERHIAccess InAccess) const
+{
+	GetPassParameters()->TextureAccessArray.Emplace(InTexture, InAccess);
+}
+
+FNDIGpuComputeDispatchArgsGenParameters* FNDIGpuComputeDispatchArgsGenContext::GetPassParameters() const
+{
+	if (PassParameters == nullptr)
+	{
+		PassParameters = GraphBuilder.AllocParameters<FNDIGpuComputeDispatchArgsGenParameters>();
+	}
+	return PassParameters;
+}
+
+void FNDIGpuComputeDispatchArgsGenContext::FlushPass() const
+{
+	if (NumIndirectCounterGenArgs == 0 && IndirectCallbacks.Num() == 0)
+	{
+		return;
+	}
+
+	// Create Args Buffer and Upload into it
+	FNiagaraDispatchIndirectArgsGenCS::FParameters* IndirectArgsGenParameters = &GetPassParameters()->IndirectArgsGenParameters;
+	if (NumIndirectCounterGenArgs > 0)
+	{
+		const uint32 DispatchInfosBufferSize = sizeof(FNiagaraDispatchIndirectInfoCS) * NumIndirectCounterGenArgs;
+		FRDGBufferRef DispatchInfosBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), DispatchInfosBufferSize / sizeof(uint32)), TEXT("NiagaraIndirectGenArgs"));
+		GraphBuilder.QueueBufferUpload(DispatchInfosBuffer, IndirectCounterGenArgs, DispatchInfosBufferSize, ERDGInitialDataFlags::NoCopy);
+
+		IndirectArgsGenParameters->DispatchInfos = GraphBuilder.CreateSRV(DispatchInfosBuffer, PF_R32_UINT);
+		IndirectArgsGenParameters->NumDispatchInfos = NumIndirectCounterGenArgs;
+		IndirectArgsGenParameters->MaxGroupsPerDimension = FUintVector3(GRHIMaxDispatchThreadGroupsPerDimension);
+
+		IndirectArgsGenParameters->InstanceCounts = ComputeDispatchInterface.GetGPUInstanceCounterManager().GetInstanceCountBuffer().SRV;
+		IndirectArgsGenParameters->RWDispatchIndirectArgs = GraphBuilder.CreateUAV(IndirectBuffer, PF_R32_UINT);
+	}
+
+	// Kick pass to genreate args
+	GraphBuilder.AddPass(
+		RDG_EVENT_NAME("Niagara::ExecuteTicks::DispatchGroupPre"),
+		GetPassParameters(),
+		ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
+		[PassParameters=GetPassParameters(), IndirectArgsGenParameters, CreateCallbacks=MoveTemp(IndirectCallbacks)](FRHICommandListImmediate& RHICmdList)
+		{
+			if (IndirectArgsGenParameters != nullptr)
+			{
+				TShaderMapRef<FNiagaraDispatchIndirectArgsGenCS> DispatchIndirectArgsGenCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+				FComputeShaderUtils::Dispatch(RHICmdList, DispatchIndirectArgsGenCS, *IndirectArgsGenParameters, FIntVector(1, 1, 1));
+			}
+			for (const auto& CreateCallback : CreateCallbacks)
+			{
+				CreateCallback.Key(RHICmdList, CreateCallback.Value.Key, CreateCallback.Value.Value);
+			}
+		}
+	);
+
+	// Clear our data
+	IndirectBuffer = nullptr;
+	IndirectCounterGenArgs = nullptr;
+	NumIndirectCounterGenArgs = 0;
+	IndirectCallbacks.Empty();
+	PassParameters = nullptr;
+}
+
+/*--------------------------------------------------------------------------------------------------------------------------*/
+
+void FNiagaraDataInterfaceProxyRW::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Context.SetDirect(GetElementCount(Context.GetSystemInstanceID()), GetGPUInstanceCountOffset(Context.GetSystemInstanceID()));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+/*--------------------------------------------------------------------------------------------------------------------------*/
+
 UNiagaraDataInterfaceRWBase::UNiagaraDataInterfaceRWBase(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -47,6 +187,7 @@ UNiagaraDataInterfaceRWBase::UNiagaraDataInterfaceRWBase(FObjectInitializer cons
 
 UNiagaraDataInterfaceGrid3D::UNiagaraDataInterfaceGrid3D(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, ClearBeforeNonIterationStage(true)
 	, NumCells(3, 3, 3)
 	, CellSize(1.)
 	, NumCellsMaxAxis(10)
@@ -203,19 +344,6 @@ void UNiagaraDataInterfaceGrid3D::GetFunctions(TArray<FNiagaraFunctionSignature>
 
 	{
 		FNiagaraFunctionSignature Sig;
-		Sig.Name = UNiagaraDataInterfaceRWBase::NumCellsFunctionName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Grid")));		
-		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("NumCellsX")));
-		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("NumCellsY")));
-		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("NumCellsZ")));
-
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
-		OutFunctions.Add(Sig);
-	}
-
-	{
-		FNiagaraFunctionSignature Sig;
 		Sig.Name = UNiagaraDataInterfaceRWBase::CellSizeFunctionName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Grid")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("CellSize")));		
@@ -251,7 +379,9 @@ bool UNiagaraDataInterfaceGrid3D::Equals(const UNiagaraDataInterface* Other) con
 	}
 	const UNiagaraDataInterfaceGrid3D* OtherTyped = CastChecked<const UNiagaraDataInterfaceGrid3D>(Other);
 
-	return OtherTyped->NumCells == NumCells &&
+	return 
+		OtherTyped->ClearBeforeNonIterationStage == ClearBeforeNonIterationStage &&
+		OtherTyped->NumCells == NumCells &&
 		FMath::IsNearlyEqual(OtherTyped->CellSize, CellSize) &&		
 		OtherTyped->WorldBBoxSize.Equals(WorldBBoxSize) && 
 		OtherTyped->SetResolutionMethod == SetResolutionMethod && 
@@ -469,7 +599,7 @@ bool UNiagaraDataInterfaceGrid3D::CopyToInternal(UNiagaraDataInterface* Destinat
 
 	UNiagaraDataInterfaceGrid3D* OtherTyped = CastChecked<UNiagaraDataInterfaceGrid3D>(Destination);
 
-
+	OtherTyped->ClearBeforeNonIterationStage = ClearBeforeNonIterationStage;
 	OtherTyped->NumCells = NumCells;
 	OtherTyped->CellSize = CellSize;
 	OtherTyped->SetResolutionMethod = SetResolutionMethod;
@@ -483,13 +613,26 @@ bool UNiagaraDataInterfaceGrid3D::CopyToInternal(UNiagaraDataInterface* Destinat
 
 UNiagaraDataInterfaceGrid2D::UNiagaraDataInterfaceGrid2D(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, ClearBeforeNonIterationStage(true)
 	, NumCellsX(3)
 	, NumCellsY(3)
 	, NumCellsMaxAxis(3)
-	, NumAttributes(1)
+	, NumAttributes(0)
 	, SetGridFromMaxAxis(false)	
 	, WorldBBoxSize(100., 100.)
 {
+}
+
+void UNiagaraDataInterfaceGrid2D::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
+	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::NiagaraGrid2DDefaultUnnamedAttributesZero)
+	{
+		NumAttributes = 1;
+	}
+
+	Super::Serialize(Ar);
 }
 
 #if WITH_EDITOR
@@ -721,6 +864,7 @@ bool UNiagaraDataInterfaceGrid2D::Equals(const UNiagaraDataInterface* Other) con
 	const UNiagaraDataInterfaceGrid2D* OtherTyped = CastChecked<const UNiagaraDataInterfaceGrid2D>(Other);
 
 	return 
+		OtherTyped->ClearBeforeNonIterationStage == ClearBeforeNonIterationStage &&
 		OtherTyped->NumCellsX == NumCellsX &&
 		OtherTyped->NumCellsY == NumCellsY &&
 		OtherTyped->NumAttributes == NumAttributes &&
@@ -956,7 +1100,7 @@ bool UNiagaraDataInterfaceGrid2D::CopyToInternal(UNiagaraDataInterface* Destinat
 
 	UNiagaraDataInterfaceGrid2D* OtherTyped = CastChecked<UNiagaraDataInterfaceGrid2D>(Destination);
 
-
+	OtherTyped->ClearBeforeNonIterationStage = ClearBeforeNonIterationStage;
 	OtherTyped->NumCellsX = NumCellsX;
 	OtherTyped->NumCellsY = NumCellsY;
 	OtherTyped->NumAttributes = NumAttributes;

@@ -5,15 +5,14 @@
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ActorDescContainer)
 
 #if WITH_EDITOR
+#include "AssetRegistry/ARFilter.h"
 #include "Editor.h"
-#include "UObject/LinkerInstancingContext.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/Level.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionLog.h"
-#include "WorldPartition/WorldPartitionHandle.h"
+#include "Modules/ModuleManager.h"
 #include "WorldPartition/WorldPartitionActorDescUtils.h"
 #include "UObject/ObjectSaveContext.h"
-#include "Engine/World.h"
 
 UActorDescContainer::FActorDescContainerInitializeDelegate UActorDescContainer::OnActorDescContainerInitialized;
 #endif
@@ -33,6 +32,8 @@ void UActorDescContainer::Initialize(UWorld* InWorld, FName InPackageName)
 
 void UActorDescContainer::Initialize(const FInitializeParams& InitParams)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UActorDescContainer::Initialize);
+
 	check(!World || World == InitParams.World);
 	World = InitParams.World;
 
@@ -47,35 +48,112 @@ void UActorDescContainer::Initialize(const FInitializeParams& InitParams)
 
 		// Do a synchronous scan of the level external actors path.			
 		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-		AssetRegistry.ScanPathsSynchronous({ ContainerExternalActorsPath }, /*bForceRescan*/true, /*bIgnoreDenyListScanFilters*/false);
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(ScanPathsSynchronous);
+			AssetRegistry.ScanPathsSynchronous({ ContainerExternalActorsPath }, /*bForceRescan*/false, /*bIgnoreDenyListScanFilters*/false);
+		}
 
 		FARFilter Filter;
 		Filter.bRecursivePaths = true;
 		Filter.bIncludeOnlyOnDiskAssets = true;
 		Filter.PackagePaths.Add(*ContainerExternalActorsPath);
 
+		TRACE_CPUPROFILER_EVENT_SCOPE(GetAssets);
 		AssetRegistry.GetAssets(Filter, Assets);
 	}
 
-	for (const FAssetData& Asset : Assets)
 	{
-		TUniquePtr<FWorldPartitionActorDesc> ActorDesc = FWorldPartitionActorDescUtils::GetActorDescriptorFromAssetData(Asset);
+		TRACE_CPUPROFILER_EVENT_SCOPE(RegisterDescriptors);
+		for (const FAssetData& Asset : Assets)
+		{
+			TUniquePtr<FWorldPartitionActorDesc> ActorDesc = FWorldPartitionActorDescUtils::GetActorDescriptorFromAssetData(Asset);
 
-		if (ActorDesc.IsValid() && (!InitParams.FilterActorDesc || InitParams.FilterActorDesc(ActorDesc.Get())))
-		{
-			AddActorDescriptor(ActorDesc.Release());
-		}
-		else
-		{
-			InvalidActors.Emplace(MoveTemp(ActorDesc));
+			if (ActorDesc.IsValid() && ActorDesc->GetNativeClass().IsValid() && (!InitParams.FilterActorDesc || InitParams.FilterActorDesc(ActorDesc.Get())))
+			{
+				AddActorDescriptor(ActorDesc.Release());
+			}
+			else
+			{
+				InvalidActors.Emplace(MoveTemp(ActorDesc));
+			}
 		}
 	}
 
-	OnActorDescContainerInitialized.Broadcast(this);
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(OnActorDescContainerInitialized)
+		OnActorDescContainerInitialized.Broadcast(this);
+	}
 
 	RegisterEditorDelegates();
 
 	bContainerInitialized = true;
+#endif
+}
+
+void UActorDescContainer::Update()
+{
+	check(World);
+
+#if WITH_EDITOR
+	check(bContainerInitialized);
+	TArray<FAssetData> Assets;
+
+	const FString ContainerExternalActorsPath = GetExternalActorPath();
+
+	// Do a synchronous scan of the level external actors path.			
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	AssetRegistry.ScanPathsSynchronous({ ContainerExternalActorsPath }, /*bForceRescan*/false, /*bIgnoreDenyListScanFilters*/false);
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.bIncludeOnlyOnDiskAssets = true;
+	Filter.PackagePaths.Add(*ContainerExternalActorsPath);
+
+	AssetRegistry.GetAssets(Filter, Assets);
+
+	TSet<FGuid> ActorGuids;
+	for (const FAssetData& Asset : Assets)
+	{
+		TUniquePtr<FWorldPartitionActorDesc> NewActorDesc = FWorldPartitionActorDescUtils::GetActorDescriptorFromAssetData(Asset);
+
+		if (NewActorDesc.IsValid() && NewActorDesc->GetNativeClass().IsValid())
+		{
+			ActorGuids.Add(NewActorDesc->GetGuid());
+
+			if (TUniquePtr<FWorldPartitionActorDesc>* ExistingActorDesc = GetActorDescriptor(NewActorDesc->GetGuid()))
+			{
+				if (!NewActorDesc->Equals((*ExistingActorDesc).Get()))
+				{
+					OnActorDescUpdating(ExistingActorDesc->Get());
+					FWorldPartitionActorDescUtils::UpdateActorDescriptorFromActorDescriptor(NewActorDesc, *ExistingActorDesc);
+					OnActorDescUpdated(ExistingActorDesc->Get());
+				}
+			}
+			else
+			{
+				FWorldPartitionActorDesc* ActorDescPtr = NewActorDesc.Release();
+				AddActorDescriptor(ActorDescPtr);
+				OnActorDescAdded(ActorDescPtr);
+			}
+		}
+	}
+
+	TArray<FGuid> ActorDescsToRemove;
+	for (FActorDescList::TIterator<> ActorDescIt(this); ActorDescIt; ++ActorDescIt)
+	{
+		if (!ActorGuids.Contains(ActorDescIt->GetGuid()))
+		{
+			ActorDescsToRemove.Add(ActorDescIt->GetGuid());
+		}
+	}
+
+	for (const FGuid& ActorDescGuidToRemove : ActorDescsToRemove)
+	{
+		if (FWorldPartitionActorDesc* ActorDesc = GetActorDesc(ActorDescGuidToRemove))
+		{
+			RemoveActor(ActorDescGuidToRemove);
+		}
+	}
 #endif
 }
 
@@ -154,9 +232,7 @@ bool UActorDescContainer::ShouldHandleActorEvent(const AActor* Actor)
 {
 	if (Actor != nullptr)
 	{
-		bool bHandlesActor = GetActorDesc(Actor->GetActorGuid()) != nullptr || IsActorDescHandled(Actor);
-		return bHandlesActor && Actor->IsMainPackageActor() && (Actor->GetLevel() != nullptr);
-		
+		return IsActorDescHandled(Actor) && Actor->IsMainPackageActor() && (Actor->GetLevel() != nullptr);
 	}
 	
 	return false;
@@ -175,7 +251,7 @@ void UActorDescContainer::OnObjectPreSave(UObject* Object, FObjectPreSaveContext
 				{
 					// Existing actor
 					OnActorDescUpdating(ExistingActorDesc->Get());
-					FWorldPartitionActorDescUtils::UpdateActorDescriptorFomActor(Actor, *ExistingActorDesc);
+					FWorldPartitionActorDescUtils::UpdateActorDescriptorFromActor(Actor, *ExistingActorDesc);
 					OnActorDescUpdated(ExistingActorDesc->Get());
 				}
 				else
@@ -206,10 +282,13 @@ void UActorDescContainer::OnObjectsReplaced(const TMap<UObject*, UObject*>& OldT
 	{
 		if (AActor* OldActor = Cast<AActor>(OldObject))
 		{
-			AActor* NewActor = Cast<AActor>(NewObject);
-			if (FWorldPartitionActorDesc* ActorDesc = GetActorDesc(OldActor->GetActorGuid()))
-			{				
-				FWorldPartitionActorDescUtils::ReplaceActorDescriptorPointerFromActor(OldActor, NewActor, ActorDesc);
+			if (ShouldHandleActorEvent(OldActor))
+			{
+				AActor* NewActor = Cast<AActor>(NewObject);
+				if (FWorldPartitionActorDesc* ActorDesc = GetActorDesc(OldActor->GetActorGuid()))
+				{
+					FWorldPartitionActorDescUtils::ReplaceActorDescriptorPointerFromActor(OldActor, NewActor, ActorDesc);
+				}
 			}
 		}
 	}

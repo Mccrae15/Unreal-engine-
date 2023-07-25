@@ -19,6 +19,7 @@
 #include "SSocketChooser.h"
 #include "LevelInstance/LevelInstanceInterface.h"
 #include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/LoaderAdapter/LoaderAdapterPinnedActors.h"
 #include "ToolMenu.h"
 #include "Engine/Level.h"
 
@@ -62,17 +63,6 @@ struct SActorTreeLabel : FSceneOutlinerCommonLabelData, public SCompoundWidget
 				{
 					return !CanExecuteRenameRequest(Item.Get());
 				})
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(0.0f, 0.f, 3.0f, 0.0f)
-			[
-				SNew(STextBlock)
-				.Text(this, &SActorTreeLabel::GetTypeText)
-				.Visibility(this, &SActorTreeLabel::GetTypeTextVisibility)
-				.HighlightText(HighlightText)
 			];
 
 		if (WeakSceneOutliner.Pin()->GetMode()->IsInteractive())
@@ -143,21 +133,6 @@ private:
 		}
 
 		return FText();
-	}
-
-	FText GetTypeText() const
-	{
-		if (const AActor* Actor = ActorPtr.Get())
-		{
-			return FText::FromName(Actor->GetClass()->GetFName());
-		}
-
-		return FText();
-	}
-
-	EVisibility GetTypeTextVisibility() const
-	{
-		return HighlightText.Get().IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
 	}
 
 	const FSlateBrush* GetIcon() const
@@ -287,15 +262,7 @@ private:
 			// Highlight actors that are exclusive to PlayWorld
 			return FLinearColor(0.9f, 0.8f, 0.4f);
 		}
-
-		// also darken items that are non selectable in the active mode(s)
-		const bool bInSelected = true;
-		const bool bSelectEvenIfHidden = true;		// @todo outliner: Is this actually OK?
-		if (!GEditor->CanSelectActor(Actor, bInSelected, bSelectEvenIfHidden))
-		{
-			return FSceneOutlinerCommonLabelData::DarkColor;
-		}
-
+		
 		return FSlateColor::UseForeground();
 	}
 
@@ -371,14 +338,7 @@ bool FActorTreeItem::CanInteract() const
 		return false;
 	}
 
-	const bool bInSelected = true;
-	const bool bSelectEvenIfHidden = true;		// @todo outliner: Is this actually OK?
-	if (!GEditor->CanSelectActor(ActorPtr, bInSelected, bSelectEvenIfHidden))
-	{
-		return false;
-	}
-
-	return true;
+	return WeakSceneOutliner.Pin()->GetMode()->CanInteract(*this);
 }
 
 TSharedRef<SWidget> FActorTreeItem::GenerateLabelWidget(ISceneOutliner& Outliner, const STableRow<FSceneOutlinerTreeItemPtr>& InRow)
@@ -388,15 +348,7 @@ TSharedRef<SWidget> FActorTreeItem::GenerateLabelWidget(ISceneOutliner& Outliner
 
 bool FActorTreeItem::ShouldShowPinnedState() const
 {
-	if (const AActor* ActorPtr = Actor.Get())
-	{
-		// Pinning of Actors is only supported on the main world partition
-		const ULevel* Level = ActorPtr->GetLevel();
-		const UWorld* World = Level->GetWorld();
-		return World && !World->IsGameWorld() && !!World->GetWorldPartition() && Level->IsPersistentLevel();
-	}
-
-	return false;
+	return FLoaderAdapterPinnedActors::SupportsPinning(Actor.Get());
 }
 
 bool FActorTreeItem::ShouldShowVisibilityState() const

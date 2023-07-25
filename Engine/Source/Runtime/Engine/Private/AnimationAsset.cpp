@@ -1,19 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimationAsset.h"
+#include "Animation/AnimData/IAnimationDataController.h"
+#include "Animation/AnimMontage.h"
 #include "Engine/AssetUserData.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/AssetMappingTable.h"
 #include "Animation/AnimMetaData.h"
 #include "Animation/AnimSequence.h"
 #include "AnimationUtils.h"
-#include "Animation/AnimInstance.h"
 #include "UObject/LinkerLoad.h"
 #include "Animation/BlendSpace.h"
 #include "Animation/PoseAsset.h"
-#include "Animation/AnimSequenceHelpers.h"
 #include "Animation/AnimNodeBase.h"
-#include "UObject/UObjectThreadContext.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimationAsset)
 
@@ -192,6 +191,11 @@ void FAnimTickRecord::AllocateContextDataContainer()
 }
 
 FAnimTickRecord::FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping, float InPlayRate, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord)
+	: FAnimTickRecord(InSequence, bInLooping, InPlayRate, /*bInIsEvaluator*/ false, InFinalBlendWeight, InCurrentTime, InMarkerTickRecord)
+{
+}
+
+FAnimTickRecord::FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping, float InPlayRate, bool bInIsEvaluator, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord)
 {
 	SourceAsset = InSequence;
 	TimeAccumulator = &InCurrentTime;
@@ -199,12 +203,12 @@ FAnimTickRecord::FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping,
 	PlayRateMultiplier = InPlayRate;
 	EffectiveBlendWeight = InFinalBlendWeight;
 	bLooping = bInLooping;
-	BlendSpace.bIsEvaluator = false;	// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
+	bIsEvaluator = bInIsEvaluator;
 }
 
 FAnimTickRecord::FAnimTickRecord(
 	UBlendSpace* InBlendSpace, const FVector& InBlendInput, TArray<FBlendSampleData>& InBlendSampleDataCache, FBlendFilter& InBlendFilter, bool bInLooping, 
-	float InPlayRate, bool bTeleportToTime, bool bIsEvaluator, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord)
+	float InPlayRate, bool bTeleportToTime, bool bInIsEvaluator, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord)
 {
 	SourceAsset = InBlendSpace;
 	BlendSpace.BlendSpacePositionX = InBlendInput.X;
@@ -212,12 +216,12 @@ FAnimTickRecord::FAnimTickRecord(
 	BlendSpace.BlendSampleDataCache = &InBlendSampleDataCache;
 	BlendSpace.BlendFilter = &InBlendFilter;
 	BlendSpace.bTeleportToTime = bTeleportToTime;
-	BlendSpace.bIsEvaluator = bIsEvaluator;
 	TimeAccumulator = &InCurrentTime;
 	MarkerTickRecord = &InMarkerTickRecord;
 	PlayRateMultiplier = InPlayRate;
 	EffectiveBlendWeight = InFinalBlendWeight;
 	bLooping = bInLooping;
+	bIsEvaluator = bInIsEvaluator;
 }
 
 FAnimTickRecord::FAnimTickRecord(UAnimMontage* InMontage, float InCurrentPosition, float, float, float InWeight, TArray<FPassedMarker>& InMarkersPassedThisTick, FMarkerTickRecord& InMarkerTickRecord)
@@ -303,9 +307,7 @@ void UAnimationAsset::PostLoad()
 
 void UAnimationAsset::ResetSkeleton(USkeleton* NewSkeleton)
 {
-// @TODO LH, I'd like this to work outside of editor, but that requires unlocking track names data in game
 #if WITH_EDITOR
-	Skeleton = NULL;
 	ReplaceSkeleton(NewSkeleton);
 #endif
 }
@@ -362,10 +364,17 @@ void UAnimationAsset::RemoveMetaData(TArrayView<UAnimMetaData*> MetaDataInstance
 
 void UAnimationAsset::SetSkeleton(USkeleton* NewSkeleton)
 {
-	if (NewSkeleton && NewSkeleton != Skeleton)
+#if WITH_EDITOR
+	OnSetSkeleton(NewSkeleton);
+#endif // WITH_EDITOR
+	Skeleton = NewSkeleton;
+	if (Skeleton)
 	{
-		Skeleton = NewSkeleton;
 		SkeletonGuid = NewSkeleton->GetGuid();
+	}
+	else
+	{
+		SkeletonGuid.Invalidate();
 	}
 }
 
@@ -419,8 +428,10 @@ void UAnimationAsset::RemapTracksToNewSkeleton(USkeleton* NewSkeleton, bool bCon
 bool UAnimationAsset::ReplaceSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces/*=false*/)
 {
 	// if it's not same 
-	if (NewSkeleton != Skeleton)
+	if (NewSkeleton && (NewSkeleton != Skeleton || NewSkeleton->GetGuid() != SkeletonGuid))
 	{
+		OnSetSkeleton(NewSkeleton);
+
 		// get all sequences that need to change
 		TArray<UAnimationAsset*> AnimAssetsToReplace;
 
@@ -643,9 +654,13 @@ void UAnimationAsset::ValidateSkeleton()
 {
 	if (Skeleton && Skeleton->GetGuid() != SkeletonGuid)
 	{
+#if WITH_EDITOR
 		// reset Skeleton
-		ResetSkeleton(Skeleton);
+		ReplaceSkeleton(Skeleton);
 		UE_LOG(LogAnimation, Verbose, TEXT("Needed to reset skeleton. Resave this asset to speed up load time: %s"), *GetPathNameSafe(this));
+#else
+		UE_LOG(LogAnimation, Warning, TEXT("Skeleton GUID is out-of-date, this should have been updated during cook. %s"), *GetPathNameSafe(this));
+#endif
 	}
 }
 
@@ -705,6 +720,21 @@ void UAnimationAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+
+void UAnimationAsset::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+	Super::GetAssetRegistryTags(OutTags);
+	
+	for (const UAssetUserData* UserData : AssetUserData)
+	{
+		if (UserData)
+		{
+			UserData->GetAssetRegistryTags(OutTags);	
+		}
+	}
+	
+	OutTags.Add( FAssetRegistryTag("HasParentAsset", HasParentAsset() ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Hidden) );
 }
 
 EDataValidationResult UAnimationAsset::IsDataValid(TArray<FText>& ValidationErrors)

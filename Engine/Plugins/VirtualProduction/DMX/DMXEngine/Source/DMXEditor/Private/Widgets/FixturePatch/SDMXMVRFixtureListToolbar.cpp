@@ -3,6 +3,8 @@
 #include "SDMXMVRFixtureListToolbar.h"
 
 #include "DMXEditor.h"
+#include "DMXEditorUtils.h"
+#include "DMXFixturePatchSharedData.h"
 #include "DMXMVRFixtureListItem.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXEntityFixtureType.h"
@@ -11,114 +13,16 @@
 
 #include "EditorStyleSet.h"
 #include "ScopedTransaction.h"
-#include "Internationalization/Regex.h"
+#include "Algo/MaxElement.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SWrapBox.h"
 
 
 #define LOCTEXT_NAMESPACE "SDMXMVRFixtureListToolbar"
-
-namespace UE::DMXRuntime::SDMXMVRFixtureListToolbar::Private
-{
-	UE_NODISCARD bool ParseUniverse(const FString& InputString, int32& OutUniverse)
-	{
-		// Try to match addresses formating, e.g. '1.', '1:' etc.
-		static const TCHAR* ParamDelimiters[] =
-		{
-			TEXT("."),
-			TEXT(","),
-			TEXT(":"),
-			TEXT(";")
-		};
-
-		TArray<FString> ValueStringArray;
-		constexpr bool bParseEmpty = true;
-		const FString InputStringWithSpace = InputString + TEXT(" "); // So ValueStringArray will be lenght of 2 if Address is empty, e.g. '0.'
-		InputStringWithSpace.ParseIntoArray(ValueStringArray, ParamDelimiters, 4, bParseEmpty);
-		if (ValueStringArray.Num() == 2)
-		{
-			if (LexTryParseString<int32>(OutUniverse, *ValueStringArray[0]))
-			{
-				return true;
-			}
-		}
-
-		// Try to match strings starting with Uni, e.g. 'Uni 1', 'Universe 1', 'Universe1'
-		if (InputString.StartsWith(TEXT("Uni")))
-		{
-			const FRegexPattern SequenceOfDigitsPattern(TEXT("^[^\\d]*(\\d+)"));
-			FRegexMatcher Regex(SequenceOfDigitsPattern, *InputString);
-			if (Regex.FindNext())
-			{
-				const FString UniverseString = Regex.GetCaptureGroup(1);
-				if (LexTryParseString<int32>(OutUniverse, *UniverseString))
-				{
-					return true;
-				}
-			}
-		}
-
-		OutUniverse = -1;
-		return false;
-	}
-
-	UE_NODISCARD bool ParseAddress(const FString& InputString, int32& OutAddress)
-	{
-		// Try to match addresses formating, e.g. '1.1', '1:1' etc.
-		static const TCHAR* ParamDelimiters[] =
-		{
-			TEXT("."),
-			TEXT(","),
-			TEXT(":"),
-			TEXT(";")
-		};
-
-		TArray<FString> ValueStringArray;
-		constexpr bool bParseEmpty = false;
-		InputString.ParseIntoArray(ValueStringArray, ParamDelimiters, 4, bParseEmpty);
-
-		if (ValueStringArray.Num() == 2)
-		{
-			if (LexTryParseString<int32>(OutAddress, *ValueStringArray[1]))
-			{
-				return true;
-			}
-		}
-
-		// Try to match strings starting with Uni Ad, e.g. 'Uni 1 Ad 1', 'Universe 1 Address 1', 'Universe1Address1'
-		if (InputString.StartsWith(TEXT("Uni")) &&
-			InputString.Contains(TEXT("Ad")))
-		{
-			const FRegexPattern SequenceOfDigitsPattern(TEXT("^[^\\d]*(\\d+)[^\\d]*(\\d+)"));
-			FRegexMatcher Regex(SequenceOfDigitsPattern, *InputString);
-			if (Regex.FindNext())
-			{
-				const FString AddressString = Regex.GetCaptureGroup(2);
-				if (LexTryParseString<int32>(OutAddress, *AddressString))
-				{
-					return true;
-				}
-			}
-		}
-
-		OutAddress = -1;
-		return false;
-	}
-
-	UE_NODISCARD bool ParseFixtureID(const FString& InputString, int32& OutFixtureID)
-	{
-		if (LexTryParseString<int32>(OutFixtureID, *InputString))
-		{
-			return true;
-		}
-
-		OutFixtureID = -1;
-		return false;
-	}
-}
 
 void SDMXMVRFixtureListToolbar::Construct(const FArguments& InArgs, TWeakPtr<FDMXEditor> InDMXEditor)
 {
@@ -162,6 +66,7 @@ void SDMXMVRFixtureListToolbar::Construct(const FArguments& InArgs, TWeakPtr<FDM
 					SNew(SSearchBox)
 					.MinDesiredWidth(400.f)
 					.OnTextChanged(this, &SDMXMVRFixtureListToolbar::OnSearchTextChanged)
+					.ToolTipText(LOCTEXT("SearchBarTooltip", "Examples:\n\n* PatchName\n* FixtureTypeName\n* SomeMode\n* 1.\n* 1.1\n* Universe 1\n* Uni 1-3\n* Uni 1, 3\n* Uni 1, 4-5'."))
 				]
 									
 				+ SWrapBox::Slot()
@@ -196,8 +101,6 @@ void SDMXMVRFixtureListToolbar::Construct(const FArguments& InArgs, TWeakPtr<FDM
 
 TArray<TSharedPtr<FDMXMVRFixtureListItem>> SDMXMVRFixtureListToolbar::FilterItems(const TArray<TSharedPtr<FDMXMVRFixtureListItem>>& Items)
 {
-	using namespace UE::DMXRuntime::SDMXMVRFixtureListToolbar::Private;
-
 	// Apply 'conflicts only' if enabled
 	TArray<TSharedPtr<FDMXMVRFixtureListItem>> Result = Items;
 	if (bShowConfictsOnly)
@@ -216,36 +119,38 @@ TArray<TSharedPtr<FDMXMVRFixtureListItem>> SDMXMVRFixtureListToolbar::FilterItem
 		return Result;
 	}
 
-	int32 Universe;
-	if (ParseUniverse(SearchString, Universe))
+	const TArray<int32> Universes = FDMXEditorUtils::ParseUniverses(SearchString);
+	if(!Universes.IsEmpty())
 	{
-		Result.RemoveAll([Universe](const TSharedPtr<FDMXMVRFixtureListItem>& Item)
+		Result.RemoveAll([Universes](const TSharedPtr<FDMXMVRFixtureListItem>& Item)
 			{
-				return Item->GetUniverse() != Universe;
+				return !Universes.Contains(Item->GetUniverse());
 			});
 
-		int32 Address;
-		if (ParseAddress(SearchString, Address))
-		{
-			Result.RemoveAll([Address](const TSharedPtr<FDMXMVRFixtureListItem>& Item)
-				{
-					return Item->GetAddress() != Address;
-				});
-		}
+		return Result;
+	}
+
+	int32 Address;
+	if (FDMXEditorUtils::ParseAddress(SearchString, Address))
+	{
+		Result.RemoveAll([Address](const TSharedPtr<FDMXMVRFixtureListItem>& Item)
+			{
+				return Item->GetAddress() != Address;
+			});
 
 		return Result;
 	}
 	
-	int32 FixtureIDNumerical;
-	if (ParseFixtureID(SearchString, FixtureIDNumerical))
+	const TArray<int32> FixtureIDs = FDMXEditorUtils::ParseFixtureIDs(SearchString);
+	for (int32 FixtureID : FixtureIDs)
 	{
 		TArray<TSharedPtr<FDMXMVRFixtureListItem>> FixtureIDsOnlyResult = Result;
-		FixtureIDsOnlyResult.RemoveAll([FixtureIDNumerical](const TSharedPtr<FDMXMVRFixtureListItem>& Item)
+		FixtureIDsOnlyResult.RemoveAll([FixtureID](const TSharedPtr<FDMXMVRFixtureListItem>& Item)
 			{
 				int32 OtherFixtureIDNumerical;
-				if (ParseFixtureID(Item->GetFixtureID(), OtherFixtureIDNumerical))
+				if (FDMXEditorUtils::ParseFixtureID(Item->GetFixtureID(), OtherFixtureIDNumerical))
 				{
-					return OtherFixtureIDNumerical != FixtureIDNumerical;
+					return OtherFixtureIDNumerical != FixtureID;
 				}
 				return true;
 			});
@@ -292,9 +197,68 @@ TSharedRef<SWidget> SDMXMVRFixtureListToolbar::GenerateFixtureTypeDropdownMenu()
 			]
 			.MenuContent()
 			[
-				SAssignNew(FixtureTypeDropdownMenu, SDMXEntityDropdownMenu<UDMXEntityFixtureType>)
-				.DMXEditor(WeakDMXEditor)
-				.OnEntitySelected(this, &SDMXMVRFixtureListToolbar::OnAddNewMVRFixtureClicked)
+
+				SNew(SVerticalBox)
+				
+				// Bulk Add Fixture Patches 
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					
+					+SHorizontalBox::Slot()
+					.HAlign(HAlign_Left)
+					.VAlign(VAlign_Center)
+					.Padding(8.f, 2.f, 4.f, 2.f)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("BulkAddPatchesLabel", "Quantity"))
+					]
+
+					+ SHorizontalBox::Slot()
+					.HAlign(HAlign_Fill)
+					.VAlign(VAlign_Center)
+					.Padding(4.f, 2.f, 4.f, 2.f)
+					[
+						SNew(SEditableTextBox)
+						.SelectAllTextWhenFocused(true)
+						.ClearKeyboardFocusOnCommit(false)
+						.SelectAllTextOnCommit(true)
+						.Text_Lambda([this]()
+							{
+								return FText::FromString(FString::FromInt(NumFixturePatchesToAdd));
+							})
+						.OnVerifyTextChanged_Lambda([](const FText& InNewText, FText& OutErrorMessage)
+							{
+								int32 Value;
+								if (!LexTryParseString<int32>(Value, *InNewText.ToString()) ||
+									Value < 1)
+								{
+									OutErrorMessage = LOCTEXT("BulkAddPatchesBadString", "Needs a numeric value > 0");
+									return false;
+								}
+								return true;
+							})
+						.OnTextCommitted_Lambda([this](const FText& Text, ETextCommit::Type CommitType)
+							{
+								int32 Value;
+								if (LexTryParseString<int32>(Value, *Text.ToString()) &&
+									Value > 0)
+								{
+									constexpr int32 MaxNumPatchesToBulkAdd = 512;
+									NumFixturePatchesToAdd = FMath::Min(Value, MaxNumPatchesToBulkAdd);
+								}
+							})
+					]
+				]
+
+				// Fixture Type Selection
+				+ SVerticalBox::Slot()
+				[
+					SAssignNew(FixtureTypeDropdownMenu, SDMXEntityDropdownMenu<UDMXEntityFixtureType>)
+					.DMXEditor(WeakDMXEditor)
+					.OnEntitySelected(this, &SDMXMVRFixtureListToolbar::OnAddNewMVRFixtureClicked)
+				]
 			]
 			.IsFocusable(true)
 			.ContentPadding(FMargin(5.0f, 1.0f))
@@ -314,6 +278,11 @@ TSharedRef<SWidget> SDMXMVRFixtureListToolbar::GenerateFixtureTypeDropdownMenu()
 
 void SDMXMVRFixtureListToolbar::OnAddNewMVRFixtureClicked(UDMXEntity* InSelectedFixtureType)
 {
+	if (!ensureMsgf(InSelectedFixtureType, TEXT("Trying to add Fixture Patches, but selected fixture type is invalid.")))
+	{
+		return;
+	}
+
 	TSharedPtr<FDMXEditor> DMXEditor = WeakDMXEditor.Pin();
 	if (!DMXEditor.IsValid())
 	{
@@ -326,44 +295,69 @@ void SDMXMVRFixtureListToolbar::OnAddNewMVRFixtureClicked(UDMXEntity* InSelected
 	}
 	UDMXEntityFixtureType* FixtureType = CastChecked<UDMXEntityFixtureType>(InSelectedFixtureType);
 
-	// Find a universe and address
+	// Find a Universe and Address
 	TArray<UDMXEntityFixturePatch*> FixturePatches = DMXLibrary->GetEntitiesTypeCast<UDMXEntityFixturePatch>();
-	FixturePatches.Sort([](const UDMXEntityFixturePatch& FixturePatchA, const UDMXEntityFixturePatch& FixturePatchB)
+	UDMXEntityFixturePatch* const* LastFixturePatchPtr = Algo::MaxElementBy(FixturePatches, [](const UDMXEntityFixturePatch* FixturePatch)
 		{
-			const bool bUniverseIsSmaller = FixturePatchA.GetUniverseID() < FixturePatchB.GetUniverseID();
-			const bool bUniverseIsEqual = FixturePatchA.GetUniverseID() == FixturePatchB.GetUniverseID();
-			const bool bLastAddressIsSmaller = FixturePatchA.GetEndingChannel() < FixturePatchB.GetEndingChannel();
-			
-			return bUniverseIsSmaller || (bUniverseIsEqual && bLastAddressIsSmaller);
+			return (int64)FixturePatch->GetUniverseID() * DMX_MAX_ADDRESS + FixturePatch->GetStartingChannel();
 		});
-
-	int32 Universe = 1; 
+	int32 Universe = 1;
 	int32 Address = 1;
-	if (FixturePatches.Num() > 0)
+	int32 ChannelSpan = 0;
+	if (LastFixturePatchPtr && !FixtureType->Modes.IsEmpty())
 	{
-		const int32 ChannelSpan = FixtureType->Modes.Num() > 0 ? FixtureType->Modes[0].ChannelSpan : 1;
-		if (FixturePatches.Last()->GetEndingChannel() + ChannelSpan > DMX_MAX_ADDRESS)
+		ChannelSpan = FixtureType->Modes[0].ChannelSpan;
+		const UDMXEntityFixturePatch& LastFixturePatch = **LastFixturePatchPtr;
+		if (LastFixturePatch.GetEndingChannel() + FixtureType->Modes[0].ChannelSpan > DMX_MAX_ADDRESS)
 		{
-			Universe = FixturePatches.Last()->GetUniverseID() + 1;
+			Universe = LastFixturePatch.GetUniverseID() + 1;
 			Address = 1;
 		}
 		else
 		{
-			Universe = FixturePatches.Last()->GetUniverseID();
-			Address = FixturePatches.Last()->GetEndingChannel() + 1;
+			Universe = LastFixturePatch.GetUniverseID();
+			Address = LastFixturePatch.GetEndingChannel() + 1;
 		}
 	}
 
-	// Create a new fixture patch
-	FDMXEntityFixturePatchConstructionParams FixturePatchConstructionParams;
-	FixturePatchConstructionParams.FixtureTypeRef = FDMXEntityFixtureTypeRef(FixtureType);
-	FixturePatchConstructionParams.ActiveMode = 0;
-	FixturePatchConstructionParams.UniverseID = Universe;
-	FixturePatchConstructionParams.StartingAddress = Address;
-
+	// Create a new fixture patches
 	const FScopedTransaction CreateFixturePatchTransaction(LOCTEXT("CreateFixturePatchTransaction", "Create Fixture Patch"));
-	constexpr bool bMarkLibraryDirty = true;
-	UDMXEntityFixturePatch* NewFixturePatch = UDMXEntityFixturePatch::CreateFixturePatchInLibrary(FixturePatchConstructionParams, FixtureType->Name, bMarkLibraryDirty);
+	TArray<UDMXEntityFixturePatch*> NewFixturePatches;
+	TArray<TWeakObjectPtr<UDMXEntityFixturePatch>> NewWeakFixturePatches;
+	DMXLibrary->PreEditChange(UDMXLibrary::StaticClass()->FindPropertyByName(UDMXLibrary::GetEntitiesPropertyName()));
+	for (int32 iNumFixturePatchesAdded = 0; iNumFixturePatchesAdded < NumFixturePatchesToAdd; iNumFixturePatchesAdded++)
+	{
+		FDMXEntityFixturePatchConstructionParams FixturePatchConstructionParams;
+		FixturePatchConstructionParams.FixtureTypeRef = FDMXEntityFixtureTypeRef(FixtureType);
+		FixturePatchConstructionParams.ActiveMode = 0;
+		FixturePatchConstructionParams.UniverseID = Universe;
+		FixturePatchConstructionParams.StartingAddress = Address;
+
+		constexpr bool bMarkLibraryDirty = false;
+		UDMXEntityFixturePatch* NewFixturePatch = UDMXEntityFixturePatch::CreateFixturePatchInLibrary(FixturePatchConstructionParams, FixtureType->Name, bMarkLibraryDirty);
+		NewFixturePatches.Add(NewFixturePatch);
+		NewWeakFixturePatches.Add(NewFixturePatch);	
+
+		// Increment Universe and Address in steps by one. This is enough for auto assign while keeping order of the named patches
+		if (Address + ChannelSpan > DMX_MAX_ADDRESS)
+		{
+			Universe++;
+			Address = 1; 
+		}
+		else
+		{
+			Address++;
+		}
+	}
+
+	// Auto assign
+	constexpr bool bAllowDecrementUniverse = false;
+	constexpr bool bAllowDecrementChannels = false;
+	FDMXEditorUtils::AutoAssignedChannels(bAllowDecrementUniverse, bAllowDecrementChannels, NewFixturePatches);
+
+	DMXLibrary->PostEditChange();
+
+	DMXEditor->GetFixturePatchSharedData()->SelectFixturePatches(NewWeakFixturePatches);
 }
 
 void SDMXMVRFixtureListToolbar::OnSearchTextChanged(const FText& SearchText)

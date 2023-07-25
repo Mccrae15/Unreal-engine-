@@ -69,9 +69,16 @@ public:
 	 * Initialize the server and start listening for messages.
 	 * @param Port the port to handle websockets messages on.
 	 * @param ClientConnectedCallback the handler called when a client has connected.
+	 * @param BindAddress Which address the server should bind to. If left empty, the server will bind to all interfaces.
 	 * @return whether the initialization was successful.
 	 */
-	virtual bool Init(uint32 Port, FWebSocketClientConnectedCallBack ClientConnectedCallback) = 0;
+	virtual bool Init(uint32 Port, FWebSocketClientConnectedCallBack ClientConnectedCallback, FString BindAddress = TEXT("")) = 0;
+
+	/**
+	 * Set a filter callback, used to reject connections based on the origin header.
+	 * @param FilterConnectionCallback handler called to filter the connection.
+	 */
+	virtual void SetFilterConnectionCallback(FWebSocketFilterConnectionCallback InFilterConnectionCallback) = 0;
 
 	/** Tick the server. */
 	virtual void Tick() = 0;

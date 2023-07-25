@@ -35,6 +35,7 @@
 #include "ClassViewerModule.h"
 #include "Algo/Sort.h"
 #include "Engine/LevelStreaming.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 
 #define LOCTEXT_NAMESPACE "ObjectBindingModel"
@@ -66,14 +67,9 @@ void GetKeyablePropertyPaths(UClass* Class, void* ValuePtr, UStruct* PropertySou
 		{
 			PropertyPath.AddProperty(FPropertyInfo(Property));
 
-			bool bIsPropertyKeyable = Sequencer.CanKeyProperty(FCanKeyPropertyParams(Class, PropertyPath));
-			if (bIsPropertyKeyable)
-			{
-				KeyablePropertyPaths.Add(PropertyPath);
-			}
-
+			bool bIsPropertyKeyable = false;
 			FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
-			if (!bIsPropertyKeyable && ArrayProperty)
+			if (ArrayProperty)
 			{
 				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(ValuePtr));
 				for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
@@ -91,6 +87,15 @@ void GetKeyablePropertyPaths(UClass* Class, void* ValuePtr, UStruct* PropertySou
 					}
 
 					PropertyPath = *PropertyPath.TrimPath(1);
+				}
+			}
+
+			if (!bIsPropertyKeyable)
+			{
+				bIsPropertyKeyable = Sequencer.CanKeyProperty(FCanKeyPropertyParams(Class, PropertyPath));
+				if (bIsPropertyKeyable)
+				{
+					KeyablePropertyPaths.Add(PropertyPath);
 				}
 			}
 
@@ -531,7 +536,7 @@ TSharedRef<SWidget> FObjectBindingModel::GetAddTrackMenuContent()
 	{
 		for (const TWeakPtr<FViewModel>& Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
 		{
-			const FObjectBindingModel* ObjectBindingNode = Node.Pin()->CastThisChecked<FObjectBindingModel>();
+			const FObjectBindingModel* ObjectBindingNode = Node.Pin()->CastThis<FObjectBindingModel>();
 			if (!ObjectBindingNode)
 			{
 				continue;
@@ -540,7 +545,7 @@ TSharedRef<SWidget> FObjectBindingModel::GetAddTrackMenuContent()
 			const FGuid Guid = ObjectBindingNode->GetObjectGuid();
 			for (auto RuntimeObject : Sequencer->FindBoundObjects(Guid, OwnerModel->GetSequenceID()))
 			{
-				if (RuntimeObject != nullptr)
+				if (RuntimeObject.Get() != nullptr)
 				{
 					ObjectBindings.AddUnique(Guid);
 					ObjectClasses.Add(RuntimeObject->GetClass());
@@ -590,8 +595,32 @@ TSharedRef<SWidget> FObjectBindingModel::GetAddTrackMenuContent()
 	// [PostProcess Settings] [ColorGrading]
 	// [Ortho View]
 
+	static const FString DefaultPropertyCategory = TEXT("Default");
+
+	// Properties with the category "Default" have no category and should be sorted to the top
+	struct FCategorySortPredicate
+	{
+		bool operator()(const FString& A, const FString& B) const
+		{
+			if (A == DefaultPropertyCategory)
+			{
+				return true;
+			}
+			else if (B == DefaultPropertyCategory)
+			{
+				return false;
+			}
+			else
+			{
+				return A.Compare(B) < 0;
+			}
+		}
+	};
+
+	bool bDefaultCategoryFound = false;
+
 	// Create property menu data based on keyable property paths
-	TArray<PropertyMenuData> KeyablePropertyMenuData;
+	TSortedMap<FString, TArray<PropertyMenuData>, FDefaultAllocator, FCategorySortPredicate> KeyablePropertyMenuData;
 	for (const FPropertyPath& KeyablePropertyPath : KeyablePropertyPaths)
 	{
 		FProperty* Property = KeyablePropertyPath.GetRootProperty().Property.Get();
@@ -607,57 +636,85 @@ TSharedRef<SWidget> FObjectBindingModel::GetAddTrackMenuContent()
 			{
 				KeyableMenuData.MenuName = Property->GetDisplayNameText().ToString();
 			}
-			KeyablePropertyMenuData.Add(KeyableMenuData);
-		}
-	}
 
-	// Sort on the menu name
-	KeyablePropertyMenuData.Sort([](const PropertyMenuData& A, const PropertyMenuData& B)
-	{
-		int32 CompareResult = A.MenuName.Compare(B.MenuName);
-		return CompareResult < 0;
-	});
-	
+			FString CategoryText = FObjectEditorUtils::GetCategory(Property);
 
-	// Add menu items
-	AddTrackMenuBuilder.BeginSection( SequencerMenuExtensionPoints::AddTrackMenu_PropertiesSection, LOCTEXT("PropertiesMenuHeader" , "Properties"));
-	for (int32 MenuDataIndex = 0; MenuDataIndex < KeyablePropertyMenuData.Num(); )
-	{
-		TArray<FPropertyPath> KeyableSubMenuPropertyPaths;
-
-		KeyableSubMenuPropertyPaths.Add(KeyablePropertyMenuData[MenuDataIndex].PropertyPath);
-
-		// If this menu data only has one property name, add the menu item
-		if (KeyablePropertyMenuData[MenuDataIndex].PropertyPath.GetNumProperties() == 1 || !bUseSubMenus)
-		{
-			AddPropertyMenuItems(AddTrackMenuBuilder, KeyableSubMenuPropertyPaths, 0, -1);
-			++MenuDataIndex;
-		}
-		// Otherwise, look to the next menu data to gather up new data
-		else
-		{
-			for (; MenuDataIndex < KeyablePropertyMenuData.Num()-1; )
+			if (CategoryText == DefaultPropertyCategory)
 			{
-				if (KeyablePropertyMenuData[MenuDataIndex].MenuName == KeyablePropertyMenuData[MenuDataIndex+1].MenuName)
-				{	
-					++MenuDataIndex;
-					KeyableSubMenuPropertyPaths.Add(KeyablePropertyMenuData[MenuDataIndex].PropertyPath);
-				}
-				else
-				{
-					break;
-				}
+				bDefaultCategoryFound = true;
 			}
 
-			AddTrackMenuBuilder.AddSubMenu(
-				FText::FromString(KeyablePropertyMenuData[MenuDataIndex].MenuName),
-				FText::GetEmpty(), 
-				FNewMenuDelegate::CreateSP(this, &FObjectBindingModel::HandleAddTrackSubMenuNew, KeyableSubMenuPropertyPaths, 0));
-
-			++MenuDataIndex;
+			KeyablePropertyMenuData.FindOrAdd(CategoryText).Add(KeyableMenuData);
 		}
 	}
-	AddTrackMenuBuilder.EndSection();
+
+	// Always add an extension point for Properties section even if none are found (Components rely on this) 
+	if (!bDefaultCategoryFound)
+	{
+		AddTrackMenuBuilder.BeginSection(SequencerMenuExtensionPoints::AddTrackMenu_PropertiesSection, LOCTEXT("PropertiesMenuHeader", "Properties"));
+		AddTrackMenuBuilder.EndSection();
+	}
+
+	// Add menu items
+	for (TPair<FString, TArray<PropertyMenuData>>& Pair : KeyablePropertyMenuData)
+	{
+		// Sort on the property name
+		Pair.Value.Sort([](const PropertyMenuData& A, const PropertyMenuData& B)
+		{
+			int32 CompareResult = A.MenuName.Compare(B.MenuName);
+			return CompareResult < 0;
+		});
+
+		FString CategoryText = Pair.Key;
+		
+		if (CategoryText == DefaultPropertyCategory)
+		{
+			AddTrackMenuBuilder.BeginSection(SequencerMenuExtensionPoints::AddTrackMenu_PropertiesSection, LOCTEXT("PropertiesMenuHeader", "Properties"));
+		}
+		else
+		{
+			AddTrackMenuBuilder.BeginSection(NAME_None, FText::FromString(CategoryText));
+		}
+	
+		for (int32 MenuDataIndex = 0; MenuDataIndex < Pair.Value.Num(); )
+		{
+			TArray<FPropertyPath> KeyableSubMenuPropertyPaths;
+
+			KeyableSubMenuPropertyPaths.Add(Pair.Value[MenuDataIndex].PropertyPath);
+
+			// If this menu data only has one property name, add the menu item
+			if (Pair.Value[MenuDataIndex].PropertyPath.GetNumProperties() == 1 || !bUseSubMenus)
+			{
+				AddPropertyMenuItems(AddTrackMenuBuilder, KeyableSubMenuPropertyPaths, 0, -1);
+				++MenuDataIndex;
+			}
+			// Otherwise, look to the next menu data to gather up new data
+			else
+			{
+				for (; MenuDataIndex < Pair.Value.Num()-1; )
+				{
+					if (Pair.Value[MenuDataIndex].MenuName == Pair.Value[MenuDataIndex+1].MenuName)
+					{	
+						++MenuDataIndex;
+						KeyableSubMenuPropertyPaths.Add(Pair.Value[MenuDataIndex].PropertyPath);
+					}
+					else
+					{
+						break;
+					}
+				}
+
+				AddTrackMenuBuilder.AddSubMenu(
+					FText::FromString(Pair.Value[MenuDataIndex].MenuName),
+					FText::GetEmpty(), 
+					FNewMenuDelegate::CreateSP(this, &FObjectBindingModel::HandleAddTrackSubMenuNew, KeyableSubMenuPropertyPaths, 0));
+
+				++MenuDataIndex;
+			}
+		}
+
+		AddTrackMenuBuilder.EndSection();
+	}
 
 	if (AddTrackMenuBuilder.GetMultiBox()->GetBlocks().Num() == NumStartingBlocks)
 	{
@@ -1044,13 +1101,13 @@ void FObjectBindingModel::AddSpawnOwnershipMenu(FMenuBuilder& MenuBuilder)
 	);
 
 	MenuBuilder.AddMenuEntry(
-		LOCTEXT("MasterSequence_Label", "Master Sequence"),
-		LOCTEXT("MasterSequence_Tooltip", "Indicates that the outermost sequence will own the spawned object. The object will be destroyed when the outermost sequence stops playing."),
+		LOCTEXT("RootSequence_Label", "Root Sequence"),
+		LOCTEXT("RootSequence_Tooltip", "Indicates that the outermost sequence will own the spawned object. The object will be destroyed when the outermost sequence stops playing."),
 		FSlateIcon(),
 		FUIAction(
-			FExecuteAction::CreateLambda(Callback, ESpawnOwnership::MasterSequence),
+			FExecuteAction::CreateLambda(Callback, ESpawnOwnership::RootSequence),
 			FCanExecuteAction(),
-			FIsActionChecked::CreateLambda([=]{ return Spawnable->GetSpawnOwnership() == ESpawnOwnership::MasterSequence; })
+			FIsActionChecked::CreateLambda([=]{ return Spawnable->GetSpawnOwnership() == ESpawnOwnership::RootSequence; })
 		),
 		NAME_None,
 		EUserInterfaceActionType::ToggleButton

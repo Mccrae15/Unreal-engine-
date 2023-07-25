@@ -11,7 +11,6 @@
 #include "Logging/LogMacros.h"
 #include "Misc/AssertionMacros.h"
 #include "MuR/Layout.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Mesh.h"
 #include "MuR/Model.h"
 #include "MuR/ModelPrivate.h"
@@ -302,6 +301,7 @@ namespace mu
 		TEXT("ME_APPLYSHAPE	   "),
 		TEXT("ME_CLIPDEFORM	   "),
 		TEXT("ME_MORPHRESHAPE  "),
+		TEXT("ME_OPTIMIZESKIN  "),
 
 		TEXT("IN_ADDMESH       "),
 		TEXT("IN_ADDIMAGE      "),
@@ -314,7 +314,8 @@ namespace mu
 
 		TEXT("LA_PACK          "),
 		TEXT("LA_MERGE         "),
-        TEXT("LA_REMOVEBLOCKS  ")
+		TEXT("LA_REMOVEBLOCKS  "),
+		TEXT("LA_FROMMESH	   "),
 	};
 
     // clang-format on
@@ -328,7 +329,7 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    extern FString GetOpDesc( const PROGRAM& program, OP::ADDRESS at )
+    extern FString GetOpDesc( const FProgram& program, OP::ADDRESS at )
 	{
 		char temp[1024];
 		FMemory::Memzero( temp, 1024 );
@@ -605,6 +606,14 @@ namespace mu
 			}
 			break;
         }
+		case OP_TYPE::ME_OPTIMIZESKINNING:
+		{
+			auto args = program.GetOpArgs<OP::MeshOptimizeSkinningArgs>(at);
+			done += mutable_snprintf(temp, 1024,
+							"source : %d",
+							args.source);
+			break;
+		}
 
 		//-----------------------------------------------------------------------------------------
 		default:

@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenReflectionTracing.cpp
-=============================================================================*/
-
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
 #include "SceneUtils.h"
@@ -88,6 +84,35 @@ FAutoConsoleVariableRef CVarLumenReflectionTraceCompactionWaveOps(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+int32 GLumenReflectionsSampleSceneColorAtHit = 1;
+FAutoConsoleVariableRef CVarLumenReflectionsSampleSceneColorAtHit(
+	TEXT("r.Lumen.Reflections.SampleSceneColorAtHit"),
+	GLumenReflectionsSampleSceneColorAtHit,
+	TEXT("Whether to sample SceneColor on reflection ray hits (both SWRT and HWRT). Useful for hiding areas where Screen Traces gave up when they went behind a foreground object. 0 - Disable. 1 - Enable only when screen space traces are enabled. 2 - Always enable."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+float GLumenReflectionSampleSceneColorRelativeDepthThreshold = .05f;
+FAutoConsoleVariableRef GVarLumenReflectionSampleSceneColorRelativeDepthThreshold(
+	TEXT("r.Lumen.Reflections.SampleSceneColorRelativeDepthThickness"),
+	GLumenReflectionSampleSceneColorRelativeDepthThreshold,
+	TEXT("Depth threshold that controls how close ray hits have to be to the depth buffer, before sampling SceneColor is allowed."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarLumenReflectionsSampleSceneColorNormalTreshold(
+	TEXT("r.Lumen.Reflections.SampleSceneColorNormalTreshold"),
+	85.0f,
+	TEXT("Normal threshold in degrees that controls how close ray hit normal and screen normal have to be, before sampling SceneColor is allowed. 0 - only exactly matching normals allowed. 180 - all normals allowed."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+float LumenReflections::GetSampleSceneColorNormalTreshold()
+{
+	const float Radians = FMath::DegreesToRadians(FMath::Clamp(CVarLumenReflectionsSampleSceneColorNormalTreshold.GetValueOnRenderThread(), 0.0f, 180.0f));
+	return FMath::Cos(Radians);
+}
+
 class FReflectionClearTracesCS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FReflectionClearTracesCS)
@@ -151,6 +176,8 @@ class FReflectionTraceScreenTexturesCS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
+
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 
 		FPermutationDomain PermutationVector(Parameters.PermutationId);
@@ -249,6 +276,8 @@ class FReflectionCompactTracesCS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
+
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 
 		FPermutationDomain PermutationVector(Parameters.PermutationId);
@@ -333,6 +362,10 @@ class FReflectionTraceMeshSDFsCS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
+		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_FEEDBACK"), 1);
+		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_HIGH_RES_PAGES"), 1);
+
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 	}
 };
@@ -354,13 +387,19 @@ class FReflectionTraceVoxelsCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FCompactedReflectionTraceParameters, CompactedTraceParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCacheParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenHZBScreenTraceParameters, HZBScreenTraceParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
+		SHADER_PARAMETER(float, RelativeDepthThickness)
+		SHADER_PARAMETER(float, SampleSceneColorNormalTreshold)
 	END_SHADER_PARAMETER_STRUCT()
 
 	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FTraceGlobalSDF : SHADER_PERMUTATION_BOOL("TRACE_GLOBAL_SDF");
 	class FHairStrands : SHADER_PERMUTATION_BOOL("USE_HAIRSTRANDS_VOXEL");
 	class FRadianceCache : SHADER_PERMUTATION_BOOL("RADIANCE_CACHE");
-	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FTraceGlobalSDF, FHairStrands, FRadianceCache>;
+	class FSampleSceneColor : SHADER_PERMUTATION_BOOL("SAMPLE_SCENE_COLOR");
+
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FTraceGlobalSDF, FHairStrands, FRadianceCache, FSampleSceneColor>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -370,6 +409,10 @@ class FReflectionTraceVoxelsCS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
+		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_FEEDBACK"), 1);
+		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_HIGH_RES_PAGES"), 1);
+
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 	}
 };
@@ -386,9 +429,9 @@ enum class ECompactedReflectionTracingIndirectArgs
 FCompactedReflectionTraceParameters CompactTraces(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View, 
+	const FLumenCardTracingParameters& TracingParameters,
 	const FLumenReflectionTracingParameters& ReflectionTracingParameters,
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
-	const FLumenCardTracingInputs& TracingInputs,
 	bool bCullByDistanceFromCamera,
 	float CompactionTracingEndDistanceFromCamera,
 	float CompactionMaxTraceDistance,
@@ -398,7 +441,12 @@ FCompactedReflectionTraceParameters CompactTraces(
 	const int32 NumCompactedTraceTexelDataElements = ReflectionTracingParameters.ReflectionTracingBufferSize.X * ReflectionTracingParameters.ReflectionTracingBufferSize.Y;
 	FRDGBufferRef CompactedTraceTexelData = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32) * 2, NumCompactedTraceTexelDataElements), TEXT("Lumen.Reflections.CompactedTraceTexelData"));
 
-	const bool bWaveOps = GLumenReflectionTraceCompactionWaveOps != 0 && GRHISupportsWaveOperations && GRHIMinimumWaveSize >= 32 && RHISupportsWaveOperations(View.GetShaderPlatform());
+	const bool bWaveOps = GLumenReflectionTraceCompactionWaveOps != 0 
+		&& GRHISupportsWaveOperations 
+		&& GRHIMinimumWaveSize <= 32 
+		&& GRHIMaximumWaveSize >= 32
+		&& RHISupportsWaveOperations(View.GetShaderPlatform());
+
 	// Only the wave ops path maintains trace order, switch to smaller groups without it to preserve coherency in the traces
 	const uint32 CompactionThreadGroupSize = FReflectionCompactTracesCS::GetThreadGroupSize(bWaveOps ? GLumenReflectionTraceCompactionGroupSizeInTiles : 1);
 	FRDGBufferRef ReflectionCompactionIndirectArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("Lumen.Reflections.CompactionIndirectArgs"));
@@ -424,7 +472,7 @@ FCompactedReflectionTraceParameters CompactTraces(
 
 	{
 		FReflectionCompactTracesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionCompactTracesCS::FParameters>();
-		GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
+		PassParameters->TracingParameters = TracingParameters;
 		PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 		PassParameters->ReflectionTileParameters = ReflectionTileParameters;
 		PassParameters->RWCompactedTraceTexelAllocator = GraphBuilder.CreateUAV(CompactedTraceTexelAllocator, PF_R32_UINT);
@@ -434,14 +482,14 @@ FCompactedReflectionTraceParameters CompactTraces(
 		PassParameters->CompactionTracingEndDistanceFromCamera = CompactionTracingEndDistanceFromCamera;
 		PassParameters->CompactionMaxTraceDistance = CompactionMaxTraceDistance;
 		PassParameters->RayTracingCullingRadius = GetRayTracingCullingRadius();
-		PassParameters->DitheredStartDistanceFactor = LumenReflections::UseFarFieldForReflections(*View.Family) ? Lumen::GetFarFieldDitheredStartDistanceFactor() : 1.0f;
+		PassParameters->DitheredStartDistanceFactor = LumenReflections::UseFarField(*View.Family) ? Lumen::GetFarFieldDitheredStartDistanceFactor() : 1.0f;
 		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 		PassParameters->IndirectArgs = ReflectionCompactionIndirectArgs;
-
+	
 		FReflectionCompactTracesCS::FPermutationDomain PermutationVector;
 		PermutationVector.Set< FReflectionCompactTracesCS::FWaveOps >(bWaveOps);
 		PermutationVector.Set< FReflectionCompactTracesCS::FThreadGroupSize >(CompactionThreadGroupSize);
-		PermutationVector.Set< FReflectionCompactTracesCS::FClipRayDim >(GetRayTracingCulling() != 0);
+		PermutationVector.Set< FReflectionCompactTracesCS::FClipRayDim >(RayTracing::GetCullingMode(View.Family->EngineShowFlags) != RayTracing::ECullingMode::Disabled);
 		auto ComputeShader = View.ShaderMap->GetShader<FReflectionCompactTracesCS>(PermutationVector);
 
 		FComputeShaderUtils::AddPass(
@@ -594,7 +642,6 @@ void TraceReflections(
 	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	bool bTraceMeshObjects,
 	const FSceneTextures& SceneTextures,
-	const FLumenCardTracingInputs& TracingInputs,
 	const FLumenReflectionTracingParameters& ReflectionTracingParameters,
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
 	const FLumenMeshSDFGridParameters& InMeshSDFGridParameters,
@@ -620,19 +667,23 @@ void TraceReflections(
 			0);
 	}
 
+	FLumenCardTracingParameters TracingParameters;
+	GetLumenCardTracingParameters(GraphBuilder, View, *Scene->GetLumenSceneData(View), FrameTemporaries, LumenReflections::UseSurfaceCacheFeedback(), TracingParameters);
+
 	FLumenIndirectTracingParameters IndirectTracingParameters;
 	SetupIndirectTracingParametersForReflections(View, IndirectTracingParameters);
 
 	const FSceneTextureParameters& SceneTextureParameters = GetSceneTextureParameters(GraphBuilder, SceneTextures);
 
 	const bool bScreenTraces = GLumenReflectionScreenTraces != 0 && View.Family->EngineShowFlags.LumenScreenTraces;
+	const bool bSampleSceneColorAtHit = (GLumenReflectionsSampleSceneColorAtHit != 0 && bScreenTraces) || GLumenReflectionsSampleSceneColorAtHit == 2;
 
 	if (bScreenTraces)
 	{
 		FReflectionTraceScreenTexturesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionTraceScreenTexturesCS::FParameters>();
 
 		PassParameters->HZBScreenTraceParameters = SetupHZBScreenTraceParameters(GraphBuilder, View, SceneTextures);
-		GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
+		PassParameters->TracingParameters = TracingParameters;
 		
 		PassParameters->SceneTextures = SceneTextureParameters;
 
@@ -659,7 +710,8 @@ void TraceReflections(
 
 		const bool bTerminateOnLowOccupancy = GLumenReflectionScreenTracesMinimumOccupancy > 0
 			&& GRHISupportsWaveOperations 
-			&& GRHIMinimumWaveSize >= 32 
+			&& GRHIMinimumWaveSize <= 32 
+			&& GRHIMaximumWaveSize >= 32
 			&& RHISupportsWaveOperations(View.GetShaderPlatform());
 
 		FReflectionTraceScreenTexturesCS::FPermutationDomain PermutationVector;
@@ -684,25 +736,29 @@ void TraceReflections(
 		FCompactedReflectionTraceParameters CompactedTraceParameters = CompactTraces(
 			GraphBuilder,
 			View,
+			TracingParameters,
 			ReflectionTracingParameters,
 			ReflectionTileParameters,
-			TracingInputs,
 			false,
 			0.0f,
-			IndirectTracingParameters.MaxTraceDistance);
+			IndirectTracingParameters.MaxTraceDistance,
+			ComputePassFlags);
 
 		RenderLumenHardwareRayTracingReflections(
 			GraphBuilder,
+			SceneTextures,
 			SceneTextureParameters,
 			Scene,
 			View,
+			TracingParameters,
 			ReflectionTracingParameters,
 			ReflectionTileParameters,
-			TracingInputs,
 			CompactedTraceParameters,
 			IndirectTracingParameters.MaxTraceDistance,
 			bUseRadianceCache,
-			RadianceCacheParameters
+			RadianceCacheParameters,
+			bSampleSceneColorAtHit,
+			ComputePassFlags
 			);
 	}
 	else 
@@ -717,7 +773,6 @@ void TraceReflections(
 					Scene, 
 					View,
 					FrameTemporaries,
-					TracingInputs,
 					IndirectTracingParameters,
 					/* out */ MeshSDFGridParameters,
 					ComputePassFlags);
@@ -731,9 +786,9 @@ void TraceReflections(
 				FCompactedReflectionTraceParameters CompactedTraceParameters = CompactTraces(
 					GraphBuilder,
 					View,
+					TracingParameters,
 					ReflectionTracingParameters,
 					ReflectionTileParameters,
-					TracingInputs,
 					true,
 					IndirectTracingParameters.CardTraceEndDistanceFromCamera,
 					IndirectTracingParameters.MaxMeshSDFTraceDistance,
@@ -741,7 +796,7 @@ void TraceReflections(
 
 				{
 					FReflectionTraceMeshSDFsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionTraceMeshSDFsCS::FParameters>();
-					GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
+					PassParameters->TracingParameters = TracingParameters;
 					PassParameters->MeshSDFGridParameters = MeshSDFGridParameters;
 					PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 					PassParameters->IndirectTracingParameters = IndirectTracingParameters;
@@ -779,9 +834,9 @@ void TraceReflections(
 		FCompactedReflectionTraceParameters CompactedTraceParameters = CompactTraces(
 			GraphBuilder,
 			View,
+			TracingParameters,
 			ReflectionTracingParameters,
 			ReflectionTileParameters,
-			TracingInputs,
 			false,
 			0.0f,
 			IndirectTracingParameters.MaxTraceDistance,
@@ -789,7 +844,7 @@ void TraceReflections(
 
 		{
 			FReflectionTraceVoxelsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionTraceVoxelsCS::FParameters>();
-			GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
+			PassParameters->TracingParameters = TracingParameters;
 			PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 			PassParameters->IndirectTracingParameters = IndirectTracingParameters;
 			PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
@@ -801,11 +856,23 @@ void TraceReflections(
 				PassParameters->HairStrandsVoxel = HairStrands::BindHairStrandsVoxelUniformParameters(View);
 			}
 
+			PassParameters->HZBScreenTraceParameters = SetupHZBScreenTraceParameters(GraphBuilder, View, SceneTextures);
+			PassParameters->SceneTextures = SceneTextureParameters;
+
+			if (PassParameters->HZBScreenTraceParameters.PrevSceneColorTexture == SceneTextures.Color.Resolve || !PassParameters->SceneTextures.GBufferVelocityTexture)
+			{
+				PassParameters->SceneTextures.GBufferVelocityTexture = GSystemTextures.GetBlackDummy(GraphBuilder);
+			}
+
+			PassParameters->RelativeDepthThickness = GLumenReflectionSampleSceneColorRelativeDepthThreshold;
+			PassParameters->SampleSceneColorNormalTreshold = LumenReflections::GetSampleSceneColorNormalTreshold();
+
 			FReflectionTraceVoxelsCS::FPermutationDomain PermutationVector;
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FThreadGroupSize32 >(Lumen::UseThreadGroupSize32());
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FTraceGlobalSDF >(Lumen::UseGlobalSDFTracing(*View.Family));
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FHairStrands >(bNeedTraceHairVoxel);
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FRadianceCache >(bUseRadianceCache);
+			PermutationVector.Set< FReflectionTraceVoxelsCS::FSampleSceneColor >(bSampleSceneColorAtHit);
 			auto ComputeShader = View.ShaderMap->GetShader<FReflectionTraceVoxelsCS>(PermutationVector);
 
 			FComputeShaderUtils::AddPass(

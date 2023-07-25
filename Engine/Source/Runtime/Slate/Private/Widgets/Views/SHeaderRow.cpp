@@ -145,8 +145,9 @@ public:
 			];
 		}
 
-		if( Column.HeaderMenuContent.Widget != SNullWidget::NullWidget ||
-			Column.OnGetMenuContent.IsBound())
+		if( ComboVisibility != EHeaderComboVisibility::Never &&
+			(Column.HeaderMenuContent.Widget != SNullWidget::NullWidget ||
+			Column.OnGetMenuContent.IsBound()))
 		{
 			// Add Drop down menu button (only if menu content has been specified)
 			Box->AddSlot()
@@ -281,12 +282,17 @@ public:
 			}
 		}
 
+		if (ComboVisibility == EHeaderComboVisibility::Never)
+		{
+			return EVisibility::Collapsed;
+		}
+
 		return EVisibility::Visible;
 	}
 
-	FVector2D GetMenuOverlaySize() const 
+	UE::Slate::FDeprecateVector2DResult GetMenuOverlaySize() const 
 	{ 
-		return MenuOverlay.IsValid() ? MenuOverlay->GetDesiredSize() : FVector2D::ZeroVector; 
+		return MenuOverlay.IsValid() ? MenuOverlay->GetDesiredSize() : FVector2f::ZeroVector; 
 	}
 
 private:
@@ -304,14 +310,17 @@ private:
 	
 	const FSlateBrush* GetComboButtonBorderBrush() const
 	{
-		if ( ComboButton.IsValid() && ( ComboButton->IsHovered() || ComboButton->IsOpen() ) )
+		if (ComboVisibility != EHeaderComboVisibility::Never)
 		{
-			return &Style->MenuDropdownHoveredBorderBrush;
-		}
+			if ( ComboButton.IsValid() && ( ComboButton->IsHovered() || ComboButton->IsOpen() ) )
+			{
+				return &Style->MenuDropdownHoveredBorderBrush;
+			}
 
-		if ( IsHovered() || ComboVisibility == EHeaderComboVisibility::Always )
-		{
-			return &Style->MenuDropdownNormalBorderBrush;
+			if ( IsHovered() || ComboVisibility == EHeaderComboVisibility::Always )
+			{
+				return &Style->MenuDropdownNormalBorderBrush;
+			}
 		}
 
 		return FStyleDefaults::GetNoBrush();
@@ -347,6 +356,11 @@ private:
 				return FLinearColor::White;
 			}
 			break;
+
+		case EHeaderComboVisibility::Never:
+			{
+				return FLinearColor::White;
+			}
 
 		default:
 			break;
@@ -421,7 +435,7 @@ private:
 	{
 		if ( ContextMenuContent != SNullWidget::NullWidget )
 		{
-			const FVector2D& SummonLocation = MouseEvent.GetScreenSpacePosition();
+			FVector2f SummonLocation = MouseEvent.GetScreenSpacePosition();
 			FWidgetPath WidgetPath = MouseEvent.GetEventPath() != nullptr ? *MouseEvent.GetEventPath() : FWidgetPath();
 
 			FSlateApplication::Get().CloseToolTip();
@@ -462,7 +476,7 @@ void SHeaderRow::Construct( const FArguments& InArgs )
 {
 	check(InArgs._Style);
 
-	ScrollBarThickness = FVector2D::ZeroVector;
+	ScrollBarThickness = FVector2f::ZeroVector;
 	ScrollBarVisibility = EVisibility::Collapsed;
 	Style = InArgs._Style;
 	OnGetMaxRowSizeForColumn = InArgs._OnGetMaxRowSizeForColumn;
@@ -608,7 +622,7 @@ FVector2D SHeaderRow::GetRowSizeForSlotIndex(int32 SlotIndex) const
 		const TSharedPtr<STableColumnHeader>& HeaderWidget = HeaderWidgets[SlotIndex];
 		const FColumn& Column = Columns[SlotIndex];
 
-		FVector2D HeaderSize = HeaderWidget->GetDesiredSize();
+		FVector2D HeaderSize = FVector2D(HeaderWidget->GetDesiredSize());
 
 		if (Column.HeaderMenuContent.Widget != SNullWidget::NullWidget && HeaderWidget->GetMenuOverlayVisibility() != EVisibility::Visible)
 		{
@@ -681,7 +695,7 @@ FReply SHeaderRow::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEv
 {
 	if (bCanSelectGeneratedColumn && MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
 	{
-		const FVector2D& SummonLocation = MouseEvent.GetScreenSpacePosition();
+		FVector2f SummonLocation = MouseEvent.GetScreenSpacePosition();
 		FWidgetPath WidgetPath = MouseEvent.GetEventPath() != nullptr ? *MouseEvent.GetEventPath() : FWidgetPath();
 
 		const bool CloseAfterSelection = true;
@@ -861,9 +875,10 @@ void SHeaderRow::RegenerateWidgets()
 					SizingGrip->SetOnMouseButtonUp(FPointerEventHandler::CreateLambda(SizingGrip_OnMouseButtonUp));
 					SizingGrip->SetOnMouseMove(FPointerEventHandler::CreateLambda(SizingGrip_OnMouseMove));
 
-					auto GetColumnWidthAsOptionalSize = [&SomeColumn]() -> FOptionalSize
+					auto GetColumnWidthAsOptionalSize = [&SomeColumn, SplitterHandleSizeCopy = SplitterHandleSize]() -> FOptionalSize
 					{
-						const float DesiredWidth = SomeColumn.GetWidth();
+						// Subtract SplitterHandleSize to compensate for SSplitter adding a handle between items.
+						const float DesiredWidth = SomeColumn.GetWidth() - SplitterHandleSizeCopy;
 						return FOptionalSize(DesiredWidth);
 					};
 

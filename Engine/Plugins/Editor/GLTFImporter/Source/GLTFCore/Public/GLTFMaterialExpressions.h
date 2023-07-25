@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "UObject/StrongObjectPtr.h"
 #include "Misc/SecureHash.h"
 
 namespace GLTF
@@ -323,6 +322,8 @@ namespace GLTF
 		virtual void SetBlendMode(int InBlendMode) = 0;
 		virtual bool GetTwoSided() const           = 0;
 		virtual void SetTwoSided(bool bTwoSided)   = 0;
+		virtual bool GetIsThinSurface() const = 0;
+		virtual void SetIsThinSurface(bool bIsThinSurface) = 0;
 		virtual void SetShadingModel(EGLTFMaterialShadingModel InShadingModel) = 0;
 		virtual void SetTranslucencyLightingMode(int InLightingMode) = 0;
 
@@ -470,3 +471,7 @@ namespace GLTF
 	}
 
 }  // namespace GLTF
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "UObject/StrongObjectPtr.h"
+#endif

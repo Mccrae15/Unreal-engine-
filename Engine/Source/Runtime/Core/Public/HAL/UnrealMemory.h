@@ -141,7 +141,9 @@ struct CORE_API FMemory
 		while (Start < End)
 		{
 			if ((*Start++) != 0)
+			{
 				return false;
+			}
 		}
 
 		return true;

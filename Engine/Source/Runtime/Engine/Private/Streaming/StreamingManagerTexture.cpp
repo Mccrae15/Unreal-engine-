@@ -5,30 +5,29 @@
 =============================================================================*/
 
 #include "Streaming/StreamingManagerTexture.h"
-#include "GameFramework/Actor.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
-#include "Engine/TextureStreamingTypes.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/Texture2D.h"
 #include "Engine/VolumeTexture.h"
 #include "Engine/Texture2DArray.h"
-#include "LandscapeComponent.h"
 #include "Materials/MaterialInterface.h"
-#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Misc/App.h"
-#include "UObject/UObjectHash.h"
+#include "RenderedTextureStats.h"
 #include "UObject/UObjectIterator.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "RenderAssetUpdate.h"
+#include "RenderingThread.h"
 #include "Streaming/AsyncTextureStreaming.h"
 #include "Components/PrimitiveComponent.h"
 #include "Misc/CoreDelegates.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Interfaces/ITargetPlatform.h"
+#include "TextureResource.h"
+
+#if !STATS
 #include "Async/ParallelFor.h"
+#endif
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
@@ -73,6 +72,13 @@ static TAutoConsoleVariable<int32> CVarSyncStatesWhenBlocking(
 	TEXT("r.Streaming.SyncStatesWhenBlocking"),
 	0,
 	TEXT("If true, SyncStates will be called to fully update async states before flushing outstanding streaming requests. Used by Movie Render Queue to ensure all streaming requests are handled each frame to avoid pop-in."),
+	ECVF_Default);
+
+// TODO: Remove once efficacy has been verified
+static TAutoConsoleVariable<int32> CVarFlushDeferredMipLevelChangeCallbacksBeforeGC(
+	TEXT("r.Streaming.FlushDeferredMipLevelChangeCallbacksBeforeGC"),
+	1,
+	TEXT("Whether to flush deferred mip level change callbacks before GC."),
 	ECVF_Default);
 
 bool TrackRenderAsset( const FString& AssetName );
@@ -215,12 +221,18 @@ void FRenderAssetStreamingManager::OnPreGarbageCollect()
 	TRACE_CPUPROFILER_EVENT_SCOPE(FRenderAssetStreamingManager::OnPreGarbageCollect);
 
 	FScopeLock ScopeLock(&CriticalSection);
+
 	if (StreamingRenderAssetsSyncEvent.IsValid())
 	{
 		StreamingRenderAssetsSyncEvent->Wait(ENamedThreads::GameThread);
 	}
 
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_OnPreGarbageCollect);
+
+	if (CVarFlushDeferredMipLevelChangeCallbacksBeforeGC.GetValueOnGameThread() != 0)
+	{
+		TickDeferredMipLevelChangeCallbacks();
+	}
 
 	FRemovedRenderAssetArray RemovedRenderAssets;
 
@@ -376,6 +388,11 @@ bool FRenderAssetStreamingManager::StreamOutRenderAssetData( int64 RequiredMemor
 	bPauseRenderAssetStreaming = CachedPauseTextureStreaming;
 	UE_LOG(LogContentStreaming, Log, TEXT("Streaming out texture memory! Saved %.2f MB."), float(MemoryDropped)/1024.0f/1024.0f);
 	return true;
+}
+
+int64 FRenderAssetStreamingManager::GetPoolSize() const
+{
+	return GTexturePoolSize;
 }
 
 void FRenderAssetStreamingManager::IncrementalUpdate(float Percentage, bool bUpdateDynamicComponents)
@@ -861,6 +878,29 @@ void FRenderAssetStreamingManager::RemoveStreamingRenderAsset( UStreamableRender
 	STAT(GatheredStats.CallbacksCycles += FPlatformTime::Cycles();)
 }
 
+bool FRenderAssetStreamingManager::IsFullyStreamedIn(UStreamableRenderAsset* RenderAsset)
+{
+	check(RenderAsset);
+
+	const FStreamingRenderAsset* StreamingAsset = GetStreamingRenderAsset(RenderAsset);
+	const FStreamableRenderResourceState& AssetState = RenderAsset->GetStreamableResourceState();
+	
+	if (StreamingAsset)
+	{
+		const FStreamingRenderAsset::EOptionalMipsState OptionalLODState = StreamingAsset->OptionalMipsState;
+		int32 NumLODsToConsiderAsFull = AssetState.MaxNumLODs - RenderAsset->GetCachedLODBias();
+		
+		if (OptionalLODState == FStreamingRenderAsset::OMS_NoOptionalMips)
+		{
+			NumLODsToConsiderAsFull = FMath::Min(NumLODsToConsiderAsFull, (int32)AssetState.NumNonOptionalLODs);
+		}
+
+		return AssetState.NumResidentLODs >= NumLODsToConsiderAsFull;
+	}
+
+	return false;
+}
+
 /** Called when a spawned primitive is deleted, or when an actor is destroyed in the editor. */
 void FRenderAssetStreamingManager::NotifyActorDestroyed( AActor* Actor )
 {
@@ -1301,14 +1341,14 @@ static TAutoConsoleVariable<int32> CVarTextureStreamingAmortizeCPUToGPUCopy(
 	0,
 	TEXT("If set and r.Streaming.MaxNumTexturesToStreamPerFrame > 0, limit the number of 2D textures ")
 	TEXT("streamed from CPU memory to GPU memory each frame"),
-	ECVF_Scalability);
+	ECVF_Scalability | ECVF_ExcludeFromPreview);
 
 static TAutoConsoleVariable<int32> CVarTextureStreamingMaxNumTexturesToStreamPerFrame(
 	TEXT("r.Streaming.MaxNumTexturesToStreamPerFrame"),
 	0,
 	TEXT("Maximum number of 2D textures allowed to stream from CPU memory to GPU memory each frame. ")
 	TEXT("<= 0 means no limit. This has no effect if r.Streaming.AmortizeCPUToGPUCopy is not set"),
-	ECVF_Scalability);
+	ECVF_Scalability | ECVF_ExcludeFromPreview);
 
 static FORCEINLINE bool ShouldAmortizeMipCopies()
 {

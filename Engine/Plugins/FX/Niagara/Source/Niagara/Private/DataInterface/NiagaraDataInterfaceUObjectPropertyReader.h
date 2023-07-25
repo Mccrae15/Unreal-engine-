@@ -28,7 +28,7 @@ struct FNiagaraUObjectPropertyReaderRemap
 Data interface to read properties from UObjects.
 Rather than having BP tick functions that push data into Niagara this data interface will instead pull them.
 */
-UCLASS(EditInlineNew, Category = "DataInterface", meta=(DisplayName="Object Reader", Experimental))
+UCLASS(EditInlineNew, Category = "DataInterface", meta=(DisplayName="Object Reader"))
 class UNiagaraDataInterfaceUObjectPropertyReader : public UNiagaraDataInterface
 {
 	GENERATED_UCLASS_BODY()
@@ -94,7 +94,6 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 	//UNiagaraDataInterface Interface

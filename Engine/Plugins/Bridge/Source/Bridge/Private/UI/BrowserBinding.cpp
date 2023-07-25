@@ -1,21 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "UI/BrowserBinding.h"
+#include "ActorFactories/ActorFactoryBasicShape.h"
+#include "Components/StaticMeshComponent.h"
+#include "BridgeDragDropHelper.h"
 #include "UI/BridgeUIManager.h"
-#include "Widgets/SToolTip.h"
+#include "DragAndDrop/AssetDragDropOp.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Editor.h"
 #include "WebBrowserModule.h"
-#include "IWebBrowserSingleton.h"
+#include "Engine/StaticMesh.h"
 #include "IWebBrowserCookieManager.h"
+#include "Misc/FileHelper.h"
 #include "SMSWindow.h"
+#include "Misc/Paths.h"
 #include "TCPServer.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/DecalActor.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
-#include "AssetRegistry/AssetData.h"
-#include "Engine/Selection.h"
-#include "Kismet/GameplayStatics.h"
+#include "NodeProcess.h"
+#include "UnrealClient.h"
+#include "SWebBrowser.h"
+#include "WebJSFunction.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SWindow.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BrowserBinding)
 
@@ -385,6 +393,11 @@ void SetupOnActorsDroppedEvent()
 			Filtered3dObjects = Filtered3dObjects.FilterByPredicate([](UObject* Object) { return Object != nullptr; });
 			Filtered3dActors = Filtered3dActors.FilterByPredicate([](AActor* Actor) { return Actor != nullptr; });
 
+			if (Filtered3dIDs.Num() != Filtered3dObjects.Num() || Filtered3dObjects.Num() != Filtered3dActors.Num())
+			{
+				return;
+			}
+			
 			for (int32 i = 0; i < Filtered3dObjects.Num(); i++)
 			{
 				UObject* Object = Filtered3dObjects[i];

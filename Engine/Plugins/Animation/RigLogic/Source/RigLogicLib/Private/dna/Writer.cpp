@@ -26,10 +26,12 @@ using VertexLayoutVector = Vector<VertexLayout>;
 
 }  // namespace
 
+HeaderWriter::~HeaderWriter() = default;
 DescriptorWriter::~DescriptorWriter() = default;
 DefinitionWriter::~DefinitionWriter() = default;
 BehaviorWriter::~BehaviorWriter() = default;
 GeometryWriter::~GeometryWriter() = default;
+MachineLearnedBehaviorWriter::~MachineLearnedBehaviorWriter() = default;
 Writer::~Writer() = default;
 
 template<typename TVector, typename TGetter>
@@ -42,11 +44,17 @@ static TVector collect_n(std::size_t count, TGetter getter, MemoryResource* memR
     return retval;
 }
 
+static void copyHeader(const HeaderReader* source, HeaderWriter* destination, MemoryResource*  /*unused*/) {
+    destination->setFileFormatGeneration(source->getFileFormatGeneration());
+    destination->setFileFormatVersion(source->getFileFormatVersion());
+}
+
 static void copyDescriptor(const DescriptorReader* source, DescriptorWriter* destination, MemoryResource*  /*unused*/) {
     destination->setName(source->getName());
     destination->setArchetype(source->getArchetype());
     destination->setGender(source->getGender());
     destination->setAge(source->getAge());
+    destination->clearMetaData();
     for (std::uint32_t i = 0u; i < source->getMetaDataCount(); ++i) {
         const auto key = source->getMetaDataKey(i);
         const auto value = source->getMetaDataValue(key);
@@ -78,11 +86,11 @@ using IndicesGetter = std::function<ConstArrayView<std::uint16_t>(std::uint16_t)
 using IndicesSetter = std::function<void (std::uint16_t, const std::uint16_t*, std::uint16_t)>;
 using LODMappingSetter = std::function<void (std::uint16_t, std::uint16_t)>;
 
-static void copyNameIndices(IndicesGetter getIndices,
-                            IndicesSetter setIndices,
-                            LODMappingSetter setLODMapping,
-                            std::uint16_t lodCount,
-                            MemoryResource* memRes) {
+static void copyLODIndices(IndicesGetter getIndices,
+                           IndicesSetter setIndices,
+                           LODMappingSetter setLODMapping,
+                           std::uint16_t lodCount,
+                           MemoryResource* memRes) {
     Matrix<std::uint16_t> allIndices{memRes};
     std::uint16_t index = 0u;
     for (std::uint16_t lod = 0u; lod < lodCount; ++lod) {
@@ -102,6 +110,22 @@ static void copyNameIndices(IndicesGetter getIndices,
 }
 
 static void copyDefinition(const DefinitionReader* source, DefinitionWriter* destination, MemoryResource* memRes) {
+    destination->clearGUIControlNames();
+    destination->clearRawControlNames();
+    destination->clearJointNames();
+    destination->clearBlendShapeChannelNames();
+    destination->clearAnimatedMapNames();
+    destination->clearMeshNames();
+    destination->clearJointIndices();
+    destination->clearLODJointMappings();
+    destination->clearBlendShapeChannelIndices();
+    destination->clearLODBlendShapeChannelMappings();
+    destination->clearAnimatedMapIndices();
+    destination->clearLODAnimatedMapMappings();
+    destination->clearMeshIndices();
+    destination->clearLODMeshMappings();
+    destination->clearMeshBlendShapeChannelMappings();
+
     const auto lodCount = source->getLODCount();
 
     for (std::uint16_t i = source->getGUIControlCount(); i > 0u; --i) {
@@ -130,25 +154,25 @@ static void copyDefinition(const DefinitionReader* source, DefinitionWriter* des
     }
 
     using namespace std::placeholders;
-    copyNameIndices(
+    copyLODIndices(
         std::bind(&DefinitionReader::getJointIndicesForLOD, source, _1),
         std::bind(&DefinitionWriter::setJointIndices, destination, _1, _2, _3),
         std::bind(&DefinitionWriter::setLODJointMapping, destination, _1, _2),
         lodCount,
         memRes);
-    copyNameIndices(
+    copyLODIndices(
         std::bind(&DefinitionReader::getBlendShapeChannelIndicesForLOD, source, _1),
         std::bind(&DefinitionWriter::setBlendShapeChannelIndices, destination, _1, _2, _3),
         std::bind(&DefinitionWriter::setLODBlendShapeChannelMapping, destination, _1, _2),
         lodCount,
         memRes);
-    copyNameIndices(
+    copyLODIndices(
         std::bind(&DefinitionReader::getAnimatedMapIndicesForLOD, source, _1),
         std::bind(&DefinitionWriter::setAnimatedMapIndices, destination, _1, _2, _3),
         std::bind(&DefinitionWriter::setLODAnimatedMapMapping, destination, _1, _2),
         lodCount,
         memRes);
-    copyNameIndices(
+    copyLODIndices(
         std::bind(&DefinitionReader::getMeshIndicesForLOD, source, _1),
         std::bind(&DefinitionWriter::setMeshIndices, destination, _1, _2, _3),
         std::bind(&DefinitionWriter::setLODMeshMapping, destination, _1, _2),
@@ -181,6 +205,8 @@ static void copyDefinition(const DefinitionReader* source, DefinitionWriter* des
 }
 
 static void copyBehavior(const BehaviorReader* source, BehaviorWriter* destination, MemoryResource*  /*unused*/) {
+    destination->clearJointGroups();
+
     auto guiToRawInputIndices = source->getGUIToRawInputIndices();
     destination->setGUIToRawInputIndices(guiToRawInputIndices.data(), static_cast<std::uint16_t>(guiToRawInputIndices.size()));
 
@@ -274,7 +300,33 @@ static void copyBehavior(const BehaviorReader* source, BehaviorWriter* destinati
     destination->setAnimatedMapCutValues(animatedMapCutValues.data(), static_cast<std::uint16_t>(animatedMapCutValues.size()));
 }
 
+static bool hasGeometry(const GeometryReader* source) {
+    // Heuristic for determining whether source DNA actually has any geometry data, or mesh count is non-zero only
+    // because of mesh names stored in definition layer
+    std::uint32_t totalVertexCount = {};
+    std::uint32_t totalVertexNormalCount = {};
+    std::uint32_t totalTextureCoordCount = {};
+    std::uint32_t totalVertexLayoutCount = {};
+    std::uint32_t totalSkinWeightCount = {};
+    for (std::uint16_t meshIndex = {}; meshIndex < source->getMeshCount(); ++meshIndex) {
+        totalVertexCount += source->getVertexPositionCount(meshIndex);
+        totalVertexNormalCount += source->getVertexNormalCount(meshIndex);
+        totalTextureCoordCount += source->getVertexTextureCoordinateCount(meshIndex);
+        totalVertexLayoutCount += source->getVertexLayoutCount(meshIndex);
+        totalSkinWeightCount += source->getSkinWeightsCount(meshIndex);
+    }
+    return ((totalVertexCount != 0u) || (totalVertexNormalCount != 0u) || (totalTextureCoordCount != 0u) ||
+            (totalVertexLayoutCount != 0u) || (totalSkinWeightCount != 0u));
+}
+
 static void copyGeometry(const GeometryReader* source, GeometryWriter* destination, MemoryResource* memRes) {
+    destination->clearMeshes();
+
+    if (!hasGeometry(source)) {
+        // Source DNA was loaded without geometry layer
+        return;
+    }
+
     for (std::uint16_t meshIndexPlusOne = source->getMeshCount(); meshIndexPlusOne > 0u; --meshIndexPlusOne) {
         const auto meshIndex = static_cast<std::uint16_t>(meshIndexPlusOne - 1u);
         auto vertexCount = source->getVertexPositionCount(meshIndex);
@@ -326,7 +378,22 @@ static void copyGeometry(const GeometryReader* source, GeometryWriter* destinati
     }
 }
 
+static bool hasBlendShapeTargets(const GeometryReader* source) {
+    // Heuristic for determining whether source DNA actually has any blend shape target data, or mesh count is non-zero only
+    // because of mesh names stored in definition layer
+    std::uint32_t totalBlendShapeTargetCount = {};
+    for (std::uint16_t meshIndex = {}; meshIndex < source->getMeshCount(); ++meshIndex) {
+        totalBlendShapeTargetCount += source->getBlendShapeTargetCount(meshIndex);
+    }
+    return (totalBlendShapeTargetCount != 0u);
+}
+
 static void copyBlendShapeTargets(const GeometryReader* source, GeometryWriter* destination, MemoryResource* memRes) {
+    if (!hasBlendShapeTargets(source)) {
+        // Source DNA was loaded without blend shape targets
+        return;
+    }
+
     for (std::uint16_t meshIndexPlusOne = source->getMeshCount(); meshIndexPlusOne > 0u; --meshIndexPlusOne) {
         const auto meshIndex = static_cast<std::uint16_t>(meshIndexPlusOne - 1u);
         for (std::uint16_t blendShapeTargetIndexPlusOne = source->getBlendShapeTargetCount(meshIndex);
@@ -350,12 +417,98 @@ static void copyBlendShapeTargets(const GeometryReader* source, GeometryWriter* 
     }
 }
 
-void Writer::setFrom(const Reader* source, DataLayer layer, MemoryResource* memRes) {
+static bool hasMachineLearnedBehavior(const MachineLearnedBehaviorReader* source) {
+    // Heuristic for determining whether source DNA actually has any machine learned behavior data
+    return (source->getMLControlCount() != 0u) || (source->getNeuralNetworkCount() != 0u);
+}
+
+static void copyMachineLearnedBehavior(const MachineLearnedBehaviorReader* source,
+                                       MachineLearnedBehaviorWriter* destination,
+                                       MemoryResource* memRes) {
+    destination->clearMLControlNames();
+    destination->clearMeshRegionNames();
+    destination->clearNeuralNetworks();
+    destination->clearNeuralNetworkIndices();
+    destination->clearNeuralNetworkIndicesPerMeshRegion();
+
+    if (!hasMachineLearnedBehavior(source)) {
+        // Source DNA was loaded without machine learned behavior layer
+        return;
+    }
+
+    for (std::uint16_t i = source->getMLControlCount(); i > 0u; --i) {
+        const auto idx = static_cast<std::uint16_t>(i - 1u);
+        destination->setMLControlName(idx, source->getMLControlName(idx).data());
+    }
+
+    using namespace std::placeholders;
+    copyLODIndices(
+        std::bind(&MachineLearnedBehaviorReader::getNeuralNetworkIndicesForLOD, source, _1),
+        std::bind(&MachineLearnedBehaviorWriter::setNeuralNetworkIndices, destination, _1, _2, _3),
+        std::bind(&MachineLearnedBehaviorWriter::setLODNeuralNetworkMapping, destination, _1, _2),
+        source->getLODCount(),
+        memRes);
+
+    for (std::uint16_t meshIndexPlusOne = source->getMeshCount(); meshIndexPlusOne > 0u; --meshIndexPlusOne) {
+        const auto meshIndex = static_cast<std::uint16_t>(meshIndexPlusOne - 1u);
+        for (std::uint16_t regionIndexPlusOne = source->getMeshRegionCount(meshIndex); regionIndexPlusOne > 0u;
+             --regionIndexPlusOne) {
+            const auto regionIndex = static_cast<std::uint16_t>(regionIndexPlusOne - 1u);
+            destination->setMeshRegionName(meshIndex, regionIndex, source->getMeshRegionName(meshIndex, regionIndex));
+            const auto netIndices = source->getNeuralNetworkIndicesForMeshRegion(meshIndex, regionIndex);
+            destination->setNeuralNetworkIndicesForMeshRegion(meshIndex,
+                                                              regionIndex,
+                                                              netIndices.data(),
+                                                              static_cast<std::uint16_t>(netIndices.size()));
+        }
+    }
+
+    for (std::uint16_t netIndexPlusOne = source->getNeuralNetworkCount(); netIndexPlusOne > 0u; --netIndexPlusOne) {
+        const auto netIndex = static_cast<std::uint16_t>(netIndexPlusOne - 1u);
+        const auto inputIndices = source->getNeuralNetworkInputIndices(netIndex);
+        destination->setNeuralNetworkInputIndices(netIndex, inputIndices.data(),
+                                                  static_cast<std::uint16_t>(inputIndices.size()));
+
+        const auto outputIndices = source->getNeuralNetworkOutputIndices(netIndex);
+        destination->setNeuralNetworkOutputIndices(netIndex, outputIndices.data(),
+                                                   static_cast<std::uint16_t>(outputIndices.size()));
+
+        const auto layerCount = source->getNeuralNetworkLayerCount(netIndex);
+        for (std::uint16_t layerIndexPlusOne = layerCount; layerIndexPlusOne > 0u; --layerIndexPlusOne) {
+            const auto layerIndex = static_cast<std::uint16_t>(layerIndexPlusOne - 1u);
+
+            const auto activationFunction = source->getNeuralNetworkLayerActivationFunction(netIndex, layerIndex);
+            destination->setNeuralNetworkLayerActivationFunction(netIndex, layerIndex, activationFunction);
+
+            const auto activationFunctionParams = source->getNeuralNetworkLayerActivationFunctionParameters(netIndex,
+                                                                                                            layerIndex);
+            destination->setNeuralNetworkLayerActivationFunctionParameters(netIndex,
+                                                                           layerIndex,
+                                                                           activationFunctionParams.data(),
+                                                                           static_cast<std::uint16_t>(activationFunctionParams.
+                                                                                                      size()));
+
+            const auto biases = source->getNeuralNetworkLayerBiases(netIndex, layerIndex);
+            destination->setNeuralNetworkLayerBiases(netIndex,
+                                                     layerIndex,
+                                                     biases.data(),
+                                                     static_cast<std::uint32_t>(biases.size()));
+
+            const auto weights = source->getNeuralNetworkLayerWeights(netIndex, layerIndex);
+            destination->setNeuralNetworkLayerWeights(netIndex, layerIndex, weights.data(),
+                                                      static_cast<std::uint32_t>(weights.size()));
+        }
+    }
+}
+
+void Writer::setFrom(const Reader* source, DataLayer layer, UnknownLayerPolicy  /*unused*/, MemoryResource* memRes) {
+    // Unknown layers are inaccessible when copying through the public API
     if (source == nullptr) {
         return;
     }
 
     const auto bitmask = computeDataLayerBitmask(layer);
+    copyHeader(source, this, memRes);
     copyDescriptor(source, this, memRes);
     if (contains(bitmask, DataLayerBitmask::Definition)) {
         copyDefinition(source, this, memRes);
@@ -368,6 +521,9 @@ void Writer::setFrom(const Reader* source, DataLayer layer, MemoryResource* memR
     }
     if (contains(bitmask, DataLayerBitmask::GeometryBlendShapesOnly)) {
         copyBlendShapeTargets(source, this, memRes);
+    }
+    if (contains(bitmask, DataLayerBitmask::MachineLearnedBehavior)) {
+        copyMachineLearnedBehavior(source, this, memRes);
     }
 }
 

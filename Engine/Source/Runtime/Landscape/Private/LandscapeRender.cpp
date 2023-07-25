@@ -11,14 +11,17 @@ LandscapeRender.cpp: New terrain rendering
 #include "LandscapePrivate.h"
 #include "LandscapeMeshProxyComponent.h"
 #include "LandscapeNaniteComponent.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionLandscapeLayerCoords.h"
 #include "Materials/MaterialExpressionLandscapeVisibilityMask.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "MeshDrawShaderBindings.h"
 #include "ShaderParameterUtils.h"
 #include "LandscapeEdit.h"
+#include "Engine/Level.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
 #include "Materials/MaterialExpressionTextureSample.h"
@@ -33,9 +36,11 @@ LandscapeRender.cpp: New terrain rendering
 #include "LandscapeInfo.h"
 #include "LandscapeDataAccess.h"
 #include "DrawDebugHelpers.h"
+#include "RHIStaticStates.h"
 #include "PrimitiveSceneInfo.h"
 #include "SceneView.h"
 #include "SceneCore.h"
+#include "ScenePrivate.h"
 #include "LandscapeProxy.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "MeshMaterialShader.h"
@@ -43,9 +48,12 @@ LandscapeRender.cpp: New terrain rendering
 #include "RayTracingInstance.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "StaticMeshResources.h"
+#include "TextureResource.h"
 #include "NaniteSceneProxy.h"
 #include "Rendering/Texture2DResource.h"
-
+#include "RenderCore.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "Algo/Transform.h"
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeUniformShaderParameters, "LandscapeParameters");
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeFixedGridUniformShaderParameters, "LandscapeFixedGrid");
@@ -326,6 +334,95 @@ TMap<uint32, FLandscapeRenderSystem*> LandscapeRenderSystems;
 
 TBitArray<> FLandscapeRenderSystem::LandscapeIndexAllocator;
 
+#if RHI_RAYTRACING
+
+struct FLandscapeSectionRayTracingState
+{
+	int8 CurrentLOD;
+	float FractionalLOD;
+	float HeightmapLODBias;
+	uint32 ReferencedTextureRHIHash;
+
+	FRayTracingGeometry Geometry;
+	FRWBuffer RayTracingDynamicVertexBuffer;
+	FLandscapeVertexFactoryMVFUniformBufferRef UniformBuffer;
+
+	FLandscapeSectionRayTracingState()
+		: CurrentLOD(-1)
+		, FractionalLOD(-1000.0f)
+		, HeightmapLODBias(-1000.0f)
+		, ReferencedTextureRHIHash(0) {}
+};
+
+// Where we are rendering multiple views, we need to branch the landscape ray tracing state (BLAS data) per view, for performance reasons.
+// Without this, the BLAS data ends up getting rebuilt from scratch every frame due to LOD thrashing, costing 30-50 ms per view, or 60-100 ms
+// for a scene with two views.  This structure represents the state for a single view.
+struct FLandscapeRayTracingState
+{
+	FLandscapeRayTracingState()
+		: Pimpl(nullptr), ViewStateNext(nullptr), ViewStatePrev(nullptr), ViewKey(-1), NumSubsections(0) {}
+	~FLandscapeRayTracingState();
+
+	// Parent structure that holds this ray tracing state, needed for deletion of this item if its view is deleted
+	FLandscapeRayTracingImpl* Pimpl;
+
+	// Linked list pointers for FLandscapeRayTracingStateList, referenced from FSceneViewState, iterated over if view gets deleted
+	FLandscapeRayTracingState* ViewStateNext;
+	FLandscapeRayTracingState** ViewStatePrev;
+
+	// View state key from FSceneViewState.  Zero is used if FSceneViewState is null (view state keys start at 1, so 0 is invalid for an actual view).
+	uint32 ViewKey;
+
+	// Rendering data
+	int32 NumSubsections;
+	TStaticArray<FLandscapeSectionRayTracingState, FLandscapeComponentSceneProxy::MAX_SUBSECTION_COUNT> Sections;
+};
+
+// This wrapper holds the ray tracing state for a single scene proxy for all views
+struct FLandscapeRayTracingImpl
+{
+	// Needs to be indirect array, because elements are added to a linked list 
+	TIndirectArray<FLandscapeRayTracingState> PerViewRayTracingState;
+
+	// ViewStateInterface pointer can be NULL
+	FLandscapeRayTracingState* FindOrCreateRayTracingState(FSceneViewStateInterface* ViewStateInterface, int32 NumSubsections, int32 SubsectionSizeVerts);
+};
+
+// When views get deleted, we need to clean up the per view ray tracing data, which is handled by this class.  This is just a doubly linked list
+// of all the ray tracing data associated with a given view, pointed to by the FSceneViewState, with the destructor emptying the items from the list.
+class FLandscapeRayTracingStateList
+{
+public:
+	FLandscapeRayTracingState* ListHead;
+
+	FLandscapeRayTracingStateList() : ListHead(nullptr) {}
+
+	~FLandscapeRayTracingStateList()
+	{
+		// Pop items from the list head until the list is empty
+		while (ListHead)
+		{
+			// Find the item in its parent array
+			FLandscapeRayTracingState* ToRemove = ListHead;
+			FLandscapeRayTracingImpl* Pimpl = ToRemove->Pimpl;
+
+			for (int32 RemoveIndex = 0; RemoveIndex < Pimpl->PerViewRayTracingState.Num(); RemoveIndex++)
+			{
+				if (&Pimpl->PerViewRayTracingState[RemoveIndex] == ToRemove)
+				{
+					// Remove it -- the destructor will also unlink it from the list, updating ListHead
+					Pimpl->PerViewRayTracingState.RemoveAtSwap(RemoveIndex);
+					break;
+				}
+			}
+
+			// Make sure the item was successfully removed (ListHead updated)
+			check(ListHead != ToRemove);
+		}
+	}
+};
+#endif	// RHI_RAYTRACING
+
 
 //
 // FLandscapeRenderSystem
@@ -602,22 +699,45 @@ void FLandscapeRenderSystem::UpdateBuffers()
 //
 FLandscapeSceneViewExtension::FLandscapeSceneViewExtension(const FAutoRegister& AutoReg) : FSceneViewExtensionBase(AutoReg)
 {
+
+	FCoreDelegates::OnEndFrame.AddRaw(this, &FLandscapeSceneViewExtension::EndFrame_GameThread);
 	FCoreDelegates::OnEndFrameRT.AddRaw(this, &FLandscapeSceneViewExtension::EndFrame_RenderThread);
 }
 
 FLandscapeSceneViewExtension::~FLandscapeSceneViewExtension()
 {
 	FCoreDelegates::OnEndFrameRT.RemoveAll(this);
+	FCoreDelegates::OnEndFrame.RemoveAll(this);
+}
+
+void FLandscapeSceneViewExtension::BeginRenderViewFamily(FSceneViewFamily& InViewFamily) 
+{
+	if (InViewFamily.EngineShowFlags.Collision)
+	{
+		NumViewsWithShowCollisionAcc++;
+	}
 }
 
 void FLandscapeSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 {
 	LandscapeViews.Emplace(InView);
 
+#if RHI_RAYTRACING
+	if (InView.State)
+	{
+		// Create the ray tracing state list class if necessary
+		FSceneViewState* ViewState = InView.State->GetConcreteViewState();
+		if (!ViewState->LandscapeRayTracingStates.IsValid())
+		{
+			ViewState->LandscapeRayTracingStates = MakePimpl<FLandscapeRayTracingStateList>();
+		}
+	}
+#endif	// RHI_RAYTRACING
+
 	// Kick the job once all views have been collected.
 	if (!LandscapeRenderSystems.IsEmpty() && LandscapeViews.Num() == InView.Family->Views.Num())
 	{
-		const auto ComputeLODs = [this]
+		auto ComputeLODs = [this]
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::ComputeLODs);
 			FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
@@ -648,7 +768,7 @@ void FLandscapeSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& Graph
 
 		if (GIsThreadedRendering && GLandscapeUseAsyncTasksForLODComputation)
 		{
-			LandscapeSetupTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, ComputeLODs, LowLevelTasks::ETaskPriority::Normal);
+			LandscapeSetupTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, MoveTemp(ComputeLODs), LowLevelTasks::ETaskPriority::Normal);
 		}
 		else
 		{
@@ -687,6 +807,12 @@ void FLandscapeSceneViewExtension::PreInitViews_RenderThread(FRDGBuilder& GraphB
 	}
 
 	LandscapeViews.Reset();
+}
+
+void FLandscapeSceneViewExtension::EndFrame_GameThread()
+{
+	NumViewsWithShowCollision = NumViewsWithShowCollisionAcc;
+	NumViewsWithShowCollisionAcc = 0;
 }
 
 // TODO [jonathan.bard] Ideally this should be symmetrical with FLandscapeSceneViewExtension::PreRenderView_RenderThread and should be called in FLandscapeSceneViewExtension::PostRenderView_RenderThread
@@ -800,10 +926,17 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 
 	const ERHIFeatureLevel::Type FeatureLevel = GetScene().GetFeatureLevel();
 
+	auto GetRenderProxy = 
+		[](const TObjectPtr<UMaterialInterface>& Material)
+		{
+			return Material ? Material->GetRenderProxy() : nullptr;
+		};
+	TArray<UMaterialInterface*> AvailableMaterialInterfaces;
 	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
 	{
 		WeightmapTextures = InComponent->MobileWeightmapTextures;
-		AvailableMaterials.Append(InComponent->MobileMaterialInterfaces);
+		Algo::Transform(InComponent->MobileMaterialInterfaces, AvailableMaterials, GetRenderProxy);
+		AvailableMaterialInterfaces.Append(InComponent->MobileMaterialInterfaces);
 		//TODO: Add support for bUseDynamicMaterialInstance ?
 	}
 	else
@@ -811,11 +944,13 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 		WeightmapTextures = InComponent->GetWeightmapTextures();
 		if (InComponent->GetLandscapeProxy()->bUseDynamicMaterialInstance)
 		{
-			AvailableMaterials.Append(InComponent->MaterialInstancesDynamic);
+			Algo::Transform(InComponent->MaterialInstancesDynamic, AvailableMaterials, GetRenderProxy);
+			AvailableMaterialInterfaces.Append(InComponent->MaterialInstancesDynamic);
 		}
 		else
 		{
-			AvailableMaterials.Append(InComponent->MaterialInstances);
+			Algo::Transform(InComponent->MaterialInstances, AvailableMaterials, GetRenderProxy);
+			AvailableMaterialInterfaces.Append(InComponent->MaterialInstances);
 		}
 	}
 
@@ -878,9 +1013,13 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	LODSettings.LastLODScreenSizeSquared = LODScreenRatioSquared[LastLOD];
 	LODSettings.ForcedLOD = ForcedLOD;
 
+	const bool bVirtualTextureRenderWithQuad = InComponent->GetLandscapeProxy()->bVirtualTextureRenderWithQuad;
+	const bool bVirtualTextureRenderWithQuadHQ = InComponent->GetLandscapeProxy()->bVirtualTextureRenderWithQuadHQ;
+	VirtualTexturePerPixelHeight = bVirtualTextureRenderWithQuad ? bVirtualTextureRenderWithQuadHQ ? 2 : 1 : 0;
+
 	LastVirtualTextureLOD = MaxLOD;
-	FirstVirtualTextureLOD = FMath::Max(MaxLOD - InComponent->GetLandscapeProxy()->VirtualTextureNumLods, 0);
-	VirtualTextureLodBias = InComponent->GetLandscapeProxy()->VirtualTextureLodBias;
+	FirstVirtualTextureLOD = bVirtualTextureRenderWithQuad ? MaxLOD : FMath::Max(MaxLOD - InComponent->GetLandscapeProxy()->VirtualTextureNumLods, 0);
+	VirtualTextureLodBias = bVirtualTextureRenderWithQuad ? 0 : InComponent->GetLandscapeProxy()->VirtualTextureLodBias;
 
 #if WITH_EDITOR || !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	LODSettings.DrawCollisionPawnLOD = CollisionResponse.GetResponse(ECC_Pawn) == ECR_Ignore ? -1 : SimpleCollisionMipLevel;
@@ -923,41 +1062,45 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 
 	const bool bHasStaticLighting = ComponentLightInfo->GetLightMap() || ComponentLightInfo->GetShadowMap();
 
-	// Check material usage
-	if (ensure(AvailableMaterials.Num() > 0))
+	check(AvailableMaterialInterfaces.Num() == AvailableMaterials.Num());
+	// Check material usage and validity. Replace invalid entries by default material so that indexing AvailableMaterials with LODIndexToMaterialIndex still works :
+	if (ensure(AvailableMaterialInterfaces.Num() > 0))
 	{
-		for (UMaterialInterface*& MaterialInterface : AvailableMaterials)
+		for(int Index = 0; Index < AvailableMaterialInterfaces.Num(); ++Index)
 		{
-			if (MaterialInterface == nullptr ||
-				(bHasStaticLighting && !MaterialInterface->CheckMaterialUsage_Concurrent(MATUSAGE_StaticLighting)))
+			bool bIsValidMaterial = false;
+			UMaterialInterface* MaterialInterface = AvailableMaterialInterfaces[Index];
+			if (MaterialInterface != nullptr)
 			{
+				bIsValidMaterial = true;
+
+				const UMaterial* LandscapeMaterial = MaterialInterface->GetMaterial_Concurrent();
+
+				// In some case it's possible that the Material Instance we have and the Material are not related, for example, in case where content was force deleted, we can have a MIC with no parent, so GetMaterial will fallback to the default material.
+				// and since the MIC is not really valid, fallback to 
+				UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(MaterialInterface);
+				bIsValidMaterial &= (MaterialInstance == nullptr) || MaterialInstance->IsChildOf(LandscapeMaterial);
+
+				// Check usage flags : 
+				bIsValidMaterial &= !bHasStaticLighting || MaterialInterface->CheckMaterialUsage_Concurrent(MATUSAGE_StaticLighting);
+			}
+
+			if (!bIsValidMaterial)
+			{
+				// Replace the landscape material by the default material : 
 				MaterialInterface = UMaterial::GetDefaultMaterial(MD_Surface);
+				AvailableMaterialInterfaces[Index] = MaterialInterface;
+				AvailableMaterials[Index] = MaterialInterface->GetRenderProxy();
 			}
 		}
 	}
 	else
 	{
-		AvailableMaterials.Add(UMaterial::GetDefaultMaterial(MD_Surface));
+		AvailableMaterialInterfaces.Add(UMaterial::GetDefaultMaterial(MD_Surface));
+		AvailableMaterials.Add(AvailableMaterialInterfaces.Last()->GetRenderProxy());
 	}
 
-	MaterialRelevances.Reserve(AvailableMaterials.Num());
-
-	for (UMaterialInterface*& MaterialInterface : AvailableMaterials)
-	{
-		const UMaterial* LandscapeMaterial = MaterialInterface != nullptr ? MaterialInterface->GetMaterial_Concurrent() : nullptr;
-
-		if (LandscapeMaterial != nullptr)
-		{
-			UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(MaterialInterface);
-
-			// In some case it's possible that the Material Instance we have and the Material are not related, for example, in case where content was force deleted, we can have a MIC with no parent, so GetMaterial will fallback to the default material.
-			// and since the MIC is not really valid, dont generate the relevance.
-			if (MaterialInstance == nullptr || MaterialInstance->IsChildOf(LandscapeMaterial))
-			{
-				MaterialRelevances.Add(MaterialInterface->GetRelevance_Concurrent(FeatureLevel));
-			}
-		}
-	}
+	Algo::Transform(AvailableMaterialInterfaces, MaterialRelevances, [FeatureLevel](UMaterialInterface* InMaterialInterface) { check(InMaterialInterface != nullptr); return InMaterialInterface->GetRelevance_Concurrent(FeatureLevel); });
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) || (UE_BUILD_SHIPPING && WITH_EDITOR)
 	if (GIsEditor)
@@ -980,7 +1123,6 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	SharedBuffersKey = (SubsectionSizeLog2 & 0xf) | ((NumSubsections & 0xf) << 4) |	(XYOffsetmapTexture == nullptr ? 0 : 1 << 31);
 
 	bSupportsHeightfieldRepresentation = true;
-	bSupportsMeshCardRepresentation = true;
 
 	// Find where the visibility weightmap lies, if available
 	// TODO: Mobile has its own MobileWeightmapLayerAllocations, and visibility layer could be in a different channel potentially?
@@ -1011,6 +1153,8 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 		}
 	}
 #endif
+
+	UpdateVisibleInLumenScene();
 }
 
 void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
@@ -1106,7 +1250,7 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 
 		// Grass is being generated using LOD0 material only
 		// It uses the fixed grid vertex factory so it doesn't support XY offsets
-		FMaterialRenderProxy* RenderProxy = AvailableMaterials[LODIndexToMaterialIndex[0]]->GetRenderProxy();
+		FMaterialRenderProxy* RenderProxy = AvailableMaterials[LODIndexToMaterialIndex[0]];
 		GrassMeshBatch.VertexFactory = FixedGridVertexFactory;
 		GrassMeshBatch.MaterialRenderProxy = RenderProxy;
 		GrassMeshBatch.LCI = nullptr;
@@ -1147,41 +1291,113 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 		}
 	}
 #endif
+}
 
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+FLandscapeRayTracingState* FLandscapeRayTracingImpl::FindOrCreateRayTracingState(FSceneViewStateInterface* ViewStateInterface, int32 NumSubsections, int32 SubsectionSizeVerts)
+{
+	// Default view key of zero if there's no ViewStateInterface provided.  View keys start at 1, so 0 wouldn't be a valid key on an actual view.
+	uint32 ViewKey = 0;
+	FSceneViewState* ViewState = nullptr;
+	if (ViewStateInterface)
 	{
-		for (int32 SubY = 0; SubY < NumSubsections; SubY++)
+		ViewState = ViewStateInterface->GetConcreteViewState();
+		ViewKey = ViewState->UniqueID;
+	}
+
+	// Check for existing state for this view.  We're just doing a linear search of the array, because practical applications won't have
+	// more than two or three views running ray tracing, for overall frame performance reasons.  If this assumption changes, we could
+	// implement a more efficient lookup in the future.
+	for (FLandscapeRayTracingState& PerView : PerViewRayTracingState)
+	{
+		if (PerView.ViewKey == ViewKey)
 		{
-			for (int32 SubX = 0; SubX < NumSubsections; SubX++)
-			{
-				const int8 SubSectionIdx = SubX + SubY * NumSubsections;
-
-				FRayTracingGeometryInitializer Initializer;
-				static const FName DebugName("FLandscapeComponentSceneProxy");
-				static int32 DebugNumber = 0;
-				Initializer.DebugName = FDebugName(DebugName, DebugNumber++);
-				Initializer.IndexBuffer = nullptr;
-				Initializer.GeometryType = RTGT_Triangles;
-				Initializer.bFastBuild = true;
-				Initializer.bAllowUpdate = true;
-				FRayTracingGeometrySegment Segment;
-				Segment.VertexBuffer = nullptr;
-				Segment.VertexBufferStride = sizeof(FVector3f);
-				Segment.VertexBufferElementType = VET_Float3;
-				Segment.MaxVertices = FMath::Square(SubsectionSizeVerts);
-				Initializer.Segments.Add(Segment);
-				SectionRayTracingStates[SubSectionIdx].Geometry.SetInitializer(Initializer);
-				SectionRayTracingStates[SubSectionIdx].Geometry.InitResource();
-
-				FLandscapeVertexFactoryMVFParameters UniformBufferParams;
-				UniformBufferParams.SubXY = FIntPoint(SubX, SubY);
-				SectionRayTracingStates[SubSectionIdx].UniformBuffer = FLandscapeVertexFactoryMVFUniformBufferRef::CreateUniformBufferImmediate(UniformBufferParams, UniformBuffer_MultiFrame);
-			}
+			return &PerView;
 		}
 	}
-#endif
+
+	// Need to create a new one
+	FLandscapeRayTracingState* RayTracingState = new FLandscapeRayTracingState();
+
+	PerViewRayTracingState.Add(RayTracingState);
+
+	RayTracingState->Pimpl = this;
+	RayTracingState->ViewKey = ViewKey;
+
+	if (ViewState)
+	{
+		// Link into the view state's linked list, so it can be cleaned up if the view gets deleted
+		FLandscapeRayTracingStateList* StateList = ViewState->LandscapeRayTracingStates.Get();
+		check(StateList);
+
+		if (StateList->ListHead)
+		{
+			StateList->ListHead->ViewStatePrev = &RayTracingState->ViewStateNext;
+		}
+		RayTracingState->ViewStateNext = StateList->ListHead;
+		RayTracingState->ViewStatePrev = &StateList->ListHead;
+		StateList->ListHead = RayTracingState;
+	}
+
+	// Initialize rendering data
+	RayTracingState->NumSubsections = NumSubsections;
+
+	for (int32 SubY = 0; SubY < NumSubsections; SubY++)
+	{
+		for (int32 SubX = 0; SubX < NumSubsections; SubX++)
+		{
+			const int8 SubSectionIdx = SubX + SubY * NumSubsections;
+
+			FRayTracingGeometryInitializer Initializer;
+			static const FName DebugName("FLandscapeComponentSceneProxy");
+			static int32 DebugNumber = 0;
+			Initializer.DebugName = FDebugName(DebugName, DebugNumber++);
+			Initializer.IndexBuffer = nullptr;
+			Initializer.GeometryType = RTGT_Triangles;
+			Initializer.bFastBuild = true;
+			Initializer.bAllowUpdate = true;
+			FRayTracingGeometrySegment Segment;
+			Segment.VertexBuffer = nullptr;
+			Segment.VertexBufferStride = sizeof(FVector3f);
+			Segment.VertexBufferElementType = VET_Float3;
+			Segment.MaxVertices = FMath::Square(SubsectionSizeVerts);
+			Initializer.Segments.Add(Segment);
+			RayTracingState->Sections[SubSectionIdx].Geometry.SetInitializer(Initializer);
+			RayTracingState->Sections[SubSectionIdx].Geometry.InitResource();
+
+			FLandscapeVertexFactoryMVFParameters UniformBufferParams;
+			UniformBufferParams.SubXY = FIntPoint(SubX, SubY);
+			RayTracingState->Sections[SubSectionIdx].UniformBuffer = FLandscapeVertexFactoryMVFUniformBufferRef::CreateUniformBufferImmediate(UniformBufferParams, UniformBuffer_MultiFrame);
+		}
+	}
+
+	return RayTracingState;
 }
+
+FLandscapeRayTracingState::~FLandscapeRayTracingState()
+{
+	// Unlink this from the view state linked list
+	if (ViewStatePrev)
+	{
+		(*ViewStatePrev) = ViewStateNext;
+	}
+	if (ViewStateNext)
+	{
+		ViewStateNext->ViewStatePrev = ViewStatePrev;
+	}
+
+	// And clean up the contents
+	for (int32 SubY = 0; SubY < NumSubsections; SubY++)
+	{
+		for (int32 SubX = 0; SubX < NumSubsections; SubX++)
+		{
+			const int8 SubSectionIdx = SubX + SubY * NumSubsections;
+			Sections[SubSectionIdx].Geometry.ReleaseResource();
+			Sections[SubSectionIdx].RayTracingDynamicVertexBuffer.Release();
+		}
+	}
+}
+#endif	// RHI_RAYTRACING
 
 void FLandscapeComponentSceneProxy::DestroyRenderThreadResources()
 {
@@ -1230,18 +1446,6 @@ FLandscapeComponentSceneProxy::~FLandscapeComponentSceneProxy()
 		}
 		SharedBuffers = nullptr;
 	}
-
-#if RHI_RAYTRACING
-	for (int32 SubY = 0; SubY < NumSubsections; SubY++)
-	{
-		for (int32 SubX = 0; SubX < NumSubsections; SubX++)
-		{
-			const int8 SubSectionIdx = SubX + SubY * NumSubsections;
-			SectionRayTracingStates[SubSectionIdx].Geometry.ReleaseResource();
-			SectionRayTracingStates[SubSectionIdx].RayTracingDynamicVertexBuffer.Release();
-		}
-	}
-#endif
 }
 
 bool FLandscapeComponentSceneProxy::CanBeOccluded() const
@@ -1530,6 +1734,7 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 	LandscapeParams.SubsectionSizeVerts = SubsectionSizeVerts;
 	LandscapeParams.NumSubsections = NumSubsections;
 	LandscapeParams.LastLOD = LastLOD;
+	LandscapeParams.VirtualTexturePerPixelHeight = VirtualTexturePerPixelHeight;
 	LandscapeParams.HeightmapUVScaleBias = HeightmapScaleBias;
 	LandscapeParams.WeightmapUVScaleBias = WeightmapScaleBias;
 	LandscapeParams.LocalToWorldNoScaling = FMatrix44f(LocalToWorldNoScaling);			// LWC_TODO: Precision loss
@@ -1561,6 +1766,9 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 	FTextureResource* HeightmapResource = HeightmapTexture ? HeightmapTexture->GetResource() : nullptr;
 	if (HeightmapResource)
 	{
+		const float SizeX = FMath::Max(HeightmapResource->GetSizeX(), 1u);
+		const float SizeY = FMath::Max(HeightmapResource->GetSizeY(), 1u);
+		LandscapeParams.HeightmapTextureSize = FVector4f(SizeX, SizeY, 1.f / SizeX, 1.f / SizeY);
 		LandscapeParams.HeightmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
 		LandscapeParams.HeightmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
 		LandscapeParams.NormalmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
@@ -1568,6 +1776,7 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 	}
 	else
 	{
+		LandscapeParams.HeightmapTextureSize = FVector4f(1, 1, 1, 1);
 		LandscapeParams.HeightmapTexture = GBlackTexture->TextureRHI;
 		LandscapeParams.HeightmapTextureSampler = GBlackTexture->SamplerStateRHI;
 		LandscapeParams.NormalmapTexture = GBlackTexture->TextureRHI;
@@ -1595,7 +1804,7 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 }
 
 /** Creates a mesh batch for virtual texture rendering. Will render a simple fixed grid with combined subsections. */
-bool FLandscapeComponentSceneProxy::GetMeshElementForVirtualTexture(int32 InLodIndex, ERuntimeVirtualTextureMaterialType MaterialType, UMaterialInterface* InMaterialInterface, FMeshBatch& OutMeshBatch, TArray<FLandscapeBatchElementParams>& OutStaticBatchParamArray) const
+bool FLandscapeComponentSceneProxy::GetMeshElementForVirtualTexture(int32 InLodIndex, ERuntimeVirtualTextureMaterialType MaterialType, FMaterialRenderProxy* InMaterialInterface, FMeshBatch& OutMeshBatch, TArray<FLandscapeBatchElementParams>& OutStaticBatchParamArray) const
 {
 	if (InMaterialInterface == nullptr)
 	{
@@ -1603,7 +1812,7 @@ bool FLandscapeComponentSceneProxy::GetMeshElementForVirtualTexture(int32 InLodI
 	}
 
 	OutMeshBatch.VertexFactory = FixedGridVertexFactory;
-	OutMeshBatch.MaterialRenderProxy = InMaterialInterface->GetRenderProxy();
+	OutMeshBatch.MaterialRenderProxy = InMaterialInterface;
 	OutMeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
 	OutMeshBatch.CastShadow = false;
 	OutMeshBatch.bUseForDepthPass = false;
@@ -1663,15 +1872,15 @@ void FLandscapeComponentSceneProxy::ApplyWorldOffset(FVector InOffset)
 template<class ArrayType>
 bool FLandscapeComponentSceneProxy::GetStaticMeshElement(int32 LODIndex, bool bForToolMesh, FMeshBatch& MeshBatch, ArrayType& OutStaticBatchParamArray) const
 {
-	UMaterialInterface* MaterialInterface = nullptr;
+	FMaterialRenderProxy* Material = nullptr;
 
 	{
 		int32 MaterialIndex = LODIndexToMaterialIndex[LODIndex];
 
 		// Defaults to the material interface w/ potential tessellation
-		MaterialInterface = AvailableMaterials[MaterialIndex];
+		Material = AvailableMaterials[MaterialIndex];
 
-		if (!MaterialInterface)
+		if (!Material)
 		{
 			return false;
 		}
@@ -1679,7 +1888,7 @@ bool FLandscapeComponentSceneProxy::GetStaticMeshElement(int32 LODIndex, bool bF
 
 	{
 		MeshBatch.VertexFactory = VertexFactory;
-		MeshBatch.MaterialRenderProxy = MaterialInterface->GetRenderProxy();
+		MeshBatch.MaterialRenderProxy = Material;
 
 		MeshBatch.LCI = ComponentLightInfo.Get();
 		MeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
@@ -2159,7 +2368,7 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 	{
 		for (const FSceneView* View : Views)
 		{
-			const FString& LandscapeName = LandscapeComponent->GetLandscapeInfo()->LandscapeActor
+			const FString& LandscapeName = LandscapeComponent->GetLandscapeInfo()->LandscapeActor.IsValid()
 											 ? LandscapeComponent->GetLandscapeInfo()->LandscapeActor->GetName()
 											 : LexToString(LandscapeComponent->GetLandscapeInfo()->LandscapeGuid);
 			const FString& ComponentName = LandscapeComponent->GetName();
@@ -2212,6 +2421,12 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 	const FSceneView& SceneView = *Context.ReferenceView;
 	const FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
 
+	if (!RayTracingImpl.IsValid())
+	{
+		RayTracingImpl = MakePimpl<FLandscapeRayTracingImpl>();
+	}
+	FLandscapeRayTracingState* RayTracingState = RayTracingImpl.Get()->FindOrCreateRayTracingState(SceneView.State, NumSubsections, SubsectionSizeVerts);
+
 	int32 LODToRender = RenderSystem.GetSectionLODValue(SceneView, ComponentBase);
 
 	FLandscapeElementParamArray& ParameterArray = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FLandscapeElementParamArray>();
@@ -2224,7 +2439,7 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 
 	const int8 CurrentLODIndex = LODToRender;
 	int8 MaterialIndex = LODIndexToMaterialIndex.IsValidIndex(CurrentLODIndex) ? LODIndexToMaterialIndex[CurrentLODIndex] : INDEX_NONE;
-	UMaterialInterface* SelectedMaterial = MaterialIndex != INDEX_NONE ? AvailableMaterials[MaterialIndex] : nullptr;
+	FMaterialRenderProxy* SelectedMaterial = MaterialIndex != INDEX_NONE ? AvailableMaterials[MaterialIndex] : nullptr;
 
 	// this is really not normal that we have no material at this point, so do not continue
 	if (SelectedMaterial == nullptr)
@@ -2234,7 +2449,7 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 
 	FMeshBatch BaseMeshBatch;
 	BaseMeshBatch.VertexFactory = VertexFactory;
-	BaseMeshBatch.MaterialRenderProxy = SelectedMaterial->GetRenderProxy();
+	BaseMeshBatch.MaterialRenderProxy = SelectedMaterial;
 	BaseMeshBatch.LCI = ComponentLightInfo.Get();
 	BaseMeshBatch.CastShadow = true;
 	BaseMeshBatch.CastRayTracedShadow = true;
@@ -2280,9 +2495,9 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 
 			MeshBatch.Elements.Add(BatchElement);
 
-			SectionRayTracingStates[SubSectionIdx].Geometry.Initializer.IndexBuffer = BatchElement.IndexBuffer->IndexBufferRHI;
+			RayTracingState->Sections[SubSectionIdx].Geometry.Initializer.IndexBuffer = BatchElement.IndexBuffer->IndexBufferRHI;
 
-			BatchElementParams.LandscapeVertexFactoryMVFUniformBuffer = SectionRayTracingStates[SubSectionIdx].UniformBuffer;
+			BatchElementParams.LandscapeVertexFactoryMVFUniformBuffer = RayTracingState->Sections[SubSectionIdx].UniformBuffer;
 
 			bool bNeedsRayTracingGeometryUpdate = false;
 
@@ -2291,22 +2506,22 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 
 			// Detect continuous LOD parameter changes. This is for far-away high LODs - they change rarely yet the BLAS refit time is not ideal, even if they contains tiny amount of triangles
 			{
-				if (SectionRayTracingStates[SubSectionIdx].CurrentLOD != CurrentLOD)
+				if (RayTracingState->Sections[SubSectionIdx].CurrentLOD != CurrentLOD)
 				{
 					bNeedsRayTracingGeometryUpdate = true;
-					SectionRayTracingStates[SubSectionIdx].CurrentLOD = CurrentLOD;
-					SectionRayTracingStates[SubSectionIdx].RayTracingDynamicVertexBuffer.Release();
+					RayTracingState->Sections[SubSectionIdx].CurrentLOD = CurrentLOD;
+					RayTracingState->Sections[SubSectionIdx].RayTracingDynamicVertexBuffer.Release();
 				}
-				if (SectionRayTracingStates[SubSectionIdx].HeightmapLODBias != RenderSystem.GetSectionLODBias(ComponentBase))
+				if (RayTracingState->Sections[SubSectionIdx].HeightmapLODBias != RenderSystem.GetSectionLODBias(ComponentBase))
 				{
 					bNeedsRayTracingGeometryUpdate = true;
-					SectionRayTracingStates[SubSectionIdx].HeightmapLODBias = RenderSystem.GetSectionLODBias(ComponentBase);
+					RayTracingState->Sections[SubSectionIdx].HeightmapLODBias = RenderSystem.GetSectionLODBias(ComponentBase);
 				}
 
-				if (SectionRayTracingStates[SubSectionIdx].FractionalLOD != RenderSystem.GetSectionLODValue(SceneView, ComponentBase))
+				if (RayTracingState->Sections[SubSectionIdx].FractionalLOD != RenderSystem.GetSectionLODValue(SceneView, ComponentBase))
 				{
 					bNeedsRayTracingGeometryUpdate = true;
-					SectionRayTracingStates[SubSectionIdx].FractionalLOD = RenderSystem.GetSectionLODValue(SceneView, ComponentBase);
+					RayTracingState->Sections[SubSectionIdx].FractionalLOD = RenderSystem.GetSectionLODValue(SceneView, ComponentBase);
 				}
 			}
 
@@ -2315,7 +2530,7 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 				const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
 				const FMaterial& Material = MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(((FSceneInterface*)Context.Scene)->GetFeatureLevel(), FallbackMaterialRenderProxyPtr);
 
-				if (Material.HasVertexPositionOffsetConnected())
+				if (Material.GetRenderingThreadShaderMap()->UsesWorldPositionOffset())
 				{
 					const FMaterialRenderProxy* MaterialRenderProxy = FallbackMaterialRenderProxyPtr ? FallbackMaterialRenderProxyPtr : MeshBatch.MaterialRenderProxy;
 
@@ -2324,19 +2539,18 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 					const FUniformExpressionSet& UniformExpressionSet = Material.GetRenderingThreadShaderMap()->GetUniformExpressionSet();
 					const uint32 Hash = UniformExpressionSet.GetReferencedTexture2DRHIHash(MaterialRenderContext);
 
-					if (SectionRayTracingStates[SubSectionIdx].ReferencedTextureRHIHash != Hash)
+					if (RayTracingState->Sections[SubSectionIdx].ReferencedTextureRHIHash != Hash)
 					{
 						bNeedsRayTracingGeometryUpdate = true;
-						SectionRayTracingStates[SubSectionIdx].ReferencedTextureRHIHash = Hash;
+						RayTracingState->Sections[SubSectionIdx].ReferencedTextureRHIHash = Hash;
 					}
 				}
 			}
 
 			FRayTracingInstance RayTracingInstance;
-			RayTracingInstance.Geometry = &SectionRayTracingStates[SubSectionIdx].Geometry;
+			RayTracingInstance.Geometry = &RayTracingState->Sections[SubSectionIdx].Geometry;
 			RayTracingInstance.InstanceTransforms.Add(GetLocalToWorld());
 			RayTracingInstance.Materials.Add(MeshBatch);
-			RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 			OutRayTracingInstances.Add(RayTracingInstance);
 
 			if (bNeedsRayTracingGeometryUpdate && VertexFactory->GetType()->SupportsRayTracingDynamicGeometry())
@@ -2352,8 +2566,8 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 						(uint32)FMath::Square(LodSubsectionSizeVerts),
 						FMath::Square(LodSubsectionSizeVerts) * (uint32)sizeof(FVector3f),
 						(uint32)FMath::Square(LodSubsectionSizeVerts - 1) * 2,
-						&SectionRayTracingStates[SubSectionIdx].Geometry,
-						&SectionRayTracingStates[SubSectionIdx].RayTracingDynamicVertexBuffer,
+						&RayTracingState->Sections[SubSectionIdx].Geometry,
+						&RayTracingState->Sections[SubSectionIdx].RayTracingDynamicVertexBuffer,
 						true
 					}
 				);
@@ -2838,6 +3052,7 @@ IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeVertexFactory, "/Engine/Private/Landscap
 	| EVertexFactoryFlags::SupportsLightmapBaking
 	| EVertexFactoryFlags::SupportsPrimitiveIdStream
 	| EVertexFactoryFlags::SupportsPSOPrecaching
+	| EVertexFactoryFlags::SupportsLumenMeshCards
 );
 
 /**
@@ -3024,19 +3239,32 @@ public:
 		return FMaterialResource::IsUsedWithStaticLighting();
 	}
 
-	bool IsUsedWithSkeletalMesh()          const override { return false; }
-	bool IsUsedWithParticleSystem()        const override { return false; }
-	bool IsUsedWithParticleSprites()       const override { return false; }
-	bool IsUsedWithBeamTrails()            const override { return false; }
-	bool IsUsedWithMeshParticles()         const override { return false; }
-	bool IsUsedWithNiagaraSprites()       const override { return false; }
-	bool IsUsedWithNiagaraRibbons()       const override { return false; }
-	bool IsUsedWithNiagaraMeshParticles()       const override { return false; }
-	bool IsUsedWithMorphTargets()          const override { return false; }
-	bool IsUsedWithSplineMeshes()          const override { return false; }
+	bool IsUsedWithNanite() const override 
+	{ 
+		if (bIsLayerThumbnail)
+		{
+			return false;
+		}
+		return FMaterialResource::IsUsedWithNanite();
+	}
+
+	bool IsUsedWithWater() const override { return false; }
+	bool IsUsedWithHairStrands() const override { return false; }
+	bool IsUsedWithLidarPointCloud() const override { return false; }
+	bool IsUsedWithSkeletalMesh() const override { return false; }
+	bool IsUsedWithParticleSystem() const override { return false; }
+	bool IsUsedWithParticleSprites() const override { return false; }
+	bool IsUsedWithBeamTrails() const override { return false; }
+	bool IsUsedWithMeshParticles() const override { return false; }
+	bool IsUsedWithNiagaraSprites() const override { return false; }
+	bool IsUsedWithNiagaraRibbons() const override { return false; }
+	bool IsUsedWithNiagaraMeshParticles() const override { return false; }
+	bool IsUsedWithMorphTargets() const override { return false; }
+	bool IsUsedWithSplineMeshes() const override { return false; }
 	bool IsUsedWithInstancedStaticMeshes() const override { return false; }
-	bool IsUsedWithAPEXCloth()             const override { return false; }
-	bool IsUsedWithGeometryCache()         const override { return false; }
+	bool IsUsedWithAPEXCloth() const override { return false; }
+	bool IsUsedWithGeometryCollections() const override { return false; }
+	bool IsUsedWithGeometryCache() const override { return false; }
 
 	bool ShouldCache(EShaderPlatform Platform, const FShaderType* ShaderType, const FVertexFactoryType* VertexFactoryType) const override
 	{
@@ -3072,10 +3300,7 @@ public:
 						}
 						else
 						{
-							if (Platform == EShaderPlatform::SP_PCD3D_SM5)
-							{
-								UE_LOG(LogLandscape, Warning, TEXT("Shader %s unknown by landscape thumbnail material, please add to either AllowedShaderTypes or ExcludedShaderTypes"), ShaderType->GetName());
-							}
+							UE_LOG(LogLandscape, Warning, TEXT("Shader %s unknown by landscape thumbnail material, please add to either AllowedShaderTypes or ExcludedShaderTypes"), ShaderType->GetName());
 							return FMaterialResource::ShouldCache(Platform, ShaderType, VertexFactoryType);
 						}
 					}
@@ -3097,8 +3322,10 @@ public:
 
 				static const FName LandscapeVertexFactory = FName(TEXT("FLandscapeVertexFactory"));
 				static const FName LandscapeXYOffsetVertexFactory = FName(TEXT("FLandscapeXYOffsetVertexFactory"));
+				static const FName NaniteVertexFactory = FName(TEXT("Nanite::FVertexFactory"));
 				if (VertexFactoryType->GetFName() == LandscapeVertexFactory ||
-					VertexFactoryType->GetFName() == LandscapeXYOffsetVertexFactory)
+					VertexFactoryType->GetFName() == LandscapeXYOffsetVertexFactory ||
+					VertexFactoryType->GetFName() == NaniteVertexFactory)
 				{
 					return (bIsRayTracingShaderType || !bIsShaderTypeUsingFixedGrid) && FMaterialResource::ShouldCache(Platform, ShaderType, VertexFactoryType);
 				}
@@ -3373,8 +3600,13 @@ void ULandscapeComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelCont
 	float TexelFactor = 0.0f;
 	if (Proxy)
 	{
+		double ScaleFactor = 1.0;
+		if (USceneComponent* ProxyRootComponent = Proxy->GetRootComponent())
+		{
+			ScaleFactor = FMath::Abs(ProxyRootComponent->GetRelativeScale3D().X);
+		}
 		LocalStreamingDistanceMultiplier = FMath::Max(0.0f, Proxy->StreamingDistanceMultiplier);
-		TexelFactor = 0.75f * LocalStreamingDistanceMultiplier * ComponentSizeQuads * FMath::Abs(Proxy->GetRootComponent()->GetRelativeScale3D().X);
+		TexelFactor = 0.75f * LocalStreamingDistanceMultiplier * ComponentSizeQuads * ScaleFactor;
 	}
 
 	ERHIFeatureLevel::Type FeatureLevel = LevelContext.GetFeatureLevel();
@@ -3828,7 +4060,7 @@ public:
 		// Disable Nanite landscape representation for Lumen, distance fields, and ray tracing
 		if (GDisableLandscapeNaniteGI != 0)
 		{
-			bSupportsMeshCardRepresentation = false;
+			bVisibleInLumenScene = false;
 			bSupportsDistanceFieldRepresentation = false;
 			bAffectDynamicIndirectLighting = false;
 			bAffectDistanceFieldLighting = false;

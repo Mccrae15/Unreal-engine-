@@ -1,14 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineAsyncTaskManagerTencent.h"
-#include "OnlineSubsystemTencentPrivate.h"
-#include "OnlineAsyncTasksTencent.h"
-#include "OnlinePresenceTencent.h"
-#include "PlayTimeLimitImpl.h"
 
 #if WITH_TENCENTSDK
 
 #if WITH_TENCENT_RAIL_SDK
+#include "Features/IModularFeatures.h"
+#include "OnlineSubsystemTencentPrivate.h"
+#include "OnlineAsyncTasksTencent.h"
+#include "OnlinePresenceTencent.h"
+#include "PlayTimeLimitImpl.h"
 #include "RailSdkWrapper.h"
 #endif
 

@@ -267,6 +267,16 @@ void FPropertyNode::RebuildChildren()
 	CachedReadAddresses.Reset();
 
 	bool bDestroySelf = false;
+	TSet<FString> OutExpandedChildPropertyPaths;
+
+	for (const TSharedPtr<FPropertyNode>& ChildNode : ChildNodes)
+	{
+		if (ChildNode->HasNodeFlags(EPropertyNodeFlags::Expanded))
+		{
+			OutExpandedChildPropertyPaths.Add(ChildNode->GetPropertyPath());
+		}
+	}
+	
 	DestroyTree(bDestroySelf);
 
 	if (MaxChildDepthAllowed != 0)
@@ -277,6 +287,13 @@ void FPropertyNode::RebuildChildren()
 		if (HasNodeFlags(EPropertyNodeFlags::CanBeExpanded) && (ChildNodes.Num() == 0))
 		{
 			InitChildNodes();
+			for (const TSharedPtr<FPropertyNode>& ChildNode : ChildNodes)
+			{
+				if ( OutExpandedChildPropertyPaths.Contains(ChildNode->GetPropertyPath()) )
+				{
+					ChildNode->SetNodeFlags(EPropertyNodeFlags::Expanded, true);
+				}
+			}
 		}
 	}
 
@@ -514,7 +531,7 @@ EPropertyDataValidationResult FPropertyNode::EnsureDataIsValid()
 			bool bObjectPropertyNull = true;
 
 			//Edit inline properties can change underneath the window
-			bool bIgnoreChangingChildren = !(HasNodeFlags(EPropertyNodeFlags::EditInlineNew) || HasNodeFlags(EPropertyNodeFlags::ShowInnerObjectProperties)) ;
+			bool bIgnoreChangingChildren = !(HasNodeFlags(EPropertyNodeFlags::EditInlineNew) || HasNodeFlags(EPropertyNodeFlags::ShowInnerObjectProperties));
 			//ignore this node if the consistency check should happen for the children
 			bool bIgnoreStaticArray = (Property->ArrayDim > 1) && (ArrayIndex == -1);
 
@@ -522,7 +539,7 @@ EPropertyDataValidationResult FPropertyNode::EnsureDataIsValid()
 			if (bIgnoreChangingChildren || bIgnoreStaticArray || HasNodeFlags(EPropertyNodeFlags::NoChildrenDueToCircularReference))
 			{
 				//this will bypass object property consistency checks
-				ObjectProperty = NULL;
+				ObjectProperty = nullptr;
 			}
 
 			FReadAddressList ReadAddresses;
@@ -598,32 +615,31 @@ EPropertyDataValidationResult FPropertyNode::EnsureDataIsValid()
 				if (ObjectProperty && !bIgnoreAllMismatch)
 				{
 					UObject* Obj = ObjectProperty->GetObjectPropertyValue(Addr);
-
-					if (!bShowInnerObjectPropertiesObjectChanged && HasNodeFlags(EPropertyNodeFlags::ShowInnerObjectProperties|EPropertyNodeFlags::EditInlineNew) && ChildNodes.Num() == 1)
+					if (IsValid(Obj))
 					{
-						bool bChildObjectFound = false;
-						// should never have more than one node (0 is ok if the object property is null)
-						check(ChildNodes.Num() == 1);
-						bool bNeedRebuild = false;
-						FObjectPropertyNode* ChildObjectNode = ChildNodes[0]->AsObjectNode();
-						for(int32 ObjectIndex = 0; ObjectIndex < ChildObjectNode->GetNumObjects(); ++ObjectIndex)
+						if (!bShowInnerObjectPropertiesObjectChanged && 
+							HasNodeFlags(EPropertyNodeFlags::ShowInnerObjectProperties|EPropertyNodeFlags::EditInlineNew) && 
+							ChildNodes.Num() == 1)
 						{
-							if(Obj == ChildObjectNode->GetUObject(ObjectIndex))
+							bool bChildObjectFound = false;
+							FObjectPropertyNode* ChildObjectNode = ChildNodes[0]->AsObjectNode();
+							for (int32 ObjectIndex = 0; ObjectIndex < ChildObjectNode->GetNumObjects(); ++ObjectIndex)
 							{
-								bChildObjectFound = true;
-								break;
+								if (Obj == ChildObjectNode->GetUObject(ObjectIndex))
+								{
+									bChildObjectFound = true;
+									break;
+								}
 							}
+							bShowInnerObjectPropertiesObjectChanged = !bChildObjectFound;
 						}
-						bShowInnerObjectPropertiesObjectChanged = !bChildObjectFound;
 					}
 
-					if (Obj != NULL)
+					if (Obj != nullptr)
 					{
 						bObjectPropertyNull = false;
 						break;
 					}
-
-					
 				}
 			}
 
@@ -646,7 +662,7 @@ EPropertyDataValidationResult FPropertyNode::EnsureDataIsValid()
 				return EPropertyDataValidationResult::ArraySizeChanged;
 			}
 
-			if(bShowInnerObjectPropertiesObjectChanged)
+			if (bShowInnerObjectPropertiesObjectChanged)
 			{
 				RebuildChildren();
 				return EPropertyDataValidationResult::EditInlineNewValueChanged;
@@ -655,7 +671,9 @@ EPropertyDataValidationResult FPropertyNode::EnsureDataIsValid()
 			const bool bHasChildren = (GetNumChildNodes() > 0);
 			// If the object property is not null and has no children, its children need to be rebuilt
 			// If the object property is null and this node has children, the node needs to be rebuilt
-			if (!HasNodeFlags(EPropertyNodeFlags::ShowInnerObjectProperties) && ObjectProperty && ((!bObjectPropertyNull && !bHasChildren) || (bObjectPropertyNull && bHasChildren)))
+			if (!HasNodeFlags(EPropertyNodeFlags::ShowInnerObjectProperties) && 
+				ObjectProperty != nullptr && 
+				((!bObjectPropertyNull && !bHasChildren) || (bObjectPropertyNull && bHasChildren)))
 			{
 				RebuildChildren();
 				return EPropertyDataValidationResult::PropertiesChanged;
@@ -703,6 +721,168 @@ EPropertyDataValidationResult FPropertyNode::EnsureDataIsValid()
 	}
 
 	return FinalResult;
+}
+
+FPropertyNodeEditStack::FPropertyNodeEditStack(const FPropertyNode* InNode, const UObject* InObj)
+{
+	Initialize(InNode, InObj);
+}
+
+FPropertyAccess::Result FPropertyNodeEditStack::Initialize(const FPropertyNode* InNode, const UObject* InObj)
+{
+	Cleanup();
+	FPropertyAccess::Result Result = InitializeInternal(InNode, InObj);
+	if (Result != FPropertyAccess::Success)
+	{
+		Cleanup();
+	}
+	return Result;
+}
+
+FPropertyAccess::Result FPropertyNodeEditStack::InitializeInternal(const FPropertyNode* InNode, const UObject* InObj)
+{
+	FPropertyAccess::Result Result = FPropertyAccess::Success;
+	const FPropertyNode* Parent = InNode->GetParentNode();
+	const FProperty* Property = InNode->GetProperty();
+	if (Parent && Parent->GetProperty())
+	{
+		// Recursively initialize the stack
+		Result = InitializeInternal(Parent, InObj);
+		if (Result != FPropertyAccess::Success)
+		{
+			return Result;
+		}
+
+		// Get the direct memory pointer for the current property
+		const FProperty* ParentProperty = Parent->GetProperty();
+		if (Property == ParentProperty) // Static array items
+		{
+			// Static array property node creates subnodes that point to individual array items
+			MemoryStack.Add(FMemoryFrame(Property, MemoryStack.Last().Memory + InNode->GetArrayIndex() * Property->ElementSize));
+		}
+		else if (const FStructProperty* StructProp = CastField<FStructProperty>(ParentProperty)) // structs
+		{
+			if (Property->HasSetterOrGetter())
+			{
+				// If a property has a setter or getter we allocate temp memory to hold its value so that we can
+				// change the value using direct memory pointer access. After we're done editing we will copy the memory back to the property in CommitChanges
+				FMemoryFrame PropertyFrame(Property, (uint8*)Property->AllocateAndInitializeValue());
+				int32 StackIndex = MemoryStack.Add(PropertyFrame);
+				Property->GetValue_InContainer(MemoryStack[StackIndex - 1].Memory, PropertyFrame.Memory);
+			}
+			else
+			{
+				MemoryStack.Add(FMemoryFrame(Property, Property->ContainerPtrToValuePtr<uint8>(MemoryStack.Last().Memory)));
+			}
+		}
+		else if (Property->GetOwner<FProperty>() == ParentProperty) // TArrays, TMaps and TSets
+		{
+			uint8* ItemAddress = (uint8*)ParentProperty->GetValueAddressAtIndex_Direct(Property, (void*)MemoryStack.Last().Memory, InNode->GetArrayIndex());
+			if (ItemAddress)
+			{
+				MemoryStack.Add(FMemoryFrame(Property, ItemAddress));
+			}
+			else
+			{
+				return FPropertyAccess::Fail;
+			}
+		}
+		else
+		{
+			checkf(false, TEXT("Unsupported property chain: Current: %s, Parent: %s"), *Property->GetFullName(), *ParentProperty->GetFullName());
+		}
+	}
+	else
+	{
+		const UObject* Object = InObj;
+		if (!Object)
+		{
+			UObject* NodeObject = nullptr;
+			Result = InNode->GetSingleObject(NodeObject);
+			if (Result != FPropertyAccess::Success)
+			{
+				return Result;
+			}
+			Object = NodeObject;
+		}
+
+		// Determine the root container address (Struct address, UObject instance or sparse class data) for this property stack
+		uint8* Container = nullptr;
+		if (InNode->HasNodeFlags(EPropertyNodeFlags::IsSparseClassData))
+		{
+			checkf(Object != nullptr, TEXT("No object pointer for property %s"), *GetNameSafe(Property));
+			Container = (uint8*)Object->GetClass()->GetOrCreateSparseClassData();
+		}
+		else if (Object)
+		{
+			Container = (uint8*)Object;
+		}
+		else
+		{
+			Result = InNode->GetSingleReadAddress(Container);
+			if (Result != FPropertyAccess::Success)
+			{
+				return Result;
+			}
+		}
+		if (!Container)
+		{
+			// This may happen when the node points at stale object
+			return FPropertyAccess::Fail;
+		}
+		MemoryStack.Add(FMemoryFrame(nullptr, Container));
+		
+		// Get the direct memory pointer for the root property
+		if (Property->HasSetterOrGetter())
+		{
+			FMemoryFrame PropertyFrame(Property, (uint8*)Property->AllocateAndInitializeValue());
+			int32 StackIndex = MemoryStack.Add(PropertyFrame);
+			Property->GetValue_InContainer(MemoryStack[StackIndex - 1].Memory, PropertyFrame.Memory);
+		}
+		else if ((uint8*)Object == Container)
+		{
+			MemoryStack.Add(FMemoryFrame(Property, (uint8*)Property->ContainerPtrToValuePtr<uint8>(Container)));
+		}
+		else
+		{
+			// This node represents a struct in which case the Container represents direct memory for the root property.
+			// todo: RobM: ideally we want Container to be the struct memory and not a property address
+			MemoryStack.Add(FMemoryFrame(Property, Container));
+		}
+	}
+	return Result;
+}
+
+void FPropertyNodeEditStack::CommitChanges()
+{
+	for (int32 Index = MemoryStack.Num() - 1; Index > 0; --Index)
+	{
+		if (MemoryStack[Index].Property->HasSetterOrGetter() &&
+			MemoryStack[Index].Property != MemoryStack[Index - 1].Property) // If this property is identical to the one below then it represents an item from an array
+		{
+			// Set the actual property value with the temp allocated memory
+			MemoryStack[Index].Property->SetValue_InContainer(MemoryStack[Index - 1].Memory, MemoryStack[Index].Memory);
+		}
+	}
+}
+
+void FPropertyNodeEditStack::Cleanup()
+{
+	for (int32 Index = MemoryStack.Num() - 1; Index > 0; --Index)
+	{
+		if (MemoryStack[Index].Property->HasSetterOrGetter() &&
+			MemoryStack[Index].Property != MemoryStack[Index - 1].Property) // If this property is identical to the one below then it represents an item from an array
+		{
+			MemoryStack[Index].Property->DestroyAndFreeValue(MemoryStack[Index].Memory);
+			MemoryStack[Index].Memory = nullptr;
+		}
+	}
+	MemoryStack.Empty();
+}
+
+FPropertyNodeEditStack::~FPropertyNodeEditStack()
+{
+	Cleanup();
 }
 
 FPropertyAccess::Result FPropertyNode::GetPropertyValueString(FString& OutString, const bool bAllowAlternateDisplayValue, EPropertyPortFlags PortFlags) const
@@ -1291,6 +1471,37 @@ FPropertyAccess::Result FPropertyNode::GetSingleReadAddress(uint8*& OutValueAddr
 	}
 
 	return ReadAddresses.Num() > 1 ? FPropertyAccess::MultipleValues : FPropertyAccess::Fail;
+}
+
+FPropertyAccess::Result FPropertyNode::GetSingleObject(UObject*& OutObject) const
+{
+	OutObject = nullptr;
+	FReadAddressList ReadAddresses;
+	bool bAllValuesTheSame = GetReadAddress(HasNodeFlags(EPropertyNodeFlags::SingleSelectOnly), ReadAddresses, false, true);
+
+	if ((ReadAddresses.Num() > 0 && bAllValuesTheSame) || ReadAddresses.Num() == 1)
+	{
+		OutObject = (UObject*)ReadAddresses.GetObject(0);
+
+		return FPropertyAccess::Success;
+	}
+
+	return ReadAddresses.Num() > 1 ? FPropertyAccess::MultipleValues : FPropertyAccess::Fail;
+}
+
+FPropertyAccess::Result FPropertyNode::GetSingleEditStack(FPropertyNodeEditStack& OutStack) const
+{
+	UObject* Object = nullptr;
+	FPropertyAccess::Result Result = FPropertyAccess::Fail;
+	if (GetProperty())
+	{
+		Result = GetSingleObject(Object);
+		if (Result == FPropertyAccess::Success)
+		{
+			Result = OutStack.Initialize(this, Object);
+		}
+	}
+	return Result;
 }
 
 uint8* FPropertyNode::GetStartAddressFromObject(const UObject* Obj) const
@@ -2563,7 +2774,7 @@ void FPropertyNode::NotifyPostChange( FPropertyChangedEvent& InPropertyChangedEv
 	TSharedRef<FEditPropertyChain> PropertyChain = BuildPropertyChain( InPropertyChangedEvent.Property );
 	
 	// remember the property that was the chain's original active property; this will correspond to the outermost property of struct/array that was modified
-	FProperty* const OriginalActiveProperty = PropertyChain->GetActiveMemberNode()->GetValue();
+	FProperty* const OriginalActiveProperty = PropertyChain->GetActiveMemberNode() ? PropertyChain->GetActiveMemberNode()->GetValue() : nullptr;
 
 	// invalidate the entire chain of objects in the hierarchy
 	{
@@ -2908,7 +3119,7 @@ TSharedRef<FEditPropertyChain> FPropertyNode::BuildPropertyChain( FProperty* InP
 
 	do
 	{
-		if (ItemNode == ComplexNode)
+		if (ItemNode == ComplexNode && PropertyChain->GetHead())
 		{
 			MemberProperty = PropertyChain->GetHead()->GetValue();
 		}
@@ -2928,7 +3139,7 @@ TSharedRef<FEditPropertyChain> FPropertyNode::BuildPropertyChain( FProperty* InP
 	while( ItemNode != NULL );
 
 	// If the modified property was a property of the object at the root of this property window, the member property will not have been set correctly
-	if (ItemNode == ComplexNode)
+	if (ItemNode == ComplexNode && PropertyChain->GetHead())
 	{
 		MemberProperty = PropertyChain->GetHead()->GetValue();
 	}

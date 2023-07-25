@@ -2,14 +2,12 @@
 
 #include "Transport/TcpMessageTransport.h"
 
-#include "HAL/RunnableThread.h"
-#include "Common/TcpSocketBuilder.h"
 #include "Common/TcpListener.h"
 #include "IMessageTransportHandler.h"
 #include "TcpMessagingPrivate.h"
 
+#include "TcpSerializedMessage.h"
 #include "Transport/TcpDeserializedMessage.h"
-#include "Transport/TcpSerializedMessage.h"
 #include "Transport/TcpMessageTransportConnection.h"
 #include "Transport/TcpSerializeMessageTask.h"
 

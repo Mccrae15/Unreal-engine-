@@ -17,7 +17,9 @@
 #include "HAL/PlatformAtomics.h"
 #include "HAL/PlatformFile.h"
 #include "HAL/UnrealMemory.h"
+#include "IO/IoChunkId.h"
 #include "IO/IoContainerId.h"
+#include "IO/IoDispatcherPriority.h"
 #include "IO/IoHash.h"
 #include "Logging/LogMacros.h"
 #include "Math/NumericLimits.h"
@@ -643,154 +645,22 @@ public:
 		return BytesToHex(Hash, 20);
 	}
 
-	static FIoChunkHash HashBuffer(const void* Data, uint64 DataSize)
+	static FIoChunkHash CreateFromIoHash(const FIoHash& IoHash)
 	{
 		FIoChunkHash Result;
-		FIoHash IoHash = FIoHash::HashBuffer(Data, DataSize);
 		FMemory::Memcpy(Result.Hash, &IoHash, sizeof IoHash);
 		FMemory::Memset(Result.Hash + 20, 0, 12);
 		return Result;
 	}
 
+	static FIoChunkHash HashBuffer(const void* Data, uint64 DataSize)
+	{
+		return CreateFromIoHash(FIoHash::HashBuffer(Data, DataSize));
+	}
+
 private:
 	uint8	Hash[32];
 };
-
-/**
- * Addressable chunk types.
- * 
- * The enumerators have explicitly defined values here to encourage backward/forward
- * compatible updates. 
- * 
- * Also note that for certain discriminators, Zen Store will assume certain things
- * about the structure of the chunk ID so changes must be made carefully.
- * 
- */
-enum class EIoChunkType : uint8
-{
-	Invalid = 0,
-	ExportBundleData = 1,
-	BulkData = 2,
-	OptionalBulkData = 3,
-	MemoryMappedBulkData = 4,
-	ScriptObjects = 5,
-	ContainerHeader = 6,
-	ExternalFile = 7,
-	ShaderCodeLibrary = 8,
-	ShaderCode = 9,
-	PackageStoreEntry = 10,
-	DerivedData = 11,
-	EditorDerivedData = 12,
-	
-	MAX
-};
-
-CORE_API FString LexToString(const EIoChunkType Type);
-
-/**
- * Identifier to a chunk of data.
- */
-class FIoChunkId
-{
-public:
-	CORE_API static const FIoChunkId InvalidChunkId;
-
-	friend uint32 GetTypeHash(FIoChunkId InId)
-	{
-		uint32 Hash = 5381;
-		for (int i = 0; i < sizeof Id; ++i)
-		{
-			Hash = Hash * 33 + InId.Id[i];
-		}
-		return Hash;
-	}
-
-	friend FArchive& operator<<(FArchive& Ar, FIoChunkId& ChunkId)
-	{
-		Ar.Serialize(&ChunkId.Id, sizeof Id);
-		return Ar;
-	}
-
-	template <typename CharType>
-	friend TStringBuilderBase<CharType>& operator<<(TStringBuilderBase<CharType>& Builder, const FIoChunkId& ChunkId)
-	{
-		UE::String::BytesToHexLower(ChunkId.Id, Builder);
-		return Builder;
-	}
-
-	friend CORE_API FString LexToString(const FIoChunkId& Id);
-
-	inline bool operator ==(const FIoChunkId& Rhs) const
-	{
-		return 0 == FMemory::Memcmp(Id, Rhs.Id, sizeof Id);
-	}
-
-	inline bool operator !=(const FIoChunkId& Rhs) const
-	{
-		return !(*this == Rhs);
-	}
-
-	void Set(const void* InIdPtr, SIZE_T InSize)
-	{
-		check(InSize == sizeof Id);
-		FMemory::Memcpy(Id, InIdPtr, sizeof Id);
-	}
-
-	void Set(FMemoryView InView)
-	{
-		check(InView.GetSize() == sizeof Id);
-		FMemory::Memcpy(Id, InView.GetData(), sizeof Id);
-	}
-
-	inline bool IsValid() const
-	{
-		return *this != InvalidChunkId;
-	}
-
-	inline const uint8* GetData() const { return Id; }
-	inline uint32		GetSize() const { return sizeof Id; }
-
-	EIoChunkType GetChunkType() const
-	{
-		return static_cast<EIoChunkType>(Id[11]);
-	}
-
-	friend class FIoStoreReaderImpl;
-	
-private:
-	static inline FIoChunkId CreateEmptyId()
-	{
-		FIoChunkId ChunkId;
-		uint8 Data[12] = { 0 };
-		ChunkId.Set(Data, sizeof Data);
-
-		return ChunkId;
-	}
-
-	uint8	Id[12];
-};
-
-/**
- * Creates a chunk identifier (generic -- prefer specialized versions where possible)
- */
-static FIoChunkId CreateIoChunkId(uint64 ChunkId, uint16 ChunkIndex, EIoChunkType IoChunkType)
-{
-	checkSlow(IoChunkType != EIoChunkType::ExternalFile);	// Use CreateExternalFileChunkId() instead
-
-	uint8 Data[12] = {0};
-
-	*reinterpret_cast<uint64*>(&Data[0]) = ChunkId;
-	*reinterpret_cast<uint16*>(&Data[8]) = NETWORK_ORDER16(ChunkIndex);
-	*reinterpret_cast<uint8*>(&Data[11]) = static_cast<uint8>(IoChunkType);
-
-	FIoChunkId IoChunkId;
-	IoChunkId.Set(Data, 12);
-
-	return IoChunkId;
-}
-
-CORE_API FIoChunkId CreatePackageDataChunkId(const FPackageId& PackageId);
-CORE_API FIoChunkId CreateExternalFileChunkId(const FStringView Filename);
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -876,15 +746,6 @@ private:
 };
 
 using FIoReadCallback = TFunction<void(TIoStatusOr<FIoBuffer>)>;
-
-enum EIoDispatcherPriority : int32
-{
-	IoDispatcherPriority_Min = INT32_MIN,
-	IoDispatcherPriority_Low = INT32_MIN / 2,
-	IoDispatcherPriority_Medium = 0,
-	IoDispatcherPriority_High = INT32_MAX / 2,
-	IoDispatcherPriority_Max = INT32_MAX
-};
 
 inline int32 ConvertToIoDispatcherPriority(EAsyncIOPriorityAndFlags AIOP)
 {
@@ -1184,6 +1045,8 @@ public:
 	{
 		uint64 TotalChunksCount = 0;
 		uint64 HashedChunksCount = 0;
+		// Number of chunks where we avoided reading and hashing, and instead used the result from the hashdb
+		uint64 HashDbChunksCount = 0;
 		uint64 CompressedChunksCount = 0;
 		uint64 SerializedChunksCount = 0;
 		uint64 ScheduledCompressionTasksCount = 0;
@@ -1292,6 +1155,19 @@ public:
 	CORE_API virtual bool RetrieveChunk(const TPair<FIoContainerId, FIoChunkHash>& InChunkKey, const FName& InCompressionMethod, uint64 InUncompressedSize, uint64 InNumChunkBlocks, TUniqueFunction<void(TIoStatusOr<FIoStoreCompressedReadResult>)> InCompletionCallback) = 0;
 };
 
+/**
+*	Allows the IIoStoreWriter to avoid loading and hashing chunks, saving pak/stage time, as the normal
+*	process involved loading the chunks, hashing them, freeing them, making some decisions, then loading
+*	them _again_ for compression/writting. It's completely fine for this to not have all available hashes,
+*	but they have to match when provided!
+*/
+class IIoStoreWriterHashDatabase
+{
+public:
+	CORE_API virtual ~IIoStoreWriterHashDatabase() = default;
+	CORE_API virtual bool FindHashForChunkId(const FIoChunkId& ChunkId, FIoChunkHash& OutHash) const = 0;
+};
+
 
 class IIoStoreWriter
 {
@@ -1303,6 +1179,7 @@ public:
 	*	from previous containers instead of recompressing input data. This must be set before any writes are appended.
 	*/
 	CORE_API virtual void SetReferenceChunkDatabase(TSharedPtr<IIoStoreWriterReferenceChunkDatabase> ReferenceChunkDatabase) = 0;
+	CORE_API virtual void SetHashDatabase(TSharedPtr<IIoStoreWriterHashDatabase> HashDatabase, bool bVerifyHashDatabase) = 0;
 	CORE_API virtual void EnableDiskLayoutOrdering(const TArray<TUniquePtr<FIoStoreReader>>& PatchSourceReaders = TArray<TUniquePtr<FIoStoreReader>>()) = 0;
 	CORE_API virtual void Append(const FIoChunkId& ChunkId, FIoBuffer Chunk, const FIoWriteOptions& WriteOptions, uint64 OrderHint = MAX_uint64) = 0;
 	CORE_API virtual void Append(const FIoChunkId& ChunkId, IIoStoreWriteRequest* Request, const FIoWriteOptions& WriteOptions) = 0;

@@ -2,27 +2,13 @@
 
 #pragma once
 
-#include "Async/TaskGraphInterfaces.h"
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "Delegates/Delegate.h"
-#include "Math/Color.h"
-#include "Math/UnrealMathSSE.h"
-#include "Misc/AssertionMacros.h"
+#include "Async/TaskGraphFwd.h"
 #include "MuCO/CustomizableObjectInstanceDescriptor.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
-#include "MuCO/MultilayerProjector.h"
-#include "Serialization/Archive.h"
 #include "Templates/SubclassOf.h"
-#include "UObject/NameTypes.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/WeakObjectPtr.h"
-#include "UObject/WeakObjectPtrTemplates.h"
 
 #include "CustomizableObjectInstance.generated.h"
+
+class USkeletalMesh;
 
 class AActor;
 class FProperty;
@@ -108,9 +94,13 @@ enum class EUpdateResult : uint8
  * - Native delegates names should end with "NativeDelegate".
  * - Dynamic delegates broadcast before native delegates. */
 
+/** Broadcast at the end of an Instance update request (e.g., before returning from UpdateSkeletalMeshAsync).
+ * Notice that Mutable internally can also request an Instance update. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FBeginUpdateDelegate, UCustomizableObjectInstance*, Instance);
 DECLARE_MULTICAST_DELEGATE_OneParam(FBeginUpdateNativeDelegate, UCustomizableObjectInstance*);
 
+/** Broadcast when an Instance update has completed.
+ * Notice that Mutable internally can also start an Instance update. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FObjectInstanceUpdatedDelegate, UCustomizableObjectInstance*, Instance);
 DECLARE_MULTICAST_DELEGATE_OneParam(FObjectInstanceUpdatedNativeDelegate, UCustomizableObjectInstance*);
 
@@ -183,6 +173,7 @@ public:
 
 	// UObject interface.
 #if WITH_EDITOR
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool CanEditChange( const FProperty* InProperty ) const override;
 	bool InstanceUpdated; // Flag for the editor, to know when the instance's skeletal mesh has been updated
@@ -307,7 +298,7 @@ public:
 	bool IsParamMultidimensional(const FString& ParamName) const;
 
 	UFUNCTION(BlueprintCallable, Category = CustomizableObjectInstance)
-	int32 CurrentParamRange(const FString& ParamName) const;
+	int32 GetProjectorValueRange(const FString& ParamName) const;
 	
 	bool IsParamMultidimensional(int32 ParamIndex) const;
 	FCustomizableObjectProjector GetProjectorDefaultValue(int32 ParamIndex) const;
@@ -346,7 +337,21 @@ public:
 	// Sets the float value "FloatValue" of a float parameter with index "FloatParamIndex"
 	UFUNCTION(BlueprintCallable, Category = CustomizableObjectInstance)
 	void SetFloatParameterSelectedOption(const FString& FloatParamName, float FloatValue, int32 RangeIndex = -1);
+	
+	/** Gets the value of a texture parameter with name "TextureParamName". */
+	uint64 GetTextureParameterSelectedOption(const FString& TextureParamName, int32 RangeIndex = -1) const;
 
+	/** Gets the texture of a texture parameter with name "TextureParamName". */
+	UFUNCTION(BlueprintCallable, Category = CustomizableObjectInstance)
+	UTexture2D* GetTextureParameterSelectedOptionT(const FString& TextureParamName, int32 RangeIndex = -1) const;
+
+	/** Sets the texture value "TextureValue" of a texture parameter with index "TextureParamIndex". */
+	void SetTextureParameterSelectedOption(const FString& TextureParamName, uint64 TextureValue, int32 RangeIndex = -1);
+
+	/** Sets the texture "Texture" of a texture parameter with index "TextureParamIndex". */
+	UFUNCTION(BlueprintCallable, Category = CustomizableObjectInstance)
+	void SetTextureParameterSelectedOptionT(const FString& TextureParamName, UTexture2D* TextureValue, int32 RangeIndex = -1);
+	
 	// Gets the value of a color parameter with name "ColorParamName"
 	UFUNCTION(BlueprintCallable, Category = CustomizableObjectInstance)
 	FLinearColor GetColorParameterSelectedOption(const FString& ColorParamName) const;
@@ -582,24 +587,43 @@ public:
 	void SetIsPlayerOrNearIt(bool NewValue);
 	float GetMinSquareDistToPlayer() const;
 	void SetMinSquareDistToPlayer(float NewValue);
-	void SetMinMaxLODToLoad(int32 NewMinLOD, int32 NewMaxLOD, bool LimitLODUpgrades = true);
+
+	int32 GetNumComponents() const;
+
+
 	int32 GetMinLODToLoad() const;
 	int32 GetMaxLODToLoad() const;
 	int32 GetNumLODsAvailable() const;
 
-	/* If enabled, CurrentMinLOD will be the first LOD of the generated SkeletalMesh. Otherwise the number of LODs will remain constant and LODs [0 .. CurrentMinLOD] will share the same RenderData. 
-	 * Enabled by default */
-	void SetUseCurrentMinLODAsBaseLOD(bool bIsBaseLOD);
-	bool GetUseCurrentMinLODAsBaseLOD() const;
+	UE_DEPRECATED(5.2, "Use SetRequestedLODs instead.")
+	void SetMinMaxLODToLoad(int32 NewMinLOD = 0, int32 NewMaxLOD = INT32_MAX, bool LimitLODUpgrades = true);
+
+	/** Return the Min LOD this Instance is using (from the beginning of an update. If an update fails this value will be incorrect). */
+	int32 GetCurrentMinLOD() const;
+
+	/** Return the Max LOD this Instance is using (from the beginning of an update. If an update fails this value will be incorrect). */
+	int32 GetCurrentMaxLOD() const;
+
+	/** Save the Min and Max LOD that will be used for the update. */
+	void CommitMinMaxLOD();
+
+	/** Sets an array of LODs to generate per component. Mutable will generate those plus the currently generated LODs (if any).
+	 * Requires mutable.EnableOnlyGenerateRequestedLODs and CurrentInstanceLODManagement->IsOnlyGenerateRequestedLODLevelsEnabled() to be true.
+	 * @param InMinLOD - MinLOD to generate.
+	 * @param InMaxLOD - MaxLOD to generate.
+	 * @param InRequestedLODsPerComponent - Array with bitmasks of requested LODs per component with range from [0 .. CO->GetComponentCount()]. */
+	void SetRequestedLODs(int32 InMinLOD, int32 InMaxLOD, const TArray<uint16>& InRequestedLODsPerComponent);
+
+	const TArray<uint16>& GetRequestedLODsPerComponent() const;
 
 	/** Instance updated. */
-	void Updated(EUpdateResult Result);
+	void Updated(EUpdateResult Result, const FDescriptorRuntimeHash& UpdatedHash);
 	
-	/** Hash representing the actual state of the instance (meshes, textures...). This does not include the parameters. */
-	uint32 GetDescriptorHash() const;
+	/** Return the UCustomizableObjectInstance::Descriptor hash on the last update request. */
+	FDescriptorRuntimeHash GetDescriptorRuntimeHash() const;
 
-	/** Hash representing the state of the instance when the update was requested. */
-	uint32 GetUpdateDescriptorHash() const;
+	/** Return the UCustomizableObjectInstance::Descriptor hash on the last successful update. */
+	FDescriptorRuntimeHash GetUpdateDescriptorRuntimeHash() const;
 
 	// --------------------------------------------------------------------
 
@@ -663,12 +687,22 @@ private:
 	UPROPERTY( Transient )
 	TObjectPtr<UCustomizableInstancePrivateData> PrivateData;
 
-	/** Hash of the UCustomizableObjectInstance::Descriptor when UpdateSkeletalMeshAsync has been called. */
-	uint32 UpdateDescriptorHash = 0;
+	/** Hash of the UCustomizableObjectInstance::Descriptor on the last update request. */
+	FDescriptorRuntimeHash UpdateDescriptorRuntimeHash;
 	
 	/** Hash of the UCustomizableObjectInstance::Descriptor on the last successful update. */
-	uint32 DescriptorHash = 0;
+	FDescriptorRuntimeHash DescriptorRuntimeHash;
 
+	/** LODs applied on the beginning of the last update. Represent the actual LODs the Instance is using (not strictly true since an update can fail). */
+	int32 CurrentMinLOD = -1;
+	int32 CurrentMaxLOD = -1;
+
+#if WITH_EDITORONLY_DATA
+	/** Textures used in the Texture Parameters. */
+	UPROPERTY(EditAnywhere, Category = TextureParameter)
+	TArray<TObjectPtr<UTexture2D>> TextureParameterDeclarations;
+#endif
+	
 	// Deprecated properties
 	
 	UPROPERTY()
@@ -702,3 +736,8 @@ private:
 #if WITH_EDITOR
 CUSTOMIZABLEOBJECT_API void CopyTextureProperties(UTexture2D* Texture, const UTexture2D* SourceTexture);
 #endif	
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Async/TaskGraphInterfaces.h"
+#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
+#endif

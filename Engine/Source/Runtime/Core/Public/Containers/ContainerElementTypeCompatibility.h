@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Templates/UnrealTypeTraits.h"
 
 /**
  * Temporary compatibility mechanism to be used solely for the purpose of raw pointers to wrapped pointers.
@@ -13,13 +14,17 @@ template <typename InElementType>
 struct TContainerElementTypeCompatibility
 {
 	typedef InElementType ReinterpretType;
+	typedef InElementType CopyFromOtherType;
 
 	template <typename IterBeginType, typename IterEndType, typename OperatorType = InElementType&(*)(IterBeginType&)>
 	static void ReinterpretRange(IterBeginType Iter, IterEndType IterEnd, OperatorType Operator = [](IterBeginType& InIt) -> InElementType& { return *InIt; })
 	{
 	}
 
-	typedef InElementType CopyFromOtherType;
+	template <typename IterBeginType, typename IterEndType, typename SizeType, typename OperatorType = InElementType & (*)(IterBeginType&)>
+	static void ReinterpretRangeContiguous(IterBeginType Iter, IterEndType IterEnd, SizeType Size, OperatorType Operator = [](IterBeginType& InIt) -> InElementType& { return *InIt; })
+	{
+	}
 
 	static constexpr void CopyingFromOtherType() {}
 };
@@ -31,7 +36,7 @@ struct TContainerElementTypeCompatibility
 template <typename ElementType>
 struct TIsContainerElementTypeReinterpretable
 {
-	enum { Value = !TIsSame<typename TContainerElementTypeCompatibility<ElementType>::ReinterpretType, ElementType>::Value };
+	enum { Value = !std::is_same_v<typename TContainerElementTypeCompatibility<ElementType>::ReinterpretType, ElementType> };
 };
 
 /**
@@ -41,5 +46,5 @@ struct TIsContainerElementTypeReinterpretable
 template <typename ElementType>
 struct TIsContainerElementTypeCopyable
 {
-	enum { Value = !TIsSame<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, ElementType>::Value };
+	enum { Value = !std::is_same_v<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, ElementType> };
 };

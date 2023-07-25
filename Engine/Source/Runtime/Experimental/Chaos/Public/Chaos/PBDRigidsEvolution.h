@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/Character/CharacterGroundConstraintContainer.h"
 #include "Chaos/PBDCollisionConstraints.h"
 #include "Chaos/PBDConstraintGraph.h"
 #include "Chaos/PBDRigidClustering.h"
@@ -350,7 +351,7 @@ public:
 		const int32 ContainerId = ConstraintContainers.Add(&InContainer);
 		InContainer.SetContainerId(ContainerId);
 
-		GetConstraintGraph().AddConstraintContainer(InContainer);
+		GetIslandManager().AddConstraintContainer(InContainer);
 		IslandGroupManager.AddConstraintContainer(InContainer, Priority);
 	}
 
@@ -359,7 +360,7 @@ public:
 	*/
 	CHAOS_API void SetNumPositionIterations(int32 InNumIterations)
 	{
-		NumPositionIterations = InNumIterations;
+		IslandGroupManager.SetNumPositionIterations(InNumIterations);
 	}
 
 	/**
@@ -367,7 +368,7 @@ public:
 	*/
 	CHAOS_API int32 GetNumPositionIterations() const
 	{
-		return NumPositionIterations;
+		return IslandGroupManager.GetIterationSettings().GetNumPositionIterations();
 	}
 
 	/**
@@ -375,7 +376,7 @@ public:
 	*/
 	CHAOS_API void SetNumVelocityIterations(int32 InNumIterations)
 	{
-		NumVelocityIterations = InNumIterations;
+		IslandGroupManager.SetNumVelocityIterations(InNumIterations);
 	}
 
 	/**
@@ -383,7 +384,7 @@ public:
 	*/
 	CHAOS_API int32 GetNumVelocityIterations() const
 	{
-		return NumVelocityIterations;
+		return IslandGroupManager.GetIterationSettings().GetNumVelocityIterations();
 	}
 
 	/**
@@ -391,7 +392,7 @@ public:
 	*/
 	CHAOS_API void SetNumProjectionIterations(int32 InNumIterations)
 	{
-		NumProjectionIterations = InNumIterations;
+		IslandGroupManager.SetNumProjectionIterations(InNumIterations);
 	}
 
 	/**
@@ -399,7 +400,7 @@ public:
 	*/
 	CHAOS_API int32 GetNumProjectionIterations() const
 	{
-		return NumProjectionIterations;
+		return IslandGroupManager.GetIterationSettings().GetNumProjectionIterations();
 	}
 
 	/**
@@ -435,7 +436,7 @@ public:
 		{
 			if (Rigid->IsDynamic() && !Rigid->Disabled())
 			{
-				ConstraintGraph.AddParticle(Particle);
+				IslandManager.AddParticle(Particle);
 			}
 		}
 
@@ -451,7 +452,7 @@ public:
 	{
 		Particles.EnableParticle(Particle);
 		EnableConstraints(Particle);
-		ConstraintGraph.AddParticle(Particle);
+		IslandManager.AddParticle(Particle);
 		DirtyParticle(*Particle);
 	}
 
@@ -463,7 +464,7 @@ public:
 		RemoveParticleFromAccelerationStructure(*Particle);
 		Particles.DisableParticle(Particle);
 		DisableConstraints(Particle);
-		ConstraintGraph.RemoveParticle(Particle);
+		IslandManager.RemoveParticle(Particle);
 	}
 
 	/**
@@ -482,11 +483,11 @@ public:
 		if (Particle->IsInConstraintGraph())
 		{
 			// Remove the particle from the constraint graph. This should remove all the constraints too
-			ConstraintGraph.RemoveParticle(Particle);
+			IslandManager.RemoveParticle(Particle);
 
 			// Re-add the particle to the constraint graph
 			// (we could add a RemoveParticleConstraints method to the graph, but removing and adding a particle isn't too bad)
-			ConstraintGraph.AddParticle(Particle);
+			IslandManager.AddParticle(Particle);
 		}
 	}
 	
@@ -556,7 +557,7 @@ public:
 
 		RemoveParticleFromAccelerationStructure(*Particle);
 		DisconnectConstraints(TSet<FGeometryParticleHandle*>({ Particle }));
-		ConstraintGraph.RemoveParticle(Particle);
+		IslandManager.RemoveParticle(Particle);
 		Particles.DestroyParticle(Particle);
 	}
 
@@ -565,7 +566,7 @@ public:
 	 */
 	CHAOS_API void ReserveParticles(const int32 Num)
 	{
-		if (const int32 NumNew = ConstraintGraph.ReserveParticles(Num))
+		if (const int32 NumNew = IslandManager.ReserveParticles(Num))
 		{
 			InternalAccelerationQueue.PendingData.Reserve(InternalAccelerationQueue.Num() + NumNew);
 			AsyncAccelerationQueue.PendingData.Reserve(AsyncAccelerationQueue.Num() + NumNew);
@@ -583,7 +584,7 @@ public:
 	{
 		if (ConstraintHandle->IsInConstraintGraph())
 		{
-			ConstraintGraph.RemoveConstraint(ConstraintHandle->GetContainerId(), ConstraintHandle);
+			IslandManager.RemoveConstraint(ConstraintHandle->GetContainerId(), ConstraintHandle);
 		}
 	}
 
@@ -596,14 +597,18 @@ public:
 			{
 				RemoveConstraintFromConstraintGraph(ConstraintHandle);
 			}
+			else if (FCharacterGroundConstraintHandle* CharacterGroundConstraint = BaseConstraintHandle->As<FCharacterGroundConstraintHandle>())
+			{
+				RemoveConstraintFromConstraintGraph(CharacterGroundConstraint);
+			}
 		}
 	}
 
 	/** 
 	* Disconnect constraints from a set of particles to be destroyed. 
-	* this will set the constraints to Enbaled = false and set their respective bodies handles to nullptr.
+	* this will set the constraints to Enabled = false and set their respective bodies handles to nullptr.
 	* Once this is done, the constraints cannot be re-enabled.
-	* @note This only applies to persistent constraints (joints etc), not transient constraints (collisons)
+	* @note This only applies to persistent constraints (joints etc), not transient constraints (collisions)
 	* @see DestroyTransientConstraints()
 	*/
 	CHAOS_API void DisconnectConstraints(const TSet<FGeometryParticleHandle*>& RemovedParticles)
@@ -623,7 +628,7 @@ public:
 	* Disconnect constraints from a particle to be removed (or destroyed)
 	* this will set the constraints to Enabled = false, but leave connections to the particles to support
 	* re-enabling at a later time.
-	* @note This only applies to persistent constraints (joints etc), not transient constraints (collisons)
+	* @note This only applies to persistent constraints (joints etc), not transient constraints (collisions)
 	* @see DestroyTransientConstraints()
 	*/
 	CHAOS_API void DisableConstraints(FGeometryParticleHandle* ParticleHandle)
@@ -660,7 +665,7 @@ public:
 	CHAOS_API void ResetConstraints()
 	{
 		// Remove all the constraints from the graph
-		GetConstraintGraph().RemoveConstraints();
+		GetIslandManager().RemoveConstraints();
 		
 		// Clear all particle lists of collisions and constraints
 		// (this could be performed by the constraint containers
@@ -736,12 +741,16 @@ public:
 			return Particles.GetActiveKinematicParticlesView();
 		};
 
+		// We do not update the particle views every time we change a particle - we do it once at the end
+		const bool bUpdateParticleViews = false;
+
 		for (auto& Particle : GetKinematicView())
 		{
 			TKinematicTarget<FReal, 3>& KinematicTarget = Particle.KinematicTarget();
 			const FVec3 CurrentX = Particle.X();
 			const FRotation3 CurrentR = Particle.R();
 
+			bool bMoved = false;
 			switch (KinematicTarget.GetMode())
 			{
 			case EKinematicTargetMode::None:
@@ -754,7 +763,7 @@ public:
 				Particle.V() = FVec3(0, 0, 0);
 				Particle.W() = FVec3(0, 0, 0);
 				KinematicTarget.SetMode(EKinematicTargetMode::None);
-				Particles.MarkTransientDirtyParticle(Particle.Handle());
+				Particles.MarkTransientDirtyParticle(Particle.Handle(), bUpdateParticleViews);
 				break;
 			}
 
@@ -777,26 +786,38 @@ public:
 					NewX = FVec3::Lerp(CurrentX, KinematicTarget.GetTarget().GetLocation(), StepFraction);
 					NewR = FRotation3::Slerp(CurrentR, KinematicTarget.GetTarget().GetRotation(), decltype(FQuat::X)(StepFraction));
 				}
-				if (Dt > MinDt)
-				{
-					FVec3 V = FVec3::CalculateVelocity(CurrentX, NewX, Dt);
-					Particle.V() = V;
 
-					FVec3 W = FRotation3::CalculateAngularVelocity(CurrentR, NewR, Dt);
-					Particle.W() = W;
+				bMoved = !FVec3::IsNearlyEqual(NewX, CurrentX, UE_SMALL_NUMBER) || !FRotation3::IsNearlyEqual(NewR, CurrentR, UE_SMALL_NUMBER);
+				FVec3 V = FVec3(0);
+				FVec3 W = FVec3(0);
+				if (bMoved)
+				{
+					if (Dt > MinDt)
+					{
+						V = FVec3::CalculateVelocity(CurrentX, NewX, Dt);
+						Particle.V() = V;
+
+						W = FRotation3::CalculateAngularVelocity(CurrentR, NewR, Dt);
+						Particle.W() = W;
+					}
+
+					Particle.X() = NewX;
+					Particle.R() = NewR;
 				}
-				Particle.X() = NewX;
-				Particle.R() = NewR;
-				Particles.MarkTransientDirtyParticle(Particle.Handle());
+				Particle.V() = V;
+				Particle.W() = W;
+				Particles.MarkTransientDirtyParticle(Particle.Handle(), bUpdateParticleViews);
+
 				break;
 			}
 
 			case EKinematicTargetMode::Velocity:
 			{
 				// Move based on velocity
+				bMoved = true;
 				Particle.X() = Particle.X() + Particle.V() * Dt;
 				Particle.R() = FRotation3::IntegrateRotationWithAngularVelocity(Particle.R(), Particle.W(), Dt);
-				Particles.MarkTransientDirtyParticle(Particle.Handle());
+				Particles.MarkTransientDirtyParticle(Particle.Handle(), bUpdateParticleViews);
 				break;
 			}
 			}
@@ -810,13 +831,17 @@ public:
 				Rigid->Q() = Rigid->R();
 				Rigid->PreV() = Rigid->V();
 				Rigid->PreW() = Rigid->W();
-				if (!Rigid->CCDEnabled())
+
+				if (bMoved)
 				{
-					Rigid->UpdateWorldSpaceState(FRigidTransform3(Rigid->P(), Rigid->Q()), FVec3(0));
-				}
-				else
-				{
-					Rigid->UpdateWorldSpaceStateSwept(FRigidTransform3(Rigid->P(), Rigid->Q()), FVec3(0), -Rigid->V() * Dt);
+					if (!Rigid->CCDEnabled())
+					{
+						Rigid->UpdateWorldSpaceState(FRigidTransform3(Rigid->P(), Rigid->Q()), FVec3(0));
+					}
+					else
+					{
+						Rigid->UpdateWorldSpaceStateSwept(FRigidTransform3(Rigid->P(), Rigid->Q()), FVec3(0), -Rigid->V() * Dt);
+					}
 				}
 			}
 		}
@@ -826,6 +851,9 @@ public:
 		{
 			Particles.UpdateAllMovingKinematic();
 		}
+
+		// If we changed any particle state, the views need to be refreshed
+		Particles.UpdateDirtyViews();
 	}
 
 	/** Make a copy of the acceleration structure to allow for external modification.
@@ -843,9 +871,14 @@ public:
 	/* Ticks computation of acceleration structures. Normally handled by Advance, but if not advancing can be called to incrementally build structures.*/
 	CHAOS_API void ComputeIntermediateSpatialAcceleration(bool bBlock = false);
 
-	CHAOS_API const FPBDConstraintGraph& GetConstraintGraph() const { return ConstraintGraph; }
-	CHAOS_API FPBDConstraintGraph& GetConstraintGraph() { return ConstraintGraph; }
-	CHAOS_API const FPBDIslandGroupManager& GetIslandGroupManager() const { return IslandGroupManager; }
+	UE_DEPRECATED(5.2, "Renamed to GetIslandManager")
+	CHAOS_API const Private::FPBDIslandManager& GetConstraintGraph() const { return IslandManager; }
+	UE_DEPRECATED(5.2, "Renamed to GetIslandManager")
+	CHAOS_API Private::FPBDIslandManager& GetConstraintGraph() { return IslandManager; }
+	
+	CHAOS_API Private::FPBDIslandManager& GetIslandManager() { return IslandManager; }
+	CHAOS_API const Private::FPBDIslandManager& GetIslandManager() const { return IslandManager; }
+	CHAOS_API const Private::FPBDIslandGroupManager& GetIslandGroupManager() const { return IslandGroupManager; }
 
 
 	void SetResim(bool bInResim) { bIsResim = bInResim; }
@@ -937,7 +970,7 @@ protected:
 	{
 		// Update the current state of the graph based on existing particles and constraints.
 		// Any new particles (from this tick) should have been added when they were enabled.
-		ConstraintGraph.InitializeGraph(Particles.GetNonDisabledDynamicView());
+		IslandManager.InitializeGraph(Particles.GetNonDisabledDynamicView());
 
 		// Add all constraints to the graph.
 		// NOTE: in PersistentGraph mode, only new constraints need to be added and expired ones should be removed.
@@ -947,14 +980,14 @@ protected:
 		// of particles, but we could probably make this cleaner.
 		for (FPBDConstraintContainer* ConstraintContainer : ConstraintContainers)
 		{
-			ConstraintContainer->AddConstraintsToGraph(GetConstraintGraph());
+			ConstraintContainer->AddConstraintsToGraph(GetIslandManager());
 		}
 	}
 
 	void CreateIslands()
 	{
 		// Package the constraints and particles into islands
-		ConstraintGraph.UpdateIslands(Particles);
+		IslandManager.UpdateIslands(Particles);
 	}
 	
 	void FlushInternalAccelerationQueue();
@@ -969,8 +1002,8 @@ protected:
 	FKinematicUpdateRule KinematicUpdate;
 	FCaptureRewindRule CaptureRewindData;
 	TArray<FPBDConstraintContainer*> ConstraintContainers;
-	FPBDIslandManager ConstraintGraph;
-	FPBDIslandGroupManager IslandGroupManager;
+	Private::FPBDIslandManager IslandManager;
+	Private::FPBDIslandGroupManager IslandGroupManager;
 	TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>> PhysicsMaterials;
 	TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>> PerParticlePhysicsMaterials;
 	TArrayCollectionArray<int32> ParticleDisableCount;
@@ -1063,9 +1096,6 @@ protected:
 	};
 	FGraphEventRef AccelerationStructureTaskComplete;
 
-	int32 NumPositionIterations;
-	int32 NumVelocityIterations;
-	int32 NumProjectionIterations;
 	TUniquePtr<ISpatialAccelerationCollectionFactory> SpatialCollectionFactory;
 
 	FAccelerationStructure* GetFreeSpatialAcceleration_Internal();

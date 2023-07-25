@@ -2,25 +2,42 @@
 
 #include "Elements/PCGStaticMeshSpawner.h"
 
-#include "PCGCommon.h"
-#include "PCGHelpers.h"
+#include "PCGComponent.h"
+#include "PCGManagedResource.h"
 #include "Data/PCGPointData.h"
 #include "Data/PCGSpatialData.h"
+#include "Elements/PCGStaticMeshSpawnerContext.h"
 #include "Helpers/PCGActorHelpers.h"
-
 #include "InstancePackers/PCGInstancePackerBase.h"
 #include "MeshSelectors/PCGMeshSelectorBase.h"
 #include "MeshSelectors/PCGMeshSelectorWeighted.h"
 
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
+#include "Materials/MaterialInterface.h"
+#include "UObject/Package.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGStaticMeshSpawner)
+
+#define LOCTEXT_NAMESPACE "PCGStaticMeshSpawnerElement"
+
+static TAutoConsoleVariable<bool> CVarAllowISMReuse(
+	TEXT("pcg.ISM.AllowReuse"),
+	true,
+	TEXT("Controls whether ISMs can be reused and skipped when re-executing"));
 
 UPCGStaticMeshSpawnerSettings::UPCGStaticMeshSpawnerSettings(const FObjectInitializer &ObjectInitializer)
 {
 	bUseSeed = true;
 
 	MeshSelectorType = UPCGMeshSelectorWeighted::StaticClass();
-	MeshSelectorInstance = ObjectInitializer.CreateDefaultSubobject<UPCGMeshSelectorWeighted>(this, TEXT("DefaultSelectorInstance"));
+	// Implementation note: this should not have been done here (it should have been null), as it causes issues with copy & paste
+	// when the thing to paste does not have that class for its instance.
+	// However, removing it makes it that any object actually using the instance created by default would be lost.
+	if (!this->HasAnyFlags(RF_ClassDefaultObject))
+	{
+		MeshSelectorInstance = ObjectInitializer.CreateDefaultSubobject<UPCGMeshSelectorWeighted>(this, TEXT("DefaultSelectorInstance"));
+	}
 }
 
 FPCGElementPtr UPCGStaticMeshSpawnerSettings::CreateElement() const
@@ -38,7 +55,64 @@ bool FPCGStaticMeshSpawnerElement::PrepareDataInternal(FPCGContext* InContext) c
 
 	if (!Settings->MeshSelectorInstance)
 	{
-		PCGE_LOG(Error, "Invalid MeshSelectorInstance");
+		PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidMeshSelectorInstance", "Invalid MatchAndSet instance, try recreating this node from the node palette"));
+		return true;
+	}
+
+	if (!Context->SourceComponent.Get())
+	{
+		return true;
+	}
+
+#if WITH_EDITOR
+	// In editor, we always want to generate this data for inspection & to prevent caching issues
+	const bool bGenerateOutput = true;
+#else
+	const bool bGenerateOutput = Context->Node && Context->Node->IsOutputPinConnected(PCGPinConstants::DefaultOutputLabel);
+#endif
+
+	// Check if we can reuse existing resources
+	bool& bSkippedDueToReuse = Context->bSkippedDueToReuse;
+
+	if (!Context->bReuseCheckDone && CVarAllowISMReuse.GetValueOnAnyThread())
+	{
+		// Compute CRC if it has not been computed (it likely isn't, but this is to futureproof this)
+		if (!Context->DependenciesCrc.IsValid())
+		{
+			GetDependenciesCrc(Context->InputData, Settings, Context->SourceComponent.Get(), Context->DependenciesCrc);
+		}
+		
+		if (Context->DependenciesCrc.IsValid())
+		{
+			TArray<UPCGManagedISMComponent*> MISMCs;
+			Context->SourceComponent->ForEachManagedResource([&MISMCs, &Context, Settings](UPCGManagedResource* InResource)
+			{
+				if (UPCGManagedISMComponent* Resource = Cast<UPCGManagedISMComponent>(InResource))
+				{
+					if (Resource->GetSettingsUID() == Settings->UID && Resource->GetCrc().IsValid() && Resource->GetCrc() == Context->DependenciesCrc)
+					{
+						MISMCs.Add(Resource);
+					}
+				}
+			});
+
+			for (UPCGManagedISMComponent* MISMC : MISMCs)
+			{
+				MISMC->MarkAsReused();
+			}
+
+			if (!MISMCs.IsEmpty())
+			{
+				bSkippedDueToReuse = true;
+			}
+		}
+
+		Context->bReuseCheckDone = true;
+	}
+
+	// Early out - if we've established we could reuse resources and there is no need to generate an output, quit now
+	if (!bGenerateOutput && bSkippedDueToReuse)
+	{
 		return true;
 	}
 
@@ -46,66 +120,111 @@ bool FPCGStaticMeshSpawnerElement::PrepareDataInternal(FPCGContext* InContext) c
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
 
-	// Forward any non-input data
-	Outputs.Append(Context->InputData.GetAllSettings());
-
-	const bool bOutputPinConnected = Context->Node && Context->Node->IsOutputPinConnected(PCGPinConstants::DefaultOutputLabel);
-
-	for (const FPCGTaggedData& Input : Inputs)
+	while(Context->CurrentInputIndex < Inputs.Num())
 	{
-		const UPCGSpatialData* SpatialData = Cast<UPCGSpatialData>(Input.Data);
-
-		if (!SpatialData)
+		if (!Context->bCurrentInputSetup)
 		{
-			PCGE_LOG(Error, "Invalid input data");
-			continue;
-		}
+			const FPCGTaggedData& Input = Inputs[Context->CurrentInputIndex];
+			const UPCGSpatialData* SpatialData = Cast<UPCGSpatialData>(Input.Data);
 
-		AActor* TargetActor = SpatialData->TargetActor.Get();
-
-		if (!TargetActor)
-		{
-			PCGE_LOG(Error, "Invalid target actor");
-			continue;
-		}
-
-		UPCGPointData* OutputPointData = nullptr;
-
-		if (bOutputPinConnected || Settings->bForceConnectOutput)
-		{
-			FPCGTaggedData& Output = Outputs.Add_GetRef(Input);
-
-			OutputPointData = NewObject<UPCGPointData>();
-			OutputPointData->InitializeFromData(SpatialData);
-
-			if (OutputPointData->Metadata->HasAttribute(Settings->OutAttributeName))
+			if (!SpatialData)
 			{
-				OutputPointData->Metadata->DeleteAttribute(Settings->OutAttributeName);
-				PCGE_LOG(Verbose, "Metadata attribute %s is being overwritten in the output data", *Settings->OutAttributeName.ToString());
+				PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidInputData", "Invalid input data"));
+				++Context->CurrentInputIndex;
+				continue;
 			}
 
-			OutputPointData->Metadata->CreateStringAttribute(Settings->OutAttributeName, FName(NAME_None).ToString(), /*bAllowsInterpolation=*/false);
+			const UPCGPointData* PointData = SpatialData->ToPointData(Context);
+			if (!PointData)
+			{
+				PCGE_LOG(Error, GraphAndLog, LOCTEXT("NoPointDataInInput", "Unable to get point data from input"));
+				++Context->CurrentInputIndex;
+				continue;
+			}
 
-			Output.Data = OutputPointData;
+			AActor* TargetActor = Context->GetTargetActor(PointData);
+			if (!TargetActor)
+			{
+				PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidTargetActor", "Invalid target actor"));
+				++Context->CurrentInputIndex;
+				continue;
+			}
+
+			if (bGenerateOutput)
+			{
+				FPCGTaggedData& Output = Outputs.Add_GetRef(Input);
+
+				UPCGPointData* OutputPointData = NewObject<UPCGPointData>();
+				OutputPointData->InitializeFromData(PointData);
+
+				if (OutputPointData->Metadata->HasAttribute(Settings->OutAttributeName))
+				{
+					OutputPointData->Metadata->DeleteAttribute(Settings->OutAttributeName);
+					PCGE_LOG(Verbose, LogOnly, FText::Format(LOCTEXT("AttributeOverwritten", "Metadata attribute '{0}' is being overwritten in the output data"), FText::FromName(Settings->OutAttributeName)));
+				}
+
+				OutputPointData->Metadata->CreateStringAttribute(Settings->OutAttributeName, FName(NAME_None).ToString(), /*bAllowsInterpolation=*/false);
+
+				Output.Data = OutputPointData;
+				check(!Context->CurrentOutputPointData);
+				Context->CurrentOutputPointData = OutputPointData;
+
+				// Create an entry in the MeshInstancesData if we're going to keep it
+				if (!bSkippedDueToReuse)
+				{
+					FPCGStaticMeshSpawnerContext::FPackedInstanceListData& InstanceListData = Context->MeshInstancesData.Emplace_GetRef();
+					InstanceListData.TargetActor = TargetActor;
+					InstanceListData.SpatialData = PointData;
+				}
+			}
+
+			Context->CurrentPointData = PointData;
+			Context->bCurrentInputSetup = true;
 		}
 
-		TArray<FPCGMeshInstanceList> MeshInstances;
-		Settings->MeshSelectorInstance->SelectInstances(*Context, Settings, SpatialData, MeshInstances, OutputPointData);
-
-		TArray<FPCGPackedCustomData> PackedCustomData;
-		PackedCustomData.SetNum(MeshInstances.Num());
-		if (Settings->InstancePackerInstance)
+		if (!Context->bSelectionDone)
 		{
-			for(int32 InstanceListIndex = 0; InstanceListIndex < MeshInstances.Num(); ++InstanceListIndex)
+			TArray<FPCGMeshInstanceList> DummyMeshInstances;
+			TArray<FPCGMeshInstanceList>& MeshInstances = (bSkippedDueToReuse ? DummyMeshInstances : Context->MeshInstancesData.Last().MeshInstances);
+
+			check(Context->CurrentPointData);
+			Context->bSelectionDone = Settings->MeshSelectorInstance->SelectInstances(*Context, Settings, Context->CurrentPointData, MeshInstances, Context->CurrentOutputPointData);
+		}
+
+		if (!Context->bSelectionDone)
+		{
+			return false;
+		}
+
+		// If we need the output but would otherwise skip the resource creation, we don't need to run the instance packing part of the processing
+		if (!bSkippedDueToReuse)
+		{
+			TArray<FPCGPackedCustomData>& PackedCustomData = Context->MeshInstancesData.Last().PackedCustomData;
+			const TArray<FPCGMeshInstanceList>& MeshInstances = Context->MeshInstancesData.Last().MeshInstances;
+
+			if (PackedCustomData.Num() != MeshInstances.Num())
 			{
-				Settings->InstancePackerInstance->PackInstances(*Context, SpatialData, MeshInstances[InstanceListIndex], PackedCustomData[InstanceListIndex]);
+				PackedCustomData.SetNum(MeshInstances.Num());
+			}
+
+			if (Settings->InstancePackerInstance)
+			{
+				for (int32 InstanceListIndex = 0; InstanceListIndex < MeshInstances.Num(); ++InstanceListIndex)
+				{
+					Settings->InstancePackerInstance->PackInstances(*Context, Context->CurrentPointData, MeshInstances[InstanceListIndex], PackedCustomData[InstanceListIndex]);
+				}
 			}
 		}
 
-		FPCGStaticMeshSpawnerContext::FPackedInstanceListData& InstanceListData = Context->MeshInstancesData.Emplace_GetRef();
-		InstanceListData.SpatialData = SpatialData;
-		InstanceListData.MeshInstances = MoveTemp(MeshInstances);
-		InstanceListData.PackedCustomData = MoveTemp(PackedCustomData);
+		// We're done - cleanup for next iteration if we still have time
+		++Context->CurrentInputIndex;
+		Context->ResetInputIterationData();
+
+		// Continue on to next iteration if there is time left, otherwise, exit here
+		if (Context->AsyncState.ShouldStop() && Context->CurrentInputIndex < Inputs.Num())
+		{
+			return false;
+		}
 	}
 
 	return true;
@@ -123,17 +242,29 @@ bool FPCGStaticMeshSpawnerElement::ExecuteInternal(FPCGContext* InContext) const
 		const FPCGStaticMeshSpawnerContext::FPackedInstanceListData& InstanceList = Context->MeshInstancesData.Last();
 		check(InstanceList.MeshInstances.Num() == InstanceList.PackedCustomData.Num());
 
-		if (InstanceList.SpatialData->TargetActor.IsValid())
+		const bool bTargetActorValid = (InstanceList.TargetActor && IsValid(InstanceList.TargetActor));
+
+		if (bTargetActorValid)
 		{
-			for (int32 DataIndex = 0; DataIndex < InstanceList.MeshInstances.Num(); ++DataIndex)
+			while (Context->CurrentDataIndex < InstanceList.MeshInstances.Num())
 			{
-				SpawnStaticMeshInstances(Context, InstanceList.MeshInstances[DataIndex], InstanceList.SpatialData->TargetActor.Get(), InstanceList.PackedCustomData[DataIndex]);
+				SpawnStaticMeshInstances(Context, InstanceList.MeshInstances[Context->CurrentDataIndex], InstanceList.TargetActor, InstanceList.PackedCustomData[Context->CurrentDataIndex]);
+				++Context->CurrentDataIndex;
+
+				if (Context->AsyncState.ShouldStop())
+				{
+					break;
+				}
 			}
 		}
 
-		Context->MeshInstancesData.RemoveAtSwap(Context->MeshInstancesData.Num() - 1);
+		if (!bTargetActorValid || Context->CurrentDataIndex == InstanceList.MeshInstances.Num())
+		{
+			Context->MeshInstancesData.RemoveAtSwap(Context->MeshInstancesData.Num() - 1);
+			Context->CurrentDataIndex = 0;
+		}
 
-		if (Context->ShouldStop())
+		if (Context->AsyncState.ShouldStop())
 		{
 			break;
 		}
@@ -167,33 +298,49 @@ void FPCGStaticMeshSpawnerElement::SpawnStaticMeshInstances(FPCGContext* Context
 		return;
 	}
 
-	// Todo: we could likely pre-load these meshes asynchronously in the settings
-	UStaticMesh* LoadedMesh = InstanceList.Mesh.LoadSynchronous();
+	// TODO: we could likely pre-load these meshes asynchronously in the settings
+	UStaticMesh* LoadedMesh = InstanceList.Descriptor.StaticMesh.LoadSynchronous();
 
 	if (!LoadedMesh)
 	{
+		// Either we have no mesh (so nothing to do) or the mesh couldn't be loaded
+		if (InstanceList.Descriptor.StaticMesh.IsValid())
+		{
+			PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("MeshLoadFailed", "Unable to load mesh '{0}'"), FText::FromString(InstanceList.Descriptor.StaticMesh.ToString())));
+		}
+
 		return;
 	}
 
+	// TODO: we could likely pre-load these materials asynchronously in the settings
+	for (TSoftObjectPtr<UMaterialInterface> OverrideMaterial : InstanceList.Descriptor.OverrideMaterials)
+	{
+		if (OverrideMaterial.IsValid() && !OverrideMaterial.LoadSynchronous())
+		{
+			PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("OverrideMaterialLoadFailed", "Unable to load override material '{0}'"), FText::FromString(OverrideMaterial.ToString())));
+			return;
+		}
+	}
+
 	FPCGISMCBuilderParameters Params;
-	Params.Mesh = LoadedMesh;
-
-	if (InstanceList.bOverrideCollisionProfile)
-	{
-		Params.CollisionProfile = InstanceList.CollisionProfile.Name;
-	}
-
-	if (InstanceList.bOverrideMaterials)
-	{
-		Params.MaterialOverrides = InstanceList.MaterialOverrides;
-	}
-
-	Params.CullStartDistance = InstanceList.CullStartDistance;
-	Params.CullEndDistance = InstanceList.CullEndDistance;
-
+	Params.Descriptor = FISMComponentDescriptor(InstanceList.Descriptor);
 	Params.NumCustomDataFloats = PackedCustomData.NumCustomDataFloats;
 
-	UInstancedStaticMeshComponent* ISMC = UPCGActorHelpers::GetOrCreateISMC(TargetActor, Context->SourceComponent.Get(), Params);
+	// If the root actor we're binding to is movable, then the ISMC should be movable by default
+	if (USceneComponent* SceneComponent = TargetActor->GetRootComponent())
+	{
+		Params.Descriptor.Mobility = SceneComponent->Mobility;
+	}
+
+	const UPCGStaticMeshSpawnerSettings* Settings = Context->GetInputSettings<UPCGStaticMeshSpawnerSettings>();
+	check(Settings);
+	UPCGManagedISMComponent* MISMC = UPCGActorHelpers::GetOrCreateManagedISMC(TargetActor, Context->SourceComponent.Get(), Settings->UID, Params);
+	
+	check(MISMC);
+	MISMC->SetCrc(Context->DependenciesCrc);
+
+	UInstancedStaticMeshComponent* ISMC = MISMC->GetComponent();
+	check(ISMC);
 
 	const int32 PreExistingInstanceCount = ISMC->GetInstanceCount();
 	const int32 NewInstanceCount = InstanceList.Instances.Num();
@@ -206,14 +353,7 @@ void FPCGStaticMeshSpawnerElement::SpawnStaticMeshInstances(FPCGContext* Context
 	const int32 PreviousCustomDataOffset = PreExistingInstanceCount * NumCustomDataFloats;
 
 	// Populate the ISM instances
-	TArray<FTransform> Instances;
-	Instances.Reserve(NewInstanceCount);
-	for (int32 InstanceIndex = 0; InstanceIndex < NewInstanceCount; ++InstanceIndex)
-	{
-		Instances.Emplace(InstanceList.Instances[InstanceIndex].Transform);
-	}
-
-	ISMC->AddInstances(Instances, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/true);
+	ISMC->AddInstances(InstanceList.Instances, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/true);
 
 	// Copy new CustomData into the ISMC PerInstanceSMCustomData
 	if (NumCustomDataFloats > 0)
@@ -227,7 +367,10 @@ void FPCGStaticMeshSpawnerElement::SpawnStaticMeshInstances(FPCGContext* Context
 
 	ISMC->UpdateBounds();
 
-	PCGE_LOG(Verbose, "Added %d instances of %s on actor %s", InstanceList.Instances.Num(), *InstanceList.Mesh->GetFName().ToString(), *TargetActor->GetFName().ToString());
+	{
+		PCGE_LOG(Verbose, LogOnly, FText::Format(LOCTEXT("GenerationInfo", "Added {0} instances of '{1}' on actor '{2}'"),
+			InstanceList.Instances.Num(), FText::FromString(InstanceList.Descriptor.StaticMesh->GetFName().ToString()), FText::FromString(TargetActor->GetFName().ToString())));
+	}
 }
 
 void UPCGStaticMeshSpawnerSettings::PostLoad()
@@ -244,22 +387,34 @@ void UPCGStaticMeshSpawnerSettings::PostLoad()
 		for (const FPCGStaticMeshSpawnerEntry& Entry : Meshes_DEPRECATED)
 		{
 			FPCGMeshSelectorWeightedEntry& NewEntry = MeshSelector->MeshEntries.Emplace_GetRef(Entry.Mesh, Entry.Weight);
-			NewEntry.CollisionProfile = Entry.CollisionProfile;
-			NewEntry.bOverrideCollisionProfile = Entry.bOverrideCollisionProfile;
+			if (Entry.bOverrideCollisionProfile)
+			{
+				NewEntry.Descriptor.BodyInstance.SetCollisionProfileName(Entry.CollisionProfile.Name);
+			}
 		}
 
 		Meshes_DEPRECATED.Reset();
 	}
 #endif
 
+	const EObjectFlags Flags = GetMaskedFlags(RF_PropagateToSubObjects) | RF_Transactional;
+	
 	if (!MeshSelectorInstance)
 	{
 		RefreshMeshSelector();
+	}
+	else
+	{
+		MeshSelectorInstance->SetFlags(Flags);
 	}
 
 	if (!InstancePackerInstance)
 	{
 		RefreshInstancePacker();
+	}
+	else
+	{
+		InstancePackerInstance->SetFlags(Flags);
 	}
 }
 
@@ -314,7 +469,15 @@ void UPCGStaticMeshSpawnerSettings::RefreshMeshSelector()
 {
 	if (MeshSelectorType)
 	{
-		MeshSelectorInstance = NewObject<UPCGMeshSelectorBase>(this, MeshSelectorType);
+		if (MeshSelectorInstance)
+		{
+			MeshSelectorInstance->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			MeshSelectorInstance->MarkAsGarbage();
+			MeshSelectorInstance = nullptr;
+		}
+
+		const EObjectFlags Flags = GetMaskedFlags(RF_PropagateToSubObjects);
+		MeshSelectorInstance = NewObject<UPCGMeshSelectorBase>(this, MeshSelectorType, NAME_None, Flags);
 	}
 	else
 	{
@@ -326,10 +489,23 @@ void UPCGStaticMeshSpawnerSettings::RefreshInstancePacker()
 {
 	if (InstancePackerType)
 	{
-		InstancePackerInstance = NewObject<UPCGInstancePackerBase>(this, InstancePackerType);
+		if (InstancePackerInstance)
+		{
+			InstancePackerInstance->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			InstancePackerInstance->MarkAsGarbage();
+			InstancePackerInstance = nullptr;
+		}
+
+		const EObjectFlags Flags = GetMaskedFlags(RF_PropagateToSubObjects);
+		InstancePackerInstance = NewObject<UPCGInstancePackerBase>(this, InstancePackerType, NAME_None, Flags);
 	}
 	else
 	{
 		InstancePackerInstance = nullptr;
 	}
 }
+
+FPCGStaticMeshSpawnerContext::FPackedInstanceListData::FPackedInstanceListData() = default;
+FPCGStaticMeshSpawnerContext::FPackedInstanceListData::~FPackedInstanceListData() = default;
+
+#undef LOCTEXT_NAMESPACE

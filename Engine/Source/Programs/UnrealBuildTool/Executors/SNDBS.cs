@@ -24,9 +24,25 @@ namespace UnrealBuildTool
 	{
 		public override string Name => "SNDBS";
 
+		private static readonly string? ProgramFilesx86 = Environment.GetEnvironmentVariable("ProgramFiles(x86)");
 		private static readonly string? SCERoot = Environment.GetEnvironmentVariable("SCE_ROOT_DIR");
-		private static readonly string SNDBSBuildExe = Path.Combine(SCERoot ?? string.Empty, "Common", "SN-DBS", "bin", "dbsbuild.exe");
-		private static readonly string SNDBSUtilExe = Path.Combine(SCERoot ?? string.Empty, "Common", "SN-DBS", "bin", "dbsutil.exe");
+
+		private static string FindDbsExe(string ExeName)
+		{
+			string InstallPath = Path.Combine(ProgramFilesx86 ?? string.Empty, "SCE", "Common", "SN-DBS", "bin", ExeName);
+			if (File.Exists(InstallPath))
+			{
+				return InstallPath;
+			}
+			else
+			{
+				// Legacy install location using SCE_ROOT_DIR
+				return Path.Combine(SCERoot ?? string.Empty, "Common", "SN-DBS", "bin", ExeName);
+			}
+		}
+
+		private static string SNDBSBuildExe => FindDbsExe("dbsbuild.exe");
+		private static string SNDBSUtilExe => FindDbsExe("dbsutil.exe");
 
 		private static readonly DirectoryReference IntermediateDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "SNDBS");
 		private static readonly FileReference IncludeRewriteRulesFile = FileReference.Combine(IntermediateDir, "include-rewrite-rules.ini");
@@ -173,7 +189,7 @@ namespace UnrealBuildTool
 		public static bool IsAvailable(ILogger Logger)
 		{
 			// Check the executable exists on disk
-			if (SCERoot == null || !File.Exists(SNDBSBuildExe))
+			if (!File.Exists(SNDBSBuildExe))
 			{
 				return false;
 			}
@@ -197,10 +213,12 @@ namespace UnrealBuildTool
 			return true;
 		}
 
-		public override bool ExecuteActions(List<LinkedAction> Actions, ILogger Logger)
+		public override bool ExecuteActions(IEnumerable<LinkedAction> Actions, ILogger Logger)
 		{
-			if (Actions.Count == 0)
+			if (!Actions.Any())
+			{
 				return true;
+			}
 
 			// Clean the intermediate directory in case there are any leftovers from previous builds
 			if (DirectoryReference.Exists(IntermediateDir))
@@ -265,7 +283,7 @@ namespace UnrealBuildTool
 			{
 				StartInfo.Arguments += " -k";
 			}
-			return ExecuteProcessWithProgressMarkup(StartInfo, Actions.Count, Logger);
+			return ExecuteProcessWithProgressMarkup(StartInfo, Actions.Count(), Logger);
 		}
 
 		/// <summary>

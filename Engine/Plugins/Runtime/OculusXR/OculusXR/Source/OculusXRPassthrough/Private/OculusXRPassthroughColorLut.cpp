@@ -5,6 +5,7 @@
 #include "GenericPlatform/GenericPlatformMath.h"
 #include "UObject/ObjectSaveContext.h"
 #include "OculusXRHMD.h"
+#include "TextureResource.h"
 
 namespace
 {

@@ -8,7 +8,7 @@
 #include "OptimusDataInterfaceGraph.generated.h"
 
 class UOptimusDeformerInstance;
-class USkinnedMeshComponent;
+class UMeshComponent;
 
 /** */
 USTRUCT()
@@ -40,6 +40,7 @@ public:
 
 	//~ Begin UComputeDataInterface Interface
 	TCHAR const* GetClassName() const override { return TEXT("Graph"); }
+	bool CanSupportUnifiedDispatch() const override { return true; }
 	void GetSupportedInputs(TArray<FShaderFunctionDefinition>& OutFunctions) const override;
 	void GetShaderParameters(TCHAR const* UID, FShaderParametersMetadataBuilder& InOutBuilder, FShaderParametersMetadataAllocations& InOutAllocations) const override;
 	void GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const override;
@@ -62,7 +63,10 @@ class UOptimusGraphDataProvider : public UComputeDataProvider
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Binding)
-	TObjectPtr<USkinnedMeshComponent> SkinnedMeshComponent = nullptr;
+	TObjectPtr<UMeshComponent> MeshComponent = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UOptimusDeformerInstance> DeformerInstance = nullptr;
 
 	UPROPERTY()
 	TArray<FOptimusGraphVariableDescription> Variables;
@@ -82,7 +86,8 @@ public:
 	FOptimusGraphDataProviderProxy(UOptimusDeformerInstance const* DeformerInstance, TArray<FOptimusGraphVariableDescription> const& Variables, int32 ParameterBufferSize);
 
 	//~ Begin FComputeDataProviderRenderProxy Interface
-	void GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData) override;
+	bool IsValid(FValidationData const& InValidationData) const override;
+	void GatherDispatchData(FDispatchData const& InDispatchData) override;
 	//~ End FComputeDataProviderRenderProxy Interface
 
 private:

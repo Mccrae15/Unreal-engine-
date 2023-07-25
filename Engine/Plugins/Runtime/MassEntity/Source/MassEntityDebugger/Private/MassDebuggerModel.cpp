@@ -48,6 +48,18 @@ namespace UE::Mass::Debugger::Private
 	{
 		return PointerHash(&Processor);
 	}
+
+	/** We're ignoring all the CDO processors (since as such are not being run at runtime) as well ass processors owned
+	 *  by a CDO, for the very same reason. */
+	bool IsDebuggableProcessor(const UWorld* ContextWorld, const UMassProcessor& Processor)
+	{
+		return IsValid(&Processor)
+			&& Processor.HasAnyFlags(RF_ClassDefaultObject) == false
+			&& Processor.GetWorld() == ContextWorld 
+			// checking ContextWorld is a cheaper way of supporting the declared behavior, since if there is a world then
+			// the processors are definitelly not CDO owned (by design). Is there is no world we need to check specifically.
+			&& (ContextWorld != nullptr || Processor.GetOuter()->HasAnyFlags(RF_ClassDefaultObject) == false);
+	}
 } // namespace UE::Mass::Debugger::Private
 
 //----------------------------------------------------------------------//
@@ -69,7 +81,7 @@ FString FMassDebuggerEnvironment::GetDisplayName() const
 #endif // WITH_MASSENTITY_DEBUG
 	
 	const UWorld* WorldPtr = World.Get();
-	DisplayName += WorldPtr ? WorldPtr->GetPathName() : TEXT("Invalid");
+	DisplayName += WorldPtr ? WorldPtr->GetPathName() : TEXT("No World");
 	return DisplayName;
 }
 
@@ -281,13 +293,32 @@ FMassDebuggerProcessingGraph::FMassDebuggerProcessingGraph(const FMassDebuggerMo
 #if WITH_MASSENTITY_DEBUG
 	TConstArrayView<UMassCompositeProcessor::FDependencyNode> ProcessingGraph = FMassDebugger::GetProcessingGraph(InGraphOwner);
 
-	GraphNodes.Reserve(ProcessingGraph.Num());
-	for (const UMassCompositeProcessor::FDependencyNode& Node : ProcessingGraph)
+	if (ProcessingGraph.Num() > 0)
 	{
-		check(Node.Processor);
-		const TSharedPtr<FMassDebuggerProcessorData>& ProcessorData = DebuggerModel.GetProcessorDataChecked(*Node.Processor);
-		check(ProcessorData.IsValid());
-		GraphNodes.Add(FMassDebuggerProcessingGraphNode(ProcessorData, Node));
+		GraphNodes.Reserve(ProcessingGraph.Num());
+		for (const UMassCompositeProcessor::FDependencyNode& Node : ProcessingGraph)
+		{
+			check(Node.Processor);
+			const TSharedPtr<FMassDebuggerProcessorData>& ProcessorData = DebuggerModel.GetProcessorDataChecked(*Node.Processor);
+			check(ProcessorData.IsValid());
+			GraphNodes.Add(FMassDebuggerProcessingGraphNode(ProcessorData, Node));
+		}
+	}
+	// it's possible for the graph to be empty if InGraphOwner has been populated for a single-thread execution.
+	// See if there are any processors owned by InGraphOwner.
+	else if (InGraphOwner.IsEmpty() == false)
+	{
+		TConstArrayView<TObjectPtr<UMassProcessor>> HostedProcessors = FMassDebugger::GetHostedProcessors(InGraphOwner);
+		for (const TObjectPtr<UMassProcessor>& Processor : HostedProcessors)
+		{
+			check(Processor);
+			const TSharedPtr<FMassDebuggerProcessorData>& ProcessorData = DebuggerModel.GetProcessorDataChecked(*Processor);
+			check(ProcessorData.IsValid());
+			GraphNodes.Add(FMassDebuggerProcessingGraphNode(ProcessorData));
+		}
+
+		// if we have processors, but the flat processing graph is empty, it means it's a single-threaded composite processor
+		bSingleTheadGraph = true;
 	}
 #endif // WITH_MASSENTITY_DEBUG
 }
@@ -295,6 +326,23 @@ FMassDebuggerProcessingGraph::FMassDebuggerProcessingGraph(const FMassDebuggerMo
 //----------------------------------------------------------------------//
 // FMassDebuggerModel
 //----------------------------------------------------------------------//
+FMassDebuggerModel::FMassDebuggerModel()
+{
+#if WITH_MASSENTITY_DEBUG
+	OnEntitySelectedHandle = FMassDebugger::OnEntitySelectedDelegate.AddRaw(this, &FMassDebuggerModel::OnEntitySelected);
+#endif // WITH_MASSENTITY_DEBUG
+}
+
+FMassDebuggerModel::~FMassDebuggerModel()
+{
+#if WITH_MASSENTITY_DEBUG
+	if (OnEntitySelectedHandle.IsValid())
+	{
+		FMassDebugger::OnEntitySelectedDelegate.Remove(OnEntitySelectedHandle);
+	}
+#endif // WITH_MASSENTITY_DEBUG
+}
+
 void FMassDebuggerModel::SetEnvironment(const TSharedPtr<FMassDebuggerEnvironment>& Item)
 {
 	if (Item)
@@ -362,7 +410,7 @@ void FMassDebuggerModel::ClearProcessorSelection()
 	OnProcessorsSelectedDelegate.Broadcast(SelectedProcessors, ESelectInfo::Direct);
 }
 
-void FMassDebuggerModel::SelectArchetypes(TArray<TSharedPtr<FMassDebuggerArchetypeData>> InSelectedArchetypes, ESelectInfo::Type SelectInfo)
+void FMassDebuggerModel::SelectArchetypes(TArrayView<TSharedPtr<FMassDebuggerArchetypeData>> InSelectedArchetypes, ESelectInfo::Type SelectInfo)
 {
 	ResetSelectedProcessors();
 	ResetSelectedArchetypes();
@@ -405,13 +453,12 @@ void FMassDebuggerModel::CacheProcessorsData(const TMap<FMassArchetypeHandle, TS
 
 	if (EntityManager)
 	{
-		check(World);
 		for (FThreadSafeObjectIterator It(UMassProcessor::StaticClass()); It; ++It)
 		{
 			UMassProcessor* Processor = Cast<UMassProcessor>(*It);
-			if (Processor && (Processor->HasAnyFlags(RF_ClassDefaultObject) == false)
+			if (Processor 
 				&& Cast<UMassCompositeProcessor>(Processor) == nullptr
-				&& Processor->GetWorld() == World)
+				&& UE::Mass::Debugger::Private::IsDebuggableProcessor(World, *Processor))
 			{
 				CachedProcessors.Add(MakeShareable(new FMassDebuggerProcessorData(*EntityManager, *Processor, InTransientArchetypesMap)));
 			}
@@ -422,9 +469,9 @@ void FMassDebuggerModel::CacheProcessorsData(const TMap<FMassArchetypeHandle, TS
 		for (FThreadSafeObjectIterator It(UMassProcessor::StaticClass()); It; ++It)
 		{
 			UMassProcessor* Processor = Cast<UMassProcessor>(*It);
-			if (Processor && (Processor->HasAnyFlags(RF_ClassDefaultObject) == false)
-				&& Cast<UMassCompositeProcessor>(Processor) == nullptr 
-				&& (World == nullptr || Processor->GetWorld() == World))
+			if (Processor 
+				&& Cast<UMassCompositeProcessor>(Processor) == nullptr
+				&& UE::Mass::Debugger::Private::IsDebuggableProcessor(World, *Processor))
 			{
 				CachedProcessors.Add(MakeShareable(new FMassDebuggerProcessorData(*Processor)));
 			}
@@ -445,8 +492,7 @@ void FMassDebuggerModel::CacheProcessingGraphs()
 	for (FThreadSafeObjectIterator It(UMassProcessor::StaticClass()); It; ++It)
 	{
 		UMassCompositeProcessor* Processor = Cast<UMassCompositeProcessor>(*It);
-		if (Processor && (Processor->HasAnyFlags(RF_ClassDefaultObject) == false)
-			&& (World == nullptr || Processor->GetWorld() == World))
+		if (Processor && UE::Mass::Debugger::Private::IsDebuggableProcessor(World, *Processor))
 		{
 			CachedProcessingGraphs.Add(MakeShareable(new FMassDebuggerProcessingGraph(*this, *Processor)));
 		}
@@ -455,7 +501,8 @@ void FMassDebuggerModel::CacheProcessingGraphs()
 
 void FMassDebuggerModel::CacheArchetypesData(TMap<FMassArchetypeHandle, TSharedPtr<FMassDebuggerArchetypeData>>& OutTransientArchetypesMap)
 {
-	CachedArchetypes.Reset();
+	CachedAllArchetypes.Reset();
+	CachedArchetypeRepresentatives.Reset();
 
 	if (Environment)
 	{
@@ -481,7 +528,7 @@ void FMassDebuggerModel::StoreArchetypes(const FMassEntityManager& EntityManager
 #if WITH_MASSENTITY_DEBUG
 	TArray<FMassArchetypeHandle> ArchetypeHandles = FMassDebugger::GetAllArchetypes(EntityManager);
 
-	CachedArchetypes.Reset(ArchetypeHandles.Num());
+	CachedAllArchetypes.Reset(ArchetypeHandles.Num());
 
 	int32 MaxBitsUsed = 0;
 
@@ -489,8 +536,8 @@ void FMassDebuggerModel::StoreArchetypes(const FMassEntityManager& EntityManager
 	for (FMassArchetypeHandle& ArchetypeHandle : ArchetypeHandles)
 	{
 		FMassDebuggerArchetypeData* ArchetypeDataPtr = new FMassDebuggerArchetypeData(ArchetypeHandle);
-		ArchetypeDataPtr->Index = CachedArchetypes.Add(MakeShareable(ArchetypeDataPtr));
-		OutTransientArchetypesMap.Add(ArchetypeHandle, CachedArchetypes.Last());
+		ArchetypeDataPtr->Index = CachedAllArchetypes.Add(MakeShareable(ArchetypeDataPtr));
+		OutTransientArchetypesMap.Add(ArchetypeHandle, CachedAllArchetypes.Last());
 
 		MaxBitsUsed = FMath::Max(MaxBitsUsed, ArchetypeDataPtr->GetTotalBitsUsedCount());
 	}
@@ -498,17 +545,17 @@ void FMassDebuggerModel::StoreArchetypes(const FMassEntityManager& EntityManager
 
 	// calculate distances
 	ArchetypeDistances.Reset();
-	ArchetypeDistances.AddDefaulted(CachedArchetypes.Num());
-	for (int i = 0; i < CachedArchetypes.Num(); ++i)
+	ArchetypeDistances.AddDefaulted(CachedAllArchetypes.Num());
+	for (int i = 0; i < CachedAllArchetypes.Num(); ++i)
 	{
-		ArchetypeDistances[i].AddDefaulted(CachedArchetypes.Num());
+		ArchetypeDistances[i].AddDefaulted(CachedAllArchetypes.Num());
 	}
 
-	for (int i = 0; i < CachedArchetypes.Num(); ++i)
+	for (int i = 0; i < CachedAllArchetypes.Num(); ++i)
 	{
-		for (int k = i + 1; k < CachedArchetypes.Num(); ++k)
+		for (int k = i + 1; k < CachedAllArchetypes.Num(); ++k)
 		{
-			const float Distance = UE::Mass::Debugger::Private::CalcArchetypeBitDistance(*CachedArchetypes[i].Get(), *CachedArchetypes[k].Get());
+			const float Distance = UE::Mass::Debugger::Private::CalcArchetypeBitDistance(*CachedAllArchetypes[i].Get(), *CachedAllArchetypes[k].Get());
 			ArchetypeDistances[i][k] = Distance;
 			ArchetypeDistances[k][i] = Distance;
 		}
@@ -516,20 +563,22 @@ void FMassDebuggerModel::StoreArchetypes(const FMassEntityManager& EntityManager
 
 	// Add archetypes that share same primary name under the same entry. 
 	TMap<FString, TSharedPtr<FMassDebuggerArchetypeData>> ArchetypeNameMap;
-	for (int32 Index = 0; Index < CachedArchetypes.Num(); Index++)
+	for (TSharedPtr<FMassDebuggerArchetypeData>& ArchetypeData : CachedAllArchetypes)
 	{
-		TSharedPtr<FMassDebuggerArchetypeData> ArchetypeData = CachedArchetypes[Index];
 		if (const TSharedPtr<FMassDebuggerArchetypeData>* Representative = ArchetypeNameMap.Find(ArchetypeData->PrimaryDebugName))
 		{
 			(*Representative)->Children.Add(ArchetypeData);
-			ArchetypeData->Parent = *Representative; 
-			CachedArchetypes.RemoveAt(Index);
-			Index--;
+			ArchetypeData->Parent = *Representative;
 		}
 		else
 		{
 			ArchetypeNameMap.Add(ArchetypeData->PrimaryDebugName, ArchetypeData);
 		}
+	}
+
+	for (auto& KeyValue : ArchetypeNameMap)
+	{
+		CachedArchetypeRepresentatives.Add(KeyValue.Value);
 	}
 }
 
@@ -559,7 +608,7 @@ void FMassDebuggerModel::MarkAsStale()
 
 bool FMassDebuggerModel::IsStale() const 
 { 
-	return Environment.IsValid() && (Environment->IsWorldValid() == false); 
+	return Environment.IsValid() == false || (Environment->NeedsValidWorld() == true && Environment->IsWorldValid() == false);
 }
 
 const TSharedPtr<FMassDebuggerProcessorData>& FMassDebuggerModel::GetProcessorDataChecked(const UMassProcessor& Processor) const
@@ -595,6 +644,36 @@ void FMassDebuggerModel::ResetSelectedProcessors()
 		ProcessorData->Selection = EMassDebuggerProcessorSelection::None;
 	}
 	SelectedProcessors.Reset();
+}
+
+void FMassDebuggerModel::OnEntitySelected(const FMassEntityManager& EntityManager, const FMassEntityHandle EntityHandle)
+{
+	if (!Environment || Environment->GetEntityManager() != &EntityManager)
+	{
+		// not the entity manager we're debugging right now
+		return;
+	}
+	
+	const FMassArchetypeHandle ArchetypeHandle = EntityManager.GetArchetypeForEntity(EntityHandle);
+	if (ArchetypeHandle.IsValid() == false)
+	{
+		return;
+	}
+
+#if WITH_MASSENTITY_DEBUG
+	const uint32 ArchetypeHash = FMassDebugger::GetArchetypeComposition(ArchetypeHandle).CalculateHash();
+#else
+	const uint32 ArchetypeHash = 0;
+#endif // WITH_MASSENTITY_DEBUG
+	TSharedPtr<FMassDebuggerArchetypeData>* DebuggerArchetypeData = CachedAllArchetypes.FindByPredicate([ArchetypeHash](const TSharedPtr<FMassDebuggerArchetypeData>& Element)
+		{
+			return Element.IsValid() && Element->CompositionHash == ArchetypeHash;
+		});
+
+	if (DebuggerArchetypeData)
+	{
+		SelectArchetypes(MakeArrayView(DebuggerArchetypeData, 1), ESelectInfo::Direct);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

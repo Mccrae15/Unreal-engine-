@@ -9,11 +9,13 @@
 #include "Misc/EngineVersion.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "Windows/WindowsPlatformCrashContext.h"
-	#include <delayimp.h>
-	#if !PLATFORM_HOLOLENS
-	#include "nvapi.h"
-	#include "nvShaderExtnEnums.h"
-	#include "amd_ags.h"
+#include <delayimp.h>
+	#if WITH_NVAPI
+		#include "nvapi.h"
+		#include "nvShaderExtnEnums.h"
+	#endif
+	#if WITH_AMD_AGS
+		#include "amd_ags.h"
 	#endif
 #include "Windows/HideWindowsPlatformTypes.h"
 
@@ -23,6 +25,7 @@
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "RHIValidation.h"
 #include "HAL/ExceptionHandling.h"
+#include "HDRHelper.h"
 
 #if NV_AFTERMATH
 bool GDX11NVAfterMathEnabled = false;
@@ -103,14 +106,6 @@ static TAutoConsoleVariable<int32> CVarNVidiaTimestampWorkaround(
 	1,
 	TEXT("If true we disable timestamps on pre-maxwell hardware (workaround for driver bug)\n"),
 	ECVF_Default);
-
-int32 GDX11ForcedGPUs = -1;
-static FAutoConsoleVariableRef CVarDX11NumGPUs(
-	TEXT("r.DX11NumForcedGPUs"),
-	GDX11ForcedGPUs,
-	TEXT("Num Forced GPUs."),
-	ECVF_Default
-	);
 
 /**
  * Console variables used by the D3D11 RHI device.
@@ -1268,6 +1263,9 @@ void FD3D11DynamicRHI::StartNVAftermath()
 		Flags |= bEnableResources ? GFSDK_Aftermath_FeatureFlags_EnableResourceTracking : 0;
 		Flags |= bEnableAll ? GFSDK_Aftermath_FeatureFlags_Maximum : 0;
 
+		// @todo - GFSDK_Aftermath_FeatureFlags_EnableShaderErrorReporting is disabled to prevent TDRs until Nvidia fixes this
+		Flags &= ~GFSDK_Aftermath_FeatureFlags_EnableShaderErrorReporting;
+
 		GFSDK_Aftermath_Result Result = GFSDK_Aftermath_DX11_Initialize(
 			GFSDK_Aftermath_Version_API, (GFSDK_Aftermath_FeatureFlags)Flags, Direct3DDevice);
 
@@ -1362,9 +1360,10 @@ void EnableNVAftermathCrashDumps()
 				GFSDK_Aftermath_Version_API,
 				GFSDK_Aftermath_GpuCrashDumpWatchedApiFlags_DX,
 				GFSDK_Aftermath_GpuCrashDumpFeatureFlags_Default,
-				D3D11AftermathCrashCallback,
+				&D3D11AftermathCrashCallback,
 				nullptr, //Shader debug callback
 				nullptr, // description callback
+				nullptr, // resolve marker callback
 				nullptr); // user data
 
 			if (Result == GFSDK_Aftermath_Result_Success)
@@ -1902,6 +1901,30 @@ void FD3D11DynamicRHI::InitD3DDevice()
 			AmdExtensionParams.pAppName = bDisableAppRegistration ? TEXT("") : FApp::GetProjectName();
 			AmdExtensionParams.appVersion = AGS_UNSPECIFIED_VERSION;
 
+			// agsDriverExtensionsDX11_CreateDevice will not check for the DriverStore if there is not already a D3D11 device
+			// initialized. In order to use AMF we require libraries to also be loaded from the driver store so we temporarily
+			// initialize a device here and destroy it once the agsDriverExtensionsDX11_CreateDevice is run.
+			ID3D11Device* D3DDevicePreload = nullptr;
+			ID3D11DeviceContext* D3DDeviceContextPreload = nullptr;
+
+			int32 NumAllowedFeatureLevels = 1;
+			D3D_FEATURE_LEVEL OutFeatureLevel = FeatureLevel;
+			HRESULT Result = D3D11CreateDevice(
+				Adapter.DXGIAdapter,
+				D3D_DRIVER_TYPE_UNKNOWN,
+				nullptr,
+				DeviceFlags,
+				&FeatureLevel,
+				NumAllowedFeatureLevels,
+				D3D11_SDK_VERSION,
+				&D3DDevicePreload,
+				&ActualFeatureLevel,
+				&D3DDeviceContextPreload);
+			if (FAILED(Result))
+			{
+				UE_LOG(LogD3D11RHI, Error, TEXT("Failed to load the AMD DriverStore library"));
+			}
+
 			AGSDX11ReturnedParams DeviceCreationReturnedParams;
 			FMemory::Memzero(&DeviceCreationReturnedParams, sizeof(DeviceCreationReturnedParams));
 			AGSReturnCode DeviceCreation =
@@ -1910,6 +1933,13 @@ void FD3D11DynamicRHI::InitD3DDevice()
 					&DeviceCreationParams,
 					&AmdExtensionParams,
 					&DeviceCreationReturnedParams);
+
+			// Destroy temporary device and context			
+			D3DDevicePreload->Release();
+			D3DDevicePreload = nullptr;
+
+			D3DDeviceContextPreload->Release();
+			D3DDeviceContextPreload = nullptr;
 
 			if (DeviceCreation == AGS_SUCCESS)
 			{
@@ -2051,38 +2081,6 @@ void FD3D11DynamicRHI::InitD3DDevice()
 			GDynamicRHI->EnableIdealGPUCaptureOptions(true);
 		}
 #endif
-
-#if WITH_SLI
-		GNumAlternateFrameRenderingGroups = 1;
-
-#ifdef NVAPI_INTERFACE
-		if (!bRenderDoc && IsRHIDeviceNVIDIA())
-		{
-			NV_GET_CURRENT_SLI_STATE SLICaps;
-			FMemory::Memzero(SLICaps);
-			SLICaps.version = NV_GET_CURRENT_SLI_STATE_VER;
-			NvAPI_Status SLIStatus = NvAPI_D3D_GetCurrentSLIState(Direct3DDevice, &SLICaps);
-			if (SLIStatus == NVAPI_OK)
-			{
-				if (SLICaps.numAFRGroups > 1)
-				{
-					GNumAlternateFrameRenderingGroups = SLICaps.numAFRGroups;
-					UE_LOG(LogD3D11RHI, Log, TEXT("Detected %i SLI GPUs Setting GNumAlternateFrameRenderingGroups to: %i."), SLICaps.numAFRGroups, GNumAlternateFrameRenderingGroups);
-				}
-			}
-			else
-			{
-				UE_LOG(LogD3D11RHI, Log, TEXT("NvAPI_D3D_GetCurrentSLIState failed: 0x%x"), (int32)SLIStatus);
-			}
-		}
-#endif //NVAPI_INTERFACE
-
-		if (GDX11ForcedGPUs > 0)
-		{
-			GNumAlternateFrameRenderingGroups = GDX11ForcedGPUs;
-			UE_LOG(LogD3D11RHI, Log, TEXT("r.DX11NumForcedGPUs forcing GNumAlternateFrameRenderingGroups to: %i "), GDX11ForcedGPUs);
-		}
-#endif // WITH_SLI
 
 		if (IsRHIDeviceNVIDIA())
 		{
@@ -2245,6 +2243,16 @@ void FD3D11DynamicRHI::RHIPerFrameRHIFlushComplete()
 		}
 	}
 #endif
+
+	for (int32 Frequency = 0; Frequency < SF_NumStandardFrequencies; ++Frequency)
+	{
+		DirtyUniformBuffers[Frequency] = 0;
+
+		for (int32 BindIndex = 0; BindIndex < MAX_UNIFORM_BUFFERS_PER_SHADER_STAGE; ++BindIndex)
+		{
+			BoundUniformBuffers[Frequency][BindIndex] = nullptr;
+		}
+	}
 }
 
 /**

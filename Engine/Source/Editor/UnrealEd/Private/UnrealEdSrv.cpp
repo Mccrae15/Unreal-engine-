@@ -40,6 +40,7 @@
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Settings/LevelEditorMiscSettings.h"
 #include "Engine/Brush.h"
+#include "Engine/GameViewportClient.h"
 #include "AssetRegistry/AssetData.h"
 #include "Editor/EditorEngine.h"
 #include "ISourceControlModule.h"
@@ -107,6 +108,7 @@
 #include "ILevelEditor.h"
 #include "Subsystems/BrushEditingSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
+#include "Elements/Framework/TypedElementCommonActions.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealEdSrv, Log, All);
 
@@ -1492,7 +1494,35 @@ bool UUnrealEdEngine::Exec_Edit( UWorld* InWorld, const TCHAR* Str, FOutputDevic
 			return true;
 		}
 
-		if (bComponentsSelected)
+		if (TypedElementCommonActionsUtils::IsElementCopyAndPasteEnabled())
+		{
+			if (GCurrentLevelEditingViewportClient)
+			{
+				if (TSharedPtr<ILevelEditor> LevelEditor = GCurrentLevelEditingViewportClient->ParentLevelEditor.Pin())
+				{
+					if (UTypedElementCommonActions* CommonActions = LevelEditor->GetCommonActions())
+					{
+						const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "Cut", "Cut"));
+
+						UTypedElementSelectionSet* SelectionSet = LevelEditor->GetMutableElementSelectionSet();
+
+						if (!bComponentsSelected)
+						{
+							FEditorDelegates::OnEditCutActorsBegin.Broadcast();
+						}
+
+						CommonActions->CopySelectedElements(SelectionSet);
+						CommonActions->DeleteSelectedElements(SelectionSet, InWorld, FTypedElementDeletionOptions());
+
+						if (!bComponentsSelected)
+						{
+							FEditorDelegates::OnEditCutActorsEnd.Broadcast();
+						}
+					}
+				}
+			}
+		}
+		else if (bComponentsSelected)
 		{
 			// Same transaction language used in CopySelectedActorsToClipboard below
 			const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "Cut", "Cut"));
@@ -1515,7 +1545,32 @@ bool UUnrealEdEngine::Exec_Edit( UWorld* InWorld, const TCHAR* Str, FOutputDevic
 			return true;
 		}
 
-		if (bComponentsSelected)
+		if (TypedElementCommonActionsUtils::IsElementCopyAndPasteEnabled())
+		{
+			if (GCurrentLevelEditingViewportClient)
+			{
+				if (TSharedPtr<ILevelEditor> LevelEditor = GCurrentLevelEditingViewportClient->ParentLevelEditor.Pin())
+				{
+					if (UTypedElementCommonActions* CommonActions = LevelEditor->GetCommonActions())
+					{
+						UTypedElementSelectionSet* SelectionSet = LevelEditor->GetMutableElementSelectionSet();
+
+						if (!bComponentsSelected)
+						{
+							FEditorDelegates::OnEditCopyActorsBegin.Broadcast();
+						}
+
+						CommonActions->CopySelectedElements(SelectionSet);
+
+						if (!bComponentsSelected)
+						{
+							FEditorDelegates::OnEditCopyActorsEnd.Broadcast();
+						}
+					}
+				}
+			}
+		}
+		else if (bComponentsSelected)
 		{
 			edactCopySelected(InWorld);
 		}
@@ -1533,39 +1588,99 @@ bool UUnrealEdEngine::Exec_Edit( UWorld* InWorld, const TCHAR* Str, FOutputDevic
 			return true;
 		}
 
-		if (bComponentsSelected)
+		bool bImportedElements = false;
+		if (TypedElementCommonActionsUtils::IsElementCopyAndPasteEnabled())
 		{
-			const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "PasteComponents", "Paste Components"));
-			edactPasteSelected(InWorld, false, false, true);
-		}
-		else
-		{
-			// How should this paste be handled
-			EPasteTo PasteTo = PT_OriginalLocation;
-			FText TransDescription = NSLOCTEXT("UnrealEd", "Paste", "Paste");
-
-			FString TempStr;
-			if (FParse::Value(Str, TEXT("TO="), TempStr))
+			if (GCurrentLevelEditingViewportClient)
 			{
-				if (!FCString::Strcmp(*TempStr, TEXT("HERE")))
+				if (TSharedPtr<ILevelEditor> LevelEditor = GCurrentLevelEditingViewportClient->ParentLevelEditor.Pin())
 				{
-					PasteTo = PT_Here;
-					TransDescription = NSLOCTEXT("UnrealEd", "PasteHere", "Paste Here");
-				}
-				else
-				{
-					if (!FCString::Strcmp(*TempStr, TEXT("ORIGIN")))
+					if (UTypedElementCommonActions* CommonActions = LevelEditor->GetCommonActions())
 					{
-						PasteTo = PT_WorldOrigin;
-						TransDescription = NSLOCTEXT("UnrealEd", "PasteToWorldOrigin", "Paste To World Origin");
+						FText TransDescription = NSLOCTEXT("UnrealEd", "Paste", "Paste");
+
+						UTypedElementSelectionSet* SelectionSet = LevelEditor->GetMutableElementSelectionSet();
+						FTypedElementPasteOptions PasteOptions;
+						PasteOptions.SelectionSetToModify = SelectionSet;
+
+						FString TempStr;
+						if (FParse::Value(Str, TEXT("TO="), TempStr))
+						{
+							if (!FCString::Strcmp(*TempStr, TEXT("HERE")))
+							{
+								PasteOptions.bPasteAtLocation = true;
+								const FSnappedPositioningData PositioningData = FSnappedPositioningData(GCurrentLevelEditingViewportClient, ClickLocation, ClickPlane)
+									.AlignToSurfaceRotation(false);
+								PasteOptions.PasteLocation = FActorPositioning::GetSnappedSurfaceAlignedTransform(PositioningData).GetLocation();
+
+								TransDescription = NSLOCTEXT("UnrealEd", "PasteHere", "Paste Here");
+							}
+							else
+							{
+								if (!FCString::Strcmp(*TempStr, TEXT("ORIGIN")))
+								{
+									PasteOptions.bPasteAtLocation = true;
+									PasteOptions.PasteLocation = FVector::ZeroVector;
+									TransDescription = NSLOCTEXT("UnrealEd", "PasteToWorldOrigin", "Paste To World Origin");
+								}
+							}
+						}
+
+						
+						const FScopedTransaction Transaction(TransDescription);
+
+						if (!bComponentsSelected)
+						{
+							FEditorDelegates::OnEditPasteActorsBegin.Broadcast();
+						}
+						
+						bImportedElements = !CommonActions->PasteElements(SelectionSet, InWorld, PasteOptions).IsEmpty();
+
+						if (!bComponentsSelected)
+						{
+							FEditorDelegates::OnEditPasteActorsEnd.Broadcast();
+						}
 					}
 				}
 			}
+		}
 
-			const FScopedTransaction Transaction(TransDescription);
-			FEditorDelegates::OnEditPasteActorsBegin.Broadcast();
-			PasteSelectedActorsFromClipboard(InWorld, TransDescription, PasteTo);
-			FEditorDelegates::OnEditPasteActorsEnd.Broadcast();
+		if (!bImportedElements)
+		{ 
+			if (bComponentsSelected)
+			{
+				const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "PasteComponents", "Paste Components"));
+				edactPasteSelected(InWorld, false, false, true);
+			}
+			else
+			{
+				// How should this paste be handled
+				EPasteTo PasteTo = PT_OriginalLocation;
+				FText TransDescription = NSLOCTEXT("UnrealEd", "Paste", "Paste");
+
+				FString TempStr;
+				if (FParse::Value(Str, TEXT("TO="), TempStr))
+				{
+					if (!FCString::Strcmp(*TempStr, TEXT("HERE")))
+					{
+						PasteTo = PT_Here;
+						TransDescription = NSLOCTEXT("UnrealEd", "PasteHere", "Paste Here");
+					}
+					else
+					{
+						if (!FCString::Strcmp(*TempStr, TEXT("ORIGIN")))
+						{
+							PasteTo = PT_WorldOrigin;
+							TransDescription = NSLOCTEXT("UnrealEd", "PasteToWorldOrigin", "Paste To World Origin");
+						}
+					}
+				}
+
+				const FScopedTransaction Transaction(TransDescription);
+				FEditorDelegates::OnEditPasteActorsBegin.Broadcast();
+				PasteSelectedActorsFromClipboard(InWorld, TransDescription, PasteTo);
+				FEditorDelegates::OnEditPasteActorsEnd.Broadcast();
+			}
 		}
 	}
 
@@ -2469,7 +2584,9 @@ bool UUnrealEdEngine::Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevi
 					}
 					else
 					{
+						FEditorDelegates::OnDeleteActorsBegin.Broadcast();
 						CommonActions->DeleteSelectedElements(SelectionSet, InWorld, FTypedElementDeletionOptions());
+						FEditorDelegates::OnDeleteActorsEnd.Broadcast();
 					}
 				}
 			}

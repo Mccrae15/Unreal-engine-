@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using Horde.Agent.Parser;
+using Horde.Agent.Utility;
 using HordeCommon;
 using HordeCommon.Rpc;
 using Microsoft.Extensions.Logging;
@@ -23,7 +24,7 @@ namespace Horde.Agent.Commands.Utilities
 	[Command("BuildGraph", "Executes a BuildGraph script with the given arguments using a build of UAT within the current branch, and runs the output through the log processor")]
 	class BuildGraphCommand : Command
 	{
-		sealed class LogSink : IJsonRpcLogSink, IDisposable
+		sealed class LogSink : IJsonRpcLogSink, IAsyncDisposable, IDisposable
 		{
 			readonly ILogger _inner;
 			readonly FileStream _eventStream;
@@ -42,29 +43,35 @@ namespace Horde.Agent.Commands.Utilities
 				inner.LogInformation("Writing output to {File}", outputFile);
 			}
 
+			public ValueTask DisposeAsync()
+			{
+				Dispose();
+				return new ValueTask();
+			}
+
 			public void Dispose()
 			{
 				_eventStream.Dispose();
 				_outputStream.Dispose();
 			}
 
-			public Task SetOutcomeAsync(JobStepOutcome outcome) => Task.CompletedTask;
+			public Task SetOutcomeAsync(JobStepOutcome outcome, CancellationToken cancellationToken) => Task.CompletedTask;
 
-			public async Task WriteEventsAsync(List<CreateEventRequest> events)
+			public async Task WriteEventsAsync(List<CreateEventRequest> events, CancellationToken cancellationToken)
 			{
 				foreach (CreateEventRequest request in events)
 				{
 					JsonSerializerOptions options = new JsonSerializerOptions();
 					options.Converters.Add(new JsonStringEnumConverter());
-					await JsonSerializer.SerializeAsync(_eventStream, request, options);
+					await JsonSerializer.SerializeAsync(_eventStream, request, options, cancellationToken);
 					_eventStream.Write(Encoding.UTF8.GetBytes(Environment.NewLine));
 				}
 			}
 
-			public async Task WriteOutputAsync(WriteOutputRequest request)
+			public async Task WriteOutputAsync(WriteOutputRequest request, CancellationToken cancellationToken)
 			{
 				PrintJson(request.Data.Span);
-				await _outputStream.WriteAsync(request.Data.Memory);
+				await _outputStream.WriteAsync(request.Data.Memory, cancellationToken);
 			}
 
 			void PrintJson(ReadOnlySpan<byte> span)

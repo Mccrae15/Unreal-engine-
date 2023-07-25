@@ -86,17 +86,15 @@ namespace UnrealBuildTool
 			XmlConfig.ApplyTo(this);
 		}
 
-		[SupportedOSPlatform("windows")]
 		public override string Name
 		{
 			get { return "XGE"; }
 		}
 
-		[SupportedOSPlatform("windows")]
 		public static bool TryGetXgConsoleExecutable([NotNullWhen(true)] out string? OutXgConsoleExe)
 		{
 			// Try to get the path from the registry
-			if(BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
+			if (OperatingSystem.IsWindows())
 			{
 				string? XgConsoleExe;
 				if(TryGetXgConsoleExecutableFromRegistry(RegistryView.Registry32, out XgConsoleExe))
@@ -304,11 +302,6 @@ namespace UnrealBuildTool
 
 		public static bool IsAvailable(ILogger Logger)
 		{
-			if (!OperatingSystem.IsWindows())
-			{
-				return false;
-			}
-
 			string? XgConsoleExe;
 			if (!TryGetXgConsoleExecutable(out XgConsoleExe))
 			{
@@ -389,53 +382,30 @@ namespace UnrealBuildTool
 			Logger.LogInformation("XGEEXPORT: Exported '{OutFile}'", OutFile);
 		}
 
-		[SupportedOSPlatform("windows")]
-		public override bool ExecuteActions(List<LinkedAction> ActionsToExecute, ILogger Logger)
+		public override bool ExecuteActions(IEnumerable<LinkedAction> Actions, ILogger Logger)
 		{
-			bool XGEResult = true;
-
-			// Batch up XGE execution by actions with the same output event handler.
-			List<LinkedAction> ActionBatch = new List<LinkedAction>();
-			ActionBatch.Add(ActionsToExecute[0]);
-			for (int ActionIndex = 1; ActionIndex < ActionsToExecute.Count && XGEResult; ++ActionIndex)
+			if (!Actions.Any())
 			{
-				LinkedAction CurrentAction = ActionsToExecute[ActionIndex];
-				ActionBatch.Add(CurrentAction);
-			}
-			if (ActionBatch.Count > 0 && XGEResult)
-			{
-				XGEResult = ExecuteActionBatch(ActionBatch, Logger);
-				ActionBatch.Clear();
+				return true;
 			}
 
-			return XGEResult;
-		}
+			// Write the actions to execute to a XGE task file.
+			string XGETaskFilePath = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "XGETasks.xml").FullName;
+			WriteTaskFile(Actions, XGETaskFilePath, true, false, Logger);
 
-		[SupportedOSPlatform("windows")]
-		bool ExecuteActionBatch(List<LinkedAction> Actions, ILogger Logger)
-		{
-			bool XGEResult = true;
-			if (Actions.Count > 0)
-			{
-				// Write the actions to execute to a XGE task file.
-				string XGETaskFilePath = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "XGETasks.xml").FullName;
-				WriteTaskFile(Actions, XGETaskFilePath, true, false, Logger);
-
-				XGEResult = ExecuteTaskFileWithProgressMarkup(XGETaskFilePath, Actions.Count, Logger);
-			}
-			return XGEResult;
+			return ExecuteTaskFileWithProgressMarkup(XGETaskFilePath, Actions.Count(), Logger);
 		}
 
 		/// <summary>
 		/// Writes a XGE task file containing the specified actions to the specified file path.
 		/// </summary>
-		static void WriteTaskFile(List<LinkedAction> InActions, string TaskFilePath, bool bProgressMarkup, bool bXGEExport, ILogger Logger)
+		static void WriteTaskFile(IEnumerable<LinkedAction> InActions, string TaskFilePath, bool bProgressMarkup, bool bXGEExport, ILogger Logger)
 		{
 			bool HostOnVpn = TryGetCoordinatorHost(out string? CoordinatorHost) && IsHostOnVpn(CoordinatorHost, Logger);
 
 			Dictionary<string, string> ExportEnv = new Dictionary<string, string>();
 
-			List<LinkedAction> Actions = InActions;
+			List<LinkedAction> Actions = InActions.ToList();
 			if (bXGEExport)
 			{
 				IDictionary CurrentEnvironment = Environment.GetEnvironmentVariables();
@@ -632,7 +602,7 @@ namespace UnrealBuildTool
 		/// <param name="ActionCount"></param>
 		/// <param name="Logger"></param>
 		/// <returns>Indicates whether the tasks were successfully executed.</returns>
-		[SupportedOSPlatform("windows")]
+		[SuppressMessage("Interoperability", "CA1416:Validate platform compatibility", Justification = "Registry only checked on Windows HostPlatform")]
 		bool ExecuteTaskFile(string TaskFilePath, DataReceivedEventHandler OutputEventHandler, int ActionCount, ILogger Logger)
 		{
 			// A bug in the UCRT can cause XGE to hang on VS2015 builds. Figure out if this hang is likely to effect this build and workaround it if able.
@@ -673,6 +643,7 @@ namespace UnrealBuildTool
 					bXGENoWatchdogThread ? "/no_watchdog_thread" : "")
 				);
 			XGEStartInfo.UseShellExecute = false;
+			XGEStartInfo.Arguments += " /Title=\"UnrealBuildTool Compile\"";
 
 			// Use the IDE-integrated Incredibuild monitor to display progress.
 			XGEStartInfo.Arguments += " /UseIdeMonitor";
@@ -722,7 +693,6 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Executes the tasks in the specified file, parsing progress markup as part of the output.
 		/// </summary>
-		[SupportedOSPlatform("windows")]
 		bool ExecuteTaskFileWithProgressMarkup(string TaskFilePath, int NumActions, ILogger Logger)
 		{
 			using (ProgressWriter Writer = new ProgressWriter("Compiling C++ source files...", false, Logger))

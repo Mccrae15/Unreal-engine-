@@ -2,12 +2,6 @@
 
 #include "RigEditor/IKRigEditorController.h"
 
-#include "IPersonaToolkit.h"
-#include "SKismetInspector.h"
-#include "Animation/DebugSkelMeshComponent.h"
-#include "Dialog/SCustomDialog.h"
-#include "Dialogs/Dialogs.h"
-
 #include "RigEditor/IKRigController.h"
 #include "RigEditor/SIKRigHierarchy.h"
 #include "RigEditor/SIKRigSolverStack.h"
@@ -15,7 +9,14 @@
 #include "RigEditor/IKRigToolkit.h"
 #include "RigEditor/SIKRigAssetBrowser.h"
 #include "RigEditor/SIKRigOutputLog.h"
-#include "Solvers/IKRig_PBIKSolver.h"
+#include "Solvers/IKRig_FBIKSolver.h"
+#include "Widgets/Input/SComboBox.h"
+#include "ContentBrowserModule.h"
+#include "IContentBrowserSingleton.h"
+#include "IPersonaToolkit.h"
+#include "SKismetInspector.h"
+#include "Animation/DebugSkelMeshComponent.h"
+#include "Dialog/SCustomDialog.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(IKRigEditorController)
 
@@ -41,7 +42,8 @@ TOptional<FTransform> UIKRigBoneDetails::GetTransform(EIKRigTransformType::Type 
 	FTransform GlobalTransform = FTransform::Identity;
 	const bool* IsRelative = nullptr;
 
-	const int32 BoneIndex = AssetPtr->Skeleton.GetBoneIndexFromName(SelectedBone);
+	const FIKRigSkeleton& Skeleton = AssetPtr->GetSkeleton();
+	const int32 BoneIndex = Skeleton.GetBoneIndexFromName(SelectedBone);
 	if(BoneIndex == INDEX_NONE)
 	{
 		return TOptional<FTransform>();
@@ -64,20 +66,20 @@ TOptional<FTransform> UIKRigBoneDetails::GetTransform(EIKRigTransformType::Type 
 			}
 			else
 			{
-				GlobalTransform = AssetPtr->Skeleton.CurrentPoseGlobal[BoneIndex];
-				LocalTransform = AssetPtr->Skeleton.CurrentPoseLocal[BoneIndex];
+				GlobalTransform = Skeleton.CurrentPoseGlobal[BoneIndex];
+				LocalTransform = Skeleton.CurrentPoseLocal[BoneIndex];
 			}
 			break;
 		}
 		case EIKRigTransformType::Reference:
 		{
 			IsRelative = ReferenceTransformRelative;
-			GlobalTransform = AssetPtr->Skeleton.RefPoseGlobal[BoneIndex];
+			GlobalTransform = Skeleton.RefPoseGlobal[BoneIndex];
 			LocalTransform = GlobalTransform;
-			const int32 ParentBoneIndex = AssetPtr->Skeleton.ParentIndices[BoneIndex];
+			const int32 ParentBoneIndex = Skeleton.ParentIndices[BoneIndex];
 			if(ParentBoneIndex != INDEX_NONE)
 			{
-				const FTransform ParentTransform = AssetPtr->Skeleton.RefPoseGlobal[ParentBoneIndex];;
+				const FTransform ParentTransform = Skeleton.RefPoseGlobal[ParentBoneIndex];;
 				LocalTransform = GlobalTransform.GetRelativeTransform(ParentTransform);
 			}
 			break;
@@ -292,20 +294,16 @@ EChainSide FRetargetChainAnalyzer::GetSideOfChain(const TArray<int32>& BoneIndic
 	return AverageXPositionOfChain > 0 ? EChainSide::Left :  EChainSide::Right;
 }
 
-void FIKRigEditorController::Initialize(TSharedPtr<FIKRigEditorToolkit> Toolkit, UIKRigDefinition* IKRigAsset)
+void FIKRigEditorController::Initialize(TSharedPtr<FIKRigEditorToolkit> Toolkit, const UIKRigDefinition* IKRigAsset)
 {
 	EditorToolkit = Toolkit;
-	AssetController = UIKRigController::GetIKRigController(IKRigAsset);
+	AssetController = UIKRigController::GetController(IKRigAsset);
 	BoneDetails = NewObject<UIKRigBoneDetails>();
 	
 	// register callback to be informed when rig asset is modified by editor
 	if (!AssetController->OnIKRigNeedsInitialized().IsBoundToObject(this))
 	{
-		ReinitializeDelegateHandle = AssetController->OnIKRigNeedsInitialized().AddSP(
-			this, &FIKRigEditorController::OnIKRigNeedsInitialized);
-
-		// Initialize editor's instances at first initialization
-		InitializeSolvers();
+		ReinitializeDelegateHandle = AssetController->OnIKRigNeedsInitialized().AddSP(this, &FIKRigEditorController::HandleIKRigNeedsInitialized);
 	}
 }
 
@@ -314,9 +312,63 @@ void FIKRigEditorController::Close() const
 	AssetController->OnIKRigNeedsInitialized().Remove(ReinitializeDelegateHandle);
 }
 
+void FIKRigEditorController::PromptUserToAssignMesh()
+{
+	// do we already have a skeletal mesh assigned?
+	if (AssetController->GetSkeletalMesh())
+	{
+		return;
+	}
+
+	// is there already an imported hierarchy of bones?
+	if (!AssetController->GetIKRigSkeleton().BoneNames.IsEmpty())
+	{
+		return;
+	}
+
+	// no skeletal mesh imported yet... so let's prompt the user to pick one...
+	
+	// Load the content browser module to display an asset picker
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	FAssetPickerConfig AssetPickerConfig;
+	// must set the parent UObject so that the resulting list filters correctly in multi-project environments
+	AssetPickerConfig.AdditionalReferencingAssets.Add(AssetController->GetAsset());
+	// the asset picker will only show skeletal meshes
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
+	// the delegate that fires when an asset is selected
+	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateLambda([this](const FAssetData& AssetData)
+	{
+		MeshPickerWindow->RequestDestroyWindow();
+		
+		if (const TObjectPtr<USkeletalMesh> SkeletalMesh = Cast<USkeletalMesh>(AssetData.GetAsset()))
+		{
+			// import the skeleton data into the IK Rig
+			AssetController->SetSkeletalMesh(SkeletalMesh.Get());
+		}
+		
+	});
+	// the default view mode should be a list view
+	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
+
+	MeshPickerWindow = SNew(SWindow)
+	.Title(LOCTEXT("CreateIKRigOptions", "Assign Skeletal Mesh to IK Rig"))
+	.ClientSize(FVector2D(500, 600))
+	.SupportsMinimize(false) .SupportsMaximize(false)
+	[
+		SNew(SBorder)
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
+		[
+			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
+		]
+	];
+
+	GEditor->EditorAddModalWindow(MeshPickerWindow.ToSharedRef());
+	MeshPickerWindow.Reset();
+}
+
 UIKRigProcessor* FIKRigEditorController::GetIKRigProcessor() const
 {
-	if (AnimInstance.IsValid())
+	if (AnimInstance)
 	{
 		return AnimInstance->GetCurrentlyRunningProcessor();
 	}
@@ -337,7 +389,7 @@ const FIKRigSkeleton* FIKRigEditorController::GetCurrentIKRigSkeleton() const
 	return nullptr;
 }
 
-void FIKRigEditorController::OnIKRigNeedsInitialized(UIKRigDefinition* ModifiedIKRig)
+void FIKRigEditorController::HandleIKRigNeedsInitialized(UIKRigDefinition* ModifiedIKRig) const
 {
 	if (ModifiedIKRig != AssetController->GetAsset())
 	{
@@ -345,15 +397,34 @@ void FIKRigEditorController::OnIKRigNeedsInitialized(UIKRigDefinition* ModifiedI
 	}
 
 	ClearOutputLog();
-	
-	AnimInstance->SetProcessorNeedsInitialized();
 
-	// Initialize editor's instances on request
-	InitializeSolvers();
+	// currently running processor needs reinit
+	AnimInstance->SetProcessorNeedsInitialized();
+	
+	// in case the skeletal mesh was swapped out, we need to ensure the preview scene is up-to-date
+	USkeletalMesh* NewMesh = AssetController->GetSkeletalMesh();
+	SkelMeshComponent->SetSkeletalMesh(NewMesh);
+	const TSharedRef<IPersonaPreviewScene> PreviewScene = EditorToolkit.Pin()->GetPersonaToolkit()->GetPreviewScene();
+	if (PreviewScene->GetPreviewMesh() != NewMesh)
+	{
+		PreviewScene->SetPreviewMeshComponent(SkelMeshComponent);
+		PreviewScene->SetPreviewMesh(NewMesh);
+	}
+
+	// re-initializes the anim instances running in the viewport
+	if (AnimInstance)
+	{
+		SkelMeshComponent->PreviewInstance = AnimInstance;
+		AnimInstance->InitializeAnimation();
+		SkelMeshComponent->EnablePreview(true, nullptr);
+	}
+
 
 	// update the bone details so it can pull on the current data
 	BoneDetails->AnimInstancePtr = AnimInstance;
 	BoneDetails->AssetPtr = ModifiedIKRig;
+
+	RefreshAllViews();
 }
 
 void FIKRigEditorController::Reset() const
@@ -426,14 +497,14 @@ void FIKRigEditorController::AddNewGoals(const TArray<FName>& GoalNames, const T
 		const FName& BoneName = BoneNames[I];
 
 		// create a new goal
-		UIKRigEffectorGoal* NewGoal = AssetController->AddNewGoal(GoalName, BoneName);
-		if (!NewGoal)
+		const FName NewGoalName = AssetController->AddNewGoal(GoalName, BoneName);
+		if (NewGoalName == NAME_None)
 		{
 			continue; // already exists
 		}
 
 		// ask user if they want to assign this goal to a chain (if there is one on this bone)
-		PromptToAssignGoalToChain(NewGoal);
+		PromptToAssignGoalToChain(NewGoalName);
 
 		LastCreatedGoalName = GoalName;
 	}
@@ -609,7 +680,7 @@ void FIKRigEditorController::CreateNewRetargetChains()
 	else
 	{
 		// create an empty chain
-		const FBoneChain Chain(FRetargetChainAnalyzer::GetDefaultChainName(), NAME_None, NAME_None);
+		FBoneChain Chain(FRetargetChainAnalyzer::GetDefaultChainName(), NAME_None, NAME_None, NAME_None);
 		PromptToAddNewRetargetChain(Chain);
 	}
 	
@@ -653,7 +724,7 @@ bool FIKRigEditorController::PromptToAddDefaultSolver() const
 	TSharedPtr<FIKRigSolverTypeAndName> SelectedSolver = SolverTypes[0];
 	for (TSharedPtr<FIKRigSolverTypeAndName>& SolverType :SolverTypes)
 	{
-		if (SolverType->SolverType == UIKRigPBIKSolver::StaticClass())
+		if (SolverType->SolverType == UIKRigFBIKSolver::StaticClass())
 		{
 			SelectedSolver = SolverType;
 			break;
@@ -712,7 +783,7 @@ void FIKRigEditorController::ShowDetailsForBone(const FName BoneName) const
 
 void FIKRigEditorController::ShowDetailsForBoneSettings(const FName& BoneName, int32 SolverIndex) const
 {
-	if (UObject* BoneSettings = AssetController->GetSettingsForBone(BoneName, SolverIndex))
+	if (UObject* BoneSettings = AssetController->GetBoneSettings(BoneName, SolverIndex))
 	{
 		DetailsView->SetObject(BoneSettings);
 	}
@@ -726,7 +797,7 @@ void FIKRigEditorController::ShowDetailsForGoal(const FName& GoalName) const
 void FIKRigEditorController::ShowDetailsForGoalSettings(const FName GoalName, const int32 SolverIndex) const
 {
 	// get solver that owns this effector
-	if (const UIKRigSolver* SolverWithEffector = AssetController->GetSolver(SolverIndex))
+	if (const UIKRigSolver* SolverWithEffector = AssetController->GetSolverAtIndex(SolverIndex))
 	{
 		if (UObject* EffectorSettings = SolverWithEffector->GetGoalSettings(GoalName))
 		{
@@ -737,7 +808,7 @@ void FIKRigEditorController::ShowDetailsForGoalSettings(const FName GoalName, co
 
 void FIKRigEditorController::ShowDetailsForSolver(const int32 SolverIndex) const
 {
-	DetailsView->SetObject(AssetController->GetSolver(SolverIndex));
+	DetailsView->SetObject(AssetController->GetSolverAtIndex(SolverIndex));
 }
 
 void FIKRigEditorController::ShowEmptyDetails() const
@@ -802,33 +873,13 @@ void FIKRigEditorController::ShowDetailsForElements(const TArray<TSharedPtr<FIKR
 	}
 }
 
-void FIKRigEditorController::OnFinishedChangingDetails(const FPropertyChangedEvent& PropertyChangedEvent)
+void FIKRigEditorController::OnFinishedChangingDetails(const FPropertyChangedEvent& PropertyChangedEvent) const
 {
-	const bool bPreviewChanged = PropertyChangedEvent.GetPropertyName() == UIKRigDefinition::GetPreviewMeshPropertyName();
-	
-	if (bPreviewChanged)
+	const bool bPreviewMeshChanged = PropertyChangedEvent.GetPropertyName() == UIKRigDefinition::GetPreviewMeshPropertyName();
+	if (bPreviewMeshChanged)
 	{
-		// set the source and target skeletal meshes on the component
-		// NOTE: this must be done AFTER setting the AnimInstance so that the correct root anim node is loaded
-		USkeletalMesh* NewMesh = AssetController->GetAsset()->GetPreviewMesh();
-		if (NewMesh)
-		{
-			// apply the mesh to the preview scene
-			TSharedRef<IPersonaPreviewScene> PreviewScene = EditorToolkit.Pin()->GetPersonaToolkit()->GetPreviewScene();
-			if (PreviewScene->GetPreviewMesh() != NewMesh)
-			{
-				PreviewScene->SetPreviewMeshComponent(SkelMeshComponent);
-				PreviewScene->SetPreviewMesh(NewMesh);
-			}
-
-			ClearOutputLog();
-			AssetController->SetSkeletalMesh(NewMesh);
-			AnimInstance->SetProcessorNeedsInitialized();
-			AnimInstance->InitializeAnimation();
-			AssetController->BroadcastNeedsReinitialized();
-			AssetController->ResetGoalTransforms();
-			RefreshAllViews();
-		}
+		USkeletalMesh* Mesh = AssetController->GetSkeletalMesh();
+		AssetController->SetSkeletalMesh(Mesh);
 	}
 }
 
@@ -839,8 +890,10 @@ void FIKRigEditorController::SetDetailsView(const TSharedPtr<IDetailsView>& InDe
 	ShowEmptyDetails();
 }
 
-void FIKRigEditorController::PromptToAssignGoalToChain(UIKRigEffectorGoal* NewGoal) const
+void FIKRigEditorController::PromptToAssignGoalToChain(const FName NewGoalName) const
 {
+	const UIKRigEffectorGoal* NewGoal = AssetController->GetGoal(NewGoalName);
+	check(NewGoal);
 	const TArray<FBoneChain>& AllRetargetChains = AssetController->GetRetargetChains();
 	FName ChainToAddGoalTo = NAME_None;
 	for (const FBoneChain& Chain : AllRetargetChains)
@@ -876,88 +929,159 @@ void FIKRigEditorController::PromptToAssignGoalToChain(UIKRigEffectorGoal* NewGo
 	AssetController->SetRetargetChainGoal(ChainToAddGoalTo, NewGoal->GoalName);
 }
 
-FName FIKRigEditorController::PromptToAddNewRetargetChain(const FBoneChain& BoneChain) const
+FName FIKRigEditorController::PromptToAddNewRetargetChain(FBoneChain& BoneChain) const
 {
-	const TSharedPtr<FStructOnScope> StructToDisplay = MakeShareable(new FStructOnScope(FIKRigRetargetChainSettings::StaticStruct(), (uint8*)&BoneChain));
-	TSharedRef<SKismetInspector> KismetInspector = SNew(SKismetInspector);
-	KismetInspector->ShowSingleStruct(StructToDisplay);
+	TArray<SCustomDialog::FButton> Buttons;
+	Buttons.Add(SCustomDialog::FButton(LOCTEXT("AddChain", "Add Chain")));
 
-	FName NewChainName = NAME_None;
-	SGenericDialogWidget::FArguments DialogArguments;
-	DialogArguments.OnOkPressed_Lambda([&BoneChain, &NewChainName, this] ()
+	const bool bHasExistingGoal = BoneChain.IKGoalName != NAME_None;
+	if (bHasExistingGoal)
 	{
-		// prompt to add a goal to the chain (skipped if already has a goal)
-		UIKRigEffectorGoal* NewGoal = PromptToAddGoalToNewChain(BoneChain);
-
-		// add the retarget chain
-		NewChainName = AssetController->AddRetargetChain(BoneChain);
-
-		// ask user if they want to assign this goal to a chain (if there is one on this bone)
-		if (NewGoal)
-		{
-			PromptToAssignGoalToChain(NewGoal);
-		}
-		
-		RefreshAllViews();
-	});
-
-	SGenericDialogWidget::OpenDialog(
-		LOCTEXT("SIKRigRetargetChains", "Add New Retarget Chain"),
-		KismetInspector,
-		DialogArguments,
-		true);
-
-	return NewChainName;
-}
-
-UIKRigEffectorGoal* FIKRigEditorController::PromptToAddGoalToNewChain(const FBoneChain& BoneChain) const
-{
-	// check if there is already a goal on the end bone of this chain, if there is, then we're done
-	UIKRigEffectorGoal* ExistingGoal = AssetController->GetGoalForBone(BoneChain.EndBone.BoneName);
-	if (ExistingGoal)
-	{
-		return ExistingGoal;
+		Buttons.Add(SCustomDialog::FButton(LOCTEXT("AddChainUsingGoal", "Add Chain using Goal")));
 	}
-
-	// check if there is a corresponding bone, if there is none, then no need to create a goal
-	const FIKRigSkeleton& IKRigSkeleton = AssetController->GetIKRigSkeleton();
-	if (IKRigSkeleton.GetBoneIndexFromName(BoneChain.EndBone.BoneName) == INDEX_NONE)
+	else
 	{
-		return nullptr;
+		Buttons.Add(SCustomDialog::FButton(LOCTEXT("AddChainAndGoal", "Add Chain and Goal")));
 	}
+	
+	Buttons.Add(SCustomDialog::FButton(LOCTEXT("Cancel", "Cancel")));
 
 	// ask user if they want to add a goal to the end of this chain
-	const TSharedRef<SCustomDialog> AddGoalToChainDialog = SNew(SCustomDialog)
-		.Title(FText(LOCTEXT("AddGoalToNewChainTitleLabel", "Add Goal to New Chain")))
+	const TSharedRef<SCustomDialog> AddNewRetargetChainDialog =
+		SNew(SCustomDialog)
+		.Title(FText(LOCTEXT("AddNewChainTitleLabel", "Add New Retarget Chain")))
+		.HAlignContent(HAlign_Center)
 		.Content()
 		[
-			SNew(STextBlock)
-			.Text(FText::Format(
-				LOCTEXT("AddGoalToNewChainLabel", "Add goal to end bone, {0} of new chain, {1}?"),
-				FText::FromName(BoneChain.EndBone.BoneName), 
-				FText::FromName(BoneChain.ChainName)))
-		]
-		.Buttons({
-			SCustomDialog::FButton(LOCTEXT("AddGoal", "Add Goal")),
-			SCustomDialog::FButton(LOCTEXT("NoGoal", "No Goal"))
-	});
+			SNew(SBox)
+			.HAlign(HAlign_Center)
+			[
+				SNew(SVerticalBox)
 
-	if (AddGoalToChainDialog->ShowModal() != 0)
+				+SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(2, 1)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SHorizontalBox)
+					+SHorizontalBox::Slot()
+					[
+						SNew(STextBlock).Text(LOCTEXT("ChainNameLabel", "Chain Name"))
+					]
+
+					+SHorizontalBox::Slot()
+					[
+						SNew(SEditableTextBox)
+						.MinDesiredWidth(200.0f)
+						.OnTextChanged_Lambda([&BoneChain](const FText& InText)
+						{
+							BoneChain.ChainName = FName(InText.ToString());
+						})
+						.Text(FText::FromName(BoneChain.ChainName))
+					]
+				]
+
+				+SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(2, 1)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SHorizontalBox)
+					+SHorizontalBox::Slot()
+					[
+						SNew(STextBlock).Text(LOCTEXT("StartBoneLabel", "Start Bone"))
+					]
+
+					+SHorizontalBox::Slot()
+					[
+						SNew(SEditableTextBox)
+						.Text(FText::FromName(BoneChain.StartBone.BoneName))
+						.IsReadOnly(true)
+					]
+				]
+
+				+SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(2, 1)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SHorizontalBox)
+					+SHorizontalBox::Slot()
+					[
+						SNew(STextBlock).Text(LOCTEXT("EndBoneLabel", "End Bone"))
+					]
+
+					+SHorizontalBox::Slot()
+					[
+						SNew(SEditableTextBox)
+						.Text(FText::FromName(BoneChain.EndBone.BoneName))
+						.IsReadOnly(true)
+					]
+				]
+
+				+SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(2, 1)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SHorizontalBox)
+					+SHorizontalBox::Slot()
+					[
+						SNew(STextBlock).Text(LOCTEXT("GoalLabel", "Goal"))
+					]
+
+					+SHorizontalBox::Slot()
+					[
+						SNew(SEditableTextBox)
+						.Text(FText::FromName(BoneChain.IKGoalName))
+						.IsReadOnly(true)
+					]
+				]
+			]
+			
+		]
+		.Buttons(Buttons);
+
+	// show the dialog and handle user choice
+	const int32 UserChoice = AddNewRetargetChainDialog->ShowModal();
+	if (UserChoice == 2 || UserChoice < 0)
 	{
-		return nullptr; // cancel button pressed, or window closed
+		return NAME_None;  // cancel button pressed, or window closed
 	}
 
-	// add a default solver if there isn't one already
-	PromptToAddDefaultSolver();
+	// add the retarget chain
+	const FName NewChainName = AssetController->AddRetargetChain(BoneChain);
 
-	// add the goal
-	const FName NewGoalName = FName(FText::Format(LOCTEXT("GoalOnNewChainName", "{0}_Goal"), FText::FromName(BoneChain.ChainName)).ToString());
-	return AssetController->AddNewGoal(NewGoalName, BoneChain.EndBone.BoneName);
+	// did user choose to assign a goal
+	if (UserChoice == 1)
+	{
+		FName GoalName = NAME_None;
+		if (bHasExistingGoal)
+		{
+			// use the existing goal
+			GoalName = BoneChain.IKGoalName;
+		}
+		else
+		{
+			// add a default solver if there isn't one already
+			PromptToAddDefaultSolver();
+			// create new goal
+			const FName NewGoalName = FName(FText::Format(LOCTEXT("GoalOnNewChainName", "{0}_Goal"), FText::FromName(BoneChain.ChainName)).ToString());
+			GoalName = AssetController->AddNewGoal(NewGoalName, BoneChain.EndBone.BoneName);
+		}
+		
+		// assign the existing goal to it
+		AssetController->SetRetargetChainGoal(NewChainName, GoalName);
+	}
+
+	RefreshAllViews();
+	
+	return NewChainName;
 }
 
 void FIKRigEditorController::PlayAnimationAsset(UAnimationAsset* AssetToPlay)
 {
-	if (AssetToPlay && AnimInstance.IsValid())
+	if (AssetToPlay && AnimInstance)
 	{
 		AnimInstance->SetAnimationAsset(AssetToPlay);
 	}
@@ -971,19 +1095,6 @@ EIKRigSelectionType FIKRigEditorController::GetLastSelectedType() const
 void FIKRigEditorController::SetLastSelectedType(EIKRigSelectionType SelectionType)
 {
 	LastSelectedType = SelectionType;
-}
-
-void FIKRigEditorController::InitializeSolvers() const
-{
-	if (AssetController)
-	{
-		const FIKRigSkeleton& IKRigSkeleton = AssetController->GetIKRigSkeleton();
-		const TArray<UIKRigSolver*>& Solvers = AssetController->GetSolverArray(); 
-		for (UIKRigSolver* Solver: Solvers)
-		{
-			Solver->Initialize(IKRigSkeleton);
-		}
-	}
 }
 
 TObjectPtr<UIKRigBoneDetails> FIKRigEditorController::CreateBoneDetails(const TSharedPtr<FIKRigTreeElement const>& InBoneItem) const

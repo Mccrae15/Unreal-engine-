@@ -204,6 +204,52 @@ void TDynamicMeshOverlay<RealType, ElementSize>::SplitVerticesWithPredicate(TFun
 
 
 template<typename RealType, int ElementSize>
+bool TDynamicMeshOverlay<RealType, ElementSize>::MergeElement(int SourceElementID, int TargetElementID)
+{	
+	if (SourceElementID == TargetElementID)
+	{
+		return false;
+	}
+
+	int SourceParentID = ParentVertices[SourceElementID];
+	int TargetParentID = ParentVertices[TargetElementID];
+
+	auto MergeElementForTriangle = [this, SourceElementID, TargetElementID](int32 TriID)
+	{
+		int ElementTriStart = TriID * 3;
+		for (int SubIdx = 0; SubIdx < 3; SubIdx++)
+		{
+			int CurElID = ElementTriangles[ElementTriStart + SubIdx];
+			if (CurElID == SourceElementID)
+			{
+				ElementsRefCounts.Decrement(SourceElementID);
+				ElementsRefCounts.Increment(TargetElementID);
+				ElementTriangles[ElementTriStart + SubIdx] = TargetElementID;
+			}
+		}
+	};
+
+	checkSlow(SourceParentID == TargetParentID);
+	if (SourceParentID != TargetParentID)
+	{
+		return false;
+	}
+
+	ParentMesh->EnumerateVertexTriangles(SourceParentID, MergeElementForTriangle);
+
+	checkSlow(ElementsRefCounts.IsValid(SourceElementID));
+	checkSlow(ElementsRefCounts.GetRefCount(SourceElementID) == 1);
+	if (ElementsRefCounts.GetRefCount(SourceElementID) == 1)
+	{
+		ElementsRefCounts.Decrement(SourceElementID);
+		ParentVertices[SourceElementID] = FDynamicMesh3::InvalidID;
+	}
+
+	return true;
+}
+
+
+template<typename RealType, int ElementSize>
 int TDynamicMeshOverlay<RealType, ElementSize>::SplitElement(int ElementID, const TArrayView<const int>& TrianglesToUpdate)
 {
 	int ParentID = ParentVertices[ElementID];
@@ -1789,17 +1835,17 @@ namespace Geometry
 // These are explicit instantiations of the templates that are exported from the shared lib.
 // Only these instantiations of the template can be used.
 // This is necessary because we have placed most of the templated functions in this .cpp file, instead of the header.
-template class TDynamicMeshOverlay<float, 1>;
-template class TDynamicMeshOverlay<double, 1>;
-template class TDynamicMeshOverlay<int, 1>;
-template class TDynamicMeshOverlay<float, 2>;
-template class TDynamicMeshOverlay<double, 2>;
-template class TDynamicMeshOverlay<int, 2>;
-template class TDynamicMeshOverlay<float, 3>;
-template class TDynamicMeshOverlay<double, 3>;
-template class TDynamicMeshOverlay<int, 3>;
-template class TDynamicMeshOverlay<float, 4>;
-template class TDynamicMeshOverlay<double, 4>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<float, 1>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<double, 1>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<int, 1>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<float, 2>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<double, 2>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<int, 2>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<float, 3>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<double, 3>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<int, 3>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<float, 4>;
+template class GEOMETRYCORE_API TDynamicMeshOverlay<double, 4>;
 
 template class TDynamicMeshVectorOverlay<float, 2, FVector2f>;
 template class TDynamicMeshVectorOverlay<double, 2, FVector2d>;

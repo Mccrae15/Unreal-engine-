@@ -2,14 +2,15 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "IPropertyTypeCustomization.h"
 
 struct EVisibility;
 
+class FDragDropEvent;
 class FReply;
 class SWidget;
 class FDragDropOperation;
+struct FGeometry;
 
 struct FActorLayerPropertyTypeCustomization : public IPropertyTypeCustomization
 {

@@ -32,7 +32,7 @@ struct MOVIESCENE_API FMovieSceneBoolChannel : public FMovieSceneChannel
 	GENERATED_BODY()
 
 	FMovieSceneBoolChannel()
-		: DefaultValue(), bHasDefaultValue(false)
+		: DefaultValue(false), bHasDefaultValue(false)
 	{}
 
 	/**
@@ -92,6 +92,18 @@ struct MOVIESCENE_API FMovieSceneBoolChannel : public FMovieSceneChannel
 	 * @return true if the channel was evaluated successfully, false otherwise
 	 */
 	virtual bool Evaluate(FFrameTime InTime, bool& OutValue) const;
+
+	/**
+	 * Add keys with these times to channel. The number of elements in both arrays much match or nothing is added.
+	 * @param InTimes Times to add
+	 * @param InValues Values to add
+	 */
+	FORCEINLINE void AddKeys(const TArray<FFrameNumber>& InTimes, const TArray<bool>& InValues)
+	{
+		check(InTimes.Num() == InValues.Num());
+		Times.Append(InTimes);
+		Values.Append(InValues);
+	}
 
 public:
 
@@ -155,6 +167,8 @@ protected:
 	UPROPERTY(meta=(KeyValues))
 	TArray<bool> Values;
 
+	/** This needs to be a UPROPERTY so it gets saved into editor transactions but transient so it doesn't get saved into assets. */
+	UPROPERTY(Transient)
 	FMovieSceneKeyHandleMap KeyHandles;
 };
 

@@ -10,6 +10,7 @@
 #include "Components/PrimitiveComponent.h"
 #include "Components/MeshComponent.h"
 #include "Exporters/Exporter.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Components/DecalComponent.h"
 #include "ScopedTransaction.h"
@@ -466,7 +467,7 @@ void FComponentEditorUtils::CopyComponents(const TArray<UActorComponent*>& Compo
 	for (UActorComponent* Component : ComponentsToCopy)
 	{
 		// Duplicate the component into a temporary object
-		UObject* DuplicatedComponent = StaticDuplicateObject(Component, GetTransientPackage(), Component->GetFName());
+		UObject* DuplicatedComponent = StaticDuplicateObject(Component, GetTransientPackage());
 		if (DuplicatedComponent)
 		{
 			// If the duplicated component is a scene component, wipe its attach parent (to prevent log warnings for referencing a private object in an external package)

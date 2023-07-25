@@ -9,7 +9,9 @@
 #include "Engine/TextureStreamingTypes.h"
 #include "Serialization/BulkData.h"
 #include "Templates/RefCounting.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RenderAssetUpdate.h"
+#endif
 #include "Streaming/StreamableRenderResourceState.h"
 #include "PerQualityLevelProperties.h"
 #include "StreamableRenderAsset.generated.h"
@@ -41,7 +43,7 @@ class UStreamableRenderAsset : public UObject
 public:
 
 	/** Destructor */
-	ENGINE_API virtual ~UStreamableRenderAsset() {};
+	ENGINE_API virtual ~UStreamableRenderAsset();
 
 	/** Get an integer representation of the LOD group */
 	virtual int32 GetLODGroupForStreaming() const
@@ -162,12 +164,13 @@ public:
 	ENGINE_API void SetForceMipLevelsToBeResident(float Seconds, int32 CinematicLODGroupMask = 0);
 
 	/**
-	* Returns the cached combined LOD bias based on texture LOD group and LOD bias.
+	* Returns the combined LOD bias based on texture LOD group and LOD bias.
+	* Function name is legacy and incorrect, it is no longer cached
 	* @return	LOD bias
 	*/
-	ENGINE_API int32 GetCachedLODBias() const 
+	ENGINE_API virtual int32 GetCachedLODBias() const 
 	{ 
-		return CachedCombinedLODBias; 
+		return 0; 
 	}
 
 	/** Return the streaming state of the render resources. Mirrors the state and lowers cache misses. Cleared if there are no resources. */
@@ -262,10 +265,6 @@ protected:
 	/** FStreamingRenderAsset index used by the texture streaming system. */
 	UPROPERTY(transient, duplicatetransient, NonTransactional)
 	int32 StreamingIndex = INDEX_NONE;
-
-	/** Cached combined group and texture LOD bias to use.	*/
-	UPROPERTY(transient)
-	int32 CachedCombinedLODBias;
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = LevelOfDetail, AssetRegistrySearchable, AdvancedDisplay)

@@ -87,6 +87,7 @@ public:
 	virtual void EnumerateSubPaths(const FName InBasePath, TFunctionRef<bool(FName)> Callback, bool bInRecurse) const override;
 	virtual void RunAssetsThroughFilter (TArray<FAssetData>& AssetDataList, const FARFilter& Filter) const override;
 	virtual void UseFilterToExcludeAssets(TArray<FAssetData>& AssetDataList, const FARFilter& Filter) const override;
+	virtual void UseFilterToExcludeAssets(TArray<FAssetData>& AssetDataList, const FARCompiledFilter& CompiledFilter) const override;
 	virtual bool IsAssetIncludedByFilter(const FAssetData& AssetData, const FARCompiledFilter& Filter) const override;
 	virtual bool IsAssetExcludedByFilter(const FAssetData& AssetData, const FARCompiledFilter& Filter) const override;
 	virtual void ExpandRecursiveFilter(const FARFilter& InFilter, FARFilter& ExpandedFilter) const override;
@@ -107,6 +108,7 @@ public:
 	virtual bool IsSearchAllAssets() const override;
 	virtual bool IsSearchAsync() const override;
 	virtual void WaitForCompletion() override;
+	virtual void ClearGathererCache() override;
 	virtual void WaitForPackage(const FString& PackageName) override;
 	virtual void ScanPathsSynchronous(const TArray<FString>& InPaths, bool bForceRescan = false, bool bIgnoreDenyListScanFilters = false) override;
 	virtual void ScanFilesSynchronous(const TArray<FString>& InFilePaths, bool bForceRescan = false) override;
@@ -138,6 +140,8 @@ public:
 	virtual void AssetDeleted(UObject* DeletedAsset) override;
 	virtual void AssetRenamed(const UObject* RenamedAsset, const FString& OldObjectPath) override;
 	virtual void AssetSaved(const UObject& SavedAsset) override;
+	virtual void AssetsSaved(TArray<FAssetData>&& SavedAssets) override;
+	virtual void AssetFullyUpdateTags(UObject* Object) override;
 	virtual void AssetTagsFinalized(const UObject& FinalizedAsset) override;
 
 	virtual void PackageDeleted(UPackage* DeletedPackage) override;
@@ -187,6 +191,8 @@ private:
 	void OnEnginePreExit();
 #if WITH_EDITOR
 	void OnFEngineLoopInitCompleteSearchAllAssets();
+	/** Called when new gatherer is registered. Requires subsequent call to RebuildAssetDependencyGathererMapIfNeeded */
+	void OnAssetDependencyGathererRegistered();
 #endif
 	void InitializeEvents(UE::AssetRegistry::Impl::FInitializeContext& Context);
 	void Broadcast(UE::AssetRegistry::Impl::FEventContext& EventContext);

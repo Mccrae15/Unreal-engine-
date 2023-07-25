@@ -2,54 +2,64 @@
 
 #include "Elements/Metadata/PCGMetadataCompareOpElement.h"
 
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataEntryKeyIterator.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataCompareOpElement)
 
 namespace PCGMetadataCompareSettings
 {
 	template <typename T>
 	bool ApplyCompare(const T& Input1, const T& Input2, EPCGMedadataCompareOperation Operation, double Tolerance)
 	{
-		switch (Operation)
+		if (Operation == EPCGMedadataCompareOperation::Equal)
 		{
-		case EPCGMedadataCompareOperation::Equal:
+			return PCG::Private::MetadataTraits<T>::Equal(Input1, Input2);
+		}
+		else if (Operation == EPCGMedadataCompareOperation::NotEqual)
 		{
-			if constexpr (std::is_same_v<T, int32> || std::is_same_v<T, int64>)
+			return !PCG::Private::MetadataTraits<T>::Equal(Input1, Input2);
+		}
+
+		if constexpr (PCG::Private::MetadataTraits<T>::CanCompare)
+		{
+			switch (Operation)
 			{
-				return Input1 == Input2;
-			}
-			else
-			{
-				return FMath::IsNearlyEqual(Input1, Input2, static_cast<T>(Tolerance));
+			case EPCGMedadataCompareOperation::Greater:
+				return PCG::Private::MetadataTraits<T>::Greater(Input1, Input2);
+			case EPCGMedadataCompareOperation::GreaterOrEqual:
+				return PCG::Private::MetadataTraits<T>::GreaterOrEqual(Input1, Input2);
+			case EPCGMedadataCompareOperation::Less:
+				return PCG::Private::MetadataTraits<T>::Less(Input1, Input2);
+			case EPCGMedadataCompareOperation::LessOrEqual:
+				return PCG::Private::MetadataTraits<T>::LessOrEqual(Input1, Input2);
+			default:
+				return false;
 			}
 		}
-		case EPCGMedadataCompareOperation::NotEqual:
+		else
 		{
-			if constexpr (std::is_same_v<T, int32> || std::is_same_v<T, int64>)
-			{
-				return Input1 != Input2;
-			}
-			else
-			{
-				return !FMath::IsNearlyEqual(Input1, Input2, static_cast<T>(Tolerance));
-			}
-		}
-		case EPCGMedadataCompareOperation::Greater:
-			return Input1 > Input2;
-		case EPCGMedadataCompareOperation::GreaterOrEqual:
-			return Input1 >= Input2;
-		case EPCGMedadataCompareOperation::Less:
-			return Input1 < Input2;
-		case EPCGMedadataCompareOperation::LessOrEqual:
-			return Input1 <= Input2;
-		default:
 			return false;
 		}
 	}
+}
+
+void UPCGMetadataCompareSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
 }
 
 FName UPCGMetadataCompareSettings::GetInputPinLabel(uint32 Index) const
@@ -73,19 +83,31 @@ uint32 UPCGMetadataCompareSettings::GetInputPinNum() const
 bool UPCGMetadataCompareSettings::IsSupportedInputType(uint16 TypeId, uint32 InputIndex, bool& bHasSpecialRequirement) const
 {
 	bHasSpecialRequirement = false;
-	return PCG::Private::IsOfTypes<int32, int64, float, double>(TypeId);
+	if (Operation == EPCGMedadataCompareOperation::Equal || Operation == EPCGMedadataCompareOperation::NotEqual)
+	{
+		return PCG::Private::IsPCGType(TypeId);
+	}
+	else
+	{
+		auto IsValid = [](auto Dummy) -> bool
+		{
+			return PCG::Private::MetadataTraits<decltype(Dummy)>::CanCompare;
+		};
+
+		return PCGMetadataAttribute::CallbackWithRightType(TypeId, IsValid);
+	}
 }
 
-FName UPCGMetadataCompareSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataCompareSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
@@ -96,7 +118,7 @@ uint16 UPCGMetadataCompareSettings::GetOutputType(uint16 InputTypeId) const
 
 FName UPCGMetadataCompareSettings::AdditionalTaskName() const
 {
-	if (const UEnum* EnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/PCG.EPCGMedadataCompareOperation"), true))
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataCompareOperation>())
 	{
 		return FName(FString("Compare: ") + EnumPtr->GetNameStringByValue(static_cast<int>(Operation)));
 	}
@@ -109,7 +131,12 @@ FName UPCGMetadataCompareSettings::AdditionalTaskName() const
 #if WITH_EDITOR
 FName UPCGMetadataCompareSettings::GetDefaultNodeName() const
 {
-	return TEXT("Attribute Compare Op");
+	return TEXT("AttributeCompareOp");
+}
+
+FText UPCGMetadataCompareSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataCompareSettings", "NodeTitle", "Attribute Compare Op");
 }
 #endif // WITH_EDITOR
 
@@ -124,25 +151,15 @@ bool FPCGMetadataCompareElement::DoOperation(FOperationData& OperationData) cons
 
 	const UPCGMetadataCompareSettings* Settings = CastChecked<UPCGMetadataCompareSettings>(OperationData.Settings);
 
-	auto CompareFunc = [this, Operation = Settings->Operation, Tolerance = Settings->Tolerance, &OperationData](auto DummyValue)
+	auto CompareFunc = [this, Operation = Settings->Operation, Tolerance = Settings->Tolerance, &OperationData](auto DummyValue) -> bool
 	{
 		using AttributeType = decltype(DummyValue);
 
-		// Need to remove types that would not compile
-		if constexpr (!PCG::Private::IsOfTypes<AttributeType, int32, int64, float, double>())
-		{
-			return;
-		}
-		else
-		{
-			DoBinaryOp<AttributeType, AttributeType>(OperationData, 
-				[Operation, Tolerance](const AttributeType& Value1, const AttributeType& Value2) -> bool { 
-					return PCGMetadataCompareSettings::ApplyCompare(Value1, Value2, Operation, Tolerance); 
-				});
-		}
+		return DoBinaryOp<AttributeType, AttributeType>(OperationData, 
+			[Operation, Tolerance](const AttributeType& Value1, const AttributeType& Value2) -> bool { 
+				return PCGMetadataCompareSettings::ApplyCompare(Value1, Value2, Operation, Tolerance); 
+			});
 	};
 
-	PCGMetadataAttribute::CallbackWithRightType(OperationData.MostComplexInputType, CompareFunc);
-
-	return true;
+	return PCGMetadataAttribute::CallbackWithRightType(OperationData.MostComplexInputType, CompareFunc);
 }

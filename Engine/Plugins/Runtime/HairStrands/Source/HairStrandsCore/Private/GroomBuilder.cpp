@@ -10,6 +10,7 @@
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
 #include "GlobalShader.h"
+#include "RHIGPUReadback.h"
 #include "ShaderParameterStruct.h"
 
 #include "Async/ParallelFor.h"
@@ -39,11 +40,7 @@ static FAutoConsoleVariableRef CVarHairGroupIndexBuilder_MaxVoxelResolution(TEXT
 
 FString FGroomBuilder::GetVersion()
 {
-	// Important to update the version when groom building changes
-	if (IsHairStrandContinuousDecimationReorderingEnabled())
-		return TEXT("3r0");
-	else
-		return TEXT("2r2");
+	return TEXT("v7");
 }
 
 namespace FHairStrandsDecimation
@@ -156,6 +153,7 @@ namespace HairStrandsBuilder
 
 		HairStrands.BoundingBox.Min = {  FLT_MAX,  FLT_MAX ,  FLT_MAX };
 		HairStrands.BoundingBox.Max = { -FLT_MAX, -FLT_MAX , -FLT_MAX };
+		HairStrands.BoundingBox.IsValid = 0;
 
 		if (HairStrands.GetNumCurves() > 0 && HairStrands.GetNumPoints() > 0)
 		{
@@ -185,7 +183,7 @@ namespace HairStrandsBuilder
 				for (uint32 PointIndex = 0; PointIndex < StrandCount; ++PointIndex, ++PositionIterator, ++RadiusIterator, ++CoordUIterator)
 				{
 					HairStrands.BoundingBox += (FVector)*PositionIterator;
-
+					HairStrands.BoundingBox.IsValid = 1;
 					if (PointIndex > 0)
 					{
 						StrandLength += ((FVector)*PositionIterator - (FVector)PreviousPosition).Size();
@@ -253,6 +251,18 @@ namespace HairStrandsBuilder
 		Out.Unlock();
 	}
 
+	template<typename T>
+	bool HasValues(const TArray<T>& In, T Ref)
+	{
+		for (const T& Value : In)
+		{
+			if (Value != Ref)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
 	/** Build the packed datas for gpu rendering/simulation */
 	void BuildRenderData(const FHairStrandsDatas& HairStrands, const TArray<uint8>& RandomSeeds, FHairStrandsBulkData& OutBulkData)
 	{
@@ -264,24 +274,48 @@ namespace HairStrandsBuilder
 			return;
 
 		TArray<FHairStrandsPositionFormat::Type> OutPackedPositions;
-		TArray<FHairStrandsAttribute0Format::Type> OutPackedAttributes0;
-		TArray<FHairStrandsAttribute1Format::Type> OutPackedAttributes1;
-		TArray<FHairStrandsMaterialFormat::Type> OutPackedMaterials;
-		TArray<FHairStrandsRootIndexFormat::Type> OutCurveOffsets;
+		TArray<FHairStrandsCurveFormat::Type> OutPackedCurves;
 
 		OutPackedPositions.SetNum(NumPoints * FHairStrandsPositionFormat::ComponentCount);
-		OutPackedAttributes0.SetNum(NumPoints * FHairStrandsAttribute0Format::ComponentCount);
-		OutPackedAttributes1.SetNum(NumPoints * FHairStrandsAttribute1Format::ComponentCount);
-		OutPackedMaterials.SetNum(NumPoints * FHairStrandsMaterialFormat::ComponentCount);
-		OutCurveOffsets = HairStrands.StrandsCurves.CurvesOffset;
+		OutPackedCurves.SetNum(NumCurves * FHairStrandsCurveFormat::ComponentCount);
+
+		const bool bUse16bitsCurveIndex = NumCurves < 65536;
+		TArray<FHairStrandsVertexToCurveFormat16::Type> OutVertexToCurve16;
+		TArray<FHairStrandsVertexToCurveFormat32::Type> OutVertexToCurve32;
+		if (bUse16bitsCurveIndex)
+		{
+			OutVertexToCurve16.SetNum(NumPoints);
+		}
+		else
+		{
+			OutVertexToCurve32.SetNum(NumPoints);
+		}
+
+		const bool bHasClumpIDs = HasValues(HairStrands.StrandsCurves.ClumpIDs, uint16(0));
+		const bool bHasColor = HasValues(HairStrands.StrandsPoints.PointsBaseColor, FLinearColor::Transparent);
+		const bool bHasRoughness = HasValues(HairStrands.StrandsPoints.PointsRoughness, 0.f);
+		const bool bHasAO = HasValues(HairStrands.StrandsPoints.PointsAO, 1.f);
+
+		TArray<uint32> AttributeRootUV;
+		TArray<uint32> AttributeSeed;
+		TArray<uint32> AttributeLength;
+		TArray<uint32> AttributeClumpIDs;
+		TArray<uint32> AttributeBaseColor;
+		TArray<uint32> AttributeRoughness;
+		TArray<uint32> AttributeAO;
+
+		AttributeRootUV.SetNum(NumCurves);									// 4 bytes encoding - Per-Curve
+		AttributeSeed.SetNum(FMath::DivideAndRoundUp(NumCurves, 4u));		// 1 bytes encoding - Per-Curve
+		AttributeLength.SetNum(FMath::DivideAndRoundUp(NumCurves, 2u));		// 2 bytes encoding - Per-Curve
+		AttributeClumpIDs.SetNum(FMath::DivideAndRoundUp(NumCurves, 2u));	// 2 bytes encoding - Per-Curve
+		AttributeBaseColor.SetNum(NumPoints);								// 4 bytes encoding - Per-Vertex
+		AttributeRoughness.SetNum(FMath::DivideAndRoundUp(NumPoints, 2u));	// 1 bytes encoding - Per-Vertex
+		AttributeAO.SetNum(FMath::DivideAndRoundUp(NumPoints, 4u));			// 1 bytes encoding - Per-Vertex
 
 		const FVector HairBoxCenter = HairStrands.BoundingBox.GetCenter();
 
 		const FHairStrandsCurves& Curves = HairStrands.StrandsCurves;
 		const FHairStrandsPoints& Points = HairStrands.StrandsPoints;
-
-		// Track what features/data the bulk data contains
-		bool bHasMaterialData = false;
 
 		struct FPackedRadiusAndType
 		{
@@ -299,7 +333,6 @@ namespace HairStrandsBuilder
 		const bool bSeedValid = RandomSeeds.Num() > 0;
 		for (uint32 CurveIndex = 0; CurveIndex < NumCurves; ++CurveIndex)
 		{
-			const uint8 CurveSeed = bSeedValid ? RandomSeeds[CurveIndex] : 0;
 			const int32 IndexOffset = Curves.CurvesOffset[CurveIndex];
 			const uint16& PointCount = Curves.CurvesCount[CurveIndex];
 			for (int32 PointIndex = 0; PointIndex < PointCount; ++PointIndex)
@@ -308,23 +341,70 @@ namespace HairStrandsBuilder
 				const uint32 NextIndex = FMath::Min(PointCount + 1, PointCount - 1);
 				const FVector& PointPosition = (FVector)Points.PointsPosition[PointIndex + IndexOffset];
 
-				const float CoordU = Points.PointsCoordU[PointIndex + IndexOffset];
-				const float NormalizedRadius = Points.PointsRadius[PointIndex + IndexOffset];
-				const float NormalizedLength = CoordU * Curves.CurvesLength[CurveIndex];
+				// Packed Position|CoordU|NormalizedRadius
+				{
+					const float CoordU = Points.PointsCoordU[PointIndex + IndexOffset];
+					const float NormalizedRadius = Points.PointsRadius[PointIndex + IndexOffset];
 
-				FHairStrandsPositionFormat::Type& PackedPosition = OutPackedPositions[PointIndex + IndexOffset];
-				CopyVectorToPosition(PointPosition - HairBoxCenter, PackedPosition);
-				FPackedRadiusAndType PackedRadiusAndType;
-				PackedRadiusAndType.Data.ControlPointType = (PointIndex == 0) ? 1u : (PointIndex == (PointCount - 1) ? 2u : 0u);
-				PackedRadiusAndType.Data.NormalizedRadius = uint8(FMath::Clamp(NormalizedRadius * 63.f, 0.f, 63.f));
-				PackedPosition.PackedRadiusAndType = PackedRadiusAndType.Packed;
-				PackedPosition.UCoord = uint8(FMath::Clamp(CoordU * 255.f, 0.f, 255.f));
+					FHairStrandsPositionFormat::Type& PackedPosition = OutPackedPositions[PointIndex + IndexOffset];
+					CopyVectorToPosition(PointPosition - HairBoxCenter, PackedPosition);
+					FPackedRadiusAndType PackedRadiusAndType;
+					PackedRadiusAndType.Data.ControlPointType = (PointIndex == 0) ? 1u : (PointIndex == (PointCount - 1) ? 2u : 0u);
+					PackedRadiusAndType.Data.NormalizedRadius = uint8(FMath::Clamp(NormalizedRadius * 63.f, 0.f, 63.f));
+					PackedPosition.PackedRadiusAndType = PackedRadiusAndType.Packed;
+					PackedPosition.UCoord = uint8(FMath::Clamp(CoordU * 255.f, 0.f, 255.f));
+				}
 
-				FVector2D RootUV = FVector2D(Curves.CurvesRootUV[CurveIndex]); 
-				FHairStrandsAttribute0Format::Type& PackedAttributes0 = OutPackedAttributes0[PointIndex + IndexOffset];
-				PackedAttributes0.NormalizedLength = uint8(FMath::Clamp(NormalizedLength * 255.f, 0.f, 255.f));
-				PackedAttributes0.Seed = CurveSeed;
+				// Vertex to Curve
+				if (bUse16bitsCurveIndex)
+				{
+					OutVertexToCurve16[PointIndex + IndexOffset] = CurveIndex;
+				}
+				else
+				{
+					OutVertexToCurve32[PointIndex + IndexOffset] = CurveIndex;
+				}
 
+				// Per-Vertex Color
+				if (bHasColor)
+				{
+					uint32& Packed = AttributeBaseColor[PointIndex + IndexOffset];
+					Packed |= FMath::Clamp(uint32(FMath::Sqrt(Points.PointsBaseColor[PointIndex + IndexOffset].R) * 0x7FF), 0u, 0x7FFu);
+					Packed |= FMath::Clamp(uint32(FMath::Sqrt(Points.PointsBaseColor[PointIndex + IndexOffset].G) * 0x7FF), 0u, 0x7FFu)<<11;
+					Packed |= FMath::Clamp(uint32(FMath::Sqrt(Points.PointsBaseColor[PointIndex + IndexOffset].B) * 0x3FF), 0u, 0x3FFu)<<22;
+				}
+
+				// Per-Vertex Roughness
+				if (bHasRoughness)
+				{
+					uint8* Packed = (uint8*)AttributeRoughness.GetData();
+					Packed[PointIndex + IndexOffset] = FMath::Clamp(uint32(Points.PointsRoughness[PointIndex + IndexOffset] * 0xFF), 0u, 0xFFu);
+				}
+
+				// Per-Vertex AO
+				if (bHasAO)
+				{
+					uint8* Packed = (uint8*)AttributeAO.GetData();
+					Packed[PointIndex + IndexOffset] = FMath::Clamp(uint32(Points.PointsAO[PointIndex + IndexOffset] * 0xFF), 0u, 0xFFu);
+				}
+			}
+
+			// Per-Curve Length
+			{
+				const float Length = Curves.CurvesLength[CurveIndex] * Curves.MaxLength;
+				FFloat16* Packed = (FFloat16*)AttributeLength.GetData();
+				Packed[CurveIndex] = Length;
+			}
+
+			// Per-Curve Seed
+			{
+				uint8* Packed = (uint8*)AttributeSeed.GetData();
+				Packed[CurveIndex] = bSeedValid ? RandomSeeds[CurveIndex] : 0;
+			}
+
+			// Per-Curve Root UVs
+			{
+				FVector2D RootUV = FVector2D(Curves.CurvesRootUV[CurveIndex]);
 				// Root UV support UDIM texture coordinate but limit the spans of the UDIM to be in 256x256 instead of 9999x9999.
 				// The internal UV coords are also limited to 8bits, which means if sampling need to be super precise, this is no enough.
 				// Specal case for UV == 1.0f, as we don't need UDIM data in this case, so force the value to be in [0..1)
@@ -335,28 +415,28 @@ namespace HairStrandsBuilder
 				const FVector2D TextureIndexUV = RootUV - TextureRootUV;
 
 				// UDIM
-				FHairStrandsAttribute1Format::Type& PackedAttributes1 = OutPackedAttributes1[PointIndex + IndexOffset];
-				PackedAttributes1.Packed = 0;
-				PackedAttributes1.Packed |= (uint32(FMath::Clamp(TextureRootUV.X * 2047.f, 0.f, 2047.f)) & 0x7FFu);
-				PackedAttributes1.Packed |= (uint32(FMath::Clamp(TextureRootUV.Y * 2047.f, 0.f, 2047.f)) & 0x7FFu) << 11u;
-				PackedAttributes1.Packed |= (uint32(FMath::Clamp(TextureIndexUV.X, 0.f, 31.f)) & 0x1F) << 22u;
-				PackedAttributes1.Packed |= (uint32(FMath::Clamp(TextureIndexUV.Y, 0.f, 31.f)) & 0x1F) << 27u;
+				uint32& Packed = AttributeRootUV[CurveIndex];
+				Packed = 0;
+				Packed |= (uint32(FMath::Clamp(TextureRootUV.X * 2047.f, 0.f, 2047.f)) & 0x7FFu);
+				Packed |= (uint32(FMath::Clamp(TextureRootUV.Y * 2047.f, 0.f, 2047.f)) & 0x7FFu) << 11u;
+				Packed |= (uint32(FMath::Clamp(TextureIndexUV.X, 0.f, 31.f)) & 0x1F) << 22u;
+				Packed |= (uint32(FMath::Clamp(TextureIndexUV.Y, 0.f, 31.f)) & 0x1F) << 27u;
+			}
 
-				// Material
-				{
-					FHairStrandsMaterialFormat::Type& Material = OutPackedMaterials[PointIndex + IndexOffset];
-					// Cheap sRGB encoding instead of PointsBaseColor.ToFColor(true), as this makes the decompression 
-					// cheaper on GPU (since R8G8B8A8 sRGB format used/exposed not exposed)
-					Material.BaseColorR = FMath::Clamp(uint32(FMath::Sqrt(Points.PointsBaseColor[PointIndex + IndexOffset].R) * 0xFF), 0u, 0xFFu);
-					Material.BaseColorG = FMath::Clamp(uint32(FMath::Sqrt(Points.PointsBaseColor[PointIndex + IndexOffset].G) * 0xFF), 0u, 0xFFu);
-					Material.BaseColorB = FMath::Clamp(uint32(FMath::Sqrt(Points.PointsBaseColor[PointIndex + IndexOffset].B) * 0xFF), 0u, 0xFFu);
-					Material.Roughness  = FMath::Clamp(uint32(Points.PointsRoughness[PointIndex + IndexOffset] * 0xFF), 0u, 0xFFu);
+			// Per-Curve Clump ID (16 bits max)
+			if (bHasClumpIDs)
+			{
+				uint16* Packed = (uint16*)AttributeClumpIDs.GetData();
+				Packed[CurveIndex] = uint16(FMath::Clamp(Curves.ClumpIDs[CurveIndex], 0, 65535));
+			}
 
-					if (Material.BaseColorR != 0 || Material.BaseColorG != 0 || Material.BaseColorB != 0 || Material.Roughness != 0)
-					{
-						bHasMaterialData = true;
-					}
-				}
+			// Curves
+			{
+				UE_CLOG(PointCount > 0xFF, LogGroomBuilder, Warning, TEXT("Curve point count is > 256"));
+				UE_CLOG(IndexOffset > 0xFFFFFF, LogGroomBuilder, Warning, TEXT("Curve point offset is > 24M"));
+				FHairStrandsCurveFormat::Type& Curve = OutPackedCurves[CurveIndex];
+				Curve.PointCount  = FMath::Min(uint32(PointCount), 0xFFu);
+				Curve.PointOffset = FMath::Min(uint32(IndexOffset), 0xFFFFFFu);
 			}
 		}
 
@@ -367,17 +447,77 @@ namespace HairStrandsBuilder
 		OutBulkData.MaxRadius = HairStrands.StrandsCurves.MaxRadius;
 		OutBulkData.Flags = FHairStrandsBulkData::DataFlags_HasData;
 
-		if (bHasMaterialData)	{ OutBulkData.Flags |= FHairStrandsBulkData::DataFlags_HasMaterialData; }	else { OutPackedMaterials.Empty(); }
+		// Concatenate all attributes
+		TArray<FHairStrandsAttributeFormat::Type> OutPackedAttributes;
+		{
+			OutPackedAttributes.Reserve(
+				AttributeRootUV.Num() + 
+				AttributeSeed.Num() +
+				AttributeLength.Num() +
+				AttributeClumpIDs.Num() +
+				AttributeBaseColor.Num() +
+				AttributeRoughness.Num() +
+				AttributeAO.Num());
+
+			const uint32 UintToByte = 4;
+
+			for (uint32 AttributeIt=0; AttributeIt< HAIR_ATTRIBUTE_COUNT; ++AttributeIt)
+			{
+				OutBulkData.AttributeOffsets[AttributeIt] = 0xFFFFFFFF;
+			}
+
+			{
+				OutBulkData.AttributeOffsets[HAIR_ATTRIBUTE_ROOTUV] = OutPackedAttributes.Num() * UintToByte;
+				OutPackedAttributes.Append(AttributeRootUV);
+			}
+
+			{
+				OutBulkData.AttributeOffsets[HAIR_ATTRIBUTE_SEED]   = OutPackedAttributes.Num() * UintToByte;
+				OutPackedAttributes.Append(AttributeSeed);
+			}
+
+			{
+				OutBulkData.AttributeOffsets[HAIR_ATTRIBUTE_LENGTH] = OutPackedAttributes.Num() * UintToByte;
+				OutPackedAttributes.Append(AttributeLength);
+			}
+
+			if (bHasClumpIDs)
+			{
+				OutBulkData.AttributeOffsets[HAIR_ATTRIBUTE_CLUMPID] = OutPackedAttributes.Num() * UintToByte;
+				OutPackedAttributes.Append(AttributeClumpIDs);
+			}
+
+			if (bHasColor)
+			{
+				OutBulkData.AttributeOffsets[HAIR_ATTRIBUTE_BASECOLOR] = OutPackedAttributes.Num() * UintToByte;
+				OutPackedAttributes.Append(AttributeBaseColor);
+			}
+
+			if (bHasRoughness)
+			{
+				OutBulkData.AttributeOffsets[HAIR_ATTRIBUTE_ROUGHNESS] = OutPackedAttributes.Num() * UintToByte;
+				OutPackedAttributes.Append(AttributeRoughness);
+			}
+
+			if (bHasAO)
+			{
+				OutBulkData.AttributeOffsets[HAIR_ATTRIBUTE_AO] = OutPackedAttributes.Num() * UintToByte;
+				OutPackedAttributes.Append(AttributeAO);
+			}
+		}
 
 		CopyToBulkData<FHairStrandsPositionFormat>(OutBulkData.Positions, OutPackedPositions);
-		CopyToBulkData<FHairStrandsAttribute0Format>(OutBulkData.Attributes0, OutPackedAttributes0);
-		CopyToBulkData<FHairStrandsAttribute1Format>(OutBulkData.Attributes1, OutPackedAttributes1);
-
-		if (bHasMaterialData)
+		CopyToBulkData<FHairStrandsAttributeFormat>(OutBulkData.Attributes, OutPackedAttributes);
+		CopyToBulkData<FHairStrandsCurveFormat>(OutBulkData.Curves, OutPackedCurves);
+		if (bUse16bitsCurveIndex)
 		{
-			CopyToBulkData<FHairStrandsMaterialFormat>(OutBulkData.Materials, OutPackedMaterials);
+			OutBulkData.Flags |= FHairStrandsBulkData::DataFlags_Has16bitsCurveIndex;
+			CopyToBulkData<FHairStrandsVertexToCurveFormat16>(OutBulkData.VertexToCurve, OutVertexToCurve16);
 		}
-		CopyToBulkData<FHairStrandsRootIndexFormat>(OutBulkData.CurveOffsets, OutCurveOffsets);
+		else
+		{
+			CopyToBulkData<FHairStrandsVertexToCurveFormat32>(OutBulkData.VertexToCurve, OutVertexToCurve32);
+		}
 	}
 
 	void BuildRenderData(const FHairStrandsDatas& HairStrands, FHairStrandsBulkData& OutBulkData)
@@ -1404,48 +1544,6 @@ namespace HairInterpolationBuilder
 	}
 }
 
-class FGroomDataRandomizer
-{
-public:
-	FGroomDataRandomizer(int Seed, int NumRenderCurves, int NumSimCurves)
-	{
-		Random.Initialize(Seed);
-
-		RenderCurveSeeds.SetNumUninitialized(NumRenderCurves);
-		for (int Index = 0; Index < NumRenderCurves; ++Index)
-		{
-			RenderCurveSeeds[Index] = Random.RandHelper(255);
-		}
-
-		SimCurveSeeds.SetNumUninitialized(NumSimCurves);
-		for (int Index = 0; Index < NumSimCurves; ++Index)
-		{
-			SimCurveSeeds[Index] = Random.RandHelper(255);
-		}
-
-		// This randomization makes certain strands being affected by 1, 2, or 3 guides
-		GuideIndices.SetNumUninitialized(NumRenderCurves);
-		for (int Index = 0; Index < NumRenderCurves; ++Index)
-		{
-			FIntVector& RandomIndices = GuideIndices[Index];
-			for (int GuideIndex = 0; GuideIndex < HairInterpolationBuilder::FMetrics::Count; ++GuideIndex)
-			{
-				RandomIndices[GuideIndex] = Random.RandRange(0, HairInterpolationBuilder::FMetrics::Count - 1);
-			}
-		}
-	}
-
-	const TArray<uint8>& GetRenderCurveSeeds() const { return RenderCurveSeeds; }
-	const TArray<uint8>& GetSimCurveSeeds() const { return SimCurveSeeds; }
-	const TArray<FIntVector>& GetRandomGuideIndices() const { return GuideIndices; }
-
-private:
-	FRandomStream Random;
-	TArray<uint8> RenderCurveSeeds;
-	TArray<uint8> SimCurveSeeds;
-	TArray<FIntVector> GuideIndices;
-};
-
 FORCEINLINE FIntVector VectorToIntVector(const FVector& Index)
 {
 	return FIntVector(Index.X, Index.Y, Index.Z);
@@ -1455,6 +1553,11 @@ FORCEINLINE FIntVector VectorToIntVector(const FVector& Index)
 bool FHairDescription::HasRootUV() const
 {
 	return StrandAttributes().GetAttributesRef<FVector2f>(HairAttribute::Strand::RootUV).IsValid();
+}
+
+bool FHairDescription::HasClumpID() const
+{
+	return StrandAttributes().GetAttributesRef<int>(HairAttribute::Strand::ClumpID).IsValid();
 }
 
 bool FHairDescription::HasGuideWeights() const
@@ -1471,18 +1574,17 @@ bool FHairDescription::HasGuideWeights() const
 
 bool FHairDescription::HasColorAttributes() const
 {
-	return
-		VertexAttributes().GetAttributesRef<FVector3f>(HairAttribute::Vertex::Color).IsValid() ||
-		StrandAttributes().GetAttributesRef<FVector3f>(HairAttribute::Strand::Color).IsValid() ||
-		GroomAttributes().GetAttributesRef<FVector3f>(HairAttribute::Groom::Color).IsValid();
+	return VertexAttributes().GetAttributesRef<FVector3f>(HairAttribute::Vertex::Color).IsValid();
 }
 
 bool FHairDescription::HasRoughnessAttributes() const
 {
-	return
-		VertexAttributes().GetAttributesRef<float>(HairAttribute::Vertex::Roughness).IsValid() ||
-		StrandAttributes().GetAttributesRef<float>(HairAttribute::Strand::Roughness).IsValid() ||
-		GroomAttributes().GetAttributesRef<float>(HairAttribute::Groom::Roughness).IsValid();
+	return VertexAttributes().GetAttributesRef<float>(HairAttribute::Vertex::Roughness).IsValid();
+}
+
+bool FHairDescription::HasAOAttributes() const
+{
+	return VertexAttributes().GetAttributesRef<float>(HairAttribute::Vertex::AO).IsValid();
 }
 
 bool FGroomBuilder::BuildHairDescriptionGroups(const FHairDescription& HairDescription, FHairDescriptionGroups& Out)
@@ -1515,24 +1617,12 @@ bool FGroomBuilder::BuildHairDescriptionGroups(const FHairDescription& HairDescr
 		GroomHairWidth = GroomHairWidthAttribute[GroomID];
 	}
 
-	TGroomAttributesConstRef<FVector3f> GroomHairColorAttribute = HairDescription.GroomAttributes().GetAttributesRef<FVector3f>(HairAttribute::Groom::Color);
-	TOptional<FVector> GroomHairColor;
-	if (GroomHairColorAttribute.IsValid())
-	{
-		GroomHairColor = (FVector)GroomHairColorAttribute[GroomID];
-	}
-
-	TGroomAttributesConstRef<float> GroomHairRoughnessAttribute = HairDescription.GroomAttributes().GetAttributesRef<float>(HairAttribute::Groom::Roughness);
-	TOptional<float> GroomHairRoughness;
-	if (GroomHairRoughnessAttribute.IsValid())
-	{
-		GroomHairRoughness = GroomHairRoughnessAttribute[GroomID];
-	}
-
 	TVertexAttributesConstRef<FVector3f> VertexPositions	= HairDescription.VertexAttributes().GetAttributesRef<FVector3f>(HairAttribute::Vertex::Position);
 	TVertexAttributesConstRef<FVector3f> VertexBaseColor	= HairDescription.VertexAttributes().GetAttributesRef<FVector3f>(HairAttribute::Vertex::Color);
-	TVertexAttributesConstRef<float> VertexRoughness	= HairDescription.VertexAttributes().GetAttributesRef<float>(HairAttribute::Vertex::Roughness);
-	TStrandAttributesConstRef<int> StrandNumVertices	= HairDescription.StrandAttributes().GetAttributesRef<int>(HairAttribute::Strand::VertexCount);
+	TVertexAttributesConstRef<float> VertexRoughness		= HairDescription.VertexAttributes().GetAttributesRef<float>(HairAttribute::Vertex::Roughness);
+	TVertexAttributesConstRef<float> VertexAO				= HairDescription.VertexAttributes().GetAttributesRef<float>(HairAttribute::Vertex::AO);
+	TStrandAttributesConstRef<int> StrandNumVertices		= HairDescription.StrandAttributes().GetAttributesRef<int>(HairAttribute::Strand::VertexCount);
+	TStrandAttributesConstRef<int> ClumpIDs					= HairDescription.StrandAttributes().GetAttributesRef<int>(HairAttribute::Strand::ClumpID);
 
 	if (!VertexPositions.IsValid() || !StrandNumVertices.IsValid())
 	{
@@ -1542,6 +1632,8 @@ bool FGroomBuilder::BuildHairDescriptionGroups(const FHairDescription& HairDescr
 
 	const bool bHasBaseColorAttribute = VertexBaseColor.IsValid();
 	const bool bHasRoughnessAttribute = VertexRoughness.IsValid();
+	const bool bHasAOAttribute = VertexAO.IsValid();
+	const bool bHasClumpIDs = ClumpIDs.IsValid();
 
 	TVertexAttributesConstRef<float> VertexWidths = HairDescription.VertexAttributes().GetAttributesRef<float>(HairAttribute::Vertex::Width);
 	TStrandAttributesConstRef<float> StrandWidths = HairDescription.StrandAttributes().GetAttributesRef<float>(HairAttribute::Strand::Width);
@@ -1581,7 +1673,7 @@ bool FGroomBuilder::BuildHairDescriptionGroups(const FHairDescription& HairDescr
 		}
 		FHairDescriptionGroup& Group = Out.HairGroups.AddDefaulted_GetRef();
 		Group.Info.GroupID = GroupID;
-		Group.Info.GroupName = GroupName != NAME_None ? GroupName : FName(FString::Printf(TEXT("Group_%d"), GroupID));
+		Group.Info.GroupName = (GroupName != NAME_None) ? GroupName : FName(FString::Printf(TEXT("Group_%d"), GroupID));
 		Group.Info.MaxImportedWidth = -1.0f; // Invalid width
 		return Group;
 	};
@@ -1672,6 +1764,11 @@ bool FGroomBuilder::BuildHairDescriptionGroups(const FHairDescription& HairDescr
 			}
 		}
 
+		if (bHasClumpIDs)
+		{
+			CurrentHairStrandsDatas->StrandsCurves.ClumpIDs.Add(ClumpIDs[StrandID]);
+		}
+
 		if (bHasUVData)
 		{
 			CurrentHairStrandsDatas->StrandsCurves.CurvesRootUV.Add(StrandRootUV[StrandID]);
@@ -1703,8 +1800,19 @@ bool FGroomBuilder::BuildHairDescriptionGroups(const FHairDescription& HairDescr
 			FVertexID VertexID(GlobalVertexIndex);
 
 			CurrentHairStrandsDatas->StrandsPoints.PointsPosition.Add(VertexPositions[VertexID]);
-			CurrentHairStrandsDatas->StrandsPoints.PointsBaseColor.Add(bHasBaseColorAttribute ? FLinearColor(VertexBaseColor[VertexID]) : (GroomHairColor     ? FLinearColor(GroomHairColor.GetValue()) : FLinearColor::Black));
-			CurrentHairStrandsDatas->StrandsPoints.PointsRoughness.Add(bHasRoughnessAttribute ? VertexRoughness[VertexID] : (GroomHairRoughness ? GroomHairRoughness.GetValue() : 0.f));
+
+			if (bHasBaseColorAttribute)
+			{
+				CurrentHairStrandsDatas->StrandsPoints.PointsBaseColor.Add(FLinearColor(VertexBaseColor[VertexID]));
+			}
+			if (bHasRoughnessAttribute)
+			{
+				CurrentHairStrandsDatas->StrandsPoints.PointsRoughness.Add(VertexRoughness[VertexID]);
+			}
+			if (bHasAOAttribute)
+			{
+				CurrentHairStrandsDatas->StrandsPoints.PointsAO.Add(VertexAO[VertexID]);
+			}
 
 			// Vertex
 			float VertexWidth = 0.f;
@@ -1807,7 +1915,7 @@ void FGroomBuilder::BuildData(
 	const float CurveDecimation		= FMath::Clamp(InSettings.DecimationSettings.CurveDecimation, 0.f, 1.f);
 	const float VertexDecimation	= FMath::Clamp(InSettings.DecimationSettings.VertexDecimation, 0.f, 1.f);
 	const float HairToGuideDensity	= FMath::Clamp(InSettings.InterpolationSettings.HairToGuideDensity, 0.f, 1.f);	
-	const bool bContinuousDecimationReordering = IsHairStrandContinuousDecimationReorderingEnabled(); //this is a read only project setting which will modify the platform data that is stored in the DDC
+	const bool bCurveReordering 	= true;
 
 	{
 		OutGroupInfo.GroupID = InHairDescriptionGroup.Info.GroupID;
@@ -1815,17 +1923,18 @@ void FGroomBuilder::BuildData(
 		OutGroupInfo.MaxImportedWidth = InHairDescriptionGroup.Info.MaxImportedWidth;
 
 		// Rendering data
+		if (InHairDescriptionGroup.Strands.IsValid())
 		{
 			OutRen = InHairDescriptionGroup.Strands;
 
 			HairStrandsBuilder::BuildInternalData(OutRen, !InHairDescriptionGroup.bHasUVData);
 
 			// Decimate
-			if (CurveDecimation < 1 || VertexDecimation < 1 || bContinuousDecimationReordering)
+			if (CurveDecimation < 1 || VertexDecimation < 1 || bCurveReordering)
 			{
 				FHairStrandsDatas FullData = OutRen;
 				OutRen.Reset();
-				FHairStrandsDecimation::Decimate(FullData, CurveDecimation, VertexDecimation, bContinuousDecimationReordering, OutRen);
+				FHairStrandsDecimation::Decimate(FullData, CurveDecimation, VertexDecimation, bCurveReordering, OutRen);
 			}
 			OutGroupInfo.NumCurves			= OutRen.GetNumCurves();
 			OutGroupInfo.NumCurveVertices	= OutRen.GetNumPoints();
@@ -2028,7 +2137,23 @@ void Decimate(
 	OutData.HairDensity = InData.HairDensity;
 
 	const bool bHasPrecomputedWeights = InData.StrandsCurves.CurvesClosestGuideIDs.Num() > 0 && InData.StrandsCurves.CurvesClosestGuideWeights.Num() > 0;
-	
+	const bool bHasColor = InData.StrandsPoints.PointsBaseColor.Num() > 0;
+	const bool bHasRoughness = InData.StrandsPoints.PointsRoughness.Num() > 0;
+	const bool bHasAO = InData.StrandsPoints.PointsAO.Num() > 0;
+	const bool bHasClumpIDs = InData.StrandsCurves.ClumpIDs.Num() > 0;
+	const bool bHasStrandIDs = InData.StrandsCurves.StrandIDs.Num() > 0;
+
+	if (bHasColor)		{ OutData.StrandsPoints.PointsBaseColor.SetNum(PointCount); }
+	if (bHasRoughness)	{ OutData.StrandsPoints.PointsRoughness.SetNum(PointCount); }
+	if (bHasAO)			{ OutData.StrandsPoints.PointsAO.SetNum(PointCount); }
+	if (bHasStrandIDs)	{ OutData.StrandsCurves.StrandIDs.SetNum(CurveCount); }
+	if (bHasClumpIDs)	{ OutData.StrandsCurves.ClumpIDs.SetNum(CurveCount); }
+	if (bHasPrecomputedWeights)
+	{
+		OutData.StrandsCurves.CurvesClosestGuideIDs.SetNum(CurveCount);
+		OutData.StrandsCurves.CurvesClosestGuideWeights.SetNum(CurveCount);
+	}
+
 	PointCount = 0;
 	for(uint32 CurveIndex = 0; CurveIndex < CurveCount; ++CurveIndex)
 	{
@@ -2043,6 +2168,14 @@ void Decimate(
 		OutData.StrandsCurves.CurvesRootUV[CurveIndex] = InData.StrandsCurves.CurvesRootUV[GuideIndex];
 		OutData.StrandsCurves.CurvesOffset[CurveIndex] = PointCount;
 		OutData.StrandsCurves.CurvesLength[CurveIndex] = InData.StrandsCurves.CurvesLength[GuideIndex];
+		if (bHasStrandIDs)
+		{
+			OutData.StrandsCurves.StrandIDs[CurveIndex] = InData.StrandsCurves.StrandIDs[GuideIndex];
+		}
+		if (bHasClumpIDs)
+		{
+			OutData.StrandsCurves.ClumpIDs[CurveIndex] = InData.StrandsCurves.ClumpIDs[GuideIndex];
+		}
 		if (bHasPrecomputedWeights)
 		{
 			OutData.StrandsCurves.CurvesClosestGuideIDs[CurveIndex] = InData.StrandsCurves.CurvesClosestGuideIDs[GuideIndex];
@@ -2056,20 +2189,16 @@ void Decimate(
 			const float PointSpace = GuideOffset + PointIndex * BoneSpace;
 	
 			const int32 PointBegin = FMath::Min(FMath::FloorToInt32(PointSpace), GuideOffset + GuideCount-2);
-			const int32 PointEnd = PointBegin+1;
-	
+			const int32 PointEnd = PointBegin+1;	
 			const float PointAlpha = PointSpace - PointBegin;
 			
-			OutData.StrandsPoints.PointsPosition[PointCount] = InData.StrandsPoints.PointsPosition[PointBegin] * (1.0-PointAlpha) +
-				InData.StrandsPoints.PointsPosition[PointEnd] * PointAlpha;
-			OutData.StrandsPoints.PointsCoordU[PointCount] = InData.StrandsPoints.PointsCoordU[PointBegin] * (1.0-PointAlpha) +
-				InData.StrandsPoints.PointsCoordU[PointEnd] * PointAlpha;
-			OutData.StrandsPoints.PointsRadius[PointCount] = InData.StrandsPoints.PointsRadius[PointBegin] * (1.0-PointAlpha) +
-				InData.StrandsPoints.PointsRadius[PointEnd] * PointAlpha;
-			OutData.StrandsPoints.PointsBaseColor[PointCount] = InData.StrandsPoints.PointsBaseColor[PointBegin] * (1.0-PointAlpha) +
-				InData.StrandsPoints.PointsBaseColor[PointEnd] * PointAlpha;
-			OutData.StrandsPoints.PointsRoughness[PointCount] = InData.StrandsPoints.PointsRoughness[PointBegin] * (1.0-PointAlpha) +
-				InData.StrandsPoints.PointsRoughness[PointEnd] * PointAlpha;
+			OutData.StrandsPoints.PointsPosition[PointCount]	= FMath::Lerp(InData.StrandsPoints.PointsPosition[PointBegin],	InData.StrandsPoints.PointsPosition[PointEnd],	PointAlpha);
+			OutData.StrandsPoints.PointsCoordU[PointCount]		= FMath::Lerp(InData.StrandsPoints.PointsCoordU[PointBegin],	InData.StrandsPoints.PointsCoordU[PointEnd],	PointAlpha);
+			// Multiply by MaxRadius as HairStrandsBuilder::BuildInternalData will recompute MaxRadius based on the actual Radius not the not the normalized radius.
+			OutData.StrandsPoints.PointsRadius[PointCount]		= FMath::Lerp(InData.StrandsPoints.PointsRadius[PointBegin],	InData.StrandsPoints.PointsRadius[PointEnd],	PointAlpha) * InData.StrandsCurves.MaxRadius; 
+			if (bHasColor)		{ OutData.StrandsPoints.PointsBaseColor[PointCount]	= FMath::Lerp(InData.StrandsPoints.PointsBaseColor[PointBegin], InData.StrandsPoints.PointsBaseColor[PointEnd], PointAlpha); }
+			if (bHasRoughness)	{ OutData.StrandsPoints.PointsRoughness[PointCount]	= FMath::Lerp(InData.StrandsPoints.PointsRoughness[PointBegin], InData.StrandsPoints.PointsRoughness[PointEnd], PointAlpha); }
+			if (bHasAO)			{ OutData.StrandsPoints.PointsAO[PointCount]		= FMath::Lerp(InData.StrandsPoints.PointsAO[PointBegin],		InData.StrandsPoints.PointsAO[PointEnd],		PointAlpha); }
 		}
 	}
 	HairStrandsBuilder::BuildInternalData(OutData, false);
@@ -2090,12 +2219,14 @@ void Decimate(
 	const uint32 InCurveCount = InData.StrandsCurves.Num();
 	const uint32 OutCurveCount = FMath::Clamp(uint32(InCurveCount * CurveDecimationPercentage), 1u, InCurveCount);
 	const bool bHasPrecomputedWeights = InData.StrandsCurves.CurvesClosestGuideIDs.Num() > 0 && InData.StrandsCurves.CurvesClosestGuideWeights.Num() > 0;
+	const bool bHasColor = InData.StrandsPoints.PointsBaseColor.Num() > 0;
+	const bool bHasRoughness = InData.StrandsPoints.PointsRoughness.Num() > 0;
+	const bool bHasAO = InData.StrandsPoints.PointsAO.Num() > 0;
+	const bool bHasClumpIDs = InData.StrandsCurves.ClumpIDs.Num() > 0;
+	const bool bHasStrandIDs = InData.StrandsCurves.StrandIDs.Num() > 0;
 
-	TArray<uint32> CurveIndices;
-	CurveIndices.SetNum(OutCurveCount);
-
-	uint32 OutTotalPointCount = 0;
 	FRandomStream Random;
+	Random.Initialize(0xdeedbeed);
 
 	TArray<uint32> CurveRandomizedIndex;
 
@@ -2103,8 +2234,6 @@ void Decimate(
 	if (bContinuousDecimationReordering)
 	{
 		CurveRandomizedIndex.SetNum(InCurveCount);
-
-		Random.Initialize(0xdeedbeed);
 
 		//initialize value
 		for (uint32 CurveIndex = 0; CurveIndex < InCurveCount; CurveIndex++)
@@ -2119,24 +2248,32 @@ void Decimate(
 		}
 	}
 
-	const float CurveBucketSize = float(InCurveCount) / float(OutCurveCount);
-	int32 LastCurveIndex = -1;
-	for (uint32 BucketIndex = 0; BucketIndex < OutCurveCount; BucketIndex++)
+	uint32 OutTotalPointCount = InData.GetNumPoints();
+	TArray<uint32> CurveIndices;
+	const bool bNeedDecimation = CurveDecimationPercentage < 1 || VertexDecimationPercentage < 1;
+	if (bNeedDecimation)
 	{
-		const float MinBucket = FMath::Max(BucketIndex  * CurveBucketSize, float(LastCurveIndex+1));
-		const float MaxBucket = (BucketIndex+1) * CurveBucketSize;
-		const float AdjustedBucketSize = MaxBucket - MinBucket;
-		if (AdjustedBucketSize > 0)
+		CurveIndices.SetNum(OutCurveCount);
+		OutTotalPointCount = 0;
+		const float CurveBucketSize = float(InCurveCount) / float(OutCurveCount);
+		int32 LastCurveIndex = -1;
+		for (uint32 BucketIndex = 0; BucketIndex < OutCurveCount; BucketIndex++)
 		{
-			const uint32 CurveIndex = Random.RandRange(MinBucket, FMath::FloorToInt(MinBucket + AdjustedBucketSize)-1);
-			CurveIndices[BucketIndex] = CurveIndex;
-			LastCurveIndex = CurveIndex;
-			
-			const uint32 EffectiveCurveIndex = bContinuousDecimationReordering ? CurveRandomizedIndex[CurveIndex] : CurveIndex;
+			const float MinBucket = FMath::Max(BucketIndex * CurveBucketSize, float(LastCurveIndex + 1));
+			const float MaxBucket = (BucketIndex + 1) * CurveBucketSize;
+			const float AdjustedBucketSize = MaxBucket - MinBucket;
+			if (AdjustedBucketSize > 0)
+			{
+				const uint32 CurveIndex = Random.RandRange(MinBucket, FMath::FloorToInt(MinBucket + AdjustedBucketSize) - 1);
+				CurveIndices[BucketIndex] = CurveIndex;
+				LastCurveIndex = CurveIndex;
 
-			const uint32 InPointCount = InData.StrandsCurves.CurvesCount[EffectiveCurveIndex];
-			const uint32 OutPointCount = DecimatePointCount(InPointCount, VertexDecimationPercentage);
-			OutTotalPointCount += OutPointCount;
+				const uint32 EffectiveCurveIndex = bContinuousDecimationReordering ? CurveRandomizedIndex[CurveIndex] : CurveIndex;
+
+				const uint32 InPointCount = InData.StrandsCurves.CurvesCount[EffectiveCurveIndex];
+				const uint32 OutPointCount = DecimatePointCount(InPointCount, VertexDecimationPercentage);
+				OutTotalPointCount += OutPointCount;
+			}
 		}
 	}
 
@@ -2144,10 +2281,21 @@ void Decimate(
 	OutData.StrandsPoints.SetNum(OutTotalPointCount);
 	OutData.HairDensity = InData.HairDensity;
 
+	if (bHasColor)		{ OutData.StrandsPoints.PointsBaseColor.SetNum(OutTotalPointCount); }
+	if (bHasRoughness)	{ OutData.StrandsPoints.PointsRoughness.SetNum(OutTotalPointCount); }
+	if (bHasAO)			{ OutData.StrandsPoints.PointsAO.SetNum(OutTotalPointCount); }
+	if (bHasStrandIDs)	{ OutData.StrandsCurves.StrandIDs.SetNum(OutCurveCount); }
+	if (bHasClumpIDs)	{ OutData.StrandsCurves.ClumpIDs.SetNum(OutCurveCount); }
+	if (bHasPrecomputedWeights)
+	{
+		OutData.StrandsCurves.CurvesClosestGuideIDs.SetNum(OutCurveCount);
+		OutData.StrandsCurves.CurvesClosestGuideWeights.SetNum(OutCurveCount);
+	}
+
 	uint32 OutPointOffset = 0; 
 	for (uint32 OutCurveIndex = 0; OutCurveIndex < OutCurveCount; ++OutCurveIndex)
 	{
-		const uint32 InCurveIndex	= CurveIndices[OutCurveIndex];
+		const uint32 InCurveIndex		 = bNeedDecimation ? CurveIndices[OutCurveIndex] : OutCurveIndex;
 		const uint32 EffectiveCurveIndex = bContinuousDecimationReordering ? CurveRandomizedIndex[InCurveIndex] : InCurveIndex;
 
 		const uint32 InPointOffset	= InData.StrandsCurves.CurvesOffset[EffectiveCurveIndex];
@@ -2156,34 +2304,38 @@ void Decimate(
 		// Decimation using area metric
 	#if 1
 		TArray<uint32> OutPointIndices;
-		// Don't need to DecimateCurve if there are only 2 control vertices
-		if (InPointCount > 2)
+		if (bNeedDecimation)
 		{
-			DecimateCurve(
-				InData.StrandsPoints.PointsPosition,
-				InPointOffset,
-				InPointCount,
-				VertexDecimationPercentage,
-				OutPointIndices);
-		}
-		else
-		{
-			// Just pass the start and end point of the curve, no decimation needed
-			OutPointIndices.Add(0);
-			OutPointIndices.Add(1);
+			// Don't need to DecimateCurve if there are only 2 control vertices
+			if (InPointCount > 2)
+			{
+				DecimateCurve(
+					InData.StrandsPoints.PointsPosition,
+					InPointOffset,
+					InPointCount,
+					VertexDecimationPercentage,
+					OutPointIndices);
+			}
+			else
+			{
+				// Just pass the start and end point of the curve, no decimation needed
+				OutPointIndices.Add(0);
+				OutPointIndices.Add(1);
+			}
 		}
 
-		const uint32 OutPointCount = OutPointIndices.Num();
-
+		const uint32 OutPointCount = bNeedDecimation ? OutPointIndices.Num() : InPointCount;
 		for (uint32 OutPointIndex = 0; OutPointIndex < OutPointCount; ++OutPointIndex)
 		{
-			const uint32 InPointIndex = OutPointIndices[OutPointIndex];
+			const uint32 InPointIndex = bNeedDecimation ? OutPointIndices[OutPointIndex] : OutPointIndex;
 
 			OutData.StrandsPoints.PointsPosition [OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsPosition	[InPointIndex + InPointOffset];
 			OutData.StrandsPoints.PointsCoordU	 [OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsCoordU	[InPointIndex + InPointOffset];
-			OutData.StrandsPoints.PointsRadius	 [OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsRadius	[InPointIndex + InPointOffset];
-			OutData.StrandsPoints.PointsBaseColor[OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsBaseColor[InPointIndex + InPointOffset];
-			OutData.StrandsPoints.PointsRoughness[OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsRoughness[InPointIndex + InPointOffset];
+			// Multiply by MaxRadius as HairStrandsBuilder::BuildInternalData will recompute MaxRadius based on the actual Radius not the not the normalized radius.
+			OutData.StrandsPoints.PointsRadius	 [OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsRadius	[InPointIndex + InPointOffset] * InData.StrandsCurves.MaxRadius;
+			if (bHasColor)		{ OutData.StrandsPoints.PointsBaseColor[OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsBaseColor[InPointIndex + InPointOffset]; }
+			if (bHasRoughness)	{ OutData.StrandsPoints.PointsRoughness[OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsRoughness[InPointIndex + InPointOffset]; }
+			if (bHasAO)			{ OutData.StrandsPoints.PointsAO[OutPointIndex + OutPointOffset]		= InData.StrandsPoints.PointsAO[InPointIndex + InPointOffset]; }
 		}
 	#else
 		// Decimation using uniform/interleaved removal
@@ -2205,19 +2357,28 @@ void Decimate(
 			OutData.StrandsPoints.PointsPosition [OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsPosition	[InPointIndex + InPointOffset];
 			OutData.StrandsPoints.PointsCoordU	 [OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsCoordU	[InPointIndex + InPointOffset];
 			OutData.StrandsPoints.PointsRadius	 [OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsRadius	[InPointIndex + InPointOffset];
-			OutData.StrandsPoints.PointsBaseColor[OutPointIndex + OutPointOffset] = FLinearColor::Black;
-			OutData.StrandsPoints.PointsRoughness[OutPointIndex + OutPointOffset] = 0;
+			if (bHasColor)		{ OutData.StrandsPoints.PointsBaseColor[OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsBaseColor[InPointIndex + InPointOffset]; }
+			if (bHasRoughness)	{ OutData.StrandsPoints.PointsRoughness[OutPointIndex + OutPointOffset] = InData.StrandsPoints.PointsRoughness[InPointIndex + InPointOffset]; }
+			if (bHasAO)			{ OutData.StrandsPoints.PointsAO[OutPointIndex + OutPointOffset]		= InData.StrandsPoints.PointsAO[InPointIndex + InPointOffset]; }
 		}
 	#endif
 
 		OutData.StrandsCurves.CurvesCount[OutCurveIndex]  = OutPointCount;
-		OutData.StrandsCurves.CurvesRootUV[OutCurveIndex] = InData.StrandsCurves.CurvesRootUV[EffectiveCurveIndex];
 		OutData.StrandsCurves.CurvesOffset[OutCurveIndex] = OutPointOffset;
+		OutData.StrandsCurves.CurvesRootUV[OutCurveIndex] = InData.StrandsCurves.CurvesRootUV[EffectiveCurveIndex];
 		OutData.StrandsCurves.CurvesLength[OutCurveIndex] = InData.StrandsCurves.CurvesLength[EffectiveCurveIndex];
 		if (bHasPrecomputedWeights)
 		{
 			OutData.StrandsCurves.CurvesClosestGuideIDs[OutCurveIndex] = InData.StrandsCurves.CurvesClosestGuideIDs[EffectiveCurveIndex];
 			OutData.StrandsCurves.CurvesClosestGuideWeights[OutCurveIndex] = InData.StrandsCurves.CurvesClosestGuideWeights[EffectiveCurveIndex];
+		}
+		if (bHasStrandIDs)
+		{
+			OutData.StrandsCurves.StrandIDs[OutCurveIndex] = InData.StrandsCurves.StrandIDs[EffectiveCurveIndex];
+		}
+		if (bHasClumpIDs)
+		{
+			OutData.StrandsCurves.ClumpIDs[OutCurveIndex] = InData.StrandsCurves.ClumpIDs[EffectiveCurveIndex];
 		}
 		OutData.StrandsCurves.MaxLength = InData.StrandsCurves.MaxLength;
 		OutData.StrandsCurves.MaxRadius = InData.StrandsCurves.MaxRadius;
@@ -2336,6 +2497,9 @@ static void Voxelize(const FHairDescriptionGroups& InGroups, FHairGrid& Out)
 		FHairStrandsDatas In = Group.Strands;
 		HairStrandsBuilder::BuildInternalData(In, false);
 
+		const bool bHasColor     = In.StrandsPoints.PointsBaseColor.Num() > 0;
+		const bool bHasRoughness = In.StrandsPoints.PointsRoughness.Num() > 0;
+
 		// Fill in voxel (TODO: make it parallel)
 		for (uint32 CurveIt = 0, CurveCount = In.GetNumCurves(); CurveIt < CurveCount; ++CurveIt)
 		{
@@ -2351,10 +2515,10 @@ static void Voxelize(const FHairDescriptionGroups& InGroups, FHairGrid& Out)
 				const FVector3f& P1 = In.StrandsPoints.PointsPosition[Index1];
 				const float R0 = In.StrandsPoints.PointsRadius[Index0];
 				const float R1 = In.StrandsPoints.PointsRadius[Index1];
-				const FVector3f C0(In.StrandsPoints.PointsBaseColor[Index0].R, In.StrandsPoints.PointsBaseColor[Index0].G, In.StrandsPoints.PointsBaseColor[Index0].B);
-				const FVector3f C1(In.StrandsPoints.PointsBaseColor[Index1].R, In.StrandsPoints.PointsBaseColor[Index1].G, In.StrandsPoints.PointsBaseColor[Index1].B);
-				const float Rough0 = In.StrandsPoints.PointsRoughness[Index0];
-				const float Rough1 = In.StrandsPoints.PointsRoughness[Index1];
+				const FVector3f C0 = bHasColor ? FVector3f(In.StrandsPoints.PointsBaseColor[Index0].R, In.StrandsPoints.PointsBaseColor[Index0].G, In.StrandsPoints.PointsBaseColor[Index0].B) : FVector3f(0);
+				const FVector3f C1 = bHasColor ? FVector3f(In.StrandsPoints.PointsBaseColor[Index1].R, In.StrandsPoints.PointsBaseColor[Index1].G, In.StrandsPoints.PointsBaseColor[Index1].B) : FVector3f(0);
+				const float Rough0 = bHasRoughness ? In.StrandsPoints.PointsRoughness[Index0] : 0;
+				const float Rough1 = bHasRoughness ? In.StrandsPoints.PointsRoughness[Index1] : 0;
 				const FVector3f Segment = P1 - P0;
 
 				// This is a coarse/non-conservative voxelization, by ray-marching segment, instead of walking intersected voxels
@@ -2827,7 +2991,7 @@ static void BuildClusterData(
 	TArray<FHairClusterInfo>& LocalClusterInfos = Out.ClusterInfos;
 	TArray<FHairClusterLODInfo>& LocalClusterLODInfos = Out.ClusterLODInfos;
 	TArray<uint32>& LocalVertexToClusterIds = Out.VertexToClusterIds;
-#define USE_PARALLE_FOR 1
+#define USE_PARALLE_FOR 0
 #if USE_PARALLE_FOR
 	ParallelFor(Out.ClusterCount,
 		[

@@ -2,12 +2,9 @@
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimBoneCompressionCodec.h"
-#include "Animation/AnimSequence.h"
 #include "Animation/AnimationSettings.h"
 #include "AnimationUtils.h"
 #include "AnimationCompression.h"
-#include "Serialization/MemoryWriter.h"
-#include "UObject/Package.h"
 #include "Async/ParallelFor.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimBoneCompressionSettings)
@@ -324,13 +321,12 @@ void UAnimBoneCompressionSettings::PopulateDDCKey(const UAnimSequenceBase& AnimS
 	{
 		if (Codec != nullptr)
 		{
-			const int64 ArchiveOffset = Ar.Tell();
+			const int64 archiveOffset = Ar.Tell();
 			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			Codec->PopulateDDCKey(AnimSeq, Ar);
 			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-			// If nothing was written, perhaps the codec implements the old deprecated API, call it just in case
-			if (ArchiveOffset == Ar.Tell())
+			if (archiveOffset == Ar.Tell())
 			{
 				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				Codec->PopulateDDCKey(Ar);

@@ -15,7 +15,7 @@ struct CONTROLRIG_API FRigUnit_GetTransform : public FRigUnit
 
 	FRigUnit_GetTransform()
 		: Item(NAME_None, ERigElementType::Bone)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Transform(FTransform::Identity)
 		, CachedIndex()
@@ -25,7 +25,7 @@ struct CONTROLRIG_API FRigUnit_GetTransform : public FRigUnit
 
 	virtual FRigElementKey DetermineSpaceForPin(const FString& InPinPath, void* InUserContext) const override
 	{
-		if(Space == EBoneGetterSetterMode::LocalSpace)
+		if(Space == ERigVMTransformSpace::LocalSpace)
 		{
 			if (const URigHierarchy* Hierarchy = (const URigHierarchy*)InUserContext)
 			{
@@ -36,7 +36,7 @@ struct CONTROLRIG_API FRigUnit_GetTransform : public FRigUnit
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The item to retrieve the transform for
@@ -48,7 +48,7 @@ struct CONTROLRIG_API FRigUnit_GetTransform : public FRigUnit
 	 * Defines if the transform should be retrieved in local or global space
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	 * Defines if the transform should be retrieved as current (false) or initial (true).
@@ -61,7 +61,7 @@ struct CONTROLRIG_API FRigUnit_GetTransform : public FRigUnit
 	UPROPERTY(meta=(Output))
 	FTransform Transform;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	FCachedRigElement CachedIndex;
 };
@@ -76,14 +76,14 @@ struct CONTROLRIG_API FRigUnit_GetTransformArray : public FRigUnit
 
 	FRigUnit_GetTransformArray()
 		: Items()
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Transforms()
 		, CachedIndex()
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	* The items to retrieve the transforms for
@@ -95,7 +95,7 @@ struct CONTROLRIG_API FRigUnit_GetTransformArray : public FRigUnit
 	* Defines if the transforms should be retrieved in local or global space
 	*/ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	* Defines if the transforms should be retrieved as current (false) or initial (true).
@@ -108,7 +108,7 @@ struct CONTROLRIG_API FRigUnit_GetTransformArray : public FRigUnit
 	UPROPERTY(meta=(Output))
 	TArray<FTransform> Transforms;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	TArray<FCachedRigElement> CachedIndex;
 
@@ -126,14 +126,14 @@ struct CONTROLRIG_API FRigUnit_GetTransformItemArray : public FRigUnit
 
 	FRigUnit_GetTransformItemArray()
 		: Items()
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Transforms()
 		, CachedIndex()
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	* The items to retrieve the transforms for
@@ -145,7 +145,7 @@ struct CONTROLRIG_API FRigUnit_GetTransformItemArray : public FRigUnit
 	* Defines if the transforms should be retrieved in local or global space
 	*/ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	* Defines if the transforms should be retrieved as current (false) or initial (true).
@@ -158,7 +158,7 @@ struct CONTROLRIG_API FRigUnit_GetTransformItemArray : public FRigUnit
 	UPROPERTY(meta=(Output))
 	TArray<FTransform> Transforms;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	TArray<FCachedRigElement> CachedIndex;
 };

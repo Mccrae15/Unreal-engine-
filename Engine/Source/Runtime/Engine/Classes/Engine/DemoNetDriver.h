@@ -213,6 +213,7 @@ public:
 	void RespawnNecessaryNetStartupActors(TArray<AActor*>& SpawnedActors, ULevel* Level = nullptr);
 
 private:
+	void RestoreComponentState(UActorComponent* ActorComp, FRollbackNetStartupActorInfo& RollbackActor);
 
 	void InitDefaults();
 
@@ -281,7 +282,7 @@ private:
 	FOnGotoTimeDelegate OnGotoTimeDelegate_Transient;
 	
 	/** Saved server time after loading a checkpoint, so that we can set the server time as accurately as possible after the fast-forward */
-	float SavedReplicatedWorldTimeSeconds;
+	double SavedReplicatedWorldTimeSeconds;
 
 	/** Saved fast-forward time, used for correcting world time after the fast-forward is complete */
 	float SavedSecondsToSkip;
@@ -626,10 +627,21 @@ public:
 	}
 
 	uint32 GetPlaybackDemoChangelist() const { return ReplayHelper.PlaybackDemoHeader.EngineVersion.GetChangelist(); }
-	uint32 GetPlaybackDemoVersion() const { return ReplayHelper.PlaybackDemoHeader.Version; }
 
-	uint32 GetPlaybackEngineNetworkProtocolVersion() const { return ReplayHelper.PlaybackDemoHeader.EngineNetworkProtocolVersion; }
-	uint32 GetPlaybackGameNetworkProtocolVersion() const { return ReplayHelper.PlaybackDemoHeader.GameNetworkProtocolVersion; }
+	UE_DEPRECATED(5.2, "Will be removed in favor of custom versions, use GetPlaybackReplayVersion instead")
+	uint32 GetPlaybackDemoVersion() const 
+	{ 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return ReplayHelper.PlaybackDemoHeader.Version; 
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	FReplayCustomVersion::Type GetPlaybackReplayVersion() const { return ReplayHelper.GetPlaybackReplayVersion(); }
+
+	uint32 GetPlaybackEngineNetworkProtocolVersion() const { return ReplayHelper.PlaybackDemoHeader.GetCustomVersion(FEngineNetworkCustomVersion::Guid); }
+	uint32 GetPlaybackGameNetworkProtocolVersion() const { return ReplayHelper.PlaybackDemoHeader.GetCustomVersion(FGameNetworkCustomVersion::Guid); }
+
+	uint32 GetPlaybackCustomVersionVersion(const FGuid& VersionGuid) const { return ReplayHelper.PlaybackDemoHeader.GetCustomVersion(VersionGuid); }
 
 	FString GetDemoPath() const;
 

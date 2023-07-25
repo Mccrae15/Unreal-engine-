@@ -2,12 +2,8 @@
 
 #include "Elements/Metadata/PCGMetadataTrigOpElement.h"
 
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataEntryKeyIterator.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataTrigOpElement)
 
 namespace PCGMetadataTrigSettings
 {
@@ -45,6 +41,25 @@ namespace PCGMetadataTrigSettings
 	}
 }
 
+void UPCGMetadataTrigSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
+}
+
 FName UPCGMetadataTrigSettings::GetInputPinLabel(uint32 Index) const
 {
 	switch (Index)
@@ -69,16 +84,16 @@ bool UPCGMetadataTrigSettings::IsSupportedInputType(uint16 TypeId, uint32 InputI
 	return PCG::Private::IsOfTypes<int32, int64, float, double>(TypeId);
 }
 
-FName UPCGMetadataTrigSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataTrigSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
@@ -102,7 +117,12 @@ FName UPCGMetadataTrigSettings::AdditionalTaskName() const
 #if WITH_EDITOR
 FName UPCGMetadataTrigSettings::GetDefaultNodeName() const
 {
-	return TEXT("Attribute Trig Op");
+	return TEXT("AttributeTrigOp");
+}
+
+FText UPCGMetadataTrigSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataTrigSettings", "NodeTitle", "Attribute Trig Op");
 }
 #endif // WITH_EDITOR
 

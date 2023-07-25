@@ -7,6 +7,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/FileManager.h"
 #include "Stats/Stats.h"
 #include "Templates/RefCounting.h"
 #include "Misc/SecureHash.h"
@@ -15,15 +16,16 @@
 #include "ShaderCore.h"
 
 class Error;
+class IShaderFormat;
 
 // this is for the protocol, not the data, bump if FShaderCompilerInput or ProcessInputFromArchive changes.
-const int32 ShaderCompileWorkerInputVersion = 17;
+inline const int32 ShaderCompileWorkerInputVersion = 18;
 // this is for the protocol, not the data, bump if FShaderCompilerOutput or WriteToOutputArchive changes.
-const int32 ShaderCompileWorkerOutputVersion = 8;
+inline const int32 ShaderCompileWorkerOutputVersion = 10;
 // this is for the protocol, not the data.
-const int32 ShaderCompileWorkerSingleJobHeader = 'S';
+inline const int32 ShaderCompileWorkerSingleJobHeader = 'S';
 // this is for the protocol, not the data.
-const int32 ShaderCompileWorkerPipelineJobHeader = 'P';
+inline const int32 ShaderCompileWorkerPipelineJobHeader = 'P';
 
 /** Returns true if shader symbols should be kept for a given platform. */
 extern RENDERCORE_API bool ShouldGenerateShaderSymbols(FName ShaderFormat);
@@ -45,11 +47,6 @@ extern RENDERCORE_API bool ShouldEnableExtraShaderData(FName ShaderFormat);
 
 extern RENDERCORE_API bool ShouldOptimizeShaders(FName ShaderFormat);
 
-UE_DEPRECATED(5.0, "ShouldGenerateShaderSymbols should be called to determine if symbols (debug data) should be generated")
-bool ShouldKeepShaderDebugInfo(EShaderPlatform Platform);
-UE_DEPRECATED(5.0, "ShouldWriteShaderSymbols should be called to determine if symbols (debug data) should be written")
-bool ShouldExportShaderDebugInfo(EShaderPlatform Platform);
-
 /** Returns true is shader compiling is allowed */
 extern RENDERCORE_API bool AllowShaderCompiling();
 
@@ -70,7 +67,6 @@ enum ECompilerFlags
 	CFLAG_ForceOptimization,
 	// Shader should generate symbols for debugging.
 	CFLAG_GenerateSymbols,
-	CFLAG_KeepDebugInfo UE_DEPRECATED(5.0, "CFLAG_GenerateSymbols should be used to signal if debug data needs to be generated") = CFLAG_GenerateSymbols,
 	// Shader should insert debug/name info at the risk of generating non-deterministic libraries
 	CFLAG_ExtraShaderData,
 	// Allows the (external) symbols to be specific to each shader rather than trying to deduplicate.
@@ -125,6 +121,8 @@ enum ECompilerFlags
 	CFLAG_BindlessSamplers,
 	// EXPERIMENTAL: Run the shader re-writer that removes any unused functions/resources/types from source code before compilation.
 	CFLAG_RemoveDeadCode,
+	// Execute shader preprocessing with MCPP (instead of the new STB preprocessor)
+	CFLAG_UseLegacyPreprocessor,
 
 	CFLAG_Max,
 };
@@ -202,7 +200,6 @@ struct FShaderCompilerInput
 	FName CompressionFormat;
 	FName ShaderPlatformName;
 	
-	FString SourceFilePrefix;
 	FString VirtualSourceFilePath;
 	FString EntryPointName;
 	FString ShaderName;
@@ -255,6 +252,11 @@ struct FShaderCompilerInput
 		bCompilingForShaderPipeline(false),
 		bIncludeUsedOutputs(false)
 	{
+	}
+
+	bool DumpDebugInfoEnabled() const 
+	{
+		return DumpDebugInfoPath != TEXT("") && IFileManager::Get().DirectoryExists(*DumpDebugInfoPath);
 	}
 
 	// generate human readable name for debugging
@@ -483,7 +485,6 @@ struct FShaderCompilerOutput
 	bool bUsedHLSLccCompiler;
 	TArray<FString> UsedAttributes;
 
-	FString OptionalPreprocessedShaderSource;
 	FString OptionalFinalShaderSource;
 
 	TArray<uint8> PlatformDebugData;
@@ -502,7 +503,6 @@ struct FShaderCompilerOutput
 		Ar << Output.bFailedRemovingUnused << Output.bSupportsQueryingUsedAttributes << Output.UsedAttributes;
 		Ar << Output.CompileTime;
 		Ar << Output.PreprocessTime;
-		Ar << Output.OptionalPreprocessedShaderSource;
 		Ar << Output.OptionalFinalShaderSource;
 		Ar << Output.PlatformDebugData;
 		Ar << Output.ShaderStats;
@@ -511,24 +511,53 @@ struct FShaderCompilerOutput
 	}
 };
 
-enum class ESCWErrorCode
+struct RENDERCORE_API FSCWErrorCode
 {
-	NotSet = -1,
-	Success,
-	GeneralCrash,
-	BadShaderFormatVersion,
-	BadInputVersion,
-	BadSingleJobHeader,
-	BadPipelineJobHeader,
-	CantDeleteInputFile,
-	CantSaveOutputFile,
-	NoTargetShaderFormatsFound,
-	CantCompileForSpecificFormat,
-	CrashInsidePlatformCompiler,
-	BadInputFile
+	enum ECode : int32
+	{
+		NotSet = -1,
+		Success,
+		GeneralCrash,
+		BadShaderFormatVersion,
+		BadInputVersion,
+		BadSingleJobHeader,
+		BadPipelineJobHeader,
+		CantDeleteInputFile,
+		CantSaveOutputFile,
+		NoTargetShaderFormatsFound,
+		CantCompileForSpecificFormat,
+		CrashInsidePlatformCompiler,
+		BadInputFile,
+		OutOfMemory,
+	};
+
+	/**
+	Sets the global SCW error code if it hasn't been set before.
+	Call Reset first before setting a new value.
+	Returns true on success, otherwise the error code has already been set.
+	*/
+	static void Report(ECode Code, const FStringView& Info = {});
+
+	/** Resets the global SCW error code to NotSet. */
+	static void Reset();
+
+	/** Returns the global SCW error code. */
+	static ECode Get();
+
+	/** Returns the global SCW error code information string. Empty string if not set. */
+	static const FString& GetInfo();
+
+	/** Returns true if the SCW global error code has been set. Equivalent to 'Get() != NotSet'. */
+	static bool IsSet();
 };
 
+#if PLATFORM_WINDOWS
+extern RENDERCORE_API int HandleShaderCompileException(Windows::LPEXCEPTION_POINTERS Info, FString& OutExMsg, FString& OutCallStack);
+#endif
+extern RENDERCORE_API const IShaderFormat* FindShaderFormat(FName Format, TArray<const IShaderFormat*> ShaderFormats);
+extern RENDERCORE_API void CompileShader(const TArray<const IShaderFormat*>& ShaderFormats, FShaderCompilerInput& Input, FShaderCompilerOutput& Output, const FString& WorkingDirectory, int32* CompileCount = nullptr);
 
+UE_DEPRECATED(5.2, "Functionality has moved to UE::ShaderCompilerCommon::ShouldUseStableConstantBuffer")
 inline bool ShouldUseStableConstantBuffer(const FShaderCompilerInput& Input)
 {
 	// stable constant buffer is for the FShaderParameterBindings::BindForLegacyShaderParameters() code path.

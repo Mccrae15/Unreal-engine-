@@ -6,6 +6,8 @@
 #include "Dataflow/DataflowNodeParameters.h"
 #include "Dataflow/DataflowNode.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataflowInputOutput)
+
 
 FDataflowInput FDataflowInput::NoOpInput = FDataflowInput();
 FDataflowOutput FDataflowOutput::NoOpOutput = FDataflowOutput();
@@ -21,7 +23,6 @@ FDataflowInput::FDataflowInput(const Dataflow::FInputParameters& Param, FGuid In
 
 bool FDataflowInput::AddConnection(FDataflowConnection* InOutput)
 {
-	ensure(Connection == nullptr);
 	if (ensure(InOutput->GetType() == this->GetType()))
 	{
 		Connection = (FDataflowOutput*)InOutput;

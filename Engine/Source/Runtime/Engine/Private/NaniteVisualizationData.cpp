@@ -1,15 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NaniteVisualizationData.h"
-#include "NaniteDefinitions.h"
-#include "HAL/IConsoleManager.h"
-#include "Materials/Material.h"
-#include "Misc/ConfigCacheIni.h"
-#include "SceneManagement.h"
 #include "GameFramework/PlayerController.h"
 #if WITH_EDITORONLY_DATA
-#include "Editor.h"
 #include "LevelEditorViewport.h"
+#else
+#include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
+#include "NaniteDefinitions.h"
+#include "SceneManagement.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "FNaniteVisualizationData"
@@ -46,12 +45,15 @@ void FNaniteVisualizationData::Initialize()
 		AddVisualizationMode(TEXT("Hierarchy"), LOCTEXT("Hierarchy", "Hierarchy"), FModeType::Advanced, NANITE_VISUALIZE_HIERARCHY_OFFSET, true);
 		AddVisualizationMode(TEXT("RasterMode"), LOCTEXT("RasterMode", "Raster Mode"), FModeType::Advanced, NANITE_VISUALIZE_RASTER_MODE, true);
 		AddVisualizationMode(TEXT("RasterBins"), LOCTEXT("RasterBins", "Raster Bins"), FModeType::Advanced, NANITE_VISUALIZE_RASTER_BINS, true);
+		AddVisualizationMode(TEXT("ShadingBins"), LOCTEXT("ShadingBins", "Shading Bins"), FModeType::Advanced, NANITE_VISUALIZE_SHADING_BINS, true);
 		AddVisualizationMode(TEXT("SceneZMin"), LOCTEXT("SceneZMin", "Scene Z Min"), FModeType::Advanced, NANITE_VISUALIZE_SCENE_Z_MIN, true);
 		AddVisualizationMode(TEXT("SceneZMax"), LOCTEXT("SceneZMax", "Scene Z Max"), FModeType::Advanced, NANITE_VISUALIZE_SCENE_Z_MAX, true);
 		AddVisualizationMode(TEXT("SceneZDelta"), LOCTEXT("SceneZDelta", "Scene Z Delta"), FModeType::Advanced, NANITE_VISUALIZE_SCENE_Z_DELTA, true);
+		AddVisualizationMode(TEXT("SceneZDecoded"), LOCTEXT("SceneZDecoded", "Scene Z Decoded"), FModeType::Advanced, NANITE_VISUALIZE_SCENE_Z_DECODED, true);
 		AddVisualizationMode(TEXT("MaterialZMin"), LOCTEXT("MaterialZMin", "Material Z Min"), FModeType::Advanced, NANITE_VISUALIZE_MATERIAL_Z_MIN, true);
 		AddVisualizationMode(TEXT("MaterialZMax"), LOCTEXT("MaterialZMax", "Material Z Max"), FModeType::Advanced, NANITE_VISUALIZE_MATERIAL_Z_MAX, true);
 		AddVisualizationMode(TEXT("MaterialZDelta"), LOCTEXT("MaterialZDelta", "Material Z Delta"), FModeType::Advanced, NANITE_VISUALIZE_MATERIAL_Z_DELTA, true);
+		AddVisualizationMode(TEXT("MaterialZDecoded"), LOCTEXT("MaterialZDecoded", "Material Z Decoded"), FModeType::Advanced, NANITE_VISUALIZE_MATERIAL_Z_DECODED, true);
 		AddVisualizationMode(TEXT("MaterialCount"), LOCTEXT("MaterialCount", "Material Count"), FModeType::Advanced, NANITE_VISUALIZE_MATERIAL_COUNT, true);
 		AddVisualizationMode(TEXT("MaterialMode"), LOCTEXT("MaterialMode", "Material Mode"), FModeType::Advanced, NANITE_VISUALIZE_MATERIAL_MODE, true);
 		AddVisualizationMode(TEXT("MaterialIndex"), LOCTEXT("MaterialIndex", "Material Index"), FModeType::Advanced, NANITE_VISUALIZE_MATERIAL_INDEX, true);
@@ -60,7 +62,6 @@ void FNaniteVisualizationData::Initialize()
 		AddVisualizationMode(TEXT("LightmapDataIndex"), LOCTEXT("LightmapDataIndex", "Lightmap Data Index"), FModeType::Advanced, NANITE_VISUALIZE_LIGHTMAP_DATA_INDEX, true);
 		AddVisualizationMode(TEXT("PositionBits"), LOCTEXT("PositionBits", "Position Bits"), FModeType::Advanced, NANITE_VISUALIZE_POSITION_BITS, true);
 		AddVisualizationMode(TEXT("VSMStatic"), LOCTEXT("VSMStatic", "Virtual Shadow Map Static"), FModeType::Advanced, NANITE_VISUALIZE_VSM_STATIC_CACHING, true);
-		AddVisualizationMode(TEXT("MaterialComplexity"), LOCTEXT("MaterialComplexity", "Material Complexity"), FModeType::Advanced, NANITE_VISUALIZE_MATERIAL_COMPLEXITY, false);
 
 		ConfigureConsoleCommand();
 

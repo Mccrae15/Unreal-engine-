@@ -307,7 +307,7 @@ void dtNavMeshQuery::updateLinkFilter(dtQuerySpecialLinkFilter* linkFilter)
 	}
 }
 
-// LWC_TODO_AI: Should be double(*frand)() to be consistent with the rest of the API
+// LWC_TODO_AI: Should be double(*frand)() to be consistent with the rest of the API, UE currently does not have a double rand function but it is planned!
 dtStatus dtNavMeshQuery::findRandomPoint(const dtQueryFilter* filter, float(*frand)(),
 										 dtPolyRef* randomRef, dtReal* randomPt) const
 {
@@ -1336,7 +1336,7 @@ int dtNavMeshQuery::queryPolygonsInTile(const dtMeshTile* tile, const dtReal* qm
 		const dtBVNode* end = &tile->bvTree[tile->header->bvNodeCount];
 		const dtReal* tbmin = tile->header->bmin;
 		const dtReal* tbmax = tile->header->bmax;
-		const dtReal qfac = m_nav->getBVQuantFactor();
+		const dtReal qfac = m_nav->getBVQuantFactor(tile->header->resolution);	//@UE
 
 		// Calculate quantized box
 		unsigned short bmin[3], bmax[3];
@@ -1492,11 +1492,12 @@ dtStatus dtNavMeshQuery::findPath(dtPolyRef startRef, dtPolyRef endRef,
 	
 	m_queryNodes = 0;
 
-	if (!startRef || !endRef)
+	if (!startRef || (m_query.requireNavigableEndLocation && !endRef))		//@UE
 		return DT_FAILURE | DT_INVALID_PARAM;
 	
 	// Validate input
-	if (!m_nav->isValidPolyRef(startRef) || !m_nav->isValidPolyRef(endRef))
+	// endRef could be 0 if requireNavigableEndLocation is false, but we don't want it to reference a polygon that doesn't exist
+	if (!m_nav->isValidPolyRef(startRef) || (!m_nav->isValidPolyRef(endRef) && (endRef || m_query.requireNavigableEndLocation)))	//@UE
 		return DT_FAILURE | DT_INVALID_PARAM;
 	
 	if (startRef == endRef)
@@ -1920,7 +1921,7 @@ dtStatus dtNavMeshQuery::testClusterPath(dtPolyRef startRef, dtPolyRef endRef) c
 /// path query.
 ///
 dtStatus dtNavMeshQuery::initSlicedFindPath(dtPolyRef startRef, dtPolyRef endRef,
-											const dtReal* startPos, const dtReal* endPos, const dtReal costLimit, //@UE
+											const dtReal* startPos, const dtReal* endPos, const dtReal costLimit, const bool requireNavigableEndLocation, //@UE 
 											const dtQueryFilter* filter)
 {
 	dtAssert(m_nav);
@@ -1935,13 +1936,15 @@ dtStatus dtNavMeshQuery::initSlicedFindPath(dtPolyRef startRef, dtPolyRef endRef
 	dtVcopy(m_query.startPos, startPos);
 	dtVcopy(m_query.endPos, endPos);
 	m_query.costLimit = costLimit; //@UE
+	m_query.requireNavigableEndLocation = requireNavigableEndLocation; //@UE
 	m_query.filter = filter;
 	
-	if (!startRef || !endRef)
+	if (!startRef || (m_query.requireNavigableEndLocation && !endRef))	//@UE
 		return DT_FAILURE | DT_INVALID_PARAM;
 	
 	// Validate input
-	if (!m_nav->isValidPolyRef(startRef) || !m_nav->isValidPolyRef(endRef))
+	// endRef could be 0 if requireNavigableEndLocation is false, but we don't want it to reference a polygon that doesn't exist
+	if (!m_nav->isValidPolyRef(startRef) || (!m_nav->isValidPolyRef(endRef) && (endRef || m_query.requireNavigableEndLocation)))	//@UE
 		return DT_FAILURE | DT_INVALID_PARAM;
 
 	if (startRef == endRef)
@@ -1979,7 +1982,8 @@ dtStatus dtNavMeshQuery::updateSlicedFindPath(const int maxIter, int* doneIters)
 		return m_query.status;
 
 	// Make sure the request is still valid.
-	if (!m_nav->isValidPolyRef(m_query.startRef) || !m_nav->isValidPolyRef(m_query.endRef))
+	// endRef could be 0 if requireNavigableEndLocation is false, but we don't want it to reference a polygon that doesn't exist
+	if (!m_nav->isValidPolyRef(m_query.startRef) || (!m_nav->isValidPolyRef(m_query.endRef) && (m_query.endRef || m_query.requireNavigableEndLocation)))	//@UE
 	{
 		m_query.status = DT_FAILURE;
 		return DT_FAILURE;
@@ -4750,7 +4754,7 @@ dtStatus dtNavMeshQuery::findWallsOverlappingShape(dtPolyRef startRef, const dtR
 }
 
 dtStatus dtNavMeshQuery::findWallsAroundPath(const dtPolyRef* path, const int pathCount, const dtReal* searchAreaPoly, const int searchAreaPolyCount,
-												   const float maxAreaEnterCost, const dtQueryFilter* filter,
+												   const dtReal maxAreaEnterCost, const dtQueryFilter* filter,
 												   dtPolyRef* neiRefs, int* neiCount, const int maxNei,
 												   dtReal* resultWalls, dtPolyRef* resultRefs, int* resultCount, const int maxResult) const
 {
@@ -4844,7 +4848,7 @@ dtStatus dtNavMeshQuery::findWallsAroundPath(const dtPolyRef* path, const int pa
 				continue;
 
 			// Do not advance if the polygon is excluded by the filter, or if the area enter cost is too high.
-			const float enterCost = filter->getAreaFixedCost(neighbourPoly->getArea());
+			const dtReal enterCost = filter->getAreaFixedCost(neighbourPoly->getArea());
 
 			if (!filter->passFilter(neighbourRef, neighbourTile, neighbourPoly)
 				|| !passLinkFilterByRef(neighbourTile, neighbourRef)

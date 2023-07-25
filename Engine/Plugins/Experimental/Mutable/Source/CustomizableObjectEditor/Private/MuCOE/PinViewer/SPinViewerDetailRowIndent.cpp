@@ -2,19 +2,7 @@
 
 #include "MuCOE/PinViewer/SPinViewerDetailRowIndent.h"
 
-#include "Layout/Children.h"
-#include "Layout/Geometry.h"
-#include "Math/Vector2D.h"
-#include "Misc/Attribute.h"
 #include "MuCOE/Widgets/SMutableExpandableTableRow.h"
-#include "Rendering/DrawElements.h"
-#include "Rendering/RenderingCommon.h"
-#include "Styling/AppStyle.h"
-#include "Styling/ISlateStyle.h"
-#include "Styling/SlateColor.h"
-#include "Types/SlateStructs.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/SWidget.h"
 
 class FPaintArgs;
 class FSlateRect;
@@ -46,7 +34,7 @@ int32 SPinViewerDetailRowIndent::OnPaint(const FPaintArgs& Args, const FGeometry
 	FSlateDrawElement::MakeBox(
 		OutDrawElements,
 		LayerId,
-		AllottedGeometry.ToPaintGeometry(FVector2D(0, 0), FVector2D(16, AllottedGeometry.GetLocalSize().Y)),
+		AllottedGeometry.ToPaintGeometry(FVector2D(16, AllottedGeometry.GetLocalSize().Y), FSlateLayoutTransform()),
 		BackgroundBrush,
 		ESlateDrawEffect::None,
 		BackgroundColor.GetColor(InWidgetStyle)
@@ -55,7 +43,7 @@ int32 SPinViewerDetailRowIndent::OnPaint(const FPaintArgs& Args, const FGeometry
 	FSlateDrawElement::MakeBox(
 		OutDrawElements,
 		LayerId + 1,
-		AllottedGeometry.ToPaintGeometry(FVector2D(0, 0), FVector2D(16, AllottedGeometry.GetLocalSize().Y)),
+		AllottedGeometry.ToPaintGeometry(FVector2D(16, AllottedGeometry.GetLocalSize().Y), FSlateLayoutTransform()),
 		DropShadowBrush
 	);
 

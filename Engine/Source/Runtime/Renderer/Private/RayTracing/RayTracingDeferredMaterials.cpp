@@ -2,9 +2,11 @@
 
 #include "RayTracingDeferredMaterials.h"
 #include "RHIDefinitions.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "RenderCore.h"
 #include "GlobalShader.h"
 #include "ShaderParameterStruct.h"
+#include "RayTracingPayloadType.h"
 #include "RenderGraphUtils.h"
 #include "DeferredShadingRenderer.h"
 #include "PipelineStateCache.h"
@@ -25,6 +27,8 @@ bool CanUseRayTracingAMDHitToken()
 		&& CVarRayTracingAMDHitToken.GetValueOnRenderThread() != 0;
 }
 
+IMPLEMENT_RT_PAYLOAD_TYPE(ERayTracingPayloadType::Deferred, 12);
+
 class FRayTracingDeferredMaterialCHS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FRayTracingDeferredMaterialCHS)
@@ -39,6 +43,11 @@ class FRayTracingDeferredMaterialCHS : public FGlobalShader
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("UE_RAY_TRACING_LIGHTWEIGHT_CLOSEST_HIT_SHADER"), 1);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::Deferred;
 	}
 
 	using FParameters = FEmptyShaderParameters;
@@ -61,6 +70,11 @@ class FRayTracingDeferredMaterialMS : public FGlobalShader
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::Deferred;
+	}
+
 	using FParameters = FEmptyShaderParameters;
 };
 
@@ -74,7 +88,7 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::CreateRayTracingDeferre
 
 	Initializer.SetRayGenShaderTable(RayGenShaderTable);
 
-	Initializer.MaxPayloadSizeInBytes = 12; // sizeof FDeferredMaterialPayload
+	Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(ERayTracingPayloadType::Deferred);
 
 	// Get the ray tracing materials
 	auto ClosestHitShader = View.ShaderMap->GetShader<FRayTracingDeferredMaterialCHS>();

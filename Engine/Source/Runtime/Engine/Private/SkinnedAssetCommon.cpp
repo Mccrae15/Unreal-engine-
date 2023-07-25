@@ -2,11 +2,17 @@
 
 #include "Engine/SkinnedAssetCommon.h"
 #include "Animation/AnimSequence.h"
-#include "Rendering/SkeletalMeshModel.h"
 #include "Engine/SkeletalMeshLODSettings.h"
+#include "Engine/TextureStreamingTypes.h"
+#include "Materials/MaterialInterface.h"
 #include "UObject/CoreObjectVersion.h"
-#include "UObject/EditorObjectVersion.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "UObject/EditorObjectVersion.h"
+#include "UObject/RenderingObjectVersion.h"
+#include "SkeletalMeshLegacyCustomVersions.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SkinnedAssetCommon)
 
 /*-----------------------------------------------------------------------------
 	FSkeletalMeshLODInfo
@@ -64,16 +70,16 @@ static void SerializeBuildSettingsForDDC(FArchive& Ar, FSkeletalMeshBuildSetting
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bUseFullPrecisionUVs);
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bUseBackwardsCompatibleF16TruncUVs);
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bUseHighPrecisionTangentBasis);
+	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bUseHighPrecisionSkinWeights);
 	Ar << BuildSettings.ThresholdPosition;
 	Ar << BuildSettings.ThresholdTangentNormal;
 	Ar << BuildSettings.ThresholdUV;
 	Ar << BuildSettings.MorphThresholdPosition;
+	Ar << BuildSettings.BoneInfluenceLimit;
 }
 
 FGuid FSkeletalMeshLODInfo::ComputeDeriveDataCacheKey(const FSkeletalMeshLODGroupSettings* SkeletalMeshLODGroupSettings)
 {
-	const bool bIs16BitfloatBufferSupported = GVertexElementTypeSupport.IsSupported(VET_Half2);
-
 	// Serialize the LOD info members, the BuildSettings and the ReductionSettings into a temporary array.
 	TArray<uint8> TempBytes;
 	TempBytes.Reserve(64);
@@ -98,6 +104,7 @@ FGuid FSkeletalMeshLODInfo::ComputeDeriveDataCacheKey(const FSkeletalMeshLODGrou
 		FString BakePoseOverridePath = BakePoseOverride->GetFullName();
 		Ar << BakePoseOverridePath;
 	}
+	
 	FArchive_Serialize_BitfieldBool(Ar, bAllowCPUAccess);
 	FArchive_Serialize_BitfieldBool(Ar, bSupportUniformlyDistributedSampling);
 
@@ -108,10 +115,6 @@ FGuid FSkeletalMeshLODInfo::ComputeDeriveDataCacheKey(const FSkeletalMeshLODGrou
 		RealReductionSettings = SkeletalMeshLODGroupSettings->GetReductionSettings();
 	}
 
-	if (!BuildSettings.bUseFullPrecisionUVs && !bIs16BitfloatBufferSupported)
-	{
-		BuildSettings.bUseFullPrecisionUVs = true;
-	}
 	SerializeBuildSettingsForDDC(Ar, BuildSettings);
 	SerializeReductionSettingsForDDC(Ar, RealReductionSettings);
 

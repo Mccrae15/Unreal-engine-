@@ -2,14 +2,12 @@
 
 #include "LiveLinkCameraController.h"
 
-#include "Camera/CameraComponent.h"
-#include "CameraCalibrationSubsystem.h"
+#include "Camera/CameraTypes.h"
 #include "CineCameraComponent.h"
-#include "Controllers/LiveLinkTransformController.h"
+#include "GameFramework/Actor.h"
 #include "LensComponent.h"
-#include "LensFile.h"
+#include "LiveLinkComponentController.h"
 #include "LiveLinkLog.h"
-#include "Logging/LogMacros.h"
 #include "Roles/LiveLinkCameraRole.h"
 #include "Roles/LiveLinkCameraTypes.h"
 #include "UObject/EnterpriseObjectVersion.h"
@@ -59,17 +57,23 @@ void ULiveLinkCameraController::Tick(float DeltaTime, const FLiveLinkSubjectFram
 
 			if (UCineCameraComponent* CineCameraComponent = Cast<UCineCameraComponent>(CameraComponent))
 			{
-				// If depth of field is not supported, force disable depth of field on the camera
-				// Otherwise, if depth of field is supported and the frame data has a valid value for focus, force the focus method to Manual 
-				if (UpdateFlags.bApplyFocusDistance)
+				// If the depth of field support flag has changed, update the focus method accordingly
+				if (bLastIsDepthOfFieldSupported != StaticData->bIsDepthOfFieldSupported)
 				{
-					if (StaticData->bIsDepthOfFieldSupported == false)
+					// If depth of field is not supported, force disable depth of field on the camera
+					// Otherwise, if depth of field is supported and the frame data has a valid value for focus, force the focus method to Manual 
+					if (UpdateFlags.bApplyFocusDistance)
 					{
-						CineCameraComponent->FocusSettings.FocusMethod = ECameraFocusMethod::Disable;
-					}
-					else if (StaticData->bIsFocusDistanceSupported)
-					{
-						CineCameraComponent->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
+						if (StaticData->bIsDepthOfFieldSupported == false)
+						{
+							CineCameraComponent->FocusSettings.FocusMethod = ECameraFocusMethod::Disable;
+						}
+						else if (StaticData->bIsFocusDistanceSupported)
+						{
+							CineCameraComponent->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
+						}
+
+						bLastIsDepthOfFieldSupported = StaticData->bIsDepthOfFieldSupported;
 					}
 				}
 
@@ -312,6 +316,10 @@ void ULiveLinkCameraController::PostLoad()
 	const int32 UE5MainVersion = GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID);
 	if (UE5MainVersion < FUE5MainStreamObjectVersion::LensComponentNodalOffset)
 	{
+		if (HasAnyFlags(RF_ArchetypeObject))
+		{
+			return;
+		}
 		// LensFile and distortion evaluation for nodal offset has moved to the Lens component. In order for existing camera actors to continue functioning as before,
 		// we have to migrate some properties from the camera controller to the lens component. If the owning actor does not have already have a lens 
 		// component then we will instance a new one.

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelEditorCreateActorMenu.h"
+#include "Engine/Blueprint.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/Class.h"
 #include "Styling/SlateColor.h"
@@ -46,6 +47,7 @@
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "Engine/Selection.h"
 #include "ActorEditorUtils.h"
+#include "Widgets/Layout/SBorder.h"
 
 class SMenuThumbnail : public SCompoundWidget
 {

@@ -4,12 +4,19 @@
 
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimNode_Inertialization.h"
+#include "Animation/AnimRootMotionProvider.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/BlendSpace.h"
 #include "Animation/MotionTrajectoryTypes.h"
-#include "Animation/AnimRootMotionProvider.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "DrawDebugHelpers.h"
 #include "PoseSearch/AnimNode_PoseSearchHistoryCollector.h"
+#include "PoseSearch/PoseSearchDatabase.h"
+#include "PoseSearch/PoseSearchDerivedData.h"
+#include "PoseSearch/PoseSearchSchema.h"
 #include "Trace/PoseSearchTraceLogger.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_MotionMatching)
 
 #define LOCTEXT_NAMESPACE "AnimNode_MotionMatching"
 
@@ -57,6 +64,8 @@ void FAnimNode_MotionMatching::UpdateAssetPlayer(const FAnimationUpdateContext& 
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(UpdateAssetPlayer);
 
+	using namespace UE::PoseSearch;
+
 	GetEvaluateGraphExposedInputs().Execute(Context);
 
 	bool bNeedsReset =
@@ -71,6 +80,14 @@ void FAnimNode_MotionMatching::UpdateAssetPlayer(const FAnimationUpdateContext& 
 	}
 	else
 	{
+#if WITH_EDITOR
+		// in case we're still indexing MotionMatchingState.CurrentSearchResult.Database we Reset the MotionMatchingState
+		if (!FAsyncPoseSearchDatabasesManagement::RequestAsyncBuildIndex(MotionMatchingState.CurrentSearchResult.Database.Get(), ERequestAsyncBuildFlag::ContinueRequest))
+		{
+			MotionMatchingState.Reset();
+		}
+#endif // WITH_EDITOR
+
 		// We adjust the motion matching state asset time to the current player node's asset time. This is done 
 		// because the player node may have ticked more or less time than we expected due to variable dt or the 
 		// dynamic playback rate adjustment and as such the motion matching state does not update by itself
@@ -90,16 +107,22 @@ void FAnimNode_MotionMatching::UpdateAssetPlayer(const FAnimationUpdateContext& 
 	);
 
 	// If a new pose is requested, blend into the new asset via BlendStackNode
-	const UPoseSearchDatabase* Database = MotionMatchingState.CurrentSearchResult.Database.Get();
-	const FPoseSearchIndexAsset* SearchIndexAsset = MotionMatchingState.GetCurrentSearchIndexAsset();
-
-	if (Database && Database->Schema && SearchIndexAsset && (MotionMatchingState.Flags & EMotionMatchingFlags::JumpedToPose) == EMotionMatchingFlags::JumpedToPose)
+	const FPoseSearchIndexAsset* SearchIndexAsset = MotionMatchingState.CurrentSearchResult.GetSearchIndexAsset();
+	if (SearchIndexAsset)
 	{
-		const FPoseSearchDatabaseAnimationAssetBase& AnimationAssetBase = Database->GetAnimationSourceAsset(SearchIndexAsset);
-		BlendStackNode.BlendTo(	SearchIndexAsset->Type, AnimationAssetBase.GetAnimationAsset(), MotionMatchingState.CurrentSearchResult.AssetTime,
-								AnimationAssetBase.IsLooping(), SearchIndexAsset->bMirrored, Database->Schema->MirrorDataTable.Get(),
-								Settings.MaxActiveBlends, Settings.BlendTime, Settings.BlendProfile, Settings.BlendOption, SearchIndexAsset->BlendParameters);
+		const UPoseSearchDatabase* Database = MotionMatchingState.CurrentSearchResult.Database.Get();
+		if (Database && Database->Schema && EnumHasAnyFlags(MotionMatchingState.Flags, EMotionMatchingFlags::JumpedToPose))
+		{
+			if (const FPoseSearchDatabaseAnimationAssetBase* DatabaseAsset = Database->GetAnimationAssetBase(*SearchIndexAsset))
+			{
+				BlendStackNode.BlendTo(SearchIndexAsset->Type, DatabaseAsset->GetAnimationAsset(), MotionMatchingState.CurrentSearchResult.AssetTime,
+					DatabaseAsset->IsLooping(), SearchIndexAsset->bMirrored, Database->Schema->MirrorDataTable.Get(),
+					Settings.MaxActiveBlends, Settings.BlendTime, Settings.BlendProfile, Settings.BlendOption, SearchIndexAsset->BlendParameters, MotionMatchingState.WantedPlayRate);
+			}
+
+		}
 	}
+	BlendStackNode.UpdatePlayRate(MotionMatchingState.WantedPlayRate);
 
 	Source.Update(Context);
 }
@@ -124,55 +147,65 @@ void FAnimNode_MotionMatching::PreUpdate(const UAnimInstance* InAnimInstance)
 		check(SkeletalMeshComponent);
 
 		const UE::PoseSearch::FSearchResult& CurResult = MotionMatchingState.CurrentSearchResult;
-		UE::PoseSearch::FDebugDrawParams DrawParams;
-		DrawParams.RootTransform = SkeletalMeshComponent->GetComponentTransform();
-		DrawParams.Database = CurResult.Database.Get();
-		DrawParams.World = SkeletalMeshComponent->GetWorld();
-		DrawParams.DefaultLifeTime = 0.0f;
 
-		if (DrawParams.CanDraw())
+#if WITH_EDITOR
+		// in case we're still indexing MotionMatchingState.CurrentSearchResult.Database we Reset the MotionMatchingState
+		if (!FAsyncPoseSearchDatabasesManagement::RequestAsyncBuildIndex(CurResult.Database.Get(), ERequestAsyncBuildFlag::ContinueRequest))
 		{
-			if (bDebugDrawMatch)
+		}
+		else
+#endif // WITH_EDITOR
+		{
+			UE::PoseSearch::FDebugDrawParams DrawParams;
+			DrawParams.RootTransform = SkeletalMeshComponent->GetComponentTransform();
+			DrawParams.Database = CurResult.Database.Get();
+			DrawParams.World = SkeletalMeshComponent->GetWorld();
+			DrawParams.DefaultLifeTime = 0.0f;
+
+			if (DrawParams.CanDraw())
 			{
-				DrawFeatureVector(DrawParams, CurResult.PoseIdx);
-			}
+				if (bDebugDrawMatch)
+				{
+					DrawFeatureVector(DrawParams, CurResult.PoseIdx);
+				}
 
-			if (bDebugDrawQuery)
-			{
-				EnumAddFlags(DrawParams.Flags, EDebugDrawFlags::DrawQuery);
-				DrawFeatureVector(DrawParams, CurResult.ComposedQuery.GetValues());
-			}
+				if (bDebugDrawQuery)
+				{
+					EnumAddFlags(DrawParams.Flags, EDebugDrawFlags::DrawQuery);
+					DrawFeatureVector(DrawParams, CurResult.ComposedQuery.GetValues());
+				}
 
-			if (DrawParams.Database->PoseSearchMode == EPoseSearchMode::PCAKDTree_Compare)
-			{
-				FDebugFloatHistory& C = MotionMatchingState.SearchCostHistoryContinuing;
-				FDebugFloatHistory& B = MotionMatchingState.SearchCostHistoryBruteForce;
-				FDebugFloatHistory& K = MotionMatchingState.SearchCostHistoryKDTree;
+				if (DrawParams.Database->PoseSearchMode == EPoseSearchMode::PCAKDTree_Compare)
+				{
+					FDebugFloatHistory& C = MotionMatchingState.SearchCostHistoryContinuing;
+					FDebugFloatHistory& B = MotionMatchingState.SearchCostHistoryBruteForce;
+					FDebugFloatHistory& K = MotionMatchingState.SearchCostHistoryKDTree;
 
-				C.AddSample(CurResult.ContinuingPoseCost.IsValid() ? CurResult.ContinuingPoseCost.GetTotalCost() : C.MaxValue);
-				B.AddSample(CurResult.BruteForcePoseCost.IsValid() ? CurResult.BruteForcePoseCost.GetTotalCost() : B.MaxValue);
-				K.AddSample(CurResult.PoseCost.IsValid() ? CurResult.PoseCost.GetTotalCost() : K.MaxValue);
+					C.AddSample(CurResult.ContinuingPoseCost.IsValid() ? CurResult.ContinuingPoseCost.GetTotalCost() : C.MaxValue);
+					B.AddSample(CurResult.BruteForcePoseCost.IsValid() ? CurResult.BruteForcePoseCost.GetTotalCost() : B.MaxValue);
+					K.AddSample(CurResult.PoseCost.IsValid() ? CurResult.PoseCost.GetTotalCost() : K.MaxValue);
 
-				// making SearchCostHistoryKDTree and SearchCostHistoryBruteForce min max consistent
-				const float MinValue = FMath::Min(C.MinValue, FMath::Min(B.MinValue, K.MinValue));
-				const float MaxValue = FMath::Max(C.MaxValue, FMath::Max(B.MaxValue, K.MaxValue));
-				
-				C.MinValue = MinValue;
-				C.MaxValue = MaxValue;
+					// making SearchCostHistoryKDTree and SearchCostHistoryBruteForce min max consistent
+					const float MinValue = FMath::Min(C.MinValue, FMath::Min(B.MinValue, K.MinValue));
+					const float MaxValue = FMath::Max(C.MaxValue, FMath::Max(B.MaxValue, K.MaxValue));
 
-				B.MinValue = MinValue;
-				B.MaxValue = MaxValue;
+					C.MinValue = MinValue;
+					C.MaxValue = MaxValue;
 
-				K.MinValue = MinValue;
-				K.MaxValue = MaxValue;
+					B.MinValue = MinValue;
+					B.MaxValue = MaxValue;
 
-				const FVector2D DrawSize(150.f, 100.f);
-				const FTransform OffsetTransform(FRotator(0.f, 0.f, 0.f), FVector(-50.f, -75.f, 100.f));
-				const FTransform DrawTransform = OffsetTransform * DrawParams.RootTransform;
+					K.MinValue = MinValue;
+					K.MaxValue = MaxValue;
 
-				DrawDebugFloatHistory(*DrawParams.World, K, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(255, 192, 203, 160)); // pink
-				DrawDebugFloatHistory(*DrawParams.World, B, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(0, 0, 255, 160)); // blue
-				DrawDebugFloatHistory(*DrawParams.World, C, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(160, 160, 160, 160)); // gray
+					const FVector2D DrawSize(150.f, 100.f);
+					const FTransform OffsetTransform(FRotator(0.f, 0.f, 0.f), FVector(-50.f, -75.f, 100.f));
+					const FTransform DrawTransform = OffsetTransform * DrawParams.RootTransform;
+
+					DrawDebugFloatHistory(*DrawParams.World, K, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(255, 192, 203, 160)); // pink
+					DrawDebugFloatHistory(*DrawParams.World, B, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(0, 0, 255, 160)); // blue
+					DrawDebugFloatHistory(*DrawParams.World, C, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(160, 160, 160, 160)); // gray
+				}
 			}
 		}
 	}

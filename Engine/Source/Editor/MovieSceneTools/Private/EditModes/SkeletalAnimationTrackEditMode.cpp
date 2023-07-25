@@ -9,6 +9,7 @@
 #include "EditorModeManager.h"
 #include "Framework/Application/SlateApplication.h"
 #include "EngineUtils.h"
+#include "Engine/SkeletalMesh.h"
 
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
@@ -27,7 +28,8 @@
 #include "MovieSceneToolHelpers.h"
 #include "MovieSceneSkeletalAnimationRootHitProxy.h"
 #include "Systems/MovieSceneComponentTransformSystem.h"
-
+#include "SkeletalDebugRendering.h"
+#include "AnimSequencerInstanceProxy.h"
 
 FName FSkeletalAnimationTrackEditMode::ModeName("EditMode.SkeletalAnimationTrackEditMode");
 
@@ -124,84 +126,56 @@ void FSkeletalAnimationTrackEditMode::Tick(FEditorViewportClient* ViewportClient
 {
 	FEdMode::Tick(ViewportClient, DeltaTime);
 }
+// check to see if virtual bone, only way is by bone name
 
-static void DrawBones(const TArray<FBoneIndexType>& RequiredBones, const FReferenceSkeleton& RefSkeleton, const TArray<FTransform>& WorldTransforms,
-	FSkeletalMeshLODRenderData* LODData,
-	FPrimitiveDrawInterface* PDI, const TArray<FLinearColor>& BoneColours, float BoundRadius, float LineThickness/*=0.f*/)
+static bool IsVirtualBone(USkeleton* Skeleton, FName BoneName)
 {
-
-	// we may not want to axis to be too big, so clamp at 1 % of bound
-	const float MaxDrawRadius = BoundRadius * 0.01f;
-	// we could cache parent bones as we calculate, but right now I'm not worried about perf issue of this
-	for (int32 Index = 0; Index < RequiredBones.Num(); ++Index)
-	{
-		const int32 BoneIndex = RequiredBones[Index];
-		{
-
-			//Check whether the bone is vertex weighted
-			if (LODData)
-			{
-				int32 LODIndex = LODData->ActiveBoneIndices.Find(BoneIndex); //same as meshbone?? todo
-				if (LODIndex == INDEX_NONE)
-				{
-					continue;
-				}
-			}
-
-			const int32 ParentIndex = RefSkeleton.GetParentIndex(BoneIndex);
-			FVector Start, End;
-			FLinearColor LineColor = BoneColours[BoneIndex];
-
-			if (ParentIndex > 0 && BoneIndex != 0)
-			{
-				Start = WorldTransforms[ParentIndex].GetLocation();
-				End = WorldTransforms[BoneIndex].GetLocation();
-			}
-			else
-			{
-				//unlike other bone drawings we don't draw back to origin, too messy.
-				continue;
-			}
-
-			const float BoneLength = (End - Start).Size();
-			// clamp by bound, we don't want too long or big
-			const float Radius = FMath::Clamp(BoneLength * 0.05f, 0.1f, MaxDrawRadius);
-			SkeletalDebugRendering::DrawWireBone(PDI, Start, End, LineColor, SDPG_Foreground, Radius);
-		}
-	}
+	checkf(Skeleton != nullptr, TEXT("Invalid Skeleton ptr"));
+	return Skeleton->GetVirtualBones().IndexOfByPredicate([&](const FVirtualBone& VirtualBone) { return VirtualBone.VirtualBoneName == BoneName; }) != INDEX_NONE;
 }
 
-static void DrawBonesFromCompactPose(const FCompactPose& Pose, USkeletalMeshComponent* MeshComponent, FPrimitiveDrawInterface* PDI,
+static void DrawBonesFromCompactPose(const FCompactPose& Pose, USkeletalMeshComponent* MeshComponent, bool bIncludeRootBone, FPrimitiveDrawInterface* PDI,
 	const FLinearColor& DrawColour, FCompactPoseBoneIndex RootBoneIndex, FVector& LocationOfRootBone)
 {
 	LocationOfRootBone = FVector(TNumericLimits<float>::Max(), TNumericLimits<float>::Max(), TNumericLimits<float>::Max());
 	if (Pose.GetNumBones() > 0 && MeshComponent != nullptr)
 	{
+		FSkelDebugDrawConfig DrawConfig;
+		DrawConfig.BoneDrawMode = EBoneDrawMode::All;
+		DrawConfig.BoneDrawSize = 1.f;
+		DrawConfig.bAddHitProxy = false;
+		DrawConfig.bForceDraw = true;
+		DrawConfig.DefaultBoneColor = DrawColour;
+		DrawConfig.AffectedBoneColor = DrawColour;
+		DrawConfig.SelectedBoneColor = DrawColour;
+		DrawConfig.ParentOfSelectedBoneColor = DrawColour;
 
-		FSkeletalMeshLODRenderData* LODData = nullptr;
-		if (MeshComponent->GetSkeletalMeshAsset() && MeshComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData.Num())
-		{
-			//Get current LOD
-			const int32 LODIndex = FMath::Clamp(MeshComponent->GetPredictedLODLevel(), 0, MeshComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData.Num() - 1);
-			LODData = &(MeshComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData[LODIndex]);
-		}
-
+		TArray<uint16> RequiredBones;
 		TArray<FTransform> WorldTransforms;
 		WorldTransforms.AddUninitialized(Pose.GetBoneContainer().GetNumBones());
 
 		TArray<FLinearColor> BoneColours;
 		BoneColours.AddUninitialized(Pose.GetBoneContainer().GetNumBones());
+		
+		const FReferenceSkeleton& RefSkeleton = Pose.GetBoneContainer().GetReferenceSkeleton();
 
 		// we could cache parent bones as we calculate, but right now I'm not worried about perf issue of this
 		for (FCompactPoseBoneIndex BoneIndex : Pose.ForEachBoneIndex())
 		{
+			if (IsVirtualBone(MeshComponent->GetSkeletalMeshAsset()->GetSkeleton(), RefSkeleton.GetBoneName(BoneIndex.GetInt())))
+			{
+				continue;
+			}
 			FMeshPoseBoneIndex MeshBoneIndex = Pose.GetBoneContainer().MakeMeshPoseIndex(BoneIndex);
+			RequiredBones.Add(MeshBoneIndex.GetInt());
 
 			int32 ParentIndex = Pose.GetBoneContainer().GetParentBoneIndex(MeshBoneIndex.GetInt());
 
+
 			if (ParentIndex == INDEX_NONE)
 			{
-				WorldTransforms[MeshBoneIndex.GetInt()] = Pose[BoneIndex] * MeshComponent->GetComponentTransform();
+				FTransform RootBone = (bIncludeRootBone == true) ? Pose[BoneIndex] : FTransform::Identity;
+				WorldTransforms[MeshBoneIndex.GetInt()] = RootBone * MeshComponent->GetComponentTransform();
 			}
 			else
 			{
@@ -218,13 +192,20 @@ static void DrawBonesFromCompactPose(const FCompactPose& Pose, USkeletalMeshComp
 			}
 			BoneColours[MeshBoneIndex.GetInt()] = DrawColour;
 		}
-
 		if (MeshComponent && MeshComponent->GetSkeletalMeshAsset())
 		{
-			DrawBones(Pose.GetBoneContainer().GetBoneIndicesArray(), MeshComponent->GetSkeletalMeshAsset()->GetRefSkeleton(), WorldTransforms,
-				LODData, PDI, BoneColours, MeshComponent->Bounds.SphereRadius, 1.0f);
+			SkeletalDebugRendering::DrawBones(
+				PDI,
+				MeshComponent->GetComponentLocation(),
+				RequiredBones,
+				MeshComponent->GetSkeletalMeshAsset()->GetRefSkeleton(),
+				WorldTransforms,
+				/*SelectedBones*/TArray<int32>(),
+				BoneColours,
+				/*HitProxies*/TArray<TRefCountPtr<HHitProxy>>(),
+				DrawConfig
+			);
 		}
-
 	}
 }
 void FSkeletalAnimationTrackEditMode::AddReferencedObjects(FReferenceCollector& Collector)
@@ -233,52 +214,26 @@ void FSkeletalAnimationTrackEditMode::AddReferencedObjects(FReferenceCollector& 
 }
 
 
-static void RenderTrail(UObject* BoundObject, UMovieSceneSkeletalAnimationTrack* SkelAnimTrack, UE::MovieScene::FSystemInterrogator& Interrogator,  UMovieScene3DTransformTrack* TransformTrack,
+static void RenderTrail(UObject* BoundObject, UMovieSceneSkeletalAnimationTrack* SkelAnimTrack, UE::MovieScene::FSystemInterrogator& Interrogator, USkeletalMeshComponent* SkelMeshComp,
 	const TSharedPtr<ISequencer>& Sequencer, FPrimitiveDrawInterface* PDI)
 {
 	const FLinearColor RootMotionColor(0.75, 0.75, 0.75, 1.0f);
-	TArray<const UObject*> Parents;
-	MovieSceneToolHelpers::GetParents(Parents, BoundObject);
-
 	TOptional<FVector> OldKeyPos_G;
 
-	FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
-
-	FFrameTime NewKeyTime = SkelAnimTrack->RootMotionParams.StartFrame;
-	Interrogator.Reset();
-	Interrogator.ImportTrack(TransformTrack, UE::MovieScene::FInterrogationChannel::Default());
-
-	for (const FTransform& Transform : SkelAnimTrack->RootMotionParams.RootTransforms)
-	{
-		Interrogator.AddInterrogation(NewKeyTime);
-		NewKeyTime += SkelAnimTrack->RootMotionParams.FrameTick;
-	}
-
-	Interrogator.Update();
-
-	TArray<UE::MovieScene::FIntermediate3DTransform> Transforms;
-	Transforms.SetNum(SkelAnimTrack->RootMotionParams.RootTransforms.Num());
-	Interrogator.QueryLocalSpaceTransforms(UE::MovieScene::FInterrogationChannel::Default(), Transforms);
-
 	int32 Index = 0;
-
-	for (const FTransform& Transform : SkelAnimTrack->RootMotionParams.RootTransforms)
+	if (SkelAnimTrack->GetAllSections().Num() > 0)
 	{
-		FVector NewKeyPos = Transform.GetLocation();
-		FTransform NewPosRefTM = FTransform::Identity;// todo need to handle parent transforms. @andrew.rodhamMovieSceneToolHelpers::GetRefFrameFromParents(Sequencer, Parents, NewKeyTime);
-
-		FRotator NewTransformRot = Transforms[Index].GetRotation();
-		FVector NewTransformPos = Transforms[Index].GetTranslation();
-		++Index;
-		FTransform TransformTrackTM(NewTransformRot, NewTransformPos);
-		NewPosRefTM = NewPosRefTM * TransformTrackTM;
-
-		FVector NewKeyPos_G = NewPosRefTM.TransformPosition(NewKeyPos);
-		if (OldKeyPos_G.IsSet())
+		const FTransform SkelMeshTransform = SkelAnimTrack->RootMotionParams.RootMotionStartOffset * SkelMeshComp->GetSocketTransform(NAME_None);
+		for (const FTransform& Transform : SkelAnimTrack->RootMotionParams.RootTransforms)
 		{
-			PDI->DrawLine(OldKeyPos_G.GetValue(), NewKeyPos_G, RootMotionColor, SDPG_Foreground);
+			FVector NewKeyPos = Transform.GetLocation();
+			FVector NewKeyPos_G = SkelMeshTransform.TransformPosition(NewKeyPos);
+			if (OldKeyPos_G.IsSet())
+			{
+				PDI->DrawLine(OldKeyPos_G.GetValue(), NewKeyPos_G, RootMotionColor, SDPG_Foreground);
+			}
+			OldKeyPos_G = NewKeyPos_G;
 		}
-		OldKeyPos_G = NewKeyPos_G;
 	}
 }
 
@@ -320,27 +275,30 @@ void FSkeletalAnimationTrackEditMode::Render(const FSceneView* View, FViewport* 
 						UObject* BoundObject = WeakBinding.Get();
 						if (BoundObject)
 						{
-							//show root motions
-							if (SkelAnimTrack->bShowRootMotionTrail)
-							{
-								//Get Transform Track if so then exit
-								//TODO a bunch, what if no transform track, what if multiple what if external transform?
-								for (UMovieSceneTrack* TrackTrack : Binding.GetTracks())
-								{
-									UMovieScene3DTransformTrack* TransformTrack = Cast<UMovieScene3DTransformTrack>(TrackTrack);
-									if (!TransformTrack)
-									{
-										continue;
-									}
-									RenderTrail(BoundObject, SkelAnimTrack, InterrogationLinker, TransformTrack, Sequencer, PDI);
-
-								}
-							}
-							//show skeletons
+							
 							USkeletalMeshComponent* SkelMeshComp = MovieSceneToolHelpers::AcquireSkeletalMeshFromObject(BoundObject);
 							if (SkelMeshComp && SkelMeshComp->GetAnimInstance())
 							{
-								const FLinearColor Colors[5] = { FLinearColor(1.0f,0.0f,1.0f,1.0f), FLinearColor(0.0f,1.0f,0.0f,1.0f), FLinearColor(0.0f, 0.0f, 1.0f, 0.0f),
+
+								//show root motions
+								if (SkelAnimTrack->bShowRootMotionTrail)
+								{
+									if (SkelAnimTrack->RootMotionParams.bCacheRootTransforms == false)
+									{
+										SkelAnimTrack->RootMotionParams.bCacheRootTransforms = true;
+										SkelAnimTrack->SetUpRootMotions(true);
+
+									}
+									RenderTrail(BoundObject, SkelAnimTrack, InterrogationLinker, SkelMeshComp, Sequencer, PDI);								
+								}
+								else
+								{
+									SkelAnimTrack->RootMotionParams.bCacheRootTransforms = false;
+									SkelAnimTrack->RootMotionParams.RootTransforms.SetNum(0);
+								}
+								//show skeletons
+
+								const FLinearColor Colors[5] = { FLinearColor(1.0f,0.0f,1.0f,1.0f), FLinearColor(0.0f,1.0f,0.0f,1.0f), FLinearColor(0.0f, 0.0f, 1.0f, 1.0f),
 									FLinearColor(0.5f, 0.5f, 0.0f, 1.0f), FLinearColor(0.0f, 0.5f, 0.5f, 1.0f) };
 
 								int32 SectionIndex = 0;
@@ -362,12 +320,12 @@ void FSkeletalAnimationTrackEditMode::Render(const FSceneView* View, FViewport* 
 											FBlendedCurve OutCurve;
 											OutCurve.InitFrom(SkelMeshComp->GetAnimInstance()->GetRequiredBones());
 											UE::Anim::FStackAttributeContainer TempAttributes;
-											FAnimationPoseData OutAnimationPoseData(OutPose, OutCurve, TempAttributes);
+											FAnimationPoseData AnimationPoseData(OutPose, OutCurve, TempAttributes);
 
-											const float Seconds = static_cast<float>(AnimSection->MapTimeToAnimation(CurrentTime.Time, CurrentTime.Rate));
+											const double Seconds = AnimSection->MapTimeToAnimation(CurrentTime.Time, CurrentTime.Rate);
 											FAnimExtractContext ExtractionContext(Seconds, false);
 
-											AnimSequence->GetAnimationPose(OutAnimationPoseData, ExtractionContext);
+											AnimSequence->GetAnimationPose(AnimationPoseData, ExtractionContext);
 
 											FFrameTime TimeToSample = CurrentTime.Time;
 											if (TimeToSample < AnimSection->GetRange().GetLowerBoundValue())
@@ -378,20 +336,33 @@ void FSkeletalAnimationTrackEditMode::Render(const FSceneView* View, FViewport* 
 											{
 												TimeToSample = AnimSection->GetRange().GetUpperBoundValue();
 											}
-											FTransform RootMotionAtStart;
-											float Weight;
-											bool bAdditive;
-											AnimSection->GetRootMotionTransform(TimeToSample, MovieScene->GetTickResolution(), OutAnimationPoseData,bAdditive, RootMotionAtStart, Weight);
-											RootMotionAtStart = RootMotionAtStart * AnimSection->TempOffsetTransform;
-											OutPose[FCompactPoseBoneIndex(Index)] = RootMotionAtStart;
+											FTransform RootMotionAtStart, ParentTransform;
+											UMovieSceneSkeletalAnimationSection::FRootMotionTransformParam Param;
+											Param.FrameRate = MovieScene->GetTickResolution();
+											Param.CurrentTime = TimeToSample;
+											AnimSection->GetRootMotionTransform(AnimationPoseData, Param);
+											RootMotionAtStart = Param.OutTransform;
+											RootMotionAtStart = RootMotionAtStart * AnimSection->PreviousTransform;
+											FCompactPoseBoneIndex PoseIndex = AnimationPoseData.GetPose().GetBoneContainer().GetCompactPoseIndexFromSkeletonIndex(Index);
+											OutPose[PoseIndex] = RootMotionAtStart;
+
+											FLinearColor SectionColor = FLinearColor(AnimSection->GetColorTint());
+
+											const float Alpha = SectionColor.A;
+											SectionColor.A = 1.f;
+
+											FLinearColor BoneColor = Colors[SectionIndex % 5] * (1.f - Alpha) + SectionColor * Alpha;
 
 											FVector RootLocation;
-											DrawBonesFromCompactPose(OutPose, SkelMeshComp, PDI, Colors[SectionIndex % 5], FCompactPoseBoneIndex(Index), RootLocation);
+											DrawBonesFromCompactPose(OutPose, SkelMeshComp, (AnimSection->Params.SwapRootBone == ESwapRootBone::SwapRootBone_None), PDI,
+												BoneColor, PoseIndex, RootLocation);
+											
 											if (IsRootSelected(AnimSection))
 											{
 												RootTransform = RootMotionAtStart;
 												RootTransform.SetLocation(RootLocation);
 											}
+
 											if (PDI != nullptr)
 											{
 												if (PDI->IsHitTesting())
@@ -418,9 +389,9 @@ void FSkeletalAnimationTrackEditMode::Render(const FSceneView* View, FViewport* 
 	}
 }
 
-bool FSkeletalAnimationTrackEditMode::IsRootSelected(UMovieSceneSkeletalAnimationSection* AnimSection)
+bool FSkeletalAnimationTrackEditMode::IsRootSelected(UMovieSceneSkeletalAnimationSection* AnimSection) const
 {
-	for (FSelectedRootData& RootData : SelectedRootData)
+	for (const FSelectedRootData& RootData : SelectedRootData)
 	{
 		if (RootData.SelectedSection.Get() == AnimSection)
 		{
@@ -479,11 +450,75 @@ bool FSkeletalAnimationTrackEditMode::UsesTransformWidget(UE::Widget::EWidgetMod
 
 FVector FSkeletalAnimationTrackEditMode::GetWidgetLocation() const
 {
-	if (IsSomethingSelected())
+	FVector PivotLocation(0.0, 0.0, 0.0);
+	if (IsSomethingSelected() && WeakSequencer.IsValid())
 	{
-		return RootTransform.GetLocation();
+		FQualifiedFrameTime CurrentTime = WeakSequencer.Pin()->GetLocalTime();
+		bool  bSelectionValid = false;
+		for (FSelectedRootData Data : SelectedRootData)
+		{
+			if (Data.SelectedMeshComp.IsValid() && Data.SelectedSection.IsValid() && Data.SelectedSection->GetRange().Contains(CurrentTime.Time.GetFrame()))
+			{
+				bSelectionValid = true;
+			}
+		}
+		if (bSelectionValid)
+		{
+			PivotLocation = RootTransform.GetLocation();
+			return PivotLocation;
+		}
 	}
 	return FEdMode::GetWidgetLocation();
+}
+
+bool FSkeletalAnimationTrackEditMode::GetPivotForOrbit(FVector& OutPivot) const
+{
+	if (IsSomethingSelected())
+	{
+		OutPivot = GetWidgetLocation();
+		return true;
+	}
+	return FEdMode::GetPivotForOrbit(OutPivot);
+}
+
+bool FSkeletalAnimationTrackEditMode::GetTransformAtFirstSectionStart(FTransform& OutTransform, FTransform& OutParentTransform) const
+{ 
+	if (IsSomethingSelected() && WeakSequencer.IsValid())
+	{
+		FQualifiedFrameTime CurrentTime = WeakSequencer.Pin()->GetLocalTime();
+		int32 NumSelected = 0;
+		for (FSelectedRootData Data : SelectedRootData)
+		{
+			if (Data.SelectedMeshComp.IsValid() && Data.SelectedMeshComp->GetAnimInstance() && Data.SelectedSection.IsValid() && Data.SelectedSection->GetRange().Contains(CurrentTime.Time.GetFrame()))
+			{
+				FTransform ComponentTransform = Data.SelectedMeshComp->GetComponentTransform();
+				FTransform PivotTransform, PivotParentTransform;
+				//we want the transform at the start!
+				Data.CalcTransform(Data.SelectedSection->GetRange().GetLowerBoundValue(), PivotTransform, PivotParentTransform);
+				OutTransform = PivotTransform * ComponentTransform;
+				OutParentTransform = PivotParentTransform * ComponentTransform;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool FSkeletalAnimationTrackEditMode::GetCustomDrawingCoordinateSystem(FMatrix& OutMatrix, void* InData)
+{
+	//Get transform at the START of the section since that's the value we will manipulate
+	FTransform Transform, ParentTransform;
+	if (GetTransformAtFirstSectionStart(Transform, ParentTransform))
+	{
+		OutMatrix = Transform.ToMatrixNoScale().RemoveTranslation();
+		return true;
+	}
+	return false;
+}
+
+bool FSkeletalAnimationTrackEditMode::GetCustomInputCoordinateSystem(FMatrix& OutMatrix, void* InData)
+{
+	return GetCustomDrawingCoordinateSystem(OutMatrix, InData);
 }
 
 
@@ -510,6 +545,40 @@ bool FSkeletalAnimationTrackEditMode::HandleClick(FEditorViewportClient* InViewp
 		}
 	}
 	return false;
+}
+FSelectedRootData::FSelectedRootData(UMovieSceneSkeletalAnimationSection* InSection, USkeletalMeshComponent* InComp) : 
+	SelectedSection(InSection), SelectedMeshComp(InComp)
+{
+	FFrameTime StartTime = SelectedSection->GetRange().GetLowerBoundValue();
+}
+
+void FSelectedRootData::CalcTransform(const FFrameTime& FrameTime, FTransform& OutTransform, FTransform& OutParentTransform)
+{
+	UMovieSceneSkeletalAnimationSection* Section = SelectedSection.Get();
+	USkeletalMeshComponent* Comp = SelectedMeshComp.Get();
+	OutTransform =  FTransform(FTransform::Identity);
+	OutParentTransform = FTransform(FTransform::Identity);
+	if (Section && Comp && Comp->GetAnimInstance())
+	{
+		if (UMovieScene* MovieScene = Section->GetTypedOuter<UMovieScene>())
+		{
+			FMemMark Mark(FMemStack::Get());
+			FCompactPose OutPose;
+			OutPose.ResetToRefPose(Comp->GetAnimInstance()->GetRequiredBones());
+			FBlendedCurve OutCurve;
+			OutCurve.InitFrom(Comp->GetAnimInstance()->GetRequiredBones());
+			UE::Anim::FStackAttributeContainer TempAttributes;
+			FAnimationPoseData AnimationPoseData(OutPose, OutCurve, TempAttributes);
+
+			UMovieSceneSkeletalAnimationSection::FRootMotionTransformParam Param;
+			Param.FrameRate = MovieScene->GetTickResolution();
+			Param.CurrentTime = FrameTime;
+			Section->GetRootMotionTransform(AnimationPoseData, Param);
+			OutTransform = Param.OutTransform * Param.OutRootStartTransform * Section->PreviousTransform;
+			OutParentTransform = Param.OutParentTransform * Param.OutRootStartTransform * Section->PreviousTransform;
+
+		}
+	}
 }
 
 bool FSkeletalAnimationTrackEditMode::IsSomethingSelected() const
@@ -564,10 +633,25 @@ bool FSkeletalAnimationTrackEditMode::InputDelta(FEditorViewportClient* InViewpo
 		const bool bDoRotation = !Rot.IsZero() && (WidgetMode == UE::Widget::WM_Rotate || WidgetMode == UE::Widget::WM_TranslateRotateZ);
 		const bool bDoTranslation = !Drag.IsZero() && (WidgetMode == UE::Widget::WM_Translate || WidgetMode == UE::Widget::WM_TranslateRotateZ);
 
-		if (IsSomethingSelected())
+		FTransform CurrentTransform,ParentTransform;
+		if ((bDoRotation || bDoTranslation) && GetTransformAtFirstSectionStart(CurrentTransform,ParentTransform))
 		{
-			for (FSelectedRootData Data : SelectedRootData)
+			for (const FSelectedRootData Data : SelectedRootData)
 			{
+				if (bDoRotation)
+				{
+					FQuat CurrentRotation = CurrentTransform.GetRotation();
+					CurrentRotation = (InRot.Quaternion() * CurrentRotation);
+					CurrentTransform.SetRotation(CurrentRotation);
+				}
+
+				if (bDoTranslation)
+				{
+					FVector CurrentLocation = CurrentTransform.GetLocation();
+					CurrentLocation = CurrentLocation + InDrag;
+					CurrentTransform.SetLocation(CurrentLocation);
+				}
+
 				if (bManipulatorMadeChange == false)
 				{
 					bManipulatorMadeChange = true;
@@ -575,13 +659,14 @@ bool FSkeletalAnimationTrackEditMode::InputDelta(FEditorViewportClient* InViewpo
 				}
 				if (Data.SelectedSection.IsValid() && Data.SelectedMeshComp.IsValid())
 				{
-					FTransform CompTransform = Data.SelectedMeshComp->GetComponentTransform();
+					CurrentTransform = CurrentTransform.GetRelativeTransform(ParentTransform);
+					
 					if (bDoRotation)
 					{
 						UMovieSceneSkeletalAnimationTrack* Track = Data.SelectedSection.Get()->GetTypedOuter<UMovieSceneSkeletalAnimationTrack>();
 						Track->Modify();
 						Data.SelectedSection.Get()->Modify();
-						Data.SelectedSection.Get()->StartRotationOffset = (Rot)+Data.SelectedSection.Get()->StartRotationOffset;
+						Data.SelectedSection.Get()->StartRotationOffset = CurrentTransform.GetRotation().Rotator(); 
 						Data.SelectedSection.Get()->GetRootMotionParams()->bRootMotionsDirty = true;
 						TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 						if (Sequencer.IsValid())
@@ -594,8 +679,7 @@ bool FSkeletalAnimationTrackEditMode::InputDelta(FEditorViewportClient* InViewpo
 						UMovieSceneSkeletalAnimationTrack* Track = Data.SelectedSection.Get()->GetTypedOuter<UMovieSceneSkeletalAnimationTrack>();
 						Track->Modify();
 						Data.SelectedSection.Get()->Modify();
-						Drag = CompTransform.GetRotation().Inverse().RotateVector(Drag);
-						Data.SelectedSection.Get()->StartLocationOffset = (Drag)+Data.SelectedSection.Get()->StartLocationOffset;
+						Data.SelectedSection.Get()->StartLocationOffset = CurrentTransform.GetLocation();
 						Data.SelectedSection.Get()->GetRootMotionParams()->bRootMotionsDirty = true;
 						TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 						if (Sequencer.IsValid())
@@ -625,8 +709,6 @@ bool FSkeletalAnimationTrackEditMode::IsCompatibleWith(FEditorModeID OtherModeID
 {
 	return true;
 }
-
-
 
 
 #undef LOCTEXT_NAMESPACE

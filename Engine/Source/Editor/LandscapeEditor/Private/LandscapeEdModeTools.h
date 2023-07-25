@@ -651,10 +651,12 @@ private:
 	void VisualizeLandscapeRegion(int32 InX1, int32 InY1, int32 InX2, int32 InY2, const FColor& InColor, const FString& InDescription)
 	{
 		check(LandscapeInfo != nullptr);
-		const FTransform& LandscapeTransform = LandscapeInfo->LandscapeActor->GetTransform();
+		ALandscapeProxy* LandscapeProxy = LandscapeInfo->GetLandscapeProxy();
+		check(LandscapeProxy != nullptr);
+		const FTransform& LandscapeTransform = LandscapeProxy->GetTransform();
 		FVector Min = LandscapeTransform.TransformPosition(FVector(InX1, InY1, 0));
 		FVector Max = LandscapeTransform.TransformPosition(FVector(InX2, InY2, 0));
-		UE_VLOG_BOX(LandscapeInfo->LandscapeActor.Get(), LogLandscapeTools, Log, FBox(Min, Max), InColor, TEXT("%s"), *InDescription);
+		UE_VLOG_BOX(LandscapeProxy, LogLandscapeTools, Log, FBox(Min, Max), InColor, TEXT("%s"), *InDescription);
 	}
 
 	TMap<FIntPoint, AccessorType> CachedData;
@@ -782,7 +784,7 @@ struct FXYOffsetmapAccessor
 				bUpdateNormals = true;
 				for (ULandscapeComponent* Component : Components)
 				{
-					ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
+					ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->GetCollisionComponent();
 					if (CollisionComponent && AInstancedFoliageActor::HasFoliageAttached(CollisionComponent))
 					{
 						bUpdateFoliage = true;
@@ -801,7 +803,7 @@ struct FXYOffsetmapAccessor
 
 				for (ULandscapeComponent* Component : Components)
 				{
-					CollisionComponents.Add(Component->CollisionComponent.Get());
+					CollisionComponents.Add(Component->GetCollisionComponent());
 					PreUpdateLocalBoxes.Add(FBox(FVector((float)X1, (float)Y1, Component->CachedLocalBox.Min.Z), FVector((float)X2, (float)Y2, Component->CachedLocalBox.Max.Z)));
 				}
 
@@ -1116,7 +1118,7 @@ struct FFullWeightmapAccessor
 			// Recreate collision for modified components to update the physical materials
 			for (ULandscapeComponent* Component : ModifiedComponents)
 			{
-				ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
+				ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->GetCollisionComponent();
 				if (CollisionComponent)
 				{
 					CollisionComponent->RecreateCollision();
@@ -1575,15 +1577,4 @@ protected:
 		UE_LOG(LogLandscapeTools, VeryVerbose, TEXT("ViewportClient = %d, IsShiftDown = %d"), (ViewportClient != nullptr), (ViewportClient != nullptr && IsShiftDown(ViewportClient->Viewport)));
 		return ViewportClient != nullptr && IsShiftDown(ViewportClient->Viewport);
 	}
-};
-
-struct FToolFlattenCustomData
-{
-	FToolFlattenCustomData()
-		: ActiveEyeDropperMode(false)
-		, EyeDropperModeHeight(0.0f)
-	{}
-
-	bool ActiveEyeDropperMode;
-	float EyeDropperModeHeight;
 };

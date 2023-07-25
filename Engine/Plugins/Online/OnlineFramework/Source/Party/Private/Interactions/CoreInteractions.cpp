@@ -2,14 +2,9 @@
 
 #include "Interactions/CoreInteractions.h"
 
-#include "SocialToolkit.h"
 #include "SocialManager.h"
-#include "User/SocialUser.h"
 #include "Chat/SocialChatManager.h"
 
-#include "OnlineSubsystem.h"
-#include "Interfaces/OnlineFriendsInterface.h"
-#include "Interfaces/OnlinePresenceInterface.h"
 
 #define LOCTEXT_NAMESPACE "UserInteractions"
 
@@ -54,7 +49,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return LOCTEXT("AddPlatformFriend_Live", "Add Xbox Live Friend");
 	}
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	else if (PlatformOssName == PS4_SUBSYSTEM)
+	else if (PlatformOssName == PS4_SUBSYSTEM || USocialSettings::IsSonyOSS(PlatformOssName))
 	{
 		return LOCTEXT("AddPlatformFriend_PSN", "Add Playstation Network Friend");
 	}

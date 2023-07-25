@@ -53,6 +53,8 @@ public:
 	TArray< TSharedPtr< FUICommandInfo > > OpenRecentFileCommands;
 	static const int32 MaxFavoriteFiles = 20;
 	TArray< TSharedPtr< FUICommandInfo > > OpenFavoriteFileCommands;
+	
+	TSharedPtr< FUICommandInfo > ClearRecentFiles;
 
 	TSharedPtr< FUICommandInfo > ToggleFavorite;
 
@@ -572,6 +574,7 @@ public:
 	TSharedPtr< FUICommandInfo > ShowTransformWidget;
 	TSharedPtr< FUICommandInfo > AllowTranslucentSelection;
 	TSharedPtr< FUICommandInfo > AllowGroupSelection;
+	TSharedPtr< FUICommandInfo > ShowSelectionSubcomponents;
 
 	TSharedPtr< FUICommandInfo > StrictBoxSelect;
 	TSharedPtr< FUICommandInfo > TransparentBoxSelect;
@@ -669,6 +672,9 @@ public:
 	 * @param	RecentFileIndex		Index into our MRU list of recent files that can be opened
 	 */
 	static void OpenRecentFile( int32 RecentFileIndex );
+
+	/** Clear the list of recent files. */
+	static void ClearRecentFiles();
 
 	/**
 	 * Opens a favorite file
@@ -1182,6 +1188,8 @@ public:
 	 */ 
 	static void OnToggleTransformWidgetVisibility();
 	static bool OnGetTransformWidgetVisibility();
+	static void OnToggleShowSelectionSubcomponents();
+	static bool OnGetShowSelectionSubcomponents();
 	static void OnAllowTranslucentSelection();
 	static bool OnIsAllowTranslucentSelectionEnabled();	
 	static void OnAllowGroupSelection();

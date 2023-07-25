@@ -33,6 +33,8 @@ namespace UE::AssetTools
 	struct FPackageMigrationContext;
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPackageMigration, FPackageMigrationContext&);
+
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FCanMigrateAsset, FName);
 }
 
 UENUM()
@@ -116,6 +118,7 @@ struct FAssetRenameData
 	}
 };
 
+DECLARE_DYNAMIC_DELEGATE_TwoParams(FAdvancedCopyCompletedEvent, bool, bSuccess, const TArray<FAssetRenameData>&, AllCopiedAssets);
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FAssetPostRenameEvent, const TArray<FAssetRenameData>&);
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FIsNameAllowed, const FString& /*Name*/, FText* /*OutErrorMessage*/);
@@ -142,7 +145,8 @@ struct FAdvancedCopyParams
 	bool bCopyOverAllDestinationOverlaps = false;
 	bool bShouldSuppressUI = false;
 	bool bShouldCheckForDependencies = false;
-
+	FAdvancedCopyCompletedEvent OnCopyComplete;
+	
 	UE_DEPRECATED(5.0, "This function has been deprecated, use GetSelectedPackageOrFolderNames")
 	const TArray<FName>& GetSelectedPackageNames() const
 	{
@@ -219,8 +223,8 @@ struct FMigrationOptions
 		: bPrompt(false)
 		, AssetConflict(EAssetMigrationConflict::Skip)
 	{}
-
 };
+
 
 // An array of maps each storing pairs of original object -> duplicated object
 using FDuplicatedObjects = TArray<TMap<TSoftObjectPtr<UObject>, TSoftObjectPtr<UObject>>>;
@@ -249,6 +253,10 @@ public:
 
 	/** Gets the appropriate AssetTypeActions for the supplied class */
 	virtual TWeakPtr<IAssetTypeActions> GetAssetTypeActionsForClass(const UClass* Class) const = 0;
+
+	virtual bool CanLocalize(const UClass* Class) const = 0;
+
+	virtual TOptional<FLinearColor> GetTypeColor(const UClass* Class) const = 0;
 
 	/** Gets the list of appropriate AssetTypeActions for the supplied class */
 	virtual TArray<TWeakPtr<IAssetTypeActions>> GetAssetTypeActionsListForClass(const UClass* Class) const = 0;
@@ -289,6 +297,30 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
 	virtual UObject* CreateAsset(const FString& AssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None) = 0;
+
+	/**
+	 * Creates one or more assets using the source objects as the basis for the next type.  This is a common enough operation
+	 * it needed a utility.  In the case that you only have a single SourceObject, we'll lean on the content browser
+	 * to create the asset and focus you to it so you can rename it inline.  However in the case that multiple assets
+	 * get created we'll construct each one and then sync the content browser to them.
+	 *
+	 * You can return null for a factory if you need to skip a given SourceObject.
+	 */
+	virtual void CreateAssetsFrom(TConstArrayView<UObject*> SourceObjects, UClass* CreateAssetType, const FString& DefaultSuffix, TFunctionRef<UFactory*(UObject*)> FactoryConstructor, FName CallingContext = NAME_None) = 0;
+
+	/**
+	 * Creates one or more assets using the source objects as the basis for the next type.  This is a common enough operation
+	 * it needed a utility.  In the case that you only have a single SourceObject, we'll lean on the content browser
+	 * to create the asset and focus you to it so you can rename it inline.  However in the case that multiple assets
+	 * get created we'll construct each one and then sync the content browser to them.
+	 *
+	 * You can return null for a factory if you need to skip a given SourceObject.
+	 */
+	template<typename SourceObjectType, typename = typename TEnableIf<TIsDerivedFrom<SourceObjectType, UObject>::Value>::Type>
+	void CreateAssetsFrom(TConstArrayView<SourceObjectType*> SourceObjects, UClass* CreateAssetType, const FString& DefaultSuffix, TFunctionRef<UFactory*(SourceObjectType*)> FactoryConstructor, FName CallingContext = NAME_None)
+	{
+		CreateAssetsFrom(TConstArrayView<UObject*>(reinterpret_cast<UObject* const*>(SourceObjects.GetData()), SourceObjects.Num()), CreateAssetType, DefaultSuffix, [FactoryConstructor](UObject* SourceObject){ return FactoryConstructor(Cast<SourceObjectType>(SourceObject)); }, CallingContext);
+	}
 
 	/** Opens an asset picker dialog and creates an asset with the specified name and path */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
@@ -476,6 +508,9 @@ public:
 	/* Copy packages and dependencies to another folder */
 	virtual void BeginAdvancedCopyPackages(const TArray<FName>& InputNamesToCopy, const FString& TargetPath) const = 0;
 
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools", BlueprintPure = false, meta = (AutoCreateRefTerm = "OnCopyComplete"))
+	virtual void BeginAdvancedCopyPackages(const TArray<FName>& InputNamesToCopy, const FString& TargetPath, const FAdvancedCopyCompletedEvent& OnCopyComplete) const = 0;
+
 	/**
 	 * Fix up references to the specified redirectors.
 	 * @param bCheckoutDialogPrompt indicates whether to prompt the user with files checkout dialog or silently attempt to checkout all necessary files.
@@ -489,7 +524,7 @@ public:
 	virtual void ExpandDirectories(const TArray<FString>& Files, const FString& DestinationPath, TArray<TPair<FString, FString>>& FilesAndDestinations) const = 0;
 
 	/** Copies files after the final set of maps of sources and destinations was confirmed */
-	virtual bool AdvancedCopyPackages(const FAdvancedCopyParams& CopyParams, const TArray<TMap<FString, FString>> PackagesAndDestinations) const = 0;
+	virtual bool AdvancedCopyPackages(const FAdvancedCopyParams& CopyParams, const TArray<TMap<FString, FString>>& PackagesAndDestinations) const = 0;
 
 	/** Copies files after the flattened map of sources and destinations was confirmed */
 	virtual bool AdvancedCopyPackages(const TMap<FString, FString>& SourceAndDestPackages, const bool bForceAutosave = false, const bool bCopyOverAllDestinationOverlaps = true, FDuplicatedObjects* OutDuplicatedObjects = nullptr, EMessageSeverity::Type NotificationSeverityFilter = EMessageSeverity::Info) const = 0;
@@ -498,7 +533,7 @@ public:
 	virtual void GenerateAdvancedCopyDestinations(FAdvancedCopyParams& InParams, const TArray<FName>& InPackageNamesToCopy, const UAdvancedCopyCustomization* CopyCustomization, TMap<FString, FString>& OutPackagesAndDestinations) const = 0;
 
 	/* Flattens the maps for each selected package into one complete map to pass to the final copy function while checking for collisions */
-	virtual bool FlattenAdvancedCopyDestinations(const TArray<TMap<FString, FString>> PackagesAndDestinations, TMap<FString, FString>& FlattenedPackagesAndDestinations) const = 0;
+	virtual bool FlattenAdvancedCopyDestinations(const TArray<TMap<FString, FString>>& PackagesAndDestinations, TMap<FString, FString>& FlattenedPackagesAndDestinations) const = 0;
 
 	/* Validate the destinations for advanced copy once the map has been flattened */
 	virtual bool ValidateFlattenedAdvancedCopyDestinations(const TMap<FString, FString>& FlattenedPackagesAndDestinations) const = 0;
@@ -531,7 +566,7 @@ public:
 	virtual TSharedRef<FNamePermissionList>& GetAssetClassPermissionList() = 0;
 
 	/** Get asset class permission list for content browser and other systems */
-	virtual TSharedRef<FPathPermissionList>& GetAssetClassPathPermissionList(EAssetClassAction AssetClassAction) = 0;
+	virtual const TSharedRef<FPathPermissionList>& GetAssetClassPathPermissionList(EAssetClassAction AssetClassAction) const = 0;
 
 	/** Which BlueprintTypes are allowed to be created. An empty list should allow everything. */
 	virtual TSet<EBlueprintType>& GetAllowedBlueprintTypes() = 0;
@@ -555,9 +590,14 @@ public:
 	/** Show notification that writable folder filter blocked an action */
 	virtual void NotifyBlockedByWritableFolderFilter() const = 0;
 
+	/** Allow to add some restrictions to the assets that can be migrated */
+	virtual void RegisterCanMigrateAsset(const FName OwnerName, UE::AssetTools::FCanMigrateAsset Delegate) = 0;
+	virtual void UnregisterCanMigrateAsset(const FName OwnerName) = 0;
+
 	/** Syncs the primary content browser to the specified assets, whether or not it is locked. Most syncs that come from AssetTools -feel- like they came from the content browser, so this is okay. */
 	virtual void SyncBrowserToAssets(const TArray<UObject*>& AssetsToSync) = 0;
 	virtual void SyncBrowserToAssets(const TArray<FAssetData>& AssetsToSync) = 0;
+	
 };
 
 UCLASS(transient)

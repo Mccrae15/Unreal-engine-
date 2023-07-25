@@ -30,9 +30,12 @@ FPropertyLocalizationDataGatherer::FPropertyLocalizationDataGatherer(TArray<FGat
 	}, true, RF_Transient, EInternalObjectFlags::Garbage);
 
 	// Iterate over each root object in the package
-	for (const UObject* Object : AllObjectsInPackage)
+	// Note: This calls GetObjectsWithPackage rather than test the AllObjectsInPackage array, as external actors don't pass a "Object->GetOuter() == Package" test when trying to query for root objects
 	{
-		if (Object->GetOuter() == Package)
+		TArray<UObject*> RootObjectsInPackage;
+		GetObjectsWithPackage(Package, RootObjectsInPackage, false, RF_Transient, EInternalObjectFlags::Garbage);
+
+		for (const UObject* Object : RootObjectsInPackage)
 		{
 			GatherLocalizationDataFromObjectWithCallbacks(Object, EPropertyLocalizationGathererTextFlags::None);
 		}
@@ -81,6 +84,8 @@ const FPropertyLocalizationDataGatherer::FGatherableFieldsForType& FPropertyLoca
 
 const FPropertyLocalizationDataGatherer::FGatherableFieldsForType& FPropertyLocalizationDataGatherer::CacheGatherableFieldsForType(const UStruct* InType)
 {
+	check(InType);
+
 	TUniquePtr<FGatherableFieldsForType> GatherableFieldsForType = MakeUnique<FGatherableFieldsForType>();
 
 	// Include the parent fields (this will recursively cache any parent types)
@@ -168,8 +173,11 @@ bool FPropertyLocalizationDataGatherer::CanGatherFromInnerProperty(const FProper
 
 	if (const FStructProperty* StructInnerProp = CastField<const FStructProperty>(InInnerProperty))
 	{
-		// Call the "Get" version as we may have already cached a result for this type
-		return !GetGatherableFieldsForType(StructInnerProp->Struct).IsEmpty();
+		if (StructInnerProp->Struct)
+		{
+			// Call the "Get" version as we may have already cached a result for this type
+			return !GetGatherableFieldsForType(StructInnerProp->Struct).IsEmpty();
+		}
 	}
 
 	return false;
@@ -501,7 +509,10 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromChildTextPrope
 		// Property is a struct property.
 		else if (StructProperty)
 		{
-			GatherLocalizationDataFromStructWithCallbacks(PathToElement, StructProperty->Struct, ElementValueAddress, DefaultElementValueAddress, ElementChildPropertyGatherTextFlags);
+			if (StructProperty->Struct)
+			{
+				GatherLocalizationDataFromStructWithCallbacks(PathToElement, StructProperty->Struct, ElementValueAddress, DefaultElementValueAddress, ElementChildPropertyGatherTextFlags);
+			}
 		}
 		// Property is an object property.
 		else if (ObjectProperty && !(GatherTextFlags & EPropertyLocalizationGathererTextFlags::SkipSubObjects))

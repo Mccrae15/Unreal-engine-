@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
@@ -23,17 +22,17 @@ enum class EControllerHand : uint8
 	ExternalCamera,
 	Gun,
 	HMD,
-	Special_1,
-	Special_2,
-	Special_3,
-	Special_4,
-	Special_5,
-	Special_6,
-	Special_7,
-	Special_8,
-	Special_9,
-	Special_10,
-	Special_11,
+	Chest,
+	LeftShoulder,
+	RightShoulder,
+	LeftElbow,
+	RightElbow,
+	Waist,
+	LeftKnee,
+	RightKnee,
+	LeftFoot,
+	RightFoot,
+	Special,
 
 	ControllerHand_Count UMETA(Hidden, DisplayName = "<INVALID>"),
 };
@@ -240,7 +239,7 @@ UENUM(BlueprintType)
 namespace ETouchIndex
 {
 	// The number of entries in ETouchIndex must match the number of touch keys defined in EKeys and NUM_TOUCH_KEYS above
-	enum Type
+	enum Type : int
 	{
 		Touch1,
 		Touch2,
@@ -264,7 +263,7 @@ namespace ETouchIndex
 UENUM()
 namespace EConsoleForGamepadLabels
 {
-	enum Type
+	enum Type : int
 	{
 		None,
 		XBoxOne,
@@ -740,7 +739,7 @@ private:
 UENUM()
 namespace ETouchType
 {
-	enum Type
+	enum Type : int
 	{
 		Began,
 		Moved,
@@ -784,3 +783,7 @@ class UInputCoreTypes : public UObject
 	GENERATED_BODY()
 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

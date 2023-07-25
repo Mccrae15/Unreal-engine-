@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeSplineActor.h"
+#include "Engine/World.h"
 #include "LandscapeInfo.h"
 #include "LandscapeInfoMap.h"
 #include "Landscape.h"
@@ -39,6 +40,16 @@ ULandscapeInfo* ALandscapeSplineActor::GetLandscapeInfo() const
 	return ULandscapeInfo::Find(GetWorld(), LandscapeGuid);
 }
 
+// this is called when Splines or LandscapeActors are registered with LandscapeInfo, to update the LandscapeActor pointer
+void ALandscapeSplineActor::UpdateSharedProperties(ULandscapeInfo* InLandscapeInfo)
+{
+	check(InLandscapeInfo);
+	check(InLandscapeInfo->LandscapeGuid == LandscapeGuid);
+#if WITH_EDITOR
+	LandscapeActor = InLandscapeInfo->LandscapeActor.Get();
+#endif // WITH_EDITOR
+}
+
 #if WITH_EDITOR
 void ALandscapeSplineActor::GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const
 {
@@ -50,6 +61,7 @@ void ALandscapeSplineActor::GetActorDescProperties(FPropertyPairsMap& PropertyPa
 	}
 }
 
+// this is called when a LandscapeSplineActor is created, to copy it's landscape target data from the landscape info
 void ALandscapeSplineActor::GetSharedProperties(ULandscapeInfo* InLandscapeInfo)
 {
 	Modify();
@@ -127,13 +139,37 @@ void ALandscapeSplineActor::UnregisterAllComponents(bool bForReregister)
 	Super::UnregisterAllComponents(bForReregister);
 }
 
+void ALandscapeSplineActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	const FName PropertyName = PropertyChangedEvent.GetMemberPropertyName();
+	if (PropertyName == FName(TEXT("LandscapeActor")))
+	{
+		if (LandscapeActor && !LandscapeActor->HasAnyFlags(RF_BeginDestroyed))
+		{
+			LandscapeGuid = LandscapeActor->GetLandscapeGuid();
+		}
+		else
+		{
+			LandscapeActor = nullptr;
+			LandscapeGuid.Invalidate();
+		}
+
+		ULandscapeInfo::UpdateRegistrationForSplineActor(GetWorld(), this);
+	}
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+
 void ALandscapeSplineActor::PostEditMove(bool bFinished)
 {
 	Super::PostEditMove(bFinished);
 
 	if (bFinished)
 	{
-		GetLandscapeInfo()->RequestSplineLayerUpdate();
+		if (ULandscapeInfo* LandscapeInfo = GetLandscapeInfo())
+		{
+			LandscapeInfo->RequestSplineLayerUpdate();
+		}
 	}
 }
 

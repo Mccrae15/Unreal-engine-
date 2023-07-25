@@ -19,7 +19,7 @@ struct CONTROLRIG_API FRigUnit_SetTransform : public FRigUnitMutable
 
 	FRigUnit_SetTransform()
 		: Item(NAME_None, ERigElementType::Bone)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Value(FTransform::Identity)
 		, Weight(1.f)
@@ -31,7 +31,7 @@ struct CONTROLRIG_API FRigUnit_SetTransform : public FRigUnitMutable
 
 	virtual FRigElementKey DetermineSpaceForPin(const FString& InPinPath, void* InUserContext) const override
 	{
-		if(Space == EBoneGetterSetterMode::LocalSpace)
+		if(Space == ERigVMTransformSpace::LocalSpace)
 		{
 			if (const URigHierarchy* Hierarchy = (const URigHierarchy*)InUserContext)
 			{
@@ -43,7 +43,7 @@ struct CONTROLRIG_API FRigUnit_SetTransform : public FRigUnitMutable
 
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The item to set the transform for
@@ -55,7 +55,7 @@ struct CONTROLRIG_API FRigUnit_SetTransform : public FRigUnitMutable
 	 * Defines if the transform should be set in local or global space
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	 * Defines if the transform should be set as current (false) or initial (true).
@@ -77,7 +77,7 @@ struct CONTROLRIG_API FRigUnit_SetTransform : public FRigUnitMutable
 	UPROPERTY(meta=(Input))
 	bool bPropagateToChildren;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	FCachedRigElement CachedIndex;
 };
@@ -92,7 +92,7 @@ struct CONTROLRIG_API FRigUnit_SetTranslation : public FRigUnitMutable
 
 	FRigUnit_SetTranslation()
 		: Item(NAME_None, ERigElementType::Bone)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Value(FVector::ZeroVector)
 		, Weight(1.f)
@@ -104,7 +104,7 @@ struct CONTROLRIG_API FRigUnit_SetTranslation : public FRigUnitMutable
 
 	virtual FRigElementKey DetermineSpaceForPin(const FString& InPinPath, void* InUserContext) const override
 	{
-		if(Space == EBoneGetterSetterMode::LocalSpace)
+		if(Space == ERigVMTransformSpace::LocalSpace)
 		{
 			if (const URigHierarchy* Hierarchy = (const URigHierarchy*)InUserContext)
 			{
@@ -115,7 +115,7 @@ struct CONTROLRIG_API FRigUnit_SetTranslation : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The item to set the translation for
@@ -127,7 +127,7 @@ struct CONTROLRIG_API FRigUnit_SetTranslation : public FRigUnitMutable
 	 * Defines if the translation should be set in local or global space
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	 * Defines if the transform should be set as current (false) or initial (true).
@@ -149,7 +149,7 @@ struct CONTROLRIG_API FRigUnit_SetTranslation : public FRigUnitMutable
 	UPROPERTY(meta=(Input))
 	bool bPropagateToChildren;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	FCachedRigElement CachedIndex;
 };
@@ -164,7 +164,7 @@ struct CONTROLRIG_API FRigUnit_SetRotation : public FRigUnitMutable
 
 	FRigUnit_SetRotation()
 		: Item(NAME_None, ERigElementType::Bone)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Value(FQuat::Identity)
 		, Weight(1.f)
@@ -176,7 +176,7 @@ struct CONTROLRIG_API FRigUnit_SetRotation : public FRigUnitMutable
 
 	virtual FRigElementKey DetermineSpaceForPin(const FString& InPinPath, void* InUserContext) const override
 	{
-		if(Space == EBoneGetterSetterMode::LocalSpace)
+		if(Space == ERigVMTransformSpace::LocalSpace)
 		{
 			if (const URigHierarchy* Hierarchy = (const URigHierarchy*)InUserContext)
 			{
@@ -187,7 +187,7 @@ struct CONTROLRIG_API FRigUnit_SetRotation : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The item to set the rotation for
@@ -199,7 +199,7 @@ struct CONTROLRIG_API FRigUnit_SetRotation : public FRigUnitMutable
 	 * Defines if the rotation should be set in local or global space
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	 * Defines if the transform should be set as current (false) or initial (true).
@@ -221,7 +221,7 @@ struct CONTROLRIG_API FRigUnit_SetRotation : public FRigUnitMutable
 	UPROPERTY(meta=(Input))
 	bool bPropagateToChildren;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	FCachedRigElement CachedIndex;
 };
@@ -236,7 +236,7 @@ struct FRigUnit_SetScale : public FRigUnitMutable
 
 	FRigUnit_SetScale()
 		: Item(NAME_None, ERigElementType::Bone)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Scale(FVector::OneVector)
 		, Weight(1.f)
@@ -247,7 +247,7 @@ struct FRigUnit_SetScale : public FRigUnitMutable
 	virtual FString GetUnitLabel() const override;
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The item to set the scale for
@@ -259,7 +259,7 @@ struct FRigUnit_SetScale : public FRigUnitMutable
 	 * Defines if the scale should be set in local or global space
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	 * Defines if the transform should be set as current (false) or initial (true).
@@ -281,7 +281,7 @@ struct FRigUnit_SetScale : public FRigUnitMutable
 	UPROPERTY(meta=(Input))
 	bool bPropagateToChildren;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	FCachedRigElement CachedIndex;
 };
@@ -300,7 +300,7 @@ struct CONTROLRIG_API FRigUnit_SetTransformArray : public FRigUnitMutable
 
 	FRigUnit_SetTransformArray()
 		: Items()
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Transforms()
 		, Weight(1.f)
@@ -309,7 +309,7 @@ struct CONTROLRIG_API FRigUnit_SetTransformArray : public FRigUnitMutable
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The item to set the transform for
@@ -321,7 +321,7 @@ struct CONTROLRIG_API FRigUnit_SetTransformArray : public FRigUnitMutable
 	 * Defines if the transform should be set in local or global space
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	 * Defines if the transform should be set as current (false) or initial (true).
@@ -343,7 +343,7 @@ struct CONTROLRIG_API FRigUnit_SetTransformArray : public FRigUnitMutable
 	UPROPERTY(meta=(Input))
 	bool bPropagateToChildren;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	TArray<FCachedRigElement> CachedIndex;
 	
@@ -365,7 +365,7 @@ struct CONTROLRIG_API FRigUnit_SetTransformItemArray : public FRigUnitMutable
 
 	FRigUnit_SetTransformItemArray()
 		: Items()
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, bInitial(false)
 		, Transforms()
 		, Weight(1.f)
@@ -374,7 +374,7 @@ struct CONTROLRIG_API FRigUnit_SetTransformItemArray : public FRigUnitMutable
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The item to set the transform for
@@ -386,7 +386,7 @@ struct CONTROLRIG_API FRigUnit_SetTransformItemArray : public FRigUnitMutable
 	 * Defines if the transform should be set in local or global space
 	 */ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	/**
 	 * Defines if the transform should be set as current (false) or initial (true).
@@ -408,7 +408,7 @@ struct CONTROLRIG_API FRigUnit_SetTransformItemArray : public FRigUnitMutable
 	UPROPERTY(meta=(Input))
 	bool bPropagateToChildren;
 
-	// Used to cache the internally
+	// Used to cache the internally used index
 	UPROPERTY()
 	TArray<FCachedRigElement> CachedIndex;
 };

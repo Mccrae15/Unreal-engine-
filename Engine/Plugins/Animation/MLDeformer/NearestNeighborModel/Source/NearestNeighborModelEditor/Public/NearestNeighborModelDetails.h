@@ -6,6 +6,9 @@
 #include "MLDeformerMorphModelDetails.h"
 
 class UNearestNeighborModel;
+class IPropertyHandle;
+class IDetailChildrenBuilder;
+class FDetailWidgetRow;
 
 namespace UE::NearestNeighborModel
 {
@@ -20,13 +23,14 @@ namespace UE::NearestNeighborModel
 
 		// ILayoutDetails overrides.
 		virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
+		virtual void CreateCategories() override;
 		// ~END ILayoutDetails overrides.
 
-		virtual void CreateCategories() override;
-
+		// FMLDeformerModelDetails overrides.
 		virtual bool UpdateMemberPointers(const TArray<TWeakObjectPtr<UObject>>& Objects) override;
+		// ~END FMLDeformerModelDetails overrides.
 
-	protected:
+	private:
 		UNearestNeighborModel* NearestNeighborModel = nullptr;
 		FNearestNeighborEditorModel* NearestNeighborEditorModel = nullptr;
 
@@ -34,5 +38,13 @@ namespace UE::NearestNeighborModel
 		IDetailCategoryBuilder* ClothPartCategoryBuilder = nullptr;
 		IDetailCategoryBuilder* NearestNeighborCategoryBuilder = nullptr;
 		IDetailCategoryBuilder* KMeansCategoryBuilder = nullptr;
+
+		TArray<TSharedPtr<FString> > SubMeshNames;
+		TMap<TSharedPtr<FString>, int32> SubMeshNameMap;
+
+		void AddActionResultText(IDetailCategoryBuilder* CategoryBuilder, uint8 Result, const FString& ActionName);
+		void GenerateClothPartElementWidget(TSharedRef<IPropertyHandle> PropertyHandle, int32 ArrayIndex, IDetailChildrenBuilder& ChildrenBuilder);
+		void BuildSubMeshNames();
+		void SubMeshComboSelectionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo, int32 ArrayIndex);
 	};
 }	// namespace UE::NearestNeighborModel

@@ -2,6 +2,7 @@
 
 #include "MetasoundParameterTransmitter.h"
 
+#include "HAL/IConsoleManager.h"
 #include "IAudioParameterInterfaceRegistry.h"
 #include "Interfaces/MetasoundFrontendSourceInterface.h"
 #include "MetasoundLog.h"
@@ -24,6 +25,7 @@ namespace Metasound
 		{
 			switch (InValue.ParamType)
 			{
+				case EAudioParameterType::Trigger:
 				case EAudioParameterType::Boolean:
 				{
 					return FLiteral(InValue.BoolParam);
@@ -93,7 +95,7 @@ namespace Metasound
 
 				default:
 				{
-					static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 12, "Possible missing switch case coverage");
+					static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 13, "Possible missing switch case coverage");
 					checkNoEntry();
 				}
 			}
@@ -105,6 +107,7 @@ namespace Metasound
 		{
 			switch (InValue.ParamType)
 			{
+				case EAudioParameterType::Trigger:
 				case EAudioParameterType::Boolean:
 				{
 					return FLiteral(InValue.BoolParam);
@@ -154,18 +157,12 @@ namespace Metasound
 						return FLiteral();
 					}
 
-					Audio::IProxyDataPtr ObjectProxyClone = InValue.ObjectProxies.Last()->Clone();
-					return FLiteral(MoveTemp(ObjectProxyClone));
+					return FLiteral(InValue.ObjectProxies.Last());
 				}
 
 				case EAudioParameterType::ObjectArray:
 				{
-					TArray<Audio::IProxyDataPtr> ObjectProxiesClone;
-					Algo::Transform(InValue.ObjectProxies, ObjectProxiesClone, [](const Audio::IProxyDataPtr& DataPtr)
-					{
-						return DataPtr->Clone();
-					});
-					return FLiteral(MoveTemp(ObjectProxiesClone));
+					return FLiteral(InValue.ObjectProxies);
 				}
 
 				case EAudioParameterType::String:
@@ -180,7 +177,7 @@ namespace Metasound
 
 				default:
 				{
-					static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 12, "Possible missing switch case coverage");
+					static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 13, "Possible missing switch case coverage");
 					checkNoEntry();
 				}
 			}
@@ -192,6 +189,7 @@ namespace Metasound
 		{
 			switch (InParameterType)
 			{
+				case EAudioParameterType::Trigger:
 				case EAudioParameterType::Boolean:
 					return GetMetasoundDataTypeName<bool>();
 				case EAudioParameterType::BooleanArray:
@@ -217,7 +215,7 @@ namespace Metasound
 				case EAudioParameterType::NoneArray:
 				default:
 					ensureAlwaysMsgf(false, TEXT("Failed to convert AudioParameterType to POD MetaSound DataType"));
-					static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 12, "Possible missing case coverage");
+					static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 13, "Possible missing case coverage");
 					return FName();
 			}
 		}
@@ -250,10 +248,8 @@ namespace Metasound
 	{
 	}
 
-	bool FMetaSoundParameterTransmitter::Reset()
+	void FMetaSoundParameterTransmitter::OnDeleteActiveSound()
 	{
-		bool bSuccess = true;
-
 		for (const FSendInfo& SendInfo : SendInfos)
 		{
 			if (InputSends.Remove(SendInfo.ParameterName))
@@ -263,13 +259,17 @@ namespace Metasound
 				// multiple times. Multiple removals of data channels has caused
 				// race conditions between newly created transmitters and transmitters
 				// being cleaned up.
-				bSuccess &= FDataTransmissionCenter::Get().UnregisterDataChannel(SendInfo.Address);
+				FDataTransmissionCenter::Get().UnregisterDataChannel(SendInfo.Address);
 			}
 		}
 
-		bSuccess &= Audio::FParameterTransmitterBase::Reset();
-
-		return bSuccess;
+		Audio::FParameterTransmitterBase::OnDeleteActiveSound();
+	}
+	
+	bool FMetaSoundParameterTransmitter::Reset()
+	{
+		OnDeleteActiveSound();
+		return true;
 	}
 
 	bool FMetaSoundParameterTransmitter::SetParameters(TArray<FAudioParameter>&& InParameters)

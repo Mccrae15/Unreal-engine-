@@ -90,54 +90,54 @@ struct FContentBrowserConfig
 	/** The default view mode */
 	EAssetViewType::Type InitialAssetViewType;
 
-	/** If true, show the bottom toolbar which shows # of assets selected, view mode buttons, etc... */
-	bool bShowBottomToolbar;
-
-	/** Indicates if this view is allowed to show classes */
-	bool bCanShowClasses;
-
-	/** Whether the sources view for choosing folders/collections is available or not */
-	bool bUseSourcesView;
-
-	/** Whether the sources view should initially be expanded or not */
-	bool bExpandSourcesView;
-
 	/** Collection to view initially */
 	FCollectionNameType SelectedCollectionName;
 
+	/** If true, show the bottom toolbar which shows # of assets selected, view mode buttons, etc... */
+	bool bShowBottomToolbar : 1;
+
+	/** Indicates if this view is allowed to show classes */
+	bool bCanShowClasses : 1;
+
+	/** Whether the sources view for choosing folders/collections is available or not */
+	bool bUseSourcesView : 1;
+
+	/** Whether the sources view should initially be expanded or not */
+	bool bExpandSourcesView : 1;
+
 	/** Whether the path picker is available or not */
-	bool bUsePathPicker;
+	bool bUsePathPicker : 1;
 
 	/** Whether to show filters */
-	bool bCanShowFilters;
+	bool bCanShowFilters : 1;
 
 	/** Whether to show asset search */
-	bool bCanShowAssetSearch;
+	bool bCanShowAssetSearch : 1;
 
 	/** Indicates if the 'Show folders' option should be enabled or disabled */
-	bool bCanShowFolders;
+	bool bCanShowFolders : 1;
 
 	/** Indicates if the 'Real-Time Thumbnails' option should be enabled or disabled */
-	bool bCanShowRealTimeThumbnails;
+	bool bCanShowRealTimeThumbnails : 1;
 
 	/** Indicates if the 'Show Developers' option should be enabled or disabled */
-	bool bCanShowDevelopersFolder;
+	bool bCanShowDevelopersFolder : 1;
 
 	/** Whether the 'lock' button is visible on the toolbar */
-	bool bCanShowLockButton;
+	bool bCanShowLockButton : 1;
 
 	/** Whether or not this Content Browser can be used as the Primary Browser for SyncBrowserTo functions */
-	bool bCanSetAsPrimaryBrowser;
+	bool bCanSetAsPrimaryBrowser : 1;
 
 	FContentBrowserConfig()
 		: ThumbnailLabel( EThumbnailLabel::ClassName )
 		, ThumbnailScale(0.1f)
 		, InitialAssetViewType(EAssetViewType::Tile)
+		, SelectedCollectionName( NAME_None, ECollectionShareType::CST_Local )
 		, bShowBottomToolbar(true)
 		, bCanShowClasses(true)
 		, bUseSourcesView(true)
 		, bExpandSourcesView(true)
-		, SelectedCollectionName( NAME_None, ECollectionShareType::CST_Local )
 		, bUsePathPicker(true)
 		, bCanShowFilters(true)
 		, bCanShowAssetSearch(true)
@@ -346,22 +346,25 @@ struct FPathPickerConfig
 	TArray<FSetPathPickerPathsDelegate*> SetPathsDelegates;
 
 	/** If true, the search box will gain focus when the path picker is created */
-	bool bFocusSearchBoxWhenOpened;
+	bool bFocusSearchBoxWhenOpened : 1;
 
 	/** If false, the context menu will not open when an item is right clicked */
-	bool bAllowContextMenu;
+	bool bAllowContextMenu : 1;
 
 	/** If true, will allow class folders to be shown in the picker */
-	bool bAllowClassesFolder;
+	bool bAllowClassesFolder : 1;
 
 	/** If true, will allow read-only folders to be shown in the picker */
-	bool bAllowReadOnlyFolders;
+	bool bAllowReadOnlyFolders : 1;
 
 	/** If true, will add the path specified in DefaultPath to the tree if it doesn't exist already */
-	bool bAddDefaultPath;
+	bool bAddDefaultPath : 1;
 
 	/** If true, passes virtual paths to OnPathSelected instead of internal asset paths */
-	bool bOnPathSelectedPassesVirtualPaths;
+	bool bOnPathSelectedPassesVirtualPaths : 1;
+
+	/** Whether or not to show the favorites selector. */
+	bool bShowFavorites : 1;
 
 	FPathPickerConfig()
 		: bFocusSearchBoxWhenOpened(true)
@@ -370,6 +373,7 @@ struct FPathPickerConfig
 		, bAllowReadOnlyFolders(true)
 		, bAddDefaultPath(false)
 		, bOnPathSelectedPassesVirtualPaths(false)
+		, bShowFavorites(true)
 	{}
 };
 
@@ -684,6 +688,9 @@ public:
 	/** Returns InPath if can be written to, otherwise picks a default path that can be written to */
 	virtual FContentBrowserItemPath GetInitialPathToSaveAsset(const FContentBrowserItemPath& InPath) = 0;
 
+	/** Returns true if the public/private state of the specified asset can be changed */
+	virtual bool CanChangeAssetPublicState(FStringView AssetPath) = 0;
+
 	/** Returns true if FolderPath is a private content edit folder */
 	virtual bool IsShowingPrivateContent(const FStringView VirtualFolderPath) = 0;
 
@@ -696,9 +703,21 @@ public:
 	/** Declares the Private Content Permission List dirty */
 	virtual void SetPrivateContentPermissionListDirty() = 0;
 
+	/** Registers the delegate called to determine whether the public/private state of the specified asset can be changed */
+	virtual void RegisterCanChangeAssetPublicStateDelegate(FCanChangeAssetPublicStateDelegate InCanChangeAssetPublicStateDelegate) = 0;
+
+	/** Unregisters the delegate called to determine whether the public/private state of the specified asset can be changed */
+	virtual void UnregisterCanChangeAssetPublicStateDelegate() = 0;
+
 	/** Registers the delegate for custom handling of if a Folder allows private content edits */
 	virtual void RegisterIsFolderShowPrivateContentToggleableDelegate(FIsFolderShowPrivateContentToggleableDelegate InIsFolderShowPrivateContentToggleableDelegate) = 0;
 
 	/** Unregisters the delegate for custom handling of if a Folder allows private content edits */
 	virtual void UnregisterIsFolderShowPrivateContentToggleableDelegate() = 0;
+
+	/** Register a delegate to be called when the Favorites changes. */
+	virtual FDelegateHandle RegisterOnFavoritesChangedHandler(FSimpleDelegate OnFavoritesChanged) = 0;
+
+	/** Unregister a previously-registered handler for when Favorites changes. */
+	virtual void UnregisterOnFavoritesChangedDelegate(FDelegateHandle Handle) = 0;
 };

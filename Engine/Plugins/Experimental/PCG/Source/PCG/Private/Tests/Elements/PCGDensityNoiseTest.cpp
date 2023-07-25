@@ -1,14 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tests/Determinism/PCGDeterminismTestsCommon.h"
-#include "Tests/PCGTestsCommon.h"
 
+#include "Data/PCGSpatialData.h"
 #include "PCGComponent.h"
-#include "PCGData.h"
-#include "PCGHelpers.h"
 
 #include "Data/PCGPointData.h"
 #include "Elements/PCGDensityNoise.h"
+#include "PCGContext.h"
 
 IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FPCGDensityNoiseTest, FPCGTestBaseClass, "pcg.tests.DensityNoise.Basic", PCGTestsCommon::TestFlags)
 
@@ -35,8 +34,7 @@ bool FPCGDensityNoiseTest::RunTest(const FString& Parameters)
 
 	auto ValidateDensityNoise = [this, &TestData, DensityNoiseElement, Settings](TArray<float> ExpectedOutput) -> bool
 	{
-		TUniquePtr<FPCGContext> Context = MakeUnique<FPCGContext>(*DensityNoiseElement->Initialize(TestData.InputData, TestData.TestPCGComponent, nullptr));
-		Context->NumAvailableTasks = 1;
+		TUniquePtr<FPCGContext> Context = TestData.InitializeTestContext();
 
 		while (!DensityNoiseElement->Execute(Context.Get()))
 		{}

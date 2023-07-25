@@ -1,14 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseSearchDatabasePreviewScene.h"
+#include "Animation/DebugSkelMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "EngineUtils.h"
+#include "GameFramework/WorldSettings.h"
+#include "PoseSearch/PoseSearchContext.h"
+#include "PoseSearch/PoseSearchDatabase.h"
+#include "PoseSearch/PoseSearchDerivedData.h"
 #include "PoseSearchDatabaseEditor.h"
 #include "PoseSearchDatabaseViewModel.h"
-
-#include "PoseSearch/PoseSearch.h"
-
-#include "Animation/DebugSkelMeshComponent.h"
-#include "GameFramework/WorldSettings.h"
-#include "EngineUtils.h"
 
 namespace UE::PoseSearch
 {
@@ -52,31 +53,36 @@ namespace UE::PoseSearch
 			PreviewWorld->bBegunPlay = true;
 		}
 
-		if (!GIntraFrameDebuggingGameThread)
-		{
-			GetWorld()->Tick(LEVELTICK_All, InDeltaTime);
-		}
+		GetWorld()->Tick(LEVELTICK_All, InDeltaTime);
 
-		const FDatabaseViewModel* ViewModel = GetEditor()->GetViewModel();
+		FDatabaseViewModel* ViewModel = GetEditor()->GetViewModel();
 		const UPoseSearchDatabase* Database = ViewModel->GetPoseSearchDatabase();
 
-		if (Database && Database->IsValidForSearch() &&
-			ViewModel->IsPoseFeaturesDrawMode(EFeaturesDrawMode::All))
+		if (ViewModel->IsPoseFeaturesDrawMode(EFeaturesDrawMode::All | EFeaturesDrawMode::Detailed) && !ViewModel->GetPreviewActors().IsEmpty() &&
+			FAsyncPoseSearchDatabasesManagement::RequestAsyncBuildIndex(Database, ERequestAsyncBuildFlag::ContinueRequest))
 		{
-			for (const FDatabasePreviewActor& PreviewActor : ViewModel->GetPreviewActors())
+			for (FDatabasePreviewActor& PreviewActor : ViewModel->GetPreviewActors())
 			{
-				if (Database->IsValidPoseIndex(PreviewActor.CurrentPoseIndex))
+				if (Database->GetSearchIndex().IsValidPoseIndex(PreviewActor.CurrentPoseIndex))
 				{
-					UE::PoseSearch::FDebugDrawParams DrawParams;
-					DrawParams.RootTransform = PreviewActor.Mesh->GetComponentTransform();
-					DrawParams.Database = Database;
-					DrawParams.World = GetWorld();
-					DrawParams.DefaultLifeTime = 0.f;
-					DrawParams.PointSize = 5.f;
-					DrawParams.Mesh = PreviewActor.Mesh;
+					if (UDebugSkelMeshComponent* Mesh = PreviewActor.GetDebugSkelMeshComponent())
+					{
+						UE::PoseSearch::FDebugDrawParams DrawParams;
+						DrawParams.RootTransform = Mesh->GetComponentTransform();
+						DrawParams.Database = Database;
+						DrawParams.World = GetWorld();
+						DrawParams.DefaultLifeTime = 0.f;
+						DrawParams.PointSize = 5.f;
+						DrawParams.Mesh = Mesh;
 
-					EnumAddFlags(DrawParams.Flags, UE::PoseSearch::EDebugDrawFlags::DrawFast);
-					DrawFeatureVector(DrawParams, PreviewActor.CurrentPoseIndex);
+						if (ViewModel->IsPoseFeaturesDrawMode(EFeaturesDrawMode::Detailed))
+						{
+							EnumAddFlags(DrawParams.Flags, UE::PoseSearch::EDebugDrawFlags::DrawBoneNames);
+						}
+
+						EnumAddFlags(DrawParams.Flags, UE::PoseSearch::EDebugDrawFlags::DrawFast);
+						DrawFeatureVector(DrawParams, PreviewActor.CurrentPoseIndex);
+					}
 				}
 			}
 		}

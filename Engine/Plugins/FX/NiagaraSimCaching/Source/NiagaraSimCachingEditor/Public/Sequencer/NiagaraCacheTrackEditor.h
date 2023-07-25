@@ -7,6 +7,7 @@
 #include "ISequencerTrackEditor.h"
 #include "MovieSceneTrackEditor.h"
 
+class IMovieSceneCachedTrack;
 /**
  * Editor for Niagara Cache tracks
  */
@@ -34,7 +35,8 @@ public:
 public:
 
 	// ~Begin ISequencerTrackEditor interface
-	virtual void BuildObjectBindingTrackMenu(class FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass) override;
+	virtual void BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass) override;
+	virtual void BuildTrackContextMenu(FMenuBuilder& MenuBuilder, UMovieSceneTrack* Track) override; 
 	virtual TSharedRef<ISequencerSection> MakeSectionInterface(UMovieSceneSection& SectionObject, UMovieSceneTrack& Track, FGuid ObjectBinding) override;
 	virtual bool SupportsSequence(UMovieSceneSequence* InSequence) const override;
 	virtual bool SupportsType(TSubclassOf<UMovieSceneTrack> Type) const override;
@@ -49,6 +51,12 @@ private:
 
 	/** Delegate for AnimatablePropertyChanged in AddKey */
 	FKeyPropertyResult AddKeyInternal(FFrameNumber KeyTime, class UNiagaraComponent* NiagaraComponent, UMovieSceneTrack* Track);
+
+	FReply RecordCacheTrack(IMovieSceneCachedTrack* Track);
+
+	static bool IsCacheTrackOutOfDate(UMovieSceneTrack* Track);
+	bool HasConflictingLifecycleTrack(UMovieSceneTrack* Track) const;
+	FText GetCacheTrackWarnings(UMovieSceneTrack* Track) const;
 };
 
 /** Niagara cache sequencer section */
@@ -60,11 +68,6 @@ public:
 
 	/** Constructor. */
 	FNiagaraCacheSection( UMovieSceneSection& InSection, TWeakPtr<ISequencer> InSequencer);
-
-	/** Virtual destructor. */
-	virtual ~FNiagaraCacheSection() { }
-
-public:
 
 	// ~Begin ISequencerSection interface
 	virtual UMovieSceneSection* GetSectionObject() override;

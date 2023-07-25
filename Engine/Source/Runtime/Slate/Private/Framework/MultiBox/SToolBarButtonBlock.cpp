@@ -65,7 +65,7 @@ void FToolBarButtonBlock::CreateMenuEntry(FMenuBuilder& MenuBuilder) const
 	else if ( LabelOverride.IsSet() )
 	{
 		const FUIAction& DirectAction = GetDirectActions();
-		MenuBuilder.AddMenuEntry( LabelOverride.Get(), ToolTipOverride.Get(), IconOverride.Get(), DirectAction );
+		MenuBuilder.AddMenuEntry( LabelOverride.Get(), ToolTipOverride.Get(), IconOverride.Get(), DirectAction, NAME_None, UserInterfaceActionType);
 	}
 
 	if (bHasValidCommand) 
@@ -207,9 +207,9 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 	TSharedRef<SWidget> ButtonContent = SNullWidget::NullWidget;
 	if (MultiBox->GetType() == EMultiBoxType::SlimHorizontalToolBar)
 	{
-		const FVector2D IconSize = ToolBarStyle.IconSize;
+		const FVector2f IconSize = ToolBarStyle.IconSize;
 
-		IconWidget->SetDesiredSizeOverride(IconSize);
+		IconWidget->SetDesiredSizeOverride(FVector2D(IconSize));
 		ButtonContent =
 			SNew(SHorizontalBox)
 			.AddMetaData<FTagMetaData>(FTagMetaData(TutorialHighlightName))

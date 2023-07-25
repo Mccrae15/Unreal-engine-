@@ -84,6 +84,8 @@ public:
 	virtual bool CanRenameItem(const ISceneOutlinerTreeItem& Item) const { return false; }
 	/** Whether the toolbar can be customized. */
 	virtual bool CanCustomizeToolbar() const { return false; }
+	/** Check if an item is interactive */
+	virtual bool CanInteract(const ISceneOutlinerTreeItem& Item) const { return true; }
 
 	/** Synchronize the mode specific selection with the tree view */
 	virtual void SynchronizeSelection() {}
@@ -159,10 +161,10 @@ public:
 	virtual void PinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) {}
 	/** Unpins an item list in the outliner */
 	virtual void UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) {}
-	/** Pins all selected items */
-	virtual void PinSelectedItems() {}
-	/** Unpins all selected items */
-	virtual void UnpinSelectedItems() {}
+	/** Returns true if any of the items can be pinned. */
+	virtual bool CanPinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const { return false; }
+	/** Returns true if any of the items can be unpinned. */
+	virtual bool CanUnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const { return false; }
 
 	/** Function called by the Outliner Filter Bar to compare an item with Type Filters*/
 	virtual bool CompareItemWithClassName(SceneOutliner::FilterBarType InItem, const TSet<FTopLevelAssetPath>&) const { return false; };

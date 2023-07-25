@@ -19,6 +19,8 @@ namespace RemoteControlPresetColumns
 {
 	static FName DragDropHandle = TEXT("DragDropHandle");
 	static FName LinkIdentifier = TEXT("LinkID");
+	static FName OwnerName = TEXT("OwnerName");
+	static FName SubobjectPath = TEXT("Subobject Path");
 	static FName Description = TEXT("Description");
 	static FName Mask = TEXT("Mask");
 	static FName Value = TEXT("Value");
@@ -58,6 +60,7 @@ struct SRCPanelTreeNode : public SCompoundWidget, public IHasProtocolExtensibili
 	virtual TSharedRef<SWidget> GetProtocolWidget(const FName ForColumnName, const FName InProtocolName = NAME_None) override;
 	virtual const bool HasProtocolExtension() const override;
 	virtual const bool GetProtocolBindingsNum() const override;
+	virtual void OnProtocolTextChanged(const FText& InText, const FName InProtocolName);
 	virtual const bool SupportsProtocol(const FName& InProtocolName) const override;
 	//~ END : IHasProtocolExtensibility Interface
 
@@ -86,6 +89,8 @@ protected:
 	struct FMakeNodeWidgetArgs
 	{
 		TSharedPtr<SWidget> DragHandle;
+		TSharedPtr<SWidget> OwnerNameWidget;
+		TSharedPtr<SWidget> SubObjectPathWidget;
 		TSharedPtr<SWidget> NameWidget;
 		TSharedPtr<SWidget> ValueWidget;
 		TSharedPtr<SWidget> ResetButton;
@@ -101,7 +106,7 @@ protected:
 private:
 	/** Stub handler for column resize callback to prevent the splitter from handling it internally.  */
 	void OnLeftColumnResized(float) const;
-
+	
 	//~ Wrappers around ColumnSizeData's delegate needed in order to offset the splitter for RC Groups. 
 	float GetLeftColumnWidth() const;
 	float GetRightColumnWidth() const;
@@ -121,13 +126,19 @@ private:
 	/** Cached widget of drag handle. */
 	TSharedPtr<SWidget> DragHandleWidget;
 
-	/** Cached widget of node name widget. */
+	/** Cached widget of node owner name. */
+	TSharedPtr<SWidget> NodeOwnerNameWidget;
+	
+	/** Cached widget of subobject path. */
+	TSharedPtr<SWidget> SubobjectPathWidget;
+
+	/** Cached widget of node name. */
 	TSharedPtr<SWidget> NodeNameWidget;
 
-	/** Cached widget of node value widget. */
+	/** Cached widget of node value. */
 	TSharedPtr<SWidget> NodeValueWidget;
 	
-	/** Cached widget of reset arrow widget. */
+	/** Cached widget of reset arrow. */
 	TSharedPtr<SWidget> ResetValueWidget;
 
 private:

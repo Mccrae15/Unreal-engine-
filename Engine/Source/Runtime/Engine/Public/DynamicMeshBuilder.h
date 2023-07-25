@@ -11,11 +11,17 @@
 #include "HitProxies.h"
 #include "RenderUtils.h"
 #include "LocalVertexFactory.h"
+#include "RenderMath.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "SceneManagement.h"
+#endif
 
 class FMaterialRenderProxy;
+class FMeshBuilderOneFrameResources;
 class FMeshElementCollector;
 class FPrimitiveDrawInterface;
+class FPrimitiveUniformShaderParameters;
+struct FMeshBatch;
 
 /** The vertex type used for dynamic meshes. */
 struct FDynamicMeshVertex
@@ -99,21 +105,6 @@ struct FDynamicMeshVertex
 	FPackedNormal TangentX;
 	FPackedNormal TangentZ;
 	FColor Color;
-};
-
-class FMeshBuilderOneFrameResources : public FOneFrameResource
-{
-public:
-	class FPooledDynamicMeshVertexBuffer* VertexBuffer = nullptr;
-	class FPooledDynamicMeshIndexBuffer* IndexBuffer = nullptr;
-	class FPooledDynamicMeshVertexFactory* VertexFactory = nullptr;
-	class FDynamicMeshPrimitiveUniformBuffer* PrimitiveUniformBuffer = nullptr;
-	virtual ENGINE_API ~FMeshBuilderOneFrameResources();
-
-	inline bool IsValidForRendering() 
-	{
-		return VertexBuffer && IndexBuffer && PrimitiveUniformBuffer && VertexFactory;
-	}
 };
 
 struct FDynamicMeshDrawOffset
@@ -207,6 +198,7 @@ public:
 		FDynamicMeshDrawOffset const * const DrawOffset, int32 ViewIndex, FMeshElementCollector& Collector, const FHitProxyId HitProxyId = FHitProxyId());
 
 	ENGINE_API void GetMeshElement(const FMatrix& LocalToWorld, const FMaterialRenderProxy* MaterialRenderProxy, uint8 DepthPriorityGroup, bool bDisableBackfaceCulling, bool bReceivesDecals, int32 ViewIndex, FMeshBuilderOneFrameResources& OneFrameResource, FMeshBatch& Mesh);
+	ENGINE_API void GetMeshElement(const FPrimitiveUniformShaderParameters& PrimitiveParams, const FMaterialRenderProxy* MaterialRenderProxy, uint8 DepthPriorityGroup, bool bDisableBackfaceCulling, int32 ViewIndex, FMeshBuilderOneFrameResources& OneFrameResource, FMeshBatch& Mesh);
 
 	/**
 	 * Draws the mesh to the given primitive draw interface.

@@ -16,6 +16,7 @@
 #include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
 #include "UObject/PackageResourceManager.h"
+#include "UObject/PackageResourceIoDispatcherBackend.h"
 #include "UObject/PackageTrailer.h"
 #include "UObject/UObjectHash.h"
 #include "Misc/PackageName.h"
@@ -55,7 +56,7 @@
 #include "Misc/StringBuilder.h"
 #include "Misc/EngineBuildSettings.h"
 #include "Internationalization/GatherableTextData.h"
-
+#include "Async/MappedFileHandle.h"
 class FTexture2DResourceMem;
 
 #define LOCTEXT_NAMESPACE "LinkerLoad"
@@ -74,6 +75,8 @@ DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Live Linker Count"), STAT_LiveLinkerCount, 
 DECLARE_FLOAT_ACCUMULATOR_STAT(TEXT("Fixup editor-only flags time"), STAT_EditorOnlyFixupTime, STATGROUP_LinkerCount);
 
 FName FLinkerLoad::NAME_LoadErrors("LoadErrors");
+
+LLM_DEFINE_TAG(UObject_Linker);
 
 /**
 * Helper function to determine and trace the most important asset class.
@@ -113,9 +116,25 @@ void TrackPackageAssetClass(UPackage* Package, FLinkerLoad& LinkerLoad, const TA
 #endif
 }
 
-/*----------------------------------------------------------------------------
-Helpers
-----------------------------------------------------------------------------*/
+EPackageSegment GetBulkDataPackageSegmentFromFlags(const EBulkDataFlags BulkDataFlags, bool bLoadingFromCookedPackage)
+{
+	if (FBulkData::HasFlags(BulkDataFlags, BULKDATA_PayloadInSeperateFile) == false)
+	{
+		return bLoadingFromCookedPackage ? EPackageSegment::Exports : EPackageSegment::Header;
+	}
+	else if (BulkDataFlags & BULKDATA_OptionalPayload )
+	{
+		return EPackageSegment::BulkDataOptional;
+	}
+	else if (BulkDataFlags & BULKDATA_MemoryMappedPayload)
+	{
+		return EPackageSegment::BulkDataMemoryMapped;
+	}
+	else
+	{
+		return EPackageSegment::BulkDataDefault;
+	}
+}
 
 #if WITH_EDITOR
 bool FLinkerLoad::ShouldCreateThrottledSlowTask() const
@@ -466,6 +485,7 @@ FLinkerLoad* FLinkerLoad::CreateLinker(FUObjectSerializeContext* LoadContext, UP
 FLinkerLoad* FLinkerLoad::CreateLinker(FUObjectSerializeContext* LoadContext, UPackage* Parent, const FPackagePath& PackagePath, uint32 LoadFlags, FArchive* InLoader /*= nullptr*/, const FLinkerInstancingContext* InstancingContext /*= nullptr*/)
 {
 	check(LoadContext);
+	LLM_SCOPE_BYTAG(UObject_Linker);
 
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	// we don't want the linker permanently created with the 
@@ -703,6 +723,9 @@ FUObjectSerializeContext* FLinkerLoad::GetSerializeContext()
 
 FLinkerLoad::ELinkerStatus FLinkerLoad::ProcessPackageSummary(TMap<TPair<FName, FPackageIndex>, FPackageIndex>* ObjectNameWithOuterToExportMap)
 {
+	TRACE_LOADTIME_BEGIN_PROCESS_SUMMARY(this);
+	LLM_SCOPE_BYTAG(UObject_Linker);
+
 	ELinkerStatus Status = LINKER_Loaded;
 	{
 		SCOPED_LOADTIMER(LinkerLoad_SerializePackageFileSummary);
@@ -814,6 +837,14 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::ProcessPackageSummary(TMap<TPair<FName, 
 		SCOPED_LOADTIMER(LinkerLoad_SerializePreloadDependencies);
 		Status = SerializePreloadDependencies();
 	}
+	
+	if (Status == LINKER_Loaded)
+	{
+		SCOPED_LOADTIMER(LinkerLoad_SerializeDataResources);
+		Status = SerializeDataResourceMap();
+	}
+
+	TRACE_LOADTIME_END_PROCESS_SUMMARY;
 
 	// Finalize creation process.
 	if( Status == LINKER_Loaded )
@@ -953,6 +984,7 @@ FLinkerLoad::FLinkerLoad(UPackage* InParent, const FPackagePath& InPackagePath, 
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 {
 	static_assert((ExportHashCount & (ExportHashCount - 1)) == 0, "ExportHashCount must be power of two");
+	LLM_SCOPE_BYTAG(UObject_Linker);
 
 	if (PackagePath.GetHeaderExtension() == EPackageExtension::Unspecified)
 	{
@@ -972,10 +1004,14 @@ FLinkerLoad::FLinkerLoad(UPackage* InParent, const FPackagePath& InPackagePath, 
 	{
 		InstancingContext.AddPackageMapping(PackageNameToLoad, LinkerRoot->GetFName());
 	}
+
+	TRACE_LOADTIME_NEW_LINKER(this);
 }
 
 FLinkerLoad::~FLinkerLoad()
 {
+	TRACE_LOADTIME_DESTROY_LINKER(this);
+
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 	FLinkerManager::Get().RemoveLiveLinker(this);
 #endif
@@ -1481,14 +1517,27 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::UpdateFromPackageFileSummary()
 			else if (Diff.Type == ECustomVersionDifference::Invalid)
 			{
 				UE_ASSET_LOG(LogLinker, Error, PackagePath, TEXT("Package was saved with an invalid custom version. Tag %s  Version %d"), *Diff.Version->Key.ToString(), Diff.Version->Version);
+
+				FMessageLog("LoadErrors")
+					.SuppressLoggingToOutputLog(true)
+					.Error(FText::Format(NSLOCTEXT("Core", "LinkerLoad_InvalidCustomVersion", "Package {0} was saved with an invalid custom version and cannot be loaded, see output log for details"),
+						FText::FromString(GetDebugName())));
+
 				return LINKER_Failed;
 			}
 			else if (Diff.Type == ECustomVersionDifference::Newer)
 			{
 				FCustomVersion LatestVersion = FCurrentCustomVersions::Get(Diff.Version->Key).GetValue();
+				
 				// Loading a package with a newer custom version than the current one.
 				UE_ASSET_LOG(LogLinker, Error, PackagePath, TEXT("Package was saved with a newer custom version than the current. Tag %s Name '%s' PackageVersion %d  MaxExpected %d"),
 					*Diff.Version->Key.ToString(), *LatestVersion.GetFriendlyName().ToString(), Diff.Version->Version, LatestVersion.Version);
+
+				FMessageLog("LoadErrors")
+					.SuppressLoggingToOutputLog(true)
+					.Error(FText::Format(NSLOCTEXT("Core", "LinkerLoad_NewCustomVersion", "Package {0} was saved with a newer custom version than the current engine and cannot be loaded, see output log for details"),
+						FText::FromString(GetDebugName())));
+
 				return LINKER_Failed;
 			}
 		}
@@ -1586,8 +1635,37 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageTrailer()
 		Seek(Summary.PayloadTocOffset);
 		
 		PackageTrailer = MakeUnique<UE::FPackageTrailer>();
-		if (!PackageTrailer->TryLoad(*this))
+
+		bool bResult = PackageTrailer->TryLoad(*this);
+		if (!bResult && Summary.GetFileVersionUE().ToValue() == (int32)EUnrealEngineObjectUE5Version::DATA_RESOURCES)
 		{
+			// There was an issue that was causing incorrect values to be written to PayloadTocOffset for
+			// a limited time. In these cases we can try the slower ::TryLoadBackwards method of loading 
+			// the trailer. Note that we only do this if the FileVersion is 
+			// EUnrealEngineObjectUE5Version::DATA_RESOURCES as the bug was introduced while this was the
+			// current version, so any package with an older or newer version should be safe.
+
+			Seek(TotalSize());
+			bResult = PackageTrailer->TryLoadBackwards(*this);
+		}
+
+		if (!bResult)
+		{
+			// If the archive has an error then we found a package trailer but it failed to serialize
+			// correctly and we most likely have a problem with the file.
+			// If the load failed but the archive is fine then the package is just of an older format
+			// and there never was a package trailer to load.
+			if (IsError())
+			{
+				UE_ASSET_LOG(LogLinker, Error, PackagePath, TEXT("Package has a corrupted package trailer"));
+
+				FMessageLog("LoadErrors").SuppressLoggingToOutputLog(true)
+					.Error(FText::Format(NSLOCTEXT("Core", "LinkerLoad_CorruptTrailer", "Package {0} has a corrupted package trailer"),
+					FText::FromString(GetDebugName())));
+
+				return LINKER_Failed;
+			}
+
 			PackageTrailer.Reset();
 		}
 
@@ -2298,6 +2376,30 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePreloadDependencies()
 	return !IsTimeLimitExceeded(TEXT("serialize preload dependencies")) ? LINKER_Loaded : LINKER_TimedOut;
 }
 
+FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeDataResourceMap()
+{
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FLinkerLoad::SerializeDataResourceMap"), STAT_LinkerLoad_SerializeDataResourceMap, STATGROUP_LinkerLoad);
+	
+	TOptional<FStructuredArchive::FSlot> DataResourcesSlot;
+	
+	if (IsTextFormat())
+	{
+		DataResourcesSlot = StructuredArchiveRootRecord->TryEnterField(TEXT("DataResources"), false);
+	}
+	else if (Summary.DataResourceOffset > 0)
+	{
+		Seek(Summary.DataResourceOffset);
+		DataResourcesSlot = StructuredArchiveRootRecord->EnterField(TEXT("DataResources"));
+	}
+
+	if (DataResourcesSlot.IsSet())
+	{
+		FObjectDataResource::Serialize(*DataResourcesSlot, DataResourceMap);
+	}
+
+	return LINKER_Loaded;
+}
+
 /**
  * Serializes thumbnails
  */
@@ -2541,6 +2643,11 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::FinalizeCreation(TMap<TPair<FName, FPack
 			Verify();
 		}
 
+
+		if (LinkerRoot)
+		{
+			TRACE_LOADTIME_PACKAGE_SUMMARY(this, LinkerRoot->GetFName(), Summary.TotalHeaderSize, Summary.ImportCount, Summary.ExportCount);
+		}
 
 		// Avoid duplicate work in the case of async linker creation.
 		bHasFinishedInitialization = true;
@@ -3229,7 +3336,7 @@ bool FLinkerLoad::VerifyImportInner(const int32 ImportIndex, FString& WarningSuf
 		check(Import.ClassName == NAME_Package || Import.HasPackageName());
 
 		UPackage* Package = nullptr;
-		uint32 InternalLoadFlags = LoadFlags & (LOAD_NoVerify | LOAD_NoWarn | LOAD_Quiet);
+		uint32 InternalLoadFlags = LoadFlags & (LOAD_NoVerify | LOAD_NoWarn | LOAD_Quiet | LOAD_RegenerateBulkDataGuids);
 		FUObjectSerializeContext* SerializeContext = GetSerializeContext();
 
 		// Resolve the package name for the import, potentially remapping it, if instancing
@@ -4211,6 +4318,7 @@ UObject* FLinkerLoad::Create( UClass* ObjectClass, FName ObjectName, UObject* Ou
 
 void FLinkerLoad::Preload( UObject* Object )
 {
+	LLM_SCOPE_BYTAG(UObject_Linker);
 	//check(IsValidLowLevel());
 	check(Object);
 
@@ -4320,6 +4428,7 @@ void FLinkerLoad::Preload( UObject* Object )
 
 				{
 					SCOPE_CYCLE_COUNTER(STAT_LinkerSerialize);
+					TRACE_LOADTIME_SERIALIZE_EXPORT_SCOPE(Object, Export.SerialSize);
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 					// communicate with FLinkerPlaceholderBase, what object is currently serializing in
 					FScopedPlaceholderContainerTracker SerializingObjTracker(Object);
@@ -4636,11 +4745,18 @@ bool FLinkerLoad::IsPackageReferenceAllowed(UPackage* InPackage)
 {
 	if (InPackage && !InPackage->IsExternallyReferenceable())
 	{
-		FName MountPointName = FPackageName::GetPackageMountPoint(LinkerRoot->GetName());
-		FName ImportMountPointName = FPackageName::GetPackageMountPoint(InPackage->GetName());
-		if (MountPointName != ImportMountPointName)
+#if WITH_EDITOR
+		// Package loaded for diff is not always in its original location (usually in /Temp/) 
+		// so we can't reliably compare mount points here
+		if ((LoadFlags & LOAD_ForDiff) == 0)
+#endif //if WITH_EDITOR
 		{
-			return false;
+			FName MountPointName = FPackageName::GetPackageMountPoint(LinkerRoot->GetName());
+			FName ImportMountPointName = FPackageName::GetPackageMountPoint(InPackage->GetName());
+			if (MountPointName != ImportMountPointName)
+			{
+				return false;
+			}
 		}
 	}
 	return true;
@@ -4657,6 +4773,7 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 	// Check whether we already loaded the object and if not whether the context flags allow loading it.
 	if( !Export.Object && !FilterExport(Export) ) // for some acceptable position, it was not "not for" 
 	{
+		TGuardValue<void*> GuardThreadContextAsyncPackage(FUObjectThreadContext::Get().AsyncPackage, AsyncRoot);
 		FUObjectSerializeContext* CurrentLoadContext = GetSerializeContext();
 		check(!GEventDrivenLoaderEnabled || !bLockoutLegacyOperations || !EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME);
 		check(Export.ObjectName!=NAME_None || !(Export.ObjectFlags&RF_Public));
@@ -4815,7 +4932,7 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 			{
 				Preload(LoadClass);
 			}
-			else if ((Export.Object == nullptr) && !(Export.ObjectFlags & RF_ClassDefaultObject))
+			else if (Export.Object == nullptr)
 			{
 				bool const bExportWasDeferred = DeferExportCreation(Index, ThisParent);
 				if (bExportWasDeferred)
@@ -4824,7 +4941,7 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 					check(Export.Object != nullptr);
 #endif // USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
 					return Export.Object;
-				}				
+				}
 			}
 			else if (Cast<ULinkerPlaceholderExportObject>(Export.Object))
 			{
@@ -4970,7 +5087,7 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 				// Don't do this for any packages that have previously fully loaded as they may have in memory changes
 				check(CurrentLoadContext);
 				CurrentLoadContext->AddLoadedObject(Export.Object);
-				if (!Export.Object->HasAnyFlags(RF_LoadCompleted) && !LinkerRoot->IsFullyLoaded())
+				if (!Export.Object->HasAnyFlags(RF_LoadCompleted) && (!LinkerRoot->IsFullyLoaded() || IsBlueprintFinalizationPending()))
 				{
 					check(!GEventDrivenLoaderEnabled || !EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME);
 
@@ -5097,24 +5214,6 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 			}
 		}
 
-		const bool bIsBlueprintCDO = ((Export.ObjectFlags & RF_ClassDefaultObject) != 0) && LoadClass->HasAnyClassFlags(CLASS_CompiledFromBlueprint) &&
-			LoadClass->GetClass()->HasAnyClassFlags(CLASS_NeedsDeferredDependencyLoading);
-
-#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-		const bool bDeferCDOSerialization = bIsBlueprintCDO && ((LoadFlags & LOAD_DeferDependencyLoads) != 0);
-		if (bDeferCDOSerialization)
-		{
-			// if LOAD_DeferDependencyLoads is set, then we're already
-			// serializing the blueprint's class somewhere up the chain... 
-			// we don't want the class regenerated while it in the middle of
-			// serializing. we also don't want to construct the CDO yet,
-			// as that may depend on other deferred imports which may not
-			// be fully resolved (e.g. default subobject class overrides).
-			DeferredCDOIndex = Index;
-			return Export.Object;
-		}
-#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-
 		LoadClass->GetDefaultObject();
 
 		FStaticConstructObjectParameters Params(LoadClass);
@@ -5125,13 +5224,26 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 		// if our outer is actually an import, then the package we are an export of is not in our outer chain, set our package in that case
 		Params.ExternalPackage = Export.OuterIndex.IsImport() ? LinkerRoot : nullptr;
 
-		// Propagate relevant flags from the outer package to the external package
+		// Propagate relevant properties from the outer package to the external package
 		if (Params.ExternalPackage)
 		{
 			Params.ExternalPackage->SetPackageFlags(ThisParent->GetPackage()->GetPackageFlags() & PKG_PlayInEditor);
+			Params.ExternalPackage->SetPIEInstanceID(ThisParent->GetPackage()->GetPIEInstanceID());
 		}
 
-		Export.Object = StaticConstructObject_Internal(Params);
+		{
+			TRACE_LOADTIME_CREATE_EXPORT_SCOPE(this, &Export.Object);
+			Export.Object = StaticConstructObject_Internal(Params);
+
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+			//if lazy load is enabled construct a packed ref if possible.
+			//this is to have a reverse map of UObject to FPackedObjectRef
+			if (UE::LinkerLoad::IsImportLazyLoadEnabled())
+			{
+				UE::CoreUObject::Private::MakePackedObjectRef(Export.Object);
+			}
+#endif
+		}
 
 		if (FPlatformProperties::RequiresCookedData())
 		{
@@ -5153,8 +5265,21 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 		
 		if( Export.Object )
 		{
+			const bool bIsBlueprintCDO = ((Export.ObjectFlags & RF_ClassDefaultObject) != 0) && LoadClass->HasAnyClassFlags(CLASS_CompiledFromBlueprint) &&
+				LoadClass->GetClass()->HasAnyClassFlags(CLASS_NeedsDeferredDependencyLoading);
+
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-			if (bIsBlueprintCDO && IsBlueprintFinalizationPending())
+			const bool bDeferCDOSerialization = bIsBlueprintCDO && ((LoadFlags & LOAD_DeferDependencyLoads) != 0);
+			if (bDeferCDOSerialization)
+			{
+				// if LOAD_DeferDependencyLoads is set, then we're already
+				// serializing the blueprint's class somewhere up the chain... 
+				// we don't want the class regenerated while it in the middle of
+				// serializing
+				DeferredCDOIndex = Index;
+				return Export.Object;
+			}
+			else if (bIsBlueprintCDO && IsBlueprintFinalizationPending())
 			{
 				// Class regeneration is deferred until Blueprint finalization, so just return the CDO.
 				return Export.Object;
@@ -6160,22 +6285,7 @@ bool FLinkerLoad::RemoveKnownMissingPackage(FName PackageName)
 #if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
 bool FLinkerLoad::IsImportLazyLoadEnabled()
 {
-	auto ImportLazyLoadEnabled = []()
-	{
-		if (FParse::Param(FCommandLine::Get(), TEXT("LazyLoadImports")))
-		{
-			return true;
-		}
-		else if (GConfig)
-		{
-			bool bLazyLoadImportsConfig = false;
-			GConfig->GetBool(TEXT("Core.System.Experimental"), TEXT("LazyLoadImports"), bLazyLoadImportsConfig, GEngineIni);
-			return bLazyLoadImportsConfig;
-		}
-		return false;
-	};
-	static const bool bImportLazyLoadEnabled = ImportLazyLoadEnabled();
-	return bImportLazyLoadEnabled;
+	return UE::LinkerLoad::IsImportLazyLoadEnabled();
 }
 #endif
 
@@ -6592,5 +6702,142 @@ bool FLinkerLoad::TryGetPreloadedLoader(const FPackagePath& InPackagePath, FOpen
 }
 
 #endif
+
+bool FLinkerLoad::SerializeBulkData(FBulkData& BulkData, const FBulkDataSerializationParams& Params)
+{
+	using namespace UE::BulkData::Private;
+
+	if (ShouldSkipBulkData() || IsTextFormat())
+	{
+		return false;
+	}
+	
+	checkf(BulkData.IsUnlocked(), TEXT("Serialize bulk data FAILED, bulk data is locked"));
+
+	FBulkMetaData& Meta = BulkData.BulkMeta;
+	int64 DuplicateSerialOffset = -1;
+	SerializeBulkMeta(Meta, DuplicateSerialOffset, Params.ElementSize);
+
+	const bool bLazyLoadable = IsAllowingLazyLoading();
+	if (bLazyLoadable)
+	{
+		Meta.AddFlags(BULKDATA_LazyLoadable);
+#if WITH_EDITOR
+		check(IsTextFormat() == false);
+		BulkData.AttachedAr = this;
+		AttachBulkData(Params.Owner, &BulkData);
+#endif // WITH_EDITOR
+	}
+
+	const bool bExternalResource = Meta.HasAnyFlags(BULKDATA_WorkspaceDomainPayload);
+	EPackageSegment Segment = GetBulkDataPackageSegmentFromFlags(Meta.GetFlags(), IsLoadingFromCookedPackage());  
+	BulkData.BulkChunkId = UE::CreatePackageResourceChunkId(PackagePath.GetPackageFName(), Segment, bExternalResource);
+
+	const bool bIsInline = Meta.HasAnyFlags(BULKDATA_PayloadAtEndOfFile) == false;
+	if (bIsInline)
+	{
+		if (IsLoadingFromCookedPackage())
+		{
+			// Cooked packages are split into .uasset/.exp files and the offset needs to be adjusted accordingly.
+			const int64 PkgHeaderSize = IPackageResourceManager::Get().FileSize(PackagePath,  EPackageSegment::Header);
+			Meta.SetOffset(Tell() - PkgHeaderSize);
+		}
+		void* Payload = BulkData.ReallocateData(Meta.GetSize());
+		BulkData.SerializeBulkData(*this, Payload, Meta.GetSize(), Meta.GetFlags());
+	}
+	else if (Meta.HasAnyFlags(BULKDATA_PayloadInSeperateFile))
+	{
+		// Streaming cooked bulk data / loading from Editor Domain and referencing Workspace domain bulk data
+		if (Meta.HasAnyFlags(BULKDATA_DuplicateNonOptionalPayload))
+		{
+			if (IPackageResourceManager::Get().DoesPackageExist(PackagePath, EPackageSegment::BulkDataOptional))
+			{
+				BulkData.BulkChunkId = UE::CreatePackageResourceChunkId(PackagePath.GetPackageFName(), EPackageSegment::BulkDataOptional, bExternalResource);
+				Meta.ClearFlags(BULKDATA_DuplicateNonOptionalPayload);
+				Meta.AddFlags(BULKDATA_OptionalPayload);
+				Meta.SetOffset(DuplicateSerialOffset);
+			}
+		}
+		else if (Meta.HasAnyFlags(BULKDATA_MemoryMappedPayload))
+		{
+			if (bLazyLoadable && Params.bAttemptMemoryMapping)
+			{
+				TUniquePtr<IMappedFileHandle> MappedFile;
+				MappedFile.Reset(IPackageResourceManager::Get().OpenMappedHandleToPackage(PackagePath, EPackageSegment::BulkDataMemoryMapped));
+				IMappedFileRegion* MappedRegion = MappedFile.IsValid() ? MappedFile->MapRegion(Meta.GetOffset(), Meta.GetSize(), true) : nullptr;
+				if (MappedRegion)
+				{
+					BulkData.DataAllocation.SetMemoryMappedData(&BulkData, MappedFile.Release(), MappedRegion);
+				}
+				else
+				{
+					UE_LOG(LogSerialization, Warning, TEXT("Memory map bulk data '%s' FAILED"), *PackagePath.GetDebugName());
+					BulkData.ForceBulkDataResident();
+				}
+			}
+		}
+	}
+	else
+	{
+		// Streaming uncooked bulk data (editor only)
+		check(IsLoadingFromCookedPackage() == false);
+
+		// Unless this package is loaded from the EditorDomain, the offset needs
+		// to be adjusted to the start of non-inline bulk data in the .uasset file. 
+		if (Meta.HasAnyFlags(BULKDATA_WorkspaceDomainPayload) == false)
+		{
+			Meta.SetOffset(Meta.GetOffset() + Summary.BulkDataStartOffset);
+		}
+
+		if (bLazyLoadable == false)
+		{
+			FArchive& Ar = *this;
+			FArchive::FScopeSeekTo _(Ar, Meta.GetOffset());
+			void* Payload = BulkData.ReallocateData(Meta.GetSize());
+			BulkData.SerializeBulkData(Ar, Payload, Meta.GetSize(), Meta.GetFlags());
+		}
+	}
+
+	if (bLazyLoadable == false)
+	{
+		BulkData.ForceBulkDataResident();
+		Meta.ClearFlags(BULKDATA_LazyLoadable);
+		BulkData.BulkChunkId = FIoChunkId::InvalidChunkId;
+	}
+
+	return true;
+}
+
+void FLinkerLoad::SerializeBulkMeta(UE::BulkData::Private::FBulkMetaData& Meta, int64& DuplicateSerialOffset, int32 ElementSize)
+{
+	using namespace UE::BulkData::Private;
+	FArchive& Ar = *this;
+
+	if (DataResourceMap.IsEmpty())
+	{
+		FBulkMetaResource SerializedMeta;
+		Ar << SerializedMeta;
+		Meta = FBulkMetaData::FromSerialized(SerializedMeta, ElementSize);
+		DuplicateSerialOffset = SerializedMeta.DuplicateOffset;
+	}
+	else
+	{
+		int32 DataResourceIndex = INDEX_NONE;
+		Ar << DataResourceIndex;
+		const FObjectDataResource& DataResource = DataResourceMap[DataResourceIndex];
+		Meta.SetFlags(static_cast<EBulkDataFlags>(DataResource.LegacyBulkDataFlags));
+		Meta.SetOffset(DataResource.SerialOffset);
+		Meta.SetSize(DataResource.RawSize);
+		Meta.SetSizeOnDisk(DataResource.SerialSize);
+		DuplicateSerialOffset = DataResource.DuplicateSerialOffset;
+	}
+
+#if WITH_EDITOR
+	if (GIsEditor)
+	{
+		Meta.ClearFlags(BULKDATA_SingleUse);
+	}
+#endif // WITH_EDITOR
+}
 
 #undef LOCTEXT_NAMESPACE

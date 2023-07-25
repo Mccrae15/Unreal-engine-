@@ -4,74 +4,49 @@
 	LevelTick.cpp: Level timer tick function
 =============================================================================*/
 
-#include "CoreMinimal.h"
-#include "HAL/PlatformFileManager.h"
-#include "Misc/CoreMisc.h"
-#include "Stats/Stats.h"
+#include "Engine/Level.h"
+#include "Async/ParallelFor.h"
 #include "Misc/TimeGuard.h"
-#include "Misc/MemStack.h"
-#include "HAL/IConsoleManager.h"
-#include "Misc/App.h"
-#include "Modules/ModuleManager.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/UObjectBaseUtility.h"
+#include "GameFramework/WorldSettings.h"
 #include "UObject/UObjectStats.h"
-#include "UObject/GarbageCollection.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
-#include "EngineUtils.h"
-#include "Engine/EngineTypes.h"
-#include "RHI.h"
 #include "RenderingThread.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
-#include "Engine/World.h"
-#include "GameFramework/Controller.h"
 #include "AI/NavigationSystemBase.h"
 #include "GameFramework/PlayerController.h"
-#include "SceneUtils.h"
 #include "ParticleHelper.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/NetConnection.h"
+#include "SceneInterface.h"
 #include "UnrealEngine.h"
 #include "Engine/LevelStreamingVolume.h"
-#include "Collision.h"
-#include "PhysicsPublic.h"
-#include "Tickable.h"
-#include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
-#include "TimerManager.h"
 #include "Camera/CameraPhotography.h"
-#include "HAL/LowLevelMemTracker.h"
-#include "ProfilingDebugging/RealtimeGPUProfiler.h"
-
-#if ENABLE_COLLISION_ANALYZER
+#include "UObject/Stack.h"
 #include "PhysicsEngine/CollisionAnalyzerCapture.h"
-#endif
+
 #if !UE_SERVER
 #include "IMediaModule.h"
+#include "Modules/ModuleManager.h"
 #endif
 
 //#include "SoundDefinitions.h"
 #include "FXSystem.h"
 #include "TickTaskManagerInterface.h"
-#if !UE_BUILD_SHIPPING
-#include "VisualizerEvents.h"
-#include "STaskGraph.h"
-#endif
-#include "Async/ParallelFor.h"
 #include "Engine/CoreSettings.h"
 
 #include "InGamePerformanceTracker.h"
 #include "Streaming/TextureStreamingHelpers.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "GPUSkinCache.h"
 #include "ComputeWorkerInterface.h"
+#include "RenderGraphBuilder.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "ObjectCacheEventSink.h"
+#else
+#include "TimerManager.h"
 #endif
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
@@ -773,6 +748,7 @@ void UWorld::ProcessLevelStreamingVolumes(FVector* OverrideViewLocation)
 									bNewShouldBeLoaded, 
 									bNewShouldBeVisible,
 									LevelStreamingObject->bShouldBlockOnLoad,
+									LevelStreamingObject->bShouldBlockOnUnload,
 									LevelStreamingObject->GetLevelLODIndex());
 						}
 					}
@@ -1032,7 +1008,12 @@ void EndSendEndOfFrameUpdatesDrawEvent(FSendAllEndOfFrameUpdates& SendAllEndOfFr
 				SCOPED_GPU_STAT(RHICmdList, ComputeTaskWorkerUpdates);
 				for (IComputeTaskWorker* ComputeTaskWorker : ComputeTaskWorkers)
 				{
-					ComputeTaskWorker->SubmitWork(RHICmdList, FeatureLevel);
+					if (ComputeTaskWorker->HasWork(ComputeTaskExecutionGroup::EndOfFrameUpdate))
+					{
+						FRDGBuilder GraphBuilder(RHICmdList, RDG_EVENT_NAME("ComputeTaskWorker"));
+						ComputeTaskWorker->SubmitWork(GraphBuilder, ComputeTaskExecutionGroup::EndOfFrameUpdate, FeatureLevel);
+						GraphBuilder.Execute();
+					}
 				}
 			}
 		});
@@ -1217,12 +1198,6 @@ void UWorld::FlushDeferredParameterCollectionInstanceUpdates()
 		bMaterialParameterCollectionInstanceNeedsDeferredUpdate = false;
 	}
 }
-
-#if ENABLE_COLLISION_ANALYZER
-#include "ICollisionAnalyzer.h"
-#include "CollisionAnalyzerModule.h"
-#endif // ENABLE_COLLISION_ANALYZER
-
 
 #if (CSV_PROFILER && !UE_BUILD_SHIPPING)
 static TAutoConsoleVariable<int32> CVarRecordTickCountsToCSV(
@@ -1607,7 +1582,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 				}
 			}
 
-			// Update cameras and streaming volumes
+			// Update cameras
 			{
 				SCOPE_CYCLE_COUNTER(STAT_UpdateCameraTime);
 				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Camera);
@@ -1626,8 +1601,11 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 						}
 					}
 				}
+			}
 
-				if( !bIsPaused && IsGameWorld())
+			// Update streaming volumes
+			{
+				if (!bIsPaused && IsGameWorld())
 				{
 					// Update world's required streaming levels
 					InternalUpdateStreamingState();

@@ -36,14 +36,16 @@ namespace UnrealGameSync
 		public bool ContainsCode;
 		public bool ContainsContent;
 
-		public PerforceChangeDetails(DescribeRecord describeRecord)
+		public PerforceChangeDetails(DescribeRecord describeRecord, Func<string, bool>? isCodeFile = null)
 		{
+			isCodeFile ??= IsCodeFile;
+
 			Description = describeRecord.Description;
 
 			// Check whether the files are code or content
 			foreach (DescribeFileRecord file in describeRecord.Files)
 			{
-				if (PerforceUtils.CodeExtensions.Any(extension => file.DepotFile.EndsWith(extension, StringComparison.OrdinalIgnoreCase)))
+				if (isCodeFile(file.DepotFile))
 				{
 					ContainsCode = true;
 				}
@@ -58,10 +60,17 @@ namespace UnrealGameSync
 				}
 			}
 		}
+
+		public static bool IsCodeFile(string depotFile)
+		{
+			return PerforceUtils.CodeExtensions.Any(extension => depotFile.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
+		}
 	}
 
 	public static class Utility
 	{
+		public static event Action<Exception>? TraceException;
+
 		static JsonSerializerOptions GetDefaultJsonSerializerOptions()
 		{
 			JsonSerializerOptions options = new JsonSerializerOptions();
@@ -87,8 +96,9 @@ namespace UnrealGameSync
 				obj = LoadJson<T>(file);
 				return true;
 			}
-			catch
+			catch(Exception ex)
 			{
+				TraceException?.Invoke(ex);
 				obj = null;
 				return false;
 			}

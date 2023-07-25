@@ -16,7 +16,6 @@
 
 namespace Chaos
 {
-
 /** Cvar to enable/disable the island sleeping */
 bool bChaosSolverSleepEnabled = true;
 FAutoConsoleVariableRef CVarChaosSolverSleepEnabled(TEXT("p.Chaos.Solver.SleepEnabled"), bChaosSolverSleepEnabled, TEXT(""));
@@ -39,8 +38,8 @@ FAutoConsoleVariableRef CVarChaosSolverValidateGraph(TEXT("p.Chaos.Solver.Valida
 bool bChaosSolverPersistentGraph = true;
 FAutoConsoleVariableRef CVarChaosSolverPersistentGraph(TEXT("p.Chaos.Solver.PersistentGraph"), bChaosSolverPersistentGraph, TEXT(""));
 
-extern int32 GSingleThreadedPhysics;
-
+namespace Private
+{
 	
 /** Check if a particle is dynamic or sleeping */
 FORCEINLINE bool IsDynamicParticle(const FGeometryParticleHandle* ParticleHandle)
@@ -188,6 +187,11 @@ FPBDIslandManager::~FPBDIslandManager()
 {
 }
 
+void FPBDIslandManager::SetIsDeterministic(const bool bInIsDeterministic)
+{
+	IslandGraph->SetIsDeterministic(bInIsDeterministic);
+}
+
 void FPBDIslandManager::Reset()
 {
 	RemoveConstraints();
@@ -240,6 +244,15 @@ void FPBDIslandManager::InitializeGraph(const TParticleView<FPBDRigidParticles>&
 			FGeometryParticleHandle* ParticleHandle = IslandGraph->GraphNodes[NodeIndex].NodeItem;
 
 			IslandGraph->UpdateNode(NodeIndex, IsDynamicParticle(ParticleHandle), IsStationaryParticle(ParticleHandle));
+
+			// If the particle is static or kinematic and has no edges, remove it
+			if (!IslandGraph->GraphNodes[NodeIndex].bValidNode)
+			{
+				if (IslandGraph->GraphNodes[NodeIndex].NodeEdges.Num() == 0)
+				{
+					RemoveParticle(ParticleHandle);
+				}
+			}
 		}
 	}
 
@@ -267,6 +280,9 @@ void FPBDIslandManager::EndTick()
 		Island->ClearParticles();
 		Island->ClearConstraints();
 	}
+
+	// Let the graph perform and end-of-frame cleanup
+	IslandGraph->EndTick();
 
 	// We can no longer use the Island's particle and constraint lists
 	bIslandsPopulated = false;
@@ -1283,4 +1299,5 @@ void FPBDIslandManager::DebugCheckIslands() const
 }
 #endif
 
-}
+}	// namespace Private
+}	// namespace Chaos

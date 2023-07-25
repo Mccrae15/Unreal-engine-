@@ -1,16 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-#include "NetworkPredictionModelDef.h"
 #include "NetworkPredictionCues.h"
 #include "NetworkPredictionConditionalState.h"
 #include "NetworkPredictionSettings.h"
 #include "NetworkPredictionDebug.h"
-#include "NetworkPredictionReplicationProxy.h"
+#include "NetworkPredictionStateTypes.h"
 #include "NetworkPredictionStateView.h"
-#include "Misc/StringBuilder.h"
-#include "GameFramework/Actor.h"
 #include "Components/PrimitiveComponent.h"
+
+struct FNetSerializeParams;
 
 struct FBodyInstance;
 
@@ -70,11 +69,11 @@ struct FNetworkPredictionDriverBase
 	using AuxType = typename StateTypes::AuxType;
 	using PhysicsState = typename ModelDef::PhysicsState;
 
-	static constexpr bool HasNpState() { return !TIsVoidType<InputType>::Value || !TIsVoidType<SyncType>::Value || !TIsVoidType<AuxType>::Value; }
-	static constexpr bool HasDriver() { return !TIsVoidType<DriverType>::Value; }
-	static constexpr bool HasSimulation() { return !TIsVoidType<Simulation>::Value; }
-	static constexpr bool HasInput() { return !TIsVoidType<InputType>::Value; }
-	static constexpr bool HasPhysics() { return !TIsVoidType<PhysicsState>::Value; }
+	static constexpr bool HasNpState() { return !std::is_void_v<InputType> || !std::is_void_v<SyncType> || !std::is_void_v<AuxType>; }
+	static constexpr bool HasDriver() { return !std::is_void_v<DriverType>; }
+	static constexpr bool HasSimulation() { return !std::is_void_v<Simulation>; }
+	static constexpr bool HasInput() { return !std::is_void_v<InputType>; }
+	static constexpr bool HasPhysics() { return !std::is_void_v<PhysicsState>; }
 
 	// Defines what the ModelDef can do. This is a compile time thing only.
 	static constexpr FNetworkPredictionModelDefCapabilities GetCapabilities()
@@ -522,12 +521,12 @@ struct FNetworkPredictionDriverBase
 
 	static void CallSetHiddenForInterpolationFallback(AActor* Driver, bool bHide)
 	{
-		Driver->SetHidden(bHide);
+		Driver->SetActorHiddenInGame(bHide);
 	}
 
 	static void CallSetHiddenForInterpolationFallback(UActorComponent* Driver, bool bHide)
 	{
-		Driver->GetOwner()->SetHidden(bHide);
+		Driver->GetOwner()->SetActorHiddenInGame(bHide);
 	}	
 
 	// -----------------------------------------------------------------------------------------------------------------------------------
@@ -896,3 +895,8 @@ struct FNetworkPredictionDriver : FNetworkPredictionDriverBase<ModelDef>
 {
 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "NetworkPredictionModelDef.h"
+#include "NetworkPredictionReplicationProxy.h"
+#endif

@@ -11,7 +11,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+struct FProgram;
 
 	//---------------------------------------------------------------------------------------------
 	//! Conditional operation.
@@ -43,12 +43,11 @@ struct PROGRAM;
 		uint64 Hash() const override;
 		void Assert() override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)> f) override;
-		void Link(PROGRAM& program, const FLinkerOptions* Options) override;
-		FImageDesc GetImageDesc(bool returnBestOption, class GetImageDescContext* context) override;
+		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		FImageDesc GetImageDesc(bool returnBestOption, class FGetImageDescContext* context) const override;
 		void GetLayoutBlockSize(int* pBlockX, int* pBlockY) override;
-		void GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY,
-			BLOCK_LAYOUT_SIZE_CACHE* cache) override;
-		Ptr<ASTOp> OptimiseSemantic(const MODEL_OPTIMIZATION_OPTIONS&) const override;
+		void GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY, FBlockLayoutSizeCache* cache) override;
+		Ptr<ASTOp> OptimiseSemantic(const FModelOptimizationOptions&) const override;
 		bool GetNonBlackRect(FImageRect& maskUsage) const override;
 		Ptr<ImageSizeExpression> GetImageSizeExpression() const override;
 	};

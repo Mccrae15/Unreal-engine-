@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "DerivedDataCacheKeyProxy.h"
 #include "UObject/GCObject.h"
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
@@ -12,6 +13,7 @@
 #include "IDetailsView.h"
 #include "TextureEditorSettings.h"
 
+class SMenuAnchor;
 class STextBlock;
 class STextureEditorViewport;
 class UFactory;
@@ -78,7 +80,6 @@ public:
 	virtual void SetZoomMode( const ETextureEditorZoomMode ZoomMode ) override;
 	virtual ETextureEditorZoomMode GetZoomMode() const override;
 	virtual double CalculateDisplayedZoomLevel() const override;
-	virtual void OffsetZoom( double OffsetValue, bool bSnapToStepSize = true );
 	virtual void ZoomIn( ) override;
 	virtual void ZoomOut( ) override;
 	virtual float GetVolumeOpacity( ) const override;
@@ -91,6 +92,7 @@ public:
 	virtual const FRotator& GetOrientation() const override;
 	virtual void SetOrientation(const FRotator& InOrientation) override;
 	virtual void ResetOrientation() override;
+	virtual ETextureEditorSampling GetSampling() const override;
 	virtual int32 GetExposureBias() const override
 	{
 		return ExposureBias;
@@ -199,6 +201,12 @@ private:
 
 	// Callback for getting the checked state of the Checkered Background action.
 	bool HandleCheckeredBackgroundActionIsChecked( ETextureEditorBackgrounds Background );
+
+	// Callback for toggling the Sampling action.
+	void HandleSamplingActionExecute(ETextureEditorSampling Sampling);
+
+	// Callback for getting the checked state of the Sampling action.
+	bool HandleSamplingActionIsChecked(ETextureEditorSampling Sampling);
 
 	// Callback for toggling the volume view action.
 	void HandleVolumeViewModeActionExecute( ETextureEditorVolumeViewMode InViewMode );
@@ -405,6 +413,7 @@ private:
 	TSharedPtr<STextBlock> FormatText;
 	TSharedPtr<STextBlock> LODBiasText;
 	TSharedPtr<STextBlock> HasAlphaChannelText;
+	TSharedPtr<STextBlock> SourceMipsAlphaDetectedText;
 	TSharedPtr<STextBlock> NumMipsText;
 	TSharedPtr<STextBlock> MipLevelTextBlock;
 	TSharedPtr<STextBlock> EncodeSpeedText;
@@ -468,9 +477,6 @@ private:
 	/** When true, the specified cubemap face index value is used, otherwise the value of -1 is used.*/
 	bool bUseSpecifiedFace;
 
-	/** During re-import, cache this setting so it can be restored if necessary */
-	bool SavedCompressionSetting;
-
 	/** The texture's zoom factor. */
 	double Zoom;
 
@@ -488,6 +494,9 @@ private:
 
 	/** This toolkit's current cubemap view mode **/
 	ETextureEditorCubemapViewMode CubemapViewMode;
+
+	/** This toolkit's current sampling mode **/
+	ETextureEditorSampling Sampling;
 
 	// Orientation of the texture in 3d when using "3D View" mode
 	FRotator Orientation;
@@ -533,7 +542,7 @@ private:
 	void OnEstimateCompressionChanged(ECheckBoxState NewState);
 	ECheckBoxState EstimateCompressionChecked() const;
 
-	TSharedPtr<STextBlock> OodleEncoderUsed;
+	TSharedPtr<STextBlock> OodleCompressorUsed;
 	TSharedPtr<STextBlock> OodleLevelUsed;
 	TSharedPtr<STextBlock> OodleCompressionBlockUsed;
 	TSharedPtr<STextBlock> OodleEstimateRaw;

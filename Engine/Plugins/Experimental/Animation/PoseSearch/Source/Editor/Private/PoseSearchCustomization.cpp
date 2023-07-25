@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseSearchCustomization.h"
-#include "PoseSearch/PoseSearch.h"
 #include "Engine/GameViewportClient.h"
 #include "AssetRegistry/AssetData.h"
 #include "EditorClassUtils.h"
@@ -25,6 +24,7 @@
 #include "IDetailsView.h"
 #include "ObjectEditorUtils.h"
 #include "Animation/AnimSequence.h"
+#include "PoseSearch/PoseSearchDatabase.h"
 
 #define LOCTEXT_NAMESPACE "PoseSearchCustomization"
 
@@ -92,10 +92,7 @@ TSharedRef<IDetailCustomization> FPoseSearchDatabaseDetails::MakeInstance()
 void FPoseSearchDatabaseDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
 	TArray<TSharedPtr<IPropertyHandle>> HiddenHandles;
-	HiddenHandles.Add(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPoseSearchDatabase, Sequences)));
-	HiddenHandles.Add(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPoseSearchDatabase, BlendSpaces)));
-	HiddenHandles.Add(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPoseSearchDatabase, SimpleSequences)));
-	HiddenHandles.Add(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPoseSearchDatabase, SimpleBlendSpaces)));
+	HiddenHandles.Add(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPoseSearchDatabase, AnimationAssets)));
 
 	for (TSharedPtr<IPropertyHandle> PropertyHandle : HiddenHandles)
 	{

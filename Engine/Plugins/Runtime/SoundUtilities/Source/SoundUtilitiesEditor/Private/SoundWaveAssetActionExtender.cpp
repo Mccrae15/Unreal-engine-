@@ -1,18 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SoundWaveAssetActionExtender.h"
+#include "AssetToolsModule.h"
 #include "ToolMenus.h"
-#include "AssetTypeActions_Base.h"
+#include "IAssetTools.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "ContentBrowserMenuContexts.h"
-#include "ObjectEditorUtils.h"
-#include "Styling/AppStyle.h"
-#include "Sound/SoundWave.h"
+#include "Misc/PackageName.h"
 #include "Sound/SoundWaveProcedural.h"
 #include "SoundSimple.h"
 #include "SoundSimpleFactory.h"
 #include "Algo/AnyOf.h"
+#include "ToolMenu.h"
+#include "ToolMenuSection.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -27,7 +28,7 @@ void FSoundWaveAssetActionExtender::RegisterMenus()
 	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu.SoundWave");
 	FToolMenuSection& Section = Menu->FindOrAddSection("GetAssetActions");
 	
-	Section.AddDynamicEntry("SoundWaveAsset", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+	Section.AddDynamicEntry(NAME_None, FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
 	{
 		if (UContentBrowserAssetContextMenuContext* Context = InSection.FindContext<UContentBrowserAssetContextMenuContext>())
 		{

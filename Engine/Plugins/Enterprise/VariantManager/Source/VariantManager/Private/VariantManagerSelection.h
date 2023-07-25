@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Guid.h"
-#include "DisplayNodes/VariantManagerDisplayNode.h"
-#include "DisplayNodes/VariantManagerActorNode.h"
+#include "Delegates/Delegate.h"
+
+class FVariantManagerActorNode;
+class FVariantManagerDisplayNode;
 
 class UVariant;
 class UVariantSet;

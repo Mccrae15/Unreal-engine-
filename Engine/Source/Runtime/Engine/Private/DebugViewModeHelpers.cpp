@@ -3,18 +3,21 @@
 /*=============================================================================
 	DebugViewModeHelpers.cpp: debug view shader helpers.
 =============================================================================*/
+
 #include "DebugViewModeHelpers.h"
 #include "DebugViewModeInterface.h"
 #include "Materials/MaterialInterface.h"
-#include "Materials/Material.h"
-#include "MaterialShaderType.h"
+#include "MaterialDomain.h"
 #include "MeshMaterialShader.h"
+#include "RenderingThread.h"
 #include "ShaderCompiler.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/FeedbackContext.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "Components/PrimitiveComponent.h"
 #include "ActorEditorUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #define LOCTEXT_NAMESPACE "LogDebugViewMode"
 
@@ -44,8 +47,6 @@ const TCHAR* DebugViewShaderModeToString(EDebugViewShaderMode InShaderMode)
 		return TEXT("DVSM_RequiredTextureResolution");
 	case DVSM_VirtualTexturePendingMips:
 		return TEXT("DVSM_VirtualTexturePendingMips");
-	case DVSM_RayTracingDebug:
-		return TEXT("DVSM_RayTracingDebug");
 	case DVSM_LODColoration:
 		return TEXT("DVSM_LODColoration");
 	case DVSM_VisualizeGPUSkinCache:
@@ -95,8 +96,6 @@ bool AllowDebugViewShaderMode(EDebugViewShaderMode ShaderMode, EShaderPlatform P
 	case DVSM_OutputMaterialTextureScales:
 	case DVSM_VirtualTexturePendingMips:
 		return FeatureLevel >= ERHIFeatureLevel::SM5 && (bForceTextureStreamingBuild || PlatformSupportsDebugViewShaders(Platform));
-	case DVSM_RayTracingDebug:
-		return FeatureLevel >= ERHIFeatureLevel::SM5 ;
 	case DVSM_VisualizeGPUSkinCache:
 		return PlatformSupportsDebugViewShaders(Platform);
 	default:

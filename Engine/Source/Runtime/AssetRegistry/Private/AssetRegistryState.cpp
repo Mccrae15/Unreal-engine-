@@ -27,6 +27,12 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
+// Even if bSerializeDependencies is enabled, this can bypass serializing at runtime.
+// Update your <project>.Target.cs build scripts to define as needed.
+#ifndef ASSET_REGISTRY_ALLOW_DEPENDENCY_SERIALIZATION
+#define ASSET_REGISTRY_ALLOW_DEPENDENCY_SERIALIZATION 1
+#endif
+
 FAssetRegistryState& FAssetRegistryState::operator=(FAssetRegistryState&& Rhs)
 {
 	Reset();
@@ -179,7 +185,6 @@ void FAssetRegistryState::FilterTags(const FAssetDataTagMapSharedView& InTagsAnd
 void FAssetRegistryState::InitializeFromExistingAndPrune(const FAssetRegistryState & ExistingState, const TSet<FName>& RequiredPackages, const TSet<FName>& RemovePackages,
 	const TSet<int32> ChunksToKeep, const FAssetRegistrySerializationOptions& Options)
 {
-	LLM_SCOPE(ELLMTag::AssetRegistry);
 	const bool bIsFilteredByChunkId = ChunksToKeep.Num() != 0;
 	const bool bIsFilteredByRequiredPackages = RequiredPackages.Num() != 0;
 	const bool bIsFilteredByRemovedPackages = RemovePackages.Num() != 0;
@@ -322,7 +327,6 @@ void FAssetRegistryState::InitializeFromExistingAndPrune(const FAssetRegistrySta
 void FAssetRegistryState::InitializeFromExisting(const FAssetDataMap& AssetDataMap, const TMap<FAssetIdentifier, FDependsNode*>& DependsNodeMap, 
 	const TMap<FName, FAssetPackageData*>& AssetPackageDataMap, const FAssetRegistrySerializationOptions& Options, EInitializationMode InInitializationMode)
 {
-	LLM_SCOPE(ELLMTag::AssetRegistry);
 	if (InInitializationMode == EInitializationMode::Rebuild)
 	{
 		Reset();
@@ -1164,8 +1168,6 @@ bool FAssetRegistryState::Save(FArchive& OriginalAr, const FAssetRegistrySeriali
 
 bool FAssetRegistryState::Load(FArchive& OriginalAr, const FAssetRegistryLoadOptions& Options, FAssetRegistryVersion::Type* OutVersion)
 {
-	LLM_SCOPE(ELLMTag::AssetRegistry);
-
 	FAssetRegistryHeader Header;
 	Header.SerializeHeader(OriginalAr);
 	if (OutVersion != nullptr)
@@ -1266,6 +1268,7 @@ void FAssetRegistryState::Load(Archive&& Ar, const FAssetRegistryHeader& Header,
 		Ar << DependencySectionSize;
 		int64 DependencySectionEnd = Ar.Tell() + DependencySectionSize;
 
+#if ASSET_REGISTRY_ALLOW_DEPENDENCY_SERIALIZATION
 		if (Options.bLoadDependencies)
 		{
 			LoadDependencies(Ar);
@@ -1275,6 +1278,9 @@ void FAssetRegistryState::Load(Archive&& Ar, const FAssetRegistryHeader& Header,
 		{
 			Ar.Seek(DependencySectionEnd);
 		}
+#else
+		Ar.Seek(DependencySectionEnd);
+#endif
 	}
 
 	int32 LocalNumPackageData = 0;
@@ -2019,17 +2025,13 @@ FDependsNode* FAssetRegistryState::FindDependsNode(const FAssetIdentifier& Ident
 
 FDependsNode* FAssetRegistryState::CreateOrFindDependsNode(const FAssetIdentifier& Identifier)
 {
-	FDependsNode* FoundNode = FindDependsNode(Identifier);
-	if (FoundNode)
+	FDependsNode*& Node = CachedDependsNodes.FindOrAdd(Identifier);
+	if (Node == nullptr)
 	{
-		return FoundNode;
+		Node = new FDependsNode(Identifier);
+		NumDependsNodes++;
 	}
-
-	FDependsNode* NewNode = new FDependsNode(Identifier);
-	NumDependsNodes++;
-	CachedDependsNodes.Add(Identifier, NewNode);
-
-	return NewNode;
+	return Node;
 }
 
 bool FAssetRegistryState::RemoveDependsNode(const FAssetIdentifier& Identifier)
@@ -2106,17 +2108,13 @@ const FAssetPackageData* FAssetRegistryState::GetAssetPackageData(FName PackageN
 
 FAssetPackageData* FAssetRegistryState::CreateOrGetAssetPackageData(FName PackageName)
 {
-	FAssetPackageData** FoundData = CachedPackageData.Find(PackageName);
-	if (FoundData)
+	FAssetPackageData*& Data = CachedPackageData.FindOrAdd(PackageName);
+	if (Data == nullptr)
 	{
-		return *FoundData;
+		Data = new FAssetPackageData();
+		NumPackageData++;
 	}
-
-	FAssetPackageData* NewData = new FAssetPackageData();
-	NumPackageData++;
-	CachedPackageData.Add(PackageName, NewData);
-
-	return NewData;
+	return Data;
 }
 
 bool FAssetRegistryState::RemovePackageData(FName PackageName)
@@ -2307,7 +2305,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 	int32 NumLinesInPage = 0;
 	const int32 LineTerminatorLen = TCString<TCHAR>::Strlen(LINE_TERMINATOR);
 
-	auto FinishPage = [&PageBuffer, &NumLinesInPage, HashStartValue, HashMultiplier, PageEndSearchLength, &OutPages, &OverflowText, LineTerminatorLen](bool bLastPage)
+	auto FinishPage = [&PageBuffer, &NumLinesInPage, HashStartValue, HashMultiplier, PageEndSearchLength, &OutPages, &OverflowText, LineTerminatorLen](bool bManualPageBreak)
 	{
 		int32 PageEndIndex = PageBuffer.Len();
 		const TCHAR* BufferEnd = PageBuffer.GetData() + PageEndIndex;
@@ -2316,7 +2314,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 		// because after one missing or added line, every page from that point on will be offset and therefore different, making false positive differences
 		// To make pages after one missing or added line the same, we look for a good page ending based on the text of all the lines near the end of the current page
 		// By choosing specific-valued texts as page breaks, we will usually randomly get lucky and have the two diffs pick the same line for the end of the page
-		if (!bLastPage && NumLinesInPage > PageEndSearchLength)
+		if (!bManualPageBreak && NumLinesInPage > PageEndSearchLength)
 		{
 			const TCHAR* WinningLineEnd = BufferEnd;
 			uint32 WinningLineValue = 0;
@@ -2383,9 +2381,17 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 			}
 		}
 	};
+	auto AddPageBreak = [LinesPerPage, &NumLinesInPage, &FinishPage]()
+	{
+		if (LinesPerPage > 1 && NumLinesInPage != 0)
+		{
+			FinishPage(true);
+		}
+	};
 
 	if (bAllFields || Arguments.Contains(TEXT("ObjectPath")))
 	{
+		AddPageBreak();
 		PageBuffer.Append(TEXT("--- Begin CachedAssetsByObjectPath ---"));
 		AddLine();
 
@@ -2396,7 +2402,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 			Keys.Emplace(FCachedAssetKey(*AssetData));
 		}
 		Keys.Sort([](const FCachedAssetKey& A, const FCachedAssetKey& B) {
-			return A.Compare(B) < 0;
+			return WriteToString<1024>(A).ToView().Compare(WriteToString<1024>(B).ToView()) < 0;
 		});
 
 		for (const FCachedAssetKey& Key : Keys)
@@ -2412,22 +2418,26 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 
 	if (bAllFields || Arguments.Contains(TEXT("PackageName")))
 	{
+		AddPageBreak();
 		PrintAssetDataMap(TEXT("CachedAssetsByPackageName"), CachedAssetsByPackageName, PageBuffer, AddLine);
 	}
 
 	if (bAllFields || Arguments.Contains(TEXT("Path")))
 	{
+		AddPageBreak();
 		PrintAssetDataMap(TEXT("CachedAssetsByPath"), CachedAssetsByPath, PageBuffer, AddLine);
 	}
 
 	if (bAllFields || Arguments.Contains(TEXT("Class")))
 	{
+		AddPageBreak();
 		PrintAssetDataMap(TEXT("CachedAssetsByClass"), CachedAssetsByClass, PageBuffer, AddLine);
 	}
 
 	// Only print this if it's requested specifically - '-all' will print tags-per-asset rather than assets-per-tag 
 	if (Arguments.Contains(TEXT("Tag")))
 	{
+		AddPageBreak();
 		PrintAssetDataMap(TEXT("CachedAssetsByTag"), CachedAssetsByTag, PageBuffer, AddLine,
 			[&PageBuffer, &AddLine](const FName& TagName, const FAssetData& Data)
 			{
@@ -2438,6 +2448,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 	if (bAllFields || Arguments.Contains(TEXT("AssetTags")))
 	{
 		int32 Counter = 0;
+		AddPageBreak();
 		PageBuffer.Append(TEXT("--- Begin AssetTags ---"));
 		AddLine();
 
@@ -2466,6 +2477,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 
 	if ((bAllFields || Arguments.Contains(TEXT("Dependencies"))) && !bDumpDependencyDetails)
 	{
+		AddPageBreak();
 		PageBuffer.Appendf(TEXT("--- Begin CachedDependsNodes ---"));
 		AddLine();
 
@@ -2490,6 +2502,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 	if (bDumpDependencyDetails)
 	{
 		using namespace UE::AssetRegistry;
+		AddPageBreak();
 		PageBuffer.Append(TEXT("--- Begin CachedDependsNodes ---"));
 		AddLine();
 
@@ -2614,6 +2627,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 	}
 	if (bAllFields || Arguments.Contains(TEXT("PackageData")))
 	{
+		AddPageBreak();
 		PageBuffer.Append(TEXT("--- Begin CachedPackageData ---"));
 		AddLine();
 
@@ -2641,6 +2655,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 	if (bAllFields || Arguments.Contains(TEXT("AssetBundles")))
 	{
 		int32 Counter = 0;
+		AddPageBreak();
 		PageBuffer.Append(TEXT("--- Begin AssetBundles ---"));
 		AddLine();
 

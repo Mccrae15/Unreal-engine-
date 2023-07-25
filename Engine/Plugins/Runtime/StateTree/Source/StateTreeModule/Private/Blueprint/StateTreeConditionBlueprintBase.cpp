@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/StateTreeConditionBlueprintBase.h"
-#include "CoreMinimal.h"
+#include "Blueprint/StateTreeNodeBlueprintBase.h"
 #include "StateTreeExecutionContext.h"
 #include "BlueprintNodeHelpers.h"
 
@@ -21,8 +21,14 @@ bool UStateTreeConditionBlueprintBase::TestCondition(FStateTreeExecutionContext&
 {
 	if (bHasTestCondition)
 	{
-		FScopedCurrentContext(*this, Context);
-		return ReceiveTestCondition();
+		// Cache the owner and event queue for the duration the condition is evaluated.
+		SetCachedInstanceDataFromContext(Context);
+
+		const bool bResult = ReceiveTestCondition();
+
+		ClearCachedInstanceData();
+
+		return bResult;
 	}
 	return false;
 }

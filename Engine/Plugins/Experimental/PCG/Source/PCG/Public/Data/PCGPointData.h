@@ -2,13 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "PCGSpatialData.h"
 
 #include "Math/GenericOctreePublic.h"
 #include "Math/GenericOctree.h"
 
 #include "PCGPointData.generated.h"
+
+struct FPCGProjectionParams;
 
 class AActor;
 
@@ -66,8 +67,13 @@ class PCG_API UPCGPointData : public UPCGSpatialData
 public:
 	typedef TOctree2<FPCGPointRef, FPCGPointRefSemantics> PointOctree;
 
+	//~Begin UObject Interface
+	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
+	//~End UObject Interface
+
 	// ~Begin UPCGData interface
-	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Point | Super::GetDataType(); }
+	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Point; }
+	virtual void AddToCrc(FArchiveCrc32& Ar, bool bFullDataCrc) const override;
 	// ~End UPCGData interface
 
 	// ~Begin UPCGSpatialData interface
@@ -75,8 +81,13 @@ public:
 	virtual FBox GetBounds() const override;
 	virtual const UPCGPointData* ToPointData(FPCGContext* Context, const FBox& InBounds = FBox(EForceInit::ForceInit)) const { return this; }
 	virtual bool SamplePoint(const FTransform& Transform, const FBox& Bounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const override;
+	virtual bool ProjectPoint(const FTransform& InTransform, const FBox& InBounds, const FPCGProjectionParams& InParams, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const override;
+
+protected:
+	virtual UPCGSpatialData* CopyInternal() const override;
 	// ~End UPCGSpatialData interface
 
+public:
 	void InitializeFromActor(AActor* InActor);
 
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
@@ -108,3 +119,7 @@ protected:
 	mutable bool bBoundsAreDirty = true;
 	mutable bool bOctreeIsDirty = true;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

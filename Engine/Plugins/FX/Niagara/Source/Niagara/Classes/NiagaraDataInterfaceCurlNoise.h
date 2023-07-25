@@ -22,7 +22,7 @@ public:
 	uint32 Seed;
 
 	// Precalculated when Seed changes. 
-	FVector OffsetFromSeed;
+	FVector3f OffsetFromSeed;
 
 	//UObject Interface
 	virtual void PostInitProperties()override;
@@ -48,7 +48,6 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
@@ -60,7 +59,7 @@ protected:
 
 struct FNiagaraDataInterfaceProxyCurlNoise : public FNiagaraDataInterfaceProxy
 {
-	FNiagaraDataInterfaceProxyCurlNoise(const FVector& InOffset)
+	FNiagaraDataInterfaceProxyCurlNoise(const FVector3f& InOffset)
 	{
 		OffsetFromSeed = InOffset;
 	}
@@ -71,5 +70,5 @@ struct FNiagaraDataInterfaceProxyCurlNoise : public FNiagaraDataInterfaceProxy
 		return 0;
 	}
 
-	FVector OffsetFromSeed;
+	FVector3f OffsetFromSeed;
 };

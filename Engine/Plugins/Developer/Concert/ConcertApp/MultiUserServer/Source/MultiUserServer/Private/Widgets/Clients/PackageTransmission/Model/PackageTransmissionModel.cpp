@@ -6,8 +6,11 @@
 #include "ConcertPackageEvents.h"
 #include "ConcertSyncSessionDatabase.h"
 #include "ConcertUtil.h"
+#include "ConcertServerUtil.h"
 #include "IConcertServer.h"
 #include "IConcertSyncServer.h"
+#include "IConcertSession.h"
+#include "Templates/NonNullPointer.h"
 
 namespace UE::MultiUserServer
 {

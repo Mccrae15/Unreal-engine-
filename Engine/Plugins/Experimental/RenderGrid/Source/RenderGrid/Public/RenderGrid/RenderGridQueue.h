@@ -4,6 +4,9 @@
 
 #include "RenderGridManager.h"
 #include "RenderGridUtils.h"
+#include "Tickable.h"
+#include "Containers/Queue.h"
+#include "UObject/ObjectPtr.h"
 #include "RenderGridQueue.generated.h"
 
 
@@ -39,10 +42,10 @@ namespace UE::RenderGrid
 	{
 	public:
 		/** The render grid of the given render grid jobs that will be rendered. */
-		TObjectPtr<URenderGrid> RenderGrid = nullptr;
+		TStrongObjectPtr<URenderGrid> RenderGrid = nullptr;
 
 		/** The specific render grid jobs that will be rendered. */
-		TArray<TObjectPtr<URenderGridJob>> RenderGridJobs;
+		TArray<TStrongObjectPtr<URenderGridJob>> RenderGridJobs;
 
 		/** If not null, it will override the movie pipeline executor class with this class. */
 		TSubclassOf<UMoviePipelinePIEExecutor> PipelineExecutorClass = nullptr;
@@ -102,6 +105,9 @@ public:
 	/** Returns true if this render job was canceled (which for example can be caused by calling Cancel(), or by closing the render popup). */
 	bool IsCanceled() const { return bCanceled; }
 
+	/** Returns true if this render job can render (otherwise it will be skipped). */
+	bool CanExecute() const { return bCanExecute; }
+
 private:
 	void ComputePlaybackContext(bool& bOutAllowBinding);
 	void ExecuteFinished(UMoviePipelineExecutorBase* InPipelineExecutor, const bool bSuccess);
@@ -150,12 +156,60 @@ protected:
 /**
  * This class is responsible for rendering the given render grid jobs.
  */
-UCLASS()
-class RENDERGRID_API URenderGridQueue : public UObject
+UCLASS(BlueprintType)
+class RENDERGRID_API URenderGridQueue : public UObject, public FTickableGameObject
 {
 	GENERATED_BODY()
 
 public:
+	/** Returns true if it's currently executing any rendering queues. */
+	static bool IsExecutingAny();
+
+	DECLARE_MULTICAST_DELEGATE(FOnExecutionQueueChanged);
+	/** The event that will be fired when the currently executing rendering queue changes (like for example when the previous one has completed its execution). */
+	static FOnExecutionQueueChanged& OnExecutionQueueChanged() { return OnExecutionQueueChangedDelegate; }
+
+	/** Call this function to make it so that the editor will be closed when all rendering queues finish execution. This function has to be only called once. */
+	UFUNCTION(BlueprintCallable, Category="Render Grid Queue", Meta=(Keywords="execution execute finish close stop end done quit"))
+	static void CloseEditorOnCompletion();
+
+private:
+	static void RequestAppExitIfSetToExitOnCompletion();
+
+private:
+	/** Returns the currently executing queue, or NULL if there isn't any currently executing. */
+	static URenderGridQueue* GetCurrentlyExecutingQueue();
+
+	/** Adds the given queue. Will automatically execute it if it's the only one currently. */
+	static void AddExecutingQueue(URenderGridQueue* Queue);
+
+	/** Executes the next queue, if any. Nothing will happen until the next tick. */
+	static void DoNextExecutingQueue();
+
+private:
+	/** The queue of executing queues. This contains the currently rendering queue, as well as the ones that should be rendering after it. */
+	static TQueue<TObjectPtr<URenderGridQueue>> ExecutingQueues;
+
+	/** The delegate for when data in the ExecutingQueues has changed. */
+	static FOnExecutionQueueChanged OnExecutionQueueChangedDelegate;
+
+	/** Whether the editor should be closed when all rendering queues finish their execution. */
+	static bool bExitOnCompletion;
+
+public:
+	//~ Begin FTickableGameObject interface
+	virtual void Tick(float DeltaTime) override;
+	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
+	virtual bool IsTickableWhenPaused() const override { return true; }
+	virtual bool IsTickableInEditor() const override { return true; }
+	virtual bool IsTickable() const override { return true; }
+	virtual bool IsAllowedToTick() const override { return true; }
+	virtual TStatId GetStatId() const override
+	{
+		RETURN_QUICK_DECLARE_CYCLE_STAT(FRenderGridQueue, STATGROUP_Tickables);
+	}
+	//~ End FTickableGameObject interface
+
 	/** Creates a new render queue, it won't be started right away. */
 	static URenderGridQueue* Create(const UE::RenderGrid::FRenderGridQueueCreateArgs& Args);
 
@@ -164,28 +218,72 @@ public:
 
 public:
 	/** Queues the given job. */
-	UFUNCTION(BlueprintCallable, Category="Render Grid|Queue", Meta=(Keywords="render append"))
+	UFUNCTION(BlueprintCallable, Category="Render Grid Queue", Meta=(Keywords="render append"))
 	void AddJob(URenderGridJob* Job);
 
 	/** Pauses the queue. */
-	UFUNCTION(BlueprintCallable, Category="Render Grid|Queue", Meta=(Keywords="wait"))
+	UFUNCTION(BlueprintCallable, Category="Render Grid Queue", Meta=(Keywords="wait"))
 	void Pause();
 
 	/** Resumes the queue. */
-	UFUNCTION(BlueprintCallable, Category="Render Grid|Queue", Meta=(Keywords="unwait unpause"))
+	UFUNCTION(BlueprintCallable, Category="Render Grid Queue", Meta=(Keywords="unwait unpause"))
 	void Resume();
 
 	/** Cancels the current and the remaining queued jobs. Relies on the internal movie pipeline implementation of job canceling on whether this will stop the current render grid job from rendering or not. Will always prevent new render grid jobs from rendering. */
-	UFUNCTION(BlueprintCallable, Category="Render Grid|Queue", Meta=(Keywords="stop quit exit kill terminate end"))
+	UFUNCTION(BlueprintCallable, Category="Render Grid Queue", Meta=(Keywords="stop quit exit kill terminate end"))
 	void Cancel();
 
+	/** Returns true if this queue has been started. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="stopped quited exited killed terminated ended succeeded completed finished canceled cancelled"))
+	bool IsStarted() const { return bStarted; }
+
+	/** Returns true if this queue is currently paused. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="stopped quited exited killed terminated ended succeeded completed finished canceled cancelled"))
+	bool IsPaused() const { return (bPaused && !bCanceled && !bFinished); }
+
 	/** Returns true if this queue has been canceled. */
-	UFUNCTION(BlueprintCallable, Category="Render Grid|Queue", Meta=(Keywords="stopped quited exited killed terminated ended"))
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="stopped quited exited killed terminated ended succeeded completed finished canceled cancelled"))
 	bool IsCanceled() const { return bCanceled; }
 
+	/** Returns true if this queue has been canceled. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="stopped quited exited killed terminated ended succeeded completed finished canceled cancelled"))
+	bool IsFinished() const { return bFinished; }
+
+	/** Returns true if this queue is the one that's currently rendering, returns false if it hasn't started yet, or if it's waiting in the queue, or if it has finished. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="stopped quited exited killed terminated ended succeeded completed finished canceled cancelled"))
+	bool IsCurrentlyRendering() const { return (GetCurrentlyExecutingQueue() == this); }
+
 	/** Retrieves the rendering status of the given render grid job. */
-	UFUNCTION(BlueprintCallable, Category="Render Grid|Queue", Meta=(Keywords="render progress"))
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="rendering obtain text"))
+	URenderGrid* GetRenderGrid() const { return RenderGrid; }
+
+	/** Retrieves the rendering status of the given render grid job. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="rendering progression obtain text"))
 	FString GetJobStatus(URenderGridJob* Job) const;
+
+	/** Returns all the jobs that have been and will be rendered. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="rendering progression obtain"))
+	TArray<URenderGridJob*> GetJobs() const;
+
+	/** Returns the number of jobs that have been and will be rendered. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="rendering progression obtain number amount"))
+	int32 GetJobsCount() const;
+
+	/** Returns the number of jobs that have finished rendering. Basically just returns [Get Jobs Count] minus [Get Jobs Remaining Count]. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="rendering progression obtain number amount finished"))
+	int32 GetJobsCompletedCount() const;
+
+	/** Returns the percentage of jobs finished, this includes the progression of the job that is currently rendering. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="rendering progression obtain number amount finished"))
+	float GetStatusPercentage() const;
+
+	/** Returns the number of jobs that are still left to render, includes the job that is currently rendering. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="rendering progression obtain number amount finished"))
+	int32 GetJobsRemainingCount() const;
+
+	/** Returns the status of the rendering process. */
+	UFUNCTION(BlueprintPure, Category="Render Grid Queue", Meta=(Keywords="rendering progression obtain text"))
+	FString GetStatus() const;
 
 protected:
 	void OnStart();
@@ -205,15 +303,27 @@ protected:
 
 	/** The render grid jobs that are to be rendered, mapped to the movie pipeline render job of each specific render grid job. */
 	UPROPERTY(Transient)
-	TMap<TObjectPtr<const URenderGridJob>, TObjectPtr<URenderGridMoviePipelineRenderJob>> Entries;
+	TMap<TObjectPtr<URenderGridJob>, TObjectPtr<URenderGridMoviePipelineRenderJob>> Entries;
 
 	/** The render grid of the given render grid job that will be rendered. */
 	UPROPERTY(Transient)
 	TObjectPtr<URenderGrid> RenderGrid;
 
-	/** Whether the remaining render grid jobs should be prevented from rendering. */
+	/** Whether the queue has been started yet. */
+	UPROPERTY(Transient)
+	bool bStarted;
+
+	/** Whether the queue has been paused. */
+	UPROPERTY(Transient)
+	bool bPaused;
+
+	/** Whether the queue has been canceled. */
 	UPROPERTY(Transient)
 	bool bCanceled;
+
+	/** Whether the queue has been finished. */
+	UPROPERTY(Transient)
+	bool bFinished;
 
 	/** The property values that have been overwritten by the currently applied render grid job property values. */
 	UPROPERTY(Transient)

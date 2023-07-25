@@ -53,6 +53,8 @@ FAdvancedPreviewScene::FAdvancedPreviewScene(ConstructionValues CVS, float InFlo
 	check(SkySphere);
 	SkyComponent->SetStaticMesh(SkySphere);
 	SkyComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SkyComponent->CastShadow = false;
+	SkyComponent->bCastDynamicShadow = false;
 
 	UMaterial* SkyMaterial = LoadObject<UMaterial>(NULL, TEXT("/Engine/EditorMaterials/AssetViewer/M_SkyBox.M_SkyBox"), NULL, LOAD_None, NULL);
 	check(SkyMaterial);
@@ -376,7 +378,7 @@ void FAdvancedPreviewScene::SetEnvironmentVisibility(const bool bVisible, const 
 	else
 	{
 		// Otherwise set visibility directly on the component
-		SkyComponent->SetVisibility(bVisible);
+		SkyComponent->SetVisibility(bVisible ? DefaultSettings->Profiles[CurrentProfileIndex].bShowEnvironment : bVisible);
 	}
 }
 

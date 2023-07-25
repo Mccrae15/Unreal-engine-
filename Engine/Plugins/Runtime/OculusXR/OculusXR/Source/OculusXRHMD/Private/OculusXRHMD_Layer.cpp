@@ -14,6 +14,7 @@
 #include "Engine/RendererSettings.h"
 #include "Engine/Texture2D.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/GameEngine.h"

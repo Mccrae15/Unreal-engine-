@@ -1,28 +1,52 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Containers/Array.h"
 #include "Containers/ArrayView.h"
-#include "HAL/Platform.h"
 
 
 namespace WaveTable
 {
+	struct WAVETABLE_API FWaveTableView
+	{
+		TArrayView<const float> SampleView;
+		float FinalValue;
+
+		explicit FWaveTableView(const TArray<float>& InSamples, const float InFinalValue)
+			: SampleView(InSamples), FinalValue(InFinalValue) {}
+		
+		explicit FWaveTableView(const TArrayView<const float>& InSamples, const float InFinalValue)
+			: SampleView(InSamples), FinalValue(InFinalValue) {}
+
+		// returns the length of the SampleView array, not including the additional FinalValue
+		int32 Num() const
+		{
+			return SampleView.Num();
+		}
+
+		bool IsEmpty() const
+		{
+			return SampleView.IsEmpty();
+		}
+	};
+	
 	struct WAVETABLE_API FWaveTable
 	{
 	private:
 		TArray<float> Samples;
+		float FinalValue;
 
 	public:
 		FWaveTable() = default;
 
-		FWaveTable(const TArray<float>& InSamples)
+		FWaveTable(const TArray<float>& InSamples, const float InFinalValue)
 			: Samples(InSamples)
+			, FinalValue(InFinalValue)
 		{
 		}
 
-		FWaveTable(TArray<float>&& InSamples)
+		FWaveTable(TArray<float>&& InSamples, const float InFinalValue)
 			: Samples(MoveTemp(InSamples))
+			, FinalValue(InFinalValue)
 		{
 		}
 
@@ -36,12 +60,12 @@ namespace WaveTable
 			return Samples.GetData();
 		}
 
-		TArrayView<float> GetView()
+		FWaveTableView GetView() const
 		{
-			return Samples;
+			return FWaveTableView(Samples, FinalValue);
 		}
 
-		TArrayView<const float> GetView() const
+		TArrayView<float> GetSamples()
 		{
 			return Samples;
 		}
@@ -59,6 +83,11 @@ namespace WaveTable
 		void Set(TArrayView<const float> InSamples)
 		{
 			Samples = InSamples;
+		}
+
+		void SetFinalValue(const float InValue)
+		{
+			FinalValue = InValue;
 		}
 
 		void SetNum(int32 InSize)

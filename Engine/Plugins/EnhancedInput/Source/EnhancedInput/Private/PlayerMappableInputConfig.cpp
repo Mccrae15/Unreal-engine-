@@ -9,6 +9,8 @@
 
 UPlayerMappableInputConfig::UPlayerMappableInputConfig(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, ConfigName(GetFName())
+	, ConfigDisplayName(FText::FromName(ConfigName))
 {
 	ResetToDefault();
 }
@@ -34,22 +36,17 @@ EDataValidationResult UPlayerMappableInputConfig::IsDataValid(TArray<FText>& Val
 	}
 	
 	// Check that every context is valid and all player mappable mappings have names
-	for (const TPair<TObjectPtr<UInputMappingContext>, int32>& ContextPair : Contexts)
+	for (TPair<TObjectPtr<UInputMappingContext>, int32>& ContextPair : Contexts)
 	{
-		if(const UInputMappingContext* IMC = ContextPair.Key.Get())
+		if (UInputMappingContext* IMC = ContextPair.Key.Get())
 		{
-			for(const FEnhancedActionKeyMapping& Mapping : IMC->GetMappings())
+			Result = CombineDataValidationResults(Result, IMC->IsDataValid(ValidationErrors));
+			if (Result == EDataValidationResult::Invalid)
 			{
-				if(Mapping.bIsPlayerMappable && Mapping.PlayerMappableOptions.Name == NAME_None)
-				{
-					Result = CombineDataValidationResults(Result, EDataValidationResult::Invalid);
-					FFormatNamedArguments Args;
-					Args.Add(TEXT("AssetPath"), FText::FromString(GetPathName()));
-					Args.Add(TEXT("ActionName"), FText::FromString(Mapping.Action->GetPathName()));
-
-					const FText NoMappingError = FText::Format(LOCTEXT("NoNamePlayerMappingError", "'{AssetPath}' has a player mappable key that has no name!"), Args);
-					ValidationErrors.Emplace(NoMappingError);
-				}
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("AssetPath"), FText::FromString(IMC->GetPathName()));
+				const FText NoMappingError = FText::Format(LOCTEXT("NoNamePlayerMappingError", "'{AssetPath}' has an invalid mapping."), Args);
+				ValidationErrors.Emplace(NoMappingError);
 			}
 		}
 		else
@@ -77,7 +74,7 @@ void UPlayerMappableInputConfig::ForEachDefaultPlayerMappableKey(TFunctionRef<vo
 		{
 			for(const FEnhancedActionKeyMapping& Mapping : IMC->GetMappings())
 			{
-				if(Mapping.bIsPlayerMappable)
+				if(Mapping.IsPlayerMappable())
 				{
 					Operation(Mapping);
 				}
@@ -104,7 +101,7 @@ FEnhancedActionKeyMapping UPlayerMappableInputConfig::GetMappingByName(const FNa
 	FEnhancedActionKeyMapping OutMapping;
 	
 	TArray<FEnhancedActionKeyMapping> MappableKeys = GetPlayerMappableKeys();
-	FEnhancedActionKeyMapping* ExistingMapping = MappableKeys.FindByPredicate([MappingName](const FEnhancedActionKeyMapping& Mapping) { return Mapping.PlayerMappableOptions.Name == MappingName; });
+	FEnhancedActionKeyMapping* ExistingMapping = MappableKeys.FindByPredicate([MappingName](const FEnhancedActionKeyMapping& Mapping) { return Mapping.GetMappingName() == MappingName; });
 
 	if(ExistingMapping)
 	{

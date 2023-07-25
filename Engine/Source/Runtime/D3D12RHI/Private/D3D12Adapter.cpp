@@ -10,16 +10,25 @@ D3D12Adapter.cpp:D3D12 Adapter implementation.
 #include "Misc/OutputDeviceRedirector.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsPlatformMisc.h"
 #include "Windows/WindowsPlatformStackWalk.h"
 #endif
 #include "Modules/ModuleManager.h"
 
-#if !PLATFORM_CPU_ARM_FAMILY && (PLATFORM_WINDOWS)
+#if WITH_AMD_AGS
 	#include "amd_ags.h"
 #endif
 #include "Windows/HideWindowsPlatformTypes.h"
+
+#if INTEL_EXTENSIONS
+	#define INTC_IGDEXT_D3D12 1
+
+	THIRD_PARTY_INCLUDES_START
+	#include "igdext.h"
+	THIRD_PARTY_INCLUDES_END
+#endif
 
 #if ENABLE_RESIDENCY_MANAGEMENT
 bool GEnableResidencyManagement = true;
@@ -211,6 +220,8 @@ FD3D12AdapterDesc::FD3D12AdapterDesc(const DXGI_ADAPTER_DESC& InDesc, int32 InAd
 	, ResourceBindingTier(DeviceInfo.ResourceBindingTier)
 	, ResourceHeapTier(DeviceInfo.ResourceHeapTier)
 	, MaxRHIFeatureLevel(DeviceInfo.MaxRHIFeatureLevel)
+	, bSupportsWaveOps(DeviceInfo.bSupportsWaveOps)
+	, bSupportsAtomic64(DeviceInfo.bSupportsAtomic64)
 {
 }
 
@@ -255,14 +266,8 @@ FD3D12Adapter::FD3D12Adapter(FD3D12AdapterDesc& DescIn)
 
 	uint32 MaxGPUCount = 1; // By default, multi-gpu is disabled.
 #if WITH_MGPU
-	if (!FParse::Value(FCommandLine::Get(), TEXT("MaxGPUCount="), MaxGPUCount))
-	{
-		// If there is a mode token in the command line, enable multi-gpu.
-		if (FParse::Param(FCommandLine::Get(), TEXT("AFR")))
-		{
-			MaxGPUCount = MAX_NUM_GPUS;
-		}
-	}
+	FParse::Value(FCommandLine::Get(), TEXT("MaxGPUCount="), MaxGPUCount);
+
 	if (FParse::Param(FCommandLine::Get(), TEXT("VMGPU")))
 	{
 		GVirtualMGPU = 1;
@@ -283,8 +288,9 @@ FD3D12Adapter::FD3D12Adapter(FD3D12AdapterDesc& DescIn)
 /** Callback function called when the GPU crashes, when Aftermath is enabled */
 static void D3D12AftermathCrashCallback(const void* InGPUCrashDump, const uint32_t InGPUCrashDumpSize, void* InUserData)
 {
-	// Forward to shared function which is also called when DEVICE_LOST return value is given
-	D3D12RHI::TerminateOnGPUCrash(nullptr, InGPUCrashDump, InGPUCrashDumpSize);
+	// Disabled for now, let the regular rendering code catch the error on the next API call via VERIFYD3D12RESULT & co.
+	// Note that this means we won't be getting aftermath crash dump files anymore, since those are written based on the data passed to this function via InGPUCrashDump.
+	// D3D12RHI::TerminateOnGPUCrash(nullptr, InGPUCrashDump, InGPUCrashDumpSize);
 }
 
 
@@ -342,9 +348,10 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 				GFSDK_Aftermath_Version_API,
 				GFSDK_Aftermath_GpuCrashDumpWatchedApiFlags_DX,
 				GFSDK_Aftermath_GpuCrashDumpFeatureFlags_Default,
-				D3D12AftermathCrashCallback,
+				&D3D12AftermathCrashCallback,
 				nullptr, //Shader debug callback
 				nullptr, // description callback
+				nullptr, // resolve marker callback
 				CurrentThread); // user data
 
 			if (Result == GFSDK_Aftermath_Result_Success)
@@ -479,6 +486,29 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	}
 #endif
 
+#if INTEL_EXTENSIONS
+	if (IsRHIDeviceIntel() && bAllowVendorDevice)
+	{
+		ID3D12Device* Device = nullptr;
+		// Create the device for communication with the extension
+		VERIFYD3D12RESULT(D3D12CreateDevice(
+			GetAdapter(),
+			D3D_FEATURE_LEVEL_11_0,
+			IID_PPV_ARGS(&Device)
+		));
+
+		INTCExtensionInfo INTCExtensionInfo{};
+		if (INTCExtensionContext* IntelExtensionContext = CreateIntelExtensionsContext(Device, INTCExtensionInfo))
+		{
+			EnableIntelAtomic64Support(IntelExtensionContext, INTCExtensionInfo);
+			// Destroy the context to release all reference to ID3D12Device
+			DestroyIntelExtensionsContext(IntelExtensionContext);
+		}
+
+		Device->Release();
+	}
+#endif
+
 	if (!bDeviceCreated)
 	{
 		// Creating the Direct3D device.
@@ -519,6 +549,9 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 			Flags |= bEnableCallstack ? GFSDK_Aftermath_FeatureFlags_CallStackCapturing : 0;
 			Flags |= bEnableResources ? GFSDK_Aftermath_FeatureFlags_EnableResourceTracking : 0;
 			Flags |= bEnableAll ? GFSDK_Aftermath_FeatureFlags_Maximum : 0;
+
+			// @todo - GFSDK_Aftermath_FeatureFlags_EnableShaderErrorReporting is disabled to prevent TDRs until Nvidia fixes this
+			Flags &= ~GFSDK_Aftermath_FeatureFlags_EnableShaderErrorReporting;
 
 			GFSDK_Aftermath_Result Result = GFSDK_Aftermath_DX12_Initialize(GFSDK_Aftermath_Version_API, (GFSDK_Aftermath_FeatureFlags)Flags, RootDevice);
 			if (Result == GFSDK_Aftermath_Result_Success)
@@ -718,40 +751,6 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 		GNumExplicitGPUsForRendering = Desc.NumDeviceNodes;
 		UE_LOG(LogD3D12RHI, Log, TEXT("Enabling multi-GPU with %d nodes"), Desc.NumDeviceNodes);
 	}
-
-	// Viewport ignores AFR if PresentGPU is specified.
-	int32 Dummy;
-	if (!FParse::Value(FCommandLine::Get(), TEXT("PresentGPU="), Dummy))
-	{
-		bool bWantsAFR = false;
-		if (FParse::Value(FCommandLine::Get(), TEXT("NumAFRGroups="), GNumAlternateFrameRenderingGroups))
-		{
-			bWantsAFR = true;
-		}
-		else if (FParse::Param(FCommandLine::Get(), TEXT("AFR")))
-		{
-			bWantsAFR = true;
-			GNumAlternateFrameRenderingGroups = GNumExplicitGPUsForRendering;
-		}
-
-		if (bWantsAFR)
-		{
-			if (GNumAlternateFrameRenderingGroups <= 1 || GNumAlternateFrameRenderingGroups > GNumExplicitGPUsForRendering)
-			{
-				UE_LOG(LogD3D12RHI, Error, TEXT("Cannot enable alternate frame rendering because NumAFRGroups (%u) must be > 1 and <= MaxGPUCount (%u)"), GNumAlternateFrameRenderingGroups, GNumExplicitGPUsForRendering);
-				GNumAlternateFrameRenderingGroups = 1;
-			}
-			else if (GNumExplicitGPUsForRendering % GNumAlternateFrameRenderingGroups != 0)
-			{
-				UE_LOG(LogD3D12RHI, Error, TEXT("Cannot enable alternate frame rendering because MaxGPUCount (%u) must be evenly divisible by NumAFRGroups (%u)"), GNumExplicitGPUsForRendering, GNumAlternateFrameRenderingGroups);
-				GNumAlternateFrameRenderingGroups = 1;
-			}
-			else
-			{
-				UE_LOG(LogD3D12RHI, Log, TEXT("Enabling alternate frame rendering with %u AFR groups"), GNumAlternateFrameRenderingGroups);
-			}
-		}
-	}
 #endif
 }
 
@@ -940,8 +939,20 @@ void FD3D12Adapter::InitializeDevices()
 			//     ResourceDescriptorHeap/SamplerDescriptorHeap must be supported on devices that support both D3D12_RESOURCE_BINDING_TIER_3 and D3D_SHADER_MODEL_6_6
 			if (GetHighestShaderModel() >= D3D_SHADER_MODEL_6_6 && GetResourceBindingTier() >= D3D12_RESOURCE_BINDING_TIER_3)
 			{
+				GRHIBindlessSupport = GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5 ? ERHIBindlessSupport::RayTracingOnly : ERHIBindlessSupport::AllShaderTypes;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				GRHISupportsBindless = true;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				UE_LOG(LogD3D12RHI, Log, TEXT("Bindless resources are supported"));
+			}
+
+			{
+				D3D12_FEATURE_DATA_D3D12_OPTIONS Features{};
+				RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &Features, sizeof(Features));
+
+				GRHISupportsStencilRefFromPixelShader = (Features.PSSpecifiedStencilRefSupported != 0);
+
+				UE_LOG(LogD3D12RHI, Log, TEXT("Stencil ref from pixel shader is %s"), GRHISupportsStencilRefFromPixelShader ? TEXT("supported") : TEXT("not supported"));
 			}
 
 			// Detect availability of shader model 6.0 wave operations
@@ -951,9 +962,15 @@ void FD3D12Adapter::InitializeDevices()
 				GRHISupportsWaveOperations = Features.WaveOps;
 				GRHIMinimumWaveSize = Features.WaveLaneCountMin;
 				GRHIMaximumWaveSize = Features.WaveLaneCountMax;
+
+				if (GRHISupportsWaveOperations)
+				{
+					UE_LOG(LogD3D12RHI, Log, TEXT("Wave Operations are supported (wave size: min=%d max=%d)."), GRHIMinimumWaveSize, GRHIMaximumWaveSize);
+				}
 			}
 
 #if D3D12_RHI_RAYTRACING
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 			D3D12_FEATURE_DATA_D3D12_OPTIONS5 D3D12Caps5 = {};
 			if (SUCCEEDED(RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &D3D12Caps5, sizeof(D3D12Caps5))))
 			{
@@ -969,7 +986,7 @@ void FD3D12Adapter::InitializeDevices()
 					&& !FParse::Param(FCommandLine::Get(), TEXT("noraytracing")))
 				{
 					if (D3D12Caps5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1
-						&& GRHISupportsBindless
+						&& GRHIBindlessSupport != ERHIBindlessSupport::Unsupported
 						&& RootDevice7)
 					{
 						if (bRayTracingAllowedOnCurrentShaderPlatform)
@@ -987,7 +1004,7 @@ void FD3D12Adapter::InitializeDevices()
  							UE_LOG(LogD3D12RHI, Log, TEXT("Ray tracing is disabled because SM6 shader platform is required (r.RayTracing.RequireSM6=1)."));
 						}
 					}
-					else if (!GRHISupportsBindless)
+					else if (GRHIBindlessSupport == ERHIBindlessSupport::Unsupported)
 					{
 						UE_LOG(LogD3D12RHI, Log, TEXT("Ray tracing is disabled because bindless resources are not supported (Shader Model 6.6 and Resource Binding Tier 3 are required)."));
 					}
@@ -1003,6 +1020,7 @@ void FD3D12Adapter::InitializeDevices()
 					UE_LOG(LogD3D12RHI, Warning, TEXT("Ray Tracing is disabled because the RenderDoc plugin is currently not compatible with D3D12 ray tracing."));
 				}
 			}
+#endif // PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 
 			GRHIRayTracingAccelerationStructureAlignment = uint32(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
 			GRHIRayTracingScratchBufferAlignment = uint32(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
@@ -1102,8 +1120,6 @@ void FD3D12Adapter::InitializeDevices()
 		bTrackAllAllocation = (GD3D12TrackAllAlocations || GPUCrashDebuggingModes == ED3D12GPUCrashDebuggingModes::All) && (GetResourceHeapTier() == D3D12_RESOURCE_HEAP_TIER_2);
 #endif 
 
-		CreateCommandSignatures();
-
 		// Context redirectors allow RHI commands to be executed on multiple GPUs at the
 		// same time in a multi-GPU system. Redirectors have a physical mask for the GPUs
 		// they can support and an active mask which restricts commands to operate on a
@@ -1190,6 +1206,9 @@ void FD3D12Adapter::InitializeDevices()
 		StaticRayTracingLocalRootSignature.InitStaticRayTracingLocalRootSignatureDesc();
 #endif
 #endif // USE_STATIC_ROOT_SIGNATURE
+
+		// Creating command signatures relies on static ray tracing root signatures.
+		CreateCommandSignatures();
 	}
 }
 
@@ -1227,10 +1246,7 @@ void FD3D12Adapter::CreateCommandSignatures()
 	commandSignatureDesc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
 	VERIFYD3D12RESULT(Device->CreateCommandSignature(&commandSignatureDesc, nullptr, IID_PPV_ARGS(DrawIndexedIndirectCommandSignature.GetInitReference())));
 
-	indirectParameterDesc[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
-	commandSignatureDesc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
-	VERIFYD3D12RESULT(Device->CreateCommandSignature(&commandSignatureDesc, nullptr, IID_PPV_ARGS(DispatchIndirectGraphicsCommandSignature.GetInitReference())));
-
+	checkf(DispatchIndirectGraphicsCommandSignature.IsValid(), TEXT("Indirect graphics dispatch command signature is expected to be created by platform-specific D3D12 adapter implementation."))
 	checkf(DispatchIndirectComputeCommandSignature.IsValid(), TEXT("Indirect compute dispatch command signature is expected to be created by platform-specific D3D12 adapter implementation."))
 }
 
@@ -1256,7 +1272,7 @@ void FD3D12Adapter::SetupGPUCrashDebuggingModesCommon()
 				EnumAddFlags(GPUCrashDebuggingModes, DebuggingMode);
 			}
 		};
-		ParseCVar(TEXT("r.GPUCrashDebugging"), ED3D12GPUCrashDebuggingModes((int)ED3D12GPUCrashDebuggingModes::BreadCrumbs | (int)ED3D12GPUCrashDebuggingModes::NvAftermath));
+		ParseCVar(TEXT("r.GPUCrashDebugging"), ED3D12GPUCrashDebuggingModes((int)ED3D12GPUCrashDebuggingModes::NvAftermath | (int)ED3D12GPUCrashDebuggingModes::DRED));
 		ParseCVar(TEXT("r.D3D12.BreadCrumbs"), ED3D12GPUCrashDebuggingModes::BreadCrumbs);
 		ParseCVar(TEXT("r.D3D12.NvAfterMath"), ED3D12GPUCrashDebuggingModes::NvAftermath);
 		ParseCVar(TEXT("r.D3D12.DRED"), ED3D12GPUCrashDebuggingModes::DRED);
@@ -1400,16 +1416,12 @@ FD3D12Adapter::~FD3D12Adapter()
 #endif
 }
 
-void FD3D12Adapter::CreateDXGIFactory(bool bWithDebug)
+void FD3D12Adapter::CreateDXGIFactory(TRefCountPtr<IDXGIFactory2>& DxgiFactory2, bool bWithDebug, HMODULE DxgiDllHandle)
 {
 #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	typedef HRESULT(WINAPI FCreateDXGIFactory2)(UINT, REFIID, void**);
 
 #if PLATFORM_WINDOWS
-	// Dynamically load this otherwise Win7 fails to boot as it's missing on that DLL
-	DxgiDllHandle = (HMODULE)FPlatformProcess::GetDllHandle(TEXT("dxgi.dll"));
-	check(DxgiDllHandle);
-
 	FCreateDXGIFactory2* CreateDXGIFactory2FnPtr = (FCreateDXGIFactory2*)(void*)::GetProcAddress(DxgiDllHandle, "CreateDXGIFactory2");
 #else
 	FCreateDXGIFactory2* CreateDXGIFactory2FnPtr = &CreateDXGIFactory2;
@@ -1419,6 +1431,21 @@ void FD3D12Adapter::CreateDXGIFactory(bool bWithDebug)
 
 	const uint32 Flags = bWithDebug ? DXGI_CREATE_FACTORY_DEBUG : 0;
 	VERIFYD3D12RESULT(CreateDXGIFactory2FnPtr(Flags, IID_PPV_ARGS(DxgiFactory2.GetInitReference())));
+#endif // #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+}
+
+void FD3D12Adapter::CreateDXGIFactory(bool bWithDebug)
+{
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+	HMODULE UsedDxgiDllHandle = (HMODULE)0;
+#if PLATFORM_WINDOWS
+	// Dynamically load this otherwise Win7 fails to boot as it's missing on that DLL
+	DxgiDllHandle = (HMODULE)FPlatformProcess::GetDllHandle(TEXT("dxgi.dll"));
+	check(DxgiDllHandle);
+	UsedDxgiDllHandle = DxgiDllHandle;
+#endif
+
+	CreateDXGIFactory(DxgiFactory2, bWithDebug, UsedDxgiDllHandle);
 
 	InitDXGIFactoryVariants(DxgiFactory2);
 #endif // #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
@@ -1481,22 +1508,6 @@ void FD3D12Adapter::EndFrame()
 	}
 #endif
 }
-
-#if WITH_MGPU
-FD3D12Adapter::FTemporalEffect& FD3D12Adapter::GetTemporalEffect(const FName& EffectName)
-{
-	FTemporalEffect* Effect = TemporalEffectMap.Find(EffectName);
-
-	if (Effect == nullptr)
-	{
-		Effect = &TemporalEffectMap.Emplace(EffectName, FTemporalEffect());
-		Effect->AddDefaulted(FRHIGPUMask::All().GetNumActive());
-	}
-
-	check(Effect);
-	return *Effect;
-}
-#endif // WITH_MGPU
 
 FD3D12FastConstantAllocator& FD3D12Adapter::GetTransientUniformBufferAllocator()
 {
@@ -1612,7 +1623,7 @@ void FD3D12Adapter::ReleaseTrackedAllocationData(FD3D12ResourceLocation* InAlloc
 	FScopeLock Lock(&TrackedAllocationDataCS);
 
 	D3D12_GPU_VIRTUAL_ADDRESS GPUAddress = InAllocation->GetGPUVirtualAddress();
-	if (GPUAddress != 0 || IsTrackingAllAllocations())
+	if (GPUAddress != 0)
 	{
 		FReleasedAllocationData ReleasedData;
 		ReleasedData.GPUVirtualAddress = GPUAddress;
@@ -1623,8 +1634,6 @@ void FD3D12Adapter::ReleaseTrackedAllocationData(FD3D12ResourceLocation* InAlloc
 		ReleasedData.bDefragFree = bDefragFree;
 		ReleasedData.bBackBuffer = InAllocation->GetResource()->IsBackBuffer();
 		ReleasedData.bTransient = InAllocation->IsTransient();
-		// Only the backbuffer doesn't have a valid gpu virtual address
-		check(ReleasedData.GPUVirtualAddress != 0 || ReleasedData.bBackBuffer);
 		ReleasedAllocationData.Add(ReleasedData);
 	}
 

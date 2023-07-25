@@ -2,7 +2,7 @@
 
 #include "SourceControlWindows.h"
 #include "SSourceControlSubmit.h"
-
+#include "AssetViewUtils.h"
 #include "FileHelpers.h"
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
@@ -36,35 +36,12 @@ FCheckinResultInfo::FCheckinResultInfo()
 
 TWeakPtr<SNotificationItem> FSourceControlWindows::ChoosePackagesToCheckInNotification;
 
-TArray<FString> FSourceControlWindows::GetSourceControlLocations(const bool bContentOnly)
-{
-	TArray<FString> SourceControlLocations;
-
-	{
-		TArray<FString> RootPaths;
-		FPackageName::QueryRootContentPaths(RootPaths);
-		for (const FString& RootPath : RootPaths)
-		{
-			const FString RootPathOnDisk = FPackageName::LongPackageNameToFilename(RootPath);
-			SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(RootPathOnDisk));
-		}
-	}
-
-	if (!bContentOnly)
-	{
-		SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(FPaths::ProjectConfigDir()));
-		SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
-	}
-
-	return SourceControlLocations;
-}
-
 bool FSourceControlWindows::ChoosePackagesToCheckIn(const FSourceControlWindowsOnCheckInComplete& OnCompleteDelegate)
 {
 	if (!ISourceControlModule::Get().IsEnabled())
 	{
 		FCheckinResultInfo ResultInfo;
-		ResultInfo.Description = LOCTEXT("SourceControlDisabled", "Source control is not enabled.");
+		ResultInfo.Description = LOCTEXT("SourceControlDisabled", "Revision control is not enabled.");
 		OnCompleteDelegate.ExecuteIfBound(ResultInfo);
 
 		return false;
@@ -73,7 +50,7 @@ bool FSourceControlWindows::ChoosePackagesToCheckIn(const FSourceControlWindowsO
 	if (!ISourceControlModule::Get().GetProvider().IsAvailable())
 	{
 		FCheckinResultInfo ResultInfo;
-		ResultInfo.Description = LOCTEXT("NoSCCConnection", "No connection to source control available!");
+		ResultInfo.Description = LOCTEXT("NoSCCConnection", "No connection to revision control available!");
 
 		FMessageLog EditorErrors("EditorErrors");
 		EditorErrors.Warning(ResultInfo.Description)->AddToken(
@@ -96,7 +73,7 @@ bool FSourceControlWindows::ChoosePackagesToCheckIn(const FSourceControlWindowsO
 	}
 	else
 	{
-		Filenames = GetSourceControlLocations();
+		Filenames = SourceControlHelpers::GetSourceControlLocations();
 	}
 	
 	// make sure the SourceControlProvider state cache is populated as well
@@ -142,15 +119,97 @@ bool FSourceControlWindows::CanChoosePackagesToCheckIn()
 {
 	ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
 	
-	return ISourceControlModule::Get().IsEnabled() &&
+	if (ISourceControlModule::Get().IsEnabled() &&
 		ISourceControlModule::Get().GetProvider().IsAvailable() &&
-		!ChoosePackagesToCheckInNotification.IsValid()
-		;
+		!ChoosePackagesToCheckInNotification.IsValid())
+	{
+		if (SourceControlModule.GetProvider().GetNumLocalChanges().IsSet())
+		{
+			return SourceControlModule.GetProvider().GetNumLocalChanges().GetValue() > 0;
+		}
+		else
+		{
+			return true;
+		}
+	}
+ 
+	return false;
 }
 
 bool FSourceControlWindows::ShouldChoosePackagesToCheckBeVisible()
 {
 	return GetDefault<USourceControlSettings>()->bEnableSubmitContentMenuAction;
+}
+
+
+static bool SaveDirtyPackages()
+{
+	const bool bPromptUserToSave = true;
+	const bool bSaveMapPackages = true;
+	const bool bSaveContentPackages = true;
+	const bool bFastSave = false;
+	const bool bNotifyNoPackagesSaved = false;
+	const bool bCanBeDeclined = true; // If the user clicks "don't save" this will continue and lose their changes
+
+	bool bHadPackagesToSave = false;
+	bool bSaved = FEditorFileUtils::SaveDirtyPackages(bPromptUserToSave, bSaveMapPackages, bSaveContentPackages, bFastSave, bNotifyNoPackagesSaved, bCanBeDeclined, &bHadPackagesToSave);
+
+	// bSaved can be true if the user selects to not save an asset by unchecking it and clicking "save"
+	if (bSaved)
+	{
+		TArray<UPackage*> DirtyPackages;
+		FEditorFileUtils::GetDirtyWorldPackages(DirtyPackages);
+		FEditorFileUtils::GetDirtyContentPackages(DirtyPackages);
+
+		bSaved = DirtyPackages.Num() == 0;
+	}
+
+	// if not properly saved, ask for confirmation from the user before continuing.
+	if (!bSaved)
+	{
+		FText DialogText = NSLOCTEXT("SourceControlCommands", "UnsavedWarningText", "Warning: There are modified assets which are not being saved. If you sync to latest you may lose your unsaved changes. Do you want to continue?");
+		FText DialogTitle = NSLOCTEXT("SourceControlCommands", "UnsavedWarningTitle", "Unsaved changes");
+
+		EAppReturnType::Type DialogResult = FMessageDialog::Open(EAppMsgType::YesNo, DialogText, &DialogTitle);
+
+		bSaved = (DialogResult == EAppReturnType::Yes);
+	}
+	
+	return bSaved;
+}
+
+bool FSourceControlWindows::SyncLatest()
+{
+	bool bSaved = SaveDirtyPackages();
+
+	// if properly saved or confirmation given, find all packages and use source control to update them.
+	if (bSaved)
+	{
+		AssetViewUtils::SyncLatestFromSourceControl();
+	}
+
+	return false;
+}
+
+
+bool FSourceControlWindows::CanSyncLatest()
+{
+	ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
+
+	if (SourceControlModule.IsEnabled() &&
+		SourceControlModule.GetProvider().IsAvailable())
+	{
+		if (SourceControlModule.GetProvider().IsAtLatestRevision().IsSet())
+		{
+			return !SourceControlModule.GetProvider().IsAtLatestRevision().GetValue();
+		}
+		else
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 
@@ -232,10 +291,11 @@ bool FSourceControlWindows::PromptForCheckin(FCheckinResultInfo& OutResultInfo, 
 			{ 
 				if (SourceControlProvider.IsAvailable())
 				{
-					return SourceControlProvider.UsesFileRevisions();
+					return !SourceControlProvider.UsesSnapshots();
 				}
 				return true;
-			});
+			})
+		.AllowDiffAgainstDepot(SourceControlProvider.AllowsDiffAgainstDepot());
 
 	NewWindow->SetContent(
 		SourceControlWidget
@@ -451,7 +511,7 @@ void FSourceControlWindows::ChoosePackagesToCheckInCompleted(const TArray<UPacka
 	}
 	else
 	{
-		PendingDeletePaths = GetSourceControlLocations();
+		PendingDeletePaths = SourceControlHelpers::GetSourceControlLocations();
 	}
 
 	PromptForCheckin(OutResultInfo, PackageNames, PendingDeletePaths, ConfigFiles, bUseSourceControlStateCache);
@@ -490,7 +550,7 @@ void FSourceControlWindows::ChoosePackagesToCheckInCallback(const FSourceControl
 
 			case ECommandResult::Failed:
 			{
-				ResultInfo.Description = LOCTEXT("CheckInOperationFailed", "Failed checking source control status!");
+				ResultInfo.Description = LOCTEXT("CheckInOperationFailed", "Failed checking revision control status!");
 				FMessageLog EditorErrors("EditorErrors");
 				EditorErrors.Warning(ResultInfo.Description);
 				EditorErrors.Notify();

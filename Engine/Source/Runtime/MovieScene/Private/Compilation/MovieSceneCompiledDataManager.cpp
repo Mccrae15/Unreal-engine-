@@ -142,7 +142,6 @@ struct FGatherParameters
 		, LocalClampRange(RootClampRange)
 		, Flags(ESectionEvaluationFlags::None)
 		, HierarchicalBias(0)
-		, bHasHierarchicalEasing(false)
 	{}
 
 	FGatherParameters CreateForSubData(const FMovieSceneSubSequenceData& SubData, FMovieSceneSequenceID InSubSequenceID) const
@@ -156,7 +155,6 @@ struct FGatherParameters
 
 		SubParams.RootToSequenceTransform   = SubData.RootToSequenceTransform;
 		SubParams.HierarchicalBias          = SubData.HierarchicalBias;
-		SubParams.bHasHierarchicalEasing    = SubData.bHasHierarchicalEasing;
 		SubParams.SequenceID                = InSubSequenceID;
 		SubParams.RootToSequenceWarpCounter = WarpCounter;
 
@@ -196,9 +194,6 @@ struct FGatherParameters
 
 	/** Current accumulated hierarchical bias */
 	int16 HierarchicalBias;
-
-	/** Whether the current sequence is receiving hierarchical easing from some parent sequence */
-	bool bHasHierarchicalEasing;
 
 	EMovieSceneServerClientMask NetworkMask;
 };
@@ -729,7 +724,7 @@ void UMovieSceneCompiledDataManager::Compile(FMovieSceneCompiledDataID DataID, U
 				CompileTrack(&Entry, nullptr, Track, Params, &GatheredSignatures, &GatheredData);
 			}
 
-			for (UMovieSceneTrack* Track : MovieScene->GetMasterTracks())
+			for (UMovieSceneTrack* Track : MovieScene->GetTracks())
 			{
 				CompileTrack(&Entry, nullptr, Track, Params, &GatheredSignatures, &GatheredData);
 			}
@@ -850,7 +845,7 @@ void UMovieSceneCompiledDataManager::Gather(const FMovieSceneCompiledDataEntry& 
 			GatherTrack(nullptr, Track, Params, TrackTemplate, OutCompilerData);
 		}
 
-		for (UMovieSceneTrack* Track : MovieScene->GetMasterTracks())
+		for (UMovieSceneTrack* Track : MovieScene->GetTracks())
 		{
 			GatherTrack(nullptr, Track, Params, TrackTemplate, OutCompilerData);
 		}
@@ -1391,7 +1386,7 @@ bool UMovieSceneCompiledDataManager::GenerateSubSequenceData(UMovieSceneSequence
 
 	bool bContainsSubSequences = false;
 
-	for (UMovieSceneTrack* Track : MovieScene->GetMasterTracks())
+	for (UMovieSceneTrack* Track : MovieScene->GetTracks())
 	{
 		if (UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track))
 		{
@@ -1463,7 +1458,6 @@ bool UMovieSceneCompiledDataManager::GenerateSubSequenceData(UMovieSceneSubTrack
 		NewSubData.PlayRange               = TRange<FFrameNumber>::Intersection(InnerClampRange, NewSubData.PlayRange.Value);
 		NewSubData.RootToSequenceTransform = NewSubData.RootToSequenceTransform * Params.RootToSequenceTransform;
 		NewSubData.HierarchicalBias        = Params.HierarchicalBias + NewSubData.HierarchicalBias;
-		NewSubData.bHasHierarchicalEasing  = Params.bHasHierarchicalEasing || NewSubData.bHasHierarchicalEasing;
 
 		// Add the sub data to the root hierarchy
 		InOutHierarchy->Add(NewSubData, InnerSequenceID, ParentSequenceID);
@@ -1495,7 +1489,7 @@ void UMovieSceneCompiledDataManager::PopulateSubSequenceTree(UMovieSceneSequence
 
 	check(RootPath && InOutHierarchy);
 
-	for (UMovieSceneTrack* Track : MovieScene->GetMasterTracks())
+	for (UMovieSceneTrack* Track : MovieScene->GetTracks())
 	{
 		if (UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track))
 		{
@@ -1544,7 +1538,7 @@ void UMovieSceneCompiledDataManager::PopulateSubSequenceTree(UMovieSceneSubTrack
 	for (const FMovieSceneTrackEvaluationFieldEntry& Entry : SubTrack->GetEvaluationField().Entries)
 	{
 		UMovieSceneSubSection* SubSection  = Cast<UMovieSceneSubSection>(Entry.Section);
-		if (!SubSection || SubSection->GetSequence() == nullptr)
+		if (!SubSection || SubSection->GetSequence() == nullptr || SubSection->GetSequence()->GetMovieScene() == nullptr)
 		{
 			continue;
 		}

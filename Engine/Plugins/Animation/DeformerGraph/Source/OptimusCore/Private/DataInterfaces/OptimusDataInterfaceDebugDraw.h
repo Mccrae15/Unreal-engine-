@@ -8,6 +8,7 @@
 
 #include "OptimusDataInterfaceDebugDraw.generated.h"
 
+class FDebugDrawDataInterfaceParameters;
 class UPrimitiveComponent;
 
 /* User controllable debug draw settings. */
@@ -53,8 +54,10 @@ public:
 	
 	//~ Begin UComputeDataInterface Interface
 	TCHAR const* GetClassName() const override { return TEXT("DebugDraw"); }
+	bool CanSupportUnifiedDispatch() const override { return true; }
 	void GetSupportedInputs(TArray<FShaderFunctionDefinition>& OutFunctions) const override;
 	void GetShaderParameters(TCHAR const* UID, FShaderParametersMetadataBuilder& InOutBuilder, FShaderParametersMetadataAllocations& InOutAllocations) const override;
+	TCHAR const* GetShaderVirtualPath() const override;
 	void GetShaderHash(FString& InOutKey) const override;
 	void GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const override;
 	UComputeDataProvider* CreateDataProvider(TObjectPtr<UObject> InBinding, uint64 InInputMask, uint64 InOutputMask) const override;
@@ -62,6 +65,9 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = DebugDraw, meta = (ShowOnlyInnerProperties))
 	FOptimusDebugDrawParameters DebugDrawParameters;
+
+private:
+	static TCHAR const* TemplateFilePath;
 };
 
 /** Compute Framework Data Provider for writing skinned mesh. */
@@ -78,7 +84,6 @@ public:
 	FOptimusDebugDrawParameters DebugDrawParameters;
 
 	//~ Begin UComputeDataProvider Interface
-	bool IsValid() const override;
 	FComputeDataProviderRenderProxy* GetRenderProxy() override;
 	//~ End UComputeDataProvider Interface
 };
@@ -89,11 +94,15 @@ public:
 	FOptimusDebugDrawDataProviderProxy(UPrimitiveComponent* InPrimitiveComponent, FOptimusDebugDrawParameters const& InDebugDrawParameters);
 
 	//~ Begin FComputeDataProviderRenderProxy Interface
+	bool IsValid(FValidationData const& InValidationData) const override;
 	void AllocateResources(FRDGBuilder& GraphBuilder) override;
-	void GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData) override;
+	void GatherDispatchData(FDispatchData const& InDispatchData) override;
 	//~ End FComputeDataProviderRenderProxy Interface
 
 private:
+	using FParameters = FDebugDrawDataInterfaceParameters;
+
+	FSceneInterface const* Scene;
 	FMatrix44f LocalToWorld;
 	ShaderPrint::FShaderPrintSetup Setup;
 	ShaderPrint::FShaderPrintCommonParameters ConfigParameters;

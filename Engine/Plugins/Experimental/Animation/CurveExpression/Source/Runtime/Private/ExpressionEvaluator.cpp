@@ -1,8 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ExpressionEvaluator.h"
-
-#include <limits>
+#include <limits> // IWYU pragma: keep
 
 namespace CurveExpression::Evaluator
 {
@@ -126,14 +125,19 @@ FEngine::FEngine(
 
 
 void FEngine::UpdateConstantValues(
-	const TMap<FName, float>& InConstants
+	const TMap<FName, float>& InConstants,
+	EUpdateConstantsMethod InUpdateMethod
 	)
 {
-	for (const TTuple<FName, float>& NewConstantItem: InConstants)
+	for (TTuple<FName, float>& OldConstantItem: Constants)
 	{
-		if (float* OldConstant = Constants.Find(NewConstantItem.Key))
+		if (const float* NewConstant = InConstants.Find(OldConstantItem.Key))
 		{
-			*OldConstant = NewConstantItem.Value; 
+			OldConstantItem.Value = *NewConstant;
+		}
+		else if (InUpdateMethod == EUpdateConstantsMethod::ZeroMissing)
+		{
+			OldConstantItem.Value = 0.0f;
 		}
 	}
 }
@@ -551,7 +555,9 @@ TVariant<FExpressionObject, FParseError> FEngine::Parse(
 			{ EOperatorToken::FloorDivide,	3, EAssociativity::Left, FExpressionObject::EOperator::FloorDivide},
 			{ EOperatorToken::ParenOpen,	0, EAssociativity::None},
 			{ EOperatorToken::ParenClose,	0, EAssociativity::None},
+			{ EOperatorToken::Comma,		0, EAssociativity::None},
 		};
+		static_assert(sizeof(OperatorTokenInfo) / sizeof(FOperatorTokenInfo) == (int32)EOperatorToken::Max);
 		checkSlow(OperatorTokenInfo[static_cast<int32>(InOpToken)].OperatorToken == InOpToken);
 		return OperatorTokenInfo[static_cast<int32>(InOpToken)];
 	};

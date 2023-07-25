@@ -2,13 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Containers/SortedMap.h"
 #include "HAL/CriticalSection.h"
 #include "Misc/StringBuilder.h"
 #include "Templates/RefCounting.h"
 #include "Templates/TypeCompatibleBytes.h"
 #include "UObject/TopLevelAssetPath.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif
 
 class FAssetRegistryState;
 class FAssetTagValueRef;
@@ -54,10 +57,10 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	bool IsEmpty() const { return ClassPath.IsNull() & Package.IsNone() & Object.IsNone(); } //-V792
 	explicit operator bool() const { return !IsEmpty(); }
-};
 
-bool operator==(const FAssetRegistryExportPath& A, const FAssetRegistryExportPath& B);
-uint32 GetTypeHash(const FAssetRegistryExportPath& Export);
+	friend bool operator==(const FAssetRegistryExportPath& A, const FAssetRegistryExportPath& B);
+	friend uint32 GetTypeHash(const FAssetRegistryExportPath& Export);
+};
 
 namespace FixedTagPrivate
 {
@@ -171,6 +174,16 @@ namespace FixedTagPrivate
 		}
 	};
 
+	// This bit is always zero in user mode addresses and most likely won't be used by current or future
+	// CPU features like ARM's PAC / Top-Byte Ignore or Intel's Linear Address Masking / 5-Level Paging
+#if defined(__x86_64__) || defined(_M_X64)
+	static constexpr uint32 KernelAddressBit = 63;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+	static constexpr uint32 KernelAddressBit = 55;
+#else
+	#error Unsupported architecture, please declare which address bit distinguish user space from kernel space
+#endif
+
 } // end namespace FixedTagPrivate
 
 /**
@@ -185,7 +198,9 @@ class COREUOBJECT_API FAssetTagValueRef
 
 	class FFixedTagValue
 	{
-		static constexpr uint64 FixedMask = uint64(1) << 63;
+		static constexpr uint64 FixedMask = uint64(1) << FixedTagPrivate::KernelAddressBit;
+		static_assert(FixedTagPrivate::FMapHandle::StoreIndexBits <= (FixedTagPrivate::KernelAddressBit - 32), 
+			"Too few bits remain for the StoreIndex. Consider using other high bits but note that ARM64 use the top byte for HWASAN & MTE.)");
 
 		uint64 Bits;
 
@@ -266,18 +281,18 @@ private:
 
 	friend class FixedTagPrivate::FStoreBuilder;
 	friend FAssetRegistryState;
+
+	friend inline bool operator==(FAssetTagValueRef A, FStringView B) { return  A.Equals(B); }
+	friend inline bool operator!=(FAssetTagValueRef A, FStringView B) { return !A.Equals(B); }
+	friend inline bool operator==(FStringView A, FAssetTagValueRef B) { return  B.Equals(A); }
+	friend inline bool operator!=(FStringView A, FAssetTagValueRef B) { return !B.Equals(A); }
+
+	// These overloads can be removed when the deprecated implicit operator FString is removed
+	friend inline bool operator==(FAssetTagValueRef A, const FString& B) { return  A.Equals(B); }
+	friend inline bool operator!=(FAssetTagValueRef A, const FString& B) { return !A.Equals(B); }
+	friend inline bool operator==(const FString& A, FAssetTagValueRef B) { return  B.Equals(A); }
+	friend inline bool operator!=(const FString& A, FAssetTagValueRef B) { return !B.Equals(A); }
 };
-
-inline bool operator==(FAssetTagValueRef A, FStringView B) { return  A.Equals(B); }
-inline bool operator!=(FAssetTagValueRef A, FStringView B) { return !A.Equals(B); }
-inline bool operator==(FStringView A, FAssetTagValueRef B) { return  B.Equals(A); }
-inline bool operator!=(FStringView A, FAssetTagValueRef B) { return !B.Equals(A); }
-
-// These overloads can be removed when the deprecated implicit operator FString is removed
-inline bool operator==(FAssetTagValueRef A, const FString& B) { return  A.Equals(B); }
-inline bool operator!=(FAssetTagValueRef A, const FString& B) { return !A.Equals(B); }
-inline bool operator==(const FString& A, FAssetTagValueRef B) { return  B.Equals(A); }
-inline bool operator!=(const FString& A, FAssetTagValueRef B) { return !B.Equals(A); }
 
 using FAssetDataTagMapBase = TSortedMap<FName, FString, FDefaultAllocator, FNameFastLess>;
 
@@ -499,9 +514,9 @@ public:
 		SIZE_T GetLooseSize() const { return LooseBytes; }
 		SIZE_T GetFixedSize() const;		
 	};
-};
 
-inline bool operator==(const FAssetDataTagMap& A, const FAssetDataTagMapSharedView& B)				{ return B == A; }
-inline bool operator!=(const FAssetDataTagMap& A, const FAssetDataTagMapSharedView& B)				{ return !(B == A); }
-inline bool operator!=(const FAssetDataTagMapSharedView& A, const FAssetDataTagMap& B)				{ return !(A == B); }
-inline bool operator!=(const FAssetDataTagMapSharedView& A, const FAssetDataTagMapSharedView& B)	{ return !(A == B); }
+	friend inline bool operator==(const FAssetDataTagMap& A, const FAssetDataTagMapSharedView& B)			{ return B == A; }
+	friend inline bool operator!=(const FAssetDataTagMap& A, const FAssetDataTagMapSharedView& B)			{ return !(B == A); }
+	friend inline bool operator!=(const FAssetDataTagMapSharedView& A, const FAssetDataTagMap& B)			{ return !(A == B); }
+	friend inline bool operator!=(const FAssetDataTagMapSharedView& A, const FAssetDataTagMapSharedView& B)	{ return !(A == B); }
+};

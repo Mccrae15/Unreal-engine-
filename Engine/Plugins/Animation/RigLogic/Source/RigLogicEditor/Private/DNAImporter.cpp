@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "DNAImporter.h"
+#include "AssetRegistry/AssetData.h"
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -14,9 +15,13 @@
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "DNAAssetImportWindow.h"
+#include "DesktopPlatformModule.h"
+#include "EditorDirectories.h"
 
 TSharedPtr<FDNAImporter> FDNAImporter::StaticInstance;
 TSharedPtr<FDNAImporter> FDNAImporter::StaticPreviewInstance;
+
+#define LOCTEXT_NAMESPACE "DNAAssetImport"
 
 FDNAAssetImportOptions* GetImportOptions(FDNAImporter * DNAImporter, UDNAAssetImportUI * ImportUI, bool bShowOptionDialog, bool bIsAutomated, const FString & FullPath, bool & OutOperationCanceled, const FString & InFilename)
 {
@@ -51,7 +56,10 @@ FDNAAssetImportOptions* GetImportOptions(FDNAImporter * DNAImporter, UDNAAssetIm
 			}
 		}
 
+		DNAImporter->SetDNAFileName(*FPaths::GetCleanFilename(FullPath));
+
 		//This option must always be the same value has the skeletalmesh one.
+		
 
 		//////////////////////////////////////////////////////////////////////////
 		// Set the information section data
@@ -59,8 +67,7 @@ FDNAAssetImportOptions* GetImportOptions(FDNAImporter * DNAImporter, UDNAAssetIm
 		//Make sure the file is open to be able to read the header before showing the options
 		//If the file is already open it will simply return false.
 		// do analytics on getting DNA data
-		ImportUI->FileVersion = DNAImporter->GetDNAFileVersion();
-		ImportUI->FileCreator = DNAImporter->GetDNAFileCreator();
+		ImportUI->FileName = DNAImporter->GetDNAFileName();
 
 		TSharedPtr<SWindow> ParentWindow;
 
@@ -191,3 +198,45 @@ void FDNAImporter::PartialCleanUp()
 	// reset
 	CurPhase = NOTSTARTED;
 }
+
+FString FDNAImporter::PromptForDNAImportFile()
+{
+	const FText PromptTitle = LOCTEXT("DNAPromptTitle", "Choose a file to import for DNA");
+
+	FString ChosenFilename("");
+
+	FString ExtensionStr;
+	ExtensionStr += TEXT("All model files|*.dna|");
+	ExtensionStr += TEXT("DNA files|*.dna|");
+	ExtensionStr += TEXT("All files|*.*");
+
+	// First, display the file open dialog for selecting the file.
+	TArray<FString> OpenFilenames;
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	bool bOpen = false;
+	if (DesktopPlatform)
+	{
+		bOpen = DesktopPlatform->OpenFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			PromptTitle.ToString(),
+			*FEditorDirectories::Get().GetLastDirectory(ELastDirectory::UNR),
+			TEXT(""),
+			*ExtensionStr,
+			EFileDialogFlags::None,
+			OpenFilenames
+		);
+	}
+
+	if (bOpen)
+	{
+		if (OpenFilenames.Num() == 1)
+		{
+			ChosenFilename = OpenFilenames[0];
+			FEditorDirectories::Get().SetLastDirectory(ELastDirectory::UNR, FPaths::GetPath(ChosenFilename));
+		}
+	}
+
+	return ChosenFilename;
+}
+
+#undef LOCTEXT_NAMESPACE

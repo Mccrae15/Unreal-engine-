@@ -2,7 +2,10 @@
 
 #include "VirtualTexturePhysicalSpace.h"
 
+#include "BatchedElements.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Engine/Canvas.h"
+#include "Engine/Engine.h"
 #include "RenderTargetPool.h"
 #include "VisualizeTexture.h"
 #include "VT/VirtualTexturePoolConfig.h"
@@ -72,6 +75,13 @@ FVirtualTexturePhysicalSpace::FVirtualTexturePhysicalSpace(const FVTPhysicalSpac
 	for (uint32 Layer = 0u; Layer < Description.NumLayers; ++Layer)
 	{
 		FormatString += GPixelFormats[Description.Format[Layer]].Name;
+		
+		// sRGB flag is only relevant on platforms that do not support texture views
+		if (!GRHISupportsTextureViews)
+		{
+			FormatString += (Description.bHasLayerSrgbView[Layer] ? TEXT(" (sRGB)") : TEXT(" (Linear)"));
+		}
+
 		if (Layer + 1u < Description.NumLayers)
 		{
 			FormatString += TEXT(", ");
@@ -118,11 +128,11 @@ void FVirtualTexturePhysicalSpace::InitRHI()
 		const EPixelFormat FormatUAV = GetUnorderedAccessViewFormat(FormatSRV);
 		const bool bCreateAliasedUAV = (FormatUAV != PF_Unknown) && (FormatUAV != FormatSRV);
 		
-		// Not all mobile RHIs support sRGB views/aliasing, use only linear targets on mobile.
-		const bool bFeatureLevelSupportsSRGB = GetFeatureLevel() > ERHIFeatureLevel::ES3_1;
+		// Not all RHIs support sRGB views/aliasing. On those platforms create texture in an expected storage format 
+		const bool bDefaultToSRGB = Description.bHasLayerSrgbView[Layer];
 		// Not all formats support sRGB.
 		const bool bFormatSupportsSRGB = FormatSRV != EPixelFormat::PF_R5G6B5_UNORM && FormatSRV != EPixelFormat::PF_B5G5R5A1_UNORM && FormatSRV != EPixelFormat::PF_G16;
-		ETextureCreateFlags VT_SRGB = (bFeatureLevelSupportsSRGB && bFormatSupportsSRGB) ? TexCreate_SRGB : TexCreate_None;
+		ETextureCreateFlags VT_SRGB = (bDefaultToSRGB && bFormatSupportsSRGB) ? TexCreate_SRGB : TexCreate_None;
 
 		// Allocate physical texture from the render target pool
 		const uint32 TextureSize = GetTextureSize();
@@ -161,6 +171,18 @@ void FVirtualTexturePhysicalSpace::ReleaseRHI()
 		GRenderTargetPool.FreeUnusedResource(PooledRenderTarget[Layer]);
 		TextureSRV[Layer].SafeRelease();
 		TextureSRV_SRGB[Layer].SafeRelease();
+	}
+}
+
+void FVirtualTexturePhysicalSpace::FinalizeTextures(FRDGBuilder& GraphBuilder)
+{
+	for (int32 Layer = 0; Layer < Description.NumLayers; ++Layer)
+	{
+		// It's only necessary to enable external access mode on textures modified by RDG this frame.
+		if (FRDGTexture* Texture = GraphBuilder.FindExternalTexture(PooledRenderTarget[Layer]))
+		{
+			GraphBuilder.UseExternalAccessMode(Texture, ERHIAccess::SRVMask);
+		}
 	}
 }
 

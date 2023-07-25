@@ -23,6 +23,7 @@ class FLightSceneProxy;
 class FPrimitiveDrawInterface;
 class FPrimitiveSceneInfo;
 class FStaticPrimitiveDrawInterface;
+class HHitProxy;
 class UPrimitiveComponent;
 class URuntimeVirtualTexture;
 class UTexture2D;
@@ -30,6 +31,8 @@ enum class ERuntimeVirtualTextureMaterialType : uint8;
 struct FMeshBatch;
 class FColorVertexBuffer;
 struct FInstanceUpdateCmdBuffer;
+class FRayTracingGeometry;
+class FVertexFactory;
 
 namespace Nanite
 {
@@ -129,7 +132,7 @@ public:
 };
 
 extern bool IsOptimizedWPO();
-
+extern bool IsAllowingApproximateOcclusionQueries();
 extern bool CacheShadowDepthsFromPrimitivesUsingWPO();
 
 enum class ERayTracingPrimitiveFlags : uint8
@@ -377,6 +380,8 @@ public:
 
 	virtual bool HeightfieldHasPendingStreaming() const { return false; }
 
+	virtual bool StaticMeshHasPendingStreaming() const { return false; }
+
 	virtual void GetHeightfieldRepresentation(UTexture2D*& OutHeightmapTexture, UTexture2D*& OutDiffuseColorTexture, UTexture2D*& OutVisibilityTexture, FHeightfieldComponentDescription& OutDescription) const
 	{
 		OutHeightmapTexture = nullptr;
@@ -419,7 +424,9 @@ public:
 		{
 			check(InstanceLocalBounds.Num() <= 1);
 			InstanceLocalBounds.SetNumUninitialized(1);
-			InstanceLocalBounds[0] = LocalBounds;
+
+			// NOTE: The proxy's local bounds have already been padded for WPO
+			SetInstanceLocalBounds(0, GetLocalBounds(), false);
 		}
 	}
 
@@ -555,8 +562,7 @@ public:
 	inline bool IsLocalToWorldDeterminantNegative() const { return bIsLocalToWorldDeterminantNegative; }
 	inline const FBoxSphereBounds& GetBounds() const { return Bounds; }
 	inline const FBoxSphereBounds& GetLocalBounds() const { return LocalBounds; }
-	inline float GetBoundsScale() const { return BoundsScale; }
-	virtual void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const { OutBounds = LocalBounds; }
+	ENGINE_API virtual void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const;
 	inline FName GetOwnerName() const { return OwnerName; }
 	inline FName GetResourceName() const { return ResourceName; }
 	inline FName GetLevelName() const { return LevelName; }
@@ -609,6 +615,7 @@ public:
 	inline bool IsVisibleInReflectionCaptures() const { return bVisibleInReflectionCaptures; }
 	inline bool IsVisibleInRealTimeSkyCaptures() const { return bVisibleInRealTimeSkyCaptures; }
 	inline bool IsVisibleInRayTracing() const { return bVisibleInRayTracing; }
+	inline bool IsVisibleInLumenScene() const { return bVisibleInLumenScene; }
 	inline bool ShouldRenderInMainPass() const { return bRenderInMainPass; }
 	inline bool ShouldRenderInDepthPass() const { return bRenderInMainPass || bRenderInDepthPass; }
 	inline bool IsCollisionEnabled() const { return bCollisionEnabled; }
@@ -644,6 +651,7 @@ public:
 	inline bool DoesVFRequirePrimitiveUniformBuffer() const { return bVFRequiresPrimitiveUniformBuffer; }
 	inline bool ShouldUseAsOccluder() const { return bUseAsOccluder; }
 	inline bool AllowApproximateOcclusion() const { return bAllowApproximateOcclusion; }
+	inline bool Holdout() const { return bHoldout; }
 
 	inline FRHIUniformBuffer* GetUniformBuffer() const
 	{
@@ -701,7 +709,6 @@ public:
 	inline bool WillEverBeLit() const { return bWillEverBeLit; }
 	inline bool HasValidSettingsForStaticLighting() const { return bHasValidSettingsForStaticLighting; }
 	inline bool SupportsDistanceFieldRepresentation() const { return bSupportsDistanceFieldRepresentation; }
-	inline bool SupportsMeshCardRepresentation() const { return bSupportsMeshCardRepresentation; }
 	inline bool SupportsHeightfieldRepresentation() const { return bSupportsHeightfieldRepresentation; }
 	inline bool SupportsInstanceDataBuffer() const { return bSupportsInstanceDataBuffer; }
 	inline bool SupportsSortedTriangles() const { return bSupportsSortedTriangles; }
@@ -724,6 +731,14 @@ public:
 
 	inline bool EvaluateWorldPositionOffset() const { return bEvaluateWorldPositionOffset; }
 	inline bool AnyMaterialHasWorldPositionOffset() const { return bAnyMaterialHasWorldPositionOffset; }
+	inline float GetMaxWorldPositionOffsetDisplacement() const
+	{
+		if (EvaluateWorldPositionOffset() && AnyMaterialHasWorldPositionOffset())
+		{
+			return MaxWPODisplacement;
+		}
+		return 0.0f;
+	}
 	
 	/** Returns true if this proxy can change transform so that we should cache previous transform for calculating velocity. */
 	inline bool HasDynamicTransform() const { return IsMovable() || bIsBeingMovedByEditor; }
@@ -770,6 +785,14 @@ public:
 	inline bool IsNaniteMesh() const
 	{
 		return bIsNaniteMesh;
+	}
+
+	/**
+	* Returns whether this proxy is a heterogeneous volume.
+	*/
+	inline bool IsHeterogeneousVolume() const
+	{
+		return bIsHeterogeneousVolume;
 	}
 
 	/**
@@ -844,12 +867,12 @@ public:
 		return false;
 	}
 
-	FORCEINLINE TConstArrayView<FPrimitiveInstance> GetInstanceSceneData() const
+	FORCEINLINE TConstArrayView<FInstanceSceneData> GetInstanceSceneData() const
 	{
 		return InstanceSceneData;
 	}
 
-	FORCEINLINE TConstArrayView<FPrimitiveInstanceDynamicData> GetInstanceDynamicData() const
+	FORCEINLINE TConstArrayView<FInstanceDynamicData> GetInstanceDynamicData() const
 	{
 		return InstanceDynamicData;
 	}
@@ -891,7 +914,10 @@ public:
 			// TODO: Should change local bounds to the optimized type and clean this up.
 			checkSlow(!bHasPerInstanceLocalBounds);
 			InstanceLocalBounds.SetNumUninitialized(1);
-			InstanceLocalBounds[0] = LocalBounds;
+
+			// NOTE: The proxy's local bounds have already been padded for WPO
+			SetInstanceLocalBounds(0, GetLocalBounds(), false);
+			
 			return InstanceLocalBounds[0];
 		}
 
@@ -914,6 +940,11 @@ public:
 		ResourceID = INDEX_NONE;
 		HierarchyOffset = INDEX_NONE;
 		ImposterIndex = INDEX_NONE;
+	}
+
+	virtual void GetNaniteMaterialMask(FUint32Vector2& OutMaterialMask) const
+	{
+		OutMaterialMask = FUint32Vector2(~uint32(0), ~uint32(0));
 	}
 
 	// Number of packed float4 values per instance
@@ -1030,6 +1061,9 @@ public:
 protected:
 	ENGINE_API void UpdateDefaultInstanceSceneData();
 
+	/** Updates bVisibleInLumen, which indicated whether a primitive should be tracked by Lumen scene. Checks if primitive can be ray traced and if it can by captured by surface cache. */
+	ENGINE_API void UpdateVisibleInLumenScene();
+
 	/** Returns true if a primitive can never be rendered outside of a runtime virtual texture. */
 	ENGINE_API bool IsVirtualTextureOnly() const { return bVirtualTextureMainPassDrawNever; }
 
@@ -1136,6 +1170,9 @@ private:
 
 protected:
 
+	/** Whether this component should be tracked by Lumen Scene. Turning this off will remove it from Lumen Scene and Lumen won't generate surface cache for it. */
+	uint8 bVisibleInLumenScene : 1;
+
 	/** Whether this component can skip redundant transform updates where applicable. */
 	uint8 bCanSkipRedundantTransformUpdates : 1;
 
@@ -1237,6 +1274,9 @@ protected:
 	/** Whether this proxy is a Nanite mesh. */
 	uint8 bIsNaniteMesh : 1;
 
+	/** Whether this proxy is a heterogeneous volume. */
+	uint8 bIsHeterogeneousVolume : 1;
+
 	/** Whether the primitive is a HierarchicalInstancedStaticMesh. */
 	uint8 bIsHierarchicalInstancedStaticMesh : 1;
 
@@ -1270,9 +1310,6 @@ protected:
 	/** Whether the primitive type supports a distance field representation.  Does not mean the primitive has a valid representation. */
 	uint8 bSupportsDistanceFieldRepresentation : 1;
 
-	/** Whether the primitive type supports a mesh card representation. */
-	uint8 bSupportsMeshCardRepresentation : 1;
-
 	/** Whether the primitive implements GetHeightfieldRepresentation() */
 	uint8 bSupportsHeightfieldRepresentation : 1;
 
@@ -1297,13 +1334,19 @@ protected:
 	uint8 bHasPerInstanceEditorData : 1;
 #endif
 
+	/** If this is True, this primitive doesn't need exact occlusion info. */
+	uint8 bAllowApproximateOcclusion : 1;
+
+	/**
+	 * If this is True, this primitive should render black with an alpha of 0, but all secondary effects (shadows, refletions, indirect lighting)
+	 * should behave as usual. This feature is currently only implemented in the Path Tracer.
+	 */
+	uint8 bHoldout : 1;
+
 private:
 
 	/** If this is True, this primitive will be used to occlusion cull other primitives. */
 	uint8 bUseAsOccluder:1;
-
-	/** If this is True, this primitive doesn't need exact occlusion info. */
-	uint8 bAllowApproximateOcclusion : 1;
 
 	/** If this is True, this primitive can be selected in the editor. */
 	uint8 bSelectable : 1;
@@ -1345,9 +1388,9 @@ private:
 	uint8 RayTracingGroupCullingPriority;
 
 protected:
-	TArray<FPrimitiveInstance, TInlineAllocator<1>> InstanceSceneData;
+	TArray<FInstanceSceneData, TInlineAllocator<1>> InstanceSceneData;
 	TArray<FRenderBounds, TInlineAllocator<1>> InstanceLocalBounds;
-	TArray<FPrimitiveInstanceDynamicData> InstanceDynamicData;
+	TArray<FInstanceDynamicData> InstanceDynamicData;
 	TArray<float> InstanceCustomData;
 	TArray<float> InstanceRandomID;
 	TArray<FVector4f> InstanceLightShadowUVBias;
@@ -1376,6 +1419,12 @@ protected:
 	float DynamicIndirectShadowMinVisibility;
 
 	float DistanceFieldSelfShadowBias;
+
+	/**
+	 * Maximum distance of World Position Offset used by materials. Values > 0.0 will cause the WPO to be clamped and the primitive's
+	 * bounds to be padded to account for it. Value of zero will not clamp the WPO of materials nor pad bounds (legacy behavior)
+	 */
+	float MaxWPODisplacement;
 
 	/** Array of runtime virtual textures that this proxy should render to. */
 	TArray<URuntimeVirtualTexture*> RuntimeVirtualTextures;
@@ -1438,9 +1487,6 @@ private:
 	/** The primitive's minimum cull distance. */
 	float MinDrawDistance;
 
-	/** The primitive's bounds scale. */
-	float BoundsScale;
-
 	/** The primitive's uniform buffer. */
 	TUniformBufferRef<FPrimitiveUniformShaderParameters> UniformBuffer;
 
@@ -1492,6 +1538,15 @@ protected:
 
 	/** Updates hover state for the primitive proxy. This is called in the rendering thread by SetHovered_GameThread. */
 	void SetHovered_RenderThread(const bool bInHovered);
+
+	/** Allows child implementations to do render-thread work when bEvaluateWorldPositionOffset changes */
+	ENGINE_API virtual void OnEvaluateWorldPositionOffsetChanged_RenderThread() {}
+
+	/**
+	 * Sets the instance local bounds for the specified instance index, and optionally will pad the bounds extents to
+	 * accomodate Max World Position Offset Distance.
+	 */
+	ENGINE_API void SetInstanceLocalBounds(uint32 InstanceIndex, const FRenderBounds& Bounds, bool bPadForWPO = true);
 };
 
 /**

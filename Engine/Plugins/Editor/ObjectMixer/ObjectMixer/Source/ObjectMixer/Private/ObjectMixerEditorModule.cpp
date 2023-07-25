@@ -3,25 +3,26 @@
 #include "ObjectMixerEditorModule.h"
 
 #include "ObjectMixerEditorLog.h"
+#include "Engine/Level.h"
 #include "ObjectMixerEditorSettings.h"
+#include "Misc/CoreDelegates.h"
+#include "ObjectMixerEditorSerializedData.h"
 #include "ObjectMixerEditorStyle.h"
-#include "Views/MainPanel/ObjectMixerEditorMainPanel.h"
+#include "Views/List/ObjectMixerEditorList.h"
+#include "Views/Widgets/ObjectMixerEditorListMenuContext.h"
 
-#include "Editor.h"
-#include "Framework/Docking/TabManager.h"
 #include "ISettingsModule.h"
 #include "LevelEditor.h"
-#include "ObjectMixerEditorSerializedData.h"
 #include "Selection.h"
 #include "Misc/TransactionObjectEvent.h"
-#include "Modules/ModuleManager.h"
 #include "ToolMenus.h"
+#include "Widgets/Docking/SDockTab.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 
 const FName FObjectMixerEditorModule::BaseObjectMixerModuleName("ObjectMixerEditor");
 
-#define LOCTEXT_NAMESPACE "FObjectMixerEditorModule"
+#define LOCTEXT_NAMESPACE "ObjectMixerEditor"
 
 IMPLEMENT_MODULE(FObjectMixerEditorModule, ObjectMixerEditor)
 
@@ -44,8 +45,14 @@ void FObjectMixerEditorModule::ShutdownModule()
 	Teardown();
 }
 
-void FObjectMixerEditorModule::Initialize()
+UWorld* FObjectMixerEditorModule::GetWorld()
 {
+	check(GEditor);
+	return GEditor->GetEditorWorldContext().World();
+}
+
+void FObjectMixerEditorModule::Initialize()
+{	
 	BindDelegates();
 	
 	SetupMenuItemVariables();
@@ -92,7 +99,7 @@ void FObjectMixerEditorModule::Teardown()
 	}
 	DelegateHandles.Empty();
 	
-	MainPanel.Reset();
+	ListModel.Reset();
 
 	UToolMenus::UnregisterOwner(this);
 	
@@ -111,42 +118,51 @@ void FObjectMixerEditorModule::OpenProjectSettings()
 		.ShowViewer("Editor", "Plugins", "Object Mixer");
 }
 
-FName FObjectMixerEditorModule::GetModuleName()
+FName FObjectMixerEditorModule::GetModuleName() const
 {
 	return "ObjectMixerEditor";
 }
 
-TSharedPtr<SWidget> FObjectMixerEditorModule::MakeObjectMixerDialog() const
+TSharedPtr<SWidget> FObjectMixerEditorModule::MakeObjectMixerDialog(
+	TSubclassOf<UObjectMixerObjectFilter> InDefaultFilterClass)
 {
-	if (MainPanel.IsValid())
+	if (!ListModel.IsValid())
 	{
-		return MainPanel->GetOrCreateWidget();
+		ListModel = MakeShared<FObjectMixerEditorList>(GetModuleName());
+		ListModel->Initialize();
 	}
 
-	return nullptr;
+	if (InDefaultFilterClass)
+	{
+		ListModel->SetDefaultFilterClass(InDefaultFilterClass);
+	}
+	
+	const TSharedPtr<SWidget> ObjectMixerDialog = ListModel->GetOrCreateWidget();
+
+	return ObjectMixerDialog;
 }
 
 void FObjectMixerEditorModule::RequestRebuildList() const
 {
-	if (MainPanel.IsValid())
+	if (ListModel.IsValid())
 	{
-		MainPanel->RequestRebuildList();
+		ListModel->RequestRebuildList();
 	}
 }
 
 void FObjectMixerEditorModule::RefreshList() const
 {
-	if (MainPanel.IsValid())
+	if (ListModel.IsValid())
 	{
-		MainPanel->RefreshList();
+		ListModel->RefreshList();
 	}
 }
 
-void FObjectMixerEditorModule::RequestSyncEditorSelectionToListSelection()
+void FObjectMixerEditorModule::OnRenameCommand()
 {
-	if (MainPanel.IsValid())
+	if (ListModel.IsValid())
 	{
-		MainPanel->RequestSyncEditorSelectionToListSelection();
+		ListModel->OnRenameCommand();
 	}
 }
 
@@ -249,33 +265,21 @@ void FObjectMixerEditorModule::UnregisterSettings() const
 
 TSharedRef<SDockTab> FObjectMixerEditorModule::SpawnTab(const FSpawnTabArgs& Args)
 {
-	 return SpawnMainPanelTab();
-}
-
-TSharedPtr<FWorkspaceItem> FObjectMixerEditorModule::GetWorkspaceGroup()
-{
-	return WorkspaceGroup;
-}
-
-TSharedRef<SDockTab> FObjectMixerEditorModule::SpawnMainPanelTab()
-{
-	MainPanel = MakeShared<FObjectMixerEditorMainPanel>(GetModuleName());
-	MainPanel->Init();
-	
 	const TSharedRef<SDockTab> DockTab =
 		SNew(SDockTab)
 		.Label(TabLabel)
 		.TabRole(ETabRole::NomadTab)
 	;
-	const TSharedPtr<SWidget> ObjectMixerDialog = MakeObjectMixerDialog();
-	DockTab->SetContent(ObjectMixerDialog ? ObjectMixerDialog.ToSharedRef() : SNullWidget::NullWidget);
 
-	if (DefaultFilterClass)
-	{
-		MainPanel->OnClassSelectionChanged(DefaultFilterClass);
-	}
+	const TSharedPtr<SWidget> ObjectMixerDialog = MakeObjectMixerDialog(DefaultFilterClass);
+	DockTab->SetContent(ObjectMixerDialog ? ObjectMixerDialog.ToSharedRef() : SNullWidget::NullWidget);
 			
 	return DockTab;
+}
+
+TSharedPtr<FWorkspaceItem> FObjectMixerEditorModule::GetWorkspaceGroup()
+{
+	return WorkspaceGroup;
 }
 
 void FObjectMixerEditorModule::BindDelegates()
@@ -318,16 +322,12 @@ void FObjectMixerEditorModule::BindDelegates()
 	{
 		RequestRebuildList();
 	}));
-	DelegateHandles.Add(GEditor->GetSelectedActors()->SelectionChangedEvent.AddLambda([this] (UObject*)
-	{
-		RequestSyncEditorSelectionToListSelection();
-	}));
-
+	
 	DelegateHandles.Add(FEditorDelegates::MapChange.AddLambda([this](uint32)
 	{
 		RequestRebuildList();
 	}));
-
+	
 	DelegateHandles.Add(FEditorDelegates::PostUndoRedo.AddLambda([this]()
 	{
 		RequestRebuildList();
@@ -335,20 +335,52 @@ void FObjectMixerEditorModule::BindDelegates()
 		// Because we can undo/redo collection adds and removes, we need to save the data after each
 		GetMutableDefault<UObjectMixerEditorSerializedData>()->SaveConfig();
 	}));
-
+	
 	DelegateHandles.Add(FCoreUObjectDelegates::OnObjectTransacted.AddLambda([this](UObject*, const FTransactionObjectEvent& Event)
-	{
-		if (Event.GetEventType() == ETransactionObjectEventType::Finalized && Event.HasPropertyChanges())
+	{		
+		if (Event.GetEventType() == ETransactionObjectEventType::Finalized)
 		{
-			RequestRebuildList();
+			if (Event.HasNameChange())
+			{
+				RequestRebuildList();
+			}
+			else if (const TSet<FName> PropertiesThatRequireRefresh = GetPropertiesThatRequireRefresh(); PropertiesThatRequireRefresh.Num() > 0)
+			{
+				const TSet<FName> ChangedPropertyNames = TSet<FName>(Event.GetChangedProperties());
+	
+				if (ChangedPropertyNames.Intersect(PropertiesThatRequireRefresh).Num() > 0)
+				{
+					RequestRebuildList();
+				}
+			}
 		}
 	}));
-
+	
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 	LevelEditorModule.OnComponentsEdited().AddLambda([this]()
 	{
 		RequestRebuildList();
 	});
+}
+
+TSet<FName> FObjectMixerEditorModule::GetPropertiesThatRequireRefresh() const
+{
+	TSet<FName> ReturnValue;
+
+	if (ListModel.IsValid())
+	{
+		for (const TObjectPtr<UObjectMixerObjectFilter> Instance : ListModel->GetObjectFilterInstances())
+		{
+			ReturnValue.Append(Instance->GetPropertiesThatRequireListRefresh());
+		}
+	}
+
+	return ReturnValue;
+}
+
+const TSubclassOf<UObjectMixerObjectFilter>& FObjectMixerEditorModule::GetDefaultFilterClass() const
+{
+	return DefaultFilterClass;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -9,8 +9,12 @@
 #include "OptimusDataDomain.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "SceneInterface.h"
+#include "ShaderCompilerCore.h"
 #include "SkeletalMeshDeformerHelpers.h"
 #include "SkeletalRenderPublic.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusDataInterfaceCloth)
 
 FString UOptimusClothDataInterface::GetDisplayName() const
 {
@@ -71,6 +75,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FClothDataInterfaceParameters, )
 	SHADER_PARAMETER(uint32, InputStreamStart)
 	SHADER_PARAMETER(uint32, NumInfluencesPerVertex)
 	SHADER_PARAMETER(float, ClothBlendWeight)
+	SHADER_PARAMETER(FVector3f, MeshScale)
 	SHADER_PARAMETER(FMatrix44f, ClothToLocal)
 	SHADER_PARAMETER_SRV(Buffer<float4>, ClothBuffer)
 	SHADER_PARAMETER_SRV(Buffer<float2>, ClothPositionsAndNormalsBuffer)
@@ -86,9 +91,16 @@ void UOptimusClothDataInterface::GetPermutations(FComputeKernelPermutationVector
 	OutPermutationVector.AddPermutation(TEXT("ENABLE_DEFORMER_CLOTH"), 2);
 }
 
+TCHAR const* UOptimusClothDataInterface::TemplateFilePath = TEXT("/Plugin/Optimus/Private/DataInterfaceCloth.ush");
+
+TCHAR const* UOptimusClothDataInterface::GetShaderVirtualPath() const
+{
+	return TemplateFilePath;
+}
+
 void UOptimusClothDataInterface::GetShaderHash(FString& InOutKey) const
 {
-	GetShaderFileHash(TEXT("/Plugin/Optimus/Private/DataInterfaceCloth.ush"), EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
+	GetShaderFileHash(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
 }
 
 void UOptimusClothDataInterface::GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const
@@ -99,7 +111,7 @@ void UOptimusClothDataInterface::GetHLSL(FString& OutHLSL, FString const& InData
 	};
 
 	FString TemplateFile;
-	LoadShaderSourceFile(TEXT("/Plugin/Optimus/Private/DataInterfaceCloth.ush"), EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
+	LoadShaderSourceFile(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
 	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
 }
 
@@ -111,13 +123,6 @@ UComputeDataProvider* UOptimusClothDataInterface::CreateDataProvider(TObjectPtr<
 }
 
 
-bool UOptimusClothDataProvider::IsValid() const
-{
-	return
-		SkinnedMesh != nullptr &&
-		SkinnedMesh->MeshObject != nullptr;
-}
-
 FComputeDataProviderRenderProxy* UOptimusClothDataProvider::GetRenderProxy()
 {
 	return new FOptimusClothDataProviderProxy(SkinnedMesh);
@@ -126,12 +131,35 @@ FComputeDataProviderRenderProxy* UOptimusClothDataProvider::GetRenderProxy()
 
 FOptimusClothDataProviderProxy::FOptimusClothDataProviderProxy(USkinnedMeshComponent* SkinnedMeshComponent)
 {
-	SkeletalMeshObject = SkinnedMeshComponent->MeshObject;
+	if (SkinnedMeshComponent != nullptr && SkinnedMeshComponent->GetScene() != nullptr)
+	{
+		SkeletalMeshObject = SkinnedMeshComponent == nullptr ? nullptr : SkinnedMeshComponent->MeshObject;
+		FrameNumber = SkinnedMeshComponent == nullptr ? 0 : SkinnedMeshComponent->GetScene()->GetFrameNumber() + 1; // +1 matches the logic for FrameNumberToPrepare in FSkeletalMeshObjectGPUSkin::Update()
 
-	USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(SkinnedMeshComponent);
-	ClothBlendWeight = SkeletalMeshComponent ? SkeletalMeshComponent->ClothBlendWeight : 1.f;
+		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(SkinnedMeshComponent))
+		{
+			ClothBlendWeight = SkeletalMeshComponent->ClothBlendWeight;
+			MeshScale = (FVector3f)SkeletalMeshComponent->GetComponentScale();
+		}
+	}
+}
 
-	FrameNumber = SkinnedMeshComponent->GetScene()->GetFrameNumber() + 1; // +1 matches the logic for FrameNumberToPrepare in FSkeletalMeshObjectGPUSkin::Update()
+bool FOptimusClothDataProviderProxy::IsValid(FValidationData const& InValidationData) const
+{
+	if (InValidationData.ParameterStructSize != sizeof(FParameters))
+	{
+		return false;
+	}
+	if (SkeletalMeshObject == nullptr)
+	{
+		return false;
+	}
+	if (SkeletalMeshObject->GetSkeletalMeshRenderData().LODRenderData[SkeletalMeshObject->GetLOD()].RenderSections.Num() != InValidationData.NumInvocations)
+	{
+		return false;
+	}
+
+	return true;
 }
 
 struct FClothDataInterfacePermutationIds
@@ -148,26 +176,33 @@ struct FClothDataInterfacePermutationIds
 	}
 };
 
-void FOptimusClothDataProviderProxy::GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData)
+void FOptimusClothDataProviderProxy::GatherPermutations(FPermutationData& InOutPermutationData) const
 {
-	if (!ensure(InDispatchSetup.ParameterStructSizeForValidation == sizeof(FClothDataInterfaceParameters)))
-	{
-		return;
-	}
-
 	const int32 LodIndex = SkeletalMeshObject->GetLOD();
 	FSkeletalMeshRenderData const& SkeletalMeshRenderData = SkeletalMeshObject->GetSkeletalMeshRenderData();
 	FSkeletalMeshLODRenderData const* LodRenderData = &SkeletalMeshRenderData.LODRenderData[LodIndex];
-	if (!ensure(LodRenderData->RenderSections.Num() == InDispatchSetup.NumInvocations))
-	{
-		return;
-	}
 
-	FClothDataInterfacePermutationIds PermutationIds(InDispatchSetup.PermutationVector);
+	FClothDataInterfacePermutationIds PermutationIds(InOutPermutationData.PermutationVector);
+	for (int32 InvocationIndex = 0; InvocationIndex < InOutPermutationData.NumInvocations; ++InvocationIndex)
+	{
+		const bool bPreviousFrame = false;
+		FSkeletalMeshDeformerHelpers::FClothBuffers ClothBuffers = FSkeletalMeshDeformerHelpers::GetClothBuffersForReading(SkeletalMeshObject, LodIndex, InvocationIndex, FrameNumber, bPreviousFrame);
+		const bool bValidCloth = (ClothBuffers.ClothInfluenceBuffer != nullptr) && (ClothBuffers.ClothSimulatedPositionAndNormalBuffer != nullptr);
+
+		InOutPermutationData.PermutationIds[InvocationIndex] |= (bValidCloth ? PermutationIds.EnableDeformerCloth : 0);
+	}
+}
+
+void FOptimusClothDataProviderProxy::GatherDispatchData(FDispatchData const& InDispatchData)
+{
+	const int32 LodIndex = SkeletalMeshObject->GetLOD();
+	FSkeletalMeshRenderData const& SkeletalMeshRenderData = SkeletalMeshObject->GetSkeletalMeshRenderData();
+	FSkeletalMeshLODRenderData const* LodRenderData = &SkeletalMeshRenderData.LODRenderData[LodIndex];
 
 	FRHIShaderResourceView* NullSRVBinding = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI.GetReference();
 
-	for (int32 InvocationIndex = 0; InvocationIndex < InDispatchSetup.NumInvocations; ++InvocationIndex)
+	const TStridedView<FParameters> ParameterArray = MakeStridedParameterView<FParameters>(InDispatchData);
+	for (int32 InvocationIndex = 0; InvocationIndex < ParameterArray.Num(); ++InvocationIndex)
 	{
 		FSkelMeshRenderSection const& RenderSection = LodRenderData->RenderSections[InvocationIndex];
 
@@ -179,15 +214,14 @@ void FOptimusClothDataProviderProxy::GatherDispatchData(FDispatchSetup const& In
 		FSkeletalMeshDeformerHelpers::FClothBuffers ClothBuffers = FSkeletalMeshDeformerHelpers::GetClothBuffersForReading(SkeletalMeshObject, LodIndex, InvocationIndex, FrameNumber, bPreviousFrame);
 		const bool bValidCloth = (ClothBuffers.ClothInfluenceBuffer != nullptr) && (ClothBuffers.ClothSimulatedPositionAndNormalBuffer != nullptr);
 
-		FClothDataInterfaceParameters* Parameters = (FClothDataInterfaceParameters*)(InOutDispatchData.ParameterBuffer + InDispatchSetup.ParameterBufferOffset + InDispatchSetup.ParameterBufferStride * InvocationIndex);
-		Parameters->NumVertices = RenderSection.NumVertices;
-		Parameters->InputStreamStart = ClothBuffers.ClothInfluenceBufferOffset;
-		Parameters->ClothBlendWeight = bValidCloth ? ClothBlendWeight : 0.f;
-		Parameters->NumInfluencesPerVertex = bValidCloth ? NumClothInfluencesPerVertex : 0;
-		Parameters->ClothToLocal = ClothBuffers.ClothToLocal;
-		Parameters->ClothBuffer = bValidCloth ? ClothBuffers.ClothInfluenceBuffer : NullSRVBinding;
-		Parameters->ClothPositionsAndNormalsBuffer = bValidCloth ? ClothBuffers.ClothSimulatedPositionAndNormalBuffer : NullSRVBinding;
-
-		InOutDispatchData.PermutationId[InvocationIndex] |= (bValidCloth ? PermutationIds.EnableDeformerCloth : 0);
+		FParameters& Parameters = ParameterArray[InvocationIndex];
+		Parameters.NumVertices = RenderSection.NumVertices;
+		Parameters.InputStreamStart = ClothBuffers.ClothInfluenceBufferOffset;
+		Parameters.ClothBlendWeight = bValidCloth ? ClothBlendWeight : 0.f;
+		Parameters.MeshScale = bValidCloth ? MeshScale : FVector3f::OneVector;
+		Parameters.NumInfluencesPerVertex = bValidCloth ? NumClothInfluencesPerVertex : 0;
+		Parameters.ClothToLocal = ClothBuffers.ClothToLocal;
+		Parameters.ClothBuffer = bValidCloth ? ClothBuffers.ClothInfluenceBuffer : NullSRVBinding;
+		Parameters.ClothPositionsAndNormalsBuffer = bValidCloth ? ClothBuffers.ClothSimulatedPositionAndNormalBuffer : NullSRVBinding;
 	}
 }

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "AssetDefinitionRegistry.h"
 #include "AssetRegistry/ARFilter.h"
 #include "AssetToolsModule.h"
 #include "AssetTypeCategories.h"
@@ -50,6 +51,7 @@
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UnrealNames.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Misc/AssetFilterData.h"
 
 #include "SAssetFilterBar.generated.h"
 
@@ -519,6 +521,11 @@ protected:
 			return CustomClassFilter;
 		}
 
+		void SetCustomClassFilterData(const TSharedRef<FCustomClassFilterData>& InCustomClassFilterData)
+		{
+			CustomClassFilter = InCustomClassFilterData;
+		}
+
 		/** Returns the display name for this filter */
 		virtual FText GetFilterDisplayName() const override
 		{
@@ -803,83 +810,82 @@ protected:
 
 		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
 
-		// Add the Basic category
-		TSharedPtr<FFilterCategory> BasicCategory = MakeShareable(new FFilterCategory(LOCTEXT("BasicFilter", "Common"), LOCTEXT("BasicFilterTooltip", "Filter by Common assets.")));
-		AssetFilterCategories.Add(EAssetTypeCategories::Basic, BasicCategory);
-
-		// We expand the basic category by default if we are creating it
-		CategoryToExpand = BasicCategory;
-		
-		// Add the advanced categories
-		TArray<FAdvancedAssetCategory> AdvancedAssetCategories;
-		AssetToolsModule.Get().GetAllAdvancedAssetCategories(/*out*/ AdvancedAssetCategories);
-
-		for (const FAdvancedAssetCategory& AdvancedAssetCategory : AdvancedAssetCategories)
 		{
-			const FText Tooltip = FText::Format(LOCTEXT("WildcardFilterTooltip", "Filter by {0} Assets."), AdvancedAssetCategory.CategoryName);
-			AssetFilterCategories.Add(AdvancedAssetCategory.CategoryType, MakeShareable(new FFilterCategory(AdvancedAssetCategory.CategoryName, Tooltip)));
+			// Add the Basic category
+			TSharedPtr<FFilterCategory> BasicCategory = MakeShareable(new FFilterCategory(LOCTEXT("BasicFilter", "Common"), LOCTEXT("BasicFilterTooltip", "Filter by Common assets.")));
+			AssetFilterCategories.Add(EAssetCategoryPaths::Basic.GetCategory(), BasicCategory);
+
+			// We expand the basic category by default if we are creating it
+			CategoryToExpand = BasicCategory;
 		}
 
-		TArray<TWeakPtr<IAssetTypeActions>> AssetTypeActionsList;
-		
-		// Get the browser type maps
-		AssetToolsModule.Get().GetAssetTypeActionsList(AssetTypeActionsList);
-		
-		// Sort the list
-		struct FCompareIAssetTypeActions
 		{
-			FORCEINLINE bool operator()( const TWeakPtr<IAssetTypeActions>& A, const TWeakPtr<IAssetTypeActions>& B ) const
-			{
-				return A.Pin()->GetName().CompareTo( B.Pin()->GetName() ) == -1;
-			}
-		};
-		AssetTypeActionsList.Sort( FCompareIAssetTypeActions() );
+			TArray<TObjectPtr<UAssetDefinition>> AssetDefinitions = UAssetDefinitionRegistry::Get()->GetAllAssetDefinitions();
 
-		const TSharedRef<FPathPermissionList>& AssetClassPermissionList = AssetToolsModule.Get().GetAssetClassPathPermissionList(AssetClassAction);
+			const TSharedRef<FPathPermissionList>& AssetClassPermissionList = AssetToolsModule.Get().GetAssetClassPathPermissionList(AssetClassAction);
 
-		// For every asset type, convert it to an FCustomClassFilterData and add it to the list
-		for (int32 ClassIdx = 0; ClassIdx < AssetTypeActionsList.Num(); ++ClassIdx)
-		{
-			const TWeakPtr<IAssetTypeActions>& WeakTypeActions = AssetTypeActionsList[ClassIdx];
-			if ( WeakTypeActions.IsValid() )
+			// For every asset type, convert it to an FCustomClassFilterData and add it to the list
+			for (UAssetDefinition* AssetDefinition : AssetDefinitions)
 			{
-				TSharedPtr<IAssetTypeActions> TypeActions = WeakTypeActions.Pin();
-				if ( ensure(TypeActions.IsValid()) && TypeActions->CanFilter() )
+				TSoftClassPtr<UObject> AssetClass = AssetDefinition->GetAssetClass();
+				if ((!AssetClass.IsNull() && AssetClassPermissionList->PassesFilter(AssetClass.ToString())))
 				{
-					UClass* SupportedClass = TypeActions->GetSupportedClass();
-					if ((!SupportedClass || AssetClassPermissionList->PassesFilter(SupportedClass->GetPathName())))
+					const TSharedRef<FAssetFilterDataCache> FilterCache = AssetDefinition->GetFilters();
+				
+					for (const FAssetFilterData& FilterData : FilterCache->Filters)
 					{
+						ensureMsgf(FilterData.FilterCategories.Num() > 0, TEXT("%s is missing Filter Categories, without any filter categories we can't display this filter."), *FilterData.Name);
+					
 						// Convert the AssetTypeAction to an FCustomClassFilterData and add it to our list
-						TSharedRef<FCustomClassFilterData> CustomClassFilterData = MakeShared<FCustomClassFilterData>(TypeActions);
+						TSharedRef<FCustomClassFilterData> CustomClassFilterData = MakeShared<FCustomClassFilterData>(AssetDefinition, FilterData);
+
+						for (const FAssetCategoryPath& CategoryPath : FilterData.FilterCategories)
+						{
+							TSharedPtr<FFilterCategory> FilterCategory = AssetFilterCategories.FindRef(CategoryPath.GetCategory());
+							if (!FilterCategory.IsValid())
+							{
+								const FText Tooltip = FText::Format(LOCTEXT("WildcardFilterTooltip", "Filter by {0} Assets."), CategoryPath.GetCategoryText());
+								FilterCategory = MakeShared<FFilterCategory>(CategoryPath.GetCategoryText(), Tooltip);
+								AssetFilterCategories.Add(CategoryPath.GetCategory(), FilterCategory);
+							}
+
+							CustomClassFilterData->AddCategory(FilterCategory);
+						}
+						
 						CustomClassFilters.Add(CustomClassFilterData);
 					}
 				}
 			}
 		}
+
+		// Update/remove any asset filters that already exist and use AssetTypeActions
+		TArray<TSharedRef<SAssetFilter>> AssetFiltersToRemove;
 		
-		// Do a second pass through all the CustomClassFilters with AssetTypeActions to update their categories
-		UpdateAssetTypeActionCategories();
-
-	}
-
-	void UpdateAssetTypeActionCategories()
-	{
-		for(const TSharedRef<FCustomClassFilterData> &CustomClassFilter : CustomClassFilters)
+		for (TSharedRef<SAssetFilter>& AssetFilter : AssetFilters)
 		{
-			for (auto MenuIt = AssetFilterCategories.CreateIterator(); MenuIt; ++MenuIt)
+			// Try and find the FCustomClassFilterData for the current filter using the new list we just created in CustomClassFilters
+			TSharedRef<FCustomClassFilterData>* FoundCustomClassFilterData = CustomClassFilters.FindByPredicate([AssetFilter](const TSharedRef<FCustomClassFilterData>& CustomClassFilterData)
 			{
-				if(TSharedPtr<IAssetTypeActions> AssetTypeActions = CustomClassFilter->GetAssetTypeActions())
-				{
-					if(MenuIt.Key() & AssetTypeActions->GetCategories())
-					{
-						CustomClassFilter->AddCategory(MenuIt.Value());
-					}
-				}
-				
-			}
-		}	
-	}
+				return CustomClassFilterData->GetFilterName() == AssetFilter->GetCustomClassFilterData()->GetFilterName();
+			});
 
+			// If it exists, update the filter to let it know
+			if (FoundCustomClassFilterData)
+			{
+				AssetFilter->SetCustomClassFilterData(*FoundCustomClassFilterData);
+			}
+			// Otherwise this filter had an AssetTypeAction that doesn't pass the new permission list, remove it
+			else
+			{
+				AssetFiltersToRemove.Add(AssetFilter);
+			}
+		}
+
+		for (TSharedRef<SAssetFilter>& AssetFilter : AssetFiltersToRemove)
+		{
+			RemoveFilter(AssetFilter);
+		}
+	}
 	
 	/* Filter Dropdown Related Functionality */
 
@@ -1016,7 +1022,7 @@ protected:
 		}
 
 		// Set the extension hook for the basic category, if it exists and we have any assets for it
-		if(TSharedPtr<FFilterCategory>* BasicCategory = AssetFilterCategories.Find(EAssetTypeCategories::Basic))
+		if(TSharedPtr<FFilterCategory>* BasicCategory = AssetFilterCategories.Find(EAssetCategoryPaths::Basic.GetCategory()))
 		{
 			if(FCategoryMenu* BasicMenu = CategoryToMenuMap.Find(*BasicCategory))
 			{
@@ -1111,7 +1117,7 @@ protected:
 	/** Handler to determine the "checked" state of class filter in the filter dropdown */
 	bool IsClassTypeInUse(TSharedPtr<FCustomClassFilterData> Class) const
 	{
-		for (const TSharedPtr<SAssetFilter> AssetFilter : this->AssetFilters)
+		for (const TSharedPtr<SAssetFilter>& AssetFilter : this->AssetFilters)
 		{
 			if (AssetFilter.IsValid() && AssetFilter->GetCustomClassFilterData() == Class)
 			{
@@ -1122,7 +1128,7 @@ protected:
 		return false;
 	}
 
- 	/** Handler for when filter by type category is selected */
+	/** Handler for when filter by type category is selected */
  	void FilterByTypeCategoryClicked(TSharedPtr<FFilterCategory> TypeCategory, TArray<TSharedPtr<FCustomClassFilterData>> Classes)
 	{
 		bool bFullCategoryInUse = IsTypeCategoryInUse(TypeCategory, Classes);
@@ -1207,13 +1213,13 @@ protected:
 	/** Copy of Custom Class Filters that were provided by the user, and not autopopulated from AssetTypeActions */
 	TArray<TSharedRef<FCustomClassFilterData>> UserCustomClassFilters;
 
-	TMap<EAssetTypeCategories::Type, TSharedPtr<FFilterCategory>> AssetFilterCategories;
+	TMap<FName, TSharedPtr<FFilterCategory>> AssetFilterCategories;
 
 	/** The category to expand in the filter menu */
 	TSharedPtr<FFilterCategory> CategoryToExpand;
 	
 	/** Whether the filter bar provides the default Asset Filters */
-	bool bUseDefaultAssetFilters;
+	bool bUseDefaultAssetFilters = false;
 
 	/** The AssetClassAction used to get the permission list from the Asset Tools Module */
 	EAssetClassAction AssetClassAction = EAssetClassAction::ViewAsset;

@@ -35,7 +35,6 @@ static FAutoConsoleVariableRef CVarHairRaytracingRadiusScale(TEXT("r.HairStrands
 static int GHairRaytracingProceduralSplits = 4;
 static FAutoConsoleVariableRef CVarHairRaytracingProceduralScale(TEXT("r.HairStrands.RaytracingProceduralSplits"), GHairRaytracingProceduralSplits, TEXT("Change how many AABBs are used per hair segment to balance between BVH build cost and ray tracing performance. (default: 4)"));
 
-
 static float GStrandHairWidth = 0.0f;
 static FAutoConsoleVariableRef CVarStrandHairWidth(TEXT("r.HairStrands.StrandWidth"), GStrandHairWidth, TEXT("Width of hair strand"));
 
@@ -300,7 +299,7 @@ class FDeformGuideCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, SimDeformedPosition2Buffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimRootBarycentricBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimVertexToRootIndexBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimVertexToCurveBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimRootToUniqueTriangleIndexBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, SimDeformedOffsetBuffer)
@@ -329,6 +328,7 @@ static void AddDeformSimHairStrandsPass(
 	FHairStrandsRestRootResource* SimRestRootResources,
 	FHairStrandsDeformedRootResource* SimDeformedRootResources,
 	FRDGBufferSRVRef SimRestPosePositionBuffer,
+	FRDGBufferSRVRef SimVertexToCurveBuffer,
 	FRDGImportedBuffer OutSimDeformedPositionBuffer,
 	const FVector& SimRestOffset,
 	FRDGBufferSRVRef SimDeformedOffsetBuffer,
@@ -369,10 +369,10 @@ static void AddDeformSimHairStrandsPass(
 
 	if (DeformationType == EDeformationType::OffsetGuide)
 	{
-		const bool bIsVertexToCurveBuffersValid = SimRestRootResources && SimRestRootResources->VertexToCurveIndexBuffer.Buffer != nullptr;
+		const bool bIsVertexToCurveBuffersValid = SimVertexToCurveBuffer != nullptr;
 		if (bIsVertexToCurveBuffersValid)
 		{
-			Parameters->SimVertexToRootIndexBuffer = RegisterAsSRV(GraphBuilder, SimRestRootResources->VertexToCurveIndexBuffer);
+			Parameters->SimVertexToCurveBuffer = SimVertexToCurveBuffer;
 		}
 
 		const uint32 RootCount = SimRestRootResources ? SimRestRootResources->BulkData.RootCount : 0;
@@ -479,50 +479,45 @@ class FHairInterpolationCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FHairInterpolationCS, FGlobalShader);
 
 	class FGroupSize : SHADER_PERMUTATION_SPARSE_INT("PERMUTATION_GROUP_SIZE", 32, 64);
-	class FDebug : SHADER_PERMUTATION_BOOL("PERMUTATION_DEBUG");
 	class FDynamicGeometry : SHADER_PERMUTATION_INT("PERMUTATION_DYNAMIC_GEOMETRY", 5);
 	class FSimulation : SHADER_PERMUTATION_BOOL("PERMUTATION_SIMULATION");
 	class FSingleGuide : SHADER_PERMUTATION_BOOL("PERMUTATION_USE_SINGLE_GUIDE");
 	class FCulling : SHADER_PERMUTATION_BOOL("PERMUTATION_CULLING");
-	using FPermutationDomain = TShaderPermutationDomain<FGroupSize, FDebug, FDynamicGeometry, FSimulation, FSingleGuide, FCulling>;
+	class FDeformer : SHADER_PERMUTATION_BOOL("PERMUTATION_DEFORMER");
+	using FPermutationDomain = TShaderPermutationDomain<FGroupSize, FDynamicGeometry, FSimulation, FSingleGuide, FCulling, FDeformer>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderDrawParameters)
 		SHADER_PARAMETER(uint32, VertexStart)
 		SHADER_PARAMETER(uint32, VertexCount)
 		SHADER_PARAMETER(uint32, DispatchCountX)
-		SHADER_PARAMETER(uint32, HairDebugMode)
 		SHADER_PARAMETER(float, HairLengthScale)
-		SHADER_PARAMETER(FVector3f, InRenderHairPositionOffset)
+		SHADER_PARAMETER(FVector3f, InRenHairPositionOffset)
 		SHADER_PARAMETER(FVector3f, InSimHairPositionOffset)
 		SHADER_PARAMETER(uint32,  HairStrandsVF_bIsCullingEnable)
 		SHADER_PARAMETER(FMatrix44f, LocalToWorldMatrix)
 
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, RenderRestPosePositionBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, OutRenderDeformedPositionBuffer)
-
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, VertexToClusterIdBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, RenRestPosePositionBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, RenDeformerPositionBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, OutRenDeformedPositionBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, SimRestPosePositionBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, DeformedSimPositionBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, SimDeformedPositionBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, InterpolationBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, Interpolation0Buffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, Interpolation1Buffer)
 
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, AttributeBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, SimAttributeBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<float4>, OutRenderAttributeBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RestPosition0Buffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RestPosition1Buffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RestPosition2Buffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RenRestPosition0Buffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RenRestPosition1Buffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RenRestPosition2Buffer)
 
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, DeformedPosition0Buffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, DeformedPosition1Buffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, DeformedPosition2Buffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RenDeformedPosition0Buffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RenDeformedPosition1Buffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RenDeformedPosition2Buffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, RenRootBarycentricBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, RenVertexToRootIndexBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, RenVertexToCurveBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, RenRootToUniqueTriangleIndexBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, SimRestPosition0Buffer)
@@ -534,7 +529,7 @@ class FHairInterpolationCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, SimDeformedPosition2Buffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimRootBarycentricBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimVertexToRootIndexBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimVertexToCurveBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimRootToUniqueTriangleIndexBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, SimRootPointIndexBuffer)
@@ -577,11 +572,10 @@ static void AddHairStrandsInterpolationPass(
 	const uint32 VertexCount,
 	const int32 MeshLODIndex,
 	const float HairLengthScale,
-	const bool bPatchedAttributeBuffer,
 	const EHairInterpolationType HairInterpolationType,
 	const EHairGeometryType InstanceGeometryType,
 	const FRDGHairStrandsCullingData& CullingData,
-	const FVector& InRenderHairWorldOffset,
+	const FVector& InRenHairWorldOffset,
 	const FVector& InSimHairWorldOffset,
 	const FRDGBufferSRVRef& OutRenHairPositionOffsetBuffer,
 	const FRDGBufferSRVRef& OutSimHairPositionOffsetBuffer,
@@ -589,20 +583,18 @@ static void AddHairStrandsInterpolationPass(
 	const FHairStrandsRestRootResource* SimRestRootResources,
 	const FHairStrandsDeformedRootResource* RenDeformedRootResources,
 	const FHairStrandsDeformedRootResource* SimDeformedRootResources,
-	const FRDGBufferSRVRef& RenderRestPosePositionBuffer,
-	const FRDGBufferSRVRef& RenderAttributeBuffer,
+	const FRDGBufferSRVRef& RenRestPosePositionBuffer,
+	const FRDGBufferSRVRef& RenVertexToCurveBuffer,
 	const bool bUseSingleGuide,
 	const FRDGBufferSRVRef& InterpolationBuffer,
 	const FRDGBufferSRVRef& Interpolation0Buffer,
 	const FRDGBufferSRVRef& Interpolation1Buffer,
 	const FRDGBufferSRVRef& SimRestPosePositionBuffer,
 	const FRDGBufferSRVRef& SimDeformedPositionBuffer,
-	const FRDGBufferSRVRef& SimAttributeBuffer,
-	FRDGImportedBuffer& OutRenderPositionBuffer,
-	FRDGImportedBuffer* OutRenderPrevPositionBuffer,
-	FRDGImportedBuffer* OutRenderAttributeBuffer,
-	const FRDGBufferSRVRef& VertexToClusterIdBuffer,
 	const FRDGBufferSRVRef& SimRootPointIndexBuffer,
+	const FRDGBufferSRVRef& SimVertexToCurveBuffer,
+	const FRDGBufferSRVRef& RenDeformerPositionBuffer,
+	FRDGImportedBuffer& OutRenPositionBuffer,
 	const FHairStrandsDeformedRootResource::FLOD::EFrameType DeformedFrame)
 {
 	const uint32 GroupSize = ComputeGroupSize();
@@ -610,9 +602,9 @@ static void AddHairStrandsInterpolationPass(
 
 
 	FHairInterpolationCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairInterpolationCS::FParameters>();
-	Parameters->RenderRestPosePositionBuffer = RenderRestPosePositionBuffer;
+	Parameters->RenRestPosePositionBuffer = RenRestPosePositionBuffer;
 	Parameters->SimRestPosePositionBuffer = SimRestPosePositionBuffer;
-	Parameters->DeformedSimPositionBuffer = SimDeformedPositionBuffer;
+	Parameters->SimDeformedPositionBuffer = SimDeformedPositionBuffer;
 	if (bUseSingleGuide)
 	{
 		Parameters->InterpolationBuffer = InterpolationBuffer;
@@ -622,11 +614,11 @@ static void AddHairStrandsInterpolationPass(
 		Parameters->Interpolation0Buffer = Interpolation0Buffer;
 		Parameters->Interpolation1Buffer = Interpolation1Buffer;
 	}
-	Parameters->OutRenderDeformedPositionBuffer = OutRenderPositionBuffer.UAV;
+	Parameters->OutRenDeformedPositionBuffer = OutRenPositionBuffer.UAV;
 
 	Parameters->VertexStart = VertexStart;
 	Parameters->VertexCount = VertexCount;
-	Parameters->InRenderHairPositionOffset = (FVector3f)InRenderHairWorldOffset;
+	Parameters->InRenHairPositionOffset = (FVector3f)InRenHairWorldOffset;
 	Parameters->InSimHairPositionOffset = (FVector3f)InSimHairWorldOffset;
 
 	Parameters->OutSimHairPositionOffsetBuffer = OutSimHairPositionOffsetBuffer;
@@ -634,53 +626,11 @@ static void AddHairStrandsInterpolationPass(
 
 	Parameters->DispatchCountX = DispatchCount.X;
 	Parameters->SimRootPointIndexBuffer = SimRootPointIndexBuffer;
-
-	Parameters->AttributeBuffer = RenderAttributeBuffer;
-	
-	const bool bIsVertexToCurveBuffersValid_Sim =
-		SimRestRootResources &&
-		SimRestRootResources->VertexToCurveIndexBuffer.Buffer != nullptr;
-	if (bIsVertexToCurveBuffersValid_Sim)
-	{
-		Parameters->SimVertexToRootIndexBuffer = RegisterAsSRV(GraphBuilder, SimRestRootResources->VertexToCurveIndexBuffer);
-	}
-
-	const bool bIsVertexToCurveBuffersValid_Ren =
-		RenRestRootResources &&
-		RenRestRootResources->VertexToCurveIndexBuffer.Buffer != nullptr;
-	if (bIsVertexToCurveBuffersValid_Ren)
-	{
-		Parameters->RenVertexToRootIndexBuffer = RegisterAsSRV(GraphBuilder, RenRestRootResources->VertexToCurveIndexBuffer);
-	}
-
-	Parameters->VertexToClusterIdBuffer = VertexToClusterIdBuffer;
+	Parameters->SimVertexToCurveBuffer = SimVertexToCurveBuffer;
+	Parameters->RenVertexToCurveBuffer = RenVertexToCurveBuffer;
 	
 	Parameters->LocalToWorldMatrix = FMatrix44f(Instance->LocalToWorld.ToMatrixWithScale());		// LWC_TODO: Precision loss
 	Parameters->HairLengthScale = HairLengthScale;
-
-	// Debug rendering
-	// 1: Patch attributes for displaying guides influences onto the render strands
-	// 2: Show the visible cluster
-	Parameters->HairDebugMode = 0;
-	{
-		// Patch Attribute0 (RooUV/NormalizedLength/Seed)
-		if (bPatchedAttributeBuffer && OutRenderAttributeBuffer)
-		{
-			Parameters->HairDebugMode = 1;
-			check(SimAttributeBuffer != nullptr);
-			check(OutRenderAttributeBuffer != nullptr);
-		}
-		else if (GetHairStrandsDebugStrandsMode() == EHairStrandsDebugMode::RenderVisCluster)
-		{
-			Parameters->HairDebugMode = 2;
-		}
-
-		if (Parameters->HairDebugMode > 0 && OutRenderAttributeBuffer)
-		{
-			Parameters->SimAttributeBuffer = SimAttributeBuffer;
-			Parameters->OutRenderAttributeBuffer = OutRenderAttributeBuffer->UAV;
-		}
-	}
 
 	// Only needed if DEBUG_ENABLE is manually enabledin HairStrandsInterpolation.usf. This is for manual debug purpose only
 	#if 0
@@ -691,7 +641,6 @@ static void AddHairStrandsInterpolationPass(
 	#endif
 
 	const bool bSupportDynamicMesh = 
-		bIsVertexToCurveBuffersValid_Ren &&
 		RenRestRootResources &&
 		RenRestRootResources->BulkData.RootCount > 0 && 
 		MeshLODIndex >= 0 && 
@@ -728,17 +677,23 @@ static void AddHairStrandsInterpolationPass(
 		const FHairStrandsRestRootResource::FLOD& Ren_RestLODDatas = RenRestRootResources->LODs[MeshLODIndex];
 		const FHairStrandsDeformedRootResource::FLOD& Ren_DeformedLODDatas = RenDeformedRootResources->LODs[MeshLODIndex];
 		{
-			Parameters->RestPosition0Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestUniqueTrianglePosition0Buffer);
-			Parameters->RestPosition1Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestUniqueTrianglePosition1Buffer);
-			Parameters->RestPosition2Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestUniqueTrianglePosition2Buffer);
+			Parameters->RenRestPosition0Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestUniqueTrianglePosition0Buffer);
+			Parameters->RenRestPosition1Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestUniqueTrianglePosition1Buffer);
+			Parameters->RenRestPosition2Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestUniqueTrianglePosition2Buffer);
 			Parameters->RenRootBarycentricBuffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RootBarycentricBuffer);
 			Parameters->RenRootToUniqueTriangleIndexBuffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RootToUniqueTriangleIndexBuffer);
 		}
 		{
-			Parameters->DeformedPosition0Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.GetDeformedUniqueTrianglePosition0Buffer(DeformedFrame));
-			Parameters->DeformedPosition1Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.GetDeformedUniqueTrianglePosition1Buffer(DeformedFrame));
-			Parameters->DeformedPosition2Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.GetDeformedUniqueTrianglePosition2Buffer(DeformedFrame));
+			Parameters->RenDeformedPosition0Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.GetDeformedUniqueTrianglePosition0Buffer(DeformedFrame));
+			Parameters->RenDeformedPosition1Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.GetDeformedUniqueTrianglePosition1Buffer(DeformedFrame));
+			Parameters->RenDeformedPosition2Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.GetDeformedUniqueTrianglePosition2Buffer(DeformedFrame));
 		}
+	}
+
+	const bool bSupportDeformer = RenDeformerPositionBuffer != nullptr;
+	if (bSupportDeformer)
+	{
+		Parameters->RenDeformerPositionBuffer = RenDeformerPositionBuffer;
 	}
 
 	const bool bHasLocalDeformation = Instance->Guides.bIsSimulationEnable || bSupportGlobalInterpolation || Instance->Guides.bIsDeformationEnable;
@@ -764,11 +719,11 @@ static void AddHairStrandsInterpolationPass(
 
 	FHairInterpolationCS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FHairInterpolationCS::FGroupSize>(GroupSize);
-	PermutationVector.Set<FHairInterpolationCS::FDebug>(Parameters->HairDebugMode > 0);
 	PermutationVector.Set<FHairInterpolationCS::FDynamicGeometry>(DynamicGeometryType);
 	PermutationVector.Set<FHairInterpolationCS::FSimulation>(bHasLocalDeformation);
 	PermutationVector.Set<FHairInterpolationCS::FSingleGuide>(bUseSingleGuide);
 	PermutationVector.Set<FHairInterpolationCS::FCulling>(bCullingEnable);
+	PermutationVector.Set<FHairInterpolationCS::FDeformer>(bSupportDeformer);
 
 	TShaderMapRef<FHairInterpolationCS> ComputeShader(ShaderMap, PermutationVector);
 
@@ -797,17 +752,103 @@ static void AddHairStrandsInterpolationPass(
 			DispatchCount);
 	}
 
-	GraphBuilder.SetBufferAccessFinal(OutRenderPositionBuffer.Buffer, ERHIAccess::SRVMask);
-	if (OutRenderAttributeBuffer)
+	GraphBuilder.SetBufferAccessFinal(OutRenPositionBuffer.Buffer, ERHIAccess::SRVMask);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Patch hair attribute (For debug visualization)
+
+class FHairPatchAttributeCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FHairPatchAttributeCS);
+	SHADER_USE_PARAMETER_STRUCT(FHairPatchAttributeCS, FGlobalShader);
+
+	class FSimulation : SHADER_PERMUTATION_INT("PERMUTATION_SIMULATION", 3); // No simulation, Simlation with 1 guide, Simulation with 3 guides
+	using FPermutationDomain = TShaderPermutationDomain<FSimulation>;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, CurveCount)
+		SHADER_PARAMETER_ARRAY(FUintVector4, RenAttributeOffsets, [HAIR_ATTRIBUTE_OFFSET_COUNT])
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, RenCurveBuffer)
+
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, InterpolationBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, Interpolation0Buffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, Interpolation1Buffer)
+
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, RenVertexToClusterIdBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWByteAddressBuffer, OutRenAttributeBuffer)
+	END_SHADER_PARAMETER_STRUCT()
+
+public:
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return IsHairStrandsSupported(EHairStrandsShaderType::All, Parameters.Platform); }
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		GraphBuilder.SetBufferAccessFinal(OutRenderAttributeBuffer->Buffer, ERHIAccess::SRVMask);
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("SHADER_PATCHATTRIBUTE"), 1);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FHairPatchAttributeCS, "/Engine/Private/HairStrands/HairStrandsInterpolation.usf", "MainCS", SF_Compute);
+
+enum class EHairPatchAttribute : uint8
+{
+	None,
+	GuideInflucence,
+	ClusterInfluence
+};
+
+static void AddPatchAttributePass(
+	FRDGBuilder& GraphBuilder,
+	FGlobalShaderMap* ShaderMap,
+	const uint32 CurveCount,
+	const EHairPatchAttribute Mode,
+	const bool bSimulation,
+	const bool bUseSingleGuide,
+	const uint32* RenAttributeOffests,
+	const FRDGBufferRef& RenAttributeBuffer,
+	const FRDGBufferSRVRef& RenCurveBuffer,
+	const FRDGBufferSRVRef& RenVertexToClusterIdBuffer,
+	const FRDGBufferSRVRef& InterpolationBuffer,
+	const FRDGBufferSRVRef& Interpolation0Buffer,
+	const FRDGBufferSRVRef& Interpolation1Buffer,
+	FRDGImportedBuffer& OutRenAttributeBuffer)
+{
+	// Sanity check
+	check(Mode == EHairPatchAttribute::ClusterInfluence || Mode == EHairPatchAttribute::GuideInflucence)
+	if (Mode == EHairPatchAttribute::GuideInflucence && !bSimulation) return;
+
+	const FIntVector DispatchCount = FIntVector(FMath::DivideAndRoundUp(CurveCount, 1024u), 1, 1);
+
+	// First copy all the rendering attributes into the new bufffer, before overriding some of them
+	AddCopyBufferPass(GraphBuilder, RenAttributeBuffer, OutRenAttributeBuffer.Buffer);
+
+	FHairPatchAttributeCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairPatchAttributeCS::FParameters>();
+	Parameters->CurveCount = CurveCount;
+	Parameters->RenCurveBuffer = RenCurveBuffer;
+	Parameters->RenVertexToClusterIdBuffer = RenVertexToClusterIdBuffer;
+	PACK_HAIR_ATTRIBUTE_OFFSETS(Parameters->RenAttributeOffsets, RenAttributeOffests)
+
+	if (bSimulation)
+	{
+		Parameters->InterpolationBuffer  = InterpolationBuffer;
+		Parameters->Interpolation0Buffer = Interpolation0Buffer;
+		Parameters->Interpolation1Buffer = Interpolation1Buffer;
 	}
 
-	if (!(IsHairVisibilityComputeRasterContinuousLODEnabled() || IsHairVisibilityComputeRasterTemporalLayeringEnabled()) && Instance->HairGroupPublicData->VFInput.bHasLODSwitch && OutRenderPrevPositionBuffer && GHairStrandsTransferPositionOnLODChange > 0)
-	{
-		AddTransferPositionPass(GraphBuilder, ShaderMap, VertexCount, OutRenderPositionBuffer.SRV, OutRenderPrevPositionBuffer->UAV);
-		GraphBuilder.SetBufferAccessFinal(OutRenderPrevPositionBuffer->Buffer, ERHIAccess::SRVMask);
-	}
+	Parameters->OutRenAttributeBuffer = OutRenAttributeBuffer.UAV;
+
+	FHairPatchAttributeCS::FPermutationDomain PermutationVector;
+	PermutationVector.Set<FHairPatchAttributeCS::FSimulation>(Mode == EHairPatchAttribute::ClusterInfluence ? 0 : (bUseSingleGuide ? 1 : 2));
+
+	TShaderMapRef<FHairPatchAttributeCS> ComputeShader(ShaderMap, PermutationVector);
+	FComputeShaderUtils::AddPass(
+		GraphBuilder,
+		RDG_EVENT_NAME("HairStrands::PatchAttribute"),
+		ComputeShader,
+		Parameters,
+		DispatchCount);
+
+	GraphBuilder.SetBufferAccessFinal(OutRenAttributeBuffer.Buffer, ERHIAccess::SRVMask);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1059,13 +1100,12 @@ static void AddHairCardsDeformationPass(
 
 	Parameters->CardsInterpolationBuffer	= RegisterAsSRV(GraphBuilder, LOD.InterpolationResource->InterpolationBuffer);
 
+	const FHairStrandsRestResource* RestResources = LOD.Guides.RestResource;
 	const FHairStrandsRestRootResource* RestRootResources = LOD.Guides.RestRootResource;
 	const FHairStrandsDeformedRootResource* DeformedRootResources = LOD.Guides.DeformedRootResource;
 
-	const bool bIsVertexToCurveBuffersValid = RestRootResources && RestRootResources->VertexToCurveIndexBuffer.Buffer != nullptr;
 	const bool bSupportDynamicMesh =
 		Instance->BindingType == EHairBindingType::Skinning &&
-		bIsVertexToCurveBuffersValid &&
 		RestRootResources &&
 		RestRootResources->BulkData.RootCount > 0 &&
 		MeshLODIndex >= 0 &&
@@ -1075,7 +1115,7 @@ static void AddHairCardsDeformationPass(
 		DeformedRootResources->LODs[MeshLODIndex].IsValid();
 	if (bSupportDynamicMesh)
 	{
-		Parameters->GuideVertexToRootIndexBuffer = RegisterAsSRV(GraphBuilder, RestRootResources->VertexToCurveIndexBuffer);
+		Parameters->GuideVertexToRootIndexBuffer = RegisterAsSRV(GraphBuilder, RestResources->VertexToCurveBuffer);
 		const FHairStrandsRestRootResource::FLOD& RestLODDatas = RestRootResources->LODs[MeshLODIndex];
 		const FHairStrandsDeformedRootResource::FLOD& DeformedLODDatas = DeformedRootResources->LODs[MeshLODIndex];
 
@@ -1402,6 +1442,7 @@ static void BuildHairAccelerationStructure_Strands(
 	FBufferRHIRef& IndexBuffer,
 	FRayTracingGeometry* OutRayTracingGeometry,
 	const FString& AssetDebugName,
+	const FString& MeshComponentName,
 	uint32 LODIndex,
 	bool bProceduralPrimitive,
 	int ProceduralSplits)
@@ -1415,7 +1456,10 @@ static void BuildHairAccelerationStructure_Strands(
 	static int32 DebugNumber = 0;
 	Initializer.DebugName = FDebugName(DebugName, DebugNumber++);
 #endif
-
+#if RHI_ENABLE_RESOURCE_INFO
+	const FName OwnerName(FString::Printf(TEXT("%s [LOD%d]"), *MeshComponentName, LODIndex));
+	Initializer.OwnerName = OwnerName;
+#endif
 	if (bProceduralPrimitive)
 	{
 		Initializer.GeometryType = RTGT_Procedural;
@@ -1458,6 +1502,7 @@ static void BuildHairAccelerationStructure_Cards(FRHICommandList& RHICmdList,
 	FHairCardsDeformedResource* DeformedResource,
 	FRayTracingGeometry* OutRayTracingGeometry,
 	const FString& AssetDebugName,
+	const FString& MeshComponentName,
 	uint32 LODIndex)
 {
 	FRayTracingGeometryInitializer Initializer;
@@ -1468,6 +1513,10 @@ static void BuildHairAccelerationStructure_Cards(FRHICommandList& RHICmdList,
 	static const FName DebugName("AS_HairCards");
 	static int32 DebugNumber = 0;
 	Initializer.DebugName = FDebugName(DebugName, DebugNumber++);
+#endif
+#if RHI_ENABLE_RESOURCE_INFO
+	const FName OwnerName(FString::Printf(TEXT("%s [LOD%d]"), *MeshComponentName, LODIndex));
+	Initializer.OwnerName = OwnerName;
 #endif
 	Initializer.IndexBuffer = RestResource->RestIndexBuffer.IndexBufferRHI;
 	Initializer.IndexBufferOffset = 0;
@@ -1565,27 +1614,6 @@ void RegisterClusterData(FHairGroupInstance* Instance, FHairStrandClusterData* I
 	HairGroupCluster.HairGroupPublicPtr->ClusterDataIndex = ClusterDataGroupIndex;
 }
 
-EHairStrandsDebugMode GetHairStrandsGeometryDebugMode(const FHairGroupInstance* Instance)
-{
-	// 1. Use the per-instance debug mode by default, and fallback on the global debug otherwise
-	EHairStrandsDebugMode DebugMode = Instance->Debug.DebugMode != EHairStrandsDebugMode::NoneDebug ? Instance->Debug.DebugMode : GetHairStrandsDebugStrandsMode();
-
-	// 2. If groom does not have guides (e.g., because it does not have simulation/RBF data), then we fallback to default view mode
-	if ((DebugMode == EHairStrandsDebugMode::SimHairStrands ||
-		 DebugMode == EHairStrandsDebugMode::RenderHairStrands ||
-		 DebugMode == EHairStrandsDebugMode::RenderVisCluster)
-		&& Instance->Guides.Data == nullptr)
-	{
-		DebugMode = EHairStrandsDebugMode::NoneDebug;
-	}
-	return DebugMode;
-}
-
-bool NeedsPatchAttributeBuffer(EHairStrandsDebugMode DebugMode)
-{
-	return DebugMode == EHairStrandsDebugMode::RenderHairStrands || DebugMode == EHairStrandsDebugMode::RenderVisCluster;
-}
-
 static void ConvertHairStrandsVFParameters(
 	FRDGBuilder* GraphBuilder,
 	FRDGImportedBuffer& OutBuffer,
@@ -1603,32 +1631,37 @@ static void ConvertHairStrandsVFParameters(
 #define CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutName, ExternalBuffer) ConvertHairStrandsVFParameters(GraphBuilder, OutName, OutName##External, OutName##RHISRV, ExternalBuffer);
 
 // Compute/Update the hair strands description which will be used for rendering (VF) / voxelization & co.
-static FHairGroupPublicData::FVertexFactoryInput InternalComputeHairStrandsVertexInputData(FRDGBuilder* GraphBuilder, const FHairGroupInstance* Instance)
+static FHairGroupPublicData::FVertexFactoryInput InternalComputeHairStrandsVertexInputData(FRDGBuilder* GraphBuilder, const FHairGroupInstance* Instance, EGroomViewMode ViewMode)
 {
 	FHairGroupPublicData::FVertexFactoryInput OutVFInput;
 	if (!Instance || Instance->GeometryType != EHairGeometryType::Strands)
+	{
+		OutVFInput.Strands.AttributeOffsets.Init(0xFFFFFFFF, HAIR_ATTRIBUTE_COUNT);
 		return OutVFInput;
+	}
 
-	const EHairStrandsDebugMode DebugMode = GetHairStrandsGeometryDebugMode(Instance);
-	const bool bDebugModePatchedAttributeBuffer = NeedsPatchAttributeBuffer(DebugMode);
-
+	const bool bSupportHasGuides = Instance->Guides.IsValid();
 	const bool bSupportDeformation = Instance->Strands.DeformedResource != nullptr;
+	bool bUseGuideAttributeOffsets = false;
 
 	// 1. Guides
-	if (DebugMode == EHairStrandsDebugMode::SimHairStrands)
+	if (ViewMode == EGroomViewMode::SimHairStrands && bSupportHasGuides)
 	{
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.PositionBuffer,			Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::EFrameType::Current));
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.PrevPositionBuffer,		Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::EFrameType::Previous));
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.TangentBuffer,			Instance->Guides.DeformedResource->TangentBuffer);
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.Attribute0Buffer,			Instance->Guides.RestResource->Attribute0Buffer);
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.Attribute1Buffer,			Instance->Guides.RestResource->Attribute1Buffer);
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.MaterialBuffer,			Instance->Guides.RestResource->MaterialBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.AttributeBuffer,			Instance->Guides.RestResource->AttributeBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.CurveBuffer,				Instance->Guides.RestResource->CurveBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.VertexToCurveBuffer,		Instance->Guides.RestResource->VertexToCurveBuffer);
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.PositionOffsetBuffer,		Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::EFrameType::Current));
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.PrevPositionOffsetBuffer,	Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::EFrameType::Previous));
 
 		OutVFInput.Strands.PositionOffset = Instance->Guides.DeformedResource->GetPositionOffset(FHairStrandsDeformedResource::EFrameType::Current);
 		OutVFInput.Strands.PrevPositionOffset = Instance->Guides.DeformedResource->GetPositionOffset(FHairStrandsDeformedResource::EFrameType::Previous);
-		OutVFInput.Strands.VertexCount = Instance->Guides.RestResource->GetVertexCount();		
+		OutVFInput.Strands.VertexCount = Instance->Guides.RestResource->GetVertexCount();
+		OutVFInput.Strands.CurveCount = Instance->Guides.RestResource->GetCurveCount();
+
+		bUseGuideAttributeOffsets = true;
 	}
 	// 2. Render Strands with deformation
 	else if (bSupportDeformation)
@@ -1657,11 +1690,12 @@ static FHairGroupPublicData::FVertexFactoryInput InternalComputeHairStrandsVerte
 			OutVFInput.Strands.PrevPositionOffset = Instance->Strands.DeformedResource->GetPositionOffset(FHairStrandsDeformedResource::EFrameType::Current);
 		}
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.TangentBuffer,			Instance->Strands.DeformedResource->TangentBuffer);
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.Attribute0Buffer,			bDebugModePatchedAttributeBuffer ? Instance->Strands.DebugAttributeBuffer : Instance->Strands.RestResource->Attribute0Buffer); // TODO
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.Attribute1Buffer,			Instance->Strands.RestResource->Attribute1Buffer);
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.MaterialBuffer,			Instance->Strands.RestResource->MaterialBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.AttributeBuffer,			(ViewMode == EGroomViewMode::RenderHairStrands || ViewMode == EGroomViewMode::Cluster || ViewMode == EGroomViewMode::ClusterAABB) ? Instance->Strands.DebugAttributeBuffer : Instance->Strands.RestResource->AttributeBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.VertexToCurveBuffer,		Instance->Strands.RestResource->VertexToCurveBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.CurveBuffer,				Instance->Strands.RestResource->CurveBuffer);
 
 		OutVFInput.Strands.VertexCount = Instance->Strands.RestResource->GetVertexCount();
+		OutVFInput.Strands.CurveCount = Instance->Strands.RestResource->GetCurveCount();
 	}
 	// 3. Render Strands in rest position: used when there are no skinning (rigid binding or no binding), no simulation, and no RBF
 	else
@@ -1669,15 +1703,16 @@ static FHairGroupPublicData::FVertexFactoryInput InternalComputeHairStrandsVerte
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.PositionBuffer,			Instance->Strands.RestResource->PositionBuffer);
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.PrevPositionBuffer,		Instance->Strands.RestResource->PositionBuffer);
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.TangentBuffer,			Instance->Strands.RestResource->TangentBuffer);
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.Attribute0Buffer,			Instance->Strands.RestResource->Attribute0Buffer);
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.Attribute1Buffer,			Instance->Strands.RestResource->Attribute1Buffer);
-		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.MaterialBuffer,			Instance->Strands.RestResource->MaterialBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.AttributeBuffer,			(ViewMode == EGroomViewMode::Cluster || ViewMode == EGroomViewMode::ClusterAABB) ? Instance->Strands.DebugAttributeBuffer : Instance->Strands.RestResource->AttributeBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.VertexToCurveBuffer,		Instance->Strands.RestResource->VertexToCurveBuffer);
+		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.CurveBuffer,				Instance->Strands.RestResource->CurveBuffer);
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.PositionOffsetBuffer,		Instance->Strands.RestResource->PositionOffsetBuffer);
 		CONVERT_HAIRSSTRANDS_VF_PARAMETERS(OutVFInput.Strands.PrevPositionOffsetBuffer, Instance->Strands.RestResource->PositionOffsetBuffer);
 
 		OutVFInput.Strands.PositionOffset = Instance->Strands.RestResource->GetPositionOffset();
 		OutVFInput.Strands.PrevPositionOffset = Instance->Strands.RestResource->GetPositionOffset();
 		OutVFInput.Strands.VertexCount = Instance->Strands.RestResource->GetVertexCount();
+		OutVFInput.Strands.CurveCount = Instance->Strands.RestResource->GetCurveCount();
 	}
 
 	OutVFInput.Strands.HairRadius = (GStrandHairWidth > 0 ? GStrandHairWidth : Instance->Strands.Modifier.HairWidth) * 0.5f;
@@ -1689,6 +1724,14 @@ static FHairGroupPublicData::FVertexFactoryInput InternalComputeHairStrandsVerte
 	OutVFInput.Strands.bScatterSceneLighting = Instance->Strands.Modifier.bScatterSceneLighting;
 	OutVFInput.Strands.bUseStableRasterization = Instance->Strands.Modifier.bUseStableRasterization;
 	OutVFInput.Strands.bUseRaytracingGeometry = false;
+
+	OutVFInput.Strands.AttributeOffsets.SetNum(0, false);
+	OutVFInput.Strands.AttributeOffsets.Reserve(HAIR_ATTRIBUTE_COUNT);
+	for (uint32 AttributeIt=0; AttributeIt< HAIR_ATTRIBUTE_COUNT; ++AttributeIt)
+	{
+		OutVFInput.Strands.AttributeOffsets.Add(bUseGuideAttributeOffsets ? Instance->Guides.Data->AttributeOffsets[AttributeIt] : Instance->Strands.Data->AttributeOffsets[AttributeIt]);
+	}
+
 #if RHI_RAYTRACING
 	// Flag bUseRaytracingGeometry only if RT geometry has been allocated for RayTracing view (not for PathTracing view). 
 	// This flag is used later for selecting if voxelization needs to flags voxel has shadow caster or if shadow casting is handled 
@@ -1699,18 +1742,19 @@ static FHairGroupPublicData::FVertexFactoryInput InternalComputeHairStrandsVerte
 	return OutVFInput;
 }
 
-FHairGroupPublicData::FVertexFactoryInput ComputeHairStrandsVertexInputData(const FHairGroupInstance* Instance)
+FHairGroupPublicData::FVertexFactoryInput ComputeHairStrandsVertexInputData(const FHairGroupInstance* Instance, EGroomViewMode ViewMode)
 {
-	return InternalComputeHairStrandsVertexInputData(nullptr, Instance);
+	return InternalComputeHairStrandsVertexInputData(nullptr, Instance, ViewMode);
 }
 
-void CreateHairStrandsDebugAttributeBuffer(FRDGBuilder& GraphBuilder, FRDGExternalBuffer* DebugAttributeBuffer, uint32 VertexCount);
+void CreateHairStrandsDebugAttributeBuffer(FRDGBuilder& GraphBuilder, FRDGExternalBuffer* DebugAttributeBuffer, uint32 VertexCount, const FName& OwnerName);
 
 void ComputeHairStrandsInterpolation(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
 	const uint32 ViewUniqueID,
 	const uint32 ViewRayTracingMask,
+	const EGroomViewMode ViewMode,
 	const FVector& TranslatedWorldOffset,
 	const FShaderPrintData* ShaderPrintData,
 	FHairGroupInstance* Instance,
@@ -1740,15 +1784,11 @@ void ComputeHairStrandsInterpolation(
 		// * None	: Display hair normally
 		// * Sim	: Show sim strands
 		// * Render : Show rendering strands with sim color influence
-		const EHairStrandsDebugMode DebugMode = GetHairStrandsGeometryDebugMode(Instance);
-		const bool bDebugModePatchedAttributeBuffer = NeedsPatchAttributeBuffer(DebugMode);
-
-		if (DebugMode == EHairStrandsDebugMode::SimHairStrands)
+		if (ViewMode == EGroomViewMode::SimHairStrands && Instance->Guides.DeformedResource)
 		{
 			// Disable culling when drawing only guides, as the culling output has been computed for the strands, not for the guides.
 			Instance->HairGroupPublicData->SetCullingResultAvailable(false);
 
-			check(Instance->Guides.DeformedResource);
 			AddHairTangentPass(
 				GraphBuilder,
 				ShaderMap,
@@ -1758,7 +1798,7 @@ void ComputeHairStrandsInterpolation(
 				RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current)),
 				Register(GraphBuilder, Instance->Guides.DeformedResource->TangentBuffer, ERDGImportedBufferFlags::CreateUAV));
 
-			Instance->HairGroupPublicData->VFInput = InternalComputeHairStrandsVertexInputData(&GraphBuilder, Instance);
+			Instance->HairGroupPublicData->VFInput = InternalComputeHairStrandsVertexInputData(&GraphBuilder, Instance, ViewMode);
 		}
 		else
 		{
@@ -1777,44 +1817,37 @@ void ComputeHairStrandsInterpolation(
 					CullingData.GroupAABBBuffer);
 			}
 
+			// "WITH_EDITOR && PatchMode == EHairPatchAttribute::GuideInflucence" is a special path when visualizing groom within the groom editor, so that we can diplay guides even when there is no simulation or global interpolation enabled
+			EHairPatchAttribute PatchMode = EHairPatchAttribute::None;
+			#if WITH_EDITOR
+			if (ViewMode == EGroomViewMode::RenderHairStrands && bNeedDeformation)				{ PatchMode = EHairPatchAttribute::GuideInflucence; }
+			if (ViewMode == EGroomViewMode::Cluster || ViewMode == EGroomViewMode::ClusterAABB)	{ PatchMode = EHairPatchAttribute::ClusterInfluence; }
+			#endif
+
 			// 2. Deform hair if needed (e.g.: skinning, simulation, RBF) and recompute tangent
 			FRDGBufferSRVRef Strands_PositionSRV = nullptr;
 			FRDGBufferSRVRef Strands_PositionOffsetSRV = nullptr;
 			FRDGBufferSRVRef Strands_PrevPositionOffsetSRV = nullptr;
-
 			FRDGBufferSRVRef Strands_TangentSRV = nullptr;
+
+			const bool bValidGuide		= bNeedDeformation && (Instance->Guides.bIsSimulationEnable || Instance->Guides.bHasGlobalInterpolation || Instance->Guides.bIsDeformationEnable);// || (WITH_EDITOR && PatchMode == EHairPatchAttribute::GuideInflucence);
+			const bool bUseSingleGuide	= bNeedDeformation && bValidGuide && Instance->Strands.InterpolationResource->UseSingleGuide();
+			const bool bHasSkinning		= bNeedDeformation && Instance->BindingType == EHairBindingType::Skinning;
+
 			if (bNeedDeformation)
 			{
 				FRDGImportedBuffer Strands_DeformedPosition = Register(GraphBuilder, Instance->Strands.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current), ERDGImportedBufferFlags::CreateViews);
 				FRDGImportedBuffer Strands_DeformedPrevPosition = Register(GraphBuilder, Instance->Strands.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Previous), ERDGImportedBufferFlags::CreateViews);
 				FRDGImportedBuffer Strands_DeformedTangent = Register(GraphBuilder, Instance->Strands.DeformedResource->TangentBuffer, ERDGImportedBufferFlags::CreateViews);
-				FRDGImportedBuffer* Strands_DebugAttribute = nullptr;
+				FRDGBufferSRVRef Strands_DeformerPositionSRV = Register(GraphBuilder, Instance->Strands.DeformedResource->DeformerBuffer, ERDGImportedBufferFlags::CreateSRV).SRV;
 
 				// Trach on which view the position has been update, so that we can ensure motion vector are coherent
 				Instance->Strands.DeformedResource->GetUniqueViewID(FHairStrandsDeformedResource::Current) = ViewUniqueID;
 
-			#if WITH_EDITOR
-				FRDGImportedBuffer Strands_DebugAttributeReg;
-				if (bDebugModePatchedAttributeBuffer)
-				{
-					// Create an debug buffer for storing cluster visalization data. This is only used for debug purpose, hence only enable in editor build.
-					// Special case for debug mode were the attribute buffer is patch with some custom data to show hair properties (strands belonging to the same cluster, ...)
-					if (Instance->Strands.DebugAttributeBuffer.Buffer == nullptr)
-					{
-						CreateHairStrandsDebugAttributeBuffer(GraphBuilder, &Instance->Strands.DebugAttributeBuffer, Instance->Strands.Data->GetNumPoints());
-					}
-
-					Strands_DebugAttributeReg = Register(GraphBuilder, Instance->Strands.DebugAttributeBuffer, ERDGImportedBufferFlags::CreateUAV);
-					Strands_DebugAttribute = &Strands_DebugAttributeReg;
-				}
-			#endif
 				Strands_PositionSRV = Strands_DeformedPosition.SRV;
 				Strands_PositionOffsetSRV = RegisterAsSRV(GraphBuilder, Instance->Strands.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::EFrameType::Current));
 				Strands_TangentSRV = Strands_DeformedTangent.SRV;
 
-				// "WITH_EDITOR && bDebugModePatchedAttributeBuffer" is a special path when visualizing groom within the groom editor, so that we can diplay guides even when there is no simulation or global interpolation enabled
-				const bool bValidGuide = Instance->Guides.bIsSimulationEnable || Instance->Guides.bHasGlobalInterpolation || Instance->Guides.bIsDeformationEnable || (WITH_EDITOR && bDebugModePatchedAttributeBuffer);
-				const bool bHasSkinning = Instance->BindingType == EHairBindingType::Skinning;
 
 				bool bHasValidGroomCacheBuffers = Instance->Debug.GroomCacheBuffers.IsValid() && Instance->Debug.GroomCacheBuffers->GetInterpolatedFrameBuffer().GroupsData.IsValidIndex(Instance->Debug.GroupIndex);
 				if (bHasValidGroomCacheBuffers && Instance->Debug.GroomCacheType == EGroomCacheType::Guides)
@@ -1874,6 +1907,7 @@ void ComputeHairStrandsInterpolation(
 									Instance->Guides.RestRootResource,
 									Instance->Guides.DeformedRootResource,
 									RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer),
+									RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->VertexToCurveBuffer),
 									Register(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current), ERDGImportedBufferFlags::CreateUAV),
 									Instance->Guides.RestResource->GetPositionOffset(),
 									RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),
@@ -1893,7 +1927,7 @@ void ComputeHairStrandsInterpolation(
 					VertexStart = Instance->HairGroupPublicData->GetActiveStrandsVertexStart(Instance->Strands.RestResource->GetVertexCount());
 					VertexCount = Instance->HairGroupPublicData->GetActiveStrandsVertexCount(Instance->Strands.RestResource->GetVertexCount(), Instance->HairGroupPublicData->MaxScreenSize);
 
-					const bool bUseSingleGuide = bValidGuide && Instance->Strands.InterpolationResource->UseSingleGuide();
+					// 2.1.1 Current Position
 					AddHairStrandsInterpolationPass(
 						GraphBuilder,
 						ShaderMap,
@@ -1903,7 +1937,6 @@ void ComputeHairStrandsInterpolation(
 						VertexCount,
 						MeshLODIndex,
 						Instance->Strands.Modifier.HairLengthScale,
-						bDebugModePatchedAttributeBuffer,
 						Instance->Strands.HairInterpolationType,
 						InstanceGeometryType,
 						CullingData,
@@ -1916,63 +1949,70 @@ void ComputeHairStrandsInterpolation(
 						bHasSkinning ? Instance->Strands.DeformedRootResource : nullptr,
 						bHasSkinning && bValidGuide ? Instance->Guides.DeformedRootResource : nullptr,
 						RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->PositionBuffer),
-						RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->Attribute0Buffer),
+						RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->VertexToCurveBuffer),
 						bUseSingleGuide,
 						bValidGuide &&  bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->InterpolationBuffer) : nullptr,
 						bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation0Buffer) : nullptr,
 						bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation1Buffer) : nullptr,
 						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer) : nullptr,
 						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current)) : nullptr,
-						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->Attribute0Buffer) : nullptr,
+						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->SimRootPointIndexBuffer) : nullptr,
+						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->VertexToCurveBuffer) : nullptr,
+						Strands_DeformerPositionSRV,
 						Strands_DeformedPosition,
-						&Strands_DeformedPrevPosition,
-						Strands_DebugAttribute,
-						RegisterAsSRV(GraphBuilder, Instance->Strands.ClusterCullingResource->VertexToClusterIdBuffer),
-						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->SimRootPointIndexBuffer) : nullptr, 
 						FHairStrandsDeformedRootResource::FLOD::Current);
 					
-						// second interpolation pass to calculate previous positions if needed
-						if (IsHairVisibilityComputeRasterContinuousLODEnabled() || IsHairVisibilityComputeRasterTemporalLayeringEnabled())
-						{
-							Strands_PrevPositionOffsetSRV = RegisterAsSRV(GraphBuilder, Instance->Strands.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::EFrameType::Previous));
+					// 2.1.2 Previous Position
+					// * Transfer prev. position
+					// * Or recompute interpolation pass for previous positions if needed
+					const bool bRecomputePrevPosition = IsHairVisibilityComputeRasterContinuousLODEnabled() || IsHairVisibilityComputeRasterTemporalLayeringEnabled();
+					const bool bTransferPrevPosition = 
+						!bRecomputePrevPosition &&
+						Instance->HairGroupPublicData->VFInput.bHasLODSwitch && 
+						GHairStrandsTransferPositionOnLODChange > 0;
+					if (bTransferPrevPosition)
+					{
+						AddTransferPositionPass(GraphBuilder, ShaderMap, VertexCount, Strands_DeformedPosition.SRV, Strands_DeformedPrevPosition.UAV);
+						GraphBuilder.SetBufferAccessFinal(Strands_DeformedPrevPosition.Buffer, ERHIAccess::SRVMask);
+					}
+					else if (bRecomputePrevPosition)
+					{
+						Strands_PrevPositionOffsetSRV = RegisterAsSRV(GraphBuilder, Instance->Strands.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::EFrameType::Previous));
 
-							AddHairStrandsInterpolationPass(
-								GraphBuilder,
-								ShaderMap,
-								ShaderPrintData,
-								Instance,
-								VertexStart,
-								VertexCount,
-								MeshLODIndex,
-								Instance->Strands.Modifier.HairLengthScale,
-								bDebugModePatchedAttributeBuffer,
-								Instance->Strands.HairInterpolationType,
-								InstanceGeometryType,
-								CullingData,
-								Instance->Strands.RestResource->GetPositionOffset(),
-								bValidGuide ? Instance->Guides.RestResource->GetPositionOffset() : FVector::ZeroVector,
-								Strands_PrevPositionOffsetSRV,
-								bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Previous)) : nullptr,
-								bHasSkinning ? Instance->Strands.RestRootResource : nullptr,
-								bHasSkinning && bValidGuide ? Instance->Guides.RestRootResource : nullptr,
-								bHasSkinning ? Instance->Strands.DeformedRootResource : nullptr,
-								bHasSkinning && bValidGuide ? Instance->Guides.DeformedRootResource : nullptr,
-								RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->PositionBuffer),
-								RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->Attribute0Buffer),
-								bUseSingleGuide,
-								bValidGuide&& bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->InterpolationBuffer) : nullptr,
-								bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation0Buffer) : nullptr,
-								bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation1Buffer) : nullptr,
-								bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer) : nullptr,
-								bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Previous)) : nullptr,
-								bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->Attribute0Buffer) : nullptr,
-								Strands_DeformedPrevPosition,
-								nullptr,
-								nullptr,//Strands_DebugAttribute,
-								RegisterAsSRV(GraphBuilder, Instance->Strands.ClusterCullingResource->VertexToClusterIdBuffer),
-								bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->SimRootPointIndexBuffer) : nullptr,
-								FHairStrandsDeformedRootResource::FLOD::Previous);
-						}
+						AddHairStrandsInterpolationPass(
+							GraphBuilder,
+							ShaderMap,
+							ShaderPrintData,
+							Instance,
+							VertexStart,
+							VertexCount,
+							MeshLODIndex,
+							Instance->Strands.Modifier.HairLengthScale,
+							Instance->Strands.HairInterpolationType,
+							InstanceGeometryType,
+							CullingData,
+							Instance->Strands.RestResource->GetPositionOffset(),
+							bValidGuide ? Instance->Guides.RestResource->GetPositionOffset() : FVector::ZeroVector,
+							Strands_PrevPositionOffsetSRV,
+							bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Previous)) : nullptr,
+							bHasSkinning ? Instance->Strands.RestRootResource : nullptr,
+							bHasSkinning && bValidGuide ? Instance->Guides.RestRootResource : nullptr,
+							bHasSkinning ? Instance->Strands.DeformedRootResource : nullptr,
+							bHasSkinning && bValidGuide ? Instance->Guides.DeformedRootResource : nullptr,
+							RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->PositionBuffer),
+							RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->VertexToCurveBuffer),
+							bUseSingleGuide,
+							bValidGuide &&  bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->InterpolationBuffer) : nullptr,
+							bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation0Buffer) : nullptr,
+							bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation1Buffer) : nullptr,
+							bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer) : nullptr,
+							bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Previous)) : nullptr,
+							bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->SimRootPointIndexBuffer) : nullptr,
+							bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->VertexToCurveBuffer) : nullptr,
+							Strands_DeformerPositionSRV,
+							Strands_DeformedPrevPosition,
+							FHairStrandsDeformedRootResource::FLOD::Previous);
+					}
 				}
 				else if (bHasValidGroomCacheBuffers)
 				{
@@ -2024,8 +2064,38 @@ void ComputeHairStrandsInterpolation(
 				Strands_TangentSRV = RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->TangentBuffer);
 			}
 
-			// 2.1 Update the VF input with the update resources
-			Instance->HairGroupPublicData->VFInput = InternalComputeHairStrandsVertexInputData(&GraphBuilder, Instance);
+			// 2.1 Patch attribute for debug visualization (guide influence or clusters visualization)
+			#if WITH_EDITOR
+			if (PatchMode != EHairPatchAttribute::None)
+			{
+				// Create an debug buffer for storing cluster visualization data. This is only used for debug purpose, hence only enable in editor build.
+				// Special case for debug mode were the attribute buffer is patch with some custom data to show hair properties (strands belonging to the same cluster, ...)
+				if (Instance->Strands.DebugAttributeBuffer.Buffer == nullptr)
+				{
+					CreateHairStrandsDebugAttributeBuffer(GraphBuilder, &Instance->Strands.DebugAttributeBuffer, Instance->Strands.Data->Attributes.GetBulkDataSize(), FName(Instance->Debug.MeshComponentName));
+				}
+				FRDGImportedBuffer OutRenAttributeBuffer = Register(GraphBuilder, Instance->Strands.DebugAttributeBuffer, ERDGImportedBufferFlags::CreateUAV);
+
+				AddPatchAttributePass(
+					GraphBuilder,
+					ShaderMap,
+					Instance->Strands.RestResource->GetCurveCount(),
+					PatchMode,
+					bValidGuide,
+					bUseSingleGuide,
+					Instance->Strands.Data->AttributeOffsets,
+					Register(GraphBuilder, Instance->Strands.RestResource->AttributeBuffer, ERDGImportedBufferFlags::CreateSRV).Buffer,
+					RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->CurveBuffer),
+					RegisterAsSRV(GraphBuilder, Instance->Strands.ClusterCullingResource->VertexToClusterIdBuffer),
+					bValidGuide &&  bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->InterpolationBuffer) : nullptr,
+					bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation0Buffer) : nullptr,
+					bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation1Buffer) : nullptr,
+					OutRenAttributeBuffer);
+			}
+			#endif
+
+			// 2.2 Update the VF input with the update resources
+			Instance->HairGroupPublicData->VFInput = InternalComputeHairStrandsVertexInputData(&GraphBuilder, Instance, ViewMode);
 
 			// 3. Compute cluster AABBs (used for LODing and voxelization)
 			{
@@ -2137,6 +2207,7 @@ void ComputeHairStrandsInterpolation(
 								IndexBuffer,
 								&Instance->Strands.RenRaytracingResource->RayTracingGeometry,
 								Instance->Debug.GroomAssetName,
+								Instance->Debug.MeshComponentName,
 								HairLODIndex,
 								bProceduralPrimitive,
 								ProceduralSplits
@@ -2157,7 +2228,7 @@ void ComputeHairStrandsInterpolation(
 
 		// Sanity check
 		check(Instance->HairGroupPublicData->VFInput.Strands.PositionBuffer.Buffer);
-		Instance->Strands.UniformBuffer.UpdateUniformBufferImmediate(Instance->GetHairStandsUniformShaderParameters());
+		Instance->Strands.UniformBuffer.UpdateUniformBufferImmediate(Instance->GetHairStandsUniformShaderParameters(ViewMode));
 	}
 	else if (InstanceGeometryType == EHairGeometryType::Cards)
 	{	
@@ -2201,7 +2272,6 @@ void ComputeHairStrandsInterpolation(
 						LOD.Guides.RestResource->GetVertexCount(),
 						MeshLODIndex,
 						1.0f,
-						false,
 						LOD.Guides.HairInterpolationType,
 						InstanceGeometryType,
 						CullingData,
@@ -2214,19 +2284,17 @@ void ComputeHairStrandsInterpolation(
 						bHasSkinning ? LOD.Guides.DeformedRootResource : nullptr,
 						bHasSkinning && bValidGuide ? Instance->Guides.DeformedRootResource : nullptr,
 						RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->PositionBuffer),
-						RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->Attribute0Buffer),
+						RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->VertexToCurveBuffer),
 						bUseSingleGuide,
 						bValidGuide &&  bUseSingleGuide ? RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->InterpolationBuffer) : nullptr,
 						bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->Interpolation0Buffer) : nullptr,
 						bValidGuide && !bUseSingleGuide ? RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->Interpolation1Buffer) : nullptr,
 						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer) : nullptr,
 						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current)) : nullptr,
-						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->Attribute0Buffer) : nullptr,
-						Guides_DeformedPositionBuffer,
-						nullptr,
-						nullptr,
-						nullptr,
 						RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->SimRootPointIndexBuffer),
+						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->VertexToCurveBuffer) : nullptr,
+						nullptr,
+						Guides_DeformedPositionBuffer,
 						FHairStrandsDeformedRootResource::FLOD::Current); // <- this should be optional
 
 					AddHairCardsDeformationPass(
@@ -2257,7 +2325,7 @@ void ComputeHairStrandsInterpolation(
 			}
 
 			#if RHI_RAYTRACING
-			if (LOD.RaytracingResource)
+			if (LOD.RaytracingResource && IsRayTracingEnabled())
 			{
 				FCardsOrMeshesResourceBLASParameters* Parameters = GraphBuilder.AllocParameters<FCardsOrMeshesResourceBLASParameters>();
 				Parameters->PositionBuffer = LOD.DeformedResource ? Register(GraphBuilder, LOD.DeformedResource->GetBuffer(FHairCardsDeformedResource::Current), ERDGImportedBufferFlags::None).Buffer : nullptr;
@@ -2282,7 +2350,7 @@ void ComputeHairStrandsInterpolation(
 						const bool bLocalNeedBuild = !LocalLOD.RaytracingResource->bIsRTGeometryInitialized;
 						if (bLocalNeedBuild)
 						{
-							BuildHairAccelerationStructure_Cards(RHICmdList, LocalLOD.RestResource, LocalLOD.DeformedResource, &LocalLOD.RaytracingResource->RayTracingGeometry, Instance->Debug.GroomAssetName, HairLODIndex);
+							BuildHairAccelerationStructure_Cards(RHICmdList, LocalLOD.RestResource, LocalLOD.DeformedResource, &LocalLOD.RaytracingResource->RayTracingGeometry, Instance->Debug.GroomAssetName, Instance->Debug.MeshComponentName, HairLODIndex);
 							LocalLOD.RaytracingResource->bIsRTGeometryInitialized = true;
 						}
 						else if (bNeedUpdate)
@@ -2400,6 +2468,7 @@ void ResetHairStrandsInterpolation(
 		Instance->Guides.RestRootResource,
 		Instance->Guides.DeformedRootResource,
 		RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer),
+		RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->VertexToCurveBuffer),
 		DeformedPositionBuffer,
 		Instance->Guides.RestResource->GetPositionOffset(),
 		RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),

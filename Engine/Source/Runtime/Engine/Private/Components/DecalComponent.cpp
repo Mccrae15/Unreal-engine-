@@ -5,11 +5,14 @@
 =============================================================================*/
 
 #include "Components/DecalComponent.h"
+#include "Engine/World.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
+#include "SceneInterface.h"
 #include "TimerManager.h"
 #include "SceneManagement.h"
+#include "SceneView.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "HAL/LowLevelMemTracker.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(DecalComponent)
 
@@ -26,7 +29,8 @@ FDeferredDecalProxy::FDeferredDecalProxy(const UDecalComponent* InComponent)
 	, InvFadeInDuration(1.0f)
 	, FadeStartDelayNormalized(1.0f)
 	, FadeInStartDelayNormalized(0.0f)
-	, FadeScreenSize( InComponent->FadeScreenSize )
+	, FadeScreenSize(InComponent->FadeScreenSize)
+	, DecalColor(InComponent->DecalColor)
 {
 	UMaterialInterface* EffectiveMaterial = UMaterial::GetDefaultMaterial(MD_DeferredDecal);
 	UMaterialInterface* ComponentMaterial = InComponent->GetDecalMaterial();
@@ -56,6 +60,43 @@ FDeferredDecalProxy::FDeferredDecalProxy(const UDecalComponent* InComponent)
 	}
 	
 	if ( InComponent->GetOwner() )
+	{
+		DrawInGame &= !(InComponent->GetOwner()->IsHidden());
+#if WITH_EDITOR
+		DrawInEditor &= !InComponent->GetOwner()->IsHiddenEd();
+#endif
+	}
+}
+
+FDeferredDecalProxy::FDeferredDecalProxy(const USceneComponent* InComponent, UMaterialInterface* InMaterial)
+	: DrawInGame(InComponent->GetVisibleFlag() && !InComponent->bHiddenInGame)
+	, DrawInEditor(InComponent->GetVisibleFlag())
+	, InvFadeDuration(-1.0f)
+	, InvFadeInDuration(1.0f)
+	, FadeStartDelayNormalized(1.0f)
+	, FadeInStartDelayNormalized(0.0f)
+	, FadeScreenSize(0.1f)
+{
+	Component = InComponent;
+	DecalMaterial = InMaterial;
+	if (InMaterial == nullptr || (InMaterial->GetMaterial()->MaterialDomain != MD_DeferredDecal))
+	{
+		DecalMaterial = UMaterial::GetDefaultMaterial(MD_DeferredDecal);
+	}
+
+	SetTransformIncludingDecalSize(FTransform::Identity, InComponent->CalcBounds(InComponent->GetComponentTransform()));
+	bOwnerSelected = InComponent->IsOwnerSelected();
+	SortOrder = 0;
+
+#if WITH_EDITOR
+	// We don't want to fade when we're editing, only in Simulate/PIE/Game
+	if (!GIsEditor || (InComponent->GetWorld() && InComponent->GetWorld()->IsPlayInEditor()))
+#endif
+	{
+		InitializeFadingParameters(InComponent->GetWorld()->GetTimeSeconds(), 1.0f, 1.0f, 0.0f, 0.0f);
+	}
+
+	if (InComponent->GetOwner())
 	{
 		DrawInGame &= !(InComponent->GetOwner()->IsHidden());
 #if WITH_EDITOR
@@ -242,6 +283,13 @@ void UDecalComponent::SetFadeScreenSize(float NewFadeScreenSize)
 void UDecalComponent::SetSortOrder(int32 Value)
 {
 	SortOrder = Value;
+
+	MarkRenderStateDirty();
+}
+
+void UDecalComponent::SetDecalColor(const FLinearColor& InColor)
+{
+	DecalColor = InColor;
 
 	MarkRenderStateDirty();
 }

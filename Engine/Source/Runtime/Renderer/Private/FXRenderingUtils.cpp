@@ -3,14 +3,15 @@
 #include "FXRenderingUtils.h"
 #include "MaterialShared.h"
 #include "Lumen/LumenScreenProbeGather.h"
+#include "PrimitiveSceneProxy.h"
+#include "SceneInterface.h"
 
 bool FFXRenderingUtils::CanMaterialRenderBeforeFXPostOpaque(
 	const FSceneViewFamily& ViewFamily,
 	const FPrimitiveSceneProxy& SceneProxy,
 	const FMaterial& Material)
 {
-	const EBlendMode BlendMode = Material.GetBlendMode();
-	const bool bTranslucent = IsTranslucentBlendMode(BlendMode);		
+	const bool bTranslucent = IsTranslucentBlendMode(Material);
 
 	if (!bTranslucent)
 	{

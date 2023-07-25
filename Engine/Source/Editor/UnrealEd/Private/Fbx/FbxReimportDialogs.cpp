@@ -32,6 +32,7 @@
 //Meshes includes
 #include "MeshUtilities.h"
 #include "RawMesh.h"
+#include "MaterialDomain.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/Material.h"
 #include "GeomFitUtils.h"
@@ -48,6 +49,7 @@
 //Skeletal mesh includes
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "AnimEncoding.h"

@@ -25,6 +25,12 @@ public:
 		SerializeIdent(Ar, &HostedBy);
 	}
 
+	virtual void Empty() override 
+	{
+		HostedBy = nullptr;
+		FTopologicalEntity::Empty();
+	}
+
 	const FMetadataDictionary& GetMetadataDictionary() const
 	{
 		return Dictionary;
@@ -127,7 +133,11 @@ public:
 
 	void RemoveOfHost()
 	{
-		GetHost()->Remove(this);
+		if (FTopologicalShapeEntity* Host = GetHost())
+		{
+			Host->Remove(this);
+			ResetHost();
+		}
 	}
 
 	virtual void Remove(const FTopologicalShapeEntity*) = 0;

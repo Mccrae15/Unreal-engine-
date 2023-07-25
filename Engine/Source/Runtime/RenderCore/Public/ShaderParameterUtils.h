@@ -152,53 +152,52 @@ GUARD_SETSHADERVALUE(FQuat4)
 GUARD_SETSHADERVALUE(FSphere3)
 GUARD_SETSHADERVALUE(FBox3)
 
-template<typename TRHIShader, typename TRHICmdList>
-FORCEINLINE void SetBindlessParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHIDescriptorHandle Handle)
-{
-	if (Handle.IsValid())
-	{
-		const uint32 BindlessIndex = Handle.GetIndex();
-		RHICmdList.SetShaderParameter(Shader, 0, Parameter.GetBaseIndex(), sizeof(BindlessIndex), &BindlessIndex);
-	}
-}
-
-
 /**
  * Sets the value of a shader surface parameter (e.g. to access MSAA samples).
  * Template'd on shader type (e.g. pixel shader or compute shader).
  */
 template<typename TRHIShader, typename TRHICmdList>
-FORCEINLINE void SetTextureParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHITexture* NewTextureRHI, uint32 ElementIndex = 0)
+UE_DEPRECATED(5.2, "SetTextureParameter with an index can't be supported anymore. Your code should be changed to use shader parameter structs to utilize resource arrays.")
+FORCEINLINE void SetTextureParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHITexture* TextureRHI, uint32 ElementIndex)
 {
 	if (Parameter.IsBound() && ElementIndex < Parameter.GetNumResources())
 	{
 #if PLATFORM_SUPPORTS_BINDLESS_RENDERING
 		if (Parameter.GetType() == EShaderParameterType::BindlessResourceIndex)
 		{
-			const FRHIDescriptorHandle Handle = NewTextureRHI ? NewTextureRHI->GetDefaultBindlessHandle() : FRHIDescriptorHandle();
-			SetBindlessParameter(RHICmdList, Shader, Parameter, Handle);
+			checkf(ElementIndex == 0, TEXT("Bindless resources don't support element offsets"));
+			RHICmdList.SetBindlessTexture(Shader, Parameter.GetBaseIndex(), TextureRHI);
 		}
 		else
 #endif
 		{
-			RHICmdList.SetShaderTexture(Shader, Parameter.GetBaseIndex() + ElementIndex, NewTextureRHI);
+			RHICmdList.SetShaderTexture(Shader, Parameter.GetBaseIndex() + ElementIndex, TextureRHI);
 		}
 	}
+}
+
+template<typename TRHIShader, typename TRHICmdList>
+FORCEINLINE void SetTextureParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHITexture* TextureRHI)
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SetTextureParameter(RHICmdList, Shader, Parameter, TextureRHI, 0);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 /**
  * Sets the value of a shader sampler parameter. Template'd on shader type.
  */
 template<typename TRHIShader, typename TRHICmdList>
-FORCEINLINE void SetSamplerParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHISamplerState* SamplerStateRHI, uint32 ElementIndex = 0)
+UE_DEPRECATED(5.2, "SetSamplerParameter with an index can't be supported anymore. Your code should be changed to use shader parameter structs to utilize resource arrays.")
+FORCEINLINE void SetSamplerParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHISamplerState* SamplerStateRHI, uint32 ElementIndex)
 {
 	if (Parameter.IsBound() && ElementIndex < Parameter.GetNumResources())
 	{
 #if PLATFORM_SUPPORTS_BINDLESS_RENDERING
 		if (Parameter.GetType() == EShaderParameterType::BindlessSamplerIndex)
 		{
-			const FRHIDescriptorHandle Handle = SamplerStateRHI ? SamplerStateRHI->GetBindlessHandle() : FRHIDescriptorHandle();
-			SetBindlessParameter(RHICmdList, Shader, Parameter, Handle);
+			checkf(ElementIndex == 0, TEXT("Bindless resources don't support element offsets"));
+			RHICmdList.SetBindlessSampler(Shader, Parameter.GetBaseIndex(), SamplerStateRHI);
 		}
 		else
 #endif
@@ -208,11 +207,19 @@ FORCEINLINE void SetSamplerParameter(TRHICmdList& RHICmdList, TRHIShader* Shader
 	}
 }
 
+template<typename TRHIShader, typename TRHICmdList>
+FORCEINLINE void SetSamplerParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHISamplerState* SamplerStateRHI)
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SetSamplerParameter(RHICmdList, Shader, Parameter, SamplerStateRHI, 0);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
 
 /**
  * Sets the value of a shader texture parameter. Template'd on shader type.
  */
 template<typename TRHIShader, typename TRHICmdList>
+UE_DEPRECATED(5.2, "SetTextureParameter with an index can't be supported anymore. Your code should be changed to use shader parameter structs to utilize resource arrays.")
 FORCEINLINE void SetTextureParameter(
 	TRHICmdList& RHICmdList,
 	TRHIShader* Shader,
@@ -220,9 +227,10 @@ FORCEINLINE void SetTextureParameter(
 	const FShaderResourceParameter& SamplerParameter,
 	FRHISamplerState* SamplerStateRHI,
 	FRHITexture* TextureRHI,
-	uint32 ElementIndex = 0
+	uint32 ElementIndex
 	)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	SetTextureParameter(RHICmdList, Shader, TextureParameter, TextureRHI, ElementIndex);
 	
 	// @todo UE samplerstate Should we maybe pass in two separate values? SamplerElement and TextureElement? Or never allow an array of samplers? Unsure best
@@ -233,19 +241,29 @@ FORCEINLINE void SetTextureParameter(
 	// This assumes that the all textures want to use the same sampler state
 
 	SetSamplerParameter(RHICmdList, Shader, SamplerParameter, SamplerStateRHI, ElementIndex);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+template<typename TRHIShader, typename TRHICmdList>
+FORCEINLINE void SetTextureParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& TextureParameter, const FShaderResourceParameter& SamplerParameter, FRHISamplerState* SamplerStateRHI, FRHITexture* TextureRHI)
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SetTextureParameter(RHICmdList, Shader, TextureParameter, SamplerParameter, SamplerStateRHI, TextureRHI, 0);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 /**
  * Sets the value of a shader texture parameter.  Template'd on shader type
  */
 template<typename TRHIShader, typename TRHICmdList>
+UE_DEPRECATED(5.2, "SetTextureParameter with an index can't be supported anymore. Your code should be changed to use shader parameter structs to utilize resource arrays.")
 FORCEINLINE void SetTextureParameter(
 	TRHICmdList& RHICmdList,
 	TRHIShader* Shader,
 	const FShaderResourceParameter& TextureParameter,
 	const FShaderResourceParameter& SamplerParameter,
 	const FTexture* Texture,
-	uint32 ElementIndex = 0
+	uint32 ElementIndex
 )
 {
 	if (TextureParameter.IsBound())
@@ -253,7 +271,18 @@ FORCEINLINE void SetTextureParameter(
 		Texture->LastRenderTime = FApp::GetCurrentTime();
 	}
 
-	SetTextureParameter(RHICmdList, Shader, TextureParameter, SamplerParameter, Texture->SamplerStateRHI, Texture->TextureRHI, ElementIndex);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SetTextureParameter(RHICmdList, Shader, TextureParameter, Texture->TextureRHI, ElementIndex);
+	SetSamplerParameter(RHICmdList, Shader, SamplerParameter, Texture->SamplerStateRHI, ElementIndex);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+template<typename TRHIShader, typename TRHICmdList>
+FORCEINLINE void SetTextureParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& TextureParameter, const FShaderResourceParameter& SamplerParameter, const FTexture* Texture)
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SetTextureParameter(RHICmdList, Shader, TextureParameter, SamplerParameter, Texture, 0);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 /**
@@ -261,64 +290,55 @@ FORCEINLINE void SetTextureParameter(
  * Template'd on shader type (e.g. pixel shader or compute shader).
  */
 template<typename TRHIShader, typename TRHICmdList>
-FORCEINLINE void SetSRVParameter(
-	TRHICmdList& RHICmdList,
-	TRHIShader* Shader,
-	const FShaderResourceParameter& Parameter,
-	FRHIShaderResourceView* NewShaderResourceViewRHI
-	)
+FORCEINLINE void SetSRVParameter(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHIShaderResourceView* SRV)
 {
 	if (Parameter.IsBound())
 	{
-		RHICmdList.SetShaderResourceViewParameter(Shader, Parameter.GetBaseIndex(), NewShaderResourceViewRHI);
+#if PLATFORM_SUPPORTS_BINDLESS_RENDERING
+		if (Parameter.GetType() == EShaderParameterType::BindlessResourceIndex)
+		{
+			RHICmdList.SetBindlessResourceView(Shader, Parameter.GetBaseIndex(), SRV);
+		}
+		else
+#endif
+		{
+			RHICmdList.SetShaderResourceViewParameter(Shader, Parameter.GetBaseIndex(), SRV);
+		}
 	}
 }
-
 
 template<typename TRHIShader, typename TRHICmdList>
-FORCEINLINE void SetSRVParameter(
-	TRHICmdList& RHICmdList,
-	const TRefCountPtr<TRHIShader>& Shader,
-	const FShaderResourceParameter& Parameter,
-	FRHIShaderResourceView* NewShaderResourceViewRHI
-)
+FORCEINLINE void SetSRVParameter(TRHICmdList& RHICmdList, const TRefCountPtr<TRHIShader>& Shader, const FShaderResourceParameter& Parameter, FRHIShaderResourceView* SRV)
+{
+	SetSRVParameter(RHICmdList, Shader.GetReference(), Parameter, SRV);
+}
+
+template<typename TRHIShader, typename TRHICmdList>
+FORCEINLINE void SetUAVParameterSafeShader(TRHICmdList& RHICmdList, TRHIShader* Shader, const FShaderResourceParameter& Parameter, FRHIUnorderedAccessView* UAV)
 {
 	if (Parameter.IsBound())
 	{
-		RHICmdList.SetShaderResourceViewParameter(Shader.GetReference(), Parameter.GetBaseIndex(), NewShaderResourceViewRHI);
+#if PLATFORM_SUPPORTS_BINDLESS_RENDERING
+		if (Parameter.GetType() == EShaderParameterType::BindlessResourceIndex)
+		{
+			RHICmdList.SetBindlessUAV(Shader, Parameter.GetBaseIndex(), UAV);
+		}
+		else
+#endif
+		{
+			RHICmdList.SetUAVParameter(Shader, Parameter.GetBaseIndex(), UAV);
+		}
 	}
 }
 
-/**
- * Sets the value of a unordered access view parameter
- */
-FORCEINLINE void SetUAVParameter(
-	FRHIComputeCommandList& RHICmdList,
-	FRHIComputeShader* ComputeShader,
-	const FShaderResourceParameter& Parameter,
-	FRHIUnorderedAccessView* NewUnorderedAccessViewRHI
-	)
+FORCEINLINE void SetUAVParameter(FRHIComputeCommandList& RHICmdList, FRHIComputeShader* Shader, const FShaderResourceParameter& Parameter, FRHIUnorderedAccessView* UAV)
 {
-	if (Parameter.IsBound())
-	{
-		RHICmdList.SetUAVParameter(ComputeShader, Parameter.GetBaseIndex(), NewUnorderedAccessViewRHI);
-	}
+	SetUAVParameterSafeShader(RHICmdList, Shader, Parameter, UAV);
 }
 
-/**
- * Sets the value of a unordered access view parameter
- */
-FORCEINLINE void SetUAVParameter(
-	FRHICommandList& RHICmdList,
-	FRHIPixelShader* PixelShader,
-	const FShaderResourceParameter& Parameter,
-	FRHIUnorderedAccessView* NewUnorderedAccessViewRHI
-)
+FORCEINLINE void SetUAVParameter(FRHICommandList& RHICmdList, FRHIPixelShader* Shader, const FShaderResourceParameter& Parameter, FRHIUnorderedAccessView* UAV)
 {
-	if (Parameter.IsBound())
-	{
-		RHICmdList.SetUAVParameter(PixelShader, Parameter.GetBaseIndex(), NewUnorderedAccessViewRHI);
-	}
+	SetUAVParameterSafeShader(RHICmdList, Shader, Parameter, UAV);
 }
 
 
@@ -373,6 +393,12 @@ inline void FRWShaderParameter::SetTexture(TRHICmdList& RHICmdList, const TShade
 	{
 		SetTextureParameter(RHICmdList, Shader, SRVParameter, Texture);
 	}
+}
+
+template<typename TRHICmdList>
+inline void FRWShaderParameter::SetUAV(TRHICmdList& RHICmdList, FRHIComputeShader* ComputeShader, FRHIUnorderedAccessView* UAV) const
+{
+	SetUAVParameter(RHICmdList, ComputeShader, UAVParameter, UAV);
 }
 
 template<typename TRHICmdList>

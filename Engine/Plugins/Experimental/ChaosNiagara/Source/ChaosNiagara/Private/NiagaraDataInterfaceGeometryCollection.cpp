@@ -1,12 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceGeometryCollection.h"
+#include "GeometryCollection/GeometryCollection.h"
+#include "GeometryCollection/GeometryCollectionActor.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraSimStageData.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
-#include "ShaderParameterUtils.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
+#include "RenderingThread.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceGeometryCollection)
 
@@ -447,7 +451,7 @@ bool UNiagaraDataInterfaceGeometryCollection::GetFunctionHLSL(const FNiagaraData
 bool UNiagaraDataInterfaceGeometryCollection::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
-	bSuccess &= InVisitor->UpdateString(TEXT("UNiagaraDataInterfaceGeometryCollectionSource"), GetShaderFileHash(NDIGeometryCollectionLocal::TemplateShaderFilePath, EShaderPlatform::SP_PCD3D_SM5).ToString());
+	bSuccess &= InVisitor->UpdateShaderFile(NDIGeometryCollectionLocal::TemplateShaderFilePath);
 	bSuccess &= InVisitor->UpdateShaderParameters<FShaderParameters>();
 	return bSuccess;
 }
@@ -455,10 +459,7 @@ bool UNiagaraDataInterfaceGeometryCollection::AppendCompileHash(FNiagaraCompileH
 void UNiagaraDataInterfaceGeometryCollection::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 	const TMap<FString, FStringFormatArg> TemplateArgs = { {TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol}, };
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDIGeometryCollectionLocal::TemplateShaderFilePath, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, NDIGeometryCollectionLocal::TemplateShaderFilePath, TemplateArgs);
 }
 #endif
 

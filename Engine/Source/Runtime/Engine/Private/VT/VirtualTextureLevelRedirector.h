@@ -17,6 +17,7 @@ public:
 
 	//~ Begin IVirtualTexture Interface.
 	virtual FVTRequestPageResult RequestPageData(
+		FRHICommandList& RHICmdList,
 		const FVirtualTextureProducerHandle& ProducerHandle,
 		uint8 LayerMask,
 		uint8 vLevel,
@@ -25,7 +26,7 @@ public:
 	) override;
 
 	virtual IVirtualTextureFinalizer* ProducePageData(
-		FRHICommandListImmediate& RHICmdList,
+		FRHICommandList& RHICmdList,
 		ERHIFeatureLevel::Type FeatureLevel,
 		EVTProducePageFlags Flags,
 		const FVirtualTextureProducerHandle& ProducerHandle,

@@ -40,6 +40,11 @@ private:
 
 public:
 
+	virtual ~FBody() override
+	{
+		FBody::Empty();
+	}
+
 	virtual void Serialize(FCADKernelArchive& Ar) override
 	{
 		FTopologicalShapeEntity::Serialize(Ar);
@@ -78,8 +83,12 @@ public:
 
 	virtual void Remove(const FTopologicalShapeEntity* ShellToRemove) override;
 
-	void Empty()
+	virtual void Empty() override
 	{
+		for (TSharedPtr<FShell>& Shell : Shells)
+		{
+			Shell->ResetHost();
+		}
 		Shells.Empty();
 	}
 

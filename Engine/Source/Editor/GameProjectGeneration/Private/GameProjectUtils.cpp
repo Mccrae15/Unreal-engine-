@@ -226,6 +226,18 @@ namespace
 				true /* ShouldReplaceExistingValue */);
 		}
 	}
+
+	void AddUserInterfaceConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
+	{
+		if (InProjectInfo.bIsBlankTemplate)
+		{
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/Engine.UserInterfaceSettings"),
+				TEXT("bAuthorizeAutomaticWidgetVariableCreation"),
+				TEXT("False"),
+				true /* ShouldReplaceExistingValue */);
+		}
+	}
 } // namespace <>
 
 FText FNewClassInfo::GetClassName() const
@@ -1658,7 +1670,7 @@ TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInfor
 	SlowTask.EnterProgressFrame();
 	{
 		// Open a new feedback scope for the loop so we can report how far through the copy we are
-		FScopedSlowTask InnerSlowTask(FilesToCopy.Num());
+		FScopedSlowTask InnerSlowTask(static_cast<float>(FilesToCopy.Num()));
 		for ( const FString& SrcFilename : FilesToCopy )
 		{
 			// Update the progress
@@ -1747,7 +1759,7 @@ TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInfor
 	SlowTask.EnterProgressFrame();
 	{
 		// Open a new feedback scope for the loop so we can report how far through the process we are
-		FScopedSlowTask InnerSlowTask(FilesThatNeedContentsReplaced.Num());
+		FScopedSlowTask InnerSlowTask(static_cast<float>(FilesThatNeedContentsReplaced.Num()));
 
 		// Open all files with the specified extensions and replace text
 		for ( const FString& FileToFix : FilesThatNeedContentsReplaced )
@@ -1807,6 +1819,7 @@ TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInfor
 	AddNewProjectDefaultShadowConfigValues(InProjectInfo, ConfigValuesToSet);
 	AddPostProcessingConfigValues(InProjectInfo, ConfigValuesToSet);
 	AddWorldPartitionConfigValues(InProjectInfo, ConfigValuesToSet);
+	AddUserInterfaceConfigValues(InProjectInfo, ConfigValuesToSet);
 	
 	TemplateDefs->AddConfigValues(ConfigValuesToSet, TemplateName, ProjectName, InProjectInfo.bShouldGenerateCode);
 
@@ -2072,12 +2085,12 @@ void GameProjectUtils::AddHardwareConfigValues(const FProjectInformation& InProj
 	// Don't override these settings for templates
 	if (InProjectInfo.TemplateFile.IsEmpty())
 	{
-	// New projects always have DX12 by default on Windows
-	ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
-		TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
-		TEXT("DefaultGraphicsRHI"),
+		// New projects always have DX12 by default on Windows
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
+			TEXT("DefaultGraphicsRHI"),
 		TEXT("DefaultGraphicsRHI_DX11"),
-		false /* ShouldReplaceExistingValue */);
+			false /* ShouldReplaceExistingValue */);
 
 		// Force clear D3D12TargetedShaderFormats since the BaseEngine list can change at any time.
 		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
@@ -2117,10 +2130,10 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 			FileContents += TEXT("[/Script/EngineSettings.GameMapsSettings]") LINE_TERMINATOR;
 
 			if (GameProjectUtils::IsEngineStarterContentAvailable() && GameProjectUtils::IsUsingEngineStarterContent(InProjectInfo)) // if use Engine StarterContent
-				{
-					FileContents += TEXT("EditorStartupMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
-					FileContents += TEXT("GameDefaultMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
-				}
+			{
+				FileContents += TEXT("EditorStartupMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
+				FileContents += TEXT("GameDefaultMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
+			}
 
 			if (InProjectInfo.bShouldGenerateCode)
 			{
@@ -2144,6 +2157,7 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 		AddPostProcessingConfigValues(InProjectInfo, ConfigValuesToSet);
 		AddRaytracingConfigValues(InProjectInfo, ConfigValuesToSet);
 		AddWorldPartitionConfigValues(InProjectInfo, ConfigValuesToSet);
+		AddUserInterfaceConfigValues(InProjectInfo, ConfigValuesToSet);
 
 		if (!SaveConfigValues(InProjectInfo, ConfigValuesToSet, OutFailReason))
 		{
@@ -3728,7 +3742,7 @@ bool GameProjectUtils::CheckoutGameProjectFile(const FString& ProjectFilename, F
 
 	if ( !ISourceControlModule::Get().IsEnabled() )
 	{
-		OutFailReason = LOCTEXT("SCCDisabled", "Source control is not enabled. Enable source control in the preferences menu.");
+		OutFailReason = LOCTEXT("SCCDisabled", "Revision control is not enabled. Enable revision control in the preferences menu.");
 		return false;
 	}
 
@@ -3739,7 +3753,7 @@ bool GameProjectUtils::CheckoutGameProjectFile(const FString& ProjectFilename, F
 	FilesToBeCheckedOut.Add(AbsoluteFilename);
 
 	bool bSuccessfullyCheckedOut = false;
-	OutFailReason = LOCTEXT("SCCStateInvalid", "Could not determine source control state.");
+	OutFailReason = LOCTEXT("SCCStateInvalid", "Could not determine revision control state.");
 
 	if(SourceControlState.IsValid())
 	{

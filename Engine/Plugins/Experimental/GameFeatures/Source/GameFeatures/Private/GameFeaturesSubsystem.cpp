@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFeaturesSubsystem.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "GameFeaturesSubsystemSettings.h"
 #include "GameFeaturesProjectPolicies.h"
 #include "GameFeatureData.h"
@@ -8,15 +10,14 @@
 #include "GameFeatureStateChangeObserver.h"
 #include "GameplayTagsManager.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
-#include "Containers/Ticker.h"
-#include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Stats/StatsMisc.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/AssetManagerSettings.h"
-#include "Engine/Engine.h"
 #include "InstallBundleTypes.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameFeaturesSubsystem)
@@ -52,6 +53,36 @@ namespace UE::GameFeatures
 
 		const FText GenericError = NSLOCTEXT("GameFeatures", "CommonErrors.Generic", "An error has occurred. Please try again later.");
 	}
+
+	static bool GCachePluginDetails = true;
+	static FAutoConsoleVariableRef CVarCachePluginDetails(
+		TEXT("GameFeaturePlugin.CachePluginDetails"),
+		GCachePluginDetails,
+		TEXT("Should use plugin details caching."),
+		ECVF_Default);
+
+#if !UE_BUILD_SHIPPING
+	static float GBuiltInPluginLoadTimeReportThreshold = 3.0;
+	static FAutoConsoleVariableRef CVarBuiltInPluginLoadTimeReportThreshold(
+		TEXT("GameFeaturePlugin.BuiltInPluginLoadTimeReportThreshold"),
+		GBuiltInPluginLoadTimeReportThreshold,
+		TEXT("Built-in plugins that take longer than this amount of time, in seconds, will be reported to the log during startup in non-shipping builds."),
+		ECVF_Default);
+
+	static float GBuiltInPluginLoadTimeErrorThreshold = 600;
+	static FAutoConsoleVariableRef CVarBuiltInPluginLoadTimeErrorThreshold(
+		TEXT("GameFeaturePlugin.BuiltInPluginLoadTimeErrorThreshold"),
+		GBuiltInPluginLoadTimeErrorThreshold,
+		TEXT("Built-in plugins that take longer than this amount of time, in seconds, will cause an error during startup in non-shipping builds."),
+		ECVF_Default);
+
+	static int32 GBuiltInPluginLoadTimeMaxReportCount = 10;
+	static FAutoConsoleVariableRef CVarBuiltInPluginLoadTimeMaxReportCount(
+		TEXT("GameFeaturePlugin.BuiltInPluginLoadTimeMaxReportCount"),
+		GBuiltInPluginLoadTimeMaxReportCount,
+		TEXT("When listing worst offenders for built-in plugin load time, show no more than this many plugins, to reduce log spam."),
+		ECVF_Default);
+#endif // !UE_BUILD_SHIPPING
 }
 
 #define GAME_FEATURE_PLUGIN_STATE_LEX_TO_STRING(inEnum, inText)  \
@@ -99,16 +130,40 @@ const FString LexToString(const EGameFeatureTargetState GameFeatureTargetState)
 	static_assert((uint8)EGameFeatureTargetState::Count == 4, TEXT("Update LexToString to include new EGameFeatureTargetState"));
 }
 
-FGameFeaturePluginIdentifier::FGameFeaturePluginIdentifier(const FString& PluginURL)
+void LexFromString(EGameFeatureTargetState& ValueOut, const TCHAR* StringIn)
 {
-	FromPluginURL(PluginURL);
+	//Default value if parsing fails
+	ValueOut = EGameFeatureTargetState::Count;
+
+	if (!StringIn || StringIn[0] == '\0')
+	{
+		ensureAlwaysMsgf(false, TEXT("Invalid empty FString used for EGameFeatureTargetState LexFromString."));
+		return;
+	}
+
+	for (uint8 EnumIndex = 0; EnumIndex < static_cast<uint8>(EGameFeatureTargetState::Count); ++EnumIndex)
+	{
+		EGameFeatureTargetState StateToCheck = static_cast<EGameFeatureTargetState>(EnumIndex);
+		if (LexToString(StateToCheck).Equals(StringIn, ESearchCase::IgnoreCase))
+		{
+			ValueOut = StateToCheck;
+			return;
+		}
+	}
+
+	ensureAlwaysMsgf(false, TEXT("Invalid FString { %s } used for EGameFeatureTargetState LexFromString. Does not correspond to any EGameFeatureTargetState!"), StringIn);
 }
 
-void FGameFeaturePluginIdentifier::FromPluginURL(const FString& PluginURLIn)
+FGameFeaturePluginIdentifier::FGameFeaturePluginIdentifier(FString PluginURL)
+{
+	FromPluginURL(MoveTemp(PluginURL));
+}
+
+void FGameFeaturePluginIdentifier::FromPluginURL(FString PluginURLIn)
 {
 	//Make sure we have no stale data
 	IdentifyingURLSubset.Reset();
-	PluginURL = PluginURLIn;
+	PluginURL = MoveTemp(PluginURLIn);
 
 	PluginProtocol = UGameFeaturesSubsystem::GetPluginURLProtocol(PluginURL);
 
@@ -118,18 +173,18 @@ void FGameFeaturePluginIdentifier::FromPluginURL(const FString& PluginURLIn)
 	{
 
 		int32 PluginProtocolEndIndex = FCString::Strlen(UE::GameFeatures::GameFeaturePluginProtocolPrefix(PluginProtocol));
-		int32 FirstOptionIndex = PluginURLIn.Find(UE::GameFeatures::PluginURLStructureInfo::OptionSeperator, ESearchCase::IgnoreCase, ESearchDir::FromStart, PluginProtocolEndIndex);
+		int32 FirstOptionIndex = PluginURL.Find(UE::GameFeatures::PluginURLStructureInfo::OptionSeperator, ESearchCase::IgnoreCase, ESearchDir::FromStart, PluginProtocolEndIndex);
 		
 		//If we don't have any options, then the IdentifyingURLSubset is just our entire URL except the protocol string
 		if (FirstOptionIndex == INDEX_NONE)
 		{
-			IdentifyingURLSubset = PluginURL.RightChop(PluginProtocolEndIndex);
+			IdentifyingURLSubset = FStringView(PluginURL).RightChop(PluginProtocolEndIndex);
 		}
 		//The IdentifyingURLSubset will be the string between the end of the protocol string and before the first option
 		else
 		{
 			const int32 IdentifierCharCount = (FirstOptionIndex - PluginProtocolEndIndex);
-			IdentifyingURLSubset = PluginURL.Mid(PluginProtocolEndIndex, IdentifierCharCount);
+			IdentifyingURLSubset = FStringView(PluginURL).Mid(PluginProtocolEndIndex, IdentifierCharCount);
 		}
 	}
 }
@@ -137,7 +192,7 @@ void FGameFeaturePluginIdentifier::FromPluginURL(const FString& PluginURLIn)
 bool FGameFeaturePluginIdentifier::operator==(const FGameFeaturePluginIdentifier& Other) const
 {
 	return ((PluginProtocol == Other.PluginProtocol) &&
-			(IdentifyingURLSubset.Equals(Other.IdentifyingURLSubset, ESearchCase::IgnoreCase)));
+			(IdentifyingURLSubset.Equals(Other.IdentifyingURLSubset, ESearchCase::CaseSensitive)));
 }
 
 bool FGameFeaturePluginIdentifier::ExactMatchesURL(const FString& PluginURLIn) const
@@ -212,7 +267,7 @@ void UGameFeaturesSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("LoadGameFeaturePlugin"),
-		TEXT("Loads and activates a game feature plugin by URL"),
+		TEXT("Loads and activates a game feature plugin by PluginName or URL"),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 		{
 			if (Args.Num() > 0)
@@ -233,7 +288,7 @@ void UGameFeaturesSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("DeactivateGameFeaturePlugin"),
-		TEXT("Deactivates a game feature plugin by URL"),
+		TEXT("Deactivates a game feature plugin by PluginName or URL"),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 		{
 			if (Args.Num() > 0)
@@ -254,7 +309,7 @@ void UGameFeaturesSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("UnloadGameFeaturePlugin"),
-		TEXT("Unloads a game feature plugin by URL"),
+		TEXT("Unloads a game feature plugin by PluginName or URL"),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 		{
 			if (Args.Num() > 0)
@@ -275,7 +330,7 @@ void UGameFeaturesSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("UnloadAndKeepRegisteredGameFeaturePlugin"),
-		TEXT("Unloads a game feature plugin by URL but keeps it registered"),
+		TEXT("Unloads a game feature plugin by PluginName or URL but keeps it registered"),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 			{
 				if (Args.Num() > 0)
@@ -296,7 +351,7 @@ void UGameFeaturesSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("ReleaseGameFeaturePlugin"),
-		TEXT("Releases a game feature plugin's InstallBundle data by URL"),
+		TEXT("Releases a game feature plugin's InstallBundle data by PluginName or URL"),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 			{
 				if (Args.Num() > 0)
@@ -317,7 +372,7 @@ void UGameFeaturesSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("CancelGameFeaturePlugin"),
-		TEXT("Cancel any state changes for a game feature plugin by URL"),
+		TEXT("Cancel any state changes for a game feature plugin by PluginName or URL"),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 			{
 				if (Args.Num() > 0)
@@ -328,6 +383,27 @@ void UGameFeaturesSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 						PluginURL = Args[0];
 					}
 					UGameFeaturesSubsystem::Get().CancelGameFeatureStateChange(PluginURL);
+				}
+				else
+				{
+					Ar.Logf(TEXT("Expected a game feature plugin URL as an argument"));
+				}
+			}),
+		ECVF_Cheat);
+
+	IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("TerminateGameFeaturePlugin"),
+		TEXT("Terminates a game feature plugin by PluginName or URL"),
+		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
+			{
+				if (Args.Num() > 0)
+				{
+					FString PluginURL;
+					if (!UGameFeaturesSubsystem::Get().GetPluginURLByName(Args[0], /*out*/ PluginURL))
+					{
+						PluginURL = Args[0];
+					}
+					UGameFeaturesSubsystem::Get().TerminateGameFeaturePlugin(PluginURL);
 				}
 				else
 				{
@@ -380,6 +456,7 @@ void UGameFeaturesSubsystem::UnloadGameFeatureData(const UGameFeatureData* GameF
 
 void UGameFeaturesSubsystem::AddGameFeatureToAssetManager(const UGameFeatureData* GameFeatureToAdd, const FString& PluginName, TArray<FName>& OutNewPrimaryAssetTypes)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(GFP_AddToAssetManager);
 	check(GameFeatureToAdd);
 	FString PluginRootPath = TEXT("/") + PluginName + TEXT("/");
 	UAssetManager& LocalAssetManager = UAssetManager::Get();
@@ -1110,14 +1187,86 @@ void UGameFeaturesSubsystem::LoadBuiltInGameFeaturePlugin(const TSharedRef<IPlug
 	UAssetManager::Get().PopBulkScanning();
 }
 
+#if UE_BUILD_SHIPPING
+class FBuiltInPluginLoadTimeTracker {};
+class FBuiltInPluginLoadTimeTrackerScope
+{
+public:
+	FORCEINLINE FBuiltInPluginLoadTimeTrackerScope(FBuiltInPluginLoadTimeTracker& InTracker, const TSharedRef<IPlugin>& Plugin) {};
+};
+#else // !UE_BUILD_SHIPPING
+class FBuiltInPluginLoadTimeTracker
+{
+public:
+	~FBuiltInPluginLoadTimeTracker()
+	{
+		if (PluginLoadTimes.Num() > 0)
+		{
+			UE_LOG(LogGameFeatures, Display, TEXT("There were %d built in plugins that took longer than %.4fs to load. Listing worst offenders."), PluginLoadTimes.Num(), UE::GameFeatures::GBuiltInPluginLoadTimeReportThreshold);
+			const int32 NumToReport = FMath::Min(PluginLoadTimes.Num(), UE::GameFeatures::GBuiltInPluginLoadTimeMaxReportCount);
+			Algo::Sort(PluginLoadTimes, [](const TPair<FString, double>& A, TPair<FString, double>& B) { return A.Value > B.Value; });
+			for (int32 PluginIdx = 0; PluginIdx < NumToReport; ++PluginIdx)
+			{
+				const TPair<FString, double>& Plugin = PluginLoadTimes[PluginIdx];
+				double LoadTime = Plugin.Value;
+				if (LoadTime >= UE::GameFeatures::GBuiltInPluginLoadTimeErrorThreshold)
+				{
+					UE_LOG(LogGameFeatures, Error, TEXT("%s took %.4f seconds to load. Something was done to significantly increase the load time of this plugin and it is now well outside what is acceptable. Reduce the load time to much less than %.4f seconds. Ideally, reduce the load time to less than %.4f seconds."),
+						*Plugin.Key, Plugin.Value, UE::GameFeatures::GBuiltInPluginLoadTimeErrorThreshold, UE::GameFeatures::GBuiltInPluginLoadTimeReportThreshold);
+				}
+				else
+				{
+					UE_LOG(LogGameFeatures, Display, TEXT("  %.4fs\t%s"), Plugin.Value, *Plugin.Key);
+				}
+			}
+		}
+	}
+
+	void ReportPlugin(const FString& PluginName, double LoadTime)
+	{
+		PluginLoadTimes.Emplace(PluginName, LoadTime);
+	}
+
+private:
+	TArray<TPair<FString, double>> PluginLoadTimes;
+	
+};
+
+class FBuiltInPluginLoadTimeTrackerScope
+{
+public:
+	FBuiltInPluginLoadTimeTrackerScope(FBuiltInPluginLoadTimeTracker& InTracker, const TSharedRef<IPlugin>& Plugin)
+		: Tracker(InTracker), PluginName(Plugin->GetName()), StartTime(FPlatformTime::Seconds())
+	{}
+
+	~FBuiltInPluginLoadTimeTrackerScope()
+	{
+		double LoadTime = FPlatformTime::Seconds() - StartTime;
+		if (LoadTime >= UE::GameFeatures::GBuiltInPluginLoadTimeReportThreshold)
+		{
+			Tracker.ReportPlugin(PluginName, LoadTime);
+		}
+	}
+
+private:
+	FBuiltInPluginLoadTimeTracker& Tracker;
+	FString PluginName;
+	double StartTime;
+};
+
+#endif // !UE_BUILD_SHIPPING
+
 void UGameFeaturesSubsystem::LoadBuiltInGameFeaturePlugins(FBuiltInPluginAdditionalFilters AdditionalFilter)
 {
+	SCOPE_LOG_TIME_IN_SECONDS(TEXT("BuiltInGameFeaturePlugins loaded."), nullptr);
 	UAssetManager::Get().PushBulkScanning();
 	UGameplayTagsManager::Get().PushDeferOnGameplayTagTreeChangedBroadcast();
 
+	FBuiltInPluginLoadTimeTracker PluginLoadTimeTracker;
 	TArray<TSharedRef<IPlugin>> EnabledPlugins = IPluginManager::Get().GetEnabledPlugins();
 	for (const TSharedRef<IPlugin>& Plugin : EnabledPlugins)
 	{
+		FBuiltInPluginLoadTimeTrackerScope TrackerScope(PluginLoadTimeTracker, Plugin);
 		LoadBuiltInGameFeaturePlugin(Plugin, AdditionalFilter);
 	}
 
@@ -1184,9 +1333,15 @@ void UGameFeaturesSubsystem::GetLoadedGameFeaturePluginFilenamesForCooking(TArra
 	}
 }
 
-EGameFeaturePluginState UGameFeaturesSubsystem::GetPluginState(const FString& PluginURL)
+EGameFeaturePluginState UGameFeaturesSubsystem::GetPluginState(const FString& PluginURL) const
 {
-	if (UGameFeaturePluginStateMachine* StateMachine = FindGameFeaturePluginStateMachine(PluginURL))
+	FGameFeaturePluginIdentifier PluginIdentifier(PluginURL);
+	return GetPluginState(PluginIdentifier);
+}
+
+EGameFeaturePluginState UGameFeaturesSubsystem::GetPluginState(FGameFeaturePluginIdentifier PluginIdentifier) const
+{
+	if (UGameFeaturePluginStateMachine* StateMachine = FindGameFeaturePluginStateMachine(PluginIdentifier))
 	{
 		return StateMachine->GetCurrentState();
 	}
@@ -1198,9 +1353,28 @@ EGameFeaturePluginState UGameFeaturesSubsystem::GetPluginState(const FString& Pl
 
 bool UGameFeaturesSubsystem::GetGameFeaturePluginDetails(const FString& PluginDescriptorFilename, FGameFeaturePluginDetails& OutPluginDetails) const
 {
-	// @TODO: We load the descriptor 2-3 per plugin because FPluginReferenceDescriptor doesn't cache any of this info.
+	TRACE_CPUPROFILER_EVENT_SCOPE(GFP_GetPluginDetails);
+
 	// GFPs are implemented with a plugin so FPluginReferenceDescriptor doesn't know anything about them.
 	// Need a better way of storing GFP specific plugin data...
+
+	FDateTime FileTimeStamp;
+	if (UE::GameFeatures::GCachePluginDetails)
+	{
+		FileTimeStamp = IFileManager::Get().GetTimeStamp(*PluginDescriptorFilename);
+		if (FCachedGameFeaturePluginDetails* ExistingDetails = CachedPluginDetailsByFilename.Find(PluginDescriptorFilename))
+		{
+			if (ExistingDetails->TimeStamp == FileTimeStamp)
+			{
+				OutPluginDetails = ExistingDetails->Details;
+				return true;
+			}
+			else
+			{
+				CachedPluginDetailsByFilename.Remove(PluginDescriptorFilename);
+			}
+		}
+	}
 
 	// Read the file to a string
 	FString FileContents;
@@ -1294,6 +1468,10 @@ bool UGameFeaturesSubsystem::GetGameFeaturePluginDetails(const FString& PluginDe
 		}
 	}
 
+	if (UE::GameFeatures::GCachePluginDetails)
+	{
+		CachedPluginDetailsByFilename.Add(PluginDescriptorFilename, FCachedGameFeaturePluginDetails(OutPluginDetails, FileTimeStamp));
+	}
 	return true;
 }
 
@@ -1315,25 +1493,38 @@ UGameFeaturePluginStateMachine* UGameFeaturesSubsystem::FindGameFeaturePluginSta
 
 UGameFeaturePluginStateMachine* UGameFeaturesSubsystem::FindGameFeaturePluginStateMachine(const FString& PluginURL) const
 {
-	TObjectPtr<UGameFeaturePluginStateMachine> const* ExistingStateMachine = GameFeaturePluginStateMachines.Find(PluginURL);
+	FGameFeaturePluginIdentifier FindPluginIdentifier(PluginURL);
+	return FindGameFeaturePluginStateMachine(FindPluginIdentifier);
+}
+
+UGameFeaturePluginStateMachine* UGameFeaturesSubsystem::FindGameFeaturePluginStateMachine(FGameFeaturePluginIdentifier PluginIdentifier) const
+{
+	TObjectPtr<UGameFeaturePluginStateMachine> const* ExistingStateMachine = GameFeaturePluginStateMachines.Find(PluginIdentifier);
 	if (ExistingStateMachine)
 	{
+		UE_LOG(LogGameFeatures, VeryVerbose, TEXT("FOUND GameFeaturePlugin using PluginIdentifier:%.*s for PluginURL:%s"), PluginIdentifier.GetIdentifyingString().Len(), PluginIdentifier.GetIdentifyingString().GetData(), *PluginIdentifier.GetFullPluginURL());
 		return *ExistingStateMachine;
 	}
+	UE_LOG(LogGameFeatures, VeryVerbose, TEXT("NOT FOUND GameFeaturePlugin using PluginIdentifier:%.*s for PluginURL:%s"), PluginIdentifier.GetIdentifyingString().Len(), PluginIdentifier.GetIdentifyingString().GetData(), *PluginIdentifier.GetFullPluginURL());
 
 	return nullptr;
 }
 
 UGameFeaturePluginStateMachine* UGameFeaturesSubsystem::FindOrCreateGameFeaturePluginStateMachine(const FString& PluginURL)
 {
-	if (UGameFeaturePluginStateMachine* ExistingStateMachine = FindGameFeaturePluginStateMachine(PluginURL))
+	TRACE_CPUPROFILER_EVENT_SCOPE(GFP_FindOrCreateStateMachine);
+	FGameFeaturePluginIdentifier PluginIdentifier(PluginURL);
+	if (UGameFeaturePluginStateMachine* ExistingStateMachine = FindGameFeaturePluginStateMachine(PluginIdentifier))
 	{
+		UE_LOG(LogGameFeatures, VeryVerbose, TEXT("Found GameFeaturePlugin StateMachine using Identifier:%.*s from PluginURL:%s"), PluginIdentifier.GetIdentifyingString().Len(), PluginIdentifier.GetIdentifyingString().GetData(), *PluginURL);
 		return ExistingStateMachine;
 	}
 
+	UE_LOG(LogGameFeatures, Display, TEXT("Creating GameFeaturePlugin StateMachine using Identifier:%.*s from PluginURL:%s"), PluginIdentifier.GetIdentifyingString().Len(), PluginIdentifier.GetIdentifyingString().GetData(), *PluginURL);
+
 	UGameFeaturePluginStateMachine* NewStateMachine = NewObject<UGameFeaturePluginStateMachine>(this);
-	GameFeaturePluginStateMachines.Add(PluginURL, NewStateMachine);
-	NewStateMachine->InitStateMachine(PluginURL);
+	GameFeaturePluginStateMachines.Add(PluginIdentifier, NewStateMachine);
+	NewStateMachine->InitStateMachine(MoveTemp(PluginIdentifier));
 
 	return NewStateMachine;
 }
@@ -1431,12 +1622,14 @@ void UGameFeaturesSubsystem::BeginTermination(UGameFeaturePluginStateMachine* Ma
 {
 	check(IsValid(Machine));
 	check(Machine->GetCurrentState() == EGameFeaturePluginState::Terminal);
-	GameFeaturePluginStateMachines.Remove(Machine->GetPluginURL());
+	UE_LOG(LogGameFeatures, Verbose, TEXT("BeginTermination of GameFeaturePlugin. Identifier:%.*s URL:%s"), Machine->GetPluginIdentifier().GetIdentifyingString().Len(), Machine->GetPluginIdentifier().GetIdentifyingString().GetData(), *(Machine->GetPluginURL()));
+	GameFeaturePluginStateMachines.Remove(Machine->GetPluginIdentifier());
 	TerminalGameFeaturePluginStateMachines.Add(Machine);
 }
 
 void UGameFeaturesSubsystem::FinishTermination(UGameFeaturePluginStateMachine* Machine)
 {
+	UE_LOG(LogGameFeatures, Display, TEXT("FinishTermination of GameFeaturePlugin. Identifier:%.*s URL:%s"), Machine->GetPluginIdentifier().GetIdentifyingString().Len(), Machine->GetPluginIdentifier().GetIdentifyingString().GetData(), *(Machine->GetPluginURL()));
 	TerminalGameFeaturePluginStateMachines.RemoveSwap(Machine);
 }
 

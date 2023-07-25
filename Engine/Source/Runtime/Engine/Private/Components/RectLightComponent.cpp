@@ -5,17 +5,13 @@
 =============================================================================*/
 
 #include "Components/RectLightComponent.h"
+#include "SceneInterface.h"
 #include "UObject/ConstructorHelpers.h"
-#include "Misc/LargeWorldRenderPosition.h"
-#include "RenderingThread.h"
 #include "Engine/Texture2D.h"
-#include "SceneManagement.h"
-#include "PointLightSceneProxy.h"
 #include "RectLightSceneProxy.h"
+#include "SceneView.h"
 
-#include "RHIUtilities.h"
-#include "GlobalShader.h"
-#include "ShaderParameterUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RectLightComponent)
 
@@ -206,7 +202,7 @@ FRectLightSceneProxy::FRectLightSceneProxy(const URectLightComponent* Component)
 	, RayTracingData(Component->RayTracingData)
 	, SourceTexture(Component->SourceTexture)
 {
-	AtlasSlotIndex = ~0u;
+	RectAtlasId = ~0u;
 }
 
 FRectLightSceneProxy::~FRectLightSceneProxy() {}
@@ -243,12 +239,36 @@ void FRectLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& Ligh
 	LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
 	LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
 	LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
-
+	LightParameters.IESAtlasIndex = INDEX_NONE;
 	LightParameters.InverseExposureBlend = InverseExposureBlend;
 
-	if (AtlasSlotIndex != ~0u)
+	if (IESAtlasId != ~0)
+	{
+		GetSceneInterface()->GetLightIESAtlasSlot(this, &LightParameters);
+	}
+
+	if (RectAtlasId != ~0u)
 	{
 		GetSceneInterface()->GetRectLightAtlasSlot(this, &LightParameters);
+	}
+	
+	// Render RectLight approximately as SpotLight on mobile
+	const bool bRenderAsSpotLight = (SceneInterface && IsMobilePlatform(SceneInterface->GetShaderPlatform()));
+	if (bRenderAsSpotLight)
+	{
+		float ClampedOuterConeAngle = FMath::DegreesToRadians(89.001f);
+		float ClampedInnerConeAngle = FMath::DegreesToRadians(70.0f);
+		float CosOuterCone = FMath::Cos(ClampedOuterConeAngle);
+		float CosInnerCone = FMath::Cos(ClampedInnerConeAngle);
+		float InvCosConeDifference = 1.0f / (CosInnerCone - CosOuterCone);
+
+		LightParameters.Color = GetColor();
+		LightParameters.FalloffExponent = 8.0f;
+		LightParameters.SpotAngles = FVector2f(CosOuterCone, InvCosConeDifference);
+		LightParameters.SourceRadius = (SourceWidth + SourceHeight) * 0.5 * 0.5f;
+		LightParameters.SourceLength = 0.0f;
+		LightParameters.RectLightBarnCosAngle = 0.0f;
+		LightParameters.RectLightBarnLength = -2.0f;
 	}
 }
 

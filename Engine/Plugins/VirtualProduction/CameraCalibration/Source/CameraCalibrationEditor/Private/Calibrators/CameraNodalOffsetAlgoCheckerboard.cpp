@@ -3,12 +3,14 @@
 #include "CameraNodalOffsetAlgoCheckerboard.h"
 #include "AssetEditor/CameraCalibrationStepsController.h"
 #include "AssetEditor/NodalOffsetTool.h"
+#include "AssetRegistry/AssetData.h"
 #include "CameraCalibrationCheckerboard.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "EngineUtils.h"
 #include "Misc/MessageDialog.h"
 #include "UI/CameraCalibrationWidgetHelpers.h"
 #include "UI/SFilterableActorPicker.h"
+#include "Widgets/Views/SListView.h"
 
 
 #if WITH_OPENCV
@@ -130,7 +132,7 @@ bool UCameraNodalOffsetAlgoCheckerboard::PopulatePoints(FText& OutErrorMessage)
 	FIntPoint Size;
 	ETextureRenderTargetFormat PixelFormat;
 
-	if (!StepsController->ReadMediaPixels(Pixels, Size, PixelFormat, OutErrorMessage))
+	if (!StepsController->ReadMediaPixels(Pixels, Size, PixelFormat, OutErrorMessage, ESimulcamViewportPortion::CameraFeed))
 	{
 		return false;
 	}

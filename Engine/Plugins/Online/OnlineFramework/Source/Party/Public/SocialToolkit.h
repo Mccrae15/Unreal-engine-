@@ -2,15 +2,18 @@
 
 #pragma once
 
-#include "UObject/Object.h"
-#include "SocialTypes.h"
-#include "User/ISocialUserList.h"
-#include "OnlineSubsystem.h"
 #include "Interfaces/OnlinePartyInterface.h"
 #include "Interfaces/OnlinePresenceInterface.h"
 #include "Containers/Ticker.h"
 
+#include "PartyModule.h"
+#include "Templates/SubclassOf.h"
+#include "User/SocialUser.h"
 #include "SocialToolkit.generated.h"
+
+class FSocialUserListConfig;
+class IOnlineSubsystem;
+class USocialManager;
 
 class ULocalPlayer;
 class USocialUser;
@@ -78,9 +81,6 @@ public:
 	USocialManager& GetSocialManager() const;
 	ULocalPlayer& GetOwningLocalPlayer() const;
 	const TArray<USocialUser*>& GetAllUsers() const { return AllUsers; }
-
-	// FExec
-	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out) override;
 
 	/** Finds a SocialUser given a unique net ID from any OSS */
 	USocialUser* FindUser(const FUniqueNetIdRepl& UserId) const;
@@ -338,3 +338,8 @@ private:
 	mutable FOnPartyRequestToJoinReceivedEvent OnPartyRequestToJoinReceivedEvent;
 	mutable FOnPartyRequestToJoinRemovedEvent OnPartyRequestToJoinRemovedEvent;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "OnlineSubsystem.h"
+#include "User/ISocialUserList.h"
+#endif

@@ -181,33 +181,17 @@ void FMassEntityManager::Deinitialize()
 
 FMassArchetypeHandle FMassEntityManager::CreateArchetype(TConstArrayView<const UScriptStruct*> FragmentsAndTagsList, const FName ArchetypeDebugName)
 {
-	FMassChunkFragmentBitSet ChunkFragments;
-	FMassTagBitSet Tags;
-	TArray<const UScriptStruct*, TInlineAllocator<16>> FragmentList;
-	FragmentList.Reserve(FragmentsAndTagsList.Num());
+	FMassArchetypeCompositionDescriptor Composition;
+	InternalAppendFragmentsAndTagsToArchetypeCompositionDescriptor(Composition, FragmentsAndTagsList);
+	return CreateArchetype(Composition, ArchetypeDebugName);
+}
 
-	for (const UScriptStruct* Type : FragmentsAndTagsList)
-	{
-		if (Type->IsChildOf(FMassFragment::StaticStruct()))
-		{
-			FragmentList.Add(Type);
-		}
-		else if (Type->IsChildOf(FMassTag::StaticStruct()))
-		{
-			Tags.Add(*Type);
-		}
-		else if (Type->IsChildOf(FMassChunkFragment::StaticStruct()))
-		{
-			ChunkFragments.Add(*Type);
-		}
-		else
-		{
-			UE_LOG(LogMass, Warning, TEXT("%s: %s is not a valid fragment nor tag type. Ignoring.")
-				, ANSI_TO_TCHAR(__FUNCTION__), *GetNameSafe(Type));
-		}
-	}
-
-	const FMassArchetypeCompositionDescriptor Composition(FMassFragmentBitSet(FragmentList), Tags, ChunkFragments, FMassSharedFragmentBitSet());
+FMassArchetypeHandle FMassEntityManager::CreateArchetype(FMassArchetypeHandle SourceArchetype,
+	TConstArrayView<const UScriptStruct*> FragmentsAndTagsList, const FName ArchetypeDebugName)
+{
+	const FMassArchetypeData& ArchetypeData = FMassArchetypeHelper::ArchetypeDataFromHandleChecked(SourceArchetype);
+	FMassArchetypeCompositionDescriptor Composition = ArchetypeData.GetCompositionDescriptor();
+	InternalAppendFragmentsAndTagsToArchetypeCompositionDescriptor(Composition, FragmentsAndTagsList);
 	return CreateArchetype(Composition, ArchetypeDebugName);
 }
 
@@ -260,6 +244,8 @@ FMassArchetypeHandle FMassEntityManager::CreateArchetype(const FMassArchetypeCom
 			checkSlow(FragmentConfig.FragmentType)
 			FragmentTypeToArchetypeMap.FindOrAdd(FragmentConfig.FragmentType).Add(ArchetypeDataPtr);
 		}
+
+		OnNewArchetypeEvent.Broadcast(FMassArchetypeHandle(ArchetypeDataPtr));
 	}
 
 	return FMassArchetypeHelper::ArchetypeHandleFromData(ArchetypeDataPtr);
@@ -314,9 +300,36 @@ FMassArchetypeHandle FMassEntityManager::InternalCreateSimilarArchetype(const FM
 			checkSlow(FragmentConfig.FragmentType)
 			FragmentTypeToArchetypeMap.FindOrAdd(FragmentConfig.FragmentType).Add(ArchetypeDataPtr);
 		}
+
+		OnNewArchetypeEvent.Broadcast(FMassArchetypeHandle(ArchetypeDataPtr));
 	}
 
 	return FMassArchetypeHelper::ArchetypeHandleFromData(ArchetypeDataPtr);
+}
+
+void FMassEntityManager::InternalAppendFragmentsAndTagsToArchetypeCompositionDescriptor(
+	FMassArchetypeCompositionDescriptor& InOutComposition, TConstArrayView<const UScriptStruct*> FragmentsAndTagsList) const
+{
+	for (const UScriptStruct* Type : FragmentsAndTagsList)
+	{
+		if (Type->IsChildOf(FMassFragment::StaticStruct()))
+		{
+			InOutComposition.Fragments.Add(*Type);
+		}
+		else if (Type->IsChildOf(FMassTag::StaticStruct()))
+		{
+			InOutComposition.Tags.Add(*Type);
+		}
+		else if (Type->IsChildOf(FMassChunkFragment::StaticStruct()))
+		{
+			InOutComposition.ChunkFragments.Add(*Type);
+		}
+		else
+		{
+			UE_LOG(LogMass, Warning, TEXT("%s: %s is not a valid fragment nor tag type. Ignoring.")
+				, ANSI_TO_TCHAR(__FUNCTION__), *GetNameSafe(Type));
+		}
+	}
 }
 
 FMassArchetypeHandle FMassEntityManager::GetArchetypeForEntity(FMassEntityHandle Entity) const
@@ -1158,14 +1171,36 @@ void FMassEntityManager::GetValidArchetypes(const FMassEntityQuery& Query, TArra
 
 	// First get set of all archetypes that contain *any* fragment
 	TSet<TSharedPtr<FMassArchetypeData>> AnyArchetypes;
-	for (const FMassFragmentRequirementDescription& Requirement : Query.GetFragmentRequirements())
+	TConstArrayView<FMassFragmentRequirementDescription> FragmentRequirements = Query.GetFragmentRequirements();
+	if (!FragmentRequirements.IsEmpty())
 	{
-		check(Requirement.StructType);
-		if (Requirement.Presence != EMassFragmentPresence::None)
+		for (const FMassFragmentRequirementDescription& Requirement : FragmentRequirements)
 		{
-			if (const TArray<TSharedPtr<FMassArchetypeData>>* pData = FragmentTypeToArchetypeMap.Find(Requirement.StructType))
+			check(Requirement.StructType);
+			if (Requirement.Presence != EMassFragmentPresence::None)
 			{
-				AnyArchetypes.Append(*pData);
+				if (const TArray<TSharedPtr<FMassArchetypeData>>* pData = FragmentTypeToArchetypeMap.Find(Requirement.StructType))
+				{
+					AnyArchetypes.Append(*pData);
+				}
+			}
+		}
+	}
+	else
+	{
+		// If there are no fragment requirements, assume this is a tag-only query.
+		const FMassTagBitSet& AllTags = Query.GetRequiredAllTags();
+		const FMassTagBitSet& AnyTags = Query.GetRequiredAnyTags();
+
+		for (const TPair<uint32, TArray<TSharedPtr<FMassArchetypeData>>>& KeyValue : FragmentHashToArchetypeMap)
+		{
+			for (const TSharedPtr<FMassArchetypeData>& ArchetypeData : KeyValue.Value)
+			{
+				const FMassTagBitSet ArchetypeTags = ArchetypeData->GetTagBitSet();
+				if (ArchetypeTags.HasAll(AllTags) || ArchetypeTags.HasAny(AnyTags))
+				{
+					AnyArchetypes.Add(ArchetypeData);
+				}
 			}
 		}
 	}
@@ -1316,7 +1351,7 @@ void FMassEntityManager::GetValidArchetypes(const FMassEntityQuery& Query, TArra
 
 FMassExecutionContext FMassEntityManager::CreateExecutionContext(const float DeltaSeconds)
 {
-	FMassExecutionContext ExecutionContext(AsShared(), DeltaSeconds);
+	FMassExecutionContext ExecutionContext(*this, DeltaSeconds);
 	ExecutionContext.SetDeferredCommandBuffer(DeferredCommandBuffer);
 	return MoveTemp(ExecutionContext);
 }

@@ -5,7 +5,6 @@
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
-#include "WorldPartition/ActorDescContainer.h"
 
 FWorldPartitionActorDescView::FWorldPartitionActorDescView()
 	: FWorldPartitionActorDescView(nullptr)
@@ -14,8 +13,8 @@ FWorldPartitionActorDescView::FWorldPartitionActorDescView()
 FWorldPartitionActorDescView::FWorldPartitionActorDescView(const FWorldPartitionActorDesc* InActorDesc)
 	: ActorDesc(InActorDesc)
 	, bIsForcedNonSpatiallyLoaded(false)
-	, bInvalidDataLayers(false)
-	, bInvalidRuntimeGrid(false)
+	, bIsForcedNoRuntimeGrid(false)
+	, bInvalidDataLayers(false)	
 {}
 
 const FGuid& FWorldPartitionActorDescView::GetGuid() const
@@ -38,19 +37,16 @@ UClass* FWorldPartitionActorDescView::GetActorNativeClass() const
 	return ActorDesc->GetActorNativeClass();
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FVector FWorldPartitionActorDescView::GetOrigin() const
 {
 	return ActorDesc->GetOrigin();
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FName FWorldPartitionActorDescView::GetRuntimeGrid() const
 {
-	if (bInvalidRuntimeGrid)
-	{
-		return FName();
-	}
-
-	return ActorDesc->GetRuntimeGrid();
+	return bIsForcedNoRuntimeGrid ? NAME_None : ActorDesc->GetRuntimeGrid();
 }
 
 bool FWorldPartitionActorDescView::GetActorIsEditorOnly() const
@@ -119,10 +115,21 @@ FName FWorldPartitionActorDescView::GetActorName() const
 	return ActorDesc->GetActorName();
 }
 
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FBox FWorldPartitionActorDescView::GetBounds() const
 {
 	return ActorDesc->GetBounds();
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+FBox FWorldPartitionActorDescView::GetEditorBounds() const
+{
+	return ActorDesc->GetEditorBounds();
+}
+
+FBox FWorldPartitionActorDescView::GetRuntimeBounds() const
+{
+	return ActorDesc->GetRuntimeBounds();
 }
 
 const TArray<FGuid>& FWorldPartitionActorDescView::GetReferences() const
@@ -155,6 +162,11 @@ bool FWorldPartitionActorDescView::IsContainerInstance() const
 	return ActorDesc->IsContainerInstance();
 }
 
+FName FWorldPartitionActorDescView::GetLevelPackage() const
+{
+	return ActorDesc->GetLevelPackage();
+}
+
 bool FWorldPartitionActorDescView::GetContainerInstance(const UActorDescContainer*& OutLevelContainer, FTransform& OutLevelTransform, EContainerClusterMode& OutClusterMode) const
 {
 	return ActorDesc->GetContainerInstance(OutLevelContainer, OutLevelTransform, OutClusterMode);
@@ -170,6 +182,13 @@ FName FWorldPartitionActorDescView::GetActorLabelOrName() const
 	return ActorDesc->GetActorLabelOrName();
 }
 
+bool FWorldPartitionActorDescView::ShouldValidateRuntimeGrid() const
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return ActorDesc->ShouldValidateRuntimeGrid();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 void FWorldPartitionActorDescView::SetForcedNonSpatiallyLoaded()
 {
 	if (!bIsForcedNonSpatiallyLoaded)
@@ -179,9 +198,9 @@ void FWorldPartitionActorDescView::SetForcedNonSpatiallyLoaded()
 	}
 }
 
-void FWorldPartitionActorDescView::SetInvalidRuntimeGrid()
+void FWorldPartitionActorDescView::SetForcedNoRuntimeGrid()
 {
-	bInvalidRuntimeGrid = true;	
+	bIsForcedNoRuntimeGrid = true;	
 }
 
 void FWorldPartitionActorDescView::SetInvalidDataLayers()

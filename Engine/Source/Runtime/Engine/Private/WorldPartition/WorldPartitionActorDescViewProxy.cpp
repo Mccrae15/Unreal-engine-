@@ -2,6 +2,9 @@
 
 #include "WorldPartition/WorldPartitionActorDescViewProxy.h"
 #include "GameFramework/Actor.h"
+#include "UObject/Package.h"
+#include "UObject/Package.h"
+#include "WorldPartition/WorldPartitionActorDescView.h"
 
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionActorDesc.h"

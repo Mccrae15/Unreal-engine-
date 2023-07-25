@@ -333,6 +333,7 @@ namespace OculusXRInput
 		/** Index trigger Slide**/
 		float IndexTriggerSlide;
 
+
 		/** Whether or not we're playing a haptic effect.  If true, force feedback calls will be early-outed in favor of the haptic effect */
 		bool bPlayingHapticEffect;
 

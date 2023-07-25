@@ -13,6 +13,7 @@
 #include "Editor/UnrealEdEngine.h"
 #include "AssetSelection.h"
 #include "Subsystems/UnrealEditorSubsystem.h"
+#include "UObject/UObjectIterator.h"
 #include "Utils.h"
 #include "ActorEditorUtils.h"
 #include "Layers/LayersSubsystem.h"
@@ -21,6 +22,7 @@
 #include "Misc/FileHelper.h"
 #include "Engine/Selection.h"
 #include "LevelEditorViewport.h"
+#include "Settings/LevelEditorViewportSettings.h"
 #include "Subsystems/EditorElementSubsystem.h"
 #include "UObject/Stack.h"
 
@@ -132,6 +134,9 @@ namespace InternalActorUtilitiesSubsystemLibrary
 
 void UEditorActorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
+	FEditorDelegates::OnNewActorsDropped.AddUObject(this, &UEditorActorSubsystem::BroadcastEditNewActorsDropped);
+	FEditorDelegates::OnNewActorsPlaced.AddUObject(this, &UEditorActorSubsystem::BroadcastEditNewActorsPlaced);
+
 	FEditorDelegates::OnEditCutActorsBegin.AddUObject(this, &UEditorActorSubsystem::BroadcastEditCutActorsBegin);
 	FEditorDelegates::OnEditCutActorsEnd.AddUObject(this, &UEditorActorSubsystem::BroadcastEditCutActorsEnd);
 
@@ -150,6 +155,8 @@ void UEditorActorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UEditorActorSubsystem::Deinitialize()
 {
+	FEditorDelegates::OnNewActorsDropped.RemoveAll(this);
+	FEditorDelegates::OnNewActorsPlaced.RemoveAll(this);
 	FEditorDelegates::OnEditCutActorsBegin.RemoveAll(this);
 	FEditorDelegates::OnEditCutActorsEnd.RemoveAll(this);
 	FEditorDelegates::OnEditCopyActorsBegin.RemoveAll(this);
@@ -161,6 +168,18 @@ void UEditorActorSubsystem::Deinitialize()
 	FEditorDelegates::OnDeleteActorsBegin.RemoveAll(this);
 	FEditorDelegates::OnDeleteActorsEnd.RemoveAll(this);
 
+}
+
+/** To fire before an Actor is Dropped */
+void UEditorActorSubsystem::BroadcastEditNewActorsDropped(const TArray<UObject*>& DroppedObjects, const TArray<AActor*>& DroppedActors)
+{
+	OnNewActorsDropped.Broadcast(DroppedObjects, DroppedActors);
+}
+
+/** To fire before an Actor is Placed */
+void UEditorActorSubsystem::BroadcastEditNewActorsPlaced(UObject* ObjToUse, const TArray<AActor*>& PlacedActors)
+{
+	OnNewActorsPlaced.Broadcast(ObjToUse, PlacedActors);
 }
 
 /** To fire before an Actor is Cut */

@@ -1,60 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "AudioDevice.h"
 
-#include "ActiveSound.h"
 #include "ActiveSoundUpdateInterface.h"
 #include "ADPCMAudioInfo.h"
-#include "Audio.h"
 #include "AudioCompressionSettingsUtils.h"
-#include "AudioDecompress.h"
-#include "AudioDefines.h"
 #include "AudioEffect.h"
+#include "AudioMixerTrace.h"
 #include "AudioPluginUtilities.h"
 #include "Audio/AudioDebug.h"
-#include "AudioMixerDevice.h"
-#include "Components/AudioComponent.h"
-#include "ContentStreaming.h"
-#include "DrawDebugHelpers.h"
 #include "GameFramework/GameUserSettings.h"
 #include "GameFramework/WorldSettings.h"
 #include "GeneralProjectSettings.h"
-#include "Engine/World.h"
 #include "HAL/FileManager.h"
-#include "IAudioExtensionPlugin.h"
 #include "IAudioParameterTransmitter.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Misc/App.h"
+#include "Misc/CoreStats.h"
 #include "Misc/OutputDeviceArchiveWrapper.h"
-#include "Misc/Paths.h"
+#include "Misc/PackageName.h"
 #include "PhysicsEngine/BodyInstance.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
-#include "ProfilingDebugging/CpuProfilerTrace.h"
-#include "Sound/AudioSettings.h"
-#include "Sound/ReverbEffect.h"
-#include "Sound/SoundEffectPreset.h"
-#include "Sound/SoundEffectSource.h"
 #include "Sound/SoundEffectSubmix.h"
 #include "Sound/SoundGroups.h"
-#include "Sound/SoundWave.h"
 #include "Sound/SoundCue.h"
-#include "Sound/SoundNode.h"
 #include "Sound/SoundNodeWavePlayer.h"
+#include "Sound/SoundSourceBus.h"
 #include "Sound/SoundSubmix.h"
+#include "Stats/StatsTrace.h"
 #include "UnrealEngine.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/Package.h"
 
 #if WITH_EDITOR
-#include "AudioEditorModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "Editor/EditorEngine.h"
+#else
+#include "UObject/Package.h"
 #endif // WITH_EDITOR
-
-DECLARE_LLM_MEMORY_STAT(TEXT("AudioSpatializationPlugins"), STAT_AudioSpatializationPluginsLLM, STATGROUP_LLMFULL);
-LLM_DEFINE_TAG(Audio_SpatializationPlugins, NAME_None, TEXT("Audio"), GET_STATFNAME(STAT_AudioSpatializationPluginsLLM), GET_STATFNAME(STAT_AudioSummaryLLM));
 
 static int32 AudioChannelCountCVar = 0;
 FAutoConsoleVariableRef CVarSetAudioChannelCount(
@@ -239,6 +221,13 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GSetCurrentSpatialPluginC
 			}
 		})
 	);
+
+#if UE_AUDIO_PROFILERTRACE_ENABLED
+UE_TRACE_EVENT_BEGIN(Audio, VirtualLoopStop)
+	UE_TRACE_EVENT_FIELD(uint64, Timestamp)
+	UE_TRACE_EVENT_FIELD(uint32, PlayOrder)
+UE_TRACE_EVENT_END()
+#endif // UE_AUDIO_PROFILERTRACE_ENABLED
 
 namespace Audio
 {
@@ -682,7 +671,7 @@ bool FAudioDevice::Init(Audio::FDeviceId InDeviceID, int32 InMaxSources, int32 I
 
 	InitDefaultAudioBuses();
 
-	UE_LOG(LogInit, Log, TEXT("FAudioDevice initialized."));
+	UE_LOG(LogInit, Log, TEXT("FAudioDevice initialized with ID %d."), InDeviceID);
 
 	return true;
 }
@@ -700,7 +689,6 @@ void FAudioDevice::OnDeviceDestroyed(Audio::FDeviceId InDeviceID)
 {
 	if (InDeviceID == DeviceID)
 	{
-		Deinitialize();
 		FAudioDeviceManagerDelegates::OnAudioDeviceDestroyed.Remove(DeviceDestroyedHandle);
 	}
 }
@@ -1261,7 +1249,7 @@ void FAudioDevice::GetSoundClassInfo(TMap<FName, FAudioClassInfo>& AudioClassInf
 		}
 
 #if !WITH_EDITOR
-		AudioClassInfo->SizeResident += SoundWave->GetCompressedDataSize(GetRuntimeFormat(SoundWave));
+		AudioClassInfo->SizeResident += SoundWave->GetCompressedDataSize(SoundWave->GetRuntimeFormat());
 		AudioClassInfo->NumResident++;
 #else
 		switch(SoundWave->DecompressionType)
@@ -1273,14 +1261,14 @@ void FAudioDevice::GetSoundClassInfo(TMap<FName, FAudioClassInfo>& AudioClassInf
 			break;
 
 		case DTYPE_RealTime:
-			AudioClassInfo->SizeRealTime += SoundWave->GetCompressedDataSize(GetRuntimeFormat(SoundWave));
+			AudioClassInfo->SizeRealTime += SoundWave->GetCompressedDataSize(SoundWave->GetRuntimeFormat());
 			AudioClassInfo->NumRealTime++;
 			break;
 
 		case DTYPE_Streaming:
 			// Add these to real time count for now - eventually compressed data won't be loaded &
 			// might have a class info entry of their own
-			AudioClassInfo->SizeRealTime += SoundWave->GetCompressedDataSize(GetRuntimeFormat(SoundWave));
+			AudioClassInfo->SizeRealTime += SoundWave->GetCompressedDataSize(SoundWave->GetRuntimeFormat());
 			AudioClassInfo->NumRealTime++;
 			break;
 
@@ -2417,6 +2405,8 @@ void FAudioDevice::InitSoundSources()
 
 void FAudioDevice::InitializeSubsystemCollection()
 {
+	UE_LOG(LogAudio, Log, TEXT("Initializing audio subsystem collection for audio device with id %d"), DeviceID);
+
 	SubsystemCollectionRoot.Reset(NewObject<UAudioSubsystemCollectionRoot>(GetTransientPackage()));
 	check(SubsystemCollectionRoot.IsValid());
 
@@ -5349,6 +5339,15 @@ bool FAudioDevice::RemoveVirtualLoop(FActiveSound& InActiveSound)
 		}
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
+#if UE_AUDIO_PROFILERTRACE_ENABLED
+		const bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AudioChannel);
+		if (bChannelEnabled)
+		{
+			UE_TRACE_LOG(Audio, VirtualLoopStop, AudioChannel)
+				<< VirtualLoopStop.Timestamp(FPlatformTime::Cycles64())
+				<< VirtualLoopStop.PlayOrder(InActiveSound.GetPlayOrder());
+		}
+#endif // UE_AUDIO_PROFILERTRACE_ENABLED
 		VirtualLoops.Remove(&InActiveSound);
 		return true;
 	}
@@ -5407,11 +5406,11 @@ void FAudioDevice::ProcessingPendingActiveSoundStops(bool bForceDelete)
 				ActiveSound->bAsyncOcclusionPending = false;
 				PendingSoundsToDelete.RemoveAtSwap(i, 1, false);
 
-				// TODO: Phil Popp investigate a more robust fix -- call Shutdown in FActiveSound or transmitter destructor?
 				if (Audio::IParameterTransmitter* Transmitter = ActiveSound->GetTransmitter())
 				{
-					Transmitter->Reset();
+					Transmitter->OnDeleteActiveSound();
 				}
+				ActiveSound->ClearTransmitter();
 
 				NotifyPendingDelete(*ActiveSound);
 				delete ActiveSound;
@@ -5467,11 +5466,11 @@ void FAudioDevice::ProcessingPendingActiveSoundStops(bool bForceDelete)
 
 			if (bDeleteActiveSound)
 			{
-				// TODO: Phil Popp investigate a more robust fix -- call Shutdown in FActiveSound or transmitter destructor?
 				if (Audio::IParameterTransmitter* Transmitter = ActiveSound->GetTransmitter())
 				{
-					Transmitter->Reset();
+					Transmitter->OnDeleteActiveSound();
 				}
+				ActiveSound->ClearTransmitter();
 
 				NotifyPendingDelete(*ActiveSound);
 
@@ -6626,7 +6625,7 @@ void FAudioDevice::Precache(USoundWave* SoundWave, bool bSynchronous, bool bTrac
 		float CompressedDurationThreshold = GetCompressionDurationThreshold(SoundGroup);
 
 		static FName NAME_OGG(TEXT("OGG"));
-		SoundWave->bDecompressedFromOgg = GetRuntimeFormat(SoundWave) == NAME_OGG;
+		SoundWave->bDecompressedFromOgg = SoundWave->GetRuntimeFormat() == NAME_OGG;
 
 		// handle audio decompression
 		if (FPlatformProperties::SupportsAudioStreaming() && SoundWave->IsStreaming(nullptr))
@@ -6655,7 +6654,7 @@ void FAudioDevice::Precache(USoundWave* SoundWave, bool bSynchronous, bool bTrac
 		}
 
 		// Grab the compressed audio data
-		SoundWave->InitAudioResource(GetRuntimeFormat(SoundWave));
+		SoundWave->InitAudioResource(SoundWave->GetRuntimeFormat());
 
 		if (SoundWave->AudioDecompressor == nullptr && (SoundWave->DecompressionType == DTYPE_Native || SoundWave->DecompressionType == DTYPE_RealTime))
 		{

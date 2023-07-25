@@ -39,18 +39,26 @@ namespace mu
         FImageFormatData( 4, 4, 16, 3 ),	// IF_BC6
         FImageFormatData( 4, 4, 16, 4 ),	// IF_BC7
 
-        FImageFormatData( 1, 1, 4, 4 ),	// IF_BGRA_UBYTE
+        FImageFormatData( 1, 1, 4, 4 ),		// IF_BGRA_UBYTE
 
         FImageFormatData( 4, 4, 16, 3 ),	// IF_ASTC_4x4_RGB_LDR
         FImageFormatData( 4, 4, 16, 4 ),	// IF_ASTC_4x4_RGBA_LDR
         FImageFormatData( 4, 4, 16, 2 ),	// IF_ASTC_4x4_RG_LDR
+		
+		FImageFormatData(8, 8, 16, 3),		// IF_ASTC_8x8_RGB_LDR,
+		FImageFormatData(8, 8, 16, 4),		// IF_ASTC_8x8_RGBA_LDR,
+		FImageFormatData(8, 8, 16, 2),		// IF_ASTC_8x8_RG_LDR,
+		FImageFormatData(12, 12, 16, 3),	// IF_ASTC_12x12_RGB_LDR
+		FImageFormatData(12, 12, 16, 4),	// IF_ASTC_12x12_RGBA_LDR
+		FImageFormatData(12, 12, 16, 2),	// IF_ASTC_12x12_RG_LDR
+
     };
 
 
     //---------------------------------------------------------------------------------------------
     const FImageFormatData& GetImageFormatData( EImageFormat format )
     {
-        check( uint8(format) < int8(EImageFormat::IF_COUNT) );
+        check( format < EImageFormat::IF_COUNT );
         return s_imageFormatData[ uint8(format) ];
     }
 
@@ -65,9 +73,10 @@ namespace mu
     Image::Image( uint32_t sizeX, uint32_t sizeY, uint32_t lods, EImageFormat format )
     {
 		MUTABLE_CPUPROFILER_SCOPE(NewImage)
+			LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
 
-        check( format!= EImageFormat::IF_NONE );
-		LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
+        check(format != EImageFormat::IF_NONE);
+		check(format < EImageFormat::IF_COUNT);
 
         m_format = format;
         m_size = FImageSize( (uint16)sizeX, (uint16)sizeY );
@@ -75,8 +84,8 @@ namespace mu
         m_internalId = 0;
 
         const FImageFormatData& fdata = GetImageFormatData( format );
-        int pixelsPerBlock = fdata.m_pixelsPerBlockX*fdata.m_pixelsPerBlockY;
-        if ( pixelsPerBlock )
+        int32 PixelsPerBlock = fdata.m_pixelsPerBlockX*fdata.m_pixelsPerBlockY;
+        if (PixelsPerBlock)
         {
 			int32 DataSize = CalculateDataSize();
             m_data.SetNum( DataSize );
@@ -92,24 +101,24 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    ImagePtr Image::StaticUnserialise( InputArchive& arch )
+    Ptr<Image> Image::StaticUnserialise( InputArchive& arch )
     {
 		LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
-        ImagePtr pResult = new Image();
+        Ptr<Image> pResult = new Image();
         arch >> *pResult;
         return pResult;
     }
 
 
 	//---------------------------------------------------------------------------------------------
-	ImagePtr Image::ExtractMip(int32 Mip) const
+	Ptr<Image> Image::ExtractMip(int32 Mip) const
 	{
 		if (Mip == 0 && m_lods == 1)
 		{
 			return Clone();
 		}
 
-		vec2<int> MipSize = CalculateMipSize(Mip);
+		FIntVector2 MipSize = CalculateMipSize(Mip);
 
 		int32 Quality = 4;
 
@@ -120,7 +129,8 @@ namespace mu
 
 			if (DataSize)
 			{
-				ImagePtr pResult = new Image(MipSize[0], MipSize[1], 1, m_format );
+				Ptr<Image> pResult = new Image(MipSize[0], MipSize[1], 1, m_format );
+				pResult->m_flags = m_flags;
 				uint8* DestData = pResult->GetData();
 				FMemory::Memcpy(DestData, SourceData, DataSize);
 				return pResult;
@@ -128,9 +138,10 @@ namespace mu
 			else
 			{
 				EImageFormat uncompressedFormat = GetUncompressedFormat(m_format);
-				ImagePtr pTemp = ImagePixelFormat(Quality, this, uncompressedFormat);
+				Ptr<Image> pTemp = ImagePixelFormat(Quality, this, uncompressedFormat);
 				pTemp = pTemp->ExtractMip(Mip);
-				ImagePtr pResult = ImagePixelFormat(Quality, pTemp.get(), m_format);
+				Ptr<Image> pResult = ImagePixelFormat(Quality, pTemp.get(), m_format);
+				pResult->m_flags = m_flags;
 				return pResult;
 			}
 		}
@@ -295,7 +306,7 @@ namespace mu
             // An RLE image.
             for ( int l=0; l<FMath::Max(1,(int)m_lods); ++l )
             {
-                auto mipSize = CalculateMipSize(l);
+				FIntVector2 mipSize = CalculateMipSize(l);
                 res += mipSize[0] * mipSize[1];
             }
         }
@@ -331,7 +342,7 @@ namespace mu
         else
         {
             // An RLE image.
-            auto mipSize = CalculateMipSize(mip);
+			FIntVector2 mipSize = CalculateMipSize(mip);
             res += mipSize[0] * mipSize[1];
         }
 
@@ -340,11 +351,11 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    vec2<int> Image::CalculateMipSize( int mip ) const
+	FIntVector2 Image::CalculateMipSize( int mip ) const
     {
-        vec2<int> res;
+		FIntVector2 res(0,0);
 
-        FImageSize s = m_size;
+		FIntVector2 s = FIntVector2(m_size.x(), m_size.y());
 
         for ( int l=0; l<mip+1; ++l )
         {
@@ -355,8 +366,8 @@ namespace mu
                 return res;
             }
 
-            s[0] = FMath::DivideAndRoundUp( s[0], (uint16)2 );
-            s[1] = FMath::DivideAndRoundUp( s[1], (uint16)2 );
+            s[0] = FMath::DivideAndRoundUp( s[0], 2 );
+            s[1] = FMath::DivideAndRoundUp( s[1], 2 );
         }
 
         return res;
@@ -498,9 +509,9 @@ namespace mu
 	}
 
     //---------------------------------------------------------------------------------------------
-    vec4<float> Image::Sample( vec2<float> coords ) const
+    FVector4f Image::Sample( FVector2f coords ) const
     {
-        vec4<float> result;
+		FVector4f result;
 
         if (m_size[0]==0 || m_size[1]==0) { return result; }
 
@@ -567,7 +578,7 @@ namespace mu
     }
 
     //---------------------------------------------------------------------------------------------
-    bool Image::IsPlainColour( vec4<float>& colour ) const
+    bool Image::IsPlainColour(FVector4f& colour) const
     {
         bool res = true;
 
@@ -922,7 +933,7 @@ namespace mu
 				DataToSkip += MipDataSize;
 			}
 
-			vec2<int> FinalSize = CalculateMipSize(LODSToSkip);
+			FIntVector2 FinalSize = CalculateMipSize(LODSToSkip);
 			m_size[0] = uint16(FinalSize[0]);
 			m_size[1] = uint16(FinalSize[1]);
 			m_lods = NewLODCount;
@@ -949,7 +960,7 @@ namespace mu
 				DataToSkip += MipDataSize;
 			}
 
-			vec2<int> FinalSize = CalculateMipSize(LODSToSkip);
+			FIntVector2 FinalSize = CalculateMipSize(LODSToSkip);
 			m_size[0] = uint16(FinalSize[0]);
 			m_size[1] = uint16(FinalSize[1]);
 			m_lods -= LODSToSkip;

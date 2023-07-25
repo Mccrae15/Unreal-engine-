@@ -2,24 +2,35 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Engine/EngineTypes.h"
-#include "Engine/EngineBaseTypes.h"
-#include "RenderResource.h"
-#include "UniformBuffer.h"
-#include "Engine/World.h"
-#include "SceneTypes.h"
-#include "ShowFlags.h"
 #include "ConvexVolume.h"
-#include "Engine/GameViewportClient.h"
-#include "SceneInterface.h"
-#include "FinalPostProcessSettings.h"
-#include "GlobalDistanceFieldParameters.h"
 #include "DebugViewModeHelpers.h"
-#include "RendererInterface.h"
-#include "Interfaces/Interface_PostProcessVolume.h"
 #include "DynamicRenderScaling.h"
+#include "EngineDefines.h"
+#include "FinalPostProcessSettings.h"
+#include "GameTime.h"
+#include "GlobalDistanceFieldConstants.h"
+#include "Interfaces/Interface_PostProcessVolume.h"
 #include "Math/MirrorMatrix.h"
+#include "PrimitiveComponentId.h"
+#include "RendererInterface.h"
+#include "RenderResource.h"
+#include "ShowFlags.h"
+#include "StereoRendering.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/World.h"
+#include "GlobalDistanceFieldParameters.h"
+#include "PhysicsInterfaceDeclaresCore.h"
+#include "SceneInterface.h"
+#include "SceneTypes.h"
+#include "UniformBuffer.h"
+#endif
+
+#define MAX_PHYSICS_FIELD_TARGETS 32
 
 class FSceneView;
 class FSceneViewFamily;
@@ -28,9 +39,11 @@ class FViewElementDrawer;
 class ISceneViewExtension;
 class FSceneViewFamily;
 class FVolumetricFogViewResources;
-class FIESLightProfileResource;
 class ISpatialUpscaler;
 class ITemporalUpscaler;
+
+class FRenderTarget;
+
 
 // Projection data for a FSceneView
 struct FSceneViewProjectionData
@@ -674,10 +687,9 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4f, BufferSizeAndInvSize) \
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FVector4f, BufferBilinearUVMinMax) \
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FVector4f, ScreenToViewSpace) \
-	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, BufferToSceneTextureScale) \
+	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FVector2f, BufferToSceneTextureScale) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, ResolutionFractionAndInv) \
 	VIEW_UNIFORM_BUFFER_MEMBER(int32, NumSceneColorMSAASamples) \
-	VIEW_UNIFORM_BUFFER_MEMBER(float, SeparateWaterMainDirLightLuminance) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, PreExposure) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, OneOverPreExposure) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(FVector4f, DiffuseOverrideParameter, EShaderPrecisionModifier::Half) \
@@ -700,6 +712,7 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, StateFrameIndexMod8) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, StateFrameIndex) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, DebugViewModeMask) \
+	VIEW_UNIFORM_BUFFER_MEMBER(uint32, WorldIsPaused) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(float, CameraCut, EShaderPrecisionModifier::Half) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(float, UnlitViewmodeMask, EShaderPrecisionModifier::Half) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(FLinearColor, DirectionalLightColor, EShaderPrecisionModifier::Half) \
@@ -763,10 +776,10 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(float, IndirectCapsuleSelfShadowingIntensity) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, ReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight) \
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(int32, StereoPassIndex) \
-	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4f, GlobalVolumeCenterAndExtent, GlobalDistanceField::MaxClipmaps) \
-	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4f, GlobalVolumeWorldToUVAddAndMul, GlobalDistanceField::MaxClipmaps) \
-	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4f, GlobalDistanceFieldMipWorldToUVScale, GlobalDistanceField::MaxClipmaps) \
-	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4f, GlobalDistanceFieldMipWorldToUVBias, GlobalDistanceField::MaxClipmaps) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4f, GlobalVolumeTranslatedCenterAndExtent, GlobalDistanceField::MaxClipmaps) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4f, GlobalVolumeTranslatedWorldToUVAddAndMul, GlobalDistanceField::MaxClipmaps) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4f, GlobalDistanceFieldMipTranslatedWorldToUVScale, GlobalDistanceField::MaxClipmaps) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4f, GlobalDistanceFieldMipTranslatedWorldToUVBias, GlobalDistanceField::MaxClipmaps) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, GlobalDistanceFieldMipFactor) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, GlobalDistanceFieldMipTransition) \
 	VIEW_UNIFORM_BUFFER_MEMBER(int32, GlobalDistanceFieldClipmapSizeInPages) \
@@ -786,6 +799,7 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, VolumetricFogInvGridSize) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, VolumetricFogGridZParams) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogSVPosToVolumeUV) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogScreenUVToHistoryVolumeUV) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, VolumetricFogMaxDistance) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, VolumetricLightmapWorldToUVScale) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, VolumetricLightmapWorldToUVAdd) \
@@ -822,7 +836,7 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldTargetCount) \
 	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FIntVector4, PhysicsFieldTargets, MAX_PHYSICS_FIELD_TARGETS) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, InstanceSceneDataSOAStride) \
-	VIEW_UNIFORM_BUFFER_MEMBER(uint32, GPUSceneViewId) \
+	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(uint32, GPUSceneViewId) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, ViewResolutionFraction) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, SubSurfaceColorAsTransmittanceAtDistanceInMeters) \
 
@@ -913,6 +927,10 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER_SAMPLER(SamplerState, DistantSkyLightLutTextureSampler)
 	SHADER_PARAMETER_TEXTURE(Texture3D, CameraAerialPerspectiveVolume)
 	SHADER_PARAMETER_SAMPLER(SamplerState, CameraAerialPerspectiveVolumeSampler)
+	SHADER_PARAMETER_TEXTURE(Texture3D, CameraAerialPerspectiveVolumeMieOnly)
+	SHADER_PARAMETER_SAMPLER(SamplerState, CameraAerialPerspectiveVolumeMieOnlySampler)
+	SHADER_PARAMETER_TEXTURE(Texture3D, CameraAerialPerspectiveVolumeRayOnly)
+	SHADER_PARAMETER_SAMPLER(SamplerState, CameraAerialPerspectiveVolumeRayOnlySampler)
 	// Hair
 	SHADER_PARAMETER_TEXTURE(Texture3D, HairScatteringLUTTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, HairScatteringLUTSampler)
@@ -943,6 +961,10 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER(float, RectLightAtlasMaxMipLevel)
 	SHADER_PARAMETER_TEXTURE(Texture2D<float4>, RectLightAtlasTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, RectLightAtlasSampler)
+	// IES atlas
+	SHADER_PARAMETER(FVector4f, IESAtlasSizeAndInvSize)
+	SHADER_PARAMETER_TEXTURE(Texture2DArray<float>, IESAtlasTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, IESAtlasSampler)
 	// Landscape
 	SHADER_PARAMETER_SAMPLER(SamplerState, LandscapeWeightmapSampler)
 	SHADER_PARAMETER_SRV(Buffer<uint>, LandscapeIndirection)
@@ -983,7 +1005,7 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 	SHADER_PARAMETER_ARRAY_EX(TShaderParameterTypeInfo<type>::TInstancedType, identifier, [INSTANCED_VIEW_COUNT], precision)
 
 #define VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(type, identifier, dimension) \
-	SHADER_PARAMETER_ARRAY(type, identifier, [dimension * INSTANCED_VIEW_COUNT])
+	SHADER_PARAMETER_ARRAY(type, identifier, [dimension])
 
 #define VIEW_UNIFORM_BUFFER_MEMBER_ARRAY_PER_VIEW(type, identifier, dimension) \
 	SHADER_PARAMETER_ARRAY(type, identifier, [dimension * INSTANCED_VIEW_COUNT])
@@ -999,6 +1021,7 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 #undef VIEW_UNIFORM_BUFFER_MEMBER_ARRAY
 #undef VIEW_UNIFORM_BUFFER_MEMBER_ARRAY_PER_VIEW
 #undef INSTANCED_VIEW_COUNT
+
 #define VIEW_UNIFORM_BUFFER_MEMBER(type, identifier) \
 	if ( CopyViewId == 0 ) \
 	{ \
@@ -1037,13 +1060,13 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 		check(FMemory::MemIsZero(((uint8*) &InstancedViewParameters.identifier[CopyViewId * dimension + ElementIndex]) + sizeof(type), sizeof(TShaderParameterTypeInfo<type>::TInstancedType) - sizeof(type))); \
 	}
 
-	namespace InstancedViewParametersUtils
+namespace InstancedViewParametersUtils
+{
+	static void CopyIntoInstancedViewParameters(FInstancedViewUniformShaderParameters& InstancedViewParameters, const FViewUniformShaderParameters& ViewParameters, uint32 CopyViewId)
 	{
-		static void CopyIntoInstancedViewParameters(FInstancedViewUniformShaderParameters& InstancedViewParameters, const FViewUniformShaderParameters& ViewParameters, uint32 CopyViewId)
-		{
-			VIEW_UNIFORM_BUFFER_MEMBER_TABLE
-		}
+		VIEW_UNIFORM_BUFFER_MEMBER_TABLE
 	}
+}
 
 #undef VIEW_UNIFORM_BUFFER_MEMBER
 #undef VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW
@@ -1164,10 +1187,16 @@ public:
 	/** Current Nanite visualization mode */
 	FName CurrentNaniteVisualizationMode;
 
-	/** Current Nanite visualization mode */
+	/** Current Lumen visualization mode */
 	FName CurrentLumenVisualizationMode;
 
-	/** Current Nanite visualization mode */
+	/** Current Substrate visualization mode */
+	FName CurrentStrataVisualizationMode;
+
+	/** Current Groom visualization mode */
+	FName CurrentGroomVisualizationMode;
+
+	/** Current Virtual Shadow Map visualization mode */
 	FName CurrentVirtualShadowMapVisualizationMode;
 
 	/** Current visualize calibration color material name */
@@ -1399,8 +1428,6 @@ public:
 	const ERHIFeatureLevel::Type FeatureLevel;
 
 #if RHI_RAYTRACING
-	FIESLightProfileResource* IESLightProfileResource;
-
 	/** Use to allow ray tracing on this view. */
 	bool bAllowRayTracing = true;
 #endif
@@ -1604,14 +1631,17 @@ public:
 	/** Current ray tracing debug visualization mode */
 	FName CurrentRayTracingDebugVisualizationMode;
 #endif
-	/** Tells if the eye adaptation texture / buffer exists without attempting to allocate it. */
+
+	UE_DEPRECATED(5.2, "Use HasValidEyeAdaptationBuffer() instead.")
 	bool HasValidEyeAdaptationTexture() const;
+
+	/** Tells if the eye adaptation buffer exists without attempting to allocate it. */
 	bool HasValidEyeAdaptationBuffer() const;
 
-	/** Returns the eye adaptation texture (SM5+ only) or null if it doesn't exist. */
+	UE_DEPRECATED(5.2, "Use GetEyeAdaptationBuffer() instead.")
 	IPooledRenderTarget* GetEyeAdaptationTexture() const;
 
-	/** Returns the eye adaptation buffer (mobile) or null if it doesn't exist. */
+	/** Returns the eye adaptation buffer or null if it doesn't exist. */
 	FRDGPooledBuffer* GetEyeAdaptationBuffer() const;
 
 	/** Returns the eye adaptation exposure or 0.0f if it doesn't exist. */
@@ -1638,8 +1668,17 @@ public:
 	/** Get all secondary views associated with the primary view. */
 	TArray<const FSceneView*> GetSecondaryViews() const;
 
+	/** Returns uniform buffer that is used to access (first) instanced view's properties. Note: it is not the same as that view's ViewUniformBuffer, albeit it contains all relevant data from it. */
+	const TUniformBufferRef<FInstancedViewUniformShaderParameters>& GetInstancedViewUniformBuffer() const
+	{
+		return InstancedViewUniformBuffer;
+	}
+
 protected:
 	FSceneViewStateInterface* EyeAdaptationViewState = nullptr;
+
+	/** Instanced view uniform buffer held on the primary view. */
+	TUniformBufferRef<FInstancedViewUniformShaderParameters> InstancedViewUniformBuffer;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1762,32 +1801,12 @@ public:
 	*/
 	struct ConstructionValues
 	{
-		ConstructionValues(
+		ENGINE_API ConstructionValues(
 			const FRenderTarget* InRenderTarget,
 			FSceneInterface* InScene,
 			const FEngineShowFlags& InEngineShowFlags
-			)
-		:	RenderTarget(InRenderTarget)
-		,	Scene(InScene)
-		,	EngineShowFlags(InEngineShowFlags)
-		,	ViewModeParam(-1)
-		,	GammaCorrection(1.0f)
-		,	bAdditionalViewFamily(false)
-		,	bRealtimeUpdate(false)
-		,	bDeferClear(false)
-		,	bResolveScene(true)			
-		,	bTimesSet(false)
-		{
-			if( InScene != NULL )			
-			{
-				UWorld* World = InScene->GetWorld();
-				// Ensure the world is valid and that we are being called from a game thread (GetRealTimeSeconds requires this)
-				if( World && IsInGameThread() )
-				{	
-					SetTime(World->GetTime());
-				}
-			}
-		}
+			);
+
 		/** The views which make up the family. */
 		const FRenderTarget* RenderTarget;
 
@@ -2034,6 +2053,8 @@ public:
 
 	FORCEINLINE bool AllowTranslucencyAfterDOF() const { return bAllowTranslucencyAfterDOF; }
 
+	FORCEINLINE bool AllowStandardTranslucencySeparated() const { return bAllowStandardTranslucencySeparated; }
+
 	FORCEINLINE const ISceneViewFamilyScreenPercentage* GetScreenPercentageInterface() const
 	{
 		return ScreenPercentageInterface;
@@ -2130,6 +2151,9 @@ public:
 		return SecondarySpatialUpscalerInterface;
 	}
 
+	inline bool GetIsInFocus() const				{ return bIsInFocus; }
+	inline void SetIsInFocus(bool bInIsInFocus)		{ bIsInFocus = bInIsInFocus; }
+
 private:
 	/** Interface to handle screen percentage of the views of the family. */
 	ISceneViewFamilyScreenPercentage* ScreenPercentageInterface;
@@ -2144,6 +2168,12 @@ private:
 
 	/** whether the translucency are allowed to render after DOF, if not they will be rendered in standard translucency. */
 	bool bAllowTranslucencyAfterDOF;
+
+	/** whether the pre DOF translucency are allowed to be rendered in separated target from scene to allow for better composition with distortion.*/
+	bool bAllowStandardTranslucencySeparated;
+
+	/** True if this view is the current editing view or the active game view */
+	bool bIsInFocus = true;
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// Only FSceneRenderer can copy a view family.

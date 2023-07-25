@@ -7,12 +7,15 @@
 #include "Engine/EngineTypes.h"
 #include "IAudioParameterTransmitter.h"
 #include "Math/RandomStream.h"
-#include "Quartz/AudioMixerClockHandle.h"
 #include "Quartz/AudioMixerQuantizedCommands.h"
 #include "Sound/QuartzQuantizationUtilities.h"
 #include "Sound/QuartzSubscription.h"
 #include "Sound/SoundAttenuation.h"
+#include "Sound/SoundModulationDestination.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Sound/SoundWave.h"
+#include "Quartz/AudioMixerClockHandle.h"
+#endif
 #include "UObject/ObjectMacros.h"
 
 #include "AudioComponent.generated.h"
@@ -20,13 +23,16 @@
 
 // Forward Declarations
 class FAudioDevice;
+class ISourceBufferListener;
 class UAudioComponent;
 class USoundBase;
 class USoundClass;
 class USoundConcurrency;
+class USoundEffectSourcePresetChain;
 class USoundWave;
-
+enum class EBusSendType : uint8;
 struct FAudioComponentParam;
+using FSharedISourceBufferListenerPtr = TSharedPtr<ISourceBufferListener, ESPMode::ThreadSafe>;
 
 
 // Enum describing the audio component play state
@@ -121,6 +127,23 @@ enum class EAudioFaderCurve : uint8
 	Count UMETA(Hidden)
 };
 
+UENUM(BlueprintType)
+enum class EModulationDestination : uint8
+{
+	/* Volume modulation */
+	Volume,
+
+	/* Pitch modulation */
+	Pitch,
+
+	/* Cutoff Frequency of a lowpass filter */
+	Lowpass,
+
+	/* Cutoff Frequency of a highpass filter */
+	Highpass,
+
+	Count UMETA(Hidden)
+};
 
 /**
  * Legacy struct used for storing named parameter for a given AudioComponent.
@@ -706,6 +729,24 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio", DisplayName="Get Cooked Amplitude Envelope Data For All Playing Sounds")
 	bool GetCookedEnvelopeDataForAllPlayingSounds(TArray<FSoundWaveEnvelopeDataPerSound>& OutEnvelopeData);
+
+	/**
+	* Sets the routing for one of the given Audio component's Modulation Destinations.
+	* The changes do not apply to any currently active sounds, but will apply to future sounds.
+	* @param Modulators The set of modulators to apply to the given destination on the component.
+	* @param Destination The destination to assign the modulators to.
+	* @param RoutingMethod The routing method to use for the given volume modulator.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio", DisplayName = "Set Modulation Routing")
+	void SetModulationRouting(const TSet<USoundModulatorBase*>& Modulators, const EModulationDestination Destination, const EModulationRouting RoutingMethod = EModulationRouting::Inherit);
+
+	/**
+	* Gets the set of currently active modulators for a given Modulation Destination.
+	* @param Destination The Destination to retrieve the Modulators from.
+	* @return The set of of Modulators applied to this component for the given Destination.
+	*/
+	UFUNCTION(BlueprintPure, Category = "Audio|Components|Audio", DisplayName = "Get Modulators")
+	UPARAM(DisplayName = "Modulators") TSet<USoundModulatorBase*> GetModulators(const EModulationDestination Destination);
 
 	static void PlaybackCompleted(uint64 AudioComponentID, bool bFailedToStart);
 

@@ -3,8 +3,11 @@
 #pragma once
 
 #include "ChaosInterfaceWrapper.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Engine/Engine.h"
+#endif
 #include "Chaos/Declares.h"
+#include "Chaos/PhysicsObject.h"
 #include "PhysicsEngine/ConstraintTypes.h"
 #include "PhysicsInterfaceWrapperShared.h"
 #include "Physics/PhysicsInterfaceDeclares.h"
@@ -71,6 +74,7 @@ public:
     static bool ExecuteRead(const FPhysicsActorHandle& InActorReferenceA, const FPhysicsActorHandle& InActorReferenceB, TFunctionRef<void(const FPhysicsActorHandle& ActorA, const FPhysicsActorHandle& ActorB)> InCallable);
     static bool ExecuteRead(const FPhysicsConstraintHandle& InConstraintRef, TFunctionRef<void(const FPhysicsConstraintHandle& Constraint)> InCallable);
     static bool ExecuteRead(FPhysScene* InScene, TFunctionRef<void()> InCallable);
+	static bool ExecuteRead(Chaos::FPhysicsObject* InObjectA, Chaos::FPhysicsObject* InObjectB, TFunctionRef<void(Chaos::FPhysicsObject* InObjectA, Chaos::FPhysicsObject* InObjectB)> InCallable);
 
     static bool ExecuteWrite(const FPhysicsActorHandle& InActorReference, TFunctionRef<void(const FPhysicsActorHandle& Actor)> InCallable);
 	static bool ExecuteWrite(FPhysicsActorHandle& InActorReference, TFunctionRef<void(FPhysicsActorHandle& Actor)> InCallable);
@@ -79,6 +83,7 @@ public:
     static bool ExecuteWrite(const FPhysicsConstraintHandle& InConstraintRef, TFunctionRef<void(const FPhysicsConstraintHandle& Constraint)> InCallable);
     static bool ExecuteWrite(FPhysScene* InScene, TFunctionRef<void()> InCallable);
 	static bool ExecuteWrite(FPhysScene* InScene, TFunctionRef<void(FPhysScene* Scene)> InCallable);
+	static bool ExecuteWrite(Chaos::FPhysicsObject* InObjectA, Chaos::FPhysicsObject* InObjectB, TFunctionRef<void(Chaos::FPhysicsObject* InObjectA, Chaos::FPhysicsObject* InObjectB)> InCallable);
 
     static void ExecuteShapeWrite(FBodyInstance* InInstance, FPhysicsShapeHandle& InShape, TFunctionRef<void(FPhysicsShapeHandle& InShape)> InCallable);
 
@@ -136,22 +141,22 @@ FORCEINLINE float GetHalfHeight(const Chaos::FCapsule& Capsule)
 }
 */
 
-FORCEINLINE void DrawOverlappingTris(const UWorld* World, const FLocationHit& Hit, const Chaos::FImplicitObject& Geom, const FTransform& QueryTM)
+FORCEINLINE void DrawOverlappingTris(const UWorld* World, const ChaosInterface::FLocationHit& Hit, const Chaos::FImplicitObject& Geom, const FTransform& QueryTM)
 {
 	//TODO_SQ_IMPLEMENTATION
 }
 
-FORCEINLINE void ComputeZeroDistanceImpactNormalAndPenetration(const UWorld* World, const FLocationHit& Hit, const Chaos::FImplicitObject& Geom, const FTransform& QueryTM, FHitResult& OutResult)
+FORCEINLINE void ComputeZeroDistanceImpactNormalAndPenetration(const UWorld* World, const ChaosInterface::FLocationHit& Hit, const Chaos::FImplicitObject& Geom, const FTransform& QueryTM, FHitResult& OutResult)
 {
 	//TODO_SQ_IMPLEMENTATION
 }
 
-FORCEINLINE void DrawOverlappingTris(const UWorld* World, const FPTLocationHit& Hit, const Chaos::FImplicitObject& Geom, const FTransform& QueryTM)
+FORCEINLINE void DrawOverlappingTris(const UWorld* World, const ChaosInterface::FPTLocationHit& Hit, const Chaos::FImplicitObject& Geom, const FTransform& QueryTM)
 {
 	//TODO_SQ_IMPLEMENTATION
 }
 
-FORCEINLINE void ComputeZeroDistanceImpactNormalAndPenetration(const UWorld* World, const FPTLocationHit& Hit, const Chaos::FImplicitObject& Geom, const FTransform& QueryTM, FHitResult& OutResult)
+FORCEINLINE void ComputeZeroDistanceImpactNormalAndPenetration(const UWorld* World, const ChaosInterface::FPTLocationHit& Hit, const Chaos::FImplicitObject& Geom, const FTransform& QueryTM, FHitResult& OutResult)
 {
 	//TODO_SQ_IMPLEMENTATION
 }

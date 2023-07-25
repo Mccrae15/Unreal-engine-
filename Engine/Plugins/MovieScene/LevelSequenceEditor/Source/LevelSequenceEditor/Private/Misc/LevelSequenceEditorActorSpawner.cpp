@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequenceEditorActorSpawner.h"
-#include "MovieScene.h"
+#include "Engine/Blueprint.h"
 #include "ActorFactories/ActorFactory.h"
 #include "AssetSelection.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/Level.h"
 #include "LevelEditorViewport.h"
 #include "SnappingUtils.h"
-#include "Sections/MovieScene3DTransformSection.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Tracks/IMovieSceneTransformOrigin.h"
 #include "SequencerSettings.h"
@@ -14,11 +15,8 @@
 #include "ISequencer.h"
 #include "Tracks/MovieSceneSpawnTrack.h"
 #include "Sections/MovieSceneBoolSection.h"
-#include "Editor.h"
-#include "Engine/World.h"
 #include "Settings/LevelEditorViewportSettings.h"
-#include "MovieSceneSequence.h"
-#include "Channels/MovieSceneChannelProxy.h"
+#include "TransformData.h"
 
 #define LOCTEXT_NAMESPACE "LevelSequenceEditorActorSpawner"
 

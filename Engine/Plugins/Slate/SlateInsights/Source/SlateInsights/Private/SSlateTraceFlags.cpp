@@ -3,7 +3,6 @@
 #include "SSlateTraceFlags.h"
 
 #include "SlateInsightsStyle.h"
-#include "Templates/UnrealTemplate.h"
 
 
 #define LOCTEXT_NAMESPACE "SSlateTraceFlags"
@@ -41,7 +40,7 @@ namespace Private
 				(
 					OutDrawElements,
 					LayerId,
-					AllottedGeometry.ToPaintGeometry(BoxSizeX0 * Index, BoxSize),
+					AllottedGeometry.ToPaintGeometry(BoxSize, FSlateLayoutTransform(BoxSizeX0 * Index)),
 					BackgroundBrush,
 					ESlateDrawEffect::None,
 					SelectionColor.GetColor(InWidgetStyle)
@@ -53,7 +52,7 @@ namespace Private
 				(
 					OutDrawElements,
 					LayerId,
-					AllottedGeometry.ToPaintGeometry(BoxSizeX0 * Index, BoxSize),
+					AllottedGeometry.ToPaintGeometry(BoxSize, FSlateLayoutTransform(BoxSizeX0 * Index)),
 					BackgroundBrush,
 					ESlateDrawEffect::None,
 					InvertedForeground.GetColor(InWidgetStyle)

@@ -4,16 +4,17 @@
 
 #include "DatasmithMVRImportOptions.h"
 #include "Factories/DMXLibraryFromMVRFactory.h"
-#include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXLibrary.h"
+#include "MVR/DMXMVRGeneralSceneDescription.h"
 #include "MVR/Types/DMXMVRFixtureNode.h"
 
-#include "Editor.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "DatasmithNativeTranslator.h"
+#include "Async/Async.h"
 #include "DatasmithSceneFactory.h"
-#include "IDatasmithSceneElements.h"
-#include "Subsystems/ImportSubsystem.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Misc/Paths.h"
+#include "UObject/Package.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 
 DECLARE_LOG_CATEGORY_CLASS(LogDatasmithMVRNativeTranslator, Log, All);
@@ -26,7 +27,15 @@ bool FDatasmithMVRNativeTranslator::LoadScene(TSharedRef<IDatasmithScene> InOutS
 		return false;
 	}
 
-	if (ImportOptions.IsValid() && !ImportOptions->bImportMVR)
+	TArray<TObjectPtr<UDatasmithOptionsBase>> ImportOptionsArray;
+	GetSceneImportOptions(ImportOptionsArray);
+
+	const TObjectPtr<UDatasmithOptionsBase>* ImportOptionsPtr = Algo::FindByPredicate(ImportOptionsArray, [](const UDatasmithOptionsBase* ImportOptions)
+		{
+			return ImportOptions->GetClass() == UDatasmithMVRImportOptions::StaticClass();
+		});
+	UDatasmithMVRImportOptions* MVRImportOptions = ImportOptionsPtr ? Cast<UDatasmithMVRImportOptions>(*ImportOptionsPtr) : nullptr;
+	if (MVRImportOptions && !MVRImportOptions->bImportMVR)
 	{
 		// Importing MVR is turned off in options. Acknowledge the scene was successfully imported by the native translator.
 		return true;
@@ -39,18 +48,34 @@ bool FDatasmithMVRNativeTranslator::LoadScene(TSharedRef<IDatasmithScene> InOutS
 		return true;
 	}
 
+	// Interchange imports on its own thread
+	if (!IsInGameThread())
+	{
+		//  MVR support via Interchange is prevented as it ingores any changes made to the scene here.
+		AsyncTask(ENamedThreads::GameThread, []()
+			{
+				const FNotificationInfo Info(NSLOCTEXT("FDatasmithMVRNativeTranslator", "InterchangeNotSupportedNotification", "MVR Import is not supported when importing Datasmith via interchange"));
+				FSlateNotificationManager::Get().AddNotification(Info);
+			});
+
+		// MVR is not supported. Acknowledge the scene was otherwise successfully import via Interchange.
+		return true;
+	}
+
 	InOutScene->SetHost(TEXT("DatasmithMVRNativeTranslator"));
 	InOutScene->SetProductName(TEXT("DatasmithMVRNativeTranslator"));
 
 	UDMXLibrary* DMXLibrary = CreateDMXLibraryFromMVR(MVRFilePathAndName);
-	if (!DMXLibrary)
+	if (DMXLibrary)
 	{
-		const FString MVRFilename = FPaths::GetCleanFilename(MVRFilePathAndName);
-		UE_LOG(LogDatasmithMVRNativeTranslator, Warning, TEXT("Failed to create DMX Library for %s. See previous errors for more info. Creating native datasmith scene instead."), *MVRFilename);
-		return true;
+		ReplaceMVRActorsWithMVRSceneActor(InOutScene, DMXLibrary);
 	}
-
-	ReplaceMVRActorsWithMVRSceneActor(InOutScene, DMXLibrary);
+	else
+	{
+		const FNotificationInfo Info(NSLOCTEXT("FDatasmithMVRNativeTranslator", "FailedToImportMVRFileNotification", "Failed to import MVR. See log for details."));
+		FSlateNotificationManager::Get().AddNotification(Info);
+		// Acknowledge the scene was successfully imported by the native translator.
+	}
 
 	return true;
 }
@@ -59,27 +84,7 @@ void FDatasmithMVRNativeTranslator::GetSceneImportOptions(TArray<TObjectPtr<UDat
 {
 	FDatasmithNativeTranslator::GetSceneImportOptions(Options);
 
-	if (!ImportOptions.IsValid())
-	{
-		const FString& FilePath = GetSource().GetSourceFile();
-
-		ImportOptions = Datasmith::MakeOptions<UDatasmithMVRImportOptions>();
-	}
-
-	Options.Add(ImportOptions.Get());
-}
-
-void FDatasmithMVRNativeTranslator::SetSceneImportOptions(const TArray<TObjectPtr<UDatasmithOptionsBase>>& Options)
-{
-	FDatasmithNativeTranslator::SetSceneImportOptions(Options);
-
-	for (const TObjectPtr<UDatasmithOptionsBase>& OptionPtr : Options)
-	{
-		if (UDatasmithMVRImportOptions* InImportOptions = Cast<UDatasmithMVRImportOptions>(OptionPtr))
-		{
-			ImportOptions.Reset(InImportOptions);
-		}
-	}
+	Options.Add(Datasmith::MakeOptionsPtr<UDatasmithMVRImportOptions>());
 }
 
 bool FDatasmithMVRNativeTranslator::FindMVRFile(FString& OutMVRFilePathAndName) const
@@ -90,7 +95,6 @@ bool FDatasmithMVRNativeTranslator::FindMVRFile(FString& OutMVRFilePathAndName) 
 	const FString DatasmithAssetsPath = FPaths::GetPath(DatasmithFilePathAndName) / DatasmithFileName + TEXT("_Assets");
 
 	const FString MVRFilename = FPaths::GetBaseFilename(DatasmithFilePathAndName) + TEXT(".mvr");
-
 	if (FPaths::FileExists(DatasmithPath / MVRFilename))
 	{
 		OutMVRFilePathAndName = DatasmithPath / MVRFilename;
@@ -99,7 +103,20 @@ bool FDatasmithMVRNativeTranslator::FindMVRFile(FString& OutMVRFilePathAndName) 
 	else if (FPaths::FileExists(DatasmithAssetsPath / MVRFilename))
 	{
 		OutMVRFilePathAndName = DatasmithAssetsPath / MVRFilename;
-		return true;;
+		return true;
+	}
+
+	// Vectorworks exports .udatasmith files with underscores, but MVR without underscores by default
+	const FString MVRFilenameNoUnderscores = MVRFilename.Replace(TEXT("_"), TEXT(" "));
+	if (FPaths::FileExists(DatasmithPath / MVRFilenameNoUnderscores))
+	{
+		OutMVRFilePathAndName = DatasmithPath / MVRFilenameNoUnderscores;
+		return true;
+	}
+	else if (FPaths::FileExists(DatasmithAssetsPath / MVRFilenameNoUnderscores))
+	{
+		OutMVRFilePathAndName = DatasmithAssetsPath / MVRFilenameNoUnderscores;
+		return true;
 	}
 
 	return false;
@@ -138,7 +155,7 @@ UDMXLibrary* FDatasmithMVRNativeTranslator::CreateDMXLibraryFromMVR(const FStrin
 	return nullptr;
 }
 
-void FDatasmithMVRNativeTranslator::ReplaceMVRActorsWithMVRSceneActor(TSharedRef<IDatasmithScene>& InOutScene, UDMXLibrary* DMXLibrary) const
+void FDatasmithMVRNativeTranslator::ReplaceMVRActorsWithMVRSceneActor(const TSharedRef<IDatasmithScene>& InOutScene, UDMXLibrary* DMXLibrary) const
 {
 	if (!ensureMsgf(DMXLibrary, TEXT("Tried to create an MVR scene in the datasmith scene, but DMXLibrary is null.")))
 	{

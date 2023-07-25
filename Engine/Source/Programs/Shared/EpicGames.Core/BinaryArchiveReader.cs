@@ -12,7 +12,7 @@ namespace EpicGames.Core
 	/// Reads data from a binary output stream. Similar to the NET Framework BinaryReader class, but supports fast serialization of object graphs and container types, and supports nullable objects.
 	/// Significantly faster than BinaryReader due to the expectation that the whole stream is in memory before deserialization.
 	/// </summary>
-	public class BinaryArchiveReader : IDisposable
+	public sealed class BinaryArchiveReader : IDisposable
 	{
 		/// <summary>
 		/// The input stream.
@@ -382,6 +382,55 @@ namespace EpicGames.Core
 			else
 			{
 				HashSet<T> result = new HashSet<T>(comparer);
+				for (int idx = 0; idx < count; idx++)
+				{
+					result.Add(readElement());
+				}
+				return result;
+			}
+		}
+
+		/// <summary>
+		/// Reads a sortedset of items
+		/// </summary>
+		/// <typeparam name="T">The element type for the sortedset</typeparam>
+		/// <param name="readElement">Delegate used to read a single element</param>
+		/// <returns>SortedSet of items</returns>
+		public SortedSet<T>? ReadSortedSet<T>(Func<T> readElement)
+		{
+			int count = ReadInt();
+			if (count < 0)
+			{
+				return null;
+			}
+			else
+			{
+				SortedSet<T> result = new SortedSet<T>();
+				for (int idx = 0; idx < count; idx++)
+				{
+					result.Add(readElement());
+				}
+				return result;
+			}
+		}
+
+		/// <summary>
+		/// Reads a sortedset of items
+		/// </summary>
+		/// <typeparam name="T">The element type for the sortedset</typeparam>
+		/// <param name="readElement">Delegate used to read a single element</param>
+		/// <param name="comparer">Comparison function for the set</param>
+		/// <returns>SortedSet of items</returns>
+		public SortedSet<T>? ReadSortedSet<T>(Func<T> readElement, IComparer<T> comparer)
+		{
+			int count = ReadInt();
+			if (count < 0)
+			{
+				return null;
+			}
+			else
+			{
+				SortedSet<T> result = new SortedSet<T>(comparer);
 				for (int idx = 0; idx < count; idx++)
 				{
 					result.Add(readElement());

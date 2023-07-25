@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+
+#include "Features/IModularFeatures.h"
 #include "IMotionController.h"
 #include "LiveLinkClient.h"
 
-#include "Roles/LiveLinkBasicRole.h"
 #include "Roles/LiveLinkTransformRole.h"
 #include "Roles/LiveLinkTransformTypes.h"
 

@@ -14,6 +14,14 @@
 #include "Serialization/StructuredArchiveNameHelpers.h"
 #include "Serialization/StructuredArchiveSlots.h"
 #include "UObject/ReleaseObjectVersion.h"
+#include "HAL/IConsoleManager.h" // for FAutoConsoleVariableRef
+
+int32 GSkipChangelistCompatibilityVersionCheck = 0;
+static FAutoConsoleVariableRef CSkipChangelistCompatibilityVersionCheck(
+	TEXT("s.SkipChangelistCompatibilityVersionCheck"),
+	GSkipChangelistCompatibilityVersionCheck,
+	TEXT("If true, engine version compatibility checks will not use changelist numbers to determine compatibility. NOTE: Changelist compatibility checks are automatically skipped in licensee builds."),
+	ECVF_Default);
 
 FEngineVersionBase::FEngineVersionBase(uint16 InMajor, uint16 InMinor, uint16 InPatch, uint32 InChangelist)
 : Major(InMajor)
@@ -121,7 +129,11 @@ bool FEngineVersion::IsCompatibleWith(const FEngineVersionBase &Other) const
 	}
 	else
 	{
-		return FEngineVersion::GetNewest(*this, Other, nullptr) != EVersionComparison::Second;
+		EVersionComponent ConflictingComponent = EVersionComponent::Minor;
+		EVersionComparison CompareResult = FEngineVersion::GetNewest(*this, Other, &ConflictingComponent);
+		
+		const bool bIsCompatible = (CompareResult != EVersionComparison::Second) || (GSkipChangelistCompatibilityVersionCheck && ConflictingComponent == EVersionComponent::Changelist);
+		return bIsCompatible;
 	}
 }
 

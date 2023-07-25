@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Data/PCGRenderTargetData.h"
-#include "Kismet/KismetRenderingLibrary.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "TextureResource.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGRenderTargetData)
 
 void UPCGRenderTargetData::Initialize(UTextureRenderTarget2D* InRenderTarget, const FTransform& InTransform)
 {
@@ -37,4 +40,15 @@ void UPCGRenderTargetData::Initialize(UTextureRenderTarget2D* InRenderTarget, co
 	Bounds += FVector(-1.0f, -1.0f, 0.0f);
 	Bounds += FVector(1.0f, 1.0f, 0.0f);
 	Bounds = Bounds.TransformBy(Transform);
+}
+
+UPCGSpatialData* UPCGRenderTargetData::CopyInternal() const
+{
+	UPCGRenderTargetData* NewRenderTargetData = NewObject<UPCGRenderTargetData>();
+
+	CopyBaseTextureData(NewRenderTargetData);
+
+	NewRenderTargetData->RenderTarget = RenderTarget;
+
+	return NewRenderTargetData;
 }

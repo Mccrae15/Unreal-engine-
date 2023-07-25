@@ -8,11 +8,12 @@
 #include "Brush.generated.h"
 
 class UBrushBuilder;
+class ULevel;
 
 //-----------------------------------------------------------------------------
 // Variables.
 UENUM()
-enum ECsgOper
+enum ECsgOper : int
 {
 	/** Active brush. (deprecated, do not use.) */
 	CSG_Active,
@@ -30,7 +31,7 @@ enum ECsgOper
 
 
 UENUM()
-enum EBrushType
+enum EBrushType : int
 {
 	/** Default/builder brush. */
 	Brush_Default UMETA(Hidden),
@@ -206,17 +207,7 @@ public:
 	 * @param	OutLevels if specified, provides a copy of the levels array
 	 * @return	true if the csg needs to be rebuilt on the next editor tick.	
 	 */
-	static bool NeedsRebuild(TArray< TWeakObjectPtr< ULevel > >* OutLevels = nullptr)
-	{
-		LevelsToRebuild.RemoveAllSwap([](const TWeakObjectPtr<ULevel>& Level) { return !Level.IsValid(); });
-
-		if (OutLevels)
-		{
-			*OutLevels = LevelsToRebuild;
-		}
-		
-		return(LevelsToRebuild.Num() > 0);
-	}
+	static bool NeedsRebuild(TArray< TWeakObjectPtr< ULevel > >* OutLevels = nullptr);
 
 	/**
 	 * Called upon finishing the csg rebuild to clear the rebuild bool.
@@ -231,7 +222,7 @@ public:
 	 *
 	 * @param	InLevel The level that needs rebuilding
 	 */
-	static void SetNeedRebuild(ULevel* InLevel){if(InLevel){LevelsToRebuild.AddUnique(InLevel);}}
+	static void SetNeedRebuild(ULevel* InLevel);
 #endif//WITH_EDITOR
 
 	/** @return true if this is a static brush */

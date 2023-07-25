@@ -42,6 +42,8 @@ class FProperty;
 
 #define LOCTEXT_NAMESPACE "MotionControllerDetails"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 TMap< FName, TSharedPtr<FName> > FMotionControllerDetails::CustomSourceNames;
 
 TSharedRef<IDetailCustomization> FMotionControllerDetails::MakeInstance()
@@ -375,3 +377,5 @@ FText FMotionControllerDetails::GetMotionSourceValueText() const
 }
 
 #undef LOCTEXT_NAMESPACE
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

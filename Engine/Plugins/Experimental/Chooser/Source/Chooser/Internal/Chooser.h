@@ -3,142 +3,84 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
-#include "IDataInterface.h"
-#include "DataInterface_Object.h"
+#include "IObjectChooser.h"
+#include "InstancedStruct.h"
+#include "IChooserColumn.h"
+
 #include "Chooser.generated.h"
 
-UINTERFACE(NotBlueprintType, meta = (CannotImplementInterfaceInBlueprint))
-class CHOOSER_API UChooserColumn : public UInterface
-{
-	GENERATED_BODY()
-};
 
-class CHOOSER_API IChooserColumn 
-{
-	GENERATED_BODY()
-
-public:
-	virtual void Filter(const UE::DataInterface::FContext& Context, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) {};
-	virtual FName GetDisplayName() { return "ChooserColumn"; }
-	virtual void SetDisplayName(FName Name) { }
-	virtual void SetNumRows(uint32 NumRows) {}
-	virtual void DeleteRows(const TArray<uint32> & RowIndices) {}
-};
-
-UCLASS()
-class CHOOSER_API UChooserColumnBool : public UObject, public IChooserColumn
-{
-	GENERATED_BODY()
-	public:
-	UChooserColumnBool() { }
-	
-	UPROPERTY(EditAnywhere, Category = "Editor")
-	FName DisplayName = "Bool Column";
-	
-	UPROPERTY(EditAnywhere, Meta=(DataInterfaceType="bool"), Category = "Input")
-	TScriptInterface<IDataInterface> Value;
-
-	UPROPERTY(EditAnywhere, Category=Runtime)
-	// array of results (cells for this column for each row in the table)
-	// should match the length of the Results array 
-	TArray<bool> RowValues;
-	
-	virtual void Filter(const UE::DataInterface::FContext& Context, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) override;
-
-	// todo: macro boilerplate
-	virtual void SetNumRows(uint32 NumRows) override { RowValues.SetNum(NumRows); }
-	virtual FName GetDisplayName() override { return DisplayName; }
-	virtual void SetDisplayName(FName Name) override { DisplayName = Name; }
-	virtual void DeleteRows(const TArray<uint32> & RowIndices )
-	{
-		for(uint32 Index : RowIndices)
-		{
-			RowValues.RemoveAt(Index);
-		}
-	}
-};
-
-USTRUCT()
-struct FChooserFloatRangeRowData
-{
-	GENERATED_BODY()
-	
-	UPROPERTY(EditAnywhere, Category=Runtime)
-	float Min=0;
-	
-	UPROPERTY(EditAnywhere, Category=Runtime)
-	float Max=0;
-};
-
-UCLASS()
-class CHOOSER_API UChooserColumnFloatRange : public UObject, public IChooserColumn
-{
-	GENERATED_BODY()
-	public:
-	UChooserColumnFloatRange() { }
-	
-	UPROPERTY(EditAnywhere, Category = "Editor")
-	FName DisplayName = "Float Range Column";
-	
-	UPROPERTY(EditAnywhere, Meta=(DataInterfaceType="float"), Category = "Input")
-	TScriptInterface<IDataInterface> Value;
-
-	UPROPERTY(EditAnywhere, Category=Runtime)
-	// array of results (cells for this column for each row in the table)
-	// should match the length of the Results array 
-	TArray<FChooserFloatRangeRowData> RowValues;
-	
-	virtual void Filter(const UE::DataInterface::FContext& Context, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) override;
-	virtual void SetNumRows(uint32 NumRows) { RowValues.SetNum(NumRows); }
-	virtual FName GetDisplayName() override { return DisplayName; }
-	virtual void SetDisplayName(FName Name) override { DisplayName = Name; }
-	virtual void DeleteRows(const TArray<uint32> & RowIndices )
-	{
-		for(uint32 Index : RowIndices)
-		{
-			RowValues.RemoveAt(Index);
-		}
-	}
-};
-
-UCLASS(MinimalAPI)
+UCLASS(MinimalAPI, BlueprintType)
 class UChooserTable : public UObject
 {
 	GENERATED_UCLASS_BODY()
 public:
 	UChooserTable() {}
 	
-	UPROPERTY(EditAnywhere, Meta=(EditInline="true"), Category = "Editor")
-	FName ResultType = "Object"; // todo: drop-down, populated by all possible return type names from all implemented data interfaces
-	// todo: struct type for Object return types
+	// deprecated UObject Results
+	UPROPERTY()
+	TArray<TScriptInterface<IObjectChooser>> Results_DEPRECATED;
+	
+	// deprecated UObject Columns
+	UPROPERTY()
+	TArray<TScriptInterface<IChooserColumn>> Columns_DEPRECATED;
 
-	UPROPERTY(EditAnywhere, Meta=(EditInline="true"), Category = "Runtime")
-	TArray<TScriptInterface<IChooserColumn>> Columns;
+	// Each possible Result (Rows of chooser table)
+	UPROPERTY(EditAnywhere, DisplayName = "Results", Meta = (ExcludeBaseStruct, BaseStruct = "/Script/Chooser.ObjectChooserBase"), Category = "Hidden")
+	TArray<FInstancedStruct> ResultsStructs;
 
-	// array of results (rows of table)
-	// todo: DataInterfaceType shouldn't be hard coded (Should be based on Result Type above) needed for Details customization to work
-	UPROPERTY(EditAnywhere, Meta=(DataInterfaceType="Asset"), Category = "Runtime")
-	TArray<TScriptInterface<IDataInterface>> Results;
+	// Columns which filter Results
+	UPROPERTY(EditAnywhere, DisplayName = "Columns", Category = Hidden, meta = (ExcludeBaseStruct, BaseStruct = "/Script/Chooser.ChooserColumnBase"))
+	TArray<FInstancedStruct> ColumnsStructs;
+
+	UPROPERTY(EditAnywhere, Category="Input", Meta = (AllowAbstract=true))
+	TObjectPtr<UClass> ContextObjectType;
+	
+	UPROPERTY(EditAnywhere, Category="Output", Meta = (AllowAbstract=true))
+	TObjectPtr<UClass> OutputObjectType;
+
+#if WITH_EDITOR
+	virtual void PostLoad() override;
+#endif
 };
 
-UCLASS()
-class CHOOSER_API UDataInterface_EvaluateChooser : public UObject, public IDataInterface
+
+USTRUCT(DisplayName = "Evaluate Chooser")
+struct CHOOSER_API FEvaluateChooser : public FObjectChooserBase
 {
 	GENERATED_BODY()
 
-	// virtual bool GetObject(const UE::DataInterface::FContext& DataContext) const final override;
-
-	/** Get the return type name, used for dynamic type checking */
-    virtual FName GetReturnTypeNameImpl() const { return Chooser ? Chooser->ResultType : NAME_None; } 
-
-    /** Get the return type struct, used for dynamic type checking. If the result is not a struct, this should return nullptr */
-    virtual const UScriptStruct* GetReturnTypeStructImpl() const { return nullptr; } // todo, get type struct from chooser once it's added
-    
-    /** Get the value for this interface. @return true if successful, false if unsuccessful. */
-    virtual bool GetDataImpl(const UE::DataInterface::FContext& Context) const;
-
+	virtual UObject* ChooseObject(const UObject* ContextObject) const final override;
+	virtual EIteratorStatus ChooseMulti(const UObject* ContextObject, FObjectChooserIteratorCallback Callback) const final override;
 	public:
 	
 	UPROPERTY(EditAnywhere, Category="Parameters")
 	TObjectPtr<UChooserTable> Chooser;
+};
+
+// Deprecated class for converting old data
+UCLASS(ClassGroup = "LiveLink", deprecated)
+class CHOOSER_API UDEPRECATED_ObjectChooser_EvaluateChooser : public UObject, public IObjectChooser
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, Category="Parameters")
+	TObjectPtr<UChooserTable> Chooser;
+
+	virtual void ConvertToInstancedStruct(FInstancedStruct& OutInstancedStruct) const
+	{
+		OutInstancedStruct.InitializeAs(FEvaluateChooser::StaticStruct());
+		FEvaluateChooser& AssetChooser = OutInstancedStruct.GetMutable<FEvaluateChooser>();
+		AssetChooser.Chooser = Chooser;
+	}
+};
+
+
+UCLASS()
+class CHOOSER_API UChooserColumnMenuContext : public UObject
+{
+	GENERATED_BODY()
+public:
+	class FAssetEditorToolkit* Editor;
+	TWeakObjectPtr<UChooserTable> Chooser;
+	int ColumnIndex;
 };

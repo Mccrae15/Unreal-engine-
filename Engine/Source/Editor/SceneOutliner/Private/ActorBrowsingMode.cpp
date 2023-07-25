@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ActorBrowsingMode.h"
+#include "Engine/Blueprint.h"
 #include "SceneOutlinerFilters.h"
 #include "SceneOutlinerModule.h"
 #include "SceneOutlinerMenuContext.h"
@@ -11,6 +12,7 @@
 #include "UnrealEdGlobals.h"
 #include "ToolMenus.h"
 #include "Engine/Selection.h"
+#include "Engine/World.h"
 #include "Editor/UnrealEdEngine.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "HAL/FileManager.h"
@@ -36,6 +38,10 @@
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "LevelInstance/LevelInstanceEditorInstanceActor.h"
 #include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/IWorldPartitionEditorModule.h"
+#include "Subsystems/ActorEditorContextSubsystem.h"
 #include "ISourceControlModule.h"
 #include "ISourceControlProvider.h"
 #include "SourceControlOperations.h"
@@ -56,12 +62,16 @@ FActorBrowsingMode::FActorBrowsingMode(SSceneOutliner* InSceneOutliner, TWeakObj
 	: FActorModeInteractive(FActorModeParams(InSceneOutliner, InSpecifiedWorldToDisplay,  /* bHideComponents */ true, /* bHideLevelInstanceHierarchy */ false, /* bHideUnloadedActors */ false, /* bHideEmptyFolders */ false))
 	, FilteredActorCount(0)
 {
+	WorldPartitionEditorModule = FModuleManager::GetModulePtr<IWorldPartitionEditorModule>("WorldPartitionEditor");
+
 	// Capture selection changes of bones from mesh selection in fracture tools
 	FSceneOutlinerDelegates::Get().OnComponentsUpdated.AddRaw(this, &FActorBrowsingMode::OnComponentsUpdated);
 
 	GEngine->OnLevelActorDeleted().AddRaw(this, &FActorBrowsingMode::OnLevelActorDeleted);
 
 	GEditor->OnSelectUnloadedActorsEvent().AddRaw(this, &FActorBrowsingMode::OnSelectUnloadedActors);
+
+	UActorEditorContextSubsystem::Get()->OnActorEditorContextSubsystemChanged().AddRaw(this, &FActorBrowsingMode::OnActorEditorContextSubsystemChanged);
 
 	FEditorDelegates::OnEditCutActorsBegin.AddRaw(this, &FActorBrowsingMode::OnEditCutActorsBegin);
 	FEditorDelegates::OnEditCutActorsEnd.AddRaw(this, &FActorBrowsingMode::OnEditCutActorsEnd);
@@ -125,6 +135,73 @@ FActorBrowsingMode::FActorBrowsingMode(SSceneOutliner* InSceneOutliner, TWeakObj
 			}
 		});
 	FilterInfoMap.Add(TEXT("ShowOnlyCurrentLevel"), OnlyCurrentLevelInfo);
+
+	FSceneOutlinerFilterInfo OnlyCurrentDataLayersInfo(LOCTEXT("ToggleShowOnlyCurrentDataLayers", "Only in any Current Data Layers"), LOCTEXT("ToggleShowOnlyCurrentDataLayersToolTip", "When enabled, only shows Actors that are in any Current Data Layers."), LocalSettings.bShowOnlyActorsInCurrentDataLayers, FCreateSceneOutlinerFilter::CreateStatic(&FActorBrowsingMode::CreateIsInCurrentDataLayersFilter));
+	OnlyCurrentDataLayersInfo.OnToggle().AddLambda([this](bool bIsActive)
+		{
+			FActorBrowsingModeConfig* Settings = GetMutableConfig();
+			if (Settings)
+			{
+				Settings->bShowOnlyActorsInCurrentDataLayers = bIsActive;
+				SaveConfig();
+			}
+		});
+	FilterInfoMap.Add(TEXT("ShowOnlyCurrentDataLayers"), OnlyCurrentDataLayersInfo);
+
+	// Add a filter for unloaded actors to properly reflect the bShowOnlyActorsInCurrentDataLayers flag.
+	SceneOutliner->AddFilter(MakeShared<FActorDescFilter>(FActorDescTreeItem::FFilterPredicate::CreateLambda([this](const FWorldPartitionActorDesc* ActorDesc)
+		{
+			FActorBrowsingModeConfig* Settings = GetMutableConfig();
+			if (Settings && Settings->bShowOnlyActorsInCurrentDataLayers)
+			{
+				const UDataLayerSubsystem* DataLayerSubsystem = RepresentingWorld.IsValid() ? RepresentingWorld->GetSubsystem<UDataLayerSubsystem>() : nullptr;
+				if (!DataLayerSubsystem || DataLayerSubsystem->GetActorEditorContextDataLayers().IsEmpty())
+				{
+					return true;
+				}
+				
+				for (const FName& DataLayerInstanceName : ActorDesc->GetDataLayerInstanceNames())
+				{
+					if (const UDataLayerInstance* const DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName))
+					{
+						if (DataLayerInstance->IsInActorEditorContext())
+						{
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+			return true;
+		}), FSceneOutlinerFilter::EDefaultBehaviour::Pass));
+
+	FSceneOutlinerFilterInfo OnlyCurrentContentBundleInfo(LOCTEXT("ToggleShowOnlyCurrentContentBundle", "Only in Current Content Bundle"), LOCTEXT("ToggleShowOnlyCurrentContentBundleToolTip", "When enabled, only shows Actors that are in the Current Content Bundle."), LocalSettings.bShowOnlyActorsInCurrentContentBundle, FCreateSceneOutlinerFilter::CreateRaw(this, &FActorBrowsingMode::CreateIsInCurrentContentBundleFilter));
+	OnlyCurrentContentBundleInfo.OnToggle().AddLambda([this](bool bIsActive)
+		{
+			FActorBrowsingModeConfig* Settings = GetMutableConfig();
+			if (Settings)
+			{
+				Settings->bShowOnlyActorsInCurrentContentBundle = bIsActive;
+				SaveConfig();
+			}
+		});
+	FilterInfoMap.Add(TEXT("ShowOnlyCurrentContentBundle"), OnlyCurrentContentBundleInfo);
+
+	// Add a filter for unloaded actors to properly reflect the bShowOnlyActorsInCurrentContentBundle flag.
+	SceneOutliner->AddFilter(MakeShared<FActorDescFilter>(FActorDescTreeItem::FFilterPredicate::CreateLambda([this](const FWorldPartitionActorDesc* ActorDesc)
+		{
+			FActorBrowsingModeConfig* Settings = GetMutableConfig();
+			if (Settings && Settings->bShowOnlyActorsInCurrentContentBundle)
+			{
+				if (!WorldPartitionEditorModule || !WorldPartitionEditorModule->IsEditingContentBundle())
+				{
+					return true;
+				}
+
+				return ActorDesc->GetContentBundleGuid().IsValid() && WorldPartitionEditorModule->IsEditingContentBundle(ActorDesc->GetContentBundleGuid());
+			}
+			return true;
+		}), FSceneOutlinerFilter::EDefaultBehaviour::Pass));
 
 	bHideComponents = LocalSettings.bHideActorComponents;
 	FSceneOutlinerFilterInfo HideComponentsInfo(LOCTEXT("ToggleHideActorComponents", "Hide Actor Components"), LOCTEXT("ToggleHideActorComponentsToolTip", "When enabled, hides components belonging to actors."), LocalSettings.bHideActorComponents, FCreateSceneOutlinerFilter::CreateStatic(&FActorBrowsingMode::CreateHideComponentsFilter));
@@ -239,6 +316,11 @@ FActorBrowsingMode::~FActorBrowsingMode()
 
 	GEditor->OnSelectUnloadedActorsEvent().RemoveAll(this);
 
+	if (UActorEditorContextSubsystem* ActorEditorContextSubsystem = UActorEditorContextSubsystem::Get())
+	{
+		ActorEditorContextSubsystem->OnActorEditorContextSubsystemChanged().RemoveAll(this);
+	}
+
 	FEditorDelegates::OnEditCutActorsBegin.RemoveAll(this);
 	FEditorDelegates::OnEditCutActorsEnd.RemoveAll(this);
 	FEditorDelegates::OnEditCopyActorsBegin.RemoveAll(this);
@@ -338,6 +420,11 @@ FSlateColor FActorBrowsingMode::GetStatusTextColor() const
 	}
 }
 
+void FActorBrowsingMode::OnActorEditorContextSubsystemChanged()
+{
+	SceneOutliner->FullRefresh();
+}
+
 void FActorBrowsingMode::OnToggleAlwaysFrameSelection()
 {
 	bAlwaysFrameSelection = !bAlwaysFrameSelection;
@@ -416,6 +503,40 @@ TSharedRef<FSceneOutlinerFilter> FActorBrowsingMode::CreateIsInCurrentLevelFilte
 		}), FSceneOutlinerFilter::EDefaultBehaviour::Pass));
 }
 
+TSharedRef<FSceneOutlinerFilter> FActorBrowsingMode::CreateIsInCurrentDataLayersFilter()
+{
+	return MakeShareable(new FActorFilter(FActorTreeItem::FFilterPredicate::CreateStatic([](const AActor* InActor)
+		{
+			const UDataLayerSubsystem* DataLayerSubsystem = InActor->GetWorld() ? InActor->GetWorld()->GetSubsystem<UDataLayerSubsystem>() : nullptr;
+			if (!DataLayerSubsystem || DataLayerSubsystem->GetActorEditorContextDataLayers().IsEmpty())
+			{
+				return true;
+			}
+
+			for (const UDataLayerInstance* DataLayerInstance : InActor->GetDataLayerInstances())
+			{
+				if (DataLayerInstance->IsInActorEditorContext())
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}), FSceneOutlinerFilter::EDefaultBehaviour::Pass));
+}
+
+TSharedRef<FSceneOutlinerFilter> FActorBrowsingMode::CreateIsInCurrentContentBundleFilter()
+{
+	return MakeShareable(new FActorFilter(FActorTreeItem::FFilterPredicate::CreateLambda([this](const AActor* InActor)
+		{
+			if (!WorldPartitionEditorModule || !WorldPartitionEditorModule->IsEditingContentBundle())
+			{
+				return true;
+			}
+			return InActor->GetContentBundleGuid().IsValid() && WorldPartitionEditorModule->IsEditingContentBundle(InActor->GetContentBundleGuid());
+		}), FSceneOutlinerFilter::EDefaultBehaviour::Pass));
+}
+
 TSharedRef<FSceneOutlinerFilter> FActorBrowsingMode::CreateHideComponentsFilter()
 {
 	return MakeShared<TSceneOutlinerPredicateFilter<FComponentTreeItem>>(TSceneOutlinerPredicateFilter<FComponentTreeItem>(
@@ -467,51 +588,55 @@ void FActorBrowsingMode::RegisterContextMenu()
 		UToolMenu* Menu = ToolMenus->RegisterMenu(DefaultContextBaseMenuName);
 
 		Menu->AddDynamicSection("DynamicHierarchySection", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
+		{
+			if(USceneOutlinerMenuContext* Context = InMenu->FindContext<USceneOutlinerMenuContext>())
 			{
-				USceneOutlinerMenuContext* Context = InMenu->FindContext<USceneOutlinerMenuContext>();
-				if (!Context || !Context->SceneOutliner.IsValid())
+				if (TSharedPtr<SSceneOutliner> SharedOutliner = Context->SceneOutliner.Pin())
 				{
-					return;
-				}
+					SSceneOutliner* SceneOutliner = SharedOutliner.Get();
+					// NOTE: the name "Section" is used in many other places
+					FToolMenuSection& Section = InMenu->FindOrAddSection("Section");
+					Section.Label = LOCTEXT("HierarchySectionName", "Hierarchy");
 
-				// NOTE: the name "Section" is used in many other places
-				FToolMenuSection& Section = InMenu->FindOrAddSection("Section");
-				Section.Label = LOCTEXT("HierarchySectionName", "Hierarchy");
-
-				SSceneOutliner* SceneOutliner = Context->SceneOutliner.Pin().Get();
-				if (Context->bShowParentTree)
-				{
-					if (Context->NumSelectedItems == 0)
+					if (Context->bShowParentTree)
 					{
-						FSceneOutlinerMenuHelper::AddMenuEntryCreateFolder(Section, *SceneOutliner);
-					}
-					else
-					{
-						if (Context->NumSelectedItems == 1)
+						if (Context->NumSelectedItems == 0)
 						{
-							SceneOutliner->GetTree().GetSelectedItems()[0]->GenerateContextMenu(InMenu, *SceneOutliner);
+							FSceneOutlinerMenuHelper::AddMenuEntryCreateFolder(Section, *SceneOutliner);
 						}
-
-						// If we've only got folders selected, show the selection and edit sub menus
-						if (Context->NumSelectedItems > 0 && Context->NumSelectedFolders == Context->NumSelectedItems)
+						else
 						{
-							Section.AddSubMenu(
-								"SelectSubMenu",
-								LOCTEXT("SelectSubmenu", "Select"),
-								LOCTEXT("SelectSubmenu_Tooltip", "Select the contents of the current selection"),
-								FNewToolMenuDelegate::CreateSP(SceneOutliner, &SSceneOutliner::FillSelectionSubMenu));
+							if (Context->NumSelectedItems == 1)
+							{
+								SceneOutliner->GetTree().GetSelectedItems()[0]->GenerateContextMenu(InMenu, *SceneOutliner);
+							}
+
+							// If we've only got folders selected, show the selection and edit sub menus
+							if (Context->NumSelectedItems > 0 && Context->NumSelectedFolders == Context->NumSelectedItems)
+							{
+								Section.AddSubMenu(
+									"SelectSubMenu",
+									LOCTEXT("SelectSubmenu", "Select"),
+									LOCTEXT("SelectSubmenu_Tooltip", "Select the contents of the current selection"),
+									FNewToolMenuDelegate::CreateSP(SceneOutliner, &SSceneOutliner::FillSelectionSubMenu));
+							}
 						}
 					}
 				}
-			}));
+			}
+		}));
 
 		Menu->AddDynamicSection("DynamicMainSection", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
-			{
-				// We always create a section here, even if there is no parent so that clients can still extend the menu
-				FToolMenuSection& Section = InMenu->AddSection("MainSection", LOCTEXT("OutlinerSectionName", "Outliner"));
+		{
+			// We always create a section here, even if there is no parent so that clients can still extend the menu
+			FToolMenuSection& Section = InMenu->AddSection("MainSection", LOCTEXT("OutlinerSectionName", "Outliner"));
 
-				if (USceneOutlinerMenuContext* Context = InMenu->FindContext<USceneOutlinerMenuContext>())
+			if (USceneOutlinerMenuContext* Context = InMenu->FindContext<USceneOutlinerMenuContext>())
+			{
+				if (TSharedPtr<SSceneOutliner> SharedOutliner = Context->SceneOutliner.Pin())
 				{
+					SSceneOutliner* SceneOutliner = SharedOutliner.Get();
+
 					// Don't add any of these menu items if we're not showing the parent tree
 					// Can't move worlds or level blueprints
 					if (Context->bShowParentTree && Context->NumSelectedItems > 0 && Context->NumWorldsSelected == 0 && Context->SceneOutliner.IsValid())
@@ -528,47 +653,58 @@ void FActorBrowsingMode::RegisterContextMenu()
 						// Only add the menu option to wp levels
 						if (!Context->bRepresentingGameWorld && Context->bRepresentingPartitionedWorld)
 						{
-							// If selection contains some unpinned items, show the pin option
-							// If the selection contains folders, always show the pin option
-							if (Context->NumPinnedItems != Context->NumSelectedItems || Context->NumSelectedFolders > 0)
-							{
-								Section.AddMenuEntry(
-									"PinItems",
-									LOCTEXT("Pin", "Pin"),
-									FText(),
-									FSlateIcon(),
-									FUIAction(FExecuteAction::CreateSP(Context->SceneOutliner.Pin().Get(), &SSceneOutliner::PinSelectedItems)));
-							}
+							Section.AddMenuEntry(
+								"PinItems",
+								LOCTEXT("Pin", "Pin"),
+								LOCTEXT("PinTooltip", "Keep the selected items loaded in the editor even when they don't overlap a loaded World Partition region"),
+								FSlateIcon(),
+								FUIAction(
+									FExecuteAction::CreateSP(SceneOutliner, &SSceneOutliner::PinSelectedItems),
+									FCanExecuteAction::CreateLambda([SceneOutliner, Context]()
+									{
+										if(Context->NumPinnedItems != Context->NumSelectedItems || Context->NumSelectedFolders > 0)
+										{
+											return SceneOutliner->CanPinSelectedItems();
+										}
+										return false;
+									})));
 
-							// If the selection contains some pinned items, show the unpin option
-							// If the selection contains folders, always show the unpin option
-							if (Context->NumPinnedItems != 0 || Context->NumSelectedFolders > 0)
-							{
-								Section.AddMenuEntry(
-									"UnpinItems",
-									LOCTEXT("Unpin", "Unpin"),
-									FText(),
-									FSlateIcon(),
-									FUIAction(FExecuteAction::CreateSP(Context->SceneOutliner.Pin().Get(), &SSceneOutliner::UnpinSelectedItems)));
-							}
+							Section.AddMenuEntry(
+								"UnpinItems",
+								LOCTEXT("Unpin", "Unpin"),
+								LOCTEXT("UnpinTooltip", "Allow the World Partition system to load and unload the selected items automatically"),
+								FSlateIcon(),
+								FUIAction(
+									FExecuteAction::CreateSP(SceneOutliner, &SSceneOutliner::UnpinSelectedItems),
+									FCanExecuteAction::CreateLambda([SceneOutliner, Context]()
+									{
+										if (Context->NumPinnedItems != 0 || Context->NumSelectedFolders > 0)
+										{
+											return SceneOutliner->CanUnpinSelectedItems();
+										}
+										return false;
+									})));
+							
 						}
 					}
 
-					if (Context->NumSelectedItems > 0 && Context->SceneOutliner.IsValid())
+					if (Context->NumSelectedItems > 0)
 					{
-						SSceneOutliner* SceneOutliner = Context->SceneOutliner.Pin().Get();
 						SceneOutliner->AddSourceControlMenuOptions(InMenu);
 					}
 				}
-			}));
+			}
+		}));
 
 		Menu->AddDynamicSection("DynamicActorEditorContext", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
+		{
+			USceneOutlinerMenuContext* Context = InMenu->FindContext<USceneOutlinerMenuContext>();
+			if (Context && Context->bShowParentTree)
 			{
-				USceneOutlinerMenuContext* Context = InMenu->FindContext<USceneOutlinerMenuContext>();
-				if (Context && Context->SceneOutliner.IsValid() && Context->bShowParentTree)
+				if (TSharedPtr<SSceneOutliner> SharedOutliner = Context->SceneOutliner.Pin())
 				{
 					FToolMenuSection& Section = InMenu->AddSection("ActorEditorContextSection", LOCTEXT("ActorEditorContextSectionName", "Actor Editor Context"));
-					SSceneOutliner* SceneOutliner = Context->SceneOutliner.Pin().Get();
+					SSceneOutliner* SceneOutliner = SharedOutliner.Get();
 
 					if ((Context->NumSelectedItems == 1) && (Context->NumSelectedFolders == 1))
 					{
@@ -605,8 +741,8 @@ void FActorBrowsingMode::RegisterContextMenu()
 										if (FActorFolderTreeItem* FolderItem = Item->CastTo<FActorFolderTreeItem>())
 										{
 											return FolderItem->World.IsValid() &&
-												  (FolderItem->World->GetCurrentLevel() == FolderItem->GetFolder().GetRootObjectAssociatedLevel()) &&
-												  (FActorFolders::Get().GetActorEditorContextFolder(*FolderItem->World) != FolderItem->GetFolder());
+												(FolderItem->World->GetCurrentLevel() == FolderItem->GetFolder().GetRootObjectAssociatedLevel()) &&
+												(FActorFolders::Get().GetActorEditorContextFolder(*FolderItem->World) != FolderItem->GetFolder());
 										}
 									}
 									return false;
@@ -639,7 +775,8 @@ void FActorBrowsingMode::RegisterContextMenu()
 						)
 					);
 				}
-			}));
+			}
+		}));
 	}
 
 	if (!ToolMenus->IsMenuRegistered(DefaultContextMenuName))
@@ -794,6 +931,12 @@ void FActorBrowsingMode::OnSelectUnloadedActors(const TArray<FGuid>& ActorGuids)
 	if (ItemsToSelect.Num())
 	{
 		SceneOutliner->SetItemSelection(ItemsToSelect, true);
+		SceneOutliner->ScrollItemIntoView(ItemsToSelect.Last());
+
+		if (const FActorDescTreeItem* ActorDescItem = ItemsToSelect.Last()->CastTo<FActorDescTreeItem>())
+		{
+			ActorDescItem->FocusActorBounds();
+		}
 	}
 }
 
@@ -806,11 +949,13 @@ void FActorBrowsingMode::OnItemSelectionChanged(FSceneOutlinerTreeItemPtr TreeIt
 {
 	TArray<AActor*> SelectedActors = Selection.GetData<AActor*>(SceneOutliner::FActorSelector());
 
+	SynchronizeSelectedActorDescs();
+
 	bool bChanged = false;
 	bool bAnyInPIE = false;
 	for (auto* Actor : SelectedActors)
 	{
-		if (!bAnyInPIE && Actor && Actor->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+		if (!bAnyInPIE && Actor && Actor->GetPackage()->HasAnyPackageFlags(PKG_PlayInEditor))
 		{
 			bAnyInPIE = true;
 		}
@@ -824,7 +969,7 @@ void FActorBrowsingMode::OnItemSelectionChanged(FSceneOutlinerTreeItemPtr TreeIt
 	for (FSelectionIterator SelectionIt(*GEditor->GetSelectedActors()); SelectionIt && !bChanged; ++SelectionIt)
 	{
 		const AActor* Actor = CastChecked< AActor >(*SelectionIt);
-		if (!bAnyInPIE && Actor->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+		if (!bAnyInPIE && Actor->GetPackage()->HasAnyPackageFlags(PKG_PlayInEditor))
 		{
 			bAnyInPIE = true;
 		}
@@ -1122,7 +1267,10 @@ void FActorBrowsingMode::RepairErrors() const
 			{
 				for (const TUniquePtr<FWorldPartitionActorDesc>& InvalidActor : ActorDescContainer->GetInvalidActors())
 				{
-					InvalidActorDescs.Add(InvalidActor.Get());
+					if (FWorldPartitionActorDesc* InvalidActorDesc = InvalidActor.Get())
+					{
+						InvalidActorDescs.Add(InvalidActorDesc);
+					}
 				}
 				ActorDescContainer->ClearInvalidActors();
 			});
@@ -1130,7 +1278,7 @@ void FActorBrowsingMode::RepairErrors() const
 			TArray<FString> ActorFilesToDelete;
 			TArray<FString> ActorFilesToRevert;
 			{
-				FScopedSlowTask SlowTask(InvalidActorDescs.Num(), LOCTEXT("UpdatingSourceControlStatus", "Updating source control status..."));
+				FScopedSlowTask SlowTask(InvalidActorDescs.Num(), LOCTEXT("UpdatingSourceControlStatus", "Updating revision control status..."));
 				SlowTask.MakeDialogDelayed(1.0f);
 
 				for (const FWorldPartitionActorDesc* InvalidActorDesc : InvalidActorDescs)
@@ -1272,6 +1420,21 @@ bool FActorBrowsingMode::ParseDragDrop(FSceneOutlinerDragDropPayload& OutPayload
 FFolder FActorBrowsingMode::GetWorldDefaultRootFolder() const
 {
 	return FFolder::GetWorldRootFolder(RepresentingWorld.Get());
+}
+
+void FActorBrowsingMode::SynchronizeSelectedActorDescs()
+{
+	if (UWorldPartitionSubsystem* WorldPartitionSubsystem = UWorld::GetSubsystem<UWorldPartitionSubsystem>(RepresentingWorld.Get()))
+	{
+		const FSceneOutlinerItemSelection Selection = SceneOutliner->GetSelection();
+		TArray<FWorldPartitionActorDesc*> SelectedActorDescs = Selection.GetData<FWorldPartitionActorDesc*>(SceneOutliner::FActorDescSelector());
+
+		WorldPartitionSubsystem->SelectedActorDescs.Empty();
+		for (FWorldPartitionActorDesc* SelectedActorDesc : SelectedActorDescs)
+		{
+			WorldPartitionSubsystem->SelectedActorDescs.Add(SelectedActorDesc);
+		}
+	}
 }
 
 FSceneOutlinerDragValidationInfo FActorBrowsingMode::ValidateDrop(const ISceneOutlinerTreeItem& DropTarget, const FSceneOutlinerDragDropPayload& Payload) const
@@ -1983,6 +2146,23 @@ namespace ActorBrowsingModeUtils
 			});
 		}
 	};
+
+	bool CanChangePinnedStates(const TArray<FSceneOutlinerTreeItemPtr>& InItems)
+	{
+		for (const FSceneOutlinerTreeItemPtr& Item : InItems)
+		{
+			if (Item->ShouldShowPinnedState())
+			{
+				return true;
+			}
+			else if (const FActorFolderTreeItem* FolderItem = Item->CastTo<FActorFolderTreeItem>(); FolderItem && FolderItem->CanChangeChildrenPinnedState())
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
 }
 
 void FActorBrowsingMode::SelectFoldersDescendants(const TArray<FFolderTreeItem*>& FolderItems, bool bSelectImmediateChildrenOnly)
@@ -2008,6 +2188,11 @@ void FActorBrowsingMode::SelectFoldersDescendants(const TArray<FFolderTreeItem*>
 
 	GEditor->GetSelectedActors()->EndBatchSelectOperation(/*bNotify*/false);
 	GEditor->NoteSelectionChange();
+}
+
+bool FActorBrowsingMode::CanPinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const
+{
+	return ActorBrowsingModeUtils::CanChangePinnedStates(InItems);
 }
 
 void FActorBrowsingMode::PinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems)
@@ -2052,6 +2237,11 @@ void FActorBrowsingMode::PinItems(const TArray<FSceneOutlinerTreeItemPtr>& InIte
 	}
 }
 
+bool FActorBrowsingMode::CanUnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const
+{
+	return ActorBrowsingModeUtils::CanChangePinnedStates(InItems);
+}
+
 void FActorBrowsingMode::UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems)
 {
 	UWorldPartition* const WorldPartition = RepresentingWorld->GetWorldPartition();
@@ -2087,34 +2277,10 @@ void FActorBrowsingMode::UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InI
 	}
 }
 
-void FActorBrowsingMode::PinSelectedItems()
+void FActorBrowsingMode::SynchronizeSelection()
 {
-	const FSceneOutlinerItemSelection Selection = SceneOutliner->GetSelection();
-	if (Selection.Num())
-	{
-		TArray<FSceneOutlinerTreeItemPtr> ItemsToPin;
-		Selection.ForEachItem([this, &ItemsToPin](const FSceneOutlinerTreeItemPtr& TreeItem)
-		{
-			ItemsToPin.Add(TreeItem);
-			return true;
-		});
-		PinItems(ItemsToPin);
-	}
-}
-
-void FActorBrowsingMode::UnpinSelectedItems()
-{
-	const FSceneOutlinerItemSelection Selection = SceneOutliner->GetSelection();
-	if(Selection.Num())
-	{
-		TArray<FSceneOutlinerTreeItemPtr> ItemsToUnpin;
-		Selection.ForEachItem([this, &ItemsToUnpin](const FSceneOutlinerTreeItemPtr& TreeItem)
-		{
-			ItemsToUnpin.Add(TreeItem);
-			return true;
-		});
-		UnpinItems(ItemsToUnpin);
-	}
+	FActorModeInteractive::SynchronizeSelection();
+	SynchronizeSelectedActorDescs();
 }
 
 FCreateSceneOutlinerMode FActorBrowsingMode::CreateFolderPickerMode(const FFolder::FRootObject& InRootObject) const

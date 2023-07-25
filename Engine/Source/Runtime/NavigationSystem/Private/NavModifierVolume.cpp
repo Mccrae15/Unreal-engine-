@@ -19,12 +19,61 @@
 ANavModifierVolume::ANavModifierVolume(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, AreaClass(UNavArea_Null::StaticClass())
+	, NavMeshResolution(ENavigationDataResolution::Invalid)
 {
 	if (GetBrushComponent())
 	{
 		GetBrushComponent()->SetGenerateOverlapEvents(false);
 		GetBrushComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 	}
+}
+
+void ANavModifierVolume::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+#if WITH_EDITOR
+	if (GIsEditor && !HasAnyFlags(RF_ClassDefaultObject))
+	{
+		OnNavAreaRegisteredDelegateHandle = UNavigationSystemBase::OnNavAreaRegisteredDelegate().AddUObject(this, &ANavModifierVolume::OnNavAreaRegistered);
+		OnNavAreaUnregisteredDelegateHandle = UNavigationSystemBase::OnNavAreaUnregisteredDelegate().AddUObject(this, &ANavModifierVolume::OnNavAreaUnregistered);
+	}
+#endif // WITH_EDITOR
+}
+
+void ANavModifierVolume::BeginDestroy()
+{
+	Super::BeginDestroy();
+
+#if WITH_EDITOR
+	if (GIsEditor && !HasAnyFlags(RF_ClassDefaultObject))
+	{
+		UNavigationSystemBase::OnNavAreaRegisteredDelegate().Remove(OnNavAreaRegisteredDelegateHandle);
+		UNavigationSystemBase::OnNavAreaUnregisteredDelegate().Remove(OnNavAreaUnregisteredDelegateHandle);
+	}
+#endif // WITH_EDITOR
+}
+
+// This function is only called if GIsEditor == true
+void ANavModifierVolume::OnNavAreaRegistered(const UWorld& World, const UClass* NavAreaClass)
+{
+#if WITH_EDITOR
+	if (NavAreaClass && NavAreaClass == AreaClass && &World == GetWorld())
+	{
+		FNavigationSystem::UpdateActorData(*this);
+	}
+#endif // WITH_EDITOR
+}
+
+// This function is only called if GIsEditor == true
+void ANavModifierVolume::OnNavAreaUnregistered(const UWorld& World, const UClass* NavAreaClass)
+{
+#if WITH_EDITOR
+	if (NavAreaClass && NavAreaClass == AreaClass && &World == GetWorld())
+	{
+		FNavigationSystem::UpdateActorData(*this);
+	}
+#endif // WITH_EDITOR
 }
 
 void ANavModifierVolume::GetNavigationData(FNavigationRelevantData& Data) const
@@ -34,13 +83,21 @@ void ANavModifierVolume::GetNavigationData(FNavigationRelevantData& Data) const
 		Data.Modifiers.CreateAreaModifiers(GetBrushComponent(), AreaClass);
 	}
 
-	if (bMaskFillCollisionUnderneathForNavmesh)
+	if (GetBrushComponent()->Brush != nullptr)
 	{
-		if (GetBrushComponent()->Brush != nullptr)
+		if (bMaskFillCollisionUnderneathForNavmesh)
 		{
 			const FBox& Box = GetBrushComponent()->Brush->Bounds.GetBox();
-			FAreaNavModifier AreaMod(Box, GetBrushComponent()->GetComponentTransform(), AreaClass);
+			const FAreaNavModifier AreaMod(Box, GetBrushComponent()->GetComponentTransform(), AreaClass);
 			Data.Modifiers.SetMaskFillCollisionUnderneathForNavmesh(true);
+			Data.Modifiers.Add(AreaMod);
+		}
+
+		if (NavMeshResolution != ENavigationDataResolution::Invalid)
+		{
+			const FBox& Box = GetBrushComponent()->Brush->Bounds.GetBox();
+			const FAreaNavModifier AreaMod(Box, GetBrushComponent()->GetComponentTransform(), AreaClass);
+			Data.Modifiers.SetNavMeshResolution(NavMeshResolution);
 			Data.Modifiers.Add(AreaMod);
 		}
 	}

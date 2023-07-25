@@ -1,12 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Builders/GLTFConvertBuilder.h"
-#include "Converters/GLTFMeshUtility.h"
+#include "Converters/GLTFMeshUtilities.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/Texture2D.h"
-#include "Engine/TextureCube.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include "Engine/TextureRenderTargetCube.h"
 
 FGLTFConvertBuilder::FGLTFConvertBuilder(const FString& FileName, const UGLTFExportOptions* ExportOptions, const TSet<AActor*>& SelectedActors)
 	: FGLTFBufferBuilder(FileName, ExportOptions)
@@ -186,7 +185,7 @@ FGLTFJsonMaterial* FGLTFConvertBuilder::AddUniqueMaterial(const UMaterialInterfa
 {
 	// TODO: optimize by skipping mesh data if material doesn't need it
 	const FGLTFMeshData* MeshData = AddUniqueMeshData(StaticMesh, nullptr, LODIndex);
-	const FGLTFIndexArray SectionIndices = FGLTFMeshUtility::GetSectionIndices(StaticMesh, MeshData->LODIndex, MaterialIndex);
+	const FGLTFIndexArray SectionIndices = FGLTFMeshUtilities::GetSectionIndices(StaticMesh, MeshData->LODIndex, MaterialIndex);
 	return AddUniqueMaterial(Material, MeshData, SectionIndices);
 }
 
@@ -194,7 +193,7 @@ FGLTFJsonMaterial* FGLTFConvertBuilder::AddUniqueMaterial(const UMaterialInterfa
 {
 	// TODO: optimize by skipping mesh data if material doesn't need it
 	const FGLTFMeshData* MeshData = AddUniqueMeshData(SkeletalMesh, nullptr, LODIndex);
-	const FGLTFIndexArray SectionIndices = FGLTFMeshUtility::GetSectionIndices(SkeletalMesh, MeshData->LODIndex, MaterialIndex);
+	const FGLTFIndexArray SectionIndices = FGLTFMeshUtilities::GetSectionIndices(SkeletalMesh, MeshData->LODIndex, MaterialIndex);
 	return AddUniqueMaterial(Material, MeshData, SectionIndices);
 }
 
@@ -218,7 +217,7 @@ FGLTFJsonMaterial* FGLTFConvertBuilder::AddUniqueMaterial(const UMaterialInterfa
 	// TODO: optimize by skipping mesh data if material doesn't need it
 	const UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh();
 	const FGLTFMeshData* MeshData = AddUniqueMeshData(StaticMesh, StaticMeshComponent, LODIndex);
-	const FGLTFIndexArray SectionIndices = FGLTFMeshUtility::GetSectionIndices(StaticMesh, MeshData->LODIndex, MaterialIndex);
+	const FGLTFIndexArray SectionIndices = FGLTFMeshUtilities::GetSectionIndices(StaticMesh, MeshData->LODIndex, MaterialIndex);
 	return AddUniqueMaterial(Material, MeshData, SectionIndices);
 }
 
@@ -227,7 +226,7 @@ FGLTFJsonMaterial* FGLTFConvertBuilder::AddUniqueMaterial(const UMaterialInterfa
 	// TODO: optimize by skipping mesh data if material doesn't need it
 	const USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
 	const FGLTFMeshData* MeshData = AddUniqueMeshData(SkeletalMesh, SkeletalMeshComponent, LODIndex);
-	const FGLTFIndexArray SectionIndices = FGLTFMeshUtility::GetSectionIndices(SkeletalMesh, MeshData->LODIndex, MaterialIndex);
+	const FGLTFIndexArray SectionIndices = FGLTFMeshUtilities::GetSectionIndices(SkeletalMesh, MeshData->LODIndex, MaterialIndex);
 	return AddUniqueMaterial(Material, MeshData, SectionIndices);
 }
 
@@ -248,7 +247,17 @@ FGLTFJsonSampler* FGLTFConvertBuilder::AddUniqueSampler(const UTexture* Texture)
 		return nullptr;
 	}
 
-	return SamplerConverter->GetOrAdd(Texture);
+	return AddUniqueSampler(Texture->GetTextureAddressX(), Texture->GetTextureAddressY(), Texture->Filter, Texture->LODGroup);
+}
+
+FGLTFJsonSampler* FGLTFConvertBuilder::AddUniqueSampler(TextureAddress Address, TextureFilter Filter, TextureGroup LODGroup)
+{
+	return AddUniqueSampler(Address, Address, Filter, LODGroup);
+}
+
+FGLTFJsonSampler* FGLTFConvertBuilder::AddUniqueSampler(TextureAddress AddressX, TextureAddress AddressY, TextureFilter Filter, TextureGroup LODGroup)
+{
+	return SamplerConverter->GetOrAdd(AddressX, AddressY, Filter, LODGroup);
 }
 
 FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTexture* Texture)
@@ -261,29 +270,9 @@ FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTexture2D* Textur
 	return AddUniqueTexture(Texture, Texture->SRGB);
 }
 
-FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTextureCube* Texture, ECubeFace CubeFace)
-{
-	return AddUniqueTexture(Texture, CubeFace, Texture->SRGB);
-}
-
 FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTextureRenderTarget2D* Texture)
 {
 	return AddUniqueTexture(Texture, Texture->SRGB);
-}
-
-FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTextureRenderTargetCube* Texture, ECubeFace CubeFace)
-{
-	return AddUniqueTexture(Texture, CubeFace, Texture->SRGB);
-}
-
-FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const ULightMapTexture2D* Texture)
-{
-	if (Texture == nullptr)
-	{
-		return nullptr;
-	}
-
-	return TextureLightMapConverter->GetOrAdd(Texture);
 }
 
 FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTexture* Texture, bool bToSRGB)
@@ -311,16 +300,6 @@ FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTexture2D* Textur
 	return Texture2DConverter->GetOrAdd(Texture, bToSRGB);
 }
 
-FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTextureCube* Texture, ECubeFace CubeFace, bool bToSRGB)
-{
-	if (Texture == nullptr)
-	{
-		return nullptr;
-	}
-
-	return TextureCubeConverter->GetOrAdd(Texture, CubeFace, bToSRGB);
-}
-
 FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTextureRenderTarget2D* Texture, bool bToSRGB)
 {
 	if (Texture == nullptr)
@@ -331,19 +310,9 @@ FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTextureRenderTarg
 	return TextureRenderTarget2DConverter->GetOrAdd(Texture, bToSRGB);
 }
 
-FGLTFJsonTexture* FGLTFConvertBuilder::AddUniqueTexture(const UTextureRenderTargetCube* Texture, ECubeFace CubeFace, bool bToSRGB)
+FGLTFJsonImage* FGLTFConvertBuilder::AddUniqueImage(TGLTFSharedArray<FColor>& Pixels, FIntPoint Size, bool bIgnoreAlpha, const FString& Name)
 {
-	if (Texture == nullptr)
-	{
-		return nullptr;
-	}
-
-	return TextureRenderTargetCubeConverter->GetOrAdd(Texture, CubeFace, bToSRGB);
-}
-
-FGLTFJsonImage* FGLTFConvertBuilder::AddUniqueImage(TGLTFSharedArray<FColor>& Pixels, FIntPoint Size, bool bIgnoreAlpha, EGLTFTextureType Type, const FString& Name)
-{
-	return ImageConverter->GetOrAdd(Name, Type, bIgnoreAlpha, Size, Pixels);
+	return ImageConverter->GetOrAdd(Name, bIgnoreAlpha, Size, Pixels);
 }
 
 FGLTFJsonSkin* FGLTFConvertBuilder::AddUniqueSkin(FGLTFJsonNode* RootNode, const USkeletalMesh* SkeletalMesh)
@@ -503,54 +472,14 @@ FGLTFJsonLight* FGLTFConvertBuilder::AddUniqueLight(const ULightComponent* Light
 	return LightConverter->GetOrAdd(LightComponent);
 }
 
-FGLTFJsonBackdrop* FGLTFConvertBuilder::AddUniqueBackdrop(const AActor* BackdropActor)
-{
-	if (BackdropActor == nullptr)
-	{
-		return nullptr;
-	}
-
-	return BackdropConverter->GetOrAdd(BackdropActor);
-}
-
-FGLTFJsonLightMap* FGLTFConvertBuilder::AddUniqueLightMap(const UStaticMeshComponent* StaticMeshComponent)
-{
-	if (StaticMeshComponent == nullptr)
-	{
-		return nullptr;
-	}
-
-	return LightMapConverter->GetOrAdd(StaticMeshComponent);
-}
-
-FGLTFJsonSkySphere* FGLTFConvertBuilder::AddUniqueSkySphere(const AActor* SkySphereActor)
-{
-	if (SkySphereActor == nullptr)
-	{
-		return nullptr;
-	}
-
-	return SkySphereConverter->GetOrAdd(SkySphereActor);
-}
-
-FGLTFJsonEpicLevelVariantSets* FGLTFConvertBuilder::AddUniqueEpicLevelVariantSets(const ULevelVariantSets* LevelVariantSets)
-{
-	if (LevelVariantSets == nullptr)
-	{
-		return nullptr;
-	}
-
-	return EpicLevelVariantSetsConverter->GetOrAdd(LevelVariantSets);
-}
-
-FGLTFJsonKhrMaterialVariant* FGLTFConvertBuilder::AddUniqueKhrMaterialVariant(const UVariant* Variant)
+FGLTFJsonMaterialVariant* FGLTFConvertBuilder::AddUniqueMaterialVariant(const UVariant* Variant)
 {
 	if (Variant == nullptr)
 	{
 		return nullptr;
 	}
 
-	return KhrMaterialVariantConverter->GetOrAdd(Variant);
+	return MaterialVariantConverter->GetOrAdd(Variant);
 }
 
 void FGLTFConvertBuilder::RegisterObjectVariant(const UObject* Object, const UPropertyValue* Property)

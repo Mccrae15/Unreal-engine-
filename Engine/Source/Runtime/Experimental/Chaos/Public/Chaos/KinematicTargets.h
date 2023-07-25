@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+// HEADER_UNIT_SKIP - Internal
+
 #include "Chaos/ChaosArchive.h"
 #include "Chaos/Transform.h"
 #include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
@@ -30,6 +32,11 @@ namespace Chaos
 		static TKinematicTarget<T, d> MakePositionTarget(const TRigidTransform<T, d>& InTransform)
 		{
 			return TKinematicTarget<T, d>(InTransform);
+		}
+
+		static TKinematicTarget<T, d> MakePositionTarget(const TVector<T, d>& InPosition, const TRotation<T, d>& InRotation)
+		{
+			return TKinematicTarget<T, d>(InPosition, InRotation);
 		}
 
 		TKinematicTarget()
@@ -140,6 +147,13 @@ namespace Chaos
 		explicit TKinematicTarget(const TRigidTransform<T, d>& InTransform)
 			: Position(InTransform.GetTranslation())
 			, Rotation(InTransform.GetRotation())
+			, Mode(EKinematicTargetMode::Position)
+		{
+		}
+
+		TKinematicTarget(const TVector<T, d>& InPosition, const TRotation<T, d>& InRotation)
+			: Position(InPosition)
+			, Rotation(InRotation)
 			, Mode(EKinematicTargetMode::Position)
 		{
 		}

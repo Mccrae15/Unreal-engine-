@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditMode/ControlRigEditMode.h"
+#include "Components/StaticMeshComponent.h"
 #include "EditMode/ControlRigEditModeToolkit.h"
 #include "Toolkits/ToolkitManager.h"
 #include "EditMode/SControlRigEditModeTools.h"
@@ -27,10 +28,9 @@
 #include "ControlRigEditorModule.h"
 #include "Constraint.h"
 #include "EngineUtils.h"
-#include "ControlRigBlueprintGeneratedClass.h"
+#include "RigVMBlueprintGeneratedClass.h"
 #include "IControlRigObjectBinding.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Drawing/ControlRigDrawInterface.h"
 #include "ControlRigBlueprint.h"
 #include "ControlRigGizmoActor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -53,6 +53,7 @@
 #include "ToolMenus.h"
 #include "Sequencer/MovieSceneControlRigParameterTrack.h"
 #include "Sequencer/MovieSceneControlRigParameterSection.h"
+#include "Settings/LevelEditorViewportSettings.h"
 #include "Editor/SRigSpacePickerWidget.h"
 #include "ControlRigSpaceChannelEditors.h"
 #include "ControlRigSequencerEditorLibrary.h"
@@ -60,11 +61,13 @@
 #include "LevelEditor.h"
 #include "InteractiveToolManager.h"
 #include "EdModeInteractiveToolsContext.h"
-#include "MovieSceneConstraintChannelHelper.h"
+#include "Constraints/MovieSceneConstraintChannelHelper.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "TransformConstraint.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigEditMode)
+
+TAutoConsoleVariable<bool> CVarClickSelectThroughGizmo(TEXT("ControlRig.Sequencer.ClickSelectThroughGizmo"), false, TEXT("When false you can't click through a gizmo and change selection if you will select the gizmo when in Animation Mode, default to false."));
 
 void UControlRigEditModeDelegateHelper::OnPoseInitialized()
 {
@@ -879,7 +882,7 @@ void FControlRigEditMode::Render(const FSceneView* View, FViewport* Viewport, FP
 						}
 					}
 				}
-				for (const FControlRigDrawInstruction& Instruction : ControlRig->DrawInterface)
+				for (const FRigVMDrawInstruction& Instruction : ControlRig->DrawInterface)
 				{
 					if (!Instruction.IsValid())
 					{
@@ -889,7 +892,7 @@ void FControlRigEditMode::Render(const FSceneView* View, FViewport* Viewport, FP
 					FTransform InstructionTransform = Instruction.Transform * ComponentTransform;
 					switch (Instruction.PrimitiveType)
 					{
-					case EControlRigDrawSettings::Points:
+					case ERigVMDrawSettings::Points:
 					{
 						for (const FVector& Point : Instruction.Positions)
 						{
@@ -897,7 +900,7 @@ void FControlRigEditMode::Render(const FSceneView* View, FViewport* Viewport, FP
 						}
 						break;
 					}
-					case EControlRigDrawSettings::Lines:
+					case ERigVMDrawSettings::Lines:
 					{
 						const TArray<FVector>& Points = Instruction.Positions;
 						PDI->AddReserveLines(SDPG_Foreground, Points.Num() / 2, false, Instruction.Thickness > SMALL_NUMBER);
@@ -907,7 +910,7 @@ void FControlRigEditMode::Render(const FSceneView* View, FViewport* Viewport, FP
 						}
 						break;
 					}
-					case EControlRigDrawSettings::LineStrip:
+					case ERigVMDrawSettings::LineStrip:
 					{
 						const TArray<FVector>& Points = Instruction.Positions;
 						PDI->AddReserveLines(SDPG_Foreground, Points.Num() - 1, false, Instruction.Thickness > SMALL_NUMBER);
@@ -918,7 +921,7 @@ void FControlRigEditMode::Render(const FSceneView* View, FViewport* Viewport, FP
 						break;
 					}
 
-					case EControlRigDrawSettings::DynamicMesh:
+					case ERigVMDrawSettings::DynamicMesh:
 					{
 						FDynamicMeshBuilder MeshBuilder(PDI->View->GetFeatureLevel());
 						MeshBuilder.AddVertices(Instruction.MeshVerts);
@@ -1243,6 +1246,17 @@ bool FControlRigEditMode::GetCustomInputCoordinateSystem(FMatrix& OutMatrix, voi
 
 bool FControlRigEditMode::HandleClick(FEditorViewportClient* InViewportClient, HHitProxy *HitProxy, const FViewportClick &Click)
 {
+	const bool bClickSelectThroughGizmo = CVarClickSelectThroughGizmo.GetValueOnGameThread();
+	if (bClickSelectThroughGizmo == false)
+	{
+		const EAxisList::Type CurrentAxis = InViewportClient->GetCurrentWidgetAxis();
+		//if we are hitting a widget, besides arcball then bail saying we are handling it
+		if (CurrentAxis != EAxisList::None)
+		{
+			return true;
+		}
+	}
+
 	InteractionType = GetInteractionType(InViewportClient);
 	
 	if(HActor* ActorHitProxy = HitProxyCast<HActor>(HitProxy))
@@ -1675,8 +1689,8 @@ bool FControlRigEditMode::FrustumSelect(const FConvexVolume& InFrustum, FEditorV
 {
 	const UControlRigEditModeSettings* Settings = GetDefault<UControlRigEditModeSettings>();
 	//need to check for a zero frustum since ComponentIsTouchingSelectionFrustum will return true, selecting everything, when this is the case
-	const bool bMalformedFrustum = (InFrustum.Planes[0].IsNearlyZero() && InFrustum.Planes[1].IsNearlyZero() && InFrustum.Planes[2].IsNearlyZero() &&
-		InFrustum.Planes[3].IsNearlyZero());
+	const bool bMalformedFrustum = (InFrustum.Planes[0].IsNearlyZero() && InFrustum.Planes[2].IsNearlyZero()) || (InFrustum.Planes[3].IsNearlyZero() &&
+		InFrustum.Planes[4].IsNearlyZero());
 	if (bMalformedFrustum || InViewportClient->IsInGameView() == true || Settings->bHideControlShapes)
 	{
 		if (Settings->bOnlySelectRigControls)
@@ -3448,6 +3462,7 @@ void FControlRigEditMode::OnHierarchyModified(ERigHierarchyNotification InNotif,
 		case ERigHierarchyNotification::ElementAdded:
 		case ERigHierarchyNotification::ElementRemoved:
 		case ERigHierarchyNotification::ElementRenamed:
+		case ERigHierarchyNotification::ElementReordered:
 		case ERigHierarchyNotification::HierarchyReset:
 		{
 			UControlRig* ControlRig = InHierarchy->GetTypedOuter<UControlRig>();
@@ -3564,7 +3579,7 @@ void FControlRigEditMode::OnHierarchyModified(ERigHierarchyNotification InNotif,
 							{
 								ControlProxy->SelectProxy(ControlRig,Key.Name, bSelected);
 
-								if(ControlElement->Settings.AnimationType == ERigControlAnimationType::ProxyControl)
+								if(ControlElement->CanDriveControls())
 								{
 									const UControlRigEditModeSettings* Settings = GetDefault<UControlRigEditModeSettings>();
 
@@ -3680,8 +3695,10 @@ void FControlRigEditMode::OnHierarchyModified_AnyThread(ERigHierarchyNotificatio
 		{
 			return;
 		}
-		const FRigBaseElement* Element = WeakHierarchy.Get()->Find(Key);
-		OnHierarchyModified(InNotif, WeakHierarchy.Get(), Element);
+		if (const FRigBaseElement* Element = WeakHierarchy.Get()->Find(Key))
+		{
+			OnHierarchyModified(InNotif, WeakHierarchy.Get(), Element);
+		}
 		
 	}, TStatId(), NULL, ENamedThreads::GameThread);
 }
@@ -3707,14 +3724,12 @@ void FControlRigEditMode::OnControlModified(UControlRig* Subject, FRigControlEle
 	*/
 }
 
-void FControlRigEditMode::OnPreConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState,
-	const FName& InEventName)
+void FControlRigEditMode::OnPreConstruction_AnyThread(UControlRig* InRig, const FName& InEventName)
 {
 	bIsConstructionEventRunning = true;
 }
 
-void FControlRigEditMode::OnPostConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState,
-	const FName& InEventName)
+void FControlRigEditMode::OnPostConstruction_AnyThread(UControlRig* InRig, const FName& InEventName)
 {
 	bIsConstructionEventRunning = false;
 
@@ -4187,6 +4202,23 @@ bool FControlRigEditMode::ModeSupportedByShapeActor(const AControlRigShapeActor*
 	return false;
 }
 
+bool FControlRigEditMode::IsControlRigSkelMeshVisible(UControlRig* ControlRig) const
+{
+	if (IsInLevelEditor())
+	{
+		if (ControlRig)
+		{
+			if (USceneComponent* SceneComponent = GetHostingSceneComponent(ControlRig))
+			{
+				const AActor* Actor = SceneComponent->GetTypedOuter<AActor>();
+				return Actor ? (Actor->IsHiddenEd() == false && SceneComponent->IsVisibleInEditor()) : SceneComponent->IsVisibleInEditor();
+			}
+		}
+		return false;
+	}
+	return true;
+}
+
 void FControlRigEditMode::TickControlShape(AControlRigShapeActor* ShapeActor, const FTransform& ComponentTransform)
 {
 	const UControlRigEditModeSettings* Settings = GetDefault<UControlRigEditModeSettings>();
@@ -4199,17 +4231,17 @@ void FControlRigEditMode::TickControlShape(AControlRigShapeActor* ShapeActor, co
 
 			if (FRigControlElement* ControlElement = ControlRig->FindControl(ShapeActor->ControlName))
 			{
-				const bool bControlsHiddenInViewport = Settings->bHideControlShapes || !ControlRig->GetControlsVisible();
-				
+				const bool bControlsHiddenInViewport = Settings->bHideControlShapes || !ControlRig->GetControlsVisible()
+					|| (IsControlRigSkelMeshVisible(ControlRig) == false);
+
 				bool bIsVisible = ControlElement->Settings.IsVisible();
-				bool bRespectVisibilityForSelection = true;
+				bool bRespectVisibilityForSelection = true; 
 
 				if(!bControlsHiddenInViewport)
 				{
 					if(ControlElement->Settings.AnimationType == ERigControlAnimationType::ProxyControl)
-					{
+					{					
 						bRespectVisibilityForSelection = false;
-						
 						if(Settings->bShowAllProxyControls)
 						{
 							bIsVisible = true;
@@ -4504,7 +4536,7 @@ void FControlRigEditMode::NotifyDrivenControls(UControlRig* InControlRig, const 
 	// if we are changing a proxy control - we also need to notify the change for the driven controls
 	if (FRigControlElement* ControlElement = InControlRig->GetHierarchy()->Find<FRigControlElement>(InKey))
 	{
-		if(ControlElement->Settings.AnimationType == ERigControlAnimationType::ProxyControl)
+		if(ControlElement->CanDriveControls())
 		{
 			FRigControlModifiedContext Context;
 			Context.EventName = FRigUnit_BeginExecution::EventName;

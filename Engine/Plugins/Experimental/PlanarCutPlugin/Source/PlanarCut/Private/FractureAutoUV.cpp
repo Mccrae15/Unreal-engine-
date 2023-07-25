@@ -1,16 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "FractureAutoUV.h"
-#include "PlanarCutPlugin.h"
 
+#include "Distance/DistLine3Segment3.h"
 #include "GeometryMeshConversion.h"
 
-#include "Async/ParallelFor.h"
 
+#include "Distance/DistLine3Triangle3.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 
-#include "DynamicMesh/DynamicMesh3.h"
+#include "Distance/DistSegment3Triangle3.h"
 #include "DynamicMesh/MeshNormals.h"
-#include "MeshWeights.h"
+#include "Generators/MeshShapeGenerator.h"
 #include "Parameterization/DynamicMeshUVEditor.h"
 #include "Sampling/MeshImageBakingCache.h"
 #include "DynamicMesh/Operations/MergeCoincidentMeshEdges.h"
@@ -24,14 +24,11 @@
 #include "DisjointSet.h"
 
 #include "Image/ImageOccupancyMap.h"
-#include "VectorUtil.h"
-#include "FrameTypes.h"
+#include "Spatial/FastWinding.h"
 #include "Util/ProgressCancel.h"
 
-#include "Templates/PimplPtr.h"
 
 #if WITH_EDITOR
-#include "Misc/ScopedSlowTask.h"
 #endif
 
 using namespace UE::Geometry;
@@ -171,10 +168,12 @@ struct FGeomMesh : public UE::Geometry::FUVPacker::IUVMeshView
 	TArray<FVector3d> GlobalVertices; // vertices transformed to global space
 	TArray<FVector3f> GlobalNormals; // normals transformed to global space
 	int32 UVLayer = 0;
+	TManagedArray<FVector2f>* CollectionUVs;
 
 	// Construct a mesh from a geometry collection and a mask of active triangles
 	FGeomMesh(int32 UVLayer, FGeometryCollection* Collection, TArrayView<bool> ActiveTriangles, int32 NumTriangles) 
-		: Collection(Collection), ActiveTriangles(ActiveTriangles), NumTriangles(NumTriangles), UVLayer(UVLayer)
+		: Collection(Collection), ActiveTriangles(ActiveTriangles), NumTriangles(NumTriangles), UVLayer(UVLayer),
+		CollectionUVs(Collection->FindUVLayer(UVLayer))
 	{
 		ValidateUVLayer();
 		InitVertices();
@@ -183,7 +182,7 @@ struct FGeomMesh : public UE::Geometry::FUVPacker::IUVMeshView
 	// Construct a mesh from an existing FGeomMesh and a mask of active triangles
 	FGeomMesh(const FGeomMesh& OtherMesh, TArrayView<bool> ActiveTriangles, int32 NumTriangles)
 		: Collection(OtherMesh.Collection), ActiveTriangles(ActiveTriangles), NumTriangles(NumTriangles),
-		  UVLayer(OtherMesh.UVLayer)
+		  UVLayer(OtherMesh.UVLayer), CollectionUVs(OtherMesh.Collection->FindUVLayer(OtherMesh.UVLayer))
 	{
 		ValidateUVLayer();
 		GlobalVertices = OtherMesh.GlobalVertices;
@@ -194,7 +193,9 @@ struct FGeomMesh : public UE::Geometry::FUVPacker::IUVMeshView
 		if (!ensure(UVLayer >= 0 && UVLayer < Collection->NumUVLayers()))
 		{
 			UVLayer = FMath::Clamp(UVLayer, 0, Collection->NumUVLayers());
+			CollectionUVs = Collection->FindUVLayer(UVLayer);
 		}
+		check(CollectionUVs);
 	}
 
 	void InitVertices()
@@ -230,14 +231,14 @@ struct FGeomMesh : public UE::Geometry::FUVPacker::IUVMeshView
 		return GlobalVertices[VID];
 	}
 
-	virtual FVector2f GetUV(int32 EID) const
+	virtual FVector2f GetUV(int32 VID) const
 	{
-		return FVector2f(Collection->UVs[EID][UVLayer]);
+		return (*CollectionUVs)[VID];
 	}
 
-	virtual void SetUV(int32 EID, FVector2f UVIn)
+	virtual void SetUV(int32 VID, FVector2f UVIn)
 	{
-		FVector2f& UV = Collection->UVs[EID][UVLayer];
+		FVector2f& UV = (*CollectionUVs)[VID];
 		UV.X = UVIn.X;
 		UV.Y = UVIn.Y;
 	}
@@ -303,9 +304,10 @@ struct FGeomFlatUVMesh
 	const TArrayView<bool> ActiveTriangles;
 	int32 NumTriangles;
 	int32 UVLayer;
+	TManagedArray<FVector2f>* CollectionUVs;
 
 	FGeomFlatUVMesh(int32 UVLayer, FGeometryCollection* Collection, TArrayView<bool> ActiveTriangles, int32 NumTriangles)
-		: Collection(Collection), ActiveTriangles(ActiveTriangles), NumTriangles(NumTriangles), UVLayer(UVLayer)
+		: Collection(Collection), ActiveTriangles(ActiveTriangles), NumTriangles(NumTriangles), UVLayer(UVLayer), CollectionUVs(Collection->FindUVLayer(UVLayer))
 	{
 		ValidateUVLayer();
 	}
@@ -315,7 +317,9 @@ struct FGeomFlatUVMesh
 		if (!ensure(UVLayer >= 0 && UVLayer < Collection->NumUVLayers()))
 		{
 			UVLayer = FMath::Clamp(UVLayer, 0, Collection->NumUVLayers());
+			CollectionUVs = Collection->FindUVLayer(UVLayer);
 		}
+		check(CollectionUVs);
 	}
 
 	inline FIndex3i GetTriangle(int32 TID) const
@@ -325,7 +329,7 @@ struct FGeomFlatUVMesh
 
 	inline FVector3d GetVertex(int32 VID) const
 	{
-		const FVector2f& UV = Collection->UVs[VID][UVLayer];
+		const FVector2f& UV = (*CollectionUVs)[VID];
 		return FVector3d(UV.X, UV.Y, 0);
 	}
 
@@ -343,7 +347,7 @@ struct FGeomFlatUVMesh
 	}
 	inline int32 MaxVertexID() const
 	{
-		return Collection->UVs.Num();
+		return (*CollectionUVs).Num();
 	}
 	inline int32 TriangleCount() const
 	{
@@ -351,7 +355,7 @@ struct FGeomFlatUVMesh
 	}
 	inline int32 VertexCount() const
 	{
-		return Collection->UVs.Num();
+		return (*CollectionUVs).Num();
 	}
 	constexpr inline uint64 GetChangeStamp() const
 	{
@@ -374,7 +378,11 @@ bool BoxProjectUVs(
 	FGeometryCollection& Collection,
 	const FVector3d& BoxDimensions,
 	EUseMaterials MaterialsPattern,
-	TArrayView<int32> WhichMaterials
+	TArrayView<int32> WhichMaterials,
+	FVector2f OffsetUVs,
+	bool bOverrideBoxDimensionsWithBounds,
+	bool bCenterBoxAtPivot,
+	bool bUniformProjectionScale
 )
 {
 	TArray<int32> TransformIndices;
@@ -423,7 +431,27 @@ bool BoxProjectUVs(
 		{
 			FDynamicMeshUVEditor UVEd(&Mesh, TargetUVLayer, false);
 			FFrame3d BoxFrame; // defaults to origin / no rotation
-			UVEd.SetTriangleUVsFromBoxProjection(TargetTris, [](const FVector3d& Pos) { return Pos; }, BoxFrame, BoxDimensions, 1);
+			FVector3d UseBoxDimensions = bUniformProjectionScale ? FVector3d(BoxDimensions.X) : BoxDimensions;
+			if (!bCenterBoxAtPivot || bOverrideBoxDimensionsWithBounds)
+			{
+				FAxisAlignedBox3d Bounds = Mesh.GetBounds(true);
+				if (!bCenterBoxAtPivot)
+				{
+					BoxFrame.Origin = Bounds.Center();
+				}
+				if (bOverrideBoxDimensionsWithBounds)
+				{
+					UseBoxDimensions = bUniformProjectionScale ? FVector3d(Bounds.MaxDim()) : Bounds.Max - Bounds.Min;
+				}
+			}
+			UVEd.SetTriangleUVsFromBoxProjection(TargetTris, [](const FVector3d& Pos) { return Pos; }, BoxFrame, UseBoxDimensions, 1);
+
+			// apply offset to UV space
+			FDynamicMeshUVOverlay* Overlap = UVEd.GetOverlay();
+			for (int ElemID : Overlap->ElementIndicesItr())
+			{
+				Overlap->SetElement(ElemID, OffsetUVs + Overlap->GetElement(ElemID));
+			}
 		}
 
 		Mesh.CompactInPlace();
@@ -580,7 +608,7 @@ bool UVLayout(
 	// To approximate a larger gutter, we tell it to consider a smaller output resolution --
 	//  hoping that e.g. the UVs for a 1 pixel gutter at 256x256 are ~ a 2 pixel gutter at 512x512
 	// TODO: If we make StandardPack support the GutterSize parameter, we can use that instead.
-	Packer.TextureResolution = UVRes / FMathf::Max(1, GutterSize);
+	Packer.TextureResolution = static_cast<int32>( UVRes / FMathf::Max(1.f, GutterSize) );
 	return Packer.StandardPack(&UVMesh, UVIslands);
 }
 
@@ -642,11 +670,11 @@ bool TextureInternalSurfaces(
 	}
 
 	const float AmbientWorkPer = 1, CurvatureWorkPer = 10;
-	const float NumMeshes = TransformIndices.Num();
+	const int32 NumMeshes = TransformIndices.Num();
 	const float AmountOfWork = 
 		float(AmbientIdx > -1) * AmbientWorkPer * NumMeshes +
 		float(CurvatureIdx > -1) * CurvatureWorkPer * NumMeshes;
-	const float WorkIncr = AmountOfWork > 0 ? .9 / AmountOfWork : 0;
+	const float WorkIncr = AmountOfWork > 0 ? 0.9f / AmountOfWork : 0.f;
 
 	FDynamicMeshCollection CollectionMeshes(&Collection, TransformIndices, FTransform::Identity, false);
 	if (bNeedsDynamicMeshes)
@@ -853,7 +881,7 @@ bool TextureInternalSurfaces(
 					{
 						double DistanceSq;
 						OutsideSpatial.FindNearestTriangle(InsidePoint, DistanceSq, AttributeSettings.ToExternal_MaxDistance);
-						float PercentDistance = FMathf::Min(1.0f, FMathf::Sqrt(DistanceSq) / (float)AttributeSettings.ToExternal_MaxDistance);
+						float PercentDistance = FMathf::Min(1.0f, static_cast<float>(FMathd::Sqrt(DistanceSq) / AttributeSettings.ToExternal_MaxDistance));
 						checkSlow(FMath::IsFinite(PercentDistance));
 						OutColor[DistanceToExternalIdx] = PercentDistance;
 					}
@@ -863,7 +891,7 @@ bool TextureInternalSurfaces(
 						{
 							double Min = OutsideSpatial.GetBoundingBox().Min[Dim], Max = OutsideSpatial.GetBoundingBox().Max[Dim];
 							checkSlow(Min != Max);
-							float PercentAlong = (float)(InsidePoint[Dim] - Min) / (Max - Min);
+							float PercentAlong = static_cast<float>( (InsidePoint[Dim] - Min) / (Max - Min) );
 							OutColor[TargetIdx] = PercentAlong;
 						}
 					};

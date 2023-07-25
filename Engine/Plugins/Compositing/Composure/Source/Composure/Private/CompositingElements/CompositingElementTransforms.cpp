@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CompositingElements/CompositingElementTransforms.h"
-#include "CompositingElements/CompElementRenderTargetPool.h"
-#include "Materials/MaterialInterface.h"
+#include "ComposurePostProcessingPassProxy.h" // IWYU pragma: keep
+#include "Materials/Material.h"
 
 /* TCompositingTargetSwapChain
  *****************************************************************************/
@@ -106,7 +106,6 @@ public:
 /* UCompositingPostProcessPass
  *****************************************************************************/
 
-#include "ComposurePostProcessingPassProxy.h"
 #include "ComposureInternals.h" // for 'Composure' log category
 
 UTexture* UCompositingPostProcessPass::ApplyTransform_Implementation(UTexture* Input, UComposurePostProcessingPassProxy* PostProcessProxy, ACameraActor* /*TargetCamera*/)
@@ -235,7 +234,6 @@ UTexture* UCompositingTonemapPass::ApplyTransform_Implementation(UTexture* Input
  *****************************************************************************/
 
 #include "UObject/ConstructorHelpers.h"
-#include "Materials/MaterialInterface.h"
 
 namespace MultiPassChromaKeyer_Impl
 {
@@ -301,7 +299,6 @@ UTexture* UMultiPassChromaKeyer::ApplyTransform_Implementation(UTexture* Input, 
  *****************************************************************************/
 
 #include "UObject/ConstructorHelpers.h"
-#include "Materials/MaterialInterface.h"
 
 LLM_DEFINE_TAG(Composure_MultiPassDespill);
 

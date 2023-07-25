@@ -4,6 +4,7 @@
 
 #include "ActiveGameplayEffectHandle.h"
 #include "CoreMinimal.h"
+#include "GameplayEffectAttributeCaptureDefinition.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
@@ -30,9 +31,11 @@ struct FActiveGameplayEffect;
 struct FGameplayEffectModCallbackData;
 struct FGameplayEffectSpec;
 struct FHitResult;
+struct FMinimalReplicationTagCountMapForNetSerializer;
 namespace UE::Net
 {
 	struct FGameplayEffectContextHandleAccessorForNetSerializer;
+	class FMinimalReplicationTagCountMapReplicationFragment;
 }
 
 /** Wrappers to convert enum to string. These are fairly slow */
@@ -85,6 +88,8 @@ struct GAMEPLAYABILITIES_API FGameplayModEvaluationChannelSettings
 	static const FString ForceHideMetadataEnabledValue;
 #endif // #if WITH_EDITORONLY_DATA
 
+	void SetEvaluationChannel(EGameplayModEvaluationChannel NewChannel);
+
 protected:
 
 	/** Channel the settings would prefer to use, if possible/valid */
@@ -100,7 +105,7 @@ UENUM(BlueprintType)
 namespace EGameplayModOp
 {
 	/** Defines the ways that mods will modify attributes. Numeric ones operate on the existing value, override ignores it */
-	enum Type
+	enum Type : int
 	{		
 		/** Numeric. */
 		Additive = 0		UMETA(DisplayName="Add"),
@@ -139,17 +144,6 @@ namespace GameplayEffectUtilities
 	 */
 	GAMEPLAYABILITIES_API float ComputeStackedModifierMagnitude(float BaseComputedMagnitude, int32 StackCount, EGameplayModOp::Type ModOp);
 }
-
-
-/** Enumeration for options of where to capture gameplay attributes from for gameplay effects. */
-UENUM()
-enum class EGameplayEffectAttributeCaptureSource : uint8
-{
-	/** Source (caster) of the gameplay effect. */
-	Source,	
-	/** Target (recipient) of the gameplay effect. */
-	Target	
-};
 
 /** Enumeration for ways a single GameplayEffect asset can stack. */
 UENUM()
@@ -216,58 +210,6 @@ struct FGameplayModifierEvaluatedData
 };
 
 
-/** Struct defining gameplay attribute capture options for gameplay effects */
-USTRUCT(BlueprintType)
-struct GAMEPLAYABILITIES_API FGameplayEffectAttributeCaptureDefinition
-{
-	GENERATED_USTRUCT_BODY()
-
-	FGameplayEffectAttributeCaptureDefinition()
-	{
-		AttributeSource = EGameplayEffectAttributeCaptureSource::Source;
-		bSnapshot = false;
-	}
-
-	FGameplayEffectAttributeCaptureDefinition(FGameplayAttribute InAttribute, EGameplayEffectAttributeCaptureSource InSource, bool InSnapshot)
-		: AttributeToCapture(InAttribute), AttributeSource(InSource), bSnapshot(InSnapshot)
-	{
-
-	}
-
-	/** Gameplay attribute to capture */
-	UPROPERTY(EditDefaultsOnly, Category=Capture)
-	FGameplayAttribute AttributeToCapture;
-
-	/** Source of the gameplay attribute */
-	UPROPERTY(EditDefaultsOnly, Category=Capture)
-	EGameplayEffectAttributeCaptureSource AttributeSource;
-
-	/** Whether the attribute should be snapshotted or not */
-	UPROPERTY(EditDefaultsOnly, Category=Capture)
-	bool bSnapshot;
-
-	/** Equality/Inequality operators */
-	bool operator==(const FGameplayEffectAttributeCaptureDefinition& Other) const;
-	bool operator!=(const FGameplayEffectAttributeCaptureDefinition& Other) const;
-
-	/**
-	 * Get type hash for the capture definition; Implemented to allow usage in TMap
-	 *
-	 * @param CaptureDef Capture definition to get the type hash of
-	 */
-	friend uint32 GetTypeHash(const FGameplayEffectAttributeCaptureDefinition& CaptureDef)
-	{
-		uint32 Hash = 0;
-		Hash = HashCombine(Hash, GetTypeHash(CaptureDef.AttributeToCapture));
-		Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(CaptureDef.AttributeSource)));
-		Hash = HashCombine(Hash, GetTypeHash(CaptureDef.bSnapshot));
-		return Hash;
-	}
-
-	FString ToSimpleString() const;
-};
-
-
 /**
  * Data structure that stores an instigator and related data, such as positions and targets
  * Games can subclass this structure and add game-specific information
@@ -283,6 +225,8 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContext
 	, WorldOrigin(ForceInitToZero)
 	, bHasWorldOrigin(false)
 	, bReplicateSourceObject(false)
+	, bReplicateInstigator(false)
+	, bReplicateEffectCauser(false)
 	{
 	}
 
@@ -291,6 +235,8 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContext
 	, WorldOrigin(ForceInitToZero)
 	, bHasWorldOrigin(false)
 	, bReplicateSourceObject(false)
+	, bReplicateInstigator(false)
+	, bReplicateEffectCauser(false)
 	{
 		FGameplayEffectContext::AddInstigator(InInstigator, InEffectCauser);
 	}
@@ -342,6 +288,7 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContext
 	void SetEffectCauser(AActor* InEffectCauser)
 	{
 		EffectCauser = InEffectCauser;
+		bReplicateEffectCauser = CanActorReferenceBeReplicated(InEffectCauser);
 	}
 
 	/** Should always return the original instigator that started the whole chain. Subclasses can override what this does */
@@ -440,6 +387,8 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContext
 	virtual bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
 
 protected:
+	static bool CanActorReferenceBeReplicated(const AActor* Actor);
+
 	// The object pointers here have to be weak because contexts aren't necessarily tracked by GC in all cases
 
 	/** Instigator actor, the actor that owns the ability system component */
@@ -485,8 +434,16 @@ protected:
 	uint8 bHasWorldOrigin:1;
 
 	/** True if the SourceObject can be replicated. This bool is not replicated itself. */
-	UPROPERTY()
+	UPROPERTY(NotReplicated)
 	uint8 bReplicateSourceObject:1;
+	
+	/** True if the Instigator can be replicated. This bool is not replicated itself. */
+	UPROPERTY(NotReplicated)	
+	uint8 bReplicateInstigator:1;
+
+	/** True if the Instigator can be replicated. This bool is not replicated itself. */
+	UPROPERTY(NotReplicated)	
+	uint8 bReplicateEffectCauser:1;
 };
 
 template<>
@@ -566,7 +523,7 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContextHandle
 		}
 	}
 
-	/** Sets Abilit instance and CDO parameters on context */
+	/** Sets Ability instance and CDO parameters on context */
 	void SetAbility(const UGameplayAbility* InGameplayAbility)
 	{
 		if (IsValid())
@@ -961,7 +918,7 @@ UENUM(BlueprintType)
 namespace EGameplayCueEvent
 {
 	/** Indicates what type of action happened to a specific gameplay cue tag. Sometimes you will get multiple events at once */
-	enum Type
+	enum Type : int
 	{
 		/** Called when a GameplayCue with duration is first activated, this will only be called if the client witnessed the activation */
 		OnActive,
@@ -1028,7 +985,7 @@ UENUM(BlueprintType)
 namespace EGameplayTagEventType
 {
 	/** Rather a tag was added or removed, used in callbacks */
-	enum Type
+	enum Type : int
 	{		
 		/** Event only happens when tag is new or completely removed */
 		NewOrRemoved,
@@ -1618,6 +1575,8 @@ struct GAMEPLAYABILITIES_API FMinimalReplicationTagCountMap
 	void RemoveAllTags();
 
 private:
+	friend FMinimalReplicationTagCountMapForNetSerializer;
+	friend UE::Net::FMinimalReplicationTagCountMapReplicationFragment;
 
 	bool bRequireNonOwningNetConnection = false;
 	void UpdateOwnerTagMap();

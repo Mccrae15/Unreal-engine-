@@ -906,6 +906,9 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 
 		// Add all the names of the named slot widgets to the slot names structure.
 		{
+		#if WITH_EDITOR
+			BPGClass->NamedSlotsWithID.Reset();
+		#endif
 			BPGClass->NamedSlots.Reset();
 			BPGClass->InstanceNamedSlots.Reset();
 			UWidgetBlueprint* WidgetBPIt = WidgetBP;
@@ -915,6 +918,10 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 					if (const UNamedSlot* NamedSlot = Cast<UNamedSlot>(Widget))
 					{
 						BPGClass->NamedSlots.Add(Widget->GetFName());
+
+					#if WITH_EDITOR
+						BPGClass->NamedSlotsWithID.Add(TPair<FName, FGuid>(Widget->GetFName(), NamedSlot->GetSlotGUID()));
+					#endif
 
 						if (NamedSlot->bExposeOnInstanceOnly)
 						{
@@ -1102,13 +1109,10 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 
 	Super::FinishCompilingClass(Class);
 
-	if (!bIsSkeletonOnly)
+	CA_ASSUME(BPGClass);
+	if (UUserWidget* UserWidget = Cast<UUserWidget>(BPGClass->GetDefaultObject()))
 	{
-		CA_ASSUME(BPGClass);
-		if (UUserWidget* UserWidget = Cast<UUserWidget>(BPGClass->GetDefaultObject()))
-		{
-			BPGClass->InitializeFieldNotification(UserWidget);
-		}
+		BPGClass->InitializeFieldNotification(UserWidget);
 	}
 
 	UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [BPGClass](UWidgetBlueprintExtension* InExtension)
@@ -1147,22 +1151,24 @@ void FWidgetBlueprintCompilerContext::ValidateWidgetAnimations()
 {
 	UWidgetBlueprintGeneratedClass* WidgetClass = NewWidgetBlueprintClass;
 	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
-	UUserWidget& UserWidget = *WidgetClass->GetDefaultObject<UUserWidget>();
+	UUserWidget* UserWidget = WidgetClass->GetDefaultObject<UUserWidget>();
 	FBlueprintCompilerLog BlueprintLog(MessageLog, WidgetClass);
-
+	
+	UWidgetTree* LatestWidgetTree = FWidgetBlueprintEditorUtils::FindLatestWidgetTree(WidgetBP, UserWidget);
+	
 	for (const UWidgetAnimation* InAnimation : WidgetBP->Animations)
 	{
 		for (const FWidgetAnimationBinding& Binding : InAnimation->AnimationBindings)
 		{
 			// Look for the object bindings within the widget
-			UObject* FoundObject = Binding.FindRuntimeObject(*WidgetBP->WidgetTree, UserWidget);
+			UObject* FoundObject = Binding.FindRuntimeObject(*LatestWidgetTree, *UserWidget);
 
 			// If any of the FoundObjects is null, we do not play the animation.
 			if (FoundObject == nullptr)
 			{
 				// Notify the user of the null track in the editor
 				const FText AnimationNullTrackMessage = LOCTEXT("AnimationNullTrack", "UMG Animation '{0}' from '{1}' is trying to animate a non-existent widget through binding '{2}'. Please re-bind or delete this object from the animation.");
-				BlueprintLog.Warning(FText::Format(AnimationNullTrackMessage, InAnimation->GetDisplayName(), FText::FromString(UserWidget.GetClass()->GetName()), FText::FromName(Binding.WidgetName)));
+				BlueprintLog.Warning(FText::Format(AnimationNullTrackMessage, InAnimation->GetDisplayName(), FText::FromString(UserWidget->GetClass()->GetName()), FText::FromName(Binding.WidgetName)));
 			}
 		}
 	}

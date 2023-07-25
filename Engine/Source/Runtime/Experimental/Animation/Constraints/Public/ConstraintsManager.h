@@ -209,7 +209,10 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FConstraintsManagerNotifyDelegate, EConstra
 class CONSTRAINTS_API FConstraintsManagerController
 {
 public:
-	/** @todo document */
+	/** Static to control if we should remove constraints or not, may not want to do some when
+	compensating since we may be deleting spawnables while doing so*/
+	static bool bDoNotRemoveConstraint;
+	/** Get and Set Controller acive in this world*/
 	static FConstraintsManagerController& Get(UWorld* InWorld);
 
 	/** Allocates a new constraint with the constraints manager as the owner. */
@@ -230,6 +233,9 @@ public:
 
 	/** Remove the constraint at the given index. */
 	bool RemoveConstraint(const int32 InConstraintIndex, bool bDoNotCompensate = false) const;
+
+	/** Remove constraint by ptr*/
+	bool RemoveConstraint(UTickableConstraint* InConstraint, bool bDoNotCompensate = false) const;
 
 	/** Returns the constraint based on it's name within the manager's constraints array. */
 	UTickableConstraint* GetConstraint(const FName& InConstraintName) const;
@@ -260,6 +266,8 @@ public:
 	/** Go through each constraint in order and evaluate and tick them*/
 	void EvaluateAllConstraints() const;
 
+	/** when PIEing/Simulating it's possible that the constraint isn't in the active manager but still lives*/
+	bool DoesExistInAnyWorld(UTickableConstraint* InConstraint);
 	
 private:
 	/** Delegeate that's fired when a scene component is constrained, this is needed to make sure things like gizmo's get updated after the constraint tick happens*/

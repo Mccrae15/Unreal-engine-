@@ -168,6 +168,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Designer)
 	bool bUseWidgetTemplateSelector;
 
+	/** This list populates the common class section of the root widget selection dialog */
+	UPROPERTY(EditAnywhere, config, Category = Designer, meta = (EditCondition = "bUseWidgetTemplateSelector"))
+	TArray<TSoftClassPtr<UPanelWidget>> CommonRootWidgetClasses;
+
 	/** The panel widget to place at the root of all newly constructed widget blueprints. Can be empty. */
 	UPROPERTY(EditAnywhere, config, Category = Designer)
 	TSubclassOf<UPanelWidget> DefaultRootWidget;
@@ -185,11 +189,11 @@ public:
 	bool bUseEditorConfigPaletteFiltering;
 
 	/**
-	 * The default parent class for all newly constructed widget blueprints.
-	 * The WidgetParentClass must have an empty widget hierarchy.
+	 * The list of parent classes to choose from for newly constructed widget blueprints.
+	 * The classes must have empty widget hierarchies.
 	 */
-	UPROPERTY(config, meta = (AllowAbstract = ""))
-	TSoftClassPtr<UUserWidget> DefaultWidgetParentClass;
+	UPROPERTY(EditAnywhere, config, Category = Designer, meta = (AllowAbstract = ""))
+	TArray<TSoftClassPtr<UUserWidget>> FavoriteWidgetParentClasses;
 
 	UPROPERTY(EditAnywhere, config, Category=Designer)
 	TArray<FDebugResolution> DebugResolutions;

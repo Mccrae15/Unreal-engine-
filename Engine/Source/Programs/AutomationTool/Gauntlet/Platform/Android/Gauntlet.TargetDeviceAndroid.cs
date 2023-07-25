@@ -161,7 +161,7 @@ namespace Gauntlet
 
 			if (Install.AndroidDevice != null && Install.AndroidDevice.Disposed)
 			{
-				Log.Warning("Attempting to cache log using disposed Android device");
+				Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Attempting to cache log using disposed Android device");
 				return;
 			}
 
@@ -229,7 +229,7 @@ namespace Gauntlet
 				}
 				catch
 				{
-					Log.Warning("Failed to remove old cache folder {0}", Install.AndroidDevice.LocalCachePath);
+					Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Failed to remove old cache folder {Folder}", Install.AndroidDevice.LocalCachePath);
 				}
 			}
 
@@ -240,7 +240,7 @@ namespace Gauntlet
 			}
 			catch (Exception Ex)
 			{
-				Log.Warning("Exception marking directory for cleanup {0}", Ex.Message);
+				Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Exception marking directory for cleanup {Exception}", Ex.Message);
 			}			
 
 			string LocalSaved = Path.Combine(Install.AndroidDevice.LocalCachePath, "Saved");
@@ -257,7 +257,7 @@ namespace Gauntlet
 
 			if (PullCmd.ExitCode != 0)
 			{
-				Log.Warning("Failed to retrieve artifacts. {0}", PullCmd.Output);
+				Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Failed to retrieve artifacts. {Output}", PullCmd.Output);
 			}
 			else
 			{
@@ -414,9 +414,9 @@ namespace Gauntlet
 					return false;
 				}
 
-				if (AllDevices[DeviceName] == false)
+				if (AllDevices[DeviceName] != "device")
 				{
-					Log.Warning("Device {0} is connected but we are not authorized", DeviceName);
+					Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Device {Name} is '{State}'", DeviceName, AllDevices[DeviceName]);
 					return false;
 				}
 
@@ -467,7 +467,7 @@ namespace Gauntlet
 				{
 					if (GetAllConnectedDevices().Count > 0)
 					{
-						throw new AutomationException("No default device available. One or more devices are connected but unauthorized. See 'adb devices'");
+						throw new AutomationException("No default device available. One or more devices are connected but unauthorized or offline. See 'adb devices'");
 					}
 					else
 					{
@@ -537,10 +537,10 @@ namespace Gauntlet
 				throw new AutomationException("Failed to find new device {0} in connection list", DeviceName);
 			}
 
-			if (ConnectedDevices[DeviceName] == false)
+			if (ConnectedDevices[DeviceName] != "device")
 			{
 				Dispose();
-				throw new AutomationException("Device {0} is connected but this PC is not authorized.", DeviceName);
+				throw new AutomationException("Device {0} is '{1}'.", DeviceName, ConnectedDevices[DeviceName]);
 			}
 		}
 
@@ -568,7 +568,7 @@ namespace Gauntlet
 				}
 				catch (Exception Ex)
 				{
-					Log.Warning("TargetDeviceAndroid.Dispose() threw: {0}", Ex.Message);
+					Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "TargetDeviceAndroid.Dispose() threw: {Exception}", Ex.Message);
 				}
 				finally
 				{
@@ -603,7 +603,7 @@ namespace Gauntlet
 		/// Returns a list of locally connected devices (e.g. 'adb devices'). 
 		/// </summary>
 		/// <returns></returns>
-		static private Dictionary<string, bool> GetAllConnectedDevices()
+		static private Dictionary<string, string> GetAllConnectedDevices()
 		{
            var Result = RunAdbGlobalCommand("devices");
 
@@ -611,7 +611,7 @@ namespace Gauntlet
 
             var DeviceList = DeviceMatches.Cast<Match>().ToDictionary(
                 M => M.Groups[1].ToString(),
-                M => !M.Groups[2].ToString().ToLower().Contains("unauthorized")
+                M => M.Groups[2].ToString().ToLower()
             );
 
             return DeviceList;
@@ -620,7 +620,7 @@ namespace Gauntlet
 		static private IEnumerable<string> GetAllAvailableDevices()
 		{
 			var AllDevices = GetAllConnectedDevices();
-			return AllDevices.Keys.Where(D => AllDevices[D] == true);
+			return AllDevices.Keys.Where(D => AllDevices[D] == "device");
 		}
 
 		static public ITargetDevice[] GetDefaultDevices()
@@ -657,8 +657,7 @@ namespace Gauntlet
 			get
 			{
 				string CommandLine = "shell dumpsys power";
-				IProcessResult OnAndUnlockedQuery = RunAdbDeviceCommand(CommandLine);
-
+				IProcessResult OnAndUnlockedQuery = RunAdbDeviceCommand(CommandLine, bPauseErrorParsing: true);
 				return OnAndUnlockedQuery.Output.Contains("mHoldingDisplaySuspendBlocker=true")
 					&& OnAndUnlockedQuery.Output.Contains("mHoldingWakeLockSuspendBlocker=true");
 			}
@@ -668,16 +667,15 @@ namespace Gauntlet
 		{
 			Log.Verbose("{0}: Powering on", ToString());
 			string CommandLine = "shell \"input keyevent KEYCODE_WAKEUP && input keyevent KEYCODE_MENU\"";
-			RunAdbDeviceCommand(CommandLine);
-			return true;
+			IProcessResult PowerOnQuery = RunAdbDeviceCommand(CommandLine, bPauseErrorParsing: true);
+			return !PowerOnQuery.Output.Contains("error");
 		}
 		public bool PowerOff()
 		{
 			Log.Verbose("{0}: Powering off", ToString());
-
 			string CommandLine = "shell \"input keyevent KEYCODE_SLEEP\"";
-			RunAdbDeviceCommand(CommandLine);
-			return true;
+			IProcessResult PowerOffQuery = RunAdbDeviceCommand(CommandLine, bPauseErrorParsing: true);
+			return !PowerOffQuery.Output.Contains("error");
 		}
 
 		public bool Reboot()
@@ -821,7 +819,29 @@ namespace Gauntlet
 
 					if (AdbResult.ExitCode != 0)
 					{
-						throw new AutomationException("Failed to push {0} to device. Error {1}", SourcePath, AdbResult.Output);
+						if ((AdbResult.Output.Contains("couldn't read from device") || AdbResult.Output.Contains("offline")) && !IsConnected)
+						{
+							Log.Info("Lost connection with device '{Name}'.", Name);
+							// Disconnection occurred. Let's retry a second time before given up
+							// Try to reconnect
+							if (Connect())
+							{
+								Log.Info("Retrying to copy via adb push...");
+								AdbResult = RunAdbDeviceCommand(AdbCommand);
+								if (AdbResult.ExitCode != 0)
+								{
+									throw new AutomationException("Failed to push {0} to device. Error {1}", SourcePath, AdbResult.Output);
+								}
+							}
+							else
+							{
+								throw new AutomationException("Failed to reconnect {0}", Name);
+							}
+						}
+						else
+						{
+							throw new AutomationException("Failed to push {0} to device. Error {1}", SourcePath, AdbResult.Output);
+						}
 					}
 
 					// Now pull info about the file which we'll write as a dep
@@ -840,7 +860,7 @@ namespace Gauntlet
 
 				if (AdbResult.ExitCode != 0)
 				{
-					Log.Warning("Failed to write dependency file {0}", DepFile);
+					Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Failed to write dependency file {File}", DepFile);
 				}
 			}
 
@@ -963,7 +983,7 @@ namespace Gauntlet
 
                     else
                     {
-                        Log.Warning("File to copy {0} not found", FileToCopy);
+                        Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "File to copy {File} not found", FileToCopy);
                     }
                 }
             }

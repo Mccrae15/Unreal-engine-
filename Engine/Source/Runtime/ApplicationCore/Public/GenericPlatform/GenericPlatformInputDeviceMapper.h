@@ -81,7 +81,7 @@ public:
 
 	/**
 	 * Returns the 'Primary' Platform user for this platform.
-	 * This typcially has an internal ID of '0' and is used as the default platform user to
+	 * This typically has an internal ID of '0' and is used as the default platform user to
 	 * map devices such as the keyboard and mouse that don't get assigned unique ID's from their
 	 * owning platform code.
 	 */
@@ -231,7 +231,7 @@ protected:
 	*/
 	virtual void UnbindCoreDelegates();
 
-	/** Callback for when FCoreDelegates::FOnUserLoginChangedEvent is broadcasted */
+	/** Callback for when FCoreDelegates::OnUserLoginChangedEvent is broadcasted */
 	virtual void OnUserLoginChangedEvent(bool bLoggedIn, int32 UserId, int32 UserIndex) = 0;
 	
 	/**
@@ -302,7 +302,7 @@ public:
 protected:
 
 	/** 
-	* Callback for when FCoreDelegates::FOnUserLoginChangedEvent is broadcasted.
+	* Callback for when FCoreDelegates::OnUserLoginChangedEvent is broadcasted.
 	* If the user has logged out, then remap any input devices that the user had to the "Unpaired" user on this platform (if bUnpairInputDevicesWhenLoggingOut is true)
 	*/
 	virtual void OnUserLoginChangedEvent(bool bLoggedIn, int32 RawPlatformUserId, int32 UserIndex) override;

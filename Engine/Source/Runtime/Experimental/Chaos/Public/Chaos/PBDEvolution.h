@@ -25,7 +25,9 @@ class CHAOS_API FPBDEvolution : public TArrayCollection
 		FSolverReal SelfCollisionsThickness = (FSolverReal)0.,
 		FSolverReal CoefficientOfFriction = (FSolverReal)0.,
 		FSolverReal Damping = (FSolverReal)0.04,
-		FSolverReal LocalDamping = (FSolverReal)0.);
+		FSolverReal LocalDamping = (FSolverReal)0.,
+		bool bDoQuasistatics = false, 
+		bool InbUsePerParticleDamping = false);
 	~FPBDEvolution() {}
 
 	// Advance one time step. Filter the input time step if specified.
@@ -47,6 +49,13 @@ class CHAOS_API FPBDEvolution : public TArrayCollection
 	// Set a block of particles active or inactive, using the index of the first added particle to identify the block.
 	void ActivateParticleRange(int32 Offset, bool bActivate)  { MParticlesActiveView.ActivateRange(Offset, bActivate); }
 
+	// Clear all ranges.
+	void DeactivateParticleRanges() { MParticlesActiveView.Reset(0); }
+
+	// Set a block of particles active or inactive, using the index of the first added particle to identify the block.
+	int32 AddParticleRange(int32 NumItems, bool bActivate = true) { return MParticlesActiveView.AddRange(NumItems, bActivate); }
+
+
 	// Particles accessors
 	const FSolverParticles& Particles() const { return MParticles; }
 	FSolverParticles& Particles() { return MParticles; }
@@ -61,6 +70,12 @@ class CHAOS_API FPBDEvolution : public TArrayCollection
 	// Use INDEX_NONE as GroupId for collision particles that affect all particle groups.
 	int32 AddCollisionParticleRange(int32 NumParticles, uint32 GroupId, bool bActivate);
 
+	// Add a single collision body particle to the solver. 
+	int32 AddCollisionParticle(uint32 GroupId, bool bActivate);
+
+	// Remove a collision body from the active view list, and save its particle in the remvoed collision particle list
+	void RemoveCollisionParticle(int32 CollisionParticleIndex, int32 CollisionParticleViewIndex);
+
 	// Set a block of collision particles active or inactive, using the index of the first added particle to identify the block.
 	void ActivateCollisionParticleRange(int32 Offset, bool bActivate) { MCollisionParticlesActiveView.ActivateRange(Offset, bActivate); }
 
@@ -70,8 +85,10 @@ class CHAOS_API FPBDEvolution : public TArrayCollection
 	// Collision particles accessors
 	const FSolverRigidParticles& CollisionParticles() const { return MCollisionParticles; }
 	FSolverRigidParticles& CollisionParticles() { return MCollisionParticles; }
+	TArray<uint32>& CollisionParticleGroupIds() { return MCollisionParticleGroupIds; }
 	const TArray<uint32>& CollisionParticleGroupIds() const { return MCollisionParticleGroupIds; }
-	const TPBDActiveView<FSolverRigidParticles>& CollisionParticlesActiveView() { return MCollisionParticlesActiveView; }
+	TPBDActiveView<FSolverRigidParticles>& CollisionParticlesActiveView() { return MCollisionParticlesActiveView; }
+	const TPBDActiveView<FSolverRigidParticles>& CollisionParticlesActiveView() const { return MCollisionParticlesActiveView; }
 
 	// Reset all constraint init and rule functions.
 	void ResetConstraintRules() 
@@ -154,6 +171,10 @@ class CHAOS_API FPBDEvolution : public TArrayCollection
 	bool GetUseCCD(const uint32 GroupId = 0) const { check(GroupId < TArrayCollection::Size()); return MGroupUseCCDs[GroupId]; }
 	void SetUseCCD(const bool bUseCCD, const uint32 GroupId = 0) { check(GroupId < TArrayCollection::Size()); MGroupUseCCDs[GroupId] = bUseCCD; }
 
+	FSolverReal GetParticleDamping(const uint32 ParticleIndex = 0) const { check(ParticleIndex < this->Particles().Size() && bUsePerParticleDamping); return MParticleDampings[ParticleIndex]; }
+	void SetParticleDamping(const FSolverReal Damping, const uint32 ParticleIndex = 0) { check(ParticleIndex < this->Particles().Size()); if (bUsePerParticleDamping) { MParticleDampings[ParticleIndex] = Damping; } }
+
+
 	UE_DEPRECATED(4.27, "Use GetCollisionStatus() instead")
 	const bool Collided(int32 index) { return MCollided[index]; }
 
@@ -172,11 +193,14 @@ class CHAOS_API FPBDEvolution : public TArrayCollection
 	template<bool bForceRule, bool bVelocityField, bool bDampVelocityRule>
 	void PreIterationUpdate(const FSolverReal Dt, const int32 Offset, const int32 Range, const int32 MinParallelBatchSize);
 
+	struct FParticleVievToken { int32 ParticleIndex = INDEX_NONE; int32 ViewIndex = INDEX_NONE; };
+
 private:
 	FSolverParticles MParticles;
 	TPBDActiveView<FSolverParticles> MParticlesActiveView;
 	FSolverRigidParticles MCollisionParticles;
 	TPBDActiveView<FSolverRigidParticles> MCollisionParticlesActiveView;
+	TArray<FParticleVievToken> RemovedCollisionIndices;
 
 	TArrayCollectionArray<FSolverRigidTransform3> MCollisionTransforms;  // Used for CCD to store the initial state before the kinematic update
 	TArrayCollectionArray<bool> MCollided;
@@ -193,6 +217,9 @@ private:
 	TArrayCollectionArray<FSolverReal> MGroupDampings;
 	TArrayCollectionArray<FSolverReal> MGroupLocalDampings;
 	TArrayCollectionArray<bool> MGroupUseCCDs;
+
+	//per particle data:
+	TArrayCollectionArray<FSolverReal> MParticleDampings;
 	
 	TArray<TFunction<void(FSolverParticles&, const FSolverReal)>> MConstraintInits;
 	TPBDActiveView<TArray<TFunction<void(FSolverParticles&, const FSolverReal)>>> MConstraintInitsActiveView;
@@ -213,6 +240,8 @@ private:
 	FSolverReal MDamping;
 	FSolverReal MLocalDamping;
 	FSolverReal MTime;
+	bool bDoQuasistatics = false;
+	bool bUsePerParticleDamping = false;
 };
 
 }  // End namespace Chaos::Softs

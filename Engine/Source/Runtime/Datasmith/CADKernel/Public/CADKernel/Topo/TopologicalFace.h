@@ -18,7 +18,10 @@
 
 namespace UE::CADKernel
 {
+
 class FCADKernelArchive;
+class FCriteriaGrid;
+class FCriterion;
 class FCurve;
 class FDatabase;
 class FModelMesh;
@@ -96,6 +99,11 @@ protected:
 
 public:
 
+	virtual ~FTopologicalFace() override
+	{
+		FTopologicalFace::Empty();
+	}
+
 	virtual void Serialize(FCADKernelArchive& Ar) override
 	{
 		FTopologicalShapeEntity::Serialize(Ar);
@@ -157,7 +165,6 @@ public:
 	virtual void SpreadBodyOrientation() override
 	{
 	}
-
 
 	// ======   Loop Functions   ======
 
@@ -268,14 +275,6 @@ public:
 
 	void EvaluateGrid(FGrid& Grid) const;
 
-	// ======   Sample Functions   ======
-
-	/**
-	 * Generate a pre-sampling of the surface saved in CrossingCoordinate.
-	 * This sampling is light enough to allow a fast computation of the grid, precise enough to compute accurately meshing criteria
-	 */
-	void Presample();
-
 	/**
 	 * Update the bounding box with an approximation of the surface based of n iso curves 
 	 * @param ApproximationFactor: the factor apply to the geometric tolerance to defined the SAG error of the ISO
@@ -284,16 +283,63 @@ public:
 
 	// ======   Topo Functions   ======
 
+	/** 
+	 * Delete a face i.e. disjoin the face to all its linked elements before setting it as deleted
+	 */
+	void Remove(TArray<FTopologicalEdge*>* NewBorderEdges = nullptr)
+	{
+		Disjoin(NewBorderEdges);
+		RemoveOfHost();
+		Delete();
+	}
+
+	virtual void Empty() override
+	{
+#ifndef CADKERNEL_DEV
+		CarrierSurface.Reset();
+		for (TSharedPtr<FTopologicalLoop>& Loop : Loops)
+		{
+			Loop->Empty();
+		}
+		Loops.Empty();
+#endif
+		RemoveOfHost();
+
+		Mesh.Reset();
+		MeshCuttingCoordinates.Empty();
+		CrossingCoordinates.Empty();
+		CrossingPointDeltaMins.Empty();
+		CrossingPointDeltaMaxs.Empty();
+
+		SurfaceCorners.Empty();
+		StartSideIndices.Empty();
+		SideProperties.Empty();
+
+		FTopologicalShapeEntity::Empty();
+	}
+
+	/** Has at least one non manifold edge */
+	bool IsANonManifoldFace() const;
+
+	/** Has at least one border edge */
+	bool IsABorderFace() const;
+
+	/** All its edges are non manifold */
+	bool IsAFullyNonManifoldFace() const;
+
+	/** one adjacent face shares the same loops */
+	bool IsADuplicatedFace() const;
+
 	/**
 	 * Checks if the face and the other face have the same boundaries i.e. each non degenerated edge is linked to an edge of the other face
 	 */
-	bool HasSameBoundariesAs(const TSharedPtr<FTopologicalFace>& OtherFace) const;
+	bool HasSameBoundariesAs(const FTopologicalFace* OtherFace) const;
 
 	/**
 	 * Disconnects the face of its neighbors i.e. remove topological edge and vertex link with its neighbors
 	 * @param OutNewBorderEdges the neighbors edges
 	 */
-	void Disjoin(TArray<FTopologicalEdge*>& OutNewBorderEdges);
+	void Disjoin(TArray<FTopologicalEdge*>* NewBorderEdges = nullptr);
 
 #ifdef CADKERNEL_DEV
 	virtual void FillTopologyReport(FTopologyReport& Report) const override;
@@ -315,9 +361,6 @@ public:
 	}
 
 	void InitDeltaUs();
-
-	void ChooseFinalDeltaUs();
-
 
 	const TArray<double>& GetCuttingCoordinatesAlongIso(EIso Iso) const
 	{
@@ -354,23 +397,24 @@ public:
 		return CrossingCoordinates[Iso];
 	}
 
+	/**
+	 * Generate a pre-sampling of the surface saved in CrossingCoordinate.
+	 * This sampling is light enough to allow a fast computation of the grid, precise enough to compute accurately meshing criteria
+	 * @return false if the face is considered as degenerate and so removed
+	 */
+	bool ComputeCriteriaGridSampling();
+		
+	/**
+	 * Compute CrossingPointDeltaMins and CrossingPointDeltaMaxs respecting the meshing criteria
+	 */
+	void ApplyCriteria(const TArray<TSharedPtr<FCriterion>>& Criteria, const FCriteriaGrid& Grid);
 
 	const TArray<double>& GetCrossingPointDeltaMins(EIso Iso) const
 	{
 		return CrossingPointDeltaMins[Iso];
 	}
 
-	TArray<double>& GetCrossingPointDeltaMins(EIso Iso)
-	{
-		return CrossingPointDeltaMins[Iso];
-	}
-
 	const TArray<double>& GetCrossingPointDeltaMaxs(EIso Iso) const
-	{
-		return CrossingPointDeltaMaxs[Iso];
-	}
-
-	TArray<double>& GetCrossingPointDeltaMaxs(EIso Iso)
 	{
 		return CrossingPointDeltaMaxs[Iso];
 	}
@@ -455,6 +499,8 @@ private:
 	double QuadCriteria = 0;
 	FSurfaceCurvature Curvatures;
 	EQuadType QuadType = EQuadType::Unset;
+
+	double EstimatedMinimalElementLength = DOUBLE_BIG_NUMBER;
 
 public:
 	void ComputeQuadCriteria();
@@ -559,6 +605,19 @@ public:
 			}
 			return (int32)StartSideIndices.Num() - 1;
 		}
+	}
+
+	void SetEstimatedMinimalElementLength(double Value)
+	{
+		EstimatedMinimalElementLength = Value;
+	}
+
+	/**
+	 * @return the minimal size of the mesh elements according to meshing criteria
+	 */
+	double GetEstimatedMinimalElementLength() const
+	{
+		return EstimatedMinimalElementLength;
 	}
 
 };

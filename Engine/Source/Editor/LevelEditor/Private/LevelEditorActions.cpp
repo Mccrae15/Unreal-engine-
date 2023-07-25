@@ -6,6 +6,7 @@
 #include "Factories/Factory.h"
 #include "Animation/AnimSequence.h"
 #include "Components/LightComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
@@ -38,6 +39,7 @@
 #include "UnrealEdMisc.h"
 #include "FileHelpers.h"
 #include "UnrealEdGlobals.h"
+#include "Settings/LevelEditorPlaySettings.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionEditorHash.h"
@@ -45,6 +47,7 @@
 #include "WorldPartition/IWorldPartitionEditorModule.h"
 #include "WorldBrowserModule.h"
 
+#include "Elements/Framework/TypedElementCommonActions.h"
 #include "Elements/Framework/TypedElementSelectionSet.h"
 #include "Elements/Interfaces/TypedElementObjectInterface.h"
 #include "Subsystems/EditorElementSubsystem.h"
@@ -110,6 +113,7 @@
 #include "Preferences/UnrealEdOptions.h"
 #include "UnrealEdGlobals.h"
 #include "EditorModeManager.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #include "Internationalization/Culture.h"
 
@@ -299,28 +303,35 @@ void FLevelEditorActionCallbacks::DeltaTransform()
 void FLevelEditorActionCallbacks::OpenRecentFile( int32 RecentFileIndex )
 {
 	IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>( "MainFrame" );
-	FMainMRUFavoritesList* RecentsAndFavorites = MainFrameModule.GetMRUFavoritesList();
-
-	FString NewPackageName;
-	if( RecentsAndFavorites->VerifyMRUFile( RecentFileIndex, NewPackageName ) )
+	
+	if (FMainMRUFavoritesList* RecentsAndFavorites = MainFrameModule.GetMRUFavoritesList())
 	{
-		// Prompt the user to save any outstanding changes.
-		if( FEditorFileUtils::SaveDirtyPackages(true, true, false) )
+		FString NewPackageName;
+		if( RecentsAndFavorites->VerifyMRUFile( RecentFileIndex, NewPackageName ) )
 		{
-			FString NewFilename;
-			if (FPackageName::TryConvertLongPackageNameToFilename(NewPackageName, NewFilename, FPackageName::GetMapPackageExtension()))
+			// Prompt the user to save any outstanding changes.
+			if( FEditorFileUtils::SaveDirtyPackages(true, true, false) )
 			{
-				// Load the requested level.
-				FEditorFileUtils::LoadMap(NewFilename);
+				FString NewFilename;
+				if (FPackageName::TryConvertLongPackageNameToFilename(NewPackageName, NewFilename, FPackageName::GetMapPackageExtension()))
+				{
+					// Load the requested level.
+					FEditorFileUtils::LoadMap(NewFilename);
+				}
 			}
-		}
-		else
-		{
-			// something went wrong or the user pressed cancel.  Return to the editor so the user doesn't lose their changes		
 		}
 	}
 }
 
+void FLevelEditorActionCallbacks::ClearRecentFiles()
+{
+	IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>( "MainFrame" );
+	
+	if (FMainMRUFavoritesList* RecentsAndFavorites = MainFrameModule.GetMRUFavoritesList())
+	{
+		RecentsAndFavorites->ClearMRUItems();
+	}
+}
 
 void FLevelEditorActionCallbacks::OpenFavoriteFile( int32 FavoriteFileIndex )
 {
@@ -660,7 +671,29 @@ void FLevelEditorActionCallbacks::SetPreviewPlatform(FPreviewPlatformInfo NewPre
 
 bool FLevelEditorActionCallbacks::CanExecutePreviewPlatform(FPreviewPlatformInfo NewPreviewPlatform)
 {
-	return NewPreviewPlatform.PreviewFeatureLevel <= GMaxRHIFeatureLevel;
+	// TODO: Prevent switching from a platform with VSM to a platform without VSM at the same FeatureLevel until all issues are resolved.
+	// (for instance, GlobalShaderMap does not contain the shaders necessary for FVirtualShadowMapArrayCacheManager::ProcessInvalidations anymore)
+	// Currently this is mostly meant to isolate going to/from VULKAN_SM5 which is wildly different and causes issues with preview mechanics.
+	if (NewPreviewPlatform.PreviewFeatureLevel == GMaxRHIFeatureLevel)
+	{
+		if (FDataDrivenShaderPlatformInfo::IsValid(NewPreviewPlatform.ShaderPlatform) &&
+			FDataDrivenShaderPlatformInfo::GetIsPreviewPlatform(NewPreviewPlatform.ShaderPlatform))
+		{
+			const EShaderPlatform ParentShaderPlatform = FDataDrivenShaderPlatformInfo::GetPreviewShaderPlatformParent(NewPreviewPlatform.ShaderPlatform);
+			return (DoesPlatformSupportVirtualShadowMaps(GMaxRHIShaderPlatform) == DoesPlatformSupportVirtualShadowMaps(ParentShaderPlatform));
+		}
+	}
+
+	// TODO: Prevent previewing VULKAN_SM5 with a D3D renderer until all issues are resolved.
+	if (FDataDrivenShaderPlatformInfo::IsValid(NewPreviewPlatform.ShaderPlatform) &&
+		FDataDrivenShaderPlatformInfo::GetIsPreviewPlatform(NewPreviewPlatform.ShaderPlatform) &&
+		FDataDrivenShaderPlatformInfo::GetIsLanguageD3D(GMaxRHIShaderPlatform))
+	{
+		const EShaderPlatform ParentShaderPlatform = FDataDrivenShaderPlatformInfo::GetPreviewShaderPlatformParent(NewPreviewPlatform.ShaderPlatform);
+		return !(FDataDrivenShaderPlatformInfo::GetIsLanguageVulkan(ParentShaderPlatform) && IsFeatureLevelSupported(ParentShaderPlatform, ERHIFeatureLevel::SM5));
+	}
+
+	return (NewPreviewPlatform.PreviewFeatureLevel < GMaxRHIFeatureLevel);
 }
 
 bool FLevelEditorActionCallbacks::IsPreviewPlatformChecked(FPreviewPlatformInfo PreviewPlatform)
@@ -1751,7 +1784,20 @@ bool FLevelEditorActionCallbacks::Cut_CanExecute()
 	}
 
 	bool bCanCut = false;
-	if (GEditor->GetSelectedComponentCount() > 0)
+	if (TypedElementCommonActionsUtils::IsElementCopyAndPasteEnabled())
+	{
+		static const FName NAME_LevelEditor = "LevelEditor";
+		if (TSharedPtr<ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(NAME_LevelEditor).GetLevelEditorInstance().Pin())
+		{
+			const UTypedElementSelectionSet* SelectionSet = LevelEditor->GetElementSelectionSet();
+			SelectionSet->ForEachSelectedElement<ITypedElementWorldInterface>([&bCanCut](const TTypedElement<ITypedElementWorldInterface>& InWorldElement)
+				{
+					bCanCut |= InWorldElement.CanCopyElement();
+					return !bCanCut;
+				});
+		}
+	}
+	else if (GEditor->GetSelectedComponentCount() > 0)
 	{
 		// Make sure the components can be copied and deleted
 		TArray<UActorComponent*> SelectedComponents;
@@ -1801,7 +1847,20 @@ bool FLevelEditorActionCallbacks::Copy_CanExecute()
 	}
 
 	bool bCanCopy = false;
-	if (GEditor->GetSelectedComponentCount() > 0)
+	if (TypedElementCommonActionsUtils::IsElementCopyAndPasteEnabled())
+	{
+		static const FName NAME_LevelEditor = "LevelEditor";
+		if (TSharedPtr<ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(NAME_LevelEditor).GetLevelEditorInstance().Pin())
+		{
+			const UTypedElementSelectionSet* SelectionSet = LevelEditor->GetElementSelectionSet();
+			SelectionSet->ForEachSelectedElement<ITypedElementWorldInterface>([&bCanCopy](const TTypedElement<ITypedElementWorldInterface>& InWorldElement)
+				{
+					bCanCopy |= InWorldElement.CanCopyElement();
+					return !bCanCopy;
+				});
+		}
+	}
+	else if (GEditor->GetSelectedComponentCount() > 0)
 	{
 		TArray<UActorComponent*> SelectedComponents;
 		for (FSelectionIterator It(GEditor->GetSelectedComponentIterator()); It; ++It)
@@ -1849,20 +1908,31 @@ bool FLevelEditorActionCallbacks::Paste_CanExecute()
 	}
 
 	bool bCanPaste = false;
-	if (GEditor->GetSelectedComponentCount() > 0)
+	if (TypedElementCommonActionsUtils::IsElementCopyAndPasteEnabled())
 	{
-		if(ensureMsgf(GEditor->GetSelectedActorCount() == 1, TEXT("Expected SelectedActorCount to be 1 but was %d"), GEditor->GetSelectedActorCount()))
-		{
-			auto SelectedActor = CastChecked<AActor>(*GEditor->GetSelectedActorIterator());
-			bCanPaste = FComponentEditorUtils::CanPasteComponents(SelectedActor->GetRootComponent());
-		}
+		// Todo Copy and Paste find the right logic for a extensible can paste
+		// but for now just set it to true
+		bCanPaste = true;
 	}
-	else
+
+	// Legacy style copy and paste format
+	if (!bCanPaste)
 	{
-		UWorld* World = GetWorld();
-		if (World)
+		if (GEditor->GetSelectedComponentCount() > 0)
 		{
-			bCanPaste = GUnrealEd->CanPasteSelectedActorsFromClipboard(World);
+			if(ensureMsgf(GEditor->GetSelectedActorCount() == 1, TEXT("Expected SelectedActorCount to be 1 but was %d"), GEditor->GetSelectedActorCount()))
+			{
+				auto SelectedActor = CastChecked<AActor>(*GEditor->GetSelectedActorIterator());
+				bCanPaste = FComponentEditorUtils::CanPasteComponents(SelectedActor->GetRootComponent());
+			}
+		}
+		else
+		{
+			UWorld* World = GetWorld();
+			if (World)
+			{
+				bCanPaste = GUnrealEd->CanPasteSelectedActorsFromClipboard(World);
+			}
 		}
 	}
 
@@ -2339,7 +2409,7 @@ void FLevelEditorActionCallbacks::ImportContent()
 void FLevelEditorActionCallbacks::ToggleVR()
 {
 	IVREditorModule& VREditorModule = IVREditorModule::Get();
-	VREditorModule.EnableVREditor( VREditorModule.GetVRMode() == nullptr );
+	VREditorModule.EnableVREditor( VREditorModule.GetVRModeBase() == nullptr );
 }
 
 
@@ -2542,9 +2612,23 @@ bool FLevelEditorActionCallbacks::OnGetTransformWidgetVisibility()
 	return GLevelEditorModeTools().GetShowWidget();
 }
 
+void FLevelEditorActionCallbacks::OnToggleShowSelectionSubcomponents()
+{
+	UEditorPerProjectUserSettings* Settings = GetMutableDefault<UEditorPerProjectUserSettings>();
+	Settings->bShowSelectionSubcomponents = !Settings->bShowSelectionSubcomponents;
+	Settings->PostEditChange();
+
+	GUnrealEd->RedrawAllViewports();
+}
+
+bool FLevelEditorActionCallbacks::OnGetShowSelectionSubcomponents()
+{
+	return GetDefault<UEditorPerProjectUserSettings>()->bShowSelectionSubcomponents == true;
+}
+
 void FLevelEditorActionCallbacks::OnAllowTranslucentSelection()
 {
-	auto* Settings = GetMutableDefault<UEditorPerProjectUserSettings>();
+	UEditorPerProjectUserSettings* Settings = GetMutableDefault<UEditorPerProjectUserSettings>();
 
 	// Toggle 'allow select translucent'
 	Settings->bAllowSelectTranslucent = !Settings->bAllowSelectTranslucent;
@@ -3405,7 +3489,7 @@ FLevelEditorCommands::FLevelEditorCommands()
 }
 
 /** UI_COMMAND takes long for the compile to optimize */
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 void FLevelEditorCommands::RegisterCommands()
 {
 	UI_COMMAND( BrowseDocumentation, "Level Editor Documentation", "Details on how to use the Level Editor", EUserInterfaceActionType::Button, FInputChord( EKeys::F1 ) );
@@ -3448,12 +3532,13 @@ void FLevelEditorCommands::RegisterCommands()
 		OpenFavoriteFileCommands.Add(OpenFavoriteFile);
 	}
 
+	UI_COMMAND( ClearRecentFiles, "Clear Recent Levels", "Clear the list of recently opened levels", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( ImportScene, "Import Into Level...", "Imports a scene from a FBX or OBJ format into the current level", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND( ExportAll, "Export All...", "Exports the entire level to a file on disk (multiple formats are supported.)", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( ExportSelected, "Export Selected...", "Exports currently-selected objects to a file on disk (multiple formats are supported.)", EUserInterfaceActionType::Button, FInputChord() );
 
 	UI_COMMAND( Build, "Build All Levels", "Builds all levels (precomputes lighting data and visibility data, generates navigation networks and updates brush models.)\nThis action is not available while Play in Editor is active, static lighting is disabled in the project settings, or when previewing less than Shader Model 5", EUserInterfaceActionType::Button, FInputChord() );
-	UI_COMMAND( BuildAndSubmitToSourceControl, "Build and Submit...", "Displays a window that allows you to build all levels and submit them to source control", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( BuildAndSubmitToSourceControl, "Build and Submit...", "Displays a window that allows you to build all levels and submit them to revision control", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildLightingOnly, "Build Lighting", "Only precomputes lighting (all levels.)\nThis action is not available while Play in Editor is active, static lighting is disabled in the project settings, or when previewing less than Shader Model 5", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control|EModifierKey::Shift, EKeys::Semicolon) );
 	UI_COMMAND( BuildReflectionCapturesOnly, "Build Reflection Captures", "Updates Reflection Captures and stores their data in the BuildData package.\nThis action is not available while Play in Editor is active, static lighting is disabled in the project settings", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildLightingOnly_VisibilityOnly, "Precompute Static Visibility", "Only precomputes static visibility data (all levels.)", EUserInterfaceActionType::Button, FInputChord() );
@@ -3463,7 +3548,7 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( BuildGeometryOnly_OnlyCurrentLevel, "Build Geometry (Current Level)", "Builds geometry, only for the current level", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildPathsOnly, "Build Paths", "Only builds paths (all levels.)", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildHLODs, "Build HLODs", "Builds all HLODs for the current world", EUserInterfaceActionType::Button, FInputChord() );
-	UI_COMMAND( BuildMinimap, "Build Minimap", "Builds the minimap for the current world", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( BuildMinimap, "Build World Partition Editor Minimap", "Builds the minimap for the current world", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildLandscapeSplineMeshes, "Build Landscape Spline Meshes", "Builds landscape spline meshes for the current world", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND( BuildTextureStreamingOnly, "Build Texture Streaming", "Build texture streaming data", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildVirtualTextureOnly, "Build Virtual Textures", "Build runtime virtual texture low mips streaming data", EUserInterfaceActionType::Button, FInputChord());
@@ -3675,6 +3760,8 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( AllowGroupSelection, "Allow Group Selection", "Allows actor groups to be selected", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Control|EModifierKey::Shift, EKeys::G) );
 	UI_COMMAND( StrictBoxSelect, "Strict Box Selection", "When enabled an object must be entirely encompassed by the selection box when marquee box selecting", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	UI_COMMAND( TransparentBoxSelect, "Box Select Occluded Objects", "When enabled, marquee box select operations will also select objects that are occluded by other objects.", EUserInterfaceActionType::ToggleButton, FInputChord() );
+	UI_COMMAND( ShowSelectionSubcomponents, "Show Subcomponents", "Toggles the visibility of the subcomponents related to the current selection", EUserInterfaceActionType::ToggleButton, FInputChord() );
+	
 	UI_COMMAND( DrawBrushMarkerPolys, "Draw Brush Polys", "Draws semi-transparent polygons around a brush when selected", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	UI_COMMAND( OnlyLoadVisibleInPIE, "Only Load Visible Levels in Game Preview", "If enabled, when game preview starts, only visible levels will be loaded", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	UI_COMMAND( ToggleSocketSnapping, "Enable Socket Snapping", "Enables or disables snapping to sockets", EUserInterfaceActionType::ToggleButton, FInputChord() ); 
@@ -3716,37 +3803,31 @@ void FLevelEditorCommands::RegisterCommands()
 	// Add preview platforms
 	for (const FPreviewPlatformMenuItem& Item : FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems())
 	{
-		FText FriendlyName;
+		FTextBuilder FriendlyNameBuilder;
 		if (!IsRunningCommandlet() && !GUsingNullRHI)
 		{
 			EShaderPlatform ShaderPlatform = FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(Item.PreviewShaderPlatformName);
-			FriendlyName = FDataDrivenShaderPlatformInfo::GetFriendlyName(ShaderPlatform);
+			FriendlyNameBuilder.AppendLine(FDataDrivenShaderPlatformInfo::GetFriendlyName(ShaderPlatform));
+			if (FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(Item.ShaderPlatformToPreview) == GMaxRHIShaderPlatform)
+			{
+				FriendlyNameBuilder.AppendLine(NSLOCTEXT("PreviewPlatform", "PreviewMenuText_DisablePreview", "(Disable Preview)"));
+			}
 		}
 
 		PreviewPlatformOverrides.Add(
 			FUICommandInfoDecl(
 				this->AsShared(),
 				FName(*FString::Printf(TEXT("PreviewPlatformOverrides_%s_%s"), *Item.PlatformName.ToString(), *Item.ShaderFormat.ToString())),
-				FriendlyName,
+				FriendlyNameBuilder.ToText(),
 				Item.MenuTooltip)
 			.UserInterfaceType(EUserInterfaceActionType::Check)
 			.DefaultChord(FInputChord())
 		);
 	}
 
-	PreviewPlatformOverrides.Add(
-		FUICommandInfoDecl(
-			this->AsShared(),
-			FName(TEXT("Disable Preview Command")),
-			NSLOCTEXT("PreviewPlatform", "PreviewMenuText_DisablePreview", "Disable Preview"),
-			NSLOCTEXT("PreviewPlatform", "PreviewMenuTooltip_DisablePreview", "Disable the current Preview Shader Platform"))
-		.UserInterfaceType(EUserInterfaceActionType::Check)
-		.DefaultChord(FInputChord())
-	);
-
 	UI_COMMAND(OpenMergeActor, "Merge Actors", "Opens the Merge Actor panel", EUserInterfaceActionType::Button, FInputChord());
 }
 
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 #undef LOCTEXT_NAMESPACE

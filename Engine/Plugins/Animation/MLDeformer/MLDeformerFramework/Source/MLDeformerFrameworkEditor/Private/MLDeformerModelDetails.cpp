@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MLDeformerModelDetails.h"
+#include "Animation/Skeleton.h"
 #include "MLDeformerModule.h"
 #include "MLDeformerAsset.h"
 #include "MLDeformerModel.h"
@@ -8,7 +9,6 @@
 #include "MLDeformerEditorModel.h"
 #include "MLDeformerEditorModule.h"
 #include "MLDeformerGeomCacheHelpers.h"
-#include "NeuralNetwork.h"
 #include "GeometryCache.h"
 #include "GeometryCacheTrack.h"
 #include "Animation/AnimSequence.h"
@@ -26,6 +26,7 @@
 #include "Widgets/Input/SButton.h"
 #include "DetailLayoutBuilder.h"
 #include "SWarningOrErrorBox.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "MLDeformerModelDetails"
 
@@ -192,13 +193,6 @@ namespace UE::MLDeformer
 		// Bone include list group.
 		if (Model->DoesSupportBones())
 		{
-			const int NumBones = EditorModel->GetEditorInputInfo() ? EditorModel->GetEditorInputInfo()->GetNumBones() : 0;
-			const FText BonesText = FText::Format(FTextFormat(LOCTEXT("BonesGroupName", "Bones ({0})")), NumBones);;
-			FText AllBonesText;
-			if (Model->GetSkeletalMesh() && (Model->GetSkeletalMesh()->GetRefSkeleton().GetNum() == NumBones || NumBones == 0))
-			{
-				AllBonesText = LOCTEXT("BoneGroupValue", "All Bones Included");
-			}
 			IDetailGroup& BoneIncludeGroup = InputOutputCategoryBuilder->AddGroup("BoneIncludeGroup", FText(), false, false);
 			BoneIncludeGroup.HeaderRow()
 			.NameContent()
@@ -208,7 +202,14 @@ namespace UE::MLDeformer
 				.HAlign(HAlign_Right)
 				[
 					SNew(STextBlock)
-					.Text(BonesText)
+					.Text_Lambda
+					(
+						[this]()
+						{
+							const int NumBonesIncluded = EditorModel->GetEditorInputInfo() ? EditorModel->GetEditorInputInfo()->GetNumBones() : 0;
+							return FText::Format(FTextFormat(LOCTEXT("BonesGroupName", "Bones ({0})")), NumBonesIncluded);
+						}
+					)
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 				]
 			]
@@ -219,7 +220,19 @@ namespace UE::MLDeformer
 				.HAlign(HAlign_Left)
 				[
 					SNew(STextBlock)
-					.Text(AllBonesText)
+					.Text_Lambda
+					(
+						[this]()
+						{
+							const int NumBonesIncluded = EditorModel->GetEditorInputInfo() ? EditorModel->GetEditorInputInfo()->GetNumBones() : 0;
+							FText AllBonesText;
+							if (Model->GetSkeletalMesh() && (Model->GetSkeletalMesh()->GetRefSkeleton().GetNum() == NumBonesIncluded || NumBonesIncluded == 0))
+							{
+								AllBonesText = LOCTEXT("BoneGroupValue", "All Bones Included");
+							}
+							return AllBonesText;
+						}
+					)
 					.Font(IDetailLayoutBuilder::GetDetailFontItalic())
 				]
 			];
@@ -247,18 +260,6 @@ namespace UE::MLDeformer
 		// Curve include list group.
 		if (Model->DoesSupportCurves())
 		{
-			const int NumCurves = EditorModel->GetEditorInputInfo() ? EditorModel->GetEditorInputInfo()->GetNumCurves() : 0;
-			const FText CurvesText = FText::Format(FTextFormat(LOCTEXT("CurvesGroupName", "Curves ({0})")), NumCurves);
-			FText AllCurvesText;
-			const int32 NumCurvesOnSkelMesh = EditorModel->GetNumCurvesOnSkeletalMesh(Model->GetSkeletalMesh());
-			if (NumCurvesOnSkelMesh == 0)
-			{
-				AllCurvesText = LOCTEXT("CurvesGroupValueNoCurves", "No Curves Found");
-			}
-			else if (NumCurves == NumCurvesOnSkelMesh)
-			{
-				AllCurvesText = LOCTEXT("CurvesGroupValue", "All Curves Included");
-			}
 			IDetailGroup& CurvesIncludeGroup = InputOutputCategoryBuilder->AddGroup("CurveIncludeGroup", LOCTEXT("CurveIncludeGroup", "Curves"), false, false);
 			CurvesIncludeGroup.HeaderRow()
 			.NameContent()
@@ -268,7 +269,14 @@ namespace UE::MLDeformer
 				.HAlign(HAlign_Right)
 				[
 					SNew(STextBlock)
-					.Text(CurvesText)
+					.Text_Lambda
+					(
+						[this]()
+						{
+							const int NumCurves = EditorModel->GetEditorInputInfo() ? EditorModel->GetEditorInputInfo()->GetNumCurves() : 0;
+							return FText::Format(FTextFormat(LOCTEXT("CurvesGroupName", "Curves ({0})")), NumCurves);
+						}
+					)
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 				]
 			]
@@ -279,7 +287,23 @@ namespace UE::MLDeformer
 				.HAlign(HAlign_Left)
 				[
 					SNew(STextBlock)
-					.Text(AllCurvesText)
+					.Text_Lambda
+					(
+						[this]()
+						{
+							const int NumCurves = EditorModel->GetEditorInputInfo() ? EditorModel->GetEditorInputInfo()->GetNumCurves() : 0;
+							const int32 NumCurvesOnSkelMesh = EditorModel->GetNumCurvesOnSkeletalMesh(Model->GetSkeletalMesh());
+							if (NumCurvesOnSkelMesh == 0)
+							{
+								return LOCTEXT("CurvesGroupValueNoCurves", "No Curves Found");
+							}
+							else if (NumCurves == NumCurvesOnSkelMesh)
+							{
+								return LOCTEXT("CurvesGroupValue", "All Curves Included");
+							}
+							return FText();
+						}
+					)
 					.Font(IDetailLayoutBuilder::GetDetailFontItalic())
 				]
 			];
@@ -309,9 +333,8 @@ namespace UE::MLDeformer
 
 		// Show a warning when no neural network has been set.
 		{		
-			UNeuralNetwork* NeuralNetwork = Model->GetNeuralNetwork();
 			FDetailWidgetRow& NeuralNetErrorRow = TrainingSettingsCategoryBuilder->AddCustomRow(FText::FromString("NeuralNetError"))
-				.Visibility((NeuralNetwork == nullptr) ? EVisibility::Visible : EVisibility::Collapsed)
+				.Visibility(!EditorModel->IsTrained() ? EVisibility::Visible : EVisibility::Collapsed)
 				.WholeRowContent()
 				[
 					SNew(SBox)
@@ -319,12 +342,12 @@ namespace UE::MLDeformer
 					[
 						SNew(SWarningOrErrorBox)
 						.MessageStyle(EMessageStyle::Warning)
-						.Message(FText::FromString("Model still needs to be trained."))
+						.Message(LOCTEXT("NeedsTraining", "Model still needs to be trained."))
 					]
 				];
 
 			// Check if our network is compatible with the skeletal mesh.
-			if (Model->GetSkeletalMesh() && NeuralNetwork)
+			if (Model->GetSkeletalMesh() && EditorModel->IsTrained())
 			{
 				FDetailWidgetRow& NeuralNetIncompatibleErrorRow = TrainingSettingsCategoryBuilder->AddCustomRow(FText::FromString("NeuralNetIncompatibleError"))
 					.Visibility(!Model->GetInputInfo()->IsCompatible(Model->GetSkeletalMesh()) ? EVisibility::Visible : EVisibility::Collapsed)
@@ -335,16 +358,18 @@ namespace UE::MLDeformer
 						[
 							SNew(SWarningOrErrorBox)
 							.MessageStyle(EMessageStyle::Error)
-							.Message(FText::FromString("Trained neural network is incompatible with selected SkeletalMesh."))
+							.Message(LOCTEXT("TrainingIncompatibleWithSkelMesh", "Trained neural network is incompatible with selected SkeletalMesh."))
 						]
 					];
 			}
 		}
+
+		AddTrainingSettingsErrors();
 	}
 
 	bool FMLDeformerModelDetails::FilterAnimSequences(const FAssetData& AssetData, USkeleton* Skeleton)
 	{
-		if (Skeleton && Skeleton->IsCompatibleSkeletonByAssetData(AssetData))
+		if (Skeleton && Skeleton->IsCompatibleForEditor(AssetData))
 		{
 			return false;
 		}
@@ -355,6 +380,7 @@ namespace UE::MLDeformer
 	FReply FMLDeformerModelDetails::OnFilterAnimatedBonesOnly() const
 	{
 		EditorModel->InitBoneIncludeListToAnimatedBonesOnly();
+		EditorModel->SetResamplingInputOutputsNeeded(true);
 		DetailLayoutBuilder->ForceRefreshDetails();
 		return FReply::Handled();
 	}
@@ -362,6 +388,7 @@ namespace UE::MLDeformer
 	FReply FMLDeformerModelDetails::OnFilterAnimatedCurvesOnly() const
 	{
 		EditorModel->InitCurveIncludeListToAnimatedCurvesOnly();
+		EditorModel->SetResamplingInputOutputsNeeded(true);
 		DetailLayoutBuilder->ForceRefreshDetails();
 		return FReply::Handled();
 	}

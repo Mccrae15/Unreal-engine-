@@ -6,6 +6,8 @@ using System.Reflection;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Amazon.AutoScaling;
+using Amazon.EC2;
 using Datadog.Trace;
 using EpicGames.Core;
 using EpicGames.Horde.Storage;
@@ -57,15 +59,13 @@ using Horde.Build.Logs.Storage;
 using Horde.Build.Tasks;
 using Horde.Build.Auditing;
 using Horde.Build.Storage.Backends;
-using EpicGames.Horde.Storage.Bundles;
 using Horde.Build.Compute;
 using Horde.Build.Devices;
+using Moq;
+using Horde.Build.Telemetry;
 
 namespace Horde.Build.Tests
 {
-	using StreamId = StringId<IStream>;
-	using ProjectId = StringId<IProject>;
-
 	/// <summary>
 	/// Handles set up of collections, services, fixtures etc during testing
 	///
@@ -74,12 +74,11 @@ namespace Horde.Build.Tests
 	public class TestSetup : DatabaseIntegrationTest
 	{
 		public FakeClock Clock => ServiceProvider.GetRequiredService<FakeClock>();
+		public IMemoryCache Cache => ServiceProvider.GetRequiredService<IMemoryCache>();
 
-		public ConfigCollection ConfigCollection => ServiceProvider.GetRequiredService<ConfigCollection>();
 		public IGraphCollection GraphCollection => ServiceProvider.GetRequiredService<IGraphCollection>();
 		public INotificationTriggerCollection NotificationTriggerCollection => ServiceProvider.GetRequiredService<INotificationTriggerCollection>();
 		public IStreamCollection StreamCollection => ServiceProvider.GetRequiredService<IStreamCollection>();
-		public IProjectCollection ProjectCollection => ServiceProvider.GetRequiredService<IProjectCollection>();
 		public IJobCollection JobCollection => ServiceProvider.GetRequiredService<IJobCollection>();
 		public IAgentCollection AgentCollection => ServiceProvider.GetRequiredService<IAgentCollection>();
 		public IJobStepRefCollection JobStepRefCollection => ServiceProvider.GetRequiredService<IJobStepRefCollection>();
@@ -95,15 +94,16 @@ namespace Horde.Build.Tests
 		public IDeviceCollection DeviceCollection => ServiceProvider.GetRequiredService<IDeviceCollection>();
 
 		public AclService AclService => ServiceProvider.GetRequiredService<AclService>();
+		public FleetService FleetService => ServiceProvider.GetRequiredService<FleetService>();
 		public AgentSoftwareService AgentSoftwareService => ServiceProvider.GetRequiredService<AgentSoftwareService>();
 		public AgentService AgentService => ServiceProvider.GetRequiredService<AgentService>();
-		public ComputeService ComputeService => ServiceProvider.GetRequiredService<ComputeService>();
+		public ICommitService CommitService => ServiceProvider.GetRequiredService<ICommitService>();
+		public Horde.Build.Compute.V1.ComputeService ComputeService => ServiceProvider.GetRequiredService<Horde.Build.Compute.V1.ComputeService>();
+		public GlobalsService GlobalsService => ServiceProvider.GetRequiredService<GlobalsService>();
 		public MongoService MongoService => ServiceProvider.GetRequiredService<MongoService>();
 		public ITemplateCollection TemplateCollection => ServiceProvider.GetRequiredService<ITemplateCollection>();
 		internal PerforceServiceStub PerforceService => (PerforceServiceStub)ServiceProvider.GetRequiredService<IPerforceService>();
 		public ILogFileService LogFileService => ServiceProvider.GetRequiredService<ILogFileService>();
-		public ProjectService ProjectService => ServiceProvider.GetRequiredService<ProjectService>();
-		public StreamService StreamService => ServiceProvider.GetRequiredService<StreamService>();
 		public ISubscriptionCollection SubscriptionCollection => ServiceProvider.GetRequiredService<ISubscriptionCollection>();
 		public INotificationService NotificationService => ServiceProvider.GetRequiredService<INotificationService>();
 		public IssueService IssueService => ServiceProvider.GetRequiredService<IssueService>();
@@ -117,6 +117,8 @@ namespace Horde.Build.Tests
 		public LifetimeService LifetimeService => ServiceProvider.GetRequiredService<LifetimeService>();
 		public ScheduleService ScheduleService => ServiceProvider.GetRequiredService<ScheduleService>();
 		public DeviceService DeviceService => ServiceProvider.GetRequiredService<DeviceService>();
+		public StorageService StorageService => ServiceProvider.GetRequiredService<StorageService>();
+		public TestDataService TestDataService => ServiceProvider.GetRequiredService<TestDataService>();
 
 		public ServerSettings ServerSettings => ServiceProvider.GetRequiredService<IOptions<ServerSettings>>().Value;
 		public IOptionsMonitor<ServerSettings> ServerSettingsMon => ServiceProvider.GetRequiredService<IOptionsMonitor<ServerSettings>>();
@@ -126,12 +128,31 @@ namespace Horde.Build.Tests
 		public PoolsController PoolsController => GetPoolsController();
 		public LeasesController LeasesController => GetLeasesController();
 		public DevicesController DevicesController => GetDevicesController();
+		public TestDataController TestDataController => GetTestDataController();
+
+		public ConfigService ConfigService => ServiceProvider.GetRequiredService<ConfigService>();
+		public IOptionsMonitor<GlobalConfig> GlobalConfig => ServiceProvider.GetRequiredService<IOptionsMonitor<GlobalConfig>>();
+		public IOptionsSnapshot<GlobalConfig> GlobalConfigSnapshot => ServiceProvider.GetRequiredService<IOptionsSnapshot<GlobalConfig>>();
 
 		private static bool s_datadogWriterPatched;
 
 		public TestSetup()
 		{
 			PatchDatadogWriter();
+		}
+
+		protected void SetConfig(GlobalConfig globalConfig)
+		{
+			globalConfig.PostLoad(ServerSettings);
+			ConfigService.Set(IoHash.Zero, globalConfig);
+		}
+
+		protected void UpdateConfig(Action<GlobalConfig> action)
+		{
+			GlobalConfig globalConfig = GlobalConfig.CurrentValue;
+			action(globalConfig);
+			globalConfig.PostLoad(ServerSettings);
+			ConfigService.Set(IoHash.Zero, globalConfig);
 		}
 
 		protected override void ConfigureSettings(ServerSettings settings)
@@ -147,6 +168,9 @@ namespace Horde.Build.Tests
 
 			settings.AdminClaimType = HordeClaimTypes.Role;
 			settings.AdminClaimValue = "app-horde-admins";
+			settings.WithAws = true;
+
+			settings.ForceConfigUpdateOnStartup = true;
 		}
 
 		protected override void ConfigureServices(IServiceCollection services)
@@ -164,11 +188,18 @@ namespace Horde.Build.Tests
 
 			services.AddSingleton(typeof(IAuditLogFactory<>), typeof(AuditLogFactory<>));
 			services.AddSingleton<IAuditLog<AgentId>>(sp => sp.GetRequiredService<IAuditLogFactory<AgentId>>().Create("Agents.Log", "AgentId"));
+			services.AddSingleton<ITelemetrySink, NullTelemetrySink>();
+
+			services.AddSingleton<ConfigService>();
+			services.AddSingleton<IOptionsFactory<GlobalConfig>>(sp => sp.GetRequiredService<ConfigService>());
+			services.AddSingleton<IOptionsChangeTokenSource<GlobalConfig>>(sp => sp.GetRequiredService<ConfigService>());
+
+			services.AddSingleton<IConfigSource, FileConfigSource>();
 
 			services.AddSingleton<IAgentCollection, AgentCollection>();
 			services.AddSingleton<IAgentSoftwareCollection, AgentSoftwareCollection>();
 			services.AddSingleton<IArtifactCollection, ArtifactCollection>();
-			services.AddSingleton<ICommitCollection, CommitCollection>();
+			services.AddSingleton<ICommitService, CommitService>();
 			services.AddSingleton<IGraphCollection, GraphCollection>();
 			services.AddSingleton<IIssueCollection, IssueCollection>();
 			services.AddSingleton<IJobCollection, JobCollection>();
@@ -179,7 +210,6 @@ namespace Horde.Build.Tests
 			services.AddSingleton<ILogFileCollection, LogFileCollection>();
 			services.AddSingleton<INotificationTriggerCollection, NotificationTriggerCollection>();
 			services.AddSingleton<IPoolCollection, PoolCollection>();
-			services.AddSingleton<IProjectCollection, ProjectCollection>();
 			services.AddSingleton<ISessionCollection, SessionCollection>();
 			services.AddSingleton<ISubscriptionCollection, SubscriptionCollection>();
 			services.AddSingleton<IStreamCollection, StreamCollection>();
@@ -196,80 +226,65 @@ namespace Horde.Build.Tests
 			services.AddSingleton<FakeClock>();
 			services.AddSingleton<IClock>(sp => sp.GetRequiredService<FakeClock>());
 			services.AddSingleton<IHostApplicationLifetime, AppLifetimeStub>();
+			
+			// Empty mocked object to satisfy basic test runs
+			services.AddSingleton<IAmazonEC2>(sp => new Mock<IAmazonEC2>().Object);
+			services.AddSingleton<IAmazonAutoScaling>(sp => new Mock<IAmazonAutoScaling>().Object);
+			services.AddSingleton<IFleetManagerFactory, FleetManagerFactory>();
 
 			services.AddSingleton<AclService>();
 			services.AddSingleton<AgentService>();
 			services.AddSingleton<AgentSoftwareService>();
-			services.AddSingleton<AutoscaleService>();
-			services.AddSingleton<AwsReuseFleetManager, AwsReuseFleetManager>();
+			services.AddSingleton<FleetService>();
 			services.AddSingleton<ConsistencyService>();
-			services.AddSingleton<ConfigCollection>();
-			services.AddSingleton<ComputeService>();
+			services.AddSingleton<Horde.Build.Compute.V1.ComputeService>();
 			services.AddSingleton<RequestTrackerService>();
+			services.AddSingleton<GlobalsService>();
 			services.AddSingleton<CredentialService>();
 			services.AddSingleton<JobTaskSource>();
 			services.AddSingleton<IDowntimeService, DowntimeServiceStub>();
 			services.AddSingleton<IDogStatsd, NoOpDogStatsd>();
 			services.AddSingleton<IssueService>();
-			services.AddSingleton<IFleetManager, AwsReuseFleetManager>();
 			services.AddSingleton<JobService>();
 			services.AddSingleton<LifetimeService>();
 			services.AddSingleton<ILogStorage, NullLogStorage>();
 			services.AddSingleton<ILogBuilder, LocalLogBuilder>();
 			services.AddSingleton<ILogFileService, LogFileService>();
+			services.AddSingleton<LogTailService>();
 			services.AddSingleton<INotificationService, NotificationService>();
 			services.AddSingleton<IPerforceService, PerforceServiceStub>();
 			services.AddSingleton<PerforceLoadBalancer>();
 			services.AddSingleton<PoolService>();
-			services.AddSingleton<ProjectService>();
 			services.AddSingleton<RpcService>();
 			services.AddSingleton<ScheduleService>();
-			services.AddSingleton<StreamService>();
-			services.AddSingleton<UpgradeService>();
 			services.AddSingleton<DeviceService>();
+			services.AddSingleton<TestDataService>();
 
 			services.AddSingleton<ConformTaskSource>();
 			services.AddSingleton<ICommitService, CommitService>();
 
-			services.AddSingleton<IStorageBackend<PersistentLogStorage>>(sp => new TransientStorageBackend().ForType<PersistentLogStorage>());
-			services.AddSingleton<IStorageBackend<ArtifactCollection>>(sp => new TransientStorageBackend().ForType<ArtifactCollection>());
-			services.AddSingleton<IStorageBackend<BasicStorageClient>>(sp => new TransientStorageBackend().ForType<BasicStorageClient>());
+			services.AddSingleton<IStorageBackend<PersistentLogStorage>>(sp => new MemoryStorageBackend().ForType<PersistentLogStorage>());
+			services.AddSingleton<IStorageBackend<ArtifactCollection>>(sp => new MemoryStorageBackend().ForType<ArtifactCollection>());
+			services.AddSingleton<IStorageBackend<BasicStorageClient>>(sp => new MemoryStorageBackend().ForType<BasicStorageClient>());
 
-			services.AddSingleton<ITreeStore<CommitService>>(sp =>
-			{
-				IBlobStore blobStore = new BasicBlobStore(sp.GetRequiredService<MongoService>(), new TransientStorageBackend(), sp.GetRequiredService<IMemoryCache>(), sp.GetRequiredService<ILogger<BasicBlobStore>>());
-				return new BundleStore(blobStore, new BundleOptions()).ForType<CommitService>();
-			});
+			services.AddSingleton<ILegacyStorageClient, BasicStorageClient>();
 
-			services.AddSingleton<IStorageClient, BasicStorageClient>();
+			services.AddSingleton<StorageService>();
 
 			services.AddSingleton<ISingletonDocument<AgentSoftwareChannels>>(new SingletonDocumentStub<AgentSoftwareChannels>());
 			services.AddSingleton<ISingletonDocument<DevicePlatformMapV1>>(new SingletonDocumentStub<DevicePlatformMapV1>());
 		}
 
-		public async Task<IStream?> CreateOrReplaceStreamAsync(StreamId streamId, IStream? stream, ProjectId projectId, StreamConfig config)
-		{
-			JsonSerializerOptions options = new JsonSerializerOptions();
-			Startup.ConfigureJsonSerializer(options);
-
-			byte[] data = JsonSerializer.SerializeToUtf8Bytes(config, options);
-			IoHash hash = IoHash.Compute(data);
-			string revision = hash.ToString();
-			await ConfigCollection.AddConfigDataAsync(revision, data);
-
-			return await StreamService.StreamCollection.TryCreateOrReplaceAsync(streamId, stream, hash.ToString(), projectId);
-		}
-
 		public Task<Fixture> CreateFixtureAsync()
 		{
-			return Fixture.Create(ConfigCollection, GraphCollection, TemplateCollection, JobService, ArtifactCollection, StreamService, AgentService);
+			return Fixture.Create(ConfigService, GraphCollection, TemplateCollection, JobService, ArtifactCollection, AgentService, ServerSettings);
 		}
 
 		private JobsController GetJobsController()
         {
 			ILogger<JobsController> logger = ServiceProvider.GetRequiredService<ILogger<JobsController>>();
-			JobsController jobsCtrl = new JobsController(GraphCollection, PerforceService, StreamService, JobService,
-		        TemplateCollection, ArtifactCollection, UserCollection, NotificationService, AgentService, logger);
+			JobsController jobsCtrl = new JobsController(GraphCollection, CommitService, PerforceService, StreamCollection, JobService,
+		        TemplateCollection, ArtifactCollection, UserCollection, NotificationService, AgentService, GlobalConfigSnapshot, logger);
 	        jobsCtrl.ControllerContext = GetControllerContext();
 	        return jobsCtrl;
         }
@@ -277,28 +292,35 @@ namespace Horde.Build.Tests
 		private DevicesController GetDevicesController()
 		{
 			ILogger<DevicesController> logger = ServiceProvider.GetRequiredService<ILogger<DevicesController>>();
-			DevicesController devicesCtrl = new DevicesController(DeviceService, AclService, UserCollection, logger);
+			DevicesController devicesCtrl = new DevicesController(UserCollection, DeviceService, GlobalConfigSnapshot, logger);
 			devicesCtrl.ControllerContext = GetControllerContext();
 			return devicesCtrl;
 		}
 
+		private TestDataController GetTestDataController()
+		{
+			TestDataController dataCtrl = new TestDataController(TestDataService, StreamCollection, JobService, TestDataCollection, GlobalConfigSnapshot);
+			dataCtrl.ControllerContext = GetControllerContext();
+			return dataCtrl;
+		}
+
 		private AgentsController GetAgentsController()
 		{
-			AgentsController agentCtrl = new AgentsController(AclService, AgentService);
+			AgentsController agentCtrl = new AgentsController(AgentService, GlobalConfigSnapshot);
 			agentCtrl.ControllerContext = GetControllerContext();
 			return agentCtrl;
 		}
 		
 		private PoolsController GetPoolsController()
 		{
-			PoolsController controller = new PoolsController(AclService, PoolService);
+			PoolsController controller = new PoolsController(PoolService, GlobalConfigSnapshot);
 			controller.ControllerContext = GetControllerContext();
 			return controller;
 		}
 		
 		private LeasesController GetLeasesController()
 		{
-			LeasesController controller = new LeasesController(AclService, AgentService);
+			LeasesController controller = new LeasesController(AgentService, GlobalConfigSnapshot);
 			controller.ControllerContext = GetControllerContext();
 			return controller;
 		}
@@ -315,7 +337,7 @@ namespace Horde.Build.Tests
 		private static int s_agentIdCounter = 1;
 		public async Task<IAgent> CreateAgentAsync(IPool pool, bool enabled = true)
 		{
-			IAgent agent = await AgentService.CreateAgentAsync("TestAgent" + s_agentIdCounter++, enabled, null, new List<StringId<IPool>> { pool.Id });
+			IAgent agent = await AgentService.CreateAgentAsync("TestAgent" + s_agentIdCounter++, enabled, new List<StringId<IPool>> { pool.Id });
 			agent = await AgentService.CreateSessionAsync(agent, AgentStatus.Ok, new List<string>(), new Dictionary<string, int>(), null);
 			return agent;
 		}
@@ -367,10 +389,15 @@ namespace Horde.Build.Tests
 			
 			processExitInstance.TrySetResult(true);
 		}
-		
-		private class DowntimeServiceStub : IDowntimeService
+	}
+	
+	public class DowntimeServiceStub : IDowntimeService
+	{
+		public DowntimeServiceStub(bool isDowntimeActive = false)
 		{
-			public bool IsDowntimeActive { get; } = false;
+			IsDowntimeActive = isDowntimeActive;
 		}
+
+		public bool IsDowntimeActive { get; set; }
 	}
 }

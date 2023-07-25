@@ -3,10 +3,11 @@
 #include "LandscapePatchComponent.h"
 
 #include "EngineUtils.h"
-#include "GameFramework/Actor.h"
 #include "Landscape.h"
 #include "LandscapePatchLogging.h"
 #include "LandscapePatchManager.h"
+#include "PropertyPairsMap.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LandscapePatchComponent)
 
@@ -218,7 +219,7 @@ void ULandscapePatchComponent::OnUpdateTransform(EUpdateTransformFlags UpdateTra
 
 	if (IsEnabled())
 	{
-		RequestLandscapeUpdate();
+		RequestLandscapeUpdate(/* bInUserTriggeredUpdate = */ true);
 	}
 }
 
@@ -249,7 +250,7 @@ void ULandscapePatchComponent::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	if (IsEnabled() || (PropertyChangedEvent.Property
 		&& (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ULandscapePatchComponent, bIsEnabled))))
 	{
-		RequestLandscapeUpdate();
+		RequestLandscapeUpdate(/* bInUserTriggeredUpdate = */ true);
 	}
 
 	// It is important that this super call happen after the above, because inside a blueprint actor, the call triggers a
@@ -384,7 +385,7 @@ void ULandscapePatchComponent::MoveToTop()
 	}
 }
 
-void ULandscapePatchComponent::RequestLandscapeUpdate()
+void ULandscapePatchComponent::RequestLandscapeUpdate(bool bInUserTriggeredUpdate)
 {
 #if WITH_EDITOR
 	UWorld* World = GetWorld();
@@ -446,7 +447,7 @@ void ULandscapePatchComponent::RequestLandscapeUpdate()
 	if(bRequestUpdate)
 	{
 		ResetWarnings();
-		PatchManager->RequestLandscapeUpdate();
+		PatchManager->RequestLandscapeUpdate(bInUserTriggeredUpdate);
 	}
 #endif
 }

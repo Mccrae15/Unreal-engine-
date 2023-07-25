@@ -136,8 +136,9 @@ FLumenCardSample ComputeSurfaceCacheSample(FLumenCardData Card, uint CardIndex, 
 	float2 PhysicalAtlasUV = (CoordInPage + AtlasBias) * LumenCardScene.InvPhysicalAtlasSize;
 	
 	// Indirect lighting can be sampled from a downsampled atlas
-	float ILFactor = LumenCardScene.IndirectLightingAtlasDownsampleFactor;
-	float2 IndirectLightingPhysicalAtlasUV = (PageUV * (AtlasScale / ILFactor - 1.0f) + AtlasBias / ILFactor + 0.5f) * ILFactor * LumenCardScene.InvPhysicalAtlasSize;
+	//float ILFactor = LumenCardScene.IndirectLightingAtlasDownsampleFactor;
+	//float2 IndirectLightingPhysicalAtlasUV = (PageUV * (AtlasScale / ILFactor - 1.0f) + AtlasBias / ILFactor + 0.5f) * ILFactor * LumenCardScene.InvPhysicalAtlasSize;
+	float2 IndirectLightingPhysicalAtlasUV = PhysicalAtlasUV;
 
 	// Compute packed feedback buffer value
 	uint2 PackedFeedback = 0;
@@ -418,6 +419,7 @@ struct FSurfaceCacheSample
 	float SampleWeightSum;
 
 	bool bValid;
+	bool bHeightfield;
 };
 
 FSurfaceCacheSample InitSurfaceCacheSample()
@@ -432,6 +434,7 @@ FSurfaceCacheSample InitSurfaceCacheSample()
 	SurfaceCacheSample.SampleWeightSum = 0.0f;
 
 	SurfaceCacheSample.bValid = false;
+	SurfaceCacheSample.bHeightfield = false;
 
 	return SurfaceCacheSample;
 }
@@ -461,6 +464,11 @@ FSurfaceCacheSample SampleLumenMeshCards(
 	if (MeshCardsIndex < LumenCardScene.NumMeshCards)
 	{
 		FLumenMeshCardsData MeshCardsData = GetLumenMeshCardsData(MeshCardsIndex);
+		if (MeshCardsData.bMostlyTwoSided)
+		{
+			// Bump bias on bMostlyTwoSided (foliage), where hits aren't very reliable
+			SurfaceCacheBias += 50.0f;
+		}
 
 		float3 MeshCardsSpacePosition = mul(WorldSpacePosition - MeshCardsData.WorldOrigin, MeshCardsData.WorldToLocalRotation);
 		float3 MeshCardsSpaceNormal = mul(WorldSpaceNormal, MeshCardsData.WorldToLocalRotation);
@@ -543,6 +551,7 @@ FSurfaceCacheSample SampleLumenMeshCards(
 			SurfaceCacheSample.Lighting = CardSampleAccumulator.LightingSum / CardSampleAccumulator.SampleWeightSum;
 			SurfaceCacheSample.Opacity = CardSampleAccumulator.OpacitySum / CardSampleAccumulator.SampleWeightSum;
 			SurfaceCacheSample.bValid = true;
+			SurfaceCacheSample.bHeightfield = MeshCardsData.bHeightfield;
 		}
 
 		#if SURFACE_CACHE_FEEDBACK

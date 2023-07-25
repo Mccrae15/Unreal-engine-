@@ -6,6 +6,7 @@
 #include "Chaos/Framework/Parallel.h"
 #include "GenericPlatform/GenericPlatformMath.h"
 #include "Misc/AssertionMacros.h"
+#include "Chaos/Vector.h"
 
 namespace Chaos {
 
@@ -63,16 +64,17 @@ void LanczosCG(
 	LanczosCG<T>(multiplyA, dotProduct, AXPY, scale, set, x, b, max_it, res, check_residual);
 }
 
-template <class T, class TV, typename Func, int32 d=3>
+template <class T, typename Func, int32 d=3>
 void LanczosCG(
 	Func multiplyA, 
-	TArray<TV>& x,
-	TArray<TV>& b,
+	TArray<TVector<T, d>>& x,
+	TArray<TVector<T, d>>& b,
 	const int max_it, 
 	const T res = 1e-4, 
 	const TArray<int32>* use_list = nullptr)
 {
-	auto dot_product = [&use_list](const TArray<TV>& x, const TArray<TV>& y) 
+	using TV = TVector<T, d>;
+	auto dot_product = [&use_list](const TArray<TV>& x, const TArray<TV>& y)
 	{
 		checkfSlow(x.Num() == y.Num(), TEXT("Chaos::LanczosCG()::dot_product[]: x and y not sized consistently."));
 		T result = T(0);
@@ -233,7 +235,7 @@ void LanczosCG(
 	set(x, c);
 	scale(x, p);
 	AXPY(v, -alpha, q);
-	T residual;
+	T residual{};
 	TArray<TV> y; y.SetNum(x.Num());
 	for (int it = 1; it < max_it; it++) 
 	{

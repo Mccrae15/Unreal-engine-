@@ -79,6 +79,8 @@ protected:
 	 */
 	FDelegateBase& operator=(FDelegateBase&& Other)
 	{
+		UE_DELEGATES_MT_SCOPED_WRITE_ACCESS(AccessDetector);
+
 		Unbind();
 		DelegateAllocator.MoveToEmpty(Other.DelegateAllocator);
 		DelegateSize = Other.DelegateSize;
@@ -91,6 +93,8 @@ protected:
 	 */
 	FORCEINLINE void Unbind()
 	{
+		UE_DELEGATES_MT_SCOPED_WRITE_ACCESS(AccessDetector);
+
 		if (IDelegateInstance* Ptr = GetDelegateInstanceProtected())
 		{
 			Ptr->~IDelegateInstance();
@@ -107,7 +111,17 @@ protected:
 	 */
 	FORCEINLINE IDelegateInstance* GetDelegateInstanceProtected() const
 	{
+		UE_DELEGATES_MT_SCOPED_READ_ACCESS(AccessDetector);
+
 		return DelegateSize ? (IDelegateInstance*)DelegateAllocator.GetAllocation() : nullptr;
+	}
+
+	/**
+	 * Returns the amount of memory allocated by this delegate, not including sizeof(*this).
+	 */
+	SIZE_T GetAllocatedSize() const
+	{
+		return DelegateAllocator.GetAllocatedSize(DelegateSize, sizeof(FAlignedInlineDelegateType));
 	}
 
 private:
@@ -115,6 +129,8 @@ private:
 
 	void* Allocate(int32 Size)
 	{
+		UE_DELEGATES_MT_SCOPED_WRITE_ACCESS(AccessDetector);
+
 		if (IDelegateInstance* CurrentInstance = GetDelegateInstanceProtected())
 		{
 			CurrentInstance->~IDelegateInstance();
@@ -133,6 +149,8 @@ private:
 private:
 	FDelegateAllocatorType::ForElementType<FAlignedInlineDelegateType> DelegateAllocator;
 	int32 DelegateSize;
+
+	UE_DELEGATES_MT_ACCESS_DETECTOR(AccessDetector);
 };
 
 inline void* operator new(size_t Size, FDelegateBase& Base)

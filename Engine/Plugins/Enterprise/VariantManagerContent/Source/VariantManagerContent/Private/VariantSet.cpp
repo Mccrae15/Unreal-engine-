@@ -4,11 +4,13 @@
 
 #include "LevelVariantSets.h"
 #include "ThumbnailGenerator.h"
+#include "UObject/Package.h"
 #include "Variant.h"
 #include "VariantManagerObjectVersion.h"
 
-#include "CoreMinimal.h"
 #include "Engine/Texture2D.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VariantSet)
 
 #define LOCTEXT_NAMESPACE "VariantManagerVariantSet"
 

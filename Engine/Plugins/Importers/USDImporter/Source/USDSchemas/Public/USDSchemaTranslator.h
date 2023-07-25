@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 
 #include "UnrealUSDWrapper.h"
-#include "USDAssetCache.h"
+#include "USDAssetCache2.h"
 #include "USDInfoCache.h"
 #include "USDMemory.h"
 #include "USDSkeletalDataConversion.h"
@@ -27,8 +27,10 @@ class FRegisteredSchemaTranslator;
 class FUsdSchemaTranslator;
 class FUsdSchemaTranslatorTaskChain;
 class ULevel;
+class UMaterialInterface;
 class USceneComponent;
 class UStaticMesh;
+class UTexture;
 struct FUsdBlendShape;
 struct FUsdSchemaTranslationContext;
 
@@ -126,7 +128,7 @@ protected:
 
 struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUsdSchemaTranslationContext >
 {
-	explicit FUsdSchemaTranslationContext( const UE::FUsdStage& InStage, UUsdAssetCache& InAssetCache );
+	explicit FUsdSchemaTranslationContext( const UE::FUsdStage& InStage, UUsdAssetCache2& InAssetCache );
 
 	/** True if we're a context created by the USDStageImporter to fully import to persistent assets and actors */
 	bool bIsImporting = false;
@@ -162,7 +164,7 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 	int32 NaniteTriangleThreshold;
 
 	/** Where the translated assets will be stored */
-	TStrongObjectPtr< UUsdAssetCache > AssetCache;
+	TStrongObjectPtr< UUsdAssetCache2 > AssetCache;
 
 	/** Caches various information about prims that are expensive to query */
 	TSharedPtr<FUsdInfoCache> InfoCache;
@@ -202,6 +204,7 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 	 * If false, will cause us to use HierarchicalInstancedStaticMeshComponents to replicate the instancing behavior.
 	 * Point instancers inside other point instancer prototypes are *always* collapsed into the prototype's static mesh.
 	 */
+	UE_DEPRECATED( 5.2, "This option is now controlled via the cvar 'USD.CollapseTopLevelPointInstancers'" )
 	bool bCollapseTopLevelPointInstancers = false;
 
 	/**
@@ -212,6 +215,9 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 
 	/** If true, we will also try creating UAnimSequence skeletal animation assets when parsing SkelRoot prims */
 	bool bAllowParsingSkeletalAnimations = true;
+
+	/** Skip the import of materials that aren't being used by any prim on the stage */
+	bool bTranslateOnlyUsedMaterials = false;
 
 	/** Groom group interpolation settings */
 	TArray<FHairGroupsInterpolation> GroomInterpolationSettings;

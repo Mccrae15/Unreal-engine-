@@ -23,6 +23,7 @@ namespace UE
 namespace MovieScene
 {
 
+enum class EEntityThreadingModel : uint8;
 
 struct FSystemTaskPrerequisites
 {
@@ -65,7 +66,7 @@ struct FSystemTaskPrerequisites
 
 	MOVIESCENE_API void FilterByComponent(FGraphEventArray& OutArray, std::initializer_list<FComponentTypeID> ComponentTypes) const;
 
-	void AddMasterTask(const FGraphEventRef& InNewTask)
+	void AddRootTask(const FGraphEventRef& InNewTask)
 	{
 		AddComponentTask(FComponentTypeID::Invalid(), InNewTask);
 	}
@@ -97,7 +98,7 @@ struct MOVIESCENE_API FSystemSubsequentTasks
 {
 	using FComponentTypeID = UE::MovieScene::FComponentTypeID;
 
-	void AddMasterTask(FGraphEventRef MasterTask);
+	void AddRootTask(FGraphEventRef RootTask);
 
 	void AddComponentTask(FComponentTypeID ComponentType, FGraphEventRef ComponentTask);
 
@@ -105,7 +106,7 @@ private:
 
 	friend FMovieSceneEntitySystemGraph;
 
-	FSystemSubsequentTasks(FMovieSceneEntitySystemGraph* InGraph, FGraphEventArray* InAllTasks);
+	FSystemSubsequentTasks(FMovieSceneEntitySystemGraph* InGraph, FGraphEventArray* InAllTasks, EEntityThreadingModel InThreadingModel);
 
 	void ResetNode(uint16 InNodeID);
 
@@ -113,6 +114,7 @@ private:
 	FMovieSceneEntitySystemGraph* Graph;
 	FGraphEventArray* AllTasks;
 	uint16 NodeID;
+	EEntityThreadingModel ThreadingModel;
 };
 
 

@@ -2,24 +2,16 @@
 
 #include "User/SocialUser.h"
 
+#include "Interactions/SocialInteractionHandle.h"
 #include "SocialQuery.h"
-#include "SocialSettings.h"
-#include "SocialToolkit.h"
 #include "SocialManager.h"
-#include "User/ISocialUserList.h"
 #include "Party/SocialParty.h"
 #include "Party/PartyMember.h"
 
-#include "Containers/Ticker.h"
-#include "Misc/Base64.h"
+#include "Misc/CommandLine.h"
 
 #include "OnlineSubsystemUtils.h"
 #include "Interfaces/OnlineUserInterface.h"
-#include "Interfaces/OnlineIdentityInterface.h"
-#include "Interfaces/OnlineFriendsInterface.h"
-#include "Interfaces/OnlinePartyInterface.h"
-#include "Interfaces/OnlinePresenceInterface.h"
-#include "Interfaces/OnlineExternalUIInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SocialUser)
 
@@ -122,8 +114,6 @@ const FOnlineUserPresence* USocialUser::FSubsystemUserInfo::GetPresenceInfo() co
 // USocialUser
 //////////////////////////////////////////////////////////////////////////
 
-TMap<TWeakObjectPtr<USocialUser>, TArray<FOnNewSocialUserInitialized>> USocialUser::InitEventsByUser;
-
 USocialUser::USocialUser()
 {}
 
@@ -188,7 +178,7 @@ void USocialUser::RegisterInitCompleteHandler(const FOnNewSocialUserInitialized&
 		}
 		else
 		{
-			InitEventsByUser.FindOrAdd(this).Add(OnInitializationComplete);
+			UserInitializedEvents.Add(OnInitializationComplete);
 		}
 	}
 }
@@ -354,20 +344,21 @@ void USocialUser::TryBroadcastInitializationComplete()
 
 				bIsInitialized = true;
 
-				TArray<FOnNewSocialUserInitialized> InitEvents;
-				if (InitEventsByUser.RemoveAndCopyValue(this, InitEvents))
+				TArray<FOnNewSocialUserInitialized> InitEvents = MoveTemp(UserInitializedEvents);
+				UserInitializedEvents.Reset();
+				for (FOnNewSocialUserInitialized& InitEvent : InitEvents)
 				{
-					for (FOnNewSocialUserInitialized& InitEvent : InitEvents)
-					{
-						InitEvent.ExecuteIfBound(*this);
-					}
+					InitEvent.ExecuteIfBound(*this);
 				}
 			}
 			else
 			{
+				ensureAlwaysMsgf(!IsLocalUser(), TEXT("%s LocalUser %s does not have UserInfo!"), ANSI_TO_TCHAR(__FUNCTION__), *ToDebugString());
+				UE_LOG(LogParty, Warning, TEXT("%s User %s does not have UserInfo!"), ANSI_TO_TCHAR(__FUNCTION__), *ToDebugString());
+
 				// User is invalid with no open queries
 				// Assume that this means the sought user doesn't exist
-				InitEventsByUser.Remove(this);
+				UserInitializedEvents.Reset();
 
 				// Remove Toolkit's reference to the SocialUser, GC will clean it
 				GetOwningToolkit().HandleUserInvalidated(*this);
@@ -893,7 +884,7 @@ bool USocialUser::CanSendFriendInvite(ESocialSubsystem SubsystemType) const
 		//@todo DanH: Really need OssCaps or something to be able to just ask an OSS if it supports a given feature. For now, we just magically know that we only support sending XB, PSN, and WeGame invites
 		const FName PlatformOssName = USocialManager::GetSocialOssName(ESocialSubsystem::Platform);
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (PlatformOssName != LIVE_SUBSYSTEM && PlatformOssName != PS4_SUBSYSTEM && PlatformOssName != TENCENT_SUBSYSTEM)
+		if (PlatformOssName != LIVE_SUBSYSTEM && PlatformOssName != PS4_SUBSYSTEM && !USocialSettings::IsSonyOSS(PlatformOssName) && PlatformOssName != TENCENT_SUBSYSTEM)
 		{
 			return false;
 		}

@@ -12,11 +12,14 @@
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
 #include "HitProxies.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "UObject/UObjectHash.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
 #include "GameFramework/WorldSettings.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RendererInterface.h"
+#endif
 
 class FCanvas;
 class FViewport;
@@ -67,18 +70,10 @@ struct HActor : public HHitProxy
 		, MaterialIndex(InMaterialIndex)
 		{}
 
-	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override
-	{
-		Collector.AddReferencedObject( Actor );
-		Collector.AddReferencedObject( PrimComponent );
-	}
-
-	virtual EMouseCursor::Type GetMouseCursor() override
-	{
-		return EMouseCursor::Crosshairs;
-	}
-
+	ENGINE_API virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	ENGINE_API virtual EMouseCursor::Type GetMouseCursor() override;
 	ENGINE_API virtual FTypedElementHandle GetElementHandle() const override;
+	ENGINE_API bool AlwaysAllowsTranslucentPrimitives() const override;
 };
 
 //
@@ -136,15 +131,8 @@ struct HTranslucentActor : public HActor
 		: HActor(InActor, InPrimComponent, InPriority)
 		{}
 
-	virtual EMouseCursor::Type GetMouseCursor() override
-	{
-		return EMouseCursor::Crosshairs;
-	}
-
-	virtual bool AlwaysAllowsTranslucentPrimitives() const override
-	{
-		return true;
-	}
+	ENGINE_API virtual EMouseCursor::Type GetMouseCursor() override;
+	ENGINE_API virtual bool AlwaysAllowsTranslucentPrimitives() const override;
 };
 
 

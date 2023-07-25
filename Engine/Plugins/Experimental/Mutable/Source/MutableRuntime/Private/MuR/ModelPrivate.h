@@ -6,7 +6,6 @@
 #include "MuR/System.h"
 
 #include "MuR/SerialisationPrivate.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Operations.h"
 #include "MuR/ImagePrivate.h"
 #include "MuR/MeshPrivate.h"
@@ -64,9 +63,9 @@ namespace mu
 	MUTABLE_DEFINE_POD_SERIALISABLE(FImageLODRange);
 
     //!
-    struct PROGRAM
+    struct FProgram
     {
-        PROGRAM()
+        FProgram()
         {
             // Add the null instruction at address 0.
             // TODO: Will do it in the linker
@@ -74,7 +73,7 @@ namespace mu
             m_opAddress.Add(0);
         }
 
-        struct STATE
+        struct FState
         {
             //! Name of the state
             string m_name;
@@ -82,7 +81,7 @@ namespace mu
             //! First instruction of the full build of an instance in this state
             OP::ADDRESS m_root = 0;
 
-            //! List of parameters index (to PROGRAM::m_parameters) of the runtime parameters of
+            //! List of parameters index (to FProgram::m_parameters) of the runtime parameters of
             //! this state.
 			TArray<int> m_runtimeParameters;
 
@@ -136,7 +135,7 @@ namespace mu
             {
                 bool res = false;
 
-                for ( size_t i=0; !res && i<m_updateCache.Num(); ++i )
+                for ( SIZE_T i=0; !res && i<m_updateCache.Num(); ++i )
                 {
                     if ( m_updateCache[i]==at )
                     {
@@ -164,7 +163,7 @@ namespace mu
 		TArray<uint8> m_byteCode;
 
         //!
-		TArray<STATE> m_states;
+		TArray<FState> m_states;
 
 		//! Data for every rom.
 		TArray<FRomData> m_roms;
@@ -188,13 +187,13 @@ namespace mu
 		TArray<Ptr<const Layout>> m_constantLayouts;
 
         //! Constant projectors
-		TArray<PROJECTOR> m_constantProjectors;
+		TArray<FProjector> m_constantProjectors;
 
         //! Constant matrices, usually used for transforms
 		TArray<mat4f> m_constantMatrices;
 
 		//! Constant projectors
-		TArray<SHAPE> m_constantShapes;
+		TArray<FShape> m_constantShapes;
 
         //! Constant curves
 		TArray<Curve> m_constantCurves;
@@ -207,10 +206,10 @@ namespace mu
 
         //! Parameters of the model.
         //! The value stored here is the default value.
-		TArray<PARAMETER_DESC> m_parameters;
+		TArray<FParameterDesc> m_parameters;
 
         //! Ranges for interation of the model operations.
-		TArray<RANGE_DESC> m_ranges;
+		TArray<FRangeDesc> m_ranges;
 
         //! List of parameter lists. These are used in several places, like storing the
         //! pregenerated list of parameters influencing a resource.
@@ -331,7 +330,9 @@ namespace mu
 			bool bCannotBeScaled = pImage->m_flags & Image::IF_CANNOT_BE_SCALED;
 			if (bCannotBeScaled)
 			{
-				MipsToStore = 1;
+				// Store only the mips that we have already calculated. We assume we have calculated them correctly.
+				//MipsToStore = 1;
+				MipsToStore = pImage->GetLODCount();
 			}
 
 			// TODO:
@@ -374,7 +375,15 @@ namespace mu
 				// Generate next mip if necessary
 				if (Mip + 1 < MipsToStore)
 				{
-					pMip = pMip->ExtractMip(1);
+					if (Mip > pImage->GetLODCount())
+					{
+						// Generate from the last mip.
+						pMip = pMip->ExtractMip(1);
+					}
+					else
+					{
+						pMip = pImage->ExtractMip(Mip+1);
+					}
 					check(pMip);
 				}
 			}
@@ -403,7 +412,7 @@ namespace mu
 		OP::ADDRESS AddConstant( Ptr<const Layout> pLayout )
         {
             // Ensure unique
-            for ( size_t i=0; i<m_constantLayouts.Num(); ++i)
+            for ( SIZE_T i=0; i<m_constantLayouts.Num(); ++i)
             {
                 if (m_constantLayouts[i]==pLayout)
                 {
@@ -419,7 +428,7 @@ namespace mu
         OP::ADDRESS AddConstant( Ptr<const Skeleton> pSkeleton )
         {
             // Ensure unique
-            for ( size_t i=0; i<m_constantSkeletons.Num(); ++i)
+            for ( SIZE_T i=0; i<m_constantSkeletons.Num(); ++i)
             {
                 if ( m_constantSkeletons[i]==pSkeleton
                      ||
@@ -438,7 +447,7 @@ namespace mu
         OP::ADDRESS AddConstant( Ptr<const PhysicsBody> pPhysicsBody )
         {
             // Ensure unique
-            for ( size_t i=0; i<m_constantPhysicsBodies.Num(); ++i)
+            for ( SIZE_T i=0; i<m_constantPhysicsBodies.Num(); ++i)
             {
                 if ( m_constantPhysicsBodies[i]==pPhysicsBody
                      ||
@@ -457,7 +466,7 @@ namespace mu
         OP::ADDRESS AddConstant( const string& str )
         {            
             // Ensure unique
-            for ( size_t i=0; i<m_constantStrings.Num(); ++i)
+            for ( SIZE_T i=0; i<m_constantStrings.Num(); ++i)
             {
                 if (m_constantStrings[i]==str)
                 {
@@ -473,7 +482,7 @@ namespace mu
         OP::ADDRESS AddConstant( const mat4f& m )
         {
             // Ensure unique
-            for ( size_t i=0; i<m_constantMatrices.Num(); ++i)
+            for ( SIZE_T i=0; i<m_constantMatrices.Num(); ++i)
             {
                 if (m_constantMatrices[i]==m)
                 {
@@ -486,10 +495,10 @@ namespace mu
             return index;
         }
 
-        OP::ADDRESS AddConstant( const SHAPE& m )
+        OP::ADDRESS AddConstant( const FShape& m )
         {
             // Ensure unique
-            for ( size_t i=0; i<m_constantShapes.Num(); ++i)
+            for ( SIZE_T i=0; i<m_constantShapes.Num(); ++i)
             {
                 if (m_constantShapes[i]==m)
                 {
@@ -502,10 +511,10 @@ namespace mu
             return index;
         }
 
-        OP::ADDRESS AddConstant( const PROJECTOR& m )
+        OP::ADDRESS AddConstant( const FProjector& m )
         {
             // Ensure unique
-            for ( size_t i=0; i<m_constantProjectors.Num(); ++i)
+            for ( SIZE_T i=0; i<m_constantProjectors.Num(); ++i)
             {
                 if (m_constantProjectors[i]==m)
                 {
@@ -521,7 +530,7 @@ namespace mu
         OP::ADDRESS AddConstant( const Curve& m )
         {
             // Ensure unique
-//            for ( size_t i=0; i<m_constantCurves.Num(); ++i)
+//            for ( SIZE_T i=0; i<m_constantCurves.Num(); ++i)
 //            {
 //                if (m_constantCurves[i]==m)
 //                {
@@ -653,7 +662,7 @@ namespace mu
     public:
 
         //!
-        PROGRAM m_program;
+        FProgram m_program;
 
         //! Non-persistent, streamer-specific location information
         string m_location;
@@ -721,41 +730,16 @@ namespace mu
     public:
 
         //!
-        ModelPtrConst m_pModel;
-        SystemPtr m_pSystem;
+        TSharedPtr<const Model> m_pModel;
+        Ptr<System> m_pSystem;
 
         //! Number of possible instances
         int64 m_instanceCount;
 
-        //!
-        struct PARAMETER_INTERVAL_VALUE
-        {
-            //! Minimum instance index to use these increments
-            int m_minIndex;
-
-            //! Parameter value in this interval
-            int m_value;
-        };
-
-        //!
-        struct PARAMETER_INTERVALS
-        {
-            //! As many entries as necessary
-            //! Sorted by PARAMETER_INCREMENTS_PER_VALUE::m_minIndex
-			TArray<PARAMETER_INTERVAL_VALUE> m_intervalValue;
-        };
-
-        //! An entry for every parameter in the model
-		TArray< PARAMETER_INTERVALS > m_intervals;
-
-        //! Whether to use brute force, or consider the parameter relevancy
-        bool m_considerRelevancy;
-
-        //! Build the interval information
-		uint32 BuildIntervals( uint32 currentInstanceIndex, uint32 currentParameter, TArray<int>& currentValues );
-
-        //! Get the parameter values for a particular instance index
-		TArray<int> GetParameters( int instanceIndex );
+		/** Value used for scalar paramters that control multidemnsional sizes. 
+		* TODO: Make it an option.
+		*/
+		int32 DefaultRangeDimension = 8;
     };
 
 }

@@ -94,6 +94,47 @@ extern std::atomic<int> GSourcesParsing;
 extern std::atomic<int> GSourcesCompleted;
 extern std::atomic<int> GSourcesStalled;
 
+// Singleton class to get the cast flag for a given class name.
+struct ClassCastFlagMap
+{
+	static ClassCastFlagMap& Get();
+
+	// Get Mapped name -> cast flag. Returns CASTCLASS_None if name is not found.
+	EClassCastFlags GetCastFlag(const FString& ClassName) const;
+
+private:
+	ClassCastFlagMap();
+	TMap<FString, EClassCastFlags> CastFlagMap;
+};
+
+
+//////////////////////////////////////////////////////////////////////////
+// ClassCastFlagMap
+
+ClassCastFlagMap::ClassCastFlagMap()
+{
+// Define macro to be applied to all cast class declarations.
+#define DECLARE_CAST_BY_FLAG(ClassName) CastFlagMap.Add(FString(#ClassName), CASTCLASS_##ClassName);
+
+// Now apply the macro to the whole list.
+DECLARE_ALL_CAST_FLAGS;
+
+#undef DECLARE_CAST_BY_FLAG
+}
+
+ClassCastFlagMap& ClassCastFlagMap::Get()
+{
+	static ClassCastFlagMap TheInstance;
+	return TheInstance;
+}
+
+EClassCastFlags ClassCastFlagMap::GetCastFlag(const FString& ClassName) const
+{
+	const EClassCastFlags* ValuePtr = CastFlagMap.Find(ClassName);
+	return ValuePtr ? *ValuePtr : CASTCLASS_None;
+}
+
+
 /*-----------------------------------------------------------------------------
 	Utility functions.
 -----------------------------------------------------------------------------*/
@@ -1125,6 +1166,11 @@ FUnrealEnumDefinitionInfo& FHeaderParser::CompileEnum()
 	if (CppForm == UEnum::ECppForm::EnumClass)
 	{
 		UnderlyingType = ParseUnderlyingEnumType();
+		if (UnderlyingType != EUnderlyingEnumType::uint8 && EnumMetaData.Contains(FHeaderParserNames::NAME_BlueprintType))
+		{
+			Throwf(TEXT("Invalid BlueprintType enum base - currently only uint8 supported"));
+		}
+
 		if (UnderlyingType != EnumDef.GetUnderlyingType())
 		{
 			Throwf(TEXT("ICE: Mismatch of underlying enum type between pre-parser and parser"));
@@ -1132,19 +1178,8 @@ FUnrealEnumDefinitionInfo& FHeaderParser::CompileEnum()
 	}
 	else if (CppForm == UEnum::ECppForm::Regular)
 	{
-		if (MatchSymbol(TEXT(':')))
-		{
-			FToken BaseToken;
-			if (!GetIdentifier(BaseToken))
-			{
-				Throwf(TEXT("Missing enum base"));
-			}
-
-			if (!BaseToken.IsValue(TEXT("int"), ESearchCase::CaseSensitive))
-			{
-				LogError(TEXT("Regular enums only support 'int' as the value size"));
-			}
-		}
+		UnderlyingType = ParseUnderlyingEnumType();
+		EnumDef.SetUnderlyingType(UnderlyingType);
 	}
 	else
 	{
@@ -1152,11 +1187,6 @@ FUnrealEnumDefinitionInfo& FHeaderParser::CompileEnum()
 		{
 			Throwf(TEXT("The 'Flags' specifier can only be used on enum classes"));
 		}
-	}
-
-	if (UnderlyingType != EUnderlyingEnumType::uint8 && EnumMetaData.Contains(FHeaderParserNames::NAME_BlueprintType))
-	{
-		Throwf(TEXT("Invalid BlueprintType enum base - currently only uint8 supported"));
 	}
 
 	EnumDef.GetDefinitionRange().Start = &Input[InputPos];
@@ -1181,19 +1211,8 @@ FUnrealEnumDefinitionInfo& FHeaderParser::CompileEnum()
 
 			EnumDef.SetCppType(FString::Printf(TEXT("%s::%s"), *EnumIdentifier, *InnerEnumToken.GetTokenValue()));
 
-			if (MatchSymbol(TEXT(':')))
-			{
-				FToken BaseToken;
-				if (!GetIdentifier(BaseToken))
-				{
-					Throwf(TEXT("Missing enum base"));
-				}
-
-				if (!BaseToken.IsValue(TEXT("int"), ESearchCase::CaseSensitive))
-				{
-					LogError(TEXT("Namespace enums only support 'int' as the value size"));
-				}
-			}
+			UnderlyingType = ParseUnderlyingEnumType();
+			EnumDef.SetUnderlyingType(UnderlyingType);
 
 			RequireSymbol( TEXT('{'), TEXT("'Enum'") );
 		}
@@ -1903,10 +1922,6 @@ FUnrealScriptStructDefinitionInfo& FHeaderParser::CompileStructDeclaration()
 
 		StructDef.GetSuperStructInfo().Struct = BaseStructDef->AsStruct();
 		StructDef.SetStructFlags(EStructFlags(BaseStructDef->GetStructFlags() & STRUCT_Inherit));
-		if (StructDef.GetScriptStructSafe() != nullptr && BaseStructDef->GetScriptStructSafe())
-		{
-			StructDef.GetScriptStructSafe()->SetSuperStruct(BaseStructDef->GetScriptStructSafe());
-		}
 	}
 
 	Scope->AddType(StructDef);
@@ -3546,6 +3561,12 @@ void FHeaderParser::GetVarType(
 				}
 				break;
 
+				case EVariableSpecifier::Required:
+				{
+					Flags |= CPF_RequiredParm;
+				}
+				break;
+
 				default:
 				{
 					LogError(TEXT("Unknown variable specifier '%s'"), *Specifier.Key);
@@ -4810,8 +4831,24 @@ FUnrealPropertyDefinitionInfo& FHeaderParser::GetVarNameAndDim
 	else
 	{
 		FToken VarToken;
-		if (!GetIdentifier(VarToken))
+		if (!GetToken(VarToken, false))
 		{
+			Throwf(TEXT("Missing variable name") );
+		}
+
+		// allow True and False as identifiers for Variables
+		if(VarToken.TokenType == ETokenType::TrueConst || VarToken.TokenType == ETokenType::FalseConst)
+		{
+			const FString FirstChar(1, VarToken.Value.GetData());
+			if(FirstChar.ToUpper().Equals(FirstChar, ESearchCase::CaseSensitive))
+			{
+				VarToken.TokenType = ETokenType::Identifier;
+			}
+		}
+
+		if(!VarToken.IsIdentifier())
+		{
+			UngetToken(VarToken);
 			Throwf(TEXT("Missing variable name") );
 		}
 
@@ -5075,6 +5112,8 @@ bool FHeaderParser::CompileDeclaration(TArray<FUnrealFunctionDefinitionInfo*>& D
 
 		if (Token.IsIdentifier(TEXT("GENERATED_IINTERFACE_BODY"), ESearchCase::CaseSensitive))
 		{
+			// Due to the way IInterface and UInterface share the same class instance, we don't set the legacy body
+			//ClassDef.MarkUsesGeneratedBodyLegacy();
 			CurrentAccessSpecifier = ACCESS_Public;
 		}
 
@@ -5105,6 +5144,7 @@ bool FHeaderParser::CompileDeclaration(TArray<FUnrealFunctionDefinitionInfo*>& D
 		if (Token.IsIdentifier(TEXT("GENERATED_UINTERFACE_BODY"), ESearchCase::CaseSensitive))
 		{
 			CurrentAccessSpecifier = ACCESS_Public;
+			ClassDef.MarkUsesGeneratedBodyLegacy();
 		}
 		return true;
 	}
@@ -5126,6 +5166,7 @@ bool FHeaderParser::CompileDeclaration(TArray<FUnrealFunctionDefinitionInfo*>& D
 		}
 		else
 		{
+			ClassDef.MarkUsesGeneratedBodyLegacy();
 			CurrentAccessSpecifier = ACCESS_Public;
 		}
 
@@ -6296,9 +6337,15 @@ FUnrealClassDefinitionInfo& FHeaderParser::CompileClassDeclaration()
 	return ClassDef;
 }
 
-FUnrealClassDefinitionInfo* FHeaderParser::ParseInterfaceNameDeclaration(FString& DeclaredInterfaceName, FString& RequiredAPIMacroIfPresent)
+FUnrealClassDefinitionInfo* FHeaderParser::ParseInterfaceNameDeclaration(FString& DeclaredInterfaceName, FString& RequiredAPIMacroIfPresent, bool bIsNativeInterface)
 {
 	ParseNameWithPotentialAPIMacroPrefix(/*out*/ DeclaredInterfaceName, /*out*/ RequiredAPIMacroIfPresent, TEXT("interface"));
+
+	// If we are expecting an native interface name and it doesn't start with 'I', then don't bother doing anything more
+	if (bIsNativeInterface && DeclaredInterfaceName[0] != 'I')
+	{
+		return nullptr;
+	}
 
 	FUnrealClassDefinitionInfo* ClassDef = FUnrealClassDefinitionInfo::FindClass(*GetClassNameWithPrefixRemoved(*DeclaredInterfaceName));
 	if (ClassDef == nullptr)
@@ -6346,7 +6393,7 @@ bool FHeaderParser::TryParseIInterfaceClass()
 	// Get a class name
 	FString DeclaredInterfaceName;
 	FString RequiredAPIMacroIfPresent;
-	if (ParseInterfaceNameDeclaration(/*out*/ DeclaredInterfaceName, /*out*/ RequiredAPIMacroIfPresent) == nullptr)
+	if (ParseInterfaceNameDeclaration(/*out*/ DeclaredInterfaceName, /*out*/ RequiredAPIMacroIfPresent, true) == nullptr)
 	{
 		return false;
 	}
@@ -6403,7 +6450,7 @@ void FHeaderParser::CompileInterfaceDeclaration()
 
 	// New style files have the interface name / extends afterwards
 	RequireIdentifier(TEXT("class"), ESearchCase::CaseSensitive, TEXT("Interface declaration"));
-	FUnrealClassDefinitionInfo* InterfaceClassDef = ParseInterfaceNameDeclaration(/*out*/ DeclaredInterfaceName, /*out*/ RequiredAPIMacroIfPresent);
+	FUnrealClassDefinitionInfo* InterfaceClassDef = ParseInterfaceNameDeclaration(/*out*/ DeclaredInterfaceName, /*out*/ RequiredAPIMacroIfPresent, false);
 	check(InterfaceClassDef);
 	InterfaceClassDef->GetDefinitionRange().Start = &Input[InputPos];
 
@@ -6621,15 +6668,31 @@ void FHeaderParser::CompileRigVMMethodDeclaration(FUnrealStructDefinitionInfo& S
 	}
 
 	FRigVMStructInfo& StructRigVMInfo = StructDef.GetRigVMInfo();
+
+	// disable support for opaque arguments
+	if (MethodInfo.Parameters.Num() > 0)
+	{
+		LogError(TEXT("RIGVM_METHOD F%s::%s has %d parameters. Since 5.2 parameters are no longer allowed for RIGVM_METHOD functions."), *StructRigVMInfo.Name, *MethodInfo.Name, MethodInfo.Parameters.Num());
+		MethodInfo.Parameters = FRigVMParameterArray();
+	}
+	
 	StructRigVMInfo.bHasRigVM = true;
 	StructRigVMInfo.Name = StructDef.GetName();
 	StructRigVMInfo.Methods.Add(MethodInfo);
+	StructRigVMInfo.ExecuteContextType = TEXT("FRigVMExecuteContext");
+
+	FString ExecuteContextTypeMetadata;
+	if(StructDef.GetStringMetaDataHierarchical(TEXT("ExecuteContext"), &ExecuteContextTypeMetadata))
+	{
+		StructRigVMInfo.ExecuteContextType = ExecuteContextTypeMetadata;
+	}
 }
 
 const FName FHeaderParser::NAME_InputText(TEXT("Input"));
 const FName FHeaderParser::NAME_OutputText(TEXT("Output"));
 const FName FHeaderParser::NAME_ConstantText(TEXT("Constant"));
 const FName FHeaderParser::NAME_VisibleText(TEXT("Visible"));
+const FName FHeaderParser::NAME_LazyText(TEXT("Lazy"));
 
 const FName FHeaderParser::NAME_SingletonText(TEXT("Singleton"));
 
@@ -6654,16 +6717,23 @@ void FHeaderParser::ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& Stru
 	// validate the property types for this struct
 	for (FUnrealPropertyDefinitionInfo* PropertyDef : TUHTFieldRange<FUnrealPropertyDefinitionInfo>(StructDef))
 	{
+		FRigVMParameter Parameter;
 		FString MemberCPPType;
 		FString ExtendedCPPType;
 		MemberCPPType = PropertyDef->GetCPPType(&ExtendedCPPType);
 
 		if (ExtendedCPPType.IsEmpty() && MemberCPPType.StartsWith(TEnumAsByteText))
 		{
+			Parameter.CastType = MemberCPPType;
 			MemberCPPType = MemberCPPType.LeftChop(1).RightChop(12);
+			Parameter.bIsEnumAsByte = true;
+		}
+		else
+		{
+			Parameter.bIsEnumAsByte = false;
 		}
 
-		FRigVMParameter Parameter;
+		Parameter.PropertyDef = PropertyDef;
 		Parameter.Name = PropertyDef->GetName();
 		Parameter.Type = MemberCPPType + ExtendedCPPType;
 		Parameter.bConstant = PropertyDef->HasMetaData(NAME_ConstantText);
@@ -6679,6 +6749,13 @@ void FHeaderParser::ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& Stru
 			Parameter.bConstant = true;
 			Parameter.bInput = true;
 			Parameter.bOutput = false;
+		}
+
+		Parameter.bIsLazy = PropertyDef->HasMetaData(NAME_LazyText);
+
+		if(Parameter.bOutput && Parameter.bIsLazy)
+		{
+			LogError(TEXT("RigVM Struct '%s' - Member '%s' is both an output and a lazy input."), *StructDef.GetName(), *Parameter.Name);
 		}
 
 		if (Parameter.bEditorOnly)
@@ -6713,7 +6790,7 @@ void FHeaderParser::ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& Stru
 		{
 			ExtendedCPPType = FString::Printf(TEXT("<%s>"), *ExtendedCPPType.LeftChop(1).RightChop(1));
 			
-			if(Parameter.IsConst())
+			if(Parameter.IsConst() && !Parameter.bIsLazy)
 			{
 				ExtendedCPPType = FString::Printf(TEXT("<const %s>"), *ExtendedCPPType.LeftChop(1).RightChop(1));
 				Parameter.CastName = FString::Printf(TEXT("%s_%d_Array"), *Parameter.Name, StructRigVMInfo.Members.Num());
@@ -6721,12 +6798,26 @@ void FHeaderParser::ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& Stru
 			}
 		}
 
-		StructRigVMInfo.Members.Add(MoveTemp(Parameter));
-	}
-
-	if (StructRigVMInfo.Members.Num() == 0)
-	{
-		LogError(TEXT("RigVM Struct '%s' - has zero members - invalid RIGVM_METHOD."), *StructDef.GetName());
+		if (Parameter.IsExecuteContext())
+		{
+			const FString ExecuteContextName = Parameter.GetExecuteContextTypeName();
+			if(StructRigVMInfo.ExecuteContextMember.IsEmpty())
+			{
+				StructRigVMInfo.ExecuteContextMember = Parameter.Name;
+			}
+			if(StructRigVMInfo.ExecuteContextType == TEXT("FRigVMExecuteContext"))
+			{
+				StructRigVMInfo.ExecuteContextType = ExecuteContextName;
+			}
+			else if(StructRigVMInfo.ExecuteContextType != ExecuteContextName)
+			{
+				LogError(TEXT("RigVM Struct '%s' contains properties of varying execute context type %s vs %s."), *StructDef.GetName(), *StructRigVMInfo.ExecuteContextType, *ExecuteContextName);
+			}
+		}
+		else
+		{
+			StructRigVMInfo.Members.Add(MoveTemp(Parameter));
+		}
 	}
 
 	if (StructRigVMInfo.Members.Num() > 64)
@@ -6843,7 +6934,8 @@ void FHeaderParser::ParseParameterList(FUnrealFunctionDefinitionInfo& FunctionDe
 			{
 				if (FUnrealEnumDefinitionInfo* EnumDef = Property.AsEnum())
 				{
-					if (EnumDef->GetUnderlyingType() != EUnderlyingEnumType::uint8 &&
+					if (EnumDef->GetCppForm() == UEnum::ECppForm::EnumClass &&
+						EnumDef->GetUnderlyingType() != EUnderlyingEnumType::uint8 &&
 						EnumDef->GetUnderlyingType() != EUnderlyingEnumType::Unspecified)
 					{
 						Throwf(TEXT("Invalid enum param for Blueprints - currently only uint8 supported"));
@@ -9160,11 +9252,7 @@ TSharedRef<FUnrealTypeDefinitionInfo> FHeaderPreParser::ParseEnumDeclaration(con
 	}
 
 	// Read base for enum class
-	EUnderlyingEnumType UnderlyingType = EUnderlyingEnumType::uint8;
-	if (CppForm == UEnum::ECppForm::EnumClass)
-	{
-		UnderlyingType = ParseUnderlyingEnumType();
-	}
+	EUnderlyingEnumType UnderlyingType = ParseUnderlyingEnumType();
 
 	TSharedRef<FUnrealEnumDefinitionInfo> EnumDef = MakeShareable(new FUnrealEnumDefinitionInfo(SourceFile, InLineNumber, FString(EnumToken.Value), FName(EnumToken.Value, FNAME_Add), CppForm, UnderlyingType));
 	return EnumDef;
@@ -9277,6 +9365,7 @@ TSharedRef<FUnrealTypeDefinitionInfo> FHeaderPreParser::ParseStructDeclaration(c
 			{
 				LogError(TEXT("The 'HasDefaults' struct specifier is only valid in the NoExportTypes.h file"));
 			}
+			StructDef->SetScriptStructExportFlags(STRUCTEXPORT_HasDefaults);
 			break;
 
 		case EStructSpecifier::HasNoOpConstructor:
@@ -9284,6 +9373,7 @@ TSharedRef<FUnrealTypeDefinitionInfo> FHeaderPreParser::ParseStructDeclaration(c
 			{
 				LogError(TEXT("The 'HasNoOpConstructor' struct specifier is only valid in the NoExportTypes.h file"));
 			}
+			StructDef->SetScriptStructExportFlags(STRUCTEXPORT_HasNoOpConstructor);
 			break;
 
 		case EStructSpecifier::IsAlwaysAccessible:
@@ -9291,6 +9381,7 @@ TSharedRef<FUnrealTypeDefinitionInfo> FHeaderPreParser::ParseStructDeclaration(c
 			{
 				LogError(TEXT("The 'IsAlwaysAccessible' struct specifier is only valid in the NoExportTypes.h file"));
 			}
+			StructDef->SetScriptStructExportFlags(STRUCTEXPORT_IsAlwaysAccessible);
 			break;
 
 		case EStructSpecifier::IsCoreType:
@@ -9298,6 +9389,7 @@ TSharedRef<FUnrealTypeDefinitionInfo> FHeaderPreParser::ParseStructDeclaration(c
 			{
 				LogError(TEXT("The 'IsCoreType' struct specifier is only valid in the NoExportTypes.h file"));
 			}
+			StructDef->SetScriptStructExportFlags(STRUCTEXPORT_IsCoreType);
 			break;
 		}
 	}

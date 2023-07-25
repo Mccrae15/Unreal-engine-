@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDistanceFieldHelper.h"
+#include "DistanceFieldLightingShared.h"
 #include "SystemTextures.h"
+#include "ScenePrivate.h"
+#include "SceneRendering.h"
 
 // todo - currently duplicated from SetupGlobalDistanceFieldParameters (GlobalDistanceField.cpp) because of problems getting it properly exported from the dll
 void FNiagaraDistanceFieldHelper::SetGlobalDistanceFieldParameters(const FGlobalDistanceFieldParameterData* OptionalParameterData, FGlobalDistanceFieldParameters2& ShaderParameters)
@@ -15,10 +18,10 @@ void FNiagaraDistanceFieldHelper::SetGlobalDistanceFieldParameters(const FGlobal
 
 		for (int32 Index = 0; Index < GlobalDistanceField::MaxClipmaps; Index++)
 		{
-			ShaderParameters.GlobalVolumeCenterAndExtent[Index] = OptionalParameterData->CenterAndExtent[Index];
-			ShaderParameters.GlobalVolumeWorldToUVAddAndMul[Index] = OptionalParameterData->WorldToUVAddAndMul[Index];
-			ShaderParameters.GlobalDistanceFieldMipWorldToUVScale[Index] = OptionalParameterData->MipWorldToUVScale[Index];
-			ShaderParameters.GlobalDistanceFieldMipWorldToUVBias[Index] = OptionalParameterData->MipWorldToUVBias[Index];
+			ShaderParameters.GlobalVolumeTranslatedCenterAndExtent[Index] = OptionalParameterData->TranslatedCenterAndExtent[Index];
+			ShaderParameters.GlobalVolumeTranslatedWorldToUVAddAndMul[Index] = OptionalParameterData->TranslatedWorldToUVAddAndMul[Index];
+			ShaderParameters.GlobalDistanceFieldMipTranslatedWorldToUVScale[Index] = OptionalParameterData->MipTranslatedWorldToUVScale[Index];
+			ShaderParameters.GlobalDistanceFieldMipTranslatedWorldToUVBias[Index] = OptionalParameterData->MipTranslatedWorldToUVBias[Index];
 		}
 
 		ShaderParameters.GlobalDistanceFieldMipFactor = OptionalParameterData->MipFactor;
@@ -40,10 +43,10 @@ void FNiagaraDistanceFieldHelper::SetGlobalDistanceFieldParameters(const FGlobal
 
 		for (int32 Index = 0; Index < GlobalDistanceField::MaxClipmaps; Index++)
 		{
-			ShaderParameters.GlobalVolumeCenterAndExtent[Index] = FVector4f::Zero();
-			ShaderParameters.GlobalVolumeWorldToUVAddAndMul[Index] = FVector4f::Zero();
-			ShaderParameters.GlobalDistanceFieldMipWorldToUVScale[Index] = FVector4f::Zero();
-			ShaderParameters.GlobalDistanceFieldMipWorldToUVBias[Index] = FVector4f::Zero();
+			ShaderParameters.GlobalVolumeTranslatedCenterAndExtent[Index] = FVector4f::Zero();
+			ShaderParameters.GlobalVolumeTranslatedWorldToUVAddAndMul[Index] = FVector4f::Zero();
+			ShaderParameters.GlobalDistanceFieldMipTranslatedWorldToUVScale[Index] = FVector4f::Zero();
+			ShaderParameters.GlobalDistanceFieldMipTranslatedWorldToUVBias[Index] = FVector4f::Zero();
 		}
 
 		ShaderParameters.GlobalDistanceFieldMipFactor = 0.0f;

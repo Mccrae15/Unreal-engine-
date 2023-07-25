@@ -112,6 +112,8 @@ private:
 	/** Set to true if SerializeActor is called due to an RPC forcing the channel open */
 	uint32 bIsForcedSerializeFromRPC:1;
 
+    uint16 ChannelSubObjectDirtyCount = 0;
+
 public:
 	bool GetSkipRoleSwap() const { return !!bSkipRoleSwap; }
 	void SetSkipRoleSwap(const bool bShouldSkip) { bSkipRoleSwap = bShouldSkip; }
@@ -219,7 +221,8 @@ public:
 	void WriteContentBlockHeader( UObject* Obj, FNetBitWriter &Bunch, const bool bHasRepLayout );
 
 	/** Writes the header for a content block specifically for deleting sub-objects */
-	void WriteContentBlockForSubObjectDelete( FOutBunch & Bunch, FNetworkGUID & GuidToDelete );
+	UE_DEPRECATED(5.2, "This function will be made private in the future." )
+	void WriteContentBlockForSubObjectDelete( FOutBunch & Bunch, FNetworkGUID & GuidToDelete);
 
 	/** Writes header and payload of content block */
 	int32 WriteContentBlockPayload( UObject* Obj, FNetBitWriter &Bunch, const bool bHasRepLayout, FNetBitWriter& Payload );
@@ -356,15 +359,24 @@ public:
 
 protected:
 
+	/** Attempts to find a valid, non-dormant replicator for the given object. */
+	TSharedRef<FObjectReplicator>* FindReplicator(UObject* Obj);
+
 	/**
-	 * Attempts to find a valid, non-dormant replicator for the given object.
-	 *
-	 * @param Obj				The object whose replicator to find.
-	 * @param bOutFoundInvalid	Indicates we found a replicator, but it was invalid.
-	 *
-	 * @return A replicator, if one was found.
-	 */
-	TSharedRef<FObjectReplicator>* FindReplicator(UObject* Obj, bool* bOutFoundInvalid=nullptr);
+	* Attempts to find a valid, non-dormant replicator for the given object.
+	*
+	* @param Obj				The object whose replicator to find.
+	* @param bOutFoundInvalid	Indicates we found a replicator, but it was invalid.
+	*
+	* @return A replicator, if one was found.
+	*/
+	UE_DEPRECATED(5.2, "This function has been deprecated in favor of the one with a single parameter")
+	TSharedRef<FObjectReplicator>* FindReplicator(UObject* Obj, bool* bOutFoundInvalid);
+
+	/** 
+	* Creates a new object replicator or reuses a replicator if it was stored for dormancy in the Connection.
+	*/
+	 TSharedRef<FObjectReplicator>& CreateReplicator(UObject* Obj);
 
 	/**
 	 * Creates a new object replicator.
@@ -379,6 +391,7 @@ protected:
 	 *
 	 * @return The newly created replicator.
 	 */
+	UE_DEPRECATED(5.2, "This function has been deprecated in favor of the one with a single parameter")
 	TSharedRef<FObjectReplicator>& CreateReplicator(UObject* Obj, bool bCheckDormantReplicators);
 
 	/**
@@ -406,6 +419,18 @@ protected:
 	/** Handle the replication of subobjects for this actor. Returns true if data was written into the Bunch. */
 	bool DoSubObjectReplication(FOutBunch& Bunch, FReplicationFlags& OutRepFlags);
 
+	enum class ESubObjectDeleteFlag : uint8
+	{
+		Destroyed, // Delete operation that occurs when we detect that the original object on the authority became invalid.
+		TearOff,      // The client's actor channel will remove references to this subobject
+		ForceDelete,  // The subobject needs to be deleted on the client even if the original on the authority was not.
+	};
+
+	/** Writes the header for a content block specifically for deleting sub-objects */
+	void WriteContentBlockForSubObjectDelete(FOutBunch& Bunch, FNetworkGUID& GuidToDelete, ESubObjectDeleteFlag DeleteFlag);
+
+	const TCHAR* ToString(UActorChannel::ESubObjectDeleteFlag DeleteFlag);
+
 private:
 
 	/** Replicate Subobjects using the actor's registered list and its replicated actor component list */
@@ -415,10 +440,10 @@ private:
 	bool WriteSubObjectInBunch(UObject* Obj, FOutBunch& Bunch, FReplicationFlags RepFlags);
 
 	/** Find the replicated subobjects of the component and write them into the bunch */
-	bool WriteSubObjects(UActorComponent* Component, FOutBunch& Bunch, FReplicationFlags RepFlags, const TStaticBitArray<COND_Max>& ConditionMap);
+	bool WriteComponentSubObjects(UActorComponent* Component, FOutBunch& Bunch, FReplicationFlags RepFlags, const TStaticBitArray<COND_Max>& ConditionMap);
 
 	/** Replicate a list of subobjects */
-	bool WriteSubObjects(UActorComponent* ReplicatedComponent, const UE::Net::FSubObjectRegistry& SubObjectList, FOutBunch& Bunch, FReplicationFlags RepFlags, const TStaticBitArray<COND_Max>& ConditionMap);
+	bool WriteSubObjects(UObject* SubObjectOwner, const UE::Net::FSubObjectRegistry& SubObjectList, FOutBunch& Bunch, FReplicationFlags RepFlags, const TStaticBitArray<COND_Max>& ConditionMap);
 
 	bool CanSubObjectReplicateToClient(ELifetimeCondition NetCondition, FObjectKey SubObjectKey, const TStaticBitArray<COND_Max>& ConditionMap) const;
 
@@ -426,6 +451,8 @@ private:
 
 	void TestLegacyReplicateSubObjects(UActorComponent* ReplicatedComponent, FOutBunch& Bunch, FReplicationFlags RepFlags);
 	void TestLegacyReplicateSubObjects(FOutBunch& Bunch, FReplicationFlags RepFlags);
+
+	bool UpdateDeletedSubObjects(FOutBunch& Bunch);
 
 	inline TArray< TObjectPtr<UObject> >& GetCreatedSubObjects()
 	{

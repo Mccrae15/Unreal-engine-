@@ -108,7 +108,7 @@ struct FLightmassParameterizedMaterialSettings
 //	ELevelViewportType
 //
 UENUM()
-enum ELevelViewportType
+enum ELevelViewportType : int
 {
 	/** Top */
 	LVT_OrthoXY = 0,
@@ -130,7 +130,7 @@ enum ELevelViewportType
 };
 
 UENUM()
-enum EDestructiveAssetActions
+enum EDestructiveAssetActions : int
 {
 	AssetDelete = 0,
 	AssetRename = 1 << 0,
@@ -139,19 +139,11 @@ enum EDestructiveAssetActions
 };
 
 /** Simple Return struct for supplying success or failure with an optional error message */
-USTRUCT()
 struct FResultMessage
 {
-	GENERATED_USTRUCT_BODY()
-public:
-	bool WasSuccesful() { return bSucceeded; }
-	FString GetErrorMessage() { return ErrorMessage; }
-	void SetErrorMessage(FString& InErrorMessage) { InErrorMessage = ErrorMessage; }
-	bool bSucceeded = false;
-private:
+	bool bSuccess = false;
 	FString ErrorMessage;
 };
-
 
 UCLASS(abstract, config=UnrealEd)
 class UUnrealEdTypes : public UObject

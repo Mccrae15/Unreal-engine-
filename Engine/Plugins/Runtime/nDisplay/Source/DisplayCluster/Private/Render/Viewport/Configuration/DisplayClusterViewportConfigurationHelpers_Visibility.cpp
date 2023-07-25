@@ -20,20 +20,27 @@ static void ImplCollectVisibility(ADisplayClusterRootActor& RootActor, const FDi
 		RootActor.FindPrimitivesByName(InVisibilityList.RootActorComponentNames, OutAdditionalComponentsList);
 	}
 
-	// Collect Actors refs
-	for (const TSoftObjectPtr<AActor>& ActorSOPtrIt : InVisibilityList.Actors)
+	auto CollectActorRefs = [&](const TArray<TSoftObjectPtr<AActor>>& InActorRefs)
+ 
 	{
-		if (ActorSOPtrIt.IsValid())
+		for (const TSoftObjectPtr<AActor>& ActorSOPtrIt : InActorRefs)
 		{
-			for (const UActorComponent* Component : ActorSOPtrIt->GetComponents())
+			if (ActorSOPtrIt.IsValid())
 			{
-				if (const UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
+				for (const UActorComponent* Component : ActorSOPtrIt->GetComponents())
 				{
-					OutAdditionalComponentsList.Add(PrimComp->ComponentId);
+					if (const UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
+					{
+						OutAdditionalComponentsList.Add(PrimComp->ComponentId);
+					}
 				}
 			}
 		}
-	}
+	};
+	
+	// Collect Actors refs
+	CollectActorRefs(InVisibilityList.Actors);
+	CollectActorRefs(InVisibilityList.AutoAddedActors);
 
 	// Collect ActorLayers
 	for (const FActorLayer& ActorLayerIt : InVisibilityList.ActorLayers)
@@ -45,7 +52,7 @@ static void ImplCollectVisibility(ADisplayClusterRootActor& RootActor, const FDi
 	}
 }
 
-bool FDisplayClusterViewportConfigurationHelpers_Visibility::IsValid(const FDisplayClusterConfigurationICVFX_VisibilityList& InVisibilityList)
+bool FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(const FDisplayClusterConfigurationICVFX_VisibilityList& InVisibilityList)
 {
 	for (const FString& ComponentNameIt : InVisibilityList.RootActorComponentNames)
 	{
@@ -71,6 +78,14 @@ bool FDisplayClusterViewportConfigurationHelpers_Visibility::IsValid(const FDisp
 		}
 	}
 
+	for (const TSoftObjectPtr<AActor>& AutoAddedActor : InVisibilityList.AutoAddedActors)
+	{
+		if (AutoAddedActor.IsValid())
+		{
+			return true;
+		}
+	}
+	
 	return false;
 }
 
@@ -131,7 +146,7 @@ void FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateHideList_ICVF
 				ViewportIt->VisibilitySettings.UpdateConfiguration(EDisplayClusterViewport_VisibilityMode::Hide, ActorLayerNames, AdditionalComponentsList);
 
 				// Support additional hide list for outer viewports
-				if ((ViewportIt->GetRenderSettingsICVFX().RuntimeFlags & ViewportRuntime_ICVFXTarget) != 0)
+				if (EnumHasAllFlags(ViewportIt->GetRenderSettingsICVFX().RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Target))
 				{
 					ViewportIt->VisibilitySettings.AppendHideList(OuterActorLayerNames, OuterAdditionalComponentsList);
 				}

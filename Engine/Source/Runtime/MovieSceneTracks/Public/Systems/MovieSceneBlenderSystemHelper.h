@@ -156,6 +156,7 @@ public:
 
 			const bool bHasChannels = Linker->EntityManager.Contains(FEntityComponentFilter().All({
 						ResultComponentID, 
+						BlenderSystem->GetBlenderTypeTag(),
 						BuiltInComponents->BlendChannelInput }));
 			if (bHasChannels)
 			{
@@ -174,18 +175,20 @@ public:
 		FGraphEventRef Task = FEntityTaskBuilder()
 			.Read(BuiltInComponents->BlendChannelInput)
 			.Read(ResultComponentID)
+			.FilterAll({ BlenderSystem->GetBlenderTypeTag() })
 			.FilterNone({ BuiltInComponents->Tags.Ignored })
 			.template Dispatch_PerEntity<TSimpleBlenderGatherResults<PropertyType>>(
 					&Linker->EntityManager, InPrerequisites, nullptr, BlenderSystem->GetBlenderSystemID(), BlendChannelResults);
 		if (Task)
 		{
-			Prereqs.AddMasterTask(Task);
+			Prereqs.AddRootTask(Task);
 		}
 
 		// Compute the final blended values and assign them to the blend channel output entities.
 		FEntityTaskBuilder()
 			.Read(BuiltInComponents->BlendChannelOutput)
 			.Write(ResultComponentID)
+			.FilterAll({ BlenderSystem->GetBlenderTypeTag() })
 			.FilterNone({ BuiltInComponents->Tags.Ignored })
 			.template Dispatch_PerEntity<TSimpleBlenderCombineResults<PropertyType>>(
 					&Linker->EntityManager, Prereqs, &Subsequents, BlenderSystem->GetBlenderSystemID(), BlendChannelResults);

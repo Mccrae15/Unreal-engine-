@@ -6,7 +6,6 @@ using System.Runtime.InteropServices;
 
 namespace DatasmithSolidworks
 {
-    [ComVisible(false)]
     public class FVec3
     {
         public float X = 0f;
@@ -187,6 +186,11 @@ namespace DatasmithSolidworks
         public static FVec3 operator -(FVec3 V, FVec3 M)
         {
             return new FVec3(V.X - M.X, V.Y - M.Y, V.Z - M.Z);
+        }
+
+        public static FVec3 operator -(FVec3 V)
+        {
+	        return new FVec3(-V.X, -V.Y, -V.Z);
         }
 
         public static FVec3 operator +(FVec3 V, float M)

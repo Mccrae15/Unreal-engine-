@@ -12,11 +12,6 @@
 #include "RivermaxMediaCapture.generated.h"
 
 
-namespace UE::RivermaxCore
-{
-	struct FRivermaxStreamOptions;
-}
-
 class URivermaxMediaOutput;
 
 /**
@@ -39,6 +34,16 @@ protected:
 	virtual void StopCaptureImpl(bool bAllowPendingFrameToBeProcess) override;
 	virtual bool ShouldCaptureRHIResource() const override;
 	virtual void OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height, int32 BytesPerRow) override;
+	virtual void OnRHIResourceCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FBufferRHIRef InBuffer) override;
+	virtual void OnFrameCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, const FMediaCaptureResourceData& InResourceData) override;
+	virtual bool SupportsAnyThreadCapture() const override
+	{
+		return true;
+	}
+	virtual bool SupportsAutoRestart() const
+	{
+		return true;
+	}
 
 	/** For custom conversion, methods that need to be overriden */
 	virtual FIntPoint GetCustomOutputSize(const FIntPoint& InSize) const override;
@@ -72,7 +77,7 @@ private:
 	bool AreSyncHandlersBusy() const;
 
 	/** Configures rivermax stream with desired output options */
-	bool ConfigureStream(URivermaxMediaOutput* InMediaOutput, UE::RivermaxCore::FRivermaxStreamOptions& OutOptions) const;
+	bool ConfigureStream(URivermaxMediaOutput* InMediaOutput, UE::RivermaxCore::FRivermaxOutputStreamOptions& OutOptions) const;
 
 	/** When GPUDirect is involved, we add a pass after the conversion pass to write a fence and know when we can consume the buffer */
 	void AddSyncPointPass(FRDGBuilder& GraphBuilder, const FCaptureBaseData& InBaseData, FRDGBufferRef OutputBuffer);
@@ -83,7 +88,7 @@ private:
 	TUniquePtr<UE::RivermaxCore::IRivermaxOutputStream> RivermaxStream;
 
 	/** Set of options used to configure output stream */
-	UE::RivermaxCore::FRivermaxStreamOptions Options;
+	UE::RivermaxCore::FRivermaxOutputStreamOptions Options;
 
 	/** Whether sync handlers have been initialized or not.  */
 	bool bAreSyncHandlersInitialized = false;

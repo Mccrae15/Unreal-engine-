@@ -2,16 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Chaos/PBDRigidsEvolutionFwd.h"
-#include "Chaos/SimCallbackInput.h"
-#include "Chaos/SimCallbackObject.h"
-#include "Chaos/GeometryParticlesfwd.h"
-#include "Chaos/Framework/PhysicsSolverBase.h"
-#include "UObject/WeakObjectPtr.h"
-#include "PhysicsInterfaceDeclaresCore.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
-#include "Templates/UniquePtr.h"
 #include "ChaosUserDataPTStats.h"
 
 /*
@@ -102,7 +93,7 @@ namespace Chaos
 		{
 			SCOPE_CYCLE_COUNTER(STAT_UserDataPT_SetData_GT);
 
-			if (const FPhysicsSolverBase* Solver = this->GetSolver())
+			if (const FPhysicsSolverBase* SolverBase = this->GetSolver())
 			{
 				if (TInput* Input = this->GetProducerInputData_External())
 				{
@@ -277,3 +268,9 @@ namespace Chaos
 		TSparseArray<TUniquePtr<TUserData>> UserDataMap_PT;
 	};
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "PhysicsInterfaceDeclaresCore.h"
+#include "UObject/WeakObjectPtr.h"
+#endif

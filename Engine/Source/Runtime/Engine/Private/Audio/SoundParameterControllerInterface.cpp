@@ -1,12 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Audio/SoundParameterControllerInterface.h"
 
-#include "ActiveSound.h"
-#include "Audio.h"
 #include "AudioDevice.h"
-#include "AudioThread.h"
-#include "IAudioExtensionPlugin.h"
-#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "IAudioParameterTransmitter.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SoundParameterControllerInterface)
 
@@ -32,7 +28,7 @@ void ISoundParameterControllerInterface::ResetParameters()
 			{
 				if (Audio::IParameterTransmitter* Transmitter = ActiveSound.GetTransmitter())
 				{
-					Transmitter->Reset();
+					Transmitter->ResetParameters();
 				}
 			}, GET_STATID(STAT_AudioResetParameters));
 		}
@@ -50,7 +46,8 @@ void ISoundParameterControllerInterface::SetTriggerParameter(FName InName)
 	{
 		if (FAudioDevice* AudioDevice = GetAudioDevice())
 		{
-			FAudioParameter ParamToSet = FAudioParameter(InName, true);
+			FAudioParameter ParamToSet = FAudioParameter(InName, EAudioParameterType::Trigger);
+			
 			if (USoundBase* Sound = GetSound())
 			{
 				TArray<FAudioParameter> Params = { MoveTemp(ParamToSet) };

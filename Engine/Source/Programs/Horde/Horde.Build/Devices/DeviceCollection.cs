@@ -4,12 +4,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Horde.Build.Acls;
 using Horde.Build.Projects;
 using Horde.Build.Server;
 using Horde.Build.Streams;
 using Horde.Build.Users;
 using Horde.Build.Utilities;
+using Microsoft.Extensions.Logging;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Bson.Serialization.Options;
@@ -20,7 +20,7 @@ namespace Horde.Build.Devices
 	using DeviceId = StringId<IDevice>;
 	using DevicePlatformId = StringId<IDevicePlatform>;
 	using DevicePoolId = StringId<IDevicePool>;
-	using ProjectId = StringId<IProject>;
+	using ProjectId = StringId<ProjectConfig>;
 	using UserId = ObjectId<IUser>;
 	using StreamId = StringId<IStream>;
 
@@ -73,9 +73,6 @@ namespace Horde.Build.Devices
 
 			[BsonRequired]
 			public string Name { get; set; } = null!;
-
-			[BsonIgnoreIfNull]
-			public Acl? Acl { get; set; }
 
 			[BsonConstructor]
 			private DevicePoolDocument()
@@ -183,6 +180,8 @@ namespace Horde.Build.Devices
 		/// </summary>
 		class DeviceDocument : IDevice
 		{
+			public static int CurrentVersion = 1;
+
 			[BsonRequired, BsonId]
 			public DeviceId Id { get; set; }
 
@@ -227,7 +226,6 @@ namespace Horde.Build.Devices
 			[BsonIgnoreIfNull]
 			public string? Notes { get; set; }
 
-
 			/// <summary>
 			/// [DEPRECATED]
 			/// </summary>
@@ -235,7 +233,7 @@ namespace Horde.Build.Devices
 			public List<DeviceUtilizationTelemetry>? Utilization { get; set; }
 
 			[BsonIgnoreIfNull]
-			public Acl? Acl { get; set; }
+			public int? Version { get; set; }
 
 			[BsonConstructor]
 			private DeviceDocument()
@@ -252,6 +250,7 @@ namespace Horde.Build.Devices
 				Address = address;
 				ModelId = modelId;
 				ModifiedByUser = userId?.ToString();
+				Version = CurrentVersion;
 			}
 		}
 
@@ -352,7 +351,6 @@ namespace Horde.Build.Devices
 				JobName = jobName;
 				StepName = stepName;
 			}
-
 		}
 
 		class DeviceReservationPoolTelemetryDocument : IDevicePoolReservationTelemetry
@@ -386,7 +384,6 @@ namespace Horde.Build.Devices
 				JobName = jobName;
 				StepName = stepName;
 			}
-
 		}
 
 		class DevicePlatformTelemetryDocument : IDevicePlatformTelemetry
@@ -488,7 +485,6 @@ namespace Horde.Build.Devices
 			}
 		}
 
-
 		readonly IMongoCollection<DevicePlatformDocument> _platforms;
 
 		readonly IMongoCollection<DeviceDocument> _devices;
@@ -501,13 +497,15 @@ namespace Horde.Build.Devices
 
 		readonly IMongoCollection<DevicePoolTelemetryDocument> _poolTelemetry;
 
-		readonly int _checkoutDays = 7;
+		readonly ILogger<DeviceCollection> _logger;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public DeviceCollection(MongoService mongoService)
+		public DeviceCollection(MongoService mongoService, ILogger<DeviceCollection> logger)
 		{
+			_logger = logger;
+
 			_devices = mongoService.GetCollection<DeviceDocument>("Devices", keys => keys.Ascending(x => x.Name), unique: true);
 			_platforms = mongoService.GetCollection<DevicePlatformDocument>("Devices.Platforms", keys => keys.Ascending(x => x.Name), unique: true);
 			_pools = mongoService.GetCollection<DevicePoolDocument>("Devices.Pools", keys => keys.Ascending(x => x.Name), unique: true);
@@ -702,7 +700,6 @@ namespace Horde.Build.Devices
 		public async Task UpdateDeviceAsync(DeviceId deviceId, DevicePoolId? newPoolId, string? newName, string? newAddress, string? newModelId, string? newNotes, bool? newEnabled, bool? newProblem, bool? newMaintenance, UserId? modifiedByUserId = null)
 		{
 			UpdateDefinitionBuilder<DeviceDocument> updateBuilder = Builders<DeviceDocument>.Update;
-
 			List<UpdateDefinition<DeviceDocument>> updates = new List<UpdateDefinition<DeviceDocument>>();
 
 			DateTime utcNow = DateTime.UtcNow;
@@ -903,10 +900,7 @@ namespace Horde.Build.Devices
 
 				List<DeviceUtilizationTelemetry>? utilization = device.Utilization;
 
-				if (utilization == null)
-				{
-					utilization = new List<DeviceUtilizationTelemetry>();
-				}
+				utilization ??= new List<DeviceUtilizationTelemetry>();
 
 				// keep up to 100, maintaining order
 				if (utilization.Count > 99)
@@ -994,7 +988,7 @@ namespace Horde.Build.Devices
 		/// <summary>
 		/// Deletes expired user checkouts
 		/// </summary>
-		public async Task<List<(UserId, IDevice)>?> ExpireCheckedOutAsync()
+		public async Task<List<(UserId, IDevice)>?> ExpireCheckedOutAsync(int checkoutDays)
 		{
 			FilterDefinition<DeviceDocument> filter = Builders<DeviceDocument>.Filter.Empty;
 			filter &= Builders<DeviceDocument>.Filter.Where(x => x.CheckedOutByUser != null && x.CheckOutTime != null);
@@ -1002,7 +996,7 @@ namespace Horde.Build.Devices
 			List<DeviceDocument> checkedOutDevices = await _devices.Find(filter).ToListAsync();
 
 			DateTime utcNow = DateTime.UtcNow;
-			List<DeviceDocument> expiredDevices = checkedOutDevices.FindAll(x => (utcNow - x.CheckOutTime!.Value).TotalDays >= _checkoutDays).ToList();
+			List<DeviceDocument> expiredDevices = checkedOutDevices.FindAll(x => (utcNow - x.CheckOutTime!.Value).TotalDays >= checkoutDays).ToList();
 
 			if (expiredDevices.Count > 0)
 			{
@@ -1031,7 +1025,7 @@ namespace Horde.Build.Devices
 		/// <summary>
 		/// Gets a list of users to notify  that their device is about to expire in the next 24 hours
 		/// </summary>
-		public async Task<List<(UserId, IDevice)>?> ExpireNotificatonsAsync()
+		public async Task<List<(UserId, IDevice)>?> ExpireNotificatonsAsync(int checkoutDays)
 		{
 			FilterDefinition<DeviceDocument> filter = Builders<DeviceDocument>.Filter.Empty;
 			filter &= Builders<DeviceDocument>.Filter.Where(x => x.CheckedOutByUser != null && x.CheckoutExpiringNotificationSent != true);
@@ -1039,7 +1033,7 @@ namespace Horde.Build.Devices
 			List<DeviceDocument> checkedOutDevices = await _devices.Find(filter).ToListAsync();
 
 			DateTime utcNow = DateTime.UtcNow;
-			List<DeviceDocument> expiredDevices = checkedOutDevices.FindAll(x => (utcNow - x.CheckOutTime!.Value).TotalDays >= (_checkoutDays - 1)).ToList();
+			List<DeviceDocument> expiredDevices = checkedOutDevices.FindAll(x => (utcNow - x.CheckOutTime!.Value).TotalDays >= (checkoutDays - 1)).ToList();
 
 			if (expiredDevices.Count > 0)
 			{
@@ -1108,11 +1102,11 @@ namespace Horde.Build.Devices
 
 		struct DevicePoolTelemetryHelper
 		{
-			public List<DeviceId> available = new List<DeviceId>();
-			public List<DeviceId> problem = new List<DeviceId>();
-			public List<DeviceId> maintenance = new List<DeviceId>();
-			public List<DeviceId> disabled = new List<DeviceId>();
-			public Dictionary<StreamId, List<DeviceReservationPoolTelemetryDocument>> reserved = new Dictionary<StreamId, List<DeviceReservationPoolTelemetryDocument>>();
+			public List<DeviceId> _available = new List<DeviceId>();
+			public List<DeviceId> _problem = new List<DeviceId>();
+			public List<DeviceId> _maintenance = new List<DeviceId>();
+			public List<DeviceId> _disabled = new List<DeviceId>();
+			public Dictionary<StreamId, List<DeviceReservationPoolTelemetryDocument>> _reserved = new Dictionary<StreamId, List<DeviceReservationPoolTelemetryDocument>>();
 
 			public DevicePoolTelemetryHelper() { }
 		}
@@ -1168,10 +1162,10 @@ namespace Horde.Build.Devices
 						{
 							StreamId streamId = new StreamId(reservation.StreamId);
 							List<DeviceReservationPoolTelemetryDocument>? rdevices;
-							if (!helper.reserved.TryGetValue(streamId, out rdevices))
+							if (!helper._reserved.TryGetValue(streamId, out rdevices))
 							{
 								rdevices = new List<DeviceReservationPoolTelemetryDocument>();
-								helper.reserved[streamId] = rdevices;
+								helper._reserved[streamId] = rdevices;
 							}
 							rdevices.Add(new DeviceReservationPoolTelemetryDocument(device.Id, reservation.JobId, reservation.StepId, reservation.JobName, reservation.StepName));
 						}
@@ -1180,33 +1174,32 @@ namespace Horde.Build.Devices
 
 					if (problemDevices.Contains(device))
 					{
-						helper.problem.Add(device.Id);
+						helper._problem.Add(device.Id);
 						continue;
 					}
 
 					if (maintenanceDevices.Contains(device))
 					{
-						helper.maintenance.Add(device.Id);
+						helper._maintenance.Add(device.Id);
 						continue;
 					}
 
 					if (disabledDevices.Contains(device))
 					{
-						helper.disabled.Add(device.Id);
+						helper._disabled.Add(device.Id);
 						continue;
 					}
 
-					helper.available.Add(device.Id);
+					helper._available.Add(device.Id);
 				}
 
 				List<DevicePlatformTelemetryDocument> platformTelemtry = new List<DevicePlatformTelemetryDocument>();
-
 
 				foreach (KeyValuePair<DevicePlatformId, DevicePoolTelemetryHelper> platform in helpers)
 				{
 					DevicePoolTelemetryHelper helper = platform.Value;
 
-					platformTelemtry.Add(new DevicePlatformTelemetryDocument(platform.Key, helper.available, helper.reserved, helper.maintenance, helper.problem, helper.disabled));
+					platformTelemtry.Add(new DevicePlatformTelemetryDocument(platform.Key, helper._available, helper._reserved, helper._maintenance, helper._problem, helper._disabled));
 				}
 
 				poolTelemetry[pool.Id] = platformTelemtry;
@@ -1235,6 +1228,43 @@ namespace Horde.Build.Devices
 			return results.ConvertAll<IDevicePoolTelemetry>(x => x);
 		}
 
+		/// <inheritdoc/>
+		public async Task UpgradeAsync()
+		{
+			FilterDefinition<DeviceDocument> filter = Builders<DeviceDocument>.Filter.Empty;
+			filter &= Builders<DeviceDocument>.Filter.Where(x => x.Version == null || x.Version < DeviceDocument.CurrentVersion);
 
+			List<DeviceDocument> results = await _devices.Find(filter).ToListAsync();
+
+			if (results.Count > 0)
+			{
+				_logger.LogInformation("Found {Count} device documents to upgrade", results.Count);
+			}			
+
+			foreach (DeviceDocument device in results)
+			{
+				// unversioned => 1
+				if (device.Version == null && DeviceDocument.CurrentVersion == 1)
+				{
+					UpdateDefinitionBuilder<DeviceDocument> updateBuilder = Builders<DeviceDocument>.Update;
+					List<UpdateDefinition<DeviceDocument>> updates = new List<UpdateDefinition<DeviceDocument>>();
+
+					updates.Add(updateBuilder.Set(x => x.Version, DeviceDocument.CurrentVersion));
+
+					if (device.CheckOutTime != null)
+					{
+						DateTime now = DateTime.UtcNow;
+						double Days = (now - device.CheckOutTime!.Value).TotalDays;
+						if (Days > 3)
+						{							
+							updates.Add(updateBuilder.Set(x => x.CheckOutTime, now));
+							updates.Add(updateBuilder.Set(x => x.CheckoutExpiringNotificationSent, null));
+						}
+					}
+
+					await _devices.FindOneAndUpdateAsync(x => x.Id == device.Id, updateBuilder.Combine(updates));
+				}
+			}
+		}
 	}
 }

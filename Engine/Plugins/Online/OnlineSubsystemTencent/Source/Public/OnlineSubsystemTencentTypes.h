@@ -3,14 +3,14 @@
 #pragma once
 
 #include "OnlineSubsystemTypes.h"
-#include "OnlineKeyValuePair.h"
 #include "Misc/Guid.h"
-#include "OnlineSubsystemNames.h"
+#include "OnlineSubsystemTencentPackage.h"
 
 #if WITH_TENCENTSDK
 
 #if WITH_TENCENT_RAIL_SDK
 
+#include "OnlineKeyValuePair.h"
 #include "RailSDK.h"
 
 template <typename ValueType>
@@ -267,5 +267,3 @@ public:
 };
 
 #endif //WITH_TENCENTSDK
-
-

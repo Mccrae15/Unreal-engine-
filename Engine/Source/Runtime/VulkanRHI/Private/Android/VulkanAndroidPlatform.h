@@ -15,7 +15,6 @@
 #define VULKAN_SHOULD_USE_COMMANDWRAPPERS			VULKAN_SHOULD_USE_LLM //LLM on Vulkan needs command wrappers to account for vkallocs
 #define VULKAN_ENABLE_LRU_CACHE						1
 #define VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING		1
-#define VULKAN_FREEPAGE_FOR_TYPE					1
 #define VULKAN_PURGE_SHADER_MODULES					0
 #define VULKAN_SUPPORTS_DEDICATED_ALLOCATION		0
 #define VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2	1
@@ -58,6 +57,7 @@ public:
 	static bool LoadVulkanInstanceFunctions(VkInstance inInstance);
 	static void FreeVulkanLibrary();
 
+	static void InitDevice(FVulkanDevice* InDevice);
 	static void GetInstanceExtensions(FVulkanInstanceExtensionArray& OutExtensions);
 	static void GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers);
 	static void GetDeviceExtensions(FVulkanDevice* Device, FVulkanDeviceExtensionArray& OutExtensions);
@@ -66,9 +66,14 @@ public:
 
 	static void CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface);
 
+	static void* GetHardwareWindowHandle();
+
 	static bool SupportsBCTextureFormats() { return false; }
 	static bool SupportsASTCTextureFormats() { return true; }
 	static bool SupportsETC2TextureFormats() { return true; }
+	// GLES does not support R16Unorm, so all Android has to fallback to R16F instead
+	static bool SupportsR16UnormTextureFormat() { return false; }
+	
 	static bool SupportsQuerySurfaceProperties() { return false; }
 
 	static void SetupFeatureLevels()
@@ -123,9 +128,11 @@ public:
 	//#todo-rco: Detect Mali? Does the platform require depth to be written on stencil clear
 	static bool RequiresDepthWriteOnStencilClear() { return true; }
 
-	static bool FramePace(FVulkanDevice& Device, VkSwapchainKHR Swapchain, uint32 PresentID, VkPresentInfoKHR& Info);
+	static bool FramePace(FVulkanDevice& Device, void* WindowHandle, VkSwapchainKHR Swapchain, uint32 PresentID, VkPresentInfoKHR& Info);
 
-	static VkResult CreateSwapchainKHR(VkDevice Device, const VkSwapchainCreateInfoKHR* CreateInfo, const VkAllocationCallbacks* Allocator, VkSwapchainKHR* Swapchain);
+	static VkResult Present(VkQueue Queue, VkPresentInfoKHR& PresentInfo);
+
+	static VkResult CreateSwapchainKHR(void* WindowHandle, VkPhysicalDevice PhysicalDevice, VkDevice Device, const VkSwapchainCreateInfoKHR* CreateInfo, const VkAllocationCallbacks* Allocator, VkSwapchainKHR* Swapchain);
 
 	static void DestroySwapchainKHR(VkDevice Device, VkSwapchainKHR Swapchain, const VkAllocationCallbacks* Allocator);
 
@@ -167,6 +174,7 @@ protected:
 	static int32 UnsuccessfulRefreshRateFrames;
 	static TArray<TArray<ANSICHAR>> DebugVulkanDeviceLayers;
 	static TArray<TArray<ANSICHAR>> DebugVulkanInstanceLayers;
+	static TArray<TArray<ANSICHAR>> SwappyRequiredExtensions;
 
 	static int32 AFBCWorkaroundOption;
 	static int32 ASTCWorkaroundOption;

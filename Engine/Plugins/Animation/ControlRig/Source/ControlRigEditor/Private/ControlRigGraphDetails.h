@@ -205,12 +205,6 @@ private:
 	/** The color block widget */
 	TSharedPtr<SColorBlock> ColorBlock;
 
-	/** The color to change */
-	FLinearColor TargetColor;
-
-	/** The color array to change */
-	TArray<FLinearColor*> TargetColors;
-
 	/** Set to true if the UI is currently picking a color */
 	bool bIsPickingColor;
 
@@ -245,7 +239,7 @@ public:
 };
 
 /** Customization for editing a Control Rig node */
-class FControlRigGraphMathTypeDetails : public IPropertyTypeCustomization, public FGCObject
+class FControlRigGraphMathTypeDetails : public IPropertyTypeCustomization
 {
 public:
 
@@ -260,20 +254,16 @@ public:
 	virtual void CustomizeHeader(TSharedRef<class IPropertyHandle> InPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils) override;
 	virtual void CustomizeChildren(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils) override;
 
-	/** FGCObject interface */
-	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
-	virtual FString GetReferencerName() const override;
-
 protected:
 
-	FORCEINLINE_DEBUGGABLE bool GetPropertyChain(TSharedRef<class IPropertyHandle> InPropertyHandle, FEditPropertyChain& OutPropertyChain, TArray<int32> &OutPropertyArrayIndices, bool& bOutEnabled)
+	bool GetPropertyChain(TSharedRef<class IPropertyHandle> InPropertyHandle, FEditPropertyChain& OutPropertyChain, TArray<int32> &OutPropertyArrayIndices, bool& bOutEnabled)
 	{
 		OutPropertyChain.Empty();
 		OutPropertyArrayIndices.Reset();
 		bOutEnabled = false;
 		if (!ObjectsBeingCustomized.IsEmpty())
 		{
-			if (ObjectsBeingCustomized[0])
+			if (ObjectsBeingCustomized[0].Get())
 			{
 				TSharedPtr<class IPropertyHandle> ChainHandle = InPropertyHandle;
 				while (ChainHandle.IsValid() && ChainHandle->GetProperty() != nullptr)
@@ -296,7 +286,7 @@ protected:
 
 	// extracts the value for a nested property (for Example Settings.WorldTransform) from an outer owner
 	template<typename ValueType>
-	FORCEINLINE_DEBUGGABLE ValueType& ContainerUObjectToValueRef(UObject* InOwner, ValueType& InDefault, FEditPropertyChain& InPropertyChain, TArray<int32> &InPropertyArrayIndices) const
+	ValueType& ContainerUObjectToValueRef(UObject* InOwner, ValueType& InDefault, FEditPropertyChain& InPropertyChain, TArray<int32> &InPropertyArrayIndices) const
 	{
 		if (InPropertyChain.GetHead() == nullptr)
 		{
@@ -358,9 +348,9 @@ protected:
 			return Result;
 		}
 	
-		for(const TObjectPtr<UObject>& Object : ObjectsBeingCustomized)
+		for(const TWeakObjectPtr<UObject>& Object : ObjectsBeingCustomized)
 		{
-			if(Object && InPropertyHandle->IsValidHandle())
+			if(Object.Get() && InPropertyHandle->IsValidHandle())
 			{
 				static VectorType ZeroVector = VectorType();
 				const VectorType& Vector = ContainerUObjectToValueRef<VectorType>(Object.Get(), ZeroVector, PropertyChain, PropertyArrayIndices);
@@ -396,8 +386,8 @@ protected:
 		TArray<UObject*> ObjectsView;
 		for(int32 Index = 0; Index < ObjectsBeingCustomized.Num(); Index++)
 		{
-			const TObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
-			if (Object)
+			const TWeakObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
+			if (Object.Get())
 			{
 				ObjectsView.Add(Object.Get());
 			}
@@ -417,8 +407,8 @@ protected:
 
 		for(int32 Index = 0; Index < ObjectsBeingCustomized.Num(); Index++)
 		{
-			const TObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
-			if(Object && InPropertyHandle->IsValidHandle())
+			const TWeakObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
+			if(Object.Get() && InPropertyHandle->IsValidHandle())
 			{
 				static VectorType ZeroVector = VectorType();
 				VectorType& Vector = ContainerUObjectToValueRef<VectorType>(Object.Get(), ZeroVector, PropertyChain, PropertyArrayIndices);
@@ -441,10 +431,10 @@ protected:
 
 	// specializations for FVector and FVector4 at the end of this file
 	template<typename VectorType>
-	FORCEINLINE void ExtendVectorArgs(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr) {}
+	void ExtendVectorArgs(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr) {}
 
 	template<typename VectorType, int32 NumberOfComponents>
-	FORCEINLINE void CustomizeVector(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
+	void CustomizeVector(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 	{
 		typedef typename VectorType::FReal NumericType;
 		typedef SNumericVectorInputBox<NumericType, VectorType, NumberOfComponents> SLocalVectorInputBox;
@@ -518,9 +508,9 @@ protected:
 			return Result;
 		}
 		
-		for(const TObjectPtr<UObject>& Object : ObjectsBeingCustomized)
+		for(const TWeakObjectPtr<UObject>& Object : ObjectsBeingCustomized)
 		{
-			if(Object && InPropertyHandle->IsValidHandle())
+			if(Object.Get() && InPropertyHandle->IsValidHandle())
 			{
 				static RotationType ZeroRotation = RotationType();
 				const RotationType& Rotation = ContainerUObjectToValueRef<RotationType>(Object.Get(), ZeroRotation, PropertyChain, PropertyArrayIndices);
@@ -555,8 +545,8 @@ protected:
 		TArray<UObject*> ObjectsView;
 		for(int32 Index = 0; Index < ObjectsBeingCustomized.Num(); Index++)
 		{
-			const TObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
-			if (Object)
+			const TWeakObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
+			if (Object.Get())
 			{
 				ObjectsView.Add(Object.Get());
 			}
@@ -576,8 +566,8 @@ protected:
 
 		for(int32 Index = 0; Index < ObjectsBeingCustomized.Num(); Index++)
 		{
-			const TObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
-			if(Object && InPropertyHandle->IsValidHandle())
+			const TWeakObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
+			if(Object.Get() && InPropertyHandle->IsValidHandle())
 			{
 				static RotationType ZeroRotation = RotationType();
 				RotationType& Rotation = ContainerUObjectToValueRef<RotationType>(Object.Get(), ZeroRotation, PropertyChain, PropertyArrayIndices);
@@ -600,11 +590,11 @@ protected:
 
 	// specializations for FRotator and FQuat at the end of this file
 	template<typename RotationType>
-	FORCEINLINE void ExtendRotationArgs(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr) {}
+	void ExtendRotationArgs(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr) {}
 
 	// add the widget for a rotation (rotator or quat)
 	template<typename RotationType>
-	FORCEINLINE void CustomizeRotation(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
+	void CustomizeRotation(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 	{
 		FEditPropertyChain PropertyChain;
 		TArray<int32> PropertyArrayIndices;
@@ -642,7 +632,7 @@ protected:
 
 	// add the widget for a transform / euler transform
 	template<typename TransformType>
-	FORCEINLINE void CustomizeTransform(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
+	void CustomizeTransform(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 	{
 		FEditPropertyChain PropertyChain;
 		TArray<int32> PropertyArrayIndices;
@@ -671,9 +661,9 @@ protected:
 				return false;
 			}
 			
-			for(const TObjectPtr<UObject>& Object : ObjectsBeingCustomized)
+			for(const TWeakObjectPtr<UObject>& Object : ObjectsBeingCustomized)
 			{
-				if(Object && InPropertyHandle->IsValidHandle())
+				if(Object.Get() && InPropertyHandle->IsValidHandle())
 				{
 					const TransformType& Transform = ContainerUObjectToValueRef<TransformType>(Object.Get(), Identity, PropertyChain, PropertyArrayIndices);
 
@@ -727,9 +717,9 @@ protected:
 				return Result;
 			}
 			
-			for(const TObjectPtr<UObject>& Object : ObjectsBeingCustomized)
+			for(const TWeakObjectPtr<UObject>& Object : ObjectsBeingCustomized)
 			{
-				if(Object && InPropertyHandle->IsValidHandle())
+				if(Object.Get() && InPropertyHandle->IsValidHandle())
 				{
 					const TransformType& Transform = ContainerUObjectToValueRef<TransformType>(Object.Get(), Identity, PropertyChain, PropertyArrayIndices);
 					
@@ -779,8 +769,8 @@ protected:
 			TArray<UObject*> ObjectsView;
 			for(int32 Index = 0; Index < ObjectsBeingCustomized.Num(); Index++)
 			{
-				const TObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
-				if (Object)
+				const TWeakObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
+				if (Object.Get())
 				{
 					ObjectsView.Add(Object.Get());
 				}
@@ -800,8 +790,8 @@ protected:
 
 			for(int32 Index = 0; Index < ObjectsBeingCustomized.Num(); Index++)
 			{
-				const TObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
-				if(Object && InPropertyHandle->IsValidHandle())
+				const TWeakObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
+				if(Object.Get() && InPropertyHandle->IsValidHandle())
 				{
 					TransformType& Transform = ContainerUObjectToValueRef<TransformType>(Object.Get(), Identity, PropertyChain, PropertyArrayIndices);
 					TransformType PreviousTransform = Transform;
@@ -869,8 +859,8 @@ protected:
 			TArray<UObject*> ObjectsView;
 			for(int32 Index = 0; Index < ObjectsBeingCustomized.Num(); Index++)
 			{
-				const TObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
-				if (Object)
+				const TWeakObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
+				if (Object.Get())
 				{
 					ObjectsView.Add(Object.Get());
 				}
@@ -880,8 +870,8 @@ protected:
 			
 			for(int32 Index = 0; Index < ObjectsBeingCustomized.Num(); Index++)
 			{
-				const TObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
-				if(Object && InPropertyHandle->IsValidHandle())
+				const TWeakObjectPtr<UObject>& Object = ObjectsBeingCustomized[Index];
+				if(Object.Get() && InPropertyHandle->IsValidHandle())
 				{
 					TransformType& Transform = ContainerUObjectToValueRef<TransformType>(Object.Get(), Identity, PropertyChain, PropertyArrayIndices);
 					TransformType PreviousTransform = Transform;
@@ -936,17 +926,17 @@ protected:
 	UScriptStruct* ScriptStruct;
 	UControlRigBlueprint* BlueprintBeingCustomized;
 	URigVMGraph* GraphBeingCustomized;
-	TArray<TObjectPtr<UObject>> ObjectsBeingCustomized; 
+	TArray<TWeakObjectPtr<UObject>> ObjectsBeingCustomized; 
 };
 
 template<>
-FORCEINLINE bool FControlRigGraphMathTypeDetails::IsQuaternionBasedRotation<FEulerTransform>() { return false; }
+inline bool FControlRigGraphMathTypeDetails::IsQuaternionBasedRotation<FEulerTransform>() { return false; }
 
 template<>
-FORCEINLINE bool FControlRigGraphMathTypeDetails::IsQuaternionBasedRotation<FRotator>() { return false; }
+inline bool FControlRigGraphMathTypeDetails::IsQuaternionBasedRotation<FRotator>() { return false; }
 
 template<>
-FORCEINLINE void FControlRigGraphMathTypeDetails::ExtendVectorArgs<FVector>(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr)
+inline void FControlRigGraphMathTypeDetails::ExtendVectorArgs<FVector>(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr)
 {
 	using VectorType = FVector;
 	typedef typename VectorType::FReal NumericType;
@@ -969,7 +959,7 @@ FORCEINLINE void FControlRigGraphMathTypeDetails::ExtendVectorArgs<FVector>(TSha
 }
 
 template<>
-FORCEINLINE void FControlRigGraphMathTypeDetails::ExtendVectorArgs<FVector4>(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr)
+inline void FControlRigGraphMathTypeDetails::ExtendVectorArgs<FVector4>(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr)
 {
 	using VectorType = FVector4;
 	typedef typename VectorType::FReal NumericType;
@@ -1004,7 +994,7 @@ FORCEINLINE void FControlRigGraphMathTypeDetails::ExtendVectorArgs<FVector4>(TSh
 }
 
 template<>
-FORCEINLINE void FControlRigGraphMathTypeDetails::ExtendRotationArgs<FQuat>(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr)
+inline void FControlRigGraphMathTypeDetails::ExtendRotationArgs<FQuat>(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr)
 {
 	using RotationType = FQuat;
 	typedef typename RotationType::FReal NumericType;
@@ -1028,7 +1018,7 @@ FORCEINLINE void FControlRigGraphMathTypeDetails::ExtendRotationArgs<FQuat>(TSha
 }
 
 template<>
-FORCEINLINE void FControlRigGraphMathTypeDetails::ExtendRotationArgs<FRotator>(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr)
+inline void FControlRigGraphMathTypeDetails::ExtendRotationArgs<FRotator>(TSharedRef<class IPropertyHandle> InPropertyHandle, void* ArgumentsPtr)
 {
 	using RotationType = FRotator;
 	typedef typename RotationType::FReal NumericType;

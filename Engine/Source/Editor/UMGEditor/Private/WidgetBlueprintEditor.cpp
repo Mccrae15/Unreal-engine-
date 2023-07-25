@@ -38,6 +38,7 @@
 #include "Blueprint/WidgetTree.h"
 #include "WidgetBlueprintEditorUtils.h"
 #include "WorkflowOrientedApp/ApplicationMode.h"
+#include "BlueprintModes/WidgetDebugApplicationMode.h"
 #include "BlueprintModes/WidgetDesignerApplicationMode.h"
 #include "BlueprintModes/WidgetGraphApplicationMode.h"
 #include "WidgetModeManager.h"
@@ -547,8 +548,13 @@ void FWidgetBlueprintEditor::RegisterApplicationModes(const TArray<UBlueprint*>&
 
 		// Create the modes and activate one (which will populate with a real layout)
 		TArray< TSharedRef<FApplicationMode> > TempModeList;
-		TempModeList.Add(MakeShareable(new FWidgetDesignerApplicationMode(ThisPtr)));
-		TempModeList.Add(MakeShareable(new FWidgetGraphApplicationMode(ThisPtr)));
+		TempModeList.Add(MakeShared<FWidgetDesignerApplicationMode>(ThisPtr));
+		TempModeList.Add(MakeShared<FWidgetGraphApplicationMode>(ThisPtr));
+
+		if (FWidgetBlueprintApplicationModes::IsDebugModeEnabled())
+		{
+			TempModeList.Add(MakeShared<FWidgetDebugApplicationMode>(ThisPtr));
+		}
 
 		for ( TSharedRef<FApplicationMode>& AppMode : TempModeList )
 		{
@@ -917,17 +923,14 @@ void FWidgetBlueprintEditor::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 
 	// Tick the preview scene world.
-	if ( !GIntraFrameDebuggingGameThread )
+	// Allow full tick only if preview simulation is enabled and we're not currently in an active SIE or PIE session
+	if (bIsSimulateEnabled && GEditor->PlayWorld == nullptr && !GEditor->bIsSimulatingInEditor)
 	{
-		// Allow full tick only if preview simulation is enabled and we're not currently in an active SIE or PIE session
-		if ( bIsSimulateEnabled && GEditor->PlayWorld == nullptr && !GEditor->bIsSimulatingInEditor )
-		{
-			PreviewScene.GetWorld()->Tick(bIsRealTime ? LEVELTICK_All : LEVELTICK_TimeOnly, DeltaTime);
-		}
-		else
-		{
-			PreviewScene.GetWorld()->Tick(bIsRealTime ? LEVELTICK_ViewportsOnly : LEVELTICK_TimeOnly, DeltaTime);
-		}
+		PreviewScene.GetWorld()->Tick(bIsRealTime ? LEVELTICK_All : LEVELTICK_TimeOnly, DeltaTime);
+	}
+	else
+	{
+		PreviewScene.GetWorld()->Tick(bIsRealTime ? LEVELTICK_ViewportsOnly : LEVELTICK_TimeOnly, DeltaTime);
 	}
 
 	// Whenever animations change the generated class animations need to be updated since they are copied on compile.  This
@@ -998,6 +1001,7 @@ static bool MigratePropertyValue(UObject* SourceObject, UObject* DestinationObje
 		{
 			if (DestinationObject)
 			{
+				DestinationObject->SetFlags(RF_Transactional);
 				DestinationObject->Modify();
 			}
 			return true;
@@ -1073,6 +1077,7 @@ void FWidgetBlueprintEditor::MigrateFromChain(FEditPropertyChain* PropertyThatCh
 void FWidgetBlueprintEditor::PostUndo(bool bSuccessful)
 {
 	Super::PostUndo(bSuccessful);
+	InvalidatePreview();
 
 	OnWidgetBlueprintTransaction.Broadcast();
 }
@@ -1080,6 +1085,7 @@ void FWidgetBlueprintEditor::PostUndo(bool bSuccessful)
 void FWidgetBlueprintEditor::PostRedo(bool bSuccessful)
 {
 	Super::PostRedo(bSuccessful);
+	InvalidatePreview();
 
 	OnWidgetBlueprintTransaction.Broadcast();
 }
@@ -1211,7 +1217,18 @@ void FWidgetBlueprintEditor::NotifyWidgetAnimListChanged()
 	}
 }
 
+
 void FWidgetBlueprintEditor::OnWidgetAnimSequencerOpened(FName StatusBarWithDrawerName)
+{
+	OnWidgetAnimDrawerSequencerOpened(StatusBarWithDrawerName);
+}
+
+void FWidgetBlueprintEditor::OnWidgetAnimSequencerDismissed(const TSharedPtr<SWidget>& NewlyFocusedWidget)
+{
+	OnWidgetAnimDrawerSequencerDismissed(NewlyFocusedWidget);
+}
+
+void FWidgetBlueprintEditor::OnWidgetAnimDrawerSequencerOpened(FName StatusBarWithDrawerName)
 {
 	bIsSequencerDrawerOpen = true;
 
@@ -1238,10 +1255,8 @@ void FWidgetBlueprintEditor::OnWidgetAnimSequencerOpened(FName StatusBarWithDraw
 	}
 }
 
-void FWidgetBlueprintEditor::OnWidgetAnimSequencerDismissed(const TSharedPtr<SWidget>& NewlyFocusedWidget)
+void FWidgetBlueprintEditor::OnWidgetAnimDrawerSequencerDismissed(const TSharedPtr<SWidget>& NewlyFocusedWidget)
 {
-	bIsSequencerDrawerOpen = false;
-
 	if (TSharedPtr<ISequencer>& ActiveSequencer = GetSequencer())
 	{
 		UWidgetAnimation* WidgetAnimation = Cast<UWidgetAnimation>(ActiveSequencer->GetFocusedMovieSceneSequence());
@@ -1249,7 +1264,10 @@ void FWidgetBlueprintEditor::OnWidgetAnimSequencerDismissed(const TSharedPtr<SWi
 		{
 			ChangeViewedAnimation(*WidgetAnimation);
 		}
+		ActiveSequencer->GetSequencerWidget()->SetEnabled(false);
+		ActiveSequencer->SetAutoChangeMode(EAutoChangeMode::None);
 	}
+	bIsSequencerDrawerOpen = false;
 
 	for (TWeakPtr<ISequencer> SequencerPtr : Sequencers)
 	{
@@ -1260,6 +1278,28 @@ void FWidgetBlueprintEditor::OnWidgetAnimSequencerDismissed(const TSharedPtr<SWi
 	}
 
 	SetKeyboardFocus();
+}
+
+void FWidgetBlueprintEditor::OnWidgetAnimTabSequencerClosed(TSharedRef<SDockTab> ClosedTab)
+{
+	// Deselected any animation when closing the tab 
+	ChangeViewedAnimation(*UWidgetAnimation::GetNullAnimation());
+	if (TSharedPtr<ISequencer>& ActiveSequencer = GetSequencer())
+	{
+		ActiveSequencer->GetSequencerWidget()->SetEnabled(false);
+		ActiveSequencer->SetAutoChangeMode(EAutoChangeMode::None);
+	}
+}
+
+void FWidgetBlueprintEditor::OnWidgetAnimTabSequencerOpened()
+{
+	if (TSharedPtr<ISequencer>& ActiveSequencer = GetSequencer())
+	{
+		if (UWidgetAnimation* WidgetAnimation = Cast<UWidgetAnimation>(ActiveSequencer->GetFocusedMovieSceneSequence()))
+		{
+			ChangeViewedAnimation(*WidgetAnimation);
+		}
+	}
 }
 
 UWidgetBlueprint* FWidgetBlueprintEditor::GetWidgetBlueprintObj() const
@@ -1410,50 +1450,57 @@ void FWidgetBlueprintEditor::DockInLayoutClicked()
 void FWidgetBlueprintEditor::ChangeViewedAnimation( UWidgetAnimation& InAnimationToView )
 {
 	CurrentAnimation = &InAnimationToView;
-
-	if (TSharedPtr<ISequencer>& Sequencer = GetSequencer())
+	for (TWeakPtr<ISequencer> SequencerPtr : Sequencers)
 	{
-		Sequencer->ResetToNewRootSequence(InAnimationToView);
-		if (&InAnimationToView == UWidgetAnimation::GetNullAnimation())
+		if (SequencerPtr.IsValid())
 		{
-			Sequencer->GetSequencerWidget()->SetEnabled(false);
-			Sequencer->SetAutoChangeMode(EAutoChangeMode::None);
-		}
-		else
-		{
-			Sequencer->GetSequencerWidget()->SetEnabled(true);
-		}
-	}
-
-	TWeakPtr<SOverlay> SequencerOverlay = bIsSequencerDrawerOpen ? DrawerSequencerOverlay : TabSequencerOverlay;
-	TWeakPtr<STextBlock> NoAnimationTextBlock = bIsSequencerDrawerOpen ? NoAnimationTextBlockDrawer : NoAnimationTextBlockTab;
-	if (SequencerOverlay.IsValid() && NoAnimationTextBlock.IsValid())
-	{
-		TSharedPtr<SOverlay> SequencerOverlayPin = SequencerOverlay.Pin();
-		TSharedPtr<STextBlock> NoAnimationTextBlockPin = NoAnimationTextBlock.Pin();
-
-		if (&InAnimationToView == UWidgetAnimation::GetNullAnimation())
-		{
-			const FName CurveEditorTabName = FName(TEXT("SequencerGraphEditor"));
-			TSharedPtr<SDockTab> ExistingTab = GetToolkitHost()->GetTabManager()->FindExistingLiveTab(CurveEditorTabName);
-			if (ExistingTab)
+			TSharedPtr<ISequencer>  Sequencer = SequencerPtr.Pin();
+			Sequencer->ResetToNewRootSequence(InAnimationToView);
+			if (&InAnimationToView == UWidgetAnimation::GetNullAnimation())
 			{
-				ExistingTab->RequestCloseTab();
+				Sequencer->GetSequencerWidget()->SetEnabled(false);
+				Sequencer->SetAutoChangeMode(EAutoChangeMode::None);
 			}
-
-			// Disable sequencer from interaction
-			NoAnimationTextBlockPin->SetVisibility(EVisibility::Visible);
-			SequencerOverlayPin->SetVisibility(EVisibility::HitTestInvisible);
-		}
-		else
-		{
-			// Allow sequencer to be interacted with
-			NoAnimationTextBlockPin->SetVisibility(EVisibility::Collapsed);
-			SequencerOverlayPin->SetVisibility(EVisibility::SelfHitTestInvisible);
+			else
+			{
+				Sequencer->GetSequencerWidget()->SetEnabled(true);
+			}
 		}
 	}
+
+	auto ToggleSequencerInteraction = [this](TWeakPtr<SOverlay> SequencerOverlay, TWeakPtr<STextBlock> NoAnimationTextBlock, UWidgetAnimation& InAnimationToView)
+	{
+		if (SequencerOverlay.IsValid() && NoAnimationTextBlock.IsValid())
+		{
+			TSharedPtr<SOverlay> SequencerOverlayPin = SequencerOverlay.Pin();
+			TSharedPtr<STextBlock> NoAnimationTextBlockPin = NoAnimationTextBlock.Pin();
+
+			if (&InAnimationToView == UWidgetAnimation::GetNullAnimation())
+			{
+				const FName CurveEditorTabName = FName(TEXT("SequencerGraphEditor"));
+				TSharedPtr<SDockTab> ExistingTab = GetToolkitHost()->GetTabManager()->FindExistingLiveTab(CurveEditorTabName);
+				if (ExistingTab)
+				{
+					ExistingTab->RequestCloseTab();
+				}
+
+				// Disable sequencer from interaction
+				NoAnimationTextBlockPin->SetVisibility(EVisibility::Visible);
+				SequencerOverlayPin->SetVisibility(EVisibility::HitTestInvisible);
+			}
+			else
+			{
+				// Allow sequencer to be interacted with
+				NoAnimationTextBlockPin->SetVisibility(EVisibility::Collapsed);
+				SequencerOverlayPin->SetVisibility(EVisibility::SelfHitTestInvisible);
+			}
+		}
+	};
+	ToggleSequencerInteraction(TabSequencerOverlay, NoAnimationTextBlockTab, InAnimationToView);
+	ToggleSequencerInteraction(DrawerSequencerOverlay, NoAnimationTextBlockDrawer, InAnimationToView);
 
 	InvalidatePreview();
+	OnSelectedAnimationChanged.Broadcast();
 }
 
 void FWidgetBlueprintEditor::RefreshPreview()
@@ -1620,19 +1667,7 @@ void FWidgetBlueprintEditor::UpdatePreview(UBlueprint* InBlueprint, bool bInForc
 				PreviewUserWidget->SetPlayerContext(FLocalPlayerContext(Player));
 			}
 
-			UWidgetTree* LatestWidgetTree = PreviewBlueprint->WidgetTree;
-
-			// If there is no RootWidget, we look for a WidgetTree in the parents classes until we find one.
-			if (LatestWidgetTree->RootWidget == nullptr)
-			{
-				UWidgetBlueprintGeneratedClass* BGClass = PreviewUserWidget->GetWidgetTreeOwningClass();
-				// If we find a class that owns the widget tree, just make sure it's not our current class, that would imply we've removed all the widgets
-				// from this current tree, and if we use this classes compiled tree it's going to be the outdated old version.
-				if (BGClass && BGClass != PreviewBlueprint->GeneratedClass)
-				{
-					LatestWidgetTree = BGClass->GetWidgetTreeArchetype();
-				}
-			}
+			UWidgetTree* LatestWidgetTree = FWidgetBlueprintEditorUtils::FindLatestWidgetTree(PreviewBlueprint, PreviewUserWidget);
 
 			TMap<FName, UWidget*> NamedSlotContentToMerge;
 			UWidgetBlueprint* WidgetBPIt = PreviewBlueprint;

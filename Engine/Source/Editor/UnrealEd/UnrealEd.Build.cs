@@ -43,6 +43,7 @@ public class UnrealEd : ModuleRules
 				"MessagingCommon",
 				"MovieSceneCapture",
 				"NaniteTools",
+				"RenderResourceViewer",
 				"PlacementMode",
 				"Settings",
 				"SettingsEditor",
@@ -79,6 +80,7 @@ public class UnrealEd : ModuleRules
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"AssetDefinition",
 				"Core",
 				"CoreUObject",
 				"ApplicationCore",
@@ -121,6 +123,7 @@ public class UnrealEd : ModuleRules
 				"SubobjectEditor",
 				"PhysicsUtilities",
 				"ToolWidgets",
+				"AssetTools",
 			}
 		);
 
@@ -229,7 +232,6 @@ public class UnrealEd : ModuleRules
 				"TextureEditor",
 				"Cascade",
 				"UMGEditor",
-				"AssetTools",
 				"ClassViewer",
 				"StructViewer",
 				"CollectionManager",
@@ -254,6 +256,7 @@ public class UnrealEd : ModuleRules
 				"MeshUtilities",
 				"MergeActors",
 				"NaniteTools",
+				"RenderResourceViewer",
 				"ProjectSettingsViewer",
 				"BehaviorTreeEditor",
 				"ViewportSnapping",
@@ -270,7 +273,8 @@ public class UnrealEd : ModuleRules
 				"WorldPartitionEditor",
 				"CSVtoSVG",
 				"SourceControlWindowExtender",
-				"AnimationSettings"
+				"AnimationSettings",
+				"GameplayDebuggerEditor"
 			}
 		);
 
@@ -326,7 +330,6 @@ public class UnrealEd : ModuleRules
 				"BlueprintGraph",
 				"AddContentDialog",
 				"MeshUtilities",
-				"AssetTools",
 				"KismetCompiler",
 				"NavigationSystem",
 				"GameplayTasks",
@@ -336,6 +339,7 @@ public class UnrealEd : ModuleRules
 				"UncontrolledChangelists",
 				"PropertyEditor",
 				"ClassViewer",
+				"EditorSubsystem"
 			}
 		);
 

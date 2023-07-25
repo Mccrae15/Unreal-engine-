@@ -9,7 +9,10 @@
 #include "MVVM/Extensions/IOutlinerExtension.h"
 #include "MVVM/Extensions/ITrackAreaExtension.h"
 #include "MVVM/Extensions/ITrackLaneExtension.h"
+#include "MVVM/ViewModels/CategoryModel.h"
 #include "MVVM/ViewModels/ChannelModel.h"
+#include "MVVM/ViewModels/FolderModel.h"
+#include "MVVM/ViewModels/ObjectBindingModel.h"
 #include "MVVM/ViewModels/TrackModel.h"
 #include "MVVM/ViewModels/ViewModel.h"
 #include "MVVM/ViewModels/ViewModelHierarchy.h"
@@ -189,11 +192,17 @@ void FSequencerEntityWalker::VisitAnyChannels(const ISequencerEntityVisitor& Vis
 		const IOutlinerExtension* OutlinerItem = InNode->CastThis<IOutlinerExtension>();
 		const bool bIsExpanded = !OutlinerItem || OutlinerItem->IsExpanded();
 
+		if ((InNode->IsA<FFolderModel>() || InNode->IsA<FObjectBindingModel>()) && !bIsExpanded)
+		{
+			return;
+		}
+
 		for (TSharedPtr<FViewModel> ChildNode : InNode->GetChildren(EViewModelListType::Outliner))
 		{
 			VisitAnyChannels(Visitor, ChildNode.ToSharedRef(), bAnyParentCollapsed || !bIsExpanded);
 		}
 	}
+
 }
 
 void FSequencerEntityWalker::VisitChannel(const ISequencerEntityVisitor& Visitor, const UE::Sequencer::TViewModelPtr<UE::Sequencer::FChannelModel>& Channel)

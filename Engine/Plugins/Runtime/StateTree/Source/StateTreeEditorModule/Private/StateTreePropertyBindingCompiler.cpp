@@ -2,9 +2,9 @@
 #include "StateTreePropertyBindingCompiler.h"
 #include "IPropertyAccessEditor.h"
 #include "PropertyPathHelpers.h"
-#include "StateTreeTypes.h"
-#include "StateTreePropertyBindings.h"
 #include "StateTreeCompiler.h"
+#include "StateTreeCompilerLog.h"
+#include "StateTreeEditorPropertyBindings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StateTreePropertyBindingCompiler)
 
@@ -137,8 +137,8 @@ bool FStateTreePropertyBindingCompiler::CompileBatch(const FStateTreeBindableStr
 	{
 		FStateTreePropCopyBatch& Batch = PropertyBindings->CopyBatches.AddDefaulted_GetRef();
 		Batch.TargetStruct = TargetStruct;
-		Batch.BindingsBegin = BindingsBegin;
-		Batch.BindingsEnd = BindingsEnd;
+		Batch.BindingsBegin = IntCastChecked<uint16>(BindingsBegin);
+		Batch.BindingsEnd = IntCastChecked<uint16>(BindingsEnd);
 		OutBatchIndex = PropertyBindings->CopyBatches.Num() - 1;
 	}
 
@@ -590,15 +590,31 @@ EPropertyAccessCompatibility FStateTreePropertyBindingCompiler::GetPropertyCompa
 		return (SourceProperty->PropertyClass->IsChildOf(TargetProperty->PropertyClass)) ? EPropertyAccessCompatibility::Compatible : EPropertyAccessCompatibility::Incompatible;
 	}
 
-	// Extract underlying types for enums
+
+	// When copying to an enum property, expect FromProperty to be the same enum.
+	auto GetPropertyEnum = [](const FProperty* Property) -> const UEnum*
+	{
+		if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+		{
+			return ByteProperty->GetIntPropertyEnum();
+		}
+		if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+		{
+			return EnumProperty->GetEnum();
+		}
+		return nullptr;
+	};
+	
+	if (const UEnum* ToPropertyEnum = GetPropertyEnum(ToProperty))
+	{
+		const UEnum* FromPropertyEnum = GetPropertyEnum(FromProperty);
+		return (ToPropertyEnum == FromPropertyEnum) ? EPropertyAccessCompatibility::Compatible : EPropertyAccessCompatibility::Incompatible;
+	}
+	
+	// Allow source enums to be promoted to numbers.
 	if (const FEnumProperty* EnumPropertyA = CastField<const FEnumProperty>(FromProperty))
 	{
 		FromProperty = EnumPropertyA->GetUnderlyingProperty();
-	}
-
-	if (const FEnumProperty* EnumPropertyB = CastField<const FEnumProperty>(ToProperty))
-	{
-		ToProperty = EnumPropertyB->GetUnderlyingProperty();
 	}
 
 	if (FromProperty->SameType(ToProperty))

@@ -5,12 +5,12 @@
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
 
-#include "DetailsCustomizations/UVUnwrapToolCustomizations.h"
 #include "DetailsCustomizations/UVTransformToolCustomizations.h"
+#include "DetailsCustomizations/UVEditorSeamToolCustomizations.h"
 
-#include "Operators/UVEditorRecomputeUVsOp.h"
 #include "UVEditorTransformTool.h"
 #include "Operators/UVEditorUVTransformOp.h"
+#include "UVEditorSeamTool.h"
 
 #define LOCTEXT_NAMESPACE "FUVEditorToolsEditorOnlyModule"
 
@@ -51,10 +51,6 @@ void FUVEditorToolsEditorOnlyModule::OnPostEngineInit()
 	// Register details view customizations
 	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	/// Unwrap
-	PropertyModule.RegisterCustomClassLayout("UVEditorRecomputeUVsToolProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FUVEditorRecomputeUVsToolDetails::MakeInstance));
-	ClassesToUnregisterOnShutdown.Add(UUVEditorRecomputeUVsToolProperties::StaticClass()->GetFName());
-
 	// Transform
 	PropertyModule.RegisterCustomClassLayout(UUVEditorUVTransformProperties::StaticClass()->GetFName(),
 		                                     FOnGetDetailCustomizationInstance::CreateStatic(&FUVEditorUVTransformToolDetails::MakeInstance));
@@ -75,7 +71,10 @@ void FUVEditorToolsEditorOnlyModule::OnPostEngineInit()
 		FOnGetDetailCustomizationInstance::CreateStatic(&FUVEditorUVDistributeToolDetails::MakeInstance));
 	ClassesToUnregisterOnShutdown.Add(UUVEditorUVDistributeProperties::StaticClass()->GetFName());
 
-
+	// Seam Tool
+	PropertyModule.RegisterCustomClassLayout(UUVEditorSeamToolProperties::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FUVEditorSeamToolPropertiesDetails::MakeInstance));
+	ClassesToUnregisterOnShutdown.Add(UUVEditorSeamToolProperties::StaticClass()->GetFName());
 }
 
 #undef LOCTEXT_NAMESPACE

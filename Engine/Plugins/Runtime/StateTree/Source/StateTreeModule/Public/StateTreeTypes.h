@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "StructView.h"
 #include "PropertyBag.h"
 #include "GameplayTagContainer.h"
 #include "StateTreeTypes.generated.h"
@@ -13,8 +12,16 @@ STATETREEMODULE_API DECLARE_LOG_CATEGORY_EXTERN(LogStateTree, Warning, All);
 #define WITH_STATETREE_DEBUG (!(UE_BUILD_SHIPPING || UE_BUILD_SHIPPING_WITH_EDITOR || UE_BUILD_TEST) && 1)
 #endif // WITH_STATETREE_DEBUG
 
-/** Status describing current ticking state. */
-UENUM()
+namespace UE::StateTree
+{
+	inline constexpr int32 MaxConditionIndent = 4;
+
+	inline const FName SchemaTag(TEXT("Schema"));
+}; // UE::StateTree
+
+
+/** Status describing current run status of a State Tree. */
+UENUM(BlueprintType)
 enum class EStateTreeRunStatus : uint8
 {
 	/** Tree is still running. */
@@ -28,17 +35,6 @@ enum class EStateTreeRunStatus : uint8
 	
 	/** Status not set. */
 	Unset,
-};
-
-/** Evaluator evaluation type. */
-UENUM()
-enum class EStateTreeEvaluationType : uint8
-{
-	/** Called during selection process on states that have not been visited yet. */
-	PreSelect,
-	
-	/** Called during tick on active states. */
-    Tick,
 };
 
 /** State change type. Passed to EnterState() and ExitState() to indicate how the state change affects the state and Evaluator or Task is on. */
@@ -59,20 +55,22 @@ enum class EStateTreeStateChangeType : uint8
 UENUM()
 enum class EStateTreeTransitionType : uint8
 {
-	/** Stop StateTree and mark execution succeeded. */
+	/** No transition will take place. */
+	None,
+
+	/** Stop State Tree or sub-tree and mark execution succeeded. */
 	Succeeded,
 	
-	/** Stop StateTree and mark execution failed. */
+	/** Stop State Tree or sub-tree and mark execution failed. */
 	Failed,
 	
-	/** Transition to specified state. */
+	/** Transition to the specified state. */
 	GotoState,
 	
-	/** No transition. */
-	NotSet,
-	
-	/** Goto next sibling state. */
+	/** Transition to the next sibling state. */
 	NextState,
+
+	NotSet UE_DEPRECATED(5.0, "Use None instead."),
 };
 
 /** Operand between conditions */
@@ -105,14 +103,6 @@ enum class EStateTreeStateType : uint8
 	Subtree,
 };
 
-namespace UE::StateTree
-{
-	constexpr int32 MaxConditionIndent = 4;
-
-	const FName SchemaTag(TEXT("Schema"));
-}; // UE::StateTree
-
-
 
 /** Transitions trigger. */
 UENUM()
@@ -129,15 +119,42 @@ enum class EStateTreeTransitionTrigger : uint8
 	/** Try trigger transition when a state failed. */
     OnStateFailed = 0x2,
 
-	/** Try trigger transition each StateTree tick. */
+	/** Try trigger transition each State Tree tick. */
     OnTick = 0x4,
 	
-	/** Try trigger transition on specific event. */
+	/** Try trigger transition on specific State Tree event. */
 	OnEvent = 0x8,
 
 	MAX
 };
 ENUM_CLASS_FLAGS(EStateTreeTransitionTrigger)
+
+
+/** Transition priority. When multiple transitions trigger at the same time, the first transition of highest priority is selected. */
+UENUM(BlueprintType)
+enum class EStateTreeTransitionPriority : uint8
+{
+	None UMETA(Hidden),
+	
+	/** Normal priority. */
+	Normal,
+	
+	/** Medium priority. */
+	Medium,
+	
+	/** High priority. */
+	High,
+	
+	/** Critical priority. */
+	Critical,
+};
+
+inline bool operator<(const EStateTreeTransitionPriority Lhs, const EStateTreeTransitionPriority Rhs) { return static_cast<uint8>(Lhs) < static_cast<uint8>(Rhs); }
+inline bool operator>(const EStateTreeTransitionPriority Lhs, const EStateTreeTransitionPriority Rhs) { return static_cast<uint8>(Lhs) > static_cast<uint8>(Rhs); }
+inline bool operator<=(const EStateTreeTransitionPriority Lhs, const EStateTreeTransitionPriority Rhs) { return static_cast<uint8>(Lhs) <= static_cast<uint8>(Rhs); }
+inline bool operator>=(const EStateTreeTransitionPriority Lhs, const EStateTreeTransitionPriority Rhs) { return static_cast<uint8>(Lhs) >= static_cast<uint8>(Rhs); }
+inline bool operator==(const EStateTreeTransitionPriority Lhs, const EStateTreeTransitionPriority Rhs) { return static_cast<uint8>(Lhs) == static_cast<uint8>(Rhs); }
+inline bool operator!=(const EStateTreeTransitionPriority Lhs, const EStateTreeTransitionPriority Rhs) { return static_cast<uint8>(Lhs) != static_cast<uint8>(Rhs); }
 
 /** Handle to a StateTree state */
 USTRUCT(BlueprintType)
@@ -152,11 +169,25 @@ struct STATETREEMODULE_API FStateTreeStateHandle
 	static const FStateTreeStateHandle Invalid;
 	static const FStateTreeStateHandle Succeeded;
 	static const FStateTreeStateHandle Failed;
+	static const FStateTreeStateHandle Root;
 
 	FStateTreeStateHandle() = default;
 	explicit FStateTreeStateHandle(uint16 InIndex) : Index(InIndex) {}
 
 	bool IsValid() const { return Index != InvalidIndex; }
+	bool IsCompletionState() const { return Index == SucceededIndex || Index == FailedIndex; }
+	EStateTreeRunStatus ToCompletionStatus() const
+	{
+		if (Index == SucceededIndex)
+		{
+			return EStateTreeRunStatus::Succeeded;
+		}
+		else if (Index == FailedIndex)
+		{
+			return EStateTreeRunStatus::Failed;
+		}
+		return EStateTreeRunStatus::Unset;
+	}
 
 	bool operator==(const FStateTreeStateHandle& RHS) const { return Index == RHS.Index; }
 	bool operator!=(const FStateTreeStateHandle& RHS) const { return Index != RHS.Index; }
@@ -211,11 +242,21 @@ struct STATETREEMODULE_API FStateTreeIndex16
 	bool operator==(const FStateTreeIndex16& RHS) const { return Value == RHS.Value; }
 	bool operator!=(const FStateTreeIndex16& RHS) const { return Value != RHS.Value; }
 
+	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot);
+
 protected:
 	UPROPERTY()
 	uint16 Value = InvalidValue;
 };
-	
+
+template<>
+struct TStructOpsTypeTraits<FStateTreeIndex16> : public TStructOpsTypeTraitsBase2<FStateTreeIndex16>
+{
+	enum
+	{
+		WithStructuredSerializeFromMismatchedTag = true,
+	};
+};
 
 /** uint8 index that can be invalid. */
 USTRUCT(BlueprintType)
@@ -252,11 +293,48 @@ struct STATETREEMODULE_API FStateTreeIndex8
 	bool operator==(const FStateTreeIndex8& RHS) const { return Value == RHS.Value; }
 	bool operator!=(const FStateTreeIndex8& RHS) const { return Value != RHS.Value; }
 
+	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot);
+	
 protected:
 	UPROPERTY()
 	uint8 Value = InvalidValue;
 };
 
+template<>
+struct TStructOpsTypeTraits<FStateTreeIndex8> : public TStructOpsTypeTraitsBase2<FStateTreeIndex8>
+{
+	enum
+	{
+		WithStructuredSerializeFromMismatchedTag = true,
+	};
+};
+
+
+/** Transition request */
+USTRUCT(BlueprintType)
+struct STATETREEMODULE_API FStateTreeTransitionRequest
+{
+	GENERATED_BODY()
+
+	FStateTreeTransitionRequest() = default;
+	FStateTreeTransitionRequest(const FStateTreeStateHandle InTargetState, const EStateTreeTransitionPriority InPriority = EStateTreeTransitionPriority::Normal)
+		: TargetState(InTargetState)
+		, Priority(InPriority)
+	{
+	}
+
+	/** Source state of the transition. Filled in by the StateTree execution context. */
+	UPROPERTY(EditDefaultsOnly, Category = "Default")
+	FStateTreeStateHandle SourceState;
+
+	/** Target state of the transition. */
+	UPROPERTY(EditDefaultsOnly, Category = "Default")
+	FStateTreeStateHandle TargetState;
+	
+	/** Priority of the transition. */
+	UPROPERTY(EditDefaultsOnly, Category = "Default")
+	EStateTreeTransitionPriority Priority = EStateTreeTransitionPriority::Normal;
+};
 
 /**
  * Describes an array of active states in a State Tree.
@@ -336,7 +414,7 @@ struct STATETREEMODULE_API FStateTreeActiveStates
 				States[Index] = FStateTreeStateHandle::Invalid;
 			}
 		}
-		NumStates = NewNum;
+		NumStates = static_cast<uint8>(NewNum);
 	}
 
 	/** Returns true of the array contains specified state. */
@@ -413,6 +491,68 @@ struct STATETREEMODULE_API FStateTreeActiveStates
 };
 
 /**
+ * Time duration with random variance. Stored compactly as two uint16s, which gives time range of about 650 seconds.
+ * The variance is symmetric (+-) around the specified duration.
+ */
+USTRUCT()
+struct STATETREEMODULE_API FStateTreeRandomTimeDuration
+{
+	GENERATED_BODY()
+
+	/** Reset duration to empty. */
+	void Reset()
+	{
+		Duration = 0;
+		RandomVariance = 0;
+	}
+
+	/** Sets the time duration with random variance. */
+	void Set(const float InDuration, const float InRandomVariance)
+	{
+		Duration = Quantize(InDuration);
+    	RandomVariance = Quantize(InRandomVariance);
+	}
+
+	/** @return the fixed duration. */
+	float GetDuration() const
+    {
+		return Duration / Scale;
+    }
+
+	/** @return the maximum random variance. */
+	float GetRandomVariance() const
+	{
+		return Duration / Scale;
+	}
+
+	/** @return True of the duration is empty (always returns 0). */
+	bool IsEmpty() const { return Duration == 0 && RandomVariance == 0; }
+	
+	/** @return Returns random duration around Duration, varied by +-RandomVariation. */
+	float GetRandomDuration() const
+	{
+		const int32 MinVal = FMath::Max(0, static_cast<int32>(Duration) - static_cast<int32>(RandomVariance));
+		const int32 MaxVal = static_cast<int32>(Duration) + static_cast<int32>(RandomVariance);
+		return FMath::RandRange(MinVal, MaxVal) / Scale;
+	}
+	
+protected:
+
+	static constexpr float Scale = 100.0f;
+
+	uint16 Quantize(const float Value) const
+	{
+		return (uint16)FMath::Clamp(FMath::RoundToInt32(Value * Scale), 0, (int32)MAX_uint16);
+	}
+	
+	UPROPERTY(EditDefaultsOnly, Category = Default)
+	uint16 Duration = 0;
+
+	UPROPERTY(EditDefaultsOnly, Category = Default)
+	uint16 RandomVariance = 0;
+};
+
+/**
  * Describes a state tree transition. Source is the state where the transition started, Target describes the state where the transition pointed at,
  * and Next describes the selected state. The reason Transition and Next are different is that Transition state can be a selector state,
  * in which case the children will be visited until a leaf state is found, which will be the next state.
@@ -424,29 +564,48 @@ struct STATETREEMODULE_API FStateTreeTransitionResult
 
 	FStateTreeTransitionResult() = default;
 
+	void Reset()
+	{
+		CurrentActiveStates.Reset();
+		CurrentRunStatus = EStateTreeRunStatus::Unset;
+		TargetState = FStateTreeStateHandle::Invalid;
+		NextActiveStates.Reset();
+		CurrentState = FStateTreeStateHandle::Invalid;
+		ChangeType = EStateTreeStateChangeType::Changed; 
+		Priority = EStateTreeTransitionPriority::None; 
+	}
+	
 	/** Current active states, where the transition started. */
-	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
+	UPROPERTY(EditDefaultsOnly, Category = "Default", BlueprintReadOnly)
 	FStateTreeActiveStates CurrentActiveStates;
 
 	/** Current Run status. */
-	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
+	UPROPERTY(EditDefaultsOnly, Category = "Default", BlueprintReadOnly)
 	EStateTreeRunStatus CurrentRunStatus = EStateTreeRunStatus::Unset;
 
+	/** Transition source state */
+	UPROPERTY(EditDefaultsOnly, Category = "Default", BlueprintReadOnly)
+	FStateTreeStateHandle SourceState = FStateTreeStateHandle::Invalid;
+
 	/** Transition target state */
-	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
+	UPROPERTY(EditDefaultsOnly, Category = "Default", BlueprintReadOnly)
 	FStateTreeStateHandle TargetState = FStateTreeStateHandle::Invalid;
 
 	/** States selected as result of the transition. */
-	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
+	UPROPERTY(EditDefaultsOnly, Category = "Default", BlueprintReadOnly)
 	FStateTreeActiveStates NextActiveStates;
 
-	/** The current state being executed. On enter/exit callbacks this is the state of the task or evaluator. */
-	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
+	/** The current state being executed. On enter/exit callbacks this is the state of the task. */
+	UPROPERTY(EditDefaultsOnly, Category = "Default", BlueprintReadOnly)
 	FStateTreeStateHandle CurrentState = FStateTreeStateHandle::Invalid;
 
 	/** If the change type is Sustained, then the CurrentState was reselected, or if Changed then the state was just activated. */
-	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
+	UPROPERTY(EditDefaultsOnly, Category = "Default", BlueprintReadOnly)
 	EStateTreeStateChangeType ChangeType = EStateTreeStateChangeType::Changed; 
+
+	/** Priority of the transition that caused the state change. */
+	UPROPERTY(EditDefaultsOnly, Category = "Default", BlueprintReadOnly)
+	EStateTreeTransitionPriority Priority = EStateTreeTransitionPriority::None; 
 };
 
 
@@ -458,6 +617,12 @@ struct STATETREEMODULE_API FCompactStateTransition
 {
 	GENERATED_BODY()
 
+	/** @return True if the transition has delay. */
+	bool HasDelay() const
+	{
+		return !Delay.IsEmpty();
+	}
+	
 	/** Transition event tag, used when trigger type is event. */
 	UPROPERTY()
 	FGameplayTag EventTag;
@@ -470,17 +635,17 @@ struct STATETREEMODULE_API FCompactStateTransition
 	UPROPERTY()
 	FStateTreeStateHandle State = FStateTreeStateHandle::Invalid;
 
-	/** Type of the transition. */
+	/** Transition delay. */
 	UPROPERTY()
-	EStateTreeTransitionType Type = EStateTreeTransitionType::NotSet;
- 
+	FStateTreeRandomTimeDuration Delay;
+	
 	/* Type of the transition trigger. */
 	UPROPERTY()
 	EStateTreeTransitionTrigger Trigger = EStateTreeTransitionTrigger::None;
 
-	/** The time the conditions need to hold true for the transition to become active, in tenths of a seconds. */
+	/* Priority of the transition. */
 	UPROPERTY()
-	uint8 GateDelay = 0;
+	EStateTreeTransitionPriority Priority = EStateTreeTransitionPriority::Normal;
 
 	/** Number of conditions to test. */
 	UPROPERTY()
@@ -495,45 +660,76 @@ struct STATETREEMODULE_API FCompactStateTreeState
 {
 	GENERATED_BODY()
 
+	FCompactStateTreeState()
+		: bHasTransitionTasks(false)
+	{
+	}
+	
 	/** @return Index to the next sibling state. */
 	uint16 GetNextSibling() const { return ChildrenEnd; }
 
 	/** @return True if the state has any child states */
 	bool HasChildren() const { return ChildrenEnd > ChildrenBegin; }
 
+	/** Name of the State */
 	UPROPERTY()
-	FName Name;											// Name of the State
+	FName Name;
 
+	/** Linked state handle if the state type is linked state. */
 	UPROPERTY()
-	FStateTreeStateHandle LinkedState = FStateTreeStateHandle::Invalid;	// Linked state 
+	FStateTreeStateHandle LinkedState = FStateTreeStateHandle::Invalid; 
 
+	/** Parent state handle, invalid if root state. */
 	UPROPERTY()
-	FStateTreeStateHandle Parent = FStateTreeStateHandle::Invalid;		// Parent state
-	UPROPERTY()
-	uint16 ChildrenBegin = 0;							// Index to first child state
-	UPROPERTY()
-	uint16 ChildrenEnd = 0;								// Index one past the last child state
+	FStateTreeStateHandle Parent = FStateTreeStateHandle::Invalid;
 
+	/** Index to first child state */
 	UPROPERTY()
-	uint16 EnterConditionsBegin = 0;					// Index to first state enter condition
-	UPROPERTY()
-	uint16 TransitionsBegin = 0;						// Index to first transition
-	UPROPERTY()
-	uint16 TasksBegin = 0;								// Index to first task
+	uint16 ChildrenBegin = 0;
 
+	/** Index one past the last child state. */
 	UPROPERTY()
-	FStateTreeIndex16 ParameterInstanceIndex = FStateTreeIndex16::Invalid;	// Index to state instance data
-	UPROPERTY()
-	FStateTreeIndex16 ParameterDataViewIndex = FStateTreeIndex16::Invalid;	// Data view index of the input parameters
+	uint16 ChildrenEnd = 0;
 
+	/** Index to first state enter condition */
 	UPROPERTY()
-	uint8 EnterConditionsNum = 0;						// Number of enter conditions
+	uint16 EnterConditionsBegin = 0;
+
+	/** Index to first transition */
 	UPROPERTY()
-	uint8 TransitionsNum = 0;							// Number of transitions
+	uint16 TransitionsBegin = 0;
+
+	/** Index to first task */
 	UPROPERTY()
-	uint8 TasksNum = 0;									// Number of tasks
+	uint16 TasksBegin = 0;
+
+	/** Index to state instance data. */
 	UPROPERTY()
-	EStateTreeStateType Type = EStateTreeStateType::State; 
+	FStateTreeIndex16 ParameterInstanceIndex = FStateTreeIndex16::Invalid;
+
+	/** Data view index of the input parameters. */
+	UPROPERTY()
+	FStateTreeIndex16 ParameterDataViewIndex = FStateTreeIndex16::Invalid;
+
+	/** Number of enter conditions */
+	UPROPERTY()
+	uint8 EnterConditionsNum = 0;
+
+	/** Number of transitions */
+	UPROPERTY()
+	uint8 TransitionsNum = 0;
+
+	/** Number of tasks */
+	UPROPERTY()
+	uint8 TasksNum = 0;
+
+	/** Type of the sate */
+	UPROPERTY()
+	EStateTreeStateType Type = EStateTreeStateType::State;
+
+	/** True if the state contains tasks that should be called during transition handling. */
+	UPROPERTY()
+	uint8 bHasTransitionTasks : 1;
 };
 
 USTRUCT()
@@ -566,11 +762,11 @@ struct STATETREEMODULE_API FStateTreeExternalDataHandle
 
 	static const FStateTreeExternalDataHandle Invalid;
 	
-	static bool IsValidIndex(const int32 Index) { return FStateTreeIndex8::IsValidIndex(Index); }
+	static bool IsValidIndex(const int32 Index) { return FStateTreeIndex16::IsValidIndex(Index); }
 	bool IsValid() const { return DataViewIndex.IsValid(); }
 
 	UPROPERTY()
-	FStateTreeIndex8 DataViewIndex = FStateTreeIndex8::Invalid;
+	FStateTreeIndex16 DataViewIndex = FStateTreeIndex16::Invalid;
 };
 
 /**
@@ -727,14 +923,14 @@ struct STATETREEMODULE_API FStateTreeStructRef
 
 	/** Returns mutable reference to the struct, this getter assumes that all data is valid. */
 	template <typename T>
-    T& GetMutable() const
+    T& GetMutable()
 	{
 		return Data.template GetMutable<T>();
 	}
 
 	/** Returns mutable pointer to the struct, or nullptr if cast is not valid. */
 	template <typename T>
-    T* GetMutablePtr() const
+    T* GetMutablePtr()
 	{
 		return Data.template GetMutablePtr<T>();
 	}
@@ -747,4 +943,248 @@ struct STATETREEMODULE_API FStateTreeStructRef
 
 protected:
 	FStructView Data;
+};
+
+
+/**
+ * Short lived pointer to an UOBJECT() or USTRUCT().
+ * The data view expects a type (UStruct) when you pass in a valid memory. In case of null, the type can be empty too.
+ */
+struct STATETREEMODULE_API FStateTreeDataView
+{
+	FStateTreeDataView() = default;
+
+	// USTRUCT() constructor.
+	FStateTreeDataView(const UScriptStruct* InScriptStruct, uint8* InMemory) : Struct(InScriptStruct), Memory(InMemory)
+	{
+		// Must have type with valid pointer.
+		check(!Memory || (Memory && Struct));
+	}
+
+	// UOBJECT() constructor.
+	FStateTreeDataView(UObject* Object) : Struct(Object ? Object->GetClass() : nullptr), Memory(reinterpret_cast<uint8*>(Object))
+	{
+		// Must have type with valid pointer.
+		check(!Memory || (Memory && Struct));
+	}
+
+	// USTRUCT() from a StructView.
+	FStateTreeDataView(FStructView StructView) : Struct(StructView.GetScriptStruct()), Memory(StructView.GetMutableMemory())
+	{
+		// Must have type with valid pointer.
+		check(!Memory || (Memory && Struct));
+	}
+
+	/**
+	 * Check is the view is valid (both pointer and type are set). On valid views it is safe to call the Get<>() methods returning a reference.
+	 * @return True if the view is valid.
+	*/
+	bool IsValid() const
+	{
+		return Memory != nullptr && Struct != nullptr;
+	}
+
+	/*
+	 * UOBJECT() getters (reference & pointer, const & mutable)
+	 */
+	template <typename T>
+    typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, const T&>::Type Get() const
+	{
+		check(Memory != nullptr);
+		check(Struct != nullptr);
+		check(Struct->IsChildOf(T::StaticClass()));
+		return *((T*)Memory);
+	}
+
+	template <typename T>
+	typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, T&>::Type GetMutable() const
+	{
+		check(Memory != nullptr);
+		check(Struct != nullptr);
+		check(Struct->IsChildOf(T::StaticClass()));
+		return *((T*)Memory);
+	}
+
+	template <typename T>
+	typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, const T*>::Type GetPtr() const
+	{
+		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
+		check(!Memory || (Memory && Struct));
+		check(!Struct || Struct->IsChildOf(T::StaticClass()));
+		return ((T*)Memory);
+	}
+
+	template <typename T>
+    typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, T*>::Type GetMutablePtr() const
+	{
+		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
+		check(!Memory || (Memory && Struct));
+		check(!Struct || Struct->IsChildOf(T::StaticClass()));
+		return ((T*)Memory);
+	}
+
+	/*
+	 * USTRUCT() getters (reference & pointer, const & mutable)
+	 */
+	template <typename T>
+	typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, const T&>::Type Get() const
+	{
+		check(Memory != nullptr);
+		check(Struct != nullptr);
+		check(Struct->IsChildOf(T::StaticStruct()));
+		return *((T*)Memory);
+	}
+
+	template <typename T>
+    typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, T&>::Type GetMutable() const
+	{
+		check(Memory != nullptr);
+		check(Struct != nullptr);
+		check(Struct->IsChildOf(T::StaticStruct()));
+		return *((T*)Memory);
+	}
+
+	template <typename T>
+    typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, const T*>::Type GetPtr() const
+	{
+		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
+		check(!Memory || (Memory && Struct));
+		check(!Struct || Struct->IsChildOf(T::StaticStruct()));
+		return ((T*)Memory);
+	}
+
+	template <typename T>
+    typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, T*>::Type GetMutablePtr() const
+	{
+		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
+		check(!Memory || (Memory && Struct));
+		check(!Struct || Struct->IsChildOf(T::StaticStruct()));
+		return ((T*)Memory);
+	}
+
+	/** @return Struct describing the data type. */
+	const UStruct* GetStruct() const { return Struct; }
+
+	/** @return Raw const pointer to the data. */
+	const uint8* GetMemory() const { return Memory; }
+
+	/** @return Raw mutable pointer to the data. */
+	uint8* GetMutableMemory() const { return Memory; }
+	
+protected:
+	/** UClass or UScriptStruct of the data. */
+	const UStruct* Struct = nullptr;
+
+	/** Memory pointing at the class or struct */
+	uint8* Memory = nullptr;
+};
+
+struct STATETREEMODULE_API FStateTreeTransitionDelayedState
+{
+	FStateTreeIndex16 TransitionIndex = FStateTreeIndex16::Invalid;
+	float TimeLeft = 0.0f;
+};
+
+USTRUCT()
+struct STATETREEMODULE_API FStateTreeExecutionState
+{
+	GENERATED_BODY()
+
+	/** @returns Delayed transition state for a specific transition, or nullptr if it does not exists. */
+	FStateTreeTransitionDelayedState* FindDelayedTransition(const FStateTreeIndex16 TransitionIndex)
+	{
+		return DelayedTransitions.FindByPredicate([TransitionIndex](const FStateTreeTransitionDelayedState& State){ return State.TransitionIndex == TransitionIndex; });
+	}
+
+	/** Currently active states */
+	FStateTreeActiveStates ActiveStates;
+
+	/** Index of the first task struct in the currently initialized instance data. */
+	FStateTreeIndex16 FirstTaskStructIndex = FStateTreeIndex16::Invalid;
+	
+	/** Index of the first task object in the currently initialized instance data. */
+	FStateTreeIndex16 FirstTaskObjectIndex = FStateTreeIndex16::Invalid;
+
+	/** The index of the task that failed during enter state. Exit state uses it to call ExitState() symmetrically. */
+	FStateTreeIndex16 EnterStateFailedTaskIndex = FStateTreeIndex16::Invalid;
+
+	/** Result of last tick */
+	EStateTreeRunStatus LastTickStatus = EStateTreeRunStatus::Failed;
+
+	/** Running status of the instance */
+	EStateTreeRunStatus TreeRunStatus = EStateTreeRunStatus::Unset;
+
+	/** Handle of the state that was first to report state completed (success or failure), used to trigger completion transitions. */
+	FStateTreeStateHandle CompletedStateHandle = FStateTreeStateHandle::Invalid;
+
+	/** Number of times a new state has been changed. */
+	uint16 StateChangeCount = 0;
+
+	/** Running time of the delayed transition */
+	TArray<FStateTreeTransitionDelayedState> DelayedTransitions;
+};
+
+/**
+ * Link to another state in StateTree
+ */
+USTRUCT(BlueprintType)
+struct STATETREEMODULE_API FStateTreeStateLink
+{
+	GENERATED_BODY()
+
+	FStateTreeStateLink() = default;
+
+#if WITH_EDITORONLY_DATA
+	FStateTreeStateLink(const EStateTreeTransitionType InType) : LinkType(InType) {}
+
+	UE_DEPRECATED(5.2, "Use UStateTreeState::GetLinkToState() instead.")
+	void Set(const EStateTreeTransitionType InType, const class UStateTreeState* InState = nullptr) {}
+	UE_DEPRECATED(5.2, "Use UStateTreeState::GetLinkToState() instead.")
+	void Set(const class UStateTreeState* InState) {}
+#endif // WITH_EDITORONLY_DATA
+	
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FStateTreeStateLink(const FStateTreeStateLink& Other) = default;
+	FStateTreeStateLink(FStateTreeStateLink&& Other) = default;
+	FStateTreeStateLink& operator=(FStateTreeStateLink const& Other) = default;
+	FStateTreeStateLink& operator=(FStateTreeStateLink&& Other) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
+	bool Serialize(FStructuredArchive::FSlot Slot);
+	void PostSerialize(const FArchive& Ar);
+
+#if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.2, "Will be removed in later releases.")
+	bool IsValid() const { return ID.IsValid(); }
+	
+	/** Name of the state at the time of linking, used for error reporting. */
+	UPROPERTY(EditDefaultsOnly, Category = "Link")
+	FName Name;
+
+	/** ID of the state linked to. */
+	UPROPERTY(EditDefaultsOnly, Category = "Link")
+	FGuid ID;
+
+	/** Type of the transition, used at edit time to describe e.g. next state (which is calculated at compile time). */
+	UPROPERTY(EditDefaultsOnly, Category = "Link")
+	EStateTreeTransitionType LinkType = EStateTreeTransitionType::None;
+
+	UE_DEPRECATED(5.2, "Use LinkType instead.")
+	UPROPERTY()
+	EStateTreeTransitionType Type_DEPRECATED = EStateTreeTransitionType::GotoState;
+#endif // WITH_EDITORONLY_DATA
+
+	/** Handle of the linked state. */
+	UPROPERTY()
+	FStateTreeStateHandle StateHandle; 
+};
+
+template<>
+struct TStructOpsTypeTraits<FStateTreeStateLink> : public TStructOpsTypeTraitsBase2<FStateTreeStateLink>
+{
+	enum
+	{
+		WithStructuredSerializer = true,
+		WithPostSerialize = true,
+	};
 };

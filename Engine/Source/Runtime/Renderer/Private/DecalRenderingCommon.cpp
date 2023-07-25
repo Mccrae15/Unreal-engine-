@@ -1,14 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DecalRenderingCommon.h"
+#include "RHIStaticStates.h"
 #include "RenderUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Strata/Strata.h"
 
 namespace DecalRendering
 {
+	inline bool IsOpaqueBlendMode(const FDecalBlendDesc& In)			{ return IsOpaqueBlendMode((EBlendMode)In.BlendMode); }
+	inline bool IsOpaqueOrMaskedBlendMode(const FDecalBlendDesc& In)	{ return IsOpaqueOrMaskedBlendMode((EBlendMode)In.BlendMode); }
+	inline bool IsMaskedBlendMode(const FDecalBlendDesc& In)			{ return IsMaskedBlendMode((EBlendMode)In.BlendMode); }
+	inline bool IsTranslucentOnlyBlendMode(const FDecalBlendDesc& In)	{ return IsTranslucentOnlyBlendMode((EBlendMode)In.BlendMode); }
+	inline bool IsTranslucentBlendMode(const FDecalBlendDesc& In)		{ return IsTranslucentBlendMode((EBlendMode)In.BlendMode); }
+	inline bool IsAlphaHoldoutBlendMode(const FDecalBlendDesc& In)		{ return IsAlphaHoldoutBlendMode((EBlendMode)In.BlendMode); }
+	inline bool IsModulateBlendMode(const FDecalBlendDesc& In)			{ return IsModulateBlendMode((EBlendMode)In.BlendMode); }
+	inline bool IsAlphaCompositeBlendMode(const FDecalBlendDesc& In)	{ return IsAlphaCompositeBlendMode((EBlendMode)In.BlendMode); }
+
 	/** Finalize the initialization of FDecalBlendDesc after BlendMode and bWrite flags have all been set. */
 	void FinalizeBlendDesc(EShaderPlatform Platform, FDecalBlendDesc& Desc)
 	{
+		const bool bIsStrataEnabled = Strata::IsStrataEnabled();
 		const bool bIsMobilePlatform = IsMobilePlatform(Platform);
 		const bool bIsMobileDeferredPlatform = bIsMobilePlatform && IsMobileDeferredShadingEnabled(Platform);
 		const bool bIsDBufferPlatform = !bIsMobilePlatform && IsUsingDBuffers(Platform);
@@ -17,11 +29,11 @@ namespace DecalRendering
 		Desc.bWriteDBufferMask = bIsDBufferMaskPlatform;
 
 		// Enforce platform blend mode limitations.
-		if (Desc.BlendMode != BLEND_Translucent && Desc.BlendMode != BLEND_AlphaComposite && Desc.BlendMode != BLEND_Modulate)
+		if (!IsTranslucentOnlyBlendMode(Desc) && !IsAlphaCompositeBlendMode(Desc) && !IsModulateBlendMode(Desc))
 		{
 			Desc.BlendMode = BLEND_Translucent;
 		}
-		if (bIsDBufferPlatform && Desc.BlendMode == BLEND_Modulate)
+		if (bIsDBufferPlatform && IsModulateBlendMode(Desc))
 		{
 			Desc.BlendMode = BLEND_Translucent;
 		}
@@ -38,7 +50,7 @@ namespace DecalRendering
 		}
 
 		// Enforce blend modes output limitations.
-		if (Desc.BlendMode == BLEND_AlphaComposite)
+		if (!bIsStrataEnabled && IsAlphaCompositeBlendMode(Desc))
 		{
 			Desc.bWriteNormal = false;
 		}
@@ -245,7 +257,7 @@ namespace DecalRendering
 		// Ignore DBuffer mask bit and always set that MRT active.
 		const uint32 Mask = GetRenderTargetWriteMask(DecalBlendDesc, DecalRenderStage, EDecalRenderTargetMode::DBuffer) & 0x7;
 
-		if (DecalBlendDesc.BlendMode == BLEND_Translucent)
+		if (IsTranslucentOnlyBlendMode(DecalBlendDesc))
 		{
 			switch (Mask)
 			{
@@ -300,7 +312,7 @@ namespace DecalRendering
 				>::GetRHI();
 			}
 		}
-		else if (DecalBlendDesc.BlendMode == BLEND_AlphaComposite)
+		else if (IsAlphaCompositeBlendMode(DecalBlendDesc))
 		{
 			ensure((Mask & 2) == 0); // AlphaComposite shouldn't write normal.
 
@@ -338,7 +350,7 @@ namespace DecalRendering
 	{
 		const uint32 Mask = GetRenderTargetWriteMask(DecalBlendDesc, DecalRenderStage, EDecalRenderTargetMode::SceneColorAndGBuffer);
 
-		if (DecalBlendDesc.BlendMode == BLEND_Translucent)
+		if (IsTranslucentOnlyBlendMode(DecalBlendDesc))
 		{
 			switch (Mask)
 			{
@@ -449,7 +461,7 @@ namespace DecalRendering
 				>::GetRHI();
 			}
 		}
-		else if (DecalBlendDesc.BlendMode == BLEND_AlphaComposite)
+		else if (IsAlphaCompositeBlendMode(DecalBlendDesc))
 		{
 			ensure((Mask & 2) == 0); // AlphaComposite shouldn't write normal.
 
@@ -506,7 +518,7 @@ namespace DecalRendering
 				>::GetRHI();
 			}
 		}
-		else if (DecalBlendDesc.BlendMode == BLEND_Modulate)
+		else if (IsModulateBlendMode(DecalBlendDesc))
 		{
 			switch (Mask)
 			{
@@ -626,7 +638,7 @@ namespace DecalRendering
 	{
 		const uint32 Mask = GetRenderTargetWriteMask(DecalBlendDesc, DecalRenderStage, EDecalRenderTargetMode::SceneColorAndGBufferNoNormal);
 
-		if (DecalBlendDesc.BlendMode == BLEND_Translucent)
+		if (IsTranslucentOnlyBlendMode(DecalBlendDesc))
 		{
 			switch (Mask)
 			{
@@ -674,7 +686,7 @@ namespace DecalRendering
 				>::GetRHI();
 			}
 		}
-		else if (DecalBlendDesc.BlendMode == BLEND_AlphaComposite)
+		else if (IsAlphaCompositeBlendMode(DecalBlendDesc))
 		{
 			switch (Mask)
 			{
@@ -722,7 +734,7 @@ namespace DecalRendering
 				>::GetRHI();
 			}
 		}
-		else if (DecalBlendDesc.BlendMode == BLEND_Modulate)
+		else if (IsModulateBlendMode(DecalBlendDesc))
 		{
 			switch (Mask)
 			{
@@ -779,7 +791,7 @@ namespace DecalRendering
 	{
 		if (DecalRenderStage == EDecalRenderStage::Mobile)
 		{
-			if (DecalBlendDesc.BlendMode == BLEND_Translucent)
+			if (IsTranslucentOnlyBlendMode(DecalBlendDesc))
 			{
 				if (DecalBlendDesc.bWriteEmissive)
 				{
@@ -792,11 +804,11 @@ namespace DecalRendering
 					return TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One, CW_NONE>::GetRHI();
 				}
 			}
-			else if (DecalBlendDesc.BlendMode == BLEND_AlphaComposite)
+			else if (IsAlphaCompositeBlendMode(DecalBlendDesc))
 			{
 				return TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One, CW_NONE>::GetRHI();
 			}
-			else if (DecalBlendDesc.BlendMode == BLEND_Modulate)
+			else if (IsModulateBlendMode(DecalBlendDesc))
 			{
 				return TStaticBlendState<CW_RGB, BO_Add, BF_DestColor, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One, CW_NONE>::GetRHI();
 			}
@@ -870,7 +882,7 @@ namespace DecalRendering
 		return nullptr;
 	}
 
-	void ModifyCompilationEnvironment(FDecalBlendDesc DecalBlendDesc, EDecalRenderStage DecalRenderStage, FShaderCompilerEnvironment& OutEnvironment)
+	void ModifyCompilationEnvironment(EShaderPlatform Platform, FDecalBlendDesc DecalBlendDesc, EDecalRenderStage DecalRenderStage, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		DecalRenderStage = DecalRenderStage != EDecalRenderStage::None ? DecalRenderStage : GetBaseRenderStage(DecalBlendDesc);
 		check(DecalRenderStage != EDecalRenderStage::None);
@@ -909,5 +921,11 @@ namespace DecalRendering
 		// Decals needs to both read Strata data (deferred path) and write (inline path)
 		OutEnvironment.SetDefine(TEXT("STRATA_INLINE_SHADING"), 1);
 		OutEnvironment.SetDefine(TEXT("STRATA_DEFERRED_SHADING"), 1);
+
+		if (IsMobilePlatform(Platform))
+		{
+			// On mobile decals are rendered in a "depth read" sub-pass
+			OutEnvironment.SetDefine(TEXT("IS_MOBILE_DEPTHREAD_SUBPASS"), 1u);
+		}
 	}
 }

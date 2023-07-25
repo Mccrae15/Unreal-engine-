@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "MuCO/UnrealPortabilityHelpers.h"
-#include "UObject/ObjectMacros.h"
 #include "CustomizableObjectParameterTypeDefinitions.generated.h"
 
 class UTexture2D;
@@ -159,6 +157,9 @@ struct FCustomizableObjectTextureParameterValue
 
 	UPROPERTY(Category = CustomizableObjectTextureParameterValue, VisibleAnywhere)
 	FString Uid;
+
+	UPROPERTY(Category = CustomizableObjectTextureParameterValue, VisibleAnywhere)
+	TArray<uint64> ParameterRangeValues;
 };
 
 
@@ -166,6 +167,11 @@ inline uint32 GetTypeHash(const FCustomizableObjectTextureParameterValue& Key)
 {
 	uint32 Hash = GetTypeHash(Key.ParameterName);
 	Hash = HashCombine(Hash, GetTypeHash(Key.ParameterValue));
+
+	for (const uint64 Value : Key.ParameterRangeValues)
+    {
+    	Hash = HashCombine(Hash, GetTypeHash(Value));
+    }
 
 	return Hash;
 }
@@ -287,3 +293,7 @@ inline uint32 GetTypeHash(const FCustomizableObjectProjectorParameterValue& Key)
 	
 	return Hash;
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "MuCO/UnrealPortabilityHelpers.h"
+#endif

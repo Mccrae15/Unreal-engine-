@@ -2,13 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "DSP/AlignedBlockBuffer.h"
 #include "DSP/AudioChannelFormatConverter.h"
-#include "DSP/BufferVectorOperations.h"
 #include "DSP/ConvolutionAlgorithm.h"
 
-#include <type_traits>
+
+namespace Audio { class FAlignedBlockBuffer; }
 
 namespace Audio
 {
@@ -43,7 +41,7 @@ namespace Audio
 		/* Used to account for energy added by convolution with "loud" Impulse Responses.  Not meant to be updated dynamically (linear gain)*/
 		float NormalizationVolume = -24.f;
 
-		/* Amout of audio to be sent to rear channels in quad/surround configurations (linear gain, < 0 = phase inverted) */
+		/* Amount of audio to be sent to rear channels in quad/surround configurations (linear gain, < 0 = phase inverted) */
 		float RearChannelBleed = 0.f;
 
 		/* If true, send Surround Rear Channel Bleed Amount sends front left to back right and vice versa */
@@ -263,3 +261,9 @@ namespace Audio
 		bool bIsConvertingOutputChannelFormat;
 	};
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "DSP/AlignedBlockBuffer.h"
+#include "DSP/BufferVectorOperations.h"
+#endif

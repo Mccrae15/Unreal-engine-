@@ -12,6 +12,7 @@
 #include "DisplayClusterProjectionStrings.h"
 
 #include "Engine/StaticMesh.h"
+#include "UObject/Package.h"
 
 #if WITH_EDITOR
 #include "Kismet2/CompilerResultsLog.h"
@@ -161,10 +162,6 @@ FDisplayClusterConfigurationProjection::FDisplayClusterConfigurationProjection()
 	Type = TEXT("simple");
 }
 
-FDisplayClusterConfigurationPostprocess::FDisplayClusterConfigurationPostprocess()
-{
-
-}
 
 const float UDisplayClusterConfigurationViewport::ViewportMinimumSize = 1.0f;
 const float UDisplayClusterConfigurationViewport::ViewportMaximumSize = 15360.0f;
@@ -244,10 +241,11 @@ void UDisplayClusterConfigurationViewport::OnPreCompile(FCompilerResultsLog& Mes
 {
 	Super::OnPreCompile(MessageLog);
 
-	if (!ensure(bAllowPreviewTexture))
+	if (!bAllowPreviewTexture)
 	{
 		// Verify correct rendering value is applied. This branch shouldn't be hit as long as the Region
-		// struct always has a final PostEditChangeProperty called without a change type of Interactive.
+		// struct always has a final PostEditChangeProperty called without a change type of Interactive, but may
+		// be hit when compiling after this viewport was deleted and then the deletion undone.
 		EnablePreviewTexture();
 	}
 }
@@ -448,30 +446,4 @@ UDisplayClusterConfigurationData* UDisplayClusterConfigurationData::CreateNewCon
 		RF_ArchetypeObject | RF_Public | RF_Transactional);
 
 	return NewConfigData;
-}
-
-FDisplayClusterConfigurationICVFX_CameraRenderSettings::FDisplayClusterConfigurationICVFX_CameraRenderSettings()
-{
-	// Setup incamera defaults:
-	GenerateMips.bAutoGenerateMips = true;
-}
-
-FDisplayClusterConfigurationOCIOConfiguration::FDisplayClusterConfigurationOCIOConfiguration()
-{
-	OCIOConfiguration.bIsEnabled = true;
-}
-
-FDisplayClusterConfigurationOCIOProfile::FDisplayClusterConfigurationOCIOProfile()
-{
-	OCIOConfiguration.bIsEnabled = true;
-}
-
-FDisplayClusterConfigurationICVFX_CameraCustomFrustum::FDisplayClusterConfigurationICVFX_CameraCustomFrustum():
-	EstimatedOverscanResolution(ForceInitToZero), InnerFrustumResolution(ForceInitToZero), OverscanPixelsIncrease(0.f)
-{
-}
-
-FDisplayClusterConfigurationICVFX_CameraSettings::FDisplayClusterConfigurationICVFX_CameraSettings()
-{
-	AllNodesColorGrading.bEnableEntireClusterColorGrading = true;
 }

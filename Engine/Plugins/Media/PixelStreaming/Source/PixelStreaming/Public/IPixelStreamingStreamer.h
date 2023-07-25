@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "PixelStreamingProtocol.h"
 #include "PixelStreamingPlayerId.h"
 #include "PixelStreamingVideoInput.h"
 #include "CoreMinimal.h"
@@ -12,8 +11,11 @@
 #include "IPixelStreamingAudioSink.h"
 #include "IPixelStreamingAudioInput.h"
 #include "IPixelStreamingInputHandler.h"
+#include "IPixelStreamingSignallingConnection.h"
+#include "PixelStreamingInputEnums.h"
 
 class UTexture2D;
+class FPixelStreamingSignallingConnection;
 
 class PIXELSTREAMING_API IPixelStreamingStreamer
 {
@@ -80,15 +82,30 @@ public:
 	/**
 	 * @brief Set the target screen size for this streamer. This is used to when the streamer doesn't have a singular target window / viewport
 	 * and as such we just use the manual scale
-	 * @param InTargetWindow The target screen size
+	 * @param InTargetScreenSize The target screen size
 	 */
+	UE_DEPRECATED(5.2, "SetTargetScreenSize() is deprecated. Please use SetTargetScreenRect() instead.")
 	virtual void SetTargetScreenSize(TWeakPtr<FIntPoint> InTargetScreenSize) = 0;
 
 	/**
 	 * @brief Get the target screen size for this streamer
 	 * @return The target screen size
 	 */
+	UE_DEPRECATED(5.2, "GetTargetScreenSize() is deprecated. Please use GetTargetScreenRect() instead.")
 	virtual TWeakPtr<FIntPoint> GetTargetScreenSize() = 0;
+
+	/**
+	 * @brief Set the target screen rectangle for this streamer. This is used to when the streamer doesn't have a singular target window / viewport
+	 * and as such we just use the manual scale
+	 * @param InTargetScreenRect The target screen rectangle
+	 */
+	virtual void SetTargetScreenRect(TWeakPtr<FIntRect> InTargetScreenRect) = 0;
+
+	/**
+	 * @brief Get the target screen rectangle for this streamer
+	 * @return The target screen rectangle
+	 */
+	virtual TWeakPtr<FIntRect> GetTargetScreenRect() = 0;
 
 	/**
 	 * @brief Set the Signalling Server URL
@@ -104,7 +121,7 @@ public:
 
 	/**
 	 * @brief Get this streamer's ID
-	 * 
+	 *
 	 */
 	virtual FString GetId() = 0;
 
@@ -210,6 +227,26 @@ public:
 	virtual TWeakPtr<IPixelStreamingInputHandler> GetInputHandler() = 0;
 
 	/**
+	 * @brief Get the connection to the signalling server.
+	 * @return The connection to the signalling server.
+	 */
+	virtual TWeakPtr<IPixelStreamingSignallingConnection> GetSignallingConnection() = 0;
+
+	/**
+	 * @brief Set the connection to the signalling server
+	 *
+	 * @param InSignallingConnection The connection to the signalling server
+	 */
+	virtual void SetSignallingConnection(TSharedPtr<IPixelStreamingSignallingConnection> InSignallingConnection) = 0;
+
+	/**
+	 * @brief Get the Signalling Connection Observer object
+	 *
+	 * @return TWeakPtr<IPixelStreamingSignallingConnectionObserver>
+	 */
+	virtual TWeakPtr<IPixelStreamingSignallingConnectionObserver> GetSignallingConnectionObserver() = 0;
+
+	/**
 	 * @brief Set the type for this streamers input handler. This controls whether input is routed to widgets or windows
 	 */
 	virtual void SetInputHandlerType(EPixelStreamingInputType InputType) = 0;
@@ -235,4 +272,12 @@ public:
 	 * @brief Remove the audio input from the Pixel Streaming mix.
 	 */
 	virtual void RemoveAudioInput(TSharedPtr<IPixelStreamingAudioInput> AudioInput) = 0;
+
+	/**
+	 * @brief Allows sending arbitrary configuration options during initial connection
+	 *
+	 * @param Value Setting a value to an empty string clears it from the mapping and prevents it being sent
+	 */
+	virtual void SetConfigOption(const FName& OptionName, const FString& Value) = 0;
+	virtual bool GetConfigOption(const FName& OptionName, FString& OutValue) = 0;
 };

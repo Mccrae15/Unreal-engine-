@@ -11,6 +11,7 @@
 #include "Internationalization/Text.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/Guid.h"
+#include "Misc/OptionalFwd.h"
 #include "MovieSceneFwd.h"
 #include "MovieSceneSequenceID.h"
 #include "Templates/SharedPointer.h"
@@ -22,7 +23,6 @@
 class UClass;
 class UObject;
 template <typename FuncType> class TFunctionRef;
-template <typename OptionalType> struct TOptional;
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "MovieSceneSpawnable.h"
@@ -254,6 +254,9 @@ protected:
 
 	/** Register of spawned objects */
 	TMap<FMovieSceneSpawnRegisterKey, FSpawnedObject> Register;
+
+	/** True when cleaning ourselves up. Used to bypass marking a sequence dirty when objects are modified since we're cleaning ourselves up */
+	bool bCleaningUp = false;
 };
 
 class FNullMovieSceneSpawnRegister : public FMovieSceneSpawnRegister

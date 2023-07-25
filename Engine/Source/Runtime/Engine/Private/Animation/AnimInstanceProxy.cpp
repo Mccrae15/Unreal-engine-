@@ -1,44 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimInstanceProxy.h"
-#include "Animation/AnimNodeBase.h"
+#include "Animation/AnimMontageEvaluationState.h"
+#include "Animation/AnimNodeFunctionRef.h"
+#include "Animation/AnimSlotEvaluationPose.h"
+#include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/PoseAsset.h"
-#include "AnimationRuntime.h"
-#include "Animation/BlendSpace.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
-#include "AnimationUtils.h"
+#include "Animation/AnimStats.h"
 #include "Logging/MessageLog.h"
 #include "Animation/AnimNode_AssetPlayerBase.h"
 #include "Animation/AnimNode_StateMachine.h"
 #include "Animation/AnimNode_TransitionResult.h"
 #include "Animation/AnimNode_SaveCachedPose.h"
 #include "Animation/AnimNode_LinkedInputPose.h"
+#include "Animation/AnimSubsystemInstance.h"
 #include "Animation/BlendProfile.h"
+#include "Animation/AnimationPoseData.h"
 #include "Animation/BlendProfileScratchData.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/SkeletalMesh.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/WorldSettings.h"
 #include "Animation/AnimNode_Root.h"
 #include "Animation/AnimNode_LinkedAnimLayer.h"
-#include "Animation/AnimMontage.h"
-#include "Animation/AnimInstance.h"
 #include "Animation/AnimSyncScope.h"
 #include "Animation/AnimNotifyStateMachineInspectionLibrary.h"
 #include "Animation/MirrorDataTable.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
-#include "Animation/AnimStateMachineTypes.h"
-#include "Animation/AnimTrace.h"
 #if WITH_EDITOR
-#include "Engine/PoseWatchRenderData.h"
 #include "Engine/PoseWatch.h"
 #endif
 
 #define DO_ANIMSTAT_PROCESSING(StatName) DEFINE_STAT(STAT_ ## StatName)
-#include "Animation/AnimMTStats.h"
+#include "Animation/AnimMTStats.h" // IWYU pragma: keep
 #undef DO_ANIMSTAT_PROCESSING
 
 #define DO_ANIMSTAT_PROCESSING(StatName) DEFINE_STAT(STAT_ ## StatName ## _WorkerThread)
-#include "Animation/AnimMTStats.h"
+#include "Animation/AnimMTStats.h" // IWYU pragma: keep
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimInstanceProxy)
 
@@ -598,7 +598,38 @@ void FAnimInstanceProxy::PostUpdate(UAnimInstance* InAnimInstance) const
 		}
 	}
 #endif
+	
+	// Copy slot information to main instance if we are using the main instance's montage evaluation data.
+	// Note that linked anim instance's proxies PostUpdate() will be called before the main instance's proxy PostUpdate().
+	if (bUseMainInstanceMontageEvaluationData && GetMainInstanceProxy() && GetMainInstanceProxy() != this)
+	{
+		FAnimInstanceProxy& MainProxy = *GetMainInstanceProxy();
+		
+		for (const TTuple<FName, int> & LinkedSlotTrackerPair : SlotNameToTrackerIndex)
+		{
+			const int* MainTrackerIndexPtr = MainProxy.SlotNameToTrackerIndex.Find(LinkedSlotTrackerPair.Key);
 
+			// Ensure slot tracker exists for main instance.
+			if (!MainTrackerIndexPtr)
+			{
+				MainProxy.RegisterSlotNodeWithAnimInstance(LinkedSlotTrackerPair.Key);
+				MainTrackerIndexPtr = MainProxy.SlotNameToTrackerIndex.Find(LinkedSlotTrackerPair.Key);
+			}
+
+			// Update slot information for main instance.
+			{
+				const FMontageActiveSlotTracker & LinkedTracker = SlotWeightTracker[GetBufferReadIndex()][LinkedSlotTrackerPair.Value];
+				FMontageActiveSlotTracker& MainTracker = MainProxy.SlotWeightTracker[MainProxy.GetBufferWriteIndex()][*MainTrackerIndexPtr];
+				
+				MainTracker.MontageLocalWeight = FMath::Max(MainTracker.MontageLocalWeight, LinkedTracker.MontageLocalWeight);
+				MainTracker.NodeGlobalWeight = FMath::Max(MainTracker.NodeGlobalWeight, LinkedTracker.NodeGlobalWeight);
+				
+				MainTracker.bIsRelevantThisTick = MainTracker.bIsRelevantThisTick || LinkedTracker.bIsRelevantThisTick;
+				MainTracker.bWasRelevantOnPreviousTick = MainTracker.bWasRelevantOnPreviousTick || LinkedTracker.bWasRelevantOnPreviousTick;
+			}
+		}
+	}
+	
 	InAnimInstance->NotifyQueue.Append(NotifyQueue);
 	InAnimInstance->NotifyQueue.ApplyMontageNotifies(*this);
 
@@ -761,7 +792,7 @@ void FAnimInstanceProxy::MakeSequenceTickRecord(FAnimTickRecord& TickRecord, cla
 	TickRecord.PlayRateMultiplier = PlayRate;
 	TickRecord.EffectiveBlendWeight = FinalBlendWeight;
 	TickRecord.bLooping = bLooping;
-	TickRecord.BlendSpace.bIsEvaluator = false;	// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
+	TickRecord.bIsEvaluator = false;
 }
 
 void FAnimInstanceProxy::MakeBlendSpaceTickRecord(
@@ -773,7 +804,6 @@ void FAnimInstanceProxy::MakeBlendSpaceTickRecord(
 	TickRecord.BlendSpace.BlendSpacePositionY = BlendInput.Y;
 	// This way of making a tick record is deprecated, so just set to defaults here rather than changing the API
 	TickRecord.BlendSpace.bTeleportToTime = false; 
-	TickRecord.BlendSpace.bIsEvaluator = false;
 	TickRecord.BlendSpace.BlendSampleDataCache = &BlendSampleDataCache;
 	TickRecord.BlendSpace.BlendFilter = &BlendFilter;
 	TickRecord.TimeAccumulator = &CurrentTime;
@@ -781,6 +811,7 @@ void FAnimInstanceProxy::MakeBlendSpaceTickRecord(
 	TickRecord.PlayRateMultiplier = PlayRate;
 	TickRecord.EffectiveBlendWeight = FinalBlendWeight;
 	TickRecord.bLooping = bLooping;
+	TickRecord.bIsEvaluator = false;
 }
 
 void FAnimInstanceProxy::MakePoseAssetTickRecord(FAnimTickRecord& TickRecord, class UPoseAsset* PoseAsset, float FinalBlendWeight) const
@@ -1370,7 +1401,7 @@ void FAnimInstanceProxy::EvaluateAnimationNode(FPoseContext& Output)
 
 void FAnimInstanceProxy::EvaluateAnimationNode_WithRoot(FPoseContext& Output, FAnimNode_Base* InRootNode)
 {
-	if (InRootNode != NULL)
+	if (InRootNode != nullptr)
 	{
 		ANIM_MT_SCOPE_CYCLE_COUNTER(EvaluateAnimGraph, !IsInGameThread());
 		if(InRootNode == RootNode)
@@ -1491,7 +1522,7 @@ void FAnimInstanceProxy::SlotEvaluatePoseWithBlendProfiles(const FName& SlotNode
 			NewPose.Curve.InitFrom(RequiredBones);
 
 			// Extract pose from Track.
-			FAnimExtractContext ExtractionContext(EvalState.MontagePosition, Montage->HasRootMotion() && RootMotionMode != ERootMotionMode::NoRootMotionExtraction, EvalState.DeltaTimeRecord);
+			FAnimExtractContext ExtractionContext(static_cast<double>(EvalState.MontagePosition), Montage->HasRootMotion() && RootMotionMode != ERootMotionMode::NoRootMotionExtraction, EvalState.DeltaTimeRecord);
 			FAnimationPoseData NewAnimationPoseData(NewPose);
 			AnimTrack->GetAnimationPose(NewAnimationPoseData, ExtractionContext);
 
@@ -1830,7 +1861,7 @@ void FAnimInstanceProxy::SlotEvaluatePose(const FName& SlotNodeName, const FAnim
 			NewPose.Curve.InitFrom(RequiredBones);
 
 			// Extract pose from Track
-			FAnimExtractContext ExtractionContext(EvalState.MontagePosition, Montage->HasRootMotion() && RootMotionMode != ERootMotionMode::NoRootMotionExtraction, EvalState.DeltaTimeRecord);
+			FAnimExtractContext ExtractionContext(static_cast<double>(EvalState.MontagePosition), Montage->HasRootMotion() && RootMotionMode != ERootMotionMode::NoRootMotionExtraction, EvalState.DeltaTimeRecord);
 
 			FAnimationPoseData NewAnimationPoseData(NewPose);
 			AnimTrack->GetAnimationPose(NewAnimationPoseData, ExtractionContext);
@@ -3243,8 +3274,39 @@ void FAnimInstanceProxy::RegisterWatchedPose(const FCompactPose& Pose, int32 Lin
 						PoseWatch.Object = GetAnimInstanceObject();
 						PoseWatch.PoseWatch->SetIsNodeEnabled(true);
 
-						const TArray<FTransform, FAnimStackAllocator>& BoneTransforms = Pose.GetBones();
-						const TArray<FBoneIndexType>& TmpRequiredBones = Pose.GetBoneContainer().GetBoneIndicesArray();
+						/*
+						for (FCompactPoseBoneIndex BoneIndex : Pose.ForEachBoneIndex())
+						{
+							FMeshPoseBoneIndex MeshBoneIndex = Pose.GetBoneContainer().MakeMeshPoseIndex(BoneIndex);
+
+							int32 ParentIndex = Pose.GetBoneContainer().GetParentBoneIndex(MeshBoneIndex.GetInt());
+
+							if (ParentIndex == INDEX_NONE)
+							{
+								WorldTransforms[MeshBoneIndex.GetInt()] = Pose[BoneIndex] * MeshComponent->GetComponentTransform();
+							}
+							else
+							{
+								WorldTransforms[MeshBoneIndex.GetInt()] = Pose[BoneIndex] * WorldTransforms[ParentIndex];
+							}
+							BoneColors[MeshBoneIndex.GetInt()] = BoneColor;
+						}
+						*/
+
+						TArray<FTransform> BoneTransforms;
+						BoneTransforms.AddUninitialized(Pose.GetBoneContainer().GetNumBones());
+
+						TArray<FBoneIndexType> TmpRequiredBones;
+						TmpRequiredBones.Reserve(Pose.GetBoneContainer().GetNumBones());
+
+						for (FCompactPoseBoneIndex BoneIndex : Pose.ForEachBoneIndex())
+						{
+							FMeshPoseBoneIndex MeshBoneIndex = Pose.GetBoneContainer().MakeMeshPoseIndex(BoneIndex);
+
+							BoneTransforms[MeshBoneIndex.GetInt()] = Pose[BoneIndex];
+							TmpRequiredBones.Add(MeshBoneIndex.GetInt());
+						}
+
 						PoseWatch.SetPose(TmpRequiredBones, BoneTransforms);
 						PoseWatch.SetWorldTransform(SkelMeshComponent->GetComponentTransform());
 

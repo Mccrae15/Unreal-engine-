@@ -2,22 +2,17 @@
 
 #include "Units/Highlevel/Hierarchy/RigUnit_TwistBones.h"
 #include "Units/RigUnitContext.h"
+#include "Math/ControlRigMathLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_TwistBones)
 
 FRigUnit_TwistBones_Execute()
 {
-	if (Context.State == EControlRigState::Init)
-	{
-		WorkData.CachedItems.Reset();
-		return;
-	}
-
 	FRigElementKeyCollection Items;
 	if(WorkData.CachedItems.Num() == 0)
 	{
 		Items = FRigElementKeyCollection::MakeFromChain(
-			Context.Hierarchy,
+			ExecuteContext.Hierarchy,
 			FRigElementKey(StartBone, ERigElementType::Bone),
 			FRigElementKey(EndBone, ERigElementType::Bone),
 			false /* reverse */
@@ -25,16 +20,14 @@ FRigUnit_TwistBones_Execute()
 	}
 
 	FRigUnit_TwistBonesPerItem::StaticExecute(
-		RigVMExecuteContext, 
+		ExecuteContext, 
 		Items,
 		TwistAxis,
 		PoleAxis,
 		TwistEaseType,
 		Weight,
 		bPropagateToChildren,
-		WorkData,
-		ExecuteContext, 
-		Context);
+		WorkData);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_TwistBones::GetUpgradeInfo() const
@@ -55,12 +48,6 @@ FRigUnit_TwistBonesPerItem_Execute()
 	TArray<FCachedRigElement>& CachedItems = WorkData.CachedItems;
 	TArray<float>& ItemRatios = WorkData.ItemRatios;
 	TArray<FTransform>& ItemTransforms = WorkData.ItemTransforms;
-
-	if (Context.State == EControlRigState::Init)
-	{
-		CachedItems.Reset();
-		return;
-	}
 
 	if (CachedItems.Num() == 0 && Items.Num() > 0)
 	{

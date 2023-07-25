@@ -2,6 +2,7 @@
 
 #include "Online/SessionsOSSAdapter.h"
 
+#include "OnlineError.h"
 #include "OnlineSubsystem.h"
 #include "Interfaces/OnlineSessionInterface.h"
 #include "Interfaces/OnlineIdentityInterface.h"
@@ -317,7 +318,7 @@ void FSessionsOSSAdapter::Initialize()
 		SessionEvents.OnUISessionJoinRequested.Broadcast(Event);
 	}));
 
-	SessionsInterface->AddOnSessionParticipantRemovedDelegate_Handle(FOnSessionParticipantRemovedDelegate::CreateLambda([this](FName SessionName, const FUniqueNetId& TargetUniqueNetId)
+	SessionsInterface->AddOnSessionParticipantJoinedDelegate_Handle(FOnSessionParticipantJoinedDelegate::CreateLambda([this](FName SessionName, const FUniqueNetId& TargetUniqueNetId)
 	{
 		// We won't update a session that can't be retrieved from the OSS or doesn't exist in OnlineServices anymore
 		if (UpdateV2Session(SessionName))
@@ -327,7 +328,7 @@ void FSessionsOSSAdapter::Initialize()
 			const FAccountId TargetAccountId = ServicesOSSAdapter.GetAccountIdRegistry().FindOrAddHandle(TargetUniqueNetIdRef);
 
 			FSessionUpdate SessionUpdate;
-			SessionUpdate.RemovedSessionMembers.Add(TargetAccountId);
+			SessionUpdate.AddedSessionMembers.Emplace(TargetAccountId);
 
 			const FSessionUpdated Event{ SessionName , SessionUpdate };
 
@@ -335,7 +336,7 @@ void FSessionsOSSAdapter::Initialize()
 		}
 	}));
 
-	SessionsInterface->AddOnSessionParticipantsChangeDelegate_Handle(FOnSessionParticipantsChangeDelegate::CreateLambda([this](FName SessionName, const FUniqueNetId& TargetUniqueNetId, bool bJoined)
+	SessionsInterface->AddOnSessionParticipantLeftDelegate_Handle(FOnSessionParticipantLeftDelegate::CreateLambda([this](FName SessionName, const FUniqueNetId& TargetUniqueNetId, EOnSessionParticipantLeftReason LeaveReason)
 	{
 		// We won't update a session that can't be retrieved from the OSS or doesn't exist in OnlineServices anymore
 		if (UpdateV2Session(SessionName))
@@ -345,14 +346,7 @@ void FSessionsOSSAdapter::Initialize()
 			const FAccountId TargetAccountId = ServicesOSSAdapter.GetAccountIdRegistry().FindOrAddHandle(TargetUniqueNetIdRef);
 
 			FSessionUpdate SessionUpdate;
-			if (bJoined)
-			{
-				SessionUpdate.AddedSessionMembers.Emplace(TargetAccountId);
-			}
-			else
-			{
-				SessionUpdate.RemovedSessionMembers.Emplace(TargetAccountId);
-			}
+			SessionUpdate.RemovedSessionMembers.Emplace(TargetAccountId);
 
 			const FSessionUpdated Event{ SessionName , SessionUpdate };
 
@@ -367,8 +361,8 @@ void FSessionsOSSAdapter::Shutdown()
 {
 	SessionsInterface->ClearOnSessionInviteReceivedDelegates(this);
 	SessionsInterface->ClearOnSessionUserInviteAcceptedDelegates(this);
-	SessionsInterface->ClearOnSessionParticipantRemovedDelegates(this);
-	SessionsInterface->ClearOnSessionParticipantsChangeDelegates(this);
+	SessionsInterface->ClearOnSessionParticipantJoinedDelegates(this);
+	SessionsInterface->ClearOnSessionParticipantLeftDelegates(this);
 	SessionsInterface->ClearOnSessionParticipantSettingsUpdatedDelegates(this);
 
 	Super::Shutdown();
@@ -505,22 +499,13 @@ TFuture<TOnlineResult<FFindSessions>> FSessionsOSSAdapter::FindSessionsImpl(cons
 	TPromise<TOnlineResult<FFindSessions>> Promise;
 	TFuture<TOnlineResult<FFindSessions>> Future = Promise.GetFuture();
 
-	const FUniqueNetIdRef LocalAccountId = Services.Get<FAuthOSSAdapter>()->GetUniqueNetId(Params.LocalAccountId).ToSharedRef();
-	if (!LocalAccountId->IsValid())
-	{
-		Promise.EmplaceValue(Errors::InvalidUser());
-		return Future;
-	}
-
-	if (PendingV1SessionSearchesPerUser.Contains(Params.LocalAccountId))
-	{
-		Promise.EmplaceValue(Errors::AlreadyPending());
-		return Future;
-	}
-
 	// Before we start the search, we reset the cache and save the promise
 	SearchResultsUserMap.FindOrAdd(Params.LocalAccountId).Reset();
 	CurrentSessionSearchPromisesUserMap.Emplace(Params.LocalAccountId, MoveTemp(Promise));
+
+	const FUniqueNetIdPtr LocalAccountIdPtr = Services.Get<FAuthOSSAdapter>()->GetUniqueNetId(Params.LocalAccountId);
+	check(LocalAccountIdPtr.IsValid());
+	const FUniqueNetIdRef LocalAccountId = LocalAccountIdPtr.ToSharedRef();
 
 	if (Params.SessionId.IsSet())
 	{
@@ -582,6 +567,7 @@ TFuture<TOnlineResult<FFindSessions>> FSessionsOSSAdapter::FindSessionsImpl(cons
 		}
 		else
 		{
+			UE_LOG(LogTemp, Verbose, TEXT("[FSessionsOSSAdapter::FindSessionsImpl] UniqueNetId could not be found for SessionId %s"), *ToLogString(*Params.SessionId));
 			Promise.EmplaceValue(Errors::InvalidParams());
 			return Future;
 		}
@@ -661,6 +647,31 @@ TFuture<TOnlineResult<FFindSessions>> FSessionsOSSAdapter::FindSessionsImpl(cons
 	return Future;
 }
 
+TOptional<FOnlineError> FSessionsOSSAdapter::CheckState(const FFindSessions::Params& Params) const
+{
+	if (TOptional<FOnlineError> BaseCheck = Super::CheckState(Params))
+	{
+		return BaseCheck;
+	}
+
+	const FUniqueNetIdRef LocalAccountId = Services.Get<FAuthOSSAdapter>()->GetUniqueNetId(Params.LocalAccountId).ToSharedRef();
+	if (!LocalAccountId->IsValid())
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[FSessionsOSSAdapter::FindSessionsImpl] UniqueId not found for LocalAccountId %s"), *ToLogString(Params.LocalAccountId));
+		
+		return TOptional<FOnlineError>(Errors::InvalidUser());
+	}
+
+	if (PendingV1SessionSearchesPerUser.Contains(Params.LocalAccountId))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[FSessionsOSSAdapter::FindSessionsImpl] Session search already in progress for LocalAccountId %s"), *ToLogString(Params.LocalAccountId));
+		
+		return TOptional<FOnlineError>(Errors::AlreadyPending());
+	}
+
+	return TOptional<FOnlineError>();
+}
+
 TFuture<TOnlineResult<FStartMatchmaking>> FSessionsOSSAdapter::StartMatchmakingImpl(const FStartMatchmaking::Params& Params)
 {
 	TPromise<TOnlineResult<FStartMatchmaking>> Promise;
@@ -710,13 +721,6 @@ TFuture<TOnlineResult<FJoinSession>> FSessionsOSSAdapter::JoinSessionImpl(const 
 	TPromise<TOnlineResult<FJoinSession>> Promise;
 	TFuture<TOnlineResult<FJoinSession>> Future = Promise.GetFuture();
 
-	const FUniqueNetIdRef LocalAccountId = Services.Get<FAuthOSSAdapter>()->GetUniqueNetId(Params.LocalAccountId).ToSharedRef();
-	if (!LocalAccountId->IsValid())
-	{
-		Promise.EmplaceValue(Errors::InvalidUser());
-		return Future;
-	}
-
 	MakeMulticastAdapter(this, SessionsInterface->OnJoinSessionCompleteDelegates,
 	[this, Promise = MoveTemp(Promise), Params](FName SessionName, EOnJoinSessionCompleteResult::Type Result) mutable
 	{
@@ -762,6 +766,10 @@ TFuture<TOnlineResult<FJoinSession>> FSessionsOSSAdapter::JoinSessionImpl(const 
 
 	const TSharedRef<const ISession>& FoundSession = GetSessionByIdResult.GetOkValue().Session;
 
+	const FUniqueNetIdPtr LocalAccountIdPtr = Services.Get<FAuthOSSAdapter>()->GetUniqueNetId(Params.LocalAccountId);
+	check(LocalAccountIdPtr.IsValid());
+	const FUniqueNetIdRef LocalAccountId = LocalAccountIdPtr.ToSharedRef();
+
 	FOnlineSessionSearchResult SearchResult;
 
 	if (const FCustomSessionSetting* PingInMs = FoundSession->GetSessionSettings().CustomSettings.Find(OSS_ADAPTER_SESSIONS_PING_IN_MS))
@@ -774,6 +782,24 @@ TFuture<TOnlineResult<FJoinSession>> FSessionsOSSAdapter::JoinSessionImpl(const 
 	SessionsInterface->JoinSession(*LocalAccountId, Params.SessionName, SearchResult);
 
 	return Future;
+}
+
+TOptional<FOnlineError> FSessionsOSSAdapter::CheckState(const FJoinSession::Params& Params) const
+{
+	if (TOptional<FOnlineError> BaseCheck = Super::CheckState(Params))
+	{
+		return BaseCheck;
+	}
+
+	const FUniqueNetIdRef LocalAccountId = Services.Get<FAuthOSSAdapter>()->GetUniqueNetId(Params.LocalAccountId).ToSharedRef();
+	if (!LocalAccountId->IsValid())
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[%s] UniqueId not found for LocalAccountId %s"), UTF8_TO_TCHAR(__FUNCTION__), *ToLogString(Params.LocalAccountId));
+		
+		return TOptional<FOnlineError>(Errors::InvalidUser());
+	}
+
+	return TOptional<FOnlineError>();
 }
 
 TFuture<TOnlineResult<FAddSessionMember>> FSessionsOSSAdapter::AddSessionMemberImpl(const FAddSessionMember::Params& Params)
@@ -845,12 +871,9 @@ TFuture<TOnlineResult<FSendSessionInvite>> FSessionsOSSAdapter::SendSessionInvit
 
 	FAuthOSSAdapter* Auth = Services.Get<FAuthOSSAdapter>();
 
-	const FUniqueNetIdRef LocalAccountId = Auth->GetUniqueNetId(Params.LocalAccountId).ToSharedRef();
-	if (!LocalAccountId->IsValid())
-	{
-		Promise.EmplaceValue(Errors::InvalidUser());
-		return Future;
-	}
+	const FUniqueNetIdPtr LocalAccountIdPtr = Services.Get<FAuthOSSAdapter>()->GetUniqueNetId(Params.LocalAccountId);
+	check(LocalAccountIdPtr.IsValid());
+	const FUniqueNetIdRef LocalAccountId = LocalAccountIdPtr.ToSharedRef();
 
 	TArray<FUniqueNetIdRef> TargetUserNetIds;
 	for (const FAccountId& TargetUser : Params.TargetUsers)
@@ -867,6 +890,24 @@ TFuture<TOnlineResult<FSendSessionInvite>> FSessionsOSSAdapter::SendSessionInvit
 	Promise.EmplaceValue(FSendSessionInvite::Result{ });
 
 	return Future;
+}
+
+TOptional<FOnlineError> FSessionsOSSAdapter::CheckState(const FSendSessionInvite::Params& Params) const
+{
+	if (TOptional<FOnlineError> BaseCheck = Super::CheckState(Params))
+	{
+		return BaseCheck;
+	}
+
+	const FUniqueNetIdRef LocalAccountId = Services.Get<FAuthOSSAdapter>()->GetUniqueNetId(Params.LocalAccountId).ToSharedRef();
+	if (!LocalAccountId->IsValid())
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[%s] UniqueId not found for LocalAccountId %s"), UTF8_TO_TCHAR(__FUNCTION__), *ToLogString(Params.LocalAccountId));
+
+		return TOptional<FOnlineError>(Errors::InvalidUser());
+	}
+
+	return TOptional<FOnlineError>();
 }
 
 TOnlineResult<FGetResolvedConnectString> FSessionsOSSAdapter::GetResolvedConnectString(const FGetResolvedConnectString::Params& Params)
@@ -898,6 +939,7 @@ TOnlineResult<FGetResolvedConnectString> FSessionsOSSAdapter::GetResolvedConnect
 	else
 	{
 		// No valid session id set
+		UE_LOG(LogTemp, Verbose, TEXT("[FSessionsOSSAdapter::GetResolvedConnectString] Invalid SessionId %s"), *ToLogString(Params.SessionId));
 		return TOnlineResult<FGetResolvedConnectString>(Errors::InvalidParams());
 	}
 }
@@ -940,20 +982,20 @@ FOnlineSessionSettings FSessionsOSSAdapter::BuildV1SettingsForCreate(const FCrea
 	{
 		Result.BuildUniqueId = BuildUniqueId->Data.GetInt64();
 	}
-	if (const FCustomSessionSetting* BuildUniqueId = Params.SessionSettings.CustomSettings.Find(OSS_ADAPTER_SESSIONS_USE_LOBBIES_IF_AVAILABLE))
+	if (const FCustomSessionSetting* UseLobbiesIfAvailable = Params.SessionSettings.CustomSettings.Find(OSS_ADAPTER_SESSIONS_USE_LOBBIES_IF_AVAILABLE))
 	{
-		Result.bUseLobbiesIfAvailable = BuildUniqueId->Data.GetBoolean();
+		Result.bUseLobbiesIfAvailable = UseLobbiesIfAvailable->Data.GetBoolean();
 	}
-	if (const FCustomSessionSetting* BuildUniqueId = Params.SessionSettings.CustomSettings.Find(OSS_ADAPTER_SESSIONS_USE_LOBBIES_VOICE_CHAT_IF_AVAILABLE))
+	if (const FCustomSessionSetting* UseLobbiesVoiceChatIfAvailable = Params.SessionSettings.CustomSettings.Find(OSS_ADAPTER_SESSIONS_USE_LOBBIES_VOICE_CHAT_IF_AVAILABLE))
 	{
-		Result.bUseLobbiesVoiceChatIfAvailable = BuildUniqueId->Data.GetBoolean();
+		Result.bUseLobbiesVoiceChatIfAvailable = UseLobbiesVoiceChatIfAvailable->Data.GetBoolean();
 	}
 
 	Result.bUsesPresence = Params.bPresenceEnabled;
 
-	if (const FCustomSessionSetting* BuildUniqueId = Params.SessionSettings.CustomSettings.Find(OSS_ADAPTER_SESSIONS_USES_STATS))
+	if (const FCustomSessionSetting* UsesStats = Params.SessionSettings.CustomSettings.Find(OSS_ADAPTER_SESSIONS_USES_STATS))
 	{
-		Result.bUsesStats = BuildUniqueId->Data.GetBoolean();
+		Result.bUsesStats = UsesStats->Data.GetBoolean();
 	}
 	Result.NumPrivateConnections = Params.SessionSettings.NumMaxConnections;
 	Result.NumPublicConnections = Params.SessionSettings.NumMaxConnections;

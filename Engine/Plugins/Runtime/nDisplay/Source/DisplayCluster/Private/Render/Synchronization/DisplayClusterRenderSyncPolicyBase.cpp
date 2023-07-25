@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Render/Synchronization/DisplayClusterRenderSyncPolicyBase.h"
+#include "Components/Viewport.h"
 #include "Render/Synchronization/DisplayClusterRenderSyncHelper.h"
 
 #include "Cluster/IPDisplayClusterClusterManager.h"
@@ -12,6 +13,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 
+#include "RHI.h"
 #include "RHIResources.h"
 
 
@@ -38,11 +40,11 @@ bool FDisplayClusterRenderSyncPolicyBase::Initialize()
 	return true;
 }
 
-void FDisplayClusterRenderSyncPolicyBase::SyncBarrierRenderThread()
+void FDisplayClusterRenderSyncPolicyBase::SyncOnBarrier()
 {
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(nDisplay SyncPolicyBase::SyncBarrier);
-		GDisplayCluster->GetPrivateClusterMgr()->GetClusterNodeController()->WaitForSwapSync();
+		GDisplayCluster->GetPrivateClusterMgr()->GetClusterNodeController()->SyncOnBarrier();
 	}
 }
 

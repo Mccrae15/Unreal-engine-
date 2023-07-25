@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimGraphNode_LinkedAnimLayer.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "EdGraphSchema_K2.h"
@@ -858,7 +859,7 @@ void UAnimGraphNode_LinkedAnimLayer::SetLayerName(FName InName)
 	{
 		FGuid FunctionGuid;
 		FBlueprintEditorUtils::GetFunctionGuidFromClassByFieldName(FBlueprintEditorUtils::GetMostUpToDateClass(TargetClass), InName, FunctionGuid);
-		FunctionReference.SetExternalMember(InName, TargetClass);
+		FunctionReference.SetExternalMember(InName, TargetClass, FunctionGuid);
 	}
 	else
 	{
@@ -901,7 +902,7 @@ void UAnimGraphNode_LinkedAnimLayer::OnLayerChanged(IDetailLayoutBuilder* Detail
 	{
 		FGuid FunctionGuid;
 		FBlueprintEditorUtils::GetFunctionGuidFromClassByFieldName(FBlueprintEditorUtils::GetMostUpToDateClass(TargetClass), Node.Layer, FunctionGuid);	
-		FunctionReference.SetExternalMember(Node.Layer, TargetClass);
+		FunctionReference.SetExternalMember(Node.Layer, TargetClass, FunctionGuid);
 	}
 	else
 	{

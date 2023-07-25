@@ -2,11 +2,12 @@
 
 #pragma once
 
-#include "AbcImporter.h"
 
 #include "SlateOptMacros.h"
 #include "AbcPolyMesh.h"
 #include "AlembicImportOptions.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Views/SListView.h"
 
 struct FAbcTrackInformation;
 

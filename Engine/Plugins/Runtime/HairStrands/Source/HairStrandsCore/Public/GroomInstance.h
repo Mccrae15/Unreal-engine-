@@ -8,12 +8,15 @@
 #include "GroomAsset.h"
 #include "GroomBindingAsset.h"
 #include "HairStrandsInterface.h"
+#include "HairStrandsDefinitions.h"
+#include "PrimitiveSceneInfo.h"
 
 class UMeshComponent;
 class UGroomComponent;
 class FHairCardsVertexFactory;
 class FHairStrandsVertexFactory;
 enum class EGroomCacheType : uint8;
+enum class EGroomViewMode : uint8;
 
 // @hair_todo: pack card ID + card UV in 32Bits alpha channel's of the position buffer:
 //  * 10/10 bits for UV -> max 1024/1024 rect resolution
@@ -57,6 +60,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FHairStrandsVertexFactoryUniformShaderParam
 	SHADER_PARAMETER(uint32, ScatterSceneLighing)
 	SHADER_PARAMETER(uint32, RaytracingProceduralSplits)
 	SHADER_PARAMETER(float, GroupIndex)
+	SHADER_PARAMETER_ARRAY(FUintVector4, AttributeOffsets, [HAIR_ATTRIBUTE_OFFSET_COUNT])
 
 	SHADER_PARAMETER_SRV(Buffer<float4>, PositionOffsetBuffer)
 	SHADER_PARAMETER_SRV(Buffer<float4>, PreviousPositionOffsetBuffer)
@@ -64,9 +68,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FHairStrandsVertexFactoryUniformShaderParam
 	SHADER_PARAMETER_SRV(Buffer<uint4>, PositionBuffer)
 	SHADER_PARAMETER_SRV(Buffer<uint4>, PreviousPositionBuffer)
 
-	SHADER_PARAMETER_SRV(Buffer<float2>, Attribute0Buffer)
-	SHADER_PARAMETER_SRV(Buffer<uint>,   Attribute1Buffer)
-	SHADER_PARAMETER_SRV(Buffer<float4>, MaterialBuffer)
+	SHADER_PARAMETER_SRV(ByteAddressBuffer, AttributeBuffer)
+	SHADER_PARAMETER_SRV(Buffer<uint>, VertexToCurveBuffer)
 	SHADER_PARAMETER_SRV(Buffer<float4>, TangentBuffer)
 
 	SHADER_PARAMETER_SRV(Buffer<uint>, CulledVertexIdsBuffer)
@@ -236,7 +239,6 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 	struct FDebug
 	{
 		// Data
-		EHairStrandsDebugMode	DebugMode = EHairStrandsDebugMode::NoneDebug;
 		uint32					ComponentId = ~0;
 		uint32					GroupIndex = ~0;
 		uint32					GroupCount = 0;
@@ -253,12 +255,13 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 		FPrimitiveSceneProxy*	Proxy = nullptr;
 		UMeshComponent*			MeshComponent = nullptr;
 		FString					MeshComponentName;
+		FPrimitiveComponentId	MeshComponentId;
+		FPersistentPrimitiveIndex CachedMeshPersistentPrimitiveIndex;
 		const UGroomComponent*	GroomComponentForDebug = nullptr; // For debug only, shouldn't be deferred on the rendering thread
 		FTransform				RigidCurrentLocalToWorld = FTransform::Identity;
 		FTransform				SkinningCurrentLocalToWorld = FTransform::Identity;
 		FTransform				RigidPreviousLocalToWorld = FTransform::Identity;
 		FTransform				SkinningPreviousLocalToWorld = FTransform::Identity;
-		bool					bDrawCardsGuides = false;
 
 		TSharedPtr<class IGroomCacheBuffers, ESPMode::ThreadSafe> GroomCacheBuffers;
 
@@ -309,5 +312,5 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 															 Debug.RigidPreviousLocalToWorld;
 	}
 
-	FHairStrandsVertexFactoryUniformShaderParameters GetHairStandsUniformShaderParameters() const;
+	FHairStrandsVertexFactoryUniformShaderParameters GetHairStandsUniformShaderParameters(EGroomViewMode ViewMode) const;
 };

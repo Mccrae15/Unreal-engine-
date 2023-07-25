@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "IConcertClientTransactionBridge.h"
 #include "IConcertModule.h"
+#include "IConcertClientModule.h"
 #include "ConcertActionDefinition.h"
 #include "ConcertSyncSessionFlags.h"
 
@@ -14,6 +15,7 @@ class IConcertClientPresenceManager;
 class IConcertClientSequencerManager;
 struct FConcertSessionClientInfo;
 class IConcertClientTransactionBridge;
+class IConcertClientPackageBridge;
 class IConcertSyncClient;
 class IConcertFileSharingService;
 
@@ -77,6 +79,9 @@ public:
 	/** Get the delegate called just after the workspace gets deleted. */
 	virtual FOnConcertClientSyncSessionStartupOrShutdown& OnSyncSessionShutdown() = 0;
 
+	/** Persist specific packages */
+	virtual void PersistSpecificChanges(TArrayView<const FName> Packages) = 0;
+
 	/** Persist all session changes and prepare the files for source control submission. */
 	virtual void PersistAllSessionChanges() = 0;
 
@@ -93,4 +98,7 @@ public:
 
 	/** Get the current transaction bridge for this client */
 	virtual IConcertClientTransactionBridge* GetTransactionBridge() const = 0;
+
+	/** Get the current package bridge for this client. */
+	virtual IConcertClientPackageBridge* GetPackageBridge() const = 0;
 };

@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenFrontLayerTranslucency.cpp
-=============================================================================*/
-
 #include "LumenFrontLayerTranslucency.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
@@ -51,6 +47,8 @@ FAutoConsoleVariableRef CVarLumenFrontLayerRelativeDepthThreshold(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+bool IsVSMTranslucentHighQualityEnabled();
+
 namespace Lumen
 {
 	bool UseLumenFrontLayerTranslucencyReflections(const FViewInfo& View)
@@ -62,14 +60,9 @@ namespace Lumen
 
 	bool ShouldRenderInFrontLayerTranslucencyGBufferPass(bool bShouldRenderInMainPass, const FMaterial& Material)
 	{
-		const EBlendMode BlendMode = Material.GetBlendMode();
-		const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
-		const ETranslucencyLightingMode TranslucencyLightingMode = Material.GetTranslucencyLightingMode();
-
-		return bIsTranslucent
-			&& (TranslucencyLightingMode == TLM_Surface || TranslucencyLightingMode == TLM_SurfacePerPixelLighting)
-			&& bShouldRenderInMainPass
-			&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain());
+		return bShouldRenderInMainPass
+			&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain())
+			&& Material.IsTranslucencyWritingFrontLayerTransparency();
 	}
 }
 
@@ -109,7 +102,7 @@ protected:
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return DoesPlatformSupportLumenGI(Parameters.Platform) && IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode) && Parameters.MaterialParameters.bIsTranslucencySurface;
+		return DoesPlatformSupportLumenGI(Parameters.Platform) && IsTranslucentBlendMode(Parameters.MaterialParameters) && Parameters.MaterialParameters.bIsTranslucencySurface;
 	}
 
 	FLumenFrontLayerTranslucencyGBufferVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -129,7 +122,7 @@ class FLumenFrontLayerTranslucencyGBufferPS : public FMeshMaterialShader
 public:
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return DoesPlatformSupportLumenGI(Parameters.Platform) && IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode) && Parameters.MaterialParameters.bIsTranslucencySurface;
+		return DoesPlatformSupportLumenGI(Parameters.Platform) && IsTranslucentBlendMode(Parameters.MaterialParameters) && Parameters.MaterialParameters.bIsTranslucencySurface;
 	}
 
 	FLumenFrontLayerTranslucencyGBufferPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -148,7 +141,7 @@ public:
 	FLumenFrontLayerTranslucencyGBufferMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type InFeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
-	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 };
@@ -259,7 +252,7 @@ void FLumenFrontLayerTranslucencyGBufferMeshProcessor::AddMeshBatch(const FMeshB
 	}
 }
 
-void FLumenFrontLayerTranslucencyGBufferMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
+void FLumenFrontLayerTranslucencyGBufferMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 		
@@ -278,7 +271,7 @@ void FLumenFrontLayerTranslucencyGBufferMeshProcessor::CollectPSOInitializers(co
 
 	if (!GetLumenFrontLayerTranslucencyGBufferShaders(
 		Material,
-		VertexFactoryType,
+		VertexFactoryData.VertexFactoryType,
 		PassShaders.VertexShader,
 		PassShaders.PixelShader))
 	{
@@ -293,7 +286,7 @@ void FLumenFrontLayerTranslucencyGBufferMeshProcessor::CollectPSOInitializers(co
 		ERenderTargetLoadAction::ENoAction, FExclusiveDepthStencil::DepthWrite_StencilNop, RenderTargetsInfo);
 
 	AddGraphicsPipelineStateInitializer(
-		VertexFactoryType,
+		VertexFactoryData,
 		Material,
 		PassDrawRenderState,
 		RenderTargetsInfo,
@@ -302,6 +295,7 @@ void FLumenFrontLayerTranslucencyGBufferMeshProcessor::CollectPSOInitializers(co
 		MeshCullMode,
 		(EPrimitiveType)PreCacheParams.PrimitiveType,
 		EMeshPassFeatures::Default,
+		true /*bRequired*/,
 		PSOInitializers);
 }
 
@@ -337,7 +331,7 @@ void RenderFrontLayerTranslucencyGBuffer(
 	const FSceneRenderer& SceneRenderer,
 	FViewInfo& View,
 	const FSceneTextures& SceneTextures,
-	FLumenFrontLayerTranslucencyGBufferParameters ReflectionGBuffer)
+	const FFrontLayerTranslucencyData& FrontLayerTranslucencyData)
 {
 	const EMeshPass::Type MeshPass = EMeshPass::LumenFrontLayerTranslucencyGBuffer;
 	const float ViewportScale = 1.0f;
@@ -347,8 +341,8 @@ void RenderFrontLayerTranslucencyGBuffer(
 
 	FLumenFrontLayerTranslucencyGBufferPassParameters* PassParameters = GraphBuilder.AllocParameters<FLumenFrontLayerTranslucencyGBufferPassParameters>();
 
-	PassParameters->RenderTargets[0] = FRenderTargetBinding(ReflectionGBuffer.FrontLayerTranslucencyNormal, ERenderTargetLoadAction::ELoad);
-	PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(ReflectionGBuffer.FrontLayerTranslucencySceneDepth, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilNop);
+	PassParameters->RenderTargets[0] = FRenderTargetBinding(FrontLayerTranslucencyData.Normal, ERenderTargetLoadAction::ELoad);
+	PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(FrontLayerTranslucencyData.SceneDepth, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilNop);
 
 	{
 		FViewUniformShaderParameters DownsampledTranslucencyViewParameters = *View.CachedViewUniformShaderParameters;
@@ -384,7 +378,7 @@ void RenderFrontLayerTranslucencyGBuffer(
 			}
 
 			PassParameters->View.InstancedView = TUniformBufferRef<FInstancedViewUniformShaderParameters>::CreateUniformBufferImmediate(
-				LocalInstancedViewUniformShaderParameters,
+				reinterpret_cast<const FInstancedViewUniformShaderParameters&>(LocalInstancedViewUniformShaderParameters),
 				UniformBuffer_SingleFrame);
 		}
 	}
@@ -407,52 +401,142 @@ void RenderFrontLayerTranslucencyGBuffer(
 		SceneRenderer.SetStereoViewport(RHICmdList, View, ViewportScale);
 		View.ParallelMeshDrawCommandPasses[MeshPass].DispatchDraw(nullptr, RHICmdList, &PassParameters->InstanceCullingDrawParams);
 	});
+
+	// Extract front layer depth depth (only needed when VSM high quality shadow on translucency is enabled)
+	if (View.ViewState && !View.bStatePrevViewInfoIsReadOnly && IsVSMTranslucentHighQualityEnabled())
+	{
+		// Queue updating the view state's render target reference with the new values
+		GraphBuilder.QueueTextureExtraction(FrontLayerTranslucencyData.SceneDepth, &View.ViewState->Lumen.TranslucentReflectionState.DepthHistoryRT);
+		GraphBuilder.QueueTextureExtraction(FrontLayerTranslucencyData.Normal, &View.ViewState->Lumen.TranslucentReflectionState.NormalHistoryRT);
+	}
+}
+
+bool FDeferredShadingSceneRenderer::IsLumenFrontLayerTranslucencyEnabled(const FViewInfo& View) const
+{ 
+	return View.bTranslucentSurfaceLighting && GetViewPipelineState(View).ReflectionsMethod == EReflectionsMethod::Lumen && Lumen::UseLumenFrontLayerTranslucencyReflections(View);
+}
+
+bool IsLumenFrontLayerHistoryValid(const FViewInfo& View)
+{ 
+	return View.ViewState && 
+		View.ViewState->PrevFrameNumber == View.ViewState->Lumen.TranslucentReflectionState.HistoryFrameIndex && 
+		View.ViewState->Lumen.TranslucentReflectionState.DepthHistoryRT != nullptr && 
+		View.ViewState->Lumen.TranslucentReflectionState.NormalHistoryRT != nullptr;
+}
+
+FFrontLayerTranslucencyData FDeferredShadingSceneRenderer::RenderFrontLayerTranslucency(
+	FRDGBuilder& GraphBuilder,
+	TArray<FViewInfo>& InViews,
+	const FSceneTextures& SceneTextures, 
+	bool bRenderOnlyForVSMPageMarking)
+{
+	// bNeedFrontLayerData:
+	// 0 : No front layer
+	// 1 : Front layer data requested by Lumen reflection
+	// 2 : Front layer data requested by VSM page marking
+	uint32 bNeedFrontLayerData = 0;
+	if (bRenderOnlyForVSMPageMarking)
+	{
+		if (IsVSMTranslucentHighQualityEnabled())
+		{
+			// Front layer translucency data can be used from different sources (in priority order):
+			// * Lumen front layer History data
+			// * Skipped if Lumen will render front layer the same frame (as Translucent 'after opaque' might be rendered, e.g. particle, and if we render the front layer here, they won't be present)
+			// * Render local front layer data here
+			bool bValidHistory = false;
+			bool bRenderLumenFrontLayer = false;
+			for (FViewInfo& View : InViews)
+			{
+				bValidHistory = bValidHistory || IsLumenFrontLayerHistoryValid(View);
+				bRenderLumenFrontLayer = bRenderLumenFrontLayer || IsLumenFrontLayerTranslucencyEnabled(View);
+			}
+
+			if (!bValidHistory && !bRenderLumenFrontLayer)
+			{
+				bNeedFrontLayerData = 2;
+			}
+		}
+	}
+	else
+	{
+		// Check if any view require translucent front layer data
+		for (const FViewInfo& View : InViews)
+		{
+			if (IsLumenFrontLayerTranslucencyEnabled(View))
+			{
+				bNeedFrontLayerData = 1;
+				break;
+			}	
+		}
+	}
+
+	FFrontLayerTranslucencyData Out;
+	if (bNeedFrontLayerData > 0)
+	{
+		RDG_EVENT_SCOPE(GraphBuilder, "LumenFrontLayerTranslucencyReflections");
+
+		// Allocate resources for all views
+		{
+			EPixelFormat NormalFormat = PF_FloatRGBA; // Need more precision than PF_A2B10G10R10 for mirror reflections
+			FRDGTextureDesc NormalDesc(FRDGTextureDesc::Create2D(SceneTextures.Config.Extent, NormalFormat, FClearValueBinding::Transparent, TexCreate_ShaderResource | TexCreate_RenderTargetable));
+			Out.Normal = GraphBuilder.CreateTexture(NormalDesc, TEXT("Lumen.TranslucencyReflections.Normal"));
+			Out.SceneDepth = GraphBuilder.CreateTexture(SceneTextures.Depth.Target->Desc, TEXT("Lumen.TranslucencyReflections.SceneDepth"));
+
+			for (const FViewInfo& View : InViews)
+			{
+				if (bNeedFrontLayerData > 1 || IsLumenFrontLayerTranslucencyEnabled(View))
+				{
+					FLumenFrontLayerTranslucencyClearGBufferPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenFrontLayerTranslucencyClearGBufferPS::FParameters>();
+					PassParameters->RenderTargets[0] = FRenderTargetBinding(Out.Normal, ERenderTargetLoadAction::ENoAction, 0);
+					PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(Out.SceneDepth, ERenderTargetLoadAction::ENoAction, FExclusiveDepthStencil::DepthWrite_StencilNop);
+					PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
+	
+					TShaderMapRef<FLumenFrontLayerTranslucencyClearGBufferPS> PixelShader(View.ShaderMap);
+					FPixelShaderUtils::AddFullscreenPass<FLumenFrontLayerTranslucencyClearGBufferPS>(
+						GraphBuilder,
+						View.ShaderMap,
+						RDG_EVENT_NAME("ClearTranslucencyGBuffer"),
+						PixelShader,
+						PassParameters,
+						View.ViewRect,
+						TStaticBlendState<>::GetRHI(),
+						TStaticRasterizerState<FM_Solid, CM_None>::GetRHI(),
+						TStaticDepthStencilState<true, CF_Always>::GetRHI());
+				}
+			}
+		}
+
+		// Render front layer data for each view
+		for (FViewInfo& View : InViews)
+		{
+			if (bNeedFrontLayerData > 1 || IsLumenFrontLayerTranslucencyEnabled(View))
+			{
+				RenderFrontLayerTranslucencyGBuffer(GraphBuilder, *this, View, SceneTextures, Out);
+			}
+		}
+	}
+	return Out;
 }
 
 void FDeferredShadingSceneRenderer::RenderLumenFrontLayerTranslucencyReflections(
 	FRDGBuilder& GraphBuilder,
 	FViewInfo& View,
 	const FSceneTextures& SceneTextures,
-	const FLumenSceneFrameTemporaries& LumenFrameTemporaries)
+	const FLumenSceneFrameTemporaries& LumenFrameTemporaries, 
+	const FFrontLayerTranslucencyData& FrontLayerTranslucencyData)
 {
 	if (Lumen::UseLumenFrontLayerTranslucencyReflections(View) && View.bTranslucentSurfaceLighting)
 	{
+		check(FrontLayerTranslucencyData.IsValid());
+
 		RDG_EVENT_SCOPE(GraphBuilder, "LumenFrontLayerTranslucencyReflections");
-
-		FLumenFrontLayerTranslucencyGBufferParameters ReflectionGBuffer;
-
-		EPixelFormat NormalFormat = PF_FloatRGBA; // Need more precision than PF_A2B10G10R10 for mirror reflections
-		FRDGTextureDesc NormalDesc(FRDGTextureDesc::Create2D(SceneTextures.Config.Extent, NormalFormat, FClearValueBinding::Transparent, TexCreate_ShaderResource | TexCreate_RenderTargetable));
-		ReflectionGBuffer.FrontLayerTranslucencyNormal = GraphBuilder.CreateTexture(NormalDesc, TEXT("Lumen.TranslucencyReflections.Normal"));
-
-		ReflectionGBuffer.FrontLayerTranslucencySceneDepth = GraphBuilder.CreateTexture(SceneTextures.Depth.Target->Desc, TEXT("Lumen.TranslucencyReflections.SceneDepth"));
-
-		{
-			FLumenFrontLayerTranslucencyClearGBufferPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenFrontLayerTranslucencyClearGBufferPS::FParameters>();
-
-			PassParameters->RenderTargets[0] = FRenderTargetBinding(ReflectionGBuffer.FrontLayerTranslucencyNormal, ERenderTargetLoadAction::ENoAction, 0);
-			PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(ReflectionGBuffer.FrontLayerTranslucencySceneDepth, ERenderTargetLoadAction::ENoAction, FExclusiveDepthStencil::DepthWrite_StencilNop);
-
-			PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
-
-			TShaderMapRef<FLumenFrontLayerTranslucencyClearGBufferPS> PixelShader(View.ShaderMap);
-
-			FPixelShaderUtils::AddFullscreenPass<FLumenFrontLayerTranslucencyClearGBufferPS>(
-				GraphBuilder, 
-				View.ShaderMap, 
-				RDG_EVENT_NAME("ClearTranslucencyGBuffer"),
-				PixelShader, 
-				PassParameters, 
-				View.ViewRect,
-				TStaticBlendState<>::GetRHI(),
-				TStaticRasterizerState<FM_Solid, CM_None>::GetRHI(),
-				TStaticDepthStencilState<true, CF_Always>::GetRHI());
-		}
-
-		RenderFrontLayerTranslucencyGBuffer(GraphBuilder, *this, View, SceneTextures, ReflectionGBuffer);
 
 		FLumenMeshSDFGridParameters MeshSDFGridParameters;
 		LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters;
+
+		FLumenFrontLayerTranslucencyGBufferParameters ReflectionGBuffer;
+		ReflectionGBuffer.FrontLayerTranslucencyNormal = FrontLayerTranslucencyData.Normal;
+		ReflectionGBuffer.FrontLayerTranslucencySceneDepth = FrontLayerTranslucencyData.SceneDepth;
 
 		FRDGTextureRef ReflectionTexture = RenderLumenReflections(
 			GraphBuilder,

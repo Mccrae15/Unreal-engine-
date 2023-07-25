@@ -498,6 +498,34 @@ public:
 
 	CORE_API static FCbObjectId NewObjectId();
 
+	inline bool operator==(const FCbObjectId& B) const
+	{
+		return FMemory::Memcmp(this, &B, sizeof(FCbObjectId)) == 0;
+	}
+
+	inline bool operator!=(const FCbObjectId& B) const
+	{
+		return FMemory::Memcmp(this, &B, sizeof(FCbObjectId)) != 0;
+	}
+
+	inline bool operator<(const FCbObjectId& B) const
+	{
+		return FMemory::Memcmp(this, &B, sizeof(FCbObjectId)) <= 0;
+	}
+
+	friend inline uint32 GetTypeHash(const FCbObjectId& Id)
+	{
+		return *reinterpret_cast<const uint32*>(&Id);
+	}
+
+	/** Convert the ObjectId to a 24-character hex string. */
+	template <typename CharType>
+	friend inline TStringBuilderBase<CharType>& operator<<(TStringBuilderBase<CharType>& Builder, const FCbObjectId& Id)
+	{
+		UE::String::BytesToHexLower(Id.GetBytes(), Builder);
+		return Builder;
+	}
+
 private:
 	alignas(uint32) ByteArray Bytes{};
 };
@@ -505,34 +533,6 @@ private:
 inline FCbObjectId::FCbObjectId(const ByteArray& ObjectId)
 {
 	FMemory::Memcpy(Bytes, ObjectId, sizeof(ByteArray));
-}
-
-inline bool operator==(const FCbObjectId& A, const FCbObjectId& B)
-{
-	return FMemory::Memcmp(&A, &B, sizeof(FCbObjectId)) == 0;
-}
-
-inline bool operator!=(const FCbObjectId& A, const FCbObjectId& B)
-{
-	return FMemory::Memcmp(&A, &B, sizeof(FCbObjectId)) != 0;
-}
-
-inline bool operator<(const FCbObjectId& A, const FCbObjectId& B)
-{
-	return FMemory::Memcmp(&A, &B, sizeof(FCbObjectId)) <= 0;
-}
-
-inline uint32 GetTypeHash(const FCbObjectId& Id)
-{
-	return *reinterpret_cast<const uint32*>(&Id);
-}
-
-/** Convert the ObjectId to a 24-character hex string. */
-template <typename CharType>
-inline TStringBuilderBase<CharType>& operator<<(TStringBuilderBase<CharType>& Builder, const FCbObjectId& Id)
-{
-	UE::String::BytesToHexLower(Id.GetBytes(), Builder);
-	return Builder;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -619,6 +619,15 @@ public:
 
 	/** Construct a field from a value, without access to the name. */
 	inline explicit FCbFieldView(const FCbValue& Value);
+
+	/** Returns a copy of the field with the name removed. */
+	constexpr inline FCbFieldView RemoveName() const
+	{
+		FCbFieldView Field;
+		Field.TypeWithFlags = TypeWithFlags & ~(ECbFieldType::HasFieldType | ECbFieldType::HasFieldName);
+		Field.Value = Value;
+		return Field;
+	}
 
 	/** Returns the name of the field if it has a name, otherwise an empty view. */
 	constexpr inline FUtf8StringView GetName() const
@@ -939,7 +948,7 @@ public:
 	CORE_API uint64 Num() const;
 
 	/** Access the array as an array field. */
-	inline FCbFieldView AsFieldView() const { return static_cast<const FCbFieldView&>(*this); }
+	inline FCbFieldView AsFieldView() const { return RemoveName(); }
 
 	/** Construct an array from an array field. No type check is performed! */
 	static inline FCbArrayView FromFieldNoCheck(const FCbFieldView& Field) { return FCbArrayView(Field); }
@@ -1036,7 +1045,7 @@ public:
 	inline FCbFieldView operator[](FUtf8StringView Name) const { return FindView(Name); }
 
 	/** Access the object as an object field. */
-	inline FCbFieldView AsFieldView() const { return static_cast<const FCbFieldView&>(*this); }
+	inline FCbFieldView AsFieldView() const { return RemoveName(); }
 
 	/** Construct an object from an object field. No type check is performed! */
 	static inline FCbObjectView FromFieldNoCheck(const FCbFieldView& Field) { return FCbObjectView(Field); }

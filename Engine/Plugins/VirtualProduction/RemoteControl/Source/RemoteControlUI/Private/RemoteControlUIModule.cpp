@@ -7,6 +7,9 @@
 #include "AssetToolsModule.h"
 #include "Commands/RemoteControlCommands.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Elements/Framework/TypedElementRegistry.h"
+#include "Elements/Framework/TypedElementSelectionSet.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -14,7 +17,9 @@
 #include "IRemoteControlModule.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "Kismet2/ComponentEditorUtils.h"
+#include "LevelEditorSubsystem.h"
 #include "MaterialEditor/DEditorParameterValue.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "PropertyHandle.h"
 #include "RemoteControlActor.h"
@@ -30,6 +35,7 @@
 #include "UI/Behaviour/Builtin/Conditional/SRCBehaviourConditional.h"
 #include "UI/Behaviour/SRCBehaviourPanel.h"
 #include "UI/Customizations/FPassphraseCustomization.h"
+#include "UI/Customizations/NetworkAddressCustomization.h"
 #include "UI/Customizations/RemoteControlEntityCustomization.h"
 #include "UI/RemoteControlPanelStyle.h"
 #include "UI/SRCPanelExposedActor.h"
@@ -304,23 +310,33 @@ TSharedRef<SRemoteControlPanel> FRemoteControlUIModule::CreateRemoteControlPanel
 		Panel->SetLiveMode(bIsInLiveMode);
 	}
 
-	TSharedRef<SRemoteControlPanel> PanelRef = SAssignNew(WeakActivePanel, SRemoteControlPanel, Preset, ToolkitHost)
+	TSharedRef<SRemoteControlPanel> PanelRef = SNew(SRemoteControlPanel, Preset, ToolkitHost)
 		.OnLiveModeChange_Lambda(
-			[this](TSharedPtr<SRemoteControlPanel> Panel, bool bLiveMode) 
+			[this](TSharedPtr<SRemoteControlPanel> Panel, bool bLiveMode)
 			{
-				// Activating the live mode on a panel sets it as the active panel 
-				if (bLiveMode)
+				URemoteControlPreset* Preset = Panel->GetPreset();
+
+				if (!IsValid(Preset) || Preset->IsEmbeddedPreset() == false)
 				{
-					if (TSharedPtr<SRemoteControlPanel> ActivePanel = WeakActivePanel.Pin())
+					// Activating the live mode on a panel sets it as the active panel 
+					if (bLiveMode)
 					{
-						if (ActivePanel != Panel)
+						if (TSharedPtr<SRemoteControlPanel> ActivePanel = WeakActivePanel.Pin())
 						{
-							ActivePanel->SetLiveMode(true);
+							if (ActivePanel != Panel)
+							{
+								ActivePanel->SetLiveMode(true);
+							}
 						}
+						WeakActivePanel = MoveTemp(Panel);
 					}
-					WeakActivePanel = MoveTemp(Panel);
 				}
 			});
+
+	if (Preset->IsEmbeddedPreset() == false)
+	{
+		WeakActivePanel = PanelRef;
+	}
 
 	RegisteredRemoteControlPanels.Add(TWeakPtr<SRemoteControlPanel>(PanelRef));
 
@@ -342,6 +358,7 @@ TSharedRef<SRemoteControlPanel> FRemoteControlUIModule::CreateRemoteControlPanel
 			
 			if (SharedDetailsPanel.IsValid())
 			{
+				SharedDetailsPanel->SetRightColumnMinWidth(50);
 				break;
 			}
 		}
@@ -824,6 +841,7 @@ void FRemoteControlUIModule::RegisterStructCustomizations()
 		PropertyEditorModule.RegisterCustomClassLayout(Name, FOnGetDetailCustomizationInstance::CreateStatic(&FRemoteControlEntityCustomization::MakeInstance));
 	}
 	
+	PropertyEditorModule.RegisterCustomPropertyTypeLayout(FRCNetworkAddress::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNetworkAddressCustomization::MakeInstance));
 	PropertyEditorModule.RegisterCustomPropertyTypeLayout(FRCPassphrase::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPassphraseCustomization::MakeInstance));
 }
 
@@ -839,6 +857,7 @@ void FRemoteControlUIModule::UnregisterStructCustomizations()
 
 	if (UObjectInitialized())
 	{
+		PropertyEditorModule.UnregisterCustomPropertyTypeLayout(FRCNetworkAddress::StaticStruct()->GetFName());
 		PropertyEditorModule.UnregisterCustomPropertyTypeLayout(FRCPassphrase::StaticStruct()->GetFName());
 	}
 }
@@ -878,6 +897,42 @@ void FRemoteControlUIModule::RegisterWidgetFactoryForType(UScriptStruct* RemoteC
 void FRemoteControlUIModule::UnregisterWidgetFactoryForType(UScriptStruct* RemoteControlEntityType)
 {
 	GenerateWidgetDelegates.Remove(RemoteControlEntityType);
+}
+
+void FRemoteControlUIModule::HighlightPropertyInDetailsPanel(const FPropertyPath& Path) const
+{
+	if (SharedDetailsPanel)
+	{
+		SharedDetailsPanel->HighlightProperty(Path);
+	}
+}
+
+void FRemoteControlUIModule::SelectObjects(const TArray<UObject*>& Objects) const
+{
+	if (ULevelEditorSubsystem* LevelEditorSubsystem = GEditor->GetEditorSubsystem<ULevelEditorSubsystem>())
+	{
+		FTypedElementListRef ElementHandles = UTypedElementRegistry::GetInstance()->CreateElementList();
+		for (UObject* Object : Objects)
+		{
+			if (UActorComponent* Component = Cast<UActorComponent>(Object))
+			{
+				if (FTypedElementHandle Handle = UEngineElementsLibrary::AcquireEditorComponentElementHandle(Component))
+				{
+					ElementHandles->Add(Handle);
+				}
+			}
+			else if (AActor* Actor = Cast<AActor>(Object))
+			{
+				if (FTypedElementHandle Handle = UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor))
+				{
+					ElementHandles->Add(Handle);
+				}
+			}
+		}
+
+		UTypedElementSelectionSet* SelectionSet = LevelEditorSubsystem->GetSelectionSet();
+		SelectionSet->SetSelection(ElementHandles->GetElementHandles(), FTypedElementSelectionOptions());
+	}
 }
 
 void FRemoteControlUIModule::RegisterWidgetFactories()
@@ -1079,6 +1134,8 @@ void FRemoteControlUIModule::RefreshPanels()
 
 TSharedPtr<SRCPanelTreeNode> FRemoteControlUIModule::GenerateEntityWidget(const FGenerateWidgetArgs& Args)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRemoteControlUIModule::GenerateEntityWidget);
+
 	if (Args.Preset && Args.Entity)
 	{
 		const UScriptStruct* EntityType = Args.Preset->GetExposedEntityType(Args.Entity->GetId());

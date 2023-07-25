@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ScreenPass.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "EngineGlobals.h"
 #include "ScenePrivate.h"
 #include "RendererModule.h"
 #include "RenderGraphUtils.h"
+#include "SystemTextures.h"
 
 IMPLEMENT_GLOBAL_SHADER(FScreenPassVS, "/Engine/Private/ScreenPass.usf", "ScreenPassVS", SF_Vertex);
 
@@ -177,6 +179,10 @@ public:
 	DECLARE_GLOBAL_SHADER(FDownsampleDepthPS);
 	SHADER_USE_PARAMETER_STRUCT(FDownsampleDepthPS, FGlobalShader);
 
+	class FOutputMinAndMaxDepth : SHADER_PERMUTATION_BOOL("OUTPUT_MIN_AND_MAX_DEPTH");
+
+	using FPermutationDomain = TShaderPermutationDomain<FOutputMinAndMaxDepth>;
+
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DepthTexture)
@@ -184,6 +190,8 @@ public:
 		SHADER_PARAMETER(FVector2f, SourceMaxUV)
 		SHADER_PARAMETER(FVector2f, DestinationResolution)
 		SHADER_PARAMETER(uint32, DownsampleDepthFilter)
+		SHADER_PARAMETER(FIntVector4, DstPixelCoordMinAndMax)
+		SHADER_PARAMETER(FIntVector4, SrcPixelCoordMinAndMax)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -206,27 +214,46 @@ void AddDownsampleDepthPass(
 	const FScreenPassTextureViewport OutputViewport(Output);
 
 	TShaderMapRef<FScreenPassVS> VertexShader(View.ShaderMap);
-	TShaderMapRef<FDownsampleDepthPS> PixelShader(View.ShaderMap);
+
+	const bool bIsMinAndMaxDepthFilter = DownsampleDepthFilter == EDownsampleDepthFilter::MinAndMaxDepth;
+	FDownsampleDepthPS::FPermutationDomain Permutation;
+	Permutation.Set<FDownsampleDepthPS::FOutputMinAndMaxDepth>(bIsMinAndMaxDepthFilter ? 1 : 0);
+	TShaderMapRef<FDownsampleDepthPS> PixelShader(View.ShaderMap, Permutation);
+
+	// The lower right corner pixel whose coordinate is max considered excluded https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d11-rect
+	// That is why we subtract -1 from the maximum value of the source viewport.
 
 	FDownsampleDepthPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FDownsampleDepthPS::FParameters>();
 	PassParameters->View = View.ViewUniformBuffer;
 	PassParameters->DepthTexture = Input.Texture;
 	PassParameters->DestinationTexelSize = FVector2f(1.0f / OutputViewport.Extent.X, 1.0f / OutputViewport.Extent.X);
-	PassParameters->SourceMaxUV = FVector2f((View.ViewRect.Max.X - 0.5f) / InputViewport.Extent.X, (View.ViewRect.Max.Y - 0.5f) / InputViewport.Extent.Y);
+	PassParameters->SourceMaxUV = FVector2f((float(View.ViewRect.Max.X) -1.0f - 0.51f) / InputViewport.Extent.X, (float(View.ViewRect.Max.Y) - 1.0f - 0.51f) / InputViewport.Extent.Y);
 	PassParameters->DownsampleDepthFilter = (uint32)DownsampleDepthFilter;
 
 	const int32 DownsampledSizeX = OutputViewport.Rect.Width();
 	const int32 DownsampledSizeY = OutputViewport.Rect.Height();
 	PassParameters->DestinationResolution = FVector2f(DownsampledSizeX, DownsampledSizeY);
 
-	PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(Output.Texture, Output.LoadAction, Output.LoadAction, FExclusiveDepthStencil::DepthWrite_StencilWrite);
+	PassParameters->DstPixelCoordMinAndMax = FIntVector4(OutputViewport.Rect.Min.X, OutputViewport.Rect.Min.Y, OutputViewport.Rect.Max.X-1, OutputViewport.Rect.Max.Y-1);
+	PassParameters->SrcPixelCoordMinAndMax = FIntVector4( InputViewport.Rect.Min.X,  InputViewport.Rect.Min.Y,  InputViewport.Rect.Max.X-1,  InputViewport.Rect.Max.Y-1);
 
 	FRHIDepthStencilState* DepthStencilState = TStaticDepthStencilState<true, CF_Always>::GetRHI();
+
+	if (bIsMinAndMaxDepthFilter)
+	{
+		DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+		PassParameters->RenderTargets[0] = FRenderTargetBinding(Output.Texture, Output.LoadAction);
+	}
+	else
+	{
+		PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(Output.Texture, Output.LoadAction, Output.LoadAction, FExclusiveDepthStencil::DepthWrite_StencilWrite);
+	}
 
 	static const TCHAR* kFilterNames[] = {
 		TEXT("Point"),
 		TEXT("Max"),
 		TEXT("CheckerMinMax"),
+		TEXT("MinAndMaxDepth"),
 	};
 
 	AddDrawScreenPass(

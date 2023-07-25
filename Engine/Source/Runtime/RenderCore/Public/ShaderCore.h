@@ -117,7 +117,7 @@ extern RENDERCORE_API void InitializeShaderHashCache();
 extern RENDERCORE_API void UpdateIncludeDirectoryForPreviewPlatform(EShaderPlatform PreviewPlatform, EShaderPlatform ActualPlatform);
 
 /** Checks if shader include isn't skipped by a shader hash cache. */
-extern RENDERCORE_API void CheckShaderHashCacheInclude(const FString& VirtualFilePath, EShaderPlatform ShaderPlatform);
+extern RENDERCORE_API void CheckShaderHashCacheInclude(const FString& VirtualFilePath, EShaderPlatform ShaderPlatform, const FString& ShaderFormatName);
 
 /** Initializes cached shader type data.  This must be called before creating any FShaderType. */
 extern RENDERCORE_API void InitializeShaderTypes();
@@ -242,18 +242,18 @@ struct FParameterAllocation
 		Ar << Allocation.Type;
 		return Ar;
 	}
+
+	friend inline bool operator==(const FParameterAllocation& A, const FParameterAllocation& B)
+	{
+		return
+			A.BufferIndex == B.BufferIndex && A.BaseIndex == B.BaseIndex && A.Size == B.Size && A.Type == B.Type && A.bBound == B.bBound;
+	}
+
+	friend inline bool operator!=(const FParameterAllocation& A, const FParameterAllocation& B)
+	{
+		return !(A == B);
+	}
 };
-
-inline bool operator==(const FParameterAllocation& A, const FParameterAllocation& B)
-{
-	return
-		A.BufferIndex == B.BufferIndex && A.BaseIndex == B.BaseIndex && A.Size == B.Size && A.Type == B.Type && A.bBound == B.bBound;
-}
-
-inline bool operator!=(const FParameterAllocation& A, const FParameterAllocation& B)
-{
-	return !(A == B);
-}
 
 /**
  * A map of shader parameter names to registers allocated to that parameter.
@@ -378,10 +378,10 @@ private:
 	TMap<FString,FString> Definitions;
 };
 
-struct FBaseShaderResourceTable
+struct FShaderResourceTable
 {
 	/** Bits indicating which resource tables contain resources bound to this shader. */
-	uint32 ResourceTableBits;
+	uint32 ResourceTableBits = 0;
 
 	/** Mapping of bound SRVs to their location in resource tables. */
 	TArray<uint32> ShaderResourceViewMap;
@@ -395,38 +395,41 @@ struct FBaseShaderResourceTable
 	/** Hash of the layouts of resource tables at compile time, used for runtime validation. */
 	TArray<uint32> ResourceTableLayoutHashes;
 
-	FBaseShaderResourceTable() :
-		ResourceTableBits(0)
-	{
-	}
+	/** Mapping of bound Textures to their location in resource tables. */
+	TArray<uint32> TextureMap;
 
-	friend bool operator==(const FBaseShaderResourceTable &A, const FBaseShaderResourceTable& B)
+	friend bool operator==(const FShaderResourceTable&A, const FShaderResourceTable& B)
 	{
 		bool bEqual = true;
 		bEqual &= (A.ResourceTableBits == B.ResourceTableBits);
-		bEqual &= (A.ShaderResourceViewMap.Num() == B.ShaderResourceViewMap.Num());
-		bEqual &= (A.SamplerMap.Num() == B.SamplerMap.Num());
-		bEqual &= (A.UnorderedAccessViewMap.Num() == B.UnorderedAccessViewMap.Num());
+		bEqual &= (A.ShaderResourceViewMap    .Num() == B.ShaderResourceViewMap    .Num());
+		bEqual &= (A.SamplerMap               .Num() == B.SamplerMap               .Num());
+		bEqual &= (A.UnorderedAccessViewMap   .Num() == B.UnorderedAccessViewMap   .Num());
 		bEqual &= (A.ResourceTableLayoutHashes.Num() == B.ResourceTableLayoutHashes.Num());
+		bEqual &= (A.TextureMap               .Num() == B.TextureMap               .Num());
+
 		if (!bEqual)
 		{
 			return false;
 		}
-		bEqual &= (FMemory::Memcmp(A.ShaderResourceViewMap.GetData(), B.ShaderResourceViewMap.GetData(), A.ShaderResourceViewMap.GetTypeSize()*A.ShaderResourceViewMap.Num()) == 0);
-		bEqual &= (FMemory::Memcmp(A.SamplerMap.GetData(), B.SamplerMap.GetData(), A.SamplerMap.GetTypeSize()*A.SamplerMap.Num()) == 0);
-		bEqual &= (FMemory::Memcmp(A.UnorderedAccessViewMap.GetData(), B.UnorderedAccessViewMap.GetData(), A.UnorderedAccessViewMap.GetTypeSize()*A.UnorderedAccessViewMap.Num()) == 0);
-		bEqual &= (FMemory::Memcmp(A.ResourceTableLayoutHashes.GetData(), B.ResourceTableLayoutHashes.GetData(), A.ResourceTableLayoutHashes.GetTypeSize()*A.ResourceTableLayoutHashes.Num()) == 0);
+
+		bEqual &= (FMemory::Memcmp(A.ShaderResourceViewMap    .GetData(), B.ShaderResourceViewMap    .GetData(), A.ShaderResourceViewMap    .GetTypeSize() * A.ShaderResourceViewMap    .Num()) == 0);
+		bEqual &= (FMemory::Memcmp(A.SamplerMap               .GetData(), B.SamplerMap               .GetData(), A.SamplerMap               .GetTypeSize() * A.SamplerMap               .Num()) == 0);
+		bEqual &= (FMemory::Memcmp(A.UnorderedAccessViewMap   .GetData(), B.UnorderedAccessViewMap   .GetData(), A.UnorderedAccessViewMap   .GetTypeSize() * A.UnorderedAccessViewMap   .Num()) == 0);
+		bEqual &= (FMemory::Memcmp(A.ResourceTableLayoutHashes.GetData(), B.ResourceTableLayoutHashes.GetData(), A.ResourceTableLayoutHashes.GetTypeSize() * A.ResourceTableLayoutHashes.Num()) == 0);
+		bEqual &= (FMemory::Memcmp(A.TextureMap               .GetData(), B.TextureMap               .GetData(), A.TextureMap               .GetTypeSize() * A.TextureMap               .Num()) == 0);
 		return bEqual;
 	}
 };
 
-inline FArchive& operator<<(FArchive& Ar, FBaseShaderResourceTable& SRT)
+inline FArchive& operator<<(FArchive& Ar, FShaderResourceTable& SRT)
 {
 	Ar << SRT.ResourceTableBits;
 	Ar << SRT.ShaderResourceViewMap;
 	Ar << SRT.SamplerMap;
 	Ar << SRT.UnorderedAccessViewMap;
 	Ar << SRT.ResourceTableLayoutHashes;
+	Ar << SRT.TextureMap;
 
 	return Ar;
 }
@@ -520,7 +523,6 @@ struct FShaderCompilerEnvironment
 	TMap<FString, FResourceTableEntry> ResourceTableMap;
 	TMap<FString, FUniformBufferEntry> UniformBufferMap;
 	TMap<FString, FString> RemoteServerData;
-	TMap<FString, FString> ShaderFormatCVars;
 
 	const ITargetPlatform* TargetPlatform = nullptr;
 
@@ -576,7 +578,6 @@ struct FShaderCompilerEnvironment
 		Ar << ResourceTableMap;
 		Ar << UniformBufferMap;
 		Ar << RemoteServerData;
-		Ar << ShaderFormatCVars;
 		Ar << FullPrecisionInPS;
 	}
 
@@ -617,7 +618,6 @@ struct FShaderCompilerEnvironment
 		Definitions.Merge(Other.Definitions);
 		RenderTargetOutputFormatsMap.Append(Other.RenderTargetOutputFormatsMap);
 		RemoteServerData.Append(Other.RemoteServerData);
-		ShaderFormatCVars.Append(Other.ShaderFormatCVars);
 		FullPrecisionInPS |= Other.FullPrecisionInPS;
 	}
 
@@ -661,7 +661,7 @@ struct FShaderCodeResourceMasks
 };
 
 // if this changes you need to make sure all shaders get invalidated
-enum class EShaderCodeFeatures : uint8
+enum class EShaderCodeFeatures : uint16
 {
 	None                    = 0,
 	WaveOps                 = 1 << 0,
@@ -671,6 +671,7 @@ enum class EShaderCodeFeatures : uint8
 	DiagnosticBuffer        = 1 << 4,
 	BindlessResources       = 1 << 5,
 	BindlessSamplers        = 1 << 6,
+	StencilRef              = 1 << 7,
 };
 ENUM_CLASS_FLAGS(EShaderCodeFeatures);
 
@@ -716,17 +717,18 @@ struct FShaderCodeVendorExtension
 	{
 		return Ar << Extension.VendorId << Extension.Parameter;
 	}
+
+	friend inline bool operator==(const FShaderCodeVendorExtension& A, const FShaderCodeVendorExtension& B)
+	{
+		return A.VendorId == B.VendorId && A.Parameter == B.Parameter;
+	}
+
+	friend inline bool operator!=(const FShaderCodeVendorExtension& A, const FShaderCodeVendorExtension& B)
+	{
+		return !(A == B);
+	}
+
 };
-
-inline bool operator==(const FShaderCodeVendorExtension& A, const FShaderCodeVendorExtension& B)
-{
-	return A.VendorId == B.VendorId && A.Parameter == B.Parameter;
-}
-
-inline bool operator!=(const FShaderCodeVendorExtension& A, const FShaderCodeVendorExtension& B)
-{
-	return !(A == B);
-}
 
 #ifndef RENDERCORE_ATTRIBUTE_UNALIGNED
 // TODO find out if using GCC_ALIGN(1) instead of this new #define break on all kinds of platforms...
@@ -1073,15 +1075,31 @@ extern RENDERCORE_API void HashShaderFileWithIncludes(FArchive& HashingArchive, 
  */
 extern RENDERCORE_API const class FSHAHash& GetShaderFilesHash(const TArray<FString>& VirtualFilePaths, EShaderPlatform ShaderPlatform);
 
-extern void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables, const FName* ShaderPlatformName = nullptr);
-
 /**
  * Flushes the shader file and CRC cache, and regenerates the binary shader files if necessary.
  * Allows shader source files to be re-read properly even if they've been modified since startup.
  */
-extern RENDERCORE_API void FlushShaderFileCache(const FName* ShaderPlatformName = nullptr);
+extern RENDERCORE_API void FlushShaderFileCache();
+
+UE_DEPRECATED(5.2, "FlushShaderFileCache no longer needs a ShaderPlatformName argument")
+inline void FlushShaderFileCache(const FName* ShaderPlatformName)
+{
+	FlushShaderFileCache();
+}
 
 extern RENDERCORE_API void VerifyShaderSourceFiles(EShaderPlatform ShaderPlatform);
+
+#if WITH_EDITOR
+
+class FShaderType;
+class FVertexFactoryType;
+class FShaderPipelineType;
+
+/** Force updates each shader/pipeline type provided to update their list of referenced uniform buffers. */
+RENDERCORE_API void UpdateReferencedUniformBufferNames(
+	TArrayView<const FShaderType*> OutdatedShaderTypes,
+	TArrayView<const FVertexFactoryType*> OutdatedFactoryTypes,
+	TArrayView<const FShaderPipelineType*> OutdatedShaderPipelineTypes);
 
 struct FCachedUniformBufferDeclaration
 {
@@ -1089,12 +1107,12 @@ struct FCachedUniformBufferDeclaration
 	FThreadSafeSharedStringPtr Declaration;
 };
 
-/** Parses the given source file and its includes for references of uniform buffers, which are then stored in UniformBufferEntries. */
-extern void GenerateReferencedUniformBuffers(
+/** Parses the given source file and its includes for references of uniform buffers. */
+extern void GenerateReferencedUniformBufferNames(
 	const TCHAR* SourceFilename,
 	const TCHAR* ShaderTypeName,
 	const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables,
-	TMap<const TCHAR*,FCachedUniformBufferDeclaration>& UniformBufferEntries);
+	TSet<const TCHAR*>& UniformBufferNames);
 
 struct FUniformBufferNameSortOrder
 {
@@ -1104,8 +1122,39 @@ struct FUniformBufferNameSortOrder
 	}
 };
 
-/** Records information about all the uniform buffer layouts referenced by UniformBufferEntries. */
-extern RENDERCORE_API void SerializeUniformBufferInfo(class FShaderSaveArchive& Ar, const TSortedMap<const TCHAR*,FCachedUniformBufferDeclaration, FDefaultAllocator, FUniformBufferNameSortOrder>& UniformBufferEntries);
+using FSortedMapUniformBufferDeclaration = TSortedMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultAllocator, FUniformBufferNameSortOrder>;
+
+/** Records information about all the uniform buffer layouts referenced by UniformBufferEntries. This function is now deprecated as there now a unified way of preparing
+ * shadermap keys that includes this and more: AppendKeyStringShaderDependencies.
+ */
+UE_DEPRECATED(5.2, "SerializeUniformBufferInfo is depreceated. For creating shadermap keys please use AppendKeyStringShaderDependencies")
+extern RENDERCORE_API void SerializeUniformBufferInfo(class FShaderSaveArchive& Ar, const FSortedMapUniformBufferDeclaration& UniformBufferEntries);
+
+/**
+ * Return the hash of the given type layout for a partical platform type layout. This function employs caching to avoid re-hashing the same parameters several times.
+ */
+extern RENDERCORE_API FSHAHash GetShaderTypeLayoutHash(const FTypeLayoutDesc& TypeDesc, FPlatformTypeLayoutParameters LayoutParameters);
+
+// Forward declarations
+class FShaderTypeDependency;
+class FShaderPipelineTypeDependency;
+class FVertexFactoryTypeDependency;
+
+/** Appends information to a KeyString for a given shader to reflect its dependencies */
+extern RENDERCORE_API void AppendKeyStringShaderDependencies(
+	TConstArrayView<FShaderTypeDependency> ShaderTypeDependencies,
+	FPlatformTypeLayoutParameters LayoutParams,
+	FString& OutKeyString,
+	bool bIncludeSourceHashes = true);
+
+extern RENDERCORE_API void AppendKeyStringShaderDependencies(
+	TConstArrayView<FShaderTypeDependency> ShaderTypeDependencies,
+	TConstArrayView<FShaderPipelineTypeDependency> ShaderPipelineTypeDependencies,
+	TConstArrayView<FVertexFactoryTypeDependency> VertexFactoryTypeDependencies,
+	FPlatformTypeLayoutParameters LayoutParams,
+	FString& OutKeyString,
+	bool bIncludeSourceHashes = true);
+#endif // WITH_EDITOR
 
 /** Create a block of source code to be injected in the preprocessed shader code. The Block will be put into a #line directive
  * to show up in case shader compilation failures happen in this code block.

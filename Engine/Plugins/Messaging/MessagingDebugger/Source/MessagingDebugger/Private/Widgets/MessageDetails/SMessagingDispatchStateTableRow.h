@@ -2,21 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "IMessageTracer.h"
-#include "Layout/Margin.h"
 #include "SlateOptMacros.h"
-#include "Styling/SlateColor.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/SListView.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/STableViewBase.h"
 
 #include "Models/MessagingDebuggerModel.h"
 
@@ -188,12 +176,6 @@ protected:
 		case ENamedThreads::ActualRenderingThread:
 			return LOCTEXT("ActualRenderingThread", "ActualRenderingThread");
 			break;
-
-#if STATS && !UE_STATS_THREAD_AS_PIPE
-		case ENamedThreads::StatsThread:
-			return LOCTEXT("StatsThread", "StatsThread");
-			break;
-#endif
 
 		default:
 			return LOCTEXT("UnknownThread", "Unknown");

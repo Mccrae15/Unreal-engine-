@@ -1,16 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SubversionSourceControlUtils.h"
+#include "HAL/PlatformFile.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformFileManager.h"
-#include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
-#include "Modules/ModuleManager.h"
 #include "ISourceControlModule.h"
 #include "SubversionSourceControlModule.h"
 #include "SubversionSourceControlCommand.h"
+#include "SubversionSourceControlRevision.h"
 #include "XmlFile.h"
+#include "SubversionSourceControlState.h"
+#include "XmlNode.h"
 
 namespace SubversionSourceControlConstants
 {
@@ -602,6 +604,7 @@ void ParseStatusResults(const TArray<FXmlFile>& ResultsXml, const TArray<FString
 	static const FString Path(TEXT("path"));
 	static const FString Wc_Status(TEXT("wc-status"));
 	static const FString Item(TEXT("item"));
+	static const FString Revision(TEXT("revision"));
 	static const FString Lock(TEXT("lock"));
 	static const FString Owner(TEXT("owner"));
 	static const FString Repos_Status(TEXT("repos-status"));
@@ -713,6 +716,12 @@ void ParseStatusResults(const TArray<FXmlFile>& ResultsXml, const TArray<FString
 						else
 						{
 							State.WorkingCopyState = EWorkingCopyState::NotAWorkingCopy;
+						}
+
+						State.LocalRevNumber = FCString::Atoi(*WcStatusNode->GetAttribute(Revision));
+						if (State.LocalRevNumber == 0)
+						{
+							State.LocalRevNumber = ISourceControlState::INVALID_REVISION;
 						}
 
 						// find the lock state (if any)

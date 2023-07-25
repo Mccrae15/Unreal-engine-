@@ -33,6 +33,7 @@ class EDITORWIDGETS_API SDropTarget : public SCompoundWidget
 {
 public:
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FVerifyDrag, TSharedPtr<FDragDropOperation>);
+	DECLARE_DELEGATE_OneParam(FOnDragAction, const FDragDropEvent&);
 	DECLARE_DELEGATE_RetVal_OneParam(FReply, FOnDropDeprecated, TSharedPtr<FDragDropOperation>);
 
 	SLATE_BEGIN_ARGS(SDropTarget)
@@ -41,6 +42,8 @@ public:
 		, _VerticalImage(FAppStyle::GetBrush("WideDash.Vertical"))
 		, _HorizontalImage(FAppStyle::GetBrush("WideDash.Horizontal"))
 		, _BackgroundImage(FAppStyle::GetBrush("DropTarget.Background"))
+		, _bOnlyRecognizeOnDragEnter(false)
+		, _bUseAllowDropCache(false)
 	{ }
 	
 		UE_DEPRECATED(5.0, "BackgroundColor has been removed. You may alter the background brush to get the same effect.")
@@ -72,6 +75,12 @@ public:
 		SLATE_EVENT(FVerifyDrag, OnAllowDrop)
 		/** Called to check if an asset is acceptable for dropping */
 		SLATE_EVENT(FVerifyDrag, OnIsRecognized)
+		SLATE_EVENT(FOnDragAction, OnDragEnter)
+		SLATE_EVENT(FOnDragAction, OnDragLeave)
+		/** When this is true, the drop target will only get recognized when entering while drag & dropping. */
+		SLATE_ATTRIBUTE(bool, bOnlyRecognizeOnDragEnter)
+		/** Whether to cache off the results of AllowDrop. Useful when then OnAllowDrop callback is expensive since it's called per frame. */
+		SLATE_ARGUMENT(bool, bUseAllowDropCache)
 
 		FOnDrop ConvertOnDropFn(const FOnDropDeprecated& LegacyDelegate)
 		{
@@ -90,13 +99,19 @@ public:
 
 	void Construct(const FArguments& InArgs );
 
+	void ClearAllowDropCache()
+	{
+		AllowDropCache.Reset();
+	}
+	
 protected:
 
 	bool AllowDrop(TSharedPtr<FDragDropOperation> DragDropOperation) const;
 
 	virtual bool OnAllowDrop(TSharedPtr<FDragDropOperation> DragDropOperation) const;
 	virtual bool OnIsRecognized(TSharedPtr<FDragDropOperation> DragDropOperation) const;
-
+	
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 protected:
 	// SWidget interface
 	virtual FReply OnDragOver( const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent ) override;
@@ -122,7 +137,12 @@ private:
 	FVerifyDrag AllowDropEvent;
 	/** Delegate to call to check validity of the asset */
 	FVerifyDrag IsRecognizedEvent;
-
+	FOnDragAction OnDragEnterEvent;
+	FOnDragAction OnDragLeaveEvent;
+	/** Attribute to check if the drop target should only be useable when actually dragging over it. */
+	TAttribute<bool> bOnlyRecognizeOnDragEnter;
+	bool bUseAllowDropCache = false;
+	
 	/** The color of the vertical/horizontal images when the drop data is valid */
 	FSlateColor ValidColor;
 	/** The color of the vertical/horizontal images when the drop data is not valid */
@@ -138,4 +158,8 @@ private:
 	mutable bool bAllowDrop;
 	/** Is the drag operation currently over our airspace? */
 	mutable bool bIsDragOver;
+
+	mutable TOptional<bool> AllowDropCache;
+	bool bIsDragDropping = false;
+	bool bWasDragDroppingLastFrame = false;
 };

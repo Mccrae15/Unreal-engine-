@@ -2,21 +2,37 @@
 
 #pragma once
 
-#include "PixelShaderUtils.h"
-#include "RayTracingDefinitions.h"
-#include "RayTracingInstance.h"
-#include "RayTracingInstanceBufferUtil.h"
-#include "RendererPrivate.h"
-#include "ScenePrivate.h"
-#include "SceneManagement.h"
+#include "CoreTypes.h"
+#include "RendererInterface.h"
+#include "ShaderParameterMacros.h"
+
+class FLightSceneInfo;
+class FPrimitiveSceneProxy;
+class FRayTracingScene;
+class FRDGBuilder;
+class FScene;
+class FSceneView;
+class FViewInfo;
+class FVirtualShadowMapArray;
+class FVisibleLightInfo;
+
+struct FMaterialShaderParameters;
+struct FRDGTextureDesc;
+struct FSceneTextures;
 
 //
 // External API
 //
 
 bool ShouldRenderHeterogeneousVolumes(const FScene* Scene);
-bool ShouldRenderHeterogeneousVolumesForView(const FSceneView& View);
+bool ShouldRenderHeterogeneousVolumesForView(const FViewInfo& View);
 bool DoesPlatformSupportHeterogeneousVolumes(EShaderPlatform Platform);
+bool DoesMaterialShaderSupportHeterogeneousVolumes(const FMaterialShaderParameters& Parameters);
+bool ShouldRenderMeshBatchWithHeterogeneousVolumes(
+	const FMeshBatch* Mesh,
+	const FPrimitiveSceneProxy* Proxy,
+	ERHIFeatureLevel::Type FeatureLevel
+);
 
 //
 // Internal API
@@ -50,7 +66,7 @@ namespace HeterogeneousVolumes
 
 	// Convenience Utils
 	int GetVoxelCount(FIntVector VolumeResolution);
-	int GetVoxelCount(FRDGTextureDesc TextureDesc);
+	int GetVoxelCount(const FRDGTextureDesc& TextureDesc);
 	FIntVector GetMipVolumeResolution(FIntVector VolumeResolution, uint32 MipLevel);
 }
 

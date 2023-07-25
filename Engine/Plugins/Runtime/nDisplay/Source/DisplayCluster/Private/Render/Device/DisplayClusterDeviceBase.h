@@ -17,9 +17,8 @@
 class IDisplayClusterPostProcess;
 class FDisplayClusterPresentationBase;
 class IDisplayClusterViewportManager;
-class IDisplayClusterViewportManagerProxy;
+class FDisplayClusterViewportManagerProxy;
 class FSceneView;
-
 
 /**
  * Abstract render device
@@ -45,6 +44,8 @@ public:
 	virtual IDisplayClusterPresentation* GetPresentation() const override;
 
 	virtual bool BeginNewFrame(FViewport* InViewport, UWorld* InWorld, FDisplayClusterRenderFrame& OutRenderFrame) override;
+
+	virtual void InitializeNewFrame() override;
 	virtual void FinalizeNewFrame() override;
 
 public:
@@ -81,18 +82,6 @@ protected:
 	virtual void CalculateRenderTargetSize(const class FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY) override;
 	virtual bool NeedReAllocateViewportRenderTarget(const class FViewport& Viewport) override;
 
-	virtual bool NeedReAllocateDepthTexture(const TRefCountPtr<struct IPooledRenderTarget>& DepthTarget) override
-	{ return false; }
-
-	virtual uint32 GetNumberOfBufferedFrames() const override
-	{ return 1; }
-
-	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override
-	{ return false; }
-
-	virtual bool AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1)
-	{ return false; }
-
 protected:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// FDisplayClusterDeviceBase
@@ -116,8 +105,8 @@ protected:
 
 private:
 	// Runtime viewport manager api for game and render threads. Internal usage only
-	IDisplayClusterViewportManager*      ViewportManagerPtr = nullptr;
-	IDisplayClusterViewportManagerProxy* ViewportManagerProxyPtr = nullptr;
+	IDisplayClusterViewportManager* ViewportManager = nullptr;
+	TSharedPtr<FDisplayClusterViewportManagerProxy, ESPMode::ThreadSafe> ViewportManagerProxy;
 
 	EDisplayClusterRenderFrameMode RenderFrameMode = EDisplayClusterRenderFrameMode::Mono;
 	int32 DesiredNumberOfViews = 0;

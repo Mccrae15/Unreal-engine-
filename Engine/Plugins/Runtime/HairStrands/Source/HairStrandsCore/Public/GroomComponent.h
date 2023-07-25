@@ -17,6 +17,9 @@
 #include "GroomComponent.generated.h"
 
 class UGroomCache;
+class UMeshDeformer;
+class UMeshDeformerInstance;
+class UMeshDeformerInstanceSettings;
 
 UCLASS(HideCategories = (Object, Physics, Activation, Mobility, "Components|Activation"), editinlinenew, meta = (BlueprintSpawnableComponent), ClassGroup = Rendering)
 class HAIRSTRANDSCORE_API UGroomComponent : public UMeshComponent, public ILODSyncInterface, public INiagaraPhysicsAssetDICollectorInterface
@@ -54,6 +57,18 @@ public:
 	/** Groom's simulation settings */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, interp, Category = "Simulation")
 	FHairSimulationSettings SimulationSettings;
+
+	/** If set the MeshDeformer will be applied on groom instance for deformation. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Deformer")
+	TObjectPtr<UMeshDeformer> MeshDeformer;
+
+	/** Object containing state for the bound MeshDeformer. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Deformer")
+	TObjectPtr<UMeshDeformerInstance> MeshDeformerInstance;
+
+	/** Object containing instance settings for the bound MeshDeformer. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Instanced, Category = "Deformer", meta = (DisplayName = "Deformer Settings", EditCondition = "MeshDeformerInstanceSettings!=nullptr", ShowOnlyInnerProperties))
+	TObjectPtr<UMeshDeformerInstanceSettings> MeshDeformerInstanceSettings;
 
 	/* Reference of the default/debug materials for each geometric representation */
 	UPROPERTY()
@@ -122,7 +137,10 @@ public:
 	virtual void DetachFromComponent(const FDetachmentTransformRules& DetachmentRules) override;
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 	virtual void SendRenderTransform_Concurrent() override;
+	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void SendRenderDynamicData_Concurrent() override;
+	virtual void DestroyRenderState_Concurrent() override;
+	virtual bool RequiresGameThreadEndOfFrameRecreate() const override;
 	//~ End UActorComponent Interface.
 
 	//~ Begin USceneComponent Interface.
@@ -131,11 +149,11 @@ public:
 
 	//~ Begin UPrimitiveComponent Interface.
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
+	virtual void CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams) override;
 	//~ End UPrimitiveComponent Interface.
 
 	//~ Begin UMeshComponent Interface.
 	virtual void PostLoad() override;
-	virtual void PrecachePSOs() override;
 	//~ End UMeshComponent Interface.
 
 	/** Return the guide hairs rest resources*/
@@ -157,9 +175,6 @@ public:
 	void ValidateMaterials(bool bMapCheck) const;
 	void Invalidate();
 	void InvalidateAndRecreate();
-
-	void SetDebugMode(EHairStrandsDebugMode InMode);
-	EHairStrandsDebugMode GetDebugMode() const { return DebugMode; }
 #endif
 
 	/* Accessor function for changing Groom asset from blueprint/sequencer */
@@ -173,6 +188,10 @@ public:
 	/* Accessor function for changing Groom physics asset from blueprint/sequencer */
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	void SetPhysicsAsset(UPhysicsAsset* InPhysicsAsset);
+
+	/* Change the MeshDeformer that is used for this Component. */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
+	void SetMeshDeformer(UMeshDeformer* InMeshDeformer);
 
 	/* Add a skeletal mesh to the collision components */
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
@@ -324,9 +343,6 @@ private:
 	EHairLODSelectionType LODSelectionType = EHairLODSelectionType::Immediate;
 	float LODPredictedIndex = -1.f;
 	float LODForcedIndex = -1.f;
-
-	// Transient property for visualizing the groom in a certain debug mode. This is used by the groom editor
-	EHairStrandsDebugMode DebugMode = EHairStrandsDebugMode::NoneDebug;
 
 	void InitResources(bool bIsBindingReloading=false);
 	void ReleaseResources();

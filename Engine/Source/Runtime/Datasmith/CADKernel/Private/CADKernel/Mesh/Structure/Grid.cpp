@@ -66,17 +66,28 @@ void FGrid::ProcessPointCloud()
 
 	DisplayGridNormal();
 
+	DisplayInnerDomainPoints(TEXT("FGrid::PointCloud before FindInnerFacePoints"), GetInner2DPoints(EGridSpace::UniformScaled));
+
 	Wait(bDisplay);
 #endif
 
 	FindInnerFacePoints();
 
 #ifdef DEBUG_GRID
-	DisplayGridPoints(DisplaySpace);
-	Wait(bDisplay);
+	DisplayInnerDomainPoints(TEXT("FGrid::PointCloud after FindInnerFacePoints"), GetInner2DPoints(EGridSpace::UniformScaled));
 #endif
+
 	FindPointsCloseToLoop();
-	RemovePointsClosedToLoop();
+
+#ifdef DEBUG_GRID
+	DisplayInnerDomainPoints(TEXT("FGrid::PointCloud after FindPointsCloseToLoop"), GetInner2DPoints(EGridSpace::UniformScaled));
+#endif
+
+	RemovePointsCloseToLoop();
+
+#ifdef DEBUG_GRID
+	DisplayInnerDomainPoints(TEXT("FGrid::PointCloud after RemovePointsCloseToLoop"), GetInner2DPoints(EGridSpace::UniformScaled));
+#endif
 
 	// Removed of Thin zone boundary (the last boundaries). In case of thin zone, the number of 2d boundary will be biggest than 3d boundary one.
 	// Only EGridSpace::Default2D is needed.
@@ -324,8 +335,7 @@ bool FGrid::GeneratePointCloud()
 		return false;
 	}
 
-	IsInsideFace.Init(true, CuttingSize);
-	IsCloseToLoop.Init(0, CuttingSize);
+	NodeMarkers.Init(ENodeMarker::None, CuttingSize);
 
 	CountOfInnerNodes = CuttingSize;
 	for (int32 Index = 0; Index < EGridSpace::EndGridSpace; ++Index)
@@ -408,10 +418,10 @@ void FGrid::FindPointsCloseToLoop()
 		if (bDisplay)
 		{
 			F3DDebugSession _(*FString::Printf(TEXT("Cell %d"), CellIndex++));
-			DisplayPoint(Points2D[EGridSpace::UniformScaled][GlobalIndex]);
-			DisplayPoint(Points2D[EGridSpace::UniformScaled][GlobalIndex - 1]);
-			DisplayPoint(Points2D[EGridSpace::UniformScaled][GlobalIndex - 1 - CuttingCount[EIso::IsoU]]);
-			DisplayPoint(Points2D[EGridSpace::UniformScaled][GlobalIndex - CuttingCount[EIso::IsoU]]);
+			DisplayPoint(Points2D[EGridSpace::UniformScaled][GlobalIndex] * DisplayScale);
+			DisplayPoint(Points2D[EGridSpace::UniformScaled][GlobalIndex - 1] * DisplayScale);
+			DisplayPoint(Points2D[EGridSpace::UniformScaled][GlobalIndex - 1 - CuttingCount[EIso::IsoU]] * DisplayScale);
+			DisplayPoint(Points2D[EGridSpace::UniformScaled][GlobalIndex - CuttingCount[EIso::IsoU]] * DisplayScale);
 			Wait(bWaitCell);
 		}
 	};
@@ -432,10 +442,10 @@ void FGrid::FindPointsCloseToLoop()
 
 	TFunction<void()> SetCellCloseToLoop = [&]()
 	{
-		IsCloseToLoop[GlobalIndex] = 1;
-		IsCloseToLoop[GlobalIndex - 1] = 1;
-		IsCloseToLoop[GlobalIndex - 1 - CuttingCount[EIso::IsoU]] = 1;
-		IsCloseToLoop[GlobalIndex - CuttingCount[EIso::IsoU]] = 1;
+		SetCloseToLoop(GlobalIndex);
+		SetCloseToLoop(GlobalIndex - 1);
+		SetCloseToLoop(GlobalIndex - 1 - CuttingCount[EIso::IsoU]);
+		SetCloseToLoop(GlobalIndex - CuttingCount[EIso::IsoU]);
 #ifdef DEBUG_FINDPOINTSCLOSETOLOOP
 		DisplayCell();
 #endif
@@ -489,7 +499,7 @@ void FGrid::FindPointsCloseToLoop()
 		return FirstValue + DOUBLE_SMALL_NUMBER < SecondValue;
 	};
 
-	double Slop;
+	double Slope;
 	double Origin;
 
 	TFunction<void(EIso, const int32, const int32, TFunction<void()>, TFunction<void()>)> FindIntersection = [&](EIso MainIso, const int32 DeltaIso, const int32 DeltaOther, TFunction<void()> OffsetIndexIfBigger, TFunction<void()> OffsetIndexIfSmaller)
@@ -500,7 +510,7 @@ void FGrid::FindPointsCloseToLoop()
 		EIso OtherIso = Other(MainIso);
 		while (TestAlongIso(UniformCuttingCoordinates[MainIso][Index[MainIso] - DeltaIso], (*PointB)[MainIso]) || TestAlongOther(UniformCuttingCoordinates[OtherIso][Index[OtherIso] - DeltaOther], (*PointB)[OtherIso]))
 		{
-			double CoordinateOther = Slop * UniformCuttingCoordinates[MainIso][Index[MainIso] - DeltaIso] + Origin;
+			double CoordinateOther = Slope * UniformCuttingCoordinates[MainIso][Index[MainIso] - DeltaIso] + Origin;
 			if (IsReallyBigger(CoordinateOther, UniformCuttingCoordinates[OtherIso][Index[OtherIso] - DeltaOther]))
 			{
 				OffsetIndexIfBigger();
@@ -572,7 +582,7 @@ void FGrid::FindPointsCloseToLoop()
 			if (bDisplay)
 			{
 				F3DDebugSession _(TEXT("SEG"));
-				DisplaySegment(*PointB, *PointA);
+				DisplaySegment(*PointB * DisplayScale, *PointA * DisplayScale);
 			}
 #endif
 
@@ -591,8 +601,8 @@ void FGrid::FindPointsCloseToLoop()
 			ABu = PointB->U - PointA->U;
 			if (FMath::Abs(ABu) > FMath::Abs(ABv))
 			{
-				Slop = ABv / ABu;
-				Origin = PointA->V - Slop * PointA->U;
+				Slope = ABv / ABu;
+				Origin = PointA->V - Slope * PointA->U;
 				if (ABu > 0)
 				{
 					if (ABv > 0)
@@ -618,8 +628,8 @@ void FGrid::FindPointsCloseToLoop()
 			}
 			else
 			{
-				Slop = ABu / ABv;
-				Origin = PointA->U - Slop * PointA->V;
+				Slope = ABu / ABv;
+				Origin = PointA->U - Slope * PointA->V;
 				if (ABu > 0)
 				{
 					if (ABv > 0)
@@ -658,7 +668,7 @@ void FGrid::FindPointsCloseToLoop()
 	Chronos.FindPointsCloseToLoopDuration += FChrono::Elapse(StartTime);
 }
 
-void FGrid::RemovePointsClosedToLoop()
+void FGrid::RemovePointsCloseToLoop()
 {
 	FTimePoint StartTime = FChrono::Now();
 
@@ -740,7 +750,7 @@ void FGrid::RemovePointsClosedToLoop()
 		IndexOfPointsNearAndInsideLoop.Reserve(CuttingSize);
 		for (int32 Index = 0; Index < CuttingSize; ++Index)
 		{
-			if (IsCloseToLoop[Index] && IsInsideFace[Index])
+			if (IsNodeInsideAndCloseToLoop(Index))
 			{
 				IndexOfPointsNearAndInsideLoop.Add(Index);
 			}
@@ -865,9 +875,7 @@ void FGrid::RemovePointsClosedToLoop()
 				continue;
 			}
 
-			IsCloseToLoop[Index] = 0;
-			IsInsideFace[Index] = 0;
-			CountOfInnerNodes--;
+			SetTooCloseToLoop(Index);
 			break;
 		}
 	}
@@ -876,7 +884,7 @@ void FGrid::RemovePointsClosedToLoop()
 }
 
 /**
- * For the surfacic normal at a StartPoint of the 3D degenerated curve (Not degenerated in 2d)
+ * For the surface normal at a StartPoint of the 3D degenerated curve (Not degenerated in 2d)
  * The normal is swap if StartPoint is too close to the Boundary
  * The norm of the normal is defined as 1/20 of the parallel boundary Length
  */
@@ -1479,7 +1487,7 @@ void FGrid::FindInnerFacePoints()
 	TArray<char> IntersectLoop;
 
 	IntersectLoop.Init(0, CuttingSize);
-	IsInsideFace.Init(1, CuttingSize);
+	NodeMarkers.Init(ENodeMarker::IsInside, CuttingSize);
 
 	NbIntersectUForward.Init(0, CuttingSize);
 	NbIntersectUBackward.Init(0, CuttingSize);
@@ -1745,7 +1753,7 @@ void FGrid::FindInnerFacePoints()
 	{
 		if (IntersectLoop[Index])
 		{
-			IsInsideFace[Index] = 0;
+			ResetInsideLoop(Index);
 			CountOfInnerNodes--;
 			continue;
 		}
@@ -1769,7 +1777,7 @@ void FGrid::FindInnerFacePoints()
 		}
 		if (IsInside < 3)
 		{
-			IsInsideFace[Index] = false;
+			ResetInsideLoop(Index);
 			CountOfInnerNodes--;
 		}
 	}

@@ -2,6 +2,8 @@
 
 #include "Physics/ExtractCollisionGeometryTool.h"
 #include "InteractiveToolManager.h"
+#include "MaterialDomain.h"
+#include "Materials/Material.h"
 #include "ToolBuilderUtil.h"
 #include "ToolSetupUtil.h"
 #include "ModelingObjectsCreationAPI.h"

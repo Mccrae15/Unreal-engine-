@@ -2,11 +2,22 @@
 
 
 #include "ModelingSelectionInteraction.h"
+#include "BaseGizmos/CombinedTransformGizmo.h"
 #include "InteractiveToolsContext.h"
 #include "BaseGizmos/TransformGizmoUtil.h"
+#include "BaseGizmos/TransformProxy.h"
 #include "Selection/GeometrySelectionManager.h"
+#include "InteractiveGizmoManager.h"
 #include "ToolSceneQueriesUtil.h"
+#include "InteractiveToolManager.h"
 #include "SceneQueries/SceneSnappingManager.h"
+
+#include "BaseBehaviors/SingleClickOrDragBehavior.h"
+#include "BaseBehaviors/MouseHoverBehavior.h"
+#include "BaseBehaviors/KeyAsModifierInputBehavior.h"
+
+#include "Mechanics/RectangleMarqueeMechanic.h"
+#include "Mechanics/DragAlignmentMechanic.h"
 
 using namespace UE::Geometry;
 
@@ -20,21 +31,45 @@ void UModelingSelectionInteraction::Initialize(
 	CanChangeSelectionCallback = MoveTemp(CanChangeSelectionCallbackIn);
 	ExternalHitCaptureCallback = MoveTemp(ExternalHitCaptureCallbackIn);
 
+	// set up rectangle marquee interaction
+	RectangleMarqueeInteraction = NewObject<URectangleMarqueeInteraction>(this);
+	RectangleMarqueeInteraction->OnDragRectangleFinished.AddUObject(this, &UModelingSelectionInteraction::OnMarqueeRectangleFinished);
+
+	// set up path selection interaction
+	PathSelectionInteraction = NewObject<UPathSelectionInteraction>(this);
+	PathSelectionInteraction->Setup(this);
+
 	// create click behavior and set ourselves as click target
-	ClickBehavior = NewObject<USingleClickInputBehavior>();
-	ClickBehavior->Modifiers.RegisterModifier(AddToSelectionModifier, FInputDeviceState::IsShiftKeyDown);
-	ClickBehavior->Modifiers.RegisterModifier(ToggleSelectionModifier, FInputDeviceState::IsCtrlKeyDown);
-	ClickBehavior->Initialize(this);
+	ClickOrDragBehavior = NewObject<USingleClickOrDragInputBehavior>();
+	ClickOrDragBehavior->Modifiers.RegisterModifier(AddToSelectionModifier, FInputDeviceState::IsShiftKeyDown);
+	ClickOrDragBehavior->Modifiers.RegisterModifier(ToggleSelectionModifier, FInputDeviceState::IsCtrlKeyDown);
+	ClickOrDragBehavior->bBeginDragIfClickTargetNotHit = false;
+	ClickOrDragBehavior->Initialize(this, PathSelectionInteraction);
+
+	HoverBehavior = NewObject<UMouseHoverBehavior>(this);
+	HoverBehavior->Initialize(this);
 
 	BehaviorSet = NewObject<UInputBehaviorSet>();
-	BehaviorSet->Add(ClickBehavior, this);
+	BehaviorSet->Add(ClickOrDragBehavior, this);
+	BehaviorSet->Add(HoverBehavior, this);
+
+	// configure drag mode of ClickOrDragBehavior
+	UpdateActiveDragMode();
 
 	TransformProxy = NewObject<UTransformProxy>(this);
-	// todo: make this repositionable etc. Maybe make this function a delegate? or allow caller to provide the gizmo?
-	TransformGizmo = UE::TransformGizmoUtil::Create3AxisTransformGizmo(
-		SelectionManager->GetToolsContext()->GizmoManager, this, TEXT("ModelingSelectionInteraction") );
+	TransformGizmo = UE::TransformGizmoUtil::CreateCustomRepositionableTransformGizmo( 
+		SelectionManager->GetToolsContext()->GizmoManager, ETransformGizmoSubElements::FullTranslateRotateScale,
+		this, TEXT("ModelingSelectionInteraction") );
 	TransformGizmo->SetActiveTarget(TransformProxy, SelectionManager->GetToolsContext()->GizmoManager);
 	TransformGizmo->SetVisibility(false);
+
+	DragAlignmentInteraction = NewObject<UDragAlignmentInteraction>(this);
+	DragAlignmentInteraction->Setup( USceneSnappingManager::Find(SelectionManager->GetToolsContext()->GizmoManager) );
+
+	DragAlignmentToggleBehavior = NewObject<UKeyAsModifierInputBehavior>(this);
+	DragAlignmentInteraction->RegisterAsBehaviorTarget(DragAlignmentToggleBehavior);
+	BehaviorSet->Add(DragAlignmentToggleBehavior, this);
+	DragAlignmentInteraction->AddToGizmo(TransformGizmo);
 
 	// listen for change events on transform proxy
 	TransformProxy->OnTransformChanged.AddUObject(this, &UModelingSelectionInteraction::OnGizmoTransformChanged);
@@ -59,7 +94,46 @@ void UModelingSelectionInteraction::Shutdown()
 	}
 }
 
+void UModelingSelectionInteraction::Render(IToolsContextRenderAPI* RenderAPI)
+{
+	if (DragAlignmentInteraction)
+	{
+		DragAlignmentInteraction->Render(RenderAPI);
+	}
+}
 
+void UModelingSelectionInteraction::DrawHUD(FCanvas* Canvas, IToolsContextRenderAPI* RenderAPI)
+{
+	if (RectangleMarqueeInteraction)
+	{
+		RectangleMarqueeInteraction->DrawHUD(Canvas, RenderAPI);
+	}
+}
+
+void UModelingSelectionInteraction::SetActiveDragMode(EModelingSelectionInteraction_DragMode NewMode)
+{
+	if (ActiveDragMode != NewMode)
+	{
+		ActiveDragMode = NewMode;
+		UpdateActiveDragMode();
+	}
+}
+
+void UModelingSelectionInteraction::UpdateActiveDragMode()
+{
+	if (ActiveDragMode == EModelingSelectionInteraction_DragMode::PathInteraction)
+	{
+		ClickOrDragBehavior->SetDragTarget(PathSelectionInteraction);
+	}
+	else if (ActiveDragMode == EModelingSelectionInteraction_DragMode::RectangleMarqueeInteraction)
+	{
+		ClickOrDragBehavior->SetDragTarget(RectangleMarqueeInteraction);
+	}
+	else
+	{
+		ClickOrDragBehavior->SetDragTarget(nullptr);
+	}
+}
 
 
 void UModelingSelectionInteraction::OnUpdateModifierState(int ModifierID, bool bIsOn)
@@ -75,7 +149,7 @@ void UModelingSelectionInteraction::OnUpdateModifierState(int ModifierID, bool b
 	}
 }
 
-PRAGMA_DISABLE_OPTIMIZATION
+
 void UModelingSelectionInteraction::ComputeSceneHits(const FInputDeviceRay& ClickPos,
 	bool& bHitActiveObjects, FInputRayHit& ActiveObjectHit,
 	bool& bHitInactiveObjectFirst, FInputRayHit& InactiveObjectHit)
@@ -112,9 +186,8 @@ void UModelingSelectionInteraction::ComputeSceneHits(const FInputDeviceRay& Clic
 		}
 	}
 }
-PRAGMA_ENABLE_OPTIMIZATION
 
-PRAGMA_DISABLE_OPTIMIZATION
+
 FInputRayHit UModelingSelectionInteraction::IsHitByClick(const FInputDeviceRay& ClickPos)
 {
 	// ignore hits in these cases
@@ -176,7 +249,6 @@ FInputRayHit UModelingSelectionInteraction::IsHitByClick(const FInputDeviceRay& 
 
 	return FInputRayHit();
 }
-PRAGMA_ENABLE_OPTIMIZATION
 
 
 
@@ -190,6 +262,18 @@ void UModelingSelectionInteraction::OnClicked(const FInputDeviceRay& ClickPos)
 		return;
 	}
 
+	FGeometrySelectionUpdateConfig UpdateConfig = GetActiveSelectionUpdateConfig();
+
+	FGeometrySelectionUpdateResult Result;
+	SelectionManager->UpdateSelectionViaRaycast(
+		ClickPos.WorldRay,
+		UpdateConfig,
+		Result);
+}
+
+
+FGeometrySelectionUpdateConfig UModelingSelectionInteraction::GetActiveSelectionUpdateConfig() const
+{
 	FGeometrySelectionUpdateConfig UpdateConfig;
 	UpdateConfig.ChangeType = EGeometrySelectionChangeType::Replace;
 	if (bAddToSelectionEnabled)
@@ -200,13 +284,47 @@ void UModelingSelectionInteraction::OnClicked(const FInputDeviceRay& ClickPos)
 	{
 		UpdateConfig.ChangeType = EGeometrySelectionChangeType::Remove;
 	}
-
-	FGeometrySelectionUpdateResult Result;
-	SelectionManager->UpdateSelectionViaRaycast(
-		ClickPos.WorldRay,
-		UpdateConfig,
-		Result);
+	return UpdateConfig;
 }
+
+
+
+FInputRayHit UModelingSelectionInteraction::BeginHoverSequenceHitTest(const FInputDeviceRay& PressPos)
+{
+	if ((SelectionManager->GetMeshTopologyMode() == UGeometrySelectionManager::EMeshTopologyMode::None)
+		|| (CanChangeSelectionCallback() == false)
+		|| ExternalHitCaptureCallback(PressPos))
+	{
+		return FInputRayHit();
+	}
+
+	bool bHitActiveObjects, bHitInactiveObjectFirst;
+	FInputRayHit ActiveObjectHit, InactiveObjectHit;
+	ComputeSceneHits(PressPos, bHitActiveObjects, ActiveObjectHit, bHitInactiveObjectFirst, InactiveObjectHit);
+
+	if (bHitActiveObjects && bHitInactiveObjectFirst == false)
+	{
+		return ActiveObjectHit;
+	}
+	return FInputRayHit();
+}
+
+void UModelingSelectionInteraction::OnBeginHover(const FInputDeviceRay& DevicePos)
+{
+	SelectionManager->UpdateSelectionPreviewViaRaycast(DevicePos.WorldRay);
+}
+
+bool UModelingSelectionInteraction::OnUpdateHover(const FInputDeviceRay& DevicePos)
+{
+	return SelectionManager->UpdateSelectionPreviewViaRaycast(DevicePos.WorldRay);
+}
+
+void UModelingSelectionInteraction::OnEndHover()
+{
+	SelectionManager->ClearSelectionPreview();
+}
+
+
 
 
 void UModelingSelectionInteraction::UpdateGizmoOnSelectionChange()
@@ -222,10 +340,6 @@ void UModelingSelectionInteraction::UpdateGizmoOnSelectionChange()
 		FFrame3d SelectionFrame;
 		SelectionManager->GetSelectionWorldFrame(SelectionFrame);
 		TransformGizmo->ReinitializeGizmoTransform( SelectionFrame.ToFTransform() );
-
-		//FGeometrySelectionBounds Bounds;
-		//SelectionManager->GetSelectionBounds(Bounds);
-		//TransformGizmo->ReinitializeGizmoTransform( FTransform(Bounds.WorldBounds.Center()) );
 	}
 }
 
@@ -243,6 +357,10 @@ void UModelingSelectionInteraction::OnBeginGizmoTransform(UTransformProxy* Proxy
 	InitialGizmoFrame = FFrame3d(Transform);
 	InitialGizmoScale = FVector3d(Transform.GetScale3D());
 
+	LastTranslationDelta = FVector3d::Zero();
+	LastRotateDelta = FVector4d::Zero();
+	LastScaleDelta = FVector3d::Zero();
+
 	bInActiveTransform = SelectionManager->BeginTransformation();
 
 	OnTransformBegin.Broadcast();
@@ -252,8 +370,19 @@ void UModelingSelectionInteraction::OnEndGizmoTransform(UTransformProxy* Proxy)
 {
 	if (bInActiveTransform)
 	{
+		// If we have an update we haven't applied, apply it now. This is particularly important if the
+		// user transformed the gizmo by typing a new value into the gizmo UI, in which case there will
+		// not have been a chance to do ApplyPendingTransformInteractions() between the update and end calls.
+		if (bGizmoUpdatePending)
+		{
+			ApplyPendingTransformInteractions();
+		}
+
 		SelectionManager->EndTransformation();
 		bInActiveTransform = false;
+
+		// reset the transient scaling being stored by the gizmo, otherwise it will be re-applied in the next transformation
+		TransformGizmo->SetNewChildScale(FVector::One());
 
 		OnTransformEnd.Broadcast();
 	}
@@ -285,8 +414,15 @@ void UModelingSelectionInteraction::ApplyPendingTransformInteractions()
 
 	const bool bLastUpdateUsedWorldFrame = true;	// for later local-frame support
 
-	if (TranslationDelta.SquaredLength() > 0.0001 || RotateDelta.SquaredLength() > 0.0001 || CurScaleDelta.SquaredLength() > 0.0001)
+	// if any of the deltas have deviated from the last delta, forward the transformation change on to targets
+	if ( (TranslationDelta - LastTranslationDelta).SizeSquared() > FMathf::ZeroTolerance
+		|| ((FVector4d)RotateDelta - LastRotateDelta).SizeSquared() > FMathf::ZeroTolerance
+		|| (CurScaleDelta- LastScaleDelta).SizeSquared() > FMathf::ZeroTolerance)
 	{
+		LastTranslationDelta = TranslationDelta;
+		LastRotateDelta = (FVector4d)RotateDelta;
+		LastScaleDelta = CurScaleDelta;
+
 		if (bLastUpdateUsedWorldFrame)
 		{
 			// For a world frame gizmo, the scaling needs to happen in world aligned gizmo space, but the 
@@ -322,8 +458,78 @@ void UModelingSelectionInteraction::ApplyPendingTransformInteractions()
 		}
 	}
 
-
-
-
 	bGizmoUpdatePending = false;
+}
+
+
+
+void UModelingSelectionInteraction::OnMarqueeRectangleFinished(const FCameraRectangle& Rectangle, bool bCancelled)
+{
+
+}
+
+
+
+
+void UPathSelectionInteraction::Setup(UModelingSelectionInteraction* SelectionInteractionIn)
+{
+
+	SelectionInteraction = SelectionInteractionIn;
+}
+
+
+FInputRayHit UPathSelectionInteraction::CanBeginClickDragSequence(const FInputDeviceRay& PressPos)
+{
+	if (SelectionInteraction->GetSelectionManager()->CanBeginTrackedSelectionChange())
+	{
+		return SelectionInteraction->IsHitByClick(PressPos);
+	}
+	return FInputRayHit();
+}
+
+void UPathSelectionInteraction::OnClickPress(const FInputDeviceRay& PressPos)
+{
+	FGeometrySelectionUpdateConfig UpdateConfig = SelectionInteraction->GetActiveSelectionUpdateConfig();
+	UGeometrySelectionManager* SelectionManager = SelectionInteraction->GetSelectionManager();
+
+	bool bInitialClear = false;
+	if (UpdateConfig.ChangeType == EGeometrySelectionChangeType::Replace)
+	{
+		bInitialClear = true;
+		UpdateConfig.ChangeType = EGeometrySelectionChangeType::Add;
+	}
+
+	if (SelectionManager->BeginTrackedSelectionChange(UpdateConfig, bInitialClear))
+	{
+		FGeometrySelectionUpdateResult Result;
+		SelectionManager->AccumulateSelectionUpdate_Raycast(PressPos.WorldRay, Result);
+	}
+}
+
+void UPathSelectionInteraction::OnClickDrag(const FInputDeviceRay& DragPos)
+{
+	UGeometrySelectionManager* SelectionManager = SelectionInteraction->GetSelectionManager();
+	if (SelectionManager->IsInTrackedSelectionChange())
+	{
+		FGeometrySelectionUpdateResult Result;
+		SelectionManager->AccumulateSelectionUpdate_Raycast(DragPos.WorldRay, Result);		
+	}
+}
+
+void UPathSelectionInteraction::OnClickRelease(const FInputDeviceRay& ReleasePos)
+{
+	UGeometrySelectionManager* SelectionManager = SelectionInteraction->GetSelectionManager();
+	if (SelectionManager->IsInTrackedSelectionChange())
+	{
+		SelectionManager->EndTrackedSelectionChange();
+	}
+}
+
+void UPathSelectionInteraction::OnTerminateDragSequence()
+{
+	UGeometrySelectionManager* SelectionManager = SelectionInteraction->GetSelectionManager();
+	if (SelectionManager->IsInTrackedSelectionChange())
+	{
+		SelectionManager->EndTrackedSelectionChange();
+	}
 }

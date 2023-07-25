@@ -16,6 +16,7 @@
 #include "ConcertSyncClientLiveSession.h"
 #include "ConcertSyncSessionDatabase.h"
 #include "ConcertSyncSettings.h"
+#include "ConcertClientSettings.h"
 #include "ConcertSyncClientUtil.h"
 #include "ConcertLogGlobal.h"
 #include "ConcertWorkspaceData.h"
@@ -1112,7 +1113,9 @@ void FConcertClientWorkspace::SetIgnoreOnRestoreFlagForEmittedActivities(bool bI
 
 bool FConcertClientWorkspace::CanFinalize() const
 {
-	return bFinalizeWorkspaceSyncRequested && Algo::AllOf(CanFinalizeDelegates, [](const TTuple<FName,FCanFinalizeWorkspaceDelegate>& Pair)
+	return bFinalizeWorkspaceSyncRequested
+		&& LiveSession->GetSessionDatabase().HasWritePackageTasksCompleted()
+		&& Algo::AllOf(CanFinalizeDelegates, [](const TTuple<FName,FCanFinalizeWorkspaceDelegate>& Pair)
 		{
 			if (Pair.Get<1>().IsBound())
 			{
@@ -1153,7 +1156,8 @@ bool FConcertClientWorkspace::IsReloadingPackage(FName PackageName) const
 
 bool FConcertClientWorkspace::CanProcessPendingPackages() const
 {
-	return Algo::AllOf(CanProcessPendingDelegates, [](const TTuple<FName,FCanProcessPendingPackages>& Pair)
+	return LiveSession->GetSessionDatabase().HasWritePackageTasksCompleted() &&
+		Algo::AllOf(CanProcessPendingDelegates, [](const TTuple<FName,FCanProcessPendingPackages>& Pair)
 		{
 			if (Pair.Get<1>().IsBound())
 			{

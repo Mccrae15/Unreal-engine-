@@ -2,28 +2,22 @@
 // ActorComponent.cpp: Actor component implementation.
 
 #include "Components/ActorComponent.h"
-#include "Misc/App.h"
+#include "Engine/LevelStreaming.h"
 #include "EngineStats.h"
-#include "UObject/UObjectIterator.h"
 #include "Engine/MemberReference.h"
-#include "ComponentInstanceDataCache.h"
 #include "Engine/Level.h"
-#include "GameFramework/Actor.h"
-#include "Engine/World.h"
 #include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Elements/Framework/EngineElementsLibrary.h"
-#include "ContentStreaming.h"
 #include "ComponentReregisterContext.h"
 #include "Engine/AssetUserData.h"
 #include "Engine/LevelStreamingPersistent.h"
-#include "UObject/PropertyPortFlags.h"
-#include "UObject/UObjectHash.h"
 #include "Engine/NetDriver.h"
 #include "Engine/ActorChannel.h"
+#include "HAL/LowLevelMemStats.h"
+#include "Misc/ScopeRWLock.h"
 #include "Net/UnrealNetwork.h"
-#include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Misc/MapErrors.h"
@@ -31,11 +25,15 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "ComponentUtils.h"
 #include "Engine/Engine.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "Net/Core/PushModel/PushModel.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "SceneInterface.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
 #include "Async/ParallelFor.h"
+#include "Engine/InputDelegateBinding.h"
+#include "GameFramework/InputSettings.h"
 
 #if WITH_EDITOR
 #include "Kismet2/ComponentEditorUtils.h"
@@ -1387,6 +1385,11 @@ void UActorComponent::RegisterComponentWithWorld(UWorld* InWorld, FRegisterCompo
 		}
 
 	}
+
+	if (MyOwner && MyOwner->InputComponent && GetDefault<UInputSettings>()->bEnableDynamicComponentInputBinding)
+	{
+		UInputDelegateBinding::BindInputDelegates(GetClass(), MyOwner->InputComponent, this);
+	}
 }
 
 void UActorComponent::RegisterComponent()
@@ -1595,6 +1598,7 @@ void UActorComponent::OnDestroyPhysicsState()
 void UActorComponent::CreatePhysicsState(bool bAllowDeferral)
 {
 	LLM_SCOPE(ELLMTag::Chaos);
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetOutermost(), ELLMTagSet::Assets);
 
 	SCOPE_CYCLE_COUNTER(STAT_ComponentCreatePhysicsState);
 
@@ -1680,6 +1684,7 @@ void UActorComponent::ExecuteRegisterEvents(FRegisterComponentContext* Context)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_ComponentCreateRenderState);
 		LLM_SCOPE(ELLMTag::SceneRender);
+		LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetOutermost(), ELLMTagSet::Assets);
 		CreateRenderState_Concurrent(Context);
 		checkf(bRenderStateCreated, TEXT("Failed to route CreateRenderState_Concurrent (%s)"), *GetFullName());
 	}
@@ -1789,6 +1794,7 @@ void UActorComponent::RemoveTickPrerequisiteComponent(UActorComponent* Prerequis
 void UActorComponent::DoDeferredRenderUpdates_Concurrent()
 {
 	LLM_SCOPE(ELLMTag::SceneRender);
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetOutermost(), ELLMTagSet::Assets);
 
 	checkf(!IsUnreachable(), TEXT("%s"), *GetFullName());
 	checkf(!IsTemplate(), TEXT("%s"), *GetFullName());
@@ -2122,6 +2128,67 @@ void UActorComponent::RemoveReplicatedSubObject(UObject* SubObject)
 	if (AActor* MyOwner=GetOwner())
 	{
 		MyOwner->RemoveActorComponentReplicatedSubObject(this, SubObject);
+	}
+}
+
+void UActorComponent::DestroyReplicatedSubObjectOnRemotePeers(UObject* SubObject)
+{
+	if (AActor* MyOwner = GetOwner())
+	{
+		if (!MyOwner->HasAuthority())
+		{
+			// Only the authority can call this.
+			return;
+		}
+
+		UE_LOG(LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) requested to Delete replicated subobject on clients %s (0x%p)"), *MyOwner->GetName(), *GetName(), this, *SubObject->GetName(), SubObject);
+
+		if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(GetWorld()))
+		{
+			for (const FNamedNetDriver& Driver : Context->ActiveNetDrivers)
+			{
+				if (Driver.NetDriver)
+				{
+					Driver.NetDriver->DeleteSubObjectOnClients(MyOwner, SubObject);
+				}
+			}
+		}
+
+
+		if (IsUsingRegisteredSubObjectList())
+		{
+			MyOwner->RemoveActorComponentReplicatedSubObject(this, SubObject);
+		}
+	}
+}
+
+void UActorComponent::TearOffReplicatedSubObjectOnRemotePeers(UObject* SubObject)
+{
+	if (AActor* MyOwner=GetOwner())
+	{
+		if (!MyOwner->HasAuthority())
+		{
+			// Only the authority can call this.
+			return;
+		}
+
+		UE_LOG(LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) requested to TearOff replicated subobject on clients %s (0x%p)"), *MyOwner->GetName(), *GetName(), this, *SubObject->GetName(), SubObject);
+	
+		if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(GetWorld()))
+		{
+			for (const FNamedNetDriver& Driver : Context->ActiveNetDrivers)
+			{
+				if (Driver.NetDriver)
+				{
+					Driver.NetDriver->TearOffSubObjectOnClients(MyOwner, SubObject);
+				}
+			}
+		}
+
+		if (IsUsingRegisteredSubObjectList())
+		{
+			MyOwner->RemoveActorComponentReplicatedSubObject(this, SubObject);
+		}
 	}
 }
 

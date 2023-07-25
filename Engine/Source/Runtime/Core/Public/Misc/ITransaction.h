@@ -3,7 +3,9 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Internationalization/Text.h"
 #include "Misc/Guid.h"
+#include "Internationalization/Text.h"
 #include "UObject/UObjectHierarchyFwd.h"
 #include "Change.h"
 
@@ -24,6 +26,8 @@ enum class ETransactionStateEventType : uint8
 	PreTransactionFinalized,
 	/** A transaction was finalized. */
 	TransactionFinalized,
+	/** A transaction has been finalized and the internal transaction state has been updated */
+	PostTransactionFinalized,
 
 	/** A transaction will be used used in an undo/redo operation. This will be followed by a UndoRedoFinalized event. */
 	UndoRedoStarted,

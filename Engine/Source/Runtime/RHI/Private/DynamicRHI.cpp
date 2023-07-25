@@ -4,17 +4,23 @@
 	DynamicRHI.cpp: Dynamically bound Render Hardware Interface implementation.
 =============================================================================*/
 
-#include "CoreMinimal.h"
+#include "DynamicRHI.h"
+#include "Containers/ClosableMpscQueue.h"
 #include "Misc/MessageDialog.h"
+#include "Experimental/Containers/HazardPointer.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/App.h"
-#include "RHI.h"
 #include "Modules/ModuleManager.h"
 #include "GenericPlatform/GenericPlatformDriver.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "PipelineStateCache.h"
+#include "RHIFwd.h"
 #include "TextureProfiler.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "RHIImmutableSamplerState.h"
+#include "RHIStrings.h"
+#include "Serialization/MemoryImage.h"
 
 IMPLEMENT_TYPE_LAYOUT(FRayTracingGeometryInitializer);
 IMPLEMENT_TYPE_LAYOUT(FRayTracingGeometrySegment);
@@ -28,6 +34,7 @@ static_assert(sizeof(FRayTracingGeometryInstance) <= 104,
 
 // Globals.
 FDynamicRHI* GDynamicRHI = NULL;
+RHIGetGPUUsageType RHIGetGPUUsage = nullptr;
 
 static TAutoConsoleVariable<int32> CVarWarnOfBadDrivers(
 	TEXT("r.WarnOfBadDrivers"),
@@ -234,11 +241,11 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 			{
 				if (!DenyListEntry.RHIName.IsEmpty())
 				{
-					LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "VideoCardDriverRHIIssueReport", "The installed version of the {Vendor} graphics driver has known issues in {RHI}.\nPlease install either the latest or the recommended driver version or switch to a different rendering API.\n\nWould you like to visit the following URL to download the driver?\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
+					LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "VideoCardDriverRHIIssueReport", "The installed version of the {Vendor} graphics driver has known issues in {RHI}.\nPlease install the latest driver version or switch to a different rendering API.\n\nWould you like to visit the following URL to download the driver?\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nMinimum required: {RecommendedVer}"), Args);
 				}
 				else
 				{
-					LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "VideoCardDriverIssueReport", "The installed version of the {Vendor} graphics driver has known issues.\nPlease install either the latest or the recommended driver version.\n\nWould you like to visit the following URL to download the driver?\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
+					LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "VideoCardDriverIssueReport", "The installed version of the {Vendor} graphics driver has known issues.\nPlease install the latest driver version.\n\nWould you like to visit the following URL to download the driver?\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nMinimum required: {RecommendedVer}"), Args);
 				}
 			}
 
@@ -339,10 +346,6 @@ void RHIInit(bool bHasEditorToken)
 
 				GDynamicRHI->Init();
 
-#if WITH_MGPU
-				AFRUtils::StaticInitialize();
-#endif
-
 				// Validation of contexts.
 				GRHICommandList.GetImmediateCommandList().GetContext();
 				check(GIsRHIInitialized);
@@ -388,6 +391,10 @@ void RHIInit(bool bHasEditorToken)
 
 		check(GDynamicRHI);
 	}
+
+#if WITH_EDITOR
+	FGenericDataDrivenShaderPlatformInfo::UpdatePreviewPlatforms();
+#endif
 }
 
 void RHIPostInit(const TArray<uint32>& InPixelFormatByteWidth)
@@ -447,6 +454,18 @@ static FAutoConsoleCommandWithWorldAndArgs GBaseRHISetGPUCaptureOptions(
 	TEXT("Platform RHI's may implement more feature toggles."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&BaseRHISetGPUCaptureOptions)
 	);
+
+// Default fallback; will not work for non-8-bit surfaces and it's extremely slow.
+void FDynamicRHI::RHIReadSurfaceData(FRHITexture* Texture, FIntRect Rect, TArray<FLinearColor>& OutData, FReadSurfaceDataFlags InFlags)
+{
+	TArray<FColor> TempData;
+	RHIReadSurfaceData(Texture, Rect, TempData, InFlags);
+	OutData.SetNumUninitialized(TempData.Num());
+	for (int32 Index = 0; Index < TempData.Num(); ++Index)
+	{
+		OutData[Index] = TempData[Index].ReinterpretAsLinear();
+	}
+}
 
 void FDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* Texture, FIntRect Rect, TArray<FFloat16Color>& OutData, FReadSurfaceDataFlags InFlags)
 {
@@ -523,16 +542,6 @@ void FDynamicRHI::RHITransferBufferUnderlyingResource(FRHIBuffer* DestBuffer, FR
 	UE_LOG(LogRHI, Fatal, TEXT("RHITransferBufferUnderlyingResource isn't implemented for the current RHI"));
 }
 
-FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel)
-{
-	return RHICreateUnorderedAccessView(Texture, MipLevel, 0, 0);
-}
-
-FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint8 Format)
-{
-	return RHICreateUnorderedAccessView(Texture, MipLevel, Format, 0, 0);
-}
-
 FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint8 Format, uint16 FirstArraySlice, uint16 NumArraySlices)
 {
 	UE_LOG(LogRHI, Fatal, TEXT("RHICreateUnorderedAccessView with Format parameter isn't implemented for the current RHI"));
@@ -547,6 +556,11 @@ void FDynamicRHI::RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIB
 void FDynamicRHI::RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer)
 {
 	UE_LOG(LogRHI, Fatal, TEXT("RHIUpdateShaderResourceView isn't implemented for the current RHI"));
+}
+
+void FDynamicRHI::RHIUpdateTextureReference(FRHITextureReference* TextureRef, FRHITexture* NewTexture)
+{
+	TextureRef->SetReferencedTexture(NewTexture);
 }
 
 uint64 FDynamicRHI::RHIGetMinimumAlignmentForBufferBackedSRV(EPixelFormat Format)
@@ -609,6 +623,11 @@ uint64 FDynamicRHI::RHIComputePrecachePSOHash(const FGraphicsPipelineStateInitia
 	HashKey.bHasFragmentDensityAttachment = Initializer.bHasFragmentDensityAttachment;
 	HashKey.ShadingRate					= Initializer.ShadingRate;
 
+	for (ETextureCreateFlags& Flags : HashKey.RenderTargetFlags)
+	{
+		Flags = Flags & FGraphicsPipelineStateInitializer::RelevantRenderTargetFlagMask;
+	}
+
 	return CityHash64((const char*)&HashKey, sizeof(FNonStateHashKey));
 }
 
@@ -623,7 +642,7 @@ bool FDynamicRHI::RHIMatchPrecachePSOInitializers(const FGraphicsPipelineStateIn
 		LHS.bHasFragmentDensityAttachment != RHS.bHasFragmentDensityAttachment ||
 		LHS.RenderTargetsEnabled != RHS.RenderTargetsEnabled ||
 		LHS.RenderTargetFormats != RHS.RenderTargetFormats ||
-		LHS.RenderTargetFlags != RHS.RenderTargetFlags ||
+		!FGraphicsPipelineStateInitializer::RelevantRenderTargetFlagsEqual(LHS.RenderTargetFlags, RHS.RenderTargetFlags) ||
 		LHS.DepthStencilTargetFormat != RHS.DepthStencilTargetFormat ||
 		LHS.DepthStencilTargetFlag != RHS.DepthStencilTargetFlag ||
 		LHS.DepthTargetLoadAction != RHS.DepthTargetLoadAction ||

@@ -14,8 +14,10 @@
 #include "RenderResource.h"
 #include "RenderGraphResources.h"
 #include "ShaderPrintParameters.h"
+#include "GroomVisualizationData.h"
 
 class UTexture2D;
+class FSceneInterface;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Utils buffers for importing/exporting hair resources
@@ -51,55 +53,6 @@ RENDERER_API FRDGBufferUAVRef   RegisterAsUAV(FRDGBuilder& GraphBuilder, const F
 RENDERER_API void				ConvertToExternalBufferWithViews(FRDGBuilder& GraphBuilder, FRDGBufferRef& InBuffer, FRDGExternalBuffer& OutBuffer, EPixelFormat Format = PF_Unknown);
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Misc/Helpers
-
-enum class EHairStrandsDebugMode : uint8
-{
-	NoneDebug,
-	SimHairStrands,
-	RenderHairStrands,
-	RenderHairUV,
-	RenderHairRootUV,
-	RenderHairRootUDIM,
-	RenderHairSeed,
-	RenderHairDimension,
-	RenderHairRadiusVariation,
-	RenderHairTangent,
-	RenderHairBaseColor,
-	RenderHairRoughness,
-	RenderVisCluster,
-	RenderHairGroup,
-	RenderLODColoration,
-	RenderHairControlPoints,
-	Count
-};
-
-enum class EHairDebugMode : uint8
-{
-	None,
-	MacroGroups,
-	LightBounds,
-	DeepOpacityMaps,
-	MacroGroupScreenRect,
-	SamplePerPixel,
-	CoverageType,
-	TAAResolveType,
-	VoxelsDensity,
-	VoxelsTangent,
-	VoxelsBaseColor,
-	VoxelsRoughness,
-	MeshProjection,
-	Coverage,
-	MaterialDepth,
-	MaterialBaseColor,
-	MaterialRoughness,
-	MaterialSpecular,
-	MaterialTangent,
-	Tile
-};
-
-/// Return the active debug view mode
-RENDERER_API EHairStrandsDebugMode GetHairStrandsDebugStrandsMode();
-RENDERER_API EHairDebugMode GetHairStrandsDebugMode();
 
 struct FHairStrandClusterCullingData;
 struct IPooledRenderTarget;
@@ -155,7 +108,7 @@ typedef TArray<FHairStrandsInstance*> FHairStrandsInstances;
 class RENDERER_API FHairGroupPublicData : public FRenderResource
 {
 public:
-	FHairGroupPublicData(uint32 InGroupIndex);
+	FHairGroupPublicData(uint32 InGroupIndex, const FName& OwnerName);
 	void SetClusters(uint32 InClusterCount, uint32 InVertexCount);
 	
 	virtual void InitRHI() override;
@@ -257,33 +210,35 @@ public:
 			FRDGImportedBuffer PositionBuffer;
 			FRDGImportedBuffer PrevPositionBuffer;
 			FRDGImportedBuffer TangentBuffer;
-			FRDGImportedBuffer MaterialBuffer;
-			FRDGImportedBuffer Attribute0Buffer;
-			FRDGImportedBuffer Attribute1Buffer;
+			FRDGImportedBuffer AttributeBuffer;
+			FRDGImportedBuffer VertexToCurveBuffer;
 			FRDGImportedBuffer PositionOffsetBuffer;
 			FRDGImportedBuffer PrevPositionOffsetBuffer;
+			FRDGImportedBuffer CurveBuffer;
 
 			FRDGExternalBuffer PositionBufferExternal;
 			FRDGExternalBuffer PrevPositionBufferExternal;
 			FRDGExternalBuffer TangentBufferExternal;
-			FRDGExternalBuffer MaterialBufferExternal;
-			FRDGExternalBuffer Attribute0BufferExternal;
-			FRDGExternalBuffer Attribute1BufferExternal;
+			FRDGExternalBuffer AttributeBufferExternal;
+			FRDGExternalBuffer VertexToCurveBufferExternal;
 			FRDGExternalBuffer PositionOffsetBufferExternal;
 			FRDGExternalBuffer PrevPositionOffsetBufferExternal;
+			FRDGExternalBuffer CurveBufferExternal;
 
 			FShaderResourceViewRHIRef PositionBufferRHISRV				= nullptr;
 			FShaderResourceViewRHIRef PrevPositionBufferRHISRV			= nullptr;
 			FShaderResourceViewRHIRef TangentBufferRHISRV				= nullptr;
-			FShaderResourceViewRHIRef MaterialBufferRHISRV				= nullptr;
-			FShaderResourceViewRHIRef Attribute0BufferRHISRV			= nullptr;
-			FShaderResourceViewRHIRef Attribute1BufferRHISRV			= nullptr;
+			FShaderResourceViewRHIRef AttributeBufferRHISRV				= nullptr;
+			FShaderResourceViewRHIRef VertexToCurveBufferRHISRV			= nullptr;
 			FShaderResourceViewRHIRef PositionOffsetBufferRHISRV		= nullptr;
 			FShaderResourceViewRHIRef PrevPositionOffsetBufferRHISRV	= nullptr;
+			FShaderResourceViewRHIRef CurveBufferRHISRV					= nullptr;
 
 			FVector PositionOffset = FVector::ZeroVector;
 			FVector PrevPositionOffset = FVector::ZeroVector;
+			TArray<uint32> AttributeOffsets;
 
+			uint32 CurveCount = 0;
 			uint32 VertexCount = 0;
 			float HairRadius = 0;
 			float HairRootScale = 0;
@@ -368,7 +323,6 @@ public:
 	bool  bDebugDrawLODInfo = false; // Enable/disable hair LOD info
 	float DebugScreenSize = 0.f;
 	FLinearColor DebugGroupColor;
-	EHairStrandsDebugMode DebugMode = EHairStrandsDebugMode::NoneDebug;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -426,9 +380,9 @@ enum class EHairStrandsShaderType
 	Tool,
 	All
 };
+
 RENDERER_API bool IsHairStrandsSupported(EHairStrandsShaderType Type, EShaderPlatform Platform);
 RENDERER_API bool IsHairStrandsEnabled(EHairStrandsShaderType Type, EShaderPlatform Platform = EShaderPlatform::SP_NumPlatforms);
-RENDERER_API void SetHairStrandsEnabled(bool In);
 
 RENDERER_API bool IsHairRayTracingEnabled();
 
@@ -476,7 +430,8 @@ enum EHairInstanceCount : uint8
 {
 	HairInstanceCount_StrandsPrimaryView = 0,
 	HairInstanceCount_StrandsShadowView = 1,
-	HairInstanceCount_CardsOrMeshes = 2,
+	HairInstanceCount_CardsOrMeshesPrimaryView = 2,
+	HairInstanceCount_CardsOrMeshesShadowView = 3
 };
 
 struct FHairStrandsBookmarkParameters
@@ -489,6 +444,7 @@ struct FHairStrandsBookmarkParameters
 	FHairStrandsInstances VisibleInstances;
 	FHairStrandsInstances* Instances = nullptr;
 	const FSceneView* View = nullptr;// // View 0
+	FSceneInterface* Scene = nullptr;
 	TArray<const FSceneView*> AllViews;
 	FRDGTextureRef SceneColorTexture = nullptr;
 	FRDGTextureRef SceneDepthTexture = nullptr; 

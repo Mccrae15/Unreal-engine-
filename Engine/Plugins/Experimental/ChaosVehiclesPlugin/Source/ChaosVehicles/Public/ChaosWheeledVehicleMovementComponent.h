@@ -86,6 +86,10 @@ struct CHAOSVEHICLES_API FWheelStatus
 	UPROPERTY()
 	FVector ContactPoint;
 
+	/** Wheel contact location */
+	UPROPERTY()
+	FVector HitLocation;
+
 	/** Material that wheel is in contact with */
 	UPROPERTY()
 	TWeakObjectPtr<class UPhysicalMaterial> PhysMaterial;
@@ -123,6 +127,18 @@ struct CHAOSVEHICLES_API FWheelStatus
 	UPROPERTY()
 	FVector SkidNormal;
 
+	/** Drive torque currently applied at wheel */
+	UPROPERTY()
+	float DriveTorque;
+
+	/** Brake torque currently applied at wheel */
+	UPROPERTY()
+	float BrakeTorque;
+
+	/** Is the ABS currently engaged - useful for audio Q's */
+	UPROPERTY()
+	bool bABSActivated;
+
 	FWheelStatus()
 	{
 		Init();
@@ -150,7 +166,11 @@ struct CHAOSVEHICLES_API FWheelStatus
 		SpringForce = 0.f;
 		SkidNormal = FVector::ZeroVector;
 		ContactPoint = FVector::ZeroVector;
+		HitLocation = FVector::ZeroVector;
 		bIsValid = false;
+		bABSActivated = false;
+		DriveTorque = 0.0f;
+		BrakeTorque = 0.0f;
 	}
 
 	FString ToString() const;
@@ -592,7 +612,7 @@ public:
 	virtual void ApplyWheelFrictionForces(float DeltaTime);
 
 	/** calculate and apply chassis suspension forces */
-	virtual void ApplySuspensionForces(float DeltaTime);
+	virtual void ApplySuspensionForces(float DeltaTime, TArray<FWheelTraceParams>& WheelTraceParams);
 
 	bool IsWheelSpinning() const;
 	bool ContainsTraces(const FBox& Box, const TArray<struct Chaos::FSuspensionTrace>& SuspensionTrace);
@@ -673,11 +693,11 @@ class CHAOSVEHICLES_API UChaosWheeledVehicleMovementComponent : public UChaosVeh
 
 	UFUNCTION(BlueprintPure, Category = "Vehicles")
 	static void BreakWheelStatus(const struct FWheelStatus& Status, bool& bInContact, FVector& ContactPoint, UPhysicalMaterial*& PhysMaterial
-			, float& NormalizedSuspensionLength, float& SpringForce, float& SlipAngle, bool& bIsSlipping, float& SlipMagnitude, bool& bIsSkidding, float& SkidMagnitude, FVector& SkidNormal);
+			, float& NormalizedSuspensionLength, float& SpringForce, float& SlipAngle, bool& bIsSlipping, float& SlipMagnitude, bool& bIsSkidding, float& SkidMagnitude, FVector& SkidNormal, float& DriveTorque, float& BrakeTorque, bool& bABSActivated);
 
 	UFUNCTION(BlueprintPure, Category = "Vehicles")
 	static FWheelStatus MakeWheelStatus(bool bInContact, FVector& ContactPoint, UPhysicalMaterial* PhysMaterial
-			, float NormalizedSuspensionLength, float SpringForce, float SlipAngle, bool bIsSlipping, float SlipMagnitude, bool bIsSkidding, float SkidMagnitude, FVector& SkidNormal);
+			, float NormalizedSuspensionLength, float SpringForce, float SlipAngle, bool bIsSlipping, float SlipMagnitude, bool bIsSkidding, float SkidMagnitude, FVector& SkidNormal, float DriveTorque, float BrakeTorque, bool bABSActivated);
 
 	UFUNCTION(BlueprintPure, Category = "Vehicles")
 	static void BreakWheeledSnapshot(const struct FWheeledSnaphotData& Snapshot, FTransform& Transform, FVector& LinearVelocity
@@ -838,6 +858,9 @@ class CHAOSVEHICLES_API UChaosWheeledVehicleMovementComponent : public UChaosVeh
 	
 	UFUNCTION(BlueprintCallable, Category = "Game|Components|ChaosWheeledVehicleMovement")
 	void SetBrakeTorque(float BrakeTorque, int32 WheelIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Game|Components|ChaosWheeledVehicleMovement")
+	void SetSuspensionParams(float Rate, float Damping, float Preload, float MaxRaise, float MaxDrop, int32 WheelIndex);
 
 	/** */
 	virtual TUniquePtr<Chaos::FSimpleWheeledVehicle> CreatePhysicsVehicle() override

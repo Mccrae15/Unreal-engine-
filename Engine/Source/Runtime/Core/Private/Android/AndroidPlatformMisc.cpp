@@ -240,7 +240,7 @@ static void InitCpuThermalSensor()
 	}
 	else
 	{
-	UE_LOG(LogAndroid, Display, TEXT("No CPU thermal sensor was detected. To manually override the sensor path set android.CPUThermalSensorFilePath CVar."));
+		UE_LOG(LogAndroid, Display, TEXT("No CPU thermal sensor was detected. To manually override the sensor path set android.CPUThermalSensorFilePath CVar."));
 	}
 }
 
@@ -615,7 +615,7 @@ void FAndroidMisc::PlatformTearDown()
 	StopTraceMarkers();
 #endif
 
-	auto RemoveBinding = [](FCoreDelegates::FApplicationLifetimeDelegate& ApplicationLifetimeDelegate, FDelegateHandle& DelegateBinding)
+	auto RemoveBinding = [](TMulticastDelegate<void()>& ApplicationLifetimeDelegate, FDelegateHandle& DelegateBinding)
 	{
 		if (DelegateBinding.IsValid())
 		{
@@ -938,7 +938,7 @@ FAndroidMisc::FCPUState& FAndroidMisc::GetCPUState(){
 		}
 		fclose(FileHandle);
 
-		double WallTime;
+		uint64_t WallTime;
 		double CPULoad[CurrentCPUState.CoreCount];
 		CurrentCPUState.AverageUtilization = 0.0;
 		for (size_t n = 0; n < CurrentCPUState.CoreCount; n++) {
@@ -954,7 +954,7 @@ FAndroidMisc::FCPUState& FAndroidMisc::GetCPUState(){
 				CPULoad[n] = 0;
 				continue;
 			}
-			CPULoad[n] = (WallTime - (double)IdleTime) * 100.0 / WallTime;
+			CPULoad[n] = ((double)WallTime - (double)IdleTime) * 100.0 / (double)WallTime;
 			CurrentCPUState.Utilization[n] = CPULoad[n];
 			CurrentCPUState.AverageUtilization += CPULoad[n];
 		}
