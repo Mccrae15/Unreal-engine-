@@ -129,6 +129,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(GetHeadPoseModifier),
 		OCULUS_BIND_ENTRY_POINT(GetControllerState4),
 		OCULUS_BIND_ENTRY_POINT(GetControllerState5),
+		OCULUS_BIND_ENTRY_POINT(GetControllerState6),
 		OCULUS_BIND_ENTRY_POINT(GetActiveController2),
 		OCULUS_BIND_ENTRY_POINT(GetConnectedControllers2),
 		OCULUS_BIND_ENTRY_POINT(SetControllerVibration2),
@@ -237,6 +238,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(GetCurrentInteractionProfile),
 		OCULUS_BIND_ENTRY_POINT(GetLayerRecommendedResolution),
 		OCULUS_BIND_ENTRY_POINT(IsLayerShapeSupported),
+		OCULUS_BIND_ENTRY_POINT(SetEyeBufferSharpenType),
 
 
 #ifndef OVRPLUGIN_JNI_LIB_EXCLUDED
@@ -261,6 +263,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(CreateSpaceUser),
 		OCULUS_BIND_ENTRY_POINT(DestroySpaceUser),
 
+
 		// Scene
 		OCULUS_BIND_ENTRY_POINT(GetSpaceContainer),
 		OCULUS_BIND_ENTRY_POINT(GetSpaceBoundingBox2D),
@@ -269,6 +272,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(GetSpaceRoomLayout),
 		OCULUS_BIND_ENTRY_POINT(GetSpaceBoundary2D),
 		OCULUS_BIND_ENTRY_POINT(RequestSceneCapture),
+		OCULUS_BIND_ENTRY_POINT(GetSpaceTriangleMesh),
 
 	// Local Groups
 
@@ -289,6 +293,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(GetEyeGazesState),
 		OCULUS_BIND_ENTRY_POINT(StartEyeTracking),
 		OCULUS_BIND_ENTRY_POINT(StopEyeTracking),
+
 
 		// OVR_Plugin_Insight.h
 		OCULUS_BIND_ENTRY_POINT(InitializeInsightPassthrough),
@@ -368,7 +373,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 	{
 		*(entryPointArray[i].EntryPointPtr) = LoadEntryPoint(LibraryHandle, entryPointArray[i].EntryPointName);
 
-		if (*entryPointArray[i].EntryPointPtr == NULL)
+		if (*entryPointArray[i].EntryPointPtr == nullptr)
 		{
 			UE_LOG(LogOculusPluginWrapper, Error, TEXT("OculusPlugin EntryPoint could not be loaded: %s"), ANSI_TO_TCHAR(entryPointArray[i].EntryPointName));
 			result = false;

@@ -1164,6 +1164,22 @@ private:
 };
 
 
+// ***** VK_KHR_depth_stencil_resolve
+class FVulkanKHRDepthStencilResolveExtension : public FVulkanDeviceExtension
+{
+public:
+
+	FVulkanKHRDepthStencilResolveExtension(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE)
+	{
+	}
+
+	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
+	{
+		ExtensionFlags.HasKHRDepthStencilResolve = 1;
+		GRHISupportsDepthStencilResolve = ExtensionFlags.HasKHRDepthStencilResolve;
+	}
+};
 
 
 template <typename ExtensionType>
@@ -1243,6 +1259,7 @@ FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensio
 	ADD_CUSTOM_EXTENSION(FVulkanEXTSubgroupSizeControlExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTCalibratedTimestampsExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTDescriptorBuffer);
+	ADD_CUSTOM_EXTENSION(FVulkanKHRDepthStencilResolveExtension);
 
 	// Needed for Raytracing
 	ADD_CUSTOM_EXTENSION(FVulkanKHRBufferDeviceAddressExtension);

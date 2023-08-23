@@ -1735,6 +1735,14 @@ namespace OculusXRHMD
 						bNeedReAllocateFoveationTexture_RenderThread = false;
 					}
 
+					// This is a hack to turn force the runtime to use FDM over FSR when we allocate our FDM to avoid a crash on Quest 3
+					// TODO: Remove this for UE 5.3 after there's an engine-side fix
+					ExecuteOnRHIThread_DoNotWait([this]() {
+						// Set this in AllocateShadingRateTexture because it guarantees that this runs after VulkanExtensions has initially
+						// selected the shading rate type, before the FDM is actually going to be used, and only when we actually have an FDM
+						CustomPresent->UseFragmentDensityMapOverShadingRate_RHIThread();
+					});
+
 					OutTexture = Texture;
 					OutTextureSize = TexSize;
 					return true;
@@ -4088,7 +4096,7 @@ namespace OculusXRHMD
 	{
 		CheckInGameThread();
 
-		if (!OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().ShowSystemUI2(ovrpUI::ovrpUI_GlobalMenu)))
+		if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().ShowSystemUI2(ovrpUI::ovrpUI_GlobalMenu)))
 		{
 			Ar.Logf(TEXT("Could not show platform menu"));
 		}
@@ -4098,7 +4106,7 @@ namespace OculusXRHMD
 	{
 		CheckInGameThread();
 
-		if (!OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().ShowSystemUI2(ovrpUI::ovrpUI_ConfirmQuit)))
+		if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().ShowSystemUI2(ovrpUI::ovrpUI_ConfirmQuit)))
 		{
 			Ar.Logf(TEXT("Could not show platform menu"));
 		}

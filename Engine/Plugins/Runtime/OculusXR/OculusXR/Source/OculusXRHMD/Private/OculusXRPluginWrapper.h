@@ -134,6 +134,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetHeadPoseModifier);
 	OCULUS_DECLARE_ENTRY_POINT(GetControllerState4);
 	OCULUS_DECLARE_ENTRY_POINT(GetControllerState5);
+	OCULUS_DECLARE_ENTRY_POINT(GetControllerState6);
 	OCULUS_DECLARE_ENTRY_POINT(GetActiveController2);
 	OCULUS_DECLARE_ENTRY_POINT(GetConnectedControllers2);
 	OCULUS_DECLARE_ENTRY_POINT(SetControllerVibration2);
@@ -243,6 +244,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetCurrentInteractionProfile);
 	OCULUS_DECLARE_ENTRY_POINT(GetLayerRecommendedResolution);
 	OCULUS_DECLARE_ENTRY_POINT(IsLayerShapeSupported);
+	OCULUS_DECLARE_ENTRY_POINT(SetEyeBufferSharpenType);
 
 
 #ifndef OVRPLUGIN_JNI_LIB_EXCLUDED
@@ -267,6 +269,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(CreateSpaceUser);
 	OCULUS_DECLARE_ENTRY_POINT(DestroySpaceUser);
 
+
 	// Scene
 	OCULUS_DECLARE_ENTRY_POINT(GetSpaceContainer);
 	OCULUS_DECLARE_ENTRY_POINT(GetSpaceBoundingBox2D);
@@ -275,6 +278,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetSpaceRoomLayout);
 	OCULUS_DECLARE_ENTRY_POINT(GetSpaceBoundary2D);
 	OCULUS_DECLARE_ENTRY_POINT(RequestSceneCapture);
+	OCULUS_DECLARE_ENTRY_POINT(GetSpaceTriangleMesh);
 
 	// Local Groups
 
@@ -297,6 +301,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetEyeGazesState);
 	OCULUS_DECLARE_ENTRY_POINT(StartEyeTracking);
 	OCULUS_DECLARE_ENTRY_POINT(StopEyeTracking);
+
 
 	//OVR_Plugin_Insight.h
 	OCULUS_DECLARE_ENTRY_POINT(InitializeInsightPassthrough);

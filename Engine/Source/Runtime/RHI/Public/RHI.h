@@ -623,6 +623,9 @@ extern RHI_API EPixelFormat GRHIVariableRateShadingImageFormat;
 /** Whether Variable Rate Shading deferred shading rate texture update is supported. */
 extern RHI_API bool GRHISupportsLateVariableRateShadingUpdate;
 
+/** Whether Depth Stencil MSAA Resolve Targets are supported. */
+extern RHI_API bool GRHISupportsDepthStencilResolve;
+
 /** Format used for the backbuffer when outputting to a HDR display. */
 extern RHI_API EPixelFormat GRHIHDRDisplayOutputFormat;
 

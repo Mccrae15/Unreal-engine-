@@ -1240,6 +1240,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 	FRDGTextureRef SceneColor = nullptr;
 	FRDGTextureRef SceneColorResolve = nullptr;
 	FRDGTextureRef SceneDepth = nullptr;
+	FRDGTextureRef SceneDepthResolve = nullptr;
 
 	// Verify using both MSAA sample count AND the scene color surface sample count, since on GLES you can't have MSAA color targets,
 	// so the color target would be created without MSAA, and MSAA is achieved through magical means (the framebuffer, being MSAA,
@@ -1263,15 +1264,15 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 		{
 			SceneColor = ViewFamilyTexture;
 		}
-		SceneDepth = SceneTextures.Depth.Target;
 	}
 	else
 	{
 		SceneColor = SceneTextures.Color.Target;
 		SceneColorResolve = (bMobileMSAA || bUseMobileTonemapSubpass) ? SceneTextures.Color.Resolve : nullptr;
-		SceneDepth = SceneTextures.Depth.Target;
 	}
 
+	SceneDepth = SceneTextures.Depth.Target;
+	SceneDepthResolve = GRHISupportsDepthStencilResolve && bMobileMSAA && SceneTextures.Depth.IsSeparate() ? SceneTextures.Depth.Resolve : nullptr;
 	TRefCountPtr<IPooledRenderTarget> ShadingRateTarget = GVRSImageManager.GetMobileVariableRateShadingImage(ViewFamily);
 
 	FRenderTargetBindingSlots BasePassRenderTargets;
@@ -1281,8 +1282,8 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 		BasePassRenderTargets[1] = FRenderTargetBinding(SceneTextures.DepthAux.Target, SceneTextures.DepthAux.Resolve, ERenderTargetLoadAction::EClear);
 	}
 	BasePassRenderTargets.DepthStencil = bIsFullDepthPrepassEnabled ? 
-		FDepthStencilBinding(SceneDepth, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilWrite) : 
-		FDepthStencilBinding(SceneDepth, ERenderTargetLoadAction::EClear, ERenderTargetLoadAction::EClear, FExclusiveDepthStencil::DepthWrite_StencilWrite);
+		FDepthStencilBinding(SceneDepth, SceneDepthResolve, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilWrite) :
+		FDepthStencilBinding(SceneDepth, SceneDepthResolve, ERenderTargetLoadAction::EClear, ERenderTargetLoadAction::EClear, FExclusiveDepthStencil::DepthWrite_StencilWrite);
 	BasePassRenderTargets.ShadingRateTexture = (!MainView.bIsSceneCapture && !MainView.bIsReflectionCapture && ShadingRateTarget.IsValid()) ? RegisterExternalTexture(GraphBuilder, ShadingRateTarget->GetRHI(), TEXT("ShadingRateTexture")) : nullptr;
 	BasePassRenderTargets.SubpassHint = (bUseMobileTonemapSubpass ? ESubpassHint::MobileTonemapSubpass : ESubpassHint::None);
 	BasePassRenderTargets.NumOcclusionQueries = 0u;
@@ -1428,7 +1429,7 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 
 		// Pre-tonemap before MSAA resolve (iOS only)
 		PreTonemapMSAA(RHICmdList, SceneTextures);
-		PostRenderBasePass(RHICmdList, View); // This has to happen before shader resolve, it may render things.
+		PostSceneColorRendering(RHICmdList, View); // This has to happen before shader resolve, it may render things.
 		if (bTonemapSubpass)
 		{
 			RHICmdList.NextSubpass();
@@ -1439,7 +1440,7 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 	});
 	
 	// resolve MSAA depth
-	if (!bIsFullDepthPrepassEnabled)
+	if (!GRHISupportsDepthStencilResolve && !bIsFullDepthPrepassEnabled)
 	{
 		AddResolveSceneDepthPass(GraphBuilder, *ViewContext.ViewInfo, SceneTextures.Depth);
 	}

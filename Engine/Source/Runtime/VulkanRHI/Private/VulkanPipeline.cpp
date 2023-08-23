@@ -1005,6 +1005,7 @@ void FGfxPipelineDesc::FRenderTargets::ReadFrom(const FVulkanRenderTargetLayout&
 
 	bHasDepthStencil =			RTLayout.bHasDepthStencil != 0;
 	bHasResolveAttachments =	RTLayout.bHasResolveAttachments != 0;
+	bHasDepthStencilResolve =	RTLayout.bHasDepthStencilResolve != 0;
 	bHasFragmentDensityAttachment =	RTLayout.bHasFragmentDensityAttachment != 0;
 	NumUsedClearValues =		RTLayout.NumUsedClearValues;
 
@@ -1043,6 +1044,7 @@ void FGfxPipelineDesc::FRenderTargets::WriteInto(FVulkanRenderTargetLayout& Out)
 
 	Out.bHasDepthStencil =			bHasDepthStencil;
 	Out.bHasResolveAttachments =	bHasResolveAttachments;
+	Out.bHasDepthStencilResolve =	bHasDepthStencilResolve;
 	Out.bHasFragmentDensityAttachment =	bHasFragmentDensityAttachment;
 	Out.NumUsedClearValues =		NumUsedClearValues;
 
@@ -1091,6 +1093,7 @@ FArchive& operator << (FArchive& Ar, FGfxPipelineDesc::FRenderTargets& RTs)
 
 	Ar << RTs.bHasDepthStencil;
 	Ar << RTs.bHasResolveAttachments;
+	Ar << RTs.bHasDepthStencilResolve;
 	Ar << RTs.RenderPassCompatibleHash;
 	Ar << RTs.Extent3D;
 

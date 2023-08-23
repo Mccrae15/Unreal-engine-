@@ -307,28 +307,36 @@ namespace OculusXRAnchors
 		return bAsyncStartSuccess;
 	}
 
-	bool FOculusXRAnchors::SaveAnchorList(const TArray<UOculusXRAnchorComponent*>& Anchors, EOculusXRSpaceStorageLocation StorageLocation, const FOculusXRAnchorSaveListDelegate& ResultCallback, EOculusXRAnchorResult::Type& OutResult)
+	void AnchorComponetsToReferences(const TArray<UOculusXRAnchorComponent*>& Anchors, TArray<uint64>& Handles, TArray<TWeakObjectPtr<UOculusXRAnchorComponent>>& AnchorPtrs)
 	{
-		TArray<uint64> Handles;
-		TArray<TWeakObjectPtr<UOculusXRAnchorComponent>> SavedAnchors;
+		Handles.Empty();
+		AnchorPtrs.Empty();
 
 		for (auto& AnchorInstance : Anchors)
 		{
 			if (!IsValid(AnchorInstance))
 			{
-				UE_LOG(LogOculusXRAnchors, Warning, TEXT("Invalid anchor provided when attempting to save anchor list."));
+				UE_LOG(LogOculusXRAnchors, Warning, TEXT("Invalid anchor provided when attempting to process anchor list."));
 				continue;
 			}
 
 			if (!AnchorInstance->HasValidHandle())
 			{
-				UE_LOG(LogOculusXRAnchors, Warning, TEXT("Anchor provided to save anchor list has invalid handle."));
+				UE_LOG(LogOculusXRAnchors, Warning, TEXT("Anchor provided to anchor list has invalid handle."));
 				continue;
 			}
 
 			Handles.Add(AnchorInstance->GetHandle().GetValue());
-			SavedAnchors.Add(AnchorInstance);
+			AnchorPtrs.Add(AnchorInstance);
 		}
+	}
+
+	bool FOculusXRAnchors::SaveAnchorList(const TArray<UOculusXRAnchorComponent*>& Anchors, EOculusXRSpaceStorageLocation StorageLocation, const FOculusXRAnchorSaveListDelegate& ResultCallback, EOculusXRAnchorResult::Type& OutResult)
+	{
+		TArray<uint64> Handles;
+		TArray<TWeakObjectPtr<UOculusXRAnchorComponent>> SavedAnchors;
+
+		AnchorComponetsToReferences(Anchors, Handles, SavedAnchors);
 
 		uint64 RequestId = 0;
 		OutResult = FOculusXRAnchorManager::SaveAnchorList(Handles, StorageLocation, RequestId);
@@ -395,23 +403,7 @@ namespace OculusXRAnchors
 		TArray<uint64> Handles;
 		TArray<TWeakObjectPtr<UOculusXRAnchorComponent>> SharedAnchors;
 
-		for (auto& AnchorInstance : Anchors)
-		{
-			if (!IsValid(AnchorInstance))
-			{
-				UE_LOG(LogOculusXRAnchors, Warning, TEXT("Invalid anchor provided when attempting to save anchor list."));
-				continue;
-			}
-
-			if (!AnchorInstance->HasValidHandle())
-			{
-				UE_LOG(LogOculusXRAnchors, Warning, TEXT("Anchor provided to save anchor list has invalid handle."));
-				continue;
-			}
-
-			Handles.Add(AnchorInstance->GetHandle().GetValue());
-			SharedAnchors.Add(AnchorInstance);
-		}
+		AnchorComponetsToReferences(Anchors, Handles, SharedAnchors);
 
 		uint64 RequestId = 0;
 		OutResult = FOculusXRAnchorManager::ShareSpaces(Handles, OculusUserIDs, RequestId);
@@ -437,6 +429,7 @@ namespace OculusXRAnchors
 		return bAsyncStartSuccess;
 	}
 
+
 	bool FOculusXRAnchors::GetSpaceContainerUUIDs(uint64 Space, TArray<FOculusXRUUID>& OutUUIDs, EOculusXRAnchorResult::Type& OutResult)
 	{
 		OutResult = FOculusXRAnchorManager::GetSpaceContainerUUIDs(Space, OutUUIDs);
@@ -461,6 +454,12 @@ namespace OculusXRAnchors
 		return UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(OutResult);
 	}
 
+	bool FOculusXRAnchors::GetSpaceBoundary2D(uint64 Space, TArray<FVector2f>& OutVertices, EOculusXRAnchorResult::Type& OutResult)
+	{
+		OutResult = FOculusXRAnchorManager::GetSpaceBoundary2D(Space, OutVertices);
+		return UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(OutResult);
+	}
+
 	void FOculusXRAnchors::HandleSpatialAnchorCreateComplete(FOculusXRUInt64 RequestId, int Result, FOculusXRUInt64 Space, FOculusXRUUID UUID)
 	{
 		CreateAnchorBinding* AnchorDataPtr = CreateSpatialAnchorBindings.Find(RequestId.GetValue());
@@ -470,7 +469,7 @@ namespace OculusXRAnchors
 			return;
 		}
 
-		if (!OVRP_SUCCESS(Result))
+		if (OVRP_FAILURE(Result))
 		{
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to create Spatial Anchor. Request: %llu  --  Result: %d"), RequestId.GetValue(), Result);
 			AnchorDataPtr->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), nullptr);
@@ -520,7 +519,7 @@ namespace OculusXRAnchors
 			return;
 		}
 
-		if (!OVRP_SUCCESS(Result))
+		if (OVRP_FAILURE(Result))
 		{
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to erase Spatial Anchor. Request: %llu  --  Result: %d"), RequestId.GetValue(), Result);
 			EraseDataPtr->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), UUID);
@@ -571,7 +570,7 @@ namespace OculusXRAnchors
 			return;
 		}
 
-		if (!OVRP_SUCCESS(Result))
+		if (OVRP_FAILURE(Result))
 		{
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to save Spatial Anchor. Request: %llu  --  Result: %d  --  Space: %llu"), RequestId.GetValue(), Result, Space.GetValue());
 			SaveAnchorData->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), SaveAnchorData->Anchor.Get());
@@ -608,7 +607,7 @@ namespace OculusXRAnchors
 		}
 
 		// Failed to save
-		if (!OVRP_SUCCESS(Result))
+		if (OVRP_FAILURE(Result))
 		{
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to save Spatial Anchors. Request: %llu  --  Result: %d"), RequestId.GetValue(), Result);
 			SaveListData->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), SavedAnchors);
@@ -673,5 +672,6 @@ namespace OculusXRAnchors
 		ShareAnchorsData->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), SharedAnchors, ShareAnchorsData->OculusUserIds);
 		ShareAnchorsBindings.Remove(RequestId.GetValue());
 	}
+
 
 } // namespace OculusXRAnchors

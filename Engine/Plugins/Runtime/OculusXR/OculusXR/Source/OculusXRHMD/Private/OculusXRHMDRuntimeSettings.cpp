@@ -40,6 +40,7 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bFaceTrackingEnabled = DefaultSettings.Flags.bFaceTrackingEnabled;
 	bSupportExperimentalFeatures = DefaultSettings.bSupportExperimentalFeatures;
 	bAnchorSupportEnabled = DefaultSettings.Flags.bAnchorSupportEnabled;
+	bAnchorSharingEnabled = DefaultSettings.Flags.bAnchorSharingEnabled;
 	bSceneSupportEnabled = DefaultSettings.Flags.bSceneSupportEnabled;
 
 	// Default this to false, FSettings doesn't have a separate composite depth flag for mobile
@@ -75,6 +76,7 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bEyeTrackingEnabled = false;
 	bFaceTrackingEnabled = false;
 	bAnchorSupportEnabled = false;
+	bAnchorSharingEnabled = false;
 	bSceneSupportEnabled = false;
 #endif
 

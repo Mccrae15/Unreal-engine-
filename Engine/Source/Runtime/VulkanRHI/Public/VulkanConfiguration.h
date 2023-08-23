@@ -282,6 +282,14 @@ struct VkAllocationCallbacks;
 	#endif
 #endif
 
+#ifndef VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+	#ifdef VK_KHR_depth_stencil_resolve
+		#define VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE 1
+	#else
+		#define VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE 0
+	#endif
+#endif
+
 #ifndef VULKAN_SUPPORTS_RENDERPASS2
 	#ifdef VK_KHR_create_renderpass2
 		#define VULKAN_SUPPORTS_RENDERPASS2 1

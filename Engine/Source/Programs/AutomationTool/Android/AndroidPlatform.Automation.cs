@@ -3670,7 +3670,7 @@ public class AndroidPlatform : Platform
 	{
 		ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(SC.RawProjectPath), SC.StageTargetPlatform.PlatformType);
 		Ini.GetArray("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "PackageForOculusMobile", out var OculusMobileDevices); // Backcompat for deprecated oculus device target setting
-		Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bPackageForOculusMobile", out var bPackageForMetaQuest);
+		Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bPackageForMetaQuest", out var bPackageForMetaQuest);
 		return bPackageForMetaQuest || OculusMobileDevices.Count > 0;
 	}
 	// END META SECTION - Meta Quest Android device support

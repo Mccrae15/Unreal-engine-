@@ -586,6 +586,22 @@ struct FDepthStencilBinding
 		ERenderTargetLoadAction InStencilLoadAction,
 		FExclusiveDepthStencil InDepthStencilAccess)
 		: Texture(InTexture)
+		, ResolveTexture(nullptr)
+		, DepthLoadAction(InDepthLoadAction)
+		, StencilLoadAction(InStencilLoadAction)
+		, DepthStencilAccess(InDepthStencilAccess)
+	{
+		check(Validate());
+	}
+
+	FORCEINLINE FDepthStencilBinding(
+		FRDGTexture* InTexture,
+		FRDGTexture* InResolveTexture,
+		ERenderTargetLoadAction InDepthLoadAction,
+		ERenderTargetLoadAction InStencilLoadAction,
+		FExclusiveDepthStencil InDepthStencilAccess)
+		: Texture(InTexture)
+		, ResolveTexture(InResolveTexture)
 		, DepthLoadAction(InDepthLoadAction)
 		, StencilLoadAction(InStencilLoadAction)
 		, DepthStencilAccess(InDepthStencilAccess)
@@ -598,6 +614,20 @@ struct FDepthStencilBinding
 		ERenderTargetLoadAction InDepthLoadAction,
 		FExclusiveDepthStencil InDepthStencilAccess)
 		: Texture(InTexture)
+		, ResolveTexture(nullptr)
+		, DepthLoadAction(InDepthLoadAction)
+		, DepthStencilAccess(InDepthStencilAccess)
+	{
+		check(Validate());
+	}
+
+	FORCEINLINE FDepthStencilBinding(
+		FRDGTexture* InTexture,
+		FRDGTexture* InResolveTexture,
+		ERenderTargetLoadAction InDepthLoadAction,
+		FExclusiveDepthStencil InDepthStencilAccess)
+		: Texture(InTexture)
+		, ResolveTexture(InResolveTexture)
 		, DepthLoadAction(InDepthLoadAction)
 		, DepthStencilAccess(InDepthStencilAccess)
 	{
@@ -607,6 +637,10 @@ struct FDepthStencilBinding
 	FORCEINLINE FRDGTexture* GetTexture() const
 	{
 		return Texture;
+	}
+	FORCEINLINE FRDGTexture* GetResolveTexture() const
+	{
+		return ResolveTexture;
 	}
 	FORCEINLINE ERenderTargetLoadAction GetDepthLoadAction() const
 	{
@@ -626,6 +660,7 @@ struct FDepthStencilBinding
 	{
 		return
 			Texture == Other.Texture &&
+			ResolveTexture == Other.ResolveTexture &&
 			Other.DepthLoadAction != ERenderTargetLoadAction::EClear &&
 			Other.StencilLoadAction != ERenderTargetLoadAction::EClear &&
 			DepthStencilAccess == Other.DepthStencilAccess;
@@ -634,6 +669,12 @@ struct FDepthStencilBinding
 	void SetTexture(FRDGTexture* InTexture)
 	{
 		Texture = InTexture;
+		check(Validate());
+	}
+
+	void SetResolveTexture(FRDGTexture* InTexture)
+	{
+		ResolveTexture = InTexture;
 		check(Validate());
 	}
 
@@ -661,6 +702,7 @@ private:
 	 * force the user to call FDepthStencilBinding() constructors. No defaults allowed.
 	 */
 	TAlignedShaderParameterPtr<FRDGTexture*> Texture = nullptr;
+	TAlignedShaderParameterPtr<FRDGTexture*> ResolveTexture = nullptr;
 	ERenderTargetLoadAction		DepthLoadAction		= ERenderTargetLoadAction::ENoAction;
 	ERenderTargetLoadAction		StencilLoadAction	= ERenderTargetLoadAction::ENoAction;
 	FExclusiveDepthStencil		DepthStencilAccess	= FExclusiveDepthStencil::DepthNop_StencilNop;
@@ -777,7 +819,7 @@ struct alignas(SHADER_PARAMETER_STRUCT_ALIGNMENT) FRenderTargetBindingSlots
 	};
 };
 
-static_assert(sizeof(FRenderTargetBindingSlots) == 256, "FRenderTargetBindingSlots needs to be same size on all platforms.");
+static_assert(sizeof(FRenderTargetBindingSlots) == 272, "FRenderTargetBindingSlots needs to be same size on all platforms.");
 
 /** Static array of shader resource shader that is initialized to nullptr. */
 template<typename TElement, uint32 NumElements>

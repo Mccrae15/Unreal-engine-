@@ -59,6 +59,7 @@ namespace OculusXRHMD
 		Flags.bRequiresSystemKeyboard = false;
 		Flags.bInsightPassthroughEnabled = false;
 		Flags.bAnchorSupportEnabled = false;
+		Flags.bAnchorSharingEnabled = false;
 		Flags.bSceneSupportEnabled = false;
 		Flags.bBodyTrackingEnabled = false;
 		Flags.bEyeTrackingEnabled = false;

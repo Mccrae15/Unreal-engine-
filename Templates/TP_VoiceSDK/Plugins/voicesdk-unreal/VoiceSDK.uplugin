@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 49,
-	"VersionName": "49.0.1",
+	"Version": 53,
+	"VersionName": "53.0.1",
 	"FriendlyName": "VoiceSDK",
 	"Description": "SDK that enables voice interactions with your app using Wit.ai",
 	"Category": "Voice",
@@ -10,7 +10,7 @@
 	"DocsURL": "https://github.com/wit-ai/voicesdk-unreal/blob/main/README.md",
 	"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/960815697bc942f19848aec9cf502867",
 	"SupportURL": "https://github.com/wit-ai/voicesdk-unreal/issues",
-	"EngineVersion": "5.1",
+	"EngineVersion": "4.27.0",
 	"CanContainContent": true,
 	"Installed": true,
 	"SupportedTargetPlatforms": [
@@ -22,7 +22,7 @@
 			"Name": "VoiceSDK",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"PlatformAllowList": [
+			"WhitelistPlatforms": [
 				"Win64",
 				"Android"
 			]
@@ -31,7 +31,7 @@
 			"Name": "PlatformIntegration",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"PlatformAllowList": [
+			"WhitelistPlatforms": [
 				"Win64",
 				"Android"
 			]
@@ -40,7 +40,7 @@
 			"Name": "Wit",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"PlatformAllowList": [
+			"WhitelistPlatforms": [
 				"Win64",
 				"Android"
 			]
@@ -49,7 +49,7 @@
 			"Name": "WitEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit",
-			"PlatformAllowList": [
+			"WhitelistPlatforms": [
 				"Win64"
 			]
 		}

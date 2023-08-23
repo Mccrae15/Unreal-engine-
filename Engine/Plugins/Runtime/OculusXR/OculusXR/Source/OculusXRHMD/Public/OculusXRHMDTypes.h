@@ -169,6 +169,7 @@ enum class EOculusXRDeviceType : uint8
 	OculusQuest_Deprecated,
 	OculusQuest2,
 	MetaQuestPro,
+	MetaQuest3,
 
 	//PC HMDs
 	Rift = 100,
@@ -176,6 +177,7 @@ enum class EOculusXRDeviceType : uint8
 	Quest_Link_Deprecated,
 	Quest2_Link,
 	MetaQuestProLink,
+	MetaQuest3Link,
 
 	//default
 	OculusUnknown = 200,
@@ -187,6 +189,7 @@ enum class EOculusXRControllerType : uint8
 	None = 0,
 	MetaQuestTouch = 1,
 	MetaQuestTouchPro = 2,
+	MetaQuestTouchPlus = 3,
 	Unknown = 0x7f,
 };
 
@@ -289,3 +292,18 @@ struct FOculusXRSplashDesc
 	}
 };
 
+
+UENUM(BlueprintType)
+enum class EOculusXREyeBufferSharpenType : uint8
+{
+	/** No Sharpening */
+	SLST_None UMETA(DisplayName = "No Sharpening"),
+
+	/** Normal Sharpening */
+	SLST_Normal UMETA(DisplayName = "Normal Sharpening"),
+
+	/** Quality Sharpening */
+	SLST_Quality UMETA(DisplayName = "Quality Sharpening"),
+
+	SLST_MAX,
+};

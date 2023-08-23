@@ -59,6 +59,7 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasNVDeviceDiagnosticConfig : 1;
 			uint64 HasQcomRenderPassTransform : 1;
 			uint64 HasQcomFragmentDensityMapOffset : 1;
+			uint64 HasQcomRenderPassShaderResolve : 1;
 
 			// Promoted to 1.1
 			uint64 HasKHRMaintenance1 : 1;
@@ -78,7 +79,7 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasEXTShaderViewportIndexLayer : 1;
 			uint64 HasSeparateDepthStencilLayouts : 1;
 			uint64 HasEXTHostQueryReset : 1;
-			uint64 HasQcomRenderPassShaderResolve : 1;
+			uint64 HasKHRDepthStencilResolve : 1;
 
 			// Promoted to 1.3
 			uint64 HasEXTTextureCompressionASTCHDR : 1;

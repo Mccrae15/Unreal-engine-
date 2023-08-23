@@ -27,6 +27,8 @@ LICENSE file in the root directory of this source tree.
 #include "ISettingsModule.h"
 #include "OculusXREditorSettings.h"
 #include "OculusXRPassthroughColorLutAsset.h"
+#include "OculusXRSimulator.h"
+#include "OculusXRSyntheticEnvironmentServer.h"
 
 #define LOCTEXT_NAMESPACE "OculusXREditor"
 
@@ -71,6 +73,29 @@ void FOculusXREditorModule::StartupModule()
 			FIsActionChecked::CreateLambda([=]() {
 				return GetMutableDefault<UOculusXRHMDRuntimeSettings>()->bDeploySoToDevice;
 			}));
+		PluginCommands->MapAction(
+			FOculusToolCommands::Get().ToggleMetaXRSim,
+			FExecuteAction::CreateRaw(this, &FOculusXREditorModule::ToggleOpenXRRuntime),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateLambda([=]() {
+				return FMetaXRSimulator::IsSimulatorActivated();
+			}));
+		PluginCommands->MapAction(
+			FOculusToolCommands::Get().LaunchOffice,
+			FExecuteAction::CreateRaw(this, &FOculusXREditorModule::LaunchSESOffice),
+			FCanExecuteAction());
+		PluginCommands->MapAction(
+			FOculusToolCommands::Get().LaunchLivingRoom,
+			FExecuteAction::CreateRaw(this, &FOculusXREditorModule::LaunchSESLivingRoom),
+			FCanExecuteAction());
+		PluginCommands->MapAction(
+			FOculusToolCommands::Get().LaunchBedroom,
+			FExecuteAction::CreateRaw(this, &FOculusXREditorModule::LaunchSESBedroom),
+			FCanExecuteAction());
+		PluginCommands->MapAction(
+			FOculusToolCommands::Get().StopServer,
+			FExecuteAction::CreateRaw(this, &FOculusXREditorModule::StopSESServer),
+			FCanExecuteAction());
 
 		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 
@@ -180,6 +205,31 @@ void FOculusXREditorModule::PluginOpenPlatWindow()
 	FGlobalTabmanager::Get()->TryInvokeTab(OculusPlatToolTabName);
 }
 
+void FOculusXREditorModule::ToggleOpenXRRuntime()
+{
+	FMetaXRSimulator::ToggleOpenXRRuntime();
+}
+
+void FOculusXREditorModule::LaunchSESOffice()
+{
+	FMetaXRSES::LaunchOffice();
+}
+
+void FOculusXREditorModule::LaunchSESLivingRoom()
+{
+	FMetaXRSES::LaunchLivingRoom();
+}
+
+void FOculusXREditorModule::LaunchSESBedroom()
+{
+	FMetaXRSES::LaunchBedroom();
+}
+
+void FOculusXREditorModule::StopSESServer()
+{
+	FMetaXRSES::StopServer();
+}
+
 void FOculusXREditorModule::AddMenuExtension(FMenuBuilder& Builder)
 {
 	bool v = false;
@@ -218,6 +268,34 @@ TSharedRef<SWidget> FOculusXREditorModule::CreateToolbarEntryMenu(TSharedPtr<cla
 	MenuBuilder.EndSection();
 
 	return MenuBuilder.MakeWidget();
+}
+
+TSharedRef<SWidget> FOculusXREditorModule::CreateXrSimToolbarEntryMenu(TSharedPtr<class FUICommandList> Commands)
+{
+	FMenuBuilder MenuBuilder(true, Commands);
+
+	MenuBuilder.BeginSection("MetaXRSimulator", LOCTEXT("MetaXRSimulator", "Toggle"));
+	MenuBuilder.AddMenuEntry(FOculusToolCommands::Get().ToggleMetaXRSim);
+	MenuBuilder.EndSection();
+
+	MenuBuilder.BeginSection("SES", LOCTEXT("SES", "SES"));
+	MenuBuilder.AddSubMenu(
+		LOCTEXT("Synthetic Environment Server", "Synthetic Environment Server"),
+		LOCTEXT("Synthetic Environment Server", "Synthetic Environment Server"),
+		FNewMenuDelegate::CreateRaw(this, &FOculusXREditorModule::CreateSESSubMenus));
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+void FOculusXREditorModule::CreateSESSubMenus(FMenuBuilder& MenuBuilder)
+{
+	MenuBuilder.BeginSection("Synthetic Environment Server", LOCTEXT("Synthetic Environment Server", "Synthetic Environment Server"));
+	MenuBuilder.AddMenuEntry(FOculusToolCommands::Get().LaunchOffice);
+	MenuBuilder.AddMenuEntry(FOculusToolCommands::Get().LaunchLivingRoom);
+	MenuBuilder.AddMenuEntry(FOculusToolCommands::Get().LaunchBedroom);
+	MenuBuilder.AddMenuEntry(FOculusToolCommands::Get().StopServer);
+	MenuBuilder.EndSection();
 }
 
 TSharedRef<IDetailCustomization> FOculusXRHMDSettingsDetailsCustomization::MakeInstance()

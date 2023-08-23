@@ -19,6 +19,7 @@ struct FWitResponse;
 class UWitVoiceService;
 class AWitVoiceExperience;
 class FJsonObject;
+class FWitHttpRequest;
 
 /**
  * A helper class that contains useful API utilities
@@ -26,6 +27,13 @@ class FJsonObject;
 class WIT_API FWitHelperUtilities
 {
 public:
+
+	friend class FWitHttpRequest;
+
+	/**
+	 * Adds a string to the user agent data to include in Wit web requests
+	 */
+	static void AddRequestUserData(const FString& UserData, const bool AddToFront = false);
 
 	/**
 	 * Finds the VoiceExperience in the scene. This is slow so do not call every frame
@@ -105,6 +113,9 @@ public:
 	/* Save a clip in a UAsset file */
 	static bool SaveClipToAssetFile(const FString& ClipDirectory, const FString& ClipId, const TArray<uint8>& ClipData, const FTtsConfiguration& ClipSettings);
 
+	/* Save a UAsset file */
+	static void SaveAssetFile(UPackage* Package, UDataAsset* Asset, const FString FileName);
+
 	/* Save a clip in a binary file */
 	static bool SaveClipToBinaryFile(const FString& CacheFilePath, const TArray<uint8>& ClipData);
 
@@ -145,4 +156,12 @@ public:
 	 * @param Response [in] the Parity Response to accept. It later will be used for final response.
 	 */
 	static void AcceptPartialResponseAndCancelRequest(const UWorld* World, const FName& Tag, const FWitResponse& Response);
+
+private:
+
+	/** Additional user data to add to the front of user agent data in Wit requests */
+	static FString AdditionalFrontUserData;
+
+	/** Additional user data to add to the end of user agent data in Wit requests */
+	static FString AdditionalEndUserData;
 };

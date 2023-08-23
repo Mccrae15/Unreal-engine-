@@ -1355,6 +1355,8 @@ EVRSImageDataType GRHIVariableRateShadingImageDataType = VRSImage_NotSupported;
 EPixelFormat GRHIVariableRateShadingImageFormat = PF_Unknown;
 bool GRHISupportsLateVariableRateShadingUpdate = false;
 
+bool GRHISupportsDepthStencilResolve = false;
+
 EPixelFormat GRHIHDRDisplayOutputFormat = PF_FloatRGBA;
 
 FIntVector GRHIMaxDispatchThreadGroupsPerDimension(0, 0, 0);
@@ -1651,6 +1653,12 @@ void FRHIRenderPassInfo::ConvertToRenderTargetsInfo(FRHISetRenderTargetsInfo& Ou
 	OutRTInfo.bClearDepth = (DepthLoadAction == ERenderTargetLoadAction::EClear);
 	OutRTInfo.bClearStencil = (StencilLoadAction == ERenderTargetLoadAction::EClear);
 
+	if (OutRTInfo.bHasResolveAttachments && DepthStencilRenderTarget.ResolveTarget && DepthStencilRenderTarget.ResolveTarget != DepthStencilRenderTarget.DepthStencilTarget)
+	{
+		OutRTInfo.DepthStencilResolveRenderTarget = OutRTInfo.DepthStencilRenderTarget;
+		OutRTInfo.DepthStencilResolveRenderTarget.Texture = DepthStencilRenderTarget.ResolveTarget;
+	}
+
 	OutRTInfo.ShadingRateTexture = ShadingRateTexture;
 	OutRTInfo.ShadingRateTextureCombiner = ShadingRateTextureCombiner;
 	OutRTInfo.MultiViewCount = MultiViewCount;
@@ -1746,6 +1754,20 @@ void FRHIRenderPassInfo::Validate() const
 			// 1. render pass must have depth target
 			// 2. depth target must support InputAttachement
 			ensure(EnumHasAnyFlags(DepthStencilRenderTarget.DepthStencilTarget->GetFlags(), TexCreate_InputAttachmentRead));
+		}
+
+		if (DepthStencilRenderTarget.ResolveTarget && DepthStencilRenderTarget.ResolveTarget != DepthStencilRenderTarget.DepthStencilTarget)
+		{
+			// for depth resolve
+			// 1. RHI must support depth stencil resolve
+			// 2. Must be using MSAA resolve
+			// 3. Resolve target sample count must be 1
+			// 4. Resolve target format must be the same as the MSAA target format
+			ensureMsgf(GRHISupportsDepthStencilResolve, TEXT("Attempted to resolve depth/stencil target but feature is not supported."));
+			ensureMsgf(bIsMSAAResolve, TEXT("Depth/stencil resolve target is bound but resolve was not requested."));
+			ensureMsgf(DepthStencilRenderTarget.ResolveTarget->GetNumSamples() == 1, TEXT("Depth/stencil resolve targets must have a sample count of 1."));
+			ensureMsgf(DepthStencilRenderTarget.ResolveTarget->GetFormat() == DepthStencilRenderTarget.DepthStencilTarget->GetFormat(),
+				TEXT("Depth/stencil resolve targets must have the same format as the MSAA target."));
 		}
 	}
 	else

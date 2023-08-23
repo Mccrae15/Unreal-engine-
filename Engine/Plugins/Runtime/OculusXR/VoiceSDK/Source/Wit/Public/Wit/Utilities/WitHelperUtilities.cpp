@@ -16,6 +16,28 @@
 #include "HAL/PlatformFileManager.h"
 #include "UObject/SavePackage.h"
 
+FString FWitHelperUtilities::AdditionalFrontUserData = "";
+FString FWitHelperUtilities::AdditionalEndUserData = "";
+
+ /**
+  * Adds a string to the user agent data to include in Wit web requests
+  */
+void FWitHelperUtilities::AddRequestUserData(const FString& UserData, const bool AddToFront)
+{
+	if (AddToFront)
+	{
+		AdditionalFrontUserData = AdditionalFrontUserData == ""
+			? FString::Printf(TEXT("%s,"), *UserData)
+			: FString::Printf(TEXT("%s%s,"), *AdditionalFrontUserData, *UserData);
+	}
+	else
+	{
+		AdditionalEndUserData = AdditionalEndUserData == ""
+			? FString::Printf(TEXT(",%s"), *UserData)
+			: FString::Printf(TEXT("%s,%s"), *AdditionalEndUserData, *UserData);
+	}
+}
+
 /**
  * Finds the VoiceExperience in the scene. This is slow so do not call every frame
  * 
@@ -404,14 +426,25 @@ bool FWitHelperUtilities::SaveClipToAssetFile(const FString& ClipDirectory, cons
 	FAssetRegistryModule::AssetCreated(CacheAsset);
 	const FString PackageFileName = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
 
-#if UE_VERSION_OLDER_THAN(5,1,0)
-	UPackage::SavePackage(CachePackage, CacheAsset, EObjectFlags::RF_Public | EObjectFlags::RF_Standalone, *PackageFileName, GError, nullptr, true, true, SAVE_NoError);
-#else
-	const FSavePackageArgs SaveArgs = { nullptr, nullptr, EObjectFlags::RF_Public | EObjectFlags::RF_Standalone, SAVE_NoError, true, true, true, FDateTime::Now(), GError};
-	UPackage::SavePackage(CachePackage, CacheAsset, *PackageFileName, SaveArgs);
-#endif
+	SaveAssetFile(CachePackage, CacheAsset, PackageFileName);
 	
 	return true;
+}
+
+/*
+ * Save a UAsset file
+ */
+void FWitHelperUtilities::SaveAssetFile(UPackage* Package, UDataAsset* Asset, const FString FileName)
+{
+#if UE_VERSION_OLDER_THAN(5,0,0)
+	UPackage::SavePackage(Package, Asset, EObjectFlags::RF_Public | EObjectFlags::RF_Standalone, *FileName, GError, nullptr, true, true, SAVE_NoError);
+#elif UE_VERSION_OLDER_THAN(5,1,0)
+	const FSavePackageArgs SaveArgs = { nullptr, EObjectFlags::RF_Public | EObjectFlags::RF_Standalone, SAVE_NoError, true, true, true, FDateTime::Now(), GError };
+	UPackage::SavePackage(Package, Asset, *FileName, SaveArgs);
+#else
+	const FSavePackageArgs SaveArgs = { nullptr, nullptr, EObjectFlags::RF_Public | EObjectFlags::RF_Standalone, SAVE_NoError, true, true, true, FDateTime::Now(), GError };
+	UPackage::SavePackage(Package, Asset, *FileName, SaveArgs);
+#endif
 }
 
 /*

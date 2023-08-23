@@ -14,6 +14,7 @@ enum class EOculusXRSupportedDevices : uint8
 	/** 0 was the deprecated Meta Quest */
 	Quest2 = 1 UMETA(DisplayName = "Meta Quest 2"),
 	QuestPro = 2 UMETA(DisplayName = "Meta Quest Pro"),
+	Quest3 = 3 UMETA(DisplayName = "Meta Quest 3"),
 };
 
 /**
@@ -56,6 +57,12 @@ public:
 	/** Computes mipmaps for the eye buffers every frame, for a higher quality distortion */
 	UPROPERTY(config, EditAnywhere, Category = PC)
 	bool bHQDistortion;
+
+	/**
+	Path to the installation package of Meta XR Simulator which holds the MetaXrSimulator folder.
+	*/
+	UPROPERTY(config, EditAnywhere, Category = PC, meta = (DisplayName = "Meta XR Simulator Package Path."))
+	FDirectoryPath MetaXRPackagePath;
 
 	/** Maximum allowed pixel density. */
 	UPROPERTY(config, EditAnywhere, Category = "Mobile|Dynamic Resolution", DisplayName = "Enable Dynamic Resolution")
@@ -141,6 +148,10 @@ public:
 	/** Whether Spatial Anchors can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Anchor Support"))
 	bool bAnchorSupportEnabled;
+
+	/** Whether Spatial Anchor Sharing can be used with the app */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Anchor Sharing"))
+	bool bAnchorSharingEnabled;
 
 	/** Whether Scene can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Scene Support"))

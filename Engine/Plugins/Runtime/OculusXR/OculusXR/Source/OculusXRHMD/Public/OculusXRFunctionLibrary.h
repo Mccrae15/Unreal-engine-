@@ -300,6 +300,12 @@ class OCULUSXRHMD_API UOculusXRFunctionLibrary : public UBlueprintFunctionLibrar
 
 
 	/**
+	* Sets the eyebuffer sharpen type. This amplifies contrast and fine details.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
+	static void SetEyeBufferSharpenType(EOculusXREyeBufferSharpenType EyeBufferSharpenType);
+
+	/**
 	 * Get a system recommendation on whether Passthrough should be active.
 	 * When set, it is recommended for apps which optionally support an MR experience
 	 * with Passthrough to default to that mode.
